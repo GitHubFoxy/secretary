@@ -51,6 +51,7 @@ func main() {
 			log.Fatalf("find owner conversation: %v", conversationErr)
 		}
 		dispatcher := &app.Dispatcher{Store: store, Node: local}
+		web.AttachWorkerController(&app.WorkerController{Store: store, Node: local})
 		go (app.Runner{Store: store, Dispatcher: dispatcher, Conversation: conversation.ID}).Run(ctx)
 		capability := os.Getenv("SECRETARY_CAPABILITY")
 		if capability == "" {
@@ -67,6 +68,13 @@ func main() {
 			}
 		}
 		if capability != "" {
+			allowed, capabilityErr := store.AuthorizeSecretaryCapability(ctx, web.OwnerID(), capability)
+			if capabilityErr != nil {
+				log.Fatalf("authorize Secretary capability: %v", capabilityErr)
+			}
+			if !allowed {
+				log.Fatal("SECRETARY_CAPABILITY is not authorized")
+			}
 			persistentSecretary = secretaryruntime.NewRuntime(local, capability)
 			if err := persistentSecretary.Start(ctx); err != nil {
 				log.Fatalf("start persistent Secretary: %v", err)

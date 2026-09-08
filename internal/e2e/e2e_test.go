@@ -55,6 +55,7 @@ func TestThinVerticalSlice(t *testing.T) {
 		t.Fatal(err)
 	}
 	dispatcher := &app.Dispatcher{Store: store, Node: local}
+	api.AttachWorkerController(&app.WorkerController{Store: store, Node: local})
 	service := ctl.Service{Store: store, PersonID: api.OwnerID(), Capability: capability, Dispatcher: dispatcher}
 	task, err := service.Create(ctx, "Inspect the local repository")
 	if err != nil {

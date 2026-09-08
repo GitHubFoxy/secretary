@@ -19,11 +19,19 @@ import (
 
 const sessionCookie = "secretary_session"
 
+type workerController interface {
+	Session(string) (node.Session, bool)
+	Steer(context.Context, string, string) (bool, error)
+	Queue(context.Context, string, string) (core.Attempt, error)
+	Stop(context.Context, string) error
+}
+
 type Server struct {
 	store          *core.Store
 	bootstrapToken string
 	owner          core.Person
 	node           *node.LocalNode
+	workers        workerController
 	secretary      interface {
 		HandleMessage(context.Context, string) error
 	}
@@ -51,9 +59,10 @@ func New(ctx context.Context, store *core.Store, bootstrapToken string) (*Server
 	return server, nil
 }
 
-func (s *Server) AttachNode(local *node.LocalNode)                  { s.node = local }
-func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime) { s.secretary = runtime }
-func (s *Server) OwnerID() string                                   { return s.owner.ID }
+func (s *Server) AttachNode(local *node.LocalNode)                   { s.node = local }
+func (s *Server) AttachWorkerController(controller workerController) { s.workers = controller }
+func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime)  { s.secretary = runtime }
+func (s *Server) OwnerID() string                                    { return s.owner.ID }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()

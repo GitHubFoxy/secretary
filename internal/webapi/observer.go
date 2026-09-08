@@ -8,6 +8,16 @@ import (
 	"github.com/coder/websocket"
 )
 
+func (s *Server) workerSession(workerRef string) (node.Session, bool) {
+	if s.workers != nil {
+		return s.workers.Session(workerRef)
+	}
+	if s.node != nil {
+		return s.node.Session(workerRef)
+	}
+	return nil, false
+}
+
 type workerStatus struct {
 	WorkerRef string `json:"worker_ref"`
 	SessionID string `json:"session_id"`
@@ -18,7 +28,7 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.authorizedConversation(w, r); !ok {
 		return
 	}
-	if s.node == nil {
+	if s.node == nil && s.workers == nil {
 		http.Error(w, "local node unavailable", http.StatusServiceUnavailable)
 		return
 	}
@@ -29,7 +39,7 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workerRef := parts[0]
-	session, found := s.node.Session(workerRef)
+	session, found := s.workerSession(workerRef)
 	if !found {
 		http.Error(w, "worker not found", http.StatusNotFound)
 		return
@@ -61,7 +71,13 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "text is required", http.StatusBadRequest)
 			return
 		}
-		injected, err := session.Steer(r.Context(), request.Text)
+		var injected bool
+		var err error
+		if s.workers != nil {
+			injected, err = s.workers.Steer(r.Context(), workerRef, request.Text)
+		} else {
+			injected, err = session.Steer(r.Context(), request.Text)
+		}
 		if err != nil {
 			http.Error(w, "steer worker", http.StatusBadGateway)
 			return
@@ -78,21 +94,34 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "text is required", http.StatusBadRequest)
 			return
 		}
-		queue, ok := session.(node.Queueer)
-		if !ok {
-			http.Error(w, "worker runtime does not support queued input", http.StatusNotImplemented)
-			return
-		}
-		if err := queue.Queue(r.Context(), request.Text); err != nil {
-			http.Error(w, "queue worker input", http.StatusBadGateway)
-			return
+		if s.workers != nil {
+			if _, err := s.workers.Queue(r.Context(), workerRef, request.Text); err != nil {
+				http.Error(w, "queue worker input", http.StatusBadGateway)
+				return
+			}
+		} else {
+			queue, ok := session.(node.Queueer)
+			if !ok {
+				http.Error(w, "worker runtime does not support queued input", http.StatusNotImplemented)
+				return
+			}
+			if err := queue.Queue(r.Context(), request.Text); err != nil {
+				http.Error(w, "queue worker input", http.StatusBadGateway)
+				return
+			}
 		}
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
 	case parts[1] == "stop" && r.Method == http.MethodPost:
 		s.mu.Lock()
 		s.workerStates[workerRef] = "stopping"
 		s.mu.Unlock()
-		if err := session.Cancel(r.Context()); err != nil {
+		var cancelErr error
+		if s.workers != nil {
+			cancelErr = s.workers.Stop(r.Context(), workerRef)
+		} else {
+			cancelErr = session.Cancel(r.Context())
+		}
+		if cancelErr != nil {
 			s.mu.Lock()
 			s.workerStates[workerRef] = "active"
 			s.mu.Unlock()

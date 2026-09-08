@@ -32,19 +32,24 @@ func (d Dispatcher) Dispatch(ctx context.Context, task core.Task, workerRef stri
 		_ = d.Node.Remove(workerRef)
 		return core.WorkerBinding{}, core.Attempt{}, err
 	}
-	go d.persistResult(task.ID, attempt.ID, session)
+	go d.persistResults(task.ID, workerRef, session)
 	return binding, attempt, nil
 }
 
-func (d Dispatcher) persistResult(taskID, attemptID string, session node.Session) {
-	result := <-session.Result()
-	status := core.ResultSucceeded
-	if result.Status == "failed" {
-		status = core.ResultFailed
+func (d Dispatcher) persistResults(taskID, workerRef string, session node.Session) {
+	for result := range session.Result() {
+		attempt, err := d.Store.ActiveAttemptForWorker(context.Background(), workerRef)
+		if err != nil {
+			continue
+		}
+		status := core.ResultSucceeded
+		if result.Status == "failed" {
+			status = core.ResultFailed
+		}
+		if result.Status == "canceled" {
+			status = core.ResultCanceled
+		}
+		_, _, _ = d.Store.CompleteAttempt(context.Background(), attempt.ID, status, result.Summary)
+		_, _ = d.Store.FinishClosingTask(context.Background(), taskID)
 	}
-	if result.Status == "canceled" {
-		status = core.ResultCanceled
-	}
-	_, _, _ = d.Store.CompleteAttempt(context.Background(), attemptID, status, result.Summary)
-	_ = taskID
 }
