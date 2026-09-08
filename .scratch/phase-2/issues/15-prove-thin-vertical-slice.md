@@ -17,7 +17,7 @@ Run one manual smoke against pinned upstream `codex-acp` and local Codex authent
 
 Добавлен `internal/e2e` test с настоящими Go HTTP/WebSocket server, temporary SQLite и process-level fake ACP. Проверка проходит по внешнему пути: owner login, ordered Conversation sync, Task Dispatch, Worker acknowledgement, observer status, activity, Steering, Stop, `stopping` и terminal canceled Result в Conversation.
 
-Store теперь публикует committed Conversation entries через observer hook, поэтому Result от Dispatcher доходит до уже подключённого Conversation WebSocket. `go test -race ./...` и `go vet ./...` проходят.
+Store теперь публикует committed Conversation entries через observer hook, поэтому Result от Dispatcher доходит до уже подключённого Conversation WebSocket. Follow-up создаёт новую Attempt и durable `worker_input` entry только после terminal предыдущей Attempt. При открытии базы active Attempts переходят в `interrupted` без automatic retry. `go test -race ./...` и `go vet ./...` проходят.
 
 Проверенный fake smoke command:
 
