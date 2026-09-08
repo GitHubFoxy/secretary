@@ -50,8 +50,8 @@ SECRETARY_ACP_ARGS=/private/tmp/codex-acp/dist/index.js \\
 - `POST /v1/web/session` вернул `201`, сообщение через `POST /v1/messages` принято с `202`.
 - Secretary создал Task через capability-scoped `secretaryctl`; реальный Worker получил prompt и вернул `WORKER_SMOKE_OK`.
 - SQLite сохранила Attempt `succeeded`, Result `succeeded` с summary `WORKER_SMOKE_OK`, а Conversation получила `worker_result` и ответ Secretary с `worker_ref`.
-- Для длинного реального Worker `POST /v1/workers/<worker_ref>/steer` вернул `202 {"injected":true}`. Следом `POST /v1/workers/<worker_ref>/stop` вернул `202 {"status":"cancel_requested"}`; Attempt стал `canceled`, Result записался, а status сначала показал `stopping`, затем `canceled`.
-- После перезапуска `secretaryd` восстановленный Worker status остался `canceled`; обычный `secretaryctl show` при работающем server не перевёл Attempt в `interrupted`.
+- Для длинного реального Worker `POST /v1/workers/<worker_ref>/steer` вернул `202 {"injected":true}`. Следом `POST /v1/workers/<worker_ref>/stop` вернул `202 {"status":"cancel_requested"}`; Attempt стал `canceled` и Result записался. Во время остановки observer status был `stopping`, после перезапуска `secretaryd` durable status стал `canceled`.
+- Обычный `secretaryctl show` при работающем server не перевёл этот Attempt в `interrupted`.
 
 Pinned fake smoke command:
 
