@@ -1,0 +1,21 @@
+:root { color-scheme: light dark; font: 16px system-ui, sans-serif; }
+body { margin: 0; background: #f3f4f6; color: #1f2937; }
+.shell { max-width: 900px; margin: 0 auto; padding: 2rem 1rem; }
+.card { background: white; border: 1px solid #d1d5db; border-radius: 12px; padding: 1.25rem; box-shadow: 0 2px 12px #0001; }
+.topbar { display: flex; justify-content: space-between; align-items: center; }
+.entries { min-height: 22rem; max-height: 60vh; overflow-y: auto; margin: 1rem 0; padding: .5rem; background: white; border: 1px solid #d1d5db; border-radius: 12px; }
+.entry { padding: .75rem; border-bottom: 1px solid #e5e7eb; white-space: pre-wrap; }
+.entry-user { background: #eff6ff; }
+.entry-worker-result { background: #ecfdf5; }
+.entry-secretary { background: #faf5ff; }
+.entry small { color: #6b7280; }
+.composer { display: flex; gap: .5rem; margin: .75rem 0; }
+input { flex: 1; min-width: 0; padding: .65rem; border: 1px solid #9ca3af; border-radius: 6px; font: inherit; }
+button { padding: .65rem 1rem; border: 0; border-radius: 6px; background: #2563eb; color: white; font: inherit; cursor: pointer; }
+button:hover { background: #1d4ed8; }
+.danger { background: #dc2626; }
+.activity { min-height: 8rem; max-height: 25rem; overflow-y: auto; padding: .75rem; margin: .75rem 0; background: #111827; color: #d1fae5; border-radius: 6px; font-family: ui-monospace, monospace; white-space: pre-wrap; }
+.error { color: #b91c1c; }
+.worker-panel { margin-top: 1rem; }
+[hidden] { display: none !important; }
+@media (prefers-color-scheme: dark) { body { background: #111827; color: #e5e7eb; } .card, .entries { background: #1f2937; border-color: #4b5563; } .entry { border-color: #374151; } .entry-user { background: #1e3a5f; } .entry-worker-result { background: #164e3b; } input { background: #111827; color: #e5e7eb; } }
