@@ -1,4 +1,4 @@
-:root { color-scheme: light dark; font: 16px system-ui, sans-serif; }
+:root { color-scheme: light; font: 16px system-ui, sans-serif; }
 body { margin: 0; background: #f3f4f6; color: #1f2937; }
 .shell { max-width: 900px; margin: 0 auto; padding: 2rem 1rem; }
 .card { background: white; border: 1px solid #d1d5db; border-radius: 12px; padding: 1.25rem; box-shadow: 0 2px 12px #0001; }
@@ -18,4 +18,3 @@ button:hover { background: #1d4ed8; }
 .error { color: #b91c1c; }
 .worker-panel { margin-top: 1rem; }
 [hidden] { display: none !important; }
-@media (prefers-color-scheme: dark) { body { background: #111827; color: #e5e7eb; } .card, .entries { background: #1f2937; border-color: #4b5563; } .entry { border-color: #374151; } .entry-user { background: #1e3a5f; } .entry-worker-result { background: #164e3b; } input { background: #111827; color: #e5e7eb; } }
