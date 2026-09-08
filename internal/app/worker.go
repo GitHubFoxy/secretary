@@ -8,6 +8,8 @@ import (
 	"github.com/beruseruko/secretary/internal/node"
 )
 
+var ErrRuntimeSessionUnavailable = errors.New("runtime_session_unavailable")
+
 // WorkerController is the server-facing boundary for observer commands. It
 // records Follow-up state before handing input to the runtime.
 type WorkerController struct {
@@ -36,6 +38,13 @@ func (c *WorkerController) Queue(ctx context.Context, workerRef, text string) (c
 	}
 	session, ok := c.Session(workerRef)
 	if !ok {
+		task, taskErr := c.Store.TaskForWorker(ctx, workerRef)
+		if taskErr == nil {
+			details, detailsErr := c.Store.TaskDetails(ctx, task.ID)
+			if detailsErr == nil && len(details.Attempts) > 0 && details.Attempts[len(details.Attempts)-1].State == core.AttemptInterrupted {
+				return core.Attempt{}, ErrRuntimeSessionUnavailable
+			}
+		}
 		return core.Attempt{}, core.ErrNotFound
 	}
 	queue, ok := session.(node.Queueer)

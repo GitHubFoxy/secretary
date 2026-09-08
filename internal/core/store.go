@@ -41,10 +41,19 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		db.Close()
 		return nil, err
 	}
+	if err := store.recoverInterrupted(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("recover attempts: %w", err)
+	}
 	return store, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+func (s *Store) recoverInterrupted(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE attempts SET state = ?, updated_at = ? WHERE state IN (?, ?)`, AttemptInterrupted, timestamp(s.now()), AttemptStarting, AttemptActive)
+	return err
+}
 
 func (s *Store) SetEntryObserver(observer func(ConversationEntry)) {
 	s.observerMu.Lock()

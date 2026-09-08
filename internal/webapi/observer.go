@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
 	"github.com/coder/websocket"
 )
@@ -28,10 +29,6 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.authorizedConversation(w, r); !ok {
 		return
 	}
-	if s.node == nil && s.workers == nil {
-		http.Error(w, "local node unavailable", http.StatusServiceUnavailable)
-		return
-	}
 	path := strings.TrimPrefix(r.URL.Path, "/v1/workers/")
 	parts := strings.Split(path, "/")
 	if len(parts) == 0 || parts[0] == "" {
@@ -40,19 +37,37 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 	}
 	workerRef := parts[0]
 	session, found := s.workerSession(workerRef)
-	if !found {
-		http.Error(w, "worker not found", http.StatusNotFound)
+	if len(parts) == 1 && r.Method == http.MethodGet {
+		if found {
+			s.mu.Lock()
+			state := s.workerStates[workerRef]
+			if state == "" {
+				state = "active"
+				s.workerStates[workerRef] = state
+			}
+			s.mu.Unlock()
+			writeJSON(w, http.StatusOK, workerStatus{WorkerRef: workerRef, SessionID: session.ID(), State: state})
+			return
+		}
+		task, taskErr := s.store.TaskForWorker(r.Context(), workerRef)
+		if taskErr != nil {
+			http.Error(w, "worker not found", http.StatusNotFound)
+			return
+		}
+		details, detailsErr := s.store.TaskDetails(r.Context(), task.ID)
+		if detailsErr != nil || details.Binding == nil {
+			http.Error(w, "worker not found", http.StatusNotFound)
+			return
+		}
+		state := string(task.State)
+		if len(details.Attempts) > 0 && details.Attempts[len(details.Attempts)-1].State == core.AttemptInterrupted {
+			state = "interrupted"
+		}
+		writeJSON(w, http.StatusOK, workerStatus{WorkerRef: workerRef, SessionID: details.Binding.RuntimeSessionID, State: state})
 		return
 	}
-	if len(parts) == 1 && r.Method == http.MethodGet {
-		s.mu.Lock()
-		state := s.workerStates[workerRef]
-		if state == "" {
-			state = "active"
-			s.workerStates[workerRef] = state
-		}
-		s.mu.Unlock()
-		writeJSON(w, http.StatusOK, workerStatus{WorkerRef: workerRef, SessionID: session.ID(), State: state})
+	if !found {
+		http.Error(w, "worker not found", http.StatusNotFound)
 		return
 	}
 	if len(parts) != 2 {
