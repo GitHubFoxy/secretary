@@ -39,12 +39,17 @@ write_bootstrap_environment() {
   fi
 }
 
-setup() {
-  mkdir -p "$BIN" "$STATE"
-  chmod 700 "$STATE"
+build() {
+  mkdir -p "$BIN"
   cd "$ROOT"
   mise exec -- go build -o "$BIN/secretaryd" ./cmd/secretaryd
   mise exec -- go build -o "$BIN/secretaryctl" ./cmd/secretaryctl
+}
+
+setup() {
+  mkdir -p "$BIN" "$STATE"
+  chmod 700 "$STATE"
+  build
   if ! command -v codex-acp >/dev/null 2>&1; then
     npm install -g @agentclientprotocol/codex-acp@1.10.0
   fi
@@ -156,7 +161,7 @@ case "${1:-}" in
   setup) setup ;;
   start) start ;;
   stop) stop ;;
-  restart) stop; start ;;
+  restart) build; stop; start ;;
   status) if pid="$(running_pid)"; then print "running pid=$pid url=$URL"; else print "stopped"; fi ;;
   logs) tail -f "$LOG_FILE" ;;
   install-service) install_service ;;
