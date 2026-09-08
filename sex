@@ -48,6 +48,10 @@ setup() {
   if ! command -v codex-acp >/dev/null 2>&1; then
     npm install -g @agentclientprotocol/codex-acp@1.10.0
   fi
+  if ! codex login status; then
+    print "Codex login is required. Opening Codex login now."
+    codex login
+  fi
   ln -sfn "$ROOT/sex" "$BIN/sex"
   write_bootstrap_environment
   print "Setup complete. Run: sex start"
