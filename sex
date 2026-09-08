@@ -1,7 +1,7 @@
 #!/bin/zsh
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="${0:A:h}"
 STATE="$HOME/.local/share/secretary"
 BIN="$HOME/.local/bin"
 ENV_FILE="$STATE/environment"
