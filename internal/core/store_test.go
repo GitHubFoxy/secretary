@@ -37,7 +37,7 @@ func TestConversationDeduplicatesInboundAndOrdersResult(t *testing.T) {
 	if err != nil || task.State != TaskDispatching {
 		t.Fatalf("task = %#v, err=%v", task, err)
 	}
-	acceptedTask, _, attempt, err := store.AcceptDispatch(ctx, task.ID, "phone-42", "local", "session-42")
+	acceptedTask, _, attempt, err := store.AcceptDispatch(ctx, task.ID, "phone-42", "local", "session-42", t.TempDir())
 	if err != nil || acceptedTask.State != TaskOpen || attempt.State != AttemptStarting {
 		t.Fatalf("accepted dispatch: task=%#v attempt=%#v err=%v", acceptedTask, attempt, err)
 	}
@@ -96,7 +96,7 @@ func TestClosingTaskCancelsActiveAttemptBeforeArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	task, _ := store.CreateTask(ctx, conversation.ID, "long task")
-	_, _, attempt, err := store.AcceptDispatch(ctx, task.ID, "long-42", "local", "session-42")
+	_, _, attempt, err := store.AcceptDispatch(ctx, task.ID, "long-42", "local", "session-42", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"os"
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
@@ -14,7 +15,11 @@ type Dispatcher struct {
 }
 
 func (d Dispatcher) Dispatch(ctx context.Context, task core.Task, workerRef string) (core.WorkerBinding, core.Attempt, error) {
-	session, err := d.Node.Dispatch(ctx, node.StartRequest{WorkerRef: workerRef, Task: task.Text})
+	workspace, err := os.MkdirTemp("", "secretary-worker-")
+	if err != nil {
+		return core.WorkerBinding{}, core.Attempt{}, err
+	}
+	session, err := d.Node.Dispatch(ctx, node.StartRequest{WorkerRef: workerRef, Task: task.Text, Workspace: workspace})
 	if err != nil {
 		_, transitionErr := d.Store.MarkDispatchFailed(ctx, task.ID)
 		if transitionErr != nil {
@@ -22,7 +27,7 @@ func (d Dispatcher) Dispatch(ctx context.Context, task core.Task, workerRef stri
 		}
 		return core.WorkerBinding{}, core.Attempt{}, err
 	}
-	_, binding, attempt, err := d.Store.AcceptDispatch(ctx, task.ID, workerRef, "local", session.ID())
+	_, binding, attempt, err := d.Store.AcceptDispatch(ctx, task.ID, workerRef, "local", session.ID(), workspace)
 	if err != nil {
 		_ = d.Node.Remove(workerRef)
 		return core.WorkerBinding{}, core.Attempt{}, err

@@ -16,7 +16,7 @@ func TestFollowUpCreatesNewAttemptAndInputEntry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, first, err := store.AcceptDispatch(ctx, task.ID, "worker", "local", "session")
+	_, _, first, err := store.AcceptDispatch(ctx, task.ID, "worker", "local", "session", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

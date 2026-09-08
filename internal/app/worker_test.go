@@ -10,6 +10,61 @@ import (
 	"github.com/beruseruko/secretary/internal/node"
 )
 
+type resumeRuntime struct {
+	runtime
+	resumed bool
+}
+
+func (r *resumeRuntime) Resume(_ context.Context, _ node.StartRequest, sessionID string) (node.Session, error) {
+	r.resumed = true
+	return &session{result: make(chan node.Result, 2), queued: make(chan string, 2)}, nil
+}
+
+func TestWorkerControllerResumesInterruptedWorkerBeforeFollowUp(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "resume.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask(ctx, conversation.ID, "initial")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &resumeRuntime{}
+	local := node.NewLocal(runtime)
+	dispatcher := &Dispatcher{Store: store, Node: local}
+	_, attempt, err := dispatcher.Dispatch(ctx, task, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkAttemptInterrupted(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := local.Remove(task.ID); err != nil {
+		t.Fatal(err)
+	}
+	controller := WorkerController{Store: store, Node: local}
+	followUp, err := controller.Queue(ctx, task.ID, "continue")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.resumed || followUp.Number != 2 {
+		t.Fatalf("resumed=%v followUp=%#v", runtime.resumed, followUp)
+	}
+	resumedSession, ok := local.Session(task.ID)
+	if !ok {
+		t.Fatal("resumed session was not registered")
+	}
+	if got := <-resumedSession.(*session).queued; got != "continue" {
+		t.Fatalf("queued=%q", got)
+	}
+}
+
 func TestWorkerControllerPersistsFollowUpBeforeQueueing(t *testing.T) {
 	ctx := context.Background()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "worker.db"))

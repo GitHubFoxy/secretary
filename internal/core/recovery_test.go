@@ -21,7 +21,7 @@ func TestRecoverInterruptedMarksActiveAttemptWithoutRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, attempt, err := store.AcceptDispatch(ctx, task.ID, "worker", "local", "session")
+	_, _, attempt, err := store.AcceptDispatch(ctx, task.ID, "worker", "local", "session", t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

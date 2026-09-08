@@ -46,8 +46,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	var persistentSecretary *secretaryruntime.Runtime
+	var local *node.LocalNode
 	if acpCommand := os.Getenv("SECRETARY_ACP_COMMAND"); acpCommand != "" {
-		local := node.NewLocal(node.ACPRuntime{Command: acpCommand, Arguments: strings.Fields(os.Getenv("SECRETARY_ACP_ARGS"))})
+		local = node.NewLocal(node.ACPRuntime{Command: acpCommand, Arguments: strings.Fields(os.Getenv("SECRETARY_ACP_ARGS"))})
 		web.AttachNode(local)
 		conversation, conversationErr := store.ConversationForPerson(ctx, web.OwnerID())
 		if conversationErr != nil {
@@ -108,6 +109,11 @@ func main() {
 	if persistentSecretary != nil {
 		if err := persistentSecretary.Stop(context.Background()); err != nil {
 			log.Printf("stop persistent Secretary: %v", err)
+		}
+	}
+	if local != nil {
+		if err := local.Close(); err != nil {
+			log.Printf("stop local Workers: %v", err)
 		}
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)

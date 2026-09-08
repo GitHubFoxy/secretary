@@ -14,8 +14,8 @@ func (s *Store) TaskDetails(ctx context.Context, taskID string) (TaskDetails, er
 	details := TaskDetails{Task: task, Attempts: []Attempt{}, Results: []Result{}}
 
 	var binding WorkerBinding
-	err = s.db.QueryRowContext(ctx, `SELECT id, task_id, worker_ref, node_id, runtime_session_id, archived, created_at FROM worker_bindings WHERE task_id = ?`, taskID).Scan(
-		&binding.ID, &binding.TaskID, &binding.WorkerRef, &binding.NodeID, &binding.RuntimeSessionID, &binding.Archived, newTimestampScanner(&binding.CreatedAt),
+	err = s.db.QueryRowContext(ctx, `SELECT id, task_id, worker_ref, node_id, runtime_session_id, workspace, archived, created_at FROM worker_bindings WHERE task_id = ?`, taskID).Scan(
+		&binding.ID, &binding.TaskID, &binding.WorkerRef, &binding.NodeID, &binding.RuntimeSessionID, &binding.Workspace, &binding.Archived, newTimestampScanner(&binding.CreatedAt),
 	)
 	if err == nil {
 		details.Binding = &binding

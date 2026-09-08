@@ -12,7 +12,7 @@ import (
 type fakeDispatcher struct{ store *core.Store }
 
 func (d fakeDispatcher) Dispatch(ctx context.Context, task core.Task, workerRef string) (core.WorkerBinding, core.Attempt, error) {
-	_, binding, attempt, err := d.store.AcceptDispatch(ctx, task.ID, workerRef, "local", "session-1")
+	_, binding, attempt, err := d.store.AcceptDispatch(ctx, task.ID, workerRef, "local", "session-1", "")
 	return binding, attempt, err
 }
 

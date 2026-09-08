@@ -94,6 +94,23 @@ func TestLocalNodeQueuesNonSteerableInput(t *testing.T) {
 	}
 }
 
+func TestLocalNodeCloseClosesAllManagedWorkers(t *testing.T) {
+	runtime := &fakeRuntime{}
+	local := NewLocal(runtime)
+	if _, err := local.Dispatch(context.Background(), StartRequest{WorkerRef: "worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := local.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.session.closed {
+		t.Fatal("Worker session was not closed")
+	}
+	if _, found := local.Session("worker"); found {
+		t.Fatal("closed Worker remained registered")
+	}
+}
+
 func TestLocalNodeForwardsSteerAndCancel(t *testing.T) {
 	runtime := &fakeRuntime{}
 	node := NewLocal(runtime)

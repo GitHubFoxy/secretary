@@ -42,6 +42,30 @@ func TestACPRuntimeUsesFakeACPProcess(t *testing.T) {
 	}
 }
 
+func TestACPRuntimeResumesExistingSession(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
+	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:]}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := runtime.Resume(ctx, StartRequest{WorkerRef: "worker", Workspace: t.TempDir()}, "saved-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	queue := session.(Queueer)
+	if err := queue.Queue(ctx, "continue"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case result := <-session.Result():
+		if result.Status != "succeeded" {
+			t.Fatalf("result=%#v", result)
+		}
+	case <-ctx.Done():
+		t.Fatal("resumed ACP prompt did not complete")
+	}
+}
+
 func TestACPRuntimeQueuesPromptUntilCurrentTurnCompletes(t *testing.T) {
 	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
 	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:]}

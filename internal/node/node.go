@@ -45,6 +45,10 @@ type Runtime interface {
 	Start(context.Context, StartRequest) (Session, error)
 }
 
+type Resumer interface {
+	Resume(context.Context, StartRequest, string) (Session, error)
+}
+
 type Queueer interface {
 	Queue(context.Context, string) error
 }
@@ -80,11 +84,43 @@ func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session
 	return session, nil
 }
 
+func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
+	resumer, ok := n.runtime.(Resumer)
+	if !ok {
+		return nil, errors.New("node: runtime does not support session resume")
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if _, exists := n.workers[request.WorkerRef]; exists {
+		return nil, errors.New("node: worker already exists")
+	}
+	session, err := resumer.Resume(ctx, request, runtimeSessionID)
+	if err != nil {
+		return nil, err
+	}
+	n.workers[request.WorkerRef] = session
+	return session, nil
+}
+
 func (n *LocalNode) Session(workerRef string) (Session, bool) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	session, ok := n.workers[workerRef]
 	return session, ok
+}
+
+func (n *LocalNode) Close() error {
+	n.mu.Lock()
+	workers := n.workers
+	n.workers = make(map[string]Session)
+	n.mu.Unlock()
+	var first error
+	for _, session := range workers {
+		if err := session.Close(); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 func (n *LocalNode) Remove(workerRef string) error {

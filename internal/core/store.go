@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -106,6 +107,7 @@ CREATE TABLE IF NOT EXISTS worker_bindings (
   worker_ref TEXT NOT NULL UNIQUE,
   node_id TEXT NOT NULL,
   runtime_session_id TEXT NOT NULL,
+  workspace TEXT NOT NULL DEFAULT '',
   archived INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
@@ -141,6 +143,9 @@ CREATE TABLE IF NOT EXISTS web_sessions (
 `)
 	if err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)
+	}
+	if _, err = s.db.ExecContext(ctx, `ALTER TABLE worker_bindings ADD COLUMN workspace TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("migrate worker workspace: %w", err)
 	}
 	return nil
 }
@@ -290,7 +295,7 @@ func (s *Store) RetryDispatch(ctx context.Context, taskID string) (Task, error) 
 	return s.transitionTask(ctx, taskID, []TaskState{TaskDispatchFailed}, TaskDispatching)
 }
 
-func (s *Store) AcceptDispatch(ctx context.Context, taskID, workerRef, nodeID, runtimeSessionID string) (Task, WorkerBinding, Attempt, error) {
+func (s *Store) AcceptDispatch(ctx context.Context, taskID, workerRef, nodeID, runtimeSessionID, workspace string) (Task, WorkerBinding, Attempt, error) {
 	accepted, err := withTx(s, ctx, func(tx *sql.Tx) (acceptedDispatch, error) {
 		task, err := getTask(ctx, tx, taskID)
 		if err != nil {
@@ -300,9 +305,9 @@ func (s *Store) AcceptDispatch(ctx context.Context, taskID, workerRef, nodeID, r
 			return acceptedDispatch{}, ErrInvalidTransition
 		}
 		now := s.now()
-		binding := WorkerBinding{ID: newID("wkb"), TaskID: task.ID, WorkerRef: workerRef, NodeID: nodeID, RuntimeSessionID: runtimeSessionID, CreatedAt: now}
+		binding := WorkerBinding{ID: newID("wkb"), TaskID: task.ID, WorkerRef: workerRef, NodeID: nodeID, RuntimeSessionID: runtimeSessionID, Workspace: workspace, CreatedAt: now}
 		attempt := Attempt{ID: newID("att"), WorkerBindingID: binding.ID, Number: 1, State: AttemptStarting, CreatedAt: now, UpdatedAt: now}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO worker_bindings(id, task_id, worker_ref, node_id, runtime_session_id, created_at) VALUES(?, ?, ?, ?, ?, ?)`, binding.ID, binding.TaskID, binding.WorkerRef, binding.NodeID, binding.RuntimeSessionID, timestamp(now)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO worker_bindings(id, task_id, worker_ref, node_id, runtime_session_id, workspace, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)`, binding.ID, binding.TaskID, binding.WorkerRef, binding.NodeID, binding.RuntimeSessionID, binding.Workspace, timestamp(now)); err != nil {
 			return acceptedDispatch{}, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO attempts(id, worker_binding_id, number, state, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)`, attempt.ID, attempt.WorkerBindingID, attempt.Number, attempt.State, timestamp(now), timestamp(now)); err != nil {

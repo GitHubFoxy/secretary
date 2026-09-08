@@ -79,6 +79,7 @@ type WorkerBinding struct {
 	WorkerRef        string    `json:"worker_ref"`
 	NodeID           string    `json:"node_id"`
 	RuntimeSessionID string    `json:"runtime_session_id"`
+	Workspace        string    `json:"workspace"`
 	Archived         bool      `json:"archived"`
 	CreatedAt        time.Time `json:"created_at"`
 }

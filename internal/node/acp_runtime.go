@@ -17,16 +17,8 @@ type ACPRuntime struct {
 }
 
 func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, error) {
-	client, err := acp.Start(ctx, r.Command, r.Arguments...)
+	client, err := r.connect(ctx)
 	if err != nil {
-		return nil, err
-	}
-	if err := client.Request(ctx, "initialize", map[string]any{
-		"protocolVersion":    1,
-		"clientInfo":         map[string]string{"name": "secretary", "version": "0.1.0"},
-		"clientCapabilities": map[string]any{"fs": map[string]bool{"readTextFile": true, "writeTextFile": true}, "terminal": false},
-	}, &map[string]any{}); err != nil {
-		client.Close()
 		return nil, err
 	}
 	var created struct {
@@ -40,10 +32,43 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 		client.Close()
 		return nil, fmt.Errorf("acp: session/new returned no sessionId")
 	}
-	session := &acpSession{id: created.SessionID, client: client, activity: make(chan Activity, 64), result: make(chan Result, 64), busy: true}
+	session := newACPSession(created.SessionID, client, true)
 	go session.watch()
 	go func() { _ = session.promptTurn(context.Background(), request.Task) }()
 	return session, nil
+}
+
+func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
+	client, err := r.connect(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := client.Request(ctx, "session/load", map[string]any{"sessionId": runtimeSessionID, "cwd": request.Workspace, "mcpServers": []any{}}, &map[string]any{}); err != nil {
+		client.Close()
+		return nil, err
+	}
+	session := newACPSession(runtimeSessionID, client, false)
+	go session.watch()
+	return session, nil
+}
+
+func (r ACPRuntime) connect(ctx context.Context) (*acp.Client, error) {
+	client, err := acp.Start(ctx, r.Command, r.Arguments...)
+	if err != nil {
+		return nil, err
+	}
+	if err := client.Request(ctx, "initialize", map[string]any{
+		"protocolVersion": 1, "clientInfo": map[string]string{"name": "secretary", "version": "0.1.0"},
+		"clientCapabilities": map[string]any{"fs": map[string]bool{"readTextFile": true, "writeTextFile": true}, "terminal": false},
+	}, &map[string]any{}); err != nil {
+		client.Close()
+		return nil, err
+	}
+	return client, nil
+}
+
+func newACPSession(id string, client *acp.Client, busy bool) *acpSession {
+	return &acpSession{id: id, client: client, activity: make(chan Activity, 64), result: make(chan Result, 64), busy: busy}
 }
 
 type acpSession struct {
