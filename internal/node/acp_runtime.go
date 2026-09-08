@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/beruseruko/secretary/internal/acp"
@@ -20,14 +21,18 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 	if err != nil {
 		return nil, err
 	}
-	if err := client.Request(ctx, "initialize", map[string]any{"protocolVersion": 1}, &map[string]any{}); err != nil {
+	if err := client.Request(ctx, "initialize", map[string]any{
+		"protocolVersion":    1,
+		"clientInfo":         map[string]string{"name": "secretary", "version": "0.1.0"},
+		"clientCapabilities": map[string]any{"fs": map[string]bool{"readTextFile": true, "writeTextFile": true}, "terminal": false},
+	}, &map[string]any{}); err != nil {
 		client.Close()
 		return nil, err
 	}
 	var created struct {
 		SessionID string `json:"sessionId"`
 	}
-	if err := client.Request(ctx, "session/new", map[string]any{"cwd": request.Workspace}, &created); err != nil {
+	if err := client.Request(ctx, "session/new", map[string]any{"cwd": request.Workspace, "mcpServers": []any{}}, &created); err != nil {
 		client.Close()
 		return nil, err
 	}
@@ -50,6 +55,9 @@ type acpSession struct {
 	turnMu sync.Mutex
 	busy   bool
 	queued []string
+
+	textMu   sync.Mutex
+	turnText strings.Builder
 }
 
 func (s *acpSession) ID() string                { return s.id }
@@ -103,6 +111,9 @@ func (s *acpSession) beginTurn() bool {
 
 func (s *acpSession) promptTurn(ctx context.Context, task string) error {
 	defer s.finishTurn()
+	s.textMu.Lock()
+	s.turnText.Reset()
+	s.textMu.Unlock()
 	var response struct {
 		Summary    string `json:"summary"`
 		StopReason string `json:"stopReason"`
@@ -113,7 +124,12 @@ func (s *acpSession) promptTurn(ctx context.Context, task string) error {
 		return err
 	}
 	if response.Summary == "" {
-		response.Summary = "completed"
+		s.textMu.Lock()
+		response.Summary = strings.TrimSpace(s.turnText.String())
+		s.textMu.Unlock()
+		if response.Summary == "" {
+			response.Summary = "completed"
+		}
 	}
 	status := "succeeded"
 	if response.StopReason == "cancelled" || response.StopReason == "canceled" {
@@ -143,7 +159,16 @@ func (s *acpSession) watch() {
 		if event.Method != "session/update" {
 			continue
 		}
-		var payload struct {
+		var envelope struct {
+			Update struct {
+				SessionUpdate string `json:"sessionUpdate"`
+				Content       struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+				Title  string `json:"title"`
+				Status string `json:"status"`
+			} `json:"update"`
 			SessionUpdate string `json:"sessionUpdate"`
 			Content       struct {
 				Type string `json:"type"`
@@ -152,14 +177,26 @@ func (s *acpSession) watch() {
 			Title  string `json:"title"`
 			Status string `json:"status"`
 		}
-		if json.Unmarshal(event.Params, &payload) != nil {
+		if json.Unmarshal(event.Params, &envelope) != nil {
 			continue
+		}
+		payload := envelope.Update
+		if payload.SessionUpdate == "" {
+			payload.SessionUpdate = envelope.SessionUpdate
+			payload.Content = envelope.Content
+			payload.Title = envelope.Title
+			payload.Status = envelope.Status
 		}
 		activity := Activity{Kind: ActivityStatus, Text: payload.SessionUpdate}
 		switch payload.SessionUpdate {
 		case "agent_message_chunk", "user_message_chunk":
 			activity.Kind = ActivityText
 			activity.Text = payload.Content.Text
+			if payload.Content.Text != "" {
+				s.textMu.Lock()
+				s.turnText.WriteString(payload.Content.Text)
+				s.textMu.Unlock()
+			}
 		case "tool_call", "tool_call_update":
 			activity.Kind = ActivityTool
 			activity.Text = payload.Title

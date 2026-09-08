@@ -2,9 +2,11 @@ package secretary
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
 )
 
@@ -68,6 +70,40 @@ func TestRuntimeUsesCapabilityAndSteersActiveSecretary(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("steering was not delivered")
 	}
+}
+
+func TestRuntimePersistsResponseEntries(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt := &fakeRuntime{}
+	secretary := NewRuntime(node.NewLocal(rt), "cap")
+	secretary.AttachConversation(store, conversation.ID)
+	if err := secretary.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	rt.session.steerable = false
+	if err := secretary.HandleMessage(ctx, "answer this"); err != nil {
+		t.Fatal(err)
+	}
+	rt.session.results <- node.Result{Status: "succeeded", Summary: "initial ready"}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		entries, readErr := store.EntriesAfter(ctx, conversation.ID, 0)
+		if readErr == nil && len(entries) == 1 && entries[0].Kind == core.EntrySecretary && entries[0].Body == "turn done" {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	entries, _ := store.EntriesAfter(ctx, conversation.ID, 0)
+	t.Fatalf("Secretary response was not persisted: %#v", entries)
 }
 
 func TestRuntimeQueuesFollowUpUntilIdle(t *testing.T) {

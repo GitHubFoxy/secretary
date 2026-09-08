@@ -22,7 +22,7 @@ func main() {
 			continue
 		}
 		if request.Method == "session/prompt" {
-			_ = out.Encode(message{Method: "session/update", Params: json.RawMessage(`{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"fake activity"}}`)})
+			_ = out.Encode(message{Method: "session/update", Params: json.RawMessage(`{"sessionId":"fake-session","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"fake activity"}}}`)})
 		}
 		if len(request.ID) > 0 {
 			result := any(map[string]any{})

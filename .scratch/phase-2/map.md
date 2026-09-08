@@ -25,6 +25,7 @@
 - [Defer Project management from the core](issues/08-defer-project-management.md): Worker сам может clone или создать worktree через shell; Project registry и `create_project` не входят в core или первый slice.
 - [Define the first thin vertical slice](issues/07-define-thin-vertical-slice.md): web → Secretary → local Codex Worker → observer Steering/Stop → Result, без Project management.
 - [Define the Secretary runtime and authority](issues/09-define-secretary-runtime-and-authority.md): persistent Codex Secretary управляет lifecycle только через capability-scoped `secretaryctl`.
+- [Prove the first thin vertical slice](issues/15-prove-thin-vertical-slice.md): real pinned `codex-acp` v1.10.0 with local Codex auth and `gpt-5.6-luna` прошёл login, Secretary, Worker Result, Steering, Stop, recovery и durable SQLite proof.
 
 ## Not yet specified
 

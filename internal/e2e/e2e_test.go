@@ -243,7 +243,7 @@ func TestE2EFakeACPProcess(t *testing.T) {
 		switch request.Method {
 		case "session/prompt":
 			activePrompt = request.ID
-			_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "fake activity"}}})
+			_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"sessionId": "fake-session", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "fake activity"}}}})
 		case "session/cancel":
 			if len(activePrompt) > 0 {
 				_ = encoder.Encode(map[string]any{"id": activePrompt, "result": map[string]string{"summary": "stopped by owner", "stopReason": "cancelled"}})

@@ -13,11 +13,12 @@ import (
 )
 
 type Message struct {
-	ID     json.RawMessage `json:"id,omitempty"`
-	Method string          `json:"method,omitempty"`
-	Params json.RawMessage `json:"params,omitempty"`
-	Result json.RawMessage `json:"result,omitempty"`
-	Error  *RPCError       `json:"error,omitempty"`
+	JSONRPC string          `json:"jsonrpc,omitempty"`
+	ID      json.RawMessage `json:"id,omitempty"`
+	Method  string          `json:"method,omitempty"`
+	Params  json.RawMessage `json:"params,omitempty"`
+	Result  json.RawMessage `json:"result,omitempty"`
+	Error   *RPCError       `json:"error,omitempty"`
 }
 
 type RPCError struct {
@@ -66,7 +67,7 @@ func (c *Client) Request(ctx context.Context, method string, params any, result 
 	response := make(chan Message, 1)
 	c.pending.Store(id, response)
 	defer c.pending.Delete(id)
-	if err := c.send(Message{ID: json.RawMessage(fmt.Appendf(nil, "%d", id)), Method: method, Params: encoded}); err != nil {
+	if err := c.send(Message{JSONRPC: "2.0", ID: json.RawMessage(fmt.Appendf(nil, "%d", id)), Method: method, Params: encoded}); err != nil {
 		return err
 	}
 	select {
@@ -90,7 +91,7 @@ func (c *Client) Notify(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	return c.send(Message{Method: method, Params: encoded})
+	return c.send(Message{JSONRPC: "2.0", Method: method, Params: encoded})
 }
 
 func (c *Client) Close() error {

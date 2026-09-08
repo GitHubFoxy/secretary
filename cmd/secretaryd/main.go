@@ -36,6 +36,9 @@ func main() {
 		log.Fatalf("open Secretary state: %v", err)
 	}
 	defer store.Close()
+	if err := store.RecoverInterrupted(context.Background()); err != nil {
+		log.Fatalf("recover interrupted Attempts: %v", err)
+	}
 	web, err := webapi.New(context.Background(), store, bootstrapToken)
 	if err != nil {
 		log.Fatalf("initialize web API: %v", err)
@@ -76,6 +79,8 @@ func main() {
 				log.Fatal("SECRETARY_CAPABILITY is not authorized")
 			}
 			persistentSecretary = secretaryruntime.NewRuntime(local, capability)
+			persistentSecretary.AttachControlPlane("secretaryctl", *dataDir)
+			persistentSecretary.AttachConversation(store, conversation.ID)
 			if err := persistentSecretary.Start(ctx); err != nil {
 				log.Fatalf("start persistent Secretary: %v", err)
 			}

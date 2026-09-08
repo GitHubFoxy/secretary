@@ -94,7 +94,7 @@ func TestFakeACPProcess(t *testing.T) {
 		}
 		switch request.Method {
 		case "session/prompt":
-			_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "fake activity"}}})
+			_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"sessionId": "fake-session", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "fake activity"}}}})
 		}
 		if len(request.ID) == 0 {
 			continue

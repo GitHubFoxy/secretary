@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
 	"github.com/coder/websocket"
 )
@@ -46,6 +45,22 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 				s.workerStates[workerRef] = state
 			}
 			s.mu.Unlock()
+			if task, taskErr := s.store.TaskForWorker(r.Context(), workerRef); taskErr == nil {
+				if details, detailsErr := s.store.TaskDetails(r.Context(), task.ID); detailsErr == nil && len(details.Attempts) > 0 {
+					attemptState := details.Attempts[len(details.Attempts)-1].State
+					if attemptState.Terminal() {
+						terminalState := string(attemptState)
+						if state != "stopping" {
+							state = terminalState
+						}
+						s.mu.Lock()
+						if s.workerStates[workerRef] == "stopping" {
+							s.workerStates[workerRef] = terminalState
+						}
+						s.mu.Unlock()
+					}
+				}
+			}
 			writeJSON(w, http.StatusOK, workerStatus{WorkerRef: workerRef, SessionID: session.ID(), State: state})
 			return
 		}
@@ -60,8 +75,11 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		state := string(task.State)
-		if len(details.Attempts) > 0 && details.Attempts[len(details.Attempts)-1].State == core.AttemptInterrupted {
-			state = "interrupted"
+		if len(details.Attempts) > 0 {
+			attemptState := details.Attempts[len(details.Attempts)-1].State
+			if attemptState.Terminal() {
+				state = string(attemptState)
+			}
 		}
 		writeJSON(w, http.StatusOK, workerStatus{WorkerRef: workerRef, SessionID: details.Binding.RuntimeSessionID, State: state})
 		return
