@@ -493,7 +493,7 @@ func (s *Store) TasksForConversation(ctx context.Context, conversationID string)
 		return nil, err
 	}
 	defer rows.Close()
-	var tasks []Task
+	tasks := make([]Task, 0)
 	for rows.Next() {
 		var task Task
 		if err := rows.Scan(&task.ID, &task.ConversationID, &task.Text, &task.State, newTimestampScanner(&task.CreatedAt), newTimestampScanner(&task.UpdatedAt)); err != nil {
