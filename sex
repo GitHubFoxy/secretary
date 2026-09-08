@@ -1,0 +1,162 @@
+#!/bin/zsh
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+STATE="$HOME/.local/share/secretary"
+BIN="$HOME/.local/bin"
+ENV_FILE="$STATE/environment"
+PID_FILE="$STATE/server.pid"
+LOG_FILE="$STATE/secretaryd.log"
+URL="http://127.0.0.1:8081"
+
+usage() {
+  cat <<'EOF'
+Usage: sex <command>
+
+Commands:
+  setup             Build Secretary and install the Codex ACP adapter
+  start             Start Secretary and open the web UI
+  stop              Stop the local Secretary server
+  restart           Restart Secretary and open the web UI
+  status            Show server status
+  logs              Follow the server log
+  install-service   Start Secretary automatically after macOS login
+  uninstall-service Remove the automatic-start service
+EOF
+}
+
+load_environment() {
+  [[ -f "$ENV_FILE" ]] && source "$ENV_FILE"
+}
+
+write_bootstrap_environment() {
+  mkdir -p "$STATE"
+  chmod 700 "$STATE"
+  if [[ ! -f "$ENV_FILE" ]]; then
+    umask 077
+    printf "export SECRETARY_BOOTSTRAP_TOKEN='%s'\n" "$(openssl rand -hex 32)" > "$ENV_FILE"
+    chmod 600 "$ENV_FILE"
+  fi
+}
+
+setup() {
+  mkdir -p "$BIN" "$STATE"
+  chmod 700 "$STATE"
+  cd "$ROOT"
+  mise exec -- go build -o "$BIN/secretaryd" ./cmd/secretaryd
+  mise exec -- go build -o "$BIN/secretaryctl" ./cmd/secretaryctl
+  if ! command -v codex-acp >/dev/null 2>&1; then
+    npm install -g @agentclientprotocol/codex-acp@1.10.0
+  fi
+  ln -sfn "$ROOT/sex" "$BIN/sex"
+  write_bootstrap_environment
+  print "Setup complete. Run: sex start"
+}
+
+running_pid() {
+  [[ -f "$PID_FILE" ]] || return 1
+  local pid
+  pid="$(<"$PID_FILE")"
+  kill -0 "$pid" 2>/dev/null || return 1
+  print -r -- "$pid"
+}
+
+start() {
+  if ! [[ -x "$BIN/secretaryd" ]]; then
+    print "Secretary is not set up. Run: sex setup"
+    return 1
+  fi
+  if running_pid >/dev/null; then
+    open "$URL"
+    print "Secretary is already running at $URL"
+    return 0
+  fi
+  write_bootstrap_environment
+  load_environment
+  : "${SECRETARY_BOOTSTRAP_TOKEN:?missing bootstrap token}"
+  : > "$LOG_FILE"
+  chmod 600 "$LOG_FILE"
+  PATH="$BIN:$PATH" \
+  CODEX_PATH="$(command -v codex)" \
+  CODEX_CONFIG='{"model":"gpt-5.6-luna"}' \
+  INITIAL_AGENT_MODE=agent-full-access \
+  NO_BROWSER=1 \
+  SECRETARY_ACP_COMMAND="$(command -v codex-acp)" \
+  nohup "$BIN/secretaryd" -data-dir "$STATE" -listen 127.0.0.1:8081 >>"$LOG_FILE" 2>&1 &
+  print -r -- "$!" > "$PID_FILE"
+  chmod 600 "$PID_FILE"
+  for _ in {1..40}; do
+    if curl -sf -o /dev/null "$URL/"; then
+      if [[ -z "${SECRETARY_CAPABILITY:-}" ]]; then
+        local capability
+        capability="$(grep -Eo 'SECRETARY_CAPABILITY=sec_[[:alnum:]]+' "$LOG_FILE" | tail -1 | cut -d= -f2 || true)"
+        if [[ -n "$capability" ]]; then
+          printf "export SECRETARY_CAPABILITY='%s'\n" "$capability" >> "$ENV_FILE"
+          chmod 600 "$ENV_FILE"
+        fi
+      fi
+      open "$URL/#bootstrap=$SECRETARY_BOOTSTRAP_TOKEN"
+      print "Secretary started at $URL"
+      return 0
+    fi
+    sleep 0.25
+  done
+  print "Secretary did not become ready. See: $LOG_FILE"
+  return 1
+}
+
+stop() {
+  local pid
+  if ! pid="$(running_pid)"; then print "Secretary is not running"; return 0; fi
+  kill -TERM "$pid"
+  for _ in {1..40}; do kill -0 "$pid" 2>/dev/null || { print "Secretary stopped"; return 0; }; sleep 0.25; done
+  print "Secretary did not stop. See: $LOG_FILE"
+  return 1
+}
+
+service_plist() { print "$HOME/Library/LaunchAgents/dev.secretary.sex.plist"; }
+
+install_service() {
+  setup
+  local plist="$(service_plist)"
+  mkdir -p "${plist:h}"
+  cat > "$plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.secretary.sex</string>
+  <key>ProgramArguments</key><array><string>$ROOT/sex</string><string>serve</string></array>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>WorkingDirectory</key><string>$ROOT</string>
+  <key>StandardOutPath</key><string>$LOG_FILE</string>
+  <key>StandardErrorPath</key><string>$LOG_FILE</string>
+</dict></plist>
+EOF
+  launchctl bootstrap "gui/$UID" "$plist" 2>/dev/null || launchctl kickstart -k "gui/$UID/dev.secretary.sex"
+  print "Secretary will start after macOS login."
+}
+
+serve() {
+  write_bootstrap_environment
+  load_environment
+  PATH="$BIN:$PATH" \
+  CODEX_PATH="$(command -v codex)" \
+  CODEX_CONFIG='{"model":"gpt-5.6-luna"}' \
+  INITIAL_AGENT_MODE=agent-full-access \
+  NO_BROWSER=1 \
+  SECRETARY_ACP_COMMAND="$(command -v codex-acp)" \
+  exec "$BIN/secretaryd" -data-dir "$STATE" -listen 127.0.0.1:8081
+}
+
+case "${1:-}" in
+  setup) setup ;;
+  start) start ;;
+  stop) stop ;;
+  restart) stop; start ;;
+  status) if pid="$(running_pid)"; then print "running pid=$pid url=$URL"; else print "stopped"; fi ;;
+  logs) tail -f "$LOG_FILE" ;;
+  install-service) install_service ;;
+  uninstall-service) launchctl bootout "gui/$UID" "$(service_plist)" 2>/dev/null || true; rm -f "$(service_plist)"; print "Service removed" ;;
+  serve) serve ;;
+  *) usage ;;
+esac

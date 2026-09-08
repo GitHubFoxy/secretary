@@ -67,6 +67,7 @@ func (s *Server) OwnerID() string                                    { return s.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/web/session", s.exchangeBootstrapToken)
+	mux.HandleFunc("GET /v1/web/session", s.currentWebSession)
 	mux.HandleFunc("GET /v1/conversation", s.conversation)
 	mux.HandleFunc("POST /v1/messages", s.message)
 	mux.HandleFunc("GET /v1/ws", s.websocket)
@@ -92,6 +93,14 @@ func (s *Server) exchangeBootstrapToken(w http.ResponseWriter, r *http.Request) 
 	}
 	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: token, HttpOnly: true, SameSite: http.SameSiteLaxMode, Path: "/", MaxAge: int((30 * 24 * time.Hour).Seconds())})
 	writeJSON(w, http.StatusCreated, map[string]string{"status": "ok"})
+}
+
+func (s *Server) currentWebSession(w http.ResponseWriter, r *http.Request) {
+	conversation, ok := s.authorizedConversation(w, r)
+	if !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"conversation_id": conversation.ID})
 }
 
 func (s *Server) conversation(w http.ResponseWriter, r *http.Request) {

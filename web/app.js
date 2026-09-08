@@ -54,19 +54,45 @@ async function connectConversation() {
   conversationSocket.onmessage = event => renderEntry(JSON.parse(event.data));
 }
 
+async function showConversation() {
+  loginView.hidden = true;
+  conversationView.hidden = false;
+  await connectConversation();
+}
+
+async function bootstrapSession(token) {
+  await request('/v1/web/session', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({bootstrap_token: token})
+  });
+}
+
+async function restoreSession() {
+  const params = new URLSearchParams(location.hash.slice(1));
+  const token = params.get('bootstrap');
+  try {
+    if (token) {
+      await bootstrapSession(token);
+      history.replaceState(null, '', `${location.pathname}${location.search}`);
+    } else {
+      await request('/v1/web/session');
+    }
+    await showConversation();
+  } catch (_) {
+    // No valid cookie yet. The login form remains visible.
+  }
+}
+
 document.querySelector('#login-form').addEventListener('submit', async event => {
   event.preventDefault();
   showError(loginError, '');
   try {
-    await request('/v1/web/session', {
-      method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({bootstrap_token: document.querySelector('#bootstrap-token').value})
-    });
-    loginView.hidden = true;
-    conversationView.hidden = false;
-    await connectConversation();
+    await bootstrapSession(document.querySelector('#bootstrap-token').value);
+    await showConversation();
   } catch (error) { showError(loginError, error.message); }
 });
+
+restoreSession();
 
 document.querySelector('#message-form').addEventListener('submit', async event => {
   event.preventDefault();
