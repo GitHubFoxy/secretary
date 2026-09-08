@@ -31,7 +31,7 @@ function renderEntry(entry) {
   item.dataset.seq = entry.seq;
   item.innerHTML = `<small>${entry.kind} · ${entry.seq}</small><div></div>`;
   item.lastElementChild.textContent = entry.body;
-  const match = entry.body.match(/worker(?:_ref| ref)?[:= ]+([A-Za-z0-9_-]+)/i);
+  const match = entry.body.match(/(?:worker(?:_ref| ref)?[:= ]+|\b)(tsk_[A-Za-z0-9_-]+)/i);
   if (match) {
     const link = document.createElement('button');
     link.type = 'button';
@@ -111,9 +111,17 @@ document.querySelector('#message-form').addEventListener('submit', async event =
 async function openWorker(workerRef) {
   activeWorker = workerRef;
   document.querySelector('#worker-observer').hidden = false;
-  const status = await request(`/v1/workers/${encodeURIComponent(workerRef)}`);
+  const [status, thread] = await Promise.all([
+    request(`/v1/workers/${encodeURIComponent(workerRef)}`),
+    request(`/v1/workers/${encodeURIComponent(workerRef)}/thread`)
+  ]);
   workerStatus.textContent = status.state;
   activity.replaceChildren();
+  const summary = document.createElement('div');
+  const attempts = thread.attempts.map(attempt => `#${attempt.number}: ${attempt.state}`).join(', ');
+  const results = thread.results.map(result => `${result.status}: ${result.summary}`).join('\n');
+  summary.textContent = `Task: ${thread.task.text}\nAttempts: ${attempts}${results ? `\nResult: ${results}` : ''}`;
+  activity.append(summary);
   if (activitySocket) activitySocket.close();
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   activitySocket = new WebSocket(`${protocol}//${location.host}/v1/workers/${encodeURIComponent(workerRef)}/activity`);

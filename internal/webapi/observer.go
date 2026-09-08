@@ -84,6 +84,20 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, workerStatus{WorkerRef: workerRef, SessionID: details.Binding.RuntimeSessionID, State: state})
 		return
 	}
+	if len(parts) == 2 && parts[1] == "thread" && r.Method == http.MethodGet {
+		task, err := s.store.TaskForWorker(r.Context(), workerRef)
+		if err != nil {
+			http.Error(w, "worker not found", http.StatusNotFound)
+			return
+		}
+		details, err := s.store.TaskDetails(r.Context(), task.ID)
+		if err != nil {
+			http.Error(w, "read worker thread", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, details)
+		return
+	}
 	if !found {
 		http.Error(w, "worker not found", http.StatusNotFound)
 		return
