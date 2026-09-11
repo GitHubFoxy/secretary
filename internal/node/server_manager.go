@@ -142,12 +142,16 @@ func (m *ServerManager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var request struct {
 			Draining *bool `json:"draining"`
 		}
-		request.Draining = new(bool)
-		*request.Draining = true
-		if r.ContentLength > 0 {
+		defaultDraining := true
+		request.Draining = &defaultDraining
+		if r.ContentLength != 0 {
 			if err := decodeNodeJSON(w, r, &request); err != nil {
 				return
 			}
+		}
+		if request.Draining == nil {
+			http.Error(w, "draining must be true or false", http.StatusBadRequest)
+			return
 		}
 		record, err := m.store.SetNodeDraining(r.Context(), nodeRef, *request.Draining)
 		if err != nil {
