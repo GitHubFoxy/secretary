@@ -60,16 +60,13 @@ func New(ctx context.Context, store *core.Store, bootstrapToken string) (*Server
 	if err != nil {
 		return nil, fmt.Errorf("create owner: %w", err)
 	}
-	remoteNodes, err := node.NewServerManager(ctx, store, bootstrapToken, bootstrapToken)
-	if err != nil {
-		return nil, fmt.Errorf("initialize Node manager: %w", err)
-	}
-	server := &Server{store: store, bootstrapToken: bootstrapToken, owner: owner, remoteNodes: remoteNodes, workerStates: make(map[string]string), subscribers: make(map[*subscription]struct{})}
+	server := &Server{store: store, bootstrapToken: bootstrapToken, owner: owner, workerStates: make(map[string]string), subscribers: make(map[*subscription]struct{})}
 	store.SetEntryObserver(server.publishEntry)
 	return server, nil
 }
 
 func (s *Server) AttachNode(local *node.LocalNode)                   { s.node = local }
+func (s *Server) AttachNodeService(manager *node.ServerManager)      { s.remoteNodes = manager }
 func (s *Server) AttachWorkerController(controller workerController) { s.workers = controller }
 func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime)  { s.secretary = runtime }
 func (s *Server) SetDebug(debug bool)                                { s.debug = debug }
@@ -93,9 +90,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/secretary/model", s.setSecretaryModel)
 	mux.HandleFunc("GET /v1/workers", s.workerList)
 	mux.HandleFunc("/v1/workers/", s.workerRoute)
-	mux.HandleFunc("GET /v1/nodes/connect", s.remoteNodes.ServeProtocolHTTP)
-	mux.Handle("/v1/nodes", s.remoteNodes)
-	mux.Handle("/v1/nodes/", s.remoteNodes)
+	if s.remoteNodes != nil {
+		mux.HandleFunc("GET /v1/nodes/connect", s.remoteNodes.ServeProtocolHTTP)
+		mux.Handle("/v1/nodes", s.remoteNodes)
+		mux.Handle("/v1/nodes/", s.remoteNodes)
+	}
 	return mux
 }
 

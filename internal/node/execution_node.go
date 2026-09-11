@@ -228,6 +228,26 @@ func (n *ExecutionNode) session(attemptID string) (Session, bool) {
 	return s, ok
 }
 
+func (n *ExecutionNode) ActiveAttempts() []ActiveAttempt {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	attempts := make([]ActiveAttempt, 0, len(n.sessions))
+	for attemptID := range n.sessions {
+		mapping, ok := n.store.SessionMapping(attemptID)
+		if !ok {
+			continue
+		}
+		attempts = append(attempts, ActiveAttempt{WorkerRef: mapping.WorkerRef, TurnID: mapping.TurnID, AttemptID: mapping.AttemptID})
+	}
+	return attempts
+}
+
+func (n *ExecutionNode) removeSession(attemptID string) {
+	n.mu.Lock()
+	delete(n.sessions, attemptID)
+	n.mu.Unlock()
+}
+
 func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope) {
 	go func() {
 		activity := session.Activity()
@@ -245,6 +265,7 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope) {
 					results = nil
 					continue
 				}
+				n.removeSession(envelope.AttemptID)
 				status := core.OutcomeFailed
 				if result.Status == "succeeded" {
 					status = core.OutcomeSucceeded

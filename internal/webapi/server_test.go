@@ -67,6 +67,28 @@ func postMessage(t *testing.T, client *http.Client, baseURL, id, body string) ma
 	return result
 }
 
+func TestNodeEndpointsAreAbsentWhenNodeServiceIsDisabled(t *testing.T) {
+	store, err := core.Open(context.Background(), filepath.Join(t.TempDir(), "nodes-disabled.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	api, err := New(context.Background(), store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	response, err := server.Client().Get(server.URL + "/v1/nodes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("disabled Node service status=%d", response.StatusCode)
+	}
+}
+
 func TestWebLoginConversationAndInboundDeduplication(t *testing.T) {
 	server, client := testServer(t)
 	login(t, client, server.URL)

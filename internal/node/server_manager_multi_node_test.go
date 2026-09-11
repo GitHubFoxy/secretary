@@ -19,7 +19,7 @@ func TestServerManagerTracksTwoIndependentNodesAndDisconnects(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	manager, err := NewServerManager(ctx, store, "pair-token", "admin-token")
+	manager, err := NewServerManagerWithConfig(ctx, store, ServerConfig{PairingTokens: []string{"pair-token-macbook", "pair-token-home"}, AdminToken: "admin-token"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,11 +30,11 @@ func TestServerManagerTracksTwoIndependentNodesAndDisconnects(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	macbook, err := EnrollNode(ctx, server.Client(), server.URL, "pair-token", "macbook")
+	macbook, err := EnrollNode(ctx, server.Client(), server.URL, "pair-token-macbook", "macbook")
 	if err != nil {
 		t.Fatal(err)
 	}
-	home, err := EnrollNode(ctx, server.Client(), server.URL, "pair-token", "home-server")
+	home, err := EnrollNode(ctx, server.Client(), server.URL, "pair-token-home", "home-server")
 	if err != nil {
 		t.Fatal(err)
 	}

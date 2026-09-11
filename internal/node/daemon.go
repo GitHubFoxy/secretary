@@ -13,17 +13,17 @@ import (
 )
 
 type Daemon struct {
-	Identity NodeIdentity
-	Store    *LocalStore
-	Runtime  Runtime
+	Identity  NodeIdentity
+	Store     *LocalStore
+	Runtime   Runtime
 	Inventory InventorySource
 
-	Capacity          int
-	HeartbeatInterval time.Duration
-	InventoryInterval time.Duration
+	Capacity           int
+	HeartbeatInterval  time.Duration
+	InventoryInterval  time.Duration
 	OutboxPollInterval time.Duration
-	ReconnectMin      time.Duration
-	ReconnectMax      time.Duration
+	ReconnectMin       time.Duration
+	ReconnectMax       time.Duration
 }
 
 type serverMessage struct {
@@ -173,7 +173,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			}
 			heartbeat := Heartbeat{
 				Node: d.Identity.Node, Online: true, Capacity: d.capacity(), Inventory: inventory,
-				LastProcessedCommand: lastProcessedCommand,
+				ActiveAttempts: execution.ActiveAttempts(), LastProcessedCommand: lastProcessedCommand,
 			}
 			if err := connection.SendHeartbeat(ctx, heartbeat, sequence); err != nil {
 				return err
