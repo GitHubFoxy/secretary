@@ -38,7 +38,9 @@ func (s *Store) migrateDurableEventSchema(ctx context.Context) error {
 
 func appendEventTx(ctx context.Context, tx *sql.Tx, now time.Time, input EventInput, payload any) (Event, error) {
 	encoded, err := mustJSON(payload)
-	if err != nil { return Event{}, fmt.Errorf("encode event payload: %w", err) }
+	if err != nil {
+		return Event{}, fmt.Errorf("encode event payload: %w", err)
+	}
 	var next int64
 	if err := tx.QueryRowContext(ctx, `SELECT next_seq FROM event_sequence WHERE id = 1`).Scan(&next); errors.Is(err, sql.ErrNoRows) {
 		next = 1
@@ -86,17 +88,29 @@ func (s *Store) ReplayConversation(ctx context.Context, conversationID string, a
 func (s *Store) ReplayEvents(ctx context.Context, afterSeq int64, limit int) (EventReplay, error) {
 	return withTx(s, ctx, func(tx *sql.Tx) (EventReplay, error) {
 		var snapshotBoundary int64
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM events`).Scan(&snapshotBoundary); err != nil { return EventReplay{}, err }
-		if limit <= 0 || limit > 500 { limit = 500 }
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM events`).Scan(&snapshotBoundary); err != nil {
+			return EventReplay{}, err
+		}
+		if limit <= 0 || limit > 500 {
+			limit = 500
+		}
 		rows, err := tx.QueryContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, payload_json, created_at FROM events WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?`, afterSeq, snapshotBoundary, limit+1)
-		if err != nil { return EventReplay{}, err }
+		if err != nil {
+			return EventReplay{}, err
+		}
 		defer rows.Close()
 		events, err := scanEvents(rows)
-		if err != nil { return EventReplay{}, err }
+		if err != nil {
+			return EventReplay{}, err
+		}
 		hasMore := len(events) > limit
-		if hasMore { events = events[:limit] }
+		if hasMore {
+			events = events[:limit]
+		}
 		lastReturned := afterSeq
-		if len(events) > 0 { lastReturned = events[len(events)-1].Seq }
+		if len(events) > 0 {
+			lastReturned = events[len(events)-1].Seq
+		}
 		return EventReplay{SnapshotBoundarySeq: snapshotBoundary, BoundarySeq: snapshotBoundary, LastReturnedSeq: lastReturned, HasMore: hasMore, Events: events}, nil
 	})
 }

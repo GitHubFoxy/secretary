@@ -155,7 +155,10 @@ func (s *Store) CreateWorker(ctx context.Context, conversationID string, spec Wo
 	if key == "" {
 		key = strings.TrimSpace(turnSpec.IdempotencyKey)
 	}
-	if key != "" { s.idempotencyMu.Lock(); defer s.idempotencyMu.Unlock() }
+	if key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+	}
 	return s.createWorker(ctx, conversationID, spec, turnSpec, key)
 }
 
@@ -181,9 +184,25 @@ func (s *Store) createWorker(ctx context.Context, conversationID string, spec Wo
 			var encoded string
 			if err := tx.QueryRowContext(ctx, `SELECT outcome_json FROM idempotency_records WHERE operation = ? AND idempotency_key = ?`, "worker.create", idempotencyKey).Scan(&encoded); err == nil {
 				var stored workerCreationOutcome
-				if err := json.Unmarshal([]byte(encoded), &stored); err != nil { return struct { worker Worker; turn Turn; attempt Phase4Attempt }{}, fmt.Errorf("core: decode durable Worker outcome: %w", err) }
-				return struct { worker Worker; turn Turn; attempt Phase4Attempt }{worker: stored.Worker, turn: stored.Turn, attempt: stored.Attempt}, nil
-			} else if !errors.Is(err, sql.ErrNoRows) { return struct { worker Worker; turn Turn; attempt Phase4Attempt }{}, err }
+				if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
+					return struct {
+						worker  Worker
+						turn    Turn
+						attempt Phase4Attempt
+					}{}, fmt.Errorf("core: decode durable Worker outcome: %w", err)
+				}
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{worker: stored.Worker, turn: stored.Turn, attempt: stored.Attempt}, nil
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
 		}
 		now := s.now()
 		worker := Worker{ID: newID("wrk"), WorkerRef: spec.WorkerRef, Title: spec.Title, Intent: spec.Intent, ProjectID: spec.ProjectID, NodeID: spec.NodeID, HarnessInstanceID: spec.HarnessInstanceID, PolicySnapshot: spec.PolicySnapshot, Status: WorkerQueued, CreatedAt: now, UpdatedAt: now}
@@ -257,8 +276,20 @@ func (s *Store) createWorker(ctx context.Context, conversationID string, spec Wo
 		}
 		if idempotencyKey != "" {
 			encoded, err := json.Marshal(workerCreationOutcome{Worker: worker, Turn: turn, Attempt: attempt})
-			if err != nil { return struct { worker Worker; turn Turn; attempt Phase4Attempt }{}, fmt.Errorf("core: encode durable Worker outcome: %w", err) }
-			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES(?, ?, ?, ?)`, "worker.create", idempotencyKey, string(encoded), timestamp(now)); err != nil { return struct { worker Worker; turn Turn; attempt Phase4Attempt }{}, err }
+			if err != nil {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, fmt.Errorf("core: encode durable Worker outcome: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES(?, ?, ?, ?)`, "worker.create", idempotencyKey, string(encoded), timestamp(now)); err != nil {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
 		}
 		return struct {
 			worker  Worker
@@ -279,7 +310,10 @@ func (s *Store) SpawnWorker(ctx context.Context, conversationID string, spec Wor
 // changes the Worker's Project, Node, HarnessInstance, or policy snapshot.
 func (s *Store) CreateTurn(ctx context.Context, workerID string, spec TurnSpec) (Turn, Phase4Attempt, error) {
 	key := strings.TrimSpace(spec.IdempotencyKey)
-if key != "" { s.idempotencyMu.Lock(); defer s.idempotencyMu.Unlock() }
+	if key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+	}
 	return s.createTurn(ctx, workerID, spec, key)
 }
 
@@ -920,3 +954,83 @@ func conversationForWorker(ctx context.Context, q interface {
 	return conversationID, err
 }
 func parseTimestamp(text string) (t time.Time, err error) { return time.Parse(time.RFC3339Nano, text) }
+
+// RecordNodeAttemptOutcome is the authenticated Node boundary for terminal
+// Attempt events. It verifies the immutable server binding before delegating to
+// the idempotent lifecycle transaction. Native runtime identifiers never cross
+// this boundary.
+func (s *Store) RecordNodeAttemptOutcome(ctx context.Context, envelope AttemptOutcomeEnvelope) (AttemptOutcome, *Phase4Result, bool, error) {
+	if err := envelope.Validate(); err != nil {
+		return AttemptOutcome{}, nil, false, err
+	}
+	if strings.TrimSpace(string(envelope.Node)) == "" || strings.TrimSpace(string(envelope.HarnessInstanceID)) == "" || strings.TrimSpace(envelope.WorkerRef) == "" || strings.TrimSpace(envelope.TurnID) == "" {
+		return AttemptOutcome{}, nil, false, errors.New("core: Node terminal event binding is required")
+	}
+	attempt, err := s.Phase4Attempt(ctx, envelope.AttemptID)
+	if err != nil {
+		return AttemptOutcome{}, nil, false, err
+	}
+	worker, err := s.Worker(ctx, attempt.WorkerID)
+	if err != nil {
+		return AttemptOutcome{}, nil, false, err
+	}
+	if attempt.NodeID != string(envelope.Node) || attempt.HarnessInstanceID != string(envelope.HarnessInstanceID) || worker.WorkerRef != envelope.WorkerRef || attempt.TurnID != envelope.TurnID {
+		return AttemptOutcome{}, nil, false, errors.New("core: Node terminal event does not match immutable Worker binding")
+	}
+	artifactRefs := ""
+	if len(envelope.ArtifactRefs) > 0 {
+		encoded, encodeErr := json.Marshal(envelope.ArtifactRefs)
+		if encodeErr != nil {
+			return AttemptOutcome{}, nil, false, encodeErr
+		}
+		artifactRefs = string(encoded)
+	}
+	returnValue, result, duplicate, err := s.RecordAttemptOutcome(ctx, envelope.AttemptID, AttemptOutcomeInput{
+		Status: envelope.Status, Classification: envelope.Classification, ErrorCode: envelope.ErrorCode, ErrorMessage: envelope.ErrorMessage,
+		Diagnostics: envelope.Diagnostics, Summary: envelope.Summary, FailureCode: envelope.FailureCode, ArtifactRefs: artifactRefs,
+	})
+	return returnValue, result, duplicate, err
+}
+
+// RecordNodeActivity validates a normalized activity against the immutable
+// server Attempt binding before appending it to the server event log.
+func (s *Store) RecordNodeActivity(ctx context.Context, instance HarnessInstance, activity Activity) (Event, error) {
+	if err := activity.ValidateFor(instance); err != nil {
+		return Event{}, err
+	}
+	attempt, err := s.Phase4Attempt(ctx, activity.Metadata.AttemptID)
+	if err != nil {
+		return Event{}, err
+	}
+	worker, err := s.Worker(ctx, attempt.WorkerID)
+	if err != nil {
+		return Event{}, err
+	}
+	if attempt.NodeID != string(activity.Metadata.Node) || attempt.HarnessInstanceID != string(activity.Metadata.HarnessInstanceID) || worker.WorkerRef != activity.Metadata.WorkerRef || attempt.TurnID != activity.Metadata.TurnID {
+		return Event{}, errors.New("core: Node activity does not match immutable Worker binding")
+	}
+	return withTx(s, ctx, func(tx *sql.Tx) (Event, error) {
+		var encoded string
+		if err := tx.QueryRowContext(ctx, `SELECT outcome_json FROM idempotency_records WHERE operation = ? AND idempotency_key = ?`, "node.activity", activity.Metadata.EventID).Scan(&encoded); err == nil {
+			var event Event
+			if err := json.Unmarshal([]byte(encoded), &event); err != nil {
+				return Event{}, err
+			}
+			return event, nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return Event{}, err
+		}
+		event, err := appendEventTx(ctx, tx, s.now(), EventInput{Kind: "attempt.activity", AggregateType: "attempt", AggregateID: attempt.ID, Source: "node", CorrelationID: activity.Metadata.CorrelationID, WorkerRef: worker.WorkerRef, AttemptID: attempt.ID, Payload: activity}, activity)
+		if err != nil {
+			return Event{}, err
+		}
+		encodedEvent, err := json.Marshal(event)
+		if err != nil {
+			return Event{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES(?, ?, ?, ?)`, "node.activity", activity.Metadata.EventID, string(encodedEvent), timestamp(s.now())); err != nil {
+			return Event{}, err
+		}
+		return event, nil
+	})
+}
