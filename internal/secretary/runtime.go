@@ -225,10 +225,13 @@ func (r *Runtime) consumeResults(session node.Session) {
 				state = core.SecretaryTurnCanceled
 			}
 			errorMessage := ""
-			if state != core.SecretaryTurnSucceeded {
+			response := ""
+			if state == core.SecretaryTurnSucceeded {
+				response = result.Summary
+			} else {
 				errorMessage = result.Summary
 			}
-			if _, err := store.FinishSecretaryTurn(context.Background(), activeTurnID, state, errorMessage); err != nil {
+			if _, _, err := store.FinishSecretaryTurnWithResponse(context.Background(), activeTurnID, state, errorMessage, response); err != nil {
 				r.reportError(err)
 			}
 		}
@@ -299,6 +302,9 @@ func (r *Runtime) startNextDurable(ctx context.Context) {
 	r.mu.Lock()
 	if r.busy || r.session != session {
 		r.mu.Unlock()
+		if _, finishErr := store.FinishSecretaryTurn(context.Background(), turn.ID, core.SecretaryTurnInterrupted, "runtime changed before queued turn could be prompted"); finishErr != nil {
+			r.reportError(finishErr)
+		}
 		return
 	}
 	r.busy, r.activeTurnID = true, turn.ID
