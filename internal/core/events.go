@@ -8,9 +8,16 @@ import (
 	"time"
 )
 
+// Event is an append-only normalized server event with a global sequence.
 type Event struct {
 	ID               string          `json:"id"`
+	Seq              int64           `json:"seq"`
 	Kind             string          `json:"kind"`
+	AggregateType    string          `json:"aggregate_type,omitempty"`
+	AggregateID      string          `json:"aggregate_id,omitempty"`
+	Source           string          `json:"source,omitempty"`
+	CorrelationID    string          `json:"correlation_id,omitempty"`
+	CausationID      string          `json:"causation_id,omitempty"`
 	WorkerRef        string          `json:"worker_ref,omitempty"`
 	AttemptID        string          `json:"attempt_id,omitempty"`
 	RuntimeSessionID string          `json:"runtime_session_id,omitempty"`
@@ -19,67 +26,77 @@ type Event struct {
 }
 
 func (s *Store) RecordEvent(ctx context.Context, kind, workerRef, attemptID, runtimeSessionID string, payload any) (Event, error) {
-	encoded, err := json.Marshal(payload)
+	return s.RecordEventWithMetadata(ctx, EventInput{Kind: kind, AggregateType: "worker", AggregateID: workerRef, Source: "server", WorkerRef: workerRef, AttemptID: attemptID, RuntimeSessionID: runtimeSessionID, Payload: payload})
+}
+
+// RecordEventWithMetadata appends one event and allocates its sequence in the
+// same transaction as the row, so sequence numbers survive restart and prune.
+func (s *Store) RecordEventWithMetadata(ctx context.Context, input EventInput) (Event, error) {
+	if input.Kind == "" {
+		return Event{}, fmt.Errorf("core: event kind is required")
+	}
+	if input.Source == "" { input.Source = "server" }
+	encoded, err := json.Marshal(input.Payload)
 	if err != nil {
 		return Event{}, fmt.Errorf("encode event payload: %w", err)
 	}
-	now := s.now()
-	event := Event{ID: newID("evt"), Kind: kind, WorkerRef: workerRef, AttemptID: attemptID, RuntimeSessionID: runtimeSessionID, Payload: encoded, CreatedAt: now}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO events(id, kind, worker_ref, attempt_id, runtime_session_id, payload_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)`, event.ID, event.Kind, event.WorkerRef, event.AttemptID, event.RuntimeSessionID, string(event.Payload), timestamp(event.CreatedAt))
-	return event, err
+	return withTx(s, ctx, func(tx *sql.Tx) (Event, error) {
+		return appendEventTx(ctx, tx, s.now(), input, encoded)
+	})
+}
+
+func (s *Store) EventsAfterSeq(ctx context.Context, afterSeq int64, limit int) ([]Event, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, runtime_session_id, payload_json, created_at FROM events WHERE seq > ? ORDER BY seq LIMIT ?`, afterSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanEvents(rows)
 }
 
 func (s *Store) EventsAfter(ctx context.Context, after time.Time, limit int) ([]Event, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, kind, worker_ref, attempt_id, runtime_session_id, payload_json, created_at FROM events WHERE created_at > ? ORDER BY created_at, id LIMIT ?`, timestamp(after), limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, runtime_session_id, payload_json, created_at FROM events WHERE created_at > ? ORDER BY seq LIMIT ?`, timestamp(after), limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var events []Event
-	for rows.Next() {
-		var event Event
-		var payload string
-		if err := rows.Scan(&event.ID, &event.Kind, &event.WorkerRef, &event.AttemptID, &event.RuntimeSessionID, &payload, newTimestampScanner(&event.CreatedAt)); err != nil {
-			return nil, err
-		}
-		event.Payload = json.RawMessage(payload)
-		events = append(events, event)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return events, nil
+	return scanEvents(rows)
 }
 
 func (s *Store) EventsRecent(ctx context.Context, limit int) ([]Event, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, kind, worker_ref, attempt_id, runtime_session_id, payload_json, created_at FROM events ORDER BY created_at DESC, id DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, runtime_session_id, payload_json, created_at FROM events ORDER BY seq DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	events := make([]Event, 0, limit)
+	events, err := scanEvents(rows)
+	for left, right := 0, len(events)-1; left < right; left, right = left+1, right-1 {
+		events[left], events[right] = events[right], events[left]
+	}
+	return events, err
+}
+
+func scanEvents(rows *sql.Rows) ([]Event, error) {
+	events := make([]Event, 0)
 	for rows.Next() {
 		var event Event
 		var payload string
-		if err := rows.Scan(&event.ID, &event.Kind, &event.WorkerRef, &event.AttemptID, &event.RuntimeSessionID, &payload, newTimestampScanner(&event.CreatedAt)); err != nil {
+		if err := rows.Scan(&event.ID, &event.Seq, &event.Kind, &event.AggregateType, &event.AggregateID, &event.Source, &event.CorrelationID, &event.CausationID, &event.WorkerRef, &event.AttemptID, &event.RuntimeSessionID, &payload, newTimestampScanner(&event.CreatedAt)); err != nil {
 			return nil, err
 		}
 		event.Payload = json.RawMessage(payload)
 		events = append(events, event)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	for left, right := 0, len(events)-1; left < right; left, right = left+1, right-1 {
-		events[left], events[right] = events[right], events[left]
-	}
-	return events, nil
+	return events, rows.Err()
 }
 
 func (s *Store) PruneEvents(ctx context.Context, before time.Time) (int64, error) {
@@ -89,5 +106,3 @@ func (s *Store) PruneEvents(ctx context.Context, before time.Time) (int64, error
 	}
 	return result.RowsAffected()
 }
-
-func scanEvent(row *sql.Row) (Event, error) { _ = row; return Event{}, nil }

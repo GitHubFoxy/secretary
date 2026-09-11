@@ -150,6 +150,34 @@ JOIN phase4_attempts source ON source.turn_id = next.turn_id AND source.number =
 }
 
 func (s *Store) CreateWorker(ctx context.Context, conversationID string, spec WorkerSpec, turnSpec TurnSpec) (Worker, Turn, Phase4Attempt, error) {
+	key := strings.TrimSpace(spec.IdempotencyKey)
+	if key == "" {
+		key = strings.TrimSpace(turnSpec.IdempotencyKey)
+	}
+	if key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+		var stored workerCreationOutcome
+		found, err := s.loadIdempotency(ctx, "worker.create", key, &stored)
+		if err != nil {
+			return Worker{}, Turn{}, Phase4Attempt{}, err
+		}
+		if found {
+			return stored.Worker, stored.Turn, stored.Attempt, nil
+		}
+		worker, turn, attempt, err := s.createWorker(ctx, conversationID, spec, turnSpec)
+		if err != nil {
+			return Worker{}, Turn{}, Phase4Attempt{}, err
+		}
+		if err := s.saveIdempotency(ctx, "worker.create", key, workerCreationOutcome{Worker: worker, Turn: turn, Attempt: attempt}); err != nil {
+			return Worker{}, Turn{}, Phase4Attempt{}, err
+		}
+		return worker, turn, attempt, nil
+	}
+	return s.createWorker(ctx, conversationID, spec, turnSpec)
+}
+
+func (s *Store) createWorker(ctx context.Context, conversationID string, spec WorkerSpec, turnSpec TurnSpec) (Worker, Turn, Phase4Attempt, error) {
 	if strings.TrimSpace(conversationID) == "" || strings.TrimSpace(spec.Intent) == "" || strings.TrimSpace(spec.ProjectID) == "" || strings.TrimSpace(spec.NodeID) == "" || strings.TrimSpace(spec.HarnessInstanceID) == "" {
 		return Worker{}, Turn{}, Phase4Attempt{}, errors.New("core: complete Worker binding and intent are required")
 	}
@@ -208,6 +236,35 @@ func (s *Store) CreateWorker(ctx context.Context, conversationID string, spec Wo
 				attempt Phase4Attempt
 			}{}, err
 		}
+		workerEvent, err := appendEventTx(ctx, tx, now, EventInput{Kind: "worker.spawned", AggregateType: "worker", AggregateID: worker.WorkerRef, Source: "server", CorrelationID: turn.ID, Payload: worker}, mustJSON(worker))
+		if err != nil {
+			return struct {
+				worker  Worker
+				turn    Turn
+				attempt Phase4Attempt
+			}{}, err
+		}
+		if _, _, err := enqueueDeliveryTx(ctx, tx, now, workerEvent.ID, "", "conversation", "worker.spawned:"+worker.ID); err != nil {
+			return struct {
+				worker  Worker
+				turn    Turn
+				attempt Phase4Attempt
+			}{}, err
+		}
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "turn.created", AggregateType: "turn", AggregateID: turn.ID, Source: "server", CorrelationID: turn.ID, Payload: turn}, mustJSON(turn)); err != nil {
+			return struct {
+				worker  Worker
+				turn    Turn
+				attempt Phase4Attempt
+			}{}, err
+		}
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.started", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: turn.ID, Payload: attempt}, mustJSON(attempt)); err != nil {
+			return struct {
+				worker  Worker
+				turn    Turn
+				attempt Phase4Attempt
+			}{}, err
+		}
 		return struct {
 			worker  Worker
 			turn    Turn
@@ -226,6 +283,32 @@ func (s *Store) SpawnWorker(ctx context.Context, conversationID string, spec Wor
 // CreateTurn creates a new user direction for an existing Worker. It never
 // changes the Worker's Project, Node, HarnessInstance, or policy snapshot.
 func (s *Store) CreateTurn(ctx context.Context, workerID string, spec TurnSpec) (Turn, Phase4Attempt, error) {
+	key := strings.TrimSpace(spec.IdempotencyKey)
+	if key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+		operation := "turn.create:" + workerID
+		var stored turnCreationOutcome
+		found, err := s.loadIdempotency(ctx, operation, key, &stored)
+		if err != nil {
+			return Turn{}, Phase4Attempt{}, err
+		}
+		if found {
+			return stored.Turn, stored.Attempt, nil
+		}
+		turn, attempt, err := s.createTurn(ctx, workerID, spec)
+		if err != nil {
+			return Turn{}, Phase4Attempt{}, err
+		}
+		if err := s.saveIdempotency(ctx, operation, key, turnCreationOutcome{Turn: turn, Attempt: attempt}); err != nil {
+			return Turn{}, Phase4Attempt{}, err
+		}
+		return turn, attempt, nil
+	}
+	return s.createTurn(ctx, workerID, spec)
+}
+
+func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec) (Turn, Phase4Attempt, error) {
 	if strings.TrimSpace(workerID) == "" || strings.TrimSpace(spec.Input) == "" {
 		return Turn{}, Phase4Attempt{}, errors.New("core: Worker and Turn input are required")
 	}
@@ -287,6 +370,18 @@ func (s *Store) CreateTurn(ctx context.Context, workerID string, spec TurnSpec) 
 				attempt Phase4Attempt
 			}{}, err
 		}
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "turn.created", AggregateType: "turn", AggregateID: turn.ID, Source: "server", CorrelationID: turn.ID, Payload: turn}, mustJSON(turn)); err != nil {
+			return struct {
+				turn    Turn
+				attempt Phase4Attempt
+			}{}, err
+		}
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.started", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: turn.ID, Payload: attempt}, mustJSON(attempt)); err != nil {
+			return struct {
+				turn    Turn
+				attempt Phase4Attempt
+			}{}, err
+		}
 		return struct {
 			turn    Turn
 			attempt Phase4Attempt
@@ -323,6 +418,17 @@ func (s *Store) transitionPhase4Attempt(ctx context.Context, attemptID string, f
 			if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`, WorkerWorking, timestamp(now), attempt.WorkerID); err != nil {
 				return Phase4Attempt{}, err
 			}
+			workerRef, err := workerRefForID(ctx, tx, attempt.WorkerID)
+			if err != nil {
+				return Phase4Attempt{}, err
+			}
+			event, err := appendEventTx(ctx, tx, now, EventInput{Kind: "worker.started", AggregateType: "worker", AggregateID: workerRef, Source: "server", CorrelationID: attempt.TurnID, Payload: attempt}, mustJSON(attempt))
+			if err != nil {
+				return Phase4Attempt{}, err
+			}
+			if _, _, err := enqueueDeliveryTx(ctx, tx, now, event.ID, "", "conversation", "worker.started:"+attempt.ID); err != nil {
+				return Phase4Attempt{}, err
+			}
 		}
 		attempt.State, attempt.UpdatedAt = to, now
 		return attempt, nil
@@ -342,10 +448,11 @@ func (s *Store) finishRetryableAttempt(ctx context.Context, attemptID string, in
 				return FinishAttemptResult{}, attemptErr
 			}
 			var sourceAttemptID, nextID string
-			if err := tx.QueryRowContext(ctx, `SELECT source_attempt_id, next_attempt_id FROM phase4_retry_operations WHERE idempotency_key = ?`, input.RetryCommandID).Scan(&sourceAttemptID, &nextID); err != nil {
-				return FinishAttemptResult{}, ErrInvalidTransition
+			err = tx.QueryRowContext(ctx, `SELECT source_attempt_id, next_attempt_id FROM phase4_retry_operations WHERE idempotency_key = ?`, input.RetryCommandID).Scan(&sourceAttemptID, &nextID)
+			if errors.Is(err, sql.ErrNoRows) {
+				err = tx.QueryRowContext(ctx, `SELECT source_attempt_id, next_attempt_id FROM phase4_retry_operations WHERE source_attempt_id = ?`, attempt.ID).Scan(&sourceAttemptID, &nextID)
 			}
-			if sourceAttemptID != attempt.ID {
+			if err != nil || sourceAttemptID != attempt.ID {
 				return FinishAttemptResult{}, ErrInvalidTransition
 			}
 			next, err := getPhase4Attempt(ctx, tx, nextID)
@@ -385,6 +492,9 @@ func (s *Store) finishRetryableAttempt(ctx context.Context, attemptID string, in
 			return FinishAttemptResult{}, err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE phase4_attempts SET state = ?, updated_at = ? WHERE id = ?`, AttemptState(input.Status), timestamp(now), attempt.ID); err != nil {
+			return FinishAttemptResult{}, err
+		}
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.outcome_recorded", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: attempt.CorrelationID, Payload: input.AttemptOutcomeInput}, mustJSON(input.AttemptOutcomeInput)); err != nil {
 			return FinishAttemptResult{}, err
 		}
 		next := Phase4Attempt{ID: newID("att"), WorkerID: attempt.WorkerID, TurnID: attempt.TurnID, Number: attempt.Number + 1, NodeID: attempt.NodeID, HarnessInstanceID: attempt.HarnessInstanceID, State: AttemptStarting, CorrelationID: attempt.CorrelationID, CreatedAt: now, UpdatedAt: now}
@@ -518,6 +628,13 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 				dup     bool
 			}{}, err
 		}
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.outcome_recorded", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: attempt.CorrelationID, Payload: outcome}, mustJSON(outcome)); err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+				dup     bool
+			}{}, err
+		}
 		turn, err := getTurn(ctx, tx, attempt.TurnID)
 		if err != nil {
 			return struct {
@@ -537,6 +654,13 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 		resultStatus := ResultStatus(input.Status)
 		result := &Phase4Result{ID: newID("res"), WorkerID: attempt.WorkerID, TurnID: attempt.TurnID, AttemptID: attempt.ID, Status: resultStatus, Summary: input.Summary, FailureCode: input.FailureCode, ArtifactRefs: input.ArtifactRefs, CorrelationID: attempt.CorrelationID, CreatedAt: now}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_results(id, worker_id, turn_id, attempt_id, status, summary, failure_code, artifact_refs, correlation_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, result.ID, result.WorkerID, result.TurnID, result.AttemptID, result.Status, result.Summary, result.FailureCode, result.ArtifactRefs, result.CorrelationID, timestamp(now)); err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+				dup     bool
+			}{}, err
+		}
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "result.accepted", AggregateType: "result", AggregateID: result.ID, Source: "server", CorrelationID: result.CorrelationID, CausationID: outcome.ID, Payload: result}, mustJSON(result)); err != nil {
 			return struct {
 				outcome AttemptOutcome
 				result  *Phase4Result
