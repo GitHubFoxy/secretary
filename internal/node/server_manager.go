@@ -382,6 +382,7 @@ func writeNodeStoreError(w http.ResponseWriter, err error) {
 type serverProtocolHandler struct {
 	manager    *ServerManager
 	expected   core.NodeReference
+	inventory  core.HarnessInventorySnapshot
 	connection *ProtocolConnection
 }
 
@@ -396,13 +397,18 @@ func (h *serverProtocolHandler) HandleNodeHandshake(ctx context.Context, handsha
 	if record.Revoked {
 		return HandshakeAccepted{}, core.ErrNodeRevoked
 	}
-	if err := h.manager.store.MarkNodeConnected(ctx, h.expected, handshake.Inventory); err != nil {
-		return HandshakeAccepted{}, err
-	}
+	// Do not mark the Node online until the authenticated handshake response
+	// has been written and ProtocolServer has promoted this socket to a live
+	// connection. Otherwise a failed acceptance can leave a ghost online Node.
+	h.inventory = handshake.Inventory
 	return HandshakeAccepted{Node: h.expected, ProtocolVersion: ProtocolVersion, ReplayFromSequence: handshake.LastAcknowledgedSequence}, nil
 }
 
 func (h *serverProtocolHandler) HandleNodeConnection(connection *ProtocolConnection) {
+	if err := h.manager.store.MarkNodeConnected(context.Background(), h.expected, h.inventory); err != nil {
+		_ = connection.Close()
+		return
+	}
 	h.connection = connection
 	h.manager.registerConnection(h.expected, connection)
 }
