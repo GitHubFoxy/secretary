@@ -209,6 +209,19 @@ func (s *LocalStore) NextEventSequence() uint64 {
 	return s.state.NextSequence
 }
 
+// ReserveEventSequence allocates a durable sequence for a Node message that
+// is not itself stored in the outbox, such as inventory or heartbeat.
+func (s *LocalStore) ReserveEventSequence() (uint64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sequence := s.state.NextSequence
+	if sequence == 0 {
+		sequence = 1
+	}
+	s.state.NextSequence = sequence + 1
+	return sequence, s.persistLocked()
+}
+
 func (s *LocalStore) QueueActivity(activity core.Activity) (PendingEvent, error) {
 	if err := activity.Metadata.Validate(); err != nil {
 		return PendingEvent{}, err

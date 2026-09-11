@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -125,10 +126,99 @@ func (h HarnessInstance) Validate() error {
 	if strings.TrimSpace(string(h.ID)) == "" || strings.TrimSpace(string(h.Node)) == "" || strings.TrimSpace(string(h.Kind)) == "" {
 		return fmt.Errorf("core: HarnessInstance id, Node and harness kind are required")
 	}
-	if strings.TrimSpace(h.Version) == "" {
-		return fmt.Errorf("core: HarnessInstance version is required")
+	if strings.TrimSpace(h.Version) == "" && h.Status != HarnessUnavailable {
+		return fmt.Errorf("core: HarnessInstance version is required unless unavailable")
 	}
 	return validateCapabilities(h.Capabilities)
+}
+
+// ErrHarnessUnavailable is returned when an observed instance cannot accept
+// work. Its state remains visible in inventory instead of falling back.
+var ErrHarnessUnavailable = errors.New("core: harness instance is unavailable")
+
+// ErrObservedPinUnavailable is returned when a requested pin was not observed
+// by the selected HarnessInstance.
+var ErrObservedPinUnavailable = errors.New("core: requested harness pin is unavailable")
+
+func (h HarnessInstance) Available() bool {
+	return h.Status == HarnessReady && h.Authentication.Authenticated && strings.TrimSpace(h.Version) != ""
+}
+
+func (h HarnessInstance) SupportsModel(model ObservedModelID) bool {
+	for _, observed := range h.ModelIDs {
+		if observed == model {
+			return true
+		}
+	}
+	return false
+}
+
+func (h HarnessInstance) SupportsReasoning(reasoning ObservedReasoningLevel) bool {
+	for _, observed := range h.ReasoningLevels {
+		if observed == reasoning {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidatePins checks only explicit pins. Empty values mean that policy did
+// not pin that dimension, while a non-empty value must be observed locally.
+func (h HarnessInstance) ValidatePins(model string, reasoning string) error {
+	if !h.Available() {
+		return fmt.Errorf("%w: %s", ErrHarnessUnavailable, h.ID)
+	}
+	if model != "" && !h.SupportsModel(ObservedModelID(model)) {
+		return fmt.Errorf("%w: model %q is not observed by %s", ErrObservedPinUnavailable, model, h.ID)
+	}
+	if reasoning != "" && !h.SupportsReasoning(ObservedReasoningLevel(reasoning)) {
+		return fmt.Errorf("%w: reasoning %q is not observed by %s", ErrObservedPinUnavailable, reasoning, h.ID)
+	}
+	return nil
+}
+
+func (h HarnessInstance) ValidateSelection(model string, reasoning string) error {
+	if err := h.Validate(); err != nil {
+		return err
+	}
+	return h.ValidatePins(model, reasoning)
+}
+
+func (s HarnessInventorySnapshot) Instance(id HarnessInstanceID) (HarnessInstance, bool) {
+	for _, instance := range s.Instances {
+		if instance.ID == id {
+			return instance, true
+		}
+	}
+	return HarnessInstance{}, false
+}
+
+func (s HarnessInventorySnapshot) ValidateSelection(id HarnessInstanceID, model string, reasoning string) error {
+	if err := s.Validate(); err != nil {
+		return err
+	}
+	instance, ok := s.Instance(id)
+	if !ok {
+		return fmt.Errorf("%w: HarnessInstance %q was not observed on %s", ErrHarnessUnavailable, id, s.Node)
+	}
+	return instance.ValidateSelection(model, reasoning)
+}
+
+// ValidateHarnessSelection is the server-side selection boundary. Routing
+// policy chooses an instance elsewhere, while this function only checks that
+// the chosen observed record can honor explicit pins.
+func ValidateHarnessSelection(inventory HarnessInventorySnapshot, id HarnessInstanceID, model string, reasoning string) (HarnessInstance, error) {
+	if err := inventory.Validate(); err != nil {
+		return HarnessInstance{}, err
+	}
+	instance, ok := inventory.Instance(id)
+	if !ok {
+		return HarnessInstance{}, fmt.Errorf("%w: HarnessInstance %q was not observed on %s", ErrHarnessUnavailable, id, inventory.Node)
+	}
+	if err := instance.ValidateSelection(model, reasoning); err != nil {
+		return HarnessInstance{}, err
+	}
+	return instance, nil
 }
 
 func (s HarnessInventorySnapshot) Validate() error {

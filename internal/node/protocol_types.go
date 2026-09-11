@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -236,6 +237,26 @@ type WorkerEnvelope struct {
 	Profile             ManagedProfile       `json:"profile,omitempty"`
 }
 
+func (w WorkerEnvelope) ValidateAgainstInventory(node core.NodeReference, inventory core.HarnessInventorySnapshot) error {
+	if err := w.Validate(node); err != nil {
+		return err
+	}
+	if inventory.Node != node {
+		return errors.New("node protocol: inventory belongs to another node")
+	}
+	if err := inventory.Validate(); err != nil {
+		return fmt.Errorf("node protocol: invalid observed inventory: %w", err)
+	}
+	observed, err := core.ValidateHarnessSelection(inventory, w.HarnessInstance.ID, w.Model, w.Reasoning)
+	if err != nil {
+		return fmt.Errorf("node protocol: selected HarnessInstance is not available: %w", err)
+	}
+	if !reflect.DeepEqual(observed, w.HarnessInstance) {
+		return errors.New("node protocol: Worker envelope does not match observed HarnessInstance")
+	}
+	return nil
+}
+
 func (w WorkerEnvelope) Validate(node core.NodeReference) error {
 	if strings.TrimSpace(w.WorkerRef) == "" || strings.TrimSpace(w.TurnID) == "" || strings.TrimSpace(w.AttemptID) == "" || strings.TrimSpace(w.OriginalUserIntent) == "" {
 		return errors.New("node protocol: incomplete Worker envelope")
@@ -245,6 +266,9 @@ func (w WorkerEnvelope) Validate(node core.NodeReference) error {
 	}
 	if w.HarnessInstance.Node != node {
 		return errors.New("node protocol: Worker envelope is bound to another node")
+	}
+	if err := w.HarnessInstance.ValidatePins(w.Model, w.Reasoning); err != nil {
+		return fmt.Errorf("node protocol: %w", err)
 	}
 	return nil
 }
