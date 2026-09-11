@@ -16,9 +16,19 @@ fast = "fast"
 smart = "smart"
 cheap = "cheap"
 
+[secretary]
+harness = "fx"
+model = "gpt-5.6-luna"
+reasoning = "default"
+
+[worker_policy]
+default_harness = "fx"
+preferred_harnesses = ["fx", "claude_code", "codex"]
+active_attempts = 4
+
+# Legacy compatibility for older readers.
 [runtime]
 harness = "fx"
-# Reasoning effort is currently shared by all Profiles. Use `default` for the harness default.
 reasoning = "default"
 
 [retention]

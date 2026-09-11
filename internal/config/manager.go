@@ -31,6 +31,10 @@ func Open(path string) (*Manager, error) {
 }
 func (m *Manager) Path() string { return m.path }
 
+func (m *Manager) OpenUserDocument() (*UserDocumentManager, error) {
+	return OpenUserDocument(filepath.Dir(m.path))
+}
+
 // SetChangeRecorder installs a durable recorder. A failed recorder prevents
 // the new configuration from becoming active.
 func (m *Manager) SetChangeRecorder(record func(previous, next Snapshot) error) {
