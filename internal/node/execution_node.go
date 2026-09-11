@@ -90,7 +90,8 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	}
 	workspace := command.Envelope.Workspace
 	if command.Envelope.ProjectID != "" {
-		if err := validateProjectWorkspaceOnNode(command.Envelope); err != nil {
+		canonicalWorkspace, err := validateProjectWorkspaceOnNode(command.Envelope)
+		if err != nil {
 			code := "workspace_forbidden"
 			if errors.Is(err, core.ErrWorkspaceMissing) {
 				code = "workspace_missing"
@@ -101,6 +102,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 			}
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, code, err.Error())
 		}
+		workspace = canonicalWorkspace
 	} else if workspace == "" {
 
 		var err error
@@ -109,7 +111,12 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "workspace_failed", err.Error())
 		}
 	}
-	request := StartRequest{WorkerRef: command.Envelope.WorkerRef, Task: command.Envelope.OriginalUserIntent, Workspace: workspace, Profile: command.Envelope.Profile}
+	request := StartRequest{WorkerRef: command.Envelope.WorkerRef, Task: command.Envelope.OriginalUserIntent, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
+	profile, err := request.effectiveProfile()
+	if err != nil {
+		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "binding_conflict", err.Error())
+	}
+	request.Profile = profile
 	session, err := n.runtime.Start(ctx, request)
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "dispatch_failed", err.Error())
@@ -124,54 +131,68 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	return acceptedOutcome(Command{Kind: CommandDispatch, Dispatch: command})
 }
 
-func validateProjectWorkspaceOnNode(envelope WorkerEnvelope) error {
+func validateProjectWorkspaceOnNode(envelope WorkerEnvelope) (string, error) {
 	if err := envelope.ProjectSnapshot.Validate(); err != nil {
-		return err
+		return "", err
 	}
 	workspace := envelope.Workspace
 	if workspace != envelope.ProjectSnapshot.Workspace {
-		return fmt.Errorf("%w: envelope workspace differs from Project snapshot", core.ErrWorkspaceOutsideRoot)
+		return "", fmt.Errorf("%w: envelope workspace differs from Project snapshot", core.ErrWorkspaceOutsideRoot)
 	}
 	if strings.TrimSpace(workspace) == "" {
-		return core.ErrWorkspaceMissing
+		return "", core.ErrWorkspaceMissing
 	}
 	info, err := os.Stat(workspace)
 	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("%w: %s", core.ErrWorkspaceMissing, workspace)
+		return "", fmt.Errorf("%w: %s", core.ErrWorkspaceMissing, workspace)
 	}
 	if err != nil {
-		return fmt.Errorf("workspace stat: %w", err)
+		return "", fmt.Errorf("workspace stat: %w", err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("%w: workspace is not a directory", core.ErrWorkspaceOutsideRoot)
+		return "", fmt.Errorf("%w: workspace is not a directory", core.ErrWorkspaceOutsideRoot)
 	}
 	mapping, ok := envelope.ProjectSnapshotPathMapping()
 	if !ok {
-		return core.ErrProjectMappingMissing
+		return "", core.ErrProjectMappingMissing
 	}
 	rootInfo, err := os.Stat(mapping.Path)
 	if errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("%w: Project root %s", core.ErrWorkspaceMissing, mapping.Path)
+		return "", fmt.Errorf("%w: Project root %s", core.ErrWorkspaceMissing, mapping.Path)
 	}
 	if err != nil {
-		return fmt.Errorf("Project root stat: %w", err)
+		return "", fmt.Errorf("Project root stat: %w", err)
 	}
 	if !rootInfo.IsDir() {
-		return fmt.Errorf("%w: Project root is not a directory", core.ErrWorkspaceOutsideRoot)
+		return "", fmt.Errorf("%w: Project root is not a directory", core.ErrWorkspaceOutsideRoot)
 	}
 	resolvedRoot, err := filepath.EvalSymlinks(mapping.Path)
 	if err != nil {
-		return fmt.Errorf("Project root: %w", err)
+		return "", fmt.Errorf("Project root: %w", err)
+	}
+	resolvedPolicyRoot := resolvedRoot
+	if policyRoot := envelope.ProjectSnapshot.Policy.EffectiveExecution().WorkspaceRoot; policyRoot != "" {
+		resolvedPolicyRoot, err = filepath.EvalSymlinks(policyRoot)
+		if err != nil {
+			return "", fmt.Errorf("Project policy root: %w", err)
+		}
+		if !pathWithin(resolvedRoot, resolvedPolicyRoot) {
+			return "", core.ErrWorkspaceOutsideRoot
+		}
 	}
 	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
 	if err != nil {
-		return fmt.Errorf("workspace: %w", err)
+		return "", fmt.Errorf("workspace: %w", err)
 	}
-	rel, err := filepath.Rel(filepath.Clean(resolvedRoot), filepath.Clean(resolvedWorkspace))
-	if err != nil || (rel != "." && (rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel))) {
-		return core.ErrWorkspaceOutsideRoot
+	if !pathWithin(resolvedPolicyRoot, resolvedWorkspace) {
+		return "", core.ErrWorkspaceOutsideRoot
 	}
-	return nil
+	return filepath.Clean(resolvedWorkspace), nil
+}
+
+func pathWithin(root, path string) bool {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	return err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)))
 }
 
 func (w WorkerEnvelope) ProjectSnapshotPathMapping() (core.ProjectPathMapping, bool) {
@@ -227,7 +248,20 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	if !ok {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 	}
-	request := StartRequest{WorkerRef: command.Envelope.WorkerRef, Task: command.Envelope.OriginalUserIntent, Workspace: command.Envelope.Workspace, Profile: command.Envelope.Profile}
+	workspace := mapping.Workspace
+	if command.Envelope.ProjectID != "" {
+		canonicalWorkspace, err := validateProjectWorkspaceOnNode(command.Envelope)
+		if err != nil {
+			return failedOutcome(Command{Kind: CommandResume, Resume: command}, "workspace_forbidden", err.Error())
+		}
+		workspace = canonicalWorkspace
+	}
+	request := StartRequest{WorkerRef: command.Envelope.WorkerRef, Task: command.Envelope.OriginalUserIntent, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
+	profile, err := request.effectiveProfile()
+	if err != nil {
+		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "binding_conflict", err.Error())
+	}
+	request.Profile = profile
 	session, err := resumer.Resume(ctx, request, mapping.RuntimeSessionID)
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", err.Error())
@@ -279,7 +313,13 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 	if !ok {
 		return nil, ErrRuntimeSessionUnavailable
 	}
-	session, err := resumer.Resume(ctx, StartRequest{WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: mapping.Workspace, Profile: envelope.Profile}, mapping.RuntimeSessionID)
+	request := StartRequest{WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: mapping.Workspace, Profile: envelope.Profile, HarnessInstance: envelope.HarnessInstance, Model: envelope.Model, Reasoning: envelope.Reasoning, ApprovalPolicy: envelope.ApprovalPolicy}
+	profile, err := request.effectiveProfile()
+	if err != nil {
+		return nil, ErrRuntimeSessionUnavailable
+	}
+	request.Profile = profile
+	session, err := resumer.Resume(ctx, request, mapping.RuntimeSessionID)
 	if err != nil {
 		return nil, ErrRuntimeSessionUnavailable
 	}

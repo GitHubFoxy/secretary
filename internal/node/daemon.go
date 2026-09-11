@@ -167,6 +167,9 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 				return err
 			}
 		case <-heartbeats.C:
+			if err := execution.SetInventory(inventory); err != nil {
+				return fmt.Errorf("node: refresh execution inventory: %w", err)
+			}
 			if err := d.flushOutbox(ctx, connection, &sentThrough); err != nil {
 				return err
 			}
@@ -188,6 +191,9 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 				continue
 			}
 			if err := refreshed.Validate(); err != nil || refreshed.Node != d.Identity.Node {
+				continue
+			}
+			if err := execution.SetInventory(refreshed); err != nil {
 				continue
 			}
 			if err := d.flushOutbox(ctx, connection, &sentThrough); err != nil {

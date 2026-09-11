@@ -23,7 +23,12 @@ type ACPRuntime struct {
 }
 
 func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, error) {
-	client, err := r.connect(ctx, request.WorkerRef, request.Profile)
+	profile, err := request.effectiveProfile()
+	if err != nil {
+		return nil, err
+	}
+	request.Profile = profile
+	client, err := r.connect(ctx, request.WorkerRef, profile)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +58,12 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 }
 
 func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
-	client, err := r.connect(ctx, request.WorkerRef, request.Profile)
+	profile, err := request.effectiveProfile()
+	if err != nil {
+		return nil, err
+	}
+	request.Profile = profile
+	client, err := r.connect(ctx, request.WorkerRef, profile)
 	if err != nil {
 		return nil, err
 	}

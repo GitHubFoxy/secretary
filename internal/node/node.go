@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"sync"
+
+	"github.com/beruseruko/secretary/internal/core"
 )
 
 type ActivityKind string
@@ -38,12 +40,48 @@ type MCPServer struct {
 }
 
 type StartRequest struct {
-	WorkerRef  string
-	Task       string
-	Workspace  string
-	RawLogPath string
-	MCPServers []MCPServer
-	Profile    ManagedProfile
+	WorkerRef       string
+	Task            string
+	Workspace       string
+	RawLogPath      string
+	MCPServers      []MCPServer
+	Profile         ManagedProfile
+	HarnessInstance core.HarnessInstance
+	Model           string
+	Reasoning       string
+	ApprovalPolicy  string
+}
+
+func (r StartRequest) validateBinding() error {
+	if r.HarnessInstance.Kind == "" && r.HarnessInstance.ID == "" && r.HarnessInstance.Node == "" {
+		return nil
+	}
+	if err := r.HarnessInstance.Validate(); err != nil {
+		return err
+	}
+	if r.Profile.Runtime != "" && r.Profile.Runtime != string(r.HarnessInstance.Kind) {
+		return errors.New("node: managed Profile runtime conflicts with immutable HarnessInstance binding")
+	}
+	if r.Profile.Model != "" && r.Profile.Model != r.Model {
+		return errors.New("node: managed Profile model conflicts with immutable execution model")
+	}
+	if r.Profile.Reasoning != "" && r.Profile.Reasoning != r.Reasoning {
+		return errors.New("node: managed Profile reasoning conflicts with immutable execution reasoning")
+	}
+	return nil
+}
+
+func (r StartRequest) effectiveProfile() (ManagedProfile, error) {
+	if err := r.validateBinding(); err != nil {
+		return ManagedProfile{}, err
+	}
+	profile := r.Profile
+	if r.HarnessInstance.Kind != "" {
+		profile.Runtime = string(r.HarnessInstance.Kind)
+		profile.Model = r.Model
+		profile.Reasoning = r.Reasoning
+	}
+	return profile, nil
 }
 
 type Session interface {
@@ -79,6 +117,11 @@ func NewLocal(runtime Runtime) *LocalNode {
 }
 
 func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session, error) {
+	profile, err := request.effectiveProfile()
+	if err != nil {
+		return nil, err
+	}
+	request.Profile = profile
 	if request.Workspace == "" {
 		workspace, err := os.MkdirTemp("", "secretary-worker-")
 		if err != nil {
@@ -105,6 +148,11 @@ func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session
 }
 
 func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
+	profile, err := request.effectiveProfile()
+	if err != nil {
+		return nil, err
+	}
+	request.Profile = profile
 	resumer, ok := n.runtime.(Resumer)
 	if !ok {
 		return nil, errors.New("node: runtime does not support session resume")

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -186,6 +187,132 @@ func TestProjectRegistryDoesNotScanDiskOrCreateImplicitProjects(t *testing.T) {
 	if _, err := os.Stat(root); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("server touched filesystem: stat err=%v", err)
 	}
+}
+
+func TestProjectExecutionPolicyAllowDenyAndRequiredSemantics(t *testing.T) {
+	instance := HarnessInstance{ID: "macbook/fx", Node: "macbook", Kind: HarnessFX, Version: "1", Status: HarnessReady, Authentication: HarnessAuthentication{Authenticated: true}, Capabilities: HarnessCapabilities{Execution: []ExecutionCapability{CapabilityShell}}}
+	base := Project{ID: "p", Name: "P", Mappings: []ProjectPathMapping{{Node: "macbook", Path: t.TempDir()}}}
+	base.Policy.Execution.AllowedCapabilities = []ExecutionCapability{CapabilityShell}
+	base.Policy.RequiredCapabilities = []ExecutionCapability{CapabilityShell}
+	if _, err := base.ValidateDispatch("macbook", instance, ""); err != nil {
+		t.Fatalf("allowlist should permit required shell: %v", err)
+	}
+	base.Policy.RequiredCapabilities = []ExecutionCapability{CapabilityEdit}
+	if _, err := base.ValidateDispatch("macbook", instance, ""); !errors.Is(err, ErrProjectPolicyDenied) {
+		t.Fatalf("required capability outside allowlist err=%v", err)
+	}
+	base.Policy.RequiredCapabilities = nil
+	base.Policy.Execution.AllowedCapabilities = nil
+	base.Policy.Execution.DeniedCapabilities = []ExecutionCapability{CapabilityShell}
+	if _, err := base.ValidateDispatch("macbook", instance, ""); !errors.Is(err, ErrProjectPolicyDenied) {
+		t.Fatalf("denied capability err=%v", err)
+	}
+}
+
+func TestProjectRejectsSlashIDsUnknownCapabilitiesAndConflictingAliases(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	base := projectFixture(t.TempDir(), t.TempDir())
+	base.ID = "bad/project"
+	if _, err := store.CreateProject(ctx, base); !errors.Is(err, ErrProjectValidation) {
+		t.Fatalf("slash id err=%v", err)
+	}
+	base.ID = "frontend"
+	base.Policy.Execution.AllowedCapabilities = []ExecutionCapability{"future_capability"}
+	if _, err := store.CreateProject(ctx, base); !errors.Is(err, ErrProjectValidation) {
+		t.Fatalf("unknown capability err=%v", err)
+	}
+	base.Policy.Execution.AllowedCapabilities = nil
+	base.Policy.ModelID, base.Policy.Model = "model-a", "model-b"
+	if _, err := store.CreateProject(ctx, base); !errors.Is(err, ErrProjectValidation) {
+		t.Fatalf("conflicting model aliases err=%v", err)
+	}
+}
+
+func TestCreateWorkerFromDispatchUsesCanonicalProjectSnapshotAndBinding(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	root := t.TempDir()
+	project, err := store.CreateProject(ctx, projectFixture(root, t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation := mustConversation(t, store)
+	instance := HarnessInstance{ID: "macbook/fx", Node: "macbook", Kind: HarnessFX, Version: "1", Status: HarnessReady, Authentication: HarnessAuthentication{Authenticated: true}, Capabilities: HarnessCapabilities{Execution: []ExecutionCapability{CapabilityShell, CapabilityEdit}}, ModelIDs: []ObservedModelID{"model-a"}, ReasoningLevels: []ObservedReasoningLevel{"high"}}
+	if _, err := store.EnrollNode(ctx, "macbook"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkNodeConnected(ctx, "macbook", projectInventory("macbook", instance.ID, HarnessFX)); err != nil {
+		t.Fatal(err)
+	}
+	forged := project.Snapshot("macbook", root, instance)
+	forged.Name = "forged"
+	forged.Policy.ModelID = "other"
+	worker, _, _, err := store.CreateWorkerFromDispatch(ctx, conversation.ID, "intent", ProjectDispatch{Project: project, Node: "macbook", Workspace: root, HarnessInstance: instance, Snapshot: forged}, "canonical-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot ProjectSnapshot
+	if err := json.Unmarshal([]byte(worker.ProjectSnapshot), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Name != project.Name || snapshot.Policy.ModelPin() != project.Policy.ModelPin() {
+		t.Fatalf("forged snapshot persisted: %#v", snapshot)
+	}
+	stale := project
+	stale.Revision = 0
+	if _, _, _, err := store.CreateWorkerFromDispatch(ctx, conversation.ID, "stale", ProjectDispatch{Project: stale, Node: "macbook", Workspace: root, HarnessInstance: instance}, "stale-worker"); !errors.Is(err, ErrProjectRevisionConflict) {
+		t.Fatalf("revision zero err=%v", err)
+	}
+	wrongNode := instance
+	wrongNode.Node = "home-server"
+	if _, _, _, err := store.CreateWorkerFromDispatch(ctx, conversation.ID, "wrong", ProjectDispatch{Project: project, Node: "macbook", Workspace: root, HarnessInstance: wrongNode}, "wrong-node"); !errors.Is(err, ErrProjectPolicyDenied) {
+		t.Fatalf("mismatched HarnessInstance Node err=%v", err)
+	}
+}
+
+func TestWorkerSnapshotSurvivesStoreRestart(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "restart.db")
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	project, err := store.CreateProject(ctx, projectFixture(root, t.TempDir()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversation := mustConversation(t, store)
+	instance := HarnessInstance{ID: "macbook/fx", Node: "macbook", Kind: HarnessFX, Version: "1", Status: HarnessReady, Authentication: HarnessAuthentication{Authenticated: true}, Capabilities: HarnessCapabilities{Execution: []ExecutionCapability{CapabilityShell, CapabilityEdit}}, ModelIDs: []ObservedModelID{"model-a"}, ReasoningLevels: []ObservedReasoningLevel{"high"}}
+	worker, _, _, err := store.CreateWorkerFromDispatch(ctx, conversation.ID, "restart", ProjectDispatch{Project: project, Node: "macbook", Workspace: root, HarnessInstance: instance}, "restart-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	loaded, err := store.Worker(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ProjectSnapshot == "" || loaded.PolicySnapshot == "" || loaded.Workspace != root {
+		t.Fatalf("snapshot did not survive restart: %#v", loaded)
+	}
+}
+
+func mustConversation(t *testing.T, store *Store) Conversation {
+	t.Helper()
+	_, conversation, err := store.CreatePersonWithConversation(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return conversation
 }
 
 func TestWorkerKeepsProjectSnapshotAfterRegistryChange(t *testing.T) {

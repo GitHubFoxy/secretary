@@ -138,6 +138,7 @@ type WorkerSpec struct {
 	PolicySnapshot    string
 	ProjectSnapshot   string
 	Workspace         string
+	ProjectRevision   int64
 	// IdempotencyKey makes Worker, first Turn, and first Attempt creation one
 	// durable operation. An empty key preserves the legacy non-idempotent API.
 	IdempotencyKey string
