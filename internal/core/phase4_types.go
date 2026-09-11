@@ -1,6 +1,9 @@
 package core
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // WorkerStatus is the server-owned lifecycle of a persistent Worker.
 type WorkerStatus string
@@ -150,4 +153,44 @@ type AttemptOutcomeInput struct {
 	Summary        string
 	FailureCode    string
 	ArtifactRefs   string
+}
+
+// FinishAttemptInput is the production completion contract. A retryable
+// outcome must carry a durable command id so outcome, next Attempt and state
+// projections commit together. Retryable completion must not use
+// RecordAttemptOutcome.
+type FinishAttemptInput struct {
+	AttemptOutcomeInput
+	RetryCommandID string
+}
+
+// FinishAttemptResult contains the durable state written by FinishAttempt.
+// NextAttempt is set only when a retryable outcome creates the next Attempt.
+type FinishAttemptResult struct {
+	Outcome     AttemptOutcome
+	Result      *Phase4Result
+	NextAttempt *Phase4Attempt
+	Duplicate   bool
+}
+
+// Phase4RecoveryDecision is returned by the Node or harness that can inspect
+// its own execution. The server must not infer a remote Attempt is dead.
+type Phase4RecoveryDecision string
+
+const (
+	Phase4RecoveryAlive   Phase4RecoveryDecision = "alive"
+	Phase4RecoveryUnknown Phase4RecoveryDecision = "unknown"
+)
+
+// Phase4AttemptRecoveryResolver is implemented by an explicit Node/harness
+// probe. A nil resolver means that Phase 4 recovery is not attempted.
+type Phase4AttemptRecoveryResolver interface {
+	ResolvePhase4Attempt(context.Context, Phase4Attempt) (Phase4RecoveryDecision, error)
+}
+
+// Phase4AttemptRecoveryFunc adapts a function into a recovery resolver.
+type Phase4AttemptRecoveryFunc func(context.Context, Phase4Attempt) (Phase4RecoveryDecision, error)
+
+func (f Phase4AttemptRecoveryFunc) ResolvePhase4Attempt(ctx context.Context, attempt Phase4Attempt) (Phase4RecoveryDecision, error) {
+	return f(ctx, attempt)
 }

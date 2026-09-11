@@ -246,23 +246,131 @@ func (s *Store) transitionPhase4Attempt(ctx context.Context, attemptID string, f
 	})
 }
 
-// RecordAttemptOutcome is the only terminal path for a Phase 4 Attempt. It is
-// idempotent by attempt ID and creates a Result only for a final outcome.
-func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, input AttemptOutcomeInput) (AttemptOutcome, *Phase4Result, bool, error) {
+func (s *Store) finishRetryableAttempt(ctx context.Context, attemptID string, input FinishAttemptInput) (FinishAttemptResult, error) {
+	returnValue, err := withTx(s, ctx, func(tx *sql.Tx) (FinishAttemptResult, error) {
+		var outcome AttemptOutcome
+		err := scanPhase4Outcome(tx.QueryRowContext(ctx, `SELECT id, attempt_id, status, classification, error_code, error_message, diagnostics, created_at FROM phase4_attempt_outcomes WHERE attempt_id = ?`, attemptID), &outcome)
+		if err == nil {
+			if outcome.Classification != OutcomeRetryable {
+				return FinishAttemptResult{}, ErrInvalidTransition
+			}
+			attempt, attemptErr := getPhase4Attempt(ctx, tx, attemptID)
+			if attemptErr != nil {
+				return FinishAttemptResult{}, attemptErr
+			}
+			var storedTurnID, nextID string
+			if err := tx.QueryRowContext(ctx, `SELECT turn_id, attempt_id FROM phase4_retry_operations WHERE idempotency_key = ?`, input.RetryCommandID).Scan(&storedTurnID, &nextID); err != nil {
+				return FinishAttemptResult{}, ErrInvalidTransition
+			}
+			if storedTurnID != attempt.TurnID {
+				return FinishAttemptResult{}, ErrInvalidTransition
+			}
+			next, err := getPhase4Attempt(ctx, tx, nextID)
+			if err != nil {
+				return FinishAttemptResult{}, err
+			}
+			result, err := phase4ResultForAttempt(ctx, tx, attemptID)
+			return FinishAttemptResult{Outcome: outcome, Result: result, NextAttempt: &next, Duplicate: true}, err
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return FinishAttemptResult{}, err
+		}
+
+		var operationTurnID, operationAttemptID string
+		if err := tx.QueryRowContext(ctx, `SELECT turn_id, attempt_id FROM phase4_retry_operations WHERE idempotency_key = ?`, input.RetryCommandID).Scan(&operationTurnID, &operationAttemptID); err == nil {
+			return FinishAttemptResult{}, ErrInvalidTransition
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return FinishAttemptResult{}, err
+		}
+		attempt, err := getPhase4Attempt(ctx, tx, attemptID)
+		if err != nil {
+			return FinishAttemptResult{}, err
+		}
+		if attempt.State.Terminal() {
+			return FinishAttemptResult{}, ErrInvalidTransition
+		}
+		turn, err := getTurn(ctx, tx, attempt.TurnID)
+		if err != nil {
+			return FinishAttemptResult{}, err
+		}
+		if turn.ResultID != "" || turn.CurrentAttemptID != attempt.ID {
+			return FinishAttemptResult{}, ErrInvalidTransition
+		}
+		now := s.now()
+		outcome = AttemptOutcome{ID: newID("aou"), AttemptID: attempt.ID, Status: input.Status, Classification: input.Classification, ErrorCode: input.ErrorCode, ErrorMessage: input.ErrorMessage, Diagnostics: input.Diagnostics, CreatedAt: now}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempt_outcomes(id, attempt_id, status, classification, error_code, error_message, diagnostics, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, outcome.ID, outcome.AttemptID, outcome.Status, outcome.Classification, outcome.ErrorCode, outcome.ErrorMessage, outcome.Diagnostics, timestamp(now)); err != nil {
+			return FinishAttemptResult{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE phase4_attempts SET state = ?, updated_at = ? WHERE id = ?`, AttemptState(input.Status), timestamp(now), attempt.ID); err != nil {
+			return FinishAttemptResult{}, err
+		}
+		next := Phase4Attempt{ID: newID("att"), WorkerID: attempt.WorkerID, TurnID: attempt.TurnID, Number: attempt.Number + 1, NodeID: attempt.NodeID, HarnessInstanceID: attempt.HarnessInstanceID, State: AttemptStarting, CorrelationID: attempt.CorrelationID, CreatedAt: now, UpdatedAt: now}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempts(id, worker_id, turn_id, number, node_id, harness_instance_id, state, correlation_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, next.ID, next.WorkerID, next.TurnID, next.Number, next.NodeID, next.HarnessInstanceID, next.State, next.CorrelationID, timestamp(now), timestamp(now)); err != nil {
+			return FinishAttemptResult{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_retry_operations(idempotency_key, turn_id, attempt_id, created_at) VALUES(?, ?, ?, ?)`, input.RetryCommandID, turn.ID, next.ID, timestamp(now)); err != nil {
+			return FinishAttemptResult{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, current_attempt_id = ?, updated_at = ? WHERE id = ?`, TurnStarting, next.ID, timestamp(now), turn.ID); err != nil {
+			return FinishAttemptResult{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`, WorkerWorking, timestamp(now), attempt.WorkerID); err != nil {
+			return FinishAttemptResult{}, err
+		}
+		return FinishAttemptResult{Outcome: outcome, NextAttempt: &next}, nil
+	})
+	return returnValue, err
+}
+
+// FinishAttempt is the production terminal path for a Phase 4 Attempt. A
+// retryable outcome, its terminal Attempt state, the next Attempt, the durable
+// retry operation and Turn/Worker projections commit in one transaction.
+func (s *Store) FinishAttempt(ctx context.Context, attemptID string, input FinishAttemptInput) (FinishAttemptResult, error) {
+	if err := validateAttemptOutcomeInput(input.AttemptOutcomeInput); err != nil {
+		return FinishAttemptResult{}, err
+	}
+	input.RetryCommandID = strings.TrimSpace(input.RetryCommandID)
+	if input.Classification == OutcomeRetryable {
+		if input.RetryCommandID == "" {
+			return FinishAttemptResult{}, errors.New("core: retryable completion requires durable retry command id")
+		}
+		return s.finishRetryableAttempt(ctx, attemptID, input)
+	}
+	if input.RetryCommandID != "" {
+		return FinishAttemptResult{}, errors.New("core: retry command id is only valid for retryable completion")
+	}
+	outcome, result, duplicate, err := s.RecordAttemptOutcome(ctx, attemptID, input.AttemptOutcomeInput)
+	return FinishAttemptResult{Outcome: outcome, Result: result, Duplicate: duplicate}, err
+}
+
+func validateAttemptOutcomeInput(input AttemptOutcomeInput) error {
 	if !input.Status.Valid() || !input.Classification.Valid() {
-		return AttemptOutcome{}, nil, false, errors.New("core: invalid terminal AttemptOutcome")
+		return errors.New("core: invalid terminal AttemptOutcome")
 	}
 	if input.Status == OutcomeInterrupted && input.Classification != OutcomeFinal {
-		return AttemptOutcome{}, nil, false, errors.New("core: interrupted outcome must be final")
+		return errors.New("core: interrupted outcome must be final")
 	}
 	if input.Status == OutcomeSucceeded && input.Classification != OutcomeFinal {
-		return AttemptOutcome{}, nil, false, errors.New("core: succeeded outcome must be final")
+		return errors.New("core: succeeded outcome must be final")
 	}
 	if input.Status == OutcomeCanceled && input.Classification == OutcomeRetryable {
-		return AttemptOutcome{}, nil, false, errors.New("core: canceled outcome cannot be retryable")
+		return errors.New("core: canceled outcome cannot be retryable")
 	}
 	if input.Classification == OutcomeFinal && strings.TrimSpace(input.Summary) == "" {
-		return AttemptOutcome{}, nil, false, errors.New("core: final outcome summary is required")
+		return errors.New("core: final outcome summary is required")
+	}
+	return nil
+}
+
+// RecordAttemptOutcome remains available for terminal final outcomes and
+// legacy callers. It deliberately rejects retryable outcomes so production
+// code cannot leave a Turn without an atomic next Attempt.
+func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, input AttemptOutcomeInput) (AttemptOutcome, *Phase4Result, bool, error) {
+	if err := validateAttemptOutcomeInput(input); err != nil {
+		return AttemptOutcome{}, nil, false, err
+	}
+	if input.Classification == OutcomeRetryable {
+		return AttemptOutcome{}, nil, false, errors.New("core: retryable outcome requires FinishAttempt with durable retry command id")
 	}
 	if input.Classification == OutcomeFinal && input.Status != OutcomeSucceeded {
 		input.FailureCode = strings.TrimSpace(input.FailureCode)
@@ -415,6 +523,9 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 	return returnValue.outcome, returnValue.result, returnValue.dup, err
 }
 
+// RetryAttempt is retained as a read-only compatibility lookup. It never
+// creates a new Attempt; production execution must call FinishAttempt with a
+// durable RetryCommandID.
 func (s *Store) RetryAttempt(ctx context.Context, turnID string, idempotencyKeys ...string) (Phase4Attempt, error) {
 	if len(idempotencyKeys) > 1 {
 		return Phase4Attempt{}, errors.New("core: at most one retry idempotency key is allowed")
@@ -429,9 +540,9 @@ func (s *Store) RetryAttempt(ctx context.Context, turnID string, idempotencyKeys
 	return s.retryAttempt(ctx, turnID, key)
 }
 
-// RetryAttemptWithKey makes the internal retry operation explicitly
-// idempotent across delivery retries. The key is never exposed as a Client
-// operation.
+// RetryAttemptWithKey is a compatibility lookup for retries already created
+// by FinishAttempt. New production retries must use FinishAttempt, which
+// durably records the command and creates the next Attempt in one transaction.
 func (s *Store) RetryAttemptWithKey(ctx context.Context, turnID, idempotencyKey string) (Phase4Attempt, error) {
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if idempotencyKey == "" {
@@ -503,33 +614,10 @@ func (s *Store) retryAttempt(ctx context.Context, turnID, idempotencyKey string)
 		if classification != OutcomeRetryable || !latest.State.Terminal() {
 			return Phase4Attempt{}, ErrInvalidTransition
 		}
-		if idempotencyKey == "" {
-			idempotencyKey = "retry:" + turnID + ":" + latest.ID
-			var storedAttemptID string
-			err := tx.QueryRowContext(ctx, `SELECT attempt_id FROM phase4_retry_operations WHERE idempotency_key = ?`, idempotencyKey).Scan(&storedAttemptID)
-			if err == nil {
-				return getPhase4Attempt(ctx, tx, storedAttemptID)
-			}
-			if !errors.Is(err, sql.ErrNoRows) {
-				return Phase4Attempt{}, err
-			}
-		}
-
-		now := s.now()
-		attempt := Phase4Attempt{ID: newID("att"), WorkerID: latest.WorkerID, TurnID: latest.TurnID, Number: latest.Number + 1, NodeID: latest.NodeID, HarnessInstanceID: latest.HarnessInstanceID, State: AttemptStarting, CorrelationID: latest.CorrelationID, CreatedAt: now, UpdatedAt: now}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempts(id, worker_id, turn_id, number, node_id, harness_instance_id, state, correlation_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, attempt.ID, attempt.WorkerID, attempt.TurnID, attempt.Number, attempt.NodeID, attempt.HarnessInstanceID, attempt.State, attempt.CorrelationID, timestamp(now), timestamp(now)); err != nil {
-			return Phase4Attempt{}, err
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_retry_operations(idempotency_key, turn_id, attempt_id, created_at) VALUES(?, ?, ?, ?)`, idempotencyKey, turn.ID, attempt.ID, timestamp(now)); err != nil {
-			return Phase4Attempt{}, err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, current_attempt_id = ?, updated_at = ? WHERE id = ?`, TurnStarting, attempt.ID, timestamp(now), turn.ID); err != nil {
-			return Phase4Attempt{}, err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`, WorkerWorking, timestamp(now), turn.WorkerID); err != nil {
-			return Phase4Attempt{}, err
-		}
-		return attempt, nil
+		// This compatibility method is intentionally read-only. It must not be a
+		// production execution path that can create a retry without an atomic
+		// outcome and next Attempt.
+		return Phase4Attempt{}, ErrInvalidTransition
 	})
 }
 

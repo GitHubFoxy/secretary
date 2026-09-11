@@ -45,23 +45,23 @@ func TestPhase4RetryHasOneOutcomePerAttemptAndOneResultPerTurn(t *testing.T) {
 	if _, err := store.SetPhase4AttemptActive(ctx, first.ID); err != nil {
 		t.Fatal(err)
 	}
-	input := AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeRetryable, ErrorCode: "temporary", Diagnostics: "adapter reset"}
-	outcome, result, duplicate, err := store.RecordAttemptOutcome(ctx, first.ID, input)
-	if err != nil || duplicate || result != nil || outcome.Classification != OutcomeRetryable {
-		t.Fatalf("retryable outcome=%#v result=%#v duplicate=%v err=%v", outcome, result, duplicate, err)
+	input := FinishAttemptInput{AttemptOutcomeInput: AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeRetryable, ErrorCode: "temporary", Diagnostics: "adapter reset"}, RetryCommandID: "retry-command-1"}
+	finished, err := store.FinishAttempt(ctx, first.ID, input)
+	if err != nil || finished.Duplicate || finished.Result != nil || finished.Outcome.Classification != OutcomeRetryable || finished.NextAttempt == nil {
+		t.Fatalf("retryable finish=%#v err=%v", finished, err)
 	}
-	again, _, duplicate, err := store.RecordAttemptOutcome(ctx, first.ID, input)
-	if err != nil || !duplicate || again.ID != outcome.ID {
-		t.Fatalf("duplicate outcome=%#v duplicate=%v err=%v", again, duplicate, err)
+	again, err := store.FinishAttempt(ctx, first.ID, input)
+	if err != nil || !again.Duplicate || again.Outcome.ID != finished.Outcome.ID || again.NextAttempt == nil || again.NextAttempt.ID != finished.NextAttempt.ID {
+		t.Fatalf("duplicate finish=%#v err=%v", again, err)
 	}
 	entries, err := store.EntriesAfter(ctx, conversation.ID, 0)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("retryable outcome leaked entries=%#v err=%v", entries, err)
 	}
 
-	second, err := store.RetryAttempt(ctx, turn.ID)
-	if err != nil || second.Number != 2 || second.TurnID != turn.ID {
-		t.Fatalf("retry attempt=%#v err=%v", second, err)
+	second := *finished.NextAttempt
+	if second.Number != 2 || second.TurnID != turn.ID {
+		t.Fatalf("retry attempt=%#v", second)
 	}
 	repeatedRetry, err := store.RetryAttempt(ctx, turn.ID)
 	if err != nil || repeatedRetry.ID != second.ID {
@@ -123,13 +123,11 @@ func TestPhase4RetryKeyIsIdempotentAcrossLaterAttemptStates(t *testing.T) {
 	if _, err := store.SetPhase4AttemptActive(ctx, first.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := store.RecordAttemptOutcome(ctx, first.ID, AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeRetryable, ErrorCode: "temporary"}); err != nil {
-		t.Fatal(err)
+	firstFinish, err := store.FinishAttempt(ctx, first.ID, FinishAttemptInput{AttemptOutcomeInput: AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeRetryable, ErrorCode: "temporary"}, RetryCommandID: "retry-command-1"})
+	if err != nil || firstFinish.NextAttempt == nil {
+		t.Fatalf("first finish=%#v err=%v", firstFinish, err)
 	}
-	second, err := store.RetryAttempt(ctx, turn.ID, "retry-command-1")
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := *firstFinish.NextAttempt
 	repeated, err := store.RetryAttempt(ctx, turn.ID, "retry-command-1")
 	if err != nil || repeated.ID != second.ID {
 		t.Fatalf("repeated retry=%#v err=%v", repeated, err)
@@ -137,16 +135,17 @@ func TestPhase4RetryKeyIsIdempotentAcrossLaterAttemptStates(t *testing.T) {
 	if _, err := store.SetPhase4AttemptActive(ctx, second.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := store.RecordAttemptOutcome(ctx, second.ID, AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeRetryable, ErrorCode: "temporary-again"}); err != nil {
-		t.Fatal(err)
+	secondFinish, err := store.FinishAttempt(ctx, second.ID, FinishAttemptInput{AttemptOutcomeInput: AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeRetryable, ErrorCode: "temporary-again"}, RetryCommandID: "retry-command-2"})
+	if err != nil || secondFinish.NextAttempt == nil {
+		t.Fatalf("second finish=%#v err=%v", secondFinish, err)
 	}
 	repeated, err = store.RetryAttempt(ctx, turn.ID, "retry-command-1")
 	if err != nil || repeated.ID != second.ID {
 		t.Fatalf("late repeated retry=%#v err=%v", repeated, err)
 	}
-	third, err := store.RetryAttempt(ctx, turn.ID, "retry-command-2")
-	if err != nil || third.ID == second.ID || third.Number != 3 {
-		t.Fatalf("next retry=%#v err=%v", third, err)
+	third := *secondFinish.NextAttempt
+	if third.ID == second.ID || third.Number != 3 {
+		t.Fatalf("next retry=%#v", third)
 	}
 }
 
@@ -168,16 +167,14 @@ func TestPhase4FinalResultNotifiesObserverAfterCommit(t *testing.T) {
 	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeRetryable, ErrorCode: "temporary"}); err != nil {
+	firstFinish, err := store.FinishAttempt(ctx, attempt.ID, FinishAttemptInput{AttemptOutcomeInput: AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeRetryable, ErrorCode: "temporary"}, RetryCommandID: "notify-retry"})
+	if err != nil || firstFinish.NextAttempt == nil {
 		t.Fatal(err)
 	}
 	if len(observed) != 0 {
 		t.Fatalf("retryable outcome notified observer: %#v", observed)
 	}
-	second, err := store.RetryAttempt(ctx, attempt.TurnID)
-	if err != nil {
-		t.Fatal(err)
-	}
+	second := *firstFinish.NextAttempt
 	if _, err := store.SetPhase4AttemptActive(ctx, second.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +317,9 @@ func TestPhase4RecoveryCreatesExplicitInterruptedResultAndBackup(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := store.RecoverInterrupted(ctx); err != nil {
+	if err := store.RecoverPhase4Attempts(ctx, Phase4AttemptRecoveryFunc(func(_ context.Context, _ Phase4Attempt) (Phase4RecoveryDecision, error) {
+		return Phase4RecoveryUnknown, nil
+	})); err != nil {
 		t.Fatal(err)
 	}
 	outcome, result, duplicate, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeInterrupted, Classification: OutcomeFinal, FailureCode: "runtime_session_uncertain", Summary: "uncertain"})

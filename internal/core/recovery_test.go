@@ -28,6 +28,15 @@ func TestRecoverInterruptedMarksActiveAttemptWithoutRetry(t *testing.T) {
 	if _, err := store.SetAttemptActive(ctx, attempt.ID); err != nil {
 		t.Fatal(err)
 	}
+	phase4Spec := phase4WorkerSpec()
+	phase4Spec.WorkerRef = "recovery-phase4-worker"
+	_, _, phase4Attempt, err := store.CreateWorker(ctx, conversation.ID, phase4Spec, TurnSpec{Input: "phase4 remains running"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, phase4Attempt.ID); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -53,5 +62,12 @@ func TestRecoverInterruptedMarksActiveAttemptWithoutRetry(t *testing.T) {
 	}
 	if details.Task.State != TaskOpen || details.Attempts[0].State != AttemptInterrupted {
 		t.Fatalf("recovered details=%#v", details)
+	}
+	phase4AfterLegacyRecovery, err := reopened.Phase4Attempt(ctx, phase4Attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase4AfterLegacyRecovery.State != AttemptActive {
+		t.Fatalf("legacy recovery changed Phase 4 Attempt: %#v", phase4AfterLegacyRecovery)
 	}
 }
