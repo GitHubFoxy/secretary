@@ -109,6 +109,138 @@ func TestPhase4RetryHasOneOutcomePerAttemptAndOneResultPerTurn(t *testing.T) {
 	}
 }
 
+func TestPhase4RetryKeyBelongsToItsSourceAttempt(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, turn, first, err := store.CreateWorker(ctx, conversation.ID, phase4WorkerSpec(), TurnSpec{Input: "two retries"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	firstFinish, err := store.FinishAttempt(ctx, first.ID, FinishAttemptInput{
+		AttemptOutcomeInput: AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeRetryable, ErrorCode: "temporary-a"},
+		RetryCommandID:      "cmd-A",
+	})
+	if err != nil || firstFinish.NextAttempt == nil {
+		t.Fatalf("first retry finish=%#v err=%v", firstFinish, err)
+	}
+	second := *firstFinish.NextAttempt
+	if _, err := store.SetPhase4AttemptActive(ctx, second.ID); err != nil {
+		t.Fatal(err)
+	}
+	secondFinish, err := store.FinishAttempt(ctx, second.ID, FinishAttemptInput{
+		AttemptOutcomeInput: AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeRetryable, ErrorCode: "temporary-b"},
+		RetryCommandID:      "cmd-B",
+	})
+	if err != nil || secondFinish.NextAttempt == nil {
+		t.Fatalf("second retry finish=%#v err=%v", secondFinish, err)
+	}
+	third := *secondFinish.NextAttempt
+
+	duplicate, err := store.FinishAttempt(ctx, first.ID, FinishAttemptInput{
+		AttemptOutcomeInput: AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeRetryable, ErrorCode: "temporary-a"},
+		RetryCommandID:      "cmd-A",
+	})
+	if err != nil || !duplicate.Duplicate || duplicate.NextAttempt == nil || duplicate.NextAttempt.ID != second.ID {
+		t.Fatalf("correct duplicate=%#v err=%v", duplicate, err)
+	}
+	if _, err := store.FinishAttempt(ctx, second.ID, FinishAttemptInput{
+		AttemptOutcomeInput: AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeRetryable, ErrorCode: "temporary-a"},
+		RetryCommandID:      "cmd-A",
+	}); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("key from another source err=%v", err)
+	}
+
+	var attempts, outcomes int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM phase4_attempts WHERE turn_id = ?`, turn.ID).Scan(&attempts); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM phase4_attempt_outcomes WHERE attempt_id IN (?, ?)`, first.ID, second.ID).Scan(&outcomes); err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 || outcomes != 2 || third.ID == second.ID {
+		t.Fatalf("retry records: attempts=%d outcomes=%d third=%#v", attempts, outcomes, third)
+	}
+}
+
+func TestPhase4RetryOperationsMigrationBackfillsSourceAttempt(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, turn, first, err := store.CreateWorker(ctx, conversation.ID, phase4WorkerSpec(), TurnSpec{Input: "migrate retry"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyNextID := "att-legacy-next"
+	const createdAt = "2024-01-01T00:00:00Z"
+	if _, err := store.db.ExecContext(ctx, `DROP TABLE phase4_retry_operations`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `CREATE TABLE phase4_retry_operations (
+		idempotency_key TEXT PRIMARY KEY,
+		turn_id TEXT NOT NULL REFERENCES turns(id),
+		attempt_id TEXT NOT NULL UNIQUE REFERENCES phase4_attempts(id),
+		created_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO phase4_attempt_outcomes(id, attempt_id, status, classification, error_code, error_message, diagnostics, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, "out-legacy", first.ID, OutcomeFailed, OutcomeRetryable, "temporary", "", "", createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE phase4_attempts SET state = ? WHERE id = ?`, AttemptFailed, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO phase4_attempts(id, worker_id, turn_id, number, node_id, harness_instance_id, state, correlation_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, legacyNextID, first.WorkerID, turn.ID, 2, first.NodeID, first.HarnessInstanceID, AttemptStarting, first.CorrelationID, createdAt, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO phase4_retry_operations(idempotency_key, turn_id, attempt_id, created_at) VALUES(?, ?, ?, ?)`, "legacy-key", turn.ID, legacyNextID, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `UPDATE turns SET current_attempt_id = ? WHERE id = ?`, legacyNextID, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	var sourceID, nextID string
+	if err := store.db.QueryRowContext(ctx, `SELECT source_attempt_id, next_attempt_id FROM phase4_retry_operations WHERE idempotency_key = ?`, "legacy-key").Scan(&sourceID, &nextID); err != nil {
+		t.Fatal(err)
+	}
+	if sourceID != first.ID || nextID != legacyNextID {
+		t.Fatalf("migrated operation source=%q next=%q", sourceID, nextID)
+	}
+	next, err := store.RetryAttemptWithKey(ctx, turn.ID, "legacy-key")
+	if err != nil || next.ID != legacyNextID {
+		t.Fatalf("migrated retry lookup=%#v err=%v", next, err)
+	}
+	duplicate, err := store.FinishAttempt(ctx, first.ID, FinishAttemptInput{
+		AttemptOutcomeInput: AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeRetryable, ErrorCode: "temporary"},
+		RetryCommandID:      "legacy-key",
+	})
+	if err != nil || !duplicate.Duplicate || duplicate.NextAttempt == nil || duplicate.NextAttempt.ID != legacyNextID {
+		t.Fatalf("migrated duplicate=%#v err=%v", duplicate, err)
+	}
+}
+
 func TestPhase4RetryKeyIsIdempotentAcrossLaterAttemptStates(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
