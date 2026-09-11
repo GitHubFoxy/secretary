@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -154,30 +155,11 @@ func (s *Store) CreateWorker(ctx context.Context, conversationID string, spec Wo
 	if key == "" {
 		key = strings.TrimSpace(turnSpec.IdempotencyKey)
 	}
-	if key != "" {
-		s.idempotencyMu.Lock()
-		defer s.idempotencyMu.Unlock()
-		var stored workerCreationOutcome
-		found, err := s.loadIdempotency(ctx, "worker.create", key, &stored)
-		if err != nil {
-			return Worker{}, Turn{}, Phase4Attempt{}, err
-		}
-		if found {
-			return stored.Worker, stored.Turn, stored.Attempt, nil
-		}
-		worker, turn, attempt, err := s.createWorker(ctx, conversationID, spec, turnSpec)
-		if err != nil {
-			return Worker{}, Turn{}, Phase4Attempt{}, err
-		}
-		if err := s.saveIdempotency(ctx, "worker.create", key, workerCreationOutcome{Worker: worker, Turn: turn, Attempt: attempt}); err != nil {
-			return Worker{}, Turn{}, Phase4Attempt{}, err
-		}
-		return worker, turn, attempt, nil
-	}
-	return s.createWorker(ctx, conversationID, spec, turnSpec)
+	if key != "" { s.idempotencyMu.Lock(); defer s.idempotencyMu.Unlock() }
+	return s.createWorker(ctx, conversationID, spec, turnSpec, key)
 }
 
-func (s *Store) createWorker(ctx context.Context, conversationID string, spec WorkerSpec, turnSpec TurnSpec) (Worker, Turn, Phase4Attempt, error) {
+func (s *Store) createWorker(ctx context.Context, conversationID string, spec WorkerSpec, turnSpec TurnSpec, idempotencyKey string) (Worker, Turn, Phase4Attempt, error) {
 	if strings.TrimSpace(conversationID) == "" || strings.TrimSpace(spec.Intent) == "" || strings.TrimSpace(spec.ProjectID) == "" || strings.TrimSpace(spec.NodeID) == "" || strings.TrimSpace(spec.HarnessInstanceID) == "" {
 		return Worker{}, Turn{}, Phase4Attempt{}, errors.New("core: complete Worker binding and intent are required")
 	}
@@ -195,6 +177,14 @@ func (s *Store) createWorker(ctx context.Context, conversationID string, spec Wo
 		turn    Turn
 		attempt Phase4Attempt
 	}, error) {
+		if idempotencyKey != "" {
+			var encoded string
+			if err := tx.QueryRowContext(ctx, `SELECT outcome_json FROM idempotency_records WHERE operation = ? AND idempotency_key = ?`, "worker.create", idempotencyKey).Scan(&encoded); err == nil {
+				var stored workerCreationOutcome
+				if err := json.Unmarshal([]byte(encoded), &stored); err != nil { return struct { worker Worker; turn Turn; attempt Phase4Attempt }{}, fmt.Errorf("core: decode durable Worker outcome: %w", err) }
+				return struct { worker Worker; turn Turn; attempt Phase4Attempt }{worker: stored.Worker, turn: stored.Turn, attempt: stored.Attempt}, nil
+			} else if !errors.Is(err, sql.ErrNoRows) { return struct { worker Worker; turn Turn; attempt Phase4Attempt }{}, err }
+		}
 		now := s.now()
 		worker := Worker{ID: newID("wrk"), WorkerRef: spec.WorkerRef, Title: spec.Title, Intent: spec.Intent, ProjectID: spec.ProjectID, NodeID: spec.NodeID, HarnessInstanceID: spec.HarnessInstanceID, PolicySnapshot: spec.PolicySnapshot, Status: WorkerQueued, CreatedAt: now, UpdatedAt: now}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO workers(id, worker_ref, conversation_id, title, intent, project_id, node_id, harness_instance_id, policy_snapshot, status, archived, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`, worker.ID, worker.WorkerRef, conversationID, worker.Title, worker.Intent, worker.ProjectID, worker.NodeID, worker.HarnessInstanceID, worker.PolicySnapshot, worker.Status, timestamp(now), timestamp(now)); err != nil {
@@ -236,7 +226,7 @@ func (s *Store) createWorker(ctx context.Context, conversationID string, spec Wo
 				attempt Phase4Attempt
 			}{}, err
 		}
-		workerEvent, err := appendEventTx(ctx, tx, now, EventInput{Kind: "worker.spawned", AggregateType: "worker", AggregateID: worker.WorkerRef, Source: "server", CorrelationID: turn.ID, Payload: worker}, mustJSON(worker))
+		workerEvent, err := appendEventTx(ctx, tx, now, EventInput{Kind: "worker.spawned", AggregateType: "worker", AggregateID: worker.WorkerRef, Source: "server", CorrelationID: turn.ID, Payload: worker}, worker)
 		if err != nil {
 			return struct {
 				worker  Worker
@@ -251,19 +241,24 @@ func (s *Store) createWorker(ctx context.Context, conversationID string, spec Wo
 				attempt Phase4Attempt
 			}{}, err
 		}
-		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "turn.created", AggregateType: "turn", AggregateID: turn.ID, Source: "server", CorrelationID: turn.ID, Payload: turn}, mustJSON(turn)); err != nil {
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "turn.created", AggregateType: "turn", AggregateID: turn.ID, Source: "server", CorrelationID: turn.ID, Payload: turn}, turn); err != nil {
 			return struct {
 				worker  Worker
 				turn    Turn
 				attempt Phase4Attempt
 			}{}, err
 		}
-		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.started", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: turn.ID, Payload: attempt}, mustJSON(attempt)); err != nil {
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.started", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: turn.ID, Payload: attempt}, attempt); err != nil {
 			return struct {
 				worker  Worker
 				turn    Turn
 				attempt Phase4Attempt
 			}{}, err
+		}
+		if idempotencyKey != "" {
+			encoded, err := json.Marshal(workerCreationOutcome{Worker: worker, Turn: turn, Attempt: attempt})
+			if err != nil { return struct { worker Worker; turn Turn; attempt Phase4Attempt }{}, fmt.Errorf("core: encode durable Worker outcome: %w", err) }
+			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES(?, ?, ?, ?)`, "worker.create", idempotencyKey, string(encoded), timestamp(now)); err != nil { return struct { worker Worker; turn Turn; attempt Phase4Attempt }{}, err }
 		}
 		return struct {
 			worker  Worker
@@ -284,31 +279,11 @@ func (s *Store) SpawnWorker(ctx context.Context, conversationID string, spec Wor
 // changes the Worker's Project, Node, HarnessInstance, or policy snapshot.
 func (s *Store) CreateTurn(ctx context.Context, workerID string, spec TurnSpec) (Turn, Phase4Attempt, error) {
 	key := strings.TrimSpace(spec.IdempotencyKey)
-	if key != "" {
-		s.idempotencyMu.Lock()
-		defer s.idempotencyMu.Unlock()
-		operation := "turn.create:" + workerID
-		var stored turnCreationOutcome
-		found, err := s.loadIdempotency(ctx, operation, key, &stored)
-		if err != nil {
-			return Turn{}, Phase4Attempt{}, err
-		}
-		if found {
-			return stored.Turn, stored.Attempt, nil
-		}
-		turn, attempt, err := s.createTurn(ctx, workerID, spec)
-		if err != nil {
-			return Turn{}, Phase4Attempt{}, err
-		}
-		if err := s.saveIdempotency(ctx, operation, key, turnCreationOutcome{Turn: turn, Attempt: attempt}); err != nil {
-			return Turn{}, Phase4Attempt{}, err
-		}
-		return turn, attempt, nil
-	}
-	return s.createTurn(ctx, workerID, spec)
+if key != "" { s.idempotencyMu.Lock(); defer s.idempotencyMu.Unlock() }
+	return s.createTurn(ctx, workerID, spec, key)
 }
 
-func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec) (Turn, Phase4Attempt, error) {
+func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, idempotencyKey string) (Turn, Phase4Attempt, error) {
 	if strings.TrimSpace(workerID) == "" || strings.TrimSpace(spec.Input) == "" {
 		return Turn{}, Phase4Attempt{}, errors.New("core: Worker and Turn input are required")
 	}
@@ -370,13 +345,13 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec) 
 				attempt Phase4Attempt
 			}{}, err
 		}
-		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "turn.created", AggregateType: "turn", AggregateID: turn.ID, Source: "server", CorrelationID: turn.ID, Payload: turn}, mustJSON(turn)); err != nil {
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "turn.created", AggregateType: "turn", AggregateID: turn.ID, Source: "server", CorrelationID: turn.ID, Payload: turn}, turn); err != nil {
 			return struct {
 				turn    Turn
 				attempt Phase4Attempt
 			}{}, err
 		}
-		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.started", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: turn.ID, Payload: attempt}, mustJSON(attempt)); err != nil {
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.started", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: turn.ID, Payload: attempt}, attempt); err != nil {
 			return struct {
 				turn    Turn
 				attempt Phase4Attempt
@@ -422,7 +397,7 @@ func (s *Store) transitionPhase4Attempt(ctx context.Context, attemptID string, f
 			if err != nil {
 				return Phase4Attempt{}, err
 			}
-			event, err := appendEventTx(ctx, tx, now, EventInput{Kind: "worker.started", AggregateType: "worker", AggregateID: workerRef, Source: "server", CorrelationID: attempt.TurnID, Payload: attempt}, mustJSON(attempt))
+			event, err := appendEventTx(ctx, tx, now, EventInput{Kind: "worker.started", AggregateType: "worker", AggregateID: workerRef, Source: "server", CorrelationID: attempt.TurnID, Payload: attempt}, attempt)
 			if err != nil {
 				return Phase4Attempt{}, err
 			}
@@ -494,7 +469,7 @@ func (s *Store) finishRetryableAttempt(ctx context.Context, attemptID string, in
 		if _, err := tx.ExecContext(ctx, `UPDATE phase4_attempts SET state = ?, updated_at = ? WHERE id = ?`, AttemptState(input.Status), timestamp(now), attempt.ID); err != nil {
 			return FinishAttemptResult{}, err
 		}
-		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.outcome_recorded", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: attempt.CorrelationID, Payload: input.AttemptOutcomeInput}, mustJSON(input.AttemptOutcomeInput)); err != nil {
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.outcome_recorded", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: attempt.CorrelationID, Payload: input.AttemptOutcomeInput}, input.AttemptOutcomeInput); err != nil {
 			return FinishAttemptResult{}, err
 		}
 		next := Phase4Attempt{ID: newID("att"), WorkerID: attempt.WorkerID, TurnID: attempt.TurnID, Number: attempt.Number + 1, NodeID: attempt.NodeID, HarnessInstanceID: attempt.HarnessInstanceID, State: AttemptStarting, CorrelationID: attempt.CorrelationID, CreatedAt: now, UpdatedAt: now}
@@ -628,7 +603,7 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 				dup     bool
 			}{}, err
 		}
-		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.outcome_recorded", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: attempt.CorrelationID, Payload: outcome}, mustJSON(outcome)); err != nil {
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.outcome_recorded", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: attempt.CorrelationID, Payload: outcome}, outcome); err != nil {
 			return struct {
 				outcome AttemptOutcome
 				result  *Phase4Result
@@ -660,7 +635,7 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 				dup     bool
 			}{}, err
 		}
-		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "result.accepted", AggregateType: "result", AggregateID: result.ID, Source: "server", CorrelationID: result.CorrelationID, CausationID: outcome.ID, Payload: result}, mustJSON(result)); err != nil {
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "result.accepted", AggregateType: "result", AggregateID: result.ID, Source: "server", CorrelationID: result.CorrelationID, CausationID: outcome.ID, Payload: result}, result); err != nil {
 			return struct {
 				outcome AttemptOutcome
 				result  *Phase4Result

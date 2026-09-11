@@ -919,7 +919,7 @@ func appendEntry(ctx context.Context, tx *sql.Tx, now time.Time, conversationID 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_entries(id, conversation_id, seq, kind, body, created_at) VALUES(?, ?, ?, ?, ?, ?)`, entry.ID, entry.ConversationID, entry.Seq, entry.Kind, entry.Body, timestamp(now)); err != nil {
 		return ConversationEntry{}, err
 	}
-	event, err := appendEventTx(ctx, tx, now, EventInput{Kind: "conversation.entry", AggregateType: "conversation", AggregateID: conversationID, Source: "server", CorrelationID: entry.ID, Payload: entry}, mustJSON(entry))
+	event, err := appendEventTx(ctx, tx, now, EventInput{Kind: "conversation.entry", AggregateType: "conversation", AggregateID: conversationID, Source: "server", CorrelationID: entry.ID, Payload: entry}, entry)
 	if err != nil {
 		return ConversationEntry{}, err
 	}
