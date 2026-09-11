@@ -49,6 +49,53 @@ func (s *fakeSession) Activity() <-chan node.Activity { return s.activities }
 func (s *fakeSession) Result() <-chan node.Result     { return s.results }
 func (s *fakeSession) Close() error                   { s.closed = true; return nil }
 
+func TestDurableRuntimeQueuesAndFinishesSecretaryTurn(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeRuntime{}
+	runtime := NewRuntime(node.NewLocal(fake), "cap")
+	runtime.AttachConversation(store, conversation.ID)
+	runtime.AttachIdentity(identity)
+	if err := runtime.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	fake.session.results <- node.Result{Status: "succeeded", Summary: "ready"}
+	if err := runtime.HandleMessage(ctx, "queued input"); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	turnID := ""
+	for time.Now().Before(deadline) {
+		if events, readErr := store.EventsAfter(ctx, time.Time{}, 100); readErr == nil {
+			for _, event := range events {
+				if event.Kind == core.SecretaryTurnQueuedEvent {
+					turnID = event.AggregateID
+				}
+			}
+			if turnID != "" {
+				stream, streamErr := store.SecretaryEvents(ctx, turnID, 0, 100)
+				if streamErr == nil && len(stream) == 3 && stream[2].Kind == core.SecretaryTurnFinishedEvent {
+					return
+				}
+			}
+		}
+		time.Sleep(time.Millisecond * 5)
+	}
+	t.Fatal("durable Secretary turn did not finish")
+}
+
 func TestRuntimeUsesCapabilityAndSteersActiveSecretary(t *testing.T) {
 	rt := &fakeRuntime{}
 	runtime := node.NewLocal(rt)

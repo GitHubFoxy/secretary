@@ -18,12 +18,26 @@ import (
 var ErrInvalid = errors.New("config: invalid")
 
 type Config struct {
-	Profiles  Profiles  `toml:"profiles" json:"profiles"`
-	Skills    []string  `toml:"skills" json:"skills"`
-	Tools     Tools     `toml:"tools" json:"tools"`
-	Models    Models    `toml:"models" json:"models"`
-	Runtime   Runtime   `toml:"runtime" json:"runtime"`
-	Retention Retention `toml:"retention" json:"retention"`
+	Profiles     Profiles        `toml:"profiles" json:"profiles"`
+	Skills       []string        `toml:"skills" json:"skills"`
+	Tools        Tools           `toml:"tools" json:"tools"`
+	Models       Models          `toml:"models" json:"models"`
+	Runtime      Runtime         `toml:"runtime" json:"runtime"` // legacy compatibility
+	Secretary    SecretaryPolicy `toml:"secretary" json:"secretary"`
+	WorkerPolicy WorkerPolicy    `toml:"worker_policy" json:"worker_policy"`
+	Retention    Retention       `toml:"retention" json:"retention"`
+}
+
+type SecretaryPolicy struct {
+	Harness   string `toml:"harness" json:"harness"`
+	Model     string `toml:"model" json:"model"`
+	Reasoning string `toml:"reasoning" json:"reasoning"`
+}
+
+type WorkerPolicy struct {
+	DefaultHarness     string   `toml:"default_harness" json:"default_harness"`
+	PreferredHarnesses []string `toml:"preferred_harnesses" json:"preferred_harnesses"`
+	ActiveAttempts     int      `toml:"active_attempts" json:"active_attempts"`
 }
 
 type Profiles struct {
@@ -101,6 +115,8 @@ func compile(base string, raw []byte, c Config) (Snapshot, error) {
 	if err := validateConfig(c); err != nil {
 		return Snapshot{}, err
 	}
+	secretary := c.EffectiveSecretaryPolicy()
+	workerPolicy := c.EffectiveWorkerPolicy()
 	skills, err := loadSkills(c.Skills)
 	if err != nil {
 		return Snapshot{}, err
@@ -119,31 +135,90 @@ func compile(base string, raw []byte, c Config) (Snapshot, error) {
 		if strings.TrimSpace(string(content)) == "" {
 			return Snapshot{}, fmt.Errorf("%w: %s profile %s is empty", ErrInvalid, name, resolved)
 		}
-		model := c.Models.Secretary
+		runtime := secretary.Harness
+		model := secretary.Model
+		reasoning := secretary.Reasoning
 		if name != "secretary" {
+			runtime = workerPolicy.DefaultHarness
 			model = c.Models.Smart
+			if model == "" {
+				model = "smart"
+			}
 		}
-		profile := Profile{Name: name, Path: resolved, Content: string(content), Skills: skills, AllowTools: append([]string(nil), c.Tools.Allow...), Runtime: c.Runtime.Harness, Model: model, Reasoning: c.Runtime.Reasoning}
+		profile := Profile{Name: name, Path: resolved, Content: string(content), Skills: skills, AllowTools: append([]string(nil), c.Tools.Allow...), Runtime: runtime, Model: model, Reasoning: reasoning}
 		profile.Hash = digest(profile.Content, profile.Runtime, profile.Model, profile.Reasoning, strings.Join(profile.AllowTools, "\n"), skillDigest(skills))
 		profiles[name] = profile
 	}
 	return Snapshot{Version: digest(string(raw), profiles["secretary"].Hash, profiles["worker"].Hash, profiles["child_worker"].Hash), Config: c, Profiles: profiles}, nil
 }
 
-func validateConfig(c Config) error {
-	if c.Profiles.Secretary == "" || c.Profiles.Worker == "" || c.Profiles.ChildWorker == "" {
-		return fmt.Errorf("%w: profiles.secretary, profiles.worker and profiles.child_worker are required", ErrInvalid)
+func (c Config) EffectiveSecretaryPolicy() SecretaryPolicy {
+	policy := c.Secretary
+	if policy.Harness == "" {
+		policy.Harness = c.Runtime.Harness
 	}
-	if c.Runtime.Harness == "" {
-		return fmt.Errorf("%w: runtime.harness is required", ErrInvalid)
+	if policy.Model == "" {
+		policy.Model = c.Models.Secretary
 	}
-	switch c.Runtime.Harness {
-	case "opencode", "codex", "fx":
+	if policy.Reasoning == "" {
+		policy.Reasoning = c.Runtime.Reasoning
+	}
+	return policy
+}
+
+func (c Config) EffectiveWorkerPolicy() WorkerPolicy {
+	policy := c.WorkerPolicy
+	if policy.DefaultHarness == "" {
+		if c.Secretary.Harness == "" {
+			policy.DefaultHarness = c.Runtime.Harness
+		}
+		if policy.DefaultHarness == "" {
+			policy.DefaultHarness = "fx"
+		}
+	}
+	return policy
+}
+
+func validateHarness(field, value string) error {
+	switch value {
+	case "opencode", "codex", "fx", "claude_code":
+		return nil
 	default:
-		return fmt.Errorf("%w: runtime.harness must be opencode, codex or fx", ErrInvalid)
+		return fmt.Errorf("%w: %s must be opencode, codex, fx or claude_code", ErrInvalid, field)
 	}
-	if c.Models.Secretary == "" || c.Models.Fast == "" || c.Models.Smart == "" || c.Models.Cheap == "" {
-		return fmt.Errorf("%w: models.secretary, models.fast, models.smart and models.cheap are required", ErrInvalid)
+}
+
+func validateConfig(c Config) error {
+	if c.Secretary.Harness == "" && c.Runtime.Harness != "" {
+		if err := validateHarness("runtime.harness", c.Runtime.Harness); err != nil {
+			return err
+		}
+	}
+	secretary := c.EffectiveSecretaryPolicy()
+	if secretary.Harness == "" {
+		return fmt.Errorf("%w: secretary.harness is required", ErrInvalid)
+	}
+	if err := validateHarness("secretary.harness", secretary.Harness); err != nil {
+		return err
+	}
+	if secretary.Model == "" {
+		return fmt.Errorf("%w: secretary.model is required", ErrInvalid)
+	}
+	if secretary.Reasoning == "" {
+		return fmt.Errorf("%w: secretary.reasoning is required", ErrInvalid)
+	}
+	workerPolicy := c.EffectiveWorkerPolicy()
+	if err := validateHarness("worker_policy.default_harness", workerPolicy.DefaultHarness); err != nil {
+		return err
+	}
+	if c.Models.Fast == "" {
+		c.Models.Fast = "fast"
+	}
+	if c.Models.Smart == "" {
+		c.Models.Smart = "smart"
+	}
+	if c.Models.Cheap == "" {
+		c.Models.Cheap = "cheap"
 	}
 	if len(c.Tools.Allow) == 0 {
 		return fmt.Errorf("%w: tools.allow_tools cannot be empty", ErrInvalid)
@@ -157,6 +232,12 @@ func validateConfig(c Config) error {
 	}
 	if !sort.StringsAreSorted(c.Tools.Allow) {
 		return fmt.Errorf("%w: tools.allow_tools must be sorted", ErrInvalid)
+	}
+	if workerPolicy.ActiveAttempts < 0 {
+		return fmt.Errorf("%w: worker_policy.active_attempts cannot be negative", ErrInvalid)
+	}
+	if c.Profiles.Secretary == "" || c.Profiles.Worker == "" || c.Profiles.ChildWorker == "" {
+		return fmt.Errorf("%w: profiles.secretary, profiles.worker and profiles.child_worker are required", ErrInvalid)
 	}
 	if _, _, _, err := c.Retention.RawLogPolicy(); err != nil {
 		return err
@@ -189,6 +270,12 @@ func Diff(previous, next Snapshot) map[string]any {
 	changed := make(map[string]any)
 	if previous.Config.Runtime != next.Config.Runtime {
 		changed["runtime"] = next.Config.Runtime
+	}
+	if previous.Config.Secretary != next.Config.Secretary {
+		changed["secretary"] = next.Config.Secretary
+	}
+	if previous.Config.WorkerPolicy.DefaultHarness != next.Config.WorkerPolicy.DefaultHarness || previous.Config.WorkerPolicy.ActiveAttempts != next.Config.WorkerPolicy.ActiveAttempts || strings.Join(previous.Config.WorkerPolicy.PreferredHarnesses, ",") != strings.Join(next.Config.WorkerPolicy.PreferredHarnesses, ",") {
+		changed["worker_policy"] = next.Config.WorkerPolicy
 	}
 	if previous.Config.Models != next.Config.Models {
 		changed["models"] = next.Config.Models

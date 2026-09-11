@@ -279,7 +279,7 @@ func (s *Store) MarkDeliveryDelivered(ctx context.Context, id string) (Delivery,
 		if _, err := tx.ExecContext(ctx, `UPDATE deliveries SET state = ?, updated_at = ?, delivered_at = ? WHERE id = ?`, delivery.State, timestamp(now), timestamp(now), id); err != nil {
 			return Delivery{}, err
 		}
-		if _, err := appendAuditEventTx(ctx, tx, now, "result.delivered", delivery.EventID, map[string]any{"delivery_id": id, "target": delivery.Target}); err != nil {
+		if _, err := appendAuditEventTx(ctx, tx, now, "delivery.delivered", delivery.EventID, map[string]any{"delivery_id": id, "target": delivery.Target}); err != nil {
 			return Delivery{}, err
 		}
 		return delivery, nil

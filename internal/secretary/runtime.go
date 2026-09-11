@@ -24,12 +24,14 @@ type Runtime struct {
 	profile        func() node.ManagedProfile
 	store          *core.Store
 	conversationID string
+	identity       core.SecretaryIdentity
 
-	mu      sync.Mutex
-	session node.Session
-	busy    bool
-	queued  []string
-	errors  chan error
+	mu           sync.Mutex
+	session      node.Session
+	busy         bool
+	activeTurnID string
+	queued       []string
+	errors       chan error
 }
 
 func NewRuntime(local *node.LocalNode, capability string) *Runtime {
@@ -56,6 +58,36 @@ func (r *Runtime) AttachConversation(store *core.Store, conversationID string) {
 	r.mu.Unlock()
 }
 
+// AttachIdentity binds a replaceable runtime to the durable Secretary identity.
+// It does not persist or expose the native runtime session identifier.
+func (r *Runtime) AttachIdentity(identity core.SecretaryIdentity) {
+	r.mu.Lock()
+	r.identity = identity
+	r.mu.Unlock()
+}
+
+func (r *Runtime) Identity() core.SecretaryIdentity {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.identity
+}
+
+// QueueMessage persists an ordered Secretary turn. Execution is deliberately
+// separate so a restart cannot silently claim an unknown runtime continuation.
+func (r *Runtime) QueueMessage(ctx context.Context, text string) (core.SecretaryTurn, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return core.SecretaryTurn{}, errors.New("secretary: message is empty")
+	}
+	r.mu.Lock()
+	store, identity := r.store, r.identity
+	r.mu.Unlock()
+	if store == nil || identity.ID == "" {
+		return core.SecretaryTurn{}, errors.New("secretary: durable identity is not attached")
+	}
+	return store.EnqueueSecretaryTurn(ctx, identity.ID, text)
+}
+
 func (r *Runtime) Start(ctx context.Context) error {
 	if r.node == nil {
 		return errors.New("secretary: local node is required")
@@ -70,8 +102,13 @@ func (r *Runtime) Start(ctx context.Context) error {
 		return errors.New("secretary: capability is required")
 	}
 	r.mu.Lock()
-	mcpCommand, dataDir, profileFn, store := r.mcpCommand, r.dataDir, r.profile, r.store
+	mcpCommand, dataDir, profileFn, store, identity := r.mcpCommand, r.dataDir, r.profile, r.store, r.identity
 	r.mu.Unlock()
+	if store != nil && identity.ID != "" {
+		if err := store.RecoverSecretaryTurn(ctx, identity.ID, "runtime restarted before completion was proven"); err != nil {
+			return err
+		}
+	}
 	prompt := "You are the persistent personal Secretary. Use the server-owned Secretary tools for Task lifecycle operations. Never give Secretary capabilities to a Worker or Channel adapter."
 	request := node.StartRequest{WorkerRef: workerRef, Task: prompt}
 	if profileFn != nil {
@@ -101,6 +138,9 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.busy = true
 	r.mu.Unlock()
 	go r.consumeResults(session)
+	if store != nil && identity.ID != "" {
+		go r.consumeActivity(session)
+	}
 	return nil
 }
 
@@ -113,9 +153,24 @@ func (r *Runtime) HandleMessage(ctx context.Context, text string) error {
 	}
 	r.mu.Lock()
 	session := r.session
+	durable := r.store != nil && r.identity.ID != ""
 	if session == nil {
 		r.mu.Unlock()
 		return ErrNotStarted
+	}
+	if durable {
+		r.mu.Unlock()
+		if strings.HasPrefix(text, "/q") {
+			text = strings.TrimSpace(strings.TrimPrefix(text, "/q"))
+			if text == "" {
+				return errors.New("secretary: queued message is empty")
+			}
+		}
+		_, err := r.QueueMessage(ctx, text)
+		if err == nil {
+			r.startNextDurable(ctx)
+		}
+		return err
 	}
 	if strings.HasPrefix(text, "/q") {
 		queued := strings.TrimSpace(strings.TrimPrefix(text, "/q"))
@@ -157,20 +212,98 @@ func (r *Runtime) consumeResults(session node.Session) {
 	initial := true
 	for result := range session.Result() {
 		r.mu.Lock()
-		store, conversationID := r.store, r.conversationID
+		store, conversationID, activeTurnID := r.store, r.conversationID, r.activeTurnID
 		r.busy = false
+		r.activeTurnID = ""
 		r.mu.Unlock()
-		if !initial && store != nil && conversationID != "" && result.Summary != "" {
+		if activeTurnID != "" && store != nil {
+			state := core.SecretaryTurnSucceeded
+			if result.Status == "failed" {
+				state = core.SecretaryTurnFailed
+			}
+			if result.Status == "canceled" || result.Status == "cancelled" {
+				state = core.SecretaryTurnCanceled
+			}
+			errorMessage := ""
+			if state != core.SecretaryTurnSucceeded {
+				errorMessage = result.Summary
+			}
+			if _, err := store.FinishSecretaryTurn(context.Background(), activeTurnID, state, errorMessage); err != nil {
+				r.reportError(err)
+			}
+		}
+		if activeTurnID == "" && !initial && store != nil && conversationID != "" && result.Summary != "" {
 			if _, err := store.AppendEntry(context.Background(), conversationID, core.EntrySecretary, result.Summary); err != nil {
-				select {
-				case r.errors <- err:
-				default:
-				}
+				r.reportError(err)
 			}
 		}
 		initial = false
+		r.startNextDurable(context.Background())
 		r.startNext(context.Background())
 	}
+}
+
+func (r *Runtime) consumeActivity(session node.Session) {
+	for activity := range session.Activity() {
+		r.mu.Lock()
+		store, turnID := r.store, r.activeTurnID
+		r.mu.Unlock()
+		if store == nil || turnID == "" {
+			continue
+		}
+		var err error
+		switch activity.Kind {
+		case node.ActivityText:
+			err = func() error {
+				_, e := store.RecordSecretaryTextDelta(context.Background(), turnID, activity.Text)
+				return e
+			}()
+		case node.ActivityTool:
+			err = func() error {
+				_, e := store.RecordSecretaryToolCall(context.Background(), turnID, activity.Text, "")
+				return e
+			}()
+		}
+		if err != nil {
+			r.reportError(err)
+		}
+	}
+}
+
+func (r *Runtime) reportError(err error) {
+	if err == nil {
+		return
+	}
+	select {
+	case r.errors <- err:
+	default:
+	}
+}
+
+func (r *Runtime) startNextDurable(ctx context.Context) {
+	r.mu.Lock()
+	if r.busy || r.session == nil || r.store == nil || r.identity.ID == "" {
+		r.mu.Unlock()
+		return
+	}
+	session, store, identity := r.session, r.store, r.identity
+	r.mu.Unlock()
+	turn, err := store.StartNextSecretaryTurn(ctx, identity.ID)
+	if errors.Is(err, core.ErrNotFound) {
+		return
+	}
+	if err != nil {
+		r.reportError(err)
+		return
+	}
+	r.mu.Lock()
+	if r.busy || r.session != session {
+		r.mu.Unlock()
+		return
+	}
+	r.busy, r.activeTurnID = true, turn.ID
+	r.mu.Unlock()
+	r.runPrompt(ctx, session, turn.Input)
 }
 
 func (r *Runtime) startNext(ctx context.Context) {
@@ -191,12 +324,16 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 	go func() {
 		if err := session.Prompt(ctx, text); err != nil {
 			r.mu.Lock()
+			store, turnID := r.store, r.activeTurnID
 			r.busy = false
+			r.activeTurnID = ""
 			r.mu.Unlock()
-			select {
-			case r.errors <- err:
-			default:
+			if store != nil && turnID != "" {
+				if _, finishErr := store.FinishSecretaryTurn(context.Background(), turnID, core.SecretaryTurnFailed, err.Error()); finishErr != nil {
+					r.reportError(finishErr)
+				}
 			}
+			r.reportError(err)
 		}
 	}()
 }
@@ -204,9 +341,12 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 func (r *Runtime) Stop(ctx context.Context) error {
 	r.mu.Lock()
 	session := r.session
+	durable := r.store != nil && r.identity.ID != ""
 	r.session = nil
 	r.busy = false
-	r.queued = nil
+	if !durable {
+		r.queued = nil
+	}
 	r.mu.Unlock()
 	if session == nil {
 		return nil

@@ -29,7 +29,8 @@ type Store struct {
 	observerMu sync.RWMutex
 	observer   func(ConversationEntry)
 
-	idempotencyMu sync.Mutex
+	idempotencyMu  sync.Mutex
+	userDocumentMu sync.Mutex
 }
 
 func Open(ctx context.Context, dsn string) (*Store, error) {
@@ -488,6 +489,9 @@ CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries(state, updated_at);
 	if err := s.migratePhase4Lifecycle(ctx); err != nil {
 		return err
 	}
+	if err := s.migrateSecretarySchema(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -524,6 +528,9 @@ func (s *Store) CreatePersonWithConversation(ctx context.Context) (Person, Conve
 		if _, err := tx.ExecContext(ctx, `INSERT INTO conversations(id, person_id, created_at) VALUES(?, ?, ?)`, conversation.ID, person.ID, timestamp(now)); err != nil {
 			return personConversation{}, err
 		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO secretary_identities(id, person_id, conversation_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?)`, newID("sec"), person.ID, conversation.ID, timestamp(now), timestamp(now)); err != nil {
+			return personConversation{}, err
+		}
 		return personConversation{person: person, conversation: conversation}, nil
 	})
 	return created.person, created.conversation, err
@@ -539,7 +546,13 @@ func (s *Store) EnsureOwner(ctx context.Context) (Person, Conversation, error) {
 		return Person{}, Conversation{}, err
 	}
 	conversation, err := s.ConversationForPerson(ctx, person.ID)
-	return person, conversation, err
+	if err != nil {
+		return Person{}, Conversation{}, err
+	}
+	if _, err := s.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID); err != nil {
+		return Person{}, Conversation{}, err
+	}
+	return person, conversation, nil
 }
 
 func (s *Store) ConversationForPerson(ctx context.Context, personID string) (Conversation, error) {

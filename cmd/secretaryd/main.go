@@ -47,7 +47,13 @@ func main() {
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
-	log.Printf("loaded config version %s", profiles.Snapshot().Version)
+	userDocument, err := config.OpenUserDocument(*dataDir)
+	if err != nil {
+		log.Printf("load user.md: %v; keeping the last valid document snapshot", err)
+		log.Printf("loaded config version %s", profiles.Snapshot().Version)
+	} else {
+		log.Printf("loaded config version %s and user.md revision %d", profiles.Snapshot().Version, userDocument.Snapshot().Revision)
+	}
 	store, err := core.Open(context.Background(), filepath.Join(*dataDir, "secretary.db"))
 	if err != nil {
 		log.Fatalf("open Secretary state: %v", err)
@@ -111,7 +117,7 @@ func main() {
 	var persistentSecretary *secretaryruntime.Runtime
 	var secretaryMu sync.Mutex
 	runtime, runtimeCommand := configuredRuntime(profiles.Snapshot(), *dataDir)
-	log.Printf("configured harness %s (%s)", profiles.Snapshot().Config.Runtime.Harness, runtimeCommand)
+	log.Printf("configured Secretary harness %s (%s)", profiles.Snapshot().Config.EffectiveSecretaryPolicy().Harness, runtimeCommand)
 	mcpCommand, mcpErr := exec.LookPath("secretary-mcp")
 	if mcpErr != nil {
 		log.Fatalf("find secretary-mcp: %v", mcpErr)
@@ -121,6 +127,10 @@ func main() {
 	conversation, conversationErr := store.ConversationForPerson(ctx, web.OwnerID())
 	if conversationErr != nil {
 		log.Fatalf("find owner conversation: %v", conversationErr)
+	}
+	secretaryIdentity, identityErr := store.EnsureSecretaryIdentity(ctx, web.OwnerID(), conversation.ID)
+	if identityErr != nil {
+		log.Fatalf("ensure Secretary identity: %v", identityErr)
 	}
 	dispatcher := &app.Dispatcher{Store: store, Node: local, MCPCommand: mcpCommand, MCPDataDir: *dataDir,
 		Profile:             func() core.BindingProfile { return bindingProfile(managedProfile(profiles.Snapshot(), "worker")) },
@@ -170,6 +180,7 @@ func main() {
 			log.Fatal("SECRETARY_CAPABILITY is not authorized")
 		}
 		persistentSecretary = secretaryruntime.NewRuntime(local, capability)
+		persistentSecretary.AttachIdentity(secretaryIdentity)
 		persistentSecretary.AttachMCP(mcpCommand, *dataDir)
 		persistentSecretary.AttachProfile(func() node.ManagedProfile {
 			return secretaryProfile(profiles.Snapshot(), store)
@@ -269,7 +280,7 @@ func main() {
 }
 
 func configuredRuntime(snapshot config.Snapshot, dataDir string) (node.Runtime, string) {
-	harness := snapshot.Config.Runtime.Harness
+	harness := snapshot.Config.EffectiveSecretaryPolicy().Harness
 	logDir := filepath.Join(dataDir, "logs", "acp")
 	codexCommand := os.Getenv("SECRETARY_ACP_COMMAND")
 	codexArgs := strings.Fields(os.Getenv("SECRETARY_ACP_ARGS"))
@@ -315,7 +326,7 @@ func managedProfile(snapshot config.Snapshot, name string) node.ManagedProfile {
 		return node.ManagedProfile{}
 	}
 	delivery := "workspace_instructions"
-	if snapshot.Config.Runtime.Harness == "opencode" {
+	if profile.Runtime == "opencode" {
 		delivery = "native"
 	}
 	skills := make([]node.ManagedSkill, 0, len(profile.Skills))
@@ -335,7 +346,7 @@ func bindingProfile(profile node.ManagedProfile) core.BindingProfile {
 
 func secretaryModels(snapshot config.Snapshot) map[string]string {
 	return map[string]string{
-		"default": snapshot.Config.Models.Secretary,
+		"default": snapshot.Config.EffectiveSecretaryPolicy().Model,
 		"fast":    snapshot.Config.Models.Fast,
 		"smart":   snapshot.Config.Models.Smart,
 		"cheap":   snapshot.Config.Models.Cheap,
