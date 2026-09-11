@@ -193,9 +193,21 @@ func (s *Store) ConfigVersion(ctx context.Context, version string) (string, erro
 	return compiled, err
 }
 
+// RecoverInterrupted preserves the legacy Phase 3 recovery contract. It does
+// not inspect Phase 4 Attempts because a server cannot prove the state of a
+// remote Node without an explicit resolver.
 func (s *Store) RecoverInterrupted(ctx context.Context) error {
-	if _, err := s.db.ExecContext(ctx, `UPDATE attempts SET state = ?, updated_at = ? WHERE state IN (?, ?)`, AttemptInterrupted, timestamp(s.now()), AttemptStarting, AttemptActive); err != nil {
-		return err
+	_, err := s.db.ExecContext(ctx, `UPDATE attempts SET state = ?, updated_at = ? WHERE state IN (?, ?)`, AttemptInterrupted, timestamp(s.now()), AttemptStarting, AttemptActive)
+	return err
+}
+
+// RecoverPhase4Attempts asks an explicit Node/harness resolver about every
+// starting or active Phase 4 Attempt. A nil resolver is a deliberate no-op,
+// not a claim that remote execution is dead. Only an unknown probe result is
+// converted to an interrupted Attempt and its final Result.
+func (s *Store) RecoverPhase4Attempts(ctx context.Context, resolver Phase4AttemptRecoveryResolver) error {
+	if resolver == nil {
+		return nil
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM phase4_attempts WHERE state IN (?, ?)`, AttemptStarting, AttemptActive)
 	if err != nil {
@@ -216,8 +228,23 @@ func (s *Store) RecoverInterrupted(ctx context.Context) error {
 	}
 	rows.Close()
 	for _, id := range ids {
-		if _, _, _, err := s.InterruptPhase4Attempt(ctx, id, "runtime_session_uncertain", "Attempt execution could not be proven after recovery"); err != nil {
+		attempt, err := s.Phase4Attempt(ctx, id)
+		if err != nil {
 			return err
+		}
+		decision, err := resolver.ResolvePhase4Attempt(ctx, attempt)
+		if err != nil {
+			return err
+		}
+		switch decision {
+		case Phase4RecoveryAlive:
+			continue
+		case Phase4RecoveryUnknown:
+			if _, _, _, err := s.InterruptPhase4Attempt(ctx, id, "runtime_execution_unknown", "Attempt execution could not be proven by the recovery resolver"); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("core: invalid Phase 4 recovery decision %q", decision)
 		}
 	}
 	return nil
