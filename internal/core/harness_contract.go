@@ -210,6 +210,30 @@ type ActivityMetadata struct {
 	CorrelationID     string            `json:"correlation_id,omitempty"`
 }
 
+// Validate checks the identity and ordering fields required to transport an
+// observed activity safely from Node to server.
+func (m ActivityMetadata) Validate() error {
+	if strings.TrimSpace(m.EventID) == "" {
+		return fmt.Errorf("core: activity event id is required")
+	}
+	if strings.TrimSpace(string(m.Node)) == "" {
+		return fmt.Errorf("core: activity Node is required")
+	}
+	if strings.TrimSpace(string(m.HarnessInstanceID)) == "" {
+		return fmt.Errorf("core: activity HarnessInstance is required")
+	}
+	if strings.TrimSpace(m.AttemptID) == "" {
+		return fmt.Errorf("core: activity Attempt is required")
+	}
+	if m.Sequence == 0 {
+		return fmt.Errorf("core: activity sequence must be greater than zero")
+	}
+	if m.ObservedAt.IsZero() {
+		return fmt.Errorf("core: activity observation time is required")
+	}
+	return nil
+}
+
 type ToolCall struct {
 	CallID    string          `json:"call_id"`
 	Name      string          `json:"name"`
@@ -253,6 +277,9 @@ type Activity struct {
 }
 
 func (a Activity) Validate(capabilities HarnessCapabilities) error {
+	if err := a.Metadata.Validate(); err != nil {
+		return err
+	}
 	capability, ok := activityCapabilityFor(a.Kind)
 	if !ok {
 		return fmt.Errorf("core: unknown activity kind %q", a.Kind)
@@ -300,6 +327,21 @@ func (a Activity) Validate(capabilities HarnessCapabilities) error {
 	return nil
 }
 
+// ValidateFor additionally binds an activity to the exact observed instance
+// that produced it, preventing cross-Node or cross-harness delivery.
+func (a Activity) ValidateFor(instance HarnessInstance) error {
+	if err := a.Validate(instance.Capabilities); err != nil {
+		return err
+	}
+	if a.Metadata.Node != instance.Node {
+		return fmt.Errorf("core: activity Node %q does not match HarnessInstance Node %q", a.Metadata.Node, instance.Node)
+	}
+	if a.Metadata.HarnessInstanceID != instance.ID {
+		return fmt.Errorf("core: activity HarnessInstance %q does not match %q", a.Metadata.HarnessInstanceID, instance.ID)
+	}
+	return nil
+}
+
 func activityCapabilityFor(kind ActivityKind) (ActivityCapability, bool) {
 	switch kind {
 	case ActivityKindSessionStarted,
@@ -321,6 +363,20 @@ func activityCapabilityFor(kind ActivityKind) (ActivityCapability, bool) {
 	}
 }
 
+// ArtifactRef identifies a durable result reference produced by the Node,
+// such as a commit or a workspace path.
+type ArtifactRef struct {
+	Kind string `json:"kind"`
+	Ref  string `json:"ref"`
+}
+
+func (r ArtifactRef) Validate() error {
+	if strings.TrimSpace(r.Kind) == "" || strings.TrimSpace(r.Ref) == "" {
+		return fmt.Errorf("core: artifact reference kind and ref are required")
+	}
+	return nil
+}
+
 // AttemptOutcomeEnvelope is the Node transport form of a terminal Attempt
 // observation. The durable core AttemptOutcome remains a separate record.
 type AttemptOutcomeEnvelope struct {
@@ -337,6 +393,7 @@ type AttemptOutcomeEnvelope struct {
 	ErrorMessage      string                `json:"error_message,omitempty"`
 	Diagnostics       string                `json:"diagnostics,omitempty"`
 	FailureCode       string                `json:"failure_code,omitempty"`
+	ArtifactRefs      []ArtifactRef         `json:"artifact_refs,omitempty"`
 	CorrelationID     string                `json:"correlation_id,omitempty"`
 	OccurredAt        time.Time             `json:"occurred_at"`
 }
@@ -356,6 +413,11 @@ func (o AttemptOutcomeEnvelope) Validate() error {
 	}
 	if o.Classification == OutcomeFinal && strings.TrimSpace(o.Summary) == "" {
 		return fmt.Errorf("core: final outcome summary is required")
+	}
+	for _, artifact := range o.ArtifactRefs {
+		if err := artifact.Validate(); err != nil {
+			return err
+		}
 	}
 	return nil
 }
