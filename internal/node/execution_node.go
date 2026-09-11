@@ -263,24 +263,47 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope) {
 }
 
 func (n *ExecutionNode) publishRuntimeActivity(envelope WorkerEnvelope, item Activity) {
-	kind := core.ActivityKindStatus
-	activity := core.Activity{Metadata: n.nextMetadata(envelope), Kind: kind, Status: item.Text}
-	switch item.Kind {
-	case ActivityText:
-		kind = core.ActivityKindAssistantTextDelta
-		activity.Kind = kind
-		activity.Text = item.Text
-	case ActivityTool:
-		kind = core.ActivityKindToolCall
-		activity.Kind = kind
-		activity.ToolCall = &core.ToolCall{Name: item.Text}
-	case ActivityStatus:
-		activity.Kind = kind
+	activity, ok := normalizeRuntimeActivity(item, n.nextMetadata(envelope), envelope.HarnessInstance.Capabilities)
+	if !ok {
+		return
 	}
 	if err := activity.ValidateFor(envelope.HarnessInstance); err != nil {
 		return
 	}
 	_, _ = n.store.QueueActivity(activity)
+}
+
+// NormalizeRuntimeActivity is the adapter boundary for normalized activity.
+// Unsupported or unknown runtime observations are never synthesized.
+func NormalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, capabilities core.HarnessCapabilities) (core.Activity, bool) {
+	return normalizeRuntimeActivity(item, metadata, capabilities)
+}
+
+// normalizeRuntimeActivity is intentionally allow-list based. An adapter event
+// with no normalized representation is dropped rather than turned into fake
+// status or progress.
+func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, capabilities core.HarnessCapabilities) (core.Activity, bool) {
+	var activity core.Activity
+	switch item.Kind {
+	case ActivityText:
+		if !capabilities.SupportsActivity(core.ActivityAssistantTextDelta) || strings.TrimSpace(item.Text) == "" {
+			return core.Activity{}, false
+		}
+		activity = core.Activity{Metadata: metadata, Kind: core.ActivityAssistantTextDelta, Text: item.Text}
+	case ActivityTool:
+		if !capabilities.SupportsActivity(core.ActivityToolCall) || strings.TrimSpace(item.Text) == "" {
+			return core.Activity{}, false
+		}
+		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolCall, ToolCall: &core.ToolCall{Name: item.Text}}
+	case ActivityStatus:
+		if !capabilities.SupportsActivity(core.ActivityStatus) || strings.TrimSpace(item.Text) == "" {
+			return core.Activity{}, false
+		}
+		activity = core.Activity{Metadata: metadata, Kind: core.ActivityStatus, Status: item.Text}
+	default:
+		return core.Activity{}, false
+	}
+	return activity, true
 }
 
 func (n *ExecutionNode) nextMetadata(envelope WorkerEnvelope) core.ActivityMetadata {
