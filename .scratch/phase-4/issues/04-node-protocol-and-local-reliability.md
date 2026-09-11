@@ -1,12 +1,12 @@
-# Node protocol and local reliability
+# 04 Node protocol and local reliability
 
 Type: task
-Status: ready-for-human
-Blocked by: 01, 02
+Status: ready-for-agent
+Blocked by: 01, 02, 04a
 
 ## Work
 
-Перестроить Execution Node как отдельный outbound runtime с явным protocol contract и локальной защитой от потери сети.
+Перестроить Execution Node как отдельный outbound runtime с typed protocol и локальной защитой от потери сети. Использовать static HarnessInstance contract из 04a, не изобретать новый inventory schema.
 
 - Определить authenticated typed WebSocket protocol для handshake, heartbeat, inventory, Dispatch, Activity и terminal Attempt events.
 - Реализовать server→Node commands: Dispatch, Cancel, Steering, Resume и generic `respond_worker { request_id, response }`.
@@ -25,4 +25,4 @@ Blocked by: 01, 02
 - Server получает terminal event через authenticated Node connection, даже если harness не знает адрес server.
 - Node restart восстанавливает command dedupe table и local session mappings.
 - Worker остаётся на исходном Node/HarnessInstance при offline, draining или reconnect.
-- Protocol тесты проверяют sequence, replay, auth failure и malformed messages.
+- Protocol tests используют HarnessInstance fixtures из 04a и проверяют sequence, replay, auth failure и malformed messages.

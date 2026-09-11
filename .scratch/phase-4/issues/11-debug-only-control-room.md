@@ -1,8 +1,8 @@
-# Debug-only Control Room
+# 11 Debug-only Control Room
 
 Type: task
-Status: ready-for-human
-Blocked by: 05, 06, 08, 09
+Status: ready-for-agent
+Blocked by: 05b, 06a, 06b, 08, 09
 
 ## Work
 

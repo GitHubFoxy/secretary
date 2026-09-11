@@ -1,8 +1,8 @@
-# Approval and input round trip
+# 08 Approval and input round trip
 
 Type: task
-Status: ready-for-human
-Blocked by: 04, 06
+Status: ready-for-agent
+Blocked by: 04, 06a, 06b
 
 ## Work
 

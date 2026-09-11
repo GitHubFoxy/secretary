@@ -1,7 +1,7 @@
-# Pi Client integration
+# 16 Pi Client integration
 
 Type: task
-Status: ready-for-human
+Status: ready-for-agent
 Blocked by: 09
 
 ## Work

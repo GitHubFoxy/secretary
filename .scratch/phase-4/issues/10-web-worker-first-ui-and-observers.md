@@ -1,15 +1,16 @@
-# Web Worker-first UI and observers
+# 10 Web Worker-first UI and observers
 
 Type: task
-Status: ready-for-human
-Blocked by: 03, 06, 09
+Status: ready-for-agent
+Blocked by: 03a, 03b, 06a, 09
 
 ## Work
 
-Обновить Web Client под Worker-first model и полноценный Secretary stream.
+Обновить Web Client под Worker-first model, user.md editor и полноценный Secretary stream.
 
 - В Personal Conversation показывать full Secretary live stream: text deltas, thinking summaries, tool calls и tool results.
 - Показывать Worker в основном разговоре как compact status, acknowledgement и terminal Result.
+- Добавить редактор external `user.md`, использующий `GET /v1/user` и `PUT /v1/user` с revision/error feedback.
 - Сделать основной список Workers вместо Tasks, с Project, Node, HarnessInstance, Turn status и explicit offline/blocked states.
 - Вынести полный Worker activity в отдельный observer.
 - Поддержать Worker actions Message, Stop, Approve, Follow-up и Close через общий API.
@@ -20,6 +21,7 @@ Blocked by: 03, 06, 09
 ## Acceptance
 
 - Main Conversation показывает Secretary stream и компактный Worker status согласно spec example.
+- Изменение preference в editor сохраняется в external `user.md`, а следующий Secretary turn его использует.
 - Worker observer показывает capability-dependent activity и не рисует отсутствующие events.
 - Attempt retries видны в diagnostic view, но в Conversation отображается один Result на Turn.
 - UI различает Saved, Accepted, Queued, Working, Waiting for approval, Needs input, Succeeded, Failed, Canceled и Interrupted.

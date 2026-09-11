@@ -1,8 +1,8 @@
-# Projects and workspace policy
+# 07 Projects and workspace policy
 
 Type: task
-Status: ready-for-human
-Blocked by: 01, 04
+Status: ready-for-agent
+Blocked by: 01, 04, 05b, 13a
 
 ## Work
 
@@ -14,6 +14,7 @@ Blocked by: 01, 04
 - Node проверяет mapping, workspace root и execution policy до принятия Dispatch.
 - Project policy поддерживает required capabilities и явные model/reasoning pins.
 - Изменение Project не переписывает snapshot уже созданного Worker.
+- Project policy не может обойти immutable Node/HarnessInstance binding.
 
 ## Acceptance
 
@@ -22,4 +23,4 @@ Blocked by: 01, 04
 - Dispatch в отсутствующий или запрещённый path завершается explicit error.
 - Worker сохраняет исходный Project/policy snapshot после reload и изменений registry.
 - Server не выполняет filesystem scan и не создаёт скрытые Projects.
-- Project policy не позволяет обойти immutable Node/HarnessInstance binding.
+- Resolver учитывает Project restrictions и не меняет binding уже созданного Worker.

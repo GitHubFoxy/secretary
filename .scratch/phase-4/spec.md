@@ -111,7 +111,7 @@ Runtime session является локальной деталью harness и ca
 
 ### 4.9. At-least-once delivery с idempotency
 
-Сбой сети может привести к повторной доставке, но не к повторному Conversation entry, Worker Turn, Attempt или Result. Намеренный retry создаёт новый Attempt того же Turn и не считается дубликатом. Side-effecting operations получают idempotency key и durable outcome.
+Сбой сети может привести к повторной доставке, но не к повторному Conversation entry, Worker Turn, Attempt или Result. Намеренный retry создаёт новый Attempt того же Turn и не считается дубликатом. Retry выполняется только внутренней server operation после terminal AttemptOutcome с явной классификацией `retryable`; uncertain execution никогда не retry-ится автоматически и получает `interrupted`. `retry_attempt` не входит в Secretary tools или Client API. Side-effecting operations получают idempotency key и durable outcome.
 
 ### 4.10. Client и Node имеют разные роли
 
@@ -167,7 +167,7 @@ Client разговаривает с Secretary. Node запускает Worker �
 
 ### AttemptOutcome
 
-Terminal outcome конкретного Attempt. Он хранит status `succeeded`, `failed`, `canceled` или `interrupted`, error или failure code, timestamps и диагностические данные. AttemptOutcome не является отдельной записью в Personal Conversation.
+Terminal outcome конкретного Attempt. Он хранит status `succeeded`, `failed`, `canceled` или `interrupted`, error или failure code, классификацию `retryable` или `final`, timestamps и диагностические данные. `retryable` допустим только при явном доказательстве adapter/server policy, что повтор безопасен. `final` закрывает Turn с соответствующим status и создаёт его единственный Result; `retryable` оставляет Turn открытым для internal `retry_attempt`. Uncertain execution всегда классифицируется как `final`/`interrupted`, а не как retryable. AttemptOutcome не является отдельной записью в Personal Conversation.
 
 ### Result
 
@@ -297,7 +297,7 @@ Pi Client входит в целевую поверхность Phase 4, но п
 Следующие решения считаются принятыми для Phase 4 и не должны заново открываться при разбиении на tickets:
 
 1. Worker является основной product entity. Task не является частью пользовательской модели.
-2. Worker сохраняется до explicit close. Каждый Attempt завершается AttemptOutcome, а каждый Turn получает один пользовательский Result.
+2. Worker сохраняется до explicit close. Каждый Attempt завершается AttemptOutcome, а каждый Turn получает один пользовательский Result. `final` outcome закрывает Turn; новый Attempt создаётся только внутренней server operation после доказанного terminal `retryable` outcome. Uncertain execution не retry-ится автоматически.
 3. Лимит применяется только к active Attempts. Idle Workers не расходуют execution capacity.
 4. Child Workers, parent Task и child Task отсутствуют в Secretary core. Subagents harness являются activity одного Worker.
 5. Server Worker record не хранит native runtime session id, а Worker/harness не получает server callback capability. Session mapping принадлежит Node; terminal events идут через authenticated Node connection.
@@ -346,6 +346,8 @@ Secretary context
 - новый runtime не должен молча продолжать старую работу без сохранённого Worker/Turn state.
 
 Secretary не получает автоматический shell access к Node. Для execution он использует server-owned lifecycle tools.
+
+`user.md` остаётся external Markdown file в user data directory. Server имеет durable revision и атомарный validated write; следующий Secretary turn читает актуальную revision. Изменение `user.md` не меняет уже сохранённые Worker policy snapshots.
 
 ## 10. Secretary behavior policy
 
@@ -430,7 +432,7 @@ close_worker
 - `close_worker` закрывает Worker после безопасной остановки;
 - `list_*` и `get_worker` возвращают только server-owned state.
 
-В Phase 4 нет Secretary tools `create_task`, `retry_dispatch`, `send_worker_message`, `queue_worker_message`, `request_approval` или child-worker tools.
+В Phase 4 нет Secretary tools `create_task`, `retry_dispatch`, `retry_attempt`, `send_worker_message`, `queue_worker_message`, `request_approval` или child-worker tools. `retry_attempt` существует только как server-internal operation с idempotency и не доступен Secretary или Client.
 
 `remember` и `search_history` остаются будущими extensions. `user.md`, summary и recent history являются MVP context sources без сложной retrieval system.
 
@@ -816,6 +818,8 @@ Telegram подключается из Web через одноразовый cod
 - важные events в General и соответствующий Worker Topic;
 - activity stream фильтруется до удобного текста;
 - rich tool cards остаются в Web и Pi;
+- Secretary text deltas и tool events агрегируются и throttle-ятся, а не создают отдельное Telegram message на каждый event;
+- Worker Topic получает compact status и readable activity без raw event spam;
 - Approval, failure, completion и offline Node не теряются;
 - follow-up внутри Worker Topic направляется тому же Worker.
 
@@ -998,6 +1002,15 @@ GET  /v1/conversation/ws?after_seq=N
 
 Если Worker уже создан до ответа, response содержит `worker_ref` и `turn_id`. Если нет, последующий durable event связывает сообщение с Worker.
 
+User context API:
+
+```text
+GET /v1/user
+PUT /v1/user
+```
+
+`PUT /v1/user` валидирует и атомарно сохраняет external `user.md`, возвращая новую revision. Следующий Secretary turn обязан использовать эту revision в context reconstruction.
+
 ### 17.3. Workers
 
 ```text
@@ -1148,7 +1161,7 @@ Server сначала сохраняет Conversation entry и dedupe key. Ес�
 
 ### 19.3. AttemptOutcome and Result
 
-Повторный terminal event для одного Attempt idempotent по `attempt_id` и возвращает тот же AttemptOutcome. Финальный Result idempotent по `(worker_ref, turn_id)`: повторная доставка не создаёт новый Result или Conversation entry. Intermediate AttemptOutcomes не публикуются как Results.
+Повторный terminal event для одного Attempt idempotent по `attempt_id` и возвращает тот же AttemptOutcome. `final` outcome закрывает Turn и создаёт Result; `retryable` outcome оставляет Turn открытым для internal `retry_attempt`. Внутренняя `retry_attempt` operation разрешена только после terminal `retryable` outcome и сама idempotent. Финальный Result idempotent по `(worker_ref, turn_id)`: повторная доставка не создаёт новый Result или Conversation entry. Intermediate AttemptOutcomes не публикуются как Results.
 
 ### 19.4. Server restart
 
@@ -1288,34 +1301,38 @@ Phase 4 считается готовой после прохождения сл
 4. Вручную зарегистрирован Project с разными path mappings.
 5. Web и Telegram видят одну Personal Conversation.
 6. Владелец отправляет задачу без указания harness.
-7. Secretary выбирает Project, Node и default `fx` для Worker, независимо от собственного Secretary harness.
-8. Создаётся один Worker и первый Turn. Отдельный Task entity не появляется в Client API.
-9. Пользователь видит acknowledgement до completion.
-10. Personal Conversation получает live Secretary events `secretary.turn.started`, text deltas, tool calls, tool results и `secretary.turn.finished`.
-11. Во время active Secretary turn второе обычное сообщение сохраняется в durable ordered queue и обрабатывается после текущего turn. Workers продолжают работать параллельно.
-12. Worker показывает только те normalized activity types, которые объявлены и реально поддержаны его HarnessInstance.
-13. Worker запрашивает Approval через Node и harness.
-14. Approval и `needs_input` разрешаются из другого Client через generic `respond_worker { request_id, response }`.
-15. Для одного Turn выполняются несколько Attempts: промежуточные AttemptOutcomes сохраняются для диагностики, но в Personal Conversation появляется только один Result по финальному состоянию Turn.
-16. Worker завершает Turn, а единственный Result появляется в Worker Topic и Personal Conversation.
-17. Владелец отправляет Follow-up, и тот же Worker получает новый Turn.
-18. Владелец отправляет явную задачу для Claude Code на MacBook.
-19. Владелец отправляет явную задачу для Codex на home server.
-20. Server перезапускается во время active Attempt.
-21. Node теряет сеть после завершения harness, но до подтверждения terminal event; после reconnect Node доставляет buffered activity и AttemptOutcome.
-22. Повторная server→Node command с тем же `command_id` возвращает сохранённый outcome и не запускает второй process или Attempt.
-23. Attempt получает корректное `interrupted` или восстанавливает доказанную native session на Node.
-24. Владелец через `message_worker` выбирает resume или создаёт Follow-up.
-25. Idle Worker не расходует active Attempt capacity.
-26. Worker остаётся привязан к исходному Node и HarnessInstance при offline или draining Node. Выполнение того же intent на другом Node создаётся как новый Worker.
-27. Internal subagent harness отображается как activity Worker, без child Worker в server state.
-28. Повторные inbound, action, terminal event и Result events не создают дубликаты.
-29. Revoked Client больше не может читать или менять state.
-30. Revoked Node больше не может принимать Dispatch.
-31. Offline Node оставляет Worker видимым и понятным.
-32. Telegram Topic соответствует правильному Worker.
-33. `go test ./...`, `go test -race ./...`, `go vet ./...` и frontend checks проходят.
-34. Реальные acceptance tests выполняются для `fx`, Claude Code и Codex. OpenCode проверяется отдельно, если заявлен установленным compatibility target.
+7. Без override Secretary выбирает `fx` как default Worker harness, независимо от собственного Secretary harness.
+8. Явный выбор Claude Code направляет Worker в Claude Code на MacBook.
+9. Явный model ID, которого нет в selected HarnessInstance inventory, даёт visible error и не переключается на `fx`.
+10. Создаётся один Worker и первый Turn. Отдельный Task entity не появляется в Client API.
+11. Пользователь меняет external `user.md`, и следующий Secretary turn видит новую preference через context reconstruction.
+12. Пользователь видит acknowledgement до completion.
+13. Personal Conversation получает live Secretary events `secretary.turn.started`, text deltas, tool calls, tool results и `secretary.turn.finished`.
+14. Во время active Secretary turn второе обычное сообщение сохраняется в durable ordered queue и обрабатывается после текущего turn. Workers продолжают работать параллельно.
+15. Worker показывает только те normalized activity types, которые объявлены и реально поддержаны его HarnessInstance.
+16. Worker запрашивает Approval через Node и harness.
+17. Approval и `needs_input` разрешаются из другого Client через generic `respond_worker { request_id, response }`.
+18. Для одного Turn выполняются несколько Attempts: промежуточные AttemptOutcomes сохраняются для диагностики, но в Personal Conversation появляется только один Result по финальному состоянию Turn.
+19. Terminal Worker Result попадает напрямую в Personal Conversation и Worker Topic без дополнительного Secretary model turn.
+20. Следующий Secretary turn получает этот Result через `unseen Worker Results` в context reconstruction.
+21. Владелец отправляет Follow-up, и тот же Worker получает новый Turn.
+22. Владелец отправляет явную задачу для Codex на home server.
+23. Server перезапускается во время active Attempt.
+24. Node теряет сеть после завершения harness, но до подтверждения terminal event; после reconnect Node доставляет buffered activity и AttemptOutcome.
+25. Повторная server→Node command с тем же `command_id` возвращает сохранённый outcome и не запускает второй process или Attempt.
+26. Attempt получает корректное `interrupted` или восстанавливает доказанную native session на Node.
+27. Владелец через `message_worker` выбирает resume или создаёт Follow-up.
+28. Idle Worker не расходует active Attempt capacity.
+29. Worker остаётся привязан к исходному Node и HarnessInstance при offline или draining Node. Выполнение того же intent на другом Node создаётся как новый Worker.
+30. Internal subagent harness отображается как activity Worker, без child Worker в server state.
+31. Внутренняя `retry_attempt` создаёт новый Attempt только после terminal `retryable` AttemptOutcome; uncertain execution не retry-ится автоматически.
+32. Повторные inbound, action, terminal event и Result events не создают дубликаты.
+33. Revoked Client больше не может читать или менять state.
+34. Revoked Node больше не может принимать Dispatch.
+35. Offline Node оставляет Worker видимым и понятным.
+36. Telegram Topic соответствует правильному Worker и не получает отдельное сообщение на каждый Secretary delta или raw Worker event.
+37. `go test ./...`, `go test -race ./...`, `go vet ./...` и frontend checks проходят.
+38. Реальные acceptance tests выполняются для `fx`, Claude Code и Codex. OpenCode проверяется отдельно, если заявлен установленным compatibility target.
 
 Pi Client считается принятым после прохождения общего Client API, pairing, Conversation replay, Worker observe, message, cancel и Approval flow.
 
@@ -1348,10 +1365,11 @@ Pi Client считается принятым после прохождения 
 - отсутствие child Workers в Secretary core;
 - отсутствие native runtime session id в server Worker record;
 - immutable Worker binding к Node и HarnessInstance;
-- context reconstruction Secretary identity;
+- context reconstruction Secretary identity и durable `user.md` revision;
 - полный Secretary stream, один активный Secretary turn и durable input queue;
 - HarnessInstance inventory, model policy и capability-dependent activity;
 - независимые Secretary и Worker harness policies;
+- internal retry rule для terminal `retryable` AttemptOutcome без public retry tool;
 - Node `respond_worker`, durable event outbox и command dedupe;
 - обязательные MVP harnesses: `fx`, Claude Code и Codex;
 - Web и Telegram MVP;
@@ -1363,4 +1381,4 @@ Pi Client считается принятым после прохождения 
 - acceptance scenario;
 - fixed decisions из раздела 8.
 
-Этот документ намеренно не содержит implementation tickets. После review можно создать отдельный Phase 4 map и разбить только подтверждённую модель. До этого новые функции не добавляются только потому, что они есть в Hermes, OpenClaw или другом агентском продукте.
+Этот документ намеренно не содержит implementation tickets. Tickets вынесены в отдельные файлы `.scratch/phase-4/issues/` и должны следовать только подтверждённой модели. Новые функции не добавляются только потому, что они есть в Hermes, OpenClaw или другом агентском продукте.
