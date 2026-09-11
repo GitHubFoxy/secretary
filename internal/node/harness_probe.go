@@ -380,10 +380,32 @@ func parseObservedReasoning(output string) []core.ObservedReasoningLevel {
 		return levels
 	}
 
-	values := parseObservedValues(output, "reasoning", "levels")
-	levels := make([]core.ObservedReasoningLevel, 0, len(values))
-	for _, value := range values {
-		levels = append(levels, core.ObservedReasoningLevel(value))
+	seen := map[core.ObservedReasoningLevel]struct{}{}
+	levels := make([]core.ObservedReasoningLevel, 0)
+	for _, raw := range strings.Split(output, "\n") {
+		line := strings.TrimSpace(raw)
+		lower := strings.ToLower(line)
+		matched := false
+		for _, prefix := range []string{"reasoning", "levels"} {
+			if strings.HasPrefix(lower, prefix+":") {
+				line = strings.TrimSpace(line[len(prefix)+1:])
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		for _, value := range strings.FieldsFunc(line, func(r rune) bool { return r == ',' || r == ';' || r == '|' }) {
+			level := core.ObservedReasoningLevel(strings.Trim(strings.TrimSpace(value), "\"'"))
+			if level == "" {
+				continue
+			}
+			if _, ok := seen[level]; !ok {
+				seen[level] = struct{}{}
+				levels = append(levels, level)
+			}
+		}
 	}
 	return levels
 }
