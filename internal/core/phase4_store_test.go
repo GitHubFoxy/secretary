@@ -78,6 +78,10 @@ func TestPhase4RetryHasOneOutcomePerAttemptAndOneResultPerTurn(t *testing.T) {
 	if err != nil || !duplicate {
 		t.Fatalf("duplicate final outcome duplicate=%v err=%v", duplicate, err)
 	}
+	repeatedRetryAfterCompletion, err := store.RetryAttempt(ctx, turn.ID)
+	if err != nil || repeatedRetryAfterCompletion.ID != second.ID {
+		t.Fatalf("late repeated retry=%#v err=%v", repeatedRetryAfterCompletion, err)
+	}
 	storedTurn, err := store.Turn(ctx, turn.ID)
 	if err != nil || storedTurn.State != TurnSucceeded || storedTurn.ResultID != finalResult.ID {
 		t.Fatalf("stored turn=%#v err=%v", storedTurn, err)
@@ -100,8 +104,8 @@ func TestPhase4RetryHasOneOutcomePerAttemptAndOneResultPerTurn(t *testing.T) {
 	if outcomes != 2 || results != 1 {
 		t.Fatalf("outcomes=%d results=%d", outcomes, results)
 	}
-	if _, err := store.RetryAttempt(ctx, turn.ID); !errors.Is(err, ErrInvalidTransition) {
-		t.Fatalf("retry after final err=%v", err)
+	if _, err := store.RetryAttempt(ctx, turn.ID, "new-retry-after-final"); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("new retry after final err=%v", err)
 	}
 }
 
@@ -205,7 +209,7 @@ func TestPhase4CloseWorkerRequiresTerminalTurnAndIsIdempotent(t *testing.T) {
 	if _, err := store.CloseWorker(ctx, worker.ID); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("close active worker err=%v", err)
 	}
-	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeCanceled, Classification: OutcomeFinal, Summary: "stopped"}); err != nil {
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeCanceled, Classification: OutcomeFinal, FailureCode: "canceled", Summary: "stopped"}); err != nil {
 		t.Fatal(err)
 	}
 	closed, err := store.CloseWorker(ctx, worker.ID)
@@ -318,7 +322,7 @@ func TestPhase4RecoveryCreatesExplicitInterruptedResultAndBackup(t *testing.T) {
 	if err := store.RecoverInterrupted(ctx); err != nil {
 		t.Fatal(err)
 	}
-	outcome, result, duplicate, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeInterrupted, Classification: OutcomeFinal, Summary: "uncertain"})
+	outcome, result, duplicate, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeInterrupted, Classification: OutcomeFinal, FailureCode: "runtime_session_uncertain", Summary: "uncertain"})
 	if err != nil || !duplicate || outcome.Status != OutcomeInterrupted || result == nil {
 		t.Fatalf("repeated recovery outcome=%#v result=%#v duplicate=%v err=%v", outcome, result, duplicate, err)
 	}

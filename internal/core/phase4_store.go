@@ -264,6 +264,12 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 	if input.Classification == OutcomeFinal && strings.TrimSpace(input.Summary) == "" {
 		return AttemptOutcome{}, nil, false, errors.New("core: final outcome summary is required")
 	}
+	if input.Classification == OutcomeFinal && input.Status != OutcomeSucceeded && strings.TrimSpace(input.FailureCode) == "" {
+		input.FailureCode = strings.TrimSpace(input.ErrorCode)
+		if input.FailureCode == "" {
+			return AttemptOutcome{}, nil, false, errors.New("core: final non-success outcome failure code is required")
+		}
+	}
 	var committedEntry ConversationEntry
 	returnValue, err := withTx(s, ctx, func(tx *sql.Tx) (struct {
 		outcome AttemptOutcome
@@ -450,6 +456,16 @@ func (s *Store) retryAttempt(ctx context.Context, turnID, idempotencyKey string)
 		turn, err := getTurn(ctx, tx, turnID)
 		if err != nil {
 			return Phase4Attempt{}, err
+		}
+		if idempotencyKey == "" && (turn.State.Terminal() || turn.ResultID != "") {
+			var storedAttemptID string
+			err := tx.QueryRowContext(ctx, `SELECT attempt_id FROM phase4_retry_operations WHERE turn_id = ? ORDER BY created_at DESC, idempotency_key DESC LIMIT 1`, turnID).Scan(&storedAttemptID)
+			if err == nil {
+				return getPhase4Attempt(ctx, tx, storedAttemptID)
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return Phase4Attempt{}, err
+			}
 		}
 		if turn.State.Terminal() || turn.ResultID != "" {
 			return Phase4Attempt{}, ErrInvalidTransition
