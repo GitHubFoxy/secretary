@@ -85,6 +85,23 @@ func main() {
 		log.Fatalf("initialize web API: %v", err)
 	}
 	web.SetDebug(*debug)
+
+	var remoteNodes *node.ServerManager
+	nodePairingToken := strings.TrimSpace(os.Getenv("SECRETARY_NODE_PAIRING_TOKEN"))
+	nodeAdminToken := strings.TrimSpace(os.Getenv("SECRETARY_NODE_ADMIN_TOKEN"))
+	switch {
+	case nodePairingToken == "" && nodeAdminToken == "":
+		log.Printf("remote Node service disabled; set SECRETARY_NODE_PAIRING_TOKEN and SECRETARY_NODE_ADMIN_TOKEN to enable it")
+	case nodePairingToken == "" || nodeAdminToken == "":
+		log.Fatal("SECRETARY_NODE_PAIRING_TOKEN and SECRETARY_NODE_ADMIN_TOKEN must be configured together")
+	default:
+		remoteNodes, err = node.NewServerManager(context.Background(), store, nodePairingToken, nodeAdminToken)
+		if err != nil {
+			log.Fatalf("initialize remote Node service: %v", err)
+		}
+		log.Printf("remote Node pairing and protocol service enabled")
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	reloads := make(chan os.Signal, 1)
@@ -232,6 +249,16 @@ func main() {
 	staticHandler := webclient.Handler()
 	controlStaticHandler := webclient.ControlHandler()
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if remoteNodes != nil {
+			if r.URL.Path == "/v1/nodes/connect" {
+				remoteNodes.ServeProtocolHTTP(w, r)
+				return
+			}
+			if r.URL.Path == "/v1/nodes" || strings.HasPrefix(r.URL.Path, "/v1/nodes/") {
+				remoteNodes.ServeHTTP(w, r)
+				return
+			}
+		}
 		if strings.HasPrefix(r.URL.Path, "/v1/control/") {
 			if !*debug {
 				http.NotFound(w, r)
