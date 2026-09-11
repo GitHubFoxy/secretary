@@ -142,6 +142,63 @@ func TestStoreEventSinkDurablyAcceptsActivityAndTerminalOutcome(t *testing.T) {
 	}
 }
 
+func TestHistoricalActivityReplayUsesImmutableBindingNotCurrentInventory(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := core.WorkerSpec{WorkerRef: "replay-worker", Title: "replay", Intent: "run", ProjectID: "project", NodeID: "replay-node", HarnessInstanceID: "replay-node/fx"}
+	worker, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, spec, core.TurnSpec{Input: "run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	oldInventory := daemonInventoryFixture("replay-node")
+	if _, err := store.EnrollNode(ctx, "replay-node"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkNodeConnected(ctx, "replay-node", oldInventory); err != nil {
+		t.Fatal(err)
+	}
+	instance := oldInventory.Instances[0]
+	activity := core.Activity{Metadata: core.ActivityMetadata{EventID: "replay-activity", Node: "replay-node", HarnessInstanceID: instance.ID, WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, Sequence: 1, ObservedAt: time.Now().UTC()}, Kind: core.ActivityStatus, Status: "working"}
+	sink := NewStoreEventSink(store)
+	if err := store.UpdateNodeInventory(ctx, "replay-node", core.HarnessInventorySnapshot{Node: "replay-node", ObservedAt: time.Now().UTC()}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink(ctx, NodeEvent{EventID: activity.Metadata.EventID, Node: "replay-node", Kind: "activity", Activity: &activity}); err != nil {
+		t.Fatalf("historical activity was rejected after inventory refresh: %v", err)
+	}
+	wrongBinding := activity
+	wrongBinding.Metadata.WorkerRef = "other-worker"
+	if err := sink(ctx, NodeEvent{EventID: "replay-wrong-binding", Node: "replay-node", Kind: "activity", Activity: &wrongBinding}); err == nil {
+		t.Fatal("activity with wrong immutable binding was accepted")
+	}
+	terminal := core.AttemptOutcomeEnvelope{EventID: "replay-terminal", Node: "replay-node", HarnessInstanceID: instance.ID, WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "done", OccurredAt: time.Now().UTC()}
+	terminalEvent := NodeEvent{EventID: terminal.EventID, Node: terminal.Node, Kind: "attempt.outcome", Outcome: &terminal}
+	if err := sink(ctx, terminalEvent); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink(ctx, terminalEvent); err != nil {
+		t.Fatalf("duplicate terminal event was not idempotent: %v", err)
+	}
+	entries, err := store.EntriesAfter(ctx, conversation.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Body != "done" {
+		t.Fatalf("terminal event did not reach conversation once: %#v", entries)
+	}
+}
+
 func TestTerminalOutcomeUsesProductionSinkAndReachesConversation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()

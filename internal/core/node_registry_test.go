@@ -40,7 +40,12 @@ func TestNodeRegistryLifecycleAndTransportSecretPersist(t *testing.T) {
 	if err := store.MarkNodeConnected(ctx, "macbook", inventory); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.UpdateNodeHeartbeat(ctx, "macbook", inventory); err != nil {
+	heartbeat := NodeHeartbeat{
+		Capacity:             4,
+		ActiveAttempts:       []NodeActiveAttempt{{WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1"}},
+		LastProcessedCommand: "command-1",
+	}
+	if err := store.UpdateNodeHeartbeat(ctx, "macbook", inventory, heartbeat); err != nil {
 		t.Fatal(err)
 	}
 	record, err = store.NodeRecord(ctx, "macbook")
@@ -49,6 +54,9 @@ func TestNodeRegistryLifecycleAndTransportSecretPersist(t *testing.T) {
 	}
 	if !record.Online || record.LastHeartbeatAt.IsZero() || record.Inventory.Node != "macbook" || len(record.Inventory.Instances) != 1 {
 		t.Fatalf("heartbeat was not persisted: %#v", record)
+	}
+	if record.Capacity != 4 || record.LastProcessedCommand != "command-1" || len(record.ActiveAttempts) != 1 || record.ActiveAttempts[0].AttemptID != "attempt-1" {
+		t.Fatalf("durable heartbeat state=%#v", record)
 	}
 
 	record, err = store.SetNodeDraining(ctx, "macbook", true)
@@ -121,7 +129,7 @@ func TestNodeRegistryMarksConnectedNodesOfflineOnServerRestart(t *testing.T) {
 
 func registryInventoryFixture(node NodeReference, observedAt time.Time) HarnessInventorySnapshot {
 	return HarnessInventorySnapshot{
-		Node: node,
+		Node:       node,
 		ObservedAt: observedAt,
 		Instances: []HarnessInstance{{
 			ID: HarnessInstanceID(string(node) + "/fx"), Node: node, Kind: HarnessFX, Version: "1.2.3",

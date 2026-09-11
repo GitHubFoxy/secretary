@@ -3,8 +3,10 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -48,6 +50,76 @@ func TestAuthenticatedWebSocketReplaysTypedNodeEventAndAcknowledgesSequence(t *t
 	case <-time.After(time.Second):
 		t.Fatal("server did not receive event")
 	}
+}
+
+func TestConcurrentSendCommandSerializesSequenceAndWireOrder(t *testing.T) {
+	auth := NewAuthenticator([]byte("sequence-secret"))
+	const commandCount = 128
+	done := make(chan error, 1)
+	handler := &concurrentCommandHandler{count: commandCount, done: done}
+	server := &ProtocolServer{Auth: auth, Handler: handler}
+	httpServer := httptest.NewServer(server)
+	defer httpServer.Close()
+	fixture := dispatchFixture("sequence-0").Dispatch.Envelope.HarnessInstance
+	handshake := Handshake{Node: "macbook", ProtocolVersion: ProtocolVersion, Inventory: core.HarnessInventorySnapshot{Node: "macbook", Instances: []core.HarnessInstance{fixture}, ObservedAt: time.Now().UTC()}, Nonce: "nonce"}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	connection, err := DialProtocol(ctx, "ws"+strings.TrimPrefix(httpServer.URL, "http"), "macbook", auth, handshake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+
+	sequences := make([]uint64, 0, commandCount+1)
+	for i := 0; i < commandCount+1; i++ {
+		if _, receiveErr := connection.ReceiveCommand(ctx); receiveErr != nil {
+			t.Fatalf("receive command %d: %v", i, receiveErr)
+		}
+		sequences = append(sequences, connection.outbound.Last())
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	for i, sequence := range sequences {
+		if sequence != uint64(i+1) {
+			t.Fatalf("wire sequence at position %d = %d, want %d; all=%v", i, sequence, i+1, sequences)
+		}
+	}
+}
+
+type concurrentCommandHandler struct {
+	count int
+	done  chan<- error
+}
+
+func (h *concurrentCommandHandler) HandleNodeHandshake(_ context.Context, handshake Handshake) (HandshakeAccepted, error) {
+	return HandshakeAccepted{Node: handshake.Node, ProtocolVersion: ProtocolVersion}, nil
+}
+
+func (h *concurrentCommandHandler) HandleNodeConnection(connection *ProtocolConnection) {
+	go func() {
+		var group sync.WaitGroup
+		errorsCh := make(chan error, h.count+1)
+		for i := 0; i < h.count; i++ {
+			group.Add(1)
+			go func(index int) {
+				defer group.Done()
+				command := dispatchFixture(fmt.Sprintf("sequence-%03d", index))
+				errorsCh <- connection.SendCommand(context.Background(), command)
+			}(i)
+		}
+		group.Wait()
+		final := dispatchFixture("sequence-final")
+		errorsCh <- connection.SendCommand(context.Background(), final)
+		close(errorsCh)
+		for err := range errorsCh {
+			if err != nil {
+				h.done <- err
+				return
+			}
+		}
+		h.done <- nil
+	}()
 }
 
 type nodeProtocolTestHandler struct{ events chan NodeEvent }

@@ -29,6 +29,41 @@ func TestServerProtocolRefusesNodeEventWithoutSink(t *testing.T) {
 	}
 }
 
+func TestHeartbeatTelemetryIsAvailableToServerStatusAndResolver(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "heartbeat.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	manager, err := NewServerManager(ctx, store, "heartbeat-pair", "heartbeat-admin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnrollNode(ctx, "heartbeat-node"); err != nil {
+		t.Fatal(err)
+	}
+	inventory := daemonInventoryFixture("heartbeat-node")
+	if err := store.MarkNodeConnected(ctx, "heartbeat-node", inventory); err != nil {
+		t.Fatal(err)
+	}
+	handler := &serverProtocolHandler{manager: manager, expected: "heartbeat-node"}
+	if err := handler.HandleNodeHeartbeat(ctx, Heartbeat{
+		Node: "heartbeat-node", Online: true, Capacity: 3,
+		ActiveAttempts:       []ActiveAttempt{{WorkerRef: "worker", TurnID: "turn", AttemptID: "attempt"}},
+		LastProcessedCommand: "command-42", Inventory: inventory,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := manager.Status(ctx, "heartbeat-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Capacity != 3 || status.LastProcessedCommand != "command-42" || len(status.ActiveAttempts) != 1 || status.ActiveAttempts[0].AttemptID != "attempt" {
+		t.Fatalf("server heartbeat status=%#v", status)
+	}
+}
+
 func TestNodeBecomesOnlineOnlyAfterAcceptedProtocolConnection(t *testing.T) {
 	ctx := context.Background()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
@@ -48,7 +83,7 @@ func TestNodeBecomesOnlineOnlyAfterAcceptedProtocolConnection(t *testing.T) {
 	handshake := Handshake{
 		Node: "macbook", ProtocolVersion: ProtocolVersion,
 		Inventory: daemonInventoryFixture("macbook"),
-		Nonce: "nonce", NonceSignature: "signature",
+		Nonce:     "nonce", NonceSignature: "signature",
 	}
 	if _, err := handler.HandleNodeHandshake(ctx, handshake); err != nil {
 		t.Fatal(err)

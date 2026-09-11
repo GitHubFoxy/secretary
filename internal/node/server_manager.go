@@ -33,15 +33,18 @@ type EnrollmentResponse struct {
 }
 
 type ServerNodeStatus struct {
-	Node               core.NodeReference            `json:"node"`
-	Online             bool                          `json:"online"`
-	Draining           bool                          `json:"draining"`
-	Revoked            bool                          `json:"revoked"`
-	EnrolledAt         time.Time                     `json:"enrolled_at"`
-	LastSeenAt         time.Time                     `json:"last_seen_at,omitempty"`
-	LastHeartbeatAt    time.Time                     `json:"last_heartbeat_at,omitempty"`
-	Inventory          core.HarnessInventorySnapshot `json:"inventory,omitempty"`
-	LastCommandOutcome *CommandOutcome               `json:"last_command_outcome,omitempty"`
+	Node                 core.NodeReference            `json:"node"`
+	Online               bool                          `json:"online"`
+	Draining             bool                          `json:"draining"`
+	Revoked              bool                          `json:"revoked"`
+	EnrolledAt           time.Time                     `json:"enrolled_at"`
+	LastSeenAt           time.Time                     `json:"last_seen_at,omitempty"`
+	LastHeartbeatAt      time.Time                     `json:"last_heartbeat_at,omitempty"`
+	Capacity             int                           `json:"capacity"`
+	ActiveAttempts       []core.NodeActiveAttempt      `json:"active_attempts,omitempty"`
+	LastProcessedCommand string                        `json:"last_processed_command,omitempty"`
+	Inventory            core.HarnessInventorySnapshot `json:"inventory,omitempty"`
+	LastCommandOutcome   *CommandOutcome               `json:"last_command_outcome,omitempty"`
 }
 
 // ServerManager owns server-side Node enrollment and live protocol connections.
@@ -294,7 +297,8 @@ func (m *ServerManager) Status(ctx context.Context, nodeRef core.NodeReference) 
 func (m *ServerManager) statusFor(record core.NodeRecord) ServerNodeStatus {
 	status := ServerNodeStatus{
 		Node: record.Node, Online: record.Online, Draining: record.Draining, Revoked: record.Revoked,
-		EnrolledAt: record.EnrolledAt, LastSeenAt: record.LastSeenAt, LastHeartbeatAt: record.LastHeartbeatAt, Inventory: record.Inventory,
+		EnrolledAt: record.EnrolledAt, LastSeenAt: record.LastSeenAt, LastHeartbeatAt: record.LastHeartbeatAt,
+		Capacity: record.Capacity, ActiveAttempts: record.ActiveAttempts, LastProcessedCommand: record.LastProcessedCommand, Inventory: record.Inventory,
 	}
 	m.mu.Lock()
 	if outcome, ok := m.outcomes[record.Node]; ok {
@@ -508,7 +512,9 @@ func (h *serverProtocolHandler) HandleNodeHeartbeat(ctx context.Context, heartbe
 	if heartbeat.Node != h.expected {
 		return errors.New("node server: heartbeat identity mismatch")
 	}
-	return h.manager.store.UpdateNodeHeartbeat(ctx, h.expected, heartbeat.Inventory)
+	return h.manager.store.UpdateNodeHeartbeat(ctx, h.expected, heartbeat.Inventory, core.NodeHeartbeat{
+		Capacity: heartbeat.Capacity, ActiveAttempts: heartbeat.ActiveAttempts, LastProcessedCommand: heartbeat.LastProcessedCommand,
+	})
 }
 
 func (h *serverProtocolHandler) HandleNodeInventory(ctx context.Context, inventory core.HarnessInventorySnapshot) error {

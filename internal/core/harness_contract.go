@@ -377,6 +377,23 @@ func (a Activity) Validate(capabilities HarnessCapabilities) error {
 	if !capabilities.SupportsActivity(capability) {
 		return fmt.Errorf("core: activity %q is not observed by this HarnessInstance", a.Kind)
 	}
+	return a.validatePayload()
+}
+
+// ValidatePayload checks the normalized kind and matching payload without
+// consulting mutable current inventory. Replay uses this for events observed
+// under an older HarnessInstance capability snapshot.
+func (a Activity) ValidatePayload() error {
+	if err := a.Metadata.Validate(); err != nil {
+		return err
+	}
+	if _, ok := activityCapabilityFor(a.Kind); !ok {
+		return fmt.Errorf("core: unknown activity kind %q", a.Kind)
+	}
+	return a.validatePayload()
+}
+
+func (a Activity) validatePayload() error {
 	switch a.Kind {
 	case ActivityKindThinkingSummary, ActivityKindAssistantTextDelta:
 		if strings.TrimSpace(a.Text) == "" {

@@ -292,12 +292,17 @@ func (c *ProtocolConnection) SendCommand(ctx context.Context, command Command) e
 	if err != nil {
 		return err
 	}
+	// Sequence allocation must share the same mutex as envelope creation and
+	// socket write. Otherwise concurrent SendCommand calls can race and put a
+	// lower sequence on the wire after a higher one.
+	c.writes.Lock()
+	defer c.writes.Unlock()
 	c.nextSequence++
 	envelope, err := NewEnvelope(kind, c.node, c.nextSequence, 0, encoded, c.auth)
 	if err != nil {
 		return err
 	}
-	return c.write(ctx, envelope)
+	return c.writeLocked(ctx, envelope)
 }
 
 func (c *ProtocolConnection) writeAck(ctx context.Context, sequence uint64) error {
@@ -319,12 +324,16 @@ func (c *ProtocolConnection) read(ctx context.Context) ([]byte, error) {
 	return data, err
 }
 func (c *ProtocolConnection) write(ctx context.Context, envelope Envelope) error {
+	c.writes.Lock()
+	defer c.writes.Unlock()
+	return c.writeLocked(ctx, envelope)
+}
+
+func (c *ProtocolConnection) writeLocked(ctx context.Context, envelope Envelope) error {
 	encoded, err := json.Marshal(envelope)
 	if err != nil {
 		return err
 	}
-	c.writes.Lock()
-	defer c.writes.Unlock()
 	return c.conn.Write(ctx, websocket.MessageText, encoded)
 }
 
