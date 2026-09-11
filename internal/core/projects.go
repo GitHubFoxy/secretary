@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -88,6 +89,8 @@ func (p ProjectPolicy) execution() ExecutionPolicy {
 	return result
 }
 
+func (p ProjectPolicy) EffectiveExecution() ExecutionPolicy { return p.execution() }
+
 func (p ProjectPolicy) modelPin() string {
 	if p.ModelID != "" {
 		return p.ModelID
@@ -119,6 +122,26 @@ func containsExecution(values []ExecutionCapability, want ExecutionCapability) b
 		}
 	}
 	return false
+}
+
+func knownExecutionCapability(capability ExecutionCapability) bool {
+	switch capability {
+	case CapabilityShell, CapabilityEdit, CapabilityCancel, CapabilitySteering, CapabilityApprovals:
+		return true
+	default:
+		return false
+	}
+}
+
+func knownActivityCapability(capability ActivityCapability) bool {
+	switch capability {
+	case ActivitySessionStarted, ActivityThinkingSummary, ActivityAssistantTextDelta, ActivityToolCall, ActivityToolResult,
+		ActivitySubagentStarted, ActivitySubagentProgress, ActivitySubagentCompleted, ActivityPermissionRequest,
+		ActivityUserInputRequest, ActivityProgress, ActivityStatus, ActivityAttemptOutcome:
+		return true
+	default:
+		return false
+	}
 }
 
 // Project is a manually managed registry record. Its paths are metadata, not
@@ -174,6 +197,17 @@ func (p ProjectSpec) project() Project {
 func (p Project) Validate() error {
 	if strings.TrimSpace(p.ID) == "" || strings.TrimSpace(p.Name) == "" {
 		return fmt.Errorf("%w: id and name are required", ErrProjectValidation)
+	}
+	if strings.ContainsAny(p.ID, "/\\\\") {
+		return fmt.Errorf("%w: id must not contain path separators", ErrProjectValidation)
+	}
+	if err := validatePolicyAliases(p.Policy); err != nil {
+		return fmt.Errorf("%w: %v", ErrProjectValidation, err)
+	}
+	for _, mapping := range p.Mappings {
+		if mapping.Node != "" && mapping.NodeID != "" && mapping.Node != NodeReference(strings.TrimSpace(mapping.NodeID)) {
+			return fmt.Errorf("%w: mapping Node aliases conflict", ErrProjectValidation)
+		}
 	}
 	if len(p.Name) > 200 || len(p.Description) > 10000 {
 		return fmt.Errorf("%w: name or description is too long", ErrProjectValidation)
@@ -232,14 +266,47 @@ func validateRootPath(path string) error {
 	}
 	return nil
 }
+func validatePolicyAliases(policy ProjectPolicy) error {
+	if policy.ModelID != "" && policy.Model != "" && policy.ModelID != policy.Model {
+		return errors.New("model and model_id policy aliases conflict")
+	}
+	if policy.DefaultNode != "" && policy.DefaultNodePolicy.Default != "" && policy.DefaultNode != policy.DefaultNodePolicy.Default {
+		return errors.New("default Node policy aliases conflict")
+	}
+	if len(policy.RequiredCapabilities) > 0 && len(policy.RequiredExecutionCapabilities) > 0 && !reflect.DeepEqual(policy.RequiredCapabilities, policy.RequiredExecutionCapabilities) {
+		return errors.New("required capability policy aliases conflict")
+	}
+	if executionPolicyAliasesConflict(policy.Execution, policy.ExecutionPolicy) {
+		return errors.New("execution policy aliases conflict")
+	}
+	return nil
+}
+
+func executionPolicyAliasesConflict(first, second ExecutionPolicy) bool {
+	if first.WorkspaceRoot != "" && second.WorkspaceRoot != "" && first.WorkspaceRoot != second.WorkspaceRoot {
+		return true
+	}
+	if len(first.AllowedCapabilities) > 0 && len(second.AllowedCapabilities) > 0 && !reflect.DeepEqual(first.AllowedCapabilities, second.AllowedCapabilities) {
+		return true
+	}
+	return len(first.DeniedCapabilities) > 0 && len(second.DeniedCapabilities) > 0 && !reflect.DeepEqual(first.DeniedCapabilities, second.DeniedCapabilities)
+}
+
 func validatePolicyValues(policy ProjectPolicy) error {
 	execution := policy.execution()
 	seenExecutionPolicy := map[ExecutionCapability]bool{}
 	for _, capability := range append(append([]ExecutionCapability(nil), execution.AllowedCapabilities...), execution.DeniedCapabilities...) {
-		if capability == "" || seenExecutionPolicy[capability] {
-			return errors.New("invalid or duplicate execution policy capability")
+		if capability == "" || !knownExecutionCapability(capability) || seenExecutionPolicy[capability] {
+			return errors.New("invalid, unknown or duplicate execution policy capability")
 		}
 		seenExecutionPolicy[capability] = true
+	}
+	for _, capability := range execution.AllowedCapabilities {
+		for _, denied := range execution.DeniedCapabilities {
+			if capability == denied {
+				return fmt.Errorf("capability %q is both allowed and denied", capability)
+			}
+		}
 	}
 	seenKinds := map[HarnessKind]bool{}
 	for _, kind := range policy.AllowedHarnessKinds {
@@ -257,15 +324,15 @@ func validatePolicyValues(policy ProjectPolicy) error {
 	}
 	seenCaps := map[ExecutionCapability]bool{}
 	for _, cap := range policy.requiredExecution() {
-		if cap == "" || seenCaps[cap] {
-			return errors.New("invalid or duplicate required execution capability")
+		if cap == "" || !knownExecutionCapability(cap) || seenCaps[cap] {
+			return errors.New("invalid, unknown or duplicate required execution capability")
 		}
 		seenCaps[cap] = true
 	}
 	seenActivity := map[ActivityCapability]bool{}
 	for _, cap := range policy.RequiredActivityCapabilities {
-		if cap == "" || seenActivity[cap] {
-			return errors.New("invalid or duplicate required activity capability")
+		if cap == "" || !knownActivityCapability(cap) || seenActivity[cap] {
+			return errors.New("invalid, unknown or duplicate required activity capability")
 		}
 		seenActivity[cap] = true
 	}
@@ -303,6 +370,9 @@ func (p Project) ValidateDispatch(node NodeReference, instance HarnessInstance, 
 	if !ok {
 		return ProjectSnapshot{}, fmt.Errorf("%w: %s", ErrProjectMappingMissing, node)
 	}
+	if instance.Node != node {
+		return ProjectSnapshot{}, fmt.Errorf("%w: HarnessInstance belongs to Node %q, selected Node is %q", ErrProjectPolicyDenied, instance.Node, node)
+	}
 	if workspace == "" {
 		workspace = mapping.Path
 	}
@@ -332,9 +402,11 @@ func (p Project) ValidateDispatch(node NodeReference, instance HarnessInstance, 
 			return ProjectSnapshot{}, fmt.Errorf("%w: execution capability %q is forbidden", ErrProjectPolicyDenied, capability)
 		}
 	}
-	for _, capability := range p.Policy.execution().AllowedCapabilities {
-		if !instance.Capabilities.SupportsExecution(capability) {
-			return ProjectSnapshot{}, fmt.Errorf("%w: execution capability %q is not allowed by execution policy", ErrProjectPolicyDenied, capability)
+	if allowed := p.Policy.execution().AllowedCapabilities; len(allowed) > 0 {
+		for _, capability := range instance.Capabilities.Execution {
+			if !containsExecution(allowed, capability) {
+				return ProjectSnapshot{}, fmt.Errorf("%w: observed execution capability %q is outside the execution allowlist", ErrProjectPolicyDenied, capability)
+			}
 		}
 	}
 	for _, capability := range p.Policy.RequiredActivityCapabilities {
@@ -344,6 +416,13 @@ func (p Project) ValidateDispatch(node NodeReference, instance HarnessInstance, 
 	}
 	if err := instance.ValidateSelection(p.Policy.modelPin(), p.Policy.Reasoning); err != nil {
 		return ProjectSnapshot{}, err
+	}
+	if allowed := p.Policy.execution().AllowedCapabilities; len(allowed) > 0 {
+		for _, capability := range required {
+			if !containsExecution(allowed, capability) {
+				return ProjectSnapshot{}, fmt.Errorf("%w: required capability %q is not in the execution allowlist", ErrProjectPolicyDenied, capability)
+			}
+		}
 	}
 	return p.Snapshot(node, workspace, instance), nil
 }
@@ -531,6 +610,8 @@ func (s *Store) UpdateProject(ctx context.Context, id string, spec ProjectSpec, 
 	if expectedRevision <= 0 {
 		return Project{}, ErrProjectRevisionConflict
 	}
+	s.projectDispatchMu.Lock()
+	defer s.projectDispatchMu.Unlock()
 	if len(idempotencyKeys) > 1 {
 		return Project{}, errors.New("core: at most one Project idempotency key is allowed")
 	}
@@ -595,6 +676,8 @@ func (s *Store) DeleteProject(ctx context.Context, id string, expectedRevision i
 	if expectedRevision <= 0 {
 		return ErrProjectRevisionConflict
 	}
+	s.projectDispatchMu.Lock()
+	defer s.projectDispatchMu.Unlock()
 	if len(idempotencyKeys) > 1 {
 		return errors.New("core: at most one Project idempotency key is allowed")
 	}
@@ -626,8 +709,14 @@ func (s *Store) DeleteProject(ctx context.Context, id string, expectedRevision i
 		if revision != expectedRevision {
 			return ErrProjectRevisionConflict
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM phase4_projects WHERE id = ? AND revision = ?`, id, expectedRevision); err != nil {
+		result, err := tx.ExecContext(ctx, `DELETE FROM phase4_projects WHERE id = ? AND revision = ?`, id, expectedRevision)
+		if err != nil {
 			return err
+		}
+		if affected, err := result.RowsAffected(); err != nil {
+			return err
+		} else if affected != 1 {
+			return ErrProjectRevisionConflict
 		}
 		if key != "" {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES(?, ?, '{}', ?)`, "project.delete:"+id, key, timestamp(s.now())); err != nil {
@@ -798,41 +887,53 @@ func (s *Store) ResolveProjectDispatch(ctx context.Context, request ProjectDispa
 }
 
 func (s *Store) CreateWorkerFromDispatch(ctx context.Context, conversationID, intent string, dispatch ProjectDispatch, idempotencyKey string) (Worker, Turn, Phase4Attempt, error) {
-	if strings.TrimSpace(dispatch.Project.ID) == "" {
-		return Worker{}, Turn{}, Phase4Attempt{}, ErrProjectValidation
+	s.projectDispatchMu.Lock()
+	defer s.projectDispatchMu.Unlock()
+	projectID := strings.TrimSpace(dispatch.Project.ID)
+	if projectID == "" || dispatch.Project.Revision <= 0 {
+		return Worker{}, Turn{}, Phase4Attempt{}, ErrProjectRevisionConflict
 	}
-	registered, err := s.Project(ctx, dispatch.Project.ID)
+	if dispatch.Node == "" || dispatch.HarnessInstance.ID == "" || dispatch.HarnessInstance.Node != dispatch.Node {
+		return Worker{}, Turn{}, Phase4Attempt{}, ErrProjectPolicyDenied
+	}
+	registered, err := s.Project(ctx, projectID)
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, err
 	}
-	if dispatch.Project.Revision != 0 && registered.Revision != dispatch.Project.Revision {
+	if registered.Revision != dispatch.Project.Revision {
 		return Worker{}, Turn{}, Phase4Attempt{}, ErrProjectRevisionConflict
 	}
-	dispatch.Project = registered
-	if dispatch.Snapshot.ID == "" {
-		snapshot, err := dispatch.Project.ValidateDispatch(dispatch.Node, dispatch.HarnessInstance, dispatch.Workspace)
-		if err != nil {
-			return Worker{}, Turn{}, Phase4Attempt{}, err
+	record, err := s.NodeRecord(ctx, dispatch.Node)
+	instance := dispatch.HarnessInstance
+	if errors.Is(err, ErrNotFound) {
+		// Legacy in-process callers may create a Worker before Node enrollment.
+		// Once a Node registry record exists, only its observed instance is trusted.
+	} else if err != nil {
+		return Worker{}, Turn{}, Phase4Attempt{}, err
+	} else {
+		if record.Revoked {
+			return Worker{}, Turn{}, Phase4Attempt{}, ErrNodeRevoked
 		}
-		dispatch.Snapshot = snapshot
-	} else if dispatch.Snapshot.ID != dispatch.Project.ID || (dispatch.Snapshot.Revision != 0 && dispatch.Snapshot.Revision != dispatch.Project.Revision) {
-		return Worker{}, Turn{}, Phase4Attempt{}, ErrProjectRevisionConflict
+		var found bool
+		instance, found = record.Inventory.Instance(dispatch.HarnessInstance.ID)
+		if !found {
+			return Worker{}, Turn{}, Phase4Attempt{}, fmt.Errorf("%w: HarnessInstance %q", ErrHarnessUnavailable, dispatch.HarnessInstance.ID)
+		}
 	}
-	if err := dispatch.Snapshot.Validate(); err != nil {
-		return Worker{}, Turn{}, Phase4Attempt{}, err
+	if instance.Node != dispatch.Node {
+		return Worker{}, Turn{}, Phase4Attempt{}, ErrProjectPolicyDenied
 	}
-	if dispatch.Workspace == "" {
-		dispatch.Workspace = dispatch.Snapshot.Workspace
-	} else if dispatch.Workspace != dispatch.Snapshot.Workspace {
-		return Worker{}, Turn{}, Phase4Attempt{}, fmt.Errorf("%w: dispatch workspace differs from snapshot", ErrWorkspaceOutsideRoot)
-	}
-	encodedSnapshot, err := json.Marshal(dispatch.Snapshot)
+	snapshot, err := registered.ValidateDispatch(dispatch.Node, instance, dispatch.Workspace)
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, err
 	}
-	encodedPolicy, err := json.Marshal(dispatch.Snapshot.Policy)
+	encodedSnapshot, err := json.Marshal(snapshot)
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, err
 	}
-	return s.CreateWorker(ctx, conversationID, WorkerSpec{WorkerRef: "", Title: intent, Intent: intent, ProjectID: dispatch.Project.ID, NodeID: string(dispatch.Node), HarnessInstanceID: string(dispatch.HarnessInstance.ID), PolicySnapshot: string(encodedPolicy), ProjectSnapshot: string(encodedSnapshot), Workspace: dispatch.Workspace, IdempotencyKey: idempotencyKey}, TurnSpec{Input: intent, IdempotencyKey: idempotencyKey})
+	encodedPolicy, err := json.Marshal(snapshot.Policy)
+	if err != nil {
+		return Worker{}, Turn{}, Phase4Attempt{}, err
+	}
+	return s.CreateWorker(ctx, conversationID, WorkerSpec{WorkerRef: "", Title: intent, Intent: intent, ProjectID: registered.ID, NodeID: string(dispatch.Node), HarnessInstanceID: string(instance.ID), PolicySnapshot: string(encodedPolicy), ProjectSnapshot: string(encodedSnapshot), Workspace: snapshot.Workspace, ProjectRevision: registered.Revision, IdempotencyKey: idempotencyKey}, TurnSpec{Input: intent, IdempotencyKey: idempotencyKey})
 }

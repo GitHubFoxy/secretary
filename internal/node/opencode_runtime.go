@@ -18,6 +18,11 @@ type OpenCodeRuntime struct {
 }
 
 func (r OpenCodeRuntime) Start(ctx context.Context, request StartRequest) (Session, error) {
+	profile, err := request.effectiveProfile()
+	if err != nil {
+		return nil, err
+	}
+	request.Profile = profile
 	prepared, err := r.prepare(request)
 	if err != nil {
 		return nil, err
@@ -26,6 +31,11 @@ func (r OpenCodeRuntime) Start(ctx context.Context, request StartRequest) (Sessi
 }
 
 func (r OpenCodeRuntime) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
+	profile, err := request.effectiveProfile()
+	if err != nil {
+		return nil, err
+	}
+	request.Profile = profile
 	prepared, err := r.prepare(request)
 	if err != nil {
 		return nil, err

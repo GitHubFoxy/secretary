@@ -16,17 +16,29 @@ type RuntimeRouter struct {
 }
 
 func (r RuntimeRouter) Start(ctx context.Context, request StartRequest) (Session, error) {
+	profile, err := request.effectiveProfile()
+	if err != nil {
+		return nil, err
+	}
+	request.Profile = profile
+	harness := r.harness(request)
 	runtime := r.runtime(request)
 	if runtime == nil {
-		return nil, fmt.Errorf("node: harness %q is unavailable", r.harness(request))
+		return nil, fmt.Errorf("node: harness %q is unavailable", harness)
 	}
 	return runtime.Start(ctx, request)
 }
 
 func (r RuntimeRouter) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
+	profile, err := request.effectiveProfile()
+	if err != nil {
+		return nil, err
+	}
+	request.Profile = profile
+	harness := r.harness(request)
 	runtime := r.runtime(request)
 	if runtime == nil {
-		return nil, fmt.Errorf("node: harness %q is unavailable", r.harness(request))
+		return nil, fmt.Errorf("node: harness %q is unavailable", harness)
 	}
 	if resumer, ok := runtime.(Resumer); ok {
 		return resumer.Resume(ctx, request, runtimeSessionID)
@@ -35,6 +47,9 @@ func (r RuntimeRouter) Resume(ctx context.Context, request StartRequest, runtime
 }
 
 func (r RuntimeRouter) harness(request StartRequest) string {
+	if request.HarnessInstance.Kind != "" {
+		return string(request.HarnessInstance.Kind)
+	}
 	harness := request.Profile.Runtime
 	if harness == "" {
 		harness = r.DefaultHarness
@@ -49,7 +64,7 @@ func (r RuntimeRouter) runtime(request StartRequest) Runtime {
 		return r.OpenCode
 	case "fx":
 		return r.FX
-	case "codex":
+	case "codex", "claude_code":
 		return r.ACP
 	default:
 		return unavailableRuntime{harness: harness}

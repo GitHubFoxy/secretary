@@ -274,14 +274,27 @@ func (w WorkerEnvelope) Validate(node core.NodeReference) error {
 		if w.ProjectSnapshot.ID != w.ProjectID {
 			return errors.New("node protocol: Project snapshot identity mismatch")
 		}
-		if w.ProjectSnapshot.Node != node || w.ProjectSnapshot.HarnessInstance.ID != w.HarnessInstance.ID {
+		if w.ProjectSnapshot.Node != node || !reflect.DeepEqual(w.ProjectSnapshot.HarnessInstance, w.HarnessInstance) {
 			return errors.New("node protocol: Project snapshot binding mismatch")
 		}
-		if w.ProjectSnapshot.Policy.ModelPin() != "" && w.Model != "" && w.ProjectSnapshot.Policy.ModelPin() != w.Model {
+		modelPin := w.ProjectSnapshot.Policy.ModelPin()
+		if modelPin != "" && w.Model == "" {
+			return errors.New("node protocol: execution model pin is required")
+		}
+		if modelPin != "" && modelPin != w.Model {
 			return errors.New("node protocol: model pin differs from Project policy")
 		}
-		if w.ProjectSnapshot.Policy.Reasoning != "" && w.Reasoning != "" && w.ProjectSnapshot.Policy.Reasoning != w.Reasoning {
+		if w.ProjectSnapshot.Policy.Reasoning != "" && w.Reasoning == "" {
+			return errors.New("node protocol: execution reasoning pin is required")
+		}
+		if w.ProjectSnapshot.Policy.Reasoning != "" && w.ProjectSnapshot.Policy.Reasoning != w.Reasoning {
 			return errors.New("node protocol: reasoning pin differs from Project policy")
+		}
+		if w.ProjectSnapshot.Policy.EffectiveExecution().RequireApproval && w.ApprovalPolicy != "required" {
+			return errors.New("node protocol: approval policy is required for this Project")
+		}
+		if !w.ProjectSnapshot.Policy.EffectiveExecution().RequireApproval && w.ApprovalPolicy == "required" {
+			return errors.New("node protocol: approval policy conflicts with Project policy")
 		}
 		if err := w.ProjectSnapshot.Validate(); err != nil {
 			return fmt.Errorf("node protocol: invalid Project snapshot: %w", err)
@@ -369,6 +382,9 @@ func (c Command) Validate(node core.NodeReference) error {
 		if c.Dispatch == nil {
 			return errors.New("node protocol: dispatch payload is required")
 		}
+		if c.Dispatch.Metadata.HarnessInstanceID != c.Dispatch.Envelope.HarnessInstance.ID {
+			return errors.New("node protocol: dispatch metadata binding mismatch")
+		}
 		return c.Dispatch.Envelope.Validate(node)
 	case CommandCancel:
 		if c.Cancel == nil {
@@ -381,6 +397,9 @@ func (c Command) Validate(node core.NodeReference) error {
 	case CommandResume:
 		if c.Resume == nil {
 			return errors.New("node protocol: resume payload is required")
+		}
+		if c.Resume.Metadata.HarnessInstanceID != c.Resume.Envelope.HarnessInstance.ID {
+			return errors.New("node protocol: resume metadata binding mismatch")
 		}
 		return c.Resume.Envelope.Validate(node)
 	case CommandRespondWorker:
