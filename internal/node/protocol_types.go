@@ -223,6 +223,7 @@ type WorkerEnvelope struct {
 	CompletionContract  string               `json:"completion_contract,omitempty"`
 	ConversationContext []string             `json:"conversation_context,omitempty"`
 	ProjectID           string               `json:"project_id,omitempty"`
+	ProjectSnapshot     core.ProjectSnapshot `json:"project_snapshot,omitempty"`
 	Workspace           string               `json:"workspace"`
 	HarnessInstance     core.HarnessInstance `json:"harness_instance"`
 	Model               string               `json:"model,omitempty"`
@@ -265,6 +266,26 @@ func (w WorkerEnvelope) Validate(node core.NodeReference) error {
 	}
 	if err := w.HarnessInstance.ValidatePins(w.Model, w.Reasoning); err != nil {
 		return fmt.Errorf("node protocol: %w", err)
+	}
+	if w.ProjectID != "" {
+		if w.ProjectSnapshot.ID == "" {
+			return errors.New("node protocol: Project policy snapshot is required")
+		}
+		if w.ProjectSnapshot.ID != w.ProjectID {
+			return errors.New("node protocol: Project snapshot identity mismatch")
+		}
+		if w.ProjectSnapshot.Node != node || w.ProjectSnapshot.HarnessInstance.ID != w.HarnessInstance.ID {
+			return errors.New("node protocol: Project snapshot binding mismatch")
+		}
+		if w.ProjectSnapshot.Policy.ModelPin() != "" && w.Model != "" && w.ProjectSnapshot.Policy.ModelPin() != w.Model {
+			return errors.New("node protocol: model pin differs from Project policy")
+		}
+		if w.ProjectSnapshot.Policy.Reasoning != "" && w.Reasoning != "" && w.ProjectSnapshot.Policy.Reasoning != w.Reasoning {
+			return errors.New("node protocol: reasoning pin differs from Project policy")
+		}
+		if err := w.ProjectSnapshot.Validate(); err != nil {
+			return fmt.Errorf("node protocol: invalid Project snapshot: %w", err)
+		}
 	}
 	return nil
 }

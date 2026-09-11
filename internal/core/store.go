@@ -318,6 +318,8 @@ CREATE TABLE IF NOT EXISTS workers (
   node_id TEXT NOT NULL,
   harness_instance_id TEXT NOT NULL,
   policy_snapshot TEXT NOT NULL,
+  project_snapshot TEXT NOT NULL DEFAULT '',
+  workspace TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL,
   current_turn_id TEXT,
   last_result_summary TEXT NOT NULL DEFAULT '',
@@ -476,6 +478,8 @@ CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries(state, updated_at);
 		{"worker_bindings", "reasoning TEXT NOT NULL DEFAULT ''", "reasoning"},
 		{"worker_bindings", "allow_tools TEXT NOT NULL DEFAULT ''", "allow tools"},
 		{"worker_bindings", "profile_delivery TEXT NOT NULL DEFAULT ''", "profile delivery"},
+		{"workers", "project_snapshot TEXT NOT NULL DEFAULT ''", "project snapshot"},
+		{"workers", "workspace TEXT NOT NULL DEFAULT ''", "workspace"},
 	} {
 		if _, err = s.db.ExecContext(ctx, `ALTER TABLE `+migration.table+` ADD COLUMN `+migration.column); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("migrate %s %s: %w", migration.table, migration.name, err)
@@ -488,6 +492,9 @@ CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries(state, updated_at);
 		return err
 	}
 	if err := s.migratePhase4Lifecycle(ctx); err != nil {
+		return err
+	}
+	if err := s.migratePhase4Projects(ctx); err != nil {
 		return err
 	}
 	if err := s.migrateSecretarySchema(ctx); err != nil {

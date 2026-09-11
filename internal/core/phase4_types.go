@@ -79,6 +79,8 @@ type Worker struct {
 	NodeID            string       `json:"node_id"`
 	HarnessInstanceID string       `json:"harness_instance_id"`
 	PolicySnapshot    string       `json:"policy_snapshot"`
+	ProjectSnapshot   string       `json:"project_snapshot,omitempty"`
+	Workspace         string       `json:"workspace,omitempty"`
 	Status            WorkerStatus `json:"status"`
 	CurrentTurnID     string       `json:"current_turn_id,omitempty"`
 	LastResultSummary string       `json:"last_result_summary,omitempty"`
@@ -134,6 +136,8 @@ type WorkerSpec struct {
 	NodeID            string
 	HarnessInstanceID string
 	PolicySnapshot    string
+	ProjectSnapshot   string
+	Workspace         string
 	// IdempotencyKey makes Worker, first Turn, and first Attempt creation one
 	// durable operation. An empty key preserves the legacy non-idempotent API.
 	IdempotencyKey string

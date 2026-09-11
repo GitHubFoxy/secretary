@@ -205,8 +205,8 @@ func (s *Store) createWorker(ctx context.Context, conversationID string, spec Wo
 			}
 		}
 		now := s.now()
-		worker := Worker{ID: newID("wrk"), WorkerRef: spec.WorkerRef, Title: spec.Title, Intent: spec.Intent, ProjectID: spec.ProjectID, NodeID: spec.NodeID, HarnessInstanceID: spec.HarnessInstanceID, PolicySnapshot: spec.PolicySnapshot, Status: WorkerQueued, CreatedAt: now, UpdatedAt: now}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO workers(id, worker_ref, conversation_id, title, intent, project_id, node_id, harness_instance_id, policy_snapshot, status, archived, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`, worker.ID, worker.WorkerRef, conversationID, worker.Title, worker.Intent, worker.ProjectID, worker.NodeID, worker.HarnessInstanceID, worker.PolicySnapshot, worker.Status, timestamp(now), timestamp(now)); err != nil {
+		worker := Worker{ID: newID("wrk"), WorkerRef: spec.WorkerRef, Title: spec.Title, Intent: spec.Intent, ProjectID: spec.ProjectID, NodeID: spec.NodeID, HarnessInstanceID: spec.HarnessInstanceID, PolicySnapshot: spec.PolicySnapshot, ProjectSnapshot: spec.ProjectSnapshot, Workspace: spec.Workspace, Status: WorkerQueued, CreatedAt: now, UpdatedAt: now}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO workers(id, worker_ref, conversation_id, title, intent, project_id, node_id, harness_instance_id, policy_snapshot, project_snapshot, workspace, status, archived, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`, worker.ID, worker.WorkerRef, conversationID, worker.Title, worker.Intent, worker.ProjectID, worker.NodeID, worker.HarnessInstanceID, worker.PolicySnapshot, worker.ProjectSnapshot, worker.Workspace, worker.Status, timestamp(now), timestamp(now)); err != nil {
 			return struct {
 				worker  Worker
 				turn    Turn
@@ -924,7 +924,7 @@ func getWorker(ctx context.Context, q interface {
 	var worker Worker
 	var closed sql.NullString
 	var archived int
-	err := q.QueryRowContext(ctx, `SELECT id, worker_ref, title, intent, project_id, node_id, harness_instance_id, policy_snapshot, status, COALESCE(current_turn_id, ''), last_result_summary, created_at, updated_at, closed_at, archived FROM workers WHERE id = ?`, id).Scan(&worker.ID, &worker.WorkerRef, &worker.Title, &worker.Intent, &worker.ProjectID, &worker.NodeID, &worker.HarnessInstanceID, &worker.PolicySnapshot, &worker.Status, &worker.CurrentTurnID, &worker.LastResultSummary, newTimestampScanner(&worker.CreatedAt), newTimestampScanner(&worker.UpdatedAt), &closed, &archived)
+	err := q.QueryRowContext(ctx, `SELECT id, worker_ref, title, intent, project_id, node_id, harness_instance_id, policy_snapshot, project_snapshot, workspace, status, COALESCE(current_turn_id, ''), last_result_summary, created_at, updated_at, closed_at, archived FROM workers WHERE id = ?`, id).Scan(&worker.ID, &worker.WorkerRef, &worker.Title, &worker.Intent, &worker.ProjectID, &worker.NodeID, &worker.HarnessInstanceID, &worker.PolicySnapshot, &worker.ProjectSnapshot, &worker.Workspace, &worker.Status, &worker.CurrentTurnID, &worker.LastResultSummary, newTimestampScanner(&worker.CreatedAt), newTimestampScanner(&worker.UpdatedAt), &closed, &archived)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Worker{}, ErrNotFound
 	}
