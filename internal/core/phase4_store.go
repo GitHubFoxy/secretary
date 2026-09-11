@@ -155,7 +155,10 @@ func (s *Store) CreateWorker(ctx context.Context, conversationID string, spec Wo
 	if key == "" {
 		key = strings.TrimSpace(turnSpec.IdempotencyKey)
 	}
-	if key != "" { s.idempotencyMu.Lock(); defer s.idempotencyMu.Unlock() }
+	if key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+	}
 	return s.createWorker(ctx, conversationID, spec, turnSpec, key)
 }
 
@@ -181,9 +184,25 @@ func (s *Store) createWorker(ctx context.Context, conversationID string, spec Wo
 			var encoded string
 			if err := tx.QueryRowContext(ctx, `SELECT outcome_json FROM idempotency_records WHERE operation = ? AND idempotency_key = ?`, "worker.create", idempotencyKey).Scan(&encoded); err == nil {
 				var stored workerCreationOutcome
-				if err := json.Unmarshal([]byte(encoded), &stored); err != nil { return struct { worker Worker; turn Turn; attempt Phase4Attempt }{}, fmt.Errorf("core: decode durable Worker outcome: %w", err) }
-				return struct { worker Worker; turn Turn; attempt Phase4Attempt }{worker: stored.Worker, turn: stored.Turn, attempt: stored.Attempt}, nil
-			} else if !errors.Is(err, sql.ErrNoRows) { return struct { worker Worker; turn Turn; attempt Phase4Attempt }{}, err }
+				if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
+					return struct {
+						worker  Worker
+						turn    Turn
+						attempt Phase4Attempt
+					}{}, fmt.Errorf("core: decode durable Worker outcome: %w", err)
+				}
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{worker: stored.Worker, turn: stored.Turn, attempt: stored.Attempt}, nil
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
 		}
 		now := s.now()
 		worker := Worker{ID: newID("wrk"), WorkerRef: spec.WorkerRef, Title: spec.Title, Intent: spec.Intent, ProjectID: spec.ProjectID, NodeID: spec.NodeID, HarnessInstanceID: spec.HarnessInstanceID, PolicySnapshot: spec.PolicySnapshot, Status: WorkerQueued, CreatedAt: now, UpdatedAt: now}
@@ -257,8 +276,20 @@ func (s *Store) createWorker(ctx context.Context, conversationID string, spec Wo
 		}
 		if idempotencyKey != "" {
 			encoded, err := json.Marshal(workerCreationOutcome{Worker: worker, Turn: turn, Attempt: attempt})
-			if err != nil { return struct { worker Worker; turn Turn; attempt Phase4Attempt }{}, fmt.Errorf("core: encode durable Worker outcome: %w", err) }
-			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES(?, ?, ?, ?)`, "worker.create", idempotencyKey, string(encoded), timestamp(now)); err != nil { return struct { worker Worker; turn Turn; attempt Phase4Attempt }{}, err }
+			if err != nil {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, fmt.Errorf("core: encode durable Worker outcome: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES(?, ?, ?, ?)`, "worker.create", idempotencyKey, string(encoded), timestamp(now)); err != nil {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
 		}
 		return struct {
 			worker  Worker
@@ -279,7 +310,10 @@ func (s *Store) SpawnWorker(ctx context.Context, conversationID string, spec Wor
 // changes the Worker's Project, Node, HarnessInstance, or policy snapshot.
 func (s *Store) CreateTurn(ctx context.Context, workerID string, spec TurnSpec) (Turn, Phase4Attempt, error) {
 	key := strings.TrimSpace(spec.IdempotencyKey)
-if key != "" { s.idempotencyMu.Lock(); defer s.idempotencyMu.Unlock() }
+	if key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+	}
 	return s.createTurn(ctx, workerID, spec, key)
 }
 
@@ -291,6 +325,28 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 		turn    Turn
 		attempt Phase4Attempt
 	}, error) {
+		operation := "turn.create:" + workerID
+		if idempotencyKey != "" {
+			var encoded string
+			if err := tx.QueryRowContext(ctx, `SELECT outcome_json FROM idempotency_records WHERE operation = ? AND idempotency_key = ?`, operation, idempotencyKey).Scan(&encoded); err == nil {
+				var stored turnCreationOutcome
+				if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
+					return struct {
+						turn    Turn
+						attempt Phase4Attempt
+					}{}, fmt.Errorf("core: decode durable Turn outcome: %w", err)
+				}
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{turn: stored.Turn, attempt: stored.Attempt}, nil
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
+		}
 		worker, err := getWorker(ctx, tx, workerID)
 		if err != nil {
 			return struct {
@@ -356,6 +412,21 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 				turn    Turn
 				attempt Phase4Attempt
 			}{}, err
+		}
+		if idempotencyKey != "" {
+			encoded, err := json.Marshal(turnCreationOutcome{Turn: turn, Attempt: attempt})
+			if err != nil {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, fmt.Errorf("core: encode durable Turn outcome: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES(?, ?, ?, ?)`, operation, idempotencyKey, string(encoded), timestamp(now)); err != nil {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
 		}
 		return struct {
 			turn    Turn
