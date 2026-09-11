@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -28,36 +29,139 @@ func (r fakeProbeRunner) Run(_ context.Context, binary string, args ...string) (
 	return CommandResult{ExitCode: -1}, fmt.Errorf("missing fake command %q", key)
 }
 
-func completeProbeRunner(version, model, reasoning string) fakeProbeRunner {
-	responses := map[string]CommandResult{}
-	for _, spec := range []HarnessProbeSpec{DefaultFXProbeSpec(), DefaultClaudeCodeProbeSpec(), DefaultCodexProbeSpec(), DefaultOpenCodeProbeSpec()} {
-		responses[spec.Binary+" "+strings.Join(spec.VersionArgs, " ")] = CommandResult{Stdout: version}
-		responses[spec.Binary+" "+strings.Join(spec.AuthenticationArgs, " ")] = CommandResult{Stdout: "authenticated"}
-		responses[spec.Binary+" "+strings.Join(spec.HealthArgs, " ")] = CommandResult{Stdout: "ready"}
-		responses[spec.Binary+" "+strings.Join(spec.ModelsArgs, " ")] = CommandResult{Stdout: model}
-		responses[spec.Binary+" "+strings.Join(spec.ReasoningArgs, " ")] = CommandResult{Stdout: reasoning}
-		responses[spec.Binary+" reasoning"] = CommandResult{Stdout: reasoning}
+func requiredProbeRunner(version, fxModel, codexModel string) fakeProbeRunner {
+	codexCatalog := fmt.Sprintf(`{"models":[{"slug":%q,"visibility":"visible","selectable":true,"default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"medium"},{"effort":"high"}]}]}`, codexModel)
+	return fakeProbeRunner{responses: map[string]CommandResult{
+		"fx --version":       {Stdout: "fx " + version},
+		"fx models":          {Stdout: fxModel},
+		"claude --version":   {Stdout: "claude " + version},
+		"claude auth status": {Stdout: `{"loggedIn":true,"authMethod":"claude.ai"}`},
+		"codex --version":    {Stdout: "codex " + version},
+		"codex login status": {Stdout: "Logged in using ChatGPT"},
+		"codex doctor":       {Stdout: "ready"},
+		"codex debug models": {Stdout: codexCatalog},
+	}}
+}
+
+func TestDefaultProbeCommandsAreExplicitContracts(t *testing.T) {
+	claude := DefaultClaudeCodeProbeSpec()
+	if !reflect.DeepEqual(claude.VersionArgs, []string{"--version"}) || !reflect.DeepEqual(claude.AuthenticationArgs, []string{"auth", "status"}) {
+		t.Fatalf("Claude probe commands=%#v", claude)
 	}
-	return fakeProbeRunner{responses: responses}
+	if len(claude.ModelsArgs) != 0 || !claude.ModelsOptional {
+		t.Fatalf("Claude must not invent a model-list command: %#v", claude)
+	}
+	codex := DefaultCodexProbeSpec()
+	if !reflect.DeepEqual(codex.AuthenticationArgs, []string{"login", "status"}) || !reflect.DeepEqual(codex.HealthArgs, []string{"doctor"}) || !reflect.DeepEqual(codex.ModelsArgs, []string{"debug", "models"}) {
+		t.Fatalf("Codex probe commands=%#v", codex)
+	}
+	open := DefaultOpenCodeProbeSpec()
+	if !reflect.DeepEqual(open.AuthenticationArgs, []string{"auth", "list"}) || !reflect.DeepEqual(open.ModelsArgs, []string{"models"}) {
+		t.Fatalf("OpenCode probe commands=%#v", open)
+	}
+}
+
+func TestClaudeProbeUsesObservedAuthAndDoesNotInventModels(t *testing.T) {
+	runner := fakeProbeRunner{responses: map[string]CommandResult{
+		"claude --version":   {Stdout: "2.1.0"},
+		"claude auth status": {Stdout: `{"loggedIn":true,"authMethod":"claude.ai"}`},
+	}}
+	result := ProbeClaudeCode(context.Background(), "macbook", runner)
+	if !result.Available() || !result.Instance.Authentication.Authenticated || result.Instance.Authentication.Method != "claude.ai" {
+		t.Fatalf("Claude result=%#v", result)
+	}
+	if len(result.Instance.ModelIDs) != 0 || len(result.Instance.ReasoningLevels) != 0 {
+		t.Fatalf("unobserved Claude pins were invented: %#v", result.Instance)
+	}
+	if err := result.Instance.ValidateSelection("claude-sonnet-4", ""); !errors.Is(err, core.ErrObservedPinUnavailable) {
+		t.Fatalf("unobserved Claude model pin err=%v", err)
+	}
+
+	unauth := fakeProbeRunner{responses: map[string]CommandResult{
+		"claude --version":   {Stdout: "2.1.0"},
+		"claude auth status": {Stdout: `{"loggedIn":false}`},
+	}}
+	failed := ProbeClaudeCode(context.Background(), "macbook", unauth)
+	if !errors.Is(failed.Err, ErrProbeUnauthenticated) || failed.Instance.Authentication.Authenticated {
+		t.Fatalf("unauthenticated Claude=%#v", failed)
+	}
+}
+
+func TestCodexAuthMethodIsObserved(t *testing.T) {
+	for _, test := range []struct {
+		output string
+		want   string
+	}{
+		{"Logged in using ChatGPT", "chatgpt"},
+		{"Logged in using an API key", "api_key"},
+		{"Logged in using Agent Identity", "agent_identity"},
+	} {
+		ok, method := parseAuthentication(core.HarnessCodex, test.output, "")
+		if !ok || method != test.want {
+			t.Fatalf("auth %q => ok=%v method=%q", test.output, ok, method)
+		}
+	}
+	if ok, _ := parseAuthentication(core.HarnessCodex, "Not logged in", ""); ok {
+		t.Fatal("Codex Not logged in accepted")
+	}
+}
+
+func TestModelCatalogFiltersUnselectableRecords(t *testing.T) {
+	catalog := `[
+		{"slug":"gpt-5-codex","visibility":"visible","selectable":true,"default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"medium"},{"effort":"high"}]},
+		{"slug":"internal-model","visibility":"hidden","default_reasoning_level":"xhigh"},
+		{"slug":"disabled-model","available":false,"default_reasoning_level":"low"},
+		{"slug":"fast","selectable":true}
+	]`
+	models := parseObservedModels(catalog)
+	if !reflect.DeepEqual(models, []core.ObservedModelID{"gpt-5-codex"}) {
+		t.Fatalf("models=%#v", models)
+	}
+	levels := parseObservedReasoning(catalog)
+	if !reflect.DeepEqual(levels, []core.ObservedReasoningLevel{"high", "medium"}) {
+		t.Fatalf("reasoning=%#v", levels)
+	}
+}
+
+func TestProbeStepsHaveBoundedTimeout(t *testing.T) {
+	runner := CommandRunnerFunc(func(ctx context.Context, _ string, args ...string) (CommandResult, error) {
+		if len(args) > 0 && args[0] == "--version" {
+			return CommandResult{Stdout: "fx 1.0.0"}, nil
+		}
+		<-ctx.Done()
+		return CommandResult{ExitCode: -1}, ctx.Err()
+	})
+	spec := DefaultFXProbeSpec()
+	spec.StepTimeout = 5 * time.Millisecond
+	result := (HarnessProbe{Node: "node-a", Spec: spec, Runner: runner}).Probe(context.Background())
+	if result.ErrorCode != "unauthenticated" || !errors.Is(result.Err, ErrProbeUnauthenticated) || !errors.Is(result.Err, context.DeadlineExceeded) {
+		t.Fatalf("timeout result=%#v", result)
+	}
+}
+
+func TestDefaultCapabilitiesOnlyAdvertiseObservableRuntimeActivity(t *testing.T) {
+	allowed := map[core.ActivityCapability]bool{
+		core.ActivityAssistantTextDelta: true,
+		core.ActivityToolCall:           true,
+		core.ActivityStatus:             true,
+		core.ActivityAttemptOutcome:     true,
+	}
+	for _, spec := range []HarnessProbeSpec{DefaultFXProbeSpec(), DefaultClaudeCodeProbeSpec(), DefaultCodexProbeSpec(), DefaultOpenCodeProbeSpec()} {
+		for _, capability := range spec.ActivityCapabilities {
+			if !allowed[capability] {
+				t.Fatalf("%s advertises activity not emitted by current adapter: %s", spec.Kind, capability)
+			}
+		}
+	}
 }
 
 func TestRequiredProbesDiscoverDifferentInstancesOnTwoNodes(t *testing.T) {
 	at := time.Date(2026, 9, 11, 12, 0, 0, 0, time.UTC)
-	firstRunner := completeProbeRunner("1.2.3", "claude-sonnet-4,gpt-5-codex", "default,extended")
-	firstProbes := NewDefaultHarnessProbes("macbook", firstRunner)
-	for i := range firstProbes {
-		firstProbes[i].Spec.ReasoningArgs = []string{"reasoning"}
-	}
-	first, err := (HarnessDiscovery{Node: "macbook", Probes: firstProbes, Now: func() time.Time { return at }}).Discover(context.Background())
+	first, err := (HarnessDiscovery{Node: "macbook", Runner: requiredProbeRunner("1.2.3", "fx-model-a", "gpt-5-codex"), Now: func() time.Time { return at }}).Discover(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondRunner := completeProbeRunner("9.0.1", "gpt-5.6-luna", "high")
-	secondProbes := NewDefaultHarnessProbes("home-server", secondRunner)
-	for i := range secondProbes {
-		secondProbes[i].Spec.ReasoningArgs = []string{"reasoning"}
-	}
-	second, err := (HarnessDiscovery{Node: "home-server", Probes: secondProbes, Now: func() time.Time { return at }}).Discover(context.Background())
+	second, err := (HarnessDiscovery{Node: "home-server", Runner: requiredProbeRunner("9.0.1", "fx-model-b", "gpt-5.6-luna"), Now: func() time.Time { return at }}).Discover(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,28 +175,36 @@ func TestRequiredProbesDiscoverDifferentInstancesOnTwoNodes(t *testing.T) {
 		t.Fatalf("required inventory sizes: %d and %d", len(first.Instances), len(second.Instances))
 	}
 	macClaude, ok := first.Instance("macbook/claude")
-	if !ok || macClaude.Kind != core.HarnessClaudeCode || macClaude.Version != "1.2.3" || !macClaude.SupportsModel("claude-sonnet-4") || !macClaude.SupportsReasoning("extended") {
+	if !ok || !macClaude.Available() || macClaude.Authentication.Method != "claude.ai" || len(macClaude.ModelIDs) != 0 {
 		t.Fatalf("macbook Claude=%#v found=%v", macClaude, ok)
 	}
-	homeFX, ok := second.Instance("home-server/fx")
-	if !ok || homeFX.Version != "9.0.1" || !homeFX.SupportsModel("gpt-5.6-luna") || !homeFX.SupportsReasoning("high") {
-		t.Fatalf("home-server fx=%#v found=%v", homeFX, ok)
+	macCodex, ok := first.Instance("macbook/codex")
+	if !ok || !macCodex.SupportsModel("gpt-5-codex") || !macCodex.SupportsReasoning("high") {
+		t.Fatalf("macbook Codex=%#v found=%v", macCodex, ok)
 	}
-	if macClaude.ID == homeFX.ID {
+	homeCodex, ok := second.Instance("home-server/codex")
+	if !ok || !homeCodex.SupportsModel("gpt-5.6-luna") {
+		t.Fatalf("home Codex=%#v found=%v", homeCodex, ok)
+	}
+	if macCodex.ID == homeCodex.ID {
 		t.Fatal("instances on different Nodes must have distinct IDs")
 	}
 }
 
 func TestRequiredProbesAndOpenCodeCompatibilityAreIsolated(t *testing.T) {
-	runner := completeProbeRunner("1.0.0", "model-a", "default")
-	if got := NewDefaultHarnessProbes("macbook", runner); len(got) != 3 {
+	if got := NewDefaultHarnessProbes("macbook", nil); len(got) != 3 {
 		t.Fatalf("mandatory probes=%d", len(got))
 	}
-	for _, probe := range NewDefaultHarnessProbes("macbook", runner) {
+	for _, probe := range NewDefaultHarnessProbes("macbook", nil) {
 		if probe.Spec.Kind == core.HarnessOpenCode {
 			t.Fatal("OpenCode leaked into mandatory probe set")
 		}
 	}
+	runner := fakeProbeRunner{responses: map[string]CommandResult{
+		"opencode --version": {Stdout: "1.0.0"},
+		"opencode auth list": {Stdout: "anthropic"},
+		"opencode models":    {Stdout: "provider/model-a"},
+	}}
 	open := NewOpenCodeCompatibilityProbe("macbook", runner).Probe(context.Background())
 	if open.Instance.Kind != core.HarnessOpenCode || !open.Available() {
 		t.Fatalf("OpenCode compatibility result=%#v", open)
@@ -100,7 +212,7 @@ func TestRequiredProbesAndOpenCodeCompatibilityAreIsolated(t *testing.T) {
 }
 
 func TestProbeMakesMissingUnauthenticatedAndUnhealthyExplicit(t *testing.T) {
-	spec := HarnessProbeSpec{Kind: core.HarnessFX, Binary: "fx", VersionArgs: []string{"version"}, AuthenticationArgs: []string{"auth"}, HealthArgs: []string{"health"}, ModelsArgs: []string{"models"}, ReasoningArgs: []string{"reasoning"}}
+	spec := HarnessProbeSpec{Kind: core.HarnessFX, Binary: "fx", VersionArgs: []string{"version"}, AuthenticationArgs: []string{"auth"}, HealthArgs: []string{"health"}, ModelsArgs: []string{"models"}}
 	missing := (HarnessProbe{Node: "node-a", Spec: spec, Runner: fakeProbeRunner{}}).Probe(context.Background())
 	if missing.Instance.Status != core.HarnessUnavailable || missing.Instance.Authentication.Authenticated || missing.ErrorCode != "missing" || !errors.Is(missing.Err, ErrProbeMissing) {
 		t.Fatalf("missing=%#v", missing)
