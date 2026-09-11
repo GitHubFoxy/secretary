@@ -428,10 +428,10 @@ func (h *serverProtocolHandler) HandleNodeEvent(ctx context.Context, event NodeE
 	h.manager.mu.Lock()
 	sink := h.manager.eventSink
 	h.manager.mu.Unlock()
-	if sink != nil {
-		return sink(ctx, event)
+	if sink == nil {
+		return errors.New("node server: event sink is not configured")
 	}
-	return nil
+	return sink(ctx, event)
 }
 
 func (h *serverProtocolHandler) HandleNodeCommandOutcome(ctx context.Context, outcome CommandOutcome) error {
