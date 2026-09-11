@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -25,10 +26,24 @@ type ExecutionNode struct {
 	mu                sync.Mutex
 	sessions          map[string]Session
 	activitySequences map[string]uint64
+	inventory         core.HarnessInventorySnapshot
 }
 
 func NewExecutionNode(node core.NodeReference, runtime Runtime, store *LocalStore) *ExecutionNode {
 	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, activitySequences: map[string]uint64{}}
+}
+
+func (n *ExecutionNode) SetInventory(inventory core.HarnessInventorySnapshot) error {
+	if inventory.Node != n.node {
+		return errors.New("node: inventory belongs to another Node")
+	}
+	if err := inventory.Validate(); err != nil {
+		return err
+	}
+	n.mu.Lock()
+	n.inventory = inventory
+	n.mu.Unlock()
+	return nil
 }
 
 func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (CommandOutcome, error) {
@@ -65,8 +80,29 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 }
 
 func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) CommandOutcome {
+	n.mu.Lock()
+	inventory := n.inventory
+	n.mu.Unlock()
+	if inventory.Node != "" {
+		if err := command.Envelope.ValidateAgainstInventory(n.node, inventory); err != nil {
+			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "harness_unavailable", err.Error())
+		}
+	}
 	workspace := command.Envelope.Workspace
-	if workspace == "" {
+	if command.Envelope.ProjectID != "" {
+		if err := validateProjectWorkspaceOnNode(command.Envelope); err != nil {
+			code := "workspace_forbidden"
+			if errors.Is(err, core.ErrWorkspaceMissing) {
+				code = "workspace_missing"
+			} else if errors.Is(err, core.ErrProjectPolicyDenied) {
+				code = "project_policy_denied"
+			} else if errors.Is(err, core.ErrProjectMappingMissing) {
+				code = "project_mapping_missing"
+			}
+			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, code, err.Error())
+		}
+	} else if workspace == "" {
+
 		var err error
 		workspace, err = os.MkdirTemp("", "secretary-worker-")
 		if err != nil {
@@ -86,6 +122,65 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	n.registerSession(mapping.AttemptID, session)
 	n.watchSession(session, command.Envelope)
 	return acceptedOutcome(Command{Kind: CommandDispatch, Dispatch: command})
+}
+
+func validateProjectWorkspaceOnNode(envelope WorkerEnvelope) error {
+	if err := envelope.ProjectSnapshot.Validate(); err != nil {
+		return err
+	}
+	workspace := envelope.Workspace
+	if workspace != envelope.ProjectSnapshot.Workspace {
+		return fmt.Errorf("%w: envelope workspace differs from Project snapshot", core.ErrWorkspaceOutsideRoot)
+	}
+	if strings.TrimSpace(workspace) == "" {
+		return core.ErrWorkspaceMissing
+	}
+	info, err := os.Stat(workspace)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: %s", core.ErrWorkspaceMissing, workspace)
+	}
+	if err != nil {
+		return fmt.Errorf("workspace stat: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: workspace is not a directory", core.ErrWorkspaceOutsideRoot)
+	}
+	mapping, ok := envelope.ProjectSnapshotPathMapping()
+	if !ok {
+		return core.ErrProjectMappingMissing
+	}
+	rootInfo, err := os.Stat(mapping.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("%w: Project root %s", core.ErrWorkspaceMissing, mapping.Path)
+	}
+	if err != nil {
+		return fmt.Errorf("Project root stat: %w", err)
+	}
+	if !rootInfo.IsDir() {
+		return fmt.Errorf("%w: Project root is not a directory", core.ErrWorkspaceOutsideRoot)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(mapping.Path)
+	if err != nil {
+		return fmt.Errorf("Project root: %w", err)
+	}
+	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		return fmt.Errorf("workspace: %w", err)
+	}
+	rel, err := filepath.Rel(filepath.Clean(resolvedRoot), filepath.Clean(resolvedWorkspace))
+	if err != nil || (rel != "." && (rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel))) {
+		return core.ErrWorkspaceOutsideRoot
+	}
+	return nil
+}
+
+func (w WorkerEnvelope) ProjectSnapshotPathMapping() (core.ProjectPathMapping, bool) {
+	for _, mapping := range w.ProjectSnapshot.Mappings {
+		if mapping.Node == w.ProjectSnapshot.Node || mapping.NodeID == string(w.ProjectSnapshot.Node) {
+			return mapping, true
+		}
+	}
+	return core.ProjectPathMapping{}, false
 }
 
 func (n *ExecutionNode) cancel(ctx context.Context, command *CancelCommand) CommandOutcome {

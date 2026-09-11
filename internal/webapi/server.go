@@ -89,6 +89,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/secretary/model", s.setSecretaryModel)
 	mux.HandleFunc("PUT /v1/secretary/model", s.setSecretaryModel)
 	mux.HandleFunc("GET /v1/workers", s.workerList)
+	mux.HandleFunc("/v1/projects", s.projectRoot)
+	mux.HandleFunc("/v1/projects/", s.projectRoute)
 	mux.HandleFunc("/v1/workers/", s.workerRoute)
 	if s.remoteNodes != nil {
 		mux.HandleFunc("GET /v1/nodes/connect", s.remoteNodes.ServeProtocolHTTP)

@@ -77,6 +77,9 @@ func (d *Daemon) runConnection(ctx context.Context, execution *ExecutionNode) er
 	if inventory.Node != d.Identity.Node {
 		return errors.New("node: inventory belongs to another Node")
 	}
+	if err := execution.SetInventory(inventory); err != nil {
+		return fmt.Errorf("node: set harness inventory: %w", err)
+	}
 	auth, err := d.Identity.Authenticator()
 	if err != nil {
 		return err
