@@ -20,16 +20,14 @@ var (
 	ErrProbeMetadata        = errors.New("harness probe: metadata probe failed")
 )
 
-// CommandResult is deliberately small so probe tests can fake exact local
-// command output without starting a harness process.
+const defaultProbeStepTimeout = 10 * time.Second
+
 type CommandResult struct {
 	Stdout   string
 	Stderr   string
 	ExitCode int
 }
 
-// CommandRunner is the only process boundary used by discovery. Production
-// uses ExecCommandRunner; tests can provide a deterministic implementation.
 type CommandRunner interface {
 	Run(context.Context, string, ...string) (CommandResult, error)
 }
@@ -41,7 +39,6 @@ func (f CommandRunnerFunc) Run(ctx context.Context, name string, args ...string)
 }
 
 type ExecCommandRunner struct{}
-
 type LocalCommandRunner = ExecCommandRunner
 
 func (ExecCommandRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
@@ -60,8 +57,10 @@ func (ExecCommandRunner) Run(ctx context.Context, name string, args ...string) (
 	return result, err
 }
 
-// HarnessProbeSpec describes the direct commands and observed capabilities of
-// one adapter. It is configuration, not a server-side model catalog.
+// HarnessProbeSpec describes direct, local observations. ModelsOptional is for
+// harnesses such as Claude Code that do not currently expose a documented model
+// catalog command; such a harness may be ready with an empty observed model set,
+// but explicit model pins remain rejected by the server contract.
 type HarnessProbeSpec struct {
 	Kind                  core.HarnessKind
 	Binary                string
@@ -71,6 +70,8 @@ type HarnessProbeSpec struct {
 	ModelsArgs            []string
 	ReasoningArgs         []string
 	AuthenticationMethod  string
+	ModelsOptional        bool
+	StepTimeout           time.Duration
 	ExecutionCapabilities []core.ExecutionCapability
 	ActivityCapabilities  []core.ActivityCapability
 }
@@ -79,14 +80,15 @@ func (s HarnessProbeSpec) validate() error {
 	if s.Kind == "" || strings.TrimSpace(s.Binary) == "" {
 		return errors.New("harness probe: kind and executable are required")
 	}
-	if len(s.VersionArgs) == 0 || len(s.AuthenticationArgs) == 0 || len(s.ModelsArgs) == 0 {
-		return fmt.Errorf("harness probe: %s requires version, authentication and model commands", s.Kind)
+	if len(s.VersionArgs) == 0 || len(s.AuthenticationArgs) == 0 {
+		return fmt.Errorf("harness probe: %s requires version and authentication commands", s.Kind)
+	}
+	if len(s.ModelsArgs) == 0 && !s.ModelsOptional {
+		return fmt.Errorf("harness probe: %s requires a model command", s.Kind)
 	}
 	return nil
 }
 
-// HarnessProbe is a deterministic local adapter probe. It reports an explicit
-// unavailable/degraded instance instead of selecting another harness.
 type HarnessProbe struct {
 	Node   core.NodeReference
 	Spec   HarnessProbeSpec
@@ -100,21 +102,13 @@ type ProbeResult struct {
 }
 
 func (r ProbeResult) Available() bool { return r.Err == nil && r.Instance.Available() }
-
-func (r ProbeResult) Error() error { return r.Err }
+func (r ProbeResult) Error() error    { return r.Err }
 
 func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
-	instance := core.HarnessInstance{
-		ID:             harnessInstanceID(p.Node, p.Spec.Kind),
-		Node:           p.Node,
-		Kind:           p.Spec.Kind,
-		Authentication: core.HarnessAuthentication{Method: p.Spec.AuthenticationMethod},
-		Status:         core.HarnessUnavailable,
-	}
+	instance := core.HarnessInstance{ID: harnessInstanceID(p.Node, p.Spec.Kind), Node: p.Node, Kind: p.Spec.Kind, Status: core.HarnessUnavailable}
 	result := ProbeResult{Instance: instance}
 	if err := p.Spec.validate(); err != nil {
-		result.Err = err
-		result.ErrorCode = "invalid_probe"
+		result.Err, result.ErrorCode = err, "invalid_probe"
 		return result
 	}
 	if p.Runner == nil {
@@ -128,53 +122,53 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
 	}
 	instance.Version = parseVersion(version.Stdout)
 	if instance.Version == "" {
-		result.Err = ErrProbeMetadata
-		result.ErrorCode = "version_unavailable"
+		result.Err, result.ErrorCode = ErrProbeMetadata, "version_unavailable"
+		result.Instance = instance
 		return result
 	}
 
 	auth, err := p.run(ctx, p.Spec.AuthenticationArgs)
-	if err != nil || auth.ExitCode != 0 || !authenticationOutputSaysReady(auth.Stdout+"\n"+auth.Stderr) {
+	if err != nil || auth.ExitCode != 0 {
 		result.Err, result.ErrorCode = probeError(ErrProbeUnauthenticated, err, "unauthenticated")
-		instance.Authentication.Authenticated = false
 		result.Instance = instance
 		return result
 	}
-	instance.Authentication.Authenticated = true
+	ok, method := parseAuthentication(p.Spec.Kind, auth.Stdout+"\n"+auth.Stderr, p.Spec.AuthenticationMethod)
+	instance.Authentication = core.HarnessAuthentication{Authenticated: ok, Method: method}
+	if !ok {
+		result.Err, result.ErrorCode = ErrProbeUnauthenticated, "unauthenticated"
+		result.Instance = instance
+		return result
+	}
 
 	if len(p.Spec.HealthArgs) > 0 {
 		health, healthErr := p.run(ctx, p.Spec.HealthArgs)
 		if healthErr != nil || health.ExitCode != 0 || !healthOutputSaysReady(health.Stdout+"\n"+health.Stderr) {
 			result.Err, result.ErrorCode = probeError(ErrProbeUnhealthy, healthErr, "unhealthy")
-			instance.Status = core.HarnessUnavailable
 			result.Instance = instance
 			return result
 		}
 	}
 
-	models, err := p.run(ctx, p.Spec.ModelsArgs)
-	if err != nil || models.ExitCode != 0 {
-		result.Err, result.ErrorCode = probeError(ErrProbeMetadata, err, "models_probe_failed")
-		instance.Status = core.HarnessDegraded
-		result.Instance = instance
-		return result
-	}
-	instance.ModelIDs = parseObservedModels(models.Stdout)
-	if len(instance.ModelIDs) == 0 {
-		result.Err = ErrProbeMetadata
-		result.ErrorCode = "models_unavailable"
-		instance.Status = core.HarnessDegraded
-		result.Instance = instance
-		return result
-	}
-
-	if len(p.Spec.ReasoningArgs) == 0 {
-		// Some CLIs expose reasoning support beside model IDs in one catalog.
-		// An empty result remains an honest "no observed levels" state.
-		if json.Valid([]byte(models.Stdout)) || strings.Contains(strings.ToLower(models.Stdout), "reasoning") {
-			instance.ReasoningLevels = parseObservedReasoning(models.Stdout)
+	var modelOutput string
+	if len(p.Spec.ModelsArgs) > 0 {
+		models, modelErr := p.run(ctx, p.Spec.ModelsArgs)
+		if modelErr != nil || models.ExitCode != 0 {
+			result.Err, result.ErrorCode = probeError(ErrProbeMetadata, modelErr, "models_probe_failed")
+			instance.Status = core.HarnessDegraded
+			result.Instance = instance
+			return result
+		}
+		modelOutput = models.Stdout
+		instance.ModelIDs = parseObservedModels(modelOutput)
+		if len(instance.ModelIDs) == 0 && !p.Spec.ModelsOptional {
+			result.Err, result.ErrorCode = ErrProbeMetadata, "models_unavailable"
+			instance.Status = core.HarnessDegraded
+			result.Instance = instance
+			return result
 		}
 	}
+
 	if len(p.Spec.ReasoningArgs) > 0 {
 		reasoning, reasoningErr := p.run(ctx, p.Spec.ReasoningArgs)
 		if reasoningErr != nil || reasoning.ExitCode != 0 {
@@ -185,12 +179,13 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
 		}
 		instance.ReasoningLevels = parseObservedReasoning(reasoning.Stdout)
 		if len(instance.ReasoningLevels) == 0 {
-			result.Err = ErrProbeMetadata
-			result.ErrorCode = "reasoning_unavailable"
+			result.Err, result.ErrorCode = ErrProbeMetadata, "reasoning_unavailable"
 			instance.Status = core.HarnessDegraded
 			result.Instance = instance
 			return result
 		}
+	} else if modelOutput != "" {
+		instance.ReasoningLevels = parseObservedReasoning(modelOutput)
 	}
 
 	instance.Capabilities = core.HarnessCapabilities{
@@ -203,10 +198,20 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
 }
 
 func (p HarnessProbe) run(ctx context.Context, args []string) (CommandResult, error) {
-	return p.Runner.Run(ctx, p.Spec.Binary, args...)
+	timeout := p.Spec.StepTimeout
+	if timeout <= 0 {
+		timeout = defaultProbeStepTimeout
+	}
+	stepCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	result, err := p.Runner.Run(stepCtx, p.Spec.Binary, args...)
+	if errors.Is(stepCtx.Err(), context.DeadlineExceeded) {
+		return result, fmt.Errorf("harness probe: %s %s timed out: %w", p.Spec.Binary, strings.Join(args, " "), context.DeadlineExceeded)
+	}
+	return result, err
 }
 
-func probeError(defaultErr error, commandErr error, code string) (error, string) {
+func probeError(defaultErr, commandErr error, code string) (error, string) {
 	if commandErr != nil {
 		return fmt.Errorf("%w: %v", defaultErr, commandErr), code
 	}
@@ -227,18 +232,75 @@ func parseVersion(output string) string {
 	return ""
 }
 
-func authenticationOutputSaysReady(output string) bool {
-	lower := strings.ToLower(strings.TrimSpace(output))
-	for _, marker := range []string{"not authenticated", "unauthenticated", "not logged", "login required", "no credentials", "logged out", "unhealthy", "degraded"} {
-		if strings.Contains(lower, marker) {
-			return false
+func parseAuthentication(kind core.HarnessKind, output, fallbackMethod string) (bool, string) {
+	trimmed := strings.TrimSpace(output)
+	lower := strings.ToLower(trimmed)
+	if trimmed == "" || hasNegativeAuthMarker(lower) {
+		return false, fallbackMethod
+	}
+
+	if kind == core.HarnessClaudeCode {
+		var status map[string]any
+		if json.Unmarshal([]byte(trimmed), &status) == nil {
+			for _, key := range []string{"loggedIn", "authenticated", "isAuthenticated"} {
+				if value, exists := status[key]; exists {
+					loggedIn, ok := value.(bool)
+					if !ok || !loggedIn {
+						return false, observedAuthMethod(status, fallbackMethod)
+					}
+					return true, observedAuthMethod(status, fallbackMethod)
+				}
+			}
 		}
 	}
-	return true
+
+	if kind == core.HarnessCodex {
+		switch {
+		case strings.Contains(lower, "logged in using chatgpt"):
+			return true, "chatgpt"
+		case strings.Contains(lower, "logged in using an api key"), strings.Contains(lower, "logged in using api key"):
+			return true, "api_key"
+		case strings.Contains(lower, "logged in using agent identity"):
+			return true, "agent_identity"
+		}
+	}
+
+	if kind == core.HarnessOpenCode {
+		return true, "provider"
+	}
+	if kind == core.HarnessFX {
+		return true, "local"
+	}
+	return true, fallbackMethod
+}
+
+func observedAuthMethod(status map[string]any, fallback string) string {
+	for _, key := range []string{"authMethod", "method", "subscriptionType", "accountType", "authType"} {
+		if value, ok := status[key].(string); ok && strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return fallback
+}
+
+func hasNegativeAuthMarker(lower string) bool {
+	for _, marker := range []string{"not authenticated", "unauthenticated", "not logged", "login required", "no credentials", "logged out"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func authenticationOutputSaysReady(output string) bool {
+	return strings.TrimSpace(output) != "" && !hasNegativeAuthMarker(strings.ToLower(output))
 }
 
 func healthOutputSaysReady(output string) bool {
 	lower := strings.ToLower(strings.TrimSpace(output))
+	if lower == "" {
+		return false
+	}
 	for _, marker := range []string{"unhealthy", "degraded", "not ready", "failed", "offline"} {
 		if strings.Contains(lower, marker) {
 			return false
@@ -248,25 +310,29 @@ func healthOutputSaysReady(output string) bool {
 }
 
 func parseObservedModels(output string) []core.ObservedModelID {
-	var catalog struct {
-		Models []struct {
-			Slug string `json:"slug"`
-		} `json:"models"`
-	}
-	if json.Unmarshal([]byte(output), &catalog) == nil && len(catalog.Models) > 0 {
+	if records := decodeModelRecords(output); len(records) > 0 {
 		seen := map[core.ObservedModelID]struct{}{}
-		models := make([]core.ObservedModelID, 0, len(catalog.Models))
-		for _, model := range catalog.Models {
-			observed := core.ObservedModelID(strings.TrimSpace(model.Slug))
-			if observed != "" && !isModelAlias(string(observed)) {
-				if _, ok := seen[observed]; !ok {
-					seen[observed] = struct{}{}
-					models = append(models, observed)
-				}
+		models := make([]core.ObservedModelID, 0, len(records))
+		for _, record := range records {
+			if !modelRecordSelectable(record) {
+				continue
+			}
+			value, _ := record["slug"].(string)
+			if strings.TrimSpace(value) == "" {
+				value, _ = record["id"].(string)
+			}
+			observed := core.ObservedModelID(strings.TrimSpace(value))
+			if observed == "" || isModelAlias(string(observed)) {
+				continue
+			}
+			if _, ok := seen[observed]; !ok {
+				seen[observed] = struct{}{}
+				models = append(models, observed)
 			}
 		}
 		return models
 	}
+
 	values := parseObservedValues(output, "models", "model")
 	models := make([]core.ObservedModelID, 0, len(values))
 	for _, value := range values {
@@ -278,43 +344,89 @@ func parseObservedModels(output string) []core.ObservedModelID {
 }
 
 func parseObservedReasoning(output string) []core.ObservedReasoningLevel {
-	var catalog struct {
-		Models []struct {
-			Default string `json:"default_reasoning_level"`
-			Levels  []struct {
-				Effort string `json:"effort"`
-			} `json:"supported_reasoning_levels"`
-		} `json:"models"`
-	}
-	if json.Unmarshal([]byte(output), &catalog) == nil && len(catalog.Models) > 0 {
+	if records := decodeModelRecords(output); len(records) > 0 {
 		seen := map[core.ObservedReasoningLevel]struct{}{}
 		levels := make([]core.ObservedReasoningLevel, 0)
-		for _, model := range catalog.Models {
-			if model.Default != "" {
-				level := core.ObservedReasoningLevel(model.Default)
-				if _, ok := seen[level]; !ok {
-					seen[level] = struct{}{}
-					levels = append(levels, level)
-				}
+		add := func(value string) {
+			level := core.ObservedReasoningLevel(strings.TrimSpace(value))
+			if level == "" {
+				return
 			}
-			for _, observed := range model.Levels {
-				if observed.Effort != "" {
-					level := core.ObservedReasoningLevel(observed.Effort)
-					if _, ok := seen[level]; !ok {
-						seen[level] = struct{}{}
-						levels = append(levels, level)
+			if _, ok := seen[level]; !ok {
+				seen[level] = struct{}{}
+				levels = append(levels, level)
+			}
+		}
+		for _, record := range records {
+			if !modelRecordSelectable(record) {
+				continue
+			}
+			if value, ok := record["default_reasoning_level"].(string); ok {
+				add(value)
+			}
+			if raw, ok := record["supported_reasoning_levels"].([]any); ok {
+				for _, item := range raw {
+					switch value := item.(type) {
+					case string:
+						add(value)
+					case map[string]any:
+						if effort, ok := value["effort"].(string); ok {
+							add(effort)
+						}
 					}
 				}
 			}
 		}
 		return levels
 	}
+
 	values := parseObservedValues(output, "reasoning", "levels")
 	levels := make([]core.ObservedReasoningLevel, 0, len(values))
 	for _, value := range values {
 		levels = append(levels, core.ObservedReasoningLevel(value))
 	}
 	return levels
+}
+
+func decodeModelRecords(output string) []map[string]any {
+	var root any
+	if json.Unmarshal([]byte(output), &root) != nil {
+		return nil
+	}
+	var items []any
+	switch value := root.(type) {
+	case []any:
+		items = value
+	case map[string]any:
+		if models, ok := value["models"].([]any); ok {
+			items = models
+		}
+	}
+	records := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if record, ok := item.(map[string]any); ok {
+			records = append(records, record)
+		}
+	}
+	return records
+}
+
+func modelRecordSelectable(record map[string]any) bool {
+	for _, key := range []string{"available", "enabled", "selectable"} {
+		if value, ok := record[key].(bool); ok && !value {
+			return false
+		}
+	}
+	if value, ok := record["hidden"].(bool); ok && value {
+		return false
+	}
+	if value, ok := record["visibility"].(string); ok {
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "hidden", "unavailable", "disabled", "internal":
+			return false
+		}
+	}
+	return true
 }
 
 func parseObservedValues(output string, prefixes ...string) []string {
@@ -336,9 +448,6 @@ func parseObservedValues(output string, prefixes ...string) []string {
 		line = strings.TrimPrefix(line, "-")
 		if strings.Contains(line, " · ") {
 			line = strings.TrimSpace(strings.SplitN(line, " · ", 2)[0])
-		}
-		if strings.Contains(strings.ToLower(line), "available") && strings.HasPrefix(strings.ToLower(line), "models") {
-			continue
 		}
 		for _, part := range strings.FieldsFunc(line, func(r rune) bool { return r == ',' || r == ';' || r == '|' }) {
 			value := strings.Trim(strings.TrimSpace(part), "\"'")
@@ -365,24 +474,19 @@ func harnessInstanceID(node core.NodeReference, kind core.HarnessKind) core.Harn
 func ProbeHarness(ctx context.Context, node core.NodeReference, spec HarnessProbeSpec, runner CommandRunner) ProbeResult {
 	return (HarnessProbe{Node: node, Spec: spec, Runner: runner}).Probe(ctx)
 }
-
 func ProbeFX(ctx context.Context, node core.NodeReference, runner CommandRunner) ProbeResult {
 	return ProbeHarness(ctx, node, DefaultFXProbeSpec(), runner)
 }
-
 func ProbeClaudeCode(ctx context.Context, node core.NodeReference, runner CommandRunner) ProbeResult {
 	return ProbeHarness(ctx, node, DefaultClaudeCodeProbeSpec(), runner)
 }
-
 func ProbeCodex(ctx context.Context, node core.NodeReference, runner CommandRunner) ProbeResult {
 	return ProbeHarness(ctx, node, DefaultCodexProbeSpec(), runner)
 }
-
 func ProbeOpenCode(ctx context.Context, node core.NodeReference, runner CommandRunner) ProbeResult {
 	return ProbeHarness(ctx, node, DefaultOpenCodeProbeSpec(), runner)
 }
 
-// NewDefaultHarnessProbes returns the mandatory MVP probes only.
 func NewDefaultHarnessProbes(node core.NodeReference, runner CommandRunner) []HarnessProbe {
 	return []HarnessProbe{
 		{Node: node, Runner: runner, Spec: DefaultFXProbeSpec()},
@@ -391,29 +495,49 @@ func NewDefaultHarnessProbes(node core.NodeReference, runner CommandRunner) []Ha
 	}
 }
 
-// NewOpenCodeCompatibilityProbe is intentionally separate from mandatory MVP
-// discovery and cannot become an implicit fallback.
 func NewOpenCodeCompatibilityProbe(node core.NodeReference, runner CommandRunner) HarnessProbe {
 	return HarnessProbe{Node: node, Runner: runner, Spec: DefaultOpenCodeProbeSpec()}
 }
 
+var observedRuntimeActivity = []core.ActivityCapability{
+	core.ActivityAssistantTextDelta,
+	core.ActivityToolCall,
+	core.ActivityStatus,
+	core.ActivityAttemptOutcome,
+}
+
 func DefaultFXProbeSpec() HarnessProbeSpec {
-	return HarnessProbeSpec{Kind: core.HarnessFX, Binary: "fx", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"models"}, ModelsArgs: []string{"models"}, AuthenticationMethod: "local", ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel}, ActivityCapabilities: []core.ActivityCapability{core.ActivitySessionStarted, core.ActivityAssistantTextDelta, core.ActivityStatus, core.ActivityAttemptOutcome}}
+	return HarnessProbeSpec{
+		Kind: core.HarnessFX, Binary: "fx", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"models"}, ModelsArgs: []string{"models"}, AuthenticationMethod: "local",
+		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel},
+		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedRuntimeActivity...),
+	}
 }
 
 func DefaultClaudeCodeProbeSpec() HarnessProbeSpec {
-	return HarnessProbeSpec{Kind: core.HarnessClaudeCode, Binary: "claude", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"auth", "status"}, ModelsArgs: []string{"models"}, AuthenticationMethod: "oauth", ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilitySteering, core.CapabilityApprovals}, ActivityCapabilities: []core.ActivityCapability{core.ActivitySessionStarted, core.ActivityThinkingSummary, core.ActivityAssistantTextDelta, core.ActivityToolCall, core.ActivityToolResult, core.ActivityPermissionRequest, core.ActivityStatus, core.ActivityAttemptOutcome}}
+	return HarnessProbeSpec{
+		Kind: core.HarnessClaudeCode, Binary: "claude", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"auth", "status"}, ModelsOptional: true,
+		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilitySteering, core.CapabilityApprovals},
+		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedRuntimeActivity...),
+	}
 }
 
 func DefaultCodexProbeSpec() HarnessProbeSpec {
-	return HarnessProbeSpec{Kind: core.HarnessCodex, Binary: "codex", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"login", "status"}, HealthArgs: []string{"doctor"}, ModelsArgs: []string{"debug", "models"}, ReasoningArgs: []string{"debug", "models"}, AuthenticationMethod: "api_key", ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilitySteering}, ActivityCapabilities: []core.ActivityCapability{core.ActivitySessionStarted, core.ActivityAssistantTextDelta, core.ActivityToolCall, core.ActivityToolResult, core.ActivityStatus, core.ActivityAttemptOutcome}}
+	return HarnessProbeSpec{
+		Kind: core.HarnessCodex, Binary: "codex", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"login", "status"}, HealthArgs: []string{"doctor"}, ModelsArgs: []string{"debug", "models"}, ReasoningArgs: []string{"debug", "models"},
+		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilitySteering},
+		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedRuntimeActivity...),
+	}
 }
 
 func DefaultOpenCodeProbeSpec() HarnessProbeSpec {
-	return HarnessProbeSpec{Kind: core.HarnessOpenCode, Binary: "opencode", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"auth", "list"}, ModelsArgs: []string{"models"}, AuthenticationMethod: "provider", ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilitySteering}, ActivityCapabilities: []core.ActivityCapability{core.ActivitySessionStarted, core.ActivityAssistantTextDelta, core.ActivityToolCall, core.ActivityToolResult, core.ActivityStatus, core.ActivityAttemptOutcome}}
+	return HarnessProbeSpec{
+		Kind: core.HarnessOpenCode, Binary: "opencode", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"auth", "list"}, ModelsArgs: []string{"models"},
+		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilitySteering},
+		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedRuntimeActivity...),
+	}
 }
 
-// HarnessDiscovery is an InventorySource backed by local adapter probes.
 type HarnessDiscovery struct {
 	Node            core.NodeReference
 	Runner          CommandRunner
@@ -444,18 +568,13 @@ func (d HarnessDiscovery) Discover(ctx context.Context) (core.HarnessInventorySn
 	return core.HarnessInventorySnapshot{Node: d.Node, Instances: instances, ObservedAt: now().UTC()}, nil
 }
 
-// DiscoverHarnessInventory probes the mandatory adapters and, when requested,
-// the separate OpenCode compatibility adapter. Every probe stays in inventory,
-// including unavailable instances.
 func DiscoverHarnessInventory(ctx context.Context, node core.NodeReference, runner CommandRunner, includeOpenCode bool) core.HarnessInventorySnapshot {
 	inventory, _ := (HarnessDiscovery{Node: node, Runner: runner, IncludeOpenCode: includeOpenCode}).Discover(ctx)
 	return inventory
 }
-
 func DiscoverRequiredHarnessInventory(ctx context.Context, node core.NodeReference, runner CommandRunner) core.HarnessInventorySnapshot {
 	return DiscoverHarnessInventory(ctx, node, runner, false)
 }
-
 func DiscoverAllHarnessInventory(ctx context.Context, node core.NodeReference, runner CommandRunner) core.HarnessInventorySnapshot {
 	return DiscoverHarnessInventory(ctx, node, runner, true)
 }
