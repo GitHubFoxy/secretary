@@ -323,7 +323,7 @@ func waitFor(t *testing.T, ctx context.Context, name string, condition func() bo
 
 func setDrainHTTP(t *testing.T, ctx context.Context, server *httptest.Server, nodeRef string, draining bool) ServerNodeStatus {
 	t.Helper()
-	body := strings.NewReader(`{"draining":` + map[bool]string{true: "true", false: "false"}[draining] + `}`)
+	body := strings.NewReader("{\"draining\":" + map[bool]string{true: "true", false: "false"}[draining] + "}")
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/nodes/"+nodeRef+"/drain", body)
 	if err != nil {
 		t.Fatal(err)
