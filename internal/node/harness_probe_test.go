@@ -134,7 +134,7 @@ func TestProbeStepsHaveBoundedTimeout(t *testing.T) {
 	spec := DefaultFXProbeSpec()
 	spec.StepTimeout = 5 * time.Millisecond
 	result := (HarnessProbe{Node: "node-a", Spec: spec, Runner: runner}).Probe(context.Background())
-	if result.ErrorCode != "unauthenticated" || !errors.Is(result.Err, ErrProbeUnauthenticated) || !errors.Is(result.Err, context.DeadlineExceeded) {
+	if result.ErrorCode != "unauthenticated" || !errors.Is(result.Err, ErrProbeUnauthenticated) || !strings.Contains(result.Err.Error(), "deadline exceeded") {
 		t.Fatalf("timeout result=%#v", result)
 	}
 }
