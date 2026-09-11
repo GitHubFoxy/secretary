@@ -2,9 +2,11 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -224,27 +226,14 @@ func TestNodeIdentityPersistsWithRestrictedPermissions(t *testing.T) {
 	if loaded != identity {
 		t.Fatalf("loaded identity=%#v want=%#v", loaded, identity)
 	}
-	info, err := osStat(path)
+	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Perm() != 0o600 {
-		t.Fatalf("identity permissions=%#o", info.Perm())
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("identity permissions=%#o", info.Mode().Perm())
 	}
 }
-
-// osStat is a tiny seam so this test asserts the persisted credential is not
-// left world-readable without coupling production code to test-only hooks.
-func osStat(path string) (interface{ Perm() uint32 }, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	return fileModeView{mode: uint32(info.Mode().Perm())}, nil
-}
-
-type fileModeView struct{ mode uint32 }
-func (v fileModeView) Perm() uint32 { return v.mode }
 
 type daemonStaticInventory struct{ snapshot core.HarnessInventorySnapshot }
 
