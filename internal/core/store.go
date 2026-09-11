@@ -8,6 +8,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -38,6 +40,10 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("configure sqlite: %w", err)
 	}
+	if err := backupBeforeMigration(ctx, db, dsn); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err := store.migrate(ctx); err != nil {
 		db.Close()
 		return nil, err
@@ -46,6 +52,92 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 }
 
 func (s *Store) Close() error { return s.db.Close() }
+
+// backupBeforeMigration keeps a recoverable copy before any schema work. The
+// SQLite VACUUM INTO snapshot includes committed WAL pages and produces a
+// standalone backup instead of copying only the main database file.
+func backupBeforeMigration(ctx context.Context, db *sql.DB, dsn string) error {
+	databasePath, ok := sqliteDatabasePath(dsn)
+	if !ok {
+		return nil
+	}
+	info, err := os.Stat(databasePath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat sqlite database for backup: %w", err)
+	}
+	if info.IsDir() || info.Size() == 0 {
+		return nil
+	}
+
+	backupPath := databasePath + ".backup"
+	temporaryPath := backupPath + ".tmp"
+	if err := os.Remove(temporaryPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale sqlite backup: %w", err)
+	}
+	removeTemporary := true
+	defer func() {
+		if removeTemporary {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
+	if _, err := db.ExecContext(ctx, `VACUUM INTO `+sqliteStringLiteral(temporaryPath)); err != nil {
+		return fmt.Errorf("create sqlite backup: %w", err)
+	}
+	if err := os.Chmod(temporaryPath, info.Mode().Perm()); err != nil {
+		return fmt.Errorf("set sqlite backup permissions: %w", err)
+	}
+	file, err := os.OpenFile(temporaryPath, os.O_WRONLY, 0)
+	if err != nil {
+		return fmt.Errorf("open sqlite backup for sync: %w", err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		return fmt.Errorf("sync sqlite backup: %w", err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close sqlite backup: %w", err)
+	}
+	if err := os.Rename(temporaryPath, backupPath); err != nil {
+		return fmt.Errorf("install sqlite backup: %w", err)
+	}
+	removeTemporary = false
+	return nil
+}
+
+func sqliteDatabasePath(dsn string) (string, bool) {
+	if dsn == "" || dsn == ":memory:" {
+		return "", false
+	}
+	if strings.HasPrefix(dsn, "file:") {
+		parsed, err := url.Parse(dsn)
+		if err != nil || parsed.Query().Get("mode") == "memory" {
+			return "", false
+		}
+		path := parsed.Path
+		if path == "" {
+			path = parsed.Opaque
+		}
+		if path == "" || path == ":memory:" {
+			return "", false
+		}
+		return path, true
+	}
+	path := dsn
+	if query := strings.IndexByte(path, '?'); query >= 0 {
+		if strings.Contains(path[query+1:], "mode=memory") {
+			return "", false
+		}
+		path = path[:query]
+	}
+	return path, path != ""
+}
+
+func sqliteStringLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
 
 // RecordConfigVersion keeps the exact compiled snapshot that a Worker binding references.
 func (s *Store) RecordConfigVersion(ctx context.Context, version, sourcePath, compiledJSON string) error {
@@ -102,8 +194,33 @@ func (s *Store) ConfigVersion(ctx context.Context, version string) (string, erro
 }
 
 func (s *Store) RecoverInterrupted(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE attempts SET state = ?, updated_at = ? WHERE state IN (?, ?)`, AttemptInterrupted, timestamp(s.now()), AttemptStarting, AttemptActive)
-	return err
+	if _, err := s.db.ExecContext(ctx, `UPDATE attempts SET state = ?, updated_at = ? WHERE state IN (?, ?)`, AttemptInterrupted, timestamp(s.now()), AttemptStarting, AttemptActive); err != nil {
+		return err
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM phase4_attempts WHERE state IN (?, ?)`, AttemptStarting, AttemptActive)
+	if err != nil {
+		return err
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, id := range ids {
+		if _, _, _, err := s.InterruptPhase4Attempt(ctx, id, "runtime_session_uncertain", "Attempt execution could not be proven after recovery"); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) SetEntryObserver(observer func(ConversationEntry)) {
@@ -158,6 +275,40 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+-- Phase 3 tasks remain legacy migration data. New product state uses these
+-- Worker-first tables and never creates a Task row.
+CREATE TABLE IF NOT EXISTS workers (
+  id TEXT PRIMARY KEY,
+  worker_ref TEXT NOT NULL UNIQUE,
+  conversation_id TEXT NOT NULL REFERENCES conversations(id),
+  title TEXT NOT NULL,
+  intent TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  harness_instance_id TEXT NOT NULL,
+  policy_snapshot TEXT NOT NULL,
+  status TEXT NOT NULL,
+  current_turn_id TEXT,
+  last_result_summary TEXT NOT NULL DEFAULT '',
+  archived INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  closed_at TEXT
+);
+CREATE TABLE IF NOT EXISTS turns (
+  id TEXT PRIMARY KEY,
+  worker_id TEXT NOT NULL REFERENCES workers(id),
+  input TEXT NOT NULL,
+  normalized_intent TEXT NOT NULL DEFAULT '',
+  context_snapshot TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL,
+  current_attempt_id TEXT,
+  result_id TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS turns_one_active_per_worker
+  ON turns(worker_id) WHERE state IN ('queued', 'starting', 'active', 'waiting_approval', 'needs_input');
 CREATE TABLE IF NOT EXISTS worker_bindings (
   id TEXT PRIMARY KEY,
   task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id),
@@ -269,6 +420,9 @@ CREATE INDEX IF NOT EXISTS events_created_at ON events(created_at);
 	}
 	if _, err = s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS tasks_parent_attempt ON tasks(parent_attempt_id); CREATE UNIQUE INDEX IF NOT EXISTS tasks_child_index ON tasks(parent_attempt_id, child_index) WHERE parent_attempt_id <> ''`); err != nil {
 		return fmt.Errorf("migrate child task indexes: %w", err)
+	}
+	if err := s.migratePhase4Lifecycle(ctx); err != nil {
+		return err
 	}
 	return nil
 }
@@ -456,11 +610,22 @@ func (s *Store) AcceptDispatchWithProfile(ctx context.Context, taskID, workerRef
 }
 
 func (s *Store) SetAttemptActive(ctx context.Context, attemptID string) (Attempt, error) {
-	return s.transitionAttempt(ctx, attemptID, []AttemptState{AttemptStarting}, AttemptActive)
+	attempt, err := s.transitionAttempt(ctx, attemptID, []AttemptState{AttemptStarting}, AttemptActive)
+	if !errors.Is(err, ErrNotFound) {
+		return attempt, err
+	}
+	return s.SetPhase4AttemptActive(ctx, attemptID)
 }
 
 func (s *Store) MarkAttemptInterrupted(ctx context.Context, attemptID string) (Attempt, error) {
-	return s.transitionAttempt(ctx, attemptID, []AttemptState{AttemptStarting, AttemptActive}, AttemptInterrupted)
+	attempt, err := s.transitionAttempt(ctx, attemptID, []AttemptState{AttemptStarting, AttemptActive}, AttemptInterrupted)
+	if !errors.Is(err, ErrNotFound) {
+		return attempt, err
+	}
+	if _, _, _, err := s.InterruptPhase4Attempt(ctx, attemptID, "interrupted", "Attempt explicitly interrupted"); err != nil {
+		return Attempt{}, err
+	}
+	return s.Phase4Attempt(ctx, attemptID)
 }
 
 func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, status ResultStatus, summary string) (Result, bool, error) {
@@ -754,6 +919,8 @@ func resultAttemptState(status ResultStatus) (AttemptState, error) {
 		return AttemptFailed, nil
 	case ResultCanceled:
 		return AttemptCanceled, nil
+	case ResultInterrupted:
+		return AttemptInterrupted, nil
 	default:
 		return "", fmt.Errorf("unknown result status %q", status)
 	}

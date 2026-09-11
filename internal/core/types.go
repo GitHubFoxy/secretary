@@ -30,9 +30,10 @@ func (s AttemptState) Terminal() bool {
 type ResultStatus string
 
 const (
-	ResultSucceeded ResultStatus = "succeeded"
-	ResultFailed    ResultStatus = "failed"
-	ResultCanceled  ResultStatus = "canceled"
+	ResultSucceeded   ResultStatus = "succeeded"
+	ResultFailed      ResultStatus = "failed"
+	ResultCanceled    ResultStatus = "canceled"
+	ResultInterrupted ResultStatus = "interrupted"
 )
 
 type EntryKind string
@@ -102,20 +103,30 @@ type BindingProfile struct {
 }
 
 type Attempt struct {
-	ID              string       `json:"id"`
-	WorkerBindingID string       `json:"worker_binding_id"`
-	Number          int          `json:"number"`
-	State           AttemptState `json:"state"`
-	CreatedAt       time.Time    `json:"created_at"`
-	UpdatedAt       time.Time    `json:"updated_at"`
+	ID                string       `json:"id"`
+	WorkerBindingID   string       `json:"worker_binding_id,omitempty"`
+	WorkerID          string       `json:"worker_id,omitempty"`
+	TurnID            string       `json:"turn_id,omitempty"`
+	Number            int          `json:"number"`
+	NodeID            string       `json:"node_id,omitempty"`
+	HarnessInstanceID string       `json:"harness_instance_id,omitempty"`
+	State             AttemptState `json:"state"`
+	CorrelationID     string       `json:"correlation_id,omitempty"`
+	CreatedAt         time.Time    `json:"created_at"`
+	UpdatedAt         time.Time    `json:"updated_at"`
 }
 
 type Result struct {
-	ID        string       `json:"id"`
-	AttemptID string       `json:"attempt_id"`
-	Status    ResultStatus `json:"status"`
-	Summary   string       `json:"summary"`
-	CreatedAt time.Time    `json:"created_at"`
+	ID            string       `json:"id"`
+	WorkerID      string       `json:"worker_id,omitempty"`
+	TurnID        string       `json:"turn_id,omitempty"`
+	AttemptID     string       `json:"attempt_id,omitempty"`
+	Status        ResultStatus `json:"status"`
+	Summary       string       `json:"summary"`
+	FailureCode   string       `json:"failure_code,omitempty"`
+	ArtifactRefs  string       `json:"artifact_refs,omitempty"`
+	CorrelationID string       `json:"correlation_id,omitempty"`
+	CreatedAt     time.Time    `json:"created_at"`
 }
 
 type TaskDetails struct {
