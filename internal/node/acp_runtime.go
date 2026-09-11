@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -12,19 +14,31 @@ import (
 )
 
 type ACPRuntime struct {
-	Command   string
-	Arguments []string
+	Command        string
+	Arguments      []string
+	RawLogDir      string
+	RawLogMaxBytes int64
+	RawLogFiles    int
+	Environment    []string
 }
 
 func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, error) {
-	client, err := r.connect(ctx)
+	client, err := r.connect(ctx, request.WorkerRef, request.Profile)
 	if err != nil {
 		return nil, err
 	}
 	var created struct {
 		SessionID string `json:"sessionId"`
 	}
-	if err := client.Request(ctx, "session/new", map[string]any{"cwd": request.Workspace, "mcpServers": []any{}}, &created); err != nil {
+	mcpServers := request.MCPServers
+	if mcpServers == nil {
+		mcpServers = []MCPServer{}
+	}
+	newParams := map[string]any{"cwd": request.Workspace, "mcpServers": mcpServers}
+	if metadata := profileMetadata(request.Profile); metadata != nil {
+		newParams["_meta"] = metadata
+	}
+	if err := client.Request(ctx, "session/new", newParams, &created); err != nil {
 		client.Close()
 		return nil, err
 	}
@@ -39,11 +53,19 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 }
 
 func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
-	client, err := r.connect(ctx)
+	client, err := r.connect(ctx, request.WorkerRef, request.Profile)
 	if err != nil {
 		return nil, err
 	}
-	if err := client.Request(ctx, "session/load", map[string]any{"sessionId": runtimeSessionID, "cwd": request.Workspace, "mcpServers": []any{}}, &map[string]any{}); err != nil {
+	mcpServers := request.MCPServers
+	if mcpServers == nil {
+		mcpServers = []MCPServer{}
+	}
+	loadParams := map[string]any{"sessionId": runtimeSessionID, "cwd": request.Workspace, "mcpServers": mcpServers}
+	if metadata := profileMetadata(request.Profile); metadata != nil {
+		loadParams["_meta"] = metadata
+	}
+	if err := client.Request(ctx, "session/load", loadParams, &map[string]any{}); err != nil {
 		client.Close()
 		return nil, err
 	}
@@ -52,9 +74,87 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 	return session, nil
 }
 
-func (r ACPRuntime) connect(ctx context.Context) (*acp.Client, error) {
-	client, err := acp.Start(ctx, r.Command, r.Arguments...)
+func profileMetadata(profile ManagedProfile) map[string]string {
+	if profile.Name == "" && profile.Version == "" && profile.Hash == "" {
+		return nil
+	}
+	return map[string]string{
+		"secretaryProfile":         profile.Name,
+		"secretaryProfileVersion":  profile.Version,
+		"secretaryProfileHash":     profile.Hash,
+		"secretaryProfileDelivery": profile.Delivery,
+	}
+}
+
+func profileEnvironment(base []string, profile ManagedProfile) ([]string, error) {
+	model := strings.TrimSpace(profile.Model)
+	reasoning := strings.TrimSpace(profile.Reasoning)
+	if (model == "" || isModelAlias(model)) && (reasoning == "" || reasoning == "default") {
+		return append([]string(nil), base...), nil
+	}
+	overrides := make(map[string]any)
+	for _, value := range base {
+		if !strings.HasPrefix(value, "CODEX_CONFIG=") {
+			continue
+		}
+		configured := make(map[string]any)
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(value, "CODEX_CONFIG=")), &configured); err != nil {
+			return nil, fmt.Errorf("node: invalid CODEX_CONFIG: %w", err)
+		}
+		for key, item := range configured {
+			overrides[key] = item
+		}
+	}
+	if model != "" && !isModelAlias(model) {
+		overrides["model"] = model
+	}
+	if reasoning != "" && reasoning != "default" {
+		overrides["model_reasoning_effort"] = reasoning
+	}
+	encoded, err := json.Marshal(overrides)
 	if err != nil {
+		return nil, fmt.Errorf("node: encode profile CODEX_CONFIG: %w", err)
+	}
+	environment := make([]string, 0, len(base)+1)
+	for _, value := range base {
+		if !strings.HasPrefix(value, "CODEX_CONFIG=") {
+			environment = append(environment, value)
+		}
+	}
+	environment = append(environment, "CODEX_CONFIG="+string(encoded))
+	return environment, nil
+}
+
+func isModelAlias(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "default", "fast", "smart", "cheap":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile ManagedProfile) (*acp.Client, error) {
+	var rawLog io.WriteCloser
+	if r.RawLogDir != "" {
+		var err error
+		rawLog, err = openRotatingLog(filepath.Join(r.RawLogDir, workerRef+".jsonl"), r.RawLogMaxBytes, r.RawLogFiles)
+		if err != nil {
+			return nil, fmt.Errorf("open raw ACP log: %w", err)
+		}
+	}
+	environment, err := profileEnvironment(r.Environment, profile)
+	if err != nil {
+		if rawLog != nil {
+			_ = rawLog.Close()
+		}
+		return nil, err
+	}
+	client, err := acp.StartWithLogEnv(ctx, rawLog, environment, r.Command, r.Arguments...)
+	if err != nil {
+		if rawLog != nil {
+			_ = rawLog.Close()
+		}
 		return nil, err
 	}
 	if err := client.Request(ctx, "initialize", map[string]any{

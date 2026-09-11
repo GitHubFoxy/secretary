@@ -3,7 +3,6 @@ package secretary
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"sync"
 
@@ -20,8 +19,9 @@ var ErrNotStarted = errors.New("secretary: runtime not started")
 type Runtime struct {
 	node           *node.LocalNode
 	capability     string
-	controlCommand string
+	mcpCommand     string
 	dataDir        string
+	profile        func() node.ManagedProfile
 	store          *core.Store
 	conversationID string
 
@@ -36,10 +36,16 @@ func NewRuntime(local *node.LocalNode, capability string) *Runtime {
 	return &Runtime{node: local, capability: capability, errors: make(chan error, 8)}
 }
 
-func (r *Runtime) AttachControlPlane(command, dataDir string) {
+func (r *Runtime) AttachMCP(command, dataDir string) {
 	r.mu.Lock()
-	r.controlCommand = command
+	r.mcpCommand = command
 	r.dataDir = dataDir
+	r.mu.Unlock()
+}
+
+func (r *Runtime) AttachProfile(profile func() node.ManagedProfile) {
+	r.mu.Lock()
+	r.profile = profile
 	r.mu.Unlock()
 }
 
@@ -64,19 +70,31 @@ func (r *Runtime) Start(ctx context.Context) error {
 		return errors.New("secretary: capability is required")
 	}
 	r.mu.Lock()
-	controlCommand, dataDir := r.controlCommand, r.dataDir
+	mcpCommand, dataDir, profileFn, store := r.mcpCommand, r.dataDir, r.profile, r.store
 	r.mu.Unlock()
-	if controlCommand == "" {
-		controlCommand = "secretaryctl"
+	prompt := "You are the persistent personal Secretary. Use the server-owned Secretary tools for Task lifecycle operations. Never give Secretary capabilities to a Worker or Channel adapter."
+	request := node.StartRequest{WorkerRef: workerRef, Task: prompt}
+	if profileFn != nil {
+		request.Profile = profileFn()
+		if request.Profile.Content != "" {
+			request.Task = "Start the Secretary session and follow the managed Profile."
+			if request.Profile.Delivery != "native" {
+				request.Task = "Read and follow the managed AGENTS.md before starting the Secretary session. Do not replace or weaken its instructions."
+			}
+		}
 	}
-	command := fmt.Sprintf("SECRETARY_CAPABILITY=%s %s", r.capability, controlCommand)
-	if dataDir != "" {
-		command += fmt.Sprintf(" -data-dir %s", dataDir)
+	if mcpCommand != "" {
+		request.MCPServers = []node.MCPServer{node.SecretaryMCPServer(mcpCommand, dataDir, "secretary", r.capability, workerRef)}
 	}
-	prompt := fmt.Sprintf("You are the persistent personal Secretary. Use only the capability-scoped secretaryctl for Task lifecycle operations. Run %s for create, retry, close, list and show. Never give this capability to a Worker or Channel adapter.", command)
-	session, err := r.node.Dispatch(ctx, node.StartRequest{WorkerRef: workerRef, Task: prompt})
+	session, err := r.node.Dispatch(ctx, request)
 	if err != nil {
 		return err
+	}
+	if request.Profile.Name != "" && store != nil {
+		_, _ = store.RecordEvent(ctx, "secretary.profile_delivery", workerRef, "", session.ID(), map[string]string{
+			"profile": request.Profile.Name, "profile_version": request.Profile.Version,
+			"profile_hash": request.Profile.Hash, "delivery": request.Profile.Delivery, "runtime": request.Profile.Runtime,
+		})
 	}
 	r.mu.Lock()
 	r.session = session

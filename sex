@@ -6,22 +6,26 @@ STATE="$HOME/.local/share/secretary"
 BIN="$HOME/.local/bin"
 ENV_FILE="$STATE/environment"
 PID_FILE="$STATE/server.pid"
+MODE_FILE="$STATE/server.mode"
 LOG_FILE="$STATE/secretaryd.log"
+PLIST="$HOME/Library/LaunchAgents/dev.secretary.sex.plist"
 URL="http://127.0.0.1:8081"
 
 usage() {
   cat <<'EOF'
-Usage: sex <command>
+Usage: sex <command> [options]
 
 Commands:
-  setup             Build Secretary and install the Codex ACP adapter
-  start             Start Secretary and open the web UI
+  setup             Build Secretary and install/check the configured harness
+  start [--debug]   Start or reuse the server and open the User UI
   stop              Stop the local Secretary server
-  restart           Restart Secretary and open the web UI
-  status            Show server status
+  restart [--debug] Restart the server and open the User UI
+  status            Show server status and mode
   logs              Follow the server log
-  install-service   Start Secretary automatically after macOS login
-  uninstall-service Remove the automatic-start service
+  doctor            Check paths, binaries, config, and harness readiness
+  install-service [--debug]
+                    Install a launchd service that survives terminal exit
+  uninstall-service Remove the launchd service
 EOF
 }
 
@@ -39,27 +43,147 @@ write_bootstrap_environment() {
   fi
 }
 
+configured_harness() {
+  local config="$STATE/config.toml"
+  if [[ -f "$config" ]]; then
+    local harness
+    harness="$(awk -F'=' '/^[[:space:]]*harness[[:space:]]*=/{gsub(/[ \"\r]/, "", $2); print $2; exit}' "$config")"
+    [[ -n "$harness" ]] && { print "$harness"; return 0; }
+  fi
+  print "fx"
+}
+
+path_command() {
+  local name="$1"
+  if command -v "$name" >/dev/null 2>&1; then
+    command -v "$name"
+    return 0
+  fi
+  for candidate in "$BIN/$name" "$HOME/.local/share/mise/shims/$name" "/opt/homebrew/bin/$name" "/usr/local/bin/$name"; do
+    [[ -x "$candidate" ]] && { print "$candidate"; return 0; }
+  done
+  return 1
+}
+
+harness_command() {
+  case "$(configured_harness)" in
+    codex)
+      [[ -n "${SECRETARY_ACP_COMMAND:-}" ]] && { print "$SECRETARY_ACP_COMMAND"; return 0; }
+      path_command codex-acp ;;
+    fx)
+      [[ -n "${SECRETARY_FX_COMMAND:-}" ]] && { print "$SECRETARY_FX_COMMAND"; return 0; }
+      path_command fx ;;
+    opencode)
+      [[ -n "${SECRETARY_OPENCODE_COMMAND:-}" ]] && { print "$SECRETARY_OPENCODE_COMMAND"; return 0; }
+      path_command opencode ;;
+    *) return 1 ;;
+  esac
+}
+
 build() {
   mkdir -p "$BIN"
   cd "$ROOT"
   mise exec -- go build -o "$BIN/secretaryd" ./cmd/secretaryd
   mise exec -- go build -o "$BIN/secretaryctl" ./cmd/secretaryctl
+  mise exec -- go build -o "$BIN/secretary-mcp" ./cmd/secretary-mcp
+}
+
+ensure_config() {
+  [[ -f "$STATE/config.toml" ]] && return 0
+  mkdir -p "$STATE/profiles"
+  cp "$ROOT/internal/config/defaults/config.toml" "$STATE/config.toml"
+  cp "$ROOT/internal/config/defaults/secretary.md" "$STATE/profiles/secretary.md"
+  cp "$ROOT/internal/config/defaults/worker.md" "$STATE/profiles/worker.md"
+  cp "$ROOT/internal/config/defaults/child-worker.md" "$STATE/profiles/child-worker.md"
+  chmod 700 "$STATE/profiles"
+  chmod 600 "$STATE/config.toml" "$STATE/profiles"/*.md
 }
 
 setup() {
   mkdir -p "$BIN" "$STATE"
   chmod 700 "$STATE"
   build
-  if ! command -v codex-acp >/dev/null 2>&1; then
-    npm install -g @agentclientprotocol/codex-acp@1.10.0
-  fi
-  if ! codex login status; then
-    print "Codex login is required. Opening Codex login now."
-    codex login
-  fi
-  ln -sfn "$ROOT/sex" "$BIN/sex"
+  ensure_config
   write_bootstrap_environment
+  local harness="$(configured_harness)"
+  case "$harness" in
+    codex)
+      if ! path_command codex-acp >/dev/null 2>&1; then
+        npm install -g @agentclientprotocol/codex-acp@1.10.0
+      fi
+      local codex_bin
+      if ! codex_bin="$(path_command codex)"; then
+        print -u2 "Codex is not installed. Install Codex, then run: sex doctor"
+        return 1
+      fi
+      if ! "$codex_bin" login status >/dev/null 2>&1; then
+        print "Codex login is required. Opening Codex login now."
+        "$codex_bin" login
+      fi
+      ;;
+    fx|opencode)
+      if ! harness_command >/dev/null 2>&1; then
+        print -u2 "Configured harness '$harness' is unavailable. Install it, then run: sex doctor"
+        return 1
+      fi
+      ;;
+    *)
+      print -u2 "Unsupported runtime harness '$harness' in $STATE/config.toml"
+      return 1
+      ;;
+  esac
+  ln -sfn "$ROOT/sex" "$BIN/sex"
   print "Setup complete. Run: sex start"
+}
+
+doctor() {
+  local failures=0
+  mkdir -p "$STATE"
+  if [[ ! -x "$BIN/secretaryd" ]]; then
+    print "missing: $BIN/secretaryd"
+    failures=$((failures + 1))
+  else
+    print "ok: secretaryd"
+  fi
+  if [[ ! -x "$BIN/secretary-mcp" ]]; then
+    print "missing: $BIN/secretary-mcp"
+    failures=$((failures + 1))
+  else
+    print "ok: secretary-mcp"
+  fi
+  local harness="$(configured_harness)"
+  if command_path="$(harness_command 2>/dev/null)"; then
+    print "ok: $harness ($command_path)"
+    if [[ "$harness" == "codex" ]]; then
+      local codex_path
+      if codex_path="$(path_command codex 2>/dev/null)" && "$codex_path" login status >/dev/null 2>&1; then
+        print "ok: codex login"
+      else
+        print "missing: codex login. Run: codex login"
+        failures=$((failures + 1))
+      fi
+    fi
+  else
+    print "missing: configured harness $harness"
+    failures=$((failures + 1))
+  fi
+  if [[ ! -f "$ENV_FILE" ]]; then
+    print "missing: bootstrap environment. Run: sex setup"
+    failures=$((failures + 1))
+  else
+    print "ok: bootstrap environment"
+  fi
+  if [[ -f "$STATE/config.toml" ]]; then
+    print "ok: config $STATE/config.toml"
+  else
+    print "missing: config $STATE/config.toml"
+    failures=$((failures + 1))
+  fi
+  if (( failures > 0 )); then
+    print -u2 "Doctor found $failures problem(s)."
+    return 1
+  fi
+  print "Doctor found no problems."
 }
 
 running_pid() {
@@ -70,32 +194,87 @@ running_pid() {
   print -r -- "$pid"
 }
 
+open_user() {
+  load_environment
+  local pairing_url="$URL/#bootstrap=$SECRETARY_BOOTSTRAP_TOKEN"
+  if ! open "$pairing_url" >/dev/null 2>&1; then
+    print "Open this URL in your browser: $pairing_url"
+  fi
+}
+
+server_http_code() {
+  curl -sS -o /dev/null -w '%{http_code}' "$URL/v1/web/session" 2>/dev/null || true
+}
+
 start() {
+  local debug=0
+  while (($#)); do
+    case "$1" in
+      --debug) debug=1 ;;
+      *) print -u2 "Unknown start option: $1"; return 2 ;;
+    esac
+    shift
+  done
   if ! [[ -x "$BIN/secretaryd" ]]; then
     print "Secretary is not set up. Run: sex setup"
     return 1
   fi
-  if running_pid >/dev/null; then
-    open "$URL"
-    print "Secretary is already running at $URL"
-    return 0
-  fi
   write_bootstrap_environment
   load_environment
+  if ! running_pid >/dev/null; then
+    local existing_code="$(server_http_code)"
+    if [[ "$existing_code" == "200" || "$existing_code" == "401" ]]; then
+      print -u2 "A Secretary server is already listening at $URL but is not managed by this state directory. Stop it first, then run sex start again."
+      return 1
+    fi
+  fi
+  if running_pid >/dev/null; then
+    local wanted="normal"
+    (( debug )) && wanted="debug"
+    local current="normal"
+    [[ -f "$MODE_FILE" ]] && current="$(<"$MODE_FILE")"
+    if [[ "$current" != "$wanted" ]]; then
+      print "Secretary is running in $current mode. Restarting in $wanted mode."
+      stop
+    else
+      open_user
+      print "Secretary is already running at $URL"
+      (( debug )) && print "Control Room: $URL/control-room"
+      return 0
+    fi
+  fi
   : "${SECRETARY_BOOTSTRAP_TOKEN:?missing bootstrap token}"
+  local harness="$(configured_harness)"
+  local harness_bin
+  if ! harness_bin="$(harness_command 2>/dev/null)"; then
+    print -u2 "Configured harness '$harness' is unavailable. Run: sex doctor"
+    return 1
+  fi
   : > "$LOG_FILE"
   chmod 600 "$LOG_FILE"
-  PATH="$BIN:$PATH" \
-  CODEX_PATH="$(command -v codex)" \
-  CODEX_CONFIG='{"model":"gpt-5.6-luna"}' \
-  INITIAL_AGENT_MODE=agent-full-access \
+  local -a args
+  args=("$BIN/secretaryd" -data-dir "$STATE" -listen 127.0.0.1:8081)
+  (( debug )) && args+=(--debug)
+  local acp_bin="" fx_bin="" opencode_bin="" codex_path=""
+  [[ "$harness" == "codex" ]] && acp_bin="$harness_bin"
+  [[ "$harness" == "codex" ]] && codex_path="$(path_command codex 2>/dev/null || true)"
+  [[ "$harness" == "fx" ]] && fx_bin="$harness_bin"
+  [[ "$harness" == "opencode" ]] && opencode_bin="$harness_bin"
+  PATH="$BIN:$HOME/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH" \
+  CODEX_PATH="$codex_path" \
   NO_BROWSER=1 \
-  SECRETARY_ACP_COMMAND="$(command -v codex-acp)" \
-  nohup "$BIN/secretaryd" -data-dir "$STATE" -listen 127.0.0.1:8081 >>"$LOG_FILE" 2>&1 &
+  SECRETARY_ACP_COMMAND="$acp_bin" \
+  SECRETARY_FX_COMMAND="$fx_bin" \
+  SECRETARY_OPENCODE_COMMAND="$opencode_bin" \
+  nohup "${args[@]}" >>"$LOG_FILE" 2>&1 &
   print -r -- "$!" > "$PID_FILE"
   chmod 600 "$PID_FILE"
-  for _ in {1..40}; do
-    if curl -sf -o /dev/null "$URL/"; then
+  (( debug )) && print "debug" > "$MODE_FILE" || print "normal" > "$MODE_FILE"
+  chmod 600 "$MODE_FILE"
+  local code
+  for _ in {1..80}; do
+    code="$(server_http_code)"
+    if [[ "$code" == "200" || "$code" == "401" ]]; then
       if [[ -z "${SECRETARY_CAPABILITY:-}" ]]; then
         local capability
         capability="$(grep -Eo 'SECRETARY_CAPABILITY=sec_[[:alnum:]]+' "$LOG_FILE" | tail -1 | cut -d= -f2 || true)"
@@ -104,68 +283,134 @@ start() {
           chmod 600 "$ENV_FILE"
         fi
       fi
-      open "$URL/#bootstrap=$SECRETARY_BOOTSTRAP_TOKEN"
+      open_user
       print "Secretary started at $URL"
+      (( debug )) && print "Control Room: $URL/control-room"
       return 0
     fi
     sleep 0.25
   done
-  print "Secretary did not become ready. See: $LOG_FILE"
+  print -u2 "Secretary did not become ready. See: $LOG_FILE"
   return 1
 }
 
 stop() {
   local pid
-  if ! pid="$(running_pid)"; then print "Secretary is not running"; return 0; fi
+  if ! pid="$(running_pid)"; then
+    rm -f "$PID_FILE" "$MODE_FILE"
+    print "Secretary is not running"
+    return 0
+  fi
   kill -TERM "$pid"
-  for _ in {1..40}; do kill -0 "$pid" 2>/dev/null || { print "Secretary stopped"; return 0; }; sleep 0.25; done
-  print "Secretary did not stop. See: $LOG_FILE"
+  for _ in {1..40}; do
+    kill -0 "$pid" 2>/dev/null || { rm -f "$PID_FILE" "$MODE_FILE"; print "Secretary stopped"; return 0; }
+    sleep 0.25
+  done
+  print -u2 "Secretary did not stop. See: $LOG_FILE"
   return 1
 }
 
-service_plist() { print "$HOME/Library/LaunchAgents/dev.secretary.sex.plist"; }
+restart() {
+  local -a options
+  while (($#)); do
+    case "$1" in
+      --debug) options+=(--debug) ;;
+      *) print -u2 "Unknown restart option: $1"; return 2 ;;
+    esac
+    shift
+  done
+  stop
+  start "${options[@]}"
+}
 
 install_service() {
+  local debug=0
+  while (($#)); do
+    case "$1" in
+      --debug) debug=1 ;;
+      *) print -u2 "Unknown install-service option: $1"; return 2 ;;
+    esac
+    shift
+  done
   setup
-  local plist="$(service_plist)"
-  mkdir -p "${plist:h}"
-  cat > "$plist" <<EOF
+  mkdir -p "${PLIST:h}"
+  local debug_arg=""
+  (( debug )) && debug_arg='<string>--debug</string>'
+  cat > "$PLIST" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>Label</key><string>dev.secretary.sex</string>
-  <key>ProgramArguments</key><array><string>$ROOT/sex</string><string>serve</string></array>
-  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>ProgramArguments</key><array><string>$ROOT/sex</string><string>serve</string>$debug_arg</array>
+  <key>EnvironmentVariables</key><dict>
+    <key>PATH</key><string>$BIN:$HOME/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
   <key>WorkingDirectory</key><string>$ROOT</string>
   <key>StandardOutPath</key><string>$LOG_FILE</string>
   <key>StandardErrorPath</key><string>$LOG_FILE</string>
 </dict></plist>
 EOF
-  launchctl bootstrap "gui/$UID" "$plist" 2>/dev/null || launchctl kickstart -k "gui/$UID/dev.secretary.sex"
+  launchctl bootout "gui/$UID" "$PLIST" 2>/dev/null || true
+  launchctl bootstrap "gui/$UID" "$PLIST"
   print "Secretary will start after macOS login."
 }
 
 serve() {
+  local -a options
+  while (($#)); do
+    case "$1" in
+      --debug) options+=(--debug) ;;
+      *) print -u2 "Unknown serve option: $1"; return 2 ;;
+    esac
+    shift
+  done
   write_bootstrap_environment
   load_environment
-  PATH="$BIN:$PATH" \
-  CODEX_PATH="$(command -v codex)" \
-  CODEX_CONFIG='{"model":"gpt-5.6-luna"}' \
-  INITIAL_AGENT_MODE=agent-full-access \
-  NO_BROWSER=1 \
-  SECRETARY_ACP_COMMAND="$(command -v codex-acp)" \
-  exec "$BIN/secretaryd" -data-dir "$STATE" -listen 127.0.0.1:8081
+  local harness="$(configured_harness)"
+  local harness_bin
+  harness_bin="$(harness_command 2>/dev/null)" || { print -u2 "Configured harness '$harness' is unavailable. Run: sex doctor"; return 1; }
+  local -a env_args
+  local codex_path=""
+  [[ "$harness" == "codex" ]] && codex_path="$(path_command codex 2>/dev/null || true)"
+  env_args=(PATH="$BIN:$HOME/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH" CODEX_PATH="$codex_path" NO_BROWSER=1)
+  case "$harness" in
+    codex) env_args+=(SECRETARY_ACP_COMMAND="$harness_bin") ;;
+    fx) env_args+=(SECRETARY_FX_COMMAND="$harness_bin") ;;
+    opencode) env_args+=(SECRETARY_OPENCODE_COMMAND="$harness_bin") ;;
+  esac
+  print -r -- "$$" > "$PID_FILE"
+  chmod 600 "$PID_FILE"
+  local mode="normal"
+  (( ${#options[@]} > 0 )) && mode="debug"
+  print -r -- "$mode" > "$MODE_FILE"
+  chmod 600 "$MODE_FILE"
+  exec env "${env_args[@]}" "$BIN/secretaryd" -data-dir "$STATE" -listen 127.0.0.1:8081 "${options[@]}"
 }
 
 case "${1:-}" in
-  setup) setup ;;
-  start) start ;;
-  stop) stop ;;
-  restart) build; stop; start ;;
-  status) if pid="$(running_pid)"; then print "running pid=$pid url=$URL"; else print "stopped"; fi ;;
+  setup) shift; setup "$@" ;;
+  start) shift; start "$@" ;;
+  stop) shift; stop "$@" ;;
+  restart) shift; restart "$@" ;;
+  status)
+    if pid="$(running_pid)"; then
+      mode="normal"; [[ -f "$MODE_FILE" ]] && mode="$(<"$MODE_FILE")"
+      print "running pid=$pid mode=$mode url=$URL"
+      if [[ "$mode" == "debug" ]]; then
+        print "control-room=$URL/control-room"
+      fi
+      return 0
+    else
+      print "stopped"
+      return 0
+    fi
+    ;;
   logs) tail -f "$LOG_FILE" ;;
-  install-service) install_service ;;
-  uninstall-service) launchctl bootout "gui/$UID" "$(service_plist)" 2>/dev/null || true; rm -f "$(service_plist)"; print "Service removed" ;;
-  serve) serve ;;
+  doctor) shift; doctor "$@" ;;
+  install-service) shift; install_service "$@" ;;
+  uninstall-service) launchctl bootout "gui/$UID" "$PLIST" 2>/dev/null || true; rm -f "$PLIST"; print "Service removed" ;;
+  serve) shift; serve "$@" ;;
   *) usage ;;
 esac

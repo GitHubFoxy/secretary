@@ -56,7 +56,7 @@ func TestRuntimeUsesCapabilityAndSteersActiveSecretary(t *testing.T) {
 	if err := secretary.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if rt.request.WorkerRef != "secretary" || rt.request.Task == "" || !contains(rt.request.Task, "cap-123") {
+	if rt.request.WorkerRef != "secretary" || rt.request.Task == "" || contains(rt.request.Task, "cap-123") {
 		t.Fatalf("request=%#v", rt.request)
 	}
 	if err := secretary.HandleMessage(context.Background(), "change direction"); err != nil {

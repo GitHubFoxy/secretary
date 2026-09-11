@@ -3,3 +3,6 @@
 *.sqlite
 *.sqlite3
 poc/__pycache__/
+web/node_modules/
+web/dist/
+web/dist-control/

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
@@ -13,8 +14,11 @@ var ErrRuntimeSessionUnavailable = errors.New("runtime_session_unavailable")
 // WorkerController is the server-facing boundary for observer commands. It
 // records Follow-up state before handing input to the runtime.
 type WorkerController struct {
-	Store *core.Store
-	Node  *node.LocalNode
+	Store          *core.Store
+	Node           *node.LocalNode
+	MCPCommand     string
+	MCPDataDir     string
+	ManagedProfile func(core.BindingProfile) node.ManagedProfile
 }
 
 func (c *WorkerController) Session(workerRef string) (node.Session, bool) {
@@ -29,7 +33,38 @@ func (c *WorkerController) Steer(ctx context.Context, workerRef, text string) (b
 	if !ok {
 		return false, core.ErrNotFound
 	}
+	if steerer, ok := session.(node.InterruptAndContinueSteerer); ok {
+		if c.Store == nil {
+			return false, errors.New("worker controller: store is required for interrupt steering")
+		}
+		task, err := c.Store.TaskForWorker(ctx, workerRef)
+		if err != nil {
+			return false, err
+		}
+		return steerer.InterruptAndContinue(ctx, text, func() error {
+			return c.createFollowUpAfterInterrupt(ctx, task.ID, text)
+		})
+	}
 	return session.Steer(ctx, text)
+}
+
+func (c *WorkerController) createFollowUpAfterInterrupt(ctx context.Context, taskID, text string) error {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		_, err := c.Store.CreateFollowUpAttempt(ctx, taskID, text)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, core.ErrInvalidTransition) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 func (c *WorkerController) Queue(ctx context.Context, workerRef, text string) (core.Attempt, error) {
@@ -49,8 +84,23 @@ func (c *WorkerController) Queue(ctx context.Context, workerRef, text string) (c
 		if details.Binding == nil || len(details.Attempts) == 0 || details.Attempts[len(details.Attempts)-1].State != core.AttemptInterrupted {
 			return core.Attempt{}, core.ErrNotFound
 		}
-		session, err = c.Node.Resume(ctx, node.StartRequest{WorkerRef: workerRef, Workspace: details.Binding.Workspace}, details.Binding.RuntimeSessionID)
+		var capability string
+		if c.MCPCommand != "" {
+			capability, err = c.Store.IssueWorkerCapability(ctx, task.ID, workerRef)
+			if err != nil {
+				return core.Attempt{}, err
+			}
+		}
+		request := node.StartRequest{WorkerRef: workerRef, Workspace: details.Binding.Workspace}
+		if c.ManagedProfile != nil {
+			request.Profile = c.ManagedProfile(details.Binding.Profile)
+		}
+		if c.MCPCommand != "" {
+			request.MCPServers = []node.MCPServer{node.SecretaryMCPServer(c.MCPCommand, c.MCPDataDir, "worker", capability, workerRef)}
+		}
+		session, err = c.Node.Resume(ctx, request, details.Binding.RuntimeSessionID)
 		if err != nil {
+			_ = c.Store.RevokeWorkerCapability(ctx, workerRef)
 			return core.Attempt{}, ErrRuntimeSessionUnavailable
 		}
 		go c.persistResults(task.ID, workerRef, session)

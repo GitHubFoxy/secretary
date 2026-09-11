@@ -47,6 +47,60 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// RecordConfigVersion keeps the exact compiled snapshot that a Worker binding references.
+func (s *Store) RecordConfigVersion(ctx context.Context, version, sourcePath, compiledJSON string) error {
+	if version == "" || compiledJSON == "" {
+		return errors.New("core: config version and compiled snapshot are required")
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO config_versions(version, source_path, compiled_json, created_at) VALUES(?, ?, ?, ?)`, version, sourcePath, compiledJSON, timestamp(s.now()))
+	return err
+}
+
+func (s *Store) RecordConfigChange(ctx context.Context, previousVersion, nextVersion, sourcePath, compiledJSON, diffJSON string) error {
+	if previousVersion == "" || nextVersion == "" || compiledJSON == "" || diffJSON == "" {
+		return errors.New("core: complete config change is required")
+	}
+	return withTxErr(s, ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO config_versions(version, source_path, compiled_json, created_at) VALUES(?, ?, ?, ?)`, nextVersion, sourcePath, compiledJSON, timestamp(s.now())); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO config_events(id, previous_version, next_version, diff_json, created_at) VALUES(?, ?, ?, ?, ?)`, newID("cev"), previousVersion, nextVersion, diffJSON, timestamp(s.now()))
+		return err
+	})
+}
+
+func (s *Store) GetSetting(ctx context.Context, key string) (string, bool, error) {
+	if key == "" {
+		return "", false, errors.New("core: setting key is required")
+	}
+	var value string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = ?`, key).Scan(&value)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return value, err == nil, err
+}
+
+func (s *Store) SetSetting(ctx context.Context, key, value string) error {
+	if key == "" {
+		return errors.New("core: setting key is required")
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO settings(key, value, updated_at) VALUES(?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`, key, value, timestamp(s.now()))
+	return err
+}
+
+func (s *Store) ConfigVersion(ctx context.Context, version string) (string, error) {
+	if version == "" {
+		return "", errors.New("core: config version is required")
+	}
+	var compiled string
+	err := s.db.QueryRowContext(ctx, `SELECT compiled_json FROM config_versions WHERE version = ?`, version).Scan(&compiled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", ErrNotFound
+	}
+	return compiled, err
+}
+
 func (s *Store) RecoverInterrupted(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE attempts SET state = ?, updated_at = ? WHERE state IN (?, ?)`, AttemptInterrupted, timestamp(s.now()), AttemptStarting, AttemptActive)
 	return err
@@ -98,6 +152,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   conversation_id TEXT NOT NULL REFERENCES conversations(id),
   text TEXT NOT NULL,
   state TEXT NOT NULL,
+  parent_task_id TEXT NOT NULL DEFAULT '',
+  parent_attempt_id TEXT NOT NULL DEFAULT '',
+  child_index INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -108,6 +165,16 @@ CREATE TABLE IF NOT EXISTS worker_bindings (
   node_id TEXT NOT NULL,
   runtime_session_id TEXT NOT NULL,
   workspace TEXT NOT NULL DEFAULT '',
+  parent_binding_id TEXT NOT NULL DEFAULT '',
+  parent_attempt_id TEXT NOT NULL DEFAULT '',
+  profile_version TEXT NOT NULL DEFAULT '',
+  profile_name TEXT NOT NULL DEFAULT '',
+  profile_hash TEXT NOT NULL DEFAULT '',
+  runtime TEXT NOT NULL DEFAULT '',
+  model TEXT NOT NULL DEFAULT '',
+  reasoning TEXT NOT NULL DEFAULT '',
+  allow_tools TEXT NOT NULL DEFAULT '',
+  profile_delivery TEXT NOT NULL DEFAULT '',
   archived INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
@@ -134,18 +201,74 @@ CREATE TABLE IF NOT EXISTS secretary_capabilities (
   revoked_at TEXT,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS worker_capabilities (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL REFERENCES tasks(id),
+  worker_ref TEXT NOT NULL UNIQUE,
+  token_hash TEXT NOT NULL UNIQUE,
+  revoked_at TEXT,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS web_sessions (
   id TEXT PRIMARY KEY,
   person_id TEXT NOT NULL REFERENCES persons(id),
   token_hash TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS config_versions (
+  version TEXT PRIMARY KEY,
+  source_path TEXT NOT NULL,
+  compiled_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS config_events (
+  id TEXT PRIMARY KEY,
+  previous_version TEXT NOT NULL,
+  next_version TEXT NOT NULL REFERENCES config_versions(version),
+  diff_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS events (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  worker_ref TEXT NOT NULL DEFAULT '',
+  attempt_id TEXT NOT NULL DEFAULT '',
+  runtime_session_id TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS events_created_at ON events(created_at);
 `)
 	if err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)
 	}
-	if _, err = s.db.ExecContext(ctx, `ALTER TABLE worker_bindings ADD COLUMN workspace TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
-		return fmt.Errorf("migrate worker workspace: %w", err)
+	for _, migration := range []struct{ table, column, name string }{
+		{"tasks", "parent_task_id TEXT NOT NULL DEFAULT ''", "task parent"},
+		{"tasks", "parent_attempt_id TEXT NOT NULL DEFAULT ''", "task parent attempt"},
+		{"tasks", "child_index INTEGER NOT NULL DEFAULT 0", "task child index"},
+		{"worker_bindings", "workspace TEXT NOT NULL DEFAULT ''", "workspace"},
+		{"worker_bindings", "parent_binding_id TEXT NOT NULL DEFAULT ''", "parent binding"},
+		{"worker_bindings", "parent_attempt_id TEXT NOT NULL DEFAULT ''", "parent attempt"},
+		{"worker_bindings", "profile_version TEXT NOT NULL DEFAULT ''", "profile version"},
+		{"worker_bindings", "profile_name TEXT NOT NULL DEFAULT ''", "profile name"},
+		{"worker_bindings", "profile_hash TEXT NOT NULL DEFAULT ''", "profile hash"},
+		{"worker_bindings", "runtime TEXT NOT NULL DEFAULT ''", "runtime"},
+		{"worker_bindings", "model TEXT NOT NULL DEFAULT ''", "model"},
+		{"worker_bindings", "reasoning TEXT NOT NULL DEFAULT ''", "reasoning"},
+		{"worker_bindings", "allow_tools TEXT NOT NULL DEFAULT ''", "allow tools"},
+		{"worker_bindings", "profile_delivery TEXT NOT NULL DEFAULT ''", "profile delivery"},
+	} {
+		if _, err = s.db.ExecContext(ctx, `ALTER TABLE `+migration.table+` ADD COLUMN `+migration.column); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate %s %s: %w", migration.table, migration.name, err)
+		}
+	}
+	if _, err = s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS tasks_parent_attempt ON tasks(parent_attempt_id); CREATE UNIQUE INDEX IF NOT EXISTS tasks_child_index ON tasks(parent_attempt_id, child_index) WHERE parent_attempt_id <> ''`); err != nil {
+		return fmt.Errorf("migrate child task indexes: %w", err)
 	}
 	return nil
 }
@@ -267,7 +390,7 @@ func (s *Store) EntriesAfter(ctx context.Context, conversationID string, afterSe
 		return nil, err
 	}
 	defer rows.Close()
-	var entries []ConversationEntry
+	entries := make([]ConversationEntry, 0)
 	for rows.Next() {
 		entry, err := scanEntry(rows)
 		if err != nil {
@@ -296,6 +419,10 @@ func (s *Store) RetryDispatch(ctx context.Context, taskID string) (Task, error) 
 }
 
 func (s *Store) AcceptDispatch(ctx context.Context, taskID, workerRef, nodeID, runtimeSessionID, workspace string) (Task, WorkerBinding, Attempt, error) {
+	return s.AcceptDispatchWithProfile(ctx, taskID, workerRef, nodeID, runtimeSessionID, workspace, BindingProfile{})
+}
+
+func (s *Store) AcceptDispatchWithProfile(ctx context.Context, taskID, workerRef, nodeID, runtimeSessionID, workspace string, profile BindingProfile) (Task, WorkerBinding, Attempt, error) {
 	accepted, err := withTx(s, ctx, func(tx *sql.Tx) (acceptedDispatch, error) {
 		task, err := getTask(ctx, tx, taskID)
 		if err != nil {
@@ -305,9 +432,15 @@ func (s *Store) AcceptDispatch(ctx context.Context, taskID, workerRef, nodeID, r
 			return acceptedDispatch{}, ErrInvalidTransition
 		}
 		now := s.now()
-		binding := WorkerBinding{ID: newID("wkb"), TaskID: task.ID, WorkerRef: workerRef, NodeID: nodeID, RuntimeSessionID: runtimeSessionID, Workspace: workspace, CreatedAt: now}
+		binding := WorkerBinding{ID: newID("wkb"), TaskID: task.ID, WorkerRef: workerRef, NodeID: nodeID, RuntimeSessionID: runtimeSessionID, Workspace: workspace, Profile: profile, CreatedAt: now}
 		attempt := Attempt{ID: newID("att"), WorkerBindingID: binding.ID, Number: 1, State: AttemptStarting, CreatedAt: now, UpdatedAt: now}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO worker_bindings(id, task_id, worker_ref, node_id, runtime_session_id, workspace, created_at) VALUES(?, ?, ?, ?, ?, ?, ?)`, binding.ID, binding.TaskID, binding.WorkerRef, binding.NodeID, binding.RuntimeSessionID, binding.Workspace, timestamp(now)); err != nil {
+		if task.ParentTaskID != "" {
+			if err := tx.QueryRowContext(ctx, `SELECT id FROM worker_bindings WHERE task_id = ? AND archived = 0`, task.ParentTaskID).Scan(&binding.ParentBindingID); err != nil {
+				return acceptedDispatch{}, err
+			}
+			binding.ParentAttemptID = task.ParentAttemptID
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO worker_bindings(id, task_id, worker_ref, node_id, runtime_session_id, workspace, parent_binding_id, parent_attempt_id, profile_version, profile_name, profile_hash, runtime, model, reasoning, allow_tools, profile_delivery, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, binding.ID, binding.TaskID, binding.WorkerRef, binding.NodeID, binding.RuntimeSessionID, binding.Workspace, binding.ParentBindingID, binding.ParentAttemptID, binding.Profile.Version, binding.Profile.Name, binding.Profile.Hash, binding.Profile.Runtime, binding.Profile.Model, binding.Profile.Reasoning, binding.Profile.Tools, binding.Profile.Delivery, timestamp(now)); err != nil {
 			return acceptedDispatch{}, err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO attempts(id, worker_binding_id, number, state, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?)`, attempt.ID, attempt.WorkerBindingID, attempt.Number, attempt.State, timestamp(now), timestamp(now)); err != nil {
@@ -359,17 +492,27 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, status Re
 		if _, err = tx.ExecContext(ctx, `INSERT INTO results(id, attempt_id, status, summary, created_at) VALUES(?, ?, ?, ?, ?)`, result.ID, result.AttemptID, result.Status, result.Summary, timestamp(now)); err != nil {
 			return completedResult{}, err
 		}
-		var conversationID string
-		if err = tx.QueryRowContext(ctx, `SELECT t.conversation_id FROM tasks t JOIN worker_bindings w ON w.task_id = t.id WHERE w.id = ?`, attempt.WorkerBindingID).Scan(&conversationID); err != nil {
+		var conversationID, parentBindingID string
+		if err = tx.QueryRowContext(ctx, `SELECT t.conversation_id, w.parent_binding_id FROM tasks t JOIN worker_bindings w ON w.task_id = t.id WHERE w.id = ?`, attempt.WorkerBindingID).Scan(&conversationID, &parentBindingID); err != nil {
 			return completedResult{}, err
 		}
-		entry, err := appendEntry(ctx, tx, now, conversationID, EntryWorkerResult, summary)
-		if err != nil {
-			return completedResult{}, err
+		var entry ConversationEntry
+		if parentBindingID == "" {
+			entry, err = appendEntry(ctx, tx, now, conversationID, EntryWorkerResult, summary)
+			if err != nil {
+				return completedResult{}, err
+			}
+		} else {
+			if _, err = tx.ExecContext(ctx, `UPDATE tasks SET state = ?, updated_at = ? WHERE id = (SELECT task_id FROM worker_bindings WHERE id = ?)`, TaskClosed, timestamp(now), attempt.WorkerBindingID); err != nil {
+				return completedResult{}, err
+			}
+			if _, err = tx.ExecContext(ctx, `UPDATE worker_bindings SET archived = 1 WHERE id = ?`, attempt.WorkerBindingID); err != nil {
+				return completedResult{}, err
+			}
 		}
 		return completedResult{result: result, entry: entry}, nil
 	})
-	if err == nil && !completed.duplicate {
+	if err == nil && !completed.duplicate && completed.entry.ID != "" {
 		s.notifyEntry(completed.entry)
 	}
 	return completed.result, completed.duplicate, err
@@ -439,6 +582,56 @@ func (s *Store) RotateSecretaryCapability(ctx context.Context, personID string) 
 	return token, err
 }
 
+func (s *Store) IssueWorkerCapability(ctx context.Context, taskID, workerRef string) (string, error) {
+	if taskID == "" || workerRef == "" {
+		return "", errors.New("core: task and worker reference are required")
+	}
+	token := newID("wcap")
+	err := withTxErr(s, ctx, func(tx *sql.Tx) error {
+		task, err := getTask(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if task.State != TaskDispatching && task.State != TaskOpen {
+			return ErrInvalidTransition
+		}
+		now := s.now()
+		result, err := tx.ExecContext(ctx, `UPDATE worker_capabilities SET task_id = ?, token_hash = ?, revoked_at = NULL, created_at = ? WHERE worker_ref = ?`, taskID, hashToken(token), timestamp(now), workerRef)
+		if err != nil {
+			return err
+		}
+		updated, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if updated == 0 {
+			_, err = tx.ExecContext(ctx, `INSERT INTO worker_capabilities(id, task_id, worker_ref, token_hash, created_at) VALUES(?, ?, ?, ?, ?)`, newID("wcap"), taskID, workerRef, hashToken(token), timestamp(now))
+		}
+		return err
+	})
+	if err != nil {
+		return "", err
+	}
+	return token, nil
+}
+
+func (s *Store) RevokeWorkerCapability(ctx context.Context, workerRef string) error {
+	if workerRef == "" {
+		return errors.New("core: worker reference is required")
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE worker_capabilities SET revoked_at = ? WHERE worker_ref = ? AND revoked_at IS NULL`, timestamp(s.now()), workerRef)
+	return err
+}
+
+func (s *Store) AuthorizeWorkerCapability(ctx context.Context, workerRef, token string) (bool, error) {
+	if workerRef == "" || token == "" {
+		return false, nil
+	}
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM worker_capabilities WHERE worker_ref = ? AND token_hash = ? AND revoked_at IS NULL`, workerRef, hashToken(token)).Scan(&count)
+	return count == 1, err
+}
+
 func (s *Store) HasSecretaryCapability(ctx context.Context, personID string) (bool, error) {
 	var count int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM secretary_capabilities WHERE person_id = ? AND revoked_at IS NULL`, personID).Scan(&count)
@@ -498,7 +691,7 @@ func appendEntry(ctx context.Context, tx *sql.Tx, now time.Time, conversationID 
 func (s *Store) Task(ctx context.Context, id string) (Task, error) { return getTask(ctx, s.db, id) }
 
 func (s *Store) TasksForConversation(ctx context.Context, conversationID string) ([]Task, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, conversation_id, text, state, created_at, updated_at FROM tasks WHERE conversation_id = ? ORDER BY created_at`, conversationID)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, conversation_id, text, state, parent_task_id, parent_attempt_id, child_index, created_at, updated_at FROM tasks WHERE conversation_id = ? ORDER BY created_at`, conversationID)
 	if err != nil {
 		return nil, err
 	}
@@ -506,7 +699,7 @@ func (s *Store) TasksForConversation(ctx context.Context, conversationID string)
 	tasks := make([]Task, 0)
 	for rows.Next() {
 		var task Task
-		if err := rows.Scan(&task.ID, &task.ConversationID, &task.Text, &task.State, newTimestampScanner(&task.CreatedAt), newTimestampScanner(&task.UpdatedAt)); err != nil {
+		if err := rows.Scan(&task.ID, &task.ConversationID, &task.Text, &task.State, &task.ParentTaskID, &task.ParentAttemptID, &task.ChildIndex, newTimestampScanner(&task.CreatedAt), newTimestampScanner(&task.UpdatedAt)); err != nil {
 			return nil, err
 		}
 		tasks = append(tasks, task)
@@ -518,7 +711,7 @@ func getTask(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, id string) (Task, error) {
 	var task Task
-	err := q.QueryRowContext(ctx, `SELECT id, conversation_id, text, state, created_at, updated_at FROM tasks WHERE id = ?`, id).Scan(&task.ID, &task.ConversationID, &task.Text, &task.State, newTimestampScanner(&task.CreatedAt), newTimestampScanner(&task.UpdatedAt))
+	err := q.QueryRowContext(ctx, `SELECT id, conversation_id, text, state, parent_task_id, parent_attempt_id, child_index, created_at, updated_at FROM tasks WHERE id = ?`, id).Scan(&task.ID, &task.ConversationID, &task.Text, &task.State, &task.ParentTaskID, &task.ParentAttemptID, &task.ChildIndex, newTimestampScanner(&task.CreatedAt), newTimestampScanner(&task.UpdatedAt))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, ErrNotFound
 	}

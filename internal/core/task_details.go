@@ -7,6 +7,13 @@ import (
 )
 
 func (s *Store) TaskDetails(ctx context.Context, taskID string) (TaskDetails, error) {
+	return s.taskDetails(ctx, taskID, 0)
+}
+
+func (s *Store) taskDetails(ctx context.Context, taskID string, depth int) (TaskDetails, error) {
+	if depth > 16 {
+		return TaskDetails{}, errors.New("core: child tree exceeds maximum depth")
+	}
 	task, err := s.Task(ctx, taskID)
 	if err != nil {
 		return TaskDetails{}, err
@@ -14,8 +21,8 @@ func (s *Store) TaskDetails(ctx context.Context, taskID string) (TaskDetails, er
 	details := TaskDetails{Task: task, Attempts: []Attempt{}, Results: []Result{}}
 
 	var binding WorkerBinding
-	err = s.db.QueryRowContext(ctx, `SELECT id, task_id, worker_ref, node_id, runtime_session_id, workspace, archived, created_at FROM worker_bindings WHERE task_id = ?`, taskID).Scan(
-		&binding.ID, &binding.TaskID, &binding.WorkerRef, &binding.NodeID, &binding.RuntimeSessionID, &binding.Workspace, &binding.Archived, newTimestampScanner(&binding.CreatedAt),
+	err = s.db.QueryRowContext(ctx, `SELECT id, task_id, worker_ref, node_id, runtime_session_id, workspace, parent_binding_id, parent_attempt_id, profile_version, profile_name, profile_hash, runtime, model, reasoning, allow_tools, profile_delivery, archived, created_at FROM worker_bindings WHERE task_id = ?`, taskID).Scan(
+		&binding.ID, &binding.TaskID, &binding.WorkerRef, &binding.NodeID, &binding.RuntimeSessionID, &binding.Workspace, &binding.ParentBindingID, &binding.ParentAttemptID, &binding.Profile.Version, &binding.Profile.Name, &binding.Profile.Hash, &binding.Profile.Runtime, &binding.Profile.Model, &binding.Profile.Reasoning, &binding.Profile.Tools, &binding.Profile.Delivery, &binding.Archived, newTimestampScanner(&binding.CreatedAt),
 	)
 	if err == nil {
 		details.Binding = &binding
@@ -47,7 +54,6 @@ func (s *Store) TaskDetails(ctx context.Context, taskID string) (TaskDetails, er
 	if err != nil {
 		return TaskDetails{}, err
 	}
-	defer rows.Close()
 	for rows.Next() {
 		var result Result
 		if err := rows.Scan(&result.ID, &result.AttemptID, &result.Status, &result.Summary, newTimestampScanner(&result.CreatedAt)); err != nil {
@@ -55,5 +61,32 @@ func (s *Store) TaskDetails(ctx context.Context, taskID string) (TaskDetails, er
 		}
 		details.Results = append(details.Results, result)
 	}
-	return details, rows.Err()
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return TaskDetails{}, err
+	}
+	rows.Close()
+	children, err := s.db.QueryContext(ctx, `SELECT id FROM tasks WHERE parent_task_id = ? ORDER BY child_index`, taskID)
+	if err != nil {
+		return TaskDetails{}, err
+	}
+	for children.Next() {
+		var childID string
+		if err := children.Scan(&childID); err != nil {
+			children.Close()
+			return TaskDetails{}, err
+		}
+		child, err := s.taskDetails(ctx, childID, depth+1)
+		if err != nil {
+			children.Close()
+			return TaskDetails{}, err
+		}
+		details.Children = append(details.Children, child)
+	}
+	if err := children.Err(); err != nil {
+		children.Close()
+		return TaskDetails{}, err
+	}
+	children.Close()
+	return details, nil
 }

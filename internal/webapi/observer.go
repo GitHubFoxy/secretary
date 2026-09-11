@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
 	"github.com/coder/websocket"
 )
@@ -129,6 +130,7 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "steer worker", http.StatusBadGateway)
 			return
 		}
+		_, _ = s.store.RecordEvent(r.Context(), "worker.steer_requested", workerRef, "", session.ID(), map[string]any{"text": request.Text, "injected": injected})
 		writeJSON(w, http.StatusAccepted, map[string]bool{"injected": injected})
 	case parts[1] == "queue" && r.Method == http.MethodPost:
 		var request struct {
@@ -141,8 +143,11 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "text is required", http.StatusBadRequest)
 			return
 		}
+		var queuedAttempt core.Attempt
 		if s.workers != nil {
-			if _, err := s.workers.Queue(r.Context(), workerRef, request.Text); err != nil {
+			var queueErr error
+			queuedAttempt, queueErr = s.workers.Queue(r.Context(), workerRef, request.Text)
+			if queueErr != nil {
 				http.Error(w, "queue worker input", http.StatusBadGateway)
 				return
 			}
@@ -157,6 +162,7 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		_, _ = s.store.RecordEvent(r.Context(), "worker.input_queued", workerRef, queuedAttempt.ID, session.ID(), map[string]string{"text": request.Text})
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
 	case parts[1] == "stop" && r.Method == http.MethodPost:
 		s.mu.Lock()
@@ -175,6 +181,7 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "stop worker", http.StatusBadGateway)
 			return
 		}
+		_, _ = s.store.RecordEvent(r.Context(), "worker.cancel_requested", workerRef, "", session.ID(), map[string]string{"source": "observer"})
 		writeJSON(w, http.StatusAccepted, map[string]string{"status": "cancel_requested"})
 	case parts[1] == "activity" && r.Method == http.MethodGet:
 		s.workerActivity(w, r, session)

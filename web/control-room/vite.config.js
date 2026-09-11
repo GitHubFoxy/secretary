@@ -1,0 +1,19 @@
+import { defineConfig } from 'vite';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
+import tailwindcss from '@tailwindcss/vite';
+
+export default defineConfig({
+  base: '/control-room/',
+  plugins: [svelte(), tailwindcss()],
+  build: {
+    outDir: '../dist-control',
+    emptyOutDir: true,
+    rollupOptions: {
+      input: { main: 'index.src.html' },
+      output: {
+        entryFileNames: 'app.js',
+        assetFileNames: (asset) => asset.name?.endsWith('.css') ? 'app.css' : '[name][extname]',
+      },
+    },
+  },
+});

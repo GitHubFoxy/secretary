@@ -16,6 +16,22 @@ func newTestStore(t *testing.T) *Store {
 	return store
 }
 
+func TestEntriesAfterReturnsEmptySliceForEmptyConversation(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.EntriesAfter(ctx, conversation.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries == nil || len(entries) != 0 {
+		t.Fatalf("entries = %#v", entries)
+	}
+}
+
 func TestConversationDeduplicatesInboundAndOrdersResult(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
@@ -64,6 +80,89 @@ func TestConversationDeduplicatesInboundAndOrdersResult(t *testing.T) {
 	closed, err := store.CloseTask(ctx, task.ID)
 	if err != nil || closed.Task.State != TaskClosed || closed.CancelAttempt != nil {
 		t.Fatalf("close completed task = %#v, err=%v", closed, err)
+	}
+}
+
+func TestRecordConfigChangeStoresVersionAndEvent(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	if err := store.RecordConfigVersion(ctx, "cfg-1", "/config", `{}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordConfigChange(ctx, "cfg-1", "cfg-2", "/config", `{"version":"cfg-2"}`, `{"models":{"smart":"new"}}`); err != nil {
+		t.Fatal(err)
+	}
+	var previous, next, diff string
+	if err := store.db.QueryRowContext(ctx, `SELECT previous_version, next_version, diff_json FROM config_events`).Scan(&previous, &next, &diff); err != nil {
+		t.Fatal(err)
+	}
+	if previous != "cfg-1" || next != "cfg-2" || diff != `{"models":{"smart":"new"}}` {
+		t.Fatalf("event = %q %q %q", previous, next, diff)
+	}
+}
+
+func TestSettingsAreDurableAndUpdatable(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	value, found, err := store.GetSetting(ctx, "secretary.model")
+	if err != nil || found || value != "" {
+		t.Fatalf("initial setting value=%q found=%v err=%v", value, found, err)
+	}
+	if err := store.SetSetting(ctx, "secretary.model", "smart"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSetting(ctx, "secretary.model", "fast"); err != nil {
+		t.Fatal(err)
+	}
+	value, found, err = store.GetSetting(ctx, "secretary.model")
+	if err != nil || !found || value != "fast" {
+		t.Fatalf("updated setting value=%q found=%v err=%v", value, found, err)
+	}
+}
+
+func TestRecordConfigVersionIsIdempotent(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	if err := store.RecordConfigVersion(ctx, "cfg-1", "/tmp/config.toml", `{"version":"cfg-1"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordConfigVersion(ctx, "cfg-1", "/changed", `{"changed":true}`); err != nil {
+		t.Fatal(err)
+	}
+	var path string
+	if err := store.db.QueryRowContext(ctx, `SELECT source_path FROM config_versions WHERE version = ?`, "cfg-1").Scan(&path); err != nil {
+		t.Fatal(err)
+	}
+	if path != "/tmp/config.toml" {
+		t.Fatalf("source path = %q", path)
+	}
+}
+
+func TestWorkerBindingKeepsImmutableProfile(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask(ctx, conversation.ID, "profile task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := BindingProfile{Version: "cfg-1", Name: "worker", Hash: "sha256", Runtime: "opencode", Model: "smart", Reasoning: "high", Tools: "bash,read"}
+	_, binding, _, err := store.AcceptDispatchWithProfile(ctx, task.ID, "worker-1", "local", "session-1", t.TempDir(), profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if binding.Profile != profile {
+		t.Fatalf("binding profile = %#v", binding.Profile)
+	}
+	details, err := store.TaskDetails(ctx, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if details.Binding == nil || details.Binding.Profile != profile {
+		t.Fatalf("stored profile = %#v", details.Binding)
 	}
 }
 

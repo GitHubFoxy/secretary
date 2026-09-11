@@ -25,10 +25,25 @@ type Result struct {
 	Summary string `json:"summary"`
 }
 
+type MCPEnv struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+type MCPServer struct {
+	Name    string   `json:"name"`
+	Command string   `json:"command"`
+	Args    []string `json:"args"`
+	Env     []MCPEnv `json:"env"`
+}
+
 type StartRequest struct {
-	WorkerRef string
-	Task      string
-	Workspace string
+	WorkerRef  string
+	Task       string
+	Workspace  string
+	RawLogPath string
+	MCPServers []MCPServer
+	Profile    ManagedProfile
 }
 
 type Session interface {
@@ -71,6 +86,11 @@ func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session
 		}
 		request.Workspace = workspace
 	}
+	if request.Profile.Name != "" && !nativeProfileDelivery(n.runtime, request.Profile) {
+		if _, err := request.Profile.MaterializeInstructions(request.Workspace); err != nil {
+			return nil, err
+		}
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if _, exists := n.workers[request.WorkerRef]; exists {
@@ -89,6 +109,14 @@ func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSes
 	if !ok {
 		return nil, errors.New("node: runtime does not support session resume")
 	}
+	if request.Workspace == "" {
+		return nil, errors.New("node: workspace is required for session resume")
+	}
+	if request.Profile.Name != "" && !nativeProfileDelivery(n.runtime, request.Profile) {
+		if _, err := request.Profile.MaterializeInstructions(request.Workspace); err != nil {
+			return nil, err
+		}
+	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	if _, exists := n.workers[request.WorkerRef]; exists {
@@ -100,6 +128,24 @@ func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSes
 	}
 	n.workers[request.WorkerRef] = session
 	return session, nil
+}
+
+func nativeProfileDelivery(runtime Runtime, profile ManagedProfile) bool {
+	if profile.Delivery == "native" || profile.Runtime == "opencode" {
+		return true
+	}
+	switch selected := runtime.(type) {
+	case OpenCodeRuntime:
+		return true
+	case *OpenCodeRuntime:
+		return selected != nil
+	case RuntimeRouter:
+		return profile.Runtime == "" && selected.DefaultHarness == "opencode"
+	case *RuntimeRouter:
+		return selected != nil && profile.Runtime == "" && selected.DefaultHarness == "opencode"
+	default:
+		return false
+	}
 }
 
 func (n *LocalNode) Session(workerRef string) (Session, bool) {

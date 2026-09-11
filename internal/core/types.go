@@ -65,23 +65,40 @@ type ConversationEntry struct {
 }
 
 type Task struct {
-	ID             string    `json:"id"`
-	ConversationID string    `json:"conversation_id"`
-	Text           string    `json:"text"`
-	State          TaskState `json:"state"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	ConversationID  string    `json:"conversation_id"`
+	Text            string    `json:"text"`
+	State           TaskState `json:"state"`
+	ParentTaskID    string    `json:"parent_task_id,omitempty"`
+	ParentAttemptID string    `json:"parent_attempt_id,omitempty"`
+	ChildIndex      int       `json:"child_index,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type WorkerBinding struct {
-	ID               string    `json:"id"`
-	TaskID           string    `json:"task_id"`
-	WorkerRef        string    `json:"worker_ref"`
-	NodeID           string    `json:"node_id"`
-	RuntimeSessionID string    `json:"runtime_session_id"`
-	Workspace        string    `json:"workspace"`
-	Archived         bool      `json:"archived"`
-	CreatedAt        time.Time `json:"created_at"`
+	ID               string         `json:"id"`
+	TaskID           string         `json:"task_id"`
+	WorkerRef        string         `json:"worker_ref"`
+	NodeID           string         `json:"node_id"`
+	RuntimeSessionID string         `json:"runtime_session_id"`
+	Workspace        string         `json:"workspace"`
+	ParentBindingID  string         `json:"parent_binding_id,omitempty"`
+	ParentAttemptID  string         `json:"parent_attempt_id,omitempty"`
+	Profile          BindingProfile `json:"profile"`
+	Archived         bool           `json:"archived"`
+	CreatedAt        time.Time      `json:"created_at"`
+}
+
+type BindingProfile struct {
+	Version   string `json:"version"`
+	Name      string `json:"name"`
+	Hash      string `json:"hash"`
+	Runtime   string `json:"runtime"`
+	Model     string `json:"model"`
+	Reasoning string `json:"reasoning"`
+	Tools     string `json:"tools"`
+	Delivery  string `json:"delivery"`
 }
 
 type Attempt struct {
@@ -106,6 +123,7 @@ type TaskDetails struct {
 	Binding  *WorkerBinding `json:"binding,omitempty"`
 	Attempts []Attempt      `json:"attempts"`
 	Results  []Result       `json:"results"`
+	Children []TaskDetails  `json:"children,omitempty"`
 }
 
 type CloseOutcome struct {

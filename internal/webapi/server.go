@@ -36,6 +36,11 @@ type Server struct {
 		HandleMessage(context.Context, string) error
 	}
 	workerStates map[string]string
+	debug        bool
+	modelCatalog func() map[string]string
+	modelDefault func() string
+	modelChanged func(string) error
+	control      ControlOptions
 
 	mu          sync.Mutex
 	subscribers map[*subscription]struct{}
@@ -62,7 +67,12 @@ func New(ctx context.Context, store *core.Store, bootstrapToken string) (*Server
 func (s *Server) AttachNode(local *node.LocalNode)                   { s.node = local }
 func (s *Server) AttachWorkerController(controller workerController) { s.workers = controller }
 func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime)  { s.secretary = runtime }
-func (s *Server) OwnerID() string                                    { return s.owner.ID }
+func (s *Server) SetDebug(debug bool)                                { s.debug = debug }
+func (s *Server) AttachSecretaryModelCatalog(catalog func() map[string]string, defaultModel func() string, changed func(string) error) {
+	s.modelCatalog, s.modelDefault, s.modelChanged = catalog, defaultModel, changed
+}
+func (s *Server) AttachControl(options ControlOptions) { s.control = options }
+func (s *Server) OwnerID() string                      { return s.owner.ID }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -71,6 +81,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/conversation", s.conversation)
 	mux.HandleFunc("POST /v1/messages", s.message)
 	mux.HandleFunc("GET /v1/ws", s.websocket)
+	mux.HandleFunc("GET /v1/bootstrap", s.bootstrap)
+	mux.HandleFunc("GET /v1/secretary/models", s.secretaryModels)
+	mux.HandleFunc("POST /v1/secretary/model", s.setSecretaryModel)
+	mux.HandleFunc("PUT /v1/secretary/model", s.setSecretaryModel)
+	mux.HandleFunc("GET /v1/workers", s.workerList)
 	mux.HandleFunc("/v1/workers/", s.workerRoute)
 	return mux
 }

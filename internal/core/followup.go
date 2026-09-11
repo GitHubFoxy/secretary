@@ -57,7 +57,7 @@ func (s *Store) CreateFollowUpAttempt(ctx context.Context, taskID, input string)
 
 func (s *Store) TaskForWorker(ctx context.Context, workerRef string) (Task, error) {
 	var task Task
-	err := s.db.QueryRowContext(ctx, `SELECT t.id, t.conversation_id, t.text, t.state, t.created_at, t.updated_at FROM tasks t JOIN worker_bindings w ON w.task_id = t.id WHERE w.worker_ref = ?`, workerRef).Scan(&task.ID, &task.ConversationID, &task.Text, &task.State, newTimestampScanner(&task.CreatedAt), newTimestampScanner(&task.UpdatedAt))
+	err := s.db.QueryRowContext(ctx, `SELECT t.id, t.conversation_id, t.text, t.state, t.parent_task_id, t.parent_attempt_id, t.child_index, t.created_at, t.updated_at FROM tasks t JOIN worker_bindings w ON w.task_id = t.id WHERE w.worker_ref = ?`, workerRef).Scan(&task.ID, &task.ConversationID, &task.Text, &task.State, &task.ParentTaskID, &task.ParentAttemptID, &task.ChildIndex, newTimestampScanner(&task.CreatedAt), newTimestampScanner(&task.UpdatedAt))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, ErrNotFound
 	}
