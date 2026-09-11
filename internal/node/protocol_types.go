@@ -202,11 +202,7 @@ type HandshakeAccepted struct {
 	PolicyVersion      string             `json:"policy_version,omitempty"`
 }
 
-type ActiveAttempt struct {
-	WorkerRef string `json:"worker_ref"`
-	TurnID    string `json:"turn_id"`
-	AttemptID string `json:"attempt_id"`
-}
+type ActiveAttempt = core.NodeActiveAttempt
 
 type Heartbeat struct {
 	Node                 core.NodeReference            `json:"node"`

@@ -1030,11 +1030,25 @@ func (s *Store) RecordNodeAttemptOutcome(ctx context.Context, envelope AttemptOu
 }
 
 // RecordNodeActivity validates a normalized activity against the immutable
-// server Attempt binding before appending it to the server event log.
+// server Attempt binding and the currently observed capability inventory.
 func (s *Store) RecordNodeActivity(ctx context.Context, instance HarnessInstance, activity Activity) (Event, error) {
 	if err := activity.ValidateFor(instance); err != nil {
 		return Event{}, err
 	}
+	return s.recordNodeActivity(ctx, activity)
+}
+
+// RecordNodeActivityReplay validates a buffered Activity using its normalized
+// payload and immutable Attempt binding. Current inventory is deliberately not
+// consulted because it may have changed after the event was observed.
+func (s *Store) RecordNodeActivityReplay(ctx context.Context, activity Activity) (Event, error) {
+	if err := activity.ValidatePayload(); err != nil {
+		return Event{}, err
+	}
+	return s.recordNodeActivity(ctx, activity)
+}
+
+func (s *Store) recordNodeActivity(ctx context.Context, activity Activity) (Event, error) {
 	attempt, err := s.Phase4Attempt(ctx, activity.Metadata.AttemptID)
 	if err != nil {
 		return Event{}, err

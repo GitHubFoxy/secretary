@@ -25,16 +25,31 @@ var (
 
 // NodeRecord is the server-owned durable view of one enrolled execution Node.
 // Native runtime session identifiers and harness credentials never belong here.
+type NodeActiveAttempt struct {
+	WorkerRef string `json:"worker_ref"`
+	TurnID    string `json:"turn_id"`
+	AttemptID string `json:"attempt_id"`
+}
+
+type NodeHeartbeat struct {
+	Capacity             int                 `json:"capacity"`
+	ActiveAttempts       []NodeActiveAttempt `json:"active_attempts,omitempty"`
+	LastProcessedCommand string              `json:"last_processed_command,omitempty"`
+}
+
 type NodeRecord struct {
-	Node            NodeReference            `json:"node"`
-	Online          bool                     `json:"online"`
-	Draining        bool                     `json:"draining"`
-	Revoked         bool                     `json:"revoked"`
-	EnrolledAt      time.Time                `json:"enrolled_at"`
-	LastSeenAt      time.Time                `json:"last_seen_at,omitempty"`
-	LastHeartbeatAt time.Time                `json:"last_heartbeat_at,omitempty"`
-	Inventory       HarnessInventorySnapshot `json:"inventory,omitempty"`
-	CredentialHash  string                   `json:"credential_hash,omitempty"`
+	Node                 NodeReference            `json:"node"`
+	Online               bool                     `json:"online"`
+	Draining             bool                     `json:"draining"`
+	Revoked              bool                     `json:"revoked"`
+	EnrolledAt           time.Time                `json:"enrolled_at"`
+	LastSeenAt           time.Time                `json:"last_seen_at,omitempty"`
+	LastHeartbeatAt      time.Time                `json:"last_heartbeat_at,omitempty"`
+	Capacity             int                      `json:"capacity"`
+	ActiveAttempts       []NodeActiveAttempt      `json:"active_attempts,omitempty"`
+	LastProcessedCommand string                   `json:"last_processed_command,omitempty"`
+	Inventory            HarnessInventorySnapshot `json:"inventory,omitempty"`
+	CredentialHash       string                   `json:"credential_hash,omitempty"`
 }
 
 func (s *Store) EnsureNodeRegistry(ctx context.Context) error {
@@ -47,6 +62,9 @@ CREATE TABLE IF NOT EXISTS phase4_nodes (
   enrolled_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL DEFAULT '',
   last_heartbeat_at TEXT NOT NULL DEFAULT '',
+  capacity INTEGER NOT NULL DEFAULT 0,
+  active_attempts_json TEXT NOT NULL DEFAULT '',
+  last_processed_command TEXT NOT NULL DEFAULT '',
   inventory_json TEXT NOT NULL DEFAULT '',
   credential_hash TEXT NOT NULL DEFAULT '',
   credential_secret TEXT NOT NULL DEFAULT ''
@@ -61,6 +79,10 @@ CREATE INDEX IF NOT EXISTS phase4_nodes_online ON phase4_nodes(online, revoked, 
 		return fmt.Errorf("core: migrate Node registry: %w", err)
 	}
 	for _, migration := range []string{
+		"phase4_nodes last_heartbeat_at TEXT NOT NULL DEFAULT ''",
+		"phase4_nodes capacity INTEGER NOT NULL DEFAULT 0",
+		"phase4_nodes active_attempts_json TEXT NOT NULL DEFAULT ''",
+		"phase4_nodes last_processed_command TEXT NOT NULL DEFAULT ''",
 		"phase4_nodes credential_hash TEXT NOT NULL DEFAULT ''",
 		"phase4_nodes credential_secret TEXT NOT NULL DEFAULT ''",
 	} {
@@ -200,7 +222,7 @@ func (s *Store) NodeRecord(ctx context.Context, node NodeReference) (NodeRecord,
 	if err := s.EnsureNodeRegistry(ctx); err != nil {
 		return NodeRecord{}, err
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, inventory_json, credential_hash, credential_secret FROM phase4_nodes WHERE node_ref = ?`, node)
+	row := s.db.QueryRowContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, capacity, active_attempts_json, last_processed_command, inventory_json, credential_hash, credential_secret FROM phase4_nodes WHERE node_ref = ?`, node)
 	return scanNodeRecord(row)
 }
 
@@ -208,7 +230,7 @@ func (s *Store) NodeRecords(ctx context.Context) ([]NodeRecord, error) {
 	if err := s.EnsureNodeRegistry(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, inventory_json, credential_hash, credential_secret FROM phase4_nodes ORDER BY enrolled_at, node_ref`)
+	rows, err := s.db.QueryContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, capacity, active_attempts_json, last_processed_command, inventory_json, credential_hash, credential_secret FROM phase4_nodes ORDER BY enrolled_at, node_ref`)
 	if err != nil {
 		return nil, err
 	}
@@ -338,19 +360,33 @@ func (s *Store) MarkNodeDisconnected(ctx context.Context, node NodeReference) er
 	return nil
 }
 
-func (s *Store) UpdateNodeHeartbeat(ctx context.Context, node NodeReference, inventory HarnessInventorySnapshot) error {
+func (s *Store) UpdateNodeHeartbeat(ctx context.Context, node NodeReference, inventory HarnessInventorySnapshot, statuses ...NodeHeartbeat) error {
 	if err := inventory.Validate(); err != nil {
 		return err
 	}
 	if inventory.Node != node {
 		return errors.New("core: Node heartbeat identity mismatch")
 	}
-	encoded, err := json.Marshal(inventory)
+	if len(statuses) > 1 {
+		return errors.New("core: at most one Node heartbeat status is allowed")
+	}
+	status := NodeHeartbeat{}
+	if len(statuses) == 1 {
+		status = statuses[0]
+	}
+	if status.Capacity < 0 {
+		return errors.New("core: Node heartbeat capacity cannot be negative")
+	}
+	encodedInventory, err := json.Marshal(inventory)
+	if err != nil {
+		return err
+	}
+	encodedAttempts, err := json.Marshal(status.ActiveAttempts)
 	if err != nil {
 		return err
 	}
 	now := s.now()
-	result, err := s.db.ExecContext(ctx, `UPDATE phase4_nodes SET online = 1, last_seen_at = ?, last_heartbeat_at = ?, inventory_json = ? WHERE node_ref = ? AND revoked = 0`, timestamp(now), timestamp(now), string(encoded), node)
+	result, err := s.db.ExecContext(ctx, `UPDATE phase4_nodes SET online = 1, last_seen_at = ?, last_heartbeat_at = ?, capacity = ?, active_attempts_json = ?, last_processed_command = ?, inventory_json = ? WHERE node_ref = ? AND revoked = 0`, timestamp(now), timestamp(now), status.Capacity, string(encodedAttempts), status.LastProcessedCommand, string(encodedInventory), node)
 	if err != nil {
 		return err
 	}
@@ -425,15 +461,21 @@ type nodeRowScanner interface {
 func scanNodeRecord(row nodeRowScanner) (NodeRecord, error) {
 	var record NodeRecord
 	var online, draining, revoked int
-	var enrolledAt, lastSeenAt, lastHeartbeatAt, inventoryJSON, credentialHashValue, credentialSecret string
-	if err := row.Scan(&record.Node, &online, &draining, &revoked, &enrolledAt, &lastSeenAt, &lastHeartbeatAt, &inventoryJSON, &credentialHashValue, &credentialSecret); err != nil {
+	var enrolledAt, lastSeenAt, lastHeartbeatAt, activeAttemptsJSON, lastProcessedCommand, inventoryJSON, credentialHashValue, credentialSecret string
+	if err := row.Scan(&record.Node, &online, &draining, &revoked, &enrolledAt, &lastSeenAt, &lastHeartbeatAt, &record.Capacity, &activeAttemptsJSON, &lastProcessedCommand, &inventoryJSON, &credentialHashValue, &credentialSecret); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return NodeRecord{}, ErrNotFound
 		}
 		return NodeRecord{}, err
 	}
 	record.Online, record.Draining, record.Revoked = online != 0, draining != 0, revoked != 0
+	record.LastProcessedCommand = lastProcessedCommand
 	record.CredentialHash = credentialHashValue
+	if activeAttemptsJSON != "" {
+		if err := json.Unmarshal([]byte(activeAttemptsJSON), &record.ActiveAttempts); err != nil {
+			return NodeRecord{}, fmt.Errorf("core: decode Node active attempts: %w", err)
+		}
+	}
 	_ = credentialSecret
 	var err error
 	if record.EnrolledAt, err = parseNodeTime(enrolledAt); err != nil {
