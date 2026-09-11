@@ -1,7 +1,7 @@
 # 01 Worker-first core state and migration contract
 
 Type: task
-Status: claimed
+Status: resolved
 Blocked by:
 
 ## Work
@@ -31,3 +31,9 @@ Blocked by:
 - Новые domain/API types не содержат parent/child Worker tree или `task_id`.
 - Existing tests покрывают state transitions, close, retry и invalid transitions.
 - Перед destructive migration сохраняется backup локального database.
+
+## Answer
+
+Worker-first core contract реализован в `internal/core`. Новые Worker, Turn, AttemptOutcome и Result records используют отдельные Phase 4 SQLite tables, сохраняют immutable Project/Node/HarnessInstance binding и не содержат native runtime session ID. Terminal AttemptOutcome идемпотентен, `retry_attempt` разрешён только после terminal `retryable` outcome, а `final` outcome создаёт единственный Result и Conversation entry. Recovery переводит недоказанные Attempts в `interrupted`/`final` без автоматического retry.
+
+Legacy Task tables и API сохранены как migration compatibility seam, но новые Phase 4 operations не создают Task records. Полная конверсия существующих Phase 3 rows и переключение production API остаются отдельными tickets 06a/06b/14. Добавлена backup-копия существующей SQLite database перед migration. Тесты покрывают retry, duplicate terminal delivery, один Result на Turn, active Turn invariant, immutable binding, invalid transitions, recovery и backup.
