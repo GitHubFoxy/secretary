@@ -1,7 +1,7 @@
 # 01 Worker-first core state and migration contract
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by:
 
 ## Work
