@@ -129,7 +129,7 @@ func (s *Store) EnqueueSecretaryTurn(ctx context.Context, identityID, input stri
 			return SecretaryTurn{}, err
 		}
 		var position int64
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) + 1 FROM secretary_turns WHERE identity_id = ? AND state = 'queued'`, identityID).Scan(&position); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(queue_position), 0) + 1 FROM secretary_turns WHERE identity_id = ? AND state = 'queued'`, identityID).Scan(&position); err != nil {
 			return SecretaryTurn{}, err
 		}
 		now := s.now()
