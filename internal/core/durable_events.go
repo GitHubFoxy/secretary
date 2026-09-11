@@ -36,7 +36,9 @@ func (s *Store) migrateDurableEventSchema(ctx context.Context) error {
 	return nil
 }
 
-func appendEventTx(ctx context.Context, tx *sql.Tx, now time.Time, input EventInput, encoded []byte) (Event, error) {
+func appendEventTx(ctx context.Context, tx *sql.Tx, now time.Time, input EventInput, payload any) (Event, error) {
+	encoded, err := mustJSON(payload)
+	if err != nil { return Event{}, fmt.Errorf("encode event payload: %w", err) }
 	var next int64
 	if err := tx.QueryRowContext(ctx, `SELECT next_seq FROM event_sequence WHERE id = 1`).Scan(&next); errors.Is(err, sql.ErrNoRows) {
 		next = 1
@@ -48,8 +50,8 @@ func appendEventTx(ctx context.Context, tx *sql.Tx, now time.Time, input EventIn
 	} else if _, err := tx.ExecContext(ctx, `UPDATE event_sequence SET next_seq = ? WHERE id = 1`, next+1); err != nil {
 		return Event{}, err
 	}
-	event := Event{ID: newID("evt"), Seq: next, Kind: input.Kind, AggregateType: input.AggregateType, AggregateID: input.AggregateID, Source: input.Source, CorrelationID: input.CorrelationID, CausationID: input.CausationID, WorkerRef: input.WorkerRef, AttemptID: input.AttemptID, RuntimeSessionID: input.RuntimeSessionID, Payload: json.RawMessage(encoded), CreatedAt: now}
-	_, err := tx.ExecContext(ctx, `INSERT INTO events(id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, runtime_session_id, payload_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.ID, event.Seq, event.Kind, event.AggregateType, event.AggregateID, event.Source, event.CorrelationID, event.CausationID, event.WorkerRef, event.AttemptID, event.RuntimeSessionID, string(event.Payload), timestamp(event.CreatedAt))
+	event := Event{ID: newID("evt"), Seq: next, Kind: input.Kind, AggregateType: input.AggregateType, AggregateID: input.AggregateID, Source: input.Source, CorrelationID: input.CorrelationID, CausationID: input.CausationID, WorkerRef: input.WorkerRef, AttemptID: input.AttemptID, Payload: json.RawMessage(encoded), CreatedAt: now}
+	_, err = tx.ExecContext(ctx, `INSERT INTO events(id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, payload_json, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, event.ID, event.Seq, event.Kind, event.AggregateType, event.AggregateID, event.Source, event.CorrelationID, event.CausationID, event.WorkerRef, event.AttemptID, string(event.Payload), timestamp(event.CreatedAt))
 	return event, err
 }
 
@@ -83,20 +85,19 @@ func (s *Store) ReplayConversation(ctx context.Context, conversationID string, a
 // at that boundary. A live subscriber can continue strictly after BoundarySeq.
 func (s *Store) ReplayEvents(ctx context.Context, afterSeq int64, limit int) (EventReplay, error) {
 	return withTx(s, ctx, func(tx *sql.Tx) (EventReplay, error) {
-		var boundary int64
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM events`).Scan(&boundary); err != nil {
-			return EventReplay{}, err
-		}
-		if limit <= 0 || limit > 500 {
-			limit = 500
-		}
-		rows, err := tx.QueryContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, runtime_session_id, payload_json, created_at FROM events WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?`, afterSeq, boundary, limit)
-		if err != nil {
-			return EventReplay{}, err
-		}
+		var snapshotBoundary int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM events`).Scan(&snapshotBoundary); err != nil { return EventReplay{}, err }
+		if limit <= 0 || limit > 500 { limit = 500 }
+		rows, err := tx.QueryContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, payload_json, created_at FROM events WHERE seq > ? AND seq <= ? ORDER BY seq LIMIT ?`, afterSeq, snapshotBoundary, limit+1)
+		if err != nil { return EventReplay{}, err }
 		defer rows.Close()
 		events, err := scanEvents(rows)
-		return EventReplay{BoundarySeq: boundary, Events: events}, err
+		if err != nil { return EventReplay{}, err }
+		hasMore := len(events) > limit
+		if hasMore { events = events[:limit] }
+		lastReturned := afterSeq
+		if len(events) > 0 { lastReturned = events[len(events)-1].Seq }
+		return EventReplay{SnapshotBoundarySeq: snapshotBoundary, BoundarySeq: snapshotBoundary, LastReturnedSeq: lastReturned, HasMore: hasMore, Events: events}, nil
 	})
 }
 
@@ -311,12 +312,8 @@ func getDelivery(ctx context.Context, q interface {
 	return delivery, err
 }
 
-func mustJSON(value any) []byte {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return []byte("null")
-	}
-	return encoded
+func mustJSON(value any) ([]byte, error) {
+	return json.Marshal(value)
 }
 
 func (s *Store) loadIdempotency(ctx context.Context, operation, key string, destination any) (bool, error) {
@@ -344,9 +341,5 @@ func (s *Store) saveIdempotency(ctx context.Context, operation, key string, outc
 }
 
 func appendAuditEventTx(ctx context.Context, tx *sql.Tx, now time.Time, kind, aggregateID string, payload any) (Event, error) {
-	encoded, err := json.Marshal(payload)
-	if err != nil {
-		return Event{}, err
-	}
-	return appendEventTx(ctx, tx, now, EventInput{Kind: kind, AggregateType: "delivery", AggregateID: aggregateID, Source: "server", Payload: payload}, encoded)
+	return appendEventTx(ctx, tx, now, EventInput{Kind: kind, AggregateType: "delivery", AggregateID: aggregateID, Source: "server", Payload: payload}, payload)
 }

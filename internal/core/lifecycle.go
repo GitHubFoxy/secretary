@@ -44,7 +44,7 @@ func (s *Store) ApplyLifecycleAction(ctx context.Context, action LifecycleAction
 		}
 		now := s.now()
 		actionID := newID("act")
-		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: action.Kind, AggregateType: action.AggregateType, AggregateID: action.AggregateID, Source: action.Source, CorrelationID: actionID, Payload: action.Payload}, mustJSON(action.Payload))
+		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: action.Kind, AggregateType: action.AggregateType, AggregateID: action.AggregateID, Source: action.Source, CorrelationID: actionID, Payload: action.Payload}, action.Payload)
 		if err != nil {
 			return struct {
 				outcome   LifecycleOutcome

@@ -18,15 +18,16 @@ type Event struct {
 	Source           string          `json:"source,omitempty"`
 	CorrelationID    string          `json:"correlation_id,omitempty"`
 	CausationID      string          `json:"causation_id,omitempty"`
-	WorkerRef        string          `json:"worker_ref,omitempty"`
-	AttemptID        string          `json:"attempt_id,omitempty"`
-	RuntimeSessionID string          `json:"runtime_session_id,omitempty"`
-	Payload          json.RawMessage `json:"payload"`
+	WorkerRef string          `json:"worker_ref,omitempty"`
+	AttemptID string          `json:"attempt_id,omitempty"`
+	Payload   json.RawMessage `json:"payload"`
 	CreatedAt        time.Time       `json:"created_at"`
 }
 
 func (s *Store) RecordEvent(ctx context.Context, kind, workerRef, attemptID, runtimeSessionID string, payload any) (Event, error) {
-	return s.RecordEventWithMetadata(ctx, EventInput{Kind: kind, AggregateType: "worker", AggregateID: workerRef, Source: "server", WorkerRef: workerRef, AttemptID: attemptID, RuntimeSessionID: runtimeSessionID, Payload: payload})
+	// runtimeSessionID remains an ignored legacy argument. It is not persisted
+	// or exposed by the Phase 4 server event contract.
+	return s.RecordEventWithMetadata(ctx, EventInput{Kind: kind, AggregateType: "worker", AggregateID: workerRef, Source: "server", WorkerRef: workerRef, AttemptID: attemptID, Payload: payload})
 }
 
 // RecordEventWithMetadata appends one event and allocates its sequence in the
@@ -49,7 +50,7 @@ func (s *Store) EventsAfterSeq(ctx context.Context, afterSeq int64, limit int) (
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, runtime_session_id, payload_json, created_at FROM events WHERE seq > ? ORDER BY seq LIMIT ?`, afterSeq, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, payload_json, created_at FROM events WHERE seq > ? ORDER BY seq LIMIT ?`, afterSeq, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +62,7 @@ func (s *Store) EventsAfter(ctx context.Context, after time.Time, limit int) ([]
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, runtime_session_id, payload_json, created_at FROM events WHERE created_at > ? ORDER BY seq LIMIT ?`, timestamp(after), limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, payload_json, created_at FROM events WHERE created_at > ? ORDER BY seq LIMIT ?`, timestamp(after), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -73,7 +74,7 @@ func (s *Store) EventsRecent(ctx context.Context, limit int) ([]Event, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, runtime_session_id, payload_json, created_at FROM events ORDER BY seq DESC LIMIT ?`, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, payload_json, created_at FROM events ORDER BY seq DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +91,7 @@ func scanEvents(rows *sql.Rows) ([]Event, error) {
 	for rows.Next() {
 		var event Event
 		var payload string
-		if err := rows.Scan(&event.ID, &event.Seq, &event.Kind, &event.AggregateType, &event.AggregateID, &event.Source, &event.CorrelationID, &event.CausationID, &event.WorkerRef, &event.AttemptID, &event.RuntimeSessionID, &payload, newTimestampScanner(&event.CreatedAt)); err != nil {
+		if err := rows.Scan(&event.ID, &event.Seq, &event.Kind, &event.AggregateType, &event.AggregateID, &event.Source, &event.CorrelationID, &event.CausationID, &event.WorkerRef, &event.AttemptID, &payload, newTimestampScanner(&event.CreatedAt)); err != nil {
 			return nil, err
 		}
 		event.Payload = json.RawMessage(payload)

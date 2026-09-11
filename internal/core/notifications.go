@@ -45,7 +45,7 @@ func (s *Store) PublishImportantNotification(ctx context.Context, kind, aggregat
 			}{event: event, delivery: delivery, duplicate: true}, nil
 		}
 		now := s.now()
-		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: kind, AggregateType: aggregateType, AggregateID: aggregateID, Source: "server", Payload: payload}, mustJSON(payload))
+		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: kind, AggregateType: aggregateType, AggregateID: aggregateID, Source: "server", Payload: payload}, payload)
 		if err != nil {
 			return struct {
 				event     Event
@@ -68,7 +68,7 @@ func getEvent(ctx context.Context, q interface {
 }, id string) (Event, error) {
 	var event Event
 	var payload string
-	err := q.QueryRowContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, runtime_session_id, payload_json, created_at FROM events WHERE id = ?`, id).Scan(&event.ID, &event.Seq, &event.Kind, &event.AggregateType, &event.AggregateID, &event.Source, &event.CorrelationID, &event.CausationID, &event.WorkerRef, &event.AttemptID, &event.RuntimeSessionID, &payload, newTimestampScanner(&event.CreatedAt))
+	err := q.QueryRowContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, payload_json, created_at FROM events WHERE id = ?`, id).Scan(&event.ID, &event.Seq, &event.Kind, &event.AggregateType, &event.AggregateID, &event.Source, &event.CorrelationID, &event.CausationID, &event.WorkerRef, &event.AttemptID, &payload, newTimestampScanner(&event.CreatedAt))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
