@@ -29,8 +29,9 @@ type Store struct {
 	observerMu sync.RWMutex
 	observer   func(ConversationEntry)
 
-	idempotencyMu  sync.Mutex
-	userDocumentMu sync.Mutex
+	idempotencyMu    sync.Mutex
+	userDocumentMu   sync.Mutex
+	nodeEnrollmentMu sync.Mutex
 }
 
 func Open(ctx context.Context, dsn string) (*Store, error) {

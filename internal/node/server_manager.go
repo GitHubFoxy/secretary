@@ -2,9 +2,7 @@ package node
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
@@ -47,44 +45,98 @@ type ServerNodeStatus struct {
 }
 
 // ServerManager owns server-side Node enrollment and live protocol connections.
-// It intentionally has no access to native runtime session IDs or local harness
-// credentials; those remain on the Node.
+// It never receives native runtime session IDs or local harness credentials.
+// Transport credentials are separate per-Node secrets used only by this boundary.
+type ServerConfig struct {
+	PairingTokens        []string
+	AdminToken           string
+	ClientBootstrapToken string
+	HeartbeatTimeout     time.Duration
+	WatchdogInterval     time.Duration
+	Now                  func() time.Time
+}
+
 type ServerManager struct {
-	store        *core.Store
-	pairingToken string
-	adminToken   string
-	masterSecret []byte
+	store      *core.Store
+	adminToken string
+	config     ServerConfig
+	now        func() time.Time
 
 	mu          sync.Mutex
 	connections map[core.NodeReference]*ProtocolConnection
 	outcomes    map[core.NodeReference]CommandOutcome
+	credentials map[core.NodeReference][]byte
 	eventSink   func(context.Context, NodeEvent) error
 	outcomeSink func(context.Context, core.NodeReference, CommandOutcome) error
 }
 
+// NewServerManager is kept as a narrow compatibility constructor. Production
+// wiring uses NewServerManagerWithConfig so Client bootstrap credentials cannot
+// cross the Node service boundary.
 func NewServerManager(ctx context.Context, store *core.Store, pairingToken, adminToken string) (*ServerManager, error) {
+	return NewServerManagerWithConfig(ctx, store, ServerConfig{PairingTokens: []string{pairingToken}, AdminToken: adminToken})
+}
+
+func NewServerManagerWithConfig(ctx context.Context, store *core.Store, config ServerConfig) (*ServerManager, error) {
 	if store == nil {
 		return nil, errors.New("node server: store is required")
 	}
-	if strings.TrimSpace(pairingToken) == "" {
-		return nil, errors.New("node server: pairing token is required")
-	}
-	if strings.TrimSpace(adminToken) == "" {
+	if strings.TrimSpace(config.AdminToken) == "" {
 		return nil, errors.New("node server: admin token is required")
+	}
+	if bootstrap := strings.TrimSpace(config.ClientBootstrapToken); bootstrap != "" && subtle.ConstantTimeCompare([]byte(bootstrap), []byte(config.AdminToken)) == 1 {
+		return nil, errors.New("node server: Client bootstrap and Node admin credentials must be distinct")
+	}
+	if config.Now == nil {
+		config.Now = func() time.Time { return time.Now().UTC() }
+	}
+	if config.HeartbeatTimeout <= 0 {
+		config.HeartbeatTimeout = 45 * time.Second
+	}
+	if config.WatchdogInterval <= 0 {
+		config.WatchdogInterval = config.HeartbeatTimeout / 3
+		if config.WatchdogInterval <= 0 {
+			config.WatchdogInterval = time.Second
+		}
+	}
+	for _, token := range config.PairingTokens {
+		if strings.TrimSpace(token) == "" {
+			return nil, errors.New("node server: pairing token is required")
+		}
+		if subtle.ConstantTimeCompare([]byte(token), []byte(config.AdminToken)) == 1 {
+			return nil, errors.New("node server: Node pairing and admin credentials must be distinct")
+		}
+		if bootstrap := strings.TrimSpace(config.ClientBootstrapToken); bootstrap != "" && subtle.ConstantTimeCompare([]byte(token), []byte(bootstrap)) == 1 {
+			return nil, errors.New("node server: Client bootstrap and Node pairing credentials must be distinct")
+		}
+	}
+	if len(config.PairingTokens) == 0 {
+		return nil, errors.New("node server: pairing token is required")
 	}
 	if err := store.EnsureNodeRegistry(ctx); err != nil {
 		return nil, err
 	}
-	secret, err := store.EnsureNodeTransportSecret(ctx)
-	if err != nil {
-		return nil, err
+	for _, token := range config.PairingTokens {
+		if err := store.ConfigureNodePairingToken(ctx, token); err != nil {
+			return nil, err
+		}
 	}
 	if err := store.MarkAllNodesOffline(ctx); err != nil {
 		return nil, err
 	}
+	credentials := make(map[core.NodeReference][]byte)
+	records, err := store.NodeRecords(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, record := range records {
+		if credential, credentialErr := store.NodeCredential(ctx, record.Node); credentialErr == nil {
+			credentials[record.Node] = credential
+		}
+	}
 	return &ServerManager{
-		store: store, pairingToken: pairingToken, adminToken: adminToken, masterSecret: secret,
-		connections: map[core.NodeReference]*ProtocolConnection{}, outcomes: map[core.NodeReference]CommandOutcome{},
+		store: store, adminToken: config.AdminToken, config: config, now: config.Now,
+		connections: map[core.NodeReference]*ProtocolConnection{}, outcomes: map[core.NodeReference]CommandOutcome{}, credentials: credentials,
 	}, nil
 }
 
@@ -258,10 +310,6 @@ func (m *ServerManager) pair(w http.ResponseWriter, r *http.Request) {
 	if err := decodeNodeJSON(w, r, &request); err != nil {
 		return
 	}
-	if subtle.ConstantTimeCompare([]byte(request.PairingToken), []byte(m.pairingToken)) != 1 {
-		http.Error(w, "invalid Node pairing token", http.StatusUnauthorized)
-		return
-	}
 	if request.Node == "" {
 		request.Node = randomNodeReference()
 	}
@@ -269,15 +317,26 @@ func (m *ServerManager) pair(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid Node reference", http.StatusBadRequest)
 		return
 	}
-	if _, err := m.store.EnrollNode(r.Context(), request.Node); err != nil {
-		if errors.Is(err, core.ErrNodeAlreadyEnrolled) {
-			http.Error(w, "Node reference is already enrolled", http.StatusConflict)
-			return
-		}
-		http.Error(w, "enroll Node", http.StatusInternalServerError)
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		http.Error(w, "generate Node credential", http.StatusInternalServerError)
 		return
 	}
-	credential := base64.RawURLEncoding.EncodeToString(m.credential(request.Node))
+	if _, err := m.store.EnrollNodeWithPairing(r.Context(), request.PairingToken, request.Node, secret); err != nil {
+		switch {
+		case errors.Is(err, core.ErrNodePairingTokenUsed), errors.Is(err, core.ErrNodePairingTokenAbsent):
+			http.Error(w, "invalid or already used Node pairing token", http.StatusUnauthorized)
+		case errors.Is(err, core.ErrNodeAlreadyEnrolled):
+			http.Error(w, "Node reference is already enrolled", http.StatusConflict)
+		default:
+			http.Error(w, "enroll Node", http.StatusInternalServerError)
+		}
+		return
+	}
+	m.mu.Lock()
+	m.credentials[request.Node] = append([]byte(nil), secret...)
+	m.mu.Unlock()
+	credential := base64.RawURLEncoding.EncodeToString(secret)
 	writeNodeJSON(w, http.StatusCreated, EnrollmentResponse{Node: request.Node, Credential: credential, ConnectURL: nodeConnectURL(r, request.Node)})
 }
 
@@ -291,9 +350,41 @@ func (m *ServerManager) authorizeAdmin(r *http.Request) bool {
 }
 
 func (m *ServerManager) credential(nodeRef core.NodeReference) []byte {
-	mac := hmac.New(sha256.New, m.masterSecret)
-	_, _ = mac.Write([]byte("secretary-node-v1\n" + string(nodeRef)))
-	return mac.Sum(nil)
+	m.mu.Lock()
+	credential := append([]byte(nil), m.credentials[nodeRef]...)
+	m.mu.Unlock()
+	if len(credential) > 0 {
+		return credential
+	}
+	credential, err := m.store.NodeCredential(context.Background(), nodeRef)
+	if err != nil {
+		return nil
+	}
+	m.mu.Lock()
+	m.credentials[nodeRef] = append([]byte(nil), credential...)
+	m.mu.Unlock()
+	return credential
+}
+
+// Run watches the last accepted heartbeat independently from socket lifetime.
+// This turns silent network loss into an explicit offline state.
+func (m *ServerManager) Run(ctx context.Context) error {
+	ticker := time.NewTicker(m.config.WatchdogInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if err := m.WatchdogTick(ctx); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func (m *ServerManager) WatchdogTick(ctx context.Context) error {
+	return m.store.MarkSilentNodesOffline(ctx, m.now().Add(-m.config.HeartbeatTimeout))
 }
 
 func (m *ServerManager) registerConnection(nodeRef core.NodeReference, connection *ProtocolConnection) {

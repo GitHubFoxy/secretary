@@ -20,7 +20,7 @@ func TestTwoDaemonsPairWithOneServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer serverStore.Close()
-	manager, err := NewServerManager(ctx, serverStore, "pair-token", "admin-token")
+	manager, err := NewServerManagerWithConfig(ctx, serverStore, ServerConfig{PairingTokens: []string{"pair-token-macbook", "pair-token-home"}, AdminToken: "admin-token"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,11 +32,11 @@ func TestTwoDaemonsPairWithOneServer(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	macbookIdentity, err := EnrollNode(ctx, server.Client(), server.URL, "pair-token", "macbook")
+	macbookIdentity, err := EnrollNode(ctx, server.Client(), server.URL, "pair-token-macbook", "macbook")
 	if err != nil {
 		t.Fatal(err)
 	}
-	homeIdentity, err := EnrollNode(ctx, server.Client(), server.URL, "pair-token", "home-server")
+	homeIdentity, err := EnrollNode(ctx, server.Client(), server.URL, "pair-token-home", "home-server")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,15 +57,15 @@ func TestTwoDaemonsPairWithOneServer(t *testing.T) {
 
 	newDaemon := func(identity NodeIdentity, local *LocalStore) *Daemon {
 		return &Daemon{
-			Identity: identity,
-			Store: local,
-			Runtime: &daemonCountingRuntime{},
-			Inventory: daemonStaticInventory{snapshot: daemonInventoryFixture(identity.Node)},
-			HeartbeatInterval: 20 * time.Millisecond,
-			InventoryInterval: time.Hour,
+			Identity:           identity,
+			Store:              local,
+			Runtime:            &daemonCountingRuntime{},
+			Inventory:          daemonStaticInventory{snapshot: daemonInventoryFixture(identity.Node)},
+			HeartbeatInterval:  20 * time.Millisecond,
+			InventoryInterval:  time.Hour,
 			OutboxPollInterval: 10 * time.Millisecond,
-			ReconnectMin: 10 * time.Millisecond,
-			ReconnectMax: 40 * time.Millisecond,
+			ReconnectMin:       10 * time.Millisecond,
+			ReconnectMax:       40 * time.Millisecond,
 		}
 	}
 

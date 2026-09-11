@@ -87,23 +87,35 @@ func main() {
 	web.SetDebug(*debug)
 
 	var remoteNodes *node.ServerManager
-	nodePairingToken := strings.TrimSpace(os.Getenv("SECRETARY_NODE_PAIRING_TOKEN"))
+	nodePairingTokens := configuredNodePairingTokens()
 	nodeAdminToken := strings.TrimSpace(os.Getenv("SECRETARY_NODE_ADMIN_TOKEN"))
 	switch {
-	case nodePairingToken == "" && nodeAdminToken == "":
-		log.Printf("remote Node service disabled; set SECRETARY_NODE_PAIRING_TOKEN and SECRETARY_NODE_ADMIN_TOKEN to enable it")
-	case nodePairingToken == "" || nodeAdminToken == "":
-		log.Fatal("SECRETARY_NODE_PAIRING_TOKEN and SECRETARY_NODE_ADMIN_TOKEN must be configured together")
+	case len(nodePairingTokens) == 0 && nodeAdminToken == "":
+		log.Printf("remote Node service disabled; set SECRETARY_NODE_PAIRING_TOKEN(S) and SECRETARY_NODE_ADMIN_TOKEN to enable it")
+	case len(nodePairingTokens) == 0 || nodeAdminToken == "":
+		log.Fatal("SECRETARY_NODE_PAIRING_TOKEN(S) and SECRETARY_NODE_ADMIN_TOKEN must be configured together")
 	default:
-		remoteNodes, err = node.NewServerManager(context.Background(), store, nodePairingToken, nodeAdminToken)
+		remoteNodes, err = node.NewServerManagerWithConfig(context.Background(), store, node.ServerConfig{
+			PairingTokens: nodePairingTokens, AdminToken: nodeAdminToken, ClientBootstrapToken: bootstrapToken,
+			HeartbeatTimeout: 45 * time.Second, WatchdogInterval: 5 * time.Second,
+		})
 		if err != nil {
 			log.Fatalf("initialize remote Node service: %v", err)
 		}
+		remoteNodes.SetEventSink(node.NewStoreEventSink(store))
+		web.AttachNodeService(remoteNodes)
 		log.Printf("remote Node pairing and protocol service enabled")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if remoteNodes != nil {
+		go func() {
+			if err := remoteNodes.Run(ctx); err != nil {
+				log.Printf("Node heartbeat watchdog: %v", err)
+			}
+		}()
+	}
 	reloads := make(chan os.Signal, 1)
 	signal.Notify(reloads, syscall.SIGHUP)
 	defer signal.Stop(reloads)
@@ -474,6 +486,20 @@ func writeConfig(path string, content []byte) error {
 		return err
 	}
 	return os.Rename(temporaryName, path)
+}
+
+func configuredNodePairingTokens() []string {
+	value := os.Getenv("SECRETARY_NODE_PAIRING_TOKENS")
+	if strings.TrimSpace(value) == "" {
+		value = os.Getenv("SECRETARY_NODE_PAIRING_TOKEN")
+	}
+	var tokens []string
+	for _, token := range strings.Split(value, ",") {
+		if token = strings.TrimSpace(token); token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	return tokens
 }
 
 func defaultDataDir() string {

@@ -2,9 +2,13 @@ package core
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,8 +17,10 @@ import (
 )
 
 var (
-	ErrNodeAlreadyEnrolled = errors.New("core: node already enrolled")
-	ErrNodeRevoked         = errors.New("core: node revoked")
+	ErrNodeAlreadyEnrolled    = errors.New("core: node already enrolled")
+	ErrNodeRevoked            = errors.New("core: node revoked")
+	ErrNodePairingTokenUsed   = errors.New("core: node pairing token is invalid or already used")
+	ErrNodePairingTokenAbsent = errors.New("core: node pairing token is not configured")
 )
 
 // NodeRecord is the server-owned durable view of one enrolled execution Node.
@@ -28,6 +34,7 @@ type NodeRecord struct {
 	LastSeenAt      time.Time                `json:"last_seen_at,omitempty"`
 	LastHeartbeatAt time.Time                `json:"last_heartbeat_at,omitempty"`
 	Inventory       HarnessInventorySnapshot `json:"inventory,omitempty"`
+	CredentialHash  string                   `json:"credential_hash,omitempty"`
 }
 
 func (s *Store) EnsureNodeRegistry(ctx context.Context) error {
@@ -40,12 +47,27 @@ CREATE TABLE IF NOT EXISTS phase4_nodes (
   enrolled_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL DEFAULT '',
   last_heartbeat_at TEXT NOT NULL DEFAULT '',
-  inventory_json TEXT NOT NULL DEFAULT ''
+  inventory_json TEXT NOT NULL DEFAULT '',
+  credential_hash TEXT NOT NULL DEFAULT '',
+  credential_secret TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS phase4_node_pairing_tokens (
+  token_hash TEXT PRIMARY KEY,
+  consumed_at TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS phase4_nodes_online ON phase4_nodes(online, revoked, draining);
 `)
 	if err != nil {
 		return fmt.Errorf("core: migrate Node registry: %w", err)
+	}
+	for _, migration := range []string{
+		"phase4_nodes credential_hash TEXT NOT NULL DEFAULT ''",
+		"phase4_nodes credential_secret TEXT NOT NULL DEFAULT ''",
+	} {
+		parts := strings.SplitN(migration, " ", 2)
+		if _, err := s.db.ExecContext(ctx, `ALTER TABLE `+parts[0]+` ADD COLUMN `+parts[1]); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+			return fmt.Errorf("core: migrate Node registry column %s: %w", migration, err)
+		}
 	}
 	return nil
 }
@@ -85,6 +107,10 @@ func (s *Store) EnsureNodeTransportSecret(ctx context.Context) ([]byte, error) {
 }
 
 func (s *Store) EnrollNode(ctx context.Context, node NodeReference) (NodeRecord, error) {
+	return s.enrollNode(ctx, node, nil)
+}
+
+func (s *Store) enrollNode(ctx context.Context, node NodeReference, credential []byte) (NodeRecord, error) {
 	if strings.TrimSpace(string(node)) == "" {
 		return NodeRecord{}, errors.New("core: Node reference is required")
 	}
@@ -92,22 +118,89 @@ func (s *Store) EnrollNode(ctx context.Context, node NodeReference) (NodeRecord,
 		return NodeRecord{}, err
 	}
 	now := s.now()
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO phase4_nodes(node_ref, enrolled_at) VALUES(?, ?)`, node, timestamp(now)); err != nil {
-		var existing NodeRecord
+	hash := credentialHash(credential)
+	secret, err := s.encryptNodeCredential(ctx, credential)
+	if err != nil {
+		return NodeRecord{}, err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO phase4_nodes(node_ref, enrolled_at, credential_hash, credential_secret) VALUES(?, ?, ?, ?)`, node, timestamp(now), hash, secret)
+	if err != nil {
 		if current, lookupErr := s.NodeRecord(ctx, node); lookupErr == nil {
-			existing = current
-			return existing, ErrNodeAlreadyEnrolled
+			return current, ErrNodeAlreadyEnrolled
 		}
 		return NodeRecord{}, err
 	}
-	return NodeRecord{Node: node, EnrolledAt: now}, nil
+	return NodeRecord{Node: node, EnrolledAt: now, CredentialHash: hash}, nil
+}
+
+// ConfigureNodePairingToken stores only a digest. The raw token remains in the
+// operator configuration and is consumed atomically by EnrollNodeWithPairing.
+func (s *Store) ConfigureNodePairingToken(ctx context.Context, token string) error {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ErrNodePairingTokenAbsent
+	}
+	if err := s.EnsureNodeRegistry(ctx); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT OR IGNORE INTO phase4_node_pairing_tokens(token_hash) VALUES(?)`, credentialHash([]byte(token)))
+	return err
+}
+
+// EnrollNodeWithPairing consumes the pairing token and creates the Node
+// credential in one transaction. A retry cannot enroll another Node.
+func (s *Store) EnrollNodeWithPairing(ctx context.Context, token string, node NodeReference, credential []byte) (NodeRecord, error) {
+	s.nodeEnrollmentMu.Lock()
+	defer s.nodeEnrollmentMu.Unlock()
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return NodeRecord{}, ErrNodePairingTokenAbsent
+	}
+	if strings.TrimSpace(string(node)) == "" {
+		return NodeRecord{}, errors.New("core: Node reference is required")
+	}
+	if len(credential) < 32 {
+		return NodeRecord{}, errors.New("core: Node credential is too short")
+	}
+	if err := s.EnsureNodeRegistry(ctx); err != nil {
+		return NodeRecord{}, err
+	}
+	secret, err := s.encryptNodeCredential(ctx, credential)
+	if err != nil {
+		return NodeRecord{}, err
+	}
+	returnValue, err := withTx(s, ctx, func(tx *sql.Tx) (NodeRecord, error) {
+		now := s.now()
+		result, err := tx.ExecContext(ctx, `UPDATE phase4_node_pairing_tokens SET consumed_at = ? WHERE token_hash = ? AND consumed_at = ''`, timestamp(now), credentialHash([]byte(token)))
+		if err != nil {
+			return NodeRecord{}, err
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 {
+			return NodeRecord{}, ErrNodePairingTokenUsed
+		}
+		hash := credentialHash(credential)
+		_, err = tx.ExecContext(ctx, `INSERT INTO phase4_nodes(node_ref, enrolled_at, credential_hash, credential_secret) VALUES(?, ?, ?, ?)`, node, timestamp(now), hash, secret)
+		if err != nil {
+			if strings.Contains(strings.ToLower(err.Error()), "unique") {
+				return NodeRecord{}, ErrNodeAlreadyEnrolled
+			}
+			return NodeRecord{}, err
+		}
+		return NodeRecord{Node: node, EnrolledAt: now, CredentialHash: hash}, nil
+	})
+	return returnValue, err
+}
+
+func credentialHash(secret []byte) string {
+	digest := sha256.Sum256(secret)
+	return hex.EncodeToString(digest[:])
 }
 
 func (s *Store) NodeRecord(ctx context.Context, node NodeReference) (NodeRecord, error) {
 	if err := s.EnsureNodeRegistry(ctx); err != nil {
 		return NodeRecord{}, err
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, inventory_json FROM phase4_nodes WHERE node_ref = ?`, node)
+	row := s.db.QueryRowContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, inventory_json, credential_hash, credential_secret FROM phase4_nodes WHERE node_ref = ?`, node)
 	return scanNodeRecord(row)
 }
 
@@ -115,7 +208,7 @@ func (s *Store) NodeRecords(ctx context.Context) ([]NodeRecord, error) {
 	if err := s.EnsureNodeRegistry(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, inventory_json FROM phase4_nodes ORDER BY enrolled_at, node_ref`)
+	rows, err := s.db.QueryContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, inventory_json, credential_hash, credential_secret FROM phase4_nodes ORDER BY enrolled_at, node_ref`)
 	if err != nil {
 		return nil, err
 	}
@@ -156,6 +249,82 @@ func (s *Store) MarkNodeConnected(ctx context.Context, node NodeReference, inven
 		return err
 	}
 	return s.requireActiveNode(ctx, node, result)
+}
+
+func (s *Store) MarkSilentNodesOffline(ctx context.Context, before time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE phase4_nodes SET online = 0 WHERE online = 1 AND revoked = 0 AND COALESCE(NULLIF(last_heartbeat_at, ''), last_seen_at) <> '' AND COALESCE(NULLIF(last_heartbeat_at, ''), last_seen_at) < ?`, timestamp(before))
+	return err
+}
+
+func (s *Store) NodeCredential(ctx context.Context, node NodeReference) ([]byte, error) {
+	if err := s.EnsureNodeRegistry(ctx); err != nil {
+		return nil, err
+	}
+	var encoded string
+	if err := s.db.QueryRowContext(ctx, `SELECT credential_secret FROM phase4_nodes WHERE node_ref = ?`, node).Scan(&encoded); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	if encoded == "" {
+		return nil, ErrNotFound
+	}
+	return s.decryptNodeCredential(ctx, encoded)
+}
+
+func (s *Store) encryptNodeCredential(ctx context.Context, credential []byte) (string, error) {
+	if len(credential) == 0 {
+		return "", nil
+	}
+	secret, err := s.EnsureNodeTransportSecret(ctx)
+	if err != nil {
+		return "", err
+	}
+	key := sha256.Sum256(secret)
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return "", err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return "", err
+	}
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return "", err
+	}
+	sealed := gcm.Seal(nonce, nonce, credential, nil)
+	return base64.RawURLEncoding.EncodeToString(sealed), nil
+}
+
+func (s *Store) decryptNodeCredential(ctx context.Context, encoded string) ([]byte, error) {
+	sealed, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, errors.New("core: invalid persisted Node credential")
+	}
+	secret, err := s.EnsureNodeTransportSecret(ctx)
+	if err != nil {
+		return nil, err
+	}
+	key := sha256.Sum256(secret)
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+	if len(sealed) < gcm.NonceSize() {
+		return nil, errors.New("core: invalid persisted Node credential")
+	}
+	nonce, ciphertext := sealed[:gcm.NonceSize()], sealed[gcm.NonceSize():]
+	credential, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, errors.New("core: invalid persisted Node credential")
+	}
+	return credential, nil
 }
 
 func (s *Store) MarkNodeDisconnected(ctx context.Context, node NodeReference) error {
@@ -256,14 +425,16 @@ type nodeRowScanner interface {
 func scanNodeRecord(row nodeRowScanner) (NodeRecord, error) {
 	var record NodeRecord
 	var online, draining, revoked int
-	var enrolledAt, lastSeenAt, lastHeartbeatAt, inventoryJSON string
-	if err := row.Scan(&record.Node, &online, &draining, &revoked, &enrolledAt, &lastSeenAt, &lastHeartbeatAt, &inventoryJSON); err != nil {
+	var enrolledAt, lastSeenAt, lastHeartbeatAt, inventoryJSON, credentialHashValue, credentialSecret string
+	if err := row.Scan(&record.Node, &online, &draining, &revoked, &enrolledAt, &lastSeenAt, &lastHeartbeatAt, &inventoryJSON, &credentialHashValue, &credentialSecret); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return NodeRecord{}, ErrNotFound
 		}
 		return NodeRecord{}, err
 	}
 	record.Online, record.Draining, record.Revoked = online != 0, draining != 0, revoked != 0
+	record.CredentialHash = credentialHashValue
+	_ = credentialSecret
 	var err error
 	if record.EnrolledAt, err = parseNodeTime(enrolledAt); err != nil {
 		return NodeRecord{}, err
