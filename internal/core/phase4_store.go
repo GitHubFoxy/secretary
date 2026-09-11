@@ -53,15 +53,98 @@ CREATE TABLE IF NOT EXISTS phase4_results (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS phase4_results_one_per_attempt
   ON phase4_results(attempt_id);
-CREATE TABLE IF NOT EXISTS phase4_retry_operations (
-  idempotency_key TEXT PRIMARY KEY,
-  turn_id TEXT NOT NULL REFERENCES turns(id),
-  attempt_id TEXT NOT NULL UNIQUE REFERENCES phase4_attempts(id),
-  created_at TEXT NOT NULL
-);
 `)
 	if err != nil {
 		return fmt.Errorf("migrate phase 4 lifecycle: %w", err)
+	}
+	if err := s.migratePhase4RetryOperations(ctx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *Store) migratePhase4RetryOperations(ctx context.Context) error {
+	var tableCount int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'phase4_retry_operations'`).Scan(&tableCount); err != nil {
+		return fmt.Errorf("inspect phase 4 retry operations: %w", err)
+	}
+	if tableCount == 0 {
+		if _, err := s.db.ExecContext(ctx, `CREATE TABLE phase4_retry_operations (
+  idempotency_key TEXT PRIMARY KEY,
+  source_attempt_id TEXT NOT NULL REFERENCES phase4_attempts(id),
+  next_attempt_id TEXT NOT NULL UNIQUE REFERENCES phase4_attempts(id),
+  created_at TEXT NOT NULL,
+  UNIQUE(source_attempt_id)
+)`); err != nil {
+			return fmt.Errorf("create phase 4 retry operations: %w", err)
+		}
+		return nil
+	}
+
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(phase4_retry_operations)`)
+	if err != nil {
+		return fmt.Errorf("inspect phase 4 retry operation columns: %w", err)
+	}
+	columns := make(map[string]bool)
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull, primaryKey int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan phase 4 retry operation columns: %w", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return fmt.Errorf("read phase 4 retry operation columns: %w", err)
+	}
+	rows.Close()
+	if columns["source_attempt_id"] && columns["next_attempt_id"] {
+		if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS phase4_retry_operations_source ON phase4_retry_operations(source_attempt_id); CREATE UNIQUE INDEX IF NOT EXISTS phase4_retry_operations_next ON phase4_retry_operations(next_attempt_id)`); err != nil {
+			return fmt.Errorf("migrate phase 4 retry operation indexes: %w", err)
+		}
+		return nil
+	}
+	if !columns["turn_id"] || !columns["attempt_id"] {
+		return errors.New("migrate phase 4 retry operations: unsupported schema")
+	}
+
+	if err := withTxErr(s, ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `CREATE TABLE phase4_retry_operations_v2 (
+  idempotency_key TEXT PRIMARY KEY,
+  source_attempt_id TEXT NOT NULL REFERENCES phase4_attempts(id),
+  next_attempt_id TEXT NOT NULL UNIQUE REFERENCES phase4_attempts(id),
+  created_at TEXT NOT NULL,
+  UNIQUE(source_attempt_id)
+)`); err != nil {
+			return fmt.Errorf("create phase 4 retry operation migration table: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_retry_operations_v2(idempotency_key, source_attempt_id, next_attempt_id, created_at)
+SELECT old.idempotency_key, source.id, next.id, old.created_at
+FROM phase4_retry_operations old
+JOIN phase4_attempts next ON next.id = old.attempt_id AND next.turn_id = old.turn_id
+JOIN phase4_attempts source ON source.turn_id = next.turn_id AND source.number = next.number - 1`); err != nil {
+			return fmt.Errorf("backfill phase 4 retry operations: %w", err)
+		}
+		var oldCount, newCount int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM phase4_retry_operations`).Scan(&oldCount); err != nil {
+			return fmt.Errorf("count old phase 4 retry operations: %w", err)
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM phase4_retry_operations_v2`).Scan(&newCount); err != nil {
+			return fmt.Errorf("count migrated phase 4 retry operations: %w", err)
+		}
+		if oldCount != newCount {
+			return fmt.Errorf("backfill phase 4 retry operations: migrated %d of %d rows", newCount, oldCount)
+		}
+		if _, err := tx.ExecContext(ctx, `DROP TABLE phase4_retry_operations; ALTER TABLE phase4_retry_operations_v2 RENAME TO phase4_retry_operations`); err != nil {
+			return fmt.Errorf("install phase 4 retry operation migration: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	return nil
 }
@@ -258,11 +341,11 @@ func (s *Store) finishRetryableAttempt(ctx context.Context, attemptID string, in
 			if attemptErr != nil {
 				return FinishAttemptResult{}, attemptErr
 			}
-			var storedTurnID, nextID string
-			if err := tx.QueryRowContext(ctx, `SELECT turn_id, attempt_id FROM phase4_retry_operations WHERE idempotency_key = ?`, input.RetryCommandID).Scan(&storedTurnID, &nextID); err != nil {
+			var sourceAttemptID, nextID string
+			if err := tx.QueryRowContext(ctx, `SELECT source_attempt_id, next_attempt_id FROM phase4_retry_operations WHERE idempotency_key = ?`, input.RetryCommandID).Scan(&sourceAttemptID, &nextID); err != nil {
 				return FinishAttemptResult{}, ErrInvalidTransition
 			}
-			if storedTurnID != attempt.TurnID {
+			if sourceAttemptID != attempt.ID {
 				return FinishAttemptResult{}, ErrInvalidTransition
 			}
 			next, err := getPhase4Attempt(ctx, tx, nextID)
@@ -276,8 +359,8 @@ func (s *Store) finishRetryableAttempt(ctx context.Context, attemptID string, in
 			return FinishAttemptResult{}, err
 		}
 
-		var operationTurnID, operationAttemptID string
-		if err := tx.QueryRowContext(ctx, `SELECT turn_id, attempt_id FROM phase4_retry_operations WHERE idempotency_key = ?`, input.RetryCommandID).Scan(&operationTurnID, &operationAttemptID); err == nil {
+		var operationSourceID, operationNextID string
+		if err := tx.QueryRowContext(ctx, `SELECT source_attempt_id, next_attempt_id FROM phase4_retry_operations WHERE idempotency_key = ?`, input.RetryCommandID).Scan(&operationSourceID, &operationNextID); err == nil {
 			return FinishAttemptResult{}, ErrInvalidTransition
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return FinishAttemptResult{}, err
@@ -308,7 +391,7 @@ func (s *Store) finishRetryableAttempt(ctx context.Context, attemptID string, in
 		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempts(id, worker_id, turn_id, number, node_id, harness_instance_id, state, correlation_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, next.ID, next.WorkerID, next.TurnID, next.Number, next.NodeID, next.HarnessInstanceID, next.State, next.CorrelationID, timestamp(now), timestamp(now)); err != nil {
 			return FinishAttemptResult{}, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_retry_operations(idempotency_key, turn_id, attempt_id, created_at) VALUES(?, ?, ?, ?)`, input.RetryCommandID, turn.ID, next.ID, timestamp(now)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_retry_operations(idempotency_key, source_attempt_id, next_attempt_id, created_at) VALUES(?, ?, ?, ?)`, input.RetryCommandID, attempt.ID, next.ID, timestamp(now)); err != nil {
 			return FinishAttemptResult{}, err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, current_attempt_id = ?, updated_at = ? WHERE id = ?`, TurnStarting, next.ID, timestamp(now), turn.ID); err != nil {
@@ -435,27 +518,6 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 				dup     bool
 			}{}, err
 		}
-		if input.Classification == OutcomeRetryable {
-			if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, current_attempt_id = NULL, updated_at = ? WHERE id = ?`, TurnActive, timestamp(now), attempt.TurnID); err != nil {
-				return struct {
-					outcome AttemptOutcome
-					result  *Phase4Result
-					dup     bool
-				}{}, err
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`, WorkerWorking, timestamp(now), attempt.WorkerID); err != nil {
-				return struct {
-					outcome AttemptOutcome
-					result  *Phase4Result
-					dup     bool
-				}{}, err
-			}
-			return struct {
-				outcome AttemptOutcome
-				result  *Phase4Result
-				dup     bool
-			}{outcome: outcome}, nil
-		}
 		turn, err := getTurn(ctx, tx, attempt.TurnID)
 		if err != nil {
 			return struct {
@@ -554,13 +616,16 @@ func (s *Store) RetryAttemptWithKey(ctx context.Context, turnID, idempotencyKey 
 func (s *Store) retryAttempt(ctx context.Context, turnID, idempotencyKey string) (Phase4Attempt, error) {
 	return withTx(s, ctx, func(tx *sql.Tx) (Phase4Attempt, error) {
 		if idempotencyKey != "" {
-			var storedTurnID, storedAttemptID string
-			err := tx.QueryRowContext(ctx, `SELECT turn_id, attempt_id FROM phase4_retry_operations WHERE idempotency_key = ?`, idempotencyKey).Scan(&storedTurnID, &storedAttemptID)
+			var storedSourceID, storedNextID, storedTurnID string
+			err := tx.QueryRowContext(ctx, `SELECT operation.source_attempt_id, operation.next_attempt_id, source.turn_id
+FROM phase4_retry_operations operation
+JOIN phase4_attempts source ON source.id = operation.source_attempt_id
+WHERE operation.idempotency_key = ?`, idempotencyKey).Scan(&storedSourceID, &storedNextID, &storedTurnID)
 			if err == nil {
 				if storedTurnID != turnID {
 					return Phase4Attempt{}, ErrInvalidTransition
 				}
-				return getPhase4Attempt(ctx, tx, storedAttemptID)
+				return getPhase4Attempt(ctx, tx, storedNextID)
 			}
 			if !errors.Is(err, sql.ErrNoRows) {
 				return Phase4Attempt{}, err
@@ -573,7 +638,10 @@ func (s *Store) retryAttempt(ctx context.Context, turnID, idempotencyKey string)
 		}
 		if idempotencyKey == "" && (turn.State.Terminal() || turn.ResultID != "") {
 			var storedAttemptID string
-			err := tx.QueryRowContext(ctx, `SELECT attempt_id FROM phase4_retry_operations WHERE turn_id = ? ORDER BY created_at DESC, idempotency_key DESC LIMIT 1`, turnID).Scan(&storedAttemptID)
+			err := tx.QueryRowContext(ctx, `SELECT operation.next_attempt_id
+FROM phase4_retry_operations operation
+JOIN phase4_attempts next ON next.id = operation.next_attempt_id
+WHERE next.turn_id = ? ORDER BY operation.created_at DESC, operation.idempotency_key DESC LIMIT 1`, turnID).Scan(&storedAttemptID)
 			if err == nil {
 				return getPhase4Attempt(ctx, tx, storedAttemptID)
 			}
@@ -597,7 +665,7 @@ func (s *Store) retryAttempt(ctx context.Context, turnID, idempotencyKey string)
 				return Phase4Attempt{}, ErrInvalidTransition
 			}
 			var operationAttemptID string
-			err := tx.QueryRowContext(ctx, `SELECT attempt_id FROM phase4_retry_operations WHERE attempt_id = ?`, latest.ID).Scan(&operationAttemptID)
+			err := tx.QueryRowContext(ctx, `SELECT next_attempt_id FROM phase4_retry_operations WHERE next_attempt_id = ?`, latest.ID).Scan(&operationAttemptID)
 			if err == nil {
 				return latest, nil
 			}
