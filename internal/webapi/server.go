@@ -31,6 +31,7 @@ type Server struct {
 	bootstrapToken string
 	owner          core.Person
 	node           *node.LocalNode
+	remoteNodes    *node.ServerManager
 	workers        workerController
 	secretary      interface {
 		HandleMessage(context.Context, string) error
@@ -59,7 +60,11 @@ func New(ctx context.Context, store *core.Store, bootstrapToken string) (*Server
 	if err != nil {
 		return nil, fmt.Errorf("create owner: %w", err)
 	}
-	server := &Server{store: store, bootstrapToken: bootstrapToken, owner: owner, workerStates: make(map[string]string), subscribers: make(map[*subscription]struct{})}
+	remoteNodes, err := node.NewServerManager(ctx, store, bootstrapToken, bootstrapToken)
+	if err != nil {
+		return nil, fmt.Errorf("initialize Node manager: %w", err)
+	}
+	server := &Server{store: store, bootstrapToken: bootstrapToken, owner: owner, remoteNodes: remoteNodes, workerStates: make(map[string]string), subscribers: make(map[*subscription]struct{})}
 	store.SetEntryObserver(server.publishEntry)
 	return server, nil
 }
@@ -73,6 +78,7 @@ func (s *Server) AttachSecretaryModelCatalog(catalog func() map[string]string, d
 }
 func (s *Server) AttachControl(options ControlOptions) { s.control = options }
 func (s *Server) OwnerID() string                      { return s.owner.ID }
+func (s *Server) RemoteNodes() *node.ServerManager     { return s.remoteNodes }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -87,6 +93,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /v1/secretary/model", s.setSecretaryModel)
 	mux.HandleFunc("GET /v1/workers", s.workerList)
 	mux.HandleFunc("/v1/workers/", s.workerRoute)
+	mux.HandleFunc("GET /v1/nodes/connect", s.remoteNodes.ServeProtocolHTTP)
+	mux.Handle("/v1/nodes", s.remoteNodes)
+	mux.Handle("/v1/nodes/", s.remoteNodes)
 	return mux
 }
 
