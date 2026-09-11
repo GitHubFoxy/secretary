@@ -325,6 +325,28 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 		turn    Turn
 		attempt Phase4Attempt
 	}, error) {
+		operation := "turn.create:" + workerID
+		if idempotencyKey != "" {
+			var encoded string
+			if err := tx.QueryRowContext(ctx, `SELECT outcome_json FROM idempotency_records WHERE operation = ? AND idempotency_key = ?`, operation, idempotencyKey).Scan(&encoded); err == nil {
+				var stored turnCreationOutcome
+				if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
+					return struct {
+						turn    Turn
+						attempt Phase4Attempt
+					}{}, fmt.Errorf("core: decode durable Turn outcome: %w", err)
+				}
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{turn: stored.Turn, attempt: stored.Attempt}, nil
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
+		}
 		worker, err := getWorker(ctx, tx, workerID)
 		if err != nil {
 			return struct {
@@ -390,6 +412,21 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 				turn    Turn
 				attempt Phase4Attempt
 			}{}, err
+		}
+		if idempotencyKey != "" {
+			encoded, err := json.Marshal(turnCreationOutcome{Turn: turn, Attempt: attempt})
+			if err != nil {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, fmt.Errorf("core: encode durable Turn outcome: %w", err)
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES(?, ?, ?, ?)`, operation, idempotencyKey, string(encoded), timestamp(now)); err != nil {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
 		}
 		return struct {
 			turn    Turn

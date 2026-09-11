@@ -10,18 +10,18 @@ import (
 
 // Event is an append-only normalized server event with a global sequence.
 type Event struct {
-	ID               string          `json:"id"`
-	Seq              int64           `json:"seq"`
-	Kind             string          `json:"kind"`
-	AggregateType    string          `json:"aggregate_type,omitempty"`
-	AggregateID      string          `json:"aggregate_id,omitempty"`
-	Source           string          `json:"source,omitempty"`
-	CorrelationID    string          `json:"correlation_id,omitempty"`
-	CausationID      string          `json:"causation_id,omitempty"`
-	WorkerRef string          `json:"worker_ref,omitempty"`
-	AttemptID string          `json:"attempt_id,omitempty"`
-	Payload   json.RawMessage `json:"payload"`
-	CreatedAt        time.Time       `json:"created_at"`
+	ID            string          `json:"id"`
+	Seq           int64           `json:"seq"`
+	Kind          string          `json:"kind"`
+	AggregateType string          `json:"aggregate_type,omitempty"`
+	AggregateID   string          `json:"aggregate_id,omitempty"`
+	Source        string          `json:"source,omitempty"`
+	CorrelationID string          `json:"correlation_id,omitempty"`
+	CausationID   string          `json:"causation_id,omitempty"`
+	WorkerRef     string          `json:"worker_ref,omitempty"`
+	AttemptID     string          `json:"attempt_id,omitempty"`
+	Payload       json.RawMessage `json:"payload"`
+	CreatedAt     time.Time       `json:"created_at"`
 }
 
 func (s *Store) RecordEvent(ctx context.Context, kind, workerRef, attemptID, runtimeSessionID string, payload any) (Event, error) {
@@ -36,13 +36,11 @@ func (s *Store) RecordEventWithMetadata(ctx context.Context, input EventInput) (
 	if input.Kind == "" {
 		return Event{}, fmt.Errorf("core: event kind is required")
 	}
-	if input.Source == "" { input.Source = "server" }
-	encoded, err := json.Marshal(input.Payload)
-	if err != nil {
-		return Event{}, fmt.Errorf("encode event payload: %w", err)
+	if input.Source == "" {
+		input.Source = "server"
 	}
 	return withTx(s, ctx, func(tx *sql.Tx) (Event, error) {
-		return appendEventTx(ctx, tx, s.now(), input, encoded)
+		return appendEventTx(ctx, tx, s.now(), input, input.Payload)
 	})
 }
 
