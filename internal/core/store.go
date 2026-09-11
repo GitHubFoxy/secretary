@@ -28,6 +28,8 @@ type Store struct {
 
 	observerMu sync.RWMutex
 	observer   func(ConversationEntry)
+
+	idempotencyMu sync.Mutex
 }
 
 func Open(ctx context.Context, dsn string) (*Store, error) {
@@ -413,14 +415,46 @@ CREATE TABLE IF NOT EXISTS config_events (
 );
 CREATE TABLE IF NOT EXISTS events (
   id TEXT PRIMARY KEY,
+  seq INTEGER,
   kind TEXT NOT NULL,
+  aggregate_type TEXT NOT NULL DEFAULT '',
+  aggregate_id TEXT NOT NULL DEFAULT '',
+  source TEXT NOT NULL DEFAULT '',
+  correlation_id TEXT NOT NULL DEFAULT '',
+  causation_id TEXT NOT NULL DEFAULT '',
   worker_ref TEXT NOT NULL DEFAULT '',
   attempt_id TEXT NOT NULL DEFAULT '',
   runtime_session_id TEXT NOT NULL DEFAULT '',
   payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS event_sequence (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  next_seq INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS idempotency_records (
+  operation TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  outcome_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(operation, idempotency_key)
+);
+CREATE TABLE IF NOT EXISTS deliveries (
+  id TEXT PRIMARY KEY,
+  event_id TEXT NOT NULL REFERENCES events(id),
+  entry_id TEXT REFERENCES conversation_entries(id),
+  target TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  state TEXT NOT NULL,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  delivered_at TEXT
+);
 CREATE INDEX IF NOT EXISTS events_created_at ON events(created_at);
+CREATE INDEX IF NOT EXISTS events_seq ON events(seq);
+CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries(state, updated_at);
 `)
 	if err != nil {
 		return fmt.Errorf("migrate sqlite: %w", err)
@@ -447,6 +481,9 @@ CREATE INDEX IF NOT EXISTS events_created_at ON events(created_at);
 	}
 	if _, err = s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS tasks_parent_attempt ON tasks(parent_attempt_id); CREATE UNIQUE INDEX IF NOT EXISTS tasks_child_index ON tasks(parent_attempt_id, child_index) WHERE parent_attempt_id <> ''`); err != nil {
 		return fmt.Errorf("migrate child task indexes: %w", err)
+	}
+	if err := s.migrateDurableEventSchema(ctx); err != nil {
+		return err
 	}
 	if err := s.migratePhase4Lifecycle(ctx); err != nil {
 		return err
@@ -545,6 +582,9 @@ func (s *Store) AppendInbound(ctx context.Context, conversationID, adapterID, ex
 			return inboundEntry{}, err
 		}
 		if _, err = tx.ExecContext(ctx, `INSERT INTO inbound_messages(adapter_id, external_message_id, entry_id) VALUES(?, ?, ?)`, adapterID, externalID, entry.ID); err != nil {
+			return inboundEntry{}, err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE events SET kind = ?, source = ? WHERE correlation_id = ?`, "message.saved", adapterID, entry.ID); err != nil {
 			return inboundEntry{}, err
 		}
 		return inboundEntry{entry: entry}, nil
@@ -876,8 +916,17 @@ func appendEntry(ctx context.Context, tx *sql.Tx, now time.Time, conversationID 
 		return ConversationEntry{}, err
 	}
 	entry := ConversationEntry{ID: newID("ent"), ConversationID: conversationID, Seq: seq, Kind: kind, Body: body, CreatedAt: now}
-	_, err := tx.ExecContext(ctx, `INSERT INTO conversation_entries(id, conversation_id, seq, kind, body, created_at) VALUES(?, ?, ?, ?, ?, ?)`, entry.ID, entry.ConversationID, entry.Seq, entry.Kind, entry.Body, timestamp(now))
-	return entry, err
+	if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_entries(id, conversation_id, seq, kind, body, created_at) VALUES(?, ?, ?, ?, ?, ?)`, entry.ID, entry.ConversationID, entry.Seq, entry.Kind, entry.Body, timestamp(now)); err != nil {
+		return ConversationEntry{}, err
+	}
+	event, err := appendEventTx(ctx, tx, now, EventInput{Kind: "conversation.entry", AggregateType: "conversation", AggregateID: conversationID, Source: "server", CorrelationID: entry.ID, Payload: entry}, mustJSON(entry))
+	if err != nil {
+		return ConversationEntry{}, err
+	}
+	if _, _, err := enqueueDeliveryTx(ctx, tx, now, event.ID, entry.ID, "conversation", "conversation:"+entry.ID); err != nil {
+		return ConversationEntry{}, err
+	}
+	return entry, nil
 }
 
 func (s *Store) Task(ctx context.Context, id string) (Task, error) { return getTask(ctx, s.db, id) }
@@ -989,28 +1038,47 @@ func (s *timestampScanner) Scan(value any) error {
 
 func withTx[T any](store *Store, ctx context.Context, fn func(*sql.Tx) (T, error)) (T, error) {
 	var zero T
-	tx, err := store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return zero, err
+	for try := 0; try < 8; try++ {
+		tx, err := store.db.BeginTx(ctx, nil)
+		if err != nil {
+			if sqliteRetryable(err) {
+				time.Sleep(time.Duration(try+1) * 5 * time.Millisecond)
+				continue
+			}
+			return zero, err
+		}
+		value, err := fn(tx)
+		if err != nil {
+			_ = tx.Rollback()
+			if sqliteRetryable(err) {
+				time.Sleep(time.Duration(try+1) * 5 * time.Millisecond)
+				continue
+			}
+			return zero, err
+		}
+		if err := tx.Commit(); err != nil {
+			if sqliteRetryable(err) {
+				time.Sleep(time.Duration(try+1) * 5 * time.Millisecond)
+				continue
+			}
+			return zero, err
+		}
+		return value, nil
 	}
-	value, err := fn(tx)
-	if err != nil {
-		tx.Rollback()
-		return zero, err
-	}
-	if err := tx.Commit(); err != nil {
-		return zero, err
-	}
-	return value, nil
+	return zero, errors.New("core: sqlite remained locked after transaction retries")
 }
 func withTxErr(store *Store, ctx context.Context, fn func(*sql.Tx) error) error {
-	tx, err := store.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
+	_, err := withTx(store, ctx, func(tx *sql.Tx) (struct{}, error) { return struct{}{}, fn(tx) })
+	return err
+}
+
+func sqliteRetryable(err error) bool {
+	if err == nil {
+		return false
 	}
-	if err := fn(tx); err != nil {
-		tx.Rollback()
-		return err
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "database is locked") || strings.Contains(text, "database table is locked") || strings.Contains(text, "busy") {
+		return true
 	}
-	return tx.Commit()
+	return strings.Contains(text, "unique constraint failed: conversation_entries") || strings.Contains(text, "unique constraint failed: phase4_attempt_outcomes") || strings.Contains(text, "unique constraint failed: phase4_results")
 }

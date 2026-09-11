@@ -134,6 +134,9 @@ type WorkerSpec struct {
 	NodeID            string
 	HarnessInstanceID string
 	PolicySnapshot    string
+	// IdempotencyKey makes Worker, first Turn, and first Attempt creation one
+	// durable operation. An empty key preserves the legacy non-idempotent API.
+	IdempotencyKey string
 }
 
 // TurnSpec contains the durable input for a new Turn.
@@ -141,6 +144,8 @@ type TurnSpec struct {
 	Input            string
 	NormalizedIntent string
 	ContextSnapshot  string
+	// IdempotencyKey makes follow-up Turn and Attempt creation one durable operation.
+	IdempotencyKey string
 }
 
 // AttemptOutcomeInput is the only input accepted by terminal event handling.
