@@ -264,10 +264,13 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 	if input.Classification == OutcomeFinal && strings.TrimSpace(input.Summary) == "" {
 		return AttemptOutcome{}, nil, false, errors.New("core: final outcome summary is required")
 	}
-	if input.Classification == OutcomeFinal && input.Status != OutcomeSucceeded && strings.TrimSpace(input.FailureCode) == "" {
-		input.FailureCode = strings.TrimSpace(input.ErrorCode)
+	if input.Classification == OutcomeFinal && input.Status != OutcomeSucceeded {
+		input.FailureCode = strings.TrimSpace(input.FailureCode)
 		if input.FailureCode == "" {
-			return AttemptOutcome{}, nil, false, errors.New("core: final non-success outcome failure code is required")
+			input.FailureCode = strings.TrimSpace(input.ErrorCode)
+		}
+		if input.FailureCode == "" {
+			input.FailureCode = string(input.Status)
 		}
 	}
 	var committedEntry ConversationEntry
@@ -531,6 +534,10 @@ func (s *Store) retryAttempt(ctx context.Context, turnID, idempotencyKey string)
 }
 
 func (s *Store) InterruptPhase4Attempt(ctx context.Context, attemptID, errorCode, diagnostics string) (AttemptOutcome, *Phase4Result, bool, error) {
+	errorCode = strings.TrimSpace(errorCode)
+	if errorCode == "" {
+		errorCode = "interrupted"
+	}
 	summary := strings.TrimSpace(diagnostics)
 	if summary == "" {
 		summary = "Attempt interrupted"

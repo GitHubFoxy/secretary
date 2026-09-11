@@ -209,8 +209,9 @@ func TestPhase4CloseWorkerRequiresTerminalTurnAndIsIdempotent(t *testing.T) {
 	if _, err := store.CloseWorker(ctx, worker.ID); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("close active worker err=%v", err)
 	}
-	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeCanceled, Classification: OutcomeFinal, FailureCode: "canceled", Summary: "stopped"}); err != nil {
-		t.Fatal(err)
+	_, result, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeCanceled, Classification: OutcomeFinal, Summary: "stopped"})
+	if err != nil || result == nil || result.FailureCode != "canceled" {
+		t.Fatalf("canceled result=%#v err=%v", result, err)
 	}
 	closed, err := store.CloseWorker(ctx, worker.ID)
 	if err != nil || closed.Status != WorkerClosed || !closed.Archived || closed.ClosedAt == nil {
