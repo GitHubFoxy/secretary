@@ -215,12 +215,13 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	if worker, turn, attempt, resolution, found, err := s.Store.ReplayWorkerCreation(ctx, request.IdempotencyKey); err != nil {
 		return core.WorkerDetails{}, err
 	} else if found {
-		if !resolution.Queued {
-			if err := s.recoverLifecycleCommand(ctx, "dispatch", worker, attempt, func(commandID string) error {
-				return s.Runtime.Dispatch(ctx, commandID, worker, turn, attempt, resolution)
-			}); err != nil {
-				return core.WorkerDetails{}, fmt.Errorf("recover dispatch Worker: %w", err)
-			}
+		// A new Worker is stored queued until the Node acknowledges the initial
+		// dispatch. Its replay snapshot therefore cannot decide whether the
+		// durable pending handoff still needs delivery.
+		if err := s.recoverLifecycleCommand(ctx, "dispatch", worker, attempt, func(commandID string) error {
+			return s.Runtime.Dispatch(ctx, commandID, worker, turn, attempt, resolution)
+		}); err != nil {
+			return core.WorkerDetails{}, fmt.Errorf("recover dispatch Worker: %w", err)
 		}
 		return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 	}
@@ -367,7 +368,7 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			}
 			if kind == "resume" {
 				err = s.deliverCommand(ctx, command, func(commandID string) error {
-					return s.Runtime.Resume(ctx, commandID, details.Worker, turn, next, request.Text)
+					return s.Runtime.Resume(ctx, commandID, details.Worker, turn, next, turn.Input)
 				})
 			} else {
 				binding, bindingErr := s.Store.ResolveWorkerBinding(ctx, details.Worker.ID)
@@ -399,7 +400,7 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		}
 		if send {
 			err = s.deliverCommand(ctx, command, func(commandID string) error {
-				return s.Runtime.Resume(ctx, commandID, details.Worker, turn, next, request.Text)
+				return s.Runtime.Resume(ctx, commandID, details.Worker, turn, next, turn.Input)
 			})
 		}
 	default:

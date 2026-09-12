@@ -42,6 +42,42 @@ func (r *lifecycleRuntime) Cancel(context.Context, string, core.Worker, core.Pha
 	return nil
 }
 
+type recordingLifecycleRuntime struct {
+	lifecycleRuntime
+	dispatchIDs []string
+	resumeIDs   []string
+	resumeTexts []string
+}
+
+func (r *recordingLifecycleRuntime) Dispatch(_ context.Context, commandID string, _ core.Worker, _ core.Turn, _ core.Phase4Attempt, _ core.DispatchResolution) error {
+	r.add("dispatch")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.dispatchIDs = append(r.dispatchIDs, commandID)
+	return nil
+}
+
+func (r *recordingLifecycleRuntime) Resume(_ context.Context, commandID string, _ core.Worker, _ core.Turn, _ core.Phase4Attempt, text string) error {
+	r.add("resume")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resumeIDs = append(r.resumeIDs, commandID)
+	r.resumeTexts = append(r.resumeTexts, text)
+	return nil
+}
+
+func (r *recordingLifecycleRuntime) dispatchCommands() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.dispatchIDs...)
+}
+
+func (r *recordingLifecycleRuntime) resumeCommands() ([]string, []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.resumeIDs...), append([]string(nil), r.resumeTexts...)
+}
+
 type unavailableCancelRuntime struct{ lifecycleRuntime }
 
 func (r *unavailableCancelRuntime) Cancel(context.Context, string, core.Worker, core.Phase4Attempt) error {
@@ -85,8 +121,13 @@ func (r *blockingLifecycleRuntime) Cancel(context.Context, string, core.Worker, 
 
 func newWorkerService(t *testing.T) (context.Context, *core.Store, WorkerService, core.Project) {
 	t.Helper()
+	return newWorkerServiceAt(t, filepath.Join(t.TempDir(), "secretary.db"))
+}
+
+func newWorkerServiceAt(t *testing.T, path string) (context.Context, *core.Store, WorkerService, core.Project) {
+	t.Helper()
 	ctx := context.Background()
-	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	store, err := core.Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,6 +373,87 @@ func TestWorkerServiceDoesNotFinalizeCancelOrCloseWhenNodeIsUnavailable(t *testi
 	attempt, err := store.Phase4Attempt(ctx, details.Attempts[0].ID)
 	if err != nil || attempt.State != core.AttemptActive || unavailable.count("cancel") != 1 {
 		t.Fatalf("attempt=%#v err=%v cancels=%d", attempt, err, unavailable.count("cancel"))
+	}
+}
+
+func TestWorkerServiceSpawnReplayRedeliversPendingInitialDispatchAfterReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	ctx, store, service, project := newWorkerServiceAt(t, path)
+	conversation, err := service.authorize(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "crash-before-dispatch-claim"
+	worker, turn, attempt, resolution, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "inspect", core.DispatchResolutionRequest{ProjectID: project.ID}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, found, err := store.FindWorkerCommand(ctx, "dispatch", "attempt", worker.ID, attempt.ID)
+	if err != nil || !found || intent.State != core.WorkerCommandPending || !intent.LeaseUntil.IsZero() || worker.Status != core.WorkerQueued {
+		t.Fatalf("worker=%#v intent=%#v found=%v err=%v", worker, intent, found, err)
+	}
+	if resolution.Queued {
+		t.Fatalf("new resolution=%#v", resolution)
+	}
+	// Reopen the same durable store after the Worker, Turn, Attempt and intent
+	// committed, but before any command claim or runtime handoff.
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := core.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	_, _, _, replayResolution, found, err := reopened.ReplayWorkerCreation(ctx, key)
+	if err != nil || !found || !replayResolution.Queued {
+		t.Fatalf("replay resolution=%#v found=%v err=%v", replayResolution, found, err)
+	}
+	runtime := &recordingLifecycleRuntime{}
+	service.Store = reopened
+	service.Runtime = runtime
+	replayed, err := service.SpawnWorker(ctx, SpawnWorkerRequest{Intent: "inspect", ProjectID: project.ID, IdempotencyKey: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.Worker.ID != worker.ID || replayed.Turns[0].ID != turn.ID || replayed.Attempts[0].ID != attempt.ID {
+		t.Fatalf("replayed=%#v want worker=%s turn=%s attempt=%s", replayed, worker.ID, turn.ID, attempt.ID)
+	}
+	if got := runtime.dispatchCommands(); len(got) != 1 || got[0] != intent.ID {
+		t.Fatalf("dispatch command IDs=%v, want [%s]", got, intent.ID)
+	}
+}
+
+func TestWorkerServiceQueuedResumeReplayUsesDurableTurnInput(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	if _, err := store.SetPhase4AttemptActive(ctx, details.Attempts[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.InterruptPhase4Attempt(ctx, details.Attempts[0].ID, "lost", "lost session"); err != nil {
+		t.Fatal(err)
+	}
+	const durableInput = "the durable resume direction"
+	turn, attempt, err := store.CreateTurn(ctx, details.Worker.ID, core.TurnSpec{Input: durableInput, IdempotencyKey: "resume-after-crash", CommandKind: "resume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intent, found, err := store.FindWorkerCommand(ctx, "resume", "attempt", details.Worker.ID, attempt.ID)
+	if err != nil || !found || intent.State != core.WorkerCommandPending || !intent.LeaseUntil.IsZero() {
+		t.Fatalf("intent=%#v found=%v err=%v", intent, found, err)
+	}
+	runtime := &recordingLifecycleRuntime{}
+	service.Runtime = runtime
+	replayed, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "changed retry text", IdempotencyKey: "resume-after-crash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replayed.CurrentAttempt() == nil || replayed.CurrentAttempt().ID != attempt.ID || replayed.Turns[len(replayed.Turns)-1].ID != turn.ID {
+		t.Fatalf("replayed=%#v want turn=%s attempt=%s", replayed, turn.ID, attempt.ID)
+	}
+	ids, texts := runtime.resumeCommands()
+	if len(ids) != 1 || ids[0] != intent.ID || len(texts) != 1 || texts[0] != durableInput {
+		t.Fatalf("resume IDs=%v texts=%v, want ID=%s text=%q", ids, texts, intent.ID, durableInput)
 	}
 }
 
