@@ -69,6 +69,10 @@ CREATE TABLE IF NOT EXISTS secretary_context_seen_results (
   seen_at TEXT NOT NULL,
   PRIMARY KEY(turn_id, result_id)
 );
+DELETE FROM secretary_context_seen_results
+WHERE rowid NOT IN (SELECT MIN(rowid) FROM secretary_context_seen_results GROUP BY result_id);
+CREATE UNIQUE INDEX IF NOT EXISTS secretary_context_seen_results_one_owner
+  ON secretary_context_seen_results(result_id);
 `)
 	if err != nil {
 		return fmt.Errorf("migrate Secretary schema: %w", err)
@@ -200,52 +204,76 @@ func (s *Store) SecretaryTurn(ctx context.Context, turnID string) (SecretaryTurn
 }
 
 func (s *Store) StartSecretaryTurn(ctx context.Context, turnID string) (SecretaryTurn, error) {
-	var identityID string
-	if err := s.db.QueryRowContext(ctx, `SELECT identity_id FROM secretary_turns WHERE id = ?`, turnID).Scan(&identityID); errors.Is(err, sql.ErrNoRows) {
-		return SecretaryTurn{}, ErrNotFound
-	} else if err != nil {
+	turn, err := s.SecretaryTurn(ctx, turnID)
+	if err != nil {
 		return SecretaryTurn{}, err
 	}
-	if _, err := s.ReconstructSecretaryContextForTurn(ctx, turnID, "", 20); err != nil {
-		return SecretaryTurn{}, fmt.Errorf("reconstruct Secretary context: %w", err)
+	var canonical SecretaryContext
+	if strings.TrimSpace(turn.ContextSnapshot) == "" {
+		if turn.State != SecretaryTurnQueued {
+			return SecretaryTurn{}, ErrInvalidTransition
+		}
+		canonical, err = s.ReconstructSecretaryContext(ctx, turn.IdentityID, "", 20)
+		if err != nil {
+			return SecretaryTurn{}, fmt.Errorf("reconstruct Secretary context: %w", err)
+		}
 	}
 	return withTx(s, ctx, func(tx *sql.Tx) (SecretaryTurn, error) {
-		var turn SecretaryTurn
-		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, secretaryTurnSelect+` WHERE id = ?`, turnID), &turn); errors.Is(err, sql.ErrNoRows) {
+		var current SecretaryTurn
+		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, secretaryTurnSelect+` WHERE id = ?`, turnID), &current); errors.Is(err, sql.ErrNoRows) {
 			return SecretaryTurn{}, ErrNotFound
 		} else if err != nil {
 			return SecretaryTurn{}, err
 		}
-		if turn.State != SecretaryTurnQueued {
+		if current.State != SecretaryTurnQueued {
 			return SecretaryTurn{}, ErrInvalidTransition
 		}
-		var active int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM secretary_turns WHERE identity_id = ? AND state = 'active'`, turn.IdentityID).Scan(&active); err != nil {
+		eligible, err := secretaryTurnEligibleTx(ctx, tx, current)
+		if err != nil {
 			return SecretaryTurn{}, err
 		}
-		if active != 0 {
+		if !eligible {
 			return SecretaryTurn{}, ErrInvalidTransition
 		}
-		var earlier int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM secretary_turns WHERE identity_id = ? AND state = 'queued' AND queue_position < ?`, turn.IdentityID, turn.QueuePosition).Scan(&earlier); err != nil {
-			return SecretaryTurn{}, err
-		}
-		if earlier != 0 {
-			return SecretaryTurn{}, ErrInvalidTransition
+		if strings.TrimSpace(current.ContextSnapshot) == "" {
+			results, err := unseenWorkerResultsQuery(ctx, tx, current.ConversationID)
+			if err != nil {
+				return SecretaryTurn{}, err
+			}
+			canonical.UnseenWorkerResults, err = claimSecretaryResultsTx(ctx, tx, current.ID, results, s.now())
+			if err != nil {
+				return SecretaryTurn{}, err
+			}
+			encoded, err := json.Marshal(canonical)
+			if err != nil {
+				return SecretaryTurn{}, err
+			}
+			result, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET context_snapshot = ?, updated_at = ? WHERE id = ? AND state = ? AND context_snapshot = ''`, string(encoded), timestamp(s.now()), current.ID, SecretaryTurnQueued)
+			if err != nil {
+				return SecretaryTurn{}, err
+			}
+			affected, err := result.RowsAffected()
+			if err != nil {
+				return SecretaryTurn{}, err
+			}
+			if affected != 1 {
+				return SecretaryTurn{}, errors.New("core: canonical Secretary context snapshot was not published")
+			}
+			current.ContextSnapshot = string(encoded)
 		}
 		now := s.now()
-		if _, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET state = ?, started_at = ?, updated_at = ? WHERE id = ?`, SecretaryTurnActive, timestamp(now), timestamp(now), turn.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET state = ?, started_at = ?, updated_at = ? WHERE id = ?`, SecretaryTurnActive, timestamp(now), timestamp(now), current.ID); err != nil {
 			return SecretaryTurn{}, err
 		}
-		turn.State, turn.StartedAt, turn.UpdatedAt = SecretaryTurnActive, &now, now
-		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: SecretaryTurnStartedEvent, AggregateType: "secretary_turn", AggregateID: turn.ID, Source: "server", CorrelationID: turn.ID, Payload: turn}, turn)
+		current.State, current.StartedAt, current.UpdatedAt = SecretaryTurnActive, &now, now
+		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: SecretaryTurnStartedEvent, AggregateType: "secretary_turn", AggregateID: current.ID, Source: "server", CorrelationID: current.ID, Payload: current}, current)
 		if err != nil {
 			return SecretaryTurn{}, err
 		}
 		if _, _, err := enqueueDeliveryTx(ctx, tx, now, event.ID, "", "conversation", "secretary-stream:"+event.ID); err != nil {
 			return SecretaryTurn{}, err
 		}
-		return turn, nil
+		return current, nil
 	})
 }
 

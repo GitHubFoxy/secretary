@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 const secretaryTurnSelect = `SELECT id, identity_id, conversation_id, input, context_snapshot, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns`
@@ -189,8 +190,8 @@ func (s *Store) ReconstructSecretaryContext(ctx context.Context, identityID, use
 }
 
 // ReconstructSecretaryContextForTurn materializes canonical context exactly
-// once for a queued turn. The compare-and-swap also makes result acknowledgement
-// belong only to the caller that won snapshot publication.
+// once for the next eligible queued turn. Snapshot publication and durable
+// Result ownership happen in one transaction.
 func (s *Store) ReconstructSecretaryContextForTurn(ctx context.Context, turnID, userPath string, recentLimit int) (SecretaryContext, error) {
 	turn, err := s.SecretaryTurn(ctx, turnID)
 	if err != nil {
@@ -206,12 +207,40 @@ func (s *Store) ReconstructSecretaryContextForTurn(ctx context.Context, turnID, 
 	if err != nil {
 		return SecretaryContext{}, err
 	}
-	encoded, err := json.Marshal(canonical)
-	if err != nil {
-		return SecretaryContext{}, err
-	}
-	returnValue, err := withTx(s, ctx, func(tx *sql.Tx) (SecretaryContext, error) {
-		result, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET context_snapshot = ?, updated_at = ? WHERE id = ? AND state = ? AND context_snapshot = ''`, string(encoded), timestamp(s.now()), turn.ID, SecretaryTurnQueued)
+	return withTx(s, ctx, func(tx *sql.Tx) (SecretaryContext, error) {
+		var current SecretaryTurn
+		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, secretaryTurnSelect+` WHERE id = ?`, turn.ID), &current); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return SecretaryContext{}, ErrNotFound
+			}
+			return SecretaryContext{}, err
+		}
+		if strings.TrimSpace(current.ContextSnapshot) != "" {
+			return decodeSecretaryContextSnapshot(current.ContextSnapshot)
+		}
+		if current.State != SecretaryTurnQueued {
+			return SecretaryContext{}, errors.New("core: canonical Secretary context snapshot is unavailable for non-queued turn")
+		}
+		eligible, err := secretaryTurnEligibleTx(ctx, tx, current)
+		if err != nil {
+			return SecretaryContext{}, err
+		}
+		if !eligible {
+			return SecretaryContext{}, ErrInvalidTransition
+		}
+		results, err := unseenWorkerResultsQuery(ctx, tx, current.ConversationID)
+		if err != nil {
+			return SecretaryContext{}, err
+		}
+		canonical.UnseenWorkerResults, err = claimSecretaryResultsTx(ctx, tx, current.ID, results, s.now())
+		if err != nil {
+			return SecretaryContext{}, err
+		}
+		encoded, err := json.Marshal(canonical)
+		if err != nil {
+			return SecretaryContext{}, err
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET context_snapshot = ?, updated_at = ? WHERE id = ? AND state = ? AND context_snapshot = ''`, string(encoded), timestamp(s.now()), current.ID, SecretaryTurnQueued)
 		if err != nil {
 			return SecretaryContext{}, err
 		}
@@ -220,16 +249,10 @@ func (s *Store) ReconstructSecretaryContextForTurn(ctx context.Context, turnID, 
 			return SecretaryContext{}, err
 		}
 		if affected == 1 {
-			for _, result := range canonical.UnseenWorkerResults {
-				if _, err := tx.ExecContext(ctx, `INSERT INTO secretary_context_seen_results(turn_id, result_id, seen_at) VALUES(?, ?, ?) ON CONFLICT(turn_id, result_id) DO NOTHING`, turn.ID, result.ID, timestamp(s.now())); err != nil {
-					return SecretaryContext{}, err
-				}
-			}
 			return canonical, nil
 		}
 		var snapshot string
-		var state SecretaryTurnState
-		if err := tx.QueryRowContext(ctx, `SELECT context_snapshot, state FROM secretary_turns WHERE id = ?`, turn.ID).Scan(&snapshot, &state); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT context_snapshot FROM secretary_turns WHERE id = ?`, current.ID).Scan(&snapshot); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return SecretaryContext{}, ErrNotFound
 			}
@@ -240,10 +263,6 @@ func (s *Store) ReconstructSecretaryContextForTurn(ctx context.Context, turnID, 
 		}
 		return decodeSecretaryContextSnapshot(snapshot)
 	})
-	if err != nil {
-		return SecretaryContext{}, err
-	}
-	return returnValue, nil
 }
 
 func decodeSecretaryContextSnapshot(encoded string) (SecretaryContext, error) {
@@ -269,8 +288,16 @@ func (s *Store) secretaryIdentityByID(ctx context.Context, identityID string) (S
 	return identity, err
 }
 
+type contextQueryer interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
 func (s *Store) unseenWorkerResults(ctx context.Context, conversationID string) ([]Phase4Result, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id, r.worker_id, r.turn_id, r.attempt_id, r.status, r.summary, r.failure_code, r.artifact_refs, r.correlation_id, r.created_at
+	return unseenWorkerResultsQuery(ctx, s.db, conversationID)
+}
+
+func unseenWorkerResultsQuery(ctx context.Context, queryer contextQueryer, conversationID string) ([]Phase4Result, error) {
+	rows, err := queryer.QueryContext(ctx, `SELECT r.id, r.worker_id, r.turn_id, r.attempt_id, r.status, r.summary, r.failure_code, r.artifact_refs, r.correlation_id, r.created_at
 FROM phase4_results r JOIN workers w ON w.id = r.worker_id
 LEFT JOIN secretary_context_seen_results seen ON seen.result_id = r.id
 WHERE w.conversation_id = ? AND seen.result_id IS NULL ORDER BY r.created_at, r.id`, conversationID)
@@ -287,6 +314,39 @@ WHERE w.conversation_id = ? AND seen.result_id IS NULL ORDER BY r.created_at, r.
 		results = append(results, result)
 	}
 	return results, rows.Err()
+}
+
+func secretaryTurnEligibleTx(ctx context.Context, tx *sql.Tx, turn SecretaryTurn) (bool, error) {
+	var active int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM secretary_turns WHERE identity_id = ? AND state = 'active'`, turn.IdentityID).Scan(&active); err != nil {
+		return false, err
+	}
+	if active != 0 {
+		return false, nil
+	}
+	var earlier int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM secretary_turns WHERE identity_id = ? AND state = 'queued' AND queue_position < ?`, turn.IdentityID, turn.QueuePosition).Scan(&earlier); err != nil {
+		return false, err
+	}
+	return earlier == 0, nil
+}
+
+func claimSecretaryResultsTx(ctx context.Context, tx *sql.Tx, turnID string, results []Phase4Result, claimedAt time.Time) ([]Phase4Result, error) {
+	claimed := make([]Phase4Result, 0, len(results))
+	for _, result := range results {
+		inserted, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO secretary_context_seen_results(turn_id, result_id, seen_at) VALUES(?, ?, ?)`, turnID, result.ID, timestamp(claimedAt))
+		if err != nil {
+			return nil, err
+		}
+		affected, err := inserted.RowsAffected()
+		if err != nil {
+			return nil, err
+		}
+		if affected == 1 {
+			claimed = append(claimed, result)
+		}
+	}
+	return claimed, nil
 }
 
 // SecretaryContextPrompt is the only runtime-facing conversion. It serializes
