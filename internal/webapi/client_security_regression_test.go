@@ -25,6 +25,46 @@ func TestClientActivityDTORedactsRuntimeAndCredentialIdentifiers(t *testing.T) {
 	}
 }
 
+func TestClientPublicSanitizerRedactsUppercaseAndAcronymKeyVariantsRecursively(t *testing.T) {
+	value := map[string]any{
+		"safeProduct": "kept",
+		"nested": []any{
+			map[string]any{
+				"SECRET":              "upper-secret",
+				"sEcReT":              "mixed-secret",
+				"TASK_ID":             "upper-task",
+				"TASKID":              "acronym-task",
+				"RUNTIME_SESSION_ID":  "upper-session",
+				"RUNTIMESESSIONID":    "acronym-session",
+				"ACCESS_TOKEN":        "upper-token",
+				"ACCESSTOKEN":         "acronym-token",
+				"CALLBACK_CAPABILITY": "upper-callback",
+				"CALLBACKCAPABILITY":  "acronym-callback",
+				"allowed_field":       "allowed",
+			},
+		},
+	}
+	sanitized := sanitizePublicJSON(value)
+	encoded, err := json.Marshal(sanitized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(encoded)
+	for _, leaked := range []string{
+		"upper-secret", "mixed-secret", "upper-task", "acronym-task", "upper-session", "acronym-session",
+		"upper-token", "acronym-token", "upper-callback", "acronym-callback",
+	} {
+		if strings.Contains(body, leaked) {
+			t.Fatalf("uppercase/acronym forbidden value leaked: %s in %s", leaked, body)
+		}
+	}
+	for _, kept := range []string{"kept", "allowed"} {
+		if !strings.Contains(body, kept) {
+			t.Fatalf("allowed product value was removed: %s in %s", kept, body)
+		}
+	}
+}
+
 func TestClientPublicSanitizerRedactsNestedForbiddenDTOKeys(t *testing.T) {
 	value := map[string]any{
 		"conversation": map[string]any{

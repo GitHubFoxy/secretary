@@ -147,6 +147,73 @@ func TestRevokeClientTerminatesAlreadyConnectedConversationStream(t *testing.T) 
 	}
 }
 
+func TestConversationReplayBoundaryDeduplicatesDelayedNotify(t *testing.T) {
+	store, err := core.Open(context.Background(), filepath.Join(t.TempDir(), "replay-race.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	api, err := New(context.Background(), store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a committed SQLite entry whose post-commit observer callback is delayed.
+	store.SetEntryObserver(nil)
+	conversation, err := store.ConversationForPerson(context.Background(), api.OwnerID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, duplicate, err := store.AppendInbound(context.Background(), conversation.ID, "web", "delayed-notify", "one entry")
+	if err != nil || duplicate {
+		t.Fatalf("append entry=%#v duplicate=%v err=%v", entry, duplicate, err)
+	}
+	httpServer := httptest.NewServer(api.Handler())
+	defer httpServer.Close()
+	clientJar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := &http.Client{Jar: clientJar}
+	login(t, client, httpServer.URL)
+	parsed, err := url.Parse(httpServer.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := http.Header{}
+	for _, cookie := range client.Jar.Cookies(parsed) {
+		header.Add("Cookie", cookie.String())
+	}
+	parsed.Scheme = "ws"
+	parsed.Path = "/v1/ws"
+	parsed.RawQuery = "after_seq=0"
+	connection, _, err := websocket.Dial(context.Background(), parsed.String(), &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+	readCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	_, payload, err := connection.Read(readCtx)
+	cancel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replayed core.ConversationEntry
+	if err := json.Unmarshal(payload, &replayed); err != nil {
+		t.Fatal(err)
+	}
+	if replayed.ID != entry.ID {
+		t.Fatalf("replay entry=%#v want=%#v", replayed, entry)
+	}
+
+	// This is the delayed notify from the same commit. It must be recognized as already replayed.
+	api.publishEntry(entry)
+	duplicateCtx, duplicateCancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer duplicateCancel()
+	if _, _, err := connection.Read(duplicateCtx); err == nil {
+		t.Fatal("delayed notify delivered the replayed entry twice")
+	}
+}
+
 func TestSlowPublisherNeverSilentlyDropsEntry(t *testing.T) {
 	entries := make(chan core.ConversationEntry, 1)
 	api := &Server{subscribers: map[*subscription]struct{}{}}
