@@ -6,8 +6,8 @@ import (
 	"errors"
 )
 
-// WorkerHandler deliberately exposes only the child-spawn capability. The
-// actual child lifecycle implementation is supplied by the server boundary.
+// WorkerHandler remains available for a separate worker runtime integration.
+// secretary-mcp does not construct or expose this handler.
 type WorkerHandler struct {
 	Spawn     func(context.Context, string, string) (any, error)
 	Authorize func(context.Context, string) error

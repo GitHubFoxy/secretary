@@ -128,6 +128,67 @@ type AttemptOutcome struct {
 type Phase4Result = Result
 
 // WorkerSpec is the creation contract for a Worker and its immutable binding.
+// WorkerDetails is the durable Secretary read model. It deliberately exposes
+// immutable bindings and lifecycle records, never Node-local session IDs.
+type WorkerCommandState string
+
+const (
+	WorkerCommandPending   WorkerCommandState = "pending"
+	WorkerCommandDelivered WorkerCommandState = "delivered"
+	WorkerCommandFailed    WorkerCommandState = "failed"
+)
+
+// WorkerCommand persists the server-side delivery decision for one immutable
+// Worker Attempt command. It contains no Node-local runtime identifiers.
+type WorkerCommand struct {
+	ID         string             `json:"id"`
+	Kind       string             `json:"kind"`
+	DedupeKey  string             `json:"dedupe_key"`
+	WorkerID   string             `json:"worker_id"`
+	AttemptID  string             `json:"attempt_id"`
+	State      WorkerCommandState `json:"state"`
+	LastError  string             `json:"last_error,omitempty"`
+	LeaseUntil time.Time          `json:"lease_until"`
+	CreatedAt  time.Time          `json:"created_at"`
+	UpdatedAt  time.Time          `json:"updated_at"`
+}
+
+type WorkerDetails struct {
+	Worker   Worker           `json:"worker"`
+	Turns    []Turn           `json:"turns"`
+	Attempts []Phase4Attempt  `json:"attempts"`
+	Outcomes []AttemptOutcome `json:"outcomes"`
+	Results  []Phase4Result   `json:"results"`
+}
+
+func (d WorkerDetails) CurrentAttempt() *Phase4Attempt {
+	if d.Worker.CurrentTurnID == "" {
+		return nil
+	}
+	for i := range d.Turns {
+		if d.Turns[i].ID != d.Worker.CurrentTurnID || d.Turns[i].CurrentAttemptID == "" {
+			continue
+		}
+		for j := range d.Attempts {
+			if d.Attempts[j].ID == d.Turns[i].CurrentAttemptID {
+				attempt := d.Attempts[j]
+				return &attempt
+			}
+		}
+	}
+	return nil
+}
+
+func (d WorkerDetails) CurrentTurn() *Turn {
+	for i := range d.Turns {
+		if d.Turns[i].ID == d.Worker.CurrentTurnID {
+			turn := d.Turns[i]
+			return &turn
+		}
+	}
+	return nil
+}
+
 type WorkerSpec struct {
 	WorkerRef         string
 	Title             string
@@ -157,6 +218,9 @@ type TurnSpec struct {
 	ContextSnapshot  string
 	// IdempotencyKey makes follow-up Turn and Attempt creation one durable operation.
 	IdempotencyKey string
+	// CommandKind records the first recoverable handoff for this Attempt in the
+	// same transaction. Empty means dispatch.
+	CommandKind string
 }
 
 // AttemptOutcomeInput is the only input accepted by terminal event handling.

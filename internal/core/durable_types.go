@@ -55,12 +55,12 @@ type ConversationReplay struct {
 
 type EventReplay struct {
 	// SnapshotBoundarySeq is the highest event visible in this replay snapshot.
-	SnapshotBoundarySeq int64   `json:"snapshot_boundary_seq"`
+	SnapshotBoundarySeq int64 `json:"snapshot_boundary_seq"`
 	// BoundarySeq is retained as a source-compatible alias.
-	BoundarySeq         int64   `json:"-"`
-	LastReturnedSeq     int64   `json:"last_returned_seq"`
-	HasMore             bool    `json:"has_more"`
-	Events              []Event `json:"events"`
+	BoundarySeq     int64   `json:"-"`
+	LastReturnedSeq int64   `json:"last_returned_seq"`
+	HasMore         bool    `json:"has_more"`
+	Events          []Event `json:"events"`
 }
 
 type idempotencyRecord struct {
@@ -76,8 +76,9 @@ type workerCreationOutcome struct {
 }
 
 type turnCreationOutcome struct {
-	Turn    Turn
-	Attempt Phase4Attempt
+	Turn        Turn
+	Attempt     Phase4Attempt
+	CommandKind string
 }
 
 type LifecycleAction struct {

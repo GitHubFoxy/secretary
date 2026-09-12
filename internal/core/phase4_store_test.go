@@ -6,7 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 func phase4WorkerSpec() WorkerSpec {
@@ -107,6 +109,178 @@ func TestPhase4RetryHasOneOutcomePerAttemptAndOneResultPerTurn(t *testing.T) {
 	if _, err := store.RetryAttempt(ctx, turn.ID, "new-retry-after-final"); !errors.Is(err, ErrInvalidTransition) {
 		t.Fatalf("new retry after final err=%v", err)
 	}
+}
+
+func TestPhase4LifecycleCommandIntentRecoversCommittedAttempts(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worker, _, first, err := store.CreateWorker(ctx, conversation.ID, phase4WorkerSpec(), TurnSpec{Input: "spawn", IdempotencyKey: "spawn-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(kind string, attempt Phase4Attempt) {
+		t.Helper()
+		if _, err := store.db.ExecContext(ctx, `DELETE FROM phase4_worker_commands WHERE worker_id = ? AND attempt_id = ?`, worker.ID, attempt.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		var openErr error
+		store, openErr = Open(ctx, path)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		command, err := store.EnsureLifecycleCommandIntent(ctx, kind, worker.ID, attempt.ID)
+		if err != nil || command.ID != lifecycleCommandID(kind, attempt.ID) || command.Kind != kind || command.State != WorkerCommandPending {
+			t.Fatalf("recovered %s command=%#v err=%v", kind, command, err)
+		}
+		claimed, duplicate, err := store.ClaimWorkerCommand(ctx, kind, "attempt", worker.ID, attempt.ID)
+		if err != nil || duplicate || claimed.ID != command.ID {
+			t.Fatalf("claimed %s command=%#v duplicate=%v err=%v", kind, claimed, duplicate, err)
+		}
+	}
+	check("dispatch", first)
+	if _, err := store.SetPhase4AttemptActive(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, first.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "done"}); err != nil {
+		t.Fatal(err)
+	}
+
+	idleTurn, idleAttempt, err := store.CreateTurn(ctx, worker.ID, TurnSpec{Input: "follow up", IdempotencyKey: "idle-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = idleTurn
+	check("dispatch", idleAttempt)
+	if _, err := store.SetPhase4AttemptActive(ctx, idleAttempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.InterruptPhase4Attempt(ctx, idleAttempt.ID, "lost", "lost node"); err != nil {
+		t.Fatal(err)
+	}
+	resumeTurn, resumeAttempt, err := store.CreateTurn(ctx, worker.ID, TurnSpec{Input: "resume", IdempotencyKey: "resume-key", CommandKind: "resume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resumeTurn
+	check("resume", resumeAttempt)
+}
+
+func TestPhase4WorkerCommandClaimIsDurableAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, phase4WorkerSpec(), TurnSpec{Input: "command"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, duplicate, err := store.ClaimWorkerCommand(ctx, "dispatch", "attempt", worker.ID, attempt.ID)
+	if err != nil || duplicate || first.State != WorkerCommandPending {
+		t.Fatalf("first=%#v duplicate=%v err=%v", first, duplicate, err)
+	}
+	if _, err := store.MarkWorkerCommandDelivered(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	other, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	second, duplicate, err := other.ClaimWorkerCommand(ctx, "dispatch", "attempt", worker.ID, attempt.ID)
+	if err != nil || !duplicate || second.ID != first.ID || second.State != WorkerCommandDelivered {
+		t.Fatalf("second=%#v duplicate=%v err=%v", second, duplicate, err)
+	}
+}
+
+func TestPhase4WorkerCommandReclaimsOnlyExpiredLeaseWithSameID(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, phase4WorkerSpec(), TurnSpec{Input: "command"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, duplicate, err := store.ClaimWorkerCommand(ctx, "dispatch", "attempt", worker.ID, attempt.ID)
+	if err != nil || duplicate {
+		t.Fatalf("claimed=%#v duplicate=%v err=%v", claimed, duplicate, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if command, reclaimed, err := first.ReclaimWorkerCommand(ctx, claimed.ID, claimed.LeaseUntil.Add(-time.Nanosecond)); err != nil || reclaimed || command.ID != claimed.ID {
+		t.Fatalf("live lease command=%#v reclaimed=%v err=%v", command, reclaimed, err)
+	}
+
+	var group sync.WaitGroup
+	reclaimed := make(chan coreReclaim, 2)
+	for _, candidate := range []*Store{first, second} {
+		group.Add(1)
+		go func(candidate *Store) {
+			defer group.Done()
+			command, ok, err := candidate.ReclaimWorkerCommand(ctx, claimed.ID, claimed.LeaseUntil)
+			reclaimed <- coreReclaim{command: command, ok: ok, err: err}
+		}(candidate)
+	}
+	group.Wait()
+	close(reclaimed)
+	count := 0
+	for result := range reclaimed {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.command.ID != claimed.ID {
+			t.Fatalf("reclaim changed command ID: %#v", result.command)
+		}
+		if result.ok {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("reclaims=%d, want 1", count)
+	}
+}
+
+type coreReclaim struct {
+	command WorkerCommand
+	ok      bool
+	err     error
 }
 
 func TestPhase4RetryKeyBelongsToItsSourceAttempt(t *testing.T) {

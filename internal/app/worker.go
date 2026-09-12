@@ -16,8 +16,6 @@ var ErrRuntimeSessionUnavailable = errors.New("runtime_session_unavailable")
 type WorkerController struct {
 	Store          *core.Store
 	Node           *node.LocalNode
-	MCPCommand     string
-	MCPDataDir     string
 	ManagedProfile func(core.BindingProfile) node.ManagedProfile
 }
 
@@ -84,23 +82,12 @@ func (c *WorkerController) Queue(ctx context.Context, workerRef, text string) (c
 		if details.Binding == nil || len(details.Attempts) == 0 || details.Attempts[len(details.Attempts)-1].State != core.AttemptInterrupted {
 			return core.Attempt{}, core.ErrNotFound
 		}
-		var capability string
-		if c.MCPCommand != "" {
-			capability, err = c.Store.IssueWorkerCapability(ctx, task.ID, workerRef)
-			if err != nil {
-				return core.Attempt{}, err
-			}
-		}
 		request := node.StartRequest{WorkerRef: workerRef, Workspace: details.Binding.Workspace}
 		if c.ManagedProfile != nil {
 			request.Profile = c.ManagedProfile(details.Binding.Profile)
 		}
-		if c.MCPCommand != "" {
-			request.MCPServers = []node.MCPServer{node.SecretaryMCPServer(c.MCPCommand, c.MCPDataDir, "worker", capability, workerRef)}
-		}
 		session, err = c.Node.Resume(ctx, request, details.Binding.RuntimeSessionID)
 		if err != nil {
-			_ = c.Store.RevokeWorkerCapability(ctx, workerRef)
 			return core.Attempt{}, ErrRuntimeSessionUnavailable
 		}
 		go c.persistResults(task.ID, workerRef, session)

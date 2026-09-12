@@ -354,6 +354,26 @@ func (s *Store) ResolveAndCreateWorker(ctx context.Context, conversationID, inte
 	return worker, turn, attempt, resolved, nil
 }
 
+// ReplayWorkerCreation returns the durable outcome for an idempotent Worker
+// creation without reading the current Project, Node, or harness inventory.
+func (s *Store) ReplayWorkerCreation(ctx context.Context, idempotencyKey string) (Worker, Turn, Phase4Attempt, DispatchResolution, bool, error) {
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey == "" {
+		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, false, nil
+	}
+	s.idempotencyMu.Lock()
+	defer s.idempotencyMu.Unlock()
+	worker, turn, attempt, found, err := s.workerCreationReplay(ctx, idempotencyKey)
+	if err != nil || !found {
+		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, found, err
+	}
+	binding, err := s.ResolveWorkerBinding(ctx, worker.ID)
+	if err != nil {
+		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, false, err
+	}
+	return worker, turn, attempt, DispatchResolution{ProjectDispatch: binding, Queued: worker.Status == WorkerQueued}, true, nil
+}
+
 func (s *Store) workerCreationReplay(ctx context.Context, idempotencyKey string) (Worker, Turn, Phase4Attempt, bool, error) {
 	var encoded string
 	err := s.db.QueryRowContext(ctx, `SELECT outcome_json FROM idempotency_records WHERE operation = ? AND idempotency_key = ?`, "worker.create", idempotencyKey).Scan(&encoded)

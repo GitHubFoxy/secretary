@@ -1055,6 +1055,10 @@ func (s *timestampScanner) Scan(value any) error {
 		}
 		text = string(b)
 	}
+	if text == "" {
+		*s.destination = time.Time{}
+		return nil
+	}
 	parsed, err := time.Parse(time.RFC3339Nano, text)
 	if err == nil {
 		*s.destination = parsed
