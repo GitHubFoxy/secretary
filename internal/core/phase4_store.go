@@ -638,7 +638,8 @@ func (s *Store) SetPhase4AttemptNeedsInput(ctx context.Context, attemptID string
 }
 
 // ResumePhase4Attempt returns a needs_input Attempt to active state without
-// allocating another Turn or Attempt.
+// allocating another Turn or Attempt. Replaying an already committed resume
+// is an idempotent no-op.
 func (s *Store) ResumePhase4Attempt(ctx context.Context, attemptID string) (Phase4Attempt, error) {
 	return withTx(s, ctx, func(tx *sql.Tx) (Phase4Attempt, error) {
 		attempt, err := getPhase4Attempt(ctx, tx, attemptID)
@@ -649,12 +650,36 @@ func (s *Store) ResumePhase4Attempt(ctx context.Context, attemptID string) (Phas
 		if err != nil {
 			return Phase4Attempt{}, err
 		}
-		if attempt.State != AttemptActive || turn.State != TurnNeedsInput {
+		if attempt.State != AttemptActive {
+			return Phase4Attempt{}, ErrInvalidTransition
+		}
+		// Replaying a delivered response after the transition already committed
+		// is a successful no-op. The state pair is durable, so a concurrent
+		// duplicate cannot turn this into an invalid transition.
+		if turn.State == TurnActive {
+			return attempt, nil
+		}
+		if turn.State != TurnNeedsInput {
 			return Phase4Attempt{}, ErrInvalidTransition
 		}
 		now := s.now()
-		if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, updated_at = ? WHERE id = ?`, TurnActive, timestamp(now), turn.ID); err != nil {
+		result, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, updated_at = ? WHERE id = ? AND state = ?`, TurnActive, timestamp(now), turn.ID, TurnNeedsInput)
+		if err != nil {
 			return Phase4Attempt{}, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return Phase4Attempt{}, err
+		}
+		if affected == 0 {
+			turn, err = getTurn(ctx, tx, attempt.TurnID)
+			if err != nil {
+				return Phase4Attempt{}, err
+			}
+			if turn.State == TurnActive {
+				return attempt, nil
+			}
+			return Phase4Attempt{}, ErrInvalidTransition
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`, WorkerWorking, timestamp(now), attempt.WorkerID); err != nil {
 			return Phase4Attempt{}, err

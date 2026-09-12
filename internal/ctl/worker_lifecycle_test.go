@@ -499,6 +499,92 @@ func TestWorkerServiceFailsClosedWithoutRuntimeBeforeSpawnSideEffects(t *testing
 	}
 }
 
+func TestWorkerServiceReplaysDeliveredNeedsInputResponseAndResumesWithoutRespond(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	attempt := details.Attempts[0]
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptNeedsInput(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	const requestID = "question-after-crash"
+	const idempotencyKey = "answer-after-crash"
+	command, duplicate, err := store.ClaimWorkerCommand(ctx, "respond", "key:"+idempotencyKey, details.Worker.ID, attempt.ID)
+	if err != nil || duplicate {
+		t.Fatalf("claimed=%#v duplicate=%v err=%v", command, duplicate, err)
+	}
+	runtime := service.Runtime.(*lifecycleRuntime)
+	if err := runtime.Respond(ctx, command.ID, details.Worker, attempt, requestID, "answer"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkWorkerCommandDelivered(ctx, command.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	replayed, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "answer", RequestID: requestID, IdempotencyKey: idempotencyKey})
+	if err != nil || replayed.Worker.Status != core.WorkerWorking || runtime.count("respond") != 1 {
+		t.Fatalf("replayed=%#v err=%v responds=%d", replayed, err, runtime.count("respond"))
+	}
+}
+
+func TestWorkerServiceConcurrentDeliveredNeedsInputReplayIsIdempotent(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	attempt := details.Attempts[0]
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptNeedsInput(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	const requestID = "question-concurrent-replay"
+	const idempotencyKey = "answer-concurrent-replay"
+	command, duplicate, err := store.ClaimWorkerCommand(ctx, "respond", "key:"+idempotencyKey, details.Worker.ID, attempt.ID)
+	if err != nil || duplicate {
+		t.Fatalf("claimed=%#v duplicate=%v err=%v", command, duplicate, err)
+	}
+	runtime := service.Runtime.(*lifecycleRuntime)
+	if err := runtime.Respond(ctx, command.ID, details.Worker, attempt, requestID, "answer"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.MarkWorkerCommandDelivered(ctx, command.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	var group sync.WaitGroup
+	errs := make(chan error, 2)
+	statuses := make(chan core.WorkerStatus, 2)
+	for range 2 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			replayed, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "answer", RequestID: requestID, IdempotencyKey: idempotencyKey})
+			if err == nil {
+				statuses <- replayed.Worker.Status
+			}
+			errs <- err
+		}()
+	}
+	group.Wait()
+	close(errs)
+	close(statuses)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	for status := range statuses {
+		if status != core.WorkerWorking {
+			t.Fatalf("replayed worker status=%s", status)
+		}
+	}
+	if runtime.count("respond") != 1 {
+		t.Fatalf("responds=%d, want 1", runtime.count("respond"))
+	}
+}
+
 func TestWorkerServiceDuplicateNeedsInputResponseByRequestIDIsNoOp(t *testing.T) {
 	ctx, store, service, project := newWorkerService(t)
 	details := spawnLifecycleWorker(t, ctx, service, project)

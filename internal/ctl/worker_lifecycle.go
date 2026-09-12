@@ -270,7 +270,15 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			return core.WorkerDetails{}, err
 		}
 		if found && command.State == core.WorkerCommandDelivered {
-			return details, nil
+			// Respond is delivered before the server-side resume transition. A
+			// crash in that gap must replay only the durable transition, never
+			// the runtime Respond side effect.
+			if details.Worker.Status == core.WorkerNeedsInput {
+				if _, err := s.Store.ResumePhase4Attempt(ctx, attempt.ID); err != nil {
+					return core.WorkerDetails{}, err
+				}
+			}
+			return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
 		}
 	}
 	switch details.Worker.Status {
