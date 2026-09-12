@@ -131,6 +131,18 @@ func (s *LocalStore) ClaimCommand(command Command) (CommandRecord, bool, error) 
 	}
 	metadata := command.Metadata()
 	if existing, ok := s.state.Commands[metadata.CommandID]; ok {
+		if existing.State == CommandFailed && command.Kind == CommandRespondWorker {
+			now := time.Now().UTC()
+			existing.State = CommandProcessing
+			existing.Outcome = CommandOutcome{CommandID: metadata.CommandID, Kind: command.Kind, State: CommandProcessing}
+			existing.ClaimedAt = now
+			existing.UpdatedAt = now
+			s.state.Commands[metadata.CommandID] = existing
+			if err := s.persistLocked(); err != nil {
+				return CommandRecord{}, false, err
+			}
+			return existing, false, nil
+		}
 		return existing, true, nil
 	}
 	encoded, err := commandJSON(command)
@@ -154,6 +166,16 @@ func (s *LocalStore) ClaimWorkerResponse(requestID string) (CommandOutcome, bool
 		return CommandOutcome{}, false, errors.New("node: worker response request_id is required")
 	}
 	if outcome, ok := s.state.WorkerResponses[requestID]; ok {
+		if outcome.State == CommandFailed {
+			outcome.State = CommandProcessing
+			outcome.ErrorCode = ""
+			outcome.ErrorMessage = ""
+			s.state.WorkerResponses[requestID] = outcome
+			if err := s.persistLocked(); err != nil {
+				return CommandOutcome{}, false, err
+			}
+			return outcome, false, nil
+		}
 		if outcome.State == CommandProcessing {
 			outcome.State = CommandInterrupted
 			outcome.ErrorCode = "execution_state_unknown"

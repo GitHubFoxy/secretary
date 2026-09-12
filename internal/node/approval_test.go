@@ -66,6 +66,82 @@ func (s *approvalResponderSession) Respond(_ context.Context, requestID, respons
 	return nil
 }
 
+func TestFailedRespondWorkerCanRetryAfterNodeReconnect(t *testing.T) {
+	ctx := context.Background()
+	path := t.TempDir() + "/node.json"
+	store, err := OpenLocalStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSession := &retryResponderSession{id: "native-first", fail: true}
+	firstRuntime := &retryResponderRuntime{session: firstSession}
+	execution := NewExecutionNode("macbook", firstRuntime, store)
+	dispatch := dispatchFixture("dispatch-retry")
+	if outcome, err := execution.HandleCommand(ctx, dispatch); err != nil || outcome.State != CommandAccepted {
+		t.Fatalf("dispatch=%#v err=%v", outcome, err)
+	}
+	command := Command{Kind: CommandRespondWorker, RespondWorker: &RespondWorkerCommand{Metadata: core.CommandMetadata{CommandID: "respond-retry", Node: "macbook", WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1"}, RequestID: "retry-request", Response: "denied"}}
+	if outcome, err := execution.HandleCommand(ctx, command); err != nil || outcome.State != CommandFailed {
+		t.Fatalf("first response=%#v err=%v", outcome, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenLocalStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	secondSession := &retryResponderSession{id: "native-reconnected"}
+	reconnected := NewExecutionNode("macbook", &retryResponderRuntime{session: secondSession}, reopened)
+	outcome, err := reconnected.HandleCommand(ctx, command)
+	if err != nil || outcome.State != CommandAccepted {
+		t.Fatalf("retry response=%#v err=%v", outcome, err)
+	}
+	if firstSession.responds != 1 || secondSession.responds != 1 || firstSession.successes+secondSession.successes != 1 {
+		t.Fatalf("responds first=%d second=%d successes=%d", firstSession.responds, secondSession.responds, firstSession.successes+secondSession.successes)
+	}
+	concurrent := command
+	concurrent.RespondWorker = &RespondWorkerCommand{Metadata: command.RespondWorker.Metadata, RequestID: command.RespondWorker.RequestID, Response: command.RespondWorker.Response}
+	concurrent.RespondWorker.Metadata.CommandID = "respond-retry-concurrent"
+	if outcome, err := reconnected.HandleCommand(ctx, concurrent); err != nil || outcome.State != CommandAccepted || secondSession.responds != 1 {
+		t.Fatalf("duplicate retry=%#v err=%v responds=%d", outcome, err, secondSession.responds)
+	}
+}
+
+type retryResponderRuntime struct{ session *retryResponderSession }
+
+func (r *retryResponderRuntime) Start(context.Context, StartRequest) (Session, error) {
+	return r.session, nil
+}
+func (r *retryResponderRuntime) Resume(context.Context, StartRequest, string) (Session, error) {
+	return r.session, nil
+}
+
+type retryResponderSession struct {
+	id        string
+	fail      bool
+	responds  int
+	successes int
+}
+
+func (s *retryResponderSession) ID() string                                { return s.id }
+func (*retryResponderSession) Prompt(context.Context, string) error        { return nil }
+func (*retryResponderSession) Steer(context.Context, string) (bool, error) { return true, nil }
+func (*retryResponderSession) Cancel(context.Context) error                { return nil }
+func (*retryResponderSession) Activity() <-chan Activity                   { return nil }
+func (*retryResponderSession) Result() <-chan Result                       { return nil }
+func (*retryResponderSession) Close() error                                { return nil }
+func (s *retryResponderSession) Respond(context.Context, string, string) error {
+	s.responds++
+	if s.fail {
+		s.fail = false
+		return errors.New("native transport disconnected")
+	}
+	s.successes++
+	return nil
+}
+
 func TestRespondWorkerRequestRebindsToNewSessionAfterNodeReconnect(t *testing.T) {
 	ctx := context.Background()
 	path := t.TempDir() + "/node.json"

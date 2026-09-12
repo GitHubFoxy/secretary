@@ -167,26 +167,6 @@ func main() {
 		ChildProfile:        func() core.BindingProfile { return bindingProfile(managedProfile(profiles.Snapshot(), "child_worker")) },
 		ManagedChildProfile: func() node.ManagedProfile { return managedProfile(profiles.Snapshot(), "child_worker") },
 	}
-	web.AttachWorkerController(&app.WorkerController{Store: store, Node: local,
-		ManagedProfile: func(binding core.BindingProfile) node.ManagedProfile {
-			compiled, err := store.ConfigVersion(ctx, binding.Version)
-			if err == nil {
-				var snapshot config.Snapshot
-				if json.Unmarshal([]byte(compiled), &snapshot) == nil {
-					profile := managedProfile(snapshot, binding.Name)
-					if binding.Delivery != "" {
-						profile.Delivery = binding.Delivery
-					}
-					return profile
-				}
-			}
-			profile := managedProfile(profiles.Snapshot(), binding.Name)
-			if binding.Delivery != "" {
-				profile.Delivery = binding.Delivery
-			}
-			return profile
-		},
-	})
 	go (app.Runner{Store: store, Dispatcher: dispatcher, Conversation: conversation.ID}).Run(ctx)
 	capability := os.Getenv("SECRETARY_CAPABILITY")
 	if capability == "" {
@@ -200,6 +180,24 @@ func main() {
 		}
 		log.Printf("generated SECRETARY_CAPABILITY=%s", capability)
 	}
+	attachProductionWorkerServices(web, store, web.OwnerID(), capability, local, remoteNodes, func(binding core.BindingProfile) node.ManagedProfile {
+		compiled, err := store.ConfigVersion(ctx, binding.Version)
+		if err == nil {
+			var snapshot config.Snapshot
+			if json.Unmarshal([]byte(compiled), &snapshot) == nil {
+				profile := managedProfile(snapshot, binding.Name)
+				if binding.Delivery != "" {
+					profile.Delivery = binding.Delivery
+				}
+				return profile
+			}
+		}
+		profile := managedProfile(profiles.Snapshot(), binding.Name)
+		if binding.Delivery != "" {
+			profile.Delivery = binding.Delivery
+		}
+		return profile
+	})
 	if remoteNodes != nil {
 		trustedNode := core.NodeReference(strings.TrimSpace(os.Getenv("SECRETARY_TRUSTED_LOCAL_NODE")))
 		trustedPolicy := core.TrustedLocalApprovalPolicy{Enabled: trustedNode != "", Explicit: trustedNode != "", LocalNode: trustedNode != "", Node: trustedNode}
@@ -328,6 +326,12 @@ func main() {
 	if err := server.Shutdown(shutdown); err != nil {
 		log.Printf("shutdown web API: %v", err)
 	}
+}
+
+func attachProductionWorkerServices(web *webapi.Server, store *core.Store, personID, capability string, local *node.LocalNode, remote *node.ServerManager, managedProfile func(core.BindingProfile) node.ManagedProfile) {
+	controller := &app.WorkerController{Store: store, Node: local, ManagedProfile: managedProfile}
+	web.AttachWorkerController(controller)
+	web.AttachWorkerResponder(ctl.WorkerService{Store: store, PersonID: personID, Capability: capability, Runtime: ctl.NodeRuntime{Manager: remote, Local: local}})
 }
 
 func configuredRuntime(snapshot config.Snapshot, dataDir string) (node.Runtime, string) {

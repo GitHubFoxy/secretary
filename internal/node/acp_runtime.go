@@ -411,24 +411,38 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 		Options []acpPermissionOption `json:"options"`
 	}
 	_ = json.Unmarshal(message.Params, &permission)
-	approved := strings.Contains(strings.ToLower(value), "approve") || strings.Contains(strings.ToLower(value), "allow") || strings.Contains(strings.ToLower(value), `"approved":true`)
-	selected := ""
-	for _, option := range permission.Options {
-		lower := strings.ToLower(option.Kind)
-		if approved && strings.Contains(lower, "allow") {
-			selected = option.OptionID
-			if strings.Contains(lower, "always") {
-				break
-			}
-		}
-		if !approved && (strings.Contains(lower, "deny") || strings.Contains(lower, "reject")) {
-			selected = option.OptionID
-		}
-	}
+	valueLower := strings.ToLower(strings.TrimSpace(value))
+	approved := strings.Contains(valueLower, "approve") || strings.Contains(valueLower, "allow") || strings.Contains(valueLower, `"approved":true`)
+	selected := selectPermissionOption(permission.Options, approved, strings.Contains(valueLower, "trusted-local"))
 	if selected == "" {
 		return nil, errors.New("harness has no matching permission option")
 	}
 	return map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": selected}}, nil
+}
+
+func selectPermissionOption(options []acpPermissionOption, approved, persistent bool) string {
+	preferred := ""
+	fallback := ""
+	for _, option := range options {
+		kind := strings.ToLower(strings.TrimSpace(option.Kind))
+		matches := approved && strings.Contains(kind, "allow") || !approved && (strings.Contains(kind, "deny") || strings.Contains(kind, "reject"))
+		if !matches || strings.TrimSpace(option.OptionID) == "" {
+			continue
+		}
+		if strings.Contains(kind, "always") {
+			if fallback == "" {
+				fallback = option.OptionID
+			}
+			continue
+		}
+		if preferred == "" {
+			preferred = option.OptionID
+		}
+	}
+	if persistent {
+		return fallback
+	}
+	return preferred
 }
 
 func (s *acpSession) Prompt(ctx context.Context, task string) error {

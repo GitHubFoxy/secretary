@@ -61,6 +61,9 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 		return CommandOutcome{}, err
 	}
 	if duplicate {
+		if record.State == CommandProcessing {
+			return failedOutcome(command, "execution_state_unknown", "command execution is already in progress"), nil
+		}
 		return record.Outcome, nil
 	}
 	var outcome CommandOutcome

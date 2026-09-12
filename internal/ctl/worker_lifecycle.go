@@ -320,7 +320,7 @@ func (s WorkerService) ApplyTrustedLocalApproval(ctx context.Context, requestID 
 			return core.Approval{}, err
 		}
 		if err := s.deliverCommand(ctx, command, func(commandID string) error {
-			return s.Runtime.Respond(ctx, commandID, worker, attempt, approval.RequestID, "approved")
+			return s.Runtime.Respond(ctx, commandID, worker, attempt, approval.RequestID, "approved:trusted-local")
 		}); err != nil {
 			return core.Approval{}, err
 		}
