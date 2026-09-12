@@ -17,8 +17,6 @@ type Dispatcher struct {
 	ManagedProfile      func() node.ManagedProfile
 	ChildProfile        func() core.BindingProfile
 	ManagedChildProfile func() node.ManagedProfile
-	MCPCommand          string
-	MCPDataDir          string
 }
 
 func (d Dispatcher) Dispatch(ctx context.Context, task core.Task, workerRef string) (core.WorkerBinding, core.Attempt, error) {
@@ -48,21 +46,8 @@ func (d Dispatcher) Dispatch(ctx context.Context, task core.Task, workerRef stri
 			"profile_hash": managedProfile.Hash, "delivery": managedProfile.Delivery, "runtime": managedProfile.Runtime,
 		})
 	}
-	var workerCapability string
-	var err error
-	if d.MCPCommand != "" && !isChild {
-		workerCapability, err = d.Store.IssueWorkerCapability(ctx, task.ID, workerRef)
-		if err != nil {
-			_, _ = d.Store.RecordEvent(ctx, "worker.dispatch_failed", workerRef, "", "", map[string]string{"task_id": task.ID, "error": err.Error()})
-			_, _ = d.Store.MarkDispatchFailed(ctx, task.ID)
-			return core.WorkerBinding{}, core.Attempt{}, err
-		}
-	}
 	workspace, err := os.MkdirTemp("", "secretary-worker-")
 	if err != nil {
-		if !isChild {
-			_ = d.Store.RevokeWorkerCapability(ctx, workerRef)
-		}
 		_, _ = d.Store.MarkDispatchFailed(ctx, task.ID)
 		return core.WorkerBinding{}, core.Attempt{}, err
 	}
@@ -71,18 +56,8 @@ func (d Dispatcher) Dispatch(ctx context.Context, task core.Task, workerRef stri
 		prompt = "Read and follow the managed AGENTS.md before doing this task. Do not replace or weaken its instructions.\n\nTask:\n" + task.Text
 	}
 	request := node.StartRequest{WorkerRef: workerRef, Task: prompt, Workspace: workspace, Profile: managedProfile}
-	if d.MCPCommand != "" {
-		role := "worker"
-		if isChild {
-			role = "child_worker"
-		}
-		request.MCPServers = []node.MCPServer{node.SecretaryMCPServer(d.MCPCommand, d.MCPDataDir, role, workerCapability, workerRef)}
-	}
 	session, err := d.Node.Dispatch(ctx, request)
 	if err != nil {
-		if !isChild {
-			_ = d.Store.RevokeWorkerCapability(ctx, workerRef)
-		}
 		_, _ = d.Store.RecordEvent(ctx, "worker.dispatch_failed", workerRef, "", "", map[string]string{"task_id": task.ID, "error": err.Error()})
 		_, transitionErr := d.Store.MarkDispatchFailed(ctx, task.ID)
 		if transitionErr != nil {
@@ -93,9 +68,6 @@ func (d Dispatcher) Dispatch(ctx context.Context, task core.Task, workerRef stri
 	_, binding, attempt, err := d.Store.AcceptDispatchWithProfile(ctx, task.ID, workerRef, "local", session.ID(), workspace, profile)
 	if err != nil {
 		_ = d.Node.Remove(workerRef)
-		if !isChild {
-			_ = d.Store.RevokeWorkerCapability(ctx, workerRef)
-		}
 		return core.WorkerBinding{}, core.Attempt{}, err
 	}
 	attempt, err = d.Store.SetAttemptActive(ctx, attempt.ID)
@@ -104,9 +76,6 @@ func (d Dispatcher) Dispatch(ctx context.Context, task core.Task, workerRef stri
 	}
 	if err != nil {
 		_ = d.Node.Remove(workerRef)
-		if !isChild {
-			_ = d.Store.RevokeWorkerCapability(ctx, workerRef)
-		}
 		return core.WorkerBinding{}, core.Attempt{}, err
 	}
 	go d.persistResults(task.ID, workerRef, session)

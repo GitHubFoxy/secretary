@@ -6,15 +6,20 @@ import (
 )
 
 func TestSecretaryMCPServerUsesScopedEnvironment(t *testing.T) {
-	server := SecretaryMCPServer("secretary-mcp", "/state", "worker", "wcap_1", "wrk_1")
+	server := SecretaryMCPServer("secretary-mcp", "/state", "secretary-capability")
 	encoded, err := json.Marshal(server)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(encoded)
-	for _, want := range []string{"\"name\":\"secretary\"", "SECRETARY_MCP_DATA_DIR", "SECRETARY_MCP_ROLE", "SECRETARY_MCP_CAPABILITY", "SECRETARY_MCP_WORKER_REF", "wcap_1"} {
+	for _, want := range []string{"\"name\":\"secretary\"", "SECRETARY_MCP_DATA_DIR", "SECRETARY_MCP_CAPABILITY", "secretary-capability"} {
 		if !contains(text, want) {
 			t.Fatalf("server=%s missing %q", text, want)
+		}
+	}
+	for _, forbidden := range []string{"SECRETARY_MCP_ROLE", "SECRETARY_MCP_WORKER_REF", "worker"} {
+		if contains(text, forbidden) {
+			t.Fatalf("server=%s contains legacy %q", text, forbidden)
 		}
 	}
 }

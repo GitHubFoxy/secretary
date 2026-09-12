@@ -161,13 +161,13 @@ func main() {
 	if identityErr != nil {
 		log.Fatalf("ensure Secretary identity: %v", identityErr)
 	}
-	dispatcher := &app.Dispatcher{Store: store, Node: local, MCPCommand: mcpCommand, MCPDataDir: *dataDir,
+	dispatcher := &app.Dispatcher{Store: store, Node: local,
 		Profile:             func() core.BindingProfile { return bindingProfile(managedProfile(profiles.Snapshot(), "worker")) },
 		ManagedProfile:      func() node.ManagedProfile { return managedProfile(profiles.Snapshot(), "worker") },
 		ChildProfile:        func() core.BindingProfile { return bindingProfile(managedProfile(profiles.Snapshot(), "child_worker")) },
 		ManagedChildProfile: func() node.ManagedProfile { return managedProfile(profiles.Snapshot(), "child_worker") },
 	}
-	web.AttachWorkerController(&app.WorkerController{Store: store, Node: local, MCPCommand: mcpCommand, MCPDataDir: *dataDir,
+	web.AttachWorkerController(&app.WorkerController{Store: store, Node: local,
 		ManagedProfile: func(binding core.BindingProfile) node.ManagedProfile {
 			compiled, err := store.ConfigVersion(ctx, binding.Version)
 			if err == nil {

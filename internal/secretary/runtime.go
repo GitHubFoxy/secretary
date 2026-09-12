@@ -121,7 +121,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 		}
 	}
 	if mcpCommand != "" {
-		request.MCPServers = []node.MCPServer{node.SecretaryMCPServer(mcpCommand, dataDir, "secretary", r.capability, workerRef)}
+		request.MCPServers = []node.MCPServer{node.SecretaryMCPServer(mcpCommand, dataDir, r.capability)}
 	}
 	session, err := r.node.Dispatch(ctx, request)
 	if err != nil {
