@@ -61,6 +61,39 @@ func TestDefaultProbeCommandsAreExplicitContracts(t *testing.T) {
 	}
 }
 
+func TestClaudeCapabilitiesMatchImplementedRuntime(t *testing.T) {
+	spec := DefaultClaudeCodeProbeSpec()
+	if spec.Kind != core.HarnessClaudeCode {
+		t.Fatalf("Claude spec kind=%q", spec.Kind)
+	}
+	for _, unsupported := range []core.ExecutionCapability{core.CapabilitySteering, core.CapabilityApprovals} {
+		if specHasExecutionCapability(spec, unsupported) {
+			t.Fatalf("Claude advertises unsupported execution capability %q", unsupported)
+		}
+	}
+	want := []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel}
+	if !reflect.DeepEqual(spec.ExecutionCapabilities, want) {
+		t.Fatalf("Claude execution capabilities=%#v, want %#v", spec.ExecutionCapabilities, want)
+	}
+
+	result := ProbeClaudeCode(context.Background(), "macbook", fakeProbeRunner{responses: map[string]CommandResult{
+		"claude --version":   {Stdout: "2.1.0"},
+		"claude auth status": {Stdout: `{"loggedIn":true}`},
+	}})
+	if result.Instance.Capabilities.SupportsExecution(core.CapabilitySteering) || result.Instance.Capabilities.SupportsExecution(core.CapabilityApprovals) {
+		t.Fatalf("Claude inventory advertises unsupported capabilities: %#v", result.Instance.Capabilities.Execution)
+	}
+}
+
+func specHasExecutionCapability(spec HarnessProbeSpec, want core.ExecutionCapability) bool {
+	for _, capability := range spec.ExecutionCapabilities {
+		if capability == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestClaudeProbeUsesObservedAuthAndDoesNotInventModels(t *testing.T) {
 	runner := fakeProbeRunner{responses: map[string]CommandResult{
 		"claude --version":   {Stdout: "2.1.0"},

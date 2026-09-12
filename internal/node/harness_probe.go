@@ -539,7 +539,7 @@ func DefaultFXProbeSpec() HarnessProbeSpec {
 func DefaultClaudeCodeProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
 		Kind: core.HarnessClaudeCode, Binary: "claude", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"auth", "status"}, ModelsOptional: true,
-		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilitySteering, core.CapabilityApprovals},
+		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel},
 		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedRuntimeActivity...),
 	}
 }

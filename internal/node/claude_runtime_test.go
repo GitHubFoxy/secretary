@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +46,80 @@ func TestClaudeCodeRuntimeUsesNativeCLIWithAuthoritativePins(t *testing.T) {
 		if !strings.Contains(string(args), want) {
 			t.Fatalf("Claude CLI args=%s, missing %q", args, want)
 		}
+	}
+}
+
+func TestClaudeCodeRuntimeRejectsConfiguredSemanticArgumentInjection(t *testing.T) {
+	instance := core.HarnessInstance{ID: "node/claude", Node: "node", Kind: core.HarnessClaudeCode, Version: "1", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}}
+	dangerous := []string{
+		"--model", "--model=attacker", "-m", "-mattacker",
+		"--effort", "--effort=low", "--thinking", "--max-thinking-tokens",
+		"--fallback-model", "--fallback-model=attacker",
+		"--session-id", "--session-id=attacker", "--resume", "--resume=attacker",
+		"--continue", "-c", "--fork-session", "--from-pr", "--no-session-persistence", "--",
+		"--print", "-p", "--verbose", "--output-format", "--output-format=text",
+		"--input-format", "--input-format=text", "--stream-json",
+		"--include-partial-messages", "--json-schema", "--replay-user-messages",
+		"--permission-prompt-tool",
+	}
+	for _, argument := range dangerous {
+		t.Run(argument, func(t *testing.T) {
+			runtime := ClaudeCodeRuntime{Arguments: []string{argument, "attacker-value"}}
+			_, err := runtime.Start(context.Background(), StartRequest{
+				HarnessInstance: instance, Workspace: t.TempDir(), Task: "inspect",
+				Model: "claude-sonnet", Reasoning: "high",
+			})
+			if !errors.Is(err, ErrClaudeCodeConfiguration) {
+				t.Fatalf("argument %q err=%v, want configuration error", argument, err)
+			}
+		})
+	}
+}
+
+func TestClaudeCodeRuntimeBuildsExactAuthoritativeArguments(t *testing.T) {
+	runtime := ClaudeCodeRuntime{Arguments: []string{"--permission-mode", "acceptEdits"}}
+	request := StartRequest{Task: "inspect", Model: "claude-sonnet", Reasoning: "extended"}
+	got, err := runtime.authoritativeArguments(request, "session-id", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"--permission-mode", "acceptEdits", "--print", "--output-format", "stream-json", "--verbose", "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id", "inspect"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Claude CLI args=%#v, want %#v", got, want)
+	}
+	got, err = runtime.authoritativeArguments(request, "saved-session", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"--permission-mode", "acceptEdits", "--print", "--output-format", "stream-json", "--verbose", "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session", "inspect"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Claude resume args=%#v, want %#v", got, want)
+	}
+	policyRequest := StartRequest{Task: "inspect", Profile: ManagedProfile{Model: "policy-model", Reasoning: "high"}}
+	got, err = runtime.authoritativeArguments(policyRequest, "policy-session", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"--permission-mode", "acceptEdits", "--print", "--output-format", "stream-json", "--verbose", "--model", "policy-model", "--effort", "high", "--session-id", "policy-session", "inspect"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Claude policy args=%#v, want %#v", got, want)
+	}
+}
+
+func TestClaudeCodeSessionSteeringIsExplicitlyUnsupported(t *testing.T) {
+	session := &claudeSession{}
+	injected, err := session.Steer(context.Background(), "continue")
+	if injected || !errors.Is(err, ErrClaudeCodeSteeringUnsupported) {
+		t.Fatalf("injected=%v err=%v, want explicit unsupported error", injected, err)
+	}
+
+	execution := &ExecutionNode{sessions: map[string]Session{"attempt": session}}
+	outcome := execution.steer(context.Background(), &SteeringCommand{
+		Metadata: core.CommandMetadata{CommandID: "steer", Node: "node", AttemptID: "attempt"},
+		Text:     "continue",
+	})
+	if outcome.State != CommandFailed || outcome.ErrorCode != "runtime_not_steerable" {
+		t.Fatalf("steering outcome=%#v, want explicit unsupported failure", outcome)
 	}
 }
 

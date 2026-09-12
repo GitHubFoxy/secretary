@@ -23,6 +23,24 @@ import (
 // turn a missing Claude executable into a different harness execution.
 var ErrClaudeCodeUnavailable = errors.New("claude_code runtime unavailable")
 
+// ErrClaudeCodeConfiguration identifies unsafe static CLI configuration that
+// would compete with the immutable Worker envelope or this adapter's parser.
+var ErrClaudeCodeConfiguration = errors.New("claude_code runtime configuration error")
+
+// ErrClaudeCodeSteeringUnsupported identifies the native CLI mode's lack of
+// an input channel for steering an active print attempt.
+var ErrClaudeCodeSteeringUnsupported = errors.New("claude: print session does not support steering")
+
+var claudeRuntimeOwnedFlags = map[string]struct{}{
+	"--model": {}, "-m": {}, "--effort": {}, "--thinking": {}, "--max-thinking-tokens": {},
+	"--fallback-model": {},
+	"--session-id":     {}, "--resume": {}, "-r": {}, "--continue": {}, "-c": {},
+	"--fork-session": {}, "--from-pr": {}, "--no-session-persistence": {}, "--": {},
+	"--print": {}, "-p": {}, "--verbose": {}, "--output-format": {}, "--input-format": {},
+	"--stream-json": {}, "--include-partial-messages": {}, "--json-schema": {},
+	"--replay-user-messages": {}, "--permission-prompt-tool": {},
+}
+
 // ClaudeCodeRuntime runs the real Claude Code CLI in its documented headless
 // print mode with stream-json output. It is intentionally not an ACP adapter.
 type ClaudeCodeRuntime struct {
@@ -50,7 +68,11 @@ func (r ClaudeCodeRuntime) Start(ctx context.Context, request StartRequest) (Ses
 	if err != nil {
 		return nil, fmt.Errorf("%w: create session id: %v", ErrClaudeCodeUnavailable, err)
 	}
-	return r.startProcess(ctx, request, id, r.arguments(request, id, false))
+	args, err := r.authoritativeArguments(request, id, false)
+	if err != nil {
+		return nil, err
+	}
+	return r.startProcess(ctx, request, id, args)
 }
 
 func (r ClaudeCodeRuntime) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
@@ -65,7 +87,11 @@ func (r ClaudeCodeRuntime) Resume(ctx context.Context, request StartRequest, run
 	if strings.TrimSpace(runtimeSessionID) == "" {
 		return nil, fmt.Errorf("%w: runtime session id is required", ErrClaudeCodeUnavailable)
 	}
-	return r.startProcess(ctx, request, runtimeSessionID, r.arguments(request, runtimeSessionID, true))
+	args, err := r.authoritativeArguments(request, runtimeSessionID, true)
+	if err != nil {
+		return nil, err
+	}
+	return r.startProcess(ctx, request, runtimeSessionID, args)
 }
 
 func validateClaudeRequest(request StartRequest) error {
@@ -94,45 +120,57 @@ func (r ClaudeCodeRuntime) command() string {
 	return r.Command
 }
 
-func (r ClaudeCodeRuntime) arguments(request StartRequest, sessionID string, resume bool) []string {
-	args := append([]string(nil), r.Arguments...)
-	appendFlag := func(flag string) {
-		for _, arg := range args {
-			if arg == flag {
-				return
+func validateClaudeArguments(configured []string) error {
+	for _, argument := range configured {
+		flag := argument
+		if index := strings.IndexByte(flag, '='); index >= 0 {
+			flag = flag[:index]
+		}
+		if _, reserved := claudeRuntimeOwnedFlags[flag]; reserved {
+			return fmt.Errorf("%w: configured argument %q is reserved for the immutable Worker contract", ErrClaudeCodeConfiguration, argument)
+		}
+		// Claude accepts attached values for short options such as -mMODEL and
+		// -pPROMPT. Treat those forms as the same reserved options.
+		if len(argument) > 2 && strings.HasPrefix(argument, "-") && !strings.HasPrefix(argument, "--") {
+			switch argument[:2] {
+			case "-m", "-p":
+				return fmt.Errorf("%w: configured argument %q is reserved for the immutable Worker contract", ErrClaudeCodeConfiguration, argument)
 			}
 		}
-		args = append(args, flag)
 	}
-	appendOption := func(flag, value string) {
-		for i, arg := range args {
-			if arg == flag {
-				if i+1 < len(args) {
-					return
-				}
-			}
-		}
-		args = append(args, flag, value)
-	}
+	return nil
+}
 
-	appendFlag("--print")
-	appendOption("--output-format", "stream-json")
-	appendFlag("--verbose")
-	if request.Model != "" && !isModelAlias(request.Model) {
-		appendOption("--model", request.Model)
+func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionID string, resume bool) ([]string, error) {
+	if err := validateClaudeArguments(r.Arguments); err != nil {
+		return nil, err
 	}
-	if request.Reasoning != "" && request.Reasoning != "default" {
-		appendOption("--effort", request.Reasoning)
+	args := append([]string(nil), r.Arguments...)
+	args = append(args, "--print", "--output-format", "stream-json", "--verbose")
+	model, reasoning := request.Model, request.Reasoning
+	if request.HarnessInstance.Kind == "" {
+		if model == "" {
+			model = request.Profile.Model
+		}
+		if reasoning == "" {
+			reasoning = request.Profile.Reasoning
+		}
+	}
+	if model != "" && !isModelAlias(model) {
+		args = append(args, "--model", model)
+	}
+	if reasoning != "" && reasoning != "default" {
+		args = append(args, "--effort", reasoning)
 	}
 	if resume {
-		appendOption("--resume", sessionID)
+		args = append(args, "--resume", sessionID)
 	} else {
-		appendOption("--session-id", sessionID)
+		args = append(args, "--session-id", sessionID)
 	}
 	if request.Task != "" {
 		args = append(args, request.Task)
 	}
-	return args
+	return args, nil
 }
 
 func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartRequest, sessionID string, args []string) (*claudeSession, error) {
@@ -188,7 +226,7 @@ func (s *claudeSession) Prompt(context.Context, string) error {
 }
 
 func (s *claudeSession) Steer(context.Context, string) (bool, error) {
-	return false, errors.New("claude: print session does not support steering")
+	return false, ErrClaudeCodeSteeringUnsupported
 }
 
 func (s *claudeSession) Queue(context.Context, string) error {

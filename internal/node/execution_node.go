@@ -222,7 +222,11 @@ func (n *ExecutionNode) steer(ctx context.Context, command *SteeringCommand) Com
 	}
 	injected, err := session.Steer(ctx, command.Text)
 	if err != nil {
-		return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "steering_failed", err.Error())
+		code := "steering_failed"
+		if errors.Is(err, ErrClaudeCodeSteeringUnsupported) {
+			code = "runtime_not_steerable"
+		}
+		return failedOutcome(Command{Kind: CommandSteering, Steering: command}, code, err.Error())
 	}
 	if !injected {
 		queue, ok := session.(Queueer)
