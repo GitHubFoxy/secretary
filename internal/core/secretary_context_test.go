@@ -53,6 +53,144 @@ func TestSecretaryContextSnapshotRejectsRuntimeAndCredentialFields(t *testing.T)
 	}
 }
 
+func TestReconstructSecretaryContextMissingPolicySnapshotFailsClosed(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userPath := filepath.Join(t.TempDir(), "user.md")
+	if _, err := store.SaveUserDocument(ctx, userPath, "policy is required"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `DELETE FROM secretary_policy_snapshots`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ReconstructSecretaryContext(ctx, identity.ID, userPath, 20); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing policy snapshot error=%v", err)
+	}
+}
+
+func TestSecretaryResultClaimReturnsAfterRestartRecovery(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "durable user"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, SecretaryPolicySnapshot{
+		Version: "test-v1", Harness: "fx", Model: "secretary", Reasoning: "high",
+		ProfileVersion: "test-v1", ProfileName: "secretary", ProfileHash: "test-hash", ProfileContent: "test policy",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, _, attempt, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{WorkerRef: "restart-result", Intent: "result", ProjectID: "p", NodeID: "n", HarnessInstanceID: "n/fx", PolicySnapshot: "worker-policy"}, TurnSpec{Input: "result"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, result, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "must survive restart"})
+	if err != nil || result == nil {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	first, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecoverSecretaryTurn(ctx, identity.ID, "runtime restarted before prompt"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := store.StartSecretaryTurn(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot SecretaryContext
+	if err := json.Unmarshal([]byte(started.ContextSnapshot), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.UnseenWorkerResults) != 1 || snapshot.UnseenWorkerResults[0].ID != result.ID {
+		t.Fatalf("recovered result=%#v", snapshot.UnseenWorkerResults)
+	}
+}
+
+func TestSecretaryPromptAcceptedClaimDoesNotReappearAfterRecovery(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "accepted prompt"); err != nil {
+		t.Fatal(err)
+	}
+	_, _, attempt, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{WorkerRef: "accepted-result", Intent: "result", ProjectID: "p", NodeID: "n", HarnessInstanceID: "n/fx", PolicySnapshot: "worker-policy"}, TurnSpec{Input: "result"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, result, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "consumed once"}); err != nil || result == nil {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	first, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BeginSecretaryPrompt(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AcceptSecretaryPrompt(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecoverSecretaryTurn(ctx, identity.ID, "runtime restarted after accepted prompt"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := store.StartSecretaryTurn(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot SecretaryContext
+	if err := json.Unmarshal([]byte(started.ContextSnapshot), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.UnseenWorkerResults) != 0 {
+		t.Fatalf("accepted result reappeared=%#v", snapshot.UnseenWorkerResults)
+	}
+}
+
 func TestSecretaryContextReconstructionUsesOnlyServerOwnedSources(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
@@ -168,6 +306,12 @@ func TestSecretaryContextReconstructionSurvivesRestartAndDoesNotTrustNativeSessi
 	}
 	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, SecretaryPolicySnapshot{
+		Version: "test-v1", Harness: "fx", Model: "secretary", Reasoning: "high",
+		ProfileVersion: "test-v1", ProfileName: "secretary", ProfileHash: "test-hash", ProfileContent: "test policy",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	userPath := filepath.Join(t.TempDir(), "user.md")

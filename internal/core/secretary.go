@@ -34,6 +34,7 @@ CREATE TABLE IF NOT EXISTS secretary_turns (
   conversation_id TEXT NOT NULL REFERENCES conversations(id),
   input TEXT NOT NULL,
   context_snapshot TEXT NOT NULL DEFAULT '',
+  prompt_state TEXT NOT NULL DEFAULT 'pending',
   state TEXT NOT NULL,
   queue_position INTEGER NOT NULL,
   error TEXT NOT NULL DEFAULT '',
@@ -67,6 +68,7 @@ CREATE TABLE IF NOT EXISTS secretary_context_seen_results (
   turn_id TEXT NOT NULL REFERENCES secretary_turns(id),
   result_id TEXT NOT NULL REFERENCES phase4_results(id),
   seen_at TEXT NOT NULL,
+  claim_state TEXT NOT NULL DEFAULT 'accepted',
   PRIMARY KEY(turn_id, result_id)
 );
 DELETE FROM secretary_context_seen_results
@@ -79,6 +81,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS secretary_context_seen_results_one_owner
 	}
 	if _, err := s.db.ExecContext(ctx, `ALTER TABLE secretary_turns ADD COLUMN context_snapshot TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 		return fmt.Errorf("migrate Secretary turn context snapshot: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE secretary_turns ADD COLUMN prompt_state TEXT NOT NULL DEFAULT 'pending'`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return fmt.Errorf("migrate Secretary turn prompt state: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE secretary_context_seen_results ADD COLUMN claim_state TEXT NOT NULL DEFAULT 'accepted'`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return fmt.Errorf("migrate Secretary result claim state: %w", err)
 	}
 	return nil
 }
@@ -174,7 +182,7 @@ func (s *Store) EnqueueSecretaryTurn(ctx context.Context, identityID, input stri
 
 func scanSecretaryTurn(row interface{ Scan(...any) error }, turn *SecretaryTurn) error {
 	var started, finished sql.NullString
-	if err := row.Scan(&turn.ID, &turn.IdentityID, &turn.ConversationID, &turn.Input, &turn.ContextSnapshot, &turn.State, &turn.QueuePosition, &turn.Error, newTimestampScanner(&turn.CreatedAt), &started, &finished, newTimestampScanner(&turn.UpdatedAt)); err != nil {
+	if err := row.Scan(&turn.ID, &turn.IdentityID, &turn.ConversationID, &turn.Input, &turn.ContextSnapshot, &turn.PromptState, &turn.State, &turn.QueuePosition, &turn.Error, newTimestampScanner(&turn.CreatedAt), &started, &finished, newTimestampScanner(&turn.UpdatedAt)); err != nil {
 		return err
 	}
 	if started.Valid {
@@ -302,6 +310,15 @@ func (s *Store) FinishSecretaryTurn(ctx context.Context, turnID string, state Se
 		}
 		if turn.State != SecretaryTurnActive {
 			return SecretaryTurn{}, ErrInvalidTransition
+		}
+		if state == SecretaryTurnSucceeded {
+			if _, err := tx.ExecContext(ctx, `UPDATE secretary_context_seen_results SET claim_state = 'accepted' WHERE turn_id = ? AND claim_state = 'claimed'`, turn.ID); err != nil {
+				return SecretaryTurn{}, err
+			}
+		} else if turn.PromptState == secretaryPromptPending {
+			if err := releaseSecretaryResultsTx(ctx, tx, turn.ID); err != nil {
+				return SecretaryTurn{}, err
+			}
 		}
 		now := s.now()
 		turn.State, turn.Error, turn.FinishedAt, turn.UpdatedAt = state, strings.TrimSpace(terminalError), &now, now

@@ -296,6 +296,29 @@ func (r *Runtime) reportError(err error) {
 	}
 }
 
+func (r *Runtime) ownsDurablePrompt(session node.Session, turnID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.session == session && r.activeTurnID == turnID && r.busy
+}
+
+func (r *Runtime) abandonDurablePrompt(store *core.Store, turnID string, release bool) {
+	if release {
+		if err := store.ReleaseSecretaryTurnClaims(context.Background(), turnID); err != nil {
+			r.reportError(err)
+		}
+	}
+	if _, err := store.FinishSecretaryTurn(context.Background(), turnID, core.SecretaryTurnInterrupted, "runtime/session changed before Prompt"); err != nil {
+		r.reportError(err)
+	}
+	r.mu.Lock()
+	if r.activeTurnID == turnID {
+		r.busy = false
+		r.activeTurnID = ""
+	}
+	r.mu.Unlock()
+}
+
 func (r *Runtime) persistPolicySnapshot(ctx context.Context, profile node.ManagedProfile) error {
 	r.mu.Lock()
 	store, identity := r.store, r.identity
@@ -423,6 +446,27 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 				return
 			}
 		}
+		if store != nil && turnID != "" {
+			if !r.ownsDurablePrompt(session, turnID) {
+				r.abandonDurablePrompt(store, turnID, false)
+				return
+			}
+			if err := store.BeginSecretaryPrompt(context.Background(), turnID); err != nil {
+				if _, finishErr := store.FinishSecretaryTurn(context.Background(), turnID, core.SecretaryTurnFailed, "prompt could not start: "+err.Error()); finishErr != nil {
+					r.reportError(finishErr)
+				}
+				r.mu.Lock()
+				r.busy = false
+				r.activeTurnID = ""
+				r.mu.Unlock()
+				r.reportError(err)
+				return
+			}
+			if !r.ownsDurablePrompt(session, turnID) {
+				r.abandonDurablePrompt(store, turnID, true)
+				return
+			}
+		}
 		if err := session.Prompt(ctx, prompt); err != nil {
 			r.mu.Lock()
 			store, turnID := r.store, r.activeTurnID
@@ -430,11 +474,20 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 			r.activeTurnID = ""
 			r.mu.Unlock()
 			if store != nil && turnID != "" {
+				if releaseErr := store.ReleaseSecretaryTurnClaims(context.Background(), turnID); releaseErr != nil {
+					r.reportError(releaseErr)
+				}
 				if _, finishErr := store.FinishSecretaryTurn(context.Background(), turnID, core.SecretaryTurnFailed, err.Error()); finishErr != nil {
 					r.reportError(finishErr)
 				}
 			}
 			r.reportError(err)
+			return
+		}
+		if store != nil && turnID != "" {
+			if err := store.AcceptSecretaryPrompt(context.Background(), turnID); err != nil {
+				r.reportError(err)
+			}
 		}
 	}()
 }

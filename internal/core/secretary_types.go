@@ -28,6 +28,10 @@ type SecretaryIdentity struct {
 type SecretaryTurnState string
 
 const (
+	secretaryPromptPending  = "pending"
+	secretaryPromptStarted  = "started"
+	secretaryPromptAccepted = "accepted"
+
 	SecretaryTurnQueued      SecretaryTurnState = "queued"
 	SecretaryTurnActive      SecretaryTurnState = "active"
 	SecretaryTurnSucceeded   SecretaryTurnState = "succeeded"
@@ -46,6 +50,7 @@ type SecretaryTurn struct {
 	ConversationID  string             `json:"conversation_id"`
 	Input           string             `json:"input"`
 	ContextSnapshot string             `json:"-"`
+	PromptState     string             `json:"-"`
 	State           SecretaryTurnState `json:"state"`
 	QueuePosition   int64              `json:"queue_position"`
 	Error           string             `json:"error,omitempty"`

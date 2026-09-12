@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const secretaryTurnSelect = `SELECT id, identity_id, conversation_id, input, context_snapshot, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns`
+const secretaryTurnSelect = `SELECT id, identity_id, conversation_id, input, context_snapshot, prompt_state, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns`
 
 // SetSecretaryConversationSummary stores a replaceable server-owned summary
 // projection. The full Conversation remains the durable source of history.
@@ -168,42 +168,8 @@ func (s *Store) ReconstructSecretaryContext(ctx context.Context, identityID, use
 		}
 	}
 	policy, err := s.SecretaryPolicySnapshot(ctx)
-	if errors.Is(err, ErrNotFound) {
-		now := s.now()
-		policy = SecretaryPolicySnapshot{
-			Version: "identity-runtime", Harness: identity.RuntimeHarness, Model: identity.RuntimeModel, Reasoning: identity.RuntimeReasoning,
-			ProfileVersion: "identity-runtime", ProfileName: "secretary", ProfileHash: "identity-runtime",
-			ProfileContent: "Use the server-owned Secretary tools.", ProfileDelivery: "prompt", UpdatedAt: now,
-		}
-	} else if err != nil {
+	if err != nil {
 		return SecretaryContext{}, err
-	}
-	if policy.Harness == "" {
-		policy.Harness = identity.RuntimeHarness
-	}
-	if policy.Model == "" {
-		policy.Model = identity.RuntimeModel
-	}
-	if policy.Reasoning == "" {
-		policy.Reasoning = identity.RuntimeReasoning
-	}
-	if policy.Harness == "" {
-		policy.Harness = "fx"
-	}
-	if policy.Model == "" {
-		policy.Model = "default"
-	}
-	if policy.Reasoning == "" {
-		policy.Reasoning = "default"
-	}
-	if policy.ProfileRuntime == "" {
-		policy.ProfileRuntime = policy.Harness
-	}
-	if policy.ProfileModel == "" {
-		policy.ProfileModel = policy.Model
-	}
-	if policy.ProfileReasoning == "" {
-		policy.ProfileReasoning = policy.Reasoning
 	}
 	return SecretaryContext{
 		Identity: identity, UserDocument: user, ConversationSummary: summary, RecentEntries: entries,
@@ -323,7 +289,7 @@ func unseenWorkerResultsQuery(ctx context.Context, queryer contextQueryer, conve
 	rows, err := queryer.QueryContext(ctx, `SELECT r.id, r.worker_id, r.turn_id, r.attempt_id, r.status, r.summary, r.failure_code, r.artifact_refs, r.correlation_id, r.created_at
 FROM phase4_results r JOIN workers w ON w.id = r.worker_id
 LEFT JOIN secretary_context_seen_results seen ON seen.result_id = r.id
-WHERE w.conversation_id = ? AND seen.result_id IS NULL ORDER BY r.created_at, r.id`, conversationID)
+WHERE w.conversation_id = ? AND (seen.result_id IS NULL OR seen.claim_state = 'released') ORDER BY r.created_at, r.id`, conversationID)
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +323,7 @@ func secretaryTurnEligibleTx(ctx context.Context, tx *sql.Tx, turn SecretaryTurn
 func claimSecretaryResultsTx(ctx context.Context, tx *sql.Tx, turnID string, results []Phase4Result, claimedAt time.Time) ([]Phase4Result, error) {
 	claimed := make([]Phase4Result, 0, len(results))
 	for _, result := range results {
-		inserted, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO secretary_context_seen_results(turn_id, result_id, seen_at) VALUES(?, ?, ?)`, turnID, result.ID, timestamp(claimedAt))
+		inserted, err := tx.ExecContext(ctx, `INSERT INTO secretary_context_seen_results(turn_id, result_id, seen_at, claim_state) VALUES(?, ?, ?, 'claimed') ON CONFLICT(result_id) DO UPDATE SET turn_id = excluded.turn_id, seen_at = excluded.seen_at, claim_state = 'claimed' WHERE secretary_context_seen_results.claim_state = 'released'`, turnID, result.ID, timestamp(claimedAt))
 		if err != nil {
 			return nil, err
 		}
@@ -370,6 +336,11 @@ func claimSecretaryResultsTx(ctx context.Context, tx *sql.Tx, turnID string, res
 		}
 	}
 	return claimed, nil
+}
+
+func releaseSecretaryResultsTx(ctx context.Context, tx *sql.Tx, turnID string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE secretary_context_seen_results SET claim_state = 'released' WHERE turn_id = ? AND claim_state = 'claimed'`, turnID)
+	return err
 }
 
 // SecretaryContextPrompt is the only runtime-facing conversion. It serializes

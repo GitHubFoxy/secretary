@@ -35,6 +35,15 @@ func (s *Store) FinishSecretaryTurnWithResponse(ctx context.Context, turnID stri
 		if turn.State != SecretaryTurnActive {
 			return secretaryTurnCompletion{}, ErrInvalidTransition
 		}
+		if state == SecretaryTurnSucceeded {
+			if _, err := tx.ExecContext(ctx, `UPDATE secretary_context_seen_results SET claim_state = 'accepted' WHERE turn_id = ? AND claim_state = 'claimed'`, turn.ID); err != nil {
+				return secretaryTurnCompletion{}, err
+			}
+		} else if turn.PromptState == secretaryPromptPending {
+			if err := releaseSecretaryResultsTx(ctx, tx, turn.ID); err != nil {
+				return secretaryTurnCompletion{}, err
+			}
+		}
 
 		now := s.now()
 		turn.State, turn.Error, turn.FinishedAt, turn.UpdatedAt = state, strings.TrimSpace(terminalError), &now, now
