@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +63,51 @@ func observerTestServer(t *testing.T, local *node.LocalNode) (*httptest.Server, 
 	return server, &http.Client{Jar: jar}
 }
 
+func TestPublicClientResponsesRedactNativeRuntimeSessionID(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "public-redaction.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask(ctx, conversation.ID, "inspect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.AcceptDispatch(ctx, task.ID, "public-worker", "local", "native-secret-session", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	client := &http.Client{Jar: mustWebCookieJar(t)}
+	login(t, client, server.URL)
+	for _, path := range []string{"/v1/bootstrap", "/v1/workers", "/v1/workers/public-worker/thread"} {
+		response, err := client.Get(server.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("path=%s status=%d body=%s", path, response.StatusCode, body)
+		}
+		if strings.Contains(string(body), "runtime_session_id") || strings.Contains(string(body), "native-secret-session") {
+			t.Fatalf("path=%s leaked native runtime ID: %s", path, body)
+		}
+	}
+}
+
 func TestWorkerObserverStatusSteerStopAndActivity(t *testing.T) {
 	runtime := &observerRuntime{}
 	local := node.NewLocal(runtime)
@@ -75,9 +122,16 @@ func TestWorkerObserverStatusSteerStopAndActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var status map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d", response.StatusCode)
+	}
+	if _, leaked := status["session_id"]; leaked {
+		t.Fatalf("public Worker response leaked native session ID: %#v", status)
 	}
 	request, _ := http.NewRequest(http.MethodPost, storeServer.URL+"/v1/workers/worker-1/steer", bytes.NewBufferString(`{"text":"change"}`))
 	request.Header.Set("Content-Type", "application/json")

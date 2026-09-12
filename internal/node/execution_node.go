@@ -19,6 +19,12 @@ type Responder interface {
 	Respond(context.Context, string, string) error
 }
 
+// RequestRebinder lets a resumed Node-local session reuse durable request IDs
+// that were created before the transport or process reconnect.
+type RequestRebinder interface {
+	RebindRequests([]string)
+}
+
 type ExecutionNode struct {
 	node              core.NodeReference
 	runtime           Runtime
@@ -55,6 +61,9 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 		return CommandOutcome{}, err
 	}
 	if duplicate {
+		if record.State == CommandProcessing {
+			return failedOutcome(command, "execution_state_unknown", "command execution is already in progress"), nil
+		}
 		return record.Outcome, nil
 	}
 	var outcome CommandOutcome
@@ -260,7 +269,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		}
 		workspace = canonicalWorkspace
 	}
-	request := StartRequest{WorkerRef: command.Envelope.WorkerRef, Task: command.Envelope.OriginalUserIntent, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
+	request := StartRequest{WorkerRef: command.Envelope.WorkerRef, Task: command.Envelope.OriginalUserIntent, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID)}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "binding_conflict", err.Error())
@@ -270,24 +279,50 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", err.Error())
 	}
+	n.rebindPendingRequests(command.Metadata.AttemptID, session)
 	n.registerSession(command.Metadata.AttemptID, session)
 	n.watchSession(session, command.Envelope)
 	return acceptedOutcome(Command{Kind: CommandResume, Resume: command})
 }
 
 func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerCommand) CommandOutcome {
+	storedResponse, duplicate, err := n.store.ClaimWorkerResponse(command.RequestID)
+	if err != nil {
+		return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "response_claim_failed", err.Error())
+	}
+	if duplicate {
+		if storedResponse.State == CommandProcessing {
+			return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "execution_state_unknown", "worker response execution state is unknown")
+		}
+		storedResponse.CommandID = command.Metadata.CommandID
+		storedResponse.Kind = CommandRespondWorker
+		return storedResponse
+	}
 	session, err := n.sessionForCommand(ctx, command.Metadata)
 	if err != nil {
-		return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "runtime_session_unavailable", err.Error())
+		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "runtime_session_unavailable", err.Error())
+		_ = n.store.CompleteWorkerResponse(command.RequestID, outcome)
+		return outcome
 	}
 	responder, ok := session.(Responder)
 	if !ok {
-		return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "runtime_does_not_accept_response", "runtime does not accept worker responses")
+		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "runtime_does_not_accept_response", "runtime does not accept worker responses")
+		_ = n.store.CompleteWorkerResponse(command.RequestID, outcome)
+		return outcome
 	}
 	if err := responder.Respond(ctx, command.RequestID, command.Response); err != nil {
-		return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "response_failed", err.Error())
+		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "response_failed", err.Error())
+		_ = n.store.CompleteWorkerResponse(command.RequestID, outcome)
+		return outcome
 	}
-	return acceptedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command})
+	outcome := acceptedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command})
+	if err := n.store.CompleteWorkerResponse(command.RequestID, outcome); err != nil {
+		return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "response_record_failed", err.Error())
+	}
+	if err := n.store.ClearPendingRequest(command.RequestID); err != nil {
+		return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "response_record_failed", err.Error())
+	}
+	return outcome
 }
 
 func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.CommandMetadata) (Session, error) {
@@ -307,17 +342,28 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 		return nil, ErrRuntimeSessionUnavailable
 	}
 	var envelope WorkerEnvelope
-	if command.Dispatch != nil {
+	switch command.Kind {
+	case CommandDispatch:
+		if command.Dispatch == nil {
+			return nil, ErrRuntimeSessionUnavailable
+		}
 		envelope = command.Dispatch.Envelope
-	}
-	if command.Resume != nil {
+	case CommandResume:
+		if command.Resume == nil {
+			return nil, ErrRuntimeSessionUnavailable
+		}
 		envelope = command.Resume.Envelope
+	default:
+		return nil, ErrRuntimeSessionUnavailable
+	}
+	if envelope.AttemptID != metadata.AttemptID || envelope.WorkerRef != mapping.WorkerRef || envelope.TurnID != mapping.TurnID || envelope.HarnessInstance.ID != mapping.HarnessInstanceID {
+		return nil, ErrRuntimeSessionUnavailable
 	}
 	resumer, ok := n.runtime.(Resumer)
 	if !ok {
 		return nil, ErrRuntimeSessionUnavailable
 	}
-	request := StartRequest{WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: mapping.Workspace, Profile: envelope.Profile, HarnessInstance: envelope.HarnessInstance, Model: envelope.Model, Reasoning: envelope.Reasoning, ApprovalPolicy: envelope.ApprovalPolicy}
+	request := StartRequest{WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: mapping.Workspace, Profile: envelope.Profile, HarnessInstance: envelope.HarnessInstance, Model: envelope.Model, Reasoning: envelope.Reasoning, ApprovalPolicy: envelope.ApprovalPolicy, PendingRequestIDs: n.store.PendingRequestIDs(metadata.AttemptID)}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return nil, ErrRuntimeSessionUnavailable
@@ -327,6 +373,7 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 	if err != nil {
 		return nil, ErrRuntimeSessionUnavailable
 	}
+	n.rebindPendingRequests(metadata.AttemptID, session)
 	n.registerSession(metadata.AttemptID, session)
 	n.watchSession(session, envelope)
 	return session, nil
@@ -339,6 +386,11 @@ func (n *ExecutionNode) Restore(ctx context.Context) error {
 func (n *ExecutionNode) Inspect(ctx context.Context, record CommandRecord) (bool, error) {
 	command, err := commandFromJSON(record.CommandJSON)
 	if err != nil {
+		return false, nil
+	}
+	// Session resume is not evidence that a native Respond completed. The
+	// command must go through normal retry/re-dispatch with the same IDs.
+	if command.Kind == CommandRespondWorker {
 		return false, nil
 	}
 	metadata := command.Metadata()
@@ -430,7 +482,20 @@ func (n *ExecutionNode) publishRuntimeActivity(envelope WorkerEnvelope, item Act
 	if err := activity.ValidateFor(envelope.HarnessInstance); err != nil {
 		return
 	}
+	if activity.Kind == core.ActivityPermissionRequest || activity.Kind == core.ActivityUserInputRequest {
+		if activity.Request == nil || n.store.SavePendingRequest(activity.Request.RequestID, envelope.AttemptID, item.Kind, envelope.HarnessInstance.ID) != nil {
+			return
+		}
+	}
 	_, _ = n.store.QueueActivity(activity)
+}
+
+func (n *ExecutionNode) rebindPendingRequests(attemptID string, session Session) {
+	rebinder, ok := session.(RequestRebinder)
+	if !ok {
+		return
+	}
+	rebinder.RebindRequests(n.store.PendingRequestIDs(attemptID))
 }
 
 // NormalizeRuntimeActivity is the adapter boundary for normalized activity.
@@ -460,6 +525,18 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 			return core.Activity{}, false
 		}
 		activity = core.Activity{Metadata: metadata, Kind: core.ActivityStatus, Status: item.Text}
+	case ActivityPermission, ActivityUserInput:
+		if strings.TrimSpace(item.RequestID) == "" {
+			return core.Activity{}, false
+		}
+		kind := core.ActivityPermissionRequest
+		if item.Kind == ActivityUserInput {
+			kind = core.ActivityUserInputRequest
+		}
+		if !capabilities.SupportsActivity(kind) {
+			return core.Activity{}, false
+		}
+		activity = core.Activity{Metadata: metadata, Kind: kind, Request: &core.ActivityRequest{RequestID: item.RequestID, Summary: item.Summary}}
 	default:
 		return core.Activity{}, false
 	}

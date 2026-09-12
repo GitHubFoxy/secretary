@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/beruseruko/secretary/internal/acp"
 )
@@ -52,6 +54,7 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 		return nil, fmt.Errorf("acp: session/new returned no sessionId")
 	}
 	session := newACPSession(created.SessionID, client, true)
+	session.setRequestHandler()
 	go session.watch()
 	go func() { _ = session.promptTurn(context.Background(), request.Task) }()
 	return session, nil
@@ -71,6 +74,12 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 	if mcpServers == nil {
 		mcpServers = []MCPServer{}
 	}
+	session := newACPSession(runtimeSessionID, client, false)
+	// ACP may issue a permission/input request while session/load is still in
+	// flight. Install the handler and durable Node-local IDs first, otherwise
+	// the request gets a native ACP ID and cannot be answered after reconnect.
+	session.setRequestHandler()
+	session.RebindRequests(request.PendingRequestIDs)
 	loadParams := map[string]any{"sessionId": runtimeSessionID, "cwd": request.Workspace, "mcpServers": mcpServers}
 	if metadata := profileMetadata(request.Profile); metadata != nil {
 		loadParams["_meta"] = metadata
@@ -79,7 +88,6 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 		client.Close()
 		return nil, err
 	}
-	session := newACPSession(runtimeSessionID, client, false)
 	go session.watch()
 	return session, nil
 }
@@ -177,8 +185,18 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 	return client, nil
 }
 
+type pendingACPResponse struct {
+	response     chan string
+	delivered    chan error
+	retry        func(string) error
+	responseSent bool
+	retryable    bool
+}
+
 func newACPSession(id string, client *acp.Client, busy bool) *acpSession {
-	return &acpSession{id: id, client: client, activity: make(chan Activity, 64), result: make(chan Result, 64), busy: busy}
+	session := &acpSession{id: id, client: client, activity: make(chan Activity, 64), result: make(chan Result, 64), pending: make(map[string]*pendingACPResponse), resolved: make(map[string]struct{}), reboundResponses: make(map[string]*pendingACPResponse), nativeRequests: make(map[string]string), nativeDeliveries: make(map[string]*pendingACPResponse), busy: busy}
+	client.SetServerRequestDeliveryHandler(session.serverRequestDelivered)
+	return session
 }
 
 type acpSession struct {
@@ -186,6 +204,14 @@ type acpSession struct {
 	client   *acp.Client
 	activity chan Activity
 	result   chan Result
+
+	requestMu        sync.Mutex
+	pending          map[string]*pendingACPResponse
+	resolved         map[string]struct{}
+	rebound          []string
+	reboundResponses map[string]*pendingACPResponse
+	nativeRequests   map[string]string
+	nativeDeliveries map[string]*pendingACPResponse
 
 	turnMu sync.Mutex
 	busy   bool
@@ -209,6 +235,254 @@ func (s *acpSession) Steer(ctx context.Context, text string) (bool, error) {
 func (s *acpSession) Cancel(ctx context.Context) error {
 	_ = ctx
 	return s.client.Notify("session/cancel", map[string]string{"sessionId": s.id})
+}
+
+func (s *acpSession) RebindRequests(requestIDs []string) {
+	s.requestMu.Lock()
+	defer s.requestMu.Unlock()
+	for _, requestID := range requestIDs {
+		requestID = strings.TrimSpace(requestID)
+		if requestID == "" {
+			continue
+		}
+		if _, resolved := s.resolved[requestID]; resolved {
+			continue
+		}
+		if _, pending := s.pending[requestID]; pending {
+			continue
+		}
+		alreadyRebound := false
+		for _, reboundID := range s.rebound {
+			if reboundID == requestID {
+				alreadyRebound = true
+				break
+			}
+		}
+		if !alreadyRebound {
+			s.rebound = append(s.rebound, requestID)
+		}
+	}
+}
+
+func (s *acpSession) Respond(ctx context.Context, requestID, response string) error {
+	if strings.TrimSpace(requestID) == "" || strings.TrimSpace(response) == "" {
+		return errors.New("acp: request_id and response are required")
+	}
+	s.requestMu.Lock()
+	pending, ok := s.pending[requestID]
+	if !ok {
+		pending = s.reboundResponses[requestID]
+	}
+	if pending == nil {
+		for _, reboundID := range s.rebound {
+			if reboundID == requestID {
+				pending = &pendingACPResponse{response: make(chan string, 1), delivered: make(chan error, 1)}
+				s.reboundResponses[requestID] = pending
+				break
+			}
+		}
+	}
+	if pending == nil {
+		_, alreadyResolved := s.resolved[requestID]
+		s.requestMu.Unlock()
+		if alreadyResolved {
+			return nil
+		}
+		return errors.New("acp: unknown worker request")
+	}
+	if pending.responseSent {
+		delivered := pending.delivered
+		s.requestMu.Unlock()
+		return waitForACPDelivery(ctx, delivered)
+	}
+	pending.responseSent = true
+	if pending.retryable {
+		pending.retryable = false
+		pending.delivered = make(chan error, 1)
+		delivered := pending.delivered
+		retry := pending.retry
+		s.requestMu.Unlock()
+		if retry == nil {
+			return errors.New("acp: failed response is not retryable")
+		}
+		_ = retry(response)
+		return waitForACPDelivery(ctx, delivered)
+	}
+	delivered := pending.delivered
+	responseCh := pending.response
+	s.requestMu.Unlock()
+	select {
+	case responseCh <- response:
+		return waitForACPDelivery(ctx, delivered)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func waitForACPDelivery(ctx context.Context, delivered <-chan error) error {
+	select {
+	case err := <-delivered:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *acpSession) setRequestHandler() {
+	s.client.SetServerRequestHandler(s.handleServerRequest)
+}
+
+var acpRequestSequence atomic.Uint64
+
+type acpPermissionOption struct {
+	OptionID string `json:"optionId"`
+	Kind     string `json:"kind"`
+}
+
+func (s *acpSession) serverRequestDelivered(message acp.Message, err error) {
+	s.requestMu.Lock()
+	nativeID := string(message.ID)
+	requestID := s.nativeRequests[nativeID]
+	pending := s.nativeDeliveries[nativeID]
+	if pending == nil {
+		pending = s.pending[requestID]
+	}
+	if pending == nil {
+		pending = s.reboundResponses[requestID]
+	}
+	if pending == nil {
+		s.requestMu.Unlock()
+		return
+	}
+	delivered := pending.delivered
+	if err == nil {
+		delete(s.nativeRequests, nativeID)
+		delete(s.nativeDeliveries, nativeID)
+		delete(s.pending, requestID)
+		delete(s.reboundResponses, requestID)
+		s.resolved[requestID] = struct{}{}
+	} else {
+		pending.retryable = true
+		pending.responseSent = false
+		s.pending[requestID] = pending
+	}
+	s.requestMu.Unlock()
+	delivered <- err
+}
+
+func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
+	requestID := ""
+	s.requestMu.Lock()
+	if len(s.rebound) > 0 {
+		requestID = s.rebound[0]
+		s.rebound = s.rebound[1:]
+	}
+	s.requestMu.Unlock()
+	if requestID == "" {
+		requestID = fmt.Sprintf("request-%d-%d", time.Now().UnixNano(), acpRequestSequence.Add(1))
+	}
+	var params map[string]any
+	if err := json.Unmarshal(message.Params, &params); err != nil {
+		return nil, errors.New("invalid harness request")
+	}
+	kind := ActivityPermission
+	summary := "Worker request"
+	if value, ok := params["question"].(string); ok && strings.TrimSpace(value) != "" {
+		summary = value
+	}
+	if value, ok := params["prompt"].(string); ok && strings.TrimSpace(value) != "" {
+		summary = value
+	}
+	if message.Method == "session/request_permission" {
+		var permission struct {
+			Options []acpPermissionOption `json:"options"`
+		}
+		if err := json.Unmarshal(message.Params, &permission); err != nil {
+			return nil, errors.New("invalid permission request")
+		}
+		for _, option := range permission.Options {
+			if strings.TrimSpace(option.OptionID) != "" && strings.TrimSpace(option.Kind) != "" {
+				summary = "Permission request"
+				break
+			}
+		}
+	} else if message.Method == "session/request_input" || message.Method == "session/request_user_input" {
+		kind = ActivityUserInput
+	} else {
+		return nil, fmt.Errorf("unsupported harness request: %s", message.Method)
+	}
+	var pending *pendingACPResponse
+	retry := func(value string) error {
+		result, handlerErr := s.serverRequestResponse(kind, message.Params, value)
+		return s.client.RetryServerRequest(message, result, handlerErr)
+	}
+	s.requestMu.Lock()
+	nativeID := string(message.ID)
+	valueResponse, alreadyResponded := s.reboundResponses[requestID]
+	if alreadyResponded {
+		delete(s.reboundResponses, requestID)
+		pending = valueResponse
+	} else {
+		pending = &pendingACPResponse{response: make(chan string, 1), delivered: make(chan error, 1)}
+		s.pending[requestID] = pending
+	}
+	pending.retry = retry
+	s.nativeRequests[nativeID] = requestID
+	s.nativeDeliveries[nativeID] = pending
+	s.requestMu.Unlock()
+	if !alreadyResponded {
+		// Requests are the durable approval/input boundary. Unlike optional
+		// activity updates, they must reach the Node outbox and cannot be
+		// silently dropped when the activity buffer is full.
+		s.activity <- Activity{Kind: kind, RequestID: requestID, Summary: summary}
+	}
+	value := <-pending.response
+	return s.serverRequestResponse(kind, message.Params, value)
+}
+
+func (s *acpSession) serverRequestResponse(kind ActivityKind, rawParams json.RawMessage, value string) (any, error) {
+	if kind == ActivityUserInput {
+		return map[string]string{"input": value}, nil
+	}
+	var permission struct {
+		Options []acpPermissionOption `json:"options"`
+	}
+	_ = json.Unmarshal(rawParams, &permission)
+	valueLower := strings.ToLower(strings.TrimSpace(value))
+	approved := strings.Contains(valueLower, "approve") || strings.Contains(valueLower, "allow") || strings.Contains(valueLower, `"approved":true`)
+	// Both ordinary approval and explicit trusted-local policy are one-shot.
+	// The policy audit is recorded by WorkerService, not encoded as a durable
+	// ACP permission choice.
+	selected := selectPermissionOption(permission.Options, approved, false)
+	if selected == "" {
+		return nil, errors.New("harness has no matching permission option")
+	}
+	return map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": selected}}, nil
+}
+
+func selectPermissionOption(options []acpPermissionOption, approved, persistent bool) string {
+	preferred := ""
+	fallback := ""
+	for _, option := range options {
+		kind := strings.ToLower(strings.TrimSpace(option.Kind))
+		matches := approved && strings.Contains(kind, "allow") || !approved && (strings.Contains(kind, "deny") || strings.Contains(kind, "reject"))
+		if !matches || strings.TrimSpace(option.OptionID) == "" {
+			continue
+		}
+		if strings.Contains(kind, "always") {
+			if fallback == "" {
+				fallback = option.OptionID
+			}
+			continue
+		}
+		if preferred == "" {
+			preferred = option.OptionID
+		}
+	}
+	if persistent {
+		return fallback
+	}
+	return preferred
 }
 
 func (s *acpSession) Prompt(ctx context.Context, task string) error {

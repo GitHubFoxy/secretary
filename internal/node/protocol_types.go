@@ -406,6 +406,9 @@ func (c Command) Validate(node core.NodeReference) error {
 		if c.RespondWorker == nil || strings.TrimSpace(c.RespondWorker.RequestID) == "" {
 			return errors.New("node protocol: response request id is required")
 		}
+		if strings.TrimSpace(c.RespondWorker.Response) == "" {
+			return errors.New("node protocol: typed worker response is required")
+		}
 	default:
 		return fmt.Errorf("node protocol: unknown command %q", c.Kind)
 	}

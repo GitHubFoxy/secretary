@@ -12,14 +12,18 @@ import (
 type ActivityKind string
 
 const (
-	ActivityText   ActivityKind = "text"
-	ActivityTool   ActivityKind = "tool"
-	ActivityStatus ActivityKind = "status"
+	ActivityText       ActivityKind = "text"
+	ActivityTool       ActivityKind = "tool"
+	ActivityStatus     ActivityKind = "status"
+	ActivityPermission ActivityKind = "permission_request"
+	ActivityUserInput  ActivityKind = "user_input_request"
 )
 
 type Activity struct {
-	Kind ActivityKind `json:"kind"`
-	Text string       `json:"text"`
+	Kind      ActivityKind `json:"kind"`
+	Text      string       `json:"text"`
+	RequestID string       `json:"request_id,omitempty"`
+	Summary   string       `json:"summary,omitempty"`
 }
 
 type Result struct {
@@ -40,16 +44,17 @@ type MCPServer struct {
 }
 
 type StartRequest struct {
-	WorkerRef       string
-	Task            string
-	Workspace       string
-	RawLogPath      string
-	MCPServers      []MCPServer
-	Profile         ManagedProfile
-	HarnessInstance core.HarnessInstance
-	Model           string
-	Reasoning       string
-	ApprovalPolicy  string
+	WorkerRef         string
+	Task              string
+	Workspace         string
+	RawLogPath        string
+	MCPServers        []MCPServer
+	Profile           ManagedProfile
+	HarnessInstance   core.HarnessInstance
+	Model             string
+	Reasoning         string
+	ApprovalPolicy    string
+	PendingRequestIDs []string
 }
 
 func (r StartRequest) validateBinding() error {

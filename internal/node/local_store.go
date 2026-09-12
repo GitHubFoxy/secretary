@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +24,13 @@ type sessionMapping struct {
 	RuntimeSessionID  string                 `json:"runtime_session_id"`
 }
 
+type pendingRequestMapping struct {
+	RequestID         string                 `json:"request_id"`
+	AttemptID         string                 `json:"attempt_id"`
+	HarnessInstanceID core.HarnessInstanceID `json:"harness_instance_id"`
+	Kind              ActivityKind           `json:"kind"`
+}
+
 // LocalSessionMapping is intentionally a Node-only type. It is never part of
 // protocol payloads or server domain records.
 type LocalSessionMapping = sessionMapping
@@ -34,12 +42,14 @@ type ProcessInspector interface {
 }
 
 type localState struct {
-	Version                  int                       `json:"version"`
-	NextSequence             uint64                    `json:"next_sequence"`
-	LastAcknowledgedSequence uint64                    `json:"last_acknowledged_sequence"`
-	Commands                 map[string]CommandRecord  `json:"commands"`
-	Mappings                 map[string]sessionMapping `json:"mappings"`
-	Outbox                   []PendingEvent            `json:"outbox"`
+	Version                  int                              `json:"version"`
+	NextSequence             uint64                           `json:"next_sequence"`
+	LastAcknowledgedSequence uint64                           `json:"last_acknowledged_sequence"`
+	Commands                 map[string]CommandRecord         `json:"commands"`
+	Mappings                 map[string]sessionMapping        `json:"mappings"`
+	PendingRequests          map[string]pendingRequestMapping `json:"pending_requests"`
+	WorkerResponses          map[string]CommandOutcome        `json:"worker_responses"`
+	Outbox                   []PendingEvent                   `json:"outbox"`
 }
 
 // LocalStore is the Node-owned durable command table, session mapping and
@@ -55,7 +65,7 @@ func OpenLocalStore(path string) (*LocalStore, error) {
 	if path == "" {
 		return nil, errors.New("node: local store path is required")
 	}
-	store := &LocalStore{path: path, state: localState{Version: 1, NextSequence: 1, Commands: map[string]CommandRecord{}, Mappings: map[string]sessionMapping{}, Outbox: []PendingEvent{}}}
+	store := &LocalStore{path: path, state: localState{Version: 1, NextSequence: 1, Commands: map[string]CommandRecord{}, Mappings: map[string]sessionMapping{}, PendingRequests: map[string]pendingRequestMapping{}, WorkerResponses: map[string]CommandOutcome{}, Outbox: []PendingEvent{}}}
 	encoded, err := os.ReadFile(path)
 	if err == nil {
 		if len(encoded) > 0 {
@@ -67,6 +77,12 @@ func OpenLocalStore(path string) (*LocalStore, error) {
 			}
 			if store.state.Mappings == nil {
 				store.state.Mappings = map[string]sessionMapping{}
+			}
+			if store.state.PendingRequests == nil {
+				store.state.PendingRequests = map[string]pendingRequestMapping{}
+			}
+			if store.state.WorkerResponses == nil {
+				store.state.WorkerResponses = map[string]CommandOutcome{}
 			}
 			if store.state.NextSequence == 0 {
 				store.state.NextSequence = 1
@@ -115,6 +131,18 @@ func (s *LocalStore) ClaimCommand(command Command) (CommandRecord, bool, error) 
 	}
 	metadata := command.Metadata()
 	if existing, ok := s.state.Commands[metadata.CommandID]; ok {
+		if existing.State == CommandFailed && command.Kind == CommandRespondWorker {
+			now := time.Now().UTC()
+			existing.State = CommandProcessing
+			existing.Outcome = CommandOutcome{CommandID: metadata.CommandID, Kind: command.Kind, State: CommandProcessing}
+			existing.ClaimedAt = now
+			existing.UpdatedAt = now
+			s.state.Commands[metadata.CommandID] = existing
+			if err := s.persistLocked(); err != nil {
+				return CommandRecord{}, false, err
+			}
+			return existing, false, nil
+		}
 		return existing, true, nil
 	}
 	encoded, err := commandJSON(command)
@@ -129,6 +157,70 @@ func (s *LocalStore) ClaimCommand(command Command) (CommandRecord, bool, error) 
 		return CommandRecord{}, false, err
 	}
 	return record, false, nil
+}
+
+func (s *LocalStore) ClaimWorkerResponse(requestID string) (CommandOutcome, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(requestID) == "" {
+		return CommandOutcome{}, false, errors.New("node: worker response request_id is required")
+	}
+	if outcome, ok := s.state.WorkerResponses[requestID]; ok {
+		if outcome.State == CommandFailed {
+			outcome.State = CommandProcessing
+			outcome.ErrorCode = ""
+			outcome.ErrorMessage = ""
+			s.state.WorkerResponses[requestID] = outcome
+			if err := s.persistLocked(); err != nil {
+				return CommandOutcome{}, false, err
+			}
+			return outcome, false, nil
+		}
+		if outcome.State == CommandProcessing {
+			outcome.State = CommandInterrupted
+			outcome.ErrorCode = "execution_state_unknown"
+			s.state.WorkerResponses[requestID] = outcome
+			if err := s.persistLocked(); err != nil {
+				return CommandOutcome{}, false, err
+			}
+		}
+		return outcome, true, nil
+	}
+	outcome := CommandOutcome{Kind: CommandRespondWorker, State: CommandProcessing}
+	s.state.WorkerResponses[requestID] = outcome
+	if err := s.persistLocked(); err != nil {
+		delete(s.state.WorkerResponses, requestID)
+		return CommandOutcome{}, false, err
+	}
+	return outcome, false, nil
+}
+
+// RecoverWorkerResponse turns an uncertain native delivery into an explicit
+// retryable failure. An accepted response is never downgraded.
+func (s *LocalStore) RecoverWorkerResponse(requestID, commandID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	outcome, ok := s.state.WorkerResponses[requestID]
+	if !ok || outcome.State != CommandProcessing {
+		return nil
+	}
+	outcome.CommandID = commandID
+	outcome.Kind = CommandRespondWorker
+	outcome.State = CommandFailed
+	outcome.ErrorCode = "execution_state_unknown"
+	outcome.ErrorMessage = "Node could not prove that the worker response was delivered"
+	s.state.WorkerResponses[requestID] = outcome
+	return s.persistLocked()
+}
+
+func (s *LocalStore) CompleteWorkerResponse(requestID string, outcome CommandOutcome) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.state.WorkerResponses[requestID]; !ok {
+		return errors.New("node: worker response claim not found")
+	}
+	s.state.WorkerResponses[requestID] = outcome
+	return s.persistLocked()
 }
 
 func (s *LocalStore) CompleteCommand(commandID string, outcome CommandOutcome) (CommandRecord, error) {
@@ -171,16 +263,26 @@ func (s *LocalStore) Command(commandID string) (CommandRecord, error) {
 func (s *LocalStore) CommandForAttempt(attemptID string) (CommandRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	candidates := make([]CommandRecord, 0, 2)
 	for _, record := range s.state.Commands {
 		command, err := commandFromJSON(record.CommandJSON)
-		if err != nil {
+		if err != nil || (command.Kind != CommandDispatch && command.Kind != CommandResume) {
 			continue
 		}
 		if command.Metadata().AttemptID == attemptID {
-			return record, nil
+			candidates = append(candidates, record)
 		}
 	}
-	return CommandRecord{}, errors.New("node: command for attempt not found")
+	if len(candidates) == 0 {
+		return CommandRecord{}, errors.New("node: dispatch or resume command for attempt not found")
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].UpdatedAt.Equal(candidates[j].UpdatedAt) {
+			return candidates[i].UpdatedAt.After(candidates[j].UpdatedAt)
+		}
+		return candidates[i].CommandID < candidates[j].CommandID
+	})
+	return candidates[0], nil
 }
 
 func (s *LocalStore) SaveSessionMapping(mapping sessionMapping) error {
@@ -198,6 +300,46 @@ func (s *LocalStore) SessionMapping(attemptID string) (LocalSessionMapping, bool
 	defer s.mu.Unlock()
 	mapping, ok := s.state.Mappings[attemptID]
 	return mapping, ok
+}
+
+func (s *LocalStore) SavePendingRequest(requestID, attemptID string, kind ActivityKind, harnessInstanceID core.HarnessInstanceID) error {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" || strings.TrimSpace(attemptID) == "" {
+		return errors.New("node: incomplete pending request mapping")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.state.PendingRequests[requestID]; ok {
+		if existing.AttemptID != attemptID || existing.Kind != kind {
+			return errors.New("node: pending request is bound to another attempt")
+		}
+		return nil
+	}
+	s.state.PendingRequests[requestID] = pendingRequestMapping{RequestID: requestID, AttemptID: attemptID, HarnessInstanceID: harnessInstanceID, Kind: kind}
+	return s.persistLocked()
+}
+
+func (s *LocalStore) PendingRequestIDs(attemptID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]string, 0)
+	for requestID, mapping := range s.state.PendingRequests {
+		if mapping.AttemptID == attemptID {
+			result = append(result, requestID)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func (s *LocalStore) ClearPendingRequest(requestID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.state.PendingRequests[requestID]; !ok {
+		return nil
+	}
+	delete(s.state.PendingRequests, requestID)
+	return s.persistLocked()
 }
 
 func (s *LocalStore) NextEventSequence() uint64 {
@@ -317,6 +459,26 @@ func (s *LocalStore) RecoverRunning(ctx context.Context, inspector ProcessInspec
 		if err != nil {
 			return err
 		}
+		command, err := commandFromJSON(record.CommandJSON)
+		if err != nil {
+			return err
+		}
+		metadata := command.Metadata()
+		if command.Kind == CommandRespondWorker {
+			// A resumed session proves only that the runtime exists. It cannot
+			// prove that Respond reached the native harness, so leave this
+			// command retryable with its original ID and request ID.
+			if command.RespondWorker != nil {
+				if err := s.RecoverWorkerResponse(command.RespondWorker.RequestID, record.CommandID); err != nil {
+					return err
+				}
+			}
+			outcome := CommandOutcome{CommandID: record.CommandID, Kind: record.Kind, State: CommandFailed, ErrorCode: "execution_state_unknown", ErrorMessage: "Node could not prove that the worker response was delivered"}
+			if _, err := s.CompleteCommand(record.CommandID, outcome); err != nil {
+				return err
+			}
+			continue
+		}
 		alive := false
 		if inspector != nil {
 			alive, err = inspector.Inspect(ctx, record)
@@ -331,11 +493,6 @@ func (s *LocalStore) RecoverRunning(ctx context.Context, inspector ProcessInspec
 		if _, err := s.CompleteCommand(record.CommandID, outcome); err != nil {
 			return err
 		}
-		command, err := commandFromJSON(record.CommandJSON)
-		if err != nil {
-			return err
-		}
-		metadata := command.Metadata()
 		if command.Kind == CommandDispatch || command.Kind == CommandResume {
 			terminal := core.AttemptOutcomeEnvelope{EventID: "interrupted-" + record.CommandID, Node: metadata.Node, HarnessInstanceID: metadata.HarnessInstanceID, WorkerRef: metadata.WorkerRef, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID, Status: core.OutcomeInterrupted, Classification: core.OutcomeFinal, Summary: "Attempt interrupted because execution state could not be proven", ErrorCode: "execution_state_unknown", OccurredAt: time.Now().UTC()}
 			if _, err := s.QueueOutcome(terminal); err != nil {

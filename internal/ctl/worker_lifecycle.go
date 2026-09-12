@@ -65,7 +65,15 @@ type MessageWorkerRequest struct {
 	WorkerRef      string `json:"worker_ref"`
 	Text           string `json:"text"`
 	RequestID      string `json:"request_id,omitempty"`
+	ClientID       string `json:"client_id,omitempty"`
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+}
+
+// RespondWorker is the single server-side entry point for permission and input
+// responses. It intentionally delegates to the same generic Node command path
+// as Worker messages.
+func (s WorkerService) RespondWorker(ctx context.Context, request MessageWorkerRequest) (core.WorkerDetails, error) {
+	return s.MessageWorker(ctx, request)
 }
 
 func (s WorkerService) authorize(ctx context.Context) (core.Conversation, error) {
@@ -109,7 +117,17 @@ func (s WorkerService) claimCommand(ctx context.Context, kind, dedupeKey string,
 		return reclaimed, true, nil
 	}
 	if duplicate && command.State == core.WorkerCommandFailed {
-		return core.WorkerCommand{}, false, fmt.Errorf("worker: prior %s command failed: %s", kind, command.LastError)
+		if kind != "respond" {
+			return core.WorkerCommand{}, false, fmt.Errorf("worker: prior %s command failed: %s", kind, command.LastError)
+		}
+		retried, retry, err := s.Store.RetryWorkerCommand(ctx, command.ID, s.workerCommandNow())
+		if err != nil {
+			return core.WorkerCommand{}, false, err
+		}
+		if !retry {
+			return core.WorkerCommand{}, false, fmt.Errorf("%w: %s", ErrWorkerCommandPending, kind)
+		}
+		return retried, true, nil
 	}
 	return command, !duplicate, nil
 }
@@ -250,6 +268,100 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 }
 
+func approvalResponseState(kind core.ApprovalKind, response string) (core.ApprovalState, error) {
+	value := strings.ToLower(strings.TrimSpace(response))
+	if kind == core.ApprovalInput {
+		if value == "" {
+			return "", errors.New("worker: input response is required")
+		}
+		return core.ApprovalApproved, nil
+	}
+	switch value {
+	case "approve", "approved", "allow", "yes", `{"approved":true}`:
+		return core.ApprovalApproved, nil
+	case "deny", "denied", "reject", "rejected", "no", `{"approved":false}`:
+		return core.ApprovalDenied, nil
+	default:
+		return "", errors.New("worker: approval response must approve or deny")
+	}
+}
+
+// ApplyTrustedLocalApproval is the explicit policy-side local handoff. The
+// server commits approval only after the typed response reaches the Node
+// runtime, so local policy cannot leave the harness waiting forever.
+func (s WorkerService) ApplyTrustedLocalApproval(ctx context.Context, requestID string, policy core.TrustedLocalApprovalPolicy) (core.Approval, error) {
+	approval, err := s.Store.Approval(ctx, requestID)
+	if err != nil {
+		return core.Approval{}, err
+	}
+	if approval.State != core.ApprovalPending || !policy.Enabled || !policy.Explicit {
+		return approval, nil
+	}
+	if !policy.LocalNode || strings.TrimSpace(string(policy.Node)) == "" || string(policy.Node) != approval.NodeID {
+		return approval, core.ErrTrustedLocalApprovalDenied
+	}
+	if approval.Kind != core.ApprovalPermission {
+		return approval, errors.New("worker: trusted-local policy only resolves permission requests")
+	}
+	worker, err := s.Store.Worker(ctx, approval.WorkerID)
+	if err != nil {
+		return core.Approval{}, err
+	}
+	attempt, err := s.Store.Phase4Attempt(ctx, approval.AttemptID)
+	if err != nil {
+		return core.Approval{}, err
+	}
+	command, send, err := s.claimCommand(ctx, "respond", "request:"+approval.RequestID, worker, attempt)
+	if err != nil {
+		return core.Approval{}, err
+	}
+	if send {
+		if err := s.requireRuntime(); err != nil {
+			return core.Approval{}, err
+		}
+		if err := s.deliverCommand(ctx, command, func(commandID string) error {
+			return s.Runtime.Respond(ctx, commandID, worker, attempt, approval.RequestID, "approved")
+		}); err != nil {
+			return core.Approval{}, err
+		}
+		command.State = core.WorkerCommandDelivered
+	}
+	if command.State != core.WorkerCommandDelivered {
+		return core.Approval{}, ErrWorkerCommandPending
+	}
+	resolved, _, err := s.Store.CommitApprovalResolution(ctx, approval.RequestID, core.ApprovalApproved, "trusted-local-policy", "auto_approved")
+	if err != nil {
+		return core.Approval{}, err
+	}
+	_, err = s.Store.RecordEventWithMetadata(ctx, core.EventInput{Kind: "approval.auto_approved", AggregateType: "approval", AggregateID: resolved.ID, Source: "policy", CorrelationID: resolved.TurnID, AttemptID: resolved.AttemptID, Payload: map[string]any{"request_id": resolved.RequestID, "node_id": resolved.NodeID, "policy": "trusted_local_explicit"}})
+	return resolved, err
+}
+
+func (s WorkerService) respondApproval(ctx context.Context, conversationID string, request MessageWorkerRequest, details core.WorkerDetails, attempt core.Phase4Attempt, approval core.Approval, state core.ApprovalState, clientID string) (core.WorkerDetails, error) {
+	command, send, err := s.claimCommand(ctx, "respond", "request:"+request.RequestID, details.Worker, attempt)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if send {
+		if err := s.requireRuntime(); err != nil {
+			return core.WorkerDetails{}, err
+		}
+		if err := s.deliverCommand(ctx, command, func(commandID string) error {
+			return s.Runtime.Respond(ctx, commandID, details.Worker, attempt, request.RequestID, request.Text)
+		}); err != nil {
+			return core.WorkerDetails{}, err
+		}
+		command.State = core.WorkerCommandDelivered
+	}
+	if command.State != core.WorkerCommandDelivered {
+		return core.WorkerDetails{}, ErrWorkerCommandPending
+	}
+	if _, _, err := s.Store.CommitApprovalResolution(ctx, approval.RequestID, state, clientID, request.Text); err != nil {
+		return core.WorkerDetails{}, err
+	}
+	return s.Store.WorkerDetailsForConversation(ctx, conversationID, request.WorkerRef)
+}
+
 func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerRequest) (core.WorkerDetails, error) {
 	conversation, err := s.authorize(ctx)
 	if err != nil {
@@ -265,23 +377,51 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 	}
 	attempt := details.CurrentAttempt()
 	if attempt != nil && strings.TrimSpace(request.RequestID) != "" {
-		command, found, err := s.Store.FindWorkerCommand(ctx, "respond", commandDedupeKey(request.IdempotencyKey, "request:"+request.RequestID), details.Worker.ID, attempt.ID)
-		if err != nil {
-			return core.WorkerDetails{}, err
+		approval, approvalErr := s.Store.Approval(ctx, request.RequestID)
+		if approvalErr == nil {
+			if approval.WorkerID != details.Worker.ID || approval.AttemptID != attempt.ID {
+				return core.WorkerDetails{}, core.ErrInvalidTransition
+			}
+			if approval.State == core.ApprovalPending {
+				if approval.ExpiresAt != nil && !s.workerCommandNow().Before(*approval.ExpiresAt) {
+					if _, _, err := s.Store.ExpireApproval(ctx, request.RequestID, s.workerCommandNow()); err != nil {
+						return core.WorkerDetails{}, err
+					}
+					return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+				}
+				state, stateErr := approvalResponseState(approval.Kind, request.Text)
+				if stateErr != nil {
+					return core.WorkerDetails{}, stateErr
+				}
+				clientID := strings.TrimSpace(request.ClientID)
+				if clientID == "" {
+					clientID = "client"
+				}
+				return s.respondApproval(ctx, conversation.ID, request, details, *attempt, approval, state, clientID)
+			}
+			// A terminal Approval is authoritative. In particular, denied,
+			// expired and revoked requests never trigger another machine action.
+			return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+		}
+		if !errors.Is(approvalErr, core.ErrNotFound) {
+			return core.WorkerDetails{}, approvalErr
+		}
+		command, found, commandErr := s.Store.FindWorkerCommand(ctx, "respond", commandDedupeKey(request.IdempotencyKey, "request:"+request.RequestID), details.Worker.ID, attempt.ID)
+		if commandErr != nil {
+			return core.WorkerDetails{}, commandErr
 		}
 		if found && command.State == core.WorkerCommandDelivered {
-			// Respond is delivered before the server-side resume transition. A
-			// crash in that gap must replay only the durable transition, never
-			// the runtime Respond side effect.
 			if details.Worker.Status == core.WorkerNeedsInput {
-				if _, err := s.Store.ResumePhase4Attempt(ctx, attempt.ID); err != nil {
-					return core.WorkerDetails{}, err
+				if _, commandErr := s.Store.ResumePhase4Attempt(ctx, attempt.ID); commandErr != nil {
+					return core.WorkerDetails{}, commandErr
 				}
 			}
 			return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
 		}
 	}
 	switch details.Worker.Status {
+	case core.WorkerWaitingApproval:
+		return core.WorkerDetails{}, errors.New("worker: approval request is required")
 	case core.WorkerWorking:
 		if attempt == nil {
 			return core.WorkerDetails{}, core.ErrInvalidTransition

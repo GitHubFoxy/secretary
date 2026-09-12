@@ -82,7 +82,7 @@ type WorkerBinding struct {
 	TaskID           string         `json:"task_id"`
 	WorkerRef        string         `json:"worker_ref"`
 	NodeID           string         `json:"node_id"`
-	RuntimeSessionID string         `json:"runtime_session_id"`
+	RuntimeSessionID string         `json:"-"`
 	Workspace        string         `json:"workspace"`
 	ParentBindingID  string         `json:"parent_binding_id,omitempty"`
 	ParentAttemptID  string         `json:"parent_attempt_id,omitempty"`

@@ -4,11 +4,56 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"testing"
 	"time"
 )
+
+func TestServerRequestDeliveryWaitsForNativeReplyWriter(t *testing.T) {
+	writer := &blockingReplyWriter{started: make(chan struct{}), release: make(chan struct{})}
+	client := &Client{stdin: writer, events: make(chan Message, 1), done: make(chan struct{})}
+	delivered := make(chan error, 1)
+	client.SetServerRequestHandler(func(Message) (any, error) {
+		return map[string]string{"ok": "yes"}, nil
+	})
+	client.SetServerRequestDeliveryHandler(func(_ Message, err error) { delivered <- err })
+	finished := make(chan error, 1)
+	go func() {
+		finished <- client.handleServerRequest(Message{ID: json.RawMessage("7"), Method: "session/request_permission"})
+	}()
+	<-writer.started
+	select {
+	case err := <-delivered:
+		t.Fatalf("delivery confirmed before native writer released: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+	close(writer.release)
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-delivered; err != nil {
+		t.Fatal(err)
+	}
+}
+
+type blockingReplyWriter struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (w *blockingReplyWriter) Write(payload []byte) (int, error) {
+	_ = payload
+	select {
+	case <-w.started:
+	default:
+		close(w.started)
+	}
+	<-w.release
+	return len(payload), nil
+}
+func (*blockingReplyWriter) Close() error { return nil }
 
 func TestClientAutomaticallyApprovesPermissionRequest(t *testing.T) {
 	command := exec.Command(os.Args[0], "-test.run=TestACPServerRequestProcess")
@@ -17,6 +62,12 @@ func TestClientAutomaticallyApprovesPermissionRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
+	client.SetServerRequestHandler(func(message Message) (any, error) {
+		if message.Method != "session/request_permission" {
+			return nil, errors.New("unexpected server request")
+		}
+		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "allow_always"}}, nil
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var ignored map[string]any

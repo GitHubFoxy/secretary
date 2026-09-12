@@ -67,6 +67,27 @@ CREATE TABLE IF NOT EXISTS phase4_worker_commands (
   updated_at TEXT NOT NULL,
   UNIQUE(kind, worker_id, attempt_id, dedupe_key)
 );
+CREATE TABLE IF NOT EXISTS phase4_approvals (
+  id TEXT PRIMARY KEY,
+  request_id TEXT NOT NULL UNIQUE,
+  worker_id TEXT NOT NULL REFERENCES workers(id),
+  turn_id TEXT NOT NULL REFERENCES turns(id),
+  attempt_id TEXT NOT NULL REFERENCES phase4_attempts(id),
+  node_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  action_summary TEXT NOT NULL,
+  risk_category TEXT NOT NULL DEFAULT '',
+  requested_at TEXT NOT NULL,
+  expires_at TEXT,
+  state TEXT NOT NULL,
+  response TEXT NOT NULL DEFAULT '',
+  resolved_by TEXT NOT NULL DEFAULT '',
+  resolved_at TEXT,
+  audit_event_id TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS phase4_approvals_state ON phase4_approvals(state, requested_at);
+CREATE UNIQUE INDEX IF NOT EXISTS phase4_approvals_one_pending_attempt ON phase4_approvals(attempt_id) WHERE state = 'pending';
 `)
 	if err != nil {
 		return fmt.Errorf("migrate phase 4 lifecycle: %w", err)
@@ -1285,6 +1306,50 @@ func (s *Store) MarkWorkerCommandFailed(ctx context.Context, commandID, message 
 	return s.updateWorkerCommand(ctx, commandID, WorkerCommandFailed, strings.TrimSpace(message))
 }
 
+// RetryWorkerCommand reopens a failed handoff without changing its durable ID.
+// Node-side command and response dedupe make retrying that same ID safe after
+// a transport failure or a crash whose delivery result was ambiguous.
+func (s *Store) RetryWorkerCommand(ctx context.Context, commandID string, now time.Time) (WorkerCommand, bool, error) {
+	now = now.UTC()
+	returnValue, err := withTx(s, ctx, func(tx *sql.Tx) (struct {
+		command WorkerCommand
+		retry   bool
+	}, error) {
+		var command WorkerCommand
+		if err := scanWorkerCommand(tx.QueryRowContext(ctx, `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, lease_until, created_at, updated_at FROM phase4_worker_commands WHERE id = ?`, commandID), &command); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return struct {
+					command WorkerCommand
+					retry   bool
+				}{}, ErrNotFound
+			}
+			return struct {
+				command WorkerCommand
+				retry   bool
+			}{}, err
+		}
+		if command.State != WorkerCommandFailed {
+			return struct {
+				command WorkerCommand
+				retry   bool
+			}{command: command}, nil
+		}
+		leaseUntil := now.Add(workerCommandLease)
+		if _, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET state = ?, last_error = '', lease_until = ?, updated_at = ? WHERE id = ? AND state = ?`, WorkerCommandPending, timestamp(leaseUntil), timestamp(now), command.ID, WorkerCommandFailed); err != nil {
+			return struct {
+				command WorkerCommand
+				retry   bool
+			}{}, err
+		}
+		command.State, command.LastError, command.LeaseUntil, command.UpdatedAt = WorkerCommandPending, "", leaseUntil, now
+		return struct {
+			command WorkerCommand
+			retry   bool
+		}{command: command, retry: true}, nil
+	})
+	return returnValue.command, returnValue.retry, err
+}
+
 func (s *Store) updateWorkerCommand(ctx context.Context, commandID string, state WorkerCommandState, message string) (WorkerCommand, error) {
 	return withTx(s, ctx, func(tx *sql.Tx) (WorkerCommand, error) {
 		var command WorkerCommand
@@ -1371,7 +1436,7 @@ func (s *Store) WorkerDetailsForConversation(ctx context.Context, conversationID
 	if err != nil {
 		return WorkerDetails{}, err
 	}
-	details := WorkerDetails{Worker: worker, Turns: []Turn{}, Attempts: []Phase4Attempt{}, Outcomes: []AttemptOutcome{}, Results: []Phase4Result{}}
+	details := WorkerDetails{Worker: worker, Turns: []Turn{}, Attempts: []Phase4Attempt{}, Outcomes: []AttemptOutcome{}, Results: []Phase4Result{}, Approvals: []Approval{}}
 	turnRows, err := s.db.QueryContext(ctx, `SELECT id FROM turns WHERE worker_id = ? ORDER BY created_at, id`, worker.ID)
 	if err != nil {
 		return WorkerDetails{}, err
@@ -1429,6 +1494,23 @@ func (s *Store) WorkerDetailsForConversation(ctx context.Context, conversationID
 			return WorkerDetails{}, err
 		}
 	}
+	approvalRows, err := s.db.QueryContext(ctx, approvalSelect+` WHERE worker_id = ? ORDER BY requested_at, id`, worker.ID)
+	if err != nil {
+		return WorkerDetails{}, err
+	}
+	for approvalRows.Next() {
+		approval, err := scanApproval(approvalRows)
+		if err != nil {
+			approvalRows.Close()
+			return WorkerDetails{}, err
+		}
+		details.Approvals = append(details.Approvals, approval)
+	}
+	if err := approvalRows.Err(); err != nil {
+		approvalRows.Close()
+		return WorkerDetails{}, err
+	}
+	approvalRows.Close()
 	return details, nil
 }
 func (s *Store) Turn(ctx context.Context, id string) (Turn, error) { return getTurn(ctx, s.db, id) }
@@ -1605,15 +1687,22 @@ func (s *Store) recordNodeActivity(ctx context.Context, activity Activity) (Even
 		} else if !errors.Is(err, sql.ErrNoRows) {
 			return Event{}, err
 		}
-		event, err := appendEventTx(ctx, tx, s.now(), EventInput{Kind: "attempt.activity", AggregateType: "attempt", AggregateID: attempt.ID, Source: "node", CorrelationID: activity.Metadata.CorrelationID, WorkerRef: worker.WorkerRef, AttemptID: attempt.ID, Payload: activity}, activity)
+		if attempt.State.Terminal() {
+			return Event{}, ErrInvalidTransition
+		}
+		now := s.now()
+		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.activity", AggregateType: "attempt", AggregateID: attempt.ID, Source: "node", CorrelationID: activity.Metadata.CorrelationID, WorkerRef: worker.WorkerRef, AttemptID: attempt.ID, Payload: activity}, activity)
 		if err != nil {
+			return Event{}, err
+		}
+		if err := s.recordApprovalRequestTx(ctx, tx, now, activity, attempt, worker); err != nil {
 			return Event{}, err
 		}
 		encodedEvent, err := json.Marshal(event)
 		if err != nil {
 			return Event{}, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES(?, ?, ?, ?)`, "node.activity", activity.Metadata.EventID, string(encodedEvent), timestamp(s.now())); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES(?, ?, ?, ?)`, "node.activity", activity.Metadata.EventID, string(encodedEvent), timestamp(now)); err != nil {
 			return Event{}, err
 		}
 		return event, nil

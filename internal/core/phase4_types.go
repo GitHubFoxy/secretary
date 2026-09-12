@@ -130,6 +130,50 @@ type Phase4Result = Result
 // WorkerSpec is the creation contract for a Worker and its immutable binding.
 // WorkerDetails is the durable Secretary read model. It deliberately exposes
 // immutable bindings and lifecycle records, never Node-local session IDs.
+type ApprovalKind string
+
+const (
+	ApprovalPermission ApprovalKind = "permission"
+	ApprovalInput      ApprovalKind = "input"
+)
+
+type ApprovalState string
+
+const (
+	ApprovalPending  ApprovalState = "pending"
+	ApprovalApproved ApprovalState = "approved"
+	ApprovalDenied   ApprovalState = "denied"
+	ApprovalExpired  ApprovalState = "expired"
+	ApprovalRevoked  ApprovalState = "revoked"
+)
+
+type Approval struct {
+	ID            string        `json:"id"`
+	RequestID     string        `json:"request_id"`
+	WorkerID      string        `json:"worker_id"`
+	TurnID        string        `json:"turn_id"`
+	AttemptID     string        `json:"attempt_id"`
+	NodeID        string        `json:"node_id"`
+	ProjectID     string        `json:"project_id"`
+	Kind          ApprovalKind  `json:"kind"`
+	ActionSummary string        `json:"action_summary"`
+	RiskCategory  string        `json:"risk_category,omitempty"`
+	RequestedAt   time.Time     `json:"requested_at"`
+	ExpiresAt     *time.Time    `json:"expires_at,omitempty"`
+	State         ApprovalState `json:"state"`
+	Response      string        `json:"response,omitempty"`
+	ResolvedBy    string        `json:"resolved_by,omitempty"`
+	ResolvedAt    *time.Time    `json:"resolved_at,omitempty"`
+	AuditEventID  string        `json:"audit_event_id,omitempty"`
+}
+
+type TrustedLocalApprovalPolicy struct {
+	Enabled   bool
+	Explicit  bool
+	LocalNode bool
+	Node      NodeReference
+}
+
 type WorkerCommandState string
 
 const (
@@ -154,11 +198,12 @@ type WorkerCommand struct {
 }
 
 type WorkerDetails struct {
-	Worker   Worker           `json:"worker"`
-	Turns    []Turn           `json:"turns"`
-	Attempts []Phase4Attempt  `json:"attempts"`
-	Outcomes []AttemptOutcome `json:"outcomes"`
-	Results  []Phase4Result   `json:"results"`
+	Worker    Worker           `json:"worker"`
+	Turns     []Turn           `json:"turns"`
+	Attempts  []Phase4Attempt  `json:"attempts"`
+	Outcomes  []AttemptOutcome `json:"outcomes"`
+	Results   []Phase4Result   `json:"results"`
+	Approvals []Approval       `json:"approvals,omitempty"`
 }
 
 func (d WorkerDetails) CurrentAttempt() *Phase4Attempt {
