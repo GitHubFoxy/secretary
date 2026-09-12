@@ -62,6 +62,7 @@ CREATE TABLE IF NOT EXISTS phase4_worker_commands (
   attempt_id TEXT NOT NULL REFERENCES phase4_attempts(id),
   state TEXT NOT NULL,
   last_error TEXT NOT NULL DEFAULT '',
+  lease_until TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(kind, worker_id, attempt_id, dedupe_key)
@@ -85,6 +86,7 @@ func (s *Store) migratePhase4WorkerCommands(ctx context.Context) error {
 		return fmt.Errorf("inspect phase 4 Worker commands: %w", err)
 	}
 	hasDedupeKey := false
+	hasLeaseUntil := false
 	for rows.Next() {
 		var cid, notNull, primaryKey int
 		var name, columnType string
@@ -93,6 +95,7 @@ func (s *Store) migratePhase4WorkerCommands(ctx context.Context) error {
 			return fmt.Errorf("scan phase 4 Worker command columns: %w", err)
 		}
 		hasDedupeKey = hasDedupeKey || name == "dedupe_key"
+		hasLeaseUntil = hasLeaseUntil || name == "lease_until"
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -102,7 +105,15 @@ func (s *Store) migratePhase4WorkerCommands(ctx context.Context) error {
 		return err
 	}
 	if hasDedupeKey {
-		return nil
+		if hasLeaseUntil {
+			return nil
+		}
+		return withTxErr(s, ctx, func(tx *sql.Tx) error {
+			if _, err := tx.ExecContext(ctx, `ALTER TABLE phase4_worker_commands ADD COLUMN lease_until TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("add phase 4 Worker command lease: %w", err)
+			}
+			return nil
+		})
 	}
 	return withTxErr(s, ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `ALTER TABLE phase4_worker_commands RENAME TO phase4_worker_commands_v1;
@@ -114,12 +125,13 @@ CREATE TABLE phase4_worker_commands (
   attempt_id TEXT NOT NULL REFERENCES phase4_attempts(id),
   state TEXT NOT NULL,
   last_error TEXT NOT NULL DEFAULT '',
+  lease_until TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(kind, worker_id, attempt_id, dedupe_key)
 );
-INSERT INTO phase4_worker_commands(id, kind, dedupe_key, worker_id, attempt_id, state, last_error, created_at, updated_at)
-SELECT id, kind, 'attempt', worker_id, attempt_id, state, last_error, created_at, updated_at FROM phase4_worker_commands_v1;
+INSERT INTO phase4_worker_commands(id, kind, dedupe_key, worker_id, attempt_id, state, last_error, lease_until, created_at, updated_at)
+SELECT id, kind, 'attempt', worker_id, attempt_id, state, last_error, '', created_at, updated_at FROM phase4_worker_commands_v1;
 DROP TABLE phase4_worker_commands_v1;`); err != nil {
 			return fmt.Errorf("migrate phase 4 Worker commands: %w", err)
 		}
@@ -1060,9 +1072,11 @@ func (s *Store) InterruptPhase4Attempt(ctx context.Context, attemptID, errorCode
 	return s.RecordAttemptOutcome(ctx, attemptID, AttemptOutcomeInput{Status: OutcomeInterrupted, Classification: OutcomeFinal, ErrorCode: errorCode, Diagnostics: diagnostics, FailureCode: errorCode, Summary: summary})
 }
 
+const workerCommandLease = 30 * time.Second
+
 // ClaimWorkerCommand creates one durable command identity for an immutable
-// Worker Attempt. Pending means another caller owns handoff; failed preserves
-// the error for an explicit recovery decision without changing command ID.
+// Worker Attempt. A pending command is owned until LeaseUntil. The lease makes
+// a crash between claim and handoff recoverable without changing command ID.
 func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerID, attemptID string) (WorkerCommand, bool, error) {
 	if strings.TrimSpace(kind) == "" || strings.TrimSpace(dedupeKey) == "" || strings.TrimSpace(workerID) == "" || strings.TrimSpace(attemptID) == "" {
 		return WorkerCommand{}, false, errors.New("core: Worker command binding is required")
@@ -1072,7 +1086,7 @@ func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerI
 	duplicate := false
 	command, err := withTx(s, ctx, func(tx *sql.Tx) (WorkerCommand, error) {
 		var command WorkerCommand
-		query := `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, created_at, updated_at FROM phase4_worker_commands WHERE kind = ? AND worker_id = ? AND attempt_id = ? AND dedupe_key = ?`
+		query := `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, lease_until, created_at, updated_at FROM phase4_worker_commands WHERE kind = ? AND worker_id = ? AND attempt_id = ? AND dedupe_key = ?`
 		err := scanWorkerCommand(tx.QueryRowContext(ctx, query, kind, workerID, attemptID, dedupeKey), &command)
 		if err == nil {
 			duplicate = true
@@ -1082,8 +1096,8 @@ func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerI
 			return WorkerCommand{}, err
 		}
 		now := s.now()
-		command = WorkerCommand{ID: newID("cmd"), Kind: kind, DedupeKey: dedupeKey, WorkerID: workerID, AttemptID: attemptID, State: WorkerCommandPending, CreatedAt: now, UpdatedAt: now}
-		result, err := tx.ExecContext(ctx, `INSERT INTO phase4_worker_commands(id, kind, dedupe_key, worker_id, attempt_id, state, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(kind, worker_id, attempt_id, dedupe_key) DO NOTHING`, command.ID, command.Kind, command.DedupeKey, command.WorkerID, command.AttemptID, command.State, timestamp(now), timestamp(now))
+		command = WorkerCommand{ID: newID("cmd"), Kind: kind, DedupeKey: dedupeKey, WorkerID: workerID, AttemptID: attemptID, State: WorkerCommandPending, LeaseUntil: now.Add(workerCommandLease), CreatedAt: now, UpdatedAt: now}
+		result, err := tx.ExecContext(ctx, `INSERT INTO phase4_worker_commands(id, kind, dedupe_key, worker_id, attempt_id, state, lease_until, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(kind, worker_id, attempt_id, dedupe_key) DO NOTHING`, command.ID, command.Kind, command.DedupeKey, command.WorkerID, command.AttemptID, command.State, timestamp(command.LeaseUntil), timestamp(now), timestamp(now))
 		if err != nil {
 			return WorkerCommand{}, err
 		}
@@ -1103,11 +1117,42 @@ func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerI
 	return command, duplicate, err
 }
 
+// ReclaimWorkerCommand atomically renews an expired pending-command lease.
+// The command ID remains unchanged. A concurrent owner with a live lease
+// cannot be reclaimed and therefore cannot receive a second handoff.
+func (s *Store) ReclaimWorkerCommand(ctx context.Context, commandID string, now time.Time) (WorkerCommand, bool, error) {
+	type reclaimResult struct {
+		command   WorkerCommand
+		reclaimed bool
+	}
+	now = now.UTC()
+	result, err := withTx(s, ctx, func(tx *sql.Tx) (reclaimResult, error) {
+		leaseUntil := now.Add(workerCommandLease)
+		result, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET lease_until = ?, updated_at = ? WHERE id = ? AND state = ? AND (lease_until = '' OR lease_until <= ?)`, timestamp(leaseUntil), timestamp(now), commandID, WorkerCommandPending, timestamp(now))
+		if err != nil {
+			return reclaimResult{}, err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return reclaimResult{}, err
+		}
+		var command WorkerCommand
+		if err := scanWorkerCommand(tx.QueryRowContext(ctx, `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, lease_until, created_at, updated_at FROM phase4_worker_commands WHERE id = ?`, commandID), &command); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return reclaimResult{}, ErrNotFound
+			}
+			return reclaimResult{}, err
+		}
+		return reclaimResult{command: command, reclaimed: affected == 1}, nil
+	})
+	return result.command, result.reclaimed, err
+}
+
 // FindWorkerCommand returns a previously claimed command for this immutable
 // Worker Attempt. It does not create a new command.
 func (s *Store) FindWorkerCommand(ctx context.Context, kind, dedupeKey, workerID, attemptID string) (WorkerCommand, bool, error) {
 	var command WorkerCommand
-	err := scanWorkerCommand(s.db.QueryRowContext(ctx, `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, created_at, updated_at FROM phase4_worker_commands WHERE kind = ? AND worker_id = ? AND attempt_id = ? AND dedupe_key = ?`, kind, workerID, attemptID, dedupeKey), &command)
+	err := scanWorkerCommand(s.db.QueryRowContext(ctx, `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, lease_until, created_at, updated_at FROM phase4_worker_commands WHERE kind = ? AND worker_id = ? AND attempt_id = ? AND dedupe_key = ?`, kind, workerID, attemptID, dedupeKey), &command)
 	if errors.Is(err, sql.ErrNoRows) {
 		return WorkerCommand{}, false, nil
 	}
@@ -1128,7 +1173,7 @@ func (s *Store) MarkWorkerCommandFailed(ctx context.Context, commandID, message 
 func (s *Store) updateWorkerCommand(ctx context.Context, commandID string, state WorkerCommandState, message string) (WorkerCommand, error) {
 	return withTx(s, ctx, func(tx *sql.Tx) (WorkerCommand, error) {
 		var command WorkerCommand
-		if err := scanWorkerCommand(tx.QueryRowContext(ctx, `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, created_at, updated_at FROM phase4_worker_commands WHERE id = ?`, commandID), &command); err != nil {
+		if err := scanWorkerCommand(tx.QueryRowContext(ctx, `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, lease_until, created_at, updated_at FROM phase4_worker_commands WHERE id = ?`, commandID), &command); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				return WorkerCommand{}, ErrNotFound
 			}
@@ -1138,16 +1183,16 @@ func (s *Store) updateWorkerCommand(ctx context.Context, commandID string, state
 			return command, nil
 		}
 		now := s.now()
-		if _, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET state = ?, last_error = ?, updated_at = ? WHERE id = ?`, state, message, timestamp(now), command.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET state = ?, last_error = ?, lease_until = '', updated_at = ? WHERE id = ?`, state, message, timestamp(now), command.ID); err != nil {
 			return WorkerCommand{}, err
 		}
-		command.State, command.LastError, command.UpdatedAt = state, message, now
+		command.State, command.LastError, command.LeaseUntil, command.UpdatedAt = state, message, time.Time{}, now
 		return command, nil
 	})
 }
 
 func scanWorkerCommand(row interface{ Scan(...any) error }, command *WorkerCommand) error {
-	return row.Scan(&command.ID, &command.Kind, &command.DedupeKey, &command.WorkerID, &command.AttemptID, &command.State, &command.LastError, newTimestampScanner(&command.CreatedAt), newTimestampScanner(&command.UpdatedAt))
+	return row.Scan(&command.ID, &command.Kind, &command.DedupeKey, &command.WorkerID, &command.AttemptID, &command.State, &command.LastError, newTimestampScanner(&command.LeaseUntil), newTimestampScanner(&command.CreatedAt), newTimestampScanner(&command.UpdatedAt))
 }
 
 func (s *Store) CloseWorker(ctx context.Context, workerID string) (Worker, error) {

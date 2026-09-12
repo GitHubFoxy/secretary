@@ -61,6 +61,28 @@ func (r *lifecycleRuntime) count(want string) int {
 	return count
 }
 
+type blockingLifecycleRuntime struct {
+	lifecycleRuntime
+	respondStarted chan struct{}
+	respondRelease chan struct{}
+	cancelStarted  chan struct{}
+	cancelRelease  chan struct{}
+}
+
+func (r *blockingLifecycleRuntime) Respond(context.Context, string, core.Worker, core.Phase4Attempt, string, string) error {
+	r.add("respond")
+	close(r.respondStarted)
+	<-r.respondRelease
+	return nil
+}
+
+func (r *blockingLifecycleRuntime) Cancel(context.Context, string, core.Worker, core.Phase4Attempt) error {
+	r.add("cancel")
+	close(r.cancelStarted)
+	<-r.cancelRelease
+	return nil
+}
+
 func newWorkerService(t *testing.T) (context.Context, *core.Store, WorkerService, core.Project) {
 	t.Helper()
 	ctx := context.Background()
@@ -393,6 +415,97 @@ func TestWorkerServiceNeedsInputRequiresRequestID(t *testing.T) {
 	}
 	if _, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "answer"}); err == nil {
 		t.Fatal("expected missing request_id error")
+	}
+}
+
+func TestWorkerServiceReclaimsStalePendingRespondBeforeResumingAttempt(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	attempt := details.Attempts[0]
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptNeedsInput(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	command, duplicate, err := store.ClaimWorkerCommand(ctx, "respond", "request:question-1", details.Worker.ID, attempt.ID)
+	if err != nil || duplicate {
+		t.Fatalf("claimed=%#v duplicate=%v err=%v", command, duplicate, err)
+	}
+	runtime := &lifecycleRuntime{}
+	service.Runtime = runtime
+	service.commandNow = func() time.Time { return command.LeaseUntil }
+	response, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "answer", RequestID: "question-1"})
+	if err != nil || response.Worker.Status != core.WorkerWorking || runtime.count("respond") != 1 {
+		t.Fatalf("response=%#v err=%v responds=%d", response, err, runtime.count("respond"))
+	}
+	recovered, found, err := store.FindWorkerCommand(ctx, "respond", "request:question-1", details.Worker.ID, attempt.ID)
+	if err != nil || !found || recovered.ID != command.ID || recovered.State != core.WorkerCommandDelivered {
+		t.Fatalf("recovered=%#v found=%v err=%v", recovered, found, err)
+	}
+}
+
+func TestWorkerServicePendingRespondDoesNotResumeUntilDelivered(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	attempt := details.Attempts[0]
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptNeedsInput(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &blockingLifecycleRuntime{respondStarted: make(chan struct{}), respondRelease: make(chan struct{}), cancelStarted: make(chan struct{}), cancelRelease: make(chan struct{})}
+	service.Runtime = runtime
+	done := make(chan error, 1)
+	go func() {
+		_, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "answer", RequestID: "question-1"})
+		done <- err
+	}()
+	<-runtime.respondStarted
+	pending, err := service.GetWorker(ctx, details.Worker.WorkerRef)
+	if err != nil || pending.Worker.Status != core.WorkerNeedsInput {
+		t.Fatalf("pending=%#v err=%v", pending, err)
+	}
+	close(runtime.respondRelease)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	resumed, err := service.GetWorker(ctx, details.Worker.WorkerRef)
+	if err != nil || resumed.Worker.Status != core.WorkerWorking {
+		t.Fatalf("resumed=%#v err=%v", resumed, err)
+	}
+}
+
+func TestWorkerServicePendingCancelDoesNotFinalizeUntilDelivered(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	attempt := details.Attempts[0]
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &blockingLifecycleRuntime{respondStarted: make(chan struct{}), respondRelease: make(chan struct{}), cancelStarted: make(chan struct{}), cancelRelease: make(chan struct{})}
+	service.Runtime = runtime
+	first := make(chan error, 1)
+	go func() {
+		_, err := service.CancelWorker(ctx, details.Worker.WorkerRef)
+		first <- err
+	}()
+	<-runtime.cancelStarted
+	pending, err := service.GetWorker(ctx, details.Worker.WorkerRef)
+	if err != nil || pending.Attempts[0].State != core.AttemptActive || len(pending.Outcomes) != 0 || len(pending.Results) != 0 {
+		t.Fatalf("pending=%#v err=%v", pending, err)
+	}
+	if _, err := service.CancelWorker(ctx, details.Worker.WorkerRef); !errors.Is(err, ErrWorkerCommandPending) {
+		t.Fatalf("concurrent cancel error=%v", err)
+	}
+	close(runtime.cancelRelease)
+	if err := <-first; err != nil {
+		t.Fatal(err)
+	}
+	canceled, err := service.GetWorker(ctx, details.Worker.WorkerRef)
+	if err != nil || !canceled.Attempts[0].State.Terminal() || len(canceled.Outcomes) != 1 || len(canceled.Results) != 1 || runtime.count("cancel") != 1 {
+		t.Fatalf("canceled=%#v err=%v cancels=%d", canceled, err, runtime.count("cancel"))
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
 )
@@ -33,6 +34,7 @@ type WorkerService struct {
 	Capability   string
 	WorkerPolicy core.HarnessPolicy
 	Runtime      WorkerRuntime
+	commandNow   func() time.Time
 }
 
 type WorkerPreferences struct {
@@ -88,21 +90,35 @@ func (s WorkerService) requireRuntime() error {
 }
 
 // claimCommand commits the server-side command identity before handoff. The
-// same Worker, Attempt and command kind always reuse one ID. Pending,
-// delivered and failed commands are never sent twice by this service. A failed
-// handoff remains visible and requires explicit recovery rather than a retry.
+// same Worker, Attempt and command kind always reuse one ID. A duplicate
+// pending command is resent only after core atomically reclaims its expired
+// lease. Node command dedupe then protects the side effect of that handoff.
 func (s WorkerService) claimCommand(ctx context.Context, kind, dedupeKey string, worker core.Worker, attempt core.Phase4Attempt) (core.WorkerCommand, bool, error) {
 	command, duplicate, err := s.Store.ClaimWorkerCommand(ctx, kind, dedupeKey, worker.ID, attempt.ID)
 	if err != nil {
 		return core.WorkerCommand{}, false, err
 	}
 	if duplicate && command.State == core.WorkerCommandPending {
-		return core.WorkerCommand{}, false, fmt.Errorf("%w: %s", ErrWorkerCommandPending, kind)
+		reclaimed, send, err := s.Store.ReclaimWorkerCommand(ctx, command.ID, s.workerCommandNow())
+		if err != nil {
+			return core.WorkerCommand{}, false, err
+		}
+		if !send {
+			return core.WorkerCommand{}, false, fmt.Errorf("%w: %s", ErrWorkerCommandPending, kind)
+		}
+		return reclaimed, true, nil
 	}
 	if duplicate && command.State == core.WorkerCommandFailed {
 		return core.WorkerCommand{}, false, fmt.Errorf("worker: prior %s command failed: %s", kind, command.LastError)
 	}
 	return command, !duplicate, nil
+}
+
+func (s WorkerService) workerCommandNow() time.Time {
+	if s.commandNow != nil {
+		return s.commandNow().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func commandDedupeKey(idempotencyKey, fallback string) string {

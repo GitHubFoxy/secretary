@@ -6,7 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 func phase4WorkerSpec() WorkerSpec {
@@ -141,6 +143,78 @@ func TestPhase4WorkerCommandClaimIsDurableAndIdempotent(t *testing.T) {
 	if err != nil || !duplicate || second.ID != first.ID || second.State != WorkerCommandDelivered {
 		t.Fatalf("second=%#v duplicate=%v err=%v", second, duplicate, err)
 	}
+}
+
+func TestPhase4WorkerCommandReclaimsOnlyExpiredLeaseWithSameID(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, phase4WorkerSpec(), TurnSpec{Input: "command"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, duplicate, err := store.ClaimWorkerCommand(ctx, "dispatch", "attempt", worker.ID, attempt.ID)
+	if err != nil || duplicate {
+		t.Fatalf("claimed=%#v duplicate=%v err=%v", claimed, duplicate, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if command, reclaimed, err := first.ReclaimWorkerCommand(ctx, claimed.ID, claimed.LeaseUntil.Add(-time.Nanosecond)); err != nil || reclaimed || command.ID != claimed.ID {
+		t.Fatalf("live lease command=%#v reclaimed=%v err=%v", command, reclaimed, err)
+	}
+
+	var group sync.WaitGroup
+	reclaimed := make(chan coreReclaim, 2)
+	for _, candidate := range []*Store{first, second} {
+		group.Add(1)
+		go func(candidate *Store) {
+			defer group.Done()
+			command, ok, err := candidate.ReclaimWorkerCommand(ctx, claimed.ID, claimed.LeaseUntil)
+			reclaimed <- coreReclaim{command: command, ok: ok, err: err}
+		}(candidate)
+	}
+	group.Wait()
+	close(reclaimed)
+	count := 0
+	for result := range reclaimed {
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		if result.command.ID != claimed.ID {
+			t.Fatalf("reclaim changed command ID: %#v", result.command)
+		}
+		if result.ok {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("reclaims=%d, want 1", count)
+	}
+}
+
+type coreReclaim struct {
+	command WorkerCommand
+	ok      bool
+	err     error
 }
 
 func TestPhase4RetryKeyBelongsToItsSourceAttempt(t *testing.T) {

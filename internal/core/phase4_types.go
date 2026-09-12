@@ -141,15 +141,16 @@ const (
 // WorkerCommand persists the server-side delivery decision for one immutable
 // Worker Attempt command. It contains no Node-local runtime identifiers.
 type WorkerCommand struct {
-	ID        string             `json:"id"`
-	Kind      string             `json:"kind"`
-	DedupeKey string             `json:"dedupe_key"`
-	WorkerID  string             `json:"worker_id"`
-	AttemptID string             `json:"attempt_id"`
-	State     WorkerCommandState `json:"state"`
-	LastError string             `json:"last_error,omitempty"`
-	CreatedAt time.Time          `json:"created_at"`
-	UpdatedAt time.Time          `json:"updated_at"`
+	ID         string             `json:"id"`
+	Kind       string             `json:"kind"`
+	DedupeKey  string             `json:"dedupe_key"`
+	WorkerID   string             `json:"worker_id"`
+	AttemptID  string             `json:"attempt_id"`
+	State      WorkerCommandState `json:"state"`
+	LastError  string             `json:"last_error,omitempty"`
+	LeaseUntil time.Time          `json:"lease_until"`
+	CreatedAt  time.Time          `json:"created_at"`
+	UpdatedAt  time.Time          `json:"updated_at"`
 }
 
 type WorkerDetails struct {
