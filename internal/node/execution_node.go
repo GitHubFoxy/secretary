@@ -19,6 +19,12 @@ type Responder interface {
 	Respond(context.Context, string, string) error
 }
 
+// RequestRebinder lets a resumed Node-local session reuse durable request IDs
+// that were created before the transport or process reconnect.
+type RequestRebinder interface {
+	RebindRequests([]string)
+}
+
 type ExecutionNode struct {
 	node              core.NodeReference
 	runtime           Runtime
@@ -270,6 +276,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", err.Error())
 	}
+	n.rebindPendingRequests(command.Metadata.AttemptID, session)
 	n.registerSession(command.Metadata.AttemptID, session)
 	n.watchSession(session, command.Envelope)
 	return acceptedOutcome(Command{Kind: CommandResume, Resume: command})
@@ -307,6 +314,9 @@ func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerComma
 	}
 	outcome := acceptedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command})
 	if err := n.store.CompleteWorkerResponse(command.RequestID, outcome); err != nil {
+		return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "response_record_failed", err.Error())
+	}
+	if err := n.store.ClearPendingRequest(command.RequestID); err != nil {
 		return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "response_record_failed", err.Error())
 	}
 	return outcome
@@ -349,6 +359,7 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 	if err != nil {
 		return nil, ErrRuntimeSessionUnavailable
 	}
+	n.rebindPendingRequests(metadata.AttemptID, session)
 	n.registerSession(metadata.AttemptID, session)
 	n.watchSession(session, envelope)
 	return session, nil
@@ -452,7 +463,20 @@ func (n *ExecutionNode) publishRuntimeActivity(envelope WorkerEnvelope, item Act
 	if err := activity.ValidateFor(envelope.HarnessInstance); err != nil {
 		return
 	}
+	if activity.Kind == core.ActivityPermissionRequest || activity.Kind == core.ActivityUserInputRequest {
+		if activity.Request == nil || n.store.SavePendingRequest(activity.Request.RequestID, envelope.AttemptID, item.Kind, envelope.HarnessInstance.ID) != nil {
+			return
+		}
+	}
 	_, _ = n.store.QueueActivity(activity)
+}
+
+func (n *ExecutionNode) rebindPendingRequests(attemptID string, session Session) {
+	rebinder, ok := session.(RequestRebinder)
+	if !ok {
+		return
+	}
+	rebinder.RebindRequests(n.store.PendingRequestIDs(attemptID))
 }
 
 // NormalizeRuntimeActivity is the adapter boundary for normalized activity.

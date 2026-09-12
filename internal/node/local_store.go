@@ -24,6 +24,13 @@ type sessionMapping struct {
 	RuntimeSessionID  string                 `json:"runtime_session_id"`
 }
 
+type pendingRequestMapping struct {
+	RequestID         string                 `json:"request_id"`
+	AttemptID         string                 `json:"attempt_id"`
+	HarnessInstanceID core.HarnessInstanceID `json:"harness_instance_id"`
+	Kind              ActivityKind           `json:"kind"`
+}
+
 // LocalSessionMapping is intentionally a Node-only type. It is never part of
 // protocol payloads or server domain records.
 type LocalSessionMapping = sessionMapping
@@ -35,13 +42,14 @@ type ProcessInspector interface {
 }
 
 type localState struct {
-	Version                  int                       `json:"version"`
-	NextSequence             uint64                    `json:"next_sequence"`
-	LastAcknowledgedSequence uint64                    `json:"last_acknowledged_sequence"`
-	Commands                 map[string]CommandRecord  `json:"commands"`
-	Mappings                 map[string]sessionMapping `json:"mappings"`
-	WorkerResponses          map[string]CommandOutcome `json:"worker_responses"`
-	Outbox                   []PendingEvent            `json:"outbox"`
+	Version                  int                              `json:"version"`
+	NextSequence             uint64                           `json:"next_sequence"`
+	LastAcknowledgedSequence uint64                           `json:"last_acknowledged_sequence"`
+	Commands                 map[string]CommandRecord         `json:"commands"`
+	Mappings                 map[string]sessionMapping        `json:"mappings"`
+	PendingRequests          map[string]pendingRequestMapping `json:"pending_requests"`
+	WorkerResponses          map[string]CommandOutcome        `json:"worker_responses"`
+	Outbox                   []PendingEvent                   `json:"outbox"`
 }
 
 // LocalStore is the Node-owned durable command table, session mapping and
@@ -57,7 +65,7 @@ func OpenLocalStore(path string) (*LocalStore, error) {
 	if path == "" {
 		return nil, errors.New("node: local store path is required")
 	}
-	store := &LocalStore{path: path, state: localState{Version: 1, NextSequence: 1, Commands: map[string]CommandRecord{}, Mappings: map[string]sessionMapping{}, WorkerResponses: map[string]CommandOutcome{}, Outbox: []PendingEvent{}}}
+	store := &LocalStore{path: path, state: localState{Version: 1, NextSequence: 1, Commands: map[string]CommandRecord{}, Mappings: map[string]sessionMapping{}, PendingRequests: map[string]pendingRequestMapping{}, WorkerResponses: map[string]CommandOutcome{}, Outbox: []PendingEvent{}}}
 	encoded, err := os.ReadFile(path)
 	if err == nil {
 		if len(encoded) > 0 {
@@ -69,6 +77,9 @@ func OpenLocalStore(path string) (*LocalStore, error) {
 			}
 			if store.state.Mappings == nil {
 				store.state.Mappings = map[string]sessionMapping{}
+			}
+			if store.state.PendingRequests == nil {
+				store.state.PendingRequests = map[string]pendingRequestMapping{}
 			}
 			if store.state.WorkerResponses == nil {
 				store.state.WorkerResponses = map[string]CommandOutcome{}
@@ -146,6 +157,10 @@ func (s *LocalStore) ClaimWorkerResponse(requestID string) (CommandOutcome, bool
 		if outcome.State == CommandProcessing {
 			outcome.State = CommandInterrupted
 			outcome.ErrorCode = "execution_state_unknown"
+			s.state.WorkerResponses[requestID] = outcome
+			if err := s.persistLocked(); err != nil {
+				return CommandOutcome{}, false, err
+			}
 		}
 		return outcome, true, nil
 	}
@@ -235,6 +250,46 @@ func (s *LocalStore) SessionMapping(attemptID string) (LocalSessionMapping, bool
 	defer s.mu.Unlock()
 	mapping, ok := s.state.Mappings[attemptID]
 	return mapping, ok
+}
+
+func (s *LocalStore) SavePendingRequest(requestID, attemptID string, kind ActivityKind, harnessInstanceID core.HarnessInstanceID) error {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" || strings.TrimSpace(attemptID) == "" {
+		return errors.New("node: incomplete pending request mapping")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing, ok := s.state.PendingRequests[requestID]; ok {
+		if existing.AttemptID != attemptID || existing.Kind != kind {
+			return errors.New("node: pending request is bound to another attempt")
+		}
+		return nil
+	}
+	s.state.PendingRequests[requestID] = pendingRequestMapping{RequestID: requestID, AttemptID: attemptID, HarnessInstanceID: harnessInstanceID, Kind: kind}
+	return s.persistLocked()
+}
+
+func (s *LocalStore) PendingRequestIDs(attemptID string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]string, 0)
+	for requestID, mapping := range s.state.PendingRequests {
+		if mapping.AttemptID == attemptID {
+			result = append(result, requestID)
+		}
+	}
+	sort.Strings(result)
+	return result
+}
+
+func (s *LocalStore) ClearPendingRequest(requestID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.state.PendingRequests[requestID]; !ok {
+		return nil
+	}
+	delete(s.state.PendingRequests, requestID)
+	return s.persistLocked()
 }
 
 func (s *LocalStore) NextEventSequence() uint64 {

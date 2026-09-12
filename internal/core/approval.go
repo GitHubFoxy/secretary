@@ -133,7 +133,20 @@ func (s *Store) recordApprovalRequestTx(ctx context.Context, tx *sql.Tx, now tim
 	return err
 }
 
+// ResolveApproval preserves the direct Store API used by policy and tests.
+// Client-facing response delivery should call CommitApprovalResolution instead.
 func (s *Store) ResolveApproval(ctx context.Context, requestID string, state ApprovalState, resolvedBy, response string) (Approval, bool, error) {
+	return s.commitApprovalResolution(ctx, requestID, state, resolvedBy, response)
+}
+
+// CommitApprovalResolution commits the durable Approval state after the Node
+// has accepted the generic RespondWorker handoff. It is idempotent, so a crash
+// after delivery and before this commit only replays the durable transition.
+func (s *Store) CommitApprovalResolution(ctx context.Context, requestID string, state ApprovalState, resolvedBy, response string) (Approval, bool, error) {
+	return s.commitApprovalResolution(ctx, requestID, state, resolvedBy, response)
+}
+
+func (s *Store) commitApprovalResolution(ctx context.Context, requestID string, state ApprovalState, resolvedBy, response string) (Approval, bool, error) {
 	requestID = strings.TrimSpace(requestID)
 	resolvedBy = strings.TrimSpace(resolvedBy)
 	if requestID == "" || resolvedBy == "" {

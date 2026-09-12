@@ -1306,6 +1306,50 @@ func (s *Store) MarkWorkerCommandFailed(ctx context.Context, commandID, message 
 	return s.updateWorkerCommand(ctx, commandID, WorkerCommandFailed, strings.TrimSpace(message))
 }
 
+// RetryWorkerCommand reopens a failed handoff without changing its durable ID.
+// Node-side command and response dedupe make retrying that same ID safe after
+// a transport failure or a crash whose delivery result was ambiguous.
+func (s *Store) RetryWorkerCommand(ctx context.Context, commandID string, now time.Time) (WorkerCommand, bool, error) {
+	now = now.UTC()
+	returnValue, err := withTx(s, ctx, func(tx *sql.Tx) (struct {
+		command WorkerCommand
+		retry   bool
+	}, error) {
+		var command WorkerCommand
+		if err := scanWorkerCommand(tx.QueryRowContext(ctx, `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, lease_until, created_at, updated_at FROM phase4_worker_commands WHERE id = ?`, commandID), &command); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return struct {
+					command WorkerCommand
+					retry   bool
+				}{}, ErrNotFound
+			}
+			return struct {
+				command WorkerCommand
+				retry   bool
+			}{}, err
+		}
+		if command.State != WorkerCommandFailed {
+			return struct {
+				command WorkerCommand
+				retry   bool
+			}{command: command}, nil
+		}
+		leaseUntil := now.Add(workerCommandLease)
+		if _, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET state = ?, last_error = '', lease_until = ?, updated_at = ? WHERE id = ? AND state = ?`, WorkerCommandPending, timestamp(leaseUntil), timestamp(now), command.ID, WorkerCommandFailed); err != nil {
+			return struct {
+				command WorkerCommand
+				retry   bool
+			}{}, err
+		}
+		command.State, command.LastError, command.LeaseUntil, command.UpdatedAt = WorkerCommandPending, "", leaseUntil, now
+		return struct {
+			command WorkerCommand
+			retry   bool
+		}{command: command, retry: true}, nil
+	})
+	return returnValue.command, returnValue.retry, err
+}
+
 func (s *Store) updateWorkerCommand(ctx context.Context, commandID string, state WorkerCommandState, message string) (WorkerCommand, error) {
 	return withTx(s, ctx, func(tx *sql.Tx) (WorkerCommand, error) {
 		var command WorkerCommand

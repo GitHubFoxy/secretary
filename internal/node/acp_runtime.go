@@ -182,7 +182,7 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 }
 
 func newACPSession(id string, client *acp.Client, busy bool) *acpSession {
-	return &acpSession{id: id, client: client, activity: make(chan Activity, 64), result: make(chan Result, 64), pending: make(map[string]chan string), resolved: make(map[string]struct{}), busy: busy}
+	return &acpSession{id: id, client: client, activity: make(chan Activity, 64), result: make(chan Result, 64), pending: make(map[string]chan string), resolved: make(map[string]struct{}), reboundResponses: make(map[string]string), busy: busy}
 }
 
 type acpSession struct {
@@ -191,9 +191,11 @@ type acpSession struct {
 	activity chan Activity
 	result   chan Result
 
-	requestMu sync.Mutex
-	pending   map[string]chan string
-	resolved  map[string]struct{}
+	requestMu        sync.Mutex
+	pending          map[string]chan string
+	resolved         map[string]struct{}
+	rebound          []string
+	reboundResponses map[string]string
 
 	turnMu sync.Mutex
 	busy   bool
@@ -219,6 +221,12 @@ func (s *acpSession) Cancel(ctx context.Context) error {
 	return s.client.Notify("session/cancel", map[string]string{"sessionId": s.id})
 }
 
+func (s *acpSession) RebindRequests(requestIDs []string) {
+	s.requestMu.Lock()
+	s.rebound = append(s.rebound, requestIDs...)
+	s.requestMu.Unlock()
+}
+
 func (s *acpSession) Respond(ctx context.Context, requestID, response string) error {
 	if strings.TrimSpace(requestID) == "" || strings.TrimSpace(response) == "" {
 		return errors.New("acp: request_id and response are required")
@@ -226,6 +234,15 @@ func (s *acpSession) Respond(ctx context.Context, requestID, response string) er
 	s.requestMu.Lock()
 	channel, ok := s.pending[requestID]
 	if !ok {
+		for i, reboundID := range s.rebound {
+			if reboundID == requestID {
+				s.rebound = append(s.rebound[:i], s.rebound[i+1:]...)
+				s.reboundResponses[requestID] = response
+				s.resolved[requestID] = struct{}{}
+				s.requestMu.Unlock()
+				return nil
+			}
+		}
 		_, alreadyResolved := s.resolved[requestID]
 		s.requestMu.Unlock()
 		if alreadyResolved {
@@ -256,7 +273,16 @@ type acpPermissionOption struct {
 }
 
 func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
-	requestID := fmt.Sprintf("request-%d-%d", time.Now().UnixNano(), acpRequestSequence.Add(1))
+	requestID := ""
+	s.requestMu.Lock()
+	if len(s.rebound) > 0 {
+		requestID = s.rebound[0]
+		s.rebound = s.rebound[1:]
+	}
+	s.requestMu.Unlock()
+	if requestID == "" {
+		requestID = fmt.Sprintf("request-%d-%d", time.Now().UnixNano(), acpRequestSequence.Add(1))
+	}
 	var params map[string]any
 	if err := json.Unmarshal(message.Params, &params); err != nil {
 		return nil, errors.New("invalid harness request")
@@ -287,15 +313,24 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 	} else {
 		return nil, fmt.Errorf("unsupported harness request: %s", message.Method)
 	}
-	response := make(chan string, 1)
+	var value string
+	var response chan string
 	s.requestMu.Lock()
-	s.pending[requestID] = response
-	s.requestMu.Unlock()
-	select {
-	case s.activity <- Activity{Kind: kind, RequestID: requestID, Summary: summary}:
-	default:
+	value, alreadyResponded := s.reboundResponses[requestID]
+	if alreadyResponded {
+		delete(s.reboundResponses, requestID)
+	} else {
+		response = make(chan string, 1)
+		s.pending[requestID] = response
 	}
-	value := <-response
+	s.requestMu.Unlock()
+	if !alreadyResponded {
+		// Requests are the durable approval/input boundary. Unlike optional
+		// activity updates, they must reach the Node outbox and cannot be
+		// silently dropped when the activity buffer is full.
+		s.activity <- Activity{Kind: kind, RequestID: requestID, Summary: summary}
+		value = <-response
+	}
 	if kind == ActivityUserInput {
 		return map[string]string{"input": value}, nil
 	}

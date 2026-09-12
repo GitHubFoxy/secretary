@@ -117,7 +117,17 @@ func (s WorkerService) claimCommand(ctx context.Context, kind, dedupeKey string,
 		return reclaimed, true, nil
 	}
 	if duplicate && command.State == core.WorkerCommandFailed {
-		return core.WorkerCommand{}, false, fmt.Errorf("worker: prior %s command failed: %s", kind, command.LastError)
+		if kind != "respond" {
+			return core.WorkerCommand{}, false, fmt.Errorf("worker: prior %s command failed: %s", kind, command.LastError)
+		}
+		retried, retry, err := s.Store.RetryWorkerCommand(ctx, command.ID, s.workerCommandNow())
+		if err != nil {
+			return core.WorkerCommand{}, false, err
+		}
+		if !retry {
+			return core.WorkerCommand{}, false, fmt.Errorf("%w: %s", ErrWorkerCommandPending, kind)
+		}
+		return retried, true, nil
 	}
 	return command, !duplicate, nil
 }
@@ -276,6 +286,31 @@ func approvalResponseState(kind core.ApprovalKind, response string) (core.Approv
 	}
 }
 
+func (s WorkerService) respondApproval(ctx context.Context, conversationID string, request MessageWorkerRequest, details core.WorkerDetails, attempt core.Phase4Attempt, approval core.Approval, state core.ApprovalState, clientID string) (core.WorkerDetails, error) {
+	command, send, err := s.claimCommand(ctx, "respond", "request:"+request.RequestID, details.Worker, attempt)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if send {
+		if err := s.requireRuntime(); err != nil {
+			return core.WorkerDetails{}, err
+		}
+		if err := s.deliverCommand(ctx, command, func(commandID string) error {
+			return s.Runtime.Respond(ctx, commandID, details.Worker, attempt, request.RequestID, request.Text)
+		}); err != nil {
+			return core.WorkerDetails{}, err
+		}
+		command.State = core.WorkerCommandDelivered
+	}
+	if command.State != core.WorkerCommandDelivered {
+		return core.WorkerDetails{}, ErrWorkerCommandPending
+	}
+	if _, _, err := s.Store.CommitApprovalResolution(ctx, approval.RequestID, state, clientID, request.Text); err != nil {
+		return core.WorkerDetails{}, err
+	}
+	return s.Store.WorkerDetailsForConversation(ctx, conversationID, request.WorkerRef)
+}
+
 func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerRequest) (core.WorkerDetails, error) {
 	conversation, err := s.authorize(ctx)
 	if err != nil {
@@ -290,13 +325,19 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		return core.WorkerDetails{}, err
 	}
 	attempt := details.CurrentAttempt()
-	approvalResponse := false
 	if attempt != nil && strings.TrimSpace(request.RequestID) != "" {
-		if approval, approvalErr := s.Store.Approval(ctx, request.RequestID); approvalErr == nil {
+		approval, approvalErr := s.Store.Approval(ctx, request.RequestID)
+		if approvalErr == nil {
 			if approval.WorkerID != details.Worker.ID || approval.AttemptID != attempt.ID {
 				return core.WorkerDetails{}, core.ErrInvalidTransition
 			}
 			if approval.State == core.ApprovalPending {
+				if approval.ExpiresAt != nil && !s.workerCommandNow().Before(*approval.ExpiresAt) {
+					if _, _, err := s.Store.ExpireApproval(ctx, request.RequestID, s.workerCommandNow()); err != nil {
+						return core.WorkerDetails{}, err
+					}
+					return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+				}
 				state, stateErr := approvalResponseState(approval.Kind, request.Text)
 				if stateErr != nil {
 					return core.WorkerDetails{}, stateErr
@@ -305,55 +346,27 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 				if clientID == "" {
 					clientID = "client"
 				}
-				approval, _, err = s.Store.ResolveApproval(ctx, request.RequestID, state, clientID, request.Text)
-				if err != nil {
-					return core.WorkerDetails{}, err
-				}
+				return s.respondApproval(ctx, conversation.ID, request, details, *attempt, approval, state, clientID)
 			}
-			if approval.State == core.ApprovalDenied || approval.State == core.ApprovalExpired || approval.State == core.ApprovalRevoked {
-				return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
-			}
-			if approval.State == core.ApprovalApproved {
-				approvalResponse = true
-			}
-		} else if !errors.Is(approvalErr, core.ErrNotFound) {
+			// A terminal Approval is authoritative. In particular, denied,
+			// expired and revoked requests never trigger another machine action.
+			return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+		}
+		if !errors.Is(approvalErr, core.ErrNotFound) {
 			return core.WorkerDetails{}, approvalErr
 		}
-	}
-	if attempt != nil && strings.TrimSpace(request.RequestID) != "" {
-		command, found, err := s.Store.FindWorkerCommand(ctx, "respond", commandDedupeKey(request.IdempotencyKey, "request:"+request.RequestID), details.Worker.ID, attempt.ID)
-		if err != nil {
-			return core.WorkerDetails{}, err
+		command, found, commandErr := s.Store.FindWorkerCommand(ctx, "respond", commandDedupeKey(request.IdempotencyKey, "request:"+request.RequestID), details.Worker.ID, attempt.ID)
+		if commandErr != nil {
+			return core.WorkerDetails{}, commandErr
 		}
 		if found && command.State == core.WorkerCommandDelivered {
-			// Respond is delivered before the server-side resume transition. A
-			// crash in that gap must replay only the durable transition, never
-			// the runtime Respond side effect.
 			if details.Worker.Status == core.WorkerNeedsInput {
-				if _, err := s.Store.ResumePhase4Attempt(ctx, attempt.ID); err != nil {
-					return core.WorkerDetails{}, err
+				if _, commandErr := s.Store.ResumePhase4Attempt(ctx, attempt.ID); commandErr != nil {
+					return core.WorkerDetails{}, commandErr
 				}
 			}
 			return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
 		}
-	}
-	if approvalResponse {
-		if err := s.requireRuntime(); err != nil {
-			return core.WorkerDetails{}, err
-		}
-		command, send, err := s.claimCommand(ctx, "respond", commandDedupeKey(request.IdempotencyKey, "request:"+request.RequestID), details.Worker, *attempt)
-		if err != nil {
-			return core.WorkerDetails{}, err
-		}
-		if send {
-			err = s.deliverCommand(ctx, command, func(commandID string) error {
-				return s.Runtime.Respond(ctx, commandID, details.Worker, *attempt, request.RequestID, request.Text)
-			})
-		}
-		if err != nil {
-			return core.WorkerDetails{}, err
-		}
-		return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
 	}
 	switch details.Worker.Status {
 	case core.WorkerWaitingApproval:
