@@ -462,23 +462,30 @@ func (s *Store) ReplaySecretaryEvents(ctx context.Context, turnID string, afterS
 	if limit <= 0 || limit > 500 {
 		limit = 500
 	}
-	events, err := s.SecretaryEvents(ctx, turnID, afterSeq, limit+1)
-	if err != nil {
-		return EventReplay{}, err
-	}
-	hasMore := len(events) > limit
-	if hasMore {
-		events = events[:limit]
-	}
-	last := afterSeq
-	if len(events) > 0 {
-		last = events[len(events)-1].Seq
-	}
-	var boundary int64
-	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM events`).Scan(&boundary); err != nil {
-		return EventReplay{}, err
-	}
-	return EventReplay{SnapshotBoundarySeq: boundary, BoundarySeq: boundary, LastReturnedSeq: last, HasMore: hasMore, Events: events}, nil
+	return withTx(s, ctx, func(tx *sql.Tx) (EventReplay, error) {
+		var boundary int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM events`).Scan(&boundary); err != nil {
+			return EventReplay{}, err
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, payload_json, created_at FROM events WHERE aggregate_type = 'secretary_turn' AND aggregate_id = ? AND seq > ? AND seq <= ? ORDER BY seq LIMIT ?`, turnID, afterSeq, boundary, limit+1)
+		if err != nil {
+			return EventReplay{}, err
+		}
+		defer rows.Close()
+		events, err := scanEvents(rows)
+		if err != nil {
+			return EventReplay{}, err
+		}
+		hasMore := len(events) > limit
+		if hasMore {
+			events = events[:limit]
+		}
+		last := afterSeq
+		if len(events) > 0 {
+			last = events[len(events)-1].Seq
+		}
+		return EventReplay{SnapshotBoundarySeq: boundary, BoundarySeq: boundary, LastReturnedSeq: last, HasMore: hasMore, Events: events}, nil
+	})
 }
 
 // SubscribeSecretaryEvents replays durable events and then polls the same log.

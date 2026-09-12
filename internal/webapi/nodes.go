@@ -1,6 +1,7 @@
 package webapi
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -58,29 +59,38 @@ func (s *Server) nodeRoute(w http.ResponseWriter, r *http.Request) {
 	nodeRef := core.NodeReference(parts[0])
 	var record core.NodeRecord
 	var err error
+	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	var request struct {
+		Draining       *bool  `json:"draining,omitempty"`
+		IdempotencyKey string `json:"idempotency_key,omitempty"`
+	}
+	if r.Body != nil && r.ContentLength != 0 {
+		if !decodeJSON(w, r, &request) {
+			return
+		}
+	}
+	if key == "" {
+		key = strings.TrimSpace(request.IdempotencyKey)
+	}
 	switch parts[1] {
 	case "drain":
 		draining := true
-		if r.ContentLength != 0 {
-			var request struct {
-				Draining *bool `json:"draining"`
-			}
-			if !decodeJSON(w, r, &request) {
-				return
-			}
-			if request.Draining != nil {
-				draining = *request.Draining
-			}
+		if request.Draining != nil {
+			draining = *request.Draining
 		}
-		record, err = s.store.SetNodeDraining(r.Context(), nodeRef, draining)
+		record, err = s.store.SetNodeDraining(r.Context(), nodeRef, draining, key)
 	case "revoke":
-		record, err = s.store.RevokeNode(r.Context(), nodeRef)
+		record, err = s.store.RevokeNode(r.Context(), nodeRef, key)
 	default:
 		http.NotFound(w, r)
 		return
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		status := http.StatusBadRequest
+		if errors.Is(err, core.ErrIdempotencyConflict) {
+			status = http.StatusConflict
+		}
+		http.Error(w, err.Error(), status)
 		return
 	}
 	writeJSON(w, http.StatusOK, publicNode{Node: record.Node, Online: record.Online, Draining: record.Draining, Revoked: record.Revoked, EnrolledAt: record.EnrolledAt, LastSeenAt: record.LastSeenAt, LastHeartbeatAt: record.LastHeartbeatAt, Capacity: record.Capacity, ActiveAttempts: record.ActiveAttempts, LastProcessed: record.LastProcessedCommand, Inventory: record.Inventory})

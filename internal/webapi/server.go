@@ -61,11 +61,19 @@ type Server struct {
 	mu            sync.Mutex
 	idempotencyMu sync.Mutex
 	subscribers   map[*subscription]struct{}
+	streams       map[string]map[*activeStream]struct{}
+}
+
+type activeStream struct {
+	cancel context.CancelFunc
 }
 
 type subscription struct {
 	conversationID string
+	clientID       string
 	entries        chan core.ConversationEntry
+	cancel         context.CancelFunc
+	slow           bool
 }
 
 func New(ctx context.Context, store *core.Store, bootstrapToken string) (*Server, error) {
@@ -76,7 +84,7 @@ func New(ctx context.Context, store *core.Store, bootstrapToken string) (*Server
 	if err != nil {
 		return nil, fmt.Errorf("create owner: %w", err)
 	}
-	server := &Server{store: store, bootstrapToken: bootstrapToken, owner: owner, workerStates: make(map[string]string), subscribers: make(map[*subscription]struct{})}
+	server := &Server{store: store, bootstrapToken: bootstrapToken, owner: owner, workerStates: make(map[string]string), subscribers: make(map[*subscription]struct{}), streams: make(map[string]map[*activeStream]struct{})}
 	store.SetEntryObserver(server.publishEntry)
 	return server, nil
 }
@@ -207,6 +215,7 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 	var request struct {
 		ExternalMessageID string `json:"external_message_id"`
 		Body              string `json:"body"`
+		IdempotencyKey    string `json:"idempotency_key,omitempty"`
 	}
 	if !decodeJSON(w, r, &request) {
 		return
@@ -214,6 +223,37 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 	if request.ExternalMessageID == "" || request.Body == "" {
 		http.Error(w, "external_message_id and body are required", http.StatusBadRequest)
 		return
+	}
+	key := strings.TrimSpace(request.IdempotencyKey)
+	if key == "" {
+		key = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	}
+	operation := "message:" + person.ID
+	payload := struct {
+		ExternalMessageID string
+		Body              string
+	}{request.ExternalMessageID, request.Body}
+	if key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+		encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), operation, key, payload)
+		if lookupErr != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(lookupErr, core.ErrIdempotencyConflict) {
+				status = http.StatusConflict
+			}
+			http.Error(w, lookupErr.Error(), status)
+			return
+		}
+		if found {
+			var acknowledgement messageAcknowledgement
+			if err := json.Unmarshal(encoded, &acknowledgement); err != nil {
+				http.Error(w, "decode idempotency record", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, acknowledgement)
+			return
+		}
 	}
 
 	adapterID := "web"
@@ -232,12 +272,32 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 			}
 		}(request.Body)
 	}
-	writeJSON(w, http.StatusAccepted, messageAcknowledgement{Entry: entry, MessageID: entry.ID, EntrySeq: entry.Seq, State: "saved", Duplicate: duplicate})
+	acknowledgement := messageAcknowledgement{Entry: entry, MessageID: entry.ID, EntrySeq: entry.Seq, State: "saved", Duplicate: duplicate}
+	if key != "" {
+		if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, key, payload, acknowledgement); err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, core.ErrIdempotencyConflict) {
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+	}
+	writeJSON(w, http.StatusAccepted, acknowledgement)
 }
 
 func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
-	conversation, ok := s.authorizedConversationScope(w, r, core.ScopeConversationRead)
+	person, client, ok := s.authorizedPerson(w, r)
 	if !ok {
+		return
+	}
+	if client != nil && !client.HasScope(core.ScopeConversationRead) {
+		http.Error(w, "Client scope required", http.StatusForbidden)
+		return
+	}
+	conversation, err := s.store.ConversationForPerson(r.Context(), person.ID)
+	if err != nil {
+		http.Error(w, "read conversation", http.StatusInternalServerError)
 		return
 	}
 	after, err := parseAfter(r)
@@ -250,14 +310,21 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.CloseNow()
+	streamContext, cancel := context.WithCancel(r.Context())
+	clientID := ""
+	if client != nil {
+		clientID = client.ID
+	}
+	stream := s.registerStream(clientID, cancel)
+	defer s.unregisterStream(clientID, stream)
 
 	s.mu.Lock()
-	entries, err := s.store.EntriesAfter(r.Context(), conversation.ID, after)
+	entries, err := s.store.EntriesAfter(streamContext, conversation.ID, after)
 	if err != nil {
 		s.mu.Unlock()
 		return
 	}
-	sub := &subscription{conversationID: conversation.ID, entries: make(chan core.ConversationEntry, len(entries)+32)}
+	sub := &subscription{conversationID: conversation.ID, clientID: clientID, entries: make(chan core.ConversationEntry, len(entries)+32), cancel: cancel}
 	for _, entry := range entries {
 		sub.entries <- entry
 	}
@@ -271,11 +338,20 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
-		case entry := <-sub.entries:
-			if err := conn.Write(r.Context(), websocket.MessageText, mustJSON(entry)); err != nil {
+		case entry, open := <-sub.entries:
+			if !open {
+				if sub.slow {
+					_ = conn.Close(websocket.StatusPolicyViolation, "subscriber too slow; reconnect with after_seq")
+				}
 				return
 			}
-		case <-r.Context().Done():
+			if err := conn.Write(streamContext, websocket.MessageText, mustJSON(entry)); err != nil {
+				return
+			}
+		case <-streamContext.Done():
+			if sub.slow {
+				_ = conn.Close(websocket.StatusPolicyViolation, "subscriber too slow; reconnect with after_seq")
+			}
 			return
 		}
 	}
@@ -295,9 +371,54 @@ func (s *Server) publishLocked(entry core.ConversationEntry) {
 		select {
 		case subscriber.entries <- entry:
 		default:
-			// A slow connection must reconnect with entry_seq rather than block all writers.
+			// Never drop a durable entry. Close the slow subscriber so it can
+			// reconnect from its last acknowledged entry_seq.
+			subscriber.slow = true
+			delete(s.subscribers, subscriber)
+			if subscriber.cancel != nil {
+				subscriber.cancel()
+			}
+			close(subscriber.entries)
 		}
 	}
+}
+
+func (s *Server) registerStream(clientID string, cancel context.CancelFunc) *activeStream {
+	if clientID == "" {
+		return nil
+	}
+	stream := &activeStream{cancel: cancel}
+	s.mu.Lock()
+	if s.streams[clientID] == nil {
+		s.streams[clientID] = make(map[*activeStream]struct{})
+	}
+	s.streams[clientID][stream] = struct{}{}
+	s.mu.Unlock()
+	return stream
+}
+
+func (s *Server) unregisterStream(clientID string, stream *activeStream) {
+	if stream == nil || clientID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if streams := s.streams[clientID]; streams != nil {
+		delete(streams, stream)
+		if len(streams) == 0 {
+			delete(s.streams, clientID)
+		}
+	}
+}
+
+func (s *Server) cancelClientStreams(clientID string) {
+	s.mu.Lock()
+	streams := s.streams[clientID]
+	delete(s.streams, clientID)
+	for stream := range streams {
+		stream.cancel()
+	}
+	s.mu.Unlock()
 }
 
 func (s *Server) authorizedConversation(w http.ResponseWriter, r *http.Request) (core.Conversation, bool) {
@@ -338,6 +459,22 @@ func (s *Server) authorizedPerson(w http.ResponseWriter, r *http.Request) (core.
 	}
 	http.Error(w, "Client or web session required", http.StatusUnauthorized)
 	return core.Person{}, nil, false
+}
+
+func bearerToken(r *http.Request) string {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(header) <= len("Bearer ") || !strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(header[len("Bearer "):])
+}
+
+func (s *Server) requestClientID(r *http.Request) string {
+	client, err := s.store.AuthenticateClient(r.Context(), bearerToken(r))
+	if err != nil || client.PersonID != s.owner.ID {
+		return ""
+	}
+	return client.ID
 }
 
 func parseAfter(r *http.Request) (int64, error) {

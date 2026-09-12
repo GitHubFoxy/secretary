@@ -1,6 +1,8 @@
 package webapi
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -32,12 +34,22 @@ func (s *Server) secretaryTurnRoute(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) secretaryStream(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizedConversationScope(w, r, core.ScopeConversationRead); !ok {
+	conversation, ok := s.authorizedConversationScope(w, r, core.ScopeConversationRead)
+	if !ok {
 		return
 	}
 	turnID := strings.TrimSpace(r.URL.Query().Get("turn_id"))
 	if turnID == "" {
 		http.Error(w, "turn_id is required", http.StatusBadRequest)
+		return
+	}
+	turn, turnErr := s.store.SecretaryTurn(r.Context(), turnID)
+	if errors.Is(turnErr, core.ErrNotFound) || (turnErr == nil && turn.ConversationID != conversation.ID) {
+		http.NotFound(w, r)
+		return
+	}
+	if turnErr != nil {
+		http.Error(w, "read Secretary turn", http.StatusInternalServerError)
 		return
 	}
 	after, err := parseAfter(r)
@@ -50,16 +62,38 @@ func (s *Server) secretaryStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "read Secretary stream", http.StatusInternalServerError)
 		return
 	}
+	for i := range replay.Events {
+		replay.Events[i] = sanitizePublicEvent(replay.Events[i])
+	}
 	writeJSON(w, http.StatusOK, replay)
 }
 
 func (s *Server) secretaryWebsocket(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizedConversationScope(w, r, core.ScopeConversationRead); !ok {
+	person, client, ok := s.authorizedPerson(w, r)
+	if !ok {
+		return
+	}
+	if client != nil && !client.HasScope(core.ScopeConversationRead) {
+		http.Error(w, "Client scope required", http.StatusForbidden)
+		return
+	}
+	conversation, err := s.store.ConversationForPerson(r.Context(), person.ID)
+	if err != nil {
+		http.Error(w, "read conversation", http.StatusInternalServerError)
 		return
 	}
 	turnID := strings.TrimSpace(r.URL.Query().Get("turn_id"))
 	if turnID == "" {
 		http.Error(w, "turn_id is required", http.StatusBadRequest)
+		return
+	}
+	turn, turnErr := s.store.SecretaryTurn(r.Context(), turnID)
+	if errors.Is(turnErr, core.ErrNotFound) || (turnErr == nil && turn.ConversationID != conversation.ID) {
+		http.NotFound(w, r)
+		return
+	}
+	if turnErr != nil {
+		http.Error(w, "read Secretary turn", http.StatusInternalServerError)
 		return
 	}
 	after, err := parseAfter(r)
@@ -72,21 +106,29 @@ func (s *Server) secretaryWebsocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer connection.CloseNow()
+	streamContext, cancel := context.WithCancel(r.Context())
+	clientID := ""
+	if client != nil {
+		clientID = client.ID
+	}
+	stream := s.registerStream(clientID, cancel)
+	defer s.unregisterStream(clientID, stream)
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		events, readErr := s.store.SecretaryEvents(r.Context(), turnID, after, 500)
+		events, readErr := s.store.SecretaryEvents(streamContext, turnID, after, 500)
 		if readErr != nil {
 			return
 		}
 		for _, event := range events {
-			if err := connection.Write(r.Context(), websocket.MessageText, mustJSON(event)); err != nil {
+			event = sanitizePublicEvent(event)
+			if err := connection.Write(streamContext, websocket.MessageText, mustJSON(event)); err != nil {
 				return
 			}
 			after = event.Seq
 		}
 		select {
-		case <-r.Context().Done():
+		case <-streamContext.Done():
 			return
 		case <-ticker.C:
 		}

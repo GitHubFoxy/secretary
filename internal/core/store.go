@@ -414,12 +414,16 @@ CREATE TABLE IF NOT EXISTS clients (
   scopes_json TEXT NOT NULL,
   status TEXT NOT NULL,
   credential_hash TEXT NOT NULL UNIQUE,
+  credential_secret TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   revoked_at TEXT
 );
 CREATE TABLE IF NOT EXISTS client_pairings (
   id TEXT PRIMARY KEY,
   client_id TEXT NOT NULL UNIQUE REFERENCES clients(id),
+  pending_token_hash TEXT NOT NULL DEFAULT '',
+  pending_token_secret TEXT NOT NULL DEFAULT '',
+  pending_token_redeemed INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS config_versions (
@@ -462,6 +466,7 @@ CREATE TABLE IF NOT EXISTS event_sequence (
 CREATE TABLE IF NOT EXISTS idempotency_records (
   operation TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
+  request_hash TEXT NOT NULL DEFAULT '',
   outcome_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   PRIMARY KEY(operation, idempotency_key)
@@ -487,6 +492,11 @@ CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries(state, updated_at);
 		return fmt.Errorf("migrate sqlite: %w", err)
 	}
 	for _, migration := range []struct{ table, column, name string }{
+		{"clients", "credential_secret TEXT NOT NULL DEFAULT ''", "client credential secret"},
+		{"client_pairings", "pending_token_hash TEXT NOT NULL DEFAULT ''", "pending pairing token hash"},
+		{"client_pairings", "pending_token_secret TEXT NOT NULL DEFAULT ''", "pending pairing secret"},
+		{"client_pairings", "pending_token_redeemed INTEGER NOT NULL DEFAULT 0", "pending pairing redeemed"},
+		{"idempotency_records", "request_hash TEXT NOT NULL DEFAULT ''", "idempotency request hash"},
 		{"tasks", "parent_task_id TEXT NOT NULL DEFAULT ''", "task parent"},
 		{"tasks", "parent_attempt_id TEXT NOT NULL DEFAULT ''", "task parent attempt"},
 		{"tasks", "child_index INTEGER NOT NULL DEFAULT 0", "task child index"},

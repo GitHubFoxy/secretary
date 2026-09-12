@@ -413,30 +413,107 @@ func (s *Store) UpdateNodeInventory(ctx context.Context, node NodeReference, inv
 	return s.requireActiveNode(ctx, node, result)
 }
 
-func (s *Store) SetNodeDraining(ctx context.Context, node NodeReference, draining bool) (NodeRecord, error) {
-	value := 0
-	if draining {
-		value = 1
+func (s *Store) SetNodeDraining(ctx context.Context, node NodeReference, draining bool, idempotencyKeys ...string) (NodeRecord, error) {
+	if len(idempotencyKeys) > 1 {
+		return NodeRecord{}, errors.New("core: at most one Node idempotency key is allowed")
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE phase4_nodes SET draining = ? WHERE node_ref = ? AND revoked = 0`, value, node)
+	key := ""
+	if len(idempotencyKeys) == 1 {
+		key = strings.TrimSpace(idempotencyKeys[0])
+	}
+	if key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+	}
+	requestHash, err := idempotencyRequestHash(struct {
+		Node     NodeReference
+		Draining bool
+	}{node, draining})
 	if err != nil {
 		return NodeRecord{}, err
 	}
-	if err := s.requireActiveNode(ctx, node, result); err != nil {
-		return NodeRecord{}, err
-	}
-	return s.NodeRecord(ctx, node)
+	return withTx(s, ctx, func(tx *sql.Tx) (NodeRecord, error) {
+		if key != "" {
+			var stored NodeRecord
+			found, err := lookupIdempotencyTx(ctx, tx, "node.drain:"+string(node), key, requestHash, &stored)
+			if err != nil || found {
+				return stored, err
+			}
+		}
+		value := 0
+		if draining {
+			value = 1
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE phase4_nodes SET draining = ? WHERE node_ref = ? AND revoked = 0`, value, node)
+		if err != nil {
+			return NodeRecord{}, err
+		}
+		if affected, _ := result.RowsAffected(); affected == 0 {
+			return NodeRecord{}, ErrNotFound
+		}
+		record, err := scanNodeRecord(tx.QueryRowContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, capacity, active_attempts_json, last_processed_command, inventory_json, credential_hash, credential_secret FROM phase4_nodes WHERE node_ref = ?`, node))
+		if err != nil {
+			return NodeRecord{}, err
+		}
+		if key != "" {
+			encoded, err := json.Marshal(record)
+			if err != nil {
+				return NodeRecord{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, request_hash, outcome_json, created_at) VALUES(?, ?, ?, ?, ?)`, "node.drain:"+string(node), key, requestHash, string(encoded), timestamp(s.now())); err != nil {
+				return NodeRecord{}, err
+			}
+		}
+		return record, nil
+	})
 }
 
-func (s *Store) RevokeNode(ctx context.Context, node NodeReference) (NodeRecord, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE phase4_nodes SET revoked = 1, online = 0, draining = 1, last_seen_at = ? WHERE node_ref = ?`, timestamp(s.now()), node)
+func (s *Store) RevokeNode(ctx context.Context, node NodeReference, idempotencyKeys ...string) (NodeRecord, error) {
+	if len(idempotencyKeys) > 1 {
+		return NodeRecord{}, errors.New("core: at most one Node idempotency key is allowed")
+	}
+	key := ""
+	if len(idempotencyKeys) == 1 {
+		key = strings.TrimSpace(idempotencyKeys[0])
+	}
+	if key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+	}
+	requestHash, err := idempotencyRequestHash(struct{ Node NodeReference }{node})
 	if err != nil {
 		return NodeRecord{}, err
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
-		return NodeRecord{}, ErrNotFound
-	}
-	return s.NodeRecord(ctx, node)
+	return withTx(s, ctx, func(tx *sql.Tx) (NodeRecord, error) {
+		if key != "" {
+			var stored NodeRecord
+			found, err := lookupIdempotencyTx(ctx, tx, "node.revoke:"+string(node), key, requestHash, &stored)
+			if err != nil || found {
+				return stored, err
+			}
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE phase4_nodes SET revoked = 1, online = 0, draining = 1, last_seen_at = ? WHERE node_ref = ?`, timestamp(s.now()), node)
+		if err != nil {
+			return NodeRecord{}, err
+		}
+		if affected, _ := result.RowsAffected(); affected == 0 {
+			return NodeRecord{}, ErrNotFound
+		}
+		record, err := scanNodeRecord(tx.QueryRowContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, capacity, active_attempts_json, last_processed_command, inventory_json, credential_hash, credential_secret FROM phase4_nodes WHERE node_ref = ?`, node))
+		if err != nil {
+			return NodeRecord{}, err
+		}
+		if key != "" {
+			encoded, err := json.Marshal(record)
+			if err != nil {
+				return NodeRecord{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, request_hash, outcome_json, created_at) VALUES(?, ?, ?, ?, ?)`, "node.revoke:"+string(node), key, requestHash, string(encoded), timestamp(s.now())); err != nil {
+				return NodeRecord{}, err
+			}
+		}
+		return record, nil
+	})
 }
 
 func (s *Store) requireActiveNode(ctx context.Context, node NodeReference, result sql.Result) error {

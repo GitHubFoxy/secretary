@@ -114,9 +114,17 @@ func (s *Server) projectRoute(w http.ResponseWriter, r *http.Request) {
 	case http.MethodDelete:
 		revision, err := strconv.ParseInt(r.URL.Query().Get("expected_revision"), 10, 64)
 		key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		var request projectRequest
+		if r.Body != nil && r.ContentLength != 0 {
+			if !decodeJSON(w, r, &request) {
+				return
+			}
+			if key == "" {
+				key = strings.TrimSpace(request.IdempotencyKey)
+			}
+		}
 		if err != nil {
-			var request projectRequest
-			if r.Body == nil || !decodeJSON(w, r, &request) || request.ExpectedRevision <= 0 {
+			if request.ExpectedRevision <= 0 {
 				if r.URL.Query().Get("expected_revision") == "" {
 					http.Error(w, "expected_revision is required", http.StatusBadRequest)
 				} else {
@@ -125,9 +133,6 @@ func (s *Server) projectRoute(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			revision = request.ExpectedRevision
-			if key == "" {
-				key = strings.TrimSpace(request.IdempotencyKey)
-			}
 		}
 		if err := s.store.DeleteProject(r.Context(), id, revision, key); err != nil {
 			writeProjectError(w, err)
@@ -144,6 +149,8 @@ func writeProjectError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, core.ErrNotFound):
 		status = http.StatusNotFound
+	case errors.Is(err, core.ErrIdempotencyConflict):
+		status = http.StatusConflict
 	case errors.Is(err, core.ErrProjectRevisionConflict):
 		status = http.StatusConflict
 	case strings.Contains(strings.ToLower(err.Error()), "unique constraint") || strings.Contains(strings.ToLower(err.Error()), "already exists"):

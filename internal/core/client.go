@@ -38,7 +38,11 @@ const (
 	ScopeUserWrite         ClientScope = "user:write"
 )
 
-var ErrClientRevoked = errors.New("core: Client is revoked")
+var (
+	ErrClientRevoked      = errors.New("core: Client is revoked")
+	ErrPairingNotReady    = errors.New("core: Client pairing is not approved")
+	ErrPairingAlreadyUsed = errors.New("core: Client pairing handoff already used")
+)
 
 // Client is the public, server-owned identity of a trusted user interface.
 // CredentialHash is deliberately never serialized.
@@ -93,10 +97,32 @@ func randomClientCredential() (string, error) {
 	return "cli_" + base64.RawURLEncoding.EncodeToString(value), nil
 }
 
+type ClientPairing struct {
+	Client
+	PendingToken string `json:"pending_token,omitempty"`
+}
+
+type ClientPairingStatus struct {
+	ClientID        string       `json:"client_id"`
+	Status          ClientStatus `json:"status"`
+	CredentialReady bool         `json:"credential_ready"`
+	Redeemed        bool         `json:"redeemed"`
+}
+
+type clientCredentialOutcome struct {
+	Client     Client `json:"client"`
+	Credential string `json:"credential,omitempty"`
+}
+
 func (s *Store) PairClient(ctx context.Context, personID, deviceID, displayName, platform string, scopes []ClientScope, idempotencyKeys ...string) (Client, error) {
+	pairing, err := s.PairClientWithToken(ctx, personID, deviceID, displayName, platform, scopes, idempotencyKeys...)
+	return pairing.Client, err
+}
+
+func (s *Store) PairClientWithToken(ctx context.Context, personID, deviceID, displayName, platform string, scopes []ClientScope, idempotencyKeys ...string) (ClientPairing, error) {
 	deviceID, displayName, platform = strings.TrimSpace(deviceID), strings.TrimSpace(displayName), strings.TrimSpace(platform)
 	if len(idempotencyKeys) > 1 {
-		return Client{}, errors.New("core: at most one Client idempotency key is allowed")
+		return ClientPairing{}, errors.New("core: at most one Client idempotency key is allowed")
 	}
 	key := ""
 	if len(idempotencyKeys) == 1 {
@@ -107,87 +133,207 @@ func (s *Store) PairClient(ctx context.Context, personID, deviceID, displayName,
 		defer s.idempotencyMu.Unlock()
 	}
 	if personID == "" || deviceID == "" || displayName == "" || platform == "" {
-		return Client{}, errors.New("core: Client person, device, display name and platform are required")
+		return ClientPairing{}, errors.New("core: Client person, device, display name and platform are required")
 	}
 	for _, scope := range scopes {
 		if !validClientScope(scope) {
-			return Client{}, fmt.Errorf("core: invalid Client scope %q", scope)
+			return ClientPairing{}, fmt.Errorf("core: invalid Client scope %q", scope)
 		}
 	}
 	normalizedScopes := normalizeClientScopes(scopes)
-	encodedScopes, err := json.Marshal(normalizedScopes)
+	requestHash, err := idempotencyRequestHash(struct {
+		PersonID    string
+		DeviceID    string
+		DisplayName string
+		Platform    string
+		Scopes      []ClientScope
+	}{personID, deviceID, displayName, platform, normalizedScopes})
 	if err != nil {
-		return Client{}, err
+		return ClientPairing{}, err
 	}
-	credential, err := randomClientCredential()
-	if err != nil {
-		return Client{}, err
-	}
-	now := s.now()
-	client := Client{ID: newID("cli"), PersonID: personID, DeviceID: deviceID, DisplayName: displayName, Platform: platform, Scopes: normalizedScopes, Status: ClientPending, CreatedAt: now, CredentialHash: credentialHash([]byte(credential))}
 	if key != "" {
-		var encoded string
-		if err := s.db.QueryRowContext(ctx, `SELECT outcome_json FROM idempotency_records WHERE operation = 'client.pair' AND idempotency_key = ?`, key).Scan(&encoded); err == nil {
+		var storedHash, encoded string
+		err := s.db.QueryRowContext(ctx, `SELECT request_hash, outcome_json FROM idempotency_records WHERE operation = 'client.pair' AND idempotency_key = ?`, key).Scan(&storedHash, &encoded)
+		if err == nil {
+			if err := checkIdempotencyHash(storedHash, requestHash); err != nil {
+				return ClientPairing{}, err
+			}
 			var stored Client
 			if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
-				return Client{}, err
+				return ClientPairing{}, err
 			}
-			return stored, nil
-		} else if !errors.Is(err, sql.ErrNoRows) {
-			return Client{}, err
+			var encrypted string
+			var redeemed int
+			if err := s.db.QueryRowContext(ctx, `SELECT pending_token_secret, pending_token_redeemed FROM client_pairings WHERE client_id = ?`, stored.ID).Scan(&encrypted, &redeemed); err == nil && redeemed == 0 && encrypted != "" {
+				if token, decryptErr := s.decryptNodeCredential(ctx, encrypted); decryptErr == nil {
+					return ClientPairing{Client: stored, PendingToken: string(token)}, nil
+				}
+			}
+			return ClientPairing{Client: stored}, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return ClientPairing{}, err
 		}
 	}
 	var existingID string
-	if err := s.db.QueryRowContext(ctx, `SELECT id FROM clients WHERE device_id = ?`, deviceID).Scan(&existingID); err == nil {
-		return s.Client(ctx, existingID)
+	var existingStatus ClientStatus
+	if err := s.db.QueryRowContext(ctx, `SELECT id, status FROM clients WHERE device_id = ?`, deviceID).Scan(&existingID, &existingStatus); err == nil {
+		if existingStatus == ClientActive {
+			client, err := s.Client(ctx, existingID)
+			if err != nil {
+				return ClientPairing{}, err
+			}
+			return ClientPairing{Client: client}, nil
+		}
 	} else if !errors.Is(err, sql.ErrNoRows) {
-		return Client{}, err
+		return ClientPairing{}, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO clients(id, person_id, device_id, display_name, platform, scopes_json, status, credential_hash, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, client.ID, client.PersonID, client.DeviceID, client.DisplayName, client.Platform, string(encodedScopes), client.Status, client.CredentialHash, timestamp(now))
+	pendingToken, err := randomClientCredential()
 	if err != nil {
-		return Client{}, err
+		return ClientPairing{}, err
 	}
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO client_pairings(id, client_id, created_at) VALUES(?, ?, ?)`, newID("pair"), client.ID, timestamp(now)); err != nil {
-		return Client{}, err
+	pendingSecret, err := s.encryptNodeCredential(ctx, []byte(pendingToken))
+	if err != nil {
+		return ClientPairing{}, err
 	}
-	_, _ = s.RecordEventWithMetadata(ctx, EventInput{Kind: "client.paired", AggregateType: "client", AggregateID: client.ID, Source: "server", Payload: map[string]any{"client_id": client.ID, "device_id": client.DeviceID, "platform": client.Platform}})
-	if key != "" {
-		encodedClient, err := json.Marshal(client)
-		if err != nil {
+	encodedScopes, err := json.Marshal(normalizedScopes)
+	if err != nil {
+		return ClientPairing{}, err
+	}
+	now := s.now()
+	client := Client{ID: existingID, PersonID: personID, DeviceID: deviceID, DisplayName: displayName, Platform: platform, Scopes: normalizedScopes, Status: ClientPending, CreatedAt: now, CredentialHash: credentialHash([]byte(pendingToken))}
+	if client.ID == "" {
+		client.ID = newID("cli")
+	}
+	created, err := withTx(s, ctx, func(tx *sql.Tx) (Client, error) {
+		if existingID == "" {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO clients(id, person_id, device_id, display_name, platform, scopes_json, status, credential_hash, credential_secret, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, '', ?)`, client.ID, client.PersonID, client.DeviceID, client.DisplayName, client.Platform, string(encodedScopes), client.Status, client.CredentialHash, timestamp(now)); err != nil {
+				return Client{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO client_pairings(id, client_id, pending_token_hash, pending_token_secret, created_at) VALUES(?, ?, ?, ?, ?)`, newID("pair"), client.ID, credentialHash([]byte(pendingToken)), pendingSecret, timestamp(now)); err != nil {
+				return Client{}, err
+			}
+		} else {
+			if _, err := tx.ExecContext(ctx, `UPDATE clients SET person_id = ?, display_name = ?, platform = ?, scopes_json = ?, status = ?, credential_hash = ?, credential_secret = '', revoked_at = NULL WHERE id = ?`, client.PersonID, client.DisplayName, client.Platform, string(encodedScopes), client.Status, client.CredentialHash, client.ID); err != nil {
+				return Client{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE client_pairings SET pending_token_hash = ?, pending_token_secret = ?, pending_token_redeemed = 0, created_at = ? WHERE client_id = ?`, credentialHash([]byte(pendingToken)), pendingSecret, timestamp(now), client.ID); err != nil {
+				return Client{}, err
+			}
+		}
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "client.paired", AggregateType: "client", AggregateID: client.ID, Source: "server", Payload: map[string]any{"client_id": client.ID, "device_id": client.DeviceID, "platform": client.Platform}}, client); err != nil {
 			return Client{}, err
 		}
-		if _, err := s.db.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES('client.pair', ?, ?, ?)`, key, string(encodedClient), timestamp(now)); err != nil {
-			return Client{}, err
+		if key != "" {
+			encodedClient, err := json.Marshal(client)
+			if err != nil {
+				return Client{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, request_hash, outcome_json, created_at) VALUES('client.pair', ?, ?, ?, ?)`, key, requestHash, string(encodedClient), timestamp(now)); err != nil {
+				return Client{}, err
+			}
 		}
+		return client, nil
+	})
+	if err != nil {
+		return ClientPairing{}, err
 	}
-	return client, nil
+	return ClientPairing{Client: created, PendingToken: pendingToken}, nil
 }
 
-func (s *Store) ApproveClient(ctx context.Context, id string) (Client, string, error) {
+func (s *Store) ApproveClient(ctx context.Context, id string, idempotencyKeys ...string) (Client, string, error) {
+	id = strings.TrimSpace(id)
+	key := ""
+	if len(idempotencyKeys) > 1 {
+		return Client{}, "", errors.New("core: at most one Client idempotency key is allowed")
+	}
+	if len(idempotencyKeys) == 1 {
+		key = strings.TrimSpace(idempotencyKeys[0])
+	}
+	if key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+	}
+	requestHash, err := idempotencyRequestHash(struct{ ClientID string }{id})
+	if err != nil {
+		return Client{}, "", err
+	}
+	if key != "" {
+		var storedHash, encoded, encrypted string
+		lookupErr := s.db.QueryRowContext(ctx, `SELECT request_hash, outcome_json FROM idempotency_records WHERE operation = 'client.approve' AND idempotency_key = ?`, key).Scan(&storedHash, &encoded)
+		if lookupErr == nil {
+			if err := checkIdempotencyHash(storedHash, requestHash); err != nil {
+				return Client{}, "", err
+			}
+			var stored clientCredentialOutcome
+			if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
+				return Client{}, "", err
+			}
+			if err := s.db.QueryRowContext(ctx, `SELECT credential_secret FROM clients WHERE id = ?`, id).Scan(&encrypted); err != nil {
+				return Client{}, "", err
+			}
+			secret, err := s.decryptNodeCredential(ctx, encrypted)
+			if err != nil {
+				return Client{}, "", err
+			}
+			return stored.Client, string(secret), nil
+		}
+		if !errors.Is(lookupErr, sql.ErrNoRows) {
+			return Client{}, "", lookupErr
+		}
+	}
 	credential, err := randomClientCredential()
 	if err != nil {
 		return Client{}, "", err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE clients SET status = ?, credential_hash = ? WHERE id = ? AND status = ?`, ClientActive, credentialHash([]byte(credential)), strings.TrimSpace(id), ClientPending)
+	credentialSecret, err := s.encryptNodeCredential(ctx, []byte(credential))
 	if err != nil {
 		return Client{}, "", err
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
-		client, lookupErr := s.Client(ctx, id)
-		if lookupErr != nil {
-			return Client{}, "", lookupErr
+	result, err := withTx(s, ctx, func(tx *sql.Tx) (clientCredentialOutcome, error) {
+		if key != "" {
+			var stored clientCredentialOutcome
+			found, err := lookupIdempotencyTx(ctx, tx, "client.approve", key, requestHash, &stored)
+			if err != nil || found {
+				return stored, err
+			}
 		}
-		if client.Status == ClientActive {
-			return client, "", nil
+		result, err := tx.ExecContext(ctx, `UPDATE clients SET status = ?, credential_hash = ?, credential_secret = ? WHERE id = ? AND status = ?`, ClientActive, credentialHash([]byte(credential)), credentialSecret, id, ClientPending)
+		if err != nil {
+			return clientCredentialOutcome{}, err
 		}
-		return Client{}, "", ErrInvalidTransition
-	}
-	client, err := s.Client(ctx, id)
-	if err != nil {
-		return Client{}, "", err
-	}
-	_, _ = s.RecordEventWithMetadata(ctx, EventInput{Kind: "client.connected", AggregateType: "client", AggregateID: client.ID, Source: "server", Payload: map[string]any{"client_id": client.ID}})
-	return client, credential, nil
+		if affected, _ := result.RowsAffected(); affected == 0 {
+			client, lookupErr := scanClient(tx.QueryRowContext(ctx, `SELECT id, person_id, device_id, display_name, platform, scopes_json, status, credential_hash, created_at, revoked_at FROM clients WHERE id = ?`, id))
+			if lookupErr != nil {
+				return clientCredentialOutcome{}, lookupErr
+			}
+			if client.Status == ClientActive {
+				return clientCredentialOutcome{Client: client}, nil
+			}
+			return clientCredentialOutcome{}, ErrInvalidTransition
+		}
+		client, err := scanClient(tx.QueryRowContext(ctx, `SELECT id, person_id, device_id, display_name, platform, scopes_json, status, credential_hash, created_at, revoked_at FROM clients WHERE id = ?`, id))
+		if err != nil {
+			return clientCredentialOutcome{}, err
+		}
+		if _, err := appendEventTx(ctx, tx, s.now(), EventInput{Kind: "client.connected", AggregateType: "client", AggregateID: client.ID, Source: "server", Payload: map[string]any{"client_id": client.ID}}, client); err != nil {
+			return clientCredentialOutcome{}, err
+		}
+		outcome := clientCredentialOutcome{Client: client, Credential: credential}
+		if key != "" {
+			encoded, err := json.Marshal(struct {
+				Client Client `json:"client"`
+			}{Client: client})
+			if err != nil {
+				return clientCredentialOutcome{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, request_hash, outcome_json, created_at) VALUES(?, ?, ?, ?, ?)`, "client.approve", key, requestHash, string(encoded), timestamp(s.now())); err != nil {
+				return clientCredentialOutcome{}, err
+			}
+		}
+		return outcome, nil
+	})
+	return result.Client, result.Credential, err
 }
 
 func (s *Store) Client(ctx context.Context, id string) (Client, error) {
@@ -229,28 +375,189 @@ func (s *Store) AuthenticateClient(ctx context.Context, credential string) (Clie
 	return client, nil
 }
 
-func (s *Store) RevokeClient(ctx context.Context, id string) (Client, error) {
-	now := s.now()
-	result, err := s.db.ExecContext(ctx, `UPDATE clients SET status = ?, revoked_at = ? WHERE id = ? AND status <> ?`, ClientRevoked, timestamp(now), strings.TrimSpace(id), ClientRevoked)
+func (s *Store) RevokeClient(ctx context.Context, id string, idempotencyKeys ...string) (Client, error) {
+	id = strings.TrimSpace(id)
+	key := ""
+	if len(idempotencyKeys) > 1 {
+		return Client{}, errors.New("core: at most one Client idempotency key is allowed")
+	}
+	if len(idempotencyKeys) == 1 {
+		key = strings.TrimSpace(idempotencyKeys[0])
+	}
+	if key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+	}
+	requestHash, err := idempotencyRequestHash(struct{ ClientID string }{id})
 	if err != nil {
 		return Client{}, err
 	}
-	if affected, _ := result.RowsAffected(); affected == 0 {
-		client, lookupErr := s.Client(ctx, id)
-		if lookupErr != nil {
-			return Client{}, lookupErr
+	returnValue, err := withTx(s, ctx, func(tx *sql.Tx) (Client, error) {
+		if key != "" {
+			var stored Client
+			found, err := lookupIdempotencyTx(ctx, tx, "client.revoke", key, requestHash, &stored)
+			if err != nil || found {
+				return stored, err
+			}
 		}
-		if client.Status != ClientRevoked {
-			return Client{}, ErrInvalidTransition
+		now := s.now()
+		result, err := tx.ExecContext(ctx, `UPDATE clients SET status = ?, revoked_at = ? WHERE id = ? AND status <> ?`, ClientRevoked, timestamp(now), id, ClientRevoked)
+		if err != nil {
+			return Client{}, err
+		}
+		if affected, _ := result.RowsAffected(); affected == 0 {
+			client, lookupErr := scanClient(tx.QueryRowContext(ctx, `SELECT id, person_id, device_id, display_name, platform, scopes_json, status, credential_hash, created_at, revoked_at FROM clients WHERE id = ?`, id))
+			if lookupErr != nil {
+				return Client{}, lookupErr
+			}
+			if client.Status != ClientRevoked {
+				return Client{}, ErrInvalidTransition
+			}
+			if key != "" {
+				encoded, _ := json.Marshal(client)
+				_, err = tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, request_hash, outcome_json, created_at) VALUES(?, ?, ?, ?, ?)`, "client.revoke", key, requestHash, string(encoded), timestamp(now))
+			}
+			return client, err
+		}
+		client, err := scanClient(tx.QueryRowContext(ctx, `SELECT id, person_id, device_id, display_name, platform, scopes_json, status, credential_hash, created_at, revoked_at FROM clients WHERE id = ?`, id))
+		if err != nil {
+			return Client{}, err
+		}
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "client.revoked", AggregateType: "client", AggregateID: client.ID, Source: "server", Payload: map[string]any{"client_id": client.ID}}, client); err != nil {
+			return Client{}, err
+		}
+		if key != "" {
+			encoded, err := json.Marshal(client)
+			if err != nil {
+				return Client{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, request_hash, outcome_json, created_at) VALUES(?, ?, ?, ?, ?)`, "client.revoke", key, requestHash, string(encoded), timestamp(now)); err != nil {
+				return Client{}, err
+			}
 		}
 		return client, nil
+	})
+	return returnValue, err
+}
+
+func (s *Store) ClientPairingStatus(ctx context.Context, id, pendingToken string) (ClientPairingStatus, error) {
+	var status ClientPairingStatus
+	var hash string
+	var redeemed int
+	err := s.db.QueryRowContext(ctx, `SELECT c.id, c.status, p.pending_token_hash, p.pending_token_redeemed FROM clients c JOIN client_pairings p ON p.client_id = c.id WHERE c.id = ?`, strings.TrimSpace(id)).Scan(&status.ClientID, &status.Status, &hash, &redeemed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ClientPairingStatus{}, ErrNotFound
 	}
-	client, err := s.Client(ctx, id)
 	if err != nil {
-		return Client{}, err
+		return ClientPairingStatus{}, err
 	}
-	_, _ = s.RecordEventWithMetadata(ctx, EventInput{Kind: "client.revoked", AggregateType: "client", AggregateID: client.ID, Source: "server", Payload: map[string]any{"client_id": client.ID}})
-	return client, nil
+	if credentialHash([]byte(strings.TrimSpace(pendingToken))) != hash {
+		return ClientPairingStatus{}, ErrNotFound
+	}
+	status.Redeemed = redeemed != 0
+	status.CredentialReady = status.Status == ClientActive && !status.Redeemed
+	return status, nil
+}
+
+func (s *Store) RedeemClient(ctx context.Context, id, pendingToken string, idempotencyKeys ...string) (Client, string, error) {
+	id = strings.TrimSpace(id)
+	pendingToken = strings.TrimSpace(pendingToken)
+	if id == "" || pendingToken == "" {
+		return Client{}, "", ErrNotFound
+	}
+	key := ""
+	if len(idempotencyKeys) > 1 {
+		return Client{}, "", errors.New("core: at most one Client idempotency key is allowed")
+	}
+	if len(idempotencyKeys) == 1 {
+		key = strings.TrimSpace(idempotencyKeys[0])
+	}
+	if key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+	}
+	requestHash, err := idempotencyRequestHash(struct{ ClientID string }{id})
+	if err != nil {
+		return Client{}, "", err
+	}
+	if key != "" {
+		var storedHash, encoded, encrypted string
+		lookupErr := s.db.QueryRowContext(ctx, `SELECT request_hash, outcome_json FROM idempotency_records WHERE operation = 'client.redeem' AND idempotency_key = ?`, key).Scan(&storedHash, &encoded)
+		if lookupErr == nil {
+			if err := checkIdempotencyHash(storedHash, requestHash); err != nil {
+				return Client{}, "", err
+			}
+			var stored clientCredentialOutcome
+			if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
+				return Client{}, "", err
+			}
+			if err := s.db.QueryRowContext(ctx, `SELECT credential_secret FROM clients WHERE id = ?`, id).Scan(&encrypted); err != nil {
+				return Client{}, "", err
+			}
+			secret, err := s.decryptNodeCredential(ctx, encrypted)
+			if err != nil {
+				return Client{}, "", err
+			}
+			return stored.Client, string(secret), nil
+		}
+		if !errors.Is(lookupErr, sql.ErrNoRows) {
+			return Client{}, "", lookupErr
+		}
+	}
+	var encrypted string
+	if err := s.db.QueryRowContext(ctx, `SELECT c.credential_secret FROM clients c JOIN client_pairings p ON p.client_id = c.id WHERE c.id = ? AND p.pending_token_hash = ?`, id, credentialHash([]byte(pendingToken))).Scan(&encrypted); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Client{}, "", ErrNotFound
+		}
+		return Client{}, "", err
+	}
+	credentialBytes, err := s.decryptNodeCredential(ctx, encrypted)
+	if err != nil {
+		return Client{}, "", ErrPairingNotReady
+	}
+	result, err := withTx(s, ctx, func(tx *sql.Tx) (clientCredentialOutcome, error) {
+		if key != "" {
+			var stored clientCredentialOutcome
+			found, err := lookupIdempotencyTx(ctx, tx, "client.redeem", key, requestHash, &stored)
+			if err != nil || found {
+				return stored, err
+			}
+		}
+		var status ClientStatus
+		var redeemed int
+		if err := tx.QueryRowContext(ctx, `SELECT c.status, p.pending_token_redeemed FROM clients c JOIN client_pairings p ON p.client_id = c.id WHERE c.id = ? AND p.pending_token_hash = ?`, id, credentialHash([]byte(pendingToken))).Scan(&status, &redeemed); errors.Is(err, sql.ErrNoRows) {
+			return clientCredentialOutcome{}, ErrNotFound
+		} else if err != nil {
+			return clientCredentialOutcome{}, err
+		}
+		if status != ClientActive {
+			return clientCredentialOutcome{}, ErrPairingNotReady
+		}
+		if redeemed != 0 {
+			return clientCredentialOutcome{}, ErrPairingAlreadyUsed
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE client_pairings SET pending_token_redeemed = 1 WHERE client_id = ?`, id); err != nil {
+			return clientCredentialOutcome{}, err
+		}
+		client, err := scanClient(tx.QueryRowContext(ctx, `SELECT id, person_id, device_id, display_name, platform, scopes_json, status, credential_hash, created_at, revoked_at FROM clients WHERE id = ?`, id))
+		if err != nil {
+			return clientCredentialOutcome{}, err
+		}
+		outcome := clientCredentialOutcome{Client: client, Credential: string(credentialBytes)}
+		if key != "" {
+			encoded, err := json.Marshal(struct {
+				Client Client `json:"client"`
+			}{Client: client})
+			if err != nil {
+				return clientCredentialOutcome{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, request_hash, outcome_json, created_at) VALUES(?, ?, ?, ?, ?)`, "client.redeem", key, requestHash, string(encoded), timestamp(s.now())); err != nil {
+				return clientCredentialOutcome{}, err
+			}
+		}
+		return outcome, nil
+	})
+	return result.Client, result.Credential, err
 }
 
 func (c Client) HasScope(scope ClientScope) bool {

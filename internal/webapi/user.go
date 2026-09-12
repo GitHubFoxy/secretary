@@ -90,7 +90,8 @@ func (s *Server) setSecretaryModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request struct {
-		Model string `json:"model"`
+		Model          string `json:"model"`
+		IdempotencyKey string `json:"idempotency_key,omitempty"`
 	}
 	if !decodeJSON(w, r, &request) {
 		return
@@ -99,6 +100,33 @@ func (s *Server) setSecretaryModel(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		http.Error(w, "unknown Secretary model", http.StatusBadRequest)
 		return
+	}
+	key := strings.TrimSpace(request.IdempotencyKey)
+	if key == "" {
+		key = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	}
+	payload := struct{ Model string }{canonical}
+	if key != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+		encoded, found, err := s.store.IdempotencyOutcomeForPayload(r.Context(), "secretary.model", key, payload)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, core.ErrIdempotencyConflict) {
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		if found {
+			var state secretaryModelState
+			if err := json.Unmarshal(encoded, &state); err != nil {
+				http.Error(w, "decode idempotency record", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusOK, state)
+			return
+		}
 	}
 	if err := s.store.SetSetting(r.Context(), secretaryModelSetting, canonical); err != nil {
 		http.Error(w, "save Secretary model", http.StatusInternalServerError)
@@ -112,7 +140,18 @@ func (s *Server) setSecretaryModel(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	_, _ = s.store.RecordEvent(r.Context(), "secretary.model_changed", "", "", "", map[string]string{"model": canonical})
-	writeJSON(w, http.StatusOK, s.secretaryModelState(r))
+	state := s.secretaryModelState(r)
+	if key != "" {
+		if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), "secretary.model", key, payload, state); err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, core.ErrIdempotencyConflict) {
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, state)
 }
 
 func (s *Server) canonicalModel(requested string) (string, bool) {
@@ -209,11 +248,19 @@ func (s *Server) user(w http.ResponseWriter, r *http.Request) {
 		if key == "" {
 			key = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 		}
+		payload := struct {
+			Content          string
+			ExpectedRevision int64
+		}{request.Content, request.ExpectedRevision}
 		if key != "" {
 			s.idempotencyMu.Lock()
 			defer s.idempotencyMu.Unlock()
-			if encoded, found, lookupErr := s.store.IdempotencyOutcome(r.Context(), "user.update", key); lookupErr != nil {
-				http.Error(w, "read idempotency record", http.StatusInternalServerError)
+			if encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), "user.update", key, payload); lookupErr != nil {
+				status := http.StatusInternalServerError
+				if errors.Is(lookupErr, core.ErrIdempotencyConflict) {
+					status = http.StatusConflict
+				}
+				http.Error(w, lookupErr.Error(), status)
 				return
 			} else if found {
 				var document core.UserDocument
@@ -235,7 +282,7 @@ func (s *Server) user(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if key != "" {
-			if err := s.store.RecordIdempotencyOutcome(r.Context(), "user.update", key, document); err != nil {
+			if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), "user.update", key, payload, document); err != nil {
 				http.Error(w, "save idempotency record", http.StatusInternalServerError)
 				return
 			}

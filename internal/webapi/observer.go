@@ -1,7 +1,9 @@
 package webapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -272,11 +274,19 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 		request.IdempotencyKey = r.Header.Get("Idempotency-Key")
 	}
 	operation := "worker.action:" + suffix[0] + ":" + details.Worker.WorkerRef
+	payloadFingerprint := struct {
+		Text      string
+		RequestID string
+	}{request.Text, request.RequestID}
 	if request.IdempotencyKey != "" {
 		s.idempotencyMu.Lock()
 		defer s.idempotencyMu.Unlock()
-		if encoded, found, lookupErr := s.store.IdempotencyOutcome(r.Context(), operation, request.IdempotencyKey); lookupErr != nil {
-			http.Error(w, "read idempotency record", http.StatusInternalServerError)
+		if encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), operation, request.IdempotencyKey, payloadFingerprint); lookupErr != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(lookupErr, core.ErrIdempotencyConflict) {
+				status = http.StatusConflict
+			}
+			http.Error(w, lookupErr.Error(), status)
 			return true
 		} else if found {
 			var stored core.WorkerDetails
@@ -305,7 +315,7 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 		return true
 	}
 	if request.IdempotencyKey != "" {
-		if err := s.store.RecordIdempotencyOutcome(r.Context(), operation, request.IdempotencyKey, result); err != nil {
+		if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, request.IdempotencyKey, payloadFingerprint, result); err != nil {
 			http.Error(w, "save idempotency record", http.StatusInternalServerError)
 			return true
 		}
@@ -325,6 +335,9 @@ func (s *Server) workerActivityReplayJSON(w http.ResponseWriter, r *http.Request
 		http.Error(w, "read worker activity", http.StatusInternalServerError)
 		return
 	}
+	for i := range events {
+		events[i] = sanitizePublicEvent(events[i])
+	}
 	writeJSON(w, http.StatusOK, events)
 }
 
@@ -334,6 +347,10 @@ func (s *Server) workerActivityReplay(w http.ResponseWriter, r *http.Request, wo
 		return
 	}
 	defer connection.CloseNow()
+	streamContext, cancel := context.WithCancel(r.Context())
+	clientID := s.requestClientID(r)
+	stream := s.registerStream(clientID, cancel)
+	defer s.unregisterStream(clientID, stream)
 	after, err := parseAfter(r)
 	if err != nil {
 		_ = connection.Close(websocket.StatusPolicyViolation, "invalid after_seq")
@@ -342,18 +359,19 @@ func (s *Server) workerActivityReplay(w http.ResponseWriter, r *http.Request, wo
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		events, readErr := s.workerEvents(r, workerRef, after)
+		events, readErr := s.workerEventsWithContext(streamContext, workerRef, after)
 		if readErr != nil {
 			return
 		}
 		for _, event := range events {
-			if err := connection.Write(r.Context(), websocket.MessageText, mustJSON(event)); err != nil {
+			event = sanitizePublicEvent(event)
+			if err := connection.Write(streamContext, websocket.MessageText, mustJSON(event)); err != nil {
 				return
 			}
 			after = event.Seq
 		}
 		select {
-		case <-r.Context().Done():
+		case <-streamContext.Done():
 			return
 		case <-ticker.C:
 		}
@@ -361,7 +379,56 @@ func (s *Server) workerActivityReplay(w http.ResponseWriter, r *http.Request, wo
 }
 
 func (s *Server) workerEvents(r *http.Request, workerRef string, after int64) ([]core.Event, error) {
-	return s.store.EventsForWorkerAfterSeq(r.Context(), workerRef, after, 500)
+	return s.workerEventsWithContext(r.Context(), workerRef, after)
+}
+
+func (s *Server) workerEventsWithContext(ctx context.Context, workerRef string, after int64) ([]core.Event, error) {
+	return s.store.EventsForWorkerAfterSeq(ctx, workerRef, after, 500)
+}
+
+func sanitizePublicEvent(event core.Event) core.Event {
+	var payload any
+	if json.Unmarshal(event.Payload, &payload) == nil {
+		if encoded, err := json.Marshal(sanitizePublicValue(payload)); err == nil {
+			event.Payload = encoded
+		}
+	}
+	return event
+}
+
+func sanitizePublicJSON(value any) any {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	var decoded any
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return value
+	}
+	return sanitizePublicValue(decoded)
+}
+
+func sanitizePublicValue(value any) any {
+	switch current := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(current))
+		for key, child := range current {
+			normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "-", "_"), " ", "_"))
+			if strings.Contains(normalized, "runtime_session_id") || strings.Contains(normalized, "task_id") || strings.Contains(normalized, "credential") || strings.Contains(normalized, "callback") || normalized == "token" || strings.HasSuffix(normalized, "_token") {
+				continue
+			}
+			result[key] = sanitizePublicValue(child)
+		}
+		return result
+	case []any:
+		result := make([]any, len(current))
+		for i, child := range current {
+			result[i] = sanitizePublicValue(child)
+		}
+		return result
+	default:
+		return value
+	}
 }
 
 func sanitizePublicTaskDetails(details *core.TaskDetails) {
@@ -382,6 +449,10 @@ func (s *Server) workerActivity(w http.ResponseWriter, r *http.Request, session 
 		return
 	}
 	defer connection.CloseNow()
+	streamContext, cancel := context.WithCancel(r.Context())
+	clientID := s.requestClientID(r)
+	stream := s.registerStream(clientID, cancel)
+	defer s.unregisterStream(clientID, stream)
 	for {
 		select {
 		case activity, open := <-session.Activity():
@@ -389,10 +460,10 @@ func (s *Server) workerActivity(w http.ResponseWriter, r *http.Request, session 
 				_ = connection.Close(websocket.StatusNormalClosure, "worker completed")
 				return
 			}
-			if err := connection.Write(r.Context(), websocket.MessageText, mustJSON(activity)); err != nil {
+			if err := connection.Write(streamContext, websocket.MessageText, mustJSON(sanitizePublicJSON(activity))); err != nil {
 				return
 			}
-		case <-r.Context().Done():
+		case <-streamContext.Done():
 			return
 		}
 	}

@@ -493,6 +493,10 @@ func (s *Store) migratePhase4Projects(ctx context.Context) error {
 }
 
 func (s *Store) CreateProject(ctx context.Context, spec ProjectSpec, idempotencyKeys ...string) (Project, error) {
+	requestHash, err := idempotencyRequestHash(spec.project())
+	if err != nil {
+		return Project{}, err
+	}
 	project := spec.project()
 	if project.ID == "" {
 		project.ID = newID("prj")
@@ -513,15 +517,10 @@ func (s *Store) CreateProject(ctx context.Context, spec ProjectSpec, idempotency
 	}
 	return withTx(s, ctx, func(tx *sql.Tx) (Project, error) {
 		if key != "" {
-			var encoded string
-			if err := tx.QueryRowContext(ctx, `SELECT outcome_json FROM idempotency_records WHERE operation = 'project.create' AND idempotency_key = ?`, key).Scan(&encoded); err == nil {
-				var stored Project
-				if json.Unmarshal([]byte(encoded), &stored) != nil {
-					return Project{}, errors.New("core: invalid stored Project outcome")
-				}
-				return stored, nil
-			} else if !errors.Is(err, sql.ErrNoRows) {
-				return Project{}, err
+			var stored Project
+			found, err := lookupIdempotencyTx(ctx, tx, "project.create", key, requestHash, &stored)
+			if err != nil || found {
+				return stored, err
 			}
 		}
 		now := s.now()
@@ -541,7 +540,7 @@ func (s *Store) CreateProject(ctx context.Context, spec ProjectSpec, idempotency
 		}
 		if key != "" {
 			encoded, _ := json.Marshal(project)
-			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES('project.create', ?, ?, ?)`, key, encoded, timestamp(now)); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, request_hash, outcome_json, created_at) VALUES('project.create', ?, ?, ?, ?)`, key, requestHash, encoded, timestamp(now)); err != nil {
 				return Project{}, err
 			}
 		}
@@ -623,6 +622,13 @@ func (s *Store) UpdateProject(ctx context.Context, id string, spec ProjectSpec, 
 		s.idempotencyMu.Lock()
 		defer s.idempotencyMu.Unlock()
 	}
+	requestHash, err := idempotencyRequestHash(struct {
+		Spec             ProjectSpec
+		ExpectedRevision int64
+	}{spec, expectedRevision})
+	if err != nil {
+		return Project{}, err
+	}
 	candidate := spec.project()
 	candidate.ID = id
 	if err := candidate.Validate(); err != nil {
@@ -630,15 +636,10 @@ func (s *Store) UpdateProject(ctx context.Context, id string, spec ProjectSpec, 
 	}
 	return withTx(s, ctx, func(tx *sql.Tx) (Project, error) {
 		if key != "" {
-			var encoded string
-			if err := tx.QueryRowContext(ctx, `SELECT outcome_json FROM idempotency_records WHERE operation = ? AND idempotency_key = ?`, "project.update:"+id, key).Scan(&encoded); err == nil {
-				var stored Project
-				if json.Unmarshal([]byte(encoded), &stored) != nil {
-					return Project{}, errors.New("core: invalid stored Project outcome")
-				}
-				return stored, nil
-			} else if !errors.Is(err, sql.ErrNoRows) {
-				return Project{}, err
+			var stored Project
+			found, err := lookupIdempotencyTx(ctx, tx, "project.update:"+id, key, requestHash, &stored)
+			if err != nil || found {
+				return stored, err
 			}
 		}
 		current, err := projectTx(ctx, tx, id)
@@ -664,7 +665,7 @@ func (s *Store) UpdateProject(ctx context.Context, id string, spec ProjectSpec, 
 		}
 		if key != "" {
 			encoded, _ := json.Marshal(candidate)
-			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES(?, ?, ?, ?)`, "project.update:"+id, key, encoded, timestamp(now)); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, request_hash, outcome_json, created_at) VALUES(?, ?, ?, ?, ?)`, "project.update:"+id, key, requestHash, encoded, timestamp(now)); err != nil {
 				return Project{}, err
 			}
 		}
@@ -689,12 +690,18 @@ func (s *Store) DeleteProject(ctx context.Context, id string, expectedRevision i
 		s.idempotencyMu.Lock()
 		defer s.idempotencyMu.Unlock()
 	}
+	requestHash, err := idempotencyRequestHash(struct {
+		ProjectID        string
+		ExpectedRevision int64
+	}{id, expectedRevision})
+	if err != nil {
+		return err
+	}
 	return withTxErr(s, ctx, func(tx *sql.Tx) error {
 		if key != "" {
-			var ignored string
-			if err := tx.QueryRowContext(ctx, `SELECT outcome_json FROM idempotency_records WHERE operation = ? AND idempotency_key = ?`, "project.delete:"+id, key).Scan(&ignored); err == nil {
-				return nil
-			} else if !errors.Is(err, sql.ErrNoRows) {
+			var ignored struct{}
+			found, err := lookupIdempotencyTx(ctx, tx, "project.delete:"+id, key, requestHash, &ignored)
+			if err != nil || found {
 				return err
 			}
 		}
@@ -719,7 +726,7 @@ func (s *Store) DeleteProject(ctx context.Context, id string, expectedRevision i
 			return ErrProjectRevisionConflict
 		}
 		if key != "" {
-			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, outcome_json, created_at) VALUES(?, ?, '{}', ?)`, "project.delete:"+id, key, timestamp(s.now())); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, request_hash, outcome_json, created_at) VALUES(?, ?, ?, '{}', ?)`, "project.delete:"+id, key, requestHash, timestamp(s.now())); err != nil {
 				return err
 			}
 		}
