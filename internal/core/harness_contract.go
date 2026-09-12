@@ -342,8 +342,10 @@ type SubagentActivity struct {
 }
 
 type ActivityRequest struct {
-	RequestID string `json:"request_id"`
-	Summary   string `json:"summary"`
+	RequestID    string     `json:"request_id"`
+	Summary      string     `json:"summary"`
+	RiskCategory string     `json:"risk_category,omitempty"`
+	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
 }
 
 type ActivityProgressData struct {
@@ -412,8 +414,8 @@ func (a Activity) validatePayload() error {
 			return fmt.Errorf("core: subagent activity requires subagent data")
 		}
 	case ActivityKindPermissionRequest, ActivityKindUserInputRequest:
-		if a.Request == nil {
-			return fmt.Errorf("core: request activity requires request data")
+		if a.Request == nil || strings.TrimSpace(a.Request.RequestID) == "" {
+			return fmt.Errorf("core: request activity requires request_id and request data")
 		}
 	case ActivityKindProgress:
 		if a.Progress == nil {

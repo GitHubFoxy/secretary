@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/beruseruko/secretary/internal/acp"
 )
@@ -52,6 +54,7 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 		return nil, fmt.Errorf("acp: session/new returned no sessionId")
 	}
 	session := newACPSession(created.SessionID, client, true)
+	session.setRequestHandler()
 	go session.watch()
 	go func() { _ = session.promptTurn(context.Background(), request.Task) }()
 	return session, nil
@@ -81,6 +84,7 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 	}
 	session := newACPSession(runtimeSessionID, client, false)
 	go session.watch()
+	session.setRequestHandler()
 	return session, nil
 }
 
@@ -178,7 +182,7 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 }
 
 func newACPSession(id string, client *acp.Client, busy bool) *acpSession {
-	return &acpSession{id: id, client: client, activity: make(chan Activity, 64), result: make(chan Result, 64), busy: busy}
+	return &acpSession{id: id, client: client, activity: make(chan Activity, 64), result: make(chan Result, 64), pending: make(map[string]chan string), resolved: make(map[string]struct{}), busy: busy}
 }
 
 type acpSession struct {
@@ -186,6 +190,10 @@ type acpSession struct {
 	client   *acp.Client
 	activity chan Activity
 	result   chan Result
+
+	requestMu sync.Mutex
+	pending   map[string]chan string
+	resolved  map[string]struct{}
 
 	turnMu sync.Mutex
 	busy   bool
@@ -209,6 +217,110 @@ func (s *acpSession) Steer(ctx context.Context, text string) (bool, error) {
 func (s *acpSession) Cancel(ctx context.Context) error {
 	_ = ctx
 	return s.client.Notify("session/cancel", map[string]string{"sessionId": s.id})
+}
+
+func (s *acpSession) Respond(ctx context.Context, requestID, response string) error {
+	if strings.TrimSpace(requestID) == "" || strings.TrimSpace(response) == "" {
+		return errors.New("acp: request_id and response are required")
+	}
+	s.requestMu.Lock()
+	channel, ok := s.pending[requestID]
+	if !ok {
+		_, alreadyResolved := s.resolved[requestID]
+		s.requestMu.Unlock()
+		if alreadyResolved {
+			return nil
+		}
+		return errors.New("acp: unknown worker request")
+	}
+	delete(s.pending, requestID)
+	s.resolved[requestID] = struct{}{}
+	s.requestMu.Unlock()
+	select {
+	case channel <- response:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *acpSession) setRequestHandler() {
+	s.client.SetServerRequestHandler(s.handleServerRequest)
+}
+
+var acpRequestSequence atomic.Uint64
+
+type acpPermissionOption struct {
+	OptionID string `json:"optionId"`
+	Kind     string `json:"kind"`
+}
+
+func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
+	requestID := fmt.Sprintf("request-%d-%d", time.Now().UnixNano(), acpRequestSequence.Add(1))
+	var params map[string]any
+	if err := json.Unmarshal(message.Params, &params); err != nil {
+		return nil, errors.New("invalid harness request")
+	}
+	kind := ActivityPermission
+	summary := "Worker request"
+	if value, ok := params["question"].(string); ok && strings.TrimSpace(value) != "" {
+		summary = value
+	}
+	if value, ok := params["prompt"].(string); ok && strings.TrimSpace(value) != "" {
+		summary = value
+	}
+	if message.Method == "session/request_permission" {
+		var permission struct {
+			Options []acpPermissionOption `json:"options"`
+		}
+		if err := json.Unmarshal(message.Params, &permission); err != nil {
+			return nil, errors.New("invalid permission request")
+		}
+		for _, option := range permission.Options {
+			if strings.TrimSpace(option.OptionID) != "" && strings.TrimSpace(option.Kind) != "" {
+				summary = "Permission request"
+				break
+			}
+		}
+	} else if message.Method == "session/request_input" || message.Method == "session/request_user_input" {
+		kind = ActivityUserInput
+	} else {
+		return nil, fmt.Errorf("unsupported harness request: %s", message.Method)
+	}
+	response := make(chan string, 1)
+	s.requestMu.Lock()
+	s.pending[requestID] = response
+	s.requestMu.Unlock()
+	select {
+	case s.activity <- Activity{Kind: kind, RequestID: requestID, Summary: summary}:
+	default:
+	}
+	value := <-response
+	if kind == ActivityUserInput {
+		return map[string]string{"input": value}, nil
+	}
+	var permission struct {
+		Options []acpPermissionOption `json:"options"`
+	}
+	_ = json.Unmarshal(message.Params, &permission)
+	approved := strings.Contains(strings.ToLower(value), "approve") || strings.Contains(strings.ToLower(value), "allow") || strings.Contains(strings.ToLower(value), `"approved":true`)
+	selected := ""
+	for _, option := range permission.Options {
+		lower := strings.ToLower(option.Kind)
+		if approved && strings.Contains(lower, "allow") {
+			selected = option.OptionID
+			if strings.Contains(lower, "always") {
+				break
+			}
+		}
+		if !approved && (strings.Contains(lower, "deny") || strings.Contains(lower, "reject")) {
+			selected = option.OptionID
+		}
+	}
+	if selected == "" {
+		return nil, errors.New("harness has no matching permission option")
+	}
+	return map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": selected}}, nil
 }
 
 func (s *acpSession) Prompt(ctx context.Context, task string) error {

@@ -65,7 +65,15 @@ type MessageWorkerRequest struct {
 	WorkerRef      string `json:"worker_ref"`
 	Text           string `json:"text"`
 	RequestID      string `json:"request_id,omitempty"`
+	ClientID       string `json:"client_id,omitempty"`
 	IdempotencyKey string `json:"idempotency_key,omitempty"`
+}
+
+// RespondWorker is the single server-side entry point for permission and input
+// responses. It intentionally delegates to the same generic Node command path
+// as Worker messages.
+func (s WorkerService) RespondWorker(ctx context.Context, request MessageWorkerRequest) (core.WorkerDetails, error) {
+	return s.MessageWorker(ctx, request)
 }
 
 func (s WorkerService) authorize(ctx context.Context) (core.Conversation, error) {
@@ -250,6 +258,24 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 }
 
+func approvalResponseState(kind core.ApprovalKind, response string) (core.ApprovalState, error) {
+	value := strings.ToLower(strings.TrimSpace(response))
+	if kind == core.ApprovalInput {
+		if value == "" {
+			return "", errors.New("worker: input response is required")
+		}
+		return core.ApprovalApproved, nil
+	}
+	switch value {
+	case "approve", "approved", "allow", "yes", `{"approved":true}`:
+		return core.ApprovalApproved, nil
+	case "deny", "denied", "reject", "rejected", "no", `{"approved":false}`:
+		return core.ApprovalDenied, nil
+	default:
+		return "", errors.New("worker: approval response must approve or deny")
+	}
+}
+
 func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerRequest) (core.WorkerDetails, error) {
 	conversation, err := s.authorize(ctx)
 	if err != nil {
@@ -264,6 +290,36 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		return core.WorkerDetails{}, err
 	}
 	attempt := details.CurrentAttempt()
+	approvalResponse := false
+	if attempt != nil && strings.TrimSpace(request.RequestID) != "" {
+		if approval, approvalErr := s.Store.Approval(ctx, request.RequestID); approvalErr == nil {
+			if approval.WorkerID != details.Worker.ID || approval.AttemptID != attempt.ID {
+				return core.WorkerDetails{}, core.ErrInvalidTransition
+			}
+			if approval.State == core.ApprovalPending {
+				state, stateErr := approvalResponseState(approval.Kind, request.Text)
+				if stateErr != nil {
+					return core.WorkerDetails{}, stateErr
+				}
+				clientID := strings.TrimSpace(request.ClientID)
+				if clientID == "" {
+					clientID = "client"
+				}
+				approval, _, err = s.Store.ResolveApproval(ctx, request.RequestID, state, clientID, request.Text)
+				if err != nil {
+					return core.WorkerDetails{}, err
+				}
+			}
+			if approval.State == core.ApprovalDenied || approval.State == core.ApprovalExpired || approval.State == core.ApprovalRevoked {
+				return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+			}
+			if approval.State == core.ApprovalApproved {
+				approvalResponse = true
+			}
+		} else if !errors.Is(approvalErr, core.ErrNotFound) {
+			return core.WorkerDetails{}, approvalErr
+		}
+	}
 	if attempt != nil && strings.TrimSpace(request.RequestID) != "" {
 		command, found, err := s.Store.FindWorkerCommand(ctx, "respond", commandDedupeKey(request.IdempotencyKey, "request:"+request.RequestID), details.Worker.ID, attempt.ID)
 		if err != nil {
@@ -281,7 +337,27 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
 		}
 	}
+	if approvalResponse {
+		if err := s.requireRuntime(); err != nil {
+			return core.WorkerDetails{}, err
+		}
+		command, send, err := s.claimCommand(ctx, "respond", commandDedupeKey(request.IdempotencyKey, "request:"+request.RequestID), details.Worker, *attempt)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		if send {
+			err = s.deliverCommand(ctx, command, func(commandID string) error {
+				return s.Runtime.Respond(ctx, commandID, details.Worker, *attempt, request.RequestID, request.Text)
+			})
+		}
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+	}
 	switch details.Worker.Status {
+	case core.WorkerWaitingApproval:
+		return core.WorkerDetails{}, errors.New("worker: approval request is required")
 	case core.WorkerWorking:
 		if attempt == nil {
 			return core.WorkerDetails{}, core.ErrInvalidTransition

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/ctl"
 	"github.com/beruseruko/secretary/internal/node"
 	"github.com/coder/websocket"
 )
@@ -36,6 +37,32 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	workerRef := parts[0]
+	if len(parts) == 2 && parts[1] == "respond" && r.Method == http.MethodPost {
+		if s.responder == nil {
+			http.Error(w, "worker response service is unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		var request struct {
+			RequestID      string `json:"request_id"`
+			Response       string `json:"response"`
+			ClientID       string `json:"client_id,omitempty"`
+			IdempotencyKey string `json:"idempotency_key,omitempty"`
+		}
+		if !decodeJSON(w, r, &request) {
+			return
+		}
+		if request.RequestID == "" || request.Response == "" {
+			http.Error(w, "request_id and response are required", http.StatusBadRequest)
+			return
+		}
+		details, err := s.responder.RespondWorker(r.Context(), ctl.MessageWorkerRequest{WorkerRef: workerRef, Text: request.Response, RequestID: request.RequestID, ClientID: "web-session", IdempotencyKey: request.IdempotencyKey})
+		if err != nil {
+			http.Error(w, "respond worker: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, http.StatusOK, details)
+		return
+	}
 	session, found := s.workerSession(workerRef)
 	if len(parts) == 1 && r.Method == http.MethodGet {
 		if found {

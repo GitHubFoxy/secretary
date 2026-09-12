@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -39,6 +40,7 @@ type localState struct {
 	LastAcknowledgedSequence uint64                    `json:"last_acknowledged_sequence"`
 	Commands                 map[string]CommandRecord  `json:"commands"`
 	Mappings                 map[string]sessionMapping `json:"mappings"`
+	WorkerResponses          map[string]CommandOutcome `json:"worker_responses"`
 	Outbox                   []PendingEvent            `json:"outbox"`
 }
 
@@ -55,7 +57,7 @@ func OpenLocalStore(path string) (*LocalStore, error) {
 	if path == "" {
 		return nil, errors.New("node: local store path is required")
 	}
-	store := &LocalStore{path: path, state: localState{Version: 1, NextSequence: 1, Commands: map[string]CommandRecord{}, Mappings: map[string]sessionMapping{}, Outbox: []PendingEvent{}}}
+	store := &LocalStore{path: path, state: localState{Version: 1, NextSequence: 1, Commands: map[string]CommandRecord{}, Mappings: map[string]sessionMapping{}, WorkerResponses: map[string]CommandOutcome{}, Outbox: []PendingEvent{}}}
 	encoded, err := os.ReadFile(path)
 	if err == nil {
 		if len(encoded) > 0 {
@@ -67,6 +69,9 @@ func OpenLocalStore(path string) (*LocalStore, error) {
 			}
 			if store.state.Mappings == nil {
 				store.state.Mappings = map[string]sessionMapping{}
+			}
+			if store.state.WorkerResponses == nil {
+				store.state.WorkerResponses = map[string]CommandOutcome{}
 			}
 			if store.state.NextSequence == 0 {
 				store.state.NextSequence = 1
@@ -129,6 +134,38 @@ func (s *LocalStore) ClaimCommand(command Command) (CommandRecord, bool, error) 
 		return CommandRecord{}, false, err
 	}
 	return record, false, nil
+}
+
+func (s *LocalStore) ClaimWorkerResponse(requestID string) (CommandOutcome, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(requestID) == "" {
+		return CommandOutcome{}, false, errors.New("node: worker response request_id is required")
+	}
+	if outcome, ok := s.state.WorkerResponses[requestID]; ok {
+		if outcome.State == CommandProcessing {
+			outcome.State = CommandInterrupted
+			outcome.ErrorCode = "execution_state_unknown"
+		}
+		return outcome, true, nil
+	}
+	outcome := CommandOutcome{Kind: CommandRespondWorker, State: CommandProcessing}
+	s.state.WorkerResponses[requestID] = outcome
+	if err := s.persistLocked(); err != nil {
+		delete(s.state.WorkerResponses, requestID)
+		return CommandOutcome{}, false, err
+	}
+	return outcome, false, nil
+}
+
+func (s *LocalStore) CompleteWorkerResponse(requestID string, outcome CommandOutcome) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.state.WorkerResponses[requestID]; !ok {
+		return errors.New("node: worker response claim not found")
+	}
+	s.state.WorkerResponses[requestID] = outcome
+	return s.persistLocked()
 }
 
 func (s *LocalStore) CompleteCommand(commandID string, outcome CommandOutcome) (CommandRecord, error) {

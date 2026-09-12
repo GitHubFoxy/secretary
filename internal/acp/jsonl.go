@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 )
@@ -31,10 +30,13 @@ type RPCError struct {
 
 func (e *RPCError) Error() string { return fmt.Sprintf("acp rpc %d: %s", e.Code, e.Message) }
 
+type ServerRequestHandler func(Message) (any, error)
+
 type Client struct {
 	stdin   io.WriteCloser
 	wait    func() error
 	write   sync.Mutex
+	handler ServerRequestHandler
 	nextID  atomic.Uint64
 	pending sync.Map
 	events  chan Message
@@ -73,6 +75,8 @@ func StartWithLogEnv(ctx context.Context, rawLog io.Writer, environment []string
 }
 
 func (c *Client) Events() <-chan Message { return c.events }
+
+func (c *Client) SetServerRequestHandler(handler ServerRequestHandler) { c.handler = handler }
 
 func (c *Client) Request(ctx context.Context, method string, params any, result any) error {
 	id := c.nextID.Add(1)
@@ -171,34 +175,16 @@ func (c *Client) writeRaw(raw []byte) {
 }
 
 func (c *Client) handleServerRequest(message Message) error {
+	if c.handler != nil {
+		result, err := c.handler(message)
+		if err != nil {
+			return c.replyError(message.ID, -32010, err.Error())
+		}
+		return c.reply(message.ID, result)
+	}
 	switch message.Method {
 	case "session/request_permission":
-		var params struct {
-			Options []struct {
-				OptionID string `json:"optionId"`
-				Kind     string `json:"kind"`
-			} `json:"options"`
-		}
-		if err := json.Unmarshal(message.Params, &params); err != nil {
-			return c.replyError(message.ID, -32602, "invalid permission request")
-		}
-		optionID := ""
-		for _, option := range params.Options {
-			kind := strings.ToLower(option.Kind)
-			if option.OptionID == "" || !strings.Contains(kind, "allow") {
-				continue
-			}
-			if optionID == "" || strings.Contains(kind, "always") {
-				optionID = option.OptionID
-				if strings.Contains(kind, "always") {
-					break
-				}
-			}
-		}
-		if optionID == "" {
-			return c.replyError(message.ID, -32010, "harness compatibility failure: no allow permission option")
-		}
-		return c.reply(message.ID, map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": optionID}})
+		return c.replyError(message.ID, -32010, "permission request requires explicit approval policy")
 	case "fs/read_text_file":
 		var params struct {
 			Path string `json:"path"`

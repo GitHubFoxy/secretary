@@ -276,18 +276,40 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 }
 
 func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerCommand) CommandOutcome {
+	storedResponse, duplicate, err := n.store.ClaimWorkerResponse(command.RequestID)
+	if err != nil {
+		return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "response_claim_failed", err.Error())
+	}
+	if duplicate {
+		if storedResponse.State == CommandProcessing {
+			return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "execution_state_unknown", "worker response execution state is unknown")
+		}
+		storedResponse.CommandID = command.Metadata.CommandID
+		storedResponse.Kind = CommandRespondWorker
+		return storedResponse
+	}
 	session, err := n.sessionForCommand(ctx, command.Metadata)
 	if err != nil {
-		return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "runtime_session_unavailable", err.Error())
+		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "runtime_session_unavailable", err.Error())
+		_ = n.store.CompleteWorkerResponse(command.RequestID, outcome)
+		return outcome
 	}
 	responder, ok := session.(Responder)
 	if !ok {
-		return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "runtime_does_not_accept_response", "runtime does not accept worker responses")
+		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "runtime_does_not_accept_response", "runtime does not accept worker responses")
+		_ = n.store.CompleteWorkerResponse(command.RequestID, outcome)
+		return outcome
 	}
 	if err := responder.Respond(ctx, command.RequestID, command.Response); err != nil {
-		return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "response_failed", err.Error())
+		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "response_failed", err.Error())
+		_ = n.store.CompleteWorkerResponse(command.RequestID, outcome)
+		return outcome
 	}
-	return acceptedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command})
+	outcome := acceptedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command})
+	if err := n.store.CompleteWorkerResponse(command.RequestID, outcome); err != nil {
+		return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "response_record_failed", err.Error())
+	}
+	return outcome
 }
 
 func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.CommandMetadata) (Session, error) {
@@ -460,6 +482,18 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 			return core.Activity{}, false
 		}
 		activity = core.Activity{Metadata: metadata, Kind: core.ActivityStatus, Status: item.Text}
+	case ActivityPermission, ActivityUserInput:
+		if strings.TrimSpace(item.RequestID) == "" {
+			return core.Activity{}, false
+		}
+		kind := core.ActivityPermissionRequest
+		if item.Kind == ActivityUserInput {
+			kind = core.ActivityUserInputRequest
+		}
+		if !capabilities.SupportsActivity(kind) {
+			return core.Activity{}, false
+		}
+		activity = core.Activity{Metadata: metadata, Kind: kind, Request: &core.ActivityRequest{RequestID: item.RequestID, Summary: item.Summary}}
 	default:
 		return core.Activity{}, false
 	}

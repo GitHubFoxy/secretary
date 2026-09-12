@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"testing"
@@ -17,6 +18,12 @@ func TestClientAutomaticallyApprovesPermissionRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
+	client.SetServerRequestHandler(func(message Message) (any, error) {
+		if message.Method != "session/request_permission" {
+			return nil, errors.New("unexpected server request")
+		}
+		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "allow_always"}}, nil
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var ignored map[string]any

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/ctl"
 	"github.com/beruseruko/secretary/internal/node"
 	secretaryruntime "github.com/beruseruko/secretary/internal/secretary"
 	"github.com/coder/websocket"
@@ -26,6 +27,10 @@ type workerController interface {
 	Stop(context.Context, string) error
 }
 
+type workerResponder interface {
+	RespondWorker(context.Context, ctl.MessageWorkerRequest) (core.WorkerDetails, error)
+}
+
 type Server struct {
 	store          *core.Store
 	bootstrapToken string
@@ -33,6 +38,7 @@ type Server struct {
 	node           *node.LocalNode
 	remoteNodes    *node.ServerManager
 	workers        workerController
+	responder      workerResponder
 	secretary      interface {
 		HandleMessage(context.Context, string) error
 	}
@@ -65,11 +71,17 @@ func New(ctx context.Context, store *core.Store, bootstrapToken string) (*Server
 	return server, nil
 }
 
-func (s *Server) AttachNode(local *node.LocalNode)                   { s.node = local }
-func (s *Server) AttachNodeService(manager *node.ServerManager)      { s.remoteNodes = manager }
-func (s *Server) AttachWorkerController(controller workerController) { s.workers = controller }
-func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime)  { s.secretary = runtime }
-func (s *Server) SetDebug(debug bool)                                { s.debug = debug }
+func (s *Server) AttachNode(local *node.LocalNode)              { s.node = local }
+func (s *Server) AttachNodeService(manager *node.ServerManager) { s.remoteNodes = manager }
+func (s *Server) AttachWorkerController(controller workerController) {
+	s.workers = controller
+	if responder, ok := controller.(workerResponder); ok {
+		s.responder = responder
+	}
+}
+func (s *Server) AttachWorkerResponder(responder workerResponder)   { s.responder = responder }
+func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime) { s.secretary = runtime }
+func (s *Server) SetDebug(debug bool)                               { s.debug = debug }
 func (s *Server) AttachSecretaryModelCatalog(catalog func() map[string]string, defaultModel func() string, changed func(string) error) {
 	s.modelCatalog, s.modelDefault, s.modelChanged = catalog, defaultModel, changed
 }
@@ -89,6 +101,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/secretary/model", s.setSecretaryModel)
 	mux.HandleFunc("PUT /v1/secretary/model", s.setSecretaryModel)
 	mux.HandleFunc("GET /v1/workers", s.workerList)
+	mux.HandleFunc("GET /v1/approvals", s.approvalList)
+	mux.HandleFunc("/v1/approvals/", s.approvalRoute)
 	mux.HandleFunc("/v1/projects", s.projectRoot)
 	mux.HandleFunc("/v1/projects/", s.projectRoute)
 	mux.HandleFunc("/v1/workers/", s.workerRoute)
