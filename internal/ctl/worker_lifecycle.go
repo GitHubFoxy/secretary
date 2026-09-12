@@ -233,7 +233,7 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		return core.WorkerDetails{}, err
 	}
 	attempt := details.CurrentAttempt()
-	if attempt != nil && strings.TrimSpace(request.RequestID) != "" && strings.TrimSpace(request.IdempotencyKey) != "" {
+	if attempt != nil && strings.TrimSpace(request.RequestID) != "" {
 		command, found, err := s.Store.FindWorkerCommand(ctx, "respond", commandDedupeKey(request.IdempotencyKey, "request:"+request.RequestID), details.Worker.ID, attempt.ID)
 		if err != nil {
 			return core.WorkerDetails{}, err

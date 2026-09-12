@@ -355,7 +355,7 @@ func TestWorkerServiceFailsClosedWithoutRuntimeBeforeSpawnSideEffects(t *testing
 	}
 }
 
-func TestWorkerServiceDuplicateNeedsInputResponseIsNoOp(t *testing.T) {
+func TestWorkerServiceDuplicateNeedsInputResponseByRequestIDIsNoOp(t *testing.T) {
 	ctx, store, service, project := newWorkerService(t)
 	details := spawnLifecycleWorker(t, ctx, service, project)
 	attempt := details.Attempts[0]
@@ -365,13 +365,20 @@ func TestWorkerServiceDuplicateNeedsInputResponseIsNoOp(t *testing.T) {
 	if _, err := store.SetPhase4AttemptNeedsInput(ctx, attempt.ID); err != nil {
 		t.Fatal(err)
 	}
-	request := MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "answer", RequestID: "question-1", IdempotencyKey: "answer-1"}
+	request := MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "answer", RequestID: "question-1"}
 	if _, err := service.MessageWorker(ctx, request); err != nil {
 		t.Fatal(err)
 	}
 	duplicate, err := service.MessageWorker(ctx, request)
-	if err != nil || duplicate.Worker.Status != core.WorkerWorking || service.Runtime.(*lifecycleRuntime).count("respond") != 1 || service.Runtime.(*lifecycleRuntime).count("steer") != 0 {
-		t.Fatalf("duplicate=%#v err=%v responds=%d steers=%d", duplicate, err, service.Runtime.(*lifecycleRuntime).count("respond"), service.Runtime.(*lifecycleRuntime).count("steer"))
+	runtime := service.Runtime.(*lifecycleRuntime)
+	if err != nil || duplicate.Worker.Status != core.WorkerWorking || runtime.count("respond") != 1 || runtime.count("steer") != 0 || runtime.count("resume") != 0 {
+		t.Fatalf("duplicate=%#v err=%v responds=%d steers=%d resumes=%d", duplicate, err, runtime.count("respond"), runtime.count("steer"), runtime.count("resume"))
+	}
+	if _, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "different request", RequestID: "question-2"}); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.count("respond") != 1 || runtime.count("steer") != 1 || runtime.count("resume") != 0 {
+		t.Fatalf("different request responds=%d steers=%d resumes=%d", runtime.count("respond"), runtime.count("steer"), runtime.count("resume"))
 	}
 }
 
