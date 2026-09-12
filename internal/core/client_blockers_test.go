@@ -77,6 +77,67 @@ func TestClientPairIdempotencyDoesNotReplayCurrentGenerationPendingToken(t *test
 	}
 }
 
+func TestClientPairActiveNoOpPersistsImmutableIdempotencyOutcome(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	person, _, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.PairClientWithToken(ctx, person.ID, "pair-noop", "First", "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ApproveClient(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	firstNoOp, err := store.PairClientWithToken(ctx, person.ID, "pair-noop", "First", "test", nil, "pair-noop-key")
+	if err != nil || firstNoOp.ID != first.ID || firstNoOp.PendingToken != "" {
+		t.Fatalf("active pair no-op=%#v err=%v", firstNoOp, err)
+	}
+	replayed, err := store.PairClientWithToken(ctx, person.ID, "pair-noop", "First", "test", nil, "pair-noop-key")
+	if err != nil || replayed.ID != firstNoOp.ID || replayed.PendingToken != "" {
+		t.Fatalf("pair no-op replay=%#v err=%v", replayed, err)
+	}
+	if _, err := store.PairClientWithToken(ctx, person.ID, "pair-noop", "Changed", "test", nil, "pair-noop-key"); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("pair no-op payload reuse was accepted: %v", err)
+	}
+	if _, err := store.PairClientWithToken(ctx, person.ID, "pair-other", "Other", "test", nil, "pair-noop-key"); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("pair no-op key reused for another client: %v", err)
+	}
+}
+
+func TestClientApproveActiveNoOpPersistsImmutableIdempotencyOutcome(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	person, _, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.PairClientWithToken(ctx, person.ID, "approve-noop", "First", "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ApproveClient(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	client, credential, err := store.ApproveClient(ctx, first.ID, "approve-noop-key")
+	if err != nil || client.ID != first.ID || credential != "" {
+		t.Fatalf("active approve no-op client=%#v credential=%q err=%v", client, credential, err)
+	}
+	replayed, replayedCredential, err := store.ApproveClient(ctx, first.ID, "approve-noop-key")
+	if err != nil || replayed.ID != client.ID || replayedCredential != "" {
+		t.Fatalf("approve no-op replay client=%#v credential=%q err=%v", replayed, replayedCredential, err)
+	}
+	second, err := store.PairClientWithToken(ctx, person.ID, "approve-other", "Other", "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ApproveClient(ctx, second.ID, "approve-noop-key"); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("approve no-op key reused for another client: %v", err)
+	}
+}
+
 func TestClientPairConcurrentDuplicateHasOneEffectAndExactOutcome(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)

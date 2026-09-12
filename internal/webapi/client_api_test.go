@@ -102,6 +102,48 @@ func TestClientPairingScopesCredentialIsolationAndRevoke(t *testing.T) {
 	response.Body.Close()
 }
 
+func TestRegisterStreamRejectsRevokedAndStaleGeneration(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "register-stream.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairing, err := store.PairClientWithToken(ctx, api.OwnerID(), "stream-generation", "Stream", "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, _, err := store.ApproveClient(ctx, pairing.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream := api.registerStream(client.ID, func() {})
+	if stream == nil {
+		t.Fatal("setup registration unexpectedly rejected")
+	}
+	if _, err := store.RevokeClient(ctx, client.ID); err != nil {
+		t.Fatal(err)
+	}
+	api.unregisterStream(client.ID, stream)
+	if stale := api.registerStream(client.ID, func() {}); stale != nil {
+		t.Fatal("revoked stream registration accepted")
+	}
+	newPairing, err := store.PairClientWithToken(ctx, api.OwnerID(), "stream-generation", "Stream 2", "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ApproveClient(ctx, newPairing.ID); err != nil {
+		t.Fatal(err)
+	}
+	if stream := api.registerStream(client.ID, func() {}); stream != nil {
+		t.Fatal("stale generation stream registration accepted")
+	}
+}
+
 func TestRevokeClientTerminatesAlreadyConnectedConversationStream(t *testing.T) {
 	store, err := core.Open(context.Background(), filepath.Join(t.TempDir(), "revoke-stream.db"))
 	if err != nil {
