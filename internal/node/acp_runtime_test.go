@@ -4,12 +4,16 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"github.com/beruseruko/secretary/internal/acp"
 )
 
 func TestACPRuntimeUsesFakeACPProcess(t *testing.T) {
@@ -114,6 +118,66 @@ func TestACPRuntimeResumeRebindsOutstandingRequestsBeforeSessionLoad(t *testing.
 			}
 		})
 	}
+}
+
+func TestACPSessionRespondRetriesFailedNativeReplyOnSameSession(t *testing.T) {
+	writer := &failOnceNativeReplyWriter{}
+	client := acp.NewClient(writer)
+	session := newACPSession("saved-session", client, false)
+	session.setRequestHandler()
+	request := acp.Message{
+		ID:     json.RawMessage("77"),
+		Method: "session/request_permission",
+		Params: json.RawMessage(`{"options":[{"optionId":"allow_once","kind":"allow_once"}]}`),
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- client.HandleServerRequest(request) }()
+	var requestID string
+	select {
+	case activity := <-session.Activity():
+		requestID = activity.RequestID
+	case <-time.After(time.Second):
+		t.Fatal("permission request was not observed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.Respond(ctx, requestID, "approved"); err == nil {
+		t.Fatal("first Respond unexpectedly succeeded")
+	}
+	if err := session.Respond(ctx, requestID, "approved"); err != nil {
+		t.Fatalf("second Respond did not retry native delivery: %v", err)
+	}
+	if err := <-finished; err == nil || err.Error() != "injected native reply write failure" {
+		t.Fatalf("first server request delivery error=%v", err)
+	}
+	if attempts, successful := writer.counts(); attempts != 2 || successful != 1 {
+		t.Fatalf("native reply writes=%d successful=%d, want two attempts and one success", attempts, successful)
+	}
+}
+
+type failOnceNativeReplyWriter struct {
+	mu         sync.Mutex
+	attempts   int
+	successful int
+}
+
+func (w *failOnceNativeReplyWriter) Write(payload []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.attempts++
+	if w.attempts == 1 {
+		return 0, errors.New("injected native reply write failure")
+	}
+	w.successful++
+	return len(payload), nil
+}
+
+func (*failOnceNativeReplyWriter) Close() error { return nil }
+
+func (w *failOnceNativeReplyWriter) counts() (int, int) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.attempts, w.successful
 }
 
 func TestACPRuntimeRespondFailsWhenNativeReplyWriterIsUnavailable(t *testing.T) {

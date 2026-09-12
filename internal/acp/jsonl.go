@@ -48,6 +48,27 @@ type Client struct {
 	logMu    sync.Mutex
 }
 
+func NewClient(stdin io.WriteCloser) *Client {
+	return &Client{stdin: stdin, events: make(chan Message, 64), done: make(chan struct{})}
+}
+
+func (c *Client) HandleServerRequest(message Message) error {
+	return c.handleServerRequest(message)
+}
+
+// RetryServerRequest repeats a server-request reply with the original native
+// request ID and reports the write result through the delivery callback.
+func (c *Client) RetryServerRequest(message Message, result any, handlerErr error) error {
+	var err error
+	if handlerErr != nil {
+		err = c.replyError(message.ID, -32010, handlerErr.Error())
+	} else {
+		err = c.reply(message.ID, result)
+	}
+	c.notifyServerRequestDelivery(message, err)
+	return err
+}
+
 func Start(ctx context.Context, command string, arguments ...string) (*Client, error) {
 	return StartWithLogEnv(ctx, nil, nil, command, arguments...)
 }

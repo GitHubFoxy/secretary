@@ -186,8 +186,11 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 }
 
 type pendingACPResponse struct {
-	response  chan string
-	delivered chan error
+	response     chan string
+	delivered    chan error
+	retry        func(string) error
+	responseSent bool
+	retryable    bool
 }
 
 func newACPSession(id string, client *acp.Client, busy bool) *acpSession {
@@ -273,12 +276,11 @@ func (s *acpSession) Respond(ctx context.Context, requestID, response string) er
 				s.rebound = append(s.rebound[:i], s.rebound[i+1:]...)
 				pending = &pendingACPResponse{response: make(chan string, 1), delivered: make(chan error, 1)}
 				s.reboundResponses[requestID] = pending
-				s.resolved[requestID] = struct{}{}
-				s.requestMu.Unlock()
-				pending.response <- response
-				return waitForACPDelivery(ctx, pending.delivered)
+				break
 			}
 		}
+	}
+	if pending == nil {
 		_, alreadyResolved := s.resolved[requestID]
 		s.requestMu.Unlock()
 		if alreadyResolved {
@@ -286,11 +288,30 @@ func (s *acpSession) Respond(ctx context.Context, requestID, response string) er
 		}
 		return errors.New("acp: unknown worker request")
 	}
-	s.resolved[requestID] = struct{}{}
+	if pending.responseSent {
+		delivered := pending.delivered
+		s.requestMu.Unlock()
+		return waitForACPDelivery(ctx, delivered)
+	}
+	pending.responseSent = true
+	if pending.retryable {
+		pending.retryable = false
+		pending.delivered = make(chan error, 1)
+		delivered := pending.delivered
+		retry := pending.retry
+		s.requestMu.Unlock()
+		if retry == nil {
+			return errors.New("acp: failed response is not retryable")
+		}
+		_ = retry(response)
+		return waitForACPDelivery(ctx, delivered)
+	}
+	delivered := pending.delivered
+	responseCh := pending.response
 	s.requestMu.Unlock()
 	select {
-	case pending.response <- response:
-		return waitForACPDelivery(ctx, pending.delivered)
+	case responseCh <- response:
+		return waitForACPDelivery(ctx, delivered)
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -318,24 +339,33 @@ type acpPermissionOption struct {
 
 func (s *acpSession) serverRequestDelivered(message acp.Message, err error) {
 	s.requestMu.Lock()
-	requestID := s.nativeRequests[string(message.ID)]
-	delete(s.nativeRequests, string(message.ID))
-	pending := s.nativeDeliveries[string(message.ID)]
-	delete(s.nativeDeliveries, string(message.ID))
+	nativeID := string(message.ID)
+	requestID := s.nativeRequests[nativeID]
+	pending := s.nativeDeliveries[nativeID]
 	if pending == nil {
 		pending = s.pending[requestID]
 	}
 	if pending == nil {
 		pending = s.reboundResponses[requestID]
 	}
-	if pending != nil {
+	if pending == nil {
+		s.requestMu.Unlock()
+		return
+	}
+	delivered := pending.delivered
+	if err == nil {
+		delete(s.nativeRequests, nativeID)
+		delete(s.nativeDeliveries, nativeID)
 		delete(s.pending, requestID)
 		delete(s.reboundResponses, requestID)
+		s.resolved[requestID] = struct{}{}
+	} else {
+		pending.retryable = true
+		pending.responseSent = false
+		s.pending[requestID] = pending
 	}
 	s.requestMu.Unlock()
-	if pending != nil {
-		pending.delivered <- err
-	}
+	delivered <- err
 }
 
 func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
@@ -379,8 +409,11 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 	} else {
 		return nil, fmt.Errorf("unsupported harness request: %s", message.Method)
 	}
-	var value string
 	var pending *pendingACPResponse
+	retry := func(value string) error {
+		result, handlerErr := s.serverRequestResponse(kind, message.Params, value)
+		return s.client.RetryServerRequest(message, result, handlerErr)
+	}
 	s.requestMu.Lock()
 	nativeID := string(message.ID)
 	valueResponse, alreadyResponded := s.reboundResponses[requestID]
@@ -391,26 +424,28 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 		pending = &pendingACPResponse{response: make(chan string, 1), delivered: make(chan error, 1)}
 		s.pending[requestID] = pending
 	}
+	pending.retry = retry
 	s.nativeRequests[nativeID] = requestID
 	s.nativeDeliveries[nativeID] = pending
 	s.requestMu.Unlock()
 	if !alreadyResponded {
-		response := pending.response
 		// Requests are the durable approval/input boundary. Unlike optional
 		// activity updates, they must reach the Node outbox and cannot be
 		// silently dropped when the activity buffer is full.
 		s.activity <- Activity{Kind: kind, RequestID: requestID, Summary: summary}
-		value = <-response
-	} else {
-		value = <-pending.response
 	}
+	value := <-pending.response
+	return s.serverRequestResponse(kind, message.Params, value)
+}
+
+func (s *acpSession) serverRequestResponse(kind ActivityKind, rawParams json.RawMessage, value string) (any, error) {
 	if kind == ActivityUserInput {
 		return map[string]string{"input": value}, nil
 	}
 	var permission struct {
 		Options []acpPermissionOption `json:"options"`
 	}
-	_ = json.Unmarshal(message.Params, &permission)
+	_ = json.Unmarshal(rawParams, &permission)
 	valueLower := strings.ToLower(strings.TrimSpace(value))
 	approved := strings.Contains(valueLower, "approve") || strings.Contains(valueLower, "allow") || strings.Contains(valueLower, `"approved":true`)
 	selected := selectPermissionOption(permission.Options, approved, strings.Contains(valueLower, "trusted-local"))
