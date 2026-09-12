@@ -139,6 +139,12 @@ type WorkerSpec struct {
 	ProjectSnapshot   string
 	Workspace         string
 	ProjectRevision   int64
+	// Expected Node fields are set only by ResolveAndCreateWorker. They bind
+	// creation to exactly the observed Node state and inventory snapshot.
+	ExpectedNodeOnline    bool
+	ExpectedNodeDraining  bool
+	ExpectedNodeRevoked   bool
+	ExpectedInventoryJSON string
 	// IdempotencyKey makes Worker, first Turn, and first Attempt creation one
 	// durable operation. An empty key preserves the legacy non-idempotent API.
 	IdempotencyKey string

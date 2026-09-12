@@ -33,6 +33,10 @@ type Store struct {
 	userDocumentMu    sync.Mutex
 	nodeEnrollmentMu  sync.Mutex
 	projectDispatchMu sync.Mutex
+
+	// beforeResolvedWorkerCreate is used by package tests to make the narrow
+	// resolution-to-creation race deterministic.
+	beforeResolvedWorkerCreate func()
 }
 
 func Open(ctx context.Context, dsn string) (*Store, error) {

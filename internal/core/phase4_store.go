@@ -150,6 +150,13 @@ JOIN phase4_attempts source ON source.turn_id = next.turn_id AND source.number =
 	return nil
 }
 
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
+}
+
 func (s *Store) CreateWorker(ctx context.Context, conversationID string, spec WorkerSpec, turnSpec TurnSpec) (Worker, Turn, Phase4Attempt, error) {
 	key := strings.TrimSpace(spec.IdempotencyKey)
 	if key == "" {
@@ -202,6 +209,50 @@ func (s *Store) createWorker(ctx context.Context, conversationID string, spec Wo
 					turn    Turn
 					attempt Phase4Attempt
 				}{}, err
+			}
+		}
+		if spec.ExpectedInventoryJSON != "" {
+			result, err := tx.ExecContext(ctx, `UPDATE phase4_nodes SET online = online WHERE node_ref = ? AND online = ? AND draining = ? AND revoked = ?`, spec.NodeID, boolInt(spec.ExpectedNodeOnline), boolInt(spec.ExpectedNodeDraining), boolInt(spec.ExpectedNodeRevoked))
+			if err != nil {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
+			if affected, err := result.RowsAffected(); err != nil {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			} else if affected != 1 {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, ErrSelectedNodeUnavailable
+			}
+			result, err = tx.ExecContext(ctx, `UPDATE phase4_nodes SET inventory_json = inventory_json WHERE node_ref = ? AND inventory_json = ?`, spec.NodeID, spec.ExpectedInventoryJSON)
+			if err != nil {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
+			if affected, err := result.RowsAffected(); err != nil {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			} else if affected != 1 {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, fmt.Errorf("%w: selected HarnessInstance changed before binding", ErrMissingHarnessInventory)
 			}
 		}
 		if spec.ProjectRevision > 0 {

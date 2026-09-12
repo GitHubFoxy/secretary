@@ -2,10 +2,10 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"sort"
 	"strings"
 )
@@ -41,6 +41,15 @@ type DispatchResolutionRequest struct {
 type DispatchResolution struct {
 	ProjectDispatch
 	Queued bool
+
+	nodeState dispatchNodeState
+}
+
+type dispatchNodeState struct {
+	online        bool
+	draining      bool
+	revoked       bool
+	inventoryJSON string
 }
 
 func (s *Store) ResolveDispatch(ctx context.Context, request DispatchResolutionRequest) (DispatchResolution, error) {
@@ -75,9 +84,6 @@ func (s *Store) ResolveDispatch(ctx context.Context, request DispatchResolutionR
 		if err != nil {
 			if firstError == nil {
 				firstError = err
-			}
-			if request.NodeID != "" || request.ModelID != "" || request.Reasoning != "" {
-				return DispatchResolution{}, err
 			}
 			continue
 		}
@@ -132,9 +138,6 @@ func (s *Store) dispatchNodeCandidates(ctx context.Context, project Project, exp
 		}
 		if record.Revoked {
 			return nil, ErrNodeRevoked
-		}
-		if record.Draining {
-			return nil, fmt.Errorf("%w: Node %s is draining", ErrSelectedNodeUnavailable, explicit)
 		}
 		if _, ok := project.MappingForNode(explicit); !ok {
 			return nil, fmt.Errorf("%w: %s", ErrProjectMappingMissing, explicit)
@@ -237,7 +240,14 @@ func resolveDispatchOnNode(project Project, candidate dispatchNodeCandidate, req
 			}
 			continue
 		}
-		resolved := DispatchResolution{ProjectDispatch: ProjectDispatch{Project: project, Node: record.Node, Workspace: workspace, HarnessInstance: instance, Snapshot: snapshot}}
+		inventoryJSON, err := json.Marshal(record.Inventory)
+		if err != nil {
+			return DispatchResolution{}, false, err
+		}
+		resolved := DispatchResolution{
+			ProjectDispatch: ProjectDispatch{Project: project, Node: record.Node, Workspace: workspace, HarnessInstance: instance, Snapshot: snapshot},
+			nodeState:       dispatchNodeState{online: record.Online, draining: record.Draining, revoked: record.Revoked, inventoryJSON: string(inventoryJSON)},
+		}
 		available := record.Online && !record.Draining && !record.Revoked && record.Capacity > len(record.ActiveAttempts)
 		resolved.Queued = !available
 		return resolved, available, nil
@@ -280,6 +290,20 @@ func orderedDispatchInstances(instances []HarnessInstance, request DispatchResol
 			}
 		}
 	}
+	// A model or reasoning pin is an adapter capability constraint, not a
+	// request to force the default harness. Try every observed adapter before
+	// reporting that no Node supports the pin.
+	if request.ModelID != "" || request.Reasoning != "" {
+		for _, instance := range ordered {
+			already := false
+			for _, current := range result {
+				already = already || current.ID == instance.ID
+			}
+			if !already {
+				result = append(result, instance)
+			}
+		}
+	}
 	return result
 }
 
@@ -287,27 +311,25 @@ func orderedDispatchInstances(instances []HarnessInstance, request DispatchResol
 // It accepts preferences, never caller-built snapshots. A new call intentionally
 // creates a new Worker for the same intent when a different binding is wanted.
 func (s *Store) ResolveAndCreateWorker(ctx context.Context, conversationID, intent string, request DispatchResolutionRequest, idempotencyKey string) (Worker, Turn, Phase4Attempt, DispatchResolution, error) {
+	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if idempotencyKey != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+		if worker, turn, attempt, found, err := s.workerCreationReplay(ctx, idempotencyKey); err != nil || found {
+			if err != nil {
+				return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
+			}
+			binding, err := s.ResolveWorkerBinding(ctx, worker.ID)
+			if err != nil {
+				return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
+			}
+			return worker, turn, attempt, DispatchResolution{ProjectDispatch: binding, Queued: worker.Status == WorkerQueued}, nil
+		}
+	}
+
 	resolved, err := s.ResolveDispatch(ctx, request)
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
-	}
-	// ResolveDispatch has just read the canonical Project and observed inventory.
-	// Recheck their identities here so a stale result cannot be installed as a
-	// caller-supplied snapshot between resolution and durable creation.
-	current, err := s.Project(ctx, resolved.Project.ID)
-	if err != nil || current.Revision != resolved.Project.Revision {
-		if err != nil {
-			return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
-		}
-		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, ErrProjectRevisionConflict
-	}
-	record, err := s.NodeRecord(ctx, resolved.Node)
-	if err != nil {
-		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
-	}
-	observed, ok := record.Inventory.Instance(resolved.HarnessInstance.ID)
-	if !ok || !reflect.DeepEqual(observed, resolved.HarnessInstance) {
-		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, fmt.Errorf("%w: selected HarnessInstance changed before binding", ErrMissingHarnessInventory)
 	}
 	projectSnapshot, err := json.Marshal(resolved.Snapshot)
 	if err != nil {
@@ -317,19 +339,35 @@ func (s *Store) ResolveAndCreateWorker(ctx context.Context, conversationID, inte
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
 	}
-	worker, turn, attempt, err := s.CreateWorker(ctx, conversationID, WorkerSpec{Title: intent, Intent: intent, ProjectID: current.ID, NodeID: string(resolved.Node), HarnessInstanceID: string(observed.ID), PolicySnapshot: string(policySnapshot), ProjectSnapshot: string(projectSnapshot), Workspace: resolved.Workspace, ProjectRevision: current.Revision, IdempotencyKey: idempotencyKey}, TurnSpec{Input: intent, IdempotencyKey: idempotencyKey})
+	if s.beforeResolvedWorkerCreate != nil {
+		s.beforeResolvedWorkerCreate()
+	}
+	worker, turn, attempt, err := s.createWorker(ctx, conversationID, WorkerSpec{Title: intent, Intent: intent, ProjectID: resolved.Project.ID, NodeID: string(resolved.Node), HarnessInstanceID: string(resolved.HarnessInstance.ID), PolicySnapshot: string(policySnapshot), ProjectSnapshot: string(projectSnapshot), Workspace: resolved.Workspace, ProjectRevision: resolved.Project.Revision, IdempotencyKey: idempotencyKey, ExpectedNodeOnline: resolved.nodeState.online, ExpectedNodeDraining: resolved.nodeState.draining, ExpectedNodeRevoked: resolved.nodeState.revoked, ExpectedInventoryJSON: resolved.nodeState.inventoryJSON}, TurnSpec{Input: intent, IdempotencyKey: idempotencyKey}, idempotencyKey)
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
 	}
-	// CreateWorker returns the original durable outcome for the same key.
-	// Reflect that binding in the response rather than returning a fresh routing
-	// observation that may differ after a heartbeat or policy update.
 	binding, err := s.ResolveWorkerBinding(ctx, worker.ID)
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
 	}
 	resolved.ProjectDispatch = binding
 	return worker, turn, attempt, resolved, nil
+}
+
+func (s *Store) workerCreationReplay(ctx context.Context, idempotencyKey string) (Worker, Turn, Phase4Attempt, bool, error) {
+	var encoded string
+	err := s.db.QueryRowContext(ctx, `SELECT outcome_json FROM idempotency_records WHERE operation = ? AND idempotency_key = ?`, "worker.create", idempotencyKey).Scan(&encoded)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Worker{}, Turn{}, Phase4Attempt{}, false, nil
+	}
+	if err != nil {
+		return Worker{}, Turn{}, Phase4Attempt{}, false, err
+	}
+	var stored workerCreationOutcome
+	if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
+		return Worker{}, Turn{}, Phase4Attempt{}, false, fmt.Errorf("core: decode durable Worker outcome: %w", err)
+	}
+	return stored.Worker, stored.Turn, stored.Attempt, true, nil
 }
 
 // ResolveWorkerBinding returns the durable immutable binding for repeat calls.
