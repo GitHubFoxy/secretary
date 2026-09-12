@@ -2,8 +2,12 @@ package node
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
 )
@@ -26,6 +30,134 @@ func TestServerProtocolRefusesNodeEventWithoutSink(t *testing.T) {
 	}
 	if !accepted {
 		t.Fatal("configured event sink did not receive Node event")
+	}
+}
+
+func TestTrustedLocalApprovalHandoffDoesNotBlockProtocolReadLoop(t *testing.T) {
+	for _, testCase := range []struct {
+		name       string
+		state      CommandState
+		wantCommit bool
+	}{
+		{name: "accepted", state: CommandAccepted, wantCommit: true},
+		{name: "failed", state: CommandFailed, wantCommit: false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			store, err := core.Open(ctx, filepath.Join(t.TempDir(), "trusted-local.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			_, conversation, err := store.CreatePersonWithConversation(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			spec := core.WorkerSpec{WorkerRef: "trusted-local-worker", Title: "trusted local", Intent: "run", ProjectID: "project", NodeID: "macbook", HarnessInstanceID: "macbook/fx"}
+			worker, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, spec, core.TurnSpec{Input: "run"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			manager, err := NewServerManager(ctx, store, "trusted-pair", "trusted-admin")
+			if err != nil {
+				t.Fatal(err)
+			}
+			const requestID = "trusted-local-request"
+			const commandID = "trusted-local-command"
+			manager.SetEventSink(NewStoreEventSinkWithTrustedLocalApproval(store, func(applyCtx context.Context, request string, nodeRef core.NodeReference) error {
+				command := Command{Kind: CommandRespondWorker, RespondWorker: &RespondWorkerCommand{
+					Metadata:  core.CommandMetadata{CommandID: commandID, Node: nodeRef, HarnessInstanceID: "macbook/fx", WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, IssuedAt: time.Now().UTC()},
+					RequestID: request, Response: "approved",
+				}}
+				if err := manager.SendCommandAndWait(applyCtx, nodeRef, command); err != nil {
+					return err
+				}
+				resolved, _, err := store.CommitApprovalResolution(applyCtx, request, core.ApprovalApproved, "trusted-local-policy", "auto_approved")
+				if err != nil {
+					return err
+				}
+				_, err = store.RecordEventWithMetadata(applyCtx, core.EventInput{Kind: "approval.auto_approved", AggregateType: "approval", AggregateID: resolved.ID, Source: "policy", CorrelationID: resolved.TurnID, AttemptID: resolved.AttemptID, Payload: map[string]any{"request_id": resolved.RequestID, "node_id": resolved.NodeID, "policy": "trusted_local_explicit"}})
+				return err
+			}))
+			mux := http.NewServeMux()
+			mux.HandleFunc("/v1/nodes/connect", manager.ServeProtocolHTTP)
+			mux.Handle("/v1/nodes", manager)
+			mux.Handle("/v1/nodes/", manager)
+			httpServer := httptest.NewServer(mux)
+			defer httpServer.Close()
+			identity, err := EnrollNode(ctx, httpServer.Client(), httpServer.URL, "trusted-pair", "macbook")
+			if err != nil {
+				t.Fatal(err)
+			}
+			auth, err := identity.Authenticator()
+			if err != nil {
+				t.Fatal(err)
+			}
+			instance := core.HarnessInstance{ID: "macbook/fx", Node: "macbook", Kind: core.HarnessFX, Version: "1.0.0", Authentication: core.HarnessAuthentication{Authenticated: true}, Status: core.HarnessReady}
+			connection, err := DialProtocol(ctx, identity.ConnectURL, identity.Node, auth, Handshake{Node: identity.Node, ProtocolVersion: ProtocolVersion, Inventory: core.HarnessInventorySnapshot{Node: identity.Node, Instances: []core.HarnessInstance{instance}, ObservedAt: time.Now().UTC()}, Nonce: "trusted-local-nonce"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer connection.Close()
+
+			activity := core.Activity{Metadata: core.ActivityMetadata{EventID: "trusted-local-activity", Node: "macbook", HarnessInstanceID: "macbook/fx", WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, Sequence: 1, ObservedAt: time.Now().UTC()}, Kind: core.ActivityPermissionRequest, Request: &core.ActivityRequest{RequestID: requestID, Summary: "run shell"}}
+			eventPayload, err := json.Marshal(NodeEvent{EventID: activity.Metadata.EventID, Node: "macbook", Kind: "activity", Sequence: 1, Activity: &activity})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := sendPendingEventWithoutWaiting(ctx, connection, PendingEvent{Sequence: 1, EventID: activity.Metadata.EventID, Payload: eventPayload}); err != nil {
+				t.Fatal(err)
+			}
+
+			var command Command
+			var acknowledged bool
+			for command.Kind == "" || !acknowledged {
+				data, err := connection.read(ctx)
+				if err != nil {
+					t.Fatalf("same connection did not make progress after event: %v", err)
+				}
+				envelope, err := DecodeEnvelope(data)
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch envelope.Type {
+				case MessageEventAck:
+					acknowledged = envelope.Ack == 1
+				case MessageCommandRespond:
+					command, err = decodeCommandEnvelope(envelope)
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if command.Metadata().CommandID != commandID {
+				t.Fatalf("command=%#v", command)
+			}
+			if err := connection.SendCommandOutcome(ctx, CommandOutcome{CommandID: commandID, Kind: CommandRespondWorker, State: testCase.state, ErrorCode: "simulated_failure", ErrorMessage: "simulated Node rejection"}); err != nil {
+				t.Fatal(err)
+			}
+
+			deadline := time.Now().Add(time.Second)
+			for time.Now().Before(deadline) {
+				approval, approvalErr := store.Approval(ctx, requestID)
+				if approvalErr == nil && ((approval.State == core.ApprovalApproved) == testCase.wantCommit) {
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			approval, err := store.Approval(ctx, requestID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if (approval.State == core.ApprovalApproved) != testCase.wantCommit {
+				t.Fatalf("approval=%#v, want committed=%v", approval, testCase.wantCommit)
+			}
+		})
 	}
 }
 
