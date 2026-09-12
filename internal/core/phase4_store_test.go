@@ -111,6 +111,72 @@ func TestPhase4RetryHasOneOutcomePerAttemptAndOneResultPerTurn(t *testing.T) {
 	}
 }
 
+func TestPhase4LifecycleCommandIntentRecoversCommittedAttempts(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worker, _, first, err := store.CreateWorker(ctx, conversation.ID, phase4WorkerSpec(), TurnSpec{Input: "spawn", IdempotencyKey: "spawn-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(kind string, attempt Phase4Attempt) {
+		t.Helper()
+		if _, err := store.db.ExecContext(ctx, `DELETE FROM phase4_worker_commands WHERE worker_id = ? AND attempt_id = ?`, worker.ID, attempt.ID); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Close(); err != nil {
+			t.Fatal(err)
+		}
+		var openErr error
+		store, openErr = Open(ctx, path)
+		if openErr != nil {
+			t.Fatal(openErr)
+		}
+		command, err := store.EnsureLifecycleCommandIntent(ctx, kind, worker.ID, attempt.ID)
+		if err != nil || command.ID != lifecycleCommandID(kind, attempt.ID) || command.Kind != kind || command.State != WorkerCommandPending {
+			t.Fatalf("recovered %s command=%#v err=%v", kind, command, err)
+		}
+		claimed, duplicate, err := store.ClaimWorkerCommand(ctx, kind, "attempt", worker.ID, attempt.ID)
+		if err != nil || duplicate || claimed.ID != command.ID {
+			t.Fatalf("claimed %s command=%#v duplicate=%v err=%v", kind, claimed, duplicate, err)
+		}
+	}
+	check("dispatch", first)
+	if _, err := store.SetPhase4AttemptActive(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, first.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "done"}); err != nil {
+		t.Fatal(err)
+	}
+
+	idleTurn, idleAttempt, err := store.CreateTurn(ctx, worker.ID, TurnSpec{Input: "follow up", IdempotencyKey: "idle-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = idleTurn
+	check("dispatch", idleAttempt)
+	if _, err := store.SetPhase4AttemptActive(ctx, idleAttempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.InterruptPhase4Attempt(ctx, idleAttempt.ID, "lost", "lost node"); err != nil {
+		t.Fatal(err)
+	}
+	resumeTurn, resumeAttempt, err := store.CreateTurn(ctx, worker.ID, TurnSpec{Input: "resume", IdempotencyKey: "resume-key", CommandKind: "resume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resumeTurn
+	check("resume", resumeAttempt)
+}
+
 func TestPhase4WorkerCommandClaimIsDurableAndIdempotent(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "secretary.db")

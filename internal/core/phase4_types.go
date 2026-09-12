@@ -218,6 +218,9 @@ type TurnSpec struct {
 	ContextSnapshot  string
 	// IdempotencyKey makes follow-up Turn and Attempt creation one durable operation.
 	IdempotencyKey string
+	// CommandKind records the first recoverable handoff for this Attempt in the
+	// same transaction. Empty means dispatch.
+	CommandKind string
 }
 
 // AttemptOutcomeInput is the only input accepted by terminal event handling.

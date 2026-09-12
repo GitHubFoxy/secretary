@@ -148,6 +148,22 @@ func (s WorkerService) deliverCommand(ctx context.Context, command core.WorkerCo
 	return err
 }
 
+// recoverLifecycleCommand repairs pre-intent committed Attempts, then claims
+// the stable command ID. The runtime is required only when a handoff is due.
+func (s WorkerService) recoverLifecycleCommand(ctx context.Context, kind string, worker core.Worker, attempt core.Phase4Attempt, send func(string) error) error {
+	if _, err := s.Store.EnsureLifecycleCommandIntent(ctx, kind, worker.ID, attempt.ID); err != nil {
+		return err
+	}
+	command, handoff, err := s.claimCommand(ctx, kind, "attempt", worker, attempt)
+	if err != nil || !handoff {
+		return err
+	}
+	if err := s.requireRuntime(); err != nil {
+		return err
+	}
+	return s.deliverCommand(ctx, command, send)
+}
+
 func (s WorkerService) ListNodes(ctx context.Context) ([]core.NodeRecord, error) {
 	if _, err := s.authorize(ctx); err != nil {
 		return nil, err
@@ -196,9 +212,16 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 		Reasoning: preferences.Reasoning, WorkerPolicy: s.WorkerPolicy}
 	// Replay precedes the preview because the durable outcome is valid even if
 	// its Project, Node inventory, or dispatch preferences have since changed.
-	if worker, _, _, _, found, err := s.Store.ReplayWorkerCreation(ctx, request.IdempotencyKey); err != nil {
+	if worker, turn, attempt, resolution, found, err := s.Store.ReplayWorkerCreation(ctx, request.IdempotencyKey); err != nil {
 		return core.WorkerDetails{}, err
 	} else if found {
+		if !resolution.Queued {
+			if err := s.recoverLifecycleCommand(ctx, "dispatch", worker, attempt, func(commandID string) error {
+				return s.Runtime.Dispatch(ctx, commandID, worker, turn, attempt, resolution)
+			}); err != nil {
+				return core.WorkerDetails{}, fmt.Errorf("recover dispatch Worker: %w", err)
+			}
+		}
 		return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 	}
 	// Resolve before creation so the production MCP wiring with Runtime=nil
@@ -217,19 +240,10 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 		return core.WorkerDetails{}, err
 	}
 	if !resolution.Queued {
-		if err := s.requireRuntime(); err != nil {
-			return core.WorkerDetails{}, err
-		}
-		command, send, err := s.claimCommand(ctx, "dispatch", "attempt", worker, attempt)
-		if err != nil {
-			return core.WorkerDetails{}, err
-		}
-		if send {
-			if err := s.deliverCommand(ctx, command, func(commandID string) error {
-				return s.Runtime.Dispatch(ctx, commandID, worker, turn, attempt, resolution)
-			}); err != nil {
-				return core.WorkerDetails{}, fmt.Errorf("dispatch Worker: %w", err)
-			}
+		if err := s.recoverLifecycleCommand(ctx, "dispatch", worker, attempt, func(commandID string) error {
+			return s.Runtime.Dispatch(ctx, commandID, worker, turn, attempt, resolution)
+		}); err != nil {
+			return core.WorkerDetails{}, fmt.Errorf("dispatch Worker: %w", err)
 		}
 	}
 	return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
@@ -305,7 +319,7 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		if err := s.requireRuntime(); err != nil {
 			return core.WorkerDetails{}, err
 		}
-		turn, next, createErr := s.Store.CreateTurn(ctx, details.Worker.ID, core.TurnSpec{Input: request.Text, IdempotencyKey: request.IdempotencyKey})
+		turn, next, createErr := s.Store.CreateTurn(ctx, details.Worker.ID, core.TurnSpec{Input: request.Text, IdempotencyKey: request.IdempotencyKey, CommandKind: "dispatch"})
 		if createErr != nil {
 			err = createErr
 			break
@@ -325,6 +339,47 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 				return s.Runtime.Dispatch(ctx, commandID, details.Worker, turn, next, core.DispatchResolution{ProjectDispatch: binding})
 			})
 		}
+	case core.WorkerQueued:
+		if attempt == nil || attempt.State != core.AttemptStarting || strings.TrimSpace(request.IdempotencyKey) == "" {
+			return core.WorkerDetails{}, core.ErrInvalidTransition
+		}
+		turn, next, createErr := s.Store.CreateTurn(ctx, details.Worker.ID, core.TurnSpec{Input: request.Text, IdempotencyKey: request.IdempotencyKey})
+		if createErr != nil {
+			err = createErr
+			break
+		}
+		kind := "dispatch"
+		if _, found, findErr := s.Store.FindWorkerCommand(ctx, "resume", "attempt", details.Worker.ID, next.ID); findErr != nil {
+			err = findErr
+			break
+		} else if found {
+			kind = "resume"
+		}
+		command, send, claimErr := s.claimCommand(ctx, kind, "attempt", details.Worker, next)
+		if claimErr != nil {
+			err = claimErr
+			break
+		}
+		if send {
+			if runtimeErr := s.requireRuntime(); runtimeErr != nil {
+				err = runtimeErr
+				break
+			}
+			if kind == "resume" {
+				err = s.deliverCommand(ctx, command, func(commandID string) error {
+					return s.Runtime.Resume(ctx, commandID, details.Worker, turn, next, request.Text)
+				})
+			} else {
+				binding, bindingErr := s.Store.ResolveWorkerBinding(ctx, details.Worker.ID)
+				if bindingErr != nil {
+					err = bindingErr
+					break
+				}
+				err = s.deliverCommand(ctx, command, func(commandID string) error {
+					return s.Runtime.Dispatch(ctx, commandID, details.Worker, turn, next, core.DispatchResolution{ProjectDispatch: binding})
+				})
+			}
+		}
 	case core.WorkerOffline:
 		if attempt == nil {
 			return core.WorkerDetails{}, core.ErrInvalidTransition
@@ -332,7 +387,7 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		if err := s.requireRuntime(); err != nil {
 			return core.WorkerDetails{}, err
 		}
-		turn, next, createErr := s.Store.CreateTurn(ctx, details.Worker.ID, core.TurnSpec{Input: request.Text, IdempotencyKey: request.IdempotencyKey})
+		turn, next, createErr := s.Store.CreateTurn(ctx, details.Worker.ID, core.TurnSpec{Input: request.Text, IdempotencyKey: request.IdempotencyKey, CommandKind: "resume"})
 		if createErr != nil {
 			err = createErr
 			break
