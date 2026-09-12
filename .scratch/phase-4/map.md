@@ -34,6 +34,7 @@
 - `fx`, Claude Code и Codex обязательны для MVP acceptance. OpenCode остаётся compatibility target и не заменяет Claude Code.
 - `sex` и `sex setup` сохраняются как исторический CLI contract.
 - [Ticket 01](issues/01-worker-first-core-state-and-migration-contract.md) закрепляет Worker-first core persistence в `internal/core`: новые Worker, Turn, AttemptOutcome и Result records отделены от legacy Task tables, а recovery и retry имеют явные terminal semantics.
+- [Ticket 06b](issues/06b-dispatch-resolver-and-binding.md) закрепляет immutable Worker binding транзакционным сравнением Project revision, Node state и observed inventory; replay `worker.create` обходит текущие Project и inventory.
 
 ## Work order
 
