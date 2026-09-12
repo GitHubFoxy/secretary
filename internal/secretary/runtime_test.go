@@ -145,6 +145,23 @@ func TestDurableRuntimePromptErrorReturnsClaimedResultToNextTurn(t *testing.T) {
 	if len(snapshot.UnseenWorkerResults) != 1 || snapshot.UnseenWorkerResults[0].ID != result.ID {
 		t.Fatalf("result after Prompt error=%#v", snapshot.UnseenWorkerResults)
 	}
+	if _, err := store.FinishSecretaryTurn(ctx, second.ID, core.SecretaryTurnSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	third, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "third")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err = store.StartSecretaryTurn(ctx, third.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(started.ContextSnapshot), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.UnseenWorkerResults) != 0 {
+		t.Fatalf("Prompt failure result appeared more than once=%#v", snapshot.UnseenWorkerResults)
+	}
 }
 
 func TestDurableRuntimeDoesNotPromptWithoutPolicySnapshot(t *testing.T) {

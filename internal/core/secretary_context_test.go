@@ -134,7 +134,7 @@ func TestSecretaryResultClaimReturnsAfterRestartRecovery(t *testing.T) {
 	}
 }
 
-func TestSecretaryPromptAcceptedClaimDoesNotReappearAfterRecovery(t *testing.T) {
+func TestReleaseSecretaryTurnClaimsAfterAcceptedPromptDoesNotRelease(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	person, conversation, err := store.CreatePersonWithConversation(ctx)
@@ -155,7 +155,8 @@ func TestSecretaryPromptAcceptedClaimDoesNotReappearAfterRecovery(t *testing.T) 
 	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, result, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "consumed once"}); err != nil || result == nil {
+	_, result, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "consumed once"})
+	if err != nil || result == nil {
 		t.Fatalf("result=%#v err=%v", result, err)
 	}
 	first, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "first")
@@ -170,6 +171,17 @@ func TestSecretaryPromptAcceptedClaimDoesNotReappearAfterRecovery(t *testing.T) 
 	}
 	if err := store.AcceptSecretaryPrompt(ctx, first.ID); err != nil {
 		t.Fatal(err)
+	}
+	releaseErr := store.ReleaseSecretaryTurnClaims(ctx, first.ID)
+	if releaseErr != nil && !errors.Is(releaseErr, ErrInvalidTransition) {
+		t.Fatalf("accepted prompt release error=%v", releaseErr)
+	}
+	var claimState string
+	if err := store.db.QueryRowContext(ctx, `SELECT claim_state FROM secretary_context_seen_results WHERE result_id = ?`, result.ID).Scan(&claimState); err != nil {
+		t.Fatal(err)
+	}
+	if claimState != "accepted" {
+		t.Fatalf("accepted prompt claim state=%q", claimState)
 	}
 	if err := store.RecoverSecretaryTurn(ctx, identity.ID, "runtime restarted after accepted prompt"); err != nil {
 		t.Fatal(err)
@@ -188,6 +200,78 @@ func TestSecretaryPromptAcceptedClaimDoesNotReappearAfterRecovery(t *testing.T) 
 	}
 	if len(snapshot.UnseenWorkerResults) != 0 {
 		t.Fatalf("accepted result reappeared=%#v", snapshot.UnseenWorkerResults)
+	}
+}
+
+func TestStartedSecretaryPromptClaimReturnsAfterRestartRecovery(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "started prompt recovery"); err != nil {
+		t.Fatal(err)
+	}
+	_, _, attempt, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{WorkerRef: "started-recovery-result", Intent: "result", ProjectID: "p", NodeID: "n", HarnessInstanceID: "n/fx", PolicySnapshot: "worker-policy"}, TurnSpec{Input: "result"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, result, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "survive started prompt"})
+	if err != nil || result == nil {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	first, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.BeginSecretaryPrompt(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecoverSecretaryTurn(ctx, identity.ID, "runtime crashed before Prompt"); err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err := store.StartSecretaryTurn(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot SecretaryContext
+	if err := json.Unmarshal([]byte(started.ContextSnapshot), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.UnseenWorkerResults) != 1 || snapshot.UnseenWorkerResults[0].ID != result.ID {
+		t.Fatalf("recovered started-prompt result=%#v", snapshot.UnseenWorkerResults)
+	}
+	if _, err := store.FinishSecretaryTurn(ctx, second.ID, SecretaryTurnSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	third, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "third")
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, err = store.StartSecretaryTurn(ctx, third.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(started.ContextSnapshot), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.UnseenWorkerResults) != 0 {
+		t.Fatalf("recovered result appeared more than once=%#v", snapshot.UnseenWorkerResults)
 	}
 }
 
