@@ -514,6 +514,54 @@ func (s *Store) SetPhase4AttemptActive(ctx context.Context, attemptID string) (P
 	return s.transitionPhase4Attempt(ctx, attemptID, []AttemptState{AttemptStarting}, AttemptActive)
 }
 
+// SetPhase4AttemptNeedsInput records a durable safe boundary before the
+// Secretary responds. The Attempt remains active and no Turn is created.
+func (s *Store) SetPhase4AttemptNeedsInput(ctx context.Context, attemptID string) (Phase4Attempt, error) {
+	return withTx(s, ctx, func(tx *sql.Tx) (Phase4Attempt, error) {
+		attempt, err := getPhase4Attempt(ctx, tx, attemptID)
+		if err != nil {
+			return Phase4Attempt{}, err
+		}
+		if attempt.State != AttemptActive {
+			return Phase4Attempt{}, ErrInvalidTransition
+		}
+		now := s.now()
+		if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, updated_at = ? WHERE id = ?`, TurnNeedsInput, timestamp(now), attempt.TurnID); err != nil {
+			return Phase4Attempt{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`, WorkerNeedsInput, timestamp(now), attempt.WorkerID); err != nil {
+			return Phase4Attempt{}, err
+		}
+		return attempt, nil
+	})
+}
+
+// ResumePhase4Attempt returns a needs_input Attempt to active state without
+// allocating another Turn or Attempt.
+func (s *Store) ResumePhase4Attempt(ctx context.Context, attemptID string) (Phase4Attempt, error) {
+	return withTx(s, ctx, func(tx *sql.Tx) (Phase4Attempt, error) {
+		attempt, err := getPhase4Attempt(ctx, tx, attemptID)
+		if err != nil {
+			return Phase4Attempt{}, err
+		}
+		turn, err := getTurn(ctx, tx, attempt.TurnID)
+		if err != nil {
+			return Phase4Attempt{}, err
+		}
+		if attempt.State != AttemptActive || turn.State != TurnNeedsInput {
+			return Phase4Attempt{}, ErrInvalidTransition
+		}
+		now := s.now()
+		if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, updated_at = ? WHERE id = ?`, TurnActive, timestamp(now), turn.ID); err != nil {
+			return Phase4Attempt{}, err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`, WorkerWorking, timestamp(now), attempt.WorkerID); err != nil {
+			return Phase4Attempt{}, err
+		}
+		return attempt, nil
+	})
+}
+
 func (s *Store) transitionPhase4Attempt(ctx context.Context, attemptID string, from []AttemptState, to AttemptState) (Phase4Attempt, error) {
 	return withTx(s, ctx, func(tx *sql.Tx) (Phase4Attempt, error) {
 		attempt, err := getPhase4Attempt(ctx, tx, attemptID)
@@ -794,7 +842,11 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 				dup     bool
 			}{}, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, last_result_summary = ?, updated_at = ? WHERE id = ?`, WorkerIdle, result.Summary, timestamp(now), attempt.WorkerID); err != nil {
+		workerStatus := WorkerIdle
+		if input.Status == OutcomeInterrupted {
+			workerStatus = WorkerOffline
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, last_result_summary = ?, updated_at = ? WHERE id = ?`, workerStatus, result.Summary, timestamp(now), attempt.WorkerID); err != nil {
 			return struct {
 				outcome AttemptOutcome
 				result  *Phase4Result
@@ -970,6 +1022,101 @@ func (s *Store) CloseWorker(ctx context.Context, workerID string) (Worker, error
 
 func (s *Store) Worker(ctx context.Context, id string) (Worker, error) {
 	return getWorker(ctx, s.db, id)
+}
+
+func (s *Store) WorkersForConversation(ctx context.Context, conversationID string) ([]Worker, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM workers WHERE conversation_id = ? ORDER BY created_at, id`, conversationID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	workers := []Worker{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		worker, err := s.Worker(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		workers = append(workers, worker)
+	}
+	return workers, rows.Err()
+}
+
+func (s *Store) WorkerDetailsForConversation(ctx context.Context, conversationID, workerRef string) (WorkerDetails, error) {
+	var workerID string
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM workers WHERE conversation_id = ? AND worker_ref = ?`, conversationID, workerRef).Scan(&workerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkerDetails{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkerDetails{}, err
+	}
+	worker, err := s.Worker(ctx, workerID)
+	if err != nil {
+		return WorkerDetails{}, err
+	}
+	details := WorkerDetails{Worker: worker, Turns: []Turn{}, Attempts: []Phase4Attempt{}, Outcomes: []AttemptOutcome{}, Results: []Phase4Result{}}
+	turnRows, err := s.db.QueryContext(ctx, `SELECT id FROM turns WHERE worker_id = ? ORDER BY created_at, id`, worker.ID)
+	if err != nil {
+		return WorkerDetails{}, err
+	}
+	for turnRows.Next() {
+		var id string
+		if err := turnRows.Scan(&id); err != nil {
+			turnRows.Close()
+			return WorkerDetails{}, err
+		}
+		turn, err := s.Turn(ctx, id)
+		if err != nil {
+			turnRows.Close()
+			return WorkerDetails{}, err
+		}
+		details.Turns = append(details.Turns, turn)
+	}
+	if err := turnRows.Err(); err != nil {
+		turnRows.Close()
+		return WorkerDetails{}, err
+	}
+	turnRows.Close()
+	attemptRows, err := s.db.QueryContext(ctx, `SELECT id FROM phase4_attempts WHERE worker_id = ? ORDER BY created_at, id`, worker.ID)
+	if err != nil {
+		return WorkerDetails{}, err
+	}
+	for attemptRows.Next() {
+		var id string
+		if err := attemptRows.Scan(&id); err != nil {
+			attemptRows.Close()
+			return WorkerDetails{}, err
+		}
+		attempt, err := s.Phase4Attempt(ctx, id)
+		if err != nil {
+			attemptRows.Close()
+			return WorkerDetails{}, err
+		}
+		details.Attempts = append(details.Attempts, attempt)
+		if outcome, err := s.AttemptOutcome(ctx, attempt.ID); err == nil {
+			details.Outcomes = append(details.Outcomes, outcome)
+		} else if !errors.Is(err, ErrNotFound) {
+			attemptRows.Close()
+			return WorkerDetails{}, err
+		}
+	}
+	if err := attemptRows.Err(); err != nil {
+		attemptRows.Close()
+		return WorkerDetails{}, err
+	}
+	attemptRows.Close()
+	for _, turn := range details.Turns {
+		if result, err := s.Phase4Result(ctx, turn.ID); err == nil {
+			details.Results = append(details.Results, result)
+		} else if !errors.Is(err, ErrNotFound) {
+			return WorkerDetails{}, err
+		}
+	}
+	return details, nil
 }
 func (s *Store) Turn(ctx context.Context, id string) (Turn, error) { return getTurn(ctx, s.db, id) }
 func (s *Store) Phase4Attempt(ctx context.Context, id string) (Phase4Attempt, error) {

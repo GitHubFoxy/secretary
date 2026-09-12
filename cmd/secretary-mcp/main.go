@@ -51,7 +51,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("find owner: %v", err)
 	}
-	service := ctl.Service{Store: store, PersonID: owner.ID, Capability: capability}
 	var handler mcp.Handler
 	switch *role {
 	case "secretary":
@@ -59,14 +58,12 @@ func main() {
 		if err != nil {
 			log.Fatalf("load config: %v", err)
 		}
-		handler = mcp.Secretary{Service: service, Models: func() map[string]string {
-			snapshot := manager.Snapshot()
-			return map[string]string{
-				"fast":  snapshot.Config.Models.Fast,
-				"smart": snapshot.Config.Models.Smart,
-				"cheap": snapshot.Config.Models.Cheap,
-			}
-		}}
+		policy := manager.Snapshot().Config.EffectiveWorkerPolicy()
+		preferred := make([]core.HarnessKind, len(policy.PreferredHarnesses))
+		for i, kind := range policy.PreferredHarnesses {
+			preferred[i] = core.HarnessKind(kind)
+		}
+		handler = mcp.Secretary{Workers: ctl.WorkerService{Store: store, PersonID: owner.ID, Capability: capability, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessKind(policy.DefaultHarness), PreferredHarnesses: preferred}}}
 	case "worker":
 		handler = mcp.WorkerHandler{
 			WorkerRef: *workerRef,

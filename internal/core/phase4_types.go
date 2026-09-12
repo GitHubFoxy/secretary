@@ -128,6 +128,44 @@ type AttemptOutcome struct {
 type Phase4Result = Result
 
 // WorkerSpec is the creation contract for a Worker and its immutable binding.
+// WorkerDetails is the durable Secretary read model. It deliberately exposes
+// immutable bindings and lifecycle records, never Node-local session IDs.
+type WorkerDetails struct {
+	Worker   Worker           `json:"worker"`
+	Turns    []Turn           `json:"turns"`
+	Attempts []Phase4Attempt  `json:"attempts"`
+	Outcomes []AttemptOutcome `json:"outcomes"`
+	Results  []Phase4Result   `json:"results"`
+}
+
+func (d WorkerDetails) CurrentAttempt() *Phase4Attempt {
+	if d.Worker.CurrentTurnID == "" {
+		return nil
+	}
+	for i := range d.Turns {
+		if d.Turns[i].ID != d.Worker.CurrentTurnID || d.Turns[i].CurrentAttemptID == "" {
+			continue
+		}
+		for j := range d.Attempts {
+			if d.Attempts[j].ID == d.Turns[i].CurrentAttemptID {
+				attempt := d.Attempts[j]
+				return &attempt
+			}
+		}
+	}
+	return nil
+}
+
+func (d WorkerDetails) CurrentTurn() *Turn {
+	for i := range d.Turns {
+		if d.Turns[i].ID == d.Worker.CurrentTurnID {
+			turn := d.Turns[i]
+			return &turn
+		}
+	}
+	return nil
+}
+
 type WorkerSpec struct {
 	WorkerRef         string
 	Title             string
