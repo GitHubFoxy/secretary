@@ -3,8 +3,10 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -277,6 +279,203 @@ func TestReconstructSecretaryContextForTurnConcurrentCallsMaterializeOnce(t *tes
 	}
 	if len(remaining.UnseenWorkerResults) != 0 {
 		t.Fatalf("concurrent materialization did not acknowledge exactly once: %#v", remaining.UnseenWorkerResults)
+	}
+}
+
+func TestConcurrentSecretaryStartsClaimResultForOnlyNextEligibleTurn(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, attempt, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{WorkerRef: "race-worker", Intent: "race", ProjectID: "p", NodeID: "n", HarnessInstanceID: "n/fx", PolicySnapshot: "snapshot"}, TurnSpec{Input: "race"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, result, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "one result"}); err != nil || result == nil {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	first, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	results := make(chan struct {
+		turn SecretaryTurn
+		err  error
+	}, 2)
+	var wg sync.WaitGroup
+	for _, queued := range []SecretaryTurn{first, second} {
+		wg.Add(1)
+		go func(queued SecretaryTurn) {
+			defer wg.Done()
+			<-start
+			turn, startErr := store.StartSecretaryTurn(ctx, queued.ID)
+			results <- struct {
+				turn SecretaryTurn
+				err  error
+			}{turn: turn, err: startErr}
+		}(queued)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	var owner SecretaryTurn
+	for result := range results {
+		if result.err == nil {
+			if owner.ID != "" {
+				t.Fatalf("two turns started: %s and %s", owner.ID, result.turn.ID)
+			}
+			owner = result.turn
+		} else if !errors.Is(result.err, ErrInvalidTransition) {
+			t.Fatalf("concurrent start error: %v", result.err)
+		}
+	}
+	if owner.ID == "" {
+		t.Fatal("no queued turn started")
+	}
+	var snapshot SecretaryContext
+	if err := json.Unmarshal([]byte(owner.ContextSnapshot), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.UnseenWorkerResults) != 1 {
+		t.Fatalf("owner snapshot=%#v", snapshot.UnseenWorkerResults)
+	}
+	if _, err := store.FinishSecretaryTurn(ctx, owner.ID, SecretaryTurnSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	other := second
+	if owner.ID == second.ID {
+		other = first
+	}
+	startedOther, err := store.StartSecretaryTurn(ctx, other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var later SecretaryContext
+	if err := json.Unmarshal([]byte(startedOther.ContextSnapshot), &later); err != nil {
+		t.Fatal(err)
+	}
+	if len(later.UnseenWorkerResults) != 0 {
+		t.Fatalf("later turn duplicated result: %#v", later.UnseenWorkerResults)
+	}
+}
+
+func TestIneligibleSecretaryStartDoesNotConsumeResult(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, _, attempt, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{WorkerRef: "failed-start-worker", Intent: "result", ProjectID: "p", NodeID: "n", HarnessInstanceID: "n/fx", PolicySnapshot: "snapshot"}, TurnSpec{Input: "result"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, result, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "must survive"}); err != nil || result == nil {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	second, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, second.ID); !errors.Is(err, ErrInvalidTransition) {
+		t.Fatalf("ineligible start error=%v", err)
+	}
+	failedTurn, err := store.SecretaryTurn(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failedTurn.ContextSnapshot != "" {
+		t.Fatalf("ineligible start published snapshot: %q", failedTurn.ContextSnapshot)
+	}
+	remaining, err := store.ReconstructSecretaryContext(ctx, identity.ID, "", 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining.UnseenWorkerResults) != 1 {
+		t.Fatalf("ineligible start consumed result: %#v", remaining.UnseenWorkerResults)
+	}
+	if _, err := store.FinishSecretaryTurn(ctx, first.ID, SecretaryTurnSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	started, err := store.StartSecretaryTurn(ctx, second.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot SecretaryContext
+	if err := json.Unmarshal([]byte(started.ContextSnapshot), &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.UnseenWorkerResults) != 1 || snapshot.UnseenWorkerResults[0].Summary != "must survive" {
+		t.Fatalf("result consumed by failed start: %#v", snapshot.UnseenWorkerResults)
+	}
+}
+
+func TestSecretaryContextReconstructionIsPureAcrossRepeats(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, attempt, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{WorkerRef: "pure-worker", Intent: "pure", ProjectID: "p", NodeID: "n", HarnessInstanceID: "n/fx", PolicySnapshot: "snapshot"}, TurnSpec{Input: "pure"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "pure result"}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		canonical, err := store.ReconstructSecretaryContext(ctx, identity.ID, "", 20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(canonical.UnseenWorkerResults) != 1 {
+			t.Fatalf("pure reconstruction=%#v", canonical.UnseenWorkerResults)
+		}
+	}
+	var seen int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM secretary_context_seen_results`).Scan(&seen); err != nil {
+		t.Fatal(err)
+	}
+	if seen != 0 {
+		t.Fatalf("pure reconstruction mutated seen claims: %d", seen)
 	}
 }
 
