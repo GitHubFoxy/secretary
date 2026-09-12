@@ -169,7 +169,12 @@ func (s *Store) ReconstructSecretaryContext(ctx context.Context, identityID, use
 	}
 	policy, err := s.SecretaryPolicySnapshot(ctx)
 	if errors.Is(err, ErrNotFound) {
-		policy = SecretaryPolicySnapshot{Harness: identity.RuntimeHarness, Model: identity.RuntimeModel, Reasoning: identity.RuntimeReasoning}
+		now := s.now()
+		policy = SecretaryPolicySnapshot{
+			Version: "identity-runtime", Harness: identity.RuntimeHarness, Model: identity.RuntimeModel, Reasoning: identity.RuntimeReasoning,
+			ProfileVersion: "identity-runtime", ProfileName: "secretary", ProfileHash: "identity-runtime",
+			ProfileContent: "Use the server-owned Secretary tools.", ProfileDelivery: "prompt", UpdatedAt: now,
+		}
 	} else if err != nil {
 		return SecretaryContext{}, err
 	}
@@ -181,6 +186,24 @@ func (s *Store) ReconstructSecretaryContext(ctx context.Context, identityID, use
 	}
 	if policy.Reasoning == "" {
 		policy.Reasoning = identity.RuntimeReasoning
+	}
+	if policy.Harness == "" {
+		policy.Harness = "fx"
+	}
+	if policy.Model == "" {
+		policy.Model = "default"
+	}
+	if policy.Reasoning == "" {
+		policy.Reasoning = "default"
+	}
+	if policy.ProfileRuntime == "" {
+		policy.ProfileRuntime = policy.Harness
+	}
+	if policy.ProfileModel == "" {
+		policy.ProfileModel = policy.Model
+	}
+	if policy.ProfileReasoning == "" {
+		policy.ProfileReasoning = policy.Reasoning
 	}
 	return SecretaryContext{
 		Identity: identity, UserDocument: user, ConversationSummary: summary, RecentEntries: entries,
@@ -352,6 +375,9 @@ func claimSecretaryResultsTx(ctx context.Context, tx *sql.Tx, turnID string, res
 // SecretaryContextPrompt is the only runtime-facing conversion. It serializes
 // the canonical read model and never adds native session state.
 func SecretaryContextPrompt(ctx SecretaryContext, input string) (string, error) {
+	if err := ctx.Validate(); err != nil {
+		return "", err
+	}
 	encoded, err := json.Marshal(ctx)
 	if err != nil {
 		return "", err

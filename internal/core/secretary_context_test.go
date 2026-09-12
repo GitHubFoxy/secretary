@@ -11,6 +11,48 @@ import (
 	"time"
 )
 
+func TestSecretaryContextValidateRejectsIncompleteCanonicalSnapshots(t *testing.T) {
+	cases := []struct {
+		name    string
+		encoded string
+		reason  string
+	}{
+		{
+			name:    "identity only",
+			encoded: `{"identity":{"id":"sec-1","conversation_id":"conv-1"}}`,
+			reason:  "identity-only snapshot must not be accepted",
+		},
+		{
+			name:    "missing user and policy",
+			encoded: `{"identity":{"id":"sec-1","person_id":"person-1","conversation_id":"conv-1","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"},"recent_entries":[],"unseen_worker_results":[],"open_workers":[],"projects":[],"nodes":[],"harness_instances":[],"active_approvals":[]}`,
+			reason:  "snapshot without user document and policy must not be accepted",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var snapshot SecretaryContext
+			if err := json.Unmarshal([]byte(tc.encoded), &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if err := snapshot.Validate(); err == nil {
+				t.Fatal(tc.reason)
+			}
+		})
+	}
+}
+
+func TestSecretaryContextSnapshotRejectsRuntimeAndCredentialFields(t *testing.T) {
+	for _, field := range []string{"runtime_session_id", "credential_hash", "callback_capability", "capability_secret"} {
+		t.Run(field, func(t *testing.T) {
+			var snapshot SecretaryContext
+			encoded := `{"identity":{"id":"sec-1"},"` + field + `":"secret"}`
+			if err := json.Unmarshal([]byte(encoded), &snapshot); err == nil {
+				t.Fatalf("snapshot accepted forbidden field %q", field)
+			}
+		})
+	}
+}
+
 func TestSecretaryContextReconstructionUsesOnlyServerOwnedSources(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
@@ -98,6 +140,14 @@ func TestSecretaryContextReconstructionUsesOnlyServerOwnedSources(t *testing.T) 
 	}
 	if canonical.PolicyProfile.Version != "cfg-v1" || canonical.PolicyProfile.ProfileHash != "profile-hash" {
 		t.Fatalf("policy profile=%#v", canonical.PolicyProfile)
+	}
+	if err := canonical.Validate(); err != nil {
+		t.Fatalf("complete canonical context rejected: %v", err)
+	}
+	canonical.ConversationSummary = ""
+	canonical.RecentEntries = nil
+	if err := canonical.Validate(); err != nil {
+		t.Fatalf("canonical context without optional recent content rejected: %v", err)
 	}
 	encoded, err := json.Marshal(canonical)
 	if err != nil || len(encoded) == 0 {

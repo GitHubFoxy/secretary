@@ -201,7 +201,7 @@ func TestRuntimeFailsClosedWhenCanonicalSnapshotIsInvalid(t *testing.T) {
 	runtime.AttachConversation(store, conversation.ID)
 	runtime.AttachIdentity(identity)
 	runtime.turnLoader = func(context.Context, string) (core.SecretaryTurn, error) {
-		active.ContextSnapshot = "not json"
+		active.ContextSnapshot = `{"identity":{"id":"` + identity.ID + `","conversation_id":"` + conversation.ID + `"}}`
 		return active, nil
 	}
 	runtime.session = &fakeSession{prompts: make(chan string, 1), results: make(chan node.Result, 1)}
