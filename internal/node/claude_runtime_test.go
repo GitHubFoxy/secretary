@@ -49,26 +49,21 @@ func TestClaudeCodeRuntimeUsesNativeCLIWithAuthoritativePins(t *testing.T) {
 	}
 }
 
-func TestClaudeCodeRuntimeRejectsConfiguredSemanticArgumentInjection(t *testing.T) {
+func TestClaudeCodeRuntimeRejectsConfiguredPolicyAndUnknownArguments(t *testing.T) {
 	instance := core.HarnessInstance{ID: "node/claude", Node: "node", Kind: core.HarnessClaudeCode, Version: "1", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}}
-	dangerous := []string{
-		"--model", "--model=attacker", "-m", "-mattacker",
-		"--effort", "--effort=low", "--thinking", "--max-thinking-tokens",
-		"--fallback-model", "--fallback-model=attacker",
-		"--session-id", "--session-id=attacker", "--resume", "--resume=attacker",
-		"--continue", "-c", "--fork-session", "--from-pr", "--no-session-persistence", "--",
-		"--print", "-p", "--verbose", "--output-format", "--output-format=text",
-		"--input-format", "--input-format=text", "--stream-json",
-		"--include-partial-messages", "--json-schema", "--replay-user-messages",
-		"--permission-prompt-tool",
+	unsafe := []string{
+		"--add-dir", "--add-dir=outside",
+		"--permission-mode", "--permission-mode=acceptEdits", "--dangerously-skip-permissions", "--allow-dangerously-skip-permissions", "--permission-prompts",
+		"--tools", "--tools=Bash", "--allowedTools", "--allowed-tools", "--disallowedTools", "--disallowed-tools", "--restricted", "--settings", "--settings=config.json",
+		"--fallback-model", "--fallback-model=attacker", "--model", "--model=attacker", "-m", "-mattacker", "--effort", "--effort=low",
+		"--session-id", "--session-id=attacker", "--resume", "--resume=attacker", "-r", "-rattacker", "--continue", "-c", "--fork-session", "--from-pr", "--no-session-persistence", "--",
+		"--print", "-p", "-pattacker", "--verbose", "--output-format", "--output-format=text", "--input-format", "--stream-json", "--include-partial-messages", "--json-schema", "--replay-user-messages",
+		"--permission-prompt-tool", "--thinking", "--max-thinking-tokens", "--mcp-config", "--plugin-dir", "--system-prompt", "--max-turns", "--unknown-flag", "--disable-slash-commands=true", "attacker-prompt",
 	}
-	for _, argument := range dangerous {
+	for _, argument := range unsafe {
 		t.Run(argument, func(t *testing.T) {
-			runtime := ClaudeCodeRuntime{Arguments: []string{argument, "attacker-value"}}
-			_, err := runtime.Start(context.Background(), StartRequest{
-				HarnessInstance: instance, Workspace: t.TempDir(), Task: "inspect",
-				Model: "claude-sonnet", Reasoning: "high",
-			})
+			runtime := ClaudeCodeRuntime{Arguments: []string{argument}}
+			_, err := runtime.Start(context.Background(), StartRequest{HarnessInstance: instance, Workspace: t.TempDir(), Task: "inspect", Model: "claude-sonnet", Reasoning: "high"})
 			if !errors.Is(err, ErrClaudeCodeConfiguration) {
 				t.Fatalf("argument %q err=%v, want configuration error", argument, err)
 			}
@@ -76,14 +71,14 @@ func TestClaudeCodeRuntimeRejectsConfiguredSemanticArgumentInjection(t *testing.
 	}
 }
 
-func TestClaudeCodeRuntimeBuildsExactAuthoritativeArguments(t *testing.T) {
-	runtime := ClaudeCodeRuntime{Arguments: []string{"--permission-mode", "acceptEdits"}}
+func TestClaudeCodeRuntimeAllowsOnlyDocumentedHarmlessStaticArgument(t *testing.T) {
+	runtime := ClaudeCodeRuntime{Arguments: []string{"--disable-slash-commands"}}
 	request := StartRequest{Task: "inspect", Model: "claude-sonnet", Reasoning: "extended"}
 	got, err := runtime.authoritativeArguments(request, "session-id", false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--permission-mode", "acceptEdits", "--print", "--output-format", "stream-json", "--verbose", "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id", "inspect"}
+	want := []string{"--disable-slash-commands", "--print", "--output-format", "stream-json", "--verbose", "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id", "inspect"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Claude CLI args=%#v, want %#v", got, want)
 	}
@@ -91,18 +86,37 @@ func TestClaudeCodeRuntimeBuildsExactAuthoritativeArguments(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = []string{"--permission-mode", "acceptEdits", "--print", "--output-format", "stream-json", "--verbose", "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session", "inspect"}
+	want = []string{"--disable-slash-commands", "--print", "--output-format", "stream-json", "--verbose", "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session", "inspect"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Claude resume args=%#v, want %#v", got, want)
 	}
-	policyRequest := StartRequest{Task: "inspect", Profile: ManagedProfile{Model: "policy-model", Reasoning: "high"}}
-	got, err = runtime.authoritativeArguments(policyRequest, "policy-session", false)
-	if err != nil {
+}
+
+func TestClaudeCodeRuntimeRejectsConfigurationBeforeStartingProcess(t *testing.T) {
+	started := filepath.Join(t.TempDir(), "started")
+	launcher := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\ntouch \"$CLAUDE_STARTED\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	want = []string{"--permission-mode", "acceptEdits", "--print", "--output-format", "stream-json", "--verbose", "--model", "policy-model", "--effort", "high", "--session-id", "policy-session", "inspect"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("Claude policy args=%#v, want %#v", got, want)
+	instance := core.HarnessInstance{ID: "node/claude", Node: "node", Kind: core.HarnessClaudeCode, Version: "1", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}}
+	_, err := (ClaudeCodeRuntime{Command: launcher, Arguments: []string{"--permission-mode", "acceptEdits"}, Environment: []string{"CLAUDE_STARTED=" + started}}).Start(context.Background(), StartRequest{HarnessInstance: instance, Workspace: t.TempDir(), Task: "inspect"})
+	if !errors.Is(err, ErrClaudeCodeConfiguration) {
+		t.Fatalf("err=%v, want configuration error", err)
+	}
+	if _, err := os.Stat(started); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Claude process started, stat err=%v", err)
+	}
+}
+
+func TestClaudeCodeRuntimeRejectsCapabilityMismatch(t *testing.T) {
+	for _, capability := range []core.ExecutionCapability{core.CapabilitySteering, core.CapabilityApprovals} {
+		t.Run(string(capability), func(t *testing.T) {
+			instance := core.HarnessInstance{ID: "node/claude", Node: "node", Kind: core.HarnessClaudeCode, Version: "1", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}, Capabilities: core.HarnessCapabilities{Execution: []core.ExecutionCapability{capability}}}
+			_, err := (ClaudeCodeRuntime{}).Start(context.Background(), StartRequest{HarnessInstance: instance, Workspace: t.TempDir(), Task: "inspect"})
+			if !errors.Is(err, ErrClaudeCodeConfiguration) {
+				t.Fatalf("capability %q err=%v, want configuration error", capability, err)
+			}
+		})
 	}
 }
 

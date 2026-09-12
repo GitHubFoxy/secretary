@@ -31,14 +31,12 @@ var ErrClaudeCodeConfiguration = errors.New("claude_code runtime configuration e
 // an input channel for steering an active print attempt.
 var ErrClaudeCodeSteeringUnsupported = errors.New("claude: print session does not support steering")
 
-var claudeRuntimeOwnedFlags = map[string]struct{}{
-	"--model": {}, "-m": {}, "--effort": {}, "--thinking": {}, "--max-thinking-tokens": {},
-	"--fallback-model": {},
-	"--session-id":     {}, "--resume": {}, "-r": {}, "--continue": {}, "-c": {},
-	"--fork-session": {}, "--from-pr": {}, "--no-session-persistence": {}, "--": {},
-	"--print": {}, "-p": {}, "--verbose": {}, "--output-format": {}, "--input-format": {},
-	"--stream-json": {}, "--include-partial-messages": {}, "--json-schema": {},
-	"--replay-user-messages": {}, "--permission-prompt-tool": {},
+// claudeStaticArgumentAllowlist is deliberately small. In documented Claude
+// print mode, disabling interactive slash commands cannot alter the Worker
+// envelope, workspace, permissions, tools, session, parser, or execution mode.
+// Every other configured argument is rejected, including aliases and values.
+var claudeStaticArgumentAllowlist = map[string]struct{}{
+	"--disable-slash-commands": {},
 }
 
 // ClaudeCodeRuntime runs the real Claude Code CLI in its documented headless
@@ -56,6 +54,9 @@ type ClaudeCodeRuntime struct {
 type ClaudeRuntime = ClaudeCodeRuntime
 
 func (r ClaudeCodeRuntime) Start(ctx context.Context, request StartRequest) (Session, error) {
+	if err := validateClaudeArguments(r.Arguments); err != nil {
+		return nil, err
+	}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return nil, err
@@ -76,6 +77,9 @@ func (r ClaudeCodeRuntime) Start(ctx context.Context, request StartRequest) (Ses
 }
 
 func (r ClaudeCodeRuntime) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
+	if err := validateClaudeArguments(r.Arguments); err != nil {
+		return nil, err
+	}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return nil, err
@@ -98,11 +102,18 @@ func validateClaudeRequest(request StartRequest) error {
 	if request.HarnessInstance.Kind != "" && request.HarnessInstance.Kind != core.HarnessClaudeCode {
 		return fmt.Errorf("node: Claude Code runtime cannot execute harness %q", request.HarnessInstance.Kind)
 	}
-	if request.HarnessInstance.Kind == core.HarnessClaudeCode && !request.HarnessInstance.Available() {
-		if !request.HarnessInstance.Authentication.Authenticated {
-			return fmt.Errorf("%w: Claude Code is not authenticated", ErrClaudeCodeUnavailable)
+	if request.HarnessInstance.Kind == core.HarnessClaudeCode {
+		for _, capability := range []core.ExecutionCapability{core.CapabilitySteering, core.CapabilityApprovals} {
+			if request.HarnessInstance.Capabilities.SupportsExecution(capability) {
+				return fmt.Errorf("%w: Claude Code print runtime cannot provide %q", ErrClaudeCodeConfiguration, capability)
+			}
 		}
-		return fmt.Errorf("%w: Claude Code HarnessInstance %s is not ready", ErrClaudeCodeUnavailable, request.HarnessInstance.ID)
+		if !request.HarnessInstance.Available() {
+			if !request.HarnessInstance.Authentication.Authenticated {
+				return fmt.Errorf("%w: Claude Code is not authenticated", ErrClaudeCodeUnavailable)
+			}
+			return fmt.Errorf("%w: Claude Code HarnessInstance %s is not ready", ErrClaudeCodeUnavailable, request.HarnessInstance.ID)
+		}
 	}
 	if request.Workspace == "" {
 		return fmt.Errorf("%w: workspace is required", ErrClaudeCodeUnavailable)
@@ -122,20 +133,8 @@ func (r ClaudeCodeRuntime) command() string {
 
 func validateClaudeArguments(configured []string) error {
 	for _, argument := range configured {
-		flag := argument
-		if index := strings.IndexByte(flag, '='); index >= 0 {
-			flag = flag[:index]
-		}
-		if _, reserved := claudeRuntimeOwnedFlags[flag]; reserved {
-			return fmt.Errorf("%w: configured argument %q is reserved for the immutable Worker contract", ErrClaudeCodeConfiguration, argument)
-		}
-		// Claude accepts attached values for short options such as -mMODEL and
-		// -pPROMPT. Treat those forms as the same reserved options.
-		if len(argument) > 2 && strings.HasPrefix(argument, "-") && !strings.HasPrefix(argument, "--") {
-			switch argument[:2] {
-			case "-m", "-p":
-				return fmt.Errorf("%w: configured argument %q is reserved for the immutable Worker contract", ErrClaudeCodeConfiguration, argument)
-			}
+		if _, allowed := claudeStaticArgumentAllowlist[argument]; !allowed {
+			return fmt.Errorf("%w: configured argument %q is not in the Claude Code static argument allowlist", ErrClaudeCodeConfiguration, argument)
 		}
 	}
 	return nil
