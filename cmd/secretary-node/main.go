@@ -57,11 +57,11 @@ func main() {
 	runtime := configuredNodeRuntime(*dataDir)
 	discovery := node.HarnessDiscovery{Node: identity.Node, Runner: node.ExecCommandRunner{}, IncludeOpenCode: *includeOpenCode}
 	daemon := &node.Daemon{
-		Identity: identity,
-		Store: store,
-		Runtime: runtime,
+		Identity:  identity,
+		Store:     store,
+		Runtime:   runtime,
 		Inventory: discovery,
-		Capacity: *capacity,
+		Capacity:  *capacity,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -76,6 +76,8 @@ func configuredNodeRuntime(dataDir string) node.Runtime {
 	logDir := filepath.Join(dataDir, "logs", "acp")
 	codexCommand := envOr("SECRETARY_ACP_COMMAND", "codex-acp")
 	codexArgs := strings.Fields(os.Getenv("SECRETARY_ACP_ARGS"))
+	claudeCommand := envOr("SECRETARY_CLAUDE_COMMAND", "claude")
+	claudeArgs := strings.Fields(os.Getenv("SECRETARY_CLAUDE_ARGS"))
 	fxCommand := envOr("SECRETARY_FX_COMMAND", "fx")
 	fxArgs := strings.Fields(os.Getenv("SECRETARY_FX_ARGS"))
 	if len(fxArgs) == 0 {
@@ -88,9 +90,10 @@ func configuredNodeRuntime(dataDir string) node.Runtime {
 	}
 	return node.RuntimeRouter{
 		DefaultHarness: "fx",
-		ACP: node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
-		FX: node.FXRuntime{ACPRuntime: node.ACPRuntime{Command: fxCommand, Arguments: fxArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
-		OpenCode: node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
+		ACP:            node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
+		Claude:         node.ClaudeCodeRuntime{Command: claudeCommand, Arguments: claudeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
+		FX:             node.FXRuntime{ACPRuntime: node.ACPRuntime{Command: fxCommand, Arguments: fxArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
+		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 	}
 }
 

@@ -7,12 +7,17 @@ import (
 
 // RuntimeRouter keeps existing sessions on their harness while allowing a
 // reloaded config snapshot to select a different harness for new sessions.
-// The dispatcher includes the immutable Profile runtime in every request.
+// When a HarnessInstance is bound, its kind and ID are authoritative. Profile
+// and DefaultHarness are only used for unbound compatibility requests.
 type RuntimeRouter struct {
 	DefaultHarness string
 	ACP            Runtime
-	FX             Runtime
-	OpenCode       Runtime
+	Claude         Runtime
+	// ClaudeCode is an explicit alias for integrations that name the adapter
+	// after the product. Claude takes precedence when both are configured.
+	ClaudeCode Runtime
+	FX         Runtime
+	OpenCode   Runtime
 }
 
 func (r RuntimeRouter) Start(ctx context.Context, request StartRequest) (Session, error) {
@@ -58,14 +63,21 @@ func (r RuntimeRouter) harness(request StartRequest) string {
 }
 
 func (r RuntimeRouter) runtime(request StartRequest) Runtime {
+	// A bound HarnessInstance must never be collapsed into the generic ACP
+	// runtime. In particular, Claude Code is a native CLI adapter, not Codex ACP.
 	harness := r.harness(request)
 	switch harness {
 	case "opencode":
 		return r.OpenCode
 	case "fx":
 		return r.FX
-	case "codex", "claude_code":
+	case "codex":
 		return r.ACP
+	case "claude_code":
+		if r.Claude != nil {
+			return r.Claude
+		}
+		return r.ClaudeCode
 	default:
 		return unavailableRuntime{harness: harness}
 	}

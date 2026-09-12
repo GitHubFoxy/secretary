@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/beruseruko/secretary/internal/core"
@@ -33,6 +34,49 @@ func TestRuntimeRouterUsesImmutableHarnessBindingAndPins(t *testing.T) {
 	select {
 	case <-fx.started:
 		t.Fatal("fx runtime was selected for codex binding")
+	default:
+	}
+}
+
+func TestRuntimeRouterUsesDistinctClaudeRuntime(t *testing.T) {
+	codex := recordingRuntime{started: make(chan StartRequest, 1)}
+	claude := recordingRuntime{started: make(chan StartRequest, 1)}
+	router := RuntimeRouter{DefaultHarness: "fx", ACP: codex, Claude: claude}
+	instance := core.HarnessInstance{ID: "node/claude", Node: "node", Kind: core.HarnessClaudeCode, Version: "1", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}}
+	if _, err := router.Start(context.Background(), StartRequest{HarnessInstance: instance, Model: "claude-sonnet", Reasoning: "extended", Profile: ManagedProfile{Runtime: "claude_code"}}); err != nil {
+		t.Fatal(err)
+	}
+	request := <-claude.started
+	if request.HarnessInstance.Kind != core.HarnessClaudeCode || request.Model != "claude-sonnet" || request.Reasoning != "extended" {
+		t.Fatalf("Claude runtime lost immutable request: %#v", request)
+	}
+	select {
+	case <-codex.started:
+		t.Fatal("Codex runtime was selected for Claude binding")
+	default:
+	}
+}
+
+func TestRuntimeRouterNeverFallsBackFromClaudeToCodex(t *testing.T) {
+	codex := recordingRuntime{started: make(chan StartRequest, 1)}
+	router := RuntimeRouter{DefaultHarness: "codex", ACP: codex}
+	instance := core.HarnessInstance{ID: "node/claude", Node: "node", Kind: core.HarnessClaudeCode, Version: "1", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}}
+	_, err := router.Start(context.Background(), StartRequest{HarnessInstance: instance, Profile: ManagedProfile{Runtime: "fx"}})
+	if err == nil {
+		t.Fatal("Claude binding with conflicting profile was silently accepted")
+	}
+	select {
+	case <-codex.started:
+		t.Fatal("Codex runtime was used as Claude fallback")
+	default:
+	}
+	_, err = router.Start(context.Background(), StartRequest{HarnessInstance: instance})
+	if err == nil || !strings.Contains(err.Error(), `harness "claude_code" is unavailable`) {
+		t.Fatalf("missing Claude runtime error=%v", err)
+	}
+	select {
+	case <-codex.started:
+		t.Fatal("Codex runtime was used after Claude runtime was unavailable")
 	default:
 	}
 }
