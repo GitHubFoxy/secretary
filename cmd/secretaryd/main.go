@@ -334,6 +334,11 @@ func configuredRuntime(snapshot config.Snapshot, dataDir string) (node.Runtime, 
 	if len(fxArgs) == 0 {
 		fxArgs = []string{"acp"}
 	}
+	claudeCommand := os.Getenv("SECRETARY_CLAUDE_COMMAND")
+	if claudeCommand == "" {
+		claudeCommand = "claude"
+	}
+	claudeArgs := strings.Fields(os.Getenv("SECRETARY_CLAUDE_ARGS"))
 	openCodeCommand := os.Getenv("SECRETARY_OPENCODE_COMMAND")
 	if openCodeCommand == "" {
 		openCodeCommand = "opencode"
@@ -345,6 +350,7 @@ func configuredRuntime(snapshot config.Snapshot, dataDir string) (node.Runtime, 
 	runtime := node.RuntimeRouter{
 		DefaultHarness: harness,
 		ACP:            node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
+		Claude:         node.ClaudeCodeRuntime{Command: claudeCommand, Arguments: claudeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		FX:             node.FXRuntime{ACPRuntime: node.ACPRuntime{Command: fxCommand, Arguments: fxArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 	}
@@ -355,6 +361,8 @@ func configuredRuntime(snapshot config.Snapshot, dataDir string) (node.Runtime, 
 		command, arguments = openCodeCommand, openCodeArgs
 	case "fx":
 		command, arguments = fxCommand, fxArgs
+	case "claude_code":
+		command, arguments = claudeCommand, claudeArgs
 	}
 	return runtime, strings.TrimSpace(command + " " + strings.Join(arguments, " "))
 }
