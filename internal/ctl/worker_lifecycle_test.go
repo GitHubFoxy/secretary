@@ -147,6 +147,34 @@ func TestWorkerServiceMessageLifecycleMatrix(t *testing.T) {
 	}
 }
 
+func TestWorkerServiceSteeringDedupeKeepsDistinctMessages(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	if _, err := store.SetPhase4AttemptActive(ctx, details.Attempts[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	runtime := service.Runtime.(*lifecycleRuntime)
+	for _, text := range []string{"first direction", "second direction"} {
+		if _, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: text}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runtime.count("steer") != 2 {
+		t.Fatalf("distinct steering calls=%d, want 2", runtime.count("steer"))
+	}
+	request := MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "deduplicated", IdempotencyKey: "steer-key"}
+	if _, err := service.MessageWorker(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	request.Text = "duplicate delivery with changed text"
+	if _, err := service.MessageWorker(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.count("steer") != 3 {
+		t.Fatalf("same-key steering calls=%d, want 3", runtime.count("steer"))
+	}
+}
+
 func TestWorkerServiceCancelAndCloseAreIdempotentAndDoNotCreateTask(t *testing.T) {
 	ctx, store, service, project := newWorkerService(t)
 	details := spawnLifecycleWorker(t, ctx, service, project)
@@ -193,13 +221,75 @@ func TestWorkerServiceConcurrentCancelCreatesOneFinalOutcome(t *testing.T) {
 	group.Wait()
 	close(errs)
 	for err := range errs {
-		if err != nil {
+		if err != nil && !errors.Is(err, ErrWorkerCommandPending) {
 			t.Fatal(err)
 		}
 	}
 	current, err := service.GetWorker(ctx, details.Worker.WorkerRef)
 	if err != nil || len(current.Outcomes) != 1 || len(current.Results) != 1 || !current.Attempts[0].State.Terminal() || service.Runtime.(*lifecycleRuntime).count("cancel") != 1 {
 		t.Fatalf("current=%#v err=%v", current, err)
+	}
+}
+
+func TestWorkerServiceConcurrentCancelAcrossStoresSendsOneCommand(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	store, err := core.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, _, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.CreateProject(ctx, core.ProjectSpec{ID: "repo", Name: "Repo", Mappings: []core.ProjectPathMapping{{Node: "node", Path: t.TempDir()}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := core.HarnessInstance{ID: "node/fx", Node: "node", Kind: core.HarnessFX, Version: "1", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}, Capabilities: core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityShell}}}
+	if _, err := store.EnrollNode(ctx, "node"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateNodeHeartbeat(ctx, "node", core.HarnessInventorySnapshot{Node: "node", ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{instance}}, core.NodeHeartbeat{Capacity: 2}); err != nil {
+		t.Fatal(err)
+	}
+	firstRuntime := &lifecycleRuntime{}
+	first := WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: firstRuntime}
+	details := spawnLifecycleWorker(t, ctx, first, project)
+	if _, err := store.SetPhase4AttemptActive(ctx, details.Attempts[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	other, err := core.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	secondRuntime := &lifecycleRuntime{}
+	second := WorkerService{Store: other, PersonID: person.ID, Capability: capability, Runtime: secondRuntime}
+	var group sync.WaitGroup
+	errs := make(chan error, 2)
+	for _, service := range []WorkerService{first, second} {
+		group.Add(1)
+		go func(service WorkerService) {
+			defer group.Done()
+			_, err := service.CancelWorker(ctx, details.Worker.WorkerRef)
+			errs <- err
+		}(service)
+	}
+	group.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil && !errors.Is(err, ErrWorkerCommandPending) {
+			t.Fatal(err)
+		}
+	}
+	if firstRuntime.count("cancel")+secondRuntime.count("cancel") != 1 {
+		t.Fatalf("cancel sends=%d", firstRuntime.count("cancel")+secondRuntime.count("cancel"))
 	}
 }
 
@@ -236,30 +326,15 @@ func TestWorkerServiceDuplicateSpawnSendsOneDispatch(t *testing.T) {
 	}
 }
 
-func TestWorkerServiceFailsClosedWithoutRuntimeAndPreservesActiveAttempt(t *testing.T) {
-	ctx, store, service, project := newWorkerService(t)
+func TestWorkerServiceFailsClosedWithoutRuntimeBeforeSpawnSideEffects(t *testing.T) {
+	ctx, _, service, project := newWorkerService(t)
 	service.Runtime = nil
 	if _, err := service.SpawnWorker(ctx, SpawnWorkerRequest{Intent: "inspect", ProjectID: project.ID, IdempotencyKey: "no-runtime"}); !errors.Is(err, ErrWorkerRuntimeUnavailable) {
 		t.Fatalf("spawn error=%v", err)
 	}
 	workers, err := service.ListWorkers(ctx)
-	if err != nil || len(workers) != 1 {
+	if err != nil || len(workers) != 0 {
 		t.Fatalf("workers=%#v err=%v", workers, err)
-	}
-	// The Worker is durable but no runtime command has been claimed or sent.
-	details, err := service.GetWorker(ctx, workers[0].WorkerRef)
-	if err != nil || len(details.Attempts) != 1 || details.Attempts[0].State != core.AttemptStarting {
-		t.Fatalf("details=%#v err=%v", details, err)
-	}
-	if _, err := store.SetPhase4AttemptActive(ctx, details.Attempts[0].ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.CancelWorker(ctx, workers[0].WorkerRef); !errors.Is(err, ErrWorkerRuntimeUnavailable) {
-		t.Fatalf("cancel error=%v", err)
-	}
-	stillActive, err := store.Phase4Attempt(ctx, details.Attempts[0].ID)
-	if err != nil || stillActive.State != core.AttemptActive {
-		t.Fatalf("attempt=%#v err=%v", stillActive, err)
 	}
 }
 

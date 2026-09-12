@@ -143,6 +143,7 @@ const (
 type WorkerCommand struct {
 	ID        string             `json:"id"`
 	Kind      string             `json:"kind"`
+	DedupeKey string             `json:"dedupe_key"`
 	WorkerID  string             `json:"worker_id"`
 	AttemptID string             `json:"attempt_id"`
 	State     WorkerCommandState `json:"state"`

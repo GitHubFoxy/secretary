@@ -125,7 +125,7 @@ func TestPhase4WorkerCommandClaimIsDurableAndIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	first, duplicate, err := store.ClaimWorkerCommand(ctx, "dispatch", worker.ID, attempt.ID)
+	first, duplicate, err := store.ClaimWorkerCommand(ctx, "dispatch", "attempt", worker.ID, attempt.ID)
 	if err != nil || duplicate || first.State != WorkerCommandPending {
 		t.Fatalf("first=%#v duplicate=%v err=%v", first, duplicate, err)
 	}
@@ -137,7 +137,7 @@ func TestPhase4WorkerCommandClaimIsDurableAndIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer other.Close()
-	second, duplicate, err := other.ClaimWorkerCommand(ctx, "dispatch", worker.ID, attempt.ID)
+	second, duplicate, err := other.ClaimWorkerCommand(ctx, "dispatch", "attempt", worker.ID, attempt.ID)
 	if err != nil || !duplicate || second.ID != first.ID || second.State != WorkerCommandDelivered {
 		t.Fatalf("second=%#v duplicate=%v err=%v", second, duplicate, err)
 	}

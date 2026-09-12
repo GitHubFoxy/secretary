@@ -2,6 +2,8 @@ package ctl
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -9,7 +11,10 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-var ErrWorkerRuntimeUnavailable = errors.New("worker: runtime command delivery is unavailable")
+var (
+	ErrWorkerRuntimeUnavailable = errors.New("worker: runtime command delivery is unavailable")
+	ErrWorkerCommandPending     = errors.New("worker: runtime command delivery is pending recovery")
+)
 
 // WorkerRuntime delivers lifecycle commands to the immutable Worker binding.
 // commandID is durable and stable across duplicate Secretary tool delivery.
@@ -86,15 +91,36 @@ func (s WorkerService) requireRuntime() error {
 // same Worker, Attempt and command kind always reuse one ID. Pending,
 // delivered and failed commands are never sent twice by this service. A failed
 // handoff remains visible and requires explicit recovery rather than a retry.
-func (s WorkerService) claimCommand(ctx context.Context, kind string, worker core.Worker, attempt core.Phase4Attempt) (core.WorkerCommand, bool, error) {
-	command, duplicate, err := s.Store.ClaimWorkerCommand(ctx, kind, worker.ID, attempt.ID)
+func (s WorkerService) claimCommand(ctx context.Context, kind, dedupeKey string, worker core.Worker, attempt core.Phase4Attempt) (core.WorkerCommand, bool, error) {
+	command, duplicate, err := s.Store.ClaimWorkerCommand(ctx, kind, dedupeKey, worker.ID, attempt.ID)
 	if err != nil {
 		return core.WorkerCommand{}, false, err
+	}
+	if duplicate && command.State == core.WorkerCommandPending {
+		return core.WorkerCommand{}, false, fmt.Errorf("%w: %s", ErrWorkerCommandPending, kind)
 	}
 	if duplicate && command.State == core.WorkerCommandFailed {
 		return core.WorkerCommand{}, false, fmt.Errorf("worker: prior %s command failed: %s", kind, command.LastError)
 	}
 	return command, !duplicate, nil
+}
+
+func commandDedupeKey(idempotencyKey, fallback string) string {
+	if key := strings.TrimSpace(idempotencyKey); key != "" {
+		return "key:" + key
+	}
+	return fallback
+}
+
+func steeringDedupeKey(idempotencyKey string) (string, error) {
+	if key := strings.TrimSpace(idempotencyKey); key != "" {
+		return "key:" + key, nil
+	}
+	bytes := make([]byte, 16)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", fmt.Errorf("worker: generate steering command key: %w", err)
+	}
+	return "call:" + hex.EncodeToString(bytes), nil
 }
 
 func (s WorkerService) deliverCommand(ctx context.Context, command core.WorkerCommand, send func(string) error) error {
@@ -149,11 +175,21 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	if preferences.ProjectID == "" {
 		preferences = WorkerPreferences{ProjectID: request.ProjectID, NodeID: request.NodeID, HarnessInstance: request.HarnessInstance, HarnessKind: request.HarnessKind, Workspace: request.Workspace, ModelID: request.ModelID, Reasoning: request.Reasoning}
 	}
-	worker, turn, attempt, resolution, err := s.Store.ResolveAndCreateWorker(ctx, conversation.ID, request.Intent, core.DispatchResolutionRequest{
-		ProjectID: preferences.ProjectID, NodeID: preferences.NodeID, HarnessInstanceID: preferences.HarnessInstance,
+	resolutionRequest := core.DispatchResolutionRequest{ProjectID: preferences.ProjectID, NodeID: preferences.NodeID, HarnessInstanceID: preferences.HarnessInstance,
 		HarnessKind: preferences.HarnessKind, Workspace: preferences.Workspace, ModelID: preferences.ModelID,
-		Reasoning: preferences.Reasoning, WorkerPolicy: s.WorkerPolicy,
-	}, request.IdempotencyKey)
+		Reasoning: preferences.Reasoning, WorkerPolicy: s.WorkerPolicy}
+	// Resolve before creation so the production MCP wiring with Runtime=nil
+	// cannot leave an online Worker/Turn/Attempt behind on a rejected spawn.
+	preview, err := s.Store.ResolveDispatch(ctx, resolutionRequest)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if !preview.Queued {
+		if err := s.requireRuntime(); err != nil {
+			return core.WorkerDetails{}, err
+		}
+	}
+	worker, turn, attempt, resolution, err := s.Store.ResolveAndCreateWorker(ctx, conversation.ID, request.Intent, resolutionRequest, request.IdempotencyKey)
 	if err != nil {
 		return core.WorkerDetails{}, err
 	}
@@ -161,7 +197,7 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 		if err := s.requireRuntime(); err != nil {
 			return core.WorkerDetails{}, err
 		}
-		command, send, err := s.claimCommand(ctx, "dispatch", worker, attempt)
+		command, send, err := s.claimCommand(ctx, "dispatch", "attempt", worker, attempt)
 		if err != nil {
 			return core.WorkerDetails{}, err
 		}
@@ -198,7 +234,11 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		if err := s.requireRuntime(); err != nil {
 			return core.WorkerDetails{}, err
 		}
-		command, send, err := s.claimCommand(ctx, "steering", details.Worker, *attempt)
+		dedupeKey, err := steeringDedupeKey(request.IdempotencyKey)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		command, send, err := s.claimCommand(ctx, "steering", dedupeKey, details.Worker, *attempt)
 		if err != nil {
 			return core.WorkerDetails{}, err
 		}
@@ -217,7 +257,7 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		if err := s.requireRuntime(); err != nil {
 			return core.WorkerDetails{}, err
 		}
-		command, send, err := s.claimCommand(ctx, "respond", details.Worker, *attempt)
+		command, send, err := s.claimCommand(ctx, "respond", commandDedupeKey(request.IdempotencyKey, "request:"+request.RequestID), details.Worker, *attempt)
 		if err != nil {
 			return core.WorkerDetails{}, err
 		}
@@ -243,7 +283,7 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			err = bindingErr
 			break
 		}
-		command, send, claimErr := s.claimCommand(ctx, "dispatch", details.Worker, next)
+		command, send, claimErr := s.claimCommand(ctx, "dispatch", "attempt", details.Worker, next)
 		if claimErr != nil {
 			err = claimErr
 			break
@@ -265,7 +305,7 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			err = createErr
 			break
 		}
-		command, send, claimErr := s.claimCommand(ctx, "resume", details.Worker, next)
+		command, send, claimErr := s.claimCommand(ctx, "resume", "attempt", details.Worker, next)
 		if claimErr != nil {
 			err = claimErr
 			break
@@ -298,7 +338,7 @@ func (s WorkerService) CancelWorker(ctx context.Context, workerRef string) (core
 		if err := s.requireRuntime(); err != nil {
 			return core.WorkerDetails{}, err
 		}
-		command, send, err := s.claimCommand(ctx, "cancel", details.Worker, *attempt)
+		command, send, err := s.claimCommand(ctx, "cancel", "attempt", details.Worker, *attempt)
 		if err != nil {
 			return core.WorkerDetails{}, err
 		}
