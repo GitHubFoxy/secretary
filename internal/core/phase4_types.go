@@ -130,6 +130,27 @@ type Phase4Result = Result
 // WorkerSpec is the creation contract for a Worker and its immutable binding.
 // WorkerDetails is the durable Secretary read model. It deliberately exposes
 // immutable bindings and lifecycle records, never Node-local session IDs.
+type WorkerCommandState string
+
+const (
+	WorkerCommandPending   WorkerCommandState = "pending"
+	WorkerCommandDelivered WorkerCommandState = "delivered"
+	WorkerCommandFailed    WorkerCommandState = "failed"
+)
+
+// WorkerCommand persists the server-side delivery decision for one immutable
+// Worker Attempt command. It contains no Node-local runtime identifiers.
+type WorkerCommand struct {
+	ID        string             `json:"id"`
+	Kind      string             `json:"kind"`
+	WorkerID  string             `json:"worker_id"`
+	AttemptID string             `json:"attempt_id"`
+	State     WorkerCommandState `json:"state"`
+	LastError string             `json:"last_error,omitempty"`
+	CreatedAt time.Time          `json:"created_at"`
+	UpdatedAt time.Time          `json:"updated_at"`
+}
+
 type WorkerDetails struct {
 	Worker   Worker           `json:"worker"`
 	Turns    []Turn           `json:"turns"`

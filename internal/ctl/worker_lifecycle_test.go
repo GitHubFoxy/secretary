@@ -21,26 +21,34 @@ func (r *lifecycleRuntime) add(call string) {
 	defer r.mu.Unlock()
 	r.calls = append(r.calls, call)
 }
-func (r *lifecycleRuntime) Dispatch(context.Context, core.Worker, core.Turn, core.Phase4Attempt, core.DispatchResolution) error {
+func (r *lifecycleRuntime) Dispatch(context.Context, string, core.Worker, core.Turn, core.Phase4Attempt, core.DispatchResolution) error {
 	r.add("dispatch")
 	return nil
 }
-func (r *lifecycleRuntime) Steer(context.Context, core.Worker, core.Phase4Attempt, string) error {
+func (r *lifecycleRuntime) Steer(context.Context, string, core.Worker, core.Phase4Attempt, string) error {
 	r.add("steer")
 	return nil
 }
-func (r *lifecycleRuntime) Respond(context.Context, core.Worker, core.Phase4Attempt, string, string) error {
+func (r *lifecycleRuntime) Respond(context.Context, string, core.Worker, core.Phase4Attempt, string, string) error {
 	r.add("respond")
 	return nil
 }
-func (r *lifecycleRuntime) Resume(context.Context, core.Worker, core.Turn, core.Phase4Attempt, string) error {
+func (r *lifecycleRuntime) Resume(context.Context, string, core.Worker, core.Turn, core.Phase4Attempt, string) error {
 	r.add("resume")
 	return nil
 }
-func (r *lifecycleRuntime) Cancel(context.Context, core.Worker, core.Phase4Attempt) error {
+func (r *lifecycleRuntime) Cancel(context.Context, string, core.Worker, core.Phase4Attempt) error {
 	r.add("cancel")
 	return nil
 }
+
+type unavailableCancelRuntime struct{ lifecycleRuntime }
+
+func (r *unavailableCancelRuntime) Cancel(context.Context, string, core.Worker, core.Phase4Attempt) error {
+	r.add("cancel")
+	return errors.New("node offline")
+}
+
 func (r *lifecycleRuntime) count(want string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -190,8 +198,82 @@ func TestWorkerServiceConcurrentCancelCreatesOneFinalOutcome(t *testing.T) {
 		}
 	}
 	current, err := service.GetWorker(ctx, details.Worker.WorkerRef)
-	if err != nil || len(current.Outcomes) != 1 || len(current.Results) != 1 || !current.Attempts[0].State.Terminal() {
+	if err != nil || len(current.Outcomes) != 1 || len(current.Results) != 1 || !current.Attempts[0].State.Terminal() || service.Runtime.(*lifecycleRuntime).count("cancel") != 1 {
 		t.Fatalf("current=%#v err=%v", current, err)
+	}
+}
+
+func TestWorkerServiceDoesNotFinalizeCancelOrCloseWhenNodeIsUnavailable(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	if _, err := store.SetPhase4AttemptActive(ctx, details.Attempts[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	unavailable := &unavailableCancelRuntime{}
+	service.Runtime = unavailable
+	if _, err := service.CancelWorker(ctx, details.Worker.WorkerRef); err == nil {
+		t.Fatal("expected unavailable Node error")
+	}
+	if _, err := service.CloseWorker(ctx, details.Worker.WorkerRef); err == nil {
+		t.Fatal("expected unavailable Node error")
+	}
+	attempt, err := store.Phase4Attempt(ctx, details.Attempts[0].ID)
+	if err != nil || attempt.State != core.AttemptActive || unavailable.count("cancel") != 1 {
+		t.Fatalf("attempt=%#v err=%v cancels=%d", attempt, err, unavailable.count("cancel"))
+	}
+}
+
+func TestWorkerServiceDuplicateSpawnSendsOneDispatch(t *testing.T) {
+	ctx, _, service, project := newWorkerService(t)
+	request := SpawnWorkerRequest{Intent: "inspect", ProjectID: project.ID, IdempotencyKey: "same-spawn"}
+	first, err := service.SpawnWorker(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.SpawnWorker(ctx, request)
+	if err != nil || second.Worker.ID != first.Worker.ID || service.Runtime.(*lifecycleRuntime).count("dispatch") != 1 {
+		t.Fatalf("first=%#v second=%#v err=%v dispatches=%d", first, second, err, service.Runtime.(*lifecycleRuntime).count("dispatch"))
+	}
+}
+
+func TestWorkerServiceFailsClosedWithoutRuntimeAndPreservesActiveAttempt(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	service.Runtime = nil
+	if _, err := service.SpawnWorker(ctx, SpawnWorkerRequest{Intent: "inspect", ProjectID: project.ID, IdempotencyKey: "no-runtime"}); !errors.Is(err, ErrWorkerRuntimeUnavailable) {
+		t.Fatalf("spawn error=%v", err)
+	}
+	workers, err := service.ListWorkers(ctx)
+	if err != nil || len(workers) != 1 {
+		t.Fatalf("workers=%#v err=%v", workers, err)
+	}
+	// The Worker is durable but no runtime command has been claimed or sent.
+	details, err := service.GetWorker(ctx, workers[0].WorkerRef)
+	if err != nil || len(details.Attempts) != 1 || details.Attempts[0].State != core.AttemptStarting {
+		t.Fatalf("details=%#v err=%v", details, err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, details.Attempts[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.CancelWorker(ctx, workers[0].WorkerRef); !errors.Is(err, ErrWorkerRuntimeUnavailable) {
+		t.Fatalf("cancel error=%v", err)
+	}
+	stillActive, err := store.Phase4Attempt(ctx, details.Attempts[0].ID)
+	if err != nil || stillActive.State != core.AttemptActive {
+		t.Fatalf("attempt=%#v err=%v", stillActive, err)
+	}
+}
+
+func TestWorkerServiceNeedsInputRequiresRequestID(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	if _, err := store.SetPhase4AttemptActive(ctx, details.Attempts[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptNeedsInput(ctx, details.Attempts[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "answer"}); err == nil {
+		t.Fatal("expected missing request_id error")
 	}
 }
 

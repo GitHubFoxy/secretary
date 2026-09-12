@@ -9,14 +9,17 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
+var ErrWorkerRuntimeUnavailable = errors.New("worker: runtime command delivery is unavailable")
+
 // WorkerRuntime delivers lifecycle commands to the immutable Worker binding.
+// commandID is durable and stable across duplicate Secretary tool delivery.
 // It deliberately has no retry operation and never receives a runtime session ID.
 type WorkerRuntime interface {
-	Dispatch(context.Context, core.Worker, core.Turn, core.Phase4Attempt, core.DispatchResolution) error
-	Steer(context.Context, core.Worker, core.Phase4Attempt, string) error
-	Respond(context.Context, core.Worker, core.Phase4Attempt, string, string) error
-	Resume(context.Context, core.Worker, core.Turn, core.Phase4Attempt, string) error
-	Cancel(context.Context, core.Worker, core.Phase4Attempt) error
+	Dispatch(context.Context, string, core.Worker, core.Turn, core.Phase4Attempt, core.DispatchResolution) error
+	Steer(context.Context, string, core.Worker, core.Phase4Attempt, string) error
+	Respond(context.Context, string, core.Worker, core.Phase4Attempt, string, string) error
+	Resume(context.Context, string, core.Worker, core.Turn, core.Phase4Attempt, string) error
+	Cancel(context.Context, string, core.Worker, core.Phase4Attempt) error
 }
 
 type WorkerService struct {
@@ -72,6 +75,37 @@ func (s WorkerService) authorize(ctx context.Context) (core.Conversation, error)
 	return s.Store.ConversationForPerson(ctx, s.PersonID)
 }
 
+func (s WorkerService) requireRuntime() error {
+	if s.Runtime == nil {
+		return ErrWorkerRuntimeUnavailable
+	}
+	return nil
+}
+
+// claimCommand commits the server-side command identity before handoff. The
+// same Worker, Attempt and command kind always reuse one ID. Pending,
+// delivered and failed commands are never sent twice by this service. A failed
+// handoff remains visible and requires explicit recovery rather than a retry.
+func (s WorkerService) claimCommand(ctx context.Context, kind string, worker core.Worker, attempt core.Phase4Attempt) (core.WorkerCommand, bool, error) {
+	command, duplicate, err := s.Store.ClaimWorkerCommand(ctx, kind, worker.ID, attempt.ID)
+	if err != nil {
+		return core.WorkerCommand{}, false, err
+	}
+	if duplicate && command.State == core.WorkerCommandFailed {
+		return core.WorkerCommand{}, false, fmt.Errorf("worker: prior %s command failed: %s", kind, command.LastError)
+	}
+	return command, !duplicate, nil
+}
+
+func (s WorkerService) deliverCommand(ctx context.Context, command core.WorkerCommand, send func(string) error) error {
+	if err := send(command.ID); err != nil {
+		_, _ = s.Store.MarkWorkerCommandFailed(context.Background(), command.ID, err.Error())
+		return err
+	}
+	_, err := s.Store.MarkWorkerCommandDelivered(ctx, command.ID)
+	return err
+}
+
 func (s WorkerService) ListNodes(ctx context.Context) ([]core.NodeRecord, error) {
 	if _, err := s.authorize(ctx); err != nil {
 		return nil, err
@@ -123,13 +157,20 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	if err != nil {
 		return core.WorkerDetails{}, err
 	}
-	if !resolution.Queued && s.Runtime != nil {
-		if err := s.Runtime.Dispatch(ctx, worker, turn, attempt, resolution); err != nil {
-			details, readErr := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
-			if readErr != nil {
-				return core.WorkerDetails{}, readErr
+	if !resolution.Queued {
+		if err := s.requireRuntime(); err != nil {
+			return core.WorkerDetails{}, err
+		}
+		command, send, err := s.claimCommand(ctx, "dispatch", worker, attempt)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		if send {
+			if err := s.deliverCommand(ctx, command, func(commandID string) error {
+				return s.Runtime.Dispatch(ctx, commandID, worker, turn, attempt, resolution)
+			}); err != nil {
+				return core.WorkerDetails{}, fmt.Errorf("dispatch Worker: %w", err)
 			}
-			return details, fmt.Errorf("dispatch Worker: %w", err)
 		}
 	}
 	return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
@@ -154,41 +195,85 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		if attempt == nil {
 			return core.WorkerDetails{}, core.ErrInvalidTransition
 		}
-		if s.Runtime != nil {
-			err = s.Runtime.Steer(ctx, details.Worker, *attempt, request.Text)
+		if err := s.requireRuntime(); err != nil {
+			return core.WorkerDetails{}, err
+		}
+		command, send, err := s.claimCommand(ctx, "steering", details.Worker, *attempt)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		if send {
+			err = s.deliverCommand(ctx, command, func(commandID string) error {
+				return s.Runtime.Steer(ctx, commandID, details.Worker, *attempt, request.Text)
+			})
 		}
 	case core.WorkerNeedsInput:
 		if attempt == nil {
 			return core.WorkerDetails{}, core.ErrInvalidTransition
 		}
-		if s.Runtime != nil {
-			err = s.Runtime.Respond(ctx, details.Worker, *attempt, request.RequestID, request.Text)
+		if strings.TrimSpace(request.RequestID) == "" {
+			return core.WorkerDetails{}, errors.New("worker: needs_input response requires request_id")
+		}
+		if err := s.requireRuntime(); err != nil {
+			return core.WorkerDetails{}, err
+		}
+		command, send, err := s.claimCommand(ctx, "respond", details.Worker, *attempt)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		if send {
+			err = s.deliverCommand(ctx, command, func(commandID string) error {
+				return s.Runtime.Respond(ctx, commandID, details.Worker, *attempt, request.RequestID, request.Text)
+			})
 		}
 		if err == nil {
 			_, err = s.Store.ResumePhase4Attempt(ctx, attempt.ID)
 		}
 	case core.WorkerIdle:
+		if err := s.requireRuntime(); err != nil {
+			return core.WorkerDetails{}, err
+		}
 		turn, next, createErr := s.Store.CreateTurn(ctx, details.Worker.ID, core.TurnSpec{Input: request.Text, IdempotencyKey: request.IdempotencyKey})
 		if createErr != nil {
 			err = createErr
 			break
 		}
-		if s.Runtime != nil {
-			binding, bindingErr := s.Store.ResolveWorkerBinding(ctx, details.Worker.ID)
-			if bindingErr != nil {
-				err = bindingErr
-			} else {
-				err = s.Runtime.Dispatch(ctx, details.Worker, turn, next, core.DispatchResolution{ProjectDispatch: binding})
-			}
+		binding, bindingErr := s.Store.ResolveWorkerBinding(ctx, details.Worker.ID)
+		if bindingErr != nil {
+			err = bindingErr
+			break
+		}
+		command, send, claimErr := s.claimCommand(ctx, "dispatch", details.Worker, next)
+		if claimErr != nil {
+			err = claimErr
+			break
+		}
+		if send {
+			err = s.deliverCommand(ctx, command, func(commandID string) error {
+				return s.Runtime.Dispatch(ctx, commandID, details.Worker, turn, next, core.DispatchResolution{ProjectDispatch: binding})
+			})
 		}
 	case core.WorkerOffline:
+		if attempt == nil {
+			return core.WorkerDetails{}, core.ErrInvalidTransition
+		}
+		if err := s.requireRuntime(); err != nil {
+			return core.WorkerDetails{}, err
+		}
 		turn, next, createErr := s.Store.CreateTurn(ctx, details.Worker.ID, core.TurnSpec{Input: request.Text, IdempotencyKey: request.IdempotencyKey})
 		if createErr != nil {
 			err = createErr
 			break
 		}
-		if s.Runtime != nil {
-			err = s.Runtime.Resume(ctx, details.Worker, turn, next, request.Text)
+		command, send, claimErr := s.claimCommand(ctx, "resume", details.Worker, next)
+		if claimErr != nil {
+			err = claimErr
+			break
+		}
+		if send {
+			err = s.deliverCommand(ctx, command, func(commandID string) error {
+				return s.Runtime.Resume(ctx, commandID, details.Worker, turn, next, request.Text)
+			})
 		}
 	default:
 		err = core.ErrInvalidTransition
@@ -210,8 +295,15 @@ func (s WorkerService) CancelWorker(ctx context.Context, workerRef string) (core
 	}
 	attempt := details.CurrentAttempt()
 	if attempt != nil && !attempt.State.Terminal() {
-		if s.Runtime != nil {
-			if err := s.Runtime.Cancel(ctx, details.Worker, *attempt); err != nil {
+		if err := s.requireRuntime(); err != nil {
+			return core.WorkerDetails{}, err
+		}
+		command, send, err := s.claimCommand(ctx, "cancel", details.Worker, *attempt)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		if send {
+			if err := s.deliverCommand(ctx, command, func(commandID string) error { return s.Runtime.Cancel(ctx, commandID, details.Worker, *attempt) }); err != nil {
 				return core.WorkerDetails{}, err
 			}
 		}

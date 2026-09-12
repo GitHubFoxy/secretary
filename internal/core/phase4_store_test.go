@@ -109,6 +109,40 @@ func TestPhase4RetryHasOneOutcomePerAttemptAndOneResultPerTurn(t *testing.T) {
 	}
 }
 
+func TestPhase4WorkerCommandClaimIsDurableAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, phase4WorkerSpec(), TurnSpec{Input: "command"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, duplicate, err := store.ClaimWorkerCommand(ctx, "dispatch", worker.ID, attempt.ID)
+	if err != nil || duplicate || first.State != WorkerCommandPending {
+		t.Fatalf("first=%#v duplicate=%v err=%v", first, duplicate, err)
+	}
+	if _, err := store.MarkWorkerCommandDelivered(ctx, first.ID); err != nil {
+		t.Fatal(err)
+	}
+	other, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	second, duplicate, err := other.ClaimWorkerCommand(ctx, "dispatch", worker.ID, attempt.ID)
+	if err != nil || !duplicate || second.ID != first.ID || second.State != WorkerCommandDelivered {
+		t.Fatalf("second=%#v duplicate=%v err=%v", second, duplicate, err)
+	}
+}
+
 func TestPhase4RetryKeyBelongsToItsSourceAttempt(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
