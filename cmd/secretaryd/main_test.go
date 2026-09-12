@@ -16,6 +16,43 @@ import (
 	"github.com/beruseruko/secretary/internal/webapi"
 )
 
+func TestProductionStartupRecoversUnknownPhase4Attempt(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "production-recovery.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{WorkerRef: "startup-recovery-worker", ProjectID: "project", NodeID: "missing-node", HarnessInstanceID: "missing-node/fx", Intent: "recover", PolicySnapshot: "{}"}, core.TurnSpec{Input: "recover"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := recoverProductionPhase4Attempts(ctx, store, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	recoveredAttempt, err := store.Phase4Attempt(ctx, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredAttempt.State != core.AttemptInterrupted {
+		t.Fatalf("attempt state=%s, want interrupted", recoveredAttempt.State)
+	}
+	recoveredResult, err := store.Phase4Result(ctx, turn.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredResult.Status != core.ResultInterrupted || recoveredResult.FailureCode != "runtime_execution_unknown" {
+		t.Fatalf("recovery result=%#v", recoveredResult)
+	}
+}
+
 func TestProductionAssemblyRespondsWithoutManualResponderAttachment(t *testing.T) {
 	ctx := context.Background()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "production.db"))

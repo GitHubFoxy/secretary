@@ -328,6 +328,10 @@ func main() {
 	}
 }
 
+func recoverProductionPhase4Attempts(context.Context, *core.Store, *node.LocalNode, *node.ServerManager) error {
+	return nil
+}
+
 func attachProductionWorkerServices(web *webapi.Server, store *core.Store, personID, capability string, local *node.LocalNode, remote *node.ServerManager, managedProfile func(core.BindingProfile) node.ManagedProfile) {
 	controller := &app.WorkerController{Store: store, Node: local, ManagedProfile: managedProfile}
 	web.AttachWorkerController(controller)

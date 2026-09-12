@@ -145,6 +145,141 @@ func TestSecretaryContextReconstructionSurvivesRestartAndDoesNotTrustNativeSessi
 	}
 }
 
+func TestReconstructSecretaryContextForTurnSnapshotIsImmutableAndDoesNotStealLaterResults(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userPath := filepath.Join(t.TempDir(), "user.md")
+	if _, err := store.SaveUserDocument(ctx, userPath, "stable context"); err != nil {
+		t.Fatal(err)
+	}
+	firstWorker, _, firstAttempt, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{WorkerRef: "snapshot-first", Intent: "first", ProjectID: "p", NodeID: "n", HarnessInstanceID: "n/fx", PolicySnapshot: "snapshot"}, TurnSpec{Input: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, firstAttempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, result, _, err := store.RecordAttemptOutcome(ctx, firstAttempt.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "first result"}); err != nil || result == nil {
+		t.Fatalf("first result=%#v err=%v", result, err)
+	}
+	turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "summarize")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstSnapshot, err := store.ReconstructSecretaryContextForTurn(ctx, turn.ID, userPath, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedFirst, err := json.Marshal(firstSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondWorker, _, secondAttempt, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{WorkerRef: "snapshot-second", Intent: "second", ProjectID: "p", NodeID: "n", HarnessInstanceID: "n/fx", PolicySnapshot: "snapshot"}, TurnSpec{Input: "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, secondAttempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, result, _, err := store.RecordAttemptOutcome(ctx, secondAttempt.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "second result"}); err != nil || result == nil {
+		t.Fatalf("second result=%#v err=%v", result, err)
+	}
+	secondSnapshot, err := store.ReconstructSecretaryContextForTurn(ctx, turn.ID, userPath, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedSecond, err := json.Marshal(secondSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(encodedSecond) != string(encodedFirst) {
+		t.Fatalf("snapshot changed on repeat: first=%s second=%s", encodedFirst, encodedSecond)
+	}
+	if len(secondSnapshot.UnseenWorkerResults) != 1 || secondSnapshot.UnseenWorkerResults[0].WorkerID != firstWorker.ID {
+		t.Fatalf("repeat returned rebuilt context=%#v", secondSnapshot.UnseenWorkerResults)
+	}
+	remaining, err := store.ReconstructSecretaryContext(ctx, identity.ID, userPath, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining.UnseenWorkerResults) != 1 || remaining.UnseenWorkerResults[0].WorkerID != secondWorker.ID {
+		t.Fatalf("later Result was stolen: %#v", remaining.UnseenWorkerResults)
+	}
+}
+
+func TestReconstructSecretaryContextForTurnConcurrentCallsMaterializeOnce(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userPath := filepath.Join(t.TempDir(), "user.md")
+	if _, err := store.SaveUserDocument(ctx, userPath, "concurrent context"); err != nil {
+		t.Fatal(err)
+	}
+	_, _, attempt, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{WorkerRef: "snapshot-concurrent", Intent: "concurrent", ProjectID: "p", NodeID: "n", HarnessInstanceID: "n/fx", PolicySnapshot: "snapshot"}, TurnSpec{Input: "concurrent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "concurrent result"}); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "summarize concurrently")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type response struct {
+		context SecretaryContext
+		err     error
+	}
+	responses := make(chan response, 8)
+	for i := 0; i < 8; i++ {
+		go func() {
+			value, callErr := store.ReconstructSecretaryContextForTurn(ctx, turn.ID, userPath, 20)
+			responses <- response{context: value, err: callErr}
+		}()
+	}
+	var first string
+	for i := 0; i < 8; i++ {
+		value := <-responses
+		if value.err != nil {
+			t.Fatal(value.err)
+		}
+		encoded, marshalErr := json.Marshal(value.context)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		if first == "" {
+			first = string(encoded)
+		} else if string(encoded) != first {
+			t.Fatalf("concurrent snapshot mismatch: first=%s got=%s", first, encoded)
+		}
+	}
+	remaining, err := store.ReconstructSecretaryContext(ctx, identity.ID, userPath, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(remaining.UnseenWorkerResults) != 0 {
+		t.Fatalf("concurrent materialization did not acknowledge exactly once: %#v", remaining.UnseenWorkerResults)
+	}
+}
+
 func TestTerminalWorkerResultIsImmediateAndUnseenForNextSecretaryContext(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)

@@ -119,6 +119,52 @@ func TestRuntimeUsesCapabilityAndSteersActiveSecretary(t *testing.T) {
 	}
 }
 
+func TestRuntimeFailsClosedWhenCanonicalSnapshotIsEmpty(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "must not prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeRuntime{}
+	runtime := NewRuntime(node.NewLocal(fake), "cap")
+	runtime.AttachConversation(store, conversation.ID)
+	runtime.AttachIdentity(identity)
+	runtime.session = &fakeSession{prompts: make(chan string, 1), results: make(chan node.Result, 1)}
+	runtime.busy = true
+	runtime.activeTurnID = turn.ID
+	runtime.runPrompt(ctx, runtime.session, turn.Input)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		stored, readErr := store.SecretaryTurn(ctx, turn.ID)
+		if readErr == nil && stored.State == core.SecretaryTurnFailed {
+			if stored.Error != "canonical Secretary context unavailable: empty canonical Secretary context snapshot" {
+				t.Fatalf("turn error=%q", stored.Error)
+			}
+			select {
+			case prompt := <-runtime.session.(*fakeSession).prompts:
+				t.Fatalf("raw prompt was sent: %q", prompt)
+			default:
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("empty canonical snapshot did not fail closed")
+}
+
 func TestRuntimePersistsResponseEntries(t *testing.T) {
 	ctx := context.Background()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
