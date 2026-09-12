@@ -431,38 +431,73 @@ func sanitizePublicValue(value any) any {
 }
 
 func forbiddenPublicKey(key string) bool {
-	var normalizedBuilder strings.Builder
-	for i, character := range strings.TrimSpace(key) {
-		if unicode.IsUpper(character) {
-			if i > 0 {
-				normalizedBuilder.WriteByte('_')
-			}
-			character = unicode.ToLower(character)
-		}
-		if character == '-' || character == ' ' {
-			character = '_'
-		}
-		normalizedBuilder.WriteRune(character)
-	}
-	normalized := normalizedBuilder.String()
-	parts := strings.Split(normalized, "_")
-	for i, part := range parts {
-		switch part {
+	words := publicKeyWords(key)
+	for i, word := range words {
+		switch word {
 		case "secret", "secrets", "credential", "credentials", "callback", "callbacks", "token", "tokens":
 			return true
 		case "task", "tasks":
 			return true
 		case "session", "sessions":
-			if i > 0 && parts[i-1] == "runtime" {
+			if i > 0 && words[i-1] == "runtime" {
 				return true
 			}
 		case "id":
-			if i > 0 && (parts[i-1] == "task" || (i > 1 && parts[i-2] == "runtime" && parts[i-1] == "session")) {
+			if i > 0 && (words[i-1] == "task" || (i > 1 && words[i-2] == "runtime" && words[i-1] == "session")) {
 				return true
 			}
 		}
 	}
+
+	// Uppercase acronyms such as RUNTIMESESSIONID have no case transition to
+	// split. Compare their compact spelling against the forbidden compound keys.
+	compact := strings.ToLower(strings.Map(func(character rune) rune {
+		if unicode.IsLetter(character) || unicode.IsDigit(character) {
+			return character
+		}
+		return -1
+	}, key))
+	for _, forbidden := range []string{
+		"secret", "secrets", "credential", "credentials", "callback", "callbacks", "token", "tokens",
+		"task", "tasks", "taskid", "tasksid", "runtimesession", "runtimesessionid", "accesstoken", "callbackcapability",
+	} {
+		if compact == forbidden || strings.HasSuffix(compact, forbidden) {
+			return true
+		}
+	}
 	return false
+}
+
+func publicKeyWords(key string) []string {
+	runes := []rune(strings.TrimSpace(key))
+	words := make([]string, 0, 4)
+	current := make([]rune, 0, len(runes))
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		words = append(words, strings.ToLower(string(current)))
+		current = current[:0]
+	}
+	for i, character := range runes {
+		if !unicode.IsLetter(character) && !unicode.IsDigit(character) {
+			flush()
+			continue
+		}
+		if unicode.IsUpper(character) && len(current) > 0 {
+			previous := runes[i-1]
+			var next rune
+			if i+1 < len(runes) {
+				next = runes[i+1]
+			}
+			if unicode.IsLower(previous) || unicode.IsDigit(previous) || (unicode.IsUpper(previous) && unicode.IsLower(next)) {
+				flush()
+			}
+		}
+		current = append(current, unicode.ToLower(character))
+	}
+	flush()
+	return words
 }
 
 func sanitizePublicTaskDetails(details *core.TaskDetails) {

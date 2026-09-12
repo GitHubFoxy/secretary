@@ -74,6 +74,35 @@ type subscription struct {
 	entries        chan core.ConversationEntry
 	cancel         context.CancelFunc
 	slow           bool
+	cursor         int64
+	pending        map[int64]core.ConversationEntry
+}
+
+func (s *subscription) enqueue(entry core.ConversationEntry) bool {
+	if entry.Seq <= s.cursor {
+		return true
+	}
+	if s.pending == nil {
+		s.pending = make(map[int64]core.ConversationEntry)
+	}
+	if _, exists := s.pending[entry.Seq]; exists {
+		return true
+	}
+	s.pending[entry.Seq] = entry
+	for {
+		next, exists := s.pending[s.cursor+1]
+		if !exists {
+			return true
+		}
+		select {
+		case s.entries <- next:
+			delete(s.pending, next.Seq)
+			s.cursor = next.Seq
+		default:
+			s.slow = true
+			return false
+		}
+	}
 }
 
 func New(ctx context.Context, store *core.Store, bootstrapToken string) (*Server, error) {
@@ -324,9 +353,12 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		return
 	}
-	sub := &subscription{conversationID: conversation.ID, clientID: clientID, entries: make(chan core.ConversationEntry, len(entries)+32), cancel: cancel}
+	sub := &subscription{conversationID: conversation.ID, clientID: clientID, entries: make(chan core.ConversationEntry, len(entries)+32), cancel: cancel, cursor: after, pending: make(map[int64]core.ConversationEntry)}
 	for _, entry := range entries {
 		sub.entries <- entry
+		if entry.Seq > sub.cursor {
+			sub.cursor = entry.Seq
+		}
 	}
 	s.subscribers[sub] = struct{}{}
 	s.mu.Unlock()
@@ -368,18 +400,16 @@ func (s *Server) publishLocked(entry core.ConversationEntry) {
 		if subscriber.conversationID != entry.ConversationID {
 			continue
 		}
-		select {
-		case subscriber.entries <- entry:
-		default:
-			// Never drop a durable entry. Close the slow subscriber so it can
-			// reconnect from its last acknowledged entry_seq.
-			subscriber.slow = true
-			delete(s.subscribers, subscriber)
-			if subscriber.cancel != nil {
-				subscriber.cancel()
-			}
-			close(subscriber.entries)
+		if subscriber.enqueue(entry) {
+			continue
 		}
+		// Never drop a durable entry. Close the slow subscriber so it can
+		// reconnect from its last acknowledged entry_seq.
+		delete(s.subscribers, subscriber)
+		if subscriber.cancel != nil {
+			subscriber.cancel()
+		}
+		close(subscriber.entries)
 	}
 }
 
