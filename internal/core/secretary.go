@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS secretary_turns (
   identity_id TEXT NOT NULL REFERENCES secretary_identities(id),
   conversation_id TEXT NOT NULL REFERENCES conversations(id),
   input TEXT NOT NULL,
+  context_snapshot TEXT NOT NULL DEFAULT '',
   state TEXT NOT NULL,
   queue_position INTEGER NOT NULL,
   error TEXT NOT NULL DEFAULT '',
@@ -52,9 +53,28 @@ CREATE TABLE IF NOT EXISTS secretary_user_documents (
   content TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS secretary_conversation_summaries (
+  conversation_id TEXT PRIMARY KEY REFERENCES conversations(id),
+  summary TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS secretary_policy_snapshots (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  snapshot_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS secretary_context_seen_results (
+  turn_id TEXT NOT NULL REFERENCES secretary_turns(id),
+  result_id TEXT NOT NULL REFERENCES phase4_results(id),
+  seen_at TEXT NOT NULL,
+  PRIMARY KEY(turn_id, result_id)
+);
 `)
 	if err != nil {
 		return fmt.Errorf("migrate Secretary schema: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE secretary_turns ADD COLUMN context_snapshot TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return fmt.Errorf("migrate Secretary turn context snapshot: %w", err)
 	}
 	return nil
 }
@@ -150,7 +170,7 @@ func (s *Store) EnqueueSecretaryTurn(ctx context.Context, identityID, input stri
 
 func scanSecretaryTurn(row interface{ Scan(...any) error }, turn *SecretaryTurn) error {
 	var started, finished sql.NullString
-	if err := row.Scan(&turn.ID, &turn.IdentityID, &turn.ConversationID, &turn.Input, &turn.State, &turn.QueuePosition, &turn.Error, newTimestampScanner(&turn.CreatedAt), &started, &finished, newTimestampScanner(&turn.UpdatedAt)); err != nil {
+	if err := row.Scan(&turn.ID, &turn.IdentityID, &turn.ConversationID, &turn.Input, &turn.ContextSnapshot, &turn.State, &turn.QueuePosition, &turn.Error, newTimestampScanner(&turn.CreatedAt), &started, &finished, newTimestampScanner(&turn.UpdatedAt)); err != nil {
 		return err
 	}
 	if started.Valid {
@@ -172,7 +192,7 @@ func scanSecretaryTurn(row interface{ Scan(...any) error }, turn *SecretaryTurn)
 
 func (s *Store) SecretaryTurn(ctx context.Context, turnID string) (SecretaryTurn, error) {
 	var turn SecretaryTurn
-	err := scanSecretaryTurn(s.db.QueryRowContext(ctx, `SELECT id, identity_id, conversation_id, input, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns WHERE id = ?`, turnID), &turn)
+	err := scanSecretaryTurn(s.db.QueryRowContext(ctx, secretaryTurnSelect+` WHERE id = ?`, turnID), &turn)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SecretaryTurn{}, ErrNotFound
 	}
@@ -180,9 +200,23 @@ func (s *Store) SecretaryTurn(ctx context.Context, turnID string) (SecretaryTurn
 }
 
 func (s *Store) StartSecretaryTurn(ctx context.Context, turnID string) (SecretaryTurn, error) {
+	var identityID string
+	if err := s.db.QueryRowContext(ctx, `SELECT identity_id FROM secretary_turns WHERE id = ?`, turnID).Scan(&identityID); errors.Is(err, sql.ErrNoRows) {
+		return SecretaryTurn{}, ErrNotFound
+	} else if err != nil {
+		return SecretaryTurn{}, err
+	}
+	canonical, err := s.ReconstructSecretaryContext(ctx, identityID, "", 20)
+	if err != nil {
+		return SecretaryTurn{}, fmt.Errorf("reconstruct Secretary context: %w", err)
+	}
+	encodedContext, err := json.Marshal(canonical)
+	if err != nil {
+		return SecretaryTurn{}, fmt.Errorf("encode Secretary context: %w", err)
+	}
 	return withTx(s, ctx, func(tx *sql.Tx) (SecretaryTurn, error) {
 		var turn SecretaryTurn
-		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, `SELECT id, identity_id, conversation_id, input, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns WHERE id = ?`, turnID), &turn); errors.Is(err, sql.ErrNoRows) {
+		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, secretaryTurnSelect+` WHERE id = ?`, turnID), &turn); errors.Is(err, sql.ErrNoRows) {
 			return SecretaryTurn{}, ErrNotFound
 		} else if err != nil {
 			return SecretaryTurn{}, err
@@ -205,10 +239,15 @@ func (s *Store) StartSecretaryTurn(ctx context.Context, turnID string) (Secretar
 			return SecretaryTurn{}, ErrInvalidTransition
 		}
 		now := s.now()
-		if _, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET state = ?, started_at = ?, updated_at = ? WHERE id = ?`, SecretaryTurnActive, timestamp(now), timestamp(now), turn.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET context_snapshot = ?, state = ?, started_at = ?, updated_at = ? WHERE id = ?`, string(encodedContext), SecretaryTurnActive, timestamp(now), timestamp(now), turn.ID); err != nil {
 			return SecretaryTurn{}, err
 		}
-		turn.State, turn.StartedAt, turn.UpdatedAt = SecretaryTurnActive, &now, now
+		for _, result := range canonical.UnseenWorkerResults {
+			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO secretary_context_seen_results(turn_id, result_id, seen_at) VALUES(?, ?, ?)`, turn.ID, result.ID, timestamp(now)); err != nil {
+				return SecretaryTurn{}, err
+			}
+		}
+		turn.ContextSnapshot, turn.State, turn.StartedAt, turn.UpdatedAt = string(encodedContext), SecretaryTurnActive, &now, now
 		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: SecretaryTurnStartedEvent, AggregateType: "secretary_turn", AggregateID: turn.ID, Source: "server", CorrelationID: turn.ID, Payload: turn}, turn)
 		if err != nil {
 			return SecretaryTurn{}, err
@@ -238,7 +277,7 @@ func (s *Store) FinishSecretaryTurn(ctx context.Context, turnID string, state Se
 	}
 	return withTx(s, ctx, func(tx *sql.Tx) (SecretaryTurn, error) {
 		var turn SecretaryTurn
-		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, `SELECT id, identity_id, conversation_id, input, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns WHERE id = ?`, turnID), &turn); errors.Is(err, sql.ErrNoRows) {
+		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, secretaryTurnSelect+` WHERE id = ?`, turnID), &turn); errors.Is(err, sql.ErrNoRows) {
 			return SecretaryTurn{}, ErrNotFound
 		} else if err != nil {
 			return SecretaryTurn{}, err
@@ -524,12 +563,16 @@ func (s *Store) LoadUserDocument(ctx context.Context, path string) (UserDocument
 		return UserDocument{}, err
 	}
 	current.Path = storedPath
-	content, readErr := os.ReadFile(path)
+	readPath := path
+	if readPath == "" {
+		readPath = storedPath
+	}
+	content, readErr := os.ReadFile(readPath)
 	if readErr == nil {
 		if ValidateUserDocument(string(content)) == nil && string(content) != current.Content {
 			now := s.now()
 			current.Content, current.Revision, current.UpdatedAt = string(content), current.Revision+1, now
-			if _, err := s.db.ExecContext(ctx, `UPDATE secretary_user_documents SET path = ?, revision = ?, content = ?, updated_at = ? WHERE id = 1`, path, current.Revision, current.Content, timestamp(now)); err != nil {
+			if _, err := s.db.ExecContext(ctx, `UPDATE secretary_user_documents SET path = ?, revision = ?, content = ?, updated_at = ? WHERE id = 1`, readPath, current.Revision, current.Content, timestamp(now)); err != nil {
 				return UserDocument{}, err
 			}
 		}

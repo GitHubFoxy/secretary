@@ -2,7 +2,9 @@ package secretary
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -104,6 +106,11 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.mu.Lock()
 	mcpCommand, dataDir, profileFn, store, identity := r.mcpCommand, r.dataDir, r.profile, r.store, r.identity
 	r.mu.Unlock()
+	if store != nil && dataDir != "" {
+		if _, err := store.LoadUserDocument(ctx, filepath.Join(dataDir, "user.md")); err != nil {
+			return err
+		}
+	}
 	if store != nil && identity.ID != "" {
 		if err := store.RecoverSecretaryTurn(ctx, identity.ID, "runtime restarted before completion was proven"); err != nil {
 			return err
@@ -113,6 +120,11 @@ func (r *Runtime) Start(ctx context.Context) error {
 	request := node.StartRequest{WorkerRef: workerRef, Task: prompt}
 	if profileFn != nil {
 		request.Profile = profileFn()
+		if store != nil && identity.ID != "" {
+			if err := r.persistPolicySnapshot(ctx, request.Profile); err != nil {
+				return err
+			}
+		}
 		if request.Profile.Content != "" {
 			request.Task = "Start the Secretary session and follow the managed Profile."
 			if request.Profile.Delivery != "native" {
@@ -283,14 +295,61 @@ func (r *Runtime) reportError(err error) {
 	}
 }
 
+func (r *Runtime) persistPolicySnapshot(ctx context.Context, profile node.ManagedProfile) error {
+	r.mu.Lock()
+	store, identity := r.store, r.identity
+	r.mu.Unlock()
+	if store == nil || identity.ID == "" {
+		return nil
+	}
+	harness, model, reasoning := profile.Runtime, profile.Model, profile.Reasoning
+	if harness == "" {
+		harness = identity.RuntimeHarness
+	}
+	if model == "" {
+		model = identity.RuntimeModel
+	}
+	if reasoning == "" {
+		reasoning = identity.RuntimeReasoning
+	}
+	if harness != "" && model != "" && reasoning != "" && (identity.RuntimeHarness != harness || identity.RuntimeModel != model || identity.RuntimeReasoning != reasoning) {
+		updated, err := store.ReplaceSecretaryRuntime(ctx, identity.ID, harness, model, reasoning)
+		if err != nil {
+			return err
+		}
+		r.mu.Lock()
+		r.identity = updated
+		r.mu.Unlock()
+	}
+	return store.SetSecretaryPolicySnapshot(ctx, core.SecretaryPolicySnapshot{
+		Version: profile.Version, Harness: harness, Model: model, Reasoning: reasoning,
+		ProfileVersion: profile.Version, ProfileName: profile.Name, ProfileHash: profile.Hash,
+		ProfileContent: profile.Content, ProfileRuntime: profile.Runtime, ProfileModel: profile.Model,
+		ProfileReasoning: profile.Reasoning, ProfileDelivery: profile.Delivery, AllowedTools: profile.AllowTools,
+	})
+}
+
 func (r *Runtime) startNextDurable(ctx context.Context) {
 	r.mu.Lock()
 	if r.busy || r.session == nil || r.store == nil || r.identity.ID == "" {
 		r.mu.Unlock()
 		return
 	}
-	session, store, identity := r.session, r.store, r.identity
+	session, store, identity, profileFn, dataDir := r.session, r.store, r.identity, r.profile, r.dataDir
 	r.mu.Unlock()
+	if dataDir != "" {
+		if _, err := store.LoadUserDocument(ctx, filepath.Join(dataDir, "user.md")); err != nil {
+			r.reportError(err)
+			return
+		}
+	}
+	if profileFn != nil {
+		if err := r.persistPolicySnapshot(ctx, profileFn()); err != nil {
+			r.reportError(err)
+			return
+		}
+		identity = r.Identity()
+	}
 	turn, err := store.StartNextSecretaryTurn(ctx, identity.ID)
 	if errors.Is(err, core.ErrNotFound) {
 		return
@@ -328,7 +387,31 @@ func (r *Runtime) startNext(ctx context.Context) {
 
 func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text string) {
 	go func() {
-		if err := session.Prompt(ctx, text); err != nil {
+		r.mu.Lock()
+		store, turnID := r.store, r.activeTurnID
+		r.mu.Unlock()
+		prompt := text
+		if store != nil && turnID != "" {
+			turn, err := store.SecretaryTurn(ctx, turnID)
+			if err == nil && turn.ContextSnapshot != "" {
+				var canonical core.SecretaryContext
+				if err = json.Unmarshal([]byte(turn.ContextSnapshot), &canonical); err == nil {
+					prompt, err = core.SecretaryContextPrompt(canonical, text)
+				}
+			}
+			if err != nil {
+				if _, finishErr := store.FinishSecretaryTurn(context.Background(), turnID, core.SecretaryTurnFailed, "canonical Secretary context unavailable: "+err.Error()); finishErr != nil {
+					r.reportError(finishErr)
+				}
+				r.mu.Lock()
+				r.busy = false
+				r.activeTurnID = ""
+				r.mu.Unlock()
+				r.reportError(err)
+				return
+			}
+		}
+		if err := session.Prompt(ctx, prompt); err != nil {
 			r.mu.Lock()
 			store, turnID := r.store, r.activeTurnID
 			r.busy = false

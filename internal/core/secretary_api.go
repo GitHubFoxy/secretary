@@ -37,7 +37,7 @@ func (s *Store) QueueSecretaryInput(ctx context.Context, identityID, input strin
 
 func (s *Store) ActiveSecretaryTurn(ctx context.Context, identityID string) (SecretaryTurn, error) {
 	var turn SecretaryTurn
-	err := scanSecretaryTurn(s.db.QueryRowContext(ctx, `SELECT id, identity_id, conversation_id, input, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns WHERE identity_id = ? AND state = 'active'`, identityID), &turn)
+	err := scanSecretaryTurn(s.db.QueryRowContext(ctx, secretaryTurnSelect+` WHERE identity_id = ? AND state = 'active'`, identityID), &turn)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SecretaryTurn{}, ErrNotFound
 	}

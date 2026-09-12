@@ -27,7 +27,7 @@ func (s *Store) FinishSecretaryTurnWithResponse(ctx context.Context, turnID stri
 
 	completed, err := withTx(s, ctx, func(tx *sql.Tx) (secretaryTurnCompletion, error) {
 		var turn SecretaryTurn
-		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, `SELECT id, identity_id, conversation_id, input, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns WHERE id = ?`, turnID), &turn); errors.Is(err, sql.ErrNoRows) {
+		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, secretaryTurnSelect+` WHERE id = ?`, turnID), &turn); errors.Is(err, sql.ErrNoRows) {
 			return secretaryTurnCompletion{}, ErrNotFound
 		} else if err != nil {
 			return secretaryTurnCompletion{}, err
