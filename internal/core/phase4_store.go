@@ -1103,6 +1103,20 @@ func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerI
 	return command, duplicate, err
 }
 
+// FindWorkerCommand returns a previously claimed command for this immutable
+// Worker Attempt. It does not create a new command.
+func (s *Store) FindWorkerCommand(ctx context.Context, kind, dedupeKey, workerID, attemptID string) (WorkerCommand, bool, error) {
+	var command WorkerCommand
+	err := scanWorkerCommand(s.db.QueryRowContext(ctx, `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, created_at, updated_at FROM phase4_worker_commands WHERE kind = ? AND worker_id = ? AND attempt_id = ? AND dedupe_key = ?`, kind, workerID, attemptID, dedupeKey), &command)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkerCommand{}, false, nil
+	}
+	if err != nil {
+		return WorkerCommand{}, false, err
+	}
+	return command, true, nil
+}
+
 func (s *Store) MarkWorkerCommandDelivered(ctx context.Context, commandID string) (WorkerCommand, error) {
 	return s.updateWorkerCommand(ctx, commandID, WorkerCommandDelivered, "")
 }

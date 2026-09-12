@@ -178,6 +178,13 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	resolutionRequest := core.DispatchResolutionRequest{ProjectID: preferences.ProjectID, NodeID: preferences.NodeID, HarnessInstanceID: preferences.HarnessInstance,
 		HarnessKind: preferences.HarnessKind, Workspace: preferences.Workspace, ModelID: preferences.ModelID,
 		Reasoning: preferences.Reasoning, WorkerPolicy: s.WorkerPolicy}
+	// Replay precedes the preview because the durable outcome is valid even if
+	// its Project, Node inventory, or dispatch preferences have since changed.
+	if worker, _, _, _, found, err := s.Store.ReplayWorkerCreation(ctx, request.IdempotencyKey); err != nil {
+		return core.WorkerDetails{}, err
+	} else if found {
+		return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+	}
 	// Resolve before creation so the production MCP wiring with Runtime=nil
 	// cannot leave an online Worker/Turn/Attempt behind on a rejected spawn.
 	preview, err := s.Store.ResolveDispatch(ctx, resolutionRequest)
@@ -226,6 +233,15 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		return core.WorkerDetails{}, err
 	}
 	attempt := details.CurrentAttempt()
+	if attempt != nil && strings.TrimSpace(request.RequestID) != "" && strings.TrimSpace(request.IdempotencyKey) != "" {
+		command, found, err := s.Store.FindWorkerCommand(ctx, "respond", commandDedupeKey(request.IdempotencyKey, "request:"+request.RequestID), details.Worker.ID, attempt.ID)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		if found && command.State == core.WorkerCommandDelivered {
+			return details, nil
+		}
+	}
 	switch details.Worker.Status {
 	case core.WorkerWorking:
 		if attempt == nil {
@@ -266,7 +282,7 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 				return s.Runtime.Respond(ctx, commandID, details.Worker, *attempt, request.RequestID, request.Text)
 			})
 		}
-		if err == nil {
+		if err == nil && send {
 			_, err = s.Store.ResumePhase4Attempt(ctx, attempt.ID)
 		}
 	case core.WorkerIdle:

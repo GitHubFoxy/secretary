@@ -326,6 +326,23 @@ func TestWorkerServiceDuplicateSpawnSendsOneDispatch(t *testing.T) {
 	}
 }
 
+func TestWorkerServiceSpawnReplayAfterProjectDeleteUsesDurableBinding(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	request := SpawnWorkerRequest{Intent: "inspect", ProjectID: project.ID, IdempotencyKey: "durable-spawn"}
+	first, err := service.SpawnWorker(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteProject(ctx, project.ID, project.Revision); err != nil {
+		t.Fatal(err)
+	}
+	service.Runtime = nil
+	replayed, err := service.SpawnWorker(ctx, request)
+	if err != nil || replayed.Worker.ID != first.Worker.ID || replayed.Turns[0].ID != first.Turns[0].ID || replayed.Attempts[0].ID != first.Attempts[0].ID || replayed.Worker.HarnessInstanceID != first.Worker.HarnessInstanceID {
+		t.Fatalf("replayed=%#v first=%#v err=%v", replayed, first, err)
+	}
+}
+
 func TestWorkerServiceFailsClosedWithoutRuntimeBeforeSpawnSideEffects(t *testing.T) {
 	ctx, _, service, project := newWorkerService(t)
 	service.Runtime = nil
@@ -335,6 +352,26 @@ func TestWorkerServiceFailsClosedWithoutRuntimeBeforeSpawnSideEffects(t *testing
 	workers, err := service.ListWorkers(ctx)
 	if err != nil || len(workers) != 0 {
 		t.Fatalf("workers=%#v err=%v", workers, err)
+	}
+}
+
+func TestWorkerServiceDuplicateNeedsInputResponseIsNoOp(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	attempt := details.Attempts[0]
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptNeedsInput(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	request := MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "answer", RequestID: "question-1", IdempotencyKey: "answer-1"}
+	if _, err := service.MessageWorker(ctx, request); err != nil {
+		t.Fatal(err)
+	}
+	duplicate, err := service.MessageWorker(ctx, request)
+	if err != nil || duplicate.Worker.Status != core.WorkerWorking || service.Runtime.(*lifecycleRuntime).count("respond") != 1 || service.Runtime.(*lifecycleRuntime).count("steer") != 0 {
+		t.Fatalf("duplicate=%#v err=%v responds=%d steers=%d", duplicate, err, service.Runtime.(*lifecycleRuntime).count("respond"), service.Runtime.(*lifecycleRuntime).count("steer"))
 	}
 }
 
