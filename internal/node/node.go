@@ -44,16 +44,17 @@ type MCPServer struct {
 }
 
 type StartRequest struct {
-	WorkerRef       string
-	Task            string
-	Workspace       string
-	RawLogPath      string
-	MCPServers      []MCPServer
-	Profile         ManagedProfile
-	HarnessInstance core.HarnessInstance
-	Model           string
-	Reasoning       string
-	ApprovalPolicy  string
+	WorkerRef         string
+	Task              string
+	Workspace         string
+	RawLogPath        string
+	MCPServers        []MCPServer
+	Profile           ManagedProfile
+	HarnessInstance   core.HarnessInstance
+	Model             string
+	Reasoning         string
+	ApprovalPolicy    string
+	PendingRequestIDs []string
 }
 
 func (r StartRequest) validateBinding() error {

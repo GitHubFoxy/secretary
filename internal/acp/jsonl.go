@@ -154,7 +154,11 @@ func (c *Client) read(stdout io.Reader) {
 				continue
 			}
 			if message.Method != "" {
-				_ = c.handleServerRequest(message)
+				// A harness request can arrive while a client Request such as
+				// session/load is waiting for its response. Handle it outside
+				// the reader so the matching RPC response can still unblock the
+				// client, while the typed response remains pending in the session.
+				go func(request Message) { _ = c.handleServerRequest(request) }(message)
 				continue
 			}
 		}

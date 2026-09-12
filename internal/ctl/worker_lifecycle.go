@@ -286,6 +286,57 @@ func approvalResponseState(kind core.ApprovalKind, response string) (core.Approv
 	}
 }
 
+// ApplyTrustedLocalApproval is the explicit policy-side local handoff. The
+// server commits approval only after the typed response reaches the Node
+// runtime, so local policy cannot leave the harness waiting forever.
+func (s WorkerService) ApplyTrustedLocalApproval(ctx context.Context, requestID string, policy core.TrustedLocalApprovalPolicy) (core.Approval, error) {
+	approval, err := s.Store.Approval(ctx, requestID)
+	if err != nil {
+		return core.Approval{}, err
+	}
+	if approval.State != core.ApprovalPending || !policy.Enabled || !policy.Explicit {
+		return approval, nil
+	}
+	if !policy.LocalNode || strings.TrimSpace(string(policy.Node)) == "" || string(policy.Node) != approval.NodeID {
+		return approval, core.ErrTrustedLocalApprovalDenied
+	}
+	if approval.Kind != core.ApprovalPermission {
+		return approval, errors.New("worker: trusted-local policy only resolves permission requests")
+	}
+	worker, err := s.Store.Worker(ctx, approval.WorkerID)
+	if err != nil {
+		return core.Approval{}, err
+	}
+	attempt, err := s.Store.Phase4Attempt(ctx, approval.AttemptID)
+	if err != nil {
+		return core.Approval{}, err
+	}
+	command, send, err := s.claimCommand(ctx, "respond", "request:"+approval.RequestID, worker, attempt)
+	if err != nil {
+		return core.Approval{}, err
+	}
+	if send {
+		if err := s.requireRuntime(); err != nil {
+			return core.Approval{}, err
+		}
+		if err := s.deliverCommand(ctx, command, func(commandID string) error {
+			return s.Runtime.Respond(ctx, commandID, worker, attempt, approval.RequestID, "approved")
+		}); err != nil {
+			return core.Approval{}, err
+		}
+		command.State = core.WorkerCommandDelivered
+	}
+	if command.State != core.WorkerCommandDelivered {
+		return core.Approval{}, ErrWorkerCommandPending
+	}
+	resolved, _, err := s.Store.CommitApprovalResolution(ctx, approval.RequestID, core.ApprovalApproved, "trusted-local-policy", "auto_approved")
+	if err != nil {
+		return core.Approval{}, err
+	}
+	_, err = s.Store.RecordEventWithMetadata(ctx, core.EventInput{Kind: "approval.auto_approved", AggregateType: "approval", AggregateID: resolved.ID, Source: "policy", CorrelationID: resolved.TurnID, AttemptID: resolved.AttemptID, Payload: map[string]any{"request_id": resolved.RequestID, "node_id": resolved.NodeID, "policy": "trusted_local_explicit"}})
+	return resolved, err
+}
+
 func (s WorkerService) respondApproval(ctx context.Context, conversationID string, request MessageWorkerRequest, details core.WorkerDetails, attempt core.Phase4Attempt, approval core.Approval, state core.ApprovalState, clientID string) (core.WorkerDetails, error) {
 	command, send, err := s.claimCommand(ctx, "respond", "request:"+request.RequestID, details.Worker, attempt)
 	if err != nil {

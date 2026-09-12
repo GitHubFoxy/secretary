@@ -74,6 +74,12 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 	if mcpServers == nil {
 		mcpServers = []MCPServer{}
 	}
+	session := newACPSession(runtimeSessionID, client, false)
+	// ACP may issue a permission/input request while session/load is still in
+	// flight. Install the handler and durable Node-local IDs first, otherwise
+	// the request gets a native ACP ID and cannot be answered after reconnect.
+	session.setRequestHandler()
+	session.RebindRequests(request.PendingRequestIDs)
 	loadParams := map[string]any{"sessionId": runtimeSessionID, "cwd": request.Workspace, "mcpServers": mcpServers}
 	if metadata := profileMetadata(request.Profile); metadata != nil {
 		loadParams["_meta"] = metadata
@@ -82,9 +88,7 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 		client.Close()
 		return nil, err
 	}
-	session := newACPSession(runtimeSessionID, client, false)
 	go session.watch()
-	session.setRequestHandler()
 	return session, nil
 }
 
@@ -223,8 +227,29 @@ func (s *acpSession) Cancel(ctx context.Context) error {
 
 func (s *acpSession) RebindRequests(requestIDs []string) {
 	s.requestMu.Lock()
-	s.rebound = append(s.rebound, requestIDs...)
-	s.requestMu.Unlock()
+	defer s.requestMu.Unlock()
+	for _, requestID := range requestIDs {
+		requestID = strings.TrimSpace(requestID)
+		if requestID == "" {
+			continue
+		}
+		if _, resolved := s.resolved[requestID]; resolved {
+			continue
+		}
+		if _, pending := s.pending[requestID]; pending {
+			continue
+		}
+		alreadyRebound := false
+		for _, reboundID := range s.rebound {
+			if reboundID == requestID {
+				alreadyRebound = true
+				break
+			}
+		}
+		if !alreadyRebound {
+			s.rebound = append(s.rebound, requestID)
+		}
+	}
 }
 
 func (s *acpSession) Respond(ctx context.Context, requestID, response string) error {

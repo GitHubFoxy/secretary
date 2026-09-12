@@ -37,6 +37,32 @@ func TestWorkerServiceApprovalResponseUsesGenericCommandAndDedupesAction(t *test
 	}
 }
 
+func TestWorkerServiceTrustedLocalApprovalHandsOffTypedResponse(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	attempt := details.Attempts[0]
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordNodeActivityReplay(ctx, core.Activity{Metadata: core.ActivityMetadata{EventID: "permission-local-service", Node: "node", HarnessInstanceID: "node/fx", WorkerRef: details.Worker.WorkerRef, TurnID: attempt.TurnID, AttemptID: attempt.ID, Sequence: 1, ObservedAt: time.Now().UTC()}, Kind: core.ActivityPermissionRequest, Request: &core.ActivityRequest{RequestID: "local-service-request", Summary: "run shell"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ApplyTrustedLocalApproval(ctx, "local-service-request", core.TrustedLocalApprovalPolicy{Enabled: true, Explicit: true, LocalNode: true, Node: "node"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ApplyTrustedLocalApproval(ctx, "local-service-request", core.TrustedLocalApprovalPolicy{Enabled: true, Explicit: true, LocalNode: true, Node: "node"}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := service.Runtime.(*lifecycleRuntime)
+	if runtime.count("respond") != 1 {
+		t.Fatalf("trusted-local respond calls=%d", runtime.count("respond"))
+	}
+	approval, err := store.Approval(ctx, "local-service-request")
+	if err != nil || approval.State != core.ApprovalApproved || approval.Response != "auto_approved" {
+		t.Fatalf("approval=%#v err=%v", approval, err)
+	}
+}
+
 func TestWorkerServiceApprovalResponseRecoversAfterDeliveredRespond(t *testing.T) {
 	ctx, store, service, project := newWorkerService(t)
 	details := spawnLifecycleWorker(t, ctx, service, project)

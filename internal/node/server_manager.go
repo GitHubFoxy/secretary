@@ -68,6 +68,7 @@ type ServerManager struct {
 	mu          sync.Mutex
 	connections map[core.NodeReference]*ProtocolConnection
 	outcomes    map[core.NodeReference]CommandOutcome
+	waiters     map[string]chan CommandOutcome
 	credentials map[core.NodeReference][]byte
 	eventSink   func(context.Context, NodeEvent) error
 	outcomeSink func(context.Context, core.NodeReference, CommandOutcome) error
@@ -139,7 +140,7 @@ func NewServerManagerWithConfig(ctx context.Context, store *core.Store, config S
 	}
 	return &ServerManager{
 		store: store, adminToken: config.AdminToken, config: config, now: config.Now,
-		connections: map[core.NodeReference]*ProtocolConnection{}, outcomes: map[core.NodeReference]CommandOutcome{}, credentials: credentials,
+		connections: map[core.NodeReference]*ProtocolConnection{}, outcomes: map[core.NodeReference]CommandOutcome{}, waiters: map[string]chan CommandOutcome{}, credentials: credentials,
 	}, nil
 }
 
@@ -251,6 +252,42 @@ func (m *ServerManager) ServeProtocolHTTP(w http.ResponseWriter, r *http.Request
 	server.ServeHTTP(w, r)
 	if handler.connection != nil {
 		m.unregisterConnection(nodeRef, handler.connection)
+	}
+}
+
+func (m *ServerManager) SendCommandAndWait(ctx context.Context, nodeRef core.NodeReference, command Command) error {
+	commandID := command.Metadata().CommandID
+	if strings.TrimSpace(commandID) == "" {
+		return errors.New("node server: command id is required")
+	}
+	waiter := make(chan CommandOutcome, 1)
+	m.mu.Lock()
+	if m.waiters == nil {
+		m.waiters = map[string]chan CommandOutcome{}
+	}
+	m.waiters[commandID] = waiter
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		if current := m.waiters[commandID]; current == waiter {
+			delete(m.waiters, commandID)
+		}
+		m.mu.Unlock()
+	}()
+	if err := m.SendCommand(ctx, nodeRef, command); err != nil {
+		return err
+	}
+	select {
+	case outcome := <-waiter:
+		if outcome.State != CommandAccepted {
+			if outcome.ErrorMessage != "" {
+				return fmt.Errorf("node command %s: %s", outcome.ErrorCode, outcome.ErrorMessage)
+			}
+			return fmt.Errorf("node command %s", outcome.State)
+		}
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -539,9 +576,19 @@ func (h *serverProtocolHandler) HandleNodeEvent(ctx context.Context, event NodeE
 
 func (h *serverProtocolHandler) HandleNodeCommandOutcome(ctx context.Context, outcome CommandOutcome) error {
 	h.manager.mu.Lock()
+	if h.manager.outcomes == nil {
+		h.manager.outcomes = map[core.NodeReference]CommandOutcome{}
+	}
 	h.manager.outcomes[h.expected] = outcome
+	waiter := h.manager.waiters[outcome.CommandID]
 	sink := h.manager.outcomeSink
 	h.manager.mu.Unlock()
+	if waiter != nil {
+		select {
+		case waiter <- outcome:
+		default:
+		}
+	}
 	if sink != nil {
 		return sink(ctx, h.expected, outcome)
 	}

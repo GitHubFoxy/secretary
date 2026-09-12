@@ -50,7 +50,11 @@ func (r NodeRuntime) Steer(ctx context.Context, commandID string, worker core.Wo
 }
 
 func (r NodeRuntime) Respond(ctx context.Context, commandID string, worker core.Worker, attempt core.Phase4Attempt, requestID, response string) error {
-	return r.send(ctx, core.NodeReference(attempt.NodeID), node.Command{Kind: node.CommandRespondWorker, RespondWorker: &node.RespondWorkerCommand{Metadata: r.metadata(commandID, worker, core.Turn{ID: attempt.TurnID}, attempt, core.HarnessInstanceID(worker.HarnessInstanceID)), RequestID: requestID, Response: response}})
+	command := node.Command{Kind: node.CommandRespondWorker, RespondWorker: &node.RespondWorkerCommand{Metadata: r.metadata(commandID, worker, core.Turn{ID: attempt.TurnID}, attempt, core.HarnessInstanceID(worker.HarnessInstanceID)), RequestID: requestID, Response: response}}
+	if r.Manager == nil {
+		return ErrWorkerRuntimeUnavailable
+	}
+	return r.Manager.SendCommandAndWait(ctx, core.NodeReference(attempt.NodeID), command)
 }
 
 func (r NodeRuntime) Cancel(ctx context.Context, commandID string, worker core.Worker, attempt core.Phase4Attempt) error {
