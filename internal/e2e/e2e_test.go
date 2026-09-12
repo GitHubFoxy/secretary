@@ -12,6 +12,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -128,6 +130,8 @@ func loginE2E(t *testing.T, client *http.Client, base string) {
 	}
 }
 
+var e2eMutationKey atomic.Uint64
+
 func postE2EMessage(t *testing.T, client *http.Client, base, id, body string) {
 	t.Helper()
 	postE2EJSONStatus(t, client, base+"/v1/messages", `{"external_message_id":"`+id+`","body":"`+body+`"}`, http.StatusAccepted)
@@ -140,6 +144,7 @@ func postE2EJSONStatus(t *testing.T, client *http.Client, path, body string, wan
 	t.Helper()
 	request, _ := http.NewRequest(http.MethodPost, path, bytes.NewBufferString(body))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "e2e-"+strconv.FormatUint(e2eMutationKey.Add(1), 10))
 	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)

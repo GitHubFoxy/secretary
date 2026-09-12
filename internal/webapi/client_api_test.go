@@ -3,6 +3,8 @@ package webapi
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/cookiejar"
@@ -313,7 +315,7 @@ func TestPendingPairingCanRedeemAfterApproveResponseLoss(t *testing.T) {
 	if approve.status != http.StatusOK {
 		t.Fatalf("approve=%d %#v", approve.status, approve.body)
 	}
-	request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/clients/"+clientID+"/redeem", strings.NewReader(`{}`))
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/clients/"+clientID+"/redeem", strings.NewReader(`{"idempotency_key":"redeem-once"}`))
 	request.Header.Set("Authorization", "Bearer "+pendingToken)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := server.Client().Do(request)
@@ -326,6 +328,9 @@ func TestPendingPairingCanRedeemAfterApproveResponseLoss(t *testing.T) {
 	if response.StatusCode != http.StatusOK || redeemed["credential"] == "" {
 		t.Fatalf("redeem=%d %#v", response.StatusCode, redeemed)
 	}
+	request, _ = http.NewRequest(http.MethodPost, server.URL+"/v1/clients/"+clientID+"/redeem", strings.NewReader(`{"idempotency_key":"redeem-second"}`))
+	request.Header.Set("Authorization", "Bearer "+pendingToken)
+	request.Header.Set("Content-Type", "application/json")
 	second, err := server.Client().Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -433,11 +438,11 @@ func TestClientAcknowledgementUserRevisionAndLegacyResponseRedaction(t *testing.
 	if user.status != http.StatusOK || user.body["content"] != "prefer short answers" || user.body["revision"].(float64) != 1 {
 		t.Fatalf("user=%d %#v", user.status, user.body)
 	}
-	updated := requestJSON(t, owner, http.MethodPut, server.URL+"/v1/user", `{"content":"prefer durable context"}`)
+	updated := requestJSON(t, owner, http.MethodPut, server.URL+"/v1/user", `{"content":"prefer durable context","idempotency_key":"user-update-1"}`)
 	if updated.status != http.StatusOK || updated.body["content"] != "prefer durable context" || updated.body["revision"].(float64) != 2 {
 		t.Fatalf("updated=%d %#v", updated.status, updated.body)
 	}
-	invalid := requestJSON(t, owner, http.MethodPut, server.URL+"/v1/user", `{"content":"bad\u0000document"}`)
+	invalid := requestJSON(t, owner, http.MethodPut, server.URL+"/v1/user", `{"content":"bad\u0000document","idempotency_key":"user-update-invalid"}`)
 	if invalid.status != http.StatusBadRequest {
 		t.Fatalf("invalid user status=%d body=%#v", invalid.status, invalid.body)
 	}
@@ -446,13 +451,13 @@ func TestClientAcknowledgementUserRevisionAndLegacyResponseRedaction(t *testing.
 		t.Fatalf("invalid update replaced snapshot: %#v", still.body)
 	}
 
-	message := postJSON(t, owner, server.URL+"/v1/messages", `{"external_message_id":"client-message-1","body":"hello"}`)
+	message := postJSON(t, owner, server.URL+"/v1/messages", `{"external_message_id":"client-message-1","body":"hello","idempotency_key":"message-first"}`)
 	for _, key := range []string{"message_id", "entry_seq", "state", "duplicate"} {
 		if _, ok := message.body[key]; !ok {
 			t.Fatalf("ack missing %q: %#v", key, message.body)
 		}
 	}
-	duplicate := postJSON(t, owner, server.URL+"/v1/messages", `{"external_message_id":"client-message-1","body":"hello"}`)
+	duplicate := postJSON(t, owner, server.URL+"/v1/messages", `{"external_message_id":"client-message-1","body":"hello","idempotency_key":"message-duplicate"}`)
 	if duplicate.body["duplicate"] != true || duplicate.body["message_id"] != message.body["message_id"] || duplicate.body["entry_seq"] != message.body["entry_seq"] {
 		t.Fatalf("duplicate acknowledgement=%#v first=%#v", duplicate.body, message.body)
 	}
@@ -503,6 +508,10 @@ func requestJSON(t *testing.T, client *http.Client, method, endpoint, payload st
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	if !strings.Contains(payload, `"idempotency_key"`) {
+		digest := sha256.Sum256([]byte(endpoint + "\x00" + payload))
+		request.Header.Set("Idempotency-Key", "test-"+hex.EncodeToString(digest[:]))
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)

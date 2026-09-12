@@ -55,7 +55,7 @@ func TestProjectsCRUDAPIIsDurableAndRequiresRevision(t *testing.T) {
 		t.Fatalf("get status=%d", get.StatusCode)
 	}
 	get.Body.Close()
-	update := `{"name":"Project 2","description":"desc","mappings":[{"node":"macbook","path":"/tmp/project"}],"policy":{"default_node":"macbook"},"expected_revision":1}`
+	update := `{"name":"Project 2","description":"desc","mappings":[{"node":"macbook","path":"/tmp/project"}],"policy":{"default_node":"macbook"},"expected_revision":1,"idempotency_key":"update-p1"}`
 	request, _ = http.NewRequest(http.MethodPut, server.URL+"/v1/projects/p1", bytes.NewBufferString(update))
 	request.Header.Set("Content-Type", "application/json")
 	response, err = client.Do(request)
@@ -66,7 +66,7 @@ func TestProjectsCRUDAPIIsDurableAndRequiresRevision(t *testing.T) {
 		t.Fatalf("update status=%d", response.StatusCode)
 	}
 	response.Body.Close()
-	stale := `{"name":"stale","mappings":[{"node":"macbook","path":"/tmp/project"}],"expected_revision":1}`
+	stale := `{"name":"stale","mappings":[{"node":"macbook","path":"/tmp/project"}],"expected_revision":1,"idempotency_key":"stale-p1"}`
 	request, _ = http.NewRequest(http.MethodPut, server.URL+"/v1/projects/p1", bytes.NewBufferString(stale))
 	request.Header.Set("Content-Type", "application/json")
 	response, err = client.Do(request)

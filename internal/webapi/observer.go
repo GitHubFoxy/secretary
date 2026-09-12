@@ -76,9 +76,36 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "request_id and response are required", http.StatusBadRequest)
 			return
 		}
-		details, err := s.responder.RespondWorker(r.Context(), ctl.MessageWorkerRequest{WorkerRef: workerRef, Text: request.Response, RequestID: request.RequestID, ClientID: "web-session", IdempotencyKey: request.IdempotencyKey})
+		key, ok := requireIdempotencyKey(w, r, request.IdempotencyKey)
+		if !ok {
+			return
+		}
+		operation := "worker.legacy:respond:" + workerRef
+		payload := struct {
+			RequestID string
+			Response  string
+		}{request.RequestID, request.Response}
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+		if encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), operation, key, payload); lookupErr != nil {
+			writeClientMutationError(w, lookupErr)
+			return
+		} else if found {
+			var details core.WorkerDetails
+			if err := json.Unmarshal(encoded, &details); err != nil {
+				http.Error(w, "decode idempotency record", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusOK, details)
+			return
+		}
+		details, err := s.responder.RespondWorker(r.Context(), ctl.MessageWorkerRequest{WorkerRef: workerRef, Text: request.Response, RequestID: request.RequestID, ClientID: "web-session", IdempotencyKey: key})
 		if err != nil {
-			http.Error(w, "respond worker: "+err.Error(), http.StatusBadRequest)
+			writeClientMutationError(w, err)
+			return
+		}
+		if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, key, payload, details); err != nil {
+			writeClientMutationError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, details)
@@ -158,13 +185,34 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case parts[1] == "steer" && r.Method == http.MethodPost:
 		var request struct {
-			Text string `json:"text"`
+			Text           string `json:"text"`
+			IdempotencyKey string `json:"idempotency_key,omitempty"`
 		}
 		if !decodeJSON(w, r, &request) {
 			return
 		}
 		if request.Text == "" {
 			http.Error(w, "text is required", http.StatusBadRequest)
+			return
+		}
+		key, ok := requireIdempotencyKey(w, r, request.IdempotencyKey)
+		if !ok {
+			return
+		}
+		operation := "worker.legacy:steer:" + workerRef
+		payload := struct{ Text string }{request.Text}
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+		if encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), operation, key, payload); lookupErr != nil {
+			writeClientMutationError(w, lookupErr)
+			return
+		} else if found {
+			var outcome map[string]bool
+			if err := json.Unmarshal(encoded, &outcome); err != nil {
+				http.Error(w, "decode idempotency record", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, outcome)
 			return
 		}
 		var injected bool
@@ -179,16 +227,42 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = s.store.RecordEvent(r.Context(), "worker.steer_requested", workerRef, "", session.ID(), map[string]any{"text": request.Text, "injected": injected})
-		writeJSON(w, http.StatusAccepted, map[string]bool{"injected": injected})
+		outcome := map[string]bool{"injected": injected}
+		if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, key, payload, outcome); err != nil {
+			writeClientMutationError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, outcome)
 	case parts[1] == "queue" && r.Method == http.MethodPost:
 		var request struct {
-			Text string `json:"text"`
+			Text           string `json:"text"`
+			IdempotencyKey string `json:"idempotency_key,omitempty"`
 		}
 		if !decodeJSON(w, r, &request) {
 			return
 		}
 		if request.Text == "" {
 			http.Error(w, "text is required", http.StatusBadRequest)
+			return
+		}
+		key, ok := requireIdempotencyKey(w, r, request.IdempotencyKey)
+		if !ok {
+			return
+		}
+		operation := "worker.legacy:queue:" + workerRef
+		payload := struct{ Text string }{request.Text}
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+		if encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), operation, key, payload); lookupErr != nil {
+			writeClientMutationError(w, lookupErr)
+			return
+		} else if found {
+			var outcome map[string]string
+			if err := json.Unmarshal(encoded, &outcome); err != nil {
+				http.Error(w, "decode idempotency record", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, outcome)
 			return
 		}
 		var queuedAttempt core.Attempt
@@ -211,8 +285,32 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		_, _ = s.store.RecordEvent(r.Context(), "worker.input_queued", workerRef, queuedAttempt.ID, session.ID(), map[string]string{"text": request.Text})
-		writeJSON(w, http.StatusAccepted, map[string]string{"status": "queued"})
+		outcome := map[string]string{"status": "queued"}
+		if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, key, payload, outcome); err != nil {
+			writeClientMutationError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, outcome)
 	case parts[1] == "stop" && r.Method == http.MethodPost:
+		key, ok := requireIdempotencyKey(w, r, "")
+		if !ok {
+			return
+		}
+		operation := "worker.legacy:stop:" + workerRef
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+		if encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), operation, key, struct{}{}); lookupErr != nil {
+			writeClientMutationError(w, lookupErr)
+			return
+		} else if found {
+			var outcome map[string]string
+			if err := json.Unmarshal(encoded, &outcome); err != nil {
+				http.Error(w, "decode idempotency record", http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusAccepted, outcome)
+			return
+		}
 		s.mu.Lock()
 		s.workerStates[workerRef] = "stopping"
 		s.mu.Unlock()
@@ -230,7 +328,12 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = s.store.RecordEvent(r.Context(), "worker.cancel_requested", workerRef, "", session.ID(), map[string]string{"source": "observer"})
-		writeJSON(w, http.StatusAccepted, map[string]string{"status": "cancel_requested"})
+		outcome := map[string]string{"status": "cancel_requested"}
+		if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, key, struct{}{}, outcome); err != nil {
+			writeClientMutationError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, outcome)
 	case parts[1] == "activity" && r.Method == http.MethodGet:
 		s.workerActivity(w, r, session)
 	default:
@@ -269,34 +372,34 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 	if !decodeJSON(w, r, &payload) {
 		return true
 	}
-	request.Text, request.RequestID, request.IdempotencyKey = payload.Text, payload.RequestID, payload.IdempotencyKey
-	if request.IdempotencyKey == "" {
-		request.IdempotencyKey = r.Header.Get("Idempotency-Key")
+	request.Text, request.RequestID = payload.Text, payload.RequestID
+	key, ok := requireIdempotencyKey(w, r, payload.IdempotencyKey)
+	if !ok {
+		return true
 	}
+	request.IdempotencyKey = key
 	operation := "worker.action:" + suffix[0] + ":" + details.Worker.WorkerRef
 	payloadFingerprint := struct {
 		Text      string
 		RequestID string
 	}{request.Text, request.RequestID}
-	if request.IdempotencyKey != "" {
-		s.idempotencyMu.Lock()
-		defer s.idempotencyMu.Unlock()
-		if encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), operation, request.IdempotencyKey, payloadFingerprint); lookupErr != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(lookupErr, core.ErrIdempotencyConflict) {
-				status = http.StatusConflict
-			}
-			http.Error(w, lookupErr.Error(), status)
-			return true
-		} else if found {
-			var stored core.WorkerDetails
-			if err := json.Unmarshal(encoded, &stored); err != nil {
-				http.Error(w, "decode idempotency record", http.StatusInternalServerError)
-				return true
-			}
-			writeJSON(w, http.StatusAccepted, stored)
+	s.idempotencyMu.Lock()
+	defer s.idempotencyMu.Unlock()
+	if encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), operation, request.IdempotencyKey, payloadFingerprint); lookupErr != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(lookupErr, core.ErrIdempotencyConflict) {
+			status = http.StatusConflict
+		}
+		http.Error(w, lookupErr.Error(), status)
+		return true
+	} else if found {
+		var stored core.WorkerDetails
+		if err := json.Unmarshal(encoded, &stored); err != nil {
+			http.Error(w, "decode idempotency record", http.StatusInternalServerError)
 			return true
 		}
+		writeJSON(w, http.StatusAccepted, stored)
+		return true
 	}
 	var result core.WorkerDetails
 	var err error
@@ -311,14 +414,12 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 		return false
 	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeClientMutationError(w, err)
 		return true
 	}
-	if request.IdempotencyKey != "" {
-		if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, request.IdempotencyKey, payloadFingerprint, result); err != nil {
-			http.Error(w, "save idempotency record", http.StatusInternalServerError)
-			return true
-		}
+	if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, request.IdempotencyKey, payloadFingerprint, result); err != nil {
+		http.Error(w, "save idempotency record", http.StatusInternalServerError)
+		return true
 	}
 	writeJSON(w, http.StatusAccepted, result)
 	return true
@@ -439,11 +540,11 @@ func forbiddenPublicKey(key string) bool {
 		case "task", "tasks":
 			return true
 		case "session", "sessions":
-			if i > 0 && words[i-1] == "runtime" {
+			if len(words) == 1 || (i+1 < len(words) && (words[i+1] == "id" || words[i+1] == "identifier")) || (i > 0 && words[i-1] == "runtime") {
 				return true
 			}
-		case "id":
-			if i > 0 && (words[i-1] == "task" || (i > 1 && words[i-2] == "runtime" && words[i-1] == "session")) {
+		case "id", "identifier":
+			if i > 0 && (words[i-1] == "task" || words[i-1] == "session" || (i > 1 && words[i-2] == "runtime" && words[i-1] == "session")) {
 				return true
 			}
 		}
@@ -459,7 +560,7 @@ func forbiddenPublicKey(key string) bool {
 	}, key))
 	for _, forbidden := range []string{
 		"secret", "secrets", "credential", "credentials", "callback", "callbacks", "token", "tokens",
-		"task", "tasks", "taskid", "tasksid", "runtimesession", "runtimesessionid", "accesstoken", "callbackcapability",
+		"task", "tasks", "taskid", "tasksid", "session", "sessions", "sessionid", "sessionsid", "sessionidentifier", "sessionsidentifier", "runtimesession", "runtimesessionid", "accesstoken", "callbackcapability",
 	} {
 		if compact == forbidden || strings.HasSuffix(compact, forbidden) {
 			return true

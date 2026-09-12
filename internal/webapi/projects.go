@@ -64,9 +64,9 @@ func (s *Server) projectCreate(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &request) {
 		return
 	}
-	key := strings.TrimSpace(request.IdempotencyKey)
-	if key == "" {
-		key = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	key, ok := requireIdempotencyKey(w, r, request.IdempotencyKey)
+	if !ok {
+		return
 	}
 	project, err := s.store.CreateProject(r.Context(), request.spec(""), key)
 	if err != nil {
@@ -101,9 +101,9 @@ func (s *Server) projectRoute(w http.ResponseWriter, r *http.Request) {
 		if !decodeJSON(w, r, &request) {
 			return
 		}
-		key := strings.TrimSpace(request.IdempotencyKey)
-		if key == "" {
-			key = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		key, ok := requireIdempotencyKey(w, r, request.IdempotencyKey)
+		if !ok {
+			return
 		}
 		project, err := s.store.UpdateProject(r.Context(), id, request.spec(id), request.ExpectedRevision, key)
 		if err != nil {
@@ -133,6 +133,10 @@ func (s *Server) projectRoute(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			revision = request.ExpectedRevision
+		}
+		key, ok := requireIdempotencyKey(w, r, request.IdempotencyKey)
+		if !ok {
+			return
 		}
 		if err := s.store.DeleteProject(r.Context(), id, revision, key); err != nil {
 			writeProjectError(w, err)

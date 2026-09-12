@@ -1,7 +1,6 @@
 package webapi
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -69,8 +68,9 @@ func (s *Server) nodeRoute(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if key == "" {
-		key = strings.TrimSpace(request.IdempotencyKey)
+	key, ok := requireIdempotencyKey(w, r, request.IdempotencyKey)
+	if !ok {
+		return
 	}
 	switch parts[1] {
 	case "drain":
@@ -86,11 +86,7 @@ func (s *Server) nodeRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, core.ErrIdempotencyConflict) {
-			status = http.StatusConflict
-		}
-		http.Error(w, err.Error(), status)
+		writeClientMutationError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, publicNode{Node: record.Node, Online: record.Online, Draining: record.Draining, Revoked: record.Revoked, EnrolledAt: record.EnrolledAt, LastSeenAt: record.LastSeenAt, LastHeartbeatAt: record.LastHeartbeatAt, Capacity: record.Capacity, ActiveAttempts: record.ActiveAttempts, LastProcessed: record.LastProcessedCommand, Inventory: record.Inventory})

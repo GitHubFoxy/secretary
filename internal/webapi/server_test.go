@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -49,10 +51,15 @@ func login(t *testing.T, client *http.Client, baseURL string) {
 	}
 }
 
+var testMessageKey atomic.Uint64
+
 func postMessage(t *testing.T, client *http.Client, baseURL, id, body string) map[string]any {
 	t.Helper()
 	payload, _ := json.Marshal(map[string]string{"external_message_id": id, "body": body})
-	response, err := client.Post(baseURL+"/v1/messages", "application/json", bytes.NewReader(payload))
+	request, _ := http.NewRequest(http.MethodPost, baseURL+"/v1/messages", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "test-message-"+strconv.FormatUint(testMessageKey.Add(1), 10))
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +156,7 @@ func TestBootstrapAndSecretaryModelSelection(t *testing.T) {
 	if bootstrap.ConversationID == "" || bootstrap.Secretary.Selected != "default" || bootstrap.Secretary.Models["fast"] != "provider/fast" {
 		t.Fatalf("bootstrap=%#v", bootstrap)
 	}
-	payload := bytes.NewBufferString(`{"model":"fast"}`)
+	payload := bytes.NewBufferString(`{"model":"fast","idempotency_key":"model-fast"}`)
 	response, err = client.Post(httpServer.URL+"/v1/secretary/model", "application/json", payload)
 	if err != nil {
 		t.Fatal(err)

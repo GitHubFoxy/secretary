@@ -37,17 +37,13 @@ func (s *Server) pairClient(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid bootstrap token", http.StatusUnauthorized)
 		return
 	}
-	key := strings.TrimSpace(request.IdempotencyKey)
-	if key == "" {
-		key = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	key, ok := requireIdempotencyKey(w, r, request.IdempotencyKey)
+	if !ok {
+		return
 	}
 	pairing, err := s.store.PairClientWithToken(r.Context(), s.owner.ID, request.DeviceID, request.DisplayName, request.Platform, request.Scopes, key)
 	if err != nil {
-		status := http.StatusBadRequest
-		if errors.Is(err, core.ErrIdempotencyConflict) {
-			status = http.StatusConflict
-		}
-		http.Error(w, "pair Client: "+err.Error(), status)
+		writeClientMutationError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, clientCredentialResponse{Client: pairing.Client, ClientID: pairing.ID, PendingToken: pairing.PendingToken})
@@ -100,20 +96,17 @@ func (s *Server) clientRoute(w http.ResponseWriter, r *http.Request) {
 		if r.Body != nil && r.ContentLength != 0 && !decodeJSON(w, r, &request) {
 			return
 		}
-		key := strings.TrimSpace(request.IdempotencyKey)
-		if key == "" {
-			key = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		key, ok := requireIdempotencyKey(w, r, request.IdempotencyKey)
+		if !ok {
+			return
 		}
 		client, credential, err := s.store.RedeemClient(r.Context(), id, token, key)
 		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, core.ErrPairingAlreadyUsed) || errors.Is(err, core.ErrIdempotencyConflict) {
-				status = http.StatusConflict
-			}
 			if errors.Is(err, core.ErrNotFound) {
-				status = http.StatusUnauthorized
+				http.Error(w, "redeem Client: "+err.Error(), http.StatusUnauthorized)
+				return
 			}
-			http.Error(w, "redeem Client: "+err.Error(), status)
+			writeClientMutationError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, clientCredentialResponse{Client: client, ClientID: client.ID, Credential: credential, CredentialRaw: true})
@@ -135,36 +128,22 @@ func (s *Server) clientRoute(w http.ResponseWriter, r *http.Request) {
 	if r.Body != nil && r.ContentLength != 0 && !decodeJSON(w, r, &request) {
 		return
 	}
-	key := strings.TrimSpace(request.IdempotencyKey)
-	if key == "" {
-		key = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	key, ok := requireIdempotencyKey(w, r, request.IdempotencyKey)
+	if !ok {
+		return
 	}
 	switch action {
 	case "approve":
 		client, credential, err := s.store.ApproveClient(r.Context(), id, key)
 		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, core.ErrNotFound) {
-				status = http.StatusNotFound
-			}
-			if errors.Is(err, core.ErrIdempotencyConflict) {
-				status = http.StatusConflict
-			}
-			http.Error(w, "approve Client: "+err.Error(), status)
+			writeClientMutationError(w, err)
 			return
 		}
 		writeJSON(w, http.StatusOK, clientCredentialResponse{Client: client, ClientID: client.ID, Credential: credential})
 	case "revoke":
 		client, err := s.store.RevokeClient(r.Context(), id, key)
 		if err != nil {
-			status := http.StatusBadRequest
-			if errors.Is(err, core.ErrNotFound) {
-				status = http.StatusNotFound
-			}
-			if errors.Is(err, core.ErrIdempotencyConflict) {
-				status = http.StatusConflict
-			}
-			http.Error(w, "revoke Client: "+err.Error(), status)
+			writeClientMutationError(w, err)
 			return
 		}
 		s.cancelClientStreams(client.ID)

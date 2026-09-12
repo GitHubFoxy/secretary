@@ -253,36 +253,34 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "external_message_id and body are required", http.StatusBadRequest)
 		return
 	}
-	key := strings.TrimSpace(request.IdempotencyKey)
-	if key == "" {
-		key = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+	key, ok := requireIdempotencyKey(w, r, request.IdempotencyKey)
+	if !ok {
+		return
 	}
 	operation := "message:" + person.ID
 	payload := struct {
 		ExternalMessageID string
 		Body              string
 	}{request.ExternalMessageID, request.Body}
-	if key != "" {
-		s.idempotencyMu.Lock()
-		defer s.idempotencyMu.Unlock()
-		encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), operation, key, payload)
-		if lookupErr != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(lookupErr, core.ErrIdempotencyConflict) {
-				status = http.StatusConflict
-			}
-			http.Error(w, lookupErr.Error(), status)
+	s.idempotencyMu.Lock()
+	defer s.idempotencyMu.Unlock()
+	encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), operation, key, payload)
+	if lookupErr != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(lookupErr, core.ErrIdempotencyConflict) {
+			status = http.StatusConflict
+		}
+		http.Error(w, lookupErr.Error(), status)
+		return
+	}
+	if found {
+		var acknowledgement messageAcknowledgement
+		if err := json.Unmarshal(encoded, &acknowledgement); err != nil {
+			http.Error(w, "decode idempotency record", http.StatusInternalServerError)
 			return
 		}
-		if found {
-			var acknowledgement messageAcknowledgement
-			if err := json.Unmarshal(encoded, &acknowledgement); err != nil {
-				http.Error(w, "decode idempotency record", http.StatusInternalServerError)
-				return
-			}
-			writeJSON(w, http.StatusAccepted, acknowledgement)
-			return
-		}
+		writeJSON(w, http.StatusAccepted, acknowledgement)
+		return
 	}
 
 	adapterID := "web"
@@ -302,15 +300,13 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 		}(request.Body)
 	}
 	acknowledgement := messageAcknowledgement{Entry: entry, MessageID: entry.ID, EntrySeq: entry.Seq, State: "saved", Duplicate: duplicate}
-	if key != "" {
-		if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, key, payload, acknowledgement); err != nil {
-			status := http.StatusInternalServerError
-			if errors.Is(err, core.ErrIdempotencyConflict) {
-				status = http.StatusConflict
-			}
-			http.Error(w, err.Error(), status)
-			return
+	if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, key, payload, acknowledgement); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, core.ErrIdempotencyConflict) {
+			status = http.StatusConflict
 		}
+		http.Error(w, err.Error(), status)
+		return
 	}
 	writeJSON(w, http.StatusAccepted, acknowledgement)
 }

@@ -120,7 +120,9 @@ func TestApprovalAPIDenyUsesRealNodeRuntimeBeforeFinalization(t *testing.T) {
 		t.Fatalf("approval not observed: worker=%#v workerErr=%v node=%#v nodeErr=%v", current, currentErr, status, statusErr)
 	}
 	for range 2 {
-		response, postErr := client.Post(server.URL+"/v1/approvals/node-deny-request/deny", "application/json", nil)
+		request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/approvals/node-deny-request/deny", nil)
+		request.Header.Set("Idempotency-Key", "approval-deny-1")
+		response, postErr := client.Do(request)
 		if postErr != nil {
 			t.Fatal(postErr)
 		}
@@ -218,7 +220,9 @@ func TestApprovalAPIDenyRespondsExactlyOnceBeforeDurableFinalization(t *testing.
 	client := &http.Client{Jar: jar}
 	login(t, client, server.URL)
 	for range 2 {
-		response, err := client.Post(server.URL+"/v1/approvals/deny-request/deny", "application/json", nil)
+		request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/approvals/deny-request/deny", nil)
+		request.Header.Set("Idempotency-Key", "approval-deny-2")
+		response, err := client.Do(request)
 		if err != nil {
 			t.Fatal(err)
 		}
