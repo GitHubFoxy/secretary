@@ -12,6 +12,12 @@ func newTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SetSecretaryPolicySnapshot(context.Background(), SecretaryPolicySnapshot{
+		Version: "test-v1", Harness: "fx", Model: "secretary", Reasoning: "high",
+		ProfileVersion: "test-v1", ProfileName: "secretary", ProfileHash: "test-hash", ProfileContent: "test policy",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
 }

@@ -24,6 +24,12 @@ func TestSecretaryIdentityPersistsAcrossRestartAndRuntimeReplacement(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, SecretaryPolicySnapshot{
+		Version: "test-v1", Harness: "fx", Model: "secretary", Reasoning: "high",
+		ProfileVersion: "test-v1", ProfileName: "secretary", ProfileHash: "test-hash", ProfileContent: "test policy",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.ReplaceSecretaryRuntime(ctx, first.ID, "fx", "model-a", "low"); err != nil {
 		t.Fatal(err)
 	}
@@ -64,6 +70,12 @@ func TestSecretaryQueueIsDurableOrderedAndHasPosition(t *testing.T) {
 	}
 	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, SecretaryPolicySnapshot{
+		Version: "test-v1", Harness: "fx", Model: "secretary", Reasoning: "high",
+		ProfileVersion: "test-v1", ProfileName: "secretary", ProfileHash: "test-hash", ProfileContent: "test policy",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	first, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "first")

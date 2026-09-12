@@ -32,6 +32,7 @@ type Store struct {
 	idempotencyMu     sync.Mutex
 	userDocumentMu    sync.Mutex
 	nodeEnrollmentMu  sync.Mutex
+	nodeRegistryMu    sync.Mutex
 	projectDispatchMu sync.Mutex
 
 	// beforeResolvedWorkerCreate is used by package tests to make the narrow

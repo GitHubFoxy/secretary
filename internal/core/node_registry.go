@@ -53,6 +53,8 @@ type NodeRecord struct {
 }
 
 func (s *Store) EnsureNodeRegistry(ctx context.Context) error {
+	s.nodeRegistryMu.Lock()
+	defer s.nodeRegistryMu.Unlock()
 	_, err := s.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS phase4_nodes (
   node_ref TEXT PRIMARY KEY,

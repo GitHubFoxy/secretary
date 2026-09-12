@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS secretary_turns (
   identity_id TEXT NOT NULL REFERENCES secretary_identities(id),
   conversation_id TEXT NOT NULL REFERENCES conversations(id),
   input TEXT NOT NULL,
+  context_snapshot TEXT NOT NULL DEFAULT '',
+  prompt_state TEXT NOT NULL DEFAULT 'pending',
   state TEXT NOT NULL,
   queue_position INTEGER NOT NULL,
   error TEXT NOT NULL DEFAULT '',
@@ -52,9 +54,39 @@ CREATE TABLE IF NOT EXISTS secretary_user_documents (
   content TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS secretary_conversation_summaries (
+  conversation_id TEXT PRIMARY KEY REFERENCES conversations(id),
+  summary TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS secretary_policy_snapshots (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  snapshot_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS secretary_context_seen_results (
+  turn_id TEXT NOT NULL REFERENCES secretary_turns(id),
+  result_id TEXT NOT NULL REFERENCES phase4_results(id),
+  seen_at TEXT NOT NULL,
+  claim_state TEXT NOT NULL DEFAULT 'accepted',
+  PRIMARY KEY(turn_id, result_id)
+);
+DELETE FROM secretary_context_seen_results
+WHERE rowid NOT IN (SELECT MIN(rowid) FROM secretary_context_seen_results GROUP BY result_id);
+CREATE UNIQUE INDEX IF NOT EXISTS secretary_context_seen_results_one_owner
+  ON secretary_context_seen_results(result_id);
 `)
 	if err != nil {
 		return fmt.Errorf("migrate Secretary schema: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE secretary_turns ADD COLUMN context_snapshot TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return fmt.Errorf("migrate Secretary turn context snapshot: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE secretary_turns ADD COLUMN prompt_state TEXT NOT NULL DEFAULT 'pending'`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return fmt.Errorf("migrate Secretary turn prompt state: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE secretary_context_seen_results ADD COLUMN claim_state TEXT NOT NULL DEFAULT 'accepted'`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return fmt.Errorf("migrate Secretary result claim state: %w", err)
 	}
 	return nil
 }
@@ -150,7 +182,7 @@ func (s *Store) EnqueueSecretaryTurn(ctx context.Context, identityID, input stri
 
 func scanSecretaryTurn(row interface{ Scan(...any) error }, turn *SecretaryTurn) error {
 	var started, finished sql.NullString
-	if err := row.Scan(&turn.ID, &turn.IdentityID, &turn.ConversationID, &turn.Input, &turn.State, &turn.QueuePosition, &turn.Error, newTimestampScanner(&turn.CreatedAt), &started, &finished, newTimestampScanner(&turn.UpdatedAt)); err != nil {
+	if err := row.Scan(&turn.ID, &turn.IdentityID, &turn.ConversationID, &turn.Input, &turn.ContextSnapshot, &turn.PromptState, &turn.State, &turn.QueuePosition, &turn.Error, newTimestampScanner(&turn.CreatedAt), &started, &finished, newTimestampScanner(&turn.UpdatedAt)); err != nil {
 		return err
 	}
 	if started.Valid {
@@ -172,7 +204,7 @@ func scanSecretaryTurn(row interface{ Scan(...any) error }, turn *SecretaryTurn)
 
 func (s *Store) SecretaryTurn(ctx context.Context, turnID string) (SecretaryTurn, error) {
 	var turn SecretaryTurn
-	err := scanSecretaryTurn(s.db.QueryRowContext(ctx, `SELECT id, identity_id, conversation_id, input, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns WHERE id = ?`, turnID), &turn)
+	err := scanSecretaryTurn(s.db.QueryRowContext(ctx, secretaryTurnSelect+` WHERE id = ?`, turnID), &turn)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SecretaryTurn{}, ErrNotFound
 	}
@@ -180,43 +212,76 @@ func (s *Store) SecretaryTurn(ctx context.Context, turnID string) (SecretaryTurn
 }
 
 func (s *Store) StartSecretaryTurn(ctx context.Context, turnID string) (SecretaryTurn, error) {
+	turn, err := s.SecretaryTurn(ctx, turnID)
+	if err != nil {
+		return SecretaryTurn{}, err
+	}
+	var canonical SecretaryContext
+	if strings.TrimSpace(turn.ContextSnapshot) == "" {
+		if turn.State != SecretaryTurnQueued {
+			return SecretaryTurn{}, ErrInvalidTransition
+		}
+		canonical, err = s.ReconstructSecretaryContext(ctx, turn.IdentityID, "", 20)
+		if err != nil {
+			return SecretaryTurn{}, fmt.Errorf("reconstruct Secretary context: %w", err)
+		}
+	}
 	return withTx(s, ctx, func(tx *sql.Tx) (SecretaryTurn, error) {
-		var turn SecretaryTurn
-		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, `SELECT id, identity_id, conversation_id, input, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns WHERE id = ?`, turnID), &turn); errors.Is(err, sql.ErrNoRows) {
+		var current SecretaryTurn
+		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, secretaryTurnSelect+` WHERE id = ?`, turnID), &current); errors.Is(err, sql.ErrNoRows) {
 			return SecretaryTurn{}, ErrNotFound
 		} else if err != nil {
 			return SecretaryTurn{}, err
 		}
-		if turn.State != SecretaryTurnQueued {
+		if current.State != SecretaryTurnQueued {
 			return SecretaryTurn{}, ErrInvalidTransition
 		}
-		var active int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM secretary_turns WHERE identity_id = ? AND state = 'active'`, turn.IdentityID).Scan(&active); err != nil {
+		eligible, err := secretaryTurnEligibleTx(ctx, tx, current)
+		if err != nil {
 			return SecretaryTurn{}, err
 		}
-		if active != 0 {
+		if !eligible {
 			return SecretaryTurn{}, ErrInvalidTransition
 		}
-		var earlier int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM secretary_turns WHERE identity_id = ? AND state = 'queued' AND queue_position < ?`, turn.IdentityID, turn.QueuePosition).Scan(&earlier); err != nil {
-			return SecretaryTurn{}, err
-		}
-		if earlier != 0 {
-			return SecretaryTurn{}, ErrInvalidTransition
+		if strings.TrimSpace(current.ContextSnapshot) == "" {
+			results, err := unseenWorkerResultsQuery(ctx, tx, current.ConversationID)
+			if err != nil {
+				return SecretaryTurn{}, err
+			}
+			canonical.UnseenWorkerResults, err = claimSecretaryResultsTx(ctx, tx, current.ID, results, s.now())
+			if err != nil {
+				return SecretaryTurn{}, err
+			}
+			encoded, err := json.Marshal(canonical)
+			if err != nil {
+				return SecretaryTurn{}, err
+			}
+			result, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET context_snapshot = ?, updated_at = ? WHERE id = ? AND state = ? AND context_snapshot = ''`, string(encoded), timestamp(s.now()), current.ID, SecretaryTurnQueued)
+			if err != nil {
+				return SecretaryTurn{}, err
+			}
+			affected, err := result.RowsAffected()
+			if err != nil {
+				return SecretaryTurn{}, err
+			}
+			if affected != 1 {
+				return SecretaryTurn{}, errors.New("core: canonical Secretary context snapshot was not published")
+			}
+			current.ContextSnapshot = string(encoded)
 		}
 		now := s.now()
-		if _, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET state = ?, started_at = ?, updated_at = ? WHERE id = ?`, SecretaryTurnActive, timestamp(now), timestamp(now), turn.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET state = ?, started_at = ?, updated_at = ? WHERE id = ?`, SecretaryTurnActive, timestamp(now), timestamp(now), current.ID); err != nil {
 			return SecretaryTurn{}, err
 		}
-		turn.State, turn.StartedAt, turn.UpdatedAt = SecretaryTurnActive, &now, now
-		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: SecretaryTurnStartedEvent, AggregateType: "secretary_turn", AggregateID: turn.ID, Source: "server", CorrelationID: turn.ID, Payload: turn}, turn)
+		current.State, current.StartedAt, current.UpdatedAt = SecretaryTurnActive, &now, now
+		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: SecretaryTurnStartedEvent, AggregateType: "secretary_turn", AggregateID: current.ID, Source: "server", CorrelationID: current.ID, Payload: current}, current)
 		if err != nil {
 			return SecretaryTurn{}, err
 		}
 		if _, _, err := enqueueDeliveryTx(ctx, tx, now, event.ID, "", "conversation", "secretary-stream:"+event.ID); err != nil {
 			return SecretaryTurn{}, err
 		}
-		return turn, nil
+		return current, nil
 	})
 }
 
@@ -238,13 +303,22 @@ func (s *Store) FinishSecretaryTurn(ctx context.Context, turnID string, state Se
 	}
 	return withTx(s, ctx, func(tx *sql.Tx) (SecretaryTurn, error) {
 		var turn SecretaryTurn
-		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, `SELECT id, identity_id, conversation_id, input, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns WHERE id = ?`, turnID), &turn); errors.Is(err, sql.ErrNoRows) {
+		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, secretaryTurnSelect+` WHERE id = ?`, turnID), &turn); errors.Is(err, sql.ErrNoRows) {
 			return SecretaryTurn{}, ErrNotFound
 		} else if err != nil {
 			return SecretaryTurn{}, err
 		}
 		if turn.State != SecretaryTurnActive {
 			return SecretaryTurn{}, ErrInvalidTransition
+		}
+		if state == SecretaryTurnSucceeded {
+			if _, err := tx.ExecContext(ctx, `UPDATE secretary_context_seen_results SET claim_state = 'accepted' WHERE turn_id = ? AND claim_state = 'claimed'`, turn.ID); err != nil {
+				return SecretaryTurn{}, err
+			}
+		} else if turn.PromptState != secretaryPromptAccepted {
+			if err := releaseSecretaryTurnClaimsForStateTx(ctx, tx, turn.ID, turn.State, turn.PromptState); err != nil {
+				return SecretaryTurn{}, err
+			}
 		}
 		now := s.now()
 		turn.State, turn.Error, turn.FinishedAt, turn.UpdatedAt = state, strings.TrimSpace(terminalError), &now, now
@@ -524,12 +598,16 @@ func (s *Store) LoadUserDocument(ctx context.Context, path string) (UserDocument
 		return UserDocument{}, err
 	}
 	current.Path = storedPath
-	content, readErr := os.ReadFile(path)
+	readPath := path
+	if readPath == "" {
+		readPath = storedPath
+	}
+	content, readErr := os.ReadFile(readPath)
 	if readErr == nil {
 		if ValidateUserDocument(string(content)) == nil && string(content) != current.Content {
 			now := s.now()
 			current.Content, current.Revision, current.UpdatedAt = string(content), current.Revision+1, now
-			if _, err := s.db.ExecContext(ctx, `UPDATE secretary_user_documents SET path = ?, revision = ?, content = ?, updated_at = ? WHERE id = 1`, path, current.Revision, current.Content, timestamp(now)); err != nil {
+			if _, err := s.db.ExecContext(ctx, `UPDATE secretary_user_documents SET path = ?, revision = ?, content = ?, updated_at = ? WHERE id = 1`, readPath, current.Revision, current.Content, timestamp(now)); err != nil {
 				return UserDocument{}, err
 			}
 		}

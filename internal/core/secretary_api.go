@@ -37,11 +37,87 @@ func (s *Store) QueueSecretaryInput(ctx context.Context, identityID, input strin
 
 func (s *Store) ActiveSecretaryTurn(ctx context.Context, identityID string) (SecretaryTurn, error) {
 	var turn SecretaryTurn
-	err := scanSecretaryTurn(s.db.QueryRowContext(ctx, `SELECT id, identity_id, conversation_id, input, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns WHERE identity_id = ? AND state = 'active'`, identityID), &turn)
+	err := scanSecretaryTurn(s.db.QueryRowContext(ctx, secretaryTurnSelect+` WHERE identity_id = ? AND state = 'active'`, identityID), &turn)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SecretaryTurn{}, ErrNotFound
 	}
 	return turn, err
+}
+
+func (s *Store) BeginSecretaryPrompt(ctx context.Context, turnID string) error {
+	_, err := withTx(s, ctx, func(tx *sql.Tx) (struct{}, error) {
+		var state SecretaryTurnState
+		var promptState string
+		if err := tx.QueryRowContext(ctx, `SELECT state, prompt_state FROM secretary_turns WHERE id = ?`, turnID).Scan(&state, &promptState); errors.Is(err, sql.ErrNoRows) {
+			return struct{}{}, ErrNotFound
+		} else if err != nil {
+			return struct{}{}, err
+		}
+		if state != SecretaryTurnActive {
+			return struct{}{}, ErrInvalidTransition
+		}
+		if promptState == secretaryPromptAccepted || promptState == secretaryPromptStarted {
+			return struct{}{}, nil
+		}
+		if promptState != secretaryPromptPending {
+			return struct{}{}, errors.New("core: unknown Secretary prompt state")
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET prompt_state = ?, updated_at = ? WHERE id = ? AND state = ? AND prompt_state = ?`, secretaryPromptStarted, timestamp(s.now()), turnID, SecretaryTurnActive, secretaryPromptPending)
+		return struct{}{}, err
+	})
+	return err
+}
+
+func (s *Store) AcceptSecretaryPrompt(ctx context.Context, turnID string) error {
+	_, err := withTx(s, ctx, func(tx *sql.Tx) (struct{}, error) {
+		var state SecretaryTurnState
+		var promptState string
+		if err := tx.QueryRowContext(ctx, `SELECT state, prompt_state FROM secretary_turns WHERE id = ?`, turnID).Scan(&state, &promptState); errors.Is(err, sql.ErrNoRows) {
+			return struct{}{}, ErrNotFound
+		} else if err != nil {
+			return struct{}{}, err
+		}
+		if promptState == secretaryPromptAccepted {
+			return struct{}{}, nil
+		}
+		if state != SecretaryTurnActive || promptState != secretaryPromptStarted {
+			return struct{}{}, ErrInvalidTransition
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET prompt_state = ?, updated_at = ? WHERE id = ? AND state = ? AND prompt_state = ?`, secretaryPromptAccepted, timestamp(s.now()), turnID, SecretaryTurnActive, secretaryPromptStarted)
+		return struct{}{}, err
+	})
+	return err
+}
+
+// ReleaseSecretaryTurnClaims is used only after a proven Prompt failure. It
+// releases claims only for an active turn whose Prompt was not accepted.
+// Releasing an accepted Prompt is rejected, and repeated release is a no-op.
+func (s *Store) ReleaseSecretaryTurnClaims(ctx context.Context, turnID string) error {
+	_, err := withTx(s, ctx, func(tx *sql.Tx) (struct{}, error) {
+		var state SecretaryTurnState
+		var promptState string
+		if err := tx.QueryRowContext(ctx, `SELECT state, prompt_state FROM secretary_turns WHERE id = ?`, turnID).Scan(&state, &promptState); errors.Is(err, sql.ErrNoRows) {
+			return struct{}{}, ErrNotFound
+		} else if err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, releaseSecretaryTurnClaimsForStateTx(ctx, tx, turnID, state, promptState)
+	})
+	return err
+}
+
+func releaseSecretaryTurnClaimsForStateTx(ctx context.Context, tx *sql.Tx, turnID string, state SecretaryTurnState, promptState string) error {
+	if state != SecretaryTurnActive {
+		return nil
+	}
+	switch promptState {
+	case secretaryPromptPending, secretaryPromptStarted:
+		return releaseSecretaryResultsTx(ctx, tx, turnID)
+	case secretaryPromptAccepted:
+		return ErrInvalidTransition
+	default:
+		return errors.New("core: unknown Secretary prompt state")
+	}
 }
 
 func (s *Store) RecoverSecretaryTurn(ctx context.Context, identityID, errorMessage string) error {

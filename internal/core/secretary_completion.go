@@ -27,13 +27,22 @@ func (s *Store) FinishSecretaryTurnWithResponse(ctx context.Context, turnID stri
 
 	completed, err := withTx(s, ctx, func(tx *sql.Tx) (secretaryTurnCompletion, error) {
 		var turn SecretaryTurn
-		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, `SELECT id, identity_id, conversation_id, input, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns WHERE id = ?`, turnID), &turn); errors.Is(err, sql.ErrNoRows) {
+		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, secretaryTurnSelect+` WHERE id = ?`, turnID), &turn); errors.Is(err, sql.ErrNoRows) {
 			return secretaryTurnCompletion{}, ErrNotFound
 		} else if err != nil {
 			return secretaryTurnCompletion{}, err
 		}
 		if turn.State != SecretaryTurnActive {
 			return secretaryTurnCompletion{}, ErrInvalidTransition
+		}
+		if state == SecretaryTurnSucceeded {
+			if _, err := tx.ExecContext(ctx, `UPDATE secretary_context_seen_results SET claim_state = 'accepted' WHERE turn_id = ? AND claim_state = 'claimed'`, turn.ID); err != nil {
+				return secretaryTurnCompletion{}, err
+			}
+		} else if turn.PromptState != secretaryPromptAccepted {
+			if err := releaseSecretaryTurnClaimsForStateTx(ctx, tx, turn.ID, turn.State, turn.PromptState); err != nil {
+				return secretaryTurnCompletion{}, err
+			}
 		}
 
 		now := s.now()
