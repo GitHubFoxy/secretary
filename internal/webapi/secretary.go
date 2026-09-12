@@ -111,7 +111,11 @@ func (s *Server) secretaryWebsocket(w http.ResponseWriter, r *http.Request) {
 	if client != nil {
 		clientID = client.ID
 	}
-	stream := s.registerStream(clientID, cancel)
+	stream, accepted := s.registerStream(streamContext, clientID, bearerToken(r), cancel)
+	if !accepted {
+		_ = connection.Close(websocket.StatusPolicyViolation, "Client revoked")
+		return
+	}
 	defer s.unregisterStream(clientID, stream)
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()

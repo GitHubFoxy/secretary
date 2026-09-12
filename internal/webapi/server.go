@@ -21,6 +21,8 @@ import (
 
 const sessionCookie = "secretary_session"
 
+type authenticatedClientContextKey struct{}
+
 type workerController interface {
 	Session(string) (node.Session, bool)
 	Steer(context.Context, string, string) (bool, error)
@@ -340,7 +342,11 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	if client != nil {
 		clientID = client.ID
 	}
-	stream := s.registerStream(clientID, cancel)
+	stream, accepted := s.registerStream(streamContext, clientID, bearerToken(r), cancel)
+	if !accepted {
+		_ = conn.Close(websocket.StatusPolicyViolation, "Client revoked")
+		return
+	}
 	defer s.unregisterStream(clientID, stream)
 
 	s.mu.Lock()
@@ -409,18 +415,26 @@ func (s *Server) publishLocked(entry core.ConversationEntry) {
 	}
 }
 
-func (s *Server) registerStream(clientID string, cancel context.CancelFunc) *activeStream {
+func (s *Server) registerStream(ctx context.Context, clientID, credential string, cancel context.CancelFunc) (*activeStream, bool) {
 	if clientID == "" {
-		return nil
+		return nil, true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Authentication happened before the WebSocket handshake. Recheck the
+	// credential and current Client state while holding the same lock used by
+	// revoke's stream sweep, so a revoked or re-paired generation cannot enter
+	// the stream registry after the initial check.
+	client, err := s.store.AuthenticateClient(ctx, credential)
+	if err != nil || client.ID != clientID {
+		return nil, false
 	}
 	stream := &activeStream{cancel: cancel}
-	s.mu.Lock()
 	if s.streams[clientID] == nil {
 		s.streams[clientID] = make(map[*activeStream]struct{})
 	}
 	s.streams[clientID][stream] = struct{}{}
-	s.mu.Unlock()
-	return stream
+	return stream, true
 }
 
 func (s *Server) unregisterStream(clientID string, stream *activeStream) {
@@ -439,12 +453,16 @@ func (s *Server) unregisterStream(clientID string, stream *activeStream) {
 
 func (s *Server) cancelClientStreams(clientID string) {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancelClientStreamsLocked(clientID)
+}
+
+func (s *Server) cancelClientStreamsLocked(clientID string) {
 	streams := s.streams[clientID]
 	delete(s.streams, clientID)
 	for stream := range streams {
 		stream.cancel()
 	}
-	s.mu.Unlock()
 }
 
 func (s *Server) authorizedConversation(w http.ResponseWriter, r *http.Request) (core.Conversation, bool) {

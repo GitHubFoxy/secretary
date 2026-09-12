@@ -141,12 +141,15 @@ func (s *Server) clientRoute(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, clientCredentialResponse{Client: client, ClientID: client.ID, Credential: credential})
 	case "revoke":
+		s.mu.Lock()
 		client, err := s.store.RevokeClient(r.Context(), id, key)
 		if err != nil {
+			s.mu.Unlock()
 			writeClientMutationError(w, err)
 			return
 		}
-		s.cancelClientStreams(client.ID)
+		s.cancelClientStreamsLocked(client.ID)
+		s.mu.Unlock()
 		writeJSON(w, http.StatusOK, client)
 	}
 }

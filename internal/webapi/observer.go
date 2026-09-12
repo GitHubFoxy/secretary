@@ -35,9 +35,21 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		scope = core.ScopeWorkerWrite
 	}
-	conversation, ok := s.authorizedConversationScope(w, r, scope)
+	person, client, ok := s.authorizedPerson(w, r)
 	if !ok {
 		return
+	}
+	if client != nil && !client.HasScope(scope) {
+		http.Error(w, "Client scope required", http.StatusForbidden)
+		return
+	}
+	conversation, err := s.store.ConversationForPerson(r.Context(), person.ID)
+	if err != nil {
+		http.Error(w, "read conversation", http.StatusInternalServerError)
+		return
+	}
+	if client != nil {
+		r = r.WithContext(context.WithValue(r.Context(), authenticatedClientContextKey{}, client.ID))
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/v1/workers/")
 	parts := strings.Split(strings.Trim(path, "/"), "/")
@@ -99,7 +111,11 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, details)
 			return
 		}
-		details, err := s.responder.RespondWorker(r.Context(), ctl.MessageWorkerRequest{WorkerRef: workerRef, Text: request.Response, RequestID: request.RequestID, ClientID: "web-session", IdempotencyKey: key})
+		clientID, _ := r.Context().Value(authenticatedClientContextKey{}).(string)
+		if clientID == "" {
+			clientID = "web-session"
+		}
+		details, err := s.responder.RespondWorker(r.Context(), ctl.MessageWorkerRequest{WorkerRef: workerRef, Text: request.Response, RequestID: request.RequestID, ClientID: clientID, IdempotencyKey: key})
 		if err != nil {
 			writeClientMutationError(w, err)
 			return
@@ -363,7 +379,15 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 	if len(suffix) != 1 || r.Method != http.MethodPost || s.actions == nil {
 		return false
 	}
-	request := ctl.MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, ClientID: r.Header.Get("X-Client-ID")}
+	authenticatedClientID, _ := r.Context().Value(authenticatedClientContextKey{}).(string)
+	if spoofed := strings.TrimSpace(r.Header.Get("X-Client-ID")); spoofed != "" && spoofed != authenticatedClientID {
+		http.Error(w, "X-Client-ID does not match authenticated Client", http.StatusBadRequest)
+		return true
+	}
+	if authenticatedClientID == "" {
+		authenticatedClientID = "web-session"
+	}
+	request := ctl.MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, ClientID: authenticatedClientID}
 	var payload struct {
 		Text           string `json:"text,omitempty"`
 		RequestID      string `json:"request_id,omitempty"`
@@ -449,8 +473,15 @@ func (s *Server) workerActivityReplay(w http.ResponseWriter, r *http.Request, wo
 	}
 	defer connection.CloseNow()
 	streamContext, cancel := context.WithCancel(r.Context())
-	clientID := s.requestClientID(r)
-	stream := s.registerStream(clientID, cancel)
+	clientID, _ := r.Context().Value(authenticatedClientContextKey{}).(string)
+	if clientID == "" {
+		clientID = s.requestClientID(r)
+	}
+	stream, accepted := s.registerStream(streamContext, clientID, bearerToken(r), cancel)
+	if !accepted {
+		_ = connection.Close(websocket.StatusPolicyViolation, "Client revoked")
+		return
+	}
 	defer s.unregisterStream(clientID, stream)
 	after, err := parseAfter(r)
 	if err != nil {
@@ -620,8 +651,15 @@ func (s *Server) workerActivity(w http.ResponseWriter, r *http.Request, session 
 	}
 	defer connection.CloseNow()
 	streamContext, cancel := context.WithCancel(r.Context())
-	clientID := s.requestClientID(r)
-	stream := s.registerStream(clientID, cancel)
+	clientID, _ := r.Context().Value(authenticatedClientContextKey{}).(string)
+	if clientID == "" {
+		clientID = s.requestClientID(r)
+	}
+	stream, accepted := s.registerStream(streamContext, clientID, bearerToken(r), cancel)
+	if !accepted {
+		_ = connection.Close(websocket.StatusPolicyViolation, "Client revoked")
+		return
+	}
 	defer s.unregisterStream(clientID, stream)
 	for {
 		select {

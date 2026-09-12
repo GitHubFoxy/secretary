@@ -117,19 +117,19 @@ func TestRegisterStreamRejectsRevokedAndStaleGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, _, err := store.ApproveClient(ctx, pairing.ID)
+	client, credential, err := store.ApproveClient(ctx, pairing.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	stream := api.registerStream(client.ID, func() {})
-	if stream == nil {
+	stream, accepted := api.registerStream(ctx, client.ID, credential, func() {})
+	if !accepted || stream == nil {
 		t.Fatal("setup registration unexpectedly rejected")
 	}
 	if _, err := store.RevokeClient(ctx, client.ID); err != nil {
 		t.Fatal(err)
 	}
 	api.unregisterStream(client.ID, stream)
-	if stale := api.registerStream(client.ID, func() {}); stale != nil {
+	if stale, accepted := api.registerStream(ctx, client.ID, credential, func() {}); accepted || stale != nil {
 		t.Fatal("revoked stream registration accepted")
 	}
 	newPairing, err := store.PairClientWithToken(ctx, api.OwnerID(), "stream-generation", "Stream 2", "test", nil)
@@ -139,7 +139,7 @@ func TestRegisterStreamRejectsRevokedAndStaleGeneration(t *testing.T) {
 	if _, _, err := store.ApproveClient(ctx, newPairing.ID); err != nil {
 		t.Fatal(err)
 	}
-	if stream := api.registerStream(client.ID, func() {}); stream != nil {
+	if stream, accepted := api.registerStream(ctx, client.ID, credential, func() {}); accepted || stream != nil {
 		t.Fatal("stale generation stream registration accepted")
 	}
 }
