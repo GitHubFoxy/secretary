@@ -10,7 +10,7 @@ import (
 )
 
 func (s *Server) approvalList(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizedConversation(w, r); !ok {
+	if _, ok := s.authorizedConversationScope(w, r, core.ScopeApprovalRead); !ok {
 		return
 	}
 	approvals, err := s.store.Approvals(r.Context())
@@ -22,8 +22,13 @@ func (s *Server) approvalList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) approvalRoute(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizedConversation(w, r); !ok {
+	if _, ok := s.authorizedConversationScope(w, r, core.ScopeApprovalWrite); !ok {
 		return
+	}
+	_, client, _ := s.authorizedPerson(w, r)
+	clientID := "web-session"
+	if client != nil {
+		clientID = client.ID
 	}
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/approvals/"), "/"), "/")
 	if len(parts) != 2 || parts[0] == "" || (parts[1] != "approve" && parts[1] != "deny") || r.Method != http.MethodPost {
@@ -52,7 +57,7 @@ func (s *Server) approvalRoute(w http.ResponseWriter, r *http.Request) {
 	if parts[1] == "approve" {
 		response = "approved"
 	}
-	details, err := s.responder.RespondWorker(r.Context(), ctl.MessageWorkerRequest{WorkerRef: worker.WorkerRef, Text: response, RequestID: approval.RequestID, ClientID: "web-session"})
+	details, err := s.responder.RespondWorker(r.Context(), ctl.MessageWorkerRequest{WorkerRef: worker.WorkerRef, Text: response, RequestID: approval.RequestID, ClientID: clientID, IdempotencyKey: r.Header.Get("Idempotency-Key")})
 	if err != nil {
 		http.Error(w, "resolve approval: "+err.Error(), http.StatusBadRequest)
 		return

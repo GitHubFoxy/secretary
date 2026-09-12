@@ -44,6 +44,18 @@ func (s *Store) RecordEventWithMetadata(ctx context.Context, input EventInput) (
 	})
 }
 
+func (s *Store) EventsForWorkerAfterSeq(ctx context.Context, workerRef string, afterSeq int64, limit int) ([]Event, error) {
+	if limit <= 0 || limit > 500 {
+		limit = 500
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, seq, kind, aggregate_type, aggregate_id, source, correlation_id, causation_id, worker_ref, attempt_id, payload_json, created_at FROM events WHERE seq > ? AND (worker_ref = ? OR (aggregate_type = 'worker' AND aggregate_id = ?)) ORDER BY seq LIMIT ?`, afterSeq, workerRef, workerRef, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanEvents(rows)
+}
+
 func (s *Store) EventsAfterSeq(ctx context.Context, afterSeq int64, limit int) ([]Event, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 500

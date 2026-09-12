@@ -43,7 +43,7 @@ func (s *Server) projectRoot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) projectList(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizedConversation(w, r); !ok {
+	if _, ok := s.authorizedConversationScope(w, r, core.ScopeProjectRead); !ok {
 		return
 	}
 	projects, err := s.store.Projects(r.Context())
@@ -57,7 +57,7 @@ func (s *Server) projectList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, projects)
 }
 func (s *Server) projectCreate(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizedConversation(w, r); !ok {
+	if _, ok := s.authorizedConversationScope(w, r, core.ScopeProjectWrite); !ok {
 		return
 	}
 	var request projectRequest
@@ -76,7 +76,11 @@ func (s *Server) projectCreate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, project)
 }
 func (s *Server) projectRoute(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizedConversation(w, r); !ok {
+	scope := core.ScopeProjectRead
+	if r.Method != http.MethodGet {
+		scope = core.ScopeProjectWrite
+	}
+	if _, ok := s.authorizedConversationScope(w, r, scope); !ok {
 		return
 	}
 	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/projects/"), "/")

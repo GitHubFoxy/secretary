@@ -405,6 +405,23 @@ CREATE TABLE IF NOT EXISTS web_sessions (
   token_hash TEXT NOT NULL UNIQUE,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS clients (
+  id TEXT PRIMARY KEY,
+  person_id TEXT NOT NULL REFERENCES persons(id),
+  device_id TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  scopes_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  credential_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  revoked_at TEXT
+);
+CREATE TABLE IF NOT EXISTS client_pairings (
+  id TEXT PRIMARY KEY,
+  client_id TEXT NOT NULL UNIQUE REFERENCES clients(id),
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS config_versions (
   version TEXT PRIMARY KEY,
   source_path TEXT NOT NULL,

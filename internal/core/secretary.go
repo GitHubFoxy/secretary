@@ -580,6 +580,9 @@ func (s *Store) LoadUserDocument(ctx context.Context, path string) (UserDocument
 	var storedPath string
 	err := s.db.QueryRowContext(ctx, `SELECT path, revision, content, updated_at FROM secretary_user_documents WHERE id = 1`).Scan(&storedPath, &current.Revision, &current.Content, newTimestampScanner(&current.UpdatedAt))
 	if errors.Is(err, sql.ErrNoRows) {
+		if path == "" {
+			path = "user.md"
+		}
 		content, readErr := os.ReadFile(path)
 		if errors.Is(readErr, os.ErrNotExist) {
 			content = []byte{}
@@ -615,7 +618,9 @@ func (s *Store) LoadUserDocument(ctx context.Context, path string) (UserDocument
 	return current, nil
 }
 
-func (s *Store) SaveUserDocument(ctx context.Context, path, content string) (UserDocument, error) {
+var ErrUserDocumentRevisionConflict = errors.New("core: user.md revision conflict")
+
+func (s *Store) SaveUserDocumentIfRevision(ctx context.Context, path, content string, expectedRevision int64) (UserDocument, error) {
 	if err := ValidateUserDocument(content); err != nil {
 		return UserDocument{}, err
 	}
@@ -624,6 +629,15 @@ func (s *Store) SaveUserDocument(ctx context.Context, path, content string) (Use
 	previous, err := s.LoadUserDocumentUnlocked(ctx, path)
 	if err != nil {
 		return UserDocument{}, err
+	}
+	if expectedRevision > 0 && previous.Revision != expectedRevision {
+		return UserDocument{}, ErrUserDocumentRevisionConflict
+	}
+	if path == "" {
+		path = previous.Path
+	}
+	if path == "" {
+		path = "user.md"
 	}
 	if err := atomicWrite(path, []byte(content)); err != nil {
 		return UserDocument{}, err
@@ -638,11 +652,18 @@ func (s *Store) SaveUserDocument(ctx context.Context, path, content string) (Use
 	return next, nil
 }
 
+func (s *Store) SaveUserDocument(ctx context.Context, path, content string) (UserDocument, error) {
+	return s.SaveUserDocumentIfRevision(ctx, path, content, 0)
+}
+
 func (s *Store) LoadUserDocumentUnlocked(ctx context.Context, path string) (UserDocument, error) {
 	var current UserDocument
 	var storedPath string
 	err := s.db.QueryRowContext(ctx, `SELECT path, revision, content, updated_at FROM secretary_user_documents WHERE id = 1`).Scan(&storedPath, &current.Revision, &current.Content, newTimestampScanner(&current.UpdatedAt))
 	if errors.Is(err, sql.ErrNoRows) {
+		if path == "" {
+			path = "user.md"
+		}
 		content, readErr := os.ReadFile(path)
 		if errors.Is(readErr, os.ErrNotExist) {
 			content = []byte{}
@@ -661,5 +682,16 @@ func (s *Store) LoadUserDocumentUnlocked(ctx context.Context, path string) (User
 		return UserDocument{}, err
 	}
 	current.Path = storedPath
+	readPath := path
+	if readPath == "" {
+		readPath = storedPath
+	}
+	if content, readErr := os.ReadFile(readPath); readErr == nil && ValidateUserDocument(string(content)) == nil && string(content) != current.Content {
+		now := s.now()
+		current.Content, current.Revision, current.UpdatedAt = string(content), current.Revision+1, now
+		if _, err := s.db.ExecContext(ctx, `UPDATE secretary_user_documents SET path = ?, revision = ?, content = ?, updated_at = ? WHERE id = 1`, readPath, current.Revision, current.Content, timestamp(now)); err != nil {
+			return UserDocument{}, err
+		}
+	}
 	return current, nil
 }

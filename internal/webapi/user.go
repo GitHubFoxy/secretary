@@ -1,8 +1,11 @@
 package webapi
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/beruseruko/secretary/internal/core"
 )
@@ -13,7 +16,7 @@ type bootstrapResponse struct {
 	OwnerID        string              `json:"owner_id"`
 	ConversationID string              `json:"conversation_id"`
 	Secretary      secretaryModelState `json:"secretary"`
-	Workers        []core.TaskDetails  `json:"workers"`
+	Workers        []core.Worker       `json:"workers"`
 }
 
 type secretaryModelState struct {
@@ -22,14 +25,17 @@ type secretaryModelState struct {
 }
 
 func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
-	conversation, ok := s.authorizedConversation(w, r)
+	conversation, ok := s.authorizedConversationScope(w, r, core.ScopeConversationRead)
 	if !ok {
 		return
 	}
-	workers, err := s.parentWorkerDetails(r, conversation.ID)
+	workers, err := s.store.WorkersForConversation(r.Context(), conversation.ID)
 	if err != nil {
 		http.Error(w, "read workers", http.StatusInternalServerError)
 		return
+	}
+	if workers == nil {
+		workers = []core.Worker{}
 	}
 	writeJSON(w, http.StatusOK, bootstrapResponse{
 		OwnerID:        s.owner.ID,
@@ -40,7 +46,7 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) secretaryModels(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizedConversation(w, r); !ok {
+	if _, ok := s.authorizedConversationScope(w, r, core.ScopeConversationRead); !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, s.secretaryModelState(r))
@@ -80,7 +86,7 @@ func (s *Server) secretaryModelState(r *http.Request) secretaryModelState {
 }
 
 func (s *Server) setSecretaryModel(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizedConversation(w, r); !ok {
+	if _, ok := s.authorizedConversationScope(w, r, core.ScopeUserWrite); !ok {
 		return
 	}
 	var request struct {
@@ -132,14 +138,17 @@ func (s *Server) canonicalModel(requested string) (string, bool) {
 }
 
 func (s *Server) workerList(w http.ResponseWriter, r *http.Request) {
-	conversation, ok := s.authorizedConversation(w, r)
+	conversation, ok := s.authorizedConversationScope(w, r, core.ScopeWorkerRead)
 	if !ok {
 		return
 	}
-	workers, err := s.parentWorkerDetails(r, conversation.ID)
+	workers, err := s.store.WorkersForConversation(r.Context(), conversation.ID)
 	if err != nil {
 		http.Error(w, "read workers", http.StatusInternalServerError)
 		return
+	}
+	if workers == nil {
+		workers = []core.Worker{}
 	}
 	writeJSON(w, http.StatusOK, workers)
 }
@@ -161,4 +170,79 @@ func (s *Server) parentWorkerDetails(r *http.Request, conversationID string) ([]
 		workers = append(workers, details)
 	}
 	return workers, nil
+}
+
+type userDocumentRequest struct {
+	Content          string `json:"content"`
+	Markdown         string `json:"markdown,omitempty"`
+	ExpectedRevision int64  `json:"expected_revision,omitempty"`
+	IdempotencyKey   string `json:"idempotency_key,omitempty"`
+}
+
+func (s *Server) userPathname() string { return s.userPath }
+
+func (s *Server) user(w http.ResponseWriter, r *http.Request) {
+	scope := core.ScopeUserRead
+	if r.Method == http.MethodPut {
+		scope = core.ScopeUserWrite
+	}
+	if _, ok := s.authorizedConversationScope(w, r, scope); !ok {
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		document, err := s.store.LoadUserDocument(r.Context(), s.userPathname())
+		if err != nil {
+			http.Error(w, "read user.md", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusOK, document)
+	case http.MethodPut:
+		var request userDocumentRequest
+		if !decodeJSON(w, r, &request) {
+			return
+		}
+		if request.Content == "" {
+			request.Content = request.Markdown
+		}
+		key := strings.TrimSpace(request.IdempotencyKey)
+		if key == "" {
+			key = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
+		}
+		if key != "" {
+			s.idempotencyMu.Lock()
+			defer s.idempotencyMu.Unlock()
+			if encoded, found, lookupErr := s.store.IdempotencyOutcome(r.Context(), "user.update", key); lookupErr != nil {
+				http.Error(w, "read idempotency record", http.StatusInternalServerError)
+				return
+			} else if found {
+				var document core.UserDocument
+				if json.Unmarshal(encoded, &document) != nil {
+					http.Error(w, "decode idempotency record", http.StatusInternalServerError)
+					return
+				}
+				writeJSON(w, http.StatusOK, document)
+				return
+			}
+		}
+		document, err := s.store.SaveUserDocumentIfRevision(r.Context(), s.userPathname(), request.Content, request.ExpectedRevision)
+		if err != nil {
+			status := http.StatusBadRequest
+			if errors.Is(err, core.ErrUserDocumentRevisionConflict) {
+				status = http.StatusConflict
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		if key != "" {
+			if err := s.store.RecordIdempotencyOutcome(r.Context(), "user.update", key, document); err != nil {
+				http.Error(w, "save idempotency record", http.StatusInternalServerError)
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, document)
+	default:
+		w.Header().Set("Allow", "GET, PUT")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
 }

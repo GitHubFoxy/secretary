@@ -85,6 +85,7 @@ func main() {
 		log.Fatalf("initialize web API: %v", err)
 	}
 	web.SetDebug(*debug)
+	web.AttachUserDocument(filepath.Join(*dataDir, "user.md"))
 
 	var remoteNodes *node.ServerManager
 	nodePairingTokens := configuredNodePairingTokens()
@@ -275,6 +276,10 @@ func main() {
 	controlStaticHandler := webclient.ControlHandler()
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if remoteNodes != nil {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Authorization"))), "bearer ") && r.URL.Path != "/v1/nodes/connect" {
+				apiHandler.ServeHTTP(w, r)
+				return
+			}
 			if r.URL.Path == "/v1/nodes/connect" {
 				remoteNodes.ServeProtocolHTTP(w, r)
 				return

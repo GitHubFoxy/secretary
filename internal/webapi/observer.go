@@ -1,8 +1,10 @@
 package webapi
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
@@ -26,11 +28,28 @@ type workerStatus struct {
 }
 
 func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizedConversation(w, r); !ok {
+	scope := core.ScopeWorkerRead
+	if r.Method != http.MethodGet {
+		scope = core.ScopeWorkerWrite
+	}
+	conversation, ok := s.authorizedConversationScope(w, r, scope)
+	if !ok {
 		return
 	}
 	path := strings.TrimPrefix(r.URL.Path, "/v1/workers/")
-	parts := strings.Split(path, "/")
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) > 0 && parts[0] != "" {
+		if details, err := s.store.WorkerDetailsForConversation(r.Context(), conversation.ID, parts[0]); err == nil {
+			if s.phase4WorkerRoute(w, r, details, parts[1:]) {
+				return
+			}
+		}
+	}
+	if r.Header.Get("Authorization") != "" {
+		http.NotFound(w, r)
+		return
+	}
+	parts = strings.Split(path, "/")
 	if len(parts) == 0 || parts[0] == "" {
 		http.NotFound(w, r)
 		return
@@ -215,6 +234,134 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, details core.WorkerDetails, suffix []string) bool {
+	if len(suffix) == 0 && r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, details)
+		return true
+	}
+	if len(suffix) == 1 && suffix[0] == "turns" && r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, details.Turns)
+		return true
+	}
+	if len(suffix) >= 1 && suffix[0] == "activity" {
+		if len(suffix) == 2 && suffix[1] == "ws" && r.Method == http.MethodGet {
+			s.workerActivityReplay(w, r, details.Worker.WorkerRef)
+			return true
+		}
+		if len(suffix) == 1 && r.Method == http.MethodGet {
+			s.workerActivityReplayJSON(w, r, details.Worker.WorkerRef)
+			return true
+		}
+	}
+	if len(suffix) != 1 || r.Method != http.MethodPost || s.actions == nil {
+		return false
+	}
+	request := ctl.MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, ClientID: r.Header.Get("X-Client-ID")}
+	var payload struct {
+		Text           string `json:"text,omitempty"`
+		RequestID      string `json:"request_id,omitempty"`
+		IdempotencyKey string `json:"idempotency_key,omitempty"`
+	}
+	if !decodeJSON(w, r, &payload) {
+		return true
+	}
+	request.Text, request.RequestID, request.IdempotencyKey = payload.Text, payload.RequestID, payload.IdempotencyKey
+	if request.IdempotencyKey == "" {
+		request.IdempotencyKey = r.Header.Get("Idempotency-Key")
+	}
+	operation := "worker.action:" + suffix[0] + ":" + details.Worker.WorkerRef
+	if request.IdempotencyKey != "" {
+		s.idempotencyMu.Lock()
+		defer s.idempotencyMu.Unlock()
+		if encoded, found, lookupErr := s.store.IdempotencyOutcome(r.Context(), operation, request.IdempotencyKey); lookupErr != nil {
+			http.Error(w, "read idempotency record", http.StatusInternalServerError)
+			return true
+		} else if found {
+			var stored core.WorkerDetails
+			if err := json.Unmarshal(encoded, &stored); err != nil {
+				http.Error(w, "decode idempotency record", http.StatusInternalServerError)
+				return true
+			}
+			writeJSON(w, http.StatusAccepted, stored)
+			return true
+		}
+	}
+	var result core.WorkerDetails
+	var err error
+	switch suffix[0] {
+	case "message":
+		result, err = s.actions.MessageWorker(r.Context(), request)
+	case "cancel":
+		result, err = s.actions.CancelWorker(r.Context(), details.Worker.WorkerRef)
+	case "close":
+		result, err = s.actions.CloseWorker(r.Context(), details.Worker.WorkerRef)
+	default:
+		return false
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return true
+	}
+	if request.IdempotencyKey != "" {
+		if err := s.store.RecordIdempotencyOutcome(r.Context(), operation, request.IdempotencyKey, result); err != nil {
+			http.Error(w, "save idempotency record", http.StatusInternalServerError)
+			return true
+		}
+	}
+	writeJSON(w, http.StatusAccepted, result)
+	return true
+}
+
+func (s *Server) workerActivityReplayJSON(w http.ResponseWriter, r *http.Request, workerRef string) {
+	after, err := parseAfter(r)
+	if err != nil {
+		http.Error(w, "invalid after_seq", http.StatusBadRequest)
+		return
+	}
+	events, err := s.workerEvents(r, workerRef, after)
+	if err != nil {
+		http.Error(w, "read worker activity", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
+func (s *Server) workerActivityReplay(w http.ResponseWriter, r *http.Request, workerRef string) {
+	connection, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		return
+	}
+	defer connection.CloseNow()
+	after, err := parseAfter(r)
+	if err != nil {
+		_ = connection.Close(websocket.StatusPolicyViolation, "invalid after_seq")
+		return
+	}
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		events, readErr := s.workerEvents(r, workerRef, after)
+		if readErr != nil {
+			return
+		}
+		for _, event := range events {
+			if err := connection.Write(r.Context(), websocket.MessageText, mustJSON(event)); err != nil {
+				return
+			}
+			after = event.Seq
+		}
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *Server) workerEvents(r *http.Request, workerRef string, after int64) ([]core.Event, error) {
+	return s.store.EventsForWorkerAfterSeq(r.Context(), workerRef, after, 500)
 }
 
 func sanitizePublicTaskDetails(details *core.TaskDetails) {

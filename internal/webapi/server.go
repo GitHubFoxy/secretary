@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -31,6 +32,12 @@ type workerResponder interface {
 	RespondWorker(context.Context, ctl.MessageWorkerRequest) (core.WorkerDetails, error)
 }
 
+type workerActions interface {
+	MessageWorker(context.Context, ctl.MessageWorkerRequest) (core.WorkerDetails, error)
+	CancelWorker(context.Context, string) (core.WorkerDetails, error)
+	CloseWorker(context.Context, string) (core.WorkerDetails, error)
+}
+
 type Server struct {
 	store          *core.Store
 	bootstrapToken string
@@ -39,6 +46,7 @@ type Server struct {
 	remoteNodes    *node.ServerManager
 	workers        workerController
 	responder      workerResponder
+	actions        workerActions
 	secretary      interface {
 		HandleMessage(context.Context, string) error
 	}
@@ -48,9 +56,11 @@ type Server struct {
 	modelDefault func() string
 	modelChanged func(string) error
 	control      ControlOptions
+	userPath     string
 
-	mu          sync.Mutex
-	subscribers map[*subscription]struct{}
+	mu            sync.Mutex
+	idempotencyMu sync.Mutex
+	subscribers   map[*subscription]struct{}
 }
 
 type subscription struct {
@@ -78,8 +88,17 @@ func (s *Server) AttachWorkerController(controller workerController) {
 	if responder, ok := controller.(workerResponder); ok {
 		s.responder = responder
 	}
+	if actions, ok := controller.(workerActions); ok {
+		s.actions = actions
+	}
 }
-func (s *Server) AttachWorkerResponder(responder workerResponder)   { s.responder = responder }
+func (s *Server) AttachWorkerResponder(responder workerResponder) {
+	s.responder = responder
+	if actions, ok := responder.(workerActions); ok {
+		s.actions = actions
+	}
+}
+func (s *Server) AttachUserDocument(path string)                    { s.userPath = strings.TrimSpace(path) }
 func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime) { s.secretary = runtime }
 func (s *Server) SetDebug(debug bool)                               { s.debug = debug }
 func (s *Server) AttachSecretaryModelCatalog(catalog func() map[string]string, defaultModel func() string, changed func(string) error) {
@@ -93,9 +112,18 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/web/session", s.exchangeBootstrapToken)
 	mux.HandleFunc("GET /v1/web/session", s.currentWebSession)
+	mux.HandleFunc("POST /v1/clients/pair", s.pairClient)
+	mux.HandleFunc("GET /v1/clients", s.listClients)
+	mux.HandleFunc("/v1/clients/", s.clientRoute)
 	mux.HandleFunc("GET /v1/conversation", s.conversation)
+	mux.HandleFunc("GET /v1/conversation/ws", s.websocket)
 	mux.HandleFunc("POST /v1/messages", s.message)
 	mux.HandleFunc("GET /v1/ws", s.websocket)
+	mux.HandleFunc("GET /v1/user", s.user)
+	mux.HandleFunc("PUT /v1/user", s.user)
+	mux.HandleFunc("GET /v1/secretary/stream", s.secretaryStream)
+	mux.HandleFunc("GET /v1/secretary/ws", s.secretaryWebsocket)
+	mux.HandleFunc("/v1/secretary/turns/", s.secretaryTurnRoute)
 	mux.HandleFunc("GET /v1/bootstrap", s.bootstrap)
 	mux.HandleFunc("GET /v1/secretary/models", s.secretaryModels)
 	mux.HandleFunc("POST /v1/secretary/model", s.setSecretaryModel)
@@ -108,8 +136,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/workers/", s.workerRoute)
 	if s.remoteNodes != nil {
 		mux.HandleFunc("GET /v1/nodes/connect", s.remoteNodes.ServeProtocolHTTP)
-		mux.Handle("/v1/nodes", s.remoteNodes)
-		mux.Handle("/v1/nodes/", s.remoteNodes)
+		mux.HandleFunc("GET /v1/nodes", s.nodeDispatch)
+		mux.HandleFunc("/v1/nodes/", s.nodeDispatch)
+	} else {
+		mux.HandleFunc("GET /v1/nodes", s.nodeList)
 	}
 	return mux
 }
@@ -143,7 +173,7 @@ func (s *Server) currentWebSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) conversation(w http.ResponseWriter, r *http.Request) {
-	conversation, ok := s.authorizedConversation(w, r)
+	conversation, ok := s.authorizedConversationScope(w, r, core.ScopeConversationRead)
 	if !ok {
 		return
 	}
@@ -161,8 +191,17 @@ func (s *Server) conversation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) message(w http.ResponseWriter, r *http.Request) {
-	conversation, ok := s.authorizedConversation(w, r)
+	person, client, ok := s.authorizedPerson(w, r)
 	if !ok {
+		return
+	}
+	if client != nil && !client.HasScope(core.ScopeConversationWrite) {
+		http.Error(w, "Client scope required", http.StatusForbidden)
+		return
+	}
+	conversation, err := s.store.ConversationForPerson(r.Context(), person.ID)
+	if err != nil {
+		http.Error(w, "read conversation", http.StatusInternalServerError)
 		return
 	}
 	var request struct {
@@ -177,7 +216,11 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	entry, duplicate, err := s.store.AppendInbound(r.Context(), conversation.ID, "web", request.ExternalMessageID, request.Body)
+	adapterID := "web"
+	if client != nil {
+		adapterID = "client:" + client.ID
+	}
+	entry, duplicate, err := s.store.AppendInbound(r.Context(), conversation.ID, adapterID, request.ExternalMessageID, request.Body)
 	if err != nil {
 		http.Error(w, "store inbound message", http.StatusInternalServerError)
 		return
@@ -189,14 +232,11 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 			}
 		}(request.Body)
 	}
-	writeJSON(w, http.StatusAccepted, struct {
-		Entry     core.ConversationEntry `json:"entry"`
-		Duplicate bool                   `json:"duplicate"`
-	}{Entry: entry, Duplicate: duplicate})
+	writeJSON(w, http.StatusAccepted, messageAcknowledgement{Entry: entry, MessageID: entry.ID, EntrySeq: entry.Seq, State: "saved", Duplicate: duplicate})
 }
 
 func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
-	conversation, ok := s.authorizedConversation(w, r)
+	conversation, ok := s.authorizedConversationScope(w, r, core.ScopeConversationRead)
 	if !ok {
 		return
 	}
@@ -261,14 +301,16 @@ func (s *Server) publishLocked(entry core.ConversationEntry) {
 }
 
 func (s *Server) authorizedConversation(w http.ResponseWriter, r *http.Request) (core.Conversation, bool) {
-	cookie, err := r.Cookie(sessionCookie)
-	if err != nil {
-		http.Error(w, "web session required", http.StatusUnauthorized)
+	return s.authorizedConversationScope(w, r, "")
+}
+
+func (s *Server) authorizedConversationScope(w http.ResponseWriter, r *http.Request, scope core.ClientScope) (core.Conversation, bool) {
+	person, client, ok := s.authorizedPerson(w, r)
+	if !ok {
 		return core.Conversation{}, false
 	}
-	person, err := s.store.WebSessionPerson(r.Context(), cookie.Value)
-	if err != nil || person.ID != s.owner.ID {
-		http.Error(w, "invalid web session", http.StatusUnauthorized)
+	if scope != "" && client != nil && !client.HasScope(scope) {
+		http.Error(w, "Client scope required", http.StatusForbidden)
 		return core.Conversation{}, false
 	}
 	conversation, err := s.store.ConversationForPerson(r.Context(), person.ID)
@@ -277,6 +319,25 @@ func (s *Server) authorizedConversation(w http.ResponseWriter, r *http.Request) 
 		return core.Conversation{}, false
 	}
 	return conversation, true
+}
+
+func (s *Server) authorizedPerson(w http.ResponseWriter, r *http.Request) (core.Person, *core.Client, bool) {
+	if cookie, err := r.Cookie(sessionCookie); err == nil {
+		person, sessionErr := s.store.WebSessionPerson(r.Context(), cookie.Value)
+		if sessionErr == nil && person.ID == s.owner.ID {
+			return person, nil, true
+		}
+	}
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(header) > len("Bearer ") && strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
+		client, err := s.store.AuthenticateClient(r.Context(), strings.TrimSpace(header[len("Bearer "):]))
+		if err == nil && client.PersonID == s.owner.ID {
+			person := s.owner
+			return person, &client, true
+		}
+	}
+	http.Error(w, "Client or web session required", http.StatusUnauthorized)
+	return core.Person{}, nil, false
 }
 
 func parseAfter(r *http.Request) (int64, error) {
