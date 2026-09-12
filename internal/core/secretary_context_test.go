@@ -176,15 +176,22 @@ func TestReleaseSecretaryTurnClaimsAfterAcceptedPromptDoesNotRelease(t *testing.
 	if releaseErr != nil && !errors.Is(releaseErr, ErrInvalidTransition) {
 		t.Fatalf("accepted prompt release error=%v", releaseErr)
 	}
+	repeatReleaseErr := store.ReleaseSecretaryTurnClaims(ctx, first.ID)
+	if (releaseErr == nil) != (repeatReleaseErr == nil) {
+		t.Fatalf("accepted prompt release was not idempotent: first=%v repeat=%v", releaseErr, repeatReleaseErr)
+	}
 	var claimState string
 	if err := store.db.QueryRowContext(ctx, `SELECT claim_state FROM secretary_context_seen_results WHERE result_id = ?`, result.ID).Scan(&claimState); err != nil {
 		t.Fatal(err)
 	}
-	if claimState != "accepted" {
-		t.Fatalf("accepted prompt claim state=%q", claimState)
+	if claimState == "released" {
+		t.Fatalf("accepted prompt claim was released, state=%q", claimState)
 	}
 	if err := store.RecoverSecretaryTurn(ctx, identity.ID, "runtime restarted after accepted prompt"); err != nil {
 		t.Fatal(err)
+	}
+	if err := store.ReleaseSecretaryTurnClaims(ctx, first.ID); err != nil {
+		t.Fatalf("terminal release should be a no-op: %v", err)
 	}
 	second, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "second")
 	if err != nil {

@@ -315,8 +315,8 @@ func (s *Store) FinishSecretaryTurn(ctx context.Context, turnID string, state Se
 			if _, err := tx.ExecContext(ctx, `UPDATE secretary_context_seen_results SET claim_state = 'accepted' WHERE turn_id = ? AND claim_state = 'claimed'`, turn.ID); err != nil {
 				return SecretaryTurn{}, err
 			}
-		} else if turn.PromptState == secretaryPromptPending {
-			if err := releaseSecretaryResultsTx(ctx, tx, turn.ID); err != nil {
+		} else if turn.PromptState != secretaryPromptAccepted {
+			if err := releaseSecretaryTurnClaimsForStateTx(ctx, tx, turn.ID, turn.State, turn.PromptState); err != nil {
 				return SecretaryTurn{}, err
 			}
 		}

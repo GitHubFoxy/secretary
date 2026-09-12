@@ -90,15 +90,34 @@ func (s *Store) AcceptSecretaryPrompt(ctx context.Context, turnID string) error 
 }
 
 // ReleaseSecretaryTurnClaims is used only after a proven Prompt failure. It
-// does not release accepted claims and is safe to repeat.
+// releases claims only for an active turn whose Prompt was not accepted.
+// Releasing an accepted Prompt is rejected, and repeated release is a no-op.
 func (s *Store) ReleaseSecretaryTurnClaims(ctx context.Context, turnID string) error {
 	_, err := withTx(s, ctx, func(tx *sql.Tx) (struct{}, error) {
-		if err := releaseSecretaryResultsTx(ctx, tx, turnID); err != nil {
+		var state SecretaryTurnState
+		var promptState string
+		if err := tx.QueryRowContext(ctx, `SELECT state, prompt_state FROM secretary_turns WHERE id = ?`, turnID).Scan(&state, &promptState); errors.Is(err, sql.ErrNoRows) {
+			return struct{}{}, ErrNotFound
+		} else if err != nil {
 			return struct{}{}, err
 		}
-		return struct{}{}, nil
+		return struct{}{}, releaseSecretaryTurnClaimsForStateTx(ctx, tx, turnID, state, promptState)
 	})
 	return err
+}
+
+func releaseSecretaryTurnClaimsForStateTx(ctx context.Context, tx *sql.Tx, turnID string, state SecretaryTurnState, promptState string) error {
+	if state != SecretaryTurnActive {
+		return nil
+	}
+	switch promptState {
+	case secretaryPromptPending, secretaryPromptStarted:
+		return releaseSecretaryResultsTx(ctx, tx, turnID)
+	case secretaryPromptAccepted:
+		return ErrInvalidTransition
+	default:
+		return errors.New("core: unknown Secretary prompt state")
+	}
 }
 
 func (s *Store) RecoverSecretaryTurn(ctx context.Context, identityID, errorMessage string) error {
