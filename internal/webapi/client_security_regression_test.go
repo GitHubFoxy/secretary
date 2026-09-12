@@ -42,6 +42,12 @@ func TestClientPublicSanitizerRedactsNestedForbiddenDTOKeys(t *testing.T) {
 				"callback":            "callback-secret",
 				"callback_capability": "callback-capability",
 				"client_name":         "allowed-client",
+				"clientSecret":        "camel-client-secret",
+				"nodeSecret":          "camel-node-secret",
+				"taskId":              "camel-task-id",
+				"runtimeSessionId":    "camel-session",
+				"accessToken":         "camel-access-token",
+				"callbackCapability":  "camel-callback",
 			},
 		},
 		"worker_activity": []any{
@@ -64,7 +70,8 @@ func TestClientPublicSanitizerRedactsNestedForbiddenDTOKeys(t *testing.T) {
 	for _, leaked := range []string{
 		"generic-secret", "client-secret", "node-secret", "legacy-task", "legacy-task-id", "native-session",
 		"token-secret", "access-token", "credential-secret", "callback-secret", "callback-capability",
-		"worker-secret", "worker-task", "credential-hash", "secretary-task",
+		"worker-secret", "worker-task", "credential-hash", "secretary-task", "camel-client-secret", "camel-node-secret",
+		"camel-task-id", "camel-session", "camel-access-token", "camel-callback",
 	} {
 		if strings.Contains(body, leaked) {
 			t.Fatalf("forbidden nested value leaked: %s in %s", leaked, body)

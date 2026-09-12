@@ -114,6 +114,13 @@ type clientCredentialOutcome struct {
 	Credential string `json:"credential,omitempty"`
 }
 
+type clientRedeemOutcome struct {
+	Client           Client `json:"client"`
+	CredentialSecret string `json:"credential_secret"`
+	Generation       int64  `json:"generation"`
+	PendingTokenHash string `json:"pending_token_hash"`
+}
+
 func (s *Store) PairClient(ctx context.Context, personID, deviceID, displayName, platform string, scopes []ClientScope, idempotencyKeys ...string) (Client, error) {
 	pairing, err := s.PairClientWithToken(ctx, personID, deviceID, displayName, platform, scopes, idempotencyKeys...)
 	return pairing.Client, err
@@ -210,14 +217,14 @@ func (s *Store) PairClientWithToken(ctx context.Context, personID, deviceID, dis
 			if _, err := tx.ExecContext(ctx, `INSERT INTO clients(id, person_id, device_id, display_name, platform, scopes_json, status, credential_hash, credential_secret, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, '', ?)`, client.ID, client.PersonID, client.DeviceID, client.DisplayName, client.Platform, string(encodedScopes), client.Status, client.CredentialHash, timestamp(now)); err != nil {
 				return Client{}, err
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO client_pairings(id, client_id, pending_token_hash, pending_token_secret, created_at) VALUES(?, ?, ?, ?, ?)`, newID("pair"), client.ID, credentialHash([]byte(pendingToken)), pendingSecret, timestamp(now)); err != nil {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO client_pairings(id, client_id, pending_token_hash, pending_token_secret, generation, created_at) VALUES(?, ?, ?, ?, 1, ?)`, newID("pair"), client.ID, credentialHash([]byte(pendingToken)), pendingSecret, timestamp(now)); err != nil {
 				return Client{}, err
 			}
 		} else {
 			if _, err := tx.ExecContext(ctx, `UPDATE clients SET person_id = ?, display_name = ?, platform = ?, scopes_json = ?, status = ?, credential_hash = ?, credential_secret = '', revoked_at = NULL WHERE id = ?`, client.PersonID, client.DisplayName, client.Platform, string(encodedScopes), client.Status, client.CredentialHash, client.ID); err != nil {
 				return Client{}, err
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE client_pairings SET pending_token_hash = ?, pending_token_secret = ?, pending_token_redeemed = 0, created_at = ? WHERE client_id = ?`, credentialHash([]byte(pendingToken)), pendingSecret, timestamp(now), client.ID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE client_pairings SET pending_token_hash = ?, pending_token_secret = ?, pending_token_redeemed = 0, generation = generation + 1, created_at = ? WHERE client_id = ?`, credentialHash([]byte(pendingToken)), pendingSecret, timestamp(now), client.ID); err != nil {
 				return Client{}, err
 			}
 		}
@@ -476,27 +483,31 @@ func (s *Store) RedeemClient(ctx context.Context, id, pendingToken string, idemp
 		s.idempotencyMu.Lock()
 		defer s.idempotencyMu.Unlock()
 	}
-	requestHash, err := idempotencyRequestHash(struct{ ClientID string }{id})
+	pendingTokenHash := credentialHash([]byte(pendingToken))
+	requestHash, err := idempotencyRequestHash(struct {
+		ClientID         string
+		PendingTokenHash string
+	}{id, pendingTokenHash})
 	if err != nil {
 		return Client{}, "", err
 	}
 	if key != "" {
-		var storedHash, encoded, encrypted string
+		var storedHash, encoded string
 		lookupErr := s.db.QueryRowContext(ctx, `SELECT request_hash, outcome_json FROM idempotency_records WHERE operation = 'client.redeem' AND idempotency_key = ?`, key).Scan(&storedHash, &encoded)
 		if lookupErr == nil {
 			if err := checkIdempotencyHash(storedHash, requestHash); err != nil {
 				return Client{}, "", err
 			}
-			var stored clientCredentialOutcome
+			var stored clientRedeemOutcome
 			if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
 				return Client{}, "", err
 			}
-			if err := s.db.QueryRowContext(ctx, `SELECT credential_secret FROM clients WHERE id = ?`, id).Scan(&encrypted); err != nil {
-				return Client{}, "", err
+			if stored.Generation <= 0 || stored.PendingTokenHash != pendingTokenHash || stored.CredentialSecret == "" {
+				return Client{}, "", ErrNotFound
 			}
-			secret, err := s.decryptNodeCredential(ctx, encrypted)
+			secret, err := s.decryptNodeCredential(ctx, stored.CredentialSecret)
 			if err != nil {
-				return Client{}, "", err
+				return Client{}, "", ErrPairingNotReady
 			}
 			return stored.Client, string(secret), nil
 		}
@@ -505,7 +516,8 @@ func (s *Store) RedeemClient(ctx context.Context, id, pendingToken string, idemp
 		}
 	}
 	var encrypted string
-	if err := s.db.QueryRowContext(ctx, `SELECT c.credential_secret FROM clients c JOIN client_pairings p ON p.client_id = c.id WHERE c.id = ? AND p.pending_token_hash = ?`, id, credentialHash([]byte(pendingToken))).Scan(&encrypted); err != nil {
+	var generation int64
+	if err := s.db.QueryRowContext(ctx, `SELECT c.credential_secret, p.generation FROM clients c JOIN client_pairings p ON p.client_id = c.id WHERE c.id = ? AND p.pending_token_hash = ?`, id, pendingTokenHash).Scan(&encrypted, &generation); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Client{}, "", ErrNotFound
 		}
@@ -515,17 +527,34 @@ func (s *Store) RedeemClient(ctx context.Context, id, pendingToken string, idemp
 	if err != nil {
 		return Client{}, "", ErrPairingNotReady
 	}
+	credentialSecret := ""
+	if key != "" {
+		credentialSecret, err = s.encryptNodeCredential(ctx, credentialBytes)
+		if err != nil {
+			return Client{}, "", err
+		}
+	}
 	result, err := withTx(s, ctx, func(tx *sql.Tx) (clientCredentialOutcome, error) {
 		if key != "" {
-			var stored clientCredentialOutcome
+			var stored clientRedeemOutcome
 			found, err := lookupIdempotencyTx(ctx, tx, "client.redeem", key, requestHash, &stored)
-			if err != nil || found {
-				return stored, err
+			if err != nil {
+				return clientCredentialOutcome{}, err
+			}
+			if found {
+				if stored.Generation <= 0 || stored.PendingTokenHash != pendingTokenHash || stored.CredentialSecret == "" {
+					return clientCredentialOutcome{}, ErrNotFound
+				}
+				secret, err := s.decryptNodeCredential(ctx, stored.CredentialSecret)
+				if err != nil {
+					return clientCredentialOutcome{}, ErrPairingNotReady
+				}
+				return clientCredentialOutcome{Client: stored.Client, Credential: string(secret)}, nil
 			}
 		}
 		var status ClientStatus
 		var redeemed int
-		if err := tx.QueryRowContext(ctx, `SELECT c.status, p.pending_token_redeemed FROM clients c JOIN client_pairings p ON p.client_id = c.id WHERE c.id = ? AND p.pending_token_hash = ?`, id, credentialHash([]byte(pendingToken))).Scan(&status, &redeemed); errors.Is(err, sql.ErrNoRows) {
+		if err := tx.QueryRowContext(ctx, `SELECT c.status, p.pending_token_redeemed FROM clients c JOIN client_pairings p ON p.client_id = c.id WHERE c.id = ? AND p.pending_token_hash = ? AND p.generation = ?`, id, pendingTokenHash, generation).Scan(&status, &redeemed); errors.Is(err, sql.ErrNoRows) {
 			return clientCredentialOutcome{}, ErrNotFound
 		} else if err != nil {
 			return clientCredentialOutcome{}, err
@@ -536,8 +565,12 @@ func (s *Store) RedeemClient(ctx context.Context, id, pendingToken string, idemp
 		if redeemed != 0 {
 			return clientCredentialOutcome{}, ErrPairingAlreadyUsed
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE client_pairings SET pending_token_redeemed = 1 WHERE client_id = ?`, id); err != nil {
+		result, err := tx.ExecContext(ctx, `UPDATE client_pairings SET pending_token_redeemed = 1 WHERE client_id = ? AND pending_token_hash = ? AND generation = ? AND pending_token_redeemed = 0`, id, pendingTokenHash, generation)
+		if err != nil {
 			return clientCredentialOutcome{}, err
+		}
+		if affected, _ := result.RowsAffected(); affected != 1 {
+			return clientCredentialOutcome{}, ErrPairingAlreadyUsed
 		}
 		client, err := scanClient(tx.QueryRowContext(ctx, `SELECT id, person_id, device_id, display_name, platform, scopes_json, status, credential_hash, created_at, revoked_at FROM clients WHERE id = ?`, id))
 		if err != nil {
@@ -545,9 +578,7 @@ func (s *Store) RedeemClient(ctx context.Context, id, pendingToken string, idemp
 		}
 		outcome := clientCredentialOutcome{Client: client, Credential: string(credentialBytes)}
 		if key != "" {
-			encoded, err := json.Marshal(struct {
-				Client Client `json:"client"`
-			}{Client: client})
+			encoded, err := json.Marshal(clientRedeemOutcome{Client: client, CredentialSecret: credentialSecret, Generation: generation, PendingTokenHash: pendingTokenHash})
 			if err != nil {
 				return clientCredentialOutcome{}, err
 			}

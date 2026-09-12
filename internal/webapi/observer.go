@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
@@ -143,8 +144,7 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "read worker thread", http.StatusInternalServerError)
 			return
 		}
-		sanitizePublicTaskDetails(&details)
-		writeJSON(w, http.StatusOK, details)
+		writeJSON(w, http.StatusOK, sanitizePublicJSON(details))
 		return
 	}
 	if !found {
@@ -240,11 +240,11 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, details core.WorkerDetails, suffix []string) bool {
 	if len(suffix) == 0 && r.Method == http.MethodGet {
-		writeJSON(w, http.StatusOK, details)
+		writeJSON(w, http.StatusOK, sanitizePublicJSON(details))
 		return true
 	}
 	if len(suffix) == 1 && suffix[0] == "turns" && r.Method == http.MethodGet {
-		writeJSON(w, http.StatusOK, details.Turns)
+		writeJSON(w, http.StatusOK, sanitizePublicJSON(details.Turns))
 		return true
 	}
 	if len(suffix) >= 1 && suffix[0] == "activity" {
@@ -413,8 +413,7 @@ func sanitizePublicValue(value any) any {
 	case map[string]any:
 		result := make(map[string]any, len(current))
 		for key, child := range current {
-			normalized := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(key, "-", "_"), " ", "_"))
-			if strings.Contains(normalized, "runtime_session_id") || strings.Contains(normalized, "task_id") || strings.Contains(normalized, "credential") || strings.Contains(normalized, "callback") || normalized == "token" || strings.HasSuffix(normalized, "_token") {
+			if forbiddenPublicKey(key) {
 				continue
 			}
 			result[key] = sanitizePublicValue(child)
@@ -429,6 +428,41 @@ func sanitizePublicValue(value any) any {
 	default:
 		return value
 	}
+}
+
+func forbiddenPublicKey(key string) bool {
+	var normalizedBuilder strings.Builder
+	for i, character := range strings.TrimSpace(key) {
+		if unicode.IsUpper(character) {
+			if i > 0 {
+				normalizedBuilder.WriteByte('_')
+			}
+			character = unicode.ToLower(character)
+		}
+		if character == '-' || character == ' ' {
+			character = '_'
+		}
+		normalizedBuilder.WriteRune(character)
+	}
+	normalized := normalizedBuilder.String()
+	parts := strings.Split(normalized, "_")
+	for i, part := range parts {
+		switch part {
+		case "secret", "secrets", "credential", "credentials", "callback", "callbacks", "token", "tokens":
+			return true
+		case "task", "tasks":
+			return true
+		case "session", "sessions":
+			if i > 0 && parts[i-1] == "runtime" {
+				return true
+			}
+		case "id":
+			if i > 0 && (parts[i-1] == "task" || (i > 1 && parts[i-2] == "runtime" && parts[i-1] == "session")) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func sanitizePublicTaskDetails(details *core.TaskDetails) {
