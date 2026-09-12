@@ -195,6 +195,24 @@ func (s *LocalStore) ClaimWorkerResponse(requestID string) (CommandOutcome, bool
 	return outcome, false, nil
 }
 
+// RecoverWorkerResponse turns an uncertain native delivery into an explicit
+// retryable failure. An accepted response is never downgraded.
+func (s *LocalStore) RecoverWorkerResponse(requestID, commandID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	outcome, ok := s.state.WorkerResponses[requestID]
+	if !ok || outcome.State != CommandProcessing {
+		return nil
+	}
+	outcome.CommandID = commandID
+	outcome.Kind = CommandRespondWorker
+	outcome.State = CommandFailed
+	outcome.ErrorCode = "execution_state_unknown"
+	outcome.ErrorMessage = "Node could not prove that the worker response was delivered"
+	s.state.WorkerResponses[requestID] = outcome
+	return s.persistLocked()
+}
+
 func (s *LocalStore) CompleteWorkerResponse(requestID string, outcome CommandOutcome) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -245,16 +263,26 @@ func (s *LocalStore) Command(commandID string) (CommandRecord, error) {
 func (s *LocalStore) CommandForAttempt(attemptID string) (CommandRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	candidates := make([]CommandRecord, 0, 2)
 	for _, record := range s.state.Commands {
 		command, err := commandFromJSON(record.CommandJSON)
-		if err != nil {
+		if err != nil || (command.Kind != CommandDispatch && command.Kind != CommandResume) {
 			continue
 		}
 		if command.Metadata().AttemptID == attemptID {
-			return record, nil
+			candidates = append(candidates, record)
 		}
 	}
-	return CommandRecord{}, errors.New("node: command for attempt not found")
+	if len(candidates) == 0 {
+		return CommandRecord{}, errors.New("node: dispatch or resume command for attempt not found")
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].UpdatedAt.Equal(candidates[j].UpdatedAt) {
+			return candidates[i].UpdatedAt.After(candidates[j].UpdatedAt)
+		}
+		return candidates[i].CommandID < candidates[j].CommandID
+	})
+	return candidates[0], nil
 }
 
 func (s *LocalStore) SaveSessionMapping(mapping sessionMapping) error {
@@ -431,6 +459,26 @@ func (s *LocalStore) RecoverRunning(ctx context.Context, inspector ProcessInspec
 		if err != nil {
 			return err
 		}
+		command, err := commandFromJSON(record.CommandJSON)
+		if err != nil {
+			return err
+		}
+		metadata := command.Metadata()
+		if command.Kind == CommandRespondWorker {
+			// A resumed session proves only that the runtime exists. It cannot
+			// prove that Respond reached the native harness, so leave this
+			// command retryable with its original ID and request ID.
+			if command.RespondWorker != nil {
+				if err := s.RecoverWorkerResponse(command.RespondWorker.RequestID, record.CommandID); err != nil {
+					return err
+				}
+			}
+			outcome := CommandOutcome{CommandID: record.CommandID, Kind: record.Kind, State: CommandFailed, ErrorCode: "execution_state_unknown", ErrorMessage: "Node could not prove that the worker response was delivered"}
+			if _, err := s.CompleteCommand(record.CommandID, outcome); err != nil {
+				return err
+			}
+			continue
+		}
 		alive := false
 		if inspector != nil {
 			alive, err = inspector.Inspect(ctx, record)
@@ -445,11 +493,6 @@ func (s *LocalStore) RecoverRunning(ctx context.Context, inspector ProcessInspec
 		if _, err := s.CompleteCommand(record.CommandID, outcome); err != nil {
 			return err
 		}
-		command, err := commandFromJSON(record.CommandJSON)
-		if err != nil {
-			return err
-		}
-		metadata := command.Metadata()
 		if command.Kind == CommandDispatch || command.Kind == CommandResume {
 			terminal := core.AttemptOutcomeEnvelope{EventID: "interrupted-" + record.CommandID, Node: metadata.Node, HarnessInstanceID: metadata.HarnessInstanceID, WorkerRef: metadata.WorkerRef, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID, Status: core.OutcomeInterrupted, Classification: core.OutcomeFinal, Summary: "Attempt interrupted because execution state could not be proven", ErrorCode: "execution_state_unknown", OccurredAt: time.Now().UTC()}
 			if _, err := s.QueueOutcome(terminal); err != nil {

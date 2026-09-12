@@ -342,11 +342,22 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 		return nil, ErrRuntimeSessionUnavailable
 	}
 	var envelope WorkerEnvelope
-	if command.Dispatch != nil {
+	switch command.Kind {
+	case CommandDispatch:
+		if command.Dispatch == nil {
+			return nil, ErrRuntimeSessionUnavailable
+		}
 		envelope = command.Dispatch.Envelope
-	}
-	if command.Resume != nil {
+	case CommandResume:
+		if command.Resume == nil {
+			return nil, ErrRuntimeSessionUnavailable
+		}
 		envelope = command.Resume.Envelope
+	default:
+		return nil, ErrRuntimeSessionUnavailable
+	}
+	if envelope.AttemptID != metadata.AttemptID || envelope.WorkerRef != mapping.WorkerRef || envelope.TurnID != mapping.TurnID || envelope.HarnessInstance.ID != mapping.HarnessInstanceID {
+		return nil, ErrRuntimeSessionUnavailable
 	}
 	resumer, ok := n.runtime.(Resumer)
 	if !ok {
@@ -375,6 +386,11 @@ func (n *ExecutionNode) Restore(ctx context.Context) error {
 func (n *ExecutionNode) Inspect(ctx context.Context, record CommandRecord) (bool, error) {
 	command, err := commandFromJSON(record.CommandJSON)
 	if err != nil {
+		return false, nil
+	}
+	// Session resume is not evidence that a native Respond completed. The
+	// command must go through normal retry/re-dispatch with the same IDs.
+	if command.Kind == CommandRespondWorker {
 		return false, nil
 	}
 	metadata := command.Metadata()
