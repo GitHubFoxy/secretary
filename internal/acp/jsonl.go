@@ -32,17 +32,20 @@ func (e *RPCError) Error() string { return fmt.Sprintf("acp rpc %d: %s", e.Code,
 
 type ServerRequestHandler func(Message) (any, error)
 
+type ServerRequestDeliveryHandler func(Message, error)
+
 type Client struct {
-	stdin   io.WriteCloser
-	wait    func() error
-	write   sync.Mutex
-	handler ServerRequestHandler
-	nextID  atomic.Uint64
-	pending sync.Map
-	events  chan Message
-	done    chan struct{}
-	log     io.Writer
-	logMu   sync.Mutex
+	stdin    io.WriteCloser
+	wait     func() error
+	write    sync.Mutex
+	handler  ServerRequestHandler
+	delivery ServerRequestDeliveryHandler
+	nextID   atomic.Uint64
+	pending  sync.Map
+	events   chan Message
+	done     chan struct{}
+	log      io.Writer
+	logMu    sync.Mutex
 }
 
 func Start(ctx context.Context, command string, arguments ...string) (*Client, error) {
@@ -77,6 +80,12 @@ func StartWithLogEnv(ctx context.Context, rawLog io.Writer, environment []string
 func (c *Client) Events() <-chan Message { return c.events }
 
 func (c *Client) SetServerRequestHandler(handler ServerRequestHandler) { c.handler = handler }
+
+// SetServerRequestDeliveryHandler observes the result of writing a JSON-RPC
+// response to the native harness. The callback runs after the write returns.
+func (c *Client) SetServerRequestDeliveryHandler(handler ServerRequestDeliveryHandler) {
+	c.delivery = handler
+}
 
 func (c *Client) Request(ctx context.Context, method string, params any, result any) error {
 	id := c.nextID.Add(1)
@@ -180,11 +189,15 @@ func (c *Client) writeRaw(raw []byte) {
 
 func (c *Client) handleServerRequest(message Message) error {
 	if c.handler != nil {
-		result, err := c.handler(message)
-		if err != nil {
-			return c.replyError(message.ID, -32010, err.Error())
+		result, handlerErr := c.handler(message)
+		var deliveryErr error
+		if handlerErr != nil {
+			deliveryErr = c.replyError(message.ID, -32010, handlerErr.Error())
+		} else {
+			deliveryErr = c.reply(message.ID, result)
 		}
-		return c.reply(message.ID, result)
+		c.notifyServerRequestDelivery(message, deliveryErr)
+		return deliveryErr
 	}
 	switch message.Method {
 	case "session/request_permission":
@@ -218,6 +231,12 @@ func (c *Client) handleServerRequest(message Message) error {
 		return c.reply(message.ID, map[string]any{})
 	default:
 		return c.replyError(message.ID, -32601, "unsupported ACP client request: "+message.Method)
+	}
+}
+
+func (c *Client) notifyServerRequestDelivery(message Message, err error) {
+	if c.delivery != nil {
+		c.delivery(message, err)
 	}
 }
 

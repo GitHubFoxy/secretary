@@ -185,8 +185,15 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 	return client, nil
 }
 
+type pendingACPResponse struct {
+	response  chan string
+	delivered chan error
+}
+
 func newACPSession(id string, client *acp.Client, busy bool) *acpSession {
-	return &acpSession{id: id, client: client, activity: make(chan Activity, 64), result: make(chan Result, 64), pending: make(map[string]chan string), resolved: make(map[string]struct{}), reboundResponses: make(map[string]string), busy: busy}
+	session := &acpSession{id: id, client: client, activity: make(chan Activity, 64), result: make(chan Result, 64), pending: make(map[string]*pendingACPResponse), resolved: make(map[string]struct{}), reboundResponses: make(map[string]*pendingACPResponse), nativeRequests: make(map[string]string), nativeDeliveries: make(map[string]*pendingACPResponse), busy: busy}
+	client.SetServerRequestDeliveryHandler(session.serverRequestDelivered)
+	return session
 }
 
 type acpSession struct {
@@ -196,10 +203,12 @@ type acpSession struct {
 	result   chan Result
 
 	requestMu        sync.Mutex
-	pending          map[string]chan string
+	pending          map[string]*pendingACPResponse
 	resolved         map[string]struct{}
 	rebound          []string
-	reboundResponses map[string]string
+	reboundResponses map[string]*pendingACPResponse
+	nativeRequests   map[string]string
+	nativeDeliveries map[string]*pendingACPResponse
 
 	turnMu sync.Mutex
 	busy   bool
@@ -257,15 +266,17 @@ func (s *acpSession) Respond(ctx context.Context, requestID, response string) er
 		return errors.New("acp: request_id and response are required")
 	}
 	s.requestMu.Lock()
-	channel, ok := s.pending[requestID]
+	pending, ok := s.pending[requestID]
 	if !ok {
 		for i, reboundID := range s.rebound {
 			if reboundID == requestID {
 				s.rebound = append(s.rebound[:i], s.rebound[i+1:]...)
-				s.reboundResponses[requestID] = response
+				pending = &pendingACPResponse{response: make(chan string, 1), delivered: make(chan error, 1)}
+				s.reboundResponses[requestID] = pending
 				s.resolved[requestID] = struct{}{}
 				s.requestMu.Unlock()
-				return nil
+				pending.response <- response
+				return waitForACPDelivery(ctx, pending.delivered)
 			}
 		}
 		_, alreadyResolved := s.resolved[requestID]
@@ -275,12 +286,20 @@ func (s *acpSession) Respond(ctx context.Context, requestID, response string) er
 		}
 		return errors.New("acp: unknown worker request")
 	}
-	delete(s.pending, requestID)
 	s.resolved[requestID] = struct{}{}
 	s.requestMu.Unlock()
 	select {
-	case channel <- response:
-		return nil
+	case pending.response <- response:
+		return waitForACPDelivery(ctx, pending.delivered)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func waitForACPDelivery(ctx context.Context, delivered <-chan error) error {
+	select {
+	case err := <-delivered:
+		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -295,6 +314,28 @@ var acpRequestSequence atomic.Uint64
 type acpPermissionOption struct {
 	OptionID string `json:"optionId"`
 	Kind     string `json:"kind"`
+}
+
+func (s *acpSession) serverRequestDelivered(message acp.Message, err error) {
+	s.requestMu.Lock()
+	requestID := s.nativeRequests[string(message.ID)]
+	delete(s.nativeRequests, string(message.ID))
+	pending := s.nativeDeliveries[string(message.ID)]
+	delete(s.nativeDeliveries, string(message.ID))
+	if pending == nil {
+		pending = s.pending[requestID]
+	}
+	if pending == nil {
+		pending = s.reboundResponses[requestID]
+	}
+	if pending != nil {
+		delete(s.pending, requestID)
+		delete(s.reboundResponses, requestID)
+	}
+	s.requestMu.Unlock()
+	if pending != nil {
+		pending.delivered <- err
+	}
 }
 
 func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
@@ -339,22 +380,29 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 		return nil, fmt.Errorf("unsupported harness request: %s", message.Method)
 	}
 	var value string
-	var response chan string
+	var pending *pendingACPResponse
 	s.requestMu.Lock()
-	value, alreadyResponded := s.reboundResponses[requestID]
+	nativeID := string(message.ID)
+	valueResponse, alreadyResponded := s.reboundResponses[requestID]
 	if alreadyResponded {
 		delete(s.reboundResponses, requestID)
+		pending = valueResponse
 	} else {
-		response = make(chan string, 1)
-		s.pending[requestID] = response
+		pending = &pendingACPResponse{response: make(chan string, 1), delivered: make(chan error, 1)}
+		s.pending[requestID] = pending
 	}
+	s.nativeRequests[nativeID] = requestID
+	s.nativeDeliveries[nativeID] = pending
 	s.requestMu.Unlock()
 	if !alreadyResponded {
+		response := pending.response
 		// Requests are the durable approval/input boundary. Unlike optional
 		// activity updates, they must reach the Node outbox and cannot be
 		// silently dropped when the activity buffer is full.
 		s.activity <- Activity{Kind: kind, RequestID: requestID, Summary: summary}
 		value = <-response
+	} else {
+		value = <-pending.response
 	}
 	if kind == ActivityUserInput {
 		return map[string]string{"input": value}, nil

@@ -142,6 +142,46 @@ func TestStoreEventSinkDurablyAcceptsActivityAndTerminalOutcome(t *testing.T) {
 	}
 }
 
+func TestStoreEventSinkInvokesTrustedLocalPolicyAfterDurablePermissionAcceptance(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "trusted-local.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec := phase4WorkerSpecForNode()
+	worker, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, spec, core.TurnSpec{Input: "run"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	sink := NewStoreEventSinkWithTrustedLocalApproval(store, func(_ context.Context, requestID string, nodeRef core.NodeReference) error {
+		called = true
+		if requestID != "trusted-local-request" || string(nodeRef) != worker.NodeID {
+			t.Fatalf("policy request=%q node=%q", requestID, nodeRef)
+		}
+		approval, approvalErr := store.Approval(ctx, requestID)
+		if approvalErr != nil || approval.State != core.ApprovalPending {
+			t.Fatalf("policy ran before durable approval: approval=%#v err=%v", approval, approvalErr)
+		}
+		return nil
+	})
+	activity := core.Activity{Metadata: core.ActivityMetadata{EventID: "trusted-local-activity", Node: core.NodeReference(worker.NodeID), HarnessInstanceID: core.HarnessInstanceID(worker.HarnessInstanceID), WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, Sequence: 1, ObservedAt: time.Now().UTC()}, Kind: core.ActivityPermissionRequest, Request: &core.ActivityRequest{RequestID: "trusted-local-request", Summary: "run shell"}}
+	if err := sink(ctx, NodeEvent{EventID: activity.Metadata.EventID, Node: core.NodeReference(worker.NodeID), Kind: "activity", Activity: &activity}); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("trusted-local policy was not invoked for permission activity")
+	}
+}
+
 func TestHistoricalActivityReplayUsesImmutableBindingNotCurrentInventory(t *testing.T) {
 	ctx := context.Background()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))

@@ -75,9 +75,16 @@ func TestWorkerObserverStatusSteerStopAndActivity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	var status map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&status); err != nil {
+		t.Fatal(err)
+	}
 	response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d", response.StatusCode)
+	}
+	if _, leaked := status["session_id"]; leaked {
+		t.Fatalf("public Worker response leaked native session ID: %#v", status)
 	}
 	request, _ := http.NewRequest(http.MethodPost, storeServer.URL+"/v1/workers/worker-1/steer", bytes.NewBufferString(`{"text":"change"}`))
 	request.Header.Set("Content-Type", "application/json")

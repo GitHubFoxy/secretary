@@ -22,7 +22,6 @@ func (s *Server) workerSession(workerRef string) (node.Session, bool) {
 
 type workerStatus struct {
 	WorkerRef string `json:"worker_ref"`
-	SessionID string `json:"session_id"`
 	State     string `json:"state"`
 }
 
@@ -89,7 +88,7 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			writeJSON(w, http.StatusOK, workerStatus{WorkerRef: workerRef, SessionID: session.ID(), State: state})
+			writeJSON(w, http.StatusOK, workerStatus{WorkerRef: workerRef, State: state})
 			return
 		}
 		task, taskErr := s.store.TaskForWorker(r.Context(), workerRef)
@@ -109,7 +108,7 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 				state = string(attemptState)
 			}
 		}
-		writeJSON(w, http.StatusOK, workerStatus{WorkerRef: workerRef, SessionID: details.Binding.RuntimeSessionID, State: state})
+		writeJSON(w, http.StatusOK, workerStatus{WorkerRef: workerRef, State: state})
 		return
 	}
 	if len(parts) == 2 && parts[1] == "thread" && r.Method == http.MethodGet {
@@ -123,6 +122,7 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "read worker thread", http.StatusInternalServerError)
 			return
 		}
+		sanitizePublicTaskDetails(&details)
 		writeJSON(w, http.StatusOK, details)
 		return
 	}
@@ -214,6 +214,18 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 		s.workerActivity(w, r, session)
 	default:
 		http.NotFound(w, r)
+	}
+}
+
+func sanitizePublicTaskDetails(details *core.TaskDetails) {
+	if details == nil {
+		return
+	}
+	if details.Binding != nil {
+		details.Binding.RuntimeSessionID = ""
+	}
+	for i := range details.Children {
+		sanitizePublicTaskDetails(&details.Children[i])
 	}
 }
 

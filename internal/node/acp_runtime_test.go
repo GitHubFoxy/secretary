@@ -116,6 +116,62 @@ func TestACPRuntimeResumeRebindsOutstandingRequestsBeforeSessionLoad(t *testing.
 	}
 }
 
+func TestACPRuntimeRespondFailsWhenNativeReplyWriterIsUnavailable(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=TestFakeACPReplyWriterFailureProcess")
+	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:]}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := runtime.Resume(ctx, StartRequest{WorkerRef: "worker", Workspace: t.TempDir(), PendingRequestIDs: []string{"durable-permission"}}, "saved-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	select {
+	case activity := <-session.Activity():
+		if activity.RequestID != "durable-permission" {
+			t.Fatalf("request id=%q", activity.RequestID)
+		}
+	case <-ctx.Done():
+		t.Fatal("ACP request was not replayed")
+	}
+	select {
+	case <-time.After(100 * time.Millisecond):
+	}
+	if err := session.(Responder).Respond(ctx, "durable-permission", "denied"); err == nil {
+		t.Fatal("Respond reported success after native ACP process stopped")
+	}
+}
+
+func TestFakeACPReplyWriterFailureProcess(t *testing.T) {
+	for _, arg := range os.Args {
+		if arg != "-test.run=TestFakeACPReplyWriterFailureProcess" {
+			continue
+		}
+		encoder := json.NewEncoder(os.Stdout)
+		scanner := bufio.NewScanner(os.Stdin)
+		for scanner.Scan() {
+			var request struct {
+				ID     json.RawMessage `json:"id,omitempty"`
+				Method string          `json:"method"`
+			}
+			if json.Unmarshal(scanner.Bytes(), &request) != nil {
+				continue
+			}
+			switch request.Method {
+			case "initialize":
+				_ = encoder.Encode(map[string]any{"id": json.RawMessage(request.ID), "result": map[string]any{}})
+			case "session/load":
+				_ = encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": 77, "method": "session/request_permission", "params": map[string]any{"options": []map[string]string{{"optionId": "deny", "kind": "reject_once"}}}})
+				_ = encoder.Encode(map[string]any{"id": json.RawMessage(request.ID), "result": map[string]any{}})
+				_ = os.Stdin.Close()
+				time.Sleep(500 * time.Millisecond)
+				return
+			}
+		}
+		return
+	}
+}
+
 func TestACPRuntimeQueuesPromptUntilCurrentTurnCompletes(t *testing.T) {
 	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
 	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:]}

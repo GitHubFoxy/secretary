@@ -200,6 +200,18 @@ func main() {
 		}
 		log.Printf("generated SECRETARY_CAPABILITY=%s", capability)
 	}
+	if remoteNodes != nil {
+		trustedNode := core.NodeReference(strings.TrimSpace(os.Getenv("SECRETARY_TRUSTED_LOCAL_NODE")))
+		trustedPolicy := core.TrustedLocalApprovalPolicy{Enabled: trustedNode != "", Explicit: trustedNode != "", LocalNode: trustedNode != "", Node: trustedNode}
+		trustedLocalService := ctl.WorkerService{Store: store, PersonID: web.OwnerID(), Capability: capability, Runtime: ctl.NodeRuntime{Manager: remoteNodes}}
+		remoteNodes.SetEventSink(node.NewStoreEventSinkWithTrustedLocalApproval(store, func(applyCtx context.Context, requestID string, nodeRef core.NodeReference) error {
+			if trustedPolicy.Node != nodeRef {
+				return core.ErrTrustedLocalApprovalDenied
+			}
+			_, applyErr := trustedLocalService.ApplyTrustedLocalApproval(applyCtx, requestID, trustedPolicy)
+			return applyErr
+		}))
+	}
 	if capability != "" {
 		allowed, capabilityErr := store.AuthorizeSecretaryCapability(ctx, web.OwnerID(), capability)
 		if capabilityErr != nil {
