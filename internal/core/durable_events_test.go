@@ -75,7 +75,7 @@ func TestDuplicateWorkerCreationReturnsDurableOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondWorker, secondTurn, secondAttempt, err := store.CreateWorker(ctx, conversation.ID, spec, TurnSpec{Input: "different"})
+	secondWorker, secondTurn, secondAttempt, err := store.CreateWorker(ctx, conversation.ID, spec, TurnSpec{Input: "same"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestIdempotentWorkerCreationSurvivesReopenAndConcurrency(t *testing.T) {
 	var wg sync.WaitGroup
 	results := make(chan string, 4)
 	errs := make(chan error, 4)
-	for i := 0; i < 4; i++ { wg.Add(1); go func() { defer wg.Done(); worker, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, spec, TurnSpec{Input: "different"}); if err != nil { errs <- err; return }; results <- worker.ID+turn.ID+attempt.ID }() }
+	for i := 0; i < 4; i++ { wg.Add(1); go func() { defer wg.Done(); worker, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, spec, TurnSpec{Input: "same"}); if err != nil { errs <- err; return }; results <- worker.ID+turn.ID+attempt.ID }() }
 	wg.Wait(); close(results); close(errs)
 	for err := range errs { if err != nil { t.Fatal(err) } }
 	for result := range results { if result != first.ID+firstTurn.ID+firstAttempt.ID { t.Fatalf("duplicate result=%s", result) } }

@@ -41,7 +41,7 @@ func TestIdempotentTurnCreationSurvivesReopen(t *testing.T) {
 	}
 	defer store.Close()
 
-	secondTurn, secondAttempt, err := store.CreateTurn(ctx, worker.ID, TurnSpec{Input: "different duplicate payload", IdempotencyKey: "turn-1"})
+	secondTurn, secondAttempt, err := store.CreateTurn(ctx, worker.ID, TurnSpec{Input: "follow up", IdempotencyKey: "turn-1"})
 	if err != nil {
 		t.Fatal(err)
 	}

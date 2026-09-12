@@ -7,12 +7,31 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
+	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/beruseruko/secretary/internal/core"
 )
+
+func TestClientPairingRejectsMissingAndMalformedBootstrapAuth(t *testing.T) {
+	server, _ := testServer(t)
+	for _, payload := range []string{
+		`{"device_id":"missing-token","display_name":"Missing","platform":"test"}`,
+		`{"bootstrap_token":"wrong","device_id":"wrong-token","display_name":"Wrong","platform":"test"}`,
+	} {
+		response := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", payload)
+		if response.status != http.StatusUnauthorized {
+			t.Fatalf("malformed pairing auth status=%d body=%#v", response.status, response.body)
+		}
+	}
+}
 
 func TestClientPairingScopesCredentialIsolationAndRevoke(t *testing.T) {
 	store, err := core.Open(context.Background(), filepath.Join(t.TempDir(), "clients.db"))
@@ -27,7 +46,7 @@ func TestClientPairingScopesCredentialIsolationAndRevoke(t *testing.T) {
 	server := httptest.NewServer(api.Handler())
 	defer server.Close()
 
-	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"device_id":"pi-1","display_name":"Pi","platform":"pi","scopes":["conversation:read"]}`)
+	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"pi-1","display_name":"Pi","platform":"pi","scopes":["conversation:read"]}`)
 	if pair.status != http.StatusCreated || pair.body["status"] != "pending" || pair.body["client_id"] == nil {
 		t.Fatalf("pair=%d %#v", pair.status, pair.body)
 	}
@@ -79,6 +98,245 @@ func TestClientPairingScopesCredentialIsolationAndRevoke(t *testing.T) {
 		t.Fatalf("revoked Client status=%d", response.StatusCode)
 	}
 	response.Body.Close()
+}
+
+func TestRevokeClientTerminatesAlreadyConnectedConversationStream(t *testing.T) {
+	store, err := core.Open(context.Background(), filepath.Join(t.TempDir(), "revoke-stream.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	api, err := New(context.Background(), store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	ownerJar, _ := cookiejar.New(nil)
+	owner := &http.Client{Jar: ownerJar}
+	login(t, owner, server.URL)
+	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"revoke-device","display_name":"Revoke","platform":"test"}`)
+	clientID := pair.body["client_id"].(string)
+	approve := postJSON(t, owner, server.URL+"/v1/clients/"+clientID+"/approve", `{}`)
+	credential := approve.body["credential"].(string)
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed.Scheme = "ws"
+	parsed.Path = "/v1/ws"
+	parsed.RawQuery = "after_seq=0"
+	header := http.Header{"Authorization": []string{"Bearer " + credential}}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	connection, _, err := websocket.Dial(ctx, parsed.String(), &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+	if revoke := postJSON(t, owner, server.URL+"/v1/clients/"+clientID+"/revoke", `{}`); revoke.status != http.StatusOK {
+		t.Fatalf("revoke=%d %#v", revoke.status, revoke.body)
+	}
+	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer readCancel()
+	started := time.Now()
+	if _, _, err := connection.Read(readCtx); err == nil {
+		t.Fatal("revoked Client websocket remained readable")
+	} else if time.Since(started) > time.Second {
+		t.Fatalf("revoked Client websocket was not terminated promptly: %v", time.Since(started))
+	}
+}
+
+func TestSlowPublisherNeverSilentlyDropsEntry(t *testing.T) {
+	entries := make(chan core.ConversationEntry, 1)
+	api := &Server{subscribers: map[*subscription]struct{}{}}
+	sub := &subscription{conversationID: "con", entries: entries}
+	api.subscribers[sub] = struct{}{}
+	api.publishEntry(core.ConversationEntry{ID: "e1", ConversationID: "con", Seq: 1})
+	api.publishEntry(core.ConversationEntry{ID: "e2", ConversationID: "con", Seq: 2})
+	<-entries
+	select {
+	case _, open := <-entries:
+		if !open {
+			return
+		}
+		t.Fatal("publisher silently replaced or dropped a queued entry")
+	default:
+		t.Fatal("publisher silently dropped entry for slow subscriber")
+	}
+}
+
+func TestSlowConversationSubscriberClosesWithoutSilentGap(t *testing.T) {
+	server, client := testServer(t)
+	login(t, client, server.URL)
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	header := http.Header{}
+	for _, cookie := range client.Jar.Cookies(parsed) {
+		header.Add("Cookie", cookie.String())
+	}
+	parsed.Scheme = "ws"
+	parsed.Path = "/v1/ws"
+	parsed.RawQuery = "after_seq=0"
+	connection, _, err := websocket.Dial(context.Background(), parsed.String(), &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+	const total = 100
+	for i := 1; i <= total; i++ {
+		postMessage(t, client, server.URL, "slow-"+strconv.Itoa(i), strings.Repeat("x", 4096))
+	}
+	last := int64(0)
+	received := 0
+	readCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	for received < total {
+		_, payload, readErr := connection.Read(readCtx)
+		if readErr != nil {
+			break
+		}
+		var entry core.ConversationEntry
+		if err := json.Unmarshal(payload, &entry); err != nil {
+			t.Fatal(err)
+		}
+		if entry.Seq != last+1 {
+			t.Fatalf("live subscriber silently skipped seq: got=%d want=%d", entry.Seq, last+1)
+		}
+		last = entry.Seq
+		received++
+	}
+	if received == total {
+		return
+	}
+	response, err := client.Get(server.URL + "/v1/conversation?after_seq=" + strconv.FormatInt(last, 10))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var replay []core.ConversationEntry
+	if err := json.NewDecoder(response.Body).Decode(&replay); err != nil {
+		t.Fatal(err)
+	}
+	for i, entry := range replay {
+		if entry.Seq != last+int64(i)+1 {
+			t.Fatalf("replay gap after slow subscriber close: got=%d", entry.Seq)
+		}
+	}
+	if int(last)+len(replay) != total {
+		t.Fatalf("slow subscriber neither delivered nor recoverable: received=%d replay=%d", received, len(replay))
+	}
+}
+
+func TestPendingPairingCanRedeemAfterApproveResponseLoss(t *testing.T) {
+	server, owner := testServer(t)
+	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"redeem-device","display_name":"Redeem","platform":"test"}`)
+	pendingToken, pendingOK := pair.body["pending_token"].(string)
+	if pair.status != http.StatusCreated || !pendingOK || pendingToken == "" {
+		t.Fatalf("pair did not return pending token: %d %#v", pair.status, pair.body)
+	}
+	clientID, clientOK := pair.body["client_id"].(string)
+	if !clientOK || clientID == "" {
+		t.Fatalf("pair did not return client id: %d %#v", pair.status, pair.body)
+	}
+	login(t, owner, server.URL)
+	approve := postJSON(t, owner, server.URL+"/v1/clients/"+clientID+"/approve", `{}`)
+	if approve.status != http.StatusOK {
+		t.Fatalf("approve=%d %#v", approve.status, approve.body)
+	}
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/clients/"+clientID+"/redeem", strings.NewReader(`{}`))
+	request.Header.Set("Authorization", "Bearer "+pendingToken)
+	request.Header.Set("Content-Type", "application/json")
+	response, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var redeemed map[string]any
+	_ = json.NewDecoder(response.Body).Decode(&redeemed)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || redeemed["credential"] == "" {
+		t.Fatalf("redeem=%d %#v", response.StatusCode, redeemed)
+	}
+	second, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second.Body.Close()
+	if second.StatusCode != http.StatusConflict && second.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("redeem credential was not one-time: status=%d", second.StatusCode)
+	}
+}
+
+func TestClientPairingDeviceLifecycleRePairIsSafe(t *testing.T) {
+	server, owner := testServer(t)
+	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"lifecycle-device","display_name":"Lifecycle","platform":"test"}`)
+	clientID := pair.body["client_id"].(string)
+	pendingToken := pair.body["pending_token"].(string)
+	pollRequest, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/clients/"+clientID+"/poll", nil)
+	pollRequest.Header.Set("Authorization", "Bearer "+pendingToken)
+	poll, err := server.Client().Do(pollRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	poll.Body.Close()
+	if poll.StatusCode != http.StatusOK {
+		t.Fatalf("pending poll status=%d", poll.StatusCode)
+	}
+	login(t, owner, server.URL)
+	approveRequest, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/clients/"+clientID+"/approve", strings.NewReader(`{"idempotency_key":"approve-life"}`))
+	approveRequest.Header.Set("Content-Type", "application/json")
+	firstApprove, err := owner.Do(approveRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstBody map[string]any
+	_ = json.NewDecoder(firstApprove.Body).Decode(&firstBody)
+	firstApprove.Body.Close()
+	if firstApprove.StatusCode != http.StatusOK {
+		t.Fatalf("approve status=%d body=%#v", firstApprove.StatusCode, firstBody)
+	}
+	credential := firstBody["credential"].(string)
+	secondRequest, _ := http.NewRequest(http.MethodPost, approveRequest.URL.String(), strings.NewReader(`{"idempotency_key":"approve-life"}`))
+	secondRequest.Header.Set("Content-Type", "application/json")
+	secondApprove, err := owner.Do(secondRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondApprove.Body.Close()
+	if secondApprove.StatusCode != http.StatusOK {
+		t.Fatalf("idempotent approve status=%d", secondApprove.StatusCode)
+	}
+	if revoke := postJSON(t, owner, server.URL+"/v1/clients/"+clientID+"/revoke", `{"idempotency_key":"revoke-life"}`); revoke.status != http.StatusOK {
+		t.Fatalf("revoke status=%d %#v", revoke.status, revoke.body)
+	}
+	repair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"lifecycle-device","display_name":"Lifecycle 2","platform":"test"}`)
+	if repair.status != http.StatusCreated || repair.body["client_id"] != clientID || repair.body["pending_token"] == "" {
+		t.Fatalf("repair=%d %#v", repair.status, repair.body)
+	}
+	oldRequest, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/conversation", nil)
+	oldRequest.Header.Set("Authorization", "Bearer "+credential)
+	oldResponse, err := server.Client().Do(oldRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldResponse.Body.Close()
+	if oldResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old credential survived re-pair: %d", oldResponse.StatusCode)
+	}
+}
+
+func TestClientPairIdempotencyConflictsOnDifferentPayload(t *testing.T) {
+	server, _ := testServer(t)
+	first := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"idem-device-1","display_name":"One","platform":"test","idempotency_key":"pair-key"}`)
+	if first.status != http.StatusCreated {
+		t.Fatalf("first pair=%d %#v", first.status, first.body)
+	}
+	second := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"idem-device-2","display_name":"Two","platform":"test","idempotency_key":"pair-key"}`)
+	if second.status != http.StatusConflict {
+		t.Fatalf("different payload reused idempotency key: %d %#v", second.status, second.body)
+	}
 }
 
 func TestClientAcknowledgementUserRevisionAndLegacyResponseRedaction(t *testing.T) {

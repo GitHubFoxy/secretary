@@ -54,8 +54,8 @@ func TestProjectCRUDPersistsAcrossReloadAndUsesOptimisticRevision(t *testing.T) 
 	if project.ID != "frontend" || project.Revision != 1 {
 		t.Fatalf("project=%#v", project)
 	}
-	if duplicate, err := store.CreateProject(ctx, projectFixture("/other/mac", "/other/home"), "create-key"); err != nil || duplicate.ID != project.ID {
-		t.Fatalf("idempotent create=%#v err=%v", duplicate, err)
+	if duplicate, err := store.CreateProject(ctx, projectFixture("/other/mac", "/other/home"), "create-key"); !errors.Is(err, ErrIdempotencyConflict) {
+		t.Fatalf("different idempotency payload was accepted: %#v err=%v", duplicate, err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)

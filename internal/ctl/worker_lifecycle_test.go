@@ -444,7 +444,7 @@ func TestWorkerServiceQueuedResumeReplayUsesDurableTurnInput(t *testing.T) {
 	}
 	runtime := &recordingLifecycleRuntime{}
 	service.Runtime = runtime
-	replayed, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "changed retry text", IdempotencyKey: "resume-after-crash"})
+	replayed, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: durableInput, IdempotencyKey: "resume-after-crash"})
 	if err != nil {
 		t.Fatal(err)
 	}
