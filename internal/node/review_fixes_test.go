@@ -161,9 +161,9 @@ func TestStoreEventSinkInvokesTrustedLocalPolicyAfterDurablePermissionAcceptance
 	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
 		t.Fatal(err)
 	}
-	called := false
+	called := make(chan struct{})
 	sink := NewStoreEventSinkWithTrustedLocalApproval(store, func(_ context.Context, requestID string, nodeRef core.NodeReference) error {
-		called = true
+		defer close(called)
 		if requestID != "trusted-local-request" || string(nodeRef) != worker.NodeID {
 			t.Fatalf("policy request=%q node=%q", requestID, nodeRef)
 		}
@@ -177,7 +177,9 @@ func TestStoreEventSinkInvokesTrustedLocalPolicyAfterDurablePermissionAcceptance
 	if err := sink(ctx, NodeEvent{EventID: activity.Metadata.EventID, Node: core.NodeReference(worker.NodeID), Kind: "activity", Activity: &activity}); err != nil {
 		t.Fatal(err)
 	}
-	if !called {
+	select {
+	case <-called:
+	case <-time.After(time.Second):
 		t.Fatal("trusted-local policy was not invoked for permission activity")
 	}
 }
