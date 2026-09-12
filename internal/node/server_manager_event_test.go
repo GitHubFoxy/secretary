@@ -37,10 +37,12 @@ func TestTrustedLocalApprovalHandoffDoesNotBlockProtocolReadLoop(t *testing.T) {
 	for _, testCase := range []struct {
 		name       string
 		state      CommandState
+		wrongKind  bool
 		wantCommit bool
 	}{
 		{name: "accepted", state: CommandAccepted, wantCommit: true},
 		{name: "failed", state: CommandFailed, wantCommit: false},
+		{name: "accepted wrong kind is ignored before valid outcome", state: CommandAccepted, wrongKind: true, wantCommit: true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -69,19 +71,29 @@ func TestTrustedLocalApprovalHandoffDoesNotBlockProtocolReadLoop(t *testing.T) {
 			}
 			const requestID = "trusted-local-request"
 			const commandID = "trusted-local-command"
+			handoffDone := make(chan error, 1)
 			manager.SetEventSink(NewStoreEventSinkWithTrustedLocalApproval(store, func(applyCtx context.Context, request string, nodeRef core.NodeReference) error {
 				command := Command{Kind: CommandRespondWorker, RespondWorker: &RespondWorkerCommand{
 					Metadata:  core.CommandMetadata{CommandID: commandID, Node: nodeRef, HarnessInstanceID: "macbook/fx", WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, IssuedAt: time.Now().UTC()},
 					RequestID: request, Response: "approved",
 				}}
 				if err := manager.SendCommandAndWait(applyCtx, nodeRef, command); err != nil {
+					if testCase.wrongKind {
+						handoffDone <- err
+					}
 					return err
 				}
 				resolved, _, err := store.CommitApprovalResolution(applyCtx, request, core.ApprovalApproved, "trusted-local-policy", "auto_approved")
 				if err != nil {
+					if testCase.wrongKind {
+						handoffDone <- err
+					}
 					return err
 				}
 				_, err = store.RecordEventWithMetadata(applyCtx, core.EventInput{Kind: "approval.auto_approved", AggregateType: "approval", AggregateID: resolved.ID, Source: "policy", CorrelationID: resolved.TurnID, AttemptID: resolved.AttemptID, Payload: map[string]any{"request_id": resolved.RequestID, "node_id": resolved.NodeID, "policy": "trusted_local_explicit"}})
+				if testCase.wrongKind {
+					handoffDone <- err
+				}
 				return err
 			}))
 			mux := http.NewServeMux()
@@ -137,6 +149,23 @@ func TestTrustedLocalApprovalHandoffDoesNotBlockProtocolReadLoop(t *testing.T) {
 			}
 			if command.Metadata().CommandID != commandID {
 				t.Fatalf("command=%#v", command)
+			}
+			if testCase.wrongKind {
+				if err := connection.SendCommandOutcome(ctx, CommandOutcome{CommandID: commandID, Kind: CommandDispatch, State: CommandAccepted}); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case err := <-handoffDone:
+					t.Fatalf("accepted outcome with wrong kind finalized respond_worker handoff: %v", err)
+				case <-time.After(100 * time.Millisecond):
+				}
+				approval, err := store.Approval(ctx, requestID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if approval.State == core.ApprovalApproved {
+					t.Fatalf("accepted outcome with wrong kind resolved approval: %#v", approval)
+				}
 			}
 			if err := connection.SendCommandOutcome(ctx, CommandOutcome{CommandID: commandID, Kind: CommandRespondWorker, State: testCase.state, ErrorCode: "simulated_failure", ErrorMessage: "simulated Node rejection"}); err != nil {
 				t.Fatal(err)

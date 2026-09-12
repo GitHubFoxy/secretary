@@ -59,6 +59,12 @@ type ServerConfig struct {
 	Now                  func() time.Time
 }
 
+type commandWaiter struct {
+	outcomes chan CommandOutcome
+	node     core.NodeReference
+	kind     CommandKind
+}
+
 type ServerManager struct {
 	store      *core.Store
 	adminToken string
@@ -68,7 +74,7 @@ type ServerManager struct {
 	mu          sync.Mutex
 	connections map[core.NodeReference]*ProtocolConnection
 	outcomes    map[core.NodeReference]CommandOutcome
-	waiters     map[string]chan CommandOutcome
+	waiters     map[string]*commandWaiter
 	credentials map[core.NodeReference][]byte
 	eventSink   func(context.Context, NodeEvent) error
 	outcomeSink func(context.Context, core.NodeReference, CommandOutcome) error
@@ -140,7 +146,7 @@ func NewServerManagerWithConfig(ctx context.Context, store *core.Store, config S
 	}
 	return &ServerManager{
 		store: store, adminToken: config.AdminToken, config: config, now: config.Now,
-		connections: map[core.NodeReference]*ProtocolConnection{}, outcomes: map[core.NodeReference]CommandOutcome{}, waiters: map[string]chan CommandOutcome{}, credentials: credentials,
+		connections: map[core.NodeReference]*ProtocolConnection{}, outcomes: map[core.NodeReference]CommandOutcome{}, waiters: map[string]*commandWaiter{}, credentials: credentials,
 	}, nil
 }
 
@@ -260,10 +266,10 @@ func (m *ServerManager) SendCommandAndWait(ctx context.Context, nodeRef core.Nod
 	if strings.TrimSpace(commandID) == "" {
 		return errors.New("node server: command id is required")
 	}
-	waiter := make(chan CommandOutcome, 1)
+	waiter := &commandWaiter{outcomes: make(chan CommandOutcome, 1), node: nodeRef, kind: command.Kind}
 	m.mu.Lock()
 	if m.waiters == nil {
-		m.waiters = map[string]chan CommandOutcome{}
+		m.waiters = map[string]*commandWaiter{}
 	}
 	m.waiters[commandID] = waiter
 	m.mu.Unlock()
@@ -278,7 +284,7 @@ func (m *ServerManager) SendCommandAndWait(ctx context.Context, nodeRef core.Nod
 		return err
 	}
 	select {
-	case outcome := <-waiter:
+	case outcome := <-waiter.outcomes:
 		if outcome.State != CommandAccepted {
 			if outcome.ErrorMessage != "" {
 				return fmt.Errorf("node command %s: %s", outcome.ErrorCode, outcome.ErrorMessage)
@@ -576,16 +582,22 @@ func (h *serverProtocolHandler) HandleNodeEvent(ctx context.Context, event NodeE
 
 func (h *serverProtocolHandler) HandleNodeCommandOutcome(ctx context.Context, outcome CommandOutcome) error {
 	h.manager.mu.Lock()
+	waiter := h.manager.waiters[outcome.CommandID]
+	if waiter != nil && (waiter.node != h.expected || waiter.kind != outcome.Kind) {
+		// A Node may replay or mis-type an outcome. Do not let it finalize a
+		// different command, and keep the connection alive for the valid outcome.
+		h.manager.mu.Unlock()
+		return nil
+	}
 	if h.manager.outcomes == nil {
 		h.manager.outcomes = map[core.NodeReference]CommandOutcome{}
 	}
 	h.manager.outcomes[h.expected] = outcome
-	waiter := h.manager.waiters[outcome.CommandID]
 	sink := h.manager.outcomeSink
 	h.manager.mu.Unlock()
 	if waiter != nil {
 		select {
-		case waiter <- outcome:
+		case waiter.outcomes <- outcome:
 		default:
 		}
 	}
