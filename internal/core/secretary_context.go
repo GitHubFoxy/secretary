@@ -188,12 +188,19 @@ func (s *Store) ReconstructSecretaryContext(ctx context.Context, identityID, use
 	}, nil
 }
 
-// ReconstructSecretaryContextForTurn snapshots canonical context on the durable
-// turn and acknowledges the results included in that snapshot.
+// ReconstructSecretaryContextForTurn materializes canonical context exactly
+// once for a queued turn. The compare-and-swap also makes result acknowledgement
+// belong only to the caller that won snapshot publication.
 func (s *Store) ReconstructSecretaryContextForTurn(ctx context.Context, turnID, userPath string, recentLimit int) (SecretaryContext, error) {
 	turn, err := s.SecretaryTurn(ctx, turnID)
 	if err != nil {
 		return SecretaryContext{}, err
+	}
+	if strings.TrimSpace(turn.ContextSnapshot) != "" {
+		return decodeSecretaryContextSnapshot(turn.ContextSnapshot)
+	}
+	if turn.State != SecretaryTurnQueued {
+		return SecretaryContext{}, errors.New("core: canonical Secretary context snapshot is unavailable for non-queued turn")
 	}
 	canonical, err := s.ReconstructSecretaryContext(ctx, turn.IdentityID, userPath, recentLimit)
 	if err != nil {
@@ -203,18 +210,51 @@ func (s *Store) ReconstructSecretaryContextForTurn(ctx context.Context, turnID, 
 	if err != nil {
 		return SecretaryContext{}, err
 	}
-	err = withTxErr(s, ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET context_snapshot = ?, updated_at = ? WHERE id = ?`, string(encoded), timestamp(s.now()), turn.ID); err != nil {
-			return err
+	returnValue, err := withTx(s, ctx, func(tx *sql.Tx) (SecretaryContext, error) {
+		result, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET context_snapshot = ?, updated_at = ? WHERE id = ? AND state = ? AND context_snapshot = ''`, string(encoded), timestamp(s.now()), turn.ID, SecretaryTurnQueued)
+		if err != nil {
+			return SecretaryContext{}, err
 		}
-		for _, result := range canonical.UnseenWorkerResults {
-			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO secretary_context_seen_results(turn_id, result_id, seen_at) VALUES(?, ?, ?)`, turn.ID, result.ID, timestamp(s.now())); err != nil {
-				return err
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return SecretaryContext{}, err
+		}
+		if affected == 1 {
+			for _, result := range canonical.UnseenWorkerResults {
+				if _, err := tx.ExecContext(ctx, `INSERT INTO secretary_context_seen_results(turn_id, result_id, seen_at) VALUES(?, ?, ?) ON CONFLICT(turn_id, result_id) DO NOTHING`, turn.ID, result.ID, timestamp(s.now())); err != nil {
+					return SecretaryContext{}, err
+				}
 			}
+			return canonical, nil
 		}
-		return nil
+		var snapshot string
+		var state SecretaryTurnState
+		if err := tx.QueryRowContext(ctx, `SELECT context_snapshot, state FROM secretary_turns WHERE id = ?`, turn.ID).Scan(&snapshot, &state); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return SecretaryContext{}, ErrNotFound
+			}
+			return SecretaryContext{}, err
+		}
+		if strings.TrimSpace(snapshot) == "" {
+			return SecretaryContext{}, errors.New("core: canonical Secretary context snapshot is unavailable for turn")
+		}
+		return decodeSecretaryContextSnapshot(snapshot)
 	})
 	if err != nil {
+		return SecretaryContext{}, err
+	}
+	return returnValue, nil
+}
+
+func decodeSecretaryContextSnapshot(encoded string) (SecretaryContext, error) {
+	if strings.TrimSpace(encoded) == "" {
+		return SecretaryContext{}, errors.New("core: canonical Secretary context snapshot is empty")
+	}
+	var canonical SecretaryContext
+	if err := json.Unmarshal([]byte(encoded), &canonical); err != nil {
+		return SecretaryContext{}, fmt.Errorf("core: decode canonical Secretary context snapshot: %w", err)
+	}
+	if err := canonical.Validate(); err != nil {
 		return SecretaryContext{}, err
 	}
 	return canonical, nil

@@ -1,6 +1,10 @@
 package core
 
-import "time"
+import (
+	"errors"
+	"strings"
+	"time"
+)
 
 // SecretaryIdentity is the durable product identity. Runtime sessions are
 // replaceable and are represented only by the generation and selected policy.
@@ -128,4 +132,12 @@ type SecretaryContext struct {
 	HarnessInstances    []HarnessInstance       `json:"harness_instances"`
 	ActiveApprovals     []Approval              `json:"active_approvals"`
 	PolicyProfile       SecretaryPolicySnapshot `json:"policy_profile"`
+}
+
+// Validate rejects syntactically valid JSON that is not a canonical context.
+func (c SecretaryContext) Validate() error {
+	if strings.TrimSpace(c.Identity.ID) == "" || strings.TrimSpace(c.Identity.ConversationID) == "" {
+		return errors.New("core: canonical Secretary context snapshot is missing identity")
+	}
+	return nil
 }

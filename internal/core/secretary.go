@@ -206,13 +206,8 @@ func (s *Store) StartSecretaryTurn(ctx context.Context, turnID string) (Secretar
 	} else if err != nil {
 		return SecretaryTurn{}, err
 	}
-	canonical, err := s.ReconstructSecretaryContext(ctx, identityID, "", 20)
-	if err != nil {
+	if _, err := s.ReconstructSecretaryContextForTurn(ctx, turnID, "", 20); err != nil {
 		return SecretaryTurn{}, fmt.Errorf("reconstruct Secretary context: %w", err)
-	}
-	encodedContext, err := json.Marshal(canonical)
-	if err != nil {
-		return SecretaryTurn{}, fmt.Errorf("encode Secretary context: %w", err)
 	}
 	return withTx(s, ctx, func(tx *sql.Tx) (SecretaryTurn, error) {
 		var turn SecretaryTurn
@@ -239,15 +234,10 @@ func (s *Store) StartSecretaryTurn(ctx context.Context, turnID string) (Secretar
 			return SecretaryTurn{}, ErrInvalidTransition
 		}
 		now := s.now()
-		if _, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET context_snapshot = ?, state = ?, started_at = ?, updated_at = ? WHERE id = ?`, string(encodedContext), SecretaryTurnActive, timestamp(now), timestamp(now), turn.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET state = ?, started_at = ?, updated_at = ? WHERE id = ?`, SecretaryTurnActive, timestamp(now), timestamp(now), turn.ID); err != nil {
 			return SecretaryTurn{}, err
 		}
-		for _, result := range canonical.UnseenWorkerResults {
-			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO secretary_context_seen_results(turn_id, result_id, seen_at) VALUES(?, ?, ?)`, turn.ID, result.ID, timestamp(now)); err != nil {
-				return SecretaryTurn{}, err
-			}
-		}
-		turn.ContextSnapshot, turn.State, turn.StartedAt, turn.UpdatedAt = string(encodedContext), SecretaryTurnActive, &now, now
+		turn.State, turn.StartedAt, turn.UpdatedAt = SecretaryTurnActive, &now, now
 		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: SecretaryTurnStartedEvent, AggregateType: "secretary_turn", AggregateID: turn.ID, Source: "server", CorrelationID: turn.ID, Payload: turn}, turn)
 		if err != nil {
 			return SecretaryTurn{}, err

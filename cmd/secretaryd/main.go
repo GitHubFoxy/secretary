@@ -152,6 +152,9 @@ func main() {
 		log.Fatalf("find secretary-mcp: %v", mcpErr)
 	}
 	local := node.NewLocal(runtime)
+	if err := recoverProductionPhase4Attempts(ctx, store, local, remoteNodes); err != nil {
+		log.Fatalf("recover Phase 4 Attempts: %v", err)
+	}
 	web.AttachNode(local)
 	conversation, conversationErr := store.ConversationForPerson(ctx, web.OwnerID())
 	if conversationErr != nil {
@@ -328,8 +331,9 @@ func main() {
 	}
 }
 
-func recoverProductionPhase4Attempts(context.Context, *core.Store, *node.LocalNode, *node.ServerManager) error {
-	return nil
+func recoverProductionPhase4Attempts(ctx context.Context, store *core.Store, local *node.LocalNode, remote *node.ServerManager) error {
+	resolver := node.Phase4RecoveryResolver{Store: store, Local: local, LocalNodeRef: "local", Remote: remote}
+	return store.RecoverPhase4Attempts(ctx, resolver)
 }
 
 func attachProductionWorkerServices(web *webapi.Server, store *core.Store, personID, capability string, local *node.LocalNode, remote *node.ServerManager, managedProfile func(core.BindingProfile) node.ManagedProfile) {

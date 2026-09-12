@@ -27,6 +27,7 @@ type Runtime struct {
 	store          *core.Store
 	conversationID string
 	identity       core.SecretaryIdentity
+	turnLoader     func(context.Context, string) (core.SecretaryTurn, error)
 
 	mu           sync.Mutex
 	session      node.Session
@@ -392,11 +393,22 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 		r.mu.Unlock()
 		prompt := text
 		if store != nil && turnID != "" {
-			turn, err := store.SecretaryTurn(ctx, turnID)
-			if err == nil && turn.ContextSnapshot != "" {
-				var canonical core.SecretaryContext
-				if err = json.Unmarshal([]byte(turn.ContextSnapshot), &canonical); err == nil {
-					prompt, err = core.SecretaryContextPrompt(canonical, text)
+			loadTurn := r.turnLoader
+			if loadTurn == nil {
+				loadTurn = store.SecretaryTurn
+			}
+			turn, err := loadTurn(ctx, turnID)
+			if err == nil {
+				if strings.TrimSpace(turn.ContextSnapshot) == "" {
+					err = errors.New("empty canonical Secretary context snapshot")
+				} else {
+					var canonical core.SecretaryContext
+					if err = json.Unmarshal([]byte(turn.ContextSnapshot), &canonical); err == nil {
+						err = canonical.Validate()
+					}
+					if err == nil {
+						prompt, err = core.SecretaryContextPrompt(canonical, text)
+					}
 				}
 			}
 			if err != nil {
