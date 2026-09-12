@@ -59,14 +59,17 @@ func (c *Client) HandleServerRequest(message Message) error {
 // RetryServerRequest repeats a server-request reply with the original native
 // request ID and reports the write result through the delivery callback.
 func (c *Client) RetryServerRequest(message Message, result any, handlerErr error) error {
-	var err error
+	var deliveryErr error
 	if handlerErr != nil {
-		err = c.replyError(message.ID, -32010, handlerErr.Error())
+		deliveryErr = c.replyError(message.ID, -32010, handlerErr.Error())
+		if deliveryErr == nil {
+			deliveryErr = handlerErr
+		}
 	} else {
-		err = c.reply(message.ID, result)
+		deliveryErr = c.reply(message.ID, result)
 	}
-	c.notifyServerRequestDelivery(message, err)
-	return err
+	c.notifyServerRequestDelivery(message, deliveryErr)
+	return deliveryErr
 }
 
 func Start(ctx context.Context, command string, arguments ...string) (*Client, error) {
@@ -214,6 +217,9 @@ func (c *Client) handleServerRequest(message Message) error {
 		var deliveryErr error
 		if handlerErr != nil {
 			deliveryErr = c.replyError(message.ID, -32010, handlerErr.Error())
+			if deliveryErr == nil {
+				deliveryErr = handlerErr
+			}
 		} else {
 			deliveryErr = c.reply(message.ID, result)
 		}

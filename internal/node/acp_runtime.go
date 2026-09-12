@@ -271,9 +271,11 @@ func (s *acpSession) Respond(ctx context.Context, requestID, response string) er
 	s.requestMu.Lock()
 	pending, ok := s.pending[requestID]
 	if !ok {
-		for i, reboundID := range s.rebound {
+		pending = s.reboundResponses[requestID]
+	}
+	if pending == nil {
+		for _, reboundID := range s.rebound {
 			if reboundID == requestID {
-				s.rebound = append(s.rebound[:i], s.rebound[i+1:]...)
 				pending = &pendingACPResponse{response: make(chan string, 1), delivered: make(chan error, 1)}
 				s.reboundResponses[requestID] = pending
 				break
@@ -448,7 +450,10 @@ func (s *acpSession) serverRequestResponse(kind ActivityKind, rawParams json.Raw
 	_ = json.Unmarshal(rawParams, &permission)
 	valueLower := strings.ToLower(strings.TrimSpace(value))
 	approved := strings.Contains(valueLower, "approve") || strings.Contains(valueLower, "allow") || strings.Contains(valueLower, `"approved":true`)
-	selected := selectPermissionOption(permission.Options, approved, strings.Contains(valueLower, "trusted-local"))
+	// Both ordinary approval and explicit trusted-local policy are one-shot.
+	// The policy audit is recorded by WorkerService, not encoded as a durable
+	// ACP permission choice.
+	selected := selectPermissionOption(permission.Options, approved, false)
 	if selected == "" {
 		return nil, errors.New("harness has no matching permission option")
 	}

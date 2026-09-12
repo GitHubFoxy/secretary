@@ -72,6 +72,69 @@ func TestACPRuntimeResumesExistingSession(t *testing.T) {
 	}
 }
 
+func TestACPRuntimeResumeRespondsBeforeLateReplayedRequests(t *testing.T) {
+	for _, kind := range []string{"permission", "input"} {
+		t.Run(kind, func(t *testing.T) {
+			responsesPath := filepath.Join(t.TempDir(), "responses.jsonl")
+			command := exec.Command(os.Args[0], "-test.run=TestFakeACPReconnectProcess")
+			runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:], Environment: []string{"ACP_RECONNECT_KIND=" + kind, "ACP_RECONNECT_LATE=1", "ACP_RESPONSES_FILE=" + responsesPath}}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			session, err := runtime.Resume(ctx, StartRequest{WorkerRef: "worker", Workspace: t.TempDir(), PendingRequestIDs: []string{"durable-" + kind}}, "saved-session")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			responded := make(chan error, 1)
+			go func() {
+				responded <- session.(Responder).Respond(ctx, "durable-"+kind, map[string]string{"permission": "denied", "input": "answer"}[kind])
+			}()
+			select {
+			case err := <-responded:
+				if err != nil {
+					t.Fatalf("late %s response failed: %v", kind, err)
+				}
+			case <-ctx.Done():
+				t.Fatalf("late %s response was not delivered: %v", kind, ctx.Err())
+			}
+			deadline := time.Now().Add(2 * time.Second)
+			var data []byte
+			for {
+				var readErr error
+				data, readErr = os.ReadFile(responsesPath)
+				if readErr == nil && strings.Count(string(data), "\n") == 1 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("responses=%q", data)
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			var nativeReply struct {
+				Error  json.RawMessage `json:"error"`
+				Result struct {
+					Input   string `json:"input"`
+					Outcome struct {
+						OptionID string `json:"optionId"`
+					} `json:"outcome"`
+				} `json:"result"`
+			}
+			if err := json.Unmarshal(data, &nativeReply); err != nil {
+				t.Fatal(err)
+			}
+			if len(nativeReply.Error) != 0 {
+				t.Fatalf("native reply error=%s", nativeReply.Error)
+			}
+			if kind == "permission" && nativeReply.Result.Outcome.OptionID != "deny" {
+				t.Fatalf("native permission reply=%s", data)
+			}
+			if kind == "input" && nativeReply.Result.Input != "answer" {
+				t.Fatalf("native input reply=%s", data)
+			}
+		})
+	}
+}
+
 func TestACPRuntimeResumeRebindsOutstandingRequestsBeforeSessionLoad(t *testing.T) {
 	for _, kind := range []string{"permission", "input"} {
 		t.Run(kind, func(t *testing.T) {
@@ -118,6 +181,106 @@ func TestACPRuntimeResumeRebindsOutstandingRequestsBeforeSessionLoad(t *testing.
 			}
 		})
 	}
+}
+
+func TestACPSessionTrustedLocalSelectsOneShotOption(t *testing.T) {
+	writer := &recordingNativeReplyWriter{}
+	client := acp.NewClient(writer)
+	session := newACPSession("trusted-local-session", client, false)
+	session.setRequestHandler()
+	request := acp.Message{
+		ID:     json.RawMessage("88"),
+		Method: "session/request_permission",
+		Params: json.RawMessage(`{"options":[{"optionId":"allow_once","kind":"allow_once"},{"optionId":"allow_always","kind":"allow_always"}]}`),
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- client.HandleServerRequest(request) }()
+	var requestID string
+	select {
+	case activity := <-session.Activity():
+		requestID = activity.RequestID
+	case <-time.After(time.Second):
+		t.Fatal("permission request was not observed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.Respond(ctx, requestID, "approved:trusted-local"); err != nil {
+		t.Fatalf("trusted-local response failed: %v", err)
+	}
+	if err := <-finished; err != nil {
+		t.Fatalf("ACP handler failed: %v", err)
+	}
+	var reply acp.Message
+	if err := json.Unmarshal(writer.last(), &reply); err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Outcome struct {
+			OptionID string `json:"optionId"`
+		} `json:"outcome"`
+	}
+	if err := json.Unmarshal(reply.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if got := result.Outcome.OptionID; got != "allow_once" {
+		t.Fatalf("trusted-local option=%q, want allow_once", got)
+	}
+}
+
+func TestACPSessionHandlerErrorIsNotSuccessfulWithOnlyAllowOnce(t *testing.T) {
+	writer := &recordingNativeReplyWriter{}
+	client := acp.NewClient(writer)
+	session := newACPSession("handler-error-session", client, false)
+	session.setRequestHandler()
+	request := acp.Message{
+		ID:     json.RawMessage("89"),
+		Method: "session/request_permission",
+		Params: json.RawMessage(`{"options":[{"optionId":"allow_once","kind":"allow_once"}]}`),
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- client.HandleServerRequest(request) }()
+	var requestID string
+	select {
+	case activity := <-session.Activity():
+		requestID = activity.RequestID
+	case <-time.After(time.Second):
+		t.Fatal("permission request was not observed")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.Respond(ctx, requestID, "denied"); err == nil {
+		t.Fatal("handler error was reported as successful native delivery")
+	}
+	if err := <-finished; err == nil {
+		t.Fatal("ACP handler error was lost")
+	}
+	var reply acp.Message
+	if err := json.Unmarshal(writer.last(), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply.Error == nil || len(reply.Result) != 0 {
+		t.Fatalf("handler error reply=%#v", reply)
+	}
+}
+
+type recordingNativeReplyWriter struct {
+	mu      sync.Mutex
+	payload []byte
+}
+
+func (w *recordingNativeReplyWriter) Write(payload []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.payload = append([]byte(nil), payload...)
+	return len(payload), nil
+}
+
+func (*recordingNativeReplyWriter) Close() error { return nil }
+
+func (w *recordingNativeReplyWriter) last() []byte {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]byte(nil), w.payload...)
 }
 
 func TestACPSessionRespondRetriesFailedNativeReplyOnSameSession(t *testing.T) {
@@ -368,8 +531,14 @@ func TestFakeACPReconnectProcess(t *testing.T) {
 				method = "session/request_input"
 				params = map[string]any{"question": "which file?"}
 			}
+			if os.Getenv("ACP_RECONNECT_LATE") == "1" {
+				_ = encoder.Encode(map[string]any{"id": json.RawMessage(request.ID), "result": map[string]any{}})
+				time.Sleep(50 * time.Millisecond)
+			}
 			_ = encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": 77, "method": method, "params": params})
-			_ = encoder.Encode(map[string]any{"id": json.RawMessage(request.ID), "result": map[string]any{}})
+			if os.Getenv("ACP_RECONNECT_LATE") != "1" {
+				_ = encoder.Encode(map[string]any{"id": json.RawMessage(request.ID), "result": map[string]any{}})
+			}
 			continue
 		}
 		if len(request.ID) > 0 {
