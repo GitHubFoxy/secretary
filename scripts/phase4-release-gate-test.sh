@@ -21,6 +21,8 @@ for command in \
   'build ./cmd/...' \
   'npm test' \
   'npm run build:all' \
+  'git diff --quiet --' \
+  'frontend build changed tracked embedded assets' \
   'git diff --check' \
   'scripts/sex-cli-test.sh' \
   'scripts/node-deployment-test.sh' \

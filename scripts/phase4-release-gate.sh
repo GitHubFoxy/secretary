@@ -44,10 +44,24 @@ command -v npm >/dev/null || { printf 'npm is required for the Phase 4 gate\n' >
 )
 
 printf '%s\n' '[7/10] production frontend builds and embedded assets'
+tracked_assets=(
+  web/index.html web/app.js web/app.css
+  web/control-room/index.html web/control-room/app.js web/control-room/app.css
+)
+git diff --quiet -- "${tracked_assets[@]}" || {
+  printf 'tracked embedded assets are dirty before build\n' >&2
+  git diff -- "${tracked_assets[@]}"
+  exit 1
+}
 (
   cd web
   run npm run build:all
 )
+git diff --quiet -- "${tracked_assets[@]}" || {
+  printf 'frontend build changed tracked embedded assets\n' >&2
+  git diff -- "${tracked_assets[@]}"
+  exit 1
+}
 for asset in \
   web/index.html web/app.js web/app.css \
   web/control-room/index.html web/control-room/app.js web/control-room/app.css; do

@@ -1,7 +1,7 @@
 # 15 Phase 4 acceptance gate
 
 Type: task
-Status: resolved
+Status: ready-for-agent
 Blocked by: 03a, 03b, 04, 04a, 05b, 06a, 06b, 07, 08, 09, 10, 11, 12, 13a, 13b, 14
 
 ## Work
