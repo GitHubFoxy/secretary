@@ -574,7 +574,7 @@ func TestTicket11CredentialValuesRedactedUnderSafeKeysAndMarkdown(t *testing.T) 
 	controlRoomLogin(t, client, server.URL)
 
 	configContent := `skills = "sk-config"
-reasoning = "ghp-config"
+reasoning = "ghp_config"
 content = "xoxb-config"
 notes = "token: config-token"
 description = "secret: config-secret"
@@ -623,7 +623,7 @@ Also secret: profile-secret and credential: profile-credential.
 		t.Fatalf("config status=%d body=%#v", response.StatusCode, config)
 	}
 	configText, _ := config["content"].(string)
-	for _, secret := range []string{"sk-config", "ghp-config", "xoxb-config", "config-token", "config-secret", "config-credential", "config-equals"} {
+	for _, secret := range []string{"sk-config", "ghp_config", "xoxb-config", "config-token", "config-secret", "config-credential", "config-equals"} {
 		if strings.Contains(configText, secret) {
 			t.Fatalf("config leaked %q: %q", secret, configText)
 		}

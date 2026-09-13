@@ -808,7 +808,7 @@ func hasControlRedactionMarker(content string) bool {
 			return true
 		}
 	}
-	return false
+	return containsKnownControlCredential(content)
 }
 
 func (s *Server) controlConfigReload(w http.ResponseWriter, r *http.Request) {
@@ -1078,19 +1078,60 @@ func controlTextSensitiveLine(line string) bool {
 	if controlTextSensitiveKey(key) || controlTextThoughtKey(key) {
 		return true
 	}
-	// Also reject an opaque assignment embedded in an otherwise ordinary
-	// value. This catches `notes = "api_key=..."` without treating safe
-	// product keys such as `content` or `skills` as diagnostic payloads.
-	lower := strings.ToLower(line)
-	for _, marker := range []string{"api_key=", "apikey=", "access_token=", "token=", "secret=", "credential=", "password=", "callback=", "auth=", "session_id=", "session-id=", "native_id=", "task_id=", "bearer "} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
+	// Also reject an opaque value embedded in an otherwise ordinary value.
+	// This catches credentials in safe product keys and free Markdown without
+	// making ordinary `content`, `skills`, or `reasoning` fields read-only.
+	if containsKnownControlCredential(line) {
+		return true
 	}
+	lower := strings.ToLower(line)
 	for _, marker := range []string{"<think", "</think", "chain-of-thought", "internal reasoning", "thought process"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
+	}
+	return false
+}
+
+func containsKnownControlCredential(value string) bool {
+	lower := strings.ToLower(value)
+	for _, prefix := range []string{"sk-", "ghp_", "xoxb-"} {
+		if strings.Contains(lower, prefix) {
+			return true
+		}
+	}
+	for _, key := range []string{"token", "secret", "credential"} {
+		for _, separator := range []string{"=", ":"} {
+			if containsControlAssignment(lower, key, separator) {
+				return true
+			}
+		}
+	}
+	for _, marker := range []string{"api_key=", "apikey=", "access_token=", "password=", "callback=", "auth=", "session_id=", "session-id=", "native_id=", "task_id=", "bearer "} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsControlAssignment(value, key, separator string) bool {
+	for start := 0; start < len(value); {
+		index := strings.Index(value[start:], key)
+		if index < 0 {
+			return false
+		}
+		index += start + len(key)
+		for index < len(value) && (value[index] == ' ' || value[index] == '\t') {
+			index++
+		}
+		if strings.HasPrefix(value[index:], separator) {
+			index += len(separator)
+			if strings.TrimSpace(value[index:]) != "" {
+				return true
+			}
+		}
+		start = index
 	}
 	return false
 }
