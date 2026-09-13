@@ -2,6 +2,8 @@ package webapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -17,18 +19,20 @@ import (
 // never receives these routes. The main process supplies callbacks so this
 // package does not own config or runtime lifecycle state.
 type ControlOptions struct {
-	ConfigPath     string
-	ConfigContent  func() (string, error)
-	ConfigSnapshot func() any
-	WriteConfig    func([]byte) error
-	ApplyConfig    func([]byte) (any, error)
-	ReloadConfig   func() (any, error)
-	ProfileFiles   func() ([]ProfileFile, error)
-	ApplyProfile   func(string, []byte) error
-	RuntimeRestart func(context.Context) error
-	RetryTask      func(context.Context, string) (core.Task, error)
-	CloseTask      func(context.Context, string) (core.CloseOutcome, error)
-	RawLogDir      string
+	ConfigPath              string
+	ConfigContent           func() (string, error)
+	ConfigRevision          func() string
+	RequireExpectedRevision bool
+	ConfigSnapshot          func() any
+	WriteConfig             func([]byte) error
+	ApplyConfig             func([]byte) (any, error)
+	ReloadConfig            func() (any, error)
+	ProfileFiles            func() ([]ProfileFile, error)
+	ApplyProfile            func(string, []byte) error
+	RuntimeRestart          func(context.Context) error
+	RetryTask               func(context.Context, string) (core.Task, error)
+	CloseTask               func(context.Context, string) (core.CloseOutcome, error)
+	RawLogDir               string
 }
 
 type ProfileFile struct {
@@ -36,6 +40,8 @@ type ProfileFile struct {
 	Path      string `json:"path"`
 	Content   string `json:"content"`
 	Hash      string `json:"hash"`
+	Revision  string `json:"revision,omitempty"`
+	Editable  bool   `json:"editable"`
 	Runtime   string `json:"runtime"`
 	Model     string `json:"model"`
 	Reasoning string `json:"reasoning"`
@@ -693,28 +699,36 @@ func (s *Server) controlConfig(w http.ResponseWriter, r *http.Request) {
 	if !s.controlAllowed(w, r) {
 		return
 	}
-	result := map[string]any{"path": s.control.ConfigPath}
+	result := map[string]any{"path": s.control.ConfigPath, "editable": true}
 	if s.control.ConfigContent != nil {
 		content, err := s.control.ConfigContent()
 		if err != nil {
 			http.Error(w, "read config: "+err.Error(), 500)
 			return
 		}
-		result["content"] = redactControlText(content)
+		redacted := redactControlText(content)
+		result["content"] = redacted
+		result["editable"] = redacted == content
+		result["revision"] = s.controlRevision(content)
 	}
 	if s.control.ConfigSnapshot != nil {
 		result["snapshot"] = sanitizeControlAny(s.control.ConfigSnapshot())
 	}
 	writeJSON(w, 200, result)
 }
+
+type controlWriteRequest struct {
+	Content          string `json:"content"`
+	TOML             string `json:"toml"`
+	Markdown         string `json:"markdown"`
+	ExpectedRevision string `json:"expected_revision"`
+}
+
 func (s *Server) controlConfigWrite(w http.ResponseWriter, r *http.Request) {
 	if !s.controlAllowed(w, r) {
 		return
 	}
-	var request struct {
-		Content string `json:"content"`
-		TOML    string `json:"toml"`
-	}
+	var request controlWriteRequest
 	if !decodeJSON(w, r, &request) {
 		return
 	}
@@ -725,6 +739,22 @@ func (s *Server) controlConfigWrite(w http.ResponseWriter, r *http.Request) {
 	if content == "" {
 		http.Error(w, "config content is required", 400)
 		return
+	}
+	if hasControlRedactionMarker(content) {
+		http.Error(w, "config contains redaction placeholders; reload and edit without opaque values", 400)
+		return
+	}
+	s.controlWriteMu.Lock()
+	defer s.controlWriteMu.Unlock()
+	if revision, ok := s.currentConfigRevision(); ok {
+		if request.ExpectedRevision == "" && s.control.RequireExpectedRevision {
+			http.Error(w, "config expected_revision is required", http.StatusPreconditionRequired)
+			return
+		}
+		if request.ExpectedRevision != "" && request.ExpectedRevision != revision {
+			http.Error(w, "config revision is stale", http.StatusConflict)
+			return
+		}
 	}
 	var result any
 	var err error
@@ -745,6 +775,42 @@ func (s *Server) controlConfigWrite(w http.ResponseWriter, r *http.Request) {
 	_, _ = s.store.RecordEvent(r.Context(), "control.config_changed", "", "", "", map[string]string{"path": s.control.ConfigPath})
 	writeJSON(w, 200, sanitizeControlAny(result))
 }
+func (s *Server) controlRevision(content string) string {
+	if s.control.ConfigRevision != nil {
+		if revision := strings.TrimSpace(s.control.ConfigRevision()); revision != "" {
+			return revision
+		}
+	}
+	digest := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(digest[:])
+}
+
+func (s *Server) currentConfigRevision() (string, bool) {
+	if s.control.ConfigRevision != nil {
+		if revision := strings.TrimSpace(s.control.ConfigRevision()); revision != "" {
+			return revision, true
+		}
+	}
+	if s.control.ConfigContent == nil {
+		return "", false
+	}
+	content, err := s.control.ConfigContent()
+	if err != nil {
+		return "", false
+	}
+	return s.controlRevision(content), true
+}
+
+func hasControlRedactionMarker(content string) bool {
+	lower := strings.ToLower(content)
+	for _, marker := range []string{"[redacted]", "[secret]", "[opaque]", "<redacted>", "<secret>"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) controlConfigReload(w http.ResponseWriter, r *http.Request) {
 	if !s.controlAllowed(w, r) {
 		return
@@ -775,7 +841,12 @@ func (s *Server) controlProfiles(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for i := range profiles {
-		profiles[i].Content = redactControlText(profiles[i].Content)
+		if profiles[i].Revision == "" {
+			profiles[i].Revision = profiles[i].Hash
+		}
+		redacted := redactControlText(profiles[i].Content)
+		profiles[i].Editable = redacted == profiles[i].Content
+		profiles[i].Content = redacted
 	}
 	if profiles == nil {
 		profiles = []ProfileFile{}
@@ -816,10 +887,7 @@ func (s *Server) controlProfileWrite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "profile editing is not configured", 501)
 		return
 	}
-	var request struct {
-		Content  string `json:"content"`
-		Markdown string `json:"markdown"`
-	}
+	var request controlWriteRequest
 	if !decodeJSON(w, r, &request) {
 		return
 	}
@@ -831,6 +899,22 @@ func (s *Server) controlProfileWrite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "profile content is required", 400)
 		return
 	}
+	if hasControlRedactionMarker(content) {
+		http.Error(w, "profile contains redaction placeholders; reload and edit without opaque values", 400)
+		return
+	}
+	s.controlWriteMu.Lock()
+	defer s.controlWriteMu.Unlock()
+	if revision, ok := s.currentProfileRevision(name); ok {
+		if request.ExpectedRevision == "" && s.control.RequireExpectedRevision {
+			http.Error(w, "profile expected_revision is required", http.StatusPreconditionRequired)
+			return
+		}
+		if request.ExpectedRevision != "" && request.ExpectedRevision != revision {
+			http.Error(w, "profile revision is stale", http.StatusConflict)
+			return
+		}
+	}
 	if err := s.control.ApplyProfile(name, []byte(content)); err != nil {
 		http.Error(w, "apply profile: "+err.Error(), 400)
 		return
@@ -840,6 +924,29 @@ func (s *Server) controlProfileWrite(w http.ResponseWriter, r *http.Request) {
 }
 func validProfileName(name string) bool {
 	return name == "secretary" || name == "worker" || name == "child_worker"
+}
+
+func (s *Server) currentProfileRevision(name string) (string, bool) {
+	if s.control.ProfileFiles == nil {
+		return "", false
+	}
+	profiles, err := s.control.ProfileFiles()
+	if err != nil {
+		return "", false
+	}
+	for _, profile := range profiles {
+		if profile.Name != name {
+			continue
+		}
+		if profile.Revision != "" {
+			return profile.Revision, true
+		}
+		if profile.Hash != "" {
+			return profile.Hash, true
+		}
+		return s.controlRevision(profile.Content), true
+	}
+	return "", false
 }
 
 func (s *Server) controlDiagnostics(w http.ResponseWriter, r *http.Request) {
@@ -908,6 +1015,8 @@ func (s *Server) controlExport(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "read control room: "+err.Error(), 500)
 		return
 	}
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="secretary-diagnostics.json"`)
 	writeJSON(w, 200, overview)
 }
 func parseControlTime(value string) (time.Time, error) {
@@ -958,7 +1067,7 @@ func redactControlText(value string) string {
 
 func sensitiveControlLine(line string) bool {
 	lower := strings.ToLower(line)
-	for _, marker := range []string{"api_key", "apikey", "token=", "token:", "secret=", "secret:", "credential=", "credential:", "password=", "password:", "callback=", "callback:", "bearer ", "session_id", "session-id"} {
+	for _, marker := range []string{"api_key", "apikey", "token=", "token:", "secret=", "secret:", "credential=", "credential:", "password=", "password:", "callback=", "callback:", "bearer ", "auth=", "auth:", "session_id", "session-id", "native_id", "task_id", "skills=", "content="} {
 		if strings.Contains(lower, marker) {
 			return true
 		}

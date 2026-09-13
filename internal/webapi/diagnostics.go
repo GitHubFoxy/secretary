@@ -71,7 +71,7 @@ func parseHarnessDiagnostic(line []byte, sequence int) (harnessDiagnosticDetail,
 	if len(message.Params) > 0 {
 		_ = json.Unmarshal(message.Params, &params)
 	}
-	detail := harnessDiagnosticDetail{Sequence: sequence, Direction: "inbound", Method: message.Method}
+	detail := harnessDiagnosticDetail{Sequence: sequence, Direction: "inbound", Method: sanitizeDiagnosticText(message.Method)}
 	if message.Method != "" {
 		detail.Direction = "outbound"
 	}
@@ -94,6 +94,9 @@ func parseHarnessDiagnostic(line []byte, sequence int) (harnessDiagnosticDetail,
 		detail.SessionUpdate = "thinking"
 		return detail, true
 	}
+	detail.SessionUpdate = sanitizeDiagnosticText(detail.SessionUpdate)
+	detail.Tool = sanitizeDiagnosticText(detail.Tool)
+	detail.Status = sanitizeDiagnosticText(detail.Status)
 	if cleaned, ok := sanitizeDiagnosticValue(params).(map[string]any); ok && len(cleaned) > 0 {
 		detail.Details = cleaned
 	}
@@ -183,7 +186,7 @@ func forbiddenDiagnosticKey(key string) bool {
 	}, key))
 	for _, marker := range []string{
 		"secret", "credential", "callback", "token", "password", "authorization", "apikey", "accesskey", "privatekey",
-		"runtimesession", "sessionid", "sessionidentifier", "runtimeid", "taskid", "token", "credential", "callback", "thought", "reasoning", "chainofthought", "analysis",
+		"runtimesession", "sessionid", "sessionidentifier", "runtimeid", "nativeid", "native", "task", "content", "skills", "opaque", "token", "credential", "callback", "thought", "reasoning", "chainofthought", "analysis",
 	} {
 		if strings.Contains(compact, marker) {
 			return true
@@ -201,7 +204,7 @@ func sanitizeDiagnosticText(value string) string {
 
 func forbiddenDiagnosticString(value string) bool {
 	lower := strings.ToLower(value)
-	for _, marker := range []string{"bearer ", "api_key=", "apikey=", "token=", "secret", "credential", "password=", "callback", "chain-of-thought", "internal reasoning", "thought process", "sk-", "ghp_", "xoxb-"} {
+	for _, marker := range []string{"bearer ", "api_key=", "apikey=", "token=", "secret", "credential", "password=", "callback", "native", "session_id", "session-id", "task", "chain-of-thought", "internal reasoning", "thought process", "sk-", "ghp_", "xoxb-"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}

@@ -254,14 +254,15 @@ func main() {
 	)
 	controlService := ctl.Service{Store: store, PersonID: web.OwnerID(), Capability: capability, Dispatcher: dispatcher, Node: local}
 	web.AttachControl(webapi.ControlOptions{
-		ConfigPath:     profiles.Path(),
-		ConfigContent:  func() (string, error) { content, err := os.ReadFile(profiles.Path()); return string(content), err },
-		ConfigSnapshot: func() any { return profiles.Snapshot() },
-		ApplyConfig:    func(content []byte) (any, error) { return applyConfig(profiles, content) },
-		ReloadConfig:   func() (any, error) { return profiles.Reload() },
-		ProfileFiles:   func() ([]webapi.ProfileFile, error) { return profileFiles(profiles.Snapshot()), nil },
-		ApplyProfile:   func(name string, content []byte) error { return applyProfile(profiles, name, content) },
-		RuntimeRestart: restartSecretary,
+		ConfigPath:              profiles.Path(),
+		ConfigContent:           func() (string, error) { content, err := os.ReadFile(profiles.Path()); return string(content), err },
+		RequireExpectedRevision: true,
+		ConfigSnapshot:          func() any { return profiles.Snapshot() },
+		ApplyConfig:             func(content []byte) (any, error) { return applyConfig(profiles, content) },
+		ReloadConfig:            func() (any, error) { return profiles.Reload() },
+		ProfileFiles:            func() ([]webapi.ProfileFile, error) { return profileFiles(profiles.Snapshot()), nil },
+		ApplyProfile:            func(name string, content []byte) error { return applyProfile(profiles, name, content) },
+		RuntimeRestart:          restartSecretary,
 		RetryTask: func(retryCtx context.Context, taskID string) (core.Task, error) {
 			return controlService.Retry(retryCtx, taskID)
 		},
@@ -450,7 +451,7 @@ func profileFiles(snapshot config.Snapshot) []webapi.ProfileFile {
 			continue
 		}
 		files = append(files, webapi.ProfileFile{
-			Name: profile.Name, Path: profile.Path, Content: profile.Content, Hash: profile.Hash,
+			Name: profile.Name, Path: profile.Path, Content: profile.Content, Hash: profile.Hash, Revision: profile.Hash, Editable: true,
 			Runtime: profile.Runtime, Model: profile.Model, Reasoning: profile.Reasoning,
 		})
 	}

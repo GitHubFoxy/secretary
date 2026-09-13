@@ -61,10 +61,11 @@ type Server struct {
 	userPath         string
 	diagnosticLogDir string
 
-	mu            sync.Mutex
-	idempotencyMu sync.Mutex
-	subscribers   map[*subscription]struct{}
-	streams       map[string]map[*activeStream]struct{}
+	mu             sync.Mutex
+	controlWriteMu sync.Mutex
+	idempotencyMu  sync.Mutex
+	subscribers    map[*subscription]struct{}
+	streams        map[string]map[*activeStream]struct{}
 }
 
 type activeStream struct {
