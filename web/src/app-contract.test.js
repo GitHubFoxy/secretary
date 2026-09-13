@@ -13,6 +13,8 @@ test('Svelte app compiles and keeps the Worker-first API seams', () => {
   }
   assert.match(source, /Worker compact item/);
   assert.match(source, /Terminal Result/);
+  assert.match(source, /visibleConversationEntries/);
+  assert.match(source, /#each visibleEntries as entry/);
   assert.match(source, /Shift\+Enter/);
   assert.match(source, /key !== 'Enter'|event\.key !== 'Enter'/);
   assert.match(source, /\/diagnostics/);

@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { formatActivityPayload, formatWorkerStatus, mergeSequenced, secretaryEventText, workerCard } from './ui-model.js';
+  import { formatActivityPayload, formatWorkerStatus, mergeSequenced, secretaryEventText, visibleConversationEntries, workerCard } from './ui-model.js';
 
   const ONBOARDING_KEY = 'secretary-onboarding-v1';
   let authenticated = false;
@@ -48,6 +48,7 @@
   let refreshTimer;
 
   $: workerCards = workers.map((worker) => workerCard(worker, projects, nodes));
+  $: visibleEntries = visibleConversationEntries(entries, workerCards);
   $: modelEntries = Object.entries(modelOptions);
   $: onboardingTitle = ['Welcome to Secretary', 'Your private workbench', 'Choose a default model', 'You are ready'][onboardingStep];
   $: currentWorker = observer?.details?.worker;
@@ -406,7 +407,7 @@
             {#if secretaryStream.length > 0}<section class="rounded-2xl border border-indigo-300/20 bg-indigo-300/[0.06] p-4" aria-label="Secretary live stream"><div class="mb-3 flex items-center justify-between text-[11px] uppercase tracking-[0.12em] text-indigo-300"><span>Secretary live stream</span><span>{formatWorkerStatus(messageStatus)}</span></div><div class="space-y-2 text-sm leading-6">{#each secretaryStream as event (event.id || event.seq)}<div class="flex gap-3"><span class="mt-2 h-1.5 w-1.5 shrink-0 rounded-full {event.kind === 'secretary.text_delta' ? 'bg-indigo-200' : 'bg-cyan-300'}"></span><div><span class="mr-2 text-[10px] uppercase tracking-wide text-slate-500">{event.kind.replace('secretary.', '')}</span><span class="whitespace-pre-wrap text-slate-200">{secretaryEventText(event)}</span></div></div>{/each}</div>{#if secretaryStreamError}<p class="mt-3 text-xs text-rose-300">{secretaryStreamError}</p>{/if}</section>{/if}
             {#each workerCards as card (card.worker.worker_ref)}<article class="rounded-2xl border border-emerald-300/20 bg-emerald-300/[0.05] p-4" aria-label="Worker compact item"><div class="flex items-center justify-between gap-3"><span class="text-xs font-medium text-emerald-200">Worker {card.worker.worker_ref}</span><span class="rounded-full border px-2 py-1 text-[10px] uppercase tracking-wide {statusTone(card.status)}">{card.statusLabel}</span></div><div class="mt-2 grid gap-1 text-xs text-slate-400 sm:grid-cols-2"><span>Turn: {card.turnStatusLabel}</span><span>{card.project} · {card.node}</span></div><p class="mt-2 text-xs text-slate-300">{card.acknowledgement}</p>{#if card.result}<p class="mt-2 whitespace-pre-wrap text-sm leading-6 text-emerald-100" aria-label="Terminal Result">Result: {card.result}</p>{/if}</article>{/each}
             {#if entries.length === 0 && workerCards.length === 0}<div class="rounded-3xl border border-dashed border-white/10 p-8 text-center text-sm text-slate-500">Start with a question or a task.</div>{/if}
-            {#each entries as entry (entry.id)}
+            {#each visibleEntries as entry (entry.id)}
               <article class="rounded-2xl border border-white/10 p-4 {entry.kind === 'user' ? 'ml-4 bg-indigo-400/[0.08] sm:ml-16' : entry.kind === 'worker_result' ? 'mr-4 bg-emerald-400/[0.06] sm:mr-16' : 'bg-white/[0.035]'}"><div class="mb-2 flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.12em] text-slate-500"><span>{entry.kind.replaceAll('_', ' ')}</span><time>{formatDate(entry.created_at)}</time></div><p class="whitespace-pre-wrap break-words leading-7 text-slate-200">{entry.body}</p></article>
             {/each}
           </div>

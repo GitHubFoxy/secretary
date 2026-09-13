@@ -79,6 +79,11 @@ export function formatActivityPayload(event) {
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 }
 
+export function visibleConversationEntries(entries = [], workerCards = []) {
+  const renderedResults = new Set(workerCards.map((card) => card?.result).filter(Boolean));
+  return entries.filter((entry) => entry?.kind !== 'worker_result' || !renderedResults.has(entry.body));
+}
+
 export function workerCard(worker, projects = [], nodes = []) {
   const project = projects.find((item) => item.id === worker?.project_id);
   const node = nodes.find((item) => item.node === worker?.node_id);

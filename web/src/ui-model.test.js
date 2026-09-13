@@ -5,6 +5,7 @@ import {
   mergeSequenced,
   secretaryEventText,
   workerCard,
+  visibleConversationEntries,
   formatActivityPayload,
 } from './ui-model.js';
 
@@ -35,6 +36,21 @@ test('compact Worker item includes Turn status, acknowledgement and terminal Res
   assert.equal(card.turnStatus, 'succeeded');
   assert.equal(card.turnStatusLabel, 'Succeeded');
   assert.equal(card.acknowledgement, 'Accepted');
+  assert.equal(card.result, 'Deployed safely');
+});
+
+test('renders a terminal Worker Result once while retaining the durable entry', () => {
+  const durableEntries = [
+    { id: 'worker-result-entry', seq: 1, kind: 'worker_result', body: 'Deployed safely' },
+    { id: 'secretary-entry', seq: 2, kind: 'secretary', body: 'Acknowledged' },
+  ];
+  const card = workerCard({
+    worker_ref: 'wkr-result', status: 'idle', last_result_summary: 'Deployed safely',
+  });
+  const visible = visibleConversationEntries(durableEntries, [card]);
+  assert.equal(durableEntries.length, 2);
+  assert.equal(durableEntries[0].kind, 'worker_result');
+  assert.deepEqual(visible.map((entry) => entry.kind), ['secretary']);
   assert.equal(card.result, 'Deployed safely');
 });
 

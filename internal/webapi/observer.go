@@ -429,7 +429,7 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 			http.Error(w, "decode idempotency record", http.StatusInternalServerError)
 			return true
 		}
-		writeJSON(w, http.StatusAccepted, stored)
+		writeJSON(w, http.StatusAccepted, sanitizePublicJSON(stored))
 		return true
 	}
 	var result core.WorkerDetails
@@ -457,11 +457,12 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 		writeClientMutationError(w, err)
 		return true
 	}
-	if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, request.IdempotencyKey, payloadFingerprint, result); err != nil {
+	publicResult := sanitizePublicJSON(result)
+	if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, request.IdempotencyKey, payloadFingerprint, publicResult); err != nil {
 		http.Error(w, "save idempotency record", http.StatusInternalServerError)
 		return true
 	}
-	writeJSON(w, http.StatusAccepted, result)
+	writeJSON(w, http.StatusAccepted, publicResult)
 	return true
 }
 
