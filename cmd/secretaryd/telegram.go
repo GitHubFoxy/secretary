@@ -103,17 +103,33 @@ func bridgeTelegramEvents(ctx context.Context, store *core.Store, adapter *teleg
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if events, err := store.EventsAfterSeq(ctx, 0, 500); err == nil {
-			for _, event := range events {
-				if err := adapter.HandleDurableEvent(ctx, telegramEvent(event)); err != nil {
-					break
-				}
-			}
-		}
+		_ = bridgeTelegramEventsOnce(ctx, store, adapter)
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		}
+	}
+}
+
+func bridgeTelegramEventsOnce(ctx context.Context, store *core.Store, adapter *telegram.Adapter) error {
+	cursor := adapter.LastEventSeq()
+	for {
+		events, err := store.EventsAfterSeq(ctx, cursor, 500)
+		if err != nil {
+			return err
+		}
+		if len(events) == 0 {
+			return nil
+		}
+		for _, event := range events {
+			if err := adapter.HandleDurableEvent(ctx, telegramEvent(event)); err != nil {
+				return err
+			}
+			cursor = event.Seq
+		}
+		if len(events) < 500 {
+			return nil
 		}
 	}
 }
@@ -159,7 +175,7 @@ func telegramEvent(event core.Event) telegram.Event {
 		}
 	case event.Kind == "approval.requested":
 		result.Kind = "worker.approval_requested"
-	case event.Kind == "approval.approved" || event.Kind == "approval.denied" || event.Kind == "approval.revoked":
+	case event.Kind == "approval.resolved" || event.Kind == "approval.approved" || event.Kind == "approval.denied" || event.Kind == "approval.revoked":
 		result.Kind = "worker.approval_resolved"
 	case event.Kind == "attempt.outcome_recorded" || event.Kind == "result.accepted":
 		classification := strings.ToLower(stringField(payload, "classification"))

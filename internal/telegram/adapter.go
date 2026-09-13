@@ -113,14 +113,17 @@ type TopicMapping struct {
 }
 
 type persistedState struct {
-	Version      int                      `json:"version"`
-	OwnerChat    int64                    `json:"owner_chat_id"`
-	Offset       int64                    `json:"offset"`
-	LastEventSeq int64                    `json:"last_event_seq"`
-	Processed    map[string]time.Time     `json:"processed_updates"`
-	Topics       map[string]TopicMapping  `json:"topics"`
-	Pairings     map[string]pairingRecord `json:"pairings"`
-	Outbox       []OutgoingMessage        `json:"outbox,omitempty"`
+	Version               int                      `json:"version"`
+	OwnerChat             int64                    `json:"owner_chat_id"`
+	Offset                int64                    `json:"offset"`
+	LastEventSeq          int64                    `json:"last_event_seq"`
+	Processed             map[string]time.Time     `json:"processed_updates"`
+	Topics                map[string]TopicMapping  `json:"topics"`
+	Pairings              map[string]pairingRecord `json:"pairings"`
+	Outbox                []OutgoingMessage        `json:"outbox,omitempty"`
+	PendingSecretaryText  string                   `json:"pending_secretary_text,omitempty"`
+	PendingSecretaryTools []string                 `json:"pending_secretary_tools,omitempty"`
+	PendingWorkerLines    map[string][]string      `json:"pending_worker_lines,omitempty"`
 }
 
 type pairingRecord struct {
@@ -146,6 +149,7 @@ type Adapter struct {
 
 	mu         sync.Mutex
 	topicMu    sync.Mutex
+	flushMu    sync.Mutex
 	state      persistedState
 	pending    pendingBatch
 	claims     map[int64]*updateClaim
@@ -177,7 +181,12 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 	if adapter.state.OwnerChat == 0 {
 		adapter.state.OwnerChat = config.OwnerChatID
 	}
-	adapter.pending.WorkerLines = make(map[string][]string)
+	adapter.pending.SecretaryText.WriteString(adapter.state.PendingSecretaryText)
+	adapter.pending.SecretaryTools = append([]string(nil), adapter.state.PendingSecretaryTools...)
+	adapter.pending.WorkerLines = cloneWorkerLines(adapter.state.PendingWorkerLines)
+	if adapter.pending.WorkerLines == nil {
+		adapter.pending.WorkerLines = make(map[string][]string)
+	}
 	return adapter, nil
 }
 
@@ -247,12 +256,17 @@ func (a *Adapter) SetOwnerChat(chatID int64) error {
 		return errors.New("telegram: owner chat id is required")
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.state.OwnerChat != 0 && a.state.OwnerChat != chatID {
+		a.mu.Unlock()
 		return ErrUnauthorized
 	}
 	a.state.OwnerChat = chatID
-	return a.saveLocked()
+	err := a.saveLocked()
+	a.mu.Unlock()
+	if err == nil {
+		a.scheduleFlush()
+	}
+	return err
 }
 
 func (a *Adapter) CreatePairing(botUsername string) (Pairing, error) {
@@ -287,17 +301,23 @@ func (a *Adapter) RedeemPairing(code string, chatID int64) error {
 	hash := sha256.Sum256([]byte(strings.TrimSpace(code)))
 	key := hex.EncodeToString(hash[:])
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	record, ok := a.state.Pairings[key]
 	if !ok || !a.now().Before(record.ExpiresAt) {
+		a.mu.Unlock()
 		return ErrPairingUsed
 	}
 	if a.state.OwnerChat != 0 && a.state.OwnerChat != chatID {
+		a.mu.Unlock()
 		return ErrUnauthorized
 	}
 	delete(a.state.Pairings, key)
 	a.state.OwnerChat = chatID
-	return a.saveLocked()
+	err := a.saveLocked()
+	a.mu.Unlock()
+	if err == nil {
+		a.scheduleFlush()
+	}
+	return err
 }
 
 func (a *Adapter) ownerAllowed(chatID int64) bool {
@@ -415,18 +435,51 @@ func (a *Adapter) PollOnce(ctx context.Context) error {
 }
 
 func (a *Adapter) Run(ctx context.Context) error {
-	ticker := time.NewTicker(a.config.PollInterval)
-	defer ticker.Stop()
+	backoff := 100 * time.Millisecond
+	maxBackoff := a.config.PollInterval
+	if maxBackoff < backoff {
+		maxBackoff = backoff
+	}
 	for {
-		if err := a.PollOnce(ctx); err != nil {
-			return err
+		err := a.PollOnce(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			timer := time.NewTimer(backoff)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return ctx.Err()
+			case <-timer.C:
+			}
+			if backoff < maxBackoff {
+				backoff *= 2
+				if backoff > maxBackoff {
+					backoff = maxBackoff
+				}
+			}
+			continue
 		}
+		backoff = 100 * time.Millisecond
+		timer := time.NewTimer(a.config.PollInterval)
 		select {
 		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
 			return ctx.Err()
-		case <-ticker.C:
+		case <-timer.C:
 		}
 	}
+}
+
+func (a *Adapter) LastEventSeq() int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.state.LastEventSeq
 }
 
 func (a *Adapter) HandleDurableEvent(ctx context.Context, event Event) error {
@@ -454,6 +507,15 @@ func (a *Adapter) HandleDurableEvent(ctx context.Context, event Event) error {
 func (a *Adapter) HandleEvent(ctx context.Context, event Event) error {
 	if strings.HasPrefix(event.Kind, "secretary.") {
 		a.queueSecretary(event)
+		a.mu.Lock()
+		err := a.persistPendingLocked()
+		if err == nil {
+			err = a.saveLocked()
+		}
+		a.mu.Unlock()
+		if err != nil {
+			return err
+		}
 		a.scheduleFlush()
 		return nil
 	}
@@ -471,7 +533,16 @@ func (a *Adapter) HandleEvent(ctx context.Context, event Event) error {
 	if err != nil {
 		return err
 	}
-	if requestID := requestIDFromPayload(event.Payload); requestID != "" && importantWorkerEvent(event.Kind) {
+	if isApprovalResolution(event.Kind) {
+		a.mu.Lock()
+		mapping.PendingRequestID = ""
+		a.state.Topics[event.WorkerRef] = mapping
+		if err := a.saveLocked(); err != nil {
+			a.mu.Unlock()
+			return err
+		}
+		a.mu.Unlock()
+	} else if requestID := requestIDFromPayload(event.Payload); requestID != "" && isRequestEvent(event.Kind) {
 		a.mu.Lock()
 		mapping.PendingRequestID = requestID
 		a.state.Topics[event.WorkerRef] = mapping
@@ -497,7 +568,14 @@ func (a *Adapter) HandleEvent(ctx context.Context, event Event) error {
 		a.pending.WorkerLines = make(map[string][]string)
 	}
 	a.pending.WorkerLines[event.WorkerRef] = append(a.pending.WorkerLines[event.WorkerRef], line)
+	err = a.persistPendingLocked()
+	if err == nil {
+		err = a.saveLocked()
+	}
 	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
 	a.scheduleFlush()
 	return nil
 }
@@ -529,6 +607,24 @@ func (a *Adapter) ensureTopic(ctx context.Context, workerRef, title string) (Top
 	err = a.saveLocked()
 	a.mu.Unlock()
 	return mapping, err
+}
+
+func (a *Adapter) persistPendingLocked() error {
+	a.state.PendingSecretaryText = a.pending.SecretaryText.String()
+	a.state.PendingSecretaryTools = append([]string(nil), a.pending.SecretaryTools...)
+	a.state.PendingWorkerLines = cloneWorkerLines(a.pending.WorkerLines)
+	return nil
+}
+
+func cloneWorkerLines(lines map[string][]string) map[string][]string {
+	if lines == nil {
+		return nil
+	}
+	clone := make(map[string][]string, len(lines))
+	for ref, values := range lines {
+		clone[ref] = append([]string(nil), values...)
+	}
+	return clone
 }
 
 func (a *Adapter) queueSecretary(event Event) {
@@ -564,41 +660,37 @@ func (a *Adapter) scheduleFlush() {
 }
 
 func (a *Adapter) Flush(ctx context.Context) error {
+	a.flushMu.Lock()
+	defer a.flushMu.Unlock()
 	a.mu.Lock()
 	if a.flushTimer != nil {
 		a.flushTimer.Stop()
 		a.flushTimer = nil
 	}
-	a.mu.Unlock()
-	if err := a.drainOutbox(ctx); err != nil {
-		return err
-	}
-	a.mu.Lock()
+	owner := a.state.OwnerChat
 	text := strings.TrimSpace(a.pending.SecretaryText.String())
 	tools := append([]string(nil), a.pending.SecretaryTools...)
-	workerLines := make(map[string][]string, len(a.pending.WorkerLines))
-	for ref, lines := range a.pending.WorkerLines {
-		workerLines[ref] = append([]string(nil), lines...)
-	}
-	a.pending.SecretaryText.Reset()
-	a.pending.SecretaryTools = nil
-	a.pending.WorkerLines = make(map[string][]string)
-	owner := a.state.OwnerChat
+	workerLines := cloneWorkerLines(a.pending.WorkerLines)
 	mappings := make(map[string]TopicMapping, len(a.state.Topics))
 	for ref, mapping := range a.state.Topics {
 		mappings[ref] = mapping
 	}
 	a.mu.Unlock()
-	if text != "" || len(tools) != 0 {
+	if err := a.drainOutbox(ctx); err != nil {
+		return err
+	}
+	if owner != 0 && (text != "" || len(tools) != 0) {
 		parts := make([]string, 0, 2)
 		if text != "" {
 			parts = append(parts, text)
 		}
 		if len(tools) != 0 {
-			unique := uniqueStrings(tools)
-			parts = append(parts, "Шаги: "+strings.Join(unique, ", "))
+			parts = append(parts, "Шаги: "+strings.Join(uniqueStrings(tools), ", "))
 		}
 		if err := a.sendMessage(ctx, OutgoingMessage{ChatID: owner, Text: strings.Join(parts, "\n")}); err != nil {
+			return err
+		}
+		if err := a.clearSecretaryPending(text, tools); err != nil {
 			return err
 		}
 	}
@@ -609,17 +701,58 @@ func (a *Adapter) Flush(ctx context.Context) error {
 	sort.Strings(refs)
 	for _, ref := range refs {
 		mapping, ok := mappings[ref]
-		if !ok {
+		if !ok || mapping.ChatID == 0 {
 			continue
 		}
 		if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: "Активность:\n" + strings.Join(uniqueStrings(workerLines[ref]), "\n")}); err != nil {
+			return err
+		}
+		if err := a.clearWorkerPending(ref, workerLines[ref]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
+func (a *Adapter) clearSecretaryPending(text string, tools []string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if strings.TrimSpace(a.pending.SecretaryText.String()) != text || !sameStrings(a.pending.SecretaryTools, tools) {
+		return nil
+	}
+	a.pending.SecretaryText.Reset()
+	a.pending.SecretaryTools = nil
+	_ = a.persistPendingLocked()
+	return a.saveLocked()
+}
+
+func (a *Adapter) clearWorkerPending(ref string, lines []string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !sameStrings(a.pending.WorkerLines[ref], lines) {
+		return nil
+	}
+	delete(a.pending.WorkerLines, ref)
+	_ = a.persistPendingLocked()
+	return a.saveLocked()
+}
+
+func sameStrings(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
 func (a *Adapter) sendMessage(ctx context.Context, message OutgoingMessage) error {
+	if message.ChatID == 0 {
+		return ErrUnauthorized
+	}
 	a.mu.Lock()
 	alreadyPending := false
 	for _, pending := range a.state.Outbox {
@@ -656,6 +789,21 @@ func (a *Adapter) drainOutbox(ctx context.Context) error {
 	outbox := append([]OutgoingMessage(nil), a.state.Outbox...)
 	a.mu.Unlock()
 	for _, message := range outbox {
+		if message.ChatID == 0 {
+			a.mu.Lock()
+			for index, pending := range a.state.Outbox {
+				if pending == message {
+					a.state.Outbox = append(a.state.Outbox[:index], a.state.Outbox[index+1:]...)
+					break
+				}
+			}
+			err := a.saveLocked()
+			a.mu.Unlock()
+			if err != nil {
+				return err
+			}
+			continue
+		}
 		if err := a.transport.SendMessage(ctx, message); err != nil {
 			return err
 		}
@@ -673,6 +821,24 @@ func (a *Adapter) drainOutbox(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+func isRequestEvent(kind string) bool {
+	switch kind {
+	case "worker.approval_requested", "worker.needs_input", "approval.requested":
+		return true
+	default:
+		return false
+	}
+}
+
+func isApprovalResolution(kind string) bool {
+	switch kind {
+	case "worker.approval_resolved", "approval.resolved", "approval.approved", "approval.denied", "approval.revoked":
+		return true
+	default:
+		return false
+	}
 }
 
 func importantWorkerEvent(kind string) bool {
@@ -710,29 +876,104 @@ func topicName(workerRef, title string) string {
 	return name
 }
 
-var sensitiveText = regexp.MustCompile(`(?i)(node[_ -]?(token|secret)|channel[_ -]?(secret|token)|callback[_ -]?(capability|secret|token)|runtime[_ -]?(session|id)|task[_ -]?id|session[_ -]?id|native[_ -]?(session|id)|worker[_ -]?ref|attempt[_ -]?id|turn[_ -]?id|api[_ -]?key|credential|token|secret)\s*[:=]?[[:space:]]*[^,; ]+`)
-var sensitiveMarkerValue = regexp.MustCompile(`(?i)\b(?:task|session|native|worker|attempt|turn|node|channel|callback|token|secret|reasoning|thought|analysis)[_-][a-z0-9][a-z0-9._/-]*\b`)
-var reasoningMarker = regexp.MustCompile(`(?i)\b(?:analysis|reasoning|thought|chain[-_ ]of[-_ ]thought|cot)\s*[:=]`)
+var sensitiveText = regexp.MustCompile(`(?i)\b(?:node|channel|callback|runtime|task|session|native|worker|attempt|turn|api|credential|token|secret)[_ -]?(?:token|secret|capability|session|id|ref|key|credential)?\s*[:=]\s*[^,;[:space:]]+`)
+var sensitiveMarkerValue = regexp.MustCompile(`(?i)\b(?:task|session|native|worker|attempt|turn|node|channel|callback|token|secret|reasoning|thought|analysis|credential)[_-][a-z0-9][a-z0-9._/-]*\b`)
 
 func safeText(text string) string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return ""
-	}
-	if reasoningMarker.MatchString(text) {
-		return "Worker activity update"
-	}
-	text = sensitiveText.ReplaceAllString(text, "[redacted]")
-	text = sensitiveMarkerValue.ReplaceAllString(text, "[redacted]")
-	text = strings.Join(strings.Fields(text), " ")
-	return text
+	return sanitizeTelegramText(strings.TrimSpace(text), true)
 }
 
 func safeDelta(text string) string {
-	if reasoningMarker.MatchString(text) {
+	return sanitizeTelegramText(text, false)
+}
+
+func sanitizeTelegramText(text string, normalize bool) string {
+	if strings.TrimSpace(text) == "" {
 		return ""
 	}
-	return sensitiveMarkerValue.ReplaceAllString(sensitiveText.ReplaceAllString(text, "[redacted]"), "[redacted]")
+	trimmed := strings.TrimSpace(text)
+	if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+		var value any
+		if json.Unmarshal([]byte(trimmed), &value) == nil {
+			cleaned, _ := sanitizeTelegramValue(value)
+			encoded, err := json.Marshal(cleaned)
+			if err == nil {
+				return string(encoded)
+			}
+			return "[redacted]"
+		}
+	}
+	if forbiddenTelegramText(text) {
+		return "[redacted]"
+	}
+	text = sensitiveText.ReplaceAllString(text, "[redacted]")
+	text = sensitiveMarkerValue.ReplaceAllString(text, "[redacted]")
+	if normalize {
+		text = strings.Join(strings.Fields(text), " ")
+	}
+	return text
+}
+
+func sanitizeTelegramValue(value any) (any, bool) {
+	switch current := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(current))
+		for key, child := range current {
+			if forbiddenTelegramKey(key) {
+				continue
+			}
+			cleaned, _ := sanitizeTelegramValue(child)
+			result[key] = cleaned
+		}
+		return result, true
+	case []any:
+		result := make([]any, len(current))
+		for index, child := range current {
+			result[index], _ = sanitizeTelegramValue(child)
+		}
+		return result, true
+	case string:
+		trimmed := strings.TrimSpace(current)
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+			var nested any
+			if json.Unmarshal([]byte(trimmed), &nested) == nil {
+				cleaned, _ := sanitizeTelegramValue(nested)
+				encoded, err := json.Marshal(cleaned)
+				if err == nil {
+					return string(encoded), true
+				}
+				return "[redacted]", true
+			}
+		}
+		return sanitizeTelegramText(current, false), true
+	default:
+		return value, true
+	}
+}
+
+func forbiddenTelegramKey(key string) bool {
+	compact := strings.ToLower(strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
+			return r
+		}
+		return -1
+	}, key))
+	for _, marker := range []string{"secret", "credential", "callback", "token", "password", "authorization", "apikey", "accesskey", "privatekey", "task", "session", "native", "analysis", "reasoning", "thought", "chainofthought"} {
+		if strings.Contains(compact, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func forbiddenTelegramText(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{"chain-of-thought", "chain of thought", "chain_of_thought", "raw thought", "raw_thought", "internal reasoning", "internal_reasoning", "thought process", "thought_process", "<think>", "</think>", "analysis:", "reasoning:", "thought:", "chain-of-thought:", "bearer ", "api_key=", "apikey=", "access_token", "api_token", "token=", "secret=", "credential=", "password=", "callback=", "runtime_session_id", "session_id", "sessionid", "native_id"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func requestIDFromPayload(payload json.RawMessage) string {

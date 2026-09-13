@@ -181,7 +181,7 @@ func (c *HTTPServerClient) post(ctx context.Context, path string, body any, idem
 	defer response.Body.Close()
 	if response.StatusCode/100 != 2 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("telegram: server returned %s: %s", response.Status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("telegram: server returned %s: %s", response.Status, redactBotSecret(c.Credential, strings.TrimSpace(string(body))))
 	}
 	return nil
 }
