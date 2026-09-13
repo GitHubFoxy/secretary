@@ -87,6 +87,15 @@ func TestCredentialSetSeparatesRolesAndRedactsExport(t *testing.T) {
 	if err := credentials.Validate(); err != nil {
 		t.Fatal(err)
 	}
+	rawEncoded, err := json.Marshal(credentials)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"node-credential", "client-credential", "secretary-capability", "telegram-bot-token"} {
+		if strings.Contains(string(rawEncoded), secret) {
+			t.Fatalf("raw credential set leaked %q: %s", secret, rawEncoded)
+		}
+	}
 	redacted := credentials.Redacted()
 	encoded, err := json.Marshal(redacted)
 	if err != nil {

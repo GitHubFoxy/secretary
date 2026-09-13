@@ -129,10 +129,10 @@ func (c DeploymentConfig) ProtocolWorkspaces() ([]Workspace, error) {
 // CredentialSet names the four independent credential domains. The raw values
 // are accepted only at process boundaries and are never suitable for export.
 type CredentialSet struct {
-	Node             string `json:"node_credential,omitempty"`
-	Client           string `json:"client_credential,omitempty"`
-	SecretaryRuntime string `json:"secretary_runtime_credential,omitempty"`
-	Telegram         string `json:"telegram_token,omitempty"`
+	Node             string `json:"-"`
+	Client           string `json:"-"`
+	SecretaryRuntime string `json:"-"`
+	Telegram         string `json:"-"`
 }
 
 func (c CredentialSet) Validate() error {

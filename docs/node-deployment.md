@@ -4,6 +4,15 @@
 
 ## Установка
 
+На Secretary server задайте отдельные Node credentials до запуска `secretaryd`:
+
+```sh
+export SECRETARY_NODE_PAIRING_TOKENS='одноразовый-token-macbook,одноразовый-token-home'
+export SECRETARY_NODE_ADMIN_TOKEN='отдельный-node-admin-token'
+```
+
+Pairing token и admin token должны отличаться от Client bootstrap/credential, Secretary runtime credential и Telegram token. Не сохраняйте эти значения в Git или launchd plist.
+
 На каждой машине выполните в корне репозитория:
 
 ```sh
