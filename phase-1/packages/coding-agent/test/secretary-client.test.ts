@@ -140,6 +140,26 @@ describe("SecretaryClient", () => {
 		).toBe(false);
 	});
 
+	test("resolves needs_input and approval using only the server request_id", async () => {
+		const { fetch, calls } = fetchSequence([
+			response({ worker: { worker_ref: "worker-7", status: "needs_input" }, turns: [] }),
+			response({ worker: { worker_ref: "worker-7", status: "working" }, turns: [] }),
+			response({ worker: { worker_ref: "worker-7", status: "working" }, turns: [] }),
+		]);
+		const secretary = client(fetch);
+		await secretary.messageWorker("worker-7", "input answer", { requestId: "request-1", idempotencyKey: "input-1" });
+		await secretary.respondWorker("worker-7", "request-1", "approved", { idempotencyKey: "approval-1" });
+		await secretary.approve("request-2", { idempotencyKey: "approval-route-1" });
+		expect(calls.map(({ input }) => input.toString())).toEqual([
+			`${baseUrl}/v1/workers/worker-7/message`,
+			`${baseUrl}/v1/workers/worker-7/message`,
+			`${baseUrl}/v1/approvals/request-2/approve`,
+		]);
+		expect(JSON.parse(String(calls[0]!.init?.body))).toMatchObject({ request_id: "request-1", text: "input answer" });
+		expect(JSON.parse(String(calls[1]!.init?.body))).toEqual({ request_id: "request-1", text: "approved" });
+		expect(JSON.parse(String(calls[2]!.init?.body))).toEqual({});
+	});
+
 	test("uses the existing Worker and Approval endpoints with idempotency", async () => {
 		const { fetch, calls } = fetchSequence([
 			response({ worker: { worker_ref: "worker-7" }, turns: [] }),

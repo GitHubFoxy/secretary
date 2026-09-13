@@ -56,13 +56,14 @@ export class SecretaryPresentation {
 		return this.#state;
 	}
 
-	async start(): Promise<SecretaryPresentationState> {
+	async start(options: { readonly live?: boolean } = {}): Promise<SecretaryPresentationState> {
 		const [conversation, workers, approvals] = await Promise.all([
 			this.#client.listConversation(),
 			this.#client.listWorkers(),
 			this.#client.listApprovals(),
 		]);
 		this.#replace({ conversation, workers, approvals, connection: "connected" });
+		if (options.live === false) return this.#state;
 		this.#conversationSubscription = await this.#client.subscribeConversation({
 			onEntry: (entry) => this.#appendConversation(entry),
 			onError: this.#onError,
@@ -128,14 +129,14 @@ export class SecretaryPresentation {
 		return details;
 	}
 
-	async approve(approvalId: string): Promise<WorkerDetails> {
-		const details = await this.#client.approve(approvalId, { workerRef: this.#state.selectedWorkerRef });
+	async approve(requestId: string): Promise<WorkerDetails> {
+		const details = await this.#client.approve(requestId, { workerRef: this.#state.selectedWorkerRef });
 		this.#replace({ selectedWorker: details });
 		return details;
 	}
 
-	async deny(approvalId: string): Promise<WorkerDetails> {
-		const details = await this.#client.deny(approvalId);
+	async deny(requestId: string): Promise<WorkerDetails> {
+		const details = await this.#client.deny(requestId);
 		this.#replace({ selectedWorker: details });
 		return details;
 	}

@@ -419,6 +419,7 @@ export class SecretaryClient {
 		response: string,
 		options: { readonly idempotencyKey?: string; readonly signal?: AbortSignal } = {},
 	): Promise<WorkerDetails> {
+		if (requestId.trim() === "") throw new TypeError("request_id is required");
 		return this.messageWorker(workerRef, response, { requestId, ...options });
 	}
 
@@ -436,18 +437,15 @@ export class SecretaryClient {
 		return this.#workerMutation(workerRef, "close", {}, options);
 	}
 
+	/** Resolve an Approval by its server-issued request_id. */
 	async approve(
-		approvalId: string,
+		requestId: string,
 		options: { readonly workerRef?: string; readonly idempotencyKey?: string; readonly signal?: AbortSignal } = {},
 	): Promise<WorkerDetails> {
+		if (requestId.trim() === "") throw new TypeError("request_id is required");
 		if (options.workerRef)
-			return this.#workerMutation(
-				options.workerRef,
-				"approve",
-				{ request_id: approvalId, text: "approve" },
-				options,
-			);
-		return this.#request<WorkerDetails>(`/v1/approvals/${encodeURIComponent(approvalId)}/approve`, {
+			return this.#workerMutation(options.workerRef, "approve", { request_id: requestId, text: "approve" }, options);
+		return this.#request<WorkerDetails>(`/v1/approvals/${encodeURIComponent(requestId)}/approve`, {
 			method: "POST",
 			body: {},
 			idempotencyKey: options.idempotencyKey ?? randomUUID(),
@@ -455,11 +453,13 @@ export class SecretaryClient {
 		});
 	}
 
+	/** Resolve an Approval by its server-issued request_id. */
 	async deny(
-		approvalId: string,
+		requestId: string,
 		options: { readonly idempotencyKey?: string; readonly signal?: AbortSignal } = {},
 	): Promise<WorkerDetails> {
-		return this.#request<WorkerDetails>(`/v1/approvals/${encodeURIComponent(approvalId)}/deny`, {
+		if (requestId.trim() === "") throw new TypeError("request_id is required");
+		return this.#request<WorkerDetails>(`/v1/approvals/${encodeURIComponent(requestId)}/deny`, {
 			method: "POST",
 			body: {},
 			idempotencyKey: options.idempotencyKey ?? randomUUID(),

@@ -27,3 +27,8 @@ export {
 	type SecretaryPresentationOptions,
 	type SecretaryPresentationState,
 } from "./presentation.ts";
+export {
+	openSecretaryClientRuntime,
+	SecretaryClientRuntime,
+	type SecretaryClientRuntimeOptions,
+} from "./runtime.ts";

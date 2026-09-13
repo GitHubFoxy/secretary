@@ -29,6 +29,7 @@ import {
 import { resolveCredentialForPrint } from "./cli/credential-print.ts";
 import { cli as experimentalCli } from "./cli/experimental/cli.ts";
 import type { ClientCommand } from "./cli/experimental/commands/client.ts";
+import type { SecretaryCommand } from "./cli/experimental/commands/secretary.ts";
 import type { ServerCommand } from "./cli/experimental/commands/server.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
@@ -68,6 +69,8 @@ import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/tru
 import { runClient } from "./experimental/client.ts";
 import { runClientTui } from "./experimental/client-tui.ts";
 import type { RadiusRelayHostStatus } from "./experimental/radius-relay.ts";
+import { runSecretaryClient } from "./experimental/secretary-client.ts";
+import { runSecretaryClientTui } from "./experimental/secretary-tui.ts";
 import { startForegroundServer } from "./experimental/server.ts";
 import { builtInExtensions } from "./extensions/index.ts";
 import { runMigrations, showDeprecationWarnings } from "./migrations.ts";
@@ -623,6 +626,14 @@ async function runExperimentalServerCommand(command: ServerCommand): Promise<voi
 	}
 }
 
+async function runSecretaryCommand(command: SecretaryCommand): Promise<void> {
+	if (command.once !== true && process.stdin.isTTY === true && process.stdout.isTTY === true) {
+		await runSecretaryClientTui(command);
+		return;
+	}
+	await runSecretaryClient(command);
+}
+
 async function runClientCommand(command: ClientCommand): Promise<void> {
 	if (command.prompt === undefined && process.stdin.isTTY === true && process.stdout.isTTY === true) {
 		await runClientTui(command);
@@ -660,11 +671,13 @@ async function runClientCommand(command: ClientCommand): Promise<void> {
 }
 
 async function runExperimentalCommand(args: string[]): Promise<boolean> {
-	if (!areExperimentalFeaturesEnabled() || (args[0] !== "server" && args[0] !== "client")) return false;
+	if (!areExperimentalFeaturesEnabled() || (args[0] !== "server" && args[0] !== "client" && args[0] !== "secretary"))
+		return false;
 	try {
 		const result = await experimentalCli.execute(args, {
 			runServer: runExperimentalServerCommand,
 			runClient: runClientCommand,
+			runSecretary: runSecretaryCommand,
 		});
 		if (!result.ok) {
 			for (const error of result.errors) console.error(chalk.red(`Error: ${error}`));
