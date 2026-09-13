@@ -46,10 +46,16 @@ type Client struct {
 	done     chan struct{}
 	log      io.Writer
 	logMu    sync.Mutex
+	stop     chan struct{}
+	stopOnce sync.Once
+	started  bool
+	closeMu  sync.Mutex
+	closeErr error
+	cancel   context.CancelFunc
 }
 
 func NewClient(stdin io.WriteCloser) *Client {
-	return &Client{stdin: stdin, events: make(chan Message, 64), done: make(chan struct{})}
+	return &Client{stdin: stdin, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{})}
 }
 
 func (c *Client) HandleServerRequest(message Message) error {
@@ -81,22 +87,26 @@ func StartWithLog(ctx context.Context, rawLog io.Writer, command string, argumen
 }
 
 func StartWithLogEnv(ctx context.Context, rawLog io.Writer, environment []string, command string, arguments ...string) (*Client, error) {
-	process := exec.CommandContext(ctx, command, arguments...)
+	processCtx, cancel := context.WithCancel(ctx)
+	process := exec.CommandContext(processCtx, command, arguments...)
 	if environment != nil {
 		process.Env = append(os.Environ(), environment...)
 	}
 	stdin, err := process.StdinPipe()
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	stdout, err := process.StdoutPipe()
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	if err := process.Start(); err != nil {
+		cancel()
 		return nil, err
 	}
-	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), log: rawLog}
+	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, log: rawLog}
 	go client.read(stdout)
 	return client, nil
 }
@@ -148,9 +158,23 @@ func (c *Client) Notify(method string, params any) error {
 }
 
 func (c *Client) Close() error {
-	err := c.stdin.Close()
-	<-c.done
-	return err
+	c.stopOnce.Do(func() {
+		close(c.stop)
+		if c.cancel != nil {
+			c.cancel()
+		}
+		if c.stdin != nil {
+			c.closeMu.Lock()
+			c.closeErr = c.stdin.Close()
+			c.closeMu.Unlock()
+		}
+	})
+	if c.started {
+		<-c.done
+	}
+	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
+	return c.closeErr
 }
 
 func (c *Client) send(message Message) error {
@@ -197,7 +221,8 @@ func (c *Client) read(stdout io.Reader) {
 		}
 		select {
 		case c.events <- message:
-		default:
+		case <-c.stop:
+			return
 		}
 	}
 }

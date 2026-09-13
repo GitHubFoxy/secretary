@@ -366,6 +366,10 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 		writeJSON(w, http.StatusOK, sanitizePublicJSON(details.Turns))
 		return true
 	}
+	if len(suffix) == 1 && suffix[0] == "diagnostics" && r.Method == http.MethodGet {
+		s.workerDiagnostics(w, r, details)
+		return true
+	}
 	if len(suffix) >= 1 && suffix[0] == "activity" {
 		if len(suffix) == 2 && suffix[1] == "ws" && r.Method == http.MethodGet {
 			s.workerActivityReplay(w, r, details.Worker.WorkerRef)
@@ -459,6 +463,15 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 	}
 	writeJSON(w, http.StatusAccepted, result)
 	return true
+}
+
+func (s *Server) workerDiagnostics(w http.ResponseWriter, r *http.Request, details core.WorkerDetails) {
+	diagnostics, err := s.buildWorkerDiagnostics(details)
+	if err != nil {
+		http.Error(w, "read worker diagnostics", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, diagnostics)
 }
 
 func (s *Server) workerActivityReplayJSON(w http.ResponseWriter, r *http.Request, workerRef string) {

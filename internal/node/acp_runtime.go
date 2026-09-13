@@ -195,6 +195,7 @@ type pendingACPResponse struct {
 
 func newACPSession(id string, client *acp.Client, busy bool) *acpSession {
 	session := &acpSession{id: id, client: client, activity: make(chan Activity, 64), result: make(chan Result, 64), pending: make(map[string]*pendingACPResponse), resolved: make(map[string]struct{}), reboundResponses: make(map[string]*pendingACPResponse), nativeRequests: make(map[string]string), nativeDeliveries: make(map[string]*pendingACPResponse), busy: busy}
+	session.activityDone = make(chan struct{})
 	client.SetServerRequestDeliveryHandler(session.serverRequestDelivered)
 	return session
 }
@@ -204,6 +205,11 @@ type acpSession struct {
 	client   *acp.Client
 	activity chan Activity
 	result   chan Result
+
+	activityMu     sync.Mutex
+	activityDone   chan struct{}
+	activityClosed bool
+	activitySendWG sync.WaitGroup
 
 	requestMu        sync.Mutex
 	pending          map[string]*pendingACPResponse
@@ -224,7 +230,37 @@ type acpSession struct {
 func (s *acpSession) ID() string                { return s.id }
 func (s *acpSession) Activity() <-chan Activity { return s.activity }
 func (s *acpSession) Result() <-chan Result     { return s.result }
-func (s *acpSession) Close() error              { return s.client.Close() }
+func (s *acpSession) Close() error {
+	s.closeActivity()
+	return s.client.Close()
+}
+
+func (s *acpSession) closeActivity() {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	if s.activityClosed {
+		return
+	}
+	s.activityClosed = true
+	close(s.activityDone)
+}
+
+func (s *acpSession) emitActivity(activity Activity) bool {
+	s.activityMu.Lock()
+	if s.activityClosed {
+		s.activityMu.Unlock()
+		return false
+	}
+	s.activitySendWG.Add(1)
+	s.activityMu.Unlock()
+	defer s.activitySendWG.Done()
+	select {
+	case s.activity <- activity:
+		return true
+	case <-s.activityDone:
+		return false
+	}
+}
 func (s *acpSession) Steer(ctx context.Context, text string) (bool, error) {
 	var response struct {
 		Outcome string `json:"outcome"`
@@ -434,7 +470,9 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 		// Requests are the durable approval/input boundary. Unlike optional
 		// activity updates, they must reach the Node outbox and cannot be
 		// silently dropped when the activity buffer is full.
-		s.activity <- Activity{Kind: kind, RequestID: requestID, Summary: summary}
+		if !s.emitActivity(Activity{Kind: kind, RequestID: requestID, Summary: summary}) {
+			return nil, errors.New("acp: session closed before worker request was observed")
+		}
 	}
 	value := <-pending.response
 	return s.serverRequestResponse(kind, message.Params, value)
@@ -563,7 +601,11 @@ func (s *acpSession) finishTurn() {
 	}
 }
 func (s *acpSession) watch() {
-	defer close(s.activity)
+	defer func() {
+		s.closeActivity()
+		s.activitySendWG.Wait()
+		close(s.activity)
+	}()
 	for event := range s.client.Events() {
 		if event.Method != "session/update" {
 			continue
@@ -585,10 +627,7 @@ func (s *acpSession) watch() {
 			content, _ = envelope["content"].(map[string]any)
 		}
 		emit := func(activity Activity) {
-			select {
-			case s.activity <- activity:
-			default:
-			}
+			s.emitActivity(activity)
 		}
 		switch kind {
 		case "agent_message_chunk", "user_message_chunk":

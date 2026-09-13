@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -120,18 +121,18 @@ func TestWorkerDiagnosticViewIncludesOutcomesAndRedactedHarnessDetails(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	task, err := store.CreateTask(ctx, conversation.ID, "inspect")
+	_, _, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{WorkerRef: "diagnostic-worker", Intent: "inspect", ProjectID: "project", NodeID: "local", HarnessInstanceID: "local/fx", PolicySnapshot: "safe"}, core.TurnSpec{Input: "inspect"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, _, err := store.AcceptDispatch(ctx, task.ID, "diagnostic-worker", "local", "native-runtime-session", t.TempDir()); err != nil {
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
 		t.Fatal(err)
 	}
-	details, err := store.TaskDetails(ctx, task.ID)
+	details, err := store.WorkerDetailsForConversation(ctx, conversation.ID, "diagnostic-worker")
 	if err != nil || len(details.Attempts) != 1 {
 		t.Fatalf("details=%#v err=%v", details, err)
 	}
-	if _, _, _, err := store.RecordAttemptOutcome(ctx, details.Attempts[0].ID, core.AttemptOutcomeInput{Status: core.OutcomeFailed, Classification: core.OutcomeFinal, ErrorCode: "harness_failed", ErrorMessage: "failed", Diagnostics: "diagnostic detail"}); err != nil {
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, details.Attempts[0].ID, core.AttemptOutcomeInput{Status: core.OutcomeFailed, Classification: core.OutcomeFinal, ErrorCode: "harness_failed", ErrorMessage: "failed", Diagnostics: "diagnostic detail", Summary: "failed"}); err != nil {
 		t.Fatal(err)
 	}
 	logDir := t.TempDir()
@@ -159,7 +160,7 @@ func TestWorkerDiagnosticViewIncludesOutcomesAndRedactedHarnessDetails(t *testin
 		t.Fatalf("status=%d body=%s", response.StatusCode, body)
 	}
 	text := string(body)
-	for _, want := range []string{"attempt_outcomes", "harness_details", "harness_failed", "shell"} {
+	for _, want := range []string{"attempt_outcomes", "raw_harness_details", "harness_failed", "shell"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("diagnostics missing %q: %s", want, text)
 		}
@@ -177,6 +178,62 @@ func TestWorkerDiagnosticViewIncludesOutcomesAndRedactedHarnessDetails(t *testin
 	conversationResponse.Body.Close()
 	if strings.Contains(string(conversationBody), "shell") || strings.Contains(string(conversationBody), "harness_details") {
 		t.Fatalf("normal Worker contract contains diagnostic details: %s", conversationBody)
+	}
+}
+
+func TestWorkerObserverReplaysBurstActivityFromDurableStore(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "burst-observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{WorkerRef: "burst-observer", Intent: "inspect", ProjectID: "project", NodeID: "local", HarnessInstanceID: "local/fx", PolicySnapshot: "safe"}, core.TurnSpec{Input: "inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	for index := 0; index < 128; index++ {
+		activity := core.Activity{
+			Metadata: core.ActivityMetadata{EventID: "burst-event-" + strconv.Itoa(index), Node: "local", HarnessInstanceID: "local/fx", WorkerRef: "burst-observer", TurnID: turn.ID, AttemptID: attempt.ID, Sequence: uint64(index + 1), ObservedAt: time.Now().UTC()},
+			Kind:     core.ActivityKindAssistantTextDelta,
+			Text:     "activity-" + strconv.Itoa(index),
+		}
+		if _, err := store.RecordNodeActivityReplay(ctx, activity); err != nil {
+			t.Fatalf("activity %d: %v", index, err)
+		}
+	}
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	client := &http.Client{Jar: mustWebCookieJar(t)}
+	login(t, client, server.URL)
+	response, err := client.Get(server.URL + "/v1/workers/burst-observer/activity?after_seq=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var events []core.Event
+	if err := json.NewDecoder(response.Body).Decode(&events); err != nil {
+		t.Fatal(err)
+	}
+	activityCount := 0
+	for _, event := range events {
+		if event.Kind == "attempt.activity" {
+			activityCount++
+		}
+	}
+	if response.StatusCode != http.StatusOK || activityCount != 128 {
+		t.Fatalf("status=%d events=%d activity=%d", response.StatusCode, len(events), activityCount)
 	}
 }
 
