@@ -135,12 +135,16 @@ describe("production Secretary client entrypoint", () => {
 			throw new Error(`unexpected ${url}`);
 		}) as unknown as typeof globalThis.fetch;
 		const originalFetch = globalThis.fetch;
+		const originalExperimental = process.env.PI_EXPERIMENTAL;
 		const output = vi.spyOn(console, "log").mockImplementation(() => {});
 		vi.stubGlobal("fetch", fetch);
+		process.env.PI_EXPERIMENTAL = "1";
 		try {
 			await main(["secretary", "--base-url", "http://secretary.test", "--credential", "client-only", "--once"]);
 		} finally {
 			vi.stubGlobal("fetch", originalFetch);
+			if (originalExperimental === undefined) delete process.env.PI_EXPERIMENTAL;
+			else process.env.PI_EXPERIMENTAL = originalExperimental;
 			output.mockRestore();
 		}
 		expect(fetch).toHaveBeenCalled();

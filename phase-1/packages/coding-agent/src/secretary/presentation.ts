@@ -130,13 +130,17 @@ export class SecretaryPresentation {
 	}
 
 	async approve(requestId: string): Promise<WorkerDetails> {
-		const details = await this.#client.approve(requestId, { workerRef: this.#state.selectedWorkerRef });
+		const workerRef = this.#state.selectedWorkerRef;
+		const details =
+			workerRef === undefined
+				? await this.#client.approve(requestId)
+				: await this.#client.respondWorker(workerRef, requestId, "approve");
 		this.#replace({ selectedWorker: details });
 		return details;
 	}
 
-	async deny(requestId: string): Promise<WorkerDetails> {
-		const details = await this.#client.deny(requestId);
+	async deny(approvalId: string): Promise<WorkerDetails> {
+		const details = await this.#client.deny(approvalId);
 		this.#replace({ selectedWorker: details });
 		return details;
 	}

@@ -166,19 +166,23 @@ describe("SecretaryClient", () => {
 			response({ worker: { worker_ref: "worker-7" }, turns: [] }),
 			response({ worker: { worker_ref: "worker-7" }, turns: [] }),
 			response({ worker: { worker_ref: "worker-7" }, turns: [] }),
+			response({ worker: { worker_ref: "worker-7" }, turns: [] }),
 		]);
 		const secretary = client(fetch);
 		await secretary.messageWorker("worker-7", "answer", { requestId: "input-1", idempotencyKey: "message-1" });
 		await secretary.cancelWorker("worker-7", { idempotencyKey: "cancel-1" });
 		await secretary.closeWorker("worker-7", { idempotencyKey: "close-1" });
+		await secretary.approve("approval-1", { idempotencyKey: "approve-1" });
 		await secretary.deny("approval-1", { idempotencyKey: "deny-1" });
 		expect(calls.map(({ input }) => input.toString())).toEqual([
 			`${baseUrl}/v1/workers/worker-7/message`,
 			`${baseUrl}/v1/workers/worker-7/cancel`,
 			`${baseUrl}/v1/workers/worker-7/close`,
+			`${baseUrl}/v1/approvals/approval-1/approve`,
 			`${baseUrl}/v1/approvals/approval-1/deny`,
 		]);
 		expect((calls[0]!.init?.headers as Headers).get("Idempotency-Key")).toBe("message-1");
+		expect((calls[3]!.init?.headers as Headers).get("Idempotency-Key")).toBe("approve-1");
 		expect(JSON.parse(String(calls[0]!.init?.body))).toMatchObject({ text: "answer", request_id: "input-1" });
 	});
 

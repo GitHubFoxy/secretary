@@ -437,15 +437,13 @@ export class SecretaryClient {
 		return this.#workerMutation(workerRef, "close", {}, options);
 	}
 
-	/** Resolve an Approval by its server-issued request_id. */
+	/** Resolve a durable Approval by its server-issued approval id. */
 	async approve(
-		requestId: string,
-		options: { readonly workerRef?: string; readonly idempotencyKey?: string; readonly signal?: AbortSignal } = {},
+		approvalId: string,
+		options: { readonly idempotencyKey?: string; readonly signal?: AbortSignal } = {},
 	): Promise<WorkerDetails> {
-		if (requestId.trim() === "") throw new TypeError("request_id is required");
-		if (options.workerRef)
-			return this.#workerMutation(options.workerRef, "approve", { request_id: requestId, text: "approve" }, options);
-		return this.#request<WorkerDetails>(`/v1/approvals/${encodeURIComponent(requestId)}/approve`, {
+		if (approvalId.trim() === "") throw new TypeError("approval id is required");
+		return this.#request<WorkerDetails>(`/v1/approvals/${encodeURIComponent(approvalId)}/approve`, {
 			method: "POST",
 			body: {},
 			idempotencyKey: options.idempotencyKey ?? randomUUID(),

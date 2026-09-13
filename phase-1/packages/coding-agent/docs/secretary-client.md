@@ -21,4 +21,4 @@ pi --experimental secretary --base-url http://127.0.0.1:8080 \
   --credential "$SECRETARY_CLIENT_CREDENTIAL" --worker-ref worker-7
 ```
 
-Approval identifiers are always server `request_id` values. `respondWorker(workerRef, requestId, response)` sends that field to `/v1/workers/{worker_ref}/message`; `approve(requestId)` and `deny(requestId)` use the direct `/v1/approvals/{request_id}/{approve,deny}` endpoints. Pi never invents a second approval identifier.
+Worker responses use the server-issued `request_id`. `respondWorker(workerRef, requestId, response)` sends that field to `/v1/workers/{worker_ref}/message`. Direct `approve(approvalId)` and `deny(approvalId)` use the durable `/v1/approvals/{approval_id}/{approve,deny}` endpoints. The presentation layer uses `respondWorker` for a selected Worker and the direct approval endpoints otherwise. Pi never invents a second approval identifier.
