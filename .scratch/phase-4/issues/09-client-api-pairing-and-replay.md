@@ -1,7 +1,7 @@
 # 09 Client API, pairing and replay
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 02, 03b, 06a, 06b, 08, 13a
 
 ## Work

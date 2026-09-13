@@ -1,7 +1,7 @@
 # 12 Telegram Topics adapter
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 03a, 06a, 08, 09
 
 ## Work

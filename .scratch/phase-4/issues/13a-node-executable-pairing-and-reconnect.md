@@ -1,7 +1,7 @@
 # 13a Node executable, pairing and reconnect
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 04, 05b
 
 ## Work

@@ -1,7 +1,7 @@
 # 10 Web Worker-first UI and observers
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 03a, 03b, 06a, 09
 
 ## Work

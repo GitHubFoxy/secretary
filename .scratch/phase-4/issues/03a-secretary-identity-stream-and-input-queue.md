@@ -1,7 +1,7 @@
 # 03a Secretary identity, stream and input queue
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 01, 02
 
 ## Work

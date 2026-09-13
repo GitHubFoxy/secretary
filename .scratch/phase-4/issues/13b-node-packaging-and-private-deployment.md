@@ -1,7 +1,7 @@
 # 13b Node packaging and private deployment
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 09, 13a
 
 ## Work

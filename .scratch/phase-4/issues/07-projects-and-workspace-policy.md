@@ -1,7 +1,7 @@
 # 07 Projects and workspace policy
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 01, 04, 05b, 13a
 
 ## Work

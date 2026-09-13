@@ -1,7 +1,7 @@
 # 05b Harness adapter discovery and real probes
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 04, 04a
 
 ## Work

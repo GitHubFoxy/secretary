@@ -1,7 +1,7 @@
 # 06a Worker lifecycle and Secretary tools
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 01, 02, 04, 05b, 06b, 07, 13a
 
 ## Work

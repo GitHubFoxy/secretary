@@ -1,7 +1,7 @@
 # 04 Node protocol and local reliability
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 01, 02, 04a
 
 ## Work

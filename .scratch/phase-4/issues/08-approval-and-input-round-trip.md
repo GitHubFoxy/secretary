@@ -1,7 +1,7 @@
 # 08 Approval and input round trip
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 04, 06a, 06b
 
 ## Work

@@ -1,7 +1,7 @@
 # 04a HarnessInstance static contract
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 01
 
 ## Work
