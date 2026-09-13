@@ -53,8 +53,8 @@ func (t *bridgeTransport) SendMessage(_ context.Context, message telegram.Outgoi
 	t.mu.Unlock()
 	return nil
 }
-func (t *bridgeTransport) CreateForumTopic(context.Context, int64, string) (telegram.ForumTopic, error) {
-	return telegram.ForumTopic{}, nil
+func (t *bridgeTransport) CreateForumTopic(_ context.Context, chatID int64, _ string) (telegram.ForumTopic, error) {
+	return telegram.ForumTopic{ChatID: chatID, ThreadID: 1}, nil
 }
 
 type bridgeState struct {
@@ -111,5 +111,73 @@ func TestTelegramEventBridgeMapsDurableWorkerEventsToSafeAdapterEvents(t *testin
 	mapped := telegramEvent(event)
 	if mapped.Kind != "worker.needs_input" || mapped.WorkerRef != "worker-1" || mapped.Sequence != 10 {
 		t.Fatalf("mapped=%#v", mapped)
+	}
+}
+
+func TestTelegramEventBridgeMapsInputApprovalAsNeedsInput(t *testing.T) {
+	mapped := telegramEvent(core.Event{
+		ID: "approval-input", Seq: 11, Kind: "approval.requested", AggregateType: "approval", WorkerRef: "worker-1",
+		Payload: []byte(`{"kind":"input","request_id":"request-1","action_summary":"answer"}`),
+	})
+	if mapped.Kind != "worker.needs_input" {
+		t.Fatalf("input approval mapped=%#v, want needs_input", mapped)
+	}
+	permission := telegramEvent(core.Event{
+		ID: "approval-permission", Seq: 12, Kind: "approval.requested", AggregateType: "approval", WorkerRef: "worker-1",
+		Payload: []byte(`{"kind":"permission","request_id":"request-2","action_summary":"run shell"}`),
+	})
+	if permission.Kind != "worker.approval_requested" {
+		t.Fatalf("permission approval mapped=%#v, want approval_requested", permission)
+	}
+}
+
+func TestTelegramEventBridgeSendsOneTerminalNotificationForOneTurn(t *testing.T) {
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []core.Event{
+		{ID: "outcome-1", Seq: 20, Kind: "attempt.outcome_recorded", AggregateType: "attempt", AggregateID: "attempt-1", WorkerRef: "worker-1", CorrelationID: "turn-1", AttemptID: "attempt-1", Payload: []byte(`{"status":"succeeded","classification":"final","summary":"done","attempt_id":"attempt-1"}`)},
+		{ID: "result-1", Seq: 21, Kind: "result.accepted", AggregateType: "result", AggregateID: "result-1", WorkerRef: "worker-1", CorrelationID: "turn-1", AttemptID: "attempt-1", Payload: []byte(`{"id":"result-1","turn_id":"turn-1","status":"succeeded","summary":"done"}`)},
+	} {
+		if err := adapter.HandleDurableEvent(context.Background(), telegramEvent(event)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	var completions int
+	for _, sent := range transport.sent {
+		if strings.Contains(sent.Text, "Worker завершён") {
+			completions++
+		}
+	}
+	if completions != 1 {
+		t.Fatalf("terminal notifications=%d, messages=%#v", completions, transport.sent)
+	}
+}
+
+func TestTelegramEventBridgeMapsTerminalOutcomeOnceAndSkipsRetryable(t *testing.T) {
+	outcome := telegramEvent(core.Event{
+		ID: "outcome-1", Seq: 20, Kind: "attempt.outcome_recorded", AggregateType: "attempt", AggregateID: "attempt-1", WorkerRef: "worker-1", CorrelationID: "turn-1", AttemptID: "attempt-1",
+		Payload: []byte(`{"status":"succeeded","classification":"final","summary":"done","attempt_id":"attempt-1"}`),
+	})
+	accepted := telegramEvent(core.Event{
+		ID: "result-1", Seq: 21, Kind: "result.accepted", AggregateType: "result", AggregateID: "result-1", WorkerRef: "worker-1", CorrelationID: "turn-1", AttemptID: "attempt-1",
+		Payload: []byte(`{"id":"result-1","turn_id":"turn-1","status":"succeeded","summary":"done"}`),
+	})
+	if outcome.Kind != "worker.completed" || accepted.Kind != "worker.completed" {
+		t.Fatalf("terminal mappings outcome=%#v accepted=%#v", outcome, accepted)
+	}
+	if outcome.TerminalIdentity == "" || accepted.TerminalIdentity == "" || outcome.TerminalIdentity != accepted.TerminalIdentity {
+		t.Fatalf("terminal identities outcome=%q accepted=%q", outcome.TerminalIdentity, accepted.TerminalIdentity)
+	}
+	retryable := telegramEvent(core.Event{
+		ID: "retry-1", Seq: 22, Kind: "attempt.outcome_recorded", AggregateType: "attempt", AggregateID: "attempt-2", WorkerRef: "worker-1", CorrelationID: "turn-1", AttemptID: "attempt-2",
+		Payload: []byte(`{"status":"failed","classification":"retryable","summary":"temporary"}`),
+	})
+	if retryable.Kind != "" {
+		t.Fatalf("retryable outcome became terminal notification: %#v", retryable)
 	}
 }
