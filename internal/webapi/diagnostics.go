@@ -209,7 +209,7 @@ func forbiddenDiagnosticString(value string) bool {
 			return true
 		}
 	}
-	for _, marker := range []string{"<think", "</think", "bearer ", "api_key=", "apikey=", "token=", "secret", "credential", "password=", "callback", "native", "session_id", "session-id", "task", "chain-of-thought", "internal reasoning", "thought process", "sk-", "ghp_", "xoxb-"} {
+	for _, marker := range []string{"<think", "</think", "bearer ", "api_key=", "apikey=", "token=", "secret", "credential", "password=", "callback", "native", "session_id", "session-id", "task", "chain-of-thought", "internal reasoning", "thought process", "sk-", "ghp_", "xoxb-", "xoxb_"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}

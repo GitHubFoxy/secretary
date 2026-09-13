@@ -132,7 +132,7 @@ func unsafeToolText(value string) bool {
 		"internal reasoning", "internal_reasoning", "thought process", "thought_process", "<think>", "</think>",
 		"analysis:", "reasoning:", "thought:", "chain-of-thought:",
 		"bearer ", "api_key=", "apikey=", "access_token", "api_token", "token=", "secret=", "credential=", "password=", "callback=",
-		"runtime_session_id", "session_id", "sessionid", "sk-", "ghp_", "xoxb-",
+		"runtime_session_id", "session_id", "sessionid", "sk-", "ghp_", "xoxb-", "xoxb_",
 	} {
 		if strings.Contains(lower, marker) {
 			return true

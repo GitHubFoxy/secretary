@@ -1095,7 +1095,7 @@ func controlTextSensitiveLine(line string) bool {
 
 func containsKnownControlCredential(value string) bool {
 	lower := strings.ToLower(value)
-	for _, prefix := range []string{"sk-", "ghp_", "xoxb-"} {
+	for _, prefix := range []string{"sk-", "ghp_", "xoxb-", "xoxb_"} {
 		if strings.Contains(lower, prefix) {
 			return true
 		}
