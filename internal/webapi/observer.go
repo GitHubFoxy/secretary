@@ -582,9 +582,46 @@ func sanitizePublicValue(value any) any {
 			result[i] = sanitizePublicValue(child)
 		}
 		return result
+	case string:
+		trimmed := strings.TrimSpace(current)
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+			var nested any
+			if json.Unmarshal([]byte(trimmed), &nested) == nil {
+				cleaned := sanitizePublicValue(nested)
+				if encoded, err := json.Marshal(cleaned); err == nil {
+					return string(encoded)
+				}
+				return "[redacted]"
+			}
+		}
+		if forbiddenPublicText(current) {
+			return "[redacted]"
+		}
+		return current
 	default:
 		return value
 	}
+}
+
+func forbiddenPublicText(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{
+		"chain-of-thought", "chain of thought", "chain_of_thought", "raw thought", "raw_thought",
+		"internal reasoning", "internal_reasoning", "thought process", "thought_process", "<think>", "</think>",
+		"analysis:", "reasoning:", "thought:", "chain-of-thought:",
+		"bearer ", "api_key=", "apikey=", "access_token", "api_token", "token=", "secret=", "credential=", "password=", "callback=",
+		"runtime_session_id", "session_id", "sessionid", "sk-", "ghp_", "xoxb-",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizePublicConversationEntry(entry core.ConversationEntry) core.ConversationEntry {
+	entry.Body = sanitizePublicValue(entry.Body).(string)
+	return entry
 }
 
 func forbiddenPublicKey(key string) bool {
@@ -619,6 +656,11 @@ func forbiddenPublicKey(key string) bool {
 		"task", "tasks", "taskid", "tasksid", "session", "sessions", "sessionid", "sessionsid", "sessionidentifier", "sessionsidentifier", "runtimesession", "runtimesessionid", "accesstoken", "callbackcapability",
 	} {
 		if compact == forbidden || strings.HasSuffix(compact, forbidden) {
+			return true
+		}
+	}
+	for _, marker := range []string{"analysis", "reasoning", "thought", "chainofthought"} {
+		if strings.Contains(compact, marker) {
 			return true
 		}
 	}

@@ -2,7 +2,6 @@ package node
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -538,11 +537,8 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 		if !capabilities.SupportsActivity(core.ActivityToolCall) || tool == "" {
 			return core.Activity{}, false
 		}
-		arguments := append(json.RawMessage(nil), item.Arguments...)
-		if len(arguments) == 0 {
-			arguments = json.RawMessage(`{}`)
-		}
-		if !json.Valid(arguments) {
+		arguments, safe := SanitizeToolArguments(item.Arguments)
+		if !safe {
 			return core.Activity{}, false
 		}
 		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolCall, ToolCall: &core.ToolCall{Name: tool, Arguments: arguments}}
@@ -554,7 +550,15 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 		if !capabilities.SupportsActivity(core.ActivityToolResult) || tool == "" || strings.TrimSpace(item.Result) == "" {
 			return core.Activity{}, false
 		}
-		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolResult, ToolResult: &core.ToolResult{Name: tool, Output: item.Result, Error: item.Error}}
+		result, safe := SanitizeToolResult(item.Result)
+		if !safe {
+			return core.Activity{}, false
+		}
+		errorText, safe := SanitizeToolResult(item.Error)
+		if !safe {
+			return core.Activity{}, false
+		}
+		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolResult, ToolResult: &core.ToolResult{Name: tool, Output: result, Error: errorText}}
 	case ActivityStatus:
 		if !capabilities.SupportsActivity(core.ActivityStatus) || strings.TrimSpace(item.Text) == "" {
 			return core.Activity{}, false
@@ -583,7 +587,7 @@ func safeRuntimeSummary(summary string) bool {
 		return false
 	}
 	lower := strings.ToLower(summary)
-	for _, marker := range []string{"chain-of-thought", "chain of thought", "raw thought", "internal reasoning", "thought process", "<think>", "</think>"} {
+	for _, marker := range []string{"chain-of-thought", "chain of thought", "raw thought", "internal reasoning", "thought process", "analysis:", "reasoning:", "thought:", "<think>", "</think>"} {
 		if strings.Contains(lower, marker) {
 			return false
 		}

@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http/httptest"
@@ -336,6 +337,41 @@ func TestWorkerEnvelopeUsesObservedInventoryForPins(t *testing.T) {
 	envelope.Model = "not-observed"
 	if err := envelope.ValidateAgainstInventory("macbook", inventory); !errors.Is(err, core.ErrObservedPinUnavailable) {
 		t.Fatalf("missing model pin err=%v", err)
+	}
+}
+
+func TestNormalizeRuntimeActivitySanitizesNestedToolPayloads(t *testing.T) {
+	metadata := core.ActivityMetadata{EventID: "event", Node: "node", HarnessInstanceID: "node/fx", AttemptID: "attempt", Sequence: 1, ObservedAt: time.Now().UTC()}
+	capabilities := core.HarnessCapabilities{Activity: []core.ActivityCapability{core.ActivityToolCall, core.ActivityToolResult}}
+	call, ok := normalizeRuntimeActivity(Activity{Kind: ActivityToolCall, Tool: "shell", Arguments: json.RawMessage(`{"command":"ls","nested":{"analysis":"raw-analysis","safe":"keep","items":[{"reasoning":"raw-reasoning"},{"thought":"raw-thought"},{"chain_of_thought":"raw-chain"}]}}`)}, metadata, capabilities)
+	if !ok {
+		t.Fatal("nested tool call was rejected")
+	}
+	callJSON, _ := json.Marshal(call)
+	for _, forbidden := range []string{"raw-analysis", "raw-reasoning", "raw-thought", "raw-chain"} {
+		if strings.Contains(string(callJSON), forbidden) {
+			t.Fatalf("tool call leaked %q: %s", forbidden, callJSON)
+		}
+	}
+	if !strings.Contains(string(callJSON), `"command":"ls"`) || !strings.Contains(string(callJSON), `"safe":"keep"`) {
+		t.Fatalf("ordinary tool arguments were not preserved: %s", callJSON)
+	}
+
+	result, ok := normalizeRuntimeActivity(Activity{Kind: ActivityToolResult, Tool: "shell", Result: `{"status":"ok","nested":{"analysis":"raw-analysis-result","safe":"keep-result","thought":"raw-thought-result"}}`}, metadata, capabilities)
+	if !ok {
+		t.Fatal("nested tool result was rejected")
+	}
+	for _, forbidden := range []string{"raw-analysis-result", "raw-thought-result"} {
+		if strings.Contains(result.ToolResult.Output, forbidden) {
+			t.Fatalf("tool result leaked %q: %s", forbidden, result.ToolResult.Output)
+		}
+	}
+	if !strings.Contains(result.ToolResult.Output, `"status":"ok"`) || !strings.Contains(result.ToolResult.Output, `"safe":"keep-result"`) {
+		t.Fatalf("ordinary tool result was not preserved: %s", result.ToolResult.Output)
+	}
+	plain, ok := normalizeRuntimeActivity(Activity{Kind: ActivityToolResult, Tool: "shell", Result: "[INFO] complete"}, metadata, capabilities)
+	if !ok || plain.ToolResult.Output != "[INFO] complete" {
+		t.Fatalf("ordinary text result was not preserved: %#v ok=%v", plain, ok)
 	}
 }
 

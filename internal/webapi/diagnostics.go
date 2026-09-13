@@ -178,6 +178,17 @@ func sanitizeDiagnosticValue(value any) any {
 		}
 		return result
 	case string:
+		trimmed := strings.TrimSpace(current)
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+			var nested any
+			if json.Unmarshal([]byte(trimmed), &nested) == nil {
+				cleaned := sanitizeDiagnosticValue(nested)
+				if encoded, err := json.Marshal(cleaned); err == nil {
+					return string(encoded)
+				}
+				return "[redacted]"
+			}
+		}
 		if forbiddenDiagnosticString(current) {
 			return "[redacted]"
 		}

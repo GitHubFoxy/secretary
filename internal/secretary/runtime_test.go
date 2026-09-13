@@ -102,8 +102,8 @@ func TestRuntimePublishesNormalizedThinkingAndToolActivity(t *testing.T) {
 	runtime.activeTurnID = turn.ID
 	go runtime.consumeActivity(session)
 	session.activities <- node.Activity{Kind: node.ActivityThinkingSummary, Summary: "Checking the project."}
-	session.activities <- node.Activity{Kind: node.ActivityToolCall, Tool: "list_workers", Arguments: json.RawMessage(`{"scope":"current","api_token":"do-not-store"}`)}
-	session.activities <- node.Activity{Kind: node.ActivityToolResult, Tool: "list_workers", Result: `[{"worker_ref":"w1"}]`, Status: "ok"}
+	session.activities <- node.Activity{Kind: node.ActivityToolCall, Tool: "list_workers", Arguments: json.RawMessage(`{"scope":"current","api_token":"do-not-store","nested":{"analysis":"raw-analysis","safe":"keep","thought":"raw-thought"}}`)}
+	session.activities <- node.Activity{Kind: node.ActivityToolResult, Tool: "list_workers", Result: `{"workers":[{"worker_ref":"w1"}],"nested":{"reasoning":"raw-reasoning","chain_of_thought":"raw-chain","safe":"keep-result"}}`, Status: "ok"}
 	close(session.activities)
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
@@ -113,8 +113,15 @@ func TestRuntimePublishesNormalizedThinkingAndToolActivity(t *testing.T) {
 				t.Fatalf("events=%#v", events)
 			}
 			encoded, _ := json.Marshal(events[3].Payload)
-			if strings.Contains(string(encoded), "do-not-store") {
-				t.Fatalf("tool secret leaked into Secretary event: %s", encoded)
+			if strings.Contains(string(encoded), "do-not-store") || strings.Contains(string(encoded), "raw-analysis") || strings.Contains(string(encoded), "raw-thought") {
+				t.Fatalf("tool call unsafe content leaked into Secretary event: %s", encoded)
+			}
+			resultJSON, _ := json.Marshal(events[4].Payload)
+			if strings.Contains(string(resultJSON), "raw-reasoning") || strings.Contains(string(resultJSON), "raw-chain") {
+				t.Fatalf("tool result unsafe content leaked into Secretary event: %s", resultJSON)
+			}
+			if !strings.Contains(string(encoded), "keep") || !strings.Contains(string(resultJSON), "keep-result") {
+				t.Fatalf("ordinary tool payload was not preserved: call=%s result=%s", encoded, resultJSON)
 			}
 			return
 		}

@@ -228,6 +228,9 @@ func (s *Server) conversation(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "read conversation", http.StatusInternalServerError)
 		return
 	}
+	for i := range entries {
+		entries[i] = sanitizePublicConversationEntry(entries[i])
+	}
 	writeJSON(w, http.StatusOK, entries)
 }
 
@@ -381,6 +384,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
+			entry = sanitizePublicConversationEntry(entry)
 			if err := conn.Write(streamContext, websocket.MessageText, mustJSON(entry)); err != nil {
 				return
 			}
