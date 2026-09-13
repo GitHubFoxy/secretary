@@ -13,6 +13,9 @@ test('Ticket 11 Control Room stays a debug-only diagnostics surface', () => {
   for (const field of ['instance.capabilities', 'instance.reasoning_levels', 'instance.authentication', 'worker.turns', 'downloadExport']) {
     assert.match(source, new RegExp(field.replaceAll('.', '\\.'), 'i'));
   }
+  for (const marker of ['turn.id', 'turn.state', 'binding.project_id', 'binding.node', 'binding.harness_instance', 'attempt_outcomes', 'outcome.status', 'outcome.classification', 'attempt.state', 'result.status']) {
+    assert.match(source, new RegExp(marker.replaceAll('.', '\\.'), 'i'));
+  }
   assert.match(source, /attachment|blob|download/i);
   assert.doesNotMatch(source, /runtime_session_id|sessionId|callback_capability|credential_secret|chain.of.thought/i);
   assert.doesNotMatch(source, /\/v1\/messages|\/v1\/secretary\/model/);

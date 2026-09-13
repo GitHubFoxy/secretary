@@ -243,6 +243,109 @@ func TestTicket11ControlRoomRendersInventoryFieldsAndExportAction(t *testing.T) 
 	}
 }
 
+func TestTicket11SafeConfigAndProfileFieldsRemainVisibleWhileOpaqueValuesStayRedacted(t *testing.T) {
+	_, api, server, client := controlRoomTestAPI(t)
+	api.SetDebug(true)
+	controlRoomLogin(t, client, server.URL)
+	api.AttachControl(ControlOptions{
+		ConfigContent: func() (string, error) {
+			return "skills = [\"safe-skill\"]\nreasoning = high\nmodel = safe-model\nruntime = fx\nname = safe-name\ncontent = ordinary product content\nnotes = \"api_key=embedded-secret\"\napi_key = config-secret\ncallback = callback-secret\nnative_session_id = native-secret\ntask_id = task-secret\n", nil
+		},
+		ProfileFiles: func() ([]ProfileFile, error) {
+			return []ProfileFile{{Name: "worker", Content: "name: safe-worker\nmodel: safe-model\nreasoning: high\nruntime: fx\ncontent: ordinary profile content\ncredential: profile-secret\npassword: password-secret\n", Hash: "profile-rev"}}, nil
+		},
+	})
+
+	response, err := client.Get(server.URL + "/v1/control/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&config); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("config status=%d body=%#v", response.StatusCode, config)
+	}
+	configText, _ := config["content"].(string)
+	for _, safe := range []string{"skills = [\"safe-skill\"]", "reasoning = high", "model = safe-model", "runtime = fx", "name = safe-name", "content = ordinary product content"} {
+		if !strings.Contains(configText, safe) {
+			t.Fatalf("config removed safe field %q: %q", safe, configText)
+		}
+	}
+	for _, secret := range []string{"config-secret", "embedded-secret", "callback-secret", "native-secret", "task-secret"} {
+		if strings.Contains(configText, secret) {
+			t.Fatalf("config leaked %q: %q", secret, configText)
+		}
+	}
+
+	response, err = client.Get(server.URL + "/v1/control/profiles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var profiles []ProfileFile
+	if err := json.NewDecoder(response.Body).Decode(&profiles); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || len(profiles) != 1 {
+		t.Fatalf("profiles status=%d body=%#v", response.StatusCode, profiles)
+	}
+	profileText := profiles[0].Content
+	for _, safe := range []string{"name: safe-worker", "model: safe-model", "reasoning: high", "runtime: fx", "content: ordinary profile content"} {
+		if !strings.Contains(profileText, safe) {
+			t.Fatalf("profile removed safe field %q: %q", safe, profileText)
+		}
+	}
+	for _, secret := range []string{"profile-secret", "password-secret"} {
+		if strings.Contains(profileText, secret) {
+			t.Fatalf("profile leaked %q: %q", secret, profileText)
+		}
+	}
+}
+
+func TestTicket11SafeProductConfigIsEditableAndCASApplied(t *testing.T) {
+	_, api, server, client := controlRoomTestAPI(t)
+	api.SetDebug(true)
+	controlRoomLogin(t, client, server.URL)
+	content := "skills = []\nreasoning = high\nmodel = safe-model\nruntime = fx\nname = safe-name\ncontent = ordinary product content\n"
+	var applied string
+	api.AttachControl(ControlOptions{
+		RequireExpectedRevision: true,
+		ConfigContent:           func() (string, error) { return content, nil },
+		ApplyConfig: func(next []byte) (any, error) {
+			applied = string(next)
+			content = applied
+			return map[string]string{"status": "applied"}, nil
+		},
+	})
+	response, err := client.Get(server.URL + "/v1/control/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&config); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if config["editable"] != true {
+		t.Fatalf("safe product config was made readonly: %#v", config)
+	}
+	revision, _ := config["revision"].(string)
+	payload, _ := json.Marshal(map[string]string{"content": "skills = []\nreasoning = low\nmodel = safe-model\nruntime = fx\nname = changed\ncontent = ordinary product content", "expected_revision": revision})
+	request, _ := http.NewRequest(http.MethodPut, server.URL+"/v1/control/config", bytes.NewReader(payload))
+	request.Header.Set("Content-Type", "application/json")
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || !strings.Contains(applied, "name = changed") || !strings.Contains(applied, "reasoning = low") {
+		t.Fatalf("safe config was not applied with CAS status=%d content=%q", response.StatusCode, applied)
+	}
+}
+
 func TestTicket11RedactedConfigAndProfileWritesFailClosedAndUseRevision(t *testing.T) {
 	_, api, server, client := controlRoomTestAPI(t)
 	api.SetDebug(true)
