@@ -397,6 +397,9 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 		return true
 	}
 	request.Text, request.RequestID = payload.Text, payload.RequestID
+	if suffix[0] == "approve" && strings.TrimSpace(request.Text) == "" {
+		request.Text = "approve"
+	}
 	key, ok := requireIdempotencyKey(w, r, payload.IdempotencyKey)
 	if !ok {
 		return true

@@ -607,6 +607,9 @@ func (s *acpSession) watch() {
 			if summary == "" {
 				summary = valueString(payload["title"])
 			}
+			if summary == "" {
+				summary = "Working on the request."
+			}
 			if safeRuntimeSummary(summary) {
 				emit(Activity{Kind: ActivityThinkingSummary, Summary: summary})
 			}
