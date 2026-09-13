@@ -317,6 +317,7 @@ func migrateDatabase(ctx context.Context, db *sql.DB, legacyModels map[string]st
 	}
 	defer tx.Rollback()
 	var report Report
+	followUpCache := make(map[string]map[string][]legacyMigrationDirection)
 	rows, err := tx.QueryContext(ctx, `SELECT t.id, t.conversation_id, t.text, t.state, t.created_at, t.updated_at,
 		w.id, w.worker_ref, w.node_id, w.runtime_session_id, w.workspace, w.profile_version, w.profile_name, w.profile_hash,
 		w.runtime, w.model, w.reasoning, w.allow_tools, w.profile_delivery, w.archived
@@ -342,6 +343,14 @@ func migrateDatabase(ctx context.Context, db *sql.DB, legacyModels map[string]st
 		}
 		workerID := "legacy-worker-" + bindingID
 		turnID := "legacy-turn-" + bindingID
+		followUps, ok := followUpCache[conversationID]
+		if !ok {
+			followUps, err = legacyFollowUpDirections(ctx, tx, conversationID)
+			if err != nil {
+				return Report{}, err
+			}
+			followUpCache[conversationID] = followUps
+		}
 		model = resolveLegacyModel(model, legacyModels, runtime)
 		if err := insertWorker(ctx, tx, workerID, workerRef, conversationID, text, nodeID, workspace, profileVersion, profileName, profileHash, runtime, model, reasoning, allowTools, delivery, taskState, taskCreated, taskUpdated); err != nil {
 			return Report{}, err
@@ -354,7 +363,7 @@ func migrateDatabase(ctx context.Context, db *sql.DB, legacyModels map[string]st
 		}
 		report.Workers++
 		report.Turns++
-		if err := migrateAttempts(ctx, tx, bindingID, workerID, turnID, nativeSession, nodeID, workspace, runtime, conversationID, workerRef, taskState, text, taskCreated, taskUpdated, &report); err != nil {
+		if err := migrateAttempts(ctx, tx, bindingID, workerID, turnID, nativeSession, nodeID, workspace, runtime, conversationID, workerRef, taskState, text, taskCreated, taskUpdated, followUps[workerRef], &report); err != nil {
 			return Report{}, err
 		}
 	}
@@ -452,7 +461,7 @@ type legacyMigrationDirection struct {
 	id, entryID, input, created, updated string
 }
 
-func migrateAttempts(ctx context.Context, tx *sql.Tx, bindingID, workerID, turnID, nativeSession, nodeID, workspace, runtime, conversationID, workerRef, taskState, initialInput, initialCreated, initialUpdated string, report *Report) error {
+func migrateAttempts(ctx context.Context, tx *sql.Tx, bindingID, workerID, turnID, nativeSession, nodeID, workspace, runtime, conversationID, workerRef, taskState, initialInput, initialCreated, initialUpdated string, followups []legacyMigrationDirection, report *Report) error {
 	_ = nativeSession
 	rows, err := tx.QueryContext(ctx, `SELECT id, number, state, created_at, updated_at FROM attempts WHERE worker_binding_id = ? ORDER BY number`, bindingID)
 	if err != nil {
@@ -490,10 +499,6 @@ func migrateAttempts(ctx context.Context, tx *sql.Tx, bindingID, workerID, turnI
 	}
 
 	directions := []legacyMigrationDirection{{id: turnID, input: initialInput, created: initialCreated, updated: initialUpdated}}
-	followups, err := legacyFollowUpDirections(ctx, tx, conversationID, workerRef)
-	if err != nil {
-		return err
-	}
 	directions = append(directions, followups...)
 	starts := make([]int, len(directions))
 	starts[0] = 0
@@ -596,40 +601,52 @@ func migratedAttemptState(state string) string {
 	return "interrupted"
 }
 
+type legacyFollowUpAttempt struct {
+	id      string
+	number  int
+	created string
+}
+
 type legacyFollowUpWorker struct {
 	workerRef    string
 	taskCreated  string
 	activities   []string
-	nextAttempts []string
+	nextAttempts []legacyFollowUpAttempt
 }
 
 // legacyFollowUpOwner uses the durable Phase 3 timeline when worker_ref was
-// not stored on a conversation entry. A direction normally precedes the
-// Attempt it queued, so the nearest next Attempt is the strongest link. A
-// completed Attempt is used when there is no next one. Ties are resolved by
-// worker_ref so every entry has one stable owner.
-func legacyFollowUpOwner(created string, workers []legacyFollowUpWorker) string {
+// not stored on a conversation entry. A follow-up Attempt and its worker_input
+// are created with the same now, so equality is a valid match. Each candidate
+// Attempt is consumed once while unscoped entries are assigned in seq order;
+// worker_ref makes equal-time choices stable.
+func legacyFollowUpOwner(created string, workers []legacyFollowUpWorker, used map[string]struct{}) string {
 	if len(workers) == 0 {
 		return ""
 	}
-	best := -1
-	bestNext := ""
+	bestWorker := -1
+	bestAttempt := -1
 	for i, worker := range workers {
-		prior := worker.taskCreated <= created
-		if !prior {
+		if worker.taskCreated > created {
 			continue
 		}
-		for _, next := range worker.nextAttempts {
-			if next <= created || best >= 0 && bestNext != "" && next > bestNext {
+		for j, attempt := range worker.nextAttempts {
+			if attempt.number <= 1 || attempt.created < created {
 				continue
 			}
-			if best < 0 || bestNext == "" || next < bestNext || next == bestNext && worker.workerRef < workers[best].workerRef {
-				best, bestNext = i, next
+			if _, ok := used[attempt.id]; ok {
+				continue
+			}
+			if bestWorker < 0 || attempt.created < workers[bestWorker].nextAttempts[bestAttempt].created ||
+				(attempt.created == workers[bestWorker].nextAttempts[bestAttempt].created &&
+					(worker.workerRef < workers[bestWorker].workerRef ||
+						worker.workerRef == workers[bestWorker].workerRef && attempt.number < workers[bestWorker].nextAttempts[bestAttempt].number)) {
+				bestWorker, bestAttempt = i, j
 			}
 		}
 	}
-	if best >= 0 && bestNext != "" {
-		return workers[best].workerRef
+	if bestWorker >= 0 {
+		used[workers[bestWorker].nextAttempts[bestAttempt].id] = struct{}{}
+		return workers[bestWorker].workerRef
 	}
 	bestAnchor := ""
 	bestPrior := false
@@ -641,14 +658,14 @@ func legacyFollowUpOwner(created string, workers []legacyFollowUpWorker) string 
 			}
 		}
 		prior := anchor <= created
-		if best < 0 || prior && !bestPrior || prior == bestPrior && (prior && anchor > bestAnchor || !prior && anchor < bestAnchor || anchor == bestAnchor && worker.workerRef < workers[best].workerRef) {
-			best, bestAnchor, bestPrior = i, anchor, prior
+		if bestWorker < 0 || prior && !bestPrior || prior == bestPrior && (prior && anchor > bestAnchor || !prior && anchor < bestAnchor || anchor == bestAnchor && worker.workerRef < workers[bestWorker].workerRef) {
+			bestWorker, bestAnchor, bestPrior = i, anchor, prior
 		}
 	}
-	return workers[best].workerRef
+	return workers[bestWorker].workerRef
 }
 
-func legacyFollowUpDirections(ctx context.Context, tx *sql.Tx, conversationID, workerRef string) ([]legacyMigrationDirection, error) {
+func legacyFollowUpDirections(ctx context.Context, tx *sql.Tx, conversationID string) (map[string][]legacyMigrationDirection, error) {
 	workersRows, err := tx.QueryContext(ctx, `SELECT w.id, w.worker_ref, t.created_at
 		FROM worker_bindings w JOIN tasks t ON t.id = w.task_id
 		WHERE t.conversation_id = ? AND COALESCE(t.parent_task_id, '') = ''
@@ -665,20 +682,21 @@ func legacyFollowUpDirections(ctx context.Context, tx *sql.Tx, conversationID, w
 			workersRows.Close()
 			return nil, err
 		}
-		attemptRows, err := tx.QueryContext(ctx, `SELECT created_at, updated_at FROM attempts WHERE worker_binding_id = ? ORDER BY number`, bindingID)
+		attemptRows, err := tx.QueryContext(ctx, `SELECT id, number, created_at, updated_at FROM attempts WHERE worker_binding_id = ? ORDER BY number`, bindingID)
 		if err != nil {
 			workersRows.Close()
 			return nil, err
 		}
 		for attemptRows.Next() {
-			var started, updated string
-			if err := attemptRows.Scan(&started, &updated); err != nil {
+			var attempt legacyFollowUpAttempt
+			var updated string
+			if err := attemptRows.Scan(&attempt.id, &attempt.number, &attempt.created, &updated); err != nil {
 				attemptRows.Close()
 				workersRows.Close()
 				return nil, err
 			}
 			worker.activities = append(worker.activities, updated)
-			worker.nextAttempts = append(worker.nextAttempts, started)
+			worker.nextAttempts = append(worker.nextAttempts, attempt)
 		}
 		if err := attemptRows.Close(); err != nil {
 			workersRows.Close()
@@ -703,7 +721,8 @@ func legacyFollowUpDirections(ctx context.Context, tx *sql.Tx, conversationID, w
 		return nil, err
 	}
 	defer rows.Close()
-	directions := make([]legacyMigrationDirection, 0)
+	directions := make(map[string][]legacyMigrationDirection)
+	usedAttempts := make(map[string]struct{})
 	for rows.Next() {
 		var id, body, entryWorkerRef, created string
 		if err := rows.Scan(&id, &body, &entryWorkerRef, &created); err != nil {
@@ -711,12 +730,12 @@ func legacyFollowUpDirections(ctx context.Context, tx *sql.Tx, conversationID, w
 		}
 		owner := entryWorkerRef
 		if owner == "" {
-			owner = legacyFollowUpOwner(created, workers)
+			owner = legacyFollowUpOwner(created, workers, usedAttempts)
 		}
-		if owner != workerRef {
+		if owner == "" {
 			continue
 		}
-		directions = append(directions, legacyMigrationDirection{id: "legacy-turn-" + strings.ReplaceAll(id, " ", "_"), entryID: id, input: body, created: created, updated: created})
+		directions[owner] = append(directions[owner], legacyMigrationDirection{id: "legacy-turn-" + strings.ReplaceAll(id, " ", "_"), entryID: id, input: body, created: created, updated: created})
 	}
 	return directions, rows.Err()
 }

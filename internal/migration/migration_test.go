@@ -593,15 +593,15 @@ INSERT INTO tasks VALUES ('task-2', 'conversation-1', 'review it', 'open', '', '
 INSERT INTO worker_bindings VALUES ('binding-2', 'task-2', 'worker-2', 'node-2', 'native-session-2', '/work/review', '', '', 'cfg-2', 'worker', 'hash-2', 'fx', 'gpt-5.6-luna', 'high', 'read', 'metadata', 0, '2024-01-01T00:01:30Z');
 INSERT INTO attempts VALUES ('attempt-3', 'binding-1', 3, 'succeeded', '2024-01-01T00:01:40Z', '2024-01-01T00:01:45Z');
 INSERT INTO attempts VALUES ('attempt-5', 'binding-2', 1, 'succeeded', '2024-01-01T00:01:35Z', '2024-01-01T00:01:50Z');
-INSERT INTO attempts VALUES ('attempt-6', 'binding-2', 2, 'failed', '2024-01-01T00:02:00Z', '2024-01-01T00:02:05Z');
-INSERT INTO conversation_entries VALUES ('entry-followup-worker-1', 'conversation-1', 3, 'worker_input', 'continue shipping', '2024-01-01T00:01:20Z');
-INSERT INTO conversation_entries VALUES ('entry-followup-worker-2', 'conversation-1', 4, 'worker_input', 'review the docs', '2024-01-01T00:01:55Z');
+INSERT INTO attempts VALUES ('attempt-6', 'binding-2', 2, 'failed', '2024-01-01T00:01:40Z', '2024-01-01T00:01:45Z');
+INSERT INTO conversation_entries VALUES ('entry-followup-worker-1', 'conversation-1', 3, 'worker_input', 'continue shipping', '2024-01-01T00:01:40Z');
+INSERT INTO conversation_entries VALUES ('entry-followup-worker-2', 'conversation-1', 4, 'worker_input', 'review the docs', '2024-01-01T00:01:40Z');
 INSERT INTO conversation_entries VALUES ('entry-worker-1-followup-result', 'conversation-1', 5, 'worker_result', 'shipping continued', '2024-01-01T00:01:45Z');
 INSERT INTO conversation_entries VALUES ('entry-worker-2-initial-result', 'conversation-1', 6, 'worker_result', 'review started', '2024-01-01T00:01:50Z');
-INSERT INTO conversation_entries VALUES ('entry-worker-2-followup-result', 'conversation-1', 7, 'worker_result', 'docs reviewed', '2024-01-01T00:02:05Z');
+INSERT INTO conversation_entries VALUES ('entry-worker-2-followup-result', 'conversation-1', 7, 'worker_result', 'docs reviewed', '2024-01-01T00:01:45Z');
 INSERT INTO results VALUES ('result-3', 'attempt-3', 'succeeded', 'shipping continued', '2024-01-01T00:01:45Z');
 INSERT INTO results VALUES ('result-5', 'attempt-5', 'succeeded', 'review started', '2024-01-01T00:01:50Z');
-INSERT INTO results VALUES ('result-6', 'attempt-6', 'failed', 'docs reviewed', '2024-01-01T00:02:05Z');`)
+INSERT INTO results VALUES ('result-6', 'attempt-6', 'failed', 'docs reviewed', '2024-01-01T00:01:45Z');`)
 	if err != nil {
 		db.Close()
 		t.Fatal(err)
