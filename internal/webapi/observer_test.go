@@ -83,6 +83,9 @@ func TestPublicClientResponsesRedactNativeRuntimeSessionID(t *testing.T) {
 	if _, _, _, err := store.AcceptDispatch(ctx, task.ID, "public-worker", "local", "native-secret-session", t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := store.AppendEntry(ctx, conversation.ID, core.EntryUser, "Plain Markdown contains xoxb_ABC"); err != nil {
+		t.Fatal(err)
+	}
 	api, err := New(ctx, store, "bootstrap")
 	if err != nil {
 		t.Fatal(err)
@@ -91,7 +94,7 @@ func TestPublicClientResponsesRedactNativeRuntimeSessionID(t *testing.T) {
 	defer server.Close()
 	client := &http.Client{Jar: mustWebCookieJar(t)}
 	login(t, client, server.URL)
-	for _, path := range []string{"/v1/bootstrap", "/v1/workers", "/v1/workers/public-worker/thread"} {
+	for _, path := range []string{"/v1/bootstrap", "/v1/workers", "/v1/workers/public-worker/thread", "/v1/conversation"} {
 		response, err := client.Get(server.URL + path)
 		if err != nil {
 			t.Fatal(err)
@@ -104,7 +107,7 @@ func TestPublicClientResponsesRedactNativeRuntimeSessionID(t *testing.T) {
 		if response.StatusCode != http.StatusOK {
 			t.Fatalf("path=%s status=%d body=%s", path, response.StatusCode, body)
 		}
-		if strings.Contains(string(body), "runtime_session_id") || strings.Contains(string(body), "native-secret-session") {
+		if strings.Contains(string(body), "runtime_session_id") || strings.Contains(string(body), "native-secret-session") || strings.Contains(string(body), "xoxb_ABC") {
 			t.Fatalf("path=%s leaked native runtime ID: %s", path, body)
 		}
 	}

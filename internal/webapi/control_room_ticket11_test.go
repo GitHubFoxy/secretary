@@ -518,21 +518,22 @@ func TestTicket11RawCoTMarkersInAllowedValuesRedactedAcrossControlSurfaces(t *te
 		Status:         core.OutcomeFailed,
 		Classification: core.OutcomeFinal,
 		ErrorMessage:   "reasoning: COT-REASONING",
-		Diagnostics:    `{"message":"thought: COT-THOUGHT","summary":"safe summary"}`,
+		Diagnostics:    `{"message":"thought: COT-THOUGHT","safe_value":"xoxb_ABC","summary":"safe summary"}`,
 		Summary:        "safe summary",
 	}}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RecordEventWithMetadata(ctx, core.EventInput{Kind: "ticket11.cot", AggregateType: "worker", AggregateID: worker.WorkerRef, WorkerRef: worker.WorkerRef, AttemptID: attempt.ID, Payload: map[string]any{
-		"message": "analysis: COT-ANALYSIS",
-		"summary": "safe summary",
-		"markup":  "<think>COT-THINK</think>",
-		"trace":   "chain-of-thought: COT-CHAIN",
+		"message":    "analysis: COT-ANALYSIS",
+		"summary":    "safe summary",
+		"safe_value": "xoxb_ABC",
+		"markup":     "<think>COT-THINK</think>",
+		"trace":      "chain-of-thought: COT-CHAIN",
 	}}); err != nil {
 		t.Fatal(err)
 	}
 	logDir := t.TempDir()
-	log := `{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"safe tool","status":"thought: COT-RAW-THOUGHT","details":"<think>COT-RAW-THINK</think>"}}}` + "\n"
+	log := `{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"safe tool","status":"xoxb_ABC","details":"<think>COT-RAW-THINK</think>"}}}` + "\n"
 	if err := os.WriteFile(filepath.Join(logDir, "worker-cot.jsonl"), []byte(log), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -557,7 +558,7 @@ func TestTicket11RawCoTMarkersInAllowedValuesRedactedAcrossControlSurfaces(t *te
 			t.Fatalf("%s status=%d body=%s", endpoint, response.StatusCode, body)
 		}
 		text := string(body)
-		for _, marker := range []string{"COT-ANALYSIS", "COT-REASONING", "COT-THOUGHT", "COT-THINK", "COT-CHAIN", "COT-RAW-THOUGHT", "COT-RAW-THINK"} {
+		for _, marker := range []string{"COT-ANALYSIS", "COT-REASONING", "COT-THOUGHT", "COT-THINK", "COT-CHAIN", "COT-RAW-THOUGHT", "COT-RAW-THINK", "xoxb_ABC"} {
 			if strings.Contains(text, marker) {
 				t.Fatalf("%s leaked %q: %s", endpoint, marker, text)
 			}
@@ -576,6 +577,7 @@ func TestTicket11CredentialValuesRedactedUnderSafeKeysAndMarkdown(t *testing.T) 
 	configContent := `skills = "sk-config"
 reasoning = "ghp_config"
 content = "xoxb-config"
+ordinary_underscore = "xoxb_ABC"
 notes = "token: config-token"
 description = "secret: config-secret"
 summary = "credential: config-credential"
@@ -587,6 +589,7 @@ skills: ordinary-skill
 reasoning: high
 content: ordinary profile content
 
+This Markdown contains xoxb_ABC.
 Use token: profile-token in this Markdown.
 Also secret: profile-secret and credential: profile-credential.
 `
@@ -623,7 +626,7 @@ Also secret: profile-secret and credential: profile-credential.
 		t.Fatalf("config status=%d body=%#v", response.StatusCode, config)
 	}
 	configText, _ := config["content"].(string)
-	for _, secret := range []string{"sk-config", "ghp_config", "xoxb-config", "config-token", "config-secret", "config-credential", "config-equals"} {
+	for _, secret := range []string{"sk-config", "ghp_config", "xoxb-config", "xoxb_ABC", "config-token", "config-secret", "config-credential", "config-equals"} {
 		if strings.Contains(configText, secret) {
 			t.Fatalf("config leaked %q: %q", secret, configText)
 		}
@@ -654,7 +657,7 @@ Also secret: profile-secret and credential: profile-credential.
 	if profiles[0].Editable {
 		t.Fatalf("redacted profile remained editable: %#v", profiles[0])
 	}
-	for _, secret := range []string{"profile-token", "profile-secret", "profile-credential"} {
+	for _, secret := range []string{"xoxb_ABC", "profile-token", "profile-secret", "profile-credential"} {
 		if strings.Contains(profileText, secret) {
 			t.Fatalf("profile leaked %q: %q", secret, profileText)
 		}
@@ -667,8 +670,7 @@ Also secret: profile-secret and credential: profile-credential.
 	profileRevision := profiles[0].Revision
 
 	configPayload, _ := json.Marshal(map[string]string{
-		"content": `skills = "sk-write"
-notes = "credential: config-write"
+		"content": `safe_key = "xoxb_write"
 ordinary = "keep"
 `,
 		"expected_revision": configRevision,
@@ -685,7 +687,7 @@ ordinary = "keep"
 	}
 
 	profilePayload, _ := json.Marshal(map[string]string{
-		"content":           "# profile\nThis Markdown contains xoxb-write\nsecret: profile-write\n",
+		"content":           "# profile\nThis Markdown contains xoxb_write\nordinary: kept\n",
 		"expected_revision": profileRevision,
 	})
 	request, _ = http.NewRequest(http.MethodPut, server.URL+"/v1/control/profiles/worker", bytes.NewReader(profilePayload))
