@@ -121,7 +121,7 @@ func TestTicket11OverviewAndDiagnosticsUseSafeDTOs(t *testing.T) {
 	if _, err := store.FinishAttempt(ctx, attempt.ID, core.FinishAttemptInput{AttemptOutcomeInput: core.AttemptOutcomeInput{Status: core.OutcomeFailed, Classification: core.OutcomeFinal, ErrorCode: "credential=do-not-return", ErrorMessage: "callback do-not-return", Diagnostics: `{"nested":{"runtime_session_id":"native-session-do-not-return","api_key":"do-not-return"}}`, Summary: "failed safely"}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.RecordEventWithMetadata(ctx, core.EventInput{Kind: "ticket11.test", AggregateType: "worker", AggregateID: worker.WorkerRef, WorkerRef: worker.WorkerRef, AttemptID: attempt.ID, Payload: map[string]any{"task_id": "task-do-not-return", "nested": map[string]any{"callback": "callback-do-not-return", "token": "token-do-not-return", "safe": "kept"}}}); err != nil {
+	if _, err := store.RecordEventWithMetadata(ctx, core.EventInput{Kind: "ticket11.test", AggregateType: "worker", AggregateID: worker.WorkerRef, WorkerRef: worker.WorkerRef, AttemptID: attempt.ID, Payload: map[string]any{"task": "task-do-not-return", "task_id": "task-do-not-return", "nested": map[string]any{"callback": "callback-do-not-return", "token": "token-do-not-return", "safe": "kept"}}}); err != nil {
 		t.Fatal(err)
 	}
 	_ = turn
@@ -146,7 +146,7 @@ func TestTicket11OverviewAndDiagnosticsUseSafeDTOs(t *testing.T) {
 	}
 	encoded, _ := json.Marshal(body)
 	text := string(encoded)
-	for _, secret := range []string{"do-not-return", "task_id", "runtime_session_id", "callback", "token-do-not-return", "credential_hash", "credential_secret"} {
+	for _, secret := range []string{"do-not-return", `"task"`, "task_id", "runtime_session_id", "callback", "token-do-not-return", "credential_hash", "credential_secret"} {
 		if strings.Contains(text, secret) {
 			t.Fatalf("overview leaked %q: %s", secret, text)
 		}
@@ -226,6 +226,143 @@ func TestTicket11ControlRoomRevokeRoutesAreAuditedAndPublicRoutesStaySeparate(t 
 	api.Handler().ServeHTTP(publicRecorder, publicRequest)
 	if publicRecorder.Code != http.StatusNotFound {
 		t.Fatalf("public API unexpectedly served Control Room status=%d", publicRecorder.Code)
+	}
+}
+
+func TestTicket11ControlRoomRendersInventoryFieldsAndExportAction(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "web", "control-room", "src", "App.svelte"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(data)
+	for _, marker := range []string{"instance.capabilities", "instance.reasoning_levels", "instance.authentication", "worker.turns", "/v1/control/export", "downloadExport"} {
+		if !strings.Contains(source, marker) {
+			t.Fatalf("Control Room omitted %q", marker)
+		}
+	}
+}
+
+func TestTicket11RedactedConfigAndProfileWritesFailClosedAndUseRevision(t *testing.T) {
+	_, api, server, client := controlRoomTestAPI(t)
+	api.SetDebug(true)
+	controlRoomLogin(t, client, server.URL)
+	profileRevision := "profile-rev-1"
+	configApplyCalls := 0
+	profileApplyCalls := 0
+	api.AttachControl(ControlOptions{
+		ConfigContent: func() (string, error) { return "api_key = super-secret\\nname = safe\\n", nil },
+		ApplyConfig: func(content []byte) (any, error) {
+			configApplyCalls++
+			return map[string]string{"status": "applied"}, nil
+		},
+		ProfileFiles: func() ([]ProfileFile, error) {
+			return []ProfileFile{{Name: "worker", Content: "token = opaque-secret\\nname = safe\\n", Hash: profileRevision}}, nil
+		},
+		ApplyProfile: func(string, []byte) error {
+			profileApplyCalls++
+			return nil
+		},
+	})
+
+	response, err := client.Get(server.URL + "/v1/control/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&config); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if revision, ok := config["revision"].(string); !ok || revision == "" || config["editable"] != false {
+		t.Fatalf("config write contract missing revision/editable: %#v", config)
+	}
+	request, _ := http.NewRequest(http.MethodPut, server.URL+"/v1/control/config", strings.NewReader(`{"content":"[redacted]\\nname = changed","expected_revision":"config-rev-1"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest || configApplyCalls != 0 {
+		t.Fatalf("redacted config was accepted status=%d calls=%d", response.StatusCode, configApplyCalls)
+	}
+
+	request, _ = http.NewRequest(http.MethodPut, server.URL+"/v1/control/profiles/worker", strings.NewReader(`{"content":"[redacted]\\nname = changed","expected_revision":"profile-rev-1"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest || profileApplyCalls != 0 {
+		t.Fatalf("redacted profile was accepted status=%d calls=%d", response.StatusCode, profileApplyCalls)
+	}
+
+	request, _ = http.NewRequest(http.MethodPut, server.URL+"/v1/control/profiles/worker", strings.NewReader(`{"content":"name = changed","expected_revision":"stale"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusConflict || profileApplyCalls != 0 {
+		t.Fatalf("stale profile revision was accepted status=%d calls=%d", response.StatusCode, profileApplyCalls)
+	}
+}
+
+func TestTicket11SanitizerRedactsArbitraryNestedDiagnosticPayload(t *testing.T) {
+	value := sanitizeControlAny(map[string]any{
+		"safe":    "kept",
+		"content": map[string]any{"safe": "kept", "secret_value": "secret-do-not-return"},
+		"skills":  []any{map[string]any{"name": "skill", "callback": "callback-do-not-return", "native_id": "native-do-not-return"}},
+		"task":    map[string]any{"id": "task-do-not-return", "text": "task text"},
+		"taskId":  "task-id-do-not-return",
+		"nested":  []any{map[string]any{"opaque": "api_key=secret-do-not-return", "nativeSessionId": "native-session-do-not-return"}},
+	})
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, secret := range []string{"secret-do-not-return", "callback-do-not-return", "native-do-not-return", "task-do-not-return", "task-id-do-not-return", "native-session-do-not-return", `"task"`, `"taskId"`, `"native_id"`} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("sanitizer leaked %q: %s", secret, text)
+		}
+	}
+	if !strings.Contains(text, "safe") {
+		t.Fatalf("sanitizer removed safe diagnostic content: %s", text)
+	}
+	detail, ok := parseHarnessDiagnostic([]byte(`{"jsonrpc":"2.0","params":{"update":{"title":"native-tool-do-not-return","status":"callback-do-not-return","sessionUpdate":"tool_call","content":{"token":"secret-do-not-return"}}}}`), 1)
+	if !ok {
+		t.Fatal("raw harness diagnostic was discarded")
+	}
+	detailText, _ := json.Marshal(detail)
+	for _, secret := range []string{"native-tool-do-not-return", "callback-do-not-return", "secret-do-not-return"} {
+		if strings.Contains(string(detailText), secret) {
+			t.Fatalf("raw diagnostic leaked %q: %s", secret, detailText)
+		}
+	}
+}
+
+func TestTicket11ExportIsAuthorizedRedactedDownload(t *testing.T) {
+	_, api, server, client := controlRoomTestAPI(t)
+	api.SetDebug(true)
+	response, err := client.Get(server.URL + "/v1/control/export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unauthorized export status=%d", response.StatusCode)
+	}
+	controlRoomLogin(t, client, server.URL)
+	response, err = client.Get(server.URL + "/v1/control/export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || !strings.Contains(response.Header.Get("Content-Disposition"), "attachment") {
+		t.Fatalf("export download headers status=%d disposition=%q", response.StatusCode, response.Header.Get("Content-Disposition"))
 	}
 }
 
