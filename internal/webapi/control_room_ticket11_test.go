@@ -944,4 +944,189 @@ More metadata: apikey: profile-apikey-colon token: profile-token-colon secret: p
 	}
 }
 
+func TestTicket11BareSessionNativeTaskValuesFailClosedAcrossControlAndPublicSurfaces(t *testing.T) {
+	store, api, server, client := controlRoomTestAPI(t)
+	api.SetDebug(true)
+	controlRoomLogin(t, client, server.URL)
+	ctx := context.Background()
+
+	configContent := `model = "safe-model"
+description = "session: bare-config-session native: bare-config-native task: bare-config-task"
+ordinary = "keep-config"
+`
+	profileContent := `# Worker profile
+model: safe-model
+ordinary: kept profile content
+
+This Markdown contains session: bare-profile-session.
+Another line contains native: bare-profile-native and task: bare-profile-task.
+`
+	configApplyCalls, profileApplyCalls := 0, 0
+	api.AttachControl(ControlOptions{
+		RequireExpectedRevision: true,
+		ConfigContent:           func() (string, error) { return configContent, nil },
+		ConfigSnapshot: func() any {
+			return map[string]any{"safe": "session: bare-snapshot-session native: bare-snapshot-native task: bare-snapshot-task", "ordinary": "kept"}
+		},
+		ApplyConfig: func(content []byte) (any, error) {
+			configApplyCalls++
+			configContent = string(content)
+			return map[string]string{"status": "applied"}, nil
+		},
+		ProfileFiles: func() ([]ProfileFile, error) {
+			return []ProfileFile{{Name: "worker", Content: profileContent, Hash: "bare-profile-rev"}}, nil
+		},
+		ApplyProfile: func(_ string, content []byte) error {
+			profileApplyCalls++
+			profileContent = string(content)
+			return nil
+		},
+	})
+
+	response, err := client.Get(server.URL + "/v1/control/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&config); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("config status=%d body=%#v", response.StatusCode, config)
+	}
+	configText, _ := config["content"].(string)
+	configRevision, _ := config["revision"].(string)
+	for _, secret := range []string{"bare-config-session", "bare-config-native", "bare-config-task"} {
+		if strings.Contains(configText, secret) {
+			t.Fatalf("config leaked %q: %q", secret, configText)
+		}
+	}
+	if !strings.Contains(configText, `ordinary = "keep-config"`) || config["editable"] != false {
+		t.Fatalf("config safe field/editability changed: %#v", config)
+	}
+
+	response, err = client.Get(server.URL + "/v1/control/profiles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var profiles []controlProfile
+	if err := json.NewDecoder(response.Body).Decode(&profiles); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || len(profiles) != 1 {
+		t.Fatalf("profiles status=%d body=%#v", response.StatusCode, profiles)
+	}
+	profileText := profiles[0].Content
+	profileRevision := profiles[0].Revision
+	for _, secret := range []string{"bare-profile-session", "bare-profile-native", "bare-profile-task"} {
+		if strings.Contains(profileText, secret) {
+			t.Fatalf("profile leaked %q: %q", secret, profileText)
+		}
+	}
+	if !strings.Contains(profileText, "ordinary: kept profile content") || profiles[0].Editable {
+		t.Fatalf("profile safe field/editability changed: %#v", profiles[0])
+	}
+
+	writeJSONRequest := func(method, path string, payload map[string]string) *http.Response {
+		t.Helper()
+		encoded, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		request, requestErr := http.NewRequest(method, server.URL+path, bytes.NewReader(encoded))
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		result, doErr := client.Do(request)
+		if doErr != nil {
+			t.Fatal(doErr)
+		}
+		return result
+	}
+	response = writeJSONRequest(http.MethodPut, "/v1/control/config", map[string]string{
+		"content":           `ordinary = "session: bare-write-session"`,
+		"expected_revision": configRevision,
+	})
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest || configApplyCalls != 0 {
+		t.Fatalf("bare config write was accepted status=%d calls=%d", response.StatusCode, configApplyCalls)
+	}
+	response = writeJSONRequest(http.MethodPut, "/v1/control/profiles/worker", map[string]string{
+		"content":           "# profile\\nNotes: native: bare-write-native task: bare-write-task session: bare-write-session",
+		"expected_revision": profileRevision,
+	})
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest || profileApplyCalls != 0 {
+		t.Fatalf("bare profile write was accepted status=%d calls=%d", response.StatusCode, profileApplyCalls)
+	}
+	response = writeJSONRequest(http.MethodPut, "/v1/control/profiles/worker", map[string]string{
+		"content":           "# profile\\nordinary: editable Markdown",
+		"expected_revision": profileRevision,
+	})
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || profileApplyCalls != 1 || profileContent != "# profile\\nordinary: editable Markdown" {
+		t.Fatalf("ordinary profile write was not editable status=%d calls=%d content=%q", response.StatusCode, profileApplyCalls, profileContent)
+	}
+
+	conversation, err := store.ConversationForPerson(ctx, api.OwnerID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+		WorkerRef: "worker-bare", Title: "safe worker", Intent: "session: bare-public-session native: bare-public-native task: bare-public-task",
+		ProjectID: "project", NodeID: "node", HarnessInstanceID: "node/fx", PolicySnapshot: "safe policy",
+	}, core.TurnSpec{Input: "session: bare-turn-session native: bare-turn-native task: bare-turn-task"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(ctx, attempt.ID, core.FinishAttemptInput{AttemptOutcomeInput: core.AttemptOutcomeInput{
+		Status: core.OutcomeFailed, Classification: core.OutcomeFinal,
+		Diagnostics: `{"safe":"session: bare-diagnostics-session native: bare-diagnostics-native task: bare-diagnostics-task","ordinary":"kept","summary":"safe summary"}`,
+		Summary:     "safe summary",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordEventWithMetadata(ctx, core.EventInput{Kind: "ticket11.bare", AggregateType: "worker", AggregateID: worker.WorkerRef, WorkerRef: worker.WorkerRef, AttemptID: attempt.ID, Payload: map[string]any{
+		"safe": "session: bare-event-session native: bare-event-native task: bare-event-task", "ordinary": "kept",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	logDir := t.TempDir()
+	log := `{"jsonrpc":"2.0","params":{"update":{"sessionUpdate":"tool_call","title":"safe tool","details":"session: bare-raw-session native: bare-raw-native task: bare-raw-task"}}}` + "\\n"
+	if err := os.WriteFile(filepath.Join(logDir, "worker-bare.jsonl"), []byte(log), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	api.AttachDiagnosticLogDir(logDir)
+
+	endpoints := []string{
+		"/v1/control/overview", "/v1/control/events", "/v1/control/diagnostics/worker-bare", "/v1/control/export",
+		"/v1/workers/worker-bare", "/v1/workers/worker-bare/diagnostics",
+	}
+	for _, endpoint := range endpoints {
+		response, err := client.Get(server.URL + endpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil || response.StatusCode != http.StatusOK {
+			t.Fatalf("%s status=%d err=%v body=%s", endpoint, response.StatusCode, err, body)
+		}
+		text := string(body)
+		for _, secret := range []string{
+			"bare-snapshot-session", "bare-snapshot-native", "bare-snapshot-task", "bare-public-session", "bare-public-native", "bare-public-task", "bare-turn-session", "bare-turn-native", "bare-turn-task",
+			"bare-diagnostics-session", "bare-diagnostics-native", "bare-diagnostics-task", "bare-event-session", "bare-event-native", "bare-event-task", "bare-raw-session", "bare-raw-native", "bare-raw-task",
+		} {
+			if strings.Contains(text, secret) {
+				t.Fatalf("%s leaked %q: %s", endpoint, secret, text)
+			}
+		}
+	}
+}
+
 func nowForTest() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
