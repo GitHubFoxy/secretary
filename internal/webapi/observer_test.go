@@ -9,6 +9,7 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -105,6 +106,77 @@ func TestPublicClientResponsesRedactNativeRuntimeSessionID(t *testing.T) {
 		if strings.Contains(string(body), "runtime_session_id") || strings.Contains(string(body), "native-secret-session") {
 			t.Fatalf("path=%s leaked native runtime ID: %s", path, body)
 		}
+	}
+}
+
+func TestWorkerDiagnosticViewIncludesOutcomesAndRedactedHarnessDetails(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "diagnostics.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask(ctx, conversation.ID, "inspect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.AcceptDispatch(ctx, task.ID, "diagnostic-worker", "local", "native-runtime-session", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	details, err := store.TaskDetails(ctx, task.ID)
+	if err != nil || len(details.Attempts) != 1 {
+		t.Fatalf("details=%#v err=%v", details, err)
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, details.Attempts[0].ID, core.AttemptOutcomeInput{Status: core.OutcomeFailed, Classification: core.OutcomeFinal, ErrorCode: "harness_failed", ErrorMessage: "failed", Diagnostics: "diagnostic detail"}); err != nil {
+		t.Fatal(err)
+	}
+	logDir := t.TempDir()
+	log := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-runtime-session","update":{"sessionUpdate":"tool_call","title":"shell","rawInput":{"command":"printf safe","token":"top-secret-token"}}}}` + "\n" +
+		`{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"raw chain-of-thought must not escape"}}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(logDir, "diagnostic-worker.jsonl"), []byte(log), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.diagnosticLogDir = logDir
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	client := &http.Client{Jar: mustWebCookieJar(t)}
+	login(t, client, server.URL)
+	response, err := client.Get(server.URL + "/v1/workers/diagnostic-worker/diagnostics")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.StatusCode, body)
+	}
+	text := string(body)
+	for _, want := range []string{"attempt_outcomes", "harness_details", "harness_failed", "shell"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("diagnostics missing %q: %s", want, text)
+		}
+	}
+	for _, forbidden := range []string{"runtime_session_id", "native-runtime-session", "top-secret-token", "raw chain-of-thought"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("diagnostics leaked %q: %s", forbidden, text)
+		}
+	}
+	conversationResponse, err := client.Get(server.URL + "/v1/workers/diagnostic-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conversationBody, _ := io.ReadAll(conversationResponse.Body)
+	conversationResponse.Body.Close()
+	if strings.Contains(string(conversationBody), "shell") || strings.Contains(string(conversationBody), "harness_details") {
+		t.Fatalf("normal Worker contract contains diagnostic details: %s", conversationBody)
 	}
 }
 

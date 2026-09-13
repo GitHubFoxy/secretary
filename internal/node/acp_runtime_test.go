@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -78,6 +79,37 @@ func TestACPRuntimeNormalizesRichActivityWithoutRawThought(t *testing.T) {
 	}
 	if activity := seen[ActivityToolResult]; activity.Tool != "list_workers" || activity.Result == "" {
 		t.Fatalf("tool result=%#v", activity)
+	}
+}
+
+func TestACPRuntimeDeliversEveryActivityInBurst(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
+	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:], Environment: []string{"ACP_BURST=128"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := runtime.Start(ctx, StartRequest{WorkerRef: "burst-worker", Task: "inspect", Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	select {
+	case result := <-session.Result():
+		if result.Status != "succeeded" {
+			t.Fatalf("burst result=%#v", result)
+		}
+	case <-ctx.Done():
+		t.Fatal("burst prompt did not complete")
+	}
+	for index := 0; index < 128; index++ {
+		select {
+		case activity := <-session.Activity():
+			want := "burst-" + strconv.Itoa(index)
+			if activity.Text != want {
+				t.Fatalf("activity[%d]=%#v, want text %q", index, activity, want)
+			}
+		case <-ctx.Done():
+			t.Fatalf("activity burst truncated at %d: %v", index, ctx.Err())
+		}
 	}
 }
 
@@ -615,7 +647,12 @@ func TestFakeACPProcess(t *testing.T) {
 		}
 		switch request.Method {
 		case "session/prompt":
-			if os.Getenv("ACP_RICH_ACTIVITY") == "1" {
+			if os.Getenv("ACP_BURST") != "" {
+				count, _ := strconv.Atoi(os.Getenv("ACP_BURST"))
+				for index := 0; index < count; index++ {
+					_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "burst-" + strconv.Itoa(index)}}}})
+				}
+			} else if os.Getenv("ACP_RICH_ACTIVITY") == "1" {
 				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "agent_thought_chunk", "content": map[string]string{"type": "text", "text": "raw internal thought"}}}})
 				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "tool_call", "title": "list_workers", "rawInput": map[string]string{"scope": "current"}}}})
 				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "tool_call_update", "title": "list_workers", "status": "completed", "rawOutput": map[string]string{"status": "ok"}}}})
