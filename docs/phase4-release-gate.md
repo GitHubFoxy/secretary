@@ -20,6 +20,17 @@
 
 Эта запись фиксирует фактический прогон, но не заменяет полную acceptance matrix ниже. Полный redacted ledger хранится в каталоге запуска и не содержит credentials или raw prompts.
 
+## Latest follow-up real-harness run
+
+- `run_id`: `p4-mcp-main.aSTI7d`
+- `commit`: `c88d5f1`
+- `PASS`: чистый server/node setup; настоящий `fx` Secretary создал Worker через server-owned MCP proxy.
+- `PASS`: Worker на `node/fx` выполнил read-only `pwd`, получил terminal success и вернул ожидаемый workspace path.
+- `BLOCKED`: прогон выполнен на одном компьютере; отдельные MacBook/home-server, Telegram, Claude Code и Codex не подтверждены.
+- `NOT RUN`: approval, queue, multi-Attempt, replay, revoke и network-loss сценарии.
+
+Эта запись подтверждает production MCP routing, но не закрывает полную acceptance matrix ниже.
+
 ## Deterministic automated checks
 
 Запуск:
