@@ -305,6 +305,75 @@ func TestTicket11SafeConfigAndProfileFieldsRemainVisibleWhileOpaqueValuesStayRed
 	}
 }
 
+func TestTicket11ProfileMetadataIsRedactedAcrossFreshReplayAndExport(t *testing.T) {
+	_, api, server, client := controlRoomTestAPI(t)
+	api.SetDebug(true)
+	controlRoomLogin(t, client, server.URL)
+	hostileRuntime := "sk-runtime-secret ghp_runtime xoxb_runtime"
+	hostileModel := "token: model-token"
+	hostileReasoning := "native-session callback task <think>COT-secret</think>"
+	api.AttachControl(ControlOptions{
+		ProfileFiles: func() ([]ProfileFile, error) {
+			return []ProfileFile{
+				{Name: "worker", Path: "/profiles/worker.md", Content: "ordinary profile", Hash: "profile-rev", Runtime: hostileRuntime, Model: hostileModel, Reasoning: hostileReasoning},
+				{Name: "secretary", Path: "/profiles/secretary.md", Content: "ordinary secretary", Hash: "secretary-rev", Runtime: "codex", Model: "smart-model", Reasoning: "high"},
+			}, nil
+		},
+		ConfigSnapshot: func() any {
+			return map[string]any{"profiles": map[string]any{
+				"worker":    map[string]string{"runtime": hostileRuntime, "model": hostileModel, "reasoning": hostileReasoning},
+				"secretary": map[string]string{"runtime": "codex", "model": "smart-model", "reasoning": "high"},
+			}}
+		},
+	})
+
+	for _, endpoint := range []string{"/v1/control/profiles", "/v1/control/profiles"} {
+		response, err := client.Get(server.URL + endpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var profiles []ProfileFile
+		if err := json.NewDecoder(response.Body).Decode(&profiles); err != nil {
+			response.Body.Close()
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK || len(profiles) != 2 {
+			t.Fatalf("%s status=%d profiles=%#v", endpoint, response.StatusCode, profiles)
+		}
+		if profiles[0].Runtime != "[redacted]" || profiles[0].Model != "[redacted]" || profiles[0].Reasoning != "[redacted]" {
+			t.Fatalf("hostile profile metadata was not redacted: %#v", profiles[0])
+		}
+		if profiles[0].Content != "ordinary profile" || profiles[1].Runtime != "codex" || profiles[1].Model != "smart-model" || profiles[1].Reasoning != "high" {
+			t.Fatalf("ordinary profile data changed: %#v", profiles)
+		}
+	}
+
+	response, err := client.Get(server.URL + "/v1/control/export")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("export status=%d body=%s", response.StatusCode, body)
+	}
+	text := string(body)
+	for _, secret := range []string{hostileRuntime, hostileModel, hostileReasoning, "sk-runtime-secret", "ghp_runtime", "xoxb_runtime", "model-token", "COT-secret"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("export leaked hostile profile metadata %q: %s", secret, text)
+		}
+	}
+	for _, safe := range []string{"codex", "smart-model", "high"} {
+		if !strings.Contains(text, safe) {
+			t.Fatalf("export removed ordinary profile metadata %q: %s", safe, text)
+		}
+	}
+}
+
 func TestTicket11SafeProductConfigIsEditableAndCASApplied(t *testing.T) {
 	_, api, server, client := controlRoomTestAPI(t)
 	api.SetDebug(true)
