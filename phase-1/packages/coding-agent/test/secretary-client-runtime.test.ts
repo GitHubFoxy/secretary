@@ -110,8 +110,14 @@ describe("production Secretary client entrypoint", () => {
 			vi.stubGlobal("fetch", originalFetch);
 			if (originalExperimental === undefined) delete process.env.PI_EXPERIMENTAL;
 			else process.env.PI_EXPERIMENTAL = originalExperimental;
-			output.mockRestore();
 		}
+		const snapshot = JSON.parse(String(output.mock.calls[0]?.[0]));
+		output.mockRestore();
+		expect(snapshot).toMatchObject({
+			selected_worker_ref: "worker-7",
+			worker: { worker: { worker_ref: "worker-7" } },
+			worker_activity: [{ id: "activity-1", seq: 1 }],
+		});
 		expect(calls.map(({ url }) => url)).toEqual([
 			"http://secretary.test/v1/clients/pair",
 			"http://secretary.test/v1/clients/client-1/poll",
@@ -148,5 +154,50 @@ describe("production Secretary client entrypoint", () => {
 			output.mockRestore();
 		}
 		expect(fetch).toHaveBeenCalled();
+	});
+
+	test("main routes needs_input response through the selected Worker endpoint", async () => {
+		const calls: Array<{ url: string; init?: RequestInit }> = [];
+		const fetch = vi.fn(async (input: string | URL, init?: RequestInit) => {
+			const url = input.toString();
+			calls.push({ url, init });
+			if (url.includes("/v1/conversation")) return jsonResponse([]);
+			if (url.endsWith("/v1/workers")) return jsonResponse([{ worker_ref: "worker-7", status: "needs_input" }]);
+			if (url.endsWith("/v1/approvals")) return jsonResponse([]);
+			if (url.includes("/v1/workers/worker-7/activity")) return jsonResponse([]);
+			if (url.endsWith("/v1/workers/worker-7")) return jsonResponse({ worker: { worker_ref: "worker-7" }, turns: [] });
+			if (url.endsWith("/v1/workers/worker-7/message")) return jsonResponse({ worker: { worker_ref: "worker-7" }, turns: [] });
+			throw new Error(`unexpected ${url}`);
+		}) as unknown as typeof globalThis.fetch;
+		const originalFetch = globalThis.fetch;
+		const originalExperimental = process.env.PI_EXPERIMENTAL;
+		const output = vi.spyOn(console, "log").mockImplementation(() => {});
+		vi.stubGlobal("fetch", fetch);
+		process.env.PI_EXPERIMENTAL = "1";
+		try {
+			await main([
+				"secretary",
+				"--base-url",
+				"http://secretary.test",
+				"--credential",
+				"client-only",
+				"--worker-ref",
+				"worker-7",
+				"--respond-request",
+				"request-1",
+				"--response",
+				"answer",
+				"--once",
+			]);
+		} finally {
+			vi.stubGlobal("fetch", originalFetch);
+			if (originalExperimental === undefined) delete process.env.PI_EXPERIMENTAL;
+			else process.env.PI_EXPERIMENTAL = originalExperimental;
+			output.mockRestore();
+		}
+		const action = calls.find(({ url }) => url.endsWith("/message"));
+		expect(action).toBeDefined();
+		expect(JSON.parse(String(action?.init?.body))).toMatchObject({ text: "answer", request_id: "request-1" });
+		expect((action?.init?.headers as Headers).get("Idempotency-Key")).toBeTruthy();
 	});
 });

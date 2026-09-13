@@ -64,7 +64,7 @@ export class SecretaryClientRuntime {
 		const state = await this.presentation.start({ live: this.#live });
 		if (this.#workerRef !== undefined) await this.presentation.openWorker(this.#workerRef);
 		this.#started = true;
-		return state;
+		return this.presentation.state;
 	}
 
 	/** Re-read server state while keeping the current Worker observer and cursor. */

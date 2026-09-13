@@ -10,6 +10,13 @@ export interface SecretaryCommand {
 	readonly displayName?: string;
 	readonly platform?: string;
 	readonly workerRef?: string;
+	readonly message?: string;
+	readonly respondRequest?: string;
+	readonly response?: string;
+	readonly cancel?: boolean;
+	readonly close?: boolean;
+	readonly approve?: string;
+	readonly deny?: string;
 	readonly once?: boolean;
 }
 
@@ -25,6 +32,13 @@ const deviceIdOption = stringOption("--device-id");
 const displayNameOption = stringOption("--display-name");
 const platformOption = stringOption("--platform");
 const workerRefOption = stringOption("--worker-ref");
+const messageOption = stringOption("--message");
+const respondRequestOption = stringOption("--respond-request");
+const responseOption = stringOption("--response");
+const cancelOption = flagOption("--cancel");
+const closeOption = flagOption("--close");
+const approveOption = stringOption("--approve");
+const denyOption = stringOption("--deny");
 const onceOption = flagOption("--once");
 
 export const secretaryCommand = new Command<SecretaryCommand, SecretaryCommandContext>("secretary")
@@ -36,6 +50,13 @@ export const secretaryCommand = new Command<SecretaryCommand, SecretaryCommandCo
 	.option(displayNameOption)
 	.option(platformOption)
 	.option(workerRefOption)
+	.option(messageOption)
+	.option(respondRequestOption)
+	.option(responseOption)
+	.option(cancelOption)
+	.option(closeOption)
+	.option(approveOption)
+	.option(denyOption)
 	.option(onceOption)
 	.build((input) => {
 		const baseUrl = input.value(baseUrlOption);
@@ -46,7 +67,15 @@ export const secretaryCommand = new Command<SecretaryCommand, SecretaryCommandCo
 		const displayName = input.value(displayNameOption);
 		const platform = input.value(platformOption);
 		const workerRef = input.value(workerRefOption);
+		const message = input.value(messageOption);
+		const respondRequest = input.value(respondRequestOption);
+		const response = input.value(responseOption);
+		const cancel = input.value(cancelOption) === true;
+		const close = input.value(closeOption) === true;
+		const approve = input.value(approveOption);
+		const deny = input.value(denyOption);
 		const once = input.value(onceOption) === true;
+		const actions = [message !== undefined, respondRequest !== undefined, cancel, close, approve !== undefined, deny !== undefined].filter(Boolean).length;
 		const errors: string[] = [];
 		if (credential !== undefined && credentialFile !== undefined)
 			errors.push("--credential and --credential-file are mutually exclusive");
@@ -59,6 +88,11 @@ export const secretaryCommand = new Command<SecretaryCommand, SecretaryCommandCo
 			errors.push("--bootstrap-token requires --display-name");
 		if (bootstrapToken === undefined && credential === undefined && credentialFile === undefined)
 			errors.push("Secretary client requires --credential, --credential-file, or --bootstrap-token");
+		if (actions > 1) errors.push("Secretary client accepts only one Worker or Approval action");
+		if ((message !== undefined || respondRequest !== undefined || cancel || close) && workerRef === undefined)
+			errors.push("Worker actions require --worker-ref");
+		if (respondRequest !== undefined && response === undefined) errors.push("--respond-request requires --response");
+		if (respondRequest === undefined && response !== undefined) errors.push("--response requires --respond-request");
 		if (input.remainingArgs.length > 0)
 			errors.push("The experimental secretary command does not accept positional arguments");
 		if (errors.length > 0) return { ok: false, errors };
@@ -74,6 +108,13 @@ export const secretaryCommand = new Command<SecretaryCommand, SecretaryCommandCo
 				...(displayName === undefined ? {} : { displayName }),
 				...(platform === undefined ? {} : { platform }),
 				...(workerRef === undefined ? {} : { workerRef }),
+				...(message === undefined ? {} : { message }),
+				...(respondRequest === undefined ? {} : { respondRequest }),
+				...(response === undefined ? {} : { response }),
+				...(cancel ? { cancel: true } : {}),
+				...(close ? { close: true } : {}),
+				...(approve === undefined ? {} : { approve }),
+				...(deny === undefined ? {} : { deny }),
 				...(once ? { once: true } : {}),
 			},
 		};

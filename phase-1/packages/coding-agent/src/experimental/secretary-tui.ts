@@ -5,7 +5,7 @@ import { SettingsManager } from "../core/settings-manager.ts";
 import { createInteractiveTui } from "../modes/interactive/tui-renderer.ts";
 import type { SecretaryPresentationState } from "../secretary/presentation.ts";
 import { openSecretaryClientRuntime } from "../secretary/runtime.ts";
-import { runtimeOptionsFromCommand } from "./secretary-client.ts";
+import { applySecretaryAction, runtimeOptionsFromCommand } from "./secretary-client.ts";
 
 class SecretaryView implements Component {
 	readonly #content = new Container();
@@ -85,6 +85,7 @@ export async function runSecretaryClientTui(command: SecretaryCommand): Promise<
 	try {
 		view = new SecretaryView(() => tui.requestRender(), finish);
 		await runtime.start();
+		await applySecretaryAction(runtime, command);
 		tui.addChild(view);
 		tui.setLayoutRoot(view);
 		tui.setFocus(view);

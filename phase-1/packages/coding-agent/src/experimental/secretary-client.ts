@@ -20,7 +20,9 @@ export async function runSecretaryClient(
 	});
 	const runtime = await SecretaryClientRuntime.create(runtimeOptions);
 	try {
-		const state = await runtime.start();
+		await runtime.start();
+		await applySecretaryAction(runtime, command);
+		const state = runtime.presentation.state;
 		console.log(
 			JSON.stringify({
 				conversation: state.conversation,
@@ -44,6 +46,34 @@ export async function runSecretaryClient(
 	} finally {
 		await runtime.dispose();
 	}
+}
+
+export async function applySecretaryAction(
+	runtime: SecretaryClientRuntime,
+	command: SecretaryCommand,
+): Promise<void> {
+	if (command.message !== undefined) {
+		await runtime.presentation.messageWorker(command.message);
+		return;
+	}
+	if (command.respondRequest !== undefined) {
+		if (command.response === undefined) throw new Error("--respond-request requires --response");
+		await runtime.presentation.respondWorker(command.respondRequest, command.response);
+		return;
+	}
+	if (command.cancel === true) {
+		await runtime.presentation.cancelWorker();
+		return;
+	}
+	if (command.close === true) {
+		await runtime.presentation.closeWorker();
+		return;
+	}
+	if (command.approve !== undefined) {
+		await runtime.presentation.approve(command.approve);
+		return;
+	}
+	if (command.deny !== undefined) await runtime.presentation.deny(command.deny);
 }
 
 export async function runtimeOptionsFromCommand(
