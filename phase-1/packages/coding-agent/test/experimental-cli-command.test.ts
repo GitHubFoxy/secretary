@@ -41,6 +41,56 @@ describe("experimental CLI commands", () => {
 		});
 	});
 
+	test("parses the production Secretary client command", () => {
+		expect(
+			cli.parse([
+				"secretary",
+				"--base-url",
+				"http://secretary.test",
+				"--credential",
+				"client-secret",
+				"--worker-ref",
+				"worker-7",
+				"--once",
+			]),
+		).toEqual({
+			ok: true,
+			command: {
+				command: "secretary",
+				baseUrl: "http://secretary.test",
+				credential: "client-secret",
+				workerRef: "worker-7",
+				once: true,
+			},
+		});
+	});
+
+	test("parses Secretary pairing options without accepting Node options", () => {
+		expect(
+			cli.parse([
+				"secretary",
+				"--base-url",
+				"http://secretary.test",
+				"--bootstrap-token",
+				"bootstrap",
+				"--device-id",
+				"pi-1",
+				"--display-name",
+				"Pi",
+			]),
+		).toEqual({
+			ok: true,
+			command: {
+				command: "secretary",
+				baseUrl: "http://secretary.test",
+				bootstrapToken: "bootstrap",
+				deviceId: "pi-1",
+				displayName: "Pi",
+			},
+		});
+		expect(cli.parse(["secretary", "--connect", "unix:///tmp/node.sock"])).toMatchObject({ ok: false });
+	});
+
 	test("parses client transport addresses", () => {
 		expect(cli.parse(["client", "--connect", "unix:///tmp/pi.sock"])).toEqual({
 			ok: true,

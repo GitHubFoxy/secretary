@@ -414,6 +414,39 @@ export {
 	Theme,
 	type ThemeColor,
 } from "./modes/interactive/theme/theme.ts";
+export {
+	type Approval,
+	type ConversationEntry,
+	type MessageAcknowledgement,
+	type NodeInventory,
+	openSecretaryClientRuntime,
+	type PairedSecretaryClient,
+	type Project,
+	pairSecretaryClient,
+	SecretaryApiError,
+	SecretaryClient,
+	type SecretaryClientIdentity,
+	type SecretaryClientOptions,
+	SecretaryClientRuntime,
+	type SecretaryClientRuntimeOptions,
+	type SecretaryClientScope,
+	type SecretaryEvent,
+	type SecretaryPairOptions,
+	type SecretarySubscription,
+	type SecretaryWebSocket,
+	type SecretaryWebSocketFactory,
+	type UserDocument,
+	type Worker,
+	type WorkerActivity,
+	type WorkerDetails,
+	type WorkerSubscription,
+} from "./secretary/index.ts";
+// Secretary Client adapter. It speaks only the Go server HTTP API and never the Node protocol.
+export {
+	SecretaryPresentation,
+	type SecretaryPresentationOptions,
+	type SecretaryPresentationState,
+} from "./secretary/presentation.ts";
 // Clipboard utilities
 export { copyToClipboard } from "./utils/clipboard.ts";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.ts";

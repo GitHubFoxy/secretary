@@ -5,7 +5,7 @@ describe("experimental CLI command composition", () => {
 	test("requires an experimental subcommand", () => {
 		expect(cli.parse([])).toEqual({
 			ok: false,
-			errors: ["Expected experimental command: server or client"],
+			errors: ["Expected experimental command: server, client, or secretary"],
 		});
 	});
 
@@ -23,7 +23,7 @@ describe("experimental CLI command composition", () => {
 				"--model",
 				"claude-sonnet-4-5",
 			],
-			{ runServer, runClient: vi.fn(() => undefined) },
+			{ runServer, runClient: vi.fn(() => undefined), runSecretary: vi.fn(() => undefined) },
 		);
 
 		const command = {
@@ -41,6 +41,7 @@ describe("experimental CLI command composition", () => {
 		const context = {
 			runServer: vi.fn(() => undefined),
 			runClient: vi.fn(() => undefined),
+			runSecretary: vi.fn(() => undefined),
 		};
 		const result = await cli.execute([name], context);
 
