@@ -13,6 +13,7 @@ import (
 
 	"github.com/beruseruko/secretary/internal/config"
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/pelletier/go-toml/v2"
 	_ "modernc.org/sqlite"
 )
 
@@ -959,6 +960,153 @@ INSERT INTO results VALUES ('result-4', 'attempt-4', 'failed', 'docs failed', '2
 		if input != expected.input || attempt != expected.attempt || status != expected.status {
 			t.Fatalf("migrated turn=%q result=%q/%q, want %#v", input, attempt, status, expected)
 		}
+	}
+}
+
+func TestMigrationCanonicalizesLegacyModelFieldsAndDurableSettings(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "secretary.db")
+	if err := seedPhase3Database(ctx, dbPath); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"secretary.md", "worker.md", "child-worker.md"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name+" policy"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configPath := filepath.Join(dir, "config.toml")
+	legacy := `[profiles]
+secretary = "secretary.md"
+worker = "worker.md"
+child_worker = "child-worker.md"
+[tools]
+allow_tools = ["read"]
+[models]
+secretary = "provider/secretary"
+fast = "provider/fast-model"
+smart = "provider/smart-model"
+cheap = "provider/cheap-model"
+[runtime]
+harness = "fx"
+reasoning = "high"
+[secretary]
+harness = "fx"
+model = "smart"
+reasoning = "high"
+[worker_policy]
+default_harness = "fx"
+model = "fast"
+default_model = "cheap"
+fallback_models = ["smart", "fast", "cheap"]
+`
+	if err := os.WriteFile(configPath, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL); INSERT INTO settings(key, value, updated_at) VALUES ('secretary.model', 'fast', 'old'); INSERT INTO settings(key, value, updated_at) VALUES ('secretary.runtime_model', 'cheap', 'old'); INSERT INTO settings(key, value, updated_at) VALUES ('unrelated', 'keep', 'old')`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, Options{SourcePath: dbPath, DestinationPath: dbPath, ConfigPath: configPath}); err != nil {
+		t.Fatal(err)
+	}
+
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tree map[string]any
+	if err := toml.Unmarshal(content, &tree); err != nil {
+		t.Fatal(err)
+	}
+	secretary := table(tree, "secretary")
+	workerPolicy := table(tree, "worker_policy")
+	if got := stringValue(secretary["model"]); got != "provider/smart-model" {
+		t.Fatalf("secretary.model=%q", got)
+	}
+	if got := stringValue(workerPolicy["model"]); got != "provider/fast-model" {
+		t.Fatalf("worker_policy.model=%q", got)
+	}
+	if got := stringValue(workerPolicy["default_model"]); got != "provider/cheap-model" {
+		t.Fatalf("worker_policy.default_model=%q", got)
+	}
+	fallback, ok := workerPolicy["fallback_models"].([]any)
+	if !ok || len(fallback) != 3 || stringValue(fallback[0]) != "provider/smart-model" || stringValue(fallback[1]) != "provider/fast-model" || stringValue(fallback[2]) != "provider/cheap-model" {
+		t.Fatalf("worker_policy.fallback_models=%#v", workerPolicy["fallback_models"])
+	}
+	for key, want := range map[string]string{"secretary.model": "provider/fast-model", "secretary.runtime_model": "provider/cheap-model"} {
+		var value string
+		if err := queryOne(dbPath, `SELECT value FROM settings WHERE key = '`+key+`'`, &value); err != nil {
+			t.Fatal(err)
+		}
+		if value != want {
+			t.Fatalf("setting %s=%q", key, value)
+		}
+	}
+	var unrelated string
+	if err := queryOne(dbPath, `SELECT value FROM settings WHERE key = 'unrelated'`, &unrelated); err != nil || unrelated != "keep" {
+		t.Fatalf("unrelated setting=%q err=%v", unrelated, err)
+	}
+}
+
+func TestMigrationRebindsCoreOpenPrefilledResultWithoutDuplicate(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	if err := seedPhase3Database(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, `ALTER TABLE conversation_entries ADD COLUMN worker_ref TEXT NOT NULL DEFAULT ''; ALTER TABLE conversation_entries ADD COLUMN turn_id TEXT NOT NULL DEFAULT ''; ALTER TABLE conversation_entries ADD COLUMN result_id TEXT NOT NULL DEFAULT ''; UPDATE attempts SET state = 'succeeded' WHERE id = 'attempt-2'; INSERT INTO results VALUES ('result-2', 'attempt-2', 'succeeded', 'done', '2024-01-01T00:01:00Z'); UPDATE conversation_entries SET worker_ref = 'worker-1', turn_id = 'legacy-attempt-attempt-2', result_id = 'legacy-result-result-2' WHERE id = 'entry-result'`); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	base, err := core.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := base.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Run(ctx, Options{SourcePath: path, DestinationPath: path}); err != nil {
+		t.Fatal(err)
+	}
+	var entryID, workerRef, turnID, resultID string
+	if err := queryOne(path, `SELECT id, worker_ref, turn_id, result_id FROM conversation_entries WHERE kind = 'worker_result' AND body = 'done'`, &entryID, &workerRef, &turnID, &resultID); err != nil {
+		t.Fatal(err)
+	}
+	if entryID != "entry-result" || workerRef != "worker-1" || turnID != "legacy-turn-binding-1" || resultID != "legacy-result-result-2" {
+		t.Fatalf("prefilled entry was not rebound: id=%q worker=%q turn=%q result=%q", entryID, workerRef, turnID, resultID)
+	}
+	var resultCount, visibleCount, orderedCount int
+	if err := queryOne(path, `SELECT COUNT(*) FROM phase4_results WHERE summary = 'done'`, &resultCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := queryOne(path, `SELECT COUNT(*) FROM conversation_entries WHERE kind = 'worker_result' AND body = 'done'`, &visibleCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := queryOne(path, `SELECT COUNT(*) FROM conversation_entries WHERE id = 'entry-result' AND seq = 2`, &orderedCount); err != nil {
+		t.Fatal(err)
+	}
+	if resultCount != 1 || visibleCount != 1 || orderedCount != 1 {
+		t.Fatalf("duplicate or reordered visible result: results=%d visible=%d ordered=%d", resultCount, visibleCount, orderedCount)
+	}
+	second, err := Run(ctx, Options{SourcePath: path, DestinationPath: path})
+	if err != nil || !second.Idempotent || second.Results != 0 {
+		t.Fatalf("prefilled result migration is not idempotent: report=%#v err=%v", second, err)
 	}
 }
 

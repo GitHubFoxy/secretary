@@ -196,39 +196,61 @@ func prepareConfig(path string) ([]byte, map[string]string, error) {
 	if stringValue(secretary["harness"]) == "" {
 		secretary["harness"] = runtime["harness"]
 	}
-	secretaryModel := canonicalLegacyModel(stringValue(models["secretary"]), "default")
-	if stringValue(secretary["model"]) == "" {
-		secretary["model"] = secretaryModel
+
+	adapterDefault := legacyAdapterDefaultModel(stringValue(runtime["harness"]))
+	modelMappings := make(map[string]string, 4)
+	for _, alias := range []string{"secretary", "fast", "smart", "cheap"} {
+		modelMappings[alias] = stringValue(models[alias])
 	}
+	secretaryModel := canonicalConfiguredModel(stringValue(secretary["model"]), modelMappings, canonicalConfiguredModel(modelMappings["secretary"], modelMappings, adapterDefault))
+	if secretaryModel == "" {
+		secretaryModel = adapterDefault
+	}
+	secretary["model"] = secretaryModel
 	if stringValue(secretary["reasoning"]) == "" {
 		secretary["reasoning"] = runtime["reasoning"]
 	}
 	if stringValue(workerPolicy["default_harness"]) == "" {
 		workerPolicy["default_harness"] = runtime["harness"]
 	}
-	workerDefaultModel := stringValue(secretary["model"])
-	if workerDefaultModel == "" {
-		workerDefaultModel = secretaryModel
+
+	workerPolicyModel := stringValue(workerPolicy["model"])
+	if workerPolicyModel == "" {
+		workerPolicyModel = stringValue(workerPolicy["default_model"])
 	}
-	if stringValue(workerPolicy["model"]) == "" {
-		workerPolicy["model"] = canonicalLegacyModel(stringValue(models["smart"]), workerDefaultModel)
+	if workerPolicyModel == "" {
+		workerPolicyModel = stringValue(models["smart"])
 	}
-	fallbackModels := []any{}
-	for _, alias := range []string{"fast", "cheap"} {
-		if value := stringValue(models[alias]); value != "" {
-			fallbackModels = append(fallbackModels, canonicalLegacyModel(value, secretaryModel))
+	workerPolicyModel = canonicalConfiguredModel(workerPolicyModel, modelMappings, secretaryModel)
+	workerPolicy["model"] = workerPolicyModel
+	if defaultModel, ok := workerPolicy["default_model"]; ok {
+		workerPolicy["default_model"] = canonicalConfiguredModel(stringValue(defaultModel), modelMappings, workerPolicyModel)
+	}
+
+	if rawFallback, ok := workerPolicy["fallback_models"]; ok {
+		workerPolicy["fallback_models"] = canonicalModelList(rawFallback, modelMappings, secretaryModel)
+	} else {
+		fallbackModels := make([]any, 0, 2)
+		for _, alias := range []string{"fast", "cheap"} {
+			if value := stringValue(models[alias]); value != "" {
+				fallbackModels = append(fallbackModels, canonicalConfiguredModel(value, modelMappings, secretaryModel))
+			}
+		}
+		if len(fallbackModels) > 0 {
+			workerPolicy["fallback_models"] = fallbackModels
 		}
 	}
-	if len(fallbackModels) > 0 {
-		workerPolicy["fallback_models"] = fallbackModels
+
+	legacyModels := map[string]string{
+		"__secretary_model": secretaryModel,
+		"__adapter_default": adapterDefault,
+		"worker_policy":     workerPolicyModel,
 	}
-	legacyModels := map[string]string{}
 	for _, alias := range []string{"secretary", "fast", "smart", "cheap"} {
 		if value := stringValue(models[alias]); value != "" {
 			legacyModels[alias] = value
 		}
 	}
-	legacyModels["worker_policy"] = stringValue(workerPolicy["model"])
 	for _, alias := range []string{"fast", "smart", "cheap"} {
 		delete(models, alias)
 	}
@@ -243,17 +265,48 @@ func prepareConfig(path string) ([]byte, map[string]string, error) {
 	return canonical, legacyModels, nil
 }
 
-func canonicalLegacyModel(value, fallback string) string {
+func canonicalConfiguredModel(value string, mappings map[string]string, fallback string) string {
 	value = strings.TrimSpace(value)
-	switch strings.ToLower(value) {
-	case "", "fast", "smart", "cheap", "default":
-		return fallback
-	default:
-		return value
+	for i := 0; i < len(mappings)+2; i++ {
+		if value == "" || strings.EqualFold(value, "default") {
+			return strings.TrimSpace(fallback)
+		}
+		mapped, ok := mappings[strings.ToLower(value)]
+		if !ok {
+			return value
+		}
+		mapped = strings.TrimSpace(mapped)
+		if mapped == "" || strings.EqualFold(mapped, value) {
+			return strings.TrimSpace(fallback)
+		}
+		value = mapped
 	}
+	if isLegacyModelAlias(value) {
+		return strings.TrimSpace(fallback)
+	}
+	return value
+}
+
+func canonicalModelList(value any, mappings map[string]string, fallback string) []any {
+	result := []any{}
+	switch values := value.(type) {
+	case []any:
+		for _, item := range values {
+			result = append(result, canonicalConfiguredModel(stringValue(item), mappings, fallback))
+		}
+	case []string:
+		for _, item := range values {
+			result = append(result, canonicalConfiguredModel(item, mappings, fallback))
+		}
+	}
+	return result
 }
 
 func resolveLegacyModel(value string, models map[string]string, runtime string) string {
+	return resolveLegacyModelWithFallback(value, models, runtime, "")
+}
+
+func resolveLegacyModelWithFallback(value string, models map[string]string, runtime, fallback string) string {
 	value = strings.TrimSpace(value)
 	for i := 0; i < 5; i++ {
 		if value == "" {
@@ -266,12 +319,85 @@ func resolveLegacyModel(value string, models map[string]string, runtime string) 
 		value = strings.TrimSpace(mapped)
 	}
 	if value == "" || isLegacyModelAlias(value) {
+		if fallback = strings.TrimSpace(fallback); fallback != "" && !isLegacyModelAlias(fallback) {
+			return fallback
+		}
 		if fallback := strings.TrimSpace(models["worker_policy"]); fallback != "" && !isLegacyModelAlias(fallback) {
+			return fallback
+		}
+		if fallback := strings.TrimSpace(models["__adapter_default"]); fallback != "" && !isLegacyModelAlias(fallback) {
 			return fallback
 		}
 		return legacyAdapterDefaultModel(runtime)
 	}
 	return value
+}
+
+func migrateDurableModelSettings(ctx context.Context, tx *sql.Tx, models map[string]string) error {
+	secretaryDefault := strings.TrimSpace(models["__secretary_model"])
+	if secretaryDefault == "" {
+		secretaryDefault = strings.TrimSpace(models["__adapter_default"])
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	rows, err := tx.QueryContext(ctx, `SELECT key, value FROM settings WHERE key IN ('secretary.model', 'secretary.runtime_model')`)
+	if err != nil {
+		return err
+	}
+	settings := make([]struct{ key, value string }, 0, 2)
+	for rows.Next() {
+		var setting struct{ key, value string }
+		if err := rows.Scan(&setting.key, &setting.value); err != nil {
+			rows.Close()
+			return err
+		}
+		settings = append(settings, setting)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, setting := range settings {
+		canonical := resolveLegacyModelWithFallback(setting.value, models, "", secretaryDefault)
+		if canonical == setting.value {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE settings SET value = ?, updated_at = ? WHERE key = ?`, canonical, now, setting.key); err != nil {
+			return err
+		}
+	}
+	identityRows, err := tx.QueryContext(ctx, `SELECT id, runtime_model FROM secretary_identities WHERE runtime_model <> ''`)
+	if err != nil {
+		return err
+	}
+	identities := make([]struct{ id, model string }, 0)
+	for identityRows.Next() {
+		var identity struct{ id, model string }
+		if err := identityRows.Scan(&identity.id, &identity.model); err != nil {
+			identityRows.Close()
+			return err
+		}
+		identities = append(identities, identity)
+	}
+	if err := identityRows.Err(); err != nil {
+		identityRows.Close()
+		return err
+	}
+	if err := identityRows.Close(); err != nil {
+		return err
+	}
+	for _, identity := range identities {
+		canonical := resolveLegacyModelWithFallback(identity.model, models, "", secretaryDefault)
+		if canonical == identity.model {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE secretary_identities SET runtime_model = ?, updated_at = ? WHERE id = ?`, canonical, now, identity.id); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func isLegacyModelAlias(value string) bool {
@@ -317,6 +443,9 @@ func migrateDatabase(ctx context.Context, db *sql.DB, legacyModels map[string]st
 		return Report{}, err
 	}
 	defer tx.Rollback()
+	if err := migrateDurableModelSettings(ctx, tx, legacyModels); err != nil {
+		return Report{}, err
+	}
 	var report Report
 	followUpCache := make(map[string]map[string][]legacyMigrationDirection)
 	rows, err := tx.QueryContext(ctx, `SELECT t.id, t.conversation_id, t.text, t.state, t.created_at, t.updated_at,
@@ -832,14 +961,20 @@ func attachVisibleResult(ctx context.Context, tx *sql.Tx, conversationID, worker
 	legacyResultID := strings.TrimPrefix(resultID, "legacy-result-")
 	legacyAttemptID := strings.TrimPrefix(attemptID, "legacy-attempt-")
 	var prefilledCount int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND body = ? AND created_at = ? AND (result_id = ? OR result_id = ?)`, conversationID, summary, created, legacyResultID, "legacy-attempt:"+legacyAttemptID).Scan(&prefilledCount); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_entries
+		WHERE conversation_id = ? AND kind = 'worker_result' AND body = ?
+			AND (result_id = ? OR result_id = ? OR turn_id = ? OR turn_id = ? OR turn_id = ?)`,
+		conversationID, summary, resultID, legacyResultID, attemptID, legacyAttemptID, "legacy-attempt:"+legacyAttemptID).Scan(&prefilledCount); err != nil {
 		return err
 	}
 	if prefilledCount > 1 {
 		return fmt.Errorf("%w: ambiguous prefilled visible Result entry for summary %q at %s", ErrInvalid, summary, created)
 	}
 	if prefilledCount == 1 {
-		if err := tx.QueryRowContext(ctx, `SELECT id FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND body = ? AND created_at = ? AND (result_id = ? OR result_id = ?) LIMIT 1`, conversationID, summary, created, legacyResultID, "legacy-attempt:"+legacyAttemptID).Scan(&entryID); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM conversation_entries
+			WHERE conversation_id = ? AND kind = 'worker_result' AND body = ?
+				AND (result_id = ? OR result_id = ? OR turn_id = ? OR turn_id = ? OR turn_id = ?) LIMIT 1`,
+			conversationID, summary, resultID, legacyResultID, attemptID, legacyAttemptID, "legacy-attempt:"+legacyAttemptID).Scan(&entryID); err != nil {
 			return err
 		}
 		_, err := tx.ExecContext(ctx, `UPDATE conversation_entries SET worker_ref = ?, turn_id = ?, result_id = ? WHERE id = ?`, workerRef, turnID, resultID, entryID)
