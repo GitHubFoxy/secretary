@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -236,7 +237,7 @@ func main() {
 		}
 		persistentSecretary = secretaryruntime.NewRuntime(local, capability)
 		persistentSecretary.AttachIdentity(secretaryIdentity)
-		persistentSecretary.AttachMCPServer(mcpCommand, *dataDir, "http://"+*listen)
+		persistentSecretary.AttachMCPServer(mcpCommand, *dataDir, secretaryMCPServerURL(*listen))
 		persistentSecretary.AttachProfile(func() node.ManagedProfile {
 			return secretaryProfile(profiles.Snapshot(), store)
 		})
@@ -360,6 +361,21 @@ func attachProductionWorkerServices(web *webapi.Server, store *core.Store, perso
 	workerService := ctl.WorkerService{Store: store, PersonID: personID, Capability: capability, Runtime: ctl.NodeRuntime{Manager: remote, Local: local}}
 	web.AttachWorkerResponder(workerService)
 	web.AttachSecretaryWorkerTools(workerService)
+}
+
+func secretaryMCPServerURL(listen string) string {
+	listen = strings.TrimSpace(listen)
+	if host, port, err := net.SplitHostPort(listen); err == nil {
+		switch host {
+		case "", "0.0.0.0", "::", "[::]":
+			host = "127.0.0.1"
+		}
+		return "http://" + net.JoinHostPort(host, port)
+	}
+	if strings.HasPrefix(listen, ":") {
+		return "http://127.0.0.1" + listen
+	}
+	return "http://" + listen
 }
 
 func configuredRuntime(snapshot config.Snapshot, dataDir string) (node.Runtime, string) {

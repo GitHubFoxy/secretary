@@ -135,6 +135,21 @@ func mustProductionCookieJar(t *testing.T) *cookiejar.Jar {
 	return jar
 }
 
+func TestSecretaryMCPServerURLUsesLoopbackForWildcardListeners(t *testing.T) {
+	cases := map[string]string{
+		"127.0.0.1:8081": "http://127.0.0.1:8081",
+		":8081":          "http://127.0.0.1:8081",
+		"0.0.0.0:8081":   "http://127.0.0.1:8081",
+		"[::]:8081":      "http://127.0.0.1:8081",
+		"[::1]:8081":     "http://[::1]:8081",
+	}
+	for listen, want := range cases {
+		if got := secretaryMCPServerURL(listen); got != want {
+			t.Errorf("secretaryMCPServerURL(%q)=%q, want %q", listen, got, want)
+		}
+	}
+}
+
 func loginProduction(t *testing.T, client *http.Client, baseURL string) {
 	t.Helper()
 	response, err := client.Post(baseURL+"/v1/web/session", "application/json", strings.NewReader(`{"bootstrap_token":"bootstrap"}`))
