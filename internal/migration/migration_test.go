@@ -300,6 +300,22 @@ func TestManualCopyMigrationPreservesRealisticPhase3Fixture(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
+	fixtureInfo, err := os.Stat(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fixtureInfo.Size() > 1<<20 {
+		t.Fatalf("realistic fixture is unexpectedly large: %d bytes", fixtureInfo.Size())
+	}
+	fixtureBytes, err := os.ReadFile(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secretMarker := range []string{"sk-live-", "Bearer ", "token-secret"} {
+		if strings.Contains(string(fixtureBytes), secretMarker) {
+			t.Fatalf("fixture contains secret marker %q", secretMarker)
+		}
+	}
 	before, err := fileDigest(source)
 	if err != nil {
 		t.Fatal(err)
@@ -308,6 +324,13 @@ func TestManualCopyMigrationPreservesRealisticPhase3Fixture(t *testing.T) {
 	if _, err := Run(ctx, Options{SourcePath: source, DestinationPath: destination}); err != nil {
 		t.Fatal(err)
 	}
+	destinationInfo, err := os.Stat(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if destinationInfo.Size() > 1<<20 {
+		t.Fatalf("copied fixture is unexpectedly large: %d bytes", destinationInfo.Size())
+	}
 	after, err := fileDigest(source)
 	if err != nil || before != after {
 		t.Fatalf("source fixture changed: before=%q after=%q err=%v", before, after, err)
@@ -315,6 +338,13 @@ func TestManualCopyMigrationPreservesRealisticPhase3Fixture(t *testing.T) {
 	var capabilityCount, eventCount, childWorkers int
 	if err := queryOne(destination, `SELECT COUNT(*) FROM secretary_capabilities`, &capabilityCount); err != nil {
 		t.Fatal(err)
+	}
+	var capabilityHash string
+	if err := queryOne(destination, `SELECT token_hash FROM secretary_capabilities WHERE id = 'cap-1'`, &capabilityHash); err != nil {
+		t.Fatal(err)
+	}
+	if capabilityHash != "hash" {
+		t.Fatalf("redacted capability hash changed: %q", capabilityHash)
 	}
 	if err := queryOne(destination, `SELECT COUNT(*) FROM events`, &eventCount); err != nil {
 		t.Fatal(err)
@@ -546,6 +576,161 @@ func fixtureCopyFile(from, to string) error {
 		}
 	}
 	return nil
+}
+
+func TestMigrationPreservesUnboundFollowUpsAcrossMultipleRootWorkers(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	if err := seedPhase3Database(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `
+INSERT INTO tasks VALUES ('task-2', 'conversation-1', 'review it', 'open', '', '', 0, '2024-01-01T00:01:30Z', '2024-01-01T00:01:30Z');
+INSERT INTO worker_bindings VALUES ('binding-2', 'task-2', 'worker-2', 'node-2', 'native-session-2', '/work/review', '', '', 'cfg-2', 'worker', 'hash-2', 'fx', 'gpt-5.6-luna', 'high', 'read', 'metadata', 0, '2024-01-01T00:01:30Z');
+INSERT INTO attempts VALUES ('attempt-3', 'binding-1', 3, 'succeeded', '2024-01-01T00:01:40Z', '2024-01-01T00:01:45Z');
+INSERT INTO attempts VALUES ('attempt-5', 'binding-2', 1, 'succeeded', '2024-01-01T00:01:35Z', '2024-01-01T00:01:50Z');
+INSERT INTO attempts VALUES ('attempt-6', 'binding-2', 2, 'failed', '2024-01-01T00:02:00Z', '2024-01-01T00:02:05Z');
+INSERT INTO conversation_entries VALUES ('entry-followup-worker-1', 'conversation-1', 3, 'worker_input', 'continue shipping', '2024-01-01T00:01:20Z');
+INSERT INTO conversation_entries VALUES ('entry-followup-worker-2', 'conversation-1', 4, 'worker_input', 'review the docs', '2024-01-01T00:01:55Z');
+INSERT INTO conversation_entries VALUES ('entry-worker-1-followup-result', 'conversation-1', 5, 'worker_result', 'shipping continued', '2024-01-01T00:01:45Z');
+INSERT INTO conversation_entries VALUES ('entry-worker-2-initial-result', 'conversation-1', 6, 'worker_result', 'review started', '2024-01-01T00:01:50Z');
+INSERT INTO conversation_entries VALUES ('entry-worker-2-followup-result', 'conversation-1', 7, 'worker_result', 'docs reviewed', '2024-01-01T00:02:05Z');
+INSERT INTO results VALUES ('result-3', 'attempt-3', 'succeeded', 'shipping continued', '2024-01-01T00:01:45Z');
+INSERT INTO results VALUES ('result-5', 'attempt-5', 'succeeded', 'review started', '2024-01-01T00:01:50Z');
+INSERT INTO results VALUES ('result-6', 'attempt-6', 'failed', 'docs reviewed', '2024-01-01T00:02:05Z');`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, Options{SourcePath: path, DestinationPath: path}); err != nil {
+		t.Fatal(err)
+	}
+	var worker1Turns, worker2Turns int
+	if err := queryOne(path, `SELECT COUNT(*) FROM turns WHERE worker_id = 'legacy-worker-binding-1'`, &worker1Turns); err != nil {
+		t.Fatal(err)
+	}
+	if err := queryOne(path, `SELECT COUNT(*) FROM turns WHERE worker_id = 'legacy-worker-binding-2'`, &worker2Turns); err != nil {
+		t.Fatal(err)
+	}
+	if worker1Turns != 2 || worker2Turns != 2 {
+		var refs string
+		_ = queryOne(path, `SELECT group_concat(body || ':' || worker_ref) FROM conversation_entries WHERE kind = 'worker_input'`, &refs)
+		t.Fatalf("unbound follow-ups were lost or misattributed: worker-1=%d worker-2=%d refs=%s", worker1Turns, worker2Turns, refs)
+	}
+	checkDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer checkDB.Close()
+	for _, expected := range []struct {
+		body, worker string
+	}{
+		{"continue shipping", "worker-1"},
+		{"review the docs", "worker-2"},
+	} {
+		var workerRef, turnID string
+		if err := checkDB.QueryRowContext(ctx, `SELECT worker_ref, turn_id FROM conversation_entries WHERE body = ?`, expected.body).Scan(&workerRef, &turnID); err != nil {
+			t.Fatal(err)
+		}
+		if workerRef != expected.worker || turnID == "" {
+			t.Fatalf("follow-up %q identity=%q/%q, want worker %q", expected.body, workerRef, turnID, expected.worker)
+		}
+	}
+	second, err := Run(ctx, Options{SourcePath: path, DestinationPath: path})
+	if err != nil || !second.Idempotent {
+		t.Fatalf("multi-worker migration is not idempotent: report=%#v err=%v", second, err)
+	}
+}
+
+func TestMigrationBackupIncludesLiveWALDataOnInvalidInput(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secretary.db")
+	if err := seedPhase3Database(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode = WAL; INSERT INTO conversation_entries VALUES ('entry-live-wal', 'conversation-1', 3, 'secretary_reply', 'live WAL state', '2024-01-01T00:03:00Z')`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(configPath, []byte("[runtime]\\nharness = \\\"not-a-harness\\\"\\n"), 0o600); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, Options{SourcePath: path, DestinationPath: path, ConfigPath: configPath}); err == nil {
+		db.Close()
+		t.Fatal("invalid WAL migration unexpectedly succeeded")
+	}
+	for _, databasePath := range []string{path, path + ".backup"} {
+		var rows int
+		if err := queryOne(databasePath, `SELECT COUNT(*) FROM conversation_entries WHERE id = 'entry-live-wal'`, &rows); err != nil {
+			db.Close()
+			t.Fatalf("query %s: %v", databasePath, err)
+		}
+		if rows != 1 {
+			db.Close()
+			t.Fatalf("database %s lost live WAL row: %d", databasePath, rows)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestInvalidWALMigrationRestoresActiveStateAndConsistentBackup(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secretary.db")
+	if err := seedPhase3Database(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode = WAL; INSERT INTO conversation_entries VALUES ('entry-rollback-wal', 'conversation-1', 3, 'secretary_reply', 'rollback WAL state', '2024-01-01T00:04:00Z'); DELETE FROM conversations`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, Options{SourcePath: path, DestinationPath: path}); err == nil {
+		db.Close()
+		t.Fatal("invalid WAL schema migration unexpectedly succeeded")
+	}
+	for _, databasePath := range []string{path, path + ".backup"} {
+		var rows int
+		if err := queryOne(databasePath, `SELECT COUNT(*) FROM conversation_entries WHERE id = 'entry-rollback-wal'`, &rows); err != nil {
+			db.Close()
+			t.Fatalf("query %s: %v", databasePath, err)
+		}
+		if rows != 1 {
+			db.Close()
+			t.Fatalf("database %s lost rollback WAL row: %d", databasePath, rows)
+		}
+	}
+	var phase4Tables int
+	if err := queryOne(path, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'workers'`, &phase4Tables); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if phase4Tables != 0 {
+		db.Close()
+		t.Fatal("failed WAL migration left Phase 4 schema in active database")
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestMigrationPinsLegacyAliasesInWorkerAndProjectSnapshots(t *testing.T) {

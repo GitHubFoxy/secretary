@@ -72,6 +72,11 @@ func Run(ctx context.Context, options Options) (Report, error) {
 	if err := backupDatabase(options.DestinationPath, backupPath); err != nil {
 		return Report{}, err
 	}
+	rollbackPath := options.DestinationPath + ".rollback"
+	if err := saveRollbackDatabase(options.DestinationPath, rollbackPath); err != nil {
+		return Report{}, err
+	}
+	defer removeDatabaseFiles(rollbackPath)
 	report := Report{BackupPath: backupPath}
 	configBackupPath := ""
 	if options.ConfigPath != "" {
@@ -101,7 +106,7 @@ func Run(ctx context.Context, options Options) (Report, error) {
 	migrated, err := migrateDatabase(ctx, db, legacyModels)
 	rollback := func() {
 		_ = db.Close()
-		_ = restoreFile(backupPath, options.DestinationPath)
+		_ = restoreRollbackDatabase(rollbackPath, options.DestinationPath)
 		if configBackupPath != "" {
 			_ = restoreFile(configBackupPath, options.ConfigPath)
 		}
@@ -591,29 +596,125 @@ func migratedAttemptState(state string) string {
 	return "interrupted"
 }
 
+type legacyFollowUpWorker struct {
+	workerRef    string
+	taskCreated  string
+	activities   []string
+	nextAttempts []string
+}
+
+// legacyFollowUpOwner uses the durable Phase 3 timeline when worker_ref was
+// not stored on a conversation entry. A direction normally precedes the
+// Attempt it queued, so the nearest next Attempt is the strongest link. A
+// completed Attempt is used when there is no next one. Ties are resolved by
+// worker_ref so every entry has one stable owner.
+func legacyFollowUpOwner(created string, workers []legacyFollowUpWorker) string {
+	if len(workers) == 0 {
+		return ""
+	}
+	best := -1
+	bestNext := ""
+	for i, worker := range workers {
+		prior := worker.taskCreated <= created
+		if !prior {
+			continue
+		}
+		for _, next := range worker.nextAttempts {
+			if next <= created || best >= 0 && bestNext != "" && next > bestNext {
+				continue
+			}
+			if best < 0 || bestNext == "" || next < bestNext || next == bestNext && worker.workerRef < workers[best].workerRef {
+				best, bestNext = i, next
+			}
+		}
+	}
+	if best >= 0 && bestNext != "" {
+		return workers[best].workerRef
+	}
+	bestAnchor := ""
+	bestPrior := false
+	for i, worker := range workers {
+		anchor := worker.taskCreated
+		for _, activity := range worker.activities {
+			if activity <= created && activity > anchor {
+				anchor = activity
+			}
+		}
+		prior := anchor <= created
+		if best < 0 || prior && !bestPrior || prior == bestPrior && (prior && anchor > bestAnchor || !prior && anchor < bestAnchor || anchor == bestAnchor && worker.workerRef < workers[best].workerRef) {
+			best, bestAnchor, bestPrior = i, anchor, prior
+		}
+	}
+	return workers[best].workerRef
+}
+
 func legacyFollowUpDirections(ctx context.Context, tx *sql.Tx, conversationID, workerRef string) ([]legacyMigrationDirection, error) {
-	var rootWorkers int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM worker_bindings w JOIN tasks t ON t.id = w.task_id WHERE t.conversation_id = ? AND COALESCE(t.parent_task_id, '') = '' AND COALESCE(w.parent_binding_id, '') = '' AND COALESCE(w.parent_attempt_id, '') = ''`, conversationID).Scan(&rootWorkers); err != nil {
+	workersRows, err := tx.QueryContext(ctx, `SELECT w.id, w.worker_ref, t.created_at
+		FROM worker_bindings w JOIN tasks t ON t.id = w.task_id
+		WHERE t.conversation_id = ? AND COALESCE(t.parent_task_id, '') = ''
+			AND COALESCE(w.parent_binding_id, '') = '' AND COALESCE(w.parent_attempt_id, '') = ''
+		ORDER BY w.worker_ref`, conversationID)
+	if err != nil {
 		return nil, err
 	}
-	query := `SELECT id, body, created_at FROM conversation_entries WHERE conversation_id = ? AND kind IN ('worker_input', 'worker_follow_up', 'follow_up') AND worker_ref = ? ORDER BY seq, id`
-	args := []any{conversationID, workerRef}
-	if rootWorkers == 1 {
-		query = `SELECT id, body, created_at FROM conversation_entries WHERE conversation_id = ? AND kind IN ('worker_input', 'worker_follow_up', 'follow_up') AND (worker_ref = ? OR worker_ref = '') ORDER BY seq, id`
+	workers := make([]legacyFollowUpWorker, 0)
+	for workersRows.Next() {
+		var worker legacyFollowUpWorker
+		var bindingID string
+		if err := workersRows.Scan(&bindingID, &worker.workerRef, &worker.taskCreated); err != nil {
+			workersRows.Close()
+			return nil, err
+		}
+		attemptRows, err := tx.QueryContext(ctx, `SELECT created_at, updated_at FROM attempts WHERE worker_binding_id = ? ORDER BY number`, bindingID)
+		if err != nil {
+			workersRows.Close()
+			return nil, err
+		}
+		for attemptRows.Next() {
+			var started, updated string
+			if err := attemptRows.Scan(&started, &updated); err != nil {
+				attemptRows.Close()
+				workersRows.Close()
+				return nil, err
+			}
+			worker.activities = append(worker.activities, updated)
+			worker.nextAttempts = append(worker.nextAttempts, started)
+		}
+		if err := attemptRows.Close(); err != nil {
+			workersRows.Close()
+			return nil, err
+		}
+		if err := attemptRows.Err(); err != nil {
+			workersRows.Close()
+			return nil, err
+		}
+		workers = append(workers, worker)
 	}
-	if rootWorkers == 1 {
-		args = []any{conversationID, workerRef}
+	if err := workersRows.Close(); err != nil {
+		return nil, err
 	}
-	rows, err := tx.QueryContext(ctx, query, args...)
+	if err := workersRows.Err(); err != nil {
+		return nil, err
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT id, body, worker_ref, created_at FROM conversation_entries
+		WHERE conversation_id = ? AND kind IN ('worker_input', 'worker_follow_up', 'follow_up') ORDER BY seq, id`, conversationID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	directions := make([]legacyMigrationDirection, 0)
 	for rows.Next() {
-		var id, body, created string
-		if err := rows.Scan(&id, &body, &created); err != nil {
+		var id, body, entryWorkerRef, created string
+		if err := rows.Scan(&id, &body, &entryWorkerRef, &created); err != nil {
 			return nil, err
+		}
+		owner := entryWorkerRef
+		if owner == "" {
+			owner = legacyFollowUpOwner(created, workers)
+		}
+		if owner != workerRef {
+			continue
 		}
 		directions = append(directions, legacyMigrationDirection{id: "legacy-turn-" + strings.ReplaceAll(id, " ", "_"), entryID: id, input: body, created: created, updated: created})
 	}
@@ -757,10 +858,14 @@ func backupDatabase(path, backup string) error {
 	if _, err := os.Stat(path); err != nil {
 		return err
 	}
-	if err := backupFileIfMissing(path, backup); err != nil {
+	if _, err := os.Stat(backup); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return nil
+	// VACUUM INTO reads the database through SQLite, so committed WAL pages
+	// are included and the backup is a standalone, queryable database.
+	return snapshotDatabase(path, backup)
 }
 
 func backupFileIfMissing(path, backup string) error {
@@ -782,10 +887,7 @@ func copyDatabase(source, destination string) error {
 	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
 		return err
 	}
-	if err := snapshotDatabase(source, destination); err == nil {
-		return nil
-	}
-	return copyFile(source, destination)
+	return snapshotDatabase(source, destination)
 }
 
 func snapshotDatabase(source, destination string) error {
@@ -808,11 +910,81 @@ func snapshotDatabase(source, destination string) error {
 		_ = os.Remove(tmp)
 		return closeErr
 	}
+	if err := removeDatabaseFiles(destination); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
 	if err := os.Rename(tmp, destination); err != nil {
 		_ = os.Remove(tmp)
 		return err
 	}
 	return nil
+}
+
+func saveRollbackDatabase(path, rollback string) error {
+	if err := removeDatabaseFiles(rollback); err != nil {
+		return err
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if _, err := db.Exec(`PRAGMA busy_timeout = 5000; BEGIN IMMEDIATE`); err != nil {
+		return fmt.Errorf("lock database for rollback snapshot: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = db.Exec("ROLLBACK")
+		}
+	}()
+	if err := copyFile(path, rollback); err != nil {
+		return fmt.Errorf("copy database rollback snapshot: %w", err)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := copyOptionalFile(path+suffix, rollback+suffix); err != nil {
+			return fmt.Errorf("copy database rollback sidecar %s: %w", suffix, err)
+		}
+	}
+	if _, err := db.Exec("COMMIT"); err != nil {
+		return fmt.Errorf("commit database rollback snapshot: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+func restoreRollbackDatabase(rollback, destination string) error {
+	if err := removeDatabaseFiles(destination); err != nil {
+		return err
+	}
+	if err := copyFile(rollback, destination); err != nil {
+		return err
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := copyOptionalFile(rollback+suffix, destination+suffix); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeDatabaseFiles(path string) error {
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		if err := os.Remove(candidate); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyOptionalFile(source, destination string) error {
+	if _, err := os.Stat(source); errors.Is(err, os.ErrNotExist) {
+		return removeDatabaseFiles(destination)
+	} else if err != nil {
+		return err
+	}
+	return copyFile(source, destination)
 }
 
 func sqliteStringLiteral(value string) string {
