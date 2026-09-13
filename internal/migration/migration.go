@@ -72,6 +72,13 @@ func Run(ctx context.Context, options Options) (Report, error) {
 		return Report{}, err
 	}
 	report := Report{BackupPath: backupPath}
+	configBackupPath := ""
+	if options.ConfigPath != "" {
+		configBackupPath = options.ConfigPath + ".backup"
+		if err := backupFileIfMissing(options.ConfigPath, configBackupPath); err != nil {
+			return report, err
+		}
+	}
 
 	canonicalConfig, err := prepareConfig(options.ConfigPath)
 	if err != nil {
@@ -94,6 +101,9 @@ func Run(ctx context.Context, options Options) (Report, error) {
 	rollback := func() {
 		_ = db.Close()
 		_ = restoreFile(backupPath, options.DestinationPath)
+		if configBackupPath != "" {
+			_ = restoreFile(configBackupPath, options.ConfigPath)
+		}
 	}
 	if err != nil {
 		rollback()
@@ -389,6 +399,9 @@ func migrateAttempts(ctx context.Context, tx *sql.Tx, bindingID, workerID, turnI
 				if _, err := tx.ExecContext(ctx, `UPDATE turns SET result_id = ?, state = ? WHERE id = ?`, newResultID, phase4TurnState(phase4Status), turnID); err != nil {
 					return err
 				}
+				if _, err := tx.ExecContext(ctx, `UPDATE workers SET last_result_summary = ? WHERE id = ?`, summary, workerID); err != nil {
+					return err
+				}
 				if err := attachVisibleResult(ctx, tx, conversationID, workerRef, turnID, newResultID, summary); err != nil {
 					return err
 				}
@@ -491,13 +504,25 @@ func backupDatabase(path, backup string) error {
 	if _, err := os.Stat(path); err != nil {
 		return err
 	}
+	if err := backupFileIfMissing(path, backup); err != nil {
+		return err
+	}
+	return nil
+}
+
+func backupFileIfMissing(path, backup string) error {
+	if _, err := os.Stat(path); err != nil {
+		return err
+	}
 	if _, err := os.Stat(backup); err == nil {
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := snapshotDatabase(path, backup); err == nil {
-		return nil
+	if strings.HasSuffix(backup, ".db.backup") {
+		if err := snapshotDatabase(path, backup); err == nil {
+			return nil
+		}
 	}
 	return copyFile(path, backup)
 }

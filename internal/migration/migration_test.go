@@ -217,6 +217,9 @@ func TestInvalidMigrationLeavesActiveDatabaseUntouchedAfterBackup(t *testing.T) 
 	if _, err := os.Stat(dbPath + ".backup"); err != nil {
 		t.Fatalf("automatic backup missing: %v", err)
 	}
+	if _, err := os.Stat(configPath + ".backup"); err != nil {
+		t.Fatalf("config backup missing: %v", err)
+	}
 	configAfter, err := fileDigest(configPath)
 	if err != nil {
 		t.Fatal(err)
