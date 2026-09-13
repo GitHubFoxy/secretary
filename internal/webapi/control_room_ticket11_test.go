@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -96,6 +98,15 @@ func TestTicket11OverviewAndDiagnosticsUseSafeDTOs(t *testing.T) {
 	if err := store.MarkNodeConnected(ctx, "node-a", inventory); err != nil {
 		t.Fatal(err)
 	}
+	secondInventory := inventory
+	secondInventory.Node = "node-b"
+	secondInventory.Instances = []core.HarnessInstance{{ID: "node-b/fx", Node: "node-b", Kind: core.HarnessFX, Version: "2.0.0", Authentication: core.HarnessAuthentication{Authenticated: true, Method: "local"}, Status: core.HarnessReady, Capabilities: core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityCancel}}, ModelIDs: []core.ObservedModelID{"model-b"}, ReasoningLevels: []core.ObservedReasoningLevel{"default"}}}
+	if _, err := store.EnrollNode(ctx, "node-b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkNodeConnected(ctx, "node-b", secondInventory); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := store.SetNodeDraining(ctx, "node-a", true); err != nil {
 		t.Fatal(err)
 	}
@@ -114,6 +125,12 @@ func TestTicket11OverviewAndDiagnosticsUseSafeDTOs(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = turn
+	logDir := t.TempDir()
+	log := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"native-session-do-not-return","update":{"sessionUpdate":"tool_call","title":"shell","rawInput":{"command":"printf safe","token":"token-do-not-return"}}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(logDir, "worker-a.jsonl"), []byte(log), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	api.AttachDiagnosticLogDir(logDir)
 
 	response, err := client.Get(server.URL + "/v1/control/overview")
 	if err != nil {
@@ -129,12 +146,12 @@ func TestTicket11OverviewAndDiagnosticsUseSafeDTOs(t *testing.T) {
 	}
 	encoded, _ := json.Marshal(body)
 	text := string(encoded)
-	for _, secret := range []string{"do-not-return", "task_id", "runtime_session_id", "callback", "token", "credential"} {
+	for _, secret := range []string{"do-not-return", "task_id", "runtime_session_id", "callback", "token-do-not-return", "credential_hash", "credential_secret"} {
 		if strings.Contains(text, secret) {
 			t.Fatalf("overview leaked %q: %s", secret, text)
 		}
 	}
-	if !strings.Contains(text, "node-a/codex") || !strings.Contains(text, "worker-a") || !strings.Contains(text, "failed safely") {
+	if !strings.Contains(text, "node-a/codex") || !strings.Contains(text, "node-b/fx") || !strings.Contains(text, "worker-a") || !strings.Contains(text, "failed safely") {
 		t.Fatalf("overview omitted diagnostics state: %s", text)
 	}
 
@@ -149,7 +166,7 @@ func TestTicket11OverviewAndDiagnosticsUseSafeDTOs(t *testing.T) {
 	response.Body.Close()
 	encoded, _ = json.Marshal(diagnostics)
 	text = string(encoded)
-	for _, secret := range []string{"do-not-return", "native-session-do-not-return", "task_id", "runtime_session_id", "callback", "token", "credential"} {
+	for _, secret := range []string{"do-not-return", "native-session-do-not-return", "task_id", "runtime_session_id", "callback", "token-do-not-return", "credential_hash", "credential_secret"} {
 		if strings.Contains(text, secret) {
 			t.Fatalf("diagnostics leaked %q: %s", secret, text)
 		}
@@ -204,13 +221,43 @@ func TestTicket11ControlRoomRevokeRoutesAreAuditedAndPublicRoutesStaySeparate(t 
 		t.Fatalf("revoke audit missing client=%v node=%v events=%#v", clientAudit, nodeAudit, events)
 	}
 
-	publicMux := api.Handler()
-	response, err := http.NewRequest(http.MethodGet, server.URL+"/v1/control/overview", nil)
+	publicRequest := httptest.NewRequest(http.MethodGet, "/v1/control/overview", nil)
+	publicRecorder := httptest.NewRecorder()
+	api.Handler().ServeHTTP(publicRecorder, publicRequest)
+	if publicRecorder.Code != http.StatusNotFound {
+		t.Fatalf("public API unexpectedly served Control Room status=%d", publicRecorder.Code)
+	}
+}
+
+func TestTicket11InvalidConfigKeepsActiveSnapshot(t *testing.T) {
+	_, api, server, client := controlRoomTestAPI(t)
+	api.SetDebug(true)
+	controlRoomLogin(t, client, server.URL)
+	active := map[string]any{"version": "active-1", "model": "safe"}
+	api.AttachControl(ControlOptions{
+		ConfigContent:  func() (string, error) { return "active", nil },
+		ConfigSnapshot: func() any { return active },
+		ApplyConfig: func(content []byte) (any, error) {
+			if string(content) == "invalid" {
+				return nil, errors.New("invalid config")
+			}
+			active = map[string]any{"version": "active-2"}
+			return active, nil
+		},
+	})
+	request, _ := http.NewRequest(http.MethodPut, server.URL+"/v1/control/config", strings.NewReader(`{"content":"invalid"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = publicMux
-	_ = response
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid config status=%d", response.StatusCode)
+	}
+	if active["version"] != "active-1" {
+		t.Fatalf("active snapshot changed after invalid input: %#v", active)
+	}
 }
 
 func nowForTest() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }

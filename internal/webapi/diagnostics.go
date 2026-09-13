@@ -11,17 +11,7 @@ import (
 	"unicode"
 
 	"github.com/beruseruko/secretary/internal/acp"
-	"github.com/beruseruko/secretary/internal/core"
 )
-
-// workerDiagnosticResponse is deliberately separate from WorkerDetails. Raw
-// harness state is an opt-in observer surface and never part of the normal
-// Worker or Conversation contract.
-type workerDiagnosticResponse struct {
-	WorkerRef         string                    `json:"worker_ref"`
-	AttemptOutcomes   []core.AttemptOutcome     `json:"attempt_outcomes"`
-	RawHarnessDetails []harnessDiagnosticDetail `json:"raw_harness_details"`
-}
 
 // harnessDiagnosticDetail contains only a typed, redacted summary of one raw
 // ACP record. It never carries the original JSON line or native session ID.
@@ -33,29 +23,6 @@ type harnessDiagnosticDetail struct {
 	Tool          string         `json:"tool,omitempty"`
 	Status        string         `json:"status,omitempty"`
 	Details       map[string]any `json:"details,omitempty"`
-}
-
-func (s *Server) buildWorkerDiagnostics(details core.WorkerDetails) (workerDiagnosticResponse, error) {
-	outcomes := append([]core.AttemptOutcome(nil), details.Outcomes...)
-	for index := range outcomes {
-		outcomes[index].ErrorCode = sanitizeDiagnosticText(outcomes[index].ErrorCode)
-		outcomes[index].ErrorMessage = sanitizeDiagnosticText(outcomes[index].ErrorMessage)
-		outcomes[index].Diagnostics = sanitizeDiagnosticText(outcomes[index].Diagnostics)
-	}
-	response := workerDiagnosticResponse{
-		WorkerRef:         details.Worker.WorkerRef,
-		AttemptOutcomes:   outcomes,
-		RawHarnessDetails: []harnessDiagnosticDetail{},
-	}
-	if strings.TrimSpace(s.diagnosticLogDir) == "" {
-		return response, nil
-	}
-	detailsFromLog, err := readHarnessDiagnostics(s.diagnosticLogDir, details.Worker.WorkerRef)
-	if err != nil {
-		return workerDiagnosticResponse{}, err
-	}
-	response.RawHarnessDetails = detailsFromLog
-	return response, nil
 }
 
 func readHarnessDiagnostics(dir, workerRef string) ([]harnessDiagnosticDetail, error) {
@@ -157,6 +124,12 @@ func isThoughtUpdate(value string) bool {
 
 func sanitizeDiagnosticValue(value any) any {
 	switch current := value.(type) {
+	case json.RawMessage:
+		var decoded any
+		if json.Unmarshal(current, &decoded) != nil {
+			return "[redacted]"
+		}
+		return sanitizeDiagnosticValue(decoded)
 	case map[string]any:
 		result := make(map[string]any, len(current))
 		for key, child := range current {
@@ -210,7 +183,7 @@ func forbiddenDiagnosticKey(key string) bool {
 	}, key))
 	for _, marker := range []string{
 		"secret", "credential", "callback", "token", "password", "authorization", "apikey", "accesskey", "privatekey",
-		"runtimesession", "sessionid", "sessionidentifier", "thought", "reasoning", "chainofthought", "analysis",
+		"runtimesession", "sessionid", "sessionidentifier", "runtimeid", "taskid", "token", "credential", "callback", "thought", "reasoning", "chainofthought", "analysis",
 	} {
 		if strings.Contains(compact, marker) {
 			return true
@@ -220,10 +193,10 @@ func forbiddenDiagnosticKey(key string) bool {
 }
 
 func sanitizeDiagnosticText(value string) string {
-	if forbiddenDiagnosticString(value) {
-		return "[redacted]"
+	if cleaned, ok := sanitizeDiagnosticValue(value).(string); ok {
+		return cleaned
 	}
-	return value
+	return "[redacted]"
 }
 
 func forbiddenDiagnosticString(value string) bool {
