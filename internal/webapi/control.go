@@ -1133,7 +1133,7 @@ func controlTextSensitiveLine(line string) bool {
 }
 
 var controlSensitiveAssignmentKeys = []string{
-	"api_key", "apikey", "access_token", "token", "secret", "credential", "password", "callback", "auth", "session_id", "session-id", "native_id", "task_id",
+	"api_key", "apikey", "access_token", "token", "secret", "credential", "password", "callback", "auth", "session", "session_id", "session-id", "native", "native_id", "task", "task_id",
 }
 
 var controlSensitivePrefixes = []string{"sk-", "ghp_", "xoxb-", "xoxb_"}

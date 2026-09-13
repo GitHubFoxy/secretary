@@ -613,6 +613,9 @@ func sanitizePublicValue(value any) any {
 }
 
 func forbiddenPublicText(value string) bool {
+	if containsKnownControlSensitiveValue(value) {
+		return true
+	}
 	lower := strings.ToLower(value)
 	for _, marker := range []string{
 		"chain-of-thought", "chain of thought", "chain_of_thought", "raw thought", "raw_thought",
