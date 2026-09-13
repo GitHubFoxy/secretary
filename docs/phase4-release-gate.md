@@ -31,6 +31,17 @@
 
 Эта запись подтверждает production MCP routing, но не закрывает полную acceptance matrix ниже.
 
+## Latest two-node real-harness run
+
+- `run_id`: `p4-real-tailscale.XOzeoY`
+- `commit`: `977e7ef`
+- `PASS`: локальный MacBook Node и отдельный Tailscale home-server Node подключились к чистому Secretary server.
+- `PASS`: оба Node сообщили inventory и Project mappings; настоящий `fx` Worker на MacBook выполнил read-only `pwd` и вернул terminal success.
+- `BLOCKED`: на home-server отсутствуют авторизованные `fx`, Claude Code и Codex; Telegram не настроен.
+- `NOT RUN`: approval, queue, multi-Attempt, replay, revoke и network-loss сценарии.
+
+Эта запись расширяет evidence, но не закрывает полную acceptance matrix ниже.
+
 ## Deterministic automated checks
 
 Запуск:
