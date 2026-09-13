@@ -67,6 +67,7 @@ type InboundMessage struct {
 type WorkerMessage struct {
 	WorkerRef         string
 	ExternalMessageID string
+	RequestID         string
 	Text              string
 }
 

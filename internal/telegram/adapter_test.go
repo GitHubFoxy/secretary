@@ -3,9 +3,11 @@ package telegram
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -47,6 +49,53 @@ func (f *fakeServer) SendMessage(_ context.Context, message InboundMessage) erro
 func (f *fakeServer) SendWorkerMessage(_ context.Context, message WorkerMessage) error {
 	f.workers = append(f.workers, message)
 	return nil
+}
+
+type retryServer struct {
+	mu        sync.Mutex
+	calls     int
+	failFirst bool
+	started   chan struct{}
+	release   chan struct{}
+}
+
+func (s *retryServer) SendMessage(context.Context, InboundMessage) error {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	if call == 1 {
+		close(s.started)
+		<-s.release
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+func (s *retryServer) SendWorkerMessage(context.Context, WorkerMessage) error { return nil }
+
+type concurrentTopicTransport struct {
+	mu      sync.Mutex
+	calls   int
+	topics  []ForumTopic
+	started chan struct{}
+	release chan struct{}
+}
+
+func (t *concurrentTopicTransport) GetUpdates(context.Context, int64, time.Duration) ([]Update, error) {
+	return nil, nil
+}
+func (t *concurrentTopicTransport) SendMessage(context.Context, OutgoingMessage) error { return nil }
+func (t *concurrentTopicTransport) CreateForumTopic(_ context.Context, chatID int64, name string) (ForumTopic, error) {
+	t.mu.Lock()
+	t.calls++
+	call := t.calls
+	t.topics = append(t.topics, ForumTopic{ChatID: chatID, ThreadID: int64(call), Name: name})
+	t.mu.Unlock()
+	if call == 1 {
+		close(t.started)
+	}
+	<-t.release
+	return t.topics[call-1], nil
 }
 
 func newTestAdapter(t *testing.T, transport Transport, server ServerClient, statePath string) *Adapter {
@@ -216,6 +265,110 @@ func TestOutboxSurvivesTransportFailureAndRestart(t *testing.T) {
 	}
 	if len(transport.sent) != 1 || !strings.Contains(transport.sent[0].Text, "Task") {
 		t.Fatalf("outbox after restart = %#v", transport.sent)
+	}
+}
+
+func TestHandleUpdateFailureCanBeRetriedAfterConcurrentDuplicate(t *testing.T) {
+	transport := &fakeTransport{}
+	server := &retryServer{failFirst: true, started: make(chan struct{}), release: make(chan struct{})}
+	adapter := newTestAdapter(t, transport, server, filepath.Join(t.TempDir(), "telegram.json"))
+	update := Update{ID: 77, Message: &Message{ChatID: 100, FromID: 100, Text: "retry me"}}
+	first := make(chan error, 1)
+	go func() { first <- adapter.HandleUpdate(context.Background(), update) }()
+	<-server.started
+	second := make(chan error, 1)
+	go func() { second <- adapter.HandleUpdate(context.Background(), update) }()
+	close(server.release)
+	if err := <-first; !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("first error=%v", err)
+	}
+	if err := <-second; err != nil {
+		t.Fatalf("concurrent duplicate error=%v", err)
+	}
+	if err := adapter.HandleUpdate(context.Background(), update); err != nil {
+		t.Fatal(err)
+	}
+	if server.calls != 2 {
+		t.Fatalf("server calls=%d, want failed delivery plus one retry", server.calls)
+	}
+}
+
+func TestEnsureTopicConcurrentCallsCreateOnlyOneTopic(t *testing.T) {
+	transport := &concurrentTopicTransport{started: make(chan struct{}), release: make(chan struct{})}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "telegram.json"))
+	var group sync.WaitGroup
+	for range 2 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			_ = adapter.HandleEvent(context.Background(), Event{Kind: "worker.created", WorkerRef: "same-worker", Title: "Same"})
+		}()
+	}
+	<-transport.started
+	close(transport.release)
+	group.Wait()
+	if transport.calls != 1 {
+		t.Fatalf("topic creates=%d, want 1", transport.calls)
+	}
+}
+
+func TestThrottleTimerFlushesSecretaryBatch(t *testing.T) {
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "telegram.json"))
+	adapter.config.FlushInterval = 10 * time.Millisecond
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.text_delta", Text: "timer"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for len(transport.sent) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if len(transport.sent) != 1 || !strings.Contains(transport.sent[0].Text, "timer") {
+		t.Fatalf("timer batch=%#v", transport.sent)
+	}
+}
+
+func TestHostileEventMetadataNeverReachesTelegram(t *testing.T) {
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "telegram.json"))
+	hostile := "task-9 session-8 native-7 node-secret channel-secret callback-secret reasoning-secret thought-secret"
+	for _, event := range []Event{
+		{Kind: "secretary.text_delta", Text: hostile + " analysis: hidden"},
+		{Kind: "worker.activity", WorkerRef: "worker-9", Tool: "shell", Text: hostile, Payload: json.RawMessage(`{"task_id":"task-9","session_id":"session-8","native_id":"native-7","channel_secret":"channel-secret","callback":"callback-secret","reasoning":"reasoning-secret"}`)},
+		{Kind: "worker.approval_requested", WorkerRef: "worker-9", Text: hostile, Payload: json.RawMessage(`{"request_id":"request-roundtrip","analysis":"thought-secret"}`)},
+	} {
+		if err := adapter.HandleEvent(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := adapter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, sent := range transport.sent {
+		for _, value := range []string{"task-9", "session-8", "native-7", "node-secret", "channel-secret", "callback-secret", "reasoning-secret", "thought-secret", "analysis: hidden"} {
+			if strings.Contains(sent.Text, value) {
+				t.Fatalf("unsafe value %q in %q", value, sent.Text)
+			}
+		}
+	}
+}
+
+func TestApprovalAndNeedsInputCarryRequestIDToWorkerReply(t *testing.T) {
+	transport := &fakeTransport{}
+	server := &fakeServer{}
+	adapter := newTestAdapter(t, transport, server, filepath.Join(t.TempDir(), "telegram.json"))
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "worker.created", WorkerRef: "worker-1", Title: "Task"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "worker.needs_input", WorkerRef: "worker-1", Payload: json.RawMessage(`{"request_id":"request-1"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	thread := transport.topics[0].ThreadID
+	if err := adapter.HandleUpdate(context.Background(), Update{ID: 88, Message: &Message{ChatID: 100, ThreadID: thread, FromID: 100, Text: "answer"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(server.workers) != 1 || server.workers[0].RequestID != "request-1" {
+		t.Fatalf("worker replies=%#v", server.workers)
 	}
 }
 
