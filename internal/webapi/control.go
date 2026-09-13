@@ -706,7 +706,7 @@ func (s *Server) controlConfig(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "read config: "+err.Error(), 500)
 			return
 		}
-		redacted := redactControlText(content)
+		redacted := redactControlConfigText(content)
 		result["content"] = redacted
 		result["editable"] = redacted == content
 		result["revision"] = s.controlRevision(content)
@@ -844,7 +844,7 @@ func (s *Server) controlProfiles(w http.ResponseWriter, r *http.Request) {
 		if profiles[i].Revision == "" {
 			profiles[i].Revision = profiles[i].Hash
 		}
-		redacted := redactControlText(profiles[i].Content)
+		redacted := redactControlProfileText(profiles[i].Content)
 		profiles[i].Editable = redacted == profiles[i].Content
 		profiles[i].Content = redacted
 	}
@@ -1047,30 +1047,94 @@ func sanitizeControlAny(value any) any {
 	}
 	return sanitizeDiagnosticValue(decoded)
 }
+
+// redactControlText is kept as the config policy name for package-local callers.
+// Diagnostic payloads must continue to use sanitizeDiagnosticValue instead. Its
+// denylist intentionally has a different, stricter contract than editable text.
 func redactControlText(value string) string {
+	return redactControlConfigText(value)
+}
+
+func redactControlConfigText(value string) string {
+	return redactControlTextLines(value)
+}
+
+func redactControlProfileText(value string) string {
+	return redactControlTextLines(value)
+}
+
+func redactControlTextLines(value string) string {
 	lines := strings.Split(value, "\n")
 	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		if index := strings.Index(trimmed, "="); index > 0 && forbiddenDiagnosticKey(strings.TrimSpace(trimmed[:index])) {
-			lines[i] = "[redacted]"
-			continue
-		}
-		if sensitiveControlLine(line) {
+		if controlTextSensitiveLine(line) {
 			lines[i] = "[redacted]"
 		}
 	}
 	return strings.Join(lines, "\n")
 }
 
-func sensitiveControlLine(line string) bool {
+func controlTextSensitiveLine(line string) bool {
+	key := controlTextAssignmentKey(line)
+	if controlTextSensitiveKey(key) || controlTextThoughtKey(key) {
+		return true
+	}
+	// Also reject an opaque assignment embedded in an otherwise ordinary
+	// value. This catches `notes = "api_key=..."` without treating safe
+	// product keys such as `content` or `skills` as diagnostic payloads.
 	lower := strings.ToLower(line)
-	for _, marker := range []string{"api_key", "apikey", "token=", "token:", "secret=", "secret:", "credential=", "credential:", "password=", "password:", "callback=", "callback:", "bearer ", "auth=", "auth:", "session_id", "session-id", "native_id", "task_id", "skills=", "content="} {
+	for _, marker := range []string{"api_key=", "apikey=", "access_token=", "token=", "secret=", "credential=", "password=", "callback=", "auth=", "session_id=", "session-id=", "native_id=", "task_id=", "bearer "} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	for _, marker := range []string{"<think", "</think", "chain-of-thought", "internal reasoning", "thought process"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
 	}
 	return false
+}
+
+func controlTextAssignmentKey(line string) string {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") || strings.HasPrefix(trimmed, "[") {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "-") {
+		trimmed = strings.TrimSpace(strings.TrimPrefix(trimmed, "-"))
+	}
+	index := strings.IndexAny(trimmed, "=:")
+	if index <= 0 {
+		return ""
+	}
+	key := strings.TrimSpace(trimmed[:index])
+	key = strings.Trim(key, "\\\"'")
+	return key
+}
+
+func controlTextCompactKey(key string) string {
+	return strings.ToLower(strings.Map(func(character rune) rune {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') {
+			return character
+		}
+		return -1
+	}, key))
+}
+
+func controlTextSensitiveKey(key string) bool {
+	compact := controlTextCompactKey(key)
+	if compact == "" {
+		return false
+	}
+	for _, marker := range []string{"secret", "credential", "token", "password", "callback", "session", "native", "task", "authorization", "apikey", "accesskey", "privatekey", "bearer", "opaque"} {
+		if strings.Contains(compact, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func controlTextThoughtKey(key string) bool {
+	compact := controlTextCompactKey(key)
+	return compact == "auth" || compact == "authentication" || strings.Contains(compact, "thought") || strings.Contains(compact, "chainofthought") || strings.Contains(compact, "analysis") || strings.Contains(compact, "cot")
 }

@@ -249,7 +249,7 @@ func TestTicket11SafeConfigAndProfileFieldsRemainVisibleWhileOpaqueValuesStayRed
 	controlRoomLogin(t, client, server.URL)
 	api.AttachControl(ControlOptions{
 		ConfigContent: func() (string, error) {
-			return "skills = [\"safe-skill\"]\nreasoning = high\nmodel = safe-model\nruntime = fx\nname = safe-name\ncontent = ordinary product content\nnotes = \"api_key=embedded-secret\"\napi_key = config-secret\ncallback = callback-secret\nnative_session_id = native-secret\ntask_id = task-secret\n", nil
+			return "skills = [\"safe-skill\"]\nreasoning = high\nmodel = safe-model\nruntime = fx\nname = safe-name\ncontent = ordinary product content\nnotes = \"api_key=embedded-secret\"\napi_key = config-secret\nauth = auth-secret\nopaque_value = opaque-secret\ncot_payload = cot-secret\ncallback = callback-secret\nnative_session_id = native-secret\ntask_id = task-secret\n", nil
 		},
 		ProfileFiles: func() ([]ProfileFile, error) {
 			return []ProfileFile{{Name: "worker", Content: "name: safe-worker\nmodel: safe-model\nreasoning: high\nruntime: fx\ncontent: ordinary profile content\ncredential: profile-secret\npassword: password-secret\n", Hash: "profile-rev"}}, nil
@@ -274,7 +274,7 @@ func TestTicket11SafeConfigAndProfileFieldsRemainVisibleWhileOpaqueValuesStayRed
 			t.Fatalf("config removed safe field %q: %q", safe, configText)
 		}
 	}
-	for _, secret := range []string{"config-secret", "embedded-secret", "callback-secret", "native-secret", "task-secret"} {
+	for _, secret := range []string{"config-secret", "embedded-secret", "auth-secret", "opaque-secret", "cot-secret", "callback-secret", "native-secret", "task-secret"} {
 		if strings.Contains(configText, secret) {
 			t.Fatalf("config leaked %q: %q", secret, configText)
 		}
