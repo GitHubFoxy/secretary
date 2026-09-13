@@ -5,12 +5,13 @@ import {
   mergeSequenced,
   secretaryEventText,
   workerCard,
+  formatActivityPayload,
 } from './ui-model.js';
 
 test('renders every public Worker and Turn status without legacy Task fields', () => {
   const statuses = ['saved', 'accepted', 'queued', 'working', 'waiting_approval', 'needs_input', 'succeeded', 'failed', 'canceled', 'interrupted', 'offline', 'blocked'];
   assert.deepEqual(statuses.map(formatWorkerStatus), [
-    'Saved', 'Accepted', 'Queued', 'Working', 'Waiting approval', 'Needs input',
+    'Saved', 'Accepted', 'Queued', 'Working', 'Waiting for approval', 'Needs input',
     'Succeeded', 'Failed', 'Canceled', 'Interrupted', 'Offline', 'Blocked',
   ]);
   const card = workerCard({
@@ -25,10 +26,29 @@ test('renders every public Worker and Turn status without legacy Task fields', (
   assert.equal('task_id' in card, false);
 });
 
+test('compact Worker item includes Turn status, acknowledgement and terminal Result', () => {
+  const card = workerCard({
+    worker_ref: 'wkr_2', title: 'Ship it', project_id: 'p', node_id: 'n',
+    harness_instance_id: 'n/fx', status: 'idle', current_turn_id: 'turn-2',
+    turn_status: 'succeeded', last_result_summary: 'Deployed safely',
+  }, [{ id: 'p', name: 'Project' }], [{ node: 'n', online: true, inventory: { instances: [] } }]);
+  assert.equal(card.turnStatus, 'succeeded');
+  assert.equal(card.turnStatusLabel, 'Succeeded');
+  assert.equal(card.acknowledgement, 'Accepted');
+  assert.equal(card.result, 'Deployed safely');
+});
+
 test('merges replay and live sequences idempotently', () => {
   const initial = [{ seq: 2, id: 'b' }, { seq: 1, id: 'a' }];
   const merged = mergeSequenced(initial, [{ seq: 2, id: 'b' }, { seq: 3, id: 'c' }, { seq: 3, id: 'duplicate' }]);
   assert.deepEqual(merged.map((item) => item.id), ['a', 'b', 'c']);
+});
+
+test('observer displays the complete sanitized activity payload', () => {
+  const payload = formatActivityPayload({ kind: 'worker.activity', payload: { kind: 'tool_call', tool_call: { name: 'shell', arguments: { command: 'ls' } } } });
+  assert.match(payload, /tool_call/);
+  assert.match(payload, /shell/);
+  assert.match(payload, /command/);
 });
 
 test('never exposes raw thinking as a Secretary stream label', () => {

@@ -568,57 +568,92 @@ func (s *acpSession) watch() {
 		if event.Method != "session/update" {
 			continue
 		}
-		var envelope struct {
-			Update struct {
-				SessionUpdate string `json:"sessionUpdate"`
-				Content       struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
-				Title  string `json:"title"`
-				Status string `json:"status"`
-			} `json:"update"`
-			SessionUpdate string `json:"sessionUpdate"`
-			Content       struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-			Title  string `json:"title"`
-			Status string `json:"status"`
-		}
+		var envelope map[string]any
 		if json.Unmarshal(event.Params, &envelope) != nil {
 			continue
 		}
-		payload := envelope.Update
-		if payload.SessionUpdate == "" {
-			payload.SessionUpdate = envelope.SessionUpdate
-			payload.Content = envelope.Content
-			payload.Title = envelope.Title
-			payload.Status = envelope.Status
+		payload, _ := envelope["update"].(map[string]any)
+		if payload == nil {
+			payload = envelope
 		}
-		activity := Activity{Kind: ActivityStatus, Text: payload.SessionUpdate}
-		switch payload.SessionUpdate {
+		kind := valueString(payload["sessionUpdate"])
+		if kind == "" {
+			kind = valueString(envelope["sessionUpdate"])
+		}
+		content, _ := payload["content"].(map[string]any)
+		if content == nil {
+			content, _ = envelope["content"].(map[string]any)
+		}
+		emit := func(activity Activity) {
+			select {
+			case s.activity <- activity:
+			default:
+			}
+		}
+		switch kind {
 		case "agent_message_chunk", "user_message_chunk":
-			activity.Kind = ActivityText
-			activity.Text = payload.Content.Text
-			if payload.Content.Text != "" {
-				s.textMu.Lock()
-				s.turnText.WriteString(payload.Content.Text)
-				s.textMu.Unlock()
+			text := valueString(content["text"])
+			if text == "" {
+				continue
 			}
-		case "tool_call", "tool_call_update":
-			activity.Kind = ActivityTool
-			activity.Text = payload.Title
-			if activity.Text == "" {
-				activity.Text = payload.Status
+			s.textMu.Lock()
+			s.turnText.WriteString(text)
+			s.textMu.Unlock()
+			emit(Activity{Kind: ActivityText, Text: text})
+		case "agent_thought_chunk", "thinking", "thinking_summary":
+			// ACP thought chunks are not safe to display. Adapters may provide an
+			// explicit short summary, but raw thought content is discarded.
+			summary := valueString(payload["summary"])
+			if summary == "" {
+				summary = valueString(payload["title"])
 			}
-		}
-		if activity.Text == "" {
-			continue
-		}
-		select {
-		case s.activity <- activity:
+			if safeRuntimeSummary(summary) {
+				emit(Activity{Kind: ActivityThinkingSummary, Summary: summary})
+			}
+		case "tool_call":
+			tool := firstString(payload, "title", "name", "tool")
+			if tool == "" {
+				continue
+			}
+			emit(Activity{Kind: ActivityToolCall, Tool: tool, Arguments: jsonValue(payload, "rawInput", "input", "arguments")})
+		case "tool_call_update", "tool_result":
+			tool := firstString(payload, "title", "name", "tool")
+			if tool == "" {
+				continue
+			}
+			output := jsonValue(payload, "rawOutput", "output", "result")
+			status := valueString(payload["status"])
+			if len(output) == 0 && status != "completed" && status != "failed" && status != "error" {
+				continue
+			}
+			result := string(output)
+			if result == "" {
+				result = status
+			}
+			emit(Activity{Kind: ActivityToolResult, Tool: tool, Result: result, Error: valueString(payload["error"]), Status: status})
 		default:
+			// Unknown ACP notifications are not converted into synthetic activity.
 		}
 	}
+}
+
+func firstString(value map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if text := strings.TrimSpace(valueString(value[key])); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func jsonValue(value map[string]any, keys ...string) json.RawMessage {
+	for _, key := range keys {
+		if item, ok := value[key]; ok && item != nil {
+			encoded, err := json.Marshal(item)
+			if err == nil && json.Valid(encoded) {
+				return encoded
+			}
+		}
+	}
+	return json.RawMessage(`{}`)
 }

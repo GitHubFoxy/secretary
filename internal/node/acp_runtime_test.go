@@ -48,6 +48,39 @@ func TestACPRuntimeUsesFakeACPProcess(t *testing.T) {
 	}
 }
 
+func TestACPRuntimeNormalizesRichActivityWithoutRawThought(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
+	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:], Environment: []string{"ACP_RICH_ACTIVITY=1"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := runtime.Start(ctx, StartRequest{WorkerRef: "worker", Task: "inspect", Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	seen := map[ActivityKind]Activity{}
+	for len(seen) < 3 {
+		select {
+		case activity := <-session.Activity():
+			seen[activity.Kind] = activity
+		case <-ctx.Done():
+			t.Fatalf("rich ACP activity=%#v", seen)
+		}
+	}
+	if _, ok := seen[ActivityThinkingSummary]; !ok {
+		t.Fatalf("thinking summary missing: %#v", seen)
+	}
+	if activity := seen[ActivityThinkingSummary]; activity.Summary == "raw internal thought" {
+		t.Fatal("raw thought was exposed")
+	}
+	if activity := seen[ActivityToolCall]; activity.Tool != "list_workers" || string(activity.Arguments) != `{"scope":"current"}` {
+		t.Fatalf("tool call=%#v", activity)
+	}
+	if activity := seen[ActivityToolResult]; activity.Tool != "list_workers" || activity.Result == "" {
+		t.Fatalf("tool result=%#v", activity)
+	}
+}
+
 func TestACPRuntimeResumesExistingSession(t *testing.T) {
 	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
 	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:]}
@@ -582,7 +615,13 @@ func TestFakeACPProcess(t *testing.T) {
 		}
 		switch request.Method {
 		case "session/prompt":
-			_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"sessionId": "fake-session", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "fake activity"}}}})
+			if os.Getenv("ACP_RICH_ACTIVITY") == "1" {
+				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "agent_thought_chunk", "summary": "Working safely."}}})
+				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "tool_call", "title": "list_workers", "rawInput": map[string]string{"scope": "current"}}}})
+				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "tool_call_update", "title": "list_workers", "status": "completed", "rawOutput": map[string]string{"status": "ok"}}}})
+			} else {
+				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"sessionId": "fake-session", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "fake activity"}}}})
+			}
 		}
 		if len(request.ID) == 0 {
 			continue

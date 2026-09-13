@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +67,61 @@ func setRuntimeTestPolicy(t *testing.T, store *core.Store) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRuntimePublishesNormalizedThinkingAndToolActivity(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary-activity.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "durable user"); err != nil {
+		t.Fatal(err)
+	}
+	setRuntimeTestPolicy(t, store)
+	turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "inspect")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	session := &fakeSession{activities: make(chan node.Activity, 3), results: make(chan node.Result, 1)}
+	runtime := NewRuntime(nil, "cap")
+	runtime.AttachConversation(store, conversation.ID)
+	runtime.AttachIdentity(identity)
+	runtime.activeTurnID = turn.ID
+	go runtime.consumeActivity(session)
+	session.activities <- node.Activity{Kind: node.ActivityThinkingSummary, Summary: "Checking the project."}
+	session.activities <- node.Activity{Kind: node.ActivityToolCall, Tool: "list_workers", Arguments: json.RawMessage(`{"scope":"current","api_token":"do-not-store"}`)}
+	session.activities <- node.Activity{Kind: node.ActivityToolResult, Tool: "list_workers", Result: `[{"worker_ref":"w1"}]`, Status: "ok"}
+	close(session.activities)
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		events, readErr := store.SecretaryEvents(ctx, turn.ID, 0, 20)
+		if readErr == nil && len(events) == 5 {
+			if events[2].Kind != core.SecretaryThinkingSummaryEvent || events[3].Kind != core.SecretaryToolCallEvent || events[4].Kind != core.SecretaryToolResultEvent {
+				t.Fatalf("events=%#v", events)
+			}
+			encoded, _ := json.Marshal(events[3].Payload)
+			if strings.Contains(string(encoded), "do-not-store") {
+				t.Fatalf("tool secret leaked into Secretary event: %s", encoded)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	events, _ := store.SecretaryEvents(ctx, turn.ID, 0, 20)
+	t.Fatalf("normalized Secretary activity was not published: %#v", events)
 }
 
 func TestDurableRuntimePromptErrorReturnsClaimedResultToNextTurn(t *testing.T) {

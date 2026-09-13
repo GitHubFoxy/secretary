@@ -428,7 +428,16 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 	var result core.WorkerDetails
 	var err error
 	switch suffix[0] {
-	case "message":
+	case "message", "follow-up":
+		result, err = s.actions.MessageWorker(r.Context(), request)
+	case "approve":
+		if strings.TrimSpace(request.RequestID) == "" {
+			http.Error(w, "request_id is required", http.StatusBadRequest)
+			return true
+		}
+		if strings.TrimSpace(request.Text) == "" {
+			request.Text = "approve"
+		}
 		result, err = s.actions.MessageWorker(r.Context(), request)
 	case "cancel":
 		result, err = s.actions.CancelWorker(r.Context(), details.Worker.WorkerRef)

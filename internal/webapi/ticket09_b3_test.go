@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/beruseruko/secretary/internal/core"
@@ -29,6 +31,54 @@ func (a *ticket09WorkerActions) CancelWorker(context.Context, string) (core.Work
 }
 func (a *ticket09WorkerActions) CloseWorker(context.Context, string) (core.WorkerDetails, error) {
 	return a.details, nil
+}
+
+func TestWorkerActionAPIExposesMessageFollowUpAndApprove(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "worker-actions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, _, _, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{Intent: "work", ProjectID: "project", NodeID: "node", HarnessInstanceID: "node/fx", PolicySnapshot: "safe"}, core.TurnSpec{Input: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := &ticket09WorkerActions{details: core.WorkerDetails{Worker: worker}}
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.AttachWorkerResponder(actions)
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	jar, _ := cookiejar.New(nil)
+	owner := &http.Client{Jar: jar}
+	login(t, owner, server.URL)
+	for _, item := range []struct {
+		action string
+		body   string
+	}{
+		{action: "message", body: `{"text":"steer","idempotency_key":"action-message"}`},
+		{action: "follow-up", body: `{"text":"follow up","idempotency_key":"action-follow-up"}`},
+		{action: "approve", body: `{"request_id":"request-1","text":"approve","idempotency_key":"action-approve"}`},
+	} {
+		response, err := owner.Post(server.URL+"/v1/workers/"+worker.WorkerRef+"/"+item.action, "application/json", strings.NewReader(item.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusAccepted {
+			t.Fatalf("action=%s status=%d", item.action, response.StatusCode)
+		}
+		if actions.request.Text == "" {
+			t.Fatalf("action=%s did not reach common API", item.action)
+		}
+	}
 }
 
 func TestTicket09GenericWorkerMessageUsesAuthenticatedBearerClient(t *testing.T) {

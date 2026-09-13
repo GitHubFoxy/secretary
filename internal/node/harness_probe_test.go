@@ -178,6 +178,8 @@ func TestDefaultCapabilitiesOnlyAdvertiseObservableRuntimeActivity(t *testing.T)
 		core.ActivityToolCall:           true,
 		core.ActivityStatus:             true,
 		core.ActivityAttemptOutcome:     true,
+		core.ActivityThinkingSummary:    true,
+		core.ActivityToolResult:         true,
 	}
 	for _, spec := range []HarnessProbeSpec{DefaultFXProbeSpec(), DefaultClaudeCodeProbeSpec(), DefaultCodexProbeSpec(), DefaultOpenCodeProbeSpec()} {
 		for _, capability := range spec.ActivityCapabilities {

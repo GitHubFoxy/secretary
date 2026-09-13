@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"sync"
@@ -12,18 +13,26 @@ import (
 type ActivityKind string
 
 const (
-	ActivityText       ActivityKind = "text"
-	ActivityTool       ActivityKind = "tool"
-	ActivityStatus     ActivityKind = "status"
-	ActivityPermission ActivityKind = "permission_request"
-	ActivityUserInput  ActivityKind = "user_input_request"
+	ActivityText            ActivityKind = "text"
+	ActivityTool            ActivityKind = "tool"
+	ActivityStatus          ActivityKind = "status"
+	ActivityPermission      ActivityKind = "permission_request"
+	ActivityUserInput       ActivityKind = "user_input_request"
+	ActivityThinkingSummary ActivityKind = "thinking_summary"
+	ActivityToolCall        ActivityKind = "tool_call"
+	ActivityToolResult      ActivityKind = "tool_result"
 )
 
 type Activity struct {
-	Kind      ActivityKind `json:"kind"`
-	Text      string       `json:"text"`
-	RequestID string       `json:"request_id,omitempty"`
-	Summary   string       `json:"summary,omitempty"`
+	Kind      ActivityKind    `json:"kind"`
+	Text      string          `json:"text,omitempty"`
+	RequestID string          `json:"request_id,omitempty"`
+	Summary   string          `json:"summary,omitempty"`
+	Tool      string          `json:"tool,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Result    string          `json:"result,omitempty"`
+	Error     string          `json:"error,omitempty"`
+	Status    string          `json:"status,omitempty"`
 }
 
 type Result struct {

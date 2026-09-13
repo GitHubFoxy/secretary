@@ -270,20 +270,135 @@ func (r *Runtime) consumeActivity(session node.Session) {
 		var err error
 		switch activity.Kind {
 		case node.ActivityText:
-			err = func() error {
-				_, e := store.RecordSecretaryTextDelta(context.Background(), turnID, activity.Text)
-				return e
-			}()
-		case node.ActivityTool:
-			err = func() error {
-				_, e := store.RecordSecretaryToolCall(context.Background(), turnID, activity.Text, "")
-				return e
-			}()
+			_, err = store.RecordSecretaryTextDelta(context.Background(), turnID, activity.Text)
+		case node.ActivityThinkingSummary:
+			summary := strings.TrimSpace(activity.Summary)
+			if summary == "" {
+				summary = strings.TrimSpace(activity.Text)
+			}
+			if safeSecretarySummary(summary) {
+				_, err = store.RecordSecretaryThinkingSummary(context.Background(), turnID, summary)
+			}
+		case node.ActivityTool, node.ActivityToolCall:
+			tool := strings.TrimSpace(activity.Tool)
+			if tool == "" {
+				tool = strings.TrimSpace(activity.Text)
+			}
+			if tool != "" {
+				_, err = store.RecordSecretaryToolCall(context.Background(), turnID, tool, sanitizeToolArguments(activity.Arguments))
+			}
+		case node.ActivityToolResult:
+			tool := strings.TrimSpace(activity.Tool)
+			if tool == "" {
+				tool = strings.TrimSpace(activity.Text)
+			}
+			if tool != "" {
+				status := strings.TrimSpace(activity.Status)
+				if status == "" {
+					status = "ok"
+				}
+				_, err = store.RecordSecretaryToolResult(context.Background(), turnID, tool, sanitizeToolResult(activity.Result), status, sanitizeToolResult(activity.Error))
+			}
 		}
 		if err != nil {
 			r.reportError(err)
 		}
 	}
+}
+
+func safeSecretarySummary(summary string) bool {
+	if summary == "" || len(summary) > 1000 {
+		return false
+	}
+	lower := strings.ToLower(summary)
+	for _, marker := range []string{"chain-of-thought", "chain of thought", "raw thought", "internal reasoning", "thought process", "<think>", "</think>"} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+func sanitizeToolArguments(raw json.RawMessage) string {
+	if len(raw) == 0 || !json.Valid(raw) {
+		return "{}"
+	}
+	value := sanitizeToolValue(raw)
+	encoded, err := json.Marshal(value)
+	if err != nil || len(encoded) > 16<<10 {
+		return "{}"
+	}
+	return string(encoded)
+}
+
+func sanitizeToolResult(result string) string {
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return ""
+	}
+	if json.Valid([]byte(result)) {
+		encoded, err := json.Marshal(sanitizeToolValue(json.RawMessage(result)))
+		if err == nil {
+			result = string(encoded)
+		}
+	} else if sensitiveToolText(result) {
+		return "[redacted]"
+	}
+	if len(result) > 16<<10 {
+		result = result[:16<<10]
+	}
+	return result
+}
+
+func sanitizeToolValue(raw json.RawMessage) any {
+	var value any
+	if json.Unmarshal(raw, &value) != nil {
+		return "[redacted]"
+	}
+	var clean func(any) any
+	clean = func(current any) any {
+		switch item := current.(type) {
+		case map[string]any:
+			out := make(map[string]any, len(item))
+			for key, child := range item {
+				if sensitiveToolKey(key) {
+					out[key] = "[redacted]"
+					continue
+				}
+				out[key] = clean(child)
+			}
+			return out
+		case []any:
+			out := make([]any, len(item))
+			for i, child := range item {
+				out[i] = clean(child)
+			}
+			return out
+		default:
+			return current
+		}
+	}
+	return clean(value)
+}
+
+func sensitiveToolText(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{"api_token", "access_token", "secret", "credential", "password", "callback", "runtime_session_id", "session_id"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func sensitiveToolKey(key string) bool {
+	key = strings.ToLower(strings.NewReplacer("_", "", "-", "").Replace(key))
+	for _, marker := range []string{"secret", "credential", "callback", "token", "password", "taskid", "sessionid", "sessionidentifier", "runtimesession"} {
+		if strings.Contains(key, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runtime) reportError(err error) {
