@@ -124,6 +124,7 @@ type persistedState struct {
 	PendingSecretaryText  string                   `json:"pending_secretary_text,omitempty"`
 	PendingSecretaryTools []string                 `json:"pending_secretary_tools,omitempty"`
 	PendingWorkerLines    map[string][]string      `json:"pending_worker_lines,omitempty"`
+	PendingEventSeqs      []int64                  `json:"pending_event_seqs,omitempty"`
 }
 
 type pairingRecord struct {
@@ -135,6 +136,7 @@ type pendingBatch struct {
 	SecretaryText  strings.Builder
 	SecretaryTools []string
 	WorkerLines    map[string][]string
+	EventSeqs      []int64
 }
 
 type updateClaim struct {
@@ -184,6 +186,7 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 	adapter.pending.SecretaryText.WriteString(adapter.state.PendingSecretaryText)
 	adapter.pending.SecretaryTools = append([]string(nil), adapter.state.PendingSecretaryTools...)
 	adapter.pending.WorkerLines = cloneWorkerLines(adapter.state.PendingWorkerLines)
+	adapter.pending.EventSeqs = append([]int64(nil), adapter.state.PendingEventSeqs...)
 	if adapter.pending.WorkerLines == nil {
 		adapter.pending.WorkerLines = make(map[string][]string)
 	}
@@ -486,13 +489,26 @@ func (a *Adapter) HandleDurableEvent(ctx context.Context, event Event) error {
 	if event.Sequence <= 0 {
 		return a.HandleEvent(ctx, event)
 	}
+	a.flushMu.Lock()
+	defer a.flushMu.Unlock()
+
 	a.mu.Lock()
 	if event.Sequence <= a.state.LastEventSeq {
 		a.mu.Unlock()
 		return nil
 	}
+	if containsEventSeq(a.pending.EventSeqs, event.Sequence) {
+		a.state.LastEventSeq = event.Sequence
+		err := a.saveLocked()
+		a.mu.Unlock()
+		return err
+	}
 	a.mu.Unlock()
-	if err := a.HandleEvent(ctx, event); err != nil {
+
+	if strings.HasPrefix(event.Kind, "secretary.") {
+		return a.handleSecretaryEvent(event, event.Sequence)
+	}
+	if err := a.handleEvent(ctx, event); err != nil {
 		return err
 	}
 	a.mu.Lock()
@@ -505,19 +521,14 @@ func (a *Adapter) HandleDurableEvent(ctx context.Context, event Event) error {
 }
 
 func (a *Adapter) HandleEvent(ctx context.Context, event Event) error {
+	a.flushMu.Lock()
+	defer a.flushMu.Unlock()
+	return a.handleEvent(ctx, event)
+}
+
+func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 	if strings.HasPrefix(event.Kind, "secretary.") {
-		a.queueSecretary(event)
-		a.mu.Lock()
-		err := a.persistPendingLocked()
-		if err == nil {
-			err = a.saveLocked()
-		}
-		a.mu.Unlock()
-		if err != nil {
-			return err
-		}
-		a.scheduleFlush()
-		return nil
+		return a.handleSecretaryEvent(event, 0)
 	}
 	if event.WorkerRef == "" {
 		return nil
@@ -613,6 +624,35 @@ func (a *Adapter) persistPendingLocked() error {
 	a.state.PendingSecretaryText = a.pending.SecretaryText.String()
 	a.state.PendingSecretaryTools = append([]string(nil), a.pending.SecretaryTools...)
 	a.state.PendingWorkerLines = cloneWorkerLines(a.pending.WorkerLines)
+	a.state.PendingEventSeqs = append([]int64(nil), a.pending.EventSeqs...)
+	return nil
+}
+
+func containsEventSeq(seqs []int64, wanted int64) bool {
+	for _, seq := range seqs {
+		if seq == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Adapter) handleSecretaryEvent(event Event, sequence int64) error {
+	a.queueSecretary(event)
+	a.mu.Lock()
+	if sequence > 0 && !containsEventSeq(a.pending.EventSeqs, sequence) {
+		a.pending.EventSeqs = append(a.pending.EventSeqs, sequence)
+		a.state.LastEventSeq = sequence
+	}
+	err := a.persistPendingLocked()
+	if err == nil {
+		err = a.saveLocked()
+	}
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	a.scheduleFlush()
 	return nil
 }
 
@@ -670,7 +710,18 @@ func (a *Adapter) Flush(ctx context.Context) error {
 	owner := a.state.OwnerChat
 	text := strings.TrimSpace(a.pending.SecretaryText.String())
 	tools := append([]string(nil), a.pending.SecretaryTools...)
+	eventSeqs := append([]int64(nil), a.pending.EventSeqs...)
 	workerLines := cloneWorkerLines(a.pending.WorkerLines)
+	secretaryMessage, hasSecretary := secretaryBatchMessage(owner, text, tools)
+	secretaryQueued := false
+	if hasSecretary {
+		for _, pending := range a.state.Outbox {
+			if pending == secretaryMessage {
+				secretaryQueued = true
+				break
+			}
+		}
+	}
 	mappings := make(map[string]TopicMapping, len(a.state.Topics))
 	for ref, mapping := range a.state.Topics {
 		mappings[ref] = mapping
@@ -679,18 +730,13 @@ func (a *Adapter) Flush(ctx context.Context) error {
 	if err := a.drainOutbox(ctx); err != nil {
 		return err
 	}
-	if owner != 0 && (text != "" || len(tools) != 0) {
-		parts := make([]string, 0, 2)
-		if text != "" {
-			parts = append(parts, text)
+	if hasSecretary {
+		if !secretaryQueued {
+			if err := a.sendMessage(ctx, secretaryMessage); err != nil {
+				return err
+			}
 		}
-		if len(tools) != 0 {
-			parts = append(parts, "Шаги: "+strings.Join(uniqueStrings(tools), ", "))
-		}
-		if err := a.sendMessage(ctx, OutgoingMessage{ChatID: owner, Text: strings.Join(parts, "\n")}); err != nil {
-			return err
-		}
-		if err := a.clearSecretaryPending(text, tools); err != nil {
+		if err := a.clearSecretaryPending(text, tools, eventSeqs); err != nil {
 			return err
 		}
 	}
@@ -714,7 +760,21 @@ func (a *Adapter) Flush(ctx context.Context) error {
 	return nil
 }
 
-func (a *Adapter) clearSecretaryPending(text string, tools []string) error {
+func secretaryBatchMessage(owner int64, text string, tools []string) (OutgoingMessage, bool) {
+	if owner == 0 || (text == "" && len(tools) == 0) {
+		return OutgoingMessage{}, false
+	}
+	parts := make([]string, 0, 2)
+	if text != "" {
+		parts = append(parts, text)
+	}
+	if len(tools) != 0 {
+		parts = append(parts, "Шаги: "+strings.Join(uniqueStrings(tools), ", "))
+	}
+	return OutgoingMessage{ChatID: owner, Text: strings.Join(parts, "\n")}, true
+}
+
+func (a *Adapter) clearSecretaryPending(text string, tools []string, seqs []int64) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if strings.TrimSpace(a.pending.SecretaryText.String()) != text || !sameStrings(a.pending.SecretaryTools, tools) {
@@ -722,8 +782,22 @@ func (a *Adapter) clearSecretaryPending(text string, tools []string) error {
 	}
 	a.pending.SecretaryText.Reset()
 	a.pending.SecretaryTools = nil
+	a.pending.EventSeqs = removeEventSeqs(a.pending.EventSeqs, seqs)
 	_ = a.persistPendingLocked()
 	return a.saveLocked()
+}
+
+func removeEventSeqs(all, removed []int64) []int64 {
+	if len(removed) == 0 {
+		return all
+	}
+	result := all[:0]
+	for _, seq := range all {
+		if !containsEventSeq(removed, seq) {
+			result = append(result, seq)
+		}
+	}
+	return result
 }
 
 func (a *Adapter) clearWorkerPending(ref string, lines []string) error {

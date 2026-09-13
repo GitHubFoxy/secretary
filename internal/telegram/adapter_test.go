@@ -45,6 +45,29 @@ type fakeServer struct {
 	workers  []WorkerMessage
 }
 
+type blockingSendTransport struct {
+	mu      sync.Mutex
+	sent    []SentMessage
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (t *blockingSendTransport) GetUpdates(context.Context, int64, time.Duration) ([]Update, error) {
+	return nil, nil
+}
+func (t *blockingSendTransport) SendMessage(_ context.Context, message OutgoingMessage) error {
+	t.once.Do(func() { close(t.started) })
+	<-t.release
+	t.mu.Lock()
+	t.sent = append(t.sent, SentMessage{OutgoingMessage: message})
+	t.mu.Unlock()
+	return nil
+}
+func (t *blockingSendTransport) CreateForumTopic(context.Context, int64, string) (ForumTopic, error) {
+	return ForumTopic{}, nil
+}
+
 func (f *fakeServer) SendMessage(_ context.Context, message InboundMessage) error {
 	f.messages = append(f.messages, message)
 	return nil
@@ -537,5 +560,105 @@ func TestStateFileIsAtomicAndReadableAfterRestart(t *testing.T) {
 	}
 	if _, err := os.ReadFile(path); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDurableEventRecoveryDoesNotDuplicatePendingBatch(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "telegram.json")
+	state := map[string]any{
+		"version":                1,
+		"owner_chat_id":          int64(100),
+		"last_event_seq":         int64(0),
+		"processed_updates":      map[string]time.Time{},
+		"topics":                 map[string]TopicMapping{},
+		"pairings":               map[string]any{},
+		"pending_secretary_text": "recover once",
+		"pending_event_seqs":     []int64{1},
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(statePath, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, statePath)
+	if err := adapter.HandleDurableEvent(context.Background(), Event{Sequence: 1, Kind: "secretary.text_delta", Text: "recover once"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := adapter.LastEventSeq(); got != 1 {
+		t.Fatalf("last event sequence = %d, want 1", got)
+	}
+	if err := adapter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "recover once" {
+		t.Fatalf("recovered batch = %#v", transport.sent)
+	}
+}
+
+func TestDurableBatchRestartDoesNotReplayAlreadyOutboxedMessage(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "telegram.json")
+	transport := &fakeTransport{fail: true}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, statePath)
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.text_delta", Text: "send once"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Flush(context.Background()); err == nil {
+		t.Fatal("expected transport failure")
+	}
+
+	transport.fail = false
+	restarted := newTestAdapter(t, transport, &fakeServer{}, statePath)
+	if err := restarted.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "send once" {
+		t.Fatalf("replayed durable batch = %#v", transport.sent)
+	}
+}
+
+func TestFlushSerializesConcurrentEventWithoutReplayingPrefix(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "telegram.json")
+	transport := &blockingSendTransport{started: make(chan struct{}), release: make(chan struct{})}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, statePath)
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.text_delta", Text: "prefix"}); err != nil {
+		t.Fatal(err)
+	}
+
+	flushDone := make(chan error, 1)
+	go func() { flushDone <- adapter.Flush(context.Background()) }()
+	<-transport.started
+	eventDone := make(chan error, 1)
+	go func() {
+		eventDone <- adapter.HandleEvent(context.Background(), Event{Kind: "secretary.text_delta", Text: "suffix"})
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		data, readErr := os.ReadFile(statePath)
+		if readErr == nil && strings.Contains(string(data), "prefixsuffix") {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(transport.release)
+	if err := <-flushDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-eventDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	transport.mu.Lock()
+	sent := append([]SentMessage(nil), transport.sent...)
+	transport.mu.Unlock()
+	if len(sent) != 2 || sent[0].Text != "prefix" || sent[1].Text != "suffix" {
+		t.Fatalf("sent batches = %#v", sent)
 	}
 }
