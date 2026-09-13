@@ -47,6 +47,18 @@ type ProfileFile struct {
 	Reasoning string `json:"reasoning"`
 }
 
+type controlProfile struct {
+	Name      string `json:"name"`
+	Path      string `json:"path"`
+	Content   string `json:"content"`
+	Hash      string `json:"hash"`
+	Revision  string `json:"revision,omitempty"`
+	Editable  bool   `json:"editable"`
+	Runtime   string `json:"runtime"`
+	Model     string `json:"model"`
+	Reasoning string `json:"reasoning"`
+}
+
 type controlOverview struct {
 	DebugOnly   bool              `json:"debug_only"`
 	GeneratedAt time.Time         `json:"generated_at"`
@@ -840,18 +852,24 @@ func (s *Server) controlProfiles(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "read profiles: "+err.Error(), 500)
 		return
 	}
-	for i := range profiles {
-		if profiles[i].Revision == "" {
-			profiles[i].Revision = profiles[i].Hash
-		}
-		redacted := redactControlProfileText(profiles[i].Content)
-		profiles[i].Editable = redacted == profiles[i].Content
-		profiles[i].Content = redacted
+	result := make([]controlProfile, 0, len(profiles))
+	for _, profile := range profiles {
+		result = append(result, controlProfileDTO(profile))
 	}
-	if profiles == nil {
-		profiles = []ProfileFile{}
+	writeJSON(w, 200, result)
+}
+
+func controlProfileDTO(profile ProfileFile) controlProfile {
+	redactedContent := redactControlProfileText(profile.Content)
+	revision := profile.Revision
+	if revision == "" {
+		revision = profile.Hash
 	}
-	writeJSON(w, 200, profiles)
+	return controlProfile{
+		Name: profile.Name, Path: profile.Path, Content: redactedContent, Hash: profile.Hash, Revision: revision,
+		Editable: redactedContent == profile.Content,
+		Runtime:  redactControlProfileMetadata(profile.Runtime), Model: redactControlProfileMetadata(profile.Model), Reasoning: redactControlProfileMetadata(profile.Reasoning),
+	}
 }
 func (s *Server) controlProfilesReload(w http.ResponseWriter, r *http.Request) {
 	if !s.controlAllowed(w, r) {
@@ -1061,6 +1079,36 @@ func redactControlConfigText(value string) string {
 
 func redactControlProfileText(value string) string {
 	return redactControlTextLines(value)
+}
+
+func redactControlProfileMetadata(value string) string {
+	if containsKnownControlCredential(value) {
+		return "[redacted]"
+	}
+	lower := strings.ToLower(value)
+	for _, marker := range []string{
+		"native", "session", "callback", "task", "<think", "</think", "chain-of-thought", "chain_of_thought",
+		"chain of thought", "internal reasoning", "thought process", "analysis:", "reasoning:", "thought:", "cot",
+	} {
+		if strings.Contains(lower, marker) {
+			return "[redacted]"
+		}
+	}
+	return value
+}
+
+func isControlProfileMetadataKey(key string) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	return key == "runtime" || key == "model" || key == "reasoning"
+}
+
+func isControlProfileName(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "secretary", "worker", "child_worker":
+		return true
+	default:
+		return false
+	}
 }
 
 func redactControlTextLines(value string) string {

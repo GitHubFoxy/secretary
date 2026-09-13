@@ -126,20 +126,32 @@ func isThoughtUpdate(value string) bool {
 }
 
 func sanitizeDiagnosticValue(value any) any {
+	return sanitizeDiagnosticValueWithProfileMetadata(value, false)
+}
+
+func sanitizeDiagnosticValueWithProfileMetadata(value any, inProfileMetadata bool) any {
 	switch current := value.(type) {
 	case json.RawMessage:
 		var decoded any
 		if json.Unmarshal(current, &decoded) != nil {
 			return "[redacted]"
 		}
-		return sanitizeDiagnosticValue(decoded)
+		return sanitizeDiagnosticValueWithProfileMetadata(decoded, inProfileMetadata)
 	case map[string]any:
 		result := make(map[string]any, len(current))
 		for key, child := range current {
-			if forbiddenDiagnosticKey(key) {
+			profileMetadataKey := isControlProfileMetadataKey(key)
+			profileNameKey := isControlProfileName(key)
+			if forbiddenDiagnosticKey(key) && !(inProfileMetadata && (profileMetadataKey || profileNameKey)) {
 				continue
 			}
-			cleaned := sanitizeDiagnosticValue(child)
+			childInProfileMetadata := inProfileMetadata || strings.EqualFold(key, "profiles")
+			cleaned := sanitizeDiagnosticValueWithProfileMetadata(child, childInProfileMetadata)
+			if profileMetadataKey && inProfileMetadata {
+				if text, ok := cleaned.(string); ok {
+					cleaned = redactControlProfileMetadata(text)
+				}
+			}
 			if cleaned != nil {
 				result[key] = cleaned
 			}
@@ -148,7 +160,7 @@ func sanitizeDiagnosticValue(value any) any {
 	case []any:
 		result := make([]any, 0, len(current))
 		for _, child := range current {
-			if cleaned := sanitizeDiagnosticValue(child); cleaned != nil {
+			if cleaned := sanitizeDiagnosticValueWithProfileMetadata(child, inProfileMetadata); cleaned != nil {
 				result = append(result, cleaned)
 			}
 		}
@@ -158,7 +170,7 @@ func sanitizeDiagnosticValue(value any) any {
 		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 			var nested any
 			if json.Unmarshal([]byte(trimmed), &nested) == nil {
-				cleaned := sanitizeDiagnosticValue(nested)
+				cleaned := sanitizeDiagnosticValueWithProfileMetadata(nested, inProfileMetadata)
 				if encoded, err := json.Marshal(cleaned); err == nil {
 					return string(encoded)
 				}
