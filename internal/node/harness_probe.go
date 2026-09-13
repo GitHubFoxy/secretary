@@ -133,7 +133,11 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
 		result.Instance = instance
 		return result
 	}
-	ok, method := parseAuthentication(p.Spec.Kind, auth.Stdout+"\n"+auth.Stderr, p.Spec.AuthenticationMethod)
+	authOutput := auth.Stdout + "\n" + auth.Stderr
+	ok, method := parseAuthentication(p.Spec.Kind, authOutput, p.Spec.AuthenticationMethod)
+	if !ok && p.Spec.Kind == core.HarnessCodex && auth.ExitCode == 0 && strings.TrimSpace(authOutput) == "" {
+		ok, method = true, "credential"
+	}
 	instance.Authentication = core.HarnessAuthentication{Authenticated: ok, Method: method}
 	if !ok {
 		result.Err, result.ErrorCode = ErrProbeUnauthenticated, "unauthenticated"
