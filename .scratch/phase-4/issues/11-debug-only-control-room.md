@@ -24,3 +24,12 @@ Blocked by: 05b, 06a, 06b, 08, 09
 - Profile/config reload с invalid input сохраняет active snapshot.
 - Revoke Client/Node доступен и виден в audit.
 - Diagnostic export редактирует secrets и не содержит runtime session IDs server-side.
+
+## Comments
+
+Блокер безопасности Ticket11 закрыт поверх `447902f`.
+
+- RED: `ee7eef4`, production-shaped cross-surface тест для bare `session:`, `native:`, `task:`.
+- GREEN: `34a6941`, общий `containsKnownControlSensitiveValue` теперь включает bare assignment keys, а public sanitizer использует тот же detector.
+- Report: fail-closed сохранён для конфигурации, Profile Markdown, hostile writes, diagnostics, export и public Worker surfaces. Обычные product fields и CAS остаются editable.
+- Gates: `gofmt`, `mise exec -- go test ./...`, `mise exec -- go test -race -p 1 ./...`, `mise exec -- go vet ./...`, `git diff --check`, `cd web && npm test`, `cd web && npm run build:all`.

@@ -11,17 +11,7 @@ import (
 	"unicode"
 
 	"github.com/beruseruko/secretary/internal/acp"
-	"github.com/beruseruko/secretary/internal/core"
 )
-
-// workerDiagnosticResponse is deliberately separate from WorkerDetails. Raw
-// harness state is an opt-in observer surface and never part of the normal
-// Worker or Conversation contract.
-type workerDiagnosticResponse struct {
-	WorkerRef         string                    `json:"worker_ref"`
-	AttemptOutcomes   []core.AttemptOutcome     `json:"attempt_outcomes"`
-	RawHarnessDetails []harnessDiagnosticDetail `json:"raw_harness_details"`
-}
 
 // harnessDiagnosticDetail contains only a typed, redacted summary of one raw
 // ACP record. It never carries the original JSON line or native session ID.
@@ -33,29 +23,6 @@ type harnessDiagnosticDetail struct {
 	Tool          string         `json:"tool,omitempty"`
 	Status        string         `json:"status,omitempty"`
 	Details       map[string]any `json:"details,omitempty"`
-}
-
-func (s *Server) buildWorkerDiagnostics(details core.WorkerDetails) (workerDiagnosticResponse, error) {
-	outcomes := append([]core.AttemptOutcome(nil), details.Outcomes...)
-	for index := range outcomes {
-		outcomes[index].ErrorCode = sanitizeDiagnosticText(outcomes[index].ErrorCode)
-		outcomes[index].ErrorMessage = sanitizeDiagnosticText(outcomes[index].ErrorMessage)
-		outcomes[index].Diagnostics = sanitizeDiagnosticText(outcomes[index].Diagnostics)
-	}
-	response := workerDiagnosticResponse{
-		WorkerRef:         details.Worker.WorkerRef,
-		AttemptOutcomes:   outcomes,
-		RawHarnessDetails: []harnessDiagnosticDetail{},
-	}
-	if strings.TrimSpace(s.diagnosticLogDir) == "" {
-		return response, nil
-	}
-	detailsFromLog, err := readHarnessDiagnostics(s.diagnosticLogDir, details.Worker.WorkerRef)
-	if err != nil {
-		return workerDiagnosticResponse{}, err
-	}
-	response.RawHarnessDetails = detailsFromLog
-	return response, nil
 }
 
 func readHarnessDiagnostics(dir, workerRef string) ([]harnessDiagnosticDetail, error) {
@@ -104,7 +71,7 @@ func parseHarnessDiagnostic(line []byte, sequence int) (harnessDiagnosticDetail,
 	if len(message.Params) > 0 {
 		_ = json.Unmarshal(message.Params, &params)
 	}
-	detail := harnessDiagnosticDetail{Sequence: sequence, Direction: "inbound", Method: message.Method}
+	detail := harnessDiagnosticDetail{Sequence: sequence, Direction: "inbound", Method: sanitizeDiagnosticText(message.Method)}
 	if message.Method != "" {
 		detail.Direction = "outbound"
 	}
@@ -127,6 +94,9 @@ func parseHarnessDiagnostic(line []byte, sequence int) (harnessDiagnosticDetail,
 		detail.SessionUpdate = "thinking"
 		return detail, true
 	}
+	detail.SessionUpdate = sanitizeDiagnosticText(detail.SessionUpdate)
+	detail.Tool = sanitizeDiagnosticText(detail.Tool)
+	detail.Status = sanitizeDiagnosticText(detail.Status)
 	if cleaned, ok := sanitizeDiagnosticValue(params).(map[string]any); ok && len(cleaned) > 0 {
 		detail.Details = cleaned
 	}
@@ -156,14 +126,32 @@ func isThoughtUpdate(value string) bool {
 }
 
 func sanitizeDiagnosticValue(value any) any {
+	return sanitizeDiagnosticValueWithProfileMetadata(value, false)
+}
+
+func sanitizeDiagnosticValueWithProfileMetadata(value any, inProfileMetadata bool) any {
 	switch current := value.(type) {
+	case json.RawMessage:
+		var decoded any
+		if json.Unmarshal(current, &decoded) != nil {
+			return "[redacted]"
+		}
+		return sanitizeDiagnosticValueWithProfileMetadata(decoded, inProfileMetadata)
 	case map[string]any:
 		result := make(map[string]any, len(current))
 		for key, child := range current {
-			if forbiddenDiagnosticKey(key) {
+			profileMetadataKey := isControlProfileMetadataKey(key)
+			profileNameKey := isControlProfileName(key)
+			if forbiddenDiagnosticKey(key) && !(inProfileMetadata && (profileMetadataKey || profileNameKey)) {
 				continue
 			}
-			cleaned := sanitizeDiagnosticValue(child)
+			childInProfileMetadata := inProfileMetadata || strings.EqualFold(key, "profiles")
+			cleaned := sanitizeDiagnosticValueWithProfileMetadata(child, childInProfileMetadata)
+			if profileMetadataKey && inProfileMetadata {
+				if text, ok := cleaned.(string); ok {
+					cleaned = redactControlProfileMetadata(text)
+				}
+			}
 			if cleaned != nil {
 				result[key] = cleaned
 			}
@@ -172,7 +160,7 @@ func sanitizeDiagnosticValue(value any) any {
 	case []any:
 		result := make([]any, 0, len(current))
 		for _, child := range current {
-			if cleaned := sanitizeDiagnosticValue(child); cleaned != nil {
+			if cleaned := sanitizeDiagnosticValueWithProfileMetadata(child, inProfileMetadata); cleaned != nil {
 				result = append(result, cleaned)
 			}
 		}
@@ -182,7 +170,7 @@ func sanitizeDiagnosticValue(value any) any {
 		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
 			var nested any
 			if json.Unmarshal([]byte(trimmed), &nested) == nil {
-				cleaned := sanitizeDiagnosticValue(nested)
+				cleaned := sanitizeDiagnosticValueWithProfileMetadata(nested, inProfileMetadata)
 				if encoded, err := json.Marshal(cleaned); err == nil {
 					return string(encoded)
 				}
@@ -210,7 +198,7 @@ func forbiddenDiagnosticKey(key string) bool {
 	}, key))
 	for _, marker := range []string{
 		"secret", "credential", "callback", "token", "password", "authorization", "apikey", "accesskey", "privatekey",
-		"runtimesession", "sessionid", "sessionidentifier", "thought", "reasoning", "chainofthought", "analysis",
+		"runtimesession", "sessionid", "sessionidentifier", "runtimeid", "nativeid", "native", "task", "content", "skills", "opaque", "token", "credential", "callback", "thought", "reasoning", "chainofthought", "analysis",
 	} {
 		if strings.Contains(compact, marker) {
 			return true
@@ -220,15 +208,18 @@ func forbiddenDiagnosticKey(key string) bool {
 }
 
 func sanitizeDiagnosticText(value string) string {
-	if forbiddenDiagnosticString(value) {
-		return "[redacted]"
+	if cleaned, ok := sanitizeDiagnosticValue(value).(string); ok {
+		return cleaned
 	}
-	return value
+	return "[redacted]"
 }
 
 func forbiddenDiagnosticString(value string) bool {
+	if containsKnownControlSensitiveValue(value) {
+		return true
+	}
 	lower := strings.ToLower(value)
-	for _, marker := range []string{"bearer ", "api_key=", "apikey=", "token=", "secret", "credential", "password=", "callback", "chain-of-thought", "internal reasoning", "thought process", "sk-", "ghp_", "xoxb-"} {
+	for _, marker := range []string{"analysis:", "reasoning:", "thought:", "bearer ", "secret", "credential", "callback", "native", "session_id", "session-id", "task"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
