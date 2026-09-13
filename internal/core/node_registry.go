@@ -64,7 +64,7 @@ type NodeRecord struct {
 func (s *Store) EnsureNodeRegistry(ctx context.Context) error {
 	s.nodeRegistryMu.Lock()
 	defer s.nodeRegistryMu.Unlock()
-	_, err := s.db.ExecContext(ctx, `
+	_, err := execSQLiteWithBusyRetry(ctx, s.db, `
 CREATE TABLE IF NOT EXISTS phase4_nodes (
   node_ref TEXT PRIMARY KEY,
   online INTEGER NOT NULL DEFAULT 0,
@@ -100,11 +100,25 @@ CREATE INDEX IF NOT EXISTS phase4_nodes_online ON phase4_nodes(online, revoked, 
 		"phase4_nodes workspaces_json TEXT NOT NULL DEFAULT ''",
 	} {
 		parts := strings.SplitN(migration, " ", 2)
-		if _, err := s.db.ExecContext(ctx, `ALTER TABLE `+parts[0]+` ADD COLUMN `+parts[1]); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		if _, err := execSQLiteWithBusyRetry(ctx, s.db, `ALTER TABLE `+parts[0]+` ADD COLUMN `+parts[1]); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 			return fmt.Errorf("core: migrate Node registry column %s: %w", migration, err)
 		}
 	}
 	return nil
+}
+
+func execSQLiteWithBusyRetry(ctx context.Context, db *sql.DB, query string, args ...any) (sql.Result, error) {
+	for attempt := 0; ; attempt++ {
+		result, err := db.ExecContext(ctx, query, args...)
+		if err == nil || (!strings.Contains(strings.ToLower(err.Error()), "database is locked") && !strings.Contains(strings.ToLower(err.Error()), "sqlite_busy")) || attempt >= 20 {
+			return result, err
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(25 * time.Millisecond):
+		}
+	}
 }
 
 // EnsureNodeTransportSecret returns the server-only master used to derive a
