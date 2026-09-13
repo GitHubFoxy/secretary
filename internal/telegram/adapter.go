@@ -329,12 +329,27 @@ func (a *Adapter) HandleUpdate(ctx context.Context, update Update) error {
 		if !ok {
 			return nil
 		}
-		return a.server.SendWorkerMessage(ctx, WorkerMessage{WorkerRef: mapping.WorkerRef, ExternalMessageID: externalID, Text: text})
+		err := a.server.SendWorkerMessage(ctx, WorkerMessage{WorkerRef: mapping.WorkerRef, ExternalMessageID: externalID, Text: text})
+		if err != nil {
+			a.unmarkProcessed(update.ID)
+		}
+		return err
 	}
 	if text == "" {
 		return nil
 	}
-	return a.server.SendMessage(ctx, InboundMessage{ExternalMessageID: externalID, Body: text})
+	err := a.server.SendMessage(ctx, InboundMessage{ExternalMessageID: externalID, Body: text})
+	if err != nil {
+		a.unmarkProcessed(update.ID)
+	}
+	return err
+}
+
+func (a *Adapter) unmarkProcessed(updateID int64) {
+	a.mu.Lock()
+	delete(a.state.Processed, fmt.Sprint(updateID))
+	_ = a.saveLocked()
+	a.mu.Unlock()
 }
 
 func (a *Adapter) mappingForThreadLocked(chatID, threadID int64) (TopicMapping, bool) {

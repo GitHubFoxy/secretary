@@ -149,5 +149,5 @@ func (c *HTTPServerClient) SendMessage(ctx context.Context, message InboundMessa
 
 func (c *HTTPServerClient) SendWorkerMessage(ctx context.Context, message WorkerMessage) error {
 	path := "/v1/workers/" + url.PathEscape(message.WorkerRef) + "/message"
-	return c.post(ctx, path, map[string]string{"text": message.Text, "external_message_id": message.ExternalMessageID}, "telegram:"+message.ExternalMessageID)
+	return c.post(ctx, path, map[string]string{"text": message.Text}, "telegram:"+message.ExternalMessageID)
 }
