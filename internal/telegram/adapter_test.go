@@ -76,6 +76,32 @@ func (s *retryServer) SendMessage(context.Context, InboundMessage) error {
 }
 func (s *retryServer) SendWorkerMessage(context.Context, WorkerMessage) error { return nil }
 
+type retryPollingTransport struct {
+	mu    sync.Mutex
+	calls int
+	ready chan struct{}
+}
+
+func (t *retryPollingTransport) GetUpdates(context.Context, int64, time.Duration) ([]Update, error) {
+	t.mu.Lock()
+	t.calls++
+	calls := t.calls
+	t.mu.Unlock()
+	if calls < 3 {
+		return nil, context.DeadlineExceeded
+	}
+	select {
+	case <-t.ready:
+	default:
+		close(t.ready)
+	}
+	return nil, nil
+}
+func (t *retryPollingTransport) SendMessage(context.Context, OutgoingMessage) error { return nil }
+func (t *retryPollingTransport) CreateForumTopic(context.Context, int64, string) (ForumTopic, error) {
+	return ForumTopic{}, nil
+}
+
 type concurrentTopicTransport struct {
 	mu      sync.Mutex
 	calls   int
@@ -380,6 +406,123 @@ func TestApprovalAndNeedsInputCarryRequestIDToWorkerReply(t *testing.T) {
 	}
 	if len(server.workers) != 1 || server.workers[0].RequestID != "request-1" {
 		t.Fatalf("worker replies=%#v", server.workers)
+	}
+}
+
+func TestDurableSecretaryEventSurvivesRestartBeforeThrottleFlush(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "telegram.json")
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, statePath)
+	if err := adapter.HandleDurableEvent(context.Background(), Event{Sequence: 1, Kind: "secretary.text_delta", Text: "survive restart"}); err != nil {
+		t.Fatal(err)
+	}
+	restarted := newTestAdapter(t, transport, &fakeServer{}, statePath)
+	if err := restarted.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || !strings.Contains(transport.sent[0].Text, "survive restart") {
+		t.Fatalf("durable secretary batch=%#v", transport.sent)
+	}
+}
+
+func TestApprovalResolvedClearsRequestForNormalFollowUp(t *testing.T) {
+	transport := &fakeTransport{}
+	server := &fakeServer{}
+	adapter := newTestAdapter(t, transport, server, filepath.Join(t.TempDir(), "telegram.json"))
+	for _, event := range []Event{
+		{Kind: "worker.created", WorkerRef: "worker-approval", Title: "Task"},
+		{Kind: "worker.approval_requested", WorkerRef: "worker-approval", Payload: json.RawMessage(`{"request_id":"approval-1"}`), Text: "approve"},
+		{Kind: "approval.resolved", WorkerRef: "worker-approval", Payload: json.RawMessage(`{"request_id":"approval-1","response":"approved"}`), Text: "approved"},
+	} {
+		if err := adapter.HandleEvent(context.Background(), event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	threadID := transport.topics[0].ThreadID
+	if err := adapter.HandleUpdate(context.Background(), Update{ID: 91, Message: &Message{ChatID: 100, ThreadID: threadID, FromID: 100, Text: "normal follow-up"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(server.workers) != 1 || server.workers[0].RequestID != "" {
+		t.Fatalf("follow-up request mapping=%#v", server.workers)
+	}
+}
+
+func TestSecretaryEventsBeforePairingDoNotCreateChatZeroOutbox(t *testing.T) {
+	transport := &fakeTransport{}
+	adapter, err := New(Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), FlushInterval: time.Minute}, transport, &fakeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.text_delta", Text: "before pairing"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 0 {
+		t.Fatalf("pre-pairing sent=%#v", transport.sent)
+	}
+	data, err := os.ReadFile(adapter.config.StatePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state persistedState
+	if err := json.Unmarshal(data, &state); err != nil {
+		t.Fatal(err)
+	}
+	for _, message := range state.Outbox {
+		if message.ChatID == 0 {
+			t.Fatalf("pre-pairing poisoned outbox=%#v", state.Outbox)
+		}
+	}
+	if err := adapter.SetOwnerChat(100); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].ChatID != 100 {
+		t.Fatalf("replayed after pairing=%#v", transport.sent)
+	}
+}
+
+func TestTelegramSanitizerRecursivelyRedactsPublicForbiddenValues(t *testing.T) {
+	input := `{"safe":"kept","nested":{"safe":"task-9","native":"native-session","credential":"credential-secret","channel":"channel-secret","text":"internal reasoning"},"array":[{"allowed":"thought-secret"}]}`
+	clean := safeText(input)
+	for _, forbidden := range []string{"task-9", "native-session", "credential-secret", "channel-secret", "internal reasoning", "thought-secret"} {
+		if strings.Contains(clean, forbidden) {
+			t.Fatalf("sanitizer leaked %q in %q", forbidden, clean)
+		}
+	}
+	if !strings.Contains(clean, "kept") {
+		t.Fatalf("sanitizer removed allowed value: %q", clean)
+	}
+	if delta := safeDelta("raw <think>secret</think> analysis: hidden"); strings.Contains(delta, "secret") || strings.Contains(delta, "analysis") {
+		t.Fatalf("unsafe delta=%q", delta)
+	}
+}
+
+func TestRunRetriesTransientPollingErrors(t *testing.T) {
+	transport := &retryPollingTransport{ready: make(chan struct{})}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "telegram.json"))
+	adapter.config.PollInterval = time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- adapter.Run(ctx) }()
+	select {
+	case <-transport.ready:
+		cancel()
+	case <-time.After(time.Second):
+		t.Fatal("polling did not retry to success")
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run error=%v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not stop after cancellation")
 	}
 }
 
