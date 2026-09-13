@@ -79,6 +79,17 @@ export function formatActivityPayload(event) {
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 }
 
+export function inputRequest(request) {
+  if (!request || request.kind !== 'input' || !request.request_id) return null;
+  return { requestId: request.request_id, prompt: request.action_summary || request.prompt || 'Input required' };
+}
+
+export function workerActionBody(text, requestId = '') {
+  const body = { text };
+  if (requestId) body.request_id = requestId;
+  return body;
+}
+
 function resultIdentity(worker, status, result) {
   const value = result && typeof result === 'object' ? result : {};
   const summary = typeof result === 'string' ? result : value.summary || worker?.last_result_summary || '';

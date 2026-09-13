@@ -1025,7 +1025,15 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 				dup     bool
 			}{}, err
 		}
-		committedEntry, err = appendEntry(ctx, tx, now, conversationID, EntryWorkerResult, result.Summary)
+		var workerRef string
+		if err := tx.QueryRowContext(ctx, `SELECT worker_ref FROM workers WHERE id = ?`, attempt.WorkerID).Scan(&workerRef); err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+				dup     bool
+			}{}, err
+		}
+		committedEntry, err = appendEntryWithIdentity(ctx, tx, now, conversationID, EntryWorkerResult, result.Summary, workerRef, result.TurnID, result.ID)
 		if err != nil {
 			return struct {
 				outcome AttemptOutcome

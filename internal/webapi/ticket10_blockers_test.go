@@ -150,6 +150,65 @@ func TestTicket10WorkerActionResponsesSanitizeFreshAndIdempotencyReplay(t *testi
 	}
 }
 
+func TestTicket10WorkerListAndBootstrapUseSafePublicDTO(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "ticket10-list.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+		WorkerRef: "public-worker", Intent: "inspect", ProjectID: "project", NodeID: "node", HarnessInstanceID: "node/fx",
+		PolicySnapshot:  `{"allow":false,"credentials":"credential-secret"}`,
+		ProjectSnapshot: `{"context":"private-context","diagnostics":"private-diagnostics"}`,
+		Workspace:       "private-workspace",
+	}, core.TurnSpec{Input: "inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(ctx, attempt.ID, core.FinishAttemptInput{AttemptOutcomeInput: core.AttemptOutcomeInput{
+		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "safe result", Diagnostics: "private diagnostics payload",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if worker.WorkerRef == "" {
+		t.Fatal("worker fixture has no production identity")
+	}
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	client := &http.Client{Jar: mustWebCookieJar(t)}
+	login(t, client, server.URL)
+	for _, path := range []string{"/v1/workers", "/v1/bootstrap"} {
+		response, err := client.Get(server.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil || response.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status=%d err=%v body=%s", path, response.StatusCode, readErr, body)
+		}
+		var decoded any
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		assertPublicKeysAbsent(t, decoded, "policy_snapshot", "project_snapshot", "workspace", "context", "diagnostics")
+		for _, forbidden := range []string{"credential-secret", "private-context", "private-diagnostics", "private diagnostics payload", "private-workspace"} {
+			if strings.Contains(string(body), forbidden) {
+				t.Fatalf("GET %s leaked %q: %s", path, forbidden, body)
+			}
+		}
+	}
+}
+
 func assertPublicKeysAbsent(t *testing.T, value any, forbidden ...string) {
 	t.Helper()
 	blocked := make(map[string]struct{}, len(forbidden))

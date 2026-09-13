@@ -63,7 +63,7 @@ func (s *Store) ReplayConversation(ctx context.Context, conversationID string, a
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM conversation_entries WHERE conversation_id = ?`, conversationID).Scan(&boundary); err != nil {
 			return ConversationReplay{}, err
 		}
-		rows, err := tx.QueryContext(ctx, `SELECT id, conversation_id, seq, kind, body, created_at FROM conversation_entries WHERE conversation_id = ? AND seq > ? AND seq <= ? ORDER BY seq`, conversationID, afterSeq, boundary)
+		rows, err := tx.QueryContext(ctx, `SELECT id, conversation_id, seq, kind, body, worker_ref, turn_id, result_id, created_at FROM conversation_entries WHERE conversation_id = ? AND seq > ? AND seq <= ? ORDER BY seq`, conversationID, afterSeq, boundary)
 		if err != nil {
 			return ConversationReplay{}, err
 		}

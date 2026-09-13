@@ -7,6 +7,8 @@ import {
   workerCard,
   visibleConversationEntries,
   formatActivityPayload,
+  inputRequest,
+  workerActionBody,
 } from './ui-model.js';
 
 test('renders every public Worker and Turn status without legacy Task fields', () => {
@@ -69,6 +71,15 @@ test('dedupes same-summary replay for each represented Worker Turn, not across i
   ];
   const visible = visibleConversationEntries(durableEntries, cards);
   assert.deepEqual(visible.map((entry) => entry.id), ['unrepresented']);
+});
+
+test('uses production-shaped input requests separately from approvals and preserves request_id', () => {
+  assert.deepEqual(inputRequest({ kind: 'input', request_id: 'input-1', action_summary: 'What is the version?' }), {
+    requestId: 'input-1',
+    prompt: 'What is the version?',
+  });
+  assert.equal(inputRequest({ kind: 'permission', request_id: 'approval-1', action_summary: 'Run shell' }), null);
+  assert.deepEqual(workerActionBody('2.4.0', 'input-1'), { text: '2.4.0', request_id: 'input-1' });
 });
 
 test('merges replay and live sequences idempotently', () => {

@@ -292,6 +292,9 @@ CREATE TABLE IF NOT EXISTS conversation_entries (
   seq INTEGER NOT NULL,
   kind TEXT NOT NULL,
   body TEXT NOT NULL,
+  worker_ref TEXT NOT NULL DEFAULT '',
+  turn_id TEXT NOT NULL DEFAULT '',
+  result_id TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   UNIQUE(conversation_id, seq)
 );
@@ -515,6 +518,9 @@ CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries(state, updated_at);
 		{"worker_bindings", "profile_delivery TEXT NOT NULL DEFAULT ''", "profile delivery"},
 		{"workers", "project_snapshot TEXT NOT NULL DEFAULT ''", "project snapshot"},
 		{"workers", "workspace TEXT NOT NULL DEFAULT ''", "workspace"},
+		{"conversation_entries", "worker_ref TEXT NOT NULL DEFAULT ''", "conversation entry worker reference"},
+		{"conversation_entries", "turn_id TEXT NOT NULL DEFAULT ''", "conversation entry turn"},
+		{"conversation_entries", "result_id TEXT NOT NULL DEFAULT ''", "conversation entry result"},
 	} {
 		if _, err = s.db.ExecContext(ctx, `ALTER TABLE `+migration.table+` ADD COLUMN `+migration.column); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 			return fmt.Errorf("migrate %s %s: %w", migration.table, migration.name, err)
@@ -662,7 +668,7 @@ func (s *Store) AppendEntry(ctx context.Context, conversationID string, kind Ent
 }
 
 func (s *Store) EntriesAfter(ctx context.Context, conversationID string, afterSeq int64) ([]ConversationEntry, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, conversation_id, seq, kind, body, created_at FROM conversation_entries WHERE conversation_id = ? AND seq > ? ORDER BY seq`, conversationID, afterSeq)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, conversation_id, seq, kind, body, worker_ref, turn_id, result_id, created_at FROM conversation_entries WHERE conversation_id = ? AND seq > ? ORDER BY seq`, conversationID, afterSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -967,12 +973,16 @@ func (s *Store) transitionAttempt(ctx context.Context, attemptID string, from []
 }
 
 func appendEntry(ctx context.Context, tx *sql.Tx, now time.Time, conversationID string, kind EntryKind, body string) (ConversationEntry, error) {
+	return appendEntryWithIdentity(ctx, tx, now, conversationID, kind, body, "", "", "")
+}
+
+func appendEntryWithIdentity(ctx context.Context, tx *sql.Tx, now time.Time, conversationID string, kind EntryKind, body, workerRef, turnID, resultID string) (ConversationEntry, error) {
 	var seq int64
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM conversation_entries WHERE conversation_id = ?`, conversationID).Scan(&seq); err != nil {
 		return ConversationEntry{}, err
 	}
-	entry := ConversationEntry{ID: newID("ent"), ConversationID: conversationID, Seq: seq, Kind: kind, Body: body, CreatedAt: now}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_entries(id, conversation_id, seq, kind, body, created_at) VALUES(?, ?, ?, ?, ?, ?)`, entry.ID, entry.ConversationID, entry.Seq, entry.Kind, entry.Body, timestamp(now)); err != nil {
+	entry := ConversationEntry{ID: newID("ent"), ConversationID: conversationID, Seq: seq, Kind: kind, Body: body, WorkerRef: workerRef, TurnID: turnID, ResultID: resultID, CreatedAt: now}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_entries(id, conversation_id, seq, kind, body, worker_ref, turn_id, result_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, entry.ID, entry.ConversationID, entry.Seq, entry.Kind, entry.Body, entry.WorkerRef, entry.TurnID, entry.ResultID, timestamp(now)); err != nil {
 		return ConversationEntry{}, err
 	}
 	event, err := appendEventTx(ctx, tx, now, EventInput{Kind: "conversation.entry", AggregateType: "conversation", AggregateID: conversationID, Source: "server", CorrelationID: entry.ID, Payload: entry}, entry)
@@ -1030,7 +1040,7 @@ func getEntry(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, id string) (ConversationEntry, error) {
 	var entry ConversationEntry
-	err := q.QueryRowContext(ctx, `SELECT id, conversation_id, seq, kind, body, created_at FROM conversation_entries WHERE id = ?`, id).Scan(&entry.ID, &entry.ConversationID, &entry.Seq, &entry.Kind, &entry.Body, newTimestampScanner(&entry.CreatedAt))
+	err := q.QueryRowContext(ctx, `SELECT id, conversation_id, seq, kind, body, worker_ref, turn_id, result_id, created_at FROM conversation_entries WHERE id = ?`, id).Scan(&entry.ID, &entry.ConversationID, &entry.Seq, &entry.Kind, &entry.Body, &entry.WorkerRef, &entry.TurnID, &entry.ResultID, newTimestampScanner(&entry.CreatedAt))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConversationEntry{}, ErrNotFound
 	}
@@ -1039,7 +1049,7 @@ func getEntry(ctx context.Context, q interface {
 
 func scanEntry(scanner interface{ Scan(...any) error }) (ConversationEntry, error) {
 	var entry ConversationEntry
-	err := scanner.Scan(&entry.ID, &entry.ConversationID, &entry.Seq, &entry.Kind, &entry.Body, newTimestampScanner(&entry.CreatedAt))
+	err := scanner.Scan(&entry.ID, &entry.ConversationID, &entry.Seq, &entry.Kind, &entry.Body, &entry.WorkerRef, &entry.TurnID, &entry.ResultID, newTimestampScanner(&entry.CreatedAt))
 	return entry, err
 }
 
