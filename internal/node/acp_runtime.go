@@ -79,7 +79,7 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 	// flight. Install the handler and durable Node-local IDs first, otherwise
 	// the request gets a native ACP ID and cannot be answered after reconnect.
 	session.setRequestHandler()
-	session.RebindRequests(request.PendingRequestIDs)
+	session.RebindPendingRequests(effectivePendingRequests(request))
 	loadParams := map[string]any{"sessionId": runtimeSessionID, "cwd": request.Workspace, "mcpServers": mcpServers}
 	if metadata := profileMetadata(request.Profile); metadata != nil {
 		loadParams["_meta"] = metadata
@@ -185,6 +185,19 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 	return client, nil
 }
 
+func effectivePendingRequests(request StartRequest) []PendingRequest {
+	if len(request.PendingRequests) > 0 {
+		return append([]PendingRequest(nil), request.PendingRequests...)
+	}
+	pending := make([]PendingRequest, 0, len(request.PendingRequestIDs))
+	for _, requestID := range request.PendingRequestIDs {
+		if strings.TrimSpace(requestID) != "" {
+			pending = append(pending, PendingRequest{RequestID: requestID, Kind: request.PendingRequestKinds[requestID]})
+		}
+	}
+	return pending
+}
+
 type pendingACPResponse struct {
 	response     chan string
 	delivered    chan error
@@ -195,6 +208,7 @@ type pendingACPResponse struct {
 
 func newACPSession(id string, client *acp.Client, busy bool) *acpSession {
 	session := &acpSession{id: id, client: client, activity: make(chan Activity, 64), result: make(chan Result, 64), pending: make(map[string]*pendingACPResponse), resolved: make(map[string]struct{}), reboundResponses: make(map[string]*pendingACPResponse), nativeRequests: make(map[string]string), nativeDeliveries: make(map[string]*pendingACPResponse), busy: busy}
+	session.activityDone = make(chan struct{})
 	client.SetServerRequestDeliveryHandler(session.serverRequestDelivered)
 	return session
 }
@@ -205,10 +219,15 @@ type acpSession struct {
 	activity chan Activity
 	result   chan Result
 
+	activityMu     sync.Mutex
+	activityDone   chan struct{}
+	activityClosed bool
+	activitySendWG sync.WaitGroup
+
 	requestMu        sync.Mutex
 	pending          map[string]*pendingACPResponse
 	resolved         map[string]struct{}
-	rebound          []string
+	rebound          []PendingRequest
 	reboundResponses map[string]*pendingACPResponse
 	nativeRequests   map[string]string
 	nativeDeliveries map[string]*pendingACPResponse
@@ -224,7 +243,37 @@ type acpSession struct {
 func (s *acpSession) ID() string                { return s.id }
 func (s *acpSession) Activity() <-chan Activity { return s.activity }
 func (s *acpSession) Result() <-chan Result     { return s.result }
-func (s *acpSession) Close() error              { return s.client.Close() }
+func (s *acpSession) Close() error {
+	s.closeActivity()
+	return s.client.Close()
+}
+
+func (s *acpSession) closeActivity() {
+	s.activityMu.Lock()
+	defer s.activityMu.Unlock()
+	if s.activityClosed {
+		return
+	}
+	s.activityClosed = true
+	close(s.activityDone)
+}
+
+func (s *acpSession) emitActivity(activity Activity) bool {
+	s.activityMu.Lock()
+	if s.activityClosed {
+		s.activityMu.Unlock()
+		return false
+	}
+	s.activitySendWG.Add(1)
+	s.activityMu.Unlock()
+	defer s.activitySendWG.Done()
+	select {
+	case s.activity <- activity:
+		return true
+	case <-s.activityDone:
+		return false
+	}
+}
 func (s *acpSession) Steer(ctx context.Context, text string) (bool, error) {
 	var response struct {
 		Outcome string `json:"outcome"`
@@ -238,28 +287,36 @@ func (s *acpSession) Cancel(ctx context.Context) error {
 }
 
 func (s *acpSession) RebindRequests(requestIDs []string) {
+	pending := make([]PendingRequest, 0, len(requestIDs))
+	for _, requestID := range requestIDs {
+		pending = append(pending, PendingRequest{RequestID: requestID})
+	}
+	s.RebindPendingRequests(pending)
+}
+
+func (s *acpSession) RebindPendingRequests(requests []PendingRequest) {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
-	for _, requestID := range requestIDs {
-		requestID = strings.TrimSpace(requestID)
-		if requestID == "" {
+	for _, request := range requests {
+		request.RequestID = strings.TrimSpace(request.RequestID)
+		if request.RequestID == "" {
 			continue
 		}
-		if _, resolved := s.resolved[requestID]; resolved {
+		if _, resolved := s.resolved[request.RequestID]; resolved {
 			continue
 		}
-		if _, pending := s.pending[requestID]; pending {
+		if _, pending := s.pending[request.RequestID]; pending {
 			continue
 		}
 		alreadyRebound := false
-		for _, reboundID := range s.rebound {
-			if reboundID == requestID {
+		for _, rebound := range s.rebound {
+			if rebound.RequestID == request.RequestID {
 				alreadyRebound = true
 				break
 			}
 		}
 		if !alreadyRebound {
-			s.rebound = append(s.rebound, requestID)
+			s.rebound = append(s.rebound, request)
 		}
 	}
 }
@@ -274,8 +331,8 @@ func (s *acpSession) Respond(ctx context.Context, requestID, response string) er
 		pending = s.reboundResponses[requestID]
 	}
 	if pending == nil {
-		for _, reboundID := range s.rebound {
-			if reboundID == requestID {
+		for _, rebound := range s.rebound {
+			if rebound.RequestID == requestID {
 				pending = &pendingACPResponse{response: make(chan string, 1), delivered: make(chan error, 1)}
 				s.reboundResponses[requestID] = pending
 				break
@@ -371,16 +428,6 @@ func (s *acpSession) serverRequestDelivered(message acp.Message, err error) {
 }
 
 func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
-	requestID := ""
-	s.requestMu.Lock()
-	if len(s.rebound) > 0 {
-		requestID = s.rebound[0]
-		s.rebound = s.rebound[1:]
-	}
-	s.requestMu.Unlock()
-	if requestID == "" {
-		requestID = fmt.Sprintf("request-%d-%d", time.Now().UnixNano(), acpRequestSequence.Add(1))
-	}
 	var params map[string]any
 	if err := json.Unmarshal(message.Params, &params); err != nil {
 		return nil, errors.New("invalid harness request")
@@ -411,6 +458,14 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 	} else {
 		return nil, fmt.Errorf("unsupported harness request: %s", message.Method)
 	}
+
+	requestID, err := s.reboundRequestID(params, kind)
+	if err != nil {
+		return nil, err
+	}
+	if requestID == "" {
+		requestID = fmt.Sprintf("request-%d-%d", time.Now().UnixNano(), acpRequestSequence.Add(1))
+	}
 	var pending *pendingACPResponse
 	retry := func(value string) error {
 		result, handlerErr := s.serverRequestResponse(kind, message.Params, value)
@@ -434,10 +489,47 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 		// Requests are the durable approval/input boundary. Unlike optional
 		// activity updates, they must reach the Node outbox and cannot be
 		// silently dropped when the activity buffer is full.
-		s.activity <- Activity{Kind: kind, RequestID: requestID, Summary: summary}
+		if !s.emitActivity(Activity{Kind: kind, RequestID: requestID, Summary: summary}) {
+			return nil, errors.New("acp: session closed before worker request was observed")
+		}
 	}
 	value := <-pending.response
 	return s.serverRequestResponse(kind, message.Params, value)
+}
+
+func (s *acpSession) reboundRequestID(params map[string]any, kind ActivityKind) (string, error) {
+	durableID := firstString(params, "request_id", "requestId")
+	s.requestMu.Lock()
+	defer s.requestMu.Unlock()
+	if durableID != "" {
+		for index, request := range s.rebound {
+			if request.RequestID != durableID {
+				continue
+			}
+			if request.Kind != "" && request.Kind != kind {
+				return "", fmt.Errorf("acp: durable request %q kind mismatch", durableID)
+			}
+			s.rebound = append(s.rebound[:index], s.rebound[index+1:]...)
+			return durableID, nil
+		}
+		return "", fmt.Errorf("acp: durable request %q was not pending", durableID)
+	}
+	match := -1
+	for index, request := range s.rebound {
+		if request.Kind != "" && request.Kind != kind {
+			continue
+		}
+		if match >= 0 {
+			return "", fmt.Errorf("acp: multiple pending %s requests lack durable request_id", kind)
+		}
+		match = index
+	}
+	if match < 0 {
+		return "", nil
+	}
+	requestID := s.rebound[match].RequestID
+	s.rebound = append(s.rebound[:match], s.rebound[match+1:]...)
+	return requestID, nil
 }
 
 func (s *acpSession) serverRequestResponse(kind ActivityKind, rawParams json.RawMessage, value string) (any, error) {
@@ -563,62 +655,101 @@ func (s *acpSession) finishTurn() {
 	}
 }
 func (s *acpSession) watch() {
-	defer close(s.activity)
+	defer func() {
+		s.closeActivity()
+		s.activitySendWG.Wait()
+		close(s.activity)
+	}()
 	for event := range s.client.Events() {
 		if event.Method != "session/update" {
 			continue
 		}
-		var envelope struct {
-			Update struct {
-				SessionUpdate string `json:"sessionUpdate"`
-				Content       struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
-				Title  string `json:"title"`
-				Status string `json:"status"`
-			} `json:"update"`
-			SessionUpdate string `json:"sessionUpdate"`
-			Content       struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-			Title  string `json:"title"`
-			Status string `json:"status"`
-		}
+		var envelope map[string]any
 		if json.Unmarshal(event.Params, &envelope) != nil {
 			continue
 		}
-		payload := envelope.Update
-		if payload.SessionUpdate == "" {
-			payload.SessionUpdate = envelope.SessionUpdate
-			payload.Content = envelope.Content
-			payload.Title = envelope.Title
-			payload.Status = envelope.Status
+		payload, _ := envelope["update"].(map[string]any)
+		if payload == nil {
+			payload = envelope
 		}
-		activity := Activity{Kind: ActivityStatus, Text: payload.SessionUpdate}
-		switch payload.SessionUpdate {
+		kind := valueString(payload["sessionUpdate"])
+		if kind == "" {
+			kind = valueString(envelope["sessionUpdate"])
+		}
+		content, _ := payload["content"].(map[string]any)
+		if content == nil {
+			content, _ = envelope["content"].(map[string]any)
+		}
+		emit := func(activity Activity) {
+			s.emitActivity(activity)
+		}
+		switch kind {
 		case "agent_message_chunk", "user_message_chunk":
-			activity.Kind = ActivityText
-			activity.Text = payload.Content.Text
-			if payload.Content.Text != "" {
-				s.textMu.Lock()
-				s.turnText.WriteString(payload.Content.Text)
-				s.textMu.Unlock()
+			text := valueString(content["text"])
+			if text == "" {
+				continue
 			}
-		case "tool_call", "tool_call_update":
-			activity.Kind = ActivityTool
-			activity.Text = payload.Title
-			if activity.Text == "" {
-				activity.Text = payload.Status
+			s.textMu.Lock()
+			s.turnText.WriteString(text)
+			s.textMu.Unlock()
+			emit(Activity{Kind: ActivityText, Text: text})
+		case "agent_thought_chunk", "thinking", "thinking_summary":
+			// ACP thought chunks are not safe to display. Adapters may provide an
+			// explicit short summary, but raw thought content is discarded.
+			summary := valueString(payload["summary"])
+			if summary == "" {
+				summary = valueString(payload["title"])
 			}
-		}
-		if activity.Text == "" {
-			continue
-		}
-		select {
-		case s.activity <- activity:
+			if summary == "" {
+				summary = "Working on the request."
+			}
+			if safeRuntimeSummary(summary) {
+				emit(Activity{Kind: ActivityThinkingSummary, Summary: summary})
+			}
+		case "tool_call":
+			tool := firstString(payload, "title", "name", "tool")
+			if tool == "" {
+				continue
+			}
+			emit(Activity{Kind: ActivityToolCall, Tool: tool, Arguments: jsonValue(payload, "rawInput", "input", "arguments")})
+		case "tool_call_update", "tool_result":
+			tool := firstString(payload, "title", "name", "tool")
+			if tool == "" {
+				continue
+			}
+			output := jsonValue(payload, "rawOutput", "output", "result")
+			status := valueString(payload["status"])
+			if len(output) == 0 && status != "completed" && status != "failed" && status != "error" {
+				continue
+			}
+			result := string(output)
+			if result == "" {
+				result = status
+			}
+			emit(Activity{Kind: ActivityToolResult, Tool: tool, Result: result, Error: valueString(payload["error"]), Status: status})
 		default:
+			// Unknown ACP notifications are not converted into synthetic activity.
 		}
 	}
+}
+
+func firstString(value map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if text := strings.TrimSpace(valueString(value[key])); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func jsonValue(value map[string]any, keys ...string) json.RawMessage {
+	for _, key := range keys {
+		if item, ok := value[key]; ok && item != nil {
+			encoded, err := json.Marshal(item)
+			if err == nil && json.Valid(encoded) {
+				return encoded
+			}
+		}
+	}
+	return json.RawMessage(`{}`)
 }

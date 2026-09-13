@@ -25,6 +25,12 @@ type RequestRebinder interface {
 	RebindRequests([]string)
 }
 
+// PendingRequestRebinder is the reconnect seam that retains request kind.
+// RequestRebinder remains for older runtime adapters.
+type PendingRequestRebinder interface {
+	RebindPendingRequests([]PendingRequest)
+}
+
 type ExecutionNode struct {
 	node              core.NodeReference
 	runtime           Runtime
@@ -269,7 +275,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		}
 		workspace = canonicalWorkspace
 	}
-	request := StartRequest{WorkerRef: command.Envelope.WorkerRef, Task: command.Envelope.OriginalUserIntent, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID)}
+	request := StartRequest{WorkerRef: command.Envelope.WorkerRef, Task: command.Envelope.OriginalUserIntent, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID)}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "binding_conflict", err.Error())
@@ -363,7 +369,7 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 	if !ok {
 		return nil, ErrRuntimeSessionUnavailable
 	}
-	request := StartRequest{WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: mapping.Workspace, Profile: envelope.Profile, HarnessInstance: envelope.HarnessInstance, Model: envelope.Model, Reasoning: envelope.Reasoning, ApprovalPolicy: envelope.ApprovalPolicy, PendingRequestIDs: n.store.PendingRequestIDs(metadata.AttemptID)}
+	request := StartRequest{WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: mapping.Workspace, Profile: envelope.Profile, HarnessInstance: envelope.HarnessInstance, Model: envelope.Model, Reasoning: envelope.Reasoning, ApprovalPolicy: envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(metadata.AttemptID)}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return nil, ErrRuntimeSessionUnavailable
@@ -490,12 +496,24 @@ func (n *ExecutionNode) publishRuntimeActivity(envelope WorkerEnvelope, item Act
 	_, _ = n.store.QueueActivity(activity)
 }
 
+func pendingRequestKinds(requests []PendingRequest) map[string]ActivityKind {
+	kinds := make(map[string]ActivityKind, len(requests))
+	for _, request := range requests {
+		if request.RequestID != "" && request.Kind != "" {
+			kinds[request.RequestID] = request.Kind
+		}
+	}
+	return kinds
+}
+
 func (n *ExecutionNode) rebindPendingRequests(attemptID string, session Session) {
-	rebinder, ok := session.(RequestRebinder)
-	if !ok {
+	if rebinder, ok := session.(PendingRequestRebinder); ok {
+		rebinder.RebindPendingRequests(n.store.PendingRequests(attemptID))
 		return
 	}
-	rebinder.RebindRequests(n.store.PendingRequestIDs(attemptID))
+	if rebinder, ok := session.(RequestRebinder); ok {
+		rebinder.RebindRequests(n.store.PendingRequestIDs(attemptID))
+	}
 }
 
 // NormalizeRuntimeActivity is the adapter boundary for normalized activity.
@@ -520,6 +538,45 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 			return core.Activity{}, false
 		}
 		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolCall, ToolCall: &core.ToolCall{Name: item.Text}}
+	case ActivityThinkingSummary:
+		summary := strings.TrimSpace(item.Summary)
+		if summary == "" {
+			summary = strings.TrimSpace(item.Text)
+		}
+		if !capabilities.SupportsActivity(core.ActivityThinkingSummary) || !safeRuntimeSummary(summary) {
+			return core.Activity{}, false
+		}
+		activity = core.Activity{Metadata: metadata, Kind: core.ActivityThinkingSummary, Text: summary}
+	case ActivityToolCall:
+		tool := strings.TrimSpace(item.Tool)
+		if tool == "" {
+			tool = strings.TrimSpace(item.Text)
+		}
+		if !capabilities.SupportsActivity(core.ActivityToolCall) || tool == "" {
+			return core.Activity{}, false
+		}
+		arguments, safe := SanitizeToolArguments(item.Arguments)
+		if !safe {
+			return core.Activity{}, false
+		}
+		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolCall, ToolCall: &core.ToolCall{Name: tool, Arguments: arguments}}
+	case ActivityToolResult:
+		tool := strings.TrimSpace(item.Tool)
+		if tool == "" {
+			tool = strings.TrimSpace(item.Text)
+		}
+		if !capabilities.SupportsActivity(core.ActivityToolResult) || tool == "" || strings.TrimSpace(item.Result) == "" {
+			return core.Activity{}, false
+		}
+		result, safe := SanitizeToolResult(item.Result)
+		if !safe {
+			return core.Activity{}, false
+		}
+		errorText, safe := SanitizeToolResult(item.Error)
+		if !safe {
+			return core.Activity{}, false
+		}
+		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolResult, ToolResult: &core.ToolResult{Name: tool, Output: result, Error: errorText}}
 	case ActivityStatus:
 		if !capabilities.SupportsActivity(core.ActivityStatus) || strings.TrimSpace(item.Text) == "" {
 			return core.Activity{}, false
@@ -541,6 +598,19 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 		return core.Activity{}, false
 	}
 	return activity, true
+}
+
+func safeRuntimeSummary(summary string) bool {
+	if summary == "" || len(summary) > 1000 {
+		return false
+	}
+	lower := strings.ToLower(summary)
+	for _, marker := range []string{"chain-of-thought", "chain of thought", "raw thought", "internal reasoning", "thought process", "analysis:", "reasoning:", "thought:", "<think>", "</think>"} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	return true
 }
 
 func (n *ExecutionNode) nextMetadata(envelope WorkerEnvelope) core.ActivityMetadata {

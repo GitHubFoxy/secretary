@@ -346,7 +346,7 @@ func safeSummary(summary string) (string, error) {
 		return "", errors.New("core: thinking summary must be short and non-empty")
 	}
 	lower := strings.ToLower(summary)
-	for _, marker := range []string{"chain-of-thought", "chain of thought", "raw thought", "internal reasoning", "thought process", "<think>", "</think>"} {
+	for _, marker := range []string{"chain-of-thought", "chain of thought", "raw thought", "internal reasoning", "thought process", "analysis:", "reasoning:", "thought:", "<think>", "</think>"} {
 		if strings.Contains(lower, marker) {
 			return "", errors.New("core: raw chain-of-thought is not allowed")
 		}

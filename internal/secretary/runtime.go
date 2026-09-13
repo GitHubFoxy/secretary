@@ -270,20 +270,81 @@ func (r *Runtime) consumeActivity(session node.Session) {
 		var err error
 		switch activity.Kind {
 		case node.ActivityText:
-			err = func() error {
-				_, e := store.RecordSecretaryTextDelta(context.Background(), turnID, activity.Text)
-				return e
-			}()
-		case node.ActivityTool:
-			err = func() error {
-				_, e := store.RecordSecretaryToolCall(context.Background(), turnID, activity.Text, "")
-				return e
-			}()
+			_, err = store.RecordSecretaryTextDelta(context.Background(), turnID, activity.Text)
+		case node.ActivityThinkingSummary:
+			summary := strings.TrimSpace(activity.Summary)
+			if summary == "" {
+				summary = strings.TrimSpace(activity.Text)
+			}
+			if safeSecretarySummary(summary) {
+				_, err = store.RecordSecretaryThinkingSummary(context.Background(), turnID, summary)
+			}
+		case node.ActivityTool, node.ActivityToolCall:
+			tool := strings.TrimSpace(activity.Tool)
+			if tool == "" {
+				tool = strings.TrimSpace(activity.Text)
+			}
+			if tool != "" {
+				arguments, safe := node.SanitizeToolArguments(activity.Arguments)
+				if !safe {
+					continue
+				}
+				_, err = store.RecordSecretaryToolCall(context.Background(), turnID, tool, string(arguments))
+			}
+		case node.ActivityToolResult:
+			tool := strings.TrimSpace(activity.Tool)
+			if tool == "" {
+				tool = strings.TrimSpace(activity.Text)
+			}
+			if tool != "" {
+				status := strings.TrimSpace(activity.Status)
+				if status == "" {
+					status = "ok"
+				}
+				result, safe := node.SanitizeToolResult(activity.Result)
+				if !safe {
+					continue
+				}
+				errorText, safe := node.SanitizeToolResult(activity.Error)
+				if !safe {
+					continue
+				}
+				_, err = store.RecordSecretaryToolResult(context.Background(), turnID, tool, result, status, errorText)
+			}
 		}
 		if err != nil {
 			r.reportError(err)
 		}
 	}
+}
+
+func safeSecretarySummary(summary string) bool {
+	if summary == "" || len(summary) > 1000 {
+		return false
+	}
+	lower := strings.ToLower(summary)
+	for _, marker := range []string{"chain-of-thought", "chain of thought", "raw thought", "internal reasoning", "thought process", "analysis:", "reasoning:", "thought:", "<think>", "</think>"} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	return true
+}
+
+func sanitizeToolArguments(raw json.RawMessage) string {
+	cleaned, ok := node.SanitizeToolArguments(raw)
+	if !ok {
+		return "{}"
+	}
+	return string(cleaned)
+}
+
+func sanitizeToolResult(result string) string {
+	cleaned, ok := node.SanitizeToolResult(result)
+	if !ok {
+		return "[redacted]"
+	}
+	return cleaned
 }
 
 func (r *Runtime) reportError(err error) {

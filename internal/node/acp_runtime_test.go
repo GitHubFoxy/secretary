@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -45,6 +46,70 @@ func TestACPRuntimeUsesFakeACPProcess(t *testing.T) {
 	injected, err := session.Steer(ctx, "keep going")
 	if err != nil || !injected {
 		t.Fatalf("steer injected=%v err=%v", injected, err)
+	}
+}
+
+func TestACPRuntimeNormalizesRichActivityWithoutRawThought(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
+	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:], Environment: []string{"ACP_RICH_ACTIVITY=1"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := runtime.Start(ctx, StartRequest{WorkerRef: "worker", Task: "inspect", Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	seen := map[ActivityKind]Activity{}
+	for len(seen) < 3 {
+		select {
+		case activity := <-session.Activity():
+			seen[activity.Kind] = activity
+		case <-ctx.Done():
+			t.Fatalf("rich ACP activity=%#v", seen)
+		}
+	}
+	if _, ok := seen[ActivityThinkingSummary]; !ok {
+		t.Fatalf("thinking summary missing: %#v", seen)
+	}
+	if activity := seen[ActivityThinkingSummary]; activity.Summary == "raw internal thought" || strings.Contains(activity.Summary, "internal thought") {
+		t.Fatalf("raw thought was exposed: %#v", activity)
+	}
+	if activity := seen[ActivityToolCall]; activity.Tool != "list_workers" || string(activity.Arguments) != `{"scope":"current"}` {
+		t.Fatalf("tool call=%#v", activity)
+	}
+	if activity := seen[ActivityToolResult]; activity.Tool != "list_workers" || activity.Result == "" {
+		t.Fatalf("tool result=%#v", activity)
+	}
+}
+
+func TestACPRuntimeDeliversEveryActivityInBurst(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
+	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:], Environment: []string{"ACP_BURST=128"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := runtime.Start(ctx, StartRequest{WorkerRef: "burst-worker", Task: "inspect", Workspace: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	select {
+	case result := <-session.Result():
+		if result.Status != "succeeded" {
+			t.Fatalf("burst result=%#v", result)
+		}
+	case <-ctx.Done():
+		t.Fatal("burst prompt did not complete")
+	}
+	for index := 0; index < 128; index++ {
+		select {
+		case activity := <-session.Activity():
+			want := "burst-" + strconv.Itoa(index)
+			if activity.Text != want {
+				t.Fatalf("activity[%d]=%#v, want text %q", index, activity, want)
+			}
+		case <-ctx.Done():
+			t.Fatalf("activity burst truncated at %d: %v", index, ctx.Err())
+		}
 	}
 }
 
@@ -180,6 +245,88 @@ func TestACPRuntimeResumeRebindsOutstandingRequestsBeforeSessionLoad(t *testing.
 				time.Sleep(10 * time.Millisecond)
 			}
 		})
+	}
+}
+
+func TestACPSessionRebindsConcurrentRequestsByKindInsteadOfFIFO(t *testing.T) {
+	writer := &recordingNativeReplyWriter{}
+	client := acp.NewClient(writer)
+	session := newACPSession("reordered-session", client, false)
+	session.setRequestHandler()
+	// Deliberately place input before permission. Native replay arrives in the
+	// opposite order, so a sorted/FIFO durable ID list cross-binds the requests.
+	session.RebindPendingRequests([]PendingRequest{{RequestID: "durable-input", Kind: ActivityUserInput}, {RequestID: "durable-permission", Kind: ActivityPermission}})
+	permission := acp.Message{ID: json.RawMessage("101"), Method: "session/request_permission", Params: json.RawMessage(`{"options":[{"optionId":"deny","kind":"reject_once"}]}`)}
+	input := acp.Message{ID: json.RawMessage("102"), Method: "session/request_input", Params: json.RawMessage(`{"prompt":"version?"}`)}
+	finished := make(chan error, 2)
+	go func() { finished <- client.HandleServerRequest(permission) }()
+	go func() { finished <- client.HandleServerRequest(input) }()
+
+	seen := make(map[ActivityKind]string)
+	for len(seen) < 2 {
+		select {
+		case activity := <-session.Activity():
+			seen[activity.Kind] = activity.RequestID
+		case <-time.After(time.Second):
+			t.Fatalf("requests were not observed: %#v", seen)
+		}
+	}
+	if seen[ActivityPermission] != "durable-permission" || seen[ActivityUserInput] != "durable-input" {
+		t.Fatalf("rebound requests crossed: %#v", seen)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.Respond(ctx, "durable-permission", "denied"); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Respond(ctx, "durable-input", "answer"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := <-finished; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestACPSessionRebindsSameKindByDurableRequestID(t *testing.T) {
+	writer := &recordingNativeReplyWriter{}
+	client := acp.NewClient(writer)
+	session := newACPSession("same-kind-session", client, false)
+	session.setRequestHandler()
+	session.RebindPendingRequests([]PendingRequest{{RequestID: "input-a", Kind: ActivityUserInput}, {RequestID: "input-b", Kind: ActivityUserInput}})
+	first := acp.Message{ID: json.RawMessage("111"), Method: "session/request_input", Params: json.RawMessage(`{"request_id":"input-b","prompt":"second"}`)}
+	second := acp.Message{ID: json.RawMessage("112"), Method: "session/request_input", Params: json.RawMessage(`{"request_id":"input-a","prompt":"first"}`)}
+	finished := make(chan error, 2)
+	go func() { finished <- client.HandleServerRequest(first) }()
+	go func() { finished <- client.HandleServerRequest(second) }()
+	seen := make(map[string]struct{})
+	for len(seen) < 2 {
+		select {
+		case activity := <-session.Activity():
+			seen[activity.RequestID] = struct{}{}
+		case <-time.After(time.Second):
+			t.Fatalf("same-kind requests were not observed: %#v", seen)
+		}
+	}
+	if _, ok := seen["input-a"]; !ok {
+		t.Fatalf("input-a was not rebound: %#v", seen)
+	}
+	if _, ok := seen["input-b"]; !ok {
+		t.Fatalf("input-b was not rebound: %#v", seen)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.Respond(ctx, "input-a", "one"); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Respond(ctx, "input-b", "two"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := <-finished; err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -582,7 +729,18 @@ func TestFakeACPProcess(t *testing.T) {
 		}
 		switch request.Method {
 		case "session/prompt":
-			_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"sessionId": "fake-session", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "fake activity"}}}})
+			if os.Getenv("ACP_BURST") != "" {
+				count, _ := strconv.Atoi(os.Getenv("ACP_BURST"))
+				for index := 0; index < count; index++ {
+					_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "burst-" + strconv.Itoa(index)}}}})
+				}
+			} else if os.Getenv("ACP_RICH_ACTIVITY") == "1" {
+				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "agent_thought_chunk", "content": map[string]string{"type": "text", "text": "raw internal thought"}}}})
+				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "tool_call", "title": "list_workers", "rawInput": map[string]string{"scope": "current"}}}})
+				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "tool_call_update", "title": "list_workers", "status": "completed", "rawOutput": map[string]string{"status": "ok"}}}})
+			} else {
+				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"sessionId": "fake-session", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "fake activity"}}}})
+			}
 		}
 		if len(request.ID) == 0 {
 			continue

@@ -86,6 +86,7 @@ func main() {
 	}
 	web.SetDebug(*debug)
 	web.AttachUserDocument(filepath.Join(*dataDir, "user.md"))
+	web.AttachDiagnosticLogDir(filepath.Join(*dataDir, "logs", "acp"))
 
 	var remoteNodes *node.ServerManager
 	nodePairingTokens := configuredNodePairingTokens()

@@ -52,13 +52,14 @@ type Server struct {
 	secretary      interface {
 		HandleMessage(context.Context, string) error
 	}
-	workerStates map[string]string
-	debug        bool
-	modelCatalog func() map[string]string
-	modelDefault func() string
-	modelChanged func(string) error
-	control      ControlOptions
-	userPath     string
+	workerStates     map[string]string
+	debug            bool
+	modelCatalog     func() map[string]string
+	modelDefault     func() string
+	modelChanged     func(string) error
+	control          ControlOptions
+	userPath         string
+	diagnosticLogDir string
 
 	mu            sync.Mutex
 	idempotencyMu sync.Mutex
@@ -138,6 +139,7 @@ func (s *Server) AttachWorkerResponder(responder workerResponder) {
 	}
 }
 func (s *Server) AttachUserDocument(path string)                    { s.userPath = strings.TrimSpace(path) }
+func (s *Server) AttachDiagnosticLogDir(path string)                { s.diagnosticLogDir = strings.TrimSpace(path) }
 func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime) { s.secretary = runtime }
 func (s *Server) SetDebug(debug bool)                               { s.debug = debug }
 func (s *Server) AttachSecretaryModelCatalog(catalog func() map[string]string, defaultModel func() string, changed func(string) error) {
@@ -225,6 +227,9 @@ func (s *Server) conversation(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "read conversation", http.StatusInternalServerError)
 		return
+	}
+	for i := range entries {
+		entries[i] = sanitizePublicConversationEntry(entries[i])
 	}
 	writeJSON(w, http.StatusOK, entries)
 }
@@ -379,6 +384,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 				}
 				return
 			}
+			entry = sanitizePublicConversationEntry(entry)
 			if err := conn.Write(streamContext, websocket.MessageText, mustJSON(entry)); err != nil {
 				return
 			}

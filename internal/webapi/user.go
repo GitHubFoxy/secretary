@@ -15,7 +15,7 @@ type bootstrapResponse struct {
 	OwnerID        string              `json:"owner_id"`
 	ConversationID string              `json:"conversation_id"`
 	Secretary      secretaryModelState `json:"secretary"`
-	Workers        []core.Worker       `json:"workers"`
+	Workers        []publicWorkerDTO   `json:"workers"`
 }
 
 type secretaryModelState struct {
@@ -28,20 +28,20 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	workers, err := s.store.WorkersForConversation(r.Context(), conversation.ID)
+	workers, err := s.publicWorkersForConversation(r.Context(), conversation.ID)
 	if err != nil {
 		http.Error(w, "read workers", http.StatusInternalServerError)
 		return
 	}
 	if workers == nil {
-		workers = []core.Worker{}
+		workers = []publicWorkerDTO{}
 	}
-	writeJSON(w, http.StatusOK, bootstrapResponse{
+	writeJSON(w, http.StatusOK, sanitizePublicJSON(bootstrapResponse{
 		OwnerID:        s.owner.ID,
 		ConversationID: conversation.ID,
 		Secretary:      s.secretaryModelState(r),
 		Workers:        workers,
-	})
+	}))
 }
 
 func (s *Server) secretaryModels(w http.ResponseWriter, r *http.Request) {
@@ -176,15 +176,15 @@ func (s *Server) workerList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	workers, err := s.store.WorkersForConversation(r.Context(), conversation.ID)
+	workers, err := s.publicWorkersForConversation(r.Context(), conversation.ID)
 	if err != nil {
 		http.Error(w, "read workers", http.StatusInternalServerError)
 		return
 	}
 	if workers == nil {
-		workers = []core.Worker{}
+		workers = []publicWorkerDTO{}
 	}
-	writeJSON(w, http.StatusOK, workers)
+	writeJSON(w, http.StatusOK, sanitizePublicJSON(workers))
 }
 
 func (s *Server) parentWorkerDetails(r *http.Request, conversationID string) ([]core.TaskDetails, error) {

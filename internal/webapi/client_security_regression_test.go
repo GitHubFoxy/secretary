@@ -25,6 +25,42 @@ func TestClientActivityDTORedactsRuntimeAndCredentialIdentifiers(t *testing.T) {
 	}
 }
 
+func TestClientPublicSanitizerRedactsNestedToolCoTInSecretaryAndWorkerPublicPayloads(t *testing.T) {
+	value := map[string]any{
+		"secretary": map[string]any{
+			"kind":      "secretary.tool_call",
+			"arguments": `{"command":"ls","nested":{"analysis":"secretary-analysis","safe":"secretary-safe","thought":"secretary-thought"}}`,
+			"result":    `{"status":"ok","nested":{"reasoning":"secretary-reasoning","chain_of_thought":"secretary-chain","safe":"secretary-result-safe"}}`,
+		},
+		"worker": map[string]any{
+			"kind": "attempt.activity",
+			"payload": map[string]any{
+				"tool_call": map[string]any{
+					"name": "shell", "arguments": map[string]any{"command": "pwd", "nested": map[string]any{"analysis": "worker-analysis", "safe": "worker-safe", "thought": "worker-thought"}},
+				},
+				"tool_result": map[string]any{
+					"output": `{"status":"ok","nested":{"reasoning":"worker-reasoning","chain_of_thought":"worker-chain","safe":"worker-result-safe"}}`,
+				},
+			},
+		},
+	}
+	encoded, err := json.Marshal(sanitizePublicJSON(value))
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(encoded)
+	for _, forbidden := range []string{"secretary-analysis", "secretary-thought", "secretary-reasoning", "secretary-chain", "worker-analysis", "worker-thought", "worker-reasoning", "worker-chain"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("nested CoT leaked %q: %s", forbidden, body)
+		}
+	}
+	for _, safe := range []string{"ls", "secretary-safe", "secretary-result-safe", "pwd", "worker-safe", "worker-result-safe"} {
+		if !strings.Contains(body, safe) {
+			t.Fatalf("ordinary public payload was removed %q: %s", safe, body)
+		}
+	}
+}
+
 func TestClientPublicSanitizerRedactsUppercaseAndAcronymKeyVariantsRecursively(t *testing.T) {
 	value := map[string]any{
 		"safeProduct": "kept",

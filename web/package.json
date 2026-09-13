@@ -6,6 +6,7 @@
     "build": "vite build && node scripts/clean-vite-assets.mjs dist",
     "build:control": "cd control-room && vite build --config vite.config.js && node ../scripts/clean-vite-assets.mjs ../dist-control",
     "build:all": "npm run build && npm run build:control && cp dist/index.src.html index.html && cp dist/app.js app.js && cp dist/app.css app.css && cp dist-control/index.src.html control-room/index.html && cp dist-control/app.js control-room/app.js && cp dist-control/app.css control-room/app.css",
+    "test": "node --test src/*.test.js",
     "dev": "vite"
   },
   "devDependencies": {

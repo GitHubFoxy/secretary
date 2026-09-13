@@ -528,11 +528,13 @@ var observedRuntimeActivity = []core.ActivityCapability{
 	core.ActivityAttemptOutcome,
 }
 
+var observedACPActivity = append(append([]core.ActivityCapability(nil), observedRuntimeActivity...), core.ActivityThinkingSummary, core.ActivityToolResult)
+
 func DefaultFXProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
 		Kind: core.HarnessFX, Binary: "fx", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"models"}, ModelsArgs: []string{"models"}, AuthenticationMethod: "local",
 		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel},
-		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedRuntimeActivity...),
+		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedACPActivity...),
 	}
 }
 
@@ -548,7 +550,7 @@ func DefaultCodexProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
 		Kind: core.HarnessCodex, Binary: "codex", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"login", "status"}, HealthArgs: []string{"doctor"}, ModelsArgs: []string{"debug", "models"}, ReasoningArgs: []string{"debug", "models"},
 		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilitySteering},
-		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedRuntimeActivity...),
+		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedACPActivity...),
 	}
 }
 

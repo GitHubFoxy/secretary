@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"sync"
@@ -12,18 +13,31 @@ import (
 type ActivityKind string
 
 const (
-	ActivityText       ActivityKind = "text"
-	ActivityTool       ActivityKind = "tool"
-	ActivityStatus     ActivityKind = "status"
-	ActivityPermission ActivityKind = "permission_request"
-	ActivityUserInput  ActivityKind = "user_input_request"
+	ActivityText            ActivityKind = "text"
+	ActivityTool            ActivityKind = "tool"
+	ActivityStatus          ActivityKind = "status"
+	ActivityPermission      ActivityKind = "permission_request"
+	ActivityUserInput       ActivityKind = "user_input_request"
+	ActivityThinkingSummary ActivityKind = "thinking_summary"
+	ActivityToolCall        ActivityKind = "tool_call"
+	ActivityToolResult      ActivityKind = "tool_result"
 )
 
-type Activity struct {
+type PendingRequest struct {
+	RequestID string       `json:"request_id"`
 	Kind      ActivityKind `json:"kind"`
-	Text      string       `json:"text"`
-	RequestID string       `json:"request_id,omitempty"`
-	Summary   string       `json:"summary,omitempty"`
+}
+
+type Activity struct {
+	Kind      ActivityKind    `json:"kind"`
+	Text      string          `json:"text,omitempty"`
+	RequestID string          `json:"request_id,omitempty"`
+	Summary   string          `json:"summary,omitempty"`
+	Tool      string          `json:"tool,omitempty"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Result    string          `json:"result,omitempty"`
+	Error     string          `json:"error,omitempty"`
+	Status    string          `json:"status,omitempty"`
 }
 
 type Result struct {
@@ -44,16 +58,23 @@ type MCPServer struct {
 }
 
 type StartRequest struct {
-	WorkerRef         string
-	Task              string
-	Workspace         string
-	RawLogPath        string
-	MCPServers        []MCPServer
-	Profile           ManagedProfile
-	HarnessInstance   core.HarnessInstance
-	Model             string
-	Reasoning         string
-	ApprovalPolicy    string
+	WorkerRef       string
+	Task            string
+	Workspace       string
+	RawLogPath      string
+	MCPServers      []MCPServer
+	Profile         ManagedProfile
+	HarnessInstance core.HarnessInstance
+	Model           string
+	Reasoning       string
+	ApprovalPolicy  string
+	// PendingRequests is the durable request metadata used for reconnect.
+	PendingRequests []PendingRequest
+	// PendingRequestKinds preserves metadata when an older caller can only
+	// provide PendingRequestIDs.
+	PendingRequestKinds map[string]ActivityKind
+	// PendingRequestIDs is retained for older runtime adapters. New code must
+	// use PendingRequests so permission and input requests cannot cross-bind.
 	PendingRequestIDs []string
 }
 

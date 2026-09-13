@@ -62,6 +62,9 @@ type ConversationEntry struct {
 	Seq            int64     `json:"seq"`
 	Kind           EntryKind `json:"kind"`
 	Body           string    `json:"body"`
+	WorkerRef      string    `json:"worker_ref,omitempty"`
+	TurnID         string    `json:"turn_id,omitempty"`
+	ResultID       string    `json:"result_id,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
 }
 

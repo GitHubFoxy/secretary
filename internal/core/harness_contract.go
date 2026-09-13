@@ -331,7 +331,8 @@ type ToolCall struct {
 }
 
 type ToolResult struct {
-	CallID string `json:"call_id"`
+	CallID string `json:"call_id,omitempty"`
+	Name   string `json:"name,omitempty"`
 	Output string `json:"output,omitempty"`
 	Error  string `json:"error,omitempty"`
 }
@@ -402,12 +403,12 @@ func (a Activity) validatePayload() error {
 			return fmt.Errorf("core: activity %q requires text", a.Kind)
 		}
 	case ActivityKindToolCall:
-		if a.ToolCall == nil {
-			return fmt.Errorf("core: tool_call activity requires a tool call")
+		if a.ToolCall == nil || strings.TrimSpace(a.ToolCall.Name) == "" {
+			return fmt.Errorf("core: tool_call activity requires a named tool call")
 		}
 	case ActivityKindToolResult:
-		if a.ToolResult == nil {
-			return fmt.Errorf("core: tool_result activity requires a tool result")
+		if a.ToolResult == nil || strings.TrimSpace(a.ToolResult.Name) == "" {
+			return fmt.Errorf("core: tool_result activity requires a named tool result")
 		}
 	case ActivityKindSubagentStarted, ActivityKindSubagentProgress, ActivityKindSubagentCompleted:
 		if a.Subagent == nil {

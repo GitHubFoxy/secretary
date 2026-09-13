@@ -108,7 +108,7 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "decode idempotency record", http.StatusInternalServerError)
 				return
 			}
-			writeJSON(w, http.StatusOK, details)
+			writeJSON(w, http.StatusOK, publicWorkerMutationDTO(details))
 			return
 		}
 		clientID, _ := r.Context().Value(authenticatedClientContextKey{}).(string)
@@ -120,11 +120,12 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			writeClientMutationError(w, err)
 			return
 		}
-		if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, key, payload, details); err != nil {
+		publicResult := publicWorkerMutationDTO(details)
+		if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, key, payload, publicResult); err != nil {
 			writeClientMutationError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, details)
+		writeJSON(w, http.StatusOK, publicResult)
 		return
 	}
 	session, found := s.workerSession(workerRef)
@@ -366,6 +367,10 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 		writeJSON(w, http.StatusOK, sanitizePublicJSON(details.Turns))
 		return true
 	}
+	if len(suffix) == 1 && suffix[0] == "diagnostics" && r.Method == http.MethodGet {
+		s.workerDiagnostics(w, r, details)
+		return true
+	}
 	if len(suffix) >= 1 && suffix[0] == "activity" {
 		if len(suffix) == 2 && suffix[1] == "ws" && r.Method == http.MethodGet {
 			s.workerActivityReplay(w, r, details.Worker.WorkerRef)
@@ -375,6 +380,9 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 			s.workerActivityReplayJSON(w, r, details.Worker.WorkerRef)
 			return true
 		}
+	}
+	if len(suffix) == 1 && suffix[0] == "respond" {
+		return false
 	}
 	if len(suffix) != 1 || r.Method != http.MethodPost || s.actions == nil {
 		return false
@@ -397,6 +405,9 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 		return true
 	}
 	request.Text, request.RequestID = payload.Text, payload.RequestID
+	if suffix[0] == "approve" && strings.TrimSpace(request.Text) == "" {
+		request.Text = "approve"
+	}
 	key, ok := requireIdempotencyKey(w, r, payload.IdempotencyKey)
 	if !ok {
 		return true
@@ -422,13 +433,22 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 			http.Error(w, "decode idempotency record", http.StatusInternalServerError)
 			return true
 		}
-		writeJSON(w, http.StatusAccepted, stored)
+		writeJSON(w, http.StatusAccepted, publicWorkerMutationDTO(stored))
 		return true
 	}
 	var result core.WorkerDetails
 	var err error
 	switch suffix[0] {
-	case "message":
+	case "message", "follow-up":
+		result, err = s.actions.MessageWorker(r.Context(), request)
+	case "approve":
+		if strings.TrimSpace(request.RequestID) == "" {
+			http.Error(w, "request_id is required", http.StatusBadRequest)
+			return true
+		}
+		if strings.TrimSpace(request.Text) == "" {
+			request.Text = "approve"
+		}
 		result, err = s.actions.MessageWorker(r.Context(), request)
 	case "cancel":
 		result, err = s.actions.CancelWorker(r.Context(), details.Worker.WorkerRef)
@@ -441,12 +461,22 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 		writeClientMutationError(w, err)
 		return true
 	}
-	if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, request.IdempotencyKey, payloadFingerprint, result); err != nil {
+	publicResult := publicWorkerMutationDTO(result)
+	if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, request.IdempotencyKey, payloadFingerprint, publicResult); err != nil {
 		http.Error(w, "save idempotency record", http.StatusInternalServerError)
 		return true
 	}
-	writeJSON(w, http.StatusAccepted, result)
+	writeJSON(w, http.StatusAccepted, publicResult)
 	return true
+}
+
+func (s *Server) workerDiagnostics(w http.ResponseWriter, r *http.Request, details core.WorkerDetails) {
+	diagnostics, err := s.buildWorkerDiagnostics(details)
+	if err != nil {
+		http.Error(w, "read worker diagnostics", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, diagnostics)
 }
 
 func (s *Server) workerActivityReplayJSON(w http.ResponseWriter, r *http.Request, workerRef string) {
@@ -528,6 +558,10 @@ func sanitizePublicEvent(event core.Event) core.Event {
 	return event
 }
 
+func publicWorkerMutationDTO(details core.WorkerDetails) any {
+	return sanitizePublicJSON(details)
+}
+
 func sanitizePublicJSON(value any) any {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -557,16 +591,53 @@ func sanitizePublicValue(value any) any {
 			result[i] = sanitizePublicValue(child)
 		}
 		return result
+	case string:
+		trimmed := strings.TrimSpace(current)
+		if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+			var nested any
+			if json.Unmarshal([]byte(trimmed), &nested) == nil {
+				cleaned := sanitizePublicValue(nested)
+				if encoded, err := json.Marshal(cleaned); err == nil {
+					return string(encoded)
+				}
+				return "[redacted]"
+			}
+		}
+		if forbiddenPublicText(current) {
+			return "[redacted]"
+		}
+		return current
 	default:
 		return value
 	}
+}
+
+func forbiddenPublicText(value string) bool {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{
+		"chain-of-thought", "chain of thought", "chain_of_thought", "raw thought", "raw_thought",
+		"internal reasoning", "internal_reasoning", "thought process", "thought_process", "<think>", "</think>",
+		"analysis:", "reasoning:", "thought:", "chain-of-thought:",
+		"bearer ", "api_key=", "apikey=", "access_token", "api_token", "token=", "secret=", "credential=", "password=", "callback=",
+		"runtime_session_id", "session_id", "sessionid", "sk-", "ghp_", "xoxb-",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func sanitizePublicConversationEntry(entry core.ConversationEntry) core.ConversationEntry {
+	entry.Body = sanitizePublicValue(entry.Body).(string)
+	return entry
 }
 
 func forbiddenPublicKey(key string) bool {
 	words := publicKeyWords(key)
 	for i, word := range words {
 		switch word {
-		case "secret", "secrets", "credential", "credentials", "callback", "callbacks", "token", "tokens":
+		case "secret", "secrets", "credential", "credentials", "callback", "callbacks", "token", "tokens", "policy", "policies", "context", "contexts", "diagnostic", "diagnostics":
 			return true
 		case "task", "tasks":
 			return true
@@ -590,10 +661,15 @@ func forbiddenPublicKey(key string) bool {
 		return -1
 	}, key))
 	for _, forbidden := range []string{
-		"secret", "secrets", "credential", "credentials", "callback", "callbacks", "token", "tokens",
+		"secret", "secrets", "credential", "credentials", "callback", "callbacks", "token", "tokens", "policy", "policies", "context", "contexts", "diagnostic", "diagnostics",
 		"task", "tasks", "taskid", "tasksid", "session", "sessions", "sessionid", "sessionsid", "sessionidentifier", "sessionsidentifier", "runtimesession", "runtimesessionid", "accesstoken", "callbackcapability",
 	} {
 		if compact == forbidden || strings.HasSuffix(compact, forbidden) {
+			return true
+		}
+	}
+	for _, marker := range []string{"analysis", "reasoning", "thought", "chainofthought"} {
+		if strings.Contains(compact, marker) {
 			return true
 		}
 	}
