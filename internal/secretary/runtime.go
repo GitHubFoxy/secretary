@@ -22,6 +22,7 @@ type Runtime struct {
 	node           *node.LocalNode
 	capability     string
 	mcpCommand     string
+	mcpServerURL   string
 	dataDir        string
 	profile        func() node.ManagedProfile
 	store          *core.Store
@@ -42,8 +43,13 @@ func NewRuntime(local *node.LocalNode, capability string) *Runtime {
 }
 
 func (r *Runtime) AttachMCP(command, dataDir string) {
+	r.AttachMCPServer(command, dataDir, "")
+}
+
+func (r *Runtime) AttachMCPServer(command, dataDir, serverURL string) {
 	r.mu.Lock()
 	r.mcpCommand = command
+	r.mcpServerURL = serverURL
 	r.dataDir = dataDir
 	r.mu.Unlock()
 }
@@ -105,7 +111,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 		return errors.New("secretary: capability is required")
 	}
 	r.mu.Lock()
-	mcpCommand, dataDir, profileFn, store, identity := r.mcpCommand, r.dataDir, r.profile, r.store, r.identity
+	mcpCommand, mcpServerURL, dataDir, profileFn, store, identity := r.mcpCommand, r.mcpServerURL, r.dataDir, r.profile, r.store, r.identity
 	r.mu.Unlock()
 	if store != nil && dataDir != "" {
 		if _, err := store.LoadUserDocument(ctx, filepath.Join(dataDir, "user.md")); err != nil {
@@ -134,7 +140,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 		}
 	}
 	if mcpCommand != "" {
-		request.MCPServers = []node.MCPServer{node.SecretaryMCPServer(mcpCommand, dataDir, r.capability)}
+		request.MCPServers = []node.MCPServer{node.SecretaryMCPServerAt(mcpCommand, dataDir, r.capability, mcpServerURL)}
 	}
 	session, err := r.node.Dispatch(ctx, request)
 	if err != nil {

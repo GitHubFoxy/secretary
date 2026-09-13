@@ -46,17 +46,23 @@ func main() {
 	if err != nil {
 		log.Fatalf("find owner: %v", err)
 	}
-	manager, err := config.Open(filepath.Join(*dataDir, "config.toml"))
-	if err != nil {
-		log.Fatalf("load config: %v", err)
-	}
-	policy := manager.Snapshot().Config.EffectiveWorkerPolicy()
-	preferred := make([]core.HarnessKind, len(policy.PreferredHarnesses))
-	for i, kind := range policy.PreferredHarnesses {
-		preferred[i] = core.HarnessKind(kind)
+	var secretaryHandler mcp.Handler
+	if serverURL := os.Getenv("SECRETARY_MCP_SERVER_URL"); serverURL != "" {
+		secretaryHandler = mcp.RemoteSecretary{BaseURL: serverURL, Capability: capability}
+	} else {
+		manager, err := config.Open(filepath.Join(*dataDir, "config.toml"))
+		if err != nil {
+			log.Fatalf("load config: %v", err)
+		}
+		policy := manager.Snapshot().Config.EffectiveWorkerPolicy()
+		preferred := make([]core.HarnessKind, len(policy.PreferredHarnesses))
+		for i, kind := range policy.PreferredHarnesses {
+			preferred[i] = core.HarnessKind(kind)
+		}
+		secretaryHandler = mcp.Secretary{Workers: ctl.WorkerService{Store: store, PersonID: owner.ID, Capability: capability, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessKind(policy.DefaultHarness), PreferredHarnesses: preferred}}}
 	}
 	handler := mcp.AuditedHandler{
-		Handler: mcp.Secretary{Workers: ctl.WorkerService{Store: store, PersonID: owner.ID, Capability: capability, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessKind(policy.DefaultHarness), PreferredHarnesses: preferred}}},
+		Handler: secretaryHandler,
 		Store:   store,
 		Role:    "secretary",
 	}
