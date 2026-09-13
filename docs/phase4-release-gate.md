@@ -15,7 +15,8 @@
 - `PASS`: два локальных outbound Node подключались и сообщили inventory; Project получил разные path mappings.
 - `BLOCKED`: это был один компьютер, без отдельного MacBook и home server; Telegram не был настроен.
 - `BLOCKED`: Claude Code отсутствует, Codex в clean Node HOME не аутентифицирован, OpenCode не установлен.
-- `NOT RUN`: остальные Worker, approval, queue, replay, revoke и network-loss сценарии.
+- `FAIL`: реальная попытка создать fx Worker достигла runtime boundary, но завершилась `worker: runtime command delivery is unavailable`; Worker и файлы не были созданы или изменены.
+- `NOT RUN`: approval, queue, replay, revoke и network-loss сценарии.
 
 Эта запись фиксирует фактический прогон, но не заменяет полную acceptance matrix ниже. Полный redacted ledger хранится в каталоге запуска и не содержит credentials или raw prompts.
 
