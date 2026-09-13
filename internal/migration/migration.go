@@ -222,6 +222,7 @@ func prepareConfig(path string) ([]byte, map[string]string, error) {
 			legacyModels[alias] = value
 		}
 	}
+	legacyModels["worker_policy"] = stringValue(workerPolicy["model"])
 	for _, alias := range []string{"fast", "smart", "cheap"} {
 		delete(models, alias)
 	}
@@ -259,6 +260,9 @@ func resolveLegacyModel(value string, models map[string]string, runtime string) 
 		value = strings.TrimSpace(mapped)
 	}
 	if value == "" || isLegacyModelAlias(value) {
+		if fallback := strings.TrimSpace(models["worker_policy"]); fallback != "" && !isLegacyModelAlias(fallback) {
+			return fallback
+		}
 		return legacyAdapterDefaultModel(runtime)
 	}
 	return value
@@ -440,7 +444,7 @@ type legacyMigrationResult struct {
 }
 
 type legacyMigrationDirection struct {
-	id, input, created, updated string
+	id, entryID, input, created, updated string
 }
 
 func migrateAttempts(ctx context.Context, tx *sql.Tx, bindingID, workerID, turnID, nativeSession, nodeID, workspace, runtime, conversationID, workerRef, taskState, initialInput, initialCreated, initialUpdated string, report *Report) error {
@@ -505,6 +509,9 @@ func migrateAttempts(ctx context.Context, tx *sql.Tx, bindingID, workerID, turnI
 			if err := insertTurn(ctx, tx, direction.id, workerID, direction.input, "queued", direction.created, direction.updated); err != nil {
 				return err
 			}
+			if _, err := tx.ExecContext(ctx, `UPDATE conversation_entries SET worker_ref = ?, turn_id = ? WHERE id = ?`, workerRef, direction.id, direction.entryID); err != nil {
+				return err
+			}
 			report.Turns++
 		}
 		start := starts[i]
@@ -534,7 +541,11 @@ func migrateAttempts(ctx context.Context, tx *sql.Tx, bindingID, workerID, turnI
 				status = "interrupted"
 				classification = "final"
 			}
-			if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempt_outcomes(id, attempt_id, status, classification, error_code, error_message, diagnostics, created_at) VALUES(?, ?, ?, ?, '', '', ?, ?)`, "legacy-outcome-"+old.id, attemptID, status, classification, `{"legacy_attempt_id":"`+old.id+`"}`, old.updated); err != nil {
+			errorCode := ""
+			if status == "interrupted" {
+				errorCode = "execution_state_unknown"
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempt_outcomes(id, attempt_id, status, classification, error_code, error_message, diagnostics, created_at) VALUES(?, ?, ?, ?, ?, '', ?, ?)`, "legacy-outcome-"+old.id, attemptID, status, classification, errorCode, `{"legacy_attempt_id":"`+old.id+`"}`, old.updated); err != nil {
 				return err
 			}
 			report.Attempts++
@@ -604,7 +615,7 @@ func legacyFollowUpDirections(ctx context.Context, tx *sql.Tx, conversationID, w
 		if err := rows.Scan(&id, &body, &created); err != nil {
 			return nil, err
 		}
-		directions = append(directions, legacyMigrationDirection{id: "legacy-turn-" + strings.ReplaceAll(id, " ", "_"), input: body, created: created, updated: created})
+		directions = append(directions, legacyMigrationDirection{id: "legacy-turn-" + strings.ReplaceAll(id, " ", "_"), entryID: id, input: body, created: created, updated: created})
 	}
 	return directions, rows.Err()
 }
@@ -629,7 +640,11 @@ func insertMigratedResult(ctx context.Context, tx *sql.Tx, workerID, turnID, con
 		return nil
 	}
 	newResultID := "legacy-result-" + resultID
-	if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_results(id, worker_id, turn_id, attempt_id, status, summary, failure_code, artifact_refs, correlation_id, created_at) VALUES(?, ?, ?, ?, ?, ?, '', '', ?, ?)`, newResultID, workerID, turnID, attemptID, status, summary, turnID, created); err != nil {
+	failureCode := ""
+	if status != "succeeded" {
+		failureCode = status
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_results(id, worker_id, turn_id, attempt_id, status, summary, failure_code, artifact_refs, correlation_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, '', ?, ?)`, newResultID, workerID, turnID, attemptID, status, summary, failureCode, turnID, created); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE turns SET result_id = ?, state = ? WHERE id = ?`, newResultID, phase4TurnState(status), turnID); err != nil {
