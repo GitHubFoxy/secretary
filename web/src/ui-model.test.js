@@ -39,19 +39,36 @@ test('compact Worker item includes Turn status, acknowledgement and terminal Res
   assert.equal(card.result, 'Deployed safely');
 });
 
-test('renders a terminal Worker Result once while retaining the durable entry', () => {
+test('hides only the Worker Result represented by its compact card identity', () => {
   const durableEntries = [
-    { id: 'worker-result-entry', seq: 1, kind: 'worker_result', body: 'Deployed safely' },
-    { id: 'secretary-entry', seq: 2, kind: 'secretary', body: 'Acknowledged' },
+    { id: 'worker-result-entry', seq: 1, kind: 'worker_result', worker_ref: 'wkr-result', turn_id: 'turn-1', result_id: 'result-1', body: 'Deployed safely' },
+    { id: 'same-summary-other-turn', seq: 2, kind: 'worker_result', worker_ref: 'wkr-result', turn_id: 'turn-2', result_id: 'result-2', body: 'Deployed safely' },
+    { id: 'secretary-entry', seq: 3, kind: 'secretary', body: 'Acknowledged' },
   ];
   const card = workerCard({
-    worker_ref: 'wkr-result', status: 'idle', last_result_summary: 'Deployed safely',
+    worker_ref: 'wkr-result', status: 'idle', current_turn_id: 'turn-1',
+    result: { id: 'result-1', worker_ref: 'wkr-result', turn_id: 'turn-1', summary: 'Deployed safely' },
   });
   const visible = visibleConversationEntries(durableEntries, [card]);
-  assert.equal(durableEntries.length, 2);
-  assert.equal(durableEntries[0].kind, 'worker_result');
-  assert.deepEqual(visible.map((entry) => entry.kind), ['secretary']);
+  assert.deepEqual(visible.map((entry) => entry.id), ['same-summary-other-turn', 'secretary-entry']);
   assert.equal(card.result, 'Deployed safely');
+});
+
+test('dedupes same-summary replay for each represented Worker Turn, not across identities', () => {
+  const durableEntries = [
+    { id: 'a-turn-1', seq: 1, kind: 'worker_result', worker_ref: 'worker-a', turn_id: 'turn-a-1', result_id: 'result-a-1', body: 'Finished' },
+    { id: 'a-turn-1-replay', seq: 1, kind: 'worker_result', worker_ref: 'worker-a', turn_id: 'turn-a-1', result_id: 'result-a-1', body: 'Finished' },
+    { id: 'a-turn-2', seq: 2, kind: 'worker_result', worker_ref: 'worker-a', turn_id: 'turn-a-2', result_id: 'result-a-2', body: 'Finished' },
+    { id: 'b-turn-1', seq: 3, kind: 'worker_result', worker_ref: 'worker-b', turn_id: 'turn-b-1', result_id: 'result-b-1', body: 'Finished' },
+    { id: 'unrepresented', seq: 4, kind: 'worker_result', worker_ref: 'worker-a', turn_id: 'turn-a-0', result_id: 'result-a-0', body: 'Finished' },
+  ];
+  const cards = [
+    workerCard({ worker_ref: 'worker-a', current_turn_id: 'turn-a-1', result: { id: 'result-a-1', worker_ref: 'worker-a', turn_id: 'turn-a-1', summary: 'Finished' } }),
+    workerCard({ worker_ref: 'worker-a', current_turn_id: 'turn-a-2', result: { id: 'result-a-2', worker_ref: 'worker-a', turn_id: 'turn-a-2', summary: 'Finished' } }),
+    workerCard({ worker_ref: 'worker-b', current_turn_id: 'turn-b-1', result: { id: 'result-b-1', worker_ref: 'worker-b', turn_id: 'turn-b-1', summary: 'Finished' } }),
+  ];
+  const visible = visibleConversationEntries(durableEntries, cards);
+  assert.deepEqual(visible.map((entry) => entry.id), ['unrepresented']);
 });
 
 test('merges replay and live sequences idempotently', () => {

@@ -108,7 +108,7 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "decode idempotency record", http.StatusInternalServerError)
 				return
 			}
-			writeJSON(w, http.StatusOK, details)
+			writeJSON(w, http.StatusOK, publicWorkerMutationDTO(details))
 			return
 		}
 		clientID, _ := r.Context().Value(authenticatedClientContextKey{}).(string)
@@ -120,11 +120,12 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			writeClientMutationError(w, err)
 			return
 		}
-		if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, key, payload, details); err != nil {
+		publicResult := publicWorkerMutationDTO(details)
+		if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, key, payload, publicResult); err != nil {
 			writeClientMutationError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, details)
+		writeJSON(w, http.StatusOK, publicResult)
 		return
 	}
 	session, found := s.workerSession(workerRef)
@@ -380,6 +381,9 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 			return true
 		}
 	}
+	if len(suffix) == 1 && suffix[0] == "respond" {
+		return false
+	}
 	if len(suffix) != 1 || r.Method != http.MethodPost || s.actions == nil {
 		return false
 	}
@@ -429,7 +433,7 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 			http.Error(w, "decode idempotency record", http.StatusInternalServerError)
 			return true
 		}
-		writeJSON(w, http.StatusAccepted, sanitizePublicJSON(stored))
+		writeJSON(w, http.StatusAccepted, publicWorkerMutationDTO(stored))
 		return true
 	}
 	var result core.WorkerDetails
@@ -457,7 +461,7 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, detai
 		writeClientMutationError(w, err)
 		return true
 	}
-	publicResult := sanitizePublicJSON(result)
+	publicResult := publicWorkerMutationDTO(result)
 	if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, request.IdempotencyKey, payloadFingerprint, publicResult); err != nil {
 		http.Error(w, "save idempotency record", http.StatusInternalServerError)
 		return true
@@ -554,6 +558,10 @@ func sanitizePublicEvent(event core.Event) core.Event {
 	return event
 }
 
+func publicWorkerMutationDTO(details core.WorkerDetails) any {
+	return sanitizePublicJSON(details)
+}
+
 func sanitizePublicJSON(value any) any {
 	encoded, err := json.Marshal(value)
 	if err != nil {
@@ -629,7 +637,7 @@ func forbiddenPublicKey(key string) bool {
 	words := publicKeyWords(key)
 	for i, word := range words {
 		switch word {
-		case "secret", "secrets", "credential", "credentials", "callback", "callbacks", "token", "tokens":
+		case "secret", "secrets", "credential", "credentials", "callback", "callbacks", "token", "tokens", "policy", "policies", "context", "contexts", "diagnostic", "diagnostics":
 			return true
 		case "task", "tasks":
 			return true
@@ -653,7 +661,7 @@ func forbiddenPublicKey(key string) bool {
 		return -1
 	}, key))
 	for _, forbidden := range []string{
-		"secret", "secrets", "credential", "credentials", "callback", "callbacks", "token", "tokens",
+		"secret", "secrets", "credential", "credentials", "callback", "callbacks", "token", "tokens", "policy", "policies", "context", "contexts", "diagnostic", "diagnostics",
 		"task", "tasks", "taskid", "tasksid", "session", "sessions", "sessionid", "sessionsid", "sessionidentifier", "sessionsidentifier", "runtimesession", "runtimesessionid", "accesstoken", "callbackcapability",
 	} {
 		if compact == forbidden || strings.HasSuffix(compact, forbidden) {

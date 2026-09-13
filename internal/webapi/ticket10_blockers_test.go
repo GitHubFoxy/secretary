@@ -129,9 +129,119 @@ func TestTicket10WorkerActionResponsesSanitizeFreshAndIdempotencyReplay(t *testi
 			t.Fatalf("action=%s fresh/replay calls=%d want=%d", item.action, calls, beforeCalls+1)
 		}
 	}
+	assertPublicKeysAbsent(t, expected, "policy", "policy_snapshot", "context", "context_snapshot", "diagnostics")
+	var public map[string]any
+	if err := json.Unmarshal(expected, &public); err != nil {
+		t.Fatal(err)
+	}
+	workerPublic, ok := public["worker"].(map[string]any)
+	if !ok {
+		t.Fatalf("sanitized response has no public worker: %#v", public)
+	}
+	for _, key := range []string{"worker_ref", "intent", "project_id", "node_id", "harness_instance_id", "status"} {
+		if _, ok := workerPublic[key]; !ok {
+			t.Fatalf("safe Worker field %q was removed: %#v", key, workerPublic)
+		}
+	}
 	for _, forbidden := range []string{"credential-secret", "callback-secret", "native-session", "context-session", "context-token", "private reasoning", "artifact-secret"} {
 		if strings.Contains(string(expected), forbidden) {
 			t.Fatalf("test fixture was not hostile enough, sanitizer retained %q: %s", forbidden, expected)
 		}
+	}
+}
+
+func assertPublicKeysAbsent(t *testing.T, value any, forbidden ...string) {
+	t.Helper()
+	blocked := make(map[string]struct{}, len(forbidden))
+	for _, key := range forbidden {
+		blocked[strings.ToLower(key)] = struct{}{}
+	}
+	var visit func(any)
+	visit = func(current any) {
+		switch current := current.(type) {
+		case map[string]any:
+			for key, child := range current {
+				if _, found := blocked[strings.ToLower(key)]; found {
+					t.Fatalf("forbidden public key %q leaked in %#v", key, current)
+				}
+				visit(child)
+			}
+		case []any:
+			for _, child := range current {
+				visit(child)
+			}
+		case string:
+			var nested any
+			if json.Unmarshal([]byte(current), &nested) == nil {
+				visit(nested)
+			}
+		}
+	}
+	visit(value)
+}
+
+func TestTicket10LegacyWorkerRespondSanitizesFreshAndIdempotencyReplay(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "ticket10-legacy-respond.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{Intent: "respond", ProjectID: "project", NodeID: "node", HarnessInstanceID: "node/fx", PolicySnapshot: "safe"}, core.TurnSpec{Input: "respond"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostile := core.WorkerDetails{
+		Worker:   core.Worker{ID: worker.ID, WorkerRef: worker.WorkerRef, Intent: worker.Intent, ProjectID: worker.ProjectID, NodeID: worker.NodeID, HarnessInstanceID: worker.HarnessInstanceID, PolicySnapshot: `{"policy":"private-policy","safe":"worker-kept"}`, Status: worker.Status},
+		Turns:    []core.Turn{{ID: turn.ID, WorkerID: worker.ID, Input: turn.Input, ContextSnapshot: `{"context":"private-context","safe":"turn-kept"}`, State: turn.State, CurrentAttemptID: attempt.ID}},
+		Attempts: []core.Phase4Attempt{{ID: attempt.ID, WorkerID: worker.ID, TurnID: turn.ID, NodeID: "node", HarnessInstanceID: "node/fx", State: attempt.State}},
+		Outcomes: []core.AttemptOutcome{{ID: "outcome-1", AttemptID: attempt.ID, Diagnostics: "private diagnostics"}},
+		Results:  []core.Phase4Result{{ID: "result-1", WorkerID: worker.ID, TurnID: turn.ID, AttemptID: attempt.ID, Summary: "same summary", ArtifactRefs: `{"safe":"artifact-kept"}`}},
+	}
+	actions := &ticket10HostileWorkerActions{details: hostile, calls: make(map[string]int)}
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.AttachWorkerResponder(actions)
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	client := &http.Client{Jar: mustWebCookieJar(t)}
+	login(t, client, server.URL)
+
+	expected, err := json.Marshal(sanitizePublicJSON(hostile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for replay := 0; replay < 2; replay++ {
+		request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/workers/"+worker.WorkerRef+"/respond", strings.NewReader(`{"request_id":"request-1","response":"answer","idempotency_key":"legacy-respond"}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if response.StatusCode != http.StatusOK || string(body) != string(expected)+"\n" {
+			t.Fatalf("legacy respond replay=%d status=%d body=%s want=%s", replay, response.StatusCode, body, expected)
+		}
+		var publicBody any
+		if err := json.Unmarshal(body, &publicBody); err != nil {
+			t.Fatal(err)
+		}
+		assertPublicKeysAbsent(t, publicBody, "policy", "policy_snapshot", "context", "context_snapshot", "diagnostics")
+	}
+	if actions.calls["message"] != 1 {
+		t.Fatalf("legacy respond fresh/replay calls=%d want=1", actions.calls["message"])
 	}
 }
