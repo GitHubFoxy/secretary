@@ -568,4 +568,153 @@ func TestTicket11RawCoTMarkersInAllowedValuesRedactedAcrossControlSurfaces(t *te
 	}
 }
 
+func TestTicket11CredentialValuesRedactedUnderSafeKeysAndMarkdown(t *testing.T) {
+	_, api, server, client := controlRoomTestAPI(t)
+	api.SetDebug(true)
+	controlRoomLogin(t, client, server.URL)
+
+	configContent := `skills = "sk-config"
+reasoning = "ghp-config"
+content = "xoxb-config"
+notes = "token: config-token"
+description = "secret: config-secret"
+summary = "credential: config-credential"
+details = "token=config-equals"
+ordinary = "keep-config"
+`
+	profileContent := `# Worker profile
+skills: ordinary-skill
+reasoning: high
+content: ordinary profile content
+
+Use token: profile-token in this Markdown.
+Also secret: profile-secret and credential: profile-credential.
+`
+	var appliedConfig, appliedProfile string
+	configApplyCalls, profileApplyCalls := 0, 0
+	api.AttachControl(ControlOptions{
+		RequireExpectedRevision: true,
+		ConfigContent:           func() (string, error) { return configContent, nil },
+		ApplyConfig: func(content []byte) (any, error) {
+			configApplyCalls++
+			appliedConfig = string(content)
+			return map[string]string{"status": "applied"}, nil
+		},
+		ProfileFiles: func() ([]ProfileFile, error) {
+			return []ProfileFile{{Name: "worker", Content: profileContent, Hash: "profile-redaction-rev"}}, nil
+		},
+		ApplyProfile: func(_ string, content []byte) error {
+			profileApplyCalls++
+			appliedProfile = string(content)
+			return nil
+		},
+	})
+
+	response, err := client.Get(server.URL + "/v1/control/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&config); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("config status=%d body=%#v", response.StatusCode, config)
+	}
+	configText, _ := config["content"].(string)
+	for _, secret := range []string{"sk-config", "ghp-config", "xoxb-config", "config-token", "config-secret", "config-credential", "config-equals"} {
+		if strings.Contains(configText, secret) {
+			t.Fatalf("config leaked %q: %q", secret, configText)
+		}
+	}
+	for _, safe := range []string{`ordinary = "keep-config"`} {
+		if !strings.Contains(configText, safe) {
+			t.Fatalf("config removed ordinary value %q: %q", safe, configText)
+		}
+	}
+	if config["editable"] != false {
+		t.Fatalf("redacted config remained editable: %#v", config)
+	}
+	configRevision, _ := config["revision"].(string)
+
+	response, err = client.Get(server.URL + "/v1/control/profiles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var profiles []ProfileFile
+	if err := json.NewDecoder(response.Body).Decode(&profiles); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || len(profiles) != 1 {
+		t.Fatalf("profiles status=%d body=%#v", response.StatusCode, profiles)
+	}
+	profileText := profiles[0].Content
+	if profiles[0].Editable {
+		t.Fatalf("redacted profile remained editable: %#v", profiles[0])
+	}
+	for _, secret := range []string{"profile-token", "profile-secret", "profile-credential"} {
+		if strings.Contains(profileText, secret) {
+			t.Fatalf("profile leaked %q: %q", secret, profileText)
+		}
+	}
+	for _, safe := range []string{"# Worker profile", "skills: ordinary-skill", "reasoning: high", "content: ordinary profile content"} {
+		if !strings.Contains(profileText, safe) {
+			t.Fatalf("profile removed ordinary Markdown %q: %q", safe, profileText)
+		}
+	}
+	profileRevision := profiles[0].Revision
+
+	configPayload, _ := json.Marshal(map[string]string{
+		"content": `skills = "sk-write"
+notes = "credential: config-write"
+ordinary = "keep"
+`,
+		"expected_revision": configRevision,
+	})
+	request, _ := http.NewRequest(http.MethodPut, server.URL+"/v1/control/config", bytes.NewReader(configPayload))
+	request.Header.Set("Content-Type", "application/json")
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest || configApplyCalls != 0 {
+		t.Fatalf("credential config write was accepted status=%d calls=%d", response.StatusCode, configApplyCalls)
+	}
+
+	profilePayload, _ := json.Marshal(map[string]string{
+		"content":           "# profile\nThis Markdown contains xoxb-write\nsecret: profile-write\n",
+		"expected_revision": profileRevision,
+	})
+	request, _ = http.NewRequest(http.MethodPut, server.URL+"/v1/control/profiles/worker", bytes.NewReader(profilePayload))
+	request.Header.Set("Content-Type", "application/json")
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest || profileApplyCalls != 0 {
+		t.Fatalf("credential Markdown write was accepted status=%d calls=%d", response.StatusCode, profileApplyCalls)
+	}
+
+	ordinaryProfile := "# profile\nskills: coding\nreasoning: high\ncontent: ordinary editable Markdown\n"
+	profilePayload, _ = json.Marshal(map[string]string{
+		"content":           ordinaryProfile,
+		"expected_revision": profileRevision,
+	})
+	request, _ = http.NewRequest(http.MethodPut, server.URL+"/v1/control/profiles/worker", bytes.NewReader(profilePayload))
+	request.Header.Set("Content-Type", "application/json")
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || profileApplyCalls != 1 || appliedProfile != ordinaryProfile {
+		t.Fatalf("ordinary Markdown was not editable status=%d calls=%d content=%q", response.StatusCode, profileApplyCalls, appliedProfile)
+	}
+	_ = appliedConfig
+}
+
 func nowForTest() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
