@@ -12,6 +12,9 @@ const MaxChildrenPerAttempt = 4
 // CreateChildTask creates a dispatchable child owned by the active parent
 // Attempt. It never appends a user-visible conversation entry.
 func (s *Store) CreateChildTask(ctx context.Context, parentWorkerRef, parentAttemptID, text string) (Task, error) {
+	if s.legacyTasksReadOnly(ctx) {
+		return Task{}, ErrLegacyTaskReadOnly
+	}
 	if strings.TrimSpace(parentWorkerRef) == "" {
 		return Task{}, errors.New("core: parent Worker reference is required")
 	}

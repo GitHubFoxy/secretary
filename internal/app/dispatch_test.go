@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -11,12 +13,18 @@ import (
 )
 
 type runtime struct{}
+type countingRuntime struct{ started chan struct{} }
+
 type session struct {
 	result chan node.Result
 	queued chan string
 }
 
 func (runtime) Start(_ context.Context, _ node.StartRequest) (node.Session, error) {
+	return &session{result: make(chan node.Result, 2), queued: make(chan string, 2)}, nil
+}
+func (r countingRuntime) Start(_ context.Context, _ node.StartRequest) (node.Session, error) {
+	close(r.started)
 	return &session{result: make(chan node.Result, 2), queued: make(chan string, 2)}, nil
 }
 func (s *session) ID() string                                  { return "runtime-session" }
@@ -30,6 +38,55 @@ func (s *session) Cancel(context.Context) error {
 func (s *session) Activity() <-chan node.Activity { return make(chan node.Activity) }
 func (s *session) Result() <-chan node.Result     { return s.result }
 func (s *session) Close() error                   { return nil }
+
+func TestDispatcherDoesNotExecuteLegacyTaskAfterMigration(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "legacy-dispatch.db")
+	store, err := core.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := store.CreateTask(ctx, conversation.ID, "legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO settings(key, value, updated_at) VALUES('phase4.migration_complete', '1', 'now')`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = core.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	started := make(chan struct{})
+	dispatcher := &Dispatcher{Store: store, Node: node.NewLocal(countingRuntime{started: started})}
+	if _, _, err := dispatcher.Dispatch(ctx, task, task.ID); !errors.Is(err, core.ErrLegacyTaskReadOnly) {
+		t.Fatalf("legacy dispatch error=%v", err)
+	}
+	select {
+	case <-started:
+		t.Fatal("legacy task started a runtime")
+	default:
+	}
+	if _, ok := dispatcher.Node.Session(task.ID); ok {
+		t.Fatal("legacy task started a runtime session")
+	}
+}
 
 func TestDispatcherPersistsTerminalResult(t *testing.T) {
 	ctx := context.Background()

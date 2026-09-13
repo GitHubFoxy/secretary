@@ -81,7 +81,7 @@ func TestTelegramEventBridgePaginatesAndPersistsCursor(t *testing.T) {
 	bridgeCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go bridgeTelegramEvents(bridgeCtx, store, adapter)
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		data, readErr := os.ReadFile(statePath)
 		if readErr == nil {

@@ -8,13 +8,10 @@ child_worker = "profiles/child-worker.md"
 [tools]
 allow_tools = ["bash", "edit", "find", "grep", "read", "write"]
 
-# Left-hand keys are stable aliases. Replace the values with model IDs supported by your harness.
-# `default` delegates model selection to the harness.
+# Secretary uses an explicit model pin. Worker profiles use the harness default
+# unless a concrete model is configured in a profile policy.
 [models]
 secretary = "gpt-5.6-luna"
-fast = "fast"
-smart = "smart"
-cheap = "cheap"
 
 [secretary]
 harness = "fx"
@@ -26,10 +23,6 @@ default_harness = "fx"
 preferred_harnesses = ["fx", "claude_code", "codex"]
 active_attempts = 4
 
-# Legacy compatibility for older readers.
-[runtime]
-harness = "fx"
-reasoning = "default"
 
 [retention]
 raw_logs = "720h"

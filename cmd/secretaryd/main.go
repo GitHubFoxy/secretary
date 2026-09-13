@@ -434,12 +434,15 @@ func bindingProfile(profile node.ManagedProfile) core.BindingProfile {
 }
 
 func secretaryModels(snapshot config.Snapshot) map[string]string {
-	return map[string]string{
-		"default": snapshot.Config.EffectiveSecretaryPolicy().Model,
-		"fast":    snapshot.Config.Models.Fast,
-		"smart":   snapshot.Config.Models.Smart,
-		"cheap":   snapshot.Config.Models.Cheap,
+	models := map[string]string{"default": snapshot.Config.EffectiveSecretaryPolicy().Model}
+	for _, model := range []string{snapshot.Config.Models.Fast, snapshot.Config.Models.Smart, snapshot.Config.Models.Cheap} {
+		model = strings.TrimSpace(model)
+		if model == "" || model == "fast" || model == "smart" || model == "cheap" {
+			continue
+		}
+		models[model] = model
 	}
+	return models
 }
 
 func secretaryProfile(snapshot config.Snapshot, store *core.Store) node.ManagedProfile {

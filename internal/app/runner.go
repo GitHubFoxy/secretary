@@ -37,7 +37,7 @@ func (r Runner) Run(ctx context.Context) {
 }
 
 func (r Runner) reconcileClosing(ctx context.Context) {
-	if r.Store == nil || r.Dispatcher == nil || r.Dispatcher.Node == nil || r.Conversation == "" {
+	if r.Store == nil || r.Dispatcher == nil || r.Dispatcher.Node == nil || r.Conversation == "" || r.Store.LegacyTasksReadOnly(ctx) {
 		return
 	}
 	tasks, err := r.Store.TasksForConversation(ctx, r.Conversation)
@@ -65,7 +65,7 @@ func (r Runner) reconcileClosing(ctx context.Context) {
 }
 
 func (r Runner) dispatch(ctx context.Context) {
-	if r.Store == nil || r.Dispatcher == nil || r.Conversation == "" {
+	if r.Store == nil || r.Dispatcher == nil || r.Conversation == "" || r.Store.LegacyTasksReadOnly(ctx) {
 		return
 	}
 	tasks, err := r.Store.TasksForConversation(ctx, r.Conversation)

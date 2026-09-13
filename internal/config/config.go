@@ -22,7 +22,7 @@ type Config struct {
 	Skills       []string        `toml:"skills" json:"skills"`
 	Tools        Tools           `toml:"tools" json:"tools"`
 	Models       Models          `toml:"models" json:"models"`
-	Runtime      Runtime         `toml:"runtime" json:"runtime"` // legacy compatibility
+	Runtime      Runtime         `toml:"runtime" json:"-"` // legacy compatibility
 	Secretary    SecretaryPolicy `toml:"secretary" json:"secretary"`
 	WorkerPolicy WorkerPolicy    `toml:"worker_policy" json:"worker_policy"`
 	Retention    Retention       `toml:"retention" json:"retention"`
@@ -36,6 +36,8 @@ type SecretaryPolicy struct {
 
 type WorkerPolicy struct {
 	DefaultHarness     string   `toml:"default_harness" json:"default_harness"`
+	Model              string   `toml:"model" json:"model"`
+	FallbackModels     []string `toml:"fallback_models" json:"fallback_models"`
 	PreferredHarnesses []string `toml:"preferred_harnesses" json:"preferred_harnesses"`
 	ActiveAttempts     int      `toml:"active_attempts" json:"active_attempts"`
 }
@@ -50,9 +52,9 @@ type Tools struct {
 }
 type Models struct {
 	Secretary string `toml:"secretary" json:"secretary"`
-	Fast      string `toml:"fast" json:"fast"`
-	Smart     string `toml:"smart" json:"smart"`
-	Cheap     string `toml:"cheap" json:"cheap"`
+	Fast      string `toml:"fast" json:"-"`  // legacy compatibility
+	Smart     string `toml:"smart" json:"-"` // legacy compatibility
+	Cheap     string `toml:"cheap" json:"-"` // legacy compatibility
 }
 type Runtime struct {
 	Harness   string `toml:"harness" json:"harness"`
@@ -140,9 +142,12 @@ func compile(base string, raw []byte, c Config) (Snapshot, error) {
 		reasoning := secretary.Reasoning
 		if name != "secretary" {
 			runtime = workerPolicy.DefaultHarness
-			model = c.Models.Smart
+			model = workerPolicy.Model
 			if model == "" {
-				model = "smart"
+				model = c.Models.Smart
+			}
+			if model == "" {
+				model = "default"
 			}
 		}
 		profile := Profile{Name: name, Path: resolved, Content: string(content), Skills: skills, AllowTools: append([]string(nil), c.Tools.Allow...), Runtime: runtime, Model: model, Reasoning: reasoning}
@@ -274,7 +279,7 @@ func Diff(previous, next Snapshot) map[string]any {
 	if previous.Config.Secretary != next.Config.Secretary {
 		changed["secretary"] = next.Config.Secretary
 	}
-	if previous.Config.WorkerPolicy.DefaultHarness != next.Config.WorkerPolicy.DefaultHarness || previous.Config.WorkerPolicy.ActiveAttempts != next.Config.WorkerPolicy.ActiveAttempts || strings.Join(previous.Config.WorkerPolicy.PreferredHarnesses, ",") != strings.Join(next.Config.WorkerPolicy.PreferredHarnesses, ",") {
+	if previous.Config.WorkerPolicy.DefaultHarness != next.Config.WorkerPolicy.DefaultHarness || previous.Config.WorkerPolicy.Model != next.Config.WorkerPolicy.Model || strings.Join(previous.Config.WorkerPolicy.FallbackModels, ",") != strings.Join(next.Config.WorkerPolicy.FallbackModels, ",") || previous.Config.WorkerPolicy.ActiveAttempts != next.Config.WorkerPolicy.ActiveAttempts || strings.Join(previous.Config.WorkerPolicy.PreferredHarnesses, ",") != strings.Join(next.Config.WorkerPolicy.PreferredHarnesses, ",") {
 		changed["worker_policy"] = next.Config.WorkerPolicy
 	}
 	if previous.Config.Models != next.Config.Models {

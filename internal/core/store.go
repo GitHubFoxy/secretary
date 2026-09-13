@@ -18,8 +18,9 @@ import (
 )
 
 var (
-	ErrNotFound          = errors.New("core: not found")
-	ErrInvalidTransition = errors.New("core: invalid state transition")
+	ErrNotFound           = errors.New("core: not found")
+	ErrInvalidTransition  = errors.New("core: invalid state transition")
+	ErrLegacyTaskReadOnly = errors.New("core: legacy Task is read-only after Phase 4 migration")
 )
 
 type Store struct {
@@ -46,7 +47,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	store := &Store{db: db, now: func() time.Time { return time.Now().UTC() }}
-	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;`); err != nil {
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("configure sqlite: %w", err)
 	}
@@ -820,7 +821,28 @@ func (s *Store) EntriesAfter(ctx context.Context, conversationID string, afterSe
 	return entries, rows.Err()
 }
 
+func (s *Store) legacyTasksReadOnly(ctx context.Context) bool {
+	var migrated string
+	return s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'phase4.migration_complete'`).Scan(&migrated) == nil && migrated == "1"
+}
+
+// LegacyTasksReadOnly reports the one-way migration barrier. Runtime paths use
+// it before touching a legacy Task so they cannot start a Node session first.
+func (s *Store) LegacyTasksReadOnly(ctx context.Context) bool {
+	return s != nil && s.legacyTasksReadOnly(ctx)
+}
+
+func (s *Store) CheckLegacyTaskDispatch(ctx context.Context, taskID string) error {
+	if s.LegacyTasksReadOnly(ctx) {
+		return ErrLegacyTaskReadOnly
+	}
+	return nil
+}
+
 func (s *Store) CreateTask(ctx context.Context, conversationID, text string) (Task, error) {
+	if s.legacyTasksReadOnly(ctx) {
+		return Task{}, ErrLegacyTaskReadOnly
+	}
 	return withTx(s, ctx, func(tx *sql.Tx) (Task, error) {
 		now := s.now()
 		task := Task{ID: newID("tsk"), ConversationID: conversationID, Text: text, State: TaskDispatching, CreatedAt: now, UpdatedAt: now}
@@ -842,6 +864,9 @@ func (s *Store) AcceptDispatch(ctx context.Context, taskID, workerRef, nodeID, r
 }
 
 func (s *Store) AcceptDispatchWithProfile(ctx context.Context, taskID, workerRef, nodeID, runtimeSessionID, workspace string, profile BindingProfile) (Task, WorkerBinding, Attempt, error) {
+	if s.legacyTasksReadOnly(ctx) {
+		return Task{}, WorkerBinding{}, Attempt{}, ErrLegacyTaskReadOnly
+	}
 	accepted, err := withTx(s, ctx, func(tx *sql.Tx) (acceptedDispatch, error) {
 		task, err := getTask(ctx, tx, taskID)
 		if err != nil {
@@ -875,6 +900,12 @@ func (s *Store) AcceptDispatchWithProfile(ctx context.Context, taskID, workerRef
 }
 
 func (s *Store) SetAttemptActive(ctx context.Context, attemptID string) (Attempt, error) {
+	if s.legacyTasksReadOnly(ctx) {
+		var legacy string
+		if err := s.db.QueryRowContext(ctx, `SELECT id FROM attempts WHERE id = ?`, attemptID).Scan(&legacy); err == nil {
+			return Attempt{}, ErrLegacyTaskReadOnly
+		}
+	}
 	attempt, err := s.transitionAttempt(ctx, attemptID, []AttemptState{AttemptStarting}, AttemptActive)
 	if !errors.Is(err, ErrNotFound) {
 		return attempt, err
@@ -883,6 +914,12 @@ func (s *Store) SetAttemptActive(ctx context.Context, attemptID string) (Attempt
 }
 
 func (s *Store) MarkAttemptInterrupted(ctx context.Context, attemptID string) (Attempt, error) {
+	if s.legacyTasksReadOnly(ctx) {
+		var legacy string
+		if err := s.db.QueryRowContext(ctx, `SELECT id FROM attempts WHERE id = ?`, attemptID).Scan(&legacy); err == nil {
+			return Attempt{}, ErrLegacyTaskReadOnly
+		}
+	}
 	attempt, err := s.transitionAttempt(ctx, attemptID, []AttemptState{AttemptStarting, AttemptActive}, AttemptInterrupted)
 	if !errors.Is(err, ErrNotFound) {
 		return attempt, err
@@ -894,6 +931,9 @@ func (s *Store) MarkAttemptInterrupted(ctx context.Context, attemptID string) (A
 }
 
 func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, status ResultStatus, summary string) (Result, bool, error) {
+	if s.legacyTasksReadOnly(ctx) {
+		return Result{}, false, ErrLegacyTaskReadOnly
+	}
 	completed, err := withTx(s, ctx, func(tx *sql.Tx) (completedResult, error) {
 		var existing Result
 		err := tx.QueryRowContext(ctx, `SELECT id, attempt_id, status, summary, created_at FROM results WHERE attempt_id = ?`, attemptID).Scan(&existing.ID, &existing.AttemptID, &existing.Status, &existing.Summary, newTimestampScanner(&existing.CreatedAt))
@@ -949,6 +989,9 @@ func (s *Store) CompleteAttempt(ctx context.Context, attemptID string, status Re
 }
 
 func (s *Store) CloseTask(ctx context.Context, taskID string) (CloseOutcome, error) {
+	if s.legacyTasksReadOnly(ctx) {
+		return CloseOutcome{}, ErrLegacyTaskReadOnly
+	}
 	return withTx(s, ctx, func(tx *sql.Tx) (CloseOutcome, error) {
 		task, err := getTask(ctx, tx, taskID)
 		if err != nil {
@@ -978,6 +1021,9 @@ func (s *Store) CloseTask(ctx context.Context, taskID string) (CloseOutcome, err
 }
 
 func (s *Store) FinishClosingTask(ctx context.Context, taskID string) (Task, error) {
+	if s.legacyTasksReadOnly(ctx) {
+		return Task{}, ErrLegacyTaskReadOnly
+	}
 	return withTx(s, ctx, func(tx *sql.Tx) (Task, error) {
 		task, err := getTask(ctx, tx, taskID)
 		if err != nil {
@@ -1075,6 +1121,9 @@ func (s *Store) AuthorizeSecretaryCapability(ctx context.Context, personID, toke
 }
 
 func (s *Store) transitionTask(ctx context.Context, taskID string, from []TaskState, to TaskState) (Task, error) {
+	if s.legacyTasksReadOnly(ctx) {
+		return Task{}, ErrLegacyTaskReadOnly
+	}
 	return withTx(s, ctx, func(tx *sql.Tx) (Task, error) {
 		task, err := getTask(ctx, tx, taskID)
 		if err != nil {

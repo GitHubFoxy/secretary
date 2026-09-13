@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -20,6 +21,12 @@ type Dispatcher struct {
 }
 
 func (d Dispatcher) Dispatch(ctx context.Context, task core.Task, workerRef string) (core.WorkerBinding, core.Attempt, error) {
+	if d.Store == nil {
+		return core.WorkerBinding{}, core.Attempt{}, errors.New("dispatcher: store is required")
+	}
+	if err := d.Store.CheckLegacyTaskDispatch(ctx, task.ID); err != nil {
+		return core.WorkerBinding{}, core.Attempt{}, err
+	}
 	_, _ = d.Store.RecordEvent(ctx, "worker.dispatch_started", workerRef, "", "", map[string]string{"task_id": task.ID})
 	isChild := task.ParentTaskID != ""
 	var managedProfile node.ManagedProfile

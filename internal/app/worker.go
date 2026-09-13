@@ -27,6 +27,9 @@ func (c *WorkerController) Session(workerRef string) (node.Session, bool) {
 }
 
 func (c *WorkerController) Steer(ctx context.Context, workerRef, text string) (bool, error) {
+	if c.Store != nil && c.Store.LegacyTasksReadOnly(ctx) {
+		return false, core.ErrLegacyTaskReadOnly
+	}
 	session, ok := c.Session(workerRef)
 	if !ok {
 		return false, core.ErrNotFound
@@ -68,6 +71,9 @@ func (c *WorkerController) createFollowUpAfterInterrupt(ctx context.Context, tas
 func (c *WorkerController) Queue(ctx context.Context, workerRef, text string) (core.Attempt, error) {
 	if c.Store == nil {
 		return core.Attempt{}, errors.New("worker controller: store is required")
+	}
+	if c.Store.LegacyTasksReadOnly(ctx) {
+		return core.Attempt{}, core.ErrLegacyTaskReadOnly
 	}
 	session, ok := c.Session(workerRef)
 	task, err := c.Store.TaskForWorker(ctx, workerRef)
@@ -125,6 +131,9 @@ func (c *WorkerController) persistResults(taskID, workerRef string, session node
 }
 
 func (c *WorkerController) Stop(ctx context.Context, workerRef string) error {
+	if c.Store != nil && c.Store.LegacyTasksReadOnly(ctx) {
+		return core.ErrLegacyTaskReadOnly
+	}
 	session, ok := c.Session(workerRef)
 	if !ok {
 		return core.ErrNotFound
