@@ -174,7 +174,11 @@ func telegramEvent(event core.Event) telegram.Event {
 			}
 		}
 	case event.Kind == "approval.requested":
-		result.Kind = "worker.approval_requested"
+		if strings.EqualFold(stringField(payload, "kind"), "input") {
+			result.Kind = "worker.needs_input"
+		} else {
+			result.Kind = "worker.approval_requested"
+		}
 	case event.Kind == "approval.resolved" || event.Kind == "approval.approved" || event.Kind == "approval.denied" || event.Kind == "approval.revoked":
 		result.Kind = "worker.approval_resolved"
 	case event.Kind == "attempt.outcome_recorded" || event.Kind == "result.accepted":
@@ -183,6 +187,7 @@ func telegramEvent(event core.Event) telegram.Event {
 			result.Kind = ""
 			break
 		}
+		result.TerminalIdentity = terminalIdentity(event, payload)
 		status := strings.ToLower(stringField(payload, "status"))
 		result.Kind = "worker.completed"
 		if strings.Contains(status, "interrupt") || strings.Contains(status, "offline") {
@@ -194,6 +199,22 @@ func telegramEvent(event core.Event) telegram.Event {
 		result.Kind = ""
 	}
 	return result
+}
+
+func terminalIdentity(event core.Event, payload map[string]any) string {
+	if identity := strings.TrimSpace(event.CorrelationID); identity != "" {
+		return "turn:" + identity
+	}
+	if identity := stringField(payload, "turn_id"); identity != "" {
+		return "turn:" + identity
+	}
+	if identity := stringField(payload, "id"); identity != "" {
+		return "result:" + identity
+	}
+	if identity := strings.TrimSpace(event.AggregateID); identity != "" {
+		return event.AggregateType + ":" + identity
+	}
+	return ""
 }
 
 func stringField(values map[string]any, keys ...string) string {
