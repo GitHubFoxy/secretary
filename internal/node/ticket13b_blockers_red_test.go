@@ -68,6 +68,13 @@ func TestTicket13bHandshakePersistsPerNodeWorkspacesAndRejectsMismatch(t *testin
 	if !nodeRecordHasWorkspace(homeRecord, project.ID, "/srv/src/frontend") {
 		t.Fatalf("home workspace registry=%#v", homeRecord)
 	}
+	resolved, err := store.ResolveProjectDispatch(ctx, core.ProjectDispatchRequest{ProjectID: project.ID, NodeID: "macbook", HarnessInstanceID: "macbook/fx"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved.Workspace != "/Users/alice/src/frontend" {
+		t.Fatalf("dispatch workspace=%q", resolved.Workspace)
+	}
 
 	if err := macConn.Close(); err != nil {
 		t.Fatal(err)

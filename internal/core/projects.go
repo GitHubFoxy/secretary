@@ -808,6 +808,22 @@ func (s *Store) ResolveProjectDispatch(ctx context.Context, request ProjectDispa
 	if record.Revoked {
 		return ProjectDispatch{}, ErrNodeRevoked
 	}
+	if len(record.Workspaces) > 0 {
+		found := false
+		for _, nodeMapping := range record.Workspaces {
+			if nodeMapping.ProjectID == project.ID {
+				if filepath.Clean(nodeMapping.Path) != filepath.Clean(mapping.Path) {
+					return ProjectDispatch{}, fmt.Errorf("%w: Project %q path changed on Node %s", ErrNodeWorkspaceMismatch, project.ID, node)
+				}
+				mapping.Path = nodeMapping.Path
+				found = true
+				break
+			}
+		}
+		if !found {
+			return ProjectDispatch{}, fmt.Errorf("%w: Project %q is not mapped on Node %s", ErrProjectMappingMissing, project.ID, node)
+		}
+	}
 	workspace := request.Workspace
 	if workspace == "" {
 		workspace = mapping.Path

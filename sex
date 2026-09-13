@@ -38,6 +38,7 @@ Commands:
   node start|stop|status|logs|doctor
                     Manage the local Execution Node process
   node drain|revoke Safely drain or revoke the configured Node
+                    revoke waits for remote active work; use --force only to override
   node install-service|uninstall-service
                     Manage the Node launchd service
 EOF
@@ -263,6 +264,14 @@ node_doctor() {
 
 node_control() {
   local action="$1"; shift
+  local force=0
+  while (($#)); do
+    case "$1" in
+      --force) force=1 ;;
+      *) print -u2 "Unknown Node $action option: $1"; return 2 ;;
+    esac
+    shift
+  done
   ensure_node_config || return 1
   local admin="${SECRETARY_NODE_ADMIN_TOKEN:-}" name="$(node_config_value node)" server="$(node_config_value server_url)"
   [[ -n "$admin" ]] || { print -u2 "SECRETARY_NODE_ADMIN_TOKEN is required for Node control"; return 1; }
@@ -276,8 +285,68 @@ node_control() {
   [[ "$persisted_name" == "$name" ]] || { print -u2 "Node identity mismatch; refusing $action"; return 1; }
   server="${server%/}"
   local key="sex-node-$action-$(openssl rand -hex 12)"
-  curl -fsS -o /dev/null -H "Authorization: Bearer $admin" -H "Idempotency-Key: $key" -H "Content-Type: application/json" -X POST "$server/v1/nodes/$name/$action" || { print -u2 "Node $action failed"; return 1; }
+  local -a request_args
+  request_args=(-fsS -o /dev/null -H "Authorization: Bearer $admin" -H "Idempotency-Key: $key" -H "Content-Type: application/json" -X POST)
+  if (( force )); then
+    request_args+=(-d '{"force":true}')
+  fi
+  curl "${request_args[@]}" "$server/v1/nodes/$name/$action" || { print -u2 "Node $action failed"; return 1; }
   print "Node $action requested: $name"
+}
+
+node_remote_status() {
+  local admin="$1" server="$2" name="$3"
+  curl -fsS -H "Authorization: Bearer $admin" "$server/v1/nodes/$name"
+}
+
+node_status_idle() {
+  local response="$1"
+  [[ "$response" != *'"active_attempts"'* || "$response" == *'"active_attempts":[]'* || "$response" == *'"active_attempts": []'* ]]
+}
+
+node_revoke() {
+  local force=0 timeout_seconds="${SECRETARY_NODE_REVOKE_TIMEOUT:-60}" poll_interval="${SECRETARY_NODE_REVOKE_POLL_INTERVAL:-1}"
+  while (($#)); do
+    case "$1" in
+      --force) force=1 ;;
+      --timeout) shift; (($#)) || { print -u2 "--timeout requires seconds"; return 2; }; timeout_seconds="$1" ;;
+      --interval) shift; (($#)) || { print -u2 "--interval requires seconds"; return 2; }; poll_interval="$1" ;;
+      *) print -u2 "Unknown Node revoke option: $1"; return 2 ;;
+    esac
+    shift
+  done
+  [[ "$timeout_seconds" == <-> && "$timeout_seconds" -ge 0 ]] || { print -u2 "--timeout must be a non-negative integer"; return 2; }
+  ensure_node_config || return 1
+  local admin="${SECRETARY_NODE_ADMIN_TOKEN:-}" name="$(node_config_value node)" server="$(node_config_value server_url)"
+  [[ -n "$admin" && -n "$name" && -n "$server" ]] || { print -u2 "Node admin, identity and server URL are required"; return 1; }
+  local identity_path="$NODE_DATA/identity.json"
+  [[ -f "$identity_path" ]] || { print -u2 "Node identity is not paired; refusing revoke"; return 1; }
+  local persisted_name="$(awk -F'"' '/"node"[[:space:]]*:/ {print $4; exit}' "$identity_path")"
+  [[ "$persisted_name" == "$name" ]] || { print -u2 "Node identity mismatch; refusing revoke"; return 1; }
+  server="${server%/}"
+  node_control drain || return 1
+  local deadline=$((SECONDS + timeout_seconds)) remote_status=""
+  while true; do
+    remote_status="$(node_remote_status "$admin" "$server" "$name")" || { print -u2 "Unable to read remote Node status; refusing revoke"; return 1; }
+    if node_status_idle "$remote_status"; then
+      break
+    fi
+    if (( force )); then
+      print -u2 "Node still has active attempts; forcing revoke"
+      break
+    fi
+    if (( SECONDS >= deadline )); then
+      print -u2 "Node drain timed out with active attempts; refusing revoke (use --force to override)"
+      return 1
+    fi
+    sleep "$poll_interval"
+  done
+  if (( force )); then
+    node_control revoke --force || return 1
+  else
+    node_control revoke || return 1
+  fi
+  node_stop
 }
 
 node_install_service() {
@@ -594,7 +663,7 @@ case "${1:-}" in
       logs) shift; tail -f "$NODE_LOG_FILE" ;;
       doctor) shift; node_doctor "$@" ;;
       drain) shift; node_control drain "$@" ;;
-      revoke) shift; node_control drain "$@" && node_control revoke "$@" && node_stop ;;
+      revoke) shift; node_revoke "$@" ;;
       install-service) shift; node_install_service "$@" ;;
       uninstall-service) launchctl bootout "gui/$UID" "$NODE_PLIST" 2>/dev/null || true; rm -f "$NODE_PLIST"; print "Node service removed" ;;
       serve) shift; node_serve "$@" ;;

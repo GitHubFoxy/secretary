@@ -37,6 +37,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 	execution := NewExecutionNode(d.Identity.Node, d.Runtime, d.Store)
+	if err := execution.SetWorkspaces(d.Workspaces); err != nil {
+		return fmt.Errorf("node: set workspace mappings: %w", err)
+	}
 	if err := execution.Restore(ctx); err != nil {
 		return fmt.Errorf("node: restore local execution state: %w", err)
 	}

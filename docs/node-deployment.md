@@ -32,7 +32,7 @@ Pairing token и admin token должны отличаться от Client boots
   --workspace frontend=/srv/src/frontend
 ```
 
-`--workspace` задаёт mapping `Project ID -> абсолютный путь`. Mapping отправляется в authenticated handshake и не меняется Worker envelope. `sex node setup` сохраняет только non-secret JSON-конфигурацию с правами `0600`.
+`--workspace` задаёт mapping `Project ID -> абсолютный путь`. Server проверяет mapping против Project registry и сохраняет его в NodeRecord. При reconnect mapping остаётся durable, а dispatch использует только согласованный путь. Credentials не попадают в Worker envelope. `sex node setup` сохраняет только non-secret JSON-конфигурацию с правами `0600`.
 
 ## Pairing и запуск
 
@@ -59,7 +59,7 @@ sex node drain
 sex node revoke
 ```
 
-`revoke` сначала ставит Node на drain, затем отзывает identity на server и останавливает локальный процесс. Для control-команд нужен отдельный `SECRETARY_NODE_ADMIN_TOKEN`. Client credential, Secretary runtime credential и Telegram token для этого не подходят.
+`revoke` сначала ставит Node на drain, затем опрашивает remote status до пустого `active_attempts`, и только после этого отзывает identity на server и останавливает локальный процесс. Таймаут bounded. При таймауте revoke отказывается по умолчанию. Явный `sex node revoke --force` разрешает принудительный отзыв и остановку активной работы. Для control-команд нужен отдельный `SECRETARY_NODE_ADMIN_TOKEN`. Client credential, Secretary runtime credential и Telegram token для этого не подходят.
 
 Для запуска после входа в macOS:
 

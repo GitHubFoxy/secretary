@@ -347,7 +347,7 @@ func setDrainHTTP(t *testing.T, ctx context.Context, server *httptest.Server, no
 
 func revokeHTTP(t *testing.T, ctx context.Context, server *httptest.Server, nodeRef string) ServerNodeStatus {
 	t.Helper()
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/nodes/"+nodeRef+"/revoke", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/nodes/"+nodeRef+"/revoke", strings.NewReader(`{"force":true}`))
 	if err != nil {
 		t.Fatal(err)
 	}
