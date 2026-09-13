@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,8 +181,11 @@ func TestMigratedStoreKeepsSecretaryIdentityAndRejectsNewLegacyTask(t *testing.T
 	if err != nil || identity.ID == "" || identity.ConversationID != "conversation-1" {
 		t.Fatalf("identity=%#v err=%v", identity, err)
 	}
-	if _, err := store.CreateTask(ctx, "conversation-1", "must not be created"); err == nil {
-		t.Fatal("created a new legacy Task after migration")
+	if _, err := store.CreateTask(ctx, "conversation-1", "must not be created"); !errors.Is(err, core.ErrLegacyTaskReadOnly) {
+		t.Fatalf("legacy Task creation error=%v", err)
+	}
+	if _, err := store.MarkDispatchFailed(ctx, "task-1"); !errors.Is(err, core.ErrLegacyTaskReadOnly) {
+		t.Fatalf("legacy Task transition error=%v", err)
 	}
 }
 
