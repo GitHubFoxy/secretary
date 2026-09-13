@@ -13,12 +13,18 @@ import (
 )
 
 type runtime struct{}
+type countingRuntime struct{ started chan struct{} }
+
 type session struct {
 	result chan node.Result
 	queued chan string
 }
 
 func (runtime) Start(_ context.Context, _ node.StartRequest) (node.Session, error) {
+	return &session{result: make(chan node.Result, 2), queued: make(chan string, 2)}, nil
+}
+func (r countingRuntime) Start(_ context.Context, _ node.StartRequest) (node.Session, error) {
+	close(r.started)
 	return &session{result: make(chan node.Result, 2), queued: make(chan string, 2)}, nil
 }
 func (s *session) ID() string                                  { return "runtime-session" }
@@ -67,9 +73,15 @@ func TestDispatcherDoesNotExecuteLegacyTaskAfterMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	dispatcher := &Dispatcher{Store: store, Node: node.NewLocal(runtime{})}
+	started := make(chan struct{})
+	dispatcher := &Dispatcher{Store: store, Node: node.NewLocal(countingRuntime{started: started})}
 	if _, _, err := dispatcher.Dispatch(ctx, task, task.ID); !errors.Is(err, core.ErrLegacyTaskReadOnly) {
 		t.Fatalf("legacy dispatch error=%v", err)
+	}
+	select {
+	case <-started:
+		t.Fatal("legacy task started a runtime")
+	default:
 	}
 	if _, ok := dispatcher.Node.Session(task.ID); ok {
 		t.Fatal("legacy task started a runtime session")

@@ -172,6 +172,17 @@ reasoning = "high"
 	if err := os.WriteFile(configPath, []byte(legacy), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	legacyDB, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacyDB.ExecContext(ctx, `UPDATE worker_bindings SET model = 'smart'`); err != nil {
+		legacyDB.Close()
+		t.Fatal(err)
+	}
+	if err := legacyDB.Close(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Run(ctx, Options{SourcePath: dbPath, DestinationPath: dbPath, ConfigPath: configPath}); err != nil {
 		t.Fatal(err)
 	}
@@ -189,6 +200,10 @@ reasoning = "high"
 	loaded, err := config.Load(configPath)
 	if err != nil || loaded.Config.WorkerPolicy.Model != "provider/smart-model" || len(loaded.Config.WorkerPolicy.FallbackModels) != 2 {
 		t.Fatalf("migrated config is not production-readable: snapshot=%#v err=%v", loaded.Config.WorkerPolicy, err)
+	}
+	var snapshotModel string
+	if err := queryOne(dbPath, `SELECT json_extract(policy_snapshot, '$.model') FROM workers LIMIT 1`, &snapshotModel); err != nil || snapshotModel != "provider/smart-model" {
+		t.Fatalf("snapshot model=%q err=%v", snapshotModel, err)
 	}
 	for _, required := range []string{"[secretary]", "harness = 'fx'", "model = 'provider/secretary'", "[worker_policy]", "default_harness = 'fx'"} {
 		if !strings.Contains(text, required) {
@@ -376,7 +391,7 @@ func TestMigrationNeverMarksCompletedTurnSucceededWithoutResult(t *testing.T) {
 	if err := queryOne(path, `SELECT attempt_id, status FROM phase4_results WHERE turn_id = 'legacy-turn-binding-1'`, &resultAttempt, &resultStatus); err != nil {
 		t.Fatal(err)
 	}
-	if resultAttempt != "legacy-attempt-attempt-2" || resultStatus != "interrupted" {
+	if resultAttempt != "legacy-attempt-binding-1-missing" || resultStatus != "interrupted" {
 		t.Fatalf("derived terminal result=%q %q", resultAttempt, resultStatus)
 	}
 }
@@ -454,6 +469,41 @@ func TestInvalidSchemaMigrationRestoresActiveDatabaseFromBackup(t *testing.T) {
 	}
 }
 
+func TestManualCopyMigrationIncludesSQLiteWALState(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	source := filepath.Join(dir, "secretary.db")
+	if err := seedPhase3Database(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `PRAGMA journal_mode = WAL; INSERT INTO conversation_entries VALUES ('entry-wal', 'conversation-1', 3, 'secretary_reply', 'written in WAL', '2024-01-01T00:02:00Z')`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	destination := filepath.Join(dir, "copy", "secretary.db")
+	if err := fixtureCopyFile(source, destination); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, Options{SourcePath: destination, DestinationPath: destination}); err != nil {
+		t.Fatal(err)
+	}
+	var copied int
+	if err := queryOne(destination, `SELECT COUNT(*) FROM conversation_entries WHERE id = 'entry-wal'`, &copied); err != nil {
+		t.Fatal(err)
+	}
+	if copied != 1 {
+		t.Fatal("manual copy dropped committed WAL row")
+	}
+}
+
 func queryOne(path, query string, destinations ...any) error {
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -477,7 +527,25 @@ func fixtureCopyFile(from, to string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(to, data, 0o600)
+	if err := os.MkdirAll(filepath.Dir(to), 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(to, data, 0o600); err != nil {
+		return err
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		sidecar, sidecarErr := os.ReadFile(from + suffix)
+		if errors.Is(sidecarErr, os.ErrNotExist) {
+			continue
+		}
+		if sidecarErr != nil {
+			return sidecarErr
+		}
+		if err := os.WriteFile(to+suffix, sidecar, 0o600); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func TestMigrationPinsLegacyAliasesInWorkerAndProjectSnapshots(t *testing.T) {
@@ -527,12 +595,12 @@ func TestMigrationPreservesFollowUpHistoryAsDistinctTurns(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = db.ExecContext(ctx, `
-INSERT INTO conversation_entries VALUES ('entry-followup-1', 'conversation-1', 3, 'worker_input', 'continue tests', '2024-01-01T00:00:20Z');
-INSERT INTO conversation_entries VALUES ('entry-followup-2', 'conversation-1', 4, 'worker_input', 'then update docs', '2024-01-01T00:00:40Z');
-INSERT INTO attempts VALUES ('attempt-3', 'binding-1', 3, 'succeeded', '2024-01-01T00:00:30Z', '2024-01-01T00:00:35Z');
-INSERT INTO attempts VALUES ('attempt-4', 'binding-1', 4, 'failed', '2024-01-01T00:00:50Z', '2024-01-01T00:00:55Z');
-INSERT INTO results VALUES ('result-3', 'attempt-3', 'succeeded', 'tests done', '2024-01-01T00:00:35Z');
-INSERT INTO results VALUES ('result-4', 'attempt-4', 'failed', 'docs failed', '2024-01-01T00:00:55Z');`)
+INSERT INTO conversation_entries VALUES ('entry-followup-1', 'conversation-1', 3, 'worker_input', 'continue tests', '2024-01-01T00:01:20Z');
+INSERT INTO conversation_entries VALUES ('entry-followup-2', 'conversation-1', 4, 'worker_input', 'then update docs', '2024-01-01T00:01:40Z');
+INSERT INTO attempts VALUES ('attempt-3', 'binding-1', 3, 'succeeded', '2024-01-01T00:01:30Z', '2024-01-01T00:01:35Z');
+INSERT INTO attempts VALUES ('attempt-4', 'binding-1', 4, 'failed', '2024-01-01T00:01:50Z', '2024-01-01T00:01:55Z');
+INSERT INTO results VALUES ('result-3', 'attempt-3', 'succeeded', 'tests done', '2024-01-01T00:01:35Z');
+INSERT INTO results VALUES ('result-4', 'attempt-4', 'failed', 'docs failed', '2024-01-01T00:01:55Z');`)
 	if err != nil {
 		db.Close()
 		t.Fatal(err)

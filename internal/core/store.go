@@ -826,6 +826,19 @@ func (s *Store) legacyTasksReadOnly(ctx context.Context) bool {
 	return s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'phase4.migration_complete'`).Scan(&migrated) == nil && migrated == "1"
 }
 
+// LegacyTasksReadOnly reports the one-way migration barrier. Runtime paths use
+// it before touching a legacy Task so they cannot start a Node session first.
+func (s *Store) LegacyTasksReadOnly(ctx context.Context) bool {
+	return s != nil && s.legacyTasksReadOnly(ctx)
+}
+
+func (s *Store) CheckLegacyTaskDispatch(ctx context.Context, taskID string) error {
+	if s.LegacyTasksReadOnly(ctx) {
+		return ErrLegacyTaskReadOnly
+	}
+	return nil
+}
+
 func (s *Store) CreateTask(ctx context.Context, conversationID, text string) (Task, error) {
 	if s.legacyTasksReadOnly(ctx) {
 		return Task{}, ErrLegacyTaskReadOnly

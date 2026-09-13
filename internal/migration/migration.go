@@ -81,7 +81,7 @@ func Run(ctx context.Context, options Options) (Report, error) {
 		}
 	}
 
-	canonicalConfig, err := prepareConfig(options.ConfigPath)
+	canonicalConfig, legacyModels, err := prepareConfig(options.ConfigPath)
 	if err != nil {
 		return report, err
 	}
@@ -98,7 +98,7 @@ func Run(ctx context.Context, options Options) (Report, error) {
 	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000`); err != nil {
 		return report, err
 	}
-	migrated, err := migrateDatabase(ctx, db)
+	migrated, err := migrateDatabase(ctx, db, legacyModels)
 	rollback := func() {
 		_ = db.Close()
 		_ = restoreFile(backupPath, options.DestinationPath)
@@ -168,20 +168,20 @@ func installUserCopy(copy *userCopy) error {
 	return nil
 }
 
-func prepareConfig(path string) ([]byte, error) {
+func prepareConfig(path string) ([]byte, map[string]string, error) {
 	if path == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("read migration config: %w", err)
+		return nil, nil, fmt.Errorf("read migration config: %w", err)
 	}
 	if _, err := config.Load(path); err != nil {
-		return nil, fmt.Errorf("%w: config validation failed: %v", ErrInvalid, err)
+		return nil, nil, fmt.Errorf("%w: config validation failed: %v", ErrInvalid, err)
 	}
 	var tree map[string]any
 	if err := toml.Unmarshal(raw, &tree); err != nil {
-		return nil, fmt.Errorf("%w: parse migration config: %v", ErrInvalid, err)
+		return nil, nil, fmt.Errorf("%w: parse migration config: %v", ErrInvalid, err)
 	}
 	secretary := table(tree, "secretary")
 	workerPolicy := table(tree, "worker_policy")
@@ -216,6 +216,12 @@ func prepareConfig(path string) ([]byte, error) {
 	if len(fallbackModels) > 0 {
 		workerPolicy["fallback_models"] = fallbackModels
 	}
+	legacyModels := map[string]string{}
+	for _, alias := range []string{"secretary", "fast", "smart", "cheap"} {
+		if value := stringValue(models[alias]); value != "" {
+			legacyModels[alias] = value
+		}
+	}
 	for _, alias := range []string{"fast", "smart", "cheap"} {
 		delete(models, alias)
 	}
@@ -225,9 +231,9 @@ func prepareConfig(path string) ([]byte, error) {
 	delete(tree, "models")
 	canonical, err := toml.Marshal(tree)
 	if err != nil {
-		return nil, fmt.Errorf("encode migrated config: %w", err)
+		return nil, nil, fmt.Errorf("encode migrated config: %w", err)
 	}
-	return canonical, nil
+	return canonical, legacyModels, nil
 }
 
 func canonicalLegacyModel(value, fallback string) string {
@@ -239,6 +245,35 @@ func canonicalLegacyModel(value, fallback string) string {
 		return value
 	}
 }
+
+func resolveLegacyModel(value string, models map[string]string, runtime string) string {
+	value = strings.TrimSpace(value)
+	for i := 0; i < 5; i++ {
+		if value == "" {
+			break
+		}
+		mapped, ok := models[strings.ToLower(value)]
+		if !ok || strings.TrimSpace(mapped) == value {
+			break
+		}
+		value = strings.TrimSpace(mapped)
+	}
+	if value == "" || isLegacyModelAlias(value) {
+		return legacyAdapterDefaultModel(runtime)
+	}
+	return value
+}
+
+func isLegacyModelAlias(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "default", "fast", "smart", "cheap":
+		return true
+	default:
+		return false
+	}
+}
+
+func legacyAdapterDefaultModel(_ string) string { return "gpt-5.6-luna" }
 
 func table(tree map[string]any, key string) map[string]any {
 	if value, ok := tree[key].(map[string]any); ok {
@@ -252,7 +287,7 @@ func stringValue(value any) string {
 	return strings.TrimSpace(text)
 }
 
-func migrateDatabase(ctx context.Context, db *sql.DB) (Report, error) {
+func migrateDatabase(ctx context.Context, db *sql.DB, legacyModels map[string]string) (Report, error) {
 	if err := installSchema(ctx, db); err != nil {
 		return Report{}, err
 	}
@@ -298,6 +333,7 @@ func migrateDatabase(ctx context.Context, db *sql.DB) (Report, error) {
 		}
 		workerID := "legacy-worker-" + bindingID
 		turnID := "legacy-turn-" + bindingID
+		model = resolveLegacyModel(model, legacyModels, runtime)
 		if err := insertWorker(ctx, tx, workerID, workerRef, conversationID, text, nodeID, workspace, profileVersion, profileName, profileHash, runtime, model, reasoning, allowTools, delivery, taskState, taskCreated, taskUpdated); err != nil {
 			return Report{}, err
 		}
@@ -309,7 +345,7 @@ func migrateDatabase(ctx context.Context, db *sql.DB) (Report, error) {
 		}
 		report.Workers++
 		report.Turns++
-		if err := migrateAttempts(ctx, tx, bindingID, workerID, turnID, nativeSession, nodeID, workspace, runtime, conversationID, workerRef, taskState, &report); err != nil {
+		if err := migrateAttempts(ctx, tx, bindingID, workerID, turnID, nativeSession, nodeID, workspace, runtime, conversationID, workerRef, taskState, text, taskCreated, taskUpdated, &report); err != nil {
 			return Report{}, err
 		}
 	}
@@ -393,59 +429,49 @@ func insertTurn(ctx context.Context, tx *sql.Tx, id, workerID, input, state, cre
 	return err
 }
 
-func migrateAttempts(ctx context.Context, tx *sql.Tx, bindingID, workerID, turnID, nativeSession, nodeID, workspace, runtime, conversationID, workerRef, taskState string, report *Report) error {
+type legacyMigrationAttempt struct {
+	id                      string
+	number                  int
+	state, created, updated string
+}
+
+type legacyMigrationResult struct {
+	id, status, summary, created string
+}
+
+type legacyMigrationDirection struct {
+	id, input, created, updated string
+}
+
+func migrateAttempts(ctx context.Context, tx *sql.Tx, bindingID, workerID, turnID, nativeSession, nodeID, workspace, runtime, conversationID, workerRef, taskState, initialInput, initialCreated, initialUpdated string, report *Report) error {
+	_ = nativeSession
 	rows, err := tx.QueryContext(ctx, `SELECT id, number, state, created_at, updated_at FROM attempts WHERE worker_binding_id = ? ORDER BY number`, bindingID)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-	type oldAttempt struct {
-		id                      string
-		number                  int
-		state, created, updated string
-	}
-	type oldResult struct {
-		id, status, summary, created string
-	}
-	var attempts []oldAttempt
-	results := make(map[string]oldResult)
+	var attempts []legacyMigrationAttempt
 	for rows.Next() {
-		var item oldAttempt
+		var item legacyMigrationAttempt
 		if err := rows.Scan(&item.id, &item.number, &item.state, &item.created, &item.updated); err != nil {
+			rows.Close()
 			return err
 		}
 		attempts = append(attempts, item)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return err
 	}
-	for index, old := range attempts {
-		attemptID := "legacy-attempt-" + old.id
-		state := old.state
-		if state == "starting" || state == "active" {
-			// The native ID is intentionally not persisted. Without a Node-local
-			// proof, resuming would be a silent and unsafe execution fork.
-			state = "interrupted"
-		}
-		harnessID := legacyHarnessInstance(nodeID, runtime, "", "").ID
-		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempts(id, worker_id, turn_id, number, node_id, harness_instance_id, state, correlation_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, attemptID, workerID, turnID, old.number, nodeID, harnessID, state, turnID, old.created, old.updated); err != nil {
-			return err
-		}
-		classification := "final"
-		if index < len(attempts)-1 {
-			classification = "retryable"
-		}
-		status := state
-		if status != "succeeded" && status != "failed" && status != "canceled" && status != "interrupted" {
-			status = "interrupted"
-			classification = "final"
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempt_outcomes(id, attempt_id, status, classification, error_code, error_message, diagnostics, created_at) VALUES(?, ?, ?, ?, '', '', ?, ?)`, "legacy-outcome-"+old.id, attemptID, status, classification, `{"legacy_attempt_id":"`+old.id+`"}`, old.updated); err != nil {
-			return err
-		}
-		report.Attempts++
-		report.Outcomes++
-		var result oldResult
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	if len(attempts) == 0 && (taskState == "closed" || taskState == "completed") {
+		attempts = append(attempts, legacyMigrationAttempt{id: bindingID + "-missing", number: 1, state: "interrupted", created: initialUpdated, updated: initialUpdated})
+	}
+
+	results := make(map[string]legacyMigrationResult)
+	for _, old := range attempts {
+		var result legacyMigrationResult
 		resultErr := tx.QueryRowContext(ctx, `SELECT id, status, summary, created_at FROM results WHERE attempt_id = ?`, old.id).Scan(&result.id, &result.status, &result.summary, &result.created)
 		if resultErr == nil {
 			results[old.id] = result
@@ -453,55 +479,133 @@ func migrateAttempts(ctx context.Context, tx *sql.Tx, bindingID, workerID, turnI
 			return resultErr
 		}
 	}
-	if len(attempts) > 0 {
-		final := attempts[len(attempts)-1]
-		finalState := final.state
-		if finalState == "starting" || finalState == "active" {
-			finalState = "interrupted"
+
+	directions := []legacyMigrationDirection{{id: turnID, input: initialInput, created: initialCreated, updated: initialUpdated}}
+	followups, err := legacyFollowUpDirections(ctx, tx, conversationID, workerRef)
+	if err != nil {
+		return err
+	}
+	directions = append(directions, followups...)
+	starts := make([]int, len(directions))
+	starts[0] = 0
+	for i := 1; i < len(directions); i++ {
+		starts[i] = len(attempts)
+		for j := starts[i-1] + 1; j < len(attempts); j++ {
+			if attempts[j].created >= directions[i].created {
+				starts[i] = j
+				break
+			}
 		}
+		if starts[i] == len(attempts) && i < len(attempts) {
+			starts[i] = i
+		}
+	}
+	for i, direction := range directions {
+		if i > 0 {
+			if err := insertTurn(ctx, tx, direction.id, workerID, direction.input, "queued", direction.created, direction.updated); err != nil {
+				return err
+			}
+			report.Turns++
+		}
+		start := starts[i]
+		end := len(attempts)
+		if i+1 < len(starts) && starts[i+1] < end {
+			end = starts[i+1]
+		}
+		if start >= end {
+			continue
+		}
+		for j := start; j < end; j++ {
+			old := attempts[j]
+			attemptID := "legacy-attempt-" + old.id
+			state := migratedAttemptState(old.state)
+			harnessID := legacyHarnessInstance(nodeID, runtime, "", "").ID
+			if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempts(id, worker_id, turn_id, number, node_id, harness_instance_id, state, correlation_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, attemptID, workerID, direction.id, j-start+1, nodeID, harnessID, state, direction.id, old.created, old.updated); err != nil {
+				return err
+			}
+			classification := "final"
+			if j < end-1 {
+				classification = "retryable"
+			}
+			status := state
+			if status == "interrupted" {
+				classification = "final"
+			} else if !validAttemptResultState(status) {
+				status = "interrupted"
+				classification = "final"
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempt_outcomes(id, attempt_id, status, classification, error_code, error_message, diagnostics, created_at) VALUES(?, ?, ?, ?, '', '', ?, ?)`, "legacy-outcome-"+old.id, attemptID, status, classification, `{"legacy_attempt_id":"`+old.id+`"}`, old.updated); err != nil {
+				return err
+			}
+			report.Attempts++
+			report.Outcomes++
+		}
+		final := attempts[end-1]
+		finalState := migratedAttemptState(final.state)
 		finalResult, hasResult := results[final.id]
-		resultAttemptID := final.id
-		// An interrupted non-terminal Task may already have a visible result from
-		// its last completed attempt. Keep that historical result, but never use a
-		// prior result to make a terminal Task look successful.
-		if !hasResult && taskState != "closed" && taskState != "completed" {
-			for index := len(attempts) - 2; index >= 0; index-- {
-				if candidate, ok := results[attempts[index].id]; ok {
-					finalResult, hasResult = candidate, true
-					resultAttemptID = attempts[index].id
+		resultStatus := finalState
+		summary := "legacy attempt " + final.id + " completed with status " + finalState
+		created := final.updated
+		if hasResult && validResultStatus(finalResult.status) {
+			resultStatus, summary, created = finalResult.status, finalResult.summary, finalResult.created
+		} else if !hasResult && finalState == "interrupted" {
+			for j := end - 2; j >= start; j-- {
+				if prior, ok := results[attempts[j].id]; ok && strings.TrimSpace(prior.summary) != "" {
+					summary, created = prior.summary, prior.created
 					break
 				}
 			}
 		}
-		if hasResult && validResultStatus(finalResult.status) && (resultAttemptID == final.id || finalState == "interrupted" && taskState != "closed" && taskState != "completed") {
-			if err := insertMigratedResult(ctx, tx, workerID, turnID, conversationID, workerRef, "legacy-attempt-"+resultAttemptID, finalResult.id, finalResult.status, finalResult.summary, finalResult.created, report); err != nil {
-				return err
-			}
-		} else if validAttemptResultState(finalState) {
-			resultID := "legacy-derived-result-" + final.id
-			summary := "legacy attempt " + final.id + " completed with status " + finalState
-			if err := insertMigratedResult(ctx, tx, workerID, turnID, conversationID, workerRef, "legacy-attempt-"+final.id, resultID, finalState, summary, final.updated, report); err != nil {
-				return err
-			}
+		if err := insertMigratedResult(ctx, tx, workerID, direction.id, conversationID, workerRef, "legacy-attempt-"+final.id, resultIDForMigration(finalResult, final.id), resultStatus, summary, created, report); err != nil {
+			return err
 		}
 		currentAttemptID := "legacy-attempt-" + final.id
-		if _, err := tx.ExecContext(ctx, `UPDATE turns SET current_attempt_id = ? WHERE id = ?`, currentAttemptID, turnID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE turns SET current_attempt_id = ? WHERE id = ?`, currentAttemptID, direction.id); err != nil {
 			return err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE workers SET current_turn_id = ? WHERE id = ?`, turnID, workerID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE workers SET current_turn_id = ? WHERE id = ?`, direction.id, workerID); err != nil {
 			return err
-		}
-		if finalState == "interrupted" {
-			if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = 'interrupted' WHERE id = ?`, turnID); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
 }
 
+func migratedAttemptState(state string) string {
+	if state == "starting" || state == "active" {
+		return "interrupted"
+	}
+	if validAttemptResultState(state) || state == "interrupted" {
+		return state
+	}
+	return "interrupted"
+}
+
+func legacyFollowUpDirections(ctx context.Context, tx *sql.Tx, conversationID, workerRef string) ([]legacyMigrationDirection, error) {
+	rows, err := tx.QueryContext(ctx, `SELECT id, body, created_at FROM conversation_entries WHERE conversation_id = ? AND kind IN ('worker_input', 'worker_follow_up', 'follow_up') AND (worker_ref = ? OR worker_ref = '') ORDER BY seq, id`, conversationID, workerRef)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	directions := make([]legacyMigrationDirection, 0)
+	for rows.Next() {
+		var id, body, created string
+		if err := rows.Scan(&id, &body, &created); err != nil {
+			return nil, err
+		}
+		directions = append(directions, legacyMigrationDirection{id: "legacy-turn-" + strings.ReplaceAll(id, " ", "_"), input: body, created: created, updated: created})
+	}
+	return directions, rows.Err()
+}
+
+func resultIDForMigration(result legacyMigrationResult, finalAttemptID string) string {
+	if result.id != "" {
+		return result.id
+	}
+	return "legacy-derived-result-" + finalAttemptID
+}
+
 func validResultStatus(status string) bool {
-	return status == "succeeded" || status == "failed" || status == "canceled"
+	return status == "succeeded" || status == "failed" || status == "canceled" || status == "interrupted"
 }
 
 func validAttemptResultState(state string) bool {
@@ -535,6 +639,8 @@ func phase4TurnState(status string) string {
 		return "succeeded"
 	case "canceled":
 		return "canceled"
+	case "interrupted":
+		return "interrupted"
 	default:
 		return "failed"
 	}
@@ -544,6 +650,17 @@ func attachVisibleResult(ctx context.Context, tx *sql.Tx, conversationID, worker
 	var entryID string
 	err := tx.QueryRowContext(ctx, `SELECT id FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND body = ? AND result_id = '' ORDER BY seq LIMIT 1`, conversationID, summary).Scan(&entryID)
 	if errors.Is(err, sql.ErrNoRows) {
+		var orphanCount int
+		if countErr := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND worker_ref = '' AND turn_id = '' AND result_id = ''`, conversationID).Scan(&orphanCount); countErr != nil {
+			return countErr
+		}
+		if orphanCount == 1 {
+			if scanErr := tx.QueryRowContext(ctx, `SELECT id FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND worker_ref = '' AND turn_id = '' AND result_id = '' LIMIT 1`, conversationID).Scan(&entryID); scanErr != nil {
+				return scanErr
+			}
+			_, updateErr := tx.ExecContext(ctx, `UPDATE conversation_entries SET worker_ref = ?, turn_id = ?, result_id = ? WHERE id = ?`, workerRef, turnID, resultID, entryID)
+			return updateErr
+		}
 		var seq int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM conversation_entries WHERE conversation_id = ?`, conversationID).Scan(&seq); err != nil {
 			return err
