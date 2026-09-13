@@ -1,7 +1,7 @@
 # 15 Phase 4 acceptance gate
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 03a, 03b, 04, 04a, 05b, 06a, 06b, 07, 08, 09, 10, 11, 12, 13a, 13b, 14
 
 ## Work
@@ -35,3 +35,9 @@ Blocked by: 03a, 03b, 04, 04a, 05b, 06a, 06b, 07, 08, 09, 10, 11, 12, 13a, 13b, 
 - Revoke Client/Node, secret redaction, offline state и no-silent-fallback доказаны.
 - `go test ./...`, `go test -race ./...`, `go vet ./...`, frontend checks и production builds проходят.
 - Manual matrix и diagnostic evidence записаны в `docs/phase4-release-gate.md`.
+
+## Answer
+
+Добавлены `scripts/phase4-release-gate.sh`, его shell contract test и `docs/phase4-release-gate.md`. Gate выполняет gofmt, Go test/race/vet/build, frontend lock/test/build, embedded asset verification, профильные CLI/Node tests и `git diff --check`. Ручная матрица сценария 24 разделена от автоматических проверок и содержит evidence ledger и BLOCKED/UNAVAILABLE правила.
+
+Проверка `./scripts/phase4-release-gate.sh` прошла. Real-harness acceptance для настоящих `fx`, Claude Code и Codex в этом запуске не выполнялась, поэтому в документации остаётся `NOT RUN` до отдельного прогона с чистой конфигурацией.
