@@ -59,16 +59,16 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	defer localStore.Close()
 	runtime := &daemonCountingRuntime{}
 	daemon := &Daemon{
-		Identity: identity,
-		Store: localStore,
-		Runtime: runtime,
-		Inventory: daemonStaticInventory{snapshot: inventory},
-		Capacity: 2,
-		HeartbeatInterval: 20 * time.Millisecond,
-		InventoryInterval: time.Hour,
+		Identity:           identity,
+		Store:              localStore,
+		Runtime:            runtime,
+		Inventory:          daemonStaticInventory{snapshot: inventory},
+		Capacity:           2,
+		HeartbeatInterval:  20 * time.Millisecond,
+		InventoryInterval:  time.Hour,
 		OutboxPollInterval: 10 * time.Millisecond,
-		ReconnectMin: 10 * time.Millisecond,
-		ReconnectMax: 40 * time.Millisecond,
+		ReconnectMin:       10 * time.Millisecond,
+		ReconnectMax:       40 * time.Millisecond,
 	}
 	daemonCtx, stopDaemon := context.WithCancel(ctx)
 	daemonDone := make(chan error, 1)
@@ -270,7 +270,7 @@ func (s *daemonSession) Close() error                                { return ni
 
 func daemonInventoryFixture(nodeRef core.NodeReference) core.HarnessInventorySnapshot {
 	return core.HarnessInventorySnapshot{
-		Node: nodeRef,
+		Node:       nodeRef,
 		ObservedAt: time.Now().UTC(),
 		Instances: []core.HarnessInstance{{
 			ID: core.HarnessInstanceID(string(nodeRef) + "/fx"), Node: nodeRef, Kind: core.HarnessFX, Version: "1.2.3",
