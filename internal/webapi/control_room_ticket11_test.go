@@ -788,4 +788,160 @@ ordinary = "keep"
 	_ = appliedConfig
 }
 
+func TestTicket11ColonSensitiveValuesAreRedactedAcrossControlSurfaces(t *testing.T) {
+	store, api, server, client := controlRoomTestAPI(t)
+	api.SetDebug(true)
+	controlRoomLogin(t, client, server.URL)
+	ctx := context.Background()
+
+	configContent := `skills = "api_key: config-api-key-colon"
+reasoning = "password: config-password-colon"
+content = "callback: config-callback-colon"
+notes = "auth: config-auth-colon"
+metadata = "apikey: config-apikey-colon token: config-token-colon secret: config-secret-colon credential: config-credential-colon session_id: config-session-colon native_id: config-native-colon task_id: config-task-colon"
+ordinary = "keep-config"
+`
+	profileContent := `# Worker profile
+skills: ordinary-skill
+reasoning: high
+content: ordinary profile content
+
+This Markdown contains api_key: profile-api-key-colon.
+Also password: profile-password-colon and callback: profile-callback-colon.
+More metadata: apikey: profile-apikey-colon token: profile-token-colon secret: profile-secret-colon credential: profile-credential-colon session_id: profile-session-colon native_id: profile-native-colon task_id: profile-task-colon.
+`
+	configMetadata := map[string]string{
+		"runtime":   "api_key: metadata-api-key-colon",
+		"model":     "password: metadata-password-colon",
+		"reasoning": "callback: metadata-callback-colon",
+	}
+	var configApplyCalls, profileApplyCalls int
+	api.AttachControl(ControlOptions{
+		RequireExpectedRevision: true,
+		ConfigContent:           func() (string, error) { return configContent, nil },
+		ConfigSnapshot: func() any {
+			return map[string]any{"profiles": map[string]any{"worker": configMetadata}}
+		},
+		ApplyConfig: func([]byte) (any, error) {
+			configApplyCalls++
+			return map[string]string{"status": "applied"}, nil
+		},
+		ProfileFiles: func() ([]ProfileFile, error) {
+			return []ProfileFile{{Name: "worker", Content: profileContent, Hash: "profile-colon-rev", Runtime: configMetadata["runtime"], Model: configMetadata["model"], Reasoning: configMetadata["reasoning"]}}, nil
+		},
+		ApplyProfile: func(string, []byte) error {
+			profileApplyCalls++
+			return nil
+		},
+	})
+
+	response, err := client.Get(server.URL + "/v1/control/config")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&config); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("config status=%d body=%#v", response.StatusCode, config)
+	}
+	configText, _ := config["content"].(string)
+	for _, secret := range []string{"config-api-key-colon", "config-password-colon", "config-callback-colon", "config-auth-colon", "config-apikey-colon", "config-token-colon", "config-secret-colon", "config-credential-colon", "config-session-colon", "config-native-colon", "config-task-colon"} {
+		if strings.Contains(configText, secret) {
+			t.Fatalf("config leaked %q: %q", secret, configText)
+		}
+	}
+	if !strings.Contains(configText, `ordinary = "keep-config"`) || config["editable"] != false {
+		t.Fatalf("config safe field/editability changed: %#v", config)
+	}
+	configRevision, _ := config["revision"].(string)
+
+	response, err = client.Get(server.URL + "/v1/control/profiles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var profiles []controlProfile
+	if err := json.NewDecoder(response.Body).Decode(&profiles); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || len(profiles) != 1 {
+		t.Fatalf("profiles status=%d body=%#v", response.StatusCode, profiles)
+	}
+	profileText := profiles[0].Content
+	for _, secret := range []string{"profile-api-key-colon", "profile-password-colon", "profile-callback-colon", "profile-apikey-colon", "profile-token-colon", "profile-secret-colon", "profile-credential-colon", "profile-session-colon", "profile-native-colon", "profile-task-colon", "metadata-api-key-colon", "metadata-password-colon", "metadata-callback-colon"} {
+		if strings.Contains(profileText, secret) || strings.Contains(profiles[0].Runtime, secret) || strings.Contains(profiles[0].Model, secret) || strings.Contains(profiles[0].Reasoning, secret) {
+			t.Fatalf("profile leaked %q: %#v", secret, profiles[0])
+		}
+	}
+	if profiles[0].Editable || !strings.Contains(profileText, "ordinary profile content") || profiles[0].Runtime != "[redacted]" || profiles[0].Model != "[redacted]" || profiles[0].Reasoning != "[redacted]" {
+		t.Fatalf("profile safe fields/editability changed: %#v", profiles[0])
+	}
+	profileRevision := profiles[0].Revision
+
+	configPayload, _ := json.Marshal(map[string]string{"content": `skills = "api_key: config-write-api-key-colon token: config-write-token-colon task_id: config-write-task-colon"`, "expected_revision": configRevision})
+	request, _ := http.NewRequest(http.MethodPut, server.URL+"/v1/control/config", bytes.NewReader(configPayload))
+	request.Header.Set("Content-Type", "application/json")
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest || configApplyCalls != 0 {
+		t.Fatalf("colon config write was accepted status=%d calls=%d", response.StatusCode, configApplyCalls)
+	}
+
+	profilePayload, _ := json.Marshal(map[string]string{"content": "# profile\\nNotes: password: profile-write-password-colon auth: profile-write-auth-colon native_id: profile-write-native-colon", "expected_revision": profileRevision})
+	request, _ = http.NewRequest(http.MethodPut, server.URL+"/v1/control/profiles/worker", bytes.NewReader(profilePayload))
+	request.Header.Set("Content-Type", "application/json")
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusBadRequest || profileApplyCalls != 0 {
+		t.Fatalf("colon profile write was accepted status=%d calls=%d", response.StatusCode, profileApplyCalls)
+	}
+
+	conversation, err := store.ConversationForPerson(ctx, api.OwnerID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{WorkerRef: "worker-colon", Intent: "inspect", ProjectID: "project", NodeID: "node", HarnessInstanceID: "node/fx", PolicySnapshot: "safe"}, core.TurnSpec{Input: "inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(ctx, attempt.ID, core.FinishAttemptInput{AttemptOutcomeInput: core.AttemptOutcomeInput{Status: core.OutcomeFailed, Classification: core.OutcomeFinal, Diagnostics: `{"safe":"api_key: diagnostics-api-key-colon","password":"password: diagnostics-password-colon","callback":"callback: diagnostics-callback-colon","extra":"apikey: diagnostics-apikey-colon token: diagnostics-token-colon secret: diagnostics-secret-colon credential: diagnostics-credential-colon auth: diagnostics-auth-colon session_id: diagnostics-session-colon native_id: diagnostics-native-colon task_id: diagnostics-task-colon","ordinary":"kept","summary":"safe summary"}`, Summary: "safe summary"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordEventWithMetadata(ctx, core.EventInput{Kind: "ticket11.colon", AggregateType: "worker", AggregateID: worker.WorkerRef, WorkerRef: worker.WorkerRef, AttemptID: attempt.ID, Payload: map[string]any{"safe": "api_key: event-api-key-colon", "ordinary": "kept"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, endpoint := range []string{"/v1/control/overview", "/v1/control/events", "/v1/control/diagnostics/worker-colon", "/v1/control/export"} {
+		response, err := client.Get(server.URL + endpoint)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := io.ReadAll(response.Body)
+		response.Body.Close()
+		if err != nil || response.StatusCode != http.StatusOK {
+			t.Fatalf("%s status=%d err=%v body=%s", endpoint, response.StatusCode, err, body)
+		}
+		text := string(body)
+		for _, secret := range []string{"metadata-api-key-colon", "metadata-password-colon", "metadata-callback-colon", "diagnostics-api-key-colon", "diagnostics-password-colon", "diagnostics-callback-colon", "diagnostics-apikey-colon", "diagnostics-token-colon", "diagnostics-secret-colon", "diagnostics-credential-colon", "diagnostics-auth-colon", "diagnostics-session-colon", "diagnostics-native-colon", "diagnostics-task-colon", "event-api-key-colon"} {
+			if strings.Contains(text, secret) {
+				t.Fatalf("%s leaked %q: %s", endpoint, secret, text)
+			}
+		}
+		if !strings.Contains(text, "safe summary") || !strings.Contains(text, "ordinary") {
+			t.Fatalf("%s removed safe diagnostics content: %s", endpoint, text)
+		}
+	}
+}
+
 func nowForTest() time.Time { return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) }
