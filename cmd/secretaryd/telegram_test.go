@@ -131,6 +131,49 @@ func TestTelegramEventBridgeMapsInputApprovalAsNeedsInput(t *testing.T) {
 	}
 }
 
+func TestTelegramEventBridgeDeduplicatesOneRequestAcrossActivityAndApproval(t *testing.T) {
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(context.Background(), telegram.Event{Kind: "worker.created", WorkerRef: "worker-1", Title: "Task"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []core.Event{
+		{ID: "activity-request", Seq: 20, Kind: "attempt.activity", AggregateType: "attempt", WorkerRef: "worker-1", Payload: []byte(`{"kind":"permission_request","request":{"request_id":"request-1","summary":"run shell"}}`)},
+		{ID: "approval-request", Seq: 21, Kind: "approval.requested", AggregateType: "approval", WorkerRef: "worker-1", Payload: []byte(`{"kind":"permission","request_id":"request-1","action_summary":"run shell"}`)},
+	} {
+		if err := adapter.HandleDurableEvent(context.Background(), telegramEvent(event)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	var approvals, inputs int
+	for _, sent := range transport.sent {
+		if strings.Contains(sent.Text, "Нужно разрешение") {
+			approvals++
+		}
+		if strings.Contains(sent.Text, "Нужен ответ") {
+			inputs++
+		}
+	}
+	if approvals+inputs != 1 || approvals != 1 {
+		t.Fatalf("request notifications approvals=%d inputs=%d messages=%#v", approvals, inputs, transport.sent)
+	}
+}
+
+func TestTelegramEventBridgeMapsCanceledTerminalEvent(t *testing.T) {
+	mapped := telegramEvent(core.Event{
+		ID: "canceled-1", Kind: "result.accepted", AggregateType: "result", WorkerRef: "worker-1",
+		Payload: []byte(`{"status":"canceled","summary":"stopped"}`),
+	})
+	if mapped.Kind != "worker.canceled" {
+		t.Fatalf("mapped=%#v, want worker.canceled", mapped)
+	}
+}
+
 func TestTelegramEventBridgeSendsOneTerminalNotificationForOneTurn(t *testing.T) {
 	transport := &bridgeTransport{}
 	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100}, transport, &bridgeServer{})

@@ -599,6 +599,76 @@ func TestDurableEventRecoveryDoesNotDuplicatePendingBatch(t *testing.T) {
 	}
 }
 
+func TestWorkerActivityOutboxRestartDoesNotResendPendingLines(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "telegram.json")
+	transport := &fakeTransport{fail: true}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, statePath)
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "worker.activity", WorkerRef: "worker-1", Tool: "shell"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Flush(context.Background()); err == nil {
+		t.Fatal("expected activity transport failure")
+	}
+
+	transport.fail = false
+	restarted := newTestAdapter(t, transport, &fakeServer{}, statePath)
+	if err := restarted.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 {
+		t.Fatalf("activity messages after restart = %#v", transport.sent)
+	}
+}
+
+func TestTerminalOutboxRestartDoesNotReplayAfterDrain(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "telegram.json")
+	transport := &fakeTransport{fail: true}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, statePath)
+	event := Event{Sequence: 1, Kind: "worker.completed", WorkerRef: "worker-1", Text: "done", TerminalIdentity: "turn:1"}
+	if err := adapter.HandleDurableEvent(context.Background(), event); err == nil {
+		t.Fatal("expected terminal transport failure")
+	}
+
+	transport.fail = false
+	restarted := newTestAdapter(t, transport, &fakeServer{}, statePath)
+	if err := restarted.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.HandleDurableEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 {
+		t.Fatalf("terminal messages after replay = %#v", transport.sent)
+	}
+}
+
+func TestTelegramSanitizerStrictPlainTextFixtures(t *testing.T) {
+	fixtures := []string{
+		"analysis: hidden",
+		"reasoning = hidden",
+		"thought: hidden",
+		"password=hidden",
+		"token: hidden",
+		"secret = hidden",
+		"credential: hidden",
+		"task=task-123 session: session-123 native=native-123 channel: channel-123",
+		"sk-live-secret ghp_live-secret xoxb-live-secret xoxb_live_secret",
+		"<think>raw chain of thought</think>",
+		`{"nested":{"analysis":"internal","safe":"visible"},"items":[{"password":"hidden"}]}`,
+	}
+	for _, fixture := range fixtures {
+		clean := safeText(fixture)
+		for _, forbidden := range []string{"hidden", "task-123", "session-123", "native-123", "channel-123", "sk-live-secret", "ghp_live-secret", "xoxb-live-secret", "xoxb_live_secret", "raw chain of thought", "internal"} {
+			if strings.Contains(clean, forbidden) {
+				t.Fatalf("sanitizer leaked %q for %q: %q", forbidden, fixture, clean)
+			}
+		}
+		if strings.Contains(clean, "analysis") || strings.Contains(clean, "reasoning") || strings.Contains(clean, "thought") || strings.Contains(clean, "password") || strings.Contains(clean, "token") || strings.Contains(clean, "secret") || strings.Contains(clean, "credential") || strings.Contains(clean, "session") || strings.Contains(clean, "native") || strings.Contains(clean, "channel") {
+			t.Fatalf("sanitizer leaked marker for %q: %q", fixture, clean)
+		}
+	}
+}
+
 func TestDurableBatchRestartDoesNotReplayAlreadyOutboxedMessage(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "telegram.json")
 	transport := &fakeTransport{fail: true}

@@ -190,7 +190,9 @@ func telegramEvent(event core.Event) telegram.Event {
 		result.TerminalIdentity = terminalIdentity(event, payload)
 		status := strings.ToLower(stringField(payload, "status"))
 		result.Kind = "worker.completed"
-		if strings.Contains(status, "interrupt") || strings.Contains(status, "offline") {
+		if strings.Contains(status, "cancel") {
+			result.Kind = "worker.canceled"
+		} else if strings.Contains(status, "interrupt") || strings.Contains(status, "offline") {
 			result.Kind = "worker.offline"
 		} else if strings.Contains(status, "fail") || strings.Contains(status, "error") {
 			result.Kind = "worker.failed"

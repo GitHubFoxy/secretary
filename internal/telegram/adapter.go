@@ -43,6 +43,7 @@ type OutgoingMessage struct {
 	ChatID   int64
 	ThreadID int64
 	Text     string
+	Identity string `json:"identity,omitempty"`
 }
 
 type SentMessage struct{ OutgoingMessage }
@@ -127,6 +128,7 @@ type persistedState struct {
 	PendingWorkerLines    map[string][]string      `json:"pending_worker_lines,omitempty"`
 	PendingEventSeqs      []int64                  `json:"pending_event_seqs,omitempty"`
 	TerminalNotified      map[string]time.Time     `json:"terminal_notified,omitempty"`
+	RequestNotified       map[string]time.Time     `json:"request_notified,omitempty"`
 }
 
 type pairingRecord struct {
@@ -175,7 +177,7 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 		config.FlushInterval = 2 * time.Second
 	}
 	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), now: func() time.Time { return time.Now().UTC() }}
-	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, Outbox: []OutgoingMessage{}}
+	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, Outbox: []OutgoingMessage{}}
 	if err := adapter.load(); err != nil {
 		return nil, err
 	}
@@ -220,6 +222,9 @@ func (a *Adapter) load() error {
 	}
 	if a.state.TerminalNotified == nil {
 		a.state.TerminalNotified = map[string]time.Time{}
+	}
+	if a.state.RequestNotified == nil {
+		a.state.RequestNotified = map[string]time.Time{}
 	}
 	return nil
 }
@@ -573,22 +578,24 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if text == "" {
 			return nil
 		}
-		if event.TerminalIdentity != "" {
+		identity := ""
+		alreadyNotified := false
+		switch {
+		case event.TerminalIdentity != "":
+			identity = "terminal:" + event.TerminalIdentity
 			a.mu.Lock()
-			_, alreadyNotified := a.state.TerminalNotified[event.TerminalIdentity]
+			_, alreadyNotified = a.state.TerminalNotified[event.TerminalIdentity]
 			a.mu.Unlock()
-			if alreadyNotified {
-				return nil
-			}
-		}
-		if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: text}); err != nil {
-			return err
-		}
-		if event.TerminalIdentity != "" {
+		case requestNotificationIdentity(event) != "":
+			identity = "request:" + requestNotificationIdentity(event)
 			a.mu.Lock()
-			a.state.TerminalNotified[event.TerminalIdentity] = a.now()
-			err := a.saveLocked()
+			_, alreadyNotified = a.state.RequestNotified[requestNotificationIdentity(event)]
 			a.mu.Unlock()
+		}
+		if alreadyNotified {
+			return nil
+		}
+		if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: text, Identity: identity}); err != nil {
 			return err
 		}
 		return nil
@@ -736,14 +743,9 @@ func (a *Adapter) Flush(ctx context.Context) error {
 	eventSeqs := append([]int64(nil), a.pending.EventSeqs...)
 	workerLines := cloneWorkerLines(a.pending.WorkerLines)
 	secretaryMessage, hasSecretary := secretaryBatchMessage(owner, text, tools)
-	secretaryQueued := false
-	if hasSecretary {
-		for _, pending := range a.state.Outbox {
-			if pending == secretaryMessage {
-				secretaryQueued = true
-				break
-			}
-		}
+	outboxIdentities := make(map[string]struct{}, len(a.state.Outbox))
+	for _, pending := range a.state.Outbox {
+		outboxIdentities[outgoingMessageIdentity(pending)] = struct{}{}
 	}
 	mappings := make(map[string]TopicMapping, len(a.state.Topics))
 	for ref, mapping := range a.state.Topics {
@@ -754,7 +756,7 @@ func (a *Adapter) Flush(ctx context.Context) error {
 		return err
 	}
 	if hasSecretary {
-		if !secretaryQueued {
+		if _, queued := outboxIdentities[outgoingMessageIdentity(secretaryMessage)]; !queued {
 			if err := a.sendMessage(ctx, secretaryMessage); err != nil {
 				return err
 			}
@@ -773,8 +775,11 @@ func (a *Adapter) Flush(ctx context.Context) error {
 		if !ok || mapping.ChatID == 0 {
 			continue
 		}
-		if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: "Активность:\n" + strings.Join(uniqueStrings(workerLines[ref]), "\n")}); err != nil {
-			return err
+		message := OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: "Активность:\n" + strings.Join(uniqueStrings(workerLines[ref]), "\n")}
+		if _, queued := outboxIdentities[outgoingMessageIdentity(message)]; !queued {
+			if err := a.sendMessage(ctx, message); err != nil {
+				return err
+			}
 		}
 		if err := a.clearWorkerPending(ref, workerLines[ref]); err != nil {
 			return err
@@ -846,14 +851,62 @@ func sameStrings(left, right []string) bool {
 	return true
 }
 
+func outgoingMessageIdentity(message OutgoingMessage) string {
+	if message.Identity != "" {
+		return message.Identity
+	}
+	hash := sha256.Sum256([]byte(fmt.Sprintf("%d:%d:%s", message.ChatID, message.ThreadID, message.Text)))
+	return "message:" + hex.EncodeToString(hash[:])
+}
+
+func (a *Adapter) markDeliveredLocked(message OutgoingMessage) {
+	switch {
+	case strings.HasPrefix(message.Identity, "terminal:"):
+		identity := strings.TrimPrefix(message.Identity, "terminal:")
+		if identity != "" {
+			a.state.TerminalNotified[identity] = a.now()
+		}
+	case strings.HasPrefix(message.Identity, "request:"):
+		identity := strings.TrimPrefix(message.Identity, "request:")
+		if identity != "" {
+			a.state.RequestNotified[identity] = a.now()
+		}
+	}
+}
+
+func removeOutboxMessage(outbox []OutgoingMessage, wanted OutgoingMessage) []OutgoingMessage {
+	identity := outgoingMessageIdentity(wanted)
+	for index, pending := range outbox {
+		if outgoingMessageIdentity(pending) == identity {
+			return append(outbox[:index], outbox[index+1:]...)
+		}
+	}
+	return outbox
+}
+
 func (a *Adapter) sendMessage(ctx context.Context, message OutgoingMessage) error {
 	if message.ChatID == 0 {
 		return ErrUnauthorized
 	}
 	a.mu.Lock()
+	if message.Identity != "" {
+		if strings.HasPrefix(message.Identity, "terminal:") {
+			if _, delivered := a.state.TerminalNotified[strings.TrimPrefix(message.Identity, "terminal:")]; delivered {
+				a.mu.Unlock()
+				return nil
+			}
+		}
+		if strings.HasPrefix(message.Identity, "request:") {
+			if _, delivered := a.state.RequestNotified[strings.TrimPrefix(message.Identity, "request:")]; delivered {
+				a.mu.Unlock()
+				return nil
+			}
+		}
+	}
 	alreadyPending := false
+	identity := outgoingMessageIdentity(message)
 	for _, pending := range a.state.Outbox {
-		if pending == message {
+		if outgoingMessageIdentity(pending) == identity {
 			alreadyPending = true
 			break
 		}
@@ -870,12 +923,8 @@ func (a *Adapter) sendMessage(ctx context.Context, message OutgoingMessage) erro
 		return err
 	}
 	a.mu.Lock()
-	for index, pending := range a.state.Outbox {
-		if pending == message {
-			a.state.Outbox = append(a.state.Outbox[:index], a.state.Outbox[index+1:]...)
-			break
-		}
-	}
+	a.state.Outbox = removeOutboxMessage(a.state.Outbox, message)
+	a.markDeliveredLocked(message)
 	err := a.saveLocked()
 	a.mu.Unlock()
 	return err
@@ -888,12 +937,7 @@ func (a *Adapter) drainOutbox(ctx context.Context) error {
 	for _, message := range outbox {
 		if message.ChatID == 0 {
 			a.mu.Lock()
-			for index, pending := range a.state.Outbox {
-				if pending == message {
-					a.state.Outbox = append(a.state.Outbox[:index], a.state.Outbox[index+1:]...)
-					break
-				}
-			}
+			a.state.Outbox = removeOutboxMessage(a.state.Outbox, message)
 			err := a.saveLocked()
 			a.mu.Unlock()
 			if err != nil {
@@ -905,12 +949,8 @@ func (a *Adapter) drainOutbox(ctx context.Context) error {
 			return err
 		}
 		a.mu.Lock()
-		for index, pending := range a.state.Outbox {
-			if pending == message {
-				a.state.Outbox = append(a.state.Outbox[:index], a.state.Outbox[index+1:]...)
-				break
-			}
-		}
+		a.state.Outbox = removeOutboxMessage(a.state.Outbox, message)
+		a.markDeliveredLocked(message)
 		err := a.saveLocked()
 		a.mu.Unlock()
 		if err != nil {
@@ -973,8 +1013,11 @@ func topicName(workerRef, title string) string {
 	return name
 }
 
-var sensitiveText = regexp.MustCompile(`(?i)\b(?:node|channel|callback|runtime|task|session|native|worker|attempt|turn|api|credential|token|secret)[_ -]?(?:token|secret|capability|session|id|ref|key|credential)?\s*[:=]\s*[^,;[:space:]]+`)
-var sensitiveMarkerValue = regexp.MustCompile(`(?i)\b(?:task|session|native|worker|attempt|turn|node|channel|callback|token|secret|reasoning|thought|analysis|credential)[_-][a-z0-9][a-z0-9._/-]*\b`)
+var sensitiveText = regexp.MustCompile(`(?i)\b(?:node|channel|callback|runtime|task|session|native|worker|attempt|turn|api|credential|token|secret|password|analysis|reasoning|thought)[_ -]?(?:token|secret|capability|session|id|ref|key|credential)?\s*[:=]\s*[^,;[:space:]]+`)
+var sensitiveMarkerValue = regexp.MustCompile(`(?i)\b(?:task|session|native|worker|attempt|turn|node|channel|callback|token|secret|reasoning|thought|analysis|credential|password)[_-][a-z0-9][a-z0-9._/-]*\b`)
+var secretPrefix = regexp.MustCompile(`(?i)(?:^|[^a-z0-9])(?:sk-|ghp_|xoxb-|xoxb_)[a-z0-9_-]+`)
+var rawCoTMarker = regexp.MustCompile(`(?i)\b(?:raw[-_ ]?cot|cot)\b`)
+var sensitiveAssignment = regexp.MustCompile(`(?i)\b(?:analysis|reasoning|thought|password|token|secret|credential|task|session|native|channel)\s*[:=]`)
 
 func safeText(text string) string {
 	return sanitizeTelegramText(strings.TrimSpace(text), true)
@@ -1055,7 +1098,7 @@ func forbiddenTelegramKey(key string) bool {
 		}
 		return -1
 	}, key))
-	for _, marker := range []string{"secret", "credential", "callback", "token", "password", "authorization", "apikey", "accesskey", "privatekey", "task", "session", "native", "analysis", "reasoning", "thought", "chainofthought"} {
+	for _, marker := range []string{"secret", "credential", "callback", "token", "password", "authorization", "apikey", "accesskey", "privatekey", "task", "session", "native", "channel", "analysis", "reasoning", "thought", "chainofthought"} {
 		if strings.Contains(compact, marker) {
 			return true
 		}
@@ -1065,12 +1108,42 @@ func forbiddenTelegramKey(key string) bool {
 
 func forbiddenTelegramText(value string) bool {
 	lower := strings.ToLower(value)
-	for _, marker := range []string{"chain-of-thought", "chain of thought", "chain_of_thought", "raw thought", "raw_thought", "internal reasoning", "internal_reasoning", "thought process", "thought_process", "<think>", "</think>", "analysis:", "reasoning:", "thought:", "chain-of-thought:", "bearer ", "api_key=", "apikey=", "access_token", "api_token", "token=", "secret=", "credential=", "password=", "callback=", "runtime_session_id", "session_id", "sessionid", "native_id"} {
+	for _, marker := range []string{"chain-of-thought", "chain of thought", "chain_of_thought", "raw thought", "raw_thought", "internal reasoning", "internal_reasoning", "thought process", "thought_process", "<think>", "</think>", "bearer ", "api_key=", "apikey=", "access_token", "api_token", "runtime_session_id", "session_id", "sessionid", "native_id"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}
 	}
-	return false
+	return sensitiveAssignment.MatchString(value) || secretPrefix.MatchString(value) || rawCoTMarker.MatchString(value)
+}
+
+func requestNotificationIdentity(event Event) string {
+	requestID := requestIDFromPayload(event.Payload)
+	if requestID == "" {
+		return ""
+	}
+	kind := ""
+	switch event.Kind {
+	case "worker.needs_input":
+		kind = "needs_input"
+	case "worker.approval_requested":
+		kind = "approval_requested"
+	case "approval.requested":
+		var payload map[string]any
+		if json.Unmarshal(event.Payload, &payload) == nil {
+			payloadKind, _ := payload["kind"].(string)
+			if strings.EqualFold(payloadKind, "input") {
+				kind = "needs_input"
+			} else {
+				kind = "approval_requested"
+			}
+		} else {
+			kind = "approval_requested"
+		}
+	}
+	if kind == "" {
+		return ""
+	}
+	return kind + ":" + requestID
 }
 
 func requestIDFromPayload(payload json.RawMessage) string {
@@ -1089,10 +1162,18 @@ func requestIDInMap(value map[string]any) string {
 		return strings.TrimSpace(candidate)
 	}
 	for _, nested := range value {
-		child, ok := nested.(map[string]any)
-		if ok {
+		switch child := nested.(type) {
+		case map[string]any:
 			if requestID := requestIDInMap(child); requestID != "" {
 				return requestID
+			}
+		case []any:
+			for _, item := range child {
+				if object, ok := item.(map[string]any); ok {
+					if requestID := requestIDInMap(object); requestID != "" {
+						return requestID
+					}
+				}
 			}
 		}
 	}
