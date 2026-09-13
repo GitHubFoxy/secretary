@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -617,14 +618,17 @@ type legacyFollowUpWorker struct {
 // legacyFollowUpOwner uses the durable Phase 3 timeline when worker_ref was
 // not stored on a conversation entry. A follow-up Attempt and its worker_input
 // are created with the same now, so equality is a valid match. Each candidate
-// Attempt is consumed once while unscoped entries are assigned in seq order;
-// worker_ref makes equal-time choices stable.
-func legacyFollowUpOwner(created string, workers []legacyFollowUpWorker, used map[string]struct{}) string {
+// Attempt is consumed once while unscoped entries are assigned in seq order.
+// Equal-time candidates belonging to different roots are not a discriminator:
+// fail closed instead of using worker_ref or conversation seq to guess.
+func legacyFollowUpOwner(created string, workers []legacyFollowUpWorker, used map[string]struct{}) (string, error) {
 	if len(workers) == 0 {
-		return ""
+		return "", nil
 	}
+	bestCreated := ""
 	bestWorker := -1
 	bestAttempt := -1
+	candidateWorkers := make(map[string]struct{})
 	for i, worker := range workers {
 		if worker.taskCreated > created {
 			continue
@@ -636,20 +640,30 @@ func legacyFollowUpOwner(created string, workers []legacyFollowUpWorker, used ma
 			if _, ok := used[attempt.id]; ok {
 				continue
 			}
-			if bestWorker < 0 || attempt.created < workers[bestWorker].nextAttempts[bestAttempt].created ||
-				(attempt.created == workers[bestWorker].nextAttempts[bestAttempt].created &&
-					(worker.workerRef < workers[bestWorker].workerRef ||
-						worker.workerRef == workers[bestWorker].workerRef && attempt.number < workers[bestWorker].nextAttempts[bestAttempt].number)) {
+			if bestWorker < 0 || attempt.created < bestCreated {
+				bestCreated = attempt.created
 				bestWorker, bestAttempt = i, j
+				candidateWorkers = map[string]struct{}{worker.workerRef: {}}
+				continue
+			}
+			if attempt.created == bestCreated {
+				candidateWorkers[worker.workerRef] = struct{}{}
+				if attempt.number < workers[bestWorker].nextAttempts[bestAttempt].number {
+					bestWorker, bestAttempt = i, j
+				}
 			}
 		}
 	}
 	if bestWorker >= 0 {
+		if len(candidateWorkers) > 1 {
+			return "", fmt.Errorf("%w: ambiguous unbound follow-up at %s: equal-time attempts belong to root workers %s", ErrInvalid, created, strings.Join(sortedKeys(candidateWorkers), ", "))
+		}
 		used[workers[bestWorker].nextAttempts[bestAttempt].id] = struct{}{}
-		return workers[bestWorker].workerRef
+		return workers[bestWorker].workerRef, nil
 	}
 	bestAnchor := ""
 	bestPrior := false
+	anchorWorkers := make(map[string]struct{})
 	for i, worker := range workers {
 		anchor := worker.taskCreated
 		for _, activity := range worker.activities {
@@ -658,11 +672,27 @@ func legacyFollowUpOwner(created string, workers []legacyFollowUpWorker, used ma
 			}
 		}
 		prior := anchor <= created
-		if bestWorker < 0 || prior && !bestPrior || prior == bestPrior && (prior && anchor > bestAnchor || !prior && anchor < bestAnchor || anchor == bestAnchor && worker.workerRef < workers[bestWorker].workerRef) {
+		better := bestWorker < 0 || prior && !bestPrior || prior == bestPrior && (prior && anchor > bestAnchor || !prior && anchor < bestAnchor)
+		if better {
 			bestWorker, bestAnchor, bestPrior = i, anchor, prior
+			anchorWorkers = map[string]struct{}{worker.workerRef: {}}
+		} else if bestWorker >= 0 && prior == bestPrior && anchor == bestAnchor {
+			anchorWorkers[worker.workerRef] = struct{}{}
 		}
 	}
-	return workers[bestWorker].workerRef
+	if len(anchorWorkers) > 1 {
+		return "", fmt.Errorf("%w: ambiguous unbound follow-up at %s: equal-time timeline anchors belong to root workers %s", ErrInvalid, created, strings.Join(sortedKeys(anchorWorkers), ", "))
+	}
+	return workers[bestWorker].workerRef, nil
+}
+
+func sortedKeys(values map[string]struct{}) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func legacyFollowUpDirections(ctx context.Context, tx *sql.Tx, conversationID string) (map[string][]legacyMigrationDirection, error) {
@@ -730,7 +760,11 @@ func legacyFollowUpDirections(ctx context.Context, tx *sql.Tx, conversationID st
 		}
 		owner := entryWorkerRef
 		if owner == "" {
-			owner = legacyFollowUpOwner(created, workers, usedAttempts)
+			var ownerErr error
+			owner, ownerErr = legacyFollowUpOwner(created, workers, usedAttempts)
+			if ownerErr != nil {
+				return nil, fmt.Errorf("conversation %q follow-up ownership: %w", conversationID, ownerErr)
+			}
 		}
 		if owner == "" {
 			continue

@@ -593,15 +593,15 @@ INSERT INTO tasks VALUES ('task-2', 'conversation-1', 'review it', 'open', '', '
 INSERT INTO worker_bindings VALUES ('binding-2', 'task-2', 'worker-2', 'node-2', 'native-session-2', '/work/review', '', '', 'cfg-2', 'worker', 'hash-2', 'fx', 'gpt-5.6-luna', 'high', 'read', 'metadata', 0, '2024-01-01T00:01:30Z');
 INSERT INTO attempts VALUES ('attempt-3', 'binding-1', 3, 'succeeded', '2024-01-01T00:01:40Z', '2024-01-01T00:01:45Z');
 INSERT INTO attempts VALUES ('attempt-5', 'binding-2', 1, 'succeeded', '2024-01-01T00:01:35Z', '2024-01-01T00:01:50Z');
-INSERT INTO attempts VALUES ('attempt-6', 'binding-2', 2, 'failed', '2024-01-01T00:01:40Z', '2024-01-01T00:01:45Z');
+INSERT INTO attempts VALUES ('attempt-6', 'binding-2', 2, 'failed', '2024-01-01T00:02:00Z', '2024-01-01T00:02:05Z');
 INSERT INTO conversation_entries VALUES ('entry-followup-worker-1', 'conversation-1', 3, 'worker_input', 'continue shipping', '2024-01-01T00:01:40Z');
-INSERT INTO conversation_entries VALUES ('entry-followup-worker-2', 'conversation-1', 4, 'worker_input', 'review the docs', '2024-01-01T00:01:40Z');
+INSERT INTO conversation_entries VALUES ('entry-followup-worker-2', 'conversation-1', 4, 'worker_input', 'review the docs', '2024-01-01T00:01:55Z');
 INSERT INTO conversation_entries VALUES ('entry-worker-1-followup-result', 'conversation-1', 5, 'worker_result', 'shipping continued', '2024-01-01T00:01:45Z');
 INSERT INTO conversation_entries VALUES ('entry-worker-2-initial-result', 'conversation-1', 6, 'worker_result', 'review started', '2024-01-01T00:01:50Z');
-INSERT INTO conversation_entries VALUES ('entry-worker-2-followup-result', 'conversation-1', 7, 'worker_result', 'docs reviewed', '2024-01-01T00:01:45Z');
+INSERT INTO conversation_entries VALUES ('entry-worker-2-followup-result', 'conversation-1', 7, 'worker_result', 'docs reviewed', '2024-01-01T00:02:05Z');
 INSERT INTO results VALUES ('result-3', 'attempt-3', 'succeeded', 'shipping continued', '2024-01-01T00:01:45Z');
 INSERT INTO results VALUES ('result-5', 'attempt-5', 'succeeded', 'review started', '2024-01-01T00:01:50Z');
-INSERT INTO results VALUES ('result-6', 'attempt-6', 'failed', 'docs reviewed', '2024-01-01T00:01:45Z');`)
+INSERT INTO results VALUES ('result-6', 'attempt-6', 'failed', 'docs reviewed', '2024-01-01T00:02:05Z');`)
 	if err != nil {
 		db.Close()
 		t.Fatal(err)
@@ -646,6 +646,58 @@ INSERT INTO results VALUES ('result-6', 'attempt-6', 'failed', 'docs reviewed', 
 	second, err := Run(ctx, Options{SourcePath: path, DestinationPath: path})
 	if err != nil || !second.Idempotent {
 		t.Fatalf("multi-worker migration is not idempotent: report=%#v err=%v", second, err)
+	}
+}
+
+func TestMigrationRejectsAmbiguousSameTimeUnboundFollowUps(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	if err := seedPhase3Database(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `
+INSERT INTO tasks VALUES ('task-2', 'conversation-1', 'review it', 'open', '', '', 0, '2024-01-01T00:01:30Z', '2024-01-01T00:01:30Z');
+INSERT INTO worker_bindings VALUES ('binding-2', 'task-2', 'worker-2', 'node-2', 'native-session-2', '/work/review', '', '', 'cfg-2', 'worker', 'hash-2', 'fx', 'gpt-5.6-luna', 'high', 'read', 'metadata', 0, '2024-01-01T00:01:30Z');
+INSERT INTO attempts VALUES ('attempt-3', 'binding-1', 3, 'succeeded', '2024-01-01T00:01:40Z', '2024-01-01T00:01:45Z');
+INSERT INTO attempts VALUES ('attempt-5', 'binding-2', 1, 'succeeded', '2024-01-01T00:01:35Z', '2024-01-01T00:01:50Z');
+INSERT INTO attempts VALUES ('attempt-6', 'binding-2', 2, 'failed', '2024-01-01T00:01:40Z', '2024-01-01T00:01:45Z');
+INSERT INTO conversation_entries VALUES ('entry-followup-worker-2', 'conversation-1', 3, 'worker_input', 'review the docs', '2024-01-01T00:01:40Z');
+INSERT INTO conversation_entries VALUES ('entry-followup-worker-1', 'conversation-1', 4, 'worker_input', 'continue shipping', '2024-01-01T00:01:40Z');`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := fileDigest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = Run(ctx, Options{SourcePath: path, DestinationPath: path})
+	if err == nil || !errors.Is(err, ErrInvalid) || !strings.Contains(strings.ToLower(err.Error()), "ambiguous") {
+		t.Fatalf("ambiguous ownership error=%v, want explicit ErrInvalid ambiguity", err)
+	}
+	after, err := fileDigest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatal("active database changed after ambiguous migration")
+	}
+	if _, err := os.Stat(path + ".backup"); err != nil {
+		t.Fatalf("automatic backup missing: %v", err)
+	}
+	var phase4Tables int
+	if err := queryOne(path, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('workers', 'turns', 'phase4_results')`, &phase4Tables); err != nil {
+		t.Fatal(err)
+	}
+	if phase4Tables != 0 {
+		t.Fatalf("ambiguous migration wrote Phase 4 history: %d tables", phase4Tables)
 	}
 }
 
