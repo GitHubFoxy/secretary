@@ -23,6 +23,11 @@ const (
 	ActivityToolResult      ActivityKind = "tool_result"
 )
 
+type PendingRequest struct {
+	RequestID string       `json:"request_id"`
+	Kind      ActivityKind `json:"kind"`
+}
+
 type Activity struct {
 	Kind      ActivityKind    `json:"kind"`
 	Text      string          `json:"text,omitempty"`
@@ -53,16 +58,23 @@ type MCPServer struct {
 }
 
 type StartRequest struct {
-	WorkerRef         string
-	Task              string
-	Workspace         string
-	RawLogPath        string
-	MCPServers        []MCPServer
-	Profile           ManagedProfile
-	HarnessInstance   core.HarnessInstance
-	Model             string
-	Reasoning         string
-	ApprovalPolicy    string
+	WorkerRef       string
+	Task            string
+	Workspace       string
+	RawLogPath      string
+	MCPServers      []MCPServer
+	Profile         ManagedProfile
+	HarnessInstance core.HarnessInstance
+	Model           string
+	Reasoning       string
+	ApprovalPolicy  string
+	// PendingRequests is the durable request metadata used for reconnect.
+	PendingRequests []PendingRequest
+	// PendingRequestKinds preserves metadata when an older caller can only
+	// provide PendingRequestIDs.
+	PendingRequestKinds map[string]ActivityKind
+	// PendingRequestIDs is retained for older runtime adapters. New code must
+	// use PendingRequests so permission and input requests cannot cross-bind.
 	PendingRequestIDs []string
 }
 

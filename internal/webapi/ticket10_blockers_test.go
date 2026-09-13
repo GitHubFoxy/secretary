@@ -3,6 +3,7 @@ package webapi
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
+	_ "modernc.org/sqlite"
 )
 
 type ticket10HostileWorkerActions struct {
@@ -147,6 +149,116 @@ func TestTicket10WorkerActionResponsesSanitizeFreshAndIdempotencyReplay(t *testi
 		if strings.Contains(string(expected), forbidden) {
 			t.Fatalf("test fixture was not hostile enough, sanitizer retained %q: %s", forbidden, expected)
 		}
+	}
+}
+
+func TestTicket10LegacyMigrationKeepsOneResultAcrossPublicSurfaces(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "ticket10-public-legacy.db")
+	store, err := core.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{WorkerRef: "legacy-public-worker", Intent: "inspect", ProjectID: "project", NodeID: "node", HarnessInstanceID: "node/fx", PolicySnapshot: "safe"}, core.TurnSpec{Input: "inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	finished, err := store.FinishAttempt(ctx, attempt.ID, core.FinishAttemptInput{AttemptOutcomeInput: core.AttemptOutcomeInput{Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "legacy public result"}})
+	if err != nil || finished.Result == nil {
+		t.Fatalf("finish result=%#v err=%v", finished.Result, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	legacyConversationEntries(t, path)
+
+	store, err = core.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	client := &http.Client{Jar: mustWebCookieJar(t)}
+	login(t, client, server.URL)
+
+	response, err := client.Get(server.URL + "/v1/conversation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var entries []core.ConversationEntry
+	if err := json.NewDecoder(response.Body).Decode(&entries); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	var resultEntries []core.ConversationEntry
+	for _, entry := range entries {
+		if entry.Kind == core.EntryWorkerResult {
+			resultEntries = append(resultEntries, entry)
+		}
+	}
+	if response.StatusCode != http.StatusOK || len(resultEntries) != 1 || resultEntries[0].WorkerRef != worker.WorkerRef || resultEntries[0].TurnID != finished.Result.TurnID || resultEntries[0].ResultID != finished.Result.ID {
+		t.Fatalf("conversation status=%d results=%#v", response.StatusCode, resultEntries)
+	}
+	response, err = client.Get(server.URL + "/v1/bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var bootstrap bootstrapResponse
+	if err := json.NewDecoder(response.Body).Decode(&bootstrap); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || len(bootstrap.Workers) != 1 || bootstrap.Workers[0].WorkerRef != worker.WorkerRef || bootstrap.Workers[0].Result == nil || bootstrap.Workers[0].Result.ID != finished.Result.ID {
+		t.Fatalf("bootstrap status=%d workers=%#v", response.StatusCode, bootstrap.Workers)
+	}
+	response, err = client.Get(server.URL + "/v1/workers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workers []publicWorkerDTO
+	if err := json.NewDecoder(response.Body).Decode(&workers); err != nil {
+		response.Body.Close()
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || len(workers) != 1 || workers[0].WorkerRef != worker.WorkerRef || workers[0].Result == nil || workers[0].Result.ID != finished.Result.ID {
+		t.Fatalf("workers status=%d workers=%#v", response.StatusCode, workers)
+	}
+}
+
+func legacyConversationEntries(t *testing.T, path string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var id, conversationID, kind, body, createdAt string
+	var seq int64
+	if err := db.QueryRow(`SELECT id, conversation_id, seq, kind, body, created_at FROM conversation_entries WHERE kind = ?`, core.EntryWorkerResult).Scan(&id, &conversationID, &seq, &kind, &body, &createdAt); err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{"PRAGMA foreign_keys = OFF", "ALTER TABLE conversation_entries RENAME TO conversation_entries_with_identity", `CREATE TABLE conversation_entries (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES conversations(id), seq INTEGER NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(conversation_id, seq))`} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO conversation_entries(id, conversation_id, seq, kind, body, created_at) VALUES(?, ?, ?, ?, ?, ?)`, id, conversationID, seq, kind, body, createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`DROP TABLE conversation_entries_with_identity`); err != nil {
+		t.Fatal(err)
 	}
 }
 

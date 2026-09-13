@@ -248,6 +248,88 @@ func TestACPRuntimeResumeRebindsOutstandingRequestsBeforeSessionLoad(t *testing.
 	}
 }
 
+func TestACPSessionRebindsConcurrentRequestsByKindInsteadOfFIFO(t *testing.T) {
+	writer := &recordingNativeReplyWriter{}
+	client := acp.NewClient(writer)
+	session := newACPSession("reordered-session", client, false)
+	session.setRequestHandler()
+	// Deliberately place input before permission. Native replay arrives in the
+	// opposite order, so a sorted/FIFO durable ID list cross-binds the requests.
+	session.RebindPendingRequests([]PendingRequest{{RequestID: "durable-input", Kind: ActivityUserInput}, {RequestID: "durable-permission", Kind: ActivityPermission}})
+	permission := acp.Message{ID: json.RawMessage("101"), Method: "session/request_permission", Params: json.RawMessage(`{"options":[{"optionId":"deny","kind":"reject_once"}]}`)}
+	input := acp.Message{ID: json.RawMessage("102"), Method: "session/request_input", Params: json.RawMessage(`{"prompt":"version?"}`)}
+	finished := make(chan error, 2)
+	go func() { finished <- client.HandleServerRequest(permission) }()
+	go func() { finished <- client.HandleServerRequest(input) }()
+
+	seen := make(map[ActivityKind]string)
+	for len(seen) < 2 {
+		select {
+		case activity := <-session.Activity():
+			seen[activity.Kind] = activity.RequestID
+		case <-time.After(time.Second):
+			t.Fatalf("requests were not observed: %#v", seen)
+		}
+	}
+	if seen[ActivityPermission] != "durable-permission" || seen[ActivityUserInput] != "durable-input" {
+		t.Fatalf("rebound requests crossed: %#v", seen)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.Respond(ctx, "durable-permission", "denied"); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Respond(ctx, "durable-input", "answer"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := <-finished; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestACPSessionRebindsSameKindByDurableRequestID(t *testing.T) {
+	writer := &recordingNativeReplyWriter{}
+	client := acp.NewClient(writer)
+	session := newACPSession("same-kind-session", client, false)
+	session.setRequestHandler()
+	session.RebindPendingRequests([]PendingRequest{{RequestID: "input-a", Kind: ActivityUserInput}, {RequestID: "input-b", Kind: ActivityUserInput}})
+	first := acp.Message{ID: json.RawMessage("111"), Method: "session/request_input", Params: json.RawMessage(`{"request_id":"input-b","prompt":"second"}`)}
+	second := acp.Message{ID: json.RawMessage("112"), Method: "session/request_input", Params: json.RawMessage(`{"request_id":"input-a","prompt":"first"}`)}
+	finished := make(chan error, 2)
+	go func() { finished <- client.HandleServerRequest(first) }()
+	go func() { finished <- client.HandleServerRequest(second) }()
+	seen := make(map[string]struct{})
+	for len(seen) < 2 {
+		select {
+		case activity := <-session.Activity():
+			seen[activity.RequestID] = struct{}{}
+		case <-time.After(time.Second):
+			t.Fatalf("same-kind requests were not observed: %#v", seen)
+		}
+	}
+	if _, ok := seen["input-a"]; !ok {
+		t.Fatalf("input-a was not rebound: %#v", seen)
+	}
+	if _, ok := seen["input-b"]; !ok {
+		t.Fatalf("input-b was not rebound: %#v", seen)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.Respond(ctx, "input-a", "one"); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Respond(ctx, "input-b", "two"); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := <-finished; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestACPSessionTrustedLocalSelectsOneShotOption(t *testing.T) {
 	writer := &recordingNativeReplyWriter{}
 	client := acp.NewClient(writer)

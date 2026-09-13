@@ -79,7 +79,7 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 	// flight. Install the handler and durable Node-local IDs first, otherwise
 	// the request gets a native ACP ID and cannot be answered after reconnect.
 	session.setRequestHandler()
-	session.RebindRequests(request.PendingRequestIDs)
+	session.RebindPendingRequests(effectivePendingRequests(request))
 	loadParams := map[string]any{"sessionId": runtimeSessionID, "cwd": request.Workspace, "mcpServers": mcpServers}
 	if metadata := profileMetadata(request.Profile); metadata != nil {
 		loadParams["_meta"] = metadata
@@ -185,6 +185,19 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 	return client, nil
 }
 
+func effectivePendingRequests(request StartRequest) []PendingRequest {
+	if len(request.PendingRequests) > 0 {
+		return append([]PendingRequest(nil), request.PendingRequests...)
+	}
+	pending := make([]PendingRequest, 0, len(request.PendingRequestIDs))
+	for _, requestID := range request.PendingRequestIDs {
+		if strings.TrimSpace(requestID) != "" {
+			pending = append(pending, PendingRequest{RequestID: requestID, Kind: request.PendingRequestKinds[requestID]})
+		}
+	}
+	return pending
+}
+
 type pendingACPResponse struct {
 	response     chan string
 	delivered    chan error
@@ -214,7 +227,7 @@ type acpSession struct {
 	requestMu        sync.Mutex
 	pending          map[string]*pendingACPResponse
 	resolved         map[string]struct{}
-	rebound          []string
+	rebound          []PendingRequest
 	reboundResponses map[string]*pendingACPResponse
 	nativeRequests   map[string]string
 	nativeDeliveries map[string]*pendingACPResponse
@@ -274,28 +287,36 @@ func (s *acpSession) Cancel(ctx context.Context) error {
 }
 
 func (s *acpSession) RebindRequests(requestIDs []string) {
+	pending := make([]PendingRequest, 0, len(requestIDs))
+	for _, requestID := range requestIDs {
+		pending = append(pending, PendingRequest{RequestID: requestID})
+	}
+	s.RebindPendingRequests(pending)
+}
+
+func (s *acpSession) RebindPendingRequests(requests []PendingRequest) {
 	s.requestMu.Lock()
 	defer s.requestMu.Unlock()
-	for _, requestID := range requestIDs {
-		requestID = strings.TrimSpace(requestID)
-		if requestID == "" {
+	for _, request := range requests {
+		request.RequestID = strings.TrimSpace(request.RequestID)
+		if request.RequestID == "" {
 			continue
 		}
-		if _, resolved := s.resolved[requestID]; resolved {
+		if _, resolved := s.resolved[request.RequestID]; resolved {
 			continue
 		}
-		if _, pending := s.pending[requestID]; pending {
+		if _, pending := s.pending[request.RequestID]; pending {
 			continue
 		}
 		alreadyRebound := false
-		for _, reboundID := range s.rebound {
-			if reboundID == requestID {
+		for _, rebound := range s.rebound {
+			if rebound.RequestID == request.RequestID {
 				alreadyRebound = true
 				break
 			}
 		}
 		if !alreadyRebound {
-			s.rebound = append(s.rebound, requestID)
+			s.rebound = append(s.rebound, request)
 		}
 	}
 }
@@ -310,8 +331,8 @@ func (s *acpSession) Respond(ctx context.Context, requestID, response string) er
 		pending = s.reboundResponses[requestID]
 	}
 	if pending == nil {
-		for _, reboundID := range s.rebound {
-			if reboundID == requestID {
+		for _, rebound := range s.rebound {
+			if rebound.RequestID == requestID {
 				pending = &pendingACPResponse{response: make(chan string, 1), delivered: make(chan error, 1)}
 				s.reboundResponses[requestID] = pending
 				break
@@ -407,16 +428,6 @@ func (s *acpSession) serverRequestDelivered(message acp.Message, err error) {
 }
 
 func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
-	requestID := ""
-	s.requestMu.Lock()
-	if len(s.rebound) > 0 {
-		requestID = s.rebound[0]
-		s.rebound = s.rebound[1:]
-	}
-	s.requestMu.Unlock()
-	if requestID == "" {
-		requestID = fmt.Sprintf("request-%d-%d", time.Now().UnixNano(), acpRequestSequence.Add(1))
-	}
 	var params map[string]any
 	if err := json.Unmarshal(message.Params, &params); err != nil {
 		return nil, errors.New("invalid harness request")
@@ -447,6 +458,14 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 	} else {
 		return nil, fmt.Errorf("unsupported harness request: %s", message.Method)
 	}
+
+	requestID, err := s.reboundRequestID(params, kind)
+	if err != nil {
+		return nil, err
+	}
+	if requestID == "" {
+		requestID = fmt.Sprintf("request-%d-%d", time.Now().UnixNano(), acpRequestSequence.Add(1))
+	}
 	var pending *pendingACPResponse
 	retry := func(value string) error {
 		result, handlerErr := s.serverRequestResponse(kind, message.Params, value)
@@ -476,6 +495,41 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 	}
 	value := <-pending.response
 	return s.serverRequestResponse(kind, message.Params, value)
+}
+
+func (s *acpSession) reboundRequestID(params map[string]any, kind ActivityKind) (string, error) {
+	durableID := firstString(params, "request_id", "requestId")
+	s.requestMu.Lock()
+	defer s.requestMu.Unlock()
+	if durableID != "" {
+		for index, request := range s.rebound {
+			if request.RequestID != durableID {
+				continue
+			}
+			if request.Kind != "" && request.Kind != kind {
+				return "", fmt.Errorf("acp: durable request %q kind mismatch", durableID)
+			}
+			s.rebound = append(s.rebound[:index], s.rebound[index+1:]...)
+			return durableID, nil
+		}
+		return "", fmt.Errorf("acp: durable request %q was not pending", durableID)
+	}
+	match := -1
+	for index, request := range s.rebound {
+		if request.Kind != "" && request.Kind != kind {
+			continue
+		}
+		if match >= 0 {
+			return "", fmt.Errorf("acp: multiple pending %s requests lack durable request_id", kind)
+		}
+		match = index
+	}
+	if match < 0 {
+		return "", nil
+	}
+	requestID := s.rebound[match].RequestID
+	s.rebound = append(s.rebound[:match], s.rebound[match+1:]...)
+	return requestID, nil
 }
 
 func (s *acpSession) serverRequestResponse(kind ActivityKind, rawParams json.RawMessage, value string) (any, error) {

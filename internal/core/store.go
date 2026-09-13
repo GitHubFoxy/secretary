@@ -535,6 +535,9 @@ CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries(state, updated_at);
 	if err := s.migratePhase4Lifecycle(ctx); err != nil {
 		return err
 	}
+	if err := s.migrateConversationEntryResultIdentity(ctx); err != nil {
+		return err
+	}
 	if err := s.migratePhase4Projects(ctx); err != nil {
 		return err
 	}
@@ -542,6 +545,139 @@ CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries(state, updated_at);
 		return err
 	}
 	return nil
+}
+
+// migrateConversationEntryResultIdentity repairs entries written before
+// worker_result identity columns existed. It only uses an unambiguous durable
+// Result relation. An ambiguous or orphaned row aborts migration instead of
+// manufacturing a Worker/Turn identity that could hide the wrong Result.
+func (s *Store) migrateConversationEntryResultIdentity(ctx context.Context) error {
+	return withTxErr(s, ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT id, conversation_id, kind, body, worker_ref, turn_id, result_id, created_at FROM conversation_entries WHERE kind = ? AND (worker_ref = '' OR turn_id = '' OR result_id = '') ORDER BY conversation_id, seq, id`, EntryWorkerResult)
+		if err != nil {
+			return fmt.Errorf("inspect legacy Worker Result entries: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var entry ConversationEntry
+			if err := rows.Scan(&entry.ID, &entry.ConversationID, &entry.Kind, &entry.Body, &entry.WorkerRef, &entry.TurnID, &entry.ResultID, newTimestampScanner(&entry.CreatedAt)); err != nil {
+				return fmt.Errorf("scan legacy Worker Result entry: %w", err)
+			}
+			identity, err := legacyEntryResultIdentity(ctx, tx, entry)
+			if err != nil {
+				return err
+			}
+			if entry.WorkerRef != "" && entry.WorkerRef != identity.workerRef || entry.TurnID != "" && entry.TurnID != identity.turnID || entry.ResultID != "" && entry.ResultID != identity.resultID {
+				return fmt.Errorf("migrate Worker Result entry %q: durable identity conflicts with stored identity", entry.ID)
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE conversation_entries SET worker_ref = ?, turn_id = ?, result_id = ? WHERE id = ?`, identity.workerRef, identity.turnID, identity.resultID, entry.ID); err != nil {
+				return fmt.Errorf("backfill Worker Result entry %q: %w", entry.ID, err)
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("read legacy Worker Result entries: %w", err)
+		}
+		return nil
+	})
+}
+
+type legacyResultIdentity struct {
+	workerRef string
+	turnID    string
+	resultID  string
+}
+
+type legacyResultCandidate struct {
+	legacyResultIdentity
+	createdAt string
+}
+
+func legacyEntryResultIdentity(ctx context.Context, tx *sql.Tx, entry ConversationEntry) (legacyResultIdentity, error) {
+	var candidates []legacyResultCandidate
+	rows, err := tx.QueryContext(ctx, `SELECT w.worker_ref, r.turn_id, r.id, r.created_at
+FROM phase4_results r
+JOIN workers w ON w.id = r.worker_id
+WHERE w.conversation_id = ? AND r.summary = ?
+ORDER BY r.created_at, r.id`, entry.ConversationID, entry.Body)
+	if err != nil {
+		return legacyResultIdentity{}, fmt.Errorf("find Phase 4 identity for entry %q: %w", entry.ID, err)
+	}
+	for rows.Next() {
+		var identity legacyResultCandidate
+		if err := rows.Scan(&identity.workerRef, &identity.turnID, &identity.resultID, &identity.createdAt); err != nil {
+			rows.Close()
+			return legacyResultIdentity{}, fmt.Errorf("scan Phase 4 identity for entry %q: %w", entry.ID, err)
+		}
+		candidates = append(candidates, identity)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return legacyResultIdentity{}, fmt.Errorf("read Phase 4 identity for entry %q: %w", entry.ID, err)
+	}
+	if err := rows.Close(); err != nil {
+		return legacyResultIdentity{}, fmt.Errorf("close Phase 4 identity for entry %q: %w", entry.ID, err)
+	}
+	if identity, ok := uniqueResultCandidate(candidates, entry.CreatedAt); ok {
+		return identity, nil
+	}
+	if len(candidates) > 1 {
+		return legacyResultIdentity{}, fmt.Errorf("migrate Worker Result entry %q: %d durable Results match summary, refusing ambiguous identity", entry.ID, len(candidates))
+	}
+
+	// Phase 3 has a durable Result -> Attempt -> WorkerBinding -> Task
+	// relation, but no Turn table. Keep that fact explicit in the namespace.
+	rows, err = tx.QueryContext(ctx, `SELECT b.worker_ref, a.id, r.id, r.created_at
+FROM results r
+JOIN attempts a ON a.id = r.attempt_id
+JOIN worker_bindings b ON b.id = a.worker_binding_id
+JOIN tasks t ON t.id = b.task_id
+WHERE t.conversation_id = ? AND r.summary = ?
+ORDER BY r.created_at, r.id`, entry.ConversationID, entry.Body)
+	if err != nil {
+		return legacyResultIdentity{}, fmt.Errorf("find legacy identity for entry %q: %w", entry.ID, err)
+	}
+	candidates = candidates[:0]
+	for rows.Next() {
+		var workerRef, attemptID, resultID, createdAt string
+		if err := rows.Scan(&workerRef, &attemptID, &resultID, &createdAt); err != nil {
+			rows.Close()
+			return legacyResultIdentity{}, fmt.Errorf("scan legacy identity for entry %q: %w", entry.ID, err)
+		}
+		candidates = append(candidates, legacyResultCandidate{legacyResultIdentity: legacyResultIdentity{workerRef: workerRef, turnID: "legacy-attempt:" + attemptID, resultID: resultID}, createdAt: createdAt})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return legacyResultIdentity{}, fmt.Errorf("read legacy identity for entry %q: %w", entry.ID, err)
+	}
+	if err := rows.Close(); err != nil {
+		return legacyResultIdentity{}, fmt.Errorf("close legacy identity for entry %q: %w", entry.ID, err)
+	}
+	if identity, ok := uniqueResultCandidate(candidates, entry.CreatedAt); ok {
+		return identity, nil
+	}
+	if len(candidates) == 0 {
+		return legacyResultIdentity{}, fmt.Errorf("migrate Worker Result entry %q: no durable Result relation, refusing invented identity", entry.ID)
+	}
+	return legacyResultIdentity{}, fmt.Errorf("migrate Worker Result entry %q: %d legacy Results match summary, refusing ambiguous identity", entry.ID, len(candidates))
+}
+
+func uniqueResultCandidate(candidates []legacyResultCandidate, createdAt time.Time) (legacyResultIdentity, bool) {
+	if len(candidates) == 0 {
+		return legacyResultIdentity{}, false
+	}
+	want := timestamp(createdAt)
+	if len(candidates) == 1 {
+		return candidates[0].legacyResultIdentity, candidates[0].createdAt == want
+	}
+	var match legacyResultIdentity
+	matches := 0
+	for _, candidate := range candidates {
+		if candidate.createdAt == want {
+			match = candidate.legacyResultIdentity
+			matches++
+		}
+	}
+	return match, matches == 1
 }
 
 type personConversation struct {

@@ -319,16 +319,25 @@ func (s *LocalStore) SavePendingRequest(requestID, attemptID string, kind Activi
 	return s.persistLocked()
 }
 
-func (s *LocalStore) PendingRequestIDs(attemptID string) []string {
+func (s *LocalStore) PendingRequests(attemptID string) []PendingRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	result := make([]string, 0)
+	result := make([]PendingRequest, 0)
 	for requestID, mapping := range s.state.PendingRequests {
 		if mapping.AttemptID == attemptID {
-			result = append(result, requestID)
+			result = append(result, PendingRequest{RequestID: requestID, Kind: mapping.Kind})
 		}
 	}
-	sort.Strings(result)
+	sort.Slice(result, func(i, j int) bool { return result[i].RequestID < result[j].RequestID })
+	return result
+}
+
+func (s *LocalStore) PendingRequestIDs(attemptID string) []string {
+	pending := s.PendingRequests(attemptID)
+	result := make([]string, 0, len(pending))
+	for _, request := range pending {
+		result = append(result, request.RequestID)
+	}
 	return result
 }
 
