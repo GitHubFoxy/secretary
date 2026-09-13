@@ -7,6 +7,18 @@
 
 Нельзя помечать ручной пункт как пройденный по результату Go-теста. В evidence ledger должна быть команда или скриншот, время, commit и идентификатор запуска. Секреты, pairing tokens и содержимое `user.md` в ledger не записываются.
 
+## Latest partial real-harness run
+
+- `run_id`: `p4-real-local-20260913`
+- `commit`: `c4e4c6e`
+- `PASS`: чистый локальный server setup/start/restart; настоящий `fx` выполнил Secretary request и вернул ожидаемый ответ.
+- `PASS`: два локальных outbound Node подключались и сообщили inventory; Project получил разные path mappings.
+- `BLOCKED`: это был один компьютер, без отдельного MacBook и home server; Telegram не был настроен.
+- `BLOCKED`: Claude Code отсутствует, Codex в clean Node HOME не аутентифицирован, OpenCode не установлен.
+- `NOT RUN`: остальные Worker, approval, queue, replay, revoke и network-loss сценарии.
+
+Эта запись фиксирует фактический прогон, но не заменяет полную acceptance matrix ниже. Полный redacted ledger хранится в каталоге запуска и не содержит credentials или raw prompts.
+
 ## Deterministic automated checks
 
 Запуск:
