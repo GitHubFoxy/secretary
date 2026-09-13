@@ -135,6 +135,7 @@ func TestWorkerObserverStatusSteerStopAndActivity(t *testing.T) {
 	}
 	request, _ := http.NewRequest(http.MethodPost, storeServer.URL+"/v1/workers/worker-1/steer", bytes.NewBufferString(`{"text":"change"}`))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "observer-steer")
 	response, err = client.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -169,6 +170,7 @@ func TestWorkerObserverStatusSteerStopAndActivity(t *testing.T) {
 	}
 	request, _ = http.NewRequest(http.MethodPost, storeServer.URL+"/v1/workers/worker-1/queue", bytes.NewBufferString(`{"text":"after idle"}`))
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "observer-queue")
 	response, err = client.Do(request)
 	if err != nil {
 		t.Fatal(err)
@@ -182,6 +184,7 @@ func TestWorkerObserverStatusSteerStopAndActivity(t *testing.T) {
 	}
 
 	request, _ = http.NewRequest(http.MethodPost, storeServer.URL+"/v1/workers/worker-1/stop", nil)
+	request.Header.Set("Idempotency-Key", "observer-stop")
 	response, err = client.Do(request)
 	if err != nil {
 		t.Fatal(err)

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,8 @@ import (
 
 const sessionCookie = "secretary_session"
 
+type authenticatedClientContextKey struct{}
+
 type workerController interface {
 	Session(string) (node.Session, bool)
 	Steer(context.Context, string, string) (bool, error)
@@ -31,6 +34,12 @@ type workerResponder interface {
 	RespondWorker(context.Context, ctl.MessageWorkerRequest) (core.WorkerDetails, error)
 }
 
+type workerActions interface {
+	MessageWorker(context.Context, ctl.MessageWorkerRequest) (core.WorkerDetails, error)
+	CancelWorker(context.Context, string) (core.WorkerDetails, error)
+	CloseWorker(context.Context, string) (core.WorkerDetails, error)
+}
+
 type Server struct {
 	store          *core.Store
 	bootstrapToken string
@@ -39,6 +48,7 @@ type Server struct {
 	remoteNodes    *node.ServerManager
 	workers        workerController
 	responder      workerResponder
+	actions        workerActions
 	secretary      interface {
 		HandleMessage(context.Context, string) error
 	}
@@ -48,14 +58,53 @@ type Server struct {
 	modelDefault func() string
 	modelChanged func(string) error
 	control      ControlOptions
+	userPath     string
 
-	mu          sync.Mutex
-	subscribers map[*subscription]struct{}
+	mu            sync.Mutex
+	idempotencyMu sync.Mutex
+	subscribers   map[*subscription]struct{}
+	streams       map[string]map[*activeStream]struct{}
+}
+
+type activeStream struct {
+	cancel context.CancelFunc
 }
 
 type subscription struct {
 	conversationID string
+	clientID       string
 	entries        chan core.ConversationEntry
+	cancel         context.CancelFunc
+	slow           bool
+	cursor         int64
+	pending        map[int64]core.ConversationEntry
+}
+
+func (s *subscription) enqueue(entry core.ConversationEntry) bool {
+	if entry.Seq <= s.cursor {
+		return true
+	}
+	if s.pending == nil {
+		s.pending = make(map[int64]core.ConversationEntry)
+	}
+	if _, exists := s.pending[entry.Seq]; exists {
+		return true
+	}
+	s.pending[entry.Seq] = entry
+	for {
+		next, exists := s.pending[s.cursor+1]
+		if !exists {
+			return true
+		}
+		select {
+		case s.entries <- next:
+			delete(s.pending, next.Seq)
+			s.cursor = next.Seq
+		default:
+			s.slow = true
+			return false
+		}
+	}
 }
 
 func New(ctx context.Context, store *core.Store, bootstrapToken string) (*Server, error) {
@@ -66,7 +115,7 @@ func New(ctx context.Context, store *core.Store, bootstrapToken string) (*Server
 	if err != nil {
 		return nil, fmt.Errorf("create owner: %w", err)
 	}
-	server := &Server{store: store, bootstrapToken: bootstrapToken, owner: owner, workerStates: make(map[string]string), subscribers: make(map[*subscription]struct{})}
+	server := &Server{store: store, bootstrapToken: bootstrapToken, owner: owner, workerStates: make(map[string]string), subscribers: make(map[*subscription]struct{}), streams: make(map[string]map[*activeStream]struct{})}
 	store.SetEntryObserver(server.publishEntry)
 	return server, nil
 }
@@ -78,8 +127,17 @@ func (s *Server) AttachWorkerController(controller workerController) {
 	if responder, ok := controller.(workerResponder); ok {
 		s.responder = responder
 	}
+	if actions, ok := controller.(workerActions); ok {
+		s.actions = actions
+	}
 }
-func (s *Server) AttachWorkerResponder(responder workerResponder)   { s.responder = responder }
+func (s *Server) AttachWorkerResponder(responder workerResponder) {
+	s.responder = responder
+	if actions, ok := responder.(workerActions); ok {
+		s.actions = actions
+	}
+}
+func (s *Server) AttachUserDocument(path string)                    { s.userPath = strings.TrimSpace(path) }
 func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime) { s.secretary = runtime }
 func (s *Server) SetDebug(debug bool)                               { s.debug = debug }
 func (s *Server) AttachSecretaryModelCatalog(catalog func() map[string]string, defaultModel func() string, changed func(string) error) {
@@ -93,9 +151,18 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/web/session", s.exchangeBootstrapToken)
 	mux.HandleFunc("GET /v1/web/session", s.currentWebSession)
+	mux.HandleFunc("POST /v1/clients/pair", s.pairClient)
+	mux.HandleFunc("GET /v1/clients", s.listClients)
+	mux.HandleFunc("/v1/clients/", s.clientRoute)
 	mux.HandleFunc("GET /v1/conversation", s.conversation)
+	mux.HandleFunc("GET /v1/conversation/ws", s.websocket)
 	mux.HandleFunc("POST /v1/messages", s.message)
 	mux.HandleFunc("GET /v1/ws", s.websocket)
+	mux.HandleFunc("GET /v1/user", s.user)
+	mux.HandleFunc("PUT /v1/user", s.user)
+	mux.HandleFunc("GET /v1/secretary/stream", s.secretaryStream)
+	mux.HandleFunc("GET /v1/secretary/ws", s.secretaryWebsocket)
+	mux.HandleFunc("/v1/secretary/turns/", s.secretaryTurnRoute)
 	mux.HandleFunc("GET /v1/bootstrap", s.bootstrap)
 	mux.HandleFunc("GET /v1/secretary/models", s.secretaryModels)
 	mux.HandleFunc("POST /v1/secretary/model", s.setSecretaryModel)
@@ -108,8 +175,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/v1/workers/", s.workerRoute)
 	if s.remoteNodes != nil {
 		mux.HandleFunc("GET /v1/nodes/connect", s.remoteNodes.ServeProtocolHTTP)
-		mux.Handle("/v1/nodes", s.remoteNodes)
-		mux.Handle("/v1/nodes/", s.remoteNodes)
+		mux.HandleFunc("GET /v1/nodes", s.nodeDispatch)
+		mux.HandleFunc("/v1/nodes/", s.nodeDispatch)
+	} else {
+		mux.HandleFunc("GET /v1/nodes", s.nodeList)
 	}
 	return mux
 }
@@ -143,7 +212,7 @@ func (s *Server) currentWebSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) conversation(w http.ResponseWriter, r *http.Request) {
-	conversation, ok := s.authorizedConversation(w, r)
+	conversation, ok := s.authorizedConversationScope(w, r, core.ScopeConversationRead)
 	if !ok {
 		return
 	}
@@ -161,13 +230,23 @@ func (s *Server) conversation(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) message(w http.ResponseWriter, r *http.Request) {
-	conversation, ok := s.authorizedConversation(w, r)
+	person, client, ok := s.authorizedPerson(w, r)
 	if !ok {
+		return
+	}
+	if client != nil && !client.HasScope(core.ScopeConversationWrite) {
+		http.Error(w, "Client scope required", http.StatusForbidden)
+		return
+	}
+	conversation, err := s.store.ConversationForPerson(r.Context(), person.ID)
+	if err != nil {
+		http.Error(w, "read conversation", http.StatusInternalServerError)
 		return
 	}
 	var request struct {
 		ExternalMessageID string `json:"external_message_id"`
 		Body              string `json:"body"`
+		IdempotencyKey    string `json:"idempotency_key,omitempty"`
 	}
 	if !decodeJSON(w, r, &request) {
 		return
@@ -176,8 +255,41 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "external_message_id and body are required", http.StatusBadRequest)
 		return
 	}
+	key, ok := requireIdempotencyKey(w, r, request.IdempotencyKey)
+	if !ok {
+		return
+	}
+	operation := "message:" + person.ID
+	payload := struct {
+		ExternalMessageID string
+		Body              string
+	}{request.ExternalMessageID, request.Body}
+	s.idempotencyMu.Lock()
+	defer s.idempotencyMu.Unlock()
+	encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), operation, key, payload)
+	if lookupErr != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(lookupErr, core.ErrIdempotencyConflict) {
+			status = http.StatusConflict
+		}
+		http.Error(w, lookupErr.Error(), status)
+		return
+	}
+	if found {
+		var acknowledgement messageAcknowledgement
+		if err := json.Unmarshal(encoded, &acknowledgement); err != nil {
+			http.Error(w, "decode idempotency record", http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, http.StatusAccepted, acknowledgement)
+		return
+	}
 
-	entry, duplicate, err := s.store.AppendInbound(r.Context(), conversation.ID, "web", request.ExternalMessageID, request.Body)
+	adapterID := "web"
+	if client != nil {
+		adapterID = "client:" + client.ID
+	}
+	entry, duplicate, err := s.store.AppendInbound(r.Context(), conversation.ID, adapterID, request.ExternalMessageID, request.Body)
 	if err != nil {
 		http.Error(w, "store inbound message", http.StatusInternalServerError)
 		return
@@ -189,15 +301,30 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 			}
 		}(request.Body)
 	}
-	writeJSON(w, http.StatusAccepted, struct {
-		Entry     core.ConversationEntry `json:"entry"`
-		Duplicate bool                   `json:"duplicate"`
-	}{Entry: entry, Duplicate: duplicate})
+	acknowledgement := messageAcknowledgement{Entry: entry, MessageID: entry.ID, EntrySeq: entry.Seq, State: "saved", Duplicate: duplicate}
+	if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, key, payload, acknowledgement); err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, core.ErrIdempotencyConflict) {
+			status = http.StatusConflict
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, acknowledgement)
 }
 
 func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
-	conversation, ok := s.authorizedConversation(w, r)
+	person, client, ok := s.authorizedPerson(w, r)
 	if !ok {
+		return
+	}
+	if client != nil && !client.HasScope(core.ScopeConversationRead) {
+		http.Error(w, "Client scope required", http.StatusForbidden)
+		return
+	}
+	conversation, err := s.store.ConversationForPerson(r.Context(), person.ID)
+	if err != nil {
+		http.Error(w, "read conversation", http.StatusInternalServerError)
 		return
 	}
 	after, err := parseAfter(r)
@@ -210,16 +337,30 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.CloseNow()
+	streamContext, cancel := context.WithCancel(r.Context())
+	clientID := ""
+	if client != nil {
+		clientID = client.ID
+	}
+	stream, accepted := s.registerStream(streamContext, clientID, bearerToken(r), cancel)
+	if !accepted {
+		_ = conn.Close(websocket.StatusPolicyViolation, "Client revoked")
+		return
+	}
+	defer s.unregisterStream(clientID, stream)
 
 	s.mu.Lock()
-	entries, err := s.store.EntriesAfter(r.Context(), conversation.ID, after)
+	entries, err := s.store.EntriesAfter(streamContext, conversation.ID, after)
 	if err != nil {
 		s.mu.Unlock()
 		return
 	}
-	sub := &subscription{conversationID: conversation.ID, entries: make(chan core.ConversationEntry, len(entries)+32)}
+	sub := &subscription{conversationID: conversation.ID, clientID: clientID, entries: make(chan core.ConversationEntry, len(entries)+32), cancel: cancel, cursor: after, pending: make(map[int64]core.ConversationEntry)}
 	for _, entry := range entries {
 		sub.entries <- entry
+		if entry.Seq > sub.cursor {
+			sub.cursor = entry.Seq
+		}
 	}
 	s.subscribers[sub] = struct{}{}
 	s.mu.Unlock()
@@ -231,11 +372,20 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 
 	for {
 		select {
-		case entry := <-sub.entries:
-			if err := conn.Write(r.Context(), websocket.MessageText, mustJSON(entry)); err != nil {
+		case entry, open := <-sub.entries:
+			if !open {
+				if sub.slow {
+					_ = conn.Close(websocket.StatusPolicyViolation, "subscriber too slow; reconnect with after_seq")
+				}
 				return
 			}
-		case <-r.Context().Done():
+			if err := conn.Write(streamContext, websocket.MessageText, mustJSON(entry)); err != nil {
+				return
+			}
+		case <-streamContext.Done():
+			if sub.slow {
+				_ = conn.Close(websocket.StatusPolicyViolation, "subscriber too slow; reconnect with after_seq")
+			}
 			return
 		}
 	}
@@ -252,23 +402,80 @@ func (s *Server) publishLocked(entry core.ConversationEntry) {
 		if subscriber.conversationID != entry.ConversationID {
 			continue
 		}
-		select {
-		case subscriber.entries <- entry:
-		default:
-			// A slow connection must reconnect with entry_seq rather than block all writers.
+		if subscriber.enqueue(entry) {
+			continue
+		}
+		// Never drop a durable entry. Close the slow subscriber so it can
+		// reconnect from its last acknowledged entry_seq.
+		delete(s.subscribers, subscriber)
+		if subscriber.cancel != nil {
+			subscriber.cancel()
+		}
+		close(subscriber.entries)
+	}
+}
+
+func (s *Server) registerStream(ctx context.Context, clientID, credential string, cancel context.CancelFunc) (*activeStream, bool) {
+	if clientID == "" {
+		return nil, true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// Authentication happened before the WebSocket handshake. Recheck the
+	// credential and current Client state while holding the same lock used by
+	// revoke's stream sweep, so a revoked or re-paired generation cannot enter
+	// the stream registry after the initial check.
+	client, err := s.store.AuthenticateClient(ctx, credential)
+	if err != nil || client.ID != clientID {
+		return nil, false
+	}
+	stream := &activeStream{cancel: cancel}
+	if s.streams[clientID] == nil {
+		s.streams[clientID] = make(map[*activeStream]struct{})
+	}
+	s.streams[clientID][stream] = struct{}{}
+	return stream, true
+}
+
+func (s *Server) unregisterStream(clientID string, stream *activeStream) {
+	if stream == nil || clientID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if streams := s.streams[clientID]; streams != nil {
+		delete(streams, stream)
+		if len(streams) == 0 {
+			delete(s.streams, clientID)
 		}
 	}
 }
 
+func (s *Server) cancelClientStreams(clientID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cancelClientStreamsLocked(clientID)
+}
+
+func (s *Server) cancelClientStreamsLocked(clientID string) {
+	streams := s.streams[clientID]
+	delete(s.streams, clientID)
+	for stream := range streams {
+		stream.cancel()
+	}
+}
+
 func (s *Server) authorizedConversation(w http.ResponseWriter, r *http.Request) (core.Conversation, bool) {
-	cookie, err := r.Cookie(sessionCookie)
-	if err != nil {
-		http.Error(w, "web session required", http.StatusUnauthorized)
+	return s.authorizedConversationScope(w, r, "")
+}
+
+func (s *Server) authorizedConversationScope(w http.ResponseWriter, r *http.Request, scope core.ClientScope) (core.Conversation, bool) {
+	person, client, ok := s.authorizedPerson(w, r)
+	if !ok {
 		return core.Conversation{}, false
 	}
-	person, err := s.store.WebSessionPerson(r.Context(), cookie.Value)
-	if err != nil || person.ID != s.owner.ID {
-		http.Error(w, "invalid web session", http.StatusUnauthorized)
+	if scope != "" && client != nil && !client.HasScope(scope) {
+		http.Error(w, "Client scope required", http.StatusForbidden)
 		return core.Conversation{}, false
 	}
 	conversation, err := s.store.ConversationForPerson(r.Context(), person.ID)
@@ -277,6 +484,41 @@ func (s *Server) authorizedConversation(w http.ResponseWriter, r *http.Request) 
 		return core.Conversation{}, false
 	}
 	return conversation, true
+}
+
+func (s *Server) authorizedPerson(w http.ResponseWriter, r *http.Request) (core.Person, *core.Client, bool) {
+	if cookie, err := r.Cookie(sessionCookie); err == nil {
+		person, sessionErr := s.store.WebSessionPerson(r.Context(), cookie.Value)
+		if sessionErr == nil && person.ID == s.owner.ID {
+			return person, nil, true
+		}
+	}
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(header) > len("Bearer ") && strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
+		client, err := s.store.AuthenticateClient(r.Context(), strings.TrimSpace(header[len("Bearer "):]))
+		if err == nil && client.PersonID == s.owner.ID {
+			person := s.owner
+			return person, &client, true
+		}
+	}
+	http.Error(w, "Client or web session required", http.StatusUnauthorized)
+	return core.Person{}, nil, false
+}
+
+func bearerToken(r *http.Request) string {
+	header := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(header) <= len("Bearer ") || !strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(header[len("Bearer "):])
+}
+
+func (s *Server) requestClientID(r *http.Request) string {
+	client, err := s.store.AuthenticateClient(r.Context(), bearerToken(r))
+	if err != nil || client.PersonID != s.owner.ID {
+		return ""
+	}
+	return client.ID
 }
 
 func parseAfter(r *http.Request) (int64, error) {

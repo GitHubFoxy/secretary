@@ -92,7 +92,10 @@ func TestProductionAssemblyRespondsWithoutManualResponderAttachment(t *testing.T
 	defer server.Close()
 	client := &http.Client{Jar: mustProductionCookieJar(t)}
 	loginProduction(t, client, server.URL)
-	response, err := client.Post(server.URL+"/v1/approvals/production-request/approve", "application/json", bytes.NewBufferString("{}"))
+	request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/approvals/production-request/approve", bytes.NewBufferString("{}"))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "production-approval")
+	response, err := client.Do(request)
 	if err != nil {
 		t.Fatal(err)
 	}
