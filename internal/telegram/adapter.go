@@ -94,14 +94,15 @@ type Pairing struct {
 }
 
 type Event struct {
-	EventID   string
-	Sequence  int64
-	Kind      string
-	WorkerRef string
-	Title     string
-	Text      string
-	Tool      string
-	Payload   json.RawMessage
+	EventID          string
+	Sequence         int64
+	Kind             string
+	WorkerRef        string
+	Title            string
+	Text             string
+	Tool             string
+	TerminalIdentity string
+	Payload          json.RawMessage
 }
 
 type TopicMapping struct {
@@ -125,6 +126,7 @@ type persistedState struct {
 	PendingSecretaryTools []string                 `json:"pending_secretary_tools,omitempty"`
 	PendingWorkerLines    map[string][]string      `json:"pending_worker_lines,omitempty"`
 	PendingEventSeqs      []int64                  `json:"pending_event_seqs,omitempty"`
+	TerminalNotified      map[string]time.Time     `json:"terminal_notified,omitempty"`
 }
 
 type pairingRecord struct {
@@ -173,7 +175,7 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 		config.FlushInterval = 2 * time.Second
 	}
 	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), now: func() time.Time { return time.Now().UTC() }}
-	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, Outbox: []OutgoingMessage{}}
+	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, Outbox: []OutgoingMessage{}}
 	if err := adapter.load(); err != nil {
 		return nil, err
 	}
@@ -215,6 +217,9 @@ func (a *Adapter) load() error {
 	}
 	if a.state.Pairings == nil {
 		a.state.Pairings = map[string]pairingRecord{}
+	}
+	if a.state.TerminalNotified == nil {
+		a.state.TerminalNotified = map[string]time.Time{}
 	}
 	return nil
 }
@@ -568,7 +573,25 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if text == "" {
 			return nil
 		}
-		return a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: text})
+		if event.TerminalIdentity != "" {
+			a.mu.Lock()
+			_, alreadyNotified := a.state.TerminalNotified[event.TerminalIdentity]
+			a.mu.Unlock()
+			if alreadyNotified {
+				return nil
+			}
+		}
+		if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: text}); err != nil {
+			return err
+		}
+		if event.TerminalIdentity != "" {
+			a.mu.Lock()
+			a.state.TerminalNotified[event.TerminalIdentity] = a.now()
+			err := a.saveLocked()
+			a.mu.Unlock()
+			return err
+		}
+		return nil
 	}
 	line := renderWorkerActivity(event)
 	if line == "" {
