@@ -14,6 +14,7 @@ type fakeTransport struct {
 	updates []Update
 	sent    []SentMessage
 	topics  []ForumTopic
+	fail    bool
 }
 
 func (f *fakeTransport) GetUpdates(context.Context, int64, time.Duration) ([]Update, error) {
@@ -22,6 +23,9 @@ func (f *fakeTransport) GetUpdates(context.Context, int64, time.Duration) ([]Upd
 	return updates, nil
 }
 func (f *fakeTransport) SendMessage(_ context.Context, message OutgoingMessage) error {
+	if f.fail {
+		return context.DeadlineExceeded
+	}
 	f.sent = append(f.sent, SentMessage{OutgoingMessage: message})
 	return nil
 }
@@ -195,6 +199,23 @@ func TestPairingCodeIsOneTimeAndDoesNotExposeCredential(t *testing.T) {
 	}
 	if err := adapter.RedeemPairing(pairing.Code, 101); err == nil {
 		t.Fatal("reused pairing code was accepted")
+	}
+}
+
+func TestOutboxSurvivesTransportFailureAndRestart(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "telegram.json")
+	transport := &fakeTransport{fail: true}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, statePath)
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "worker.created", WorkerRef: "w-1", Title: "Task"}); err == nil {
+		t.Fatal("transport failure was hidden")
+	}
+	transport.fail = false
+	restarted := newTestAdapter(t, transport, &fakeServer{}, statePath)
+	if err := restarted.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || !strings.Contains(transport.sent[0].Text, "Task") {
+		t.Fatalf("outbox after restart = %#v", transport.sent)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"github.com/beruseruko/secretary/internal/ctl"
 	"github.com/beruseruko/secretary/internal/node"
 	secretaryruntime "github.com/beruseruko/secretary/internal/secretary"
+	"github.com/beruseruko/secretary/internal/telegram"
 	"github.com/coder/websocket"
 )
 
@@ -40,6 +41,10 @@ type workerActions interface {
 	CloseWorker(context.Context, string) (core.WorkerDetails, error)
 }
 
+type TelegramPairingService interface {
+	CreatePairing(string) (telegram.Pairing, error)
+}
+
 type Server struct {
 	store          *core.Store
 	bootstrapToken string
@@ -60,6 +65,7 @@ type Server struct {
 	control          ControlOptions
 	userPath         string
 	diagnosticLogDir string
+	telegramPairer   TelegramPairingService
 
 	mu             sync.Mutex
 	controlWriteMu sync.Mutex
@@ -139,10 +145,11 @@ func (s *Server) AttachWorkerResponder(responder workerResponder) {
 		s.actions = actions
 	}
 }
-func (s *Server) AttachUserDocument(path string)                    { s.userPath = strings.TrimSpace(path) }
-func (s *Server) AttachDiagnosticLogDir(path string)                { s.diagnosticLogDir = strings.TrimSpace(path) }
-func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime) { s.secretary = runtime }
-func (s *Server) SetDebug(debug bool)                               { s.debug = debug }
+func (s *Server) AttachUserDocument(path string)                     { s.userPath = strings.TrimSpace(path) }
+func (s *Server) AttachDiagnosticLogDir(path string)                 { s.diagnosticLogDir = strings.TrimSpace(path) }
+func (s *Server) AttachTelegramPairer(pairer TelegramPairingService) { s.telegramPairer = pairer }
+func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime)  { s.secretary = runtime }
+func (s *Server) SetDebug(debug bool)                                { s.debug = debug }
 func (s *Server) AttachSecretaryModelCatalog(catalog func() map[string]string, defaultModel func() string, changed func(string) error) {
 	s.modelCatalog, s.modelDefault, s.modelChanged = catalog, defaultModel, changed
 }
@@ -160,6 +167,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/conversation", s.conversation)
 	mux.HandleFunc("GET /v1/conversation/ws", s.websocket)
 	mux.HandleFunc("POST /v1/messages", s.message)
+	mux.HandleFunc("POST /v1/telegram/pairing", s.telegramPairing)
 	mux.HandleFunc("GET /v1/ws", s.websocket)
 	mux.HandleFunc("GET /v1/user", s.user)
 	mux.HandleFunc("PUT /v1/user", s.user)
