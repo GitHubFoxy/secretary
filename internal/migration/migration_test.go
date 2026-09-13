@@ -369,8 +369,15 @@ func TestMigrationNeverMarksCompletedTurnSucceededWithoutResult(t *testing.T) {
 	if err := queryOne(path, `SELECT state, COALESCE(result_id, '') FROM turns WHERE id = 'legacy-turn-binding-1'`, &state, &resultID); err != nil {
 		t.Fatal(err)
 	}
-	if state == "succeeded" || resultID != "" {
-		t.Fatalf("completed Turn has false success without Result: state=%q result=%q", state, resultID)
+	if state != "interrupted" || resultID == "" {
+		t.Fatalf("terminal Turn must have interrupted Result: state=%q result=%q", state, resultID)
+	}
+	var resultAttempt, resultStatus string
+	if err := queryOne(path, `SELECT attempt_id, status FROM phase4_results WHERE turn_id = 'legacy-turn-binding-1'`, &resultAttempt, &resultStatus); err != nil {
+		t.Fatal(err)
+	}
+	if resultAttempt != "legacy-attempt-attempt-2" || resultStatus != "interrupted" {
+		t.Fatalf("derived terminal result=%q %q", resultAttempt, resultStatus)
 	}
 }
 
@@ -471,6 +478,105 @@ func fixtureCopyFile(from, to string) error {
 		return err
 	}
 	return os.WriteFile(to, data, 0o600)
+}
+
+func TestMigrationPinsLegacyAliasesInWorkerAndProjectSnapshots(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	if err := seedPhase3Database(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE worker_bindings SET model = 'smart'; UPDATE worker_bindings SET runtime = 'codex' WHERE id = 'binding-1'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, Options{SourcePath: path, DestinationPath: path}); err != nil {
+		t.Fatal(err)
+	}
+	var policy, project string
+	if err := queryOne(path, `SELECT policy_snapshot, project_snapshot FROM workers WHERE worker_ref = 'worker-1'`, &policy, &project); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.ToLower(policy), `"model":"smart"`) || strings.Contains(strings.ToLower(project), `"model":"smart"`) || strings.Contains(strings.ToLower(project), `"model_id":"smart"`) {
+		t.Fatalf("legacy model alias survived snapshots: policy=%s project=%s", policy, project)
+	}
+	var model string
+	if err := queryOne(path, `SELECT json_extract(project_snapshot, '$.policy.model_id') FROM workers WHERE worker_ref = 'worker-1'`, &model); err != nil {
+		t.Fatal(err)
+	}
+	if model != "gpt-5.6-luna" {
+		t.Fatalf("adapter default model pin=%q", model)
+	}
+}
+
+func TestMigrationPreservesFollowUpHistoryAsDistinctTurns(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	if err := seedPhase3Database(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `
+INSERT INTO conversation_entries VALUES ('entry-followup-1', 'conversation-1', 3, 'worker_input', 'continue tests', '2024-01-01T00:00:20Z');
+INSERT INTO conversation_entries VALUES ('entry-followup-2', 'conversation-1', 4, 'worker_input', 'then update docs', '2024-01-01T00:00:40Z');
+INSERT INTO attempts VALUES ('attempt-3', 'binding-1', 3, 'succeeded', '2024-01-01T00:00:30Z', '2024-01-01T00:00:35Z');
+INSERT INTO attempts VALUES ('attempt-4', 'binding-1', 4, 'failed', '2024-01-01T00:00:50Z', '2024-01-01T00:00:55Z');
+INSERT INTO results VALUES ('result-3', 'attempt-3', 'succeeded', 'tests done', '2024-01-01T00:00:35Z');
+INSERT INTO results VALUES ('result-4', 'attempt-4', 'failed', 'docs failed', '2024-01-01T00:00:55Z');`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, Options{SourcePath: path, DestinationPath: path}); err != nil {
+		t.Fatal(err)
+	}
+	var turns int
+	if err := queryOne(path, `SELECT COUNT(*) FROM turns WHERE worker_id = 'legacy-worker-binding-1'`, &turns); err != nil {
+		t.Fatal(err)
+	}
+	if turns != 3 {
+		t.Fatalf("follow-up directions collapsed into %d turns", turns)
+	}
+	rows, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	resultRows, err := rows.QueryContext(ctx, `SELECT t.input, r.attempt_id, r.status FROM turns t JOIN phase4_results r ON r.turn_id = t.id WHERE t.worker_id = 'legacy-worker-binding-1' ORDER BY t.created_at, t.id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resultRows.Close()
+	want := []struct{ input, attempt, status string }{
+		{"ship it", "legacy-attempt-attempt-2", "interrupted"},
+		{"continue tests", "legacy-attempt-attempt-3", "succeeded"},
+		{"then update docs", "legacy-attempt-attempt-4", "failed"},
+	}
+	for _, expected := range want {
+		if !resultRows.Next() {
+			t.Fatalf("missing migrated turn for %#v", expected)
+		}
+		var input, attempt, status string
+		if err := resultRows.Scan(&input, &attempt, &status); err != nil {
+			t.Fatal(err)
+		}
+		if input != expected.input || attempt != expected.attempt || status != expected.status {
+			t.Fatalf("migrated turn=%q result=%q/%q, want %#v", input, attempt, status, expected)
+		}
+	}
 }
 
 func seedPhase3Database(ctx context.Context, path string) error {
