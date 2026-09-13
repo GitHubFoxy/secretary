@@ -1,7 +1,10 @@
 package node
 
 import (
+	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -34,6 +37,43 @@ func TestDeploymentConfigSupportsPrivateServerWorkspaceMappingsAndNoNodeListener
 		if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "inbound") {
 			t.Fatalf("listener %q was accepted: %v", listener, err)
 		}
+	}
+}
+
+func TestDeploymentConfigPersistsWithPrivateFilePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	config := DeploymentConfig{ServerURL: "http://127.0.0.1:8081", Node: "local", DataDir: filepath.Join(t.TempDir(), "node")}
+	if err := SaveDeploymentConfig(path, config); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadDeploymentConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Node != config.Node || loaded.ServerURL != config.ServerURL {
+		t.Fatalf("loaded config=%#v, want %#v", loaded, config)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("config permissions=%#o, want 0600", got)
+	}
+}
+
+func TestHarnessDiscoveryUsesInstalledBinaryOverrides(t *testing.T) {
+	var calls []string
+	runner := CommandRunnerFunc(func(_ context.Context, name string, args ...string) (CommandResult, error) {
+		calls = append(calls, name+" "+strings.Join(args, " "))
+		return CommandResult{Stdout: "1.2.3\nmodels: test-model\nreasoning: medium\n"}, nil
+	})
+	inventory, err := (HarnessDiscovery{Node: "macbook", Runner: runner, BinaryOverrides: map[core.HarnessKind]string{core.HarnessFX: "/opt/fx"}}).Discover(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(inventory.Instances) == 0 || !strings.HasPrefix(calls[0], "/opt/fx ") {
+		t.Fatalf("discovery did not use installed FX path: calls=%v inventory=%#v", calls, inventory)
 	}
 }
 

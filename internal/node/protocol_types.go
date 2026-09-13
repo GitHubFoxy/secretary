@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -171,6 +172,16 @@ type Workspace struct {
 	Path      string `json:"path"`
 }
 
+func (w Workspace) Validate() error {
+	if strings.TrimSpace(w.ProjectID) == "" {
+		return errors.New("node protocol: workspace Project ID is required")
+	}
+	if strings.TrimSpace(w.Path) == "" || !filepath.IsAbs(w.Path) {
+		return fmt.Errorf("node protocol: workspace %q must use an absolute path", w.ProjectID)
+	}
+	return nil
+}
+
 type Handshake struct {
 	Node                     core.NodeReference            `json:"node"`
 	ProtocolVersion          int                           `json:"protocol_version"`
@@ -191,6 +202,16 @@ func (h Handshake) Validate() error {
 	}
 	if h.Inventory.Node != h.Node {
 		return errors.New("node protocol: handshake inventory belongs to another node")
+	}
+	seenWorkspaces := make(map[string]struct{}, len(h.Workspaces))
+	for _, workspace := range h.Workspaces {
+		if err := workspace.Validate(); err != nil {
+			return err
+		}
+		if _, exists := seenWorkspaces[workspace.ProjectID]; exists {
+			return fmt.Errorf("node protocol: duplicate workspace mapping for Project %q", workspace.ProjectID)
+		}
+		seenWorkspaces[workspace.ProjectID] = struct{}{}
 	}
 	return nil
 }

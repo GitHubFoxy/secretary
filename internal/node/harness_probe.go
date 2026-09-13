@@ -567,6 +567,9 @@ type HarnessDiscovery struct {
 	Runner          CommandRunner
 	Probes          []HarnessProbe
 	IncludeOpenCode bool
+	// BinaryOverrides lets packaging resolve installed harnesses without
+	// relying on a launchd process inheriting an interactive shell PATH.
+	BinaryOverrides map[core.HarnessKind]string
 	Now             func() time.Time
 }
 
@@ -580,6 +583,11 @@ func (d HarnessDiscovery) Discover(ctx context.Context) (core.HarnessInventorySn
 	}
 	if d.IncludeOpenCode {
 		probes = append(probes, NewOpenCodeCompatibilityProbe(d.Node, d.Runner))
+	}
+	for index := range probes {
+		if binary := strings.TrimSpace(d.BinaryOverrides[probes[index].Spec.Kind]); binary != "" {
+			probes[index].Spec.Binary = binary
+		}
 	}
 	instances := make([]core.HarnessInstance, 0, len(probes))
 	for _, probe := range probes {

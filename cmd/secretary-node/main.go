@@ -6,6 +6,7 @@ import (
 	"flag"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -19,6 +20,7 @@ import (
 var invalidNodeName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 func main() {
+	configPath := flag.String("config", "", "non-secret Node deployment config JSON")
 	dataDir := flag.String("data-dir", defaultNodeDataDir(), "directory for Node identity and durable local state")
 	serverURL := flag.String("server", envOr("SECRETARY_NODE_SERVER", "http://127.0.0.1:8081"), "Secretary server URL used for first pairing")
 	pairingToken := flag.String("pair-token", os.Getenv("SECRETARY_NODE_PAIRING_TOKEN"), "one-time/owner-approved Node pairing token")
@@ -26,6 +28,28 @@ func main() {
 	capacity := flag.Int("capacity", 1, "maximum advertised concurrent Worker capacity")
 	includeOpenCode := flag.Bool("include-opencode", false, "include OpenCode compatibility inventory probe")
 	flag.Parse()
+
+	var deployment node.DeploymentConfig
+	if strings.TrimSpace(*configPath) != "" {
+		loaded, err := node.LoadDeploymentConfig(*configPath)
+		if err != nil {
+			log.Fatalf("load Node deployment config: %v", err)
+		}
+		deployment = loaded
+		*dataDir, *serverURL, *nodeName, *capacity, *includeOpenCode = loaded.DataDir, loaded.ServerURL, string(loaded.Node), loaded.Capacity, loaded.IncludeOpenCode
+		if *capacity == 0 {
+			*capacity = 1
+		}
+	} else {
+		deployment = node.DeploymentConfig{ServerURL: *serverURL, Node: core.NodeReference(normalizeNodeName(*nodeName)), DataDir: *dataDir, Capacity: *capacity, IncludeOpenCode: *includeOpenCode}
+	}
+	if err := deployment.Validate(); err != nil {
+		log.Fatalf("invalid Node deployment: %v", err)
+	}
+	workspaces, err := deployment.ProtocolWorkspaces()
+	if err != nil {
+		log.Fatalf("load Node workspace mappings: %v", err)
+	}
 
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		log.Fatalf("create Node data directory: %v", err)
@@ -55,13 +79,14 @@ func main() {
 	defer store.Close()
 
 	runtime := configuredNodeRuntime(*dataDir)
-	discovery := node.HarnessDiscovery{Node: identity.Node, Runner: node.ExecCommandRunner{}, IncludeOpenCode: *includeOpenCode}
+	discovery := node.HarnessDiscovery{Node: identity.Node, Runner: node.ExecCommandRunner{}, IncludeOpenCode: *includeOpenCode, BinaryOverrides: installedHarnesses()}
 	daemon := &node.Daemon{
-		Identity:  identity,
-		Store:     store,
-		Runtime:   runtime,
-		Inventory: discovery,
-		Capacity:  *capacity,
+		Identity:   identity,
+		Store:      store,
+		Runtime:    runtime,
+		Inventory:  discovery,
+		Workspaces: workspaces,
+		Capacity:   *capacity,
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -70,6 +95,19 @@ func main() {
 	if err := daemon.Run(ctx); err != nil {
 		log.Fatalf("run Node: %v", err)
 	}
+}
+
+func installedHarnesses() map[core.HarnessKind]string {
+	commands := map[core.HarnessKind]string{
+		core.HarnessFX: "fx", core.HarnessClaudeCode: "claude", core.HarnessCodex: "codex", core.HarnessOpenCode: "opencode",
+	}
+	resolved := make(map[core.HarnessKind]string, len(commands))
+	for kind, command := range commands {
+		if path, err := exec.LookPath(command); err == nil {
+			resolved[kind] = path
+		}
+	}
+	return resolved
 }
 
 func configuredNodeRuntime(dataDir string) node.Runtime {

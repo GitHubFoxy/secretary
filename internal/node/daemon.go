@@ -19,6 +19,7 @@ type Daemon struct {
 	Inventory InventorySource
 
 	Capacity           int
+	Workspaces         []Workspace
 	HeartbeatInterval  time.Duration
 	InventoryInterval  time.Duration
 	OutboxPollInterval time.Duration
@@ -90,7 +91,8 @@ func (d *Daemon) runConnection(ctx context.Context, execution *ExecutionNode) er
 	}
 	handshake := Handshake{
 		Node: d.Identity.Node, ProtocolVersion: ProtocolVersion, Inventory: inventory,
-		Nonce: nonce, LastAcknowledgedSequence: d.Store.LastAcknowledgedSequence(),
+		Workspaces: append([]Workspace(nil), d.Workspaces...),
+		Nonce:      nonce, LastAcknowledgedSequence: d.Store.LastAcknowledgedSequence(),
 	}
 	connection, err := DialProtocol(ctx, d.Identity.ConnectURL, d.Identity.Node, auth, handshake)
 	if err != nil {

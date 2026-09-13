@@ -1,6 +1,6 @@
 # Быстрый старт
 
-Этот quickstart запускает локальный Secretary на macOS с fx и gpt-5.6-luna по умолчанию.
+Этот quickstart запускает локальный Secretary на macOS с fx и gpt-5.6-luna по умолчанию. Настройка двух outbound Nodes описана в [Private Node deployment](node-deployment.md).
 
 ## Требования
 
@@ -32,7 +32,8 @@ export PATH="$HOME/.local/bin:$PATH"
 
 - собирает `secretaryd`, `secretaryctl` и `secretary-mcp`;
 - создаёт локальный конфиг и внешние Profiles;
-- создаёт bootstrap token;
+- создаёт локальный bootstrap token;
+- собирает `secretary-node` и показывает явную full-access trusted Node policy;
 - проверяет выбранный harness;
 - проверяет доступность fx;
 - сохраняет model ID `gpt-5.6-luna` в настройках Secretary.
@@ -55,7 +56,7 @@ Doctor found no problems.
 sex start
 ```
 
-Откроется User UI в браузере. Если браузер не открылся автоматически, команда напечатает pairing URL с bootstrap fragment. Не публикуйте этот URL.
+Откроется User UI в браузере. Если браузер не открылся автоматически, команда сообщает адрес локального UI без печати bootstrap token. Bootstrap fragment передаётся только системному браузеру. Не публикуйте этот URL.
 
 Откройте Control Room только для debug-сеанса:
 
@@ -119,7 +120,8 @@ Secretary хранит данные в:
 - `profiles/`: `secretary.md`, `worker.md`, `child-worker.md`;
 - `secretary.db`: durable Conversation, Tasks, Attempts и Events;
 - `logs/` и `secretaryd.log`: runtime logs;
-- `environment`: bootstrap token и локальные capability values.
+- `environment`: bootstrap token и локальные capability values;
+- `node/`: non-secret deployment config, per-Node identity, local outbox и logs. Node использует только исходящее соединение.
 
 Конфиг и Profiles можно менять вручную. Для применения изменений перезапустите сервер или используйте Config в Control Room.
 
@@ -156,6 +158,8 @@ sex logs
 - отсутствует выбранный harness: установите его или исправьте `runtime.harness` в `config.toml`;
 - порт `127.0.0.1:8081` занят другим процессом;
 - выбран debug-сеанс, но Control Room запрашивается у normal-сервера.
+
+Для настройки Node на второй машине используйте отдельные pairing и admin credentials. Client credential, Secretary runtime credential и Telegram token не подходят для Node. См. [Private Node deployment](node-deployment.md).
 
 Для проверки самого CLI без изменения пользовательского состояния:
 

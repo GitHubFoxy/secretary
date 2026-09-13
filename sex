@@ -8,6 +8,14 @@ ENV_FILE="$STATE/environment"
 PID_FILE="$STATE/server.pid"
 MODE_FILE="$STATE/server.mode"
 LOG_FILE="$STATE/secretaryd.log"
+CAPABILITY_FILE="$STATE/secretary-runtime-credential"
+NODE_STATE="$STATE/node"
+NODE_CONFIG="$NODE_STATE/config.json"
+NODE_DATA="$NODE_STATE/data"
+NODE_BIN="$BIN/secretary-node"
+NODE_PID_FILE="$NODE_STATE/node.pid"
+NODE_LOG_FILE="$NODE_STATE/secretary-node.log"
+NODE_PLIST="$HOME/Library/LaunchAgents/dev.secretary.sex-node.plist"
 PLIST="$HOME/Library/LaunchAgents/dev.secretary.sex.plist"
 URL="http://127.0.0.1:8081"
 
@@ -26,6 +34,12 @@ Commands:
   install-service [--debug]
                     Install a launchd service that survives terminal exit
   uninstall-service Remove the launchd service
+  node setup       Configure a private outbound Execution Node
+  node start|stop|status|logs|doctor
+                    Manage the local Execution Node process
+  node drain|revoke Safely drain or revoke the configured Node
+  node install-service|uninstall-service
+                    Manage the Node launchd service
 EOF
 }
 
@@ -86,6 +100,7 @@ build() {
   mise exec -- go build -o "$BIN/secretaryd" ./cmd/secretaryd
   mise exec -- go build -o "$BIN/secretaryctl" ./cmd/secretaryctl
   mise exec -- go build -o "$BIN/secretary-mcp" ./cmd/secretary-mcp
+  mise exec -- go build -o "$NODE_BIN" ./cmd/secretary-node
 }
 
 ensure_config() {
@@ -99,12 +114,44 @@ ensure_config() {
   chmod 600 "$STATE/config.toml" "$STATE/profiles"/*.md
 }
 
+node_config_value() {
+  local key="$1"
+  [[ -f "$NODE_CONFIG" ]] || return 1
+  awk -F'"' -v wanted="$key" '$2 == wanted { print $4; exit }' "$NODE_CONFIG"
+}
+
+json_safe_value() {
+  [[ "$1" != *'"'* && "$1" != *'\\'* && "$1" != *$'\n'* && "$1" != *$'\r'* ]]
+}
+
+ensure_node_config() {
+  [[ -f "$NODE_CONFIG" ]] && return 0
+  mkdir -p "$NODE_DATA"
+  local server="${SECRETARY_NODE_SERVER:-$URL}"
+  local name="${SECRETARY_NODE_NAME:-$(hostname 2>/dev/null || print node)}"
+  name="$(print -r -- "$name" | tr -cd 'A-Za-z0-9._-')"
+  [[ -n "$name" ]] || name="node"
+  json_safe_value "$server" && json_safe_value "$name" || { print -u2 "Node config values contain unsupported characters"; return 1; }
+  umask 077
+  /bin/cat > "$NODE_CONFIG" <<EOF
+{
+  "server_url": "$server",
+  "node": "$name",
+  "data_dir": "$NODE_DATA",
+  "capacity": 1,
+  "workspaces": []
+}
+EOF
+  chmod 600 "$NODE_CONFIG"
+}
+
 setup() {
   mkdir -p "$BIN" "$STATE"
   chmod 700 "$STATE"
   build
   ensure_config
   write_bootstrap_environment
+  ensure_node_config
   local harness="$(configured_harness)"
   case "$harness" in
     codex)
@@ -134,6 +181,131 @@ setup() {
   esac
   ln -sfn "$ROOT/sex" "$BIN/sex"
   print "Setup complete. Run: sex start"
+  print "Full-access trusted Node policy: explicit and enabled for local Node only."
+}
+
+node_setup() {
+  [[ -x "$NODE_BIN" ]] || build >/dev/null
+  export PATH="$BIN:/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin"
+  rehash
+  mkdir -p "$NODE_STATE" "$NODE_DATA"
+  local server="${SECRETARY_NODE_SERVER:-$URL}" name="${SECRETARY_NODE_NAME:-$(hostname 2>/dev/null || print node)}" capacity=1 include_opencode=false workspace_json="" spec project path
+  while (($#)); do
+    case "$1" in
+      --server) shift; (($#)) || { print -u2 "--server requires a value"; return 2; }; server="$1" ;;
+      --name) shift; (($#)) || { print -u2 "--name requires a value"; return 2; }; name="$1" ;;
+      --capacity) shift; (($#)) || { print -u2 "--capacity requires a value"; return 2; }; capacity="$1" ;;
+      --include-opencode) include_opencode=true ;;
+      --workspace) shift; (($#)) || { print -u2 "--workspace requires project=path"; return 2; }; spec="$1"; project="${spec%%=*}"; path="${spec#*=}"; [[ "$project" != "$spec" && "$path" == /* ]] || { print -u2 "--workspace requires project=absolute-path"; return 2; }; json_safe_value "$project" && json_safe_value "$path" || { print -u2 "workspace contains unsupported characters"; return 2; }; [[ -z "$workspace_json" ]] || workspace_json+=","; workspace_json+="{\"project_id\":\"$project\",\"path\":\"$path\"}" ;;
+      *) print -u2 "Unknown node setup option: $1"; return 2 ;;
+    esac
+    shift
+  done
+  name="$(print -r -- "$name" | /usr/bin/tr -cd 'A-Za-z0-9._-')"; [[ -n "$name" ]] || name="node"
+  json_safe_value "$server" || { print -u2 "server URL contains unsupported characters"; return 2; }
+  umask 077
+  /bin/cat > "$NODE_CONFIG" <<EOF
+{
+  "server_url": "$server",
+  "node": "$name",
+  "data_dir": "$NODE_DATA",
+  "capacity": $capacity,
+  "include_opencode": $include_opencode,
+  "workspaces": [$workspace_json]
+}
+EOF
+  /bin/chmod 600 "$NODE_CONFIG"
+  print "Node setup complete: $name"
+  print "Private-network-first: Node uses outbound connection only; no inbound Node port."
+}
+
+node_running_pid() {
+  [[ -f "$NODE_PID_FILE" ]] || return 1
+  local pid; pid="$(<"$NODE_PID_FILE")"
+  kill -0 "$pid" 2>/dev/null || return 1
+  print -r -- "$pid"
+}
+
+node_start() {
+  ensure_node_config || return 1
+  [[ -x "$NODE_BIN" ]] || { print -u2 "secretary-node is not installed. Run: sex setup"; return 1; }
+  if node_running_pid >/dev/null; then print "Node is already running"; return 0; fi
+  : > "$NODE_LOG_FILE"; /bin/chmod 600 "$NODE_LOG_FILE"
+  SECRETARY_NODE_PAIRING_TOKEN="${SECRETARY_NODE_PAIRING_TOKEN:-}" nohup "$NODE_BIN" --config "$NODE_CONFIG" >>"$NODE_LOG_FILE" 2>&1 &
+  print -r -- "$!" > "$NODE_PID_FILE"; /bin/chmod 600 "$NODE_PID_FILE"
+  print "Node started: $(node_config_value node)"
+}
+
+node_stop() {
+  local pid
+  if ! pid="$(node_running_pid)"; then rm -f "$NODE_PID_FILE"; print "Node is not running"; return 0; fi
+  kill -TERM "$pid"
+  for _ in {1..40}; do
+    kill -0 "$pid" 2>/dev/null || { rm -f "$NODE_PID_FILE"; print "Node stopped"; return 0; }
+    sleep 0.25
+  done
+  print -u2 "Node did not stop. See: $NODE_LOG_FILE"; return 1
+}
+
+node_doctor() {
+  local failures=0
+  [[ -x "$NODE_BIN" ]] && print "ok: secretary-node" || { print "missing: $NODE_BIN"; failures=$((failures+1)); }
+  [[ -f "$NODE_CONFIG" ]] && print "ok: Node deployment config" || { print "missing: $NODE_CONFIG"; failures=$((failures+1)); }
+  if [[ -f "$NODE_CONFIG" ]]; then
+    local name="$(node_config_value node)"
+    [[ -n "$name" ]] && print "ok: Node identity $name" || { print "missing: Node identity"; failures=$((failures+1)); }
+    [[ "$(<"$NODE_CONFIG")" != *'"listen_address"'* ]] && print "ok: no inbound Node listener" || { print "invalid: inbound Node listener configured"; failures=$((failures+1)); }
+    [[ -f "$NODE_DATA/identity.json" ]] && print "ok: paired Node identity" || print "pending: Node pairing (run with SECRETARY_NODE_PAIRING_TOKEN)"
+  fi
+  if (( failures > 0 )); then print -u2 "Node doctor found $failures problem(s)."; return 1; fi
+  print "Node doctor found no problems."
+}
+
+node_control() {
+  local action="$1"; shift
+  ensure_node_config || return 1
+  local admin="${SECRETARY_NODE_ADMIN_TOKEN:-}" name="$(node_config_value node)" server="$(node_config_value server_url)"
+  [[ -n "$admin" ]] || { print -u2 "SECRETARY_NODE_ADMIN_TOKEN is required for Node control"; return 1; }
+  for other in "${SECRETARY_CLIENT_CREDENTIAL:-}" "${SECRETARY_CAPABILITY:-}" "${SECRETARY_BOOTSTRAP_TOKEN:-}" "${SECRETARY_TELEGRAM_BOT_TOKEN:-}"; do
+    [[ -z "$other" || "$admin" != "$other" ]] || { print -u2 "Node admin credential must be distinct from other credential roles"; return 1; }
+  done
+  [[ -n "$name" && -n "$server" ]] || { print -u2 "Node identity and server URL are required"; return 1; }
+  local identity_path="$NODE_DATA/identity.json"
+  [[ -f "$identity_path" ]] || { print -u2 "Node identity is not paired; refusing $action"; return 1; }
+  local persisted_name="$(awk -F'"' '/"node"[[:space:]]*:/ {print $4; exit}' "$identity_path")"
+  [[ "$persisted_name" == "$name" ]] || { print -u2 "Node identity mismatch; refusing $action"; return 1; }
+  server="${server%/}"
+  local key="sex-node-$action-$(openssl rand -hex 12)"
+  curl -fsS -o /dev/null -H "Authorization: Bearer $admin" -H "Idempotency-Key: $key" -H "Content-Type: application/json" -X POST "$server/v1/nodes/$name/$action" || { print -u2 "Node $action failed"; return 1; }
+  print "Node $action requested: $name"
+}
+
+node_install_service() {
+  setup >/dev/null
+  mkdir -p "${NODE_PLIST:h}"
+  cat > "$NODE_PLIST" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>dev.secretary.sex-node</string>
+  <key>ProgramArguments</key><array><string>$ROOT/sex</string><string>node</string><string>serve</string></array>
+  <key>EnvironmentVariables</key><dict><key>PATH</key><string>$BIN:$HOME/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string></dict>
+  <key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+  <key>WorkingDirectory</key><string>$ROOT</string>
+  <key>StandardOutPath</key><string>$NODE_LOG_FILE</string><key>StandardErrorPath</key><string>$NODE_LOG_FILE</string>
+</dict></plist>
+EOF
+  /bin/chmod 600 "$NODE_PLIST"
+  launchctl bootout "gui/$UID" "$NODE_PLIST" 2>/dev/null || true
+  launchctl bootstrap "gui/$UID" "$NODE_PLIST"
+  print "Node will start after macOS login."
+}
+
+node_serve() {
+  ensure_node_config || return 1
+  print -r -- "$$" > "$NODE_PID_FILE"; /bin/chmod 600 "$NODE_PID_FILE"
+  trap 'rm -f "$NODE_PID_FILE"' EXIT INT TERM
+  exec "$NODE_BIN" --config "$NODE_CONFIG"
 }
 
 doctor() {
@@ -198,7 +370,7 @@ open_user() {
   load_environment
   local pairing_url="$URL/#bootstrap=$SECRETARY_BOOTSTRAP_TOKEN"
   if ! open "$pairing_url" >/dev/null 2>&1; then
-    print "Open this URL in your browser: $pairing_url"
+    print "Open the local Secretary UI at $URL and complete pairing there."
   fi
 }
 
@@ -266,6 +438,7 @@ start() {
   SECRETARY_ACP_COMMAND="$acp_bin" \
   SECRETARY_FX_COMMAND="$fx_bin" \
   SECRETARY_OPENCODE_COMMAND="$opencode_bin" \
+  SECRETARY_CAPABILITY_FILE="$CAPABILITY_FILE" \
   nohup "${args[@]}" >>"$LOG_FILE" 2>&1 &
   print -r -- "$!" > "$PID_FILE"
   chmod 600 "$PID_FILE"
@@ -276,11 +449,11 @@ start() {
     code="$(server_http_code)"
     if [[ "$code" == "200" || "$code" == "401" ]]; then
       if [[ -z "${SECRETARY_CAPABILITY:-}" ]]; then
-        local capability
-        capability="$(grep -Eo 'SECRETARY_CAPABILITY=sec_[[:alnum:]]+' "$LOG_FILE" | tail -1 | cut -d= -f2 || true)"
+        local capability=""
+        [[ -f "$CAPABILITY_FILE" ]] && capability="$(<"$CAPABILITY_FILE")"
         if [[ -n "$capability" ]]; then
           printf "export SECRETARY_CAPABILITY='%s'\n" "$capability" >> "$ENV_FILE"
-          chmod 600 "$ENV_FILE"
+          chmod 600 "$ENV_FILE" "$CAPABILITY_FILE"
         fi
       fi
       open_user
@@ -374,7 +547,7 @@ serve() {
   local -a env_args
   local codex_path=""
   [[ "$harness" == "codex" ]] && codex_path="$(path_command codex 2>/dev/null || true)"
-  env_args=(PATH="$BIN:$HOME/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH" CODEX_PATH="$codex_path" NO_BROWSER=1)
+  env_args=(PATH="$BIN:$HOME/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH" CODEX_PATH="$codex_path" NO_BROWSER=1 SECRETARY_CAPABILITY_FILE="$CAPABILITY_FILE")
   case "$harness" in
     codex) env_args+=(SECRETARY_ACP_COMMAND="$harness_bin") ;;
     fx) env_args+=(SECRETARY_FX_COMMAND="$harness_bin") ;;
@@ -409,6 +582,25 @@ case "${1:-}" in
     ;;
   logs) tail -f "$LOG_FILE" ;;
   doctor) shift; doctor "$@" ;;
+  node)
+    shift
+    case "${1:-}" in
+      setup) shift; node_setup "$@" ;;
+      start) shift; node_start "$@" ;;
+      stop) shift; node_stop "$@" ;;
+      status)
+        if pid="$(node_running_pid)"; then print "Node running pid=$pid identity=$(node_config_value node) outbound-only"; else print "Node stopped identity=$(node_config_value node 2>/dev/null || print unknown) outbound-only"; fi
+        ;;
+      logs) shift; tail -f "$NODE_LOG_FILE" ;;
+      doctor) shift; node_doctor "$@" ;;
+      drain) shift; node_control drain "$@" ;;
+      revoke) shift; node_control drain "$@" && node_control revoke "$@" && node_stop ;;
+      install-service) shift; node_install_service "$@" ;;
+      uninstall-service) launchctl bootout "gui/$UID" "$NODE_PLIST" 2>/dev/null || true; rm -f "$NODE_PLIST"; print "Node service removed" ;;
+      serve) shift; node_serve "$@" ;;
+      *) print -u2 "usage: sex node {setup|start|stop|status|logs|doctor|drain|revoke|install-service|uninstall-service|serve}"; return 2 ;;
+    esac
+    ;;
   install-service) shift; install_service "$@" ;;
   uninstall-service) launchctl bootout "gui/$UID" "$PLIST" 2>/dev/null || true; rm -f "$PLIST"; print "Service removed" ;;
   serve) shift; serve "$@" ;;
