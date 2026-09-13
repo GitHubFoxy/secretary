@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/beruseruko/secretary/internal/config"
 	"github.com/beruseruko/secretary/internal/core"
 	_ "modernc.org/sqlite"
 )
@@ -82,6 +83,22 @@ func TestManualCopyMigrationPreservesPhase3HistoryAndIsIdempotent(t *testing.T) 
 	if personID != "person-1" || conversationID != "conversation-1" || body != "done" || intent != "ship it" || !strings.Contains(projectSnapshot, "workspace") {
 		t.Fatalf("history lost: person=%q conversation=%q body=%q intent=%q project=%q", personID, conversationID, body, intent, projectSnapshot)
 	}
+	phase4Store, err := core.Open(ctx, copyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := phase4Store.ResolveWorkerBinding(ctx, "legacy-worker-binding-1")
+	if err != nil {
+		phase4Store.Close()
+		t.Fatal(err)
+	}
+	if bound.Project.ID != "legacy-project-node-1" || bound.Project.Revision != 1 || bound.Node != "node-1" || bound.Workspace != "/work/project" || bound.HarnessInstance.ID != "legacy-fx" || bound.HarnessInstance.Node != "node-1" || bound.HarnessInstance.Kind != core.HarnessFX || bound.HarnessInstance.Status != core.HarnessUnavailable || bound.Snapshot.Policy.ModelPin() != "gpt-5.6-luna" || bound.Snapshot.Policy.Reasoning != "high" {
+		phase4Store.Close()
+		t.Fatalf("invalid migrated binding=%#v", bound)
+	}
+	if err := phase4Store.Close(); err != nil {
+		t.Fatal(err)
+	}
 	var taskCount, workerCount, turnCount, attemptCount, outcomeCount, resultCount int
 	for query, target := range map[string]*int{
 		`SELECT COUNT(*) FROM tasks`:                   &taskCount,
@@ -97,6 +114,16 @@ func TestManualCopyMigrationPreservesPhase3HistoryAndIsIdempotent(t *testing.T) 
 	}
 	if taskCount != 2 || workerCount != 1 || turnCount != 1 || attemptCount != 2 || outcomeCount != 2 || resultCount != 1 {
 		t.Fatalf("counts tasks=%d workers=%d turns=%d attempts=%d outcomes=%d results=%d", taskCount, workerCount, turnCount, attemptCount, outcomeCount, resultCount)
+	}
+	var childWorkers, childTurns int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM workers WHERE worker_ref = 'child-worker-1'`).Scan(&childWorkers); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM turns WHERE worker_id = 'legacy-worker-binding-child'`).Scan(&childTurns); err != nil {
+		t.Fatal(err)
+	}
+	if childWorkers != 0 || childTurns != 0 {
+		t.Fatalf("historical child was migrated: workers=%d turns=%d", childWorkers, childTurns)
 	}
 	var interrupted int
 	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM phase4_attempt_outcomes WHERE status = 'interrupted' AND classification = 'final'`).Scan(&interrupted); err != nil {
@@ -135,9 +162,9 @@ child_worker = "child-worker.md"
 allow_tools = ["read"]
 [models]
 secretary = "provider/secretary"
-fast = "fast"
-smart = "smart"
-cheap = "cheap"
+fast = "provider/fast-model"
+smart = "provider/smart-model"
+cheap = "provider/cheap-model"
 [runtime]
 harness = "fx"
 reasoning = "high"
@@ -153,8 +180,15 @@ reasoning = "high"
 		t.Fatal(err)
 	}
 	text := string(content)
-	if strings.Contains(text, "[runtime]") || strings.Contains(text, "fast") || strings.Contains(text, "smart") || strings.Contains(text, "cheap") {
+	if strings.Contains(text, "[runtime]") || strings.Contains(text, "\nfast =") || strings.Contains(text, "\nsmart =") || strings.Contains(text, "\ncheap =") {
 		t.Fatalf("legacy config contract remains: %s", text)
+	}
+	if !strings.Contains(text, "model = 'provider/smart-model'") || !strings.Contains(text, "provider/fast-model") || !strings.Contains(text, "provider/cheap-model") {
+		t.Fatalf("legacy model pins were lost: %s", text)
+	}
+	loaded, err := config.Load(configPath)
+	if err != nil || loaded.Config.WorkerPolicy.Model != "provider/smart-model" || len(loaded.Config.WorkerPolicy.FallbackModels) != 2 {
+		t.Fatalf("migrated config is not production-readable: snapshot=%#v err=%v", loaded.Config.WorkerPolicy, err)
 	}
 	for _, required := range []string{"[secretary]", "harness = 'fx'", "model = 'provider/secretary'", "[worker_policy]", "default_harness = 'fx'"} {
 		if !strings.Contains(text, required) {
@@ -233,6 +267,195 @@ func TestInvalidMigrationLeavesActiveDatabaseUntouchedAfterBackup(t *testing.T) 
 	}
 }
 
+func TestManualCopyMigrationPreservesRealisticPhase3Fixture(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	source := filepath.Join(dir, "secretary.db")
+	if err := seedPhase3Database(ctx, source); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE secretary_capabilities (id TEXT PRIMARY KEY, person_id TEXT NOT NULL, token_hash TEXT NOT NULL, created_at TEXT NOT NULL); CREATE TABLE events (id TEXT PRIMARY KEY, seq INTEGER, kind TEXT NOT NULL, aggregate_type TEXT NOT NULL DEFAULT '', aggregate_id TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', correlation_id TEXT NOT NULL DEFAULT '', causation_id TEXT NOT NULL DEFAULT '', worker_ref TEXT NOT NULL DEFAULT '', attempt_id TEXT NOT NULL DEFAULT '', runtime_session_id TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL, created_at TEXT NOT NULL); INSERT INTO secretary_capabilities VALUES ('cap-1', 'person-1', 'hash', '2024-01-01T00:00:00Z'); INSERT INTO events VALUES ('event-1', 1, 'worker.completed', 'worker', 'worker-1', 'legacy', '', '', 'worker-1', '', '', '{"worker_ref":"worker-1"}', '2024-01-01T00:01:00Z')`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := fileDigest(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(dir, "copy", "secretary.db")
+	if _, err := Run(ctx, Options{SourcePath: source, DestinationPath: destination}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := fileDigest(source)
+	if err != nil || before != after {
+		t.Fatalf("source fixture changed: before=%q after=%q err=%v", before, after, err)
+	}
+	var capabilityCount, eventCount, childWorkers int
+	if err := queryOne(destination, `SELECT COUNT(*) FROM secretary_capabilities`, &capabilityCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := queryOne(destination, `SELECT COUNT(*) FROM events`, &eventCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := queryOne(destination, `SELECT COUNT(*) FROM workers WHERE worker_ref = 'child-worker-1'`, &childWorkers); err != nil {
+		t.Fatal(err)
+	}
+	if capabilityCount != 1 || eventCount != 1 || childWorkers != 0 {
+		t.Fatalf("realistic fixture projection lost data: capabilities=%d events=%d childWorkers=%d", capabilityCount, eventCount, childWorkers)
+	}
+}
+
+func TestMigrationDerivesOnlyValidFinalAttemptResult(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secretary.db")
+	if err := seedPhase3Database(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE tasks SET state = 'completed' WHERE id = 'task-1'; DELETE FROM results WHERE id = 'result-1'; UPDATE attempts SET state = 'succeeded' WHERE id = 'attempt-2'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, Options{SourcePath: path, DestinationPath: path}); err != nil {
+		t.Fatal(err)
+	}
+	var turnState, resultID, resultAttempt, resultStatus, summary string
+	if err := queryOne(path, `SELECT state, COALESCE(result_id, '') FROM turns WHERE id = 'legacy-turn-binding-1'`, &turnState, &resultID); err != nil {
+		t.Fatal(err)
+	}
+	if err := queryOne(path, `SELECT attempt_id, status, summary FROM phase4_results WHERE turn_id = 'legacy-turn-binding-1'`, &resultAttempt, &resultStatus, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if turnState != "succeeded" || resultID == "" || resultAttempt != "legacy-attempt-attempt-2" || resultStatus != "succeeded" || summary == "" {
+		t.Fatalf("final result was not derived from final attempt: state=%q result=%q attempt=%q status=%q summary=%q", turnState, resultID, resultAttempt, resultStatus, summary)
+	}
+}
+
+func TestMigrationNeverMarksCompletedTurnSucceededWithoutResult(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	if err := seedPhase3Database(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE tasks SET state = 'completed' WHERE id = 'task-1'; DELETE FROM results WHERE attempt_id IN ('attempt-1', 'attempt-2'); DELETE FROM attempts WHERE worker_binding_id = 'binding-1'`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, Options{SourcePath: path, DestinationPath: path}); err != nil {
+		t.Fatal(err)
+	}
+	var state, resultID string
+	if err := queryOne(path, `SELECT state, COALESCE(result_id, '') FROM turns WHERE id = 'legacy-turn-binding-1'`, &state, &resultID); err != nil {
+		t.Fatal(err)
+	}
+	if state == "succeeded" || resultID != "" {
+		t.Fatalf("completed Turn has false success without Result: state=%q result=%q", state, resultID)
+	}
+}
+
+func TestMigrationSelectsFinalResultAfterRetryableHistory(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "secretary.db")
+	if err := seedPhase3Database(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `UPDATE tasks SET state = 'completed' WHERE id = 'task-1'; UPDATE attempts SET state = 'failed' WHERE id = 'attempt-2'; INSERT INTO results VALUES ('result-2', 'attempt-2', 'failed', 'final failure', '2024-01-01T00:01:10Z')`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, Options{SourcePath: path, DestinationPath: path}); err != nil {
+		t.Fatal(err)
+	}
+	var resultAttempt, resultStatus, summary string
+	if err := queryOne(path, `SELECT attempt_id, status, summary FROM phase4_results WHERE turn_id = 'legacy-turn-binding-1'`, &resultAttempt, &resultStatus, &summary); err != nil {
+		t.Fatal(err)
+	}
+	if resultAttempt != "legacy-attempt-attempt-2" || resultStatus != "failed" || summary != "final failure" {
+		t.Fatalf("wrong final result=%q %q %q", resultAttempt, resultStatus, summary)
+	}
+	var priorClassification, finalClassification string
+	if err := queryOne(path, `SELECT classification FROM phase4_attempt_outcomes WHERE attempt_id = 'legacy-attempt-attempt-1'`, &priorClassification); err != nil {
+		t.Fatal(err)
+	}
+	if err := queryOne(path, `SELECT classification FROM phase4_attempt_outcomes WHERE attempt_id = 'legacy-attempt-attempt-2'`, &finalClassification); err != nil {
+		t.Fatal(err)
+	}
+	if priorClassification != "retryable" || finalClassification != "final" {
+		t.Fatalf("retry history classification prior=%q final=%q", priorClassification, finalClassification)
+	}
+}
+
+func TestInvalidSchemaMigrationRestoresActiveDatabaseFromBackup(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE persons (id TEXT PRIMARY KEY, created_at TEXT NOT NULL); INSERT INTO persons VALUES ('person-1', '2024-01-01T00:00:00Z')`); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	before, err := fileDigest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, Options{SourcePath: path, DestinationPath: path}); err == nil {
+		t.Fatal("invalid schema migration unexpectedly succeeded")
+	}
+	after, err := fileDigest(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != after {
+		t.Fatal("active database changed after schema rollback")
+	}
+	if _, err := os.Stat(path + ".backup"); err != nil {
+		t.Fatalf("schema backup missing: %v", err)
+	}
+}
+
+func queryOne(path, query string, destinations ...any) error {
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return db.QueryRow(query).Scan(destinations...)
+}
+
 func fileDigest(path string) (string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -271,6 +494,7 @@ INSERT INTO conversation_entries VALUES ('entry-result', 'conversation-1', 2, 'w
 INSERT INTO tasks VALUES ('task-1', 'conversation-1', 'ship it', 'open', '', '', 0, '2024-01-01T00:00:00Z', '2024-01-01T00:01:00Z');
 INSERT INTO tasks VALUES ('task-child', 'conversation-1', 'child history', 'closed', 'task-1', 'attempt-2', 1, '2024-01-01T00:00:00Z', '2024-01-01T00:01:00Z');
 INSERT INTO worker_bindings VALUES ('binding-1', 'task-1', 'worker-1', 'node-1', 'native-session-1', '/work/project', '', '', 'cfg-1', 'worker', 'hash', 'fx', 'gpt-5.6-luna', 'high', 'read', 'metadata', 0, '2024-01-01T00:00:00Z');
+INSERT INTO worker_bindings VALUES ('binding-child', 'task-child', 'child-worker-1', 'node-1', 'native-child-session', '/work/project/child', 'binding-1', 'attempt-2', 'cfg-child', 'child', 'child-hash', 'fx', 'gpt-5.6-luna', 'high', 'read', 'metadata', 0, '2024-01-01T00:01:00Z');
 INSERT INTO attempts VALUES ('attempt-1', 'binding-1', 1, 'succeeded', '2024-01-01T00:00:00Z', '2024-01-01T00:00:10Z');
 INSERT INTO attempts VALUES ('attempt-2', 'binding-1', 2, 'active', '2024-01-01T00:01:00Z', '2024-01-01T00:01:10Z');
 INSERT INTO results VALUES ('result-1', 'attempt-1', 'succeeded', 'done', '2024-01-01T00:00:10Z');

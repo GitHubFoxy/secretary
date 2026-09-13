@@ -36,6 +36,8 @@ type SecretaryPolicy struct {
 
 type WorkerPolicy struct {
 	DefaultHarness     string   `toml:"default_harness" json:"default_harness"`
+	Model              string   `toml:"model" json:"model"`
+	FallbackModels     []string `toml:"fallback_models" json:"fallback_models"`
 	PreferredHarnesses []string `toml:"preferred_harnesses" json:"preferred_harnesses"`
 	ActiveAttempts     int      `toml:"active_attempts" json:"active_attempts"`
 }
@@ -140,7 +142,10 @@ func compile(base string, raw []byte, c Config) (Snapshot, error) {
 		reasoning := secretary.Reasoning
 		if name != "secretary" {
 			runtime = workerPolicy.DefaultHarness
-			model = c.Models.Smart
+			model = workerPolicy.Model
+			if model == "" {
+				model = c.Models.Smart
+			}
 			if model == "" {
 				model = "default"
 			}
@@ -274,7 +279,7 @@ func Diff(previous, next Snapshot) map[string]any {
 	if previous.Config.Secretary != next.Config.Secretary {
 		changed["secretary"] = next.Config.Secretary
 	}
-	if previous.Config.WorkerPolicy.DefaultHarness != next.Config.WorkerPolicy.DefaultHarness || previous.Config.WorkerPolicy.ActiveAttempts != next.Config.WorkerPolicy.ActiveAttempts || strings.Join(previous.Config.WorkerPolicy.PreferredHarnesses, ",") != strings.Join(next.Config.WorkerPolicy.PreferredHarnesses, ",") {
+	if previous.Config.WorkerPolicy.DefaultHarness != next.Config.WorkerPolicy.DefaultHarness || previous.Config.WorkerPolicy.Model != next.Config.WorkerPolicy.Model || strings.Join(previous.Config.WorkerPolicy.FallbackModels, ",") != strings.Join(next.Config.WorkerPolicy.FallbackModels, ",") || previous.Config.WorkerPolicy.ActiveAttempts != next.Config.WorkerPolicy.ActiveAttempts || strings.Join(previous.Config.WorkerPolicy.PreferredHarnesses, ",") != strings.Join(next.Config.WorkerPolicy.PreferredHarnesses, ",") {
 		changed["worker_policy"] = next.Config.WorkerPolicy
 	}
 	if previous.Config.Models != next.Config.Models {
