@@ -807,7 +807,7 @@ func insertMigratedResult(ctx context.Context, tx *sql.Tx, workerID, turnID, con
 	if _, err := tx.ExecContext(ctx, `UPDATE workers SET last_result_summary = ? WHERE id = ?`, summary, workerID); err != nil {
 		return err
 	}
-	if err := attachVisibleResult(ctx, tx, conversationID, workerRef, turnID, newResultID, summary, created); err != nil {
+	if err := attachVisibleResult(ctx, tx, conversationID, workerRef, turnID, attemptID, newResultID, summary, created); err != nil {
 		return err
 	}
 	report.Results++
@@ -827,8 +827,24 @@ func phase4TurnState(status string) string {
 	}
 }
 
-func attachVisibleResult(ctx context.Context, tx *sql.Tx, conversationID, workerRef, turnID, resultID, summary, created string) error {
+func attachVisibleResult(ctx context.Context, tx *sql.Tx, conversationID, workerRef, turnID, attemptID, resultID, summary, created string) error {
 	var entryID string
+	legacyResultID := strings.TrimPrefix(resultID, "legacy-result-")
+	legacyAttemptID := strings.TrimPrefix(attemptID, "legacy-attempt-")
+	var prefilledCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND body = ? AND created_at = ? AND (result_id = ? OR result_id = ?)`, conversationID, summary, created, legacyResultID, "legacy-attempt:"+legacyAttemptID).Scan(&prefilledCount); err != nil {
+		return err
+	}
+	if prefilledCount > 1 {
+		return fmt.Errorf("%w: ambiguous prefilled visible Result entry for summary %q at %s", ErrInvalid, summary, created)
+	}
+	if prefilledCount == 1 {
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND body = ? AND created_at = ? AND (result_id = ? OR result_id = ?) LIMIT 1`, conversationID, summary, created, legacyResultID, "legacy-attempt:"+legacyAttemptID).Scan(&entryID); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE conversation_entries SET worker_ref = ?, turn_id = ?, result_id = ? WHERE id = ?`, workerRef, turnID, resultID, entryID)
+		return err
+	}
 	var candidateCount int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND body = ? AND created_at = ? AND result_id = ''`, conversationID, summary, created).Scan(&candidateCount); err != nil {
 		return err
@@ -844,11 +860,14 @@ func attachVisibleResult(ctx context.Context, tx *sql.Tx, conversationID, worker
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		var orphanCount int
-		if countErr := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND worker_ref = '' AND turn_id = '' AND result_id = ''`, conversationID).Scan(&orphanCount); countErr != nil {
+		if countErr := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND body = ? AND worker_ref = '' AND turn_id = '' AND result_id = ''`, conversationID, summary).Scan(&orphanCount); countErr != nil {
 			return countErr
 		}
+		if orphanCount > 1 {
+			return fmt.Errorf("%w: ambiguous visible Result entries for summary %q", ErrInvalid, summary)
+		}
 		if orphanCount == 1 {
-			if scanErr := tx.QueryRowContext(ctx, `SELECT id FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND worker_ref = '' AND turn_id = '' AND result_id = '' LIMIT 1`, conversationID).Scan(&entryID); scanErr != nil {
+			if scanErr := tx.QueryRowContext(ctx, `SELECT id FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND body = ? AND worker_ref = '' AND turn_id = '' AND result_id = '' LIMIT 1`, conversationID, summary).Scan(&entryID); scanErr != nil {
 				return scanErr
 			}
 			_, updateErr := tx.ExecContext(ctx, `UPDATE conversation_entries SET worker_ref = ?, turn_id = ?, result_id = ? WHERE id = ?`, workerRef, turnID, resultID, entryID)
