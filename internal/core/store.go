@@ -46,7 +46,7 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
 	store := &Store{db: db, now: func() time.Time { return time.Now().UTC() }}
-	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;`); err != nil {
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;`); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("configure sqlite: %w", err)
 	}
