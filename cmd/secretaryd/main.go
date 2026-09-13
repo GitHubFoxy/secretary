@@ -111,6 +111,11 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if _, telegramErr := attachProductionTelegram(ctx, *dataDir, *listen, store, web); telegramErr != nil {
+		log.Fatalf("initialize Telegram adapter: %v", telegramErr)
+	} else if parseBoolEnv("SECRETARY_TELEGRAM_ENABLED") {
+		log.Printf("Telegram adapter enabled with polling and durable event bridge")
+	}
 	if remoteNodes != nil {
 		go func() {
 			if err := remoteNodes.Run(ctx); err != nil {

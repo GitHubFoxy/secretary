@@ -13,6 +13,7 @@ import (
 )
 
 type fakeTransport struct {
+	mu      sync.Mutex
 	updates []Update
 	sent    []SentMessage
 	topics  []ForumTopic
@@ -25,6 +26,8 @@ func (f *fakeTransport) GetUpdates(context.Context, int64, time.Duration) ([]Upd
 	return updates, nil
 }
 func (f *fakeTransport) SendMessage(_ context.Context, message OutgoingMessage) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.fail {
 		return context.DeadlineExceeded
 	}
@@ -89,13 +92,14 @@ func (t *concurrentTopicTransport) CreateForumTopic(_ context.Context, chatID in
 	t.mu.Lock()
 	t.calls++
 	call := t.calls
-	t.topics = append(t.topics, ForumTopic{ChatID: chatID, ThreadID: int64(call), Name: name})
+	topic := ForumTopic{ChatID: chatID, ThreadID: int64(call), Name: name}
+	t.topics = append(t.topics, topic)
 	t.mu.Unlock()
 	if call == 1 {
 		close(t.started)
 	}
 	<-t.release
-	return t.topics[call-1], nil
+	return topic, nil
 }
 
 func newTestAdapter(t *testing.T, transport Transport, server ServerClient, statePath string) *Adapter {
@@ -320,12 +324,19 @@ func TestThrottleTimerFlushesSecretaryBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
-	for len(transport.sent) == 0 && time.Now().Before(deadline) {
+	for time.Now().Before(deadline) {
+		transport.mu.Lock()
+		sent := append([]SentMessage(nil), transport.sent...)
+		transport.mu.Unlock()
+		if len(sent) > 0 {
+			if len(sent) != 1 || !strings.Contains(sent[0].Text, "timer") {
+				t.Fatalf("timer batch=%#v", sent)
+			}
+			return
+		}
 		time.Sleep(time.Millisecond)
 	}
-	if len(transport.sent) != 1 || !strings.Contains(transport.sent[0].Text, "timer") {
-		t.Fatalf("timer batch=%#v", transport.sent)
-	}
+	t.Fatal("throttle timer did not flush")
 }
 
 func TestHostileEventMetadataNeverReachesTelegram(t *testing.T) {

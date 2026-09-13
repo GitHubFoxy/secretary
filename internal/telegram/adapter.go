@@ -94,6 +94,8 @@ type Pairing struct {
 }
 
 type Event struct {
+	EventID   string
+	Sequence  int64
 	Kind      string
 	WorkerRef string
 	Title     string
@@ -103,20 +105,22 @@ type Event struct {
 }
 
 type TopicMapping struct {
-	WorkerRef string    `json:"worker_ref"`
-	ChatID    int64     `json:"chat_id"`
-	ThreadID  int64     `json:"thread_id"`
-	CreatedAt time.Time `json:"created_at"`
+	WorkerRef        string    `json:"worker_ref"`
+	ChatID           int64     `json:"chat_id"`
+	ThreadID         int64     `json:"thread_id"`
+	PendingRequestID string    `json:"pending_request_id,omitempty"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
 type persistedState struct {
-	Version   int                      `json:"version"`
-	OwnerChat int64                    `json:"owner_chat_id"`
-	Offset    int64                    `json:"offset"`
-	Processed map[string]time.Time     `json:"processed_updates"`
-	Topics    map[string]TopicMapping  `json:"topics"`
-	Pairings  map[string]pairingRecord `json:"pairings"`
-	Outbox    []OutgoingMessage        `json:"outbox,omitempty"`
+	Version      int                      `json:"version"`
+	OwnerChat    int64                    `json:"owner_chat_id"`
+	Offset       int64                    `json:"offset"`
+	LastEventSeq int64                    `json:"last_event_seq"`
+	Processed    map[string]time.Time     `json:"processed_updates"`
+	Topics       map[string]TopicMapping  `json:"topics"`
+	Pairings     map[string]pairingRecord `json:"pairings"`
+	Outbox       []OutgoingMessage        `json:"outbox,omitempty"`
 }
 
 type pairingRecord struct {
@@ -130,14 +134,21 @@ type pendingBatch struct {
 	WorkerLines    map[string][]string
 }
 
+type updateClaim struct {
+	done chan struct{}
+	err  error
+}
+
 type Adapter struct {
 	transport Transport
 	server    ServerClient
 	config    Config
 
 	mu         sync.Mutex
+	topicMu    sync.Mutex
 	state      persistedState
 	pending    pendingBatch
+	claims     map[int64]*updateClaim
 	flushTimer *time.Timer
 	now        func() time.Time
 }
@@ -155,7 +166,7 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 	if config.FlushInterval <= 0 {
 		config.FlushInterval = 2 * time.Second
 	}
-	adapter := &Adapter{transport: transport, server: server, config: config, now: func() time.Time { return time.Now().UTC() }}
+	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), now: func() time.Time { return time.Now().UTC() }}
 	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, Outbox: []OutgoingMessage{}}
 	if err := adapter.load(); err != nil {
 		return nil, err
@@ -297,30 +308,53 @@ func (a *Adapter) HandleUpdate(ctx context.Context, update Update) error {
 	if update.ID <= 0 || update.Message == nil {
 		return nil
 	}
-	a.mu.Lock()
-	if _, exists := a.state.Processed[fmt.Sprint(update.ID)]; exists {
+	for {
+		a.mu.Lock()
+		if _, exists := a.state.Processed[fmt.Sprint(update.ID)]; exists {
+			a.mu.Unlock()
+			return nil
+		}
+		if claim, exists := a.claims[update.ID]; exists {
+			done := claim.done
+			a.mu.Unlock()
+			select {
+			case <-done:
+				if claim.err != nil {
+					continue
+				}
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		claim := &updateClaim{done: make(chan struct{})}
+		a.claims[update.ID] = claim
+		allowed := a.ownerAllowed(update.Message.ChatID) && (update.Message.FromID == 0 || update.Message.FromID == update.Message.ChatID)
 		a.mu.Unlock()
-		return nil
-	}
-	// Mark before the side effect. The server receives the update id as its
-	// idempotency key, so a crash cannot turn replay into a duplicate turn.
-	a.state.Processed[fmt.Sprint(update.ID)] = a.now()
-	if err := a.saveLocked(); err != nil {
+
+		err := a.deliverUpdate(ctx, update, allowed)
+		a.mu.Lock()
+		claim.err = err
+		if err == nil {
+			a.state.Processed[fmt.Sprint(update.ID)] = a.now()
+			err = a.saveLocked()
+			claim.err = err
+		}
+		delete(a.claims, update.ID)
+		close(claim.done)
 		a.mu.Unlock()
 		return err
 	}
-	allowed := a.ownerAllowed(update.Message.ChatID) && (update.Message.FromID == 0 || update.Message.FromID == update.Message.ChatID)
-	a.mu.Unlock()
+}
+
+func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool) error {
 	text := strings.TrimSpace(update.Message.Text)
 	if strings.HasPrefix(text, "/start ") {
 		// Possession of the short-lived deep-link code is the explicit owner
 		// pairing proof. It is the only update accepted before allowlisting.
 		return a.RedeemPairing(strings.TrimSpace(strings.TrimPrefix(text, "/start ")), update.Message.ChatID)
 	}
-	if !allowed {
-		return nil
-	}
-	if text == "/start" {
+	if !allowed || text == "/start" || text == "" {
 		return nil
 	}
 	externalID := fmt.Sprint(update.ID)
@@ -331,27 +365,19 @@ func (a *Adapter) HandleUpdate(ctx context.Context, update Update) error {
 		if !ok {
 			return nil
 		}
-		err := a.server.SendWorkerMessage(ctx, WorkerMessage{WorkerRef: mapping.WorkerRef, ExternalMessageID: externalID, Text: text})
-		if err != nil {
-			a.unmarkProcessed(update.ID)
+		err := a.server.SendWorkerMessage(ctx, WorkerMessage{WorkerRef: mapping.WorkerRef, ExternalMessageID: externalID, RequestID: mapping.PendingRequestID, Text: text})
+		if err == nil && mapping.PendingRequestID != "" {
+			a.mu.Lock()
+			if current, exists := a.state.Topics[mapping.WorkerRef]; exists && current.ThreadID == mapping.ThreadID {
+				current.PendingRequestID = ""
+				a.state.Topics[mapping.WorkerRef] = current
+				_ = a.saveLocked()
+			}
+			a.mu.Unlock()
 		}
 		return err
 	}
-	if text == "" {
-		return nil
-	}
-	err := a.server.SendMessage(ctx, InboundMessage{ExternalMessageID: externalID, Body: text})
-	if err != nil {
-		a.unmarkProcessed(update.ID)
-	}
-	return err
-}
-
-func (a *Adapter) unmarkProcessed(updateID int64) {
-	a.mu.Lock()
-	delete(a.state.Processed, fmt.Sprint(updateID))
-	_ = a.saveLocked()
-	a.mu.Unlock()
+	return a.server.SendMessage(ctx, InboundMessage{ExternalMessageID: externalID, Body: text})
 }
 
 func (a *Adapter) mappingForThreadLocked(chatID, threadID int64) (TopicMapping, bool) {
@@ -403,6 +429,28 @@ func (a *Adapter) Run(ctx context.Context) error {
 	}
 }
 
+func (a *Adapter) HandleDurableEvent(ctx context.Context, event Event) error {
+	if event.Sequence <= 0 {
+		return a.HandleEvent(ctx, event)
+	}
+	a.mu.Lock()
+	if event.Sequence <= a.state.LastEventSeq {
+		a.mu.Unlock()
+		return nil
+	}
+	a.mu.Unlock()
+	if err := a.HandleEvent(ctx, event); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	if event.Sequence > a.state.LastEventSeq {
+		a.state.LastEventSeq = event.Sequence
+	}
+	err := a.saveLocked()
+	a.mu.Unlock()
+	return err
+}
+
 func (a *Adapter) HandleEvent(ctx context.Context, event Event) error {
 	if strings.HasPrefix(event.Kind, "secretary.") {
 		a.queueSecretary(event)
@@ -422,6 +470,16 @@ func (a *Adapter) HandleEvent(ctx context.Context, event Event) error {
 	mapping, err := a.ensureTopic(ctx, event.WorkerRef, event.Title)
 	if err != nil {
 		return err
+	}
+	if requestID := requestIDFromPayload(event.Payload); requestID != "" && importantWorkerEvent(event.Kind) {
+		a.mu.Lock()
+		mapping.PendingRequestID = requestID
+		a.state.Topics[event.WorkerRef] = mapping
+		if err := a.saveLocked(); err != nil {
+			a.mu.Unlock()
+			return err
+		}
+		a.mu.Unlock()
 	}
 	if importantWorkerEvent(event.Kind) {
 		text := renderWorkerEvent(event)
@@ -445,6 +503,8 @@ func (a *Adapter) HandleEvent(ctx context.Context, event Event) error {
 }
 
 func (a *Adapter) ensureTopic(ctx context.Context, workerRef, title string) (TopicMapping, error) {
+	a.topicMu.Lock()
+	defer a.topicMu.Unlock()
 	a.mu.Lock()
 	if mapping, ok := a.state.Topics[workerRef]; ok {
 		a.mu.Unlock()
@@ -561,10 +621,19 @@ func (a *Adapter) Flush(ctx context.Context) error {
 
 func (a *Adapter) sendMessage(ctx context.Context, message OutgoingMessage) error {
 	a.mu.Lock()
-	a.state.Outbox = append(a.state.Outbox, message)
-	if err := a.saveLocked(); err != nil {
-		a.mu.Unlock()
-		return err
+	alreadyPending := false
+	for _, pending := range a.state.Outbox {
+		if pending == message {
+			alreadyPending = true
+			break
+		}
+	}
+	if !alreadyPending {
+		a.state.Outbox = append(a.state.Outbox, message)
+		if err := a.saveLocked(); err != nil {
+			a.mu.Unlock()
+			return err
+		}
 	}
 	a.mu.Unlock()
 	if err := a.transport.SendMessage(ctx, message); err != nil {
@@ -633,7 +702,7 @@ func renderWorkerActivity(event Event) string {
 func topicName(workerRef, title string) string {
 	name := safeText(title)
 	if name == "" {
-		name = "Worker " + workerRef
+		name = "Worker"
 	}
 	if len(name) > 60 {
 		name = name[:60]
@@ -641,26 +710,55 @@ func topicName(workerRef, title string) string {
 	return name
 }
 
-var sensitiveText = regexp.MustCompile(`(?i)(node[_ -]?token|channel[_ -]?secret|callback[_ -]?capability|runtime[_ -]?(session|id)|chain[_ -]?of[_ -]?thought|api[_ -]?key|credential|token)\s*[:=]?[[:space:]]*[^,; ]+`)
+var sensitiveText = regexp.MustCompile(`(?i)(node[_ -]?(token|secret)|channel[_ -]?(secret|token)|callback[_ -]?(capability|secret|token)|runtime[_ -]?(session|id)|task[_ -]?id|session[_ -]?id|native[_ -]?(session|id)|worker[_ -]?ref|attempt[_ -]?id|turn[_ -]?id|api[_ -]?key|credential|token|secret)\s*[:=]?[[:space:]]*[^,; ]+`)
+var sensitiveMarkerValue = regexp.MustCompile(`(?i)\b(?:task|session|native|worker|attempt|turn|node|channel|callback|token|secret|reasoning|thought|analysis)[_-][a-z0-9][a-z0-9._/-]*\b`)
+var reasoningMarker = regexp.MustCompile(`(?i)\b(?:analysis|reasoning|thought|chain[-_ ]of[-_ ]thought|cot)\s*[:=]`)
 
 func safeText(text string) string {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return ""
 	}
-	if strings.Contains(strings.ToLower(text), "analysis:") || strings.Contains(strings.ToLower(text), "chain of thought") {
+	if reasoningMarker.MatchString(text) {
 		return "Worker activity update"
 	}
 	text = sensitiveText.ReplaceAllString(text, "[redacted]")
+	text = sensitiveMarkerValue.ReplaceAllString(text, "[redacted]")
 	text = strings.Join(strings.Fields(text), " ")
 	return text
 }
 
 func safeDelta(text string) string {
-	if strings.Contains(strings.ToLower(text), "analysis:") || strings.Contains(strings.ToLower(text), "chain of thought") {
+	if reasoningMarker.MatchString(text) {
 		return ""
 	}
-	return sensitiveText.ReplaceAllString(text, "[redacted]")
+	return sensitiveMarkerValue.ReplaceAllString(sensitiveText.ReplaceAllString(text, "[redacted]"), "[redacted]")
+}
+
+func requestIDFromPayload(payload json.RawMessage) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var value map[string]any
+	if json.Unmarshal(payload, &value) != nil {
+		return ""
+	}
+	return requestIDInMap(value)
+}
+
+func requestIDInMap(value map[string]any) string {
+	if candidate, ok := value["request_id"].(string); ok && strings.TrimSpace(candidate) != "" {
+		return strings.TrimSpace(candidate)
+	}
+	for _, nested := range value {
+		child, ok := nested.(map[string]any)
+		if ok {
+			if requestID := requestIDInMap(child); requestID != "" {
+				return requestID
+			}
+		}
+	}
+	return ""
 }
 
 func uniqueStrings(values []string) []string {

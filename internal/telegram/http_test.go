@@ -5,13 +5,25 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
+func TestBotAPITransportErrorRedactsBotToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "fixture", http.StatusBadGateway)
+	}))
+	defer server.Close()
+	err := (&BotAPITransport{BaseURL: server.URL, BotToken: "fixture"}).SendMessage(context.Background(), OutgoingMessage{ChatID: 1, Text: "hello"})
+	if err == nil || strings.Contains(err.Error(), "fixture") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestBotAPITransportDecodesProductionNestedMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/botprivate-token/getUpdates" {
+		if r.URL.Path != "/botfixture/getUpdates" {
 			t.Fatalf("path=%s", r.URL.Path)
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": []any{map[string]any{
@@ -27,7 +39,7 @@ func TestBotAPITransportDecodesProductionNestedMessage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	updates, err := (&BotAPITransport{BaseURL: server.URL, BotToken: "private-token"}).GetUpdates(context.Background(), 1, time.Second)
+	updates, err := (&BotAPITransport{BaseURL: server.URL, BotToken: "fixture"}).GetUpdates(context.Background(), 1, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

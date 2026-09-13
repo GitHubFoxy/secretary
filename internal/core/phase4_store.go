@@ -826,7 +826,11 @@ func (s *Store) finishRetryableAttempt(ctx context.Context, attemptID string, in
 		if _, err := tx.ExecContext(ctx, `UPDATE phase4_attempts SET state = ?, updated_at = ? WHERE id = ?`, AttemptState(input.Status), timestamp(now), attempt.ID); err != nil {
 			return FinishAttemptResult{}, err
 		}
-		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.outcome_recorded", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: attempt.CorrelationID, Payload: input.AttemptOutcomeInput}, input.AttemptOutcomeInput); err != nil {
+		workerRef, err := workerRefForID(ctx, tx, attempt.WorkerID)
+		if err != nil {
+			return FinishAttemptResult{}, err
+		}
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.outcome_recorded", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: attempt.CorrelationID, WorkerRef: workerRef, Payload: input.AttemptOutcomeInput}, input.AttemptOutcomeInput); err != nil {
 			return FinishAttemptResult{}, err
 		}
 		next := Phase4Attempt{ID: newID("att"), WorkerID: attempt.WorkerID, TurnID: attempt.TurnID, Number: attempt.Number + 1, NodeID: attempt.NodeID, HarnessInstanceID: attempt.HarnessInstanceID, State: AttemptStarting, CorrelationID: attempt.CorrelationID, CreatedAt: now, UpdatedAt: now}
@@ -960,7 +964,15 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 				dup     bool
 			}{}, err
 		}
-		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.outcome_recorded", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: attempt.CorrelationID, Payload: outcome}, outcome); err != nil {
+		workerRef, err := workerRefForID(ctx, tx, attempt.WorkerID)
+		if err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+				dup     bool
+			}{}, err
+		}
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "attempt.outcome_recorded", AggregateType: "attempt", AggregateID: attempt.ID, Source: "server", CorrelationID: attempt.CorrelationID, WorkerRef: workerRef, Payload: outcome}, outcome); err != nil {
 			return struct {
 				outcome AttemptOutcome
 				result  *Phase4Result
@@ -992,7 +1004,7 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 				dup     bool
 			}{}, err
 		}
-		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "result.accepted", AggregateType: "result", AggregateID: result.ID, Source: "server", CorrelationID: result.CorrelationID, CausationID: outcome.ID, Payload: result}, result); err != nil {
+		if _, err := appendEventTx(ctx, tx, now, EventInput{Kind: "result.accepted", AggregateType: "result", AggregateID: result.ID, Source: "server", CorrelationID: result.CorrelationID, CausationID: outcome.ID, WorkerRef: workerRef, Payload: result}, result); err != nil {
 			return struct {
 				outcome AttemptOutcome
 				result  *Phase4Result
@@ -1019,14 +1031,6 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 		}
 		conversationID, err := conversationForWorker(ctx, tx, attempt.WorkerID)
 		if err != nil {
-			return struct {
-				outcome AttemptOutcome
-				result  *Phase4Result
-				dup     bool
-			}{}, err
-		}
-		var workerRef string
-		if err := tx.QueryRowContext(ctx, `SELECT worker_ref FROM workers WHERE id = ?`, attempt.WorkerID).Scan(&workerRef); err != nil {
 			return struct {
 				outcome AttemptOutcome
 				result  *Phase4Result

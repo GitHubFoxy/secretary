@@ -45,12 +45,12 @@ func (t *BotAPITransport) call(ctx context.Context, method string, values url.Va
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	response, err := t.client().Do(request)
 	if err != nil {
-		return fmt.Errorf("telegram: Bot API %s: %w", method, err)
+		return fmt.Errorf("telegram: Bot API %s request failed", method)
 	}
 	defer response.Body.Close()
 	if response.StatusCode/100 != 2 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("telegram: Bot API %s returned %s: %s", method, response.Status, strings.TrimSpace(string(body)))
+		return fmt.Errorf("telegram: Bot API %s returned %s: %s", method, response.Status, redactBotSecret(t.BotToken, strings.TrimSpace(string(body))))
 	}
 	var envelope struct {
 		OK          bool            `json:"ok"`
@@ -61,7 +61,7 @@ func (t *BotAPITransport) call(ctx context.Context, method string, values url.Va
 		return err
 	}
 	if !envelope.OK {
-		return fmt.Errorf("telegram: Bot API %s failed: %s", method, envelope.Description)
+		return fmt.Errorf("telegram: Bot API %s failed: %s", method, redactBotSecret(t.BotToken, envelope.Description))
 	}
 	if result != nil {
 		if err := json.Unmarshal(envelope.Result, result); err != nil {
@@ -71,15 +71,58 @@ func (t *BotAPITransport) call(ctx context.Context, method string, values url.Va
 	return nil
 }
 
+type botUpdateDTO struct {
+	ID      int64          `json:"update_id"`
+	Message *botMessageDTO `json:"message,omitempty"`
+}
+
+type botMessageDTO struct {
+	From *struct {
+		ID int64 `json:"id"`
+	} `json:"from,omitempty"`
+	Chat *struct {
+		ID int64 `json:"id"`
+	} `json:"chat,omitempty"`
+	ThreadID int64  `json:"message_thread_id,omitempty"`
+	Text     string `json:"text,omitempty"`
+}
+
+func (dto botUpdateDTO) update() Update {
+	update := Update{ID: dto.ID}
+	if dto.Message == nil {
+		return update
+	}
+	message := &Message{ThreadID: dto.Message.ThreadID, Text: dto.Message.Text}
+	if dto.Message.Chat != nil {
+		message.ChatID = dto.Message.Chat.ID
+	}
+	if dto.Message.From != nil {
+		message.FromID = dto.Message.From.ID
+	}
+	update.Message = message
+	return update
+}
+
+func redactBotSecret(secret, text string) string {
+	if secret == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, secret, "[redacted]")
+}
+
 func (t *BotAPITransport) GetUpdates(ctx context.Context, offset int64, timeout time.Duration) ([]Update, error) {
 	seconds := int(timeout / time.Second)
 	if seconds < 1 {
 		seconds = 1
 	}
 	values := url.Values{"offset": {strconv.FormatInt(offset, 10)}, "timeout": {strconv.Itoa(seconds)}, "allowed_updates": {"[\"message\"]"}}
-	var updates []Update
-	if err := t.call(ctx, "getUpdates", values, &updates); err != nil {
+	var decoded []botUpdateDTO
+	if err := t.call(ctx, "getUpdates", values, &decoded); err != nil {
 		return nil, err
+	}
+	updates := make([]Update, 0, len(decoded))
+	for _, dto := range decoded {
+		updates = append(updates, dto.update())
 	}
 	return updates, nil
 }
@@ -149,5 +192,9 @@ func (c *HTTPServerClient) SendMessage(ctx context.Context, message InboundMessa
 
 func (c *HTTPServerClient) SendWorkerMessage(ctx context.Context, message WorkerMessage) error {
 	path := "/v1/workers/" + url.PathEscape(message.WorkerRef) + "/message"
-	return c.post(ctx, path, map[string]string{"text": message.Text}, "telegram:"+message.ExternalMessageID)
+	body := map[string]string{"text": message.Text}
+	if message.RequestID != "" {
+		body["request_id"] = message.RequestID
+	}
+	return c.post(ctx, path, body, "telegram:"+message.ExternalMessageID)
 }
