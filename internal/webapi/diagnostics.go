@@ -215,13 +215,11 @@ func sanitizeDiagnosticText(value string) string {
 }
 
 func forbiddenDiagnosticString(value string) bool {
-	lower := strings.ToLower(value)
-	for _, prefix := range []string{"analysis:", "reasoning:", "thought:"} {
-		if strings.Contains(lower, prefix) {
-			return true
-		}
+	if containsKnownControlSensitiveValue(value) {
+		return true
 	}
-	for _, marker := range []string{"<think", "</think", "bearer ", "api_key=", "apikey=", "token=", "secret", "credential", "password=", "callback", "native", "session_id", "session-id", "task", "chain-of-thought", "internal reasoning", "thought process", "sk-", "ghp_", "xoxb-", "xoxb_"} {
+	lower := strings.ToLower(value)
+	for _, marker := range []string{"analysis:", "reasoning:", "thought:", "bearer ", "secret", "credential", "callback", "native", "session_id", "session-id", "task"} {
 		if strings.Contains(lower, marker) {
 			return true
 		}

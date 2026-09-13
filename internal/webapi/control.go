@@ -820,7 +820,7 @@ func hasControlRedactionMarker(content string) bool {
 			return true
 		}
 	}
-	return containsKnownControlCredential(content)
+	return containsKnownControlSensitiveValue(content)
 }
 
 func (s *Server) controlConfigReload(w http.ResponseWriter, r *http.Request) {
@@ -1082,7 +1082,7 @@ func redactControlProfileText(value string) string {
 }
 
 func redactControlProfileMetadata(value string) string {
-	if containsKnownControlCredential(value) {
+	if containsKnownControlSensitiveValue(value) {
 		return "[redacted]"
 	}
 	lower := strings.ToLower(value)
@@ -1129,35 +1129,41 @@ func controlTextSensitiveLine(line string) bool {
 	// Also reject an opaque value embedded in an otherwise ordinary value.
 	// This catches credentials in safe product keys and free Markdown without
 	// making ordinary `content`, `skills`, or `reasoning` fields read-only.
-	if containsKnownControlCredential(line) {
-		return true
-	}
-	lower := strings.ToLower(line)
-	for _, marker := range []string{"<think", "</think", "chain-of-thought", "internal reasoning", "thought process"} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	return false
+	return containsKnownControlSensitiveValue(line)
 }
 
-func containsKnownControlCredential(value string) bool {
+var controlSensitiveAssignmentKeys = []string{
+	"api_key", "apikey", "access_token", "token", "secret", "credential", "password", "callback", "auth", "session_id", "session-id", "native_id", "task_id",
+}
+
+var controlSensitivePrefixes = []string{"sk-", "ghp_", "xoxb-", "xoxb_"}
+
+var controlSensitiveCoTMarkers = []string{"<think", "</think", "chain-of-thought", "chain_of_thought", "chain of thought", "internal reasoning", "thought process"}
+
+var controlSensitiveValueMarkers = []string{"bearer "}
+
+func containsKnownControlSensitiveValue(value string) bool {
 	lower := strings.ToLower(value)
-	for _, prefix := range []string{"sk-", "ghp_", "xoxb-", "xoxb_"} {
+	for _, prefix := range controlSensitivePrefixes {
 		if strings.Contains(lower, prefix) {
 			return true
 		}
 	}
-	for _, key := range []string{"token", "secret", "credential"} {
+	for _, marker := range controlSensitiveCoTMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	for _, marker := range controlSensitiveValueMarkers {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	for _, key := range controlSensitiveAssignmentKeys {
 		for _, separator := range []string{"=", ":"} {
 			if containsControlAssignment(lower, key, separator) {
 				return true
 			}
-		}
-	}
-	for _, marker := range []string{"api_key=", "apikey=", "access_token=", "password=", "callback=", "auth=", "session_id=", "session-id=", "native_id=", "task_id=", "bearer "} {
-		if strings.Contains(lower, marker) {
-			return true
 		}
 	}
 	return false
