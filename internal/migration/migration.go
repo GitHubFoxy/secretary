@@ -199,9 +199,7 @@ func prepareConfig(path string) ([]byte, error) {
 		workerPolicy["default_harness"] = runtime["harness"]
 	}
 	for _, alias := range []string{"fast", "smart", "cheap"} {
-		if stringValue(models[alias]) == alias {
-			models[alias] = "default"
-		}
+		delete(models, alias)
 	}
 	delete(tree, "runtime")
 	tree["secretary"] = secretary
@@ -484,6 +482,17 @@ CREATE TABLE IF NOT EXISTS phase4_results (id TEXT PRIMARY KEY, worker_id TEXT N
 CREATE TABLE IF NOT EXISTS phase4_migration_records (legacy_task_id TEXT PRIMARY KEY, legacy_binding_id TEXT NOT NULL UNIQUE, worker_id TEXT NOT NULL UNIQUE, turn_id TEXT NOT NULL UNIQUE);
 CREATE TABLE IF NOT EXISTS phase4_migration_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS phase4_projects (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '', mappings_json TEXT NOT NULL, policy_json TEXT NOT NULL, revision INTEGER NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS phase4_nodes (node_ref TEXT PRIMARY KEY, online INTEGER NOT NULL DEFAULT 0, draining INTEGER NOT NULL DEFAULT 0, revoked INTEGER NOT NULL DEFAULT 0, enrolled_at TEXT NOT NULL, last_seen_at TEXT NOT NULL DEFAULT '', last_heartbeat_at TEXT NOT NULL DEFAULT '', capacity INTEGER NOT NULL DEFAULT 0, active_attempts_json TEXT NOT NULL DEFAULT '', last_processed_command TEXT NOT NULL DEFAULT '', inventory_json TEXT NOT NULL DEFAULT '', credential_hash TEXT NOT NULL DEFAULT '', credential_secret TEXT NOT NULL DEFAULT '', workspaces_json TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS phase4_node_pairing_tokens (token_hash TEXT PRIMARY KEY, consumed_at TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS clients (id TEXT PRIMARY KEY, person_id TEXT NOT NULL, device_id TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, platform TEXT NOT NULL, scopes_json TEXT NOT NULL, status TEXT NOT NULL, credential_hash TEXT NOT NULL UNIQUE, credential_secret TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, revoked_at TEXT);
+CREATE TABLE IF NOT EXISTS client_pairings (id TEXT PRIMARY KEY, client_id TEXT NOT NULL UNIQUE, pending_token_hash TEXT NOT NULL DEFAULT '', pending_token_secret TEXT NOT NULL DEFAULT '', pending_token_redeemed INTEGER NOT NULL DEFAULT 0, generation INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS phase4_approvals (id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, worker_id TEXT NOT NULL, turn_id TEXT NOT NULL, attempt_id TEXT NOT NULL, node_id TEXT NOT NULL, project_id TEXT NOT NULL, kind TEXT NOT NULL, action_summary TEXT NOT NULL, risk_category TEXT NOT NULL DEFAULT '', requested_at TEXT NOT NULL, expires_at TEXT, state TEXT NOT NULL, response TEXT NOT NULL DEFAULT '', resolved_by TEXT NOT NULL DEFAULT '', resolved_at TEXT, audit_event_id TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, seq INTEGER, kind TEXT NOT NULL, aggregate_type TEXT NOT NULL DEFAULT '', aggregate_id TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', correlation_id TEXT NOT NULL DEFAULT '', causation_id TEXT NOT NULL DEFAULT '', worker_ref TEXT NOT NULL DEFAULT '', attempt_id TEXT NOT NULL DEFAULT '', runtime_session_id TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS event_sequence (id INTEGER PRIMARY KEY CHECK(id = 1), next_seq INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, entry_id TEXT, target TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL, retry_count INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, delivered_at TEXT);
+CREATE TABLE IF NOT EXISTS config_versions (version TEXT PRIMARY KEY, source_path TEXT NOT NULL, compiled_json TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS config_events (id TEXT PRIMARY KEY, previous_version TEXT NOT NULL, next_version TEXT NOT NULL, diff_json TEXT NOT NULL, created_at TEXT NOT NULL);
 `)
 	if err != nil {
 		return fmt.Errorf("create Phase 4 migration schema: %w", err)

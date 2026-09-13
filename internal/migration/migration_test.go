@@ -153,10 +153,10 @@ reasoning = "high"
 		t.Fatal(err)
 	}
 	text := string(content)
-	if strings.Contains(text, "[runtime]") || strings.Contains(text, `fast = "fast"`) || strings.Contains(text, `smart = "smart"`) || strings.Contains(text, `cheap = "cheap"`) {
+	if strings.Contains(text, "[runtime]") || strings.Contains(text, "fast") || strings.Contains(text, "smart") || strings.Contains(text, "cheap") {
 		t.Fatalf("legacy config contract remains: %s", text)
 	}
-	for _, required := range []string{"[secretary]", "harness = 'fx'", "model = 'provider/secretary'", "[worker_policy]", "default_harness = 'fx'", `fast = 'default'`} {
+	for _, required := range []string{"[secretary]", "harness = 'fx'", "model = 'provider/secretary'", "[worker_policy]", "default_harness = 'fx'"} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("migrated config misses %q: %s", required, text)
 		}
