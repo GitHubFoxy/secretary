@@ -19,6 +19,7 @@ type Daemon struct {
 	Inventory InventorySource
 
 	Capacity           int
+	Workspaces         []Workspace
 	HeartbeatInterval  time.Duration
 	InventoryInterval  time.Duration
 	OutboxPollInterval time.Duration
@@ -36,6 +37,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 	execution := NewExecutionNode(d.Identity.Node, d.Runtime, d.Store)
+	if err := execution.SetWorkspaces(d.Workspaces); err != nil {
+		return fmt.Errorf("node: set workspace mappings: %w", err)
+	}
 	if err := execution.Restore(ctx); err != nil {
 		return fmt.Errorf("node: restore local execution state: %w", err)
 	}
@@ -90,7 +94,8 @@ func (d *Daemon) runConnection(ctx context.Context, execution *ExecutionNode) er
 	}
 	handshake := Handshake{
 		Node: d.Identity.Node, ProtocolVersion: ProtocolVersion, Inventory: inventory,
-		Nonce: nonce, LastAcknowledgedSequence: d.Store.LastAcknowledgedSequence(),
+		Workspaces: append([]Workspace(nil), d.Workspaces...),
+		Nonce:      nonce, LastAcknowledgedSequence: d.Store.LastAcknowledgedSequence(),
 	}
 	connection, err := DialProtocol(ctx, d.Identity.ConnectURL, d.Identity.Node, auth, handshake)
 	if err != nil {

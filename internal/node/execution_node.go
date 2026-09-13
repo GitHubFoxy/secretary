@@ -39,10 +39,28 @@ type ExecutionNode struct {
 	sessions          map[string]Session
 	activitySequences map[string]uint64
 	inventory         core.HarnessInventorySnapshot
+	workspaces        map[string]string
 }
 
 func NewExecutionNode(node core.NodeReference, runtime Runtime, store *LocalStore) *ExecutionNode {
-	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, activitySequences: map[string]uint64{}}
+	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, activitySequences: map[string]uint64{}, workspaces: map[string]string{}}
+}
+
+func (n *ExecutionNode) SetWorkspaces(workspaces []Workspace) error {
+	mapped := make(map[string]string, len(workspaces))
+	for _, workspace := range workspaces {
+		if err := workspace.Validate(); err != nil {
+			return err
+		}
+		if _, exists := mapped[workspace.ProjectID]; exists {
+			return fmt.Errorf("node: duplicate workspace mapping for Project %q", workspace.ProjectID)
+		}
+		mapped[workspace.ProjectID] = filepath.Clean(workspace.Path)
+	}
+	n.mu.Lock()
+	n.workspaces = mapped
+	n.mu.Unlock()
+	return nil
 }
 
 func (n *ExecutionNode) SetInventory(inventory core.HarnessInventorySnapshot) error {
@@ -105,6 +123,9 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	}
 	workspace := command.Envelope.Workspace
 	if command.Envelope.ProjectID != "" {
+		if err := n.validateReconciledWorkspace(command.Envelope); err != nil {
+			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "workspace_mapping_mismatch", err.Error())
+		}
 		canonicalWorkspace, err := validateProjectWorkspaceOnNode(command.Envelope)
 		if err != nil {
 			code := "workspace_forbidden"
@@ -144,6 +165,27 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	n.registerSession(mapping.AttemptID, session)
 	n.watchSession(session, command.Envelope)
 	return acceptedOutcome(Command{Kind: CommandDispatch, Dispatch: command})
+}
+
+func (n *ExecutionNode) validateReconciledWorkspace(envelope WorkerEnvelope) error {
+	if envelope.ProjectID == "" {
+		return nil
+	}
+	n.mu.Lock()
+	root, configured := n.workspaces[envelope.ProjectID]
+	configuredCount := len(n.workspaces)
+	n.mu.Unlock()
+	if configuredCount == 0 {
+		return nil
+	}
+	if !configured {
+		return fmt.Errorf("%w: Project %q is not configured on Node %s", core.ErrProjectMappingMissing, envelope.ProjectID, n.node)
+	}
+	mapping, ok := envelope.ProjectSnapshotPathMapping()
+	if !ok || filepath.Clean(mapping.Path) != root {
+		return fmt.Errorf("%w: Project %q mapping differs from Node configuration", core.ErrNodeWorkspaceMismatch, envelope.ProjectID)
+	}
+	return nil
 }
 
 func validateProjectWorkspaceOnNode(envelope WorkerEnvelope) (string, error) {
@@ -269,6 +311,9 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	}
 	workspace := mapping.Workspace
 	if command.Envelope.ProjectID != "" {
+		if err := n.validateReconciledWorkspace(command.Envelope); err != nil {
+			return failedOutcome(Command{Kind: CommandResume, Resume: command}, "workspace_mapping_mismatch", err.Error())
+		}
 		canonicalWorkspace, err := validateProjectWorkspaceOnNode(command.Envelope)
 		if err != nil {
 			return failedOutcome(Command{Kind: CommandResume, Resume: command}, "workspace_forbidden", err.Error())
@@ -367,6 +412,9 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 	}
 	resumer, ok := n.runtime.(Resumer)
 	if !ok {
+		return nil, ErrRuntimeSessionUnavailable
+	}
+	if err := n.validateReconciledWorkspace(envelope); err != nil {
 		return nil, ErrRuntimeSessionUnavailable
 	}
 	request := StartRequest{WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: mapping.Workspace, Profile: envelope.Profile, HarnessInstance: envelope.HarnessInstance, Model: envelope.Model, Reasoning: envelope.Reasoning, ApprovalPolicy: envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(metadata.AttemptID)}

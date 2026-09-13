@@ -188,7 +188,13 @@ func main() {
 		if capabilityErr != nil {
 			log.Fatalf("create Secretary capability: %v", capabilityErr)
 		}
-		log.Printf("generated SECRETARY_CAPABILITY=%s", capability)
+		if path := strings.TrimSpace(os.Getenv("SECRETARY_CAPABILITY_FILE")); path != "" {
+			if err := writeSecretFile(path, capability); err != nil {
+				log.Fatalf("save Secretary capability: %v", err)
+			}
+		} else {
+			log.Printf("generated Secretary runtime credential")
+		}
 	}
 	attachProductionWorkerServices(web, store, web.OwnerID(), capability, local, remoteNodes, func(binding core.BindingProfile) node.ManagedProfile {
 		compiled, err := store.ConfigVersion(ctx, binding.Version)
@@ -504,6 +510,13 @@ func applyConfig(manager *config.Manager, content []byte) (any, error) {
 		return nil, err
 	}
 	return snapshot, nil
+}
+
+func writeSecretFile(path, value string) error {
+	if strings.TrimSpace(path) == "" || strings.TrimSpace(value) == "" {
+		return errors.New("secret file path and value are required")
+	}
+	return writeConfig(path, []byte(value+"\n"))
 }
 
 func writeConfig(path string, content []byte) error {

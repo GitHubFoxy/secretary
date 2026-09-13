@@ -12,15 +12,18 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 )
 
 var (
 	ErrNodeAlreadyEnrolled    = errors.New("core: node already enrolled")
+	ErrNodeWorkspaceMismatch  = errors.New("core: Node workspace mapping mismatch")
 	ErrNodeRevoked            = errors.New("core: node revoked")
 	ErrNodePairingTokenUsed   = errors.New("core: node pairing token is invalid or already used")
 	ErrNodePairingTokenAbsent = errors.New("core: node pairing token is not configured")
+	ErrNodeActiveAttempts     = errors.New("core: Node has active attempts")
 )
 
 // NodeRecord is the server-owned durable view of one enrolled execution Node.
@@ -37,6 +40,11 @@ type NodeHeartbeat struct {
 	LastProcessedCommand string              `json:"last_processed_command,omitempty"`
 }
 
+type NodeWorkspaceMapping struct {
+	ProjectID string `json:"project_id"`
+	Path      string `json:"path"`
+}
+
 type NodeRecord struct {
 	Node                 NodeReference            `json:"node"`
 	Online               bool                     `json:"online"`
@@ -50,6 +58,7 @@ type NodeRecord struct {
 	LastProcessedCommand string                   `json:"last_processed_command,omitempty"`
 	Inventory            HarnessInventorySnapshot `json:"inventory,omitempty"`
 	CredentialHash       string                   `json:"credential_hash,omitempty"`
+	Workspaces           []NodeWorkspaceMapping   `json:"workspaces,omitempty"`
 }
 
 func (s *Store) EnsureNodeRegistry(ctx context.Context) error {
@@ -69,7 +78,8 @@ CREATE TABLE IF NOT EXISTS phase4_nodes (
   last_processed_command TEXT NOT NULL DEFAULT '',
   inventory_json TEXT NOT NULL DEFAULT '',
   credential_hash TEXT NOT NULL DEFAULT '',
-  credential_secret TEXT NOT NULL DEFAULT ''
+  credential_secret TEXT NOT NULL DEFAULT '',
+  workspaces_json TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS phase4_node_pairing_tokens (
   token_hash TEXT PRIMARY KEY,
@@ -87,6 +97,7 @@ CREATE INDEX IF NOT EXISTS phase4_nodes_online ON phase4_nodes(online, revoked, 
 		"phase4_nodes last_processed_command TEXT NOT NULL DEFAULT ''",
 		"phase4_nodes credential_hash TEXT NOT NULL DEFAULT ''",
 		"phase4_nodes credential_secret TEXT NOT NULL DEFAULT ''",
+		"phase4_nodes workspaces_json TEXT NOT NULL DEFAULT ''",
 	} {
 		parts := strings.SplitN(migration, " ", 2)
 		if _, err := s.db.ExecContext(ctx, `ALTER TABLE `+parts[0]+` ADD COLUMN `+parts[1]); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
@@ -224,7 +235,7 @@ func (s *Store) NodeRecord(ctx context.Context, node NodeReference) (NodeRecord,
 	if err := s.EnsureNodeRegistry(ctx); err != nil {
 		return NodeRecord{}, err
 	}
-	row := s.db.QueryRowContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, capacity, active_attempts_json, last_processed_command, inventory_json, credential_hash, credential_secret FROM phase4_nodes WHERE node_ref = ?`, node)
+	row := s.db.QueryRowContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, capacity, active_attempts_json, last_processed_command, inventory_json, credential_hash, credential_secret, workspaces_json FROM phase4_nodes WHERE node_ref = ?`, node)
 	return scanNodeRecord(row)
 }
 
@@ -232,7 +243,7 @@ func (s *Store) NodeRecords(ctx context.Context) ([]NodeRecord, error) {
 	if err := s.EnsureNodeRegistry(ctx); err != nil {
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, capacity, active_attempts_json, last_processed_command, inventory_json, credential_hash, credential_secret FROM phase4_nodes ORDER BY enrolled_at, node_ref`)
+	rows, err := s.db.QueryContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, capacity, active_attempts_json, last_processed_command, inventory_json, credential_hash, credential_secret, workspaces_json FROM phase4_nodes ORDER BY enrolled_at, node_ref`)
 	if err != nil {
 		return nil, err
 	}
@@ -254,6 +265,60 @@ func (s *Store) MarkAllNodesOffline(ctx context.Context) error {
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE phase4_nodes SET online = 0`)
 	return err
+}
+
+func (s *Store) ReconcileNodeWorkspaces(ctx context.Context, node NodeReference, mappings []NodeWorkspaceMapping) error {
+	if err := s.EnsureNodeRegistry(ctx); err != nil {
+		return err
+	}
+	if len(mappings) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(mappings))
+	for i := range mappings {
+		mappings[i].ProjectID = strings.TrimSpace(mappings[i].ProjectID)
+		mappings[i].Path = filepath.Clean(strings.TrimSpace(mappings[i].Path))
+		if mappings[i].ProjectID == "" {
+			return fmt.Errorf("%w: Project ID is required", ErrNodeWorkspaceMismatch)
+		}
+		if _, exists := seen[mappings[i].ProjectID]; exists {
+			return fmt.Errorf("%w: duplicate Project %q", ErrNodeWorkspaceMismatch, mappings[i].ProjectID)
+		}
+		seen[mappings[i].ProjectID] = struct{}{}
+		if err := validateRootPath(mappings[i].Path); err != nil {
+			return fmt.Errorf("%w: Project %q path: %v", ErrNodeWorkspaceMismatch, mappings[i].ProjectID, err)
+		}
+		project, err := s.Project(ctx, mappings[i].ProjectID)
+		if err != nil {
+			return fmt.Errorf("%w: Project %q: %v", ErrNodeWorkspaceMismatch, mappings[i].ProjectID, err)
+		}
+		projectMapping, ok := project.MappingForNode(node)
+		if !ok || filepath.Clean(projectMapping.Path) != mappings[i].Path {
+			return fmt.Errorf("%w: Project %q path does not match Node %s", ErrNodeWorkspaceMismatch, mappings[i].ProjectID, node)
+		}
+	}
+	encoded, err := json.Marshal(mappings)
+	if err != nil {
+		return err
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE phase4_nodes SET workspaces_json = ? WHERE node_ref = ? AND revoked = 0`, string(encoded), node)
+	if err != nil {
+		return err
+	}
+	return s.requireActiveNode(ctx, node, result)
+}
+
+func (s *Store) NodeWorkspace(ctx context.Context, node NodeReference, projectID string) (NodeWorkspaceMapping, bool, error) {
+	record, err := s.NodeRecord(ctx, node)
+	if err != nil {
+		return NodeWorkspaceMapping{}, false, err
+	}
+	for _, mapping := range record.Workspaces {
+		if mapping.ProjectID == projectID {
+			return mapping, true, nil
+		}
+	}
+	return NodeWorkspaceMapping{}, false, nil
 }
 
 func (s *Store) MarkNodeConnected(ctx context.Context, node NodeReference, inventory HarnessInventorySnapshot) error {
@@ -451,7 +516,7 @@ func (s *Store) SetNodeDraining(ctx context.Context, node NodeReference, drainin
 		if affected, _ := result.RowsAffected(); affected == 0 {
 			return NodeRecord{}, ErrNotFound
 		}
-		record, err := scanNodeRecord(tx.QueryRowContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, capacity, active_attempts_json, last_processed_command, inventory_json, credential_hash, credential_secret FROM phase4_nodes WHERE node_ref = ?`, node))
+		record, err := scanNodeRecord(tx.QueryRowContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, capacity, active_attempts_json, last_processed_command, inventory_json, credential_hash, credential_secret, workspaces_json FROM phase4_nodes WHERE node_ref = ?`, node))
 		if err != nil {
 			return NodeRecord{}, err
 		}
@@ -468,7 +533,18 @@ func (s *Store) SetNodeDraining(ctx context.Context, node NodeReference, drainin
 	})
 }
 
+// RevokeNodeIfIdle refuses to revoke while the latest heartbeat reports work.
+// RevokeNode remains the low-level compatibility escape hatch for existing
+// callers; operator-facing control uses this safe method unless forced.
+func (s *Store) RevokeNodeIfIdle(ctx context.Context, node NodeReference, idempotencyKeys ...string) (NodeRecord, error) {
+	return s.revokeNode(ctx, node, false, idempotencyKeys...)
+}
+
 func (s *Store) RevokeNode(ctx context.Context, node NodeReference, idempotencyKeys ...string) (NodeRecord, error) {
+	return s.revokeNode(ctx, node, true, idempotencyKeys...)
+}
+
+func (s *Store) revokeNode(ctx context.Context, node NodeReference, allowActive bool, idempotencyKeys ...string) (NodeRecord, error) {
 	if len(idempotencyKeys) > 1 {
 		return NodeRecord{}, errors.New("core: at most one Node idempotency key is allowed")
 	}
@@ -492,6 +568,24 @@ func (s *Store) RevokeNode(ctx context.Context, node NodeReference, idempotencyK
 				return stored, err
 			}
 		}
+		if !allowActive {
+			var activeAttemptsJSON string
+			if err := tx.QueryRowContext(ctx, `SELECT active_attempts_json FROM phase4_nodes WHERE node_ref = ? AND revoked = 0`, node).Scan(&activeAttemptsJSON); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return NodeRecord{}, ErrNotFound
+				}
+				return NodeRecord{}, err
+			}
+			var activeAttempts []NodeActiveAttempt
+			if activeAttemptsJSON != "" {
+				if err := json.Unmarshal([]byte(activeAttemptsJSON), &activeAttempts); err != nil {
+					return NodeRecord{}, fmt.Errorf("core: decode Node active attempts: %w", err)
+				}
+			}
+			if len(activeAttempts) > 0 {
+				return NodeRecord{}, ErrNodeActiveAttempts
+			}
+		}
 		result, err := tx.ExecContext(ctx, `UPDATE phase4_nodes SET revoked = 1, online = 0, draining = 1, last_seen_at = ? WHERE node_ref = ?`, timestamp(s.now()), node)
 		if err != nil {
 			return NodeRecord{}, err
@@ -499,7 +593,7 @@ func (s *Store) RevokeNode(ctx context.Context, node NodeReference, idempotencyK
 		if affected, _ := result.RowsAffected(); affected == 0 {
 			return NodeRecord{}, ErrNotFound
 		}
-		record, err := scanNodeRecord(tx.QueryRowContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, capacity, active_attempts_json, last_processed_command, inventory_json, credential_hash, credential_secret FROM phase4_nodes WHERE node_ref = ?`, node))
+		record, err := scanNodeRecord(tx.QueryRowContext(ctx, `SELECT node_ref, online, draining, revoked, enrolled_at, last_seen_at, last_heartbeat_at, capacity, active_attempts_json, last_processed_command, inventory_json, credential_hash, credential_secret, workspaces_json FROM phase4_nodes WHERE node_ref = ?`, node))
 		if err != nil {
 			return NodeRecord{}, err
 		}
@@ -540,8 +634,8 @@ type nodeRowScanner interface {
 func scanNodeRecord(row nodeRowScanner) (NodeRecord, error) {
 	var record NodeRecord
 	var online, draining, revoked int
-	var enrolledAt, lastSeenAt, lastHeartbeatAt, activeAttemptsJSON, lastProcessedCommand, inventoryJSON, credentialHashValue, credentialSecret string
-	if err := row.Scan(&record.Node, &online, &draining, &revoked, &enrolledAt, &lastSeenAt, &lastHeartbeatAt, &record.Capacity, &activeAttemptsJSON, &lastProcessedCommand, &inventoryJSON, &credentialHashValue, &credentialSecret); err != nil {
+	var enrolledAt, lastSeenAt, lastHeartbeatAt, activeAttemptsJSON, lastProcessedCommand, inventoryJSON, credentialHashValue, credentialSecret, workspacesJSON string
+	if err := row.Scan(&record.Node, &online, &draining, &revoked, &enrolledAt, &lastSeenAt, &lastHeartbeatAt, &record.Capacity, &activeAttemptsJSON, &lastProcessedCommand, &inventoryJSON, &credentialHashValue, &credentialSecret, &workspacesJSON); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return NodeRecord{}, ErrNotFound
 		}
@@ -573,6 +667,11 @@ func scanNodeRecord(row nodeRowScanner) (NodeRecord, error) {
 	if inventoryJSON != "" {
 		if err := json.Unmarshal([]byte(inventoryJSON), &record.Inventory); err != nil {
 			return NodeRecord{}, fmt.Errorf("core: decode Node inventory: %w", err)
+		}
+	}
+	if workspacesJSON != "" {
+		if err := json.Unmarshal([]byte(workspacesJSON), &record.Workspaces); err != nil {
+			return NodeRecord{}, fmt.Errorf("core: decode Node workspaces: %w", err)
 		}
 	}
 	return record, nil

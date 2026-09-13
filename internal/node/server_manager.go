@@ -44,6 +44,7 @@ type ServerNodeStatus struct {
 	ActiveAttempts       []core.NodeActiveAttempt      `json:"active_attempts,omitempty"`
 	LastProcessedCommand string                        `json:"last_processed_command,omitempty"`
 	Inventory            core.HarnessInventorySnapshot `json:"inventory,omitempty"`
+	Workspaces           []core.NodeWorkspaceMapping   `json:"workspaces,omitempty"`
 	LastCommandOutcome   *CommandOutcome               `json:"last_command_outcome,omitempty"`
 }
 
@@ -194,6 +195,15 @@ func (m *ServerManager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	parts := strings.Split(strings.TrimPrefix(path, "/v1/nodes/"), "/")
+	if len(parts) == 1 && strings.TrimSpace(parts[0]) != "" && r.Method == http.MethodGet {
+		record, err := m.store.NodeRecord(r.Context(), core.NodeReference(parts[0]))
+		if err != nil {
+			writeNodeStoreError(w, err)
+			return
+		}
+		writeNodeJSON(w, http.StatusOK, m.statusFor(record))
+		return
+	}
 	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || r.Method != http.MethodPost {
 		http.NotFound(w, r)
 		return
@@ -222,7 +232,21 @@ func (m *ServerManager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		writeNodeJSON(w, http.StatusOK, m.statusFor(record))
 	case "revoke":
-		record, err := m.store.RevokeNode(r.Context(), nodeRef)
+		var request struct {
+			Force bool `json:"force"`
+		}
+		if r.ContentLength != 0 {
+			if err := decodeNodeJSON(w, r, &request); err != nil {
+				return
+			}
+		}
+		var record core.NodeRecord
+		var err error
+		if request.Force {
+			record, err = m.store.RevokeNode(r.Context(), nodeRef)
+		} else {
+			record, err = m.store.RevokeNodeIfIdle(r.Context(), nodeRef)
+		}
 		if err != nil {
 			writeNodeStoreError(w, err)
 			return
@@ -341,7 +365,7 @@ func (m *ServerManager) statusFor(record core.NodeRecord) ServerNodeStatus {
 	status := ServerNodeStatus{
 		Node: record.Node, Online: record.Online, Draining: record.Draining, Revoked: record.Revoked,
 		EnrolledAt: record.EnrolledAt, LastSeenAt: record.LastSeenAt, LastHeartbeatAt: record.LastHeartbeatAt,
-		Capacity: record.Capacity, ActiveAttempts: record.ActiveAttempts, LastProcessedCommand: record.LastProcessedCommand, Inventory: record.Inventory,
+		Capacity: record.Capacity, ActiveAttempts: record.ActiveAttempts, LastProcessedCommand: record.LastProcessedCommand, Inventory: record.Inventory, Workspaces: record.Workspaces,
 	}
 	m.mu.Lock()
 	if outcome, ok := m.outcomes[record.Node]; ok {
@@ -508,6 +532,8 @@ func writeNodeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeNodeStoreError(w http.ResponseWriter, err error) {
 	switch {
+	case errors.Is(err, core.ErrNodeActiveAttempts):
+		http.Error(w, "Node has active attempts", http.StatusConflict)
 	case errors.Is(err, core.ErrNotFound):
 		http.Error(w, "Node not found", http.StatusNotFound)
 	case errors.Is(err, core.ErrNodeRevoked):
@@ -534,6 +560,13 @@ func (h *serverProtocolHandler) HandleNodeHandshake(ctx context.Context, handsha
 	}
 	if record.Revoked {
 		return HandshakeAccepted{}, core.ErrNodeRevoked
+	}
+	workspaces := make([]core.NodeWorkspaceMapping, 0, len(handshake.Workspaces))
+	for _, workspace := range handshake.Workspaces {
+		workspaces = append(workspaces, core.NodeWorkspaceMapping{ProjectID: workspace.ProjectID, Path: workspace.Path})
+	}
+	if err := h.manager.store.ReconcileNodeWorkspaces(ctx, h.expected, workspaces); err != nil {
+		return HandshakeAccepted{}, err
 	}
 	// Do not mark the Node online until the authenticated handshake response
 	// has been written and ProtocolServer has promoted this socket to a live
