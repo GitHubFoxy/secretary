@@ -1,7 +1,7 @@
 # 14 Phase 3 migration
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 01, 02, 03a, 03b, 06a, 06b, 07, 09, 13a
 
 ## Work
