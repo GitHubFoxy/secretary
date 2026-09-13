@@ -22,7 +22,7 @@ type Config struct {
 	Skills       []string        `toml:"skills" json:"skills"`
 	Tools        Tools           `toml:"tools" json:"tools"`
 	Models       Models          `toml:"models" json:"models"`
-	Runtime      Runtime         `toml:"runtime" json:"runtime"` // legacy compatibility
+	Runtime      Runtime         `toml:"runtime" json:"-"` // legacy compatibility
 	Secretary    SecretaryPolicy `toml:"secretary" json:"secretary"`
 	WorkerPolicy WorkerPolicy    `toml:"worker_policy" json:"worker_policy"`
 	Retention    Retention       `toml:"retention" json:"retention"`
@@ -50,9 +50,9 @@ type Tools struct {
 }
 type Models struct {
 	Secretary string `toml:"secretary" json:"secretary"`
-	Fast      string `toml:"fast" json:"fast"`
-	Smart     string `toml:"smart" json:"smart"`
-	Cheap     string `toml:"cheap" json:"cheap"`
+	Fast      string `toml:"fast" json:"-"`  // legacy compatibility
+	Smart     string `toml:"smart" json:"-"` // legacy compatibility
+	Cheap     string `toml:"cheap" json:"-"` // legacy compatibility
 }
 type Runtime struct {
 	Harness   string `toml:"harness" json:"harness"`
@@ -142,7 +142,7 @@ func compile(base string, raw []byte, c Config) (Snapshot, error) {
 			runtime = workerPolicy.DefaultHarness
 			model = c.Models.Smart
 			if model == "" {
-				model = "smart"
+				model = "default"
 			}
 		}
 		profile := Profile{Name: name, Path: resolved, Content: string(content), Skills: skills, AllowTools: append([]string(nil), c.Tools.Allow...), Runtime: runtime, Model: model, Reasoning: reasoning}

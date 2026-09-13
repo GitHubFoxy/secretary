@@ -821,6 +821,10 @@ func (s *Store) EntriesAfter(ctx context.Context, conversationID string, afterSe
 }
 
 func (s *Store) CreateTask(ctx context.Context, conversationID, text string) (Task, error) {
+	var migrated string
+	if err := s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'phase4.migration_complete'`).Scan(&migrated); err == nil && migrated == "1" {
+		return Task{}, errors.New("core: legacy Task is read-only after Phase 4 migration")
+	}
 	return withTx(s, ctx, func(tx *sql.Tx) (Task, error) {
 		now := s.now()
 		task := Task{ID: newID("tsk"), ConversationID: conversationID, Text: text, State: TaskDispatching, CreatedAt: now, UpdatedAt: now}

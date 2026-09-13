@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/beruseruko/secretary/internal/core"
 	_ "modernc.org/sqlite"
 )
 
@@ -32,7 +33,7 @@ func TestManualCopyMigrationPreservesPhase3HistoryAndIsIdempotent(t *testing.T) 
 	if err := os.MkdirAll(filepath.Dir(copyPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := copyFile(source, copyPath); err != nil {
+	if err := fixtureCopyFile(source, copyPath); err != nil {
 		t.Fatal(err)
 	}
 	userCopy := filepath.Join(dir, "copy", "user.md")
@@ -112,6 +113,78 @@ func TestManualCopyMigrationPreservesPhase3HistoryAndIsIdempotent(t *testing.T) 
 	}
 }
 
+func TestMigrationSplitsLegacyRuntimeConfigAndPinsModels(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "secretary.db")
+	if err := seedPhase3Database(ctx, dbPath); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"secretary.md", "worker.md", "child-worker.md"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name+" policy"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	configPath := filepath.Join(dir, "config.toml")
+	legacy := `[profiles]
+secretary = "secretary.md"
+worker = "worker.md"
+child_worker = "child-worker.md"
+[tools]
+allow_tools = ["read"]
+[models]
+secretary = "provider/secretary"
+fast = "fast"
+smart = "smart"
+cheap = "cheap"
+[runtime]
+harness = "fx"
+reasoning = "high"
+`
+	if err := os.WriteFile(configPath, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, Options{SourcePath: dbPath, DestinationPath: dbPath, ConfigPath: configPath}); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(content)
+	if strings.Contains(text, "[runtime]") || strings.Contains(text, `fast = "fast"`) || strings.Contains(text, `smart = "smart"`) || strings.Contains(text, `cheap = "cheap"`) {
+		t.Fatalf("legacy config contract remains: %s", text)
+	}
+	for _, required := range []string{"[secretary]", "harness = 'fx'", "model = 'provider/secretary'", "[worker_policy]", "default_harness = 'fx'", `fast = 'default'`} {
+		if !strings.Contains(text, required) {
+			t.Fatalf("migrated config misses %q: %s", required, text)
+		}
+	}
+}
+
+func TestMigratedStoreKeepsSecretaryIdentityAndRejectsNewLegacyTask(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "secretary.db")
+	if err := seedPhase3Database(ctx, dbPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Run(ctx, Options{SourcePath: dbPath, DestinationPath: dbPath}); err != nil {
+		t.Fatal(err)
+	}
+	store, err := core.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	identity, err := store.SecretaryIdentity(ctx, "person-1")
+	if err != nil || identity.ID == "" || identity.ConversationID != "conversation-1" {
+		t.Fatalf("identity=%#v err=%v", identity, err)
+	}
+	if _, err := store.CreateTask(ctx, "conversation-1", "must not be created"); err == nil {
+		t.Fatal("created a new legacy Task after migration")
+	}
+}
+
 func TestInvalidMigrationLeavesActiveDatabaseUntouchedAfterBackup(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -127,6 +200,10 @@ func TestInvalidMigrationLeavesActiveDatabaseUntouchedAfterBackup(t *testing.T) 
 	if err := os.WriteFile(configPath, []byte("[runtime]\nharness = \"not-a-harness\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	configBefore, err := fileDigest(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := Run(ctx, Options{SourcePath: dbPath, DestinationPath: dbPath, ConfigPath: configPath}); err == nil {
 		t.Fatal("invalid migration input unexpectedly succeeded")
 	}
@@ -140,6 +217,13 @@ func TestInvalidMigrationLeavesActiveDatabaseUntouchedAfterBackup(t *testing.T) 
 	if _, err := os.Stat(dbPath + ".backup"); err != nil {
 		t.Fatalf("automatic backup missing: %v", err)
 	}
+	configAfter, err := fileDigest(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configBefore != configAfter {
+		t.Fatal("active config changed after invalid migration")
+	}
 }
 
 func fileDigest(path string) (string, error) {
@@ -151,7 +235,7 @@ func fileDigest(path string) (string, error) {
 	return hex.EncodeToString(hash[:]), nil
 }
 
-func copyFile(from, to string) error {
+func fixtureCopyFile(from, to string) error {
 	data, err := os.ReadFile(from)
 	if err != nil {
 		return err
