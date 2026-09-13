@@ -807,7 +807,7 @@ func insertMigratedResult(ctx context.Context, tx *sql.Tx, workerID, turnID, con
 	if _, err := tx.ExecContext(ctx, `UPDATE workers SET last_result_summary = ? WHERE id = ?`, summary, workerID); err != nil {
 		return err
 	}
-	if err := attachVisibleResult(ctx, tx, conversationID, workerRef, turnID, newResultID, summary); err != nil {
+	if err := attachVisibleResult(ctx, tx, conversationID, workerRef, turnID, newResultID, summary, created); err != nil {
 		return err
 	}
 	report.Results++
@@ -827,9 +827,21 @@ func phase4TurnState(status string) string {
 	}
 }
 
-func attachVisibleResult(ctx context.Context, tx *sql.Tx, conversationID, workerRef, turnID, resultID, summary string) error {
+func attachVisibleResult(ctx context.Context, tx *sql.Tx, conversationID, workerRef, turnID, resultID, summary, created string) error {
 	var entryID string
-	err := tx.QueryRowContext(ctx, `SELECT id FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND body = ? AND result_id = '' ORDER BY seq LIMIT 1`, conversationID, summary).Scan(&entryID)
+	var candidateCount int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND body = ? AND created_at = ? AND result_id = ''`, conversationID, summary, created).Scan(&candidateCount); err != nil {
+		return err
+	}
+	if candidateCount > 1 {
+		return fmt.Errorf("%w: ambiguous visible Result entry for summary %q at %s", ErrInvalid, summary, created)
+	}
+	var err error
+	if candidateCount == 1 {
+		err = tx.QueryRowContext(ctx, `SELECT id FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND body = ? AND created_at = ? AND result_id = '' LIMIT 1`, conversationID, summary, created).Scan(&entryID)
+	} else {
+		err = sql.ErrNoRows
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		var orphanCount int
 		if countErr := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_entries WHERE conversation_id = ? AND kind = 'worker_result' AND worker_ref = '' AND turn_id = '' AND result_id = ''`, conversationID).Scan(&orphanCount); countErr != nil {

@@ -649,6 +649,84 @@ INSERT INTO results VALUES ('result-6', 'attempt-6', 'failed', 'docs reviewed', 
 	}
 }
 
+func TestMigrationBindsVisibleResultsByCompletionTimeAcrossRootWorkers(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	if err := seedPhase3Database(ctx, path); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.ExecContext(ctx, `
+UPDATE tasks SET state = 'completed', updated_at = '2024-01-01T00:02:00Z' WHERE id = 'task-1';
+DELETE FROM attempts;
+DELETE FROM results;
+INSERT INTO tasks VALUES ('task-2', 'conversation-1', 'review it', 'completed', '', '', 0, '2024-01-01T00:00:30Z', '2024-01-01T00:01:00Z');
+INSERT INTO worker_bindings VALUES ('binding-2', 'task-2', 'worker-2', 'node-2', 'native-session-2', '/work/review', '', '', 'cfg-2', 'worker', 'hash-2', 'fx', 'gpt-5.6-luna', 'high', 'read', 'metadata', 0, '2024-01-01T00:00:30Z');
+INSERT INTO attempts VALUES ('attempt-1', 'binding-1', 1, 'succeeded', '2024-01-01T00:00:00Z', '2024-01-01T00:02:00Z');
+INSERT INTO attempts VALUES ('attempt-2', 'binding-2', 1, 'succeeded', '2024-01-01T00:00:30Z', '2024-01-01T00:01:00Z');
+INSERT INTO results VALUES ('result-1', 'attempt-1', 'succeeded', 'same summary', '2024-01-01T00:02:00Z');
+INSERT INTO results VALUES ('result-2', 'attempt-2', 'succeeded', 'same summary', '2024-01-01T00:01:00Z');
+UPDATE conversation_entries SET body = 'same summary', created_at = '2024-01-01T00:01:00Z' WHERE id = 'entry-result';
+INSERT INTO conversation_entries VALUES ('entry-result-1', 'conversation-1', 3, 'worker_result', 'same summary', '2024-01-01T00:02:00Z');`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = Run(ctx, Options{SourcePath: path, DestinationPath: path})
+	if err != nil {
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("migration failed without an explicit fail-closed error: %v", err)
+		}
+		return
+	}
+
+	checkDB, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer checkDB.Close()
+	resultRows, err := checkDB.QueryContext(ctx, `
+SELECT e.created_at, w.worker_ref, r.id
+FROM conversation_entries e
+JOIN workers w ON w.worker_ref = e.worker_ref
+JOIN phase4_results r ON r.id = e.result_id
+WHERE e.kind = 'worker_result'
+ORDER BY e.created_at`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resultRows.Close()
+	want := []struct{ created, worker, result string }{
+		{"2024-01-01T00:01:00Z", "worker-2", "legacy-result-result-2"},
+		{"2024-01-01T00:02:00Z", "worker-1", "legacy-result-result-1"},
+	}
+	for _, expected := range want {
+		if !resultRows.Next() {
+			t.Fatalf("missing visible Result for %#v", expected)
+		}
+		var created, worker, result string
+		if err := resultRows.Scan(&created, &worker, &result); err != nil {
+			t.Fatal(err)
+		}
+		if created != expected.created || worker != expected.worker || result != expected.result {
+			t.Fatalf("visible Result binding=%q/%q/%q, want %#v", created, worker, result, expected)
+		}
+	}
+	if resultRows.Next() {
+		t.Fatal("unexpected extra visible Result")
+	}
+	if err := resultRows.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMigrationRejectsAmbiguousSameTimeUnboundFollowUps(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "secretary.db")
