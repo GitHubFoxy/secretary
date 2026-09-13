@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -394,6 +395,73 @@ func TestTicket11InvalidConfigKeepsActiveSnapshot(t *testing.T) {
 	}
 	if active["version"] != "active-1" {
 		t.Fatalf("active snapshot changed after invalid input: %#v", active)
+	}
+}
+
+func TestTicket11RawCoTMarkersInAllowedValuesRedactedAcrossControlSurfaces(t *testing.T) {
+	store, api, server, client := controlRoomTestAPI(t)
+	api.SetDebug(true)
+	controlRoomLogin(t, client, server.URL)
+	ctx := context.Background()
+	conversation, err := store.ConversationForPerson(ctx, api.OwnerID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{WorkerRef: "worker-cot", Title: "safe worker", Intent: "safe intent", ProjectID: "project", NodeID: "node", HarnessInstanceID: "harness", PolicySnapshot: "safe policy"}, core.TurnSpec{Input: "safe input"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(ctx, attempt.ID, core.FinishAttemptInput{AttemptOutcomeInput: core.AttemptOutcomeInput{
+		Status:         core.OutcomeFailed,
+		Classification: core.OutcomeFinal,
+		ErrorMessage:   "reasoning: COT-REASONING",
+		Diagnostics:    `{"message":"thought: COT-THOUGHT","summary":"safe summary"}`,
+		Summary:        "safe summary",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordEventWithMetadata(ctx, core.EventInput{Kind: "ticket11.cot", AggregateType: "worker", AggregateID: worker.WorkerRef, WorkerRef: worker.WorkerRef, AttemptID: attempt.ID, Payload: map[string]any{
+		"message": "analysis: COT-ANALYSIS",
+		"summary": "safe summary",
+		"markup":  "<think>COT-THINK</think>",
+		"trace":   "chain-of-thought: COT-CHAIN",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	logDir := t.TempDir()
+	log := `{"jsonrpc":"2.0","method":"session/update","params":{"update":{"sessionUpdate":"tool_call","title":"safe tool","status":"thought: COT-RAW-THOUGHT","details":"<think>COT-RAW-THINK</think>"}}}` + "\n"
+	if err := os.WriteFile(filepath.Join(logDir, "worker-cot.jsonl"), []byte(log), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	api.AttachDiagnosticLogDir(logDir)
+
+	for _, endpoint := range []string{
+		"/v1/control/overview",
+		"/v1/control/events",
+		"/v1/control/diagnostics/worker-cot",
+		"/v1/control/export",
+	} {
+		response, requestErr := client.Get(server.URL + endpoint)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("%s status=%d body=%s", endpoint, response.StatusCode, body)
+		}
+		text := string(body)
+		for _, marker := range []string{"COT-ANALYSIS", "COT-REASONING", "COT-THOUGHT", "COT-THINK", "COT-CHAIN", "COT-RAW-THOUGHT", "COT-RAW-THINK"} {
+			if strings.Contains(text, marker) {
+				t.Fatalf("%s leaked %q: %s", endpoint, marker, text)
+			}
+		}
+		if !strings.Contains(text, "safe summary") {
+			t.Fatalf("%s removed ordinary safe summary: %s", endpoint, text)
+		}
 	}
 }
 
