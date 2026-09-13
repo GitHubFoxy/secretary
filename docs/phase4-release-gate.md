@@ -42,6 +42,17 @@
 
 Эта запись расширяет evidence, но не закрывает полную acceptance matrix ниже.
 
+## Real Codex ACP run
+
+- `run_id`: `p4-real-tailscale.XOzeoY-codex`
+- `commit`: `ccd3fbe`
+- `PASS`: отдельный Tailscale home-server Node сообщил `home-server/codex` как `ready` с авторизацией ChatGPT после исправления non-TTY Codex probe.
+- `PASS`: upstream `@agentclientprotocol/codex-acp@1.10.0` запустил настоящий Codex CLI `0.135.0`; Worker с явным `home-server/codex` выполнил read-only `pwd` и вернул `/tmp/secretary-node-p4-workspace`.
+- `PASS`: явный Codex binding не переключился на `fx`; ошибки неподдерживаемых моделей также вернулись видимым terminal Result.
+- `BLOCKED`: Claude Code и Telegram по-прежнему недоступны для real acceptance.
+
+Эта запись расширяет evidence, но не закрывает полную acceptance matrix ниже.
+
 ## Deterministic automated checks
 
 Запуск:
