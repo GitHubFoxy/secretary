@@ -121,6 +121,19 @@ func TestClaudeProbeUsesObservedAuthAndDoesNotInventModels(t *testing.T) {
 	}
 }
 
+func TestCodexSuccessfulEmptyAuthStatusIsAuthenticated(t *testing.T) {
+	runner := fakeProbeRunner{responses: map[string]CommandResult{
+		"codex --version":    {Stdout: "codex 0.135.0"},
+		"codex login status": {ExitCode: 0},
+		"codex doctor":       {Stdout: "ready"},
+		"codex debug models": {Stdout: `{"models":[{"slug":"gpt-5.4","visibility":"list","default_reasoning_level":"medium","supported_reasoning_levels":[{"effort":"medium"}]}]}`},
+	}}
+	result := ProbeCodex(context.Background(), "home-server", runner)
+	if !result.Available() || !result.Instance.Authentication.Authenticated || result.Instance.Authentication.Method != "credential" {
+		t.Fatalf("Codex result=%#v", result)
+	}
+}
+
 func TestCodexAuthMethodIsObserved(t *testing.T) {
 	for _, test := range []struct {
 		output string
