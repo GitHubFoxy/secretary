@@ -16,7 +16,7 @@ test('renders every public Worker and Turn status without legacy Task fields', (
   const card = workerCard({
     worker_ref: 'wkr_1', title: 'Fix header', project_id: 'project_web', node_id: 'macbook',
     harness_instance_id: 'macbook/claude', status: 'offline',
-  }, [{ id: 'p', name: 'Web' }], [{ node: 'macbook', online: false, inventory: { instances: [{ id: 'macbook/claude', harness: 'claude' }] } }]);
+  }, [{ id: 'project_web', name: 'Web' }], [{ node: 'macbook', online: false, inventory: { instances: [{ id: 'macbook/claude', harness: 'claude' }] } }]);
   assert.equal(card.project, 'Web');
   assert.equal(card.node, 'macbook');
   assert.equal(card.harness, 'macbook/claude');
