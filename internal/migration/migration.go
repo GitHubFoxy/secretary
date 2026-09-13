@@ -581,7 +581,19 @@ func migratedAttemptState(state string) string {
 }
 
 func legacyFollowUpDirections(ctx context.Context, tx *sql.Tx, conversationID, workerRef string) ([]legacyMigrationDirection, error) {
-	rows, err := tx.QueryContext(ctx, `SELECT id, body, created_at FROM conversation_entries WHERE conversation_id = ? AND kind IN ('worker_input', 'worker_follow_up', 'follow_up') AND (worker_ref = ? OR worker_ref = '') ORDER BY seq, id`, conversationID, workerRef)
+	var rootWorkers int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM worker_bindings w JOIN tasks t ON t.id = w.task_id WHERE t.conversation_id = ? AND COALESCE(t.parent_task_id, '') = '' AND COALESCE(w.parent_binding_id, '') = '' AND COALESCE(w.parent_attempt_id, '') = ''`, conversationID).Scan(&rootWorkers); err != nil {
+		return nil, err
+	}
+	query := `SELECT id, body, created_at FROM conversation_entries WHERE conversation_id = ? AND kind IN ('worker_input', 'worker_follow_up', 'follow_up') AND worker_ref = ? ORDER BY seq, id`
+	args := []any{conversationID, workerRef}
+	if rootWorkers == 1 {
+		query = `SELECT id, body, created_at FROM conversation_entries WHERE conversation_id = ? AND kind IN ('worker_input', 'worker_follow_up', 'follow_up') AND (worker_ref = ? OR worker_ref = '') ORDER BY seq, id`
+	}
+	if rootWorkers == 1 {
+		args = []any{conversationID, workerRef}
+	}
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
