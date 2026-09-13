@@ -134,10 +134,11 @@ type Adapter struct {
 	server    ServerClient
 	config    Config
 
-	mu      sync.Mutex
-	state   persistedState
-	pending pendingBatch
-	now     func() time.Time
+	mu         sync.Mutex
+	state      persistedState
+	pending    pendingBatch
+	flushTimer *time.Timer
+	now        func() time.Time
 }
 
 func New(config Config, transport Transport, server ServerClient) (*Adapter, error) {
@@ -404,6 +405,7 @@ func (a *Adapter) Run(ctx context.Context) error {
 func (a *Adapter) HandleEvent(ctx context.Context, event Event) error {
 	if strings.HasPrefix(event.Kind, "secretary.") {
 		a.queueSecretary(event)
+		a.scheduleFlush()
 		return nil
 	}
 	if event.WorkerRef == "" {
@@ -437,6 +439,7 @@ func (a *Adapter) HandleEvent(ctx context.Context, event Event) error {
 	}
 	a.pending.WorkerLines[event.WorkerRef] = append(a.pending.WorkerLines[event.WorkerRef], line)
 	a.mu.Unlock()
+	a.scheduleFlush()
 	return nil
 }
 
@@ -488,7 +491,24 @@ func (a *Adapter) queueSecretary(event Event) {
 	}
 }
 
+func (a *Adapter) scheduleFlush() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.flushTimer != nil {
+		return
+	}
+	a.flushTimer = time.AfterFunc(a.config.FlushInterval, func() {
+		_ = a.Flush(context.Background())
+	})
+}
+
 func (a *Adapter) Flush(ctx context.Context) error {
+	a.mu.Lock()
+	if a.flushTimer != nil {
+		a.flushTimer.Stop()
+		a.flushTimer = nil
+	}
+	a.mu.Unlock()
 	if err := a.drainOutbox(ctx); err != nil {
 		return err
 	}
