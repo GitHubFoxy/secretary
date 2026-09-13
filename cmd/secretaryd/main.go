@@ -236,7 +236,7 @@ func main() {
 		}
 		persistentSecretary = secretaryruntime.NewRuntime(local, capability)
 		persistentSecretary.AttachIdentity(secretaryIdentity)
-		persistentSecretary.AttachMCP(mcpCommand, *dataDir)
+		persistentSecretary.AttachMCPServer(mcpCommand, *dataDir, "http://"+*listen)
 		persistentSecretary.AttachProfile(func() node.ManagedProfile {
 			return secretaryProfile(profiles.Snapshot(), store)
 		})
@@ -357,7 +357,9 @@ func recoverProductionPhase4Attempts(ctx context.Context, store *core.Store, loc
 func attachProductionWorkerServices(web *webapi.Server, store *core.Store, personID, capability string, local *node.LocalNode, remote *node.ServerManager, managedProfile func(core.BindingProfile) node.ManagedProfile) {
 	controller := &app.WorkerController{Store: store, Node: local, ManagedProfile: managedProfile}
 	web.AttachWorkerController(controller)
-	web.AttachWorkerResponder(ctl.WorkerService{Store: store, PersonID: personID, Capability: capability, Runtime: ctl.NodeRuntime{Manager: remote, Local: local}})
+	workerService := ctl.WorkerService{Store: store, PersonID: personID, Capability: capability, Runtime: ctl.NodeRuntime{Manager: remote, Local: local}}
+	web.AttachWorkerResponder(workerService)
+	web.AttachSecretaryWorkerTools(workerService)
 }
 
 func configuredRuntime(snapshot config.Snapshot, dataDir string) (node.Runtime, string) {

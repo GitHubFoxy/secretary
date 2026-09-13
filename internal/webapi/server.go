@@ -41,6 +41,17 @@ type workerActions interface {
 	CloseWorker(context.Context, string) (core.WorkerDetails, error)
 }
 
+type secretaryWorkerTools interface {
+	ListNodes(context.Context) ([]core.NodeRecord, error)
+	ListProjects(context.Context) ([]core.Project, error)
+	ListWorkers(context.Context) ([]core.Worker, error)
+	GetWorker(context.Context, string) (core.WorkerDetails, error)
+	SpawnWorker(context.Context, ctl.SpawnWorkerRequest) (core.WorkerDetails, error)
+	MessageWorker(context.Context, ctl.MessageWorkerRequest) (core.WorkerDetails, error)
+	CancelWorker(context.Context, string) (core.WorkerDetails, error)
+	CloseWorker(context.Context, string) (core.WorkerDetails, error)
+}
+
 type TelegramPairingService interface {
 	CreatePairing(string) (telegram.Pairing, error)
 }
@@ -54,6 +65,7 @@ type Server struct {
 	workers        workerController
 	responder      workerResponder
 	actions        workerActions
+	secretaryTools secretaryWorkerTools
 	secretary      interface {
 		HandleMessage(context.Context, string) error
 	}
@@ -145,11 +157,12 @@ func (s *Server) AttachWorkerResponder(responder workerResponder) {
 		s.actions = actions
 	}
 }
-func (s *Server) AttachUserDocument(path string)                     { s.userPath = strings.TrimSpace(path) }
-func (s *Server) AttachDiagnosticLogDir(path string)                 { s.diagnosticLogDir = strings.TrimSpace(path) }
-func (s *Server) AttachTelegramPairer(pairer TelegramPairingService) { s.telegramPairer = pairer }
-func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime)  { s.secretary = runtime }
-func (s *Server) SetDebug(debug bool)                                { s.debug = debug }
+func (s *Server) AttachSecretaryWorkerTools(tools secretaryWorkerTools) { s.secretaryTools = tools }
+func (s *Server) AttachUserDocument(path string)                        { s.userPath = strings.TrimSpace(path) }
+func (s *Server) AttachDiagnosticLogDir(path string)                    { s.diagnosticLogDir = strings.TrimSpace(path) }
+func (s *Server) AttachTelegramPairer(pairer TelegramPairingService)    { s.telegramPairer = pairer }
+func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime)     { s.secretary = runtime }
+func (s *Server) SetDebug(debug bool)                                   { s.debug = debug }
 func (s *Server) AttachSecretaryModelCatalog(catalog func() map[string]string, defaultModel func() string, changed func(string) error) {
 	s.modelCatalog, s.modelDefault, s.modelChanged = catalog, defaultModel, changed
 }
@@ -167,6 +180,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/conversation", s.conversation)
 	mux.HandleFunc("GET /v1/conversation/ws", s.websocket)
 	mux.HandleFunc("POST /v1/messages", s.message)
+	mux.HandleFunc("POST /v1/internal/secretary/tools/call", s.secretaryToolCall)
 	mux.HandleFunc("POST /v1/telegram/pairing", s.telegramPairing)
 	mux.HandleFunc("GET /v1/ws", s.websocket)
 	mux.HandleFunc("GET /v1/user", s.user)

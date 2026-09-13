@@ -24,6 +24,23 @@ func TestSecretaryMCPServerUsesScopedEnvironment(t *testing.T) {
 	}
 }
 
+func TestSecretaryMCPServerAtCarriesOnlyScopedServerURL(t *testing.T) {
+	server := SecretaryMCPServerAt("secretary-mcp", "/state", "capability", "http://127.0.0.1:8081")
+	if len(server.Args) != 0 {
+		t.Fatalf("server args=%v", server.Args)
+	}
+	encoded, err := json.Marshal(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(encoded)
+	for _, want := range []string{"SECRETARY_MCP_SERVER_URL", "http://127.0.0.1:8081"} {
+		if !contains(text, want) {
+			t.Fatalf("server=%s missing %q", text, want)
+		}
+	}
+}
+
 func contains(value, part string) bool {
 	for i := 0; i+len(part) <= len(value); i++ {
 		if value[i:i+len(part)] == part {
