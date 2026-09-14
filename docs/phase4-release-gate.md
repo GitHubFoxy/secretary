@@ -213,6 +213,7 @@ Evidence оставлено только во временном redacted run di
 ## Scenario 31 retry status
 
 - `BLOCKED`: real-harness proof не запускался. В доступном Client/Control API нет операции `retry_attempt`, а установленный real FX не даёт управляемого способа завершить Attempt с классификацией `retryable`; network loss/restart дают `interrupted`/`runtime_execution_unknown`. DB и protocol payloads намеренно не подменялись, поэтому retryable и uncertain не объявляются PASS.
+- `BLOCKED` для Scenario 18: без такого controllable `retryable` outcome нельзя получить несколько Attempts внутри одного Turn и проверить ровно один финальный Result. Реальный follow-up run создал два Attempts и два Results в разных Turns, это не заменяет acceptance.
 
 ## Latest deterministic gate run
 
@@ -368,7 +369,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 15 | Activity соответствует capabilities HarnessInstance | inventory capabilities и normalized activity list |
 | 16 | Worker запрашивает Approval через Node/harness | request ID, Node event, Approval state |
 | 17 | Другой Client отвечает Approval и `needs_input` через `respond_worker` | Client B request/response и terminal state |
-| 18 | Несколько Attempts дают diagnostics, но один Result на Turn | Attempts, AttemptOutcomes и count ровно 1 Result |
+| 18 | Несколько Attempts дают diagnostics, но один Result на Turn | BLOCKED: нет controllable real `retryable` outcome; follow-up с двумя Turns/Results не выдаётся за multi-Attempt acceptance |
 | 19 | Terminal Result доставлен напрямую без Secretary model turn | PASS: `p4-network-loss-real-20260914`, `result.accepted`/`attempt.outcome_recorded` без `secretary.turn.*` в event list |
 | 20 | Следующий Secretary context содержит unseen Result | PASS: `p4-unseen-result-real-20260914`, следующий Secretary turn вернул `status: succeeded` и `UNSEEN_RESULT_OK` из Worker Result |
 | 21 | Follow-up идёт тому же Worker новым Turn | Worker ID прежний, Turn ID новый |
