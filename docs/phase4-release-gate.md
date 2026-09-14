@@ -351,7 +351,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 30 | Internal subagent отображается activity, child Worker отсутствует | activity stream и server state без child Worker |
 | 31 | `retry_attempt` только после terminal `retryable`, uncertain не retry-ится | outcome classification и Attempt sequence |
 | 32 | Повтор inbound/action/event/Result не дублирует state | PASS: `p4-idempotency-real-20260914`, inbound `INBOUND_ENTRIES=1`/`duplicate=true`, один Worker/command/Attempt/Result, duplicate terminal event дал один durable outcome |
-| 33 | Revoked Client не читает и не меняет state | revoked credential получает 401/403 |
+| 33 | Revoked Client не читает и не меняет state | PASS: `p4-real-local-20260914-followup`, Client B после revoke получил `401` на чтение и запись |
 | 34 | Revoked Node не принимает Dispatch | PASS: `p4-revoked-node-real-20260914`, revoke HTTP 200; следующий dispatch отвергнут как `core: node revoked`, `COMMAND_COUNT=0` |
 | 35 | Offline Node оставляет Worker видимым и понятным | Web/Telegram status `offline` и binding |
 | 36 | Telegram Topic соответствует Worker без delta/raw-event spam | Topic mapping и агрегированные сообщения |
