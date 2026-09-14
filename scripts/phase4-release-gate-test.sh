@@ -50,6 +50,7 @@ for marker in \
   'evidence-ledger.md' \
   'BLOCKED' \
   'NOT RUN' \
+  'all required matrix rows are PASS' \
   'never changes Ticket 15 status'; do
   grep -Fq "$marker" "$WIZARD" || fail "wizard is missing: $marker"
 done

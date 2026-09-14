@@ -83,7 +83,7 @@ Gate останавливается на первой ошибке и выпол
 ./scripts/phase4-manual-acceptance-wizard.sh
 ```
 
-Он не принимает credentials, не сохраняет cookies или prompts, не подменяет real harness deterministic doubles и не меняет статус Ticket 15. Wizard создаёт новый ledger с режимами `PASS`, `FAIL`, `BLOCKED` и `NOT RUN`; существующий ledger намеренно не перезаписывается.
+Он не принимает credentials, не сохраняет cookies или prompts, не подменяет real harness deterministic doubles и не меняет статус Ticket 15. Wizard создаёт новый ledger с режимами `PASS`, `FAIL`, `BLOCKED` и `NOT RUN`; существующий ledger намеренно не перезаписывается. В конце он проверяет все 38 строк и записывает строку решения со статусом `PASS` только если каждая обязательная строка имеет `PASS`; иначе решение остаётся `BLOCKED`.
 
 ### 1. Чистая конфигурация и два Node
 

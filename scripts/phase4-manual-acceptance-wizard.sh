@@ -216,8 +216,14 @@ ask_state() {
     state=$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')
     case "$state" in PASS|BLOCKED|FAIL|NOT\ RUN) break;; *) warn "use PASS, BLOCKED, FAIL, or NOT RUN";; esac
   done
-  printf '  Short redacted note: '
-  read -r notes || true
+  while :; do
+    printf '  Short redacted note: '
+    read -r notes || true
+    if [[ "$state" != "PASS" || -n "$notes" ]]; then
+      break
+    fi
+    warn "PASS requires a short redacted evidence note"
+  done
   [[ -n "$notes" ]] || notes="no note"
   record "$scenario" "$state" "$notes"
 }
@@ -316,6 +322,20 @@ pause "Press Enter after security and revoke checks"
 
 stage "Review and handoff"
 say "Review the ledger for raw credentials, cookies, native session IDs, Task fields, or raw prompts."
+matrix_ok=1
+for scenario in $(seq 1 38); do
+  state=$(awk -F'|' -v wanted="$scenario" '$2 ~ /^[[:space:]]*[0-9]+[[:space:]]*$/ && ($2 + 0) == wanted { value=$3 } END { gsub(/^[[:space:]]+|[[:space:]]+$/, "", value); print value }' "$LEDGER")
+  if [[ "$state" != "PASS" ]]; then
+    matrix_ok=0
+    warn "scenario $scenario is $state, not PASS"
+  fi
+done
+if (( matrix_ok )); then
+  record "decision" "PASS" "all required matrix rows are PASS"
+else
+  record "decision" "BLOCKED" "one or more required matrix rows are not PASS"
+  warn "acceptance is not complete; Ticket 15 must remain pending"
+fi
 if grep -Eiq 'token|cookie|credential|password|secret|api[_ -]?key' "$LEDGER"; then
   warn "ledger contains a sensitive-looking word; inspect it manually before sharing"
 fi
