@@ -147,6 +147,17 @@ Evidence оставлено только во временном redacted run di
 
 Evidence оставлено только во временном redacted run directory.
 
+## Latest revoked Node dispatch rejection
+
+- `run_id`: `p4-revoked-node-real-20260914`
+- `commit`: `0fcd451`
+- `command`: `zsh /tmp/p4-revoked-node-real.sh`
+- `observed_at_utc`: `2026-09-14T07:04:15Z`–`2026-09-14T07:04:41Z`
+- `PASS`: на чистом изолированном server/Node с реальным FX owner control revoke вернул HTTP 200; admin state после revoke показал `online=false`, `draining=true`, `revoked=true`, `health=revoked`.
+- `PASS`: последующий explicit `spawn_worker` с binding на revoked Node получил видимую ошибку `core: node revoked`; Node state сохранил `COMMAND_COUNT=0`, sentinel не записан, Worker/Attempt не созданы. Это rejected dispatch до доставки на отозванный Node.
+
+Evidence оставлено только во временном redacted run directory.
+
 ## Latest deterministic gate run
 
 - `run_id`: `p4-deterministic-c32d9a8-20260914T052227Z`
@@ -317,7 +328,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 31 | `retry_attempt` только после terminal `retryable`, uncertain не retry-ится | outcome classification и Attempt sequence |
 | 32 | Повтор inbound/action/event/Result не дублирует state | idempotency keys и counts до/после replay |
 | 33 | Revoked Client не читает и не меняет state | revoked credential получает 401/403 |
-| 34 | Revoked Node не принимает Dispatch | revoke response и rejected dispatch |
+| 34 | Revoked Node не принимает Dispatch | PASS: `p4-revoked-node-real-20260914`, revoke HTTP 200; следующий dispatch отвергнут как `core: node revoked`, `COMMAND_COUNT=0` |
 | 35 | Offline Node оставляет Worker видимым и понятным | Web/Telegram status `offline` и binding |
 | 36 | Telegram Topic соответствует Worker без delta/raw-event spam | Topic mapping и агрегированные сообщения |
 | 37 | Go, race, vet и frontend checks проходят | ссылка на automated gate log и commit |
