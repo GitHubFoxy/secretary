@@ -135,6 +135,18 @@ Evidence оставлено только во временном redacted run di
 
 Это прямое real-harness evidence дедупликации повторной доставки одного `command_id`. Evidence оставлено только во временном redacted run directory.
 
+## Latest server restart during active Attempt
+
+- `run_id`: `p4-server-restart-real-20260914`
+- `commit`: `7aa3781`
+- `command`: `zsh /tmp/p4-restart-proxy-real.sh`
+- `observed_at_utc`: `2026-09-14T06:51:29Z`–`2026-09-14T06:51:57Z`
+- `PASS`: run завершился с `RC=0`; на чистом изолированном server/Node с реальным FX Attempt имел статус `starting` до перезапуска Secretary server. После перезапуска durable recovery завершил его ровно одним явным `interrupted` Result с `failure_code=runtime_execution_unknown`; Worker стал `offline`, в store остались один Attempt и один Result.
+- `PASS`: в этом прогоне второй process или второй Attempt не создан. Наблюдаемое поведение было консервативным: при недоказанном выполнении Attempt завершён как `interrupted`.
+- `NOT RUN`: этот прогон не доказывает восстановление native session после reconnect, только корректное `interrupted` завершение.
+
+Evidence оставлено только во временном redacted run directory.
+
 ## Latest deterministic gate run
 
 - `run_id`: `p4-deterministic-c32d9a8-20260914T052227Z`
@@ -294,10 +306,10 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 20 | Следующий Secretary context содержит unseen Result | следующий turn diagnostic/context evidence |
 | 21 | Follow-up идёт тому же Worker новым Turn | Worker ID прежний, Turn ID новый |
 | 22 | Явная задача Codex выполняется на home server | binding `home-server/codex` и terminal Result |
-| 23 | Restart server во время active Attempt безопасен | pre/post status и recovery timeline |
+| 23 | Restart server во время active Attempt безопасен | PASS: `p4-server-restart-real-20260914`, Attempt `starting` → `interrupted`, один Attempt/Result без дубля |
 | 24 | Network loss после harness completion replay-ит outbox | PASS: `p4-network-loss-real-20260914`, proxy-сбой после terminal outcome, outbox `1 → 0`, один AttemptOutcome |
 | 25 | Повтор `command_id` не создаёт process/Attempt | PASS: `p4-command-duplicate-real-20260914`, proxy доставил один `command.dispatch` frame дважды, Node сохранил один claim/outcome, один Attempt и один Result |
-| 26 | После сбоя `interrupted` или доказанное native session recovery | terminal state и Node recovery evidence |
+| 26 | После сбоя `interrupted` или доказанное native session recovery | PASS: `p4-server-restart-real-20260914`, explicit `interrupted` Result с `failure_code=runtime_execution_unknown`; native session recovery отдельно не заявляется |
 | 27 | `message_worker` выбирает resume или Follow-up | request, выбранная операция и binding |
 | 28 | Idle Worker не тратит active Attempt capacity | capacity snapshot до/после idle периода |
 | 29 | Offline Node не мигрирует Worker | offline status, прежний binding, новый Worker для другой машины |
