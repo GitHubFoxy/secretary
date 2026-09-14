@@ -34,14 +34,15 @@ Evidence оставлено только во временном redacted run di
 
 ## Latest Telegram run with an Execution Node
 
-- `run_id`: `p4-telegram-node-real-20260914`
-- `commit`: `21b4c76`
-- `command`: `/tmp/p4-telegram-node-real.sh` в изолированной data directory; Node `telegram-real` сообщил ready `fx` inventory.
-- `observed_at_utc`: `2026-09-14T10:48:36Z`–`2026-09-14T10:49:20Z`
-- `PASS` для pairing и inbound boundary: одноразовый Telegram pairing был redeemed, а inbound message попал в server-owned Personal Conversation.
-- `FAIL`: при доступных Node и `fx` настоящий локальный `fx` Secretary начал turn, но не опубликовал terminal response в отведённое время. Итоговый snapshot содержал `assistant_entries=0`, `workers=0`, `results=0`. General chat reply, Worker Topic, Worker activity и terminal Result не закрыты.
-- `NOT RUN` для real replay/process-count: этот harness не выполнял отдельный replay и не считал процессы. Четыре обработанных update ID не являются доказательством duplicate safety.
-- `PASS` для authorization boundary и replay dedup получен отдельно в deterministic `internal/webapi/telegram_test.go` на commit `21b4c76`: scoped principal `telegram-adapter` имеет только `conversation:write` и `worker:write`, `/v1/workers` получает `403`, повтор inbound даёт `duplicate=true`. Это не real-harness evidence.
+- `run_id`: `p4-telegram-node-real-20260914-general-chat`
+- `commit`: `fa20a0d`
+- `command`: `/tmp/p4-telegram-node-real.sh` в изолированной data directory; Node сообщил ready authenticated `fx` inventory.
+- `observed_at_utc`: `2026-09-14T14:41:23Z`–`2026-09-14T14:42:41Z`
+- `PASS`: одноразовый Telegram pairing был redeemed; inbound General chat message был сохранён в server-owned Personal Conversation, durable Secretary turn стал `succeeded`, а настоящий локальный `fx` ACP вернул terminal response.
+- `PASS`: Secretary entry `TELEGRAMOK` был persisted и доставлен в Telegram General chat. UI screenshot и redacted ACP envelope trace сохранены только во временном isolated run directory.
+- `NOT RUN`: Worker Topic, Worker activity и terminal Worker Result. Этот flow не создавал Worker.
+- `NOT RUN` для real replay/process-count: harness не выполнял отдельный replay и не считал процессы.
+- `PASS` для authorization boundary и replay dedup получен отдельно в deterministic `internal/webapi/telegram_test.go`: scoped principal `telegram-adapter` имеет только `conversation:write` и `worker:write`, `/v1/workers` получает `403`, повтор inbound даёт `duplicate=true`. Это не real-harness evidence.
 
 Секреты, pairing code, cookies, chat/thread IDs и runtime/session IDs в документацию не записывались.
 
