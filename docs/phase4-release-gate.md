@@ -170,6 +170,17 @@ Evidence оставлено только во временном redacted run di
 
 Evidence оставлено только во временном redacted run directory.
 
+## Latest idle Worker capacity check
+
+- `run_id`: `p4-idle-capacity-real-20260914`
+- `commit`: `19cc036`
+- `command`: `zsh /tmp/p4-idle-capacity-real.sh`
+- `observed_at_utc`: `2026-09-14T07:16:20Z`–`2026-09-14T07:17:05Z`
+- `PASS`: после завершения реального FX Worker snapshots до и после 8-секундного idle периода показали `capacity=1` и `active_attempts=0` (`BEFORE_CAPACITY=1`, `BEFORE_ACTIVE_ATTEMPTS=0`, `AFTER_CAPACITY=1`, `AFTER_ACTIVE_ATTEMPTS=0`).
+- `PASS`: run завершился с `RC=0`, одним dispatch command, одним Attempt и одним Result; mapped workspace sentinel подтверждён (`SENTINEL_OK=1`).
+
+Evidence оставлено только во временном redacted run directory.
+
 ## Latest deterministic gate run
 
 - `run_id`: `p4-deterministic-c32d9a8-20260914T052227Z`
@@ -334,7 +345,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 25 | Повтор `command_id` не создаёт process/Attempt | PASS: `p4-command-duplicate-real-20260914`, proxy доставил один `command.dispatch` frame дважды, Node сохранил один claim/outcome, один Attempt и один Result |
 | 26 | После сбоя `interrupted` или доказанное native session recovery | PASS: `p4-server-restart-real-20260914`, explicit `interrupted` Result с `failure_code=runtime_execution_unknown`; native session recovery отдельно не заявляется |
 | 27 | `message_worker` выбирает resume или Follow-up | request, выбранная операция и binding |
-| 28 | Idle Worker не тратит active Attempt capacity | capacity snapshot до/после idle периода |
+| 28 | Idle Worker не тратит active Attempt capacity | PASS: `p4-idle-capacity-real-20260914`, до/после idle `capacity=1`, `active_attempts=0` |
 | 29 | Offline Node не мигрирует Worker | offline status, прежний binding, новый Worker для другой машины |
 | 30 | Internal subagent отображается activity, child Worker отсутствует | activity stream и server state без child Worker |
 | 31 | `retry_attempt` только после terminal `retryable`, uncertain не retry-ится | outcome classification и Attempt sequence |
