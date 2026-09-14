@@ -194,6 +194,8 @@ func TestDefaultCapabilitiesOnlyAdvertiseObservableRuntimeActivity(t *testing.T)
 		core.ActivityAttemptOutcome:     true,
 		core.ActivityThinkingSummary:    true,
 		core.ActivityToolResult:         true,
+		core.ActivityPermissionRequest:  true,
+		core.ActivityUserInputRequest:   true,
 	}
 	for _, spec := range []HarnessProbeSpec{DefaultFXProbeSpec(), DefaultClaudeCodeProbeSpec(), DefaultCodexProbeSpec(), DefaultOpenCodeProbeSpec()} {
 		for _, capability := range spec.ActivityCapabilities {
@@ -202,6 +204,23 @@ func TestDefaultCapabilitiesOnlyAdvertiseObservableRuntimeActivity(t *testing.T)
 			}
 		}
 	}
+	for _, spec := range []HarnessProbeSpec{DefaultFXProbeSpec(), DefaultCodexProbeSpec()} {
+		if !containsActivityCapability(spec.ActivityCapabilities, core.ActivityPermissionRequest) {
+			t.Fatalf("%s must advertise permission requests for the ACP approval path", spec.Kind)
+		}
+		if !containsActivityCapability(spec.ActivityCapabilities, core.ActivityUserInputRequest) {
+			t.Fatalf("%s must advertise user input requests for the ACP input path", spec.Kind)
+		}
+	}
+}
+
+func containsActivityCapability(capabilities []core.ActivityCapability, want core.ActivityCapability) bool {
+	for _, capability := range capabilities {
+		if capability == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRequiredProbesDiscoverDifferentInstancesOnTwoNodes(t *testing.T) {
@@ -390,9 +409,17 @@ func TestNormalizeRuntimeActivitySanitizesNestedToolPayloads(t *testing.T) {
 
 func TestNormalizeRuntimeActivityNeverSynthesizesUnsupportedEvents(t *testing.T) {
 	metadata := core.ActivityMetadata{EventID: "event", Node: "node", HarnessInstanceID: "node/fx", AttemptID: "attempt", Sequence: 1, ObservedAt: time.Now().UTC()}
-	capabilities := core.HarnessCapabilities{Activity: []core.ActivityCapability{core.ActivityAssistantTextDelta}}
+	capabilities := core.HarnessCapabilities{Activity: []core.ActivityCapability{core.ActivityAssistantTextDelta, core.ActivityPermissionRequest, core.ActivityUserInputRequest}}
 	if activity, ok := normalizeRuntimeActivity(Activity{Kind: ActivityText, Text: "hello"}, metadata, capabilities); !ok || activity.Kind != core.ActivityAssistantTextDelta {
 		t.Fatalf("supported activity=%#v ok=%v", activity, ok)
+	}
+	permission, ok := normalizeRuntimeActivity(Activity{Kind: ActivityPermission, RequestID: "permission", Summary: "write"}, metadata, capabilities)
+	if !ok || permission.Kind != core.ActivityPermissionRequest || permission.Request == nil || permission.Request.RequestID != "permission" {
+		t.Fatalf("permission activity=%#v ok=%v", permission, ok)
+	}
+	input, ok := normalizeRuntimeActivity(Activity{Kind: ActivityUserInput, RequestID: "input", Summary: "question"}, metadata, capabilities)
+	if !ok || input.Kind != core.ActivityUserInputRequest || input.Request == nil || input.Request.RequestID != "input" {
+		t.Fatalf("input activity=%#v ok=%v", input, ok)
 	}
 	for _, item := range []Activity{{Kind: ActivityTool, Text: "shell"}, {Kind: ActivityStatus, Text: "working"}, {Kind: ActivityKind("unknown"), Text: "fake"}} {
 		if activity, ok := normalizeRuntimeActivity(item, metadata, capabilities); ok || activity.Kind != "" {

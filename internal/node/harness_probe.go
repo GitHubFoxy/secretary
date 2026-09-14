@@ -532,7 +532,12 @@ var observedRuntimeActivity = []core.ActivityCapability{
 	core.ActivityAttemptOutcome,
 }
 
-var observedACPActivity = append(append([]core.ActivityCapability(nil), observedRuntimeActivity...), core.ActivityThinkingSummary, core.ActivityToolResult)
+var observedACPActivity = append(append([]core.ActivityCapability(nil), observedRuntimeActivity...),
+	core.ActivityThinkingSummary,
+	core.ActivityToolResult,
+	core.ActivityPermissionRequest,
+	core.ActivityUserInputRequest,
+)
 
 func DefaultFXProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
