@@ -59,10 +59,12 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 		client.Close()
 		return nil, fmt.Errorf("acp: session/new returned no sessionId")
 	}
-	session := newACPSession(created.SessionID, client, true)
+	session := newACPSession(created.SessionID, client, !request.DeferInitialPrompt)
 	session.setRequestHandler()
 	go session.watch()
-	go func() { _ = session.promptTurn(context.Background(), request.Task) }()
+	if !request.DeferInitialPrompt {
+		go func() { _ = session.promptTurn(context.Background(), request.Task) }()
+	}
 	return session, nil
 }
 

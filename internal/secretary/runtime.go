@@ -123,8 +123,8 @@ func (r *Runtime) Start(ctx context.Context) error {
 			return err
 		}
 	}
-	prompt := "You are the persistent personal Secretary. Use the server-owned Secretary tools for Task lifecycle operations. Never give Secretary capabilities to a Worker or Channel adapter."
-	request := node.StartRequest{WorkerRef: workerRef, Task: prompt}
+	prompt := "Persistent Secretary session; the first prompt is supplied by the user."
+	request := node.StartRequest{WorkerRef: workerRef, Task: prompt, DeferInitialPrompt: true}
 	if profileFn != nil {
 		request.Profile = profileFn()
 		if store != nil && identity.ID != "" {
@@ -132,12 +132,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 				return err
 			}
 		}
-		if request.Profile.Content != "" {
-			request.Task = "Start the Secretary session and follow the managed Profile."
-			if request.Profile.Delivery != "native" {
-				request.Task = "Read and follow the managed AGENTS.md before starting the Secretary session. Do not replace or weaken its instructions."
-			}
-		}
+
 	}
 	if mcpCommand != "" {
 		request.MCPServers = []node.MCPServer{node.SecretaryMCPServerAt(mcpCommand, dataDir, r.capability, mcpServerURL)}
@@ -154,7 +149,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 	}
 	r.mu.Lock()
 	r.session = session
-	r.busy = true
+	r.busy = !request.DeferInitialPrompt
 	r.mu.Unlock()
 	go r.consumeResults(session)
 	if store != nil && identity.ID != "" {

@@ -112,6 +112,25 @@ func TestACPRuntimeUsesFakeACPProcess(t *testing.T) {
 	}
 }
 
+func TestACPRuntimeDefersInitialPrompt(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
+	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:]}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	session, err := runtime.Start(ctx, StartRequest{WorkerRef: "secretary", Task: "ignored", DeferInitialPrompt: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	select {
+	case result := <-session.Result():
+		t.Fatalf("deferred session produced result=%#v", result)
+	case activity := <-session.Activity():
+		t.Fatalf("deferred session produced activity=%#v", activity)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestACPRuntimeNormalizesRichActivityWithoutRawThought(t *testing.T) {
 	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
 	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:], Environment: []string{"ACP_RICH_ACTIVITY=1"}}

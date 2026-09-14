@@ -330,26 +330,26 @@ func TestDurableRuntimeQueuesAndFinishesSecretaryTurn(t *testing.T) {
 	t.Fatal("durable Secretary turn did not finish")
 }
 
-func TestRuntimeUsesCapabilityAndSteersActiveSecretary(t *testing.T) {
+func TestRuntimeUsesCapabilityForSecretarySession(t *testing.T) {
 	rt := &fakeRuntime{}
 	runtime := node.NewLocal(rt)
 	secretary := NewRuntime(runtime, "cap-123")
 	if err := secretary.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if rt.request.WorkerRef != "secretary" || rt.request.Task == "" || contains(rt.request.Task, "cap-123") {
+	if rt.request.WorkerRef != "secretary" || rt.request.Task == "" || contains(rt.request.Task, "cap-123") || !rt.request.DeferInitialPrompt {
 		t.Fatalf("request=%#v", rt.request)
 	}
 	if err := secretary.HandleMessage(context.Background(), "change direction"); err != nil {
 		t.Fatal(err)
 	}
 	select {
-	case activity := <-rt.session.activities:
-		if activity.Text != "change direction" {
-			t.Fatalf("activity=%#v", activity)
+	case prompt := <-rt.session.prompts:
+		if prompt != "change direction" {
+			t.Fatalf("prompt=%q", prompt)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("steering was not delivered")
+		t.Fatal("prompt was not delivered")
 	}
 }
 

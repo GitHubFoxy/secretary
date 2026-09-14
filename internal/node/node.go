@@ -59,16 +59,17 @@ type MCPServer struct {
 }
 
 type StartRequest struct {
-	WorkerRef       string
-	Task            string
-	Workspace       string
-	RawLogPath      string
-	MCPServers      []MCPServer
-	Profile         ManagedProfile
-	HarnessInstance core.HarnessInstance
-	Model           string
-	Reasoning       string
-	ApprovalPolicy  string
+	WorkerRef          string
+	Task               string
+	Workspace          string
+	RawLogPath         string
+	MCPServers         []MCPServer
+	Profile            ManagedProfile
+	HarnessInstance    core.HarnessInstance
+	Model              string
+	Reasoning          string
+	ApprovalPolicy     string
+	DeferInitialPrompt bool
 	// PendingRequests is the durable request metadata used for reconnect.
 	PendingRequests []PendingRequest
 	// PendingRequestKinds preserves metadata when an older caller can only
