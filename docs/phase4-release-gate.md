@@ -53,6 +53,16 @@
 
 Эта запись расширяет evidence, но не закрывает полную acceptance matrix ниже.
 
+## Real Codex Approval attempt
+
+- `run_id`: `p4-real-approval`
+- `commit`: `eb53065`
+- `FAIL`: при запуске отдельного home-server Node с заявленным `INITIAL_AGENT_MODE=read-only` настоящий Codex создал файл в workspace без Approval request.
+- `NOT RUN`: Client B response и `needs_input`, потому что prerequisite permission event не появился.
+- Это security failure, а не успешный acceptance и не повод заменить real flow deterministic double.
+
+Эта запись расширяет evidence, но не закрывает полную acceptance matrix ниже.
+
 ## Deterministic automated checks
 
 Запуск:
