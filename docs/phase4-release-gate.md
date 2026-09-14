@@ -352,10 +352,10 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 
 | # | Что доказать вручную | Минимальное evidence |
 |---:|---|---|
-| 1 | Чистый Secretary server запущен | `sex start`, URL, server log, run ID |
-| 2 | Подключены MacBook Node и home server Node | два `sex node status` и server inventory |
+| 1 | Чистый Secretary server запущен | PASS: `p4-real-tailscale.XOzeoY`, чистый Secretary server поднят и принял подключения Node |
+| 2 | Подключены MacBook Node и home server Node | PASS: `p4-real-tailscale.XOzeoY`, локальный MacBook Node и отдельный Tailscale home-server Node подключились |
 | 3 | Каждый Node сообщает несколько HarnessInstances | inventory snapshot с version/models/capabilities |
-| 4 | Project зарегистрирован с разными path mappings | Project record и mapping `macbook`/`home-server` |
+| 4 | Project зарегистрирован с разными path mappings | PASS: `p4-real-tailscale.XOzeoY`, Project mappings для `macbook` и `home-server` различались |
 | 5 | Web и Telegram видят одну Personal Conversation | одинаковый conversation reference и два redacted screenshots |
 | 6 | Задача без harness override принята | inbound entry, acknowledgement и dispatch record |
 | 7 | Без override выбран `fx`, независимо от Secretary harness | Secretary config и Worker HarnessInstance `fx` |
