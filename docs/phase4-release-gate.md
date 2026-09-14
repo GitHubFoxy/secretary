@@ -388,7 +388,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 34 | Revoked Node не принимает Dispatch | PASS: `p4-revoked-node-real-20260914`, revoke HTTP 200; следующий dispatch отвергнут как `core: node revoked`, `COMMAND_COUNT=0` |
 | 35 | Offline Node оставляет Worker видимым и понятным | BLOCKED: Web/API offline status и binding наблюдались в `p4-server-restart-real-20260914`, но Telegram не настроен |
 | 36 | Telegram Topic соответствует Worker без delta/raw-event spam | BLOCKED: Telegram bot и topic configuration недоступны |
-| 37 | Go, race, vet и frontend checks проходят | ссылка на automated gate log и commit |
+| 37 | Go, race, vet и frontend checks проходят | PASS: `p4-deterministic-c32d9a8-20260914T052227Z`, release gate RC=0 и `git diff --check` чист |
 | 38 | Реальные `fx`, Claude Code, Codex проходят; OpenCode отдельно conditional | BLOCKED: real `fx` и Codex имеют evidence (`p4-real-local-20260914`, `p4-real-tailscale.XOzeoY-codex`), Claude Code недоступен; OpenCode не установлен и остаётся optional |
 
 ## Evidence ledger
