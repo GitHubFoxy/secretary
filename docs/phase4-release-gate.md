@@ -372,7 +372,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 18 | Несколько Attempts дают diagnostics, но один Result на Turn | BLOCKED: нет controllable real `retryable` outcome; follow-up с двумя Turns/Results не выдаётся за multi-Attempt acceptance |
 | 19 | Terminal Result доставлен напрямую без Secretary model turn | PASS: `p4-network-loss-real-20260914`, `result.accepted`/`attempt.outcome_recorded` без `secretary.turn.*` в event list |
 | 20 | Следующий Secretary context содержит unseen Result | PASS: `p4-unseen-result-real-20260914`, следующий Secretary turn вернул `status: succeeded` и `UNSEEN_RESULT_OK` из Worker Result |
-| 21 | Follow-up идёт тому же Worker новым Turn | Worker ID прежний, Turn ID новый |
+| 21 | Follow-up идёт тому же Worker новым Turn | PASS: `p4-followup-real-20260914`, тот же Worker получил второй Turn при двух Turn IDs и прежнем binding |
 | 22 | Явная задача Codex выполняется на home server | binding `home-server/codex` и terminal Result |
 | 23 | Restart server во время active Attempt безопасен | PASS: `p4-server-restart-real-20260914`, Attempt `starting` → `interrupted`, один Attempt/Result без дубля |
 | 24 | Network loss после harness completion replay-ит outbox | PASS: `p4-network-loss-real-20260914`, proxy-сбой после terminal outcome, outbox `1 → 0`, один AttemptOutcome |
