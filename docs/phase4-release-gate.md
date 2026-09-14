@@ -182,6 +182,17 @@ Evidence оставлено только во временном redacted run di
 
 Evidence оставлено только во временном redacted run directory.
 
+## Latest real Worker follow-up
+
+- `run_id`: `p4-followup-real-20260914`
+- `commit`: `514e8c7`
+- `command`: `zsh /tmp/p4-followup-real.sh`
+- `observed_at_utc`: `2026-09-14T07:30:46Z`–`2026-09-14T07:31:34Z`
+- `PASS`: после первого успешного FX Turn `message_worker` на idle Worker создал новый Turn на том же Worker. Final details содержали два Turn, два Attempt и два Result; follow-up сохранил `node_id=local-codex` и `harness_instance_id=local-codex/fx`, а sentinel второго запроса подтвердился (`SENTINEL_OK=1`, `RC=0`).
+- `PASS` для Scenario 27: lifecycle response сначала показал новый Turn в `queued/starting`, затем Worker вернулся в `idle`; отдельный Worker или rebinding не создавались.
+
+Evidence оставлено только во временном redacted run directory.
+
 ## Offline UI and Telegram status
 
 - `BLOCKED` для полного Scenario 35: restart run показал Worker `offline` и сохранённую binding через Web/API, но Telegram adapter не был настроен, поэтому согласованный Web+Telegram offline state не подтверждён.
@@ -354,7 +365,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 24 | Network loss после harness completion replay-ит outbox | PASS: `p4-network-loss-real-20260914`, proxy-сбой после terminal outcome, outbox `1 → 0`, один AttemptOutcome |
 | 25 | Повтор `command_id` не создаёт process/Attempt | PASS: `p4-command-duplicate-real-20260914`, proxy доставил один `command.dispatch` frame дважды, Node сохранил один claim/outcome, один Attempt и один Result |
 | 26 | После сбоя `interrupted` или доказанное native session recovery | PASS: `p4-server-restart-real-20260914`, explicit `interrupted` Result с `failure_code=runtime_execution_unknown`; native session recovery отдельно не заявляется |
-| 27 | `message_worker` выбирает resume или Follow-up | request, выбранная операция и binding |
+| 27 | `message_worker` выбирает resume или Follow-up | PASS: `p4-followup-real-20260914`, idle Worker получил новый Turn, всего два Turn/Attempt/Result при прежнем binding |
 | 28 | Idle Worker не тратит active Attempt capacity | PASS: `p4-idle-capacity-real-20260914`, до/после idle `capacity=1`, `active_attempts=0` |
 | 29 | Offline Node не мигрирует Worker | NOT RUN: `p4-server-restart-real-20260914` подтвердил offline status и сохранение binding, но без второго Node не проверил отсутствие миграции |
 | 30 | Internal subagent отображается activity, child Worker отсутствует | activity stream и server state без child Worker |
