@@ -74,9 +74,32 @@ func setRuntimeTestPolicy(t *testing.T, store *core.Store) {
 	}
 }
 
+func TestRuntimeIgnoresResultFromReplacedSession(t *testing.T) {
+	oldRuntime := &fakeRuntime{}
+	runtime := NewRuntime(node.NewLocal(oldRuntime), "cap")
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	current := &fakeSession{results: make(chan node.Result, 1)}
+	runtime.mu.Lock()
+	runtime.session = current
+	runtime.busy = true
+	runtime.activeTurnID = "current-turn"
+	runtime.mu.Unlock()
+	oldRuntime.session.results <- node.Result{Status: "canceled", Summary: "old session stopped"}
+	time.Sleep(20 * time.Millisecond)
+	runtime.mu.Lock()
+	busy, turnID := runtime.busy, runtime.activeTurnID
+	runtime.mu.Unlock()
+	if !busy || turnID != "current-turn" {
+		t.Fatalf("old session result changed current turn: busy=%v turn=%q", busy, turnID)
+	}
+}
+
 func TestRuntimeFailsClosedOnSecretaryInteraction(t *testing.T) {
 	session := &fakeSession{activities: make(chan node.Activity, 2), responses: make(chan string, 2)}
 	runtime := NewRuntime(nil, "cap")
+	runtime.session = session
 	go runtime.consumeActivity(session)
 	session.activities <- node.Activity{Kind: node.ActivityPermission, RequestID: "permission-1"}
 	session.activities <- node.Activity{Kind: node.ActivityUserInput, RequestID: "input-1"}
@@ -123,6 +146,7 @@ func TestRuntimePublishesNormalizedThinkingAndToolActivity(t *testing.T) {
 	runtime := NewRuntime(nil, "cap")
 	runtime.AttachConversation(store, conversation.ID)
 	runtime.AttachIdentity(identity)
+	runtime.session = session
 	runtime.activeTurnID = turn.ID
 	go runtime.consumeActivity(session)
 	session.activities <- node.Activity{Kind: node.ActivityThinkingSummary, Summary: "Checking the project."}
@@ -304,6 +328,102 @@ func TestDurableRuntimeDoesNotPromptWithoutPolicySnapshot(t *testing.T) {
 	if stored.State != core.SecretaryTurnQueued {
 		t.Fatalf("missing policy changed turn state: %#v", stored)
 	}
+}
+
+func TestDurableRuntimeRunsMessageQueuedBeforeSessionStart(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary-prestart.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setRuntimeTestPolicy(t, store)
+	dataDir := t.TempDir()
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(dataDir, "user.md"), "durable user"); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeRuntime{}
+	runtime := NewRuntime(node.NewLocal(fake), "cap")
+	runtime.AttachMCP("", dataDir)
+	runtime.AttachConversation(store, conversation.ID)
+	runtime.AttachIdentity(identity)
+	if err := runtime.HandleMessage(ctx, "arrived before Node readiness"); err != nil {
+		t.Fatalf("pre-start durable message: %v", err)
+	}
+	if err := runtime.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		turns, readErr := store.SecretaryTurns(ctx, identity.ID)
+		if readErr == nil && len(turns) == 1 && turns[0].State == core.SecretaryTurnSucceeded {
+			return
+		}
+		time.Sleep(time.Millisecond * 5)
+	}
+	turns, _ := store.SecretaryTurns(ctx, identity.ID)
+	t.Fatalf("pre-start durable turn did not finish: %#v", turns)
+}
+
+func TestDurableRuntimeDrainsPreStartBacklogAfterFailedTurn(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary-backlog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setRuntimeTestPolicy(t, store)
+	dataDir := t.TempDir()
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(dataDir, "user.md"), "durable user"); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeRuntime{}
+	runtime := NewRuntime(node.NewLocal(fake), "cap")
+	runtime.AttachMCP("", dataDir)
+	runtime.AttachConversation(store, conversation.ID)
+	runtime.AttachIdentity(identity)
+	calls := 0
+	runtime.turnLoader = func(ctx context.Context, id string) (core.SecretaryTurn, error) {
+		calls++
+		if calls == 1 {
+			return core.SecretaryTurn{}, errors.New("injected context failure")
+		}
+		return store.SecretaryTurn(ctx, id)
+	}
+	for _, input := range []string{"first", "second"} {
+		if err := runtime.HandleMessage(ctx, input); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runtime.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		turns, readErr := store.SecretaryTurns(ctx, identity.ID)
+		if readErr == nil && len(turns) == 2 && turns[0].State == core.SecretaryTurnFailed && turns[1].State == core.SecretaryTurnSucceeded {
+			return
+		}
+		time.Sleep(time.Millisecond * 5)
+	}
+	turns, _ := store.SecretaryTurns(ctx, identity.ID)
+	t.Fatalf("startup backlog was not drained: %#v", turns)
 }
 
 func TestDurableRuntimeQueuesAndFinishesSecretaryTurn(t *testing.T) {

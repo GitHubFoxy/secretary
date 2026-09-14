@@ -155,6 +155,9 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.mu.Unlock()
 	go r.consumeResults(session)
 	go r.consumeActivity(session)
+	// Telegram may persist a message while the Node session is still pairing.
+	// Start consumes that durable backlog once the ACP session is ready.
+	r.startNextDurable(context.Background())
 	return nil
 }
 
@@ -168,10 +171,6 @@ func (r *Runtime) HandleMessage(ctx context.Context, text string) error {
 	r.mu.Lock()
 	session := r.session
 	durable := r.store != nil && r.identity.ID != ""
-	if session == nil {
-		r.mu.Unlock()
-		return ErrNotStarted
-	}
 	if durable {
 		r.mu.Unlock()
 		if strings.HasPrefix(text, "/q") {
@@ -186,6 +185,10 @@ func (r *Runtime) HandleMessage(ctx context.Context, text string) error {
 			r.startNextDurable(context.Background())
 		}
 		return err
+	}
+	if session == nil {
+		r.mu.Unlock()
+		return ErrNotStarted
 	}
 	if strings.HasPrefix(text, "/q") {
 		queued := strings.TrimSpace(strings.TrimPrefix(text, "/q"))
@@ -227,6 +230,10 @@ func (r *Runtime) consumeResults(session node.Session) {
 	initial := true
 	for result := range session.Result() {
 		r.mu.Lock()
+		if r.session != session {
+			r.mu.Unlock()
+			continue
+		}
 		store, conversationID, activeTurnID := r.store, r.conversationID, r.activeTurnID
 		r.busy = false
 		r.activeTurnID = ""
@@ -263,6 +270,13 @@ func (r *Runtime) consumeResults(session node.Session) {
 
 func (r *Runtime) consumeActivity(session node.Session) {
 	for activity := range session.Activity() {
+		r.mu.Lock()
+		current := r.session == session
+		store, turnID := r.store, r.activeTurnID
+		r.mu.Unlock()
+		if !current {
+			continue
+		}
 		// Secretary has no approval or input UI round-trip. Answer every reverse
 		// request explicitly rather than leaving the harness blocked forever.
 		if activity.Kind == node.ActivityPermission || activity.Kind == node.ActivityUserInput {
@@ -283,9 +297,6 @@ func (r *Runtime) consumeActivity(session node.Session) {
 			}
 			continue
 		}
-		r.mu.Lock()
-		store, turnID := r.store, r.activeTurnID
-		r.mu.Unlock()
 		if store == nil || turnID == "" {
 			continue
 		}
@@ -385,6 +396,19 @@ func (r *Runtime) ownsDurablePrompt(session node.Session, turnID string) bool {
 	return r.session == session && r.activeTurnID == turnID && r.busy
 }
 
+// clearOwnedDurablePrompt releases only the turn owned by this exact ACP
+// session. A late error from a stopped session must never clear a newer turn.
+func (r *Runtime) clearOwnedDurablePrompt(session node.Session, turnID string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.session != session || r.activeTurnID != turnID {
+		return false
+	}
+	r.busy = false
+	r.activeTurnID = ""
+	return true
+}
+
 func (r *Runtime) abandonDurablePrompt(store *core.Store, turnID string, release bool) {
 	if release {
 		if err := store.ReleaseSecretaryTurnClaims(context.Background(), turnID); err != nil {
@@ -471,6 +495,7 @@ func (r *Runtime) startNextDurable(ctx context.Context) {
 		if _, finishErr := store.FinishSecretaryTurn(context.Background(), turn.ID, core.SecretaryTurnInterrupted, "runtime changed before queued turn could be prompted"); finishErr != nil {
 			r.reportError(finishErr)
 		}
+		go r.startNextDurable(context.Background())
 		return
 	}
 	r.busy, r.activeTurnID = true, turn.ID
@@ -495,6 +520,10 @@ func (r *Runtime) startNext(ctx context.Context) {
 func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text string) {
 	go func() {
 		r.mu.Lock()
+		if r.session != session {
+			r.mu.Unlock()
+			return
+		}
 		store, turnID := r.store, r.activeTurnID
 		r.mu.Unlock()
 		prompt := text
@@ -521,11 +550,11 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 				if _, finishErr := store.FinishSecretaryTurn(context.Background(), turnID, core.SecretaryTurnFailed, "canonical Secretary context unavailable: "+err.Error()); finishErr != nil {
 					r.reportError(finishErr)
 				}
-				r.mu.Lock()
-				r.busy = false
-				r.activeTurnID = ""
-				r.mu.Unlock()
+				owned := r.clearOwnedDurablePrompt(session, turnID)
 				r.reportError(err)
+				if owned {
+					r.startNextDurable(context.Background())
+				}
 				return
 			}
 		}
@@ -538,11 +567,11 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 				if _, finishErr := store.FinishSecretaryTurn(context.Background(), turnID, core.SecretaryTurnFailed, "prompt could not start: "+err.Error()); finishErr != nil {
 					r.reportError(finishErr)
 				}
-				r.mu.Lock()
-				r.busy = false
-				r.activeTurnID = ""
-				r.mu.Unlock()
+				owned := r.clearOwnedDurablePrompt(session, turnID)
 				r.reportError(err)
+				if owned {
+					r.startNextDurable(context.Background())
+				}
 				return
 			}
 			if !r.ownsDurablePrompt(session, turnID) {
@@ -550,12 +579,15 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 				return
 			}
 		}
+		if store != nil && turnID != "" && !r.ownsDurablePrompt(session, turnID) {
+			return
+		}
 		if err := session.Prompt(ctx, prompt); err != nil {
-			r.mu.Lock()
-			store, turnID := r.store, r.activeTurnID
-			r.busy = false
-			r.activeTurnID = ""
-			r.mu.Unlock()
+			// Prompt may return after Stop or replacement. That error belongs to
+			// the old session and must not mutate any current durable turn.
+			if store != nil && turnID != "" && !r.ownsDurablePrompt(session, turnID) {
+				return
+			}
 			if store != nil && turnID != "" {
 				if releaseErr := store.ReleaseSecretaryTurnClaims(context.Background(), turnID); releaseErr != nil {
 					r.reportError(releaseErr)
@@ -564,10 +596,14 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 					r.reportError(finishErr)
 				}
 			}
+			owned := r.clearOwnedDurablePrompt(session, turnID)
 			r.reportError(err)
+			if owned {
+				r.startNextDurable(context.Background())
+			}
 			return
 		}
-		if store != nil && turnID != "" {
+		if store != nil && turnID != "" && r.ownsDurablePrompt(session, turnID) {
 			if err := store.AcceptSecretaryPrompt(context.Background(), turnID); err != nil {
 				r.reportError(err)
 			}
@@ -581,6 +617,7 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	durable := r.store != nil && r.identity.ID != ""
 	r.session = nil
 	r.busy = false
+	r.activeTurnID = ""
 	if !durable {
 		r.queued = nil
 	}
