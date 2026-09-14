@@ -124,16 +124,16 @@
 
 Evidence оставлено только во временном redacted run directory. Секреты, cookies и runtime/session IDs в документацию не записывались.
 
-## Latest duplicate dispatch replay
+## Latest duplicate command delivery
 
-- `run_id`: `p4-duplicate-real-20260914`
-- `commit`: `b385f71`
-- `command`: `zsh /tmp/p4-duplicate-real.sh`
-- `observed_at_utc`: `2026-09-14T06:23:00Z`–`2026-09-14T06:23:50Z`
-- `PASS`: на чистом изолированном server/Node с реальным FX две одинаковые `spawn_worker` submissions с одним idempotency key вернули один и тот же Worker. Replay переиспользовал тот же lifecycle command.
-- `PASS`: run завершился с `RC=0`, `RESULT_COUNT=1` и проверенным sentinel; Node state содержит ровно один dispatch command (`COMMAND_COUNT=1`), durable store содержит один Attempt и один Result со статусом `succeeded`, Worker перешёл в `idle`; второй процесс не наблюдался.
+- `run_id`: `p4-command-duplicate-real-20260914`
+- `commit`: `9582065`
+- `command`: `zsh /tmp/p4-command-duplicate-real.sh`
+- `observed_at_utc`: `2026-09-14T06:45:24Z`–`2026-09-14T06:46:03Z`
+- `PASS`: на чистом изолированном server/Node с реальным FX прозрачный WebSocket proxy намеренно доставил один и тот же server→Node `command.dispatch` frame дважды (`DUPLICATED_DISPATCH=1`). Node state сохранил один command claim и один accepted outcome.
+- `PASS`: run завершился с `RC=0`, `COMMAND_COUNT=1`, `ATTEMPT_COUNT=1`, `RESULT_COUNT=1` и проверенным sentinel; durable store содержит один Attempt со статусом `succeeded` и один Result, Worker перешёл в `idle`, второй процесс не наблюдался.
 
-Этот прогон даёт частичное evidence дедупликации повторной lifecycle submission, но не заменяет отдельную проверку повторной низкоуровневой отправки `command_id`. Evidence оставлено только во временном redacted run directory.
+Это прямое real-harness evidence дедупликации повторной доставки одного `command_id`. Evidence оставлено только во временном redacted run directory.
 
 ## Latest deterministic gate run
 
@@ -296,7 +296,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 22 | Явная задача Codex выполняется на home server | binding `home-server/codex` и terminal Result |
 | 23 | Restart server во время active Attempt безопасен | pre/post status и recovery timeline |
 | 24 | Network loss после harness completion replay-ит outbox | PASS: `p4-network-loss-real-20260914`, proxy-сбой после terminal outcome, outbox `1 → 0`, один AttemptOutcome |
-| 25 | Повтор `command_id` не создаёт process/Attempt | NOT RUN: `p4-duplicate-real-20260914` проверил повторную lifecycle submission с одним idempotency key, но не отдельную повторную доставку низкоуровневой команды с тем же `command_id` |
+| 25 | Повтор `command_id` не создаёт process/Attempt | PASS: `p4-command-duplicate-real-20260914`, proxy доставил один `command.dispatch` frame дважды, Node сохранил один claim/outcome, один Attempt и один Result |
 | 26 | После сбоя `interrupted` или доказанное native session recovery | terminal state и Node recovery evidence |
 | 27 | `message_worker` выбирает resume или Follow-up | request, выбранная операция и binding |
 | 28 | Idle Worker не тратит active Attempt capacity | capacity snapshot до/после idle периода |
