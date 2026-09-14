@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"math/big"
 	"net/url"
 	"path/filepath"
@@ -232,12 +233,18 @@ func redactACPLogLine(raw []byte) []byte {
 		return []byte("[redacted non-JSON ACP output]\n")
 	}
 	redacted := false
+	safe := make(map[string]any, 4)
+	for _, key := range []string{"jsonrpc", "method"} {
+		if value, ok := message[key]; ok {
+			safe[key] = value
+		}
+	}
 	if _, hasParams := message["params"]; hasParams {
-		message["params"] = map[string]any{"redacted": true}
+		safe["params"] = map[string]any{"redacted": true}
 		redacted = true
 	}
 	if _, hasResult := message["result"]; hasResult {
-		message["result"] = map[string]any{"redacted": true}
+		safe["result"] = map[string]any{"redacted": true}
 		redacted = true
 	}
 	if _, hasError := message["error"]; hasError {
@@ -247,13 +254,22 @@ func redactACPLogLine(raw []byte) []byte {
 				code = int(value)
 			}
 		}
-		message["error"] = map[string]any{"code": code, "message": "[redacted]"}
+		safe["error"] = map[string]any{"code": code, "message": "[redacted]"}
+		redacted = true
+	}
+	for key := range message {
+		if key != "jsonrpc" && key != "id" && key != "method" && key != "params" && key != "result" && key != "error" {
+			redacted = true
+		}
+	}
+	if _, hasID := message["id"]; hasID {
 		redacted = true
 	}
 	if !redacted {
 		return raw
 	}
-	encoded, err := json.Marshal(message)
+	safe["redacted"] = true
+	encoded, err := json.Marshal(safe)
 	if err != nil {
 		return []byte("[redacted ACP output]\n")
 	}
@@ -507,8 +523,8 @@ func (s *acpSession) serverRequestDelivered(message acp.Message, err error) {
 
 func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 	var params map[string]any
-	if err := json.Unmarshal(message.Params, &params); err != nil {
-		return nil, errors.New("invalid harness request")
+	if err := json.Unmarshal(message.Params, &params); err != nil || params == nil {
+		return nil, acp.NewRequestError(-32602, "invalid harness request params")
 	}
 	kind := ActivityPermission
 	summary := "Worker request"
@@ -764,9 +780,6 @@ func validateElicitationSchema(raw json.RawMessage) error {
 	if json.Unmarshal(trimmed, &schema) != nil || schema.Type != "" && schema.Type != "object" {
 		return errors.New("invalid ACP elicitation form schema")
 	}
-	if len(schema.Properties) > 32 {
-		return errors.New("ACP elicitation form has too many properties")
-	}
 	if containsSensitiveElicitationText(schema.Title) || containsSensitiveElicitationText(schema.Description) {
 		return errors.New("ACP form elicitation schema requests a secret or credential")
 	}
@@ -800,8 +813,8 @@ func validateElicitationProperty(name string, raw json.RawMessage) error {
 			return fmt.Errorf("ACP elicitation default has invalid type for %q", name)
 		}
 	}
-	if definition.Type == "array" && definition.Items != nil && definition.Items.Type == "string" && len(definition.Items.Enum) == 0 {
-		return fmt.Errorf("ACP elicitation array property %q must declare enum values", name)
+	if definition.Type != "string" && (len(definition.Enum) > 0 || len(definition.OneOf) > 0) {
+		return fmt.Errorf("ACP elicitation enum is only supported for string property %q", name)
 	}
 	for _, candidate := range definition.Enum {
 		if !elicitationPrimitiveMatchesType(candidate, definition.Type) {
@@ -848,10 +861,17 @@ func validateElicitationProperty(name string, raw json.RawMessage) error {
 	if definition.Minimum != nil && definition.Maximum != nil && *definition.Minimum > *definition.Maximum {
 		return fmt.Errorf("invalid ACP elicitation numeric range for %q", name)
 	}
+	if definition.Type == "integer" && (definition.Minimum != nil && !validIntegerBound(*definition.Minimum) || definition.Maximum != nil && !validIntegerBound(*definition.Maximum)) {
+		return fmt.Errorf("invalid ACP elicitation integer range for %q", name)
+	}
 	if definition.MinItems != nil && definition.MaxItems != nil && *definition.MinItems > *definition.MaxItems {
 		return fmt.Errorf("invalid ACP elicitation item range for %q", name)
 	}
 	return nil
+}
+
+func validIntegerBound(value float64) bool {
+	return !math.IsNaN(value) && !math.IsInf(value, 0) && math.Trunc(value) == value
 }
 
 func containsSensitiveElicitationText(value string) bool {

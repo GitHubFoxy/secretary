@@ -43,12 +43,16 @@ func TestRedactACPLogLineHidesUserInput(t *testing.T) {
 	if err := json.Unmarshal(redacted, &message); err != nil {
 		t.Fatal(err)
 	}
-	if message.Result["redacted"] != true {
-		t.Fatalf("redacted ACP log=%#v", message)
+	if message.Result["redacted"] != true || strings.Contains(string(redacted), `"id"`) {
+		t.Fatalf("redacted ACP log=%#v raw=%s", message, redacted)
 	}
 	update := []byte(`{"jsonrpc":"2.0","method":"session/update","params":{"update":{"text":"raw thought"}}}` + "\n")
 	if got := redactACPLogLine(update); strings.Contains(string(got), "raw thought") {
 		t.Fatalf("ACP update log leaked runtime content: %s", got)
+	}
+	unknown := redactACPLogLine([]byte(`{"secret":"credential-value"}`))
+	if strings.Contains(string(unknown), "credential-value") || !strings.Contains(string(unknown), `"redacted":true`) {
+		t.Fatalf("unknown ACP log field was not redacted: %s", unknown)
 	}
 }
 
