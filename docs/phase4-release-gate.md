@@ -20,6 +20,18 @@
 
 Эта запись фиксирует фактический прогон, но не заменяет полную acceptance matrix ниже. Полный redacted ledger хранится в каталоге запуска и не содержит credentials или raw prompts.
 
+## Latest Telegram pairing and inbound run
+
+- `run_id`: `p4-telegram-inbound-real-20260914`
+- `commit`: `494dfcc`
+- `command`: `zsh /tmp/p4-telegram-real.sh` в изолированной data directory
+- `observed_at_utc`: `2026-09-14T09:30:29Z`–`2026-09-14T10:04:26Z`
+- `PASS` для partial flow: Telegram Bot API ответил успешно; одноразовый pairing deep link был redeemed, pairing code удалён, update обработан.
+- `PASS` для inbound boundary: после исправления отдельного Telegram server credential API сохранил два `message.saved` и два inbound message без Client credential; второй процесс не создавался.
+- `BLOCKED`: изолированный server был поднят без Execution Node, поэтому Secretary не вернул terminal reply и Worker Topic не создавался. General chat, Topics, Worker activity и terminal Result не считаются закрытыми.
+
+Evidence оставлено только во временном redacted run directory. Секреты, pairing code, cookies и runtime/session IDs в документацию не записывались.
+
 ## Latest follow-up real-harness run
 
 - `run_id`: `p4-mcp-main.aSTI7d`
