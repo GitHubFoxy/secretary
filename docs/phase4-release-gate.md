@@ -362,7 +362,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 8 | Explicit Claude Code направлен на MacBook | request, binding `macbook/claude`, terminal Result |
 | 9 | Неизвестный model ID даёт visible error без fx fallback | error entry, отсутствие dispatch к `fx` |
 | 10 | Создан один Worker и первый Turn, Task нет в Client API | Client API response и Worker/Turn IDs |
-| 11 | Изменённый `user.md` виден следующему Secretary turn | redacted before/after revision и следующий-turn evidence |
+| 11 | Изменённый `user.md` виден следующему Secretary turn | PASS: `p4-real-local-20260914-followup`, revision 1 → 2 и следующий Secretary turn использовал новое предпочтение |
 | 12 | Acknowledgement приходит до completion | timestamps acknowledgement и Result |
 | 13 | Видны `started`, deltas, tool call/result и `finished` | Web replay или export event types |
 | 14 | Второе сообщение во время Secretary turn queued, Workers параллельны | ordered queue entries и overlapping Worker timestamps |
