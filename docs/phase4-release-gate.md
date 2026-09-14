@@ -88,6 +88,18 @@
 
 Эта запись расширяет partial evidence и сохраняет неуспешный queue run, но не закрывает полную acceptance matrix ниже.
 
+## Real Codex Approval round-trip
+
+- `run_id`: `p4-real-approval2`
+- `commit`: `9debd40`
+- `PASS`: свежий изолированный Secretary server и outbound Node запустили настоящий Codex ACP; `fx` probe в этом прогоне был fixture-only из-за недоступности `fx models` и не считается evidence для `fx`.
+- `PASS`: настоящий Codex запросил запись во внешний путь вне workspace. Node опубликовал permission activity с capability из inventory, Worker перешёл в `waiting_approval`, а pending Approval появился в API.
+- `PASS`: отдельный Client B получил credential, одобрил запрос через API, Worker завершился `succeeded`, а внешний sentinel получил ровно `APPROVED`.
+- `NOT RUN`: `needs_input`. Тот же настоящий Codex завершил flow с сообщением, что механизм user input недоступен, и не создавал input request. Это не считается PASS.
+- `NOT RUN`: queue, multi-Attempt, replay, revoke, network-loss, Telegram, Claude Code и cross-Node scenarios.
+
+Эта запись доказывает только Codex Approval round-trip после исправления capabilities и не закрывает полную acceptance matrix ниже.
+
 ## Deterministic automated checks
 
 Запуск:
