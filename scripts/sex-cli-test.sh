@@ -83,13 +83,15 @@ kill_matching_processes() {
 }
 
 stop_background() {
-  local pid="$1"
+  local pid="$1" child
   [[ -n "$pid" ]] || return 0
-  kill -TERM -- -"$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+  for child in $(pgrep -P "$pid" 2>/dev/null || true); do
+    kill -TERM "$child" 2>/dev/null || true
+  done
+  kill -TERM "$pid" 2>/dev/null || true
   set +e
   wait "$pid"
   set -e
-  kill_matching_processes "$STATE/secretaryd.log"
 }
 
 cleanup() {

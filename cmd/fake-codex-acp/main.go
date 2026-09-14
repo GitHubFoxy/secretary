@@ -26,6 +26,9 @@ func main() {
 		}
 		if len(request.ID) > 0 {
 			result := any(map[string]any{})
+			if request.Method == "initialize" {
+				result = map[string]any{"protocolVersion": 1}
+			}
 			if request.Method == "session/new" {
 				result = map[string]any{"sessionId": "fake-session"}
 			}
