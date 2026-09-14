@@ -21,6 +21,7 @@ import (
 )
 
 const sessionCookie = "secretary_session"
+const telegramInternalClientID = "telegram-adapter"
 
 type authenticatedClientContextKey struct{}
 
@@ -164,6 +165,14 @@ func (s *Server) AttachDiagnosticLogDir(path string)                    { s.diag
 func (s *Server) AttachTelegramPairer(pairer TelegramPairingService)    { s.telegramPairer = pairer }
 func (s *Server) AttachInternalCredential(credential string) {
 	s.internalCredential = strings.TrimSpace(credential)
+}
+func (s *Server) telegramInternalClient() core.Client {
+	return core.Client{
+		ID:       telegramInternalClientID,
+		PersonID: s.owner.ID,
+		Scopes:   []core.ClientScope{core.ScopeConversationWrite, core.ScopeWorkerWrite},
+		Status:   core.ClientActive,
+	}
 }
 func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime) { s.secretary = runtime }
 func (s *Server) SetDebug(debug bool)                               { s.debug = debug }
@@ -530,7 +539,8 @@ func (s *Server) authorizedPerson(w http.ResponseWriter, r *http.Request) (core.
 	if len(header) > len("Bearer ") && strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
 		credential := strings.TrimSpace(header[len("Bearer "):])
 		if s.internalCredential != "" && subtle.ConstantTimeCompare([]byte(credential), []byte(s.internalCredential)) == 1 {
-			return s.owner, nil, true
+			client := s.telegramInternalClient()
+			return s.owner, &client, true
 		}
 		client, err := s.store.AuthenticateClient(r.Context(), credential)
 		if err == nil && client.PersonID == s.owner.ID {

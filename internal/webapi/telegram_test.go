@@ -112,6 +112,38 @@ func TestTelegramInternalCredentialCanSubmitMessageWithoutClientCredential(t *te
 	if response.StatusCode != http.StatusAccepted {
 		t.Fatalf("internal credential message status=%d", response.StatusCode)
 	}
+	replayRequest, err := http.NewRequest(http.MethodPost, server.URL+"/v1/messages", strings.NewReader(`{"external_message_id":"telegram-update-1","body":"hello"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayRequest.Header.Set("Authorization", "Bearer telegram-internal-secret")
+	replayRequest.Header.Set("Idempotency-Key", "telegram:telegram-update-1-replay")
+	replayResponse, err := http.DefaultClient.Do(replayRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer replayResponse.Body.Close()
+	var replay map[string]any
+	if err := json.NewDecoder(replayResponse.Body).Decode(&replay); err != nil {
+		t.Fatal(err)
+	}
+	if replayResponse.StatusCode != http.StatusAccepted || replay["duplicate"] != true {
+		t.Fatalf("Telegram replay status=%d body=%#v", replayResponse.StatusCode, replay)
+	}
+
+	readRequest, err := http.NewRequest(http.MethodGet, server.URL+"/v1/workers", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readRequest.Header.Set("Authorization", "Bearer telegram-internal-secret")
+	readResponse, err := http.DefaultClient.Do(readRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readResponse.Body.Close()
+	if readResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("internal credential worker read status=%d", readResponse.StatusCode)
+	}
 }
 
 func TestTelegramPairingResponseShapeHasNoCredential(t *testing.T) {
