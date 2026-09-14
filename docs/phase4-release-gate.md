@@ -144,6 +144,7 @@ Evidence оставлено только во временном redacted run di
 - `PASS`: run завершился с `RC=0`; на чистом изолированном server/Node с реальным FX Attempt имел статус `starting` до перезапуска Secretary server. После перезапуска durable recovery завершил его ровно одним явным `interrupted` Result с `failure_code=runtime_execution_unknown`; Worker стал `offline`, в store остались один Attempt и один Result.
 - `PASS`: в этом прогоне второй process или второй Attempt не создан. Наблюдаемое поведение было консервативным: при недоказанном выполнении Attempt завершён как `interrupted`.
 - `NOT RUN`: этот прогон не доказывает восстановление native session после reconnect, только корректное `interrupted` завершение.
+- `NOT RUN` для полного Scenario 29: post-restart Worker details сохранили `status=offline`, `node_id=local-codex` и `harness_instance_id=local-codex/fx`, но в этом прогоне не было второго Node, поэтому отсутствие миграции на другую машину не доказано.
 
 Evidence оставлено только во временном redacted run directory.
 
@@ -346,7 +347,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 26 | После сбоя `interrupted` или доказанное native session recovery | PASS: `p4-server-restart-real-20260914`, explicit `interrupted` Result с `failure_code=runtime_execution_unknown`; native session recovery отдельно не заявляется |
 | 27 | `message_worker` выбирает resume или Follow-up | request, выбранная операция и binding |
 | 28 | Idle Worker не тратит active Attempt capacity | PASS: `p4-idle-capacity-real-20260914`, до/после idle `capacity=1`, `active_attempts=0` |
-| 29 | Offline Node не мигрирует Worker | offline status, прежний binding, новый Worker для другой машины |
+| 29 | Offline Node не мигрирует Worker | NOT RUN: `p4-server-restart-real-20260914` подтвердил offline status и сохранение binding, но без второго Node не проверил отсутствие миграции |
 | 30 | Internal subagent отображается activity, child Worker отсутствует | activity stream и server state без child Worker |
 | 31 | `retry_attempt` только после terminal `retryable`, uncertain не retry-ится | outcome classification и Attempt sequence |
 | 32 | Повтор inbound/action/event/Result не дублирует state | PASS: `p4-idempotency-real-20260914`, inbound `INBOUND_ENTRIES=1`/`duplicate=true`, один Worker/command/Attempt/Result, duplicate terminal event дал один durable outcome |
