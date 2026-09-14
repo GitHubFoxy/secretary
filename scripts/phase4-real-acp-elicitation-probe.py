@@ -10,6 +10,8 @@ import sys
 import tempfile
 import time
 
+MCP_SUCCESS_TEXT = 'The user chose a harmless greeting.'
+
 MCP_SERVER = r'''
 import json
 import sys
@@ -94,11 +96,12 @@ def read_until(reader, process, request_id, deadline):
         if method:
             methods.append(method)
             if method == 'elicitation/create':
-                if params.get('mode') != 'form' or message.get('id') is None:
+                schema = params.get('requestedSchema')
+                if (params.get('mode') != 'form' or message.get('id') is None or not isinstance(schema, dict) or schema.get('type') != 'object' or 'greeting' not in schema.get('properties', {})):
                     raise RuntimeError('real codex-acp sent malformed elicitation request')
                 observed['elicitation'] = True
-                observed['elicitation_accepted'] = True
                 send_response(process, message.get('id'), {'action': 'accept', 'content': {'greeting': 'hello'}})
+                observed['elicitation_accepted'] = True
             elif method == 'session/request_permission':
                 options = params.get('options', [])
                 option_id = next((item.get('optionId') for item in options if 'allow' in item.get('kind', '')), None)
@@ -106,9 +109,15 @@ def read_until(reader, process, request_id, deadline):
                     send_response(process, message.get('id'), {'outcome': {'outcome': 'selected', 'optionId': option_id}})
         update = params.get('update', {})
         if method == 'session/update' and update.get('sessionUpdate') == 'tool_call':
-            observed['tool_call'] = True
+            title = update.get('title', '')
+            if isinstance(title, str) and title.endswith('ask_harmless'):
+                observed['tool_call'] = True
         if method == 'session/update' and update.get('sessionUpdate') == 'tool_call_update' and update.get('status') == 'completed':
-            observed['tool_completed'] = True
+            raw_output = update.get('rawOutput')
+            result = raw_output.get('result', {}) if isinstance(raw_output, dict) else {}
+            content = result.get('content', []) if isinstance(result, dict) else []
+            if any(isinstance(item, dict) and item.get('text') == MCP_SUCCESS_TEXT for item in content):
+                observed['tool_completed'] = True
         if message.get('id') == request_id and not message.get('method'):
             return message, methods, observed
     return {}, methods, observed
