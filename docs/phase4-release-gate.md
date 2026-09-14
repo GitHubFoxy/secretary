@@ -63,6 +63,19 @@
 
 Эта запись расширяет evidence, но не закрывает полную acceptance matrix ниже.
 
+## Latest isolated local real-harness run
+
+- `run_id`: `p4-real-local-20260914`
+- `commit`: `f88460d`
+- `PASS`: изолированный Secretary server и outbound Node `local-real` подняты на чистом временном data directory; web session и Node pairing прошли.
+- `PASS`: Node сообщил реальные `fx` и Codex inventory; оба harness были `ready` и authenticated в момент dispatch.
+- `PASS`: Project с mapping для `local-real` был создан, mapping добавлен в Node deployment, а Worker с явным `local-real/fx` завершил read-only `pwd`.
+- `PASS`: Worker с явным `local-real/codex` завершил read-only `pwd` в runtime-provided mapped workspace без `fx` fallback.
+- `BLOCKED`: это один локальный Node, без отдельного MacBook и home-server; Claude Code и Telegram недоступны.
+- `NOT RUN`: Approval/needs_input, queue, multi-Attempt, replay, revoke, network-loss и оставшиеся cross-Node scenarios.
+
+Эта запись добавляет partial evidence для real `fx` и Codex, но не закрывает полную acceptance matrix ниже.
+
 ## Deterministic automated checks
 
 Запуск:
