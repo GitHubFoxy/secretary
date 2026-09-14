@@ -182,6 +182,11 @@ Evidence оставлено только во временном redacted run di
 
 Evidence оставлено только во временном redacted run directory.
 
+## Offline UI and Telegram status
+
+- `BLOCKED` для полного Scenario 35: restart run показал Worker `offline` и сохранённую binding через Web/API, но Telegram adapter не был настроен, поэтому согласованный Web+Telegram offline state не подтверждён.
+- `BLOCKED` для Scenario 36: Telegram bot и topic configuration недоступны, поэтому Worker Topic mapping и отсутствие delta/raw-event spam не проверялись.
+
 ## Scenario 31 retry status
 
 - `BLOCKED`: real-harness proof не запускался. В доступном Client/Control API нет операции `retry_attempt`, а установленный real FX не даёт управляемого способа завершить Attempt с классификацией `retryable`; network loss/restart дают `interrupted`/`runtime_execution_unknown`. DB и protocol payloads намеренно не подменялись, поэтому retryable и uncertain не объявляются PASS.
@@ -357,8 +362,8 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 32 | Повтор inbound/action/event/Result не дублирует state | PASS: `p4-idempotency-real-20260914`, inbound `INBOUND_ENTRIES=1`/`duplicate=true`, один Worker/command/Attempt/Result, duplicate terminal event дал один durable outcome |
 | 33 | Revoked Client не читает и не меняет state | PASS: `p4-real-local-20260914-followup`, Client B после revoke получил `401` на чтение и запись |
 | 34 | Revoked Node не принимает Dispatch | PASS: `p4-revoked-node-real-20260914`, revoke HTTP 200; следующий dispatch отвергнут как `core: node revoked`, `COMMAND_COUNT=0` |
-| 35 | Offline Node оставляет Worker видимым и понятным | Web/Telegram status `offline` и binding |
-| 36 | Telegram Topic соответствует Worker без delta/raw-event spam | Topic mapping и агрегированные сообщения |
+| 35 | Offline Node оставляет Worker видимым и понятным | BLOCKED: Web/API offline status и binding наблюдались в `p4-server-restart-real-20260914`, но Telegram не настроен |
+| 36 | Telegram Topic соответствует Worker без delta/raw-event spam | BLOCKED: Telegram bot и topic configuration недоступны |
 | 37 | Go, race, vet и frontend checks проходят | ссылка на automated gate log и commit |
 | 38 | Реальные `fx`, Claude Code, Codex проходят; OpenCode отдельно conditional | по одному real run ID на harness |
 
