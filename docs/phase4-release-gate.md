@@ -124,6 +124,17 @@
 
 Evidence оставлено только во временном redacted run directory. Секреты, cookies и runtime/session IDs в документацию не записывались.
 
+## Latest duplicate dispatch replay
+
+- `run_id`: `p4-duplicate-real-20260914`
+- `commit`: `b385f71`
+- `command`: `zsh /tmp/p4-duplicate-real.sh`
+- `observed_at_utc`: `2026-09-14T06:23:00Z`–`2026-09-14T06:23:50Z`
+- `PASS`: на чистом изолированном server/Node с реальным FX две одинаковые `spawn_worker` submissions с одним idempotency key вернули один и тот же Worker. Replay переиспользовал тот же lifecycle command.
+- `PASS`: run завершился с `RC=0`, `RESULT_COUNT=1` и проверенным sentinel; Node state содержит ровно один dispatch command (`COMMAND_COUNT=1`), durable store содержит один Attempt и один Result со статусом `succeeded`, Worker перешёл в `idle`; второй процесс не наблюдался.
+
+Этот прогон даёт частичное evidence дедупликации повторной lifecycle submission, но не заменяет отдельную проверку повторной низкоуровневой отправки `command_id`. Evidence оставлено только во временном redacted run directory.
+
 ## Latest deterministic gate run
 
 - `run_id`: `p4-deterministic-c32d9a8-20260914T052227Z`
@@ -285,7 +296,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 22 | Явная задача Codex выполняется на home server | binding `home-server/codex` и terminal Result |
 | 23 | Restart server во время active Attempt безопасен | pre/post status и recovery timeline |
 | 24 | Network loss после harness completion replay-ит outbox | PASS: `p4-network-loss-real-20260914`, proxy-сбой после terminal outcome, outbox `1 → 0`, один AttemptOutcome |
-| 25 | Повтор `command_id` не создаёт process/Attempt | NOT RUN: network-loss прогон отправил один server dispatch command; отдельная повторная submission не проверялась |
+| 25 | Повтор `command_id` не создаёт process/Attempt | NOT RUN: `p4-duplicate-real-20260914` проверил повторную lifecycle submission с одним idempotency key, но не отдельную повторную доставку низкоуровневой команды с тем же `command_id` |
 | 26 | После сбоя `interrupted` или доказанное native session recovery | terminal state и Node recovery evidence |
 | 27 | `message_worker` выбирает resume или Follow-up | request, выбранная операция и binding |
 | 28 | Idle Worker не тратит active Attempt capacity | capacity snapshot до/после idle периода |
