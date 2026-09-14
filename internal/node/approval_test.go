@@ -152,11 +152,22 @@ func TestRespondWorkerRequestRebindsToNewSessionAfterNodeReconnect(t *testing.T)
 	firstRuntime := &reconnectRuntime{session: newReconnectSession("native-1")}
 	execution := NewExecutionNode("macbook", firstRuntime, store)
 	dispatch := dispatchFixture("dispatch-reconnect")
-	dispatch.Dispatch.Envelope.HarnessInstance.Capabilities.Activity = []core.ActivityCapability{core.ActivitySessionStarted, core.ActivityAssistantTextDelta, core.ActivityPermissionRequest}
+	dispatch.Dispatch.Metadata.HarnessInstanceID = "macbook/codex"
+	dispatch.Dispatch.Envelope.HarnessInstance.ID = "macbook/codex"
+	dispatch.Dispatch.Envelope.HarnessInstance.Kind = core.HarnessCodex
+	dispatch.Dispatch.Envelope.HarnessInstance.Capabilities.Activity = []core.ActivityCapability{core.ActivitySessionStarted, core.ActivityAssistantTextDelta}
 	if _, err := execution.HandleCommand(ctx, dispatch); err != nil {
 		t.Fatal(err)
 	}
 	execution.publishRuntimeActivity(dispatch.Dispatch.Envelope, Activity{Kind: ActivityPermission, RequestID: "durable-request", Summary: "write"})
+	pending := store.PendingRequests("attempt-1")
+	if len(pending) != 1 || pending[0].RequestID != "durable-request" {
+		t.Fatalf("legacy binding dropped observed request: %#v", pending)
+	}
+	queued, err := store.PendingEvents()
+	if err != nil || len(queued) == 0 {
+		t.Fatalf("legacy request was not queued: events=%#v err=%v", queued, err)
+	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -181,6 +192,28 @@ func TestRespondWorkerRequestRebindsToNewSessionAfterNodeReconnect(t *testing.T)
 	duplicate.RespondWorker.Metadata.CommandID = "respond-reconnect-duplicate"
 	if outcome, err := reconnected.HandleCommand(ctx, duplicate); err != nil || outcome.State != CommandAccepted || resumed.responds != 1 {
 		t.Fatalf("duplicate=%#v err=%v responds=%d", outcome, err, resumed.responds)
+	}
+}
+
+func TestPublishRuntimeActivityRejectsRequestForNonACPHarness(t *testing.T) {
+	for _, harnessKind := range []core.HarnessKind{core.HarnessClaudeCode, core.HarnessOpenCode} {
+		t.Run(string(harnessKind), func(t *testing.T) {
+			store, err := OpenLocalStore(t.TempDir() + "/node.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			execution := NewExecutionNode("macbook", &reconnectRuntime{session: newReconnectSession("native")}, store)
+			dispatch := dispatchFixture("dispatch-non-acp-" + string(harnessKind))
+			dispatch.Dispatch.Envelope.HarnessInstance.Kind = harnessKind
+			execution.publishRuntimeActivity(dispatch.Dispatch.Envelope, Activity{Kind: ActivityPermission, RequestID: "unsupported-request", Summary: "write"})
+			if pending := store.PendingRequests("attempt-1"); len(pending) != 0 {
+				t.Fatalf("non-ACP request bypassed capabilities: %#v", pending)
+			}
+			if events, err := store.PendingEvents(); err != nil || len(events) != 0 {
+				t.Fatalf("non-ACP request queued activity: events=%#v err=%v", events, err)
+			}
+		})
 	}
 }
 

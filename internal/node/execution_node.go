@@ -529,11 +529,14 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope) {
 }
 
 func (n *ExecutionNode) publishRuntimeActivity(envelope WorkerEnvelope, item Activity) {
-	activity, ok := normalizeRuntimeActivity(item, n.nextMetadata(envelope), envelope.HarnessInstance.Capabilities)
+	capabilities := capabilitiesForObservedActivity(envelope.HarnessInstance, item.Kind)
+	activity, ok := normalizeRuntimeActivity(item, n.nextMetadata(envelope), capabilities)
 	if !ok {
 		return
 	}
-	if err := activity.ValidateFor(envelope.HarnessInstance); err != nil {
+	validatedInstance := envelope.HarnessInstance
+	validatedInstance.Capabilities = capabilities
+	if err := activity.ValidateFor(validatedInstance); err != nil {
 		return
 	}
 	if activity.Kind == core.ActivityPermissionRequest || activity.Kind == core.ActivityUserInputRequest {
@@ -542,6 +545,30 @@ func (n *ExecutionNode) publishRuntimeActivity(envelope WorkerEnvelope, item Act
 		}
 	}
 	_, _ = n.store.QueueActivity(activity)
+}
+
+// capabilitiesForObservedActivity keeps attempts dispatched with a pre-Phase-4
+// inventory compatible with a typed request emitted by the runtime. The event
+// itself is still validated for shape and binding before it is persisted.
+func capabilitiesForObservedActivity(instance core.HarnessInstance, kind ActivityKind) core.HarnessCapabilities {
+	capabilities := instance.Capabilities
+	if instance.Kind != core.HarnessFX && instance.Kind != core.HarnessCodex {
+		return capabilities
+	}
+	var required core.ActivityCapability
+	switch kind {
+	case ActivityPermission:
+		required = core.ActivityPermissionRequest
+	case ActivityUserInput:
+		required = core.ActivityUserInputRequest
+	default:
+		return capabilities
+	}
+	if capabilities.SupportsActivity(required) {
+		return capabilities
+	}
+	capabilities.Activity = append(append([]core.ActivityCapability(nil), capabilities.Activity...), required)
+	return capabilities
 }
 
 func pendingRequestKinds(requests []PendingRequest) map[string]ActivityKind {
