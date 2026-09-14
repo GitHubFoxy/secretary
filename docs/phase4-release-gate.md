@@ -102,14 +102,14 @@
 
 ## Latest ACP elicitation probe
 
-- `run_id`: `p4-real-acp-elicitation-20260914T043223Z`
-- `commit`: `a943ac8`
-- `command`: `python3 /tmp/real_acp_probe.py`
-- `observed_at_utc`: `2026-09-14T04:32:23Z`–`2026-09-14T04:32:54Z`
-- `PASS`: реальный `codex-acp` принял ACP v1 initialize с form capability и завершил session/prompt; ACP output содержал только `session/update` notifications.
-- `NOT RUN`: агент не отправил `elicitation/create`, поэтому pending form, Client B response и terminal continuation не могут считаться PASS.
+- `run_id`: `p4-real-acp-elicitation-20260914T050246Z`
+- `commit`: `2d6b2b1`
+- `command`: `python3 scripts/phase4-real-acp-elicitation-probe.py`
+- `observed_at_utc`: `2026-09-14T05:02:46Z`–`2026-09-14T05:03:02Z`
+- `PASS`: реальный `codex-acp` согласовал ACP v1 initialize с form capability, вызвал MCP tool через временный локальный сервер, отправил `elicitation/create`, получил accept response и завершил prompt.
+- `NOT RUN`: это прямой ACP probe, не Secretary Node/API flow. Durable pending request, Client B response и terminal continuation через `respond_worker` не считаются PASS.
 
-Это подтверждает фактическое поведение установленного Codex ACP, но не подменяет обязательный real-harness `needs_input` сценарий.
+Это подтверждает фактическое поведение установленного Codex ACP и оставляет обязательный full real-harness `needs_input` сценарий открытым.
 
 ## Latest deterministic gate run
 
