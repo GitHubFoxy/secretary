@@ -113,10 +113,10 @@
 
 ## Latest deterministic gate run
 
-- `run_id`: `p4-deterministic-a943ac8-20260914T043138Z`
-- `commit`: `a943ac8`
+- `run_id`: `p4-deterministic-c32d9a8-20260914T052227Z`
+- `commit`: `c32d9a8`
 - `command`: `./scripts/phase4-release-gate.sh`
-- `observed_at_utc`: `2026-09-14T04:31:38Z`–`2026-09-14T04:32:11Z`
+- `observed_at_utc`: `2026-09-14T05:22:27Z`–`2026-09-14T05:22:44Z`
 - `PASS`: release gate завершился с кодом 0, включая Go tests, race tests, vet, command builds, frontend tests/build, embedded assets, CLI, Node deployment/revoke tests и `git diff --check`.
 - `PASS`: `sex-cli-test.sh` изолированно завершает `logs` tail и не останавливает основной Secretary server.
 
