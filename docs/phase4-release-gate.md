@@ -100,6 +100,26 @@
 
 Эта запись доказывает только Codex Approval round-trip после исправления capabilities и не закрывает полную acceptance matrix ниже.
 
+## Latest ACP elicitation probe
+
+- `run_id`: `p4-real-acp-elicitation-20260914T043223Z`
+- `commit`: `a943ac8`
+- `command`: `python3 /tmp/real_acp_probe.py`
+- `observed_at_utc`: `2026-09-14T04:32:23Z`–`2026-09-14T04:32:54Z`
+- `PASS`: реальный `codex-acp` принял ACP v1 initialize с form capability и завершил session/prompt; ACP output содержал только `session/update` notifications.
+- `NOT RUN`: агент не отправил `elicitation/create`, поэтому pending form, Client B response и terminal continuation не могут считаться PASS.
+
+Это подтверждает фактическое поведение установленного Codex ACP, но не подменяет обязательный real-harness `needs_input` сценарий.
+
+## Latest deterministic gate run
+
+- `run_id`: `p4-deterministic-a943ac8-20260914T043138Z`
+- `commit`: `a943ac8`
+- `command`: `./scripts/phase4-release-gate.sh`
+- `observed_at_utc`: `2026-09-14T04:31:38Z`–`2026-09-14T04:32:11Z`
+- `PASS`: release gate завершился с кодом 0, включая Go tests, race tests, vet, command builds, frontend tests/build, embedded assets, CLI, Node deployment/revoke tests и `git diff --check`.
+- `PASS`: `sex-cli-test.sh` изолированно завершает `logs` tail и не останавливает основной Secretary server.
+
 ## Deterministic automated checks
 
 Запуск:
