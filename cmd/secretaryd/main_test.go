@@ -135,6 +135,17 @@ func mustProductionCookieJar(t *testing.T) *cookiejar.Jar {
 	return jar
 }
 
+func TestSecretaryMCPCommandHonorsOverride(t *testing.T) {
+	t.Setenv("SECRETARY_MCP_COMMAND", "custom-secretary-mcp")
+	got, err := secretaryMCPCommand()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "custom-secretary-mcp" {
+		t.Fatalf("secretaryMCPCommand()=%q, want override", got)
+	}
+}
+
 func TestSecretaryMCPServerURLUsesLoopbackForWildcardListeners(t *testing.T) {
 	cases := map[string]string{
 		"127.0.0.1:8081": "http://127.0.0.1:8081",

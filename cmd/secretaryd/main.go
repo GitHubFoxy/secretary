@@ -155,7 +155,7 @@ func main() {
 	var secretaryMu sync.Mutex
 	runtime, runtimeCommand := configuredRuntime(profiles.Snapshot(), *dataDir)
 	log.Printf("configured Secretary harness %s (%s)", profiles.Snapshot().Config.EffectiveSecretaryPolicy().Harness, runtimeCommand)
-	mcpCommand, mcpErr := exec.LookPath("secretary-mcp")
+	mcpCommand, mcpErr := secretaryMCPCommand()
 	if mcpErr != nil {
 		log.Fatalf("find secretary-mcp: %v", mcpErr)
 	}
@@ -227,27 +227,6 @@ func main() {
 			return applyErr
 		}))
 	}
-	if capability != "" {
-		allowed, capabilityErr := store.AuthorizeSecretaryCapability(ctx, web.OwnerID(), capability)
-		if capabilityErr != nil {
-			log.Fatalf("authorize Secretary capability: %v", capabilityErr)
-		}
-		if !allowed {
-			log.Fatal("SECRETARY_CAPABILITY is not authorized")
-		}
-		persistentSecretary = secretaryruntime.NewRuntime(local, capability)
-		persistentSecretary.AttachIdentity(secretaryIdentity)
-		persistentSecretary.AttachMCPServer(mcpCommand, *dataDir, secretaryMCPServerURL(*listen))
-		persistentSecretary.AttachProfile(func() node.ManagedProfile {
-			return secretaryProfile(profiles.Snapshot(), store)
-		})
-		persistentSecretary.AttachConversation(store, conversation.ID)
-		if err := persistentSecretary.Start(ctx); err != nil {
-			log.Fatalf("start persistent Secretary: %v", err)
-		}
-		web.AttachSecretary(persistentSecretary)
-	}
-
 	restartSecretary := func(restartCtx context.Context) error {
 		secretaryMu.Lock()
 		defer secretaryMu.Unlock()
@@ -258,6 +237,30 @@ func main() {
 			return err
 		}
 		return persistentSecretary.Start(restartCtx)
+	}
+	startPersistentSecretary := func() error {
+		if capability == "" {
+			return nil
+		}
+		allowed, capabilityErr := store.AuthorizeSecretaryCapability(ctx, web.OwnerID(), capability)
+		if capabilityErr != nil {
+			return fmt.Errorf("authorize Secretary capability: %w", capabilityErr)
+		}
+		if !allowed {
+			return errors.New("SECRETARY_CAPABILITY is not authorized")
+		}
+		persistentSecretary = secretaryruntime.NewRuntime(local, capability)
+		persistentSecretary.AttachIdentity(secretaryIdentity)
+		persistentSecretary.AttachMCPServer(mcpCommand, *dataDir, secretaryMCPServerURL(*listen))
+		persistentSecretary.AttachProfile(func() node.ManagedProfile {
+			return secretaryProfile(profiles.Snapshot(), store)
+		})
+		persistentSecretary.AttachConversation(store, conversation.ID)
+		if err := persistentSecretary.Start(ctx); err != nil {
+			return fmt.Errorf("start persistent Secretary: %w", err)
+		}
+		web.AttachSecretary(persistentSecretary)
+		return nil
 	}
 	web.AttachSecretaryModelCatalog(
 		func() map[string]string { return secretaryModels(profiles.Snapshot()) },
@@ -326,12 +329,19 @@ func main() {
 		staticHandler.ServeHTTP(w, r)
 	})
 	server := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+	listener, err := net.Listen("tcp", *listen)
+	if err != nil {
+		log.Fatalf("listen web API: %v", err)
+	}
 	go func() {
 		log.Printf("Secretary web API listening on %s", *listen)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("serve web API: %v", err)
 		}
 	}()
+	if err := startPersistentSecretary(); err != nil {
+		log.Fatal(err)
+	}
 	<-ctx.Done()
 	if persistentSecretary != nil {
 		if err := persistentSecretary.Stop(context.Background()); err != nil {
@@ -361,6 +371,19 @@ func attachProductionWorkerServices(web *webapi.Server, store *core.Store, perso
 	workerService := ctl.WorkerService{Store: store, PersonID: personID, Capability: capability, Runtime: ctl.NodeRuntime{Manager: remote, Local: local}}
 	web.AttachWorkerResponder(workerService)
 	web.AttachSecretaryWorkerTools(workerService)
+}
+
+func secretaryMCPCommand() (string, error) {
+	if configured := strings.TrimSpace(os.Getenv("SECRETARY_MCP_COMMAND")); configured != "" {
+		return configured, nil
+	}
+	if executable, err := os.Executable(); err == nil {
+		candidate := filepath.Join(filepath.Dir(executable), "secretary-mcp")
+		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() && info.Mode()&0o111 != 0 {
+			return candidate, nil
+		}
+	}
+	return exec.LookPath("secretary-mcp")
 }
 
 func secretaryMCPServerURL(listen string) string {
