@@ -80,6 +80,7 @@ func attachProductionTelegram(ctx context.Context, dataDir, listen string, store
 	if !deployment.Enabled {
 		return nil, nil
 	}
+	web.AttachInternalCredential(deployment.ServerCredential)
 	adapter, err := telegram.New(telegram.Config{
 		StatePath: filepath.Join(dataDir, "telegram", "state.json"), OwnerChatID: deployment.OwnerChatID,
 		PollInterval: deployment.PollInterval, FlushInterval: deployment.FlushInterval, BotUsername: deployment.BotUsername,

@@ -69,6 +69,51 @@ func TestTelegramPairingRequiresOwnerSessionAndNeverReturnsCredential(t *testing
 	}
 }
 
+func TestTelegramInternalCredentialCanSubmitMessageWithoutClientCredential(t *testing.T) {
+	store, err := core.Open(context.Background(), filepath.Join(t.TempDir(), "telegram-internal.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	api, err := New(context.Background(), store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.AttachInternalCredential("telegram-internal-secret")
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/messages", strings.NewReader(`{"external_message_id":"telegram-update-unauthorized","body":"hello"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer wrong-secret")
+	request.Header.Set("Idempotency-Key", "telegram:telegram-update-unauthorized")
+	unauthorized, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unauthorized.Body.Close()
+	if unauthorized.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("wrong internal credential status=%d", unauthorized.StatusCode)
+	}
+
+	request, err = http.NewRequest(http.MethodPost, server.URL+"/v1/messages", strings.NewReader(`{"external_message_id":"telegram-update-1","body":"hello"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer telegram-internal-secret")
+	request.Header.Set("Idempotency-Key", "telegram:telegram-update-1")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("internal credential message status=%d", response.StatusCode)
+	}
+}
+
 func TestTelegramPairingResponseShapeHasNoCredential(t *testing.T) {
 	pairing := telegram.Pairing{Code: "code", DeepLink: "https://t.me/bot?start=code", Credential: "server-secret"}
 	encoded, err := json.Marshal(pairing)

@@ -57,16 +57,17 @@ type TelegramPairingService interface {
 }
 
 type Server struct {
-	store          *core.Store
-	bootstrapToken string
-	owner          core.Person
-	node           *node.LocalNode
-	remoteNodes    *node.ServerManager
-	workers        workerController
-	responder      workerResponder
-	actions        workerActions
-	secretaryTools secretaryWorkerTools
-	secretary      interface {
+	store              *core.Store
+	bootstrapToken     string
+	internalCredential string
+	owner              core.Person
+	node               *node.LocalNode
+	remoteNodes        *node.ServerManager
+	workers            workerController
+	responder          workerResponder
+	actions            workerActions
+	secretaryTools     secretaryWorkerTools
+	secretary          interface {
 		HandleMessage(context.Context, string) error
 	}
 	workerStates     map[string]string
@@ -161,8 +162,11 @@ func (s *Server) AttachSecretaryWorkerTools(tools secretaryWorkerTools) { s.secr
 func (s *Server) AttachUserDocument(path string)                        { s.userPath = strings.TrimSpace(path) }
 func (s *Server) AttachDiagnosticLogDir(path string)                    { s.diagnosticLogDir = strings.TrimSpace(path) }
 func (s *Server) AttachTelegramPairer(pairer TelegramPairingService)    { s.telegramPairer = pairer }
-func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime)     { s.secretary = runtime }
-func (s *Server) SetDebug(debug bool)                                   { s.debug = debug }
+func (s *Server) AttachInternalCredential(credential string) {
+	s.internalCredential = strings.TrimSpace(credential)
+}
+func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime) { s.secretary = runtime }
+func (s *Server) SetDebug(debug bool)                               { s.debug = debug }
 func (s *Server) AttachSecretaryModelCatalog(catalog func() map[string]string, defaultModel func() string, changed func(string) error) {
 	s.modelCatalog, s.modelDefault, s.modelChanged = catalog, defaultModel, changed
 }
@@ -524,7 +528,11 @@ func (s *Server) authorizedPerson(w http.ResponseWriter, r *http.Request) (core.
 	}
 	header := strings.TrimSpace(r.Header.Get("Authorization"))
 	if len(header) > len("Bearer ") && strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
-		client, err := s.store.AuthenticateClient(r.Context(), strings.TrimSpace(header[len("Bearer "):]))
+		credential := strings.TrimSpace(header[len("Bearer "):])
+		if s.internalCredential != "" && subtle.ConstantTimeCompare([]byte(credential), []byte(s.internalCredential)) == 1 {
+			return s.owner, nil, true
+		}
+		client, err := s.store.AuthenticateClient(r.Context(), credential)
 		if err == nil && client.PersonID == s.owner.ID {
 			person := s.owner
 			return person, &client, true
