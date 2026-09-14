@@ -121,6 +121,7 @@
 - `PASS`: прозрачный тестовый WebSocket proxy симулировал сетевой разрыв и намеренно потерял terminal AttemptOutcome. После reconnect Node outbox доставил событие: `OUTBOX_BEFORE_RECONNECT=1`, `OUTBOX_AFTER_RECONNECT=0`; в durable store остались ровно один `phase4_attempt_outcome` и один `phase4_result`, Attempt завершился `succeeded`, Worker перешёл в `idle`.
 - `PASS`: Node state содержит ровно один принятый dispatch command, абсолютный sentinel в mapped workspace содержит ожидаемый маркер, а второй процесс и второй Attempt в этом reconnect run не наблюдались.
 - `BLOCKED`: это симуляция сетевого разрыва через тестовый proxy, а не физическое отключение интерфейса. Прогон использовал FX, а не Codex, и не закрывает обязательные Claude Code, Telegram, `needs_input`, multi-Attempt и cross-Node строки.
+- `PASS` для Scenario 19: в этом lifecycle run durable event list содержал `result.accepted` и `attempt.outcome_recorded`, но не содержал `secretary.turn.*`; terminal Result был принят напрямую без нового Secretary model turn.
 
 Evidence оставлено только во временном redacted run directory. Секреты, cookies и runtime/session IDs в документацию не записывались.
 
@@ -357,7 +358,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 16 | Worker запрашивает Approval через Node/harness | request ID, Node event, Approval state |
 | 17 | Другой Client отвечает Approval и `needs_input` через `respond_worker` | Client B request/response и terminal state |
 | 18 | Несколько Attempts дают diagnostics, но один Result на Turn | Attempts, AttemptOutcomes и count ровно 1 Result |
-| 19 | Terminal Result доставлен напрямую без Secretary model turn | event timeline и отсутствие нового Secretary turn |
+| 19 | Terminal Result доставлен напрямую без Secretary model turn | PASS: `p4-network-loss-real-20260914`, `result.accepted`/`attempt.outcome_recorded` без `secretary.turn.*` в event list |
 | 20 | Следующий Secretary context содержит unseen Result | следующий turn diagnostic/context evidence |
 | 21 | Follow-up идёт тому же Worker новым Turn | Worker ID прежний, Turn ID новый |
 | 22 | Явная задача Codex выполняется на home server | binding `home-server/codex` и terminal Result |
