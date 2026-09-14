@@ -111,6 +111,18 @@
 
 Это подтверждает фактическое поведение установленного Codex ACP и оставляет обязательный full real-harness `needs_input` сценарий открытым.
 
+## Latest isolated real needs_input attempt
+
+- `run_id`: `p4-real-input7.yEnawO`
+- `commit`: `bb3c694`
+- `command`: `zsh /tmp/p4-real-input7.sh`
+- `observed_at_utc`: `2026-09-14T08:27:16Z`–`2026-09-14T08:30:45Z`
+- `PASS`: свежий изолированный Secretary server и outbound Node поднялись; Codex HarnessInstance был `ready` с `capacity=2`; Worker выполнил реальный Codex ACP flow и завершился с одним `succeeded` Result.
+- `BLOCKED`: Codex не создал `user_input_request` и не оставил pending input Approval. Поэтому Client B не получил реальный request ID для `respond_worker`, а полный `needs_input` round-trip не запускался. Это не заменяется прямым ACP elicitation probe.
+- `PASS` для отрицательной части no-input check: в durable events был один `attempt.started`, один `attempt.outcome_recorded`, один `result.accepted` и не было `attempt.activity` с `user_input_request`.
+
+Evidence оставлено только во временном redacted run directory. Секреты, cookies, prompts, runtime/session IDs и значения credentials в документацию не записывались.
+
 ## Latest isolated network-loss simulation
 
 - `run_id`: `p4-network-loss-real-20260914`
@@ -368,7 +380,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 14 | Второе сообщение во время Secretary turn queued, Workers параллельны | ordered queue entries и overlapping Worker timestamps |
 | 15 | Activity соответствует capabilities HarnessInstance | inventory capabilities и normalized activity list |
 | 16 | Worker запрашивает Approval через Node/harness | PASS: `p4-real-approval2`, реальный Codex опубликовал permission activity, Worker стал `waiting_approval`, pending Approval появился в API |
-| 17 | Другой Client отвечает Approval и `needs_input` через `respond_worker` | BLOCKED: `p4-real-approval2` подтвердил Approval Client B, но real Codex не создал user-input request; полный `needs_input`/`respond_worker` flow не доказан |
+| 17 | Другой Client отвечает Approval и `needs_input` через `respond_worker` | BLOCKED: `p4-real-input7.yEnawO` подтвердил real Codex без `user_input_request`; Client B не получил request ID, полный `needs_input`/`respond_worker` flow не запускался |
 | 18 | Несколько Attempts дают diagnostics, но один Result на Turn | BLOCKED: нет controllable real `retryable` outcome; follow-up с двумя Turns/Results не выдаётся за multi-Attempt acceptance |
 | 19 | Terminal Result доставлен напрямую без Secretary model turn | PASS: `p4-network-loss-real-20260914`, `result.accepted`/`attempt.outcome_recorded` без `secretary.turn.*` в event list |
 | 20 | Следующий Secretary context содержит unseen Result | PASS: `p4-unseen-result-real-20260914`, следующий Secretary turn вернул `status: succeeded` и `UNSEEN_RESULT_OK` из Worker Result |
