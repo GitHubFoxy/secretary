@@ -151,14 +151,13 @@ Evidence оставлено только во временном redacted run di
 
 ## Latest server restart during active Attempt
 
-- `run_id`: `p4-server-restart-real-r2-20260914`
-- `commit`: `22a9224`
-- `command`: `zsh /tmp/p4-restart-real-current.sh`
-- `observed_at_utc`: `2026-09-14T08:39:31Z`–`2026-09-14T08:40:01Z`
-- `PASS`: на свежем изолированном server/Node с реальным FX перед restart Attempt имел `state=starting`, а Node доставил 27 `attempt.activity` событий. Это подтверждает фактический запуск FX, хотя публичный Worker status в этот момент оставался `queued`.
-- `PASS`: server был остановлен в `2026-09-14T08:39:58Z` и поднят заново в `2026-09-14T08:40:00Z`; recovery завершил Attempt одним `interrupted` Result с `failure_code=runtime_execution_unknown`, Worker стал `offline`.
-- `PASS`: durable store сохранил ровно один Attempt, один AttemptOutcome и один Result; Node state сохранил один accepted dispatch command. Второй dispatch, Attempt или Result не создан.
-- `NOT RUN`: этот прогон не доказывает восстановление native session после reconnect, только корректное `interrupted` завершение.
+- `run_id`: `p4-server-restart-real-20260914`
+- `commit`: `7aa3781`
+- `command`: `zsh /tmp/p4-restart-proxy-real.sh`
+- `observed_at_utc`: `2026-09-14T06:51:29Z`–`2026-09-14T06:51:57Z`
+- `PASS` только для частичных фактов: на изолированном server/Node с реальным FX перед restart Attempt имел `state=starting`. После restart Attempt стал `interrupted`, Worker стал `offline`, создан ровно один Result, дубликатов процесса и Attempt нет.
+- `BLOCKED` для полного acceptance: Node после restart через proxy не переподключился, outbox остался buffered. Поэтому этот прогон не доказывает полный recovery flow, а только консервативное завершение uncertain Attempt.
+- `NOT RUN`: этот прогон не доказывает восстановление native session после reconnect.
 - `NOT RUN` для полного Scenario 29: в этом прогоне не было второго Node, поэтому отсутствие миграции на другую машину не доказано.
 
 Evidence оставлено только во временном redacted run directory. Секреты, cookies, prompts и runtime/session IDs в документацию не записывались.
@@ -388,10 +387,10 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 20 | Следующий Secretary context содержит unseen Result | PASS: `p4-unseen-result-real-20260914`, следующий Secretary turn вернул `status: succeeded` и `UNSEEN_RESULT_OK` из Worker Result |
 | 21 | Follow-up идёт тому же Worker новым Turn | PASS: `p4-followup-real-20260914`, тот же Worker получил второй Turn при двух Turn IDs и прежнем binding |
 | 22 | Явная задача Codex выполняется на home server | PASS: `p4-real-tailscale.XOzeoY-codex`, binding `home-server/codex` и terminal Result подтверждены |
-| 23 | Restart server во время active Attempt безопасен | PASS: `p4-server-restart-real-r2-20260914`, FX прислал 27 activity до restart; Attempt `starting` → `interrupted`, один Attempt/Outcome/Result без дубля |
+| 23 | Restart server во время active Attempt безопасен | BLOCKED: `p4-server-restart-real-20260914` подтвердил `starting` → `interrupted`, offline Worker, один Result и отсутствие дублей, но Node после restart не переподключился и outbox остался buffered |
 | 24 | Network loss после harness completion replay-ит outbox | PASS: `p4-network-loss-real-20260914`, proxy-сбой после terminal outcome, outbox `1 → 0`, один AttemptOutcome |
 | 25 | Повтор `command_id` не создаёт process/Attempt | NOT RUN: `p4-duplicate-real-20260914` проверил повторную lifecycle submission с одним idempotency key, но не отдельную повторную доставку низкоуровневой команды с тем же `command_id` |
-| 26 | После сбоя `interrupted` или доказанное native session recovery | PASS: `p4-server-restart-real-r2-20260914`, explicit `interrupted` Result с `failure_code=runtime_execution_unknown`; native session recovery отдельно не заявляется |
+| 26 | После сбоя `interrupted` или доказанное native session recovery | BLOCKED: `p4-server-restart-real-20260914` подтвердил explicit `interrupted` Result и отсутствие дублей, но Node не переподключился после restart; native session recovery не доказано |
 | 27 | `message_worker` выбирает resume или Follow-up | PASS: `p4-followup-real-20260914`, idle Worker получил новый Turn, всего два Turn/Attempt/Result при прежнем binding |
 | 28 | Idle Worker не тратит active Attempt capacity | PASS: `p4-idle-capacity-real-20260914`, до/после idle `capacity=1`, `active_attempts=0` |
 | 29 | Offline Node не мигрирует Worker | NOT RUN: `p4-server-restart-real-20260914` подтвердил offline status и сохранение binding, но без второго Node не проверил отсутствие миграции |
