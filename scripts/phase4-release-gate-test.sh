@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GATE="$ROOT/scripts/phase4-release-gate.sh"
 DOC="$ROOT/docs/phase4-release-gate.md"
+WIZARD="$ROOT/scripts/phase4-manual-acceptance-wizard.sh"
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
@@ -12,7 +13,9 @@ fail() {
 
 [[ -x "$GATE" ]] || fail "Phase 4 gate is not executable"
 [[ -f "$DOC" ]] || fail "Phase 4 gate documentation is missing"
+[[ -x "$WIZARD" ]] || fail "manual acceptance wizard is not executable"
 bash -n "$GATE" || fail "Phase 4 gate has invalid shell syntax"
+bash -n "$WIZARD" || fail "manual acceptance wizard has invalid shell syntax"
 
 for command in \
   'test ./...' \
@@ -39,6 +42,15 @@ for marker in \
   'home server Node' \
   'OpenCode'; do
   grep -Fqi "$marker" "$DOC" || fail "documentation is missing: $marker"
+done
+
+for marker in \
+  'GATE_RUN' \
+  'evidence-ledger.md' \
+  'BLOCKED' \
+  'NOT RUN' \
+  'never changes Ticket 15 status'; do
+  grep -Fq "$marker" "$WIZARD" || fail "wizard is missing: $marker"
 done
 
 printf 'Phase 4 release gate contract test passed.\n'

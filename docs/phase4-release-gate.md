@@ -77,6 +77,14 @@ Gate останавливается на первой ошибке и выпол
 
 ## Manual real-harness proof
 
+Для повторяемого сбора evidence можно запустить интерактивный wizard:
+
+```sh
+./scripts/phase4-manual-acceptance-wizard.sh
+```
+
+Он не принимает credentials, не сохраняет cookies или prompts, не подменяет real harness deterministic doubles и не меняет статус Ticket 15. Wizard создаёт новый ledger с режимами `PASS`, `FAIL`, `BLOCKED` и `NOT RUN`; существующий ledger намеренно не перезаписывается.
+
 ### 1. Чистая конфигурация и два Node
 
 Запускать новый прогон нужно в отдельной директории и с отдельным `HOME`. Не использовать существующий `~/.local/share/secretary`.
