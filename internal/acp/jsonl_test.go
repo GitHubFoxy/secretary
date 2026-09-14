@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -54,6 +57,87 @@ func (w *blockingReplyWriter) Write(payload []byte) (int, error) {
 	return len(payload), nil
 }
 func (*blockingReplyWriter) Close() error { return nil }
+
+func TestClientRoutesRequestBeforePendingResponseWithSameNumericID(t *testing.T) {
+	writer := &recordingWriter{}
+	stdout, peer := io.Pipe()
+	client := &Client{stdin: writer, wait: func() error { return nil }, events: make(chan Message, 1), done: make(chan struct{}), stop: make(chan struct{})}
+	requests := make(chan Message, 1)
+	client.SetServerRequestHandler(func(message Message) (any, error) {
+		requests <- message
+		return map[string]string{"outcome": "denied"}, nil
+	})
+	go client.read(stdout)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	finished := make(chan error, 1)
+	go func() {
+		var result map[string]bool
+		finished <- client.Request(ctx, "session/prompt", map[string]any{}, &result)
+	}()
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(writer.String(), `"method":"session/prompt"`) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if _, err := io.WriteString(peer, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"session/request_permission\",\"params\":{}}\n{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"ok\":true}}\n"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case request := <-requests:
+		if request.Method != "session/request_permission" || string(request.ID) != "1" {
+			t.Fatalf("request=%#v", request)
+		}
+	case <-ctx.Done():
+		t.Fatal("same-ID server request was treated as a pending response")
+	}
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(time.Second)
+	for !strings.Contains(writer.String(), `"id":1,"result"`) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !strings.Contains(writer.String(), `"id":1,"result"`) {
+		t.Fatalf("server response was not written: %q", writer.String())
+	}
+	_ = peer.Close()
+}
+
+func TestCustomHandlerCannotBeBypassedByFilesystemRequest(t *testing.T) {
+	writer := &recordingWriter{}
+	client := NewClient(writer)
+	called := false
+	client.SetServerRequestHandler(func(message Message) (any, error) {
+		called = true
+		if message.Method != "fs/read_text_file" {
+			return nil, errors.New("unexpected method")
+		}
+		return nil, errors.New("filesystem capability is not available")
+	})
+	if err := client.HandleServerRequest(Message{ID: json.RawMessage("7"), Method: "fs/read_text_file", Params: json.RawMessage(`{"path":"/private/secret"}`)}); err == nil {
+		t.Fatal("filesystem request unexpectedly succeeded")
+	}
+	if !called || strings.Contains(writer.String(), "secret") {
+		t.Fatalf("filesystem request bypassed handler or leaked path: called=%v response=%q", called, writer.String())
+	}
+}
+
+type recordingWriter struct {
+	mu sync.Mutex
+	strings.Builder
+}
+
+func (w *recordingWriter) Write(payload []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.Builder.Write(payload)
+}
+func (w *recordingWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.Builder.String()
+}
+func (*recordingWriter) Close() error { return nil }
 
 func TestClientAutomaticallyApprovesPermissionRequest(t *testing.T) {
 	command := exec.Command(os.Args[0], "-test.run=TestACPServerRequestProcess")

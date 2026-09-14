@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
@@ -152,9 +154,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.busy = !request.DeferInitialPrompt
 	r.mu.Unlock()
 	go r.consumeResults(session)
-	if store != nil && identity.ID != "" {
-		go r.consumeActivity(session)
-	}
+	go r.consumeActivity(session)
 	return nil
 }
 
@@ -182,7 +182,8 @@ func (r *Runtime) HandleMessage(ctx context.Context, text string) error {
 		}
 		_, err := r.QueueMessage(ctx, text)
 		if err == nil {
-			r.startNextDurable(ctx)
+			// The durable turn outlives the Telegram/HTTP acknowledgement context.
+			r.startNextDurable(context.Background())
 		}
 		return err
 	}
@@ -262,6 +263,26 @@ func (r *Runtime) consumeResults(session node.Session) {
 
 func (r *Runtime) consumeActivity(session node.Session) {
 	for activity := range session.Activity() {
+		// Secretary has no approval or input UI round-trip. Answer every reverse
+		// request explicitly rather than leaving the harness blocked forever.
+		if activity.Kind == node.ActivityPermission || activity.Kind == node.ActivityUserInput {
+			responder, ok := session.(node.Responder)
+			if !ok || strings.TrimSpace(activity.RequestID) == "" {
+				r.reportError(errors.New("secretary: ACP interaction cannot be answered"))
+				continue
+			}
+			response := "denied"
+			if activity.Kind == node.ActivityUserInput {
+				response = "cancel"
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			err := responder.Respond(ctx, activity.RequestID, response)
+			cancel()
+			if err != nil {
+				r.reportError(fmt.Errorf("secretary: deny ACP interaction: %w", err))
+			}
+			continue
+		}
 		r.mu.Lock()
 		store, turnID := r.store, r.activeTurnID
 		r.mu.Unlock()

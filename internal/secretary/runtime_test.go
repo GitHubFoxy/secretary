@@ -25,6 +25,7 @@ type fakeSession struct {
 	prompts      chan string
 	activities   chan node.Activity
 	results      chan node.Result
+	responses    chan string
 	closed       bool
 }
 
@@ -55,6 +56,10 @@ func (s *fakeSession) Cancel(context.Context) error {
 	s.results <- node.Result{Status: "canceled", Summary: "stopped"}
 	return nil
 }
+func (s *fakeSession) Respond(_ context.Context, requestID, response string) error {
+	s.responses <- requestID + ":" + response
+	return nil
+}
 func (s *fakeSession) Activity() <-chan node.Activity { return s.activities }
 func (s *fakeSession) Result() <-chan node.Result     { return s.results }
 func (s *fakeSession) Close() error                   { s.closed = true; return nil }
@@ -67,6 +72,25 @@ func setRuntimeTestPolicy(t *testing.T, store *core.Store) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRuntimeFailsClosedOnSecretaryInteraction(t *testing.T) {
+	session := &fakeSession{activities: make(chan node.Activity, 2), responses: make(chan string, 2)}
+	runtime := NewRuntime(nil, "cap")
+	go runtime.consumeActivity(session)
+	session.activities <- node.Activity{Kind: node.ActivityPermission, RequestID: "permission-1"}
+	session.activities <- node.Activity{Kind: node.ActivityUserInput, RequestID: "input-1"}
+	for _, want := range []string{"permission-1:denied", "input-1:cancel"} {
+		select {
+		case got := <-session.responses:
+			if got != want {
+				t.Fatalf("response=%q want=%q", got, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("missing response %q", want)
+		}
+	}
+	close(session.activities)
 }
 
 func TestRuntimePublishesNormalizedThinkingAndToolActivity(t *testing.T) {

@@ -9,7 +9,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 )
@@ -203,7 +202,7 @@ func (c *Client) send(message Message) error {
 	}
 	c.write.Lock()
 	defer c.write.Unlock()
-	c.writeRaw(encoded)
+	c.writeRaw("tx", encoded)
 	_, err = c.stdin.Write(append(encoded, '\n'))
 	return err
 }
@@ -218,9 +217,28 @@ func (c *Client) read(stdout io.Reader) {
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		raw := append([]byte(nil), scanner.Bytes()...)
-		c.writeRaw(raw)
+		c.writeRaw("rx", raw)
 		var message Message
 		if json.Unmarshal(raw, &message) != nil {
+			continue
+		}
+		// JSON-RPC is bidirectional. A peer can independently choose the same
+		// numeric request ID as an outstanding local request, so a frame with a
+		// method is always an inbound request or notification, never a response.
+		if message.Method != "" {
+			if len(message.ID) > 0 {
+				// A harness request can arrive while a client Request such as
+				// session/load is waiting for its response. Handle it outside
+				// the reader so the matching RPC response can still unblock the
+				// client, while the typed response remains pending in the session.
+				go func(request Message) { _ = c.handleServerRequest(request) }(message)
+				continue
+			}
+			select {
+			case c.events <- message:
+			case <-c.stop:
+				return
+			}
 			continue
 		}
 		if len(message.ID) > 0 {
@@ -231,14 +249,6 @@ func (c *Client) read(stdout io.Reader) {
 					continue
 				}
 			}
-			if message.Method != "" {
-				// A harness request can arrive while a client Request such as
-				// session/load is waiting for its response. Handle it outside
-				// the reader so the matching RPC response can still unblock the
-				// client, while the typed response remains pending in the session.
-				go func(request Message) { _ = c.handleServerRequest(request) }(message)
-				continue
-			}
 		}
 		select {
 		case c.events <- message:
@@ -248,12 +258,20 @@ func (c *Client) read(stdout io.Reader) {
 	}
 }
 
-func (c *Client) writeRaw(raw []byte) {
+type frameLogger interface {
+	WriteACPFrame(direction string, raw []byte) (int, error)
+}
+
+func (c *Client) writeRaw(direction string, raw []byte) {
 	if c.log == nil {
 		return
 	}
 	c.logMu.Lock()
 	defer c.logMu.Unlock()
+	if logger, ok := c.log.(frameLogger); ok {
+		_, _ = logger.WriteACPFrame(direction, append(raw, '\n'))
+		return
+	}
 	_, _ = c.log.Write(append(raw, '\n'))
 }
 
@@ -275,33 +293,6 @@ func (c *Client) handleServerRequest(message Message) error {
 	switch message.Method {
 	case "session/request_permission":
 		return c.replyError(message.ID, -32010, "permission request requires explicit approval policy")
-	case "fs/read_text_file":
-		var params struct {
-			Path string `json:"path"`
-		}
-		if err := json.Unmarshal(message.Params, &params); err != nil || params.Path == "" {
-			return c.replyError(message.ID, -32602, "path is required")
-		}
-		content, err := os.ReadFile(params.Path)
-		if err != nil {
-			return c.replyError(message.ID, -32001, err.Error())
-		}
-		return c.reply(message.ID, map[string]string{"content": string(content)})
-	case "fs/write_text_file":
-		var params struct {
-			Path    string `json:"path"`
-			Content string `json:"content"`
-		}
-		if err := json.Unmarshal(message.Params, &params); err != nil || params.Path == "" {
-			return c.replyError(message.ID, -32602, "path is required")
-		}
-		if err := os.MkdirAll(filepath.Dir(params.Path), 0o700); err != nil {
-			return c.replyError(message.ID, -32001, err.Error())
-		}
-		if err := os.WriteFile(params.Path, []byte(params.Content), 0o600); err != nil {
-			return c.replyError(message.ID, -32001, err.Error())
-		}
-		return c.reply(message.ID, map[string]any{})
 	default:
 		return c.replyError(message.ID, -32601, "unsupported ACP client request: "+message.Method)
 	}

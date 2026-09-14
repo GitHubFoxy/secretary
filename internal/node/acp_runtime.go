@@ -3,6 +3,7 @@ package node
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -204,7 +205,6 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 
 func acpClientCapabilities() map[string]any {
 	return map[string]any{
-		"fs":          map[string]bool{"readTextFile": true, "writeTextFile": true},
 		"terminal":    false,
 		"elicitation": map[string]any{"form": map[string]any{}},
 	}
@@ -220,7 +220,11 @@ func newRedactingACPLog(log io.WriteCloser) io.WriteCloser {
 }
 
 func (l *redactingACPLog) Write(raw []byte) (int, error) {
-	redacted := redactACPLogLine(raw)
+	return l.WriteACPFrame("unknown", raw)
+}
+
+func (l *redactingACPLog) WriteACPFrame(direction string, raw []byte) (int, error) {
+	redacted := redactACPLogFrame(direction, raw)
 	if _, err := l.writer.Write(redacted); err != nil {
 		return 0, err
 	}
@@ -229,13 +233,23 @@ func (l *redactingACPLog) Write(raw []byte) (int, error) {
 
 func (l *redactingACPLog) Close() error { return l.closer.Close() }
 
-func redactACPLogLine(raw []byte) []byte {
+func redactACPLogLine(raw []byte) []byte { return redactACPLogFrame("unknown", raw) }
+
+func redactACPLogFrame(direction string, raw []byte) []byte {
 	var message map[string]any
 	if json.Unmarshal(raw, &message) != nil {
-		return []byte("[redacted non-JSON ACP output]\n")
+		encoded, _ := json.Marshal(map[string]any{
+			"observed_at": time.Now().UTC().Format(time.RFC3339Nano),
+			"direction":   direction,
+			"kind":        "non_json",
+			"redacted":    true,
+		})
+		return append(encoded, '\n')
 	}
 	redacted := false
-	safe := make(map[string]any, 4)
+	safe := make(map[string]any, 8)
+	safe["observed_at"] = time.Now().UTC().Format(time.RFC3339Nano)
+	safe["direction"] = direction
 	for _, key := range []string{"jsonrpc", "method"} {
 		if value, ok := message[key]; ok {
 			safe[key] = value
@@ -264,13 +278,28 @@ func redactACPLogLine(raw []byte) []byte {
 			redacted = true
 		}
 	}
-	if _, hasID := message["id"]; hasID {
+	if id, hasID := message["id"]; hasID {
+		fingerprint := sha256.Sum256([]byte(fmt.Sprint(id)))
+		safe["id_fingerprint"] = fmt.Sprintf("%x", fingerprint[:6])
+		if _, hasMethod := message["method"]; hasMethod {
+			safe["kind"] = "request"
+		} else {
+			safe["kind"] = "response"
+		}
 		redacted = true
+	} else if _, hasMethod := message["method"]; hasMethod {
+		safe["kind"] = "notification"
 	}
-	if !redacted {
-		return raw
+	if method, _ := message["method"].(string); method == "session/update" {
+		if params, ok := message["params"].(map[string]any); ok {
+			if update, ok := params["update"].(map[string]any); ok {
+				if kind, ok := update["sessionUpdate"].(string); ok {
+					safe["session_update"] = kind
+				}
+			}
+		}
 	}
-	safe["redacted"] = true
+	safe["redacted"] = redacted
 	encoded, err := json.Marshal(safe)
 	if err != nil {
 		return []byte("[redacted ACP output]\n")
@@ -446,7 +475,7 @@ func (s *acpSession) Respond(ctx context.Context, requestID, response string) er
 	if pending.responseSent {
 		delivered := pending.delivered
 		s.requestMu.Unlock()
-		return waitForACPDelivery(ctx, delivered)
+		return s.waitForACPDelivery(ctx, delivered)
 	}
 	pending.responseSent = true
 	if pending.retryable {
@@ -459,25 +488,29 @@ func (s *acpSession) Respond(ctx context.Context, requestID, response string) er
 			return errors.New("acp: failed response is not retryable")
 		}
 		_ = retry(response)
-		return waitForACPDelivery(ctx, delivered)
+		return s.waitForACPDelivery(ctx, delivered)
 	}
 	delivered := pending.delivered
 	responseCh := pending.response
 	s.requestMu.Unlock()
 	select {
 	case responseCh <- response:
-		return waitForACPDelivery(ctx, delivered)
+		return s.waitForACPDelivery(ctx, delivered)
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-s.activityDone:
+		return errors.New("acp: session closed before interaction response delivery")
 	}
 }
 
-func waitForACPDelivery(ctx context.Context, delivered <-chan error) error {
+func (s *acpSession) waitForACPDelivery(ctx context.Context, delivered <-chan error) error {
 	select {
 	case err := <-delivered:
 		return err
 	case <-ctx.Done():
 		return ctx.Err()
+	case <-s.activityDone:
+		return errors.New("acp: session closed before interaction response delivery")
 	}
 }
 
@@ -634,8 +667,12 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 			return nil, errors.New("acp: session closed before worker request was observed")
 		}
 	}
-	value := <-pending.response
-	return s.serverRequestResponse(kind, message.Params, value)
+	select {
+	case value := <-pending.response:
+		return s.serverRequestResponse(kind, message.Params, value)
+	case <-s.activityDone:
+		return nil, acp.NewRequestError(-32800, "ACP session closed before interaction response")
+	}
 }
 
 func (s *acpSession) elicitationRequestID(requestID json.RawMessage, kind ActivityKind) (string, error) {

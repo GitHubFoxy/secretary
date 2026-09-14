@@ -29,6 +29,9 @@ func TestACPClientCapabilitiesAdvertiseFormOnly(t *testing.T) {
 	if _, ok := elicitation["url"]; ok {
 		t.Fatalf("URL capability must not be advertised: %#v", elicitation)
 	}
+	if _, ok := capabilities["fs"]; ok {
+		t.Fatalf("filesystem capability must not be advertised: %#v", capabilities)
+	}
 }
 
 func TestRedactACPLogLineHidesUserInput(t *testing.T) {
@@ -53,6 +56,14 @@ func TestRedactACPLogLineHidesUserInput(t *testing.T) {
 	unknown := redactACPLogLine([]byte(`{"secret":"credential-value"}`))
 	if strings.Contains(string(unknown), "credential-value") || !strings.Contains(string(unknown), `"redacted":true`) {
 		t.Fatalf("unknown ACP log field was not redacted: %s", unknown)
+	}
+	trace := redactACPLogFrame("tx", []byte(`{"jsonrpc":"2.0","method":"initialized"}`))
+	if !strings.Contains(string(trace), `"direction":"tx"`) || !strings.Contains(string(trace), `"kind":"notification"`) {
+		t.Fatalf("trace lacks safe envelope metadata: %s", trace)
+	}
+	nonJSON := redactACPLogFrame("rx", []byte("not json"))
+	if !strings.Contains(string(nonJSON), `"direction":"rx"`) || strings.Contains(string(nonJSON), "not json") {
+		t.Fatalf("non-JSON trace leaked payload or direction: %s", nonJSON)
 	}
 }
 
@@ -111,6 +122,48 @@ func TestACPRuntimeUsesFakeACPProcess(t *testing.T) {
 		t.Fatalf("steer injected=%v err=%v", injected, err)
 	}
 }
+
+func TestACPSessionClosingCancelsPendingInteraction(t *testing.T) {
+	client := acp.NewClient(&discardACPWriter{})
+	session := newACPSession("session", client, false)
+	finished := make(chan error, 1)
+	go func() {
+		_, err := session.handleServerRequest(acp.Message{
+			ID:     json.RawMessage("9"),
+			Method: "session/request_permission",
+			Params: json.RawMessage(`{"options":[{"optionId":"deny","kind":"deny"}]}`),
+		})
+		finished <- err
+	}()
+	select {
+	case activity := <-session.Activity():
+		if activity.Kind != ActivityPermission {
+			t.Fatalf("activity=%#v", activity)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("permission activity was not emitted")
+	}
+	session.closeActivity()
+	select {
+	case err := <-finished:
+		if err == nil {
+			t.Fatal("pending interaction completed without a cancellation error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending interaction remained blocked after session close")
+	}
+	session.RebindPendingRequests([]PendingRequest{{RequestID: "rebound", Kind: ActivityPermission}})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.Respond(ctx, "rebound", "denied"); err == nil {
+		t.Fatal("rebound Respond succeeded after session close")
+	}
+}
+
+type discardACPWriter struct{}
+
+func (*discardACPWriter) Write(payload []byte) (int, error) { return len(payload), nil }
+func (*discardACPWriter) Close() error                      { return nil }
 
 func TestACPRuntimeDefersInitialPrompt(t *testing.T) {
 	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
