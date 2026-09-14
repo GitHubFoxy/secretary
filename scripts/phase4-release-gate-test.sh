@@ -45,6 +45,7 @@ for marker in \
 done
 
 for marker in \
+  'ROOT=' \
   'GATE_RUN' \
   'evidence-ledger.md' \
   'BLOCKED' \

@@ -186,7 +186,8 @@ finish() {
 
 TOTAL_STAGES=7
 
-GATE_RUN="${GATE_RUN:-$PWD/.scratch/phase4-runs/$(date -u +%Y%m%dT%H%M%SZ)}"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GATE_RUN="${GATE_RUN:-$ROOT/.scratch/phase4-runs/$(date -u +%Y%m%dT%H%M%SZ)}"
 LEDGER="$GATE_RUN/evidence-ledger.md"
 umask 077
 mkdir -p "$GATE_RUN"
@@ -196,7 +197,7 @@ if [[ -e "$LEDGER" ]]; then
 fi
 : > "$LEDGER"
 printf 'run_id: %s\ncommit: %s\nstarted_at_utc: %s\n\n' \
-  "$(basename "$GATE_RUN")" "$(git rev-parse HEAD 2>/dev/null || printf unknown)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LEDGER"
+  "$(basename "$GATE_RUN")" "$(cd "$ROOT" && git rev-parse HEAD 2>/dev/null || printf unknown)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$LEDGER"
 printf '| scenario | state | notes |\n|---:|---|---|\n' >> "$LEDGER"
 
 record() {
@@ -268,7 +269,7 @@ stage "Run directory"
 say "This wizard records evidence only. It never stores pairing tokens, cookies, bot tokens, or model prompts."
 say "Use a fresh GATE_RUN directory. Keep notes short and redact private hostnames and paths."
 step "Review the current commit and confirm the repository is clean before starting."
-if [[ -n "$(git status --porcelain)" ]]; then
+if [[ -n "$(cd "$ROOT" && git status --porcelain)" ]]; then
   warn "working tree is not clean; resolve this before treating the run as release evidence"
   record "preflight" "BLOCKED" "working tree is dirty"
 else
@@ -290,7 +291,7 @@ pause "Press Enter after harness status has been checked"
 
 stage "Deterministic gate"
 say "The deterministic gate is independent evidence and must be recorded separately."
-if "$PWD/scripts/phase4-release-gate.sh" >"$GATE_RUN/deterministic-gate.log" 2>&1; then
+if (cd "$ROOT" && "$ROOT/scripts/phase4-release-gate.sh") >"$GATE_RUN/deterministic-gate.log" 2>&1; then
   record "37" "PASS" "phase4-release-gate.sh log: deterministic-gate.log"
   note "Deterministic gate passed."
 else
