@@ -194,6 +194,17 @@ Evidence оставлено только во временном redacted run di
 
 Evidence оставлено только во временном redacted run directory.
 
+## Latest unseen Worker Result context
+
+- `run_id`: `p4-unseen-result-real-20260914`
+- `commit`: `a516142`
+- `command`: `zsh /tmp/p4-unseen-result-real.sh`
+- `observed_at_utc`: `2026-09-14T07:40:27Z`–`2026-09-14T07:41:16Z`
+- `PASS`: реальный FX Worker завершился с одним Result и записал sentinel `UNSEEN_RESULT_OK` (`RESULT_COUNT=1`, `SENTINEL_OK=1`, `RC=0`). Следующее inbound message запустило реальный Secretary turn; ответ Secretary сообщил `status: succeeded` и точный sentinel unseen Result (`ANSWER_SENTINEL_MATCH=1`).
+- `PASS` для Scenario 20: durable event sequence содержал `secretary.turn.queued`, `secretary.turn.started`, `secretary.turn.finished` после `result.accepted`, что подтверждает передачу unseen Result в следующий Secretary context.
+
+Evidence оставлено только во временном redacted run directory.
+
 ## Offline UI and Telegram status
 
 - `BLOCKED` для полного Scenario 35: restart run показал Worker `offline` и сохранённую binding через Web/API, но Telegram adapter не был настроен, поэтому согласованный Web+Telegram offline state не подтверждён.
@@ -359,7 +370,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 17 | Другой Client отвечает Approval и `needs_input` через `respond_worker` | Client B request/response и terminal state |
 | 18 | Несколько Attempts дают diagnostics, но один Result на Turn | Attempts, AttemptOutcomes и count ровно 1 Result |
 | 19 | Terminal Result доставлен напрямую без Secretary model turn | PASS: `p4-network-loss-real-20260914`, `result.accepted`/`attempt.outcome_recorded` без `secretary.turn.*` в event list |
-| 20 | Следующий Secretary context содержит unseen Result | следующий turn diagnostic/context evidence |
+| 20 | Следующий Secretary context содержит unseen Result | PASS: `p4-unseen-result-real-20260914`, следующий Secretary turn вернул `status: succeeded` и `UNSEEN_RESULT_OK` из Worker Result |
 | 21 | Follow-up идёт тому же Worker новым Turn | Worker ID прежний, Turn ID новый |
 | 22 | Явная задача Codex выполняется на home server | binding `home-server/codex` и terminal Result |
 | 23 | Restart server во время active Attempt безопасен | PASS: `p4-server-restart-real-20260914`, Attempt `starting` → `interrupted`, один Attempt/Result без дубля |
