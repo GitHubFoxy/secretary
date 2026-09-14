@@ -111,6 +111,19 @@
 
 Это подтверждает фактическое поведение установленного Codex ACP и оставляет обязательный full real-harness `needs_input` сценарий открытым.
 
+## Latest isolated network-loss simulation
+
+- `run_id`: `p4-network-loss-real-20260914`
+- `commit`: `3a0270a`
+- `command`: `zsh /tmp/p4-network-loss-real.sh`
+- `observed_at_utc`: `2026-09-14T06:11:13Z`–`2026-09-14T06:12:02Z`
+- `PASS`: изолированный Secretary server и outbound Node с реальным FX подняты на временных data directories; Web session, Project mapping и dispatch прошли.
+- `PASS`: прозрачный тестовый WebSocket proxy симулировал сетевой разрыв и намеренно потерял terminal AttemptOutcome. После reconnect Node outbox доставил событие: `OUTBOX_BEFORE_RECONNECT=1`, `OUTBOX_AFTER_RECONNECT=0`; в durable store остались ровно один `phase4_attempt_outcome` и один `phase4_result`, Attempt завершился `succeeded`, Worker перешёл в `idle`.
+- `PASS`: Node state содержит ровно один принятый dispatch command, абсолютный sentinel в mapped workspace содержит ожидаемый маркер, а второй процесс и второй Attempt в этом reconnect run не наблюдались.
+- `BLOCKED`: это симуляция сетевого разрыва через тестовый proxy, а не физическое отключение интерфейса. Прогон использовал FX, а не Codex, и не закрывает обязательные Claude Code, Telegram, `needs_input`, multi-Attempt и cross-Node строки.
+
+Evidence оставлено только во временном redacted run directory. Секреты, cookies и runtime/session IDs в документацию не записывались.
+
 ## Latest deterministic gate run
 
 - `run_id`: `p4-deterministic-c32d9a8-20260914T052227Z`
@@ -271,8 +284,8 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 | 21 | Follow-up идёт тому же Worker новым Turn | Worker ID прежний, Turn ID новый |
 | 22 | Явная задача Codex выполняется на home server | binding `home-server/codex` и terminal Result |
 | 23 | Restart server во время active Attempt безопасен | pre/post status и recovery timeline |
-| 24 | Network loss после harness completion replay-ит outbox | отключение сети, local outbox, reconnect и AttemptOutcome |
-| 25 | Повтор `command_id` не создаёт process/Attempt | две dispatch submissions, один outcome/process/Attempt |
+| 24 | Network loss после harness completion replay-ит outbox | PASS: `p4-network-loss-real-20260914`, proxy-сбой после terminal outcome, outbox `1 → 0`, один AttemptOutcome |
+| 25 | Повтор `command_id` не создаёт process/Attempt | NOT RUN: network-loss прогон отправил один server dispatch command; отдельная повторная submission не проверялась |
 | 26 | После сбоя `interrupted` или доказанное native session recovery | terminal state и Node recovery evidence |
 | 27 | `message_worker` выбирает resume или Follow-up | request, выбранная операция и binding |
 | 28 | Idle Worker не тратит active Attempt capacity | capacity snapshot до/после idle периода |
