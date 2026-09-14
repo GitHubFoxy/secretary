@@ -133,7 +133,7 @@ func TestSharedHarnessACPProcess(t *testing.T) {
 			result := map[string]any{}
 			switch request.Method {
 			case "initialize":
-				result = map[string]any{}
+				result = map[string]any{"protocolVersion": 1}
 			case "session/new":
 				result = map[string]any{"sessionId": "shared-session"}
 			case "session/load":

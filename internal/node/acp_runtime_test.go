@@ -17,6 +17,65 @@ import (
 	"github.com/beruseruko/secretary/internal/acp"
 )
 
+func TestACPClientCapabilitiesAdvertiseFormOnly(t *testing.T) {
+	capabilities := acpClientCapabilities()
+	elicitation, ok := capabilities["elicitation"].(map[string]any)
+	if !ok {
+		t.Fatalf("elicitation capabilities=%#v", capabilities["elicitation"])
+	}
+	if _, ok := elicitation["form"]; !ok {
+		t.Fatalf("form capability missing: %#v", elicitation)
+	}
+	if _, ok := elicitation["url"]; ok {
+		t.Fatalf("URL capability must not be advertised: %#v", elicitation)
+	}
+}
+
+func TestRedactACPLogLineHidesUserInput(t *testing.T) {
+	raw := []byte(`{"jsonrpc":"2.0","id":43,"result":{"action":"accept","content":{"answer":"super-secret"},"input":"also-secret"}}` + "\n")
+	redacted := redactACPLogLine(raw)
+	if strings.Contains(string(redacted), "super-secret") || strings.Contains(string(redacted), "also-secret") {
+		t.Fatalf("ACP log leaked input: %s", redacted)
+	}
+	var message struct {
+		Result map[string]any `json:"result"`
+	}
+	if err := json.Unmarshal(redacted, &message); err != nil {
+		t.Fatal(err)
+	}
+	if message.Result["redacted"] != true {
+		t.Fatalf("redacted ACP log=%#v", message)
+	}
+	update := []byte(`{"jsonrpc":"2.0","method":"session/update","params":{"update":{"text":"raw thought"}}}` + "\n")
+	if got := redactACPLogLine(update); strings.Contains(string(got), "raw thought") {
+		t.Fatalf("ACP update log leaked runtime content: %s", got)
+	}
+}
+
+func TestCanonicalElicitationRequestIDPreservesWireNumber(t *testing.T) {
+	got, present, valid := canonicalElicitationRequestID(json.RawMessage(`9007199254740993`))
+	if !present || !valid || got != "elicitation:number:9007199254740993" {
+		t.Fatalf("canonical request ID=%q present=%v valid=%v", got, present, valid)
+	}
+	got, present, valid = canonicalElicitationRequestID(json.RawMessage(`"9007199254740993"`))
+	if !present || !valid || got != "elicitation:string:9007199254740993" {
+		t.Fatalf("canonical string request ID=%q present=%v valid=%v", got, present, valid)
+	}
+	if _, present, valid = canonicalElicitationRequestID(json.RawMessage(`1.5`)); !present || valid {
+		t.Fatal("fractional request ID was accepted")
+	}
+}
+
+func TestACPRuntimeRejectsUnsupportedProtocolVersion(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
+	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:], Environment: []string{"ACP_PROTOCOL_VERSION=2"}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := runtime.Start(ctx, StartRequest{WorkerRef: "unsupported-version", Task: "inspect", Workspace: t.TempDir()}); err == nil {
+		t.Fatal("ACP runtime accepted unsupported protocol version")
+	}
+}
+
 func TestACPRuntimeUsesFakeACPProcess(t *testing.T) {
 	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
 	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:]}
@@ -410,6 +469,132 @@ func TestACPSessionHandlerErrorIsNotSuccessfulWithOnlyAllowOnce(t *testing.T) {
 	}
 }
 
+func TestACPSessionHandlesFormElicitation(t *testing.T) {
+	writer := &recordingNativeReplyWriter{}
+	client := acp.NewClient(writer)
+	session := newACPSession("elicitation-session", client, false)
+	session.setRequestHandler()
+	request := acp.Message{
+		ID:     json.RawMessage("43"),
+		Method: "elicitation/create",
+		Params: json.RawMessage(`{"requestId":42,"mode":"form","message":"Which command should I run?","requestedSchema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}}`),
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- client.HandleServerRequest(request) }()
+	var activity Activity
+	select {
+	case activity = <-session.Activity():
+	case err := <-finished:
+		t.Fatalf("elicitation handler returned before request observation: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("elicitation request was not observed")
+	}
+	if activity.Kind != ActivityUserInput || activity.RequestID != "elicitation:number:42" || activity.Summary != "Which command should I run?" || !strings.Contains(string(activity.RequestSchema), `"answer"`) {
+		t.Fatalf("elicitation activity=%#v", activity)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.Respond(ctx, activity.RequestID, "git status"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+	var reply acp.Message
+	if err := json.Unmarshal(writer.last(), &reply); err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Action  string            `json:"action"`
+		Content map[string]string `json:"content"`
+	}
+	if err := json.Unmarshal(reply.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Action != "accept" || result.Content["answer"] != "git status" {
+		t.Fatalf("elicitation response=%#v", result)
+	}
+}
+
+func TestElicitationResponseValidatesSchemaConstraints(t *testing.T) {
+	schema := json.RawMessage(`{"type":"object","properties":{"answer":{"type":"string","enum":["yes","no"],"minLength":2},"count":{"type":"integer","minimum":1,"maximum":3}},"required":["answer","count"]}`)
+	if _, err := elicitationResponse(schema, `{"answer":"yes","count":2}`); err != nil {
+		t.Fatal(err)
+	}
+	for _, invalid := range []string{`{"answer":"maybe","count":2}`, `{"answer":"yes","count":4}`} {
+		if _, err := elicitationResponse(schema, invalid); err == nil {
+			t.Fatalf("invalid elicitation response accepted: %s", invalid)
+		}
+	}
+}
+
+func TestACPSessionRejectsSecretFormElicitation(t *testing.T) {
+	writer := &recordingNativeReplyWriter{}
+	client := acp.NewClient(writer)
+	session := newACPSession("elicitation-secret-session", client, false)
+	session.setRequestHandler()
+	request := acp.Message{ID: json.RawMessage("46"), Method: "elicitation/create", Params: json.RawMessage(`{"mode":"form","message":"Enter your password","requestedSchema":{"type":"object","properties":{"password":{"type":"string"}},"required":["password"]}}`)}
+	if err := client.HandleServerRequest(request); err == nil {
+		t.Fatal("secret form elicitation was accepted")
+	}
+	select {
+	case activity := <-session.Activity():
+		t.Fatalf("secret elicitation emitted activity=%#v", activity)
+	default:
+	}
+}
+
+func TestACPSessionRebindsFormElicitationByRequestID(t *testing.T) {
+	writer := &recordingNativeReplyWriter{}
+	client := acp.NewClient(writer)
+	session := newACPSession("elicitation-rebind-session", client, false)
+	session.setRequestHandler()
+	session.RebindPendingRequests([]PendingRequest{{RequestID: "elicitation:number:42", Kind: ActivityUserInput}})
+	request := acp.Message{ID: json.RawMessage("45"), Method: "elicitation/create", Params: json.RawMessage(`{"requestId":42,"mode":"form","message":"question","requestedSchema":{"type":"object","properties":{"answer":{"type":"string"}},"required":["answer"]}}`)}
+	finished := make(chan error, 1)
+	go func() { finished <- client.HandleServerRequest(request) }()
+	var activity Activity
+	select {
+	case activity = <-session.Activity():
+	case <-time.After(time.Second):
+		t.Fatal("rebound elicitation was not observed")
+	}
+	if activity.RequestID != "elicitation:number:42" {
+		t.Fatalf("rebound request ID=%q", activity.RequestID)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := session.Respond(ctx, activity.RequestID, "answer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-finished; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestACPSessionRejectsUnsupportedElicitationMode(t *testing.T) {
+	writer := &recordingNativeReplyWriter{}
+	client := acp.NewClient(writer)
+	session := newACPSession("elicitation-url-session", client, false)
+	session.setRequestHandler()
+	request := acp.Message{ID: json.RawMessage("44"), Method: "elicitation/create", Params: json.RawMessage(`{"mode":"url","message":"authorize","elicitationId":"id","url":"https://example.invalid"}`)}
+	if err := client.HandleServerRequest(request); err == nil {
+		t.Fatal("URL elicitation was accepted without URL capability")
+	}
+	select {
+	case activity := <-session.Activity():
+		t.Fatalf("unsupported elicitation emitted activity=%#v", activity)
+	default:
+	}
+	var reply acp.Message
+	if err := json.Unmarshal(writer.last(), &reply); err != nil {
+		t.Fatal(err)
+	}
+	if reply.Error == nil || reply.Error.Code != -32602 {
+		t.Fatalf("unsupported elicitation error=%#v", reply.Error)
+	}
+}
+
 type recordingNativeReplyWriter struct {
 	mu      sync.Mutex
 	payload []byte
@@ -533,7 +718,7 @@ func TestFakeACPReplyWriterFailureProcess(t *testing.T) {
 			}
 			switch request.Method {
 			case "initialize":
-				_ = encoder.Encode(map[string]any{"id": json.RawMessage(request.ID), "result": map[string]any{}})
+				_ = encoder.Encode(map[string]any{"id": json.RawMessage(request.ID), "result": map[string]any{"protocolVersion": 1}})
 			case "session/load":
 				_ = encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": 77, "method": "session/request_permission", "params": map[string]any{"options": []map[string]string{{"optionId": "deny", "kind": "reject_once"}}}})
 				_ = encoder.Encode(map[string]any{"id": json.RawMessage(request.ID), "result": map[string]any{}})
@@ -600,7 +785,7 @@ func TestFakeACPAllowOnceProcess(t *testing.T) {
 		}
 		switch request.Method {
 		case "initialize":
-			_ = encoder.Encode(map[string]any{"id": request.ID, "result": map[string]any{}})
+			_ = encoder.Encode(map[string]any{"id": request.ID, "result": map[string]any{"protocolVersion": 1}})
 		case "session/new":
 			_ = encoder.Encode(map[string]any{"id": request.ID, "result": map[string]string{"sessionId": "allow-once-session"}})
 		case "session/prompt":
@@ -668,7 +853,7 @@ func TestFakeACPReconnectProcess(t *testing.T) {
 			continue
 		}
 		if request.Method == "initialize" {
-			_ = encoder.Encode(map[string]any{"id": json.RawMessage(request.ID), "result": map[string]any{}})
+			_ = encoder.Encode(map[string]any{"id": json.RawMessage(request.ID), "result": map[string]any{"protocolVersion": 1}})
 			continue
 		}
 		if request.Method == "session/load" {
@@ -747,6 +932,12 @@ func TestFakeACPProcess(t *testing.T) {
 		}
 		result := map[string]any{}
 		switch request.Method {
+		case "initialize":
+			version := 1
+			if os.Getenv("ACP_PROTOCOL_VERSION") == "2" {
+				version = 2
+			}
+			result = map[string]any{"protocolVersion": version}
 		case "session/new":
 			result = map[string]any{"sessionId": "fake-session"}
 		case "session/prompt":

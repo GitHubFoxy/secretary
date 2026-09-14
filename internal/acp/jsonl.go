@@ -30,6 +30,25 @@ type RPCError struct {
 
 func (e *RPCError) Error() string { return fmt.Sprintf("acp rpc %d: %s", e.Code, e.Message) }
 
+type RequestError struct {
+	Code    int
+	Message string
+}
+
+func (e *RequestError) Error() string { return e.Message }
+
+func NewRequestError(code int, message string) error {
+	return &RequestError{Code: code, Message: message}
+}
+
+func requestErrorCode(err error) int {
+	var requestErr *RequestError
+	if errors.As(err, &requestErr) {
+		return requestErr.Code
+	}
+	return -32010
+}
+
 type ServerRequestHandler func(Message) (any, error)
 
 type ServerRequestDeliveryHandler func(Message, error)
@@ -67,7 +86,7 @@ func (c *Client) HandleServerRequest(message Message) error {
 func (c *Client) RetryServerRequest(message Message, result any, handlerErr error) error {
 	var deliveryErr error
 	if handlerErr != nil {
-		deliveryErr = c.replyError(message.ID, -32010, handlerErr.Error())
+		deliveryErr = c.replyError(message.ID, requestErrorCode(handlerErr), handlerErr.Error())
 		if deliveryErr == nil {
 			deliveryErr = handlerErr
 		}
@@ -204,11 +223,13 @@ func (c *Client) read(stdout io.Reader) {
 		if json.Unmarshal(raw, &message) != nil {
 			continue
 		}
-		var id uint64
-		if len(message.ID) > 0 && json.Unmarshal(message.ID, &id) == nil {
-			if pending, ok := c.pending.Load(id); ok {
-				pending.(chan Message) <- message
-				continue
+		if len(message.ID) > 0 {
+			var id uint64
+			if json.Unmarshal(message.ID, &id) == nil {
+				if pending, ok := c.pending.Load(id); ok {
+					pending.(chan Message) <- message
+					continue
+				}
 			}
 			if message.Method != "" {
 				// A harness request can arrive while a client Request such as
@@ -241,7 +262,7 @@ func (c *Client) handleServerRequest(message Message) error {
 		result, handlerErr := c.handler(message)
 		var deliveryErr error
 		if handlerErr != nil {
-			deliveryErr = c.replyError(message.ID, -32010, handlerErr.Error())
+			deliveryErr = c.replyError(message.ID, requestErrorCode(handlerErr), handlerErr.Error())
 			if deliveryErr == nil {
 				deliveryErr = handlerErr
 			}

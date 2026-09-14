@@ -79,6 +79,37 @@ func TestClientAutomaticallyApprovesPermissionRequest(t *testing.T) {
 	}
 }
 
+func TestClientRoutesStringIDServerRequest(t *testing.T) {
+	command := exec.Command(os.Args[0], "-test.run=TestACPServerRequestProcess")
+	client, err := StartWithLogEnv(context.Background(), nil, []string{"ACP_STRING_SERVER_ID=1"}, command.Path, command.Args[1:]...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	requests := make(chan Message, 1)
+	client.SetServerRequestHandler(func(message Message) (any, error) {
+		requests <- message
+		return map[string]any{"outcome": map[string]any{"outcome": "selected", "optionId": "allow_always"}}, nil
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var ignored map[string]any
+	if err := client.Request(ctx, "initialize", map[string]any{}, &ignored); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Request(ctx, "session/prompt", map[string]any{}, &ignored); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case message := <-requests:
+		if message.Method != "session/request_permission" || string(message.ID) != `"server-request"` {
+			t.Fatalf("server request=%#v", message)
+		}
+	case <-ctx.Done():
+		t.Fatal("string-ID server request was not routed")
+	}
+}
+
 func TestACPServerRequestProcess(t *testing.T) {
 	for _, arg := range os.Args {
 		if arg == "-test.run=TestACPServerRequestProcess" {
@@ -94,7 +125,11 @@ func TestACPServerRequestProcess(t *testing.T) {
 				if json.Unmarshal(scanner.Bytes(), &request) != nil {
 					continue
 				}
-				if string(request.ID) == "900" {
+				serverRequestID := "900"
+				if os.Getenv("ACP_STRING_SERVER_ID") == "1" {
+					serverRequestID = `"server-request"`
+				}
+				if string(request.ID) == "900" || string(request.ID) == serverRequestID {
 					outcome, _ := request.Result["outcome"].(map[string]any)
 					approved = outcome["outcome"] == "selected" && outcome["optionId"] == "allow_always"
 					if approved {
@@ -103,7 +138,11 @@ func TestACPServerRequestProcess(t *testing.T) {
 					continue
 				}
 				if request.Method == "session/prompt" {
-					_ = encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": 900, "method": "session/request_permission", "params": map[string]any{"options": []map[string]string{{"optionId": "allow_always", "kind": "allow_always"}}}})
+					requestID := any(900)
+					if os.Getenv("ACP_STRING_SERVER_ID") == "1" {
+						requestID = "server-request"
+					}
+					_ = encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": requestID, "method": "session/request_permission", "params": map[string]any{"options": []map[string]string{{"optionId": "allow_always", "kind": "allow_always"}}}})
 					continue
 				}
 				if len(request.ID) == 0 {

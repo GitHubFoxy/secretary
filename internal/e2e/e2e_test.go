@@ -265,7 +265,7 @@ func TestE2EFakeACPProcess(t *testing.T) {
 		case "_session/steering":
 			result = map[string]any{"outcome": "injected"}
 		case "initialize":
-			result = map[string]any{}
+			result = map[string]any{"protocolVersion": 1}
 		case "session/prompt":
 			continue
 		}

@@ -343,10 +343,11 @@ type SubagentActivity struct {
 }
 
 type ActivityRequest struct {
-	RequestID    string     `json:"request_id"`
-	Summary      string     `json:"summary"`
-	RiskCategory string     `json:"risk_category,omitempty"`
-	ExpiresAt    *time.Time `json:"expires_at,omitempty"`
+	RequestID    string          `json:"request_id"`
+	Summary      string          `json:"summary"`
+	Schema       json.RawMessage `json:"schema,omitempty"`
+	RiskCategory string          `json:"risk_category,omitempty"`
+	ExpiresAt    *time.Time      `json:"expires_at,omitempty"`
 }
 
 type ActivityProgressData struct {

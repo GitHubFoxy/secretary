@@ -81,7 +81,9 @@ export function formatActivityPayload(event) {
 
 export function inputRequest(request) {
   if (!request || request.kind !== 'input' || !request.request_id) return null;
-  return { requestId: request.request_id, prompt: request.action_summary || request.prompt || 'Input required' };
+  const result = { requestId: request.request_id, prompt: request.action_summary || request.prompt || 'Input required' };
+  if (request.schema && typeof request.schema === 'object') result.schema = request.schema;
+  return result;
 }
 
 export function workerActionBody(text, requestId = '') {

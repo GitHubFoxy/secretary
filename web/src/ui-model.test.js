@@ -74,9 +74,10 @@ test('dedupes same-summary replay for each represented Worker Turn, not across i
 });
 
 test('uses production-shaped input requests separately from approvals and preserves request_id', () => {
-  assert.deepEqual(inputRequest({ kind: 'input', request_id: 'input-1', action_summary: 'What is the version?' }), {
+  assert.deepEqual(inputRequest({ kind: 'input', request_id: 'input-1', action_summary: 'What is the version?', schema: { properties: { answer: { type: 'string' } } } }), {
     requestId: 'input-1',
     prompt: 'What is the version?',
+    schema: { properties: { answer: { type: 'string' } } },
   });
   assert.equal(inputRequest({ kind: 'permission', request_id: 'approval-1', action_summary: 'Run shell' }), null);
   assert.deepEqual(workerActionBody('2.4.0', 'input-1'), { text: '2.4.0', request_id: 'input-1' });

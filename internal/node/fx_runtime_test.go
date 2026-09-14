@@ -71,7 +71,7 @@ func TestFakeFXACPProcess(t *testing.T) {
 					_ = encoder.Encode(map[string]any{"id": promptID, "result": map[string]string{"stopReason": "cancelled"}})
 				}
 			case "initialize":
-				_ = encoder.Encode(map[string]any{"id": request.ID, "result": map[string]any{}})
+				_ = encoder.Encode(map[string]any{"id": request.ID, "result": map[string]any{"protocolVersion": 1}})
 			}
 		}
 		return

@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -668,7 +669,7 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 		if !capabilities.SupportsActivity(kind) {
 			return core.Activity{}, false
 		}
-		activity = core.Activity{Metadata: metadata, Kind: kind, Request: &core.ActivityRequest{RequestID: item.RequestID, Summary: item.Summary}}
+		activity = core.Activity{Metadata: metadata, Kind: kind, Request: &core.ActivityRequest{RequestID: item.RequestID, Summary: item.Summary, Schema: append(json.RawMessage(nil), item.RequestSchema...)}}
 	default:
 		return core.Activity{}, false
 	}
