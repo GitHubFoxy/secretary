@@ -48,10 +48,7 @@ export async function runSecretaryClient(
 	}
 }
 
-export async function applySecretaryAction(
-	runtime: SecretaryClientRuntime,
-	command: SecretaryCommand,
-): Promise<void> {
+export async function applySecretaryAction(runtime: SecretaryClientRuntime, command: SecretaryCommand): Promise<void> {
 	if (command.message !== undefined) {
 		await runtime.presentation.messageWorker(command.message);
 		return;

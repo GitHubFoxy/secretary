@@ -29,7 +29,11 @@ describe("production Secretary client entrypoint", () => {
 			const url = input.toString();
 			calls.push(url);
 			if (url.includes("/v1/conversation"))
-				return jsonResponse({ entries: [{ id: "entry-1", seq: 1, body: "hello" }], next_before_seq: null, next_after_seq: null });
+				return jsonResponse({
+					entries: [{ id: "entry-1", seq: 1, body: "hello" }],
+					next_before_seq: null,
+					next_after_seq: null,
+				});
 			if (url.endsWith("/v1/workers")) return jsonResponse([{ worker_ref: "worker-7", status: "needs_input" }]);
 			if (url.includes("/v1/workers/worker-7/activity"))
 				return jsonResponse([{ id: "activity-1", seq: 1, kind: "needs_input", request_id: "request-1" }]);
@@ -176,8 +180,10 @@ describe("production Secretary client entrypoint", () => {
 			if (url.endsWith("/v1/workers")) return jsonResponse([{ worker_ref: "worker-7", status: "needs_input" }]);
 			if (url.endsWith("/v1/approvals")) return jsonResponse([]);
 			if (url.includes("/v1/workers/worker-7/activity")) return jsonResponse([]);
-			if (url.endsWith("/v1/workers/worker-7")) return jsonResponse({ worker: { worker_ref: "worker-7" }, turns: [] });
-			if (url.endsWith("/v1/workers/worker-7/message")) return jsonResponse({ worker: { worker_ref: "worker-7" }, turns: [] });
+			if (url.endsWith("/v1/workers/worker-7"))
+				return jsonResponse({ worker: { worker_ref: "worker-7" }, turns: [] });
+			if (url.endsWith("/v1/workers/worker-7/message"))
+				return jsonResponse({ worker: { worker_ref: "worker-7" }, turns: [] });
 			throw new Error(`unexpected ${url}`);
 		}) as unknown as typeof globalThis.fetch;
 		const originalFetch = globalThis.fetch;

@@ -61,7 +61,7 @@ export class SecretaryClientRuntime {
 	async start(): Promise<SecretaryPresentationState> {
 		if (this.#disposed) throw new Error("Secretary Client runtime is disposed");
 		if (this.#started) return this.presentation.state;
-		const state = await this.presentation.start({ live: this.#live });
+		await this.presentation.start({ live: this.#live });
 		if (this.#workerRef !== undefined) await this.presentation.openWorker(this.#workerRef);
 		this.#started = true;
 		return this.presentation.state;

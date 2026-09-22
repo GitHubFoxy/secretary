@@ -1,9 +1,9 @@
 import {
-	SecretaryRevokedError,
 	type Approval,
 	type ConversationEntry,
 	type SecretaryClient,
 	type SecretaryEvent,
+	SecretaryRevokedError,
 	type SecretarySubscription,
 	type Worker,
 	type WorkerActivity,

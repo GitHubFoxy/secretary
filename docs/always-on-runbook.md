@@ -110,6 +110,81 @@ systemctl --user restart secretaryd.service secretary-node.service
 sex doctor
 ```
 
+## Viewer pairing (Pi read-only credential)
+
+Ручной flow выдачи read-only credential для Pi viewer на MacBook Air. Bootstrap token берётся только из `environment` и не записывается в ledger, документацию или вывод на Air. Для pairing не нужны SQLite и Node credential.
+
+Все Client mutations требуют idempotency key: в заголовке `Idempotency-Key` или в поле body `idempotency_key` (при заданных обоих значения должны совпадать, иначе `400 idempotency key in body and header must match`). Без ключа сервер отвечает `400 idempotency key is required`. Это штатный mutation contract, а не сбой сервера. `POST /v1/clients/{id}/approve` требует `Idempotency-Key` наравне с остальными mutations.
+
+```sh
+source ~/.local/share/secretary/environment
+API=http://127.0.0.1:8081
+
+# 1. Pair. Явный scope list обязателен: omitted, null и [] дают 400
+pair=$(curl -fsS -X POST -H 'Content-Type: application/json' \
+  -d "{\"bootstrap_token\":\"$SECRETARY_BOOTSTRAP_TOKEN\",\"device_id\":\"mba-viewer\",\"display_name\":\"Pi viewer\",\"platform\":\"pi\",\"scopes\":[\"conversation:read\",\"worker:read\",\"approval:read\"],\"idempotency_key\":\"mba-viewer-pair\"}" \
+  "$API/v1/clients/pair")
+client_id=$(printf '%s' "$pair" | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_id"])')
+# pending_token из ответа не сохранять: он держится в памяти Pi до approve/redeem
+
+# 2. Owner web session
+curl -fsS -c /tmp/owner.jar -X POST -H 'Content-Type: application/json' \
+  -d "{\"bootstrap_token\":\"$SECRETARY_BOOTSTRAP_TOKEN\"}" "$API/v1/web/session"
+
+# 3. Approve. Idempotency-Key обязателен, без него 400 idempotency key is required.
+# Ответ уходит в shell-переменную, credential из неё извлекается без stdout:
+# в scrollback и в журнал команд он не попадает.
+approve=$(curl -fsS -b /tmp/owner.jar -X POST -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: mba-viewer-approve' -d '{}' \
+  "$API/v1/clients/$client_id/approve")
+credential=$(printf '%s' "$approve" | python3 -c 'import json,sys; print(json.load(sys.stdin)["credential"])')
+unset approve pair
+rm -f /tmp/owner.jar
+```
+
+Credential живёт только в shell-переменной `credential`, в stdout не выводится. Передача на Air идёт приватным каналом (Tailscale SSH) пайпом, тоже без вывода в терминал. Файл на Air должен быть создан заранее через `install -m 0600` (см. `docs/pi-viewer-runbook.md`), тогда `cat >` перезапишет содержимое и сохранит режим `0600`:
+
+```sh
+# на Air (один раз, до передачи)
+mkdir -m 0700 -p ~/.config/secretary
+install -m 0600 /dev/null ~/.config/secretary/viewer-credential
+
+# на сервере: credential в переменной, stdout не используется
+printf '%s' "$credential" | ssh <air> 'cat > "$HOME/.config/secretary/viewer-credential"'
+unset credential
+```
+
+После передачи переменная сбрасывается. `credential` не записывается в ledger, логи, документацию или вывод на Air.
+
+Transfer предполагает Tailscale SSH. Если capability выключена (`tailscale status --json | jq '.Self.CapMap.SSH'` пусто) и на Air не слушает порт 22, канала omarchy→Air нет. Тогда весь flow выполняется с Air, transfer не нужен:
+
+```sh
+# bootstrap в shell-переменную, в stdout не выводится
+bootstrap=$(ssh omarchy 'source ~/.local/share/secretary/environment && printf %s "$SECRETARY_BOOTSTRAP_TOKEN"')
+# pair, owner session и approve — на https://<host>.<tailnet>.ts.net/v1 (curl с --noproxy '*', если задан прокси),
+# capture в переменные так же, как выше
+# запись на Air без вывода в терминал:
+mkdir -m 0700 -p ~/.config/secretary
+install -m 0600 /dev/null ~/.config/secretary/viewer-credential
+printf '%s' "$credential" > ~/.config/secretary/viewer-credential
+unset credential bootstrap
+```
+
+Запись в уже созданный install'ом файл сохраняет режим `0600`.
+
+Revoke выполняет owner и тоже требует idempotency key:
+
+```sh
+curl -fsS -c /tmp/owner.jar -X POST -H 'Content-Type: application/json' \
+  -d "{\"bootstrap_token\":\"$SECRETARY_BOOTSTRAP_TOKEN\"}" "$API/v1/web/session"
+curl -fsS -b /tmp/owner.jar -X POST -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: mba-viewer-revoke' -d '{}' \
+  "$API/v1/clients/$client_id/revoke"
+rm -f /tmp/owner.jar
+```
+
+После revoke активные streams закрываются (`1008 Client revoked`), новые HTTP и WS запросы получают `401`, повторное подключение требует нового pairing. Viewer credential не даёт доступа к SQLite, Node credential, bootstrap token после pairing, `client:manage`, `user:write` и write routes. Air-сторона flow: `docs/pi-viewer-runbook.md`.
+
 ## Backup
 
 `sqlite3 .backup` безопасен при работающем сервере, включая WAL:
@@ -152,6 +227,23 @@ curl -fsS https://<machine>.<tailnet>.ts.net/v1/health          # через Tai
 ```
 
 `GET /v1/health` не требует credential, возвращает только поле `status` и отвечает `503`, если SQLite недоступна. Domain-данных в ответе нет, поэтому его можно публиковать через Serve.
+
+## Tailscale diagnosis
+
+```sh
+tailscale status                                  # пиринг, IP и активность
+tailscale serve status                            # HTTPS proxy должен вести на 127.0.0.1:8081
+tailscale ping --timeout=8s <viewer-host>         # до MacBook Air
+curl -fsS https://<host>.<tailnet>.ts.net/v1/health
+```
+
+Если `tailscale serve status` пуст, публикация не поднята:
+
+```sh
+tailscale serve --bg http://127.0.0.1:8081
+```
+
+ACL в админ-консоли Tailscale должен разрешать owner-устройствам доступ к HTTPS-порту (см. Topology). Viewer-машина должна быть в том же tailnet и видима по `tailscale status`.
 
 ## Restart и восстановление
 

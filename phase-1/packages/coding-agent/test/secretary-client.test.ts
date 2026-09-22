@@ -285,9 +285,7 @@ describe("SecretaryClient snapshot paging and stream states", () => {
 	});
 
 	test("revoked close stops reconnect", async () => {
-		const { fetch } = fetchSequence([
-			response({ entries: [], next_before_seq: null, next_after_seq: null }),
-		]);
+		const { fetch } = fetchSequence([response({ entries: [], next_before_seq: null, next_after_seq: null })]);
 		const sockets: FakeSocket[] = [];
 		const errors: Error[] = [];
 		const subscription = await streamClient(fetch, sockets).subscribeConversation({
@@ -305,9 +303,7 @@ describe("SecretaryClient snapshot paging and stream states", () => {
 	});
 
 	test("sequence jump reports one gap without rendering jumped entries", async () => {
-		const { fetch } = fetchSequence([
-			response({ entries: [], next_before_seq: null, next_after_seq: null }),
-		]);
+		const { fetch } = fetchSequence([response({ entries: [], next_before_seq: null, next_after_seq: null })]);
 		const sockets: FakeSocket[] = [];
 		const gaps: Array<{ from: number; to: number }> = [];
 		const received: string[] = [];

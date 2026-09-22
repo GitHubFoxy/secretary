@@ -75,7 +75,14 @@ export const secretaryCommand = new Command<SecretaryCommand, SecretaryCommandCo
 		const approve = input.value(approveOption);
 		const deny = input.value(denyOption);
 		const once = input.value(onceOption) === true;
-		const actions = [message !== undefined, respondRequest !== undefined, cancel, close, approve !== undefined, deny !== undefined].filter(Boolean).length;
+		const actions = [
+			message !== undefined,
+			respondRequest !== undefined,
+			cancel,
+			close,
+			approve !== undefined,
+			deny !== undefined,
+		].filter(Boolean).length;
 		const errors: string[] = [];
 		if (credential !== undefined && credentialFile !== undefined)
 			errors.push("--credential and --credential-file are mutually exclusive");
