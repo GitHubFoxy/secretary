@@ -1,7 +1,7 @@
 # 02 Pi read-only credential
 
 Type: task
-Status: claimed
+Status: resolved
 Blocked by: 00, 01
 Contract: `docs/pi-viewer.md`
 
@@ -30,3 +30,12 @@ Contract: `docs/pi-viewer.md`
 - Revoke прерывает активную subscription и запрещает reconnect.
 - Pi не хранит bootstrap token, Node credential или Telegram internal credential.
 - Regression tests покрывают HTTP и WebSocket authorization, read-only scope matrix и revoke активных HTTP и WebSocket streams.
+
+## Answer
+
+Закрыт 2026-09-22. Вариант A: строгий HTTP-контракт на `POST /v1/clients/pair`, store-уровень не менялся.
+
+- `clientPairRequest.Scopes` теперь `*[]core.ClientScope`: omitted/`null`/`[]` → 400, неверный bootstrap → 401 (проверка до scope validation), явные scopes идут старым путём. Тихий full-control default на boundary закрыт.
+- Pi client при `undefined` scopes отправляет ровно `conversation:read`, `worker:read`, `approval:read` (`defaultPairScopes`); контракт `docs/pi-viewer.md` обновлён.
+- Revoke закрывает активные стримы кодом 1008 только при реальном revoke (`activeStream.revoked` atomic flag, выставляет sweep): Conversation, Worker activity replay и Secretary turn streams. Normal disconnect/shutdown/transport failure дают обычный close без false revoke. Reconnect с отозванным credential отклоняется на upgrade.
+- Regression: `TestClientPairingRequiresExplicitScopes`, `TestReadOnlyCredentialGrantsExactlyViewerScopes` (exact grant, не только статус), три revoke-теста стримов, существующая read-only surface matrix. `go test ./...`, `go vet`, vitest пакета, `tsgo --noEmit` чисто.

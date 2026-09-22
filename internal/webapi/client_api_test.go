@@ -226,6 +226,132 @@ func TestRevokeClientTerminatesAlreadyConnectedConversationStream(t *testing.T) 
 	}
 }
 
+func pairApprovedViewerCredential(t *testing.T, server *httptest.Server, owner *http.Client, device string) (string, string) {
+	t.Helper()
+	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"`+device+`","display_name":"Viewer","platform":"pi","scopes":["conversation:read","worker:read","approval:read"]}`)
+	if pair.status != http.StatusCreated || pair.body["client_id"] == nil {
+		t.Fatalf("pair=%d %#v", pair.status, pair.body)
+	}
+	clientID := pair.body["client_id"].(string)
+	approve := postJSON(t, owner, server.URL+"/v1/clients/"+clientID+"/approve", `{}`)
+	if approve.status != http.StatusOK || approve.body["credential"] == nil {
+		t.Fatalf("approve=%d %#v", approve.status, approve.body)
+	}
+	return clientID, approve.body["credential"].(string)
+}
+
+func dialClientStream(t *testing.T, rawURL, credential string) *websocket.Conn {
+	t.Helper()
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed.Scheme = "ws"
+	header := http.Header{"Authorization": []string{"Bearer " + credential}}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	connection, _, err := websocket.Dial(ctx, parsed.String(), &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return connection
+}
+
+func expectRevokedStreamClose(t *testing.T, connection *websocket.Conn) {
+	t.Helper()
+	started := time.Now()
+	deadline := started.Add(3 * time.Second)
+	for {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			t.Fatal("revoked stream remained readable")
+		}
+		readCtx, readCancel := context.WithTimeout(context.Background(), remaining)
+		_, _, err := connection.Read(readCtx)
+		readCancel()
+		if err == nil {
+			continue
+		}
+		var closeErr websocket.CloseError
+		if !errors.As(err, &closeErr) || closeErr.Code != websocket.StatusPolicyViolation {
+			t.Fatalf("revoked close=%v, want code 1008", err)
+		}
+		if time.Since(started) > 2*time.Second {
+			t.Fatalf("revoked stream was not terminated promptly: %v", time.Since(started))
+		}
+		return
+	}
+}
+
+func TestRevokeClientTerminatesWorkerActivityStream(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "revoke-activity-stream.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.EnsureOwner(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{WorkerRef: "revoke-activity", Intent: "inspect", ProjectID: "project", NodeID: "local", HarnessInstanceID: "local/fx", PolicySnapshot: "safe"}, core.TurnSpec{Input: "inspect"}); err != nil {
+		t.Fatal(err)
+	}
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	ownerJar, _ := cookiejar.New(nil)
+	ownerClient := &http.Client{Jar: ownerJar}
+	login(t, ownerClient, server.URL)
+	clientID, credential := pairApprovedViewerCredential(t, server, ownerClient, "revoke-activity-device")
+	connection := dialClientStream(t, server.URL+"/v1/workers/revoke-activity/activity/ws?after_seq=0", credential)
+	defer connection.CloseNow()
+	if revoke := postJSON(t, ownerClient, server.URL+"/v1/clients/"+clientID+"/revoke", `{}`); revoke.status != http.StatusOK {
+		t.Fatalf("revoke=%d %#v", revoke.status, revoke.body)
+	}
+	expectRevokedStreamClose(t, connection)
+}
+
+func TestRevokeClientTerminatesSecretaryTurnStream(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "revoke-secretary-stream.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	owner, conversation, err := store.EnsureOwner(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, owner.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := store.QueueSecretaryInput(ctx, identity.ID, "status check")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	ownerJar, _ := cookiejar.New(nil)
+	ownerClient := &http.Client{Jar: ownerJar}
+	login(t, ownerClient, server.URL)
+	clientID, credential := pairApprovedViewerCredential(t, server, ownerClient, "revoke-secretary-device")
+	connection := dialClientStream(t, server.URL+"/v1/secretary/ws?turn_id="+turn.ID+"&after_seq=0", credential)
+	defer connection.CloseNow()
+	if revoke := postJSON(t, ownerClient, server.URL+"/v1/clients/"+clientID+"/revoke", `{}`); revoke.status != http.StatusOK {
+		t.Fatalf("revoke=%d %#v", revoke.status, revoke.body)
+	}
+	expectRevokedStreamClose(t, connection)
+}
+
 func TestConversationReplayBoundaryDeduplicatesDelayedNotify(t *testing.T) {
 	store, err := core.Open(context.Background(), filepath.Join(t.TempDir(), "replay-race.db"))
 	if err != nil {
