@@ -1,7 +1,7 @@
 # 02 Pi read-only credential
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: 00, 01
 Contract: `docs/pi-viewer.md`
 

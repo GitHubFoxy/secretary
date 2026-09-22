@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
@@ -90,6 +91,11 @@ type Server struct {
 
 type activeStream struct {
 	cancel context.CancelFunc
+	// revoked is set only by the revoke stream sweep. The stream loop
+	// reports 1008 "Client revoked" solely on this flag, so a normal
+	// disconnect, server shutdown or transport failure never looks like
+	// a revoke to the reconnecting client.
+	revoked atomic.Bool
 }
 
 type subscription struct {
@@ -428,6 +434,8 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		case <-streamContext.Done():
 			if sub.slow {
 				_ = conn.Close(websocket.StatusPolicyViolation, "subscriber too slow; reconnect with after_seq")
+			} else if stream != nil && stream.revoked.Load() {
+				_ = conn.Close(websocket.StatusPolicyViolation, "Client revoked")
 			}
 			return
 		}
@@ -504,6 +512,7 @@ func (s *Server) cancelClientStreamsLocked(clientID string) {
 	streams := s.streams[clientID]
 	delete(s.streams, clientID)
 	for stream := range streams {
+		stream.revoked.Store(true)
 		stream.cancel()
 	}
 }

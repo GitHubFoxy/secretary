@@ -133,6 +133,9 @@ func (s *Server) secretaryWebsocket(w http.ResponseWriter, r *http.Request) {
 		}
 		select {
 		case <-streamContext.Done():
+			if stream != nil && stream.revoked.Load() {
+				_ = connection.Close(websocket.StatusPolicyViolation, "Client revoked")
+			}
 			return
 		case <-ticker.C:
 		}

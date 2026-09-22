@@ -81,6 +81,44 @@ describe("SecretaryClient", () => {
 		expect(JSON.stringify(calls[0]!.init?.body)).toContain("bootstrap-only");
 	});
 
+	test("pairs without explicit scopes using the read-only viewer grant", async () => {
+		const { fetch, calls } = fetchSequence([
+			response({ client_id: "cli-1", pending_token: "pending-only", status: "pending" }, 201),
+			response({ client_id: "cli-1", status: "active", credential_ready: true, redeemed: false }),
+			response({ client_id: "cli-1", credential: "cli_active", status: "active" }),
+		]);
+		const result = await SecretaryClient.pair({
+			baseUrl,
+			bootstrapToken: "bootstrap-only",
+			deviceId: "pi-1",
+			displayName: "Pi",
+			fetch,
+			pollIntervalMs: 10,
+		});
+		const body = JSON.parse(calls[0]!.init?.body as string) as { scopes?: readonly string[] };
+		expect(body.scopes).toEqual(["conversation:read", "worker:read", "approval:read"]);
+		expect(result.identity.scopes).toEqual(["conversation:read", "worker:read", "approval:read"]);
+	});
+
+	test("pairs with explicit scopes untouched", async () => {
+		const { fetch, calls } = fetchSequence([
+			response({ client_id: "cli-1", pending_token: "pending-only", status: "pending" }, 201),
+			response({ client_id: "cli-1", status: "active", credential_ready: true, redeemed: false }),
+			response({ client_id: "cli-1", credential: "cli_active", status: "active" }),
+		]);
+		await SecretaryClient.pair({
+			baseUrl,
+			bootstrapToken: "bootstrap-only",
+			deviceId: "pi-1",
+			displayName: "Pi",
+			scopes: ["worker:read"],
+			fetch,
+			pollIntervalMs: 10,
+		});
+		const body = JSON.parse(calls[0]!.init?.body as string) as { scopes?: readonly string[] };
+		expect(body.scopes).toEqual(["worker:read"]);
+	});
+
 	test("replays ordered conversation entries and ignores the replay/live duplicate", async () => {
 		const { fetch, calls } = fetchSequence([
 			response([

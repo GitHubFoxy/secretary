@@ -64,7 +64,7 @@ Scopes Pi на первый релиз:
 
 Требование контракта: pairing без явного scope list запрещён, server отклоняет такой запрос. Server-side проверку и regression tests выполняет тикет 02.
 
-Сегодня requirement нарушен: пустой `scopes` в `POST /v1/clients/pair` даёт полный default набор из 13 scopes (`normalizeClientScopes`, `internal/core/client.go`), а `SecretaryPairOptions.scopes` в Pi optional и `client.ts` не отправляет поле, если оно не задано. Паринг Pi без явного списка сейчас выдаёт full-control credential.
+`POST /v1/clients/pair` требует явный `scopes`: omitted, `null` и `[]` отклоняются с `400`, неверный bootstrap при этом по-прежнему даёт `401`. Тихий default из 13 scopes на HTTP boundary больше не выдаётся (`normalizeClientScopes` для прямых store-вызовов не менялся). Pi client при незаданных `SecretaryPairOptions.scopes` отправляет ровно `conversation:read`, `worker:read`, `approval:read` (`defaultPairScopes` в `client.ts`).
 
 Revoke выполняет owner: `POST /v1/clients/{id}/revoke`. Server отменяет активные streams этого Client и запрещает новые HTTP и WS запросы. Повторное подключение требует нового pairing.
 

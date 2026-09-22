@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -32,6 +33,29 @@ func TestClientPairingRejectsMissingAndMalformedBootstrapAuth(t *testing.T) {
 		if response.status != http.StatusUnauthorized {
 			t.Fatalf("malformed pairing auth status=%d body=%#v", response.status, response.body)
 		}
+	}
+}
+
+func TestClientPairingRequiresExplicitScopes(t *testing.T) {
+	server, _ := testServer(t)
+	for _, payload := range []struct {
+		name   string
+		body   string
+		status int
+	}{
+		{"omitted", `{"bootstrap_token":"bootstrap","device_id":"scope-omitted","display_name":"Omitted","platform":"test","idempotency_key":"scope-omitted"}`, http.StatusBadRequest},
+		{"empty", `{"bootstrap_token":"bootstrap","device_id":"scope-empty","display_name":"Empty","platform":"test","scopes":[],"idempotency_key":"scope-empty"}`, http.StatusBadRequest},
+		{"null", `{"bootstrap_token":"bootstrap","device_id":"scope-null","display_name":"Null","platform":"test","scopes":null,"idempotency_key":"scope-null"}`, http.StatusBadRequest},
+		{"invalid", `{"bootstrap_token":"bootstrap","device_id":"scope-invalid","display_name":"Invalid","platform":"test","scopes":["conversation:read","bogus:scope"],"idempotency_key":"scope-invalid"}`, http.StatusBadRequest},
+	} {
+		response := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", payload.body)
+		if response.status != payload.status {
+			t.Fatalf("%s scopes status=%d body=%#v, want %d", payload.name, response.status, response.body, payload.status)
+		}
+	}
+	viewer := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"scope-viewer","display_name":"Viewer","platform":"pi","scopes":["conversation:read","worker:read","approval:read"],"idempotency_key":"scope-viewer"}`)
+	if viewer.status != http.StatusCreated || viewer.body["client_id"] == nil || viewer.body["pending_token"] == nil {
+		t.Fatalf("explicit viewer scopes status=%d body=%#v, want 201", viewer.status, viewer.body)
 	}
 }
 
@@ -159,7 +183,7 @@ func TestRevokeClientTerminatesAlreadyConnectedConversationStream(t *testing.T) 
 	ownerJar, _ := cookiejar.New(nil)
 	owner := &http.Client{Jar: ownerJar}
 	login(t, owner, server.URL)
-	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"revoke-device","display_name":"Revoke","platform":"test"}`)
+	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"revoke-device","display_name":"Revoke","platform":"test","scopes":["conversation:read"]}`)
 	clientID := pair.body["client_id"].(string)
 	approve := postJSON(t, owner, server.URL+"/v1/clients/"+clientID+"/approve", `{}`)
 	credential := approve.body["credential"].(string)
@@ -184,10 +208,21 @@ func TestRevokeClientTerminatesAlreadyConnectedConversationStream(t *testing.T) 
 	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer readCancel()
 	started := time.Now()
-	if _, _, err := connection.Read(readCtx); err == nil {
+	_, _, err = connection.Read(readCtx)
+	if err == nil {
 		t.Fatal("revoked Client websocket remained readable")
-	} else if time.Since(started) > time.Second {
+	}
+	var closeErr websocket.CloseError
+	if !errors.As(err, &closeErr) || closeErr.Code != websocket.StatusPolicyViolation {
+		t.Fatalf("revoked Client close=%v, want code 1008", err)
+	}
+	if time.Since(started) > time.Second {
 		t.Fatalf("revoked Client websocket was not terminated promptly: %v", time.Since(started))
+	}
+	reconnectCtx, reconnectCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer reconnectCancel()
+	if _, _, err := websocket.Dial(reconnectCtx, parsed.String(), &websocket.DialOptions{HTTPHeader: header}); err == nil {
+		t.Fatal("revoked credential reconnected after revoke")
 	}
 }
 
@@ -343,7 +378,7 @@ func TestSlowConversationSubscriberClosesWithoutSilentGap(t *testing.T) {
 
 func TestPendingPairingCanRedeemAfterApproveResponseLoss(t *testing.T) {
 	server, owner := testServer(t)
-	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"redeem-device","display_name":"Redeem","platform":"test"}`)
+	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"redeem-device","display_name":"Redeem","platform":"test","scopes":["conversation:read"]}`)
 	pendingToken, pendingOK := pair.body["pending_token"].(string)
 	if pair.status != http.StatusCreated || !pendingOK || pendingToken == "" {
 		t.Fatalf("pair did not return pending token: %d %#v", pair.status, pair.body)
@@ -385,7 +420,7 @@ func TestPendingPairingCanRedeemAfterApproveResponseLoss(t *testing.T) {
 
 func TestClientPairingDeviceLifecycleRePairIsSafe(t *testing.T) {
 	server, owner := testServer(t)
-	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"lifecycle-device","display_name":"Lifecycle","platform":"test"}`)
+	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"lifecycle-device","display_name":"Lifecycle","platform":"test","scopes":["conversation:read"]}`)
 	clientID := pair.body["client_id"].(string)
 	pendingToken := pair.body["pending_token"].(string)
 	pollRequest, _ := http.NewRequest(http.MethodGet, server.URL+"/v1/clients/"+clientID+"/poll", nil)
@@ -425,7 +460,7 @@ func TestClientPairingDeviceLifecycleRePairIsSafe(t *testing.T) {
 	if revoke := postJSON(t, owner, server.URL+"/v1/clients/"+clientID+"/revoke", `{"idempotency_key":"revoke-life"}`); revoke.status != http.StatusOK {
 		t.Fatalf("revoke status=%d %#v", revoke.status, revoke.body)
 	}
-	repair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"lifecycle-device","display_name":"Lifecycle 2","platform":"test"}`)
+	repair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"lifecycle-device","display_name":"Lifecycle 2","platform":"test","scopes":["conversation:read"]}`)
 	if repair.status != http.StatusCreated || repair.body["client_id"] != clientID || repair.body["pending_token"] == "" {
 		t.Fatalf("repair=%d %#v", repair.status, repair.body)
 	}
@@ -443,11 +478,11 @@ func TestClientPairingDeviceLifecycleRePairIsSafe(t *testing.T) {
 
 func TestClientPairIdempotencyConflictsOnDifferentPayload(t *testing.T) {
 	server, _ := testServer(t)
-	first := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"idem-device-1","display_name":"One","platform":"test","idempotency_key":"pair-key"}`)
+	first := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"idem-device-1","display_name":"One","platform":"test","scopes":["conversation:read"],"idempotency_key":"pair-key"}`)
 	if first.status != http.StatusCreated {
 		t.Fatalf("first pair=%d %#v", first.status, first.body)
 	}
-	second := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"idem-device-2","display_name":"Two","platform":"test","idempotency_key":"pair-key"}`)
+	second := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"idem-device-2","display_name":"Two","platform":"test","scopes":["conversation:read"],"idempotency_key":"pair-key"}`)
 	if second.status != http.StatusConflict {
 		t.Fatalf("different payload reused idempotency key: %d %#v", second.status, second.body)
 	}

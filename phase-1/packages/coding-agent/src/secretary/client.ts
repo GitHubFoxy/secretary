@@ -11,6 +11,15 @@ export type SecretaryClientScope =
 	| "project:read"
 	| "node:read";
 
+// Read-only viewer scopes sent when pairing without an explicit scope list.
+// The server rejects omitted and empty scope lists, so the Pi client must
+// always state its grant explicitly.
+export const defaultPairScopes: readonly SecretaryClientScope[] = [
+	"conversation:read",
+	"worker:read",
+	"approval:read",
+];
+
 export interface SecretaryClientIdentity {
 	readonly id: string;
 	readonly device_id: string;
@@ -224,7 +233,7 @@ export class SecretaryClient {
 					device_id: options.deviceId,
 					display_name: options.displayName,
 					platform: options.platform ?? "pi",
-					...(options.scopes === undefined ? {} : { scopes: options.scopes }),
+					scopes: options.scopes ?? defaultPairScopes,
 					idempotency_key: idempotencyKey,
 				},
 				signal: options.signal,
@@ -269,7 +278,7 @@ export class SecretaryClient {
 			device_id: pairing.device_id ?? options.deviceId,
 			display_name: pairing.display_name ?? options.displayName,
 			platform: pairing.platform ?? options.platform ?? "pi",
-			scopes: pairing.scopes ?? options.scopes ?? [],
+			scopes: pairing.scopes ?? options.scopes ?? defaultPairScopes,
 			status: "active",
 		};
 		return {

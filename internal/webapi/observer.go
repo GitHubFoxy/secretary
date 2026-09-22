@@ -534,6 +534,9 @@ func (s *Server) workerActivityReplay(w http.ResponseWriter, r *http.Request, wo
 		}
 		select {
 		case <-streamContext.Done():
+			if stream != nil && stream.revoked.Load() {
+				_ = connection.Close(websocket.StatusPolicyViolation, "Client revoked")
+			}
 			return
 		case <-ticker.C:
 		}
@@ -751,6 +754,9 @@ func (s *Server) workerActivity(w http.ResponseWriter, r *http.Request, session 
 				return
 			}
 		case <-streamContext.Done():
+			if stream != nil && stream.revoked.Load() {
+				_ = connection.Close(websocket.StatusPolicyViolation, "Client revoked")
+			}
 			return
 		}
 	}

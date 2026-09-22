@@ -98,3 +98,43 @@ func TestReadOnlyCredentialIsRefusedOutsideTheReadSurface(t *testing.T) {
 		}
 	}
 }
+
+func TestReadOnlyCredentialGrantsExactlyViewerScopes(t *testing.T) {
+	store, err := core.Open(context.Background(), filepath.Join(t.TempDir(), "pi-scopes.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	api, err := New(context.Background(), store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair",
+		`{"bootstrap_token":"bootstrap","device_id":"pi-scopes","display_name":"Pi","platform":"pi","scopes":["conversation:read","worker:read","approval:read"]}`)
+	if pair.status != http.StatusCreated || pair.body["client_id"] == nil {
+		t.Fatalf("pair=%d %#v", pair.status, pair.body)
+	}
+	ownerJar, _ := cookiejar.New(nil)
+	owner := &http.Client{Jar: ownerJar}
+	login(t, owner, server.URL)
+	approve := postJSON(t, owner, server.URL+"/v1/clients/"+pair.body["client_id"].(string)+"/approve", `{}`)
+	if approve.status != http.StatusOK || approve.body["credential"] == nil {
+		t.Fatalf("approve=%d %#v", approve.status, approve.body)
+	}
+	granted, ok := approve.body["scopes"].([]any)
+	if !ok {
+		t.Fatalf("approve scopes=%#v, want explicit list", approve.body["scopes"])
+	}
+	want := map[string]bool{"conversation:read": true, "worker:read": true, "approval:read": true}
+	if len(granted) != len(want) {
+		t.Fatalf("granted scopes=%v, want exactly %v", granted, want)
+	}
+	for _, scope := range granted {
+		name, _ := scope.(string)
+		if !want[name] {
+			t.Fatalf("granted scopes=%v, want exactly %v", granted, want)
+		}
+	}
+}

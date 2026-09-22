@@ -10,12 +10,12 @@ import (
 )
 
 type clientPairRequest struct {
-	DeviceID       string             `json:"device_id"`
-	DisplayName    string             `json:"display_name"`
-	Platform       string             `json:"platform"`
-	Scopes         []core.ClientScope `json:"scopes,omitempty"`
-	BootstrapToken string             `json:"bootstrap_token,omitempty"`
-	IdempotencyKey string             `json:"idempotency_key,omitempty"`
+	DeviceID       string              `json:"device_id"`
+	DisplayName    string              `json:"display_name"`
+	Platform       string              `json:"platform"`
+	Scopes         *[]core.ClientScope `json:"scopes,omitempty"`
+	BootstrapToken string              `json:"bootstrap_token,omitempty"`
+	IdempotencyKey string              `json:"idempotency_key,omitempty"`
 }
 
 type clientCredentialResponse struct {
@@ -37,11 +37,17 @@ func (s *Server) pairClient(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid bootstrap token", http.StatusUnauthorized)
 		return
 	}
+	// An omitted or empty scope list must not fall back to full-control
+	// default scopes. The caller has to state the grant explicitly.
+	if request.Scopes == nil || len(*request.Scopes) == 0 {
+		http.Error(w, "explicit Client scopes are required", http.StatusBadRequest)
+		return
+	}
 	key, ok := requireIdempotencyKey(w, r, request.IdempotencyKey)
 	if !ok {
 		return
 	}
-	pairing, err := s.store.PairClientWithToken(r.Context(), s.owner.ID, request.DeviceID, request.DisplayName, request.Platform, request.Scopes, key)
+	pairing, err := s.store.PairClientWithToken(r.Context(), s.owner.ID, request.DeviceID, request.DisplayName, request.Platform, *request.Scopes, key)
 	if err != nil {
 		writeClientMutationError(w, err)
 		return
