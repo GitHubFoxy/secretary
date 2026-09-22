@@ -88,6 +88,8 @@ sex restart --debug # перезапуск с Control Room
 sex stop            # остановка
 ```
 
+Обслуживание always-on сервера: data directory, backup, restore-check, Tailscale Serve и health checks описаны в `docs/always-on-runbook.md`.
+
 ## Модели и reasoning
 
 В `config.toml` секция `[models]` задаёт не список моделей, а четыре alias:

@@ -3,6 +3,7 @@
 Type: task
 Status: ready-for-agent
 Blocked by: 01, 02, 03
+Contract: `docs/pi-viewer.md`
 
 ## Goal
 
