@@ -37,7 +37,7 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 		return nil, err
 	}
 	request.Profile = profile
-	client, err := r.connect(ctx, request.WorkerRef, profile)
+	client, err := r.connect(ctx, request.WorkerRef, profile, request.Workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +75,7 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 		return nil, err
 	}
 	request.Profile = profile
-	client, err := r.connect(ctx, request.WorkerRef, profile)
+	client, err := r.connect(ctx, request.WorkerRef, profile, request.Workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +161,7 @@ func isModelAlias(value string) bool {
 	}
 }
 
-func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile ManagedProfile) (*acp.Client, error) {
+func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile ManagedProfile, workspace string) (*acp.Client, error) {
 	var rawLog io.WriteCloser
 	if r.RawLogDir != "" {
 		var err error
@@ -178,7 +178,7 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 		}
 		return nil, err
 	}
-	client, err := acp.StartWithLogEnv(ctx, rawLog, environment, r.Command, r.Arguments...)
+	client, err := acp.StartWithLogEnvDir(ctx, rawLog, environment, workspace, r.Command, r.Arguments...)
 	if err != nil {
 		if rawLog != nil {
 			_ = rawLog.Close()

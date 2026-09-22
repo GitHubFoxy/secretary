@@ -105,10 +105,20 @@ func StartWithLog(ctx context.Context, rawLog io.Writer, command string, argumen
 }
 
 func StartWithLogEnv(ctx context.Context, rawLog io.Writer, environment []string, command string, arguments ...string) (*Client, error) {
+	return StartWithLogEnvDir(ctx, rawLog, environment, "", command, arguments...)
+}
+
+// StartWithLogEnvDir starts the harness with process.Dir set to dir, so the
+// harness primary workspace matches the dispatched Project workspace. An
+// empty dir preserves the inherited working directory.
+func StartWithLogEnvDir(ctx context.Context, rawLog io.Writer, environment []string, dir string, command string, arguments ...string) (*Client, error) {
 	processCtx, cancel := context.WithCancel(ctx)
 	process := exec.CommandContext(processCtx, command, arguments...)
 	if environment != nil {
 		process.Env = append(os.Environ(), environment...)
+	}
+	if dir != "" {
+		process.Dir = dir
 	}
 	stdin, err := process.StdinPipe()
 	if err != nil {

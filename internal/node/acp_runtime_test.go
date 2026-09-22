@@ -123,6 +123,55 @@ func TestACPRuntimeUsesFakeACPProcess(t *testing.T) {
 	}
 }
 
+func TestACPConnectStartsHarnessInRequestWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+	record := filepath.Join(t.TempDir(), "cwd")
+	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
+	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:], Environment: []string{"ACP_CWD_RECORD=" + record}}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := runtime.connect(ctx, "worker-cwd", ManagedProfile{}, workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	content, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(content)); got != want {
+		t.Fatalf("harness cwd=%q workspace=%q", got, want)
+	}
+}
+
+func TestACPConnectWithoutWorkspaceInheritsDirectory(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "cwd")
+	command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
+	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:], Environment: []string{"ACP_CWD_RECORD=" + record}}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client, err := runtime.connect(ctx, "worker-cwd", ManagedProfile{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	content, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(content)); got != want {
+		t.Fatalf("harness cwd=%q inherited=%q", got, want)
+	}
+}
+
 func TestACPSessionClosingCancelsPendingInteraction(t *testing.T) {
 	client := acp.NewClient(&discardACPWriter{})
 	session := newACPSession("session", client, false)
@@ -1012,6 +1061,11 @@ func TestFakeACPProcess(t *testing.T) {
 			version := 1
 			if os.Getenv("ACP_PROTOCOL_VERSION") == "2" {
 				version = 2
+			}
+			if record := os.Getenv("ACP_CWD_RECORD"); record != "" {
+				if dir, err := os.Getwd(); err == nil {
+					_ = os.WriteFile(record, []byte(dir), 0o600)
+				}
 			}
 			result = map[string]any{"protocolVersion": version}
 		case "session/new":
