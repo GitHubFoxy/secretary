@@ -63,7 +63,7 @@ configured_harness() {
   local config="$STATE/config.toml"
   if [[ -f "$config" ]]; then
     local harness
-    harness="$(awk -F'=' '/^[[:space:]]*harness[[:space:]]*=/{gsub(/[ \"\r]/, "", $2); print $2; exit}' "$config")"
+    harness="$(awk -F'=' '/^[[:space:]]*harness[[:space:]]*=/{gsub(/[ "\r]/, "", $2); print $2; exit}' "$config")"
     [[ -n "$harness" ]] && { print "$harness"; return 0; }
   fi
   print "fx"
