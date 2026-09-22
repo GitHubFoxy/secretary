@@ -1,7 +1,7 @@
 # 06 ACP cwd/workspace isolation
 
 Type: task
-Status: claimed
+Status: resolved
 Blocked by: none
 Contract: `docs/pi-viewer.md`
 Blocks: 01 (real Worker acceptance)
@@ -42,3 +42,13 @@ Real fx run подтверждает фактический cwd.
 ```
 
 Порядок: сначала фикс, затем повтор real Worker flow из тикета 01, backup/restore-check, и только тогда закрывать тикет 01.
+
+## Answer
+
+Закрыт 2026-09-22, проверено на реальном железе (omarchy).
+
+- Фикс: `StartWithLogEnvDir` (`internal/acp/jsonl.go`) + `connect` принимает workspace (`internal/node/acp_runtime.go`), коммит `f336024`. Unit-тесты проверяют фактический cwd дочернего процесса без real provider.
+- Деплой: `git pull`, `sex setup` (пересборка), restart обоих юнитов, health ok.
+- Повторный real fx flow: один Worker на `omarchy/fx`, один terminal succeeded Result. Sentinel с точным содержимым создан строго в mapped workspace, `$HOME` чист (stray files отсутствуют).
+- Свежий backup + restore-check: `integrity_check ok`, `workers|2`, `phase4_results|2` (оба `succeeded`).
+- Все пункты acceptance тикета выполнены. Тикеты 06 и 01 закрыты.

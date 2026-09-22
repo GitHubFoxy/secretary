@@ -1,7 +1,7 @@
 # 01 Always-on server baseline
 
 Type: task
-Status: claimed
+Status: resolved
 Blocked by: 00
 Contract: `docs/pi-viewer.md`
 
@@ -49,7 +49,7 @@ Acceptance пройден на реальном железе 2026-09-22 (omarchy
 
 Ветка `phase4-implementation`, все коммиты запушены (`08fd676`, `bf0d760`, `20cfd08`, `bf0156c`, `d413bff`, `9bced9c`).
 
-Дополнение: статус возвращён в `claimed`, flow ниже признан FAIL (см. следующий раздел).
+Дополнение: статус возвращён в `claimed`, flow ниже признан FAIL (см. следующий раздел). После фикса тикета 06 flow повторён успешно, оба тикета закрыты (см. конец файла).
 
 ## Answer продолжение: real Worker flow FAIL (workspace isolation)
 
@@ -62,3 +62,10 @@ Flow признан FAIL и не используется как подтвер�
 - Ветка `phase4-implementation`, все коммиты запушены (`08fd676`, `bf0d760`, `20cfd08`, `bf0156c`, `d413bff`, `9bced9c`).
 
 Почему FAIL: файл создан с верным содержимым, но в `/home/coder/ACCEPTANCE.md` вместо declared project workspace. Worker с project mapping писал вне workspace — это нарушение workspace isolation, а не успешный flow. Stray-файл удалён.
+
+## Answer продолжение: повторный flow после фикса 06 — PASS, тикет закрыт
+
+- Фикс `f336024` задеплоен на omarchy (`git pull`, `sex setup`, restart юнитов).
+- Повторный real fx flow: один Worker на `omarchy/fx`, один terminal succeeded Result. Sentinel с точным содержимым создан строго в mapped workspace (`acceptance-ws`), `$HOME` чист.
+- Свежий backup + restore-check: `integrity_check ok`, `workers|2`, `phase4_results|2` (оба `succeeded`).
+- Все пункты acceptance выполнены: reboot без логина (оба юнита active), health через Tailscale Serve с MacBook Air, fx ready в server-observed inventory, readable Conversation + Worker Results, negative tests, loopback-only bind, runbook без секретов.
