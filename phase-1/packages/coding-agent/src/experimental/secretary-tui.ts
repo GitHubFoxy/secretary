@@ -33,7 +33,7 @@ class SecretaryView implements Component {
 				this.#content.addChild(new Text(`[activity ${activity.seq}] ${JSON.stringify(activity)}`, 1, 0));
 		}
 		for (const approval of state.approvals)
-			this.#content.addChild(new Text(`Approval ${approval.request_id}: ${approval.state}`, 1, 0));
+			this.#content.addChild(new Text(`Approval ${approval.id}: ${approval.state}`, 1, 0));
 		this.#requestRender();
 	}
 
@@ -78,7 +78,7 @@ export async function runSecretaryClientTui(command: SecretaryCommand): Promise<
 		...(await runtimeOptionsFromCommand(command)),
 		onChange: (state) => view?.update(state),
 		onError: (error) => {
-			if (view) view.update({ ...runtime.presentation.state, connection: "degraded" });
+			if (view) view.update(runtime.presentation.state);
 			else console.error(error);
 		},
 	});

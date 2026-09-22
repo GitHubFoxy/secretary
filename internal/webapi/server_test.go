@@ -113,11 +113,12 @@ func TestWebLoginConversationAndInboundDeduplication(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	var entries []map[string]any
-	if err := json.NewDecoder(response.Body).Decode(&entries); err != nil {
+	var page conversationPage
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0]["body"] != "hello" || entries[0]["seq"].(float64) != 1 {
+	entries := page.Entries
+	if len(entries) != 1 || entries[0].Body != "hello" || entries[0].Seq != 1 {
 		t.Fatalf("entries = %#v", entries)
 	}
 }

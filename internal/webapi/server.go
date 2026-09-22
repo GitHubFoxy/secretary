@@ -256,9 +256,36 @@ func (s *Server) currentWebSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"conversation_id": conversation.ID})
 }
 
+// conversationPage is the bounded Pi snapshot envelope. Cursors the client
+// did not ask for stay null; an empty page carries no cursors at all.
+type conversationPage struct {
+	Entries       []core.ConversationEntry `json:"entries"`
+	NextBeforeSeq *int64                   `json:"next_before_seq"`
+	NextAfterSeq  *int64                   `json:"next_after_seq"`
+}
+
 func (s *Server) conversation(w http.ResponseWriter, r *http.Request) {
 	conversation, ok := s.authorizedConversationScope(w, r, core.ScopeConversationRead)
 	if !ok {
+		return
+	}
+	limit, err := parseSnapshotLimit(r)
+	if err != nil {
+		http.Error(w, "invalid limit", http.StatusBadRequest)
+		return
+	}
+	query := r.URL.Query()
+	before, hasBefore, err := parseBefore(r)
+	if err != nil {
+		http.Error(w, "invalid before_seq", http.StatusBadRequest)
+		return
+	}
+	if hasBefore && query.Has("after_seq") {
+		http.Error(w, "before_seq and after_seq are mutually exclusive", http.StatusBadRequest)
+		return
+	}
+	if hasBefore && before <= 0 {
+		http.Error(w, "invalid before_seq", http.StatusBadRequest)
 		return
 	}
 	after, err := parseAfter(r)
@@ -266,15 +293,40 @@ func (s *Server) conversation(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid after_seq", http.StatusBadRequest)
 		return
 	}
-	entries, err := s.store.EntriesAfter(r.Context(), conversation.ID, after)
-	if err != nil {
-		http.Error(w, "read conversation", http.StatusInternalServerError)
-		return
+	page := conversationPage{Entries: []core.ConversationEntry{}}
+	// A bare limit reads the latest tail. An explicit after_seq, even zero,
+	// pages forward; before_seq pages backward.
+	if hasBefore || !query.Has("after_seq") {
+		beforeSeq := before
+		if !hasBefore {
+			beforeSeq = 0
+		}
+		entries, err := s.store.EntriesTail(r.Context(), conversation.ID, beforeSeq, limit)
+		if err != nil {
+			http.Error(w, "read conversation", http.StatusInternalServerError)
+			return
+		}
+		page.Entries = entries
+		if len(entries) > 0 {
+			first := entries[0].Seq
+			page.NextBeforeSeq = &first
+		}
+	} else {
+		entries, err := s.store.EntriesForward(r.Context(), conversation.ID, after, limit)
+		if err != nil {
+			http.Error(w, "read conversation", http.StatusInternalServerError)
+			return
+		}
+		page.Entries = entries
+		if len(entries) > 0 {
+			last := entries[len(entries)-1].Seq
+			page.NextAfterSeq = &last
+		}
 	}
-	for i := range entries {
-		entries[i] = sanitizePublicConversationEntry(entries[i])
+	for i := range page.Entries {
+		page.Entries[i] = sanitizePublicConversationEntry(page.Entries[i])
 	}
-	writeJSON(w, http.StatusOK, entries)
+	writeJSON(w, http.StatusOK, page)
 }
 
 func (s *Server) message(w http.ResponseWriter, r *http.Request) {
@@ -584,6 +636,40 @@ func parseAfter(r *http.Request) (int64, error) {
 		return 0, nil
 	}
 	return strconv.ParseInt(value, 10, 64)
+}
+
+const (
+	// defaultSnapshotLimit bounds every Pi snapshot list. maximumSnapshotLimit
+	// caps a single response; larger limits clamp instead of failing.
+	defaultSnapshotLimit = 100
+	maximumSnapshotLimit = 500
+)
+
+func parseSnapshotLimit(r *http.Request) (int, error) {
+	value := r.URL.Query().Get("limit")
+	if value == "" {
+		return defaultSnapshotLimit, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0, errors.New("limit must be a positive integer")
+	}
+	if parsed > maximumSnapshotLimit {
+		return maximumSnapshotLimit, nil
+	}
+	return parsed, nil
+}
+
+func parseBefore(r *http.Request) (int64, bool, error) {
+	value := r.URL.Query().Get("before_seq")
+	if value == "" {
+		return 0, false, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, false, err
+	}
+	return parsed, true, nil
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, into any) bool {

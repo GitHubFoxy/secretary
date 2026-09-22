@@ -5,21 +5,57 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
 )
 
+// publicApprovalDTO is the allowlisted Pi viewer shape. The raw
+// core.Approval carries node, project, attempt and audit identifiers plus the
+// owner response, none of which cross the public Client API boundary.
+type publicApprovalDTO struct {
+	ID            string             `json:"id"`
+	Kind          core.ApprovalKind  `json:"kind"`
+	ActionSummary string             `json:"action_summary"`
+	RiskCategory  string             `json:"risk_category"`
+	State         core.ApprovalState `json:"state"`
+	RequestedAt   time.Time          `json:"requested_at"`
+	ExpiresAt     *time.Time         `json:"expires_at"`
+}
+
+func publicApprovalDTOFromApproval(approval core.Approval) publicApprovalDTO {
+	dto := publicApprovalDTO{
+		ID: approval.ID, Kind: approval.Kind, ActionSummary: approval.ActionSummary,
+		RiskCategory: approval.RiskCategory, State: approval.State,
+		RequestedAt: approval.RequestedAt,
+	}
+	if approval.ExpiresAt != nil {
+		dto.ExpiresAt = approval.ExpiresAt
+	}
+	return dto
+}
+
 func (s *Server) approvalList(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizedConversationScope(w, r, core.ScopeApprovalRead); !ok {
+	conversation, ok := s.authorizedConversationScope(w, r, core.ScopeApprovalRead)
+	if !ok {
 		return
 	}
-	approvals, err := s.store.Approvals(r.Context())
+	limit, err := parseSnapshotLimit(r)
+	if err != nil {
+		http.Error(w, "invalid limit", http.StatusBadRequest)
+		return
+	}
+	approvals, err := s.store.ApprovalsForConversation(r.Context(), conversation.ID, limit)
 	if err != nil {
 		http.Error(w, "read approvals", http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, http.StatusOK, approvals)
+	public := make([]publicApprovalDTO, 0, len(approvals))
+	for _, approval := range approvals {
+		public = append(public, publicApprovalDTOFromApproval(approval))
+	}
+	writeJSON(w, http.StatusOK, public)
 }
 
 func (s *Server) approvalRoute(w http.ResponseWriter, r *http.Request) {

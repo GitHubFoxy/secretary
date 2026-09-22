@@ -113,7 +113,7 @@
       request('/v1/nodes'),
       request('/v1/user'),
     ]);
-    entries = history || [];
+    entries = history?.entries || [];
     workers = workerList || state.workers || [];
     projects = projectList || [];
     nodes = nodeList || [];

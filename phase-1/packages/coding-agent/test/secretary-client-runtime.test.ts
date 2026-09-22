@@ -9,9 +9,12 @@ class FakeSocket implements SecretaryWebSocket {
 	onopen: (() => void) | null = null;
 	onmessage: ((event: { readonly data: unknown }) => void) | null = null;
 	onerror: ((event: unknown) => void) | null = null;
-	onclose: (() => void) | null = null;
-	close(): void {
-		this.onclose?.();
+	onclose: ((event: { readonly code: number; readonly reason?: string }) => void) | null = null;
+	close(code = 1000, reason = ""): void {
+		this.onclose?.({ code, reason });
+	}
+	emit(value: unknown): void {
+		this.onmessage?.({ data: JSON.stringify(value) });
 	}
 }
 
@@ -25,7 +28,8 @@ describe("production Secretary client entrypoint", () => {
 		const fetch = vi.fn(async (input: string | URL) => {
 			const url = input.toString();
 			calls.push(url);
-			if (url.includes("/v1/conversation")) return jsonResponse([{ id: "entry-1", seq: 1, body: "hello" }]);
+			if (url.includes("/v1/conversation"))
+				return jsonResponse({ entries: [{ id: "entry-1", seq: 1, body: "hello" }], next_before_seq: null, next_after_seq: null });
 			if (url.endsWith("/v1/workers")) return jsonResponse([{ worker_ref: "worker-7", status: "needs_input" }]);
 			if (url.includes("/v1/workers/worker-7/activity"))
 				return jsonResponse([{ id: "activity-1", seq: 1, kind: "needs_input", request_id: "request-1" }]);
@@ -77,7 +81,12 @@ describe("production Secretary client entrypoint", () => {
 				return jsonResponse({ client_id: "client-1", status: "active", credential_ready: true, redeemed: false });
 			if (url.endsWith("/v1/clients/client-1/redeem"))
 				return jsonResponse({ client_id: "client-1", credential: "client-only", status: "active" });
-			if (url.includes("/v1/conversation")) return jsonResponse([{ id: "entry-1", seq: 1, body: "paired" }]);
+			if (url.includes("/v1/conversation"))
+				return jsonResponse({
+					entries: [{ id: "entry-1", seq: 1, body: "paired" }],
+					next_before_seq: 1,
+					next_after_seq: null,
+				});
 			if (url.endsWith("/v1/workers")) return jsonResponse([{ worker_ref: "worker-7", status: "needs_input" }]);
 			if (url.includes("/v1/workers/worker-7/activity"))
 				return jsonResponse([{ id: "activity-1", seq: 1, kind: "needs_input" }]);
@@ -122,7 +131,7 @@ describe("production Secretary client entrypoint", () => {
 			"http://secretary.test/v1/clients/pair",
 			"http://secretary.test/v1/clients/client-1/poll",
 			"http://secretary.test/v1/clients/client-1/redeem",
-			"http://secretary.test/v1/conversation?after_seq=0",
+			"http://secretary.test/v1/conversation",
 			"http://secretary.test/v1/workers",
 			"http://secretary.test/v1/approvals",
 			"http://secretary.test/v1/workers/worker-7",
@@ -135,7 +144,8 @@ describe("production Secretary client entrypoint", () => {
 	test("main dispatches the explicit Secretary command to the production adapter", async () => {
 		const fetch = vi.fn(async (input: string | URL) => {
 			const url = input.toString();
-			if (url.includes("/v1/conversation")) return jsonResponse([]);
+			if (url.includes("/v1/conversation"))
+				return jsonResponse({ entries: [], next_before_seq: null, next_after_seq: null });
 			if (url.endsWith("/v1/workers")) return jsonResponse([]);
 			if (url.endsWith("/v1/approvals")) return jsonResponse([]);
 			throw new Error(`unexpected ${url}`);
@@ -161,7 +171,8 @@ describe("production Secretary client entrypoint", () => {
 		const fetch = vi.fn(async (input: string | URL, init?: RequestInit) => {
 			const url = input.toString();
 			calls.push({ url, init });
-			if (url.includes("/v1/conversation")) return jsonResponse([]);
+			if (url.includes("/v1/conversation"))
+				return jsonResponse({ entries: [], next_before_seq: null, next_after_seq: null });
 			if (url.endsWith("/v1/workers")) return jsonResponse([{ worker_ref: "worker-7", status: "needs_input" }]);
 			if (url.endsWith("/v1/approvals")) return jsonResponse([]);
 			if (url.includes("/v1/workers/worker-7/activity")) return jsonResponse([]);
@@ -199,5 +210,87 @@ describe("production Secretary client entrypoint", () => {
 		expect(action).toBeDefined();
 		expect(JSON.parse(String(action?.init?.body))).toMatchObject({ text: "answer", request_id: "request-1" });
 		expect((action?.init?.headers as Headers).get("Idempotency-Key")).toBeTruthy();
+	});
+});
+
+describe("Secretary presentation connection states", () => {
+	function conversationRuntime(
+		fetch: typeof globalThis.fetch,
+		sockets: FakeSocket[],
+		extra: Record<string, unknown> = {},
+	): SecretaryClientRuntime {
+		return new SecretaryClientRuntime({
+			clientOptions: {
+				baseUrl: "http://secretary.test",
+				credential: "client-only",
+				fetch,
+				reconnectInitialMs: 10,
+				webSocketFactory: () => {
+					const socket = new FakeSocket();
+					sockets.push(socket);
+					return socket;
+				},
+			},
+			...extra,
+		});
+	}
+
+	function conversationFetch(entries: Array<{ id: string; seq: number }>) {
+		return vi.fn(async (input: string | URL) => {
+			const url = input.toString();
+			if (url.includes("/v1/conversation"))
+				return jsonResponse({ entries, next_before_seq: null, next_after_seq: null });
+			if (url.endsWith("/v1/workers")) return jsonResponse([]);
+			if (url.endsWith("/v1/approvals")) return jsonResponse([]);
+			throw new Error(`unexpected ${url}`);
+		}) as unknown as typeof globalThis.fetch;
+	}
+
+	test("once snapshot opens no sockets", async () => {
+		const sockets: FakeSocket[] = [];
+		const runtime = conversationRuntime(conversationFetch([{ id: "entry-1", seq: 1 }]), sockets, { live: false });
+		const state = await runtime.start();
+		expect(state.connection).toBe("connected");
+		expect(state.conversation.map((entry) => entry.id)).toEqual(["entry-1"]);
+		expect(sockets).toHaveLength(0);
+		await runtime.dispose();
+	});
+
+	test("revoked close moves presentation to revoked", async () => {
+		const sockets: FakeSocket[] = [];
+		const runtime = conversationRuntime(conversationFetch([]), sockets);
+		await runtime.start();
+		expect(runtime.presentation.state.connection).toBe("connected");
+		expect(sockets).toHaveLength(1);
+		sockets[0]!.close(1008, "Client revoked");
+		await new Promise((resolve) => setTimeout(resolve, 20));
+		expect(runtime.presentation.state.connection).toBe("revoked");
+		expect(sockets).toHaveLength(1);
+		await runtime.dispose();
+	});
+
+	test("sequence jump triggers canonical resync", async () => {
+		let tails = 0;
+		const fetch = vi.fn(async (input: string | URL) => {
+			const url = input.toString();
+			if (url.includes("/v1/conversation") && !url.includes("after_seq")) {
+				tails += 1;
+				return jsonResponse({ entries: [{ id: "entry-1", seq: 1 }], next_before_seq: 1, next_after_seq: null });
+			}
+			if (url.includes("/v1/conversation"))
+				return jsonResponse({ entries: [], next_before_seq: null, next_after_seq: null });
+			if (url.endsWith("/v1/workers")) return jsonResponse([]);
+			if (url.endsWith("/v1/approvals")) return jsonResponse([]);
+			throw new Error(`unexpected ${url}`);
+		}) as unknown as typeof globalThis.fetch;
+		const sockets: FakeSocket[] = [];
+		const runtime = conversationRuntime(fetch, sockets);
+		await runtime.start();
+		expect(tails).toBe(1);
+		sockets[0]!.emit({ id: "entry-9", seq: 9 });
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(tails).toBeGreaterThan(1);
+		expect(runtime.presentation.state.connection).toBe("connected");
+		await runtime.dispose();
 	});
 });

@@ -33,13 +33,16 @@ class FakeSocket implements SecretaryWebSocket {
 	onopen: (() => void) | null = null;
 	onmessage: ((event: { readonly data: unknown }) => void) | null = null;
 	onerror: ((event: unknown) => void) | null = null;
-	onclose: (() => void) | null = null;
-	close(): void {
+	onclose: ((event: { readonly code: number; readonly reason?: string }) => void) | null = null;
+	close(code = 1000, reason = ""): void {
 		this.readyState = 3;
-		this.onclose?.();
+		this.onclose?.({ code, reason });
 	}
 	emit(value: unknown): void {
 		this.onmessage?.({ data: JSON.stringify(value) });
+	}
+	fail(error: unknown): void {
+		this.onerror?.(error);
 	}
 }
 
@@ -60,7 +63,7 @@ describe("SecretaryClient", () => {
 			response({ client_id: "cli-1", pending_token: "pending-only", status: "pending" }, 201),
 			response({ client_id: "cli-1", status: "active", credential_ready: true, redeemed: false }),
 			response({ client_id: "cli-1", credential: "cli_active", status: "active" }),
-			response([]),
+			response({ entries: [], next_before_seq: null, next_after_seq: null }),
 		]);
 		const result = await SecretaryClient.pair({
 			baseUrl,
@@ -121,11 +124,15 @@ describe("SecretaryClient", () => {
 
 	test("replays ordered conversation entries and ignores the replay/live duplicate", async () => {
 		const { fetch, calls } = fetchSequence([
-			response([
-				{ id: "e2", seq: 2 },
-				{ id: "e1", seq: 1 },
-			]),
-			response([]),
+			response({
+				entries: [
+					{ id: "e2", seq: 2 },
+					{ id: "e1", seq: 1 },
+				],
+				next_before_seq: null,
+				next_after_seq: 2,
+			}),
+			response({ entries: [], next_before_seq: null, next_after_seq: null }),
 		]);
 		const sockets: FakeSocket[] = [];
 		const factory: SecretaryWebSocketFactory = (url, credential) => {
@@ -158,9 +165,9 @@ describe("SecretaryClient", () => {
 
 	test("reconnect reuses server state and selected worker, without a spawn or Node protocol call", async () => {
 		const { fetch, calls } = fetchSequence([
-			response([]),
+			response({ entries: [], next_before_seq: null, next_after_seq: null }),
 			response({ worker: { worker_ref: "worker-7", status: "working" }, turns: [] }),
-			response([]),
+			response({ entries: [], next_before_seq: null, next_after_seq: null }),
 			response({ worker: { worker_ref: "worker-7", status: "idle" }, turns: [] }),
 		]);
 		const secretary = client(fetch);
@@ -228,5 +235,173 @@ describe("SecretaryClient", () => {
 		const { fetch } = fetchSequence([response({ error: "no" }, 401), response({ error: "no" }, 401)]);
 		await expect(client(fetch).listWorkers()).rejects.toEqual(expect.any(SecretaryApiError));
 		await expect(client(fetch).listWorkers()).rejects.toHaveProperty("status", 401);
+	});
+});
+
+describe("SecretaryClient snapshot paging and stream states", () => {
+	function streamClient(
+		fetch: typeof globalThis.fetch,
+		sockets: FakeSocket[],
+		extra: Record<string, unknown> = {},
+	): SecretaryClient {
+		return new SecretaryClient({
+			baseUrl,
+			credential: "cli_pi_only",
+			fetch,
+			webSocketFactory: () => {
+				const socket = new FakeSocket();
+				sockets.push(socket);
+				return socket;
+			},
+			reconnectInitialMs: 10,
+			reconnectMaxMs: 10,
+			...extra,
+		});
+	}
+
+	test("listTail reads the bounded server tail", async () => {
+		const { fetch, calls } = fetchSequence([
+			response({ entries: [{ id: "e9", seq: 9 }], next_before_seq: 9, next_after_seq: null }),
+		]);
+		const page = await client(fetch).listTail(50);
+		expect(calls[0]!.input.toString()).toContain("/v1/conversation?limit=50");
+		expect(page.entries).toHaveLength(1);
+		expect(page.next_before_seq).toBe(9);
+		expect(page.next_after_seq).toBeNull();
+	});
+
+	test("listConversation pages forward to the live cursor", async () => {
+		const first = Array.from({ length: 500 }, (_, index) => ({ id: `e${index + 1}`, seq: index + 1 }));
+		const { fetch, calls } = fetchSequence([
+			response({ entries: first, next_before_seq: null, next_after_seq: 500 }),
+			response({ entries: [{ id: "e501", seq: 501 }], next_before_seq: null, next_after_seq: 501 }),
+		]);
+		const entries = await client(fetch).listConversation(0);
+		expect(entries).toHaveLength(501);
+		expect(calls.map(({ input }) => input.toString())).toEqual([
+			`${baseUrl}/v1/conversation?after_seq=0&limit=500`,
+			`${baseUrl}/v1/conversation?after_seq=500&limit=500`,
+		]);
+	});
+
+	test("revoked close stops reconnect", async () => {
+		const { fetch } = fetchSequence([
+			response({ entries: [], next_before_seq: null, next_after_seq: null }),
+		]);
+		const sockets: FakeSocket[] = [];
+		const errors: Error[] = [];
+		const subscription = await streamClient(fetch, sockets).subscribeConversation({
+			onEntry: () => {},
+			onError: (error) => {
+				errors.push(error);
+			},
+		});
+		expect(sockets).toHaveLength(1);
+		sockets[0]!.close(1008, "Client revoked");
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		expect(sockets).toHaveLength(1);
+		expect(errors.some((error) => error.name === "SecretaryRevokedError")).toBe(true);
+		subscription.close();
+	});
+
+	test("sequence jump reports one gap without rendering jumped entries", async () => {
+		const { fetch } = fetchSequence([
+			response({ entries: [], next_before_seq: null, next_after_seq: null }),
+		]);
+		const sockets: FakeSocket[] = [];
+		const gaps: Array<{ from: number; to: number }> = [];
+		const received: string[] = [];
+		const subscription = await streamClient(fetch, sockets).subscribeConversation({
+			onEntry: (entry) => {
+				received.push(entry.id);
+			},
+			onGap: (gap) => {
+				gaps.push({ from: gap.from, to: gap.to });
+			},
+		});
+		sockets[0]!.emit({ id: "e1", seq: 1 });
+		sockets[0]!.emit({ id: "e5", seq: 5 });
+		sockets[0]!.emit({ id: "e6", seq: 6 });
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(received).toEqual(["e1"]);
+		expect(gaps).toEqual([{ from: 1, to: 5 }]);
+		subscription.close();
+	});
+
+	test("slow-subscriber close stays reconnectable", async () => {
+		const { fetch } = fetchSequence([
+			response({ entries: [], next_before_seq: null, next_after_seq: null }),
+			response({ entries: [], next_before_seq: null, next_after_seq: null }),
+		]);
+		const sockets: FakeSocket[] = [];
+		const errors: Error[] = [];
+		const subscription = await streamClient(fetch, sockets).subscribeConversation({
+			onEntry: () => {},
+			onError: (error) => {
+				errors.push(error);
+			},
+		});
+		expect(sockets).toHaveLength(1);
+		sockets[0]!.close(1008, "subscriber too slow; reconnect with after_seq");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(sockets).toHaveLength(2);
+		expect(errors.some((error) => error.name === "SecretaryRevokedError")).toBe(false);
+		subscription.close();
+	});
+
+	test("one socket attempt counts one failure", async () => {
+		const { fetch } = fetchSequence([
+			response({ entries: [], next_before_seq: null, next_after_seq: null }),
+			response({ entries: [], next_before_seq: null, next_after_seq: null }),
+		]);
+		const sockets: FakeSocket[] = [];
+		let offline = 0;
+		const subscription = await streamClient(fetch, sockets).subscribeConversation({
+			onEntry: () => {},
+			offlineAfterFailures: 2,
+			onOffline: () => {
+				offline += 1;
+			},
+		});
+		expect(sockets).toHaveLength(1);
+		sockets[0]!.fail(new Error("network drop"));
+		sockets[0]!.close(1000, "");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(sockets).toHaveLength(2);
+		expect(offline).toBe(0);
+		subscription.close();
+	});
+
+	test("repeated failures report offline and recovery", async () => {
+		let failures = 0;
+		const fetch = vi.fn(async () => {
+			failures += 1;
+			if (failures <= 2) throw new Error("network down");
+			return response({ entries: [], next_before_seq: null, next_after_seq: null });
+		}) as unknown as typeof globalThis.fetch;
+		const sockets: FakeSocket[] = [];
+		let lost = 0;
+		let offline = 0;
+		let recovered = 0;
+		const subscription = await streamClient(fetch, sockets).subscribeConversation({
+			onEntry: () => {},
+			onConnectionLost: () => {
+				lost += 1;
+			},
+			onOffline: () => {
+				offline += 1;
+			},
+			offlineAfterFailures: 2,
+			onRecovered: () => {
+				recovered += 1;
+			},
+		});
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		expect(lost).toBe(1);
+		expect(offline).toBe(1);
+		sockets[0]!.onopen?.();
+		expect(recovered).toBe(1);
+		expect(sockets).toHaveLength(1);
+		subscription.close();
 	});
 });

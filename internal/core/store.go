@@ -825,6 +825,59 @@ func (s *Store) EntriesAfter(ctx context.Context, conversationID string, afterSe
 	return entries, rows.Err()
 }
 
+// EntriesForward returns at most limit entries with seq greater than
+// afterSeq, ascending by seq. limit must be positive; the HTTP layer owns
+// defaults, clamping and validation.
+func (s *Store) EntriesForward(ctx context.Context, conversationID string, afterSeq int64, limit int) ([]ConversationEntry, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, conversation_id, seq, kind, body, worker_ref, turn_id, result_id, created_at FROM conversation_entries WHERE conversation_id = ? AND seq > ? ORDER BY seq LIMIT ?`, conversationID, afterSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	entries := make([]ConversationEntry, 0)
+	for rows.Next() {
+		entry, err := scanEntry(rows)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
+}
+
+// EntriesTail returns at most limit entries with seq smaller than beforeSeq,
+// ascending by seq. A non-positive beforeSeq reads the latest tail. limit
+// must be positive; the HTTP layer owns defaults, clamping and validation.
+func (s *Store) EntriesTail(ctx context.Context, conversationID string, beforeSeq int64, limit int) ([]ConversationEntry, error) {
+	condition := `seq < ?`
+	arguments := []any{conversationID, beforeSeq, limit}
+	if beforeSeq <= 0 {
+		condition = `1 = 1`
+		arguments = []any{conversationID, limit}
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, conversation_id, seq, kind, body, worker_ref, turn_id, result_id, created_at FROM conversation_entries WHERE conversation_id = ? AND `+condition+` ORDER BY seq DESC LIMIT ?`, arguments...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	reversed := make([]ConversationEntry, 0, limit)
+	for rows.Next() {
+		entry, err := scanEntry(rows)
+		if err != nil {
+			return nil, err
+		}
+		reversed = append(reversed, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	entries := make([]ConversationEntry, 0, len(reversed))
+	for index := len(reversed) - 1; index >= 0; index-- {
+		entries = append(entries, reversed[index])
+	}
+	return entries, nil
+}
+
 func (s *Store) legacyTasksReadOnly(ctx context.Context) bool {
 	var migrated string
 	return s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'phase4.migration_complete'`).Scan(&migrated) == nil && migrated == "1"

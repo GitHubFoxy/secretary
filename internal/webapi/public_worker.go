@@ -71,6 +71,18 @@ func (s *Server) publicWorkersForConversation(ctx context.Context, conversationI
 	if err != nil {
 		return nil, err
 	}
+	return s.publicWorkerDetails(ctx, conversationID, workers)
+}
+
+func (s *Server) publicWorkersForConversationLimit(ctx context.Context, conversationID string, limit int) ([]publicWorkerDTO, error) {
+	workers, err := s.store.WorkersForConversationLimit(ctx, conversationID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return s.publicWorkerDetails(ctx, conversationID, workers)
+}
+
+func (s *Server) publicWorkerDetails(ctx context.Context, conversationID string, workers []core.Worker) ([]publicWorkerDTO, error) {
 	public := make([]publicWorkerDTO, 0, len(workers))
 	for _, worker := range workers {
 		details, err := s.store.WorkerDetailsForConversation(ctx, conversationID, worker.WorkerRef)

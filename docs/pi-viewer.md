@@ -74,26 +74,26 @@ Revoke выполняет owner: `POST /v1/clients/{id}/revoke`. Server отме
 
 | Endpoint | Scope | Что получает Pi |
 | --- | --- | --- |
-| `GET /v1/conversation?after_seq=N` | `conversation:read` | entries Personal Conversation после cursor |
+| `GET /v1/conversation?limit=N` | `conversation:read` | последние N entries, ascending by seq |
+| `GET /v1/conversation?before_seq=N&limit=N` | `conversation:read` | entries with `seq < N`, ascending by seq |
+| `GET /v1/conversation?after_seq=N&limit=N` | `conversation:read` | entries with `seq > N`, ascending by seq, постраничное дочитывание до live cursor |
 | `GET /v1/conversation/ws?after_seq=N` | `conversation:read` | replay после cursor, затем live entries |
-| `GET /v1/workers` | `worker:read` | список Workers со status |
+| `GET /v1/workers?limit=N` | `worker:read` | список Workers со status, bounded |
 | `GET /v1/workers/{worker_ref}` | `worker:read` | status и durable WorkerDetails |
 | `GET /v1/workers/{worker_ref}/activity?after_seq=N` | `worker:read` | батч activity events, максимум 500 |
 | `GET /v1/workers/{worker_ref}/activity/ws?after_seq=N` | `worker:read` | live activity |
 | `GET /v1/secretary/turns/{turn_id}/stream?after_seq=N` | `conversation:read` | события активного Secretary turn |
 | `GET /v1/secretary/turns/{turn_id}/stream/ws?after_seq=N` | `conversation:read` | live события Secretary turn |
 | `GET /v1/secretary/models` | `conversation:read` | выбранная model и catalog имён |
-| `GET /v1/approvals` | `approval:read` | pending Approval summary, см. требуемую работу |
+| `GET /v1/approvals?limit=N` | `approval:read` | pending Approval summary в allowlisted DTO |
 
 Сюда не входят `GET /v1/bootstrap` и `GET /v1/workers/{worker_ref}/diagnostics`: snapshot viewer собирает из объявленных выше read endpoints.
 
-### Требуемая работа по surface
+### Требуемая работа по surface (выполнено тикетом 03)
 
-Часть контракта пока не реализована server'ом. До закрытия соответствующих тикетов эти пункты считаются долгом, а не гарантией:
-
-- **Bounded snapshot.** `GET /v1/conversation?after_seq=0` отдаёт все entries после cursor, `GET /v1/workers` и `GET /v1/approvals` отдают всё без limit. Server-side limit обязателен: выбор контракта `GET /v1/conversation?before_seq=N&limit=N` либо `GET /v1/conversation/tail?limit=N`, плюс limit для Workers и Approvals. Выполняет тикет 03. Пока параметр не реализован, snapshot считается unbounded и client-side обрезка хвоста ограничением не является.
-- **Public approval DTO.** `GET /v1/approvals` возвращает `[]core.Approval` целиком и не вызывает sanitizer: уходят `request_id`, `worker_id`, `turn_id`, `attempt_id`, `node_id`, `project_id`, `response`, `resolved_by`, `audit_event_id`. Нужен отдельный allowlisted DTO с полями из раздела Privacy boundary. Выполняет тикет 03.
-- **Фильтр approvals.** `Store.Approvals` читает `phase4_approvals` без фильтра по Person или Conversation, поэтому любой Client с `approval:read` видит все Approvals. Фильтр обязателен до закрепления endpoint как Pi public surface. Выполняет тикет 03.
+- **Bounded snapshot.** Snapshot читается хвостом `GET /v1/conversation?limit=N` и страницами `before_seq`/`after_seq`. Ответ всегда envelope `{entries, next_before_seq, next_after_seq}`: entries ascending by seq, неиспользуемый cursor `null`, пустая страница несёт оба `null`. Store выбирает `DESC LIMIT` и переворачивает сам, порядок не перекладывается на viewer. Лимиты едины для conversation, workers и approvals: default 100, maximum 500, `limit > max` clamp до 500, `limit <= 0` и malformed дают `400`. Forward replay (`after_seq`) дочитывается страницами до live cursor, поэтому полнота replay сохраняется при ограниченном response.
+- **Public approval DTO.** `GET /v1/approvals` возвращает allowlisted `publicApprovalDTO` (`id`, `kind`, `action_summary`, `risk_category`, `state`, `requested_at`, `expires_at`); `node_id`, `request_id`, `worker_id`, `turn_id`, `attempt_id`, `project_id`, `response`, `resolved_by`, `audit_event_id` за границу не уходят.
+- **Фильтр approvals.** Endpoint читает только Approvals, чей worker принадлежит текущей Conversation (JOIN через `workers.conversation_id`).
 
 Запросы на запись для Pi получают отказ `403` (не хватает scope), pairing routes без bootstrap или pending token - `401`:
 
@@ -151,7 +151,7 @@ Layout и keybindings оставлены тикету 03. Контракт тр�
 Что это значит на практике:
 
 - Conversation entries, Worker details и события activity проходят sanitizer.
-- `GET /v1/approvals` sanitizer не вызывает вообще, поэтому его public DTO - работа тикета 03, а не сегодняшняя гарантия.
+- `GET /v1/approvals` отдаёт allowlisted DTO и sanitizer не требует: private fields не сериализуются вовсе.
 - Sanitizer не трогает `node_id`, `project_id`, `harness_instance_id`, `workspace` и `policy_snapshot`: server может их отправить, а viewer обязан их не рендерить. Обе стороны ограничения остаются обязательными.
 
 Список полей, которые viewer рендерит:

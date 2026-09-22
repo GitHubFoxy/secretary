@@ -1452,6 +1452,30 @@ func (s *Store) WorkersForConversation(ctx context.Context, conversationID strin
 	return workers, rows.Err()
 }
 
+// WorkersForConversationLimit bounds the conversation worker snapshot.
+// limit must be positive; the HTTP layer owns defaults, clamping and
+// validation.
+func (s *Store) WorkersForConversationLimit(ctx context.Context, conversationID string, limit int) ([]Worker, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id FROM workers WHERE conversation_id = ? ORDER BY created_at, id LIMIT ?`, conversationID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	workers := []Worker{}
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		worker, err := s.Worker(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		workers = append(workers, worker)
+	}
+	return workers, rows.Err()
+}
+
 func (s *Store) WorkerDetailsForConversation(ctx context.Context, conversationID, workerRef string) (WorkerDetails, error) {
 	var workerID string
 	err := s.db.QueryRowContext(ctx, `SELECT id FROM workers WHERE conversation_id = ? AND worker_ref = ?`, conversationID, workerRef).Scan(&workerID)

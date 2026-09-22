@@ -1,12 +1,13 @@
-import type {
-	Approval,
-	ConversationEntry,
-	SecretaryClient,
-	SecretaryEvent,
-	SecretarySubscription,
-	Worker,
-	WorkerActivity,
-	WorkerDetails,
+import {
+	SecretaryRevokedError,
+	type Approval,
+	type ConversationEntry,
+	type SecretaryClient,
+	type SecretaryEvent,
+	type SecretarySubscription,
+	type Worker,
+	type WorkerActivity,
+	type WorkerDetails,
 } from "./client.ts";
 
 export interface SecretaryPresentationState {
@@ -17,7 +18,9 @@ export interface SecretaryPresentationState {
 	readonly selectedWorker?: WorkerDetails;
 	readonly workerActivity: readonly WorkerActivity[];
 	readonly secretaryEvents: readonly SecretaryEvent[];
-	readonly connection: "starting" | "connected" | "degraded";
+	readonly connection: "starting" | "connected" | "reconnecting" | "offline" | "revoked";
+	/** Last successful snapshot read, for the offline screen. */
+	readonly snapshotAt?: string;
 }
 
 export interface SecretaryPresentationOptions {
@@ -57,16 +60,24 @@ export class SecretaryPresentation {
 	}
 
 	async start(options: { readonly live?: boolean } = {}): Promise<SecretaryPresentationState> {
-		const [conversation, workers, approvals] = await Promise.all([
-			this.#client.listConversation(),
-			this.#client.listWorkers(),
-			this.#client.listApprovals(),
-		]);
-		this.#replace({ conversation, workers, approvals, connection: "connected" });
+		const tail = await this.#client.listTail();
+		const [workers, approvals] = await Promise.all([this.#client.listWorkers(), this.#client.listApprovals()]);
+		this.#replace({
+			conversation: [...tail.entries].sort((left, right) => left.seq - right.seq),
+			workers,
+			approvals,
+			connection: "connected",
+			snapshotAt: new Date().toISOString(),
+		});
 		if (options.live === false) return this.#state;
 		this.#conversationSubscription = await this.#client.subscribeConversation({
+			afterSeq: this.#lastConversationSeq(),
 			onEntry: (entry) => this.#appendConversation(entry),
-			onError: this.#onError,
+			onError: (error) => this.#subscriptionError(error),
+			onGap: () => this.#resyncAfterGap(),
+			onConnectionLost: () => this.#replace({ connection: "reconnecting" }),
+			onOffline: () => this.#replace({ connection: "offline" }),
+			onRecovered: () => this.#replace({ connection: "connected", snapshotAt: new Date().toISOString() }),
 		});
 		return this.#state;
 	}
@@ -78,7 +89,11 @@ export class SecretaryPresentation {
 		this.#replace({ secretaryEvents: [] });
 		this.#secretarySubscription = await this.#client.subscribeSecretaryTurn(acknowledgement.turn_id, {
 			onEvent: (event) => this.#appendSecretaryEvent(event),
-			onError: this.#onError,
+			onError: (error) => this.#subscriptionError(error),
+			onGap: () => this.#resyncAfterGap(),
+			onConnectionLost: () => this.#replace({ connection: "reconnecting" }),
+			onOffline: () => this.#replace({ connection: "offline" }),
+			onRecovered: () => this.#replace({ connection: "connected", snapshotAt: new Date().toISOString() }),
 		});
 	}
 
@@ -86,7 +101,11 @@ export class SecretaryPresentation {
 		this.#workerSubscription?.close();
 		const observed = await this.#client.observeWorker(workerRef, {
 			onActivity: (activity) => this.#appendActivity(activity),
-			onError: this.#onError,
+			onError: (error) => this.#subscriptionError(error),
+			onGap: () => this.#resyncAfterGap(),
+			onConnectionLost: () => this.#replace({ connection: "reconnecting" }),
+			onOffline: () => this.#replace({ connection: "offline" }),
+			onRecovered: () => this.#replace({ connection: "connected", snapshotAt: new Date().toISOString() }),
 		});
 		this.#replace({
 			selectedWorkerRef: workerRef,
@@ -148,11 +167,52 @@ export class SecretaryPresentation {
 	async refresh(): Promise<void> {
 		try {
 			const [workers, approvals] = await Promise.all([this.#client.listWorkers(), this.#client.listApprovals()]);
-			this.#replace({ workers, approvals, connection: "connected" });
+			this.#replace({ workers, approvals, connection: "connected", snapshotAt: new Date().toISOString() });
 		} catch (error) {
-			this.#replace({ connection: "degraded" });
+			this.#replace({ connection: "offline" });
 			this.#onError(error instanceof Error ? error : new Error(String(error)));
 		}
+	}
+
+	/** Canonical resync: re-read the snapshot, reset cursors, reopen subscriptions. */
+	async resync(): Promise<SecretaryPresentationState> {
+		this.#conversationSubscription?.close();
+		this.#workerSubscription?.close();
+		this.#secretarySubscription?.close();
+		this.#conversationSubscription = undefined;
+		this.#workerSubscription = undefined;
+		this.#secretarySubscription = undefined;
+		const workerRef = this.#state.selectedWorkerRef;
+		this.#replace({ workerActivity: [], secretaryEvents: [] });
+		const state = await this.start({ live: true });
+		if (workerRef !== undefined) await this.openWorker(workerRef);
+		return state;
+	}
+
+	#resyncAfterGap(): void {
+		void this.resync().catch((error: unknown) => {
+			this.#replace({ connection: "offline" });
+			this.#onError(error instanceof Error ? error : new Error(String(error)));
+		});
+	}
+
+	#subscriptionError(error: Error): void {
+		if (error instanceof SecretaryRevokedError) {
+			this.#conversationSubscription?.close();
+			this.#workerSubscription?.close();
+			this.#secretarySubscription?.close();
+			this.#conversationSubscription = undefined;
+			this.#workerSubscription = undefined;
+			this.#secretarySubscription = undefined;
+			this.#replace({ connection: "revoked" });
+			return;
+		}
+		this.#onError(error);
+	}
+
+	#lastConversationSeq(): number {
+		const entries = this.#state.conversation;
+		return entries.length === 0 ? 0 : entries[entries.length - 1]!.seq;
 	}
 
 	async dispose(): Promise<void> {

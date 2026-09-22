@@ -179,11 +179,13 @@ func mustConversation(t *testing.T, client *http.Client, base string) []core.Con
 		t.Fatal(err)
 	}
 	defer response.Body.Close()
-	var entries []core.ConversationEntry
-	if err := json.NewDecoder(response.Body).Decode(&entries); err != nil {
+	var page struct {
+		Entries []core.ConversationEntry `json:"entries"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
 		t.Fatal(err)
 	}
-	return entries
+	return page.Entries
 }
 
 func dialE2EWebSocket(t *testing.T, client *http.Client, base, path string) *websocket.Conn {

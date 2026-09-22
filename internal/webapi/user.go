@@ -176,7 +176,12 @@ func (s *Server) workerList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	workers, err := s.publicWorkersForConversation(r.Context(), conversation.ID)
+	limit, err := parseSnapshotLimit(r)
+	if err != nil {
+		http.Error(w, "invalid limit", http.StatusBadRequest)
+		return
+	}
+	workers, err := s.publicWorkersForConversationLimit(r.Context(), conversation.ID, limit)
 	if err != nil {
 		http.Error(w, "read workers", http.StatusInternalServerError)
 		return

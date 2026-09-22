@@ -98,10 +98,24 @@ export interface WorkerActivity {
 }
 
 export interface Approval {
-	readonly request_id: string;
+	readonly id: string;
+	readonly kind: string;
+	readonly action_summary: string;
+	readonly risk_category: string;
 	readonly state: "pending" | "approved" | "denied" | "expired" | string;
+	readonly requested_at: string;
+	readonly expires_at: string | null;
 	readonly [key: string]: unknown;
 }
+
+export interface ConversationPage {
+	readonly entries: readonly ConversationEntry[];
+	readonly next_before_seq: number | null;
+	readonly next_after_seq: number | null;
+}
+
+/** Page size for forward replay collection. Snapshot tails use the server default. */
+const conversationReplayLimit = 500;
 
 export interface UserDocument {
 	readonly content: string;
@@ -148,7 +162,7 @@ export interface SecretaryWebSocket {
 	onopen: (() => void) | null;
 	onmessage: ((event: { readonly data: unknown }) => void) | null;
 	onerror: ((event: unknown) => void) | null;
-	onclose: (() => void) | null;
+	onclose: ((event: { readonly code: number; readonly reason?: string }) => void) | null;
 	close(code?: number, reason?: string): void;
 }
 
@@ -174,6 +188,27 @@ interface SequenceSubscriptionOptions<T> {
 	readonly onValue: (value: T) => void | Promise<void>;
 	readonly onError?: (error: Error) => void;
 	readonly afterSeq?: number;
+	/** Fired when a sequence jump proves missed entries; the host must resync. */
+	readonly onGap?: (gap: { readonly from: number; readonly to: number }) => void | Promise<void>;
+	/** Fired on the first failure after a success; the host shows reconnecting. */
+	readonly onConnectionLost?: () => void;
+	/** Fired after offlineAfterFailures consecutive failures; the host shows offline. */
+	readonly onOffline?: () => void;
+	readonly offlineAfterFailures?: number;
+	/** Fired on the first success after failures; the host shows connected. */
+	readonly onRecovered?: () => void;
+}
+
+/** The credential was revoked: reconnect must stop until a new pairing. */
+export class SecretaryRevokedError extends Error {
+	constructor(message = "Secretary Client credential was revoked") {
+		super(message);
+		this.name = "SecretaryRevokedError";
+	}
+}
+
+function isRevokedApiError(error: unknown): boolean {
+	return error instanceof SecretaryApiError && (error.status === 401 || error.status === 403);
 }
 
 type InternalSubscription = SecretarySubscription;
@@ -312,12 +347,29 @@ export class SecretaryClient {
 	}
 
 	async listConversation(afterSeq = 0, signal?: AbortSignal): Promise<readonly ConversationEntry[]> {
-		const entries = await this.#request<ConversationEntry[]>(`/v1/conversation?after_seq=${Math.max(0, afterSeq)}`, {
-			signal,
-		});
-		const ordered = [...entries].sort((left, right) => left.seq - right.seq);
-		if (ordered.length > 0) this.#conversationSeq = Math.max(this.#conversationSeq, ordered[ordered.length - 1]!.seq);
-		return ordered;
+		const collected: ConversationEntry[] = [];
+		let cursor = Math.max(0, afterSeq);
+		for (;;) {
+			const page = await this.#request<ConversationPage>(
+				`/v1/conversation?after_seq=${cursor}&limit=${conversationReplayLimit}`,
+				{ signal },
+			);
+			const ordered = [...page.entries].sort((left, right) => left.seq - right.seq);
+			collected.push(...ordered);
+			if (ordered.length < conversationReplayLimit) break;
+			const last = ordered[ordered.length - 1]!.seq;
+			if (page.next_after_seq === null || last <= cursor) break;
+			cursor = page.next_after_seq;
+		}
+		if (collected.length > 0)
+			this.#conversationSeq = Math.max(this.#conversationSeq, collected[collected.length - 1]!.seq);
+		return collected;
+	}
+
+	/** Bounded latest tail for snapshots. The server owns limit and cursors. */
+	async listTail(limit?: number, signal?: AbortSignal): Promise<ConversationPage> {
+		const path = limit === undefined ? "/v1/conversation" : `/v1/conversation?limit=${Math.max(1, limit)}`;
+		return this.#request<ConversationPage>(path, { signal });
 	}
 
 	async sendMessage(
@@ -389,6 +441,10 @@ export class SecretaryClient {
 			readonly afterSeq?: number;
 			readonly onActivity: (activity: WorkerActivity) => void | Promise<void>;
 			readonly onError?: (error: Error) => void;
+			readonly onGap?: (gap: { readonly from: number; readonly to: number }) => void | Promise<void>;
+			readonly onConnectionLost?: () => void;
+			readonly onOffline?: () => void;
+			readonly onRecovered?: () => void;
 		},
 	): Promise<WorkerSubscription> {
 		this.selectWorker(workerRef);
@@ -405,6 +461,10 @@ export class SecretaryClient {
 			identity: (item) => (typeof item.id === "string" ? item.id : undefined),
 			onValue: options.onActivity,
 			onError: options.onError,
+			onGap: options.onGap,
+			onConnectionLost: options.onConnectionLost,
+			onOffline: options.onOffline,
+			onRecovered: options.onRecovered,
 			afterSeq: cursor,
 		});
 		return { workerRef, details, activity, subscription };
@@ -478,6 +538,11 @@ export class SecretaryClient {
 		readonly afterSeq?: number;
 		readonly onEntry: (entry: ConversationEntry) => void | Promise<void>;
 		readonly onError?: (error: Error) => void;
+		readonly onGap?: (gap: { readonly from: number; readonly to: number }) => void | Promise<void>;
+		readonly onConnectionLost?: () => void;
+		readonly onOffline?: () => void;
+		readonly offlineAfterFailures?: number;
+		readonly onRecovered?: () => void;
 	}): Promise<SecretarySubscription> {
 		return this.#subscribe<ConversationEntry>({
 			replay: (afterSeq) => this.listConversation(afterSeq),
@@ -489,6 +554,11 @@ export class SecretaryClient {
 				await options.onEntry(entry);
 			},
 			onError: options.onError,
+			onGap: options.onGap,
+			onConnectionLost: options.onConnectionLost,
+			onOffline: options.onOffline,
+			offlineAfterFailures: options.offlineAfterFailures,
+			onRecovered: options.onRecovered,
 			afterSeq: options.afterSeq ?? this.#conversationSeq,
 		});
 	}
@@ -499,6 +569,10 @@ export class SecretaryClient {
 			readonly afterSeq?: number;
 			readonly onEvent: (event: SecretaryEvent) => void | Promise<void>;
 			readonly onError?: (error: Error) => void;
+			readonly onGap?: (gap: { readonly from: number; readonly to: number }) => void | Promise<void>;
+			readonly onConnectionLost?: () => void;
+			readonly onOffline?: () => void;
+			readonly onRecovered?: () => void;
 		},
 	): Promise<SecretarySubscription> {
 		const path = `/v1/secretary/turns/${encodeURIComponent(turnId)}/stream`;
@@ -514,6 +588,10 @@ export class SecretaryClient {
 			identity: (event) => event.id,
 			onValue: options.onEvent,
 			onError: options.onError,
+			onGap: options.onGap,
+			onConnectionLost: options.onConnectionLost,
+			onOffline: options.onOffline,
+			onRecovered: options.onRecovered,
 			afterSeq: options.afterSeq ?? 0,
 		});
 	}
@@ -558,11 +636,23 @@ export class SecretaryClient {
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		let closed = false;
 		let reconnectMs = this.#reconnectInitialMs;
+		let failures = 0;
+		let gapNotified = false;
+		const offlineAfter = Math.max(1, options.offlineAfterFailures ?? 5);
 		const seen = new Set<string>();
 		const delivered = (item: T): boolean => {
 			const seq = options.sequence(item);
 			const identity = options.identity(item);
 			if (seq <= cursor || (identity !== undefined && seen.has(identity))) return false;
+			if (cursor > 0 && seq > cursor + 1) {
+				if (!gapNotified) {
+					gapNotified = true;
+					void Promise.resolve(options.onGap?.({ from: cursor, to: seq })).catch((error: unknown) =>
+						options.onError?.(toError(error)),
+					);
+				}
+				return false;
+			}
 			if (identity !== undefined) seen.add(identity);
 			cursor = Math.max(cursor, seq);
 			void Promise.resolve(options.onValue(item)).catch((error: unknown) => options.onError?.(toError(error)));
@@ -572,10 +662,40 @@ export class SecretaryClient {
 			for (const item of [...items].sort((left, right) => options.sequence(left) - options.sequence(right)))
 				delivered(item);
 		};
+		const stopRevoked = (error: unknown): void => {
+			if (closed || this.#closed) return;
+			closed = true;
+			if (timer !== undefined) {
+				clearTimeout(timer);
+				timer = undefined;
+			}
+			if (socket !== undefined) {
+				socket.onclose = null;
+				socket.onerror = null;
+				socket.close(1000, "Credential revoked");
+			}
+			options.onError?.(error instanceof Error ? error : new SecretaryRevokedError());
+		};
+		const noteSuccess = (): void => {
+			if (failures === 0) return;
+			failures = 0;
+			reconnectMs = this.#reconnectInitialMs;
+			options.onRecovered?.();
+		};
+		const noteFailure = (): void => {
+			failures += 1;
+			if (failures === 1) options.onConnectionLost?.();
+			if (failures === offlineAfter) options.onOffline?.();
+		};
 		const schedule = (error?: unknown): void => {
 			if (closed || this.#closed) return;
-			if (error !== undefined) options.onError?.(toError(error));
+			if (error !== undefined && isRevokedApiError(error)) {
+				stopRevoked(error);
+				return;
+			}
 			if (timer !== undefined) return;
+			if (error !== undefined) options.onError?.(toError(error));
+			noteFailure();
 			const wait = reconnectMs;
 			reconnectMs = Math.min(this.#reconnectMaxMs, reconnectMs * 2);
 			timer = setTimeout(() => {
@@ -591,7 +711,7 @@ export class SecretaryClient {
 				const url = websocketUrl(this.#baseUrl, options.socketPath, cursor);
 				socket = this.#webSocketFactory(url, this.#credential);
 				socket.onopen = () => {
-					reconnectMs = this.#reconnectInitialMs;
+					noteSuccess();
 				};
 				socket.onmessage = (event) => {
 					void parseSocketValue<T>(event.data)
@@ -601,7 +721,13 @@ export class SecretaryClient {
 						.catch(schedule);
 				};
 				socket.onerror = (event) => schedule(event);
-				socket.onclose = () => schedule();
+				socket.onclose = (event) => {
+					if (event?.code === 1008 && event?.reason === "Client revoked") {
+						stopRevoked(new SecretaryRevokedError());
+						return;
+					}
+					schedule();
+				};
 			} catch (error) {
 				schedule(error);
 			}

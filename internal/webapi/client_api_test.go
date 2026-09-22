@@ -677,11 +677,12 @@ func TestClientSurfaceUsesWorkerEntitiesAndOrderedReplayRoute(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var entries []core.ConversationEntry
-	if err := json.NewDecoder(response.Body).Decode(&entries); err != nil {
+	var page conversationPage
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
 		t.Fatal(err)
 	}
 	response.Body.Close()
+	entries := page.Entries
 	if len(entries) != 1 || entries[0].Seq != 1 {
 		t.Fatalf("replay=%#v", entries)
 	}

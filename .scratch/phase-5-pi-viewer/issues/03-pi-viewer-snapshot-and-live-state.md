@@ -1,7 +1,7 @@
 # 03 Pi viewer snapshot and live state
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 00, 02
 Contract: `docs/pi-viewer.md`
 
@@ -36,3 +36,12 @@ Contract: `docs/pi-viewer.md`
 - Restart Pi и temporary network loss не создают duplicate presentation entries.
 - Pi offline во время Worker execution после reconnect видит terminal state.
 - UI не раскрывает запрещённые поля.
+
+## Answer
+
+Закрыт 2026-09-22.
+
+- Snapshot bounded server'ом: envelope `{entries, next_before_seq, next_after_seq}`, ascending; default limit 100, max 500, clamp, `<=0`/malformed → 400; tail, backward и paged-forward формы; пустая страница несёт оба cursor `null`. Forward replay дочитывается страницами до live cursor.
+- Approval list: allowlisted DTO из семи полей, фильтр по текущей Conversation (JOIN через workers).
+- Pi client: tail snapshot, revoke останавливает reconnect (только `1008` + `Client revoked`), одна socket attempt — одна failure, gap ведёт в canonical resync без рендера пропущенных entries и без параллельных resync, состояния connected/reconnecting/offline/revoked.
+- Проверки: `go test ./...`, `go vet`, vitest, `tsgo`, `gofmt`, `diff --check` чисто. `GET /v1/bootstrap` оставлен owner UI surface вне скоупа.

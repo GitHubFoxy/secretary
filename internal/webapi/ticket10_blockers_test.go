@@ -194,12 +194,13 @@ func TestTicket10LegacyMigrationKeepsOneResultAcrossPublicSurfaces(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var entries []core.ConversationEntry
-	if err := json.NewDecoder(response.Body).Decode(&entries); err != nil {
+	var page conversationPage
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
 		response.Body.Close()
 		t.Fatal(err)
 	}
 	response.Body.Close()
+	entries := page.Entries
 	var resultEntries []core.ConversationEntry
 	for _, entry := range entries {
 		if entry.Kind == core.EntryWorkerResult {
