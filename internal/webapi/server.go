@@ -187,6 +187,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/web/session", s.exchangeBootstrapToken)
 	mux.HandleFunc("GET /v1/web/session", s.currentWebSession)
+	mux.HandleFunc("GET /v1/health", s.health)
 	mux.HandleFunc("POST /v1/clients/pair", s.pairClient)
 	mux.HandleFunc("GET /v1/clients", s.listClients)
 	mux.HandleFunc("/v1/clients/", s.clientRoute)

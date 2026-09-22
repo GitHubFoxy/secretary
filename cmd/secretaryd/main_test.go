@@ -172,3 +172,68 @@ func loginProduction(t *testing.T, client *http.Client, baseURL string) {
 		t.Fatalf("login status=%d", response.StatusCode)
 	}
 }
+
+func TestValidateListenRejectsNonLoopback(t *testing.T) {
+	for _, listen := range []string{"127.0.0.1:8081", "localhost:8081", "[::1]:8081"} {
+		if err := validateListen(listen); err != nil {
+			t.Errorf("validateListen(%q)=%v, want nil", listen, err)
+		}
+	}
+	for _, listen := range []string{"0.0.0.0:8081", ":8081", "192.168.1.10:8081", "secretary.internal:8081", "8081"} {
+		if err := validateListen(listen); err == nil {
+			t.Errorf("validateListen(%q)=nil, want rejection of non-loopback bind", listen)
+		}
+	}
+}
+
+func servedResponse(handler http.Handler, target string) *httptest.ResponseRecorder {
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, target, nil))
+	return recorder
+}
+
+func TestControlRoutesStayDebugOnly(t *testing.T) {
+	spy := func(name string) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(name)) })
+	}
+	normal := rootHandler(spy("api"), spy("control"), spy("static"), spy("control-static"), nil, false)
+	for _, target := range []string{"/v1/control/overview", "/control-room"} {
+		if response := servedResponse(normal, target); response.Code != http.StatusNotFound {
+			t.Errorf("normal mode %s status=%d, want 404", target, response.Code)
+		}
+	}
+	if response := servedResponse(normal, "/v1/health"); response.Code == http.StatusNotFound {
+		t.Errorf("normal mode /v1/health status=%d, want API route to answer", response.Code)
+	}
+
+	debug := rootHandler(spy("api"), spy("control"), spy("static"), spy("control-static"), nil, true)
+	if response := servedResponse(debug, "/v1/control/overview"); response.Code != http.StatusOK || response.Body.String() != "control" {
+		t.Errorf("debug mode /v1/control/overview status=%d body=%q, want control handler", response.Code, response.Body.String())
+	}
+	if response := servedResponse(debug, "/control-room"); response.Code != http.StatusOK || response.Body.String() != "control-static" {
+		t.Errorf("debug mode /control-room status=%d body=%q, want control static handler", response.Code, response.Body.String())
+	}
+}
+
+func TestNodesConnectRefusesClientCredential(t *testing.T) {
+	store, err := core.Open(context.Background(), filepath.Join(t.TempDir(), "nodes-connect.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	manager, err := node.NewServerManagerWithConfig(context.Background(), store, node.ServerConfig{
+		PairingTokens: []string{"pairing-token"}, AdminToken: "admin-token", ClientBootstrapToken: "bootstrap",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := rootHandler(http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), manager, false)
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/nodes/connect", nil)
+	request.Header.Set("Authorization", "Bearer pi-read-only-credential")
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code >= 200 && recorder.Code < 300 {
+		t.Fatalf("/v1/nodes/connect status=%d with Client credential, want refusal", recorder.Code)
+	}
+}

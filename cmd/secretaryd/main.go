@@ -34,6 +34,9 @@ func main() {
 	configPath := flag.String("config", "", "path to Secretary config.toml")
 	debug := flag.Bool("debug", false, "enable the local-only Control Room")
 	flag.Parse()
+	if err := validateListen(*listen); err != nil {
+		log.Fatal(err)
+	}
 	if *configPath == "" {
 		*configPath = filepath.Join(*dataDir, "config.toml")
 	}
@@ -291,43 +294,7 @@ func main() {
 	controlAPI := web.ControlHandler()
 	staticHandler := webclient.Handler()
 	controlStaticHandler := webclient.ControlHandler()
-	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if remoteNodes != nil {
-			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Authorization"))), "bearer ") && r.URL.Path != "/v1/nodes/connect" {
-				apiHandler.ServeHTTP(w, r)
-				return
-			}
-			if r.URL.Path == "/v1/nodes/connect" {
-				remoteNodes.ServeProtocolHTTP(w, r)
-				return
-			}
-			if r.URL.Path == "/v1/nodes" || strings.HasPrefix(r.URL.Path, "/v1/nodes/") {
-				remoteNodes.ServeHTTP(w, r)
-				return
-			}
-		}
-		if strings.HasPrefix(r.URL.Path, "/v1/control/") {
-			if !*debug {
-				http.NotFound(w, r)
-				return
-			}
-			controlAPI.ServeHTTP(w, r)
-			return
-		}
-		if strings.HasPrefix(r.URL.Path, "/v1/") {
-			apiHandler.ServeHTTP(w, r)
-			return
-		}
-		if r.URL.Path == "/control-room" || strings.HasPrefix(r.URL.Path, "/control-room/") {
-			if !*debug {
-				http.NotFound(w, r)
-				return
-			}
-			controlStaticHandler.ServeHTTP(w, r)
-			return
-		}
-		staticHandler.ServeHTTP(w, r)
-	})
+	handler := rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler, remoteNodes, *debug)
 	server := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
 	listener, err := net.Listen("tcp", *listen)
 	if err != nil {
@@ -358,6 +325,67 @@ func main() {
 	if err := server.Shutdown(shutdown); err != nil {
 		log.Printf("shutdown web API: %v", err)
 	}
+}
+
+// rootHandler keeps one loopback server for the whole product, matching the
+// Serve model in docs/pi-viewer.md: control routes stay debug-only, and every
+// other /v1 path reaches the API where credential checks live.
+func rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler http.Handler, remoteNodes *node.ServerManager, debug bool) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if remoteNodes != nil {
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(r.Header.Get("Authorization"))), "bearer ") && r.URL.Path != "/v1/nodes/connect" {
+				apiHandler.ServeHTTP(w, r)
+				return
+			}
+			if r.URL.Path == "/v1/nodes/connect" {
+				remoteNodes.ServeProtocolHTTP(w, r)
+				return
+			}
+			if r.URL.Path == "/v1/nodes" || strings.HasPrefix(r.URL.Path, "/v1/nodes/") {
+				remoteNodes.ServeHTTP(w, r)
+				return
+			}
+		}
+		if strings.HasPrefix(r.URL.Path, "/v1/control/") {
+			if !debug {
+				http.NotFound(w, r)
+				return
+			}
+			controlAPI.ServeHTTP(w, r)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/v1/") {
+			apiHandler.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/control-room" || strings.HasPrefix(r.URL.Path, "/control-room/") {
+			if !debug {
+				http.NotFound(w, r)
+				return
+			}
+			controlStaticHandler.ServeHTTP(w, r)
+			return
+		}
+		staticHandler.ServeHTTP(w, r)
+	})
+}
+
+// validateListen enforces the supported topology from docs/pi-viewer.md:
+// secretaryd binds loopback only and remote access goes through the Tailscale
+// Serve proxy, so wildcard and LAN binds are refused at startup.
+func validateListen(addr string) error {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err != nil {
+		return fmt.Errorf("invalid -listen %q: %w; use a loopback host:port such as 127.0.0.1:8081", addr, err)
+	}
+	if host == "localhost" {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("-listen %q is not loopback; secretaryd must bind 127.0.0.1 and publish through Tailscale Serve (see docs/always-on-runbook.md)", addr)
+	}
+	return nil
 }
 
 func recoverProductionPhase4Attempts(ctx context.Context, store *core.Store, local *node.LocalNode, remote *node.ServerManager) error {

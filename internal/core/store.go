@@ -64,6 +64,10 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
+// Ping checks that the SQLite connection is usable. The health endpoint uses
+// it as a bounded liveness probe for runbooks.
+func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
+
 // backupBeforeMigration keeps a recoverable copy before any schema work. The
 // SQLite VACUUM INTO snapshot includes committed WAL pages and produces a
 // standalone backup instead of copying only the main database file.
