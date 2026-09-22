@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
@@ -217,8 +220,49 @@ func TestControlRoutesStayDebugOnly(t *testing.T) {
 	}
 }
 
-func TestNodesConnectRefusesRealViewerCredential(t *testing.T) {
+// TestNodesConnectRequiresNodeReference pins only the gateway check: without a
+// valid ?node= parameter the protocol endpoint answers 400 before any
+// WebSocket upgrade or credential evaluation. It proves nothing about
+// credentials; TestNodesConnectRejectsRealViewerCapability covers that.
+func TestNodesConnectRequiresNodeReference(t *testing.T) {
 	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "nodes-connect.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	manager, err := node.NewServerManagerWithConfig(ctx, store, node.ServerConfig{
+		PairingTokens: []string{"pairing-token"}, AdminToken: "admin-token", ClientBootstrapToken: "bootstrap",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := rootHandler(http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), manager, false)
+
+	request := httptest.NewRequest(http.MethodGet, "/v1/nodes/connect", nil)
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest || !strings.Contains(recorder.Body.String(), "valid Node reference") {
+		t.Fatalf("/v1/nodes/connect without ?node= status=%d body=%q, want 400 requiring a Node reference", recorder.Code, recorder.Body.String())
+	}
+}
+
+// TestNodesConnectRejectsRealViewerCapability proves a real Pi viewer Client
+// credential cannot stand in for a Node capability on /v1/nodes/connect:
+//  1. a real Node is enrolled, so ?node= is valid and its record exists;
+//  2. a positive control completes the handshake with the enrolled Node
+//     credential, proving routing, query parameter, and record lookup all pass;
+//  3. the negative case reuses the same valid ?node=, a real WebSocket upgrade,
+//     and the viewer credential in HTTP Authorization, but signs the protocol
+//     handshake with the viewer secret instead of the Node capability.
+//
+// The rejection must come from protocol authentication
+// (StatusPolicyViolation "node protocol: authentication failed"), not from the
+// missing-parameter 400. Note the protocol never reads the Authorization
+// header; carrying the viewer credential there must not grant access.
+func TestNodesConnectRejectsRealViewerCapability(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "nodes-connect.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -239,13 +283,71 @@ func TestNodesConnectRefusesRealViewerCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := rootHandler(http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), manager, false)
+	server := httptest.NewServer(handler)
+	defer server.Close()
 
-	request := httptest.NewRequest(http.MethodGet, "/v1/nodes/connect", nil)
-	request.Header.Set("Authorization", "Bearer "+credential)
-	recorder := httptest.NewRecorder()
-	handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("/v1/nodes/connect status=%d with a real viewer Client credential, want protocol rejection 400", recorder.Code)
+	identity, err := node.EnrollNode(ctx, server.Client(), server.URL, "pairing-token", "pi-review-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(identity.ConnectURL, "node=pi-review-node") {
+		t.Fatalf("ConnectURL=%q lacks the enrolled ?node= parameter", identity.ConnectURL)
+	}
+	inventory := core.HarnessInventorySnapshot{Node: identity.Node, ObservedAt: time.Now().UTC()}
+
+	nodeAuth, err := identity.Authenticator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	control, err := node.DialProtocol(ctx, identity.ConnectURL, identity.Node, nodeAuth, node.Handshake{
+		Node: identity.Node, ProtocolVersion: node.ProtocolVersion, Inventory: inventory, Nonce: "control-nonce",
+	})
+	if err != nil {
+		t.Fatalf("positive control with the enrolled Node credential failed: %v", err)
+	}
+	if err := control.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	header := http.Header{}
+	header.Set("Authorization", "Bearer "+credential)
+	connection, response, err := websocket.Dial(ctx, identity.ConnectURL, &websocket.DialOptions{HTTPHeader: header})
+	if err != nil {
+		t.Fatalf("WebSocket upgrade with valid ?node= and viewer Authorization failed: %v response=%v", err, response)
+	}
+	defer connection.Close(websocket.StatusNormalClosure, "")
+
+	viewerAuth := node.NewAuthenticator([]byte(credential))
+	viewerHandshake := node.Handshake{
+		Node: identity.Node, ProtocolVersion: node.ProtocolVersion, Inventory: inventory, Nonce: "viewer-nonce",
+	}
+	viewerHandshake.NonceSignature = viewerAuth.SignNonce(viewerHandshake.Node, viewerHandshake.Nonce)
+	payload, err := json.Marshal(viewerHandshake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := node.NewEnvelope(node.MessageHandshake, identity.Node, 0, 0, payload, viewerAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Write(ctx, websocket.MessageText, encoded); err != nil {
+		t.Fatalf("send viewer-signed handshake: %v", err)
+	}
+
+	_, _, err = connection.Read(ctx)
+	if err == nil {
+		t.Fatal("Node protocol accepted a handshake signed with the viewer credential")
+	}
+	var closeErr websocket.CloseError
+	if !errors.As(err, &closeErr) {
+		t.Fatalf("want protocol close, got %T: %v", err, err)
+	}
+	if closeErr.Code != websocket.StatusPolicyViolation || !strings.Contains(closeErr.Reason, "authentication failed") {
+		t.Fatalf("close code=%d reason=%q, want StatusPolicyViolation for node protocol authentication failure", closeErr.Code, closeErr.Reason)
 	}
 }
 
