@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -324,4 +325,184 @@ func TestApprovalListReturnsAllowlistedConversationApprovals(t *testing.T) {
 			t.Fatalf("approval misses required field %q: %v", key, approvals[0])
 		}
 	}
+}
+
+func TestWorkerSurfaceStrictForClientCredential(t *testing.T) {
+	ctx := context.Background()
+	store, conversation, server, credential := piSnapshotServer(t, ctx)
+	_, _, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{WorkerRef: "strict-worker", Intent: "inspect", ProjectID: "project", NodeID: "local", HarnessInstanceID: "local/fx", PolicySnapshot: "safe"}, core.TurnSpec{Input: "inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
+		Status:         core.OutcomeFailed,
+		Classification: core.OutcomeFinal,
+		ErrorCode:      "harness_failed",
+		ErrorMessage:   "error message with secret token=do-not-return",
+		Diagnostics:    `{"runtime_session_id":"native-session-do-not-return","detail":"diagnostic detail"}`,
+		FailureCode:    "runtime_session_uncertain",
+		Summary:        "failed safely",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	getRaw := func(client *http.Client, path, bearer string) (int, []byte) {
+		t.Helper()
+		request, err := http.NewRequest(http.MethodGet, server.URL+path, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bearer != "" {
+			request.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		raw, err := io.ReadAll(response.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return response.StatusCode, raw
+	}
+	decodeList := func(raw []byte) []map[string]any {
+		t.Helper()
+		var body []map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode list %s: %v", raw, err)
+		}
+		return body
+	}
+	viewer := server.Client()
+	if status, raw := getRaw(viewer, "/v1/workers", credential); status != http.StatusOK {
+		t.Fatalf("viewer list status=%d", status)
+	} else {
+		assertNoPrivateFields(t, raw)
+		workers := decodeList(raw)
+		if len(workers) != 1 {
+			t.Fatalf("viewer workers=%v", workers)
+		}
+		for _, key := range []string{"node_id", "harness_instance_id"} {
+			if _, ok := workers[0][key]; ok {
+				t.Fatalf("viewer list leaks %q: %v", key, workers[0])
+			}
+		}
+		if workers[0]["worker_ref"] != "strict-worker" {
+			t.Fatalf("viewer list worker=%v", workers[0])
+		}
+	}
+	if status, raw := getRaw(viewer, "/v1/workers/strict-worker", credential); status != http.StatusOK {
+		t.Fatalf("viewer details status=%d", status)
+	} else {
+		assertNoPrivateFields(t, raw)
+		var decoded map[string]any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"worker", "turns", "attempts", "outcomes", "results"} {
+			if _, ok := decoded[key]; !ok {
+				t.Fatalf("viewer details miss %q: %s", key, raw)
+			}
+		}
+		for _, key := range []string{"attempts", "outcomes", "results"} {
+			items, ok := decoded[key].([]any)
+			if !ok || len(items) == 0 {
+				t.Fatalf("viewer details %q not populated: %s", key, raw)
+			}
+		}
+		worker, _ := decoded["worker"].(map[string]any)
+		if worker == nil || worker["worker_ref"] != "strict-worker" {
+			t.Fatalf("viewer details worker=%v", decoded["worker"])
+		}
+	}
+	if status, raw := getRaw(viewer, "/v1/workers/strict-worker/turns", credential); status != http.StatusOK {
+		t.Fatalf("viewer turns status=%d", status)
+	} else {
+		assertNoPrivateFields(t, raw)
+	}
+	if status, _ := getRaw(viewer, "/v1/workers/strict-worker/diagnostics", credential); status != http.StatusForbidden {
+		t.Fatalf("viewer diagnostics status=%d, want 403", status)
+	}
+	ownerJar, _ := cookiejar.New(nil)
+	owner := &http.Client{Jar: ownerJar}
+	login(t, owner, server.URL)
+	if status, raw := getRaw(owner, "/v1/workers", ""); status != http.StatusOK {
+		t.Fatalf("owner list status=%d", status)
+	} else {
+		workers := decodeList(raw)
+		if len(workers) != 1 || workers[0]["node_id"] != "local" || workers[0]["harness_instance_id"] != "local/fx" {
+			t.Fatalf("owner list changed: %v", workers)
+		}
+	}
+	if status, raw := getRaw(owner, "/v1/workers/strict-worker", ""); status != http.StatusOK {
+		t.Fatalf("owner details status=%d", status)
+	} else {
+		for _, want := range []string{`"node_id"`, `"error_code"`, `"error_message"`, `"correlation_id"`, `"worker_id"`} {
+			if !strings.Contains(string(raw), want) {
+				t.Fatalf("owner details lost %s: %s", want, raw)
+			}
+		}
+		var decoded map[string]any
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"attempts", "outcomes", "results"} {
+			items, ok := decoded[key].([]any)
+			if !ok || len(items) == 0 {
+				t.Fatalf("owner details %q not populated: %s", key, raw)
+			}
+		}
+	}
+	if status, _ := getRaw(owner, "/v1/workers/strict-worker/diagnostics", ""); status != http.StatusOK {
+		t.Fatalf("owner diagnostics status=%d, want unchanged behavior", status)
+	}
+	source, err := store.WorkerDetailsForConversation(ctx, conversation.ID, "strict-worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(source.Attempts) != 1 || source.Attempts[0].NodeID != "local" || source.Attempts[0].HarnessInstanceID != "local/fx" || source.Attempts[0].CorrelationID == "" {
+		t.Fatalf("source attempts missing private values: %#v", source.Attempts)
+	}
+	if len(source.Outcomes) != 1 || source.Outcomes[0].Diagnostics == "" || source.Outcomes[0].ErrorMessage == "" || source.Outcomes[0].ErrorCode == "" {
+		t.Fatalf("source outcomes missing private values: %#v", source.Outcomes)
+	}
+	if len(source.Results) != 1 || source.Results[0].CorrelationID == "" || source.Results[0].FailureCode == "" {
+		t.Fatalf("source results missing private values: %#v", source.Results)
+	}
+}
+
+func assertNoPrivateFields(t *testing.T, raw []byte) {
+	t.Helper()
+	var value any
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatal(err)
+	}
+	forbidden := []string{
+		"node_id", "harness_instance_id", "policy_snapshot", "project_snapshot", "workspace",
+		"context_snapshot", "diagnostics", "error_message", "artifact_refs", "normalized_intent",
+		"audit_event_id", "request_id", "credential",
+		"runtime_session_id", "native_id", "response", "resolved_by",
+	}
+	var walk func(node any, path string)
+	walk = func(node any, path string) {
+		switch current := node.(type) {
+		case map[string]any:
+			for key, child := range current {
+				for _, denied := range forbidden {
+					if key == denied {
+						t.Fatalf("private field %q at %s", key, path)
+					}
+				}
+				walk(child, path+"."+key)
+			}
+		case []any:
+			for index, child := range current {
+				walk(child, fmt.Sprintf("%s[%d]", path, index))
+			}
+		}
+	}
+	walk(value, "$")
 }

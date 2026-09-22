@@ -172,13 +172,34 @@ func (s *Server) canonicalModel(requested string) (string, bool) {
 }
 
 func (s *Server) workerList(w http.ResponseWriter, r *http.Request) {
-	conversation, ok := s.authorizedConversationScope(w, r, core.ScopeWorkerRead)
+	person, client, ok := s.authorizedPerson(w, r)
 	if !ok {
+		return
+	}
+	if client != nil && !client.HasScope(core.ScopeWorkerRead) {
+		http.Error(w, "Client scope required", http.StatusForbidden)
+		return
+	}
+	conversation, err := s.store.ConversationForPerson(r.Context(), person.ID)
+	if err != nil {
+		http.Error(w, "read workers", http.StatusInternalServerError)
 		return
 	}
 	limit, err := parseSnapshotLimit(r)
 	if err != nil {
 		http.Error(w, "invalid limit", http.StatusBadRequest)
+		return
+	}
+	if client != nil {
+		workers, err := s.publicWorkersStrictForConversationLimit(r.Context(), conversation.ID, limit)
+		if err != nil {
+			http.Error(w, "read workers", http.StatusInternalServerError)
+			return
+		}
+		if workers == nil {
+			workers = []publicWorkerStrictDTO{}
+		}
+		writeJSON(w, http.StatusOK, sanitizePublicJSON(workers))
 		return
 	}
 	workers, err := s.publicWorkersForConversationLimit(r.Context(), conversation.ID, limit)

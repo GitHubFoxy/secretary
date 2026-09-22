@@ -55,7 +55,7 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.Trim(path, "/"), "/")
 	if len(parts) > 0 && parts[0] != "" {
 		if details, err := s.store.WorkerDetailsForConversation(r.Context(), conversation.ID, parts[0]); err == nil {
-			if s.phase4WorkerRoute(w, r, details, parts[1:]) {
+			if s.phase4WorkerRoute(w, r, client, details, parts[1:]) {
 				return
 			}
 		}
@@ -358,16 +358,28 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, details core.WorkerDetails, suffix []string) bool {
+func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, client *core.Client, details core.WorkerDetails, suffix []string) bool {
 	if len(suffix) == 0 && r.Method == http.MethodGet {
+		if client != nil {
+			writeJSON(w, http.StatusOK, sanitizePublicJSON(publicWorkerDetailsStrictFromDetails(details)))
+			return true
+		}
 		writeJSON(w, http.StatusOK, sanitizePublicJSON(details))
 		return true
 	}
 	if len(suffix) == 1 && suffix[0] == "turns" && r.Method == http.MethodGet {
+		if client != nil {
+			writeJSON(w, http.StatusOK, sanitizePublicJSON(publicTurnsStrict(details)))
+			return true
+		}
 		writeJSON(w, http.StatusOK, sanitizePublicJSON(details.Turns))
 		return true
 	}
 	if len(suffix) == 1 && suffix[0] == "diagnostics" && r.Method == http.MethodGet {
+		if client != nil {
+			http.Error(w, "diagnostics are not available to Client credentials", http.StatusForbidden)
+			return true
+		}
 		s.workerDiagnostics(w, r, details)
 		return true
 	}
