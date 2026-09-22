@@ -372,18 +372,16 @@ func rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler htt
 
 // validateListen enforces the supported topology from docs/pi-viewer.md:
 // secretaryd binds loopback only and remote access goes through the Tailscale
-// Serve proxy, so wildcard and LAN binds are refused at startup.
+// Serve proxy. Only literal loopback IPs are accepted, because a hostname such
+// as localhost can resolve off-loopback via /etc/hosts or DNS.
 func validateListen(addr string) error {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
 	if err != nil {
 		return fmt.Errorf("invalid -listen %q: %w; use a loopback host:port such as 127.0.0.1:8081", addr, err)
 	}
-	if host == "localhost" {
-		return nil
-	}
 	ip := net.ParseIP(host)
 	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("-listen %q is not loopback; secretaryd must bind 127.0.0.1 and publish through Tailscale Serve (see docs/always-on-runbook.md)", addr)
+		return fmt.Errorf("-listen %q must be a literal loopback IP such as 127.0.0.1 or [::1]; hostnames can resolve off-loopback and secretaryd must publish through Tailscale Serve (see docs/always-on-runbook.md)", addr)
 	}
 	return nil
 }

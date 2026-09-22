@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -174,12 +176,12 @@ func loginProduction(t *testing.T, client *http.Client, baseURL string) {
 }
 
 func TestValidateListenRejectsNonLoopback(t *testing.T) {
-	for _, listen := range []string{"127.0.0.1:8081", "localhost:8081", "[::1]:8081"} {
+	for _, listen := range []string{"127.0.0.1:8081", "[::1]:8081"} {
 		if err := validateListen(listen); err != nil {
 			t.Errorf("validateListen(%q)=%v, want nil", listen, err)
 		}
 	}
-	for _, listen := range []string{"0.0.0.0:8081", ":8081", "192.168.1.10:8081", "secretary.internal:8081", "8081"} {
+	for _, listen := range []string{"0.0.0.0:8081", ":8081", "localhost:8081", "192.168.1.10:8081", "secretary.internal:8081", "8081"} {
 		if err := validateListen(listen); err == nil {
 			t.Errorf("validateListen(%q)=nil, want rejection of non-loopback bind", listen)
 		}
@@ -215,13 +217,22 @@ func TestControlRoutesStayDebugOnly(t *testing.T) {
 	}
 }
 
-func TestNodesConnectRefusesClientCredential(t *testing.T) {
-	store, err := core.Open(context.Background(), filepath.Join(t.TempDir(), "nodes-connect.db"))
+func TestNodesConnectRefusesRealViewerCredential(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "nodes-connect.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	manager, err := node.NewServerManagerWithConfig(context.Background(), store, node.ServerConfig{
+	api, err := webapi.New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	provision := httptest.NewServer(api.Handler())
+	defer provision.Close()
+	credential := pairedViewerCredential(t, provision)
+
+	manager, err := node.NewServerManagerWithConfig(ctx, store, node.ServerConfig{
 		PairingTokens: []string{"pairing-token"}, AdminToken: "admin-token", ClientBootstrapToken: "bootstrap",
 	})
 	if err != nil {
@@ -230,10 +241,74 @@ func TestNodesConnectRefusesClientCredential(t *testing.T) {
 	handler := rootHandler(http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), manager, false)
 
 	request := httptest.NewRequest(http.MethodGet, "/v1/nodes/connect", nil)
-	request.Header.Set("Authorization", "Bearer pi-read-only-credential")
+	request.Header.Set("Authorization", "Bearer "+credential)
 	recorder := httptest.NewRecorder()
 	handler.ServeHTTP(recorder, request)
-	if recorder.Code >= 200 && recorder.Code < 300 {
-		t.Fatalf("/v1/nodes/connect status=%d with Client credential, want refusal", recorder.Code)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("/v1/nodes/connect status=%d with a real viewer Client credential, want protocol rejection 400", recorder.Code)
 	}
+}
+
+// pairedViewerCredential mints the contract's Pi viewer credential: a Client
+// approved with exactly the three viewer scopes from docs/pi-viewer.md.
+func pairedViewerCredential(t *testing.T, server *httptest.Server) string {
+	t.Helper()
+	pairRequest, err := http.NewRequest(http.MethodPost, server.URL+"/v1/clients/pair", strings.NewReader(
+		`{"bootstrap_token":"bootstrap","device_id":"pi-review","display_name":"Pi","platform":"pi","scopes":["conversation:read","worker:read","approval:read"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairRequest.Header.Set("Content-Type", "application/json")
+	pairRequest.Header.Set("Idempotency-Key", "test-pair-pi-review")
+	pairResponse, err := http.DefaultClient.Do(pairRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pairResponse.Body.Close()
+	rawPair, err := io.ReadAll(pairResponse.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pairResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("pair status=%d body=%s, want 201", pairResponse.StatusCode, rawPair)
+	}
+	var pair struct {
+		Status   string `json:"status"`
+		ClientID string `json:"client_id"`
+	}
+	if err := json.Unmarshal(rawPair, &pair); err != nil {
+		t.Fatal(err)
+	}
+	if pair.Status != "pending" || pair.ClientID == "" {
+		t.Fatalf("pair response=%#v, want pending client_id", pair)
+	}
+
+	ownerJar, _ := cookiejar.New(nil)
+	owner := &http.Client{Jar: ownerJar}
+	loginProduction(t, owner, server.URL)
+
+	approveRequest, err := http.NewRequest(http.MethodPost, server.URL+"/v1/clients/"+pair.ClientID+"/approve", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	approveRequest.Header.Set("Content-Type", "application/json")
+	approveRequest.Header.Set("Idempotency-Key", "test-approve-pi-review")
+	approveResponse, err := owner.Do(approveRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer approveResponse.Body.Close()
+	if approveResponse.StatusCode != http.StatusOK {
+		t.Fatalf("approve status=%d, want 200", approveResponse.StatusCode)
+	}
+	var approved struct {
+		Credential string `json:"credential"`
+	}
+	if err := json.NewDecoder(approveResponse.Body).Decode(&approved); err != nil {
+		t.Fatal(err)
+	}
+	if approved.Credential == "" {
+		t.Fatal("approve returned no credential")
+	}
+	return approved.Credential
 }

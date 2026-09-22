@@ -31,7 +31,7 @@ Serve surface - полный `/v1` и статика User UI поверх одн
 
 Через тот же proxy публикуется `GET /v1/health`: liveness-проба для runbook, не требует credential, возвращает только поле `status` и не входит в snapshot surface.
 
-`GET /v1/bootstrap` отказ не получает: он открыт тем же `conversation:read`, что и остальная snapshot surface, и возвращает те же Workers. Он не входит в snapshot по решению контракта, но запретить его Pi без отдельного scope server не может.
+`GET /v1/bootstrap` остаётся доступен любому credential с `conversation:read`, включая viewer credential: контракт говорит, что Pi его не вызывает, а не что сервер route запрещает. Полный запрет возможен только через отдельный viewer scope или отдельный viewer DTO, и это решение тикета 03. До тех пор route отдаёт viewer те же Workers, что и `/v1/workers`.
 
 Вариант A (path allowlist только для Pi read endpoints и pairing routes) отклонён для первого релиза: он требует второго listener и отдельной конфигурации proxy без выигрыша в покрытии, если negative tests проходят.
 

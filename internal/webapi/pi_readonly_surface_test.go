@@ -12,12 +12,12 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-// pairedReadonlyCredential creates the Pi viewer credential shape: a client
-// that holds only read scopes, approved through the owner session.
+// pairedReadonlyCredential creates the Pi viewer credential shape: a Client
+// approved with exactly the three viewer scopes from docs/pi-viewer.md.
 func pairedReadonlyCredential(t *testing.T, server *httptest.Server) string {
 	t.Helper()
 	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair",
-		`{"bootstrap_token":"bootstrap","device_id":"pi-negative","display_name":"Pi","platform":"pi","scopes":["conversation:read","worker:read","approval:read","project:read","node:read","user:read"]}`)
+		`{"bootstrap_token":"bootstrap","device_id":"pi-negative","display_name":"Pi","platform":"pi","scopes":["conversation:read","worker:read","approval:read"]}`)
 	if pair.status != http.StatusCreated || pair.body["client_id"] == nil {
 		t.Fatalf("pair=%d %#v", pair.status, pair.body)
 	}
