@@ -181,7 +181,7 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 		return nil, errors.New("telegram: state path is required")
 	}
 	if config.PollInterval <= 0 {
-		config.PollInterval = 30 * time.Second
+		config.PollInterval = 2 * time.Second
 	}
 	if config.FlushInterval <= 0 {
 		config.FlushInterval = 2 * time.Second
@@ -597,6 +597,9 @@ func (a *Adapter) Run(ctx context.Context) error {
 		maxBackoff = backoff
 	}
 	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		err := a.PollOnce(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -620,15 +623,6 @@ func (a *Adapter) Run(ctx context.Context) error {
 			continue
 		}
 		backoff = 100 * time.Millisecond
-		timer := time.NewTimer(a.config.PollInterval)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return ctx.Err()
-		case <-timer.C:
-		}
 	}
 }
 

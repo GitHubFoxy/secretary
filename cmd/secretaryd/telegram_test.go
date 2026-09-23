@@ -34,6 +34,20 @@ func TestTelegramDeploymentIsExplicitlyGated(t *testing.T) {
 	}
 }
 
+func TestTelegramDeploymentDefaultsToTwoSecondPolling(t *testing.T) {
+	t.Setenv("SECRETARY_TELEGRAM_ENABLED", "true")
+	t.Setenv("SECRETARY_TELEGRAM_BOT_TOKEN", "fixture")
+	t.Setenv("SECRETARY_TELEGRAM_SERVER_CREDENTIAL", "fixture")
+	t.Setenv("SECRETARY_TELEGRAM_POLL_INTERVAL", "")
+	config, err := configuredTelegramDeployment()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if config.PollInterval != 2*time.Second {
+		t.Fatalf("poll interval=%s, want 2s", config.PollInterval)
+	}
+}
+
 type bridgeServer struct{}
 
 func (bridgeServer) SendMessage(context.Context, telegram.InboundMessage) error      { return nil }

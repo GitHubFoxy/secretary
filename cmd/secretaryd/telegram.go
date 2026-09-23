@@ -37,7 +37,7 @@ func configuredTelegramDeployment() (telegramDeploymentConfig, error) {
 		BotUsername:      strings.TrimSpace(os.Getenv("SECRETARY_TELEGRAM_BOT_USERNAME")),
 		ServerCredential: strings.TrimSpace(os.Getenv("SECRETARY_TELEGRAM_SERVER_CREDENTIAL")),
 		BaseURL:          strings.TrimRight(strings.TrimSpace(os.Getenv("SECRETARY_TELEGRAM_API_BASE_URL")), "/"),
-		PollInterval:     30 * time.Second,
+		PollInterval:     2 * time.Second,
 		FlushInterval:    2 * time.Second,
 	}
 	if config.BotToken == "" || config.ServerCredential == "" {

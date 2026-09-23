@@ -710,6 +710,45 @@ func TestTelegramSanitizerRecursivelyRedactsPublicForbiddenValues(t *testing.T) 
 	}
 }
 
+func TestDefaultPollIntervalIsTwoSeconds(t *testing.T) {
+	adapter := newTestAdapter(t, &fakeTransport{}, &fakeServer{}, filepath.Join(t.TempDir(), "telegram.json"))
+	if adapter.config.PollInterval != 2*time.Second {
+		t.Fatalf("poll interval=%s, want 2s", adapter.config.PollInterval)
+	}
+}
+
+func TestRunImmediatelyStartsNextLongPollAfterSuccess(t *testing.T) {
+	transport := &retryPollingTransport{ready: make(chan struct{})}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "telegram.json"))
+	adapter.config.PollInterval = 5 * time.Second
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() { result <- adapter.Run(ctx) }()
+	select {
+	case <-transport.ready:
+	case <-time.After(time.Second):
+		t.Fatal("polling did not reach a successful response")
+	}
+	deadline := time.Now().Add(300 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		transport.mu.Lock()
+		calls := transport.calls
+		transport.mu.Unlock()
+		if calls >= 4 {
+			cancel()
+			if err := <-result; !errors.Is(err, context.Canceled) {
+				t.Fatalf("Run error=%v", err)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-result
+	t.Fatal("Run waited for PollInterval after a successful long poll")
+}
+
 func TestRunRetriesTransientPollingErrors(t *testing.T) {
 	transport := &retryPollingTransport{ready: make(chan struct{})}
 	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "telegram.json"))
