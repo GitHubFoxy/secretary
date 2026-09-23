@@ -38,6 +38,37 @@ func TestBotAPITransportPreservesTextInFormEncoding(t *testing.T) {
 	}
 }
 
+func TestBotAPITransportSetsEyesReaction(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/botfixture/setMessageReaction" {
+			t.Errorf("path=%s", r.URL.Path)
+		}
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.Form.Get("chat_id"); got != "555" {
+			t.Errorf("chat_id=%q", got)
+		}
+		if got := r.Form.Get("message_id"); got != "42" {
+			t.Errorf("message_id=%q", got)
+		}
+		var reaction []struct {
+			Type  string `json:"type"`
+			Emoji string `json:"emoji"`
+		}
+		if err := json.Unmarshal([]byte(r.Form.Get("reaction")), &reaction); err != nil {
+			t.Errorf("decode reaction: %v", err)
+		} else if len(reaction) != 1 || reaction[0].Type != "emoji" || reaction[0].Emoji != "👀" {
+			t.Errorf("reaction=%#v", reaction)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+	}))
+	defer server.Close()
+	if err := (&BotAPITransport{BaseURL: server.URL, BotToken: "fixture"}).SetMessageReaction(context.Background(), 555, 42, "👀"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBotAPITransportDecodesProductionNestedMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/botfixture/getUpdates" {
@@ -64,7 +95,7 @@ func TestBotAPITransportDecodesProductionNestedMessage(t *testing.T) {
 		t.Fatalf("updates=%#v", updates)
 	}
 	message := updates[0].Message
-	if message.ChatID != 555 || message.FromID != 777 || message.ThreadID != 33 || message.Text != "/start one-time" {
+	if message.ChatID != 555 || message.FromID != 777 || message.MessageID != 9 || message.ThreadID != 33 || message.Text != "/start one-time" {
 		t.Fatalf("message=%#v", message)
 	}
 }

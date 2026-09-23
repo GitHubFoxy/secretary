@@ -77,7 +77,8 @@ type botUpdateDTO struct {
 }
 
 type botMessageDTO struct {
-	From *struct {
+	MessageID int64 `json:"message_id,omitempty"`
+	From      *struct {
 		ID int64 `json:"id"`
 	} `json:"from,omitempty"`
 	Chat *struct {
@@ -92,7 +93,7 @@ func (dto botUpdateDTO) update() Update {
 	if dto.Message == nil {
 		return update
 	}
-	message := &Message{ThreadID: dto.Message.ThreadID, Text: dto.Message.Text}
+	message := &Message{MessageID: dto.Message.MessageID, ThreadID: dto.Message.ThreadID, Text: dto.Message.Text}
 	if dto.Message.Chat != nil {
 		message.ChatID = dto.Message.Chat.ID
 	}
@@ -133,6 +134,19 @@ func (t *BotAPITransport) SendMessage(ctx context.Context, message OutgoingMessa
 		values.Set("message_thread_id", strconv.FormatInt(message.ThreadID, 10))
 	}
 	return t.call(ctx, "sendMessage", values, nil)
+}
+
+func (t *BotAPITransport) SetMessageReaction(ctx context.Context, chatID, messageID int64, emoji string) error {
+	reaction, err := json.Marshal([]map[string]string{{"type": "emoji", "emoji": emoji}})
+	if err != nil {
+		return err
+	}
+	values := url.Values{
+		"chat_id":    {strconv.FormatInt(chatID, 10)},
+		"message_id": {strconv.FormatInt(messageID, 10)},
+		"reaction":   {string(reaction)},
+	}
+	return t.call(ctx, "setMessageReaction", values, nil)
 }
 
 func (t *BotAPITransport) SendChatAction(ctx context.Context, chatID, threadID int64, action string) error {

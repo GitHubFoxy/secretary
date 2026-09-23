@@ -32,10 +32,11 @@ type Update struct {
 }
 
 type Message struct {
-	ChatID   int64  `json:"chat_id"`
-	FromID   int64  `json:"from_id"`
-	ThreadID int64  `json:"message_thread_id,omitempty"`
-	Text     string `json:"text,omitempty"`
+	ChatID    int64  `json:"chat_id"`
+	FromID    int64  `json:"from_id"`
+	MessageID int64  `json:"message_id"`
+	ThreadID  int64  `json:"message_thread_id,omitempty"`
+	Text      string `json:"text,omitempty"`
 }
 
 type OutgoingMessage struct {
@@ -58,6 +59,10 @@ type Transport interface {
 	SendMessage(context.Context, OutgoingMessage) error
 	SendChatAction(context.Context, int64, int64, string) error
 	CreateForumTopic(context.Context, int64, string) (ForumTopic, error)
+}
+
+type MessageReactionTransport interface {
+	SetMessageReaction(context.Context, int64, int64, string) error
 }
 
 type InboundMessage struct {
@@ -512,6 +517,7 @@ func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool
 		} else {
 			err := a.server.SendWorkerMessage(ctx, WorkerMessage{WorkerRef: mapping.WorkerRef, ExternalMessageID: externalID, RequestID: mapping.PendingRequestID, Text: text})
 			if err == nil {
+				a.reactToMessage(ctx, update.Message)
 				a.sendTyping(update.Message.ChatID, update.Message.ThreadID)
 			}
 			if err == nil && mapping.PendingRequestID != "" {
@@ -529,6 +535,7 @@ func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool
 	if err := a.server.SendMessage(ctx, InboundMessage{ExternalMessageID: externalID, Body: text}); err != nil {
 		return err
 	}
+	a.reactToMessage(ctx, update.Message)
 	thread := update.Message.ThreadID
 	if thread == 0 {
 		thread = 1
@@ -544,6 +551,18 @@ func (a *Adapter) mappingForThreadLocked(chatID, threadID int64) (TopicMapping, 
 		}
 	}
 	return TopicMapping{}, false
+}
+
+// reactToMessage is a best-effort visual acknowledgement after the server accepts the update.
+func (a *Adapter) reactToMessage(ctx context.Context, message *Message) {
+	if message == nil || message.MessageID <= 0 {
+		return
+	}
+	transport, ok := a.transport.(MessageReactionTransport)
+	if !ok {
+		return
+	}
+	_ = transport.SetMessageReaction(ctx, message.ChatID, message.MessageID, "👀")
 }
 
 // sendTyping is best-effort liveness: failures never block delivery.

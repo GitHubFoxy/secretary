@@ -56,6 +56,23 @@ func (f *fakeTransport) CreateForumTopic(_ context.Context, chatID int64, name s
 	return topic, nil
 }
 
+type reactionCall struct {
+	chatID    int64
+	messageID int64
+	emoji     string
+}
+
+type recordingReactionTransport struct {
+	*fakeTransport
+	reactions []reactionCall
+	err       error
+}
+
+func (t *recordingReactionTransport) SetMessageReaction(_ context.Context, chatID, messageID int64, emoji string) error {
+	t.reactions = append(t.reactions, reactionCall{chatID: chatID, messageID: messageID, emoji: emoji})
+	return t.err
+}
+
 type fakeServer struct {
 	messages []InboundMessage
 	workers  []WorkerMessage
@@ -318,6 +335,27 @@ func TestTypingActionOnInboundAndFlush(t *testing.T) {
 	}
 	if len(transport.sent) != 1 || !strings.Contains(transport.sent[0].Text, "working") {
 		t.Fatalf("pending flush=%#v", transport.sent)
+	}
+}
+
+func TestAcceptedSecretaryMessageGetsBestEffortReaction(t *testing.T) {
+	for _, reactionErr := range []error{nil, errors.New("reaction unavailable")} {
+		transport := &recordingReactionTransport{fakeTransport: &fakeTransport{}, err: reactionErr}
+		server := &fakeServer{}
+		adapter, err := New(Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, FlushInterval: time.Minute}, transport, server)
+		if err != nil {
+			t.Fatal(err)
+		}
+		update := Update{ID: 7, Message: &Message{ChatID: 100, FromID: 100, MessageID: 42, Text: "hello"}}
+		if err := adapter.HandleUpdate(context.Background(), update); err != nil {
+			t.Fatalf("reaction error %v blocked message: %v", reactionErr, err)
+		}
+		if len(server.messages) != 1 {
+			t.Fatalf("server messages=%#v", server.messages)
+		}
+		if len(transport.reactions) != 1 || transport.reactions[0] != (reactionCall{chatID: 100, messageID: 42, emoji: "👀"}) {
+			t.Fatalf("reactions=%#v", transport.reactions)
+		}
 	}
 }
 
