@@ -109,7 +109,7 @@ Revoke выполняет owner: `POST /v1/clients/{id}/revoke`. Server отме
 
 **Initial snapshot.** Extension читает bounded Conversation tail, Workers и approvals, затем открывает выбранный Worker observer при необходимости.
 
-**Live updates.** После snapshot открывается `GET /v1/conversation/ws?after_seq=<последний confirmed seq>`. Server сначала отдаёт durable entries после cursor, затем live. Доставка строго по возрастанию `seq`: server держит pending map и не отправляет entry с `seq <= cursor`. Те же правила у Secretary turn stream и Worker activity.
+**Live updates.** После snapshot открывается `GET /v1/conversation/ws?after_seq=<последний confirmed seq>`. Server сначала отдаёт durable entries после cursor, затем live. Доставка строго по возрастанию `seq`: server держит pending map и не отправляет entry с `seq <= cursor`. Те же правила у Secretary turn stream и Worker activity. Стандартный Node WebSocket в Pi не позволяет задать HTTP-заголовок `Authorization`, поэтому клиент передаёт credential в запрошенном subprotocol `secretary.bearer.<credential>` вместе с `secretary.v1`. Сервер принимает его только при валидном WebSocket upgrade и возвращает в ответе только постоянный subprotocol `secretary.v1`, не credential.
 
 **Дедупликация.** Viewer дедуплицирует по `id` (Conversation, Secretary events) и по `seq` (activity), затем сортирует по `seq`. Это уже делает `SecretaryPresentation`, поэтому повторная доставка не создаёт duplicate presentation entries.
 
