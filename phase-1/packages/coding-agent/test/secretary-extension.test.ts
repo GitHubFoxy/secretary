@@ -1,7 +1,21 @@
 import { describe, expect, test } from "vitest";
-import { summary } from "../src/extensions/secretary.ts";
+import { summary, workerPickerOptions } from "../src/extensions/secretary.ts";
 
 describe("Secretary extension live view", () => {
+	test("uses Worker titles in the picker and keeps refs internal", () => {
+		expect(workerPickerOptions([
+			{ worker_ref: "wrk_hidden_a", title: "Pong", status: "idle" },
+			{ worker_ref: "wrk_hidden_b", title: "Pong", status: "working" },
+			{ worker_ref: "wrk_hidden_c", title: "", status: "idle" },
+			{ worker_ref: "wrk_hidden_d", title: "Closed", status: "closed" },
+			{ worker_ref: "wrk_hidden_e", title: "Archived", status: "idle", archived: true },
+		])).toEqual([
+			{ label: "Worker: Pong (1)", workerRef: "wrk_hidden_a" },
+			{ label: "Worker: Pong (2)", workerRef: "wrk_hidden_b" },
+			{ label: "Worker: wrk_hidden_c", workerRef: "wrk_hidden_c" },
+		]);
+	});
+
 	test("renders allowlisted Worker status and tool event envelope fields only", () => {
 		const text = summary({
 			conversation: [{ id: "hidden-id", seq: 1, body: "safe reply", credential: "secret" }],
@@ -26,6 +40,7 @@ describe("Secretary extension live view", () => {
 			connection: "connected",
 		});
 		expect(text).toContain("safe reply");
+		expect(text).toContain("Secretary server: удалённый чат; ввод ниже пойдёт в локальный Pi");
 		expect(text).toContain("Worker status: working");
 		expect(text).toContain("Tool started: shell");
 		expect(text).toContain("Tool finished: shell");

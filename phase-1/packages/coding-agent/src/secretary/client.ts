@@ -74,7 +74,9 @@ export interface SecretaryEvent {
 
 export interface Worker {
 	readonly worker_ref: string;
+	readonly title?: string;
 	readonly status: string;
+	readonly archived?: boolean;
 	readonly [key: string]: unknown;
 }
 
