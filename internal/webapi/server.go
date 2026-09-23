@@ -3,6 +3,7 @@ package webapi
 import (
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -432,7 +433,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid after_seq", http.StatusBadRequest)
 		return
 	}
-	conn, err := websocket.Accept(w, r, nil)
+	conn, err := websocket.Accept(w, r, websocketAcceptOptions(r))
 	if err != nil {
 		return
 	}
@@ -597,9 +598,7 @@ func (s *Server) authorizedPerson(w http.ResponseWriter, r *http.Request) (core.
 			return person, nil, true
 		}
 	}
-	header := strings.TrimSpace(r.Header.Get("Authorization"))
-	if len(header) > len("Bearer ") && strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
-		credential := strings.TrimSpace(header[len("Bearer "):])
+	if credential := bearerToken(r); credential != "" {
 		if s.internalCredential != "" && subtle.ConstantTimeCompare([]byte(credential), []byte(s.internalCredential)) == 1 {
 			client := s.telegramInternalClient()
 			return s.owner, &client, true
@@ -614,12 +613,64 @@ func (s *Server) authorizedPerson(w http.ResponseWriter, r *http.Request) (core.
 	return core.Person{}, nil, false
 }
 
+const secretaryWebSocketProtocol = "secretary.v1"
+
+func requestedWebSocketProtocols(r *http.Request) map[string]bool {
+	protocols := make(map[string]bool)
+	for _, protocol := range strings.Split(r.Header.Get("Sec-WebSocket-Protocol"), ",") {
+		protocol = strings.TrimSpace(protocol)
+		if protocol != "" {
+			protocols[protocol] = true
+		}
+	}
+	return protocols
+}
+
+func isWebSocketUpgrade(r *http.Request) bool {
+	key, err := base64.StdEncoding.DecodeString(r.Header.Get("Sec-WebSocket-Key"))
+	return r.Method == http.MethodGet && strings.EqualFold(strings.TrimSpace(r.Header.Get("Upgrade")), "websocket") &&
+		hasHeaderToken(r.Header.Get("Connection"), "upgrade") && r.Header.Get("Sec-WebSocket-Version") == "13" && err == nil && len(key) == 16
+}
+
 func bearerToken(r *http.Request) string {
 	header := strings.TrimSpace(r.Header.Get("Authorization"))
-	if len(header) <= len("Bearer ") || !strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
+	if len(header) > len("Bearer ") && strings.EqualFold(header[:len("Bearer ")], "Bearer ") {
+		return strings.TrimSpace(header[len("Bearer "):])
+	}
+	if !isWebSocketUpgrade(r) {
 		return ""
 	}
-	return strings.TrimSpace(header[len("Bearer "):])
+	protocols := requestedWebSocketProtocols(r)
+	if !protocols[secretaryWebSocketProtocol] {
+		return ""
+	}
+	return requestedBearerProtocol(r)
+}
+
+func requestedBearerProtocol(r *http.Request) string {
+	for _, protocol := range strings.Split(r.Header.Get("Sec-WebSocket-Protocol"), ",") {
+		protocol = strings.TrimSpace(protocol)
+		if strings.HasPrefix(protocol, "secretary.bearer.") {
+			return strings.TrimPrefix(protocol, "secretary.bearer.")
+		}
+	}
+	return ""
+}
+
+func websocketAcceptOptions(r *http.Request) *websocket.AcceptOptions {
+	if !isWebSocketUpgrade(r) || !requestedWebSocketProtocols(r)[secretaryWebSocketProtocol] || requestedBearerProtocol(r) == "" {
+		return nil
+	}
+	return &websocket.AcceptOptions{Subprotocols: []string{secretaryWebSocketProtocol}}
+}
+
+func hasHeaderToken(header, token string) bool {
+	for _, value := range strings.Split(header, ",") {
+		if strings.EqualFold(strings.TrimSpace(value), token) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) requestClientID(r *http.Request) string {

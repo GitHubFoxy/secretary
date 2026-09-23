@@ -509,7 +509,7 @@ func (s *Server) workerActivityReplayJSON(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) workerActivityReplay(w http.ResponseWriter, r *http.Request, workerRef string) {
-	connection, err := websocket.Accept(w, r, nil)
+	connection, err := websocket.Accept(w, r, websocketAcceptOptions(r))
 	if err != nil {
 		return
 	}
@@ -739,7 +739,7 @@ func sanitizePublicTaskDetails(details *core.TaskDetails) {
 }
 
 func (s *Server) workerActivity(w http.ResponseWriter, r *http.Request, session node.Session) {
-	connection, err := websocket.Accept(w, r, nil)
+	connection, err := websocket.Accept(w, r, websocketAcceptOptions(r))
 	if err != nil {
 		return
 	}

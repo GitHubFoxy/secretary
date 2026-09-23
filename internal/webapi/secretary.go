@@ -101,7 +101,7 @@ func (s *Server) secretaryWebsocket(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid after_seq", http.StatusBadRequest)
 		return
 	}
-	connection, err := websocket.Accept(w, r, nil)
+	connection, err := websocket.Accept(w, r, websocketAcceptOptions(r))
 	if err != nil {
 		return
 	}

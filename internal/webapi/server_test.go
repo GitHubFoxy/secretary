@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -72,6 +73,66 @@ func postMessage(t *testing.T, client *http.Client, baseURL, id, body string) ma
 		t.Fatal(err)
 	}
 	return result
+}
+
+func TestBearerWebSocketSubprotocolDoesNotEchoCredentialOrAuthorizeHTTP(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "websocket-protocol.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, _, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairing, err := store.PairClientWithToken(ctx, person.ID, "ws-protocol", "WS protocol", "test", []core.ClientScope{core.ScopeConversationRead})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, credential, err := store.ApproveClient(ctx, pairing.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/conversation/ws?after_seq=0"
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_, rejectedResponse, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{Subprotocols: []string{"secretary.bearer." + credential}})
+	if err == nil || rejectedResponse == nil || rejectedResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("bearer subprotocol without secretary.v1: err=%v response=%v", err, rejectedResponse)
+	}
+	if rejectedResponse.Body != nil {
+		rejectedResponse.Body.Close()
+	}
+	connection, response, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{Subprotocols: []string{"secretary.v1", "secretary.bearer." + credential}})
+	if err != nil {
+		t.Fatalf("authenticated websocket handshake failed: %v", err)
+	}
+	defer connection.Close(websocket.StatusNormalClosure, "test complete")
+	protocol := response.Header.Get("Sec-WebSocket-Protocol")
+	if protocol != "secretary.v1" || strings.Contains(protocol, credential) {
+		t.Fatalf("handshake selected unsafe protocol %q", protocol)
+	}
+
+	request, err := http.NewRequest(http.MethodGet, server.URL+"/v1/conversation/ws?after_seq=0", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Sec-WebSocket-Protocol", "secretary.v1, secretary.bearer."+credential)
+	httpResponse, err := server.Client().Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpResponse.Body.Close()
+	if httpResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("non-upgrade request with protocol auth status=%d want=%d", httpResponse.StatusCode, http.StatusUnauthorized)
+	}
 }
 
 func TestNodeEndpointsAreAbsentWhenNodeServiceIsDisabled(t *testing.T) {
