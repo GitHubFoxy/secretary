@@ -1121,7 +1121,7 @@ func isApprovalResolution(kind string) bool {
 }
 
 func importantWorkerEvent(kind string) bool {
-	return strings.Contains(kind, "approval") || strings.Contains(kind, "needs_input") || strings.HasSuffix(kind, ".failed") || strings.HasSuffix(kind, ".completed") || strings.HasSuffix(kind, ".succeeded") || strings.HasSuffix(kind, ".canceled") || strings.HasSuffix(kind, ".offline") || strings.HasSuffix(kind, ".completion")
+	return kind == "worker.tool_started" || kind == "worker.tool_finished" || strings.Contains(kind, "approval") || strings.Contains(kind, "needs_input") || strings.HasSuffix(kind, ".failed") || strings.HasSuffix(kind, ".completed") || strings.HasSuffix(kind, ".succeeded") || strings.HasSuffix(kind, ".canceled") || strings.HasSuffix(kind, ".offline") || strings.HasSuffix(kind, ".completion")
 }
 
 func workerEventLabel(kind string) string {
@@ -1132,6 +1132,17 @@ func workerEventLabel(kind string) string {
 }
 
 func renderWorkerEvent(event Event) string {
+	if event.Kind == "worker.tool_started" || event.Kind == "worker.tool_finished" {
+		tool := safeText(event.Tool)
+		if tool == "" {
+			return ""
+		}
+		status := "запускает"
+		if event.Kind == "worker.tool_finished" {
+			status = "завершил"
+		}
+		return "Worker " + status + " инструмент " + tool
+	}
 	label := workerEventLabel(event.Kind)
 	text := safeText(event.Text)
 	if text == "" {

@@ -179,12 +179,14 @@ func telegramEvent(event core.Event) telegram.Event {
 		case "user_input_request":
 			result.Kind = "worker.needs_input"
 		case "tool_call":
+			result.Kind = "worker.tool_started"
 			if result.Tool == "" {
 				if call, ok := payload["tool_call"].(map[string]any); ok {
 					result.Tool = stringField(call, "name")
 				}
 			}
 		case "tool_result":
+			result.Kind = "worker.tool_finished"
 			if result.Tool == "" {
 				if tool, ok := payload["tool_result"].(map[string]any); ok {
 					result.Tool = stringField(tool, "name")
