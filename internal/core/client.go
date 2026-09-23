@@ -27,6 +27,7 @@ const (
 	ScopeConversationWrite ClientScope = "conversation:write"
 	ScopeWorkerRead        ClientScope = "worker:read"
 	ScopeWorkerWrite       ClientScope = "worker:write"
+	ScopeWorkerMessage     ClientScope = "worker:message"
 	ScopeApprovalRead      ClientScope = "approval:read"
 	ScopeApprovalWrite     ClientScope = "approval:write"
 	ScopeProjectRead       ClientScope = "project:read"
@@ -65,7 +66,7 @@ func defaultClientScopes() []ClientScope {
 
 func validClientScope(scope ClientScope) bool {
 	switch scope {
-	case ScopeConversationRead, ScopeConversationWrite, ScopeWorkerRead, ScopeWorkerWrite, ScopeApprovalRead, ScopeApprovalWrite, ScopeProjectRead, ScopeProjectWrite, ScopeNodeRead, ScopeNodeWrite, ScopeClientManage, ScopeUserRead, ScopeUserWrite:
+	case ScopeConversationRead, ScopeConversationWrite, ScopeWorkerRead, ScopeWorkerWrite, ScopeWorkerMessage, ScopeApprovalRead, ScopeApprovalWrite, ScopeProjectRead, ScopeProjectWrite, ScopeNodeRead, ScopeNodeWrite, ScopeClientManage, ScopeUserRead, ScopeUserWrite:
 		return true
 	default:
 		return false

@@ -1,24 +1,15 @@
 # Secretary Client boundary
 
-`src/secretary/client.ts` is the Pi integration boundary for the Go Secretary server.
+`src/secretary/client.ts` is the Pi integration boundary for the Secretary server. It uses the public `/v1/` HTTP API and conversation, Secretary-turn, and Worker activity WebSockets. Pairing exchanges a bootstrap token for a pending handoff and redeems a separate Client credential.
 
-It uses the public HTTP API under `/v1/` and the conversation, Secretary-turn, and Worker activity WebSockets. Pairing exchanges the bootstrap token for a pending handoff, waits for owner approval, and redeems a separate Client credential. The bootstrap token and pending handoff are never retained by `SecretaryClient`.
+The adapter owns no Secretary domain state. It retains only presentation cursors and the selected `worker_ref`. It never creates Workers or connects to a Node protocol.
 
-The adapter owns no Secretary domain state. It keeps only presentation cursors and the selected `worker_ref`; Workers, Turns, Attempts, Results, Approvals, and reconnect decisions remain server-owned. A reconnect replays from the last sequence and reuses the selected `worker_ref`. It never calls a spawn operation.
+## Stable Pi extension
 
-The adapter intentionally has no Node protocol transport, Node credential field, or Node command method. `/v1/nodes` is available only as the server-owned inventory read required by the Client contract. Extensions remain local Pi presentation/client capabilities and no child Worker tree is created.
+Use the normal Pi TypeScript extension mechanism. Load `src/extensions/secretary.ts` directly with `pi --extension <path-to-secretary.ts>` or install it in the configured extension directory, then run `/secretary`. Set `SECRETARY_BASE_URL` to the Tailscale-reachable server URL and `SECRETARY_CLIENT_CREDENTIAL` to an owner-approved Client credential.
 
-This is a TypeScript boundary because the phase-1 Pi packages cannot import the root Go module. Go integration tests use `httptest` and temporary SQLite; Pi tests use injected `fetch` and WebSocket factories. Neither suite requires real infrastructure.
+The command opens a compose editor, lets the user select Secretary or an existing Worker, then sends the body directly over HTTP to Secretary. It does not call `sendUserMessage` and does not expose the body to Pi's model. Live stream data is reduced to conversation body and Worker text/status; raw event payloads, tool arguments, credentials, IDs other than selected Worker reference, and reasoning are not rendered.
 
-## Production entrypoint
+Default pairing scopes are `conversation:read`, `conversation:write`, `worker:read`, `worker:message`, and `approval:read`. `worker:message` authorizes only POST `/v1/workers/{worker_ref}/message`; Worker control, approvals, Node, Client management, and diagnostics still require separate scopes or are unavailable. Do not grant broad `worker:write` to the extension.
 
-`PI_EXPERIMENTAL=1 pi secretary` is the production Secretary client path. Pass a Client credential with `--base-url` and `--credential`, or use `--bootstrap-token`, `--device-id`, and `--display-name` for owner-approved pairing. The command creates `SecretaryClientRuntime`, loads the Personal Conversation replay, subscribes to its live stream, and optionally opens a server-owned Worker observer with `--worker-ref`. `--once` prints one snapshot without keeping live sockets open. Without `--once`, an interactive terminal uses the same Pi fullscreen TUI host.
-
-Example:
-
-```sh
-pi --experimental secretary --base-url http://127.0.0.1:8080 \
-  --credential "$SECRETARY_CLIENT_CREDENTIAL" --worker-ref worker-7
-```
-
-Worker responses use the server-issued `request_id`. `respondWorker(workerRef, requestId, response)` sends that field to `/v1/workers/{worker_ref}/message`. Direct `approve(approvalId)` and `deny(approvalId)` use the durable `/v1/approvals/{approval_id}/{approve,deny}` endpoints. The presentation layer uses `respondWorker` for a selected Worker and the direct approval endpoints otherwise. Pi never invents a second approval identifier.
+Tests use injected HTTP and WebSocket transports. They do not require a live Secretary server or Tailscale connection.

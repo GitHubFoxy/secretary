@@ -34,12 +34,15 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 	scope := core.ScopeWorkerRead
 	if r.Method != http.MethodGet {
 		scope = core.ScopeWorkerWrite
+		if strings.HasSuffix(strings.TrimRight(r.URL.Path, "/"), "/message") {
+			scope = core.ScopeWorkerMessage
+		}
 	}
 	person, client, ok := s.authorizedPerson(w, r)
 	if !ok {
 		return
 	}
-	if client != nil && !client.HasScope(scope) {
+	if client != nil && !client.HasScope(scope) && !(scope == core.ScopeWorkerMessage && client.HasScope(core.ScopeWorkerWrite)) {
 		http.Error(w, "Client scope required", http.StatusForbidden)
 		return
 	}
