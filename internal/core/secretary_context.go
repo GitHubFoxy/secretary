@@ -343,8 +343,8 @@ func releaseSecretaryResultsTx(ctx context.Context, tx *sql.Tx, turnID string) e
 	return err
 }
 
-// SecretaryContextPrompt is the only runtime-facing conversion. It serializes
-// the canonical read model and never adds native session state.
+// SecretaryContextPrompt places the editable Markdown profile before the
+// canonical read model and never adds native session state.
 func SecretaryContextPrompt(ctx SecretaryContext, input string) (string, error) {
 	if err := ctx.Validate(); err != nil {
 		return "", err
@@ -353,7 +353,7 @@ func SecretaryContextPrompt(ctx SecretaryContext, input string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Canonical server-owned Secretary context:\n%s\n\nUser turn:\n%s", encoded, input), nil
+	return fmt.Sprintf("%s\n\nCanonical server-owned Secretary context:\n%s\n\nUser turn:\n%s", strings.TrimSpace(ctx.PolicyProfile.ProfileContent), encoded, input), nil
 }
 
 func sortHarnessInstances(instances []HarnessInstance) {

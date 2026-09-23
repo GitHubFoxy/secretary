@@ -89,6 +89,42 @@ func TestTelegramBridgePreservesSecretaryDeltaWhitespace(t *testing.T) {
 	}
 }
 
+func TestTelegramBridgeKeepsSecretaryDeltasUntilTurnFinished(t *testing.T) {
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, FlushInterval: time.Minute}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []core.Event{
+		{Seq: 1, Kind: core.SecretaryTurnStartedEvent, Payload: []byte(`{"turn_id":"turn-1"}`)},
+		{Seq: 2, Kind: core.SecretaryTextDeltaEvent, Payload: []byte(`{"turn_id":"turn-1","text":"Answer starts"}`)},
+	} {
+		if err := adapter.HandleDurableEvent(context.Background(), telegramEvent(event)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := adapter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 0 {
+		t.Fatalf("sent during open turn: %#v", transport.sent)
+	}
+	for _, event := range []core.Event{
+		{Seq: 3, Kind: core.SecretaryTextDeltaEvent, Payload: []byte(`{"turn_id":"turn-1","text":" and finishes"}`)},
+		{Seq: 4, Kind: core.SecretaryTurnFinishedEvent, Payload: []byte(`{"turn_id":"turn-1","status":"succeeded"}`)},
+	} {
+		if err := adapter.HandleDurableEvent(context.Background(), telegramEvent(event)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := adapter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Answer starts and finishes" {
+		t.Fatalf("Secretary response=%#v, want full response", transport.sent)
+	}
+}
+
 func TestTelegramEventBridgePaginatesAndPersistsCursor(t *testing.T) {
 	ctx := context.Background()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))

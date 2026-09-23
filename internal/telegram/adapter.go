@@ -919,7 +919,7 @@ func (a *Adapter) Flush(ctx context.Context) error {
 		if err := a.clearSecretaryPending(text, tools, eventSeqs); err != nil {
 			return err
 		}
-	} else if len(eventSeqs) > 0 {
+	} else if len(eventSeqs) > 0 && !turnOpen {
 		if err := a.clearSecretaryPending(text, tools, eventSeqs); err != nil {
 			return err
 		}

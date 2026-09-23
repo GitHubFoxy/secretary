@@ -6,10 +6,46 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestSecretaryContextPromptUsesMarkdownProfileAsTopLevelInstructions(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	userPath := filepath.Join(t.TempDir(), "user.md")
+	if _, err := store.SaveUserDocument(ctx, userPath, "owner context"); err != nil {
+		t.Fatal(err)
+	}
+	profile := "Always answer in Russian."
+	if err := store.SetSecretaryPolicySnapshot(ctx, SecretaryPolicySnapshot{
+		Version: "v1", Harness: "fx", Model: "test-model", Reasoning: "default",
+		ProfileVersion: "v1", ProfileName: "secretary", ProfileHash: "test-hash", ProfileContent: profile,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := store.ReconstructSecretaryContext(ctx, identity.ID, userPath, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := SecretaryContextPrompt(canonical, "hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(prompt, profile+"\n\nCanonical server-owned Secretary context:") {
+		t.Fatalf("profile is not the leading instruction in the prompt: %q", prompt[:min(len(prompt), 80)])
+	}
+}
 
 func TestSecretaryContextValidateRejectsIncompleteCanonicalSnapshots(t *testing.T) {
 	cases := []struct {
