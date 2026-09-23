@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { WebSocket as UndiciWebSocket } from "undici";
 
 export type SecretaryClientScope =
 	| "conversation:read"
@@ -807,9 +806,7 @@ function websocketUrl(baseUrl: string, path: string, afterSeq: number): string {
 }
 
 function defaultWebSocketFactory(url: string, credential: string): SecretaryWebSocket {
-	return new UndiciWebSocket(url, {
-		headers: { authorization: `Bearer ${credential}` },
-	}) as unknown as SecretaryWebSocket;
+	return new globalThis.WebSocket(url, ["secretary.v1", `secretary.bearer.${credential}`]) as unknown as SecretaryWebSocket;
 }
 
 async function parseSocketValue<T>(data: unknown): Promise<T> {

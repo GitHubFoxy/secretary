@@ -18,16 +18,17 @@ export function summary(state: SecretaryPresentationState): string {
 		const body = safeLine(entry.body);
 		if (body) lines.push(body);
 	}
+	const workerStatus = state.selectedWorker?.worker.status;
+	if (["queued", "starting", "working", "waiting_approval", "needs_input", "offline", "idle", "closed"].includes(workerStatus ?? "")) {
+		lines.push(`Worker status: ${workerStatus}`);
+	}
 	for (const activity of state.workerActivity.slice(-12)) {
-		const item = activity as Record<string, unknown>;
-		const status = item.kind === "status" ? item.status : undefined;
-		if (status === "working" || status === "idle" || status === "needs_input" || status === "completed" || status === "failed") {
-			lines.push(`Worker status: ${status}`);
-			continue;
-		}
-		const tool = typeof item.tool === "string" && /^[a-zA-Z0-9_.-]{1,80}$/.test(item.tool) ? item.tool : undefined;
-		if (tool && item.kind === "tool_call") lines.push(`Tool started: ${tool}`);
-		if (tool && item.kind === "tool_result") lines.push(`Tool finished: ${tool}`);
+		const event = activity as Record<string, unknown>;
+		if (event.kind !== "attempt.activity" || typeof event.payload !== "object" || event.payload === null) continue;
+		const payload = event.payload as Record<string, unknown>;
+		const tool = typeof payload.tool === "string" && /^[a-zA-Z0-9_.-]{1,80}$/.test(payload.tool) ? payload.tool : undefined;
+		if (tool && payload.kind === "tool_call") lines.push(`Tool started: ${tool}`);
+		if (tool && payload.kind === "tool_result") lines.push(`Tool finished: ${tool}`);
 	}
 	return lines.join("\n");
 }

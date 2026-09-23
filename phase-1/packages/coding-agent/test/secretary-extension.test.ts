@@ -2,22 +2,35 @@ import { describe, expect, test } from "vitest";
 import { summary } from "../src/extensions/secretary.ts";
 
 describe("Secretary extension live view", () => {
-	test("renders only conversation bodies, allowlisted status and tool name/start/finish", () => {
+	test("renders allowlisted Worker status and tool event envelope fields only", () => {
 		const text = summary({
 			conversation: [{ id: "hidden-id", seq: 1, body: "safe reply", credential: "secret" }],
-			workers: [], approvals: [],
+			workers: [],
+			approvals: [],
+			selectedWorker: { worker: { worker_ref: "hidden-ref", status: "working", reasoning: "hidden-status-detail" }, turns: [] },
 			workerActivity: [
-				{ seq: 1, kind: "tool_call", tool: "shell", arguments: { command: "private" }, raw: "ACP" },
-				{ seq: 2, kind: "tool_result", tool: "shell", output: "private output" },
-				{ seq: 3, kind: "status", status: "working", reasoning: "private thought" },
-				{ seq: 4, kind: "text", text: "private output" },
+				{
+					id: "hidden-event-id", seq: 1, kind: "attempt.activity",
+					payload: { kind: "tool_call", tool: "shell", arguments: { command: "private argument", reasoning: "private thought" } },
+				},
+				{
+					id: "hidden-event-id-2", seq: 2, kind: "attempt.activity",
+					payload: { kind: "tool_result", tool: "shell", result: "private output", reasoning: "private thought" },
+				},
+				{
+					seq: 3, kind: "attempt.activity",
+					payload: { kind: "text", tool: "not-a-tool-event", text: "raw output" },
+				},
 			],
-			secretaryEvents: [], connection: "connected",
+			secretaryEvents: [],
+			connection: "connected",
 		});
 		expect(text).toContain("safe reply");
+		expect(text).toContain("Worker status: working");
 		expect(text).toContain("Tool started: shell");
 		expect(text).toContain("Tool finished: shell");
-		expect(text).toContain("Worker status: working");
-		for (const forbidden of ["private", "ACP", "secret", "hidden-id", "reasoning"]) expect(text).not.toContain(forbidden);
+		for (const forbidden of ["private", "raw output", "hidden-ref", "hidden-event-id", "hidden-status-detail", "secret", "reasoning"]) {
+			expect(text).not.toContain(forbidden);
+		}
 	});
 });
