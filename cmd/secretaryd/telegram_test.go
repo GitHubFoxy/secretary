@@ -174,6 +174,16 @@ func TestTelegramEventBridgePaginatesAndPersistsCursor(t *testing.T) {
 	t.Fatalf("bridge cursor did not paginate: %s", data)
 }
 
+func TestTelegramEventBridgeMapsPiMessageForGeneralMirror(t *testing.T) {
+	mapped := telegramEvent(core.Event{
+		ID: "message-event-1", Seq: 9, Kind: "message.saved", Source: "client:pi-client",
+		Payload: []byte(`{"id":"entry-1","kind":"user","body":"Hi"}`),
+	})
+	if mapped.Kind != "message.saved" || mapped.Source != "client:pi-client" || mapped.Text != "Hi" {
+		t.Fatalf("mapped=%#v", mapped)
+	}
+}
+
 func TestTelegramEventBridgeMapsOfflineTerminalEvent(t *testing.T) {
 	event := core.Event{Kind: "result.accepted", AggregateType: "result", WorkerRef: "worker-1", Payload: []byte(`{"status":"interrupted"}`)}
 	if mapped := telegramEvent(event); mapped.Kind != "worker.offline" {

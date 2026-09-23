@@ -154,13 +154,16 @@ func telegramEvent(event core.Event) telegram.Event {
 	if workerRef == "" && event.AggregateType == "worker" {
 		workerRef = event.AggregateID
 	}
-	result := telegram.Event{EventID: event.ID, Sequence: event.Seq, Kind: event.Kind, WorkerRef: workerRef, Payload: event.Payload}
+	result := telegram.Event{EventID: event.ID, Sequence: event.Seq, Kind: event.Kind, Source: event.Source, WorkerRef: workerRef, Payload: event.Payload}
 	var payload map[string]any
 	_ = json.Unmarshal(event.Payload, &payload)
 	result.Title = stringField(payload, "title", "text", "summary")
 	result.Text = stringField(payload, "text", "summary", "result", "error", "response")
 	result.Tool = stringField(payload, "tool")
 	switch {
+	case event.Kind == "message.saved":
+		result.Text = stringField(payload, "body")
+		return result
 	case strings.HasPrefix(event.Kind, "secretary."):
 		if event.Kind == core.SecretaryTextDeltaEvent {
 			result.Text, _ = payload["text"].(string)

@@ -202,6 +202,34 @@ func newTestAdapter(t *testing.T, transport Transport, server ServerClient, stat
 	return adapter
 }
 
+func TestClientMessageMirrorsToGeneralOnceWithoutTelegramEcho(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "telegram.json")
+	transport := &fakeTransport{}
+	event := Event{EventID: "entry-event-1", Sequence: 1, Kind: "message.saved", Source: "client:pi-client", Text: "Hi"}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, statePath)
+	if err := adapter.HandleEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	adapter = newTestAdapter(t, transport, &fakeServer{}, statePath)
+	if err := adapter.HandleEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	telegramEvent := event
+	telegramEvent.EventID = "entry-event-2"
+	telegramEvent.Source = "client:telegram-adapter"
+	telegramEvent.Text = "Do not echo"
+	if err := adapter.HandleEvent(context.Background(), telegramEvent); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 {
+		t.Fatalf("sent=%#v, want one General mirror", transport.sent)
+	}
+	message := transport.sent[0]
+	if message.ChatID != 100 || message.ThreadID != 0 || message.Text != "Hi" {
+		t.Fatalf("mirrored message=%#v", message)
+	}
+}
+
 func TestTerminalResultMirrorsToGeneralWithWorkerLabel(t *testing.T) {
 	transport := &fakeTransport{}
 	server := &fakeServer{}

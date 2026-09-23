@@ -103,6 +103,7 @@ type Event struct {
 	EventID          string
 	Sequence         int64
 	Kind             string
+	Source           string
 	WorkerRef        string
 	Title            string
 	Text             string
@@ -136,6 +137,7 @@ type persistedState struct {
 	SecretaryDelegated    bool                     `json:"secretary_delegated,omitempty"`
 	TerminalNotified      map[string]time.Time     `json:"terminal_notified,omitempty"`
 	RequestNotified       map[string]time.Time     `json:"request_notified,omitempty"`
+	InboundNotified       map[string]time.Time     `json:"inbound_notified,omitempty"`
 	PreviousOwnerBound    bool                     `json:"previous_owner_bound,omitempty"`
 	ReboundAt             time.Time                `json:"rebound_at,omitempty"`
 	RebindReason          string                   `json:"rebind_reason,omitempty"`
@@ -192,7 +194,7 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 		config.FlushInterval = 2 * time.Second
 	}
 	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), now: func() time.Time { return time.Now().UTC() }}
-	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, Outbox: []OutgoingMessage{}}
+	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, Outbox: []OutgoingMessage{}}
 	if err := adapter.load(); err != nil {
 		return nil, err
 	}
@@ -238,6 +240,9 @@ func (a *Adapter) load() error {
 	}
 	if a.state.RequestNotified == nil {
 		a.state.RequestNotified = map[string]time.Time{}
+	}
+	if a.state.InboundNotified == nil {
+		a.state.InboundNotified = map[string]time.Time{}
 	}
 	return nil
 }
@@ -696,6 +701,26 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 	if strings.HasPrefix(event.Kind, "secretary.") {
 		return a.handleSecretaryEvent(event, 0)
 	}
+	if event.Kind == "message.saved" {
+		if !strings.HasPrefix(event.Source, "client:") || event.Source == "client:telegram-adapter" || strings.TrimPrefix(event.Source, "client:") == "" {
+			return nil
+		}
+		text := safeText(event.Text)
+		if text == "" {
+			return nil
+		}
+		a.mu.Lock()
+		owner := a.state.OwnerChat
+		a.mu.Unlock()
+		if owner == 0 {
+			return nil
+		}
+		identity := event.EventID
+		if identity == "" {
+			identity = fmt.Sprintf("seq:%d", event.Sequence)
+		}
+		return a.sendMessage(ctx, OutgoingMessage{ChatID: owner, Text: text, Identity: "inbound:" + identity})
+	}
 	if event.WorkerRef == "" {
 		return nil
 	}
@@ -1013,6 +1038,11 @@ func (a *Adapter) markDeliveredLocked(message OutgoingMessage) {
 		if identity != "" {
 			a.state.RequestNotified[identity] = a.now()
 		}
+	case strings.HasPrefix(message.Identity, "inbound:"):
+		identity := strings.TrimPrefix(message.Identity, "inbound:")
+		if identity != "" {
+			a.state.InboundNotified[identity] = a.now()
+		}
 	}
 }
 
@@ -1040,6 +1070,12 @@ func (a *Adapter) sendMessage(ctx context.Context, message OutgoingMessage) erro
 		}
 		if strings.HasPrefix(message.Identity, "request:") {
 			if _, delivered := a.state.RequestNotified[strings.TrimPrefix(message.Identity, "request:")]; delivered {
+				a.mu.Unlock()
+				return nil
+			}
+		}
+		if strings.HasPrefix(message.Identity, "inbound:") {
+			if _, delivered := a.state.InboundNotified[strings.TrimPrefix(message.Identity, "inbound:")]; delivered {
 				a.mu.Unlock()
 				return nil
 			}
