@@ -10,8 +10,9 @@ Blocked by: 03a, 06a, 08, 09
 
 - Подключать Telegram из Web через одноразовый code или deep link, без ввода server token в обычном чате.
 - Ограничить MVP одним владельцем через allowlist и polling-first transport.
-- General chat использовать для Secretary и его compacted/throttled stream.
-- Создавать отдельный Topic для каждого Worker и направлять туда acknowledgement, compact status, readable activity, Approval, failure, completion и Follow-up.
+- General chat использовать для Secretary и его compacted/throttled stream; владелец пишет Secretary только в General.
+- Создавать отдельный Topic для каждого Worker и направлять туда acknowledgement, compact status, readable activity, Approval, failure, completion и Follow-up; сообщения внутри Worker Topic направлять этому Worker.
+- Важные Worker events и terminal result зеркалить в General и соответствующий Worker Topic по контракту.
 - Агрегировать и throttle-ить Secretary text deltas и tool events, не создавая отдельное Telegram message на каждый event.
 - Не отправлять raw Worker events. Собирать readable activity batches вместо спама каждого delta/tool event.
 - Сопоставлять Topic с `worker_ref` в server state и сохранять mapping durable.

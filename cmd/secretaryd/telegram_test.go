@@ -53,12 +53,40 @@ func (t *bridgeTransport) SendMessage(_ context.Context, message telegram.Outgoi
 	t.mu.Unlock()
 	return nil
 }
+func (t *bridgeTransport) SendChatAction(context.Context, int64, int64, string) error {
+	return nil
+}
 func (t *bridgeTransport) CreateForumTopic(_ context.Context, chatID int64, _ string) (telegram.ForumTopic, error) {
 	return telegram.ForumTopic{ChatID: chatID, ThreadID: 1}, nil
 }
 
 type bridgeState struct {
 	LastEventSeq int64 `json:"last_event_seq"`
+}
+
+func TestTelegramBridgePreservesSecretaryDeltaWhitespace(t *testing.T) {
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, FlushInterval: time.Minute}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []core.Event{
+		{Seq: 1, Kind: core.SecretaryTurnStartedEvent, Payload: []byte(`{"turn_id":"turn-1"}`)},
+		{Seq: 2, Kind: core.SecretaryTextDeltaEvent, Payload: []byte(`{"turn_id":"turn-1","text":"I'll create"}`)},
+		{Seq: 3, Kind: core.SecretaryTextDeltaEvent, Payload: []byte(`{"turn_id":"turn-1","text":" "}`)},
+		{Seq: 4, Kind: core.SecretaryTextDeltaEvent, Payload: []byte(`{"turn_id":"turn-1","text":"a new Worker"}`)},
+		{Seq: 5, Kind: core.SecretaryTurnFinishedEvent, Payload: []byte(`{"turn_id":"turn-1","status":"succeeded"}`)},
+	} {
+		if err := adapter.HandleDurableEvent(context.Background(), telegramEvent(event)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := adapter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "I'll create a new Worker" {
+		t.Fatalf("Secretary delta text=%#v, want spaces preserved", transport.sent)
+	}
 }
 
 func TestTelegramEventBridgePaginatesAndPersistsCursor(t *testing.T) {
@@ -190,14 +218,34 @@ func TestTelegramEventBridgeSendsOneTerminalNotificationForOneTurn(t *testing.T)
 	}
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
-	var completions int
+	var topicCompletions, generalMirrors int
 	for _, sent := range transport.sent {
-		if strings.Contains(sent.Text, "Worker завершён") {
-			completions++
+		if sent.ThreadID != 0 && sent.Text == "done" {
+			topicCompletions++
+		}
+		if sent.ThreadID == 0 && sent.Text == "worker-1:\ndone" {
+			generalMirrors++
 		}
 	}
-	if completions != 1 {
-		t.Fatalf("terminal notifications=%d, messages=%#v", completions, transport.sent)
+	if topicCompletions != 1 || generalMirrors != 1 {
+		t.Fatalf("terminal notifications topic=%d general=%d messages=%#v", topicCompletions, generalMirrors, transport.sent)
+	}
+}
+
+func TestTelegramEventBridgeSkipsTextlessOutcomeSoResultDeliversSummary(t *testing.T) {
+	empty := telegramEvent(core.Event{
+		ID: "outcome-empty", Seq: 30, Kind: "attempt.outcome_recorded", AggregateType: "attempt", WorkerRef: "worker-1", CorrelationID: "turn-9",
+		Payload: []byte(`{"status":"succeeded","classification":"final","attempt_id":"attempt-9"}`),
+	})
+	if empty.Kind != "" {
+		t.Fatalf("textless outcome mapped=%#v, want skipped", empty)
+	}
+	accepted := telegramEvent(core.Event{
+		ID: "result-9", Seq: 31, Kind: "result.accepted", AggregateType: "result", WorkerRef: "worker-1", CorrelationID: "turn-9",
+		Payload: []byte(`{"status":"succeeded","summary":"pong"}`),
+	})
+	if accepted.Kind != "worker.completed" || accepted.Text != "pong" {
+		t.Fatalf("result accepted mapped=%#v, want completed with pong", accepted)
 	}
 }
 

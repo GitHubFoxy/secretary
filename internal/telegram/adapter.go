@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +56,7 @@ type ForumTopic struct {
 type Transport interface {
 	GetUpdates(context.Context, int64, time.Duration) ([]Update, error)
 	SendMessage(context.Context, OutgoingMessage) error
+	SendChatAction(context.Context, int64, int64, string) error
 	CreateForumTopic(context.Context, int64, string) (ForumTopic, error)
 }
 
@@ -117,6 +117,7 @@ type TopicMapping struct {
 type persistedState struct {
 	Version               int                      `json:"version"`
 	OwnerChat             int64                    `json:"owner_chat_id"`
+	OwnerUser             int64                    `json:"owner_user_id,omitempty"`
 	Offset                int64                    `json:"offset"`
 	LastEventSeq          int64                    `json:"last_event_seq"`
 	Processed             map[string]time.Time     `json:"processed_updates"`
@@ -125,10 +126,15 @@ type persistedState struct {
 	Outbox                []OutgoingMessage        `json:"outbox,omitempty"`
 	PendingSecretaryText  string                   `json:"pending_secretary_text,omitempty"`
 	PendingSecretaryTools []string                 `json:"pending_secretary_tools,omitempty"`
-	PendingWorkerLines    map[string][]string      `json:"pending_worker_lines,omitempty"`
 	PendingEventSeqs      []int64                  `json:"pending_event_seqs,omitempty"`
+	SecretaryReady        bool                     `json:"secretary_ready,omitempty"`
+	SecretaryDelegated    bool                     `json:"secretary_delegated,omitempty"`
 	TerminalNotified      map[string]time.Time     `json:"terminal_notified,omitempty"`
 	RequestNotified       map[string]time.Time     `json:"request_notified,omitempty"`
+	PreviousOwnerBound    bool                     `json:"previous_owner_bound,omitempty"`
+	ReboundAt             time.Time                `json:"rebound_at,omitempty"`
+	RebindReason          string                   `json:"rebind_reason,omitempty"`
+	RebindWatermark       int64                    `json:"rebind_watermark,omitempty"`
 }
 
 type pairingRecord struct {
@@ -139,8 +145,10 @@ type pairingRecord struct {
 type pendingBatch struct {
 	SecretaryText  strings.Builder
 	SecretaryTools []string
-	WorkerLines    map[string][]string
 	EventSeqs      []int64
+	TurnOpen       bool
+	Delegated      bool
+	Ready          bool
 }
 
 type updateClaim struct {
@@ -156,8 +164,10 @@ type Adapter struct {
 	mu         sync.Mutex
 	topicMu    sync.Mutex
 	flushMu    sync.Mutex
+	typingMu   sync.Mutex
 	state      persistedState
 	pending    pendingBatch
+	lastTyping map[string]time.Time
 	claims     map[int64]*updateClaim
 	flushTimer *time.Timer
 	now        func() time.Time
@@ -189,11 +199,9 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 	}
 	adapter.pending.SecretaryText.WriteString(adapter.state.PendingSecretaryText)
 	adapter.pending.SecretaryTools = append([]string(nil), adapter.state.PendingSecretaryTools...)
-	adapter.pending.WorkerLines = cloneWorkerLines(adapter.state.PendingWorkerLines)
 	adapter.pending.EventSeqs = append([]int64(nil), adapter.state.PendingEventSeqs...)
-	if adapter.pending.WorkerLines == nil {
-		adapter.pending.WorkerLines = make(map[string][]string)
-	}
+	adapter.pending.Ready = adapter.state.SecretaryReady
+	adapter.pending.Delegated = adapter.state.SecretaryDelegated
 	return adapter, nil
 }
 
@@ -282,6 +290,82 @@ func (a *Adapter) SetOwnerChat(chatID int64) error {
 	return err
 }
 
+func Rebind(statePath string, configOwner int64, reason string, watermark int64) error {
+	if configOwner == 0 {
+		return errors.New("telegram: new owner chat id is required")
+	}
+	if reason != "private-to-forum" {
+		return errors.New("telegram: reason must be private-to-forum")
+	}
+	if watermark < 0 {
+		return errors.New("telegram: watermark must be non-negative")
+	}
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("telegram: state not found at %s", statePath)
+		}
+		return fmt.Errorf("telegram: read state: %w", err)
+	}
+	var state persistedState
+	if err := json.Unmarshal(data, &state); err != nil {
+		return fmt.Errorf("telegram: decode state: %w", err)
+	}
+	// Preserve offset, validate watermark does not go backwards.
+	if watermark < state.LastEventSeq {
+		watermark = state.LastEventSeq
+	}
+	previousBound := state.OwnerChat != 0
+	state.PreviousOwnerBound = previousBound || state.PreviousOwnerBound
+	state.ReboundAt = time.Now().UTC()
+	state.RebindReason = reason
+	state.RebindWatermark = watermark
+	state.LastEventSeq = watermark
+	state.OwnerChat = configOwner
+	state.OwnerUser = 0
+	state.Topics = map[string]TopicMapping{}
+	state.Pairings = map[string]pairingRecord{}
+	state.Outbox = nil
+	state.PendingSecretaryText = ""
+	state.PendingSecretaryTools = nil
+	state.PendingEventSeqs = nil
+	state.SecretaryReady = false
+	state.SecretaryDelegated = false
+	// Keep Offset, Processed, TerminalNotified, RequestNotified, Version, OwnerChat/OwnerUser updated.
+	encoded, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("telegram: encode state: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(statePath), 0o700); err != nil {
+		return fmt.Errorf("telegram: create state directory: %w", err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(statePath), ".telegram-state-*")
+	if err != nil {
+		return fmt.Errorf("telegram: create temporary state: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+	if err := tmp.Chmod(0o600); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(encoded); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("telegram: write state: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("telegram: sync state: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpName, statePath); err != nil {
+		return fmt.Errorf("telegram: install state: %w", err)
+	}
+	return nil
+}
+
 func (a *Adapter) CreatePairing(botUsername string) (Pairing, error) {
 	secret := make([]byte, 18)
 	if _, err := rand.Read(secret); err != nil {
@@ -308,6 +392,10 @@ func (a *Adapter) CreatePairing(botUsername string) (Pairing, error) {
 }
 
 func (a *Adapter) RedeemPairing(code string, chatID int64) error {
+	return a.RedeemPairingWithSender(code, chatID, 0)
+}
+
+func (a *Adapter) RedeemPairingWithSender(code string, chatID int64, fromID int64) error {
 	if strings.TrimSpace(code) == "" || chatID == 0 {
 		return ErrPairingUsed
 	}
@@ -323,8 +411,17 @@ func (a *Adapter) RedeemPairing(code string, chatID int64) error {
 		a.mu.Unlock()
 		return ErrUnauthorized
 	}
+	if a.state.OwnerUser != 0 && fromID != 0 && a.state.OwnerUser != fromID {
+		a.mu.Unlock()
+		return ErrUnauthorized
+	}
 	delete(a.state.Pairings, key)
 	a.state.OwnerChat = chatID
+	if fromID != 0 {
+		a.state.OwnerUser = fromID
+	} else if a.state.OwnerUser == 0 {
+		a.state.OwnerUser = chatID
+	}
 	err := a.saveLocked()
 	a.mu.Unlock()
 	if err == nil {
@@ -335,6 +432,16 @@ func (a *Adapter) RedeemPairing(code string, chatID int64) error {
 
 func (a *Adapter) ownerAllowed(chatID int64) bool {
 	return chatID != 0 && a.state.OwnerChat != 0 && chatID == a.state.OwnerChat
+}
+
+func (a *Adapter) senderAllowed(fromID int64) bool {
+	if fromID == 0 {
+		return true
+	}
+	if a.state.OwnerUser != 0 {
+		return fromID == a.state.OwnerUser
+	}
+	return fromID == a.state.OwnerChat
 }
 
 func (a *Adapter) HandleUpdate(ctx context.Context, update Update) error {
@@ -362,7 +469,7 @@ func (a *Adapter) HandleUpdate(ctx context.Context, update Update) error {
 		}
 		claim := &updateClaim{done: make(chan struct{})}
 		a.claims[update.ID] = claim
-		allowed := a.ownerAllowed(update.Message.ChatID) && (update.Message.FromID == 0 || update.Message.FromID == update.Message.ChatID)
+		allowed := a.ownerAllowed(update.Message.ChatID) && a.senderAllowed(update.Message.FromID)
 		a.mu.Unlock()
 
 		err := a.deliverUpdate(ctx, update, allowed)
@@ -385,7 +492,7 @@ func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool
 	if strings.HasPrefix(text, "/start ") {
 		// Possession of the short-lived deep-link code is the explicit owner
 		// pairing proof. It is the only update accepted before allowlisting.
-		return a.RedeemPairing(strings.TrimSpace(strings.TrimPrefix(text, "/start ")), update.Message.ChatID)
+		return a.RedeemPairingWithSender(strings.TrimSpace(strings.TrimPrefix(text, "/start ")), update.Message.ChatID, update.Message.FromID)
 	}
 	if !allowed || text == "/start" || text == "" {
 		return nil
@@ -396,21 +503,38 @@ func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool
 		mapping, ok := a.mappingForThreadLocked(update.Message.ChatID, update.Message.ThreadID)
 		a.mu.Unlock()
 		if !ok {
-			return nil
-		}
-		err := a.server.SendWorkerMessage(ctx, WorkerMessage{WorkerRef: mapping.WorkerRef, ExternalMessageID: externalID, RequestID: mapping.PendingRequestID, Text: text})
-		if err == nil && mapping.PendingRequestID != "" {
-			a.mu.Lock()
-			if current, exists := a.state.Topics[mapping.WorkerRef]; exists && current.ThreadID == mapping.ThreadID {
-				current.PendingRequestID = ""
-				a.state.Topics[mapping.WorkerRef] = current
-				_ = a.saveLocked()
+			// Forum General carries thread 1 on some clients; route it to
+			// Secretary like a thread-less General message. Any other
+			// unknown thread is dropped, never auto-promoted to Secretary.
+			if update.Message.ThreadID != 1 {
+				return nil
 			}
-			a.mu.Unlock()
+		} else {
+			err := a.server.SendWorkerMessage(ctx, WorkerMessage{WorkerRef: mapping.WorkerRef, ExternalMessageID: externalID, RequestID: mapping.PendingRequestID, Text: text})
+			if err == nil {
+				a.sendTyping(update.Message.ChatID, update.Message.ThreadID)
+			}
+			if err == nil && mapping.PendingRequestID != "" {
+				a.mu.Lock()
+				if current, exists := a.state.Topics[mapping.WorkerRef]; exists && current.ThreadID == mapping.ThreadID {
+					current.PendingRequestID = ""
+					a.state.Topics[mapping.WorkerRef] = current
+					_ = a.saveLocked()
+				}
+				a.mu.Unlock()
+			}
+			return err
 		}
+	}
+	if err := a.server.SendMessage(ctx, InboundMessage{ExternalMessageID: externalID, Body: text}); err != nil {
 		return err
 	}
-	return a.server.SendMessage(ctx, InboundMessage{ExternalMessageID: externalID, Body: text})
+	thread := update.Message.ThreadID
+	if thread == 0 {
+		thread = 1
+	}
+	a.sendTyping(update.Message.ChatID, thread)
+	return nil
 }
 
 func (a *Adapter) mappingForThreadLocked(chatID, threadID int64) (TopicMapping, bool) {
@@ -420,6 +544,25 @@ func (a *Adapter) mappingForThreadLocked(chatID, threadID int64) (TopicMapping, 
 		}
 	}
 	return TopicMapping{}, false
+}
+
+// sendTyping is best-effort liveness: failures never block delivery.
+func (a *Adapter) sendTyping(chatID, threadID int64) {
+	if chatID == 0 {
+		return
+	}
+	key := fmt.Sprintf("%d:%d", chatID, threadID)
+	a.typingMu.Lock()
+	if a.lastTyping == nil {
+		a.lastTyping = make(map[string]time.Time)
+	}
+	if last, ok := a.lastTyping[key]; ok && a.now().Sub(last) < 4*time.Second {
+		a.typingMu.Unlock()
+		return
+	}
+	a.lastTyping[key] = a.now()
+	a.typingMu.Unlock()
+	_ = a.transport.SendChatAction(context.Background(), chatID, threadID, "typing")
 }
 
 func (a *Adapter) PollOnce(ctx context.Context) error {
@@ -544,11 +687,10 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		return nil
 	}
 	if event.Kind == "worker.created" {
-		mapping, err := a.ensureTopic(ctx, event.WorkerRef, event.Title)
-		if err != nil {
+		if _, err := a.ensureTopic(ctx, event.WorkerRef, event.Title); err != nil {
 			return err
 		}
-		return a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: "Worker принят: " + safeText(event.Title)})
+		return nil
 	}
 	mapping, err := a.ensureTopic(ctx, event.WorkerRef, event.Title)
 	if err != nil {
@@ -574,8 +716,16 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		a.mu.Unlock()
 	}
 	if importantWorkerEvent(event.Kind) {
-		text := renderWorkerEvent(event)
-		if text == "" {
+		var body string
+		if event.TerminalIdentity != "" {
+			body = safeText(event.Text)
+			if body == "" {
+				body = workerEventLabel(event.Kind)
+			}
+		} else {
+			body = renderWorkerEvent(event)
+		}
+		if body == "" {
 			return nil
 		}
 		identity := ""
@@ -595,29 +745,23 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if alreadyNotified {
 			return nil
 		}
-		if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: text, Identity: identity}); err != nil {
+		a.sendTyping(mapping.ChatID, mapping.ThreadID)
+		if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: body, Identity: identity}); err != nil {
 			return err
+		}
+		if event.TerminalIdentity != "" {
+			a.mu.Lock()
+			owner := a.state.OwnerChat
+			a.mu.Unlock()
+			if owner != 0 {
+				mirror := OutgoingMessage{ChatID: owner, Text: event.WorkerRef + ":\n" + body, Identity: identity + ":general"}
+				if err := a.sendMessage(ctx, mirror); err != nil {
+					return err
+				}
+			}
 		}
 		return nil
 	}
-	line := renderWorkerActivity(event)
-	if line == "" {
-		return nil
-	}
-	a.mu.Lock()
-	if a.pending.WorkerLines == nil {
-		a.pending.WorkerLines = make(map[string][]string)
-	}
-	a.pending.WorkerLines[event.WorkerRef] = append(a.pending.WorkerLines[event.WorkerRef], line)
-	err = a.persistPendingLocked()
-	if err == nil {
-		err = a.saveLocked()
-	}
-	a.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	a.scheduleFlush()
 	return nil
 }
 
@@ -653,8 +797,9 @@ func (a *Adapter) ensureTopic(ctx context.Context, workerRef, title string) (Top
 func (a *Adapter) persistPendingLocked() error {
 	a.state.PendingSecretaryText = a.pending.SecretaryText.String()
 	a.state.PendingSecretaryTools = append([]string(nil), a.pending.SecretaryTools...)
-	a.state.PendingWorkerLines = cloneWorkerLines(a.pending.WorkerLines)
 	a.state.PendingEventSeqs = append([]int64(nil), a.pending.EventSeqs...)
+	a.state.SecretaryReady = a.pending.Ready
+	a.state.SecretaryDelegated = a.pending.Delegated
 	return nil
 }
 
@@ -668,11 +813,35 @@ func containsEventSeq(seqs []int64, wanted int64) bool {
 }
 
 func (a *Adapter) handleSecretaryEvent(event Event, sequence int64) error {
-	a.queueSecretary(event)
+	queued := a.queueSecretary(event)
 	a.mu.Lock()
-	if sequence > 0 && !containsEventSeq(a.pending.EventSeqs, sequence) {
-		a.pending.EventSeqs = append(a.pending.EventSeqs, sequence)
-		a.state.LastEventSeq = sequence
+	switch event.Kind {
+	case "secretary.turn.queued", "secretary.turn.started":
+		a.pending.TurnOpen = true
+		a.pending.Delegated = false
+		a.pending.Ready = false
+	case "secretary.tool_call":
+		if strings.Contains(event.Tool, "spawn_worker") {
+			a.pending.Delegated = true
+		}
+	case "secretary.turn.finished":
+		a.pending.TurnOpen = false
+		if a.pending.Delegated {
+			a.pending.SecretaryText.Reset()
+			a.pending.SecretaryTools = nil
+			a.pending.EventSeqs = nil
+			a.pending.Delegated = false
+		} else {
+			a.pending.Ready = true
+		}
+	}
+	if sequence > 0 {
+		if queued && !containsEventSeq(a.pending.EventSeqs, sequence) {
+			a.pending.EventSeqs = append(a.pending.EventSeqs, sequence)
+		}
+		if sequence > a.state.LastEventSeq {
+			a.state.LastEventSeq = sequence
+		}
 	}
 	err := a.persistPendingLocked()
 	if err == nil {
@@ -686,36 +855,22 @@ func (a *Adapter) handleSecretaryEvent(event Event, sequence int64) error {
 	return nil
 }
 
-func cloneWorkerLines(lines map[string][]string) map[string][]string {
-	if lines == nil {
-		return nil
-	}
-	clone := make(map[string][]string, len(lines))
-	for ref, values := range lines {
-		clone[ref] = append([]string(nil), values...)
-	}
-	return clone
-}
-
-func (a *Adapter) queueSecretary(event Event) {
+func (a *Adapter) queueSecretary(event Event) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	switch event.Kind {
 	case "secretary.text_delta":
-		a.pending.SecretaryText.WriteString(safeDelta(event.Text))
-	case "secretary.tool_call", "secretary.tool_result":
-		tool := safeText(event.Tool)
-		if tool == "" {
-			tool = safeText(event.Text)
-		}
-		if tool != "" {
-			a.pending.SecretaryTools = append(a.pending.SecretaryTools, tool)
+		if delta := safeDelta(event.Text); delta != "" {
+			a.pending.SecretaryText.WriteString(delta)
+			return true
 		}
 	case "secretary.turn.finished":
 		if text := safeText(event.Text); text != "" {
 			a.pending.SecretaryText.WriteString(text)
+			return true
 		}
 	}
+	return false
 }
 
 func (a *Adapter) scheduleFlush() {
@@ -741,21 +896,21 @@ func (a *Adapter) Flush(ctx context.Context) error {
 	text := strings.TrimSpace(a.pending.SecretaryText.String())
 	tools := append([]string(nil), a.pending.SecretaryTools...)
 	eventSeqs := append([]int64(nil), a.pending.EventSeqs...)
-	workerLines := cloneWorkerLines(a.pending.WorkerLines)
+	turnOpen := a.pending.TurnOpen
+	ready := a.pending.Ready && !turnOpen
 	secretaryMessage, hasSecretary := secretaryBatchMessage(owner, text, tools)
 	outboxIdentities := make(map[string]struct{}, len(a.state.Outbox))
 	for _, pending := range a.state.Outbox {
 		outboxIdentities[outgoingMessageIdentity(pending)] = struct{}{}
 	}
-	mappings := make(map[string]TopicMapping, len(a.state.Topics))
-	for ref, mapping := range a.state.Topics {
-		mappings[ref] = mapping
-	}
 	a.mu.Unlock()
 	if err := a.drainOutbox(ctx); err != nil {
 		return err
 	}
-	if hasSecretary {
+	if owner != 0 && (hasSecretary || turnOpen) {
+		a.sendTyping(owner, 1)
+	}
+	if hasSecretary && ready {
 		if _, queued := outboxIdentities[outgoingMessageIdentity(secretaryMessage)]; !queued {
 			if err := a.sendMessage(ctx, secretaryMessage); err != nil {
 				return err
@@ -764,24 +919,8 @@ func (a *Adapter) Flush(ctx context.Context) error {
 		if err := a.clearSecretaryPending(text, tools, eventSeqs); err != nil {
 			return err
 		}
-	}
-	refs := make([]string, 0, len(workerLines))
-	for ref := range workerLines {
-		refs = append(refs, ref)
-	}
-	sort.Strings(refs)
-	for _, ref := range refs {
-		mapping, ok := mappings[ref]
-		if !ok || mapping.ChatID == 0 {
-			continue
-		}
-		message := OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: "Активность:\n" + strings.Join(uniqueStrings(workerLines[ref]), "\n")}
-		if _, queued := outboxIdentities[outgoingMessageIdentity(message)]; !queued {
-			if err := a.sendMessage(ctx, message); err != nil {
-				return err
-			}
-		}
-		if err := a.clearWorkerPending(ref, workerLines[ref]); err != nil {
+	} else if len(eventSeqs) > 0 {
+		if err := a.clearSecretaryPending(text, tools, eventSeqs); err != nil {
 			return err
 		}
 	}
@@ -811,6 +950,7 @@ func (a *Adapter) clearSecretaryPending(text string, tools []string, seqs []int6
 	a.pending.SecretaryText.Reset()
 	a.pending.SecretaryTools = nil
 	a.pending.EventSeqs = removeEventSeqs(a.pending.EventSeqs, seqs)
+	a.pending.Ready = false
 	_ = a.persistPendingLocked()
 	return a.saveLocked()
 }
@@ -826,17 +966,6 @@ func removeEventSeqs(all, removed []int64) []int64 {
 		}
 	}
 	return result
-}
-
-func (a *Adapter) clearWorkerPending(ref string, lines []string) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if !sameStrings(a.pending.WorkerLines[ref], lines) {
-		return nil
-	}
-	delete(a.pending.WorkerLines, ref)
-	_ = a.persistPendingLocked()
-	return a.saveLocked()
 }
 
 func sameStrings(left, right []string) bool {
@@ -982,24 +1111,20 @@ func importantWorkerEvent(kind string) bool {
 	return strings.Contains(kind, "approval") || strings.Contains(kind, "needs_input") || strings.HasSuffix(kind, ".failed") || strings.HasSuffix(kind, ".completed") || strings.HasSuffix(kind, ".succeeded") || strings.HasSuffix(kind, ".canceled") || strings.HasSuffix(kind, ".offline") || strings.HasSuffix(kind, ".completion")
 }
 
-func renderWorkerEvent(event Event) string {
-	label := map[string]string{"worker.approval_requested": "Нужно разрешение", "worker.needs_input": "Нужен ответ", "worker.failed": "Ошибка Worker", "worker.completed": "Worker завершён", "worker.succeeded": "Worker завершён", "worker.canceled": "Worker отменён", "worker.offline": "Node offline"}[event.Kind]
-	if label == "" {
-		label = "Статус Worker"
+func workerEventLabel(kind string) string {
+	if label := map[string]string{"worker.approval_requested": "Нужно разрешение", "worker.needs_input": "Нужен ответ", "worker.failed": "Ошибка Worker", "worker.completed": "Worker завершён", "worker.succeeded": "Worker завершён", "worker.canceled": "Worker отменён", "worker.offline": "Node offline"}[kind]; label != "" {
+		return label
 	}
+	return "Статус Worker"
+}
+
+func renderWorkerEvent(event Event) string {
+	label := workerEventLabel(event.Kind)
 	text := safeText(event.Text)
 	if text == "" {
 		return label
 	}
 	return label + ": " + text
-}
-
-func renderWorkerActivity(event Event) string {
-	tool := safeText(event.Tool)
-	if tool == "" {
-		tool = "activity"
-	}
-	return "• " + tool + ": выполнено"
 }
 
 func topicName(workerRef, title string) string {
@@ -1028,7 +1153,7 @@ func safeDelta(text string) string {
 }
 
 func sanitizeTelegramText(text string, normalize bool) string {
-	if strings.TrimSpace(text) == "" {
+	if text == "" || (normalize && strings.TrimSpace(text) == "") {
 		return ""
 	}
 	trimmed := strings.TrimSpace(text)

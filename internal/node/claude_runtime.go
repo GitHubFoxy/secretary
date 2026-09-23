@@ -369,7 +369,7 @@ func (s *claudeSession) emitText(text string) {
 }
 
 func (s *claudeSession) emitActivity(activity Activity) {
-	if strings.TrimSpace(activity.Text) == "" {
+	if (activity.Kind == ActivityText && activity.Text == "") || (activity.Kind != ActivityText && strings.TrimSpace(activity.Text) == "") {
 		return
 	}
 	select {

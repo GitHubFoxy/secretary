@@ -813,9 +813,9 @@ Telegram подключается из Web через одноразовый cod
 - allowlist одного владельца в MVP;
 - idempotency по Telegram update id;
 - polling в первом варианте, без публичного webhook;
-- General chat для Secretary;
-- отдельный Topic для каждого Worker;
-- важные events в General и соответствующий Worker Topic;
+- General chat является перепиской владельца с Secretary; владелец отправляет сообщения Secretary только через General;
+- отдельный Topic для каждого Worker; сообщения внутри Topic являются follow-up этому Worker;
+- важные events и terminal result Worker публикуются и в General, и в соответствующем Worker Topic, это намеренное зеркало по контракту;
 - activity stream фильтруется до удобного текста;
 - rich tool cards остаются в Web и Pi;
 - Secretary text deltas и tool events агрегируются и throttle-ятся, а не создают отдельное Telegram message на каждый event;

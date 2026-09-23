@@ -110,6 +110,17 @@ func scanEvents(rows *sql.Rows) ([]Event, error) {
 	return events, rows.Err()
 }
 
+func (s *Store) MaxEventSeq(ctx context.Context) (int64, error) {
+	var max sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(seq) FROM events`).Scan(&max); err != nil {
+		return 0, err
+	}
+	if !max.Valid {
+		return 0, nil
+	}
+	return max.Int64, nil
+}
+
 func (s *Store) PruneEvents(ctx context.Context, before time.Time) (int64, error) {
 	result, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE created_at < ?`, timestamp(before))
 	if err != nil {

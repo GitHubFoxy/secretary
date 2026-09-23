@@ -135,6 +135,17 @@ func (t *BotAPITransport) SendMessage(ctx context.Context, message OutgoingMessa
 	return t.call(ctx, "sendMessage", values, nil)
 }
 
+func (t *BotAPITransport) SendChatAction(ctx context.Context, chatID, threadID int64, action string) error {
+	if chatID == 0 || strings.TrimSpace(action) == "" {
+		return errors.New("telegram: chat id and action are required")
+	}
+	values := url.Values{"chat_id": {strconv.FormatInt(chatID, 10)}, "action": {strings.TrimSpace(action)}}
+	if threadID != 0 {
+		values.Set("message_thread_id", strconv.FormatInt(threadID, 10))
+	}
+	return t.call(ctx, "sendChatAction", values, nil)
+}
+
 func (t *BotAPITransport) CreateForumTopic(ctx context.Context, chatID int64, name string) (ForumTopic, error) {
 	values := url.Values{"chat_id": {strconv.FormatInt(chatID, 10)}, "name": {name}}
 	var result struct {

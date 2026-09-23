@@ -101,36 +101,50 @@ func attachProductionTelegram(ctx context.Context, dataDir, listen string, store
 }
 
 func bridgeTelegramEvents(ctx context.Context, store *core.Store, adapter *telegram.Adapter) {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
+	backoff := 100 * time.Millisecond
+	const maxBackoff = 30 * time.Second
 	for {
-		_ = bridgeTelegramEventsOnce(ctx, store, adapter)
+		failedSeq, err := bridgeTelegramEventsOnce(ctx, store, adapter)
+		if err != nil {
+			log.Printf("telegram bridge failed at event seq %d (cursor %d): %v", failedSeq, adapter.LastEventSeq(), err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+			backoff *= 2
+			if backoff > maxBackoff {
+				backoff = maxBackoff
+			}
+			continue
+		}
+		backoff = 100 * time.Millisecond
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
 }
 
-func bridgeTelegramEventsOnce(ctx context.Context, store *core.Store, adapter *telegram.Adapter) error {
+func bridgeTelegramEventsOnce(ctx context.Context, store *core.Store, adapter *telegram.Adapter) (int64, error) {
 	cursor := adapter.LastEventSeq()
 	for {
 		events, err := store.EventsAfterSeq(ctx, cursor, 500)
 		if err != nil {
-			return err
+			return 0, err
 		}
 		if len(events) == 0 {
-			return nil
+			return 0, nil
 		}
 		for _, event := range events {
 			if err := adapter.HandleDurableEvent(ctx, telegramEvent(event)); err != nil {
-				return err
+				return event.Seq, err
 			}
 			cursor = event.Seq
 		}
 		if len(events) < 500 {
-			return nil
+			return 0, nil
 		}
 	}
 }
@@ -148,6 +162,9 @@ func telegramEvent(event core.Event) telegram.Event {
 	result.Tool = stringField(payload, "tool")
 	switch {
 	case strings.HasPrefix(event.Kind, "secretary."):
+		if event.Kind == core.SecretaryTextDeltaEvent {
+			result.Text, _ = payload["text"].(string)
+		}
 		return result
 	case event.Kind == "worker.spawned":
 		result.Kind = "worker.created"
@@ -185,6 +202,15 @@ func telegramEvent(event core.Event) telegram.Event {
 	case event.Kind == "attempt.outcome_recorded" || event.Kind == "result.accepted":
 		classification := strings.ToLower(stringField(payload, "classification"))
 		if classification == "retryable" {
+			result.Kind = ""
+			break
+		}
+		// A final outcome carries no renderable text; the paired
+		// result.accepted event from the same transaction holds the summary.
+		// Skipping the empty outcome keeps the terminal identity free so the
+		// result delivers "Worker завершён: <summary>" instead of burning it
+		// on a textless status.
+		if event.Kind == "attempt.outcome_recorded" && stringField(payload, "text", "summary", "result", "error", "response") == "" {
 			result.Kind = ""
 			break
 		}

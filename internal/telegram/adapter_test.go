@@ -16,8 +16,15 @@ type fakeTransport struct {
 	mu      sync.Mutex
 	updates []Update
 	sent    []SentMessage
+	actions []ChatAction
 	topics  []ForumTopic
 	fail    bool
+}
+
+type ChatAction struct {
+	ChatID   int64
+	ThreadID int64
+	Action   string
 }
 
 func (f *fakeTransport) GetUpdates(context.Context, int64, time.Duration) ([]Update, error) {
@@ -32,6 +39,15 @@ func (f *fakeTransport) SendMessage(_ context.Context, message OutgoingMessage) 
 		return context.DeadlineExceeded
 	}
 	f.sent = append(f.sent, SentMessage{OutgoingMessage: message})
+	return nil
+}
+func (f *fakeTransport) SendChatAction(_ context.Context, chatID, threadID int64, action string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.fail {
+		return context.DeadlineExceeded
+	}
+	f.actions = append(f.actions, ChatAction{ChatID: chatID, ThreadID: threadID, Action: action})
 	return nil
 }
 func (f *fakeTransport) CreateForumTopic(_ context.Context, chatID int64, name string) (ForumTopic, error) {
@@ -66,6 +82,9 @@ func (t *blockingSendTransport) SendMessage(_ context.Context, message OutgoingM
 }
 func (t *blockingSendTransport) CreateForumTopic(context.Context, int64, string) (ForumTopic, error) {
 	return ForumTopic{}, nil
+}
+func (t *blockingSendTransport) SendChatAction(context.Context, int64, int64, string) error {
+	return nil
 }
 
 func (f *fakeServer) SendMessage(_ context.Context, message InboundMessage) error {
@@ -121,6 +140,9 @@ func (t *retryPollingTransport) GetUpdates(context.Context, int64, time.Duration
 	return nil, nil
 }
 func (t *retryPollingTransport) SendMessage(context.Context, OutgoingMessage) error { return nil }
+func (t *retryPollingTransport) SendChatAction(context.Context, int64, int64, string) error {
+	return nil
+}
 func (t *retryPollingTransport) CreateForumTopic(context.Context, int64, string) (ForumTopic, error) {
 	return ForumTopic{}, nil
 }
@@ -137,6 +159,9 @@ func (t *concurrentTopicTransport) GetUpdates(context.Context, int64, time.Durat
 	return nil, nil
 }
 func (t *concurrentTopicTransport) SendMessage(context.Context, OutgoingMessage) error { return nil }
+func (t *concurrentTopicTransport) SendChatAction(context.Context, int64, int64, string) error {
+	return nil
+}
 func (t *concurrentTopicTransport) CreateForumTopic(_ context.Context, chatID int64, name string) (ForumTopic, error) {
 	t.mu.Lock()
 	t.calls++
@@ -158,6 +183,142 @@ func newTestAdapter(t *testing.T, transport Transport, server ServerClient, stat
 		t.Fatal(err)
 	}
 	return adapter
+}
+
+func TestTerminalResultMirrorsToGeneralWithWorkerLabel(t *testing.T) {
+	transport := &fakeTransport{}
+	server := &fakeServer{}
+	adapter := newTestAdapter(t, transport, server, filepath.Join(t.TempDir(), "telegram.json"))
+	event := Event{Kind: "worker.completed", WorkerRef: "worker-9", Text: "pong", TerminalIdentity: "turn:9"}
+	if err := adapter.HandleEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	var topic, general int
+	for _, sent := range transport.sent {
+		switch {
+		case sent.ThreadID != 0 && sent.Text == "pong":
+			topic++
+		case sent.ThreadID == 0 && sent.Text == "worker-9:\npong":
+			general++
+		default:
+			t.Fatalf("unexpected terminal message=%#v", sent)
+		}
+	}
+	if topic != 1 || general != 1 {
+		t.Fatalf("terminal mirror topic=%d general=%d sent=%#v", topic, general, transport.sent)
+	}
+}
+
+func TestDelegatedTurnSendsNothingToGeneral(t *testing.T) {
+	transport := &fakeTransport{}
+	server := &fakeServer{}
+	adapter := newTestAdapter(t, transport, server, filepath.Join(t.TempDir(), "telegram.json"))
+	ctx := context.Background()
+	for _, event := range []Event{
+		{Kind: "secretary.turn.started"},
+		{Kind: "secretary.text_delta", Text: "I'll create a Worker"},
+		{Kind: "secretary.tool_call", Tool: "mcp_secretary_spawn_worker"},
+		{Kind: "secretary.text_delta", Text: "done narrating"},
+		{Kind: "secretary.turn.finished"},
+	} {
+		if err := adapter.HandleEvent(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := adapter.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 0 {
+		t.Fatalf("delegated narration reached General: %#v", transport.sent)
+	}
+}
+
+func TestQuestionTurnSendsSingleMessageOnFinished(t *testing.T) {
+	transport := &fakeTransport{}
+	server := &fakeServer{}
+	adapter := newTestAdapter(t, transport, server, filepath.Join(t.TempDir(), "telegram.json"))
+	ctx := context.Background()
+	if err := adapter.HandleEvent(ctx, Event{Kind: "secretary.turn.started"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []string{"I’ll create", " a", " new", " Worker"} {
+		if err := adapter.HandleEvent(ctx, Event{Kind: "secretary.text_delta", Text: delta}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := adapter.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 0 {
+		t.Fatalf("interim flush split the turn: %#v", transport.sent)
+	}
+	if err := adapter.HandleEvent(ctx, Event{Kind: "secretary.turn.finished"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "I’ll create a new Worker" {
+		t.Fatalf("question turn batch=%#v", transport.sent)
+	}
+}
+
+func TestGeneralThreadRoutesToSecretaryAndUnknownThreadDrops(t *testing.T) {
+	transport := &fakeTransport{}
+	server := &fakeServer{}
+	adapter := newTestAdapter(t, transport, server, filepath.Join(t.TempDir(), "telegram.json"))
+	ctx := context.Background()
+	if err := adapter.HandleUpdate(ctx, Update{ID: 60, Message: &Message{ChatID: 100, ThreadID: 1, FromID: 100, Text: "general via thread"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleUpdate(ctx, Update{ID: 61, Message: &Message{ChatID: 100, ThreadID: 7, FromID: 100, Text: "unknown thread"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(server.messages) != 1 || server.messages[0].Body != "general via thread" {
+		t.Fatalf("thread routing messages=%#v", server.messages)
+	}
+}
+
+func TestTypingActionOnInboundAndFlush(t *testing.T) {
+	transport := &fakeTransport{}
+	server := &fakeServer{}
+	adapter := newTestAdapter(t, transport, server, filepath.Join(t.TempDir(), "telegram.json"))
+	if err := adapter.HandleUpdate(context.Background(), Update{ID: 50, Message: &Message{ChatID: 100, FromID: 100, Text: "hello"}}); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.actions) != 1 || transport.actions[0] != (ChatAction{ChatID: 100, ThreadID: 1, Action: "typing"}) {
+		t.Fatalf("typing after inbound=%#v", transport.actions)
+	}
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.turn.started"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.actions) != 1 {
+		t.Fatalf("typing while turn open without new content should stay throttled=%#v", transport.actions)
+	}
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.text_delta", Text: "working"}); err != nil {
+		t.Fatal(err)
+	}
+	adapter.typingMu.Lock()
+	adapter.lastTyping = map[string]time.Time{}
+	adapter.typingMu.Unlock()
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.turn.finished"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.actions) != 2 {
+		t.Fatalf("typing while pending=%#v", transport.actions)
+	}
+	if len(transport.sent) != 1 || !strings.Contains(transport.sent[0].Text, "working") {
+		t.Fatalf("pending flush=%#v", transport.sent)
+	}
 }
 
 func TestDuplicateUpdateIsIgnoredAndUnauthorizedCannotChangeState(t *testing.T) {
@@ -231,8 +392,20 @@ func TestSecretaryEventsAreThrottledAndWorkerEventsAreReadable(t *testing.T) {
 	if err := adapter.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(transport.sent) != 1 || !strings.Contains(transport.sent[0].Text, "Hello world") || !strings.Contains(transport.sent[0].Text, "list_workers") {
+	if len(transport.sent) != 0 {
+		t.Fatalf("secretary batch sent before turn finished: %#v", transport.sent)
+	}
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.turn.finished"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || !strings.Contains(transport.sent[0].Text, "Hello world") {
 		t.Fatalf("secretary batch = %#v", transport.sent)
+	}
+	if strings.Contains(transport.sent[0].Text, "list_workers") || strings.Contains(transport.sent[0].Text, "Шаги:") {
+		t.Fatalf("secretary tool call leaked into General: %q", transport.sent[0].Text)
 	}
 	if err := adapter.HandleEvent(context.Background(), Event{Kind: "worker.activity", WorkerRef: "w-1", Text: "analysis: secret-cot", Tool: "shell", Payload: json.RawMessage(`{"token":"node-secret","path":"/tmp/work"}`)}); err != nil {
 		t.Fatal(err)
@@ -240,12 +413,8 @@ func TestSecretaryEventsAreThrottledAndWorkerEventsAreReadable(t *testing.T) {
 	if err := adapter.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	last := transport.sent[len(transport.sent)-1].Text
-	if strings.Contains(last, "secret-cot") || strings.Contains(last, "node-secret") || strings.Contains(last, "runtime") {
-		t.Fatalf("raw or sensitive worker event leaked: %q", last)
-	}
-	if !strings.Contains(last, "shell") {
-		t.Fatalf("readable worker activity missing: %q", last)
+	if len(transport.sent) != 1 {
+		t.Fatalf("worker activity must stay out of topics: %#v", transport.sent)
 	}
 }
 
@@ -308,15 +477,19 @@ func TestOutboxSurvivesTransportFailureAndRestart(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "telegram.json")
 	transport := &fakeTransport{fail: true}
 	adapter := newTestAdapter(t, transport, &fakeServer{}, statePath)
-	if err := adapter.HandleEvent(context.Background(), Event{Kind: "worker.created", WorkerRef: "w-1", Title: "Task"}); err == nil {
+	event := Event{Sequence: 1, Kind: "worker.completed", WorkerRef: "w-1", Text: "Task", TerminalIdentity: "turn:1"}
+	if err := adapter.HandleDurableEvent(context.Background(), event); err == nil {
 		t.Fatal("transport failure was hidden")
 	}
 	transport.fail = false
 	restarted := newTestAdapter(t, transport, &fakeServer{}, statePath)
-	if err := restarted.Flush(context.Background()); err != nil {
+	if err := restarted.HandleDurableEvent(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
-	if len(transport.sent) != 1 || !strings.Contains(transport.sent[0].Text, "Task") {
+	if err := restarted.HandleDurableEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 2 || transport.sent[0].Text != "Task" || transport.sent[1].Text != "w-1:\nTask" {
 		t.Fatalf("outbox after restart = %#v", transport.sent)
 	}
 }
@@ -370,6 +543,9 @@ func TestThrottleTimerFlushesSecretaryBatch(t *testing.T) {
 	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "telegram.json"))
 	adapter.config.FlushInterval = 10 * time.Millisecond
 	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.text_delta", Text: "timer"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.turn.finished"}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -440,6 +616,9 @@ func TestDurableSecretaryEventSurvivesRestartBeforeThrottleFlush(t *testing.T) {
 		t.Fatal(err)
 	}
 	restarted := newTestAdapter(t, transport, &fakeServer{}, statePath)
+	if err := restarted.HandleDurableEvent(context.Background(), Event{Sequence: 2, Kind: "secretary.turn.finished"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := restarted.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -501,6 +680,9 @@ func TestSecretaryEventsBeforePairingDoNotCreateChatZeroOutbox(t *testing.T) {
 	if err := adapter.SetOwnerChat(100); err != nil {
 		t.Fatal(err)
 	}
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.turn.finished"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := adapter.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -522,6 +704,9 @@ func TestTelegramSanitizerRecursivelyRedactsPublicForbiddenValues(t *testing.T) 
 	}
 	if delta := safeDelta("raw <think>secret</think> analysis: hidden"); strings.Contains(delta, "secret") || strings.Contains(delta, "analysis") {
 		t.Fatalf("unsafe delta=%q", delta)
+	}
+	if delta := safeDelta(" "); delta != " " {
+		t.Fatalf("whitespace delta=%q, want one space", delta)
 	}
 }
 
@@ -591,6 +776,9 @@ func TestDurableEventRecoveryDoesNotDuplicatePendingBatch(t *testing.T) {
 	if got := adapter.LastEventSeq(); got != 1 {
 		t.Fatalf("last event sequence = %d, want 1", got)
 	}
+	if err := adapter.HandleDurableEvent(context.Background(), Event{Sequence: 2, Kind: "secretary.turn.finished"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := adapter.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -599,24 +787,22 @@ func TestDurableEventRecoveryDoesNotDuplicatePendingBatch(t *testing.T) {
 	}
 }
 
-func TestWorkerActivityOutboxRestartDoesNotResendPendingLines(t *testing.T) {
+func TestWorkerActivityNeverReachesTopics(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "telegram.json")
-	transport := &fakeTransport{fail: true}
+	transport := &fakeTransport{}
 	adapter := newTestAdapter(t, transport, &fakeServer{}, statePath)
 	if err := adapter.HandleEvent(context.Background(), Event{Kind: "worker.activity", WorkerRef: "worker-1", Tool: "shell"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.Flush(context.Background()); err == nil {
-		t.Fatal("expected activity transport failure")
+	if err := adapter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
 	}
-
-	transport.fail = false
 	restarted := newTestAdapter(t, transport, &fakeServer{}, statePath)
 	if err := restarted.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(transport.sent) != 1 {
-		t.Fatalf("activity messages after restart = %#v", transport.sent)
+	if len(transport.sent) != 0 {
+		t.Fatalf("activity messages reached topics: %#v", transport.sent)
 	}
 }
 
@@ -676,6 +862,9 @@ func TestDurableBatchRestartDoesNotReplayAlreadyOutboxedMessage(t *testing.T) {
 	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.text_delta", Text: "send once"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.turn.finished"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := adapter.Flush(context.Background()); err == nil {
 		t.Fatal("expected transport failure")
 	}
@@ -697,6 +886,9 @@ func TestFlushSerializesConcurrentEventWithoutReplayingPrefix(t *testing.T) {
 	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.text_delta", Text: "prefix"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.turn.finished"}); err != nil {
+		t.Fatal(err)
+	}
 
 	flushDone := make(chan error, 1)
 	go func() { flushDone <- adapter.Flush(context.Background()) }()
@@ -706,19 +898,15 @@ func TestFlushSerializesConcurrentEventWithoutReplayingPrefix(t *testing.T) {
 		eventDone <- adapter.HandleEvent(context.Background(), Event{Kind: "secretary.text_delta", Text: "suffix"})
 	}()
 
-	deadline := time.Now().Add(time.Second)
-	for time.Now().Before(deadline) {
-		data, readErr := os.ReadFile(statePath)
-		if readErr == nil && strings.Contains(string(data), "prefixsuffix") {
-			break
-		}
-		time.Sleep(time.Millisecond)
-	}
+	time.Sleep(50 * time.Millisecond)
 	close(transport.release)
 	if err := <-flushDone; err != nil {
 		t.Fatal(err)
 	}
 	if err := <-eventDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.turn.finished"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := adapter.Flush(context.Background()); err != nil {

@@ -21,6 +21,23 @@ func TestBotAPITransportErrorRedactsBotToken(t *testing.T) {
 	}
 }
 
+func TestBotAPITransportPreservesTextInFormEncoding(t *testing.T) {
+	const want = "I'll create a new Worker\nand preserve *format*."
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.Form.Get("text"); got != want {
+			t.Errorf("text=%q, want %q", got, want)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
+	}))
+	defer server.Close()
+	if err := (&BotAPITransport{BaseURL: server.URL, BotToken: "fixture"}).SendMessage(context.Background(), OutgoingMessage{ChatID: 1, Text: want}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBotAPITransportDecodesProductionNestedMessage(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/botfixture/getUpdates" {

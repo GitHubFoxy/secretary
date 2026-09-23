@@ -14,6 +14,19 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
+func TestClaudeSessionPreservesWhitespaceTextDeltas(t *testing.T) {
+	session := &claudeSession{activity: make(chan Activity, 1)}
+	session.emitText(" ")
+	select {
+	case activity := <-session.activity:
+		if activity.Kind != ActivityText || activity.Text != " " {
+			t.Fatalf("activity=%#v, want a whitespace text delta", activity)
+		}
+	default:
+		t.Fatal("whitespace text delta was discarded")
+	}
+}
+
 func TestClaudeCodeRuntimeUsesNativeCLIWithAuthoritativePins(t *testing.T) {
 	capture := filepath.Join(t.TempDir(), "claude-request.json")
 	launcher := filepath.Join(t.TempDir(), "claude")
