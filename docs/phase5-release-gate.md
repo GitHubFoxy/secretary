@@ -1,4 +1,6 @@
-# Phase 5 release gate: Pi read-only viewer
+# Phase 5 release gate: historical read-only viewer
+
+Этот gate фиксирует историческую проверку read-only viewer и не подтверждает новый messaging extension. Текущий scope и run procedure описаны в `docs/pi-viewer.md` и `docs/pi-viewer-runbook.md`.
 
 Разделяет детерминированный automated check и ручной proof на реальном железе. Один и тот же статус нельзя получать из другого источника: Go-тест не закрывает ручную строку, ручной прогон не заменяет gate.
 

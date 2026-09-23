@@ -1,6 +1,6 @@
-# Pi read-only viewer contract
+# Pi Secretary client contract
 
-Контракт первого usable Secretary client: Pi на MacBook Air только читает состояние always-on Laptop server. Документ фиксирует topology, credential model, screens, reconnect и privacy boundary. Тикеты `phase-5-pi-viewer` 01-05 ссылаются на него.
+Исходный Pi viewer был read-only. Стандартное TypeScript-расширение дополнительно поддерживает отправку Conversation и Worker message, но не control actions. Этот документ описывает topology, scopes, credential lifecycle, live state и privacy boundary.
 
 Контракт не вводит нового domain state и нового транспорта. Viewer работает поверх существующих `/v1` HTTP read endpoints и WebSocket подписок. Требуемые limit/cursor параметры и public DTO не меняют ни domain state, ни transport.
 
@@ -42,7 +42,7 @@ Serve surface - полный `/v1` и статика User UI поверх одн
 - Не второй source of truth: у Pi нет локальной durable базы. Presentation state, последний confirmed cursor и файл credential - всё, что он хранит между запусками.
 - Не owner management UI: после pairing Pi не получает bootstrap token, `client:manage` и `user:write`.
 
-По модели repo Pi viewer - отдельный Client с read-only scopes, а не Channel adapter с write-правами.
+По модели repo Pi остаётся отдельным Client, не Channel adapter. Обычный pairing default остаётся read-only; write scopes выдаются только после явного owner-approved pairing с точным scope list.
 
 ## Credential model
 
@@ -60,11 +60,9 @@ Scopes Pi на первый релиз:
 | `worker:read` | список Workers, статус, детали, Worker activity |
 | `approval:read` | summary pending Approvals для отображения |
 
-Явно не выдаются: `conversation:write`, `worker:write`, `approval:write`, `project:*`, `node:*`, `client:manage`, `user:read`, `user:write`.
+Для обычного read-only viewer остаются только `conversation:read`, `worker:read`, `approval:read`. Отправляющий Pi extension требует owner-approved credential с точными scopes `conversation:read`, `conversation:write`, `worker:read`, `worker:message`, `approval:read`. `worker:message` разрешает только POST `/v1/workers/{worker_ref}/message`; никогда не выдавать extension `worker:write`. Не выдаются `approval:write`, `project:*`, `node:*`, `client:manage`, `user:read`, `user:write`.
 
-Требование контракта: pairing без явного scope list запрещён, server отклоняет такой запрос. Server-side проверку и regression tests выполняет тикет 02.
-
-`POST /v1/clients/pair` требует явный `scopes`: omitted, `null` и `[]` отклоняются с `400`, неверный bootstrap при этом по-прежнему даёт `401`. Тихий default из 13 scopes на HTTP boundary больше не выдаётся (`normalizeClientScopes` для прямых store-вызовов не менялся). Pi client при незаданных `SecretaryPairOptions.scopes` отправляет ровно `conversation:read`, `worker:read`, `approval:read` (`defaultPairScopes` в `client.ts`).
+`POST /v1/clients/pair` требует явный scope list. Без scopes `defaultPairScopes` остаётся read-only. Для extension scopes должны быть заданы явно при pairing; revoke старого credential и повторное pairing обязательны при смене grants.
 
 Revoke выполняет owner: `POST /v1/clients/{id}/revoke`. Server отменяет активные streams этого Client и запрещает новые HTTP и WS запросы. Повторное подключение требует нового pairing.
 
@@ -95,10 +93,7 @@ Revoke выполняет owner: `POST /v1/clients/{id}/revoke`. Server отме
 - **Public approval DTO.** `GET /v1/approvals` возвращает allowlisted `publicApprovalDTO` (`id`, `kind`, `action_summary`, `risk_category`, `state`, `requested_at`, `expires_at`); `node_id`, `request_id`, `worker_id`, `turn_id`, `attempt_id`, `project_id`, `response`, `resolved_by`, `audit_event_id` за границу не уходят.
 - **Фильтр approvals.** Endpoint читает только Approvals, чей worker принадлежит текущей Conversation (JOIN через `workers.conversation_id`).
 
-Запросы на запись для Pi получают отказ `403` (не хватает scope), pairing routes без bootstrap или pending token - `401`:
-
-- `POST /v1/messages`;
-- `POST /v1/workers/{worker_ref}/{message,respond,steer,queue,stop,cancel,close,approve}`;
+Разрешённые write routes ограничены двумя операциями: `conversation:write` только `POST /v1/messages`; `worker:message` только `POST /v1/workers/{worker_ref}/message`. Остальные Worker mutations получают `403`, включая `respond`, `steer`, `queue`, `stop`, `cancel`, `close` и `approve`. Также запрещены:
 - `POST /v1/approvals/{approval_id}/{approve,deny}`;
 - `PUT /v1/user`, `POST /v1/projects`, `POST /v1/secretary/model`;
 - `POST /v1/clients/*` кроме pair/poll/redeem;
@@ -106,24 +101,13 @@ Revoke выполняет owner: `POST /v1/clients/{id}/revoke`. Server отме
 
 ## Screens
 
-Первый релиз описывает четыре экрана, без изменения Web UI и Telegram:
+Стандартное расширение вызывается `/secretary`, открывает recipient selector и compose editor, затем шлёт текст серверу напрямую, не передавая его модели Pi. Live view ограничен Conversation body, Worker status и tool name/start/finish:
 
-1. **Snapshot** - `pi --experimental secretary --once`. Без открытия socket'ов: только HTTP read запросы, затем завершение. Печатает:
-   - Secretary state: состояние активного Turn и выбранную model;
-   - хвост Conversation;
-   - для каждого Worker: `status`, `last_result_summary`, последнюю безопасную activity summary;
-   - pending Approval summary.
-
-   Result и activity попадают в snapshot напрямую, а не только после открытия Worker detail.
-2. **Conversation** - интерактивный режим. Personal Conversation в порядке `seq`, события активного Secretary turn, индикатор connection state.
-3. **Worker detail** - выбранный Worker по `worker_ref`: status, Turns и Results summary, live activity.
-4. **Approval summary** - pending Approvals: `id`, `kind`, `action_summary`, `risk_category`, `state`. Без кнопок approve/deny.
-
-Layout и keybindings оставлены тикету 03. Контракт требует только состав данных и состояния связи.
+Расширение показывает compact live widget с Conversation body, connection state, allowlisted Worker status и tool name с отметкой start/finish. Compose editor отправляет тело напрямую серверу. Это не built-in CLI command и не команда экспериментального режима.
 
 ## Snapshot, live, reconnect, resync
 
-**Initial snapshot.** До открытия подписок viewer читает `GET /v1/conversation`, `GET /v1/workers`, `GET /v1/approvals` и, если нужен выбранный Worker, `GET /v1/workers/{worker_ref}`. Snapshot обязан быть bounded server'ом: limit и cursor задаёт API, а не viewer. См. раздел "Требуемая работа по surface" - до реализации limit'ов snapshot считается unbounded.
+**Initial snapshot.** Extension читает bounded Conversation tail, Workers и approvals, затем открывает выбранный Worker observer при необходимости.
 
 **Live updates.** После snapshot открывается `GET /v1/conversation/ws?after_seq=<последний confirmed seq>`. Server сначала отдаёт durable entries после cursor, затем live. Доставка строго по возрастанию `seq`: server держит pending map и не отправляет entry с `seq <= cursor`. Те же правила у Secretary turn stream и Worker activity.
 
@@ -150,7 +134,7 @@ Layout и keybindings оставлены тикету 03. Контракт тр�
 
 Что это значит на практике:
 
-- Conversation entries, Worker details и события activity проходят sanitizer.
+- Conversation entries, Worker details и activity проходят sanitizer; extension рендерит только Conversation body, allowlisted Worker status и tool name/start/finish.
 - `GET /v1/approvals` отдаёт allowlisted DTO и sanitizer не требует: private fields не сериализуются вовсе.
 - Sanitizer не трогает `node_id`, `project_id`, `harness_instance_id`, `workspace` и `policy_snapshot`: server может их отправить, а viewer обязан их не рендерить. Обе стороны ограничения остаются обязательными.
 
@@ -158,19 +142,15 @@ Layout и keybindings оставлены тикету 03. Контракт тр�
 
 | Сущность | Рендерит |
 | --- | --- |
-| Conversation entry | `id`, `seq`, `kind`, `body`, `worker_ref`, `turn_id`, `result_id`, `created_at` |
-| Secretary state | состояние Turn (`queued`, `starting`, `active`, `waiting_approval`, `needs_input`, `succeeded`, `failed`, `canceled`, `interrupted`), `seq` и kind события, имя выбранной model |
-| Worker | `worker_ref`, `title`, `intent`, `status`, `last_result_summary`, `created_at`, `updated_at`, `closed_at`, `archived` |
-| Worker activity | `seq`, тип события, sanitized text |
-| Result | `status`, `summary`, `failure_code`, `artifact_refs`, `created_at` |
-| Approval summary | `id`, `kind`, `action_summary`, `risk_category`, `state`, `requested_at`, `expires_at` |
+| Conversation entry | `body` |
+| Worker status | ограниченное enum-значение |
+| Worker activity | allowlisted tool name и start/finish marker |
 
 Не показывать нигде: native и runtime session IDs, `harness_instance_id`, `node_id`, пути `workspace`, `policy_snapshot` и `context_snapshot`, `diagnostics`, credentials, tokens и bootstrap fragment, tool arguments и raw ACP frames, chain of thought и reasoning, prompt'ы runtime.
 
-## Не-цели первого релиза
+## Ограничения Pi extension
 
-- Отправка сообщений: `/v1/messages` и Secretary turn input.
-- Worker commands: `message`, `respond`, `steer`, `queue`, `stop`, `cancel`, `close`, `approve`.
+- Worker commands `respond`, `steer`, `queue`, `stop`, `cancel`, `close`, `approve` недоступны. Отправка обычного сообщения Worker разрешена через narrow `worker:message`.
 - Approval decisions: `approve` и `deny`.
 - Node control и Node protocol, включая `node:read` inventory.
 - Model control: `POST /v1/secretary/model`.
@@ -182,7 +162,7 @@ Layout и keybindings оставлены тикету 03. Контракт тр�
 ## Определяют последующие тикеты
 
 - `01-always-on-server-baseline.md`: documented data directory, backup/restore-check, launchd runbook, loopback-only listener с Tailscale Serve HTTPS proxy и ACL, запрет прямого bind, Serve surface с negative tests против Node/internal/control routes, health/status checks.
-- `02-pi-read-only-credential.md`: pairing path, запрет pairing без явного scope list, storage credential на MacBook Air, revoke flow, regression tests на HTTP и WS authorization и revoke streams.
-- `03-pi-viewer-snapshot-and-live-state.md`: bounded snapshot с limit/cursor, allowlisted public DTO включая approval summary и фильтр approvals, реализация screens, cursor replay, resync и connection states в `pi --experimental secretary`.
+- `02-pi-read-only-credential.md`: историческая read-only credential схема; текущая messaging миграция описана выше и в `docs/always-on-runbook.md`.
+- `03-pi-viewer-snapshot-and-live-state.md`: bounded snapshot с limit/cursor, allowlisted public DTO, replay и connection states.
 - `04-pi-viewer-real-acceptance.md`: проверка на реальных машинах, redacted evidence ledger.
-- `05-pi-viewer-runbook-and-release.md`: install/runbook, automated release check, release note `Pi read-only viewer`.
+- `05-pi-viewer-runbook-and-release.md`: install/runbook и automated release check.

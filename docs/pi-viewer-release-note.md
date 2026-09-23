@@ -1,40 +1,27 @@
-# Release note: Pi read-only viewer
+# Pi Secretary client
 
-Первый client-релиз Secretary: Pi на MacBook Air читает состояние always-on сервера через Tailscale. Это read-only viewer.
+Pi 0.87.1 загружает клиент как обычное TypeScript extension: `pi --extension <secretary.ts>` или из configured extensions. Команда `/secretary` позволяет выбрать Secretary либо существующего Worker и отправить сообщение напрямую серверу через Tailscale. Текст сообщения не поступает в Pi model.
 
-## Что объявляется
+## Documented grants
 
-`Pi read-only viewer`: `pi --experimental secretary` (snapshot через `--once` и interactive TUI) поверх HTTPS-эндпоинтов сервера в tailnet.
+Обычный pairing default остаётся read-only: `conversation:read`, `worker:read`, `approval:read`. Для messaging extension owner должен явно создать и одобрить credential с ровно этими scopes:
 
-Viewer не является remote control: он только читает состояние сервера и не выполняет никаких действий от имени владельца.
+- `conversation:read`
+- `conversation:write`, только `POST /v1/messages`
+- `worker:read`
+- `worker:message`, только `POST /v1/workers/{worker_ref}/message`
+- `approval:read`
 
-## Documented grant
+`worker:write` не выдаётся. Cancel/stop/steer/respond/approve/close, Node, Client management, diagnostics и approval decisions не доступны extension credential.
 
-Выдаётся ровно один credential с тремя scope'ами:
+Credential читается из `~/.config/secretary/viewer-credential` с режимом `0600`, без передачи секрета через аргументы команды. Для миграции старого Client отзовите его и выполните новый explicit-scope pairing по `docs/always-on-runbook.md`; затем безопасно замените файл credential.
 
-| Scope | Что даёт |
-| --- | --- |
-| `conversation:read` | Personal Conversation, live stream, Secretary turn stream |
-| `worker:read` | список Workers, статус, детали, worker activity |
-| `approval:read` | summary pending Approvals |
+## Live data boundary
 
-Credential хранится на Air в `~/.config/secretary/viewer-credential` (каталог `0700`, файл `0600`).
-
-## Что не входит
-
-- Отправка сообщений и worker commands (`message`, `respond`, `steer`, `queue`, `stop`, `cancel`, `close`).
-- Approval decisions (`approve`, `deny`).
-- Node control и Node protocol.
-- Управление Clients, bootstrap token, доступ к SQLite и Data directory.
-- Telegram и phone client.
-
-## Границы данных
-
-Каждый viewer endpoint отдаёт отдельный allowlisted public DTO: без `node_id`, `harness_instance_id`, `diagnostics`, `context_snapshot`, `policy_snapshot`, credentials, native IDs и raw ACP frames. `GET /v1/workers/{worker_ref}/diagnostics` для viewer credential возвращает `403`.
+Extension отображает Conversation body, ограниченные Worker status и имя инструмента с отметкой start/finish. Оно не отображает tool arguments, tool output, raw ACP, credentials, session IDs или reasoning.
 
 ## Документация
 
-- Контракт: `docs/pi-viewer.md`
-- Серверный runbook: `docs/always-on-runbook.md`
-- Air-side runbook: `docs/pi-viewer-runbook.md`
-- Release evidence: `docs/phase5-release-gate.md`
+- Scope и API contract: `docs/pi-viewer.md`
+- Pair/revoke procedure: `docs/always-on-runbook.md`
+- Установка и восстановление: `docs/pi-viewer-runbook.md`

@@ -81,6 +81,114 @@ func TestWorkerActionAPIExposesMessageFollowUpAndApprove(t *testing.T) {
 	}
 }
 
+func TestWorkerMessageScopeOnlyAllowsMessageRoute(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "worker-message-scope.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, _, _, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{Intent: "work", ProjectID: "project", NodeID: "node", HarnessInstanceID: "node/fx", PolicySnapshot: "safe"}, core.TurnSpec{Input: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairing, err := store.PairClientWithToken(ctx, person.ID, "message-only", "Message only", "test", []core.ClientScope{core.ScopeWorkerMessage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, credential, err := store.ApproveClient(ctx, pairing.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actions := &ticket09WorkerActions{details: core.WorkerDetails{Worker: worker}}
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.AttachWorkerResponder(actions)
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	for _, item := range []struct {
+		path, body string
+		want       int
+	}{
+		{"message", `{"text":"hello","idempotency_key":"scope-message"}`, http.StatusAccepted},
+		{"stop", `{}`, http.StatusForbidden}, {"cancel", `{}`, http.StatusForbidden},
+		{"steer", `{"text":"x"}`, http.StatusForbidden}, {"respond", `{"request_id":"r","response":"x"}`, http.StatusForbidden},
+		{"approve", `{"request_id":"r","text":"approve"}`, http.StatusForbidden},
+		{"close", `{}`, http.StatusForbidden}, {"follow-up", `{"text":"x"}`, http.StatusForbidden},
+	} {
+		req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/workers/"+worker.WorkerRef+"/"+item.path, strings.NewReader(item.body))
+		req.Header.Set("Authorization", "Bearer "+credential)
+		req.Header.Set("Content-Type", "application/json")
+		res, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != item.want {
+			t.Errorf("%s status=%d want=%d", item.path, res.StatusCode, item.want)
+		}
+	}
+}
+
+func TestConversationWriteScopeOnlyAllowsMessageEndpoint(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "conversation-write-scope.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, _, _, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{Intent: "work", ProjectID: "project", NodeID: "node", HarnessInstanceID: "node/fx", PolicySnapshot: "safe"}, core.TurnSpec{Input: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairing, err := store.PairClientWithToken(ctx, person.ID, "conversation-write", "Conversation writer", "test", []core.ClientScope{core.ScopeConversationWrite})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, credential, err := store.ApproveClient(ctx, pairing.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	for _, item := range []struct {
+		path, body string
+		want       int
+	}{
+		{"messages", `{"external_message_id":"m1","body":"hello","idempotency_key":"message-write"}`, http.StatusAccepted},
+		{"workers/" + worker.WorkerRef + "/message", `{"text":"x","idempotency_key":"worker-write"}`, http.StatusForbidden},
+		{"workers/" + worker.WorkerRef + "/cancel", `{}`, http.StatusForbidden},
+		{"workers/" + worker.WorkerRef + "/close", `{}`, http.StatusForbidden},
+		{"workers/" + worker.WorkerRef + "/approve", `{"request_id":"r","text":"approve"}`, http.StatusForbidden},
+	} {
+		req, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/"+item.path, strings.NewReader(item.body))
+		req.Header.Set("Authorization", "Bearer "+credential)
+		req.Header.Set("Content-Type", "application/json")
+		res, err := server.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		res.Body.Close()
+		if res.StatusCode != item.want {
+			t.Errorf("%s status=%d want=%d", item.path, res.StatusCode, item.want)
+		}
+	}
+}
+
 func TestTicket09GenericWorkerMessageUsesAuthenticatedBearerClient(t *testing.T) {
 	ctx := context.Background()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "worker-spoof.db"))

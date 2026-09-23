@@ -99,8 +99,8 @@ describe("SecretaryClient", () => {
 			pollIntervalMs: 10,
 		});
 		const body = JSON.parse(calls[0]!.init?.body as string) as { scopes?: readonly string[] };
-		expect(body.scopes).toEqual(["conversation:read", "conversation:write", "worker:read", "worker:message", "approval:read"]);
-		expect(result.identity.scopes).toEqual(["conversation:read", "conversation:write", "worker:read", "worker:message", "approval:read"]);
+		expect(body.scopes).toEqual(["conversation:read", "worker:read", "approval:read"]);
+		expect(result.identity.scopes).toEqual(["conversation:read", "worker:read", "approval:read"]);
 	});
 
 	test("pairs with explicit scopes untouched", async () => {

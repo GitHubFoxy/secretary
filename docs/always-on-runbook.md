@@ -110,9 +110,9 @@ systemctl --user restart secretaryd.service secretary-node.service
 sex doctor
 ```
 
-## Viewer pairing (Pi read-only credential)
+## Pi Client pairing и messaging-scope migration
 
-Ручной flow выдачи read-only credential для Pi viewer на MacBook Air. Bootstrap token берётся только из `environment` и не записывается в ledger, документацию или вывод на Air. Для pairing не нужны SQLite и Node credential.
+Ручной flow owner-approved pairing для стандартного Pi extension. Bootstrap token берётся только из `environment` и не записывается в ledger, документацию или вывод на Air. Для pairing не нужны SQLite и Node credential. Обычный client default остаётся read-only; messaging grants выдаются только с приведённым ниже явным списком scopes.
 
 Все Client mutations требуют idempotency key: в заголовке `Idempotency-Key` или в поле body `idempotency_key` (при заданных обоих значения должны совпадать, иначе `400 idempotency key in body and header must match`). Без ключа сервер отвечает `400 idempotency key is required`. Это штатный mutation contract, а не сбой сервера. `POST /v1/clients/{id}/approve` требует `Idempotency-Key` наравне с остальными mutations.
 
@@ -122,7 +122,7 @@ API=http://127.0.0.1:8081
 
 # 1. Pair. Явный scope list обязателен: omitted, null и [] дают 400
 pair=$(curl -fsS -X POST -H 'Content-Type: application/json' \
-  -d "{\"bootstrap_token\":\"$SECRETARY_BOOTSTRAP_TOKEN\",\"device_id\":\"mba-viewer\",\"display_name\":\"Pi viewer\",\"platform\":\"pi\",\"scopes\":[\"conversation:read\",\"worker:read\",\"approval:read\"],\"idempotency_key\":\"mba-viewer-pair\"}" \
+  -d "{\"bootstrap_token\":\"$SECRETARY_BOOTSTRAP_TOKEN\",\"device_id\":\"mba-viewer\",\"display_name\":\"Pi Secretary extension\",\"platform\":\"pi\",\"scopes\":[\"conversation:read\",\"conversation:write\",\"worker:read\",\"worker:message\",\"approval:read\"],\"idempotency_key\":\"mba-secretary-pair\"}" \
   "$API/v1/clients/pair")
 client_id=$(printf '%s' "$pair" | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_id"])')
 # pending_token из ответа не сохранять: он держится в памяти Pi до approve/redeem
@@ -183,7 +183,7 @@ curl -fsS -b /tmp/owner.jar -X POST -H 'Content-Type: application/json' \
 rm -f /tmp/owner.jar
 ```
 
-После revoke активные streams закрываются (`1008 Client revoked`), новые HTTP и WS запросы получают `401`, повторное подключение требует нового pairing. Viewer credential не даёт доступа к SQLite, Node credential, bootstrap token после pairing, `client:manage`, `user:write` и write routes. Air-сторона flow: `docs/pi-viewer-runbook.md`.
+После revoke активные streams закрываются (`1008 Client revoked`), новые HTTP и WS запросы получают `401`, повторное подключение требует нового pairing. Для миграции от прежнего read-only Client сначала выполните revoke, затем повторите pairing выше с новым idempotency key и одобрите Client. Не выдавайте `worker:write`: `worker:message` разрешает только POST `/v1/workers/{worker_ref}/message`; `conversation:write` разрешает только POST `/v1/messages`. Worker control, approval decisions, Node и Client management остаются закрыты. Air-side flow: `docs/pi-viewer-runbook.md`.
 
 ## Backup
 

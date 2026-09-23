@@ -1,4 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { readFile, stat } from "node:fs/promises";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { SecretaryClientRuntime } from "../secretary/runtime.ts";
 import type { SecretaryPresentationState } from "../secretary/presentation.ts";
 
@@ -9,18 +12,22 @@ function safeLine(value: unknown): string | undefined {
 	return value.replace(/[\u0000-\u001f\u007f]/g, " ").slice(0, 500);
 }
 
-function summary(state: SecretaryPresentationState): string {
+export function summary(state: SecretaryPresentationState): string {
 	const lines = [`Secretary: ${state.connection}`];
 	for (const entry of state.conversation.slice(-10)) {
 		const body = safeLine(entry.body);
 		if (body) lines.push(body);
 	}
-	for (const activity of state.workerActivity.slice(-8)) {
+	for (const activity of state.workerActivity.slice(-12)) {
 		const item = activity as Record<string, unknown>;
 		const status = item.kind === "status" ? item.status : undefined;
 		if (status === "working" || status === "idle" || status === "needs_input" || status === "completed" || status === "failed") {
-			lines.push(`Worker: ${status}`);
+			lines.push(`Worker status: ${status}`);
+			continue;
 		}
+		const tool = typeof item.tool === "string" && /^[a-zA-Z0-9_.-]{1,80}$/.test(item.tool) ? item.tool : undefined;
+		if (tool && item.kind === "tool_call") lines.push(`Tool started: ${tool}`);
+		if (tool && item.kind === "tool_result") lines.push(`Tool finished: ${tool}`);
 	}
 	return lines.join("\n");
 }
@@ -39,9 +46,18 @@ export default function (pi: ExtensionAPI) {
 				return;
 			}
 			const baseUrl = process.env.SECRETARY_BASE_URL;
-			const credential = process.env.SECRETARY_CLIENT_CREDENTIAL;
-			if (!baseUrl || !credential) {
-				ctx.ui.notify("Задайте SECRETARY_BASE_URL и SECRETARY_CLIENT_CREDENTIAL", "error");
+			const credentialFile = process.env.SECRETARY_CLIENT_CREDENTIAL_FILE ?? join(homedir(), ".config/secretary/viewer-credential");
+			if (!baseUrl) {
+				ctx.ui.notify("Задайте SECRETARY_BASE_URL", "error");
+				return;
+			}
+			let credential: string;
+			try {
+				if ((await stat(credentialFile)).mode & 0o077) throw new Error("credential file must be mode 0600");
+				credential = (await readFile(credentialFile, "utf8")).trim();
+				if (!credential) throw new Error("credential file is empty");
+			} catch {
+				ctx.ui.notify(`Не удалось прочитать credential из ${credentialFile}; нужен файл с правами 0600`, "error");
 				return;
 			}
 			await activeRuntime?.dispose();
