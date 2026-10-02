@@ -18,7 +18,7 @@ Runbook для always-on Arch Linux сервера (omarchy), где посто�
   { "acls": [{ "action": "accept", "src": ["group:owner"], "dst": ["tag:secretary:443"] }] }
   ```
 
-- Serve публикует весь `/v1` и статику User UI (вариант B из `docs/pi-viewer.md`): routes закрыты credential-ами, Control Room и `/v1/control/*` отдаются только при `-debug` и возвращают `404` без него.
+- Serve публикует весь `/v1` и статику User UI: защищённые routes требуют credentials, Control Room и `/v1/control/*` доступны только при `-debug` и возвращают `404` без него.
 - Порт `8081` не открывается в firewall наружу: наружу смотрит только Tailscale.
 
 ## Data directory
@@ -110,80 +110,49 @@ systemctl --user restart secretaryd.service secretary-node.service
 sex doctor
 ```
 
-## Pi Client pairing и messaging-scope migration
+## Client pairing and revoke
 
-Ручной flow owner-approved pairing для стандартного Pi extension. Bootstrap token берётся только из `environment` и не записывается в ledger, документацию или вывод на Air. Для pairing не нужны SQLite и Node credential. Обычный client default остаётся read-only; messaging grants выдаются только с приведённым ниже явным списком scopes.
+Pairing выполняет владелец. Client получает собственный credential, отдельный от Node credentials и bootstrap token; для обычного Client pairing не нужен доступ к SQLite или Node credential. Не сохраняйте bootstrap token в командах, логах или документации. Pair request обязан содержать явный список scopes. Пропущенный, `null` или пустой список отклоняется с `400`; выдавайте только scopes, нужные конкретному Client.
 
-Все Client mutations требуют idempotency key: в заголовке `Idempotency-Key` или в поле body `idempotency_key` (при заданных обоих значения должны совпадать, иначе `400 idempotency key in body and header must match`). Без ключа сервер отвечает `400 idempotency key is required`. Это штатный mutation contract, а не сбой сервера. `POST /v1/clients/{id}/approve` требует `Idempotency-Key` наравне с остальными mutations.
+Все Client mutations требуют idempotency key: в заголовке `Idempotency-Key` или в поле body `idempotency_key`. Если заданы оба значения, они должны совпадать, иначе сервер отвечает `400 idempotency key in body and header must match`. Без ключа сервер отвечает `400 idempotency key is required`. Это штатный mutation contract. `POST /v1/clients/{id}/approve` также требует `Idempotency-Key`.
+
+Пример pairing read-only Client с базовыми scopes. Добавляйте `approval:read` только если Client показывает approval summaries:
 
 ```sh
 source ~/.local/share/secretary/environment
+export SECRETARY_BOOTSTRAP_TOKEN
 API=http://127.0.0.1:8081
 
-# 1. Pair. Явный scope list обязателен: omitted, null и [] дают 400
-pair=$(curl -fsS -X POST -H 'Content-Type: application/json' \
-  -d "{\"bootstrap_token\":\"$SECRETARY_BOOTSTRAP_TOKEN\",\"device_id\":\"mba-viewer\",\"display_name\":\"Pi Secretary extension\",\"platform\":\"pi\",\"scopes\":[\"conversation:read\",\"conversation:write\",\"worker:read\",\"worker:message\",\"approval:read\"],\"idempotency_key\":\"mba-secretary-pair\"}" \
-  "$API/v1/clients/pair")
+pair=$(python3 -c 'import json,os; print(json.dumps({"bootstrap_token":os.environ["SECRETARY_BOOTSTRAP_TOKEN"],"device_id":"trusted-client","display_name":"Trusted Client","platform":"example","scopes":["conversation:read","worker:read"],"idempotency_key":"client-pair-unique-key"}))' |
+  curl -fsS -X POST -H 'Content-Type: application/json' --data-binary @- "$API/v1/clients/pair")
 client_id=$(printf '%s' "$pair" | python3 -c 'import json,sys; print(json.load(sys.stdin)["client_id"])')
-# pending_token из ответа не сохранять: он держится в памяти Pi до approve/redeem
+unset pair
 
-# 2. Owner web session
-curl -fsS -c /tmp/owner.jar -X POST -H 'Content-Type: application/json' \
-  -d "{\"bootstrap_token\":\"$SECRETARY_BOOTSTRAP_TOKEN\"}" "$API/v1/web/session"
+python3 -c 'import json,os; print(json.dumps({"bootstrap_token":os.environ["SECRETARY_BOOTSTRAP_TOKEN"]}))' |
+  curl -fsS -c /tmp/owner.jar -X POST -H 'Content-Type: application/json' --data-binary @- "$API/v1/web/session" -o /dev/null
 
-# 3. Approve. Idempotency-Key обязателен, без него 400 idempotency key is required.
-# Ответ уходит в shell-переменную, credential из неё извлекается без stdout:
-# в scrollback и в журнал команд он не попадает.
-approve=$(curl -fsS -b /tmp/owner.jar -X POST -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: mba-viewer-approve' -d '{}' \
-  "$API/v1/clients/$client_id/approve")
+# Credential остаётся в shell-переменной, команда не печатает тело ответа.
+approve=$(curl -fsS -b /tmp/owner.jar -X POST -H 'Idempotency-Key: client-approve-unique-key' \
+  -d '{}' "$API/v1/clients/$client_id/approve")
 credential=$(printf '%s' "$approve" | python3 -c 'import json,sys; print(json.load(sys.stdin)["credential"])')
-unset approve pair
+unset approve
 rm -f /tmp/owner.jar
 ```
 
-Credential живёт только в shell-переменной `credential`, в stdout не выводится. Передача на Air идёт приватным каналом (Tailscale SSH) пайпом, тоже без вывода в терминал. Файл на Air должен быть создан заранее через `install -m 0600` (см. `docs/pi-viewer-runbook.md`), тогда `cat >` перезапишет содержимое и сохранит режим `0600`:
+Передавайте `credential` только в защищённое хранилище конкретного Client. Не выводите его в терминал, не помещайте в аргументы запуска, logs, Conversation или Worker environment. Если Client требует дополнительные разрешения, явно добавьте только необходимые scopes после проверки их действия. `conversation:write` разрешает только `POST /v1/messages`; `worker:message` разрешает только `POST /v1/workers/{worker_ref}/message`. Не выдавайте `worker:write` вместо узких grants. Worker control, approval decisions, Node protocol и Client management остаются закрыты, если их отдельные scopes не были выданы явно.
+
+Owner отзывает Client отдельным mutation с уникальным idempotency key:
 
 ```sh
-# на Air (один раз, до передачи)
-mkdir -m 0700 -p ~/.config/secretary
-install -m 0600 /dev/null ~/.config/secretary/viewer-credential
-
-# на сервере: credential в переменной, stdout не используется
-printf '%s' "$credential" | ssh <air> 'cat > "$HOME/.config/secretary/viewer-credential"'
+python3 -c 'import json,os; print(json.dumps({"bootstrap_token":os.environ["SECRETARY_BOOTSTRAP_TOKEN"]}))' |
+  curl -fsS -c /tmp/owner.jar -X POST -H 'Content-Type: application/json' --data-binary @- "$API/v1/web/session" -o /dev/null
+curl -fsS -b /tmp/owner.jar -X POST -H 'Idempotency-Key: client-revoke-unique-key' \
+  -d '{}' "$API/v1/clients/$client_id/revoke" -o /dev/null
+rm -f /tmp/owner.jar
 unset credential
 ```
 
-После передачи переменная сбрасывается. `credential` не записывается в ledger, логи, документацию или вывод на Air.
-
-Transfer предполагает Tailscale SSH. Если capability выключена (`tailscale status --json | jq '.Self.CapMap.SSH'` пусто) и на Air не слушает порт 22, канала omarchy→Air нет. Тогда весь flow выполняется с Air, transfer не нужен:
-
-```sh
-# bootstrap в shell-переменную, в stdout не выводится
-bootstrap=$(ssh omarchy 'source ~/.local/share/secretary/environment && printf %s "$SECRETARY_BOOTSTRAP_TOKEN"')
-# pair, owner session и approve — на https://<host>.<tailnet>.ts.net/v1 (curl с --noproxy '*', если задан прокси),
-# capture в переменные так же, как выше
-# запись на Air без вывода в терминал:
-mkdir -m 0700 -p ~/.config/secretary
-install -m 0600 /dev/null ~/.config/secretary/viewer-credential
-printf '%s' "$credential" > ~/.config/secretary/viewer-credential
-unset credential bootstrap
-```
-
-Запись в уже созданный install'ом файл сохраняет режим `0600`.
-
-Revoke выполняет owner и тоже требует idempotency key:
-
-```sh
-curl -fsS -c /tmp/owner.jar -X POST -H 'Content-Type: application/json' \
-  -d "{\"bootstrap_token\":\"$SECRETARY_BOOTSTRAP_TOKEN\"}" "$API/v1/web/session"
-curl -fsS -b /tmp/owner.jar -X POST -H 'Content-Type: application/json' \
-  -H 'Idempotency-Key: mba-viewer-revoke' -d '{}' \
-  "$API/v1/clients/$client_id/revoke"
-rm -f /tmp/owner.jar
-```
-
-После revoke активные streams закрываются (`1008 Client revoked`), новые HTTP и WS запросы получают `401`, повторное подключение требует нового pairing. Для миграции от прежнего read-only Client сначала выполните revoke, затем повторите pairing выше с новым idempotency key и одобрите Client. Не выдавайте `worker:write`: `worker:message` разрешает только POST `/v1/workers/{worker_ref}/message`; `conversation:write` разрешает только POST `/v1/messages`. Worker control, approval decisions, Node и Client management остаются закрыты. Air-side flow: `docs/pi-viewer-runbook.md`.
+После revoke активные streams закрываются кодом `1008 Client revoked`, новые HTTP и WebSocket запросы получают `401`, а reconnect требует нового pairing. Удалите отозванный credential из хранилища Client и при необходимости повторите pairing с новым idempotency key и узким явным списком scopes.
 
 ## Backup
 
@@ -233,7 +202,7 @@ curl -fsS https://<machine>.<tailnet>.ts.net/v1/health          # через Tai
 ```sh
 tailscale status                                  # пиринг, IP и активность
 tailscale serve status                            # HTTPS proxy должен вести на 127.0.0.1:8081
-tailscale ping --timeout=8s <viewer-host>         # до MacBook Air
+tailscale ping --timeout=8s <client-host>         # до доверенного Client устройства
 curl -fsS https://<host>.<tailnet>.ts.net/v1/health
 ```
 
@@ -243,7 +212,7 @@ curl -fsS https://<host>.<tailnet>.ts.net/v1/health
 tailscale serve --bg http://127.0.0.1:8081
 ```
 
-ACL в админ-консоли Tailscale должен разрешать owner-устройствам доступ к HTTPS-порту (см. Topology). Viewer-машина должна быть в том же tailnet и видима по `tailscale status`.
+ACL в админ-консоли Tailscale должен разрешать owner-устройствам доступ к HTTPS-порту (см. Topology). Client device должен быть в том же tailnet и виден в `tailscale status`.
 
 ## Restart и восстановление
 
@@ -253,18 +222,18 @@ ACL в админ-консоли Tailscale должен разрешать owner
 
 ## Negative surface
 
-Автотесты фиксируют, что read-only (Pi) credential получает отказ вне read surface:
+Автотесты фиксируют, что read-only Client credential получает отказ вне разрешённой read surface:
 
 ```sh
 go test ./internal/webapi ./cmd/secretaryd
 ```
 
-Покрыто: `/v1/nodes/connect` (Node protocol), `/v1/internal/secretary/tools/call`, `/v1/telegram/pairing`, `/v1/control/*`, `/v1/clients/*` с `client:manage` и все write routes. `GET /v1/bootstrap` остаётся доступен по `conversation:read` и в negative tests не входит (см. `docs/pi-viewer.md`).
+Покрыто: `/v1/nodes/connect` (Node protocol), `/v1/internal/secretary/tools/call`, `/v1/telegram/pairing`, `/v1/control/*`, `/v1/clients/*` с `client:manage` и все write routes. `GET /v1/bootstrap` остаётся доступен по `conversation:read` и в negative tests не входит.
 
 ## Ручные проверки acceptance (после reboot и на реальном железе)
 
 1. Reboot сервера без входа пользователя (linger включён): `systemctl --user is-active secretaryd.service secretary-node.service` показывает `active`.
-2. `curl -fsS https://<machine>.<tailnet>.ts.net/v1/health` с MacBook Air возвращает `{"status":"ok"}`.
+2. `curl -fsS https://<machine>.<tailnet>.ts.net/v1/health` с доверенного устройства возвращает `{"status":"ok"}`.
 3. Реальный fx HarnessInstance становится ready после restart: `sex doctor` без проблем.
 4. Restore-check на копии свежего бэкапа возвращает `ok` и ненулевые счётчики.
 

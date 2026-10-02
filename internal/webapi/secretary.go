@@ -122,20 +122,20 @@ func (s *Server) secretaryWebsocket(w http.ResponseWriter, r *http.Request) {
 	for {
 		events, readErr := s.store.SecretaryEvents(streamContext, turnID, after, 500)
 		if readErr != nil {
+			closeRevokedStream(connection, stream)
 			return
 		}
 		for _, event := range events {
 			event = sanitizePublicEvent(event)
 			if err := connection.Write(streamContext, websocket.MessageText, mustJSON(event)); err != nil {
+				closeRevokedStream(connection, stream)
 				return
 			}
 			after = event.Seq
 		}
 		select {
 		case <-streamContext.Done():
-			if stream != nil && stream.revoked.Load() {
-				_ = connection.Close(websocket.StatusPolicyViolation, "Client revoked")
-			}
+			closeRevokedStream(connection, stream)
 			return
 		case <-ticker.C:
 		}

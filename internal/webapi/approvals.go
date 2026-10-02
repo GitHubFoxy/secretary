@@ -11,7 +11,7 @@ import (
 	"github.com/beruseruko/secretary/internal/ctl"
 )
 
-// publicApprovalDTO is the allowlisted Pi viewer shape. The raw
+// publicApprovalDTO is the allowlisted Client response shape. The raw
 // core.Approval carries node, project, attempt and audit identifiers plus the
 // owner response, none of which cross the public Client API boundary.
 type publicApprovalDTO struct {

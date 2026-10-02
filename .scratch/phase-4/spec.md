@@ -143,7 +143,7 @@ Client разговаривает с Secretary. Node запускает Worker �
 
 ### Client
 
-Доверенный пользовательский интерфейс: Web, Telegram adapter, Pi client или CLI. Client отправляет сообщения, показывает Conversation и вызывает разрешённые действия.
+Доверенный пользовательский интерфейс: Web, Telegram adapter или другой paired Client. Client отправляет сообщения, показывает Conversation и вызывает только разрешённые действия.
 
 ### Execution Node
 
@@ -191,7 +191,7 @@ Durable запрос разрешения, который идёт от Worker �
 
 ```text
                          ┌────────────────────┐
- Web / Pi / Telegram ───▶│    Secretary       │
+ Web / Clients / Telegram ─▶│    Secretary       │
                          │  server + identity │
                          └─────────┬──────────┘
                                    │ outbound Node protocol
@@ -270,13 +270,7 @@ MVP должен включать:
 - private pairing для Clients и Nodes;
 - acceptance flow с двумя машинами.
 
-### 7.2. Pi Client
-
-Pi Client входит в целевую поверхность Phase 4, но подключается после стабилизации общего Client API. Он не должен требовать отдельного server-side состояния или нового domain model.
-
-Сохранённый в `phase-1/` Pi snapshot является базой для Client integration, а не заменой Server/Node contract.
-
-### 7.3. Не входит в MVP
+### 7.2. Не входит в MVP
 
 - SaaS account system, billing и hosted provisioning;
 - несколько владельцев, team accounts и multi-Secretary;
@@ -309,11 +303,10 @@ Pi Client входит в целевую поверхность Phase 4, но п
 11. Claude Code, Codex и `fx` обязательны для MVP acceptance. OpenCode сохраняется, но не заменяет Claude Code.
 12. Telegram входит в первый product MVP.
 13. Для Telegram General chat является Secretary, а Topic является Worker.
-14. Pi Client подключается после стабилизации core Client API.
-15. Approval приходит от Worker/harness через Node и server. Secretary не вызывает `request_approval` для собственных действий.
-16. Secretary обрабатывает один turn за раз. Входящие сообщения во время его работы сохраняются в порядке поступления и ждут очереди; Workers при этом работают параллельно.
-17. Phase 4 deployment является self-hosted/private-network-first. Hosted service откладывается.
-18. Команда `sex` и команда `sex setup` сохраняются как текущий исторический CLI contract.
+14. Approval приходит от Worker/harness через Node и server. Secretary не вызывает `request_approval` для собственных действий.
+15. Secretary обрабатывает один turn за раз. Входящие сообщения во время его работы сохраняются в порядке поступления и ждут очереди; Workers при этом работают параллельно.
+16. Phase 4 deployment является self-hosted/private-network-first. Hosted service откладывается.
+17. Команда `sex` и команда `sex setup` сохраняются как текущий исторический CLI contract.
 
 ## 9. Secretary context reconstruction
 
@@ -817,25 +810,25 @@ Telegram подключается из Web через одноразовый cod
 - отдельный Topic для каждого Worker; сообщения внутри Topic являются follow-up этому Worker;
 - важные events и terminal result Worker публикуются и в General, и в соответствующем Worker Topic, это намеренное зеркало по контракту;
 - activity stream фильтруется до удобного текста;
-- rich tool cards остаются в Web и Pi;
+- rich tool cards остаются в Web UI; paired Clients получают только разрешённые API данные;
 - Secretary text deltas и tool events агрегируются и throttle-ятся, а не создают отдельное Telegram message на каждый event;
 - Worker Topic получает compact status и readable activity без raw event spam;
 - Approval, failure, completion и offline Node не теряются;
 - follow-up внутри Worker Topic направляется тому же Worker.
 
-### 14.5. Pi Client
+### 14.5. Client API and observers
 
-Pi подключается как Client, а не как Node.
+Paired Clients используют общий server API, а не Node protocol или отдельную domain model.
 
 Требования:
 
-- browser pairing выдаёт Client credential;
-- Pi не получает Node token;
-- Pi видит одну Personal Conversation;
-- Worker viewer открывается по `worker_ref`;
-- activity, message, cancel и Approval используют server state;
-- reconnect возвращает выбранный Worker без повторного запуска;
-- extensions Pi остаются presentation/client capabilities, а не новым Secretary core.
+- owner-approved pairing выдаёт отдельный Client credential с явными scopes;
+- Client не получает Node token;
+- Client видит Personal Conversation и Workers, разрешённые его scopes;
+- Worker observer адресуется через `worker_ref`;
+- activity, message, cancel и Approval используют server state и соответствующие узкие scopes;
+- reconnect и replay восстанавливают server state без повторного запуска Worker или дублирования событий;
+- Client presentation остаётся вне Secretary core.
 
 ## 15. Approval and execution policy
 
@@ -848,7 +841,7 @@ Execution Node
       ↓
 Secretary server
       ↓
-Web / Telegram / Pi Clients
+Web / Telegram adapter / paired Clients
 ```
 
 Ответ владельца идёт обратно по цепочке `Client → Secretary server → Node.respond_worker → Worker/harness`. Approval и `needs_input` используют один typed response contract.
@@ -871,7 +864,8 @@ Secretary сам не вызывает `request_approval` для своих де
 
 - Client credentials, Node credentials, Secretary capabilities и channel tokens разделены;
 - токены не попадают в Profiles, Worker envelope, Conversation или activity;
-- Node token не используется Pi или Telegram;
+- credential-authenticated Client endpoints используют allowlisted DTO, а не raw domain structs; ответы исключают credentials, native session IDs, внутреннюю topology, policy/context snapshots, diagnostics, raw ACP, tool arguments/output и скрытые рассуждения;
+- Node token не выдаётся paired Clients и не используется Telegram;
 - raw logs и diagnostic export редактируют secrets;
 - revoked Client больше не может читать или менять state;
 - revoked Node больше не может принимать Dispatch.
@@ -1267,8 +1261,7 @@ External Profiles остаются Markdown files. Profile reload атомаре
 10. Новые records `clients`, `nodes`, `projects`, `harness_instances`, `approvals` и `deliveries` создаются миграцией.
 11. Перед миграцией `secretary.db` автоматически архивируется.
 12. Невалидная новая конфигурация не заменяет активный snapshot.
-13. `phase-1/` остаётся сохранённым Pi source snapshot и не включается автоматически в Go build.
-14. Команда `sex setup` сохраняется без переименования.
+13. Команда `sex setup` сохраняется без переименования.
 
 ## 23. Security boundary
 
@@ -1281,13 +1274,14 @@ Phase 4 phone access и remote Nodes увеличивают поверхност
 - каждый Client проходит pairing и имеет отдельный revoke;
 - каждый Node проходит отдельное pairing и имеет отдельный revoke;
 - Secretary capability не используется внешним Client;
-- Node token не используется Pi или Telegram;
+- Node token не выдаётся paired Clients и не используется Telegram;
 - channel bot token не попадает в Worker environment;
-- Project path и workspace проверяются Node policy;
+- Project path и workspace проверяются Node policy; ACP-процесс запускается с cwd ровно в mapped workspace, без подмены на process default или временный каталог;
 - full access явно показывается при setup и в Settings;
 - interactive Approval доступен для policy-restricted Nodes;
 - raw logs и diagnostic export редактируют secrets;
-- server не принимает unauthenticated control requests.
+- server не принимает unauthenticated control requests;
+- Client scopes выдаются явно, а WebSocket authentication проверяется до upgrade и при reconnect; revoke закрывает активные streams и запрещает новое подключение.
 
 Sandbox и multi-user isolation остаются будущими security boundaries. В Phase 4 trusted full-access Node считается полностью доверенным компьютером владельца.
 
@@ -1334,8 +1328,6 @@ Phase 4 считается готовой после прохождения сл
 37. `go test ./...`, `go test -race ./...`, `go vet ./...` и frontend checks проходят.
 38. Реальные acceptance tests выполняются для `fx`, Claude Code и Codex. OpenCode проверяется отдельно, если заявлен установленным compatibility target.
 
-Pi Client считается принятым после прохождения общего Client API, pairing, Conversation replay, Worker observe, message, cancel и Approval flow.
-
 ## 25. Product language
 
 Пользовательское описание:
@@ -1373,7 +1365,7 @@ Pi Client считается принятым после прохождения 
 - Node `respond_worker`, durable event outbox и command dedupe;
 - обязательные MVP harnesses: `fx`, Claude Code и Codex;
 - Web и Telegram MVP;
-- Pi Client после стабилизации общего API;
+- общий API для paired Clients с explicit scopes, replay и revoke;
 - Projects и простой `user.md`;
 - Worker-originated Approval flow;
 - delivery, idempotency и recovery semantics;

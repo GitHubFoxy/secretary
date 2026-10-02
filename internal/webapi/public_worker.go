@@ -94,8 +94,8 @@ func (s *Server) publicWorkerDetails(ctx context.Context, conversationID string,
 	return public, nil
 }
 
-// publicWorkerStrictDTO is the Pi credential shape: worker identity, status
-// and results without Node topology. Owner web sessions keep publicWorkerDTO.
+// publicWorkerStrictDTO is the paired Client credential shape: worker identity,
+// status and results without Node topology. Owner web sessions keep publicWorkerDTO.
 type publicWorkerStrictDTO struct {
 	ID                string                 `json:"id"`
 	WorkerRef         string                 `json:"worker_ref"`

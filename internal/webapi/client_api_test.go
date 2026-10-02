@@ -53,9 +53,9 @@ func TestClientPairingRequiresExplicitScopes(t *testing.T) {
 			t.Fatalf("%s scopes status=%d body=%#v, want %d", payload.name, response.status, response.body, payload.status)
 		}
 	}
-	viewer := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"scope-viewer","display_name":"Viewer","platform":"pi","scopes":["conversation:read","worker:read","approval:read"],"idempotency_key":"scope-viewer"}`)
-	if viewer.status != http.StatusCreated || viewer.body["client_id"] == nil || viewer.body["pending_token"] == nil {
-		t.Fatalf("explicit viewer scopes status=%d body=%#v, want 201", viewer.status, viewer.body)
+	readOnly := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"scope-read-only","display_name":"Read-only Client","platform":"test","scopes":["conversation:read","worker:read","approval:read"],"idempotency_key":"scope-read-only"}`)
+	if readOnly.status != http.StatusCreated || readOnly.body["client_id"] == nil || readOnly.body["pending_token"] == nil {
+		t.Fatalf("explicit read-only scopes status=%d body=%#v, want 201", readOnly.status, readOnly.body)
 	}
 }
 
@@ -72,7 +72,7 @@ func TestClientPairingScopesCredentialIsolationAndRevoke(t *testing.T) {
 	server := httptest.NewServer(api.Handler())
 	defer server.Close()
 
-	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"pi-1","display_name":"Pi","platform":"pi","scopes":["conversation:read"]}`)
+	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"client-1","display_name":"Client","platform":"test","scopes":["conversation:read"]}`)
 	if pair.status != http.StatusCreated || pair.body["status"] != "pending" || pair.body["client_id"] == nil {
 		t.Fatalf("pair=%d %#v", pair.status, pair.body)
 	}
@@ -226,9 +226,9 @@ func TestRevokeClientTerminatesAlreadyConnectedConversationStream(t *testing.T) 
 	}
 }
 
-func pairApprovedViewerCredential(t *testing.T, server *httptest.Server, owner *http.Client, device string) (string, string) {
+func pairApprovedReadOnlyClientCredential(t *testing.T, server *httptest.Server, owner *http.Client, device string) (string, string) {
 	t.Helper()
-	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"`+device+`","display_name":"Viewer","platform":"pi","scopes":["conversation:read","worker:read","approval:read"]}`)
+	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair", `{"bootstrap_token":"bootstrap","device_id":"`+device+`","display_name":"Read-only Client","platform":"test","scopes":["conversation:read","worker:read","approval:read"]}`)
 	if pair.status != http.StatusCreated || pair.body["client_id"] == nil {
 		t.Fatalf("pair=%d %#v", pair.status, pair.body)
 	}
@@ -306,7 +306,7 @@ func TestRevokeClientTerminatesWorkerActivityStream(t *testing.T) {
 	ownerJar, _ := cookiejar.New(nil)
 	ownerClient := &http.Client{Jar: ownerJar}
 	login(t, ownerClient, server.URL)
-	clientID, credential := pairApprovedViewerCredential(t, server, ownerClient, "revoke-activity-device")
+	clientID, credential := pairApprovedReadOnlyClientCredential(t, server, ownerClient, "revoke-activity-device")
 	connection := dialClientStream(t, server.URL+"/v1/workers/revoke-activity/activity/ws?after_seq=0", credential)
 	defer connection.CloseNow()
 	if revoke := postJSON(t, ownerClient, server.URL+"/v1/clients/"+clientID+"/revoke", `{}`); revoke.status != http.StatusOK {
@@ -343,7 +343,7 @@ func TestRevokeClientTerminatesSecretaryTurnStream(t *testing.T) {
 	ownerJar, _ := cookiejar.New(nil)
 	ownerClient := &http.Client{Jar: ownerJar}
 	login(t, ownerClient, server.URL)
-	clientID, credential := pairApprovedViewerCredential(t, server, ownerClient, "revoke-secretary-device")
+	clientID, credential := pairApprovedReadOnlyClientCredential(t, server, ownerClient, "revoke-secretary-device")
 	connection := dialClientStream(t, server.URL+"/v1/secretary/ws?turn_id="+turn.ID+"&after_seq=0", credential)
 	defer connection.CloseNow()
 	if revoke := postJSON(t, ownerClient, server.URL+"/v1/clients/"+clientID+"/revoke", `{}`); revoke.status != http.StatusOK {

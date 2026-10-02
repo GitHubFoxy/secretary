@@ -1,0 +1,52 @@
+{
+  "repository": "GitHubFoxy/secretary",
+  "captured_at": "2026-10-02T12:16:34.790131+00:00",
+  "scope": "open issues; closed issue #4 is not migrated or deleted",
+  "issues": [
+    {
+      "github_number": 1,
+      "github_url": "https://github.com/GitHubFoxy/secretary/issues/1",
+      "github_node_id": "I_kwDOUWHcTs8AAAABUk-b_w",
+      "updated_at": "2026-10-02T10:05:59Z",
+      "local_ticket": ".scratch/phase-4/issues/24-self-update-supervisor.md",
+      "local_status": "needs-triage",
+      "body_sha256": "8c40de45394bff3913b32ff477647cad3262e281635ef3422b03b9a0fd4c58f2",
+      "comments_count": 0,
+      "snapshots_sha256": {
+        "issue-1.json": "756998eb39ae85841252ad466aac92c258881dee49a994e603ad40c01887c7ba",
+        "comments-1.json": "cf1cbb66a638b4860a516671fb74850e6ccf787fe6c4c8d29e9c04efe880bd05",
+        "timeline-1.json": "9f296d6aa247dad0c91eb668ce552f756fd59d3c47cd213de99bbd22047bcbae"
+      }
+    },
+    {
+      "github_number": 2,
+      "github_url": "https://github.com/GitHubFoxy/secretary/issues/2",
+      "github_node_id": "I_kwDOUWHcTs8AAAABUlBHIg",
+      "updated_at": "2026-10-02T10:10:03Z",
+      "local_ticket": ".scratch/phase-4/issues/25-prompt-driven-e2e-acceptance-suite.md",
+      "local_status": "needs-triage",
+      "body_sha256": "4bbb72b1489e8199edfdf58b4bebafbf149e79d18fcbde69a91fa77275ede54b",
+      "comments_count": 0,
+      "snapshots_sha256": {
+        "issue-2.json": "f1469fe41ad7c76e8672513041c7c4964711a066ba0732d7ae0a3760a95a1d57",
+        "comments-2.json": "cf1cbb66a638b4860a516671fb74850e6ccf787fe6c4c8d29e9c04efe880bd05",
+        "timeline-2.json": "7d278221bab8762d41fb232f1f8efbee31b56eebee4de46528eb4130a6659615"
+      }
+    },
+    {
+      "github_number": 3,
+      "github_url": "https://github.com/GitHubFoxy/secretary/issues/3",
+      "github_node_id": "I_kwDOUWHcTs8AAAABUlDuhQ",
+      "updated_at": "2026-10-02T10:14:03Z",
+      "local_ticket": ".scratch/phase-4/issues/26-full-product-user-journey.md",
+      "local_status": "needs-triage",
+      "body_sha256": "639feda569f0ab8fb53456ed842b0fa56682924432f7e9b47574220d53bc57f0",
+      "comments_count": 0,
+      "snapshots_sha256": {
+        "issue-3.json": "63776d894eaa250ffaf4c8224cbf3b40fa567bdbfd647a02f23d8371f7cedee9",
+        "comments-3.json": "cf1cbb66a638b4860a516671fb74850e6ccf787fe6c4c8d29e9c04efe880bd05",
+        "timeline-3.json": "cf1cbb66a638b4860a516671fb74850e6ccf787fe6c4c8d29e9c04efe880bd05"
+      }
+    }
+  ]
+}

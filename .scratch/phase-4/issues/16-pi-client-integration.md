@@ -1,10 +1,13 @@
-# 16 Pi Client integration
+# 16 Pi Client integration (historical)
 
 Type: task
 Status: resolved
 Blocked by: 09
+Related: [28: удаление поддержки Pi viewer](28-remove-pi-viewer-extension.md)
 
-## Work
+Исторический статус: поддержка Pi Client/viewer снята в ticket 28. Этот файл описывает прежнюю реализацию. Его scope и acceptance results являются историческим свидетельством, а не текущими обязательствами по поддержке или планом реализации.
+
+## Former scope
 
 Подключить Pi как Client после стабилизации общего Client API. Pi не становится Node, Worker harness или новой domain entity.
 
@@ -15,16 +18,18 @@ Blocked by: 09
 - Использовать server state для reconnect и не запускать новый Worker при восстановлении клиента.
 - Сохранить Pi extensions presentation/client capabilities, не добавляя server-side child tree.
 
-## Acceptance
+## Historical acceptance results
 
-- Pi проходит общий Client pairing, Conversation replay и live subscription contract.
-- Pi видит тот же Worker и Result, что Web и Telegram.
-- Reconnect Pi не создаёт duplicate message, Turn, Attempt или Result.
-- Pi не получает Node token и не может вызвать Node protocol напрямую.
-- Worker activity и Approval flow работают через существующие server endpoints.
-- Pi integration не меняет Worker-first domain model.
+Эти критерии относились только к прежней реализации и больше не являются действующими требованиями.
 
-## Answer
+- Pi проходил общий Client pairing, Conversation replay и live subscription contract.
+- Pi видел тот же Worker и Result, что Web и Telegram.
+- Reconnect Pi не создавал duplicate message, Turn, Attempt или Result.
+- Pi не получал Node token и не мог вызвать Node protocol напрямую.
+- Worker activity и Approval flow работали через существующие server endpoints.
+- Pi integration не меняла Worker-first domain model.
+
+## Historical implementation evidence
 
 Реализован узкий TypeScript adapter `phase-1/packages/coding-agent/src/secretary/` поверх Go `/v1/*` API. Pairing проходит через pending handoff, owner approval и one-time redeem отдельного Client credential. Conversation, Secretary turn stream и Worker activity используют ordered replay с cursor, WebSocket live delivery, deduplication и reconnect без spawn. Добавлены Worker message/respond, cancel, close, Approval approve/deny, user, Projects и Nodes read APIs. Production Secretary MCP теперь проксирует Worker tools через server-owned runtime endpoint, поэтому отдельный MCP процесс не теряет Node connections и dispatch state. `secretaryd` выбирает bundled `secretary-mcp` рядом с daemon или явный `SECRETARY_MCP_COMMAND`, а web listener bind завершается до запуска persistent Secretary.
 

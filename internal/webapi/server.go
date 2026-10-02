@@ -257,7 +257,7 @@ func (s *Server) currentWebSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"conversation_id": conversation.ID})
 }
 
-// conversationPage is the bounded Pi snapshot envelope. Cursors the client
+// conversationPage is the bounded Client snapshot envelope. Cursors the client
 // did not ask for stay null; an empty page carries no cursors at all.
 type conversationPage struct {
 	Entries       []core.ConversationEntry `json:"entries"`
@@ -454,6 +454,7 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 	entries, err := s.store.EntriesAfter(streamContext, conversation.ID, after)
 	if err != nil {
 		s.mu.Unlock()
+		closeRevokedStream(conn, stream)
 		return
 	}
 	sub := &subscription{conversationID: conversation.ID, clientID: clientID, entries: make(chan core.ConversationEntry, len(entries)+32), cancel: cancel, cursor: after, pending: make(map[int64]core.ConversationEntry)}
@@ -482,13 +483,14 @@ func (s *Server) websocket(w http.ResponseWriter, r *http.Request) {
 			}
 			entry = sanitizePublicConversationEntry(entry)
 			if err := conn.Write(streamContext, websocket.MessageText, mustJSON(entry)); err != nil {
+				closeRevokedStream(conn, stream)
 				return
 			}
 		case <-streamContext.Done():
 			if sub.slow {
 				_ = conn.Close(websocket.StatusPolicyViolation, "subscriber too slow; reconnect with after_seq")
-			} else if stream != nil && stream.revoked.Load() {
-				_ = conn.Close(websocket.StatusPolicyViolation, "Client revoked")
+			} else {
+				closeRevokedStream(conn, stream)
 			}
 			return
 		}
@@ -553,6 +555,15 @@ func (s *Server) unregisterStream(clientID string, stream *activeStream) {
 			delete(s.streams, clientID)
 		}
 	}
+}
+
+// closeRevokedStream preserves the revoke close code when cancellation races a store read or event write.
+func closeRevokedStream(connection *websocket.Conn, stream *activeStream) bool {
+	if stream == nil || !stream.revoked.Load() {
+		return false
+	}
+	_ = connection.Close(websocket.StatusPolicyViolation, "Client revoked")
+	return true
 }
 
 func (s *Server) cancelClientStreams(clientID string) {
@@ -690,7 +701,7 @@ func parseAfter(r *http.Request) (int64, error) {
 }
 
 const (
-	// defaultSnapshotLimit bounds every Pi snapshot list. maximumSnapshotLimit
+	// defaultSnapshotLimit bounds every Client snapshot list. maximumSnapshotLimit
 	// caps a single response; larger limits clamp instead of failing.
 	defaultSnapshotLimit = 100
 	maximumSnapshotLimit = 500

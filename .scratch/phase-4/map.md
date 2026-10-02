@@ -22,7 +22,7 @@
 - Profiles остаются внешними Markdown files. Product deployment self-hosted/private-network-first.
 - Control Room доступен только при `--debug`.
 - Telegram входит в MVP: General chat принадлежит Secretary, отдельный Topic соответствует каждому Worker. Secretary stream и Worker activity агрегируются, а не превращаются в raw message spam.
-- Pi Client подключается после стабилизации общего Client API и не добавляет новую domain entity.
+- Paired Clients используют общий API с explicit scopes и не добавляют отдельную domain entity.
 
 ## Decisions so far
 
@@ -65,7 +65,25 @@
 
 15. [14: Phase 3 migration](issues/14-phase3-migration.md)
 16. [15: Phase 4 acceptance gate](issues/15-phase4-acceptance-gate.md)
-17. [16: Pi Client integration](issues/16-pi-client-integration.md) идёт после 09 параллельно и не блокирует основной MVP gate.
+
+### Сквозная продуктовая проверка
+
+- [23: Чистая машина, установка, CLI и реальные harness adapters](issues/23-clean-machine-product-e2e-journey.md) задаёт один поэтапный E2E-прогон с агентами-исполнителями и независимыми проверками runner. Дополняет tickets 15, 25 и 26; требует фиксации installer/release contract и тестового provisioning.
+
+### Тикеты, перенесённые из GitHub
+
+Все перенесённые тикеты имеют статус `needs-triage`. Их исходные требования сохранены для сверки с текущим contract, а не автоматически добавлены в обязательный Phase 4 gate.
+
+- [24: Самообновление через supervisor](issues/24-self-update-supervisor.md), ранее GitHub #1.
+- [25: Prompt-driven E2E](issues/25-prompt-driven-e2e-acceptance-suite.md), ранее GitHub #2.
+- [26: Полный пользовательский путь](issues/26-full-product-user-journey.md), ранее GitHub #3.
+
+Оригинальные API snapshots, комментарии и timeline сохранены в [`github-import/`](github-import/).
+
+### Снятая поддержка Pi viewer
+
+- Ticket 16 ([Pi Client integration](issues/16-pi-client-integration.md)) оставлен только как историческая запись. Ticket 28 снял эту поддержку; его прежнее acceptance evidence не является текущим обязательством.
+- [28: Удаление Pi viewer и Secretary extension](issues/28-remove-pi-viewer-extension.md), `resolved`. Специализированные docs, Phase 5 gate и effort удалены; общие Client API и privacy coverage сохранены. Будущий Pi Worker harness из ticket 27 остаётся отдельной задачей.
 
 ## Fog
 

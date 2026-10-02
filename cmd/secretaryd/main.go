@@ -327,9 +327,8 @@ func main() {
 	}
 }
 
-// rootHandler keeps one loopback server for the whole product, matching the
-// Serve model in docs/pi-viewer.md: control routes stay debug-only, and every
-// other /v1 path reaches the API where credential checks live.
+// rootHandler keeps one loopback server for the whole product: control routes
+// stay debug-only, and every other /v1 path reaches the API where credential checks live.
 func rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler http.Handler, remoteNodes *node.ServerManager, debug bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if remoteNodes != nil {
@@ -370,10 +369,9 @@ func rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler htt
 	})
 }
 
-// validateListen enforces the supported topology from docs/pi-viewer.md:
-// secretaryd binds loopback only and remote access goes through the Tailscale
-// Serve proxy. Only literal loopback IPs are accepted, because a hostname such
-// as localhost can resolve off-loopback via /etc/hosts or DNS.
+// validateListen enforces the supported topology: secretaryd binds loopback
+// only and remote access goes through the Tailscale Serve proxy. Only literal
+// loopback IPs are accepted, because localhost can resolve off-loopback.
 func validateListen(addr string) error {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
 	if err != nil {

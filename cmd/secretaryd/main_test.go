@@ -223,7 +223,7 @@ func TestControlRoutesStayDebugOnly(t *testing.T) {
 // TestNodesConnectRequiresNodeReference pins only the gateway check: without a
 // valid ?node= parameter the protocol endpoint answers 400 before any
 // WebSocket upgrade or credential evaluation. It proves nothing about
-// credentials; TestNodesConnectRejectsRealViewerCapability covers that.
+// credentials; TestNodesConnectRejectsClientCredential covers that.
 func TestNodesConnectRequiresNodeReference(t *testing.T) {
 	ctx := context.Background()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "nodes-connect.db"))
@@ -247,20 +247,20 @@ func TestNodesConnectRequiresNodeReference(t *testing.T) {
 	}
 }
 
-// TestNodesConnectRejectsRealViewerCapability proves a real Pi viewer Client
-// credential cannot stand in for a Node capability on /v1/nodes/connect:
+// TestNodesConnectRejectsClientCredential proves a paired Client credential
+// cannot stand in for a Node capability on /v1/nodes/connect:
 //  1. a real Node is enrolled, so ?node= is valid and its record exists;
 //  2. a positive control completes the handshake with the enrolled Node
 //     credential, proving routing, query parameter, and record lookup all pass;
 //  3. the negative case reuses the same valid ?node=, a real WebSocket upgrade,
-//     and the viewer credential in HTTP Authorization, but signs the protocol
-//     handshake with the viewer secret instead of the Node capability.
+//     and the client credential in HTTP Authorization, but signs the protocol
+//     handshake with the client secret instead of the Node capability.
 //
 // The rejection must come from protocol authentication
 // (StatusPolicyViolation "node protocol: authentication failed"), not from the
 // missing-parameter 400. Note the protocol never reads the Authorization
-// header; carrying the viewer credential there must not grant access.
-func TestNodesConnectRejectsRealViewerCapability(t *testing.T) {
+// header; carrying the client credential there must not grant access.
+func TestNodesConnectRejectsClientCredential(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "nodes-connect.db"))
@@ -274,7 +274,7 @@ func TestNodesConnectRejectsRealViewerCapability(t *testing.T) {
 	}
 	provision := httptest.NewServer(api.Handler())
 	defer provision.Close()
-	credential := pairedViewerCredential(t, provision)
+	credential := pairedReadOnlyClientCredential(t, provision)
 
 	manager, err := node.NewServerManagerWithConfig(ctx, store, node.ServerConfig{
 		PairingTokens: []string{"pairing-token"}, AdminToken: "admin-token", ClientBootstrapToken: "bootstrap",
@@ -286,11 +286,11 @@ func TestNodesConnectRejectsRealViewerCapability(t *testing.T) {
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
-	identity, err := node.EnrollNode(ctx, server.Client(), server.URL, "pairing-token", "pi-review-node")
+	identity, err := node.EnrollNode(ctx, server.Client(), server.URL, "pairing-token", "client-review-node")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(identity.ConnectURL, "node=pi-review-node") {
+	if !strings.Contains(identity.ConnectURL, "node=client-review-node") {
 		t.Fatalf("ConnectURL=%q lacks the enrolled ?node= parameter", identity.ConnectURL)
 	}
 	inventory := core.HarnessInventorySnapshot{Node: identity.Node, ObservedAt: time.Now().UTC()}
@@ -313,20 +313,20 @@ func TestNodesConnectRejectsRealViewerCapability(t *testing.T) {
 	header.Set("Authorization", "Bearer "+credential)
 	connection, response, err := websocket.Dial(ctx, identity.ConnectURL, &websocket.DialOptions{HTTPHeader: header})
 	if err != nil {
-		t.Fatalf("WebSocket upgrade with valid ?node= and viewer Authorization failed: %v response=%v", err, response)
+		t.Fatalf("WebSocket upgrade with valid ?node= and client Authorization failed: %v response=%v", err, response)
 	}
 	defer connection.Close(websocket.StatusNormalClosure, "")
 
-	viewerAuth := node.NewAuthenticator([]byte(credential))
-	viewerHandshake := node.Handshake{
-		Node: identity.Node, ProtocolVersion: node.ProtocolVersion, Inventory: inventory, Nonce: "viewer-nonce",
+	clientAuth := node.NewAuthenticator([]byte(credential))
+	clientHandshake := node.Handshake{
+		Node: identity.Node, ProtocolVersion: node.ProtocolVersion, Inventory: inventory, Nonce: "client-nonce",
 	}
-	viewerHandshake.NonceSignature = viewerAuth.SignNonce(viewerHandshake.Node, viewerHandshake.Nonce)
-	payload, err := json.Marshal(viewerHandshake)
+	clientHandshake.NonceSignature = clientAuth.SignNonce(clientHandshake.Node, clientHandshake.Nonce)
+	payload, err := json.Marshal(clientHandshake)
 	if err != nil {
 		t.Fatal(err)
 	}
-	envelope, err := node.NewEnvelope(node.MessageHandshake, identity.Node, 0, 0, payload, viewerAuth)
+	envelope, err := node.NewEnvelope(node.MessageHandshake, identity.Node, 0, 0, payload, clientAuth)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,12 +335,12 @@ func TestNodesConnectRejectsRealViewerCapability(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := connection.Write(ctx, websocket.MessageText, encoded); err != nil {
-		t.Fatalf("send viewer-signed handshake: %v", err)
+		t.Fatalf("send client-signed handshake: %v", err)
 	}
 
 	_, _, err = connection.Read(ctx)
 	if err == nil {
-		t.Fatal("Node protocol accepted a handshake signed with the viewer credential")
+		t.Fatal("Node protocol accepted a handshake signed with the client credential")
 	}
 	var closeErr websocket.CloseError
 	if !errors.As(err, &closeErr) {
@@ -351,17 +351,17 @@ func TestNodesConnectRejectsRealViewerCapability(t *testing.T) {
 	}
 }
 
-// pairedViewerCredential mints the contract's Pi viewer credential: a Client
-// approved with exactly the three viewer scopes from docs/pi-viewer.md.
-func pairedViewerCredential(t *testing.T, server *httptest.Server) string {
+// pairedReadOnlyClientCredential mints a Client credential with exactly
+// conversation:read, worker:read, and approval:read.
+func pairedReadOnlyClientCredential(t *testing.T, server *httptest.Server) string {
 	t.Helper()
 	pairRequest, err := http.NewRequest(http.MethodPost, server.URL+"/v1/clients/pair", strings.NewReader(
-		`{"bootstrap_token":"bootstrap","device_id":"pi-review","display_name":"Pi","platform":"pi","scopes":["conversation:read","worker:read","approval:read"]}`))
+		`{"bootstrap_token":"bootstrap","device_id":"readonly-client","display_name":"Client","platform":"test","scopes":["conversation:read","worker:read","approval:read"]}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	pairRequest.Header.Set("Content-Type", "application/json")
-	pairRequest.Header.Set("Idempotency-Key", "test-pair-pi-review")
+	pairRequest.Header.Set("Idempotency-Key", "test-pair-readonly-client")
 	pairResponse, err := http.DefaultClient.Do(pairRequest)
 	if err != nil {
 		t.Fatal(err)
@@ -394,7 +394,7 @@ func pairedViewerCredential(t *testing.T, server *httptest.Server) string {
 		t.Fatal(err)
 	}
 	approveRequest.Header.Set("Content-Type", "application/json")
-	approveRequest.Header.Set("Idempotency-Key", "test-approve-pi-review")
+	approveRequest.Header.Set("Idempotency-Key", "test-approve-readonly-client")
 	approveResponse, err := owner.Do(approveRequest)
 	if err != nil {
 		t.Fatal(err)

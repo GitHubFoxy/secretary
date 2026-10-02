@@ -538,11 +538,13 @@ func (s *Server) workerActivityReplay(w http.ResponseWriter, r *http.Request, wo
 	for {
 		events, readErr := s.workerEventsWithContext(streamContext, workerRef, after)
 		if readErr != nil {
+			closeRevokedStream(connection, stream)
 			return
 		}
 		for _, event := range events {
 			event = sanitizePublicEvent(event)
 			if err := connection.Write(streamContext, websocket.MessageText, mustJSON(event)); err != nil {
+				closeRevokedStream(connection, stream)
 				return
 			}
 			after = event.Seq
@@ -762,10 +764,13 @@ func (s *Server) workerActivity(w http.ResponseWriter, r *http.Request, session 
 		select {
 		case activity, open := <-session.Activity():
 			if !open {
-				_ = connection.Close(websocket.StatusNormalClosure, "worker completed")
+				if !closeRevokedStream(connection, stream) {
+					_ = connection.Close(websocket.StatusNormalClosure, "worker completed")
+				}
 				return
 			}
 			if err := connection.Write(streamContext, websocket.MessageText, mustJSON(sanitizePublicJSON(activity))); err != nil {
+				closeRevokedStream(connection, stream)
 				return
 			}
 		case <-streamContext.Done():
