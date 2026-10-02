@@ -35,6 +35,7 @@
 - `sex` и `sex setup` сохраняются как исторический CLI contract.
 - [Ticket 01](issues/01-worker-first-core-state-and-migration-contract.md) закрепляет Worker-first core persistence в `internal/core`: новые Worker, Turn, AttemptOutcome и Result records отделены от legacy Task tables, а recovery и retry имеют явные terminal semantics.
 - [Ticket 06b](issues/06b-dispatch-resolver-and-binding.md) закрепляет immutable Worker binding транзакционным сравнением Project revision, Node state и observed inventory; replay `worker.create` обходит текущие Project и inventory.
+- [Ticket 17](issues/17-generate-worker-topic-titles.md) использует отдельный OpenCode v2 для названий Telegram Topics. Harness/model/effort и внешний `title-generation-prompt.md` задаются в `[telegram]`, не меняют Secretary/Worker profiles и имеют детерминированный fallback.
 
 ## Work order
 
@@ -65,6 +66,11 @@
 
 15. [14: Phase 3 migration](issues/14-phase3-migration.md)
 16. [15: Phase 4 acceptance gate](issues/15-phase4-acceptance-gate.md)
+
+### Telegram and Worker presentation follow-ups
+
+- [18: Configure the Worker Topic title model](issues/18-configure-topic-title-model.md), `resolved`. Секция `[telegram]` задаёт `title_model = "gpt-6-luna"` и `title_model_reasoning = "minimal"`; validation и defaults независимы от Secretary/Worker profiles.
+- [17: Generate readable Worker Topic titles](issues/17-generate-worker-topic-titles.md), `resolved`. Название получается из dispatched intent через OpenCode v2 `--standalone`; `title_harness` и `title_prompt` явно задаются в config. Внешний prompt поддерживает reload, failures/timeout дают 60-rune fallback. Go/race/vet/build и native OpenCode с локальным HTTP fixture проверены.
 
 ### Сквозная продуктовая проверка
 

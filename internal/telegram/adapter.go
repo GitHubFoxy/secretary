@@ -84,11 +84,13 @@ type ServerClient interface {
 }
 
 type Config struct {
-	StatePath     string
-	OwnerChatID   int64
-	PollInterval  time.Duration
-	FlushInterval time.Duration
-	BotUsername   string
+	StatePath      string
+	OwnerChatID    int64
+	PollInterval   time.Duration
+	FlushInterval  time.Duration
+	BotUsername    string
+	TitleGenerator func(context.Context, string) (string, error)
+	TitleTimeout   time.Duration
 }
 
 type Pairing struct {
@@ -107,6 +109,7 @@ type Event struct {
 	Source           string
 	WorkerRef        string
 	Title            string
+	TaskPrompt       string
 	Text             string
 	Tool             string
 	TerminalIdentity string
@@ -117,6 +120,7 @@ type TopicMapping struct {
 	WorkerRef        string    `json:"worker_ref"`
 	ChatID           int64     `json:"chat_id"`
 	ThreadID         int64     `json:"thread_id"`
+	Title            string    `json:"title,omitempty"`
 	PendingRequestID string    `json:"pending_request_id,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 }
@@ -193,6 +197,9 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 	}
 	if config.FlushInterval <= 0 {
 		config.FlushInterval = 2 * time.Second
+	}
+	if config.TitleTimeout <= 0 {
+		config.TitleTimeout = 5 * time.Second
 	}
 	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), now: func() time.Time { return time.Now().UTC() }}
 	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, Outbox: []OutgoingMessage{}}
@@ -726,7 +733,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		return nil
 	}
 	if event.Kind == "worker.created" {
-		if _, err := a.ensureTopic(ctx, event.WorkerRef, event.Title); err != nil {
+		if _, err := a.ensureTopic(ctx, event.WorkerRef, event.Title, event.TaskPrompt); err != nil {
 			return err
 		}
 		return nil
@@ -806,7 +813,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 	return nil
 }
 
-func (a *Adapter) ensureTopic(ctx context.Context, workerRef, title string) (TopicMapping, error) {
+func (a *Adapter) ensureTopic(ctx context.Context, workerRef, title string, prompts ...string) (TopicMapping, error) {
 	a.topicMu.Lock()
 	defer a.topicMu.Unlock()
 	a.mu.Lock()
@@ -819,11 +826,15 @@ func (a *Adapter) ensureTopic(ctx context.Context, workerRef, title string) (Top
 	if owner == 0 {
 		return TopicMapping{}, ErrUnauthorized
 	}
-	topic, err := a.transport.CreateForumTopic(ctx, owner, topicName(workerRef, title))
+	name := topicName(workerRef, title)
+	if len(prompts) > 0 && strings.TrimSpace(prompts[0]) != "" {
+		name = a.taskTopicTitle(ctx, prompts[0])
+	}
+	topic, err := a.transport.CreateForumTopic(ctx, owner, name)
 	if err != nil {
 		return TopicMapping{}, err
 	}
-	mapping := TopicMapping{WorkerRef: workerRef, ChatID: topic.ChatID, ThreadID: topic.ThreadID, CreatedAt: a.now()}
+	mapping := TopicMapping{WorkerRef: workerRef, ChatID: topic.ChatID, ThreadID: topic.ThreadID, Title: name, CreatedAt: a.now()}
 	a.mu.Lock()
 	if existing, ok := a.state.Topics[workerRef]; ok {
 		a.mu.Unlock()

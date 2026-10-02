@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beruseruko/secretary/internal/config"
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/telegram"
 	"github.com/beruseruko/secretary/internal/webapi"
@@ -72,7 +73,7 @@ func parseBoolEnv(name string) bool {
 	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
-func attachProductionTelegram(ctx context.Context, dataDir, listen string, store *core.Store, web *webapi.Server) (*telegram.Adapter, error) {
+func attachProductionTelegram(ctx context.Context, dataDir, listen string, store *core.Store, web *webapi.Server, profiles *config.Manager) (*telegram.Adapter, error) {
 	deployment, err := configuredTelegramDeployment()
 	if err != nil {
 		return nil, err
@@ -84,6 +85,16 @@ func attachProductionTelegram(ctx context.Context, dataDir, listen string, store
 	adapter, err := telegram.New(telegram.Config{
 		StatePath: filepath.Join(dataDir, "telegram", "state.json"), OwnerChatID: deployment.OwnerChatID,
 		PollInterval: deployment.PollInterval, FlushInterval: deployment.FlushInterval, BotUsername: deployment.BotUsername,
+		TitleGenerator: func(ctx context.Context, prompt string) (string, error) {
+			snapshot := profiles.Snapshot()
+			policy := snapshot.Config.Telegram
+			if policy.TitleHarness != "opencode" {
+				return "", errors.New("telegram: unsupported title harness")
+			}
+			return (telegram.OpenCodeTitleGenerator{
+				Model: policy.TitleModel, Reasoning: policy.TitleModelReasoning, Prompt: snapshot.TitlePrompt.Content,
+			}).Generate(ctx, prompt)
+		},
 	}, &telegram.BotAPITransport{BaseURL: deployment.BaseURL, BotToken: deployment.BotToken}, &telegram.HTTPServerClient{
 		BaseURL: "http://" + listen, Credential: deployment.ServerCredential,
 	})
@@ -171,6 +182,9 @@ func telegramEvent(event core.Event) telegram.Event {
 		return result
 	case event.Kind == "worker.spawned":
 		result.Kind = "worker.created"
+		// Intent является OriginalUserIntent в Node Dispatch envelope.
+		// Не передаём генератору весь payload с Project/Policy snapshots.
+		result.TaskPrompt, _ = payload["intent"].(string)
 	case event.Kind == "worker.started":
 		result.Kind = "worker.started"
 	case event.Kind == "attempt.activity":

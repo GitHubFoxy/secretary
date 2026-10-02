@@ -23,6 +23,13 @@ default_harness = "fx"
 preferred_harnesses = ["fx", "claude_code", "codex"]
 active_attempts = 4
 
+# Только названия Telegram Worker Topics; Secretary и Worker profiles не меняются.
+[telegram]
+title_harness = "opencode"
+title_prompt = "title-generation-prompt.md"
+title_model = "gpt-6-luna"
+# Допустимы none, minimal, low, medium, high, xhigh. Поддержка зависит от provider.
+title_model_reasoning = "minimal"
 
 [retention]
 raw_logs = "720h"

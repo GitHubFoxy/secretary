@@ -6,16 +6,26 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/pelletier/go-toml/v2"
 )
 
 var ErrInvalid = errors.New("config: invalid")
+
+const (
+	DefaultTitleHarness        = "opencode"
+	DefaultTitlePrompt         = "title-generation-prompt.md"
+	DefaultTitleModel          = "gpt-6-luna"
+	DefaultTitleModelReasoning = "minimal"
+)
 
 type Config struct {
 	Profiles     Profiles        `toml:"profiles" json:"profiles"`
@@ -25,6 +35,7 @@ type Config struct {
 	Runtime      Runtime         `toml:"runtime" json:"-"` // legacy compatibility
 	Secretary    SecretaryPolicy `toml:"secretary" json:"secretary"`
 	WorkerPolicy WorkerPolicy    `toml:"worker_policy" json:"worker_policy"`
+	Telegram     TelegramPolicy  `toml:"telegram" json:"telegram"`
 	Retention    Retention       `toml:"retention" json:"retention"`
 }
 
@@ -40,6 +51,14 @@ type WorkerPolicy struct {
 	FallbackModels     []string `toml:"fallback_models" json:"fallback_models"`
 	PreferredHarnesses []string `toml:"preferred_harnesses" json:"preferred_harnesses"`
 	ActiveAttempts     int      `toml:"active_attempts" json:"active_attempts"`
+}
+
+// TelegramPolicy задаёт только настройки генерации названий Worker Topics.
+type TelegramPolicy struct {
+	TitleHarness        string `toml:"title_harness" json:"title_harness"`
+	TitlePrompt         string `toml:"title_prompt" json:"title_prompt"`
+	TitleModel          string `toml:"title_model" json:"title_model"`
+	TitleModelReasoning string `toml:"title_model_reasoning" json:"title_model_reasoning"`
 }
 
 type Profiles struct {
@@ -80,10 +99,18 @@ func (r Retention) RawLogPolicy() (time.Duration, int64, bool, error) {
 }
 
 type Snapshot struct {
-	Version  string             `json:"version"`
-	Config   Config             `json:"config"`
-	Profiles map[string]Profile `json:"profiles"`
+	Version     string             `json:"version"`
+	Config      Config             `json:"config"`
+	Profiles    map[string]Profile `json:"profiles"`
+	TitlePrompt Prompt             `json:"title_prompt"`
 }
+
+type Prompt struct {
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	Hash    string `json:"hash"`
+}
+
 type Profile struct {
 	Name       string   `json:"name"`
 	Path       string   `json:"path"`
@@ -106,15 +133,30 @@ func Load(path string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read config %s: %w", path, err)
 	}
-	var c Config
+	c := Config{Telegram: TelegramPolicy{
+		TitleHarness: DefaultTitleHarness, TitlePrompt: DefaultTitlePrompt,
+		TitleModel: DefaultTitleModel, TitleModelReasoning: DefaultTitleModelReasoning,
+	}}
 	if err := toml.Unmarshal(data, &c); err != nil {
 		return Snapshot{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	return compile(filepath.Dir(path), data, c)
+	var explicit struct {
+		Telegram struct {
+			TitlePrompt *string `toml:"title_prompt"`
+		} `toml:"telegram"`
+	}
+	if err := toml.Unmarshal(data, &explicit); err != nil {
+		return Snapshot{}, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	return compile(filepath.Dir(path), data, c, explicit.Telegram.TitlePrompt == nil)
 }
 
-func compile(base string, raw []byte, c Config) (Snapshot, error) {
+func compile(base string, raw []byte, c Config, allowEmbeddedTitlePrompt bool) (Snapshot, error) {
 	if err := validateConfig(c); err != nil {
+		return Snapshot{}, err
+	}
+	titlePrompt, err := loadTitlePrompt(base, c.Telegram.TitlePrompt, allowEmbeddedTitlePrompt)
+	if err != nil {
 		return Snapshot{}, err
 	}
 	secretary := c.EffectiveSecretaryPolicy()
@@ -154,7 +196,29 @@ func compile(base string, raw []byte, c Config) (Snapshot, error) {
 		profile.Hash = digest(profile.Content, profile.Runtime, profile.Model, profile.Reasoning, strings.Join(profile.AllowTools, "\n"), skillDigest(skills))
 		profiles[name] = profile
 	}
-	return Snapshot{Version: digest(string(raw), profiles["secretary"].Hash, profiles["worker"].Hash, profiles["child_worker"].Hash), Config: c, Profiles: profiles}, nil
+	return Snapshot{Version: digest(string(raw), profiles["secretary"].Hash, profiles["worker"].Hash, profiles["child_worker"].Hash, titlePrompt.Hash), Config: c, Profiles: profiles, TitlePrompt: titlePrompt}, nil
+}
+
+func loadTitlePrompt(base, path string, allowEmbedded bool) (Prompt, error) {
+	resolved := path
+	if !filepath.IsAbs(resolved) {
+		resolved = filepath.Join(base, resolved)
+	}
+	file, err := os.Open(resolved)
+	var content []byte
+	if err == nil {
+		content, err = io.ReadAll(io.LimitReader(file, 64*1024+1))
+		_ = file.Close()
+	} else if errors.Is(err, os.ErrNotExist) && allowEmbedded && path == DefaultTitlePrompt {
+		content, err = defaults.ReadFile("defaults/" + DefaultTitlePrompt)
+	}
+	if err != nil {
+		return Prompt{}, fmt.Errorf("%w: telegram.title_prompt cannot be read", ErrInvalid)
+	}
+	if strings.TrimSpace(string(content)) == "" || len(content) > 64*1024 || !utf8.Valid(content) {
+		return Prompt{}, fmt.Errorf("%w: telegram.title_prompt must be non-empty UTF-8 and at most 64 KiB", ErrInvalid)
+	}
+	return Prompt{Path: resolved, Content: string(content), Hash: digest(string(content))}, nil
 }
 
 func (c Config) EffectiveSecretaryPolicy() SecretaryPolicy {
@@ -190,6 +254,36 @@ func validateHarness(field, value string) error {
 		return nil
 	default:
 		return fmt.Errorf("%w: %s must be opencode, codex, fx or claude_code", ErrInvalid, field)
+	}
+}
+
+func validateTelegramPolicy(policy TelegramPolicy) error {
+	if policy.TitleHarness != "opencode" {
+		return fmt.Errorf("%w: telegram.title_harness must be opencode", ErrInvalid)
+	}
+	if strings.TrimSpace(policy.TitlePrompt) == "" || strings.IndexFunc(policy.TitlePrompt, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+	}) >= 0 {
+		return fmt.Errorf("%w: telegram.title_prompt must be a non-empty file path without control characters", ErrInvalid)
+	}
+	if strings.Contains(policy.TitleModel, "#") {
+		return fmt.Errorf("%w: telegram.title_model must not include a variant; use title_model_reasoning", ErrInvalid)
+	}
+	if policy.TitleModel == "" || strings.IndexFunc(policy.TitleModel, func(r rune) bool {
+		return unicode.IsSpace(r) || unicode.IsControl(r) || unicode.Is(unicode.Cf, r)
+	}) >= 0 {
+		return fmt.Errorf("%w: telegram.title_model must be a non-empty model ID without whitespace or control characters", ErrInvalid)
+	}
+	for _, part := range strings.Split(policy.TitleModel, "/") {
+		if part == "" {
+			return fmt.Errorf("%w: telegram.title_model must not contain empty slash-separated components", ErrInvalid)
+		}
+	}
+	switch policy.TitleModelReasoning {
+	case "none", "minimal", "low", "medium", "high", "xhigh":
+		return nil
+	default:
+		return fmt.Errorf("%w: telegram.title_model_reasoning must be none, minimal, low, medium, high or xhigh", ErrInvalid)
 	}
 }
 
@@ -244,6 +338,9 @@ func validateConfig(c Config) error {
 	if c.Profiles.Secretary == "" || c.Profiles.Worker == "" || c.Profiles.ChildWorker == "" {
 		return fmt.Errorf("%w: profiles.secretary, profiles.worker and profiles.child_worker are required", ErrInvalid)
 	}
+	if err := validateTelegramPolicy(c.Telegram); err != nil {
+		return err
+	}
 	if _, _, _, err := c.Retention.RawLogPolicy(); err != nil {
 		return err
 	}
@@ -284,6 +381,12 @@ func Diff(previous, next Snapshot) map[string]any {
 	}
 	if previous.Config.Models != next.Config.Models {
 		changed["models"] = next.Config.Models
+	}
+	if previous.Config.Telegram != next.Config.Telegram {
+		changed["telegram"] = next.Config.Telegram
+	}
+	if previous.TitlePrompt.Hash != next.TitlePrompt.Hash {
+		changed["telegram.title_prompt"] = next.TitlePrompt.Hash
 	}
 	if strings.Join(previous.Config.Tools.Allow, ",") != strings.Join(next.Config.Tools.Allow, ",") {
 		changed["allow_tools"] = next.Config.Tools.Allow

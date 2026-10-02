@@ -108,6 +108,22 @@ cheap = "provider/cheap-model-id"
 
 После изменения `config.toml` перезапустите сервер или нажмите `Validate and apply` в Config. Markdown Profiles можно менять в Control Room во вкладке Profiles.
 
+## Названия Worker Topics
+
+Модель названий задаётся отдельно от Secretary и Worker runtime:
+
+```toml
+[telegram]
+title_harness = "opencode"
+title_prompt = "title-generation-prompt.md"
+title_model = "gpt-6-luna"
+title_model_reasoning = "minimal"
+```
+
+На Secretary server нужен OpenCode v2 с provider authentication. Генератор запускает отдельный `--standalone` вызов без tools и не меняет Secretary/Worker runtime. Bare model ID означает `openai/<model>`; другой provider задаётся явно.
+
+`title-generation-prompt.md` создаётся рядом с `config.toml`; существующий файл не перезаписывается. Меняйте его и применяйте config reload, чтобы новые Topics использовали обновлённый prompt. Старые configs получают эти defaults автоматически. При ошибке или таймауте Topic получает название из текста задачи. Детали описаны в [справочнике конфигурации](configuration.md).
+
 ## Локальные данные
 
 Secretary хранит данные в:
