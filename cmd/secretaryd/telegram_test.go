@@ -253,6 +253,25 @@ func TestTelegramEventBridgeMapsClientMessageForGeneralMirror(t *testing.T) {
 	}
 }
 
+func TestTelegramEventBridgePublishesOnlyDispatchedWorkerIntent(t *testing.T) {
+	ctx := context.Background()
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := telegramEvent(core.Event{
+		ID: "spawn-1", Seq: 1, Kind: "worker.spawned", AggregateType: "worker", AggregateID: "worker-private",
+		Payload: []byte(`{"intent":"Fix the server.\nRun tests.","title":"Generic title","system_prompt":"private instructions","reasoning":"private reasoning","policy_snapshot":{"token":"private credential"},"session_id":"private session"}`),
+	})
+	if err := adapter.HandleDurableEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].ThreadID != 1 || transport.sent[0].Text != "Задача от Secretary:\n\nFix the server.\nRun tests." {
+		t.Fatalf("dispatched prompt delivery=%#v", transport.sent)
+	}
+}
+
 func TestTelegramEventBridgeMapsOfflineTerminalEvent(t *testing.T) {
 	event := core.Event{Kind: "result.accepted", AggregateType: "result", WorkerRef: "worker-1", Payload: []byte(`{"status":"interrupted"}`)}
 	if mapped := telegramEvent(event); mapped.Kind != "worker.offline" {

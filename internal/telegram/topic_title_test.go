@@ -101,7 +101,7 @@ func TestTitleTimeoutDoesNotPreventResultOrAcceptLateAnswer(t *testing.T) {
 	if err := adapter.HandleDurableEvent(context.Background(), Event{Sequence: 2, Kind: "worker.completed", WorkerRef: "worker-1", Text: "Готово", TerminalIdentity: "turn-1"}); err != nil {
 		t.Fatal(err)
 	}
-	if adapter.LastEventSeq() != 2 || len(transport.sent) != 2 || transport.topics[0].Name != "Проверь тесты" {
+	if adapter.LastEventSeq() != 2 || len(transport.sent) != 3 || transport.topics[0].Name != "Проверь тесты" {
 		t.Fatalf("cursor=%d topics=%#v sent=%#v", adapter.LastEventSeq(), transport.topics, transport.sent)
 	}
 }

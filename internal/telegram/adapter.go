@@ -122,6 +122,7 @@ type TopicMapping struct {
 	ThreadID         int64     `json:"thread_id"`
 	Title            string    `json:"title,omitempty"`
 	PendingRequestID string    `json:"pending_request_id,omitempty"`
+	PromptDelivered  bool      `json:"prompt_delivered,omitempty"`
 	CreatedAt        time.Time `json:"created_at"`
 }
 
@@ -733,8 +734,15 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		return nil
 	}
 	if event.Kind == "worker.created" {
-		if _, err := a.ensureTopic(ctx, event.WorkerRef, event.Title, event.TaskPrompt); err != nil {
+		mapping, err := a.ensureTopic(ctx, event.WorkerRef, event.Title, event.TaskPrompt)
+		if err != nil {
 			return err
+		}
+		if prompt := safeDelta(event.TaskPrompt); strings.TrimSpace(prompt) != "" {
+			return a.sendMessage(ctx, OutgoingMessage{
+				ChatID: mapping.ChatID, ThreadID: mapping.ThreadID,
+				Text: "Задача от Secretary:\n\n" + prompt, Identity: "task-prompt:" + event.WorkerRef,
+			})
 		}
 		return nil
 	}
@@ -1036,6 +1044,12 @@ func outgoingMessageIdentity(message OutgoingMessage) string {
 
 func (a *Adapter) markDeliveredLocked(message OutgoingMessage) {
 	switch {
+	case strings.HasPrefix(message.Identity, "task-prompt:"):
+		workerRef := strings.TrimPrefix(message.Identity, "task-prompt:")
+		if mapping, ok := a.state.Topics[workerRef]; ok {
+			mapping.PromptDelivered = true
+			a.state.Topics[workerRef] = mapping
+		}
 	case strings.HasPrefix(message.Identity, "terminal:"):
 		identity := strings.TrimPrefix(message.Identity, "terminal:")
 		if identity != "" {
@@ -1070,6 +1084,12 @@ func (a *Adapter) sendMessage(ctx context.Context, message OutgoingMessage) erro
 	}
 	a.mu.Lock()
 	if message.Identity != "" {
+		if strings.HasPrefix(message.Identity, "task-prompt:") {
+			if a.state.Topics[strings.TrimPrefix(message.Identity, "task-prompt:")].PromptDelivered {
+				a.mu.Unlock()
+				return nil
+			}
+		}
 		if strings.HasPrefix(message.Identity, "terminal:") {
 			if _, delivered := a.state.TerminalNotified[strings.TrimPrefix(message.Identity, "terminal:")]; delivered {
 				a.mu.Unlock()

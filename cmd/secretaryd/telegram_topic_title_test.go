@@ -47,7 +47,7 @@ func TestTelegramTopicTitleBridgeUsesOnlyDispatchedIntent(t *testing.T) {
 	if _, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || adapter.LastEventSeq() != 2 || len(transport.sent) != 2 {
+	if calls != 1 || adapter.LastEventSeq() != 2 || len(transport.sent) != 3 {
 		t.Fatalf("calls=%d cursor=%d sent=%#v", calls, adapter.LastEventSeq(), transport.sent)
 	}
 	for _, sent := range transport.sent {
@@ -58,7 +58,7 @@ func TestTelegramTopicTitleBridgeUsesOnlyDispatchedIntent(t *testing.T) {
 	if _, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil {
 		t.Fatal(err)
 	}
-	if calls != 1 || len(transport.sent) != 2 {
+	if calls != 1 || len(transport.sent) != 3 {
 		t.Fatal("replay repeated generation or Result")
 	}
 }
