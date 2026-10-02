@@ -40,10 +40,11 @@ type Message struct {
 }
 
 type OutgoingMessage struct {
-	ChatID   int64
-	ThreadID int64
-	Text     string
-	Identity string `json:"identity,omitempty"`
+	ChatID         int64
+	ThreadID       int64
+	Text           string
+	Identity       string `json:"identity,omitempty"`
+	DeliveredBytes int    `json:"delivered_bytes,omitempty"`
 }
 
 type SentMessage struct{ OutgoingMessage }
@@ -780,7 +781,9 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			_, alreadyNotified = a.state.RequestNotified[requestNotificationIdentity(event)]
 			a.mu.Unlock()
 		}
-		if alreadyNotified {
+		// Each destination is deduplicated by sendMessage. A delivered Topic
+		// must not prevent retrying its still-pending General mirror.
+		if alreadyNotified && event.TerminalIdentity == "" {
 			return nil
 		}
 		a.sendTyping(mapping.ChatID, mapping.ThreadID)
@@ -864,14 +867,8 @@ func (a *Adapter) handleSecretaryEvent(event Event, sequence int64) error {
 		}
 	case "secretary.turn.finished":
 		a.pending.TurnOpen = false
-		if a.pending.Delegated {
-			a.pending.SecretaryText.Reset()
-			a.pending.SecretaryTools = nil
-			a.pending.EventSeqs = nil
-			a.pending.Delegated = false
-		} else {
-			a.pending.Ready = true
-		}
+		a.pending.Delegated = false
+		a.pending.Ready = true
 	}
 	if sequence > 0 {
 		if queued && !containsEventSeq(a.pending.EventSeqs, sequence) {
@@ -1097,15 +1094,7 @@ func (a *Adapter) sendMessage(ctx context.Context, message OutgoingMessage) erro
 		}
 	}
 	a.mu.Unlock()
-	if err := a.transport.SendMessage(ctx, message); err != nil {
-		return err
-	}
-	a.mu.Lock()
-	a.state.Outbox = removeOutboxMessage(a.state.Outbox, message)
-	a.markDeliveredLocked(message)
-	err := a.saveLocked()
-	a.mu.Unlock()
-	return err
+	return a.drainOutbox(ctx)
 }
 
 func (a *Adapter) drainOutbox(ctx context.Context) error {
@@ -1123,19 +1112,53 @@ func (a *Adapter) drainOutbox(ctx context.Context) error {
 			}
 			continue
 		}
-		if err := a.transport.SendMessage(ctx, message); err != nil {
-			return err
-		}
-		a.mu.Lock()
-		a.state.Outbox = removeOutboxMessage(a.state.Outbox, message)
-		a.markDeliveredLocked(message)
-		err := a.saveLocked()
-		a.mu.Unlock()
-		if err != nil {
-			return err
+		for {
+			chunk := message
+			chunk.Text = telegramMessageChunk(message.Text[message.DeliveredBytes:])
+			if err := a.transport.SendMessage(ctx, chunk); err != nil {
+				return err
+			}
+			message.DeliveredBytes += len(chunk.Text)
+			done := message.DeliveredBytes == len(message.Text)
+			a.mu.Lock()
+			if done {
+				a.state.Outbox = removeOutboxMessage(a.state.Outbox, message)
+				a.markDeliveredLocked(message)
+			} else {
+				for index, pending := range a.state.Outbox {
+					if outgoingMessageIdentity(pending) == outgoingMessageIdentity(message) {
+						a.state.Outbox[index].DeliveredBytes = message.DeliveredBytes
+						break
+					}
+				}
+			}
+			err := a.saveLocked()
+			a.mu.Unlock()
+			if err != nil {
+				return err
+			}
+			if done {
+				break
+			}
 		}
 	}
 	return nil
+}
+
+// Keep chunks within Telegram's 4096-character limit, counting astral
+// characters as two UTF-16 units and never cutting a UTF-8 code point.
+func telegramMessageChunk(text string) string {
+	units := 0
+	for index, r := range text {
+		units++
+		if r > 0xffff {
+			units++
+		}
+		if units > 4096 {
+			return text[:index]
+		}
+	}
+	return text
 }
 
 func isRequestEvent(kind string) bool {
@@ -1192,8 +1215,9 @@ func topicName(workerRef, title string) string {
 	if name == "" {
 		name = "Worker"
 	}
-	if len(name) > 60 {
-		name = name[:60]
+	characters := []rune(name)
+	if len(characters) > 60 {
+		name = string(characters[:60])
 	}
 	return name
 }

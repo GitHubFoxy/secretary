@@ -3,12 +3,15 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/telegram"
@@ -76,6 +79,72 @@ func (t *bridgeTransport) CreateForumTopic(_ context.Context, chatID int64, _ st
 
 type bridgeState struct {
 	LastEventSeq int64 `json:"last_event_seq"`
+}
+
+type constrainedBridgeTransport struct{ bridgeTransport }
+
+func (t *constrainedBridgeTransport) CreateForumTopic(ctx context.Context, chatID int64, name string) (telegram.ForumTopic, error) {
+	if !utf8.ValidString(name) {
+		return telegram.ForumTopic{}, errors.New("strings must be encoded in UTF-8")
+	}
+	return t.bridgeTransport.CreateForumTopic(ctx, chatID, name)
+}
+
+func (t *constrainedBridgeTransport) SendMessage(ctx context.Context, message telegram.OutgoingMessage) error {
+	if !utf8.ValidString(message.Text) || len(utf16.Encode([]rune(message.Text))) > 4096 {
+		return errors.New("invalid UTF-8 or message is too long")
+	}
+	return t.bridgeTransport.SendMessage(ctx, message)
+}
+
+func TestTelegramBridgeDelegationAndLongResultDoNotBlockReplay(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	ack := "Worker запущен. Результат придёт отдельно."
+	result := strings.Repeat("Рецепт 🍹 ", 600)
+	events := []core.EventInput{
+		{Kind: core.SecretaryTurnStartedEvent},
+		{Kind: core.SecretaryToolCallEvent, Payload: map[string]string{"tool": "mcp_secretary_spawn_worker"}},
+		{Kind: "worker.spawned", AggregateType: "worker", AggregateID: "worker-1", Payload: map[string]string{"title": strings.Repeat("я", 29) + "🍹" + strings.Repeat("р", 40)}},
+		{Kind: core.SecretaryTextDeltaEvent, Payload: map[string]string{"text": ack}},
+		{Kind: core.SecretaryTurnFinishedEvent, Payload: map[string]string{"status": "succeeded"}},
+		{Kind: "result.accepted", WorkerRef: "worker-1", CorrelationID: "turn-1", Payload: map[string]string{"summary": result, "status": "succeeded"}},
+	}
+	for _, event := range events {
+		if _, err := store.RecordEventWithMetadata(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport := &constrainedBridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, FlushInterval: time.Hour}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seq, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil {
+		t.Fatalf("durable bridge blocked at %d: %v", seq, err)
+	}
+	if err := adapter.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.LastEventSeq() != int64(len(events)) || len(transport.sent) != 5 {
+		t.Fatalf("cursor=%d messages=%d, want 6 events and 5 messages", adapter.LastEventSeq(), len(transport.sent))
+	}
+	if transport.sent[4].Text != ack {
+		t.Fatalf("delegation acknowledgement missing: %q", transport.sent[4].Text)
+	}
+	if _, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 5 {
+		t.Fatalf("replay duplicated delivery: %d messages", len(transport.sent))
+	}
 }
 
 func TestTelegramBridgePreservesSecretaryDeltaWhitespace(t *testing.T) {

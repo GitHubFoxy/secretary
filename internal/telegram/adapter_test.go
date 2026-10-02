@@ -257,7 +257,7 @@ func TestTerminalResultMirrorsToGeneralWithWorkerLabel(t *testing.T) {
 	}
 }
 
-func TestDelegatedTurnSendsNothingToGeneral(t *testing.T) {
+func TestDelegatedTurnAcknowledgesBeforeWorkerCompletes(t *testing.T) {
 	transport := &fakeTransport{}
 	server := &fakeServer{}
 	adapter := newTestAdapter(t, transport, server, filepath.Join(t.TempDir(), "telegram.json"))
@@ -276,8 +276,21 @@ func TestDelegatedTurnSendsNothingToGeneral(t *testing.T) {
 	if err := adapter.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(transport.sent) != 0 {
-		t.Fatalf("delegated narration reached General: %#v", transport.sent)
+	if len(transport.sent) != 1 || transport.sent[0].ThreadID != 0 || transport.sent[0].Text != "I'll create a Workerdone narrating" {
+		t.Fatalf("missing delegation acknowledgement: %#v", transport.sent)
+	}
+	adapter.typingMu.Lock()
+	adapter.lastTyping = map[string]time.Time{}
+	adapter.typingMu.Unlock()
+	before := len(transport.actions)
+	if err := adapter.HandleEvent(ctx, Event{Kind: "worker.activity", WorkerRef: "worker-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.actions) != before {
+		t.Fatalf("Secretary typing continued after delegation: %#v", transport.actions)
 	}
 }
 
@@ -608,6 +621,11 @@ func TestThrottleTimerFlushesSecretaryBatch(t *testing.T) {
 	transport := &fakeTransport{}
 	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "telegram.json"))
 	adapter.config.FlushInterval = 10 * time.Millisecond
+	defer func() {
+		if err := adapter.Flush(context.Background()); err != nil {
+			t.Error(err)
+		}
+	}()
 	if err := adapter.HandleEvent(context.Background(), Event{Kind: "secretary.text_delta", Text: "timer"}); err != nil {
 		t.Fatal(err)
 	}
@@ -928,8 +946,14 @@ func TestTerminalOutboxRestartDoesNotReplayAfterDrain(t *testing.T) {
 	if err := restarted.HandleDurableEvent(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
-	if len(transport.sent) != 1 {
-		t.Fatalf("terminal messages after replay = %#v", transport.sent)
+	if len(transport.sent) != 2 || transport.sent[0].ThreadID == 0 || transport.sent[1].ThreadID != 0 {
+		t.Fatalf("terminal must reach Topic and General exactly once: %#v", transport.sent)
+	}
+	if err := restarted.HandleDurableEvent(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 2 {
+		t.Fatalf("duplicate terminal delivery: %#v", transport.sent)
 	}
 }
 
