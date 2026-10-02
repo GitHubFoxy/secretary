@@ -1,7 +1,7 @@
 # Svelte Control Room
 
 Type: task
-Status: ready-for-human
+Status: resolved
 Blocked by: 01, 02, 04, 05, 06
 
 ## Work
@@ -19,3 +19,7 @@ Implement `/control-room` as a Svelte/Tailwind operator surface, registered only
 - `/control-room` returns 404 without debug mode.
 - Every action and state transition is visible live and durable.
 - Config changes write `config.toml` and create versioned events.
+
+## Answer
+
+Implemented the debug-only Svelte/Tailwind Control Room with Overview, Workers, Events and Config screens, including config reload, runtime controls, log access and diagnostics export.

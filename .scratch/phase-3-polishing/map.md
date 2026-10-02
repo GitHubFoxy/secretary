@@ -18,6 +18,8 @@
 - Events сохраняются normalized в SQLite, raw ACP JSONL в rotating files. Default retention: 30 дней и 1 GiB. Workspaces closed Tasks хранятся 30 дней.
 - Global Worker limit: 4, включая children. Parent создаёт максимум 4 children за Attempt.
 - Remote Node, Telegram, arbitrary providers и security sandboxing не входят в Phase 3.
+- Ticket 01 resolved: [external config and Profiles](issues/01-external-config-and-profiles.md) implemented and verified.
+- Tickets [02](issues/02-event-log-and-retention.md), [03](issues/03-server-owned-mcp-tools.md), [04](issues/04-child-worker-tree.md), [05](issues/05-opencode-profile-first-runtime.md), [06](issues/06-codex-and-fx-compatibility-runtimes.md), [07](issues/07-svelte-mobile-user-ui.md), [08](issues/08-svelte-control-room.md), and [09](issues/09-product-launcher-and-launchd.md) are implemented and resolved. Ticket [10](issues/10-prove-phase-3-release-gate.md) remains open for the real-harness acceptance matrix.
 
 ## Completed decisions
 

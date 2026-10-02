@@ -1,7 +1,7 @@
 # OpenCode profile-first runtime
 
 Type: task
-Status: ready-for-human
+Status: resolved
 Blocked by: 01, 02, 03
 
 ## Work
@@ -22,3 +22,7 @@ Install/test OpenCode ACP and implement its runtime adapter. Generate OpenCode a
 - Raw ACP JSONL contains Profile version, hash and delivery metadata without leaking Profile prompt text.
 - OpenCode adapter uses the shared start, load, resume, prompt, cancel, MCP and child-event paths.
 - Binding metadata records `delivery = native` for OpenCode snapshots; compatibility harnesses record `workspace_instructions`.
+
+## Answer
+
+Implemented the OpenCode profile-first runtime, native Profile delivery, MCP integration and immutable resume snapshots. ACP initialization and `session/new` were smoke-tested.

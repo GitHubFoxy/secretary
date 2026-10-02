@@ -1,0 +1,380 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Secretary · текущая архитектура</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #050608;
+      --panel: #0b0e12;
+      --panel-2: #10151b;
+      --line: #202831;
+      --muted: #8d99a6;
+      --text: #edf2f5;
+      --green: #b4f47c;
+      --cyan: #8ce6ef;
+      --purple: #c0a1ff;
+      --orange: #ffc078;
+      --red: #ff827a;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      line-height: 1.55;
+    }
+    a { color: var(--cyan); text-decoration-color: #42636b; text-underline-offset: 3px; }
+    a:hover { color: #d2fbff; }
+    .page { width: min(1420px, calc(100% - 40px)); margin: auto; }
+    .topline { height: 3px; background: linear-gradient(90deg, var(--green), var(--cyan) 45%, var(--purple)); }
+    header { padding: 78px 0 44px; border-bottom: 1px solid var(--line); }
+    .eyebrow, .label, .index, .mono { font-family: var(--mono); letter-spacing: .06em; }
+    .eyebrow { color: var(--green); font-size: 12px; text-transform: uppercase; }
+    h1 { max-width: 900px; margin: 17px 0 14px; font-size: clamp(42px, 7vw, 88px); line-height: .98; letter-spacing: -.065em; font-weight: 650; }
+    .lede { max-width: 760px; margin: 0; color: #aab4bd; font-size: clamp(16px, 2vw, 20px); }
+    .lede strong { color: var(--text); font-weight: 550; }
+    .facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-top: 38px; }
+    .fact { min-height: 105px; padding: 17px 19px; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; }
+    .fact b { display: block; font: 500 20px var(--mono); color: var(--green); letter-spacing: -.04em; }
+    .fact span { display: block; margin-top: 8px; color: var(--muted); font-size: 13px; }
+    main { padding: 36px 0 82px; }
+    section { margin: 0 0 76px; scroll-margin-top: 24px; }
+    .section-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 20px; }
+    .index { color: var(--green); font-size: 12px; }
+    h2 { margin: 0; font-size: clamp(23px, 3vw, 34px); line-height: 1.15; letter-spacing: -.04em; font-weight: 590; }
+    h3 { margin: 0 0 8px; font-size: 16px; font-weight: 600; }
+    p { margin: 0; color: #aab4bd; }
+    .diagram-shell { overflow-x: auto; border: 1px solid var(--line); border-radius: 10px; background: #080a0d; }
+    .diagram { display: block; width: 100%; min-width: 900px; height: auto; }
+    .diagram text { font-family: var(--sans); }
+    .diagram .mono { font-family: var(--mono); }
+    .diagram .box { fill: #0c1116; stroke: #29343e; stroke-width: 1.3; }
+    .diagram .inner { fill: #111820; stroke: #34414c; stroke-width: 1.1; }
+    .diagram .label { fill: #8e9aa5; font-size: 12px; letter-spacing: 1.5px; }
+    .diagram .title { fill: #edf2f5; font-size: 17px; font-weight: 600; }
+    .diagram .copy { fill: #9ba8b3; font-size: 12px; }
+    .diagram .green { fill: var(--green); }
+    .diagram .cyan { fill: var(--cyan); }
+    .diagram .purple { fill: var(--purple); }
+    .diagram .orange { fill: var(--orange); }
+    .diagram .wire { fill: none; stroke: var(--cyan); stroke-width: 2; marker-end: url(#arrow-cyan); }
+    .diagram .poll { fill: none; stroke: var(--orange); stroke-width: 2; marker-end: url(#arrow-orange); }
+    .diagram .reply { fill: none; stroke: var(--orange); stroke-width: 2; marker-end: url(#arrow-orange); stroke-dasharray: 6 5; }
+    .diagram .dispatch { fill: none; stroke: var(--purple); stroke-width: 2; marker-end: url(#arrow-purple); }
+    .diagram .return { fill: none; stroke: var(--green); stroke-width: 2; marker-end: url(#arrow-green); }
+    .diagram .boundary { fill: rgba(140, 230, 239, .025); stroke: #34515a; stroke-width: 1.2; stroke-dasharray: 7 6; }
+    .legend { display: flex; flex-wrap: wrap; gap: 18px; padding: 13px 17px; border-top: 1px solid var(--line); color: var(--muted); font: 11px var(--mono); }
+    .legend span { display: inline-flex; align-items: center; gap: 7px; }
+    .swatch { width: 15px; height: 2px; background: var(--cyan); }
+    .swatch.orange { background: var(--orange); }
+    .swatch.purple { background: var(--purple); }
+    .swatch.green { background: var(--green); }
+    .caption { padding: 15px 18px 18px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+    .grid-2 { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+    .card { padding: 22px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+    .card p + p { margin-top: 10px; }
+    .card .tag { display: inline-block; margin-bottom: 12px; color: var(--cyan); font: 11px var(--mono); text-transform: uppercase; letter-spacing: .08em; }
+    .why-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .why { padding: 24px; border-radius: 8px; background: var(--panel); border: 1px solid var(--line); }
+    .why.good { border-top: 2px solid var(--green); }
+    .why.limit { border-top: 2px solid var(--orange); }
+    .why ul, .steps ol { margin: 12px 0 0; padding-left: 20px; color: #aab4bd; }
+    .why li, .steps li { margin: 7px 0; padding-left: 4px; }
+    .flow { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; counter-reset: flow; }
+    .step { position: relative; min-height: 170px; padding: 20px; border: 1px solid var(--line); background: var(--panel); border-radius: 8px; counter-increment: flow; }
+    .step::before { content: "0" counter(flow); display: block; margin-bottom: 28px; color: var(--green); font: 12px var(--mono); }
+    .step:not(:last-child)::after { content: ""; position: absolute; top: 31px; right: -11px; width: 11px; border-top: 1px solid #45515c; }
+    .step p { font-size: 13px; }
+    .step .mono { display: inline-block; margin-top: 14px; color: var(--cyan); font-size: 11px; }
+    .timing { padding: 24px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+    .timing-bar { display: grid; grid-template-columns: 1fr 1.3fr 1fr .6fr; gap: 5px; margin: 22px 0 12px; }
+    .timing-bar div { min-height: 38px; padding: 8px 10px; border-radius: 4px; font: 11px var(--mono); }
+    .t-poll { background: #382917; color: var(--orange); }
+    .t-model { background: #211a32; color: var(--purple); }
+    .t-bridge { background: #14282a; color: var(--cyan); }
+    .t-send { background: #1b2a16; color: var(--green); }
+    .timing-note { font-size: 13px; }
+    .callout { display: grid; grid-template-columns: 150px 1fr; gap: 20px; align-items: start; margin-top: 14px; padding: 19px 21px; border: 1px solid #473721; background: #17120b; border-radius: 8px; }
+    .callout .label { color: var(--orange); font-size: 11px; text-transform: uppercase; }
+    .callout p { font-size: 13px; }
+    .boundary-table { width: 100%; border-collapse: collapse; border: 1px solid var(--line); background: var(--panel); font-size: 13px; }
+    .boundary-table th, .boundary-table td { padding: 13px 15px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    .boundary-table th { color: var(--muted); font: 11px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+    .boundary-table td:first-child { color: var(--text); white-space: nowrap; }
+    .yes { color: var(--green); }
+    .no { color: var(--red); }
+    .future { color: var(--orange); }
+    .sources { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 15px; }
+    .sources code { padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px; background: #0b0e12; color: #9daab6; font: 11px var(--mono); }
+    footer { padding: 24px 0 42px; border-top: 1px solid var(--line); color: #68747f; font: 11px var(--mono); }
+    @media (max-width: 800px) {
+      .page { width: min(100% - 24px, 1420px); }
+      header { padding-top: 52px; }
+      .facts { grid-template-columns: repeat(2, 1fr); }
+      .grid-2, .why-grid { grid-template-columns: 1fr; }
+      .flow { grid-template-columns: repeat(2, 1fr); }
+      .step:not(:last-child)::after { display: none; }
+      .callout { grid-template-columns: 1fr; gap: 8px; }
+      .boundary-table { font-size: 12px; }
+      .boundary-table th, .boundary-table td { padding: 10px 8px; }
+    }
+    @media (max-width: 480px) {
+      .facts { grid-template-columns: 1fr 1fr; }
+      .fact { padding: 13px; min-height: 95px; }
+      .fact b { font-size: 15px; }
+      .flow { grid-template-columns: 1fr; }
+      .timing-bar { grid-template-columns: 1fr 1fr; }
+      .boundary-table td:first-child { white-space: normal; }
+    }
+    @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  </style>
+</head>
+<body>
+  <div class="topline"></div>
+  <div class="page">
+    <header>
+      <div class="eyebrow">Secretary / система сейчас / omarchy</div>
+      <h1>Приватный сервер.<br>Ни одного открытого порта.</h1>
+      <p class="lede">Tailscale даёт доверенным устройствам приватный HTTPS-доступ к серверу. Telegram работает отдельно: сервер сам подключается к Bot API и забирает сообщения через long polling.</p>
+      <div class="facts" aria-label="Текущие параметры">
+        <div class="fact"><b>127.0.0.1:8081</b><span>единственный HTTP listener Secretary</span></div>
+        <div class="fact"><b>Tailscale Serve</b><span>приватный HTTPS-вход для owner и paired Clients</span></div>
+        <div class="fact"><b>2 секунды</b><span>long-poll timeout Telegram, затем новый запрос сразу</span></div>
+        <div class="fact"><b>0 public ports</b><span>порт сервера не открыт в интернет или LAN</span></div>
+      </div>
+    </header>
+
+    <main>
+      <section id="map">
+        <div class="section-head"><span class="index">01</span><h2>Карта системы</h2></div>
+        <div class="diagram-shell">
+          <svg class="diagram" viewBox="0 0 1500 790" role="img" aria-labelledby="diagram-title diagram-desc">
+            <title id="diagram-title">Архитектура Secretary на omarchy</title>
+            <desc id="diagram-desc">Owner и paired Clients входят через приватную сеть Tailscale и Tailscale Serve. Telegram использует исходящий long polling. Сервер хранит данные в SQLite и передаёт Worker работу через отдельный Node-сервис.</desc>
+            <defs>
+              <marker id="arrow-cyan" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#8ce6ef"/></marker>
+              <marker id="arrow-orange" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#ffc078"/></marker>
+              <marker id="arrow-purple" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#c0a1ff"/></marker>
+              <marker id="arrow-green" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#b4f47c"/></marker>
+            </defs>
+
+            <!-- trusted devices -->
+            <text x="35" y="49" class="label">УСТРОЙСТВА ВЛАДЕЛЬЦА</text>
+            <rect x="30" y="70" width="250" height="115" rx="8" class="box"/>
+            <text x="52" y="102" class="title">Owner browser</text>
+            <text x="52" y="127" class="copy">Web UI · управление</text>
+            <text x="52" y="151" class="copy">owner session · HTTPS</text>
+            <rect x="30" y="210" width="250" height="115" rx="8" class="box"/>
+            <text x="52" y="242" class="title">Paired Client</text>
+            <text x="52" y="267" class="copy">snapshot · live stream</text>
+            <text x="52" y="291" class="copy">explicit read scopes</text>
+            <rect x="30" y="530" width="250" height="115" rx="8" class="box"/>
+            <text x="52" y="562" class="title">Telegram app</text>
+            <text x="52" y="587" class="copy">General · Worker Topics</text>
+            <text x="52" y="611" class="copy">пользователь пишет боту</text>
+
+            <!-- tailnet -->
+            <rect x="330" y="48" width="430" height="360" rx="18" class="boundary"/>
+            <text x="355" y="78" class="label cyan">TAILNET · ТОЛЬКО ДОВЕРЕННЫЕ УСТРОЙСТВА</text>
+            <rect x="375" y="123" width="155" height="106" rx="8" class="inner"/>
+            <text x="397" y="155" class="title">Tailscale</text>
+            <text x="397" y="180" class="copy">WireGuard mesh</text>
+            <text x="397" y="202" class="copy">direct или DERP relay</text>
+            <rect x="575" y="123" width="145" height="106" rx="8" class="inner"/>
+            <text x="597" y="155" class="title">Serve</text>
+            <text x="597" y="180" class="copy">HTTPS proxy</text>
+            <text x="597" y="202" class="mono cyan" font-size="11">→ 127.0.0.1:8081</text>
+            <path d="M280 125H365" class="wire"/>
+            <path d="M280 265H350V210H365" class="wire"/>
+            <path d="M530 176H565" class="wire"/>
+            <path d="M720 176H835" class="wire"/>
+            <text x="366" y="260" class="copy">ACL по устройству / identity</text>
+            <text x="366" y="281" class="copy">нет port forwarding</text>
+            <text x="366" y="302" class="copy">нет публичного listener</text>
+            <rect x="365" y="330" width="360" height="52" rx="6" fill="#0b1519" stroke="#29474d"/>
+            <text x="385" y="352" class="copy cyan">Clients и браузер входят сами.</text>
+            <text x="385" y="371" class="copy">Сервер не принимает соединения из интернета.</text>
+
+            <!-- omarchy host -->
+            <rect x="820" y="38" width="650" height="704" rx="14" class="box"/>
+            <text x="850" y="75" class="label green">OMARCHY · SYSTEMD USER SERVICES</text>
+            <text x="850" y="105" class="copy">один хост · loopback services · SQLite source of truth</text>
+
+            <!-- secretaryd -->
+            <rect x="850" y="130" width="590" height="320" rx="10" fill="#0d1417" stroke="#45603d" stroke-width="1.4"/>
+            <text x="875" y="164" class="title green">secretaryd.service</text>
+            <text x="875" y="188" class="mono" fill="#91a18d" font-size="11">127.0.0.1:8081</text>
+            <rect x="875" y="215" width="168" height="82" rx="6" class="inner"/>
+            <text x="892" y="242" class="title" font-size="14">HTTP API + UI</text>
+            <text x="892" y="266" class="copy">owner · paired Client API</text>
+            <text x="892" y="284" class="copy">HTTP + WebSocket</text>
+            <rect x="1060" y="215" width="168" height="82" rx="6" class="inner"/>
+            <text x="1077" y="242" class="title" font-size="14">Secretary runtime</text>
+            <text x="1077" y="266" class="copy">persistent ACP · fx</text>
+            <text x="1077" y="284" class="copy">uses lifecycle tools</text>
+            <rect x="1245" y="215" width="168" height="82" rx="6" class="inner"/>
+            <text x="1262" y="242" class="title" font-size="14">secretary-mcp</text>
+            <text x="1262" y="266" class="copy">bounded tool surface</text>
+            <text x="1262" y="284" class="copy">Worker lifecycle only</text>
+            <path d="M1228 256H1237" class="dispatch"/>
+            <rect x="875" y="318" width="248" height="94" rx="6" class="inner"/>
+            <text x="892" y="347" class="title" font-size="14">Telegram adapter</text>
+            <text x="892" y="372" class="copy">getUpdates long poll · 2 s</text>
+            <text x="892" y="394" class="copy">durable bridge · General + Topics</text>
+            <rect x="1140" y="318" width="273" height="94" rx="6" class="inner"/>
+            <text x="1157" y="347" class="title" font-size="14">SQLite · secretary.db</text>
+            <text x="1157" y="372" class="copy">Conversation · Worker lifecycle</text>
+            <text x="1157" y="394" class="copy">Attempts · Results · Events</text>
+            <path d="M1125 365H1132" class="return"/>
+            <path d="M1035 297V316" class="return"/>
+
+            <!-- Telegram API outside -->
+            <rect x="335" y="520" width="280" height="135" rx="9" class="box" stroke="#614729"/>
+            <text x="359" y="553" class="label orange">TELEGRAM CLOUD</text>
+            <text x="359" y="582" class="title">Bot API</text>
+            <text x="359" y="606" class="copy">sendMessage · getUpdates</text>
+            <text x="359" y="630" class="copy">входящий webhook не включён</text>
+            <path d="M615 551C710 475 772 470 875 358" class="poll"/>
+            <text x="666" y="490" class="copy orange">HTTPS: запросы сервера наружу</text>
+            <path d="M875 397C790 485 710 530 625 590" class="reply"/>
+            <text x="664" y="626" class="copy orange">ответы возвращаются через Bot API</text>
+            <path d="M280 587H324" class="poll"/>
+            <text x="286" y="568" class="copy orange">чат</text>
+
+            <!-- node service and execution -->
+            <rect x="850" y="480" width="590" height="225" rx="10" fill="#100e18" stroke="#493c65" stroke-width="1.4"/>
+            <text x="875" y="514" class="title purple">secretary-node.service</text>
+            <text x="875" y="538" class="copy">Node сам устанавливает исходящий аутентифицированный канал к серверу.</text>
+            <rect x="875" y="558" width="220" height="112" rx="6" class="inner"/>
+            <text x="894" y="587" class="title" font-size="14">Execution Node</text>
+            <text x="894" y="611" class="copy">принимает Dispatch</text>
+            <text x="894" y="634" class="copy">запускает Worker Attempt</text>
+            <text x="894" y="653" class="copy">возвращает terminal Result</text>
+            <rect x="1130" y="558" width="283" height="112" rx="6" class="inner"/>
+            <text x="1149" y="587" class="title" font-size="14">Worker workspace + harness</text>
+            <text x="1149" y="611" class="copy">отдельный рабочий каталог</text>
+            <text x="1149" y="634" class="copy">fx / Codex / Claude Code</text>
+            <text x="1149" y="653" class="copy">code и tools выполняются здесь</text>
+            <path d="M1095 613H1120" class="dispatch"/>
+            <path d="M1128 651H1102" class="return"/>
+            <path d="M1080 450V472" class="dispatch"/>
+            <text x="1090" y="468" class="copy purple">Dispatch / Result</text>
+
+            <text x="850" y="728" class="mono" fill="#64717c" font-size="10">DATA DIR: ~/.local/share/secretary · PROFILE: profiles/secretary.md · SECRETS НЕ В РЕПОЗИТОРИИ</text>
+          </svg>
+          <div class="legend" aria-label="Легенда соединений">
+            <span><i class="swatch"></i> приватный HTTP / WebSocket в tailnet</span>
+            <span><i class="swatch orange"></i> исходящий Telegram Bot API</span>
+            <span><i class="swatch purple"></i> Dispatch к Worker</span>
+            <span><i class="swatch green"></i> durable state / Result</span>
+          </div>
+          <div class="caption">Публичного маршрута Telegram → omarchy сейчас нет. Сервер открывает HTTPS-соединение к Telegram сам и получает обновления в ответ на long-poll запрос.</div>
+        </div>
+      </section>
+
+      <section id="flow">
+        <div class="section-head"><span class="index">02</span><h2>Что происходит с сообщением</h2></div>
+        <div class="flow">
+          <article class="step"><h3>Канал</h3><p>Owner пишет в General. Telegram хранит сообщение и выдаёт его следующему `getUpdates` запросу бота.</p><span class="mono">PHONE → TELEGRAM</span></article>
+          <article class="step"><h3>Secretary server</h3><p>Адаптер проверяет чат и автора, передаёт текст локальному API. Server сохраняет Conversation entry и создаёт turn.</p><span class="mono">TELEGRAM → LOOPBACK</span></article>
+          <article class="step"><h3>Исполнение</h3><p>Secretary отвечает сам или вызывает lifecycle tool. Для работы он создаёт Worker и отправляет Dispatch на Node.</p><span class="mono">SECRETARY → NODE → WORKER</span></article>
+          <article class="step"><h3>Ответ</h3><p>Server сохраняет terminal Result. Важные Worker events и результат зеркалятся в General и его Worker Topic.</p><span class="mono">RESULT → SQLITE → TELEGRAM</span></article>
+        </div>
+      </section>
+
+      <section id="tailscale">
+        <div class="section-head"><span class="index">03</span><h2>Зачем здесь Tailscale</h2></div>
+        <div class="why-grid">
+          <article class="why good">
+            <span class="tag">Что он делает</span>
+            <h3>Даёт приватный путь до сервера</h3>
+            <ul>
+              <li>Owner browser и paired Clients входят в tailnet с доверенных устройств.</li>
+              <li>Tailscale Serve принимает приватный HTTPS и проксирует его на `127.0.0.1:8081`.</li>
+              <li>ACL ограничивает доступ по identity и устройствам.</li>
+              <li>WireGuard соединяет устройства напрямую, если возможно; иначе трафик идёт через DERP relay, оставаясь шифрованным.</li>
+            </ul>
+          </article>
+          <article class="why limit">
+            <span class="tag">Чего он не делает</span>
+            <h3>Не принимает сообщения Telegram</h3>
+            <ul>
+              <li>Telegram не состоит в tailnet и не может вызвать приватный Tailscale Serve адрес.</li>
+              <li>Поэтому бот использует исходящий long polling, а не webhook.</li>
+              <li>Для webhook понадобится отдельный публичный HTTPS вход, например Funnel или relay. Нельзя просто опубликовать весь `secretaryd`.</li>
+              <li>Tailscale не запускает Workers и не хранит Conversation. Это только сетевой доступ.</li>
+            </ul>
+          </article>
+        </div>
+      </section>
+
+      <section id="timing">
+        <div class="section-head"><span class="index">04</span><h2>Где появляется задержка</h2></div>
+        <div class="timing">
+          <p>Входящее сообщение уже не ждёт минуту между запросами. При включённом long poll Telegram может ответить сразу, а после ответа сервер начинает следующий запрос без дополнительной паузы.</p>
+          <div class="timing-bar" aria-label="Текущие интервалы обработки">
+            <div class="t-poll">getUpdates<br>timeout ≤ 2 s</div>
+            <div class="t-model">Secretary / Worker<br>время модели</div>
+            <div class="t-bridge">event bridge<br>опрос раз в 100 ms</div>
+            <div class="t-send">sendMessage<br>flush ≤ 2 s</div>
+          </div>
+          <p class="timing-note">Две секунды ограничивают ожидание входящего update на границе двух poll запросов. Генерация ответа зависит от модели и работы Worker. После завершения turn текущая пакетная отправка может добавить до двух секунд.</p>
+          <div class="callout">
+            <div class="label">Webhook позже</div>
+            <p>Webhook уберёт ожидание следующего poll. Для него нужен изолированный receiver, публичный HTTPS маршрут, secret header и durable inbox с дедупликацией. Tailscale Serve сам по себе не подходит, потому что доступен только tailnet.</p>
+          </div>
+        </div>
+      </section>
+
+      <section id="boundaries">
+        <div class="section-head"><span class="index">05</span><h2>Границы доступа</h2></div>
+        <div class="diagram-shell">
+          <table class="boundary-table">
+            <thead><tr><th>Путь</th><th>Кто начинает соединение</th><th>Что разрешено</th><th>Статус</th></tr></thead>
+            <tbody>
+              <tr><td>Owner browser → Serve</td><td>Owner device внутри tailnet</td><td>Приватный User UI и API</td><td class="yes">Включён</td></tr>
+              <tr><td>Paired Client → Serve</td><td>Устройство внутри tailnet</td><td>Только явно выданные Client scopes</td><td class="yes">Включён</td></tr>
+              <tr><td>Telegram adapter → Bot API</td><td>omarchy, исходящее HTTPS</td><td>getUpdates и sendMessage</td><td class="yes">Long polling · 2 s</td></tr>
+              <tr><td>Telegram → webhook</td><td>Потребовался бы публичный endpoint</td><td>Сейчас не настроено</td><td class="future">Не включён</td></tr>
+              <tr><td>Интернет → порт 8081</td><td>Не разрешён</td><td>Нет прямого public или LAN bind</td><td class="no">Закрыт</td></tr>
+              <tr><td>Node → server</td><td>Node инициирует канал наружу</td><td>Authenticated execution protocol и reconnect</td><td class="yes">Включён</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="components">
+        <div class="section-head"><span class="index">06</span><h2>Слои и source of truth</h2></div>
+        <div class="grid-2">
+          <article class="card"><span class="tag">01 / Channel</span><h3>Telegram adapter</h3><p>Только транспорт: принимает updates, проверяет allowlist, маршрутизирует General и Worker Topics. Он не владеет Conversation или Worker lifecycle.</p></article>
+          <article class="card"><span class="tag">02 / Product server</span><h3>secretaryd</h3><p>Хранит durable Conversation и Worker state, строит контекст, запускает Secretary turn и выдаёт lifecycle tools. API доступен локально и через приватный Serve.</p></article>
+          <article class="card"><span class="tag">03 / Execution</span><h3>secretary-node</h3><p>Отдельный systemd service. Node сам устанавливает канал к server, запускает Worker в workspace и возвращает события и terminal Result.</p></article>
+          <article class="card"><span class="tag">04 / Storage</span><h3>SQLite и локальные профили</h3><p>SQLite в `~/.local/share/secretary/secretary.db` хранит durable state. `config.toml`, `profiles/*.md` и `user.md` задают конфигурацию и инструкции.</p></article>
+        </div>
+      </section>
+
+      <section id="sources">
+        <div class="section-head"><span class="index">07</span><h2>Файлы, на которых основана схема</h2></div>
+        <p>Схема описывает текущую установку и код. Webhook показан только как возможное будущее расширение.</p>
+        <div class="sources">
+          <code>docs/always-on-runbook.md</code>
+          <code>internal/webapi/client.go</code>
+          <code>cmd/secretaryd/telegram.go</code>
+          <code>internal/telegram/adapter.go</code>
+          <code>internal/node/daemon.go</code>
+          <code>internal/secretary/runtime.go</code>
+        </div>
+      </section>
+    </main>
+    <footer>SECRETARY · CURRENT DEPLOYMENT VIEW · SELF-CONTAINED HTML · NO EXTERNAL FONTS OR SCRIPTS</footer>
+  </div>
+</body>
+</html>

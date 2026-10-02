@@ -1,7 +1,7 @@
 # Server-owned MCP tools
 
 Type: task
-Status: ready-for-human
+Status: resolved
 Blocked by: 01, 02
 
 ## Work

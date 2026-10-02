@@ -1,7 +1,7 @@
 # Svelte mobile-first User UI
 
 Type: task
-Status: ready-for-human
+Status: resolved
 Blocked by: 01, 04, 05, 06
 
 ## Work
@@ -19,3 +19,7 @@ Replace the prototype UI with Svelte and Tailwind. Build a dark, readable, mobil
 - Static assets are embedded in the Go binary.
 - Mobile Worker thread is full-screen; desktop uses drawer or modal.
 - No Control Room diagnostics leak into normal Conversation.
+
+## Answer
+
+Implemented and embedded the Svelte/Tailwind User UI, including onboarding, model selection, Conversation, Worker controls, and mobile full-screen threads with a desktop drawer.

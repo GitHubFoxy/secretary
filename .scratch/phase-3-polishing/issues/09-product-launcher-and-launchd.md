@@ -1,7 +1,7 @@
 # Product launcher and launchd
 
 Type: task
-Status: ready-for-human
+Status: resolved
 Blocked by: 05, 06, 07, 08
 
 ## Work
@@ -20,3 +20,7 @@ Finish `sex setup/start/stop/restart/status/logs/doctor/install-service/uninstal
 - `sex start` starts or reuses server and opens User UI without manual tokens or env variables.
 - `sex start --debug` provides User UI and Control Room.
 - LaunchAgent starts after macOS login and has no terminal dependency.
+
+## Answer
+
+Implemented the `sex` lifecycle commands and LaunchAgent setup, including harness preflight, browser pairing, and normal/debug service modes.

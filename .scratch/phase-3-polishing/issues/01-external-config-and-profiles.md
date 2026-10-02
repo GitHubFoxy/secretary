@@ -1,7 +1,7 @@
 # External config and Profiles
 
 Type: task
-Status: ready-for-human
+Status: resolved
 Blocked by:
 
 ## Work

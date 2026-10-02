@@ -1,7 +1,7 @@
 # Event log and retention
 
 Type: task
-Status: ready-for-human
+Status: resolved
 Blocked by: 01
 
 ## Work

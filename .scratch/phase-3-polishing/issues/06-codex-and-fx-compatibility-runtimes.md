@@ -1,7 +1,7 @@
 # Codex and fx compatibility runtimes
 
 Type: task
-Status: ready-for-human
+Status: resolved
 Blocked by: 01, 02, 03
 
 ## Work
@@ -19,3 +19,7 @@ Upgrade Codex and fx adapters to the shared harness contract. Materialize effect
 - Codex and fx pass the shared harness compatibility suite.
 - Control Room identifies delivery as `workspace_instructions`.
 - Unavailable harness causes explicit dispatch failure, never silent fallback.
+
+## Answer
+
+Implemented the shared Codex/fx ACP compatibility path, managed `AGENTS.md` Profile delivery and fx interrupt-and-continue steering. Both adapters use the shared compatibility tests.

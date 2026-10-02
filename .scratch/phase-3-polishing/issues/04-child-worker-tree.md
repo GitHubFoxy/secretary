@@ -1,7 +1,7 @@
 # Child Worker tree
 
 Type: task
-Status: ready-for-human
+Status: resolved
 Blocked by: 03
 
 ## Work
