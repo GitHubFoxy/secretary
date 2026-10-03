@@ -261,8 +261,244 @@ func TestACPRuntimeNormalizesRichActivityWithoutRawThought(t *testing.T) {
 	if activity := seen[ActivityToolCall]; activity.Tool != "list_workers" || string(activity.Arguments) != `{"scope":"current"}` {
 		t.Fatalf("tool call=%#v", activity)
 	}
-	if activity := seen[ActivityToolResult]; activity.Tool != "list_workers" || activity.Result == "" {
+	if activity := seen[ActivityToolResult]; activity.Tool != "list_workers" || activity.Result == "" || activity.Status != "completed" {
 		t.Fatalf("tool result=%#v", activity)
+	}
+}
+
+func TestACPToolTrackerSeparatesIdentityProgressAndLifecycle(t *testing.T) {
+	tracker := newACPToolTracker()
+	for _, title := range []string{"Running", "Waiting for", "Reading", "list_workers"} {
+		for _, kind := range []string{"tool_call", "tool_call_update", "tool_result"} {
+			got := tracker.observe(kind, map[string]any{"title": title, "status": "completed", "rawOutput": map[string]string{"result": "synthetic output"}})
+			if len(got) != 0 {
+				t.Fatalf("title-only %s event %q invented a tool: %#v", kind, title, got)
+			}
+		}
+	}
+
+	if got := tracker.observe("tool_result", map[string]any{"name": "bash", "status": "in_progress"}); len(got) != 0 {
+		t.Fatalf("nonterminal tool_result became a start: %#v", got)
+	}
+
+	start := tracker.observe("tool_call", map[string]any{
+		"toolCallId": "read-call-1", "name": "read", "title": "Running", "status": "in_progress",
+		"rawInput": map[string]any{"path": "src/config.toml"},
+	})
+	if len(start) != 1 || start[0].Kind != ActivityToolCall || start[0].Tool != "read" {
+		t.Fatalf("start=%#v", start)
+	}
+	if duplicate := tracker.observe("tool_call", map[string]any{"toolCallId": "read-call-1", "name": "read", "title": "Reading", "rawInput": map[string]any{"path": "src/config.toml"}}); len(duplicate) != 0 {
+		t.Fatalf("replayed start created another invocation: %#v", duplicate)
+	}
+	finished := tracker.observe("tool_call_update", map[string]any{"toolCallId": "read-call-1", "title": "Reading", "status": "completed"})
+	if len(finished) != 1 || finished[0].Kind != ActivityToolResult || finished[0].Tool != "read" || finished[0].Status != "completed" || string(finished[0].Arguments) != string(start[0].Arguments) {
+		t.Fatalf("sparse completion=%#v", finished)
+	}
+	if duplicate := tracker.observe("tool_call_update", map[string]any{"toolCallId": "read-call-1", "title": "Reading", "status": "completed"}); len(duplicate) != 0 {
+		t.Fatalf("repeated completion was emitted: %#v", duplicate)
+	}
+
+	failedStart := tracker.observe("tool_call", map[string]any{"toolCallId": "error-call", "name": "bash", "status": "in_progress", "rawInput": map[string]string{"command": "make test"}})
+	failed := tracker.observe("tool_call_update", map[string]any{"toolCallId": "error-call", "title": "Running", "status": "failed", "error": "synthetic failure"})
+	if len(failedStart) != 1 || len(failed) != 1 || failed[0].Tool != "bash" || failed[0].Status != "failed" || failed[0].Error != "synthetic failure" {
+		t.Fatalf("failure lifecycle start=%#v finish=%#v", failedStart, failed)
+	}
+}
+
+func TestACPToolTrackerKeepsDistinctSameNameInvocationsAndRejectsAmbiguousUpdates(t *testing.T) {
+	tracker := newACPToolTracker()
+	for _, id := range []string{"bash-call-1", "bash-call-2"} {
+		got := tracker.observe("tool_call", map[string]any{"toolCallId": id, "name": "bash", "status": "in_progress", "rawInput": map[string]string{"command": id}})
+		if len(got) != 1 || got[0].Kind != ActivityToolCall {
+			t.Fatalf("start %s=%#v", id, got)
+		}
+	}
+	if got := tracker.observe("tool_call_update", map[string]any{"title": "Running", "status": "completed"}); len(got) != 0 {
+		t.Fatalf("ambiguous id-less update was correlated by tool name: %#v", got)
+	}
+	for _, id := range []string{"bash-call-1", "bash-call-2"} {
+		got := tracker.observe("tool_call_update", map[string]any{"toolCallId": id, "status": "completed"})
+		if len(got) != 1 || got[0].Kind != ActivityToolResult || got[0].Tool != "bash" || string(got[0].Arguments) != `{"command":"`+id+`"}` {
+			t.Fatalf("completion %s=%#v", id, got)
+		}
+	}
+}
+
+func TestACPToolTrackerKeepsConcurrentIdlessSameNameInvocationsDistinct(t *testing.T) {
+	tracker := newACPToolTracker()
+	first := tracker.observe("tool_call", map[string]any{"name": "bash", "status": "in_progress", "rawInput": map[string]string{"command": "make test"}})
+	second := tracker.observe("tool_call", map[string]any{"name": "bash", "status": "in_progress", "rawInput": map[string]string{"command": "make lint"}})
+	if len(first) != 1 || len(second) != 1 || first[0].Kind != ActivityToolCall || second[0].Kind != ActivityToolCall {
+		t.Fatalf("concurrent same-name starts first=%#v second=%#v", first, second)
+	}
+	if string(first[0].Arguments) != `{"command":"make test"}` || string(second[0].Arguments) != `{"command":"make lint"}` {
+		t.Fatalf("invocation arguments crossed: first=%s second=%s", first[0].Arguments, second[0].Arguments)
+	}
+	ambiguous := tracker.observe("tool_call_update", map[string]any{"name": "bash", "status": "in_progress", "rawInput": map[string]string{"command": "must not bind"}})
+	if len(ambiguous) != 0 || len(tracker.active) != 2 {
+		t.Fatalf("ambiguous id-less update was guessed into an invocation: events=%#v active=%d", ambiguous, len(tracker.active))
+	}
+	if string(tracker.active[0].arguments) != `{"command":"make test"}` || string(tracker.active[1].arguments) != `{"command":"make lint"}` {
+		t.Fatalf("ambiguous update overwrote active arguments: %s, %s", tracker.active[0].arguments, tracker.active[1].arguments)
+	}
+}
+
+func TestACPToolTrackerDoesNotRegressStartedStateOnSparseReplays(t *testing.T) {
+	for _, replay := range []string{"pending", "queued", "unrecognized"} {
+		t.Run(replay, func(t *testing.T) {
+			tracker := newACPToolTracker()
+			start := tracker.observe("tool_call", map[string]any{"toolCallId": "running-call", "name": "bash", "status": "in_progress"})
+			if len(start) != 1 || start[0].Kind != ActivityToolCall {
+				t.Fatalf("initial start=%#v", start)
+			}
+			if got := tracker.observe("tool_call_update", map[string]any{"toolCallId": "running-call", "status": replay}); len(got) != 0 {
+				t.Fatalf("%s replay emitted activity: %#v", replay, got)
+			}
+			if got := tracker.observe("tool_call_update", map[string]any{"toolCallId": "running-call", "status": "in_progress"}); len(got) != 0 {
+				t.Fatalf("%s replay caused duplicate start: %#v", replay, got)
+			}
+		})
+	}
+}
+
+func TestACPToolTrackerDeduplicatesIdlessStatusButKeepsNewInvocation(t *testing.T) {
+	tracker := newACPToolTracker()
+	start := func(command string) []Activity {
+		return tracker.observe("tool_call", map[string]any{"name": "bash", "status": "in_progress", "rawInput": map[string]string{"command": command}})
+	}
+	finish := func() []Activity {
+		return tracker.observe("tool_call_update", map[string]any{"name": "bash", "title": "Running", "status": "completed"})
+	}
+	if got := start("make test"); len(got) != 1 {
+		t.Fatalf("first start=%#v", got)
+	}
+	if got := finish(); len(got) != 1 || got[0].Tool != "bash" {
+		t.Fatalf("first completion=%#v", got)
+	}
+	if got := finish(); len(got) != 0 {
+		t.Fatalf("equivalent id-less completion repeated: %#v", got)
+	}
+	if got := start("make lint"); len(got) != 1 {
+		t.Fatalf("same-name second invocation was suppressed: %#v", got)
+	}
+	if got := finish(); len(got) != 1 || got[0].Tool != "bash" {
+		t.Fatalf("second completion=%#v", got)
+	}
+}
+
+func TestACPToolTrackerHonorsInitialLifecycleStatus(t *testing.T) {
+	for _, test := range []struct {
+		status string
+		want   ActivityKind
+	}{
+		{"pending", ""},
+		{"queued", ""},
+		{"in_progress", ActivityToolCall},
+		{"completed", ActivityToolResult},
+		{"failed", ActivityToolResult},
+		{"canceled", ActivityToolResult},
+		{"", ActivityToolCall}, // ACP tool_call itself proves start when status is absent.
+	} {
+		t.Run("initial_"+test.status, func(t *testing.T) {
+			tracker := newACPToolTracker()
+			got := tracker.observe("tool_call", map[string]any{"toolCallId": "initial-" + test.status, "name": "bash", "status": test.status})
+			if test.want == "" {
+				if len(got) != 0 {
+					t.Fatalf("initial status %q emitted activity: %#v", test.status, got)
+				}
+				return
+			}
+			if len(got) != 1 || got[0].Kind != test.want {
+				t.Fatalf("initial status %q activity=%#v want kind %q", test.status, got, test.want)
+			}
+			if test.want == ActivityToolResult && got[0].Status != test.status {
+				t.Fatalf("initial terminal status changed: %#v", got[0])
+			}
+		})
+	}
+}
+
+func TestACPToolTrackerPendingTransitionsDoNotInventStarts(t *testing.T) {
+	tracker := newACPToolTracker()
+	queued := map[string]any{"toolCallId": "queued-success", "name": "bash", "status": "queued", "rawInput": map[string]string{"command": "make test"}}
+	if got := tracker.observe("tool_call", queued); len(got) != 0 {
+		t.Fatalf("queued call emitted a start: %#v", got)
+	}
+	for index := 0; index < 2; index++ {
+		got := tracker.observe("tool_call_update", map[string]any{"toolCallId": "queued-success", "status": "in_progress"})
+		if index == 0 && (len(got) != 1 || got[0].Kind != ActivityToolCall) {
+			t.Fatalf("confirmed running transition=%#v", got)
+		}
+		if index == 1 && len(got) != 0 {
+			t.Fatalf("repeated running transition emitted another start: %#v", got)
+		}
+	}
+	if got := tracker.observe("tool_call_update", map[string]any{"toolCallId": "queued-success", "status": "completed"}); len(got) != 1 || got[0].Kind != ActivityToolResult || got[0].Status != "completed" {
+		t.Fatalf("queued -> running -> completed=%#v", got)
+	}
+
+	failedTracker := newACPToolTracker()
+	if got := failedTracker.observe("tool_call", map[string]any{"toolCallId": "queued-failure", "name": "bash", "status": "queued"}); len(got) != 0 {
+		t.Fatalf("queued failure emitted start: %#v", got)
+	}
+	if got := failedTracker.observe("tool_call_update", map[string]any{"toolCallId": "queued-failure", "status": "failed"}); len(got) != 1 || got[0].Kind != ActivityToolResult || got[0].Status != "failed" {
+		t.Fatalf("queued -> failed=%#v", got)
+	}
+}
+
+func TestACPToolTrackerDeduplicatesStandaloneTerminalIDs(t *testing.T) {
+	tracker := newACPToolTracker()
+	for _, kind := range []string{"tool_call_update", "tool_result"} {
+		for _, id := range []string{kind + "-standalone-1", kind + "-standalone-2"} {
+			frame := map[string]any{"toolCallId": id, "name": "read", "status": "completed", "rawOutput": map[string]string{"result": "synthetic"}}
+			first := tracker.observe(kind, frame)
+			if len(first) != 1 || first[0].Kind != ActivityToolResult {
+				t.Fatalf("standalone %s terminal %s=%#v", kind, id, first)
+			}
+			if repeated := tracker.observe(kind, frame); len(repeated) != 0 {
+				t.Fatalf("%s terminal replay %s=%#v", kind, id, repeated)
+			}
+		}
+	}
+}
+
+func TestACPToolTrackerRefreshesOnlyPresentSparseArguments(t *testing.T) {
+	tracker := newACPToolTracker()
+	start := tracker.observe("tool_call", map[string]any{"toolCallId": "sparse-change", "name": "bash", "status": "in_progress", "rawInput": map[string]string{"command": "initial"}})
+	if len(start) != 1 {
+		t.Fatalf("start=%#v", start)
+	}
+	if got := tracker.observe("tool_call_update", map[string]any{"toolCallId": "sparse-change", "status": "in_progress", "rawInput": map[string]string{"command": "updated later"}}); len(got) != 0 {
+		t.Fatalf("argument refresh emitted duplicate start: %#v", got)
+	}
+	if got := tracker.observe("tool_call_update", map[string]any{"toolCallId": "sparse-change", "status": "in_progress"}); len(got) != 0 {
+		t.Fatalf("sparse update emitted activity: %#v", got)
+	}
+	finished := tracker.observe("tool_call_update", map[string]any{"toolCallId": "sparse-change", "status": "completed"})
+	if len(finished) != 1 || string(finished[0].Arguments) != `{"command":"updated later"}` {
+		t.Fatalf("latest available arguments were not retained: %#v", finished)
+	}
+
+	preserve := newACPToolTracker()
+	preserve.observe("tool_call", map[string]any{"toolCallId": "sparse-missing", "name": "bash", "status": "in_progress", "rawInput": map[string]string{"command": "keep this"}})
+	completed := preserve.observe("tool_call_update", map[string]any{"toolCallId": "sparse-missing", "status": "completed"})
+	if len(completed) != 1 || string(completed[0].Arguments) != `{"command":"keep this"}` {
+		t.Fatalf("absent arguments overwrote invocation input: %#v", completed)
+	}
+}
+
+func TestACPToolTrackerDedupeKeysDoNotRetainRawOutput(t *testing.T) {
+	tracker := newACPToolTracker()
+	rawOutput := strings.Repeat("synthetic-large-output-", 2000)
+	tracker.observe("tool_result", map[string]any{"name": "bash", "status": "completed", "rawOutput": rawOutput, "error": "synthetic-sensitive-error"})
+	if len(tracker.idlessTerminalFrames) != 1 {
+		t.Fatalf("terminal digest entries=%d", len(tracker.idlessTerminalFrames))
+	}
+	for key := range tracker.idlessTerminalFrames {
+		if strings.Contains(key, "synthetic-large-output") || strings.Contains(key, "synthetic-sensitive-error") || len(key) > 128 {
+			t.Fatalf("dedupe key retained raw terminal content (%d bytes)", len(key))
+		}
 	}
 }
 
@@ -1046,8 +1282,8 @@ func TestFakeACPProcess(t *testing.T) {
 				}
 			} else if os.Getenv("ACP_RICH_ACTIVITY") == "1" {
 				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "agent_thought_chunk", "content": map[string]string{"type": "text", "text": "raw internal thought"}}}})
-				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "tool_call", "title": "list_workers", "rawInput": map[string]string{"scope": "current"}}}})
-				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "tool_call_update", "title": "list_workers", "status": "completed", "rawOutput": map[string]string{"status": "ok"}}}})
+				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "tool_call", "toolCallId": "fixture-call-1", "name": "list_workers", "title": "Running", "status": "in_progress", "rawInput": map[string]string{"scope": "current"}}}})
+				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "fixture-call-1", "title": "Reading", "status": "completed", "rawOutput": map[string]string{"status": "ok"}}}})
 			} else {
 				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"sessionId": "fake-session", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "fake activity"}}}})
 			}

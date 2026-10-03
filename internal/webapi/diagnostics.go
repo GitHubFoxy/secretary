@@ -82,11 +82,11 @@ func parseHarnessDiagnostic(line []byte, sequence int) (harnessDiagnosticDetail,
 		if detail.SessionUpdate == "" {
 			detail.SessionUpdate = strings.TrimSpace(diagnosticValueString(params["sessionUpdate"]))
 		}
-		detail.Tool = firstDiagnosticString(update, "title", "name", "tool")
+		detail.Tool = firstDiagnosticString(update, "name", "tool_name", "tool")
 		detail.Status = diagnosticValueString(update["status"])
 	} else {
 		detail.SessionUpdate = strings.TrimSpace(diagnosticValueString(params["sessionUpdate"]))
-		detail.Tool = firstDiagnosticString(params, "title", "name", "tool")
+		detail.Tool = firstDiagnosticString(params, "name", "tool_name", "tool")
 		detail.Status = diagnosticValueString(params["status"])
 	}
 	if isThoughtUpdate(detail.SessionUpdate) {

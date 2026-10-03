@@ -98,6 +98,7 @@ func sanitizeToolValue(value any) (any, bool) {
 				return string(encoded), true
 			}
 		}
+		current = redactToolSensitiveText(current)
 		if unsafeToolText(current) {
 			return nil, false
 		}
@@ -126,7 +127,7 @@ func forbiddenToolKey(key string) bool {
 }
 
 func unsafeToolText(value string) bool {
-	lower := strings.ToLower(value)
+	lower := strings.ToLower(toolRedactedValue.ReplaceAllString(value, ""))
 	for _, marker := range []string{
 		"chain-of-thought", "chain of thought", "chain_of_thought", "raw thought", "raw_thought",
 		"internal reasoning", "internal_reasoning", "thought process", "thought_process", "<think>", "</think>",

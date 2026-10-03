@@ -37,6 +37,7 @@
 - [Ticket 06b](issues/06b-dispatch-resolver-and-binding.md) закрепляет immutable Worker binding транзакционным сравнением Project revision, Node state и observed inventory; replay `worker.create` обходит текущие Project и inventory.
 - [Ticket 17](issues/17-generate-worker-topic-titles.md) использует отдельный OpenCode v2 для названий Telegram Topics. Harness/model/effort и внешний `title-generation-prompt.md` задаются в `[telegram]`, не меняют Secretary/Worker profiles и имеют детерминированный fallback.
 - [Ticket 19](issues/19-show-worker-prompt-in-topic.md) публикует dispatched intent первым сообщением Worker Topic через durable outbox; флаг доставки в TopicMapping предотвращает дубли при restart/replay и сохраняется после отправки последней части.
+- [Ticket 20](issues/20-map-acp-progress-titles-correctly.md), `resolved`: отделяет explicit ACP tool identity от progress `title`, коррелирует lifecycle updates по invocation и показывает в Telegram/Web только безопасный компактный preview без tool output.
 
 ## Work order
 
@@ -73,7 +74,7 @@
 - [18: Configure the Worker Topic title model](issues/18-configure-topic-title-model.md), `resolved`. Секция `[telegram]` задаёт `title_model = "gpt-6-luna"` и `title_model_reasoning = "minimal"`; validation и defaults независимы от Secretary/Worker profiles.
 - [17: Generate readable Worker Topic titles](issues/17-generate-worker-topic-titles.md), `resolved`. Название получается из dispatched intent через OpenCode v2 `--standalone`; `title_harness` и `title_prompt` явно задаются в config. Внешний prompt поддерживает reload, failures/timeout дают 60-rune fallback. Go/race/vet/build и native OpenCode с локальным HTTP fixture проверены.
 - [19: Show the dispatched Worker prompt in its Topic](issues/19-show-worker-prompt-in-topic.md), `resolved`. Показывает задачу без внутренних инструкций; retry/replay и порядок сообщений покрыты тестами.
-- [20: Map ACP progress titles correctly](issues/20-map-acp-progress-titles-correctly.md) отделяет статусы от настоящих tool events.
+- [20: Map ACP progress titles correctly](issues/20-map-acp-progress-titles-correctly.md), `resolved`.
 - [21: Keep Worker progress out of the final Result](issues/21-separate-worker-progress-from-telegram-result.md) исправляет смешивание progress, потерю переносов и неотформатированные Markdown-ссылки.
 - [22: Decide how to deliver oversized Worker messages](issues/22-investigate-oversized-telegram-messages.md) фиксирует диагностику и выбор поведения для длинных сообщений.
 

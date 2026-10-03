@@ -497,6 +497,26 @@ func TestSecretaryEventsAreThrottledAndWorkerEventsAreReadable(t *testing.T) {
 	}
 }
 
+func TestWorkerToolEventsRenderActualNamePreviewAndLifecycle(t *testing.T) {
+	tool := "mcp__filesystem__read_file_with_a_long_but_real_name"
+	for _, test := range []struct {
+		kind, marker string
+	}{
+		{"worker.tool_started", "▶"},
+		{"worker.tool_finished", "✓"},
+		{"worker.tool_failed", "✗"},
+	} {
+		got := renderWorkerEvent(Event{Kind: test.kind, Tool: tool, ToolPreview: "src/config.toml", Text: "synthetic tool output must not appear"})
+		want := test.marker + " " + tool + " src/config.toml"
+		if got != want || strings.Contains(got, "Worker запускает") || strings.Contains(got, "synthetic") {
+			t.Fatalf("rendered tool event=%q want=%q", got, want)
+		}
+	}
+	if got := renderWorkerEvent(Event{Kind: "worker.tool_started", ToolPreview: "src/config.toml"}); got != "" {
+		t.Fatalf("missing tool identity rendered as event: %q", got)
+	}
+}
+
 func TestImportantWorkerStatesAndRestartReplay(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "telegram.json")
 	transport := &fakeTransport{updates: []Update{{ID: 11, Message: &Message{ChatID: 100, FromID: 100, Text: "hello"}}}}

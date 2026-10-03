@@ -515,6 +515,17 @@ func TestTicket11SanitizerRedactsArbitraryNestedDiagnosticPayload(t *testing.T) 
 			t.Fatalf("raw diagnostic leaked %q: %s", secret, detailText)
 		}
 	}
+
+	actual, ok := parseHarnessDiagnostic([]byte(`{"jsonrpc":"2.0","params":{"update":{"sessionUpdate":"tool_call","title":"Running","name":"read","status":"in_progress"}}}`), 2)
+	if !ok || actual.Tool != "read" || actual.Status != "in_progress" {
+		t.Fatalf("diagnostic lost actual identity/lifecycle: %#v ok=%v", actual, ok)
+	}
+	for _, title := range []string{"Running", "Waiting for", "Reading", "list_workers"} {
+		statusOnly, ok := parseHarnessDiagnostic([]byte(`{"jsonrpc":"2.0","params":{"update":{"sessionUpdate":"tool_call_update","title":"`+title+`","status":"completed"}}}`), 3)
+		if !ok || statusOnly.Tool != "" || statusOnly.Status != "completed" {
+			t.Fatalf("title-only diagnostic %q was used as tool identity: %#v ok=%v", title, statusOnly, ok)
+		}
+	}
 }
 
 func TestTicket11ExportIsAuthorizedRedactedDownload(t *testing.T) {

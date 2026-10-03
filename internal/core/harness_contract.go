@@ -328,13 +328,16 @@ type ToolCall struct {
 	CallID    string          `json:"call_id"`
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+	Preview   string          `json:"preview,omitempty"`
 }
 
 type ToolResult struct {
-	CallID string `json:"call_id,omitempty"`
-	Name   string `json:"name,omitempty"`
-	Output string `json:"output,omitempty"`
-	Error  string `json:"error,omitempty"`
+	CallID  string `json:"call_id,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Output  string `json:"output,omitempty"`
+	Error   string `json:"error,omitempty"`
+	Status  string `json:"status,omitempty"`
+	Preview string `json:"preview,omitempty"`
 }
 
 type SubagentActivity struct {

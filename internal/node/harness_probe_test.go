@@ -407,6 +407,53 @@ func TestNormalizeRuntimeActivitySanitizesNestedToolPayloads(t *testing.T) {
 	}
 }
 
+func TestToolSanitizersPreserveMultilineContentWhileRedactingSecrets(t *testing.T) {
+	command := "python3 - <<'PY'\n  print('safe block')\nTOKEN=synthetic-command-password\nPY"
+	arguments, _ := json.Marshal(map[string]string{"command": command})
+	sanitizedArguments, ok := SanitizeToolArguments(arguments)
+	if !ok {
+		t.Fatal("multiline command was rejected")
+	}
+	var decodedArguments map[string]string
+	if err := json.Unmarshal(sanitizedArguments, &decodedArguments); err != nil {
+		t.Fatal(err)
+	}
+	wantCommand := "python3 - <<'PY'\n  print('safe block')\nTOKEN=[redacted]\nPY"
+	if decodedArguments["command"] != wantCommand || strings.Contains(decodedArguments["command"], "synthetic-command-password") {
+		t.Fatalf("sanitized command lost whitespace or retained credential: %q", decodedArguments["command"])
+	}
+
+	structured := `{"content":"first line\n  indented second line\nTOKEN=synthetic-output-password"}`
+	cleanOutput, ok := SanitizeToolResult(structured)
+	if !ok {
+		t.Fatal("structured multiline tool output was rejected")
+	}
+	var decodedOutput map[string]string
+	if err := json.Unmarshal([]byte(cleanOutput), &decodedOutput); err != nil {
+		t.Fatal(err)
+	}
+	wantOutput := "first line\n  indented second line\nTOKEN=[redacted]"
+	if decodedOutput["content"] != wantOutput || strings.Contains(decodedOutput["content"], "synthetic-output-password") {
+		t.Fatalf("sanitized structured output lost whitespace or retained credential: %q", decodedOutput["content"])
+	}
+}
+
+func TestNormalizeRuntimeActivityPreservesToolLifecycleAndSafePreview(t *testing.T) {
+	metadata := core.ActivityMetadata{EventID: "event", Node: "node", HarnessInstanceID: "node/fx", AttemptID: "attempt", Sequence: 1, ObservedAt: time.Now().UTC()}
+	capabilities := core.HarnessCapabilities{Activity: []core.ActivityCapability{core.ActivityToolCall, core.ActivityToolResult}}
+	call, ok := normalizeRuntimeActivity(Activity{Kind: ActivityToolCall, Tool: "read", Arguments: json.RawMessage(`{"path":"/worker/project/src/config.toml"}`)}, metadata, capabilities, "/worker/project")
+	if !ok || call.ToolCall.Name != "read" || call.ToolCall.Preview != "src/config.toml" {
+		t.Fatalf("normalized tool call=%#v ok=%v", call, ok)
+	}
+	finished, ok := normalizeRuntimeActivity(Activity{Kind: ActivityToolResult, Tool: "bash", Arguments: json.RawMessage(`{"command":"make test"}`), Status: "failed", Error: "synthetic failure"}, metadata, capabilities)
+	if !ok || finished.ToolResult.Name != "bash" || finished.ToolResult.Status != "failed" || finished.ToolResult.Preview != "make test" || finished.ToolResult.Output != "" {
+		t.Fatalf("normalized tool failure=%#v ok=%v", finished, ok)
+	}
+	if activity, ok := normalizeRuntimeActivity(Activity{Kind: ActivityToolCall, Text: "Running"}, metadata, capabilities); ok || activity.Kind != "" {
+		t.Fatalf("progress title was used as missing tool identity: %#v", activity)
+	}
+}
+
 func TestNormalizeRuntimeActivityNeverSynthesizesUnsupportedEvents(t *testing.T) {
 	metadata := core.ActivityMetadata{EventID: "event", Node: "node", HarnessInstanceID: "node/fx", AttemptID: "attempt", Sequence: 1, ObservedAt: time.Now().UTC()}
 	capabilities := core.HarnessCapabilities{Activity: []core.ActivityCapability{core.ActivityAssistantTextDelta, core.ActivityPermissionRequest, core.ActivityUserInputRequest}}

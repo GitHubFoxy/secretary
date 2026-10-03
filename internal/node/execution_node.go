@@ -531,7 +531,7 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope) {
 
 func (n *ExecutionNode) publishRuntimeActivity(envelope WorkerEnvelope, item Activity) {
 	capabilities := capabilitiesForObservedActivity(envelope.HarnessInstance, item.Kind)
-	activity, ok := normalizeRuntimeActivity(item, n.nextMetadata(envelope), capabilities)
+	activity, ok := normalizeRuntimeActivity(item, n.nextMetadata(envelope), capabilities, envelope.Workspace)
 	if !ok {
 		return
 	}
@@ -594,14 +594,18 @@ func (n *ExecutionNode) rebindPendingRequests(attemptID string, session Session)
 
 // NormalizeRuntimeActivity is the adapter boundary for normalized activity.
 // Unsupported or unknown runtime observations are never synthesized.
-func NormalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, capabilities core.HarnessCapabilities) (core.Activity, bool) {
-	return normalizeRuntimeActivity(item, metadata, capabilities)
+func NormalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, capabilities core.HarnessCapabilities, workspace ...string) (core.Activity, bool) {
+	return normalizeRuntimeActivity(item, metadata, capabilities, workspace...)
 }
 
 // normalizeRuntimeActivity is intentionally allow-list based. An adapter event
 // with no normalized representation is dropped rather than turned into fake
 // status or progress.
-func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, capabilities core.HarnessCapabilities) (core.Activity, bool) {
+func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, capabilities core.HarnessCapabilities, workspace ...string) (core.Activity, bool) {
+	workspacePath := ""
+	if len(workspace) > 0 {
+		workspacePath = workspace[0]
+	}
 	var activity core.Activity
 	switch item.Kind {
 	case ActivityText:
@@ -625,9 +629,6 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 		activity = core.Activity{Metadata: metadata, Kind: core.ActivityThinkingSummary, Text: summary}
 	case ActivityToolCall:
 		tool := strings.TrimSpace(item.Tool)
-		if tool == "" {
-			tool = strings.TrimSpace(item.Text)
-		}
 		if !capabilities.SupportsActivity(core.ActivityToolCall) || tool == "" {
 			return core.Activity{}, false
 		}
@@ -635,13 +636,10 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 		if !safe {
 			return core.Activity{}, false
 		}
-		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolCall, ToolCall: &core.ToolCall{Name: tool, Arguments: arguments}}
+		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolCall, ToolCall: &core.ToolCall{Name: tool, Arguments: arguments, Preview: ToolArgumentPreview(tool, arguments, workspacePath)}}
 	case ActivityToolResult:
 		tool := strings.TrimSpace(item.Tool)
-		if tool == "" {
-			tool = strings.TrimSpace(item.Text)
-		}
-		if !capabilities.SupportsActivity(core.ActivityToolResult) || tool == "" || strings.TrimSpace(item.Result) == "" {
+		if !capabilities.SupportsActivity(core.ActivityToolResult) || tool == "" {
 			return core.Activity{}, false
 		}
 		result, safe := SanitizeToolResult(item.Result)
@@ -652,7 +650,10 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 		if !safe {
 			return core.Activity{}, false
 		}
-		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolResult, ToolResult: &core.ToolResult{Name: tool, Output: result, Error: errorText}}
+		if result == "" && errorText == "" && strings.TrimSpace(item.Status) == "" {
+			return core.Activity{}, false
+		}
+		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolResult, ToolResult: &core.ToolResult{Name: tool, Output: result, Error: errorText, Status: item.Status, Preview: ToolArgumentPreview(tool, item.Arguments, workspacePath)}}
 	case ActivityStatus:
 		if !capabilities.SupportsActivity(core.ActivityStatus) || strings.TrimSpace(item.Text) == "" {
 			return core.Activity{}, false

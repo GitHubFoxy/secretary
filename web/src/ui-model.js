@@ -76,6 +76,17 @@ export function formatActivityPayload(event) {
     try { value = JSON.parse(payload); } catch (_) { value = payload; }
   }
   if (value === undefined) value = event || {};
+  if (value && typeof value === 'object' && (value.kind === 'tool_call' || value.kind === 'tool_result')) {
+    const toolCall = value.tool_call || {};
+    const toolResult = value.tool_result || {};
+    const tool = toolCall.name || toolResult.name || value.tool || value.name || '';
+    if (!tool) return '';
+    const preview = toolCall.preview || toolResult.preview || '';
+    const failed = value.kind === 'tool_result'
+      && (['failed', 'error', 'canceled', 'cancelled'].includes(String(toolResult.status || '').toLowerCase()) || Boolean(toolResult.error));
+    const state = value.kind === 'tool_call' ? '▶' : failed ? '✗' : '✓';
+    return `${state} ${tool}${preview ? ` ${preview}` : ''}`;
+  }
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 }
 

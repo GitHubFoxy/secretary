@@ -1243,6 +1243,7 @@ func (s *acpSession) watch() {
 		s.activitySendWG.Wait()
 		close(s.activity)
 	}()
+	toolTracker := newACPToolTracker()
 	for event := range s.client.Events() {
 		if event.Method != "session/update" {
 			continue
@@ -1289,30 +1290,248 @@ func (s *acpSession) watch() {
 			if safeRuntimeSummary(summary) {
 				emit(Activity{Kind: ActivityThinkingSummary, Summary: summary})
 			}
-		case "tool_call":
-			tool := firstString(payload, "title", "name", "tool")
-			if tool == "" {
-				continue
+		case "tool_call", "tool_call_update", "tool_result":
+			for _, activity := range toolTracker.observe(kind, payload) {
+				emit(activity)
 			}
-			emit(Activity{Kind: ActivityToolCall, Tool: tool, Arguments: jsonValue(payload, "rawInput", "input", "arguments")})
-		case "tool_call_update", "tool_result":
-			tool := firstString(payload, "title", "name", "tool")
-			if tool == "" {
-				continue
-			}
-			output := jsonValue(payload, "rawOutput", "output", "result")
-			status := valueString(payload["status"])
-			if len(output) == 0 && status != "completed" && status != "failed" && status != "error" {
-				continue
-			}
-			result := string(output)
-			if result == "" {
-				result = status
-			}
-			emit(Activity{Kind: ActivityToolResult, Tool: tool, Result: result, Error: valueString(payload["error"]), Status: status})
 		default:
 			// Unknown ACP notifications are not converted into synthetic activity.
 		}
+	}
+}
+
+type acpToolInvocation struct {
+	name      string
+	arguments json.RawMessage
+	status    string
+	done      bool
+}
+
+type acpToolTracker struct {
+	byID                 map[string]*acpToolInvocation
+	active               []*acpToolInvocation
+	idlessTerminalFrames map[string]string
+}
+
+func newACPToolTracker() *acpToolTracker {
+	return &acpToolTracker{byID: make(map[string]*acpToolInvocation), idlessTerminalFrames: make(map[string]string)}
+}
+
+func (t *acpToolTracker) observe(kind string, payload map[string]any) []Activity {
+	name := firstString(payload, "name", "tool_name", "toolName", "tool")
+	callID := firstString(payload, "toolCallId", "tool_call_id", "callId", "call_id")
+	rawStatus := strings.TrimSpace(valueString(payload["status"]))
+	status := normalizeACPToolStatus(rawStatus)
+	if rawStatus == "" && strings.TrimSpace(valueString(payload["error"])) != "" {
+		status = "failed"
+	}
+	arguments := jsonValueOptional(payload, "rawInput", "input", "arguments")
+
+	if kind == "tool_call" && name == "" {
+		return nil
+	}
+	var invocation *acpToolInvocation
+	ambiguous := false
+	if kind == "tool_call" {
+		if callID != "" {
+			invocation = t.byID[callID]
+		}
+	} else {
+		invocation, ambiguous = t.findInvocation(callID, name)
+	}
+	if ambiguous {
+		return nil // Never guess between concurrent id-less invocations.
+	}
+	if kind == "tool_call" && invocation == nil {
+		if callID != "" && t.byID[callID] != nil {
+			return nil
+		}
+		t.clearIdlessTerminalFrames(name)
+		if rawStatus == "" && status == "" {
+			// A tool_call frame with no status proves the call was issued.
+			status = "in_progress"
+		} else if rawStatus != "" && status == "" {
+			status = "unknown"
+		}
+		invocation = &acpToolInvocation{name: name, arguments: arguments, status: status}
+		if callID != "" {
+			t.byID[callID] = invocation
+		}
+		if isACPToolTerminal(status) {
+			invocation.done = true
+			if callID == "" {
+				if t.hasIdlessTerminalFrame(name, status, payload) {
+					return nil
+				}
+				t.rememberIdlessTerminalFrame(name, status, payload)
+			}
+			return []Activity{acpToolResult(name, arguments, payload, status)}
+		}
+		t.active = append(t.active, invocation)
+		if status == "in_progress" {
+			return []Activity{{Kind: ActivityToolCall, Tool: name, Arguments: arguments, Status: status}}
+		}
+		return nil
+	}
+
+	if invocation == nil {
+		if name == "" {
+			return nil
+		}
+		if status == "" && rawStatus == "" && kind == "tool_result" {
+			status = "completed"
+		} else if rawStatus != "" && status == "" {
+			status = "unknown"
+		}
+		invocation = &acpToolInvocation{name: name, arguments: arguments, status: status}
+		if isACPToolTerminal(status) {
+			invocation.done = true
+			if callID != "" {
+				t.byID[callID] = invocation
+			} else {
+				if t.hasIdlessTerminalFrame(name, status, payload) {
+					return nil
+				}
+				t.rememberIdlessTerminalFrame(name, status, payload)
+			}
+			return []Activity{acpToolResult(name, arguments, payload, status)}
+		}
+		if status == "in_progress" && kind == "tool_call_update" {
+			if callID != "" {
+				t.byID[callID] = invocation
+			}
+			t.active = append(t.active, invocation)
+			return []Activity{{Kind: ActivityToolCall, Tool: name, Arguments: arguments, Status: status}}
+		}
+		if callID != "" {
+			t.byID[callID] = invocation
+		}
+		if status != "" {
+			t.active = append(t.active, invocation)
+		}
+		return nil
+	}
+	if invocation.done {
+		return nil // Replays of a terminal invocation are not new tool calls.
+	}
+	if len(arguments) > 0 {
+		invocation.arguments = arguments
+	}
+	if status == "" && rawStatus != "" {
+		status = "unknown"
+	}
+	if status == "" && rawStatus == "" && kind == "tool_result" {
+		status = "completed"
+	}
+	if kind == "tool_call" && rawStatus == "" && status == "" {
+		status = "in_progress"
+	}
+	switch status {
+	case "pending", "queued", "unknown", "":
+		if status != "" && invocation.status != "in_progress" {
+			invocation.status = status
+		}
+		return nil
+	case "in_progress":
+		if invocation.status == "in_progress" {
+			return nil
+		}
+		invocation.status = status
+		return []Activity{{Kind: ActivityToolCall, Tool: invocation.name, Arguments: invocation.arguments, Status: status}}
+	case "completed", "failed", "canceled":
+		invocation.done = true
+		invocation.status = status
+		t.active = removeACPToolInvocation(t.active, invocation)
+		if callID == "" {
+			t.rememberIdlessTerminalFrame(invocation.name, status, payload)
+		}
+		return []Activity{acpToolResult(invocation.name, invocation.arguments, payload, status)}
+	default:
+		return nil
+	}
+}
+
+func isACPToolTerminal(status string) bool {
+	return status == "completed" || status == "failed" || status == "canceled"
+}
+
+func (t *acpToolTracker) idlessFrameKey(name, status string, payload map[string]any) string {
+	frame := struct {
+		Name   string          `json:"name"`
+		Status string          `json:"status"`
+		Output json.RawMessage `json:"output,omitempty"`
+		Error  string          `json:"error,omitempty"`
+	}{Name: name, Status: status, Output: jsonValueOptional(payload, "rawOutput", "output", "result"), Error: valueString(payload["error"])}
+	encoded, _ := json.Marshal(frame)
+	digest := sha256.Sum256(encoded)
+	return fmt.Sprintf("%x", digest[:])
+}
+
+func (t *acpToolTracker) hasIdlessTerminalFrame(name, status string, payload map[string]any) bool {
+	_, exists := t.idlessTerminalFrames[t.idlessFrameKey(name, status, payload)]
+	return exists
+}
+
+func (t *acpToolTracker) rememberIdlessTerminalFrame(name, status string, payload map[string]any) {
+	t.idlessTerminalFrames[t.idlessFrameKey(name, status, payload)] = name
+}
+
+func (t *acpToolTracker) clearIdlessTerminalFrames(name string) {
+	for key, frameName := range t.idlessTerminalFrames {
+		if frameName == name {
+			delete(t.idlessTerminalFrames, key)
+		}
+	}
+}
+
+func (t *acpToolTracker) findInvocation(callID, name string) (*acpToolInvocation, bool) {
+	if callID != "" {
+		return t.byID[callID], false
+	}
+	var match *acpToolInvocation
+	for _, invocation := range t.active {
+		if invocation.done || (name != "" && invocation.name != name) {
+			continue
+		}
+		if match != nil {
+			return nil, true // Ambiguous id-less update: do not bind it by name alone.
+		}
+		match = invocation
+	}
+	return match, false
+}
+
+func removeACPToolInvocation(active []*acpToolInvocation, target *acpToolInvocation) []*acpToolInvocation {
+	for index, invocation := range active {
+		if invocation == target {
+			return append(active[:index], active[index+1:]...)
+		}
+	}
+	return active
+}
+
+func acpToolResult(name string, arguments json.RawMessage, payload map[string]any, status string) Activity {
+	output := jsonValueOptional(payload, "rawOutput", "output", "result")
+	return Activity{
+		Kind: ActivityToolResult, Tool: name, Arguments: arguments, Result: string(output),
+		Error: valueString(payload["error"]), Status: status,
+	}
+}
+
+func normalizeACPToolStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "pending", "queued":
+		return strings.ToLower(strings.TrimSpace(status))
+	case "in_progress", "running", "started":
+		return "in_progress"
+	case "completed", "complete", "succeeded", "success":
+		return "completed"
+	case "failed", "error":
+		return "failed"
+	case "canceled", "cancelled":
+		return "canceled"
+	default:
+		return ""
 	}
 }
 
@@ -1326,6 +1545,13 @@ func firstString(value map[string]any, keys ...string) string {
 }
 
 func jsonValue(value map[string]any, keys ...string) json.RawMessage {
+	if item := jsonValueOptional(value, keys...); len(item) > 0 {
+		return item
+	}
+	return json.RawMessage(`{}`)
+}
+
+func jsonValueOptional(value map[string]any, keys ...string) json.RawMessage {
 	for _, key := range keys {
 		if item, ok := value[key]; ok && item != nil {
 			encoded, err := json.Marshal(item)
@@ -1334,5 +1560,5 @@ func jsonValue(value map[string]any, keys ...string) json.RawMessage {
 			}
 		}
 	}
-	return json.RawMessage(`{}`)
+	return nil
 }

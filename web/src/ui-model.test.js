@@ -89,11 +89,19 @@ test('merges replay and live sequences idempotently', () => {
   assert.deepEqual(merged.map((item) => item.id), ['a', 'b', 'c']);
 });
 
-test('observer displays the complete sanitized activity payload', () => {
-  const payload = formatActivityPayload({ kind: 'worker.activity', payload: { kind: 'tool_call', tool_call: { name: 'shell', arguments: { command: 'ls' } } } });
-  assert.match(payload, /tool_call/);
-  assert.match(payload, /shell/);
-  assert.match(payload, /command/);
+test('observer shows compact tool identity and preview without arguments or output', () => {
+  const started = formatActivityPayload({ kind: 'worker.activity', payload: { kind: 'tool_call', tool_call: { name: 'bash', preview: 'python3 - <<\'PY\' import…', arguments: { command: 'private full script' } } } });
+  assert.equal(started, "▶ bash python3 - <<'PY' import…");
+  assert.doesNotMatch(started, /arguments|private full script/);
+
+  const finished = formatActivityPayload({ kind: 'worker.activity', payload: { kind: 'tool_result', tool_result: { name: 'read', preview: 'src/config.toml', status: 'completed', output: 'sensitive file contents' } } });
+  assert.equal(finished, '✓ read src/config.toml');
+  assert.doesNotMatch(finished, /sensitive file contents|output/);
+
+  const failed = formatActivityPayload({ kind: 'worker.activity', payload: { kind: 'tool_result', tool_result: { name: 'bash', preview: 'make test', status: 'failed', error: 'private diagnostic' } } });
+  assert.equal(failed, '✗ bash make test');
+  assert.doesNotMatch(failed, /private diagnostic/);
+  assert.equal(formatActivityPayload({ payload: { kind: 'tool_call', title: 'Reading', status: 'in_progress' } }), '');
 });
 
 test('never exposes raw thinking as a Secretary stream label', () => {

@@ -292,14 +292,21 @@ func TestTelegramEventBridgeMapsDurableWorkerEventsToSafeAdapterEvents(t *testin
 
 func TestTelegramEventBridgeMapsToolActivityWithoutArgumentsOrOutput(t *testing.T) {
 	for _, tc := range []struct {
-		kind, want string
+		kind, status, want, marker string
 	}{
-		{"tool_call", "worker.tool_started"},
-		{"tool_result", "worker.tool_finished"},
+		{"tool_call", "", "worker.tool_started", "▶"},
+		{"tool_result", "completed", "worker.tool_finished", "✓"},
+		{"tool_result", "failed", "worker.tool_failed", "✗"},
 	} {
-		mapped := telegramEvent(core.Event{Kind: "attempt.activity", WorkerRef: "worker-1", Payload: []byte(`{"kind":"` + tc.kind + `","tool_call":{"name":"shell","arguments":{"token":"do-not-leak"}},"tool_result":{"name":"shell","output":"do-not-leak"}}`)})
+		mapped := telegramEvent(core.Event{Kind: "attempt.activity", WorkerRef: "worker-1", Payload: []byte(`{"kind":"` + tc.kind + `","tool_call":{"name":"shell","preview":"python3 - <<'PY' import…","arguments":{"token":"do-not-leak"}},"tool_result":{"name":"shell","preview":"make test","status":"` + tc.status + `","output":"do-not-leak"}}`)})
 		if mapped.Kind != tc.want || mapped.Tool != "shell" {
-			t.Fatalf("mapped event lost tool status: %#v", mapped)
+			t.Fatalf("mapped event lost tool lifecycle: %#v", mapped)
+		}
+		if tc.kind == "tool_call" && mapped.ToolPreview != "python3 - <<'PY' import…" {
+			t.Fatalf("tool preview=%q", mapped.ToolPreview)
+		}
+		if tc.kind == "tool_result" && mapped.ToolPreview != "make test" {
+			t.Fatalf("result preview=%q", mapped.ToolPreview)
 		}
 		transport := &bridgeTransport{}
 		adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100}, transport, &bridgeServer{})
@@ -312,8 +319,17 @@ func TestTelegramEventBridgeMapsToolActivityWithoutArgumentsOrOutput(t *testing.
 		if err := adapter.HandleEvent(context.Background(), mapped); err != nil {
 			t.Fatal(err)
 		}
-		if len(transport.sent) != 1 || !strings.Contains(transport.sent[0].Text, "shell") || strings.Contains(transport.sent[0].Text, "do-not-leak") {
-			t.Fatalf("unsafe tool progress message: %#v", transport.sent)
+		if len(transport.sent) != 1 || !strings.Contains(transport.sent[0].Text, tc.marker) || !strings.Contains(transport.sent[0].Text, "shell") || strings.Contains(transport.sent[0].Text, "do-not-leak") || strings.Contains(transport.sent[0].Text, "Worker запускает") {
+			t.Fatalf("unsafe or verbose tool progress message: %#v", transport.sent)
+		}
+	}
+}
+
+func TestTelegramEventBridgeDropsToolEventsWithoutRealIdentity(t *testing.T) {
+	for _, kind := range []string{"tool_call", "tool_result"} {
+		mapped := telegramEvent(core.Event{Kind: "attempt.activity", Payload: []byte(`{"kind":"` + kind + `","title":"Reading","status":"completed"}`)})
+		if mapped.Kind != "" || mapped.Tool != "" {
+			t.Fatalf("title-only event became a tool: %#v", mapped)
 		}
 	}
 }
