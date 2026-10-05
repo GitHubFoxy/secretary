@@ -38,6 +38,10 @@ type workerResponder interface {
 	RespondWorker(context.Context, ctl.MessageWorkerRequest) (core.WorkerDetails, error)
 }
 
+type approvalResolutionRetryer interface {
+	RetryApprovalResolution(context.Context, string, string) (core.WorkerDetails, error)
+}
+
 type workerActions interface {
 	MessageWorker(context.Context, ctl.MessageWorkerRequest) (core.WorkerDetails, error)
 	CancelWorker(context.Context, string) (core.WorkerDetails, error)
@@ -68,9 +72,12 @@ type Server struct {
 	remoteNodes        *node.ServerManager
 	workers            workerController
 	responder          workerResponder
-	actions            workerActions
-	secretaryTools     secretaryWorkerTools
-	secretary          interface {
+	// approvalAuthorizationCheckpoint is a nil-by-default test seam for deterministic revoke-race coverage.
+	approvalAuthorizationCheckpoint func()
+	actions                         workerActions
+	secretaryTools                  secretaryWorkerTools
+	secretaryReplyContract          func() string
+	secretary                       interface {
 		HandleMessage(context.Context, string) error
 	}
 	workerStates     map[string]string
@@ -167,9 +174,12 @@ func (s *Server) AttachWorkerResponder(responder workerResponder) {
 	}
 }
 func (s *Server) AttachSecretaryWorkerTools(tools secretaryWorkerTools) { s.secretaryTools = tools }
-func (s *Server) AttachUserDocument(path string)                        { s.userPath = strings.TrimSpace(path) }
-func (s *Server) AttachDiagnosticLogDir(path string)                    { s.diagnosticLogDir = strings.TrimSpace(path) }
-func (s *Server) AttachTelegramPairer(pairer TelegramPairingService)    { s.telegramPairer = pairer }
+func (s *Server) AttachSecretaryReplyContract(version func() string) {
+	s.secretaryReplyContract = version
+}
+func (s *Server) AttachUserDocument(path string)                     { s.userPath = strings.TrimSpace(path) }
+func (s *Server) AttachDiagnosticLogDir(path string)                 { s.diagnosticLogDir = strings.TrimSpace(path) }
+func (s *Server) AttachTelegramPairer(pairer TelegramPairingService) { s.telegramPairer = pairer }
 func (s *Server) AttachInternalCredential(credential string) {
 	s.internalCredential = strings.TrimSpace(credential)
 }

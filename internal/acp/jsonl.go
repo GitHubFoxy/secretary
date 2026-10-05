@@ -20,6 +20,23 @@ type Message struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 	Result  json.RawMessage `json:"result,omitempty"`
 	Error   *RPCError       `json:"error,omitempty"`
+	// Local-only FIFO fence. It is never serialized to the native protocol.
+	eventBarrier chan struct{}
+}
+
+// AcknowledgeEventBarrier is called by the event consumer after all preceding
+// notifications have been handled. It is not a native/synthetic activity.
+func (m Message) AcknowledgeEventBarrier() bool {
+	if m.eventBarrier == nil {
+		return false
+	}
+	close(m.eventBarrier)
+	return true
+}
+
+type pendingRequest struct {
+	response    chan Message
+	drainEvents bool
 }
 
 type RPCError struct {
@@ -112,10 +129,22 @@ func StartWithLogEnv(ctx context.Context, rawLog io.Writer, environment []string
 // harness primary workspace matches the dispatched Project workspace. An
 // empty dir preserves the inherited working directory.
 func StartWithLogEnvDir(ctx context.Context, rawLog io.Writer, environment []string, dir string, command string, arguments ...string) (*Client, error) {
+	return startWithProcessEnvironment(ctx, rawLog, environment, true, dir, command, arguments...)
+}
+
+// StartWithLogExactEnvDir replaces the inherited environment. Callers supply
+// the complete allowlisted environment; excluded secrets must not reappear.
+func StartWithLogExactEnvDir(ctx context.Context, rawLog io.Writer, environment []string, dir string, command string, arguments ...string) (*Client, error) {
+	return startWithProcessEnvironment(ctx, rawLog, environment, false, dir, command, arguments...)
+}
+
+func startWithProcessEnvironment(ctx context.Context, rawLog io.Writer, environment []string, inherit bool, dir string, command string, arguments ...string) (*Client, error) {
 	processCtx, cancel := context.WithCancel(ctx)
 	process := exec.CommandContext(processCtx, command, arguments...)
-	if environment != nil {
+	if inherit && environment != nil {
 		process.Env = append(os.Environ(), environment...)
+	} else if !inherit {
+		process.Env = append([]string{}, environment...)
 	}
 	if dir != "" {
 		process.Dir = dir
@@ -150,30 +179,71 @@ func (c *Client) SetServerRequestDeliveryHandler(handler ServerRequestDeliveryHa
 }
 
 func (c *Client) Request(ctx context.Context, method string, params any, result any) error {
+	return c.request(ctx, method, params, result, false)
+}
+
+// RequestDrainingEvents additionally waits for the event consumer to handle
+// every notification preceding the response. A consumer must already run.
+func (c *Client) RequestDrainingEvents(ctx context.Context, method string, params any, result any) error {
+	return c.request(ctx, method, params, result, true)
+}
+
+// RequestWithDeferredEventDrain places the same FIFO fence as
+// RequestDrainingEvents but lets the caller choose when to wait for it. The
+// caller must wait before beginning a request whose state replaces the prior
+// notification collector. This is a local ordering boundary, never a wire RPC.
+func (c *Client) RequestWithDeferredEventDrain(ctx context.Context, method string, params any, result any) (func(context.Context) error, error) {
+	return c.requestWithEventBarrier(ctx, method, params, result, true)
+}
+
+func (c *Client) request(ctx context.Context, method string, params any, result any, drainEvents bool) error {
+	drain, err := c.requestWithEventBarrier(ctx, method, params, result, drainEvents)
+	if drain != nil {
+		if drainErr := drain(ctx); drainErr != nil {
+			return drainErr
+		}
+	}
+	return err
+}
+
+func (c *Client) requestWithEventBarrier(ctx context.Context, method string, params any, result any, drainEvents bool) (func(context.Context) error, error) {
 	id := c.nextID.Add(1)
 	encoded, err := json.Marshal(params)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	response := make(chan Message, 1)
-	c.pending.Store(id, response)
+	c.pending.Store(id, pendingRequest{response: response, drainEvents: drainEvents})
 	defer c.pending.Delete(id)
 	if err := c.send(Message{JSONRPC: "2.0", ID: json.RawMessage(fmt.Appendf(nil, "%d", id)), Method: method, Params: encoded}); err != nil {
-		return err
+		return nil, err
 	}
 	select {
 	case message := <-response:
+		var drain func(context.Context) error
+		if message.eventBarrier != nil {
+			drain = func(waitCtx context.Context) error {
+				select {
+				case <-message.eventBarrier:
+					return nil
+				case <-waitCtx.Done():
+					return waitCtx.Err()
+				case <-c.stop:
+					return errors.New("acp process stopped")
+				}
+			}
+		}
 		if message.Error != nil {
-			return message.Error
+			return drain, message.Error
 		}
 		if result == nil {
-			return nil
+			return drain, nil
 		}
-		return json.Unmarshal(message.Result, result)
+		return drain, json.Unmarshal(message.Result, result)
 	case <-ctx.Done():
-		return ctx.Err()
+		return nil, ctx.Err()
 	case <-c.done:
-		return errors.New("acp process stopped")
+		return nil, errors.New("acp process stopped")
 	}
 }
 
@@ -255,7 +325,16 @@ func (c *Client) read(stdout io.Reader) {
 			var id uint64
 			if json.Unmarshal(message.ID, &id) == nil {
 				if pending, ok := c.pending.Load(id); ok {
-					pending.(chan Message) <- message
+					request := pending.(pendingRequest)
+					if request.drainEvents {
+						message.eventBarrier = make(chan struct{})
+						select {
+						case c.events <- Message{eventBarrier: message.eventBarrier}:
+						case <-c.stop:
+							return
+						}
+					}
+					request.response <- message
 					continue
 				}
 			}

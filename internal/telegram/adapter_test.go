@@ -234,7 +234,7 @@ func TestTerminalResultMirrorsToGeneralWithWorkerLabel(t *testing.T) {
 	transport := &fakeTransport{}
 	server := &fakeServer{}
 	adapter := newTestAdapter(t, transport, server, filepath.Join(t.TempDir(), "telegram.json"))
-	event := Event{Kind: "worker.completed", WorkerRef: "worker-9", Text: "pong", TerminalIdentity: "turn:9"}
+	event := Event{Kind: "worker.completed", WorkerRef: "wrk_private", Title: "Погода", Text: "pong", TerminalIdentity: "turn:9"}
 	if err := adapter.HandleEvent(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +246,7 @@ func TestTerminalResultMirrorsToGeneralWithWorkerLabel(t *testing.T) {
 		switch {
 		case sent.ThreadID != 0 && sent.Text == "pong":
 			topic++
-		case sent.ThreadID == 0 && sent.Text == "worker-9:\npong":
+		case sent.ThreadID == 0 && sent.Text == "Погода:\npong":
 			general++
 		default:
 			t.Fatalf("unexpected terminal message=%#v", sent)
@@ -276,7 +276,7 @@ func TestDelegatedTurnAcknowledgesBeforeWorkerCompletes(t *testing.T) {
 	if err := adapter.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(transport.sent) != 1 || transport.sent[0].ThreadID != 0 || transport.sent[0].Text != "I'll create a Workerdone narrating" {
+	if len(transport.sent) != 1 || transport.sent[0].ThreadID != 0 || transport.sent[0].Text != "I&#39;ll create a Workerdone narrating" {
 		t.Fatalf("missing delegation acknowledgement: %#v", transport.sent)
 	}
 	adapter.typingMu.Lock()
@@ -588,7 +588,7 @@ func TestOutboxSurvivesTransportFailureAndRestart(t *testing.T) {
 	if err := restarted.HandleDurableEvent(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
-	if len(transport.sent) != 2 || transport.sent[0].Text != "Task" || transport.sent[1].Text != "w-1:\nTask" {
+	if len(transport.sent) != 2 || transport.sent[0].Text != "Task" || transport.sent[1].Text != "Worker:\nTask" {
 		t.Fatalf("outbox after restart = %#v", transport.sent)
 	}
 }

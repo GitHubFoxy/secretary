@@ -101,6 +101,13 @@ test('observer shows compact tool identity and preview without arguments or outp
   const failed = formatActivityPayload({ kind: 'worker.activity', payload: { kind: 'tool_result', tool_result: { name: 'bash', preview: 'make test', status: 'failed', error: 'private diagnostic' } } });
   assert.equal(failed, '✗ bash make test');
   assert.doesNotMatch(failed, /private diagnostic/);
+
+  const classified = formatActivityPayload({ kind: 'worker.activity', payload: { kind: 'tool_result', tool_result: { name: 'web_fetch', status: 'failed', preview: 'wttr.in', failure: { category: 'http', code: 'http_error', http_status: 503, message: 'private producer text' } } } });
+  assert.equal(classified, '✗ web_fetch wttr.in · http · http_error · HTTP 503');
+  assert.doesNotMatch(classified, /private producer text/);
+
+  const unknown = formatActivityPayload({ kind: 'worker.activity', payload: { kind: 'tool_result', tool_result: { name: 'web_fetch', status: 'failed', failure: { category: 'site_unavailable', code: 'host-private.invalid', http_status: 700 } } } });
+  assert.equal(unknown, '✗ web_fetch');
   assert.equal(formatActivityPayload({ payload: { kind: 'tool_call', title: 'Reading', status: 'in_progress' } }), '');
 });
 

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -32,17 +34,37 @@ type CommandRunner interface {
 	Run(context.Context, string, ...string) (CommandResult, error)
 }
 
+type ACPProbeRunner interface {
+	ProbeACP(context.Context, string, ...string) error
+}
+
 type CommandRunnerFunc func(context.Context, string, ...string) (CommandResult, error)
 
 func (f CommandRunnerFunc) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
 	return f(ctx, name, args...)
 }
 
-type ExecCommandRunner struct{}
+type ExecCommandRunner struct {
+	OpenCodeDataHome       string
+	LegacyOpenCodeDataHome bool
+}
 type LocalCommandRunner = ExecCommandRunner
 
-func (ExecCommandRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
+func (r ExecCommandRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
 	cmd := exec.CommandContext(ctx, name, args...)
+	if r.OpenCodeDataHome != "" {
+		sandboxRoot, err := os.MkdirTemp("", "secretary-opencode-probe-")
+		if err != nil {
+			return CommandResult{ExitCode: -1}, errors.New("OpenCode probe environment unavailable")
+		}
+		defer os.RemoveAll(sandboxRoot)
+		for _, dir := range []string{"home", "config/opencode", "state", "cache"} {
+			if err := os.MkdirAll(filepath.Join(sandboxRoot, dir), 0o700); err != nil {
+				return CommandResult{ExitCode: -1}, errors.New("OpenCode probe environment unavailable")
+			}
+		}
+		cmd.Env = environmentWithXDGDataHome(os.Environ(), r.OpenCodeDataHome, sandboxRoot)
+	}
 	output, err := cmd.Output()
 	result := CommandResult{Stdout: string(output), ExitCode: 0}
 	if err == nil {
@@ -57,6 +79,10 @@ func (ExecCommandRunner) Run(ctx context.Context, name string, args ...string) (
 	return result, err
 }
 
+func (r ExecCommandRunner) ProbeACP(ctx context.Context, command string, args ...string) error {
+	return probeOpenCodeACPWithDataHome(ctx, command, r.OpenCodeDataHome, r.LegacyOpenCodeDataHome, args...)
+}
+
 // HarnessProbeSpec describes direct, local observations. ModelsOptional is for
 // harnesses such as Claude Code that do not currently expose a documented model
 // catalog command; such a harness may be ready with an empty observed model set,
@@ -69,6 +95,7 @@ type HarnessProbeSpec struct {
 	HealthArgs            []string
 	ModelsArgs            []string
 	ReasoningArgs         []string
+	ACPArgs               []string
 	AuthenticationMethod  string
 	ModelsOptional        bool
 	StepTimeout           time.Duration
@@ -114,6 +141,22 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
 	if p.Runner == nil {
 		p.Runner = ExecCommandRunner{}
 	}
+	if p.Spec.Kind == core.HarnessOpenCode {
+		switch runner := p.Runner.(type) {
+		case ExecCommandRunner:
+			if strings.TrimSpace(runner.OpenCodeDataHome) == "" {
+				result.Err, result.ErrorCode = ErrProbeMetadata, "native_store_unselected"
+				result.Instance = instance
+				return result
+			}
+		case *ExecCommandRunner:
+			if runner == nil || strings.TrimSpace(runner.OpenCodeDataHome) == "" {
+				result.Err, result.ErrorCode = ErrProbeMetadata, "native_store_unselected"
+				result.Instance = instance
+				return result
+			}
+		}
+	}
 
 	version, err := p.run(ctx, p.Spec.VersionArgs)
 	if err != nil || version.ExitCode != 0 {
@@ -123,6 +166,11 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
 	instance.Version = parseVersion(version.Stdout)
 	if instance.Version == "" {
 		result.Err, result.ErrorCode = ErrProbeMetadata, "version_unavailable"
+		result.Instance = instance
+		return result
+	}
+	if p.Spec.Kind == core.HarnessOpenCode && !strings.HasPrefix(instance.Version, "2.") {
+		result.Err, result.ErrorCode = ErrProbeUnhealthy, "unsupported_version"
 		result.Instance = instance
 		return result
 	}
@@ -155,7 +203,28 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
 	}
 
 	var modelOutput string
-	if len(p.Spec.ModelsArgs) > 0 {
+	if p.Spec.Kind == core.HarnessOpenCode {
+		observer, ok := p.Runner.(OpenCodeModelObserver)
+		if !ok {
+			result.Err, result.ErrorCode = ErrProbeMetadata, "native_models_probe_unavailable"
+			instance.Status = core.HarnessDegraded
+			result.Instance = instance
+			return result
+		}
+		timeout := p.Spec.StepTimeout
+		if timeout <= 0 {
+			timeout = defaultProbeStepTimeout
+		}
+		metadataCtx, cancel := context.WithTimeout(ctx, timeout)
+		instance.ModelIDs, instance.ReasoningLevels, err = observer.ObserveOpenCodeModels(metadataCtx, p.Spec.Binary)
+		cancel()
+		if err != nil || len(instance.ModelIDs) == 0 {
+			result.Err, result.ErrorCode = ErrProbeMetadata, "native_models_probe_failed"
+			instance.Status = core.HarnessDegraded
+			result.Instance = instance
+			return result
+		}
+	} else if len(p.Spec.ModelsArgs) > 0 {
 		models, modelErr := p.run(ctx, p.Spec.ModelsArgs)
 		if modelErr != nil || models.ExitCode != 0 {
 			result.Err, result.ErrorCode = probeError(ErrProbeMetadata, modelErr, "models_probe_failed")
@@ -190,6 +259,27 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
 		}
 	} else if modelOutput != "" {
 		instance.ReasoningLevels = parseObservedReasoning(modelOutput)
+	}
+
+	if len(p.Spec.ACPArgs) > 0 {
+		probeRunner, ok := p.Runner.(ACPProbeRunner)
+		if !ok {
+			result.Err, result.ErrorCode = ErrProbeUnhealthy, "acp_probe_unavailable"
+			result.Instance = instance
+			return result
+		}
+		timeout := p.Spec.StepTimeout
+		if timeout <= 0 {
+			timeout = defaultProbeStepTimeout
+		}
+		acpCtx, cancel := context.WithTimeout(ctx, timeout)
+		err := probeRunner.ProbeACP(acpCtx, p.Spec.Binary, p.Spec.ACPArgs...)
+		cancel()
+		if err != nil {
+			result.Err, result.ErrorCode = probeError(ErrProbeUnhealthy, err, "acp_unavailable")
+			result.Instance = instance
+			return result
+		}
 	}
 
 	instance.Capabilities = core.HarnessCapabilities{
@@ -518,6 +608,7 @@ func NewDefaultHarnessProbes(node core.NodeReference, runner CommandRunner) []Ha
 		{Node: node, Runner: runner, Spec: DefaultFXProbeSpec()},
 		{Node: node, Runner: runner, Spec: DefaultClaudeCodeProbeSpec()},
 		{Node: node, Runner: runner, Spec: DefaultCodexProbeSpec()},
+		{Node: node, Runner: runner, Spec: DefaultOpenCodeProbeSpec()},
 	}
 }
 
@@ -565,16 +656,23 @@ func DefaultCodexProbeSpec() HarnessProbeSpec {
 
 func DefaultOpenCodeProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
-		Kind: core.HarnessOpenCode, Binary: "opencode", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"auth", "list"}, ModelsArgs: []string{"models"},
-		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilitySteering},
-		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedRuntimeActivity...),
+		Kind: core.HarnessOpenCode, Binary: "opencode", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"auth", "list"}, ModelsArgs: []string{"models"}, ACPArgs: []string{"acp"},
+		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel},
+		// V2.0.22 ACP translates native tools to title/kind/locations/rawInput,
+		// without explicit tool identity. Do not promise normalized tool cards
+		// or guess identity from a human-readable progress title (ticket20).
+		ActivityCapabilities: []core.ActivityCapability{core.ActivityAssistantTextDelta, core.ActivityStatus, core.ActivityAttemptOutcome, core.ActivityPermissionRequest, core.ActivityUserInputRequest},
 	}
 }
 
 type HarnessDiscovery struct {
-	Node            core.NodeReference
-	Runner          CommandRunner
-	Probes          []HarnessProbe
+	Node                   core.NodeReference
+	Runner                 CommandRunner
+	OpenCodeDataHome       string
+	LegacyOpenCodeDataHome bool
+	Probes                 []HarnessProbe
+	// IncludeOpenCode is enabled by default by Node deployment setup; false
+	// remains an explicit opt-out for legacy/custom discovery callers.
 	IncludeOpenCode bool
 	// BinaryOverrides lets packaging resolve installed harnesses without
 	// relying on a launchd process inheriting an interactive shell PATH.
@@ -586,16 +684,50 @@ func (d HarnessDiscovery) Discover(ctx context.Context) (core.HarnessInventorySn
 	if strings.TrimSpace(string(d.Node)) == "" {
 		return core.HarnessInventorySnapshot{}, errors.New("harness discovery: Node is required")
 	}
+	runner := d.Runner
+	if runner == nil && d.OpenCodeDataHome != "" {
+		runner = ExecCommandRunner{OpenCodeDataHome: d.OpenCodeDataHome, LegacyOpenCodeDataHome: d.LegacyOpenCodeDataHome}
+	}
 	probes := append([]HarnessProbe(nil), d.Probes...)
 	if len(probes) == 0 {
-		probes = NewDefaultHarnessProbes(d.Node, d.Runner)
+		probes = NewDefaultHarnessProbes(d.Node, runner)
+		if !d.IncludeOpenCode {
+			filtered := probes[:0]
+			for _, probe := range probes {
+				if probe.Spec.Kind != core.HarnessOpenCode {
+					filtered = append(filtered, probe)
+				}
+			}
+			probes = filtered
+		}
 	}
 	if d.IncludeOpenCode {
-		probes = append(probes, NewOpenCodeCompatibilityProbe(d.Node, d.Runner))
+		found := false
+		for _, probe := range probes {
+			found = found || probe.Spec.Kind == core.HarnessOpenCode
+		}
+		if !found {
+			probes = append(probes, NewOpenCodeCompatibilityProbe(d.Node, d.Runner))
+		}
 	}
 	for index := range probes {
 		if binary := strings.TrimSpace(d.BinaryOverrides[probes[index].Spec.Kind]); binary != "" {
 			probes[index].Spec.Binary = binary
+		}
+		if probes[index].Spec.Kind == core.HarnessOpenCode && d.OpenCodeDataHome != "" {
+			switch current := probes[index].Runner.(type) {
+			case nil:
+				probes[index].Runner = ExecCommandRunner{OpenCodeDataHome: d.OpenCodeDataHome, LegacyOpenCodeDataHome: d.LegacyOpenCodeDataHome}
+			case ExecCommandRunner:
+				current.OpenCodeDataHome = d.OpenCodeDataHome
+				current.LegacyOpenCodeDataHome = d.LegacyOpenCodeDataHome
+				probes[index].Runner = current
+			case *ExecCommandRunner:
+				copy := *current
+				copy.OpenCodeDataHome = d.OpenCodeDataHome
+				copy.LegacyOpenCodeDataHome = d.LegacyOpenCodeDataHome
+				probes[index].Runner = copy
+			}
 		}
 	}
 	instances := make([]core.HarnessInstance, 0, len(probes))

@@ -1,5 +1,8 @@
 /** @typedef {{seq?: number, id?: string}} Sequenced */
 
+const TOOL_FAILURE_CATEGORIES = new Set(['dns', 'tls', 'timeout', 'proxy', 'network', 'http', 'permission', 'provider', 'capability', 'tool']);
+const TOOL_FAILURE_CODES = new Set(['dns_lookup_failed', 'tls_handshake_failed', 'request_timeout', 'connection_failed', 'proxy_error', 'http_error', 'permission_denied', 'provider_error', 'capability_unavailable', 'tool_error']);
+
 export const STATUS_LABELS = {
   saved: 'Saved',
   accepted: 'Accepted',
@@ -69,6 +72,17 @@ export function secretaryEventText(event) {
   }
 }
 
+function safeToolFailureLabel(failure) {
+  if (!failure || typeof failure !== 'object') return '';
+  const labels = [];
+  if (TOOL_FAILURE_CATEGORIES.has(failure.category)) labels.push(failure.category);
+  if (TOOL_FAILURE_CODES.has(failure.code)) labels.push(failure.code);
+  if (Number.isInteger(failure.http_status) && failure.http_status >= 100 && failure.http_status <= 599) {
+    labels.push(`HTTP ${failure.http_status}`);
+  }
+  return labels.length ? ` · ${labels.join(' · ')}` : '';
+}
+
 export function formatActivityPayload(event) {
   const payload = event?.payload;
   let value = payload;
@@ -85,7 +99,8 @@ export function formatActivityPayload(event) {
     const failed = value.kind === 'tool_result'
       && (['failed', 'error', 'canceled', 'cancelled'].includes(String(toolResult.status || '').toLowerCase()) || Boolean(toolResult.error));
     const state = value.kind === 'tool_call' ? '▶' : failed ? '✗' : '✓';
-    return `${state} ${tool}${preview ? ` ${preview}` : ''}`;
+    const failure = failed ? safeToolFailureLabel(toolResult.failure) : '';
+    return `${state} ${tool}${preview ? ` ${preview}` : ''}${failure}`;
   }
   return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
 }

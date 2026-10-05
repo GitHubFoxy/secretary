@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/beruseruko/secretary/internal/acp"
+	"github.com/beruseruko/secretary/internal/core"
 )
 
 func TestACPClientCapabilitiesAdvertiseFormOnly(t *testing.T) {
@@ -301,8 +302,46 @@ func TestACPToolTrackerSeparatesIdentityProgressAndLifecycle(t *testing.T) {
 
 	failedStart := tracker.observe("tool_call", map[string]any{"toolCallId": "error-call", "name": "bash", "status": "in_progress", "rawInput": map[string]string{"command": "make test"}})
 	failed := tracker.observe("tool_call_update", map[string]any{"toolCallId": "error-call", "title": "Running", "status": "failed", "error": "synthetic failure"})
-	if len(failedStart) != 1 || len(failed) != 1 || failed[0].Tool != "bash" || failed[0].Status != "failed" || failed[0].Error != "synthetic failure" {
+	if len(failedStart) != 1 || len(failed) != 1 || failed[0].Tool != "bash" || failed[0].Status != "failed" || failed[0].Error != "" {
 		t.Fatalf("failure lifecycle start=%#v finish=%#v", failedStart, failed)
+	}
+}
+
+func TestACPToolTrackerKeepsOnlyExplicitAllowlistedFailureMetadata(t *testing.T) {
+	tracker := newACPToolTracker()
+	failurePayload := map[string]any{
+		"toolCallId": "web-fetch-1", "name": "web_fetch", "status": "failed",
+		"rawOutput": map[string]any{
+			"error":    "Bearer private-error-token",
+			"metadata": map[string]any{"failure": map[string]any{"category": "http", "code": "http_error", "http_status": float64(503), "message": "private producer text"}},
+		},
+	}
+	failed := tracker.observe("tool_call_update", failurePayload)
+	if len(failed) != 1 || failed[0].Failure == nil {
+		t.Fatalf("explicit failure metadata=%#v", failed)
+	}
+	if got, want := *failed[0].Failure, (core.ToolFailureMetadata{Category: core.ToolFailureCategoryHTTP, Code: core.ToolFailureCodeHTTPError, HTTPStatus: 503}); got != want {
+		t.Fatalf("failure metadata=%#v want=%#v", got, want)
+	}
+	if failed[0].Error != "" || failed[0].Result != "" {
+		t.Fatalf("failed ACP payload retained free-form data: %#v", failed[0])
+	}
+	completed := newACPToolTracker().observe("tool_call_update", map[string]any{
+		"toolCallId": "completed-with-metadata", "name": "web_fetch", "status": "completed",
+		"rawOutput": map[string]any{"metadata": map[string]any{"failure": map[string]any{"category": "http", "code": "http_error", "http_status": float64(503)}}},
+	})
+	if len(completed) != 1 || completed[0].Failure != nil || completed[0].Status != "completed" {
+		t.Fatalf("non-failure ACP event was classified as a tool failure: %#v", completed)
+	}
+
+	unknown := newACPToolTracker().observe("tool_call_update", map[string]any{
+		"toolCallId": "unknown-error", "name": "web_fetch", "status": "failed",
+		"title": "HTTP 200", "rawOutput": map[string]any{"error": "site unavailable", "metadata": map[string]any{
+			"failure": map[string]any{"category": "site_unavailable", "code": "host_private.example", "http_status": float64(600)},
+		}},
+	})
+	if len(unknown) != 1 || unknown[0].Failure != nil || unknown[0].Status != "failed" || unknown[0].Error != "" || unknown[0].Result != "" {
+		t.Fatalf("unallowlisted metadata or title/text inference crossed ACP adapter: %#v", unknown)
 	}
 }
 

@@ -25,12 +25,17 @@ func TestOpenCodeTitleUsesExplicitConfigAndOnlyTaskInput(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", "")
 	t.Setenv("SECRETARY_TITLE_TEST_SECRET", "fixture-private")
 	t.Setenv("CODEX_CONFIG", "fixture-private")
+	t.Setenv("OPENAI_API_KEY", "fixture-private-provider-key")
+	t.Setenv("AWS_ACCESS_KEY_ID", "fixture-private-access-key-id")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "fixture-private-cloud-key")
+	t.Setenv("GITHUB_TOKEN", "fixture-private-token")
 	t.Setenv("OPENCODE_CONFIG_CONTENT", "fixture-private")
 	prompt := "Составь только короткое название задачи."
 	task := "Найди рецепт мохито без алкоголя."
+	dataHome := filepath.Join(t.TempDir(), "secretary-native-data")
 	calls := 0
 	var root string
-	g := OpenCodeTitleGenerator{Model: "gpt-6-luna", Reasoning: "minimal", Prompt: prompt,
+	g := OpenCodeTitleGenerator{Model: "gpt-6-luna", Reasoning: "minimal", Prompt: prompt, DataHome: dataHome,
 		run: func(_ context.Context, command titleCommand) ([]byte, error) {
 			calls++
 			root = command.Directory
@@ -40,11 +45,11 @@ func TestOpenCodeTitleUsesExplicitConfigAndOnlyTaskInput(t *testing.T) {
 				env[key] = value
 			}
 			for key := range env {
-				if strings.HasPrefix(key, "SECRETARY_") || key == "CODEX_CONFIG" {
-					t.Error("server configuration reached title process")
+				if strings.HasPrefix(key, "SECRETARY_") || key == "CODEX_CONFIG" || key == "OPENAI_API_KEY" || key == "AWS_ACCESS_KEY_ID" || key == "AWS_SECRET_ACCESS_KEY" || key == "GITHUB_TOKEN" {
+					t.Error("server configuration or provider credentials reached title process")
 				}
 			}
-			if env["HOME"] == originalHome || env["XDG_DATA_HOME"] != filepath.Join(originalHome, ".local", "share") || env["OPENCODE_CONFIG_CONTENT"] != "" || env["OPENCODE_DISABLE_PROJECT_CONFIG"] != "1" {
+			if env["HOME"] == originalHome || env["XDG_DATA_HOME"] != dataHome || env["OPENCODE_CONFIG_CONTENT"] != "" || env["OPENCODE_DISABLE_PROJECT_CONFIG"] != "1" {
 				t.Error("invalid title isolation")
 			}
 			if reflect.DeepEqual(command.Arguments, []string{"--version"}) {
@@ -94,10 +99,45 @@ func TestOpenCodeTitleUsesExplicitConfigAndOnlyTaskInput(t *testing.T) {
 	}
 }
 
+func TestOpenCodeTitlePreservesLegacyStorePermissions(t *testing.T) {
+	legacyHome := t.TempDir()
+	legacyApp := filepath.Join(legacyHome, "opencode")
+	if err := os.Mkdir(legacyApp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	canary := filepath.Join(legacyApp, "opencode.db")
+	if err := os.WriteFile(canary, []byte("existing legacy sessions"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	generator := OpenCodeTitleGenerator{
+		Model: "openai/title-model", Reasoning: "none", Prompt: "Составь название.", DataHome: legacyHome, LegacyDataHome: true,
+		run: func(_ context.Context, command titleCommand) ([]byte, error) {
+			for _, entry := range command.Environment {
+				if strings.HasPrefix(entry, "XDG_DATA_HOME=") && entry != "XDG_DATA_HOME="+legacyHome {
+					t.Fatal("title runtime selected a different legacy store")
+				}
+			}
+			if reflect.DeepEqual(command.Arguments, []string{"--version"}) {
+				return []byte("opencode v2.0.22\n"), nil
+			}
+			return titleTextFrame("title", "title-message", "Заголовок", 1), nil
+		},
+	}
+	if _, err := generator.Generate(context.Background(), "Задача"); err != nil {
+		t.Fatal("title runtime rejected pinned legacy store")
+	}
+	appInfo, appErr := os.Stat(legacyApp)
+	dbInfo, dbErr := os.Stat(canary)
+	data, readErr := os.ReadFile(canary)
+	if appErr != nil || appInfo.Mode().Perm() != 0o755 || dbErr != nil || dbInfo.Mode().Perm() != 0o644 || readErr != nil || string(data) != "existing legacy sessions" {
+		t.Fatal("title runtime changed legacy native store contents or permissions")
+	}
+}
+
 func TestOpenCodeTitleRejectsHarnessErrorsWithoutPrivateDiagnostics(t *testing.T) {
 	for _, name := range []string{"missing binary", "old version", "model failure", "invalid stream"} {
 		t.Run(name, func(t *testing.T) {
-			g := OpenCodeTitleGenerator{Model: "openai/title-model", Reasoning: "none", Prompt: "Составь название.",
+			g := OpenCodeTitleGenerator{Model: "openai/title-model", Reasoning: "none", Prompt: "Составь название.", DataHome: filepath.Join(t.TempDir(), "secretary-native-data"),
 				run: func(_ context.Context, c titleCommand) ([]byte, error) {
 					if name == "missing binary" {
 						return nil, errors.New("fixture-private")

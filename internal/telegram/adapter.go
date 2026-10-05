@@ -16,9 +16,14 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/rivo/uniseg"
 )
 
 var (
@@ -45,6 +50,8 @@ type OutgoingMessage struct {
 	Text           string
 	Identity       string `json:"identity,omitempty"`
 	DeliveredBytes int    `json:"delivered_bytes,omitempty"`
+	ParseMode      string `json:"parse_mode,omitempty"`
+	PlainFallback  bool   `json:"plain_fallback,omitempty"`
 }
 
 type SentMessage struct{ OutgoingMessage }
@@ -811,7 +818,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			owner := a.state.OwnerChat
 			a.mu.Unlock()
 			if owner != 0 {
-				mirror := OutgoingMessage{ChatID: owner, Text: event.WorkerRef + ":\n" + body, Identity: identity + ":general"}
+				mirror := OutgoingMessage{ChatID: owner, Text: topicName("", mapping.Title) + ":\n" + body, Identity: identity + ":general"}
 				if err := a.sendMessage(ctx, mirror); err != nil {
 					return err
 				}
@@ -983,6 +990,7 @@ func (a *Adapter) Flush(ctx context.Context) error {
 }
 
 func secretaryBatchMessage(owner int64, text string, tools []string) (OutgoingMessage, bool) {
+	text = safeText(text)
 	if owner == 0 || (text == "" && len(tools) == 0) {
 		return OutgoingMessage{}, false
 	}
@@ -1134,6 +1142,7 @@ func (a *Adapter) drainOutbox(ctx context.Context) error {
 	outbox := append([]OutgoingMessage(nil), a.state.Outbox...)
 	a.mu.Unlock()
 	for _, message := range outbox {
+		fences := telegramFenceBlocks(message.Text)
 		if message.ChatID == 0 {
 			a.mu.Lock()
 			a.state.Outbox = removeOutboxMessage(a.state.Outbox, message)
@@ -1146,12 +1155,41 @@ func (a *Adapter) drainOutbox(ctx context.Context) error {
 		}
 		for {
 			chunk := message
-			chunk.Text = telegramMessageChunk(message.Text[message.DeliveredBytes:])
-			if err := a.transport.SendMessage(ctx, chunk); err != nil {
+			prepared := prepareTelegramChunk(message.Text, message.DeliveredBytes, fences)
+			if prepared.sourceBytes <= 0 {
+				return errors.New("telegram: chunker made no source progress")
+			}
+			chunk.Text, chunk.ParseMode = prepared.formatted, "HTML"
+			if message.PlainFallback {
+				chunk.Text, chunk.ParseMode = prepared.plain, ""
+			}
+			err := a.transport.SendMessage(ctx, chunk)
+			if errors.Is(err, ErrFormatting) && chunk.ParseMode != "" {
+				// A known parse rejection proves this send was not accepted.
+				// Persist fallback before attempting it; transport failures with
+				// uncertain acceptance must never trigger a second immediate send.
+				message.PlainFallback = true
+				a.mu.Lock()
+				for index, pending := range a.state.Outbox {
+					if outgoingMessageIdentity(pending) == outgoingMessageIdentity(message) {
+						a.state.Outbox[index].PlainFallback = true
+					}
+				}
+				saveErr := a.saveLocked()
+				a.mu.Unlock()
+				if saveErr != nil {
+					return saveErr
+				}
+				chunk.Text, chunk.ParseMode = prepared.plain, ""
+				err = a.transport.SendMessage(ctx, chunk)
+			}
+			if err != nil {
 				return err
 			}
-			message.DeliveredBytes += len(chunk.Text)
-			done := message.DeliveredBytes == len(message.Text)
+			// Checkpoint only consumed original UTF-8 source bytes. Escaped HTML
+			// and generated balanced-fence tags are presentation, not source.
+			message.DeliveredBytes += prepared.sourceBytes
+			done := message.DeliveredBytes >= len(message.Text)
 			a.mu.Lock()
 			if done {
 				a.state.Outbox = removeOutboxMessage(a.state.Outbox, message)
@@ -1164,7 +1202,7 @@ func (a *Adapter) drainOutbox(ctx context.Context) error {
 					}
 				}
 			}
-			err := a.saveLocked()
+			err = a.saveLocked()
 			a.mu.Unlock()
 			if err != nil {
 				return err
@@ -1177,18 +1215,321 @@ func (a *Adapter) drainOutbox(ctx context.Context) error {
 	return nil
 }
 
-// Keep chunks within Telegram's 4096-character limit, counting astral
-// characters as two UTF-16 units and never cutting a UTF-8 code point.
+type preparedTelegramChunk struct {
+	sourceBytes int
+	formatted   string
+	plain       string
+}
+
+type telegramFenceBlock struct {
+	start, bodyStart, bodyEnd, end int
+}
+
+func telegramFenceBlocks(text string) []telegramFenceBlock {
+	var blocks []telegramFenceBlock
+	for lineStart := 0; lineStart < len(text); {
+		lineEnd, nextLine := telegramLineEnd(text, lineStart)
+		line := text[lineStart:lineEnd]
+		if !strings.HasPrefix(line, "```") {
+			lineStart = nextLine
+			continue
+		}
+		for closeStart := nextLine; closeStart <= len(text); {
+			closeEnd, closeNext := telegramLineEnd(text, closeStart)
+			if strings.TrimSpace(text[closeStart:closeEnd]) == "```" {
+				blocks = append(blocks, telegramFenceBlock{start: lineStart, bodyStart: nextLine, bodyEnd: closeStart, end: closeNext})
+				lineStart = closeNext
+				break
+			}
+			if closeEnd == len(text) {
+				lineStart = len(text)
+				break
+			}
+			closeStart = closeNext
+		}
+	}
+	return blocks
+}
+
+func telegramLineEnd(text string, start int) (end, next int) {
+	if start >= len(text) {
+		return len(text), len(text)
+	}
+	if relative := strings.IndexByte(text[start:], '\n'); relative >= 0 {
+		end = start + relative
+		return end, end + 1
+	}
+	return len(text), len(text)
+}
+
+func prepareTelegramChunk(text string, offset int, fences []telegramFenceBlock) preparedTelegramChunk {
+	if offset < 0 || offset >= len(text) {
+		return preparedTelegramChunk{}
+	}
+	for _, block := range fences {
+		if offset < block.start || offset >= block.end || offset >= block.bodyEnd {
+			continue
+		}
+		bodyOffset := offset
+		if bodyOffset < block.bodyStart {
+			bodyOffset = block.bodyStart
+		}
+		body := telegramCodeBodyChunk(text[bodyOffset:block.bodyEnd])
+		consumed := bodyOffset - offset + len(body)
+		if bodyOffset+len(body) >= block.bodyEnd {
+			consumed += block.end - block.bodyEnd
+		}
+		formatted, plain := formatTelegramCodeBlock(body)
+		return preparedTelegramChunk{sourceBytes: consumed, formatted: formatted, plain: plain}
+	}
+	raw := telegramMessageChunk(text[offset:])
+	formatted, plain := formatTelegramChunk(raw)
+	return preparedTelegramChunk{sourceBytes: len(raw), formatted: formatted, plain: plain}
+}
+
+func telegramCodeBodyChunk(text string) string {
+	graphemes := uniseg.NewGraphemes(text)
+	units, hardEnd, lineEnd := 0, 0, 0
+	for graphemes.Next() {
+		clusterUnits := telegramUTF16Units(graphemes.Str())
+		if units+clusterUnits > 4096 {
+			break
+		}
+		units += clusterUnits
+		_, hardEnd = graphemes.Positions()
+		if strings.HasSuffix(text[:hardEnd], "\n") {
+			lineEnd = hardEnd
+		}
+	}
+	if hardEnd == len(text) {
+		return text
+	}
+	if lineEnd > 0 {
+		return text[:lineEnd]
+	}
+	if hardEnd > 0 {
+		return text[:hardEnd]
+	}
+	return telegramCodePointChunk(text, 4096)
+}
+
+// Keep chunks within Telegram's parsed-text limit. Source syntax is counted
+// conservatively; source-byte checkpoints exclude rendered HTML and synthetic tags.
 func telegramMessageChunk(text string) string {
+	graphemes := uniseg.NewGraphemes(text)
+	units, hardEnd := 0, 0
+	for graphemes.Next() {
+		clusterUnits := telegramUTF16Units(graphemes.Str())
+		if units+clusterUnits > 4096 {
+			break
+		}
+		units += clusterUnits
+		_, hardEnd = graphemes.Positions()
+	}
+	if hardEnd == len(text) {
+		return text
+	}
+	atoms := telegramMarkdownAtoms(text, hardEnd)
+	graphemes.Reset()
+	safeEnd, paragraphEnd, listEnd, sentenceEnd := 0, 0, 0, 0
+	for graphemes.Next() {
+		_, end := graphemes.Positions()
+		if end > hardEnd {
+			break
+		}
+		if telegramInsideAtom(atoms, end) {
+			continue
+		}
+		safeEnd = end
+		if graphemes.IsSentenceBoundary() && telegramSentenceTerminator(text[:end]) {
+			sentenceEnd = end
+		}
+		prefix := text[:end]
+		if strings.HasSuffix(prefix, "\n\n") {
+			paragraphEnd = end
+		}
+		if strings.HasSuffix(prefix, "\n") {
+			lineEnd := end - 1
+			lineStart := strings.LastIndexByte(text[:lineEnd], '\n') + 1
+			if isTelegramListItem(text[lineStart:lineEnd]) {
+				listEnd = end
+			}
+		}
+	}
+	semanticEnd := paragraphEnd
+	if listEnd > semanticEnd {
+		semanticEnd = listEnd
+	}
+	if sentenceEnd > semanticEnd {
+		semanticEnd = sentenceEnd
+	}
+	if semanticEnd > 0 {
+		return text[:semanticEnd]
+	}
+	if safeEnd > 0 {
+		return text[:safeEnd]
+	}
+	if hardEnd > 0 {
+		return text[:hardEnd]
+	}
+	return telegramCodePointChunk(text, 4096)
+}
+
+type telegramTextRange struct{ start, end int }
+
+func telegramMarkdownAtoms(text string, maxStart int) []telegramTextRange {
+	var ranges []telegramTextRange
+	for lineStart := 0; lineStart < len(text) && lineStart < maxStart; {
+		lineEnd, nextLine := telegramLineEnd(text, lineStart)
+		line := text[lineStart:lineEnd]
+		if isTelegramListItem(line) && telegramFitsUTF16(text[lineStart:nextLine], 4096) {
+			ranges = append(ranges, telegramTextRange{lineStart, nextLine})
+		}
+		if strings.HasPrefix(line, "```") {
+			for closeStart := nextLine; closeStart <= len(text); {
+				closeEnd := closeStart + strings.IndexByte(text[closeStart:], '\n')
+				if closeEnd < closeStart {
+					closeEnd = len(text)
+				}
+				closeNext := closeEnd
+				if closeNext < len(text) {
+					closeNext++
+				}
+				if strings.TrimSpace(text[closeStart:closeEnd]) == "```" {
+					ranges = append(ranges, telegramTextRange{lineStart, closeNext})
+					break
+				}
+				if closeEnd == len(text) {
+					break
+				}
+				closeStart = closeNext
+			}
+			lineStart = nextLine
+			continue
+		}
+		for index := 0; index < len(line) && lineStart+index < maxStart; {
+			if line[index] == '[' {
+				if end, ok := telegramMarkdownLinkEnd(line, index); ok {
+					ranges = append(ranges, telegramTextRange{lineStart + index, lineStart + end})
+					index = end
+					continue
+				}
+			}
+			token := ""
+			for _, candidate := range []string{"**", "__", "`"} {
+				if strings.HasPrefix(line[index:], candidate) {
+					token = candidate
+					break
+				}
+			}
+			if token != "" {
+				close := strings.Index(line[index+len(token):], token)
+				if close > 0 {
+					end := index + len(token) + close + len(token)
+					ranges = append(ranges, telegramTextRange{lineStart + index, lineStart + end})
+					index = end
+					continue
+				}
+			}
+			_, size := utf8.DecodeRuneInString(line[index:])
+			index += size
+		}
+		lineStart = nextLine
+	}
+	sort.Slice(ranges, func(i, j int) bool { return ranges[i].start < ranges[j].start })
+	merged := ranges[:0]
+	for _, current := range ranges {
+		if len(merged) == 0 || current.start >= merged[len(merged)-1].end {
+			merged = append(merged, current)
+			continue
+		}
+		if current.end > merged[len(merged)-1].end {
+			merged[len(merged)-1].end = current.end
+		}
+	}
+	return merged
+}
+
+func telegramMarkdownLinkEnd(line string, start int) (int, bool) {
+	labelEnd := strings.Index(line[start+1:], "](")
+	if labelEnd <= 0 {
+		return 0, false
+	}
+	targetStart := start + 1 + labelEnd + 2
+	depth, end := 1, targetStart
+	for end < len(line) && depth > 0 {
+		if line[end] == '(' {
+			depth++
+		} else if line[end] == ')' {
+			depth--
+		}
+		end++
+	}
+	return end, depth == 0
+}
+
+func telegramInsideAtom(ranges []telegramTextRange, position int) bool {
+	index := sort.Search(len(ranges), func(i int) bool { return ranges[i].end >= position })
+	return index < len(ranges) && ranges[index].start < position && position < ranges[index].end
+}
+
+func isTelegramListItem(line string) bool {
+	line = strings.TrimLeft(line, " \t")
+	if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "+ ") || strings.HasPrefix(line, "* ") {
+		return true
+	}
+	index := 0
+	for index < len(line) && line[index] >= '0' && line[index] <= '9' {
+		index++
+	}
+	return index > 0 && index+1 < len(line) && (line[index] == '.' || line[index] == ')') && line[index+1] == ' '
+}
+
+func telegramSentenceTerminator(prefix string) bool {
+	trimmed := strings.TrimRightFunc(prefix, unicode.IsSpace)
+	last, _ := utf8.DecodeLastRuneInString(trimmed)
+	return unicode.Is(unicode.Properties["Sentence_Terminal"], last)
+}
+
+func telegramFitsUTF16(text string, limit int) bool {
 	units := 0
-	for index, r := range text {
+	for _, r := range text {
 		units++
 		if r > 0xffff {
 			units++
 		}
-		if units > 4096 {
+		if units > limit {
+			return false
+		}
+	}
+	return true
+}
+
+func telegramUTF16Units(text string) int {
+	units := 0
+	for _, r := range text {
+		units++
+		if r > 0xffff {
+			units++
+		}
+	}
+	return units
+}
+
+// A single extended grapheme can itself exceed Telegram's limit (for example,
+// a base followed by thousands of combining marks). In that impossible case,
+// split only at UTF-8 code-point boundaries so delivery always makes progress.
+func telegramCodePointChunk(text string, limit int) string {
+	units := 0
+	for index, r := range text {
+		nextUnits := 1
+		if r > 0xffff {
+			nextUnits = 2
+		}
+		if units+nextUnits > limit {
 			return text[:index]
 		}
+		units += nextUnits
 	}
 	return text
 }
@@ -1249,7 +1590,7 @@ func renderWorkerEvent(event Event) string {
 }
 
 func topicName(workerRef, title string) string {
-	name := safeText(title)
+	name := strings.Join(strings.Fields(safeText(title)), " ")
 	if name == "" {
 		name = "Worker"
 	}
@@ -1296,7 +1637,7 @@ func sanitizeTelegramText(text string, normalize bool) string {
 	text = sensitiveText.ReplaceAllString(text, "[redacted]")
 	text = sensitiveMarkerValue.ReplaceAllString(text, "[redacted]")
 	if normalize {
-		text = strings.Join(strings.Fields(text), " ")
+		text = strings.TrimSpace(strings.ReplaceAll(text, "\r\n", "\n"))
 	}
 	return text
 }

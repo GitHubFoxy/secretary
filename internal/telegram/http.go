@@ -13,6 +13,17 @@ import (
 	"time"
 )
 
+// ErrFormatting means Telegram rejected entity parsing before accepting a message.
+var ErrFormatting = errors.New("telegram: entity parsing rejected")
+
+func botAPIError(method string, code int, description string) error {
+	lower := strings.ToLower(description)
+	if method == "sendMessage" && code == 400 && (strings.Contains(lower, "can't parse entities") || strings.Contains(lower, "cannot parse entities")) {
+		return ErrFormatting
+	}
+	return fmt.Errorf("telegram: Bot API %s failed (%d): %s", method, code, description)
+}
+
 // BotAPITransport is the production transport. It uses long polling and the
 // Telegram Bot API only. The bot token is kept in this process and is never
 // included in OutgoingMessage, Pairing or ServerClient payloads.
@@ -50,10 +61,15 @@ func (t *BotAPITransport) call(ctx context.Context, method string, values url.Va
 	defer response.Body.Close()
 	if response.StatusCode/100 != 2 {
 		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
-		return fmt.Errorf("telegram: Bot API %s returned %s: %s", method, response.Status, redactBotSecret(t.BotToken, strings.TrimSpace(string(body))))
+		var failure struct{ Description string }
+		if json.Unmarshal(body, &failure) == nil && failure.Description != "" {
+			return botAPIError(method, response.StatusCode, redactBotSecret(t.BotToken, failure.Description))
+		}
+		return botAPIError(method, response.StatusCode, redactBotSecret(t.BotToken, strings.TrimSpace(string(body))))
 	}
 	var envelope struct {
 		OK          bool            `json:"ok"`
+		ErrorCode   int             `json:"error_code"`
 		Description string          `json:"description"`
 		Result      json.RawMessage `json:"result"`
 	}
@@ -61,7 +77,7 @@ func (t *BotAPITransport) call(ctx context.Context, method string, values url.Va
 		return err
 	}
 	if !envelope.OK {
-		return fmt.Errorf("telegram: Bot API %s failed: %s", method, redactBotSecret(t.BotToken, envelope.Description))
+		return botAPIError(method, envelope.ErrorCode, redactBotSecret(t.BotToken, envelope.Description))
 	}
 	if result != nil {
 		if err := json.Unmarshal(envelope.Result, result); err != nil {
@@ -130,6 +146,9 @@ func (t *BotAPITransport) GetUpdates(ctx context.Context, offset int64, timeout 
 
 func (t *BotAPITransport) SendMessage(ctx context.Context, message OutgoingMessage) error {
 	values := url.Values{"chat_id": {strconv.FormatInt(message.ChatID, 10)}, "text": {message.Text}}
+	if message.ParseMode != "" {
+		values.Set("parse_mode", message.ParseMode)
+	}
 	if message.ThreadID != 0 {
 		values.Set("message_thread_id", strconv.FormatInt(message.ThreadID, 10))
 	}

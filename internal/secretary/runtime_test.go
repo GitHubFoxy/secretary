@@ -74,6 +74,149 @@ func setRuntimeTestPolicy(t *testing.T, store *core.Store) {
 	}
 }
 
+func TestRuntimeStartsOnlyExplicitAddressedReplyProfileWithVersionedMCP(t *testing.T) {
+	fake := &fakeRuntime{}
+	runtime := NewRuntime(node.NewLocal(fake), "capability")
+	runtime.AttachMCPServer("secretary-mcp", "/state", "http://127.0.0.1:8081")
+	runtime.AttachProfile(func() node.ManagedProfile {
+		return node.ManagedProfile{Name: "secretary", Version: "profile-v1", Hash: "hash-v1", Content: "explicit addressed policy", ReplyContractVersion: core.SecretaryReplyContractAddressedV1}
+	})
+	if err := runtime.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !fake.request.DrainOutputBeforeResult || fake.request.Profile.ReplyContractVersion != core.SecretaryReplyContractAddressedV1 {
+		t.Fatalf("runtime request omitted the explicit v1 stream contract: %#v", fake.request)
+	}
+	found := false
+	for _, server := range fake.request.MCPServers {
+		for _, env := range server.Env {
+			if env.Name == "SECRETARY_MCP_REPLY_CONTRACT" && env.Value == core.SecretaryReplyContractAddressedV1 {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("MCP session lacks explicit reply contract environment: %#v", fake.request.MCPServers)
+	}
+	close(fake.session.activities)
+	close(fake.session.results)
+}
+
+func TestRuntimeAddressedReplyPreservesPreResultDeltaAndSuppressesPostResultOutput(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "synthetic owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, core.SecretaryPolicySnapshot{Version: "v1", Harness: "fx", Model: "secretary", Reasoning: "high", ProfileVersion: "v1", ProfileName: "secretary", ProfileHash: "hash", ProfileContent: "policy", ReplyContractVersion: core.SecretaryReplyContractAddressedV1}); err != nil {
+		t.Fatal(err)
+	}
+	origin, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "dispatch a worker task")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, origin.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, workerTurn, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{WorkerRef: "runtime-origin", Intent: "synthetic", ProjectID: "p", NodeID: "n", HarnessInstanceID: "n/fx", PolicySnapshot: "synthetic"}, core.TurnSpec{Input: "synthetic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	session := &fakeSession{id: "addressed-session", activities: make(chan node.Activity, 2), results: make(chan node.Result, 1)}
+	runtime := NewRuntime(nil, capability)
+	runtime.AttachConversation(store, conversation.ID)
+	runtime.AttachIdentity(identity)
+	runtime.mu.Lock()
+	runtime.session = session
+	runtime.busy = true
+	runtime.activeTurnID = origin.ID
+	runtime.activeInputID = origin.InputID
+	runtime.replyContractVersion = core.SecretaryReplyContractAddressedV1
+	runtime.mu.Unlock()
+	go runtime.consumeAddressedSession(session)
+	session.activities <- node.Activity{Kind: node.ActivityText, Text: "independent progress before Worker Result"}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		events, eventErr := store.SecretaryEvents(ctx, origin.ID, 0, 20)
+		if eventErr == nil && len(events) == 3 && events[2].Kind == core.SecretaryTextDeltaEvent {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	preEvents, err := store.SecretaryEvents(ctx, origin.ID, 0, 20)
+	if err != nil || len(preEvents) != 3 || preEvents[2].Kind != core.SecretaryTextDeltaEvent {
+		t.Fatalf("pre-Result ActivityText was not streamed immediately: events=%#v err=%v", preEvents, err)
+	}
+	if _, result, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "canonical worker result"}); err != nil || result == nil {
+		t.Fatalf("record Worker Result: result=%#v err=%v", result, err)
+	}
+	if _, err := store.LinkSecretaryWorkerTurn(ctx, person.ID, capability, origin.ID, origin.InputID, workerTurn.ID); err != nil {
+		t.Fatal(err)
+	}
+	session.activities <- node.Activity{Kind: node.ActivityText, Text: "unaddressed after Worker Result"}
+	session.results <- node.Result{Status: "succeeded", Summary: "same result summary echo"}
+	close(session.results)
+	close(session.activities)
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		turn, err := store.SecretaryTurn(ctx, origin.ID)
+		if err == nil && turn.State == core.SecretaryTurnSucceeded {
+			entries, listErr := store.EntriesAfter(ctx, conversation.ID, 0)
+			if listErr != nil {
+				t.Fatal(listErr)
+			}
+			secretaryEntries, workerResults := 0, 0
+			for _, entry := range entries {
+				if entry.Kind == core.EntrySecretary {
+					secretaryEntries++
+				}
+				if entry.Kind == core.EntryWorkerResult {
+					workerResults++
+				}
+			}
+			if secretaryEntries != 0 || workerResults != 1 {
+				t.Fatalf("Runtime produced a duplicate echo: Secretary=%d WorkerResults=%d entries=%#v", secretaryEntries, workerResults, entries)
+			}
+			events, eventErr := store.SecretaryEvents(ctx, origin.ID, 0, 20)
+			streamDeltas := 0
+			for _, event := range events {
+				if event.Kind == core.SecretaryTextDeltaEvent {
+					streamDeltas++
+					var payload map[string]any
+					if err := json.Unmarshal(event.Payload, &payload); err != nil || payload["text"] != "independent progress before Worker Result" {
+						t.Fatalf("Runtime exposed post-Result delta: payload=%#v err=%v", payload, err)
+					}
+				}
+			}
+			if eventErr != nil || streamDeltas != 1 {
+				t.Fatalf("Runtime stream did not preserve exactly the pre-Result delta: events=%#v err=%v", events, eventErr)
+			}
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("addressed Runtime turn did not complete")
+}
+
 func TestRuntimeIgnoresResultFromReplacedSession(t *testing.T) {
 	oldRuntime := &fakeRuntime{}
 	runtime := NewRuntime(node.NewLocal(oldRuntime), "cap")

@@ -331,13 +331,78 @@ type ToolCall struct {
 	Preview   string          `json:"preview,omitempty"`
 }
 
+type ToolFailureCategory string
+
+type ToolFailureCode string
+
+const (
+	ToolFailureCategoryDNS        ToolFailureCategory = "dns"
+	ToolFailureCategoryTLS        ToolFailureCategory = "tls"
+	ToolFailureCategoryTimeout    ToolFailureCategory = "timeout"
+	ToolFailureCategoryProxy      ToolFailureCategory = "proxy"
+	ToolFailureCategoryNetwork    ToolFailureCategory = "network"
+	ToolFailureCategoryHTTP       ToolFailureCategory = "http"
+	ToolFailureCategoryPermission ToolFailureCategory = "permission"
+	ToolFailureCategoryProvider   ToolFailureCategory = "provider"
+	ToolFailureCategoryCapability ToolFailureCategory = "capability"
+	ToolFailureCategoryTool       ToolFailureCategory = "tool"
+)
+
+const (
+	ToolFailureCodeDNSLookupFailed       ToolFailureCode = "dns_lookup_failed"
+	ToolFailureCodeTLSHandshakeFailed    ToolFailureCode = "tls_handshake_failed"
+	ToolFailureCodeRequestTimeout        ToolFailureCode = "request_timeout"
+	ToolFailureCodeConnectionFailed      ToolFailureCode = "connection_failed"
+	ToolFailureCodeProxyError            ToolFailureCode = "proxy_error"
+	ToolFailureCodeHTTPError             ToolFailureCode = "http_error"
+	ToolFailureCodePermissionDenied      ToolFailureCode = "permission_denied"
+	ToolFailureCodeProviderError         ToolFailureCode = "provider_error"
+	ToolFailureCodeCapabilityUnavailable ToolFailureCode = "capability_unavailable"
+	ToolFailureCodeToolError             ToolFailureCode = "tool_error"
+)
+
+// ToolFailureMetadata contains only explicit producer-owned facts safe for the
+// public Worker observer. It is never inferred from tool text or output.
+type ToolFailureMetadata struct {
+	Category   ToolFailureCategory `json:"category,omitempty"`
+	Code       ToolFailureCode     `json:"code,omitempty"`
+	HTTPStatus int                 `json:"http_status,omitempty"`
+}
+
+func (m ToolFailureMetadata) Validate() error {
+	switch m.Category {
+	case "", ToolFailureCategoryDNS, ToolFailureCategoryTLS, ToolFailureCategoryTimeout,
+		ToolFailureCategoryProxy, ToolFailureCategoryNetwork, ToolFailureCategoryHTTP,
+		ToolFailureCategoryPermission, ToolFailureCategoryProvider, ToolFailureCategoryCapability,
+		ToolFailureCategoryTool:
+	default:
+		return fmt.Errorf("core: unallowlisted tool failure category")
+	}
+	switch m.Code {
+	case "", ToolFailureCodeDNSLookupFailed, ToolFailureCodeTLSHandshakeFailed,
+		ToolFailureCodeRequestTimeout, ToolFailureCodeConnectionFailed, ToolFailureCodeProxyError,
+		ToolFailureCodeHTTPError, ToolFailureCodePermissionDenied, ToolFailureCodeProviderError,
+		ToolFailureCodeCapabilityUnavailable, ToolFailureCodeToolError:
+	default:
+		return fmt.Errorf("core: unallowlisted tool failure code")
+	}
+	if m.HTTPStatus < 0 || m.HTTPStatus > 599 || (m.HTTPStatus > 0 && m.HTTPStatus < 100) {
+		return fmt.Errorf("core: invalid tool HTTP status %d", m.HTTPStatus)
+	}
+	if m.Category == "" && m.Code == "" && m.HTTPStatus == 0 {
+		return fmt.Errorf("core: empty tool failure metadata")
+	}
+	return nil
+}
+
 type ToolResult struct {
-	CallID  string `json:"call_id,omitempty"`
-	Name    string `json:"name,omitempty"`
-	Output  string `json:"output,omitempty"`
-	Error   string `json:"error,omitempty"`
-	Status  string `json:"status,omitempty"`
-	Preview string `json:"preview,omitempty"`
+	CallID  string               `json:"call_id,omitempty"`
+	Name    string               `json:"name,omitempty"`
+	Output  string               `json:"output,omitempty"`
+	Error   string               `json:"-"`
+	Status  string               `json:"status,omitempty"`
+	Preview string               `json:"preview,omitempty"`
+	Failure *ToolFailureMetadata `json:"failure,omitempty"`
 }
 
 type SubagentActivity struct {
@@ -413,6 +478,17 @@ func (a Activity) validatePayload() error {
 	case ActivityKindToolResult:
 		if a.ToolResult == nil || strings.TrimSpace(a.ToolResult.Name) == "" {
 			return fmt.Errorf("core: tool_result activity requires a named tool result")
+		}
+		if a.ToolResult.Error != "" {
+			return fmt.Errorf("core: free-form tool error text is not normalized activity")
+		}
+		if a.ToolResult.Failure != nil {
+			if a.ToolResult.Status != "failed" {
+				return fmt.Errorf("core: tool failure metadata requires a failed tool result")
+			}
+			if err := a.ToolResult.Failure.Validate(); err != nil {
+				return err
+			}
 		}
 	case ActivityKindSubagentStarted, ActivityKindSubagentProgress, ActivityKindSubagentCompleted:
 		if a.Subagent == nil {

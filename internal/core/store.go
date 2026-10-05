@@ -1392,5 +1392,5 @@ func sqliteRetryable(err error) bool {
 	if strings.Contains(text, "database is locked") || strings.Contains(text, "database table is locked") || strings.Contains(text, "busy") {
 		return true
 	}
-	return strings.Contains(text, "unique constraint failed: conversation_entries") || strings.Contains(text, "unique constraint failed: phase4_attempt_outcomes") || strings.Contains(text, "unique constraint failed: phase4_results")
+	return strings.Contains(text, "unique constraint failed: conversation_entries") || strings.Contains(text, "unique constraint failed: phase4_attempt_outcomes") || strings.Contains(text, "unique constraint failed: phase4_results") || strings.Contains(text, "unique constraint failed: secretary_worker_origins") || strings.Contains(text, "unique constraint failed: secretary_reply_entries")
 }

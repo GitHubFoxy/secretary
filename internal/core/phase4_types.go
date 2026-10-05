@@ -140,11 +140,12 @@ const (
 type ApprovalState string
 
 const (
-	ApprovalPending  ApprovalState = "pending"
-	ApprovalApproved ApprovalState = "approved"
-	ApprovalDenied   ApprovalState = "denied"
-	ApprovalExpired  ApprovalState = "expired"
-	ApprovalRevoked  ApprovalState = "revoked"
+	ApprovalPending   ApprovalState = "pending"
+	ApprovalResolving ApprovalState = "resolving"
+	ApprovalApproved  ApprovalState = "approved"
+	ApprovalDenied    ApprovalState = "denied"
+	ApprovalExpired   ApprovalState = "expired"
+	ApprovalRevoked   ApprovalState = "revoked"
 )
 
 type Approval struct {
@@ -161,10 +162,15 @@ type Approval struct {
 	RequestedAt   time.Time     `json:"requested_at"`
 	ExpiresAt     *time.Time    `json:"expires_at,omitempty"`
 	State         ApprovalState `json:"state"`
-	Response      string        `json:"response,omitempty"`
+	Response      string        `json:"-"`
 	ResolvedBy    string        `json:"resolved_by,omitempty"`
 	ResolvedAt    *time.Time    `json:"resolved_at,omitempty"`
 	AuditEventID  string        `json:"audit_event_id,omitempty"`
+
+	ResolutionCommandID  string        `json:"-"`
+	ResolutionState      ApprovalState `json:"-"`
+	ResolutionResponse   string        `json:"-"`
+	ResolutionResolvedBy string        `json:"-"`
 }
 
 type TrustedLocalApprovalPolicy struct {
@@ -178,9 +184,30 @@ type WorkerCommandState string
 
 const (
 	WorkerCommandPending   WorkerCommandState = "pending"
+	WorkerCommandUncertain WorkerCommandState = "uncertain"
 	WorkerCommandDelivered WorkerCommandState = "delivered"
 	WorkerCommandFailed    WorkerCommandState = "failed"
 )
+
+type WorkerCommandReceiptState string
+
+const (
+	WorkerCommandReceiptAccepted  WorkerCommandReceiptState = "accepted"
+	WorkerCommandReceiptDenied    WorkerCommandReceiptState = "denied"
+	WorkerCommandReceiptUncertain WorkerCommandReceiptState = "uncertain"
+)
+
+// WorkerCommandReceipt is an authenticated Node outcome bound to one durable
+// command and its immutable Worker Turn/Attempt.
+type WorkerCommandReceipt struct {
+	CommandID    string
+	Kind         string
+	TurnID       string
+	AttemptID    string
+	State        WorkerCommandReceiptState
+	ErrorCode    string
+	ErrorMessage string
+}
 
 // WorkerCommand persists the server-side delivery decision for one immutable
 // Worker Attempt command. It contains no Node-local runtime identifiers.
@@ -198,12 +225,14 @@ type WorkerCommand struct {
 }
 
 type WorkerDetails struct {
-	Worker    Worker           `json:"worker"`
-	Turns     []Turn           `json:"turns"`
-	Attempts  []Phase4Attempt  `json:"attempts"`
-	Outcomes  []AttemptOutcome `json:"outcomes"`
-	Results   []Phase4Result   `json:"results"`
-	Approvals []Approval       `json:"approvals,omitempty"`
+	// ActionTurnID is populated only by ctl for the exact Worker Turn affected by an accepted Secretary action; it is never serialized or persisted.
+	ActionTurnID string           `json:"-"`
+	Worker       Worker           `json:"worker"`
+	Turns        []Turn           `json:"turns"`
+	Attempts     []Phase4Attempt  `json:"attempts"`
+	Outcomes     []AttemptOutcome `json:"outcomes"`
+	Results      []Phase4Result   `json:"results"`
+	Approvals    []Approval       `json:"approvals,omitempty"`
 }
 
 func (d WorkerDetails) CurrentAttempt() *Phase4Attempt {

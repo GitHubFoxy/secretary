@@ -42,14 +42,19 @@ func TestTwoSecretaryNodeProcessesPairInventoryAndReconnect(t *testing.T) {
 
 	binary := buildNodeBinary(t)
 	fakeBin := writeFakeHarnesses(t)
+	opencodeProbeMarker := filepath.Join(t.TempDir(), "opencode-probe.log")
 	firstDataDir := filepath.Join(t.TempDir(), "process-a")
 	secondDataDir := filepath.Join(t.TempDir(), "process-b")
 	startAt := func(name, token, dataDir string) *exec.Cmd {
-		cmd := exec.Command(binary, "--data-dir", dataDir, "--server", server.URL, "--name", name, "--capacity", "2")
+		// This process test covers transport and saved-identity reconnect. Keep
+		// native OpenCode probing in its dedicated checks, not in every restart.
+		cmd := exec.Command(binary, "--data-dir", dataDir, "--server", server.URL, "--name", name, "--capacity", "2", "--include-opencode=false")
 		cmd.Env = append(os.Environ(),
 			"SECRETARY_NODE_PAIRING_TOKEN="+token,
 			"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
 			"SECRETARY_ACP_COMMAND=missing-acp",
+			"SECRETARY_OPENCODE_COMMAND="+filepath.Join(fakeBin, "opencode"),
+			"TEST_NATIVE_PROBE_MARKER="+opencodeProbeMarker,
 		)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -69,7 +74,7 @@ func TestTwoSecretaryNodeProcessesPairInventoryAndReconnect(t *testing.T) {
 		secondStatus, secondErr := manager.Status(ctx, "process-b")
 		return firstErr == nil && secondErr == nil && firstStatus.Online && secondStatus.Online &&
 			firstStatus.Inventory.Node == "process-a" && secondStatus.Inventory.Node == "process-b" &&
-			len(firstStatus.Inventory.Instances) > 0 && len(secondStatus.Inventory.Instances) > 0
+			inventoryHasHarness(firstStatus.Inventory, core.HarnessFX) && inventoryHasHarness(secondStatus.Inventory, core.HarnessFX)
 	})
 
 	if err := first.Process.Signal(os.Interrupt); err != nil {
@@ -88,8 +93,13 @@ func TestTwoSecretaryNodeProcessesPairInventoryAndReconnect(t *testing.T) {
 	defer stopProcess(t, first)
 	waitFor(t, ctx, "first Node authenticated reconnect", func() bool {
 		status, err := manager.Status(ctx, "process-a")
-		return err == nil && status.Online && status.Inventory.Node == "process-a"
+		return err == nil && status.Online && status.Inventory.Node == "process-a" && inventoryHasHarness(status.Inventory, core.HarnessFX)
 	})
+	if _, err := os.Stat(opencodeProbeMarker); err == nil {
+		t.Fatal("transport integration unexpectedly ran the OpenCode inventory probe")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("check OpenCode probe marker: %v", err)
+	}
 }
 
 func buildNodeBinary(t *testing.T) string {
@@ -128,7 +138,29 @@ esac
 			t.Fatal(err)
 		}
 	}
+	// This tripwire only records accidental process-level probes. It does not
+	// emulate or claim any native OpenCode acceptance behavior.
+	opencode := `#!/bin/sh
+printf '%s\n' "$*" >> "$TEST_NATIVE_PROBE_MARKER"
+case "$*" in
+  --version) echo "opencode v2.0.22" ;;
+  "auth list") exit 0 ;;
+  *) echo "ready" ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(dir, "opencode"), []byte(opencode), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	return dir
+}
+
+func inventoryHasHarness(inventory core.HarnessInventorySnapshot, kind core.HarnessKind) bool {
+	for _, instance := range inventory.Instances {
+		if instance.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
 
 func stopProcess(t *testing.T, cmd *exec.Cmd) {

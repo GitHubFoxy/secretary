@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -48,7 +49,7 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 		if err != nil {
 			return node.CommandOutcome{}, err
 		}
-		return node.CommandOutcome{CommandID: metadata.CommandID, Kind: command.Kind, State: node.CommandAccepted}, nil
+		return node.CommandOutcome{CommandID: metadata.CommandID, Kind: command.Kind, State: node.CommandAccepted, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID}, nil
 	}
 	if !ok {
 		return node.CommandOutcome{}, ErrWorkerRuntimeUnavailable
@@ -61,7 +62,7 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 		}
 		err := responder.Respond(ctx, command.RespondWorker.RequestID, command.RespondWorker.Response)
 		if err != nil {
-			return node.CommandOutcome{}, err
+			return node.CommandOutcome{}, fmt.Errorf("%w: %w", node.ErrCommandOutcomeUnknown, err)
 		}
 	case node.CommandSteering:
 		if command.Steering == nil {
@@ -78,7 +79,7 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 	default:
 		return node.CommandOutcome{}, ErrWorkerRuntimeUnavailable
 	}
-	return node.CommandOutcome{CommandID: metadata.CommandID, Kind: command.Kind, State: node.CommandAccepted}, nil
+	return node.CommandOutcome{CommandID: metadata.CommandID, Kind: command.Kind, State: node.CommandAccepted, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID}, nil
 }
 
 func (r NodeRuntime) Dispatch(ctx context.Context, commandID string, worker core.Worker, turn core.Turn, attempt core.Phase4Attempt, resolution core.DispatchResolution) error {

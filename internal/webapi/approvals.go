@@ -11,17 +11,18 @@ import (
 	"github.com/beruseruko/secretary/internal/ctl"
 )
 
-// publicApprovalDTO is the allowlisted Client response shape. The raw
-// core.Approval carries node, project, attempt and audit identifiers plus the
-// owner response, none of which cross the public Client API boundary.
+// publicApprovalDTO is the allowlisted Approval shape for credential Clients
+// and the owner observer. Raw core.Approval carries additional request, node,
+// project, attempt and audit identifiers plus the saved response.
 type publicApprovalDTO struct {
-	ID            string             `json:"id"`
-	Kind          core.ApprovalKind  `json:"kind"`
-	ActionSummary string             `json:"action_summary"`
-	RiskCategory  string             `json:"risk_category"`
-	State         core.ApprovalState `json:"state"`
-	RequestedAt   time.Time          `json:"requested_at"`
-	ExpiresAt     *time.Time         `json:"expires_at"`
+	ID              string             `json:"id"`
+	Kind            core.ApprovalKind  `json:"kind"`
+	ActionSummary   string             `json:"action_summary"`
+	RiskCategory    string             `json:"risk_category"`
+	State           core.ApprovalState `json:"state"`
+	ResolutionState core.ApprovalState `json:"resolution_state,omitempty"`
+	RequestedAt     time.Time          `json:"requested_at"`
+	ExpiresAt       *time.Time         `json:"expires_at"`
 }
 
 func publicApprovalDTOFromApproval(approval core.Approval) publicApprovalDTO {
@@ -33,7 +34,18 @@ func publicApprovalDTOFromApproval(approval core.Approval) publicApprovalDTO {
 	if approval.ExpiresAt != nil {
 		dto.ExpiresAt = approval.ExpiresAt
 	}
+	if approval.State == core.ApprovalResolving {
+		dto.ResolutionState = approval.ResolutionState
+	}
 	return dto
+}
+
+func writeApprovalRouteDetails(w http.ResponseWriter, status int, details core.WorkerDetails, strict bool) {
+	if strict {
+		writeJSON(w, status, sanitizePublicJSON(publicWorkerDetailsStrictFromDetails(details)))
+		return
+	}
+	writeJSON(w, status, details)
 }
 
 func (s *Server) approvalList(w http.ResponseWriter, r *http.Request) {
@@ -59,16 +71,27 @@ func (s *Server) approvalList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) approvalRoute(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizedConversationScope(w, r, core.ScopeApprovalWrite); !ok {
+	conversation, ok := s.authorizedConversationScope(w, r, core.ScopeApprovalWrite)
+	if !ok {
 		return
 	}
-	_, client, _ := s.authorizedPerson(w, r)
+	if s.approvalAuthorizationCheckpoint != nil {
+		s.approvalAuthorizationCheckpoint()
+	}
+	person, client, authorized := s.authorizedPerson(w, r)
+	if !authorized {
+		return
+	}
+	if person.ID != conversation.PersonID || (client != nil && !client.HasScope(core.ScopeApprovalWrite)) {
+		http.Error(w, "approval write scope required", http.StatusForbidden)
+		return
+	}
 	clientID := "web-session"
 	if client != nil {
 		clientID = client.ID
 	}
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/approvals/"), "/"), "/")
-	if len(parts) != 2 || parts[0] == "" || (parts[1] != "approve" && parts[1] != "deny") || r.Method != http.MethodPost {
+	if len(parts) != 2 || parts[0] == "" || (parts[1] != "approve" && parts[1] != "deny" && parts[1] != "retry") || r.Method != http.MethodPost {
 		http.NotFound(w, r)
 		return
 	}
@@ -85,10 +108,41 @@ func (s *Server) approvalRoute(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "worker response service is unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	var retryer approvalResolutionRetryer
+	if parts[1] == "retry" {
+		var ok bool
+		retryer, ok = s.responder.(approvalResolutionRetryer)
+		if !ok {
+			http.Error(w, "approval retry service is unavailable", http.StatusServiceUnavailable)
+			return
+		}
+	}
 	worker, err := s.store.Worker(r.Context(), approval.WorkerID)
 	if err != nil {
 		http.Error(w, "read approval worker", http.StatusInternalServerError)
 		return
+	}
+	if parts[1] == "retry" {
+		details, scopeErr := s.store.WorkerDetailsForConversation(r.Context(), conversation.ID, worker.WorkerRef)
+		if errors.Is(scopeErr, core.ErrNotFound) {
+			http.NotFound(w, r)
+			return
+		}
+		if scopeErr != nil {
+			http.Error(w, "read approval worker", http.StatusInternalServerError)
+			return
+		}
+		belongs := false
+		for _, item := range details.Approvals {
+			if item.ID == approval.ID {
+				belongs = true
+				break
+			}
+		}
+		if !belongs {
+			http.NotFound(w, r)
+			return
+		}
 	}
 	response := "denied"
 	if parts[1] == "approve" {
@@ -105,11 +159,18 @@ func (s *Server) approvalRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	operation := "approval:" + approval.RequestID
-	payload := struct {
+	var payload any = struct {
 		Action   string
 		Response string
 		ClientID string
 	}{parts[1], response, clientID}
+	if parts[1] == "retry" {
+		operation = "approval-retry:" + approval.RequestID
+		payload = struct {
+			Action   string
+			ClientID string
+		}{parts[1], clientID}
+	}
 	s.idempotencyMu.Lock()
 	defer s.idempotencyMu.Unlock()
 	encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), operation, key, payload)
@@ -127,12 +188,23 @@ func (s *Server) approvalRoute(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "decode idempotency record", http.StatusInternalServerError)
 			return
 		}
-		writeJSON(w, http.StatusOK, details)
+		writeApprovalRouteDetails(w, http.StatusOK, details, client != nil)
 		return
 	}
-	details, err := s.responder.RespondWorker(r.Context(), ctl.MessageWorkerRequest{WorkerRef: worker.WorkerRef, Text: response, RequestID: approval.RequestID, ClientID: clientID, IdempotencyKey: key})
+	var details core.WorkerDetails
+	if parts[1] == "retry" {
+		details, err = retryer.RetryApprovalResolution(r.Context(), approval.RequestID, clientID)
+	} else {
+		details, err = s.responder.RespondWorker(r.Context(), ctl.MessageWorkerRequest{WorkerRef: worker.WorkerRef, Text: response, RequestID: approval.RequestID, ClientID: clientID, IdempotencyKey: key})
+	}
 	if err != nil {
-		http.Error(w, "resolve approval: "+err.Error(), http.StatusBadRequest)
+		status := http.StatusBadRequest
+		if errors.Is(err, core.ErrApprovalResolutionConflict) || errors.Is(err, core.ErrInvalidTransition) || errors.Is(err, ctl.ErrWorkerCommandPending) {
+			status = http.StatusConflict
+		} else if errors.Is(err, core.ErrNotFound) {
+			status = http.StatusNotFound
+		}
+		http.Error(w, "resolve approval: "+err.Error(), status)
 		return
 	}
 	if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, key, payload, details); err != nil {
@@ -143,5 +215,5 @@ func (s *Server) approvalRoute(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), status)
 		return
 	}
-	writeJSON(w, http.StatusOK, details)
+	writeApprovalRouteDetails(w, http.StatusOK, details, client != nil)
 }

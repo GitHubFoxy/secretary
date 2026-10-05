@@ -29,16 +29,17 @@ type PendingRequest struct {
 }
 
 type Activity struct {
-	Kind          ActivityKind    `json:"kind"`
-	Text          string          `json:"text,omitempty"`
-	RequestID     string          `json:"request_id,omitempty"`
-	Summary       string          `json:"summary,omitempty"`
-	RequestSchema json.RawMessage `json:"request_schema,omitempty"`
-	Tool          string          `json:"tool,omitempty"`
-	Arguments     json.RawMessage `json:"arguments,omitempty"`
-	Result        string          `json:"result,omitempty"`
-	Error         string          `json:"error,omitempty"`
-	Status        string          `json:"status,omitempty"`
+	Kind          ActivityKind              `json:"kind"`
+	Text          string                    `json:"text,omitempty"`
+	RequestID     string                    `json:"request_id,omitempty"`
+	Summary       string                    `json:"summary,omitempty"`
+	RequestSchema json.RawMessage           `json:"request_schema,omitempty"`
+	Tool          string                    `json:"tool,omitempty"`
+	Arguments     json.RawMessage           `json:"arguments,omitempty"`
+	Result        string                    `json:"result,omitempty"`
+	Error         string                    `json:"-"`
+	Status        string                    `json:"status,omitempty"`
+	Failure       *core.ToolFailureMetadata `json:"failure,omitempty"`
 }
 
 type Result struct {
@@ -59,17 +60,18 @@ type MCPServer struct {
 }
 
 type StartRequest struct {
-	WorkerRef          string
-	Task               string
-	Workspace          string
-	RawLogPath         string
-	MCPServers         []MCPServer
-	Profile            ManagedProfile
-	HarnessInstance    core.HarnessInstance
-	Model              string
-	Reasoning          string
-	ApprovalPolicy     string
-	DeferInitialPrompt bool
+	WorkerRef               string
+	Task                    string
+	Workspace               string
+	RawLogPath              string
+	MCPServers              []MCPServer
+	Profile                 ManagedProfile
+	HarnessInstance         core.HarnessInstance
+	Model                   string
+	Reasoning               string
+	ApprovalPolicy          string
+	DrainOutputBeforeResult bool
+	DeferInitialPrompt      bool
 	// PendingRequests is the durable request metadata used for reconnect.
 	PendingRequests []PendingRequest
 	// PendingRequestKinds preserves metadata when an older caller can only

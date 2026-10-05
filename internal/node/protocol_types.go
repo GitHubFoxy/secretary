@@ -449,6 +449,8 @@ type CommandOutcome struct {
 	CommandID    string       `json:"command_id"`
 	Kind         CommandKind  `json:"kind"`
 	State        CommandState `json:"state"`
+	TurnID       string       `json:"turn_id,omitempty"`
+	AttemptID    string       `json:"attempt_id,omitempty"`
 	ErrorCode    string       `json:"error_code,omitempty"`
 	ErrorMessage string       `json:"error_message,omitempty"`
 }

@@ -71,8 +71,29 @@ func TestWorkerRequestCreatesDurableApprovalAndTransitionsState(t *testing.T) {
 func TestApprovalResolutionIsIdempotentAndDeniedCannotRerun(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
 	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "synthetic owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, SecretaryPolicySnapshot{Version: "test", Harness: "fx", Model: "m", Reasoning: "high", ProfileVersion: "test", ProfileName: "secretary", ProfileHash: "hash", ProfileContent: "policy"}); err != nil {
+		t.Fatal(err)
+	}
+	origin, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "deny and report worker result")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, origin.ID); err != nil {
 		t.Fatal(err)
 	}
 	spec := phase4WorkerSpec()
@@ -83,6 +104,9 @@ func TestApprovalResolutionIsIdempotentAndDeniedCannotRerun(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LinkSecretaryWorkerTurn(ctx, person.ID, capability, origin.ID, origin.InputID, turn.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RecordNodeActivityReplay(ctx, Activity{Metadata: ActivityMetadata{EventID: "permission-2", Node: "remote", HarnessInstanceID: "remote/fx", WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, Sequence: 1, ObservedAt: time.Now().UTC()}, Kind: ActivityPermissionRequest, Request: &ActivityRequest{RequestID: "request-2", Summary: "run command"}}); err != nil {
@@ -99,6 +123,9 @@ func TestApprovalResolutionIsIdempotentAndDeniedCannotRerun(t *testing.T) {
 	third, duplicate, err := store.ResolveApproval(ctx, "request-2", ApprovalApproved, "client-1", "yes")
 	if err != nil || !duplicate || third.State != ApprovalDenied {
 		t.Fatalf("third=%#v duplicate=%v err=%v", third, duplicate, err)
+	}
+	if linked, err := store.SecretaryOriginHasResult(ctx, origin.ID, origin.InputID); err != nil || !linked {
+		t.Fatalf("approval denial Result was not linked to its exact accepted Worker Turn: linked=%v err=%v", linked, err)
 	}
 }
 

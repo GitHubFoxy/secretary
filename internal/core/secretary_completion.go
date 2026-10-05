@@ -17,6 +17,13 @@ type secretaryTurnCompletion struct {
 // Personal Conversation. The live Secretary stream remains an event log; it is
 // not a substitute for the durable conversation entry.
 func (s *Store) FinishSecretaryTurnWithResponse(ctx context.Context, turnID string, state SecretaryTurnState, terminalError, response string) (SecretaryTurn, ConversationEntry, error) {
+	return s.FinishSecretaryTurnWithOutput(ctx, turnID, "", state, terminalError, response, nil)
+}
+
+// FinishSecretaryTurnWithOutput atomically flushes buffered assistant deltas
+// and completes a turn. Addressed replies and Results linked to this exact
+// turn/input identity suppress only unaddressed completion output.
+func (s *Store) FinishSecretaryTurnWithOutput(ctx context.Context, turnID, inputID string, state SecretaryTurnState, terminalError, response string, textDeltas []string) (SecretaryTurn, ConversationEntry, error) {
 	if !state.Terminal() {
 		return SecretaryTurn{}, ConversationEntry{}, errors.New("core: Secretary turn must finish in a terminal state")
 	}
@@ -35,6 +42,9 @@ func (s *Store) FinishSecretaryTurnWithResponse(ctx context.Context, turnID stri
 		if turn.State != SecretaryTurnActive {
 			return secretaryTurnCompletion{}, ErrInvalidTransition
 		}
+		if inputID != "" && turn.InputID != inputID {
+			return secretaryTurnCompletion{}, ErrInvalidSecretaryOrigin
+		}
 		if state == SecretaryTurnSucceeded {
 			if _, err := tx.ExecContext(ctx, `UPDATE secretary_context_seen_results SET claim_state = 'accepted' WHERE turn_id = ? AND claim_state = 'claimed'`, turn.ID); err != nil {
 				return secretaryTurnCompletion{}, err
@@ -52,11 +62,34 @@ func (s *Store) FinishSecretaryTurnWithResponse(ctx context.Context, turnID stri
 		}
 
 		var entry ConversationEntry
-		if state == SecretaryTurnSucceeded && response != "" {
-			var err error
-			entry, err = appendEntry(ctx, tx, now, turn.ConversationID, EntrySecretary, response)
-			if err != nil {
+		publishUnaddressedOutput := state == SecretaryTurnSucceeded
+		if publishUnaddressedOutput && turn.InputID != "" {
+			var addressed, relatedResult int
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM secretary_reply_entries WHERE secretary_turn_id = ? AND input_id = ?), EXISTS(SELECT 1 FROM secretary_origin_results WHERE secretary_turn_id = ? AND input_id = ?)`, turn.ID, turn.InputID, turn.ID, turn.InputID).Scan(&addressed, &relatedResult); err != nil {
 				return secretaryTurnCompletion{}, err
+			}
+			publishUnaddressedOutput = addressed == 0 && relatedResult == 0
+		}
+		if publishUnaddressedOutput {
+			for _, delta := range textDeltas {
+				if delta == "" {
+					continue
+				}
+				streamPayload := map[string]any{"turn_id": turn.ID, "text": delta}
+				streamEvent, err := appendEventTx(ctx, tx, now, EventInput{Kind: SecretaryTextDeltaEvent, AggregateType: "secretary_turn", AggregateID: turn.ID, Source: "secretary", CorrelationID: turn.ID, Payload: streamPayload}, streamPayload)
+				if err != nil {
+					return secretaryTurnCompletion{}, err
+				}
+				if _, _, err := enqueueDeliveryTx(ctx, tx, now, streamEvent.ID, "", "conversation", "secretary-stream:"+streamEvent.ID); err != nil {
+					return secretaryTurnCompletion{}, err
+				}
+			}
+			if response != "" {
+				var err error
+				entry, err = appendEntry(ctx, tx, now, turn.ConversationID, EntrySecretary, response)
+				if err != nil {
+					return secretaryTurnCompletion{}, err
+				}
 			}
 		}
 

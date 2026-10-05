@@ -211,10 +211,10 @@ ask_state() {
   local scenario="$1" description="$2" state notes
   while :; do
     printf '  Scenario %s: %s\n' "$scenario" "$description"
-    printf '  State [PASS/BLOCKED/FAIL/NOT RUN]: '
+    printf '  State [PASS/FAIL/BLOCKED/UNAVAILABLE/NOT RUN]: '
     read -r state || true
     state=$(printf '%s' "$state" | tr '[:lower:]' '[:upper:]')
-    case "$state" in PASS|BLOCKED|FAIL|NOT\ RUN) break;; *) warn "use PASS, BLOCKED, FAIL, or NOT RUN";; esac
+    case "$state" in PASS|FAIL|BLOCKED|UNAVAILABLE|NOT\ RUN) break;; *) warn "use PASS, FAIL, BLOCKED, UNAVAILABLE, or NOT RUN";; esac
   done
   while :; do
     printf '  Short redacted note: '
@@ -235,7 +235,7 @@ SCENARIOS=(
   "Project path mappings"
   "Web and Telegram Personal Conversation"
   "message accepted and acknowledged"
-  "default policy selects fx"
+  "default policy selects OpenCode v2"
   "explicit Claude Code on MacBook"
   "unknown model visible error without fx fallback"
   "Worker and Turn without Task in Client API"
@@ -266,7 +266,7 @@ SCENARIOS=(
   "offline Worker remains visible"
   "Telegram Worker Topic aggregation"
   "automated release gate"
-  "real fx, Claude Code, Codex and conditional OpenCode"
+  "default OpenCode v2 and explicit fx, Claude Code, Codex adapters"
 )
 
 banner "Phase 4 manual acceptance"
@@ -290,9 +290,9 @@ step "Restart the server once and confirm the same Worker binding remains."
 pause "Press Enter after the server and both Nodes have been checked"
 
 stage "Harness authentication"
-say "On each required Node, run sex doctor and authenticate fx, Claude Code, and Codex separately."
-step "Do not copy credentials into this shell or into the ledger."
-step "If a required harness is unavailable, record BLOCKED instead of substituting fx."
+say "On each required Node, inspect sex doctor and observed inventory for OpenCode v2, fx, Claude Code, and Codex."
+step "Do not copy credentials or access a personal native store. Owner login or legacy migration needs separate approval."
+step "If native owner auth/access is unavailable, record UNAVAILABLE; never substitute another harness or model."
 pause "Press Enter after harness status has been checked"
 
 stage "Deterministic gate"

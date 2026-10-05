@@ -167,7 +167,7 @@ func TestTelegramBridgePreservesSecretaryDeltaWhitespace(t *testing.T) {
 	if err := adapter.Flush(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(transport.sent) != 1 || transport.sent[0].Text != "I'll create a new Worker" {
+	if len(transport.sent) != 1 || transport.sent[0].Text != "I&#39;ll create a new Worker" {
 		t.Fatalf("Secretary delta text=%#v, want spaces preserved", transport.sent)
 	}
 }
@@ -415,7 +415,7 @@ func TestTelegramEventBridgeSendsOneTerminalNotificationForOneTurn(t *testing.T)
 		if sent.ThreadID != 0 && sent.Text == "done" {
 			topicCompletions++
 		}
-		if sent.ThreadID == 0 && sent.Text == "worker-1:\ndone" {
+		if sent.ThreadID == 0 && sent.Text == "Worker:\ndone" {
 			generalMirrors++
 		}
 	}

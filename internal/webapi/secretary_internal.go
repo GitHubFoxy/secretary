@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
 )
 
@@ -52,7 +53,7 @@ func (s *Server) secretaryToolCall(w http.ResponseWriter, r *http.Request) {
 	if request.Arguments == nil {
 		request.Arguments = json.RawMessage(`{}`)
 	}
-	value, callErr := s.callSecretaryTool(r, request.Name, request.Arguments)
+	value, callErr := s.callSecretaryTool(r, request.Name, request.Arguments, s.owner.ID, capability)
 	if callErr != nil {
 		writeJSON(w, http.StatusOK, secretaryToolCallResponse{Error: callErr.Error()})
 		return
@@ -60,16 +61,19 @@ func (s *Server) secretaryToolCall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, secretaryToolCallResponse{Value: value})
 }
 
-func (s *Server) callSecretaryTool(r *http.Request, name string, raw json.RawMessage) (any, error) {
+func (s *Server) callSecretaryTool(r *http.Request, name string, raw json.RawMessage, personID, capability string) (any, error) {
 	var args struct {
-		WorkerRef string `json:"worker_ref"`
-		Text      string `json:"text"`
-		RequestID string `json:"request_id"`
+		WorkerRef       string `json:"worker_ref"`
+		Text            string `json:"text"`
+		RequestID       string `json:"request_id"`
+		SecretaryTurnID string `json:"secretary_turn_id"`
+		InputID         string `json:"input_id"`
 		ctl.SpawnWorkerRequest
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, err
 	}
+	addressedReplyEnabled := s.addressedReplyEnabled()
 	switch name {
 	case "list_nodes":
 		return s.secretaryTools.ListNodes(r.Context())
@@ -80,9 +84,54 @@ func (s *Server) callSecretaryTool(r *http.Request, name string, raw json.RawMes
 	case "get_worker":
 		return s.secretaryTools.GetWorker(r.Context(), args.WorkerRef)
 	case "spawn_worker":
-		return s.secretaryTools.SpawnWorker(r.Context(), args.SpawnWorkerRequest)
+		if addressedReplyEnabled {
+			if err := s.store.ValidateSecretaryOrigin(r.Context(), personID, capability, args.SecretaryTurnID, args.InputID); err != nil {
+				return nil, err
+			}
+		}
+		spawnRequest := args.SpawnWorkerRequest
+		if addressedReplyEnabled {
+			spawnRequest.SecretaryTurnID, spawnRequest.InputID = args.SecretaryTurnID, args.InputID
+		}
+		details, err := s.secretaryTools.SpawnWorker(r.Context(), spawnRequest)
+		if err != nil {
+			return nil, err
+		}
+		if addressedReplyEnabled {
+			if _, err := s.store.LinkSecretaryWorkerTurn(r.Context(), personID, capability, args.SecretaryTurnID, args.InputID, details.ActionTurnID); err != nil {
+				return nil, err
+			}
+		}
+		return details, nil
 	case "message_worker":
-		return s.secretaryTools.MessageWorker(r.Context(), ctl.MessageWorkerRequest{WorkerRef: args.WorkerRef, Text: args.Text, RequestID: args.RequestID, IdempotencyKey: args.IdempotencyKey})
+		if addressedReplyEnabled {
+			if err := s.store.ValidateSecretaryOrigin(r.Context(), personID, capability, args.SecretaryTurnID, args.InputID); err != nil {
+				return nil, err
+			}
+		}
+		messageRequest := ctl.MessageWorkerRequest{WorkerRef: args.WorkerRef, Text: args.Text, RequestID: args.RequestID, IdempotencyKey: args.IdempotencyKey}
+		if addressedReplyEnabled {
+			messageRequest.SecretaryTurnID, messageRequest.InputID = args.SecretaryTurnID, args.InputID
+		}
+		details, err := s.secretaryTools.MessageWorker(r.Context(), messageRequest)
+		if err != nil {
+			return nil, err
+		}
+		if addressedReplyEnabled && details.ActionTurnID != "" {
+			if _, err := s.store.LinkSecretaryWorkerTurn(r.Context(), personID, capability, args.SecretaryTurnID, args.InputID, details.ActionTurnID); err != nil {
+				return nil, err
+			}
+		}
+		return details, nil
+	case "reply_to_user":
+		if !addressedReplyEnabled {
+			return nil, &unknownSecretaryToolError{name: name}
+		}
+		entry, duplicate, err := s.store.RecordSecretaryReply(r.Context(), personID, capability, args.SecretaryTurnID, args.InputID, args.Text)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"entry_id": entry.ID, "duplicate": duplicate}, nil
 	case "cancel_worker":
 		return s.secretaryTools.CancelWorker(r.Context(), args.WorkerRef)
 	case "close_worker":
@@ -90,6 +139,10 @@ func (s *Server) callSecretaryTool(r *http.Request, name string, raw json.RawMes
 	default:
 		return nil, &unknownSecretaryToolError{name: name}
 	}
+}
+
+func (s *Server) addressedReplyEnabled() bool {
+	return s.secretaryReplyContract != nil && s.secretaryReplyContract() == core.SecretaryReplyContractAddressedV1
 }
 
 type unknownSecretaryToolError struct{ name string }

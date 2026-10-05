@@ -26,6 +26,14 @@ func main() {
 		}
 		if len(request.ID) > 0 {
 			result := any(map[string]any{})
+			if request.Method == "session/set_config_option" && os.Getenv("OPENCODE_CONFIG") != "" {
+				var ok bool
+				result, ok = openCodeFixtureSelection(request.Params)
+				if !ok {
+					_ = out.Encode(map[string]any{"id": request.ID, "error": map[string]any{"code": -32602, "message": "fixture selection absent from config"}})
+					continue
+				}
+			}
 			if request.Method == "initialize" {
 				result = map[string]any{"protocolVersion": 1}
 			}

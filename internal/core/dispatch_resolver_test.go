@@ -141,17 +141,60 @@ func TestDispatchResolverQueuesExplicitUnavailableNodeAndKeepsImmutableBinding(t
 		t.Fatal(err)
 	}
 	resolverEnroll(t, store, "other", resolverInventory("other", []HarnessInstance{resolverInstance("other/fx", "other", HarnessFX)}), 1, nil)
-	conversation := mustConversation(t, store)
-	worker, _, _, resolved, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "fix it", DispatchResolutionRequest{ProjectID: project.ID, NodeID: "offline", HarnessInstanceID: offline.ID}, "same-request")
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "synthetic owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, SecretaryPolicySnapshot{Version: "test-v1", Harness: "fx", Model: "secretary", Reasoning: "high", ProfileVersion: "test-v1", ProfileName: "secretary", ProfileHash: "hash", ProfileContent: "test profile"}); err != nil {
+		t.Fatal(err)
+	}
+	secretaryTurn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "create an offline Worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, secretaryTurn.ID); err != nil {
+		t.Fatal(err)
+	}
+	origin := SecretaryOriginIdentity{PersonID: person.ID, Capability: capability, SecretaryTurnID: secretaryTurn.ID, InputID: secretaryTurn.InputID}
+	worker, turn, _, resolved, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "fix it", DispatchResolutionRequest{ProjectID: project.ID, NodeID: "offline", HarnessInstanceID: offline.ID}, "same-request", origin)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !resolved.Queued || worker.Status != WorkerQueued || worker.NodeID != "offline" || worker.HarnessInstanceID != "offline/fx" {
 		t.Fatalf("queued immutable binding=%#v resolved=%#v", worker, resolved)
 	}
-	repeated, _, _, repeatedResolution, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "fix it", DispatchResolutionRequest{ProjectID: project.ID, NodeID: "offline", HarnessInstanceID: offline.ID}, "same-request")
+	var linked int
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM secretary_worker_creation_origins WHERE worker_turn_id = ? AND secretary_turn_id = ? AND input_id = ?`, turn.ID, secretaryTurn.ID, secretaryTurn.InputID).Scan(&linked); err != nil || linked != 1 {
+		t.Fatalf("queued creation origin was not committed with Worker Turn: linked=%d err=%v", linked, err)
+	}
+	repeated, _, _, repeatedResolution, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "fix it", DispatchResolutionRequest{ProjectID: project.ID, NodeID: "offline", HarnessInstanceID: offline.ID}, "same-request", origin)
 	if err != nil || repeated.ID != worker.ID || repeated.NodeID != worker.NodeID || repeatedResolution.HarnessInstance.ID != offline.ID {
 		t.Fatalf("repeat=%#v resolution=%#v err=%v", repeated, repeatedResolution, err)
+	}
+	if _, _, err := store.FinishSecretaryTurnWithOutput(ctx, secretaryTurn.ID, secretaryTurn.InputID, SecretaryTurnSucceeded, "", "", nil); err != nil {
+		t.Fatal(err)
+	}
+	laterTurn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "retry old queued creation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, laterTurn.ID); err != nil {
+		t.Fatal(err)
+	}
+	laterOrigin := SecretaryOriginIdentity{PersonID: person.ID, Capability: capability, SecretaryTurnID: laterTurn.ID, InputID: laterTurn.InputID}
+	if err := store.ValidateSecretaryWorkerCreationOrigin(ctx, laterOrigin, turn.ID); !errors.Is(err, ErrInvalidSecretaryOrigin) {
+		t.Fatalf("queued spawn replay was reassigned to later input: err=%v", err)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
@@ -164,6 +207,9 @@ func TestDispatchResolverQueuesExplicitUnavailableNodeAndKeepsImmutableBinding(t
 	bound, err := store.ResolveWorkerBinding(ctx, worker.ID)
 	if err != nil || bound.Node != "offline" || bound.HarnessInstance.ID != "offline/fx" {
 		t.Fatalf("reloaded binding=%#v err=%v", bound, err)
+	}
+	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM secretary_worker_creation_origins WHERE worker_turn_id = ? AND secretary_turn_id = ? AND input_id = ?`, turn.ID, secretaryTurn.ID, secretaryTurn.InputID).Scan(&linked); err != nil || linked != 1 {
+		t.Fatalf("queued origin did not survive Core reopen: linked=%d err=%v", linked, err)
 	}
 	alternate, _, _, alternateResolved, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "fix it", DispatchResolutionRequest{ProjectID: project.ID, NodeID: "other", HarnessInstanceID: "other/fx"}, "other-request")
 	if err != nil || alternate.ID == worker.ID || alternateResolved.Node != "other" {
@@ -192,7 +238,7 @@ func TestDispatchResolverRejectsNoProjectMissingInventoryAndRevokedNodes(t *test
 		t.Fatal(err)
 	}
 	conversation := mustConversation(t, store)
-	worker, _, _, resolved, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "wait for node", DispatchResolutionRequest{ProjectID: project.ID, NodeID: "node"}, "draining-node")
+	worker, _, _, resolved, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "wait for node", DispatchResolutionRequest{ProjectID: project.ID, NodeID: "node", WorkerPolicy: HarnessPolicy{DefaultHarness: HarnessFX}}, "draining-node")
 	if err != nil || !resolved.Queued || worker.Status != WorkerQueued || worker.NodeID != "node" {
 		t.Fatalf("draining binding worker=%#v resolution=%#v err=%v", worker, resolved, err)
 	}
@@ -227,17 +273,30 @@ func TestDispatchResolverTriesEveryNodeForExplicitModelPin(t *testing.T) {
 	}
 }
 
-func TestDispatchResolverDefaultsEmptyWorkerPolicyToFX(t *testing.T) {
+func TestDispatchResolverDefaultsEmptyWorkerPolicyToOpenCode(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
 	project, err := store.CreateProject(ctx, ProjectSpec{ID: "repo", Name: "Repo", Mappings: []ProjectPathMapping{{Node: "node", Path: t.TempDir()}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolverEnroll(t, store, "node", resolverInventory("node", []HarnessInstance{resolverInstance("node/claude", "node", HarnessClaudeCode), resolverInstance("node/fx", "node", HarnessFX)}), 1, nil)
+	resolverEnroll(t, store, "node", resolverInventory("node", []HarnessInstance{resolverInstance("node/claude", "node", HarnessClaudeCode), resolverInstance("node/fx", "node", HarnessFX), resolverInstance("node/opencode", "node", HarnessOpenCode)}), 1, nil)
 	resolved, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{ProjectID: project.ID})
-	if err != nil || resolved.HarnessInstance.Kind != HarnessFX {
+	if err != nil || resolved.HarnessInstance.Kind != HarnessOpenCode {
 		t.Fatalf("resolution=%#v err=%v", resolved, err)
+	}
+}
+
+func TestDispatchResolverDoesNotSilentlyFallbackWhenOpenCodeIsUnavailable(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	project, err := store.CreateProject(ctx, ProjectSpec{ID: "repo", Name: "Repo", Mappings: []ProjectPathMapping{{Node: "node", Path: t.TempDir()}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolverEnroll(t, store, "node", resolverInventory("node", []HarnessInstance{resolverInstance("node/fx", "node", HarnessFX)}), 1, nil)
+	if _, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{ProjectID: project.ID}); err == nil || !errors.Is(err, ErrInvalidDispatchPin) {
+		t.Fatalf("missing OpenCode default silently selected another harness: %v", err)
 	}
 }
 
@@ -255,7 +314,7 @@ func TestResolveAndCreateWorkerReplaysBeforeCanonicalReads(t *testing.T) {
 	inventory := resolverInventory("node", []HarnessInstance{resolverInstance("node/fx", "node", HarnessFX)})
 	resolverEnroll(t, store, "node", inventory, 1, nil)
 	conversation := mustConversation(t, store)
-	worker, turn, attempt, _, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "durable", DispatchResolutionRequest{ProjectID: project.ID}, "durable-key")
+	worker, turn, attempt, _, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "durable", DispatchResolutionRequest{ProjectID: project.ID, WorkerPolicy: HarnessPolicy{DefaultHarness: HarnessFX}}, "durable-key")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +364,7 @@ func TestResolveAndCreateWorkerRejectsNodeMutationAfterResolution(t *testing.T) 
 		}
 	}
 	defer func() { store.beforeResolvedWorkerCreate = nil }()
-	if _, _, _, _, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "race", DispatchResolutionRequest{ProjectID: project.ID}, "race-key"); !errors.Is(err, ErrSelectedNodeUnavailable) {
+	if _, _, _, _, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "race", DispatchResolutionRequest{ProjectID: project.ID, WorkerPolicy: HarnessPolicy{DefaultHarness: HarnessFX}}, "race-key"); !errors.Is(err, ErrSelectedNodeUnavailable) {
 		t.Fatalf("creation error=%v", err)
 	}
 	var workers int
@@ -340,7 +399,7 @@ func TestResolveAndCreateWorkerRejectsInventoryMutationAfterResolution(t *testin
 		}
 	}
 	defer func() { store.beforeResolvedWorkerCreate = nil }()
-	if _, _, _, _, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "race", DispatchResolutionRequest{ProjectID: project.ID}, "inventory-race-key"); !errors.Is(err, ErrMissingHarnessInventory) {
+	if _, _, _, _, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "race", DispatchResolutionRequest{ProjectID: project.ID, WorkerPolicy: HarnessPolicy{DefaultHarness: HarnessFX}}, "inventory-race-key"); !errors.Is(err, ErrMissingHarnessInventory) {
 		t.Fatalf("creation error=%v", err)
 	}
 	var workers int

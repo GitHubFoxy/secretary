@@ -8,19 +8,22 @@ child_worker = "profiles/child-worker.md"
 [tools]
 allow_tools = ["bash", "edit", "find", "grep", "read", "write"]
 
-# Secretary uses an explicit model pin. Worker profiles use the harness default
-# unless a concrete model is configured in a profile policy.
+# Secretary and new Workers have independent explicit model/reasoning defaults.
 [models]
-secretary = "gpt-5.6-luna"
+secretary = "openai/gpt-6.1-sol"
 
 [secretary]
-harness = "fx"
-model = "gpt-5.6-luna"
-reasoning = "default"
+harness = "opencode"
+model = "openai/gpt-6.1-sol"
+reasoning = "xhigh"
+# Явное включение addressed reply v1 меняет MCP contract; после настройки перезапустите Secretary.
+# reply_contract = "addressed-reply-v1"
 
 [worker_policy]
-default_harness = "fx"
-preferred_harnesses = ["fx", "claude_code", "codex"]
+default_harness = "opencode"
+model = "openai/gpt-6-luna"
+reasoning = "xhigh"
+preferred_harnesses = ["opencode"]
 active_attempts = 4
 
 # Только названия Telegram Worker Topics; Secretary и Worker profiles не меняются.

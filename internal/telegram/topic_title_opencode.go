@@ -18,10 +18,12 @@ const titleVariant = "secretary-title"
 // OpenCodeTitleGenerator запускает отдельный OpenCode v2 с одним model step,
 // внешним system prompt и запретом всех tools. Worker runtime не используется.
 type OpenCodeTitleGenerator struct {
-	Model     string
-	Reasoning string
-	Prompt    string
-	run       func(context.Context, titleCommand) ([]byte, error)
+	Model          string
+	Reasoning      string
+	Prompt         string
+	DataHome       string
+	LegacyDataHome bool
+	run            func(context.Context, titleCommand) ([]byte, error)
 }
 
 type titleCommand struct {
@@ -44,6 +46,39 @@ func (g OpenCodeTitleGenerator) Generate(ctx context.Context, task string) (stri
 		return "", errors.New("telegram: title workspace unavailable")
 	}
 	defer os.RemoveAll(root)
+	dataHome := strings.TrimSpace(g.DataHome)
+	if dataHome == "" || !filepath.IsAbs(dataHome) {
+		return "", errors.New("telegram: persistent OpenCode data home is required")
+	}
+	storeDirs := []string{dataHome, filepath.Join(dataHome, "opencode")}
+	if g.LegacyDataHome {
+		for _, dir := range storeDirs {
+			info, err := os.Lstat(dir)
+			if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+				return "", errors.New("telegram: pinned legacy OpenCode data home unavailable")
+			}
+		}
+	} else {
+		installationRoot := filepath.Dir(dataHome)
+		rootInfo, rootErr := os.Lstat(installationRoot)
+		if rootErr != nil || !rootInfo.IsDir() || rootInfo.Mode()&os.ModeSymlink != 0 || os.Chmod(installationRoot, 0o700) != nil {
+			return "", errors.New("telegram: private installation data directory unavailable")
+		}
+		for _, dir := range storeDirs {
+			if info, statErr := os.Lstat(dir); statErr == nil && (!info.IsDir() || info.Mode()&os.ModeSymlink != 0) {
+				return "", errors.New("telegram: private OpenCode data home unavailable")
+			} else if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+				return "", errors.New("telegram: private OpenCode data home unavailable")
+			}
+			if err := os.MkdirAll(dir, 0o700); err != nil {
+				return "", errors.New("telegram: private OpenCode data home unavailable")
+			}
+			info, err := os.Lstat(dir)
+			if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || os.Chmod(dir, 0o700) != nil {
+				return "", errors.New("telegram: private OpenCode data home unavailable")
+			}
+		}
+	}
 	configDir := filepath.Join(root, "config", "opencode")
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		return "", errors.New("telegram: title configuration unavailable")
@@ -60,7 +95,7 @@ func (g OpenCodeTitleGenerator) Generate(ctx context.Context, task string) (stri
 	if err := os.WriteFile(configPath, encoded, 0o600); err != nil {
 		return "", errors.New("telegram: title configuration unavailable")
 	}
-	environment, err := titleEnvironment(root, home, configDir, configPath)
+	environment, err := titleEnvironment(root, home, configDir, configPath, dataHome)
 	if err != nil {
 		return "", errors.New("telegram: title configuration unavailable")
 	}
@@ -121,25 +156,19 @@ func (g OpenCodeTitleGenerator) openCodeConfig(provider, model string) map[strin
 }
 
 // HOME и config/state отделены от пользовательских instructions, skills,
-// plugins и background service. Data/cache остаются прежними для provider
-// authentication и встроенных provider packages; credentials не копируются.
-func titleEnvironment(root, home, configDir, path string) ([]string, error) {
-	originalHome, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
+// plugins и background service. Provider auth и native history остаются в
+// постоянном Secretary store; credentials не копируются.
+func titleEnvironment(root, home, configDir, path, dataHome string) ([]string, error) {
 	values := map[string]string{}
 	for _, entry := range os.Environ() {
 		key, value, _ := strings.Cut(entry, "=")
-		if !strings.HasPrefix(key, "SECRETARY_") && key != "CODEX_CONFIG" {
+		if !strings.HasPrefix(key, "SECRETARY_") && !strings.HasPrefix(key, "OPENCODE_") && !strings.HasPrefix(key, "XDG_") && key != "HOME" && key != "CODEX_CONFIG" && !isTitleCredentialEnvironmentVariable(key) {
 			values[key] = value
 		}
 	}
-	if values["XDG_DATA_HOME"] == "" {
-		values["XDG_DATA_HOME"] = filepath.Join(originalHome, ".local", "share")
-	}
+	values["XDG_DATA_HOME"] = dataHome
 	if values["XDG_CACHE_HOME"] == "" {
-		values["XDG_CACHE_HOME"] = filepath.Join(originalHome, ".cache")
+		values["XDG_CACHE_HOME"] = filepath.Join(home, ".cache")
 	}
 	values["HOME"] = home
 	values["XDG_CONFIG_HOME"] = filepath.Dir(configDir)
@@ -161,6 +190,20 @@ func titleEnvironment(root, home, configDir, path string) ([]string, error) {
 		environment = append(environment, key+"="+values[key])
 	}
 	return environment, nil
+}
+
+func isTitleCredentialEnvironmentVariable(key string) bool {
+	upper := strings.ToUpper(key)
+	switch upper {
+	case "AWS_ACCESS_KEY_ID", "AWS_PROFILE", "AWS_DEFAULT_PROFILE", "AWS_SHARED_CREDENTIALS_FILE", "AWS_CONFIG_FILE", "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "GOOGLE_APPLICATION_CREDENTIALS", "AZURE_CONFIG_DIR":
+		return true
+	}
+	for _, suffix := range []string{"_API_KEY", "_AUTH_TOKEN", "_ACCESS_TOKEN", "_REFRESH_TOKEN", "_CLIENT_SECRET", "_SECRET_ACCESS_KEY", "_SESSION_TOKEN", "_PASSWORD", "_CREDENTIALS_FILE", "_CREDENTIALS", "_TOKEN"} {
+		if strings.HasSuffix(upper, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func parseOpenCodeTitle(output []byte) (string, error) {

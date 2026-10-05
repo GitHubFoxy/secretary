@@ -115,12 +115,18 @@ func effectiveDispatchPins(policy ProjectPolicy, request DispatchResolutionReque
 		}
 		model = requested
 	}
+	if model == "" {
+		model = strings.TrimSpace(request.WorkerPolicy.ModelID)
+	}
 	reasoning := policy.Reasoning
 	if requested := strings.TrimSpace(request.Reasoning); requested != "" {
 		if reasoning != "" && reasoning != requested {
 			return "", "", fmt.Errorf("%w: reasoning is forbidden by Project policy", ErrInvalidDispatchPin)
 		}
 		reasoning = requested
+	}
+	if reasoning == "" {
+		reasoning = strings.TrimSpace(request.WorkerPolicy.Reasoning)
 	}
 	return model, reasoning, nil
 }
@@ -270,7 +276,7 @@ func orderedDispatchInstances(instances []HarnessInstance, request DispatchResol
 	} else {
 		defaultKind := request.WorkerPolicy.DefaultHarness
 		if defaultKind == "" {
-			defaultKind = HarnessFX
+			defaultKind = HarnessOpenCode
 		}
 		kinds = append(kinds, defaultKind)
 		kinds = append(kinds, request.WorkerPolicy.PreferredHarnesses...)
@@ -310,8 +316,21 @@ func orderedDispatchInstances(instances []HarnessInstance, request DispatchResol
 // ResolveAndCreateWorker is the only creation path exposed by this resolver.
 // It accepts preferences, never caller-built snapshots. A new call intentionally
 // creates a new Worker for the same intent when a different binding is wanted.
-func (s *Store) ResolveAndCreateWorker(ctx context.Context, conversationID, intent string, request DispatchResolutionRequest, idempotencyKey string) (Worker, Turn, Phase4Attempt, DispatchResolution, error) {
+func (s *Store) ResolveAndCreateWorker(ctx context.Context, conversationID, intent string, request DispatchResolutionRequest, idempotencyKey string, origins ...SecretaryOriginIdentity) (Worker, Turn, Phase4Attempt, DispatchResolution, error) {
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
+	if len(origins) > 1 {
+		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, ErrInvalidSecretaryOrigin
+	}
+	var origin *SecretaryOriginIdentity
+	if len(origins) == 1 {
+		value := origins[0]
+		value.PersonID, value.Capability = strings.TrimSpace(value.PersonID), strings.TrimSpace(value.Capability)
+		value.SecretaryTurnID, value.InputID = strings.TrimSpace(value.SecretaryTurnID), strings.TrimSpace(value.InputID)
+		if value.PersonID == "" || value.Capability == "" || value.SecretaryTurnID == "" || value.InputID == "" {
+			return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, ErrInvalidSecretaryOrigin
+		}
+		origin = &value
+	}
 	if idempotencyKey != "" {
 		s.idempotencyMu.Lock()
 		defer s.idempotencyMu.Unlock()
@@ -342,7 +361,11 @@ func (s *Store) ResolveAndCreateWorker(ctx context.Context, conversationID, inte
 	if s.beforeResolvedWorkerCreate != nil {
 		s.beforeResolvedWorkerCreate()
 	}
-	worker, turn, attempt, err := s.createWorker(ctx, conversationID, WorkerSpec{Title: intent, Intent: intent, ProjectID: resolved.Project.ID, NodeID: string(resolved.Node), HarnessInstanceID: string(resolved.HarnessInstance.ID), PolicySnapshot: string(policySnapshot), ProjectSnapshot: string(projectSnapshot), Workspace: resolved.Workspace, ProjectRevision: resolved.Project.Revision, IdempotencyKey: idempotencyKey, ExpectedNodeOnline: resolved.nodeState.online, ExpectedNodeDraining: resolved.nodeState.draining, ExpectedNodeRevoked: resolved.nodeState.revoked, ExpectedInventoryJSON: resolved.nodeState.inventoryJSON}, TurnSpec{Input: intent, IdempotencyKey: idempotencyKey}, idempotencyKey)
+	var queuedOrigin *SecretaryOriginIdentity
+	if resolved.Queued {
+		queuedOrigin = origin
+	}
+	worker, turn, attempt, err := s.createWorkerWithOrigin(ctx, conversationID, WorkerSpec{Title: intent, Intent: intent, ProjectID: resolved.Project.ID, NodeID: string(resolved.Node), HarnessInstanceID: string(resolved.HarnessInstance.ID), PolicySnapshot: string(policySnapshot), ProjectSnapshot: string(projectSnapshot), Workspace: resolved.Workspace, ProjectRevision: resolved.Project.Revision, IdempotencyKey: idempotencyKey, ExpectedNodeOnline: resolved.nodeState.online, ExpectedNodeDraining: resolved.nodeState.draining, ExpectedNodeRevoked: resolved.nodeState.revoked, ExpectedInventoryJSON: resolved.nodeState.inventoryJSON}, TurnSpec{Input: intent, IdempotencyKey: idempotencyKey}, idempotencyKey, queuedOrigin)
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
 	}

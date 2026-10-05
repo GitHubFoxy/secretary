@@ -119,7 +119,7 @@ Client разговаривает с Secretary. Node запускает Worker �
 
 ## 5. Terminology
 
-Термины соответствуют `CONTEXT.md`.
+Термины соответствуют `GLOSSARY.md`.
 
 ### Person
 
@@ -254,10 +254,8 @@ MVP должен включать:
 - Telegram text adapter с Topics для Workers;
 - manual Projects registry;
 - простой editable `user.md`;
-- `fx` как default Worker harness;
-- Claude Code как обязательный harness;
-- Codex как обязательный harness;
-- существующий OpenCode adapter как дополнительный compatibility target, но не как замена Claude Code;
+- OpenCode v2 как default Worker harness и native ACP runtime Secretary;
+- `fx`, Claude Code и Codex как selectable adapters с сохранённой compatibility coverage;
 - HarnessInstance discovery с observed models и reasoning capabilities;
 - Workers как основную сущность пользователя;
 - Turns и Attempts без отдельной product Task entity;
@@ -296,11 +294,11 @@ MVP должен включать:
 4. Child Workers, parent Task и child Task отсутствуют в Secretary core. Subagents harness являются activity одного Worker.
 5. Server Worker record не хранит native runtime session id, а Worker/harness не получает server callback capability. Session mapping принадлежит Node; terminal events идут через authenticated Node connection.
 6. После создания Worker его Node и HarnessInstance binding неизменяемы. Если Node недоступен, Worker ждёт на этой привязке. Выполнение того же intent на другой машине или harness требует нового Worker.
-7. Secretary runtime harness и default Worker harness выбираются независимыми policy: `secretary.harness` для Secretary и `worker_policy.default_harness` для Workers. Они могут обе указывать на `fx`, но это не одна настройка.
+7. Secretary runtime harness и default Worker harness выбираются независимыми policy: `secretary.harness` для Secretary и `worker_policy.default_harness` для Workers. Clean-install default для обеих policy - OpenCode v2; это не одна настройка.
 8. Secretary является persistent identity. Native runtime session можно пересоздать из canonical context.
 9. `HarnessInstance` и Node inventory являются источником observed models, versions и capabilities. Legacy aliases `fast`, `smart` и `cheap` не входят в Phase 4 core.
-10. `fx` является default/fallback только по явной policy. Fallback никогда не бывает silent.
-11. Claude Code, Codex и `fx` обязательны для MVP acceptance. OpenCode сохраняется, но не заменяет Claude Code.
+10. OpenCode v2 является default harness для новых Workers. Model и reasoning pins проверяются по observed HarnessInstance; неизвестный pin возвращает visible error без silent подмены значения.
+11. `fx`, Claude Code и Codex остаются selectable и обязательны для explicit adapter coverage; OpenCode v2 проходит отдельный native ACP acceptance.
 12. Telegram входит в первый product MVP.
 13. Для Telegram General chat является Secretary, а Topic является Worker.
 14. Approval приходит от Worker/harness через Node и server. Secretary не вызывает `request_approval` для собственных действий.
@@ -867,7 +865,7 @@ Secretary сам не вызывает `request_approval` для своих де
 - credential-authenticated Client endpoints используют allowlisted DTO, а не raw domain structs; ответы исключают credentials, native session IDs, внутреннюю topology, policy/context snapshots, diagnostics, raw ACP, tool arguments/output и скрытые рассуждения;
 - Node token не выдаётся paired Clients и не используется Telegram;
 - raw logs и diagnostic export редактируют secrets;
-- revoked Client больше не может читать или менять state;
+- revoked Client больше не может читать или менять state; любая явная ошибка повторной проверки auth завершает запрос без mutation и без downcast Client в owner web-session;
 - revoked Node больше не может принимать Dispatch.
 
 ## 16. UX requirements
@@ -1026,9 +1024,14 @@ POST /v1/workers/{ref}/close
 GET  /v1/approvals
 POST /v1/approvals/{id}/approve
 POST /v1/approvals/{id}/deny
+POST /v1/approvals/{id}/retry
 ```
 
-Ответ на уже resolved Approval не запускает повторное действие.
+Ответ на уже resolved Approval не запускает повторное действие. `retry` доступен только авторизованному owner с Approval write scope и только для `resolving` Approval с уже сохранённым intent. Запрос не принимает decision или response: server повторно отправляет тот же command с исходными Node/Turn/Attempt identities и сохранённым response. Retry не создаёт новый command, не меняет исходное решение и не возобновляет terminal Turn. Public DTO может показать `resolution_state`, но не сохраняет response или command identity.
+
+Credential Client ответы из Approval mutation route сериализуются только через allowlisted `publicWorkerDetailsStrictFromDetails` shape — включая успешный retry, повтор idempotency key, retry уже resolved Approval без handoff и approve/deny branches того же handler. Raw WorkerDetails могут храниться только во внутреннем idempotency ledger и не возвращаются Client. Scope `approval:write` не предоставляет `worker:read`. Если повторная auth проверка отклоняет/revokes Client, handler немедленно завершает запрос: он не назначает `web-session`, не вызывает mutation/retry и не пишет второй HTTP body. `ClientID` idempotency namespace и существующий owner capability path для web-сессии сохраняются.
+
+Owner Worker observer refresh сериализует Approval через public DTO: видимы public `id`, `state` и сохранённый `resolution_state`; `RequestID`/actor, actual saved response и private command identity не передаются. UI читает это через тот же `GET /v1/workers/{ref}` refresh path и показывает сохранённый approve/deny выбор; retry по-прежнему использует только `approval.id`.
 
 ### 17.5. Projects и Nodes
 
@@ -1163,6 +1166,8 @@ Server восстанавливает identity, Conversation, Workers, Turns, Ap
 
 Active Attempts, состояние которых нельзя доказать, получают AttemptOutcome `interrupted`. Server не запускает их повторно автоматически. Если новый Attempt не создаётся по явной retry policy, Turn получает `interrupted`, после чего server создаёт его единственный Result.
 
+Если процесс остановился после сохранения Approval resolution intent, но до подтверждённой доставки команды, server сохраняет исходный decision, response и command identity, снимает устаревшую lease и помечает доставку uncertain. Он не выполняет автоматический retry. Owner может явно вызвать `POST /v1/approvals/{id}/retry` после reconnect; этот запрос повторно использует тот же intent и command. Поздний authenticated receipt завершает только исходный intent и не изменяет terminal Turn или canonical Result.
+
 ### 19.5. Node restart
 
 Node не повторяет active Attempt автоматически и не меняет Worker binding. Он отправляет inventory и local session mappings. Server либо подтверждает восстановление исходного Attempt на том же Node и HarnessInstance, либо получает explicit `runtime_session_unavailable` и сохраняет Worker на исходной привязке.
@@ -1217,13 +1222,15 @@ Config хранит policy, а не выдуманный глобальный к
 listen = "127.0.0.1:8081"
 
 [secretary]
-harness = "fx"
-model = "gpt-5.6-luna"
-reasoning = "default"
+harness = "opencode"
+model = "openai/gpt-6.1-sol"
+reasoning = "xhigh"
 
 [worker_policy]
-default_harness = "fx"
-preferred_harnesses = ["fx", "claude_code", "codex"]
+default_harness = "opencode"
+preferred_harnesses = ["opencode"]
+model = "openai/gpt-6-luna"
+reasoning = "xhigh"
 active_attempts = 4
 
 [security]
@@ -1239,7 +1246,7 @@ enabled = false
 polling = true
 ```
 
-`secretary.harness`, `secretary.model` и `secretary.reasoning` выбирают runtime самого Secretary. `worker_policy.default_harness` и `preferred_harnesses` выбирают Worker. Эти policy независимы, даже если сейчас обе используют `fx`.
+`secretary.harness`, `secretary.model` и `secretary.reasoning` выбирают runtime самого Secretary. `worker_policy.default_harness` и `preferred_harnesses` выбирают Worker. Эти policy независимы; clean-install default для обеих - OpenCode v2. Новые Workers без explicit preference или Project pin получают `worker_policy.model` / `worker_policy.reasoning`; existing bindings не меняются. Отсутствующие pins в legacy policy сохраняют прежнюю компиляцию профиля, а не включают silent model fallback.
 
 Значения `model` являются policy pins, а не глобальным каталогом. Для Secretary выбранный runtime adapter подтверждает поддерживаемый model ID; для Worker список моделей и reasoning levels для конкретного Node приходит от HarnessInstance adapter. Если заданный model ID отсутствует в observed inventory, Dispatch завершается explicit error.
 
@@ -1295,9 +1302,9 @@ Phase 4 считается готовой после прохождения сл
 4. Вручную зарегистрирован Project с разными path mappings.
 5. Web и Telegram видят одну Personal Conversation.
 6. Владелец отправляет задачу без указания harness.
-7. Без override Secretary выбирает `fx` как default Worker harness, независимо от собственного Secretary harness.
+7. Без override новый Worker использует default OpenCode v2 с `openai/gpt-6-luna` / `xhigh`; независимая Secretary policy использует OpenCode v2 с `openai/gpt-6.1-sol` / `xhigh`.
 8. Явный выбор Claude Code направляет Worker в Claude Code на MacBook.
-9. Явный model ID, которого нет в selected HarnessInstance inventory, даёт visible error и не переключается на `fx`.
+9. Явный model ID, которого нет в выбранном observed inventory, даёт visible error и не подменяется другим model ID.
 10. Создаётся один Worker и первый Turn. Отдельный Task entity не появляется в Client API.
 11. Пользователь меняет external `user.md`, и следующий Secretary turn видит новую preference через context reconstruction.
 12. Пользователь видит acknowledgement до completion.
@@ -1326,7 +1333,7 @@ Phase 4 считается готовой после прохождения сл
 35. Offline Node оставляет Worker видимым и понятным.
 36. Telegram Topic соответствует правильному Worker и не получает отдельное сообщение на каждый Secretary delta или raw Worker event.
 37. `go test ./...`, `go test -race ./...`, `go vet ./...` и frontend checks проходят.
-38. Реальные acceptance tests выполняются для `fx`, Claude Code и Codex. OpenCode проверяется отдельно, если заявлен установленным compatibility target.
+38. Acceptance включает default OpenCode v2 Worker и Secretary ACP profile round-trip, а также explicit adapter coverage для `fx`, Claude Code и Codex.
 
 ## 25. Product language
 
@@ -1363,7 +1370,7 @@ Phase 4 считается готовой после прохождения сл
 - независимые Secretary и Worker harness policies;
 - internal retry rule для terminal `retryable` AttemptOutcome без public retry tool;
 - Node `respond_worker`, durable event outbox и command dedupe;
-- обязательные MVP harnesses: `fx`, Claude Code и Codex;
+- default harness OpenCode v2; `fx`, Claude Code и Codex остаются selectable и покрываются explicit adapter tests;
 - Web и Telegram MVP;
 - общий API для paired Clients с explicit scopes, replay и revoke;
 - Projects и простой `user.md`;

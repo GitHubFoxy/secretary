@@ -84,10 +84,14 @@ CREATE TABLE IF NOT EXISTS phase4_approvals (
   response TEXT NOT NULL DEFAULT '',
   resolved_by TEXT NOT NULL DEFAULT '',
   resolved_at TEXT,
-  audit_event_id TEXT NOT NULL DEFAULT ''
+  audit_event_id TEXT NOT NULL DEFAULT '',
+  resolution_command_id TEXT NOT NULL DEFAULT '',
+  resolution_state TEXT NOT NULL DEFAULT '',
+  resolution_response TEXT NOT NULL DEFAULT '',
+  resolution_resolved_by TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS phase4_approvals_state ON phase4_approvals(state, requested_at);
-CREATE UNIQUE INDEX IF NOT EXISTS phase4_approvals_one_pending_attempt ON phase4_approvals(attempt_id) WHERE state = 'pending';
+CREATE UNIQUE INDEX IF NOT EXISTS phase4_approvals_one_pending_attempt ON phase4_approvals(attempt_id) WHERE state IN ('pending', 'resolving');
 `)
 	if err != nil {
 		return fmt.Errorf("migrate phase 4 lifecycle: %w", err)
@@ -98,7 +102,68 @@ CREATE UNIQUE INDEX IF NOT EXISTS phase4_approvals_one_pending_attempt ON phase4
 	if err := s.migratePhase4RetryOperations(ctx); err != nil {
 		return err
 	}
+	if _, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS phase4_worker_command_outcomes (
+  command_id TEXT PRIMARY KEY REFERENCES phase4_worker_commands(id),
+  node_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  turn_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL,
+  state TEXT NOT NULL,
+  error_code TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  received_at TEXT NOT NULL
+)`); err != nil {
+		return fmt.Errorf("create durable Worker command outcomes: %w", err)
+	}
+	if err := s.migratePhase4ApprovalResolution(ctx); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (s *Store) migratePhase4ApprovalResolution(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(phase4_approvals)`)
+	if err != nil {
+		return fmt.Errorf("inspect phase 4 Approval columns: %w", err)
+	}
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan phase 4 Approval columns: %w", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	return withTxErr(s, ctx, func(tx *sql.Tx) error {
+		for _, column := range []struct{ name, definition string }{
+			{name: "resolution_command_id", definition: `TEXT NOT NULL DEFAULT ''`},
+			{name: "resolution_state", definition: `TEXT NOT NULL DEFAULT ''`},
+			{name: "resolution_response", definition: `TEXT NOT NULL DEFAULT ''`},
+			{name: "resolution_resolved_by", definition: `TEXT NOT NULL DEFAULT ''`},
+		} {
+			if columns[column.name] {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `ALTER TABLE phase4_approvals ADD COLUMN `+column.name+` `+column.definition); err != nil {
+				return fmt.Errorf("add Approval resolution column %s: %w", column.name, err)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `DROP INDEX IF EXISTS phase4_approvals_one_pending_attempt;
+CREATE UNIQUE INDEX phase4_approvals_one_pending_attempt ON phase4_approvals(attempt_id) WHERE state IN ('pending', 'resolving');`); err != nil {
+			return fmt.Errorf("update unresolved Approval uniqueness: %w", err)
+		}
+		return nil
+	})
 }
 
 func (s *Store) migratePhase4WorkerCommands(ctx context.Context) error {
@@ -266,6 +331,10 @@ func (s *Store) CreateWorker(ctx context.Context, conversationID string, spec Wo
 }
 
 func (s *Store) createWorker(ctx context.Context, conversationID string, spec WorkerSpec, turnSpec TurnSpec, idempotencyKey string) (Worker, Turn, Phase4Attempt, error) {
+	return s.createWorkerWithOrigin(ctx, conversationID, spec, turnSpec, idempotencyKey, nil)
+}
+
+func (s *Store) createWorkerWithOrigin(ctx context.Context, conversationID string, spec WorkerSpec, turnSpec TurnSpec, idempotencyKey string, queuedOrigin *SecretaryOriginIdentity) (Worker, Turn, Phase4Attempt, error) {
 	fingerprintTurn := turnSpec
 	fingerprintTurn.IdempotencyKey = ""
 	requestHash, err := idempotencyRequestHash(struct {
@@ -304,6 +373,15 @@ func (s *Store) createWorker(ctx context.Context, conversationID string, spec Wo
 				}{}, err
 			}
 			if found {
+				if queuedOrigin != nil && stored.Worker.Status == WorkerQueued {
+					if err := bindSecretaryWorkerCreationOriginTx(ctx, tx, *queuedOrigin, conversationID, stored.Turn.ID, s.now(), false); err != nil {
+						return struct {
+							worker  Worker
+							turn    Turn
+							attempt Phase4Attempt
+						}{}, err
+					}
+				}
 				if err := ensureLifecycleCommandIntentTx(ctx, tx, s.now(), "dispatch", stored.Worker.ID, stored.Attempt.ID); err != nil {
 					return struct {
 						worker  Worker
@@ -461,6 +539,15 @@ func (s *Store) createWorker(ctx context.Context, conversationID string, spec Wo
 				turn    Turn
 				attempt Phase4Attempt
 			}{}, err
+		}
+		if queuedOrigin != nil {
+			if err := bindSecretaryWorkerCreationOriginTx(ctx, tx, *queuedOrigin, conversationID, turn.ID, now, true); err != nil {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
 		}
 		if idempotencyKey != "" {
 			encoded, err := json.Marshal(workerCreationOutcome{Worker: worker, Turn: turn, Attempt: attempt})
@@ -1045,6 +1132,13 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 				dup     bool
 			}{}, err
 		}
+		if err := recordSecretaryOriginResultsForWorkerTurnTx(ctx, tx, turn.ID, now); err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+				dup     bool
+			}{}, err
+		}
 		return struct {
 			outcome AttemptOutcome
 			result  *Phase4Result
@@ -1221,24 +1315,43 @@ func ensureLifecycleCommandIntentTx(ctx context.Context, tx *sql.Tx, now time.Ti
 // ClaimWorkerCommand creates one durable command identity for an immutable
 // Worker Attempt. A pending command is owned until LeaseUntil. The lease makes
 // a crash between claim and handoff recoverable without changing command ID.
-func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerID, attemptID string) (WorkerCommand, bool, error) {
+func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerID, attemptID string, origins ...SecretaryOriginIdentity) (WorkerCommand, bool, error) {
 	if strings.TrimSpace(kind) == "" || strings.TrimSpace(dedupeKey) == "" || strings.TrimSpace(workerID) == "" || strings.TrimSpace(attemptID) == "" {
 		return WorkerCommand{}, false, errors.New("core: Worker command binding is required")
+	}
+	if len(origins) > 1 {
+		return WorkerCommand{}, false, ErrInvalidSecretaryOrigin
+	}
+	var origin *SecretaryOriginIdentity
+	if len(origins) == 1 {
+		value := normalizeSecretaryOriginIdentity(origins[0])
+		if !validSecretaryOriginIdentity(value) {
+			return WorkerCommand{}, false, ErrInvalidSecretaryOrigin
+		}
+		origin = &value
 	}
 	s.idempotencyMu.Lock()
 	defer s.idempotencyMu.Unlock()
 	duplicate := false
 	command, err := withTx(s, ctx, func(tx *sql.Tx) (WorkerCommand, error) {
+		bindOrigin := func(command WorkerCommand) (WorkerCommand, error) {
+			if origin != nil {
+				if err := bindSecretaryWorkerCommandOriginTx(ctx, tx, *origin, command.ID, s.now()); err != nil {
+					return WorkerCommand{}, err
+				}
+			}
+			return command, nil
+		}
 		var command WorkerCommand
 		query := `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, lease_until, created_at, updated_at FROM phase4_worker_commands WHERE kind = ? AND worker_id = ? AND attempt_id = ? AND dedupe_key = ?`
 		err := scanWorkerCommand(tx.QueryRowContext(ctx, query, kind, workerID, attemptID, dedupeKey), &command)
 		if err == nil {
 			// A command inserted with the lifecycle state is an unowned intent.
 			// Its first claimant acquires the lease and performs the handoff.
-			if command.State == WorkerCommandPending && command.LeaseUntil.IsZero() {
+			if (command.State == WorkerCommandPending || command.State == WorkerCommandUncertain) && command.LeaseUntil.IsZero() {
 				now := s.now()
 				leaseUntil := now.Add(workerCommandLease)
-				result, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET lease_until = ?, updated_at = ? WHERE id = ? AND state = ? AND lease_until = ''`, timestamp(leaseUntil), timestamp(now), command.ID, WorkerCommandPending)
+				result, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET state = ?, lease_until = ?, updated_at = ? WHERE id = ? AND state IN (?, ?) AND lease_until = ''`, WorkerCommandPending, timestamp(leaseUntil), timestamp(now), command.ID, WorkerCommandPending, WorkerCommandUncertain)
 				if err != nil {
 					return WorkerCommand{}, err
 				}
@@ -1247,15 +1360,15 @@ func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerI
 					return WorkerCommand{}, err
 				}
 				if affected == 1 {
-					command.LeaseUntil, command.UpdatedAt = leaseUntil, now
-					return command, nil
+					command.State, command.LeaseUntil, command.UpdatedAt = WorkerCommandPending, leaseUntil, now
+					return bindOrigin(command)
 				}
 				if err := scanWorkerCommand(tx.QueryRowContext(ctx, query, kind, workerID, attemptID, dedupeKey), &command); err != nil {
 					return WorkerCommand{}, err
 				}
 			}
 			duplicate = true
-			return command, nil
+			return bindOrigin(command)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return WorkerCommand{}, err
@@ -1271,13 +1384,13 @@ func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerI
 			return WorkerCommand{}, err
 		}
 		if affected == 1 {
-			return command, nil
+			return bindOrigin(command)
 		}
 		duplicate = true
 		if err := scanWorkerCommand(tx.QueryRowContext(ctx, query, kind, workerID, attemptID, dedupeKey), &command); err != nil {
 			return WorkerCommand{}, err
 		}
-		return command, nil
+		return bindOrigin(command)
 	})
 	return command, duplicate, err
 }
@@ -1293,7 +1406,7 @@ func (s *Store) ReclaimWorkerCommand(ctx context.Context, commandID string, now 
 	now = now.UTC()
 	result, err := withTx(s, ctx, func(tx *sql.Tx) (reclaimResult, error) {
 		leaseUntil := now.Add(workerCommandLease)
-		result, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET lease_until = ?, updated_at = ? WHERE id = ? AND state = ? AND (lease_until = '' OR lease_until <= ?)`, timestamp(leaseUntil), timestamp(now), commandID, WorkerCommandPending, timestamp(now))
+		result, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET state = ?, lease_until = ?, updated_at = ? WHERE id = ? AND state IN (?, ?) AND (lease_until = '' OR lease_until <= ?)`, WorkerCommandPending, timestamp(leaseUntil), timestamp(now), commandID, WorkerCommandPending, WorkerCommandUncertain, timestamp(now))
 		if err != nil {
 			return reclaimResult{}, err
 		}
@@ -1389,6 +1502,15 @@ func (s *Store) updateWorkerCommand(ctx context.Context, commandID string, state
 			return WorkerCommand{}, err
 		}
 		if command.State == WorkerCommandDelivered {
+			if state == WorkerCommandDelivered {
+				now := s.now()
+				if err := linkSecretaryWorkerCommandOriginsTx(ctx, tx, command.ID, now); err != nil {
+					return WorkerCommand{}, err
+				}
+				if _, err := commitApprovalResolutionIntentTx(ctx, tx, command.ID, now); err != nil {
+					return WorkerCommand{}, err
+				}
+			}
 			return command, nil
 		}
 		now := s.now()
@@ -1396,6 +1518,14 @@ func (s *Store) updateWorkerCommand(ctx context.Context, commandID string, state
 			return WorkerCommand{}, err
 		}
 		command.State, command.LastError, command.LeaseUntil, command.UpdatedAt = state, message, time.Time{}, now
+		if state == WorkerCommandDelivered {
+			if err := linkSecretaryWorkerCommandOriginsTx(ctx, tx, command.ID, now); err != nil {
+				return WorkerCommand{}, err
+			}
+			if _, err := commitApprovalResolutionIntentTx(ctx, tx, command.ID, now); err != nil {
+				return WorkerCommand{}, err
+			}
+		}
 		return command, nil
 	})
 }

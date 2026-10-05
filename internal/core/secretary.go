@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS secretary_turns (
   identity_id TEXT NOT NULL REFERENCES secretary_identities(id),
   conversation_id TEXT NOT NULL REFERENCES conversations(id),
   input TEXT NOT NULL,
+  input_id TEXT NOT NULL DEFAULT '',
   context_snapshot TEXT NOT NULL DEFAULT '',
   prompt_state TEXT NOT NULL DEFAULT 'pending',
   state TEXT NOT NULL,
@@ -64,6 +65,44 @@ CREATE TABLE IF NOT EXISTS secretary_policy_snapshots (
   snapshot_json TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS secretary_worker_origins (
+  secretary_turn_id TEXT NOT NULL REFERENCES secretary_turns(id),
+  input_id TEXT NOT NULL,
+  worker_turn_id TEXT NOT NULL REFERENCES turns(id),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(secretary_turn_id, input_id, worker_turn_id)
+);
+CREATE TABLE IF NOT EXISTS secretary_worker_command_origins (
+  command_id TEXT PRIMARY KEY REFERENCES phase4_worker_commands(id),
+  secretary_turn_id TEXT NOT NULL REFERENCES secretary_turns(id),
+  input_id TEXT NOT NULL,
+  worker_turn_id TEXT NOT NULL REFERENCES turns(id),
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS secretary_worker_creation_origins (
+  worker_turn_id TEXT PRIMARY KEY REFERENCES turns(id),
+  secretary_turn_id TEXT NOT NULL REFERENCES secretary_turns(id),
+  input_id TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS secretary_origin_results (
+  secretary_turn_id TEXT NOT NULL,
+  input_id TEXT NOT NULL,
+  worker_turn_id TEXT NOT NULL,
+  result_id TEXT NOT NULL REFERENCES phase4_results(id),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(secretary_turn_id, input_id, result_id),
+  FOREIGN KEY(secretary_turn_id, input_id, worker_turn_id)
+    REFERENCES secretary_worker_origins(secretary_turn_id, input_id, worker_turn_id)
+);
+CREATE TABLE IF NOT EXISTS secretary_reply_entries (
+  secretary_turn_id TEXT NOT NULL REFERENCES secretary_turns(id),
+  input_id TEXT NOT NULL,
+  body TEXT NOT NULL,
+  entry_id TEXT NOT NULL UNIQUE REFERENCES conversation_entries(id),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(secretary_turn_id, input_id)
+);
 CREATE TABLE IF NOT EXISTS secretary_context_seen_results (
   turn_id TEXT NOT NULL REFERENCES secretary_turns(id),
   result_id TEXT NOT NULL REFERENCES phase4_results(id),
@@ -79,6 +118,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS secretary_context_seen_results_one_owner
 	if err != nil {
 		return fmt.Errorf("migrate Secretary schema: %w", err)
 	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE secretary_turns ADD COLUMN input_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return fmt.Errorf("migrate Secretary turn input identity: %w", err)
+	}
 	if _, err := s.db.ExecContext(ctx, `ALTER TABLE secretary_turns ADD COLUMN context_snapshot TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 		return fmt.Errorf("migrate Secretary turn context snapshot: %w", err)
 	}
@@ -87,6 +129,36 @@ CREATE UNIQUE INDEX IF NOT EXISTS secretary_context_seen_results_one_owner
 	}
 	if _, err := s.db.ExecContext(ctx, `ALTER TABLE secretary_context_seen_results ADD COLUMN claim_state TEXT NOT NULL DEFAULT 'accepted'`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 		return fmt.Errorf("migrate Secretary result claim state: %w", err)
+	}
+	if err := withTxErr(s, ctx, func(tx *sql.Tx) error {
+		rows, err := tx.QueryContext(ctx, `SELECT id FROM secretary_turns WHERE input_id = '' ORDER BY created_at, id`)
+		if err != nil {
+			return err
+		}
+		var turnIDs []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			turnIDs = append(turnIDs, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
+		for _, id := range turnIDs {
+			if _, err := tx.ExecContext(ctx, `UPDATE secretary_turns SET input_id = ? WHERE id = ? AND input_id = ''`, newID("sin"), id); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return fmt.Errorf("migrate Secretary turn input identities: %w", err)
 	}
 	return nil
 }
@@ -165,8 +237,8 @@ func (s *Store) EnqueueSecretaryTurn(ctx context.Context, identityID, input stri
 			return SecretaryTurn{}, err
 		}
 		now := s.now()
-		turn := SecretaryTurn{ID: newID("stn"), IdentityID: identityID, ConversationID: conversationID, Input: input, State: SecretaryTurnQueued, QueuePosition: position, CreatedAt: now, UpdatedAt: now}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO secretary_turns(id, identity_id, conversation_id, input, state, queue_position, error, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, '', ?, ?)`, turn.ID, turn.IdentityID, turn.ConversationID, turn.Input, turn.State, turn.QueuePosition, timestamp(now), timestamp(now)); err != nil {
+		turn := SecretaryTurn{ID: newID("stn"), IdentityID: identityID, ConversationID: conversationID, Input: input, InputID: newID("sin"), State: SecretaryTurnQueued, QueuePosition: position, CreatedAt: now, UpdatedAt: now}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO secretary_turns(id, identity_id, conversation_id, input, input_id, state, queue_position, error, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, '', ?, ?)`, turn.ID, turn.IdentityID, turn.ConversationID, turn.Input, turn.InputID, turn.State, turn.QueuePosition, timestamp(now), timestamp(now)); err != nil {
 			return SecretaryTurn{}, err
 		}
 		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: SecretaryTurnQueuedEvent, AggregateType: "secretary_turn", AggregateID: turn.ID, Source: "server", CorrelationID: turn.ID, Payload: turn}, turn)
@@ -182,7 +254,7 @@ func (s *Store) EnqueueSecretaryTurn(ctx context.Context, identityID, input stri
 
 func scanSecretaryTurn(row interface{ Scan(...any) error }, turn *SecretaryTurn) error {
 	var started, finished sql.NullString
-	if err := row.Scan(&turn.ID, &turn.IdentityID, &turn.ConversationID, &turn.Input, &turn.ContextSnapshot, &turn.PromptState, &turn.State, &turn.QueuePosition, &turn.Error, newTimestampScanner(&turn.CreatedAt), &started, &finished, newTimestampScanner(&turn.UpdatedAt)); err != nil {
+	if err := row.Scan(&turn.ID, &turn.IdentityID, &turn.ConversationID, &turn.Input, &turn.InputID, &turn.ContextSnapshot, &turn.PromptState, &turn.State, &turn.QueuePosition, &turn.Error, newTimestampScanner(&turn.CreatedAt), &started, &finished, newTimestampScanner(&turn.UpdatedAt)); err != nil {
 		return err
 	}
 	if started.Valid {

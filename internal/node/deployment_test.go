@@ -124,6 +124,25 @@ func TestCredentialSetRejectsClientCredentialAsNodeCredential(t *testing.T) {
 	}
 }
 
+func TestDeploymentConfigDefaultsOpenCodeProbeUnlessExplicitlyDisabled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	base := `{"server_url":"https://secretary.tailnet.ts.net","node":"home-server","data_dir":"/srv/secretary/node"}`
+	if err := os.WriteFile(path, []byte(base), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadDeploymentConfig(path)
+	if err != nil || !loaded.IncludeOpenCode {
+		t.Fatal("clean Node config did not enable OpenCode probe by default")
+	}
+	if err := os.WriteFile(path, []byte(strings.TrimSuffix(base, "}")+`,"include_opencode":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err = LoadDeploymentConfig(path)
+	if err != nil || loaded.IncludeOpenCode {
+		t.Fatal("explicit legacy opt-out was not preserved")
+	}
+}
+
 func TestDeploymentConfigRejectsPublicAndInvalidServerURLs(t *testing.T) {
 	base := DeploymentConfig{ServerURL: "https://secretary.tailnet.ts.net", Node: core.NodeReference("home-server"), DataDir: "/srv/secretary/node"}
 	for _, serverURL := range []string{"", "localhost", "ftp://secretary.example", "https://"} {

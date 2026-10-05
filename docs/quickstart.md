@@ -1,6 +1,6 @@
 # Быстрый старт
 
-Этот quickstart запускает локальный Secretary на macOS с fx и gpt-5.6-luna по умолчанию. Настройка двух outbound Nodes описана в [Private Node deployment](node-deployment.md).
+Этот quickstart запускает локальный Secretary на macOS с OpenCode v2. Secretary использует `openai/gpt-6.1-sol` / `xhigh`; новые Workers — OpenCode с `openai/gpt-6-luna` / `xhigh`. Настройка двух outbound Nodes описана в [Private Node deployment](node-deployment.md).
 
 ## Требования
 
@@ -8,8 +8,9 @@
 
 - macOS и `zsh`;
 - установленный `mise`;
-- установленный fx;
-- выполненный вход в нужный provider, например `fx login codex`.
+- установленный OpenCode v2.
+
+Личная OpenCode authentication не используется. После setup owner отдельно войдёт в provider для Secretary store и local Worker Node store.
 
 ## Запуск
 
@@ -35,20 +36,25 @@ export PATH="$HOME/.local/bin:$PATH"
 - создаёт локальный bootstrap token;
 - собирает `secretary-node` и показывает явную full-access trusted Node policy;
 - проверяет выбранный harness;
-- проверяет доступность fx;
-- сохраняет model ID `gpt-5.6-luna` в настройках Secretary.
+- проверяет наличие настроенного harness binary;
+- создаёт отдельные persistent native stores Secretary и local Node; `opencode auth list` только инициализирует DB и не запускает login;
+- задаёт Secretary `openai/gpt-6.1-sol` / `xhigh`, а новым Workers — `openai/gpt-6-luna` / `xhigh`.
 
-Проверьте окружение:
+Выполните provider login как явное действие owner; команда откроет OpenCode auth flow в выделенном Secretary store, не импортируя личные credentials:
+
+```sh
+sex opencode login
+sex node opencode login
+```
+
+Проверьте оба runtime store:
 
 ```sh
 sex doctor
+sex node doctor
 ```
 
-Ожидаемый результат:
-
-```text
-Doctor found no problems.
-```
+После явного provider login обе команды Doctor должны завершиться без ошибок. На чистой установке без login каждая показывает missing auth своего store и соответствующую команду; для старого managed state вместо этого появляется migration requirement.
 
 Запустите Secretary:
 
@@ -102,9 +108,9 @@ smart = "provider/smart-model-id"
 cheap = "provider/cheap-model-id"
 ```
 
-Левая часть (`secretary`, `fast`, `smart`, `cheap`) сохраняется в UI и в вызовах MCP. Правая часть является настроенным значением модели. OpenCode применяет provider ID в native agent config. Codex получает совместимый `AGENTS.md`, а конкретные model ID и reasoning effort передаются через `CODEX_CONFIG`; для fx применение зависит от его ACP-адаптера. В шаблоне справа стоят `default`, `fast`, `smart` и `cheap`, поэтому вы видите именно эти слова. `default` означает выбор модели самим harness, а не модель с именем `default`. Для OpenCode укажите provider ID, например `openai/gpt-5-codex`, а для Codex его собственный model ID, например `gpt-5.6-terra`, если такой ID доступен в вашей установке.
+Левая часть (`secretary`, `fast`, `smart`, `cheap`) сохраняется в UI и в вызовах MCP. Правая часть является настроенным значением модели. OpenCode применяет provider-qualified model ID и reasoning variant в native V2 agent config. Новые Workers без явного preference или Project pin получают `openai/gpt-6-luna` / `xhigh`; эти значения проверяются по observed inventory и не заменяются при ошибке. fx, Claude Code и Codex остаются доступными при явном выборе. Codex получает совместимый `AGENTS.md`, а конкретные model ID и reasoning effort передаются через `CODEX_CONFIG`; для fx применение зависит от его ACP-адаптера. В шаблоне справа стоят `default`, `fast`, `smart` и `cheap`, поэтому вы видите именно эти слова. `default` означает выбор модели самим harness, а не модель с именем `default`. Для OpenCode укажите provider ID, например `openai/gpt-5-codex`, а для Codex его собственный model ID, например `gpt-5.6-terra`, если такой ID доступен в вашей установке.
 
-`[runtime].reasoning` сейчас является общей настройкой усилия рассуждения для новой версии всех Profiles. Это не идентичность модели: одна и та же модель может работать с разным effort, поэтому параметр оставлен отдельно. Для OpenCode он попадает в native agent config. Для Codex и fx он сохраняется в Profile metadata и совместимом delivery, но ACP-адаптер не обещает, что конкретный harness применит этот параметр.
+`secretary.reasoning` задаёт effort Secretary; `worker_policy.reasoning` независимо задаёт default новых Workers. Clean-install defaults: Secretary — `openai/gpt-6.1-sol` / `xhigh`, новые Workers — `openai/gpt-6-luna` / `xhigh`. Явные preferences и Project pins имеют приоритет над Worker defaults; существующие bindings не меняются. Конкретные model и reasoning pins проверяются по observed HarnessInstance inventory; OpenCode получает V2 variant, Codex - `CODEX_CONFIG`, а применение для fx зависит от ACP-адаптера.
 
 После изменения `config.toml` перезапустите сервер или нажмите `Validate and apply` в Config. Markdown Profiles можно менять в Control Room во вкладке Profiles.
 
@@ -172,8 +178,8 @@ sex logs
 
 Частые причины:
 
-- fx не авторизован: выполните вход в нужный provider через `fx login`;
-- отсутствует выбранный harness: установите его или исправьте `runtime.harness` в `config.toml`;
+- OpenCode provider не авторизован: завершите вход для нужного provider средствами OpenCode;
+- отсутствует выбранный harness: установите его или исправьте `secretary.harness` в `config.toml`;
 - порт `127.0.0.1:8081` занят другим процессом;
 - выбран debug-сеанс, но Control Room запрашивается у normal-сервера.
 

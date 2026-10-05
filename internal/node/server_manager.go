@@ -21,6 +21,20 @@ import (
 
 var nodeReferencePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
+var ErrCommandOutcomeUnknown = errors.New("node server: command outcome is unknown")
+
+func uncertainRespondOutcome(outcome CommandOutcome) bool {
+	if outcome.State == CommandInterrupted {
+		return true
+	}
+	switch outcome.ErrorCode {
+	case "execution_state_unknown", "response_failed", "response_record_failed":
+		return true
+	default:
+		return false
+	}
+}
+
 type EnrollmentRequest struct {
 	PairingToken string             `json:"pairing_token"`
 	Node         core.NodeReference `json:"node"`
@@ -305,11 +319,17 @@ func (m *ServerManager) SendCommandAndWait(ctx context.Context, nodeRef core.Nod
 		m.mu.Unlock()
 	}()
 	if err := m.SendCommand(ctx, nodeRef, command); err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return fmt.Errorf("%w: %w", ErrCommandOutcomeUnknown, err)
+		}
 		return err
 	}
 	select {
 	case outcome := <-waiter.outcomes:
 		if outcome.State != CommandAccepted {
+			if uncertainRespondOutcome(outcome) {
+				return fmt.Errorf("%w: %s", ErrCommandOutcomeUnknown, outcome.ErrorMessage)
+			}
 			if outcome.ErrorMessage != "" {
 				return fmt.Errorf("node command %s: %s", outcome.ErrorCode, outcome.ErrorMessage)
 			}
@@ -317,7 +337,7 @@ func (m *ServerManager) SendCommandAndWait(ctx context.Context, nodeRef core.Nod
 		}
 		return nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return fmt.Errorf("%w: %w", ErrCommandOutcomeUnknown, ctx.Err())
 	}
 }
 
@@ -338,7 +358,10 @@ func (m *ServerManager) SendCommand(ctx context.Context, nodeRef core.NodeRefere
 	if !record.Online || connection == nil {
 		return errors.New("node server: Node is offline")
 	}
-	return connection.SendCommand(ctx, command)
+	if err := connection.SendCommand(ctx, command); err != nil {
+		return fmt.Errorf("%w: %w", ErrCommandOutcomeUnknown, err)
+	}
+	return nil
 }
 
 func (m *ServerManager) Statuses(ctx context.Context) ([]ServerNodeStatus, error) {
@@ -628,14 +651,16 @@ func (h *serverProtocolHandler) HandleNodeCommandOutcome(ctx context.Context, ou
 	h.manager.outcomes[h.expected] = outcome
 	sink := h.manager.outcomeSink
 	h.manager.mu.Unlock()
+	if sink != nil {
+		if err := sink(ctx, h.expected, outcome); err != nil {
+			return err
+		}
+	}
 	if waiter != nil {
 		select {
 		case waiter.outcomes <- outcome:
 		default:
 		}
-	}
-	if sink != nil {
-		return sink(ctx, h.expected, outcome)
 	}
 	return nil
 }

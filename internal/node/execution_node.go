@@ -89,7 +89,7 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 		if record.State == CommandProcessing {
 			return failedOutcome(command, "execution_state_unknown", "command execution is already in progress"), nil
 		}
-		return record.Outcome, nil
+		return bindCommandOutcomeIdentity(record.Outcome, command), nil
 	}
 	var outcome CommandOutcome
 	switch command.Kind {
@@ -346,8 +346,14 @@ func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerComma
 		if storedResponse.State == CommandProcessing {
 			return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "execution_state_unknown", "worker response execution state is unknown")
 		}
-		storedResponse.CommandID = command.Metadata.CommandID
+		metadata := command.Metadata
+		if (storedResponse.TurnID != "" && storedResponse.TurnID != metadata.TurnID) || (storedResponse.AttemptID != "" && storedResponse.AttemptID != metadata.AttemptID) {
+			return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "request_turn_mismatch", "worker request belongs to another Turn or Attempt")
+		}
+		storedResponse.CommandID = metadata.CommandID
 		storedResponse.Kind = CommandRespondWorker
+		storedResponse.TurnID = metadata.TurnID
+		storedResponse.AttemptID = metadata.AttemptID
 		return storedResponse
 	}
 	session, err := n.sessionForCommand(ctx, command.Metadata)
@@ -363,7 +369,9 @@ func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerComma
 		return outcome
 	}
 	if err := responder.Respond(ctx, command.RequestID, command.Response); err != nil {
-		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "response_failed", err.Error())
+		// Responder errors can race with native acceptance. The server must wait
+		// for a later receipt/replay instead of treating this as authoritative denial.
+		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "execution_state_unknown", err.Error())
 		_ = n.store.CompleteWorkerResponse(command.RequestID, outcome)
 		return outcome
 	}
@@ -642,18 +650,24 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 		if !capabilities.SupportsActivity(core.ActivityToolResult) || tool == "" {
 			return core.Activity{}, false
 		}
-		result, safe := SanitizeToolResult(item.Result)
-		if !safe {
+		result := ""
+		var failure *core.ToolFailureMetadata
+		if strings.EqualFold(strings.TrimSpace(item.Status), "failed") {
+			if item.Failure != nil && item.Failure.Validate() == nil {
+				copy := *item.Failure
+				failure = &copy
+			}
+		} else {
+			var safe bool
+			result, safe = SanitizeToolResult(item.Result)
+			if !safe {
+				return core.Activity{}, false
+			}
+		}
+		if result == "" && strings.TrimSpace(item.Status) == "" && failure == nil {
 			return core.Activity{}, false
 		}
-		errorText, safe := SanitizeToolResult(item.Error)
-		if !safe {
-			return core.Activity{}, false
-		}
-		if result == "" && errorText == "" && strings.TrimSpace(item.Status) == "" {
-			return core.Activity{}, false
-		}
-		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolResult, ToolResult: &core.ToolResult{Name: tool, Output: result, Error: errorText, Status: item.Status, Preview: ToolArgumentPreview(tool, item.Arguments, workspacePath)}}
+		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolResult, ToolResult: &core.ToolResult{Name: tool, Output: result, Status: item.Status, Preview: ToolArgumentPreview(tool, item.Arguments, workspacePath), Failure: failure}}
 	case ActivityStatus:
 		if !capabilities.SupportsActivity(core.ActivityStatus) || strings.TrimSpace(item.Text) == "" {
 			return core.Activity{}, false
@@ -702,10 +716,26 @@ func (n *ExecutionNode) nextMetadata(envelope WorkerEnvelope) core.ActivityMetad
 }
 
 func acceptedOutcome(command Command) CommandOutcome {
-	return CommandOutcome{CommandID: command.Metadata().CommandID, Kind: command.Kind, State: CommandAccepted}
+	return bindCommandOutcomeIdentity(CommandOutcome{State: CommandAccepted}, command)
 }
 func failedOutcome(command Command, code, message string) CommandOutcome {
-	return CommandOutcome{CommandID: command.Metadata().CommandID, Kind: command.Kind, State: CommandFailed, ErrorCode: code, ErrorMessage: message}
+	return bindCommandOutcomeIdentity(CommandOutcome{State: CommandFailed, ErrorCode: code, ErrorMessage: message}, command)
+}
+func bindCommandOutcomeIdentity(outcome CommandOutcome, command Command) CommandOutcome {
+	metadata := command.Metadata()
+	if outcome.CommandID == "" {
+		outcome.CommandID = metadata.CommandID
+	}
+	if outcome.Kind == "" {
+		outcome.Kind = command.Kind
+	}
+	if outcome.TurnID == "" {
+		outcome.TurnID = metadata.TurnID
+	}
+	if outcome.AttemptID == "" {
+		outcome.AttemptID = metadata.AttemptID
+	}
+	return outcome
 }
 func nodeEventID(attempt string) string {
 	return fmt.Sprintf("node-event-%s-%d", attempt, time.Now().UnixNano())

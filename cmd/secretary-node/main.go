@@ -20,14 +20,28 @@ import (
 var invalidNodeName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 func main() {
+	_ = syscall.Umask(0o077)
 	configPath := flag.String("config", "", "non-secret Node deployment config JSON")
 	dataDir := flag.String("data-dir", defaultNodeDataDir(), "directory for Node identity and durable local state")
 	serverURL := flag.String("server", envOr("SECRETARY_NODE_SERVER", "http://127.0.0.1:8081"), "Secretary server URL used for first pairing")
 	pairingToken := flag.String("pair-token", os.Getenv("SECRETARY_NODE_PAIRING_TOKEN"), "one-time/owner-approved Node pairing token")
 	nodeName := flag.String("name", envOr("SECRETARY_NODE_NAME", defaultNodeName()), "stable Node reference requested during pairing")
 	capacity := flag.Int("capacity", 1, "maximum advertised concurrent Worker capacity")
-	includeOpenCode := flag.Bool("include-opencode", false, "include OpenCode compatibility inventory probe")
+	includeOpenCode := flag.Bool("include-opencode", true, "include the OpenCode ACP inventory probe")
+	selectOpenCodeStore := flag.Bool("select-opencode-store", false, "initialize the selected private or legacy OpenCode store and exit")
 	flag.Parse()
+	if *selectOpenCodeStore {
+		selectedStore, err := selectNodeNativeStore(*dataDir)
+		if err != nil {
+			log.Fatalf("select OpenCode native store: %v", err)
+		}
+		if selectedStore.MigrationRequired {
+			log.Print("OpenCode legacy native store preserved; owner-approved migration is required before switching stores")
+		} else {
+			log.Print("private Node OpenCode store selected")
+		}
+		return
+	}
 
 	var deployment node.DeploymentConfig
 	if strings.TrimSpace(*configPath) != "" {
@@ -51,6 +65,13 @@ func main() {
 		log.Fatalf("load Node workspace mappings: %v", err)
 	}
 
+	selectedStore, err := selectNodeNativeStore(*dataDir)
+	if err != nil {
+		log.Fatalf("select OpenCode native store: %v", err)
+	}
+	if selectedStore.MigrationRequired {
+		log.Printf("OpenCode legacy native store preserved; owner-approved migration is required before switching stores")
+	}
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
 		log.Fatalf("create Node data directory: %v", err)
 	}
@@ -78,8 +99,8 @@ func main() {
 	}
 	defer store.Close()
 
-	runtime := configuredNodeRuntime(*dataDir)
-	discovery := node.HarnessDiscovery{Node: identity.Node, Runner: node.ExecCommandRunner{}, IncludeOpenCode: *includeOpenCode, BinaryOverrides: installedHarnesses()}
+	runtime := configuredNodeRuntimeWithStore(*dataDir, selectedStore)
+	discovery := configuredNodeDiscovery(identity.Node, *includeOpenCode, selectedStore)
 	daemon := &node.Daemon{
 		Identity:   identity,
 		Store:      store,
@@ -97,20 +118,44 @@ func main() {
 	}
 }
 
+func selectNodeNativeStore(dataDir string) (node.OpenCodeNativeStore, error) {
+	_, stateErr := os.Stat(filepath.Join(dataDir, "node-state.json"))
+	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
+		return node.OpenCodeNativeStore{}, errors.New("inspect Node local state before selecting OpenCode store")
+	}
+	legacyDataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
+	return node.SelectOpenCodeNativeStore(dataDir, stateErr == nil, legacyDataHome)
+}
+
 func installedHarnesses() map[core.HarnessKind]string {
 	commands := map[core.HarnessKind]string{
-		core.HarnessFX: "fx", core.HarnessClaudeCode: "claude", core.HarnessCodex: "codex", core.HarnessOpenCode: "opencode",
+		core.HarnessFX: "fx", core.HarnessClaudeCode: "claude", core.HarnessCodex: "codex", core.HarnessOpenCode: envOr("SECRETARY_OPENCODE_COMMAND", "opencode"),
 	}
 	resolved := make(map[core.HarnessKind]string, len(commands))
 	for kind, command := range commands {
 		if path, err := exec.LookPath(command); err == nil {
 			resolved[kind] = path
+		} else if kind == core.HarnessOpenCode && strings.TrimSpace(os.Getenv("SECRETARY_OPENCODE_COMMAND")) != "" {
+			// Keep an unavailable explicit binary unavailable in discovery too.
+			resolved[kind] = command
 		}
 	}
 	return resolved
 }
 
 func configuredNodeRuntime(dataDir string) node.Runtime {
+	return configuredNodeRuntimeWithStore(dataDir, node.OpenCodeNativeStore{DataHome: node.OpenCodeNativeDataHome(dataDir)})
+}
+
+func configuredNodeDiscovery(identity core.NodeReference, includeOpenCode bool, store node.OpenCodeNativeStore) node.HarnessDiscovery {
+	return node.HarnessDiscovery{
+		Node: identity, Runner: node.ExecCommandRunner{}, IncludeOpenCode: includeOpenCode,
+		OpenCodeDataHome: store.DataHome, LegacyOpenCodeDataHome: store.Legacy,
+		BinaryOverrides: installedHarnesses(),
+	}
+}
+
+func configuredNodeRuntimeWithStore(dataDir string, store node.OpenCodeNativeStore) node.Runtime {
 	logDir := filepath.Join(dataDir, "logs", "acp")
 	codexCommand := envOr("SECRETARY_ACP_COMMAND", "codex-acp")
 	codexArgs := strings.Fields(os.Getenv("SECRETARY_ACP_ARGS"))
@@ -127,11 +172,11 @@ func configuredNodeRuntime(dataDir string) node.Runtime {
 		openCodeArgs = []string{"acp"}
 	}
 	return node.RuntimeRouter{
-		DefaultHarness: "fx",
+		DefaultHarness: "opencode",
 		ACP:            node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		Claude:         node.ClaudeCodeRuntime{Command: claudeCommand, Arguments: claudeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		FX:             node.FXRuntime{ACPRuntime: node.ACPRuntime{Command: fxCommand, Arguments: fxArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
-		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
+		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, DataHome: store.DataHome, LegacyDataHome: store.Legacy, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 	}
 }
 

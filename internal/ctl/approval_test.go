@@ -78,6 +78,9 @@ func TestWorkerServiceApprovalResponseRecoversAfterDeliveredRespond(t *testing.T
 	if err != nil || duplicate {
 		t.Fatalf("claim duplicate=%v err=%v", duplicate, err)
 	}
+	if _, _, err := store.BeginApprovalResolution(ctx, "recovery-request", command.ID, core.ApprovalDenied, "client", "denied"); err != nil {
+		t.Fatal(err)
+	}
 	if err := runtime.Respond(ctx, command.ID, details.Worker, attempt, "recovery-request", "denied"); err != nil {
 		t.Fatal(err)
 	}

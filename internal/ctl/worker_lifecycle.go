@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/node"
 )
 
 var (
@@ -29,12 +30,13 @@ type WorkerRuntime interface {
 }
 
 type WorkerService struct {
-	Store        *core.Store
-	PersonID     string
-	Capability   string
-	WorkerPolicy core.HarnessPolicy
-	Runtime      WorkerRuntime
-	commandNow   func() time.Time
+	Store              *core.Store
+	PersonID           string
+	Capability         string
+	WorkerPolicy       core.HarnessPolicy
+	WorkerPolicySource func() core.HarnessPolicy
+	Runtime            WorkerRuntime
+	commandNow         func() time.Time
 }
 
 type WorkerPreferences struct {
@@ -48,9 +50,11 @@ type WorkerPreferences struct {
 }
 
 type SpawnWorkerRequest struct {
-	Intent         string            `json:"intent"`
-	Preferences    WorkerPreferences `json:"preferences"`
-	IdempotencyKey string            `json:"idempotency_key,omitempty"`
+	Intent          string            `json:"intent"`
+	Preferences     WorkerPreferences `json:"preferences"`
+	SecretaryTurnID string            `json:"-"`
+	InputID         string            `json:"-"`
+	IdempotencyKey  string            `json:"idempotency_key,omitempty"`
 	// Flat fields preserve direct Go callers while MCP uses preferences.
 	ProjectID       string                 `json:"project_id,omitempty"`
 	NodeID          core.NodeReference     `json:"node_id,omitempty"`
@@ -62,11 +66,19 @@ type SpawnWorkerRequest struct {
 }
 
 type MessageWorkerRequest struct {
-	WorkerRef      string `json:"worker_ref"`
-	Text           string `json:"text"`
-	RequestID      string `json:"request_id,omitempty"`
-	ClientID       string `json:"client_id,omitempty"`
-	IdempotencyKey string `json:"idempotency_key,omitempty"`
+	WorkerRef       string `json:"worker_ref"`
+	Text            string `json:"text"`
+	SecretaryTurnID string `json:"-"`
+	InputID         string `json:"-"`
+	RequestID       string `json:"request_id,omitempty"`
+	ClientID        string `json:"client_id,omitempty"`
+	IdempotencyKey  string `json:"idempotency_key,omitempty"`
+}
+
+type SecretaryReplyRequest struct {
+	SecretaryTurnID string `json:"secretary_turn_id"`
+	InputID         string `json:"input_id"`
+	Text            string `json:"text"`
 }
 
 // RespondWorker is the single server-side entry point for permission and input
@@ -74,6 +86,70 @@ type MessageWorkerRequest struct {
 // as Worker messages.
 func (s WorkerService) RespondWorker(ctx context.Context, request MessageWorkerRequest) (core.WorkerDetails, error) {
 	return s.MessageWorker(ctx, request)
+}
+
+// RetryApprovalResolution is an explicit owner action. It never accepts a
+// replacement response or command identity from the caller; it reuses the
+// saved decision and exact respond command for the original immutable Attempt.
+func (s WorkerService) RetryApprovalResolution(ctx context.Context, requestID, clientID string) (core.WorkerDetails, error) {
+	conversation, err := s.authorize(ctx)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	approval, err := s.Store.Approval(ctx, requestID)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	worker, err := s.Store.Worker(ctx, approval.WorkerID)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	details, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	listed := false
+	for _, item := range details.Approvals {
+		if item.ID == approval.ID {
+			listed = true
+			break
+		}
+	}
+	if !listed {
+		return core.WorkerDetails{}, core.ErrNotFound
+	}
+	if approval.State != core.ApprovalResolving {
+		if approval.State != core.ApprovalPending {
+			return details, nil
+		}
+		return core.WorkerDetails{}, core.ErrInvalidTransition
+	}
+	if approval.ResolutionCommandID == "" || (approval.ResolutionState != core.ApprovalApproved && approval.ResolutionState != core.ApprovalDenied) {
+		return core.WorkerDetails{}, core.ErrInvalidTransition
+	}
+	attempt, err := s.Store.Phase4Attempt(ctx, approval.AttemptID)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if attempt.WorkerID != approval.WorkerID || attempt.TurnID != approval.TurnID {
+		return core.WorkerDetails{}, core.ErrInvalidTransition
+	}
+	command, found, err := s.Store.FindWorkerCommand(ctx, "respond", "request:"+approval.RequestID, approval.WorkerID, approval.AttemptID)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if !found || command.ID != approval.ResolutionCommandID || command.Kind != "respond" || command.AttemptID != approval.AttemptID {
+		return core.WorkerDetails{}, core.ErrInvalidTransition
+	}
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" {
+		clientID = "client"
+	}
+	request := MessageWorkerRequest{
+		WorkerRef: worker.WorkerRef, RequestID: approval.RequestID,
+		Text: approval.ResolutionResponse, ClientID: clientID,
+	}
+	return s.respondApproval(ctx, conversation.ID, request, details, attempt, approval, approval.ResolutionState, clientID)
 }
 
 func (s WorkerService) authorize(ctx context.Context) (core.Conversation, error) {
@@ -97,16 +173,49 @@ func (s WorkerService) requireRuntime() error {
 	return nil
 }
 
+func (s WorkerService) secretaryOrigin(secretaryTurnID, inputID string) *core.SecretaryOriginIdentity {
+	secretaryTurnID, inputID = strings.TrimSpace(secretaryTurnID), strings.TrimSpace(inputID)
+	if secretaryTurnID == "" && inputID == "" {
+		return nil
+	}
+	return &core.SecretaryOriginIdentity{PersonID: s.PersonID, Capability: s.Capability, SecretaryTurnID: secretaryTurnID, InputID: inputID}
+}
+
+func (s WorkerService) ValidateSecretaryOrigin(ctx context.Context, secretaryTurnID, inputID string) error {
+	if _, err := s.authorize(ctx); err != nil {
+		return err
+	}
+	return s.Store.ValidateSecretaryOrigin(ctx, s.PersonID, s.Capability, secretaryTurnID, inputID)
+}
+
+func (s WorkerService) LinkSecretaryWorkerTurn(ctx context.Context, secretaryTurnID, inputID, workerTurnID string) (bool, error) {
+	if _, err := s.authorize(ctx); err != nil {
+		return false, err
+	}
+	return s.Store.LinkSecretaryWorkerTurn(ctx, s.PersonID, s.Capability, secretaryTurnID, inputID, workerTurnID)
+}
+
+func (s WorkerService) ReplyToUser(ctx context.Context, request SecretaryReplyRequest) (core.ConversationEntry, bool, error) {
+	if _, err := s.authorize(ctx); err != nil {
+		return core.ConversationEntry{}, false, err
+	}
+	return s.Store.RecordSecretaryReply(ctx, s.PersonID, s.Capability, request.SecretaryTurnID, request.InputID, request.Text)
+}
+
 // claimCommand commits the server-side command identity before handoff. The
 // same Worker, Attempt and command kind always reuse one ID. A duplicate
 // pending command is resent only after core atomically reclaims its expired
 // lease. Node command dedupe then protects the side effect of that handoff.
-func (s WorkerService) claimCommand(ctx context.Context, kind, dedupeKey string, worker core.Worker, attempt core.Phase4Attempt) (core.WorkerCommand, bool, error) {
-	command, duplicate, err := s.Store.ClaimWorkerCommand(ctx, kind, dedupeKey, worker.ID, attempt.ID)
+func (s WorkerService) claimCommand(ctx context.Context, kind, dedupeKey string, worker core.Worker, attempt core.Phase4Attempt, origin *core.SecretaryOriginIdentity) (core.WorkerCommand, bool, error) {
+	origins := []core.SecretaryOriginIdentity(nil)
+	if origin != nil {
+		origins = append(origins, *origin)
+	}
+	command, duplicate, err := s.Store.ClaimWorkerCommand(ctx, kind, dedupeKey, worker.ID, attempt.ID, origins...)
 	if err != nil {
 		return core.WorkerCommand{}, false, err
 	}
-	if duplicate && command.State == core.WorkerCommandPending {
+	if duplicate && (command.State == core.WorkerCommandPending || command.State == core.WorkerCommandUncertain) {
 		reclaimed, send, err := s.Store.ReclaimWorkerCommand(ctx, command.ID, s.workerCommandNow())
 		if err != nil {
 			return core.WorkerCommand{}, false, err
@@ -159,7 +268,15 @@ func steeringDedupeKey(idempotencyKey string) (string, error) {
 
 func (s WorkerService) deliverCommand(ctx context.Context, command core.WorkerCommand, send func(string) error) error {
 	if err := send(command.ID); err != nil {
-		_, _ = s.Store.MarkWorkerCommandFailed(context.Background(), command.ID, err.Error())
+		uncertain := command.Kind == "respond" && (errors.Is(err, node.ErrCommandOutcomeUnknown) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+		if uncertain {
+			if !errors.Is(err, node.ErrCommandOutcomeUnknown) {
+				err = fmt.Errorf("%w: %w", node.ErrCommandOutcomeUnknown, err)
+			}
+			_, _ = s.Store.MarkWorkerCommandUncertain(context.Background(), command.ID, err.Error())
+		} else {
+			_, _ = s.Store.MarkWorkerCommandFailed(context.Background(), command.ID, err.Error())
+		}
 		return err
 	}
 	_, err := s.Store.MarkWorkerCommandDelivered(ctx, command.ID)
@@ -168,11 +285,11 @@ func (s WorkerService) deliverCommand(ctx context.Context, command core.WorkerCo
 
 // recoverLifecycleCommand repairs pre-intent committed Attempts, then claims
 // the stable command ID. The runtime is required only when a handoff is due.
-func (s WorkerService) recoverLifecycleCommand(ctx context.Context, kind string, worker core.Worker, attempt core.Phase4Attempt, send func(string) error) error {
+func (s WorkerService) recoverLifecycleCommand(ctx context.Context, kind string, worker core.Worker, attempt core.Phase4Attempt, send func(string) error, origin *core.SecretaryOriginIdentity) error {
 	if _, err := s.Store.EnsureLifecycleCommandIntent(ctx, kind, worker.ID, attempt.ID); err != nil {
 		return err
 	}
-	command, handoff, err := s.claimCommand(ctx, kind, "attempt", worker, attempt)
+	command, handoff, err := s.claimCommand(ctx, kind, "attempt", worker, attempt, origin)
 	if err != nil || !handoff {
 		return err
 	}
@@ -217,6 +334,7 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	if err != nil {
 		return core.WorkerDetails{}, err
 	}
+	origin := s.secretaryOrigin(request.SecretaryTurnID, request.InputID)
 	request.Intent = strings.TrimSpace(request.Intent)
 	if request.Intent == "" {
 		return core.WorkerDetails{}, errors.New("worker: intent is required")
@@ -233,15 +351,30 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	if worker, turn, attempt, resolution, found, err := s.Store.ReplayWorkerCreation(ctx, request.IdempotencyKey); err != nil {
 		return core.WorkerDetails{}, err
 	} else if found {
+		// Queued spawn acceptance is committed with its original input identity;
+		// retries must not reassign that durable action to a later user turn.
+		if origin != nil {
+			if _, err := s.Store.ValidateSecretaryWorkerCreationOriginIfPresent(ctx, *origin, turn.ID); err != nil {
+				return core.WorkerDetails{}, err
+			}
+		}
 		// A new Worker is stored queued until the Node acknowledges the initial
 		// dispatch. Its replay snapshot therefore cannot decide whether the
 		// durable pending handoff still needs delivery.
 		if err := s.recoverLifecycleCommand(ctx, "dispatch", worker, attempt, func(commandID string) error {
 			return s.Runtime.Dispatch(ctx, commandID, worker, turn, attempt, resolution)
-		}); err != nil {
+		}, origin); err != nil {
 			return core.WorkerDetails{}, fmt.Errorf("recover dispatch Worker: %w", err)
 		}
-		return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+		details, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		details.ActionTurnID = turn.ID
+		return details, nil
+	}
+	if s.WorkerPolicySource != nil {
+		resolutionRequest.WorkerPolicy = s.WorkerPolicySource()
 	}
 	// Resolve before creation so the production MCP wiring with Runtime=nil
 	// cannot leave an online Worker/Turn/Attempt behind on a rejected spawn.
@@ -254,18 +387,27 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 			return core.WorkerDetails{}, err
 		}
 	}
-	worker, turn, attempt, resolution, err := s.Store.ResolveAndCreateWorker(ctx, conversation.ID, request.Intent, resolutionRequest, request.IdempotencyKey)
+	origins := []core.SecretaryOriginIdentity(nil)
+	if origin != nil {
+		origins = append(origins, *origin)
+	}
+	worker, turn, attempt, resolution, err := s.Store.ResolveAndCreateWorker(ctx, conversation.ID, request.Intent, resolutionRequest, request.IdempotencyKey, origins...)
 	if err != nil {
 		return core.WorkerDetails{}, err
 	}
 	if !resolution.Queued {
 		if err := s.recoverLifecycleCommand(ctx, "dispatch", worker, attempt, func(commandID string) error {
 			return s.Runtime.Dispatch(ctx, commandID, worker, turn, attempt, resolution)
-		}); err != nil {
+		}, origin); err != nil {
 			return core.WorkerDetails{}, fmt.Errorf("dispatch Worker: %w", err)
 		}
 	}
-	return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+	details, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	details.ActionTurnID = turn.ID
+	return details, nil
 }
 
 func approvalResponseState(kind core.ApprovalKind, response string) (core.ApprovalState, error) {
@@ -294,8 +436,11 @@ func (s WorkerService) ApplyTrustedLocalApproval(ctx context.Context, requestID 
 	if err != nil {
 		return core.Approval{}, err
 	}
-	if approval.State != core.ApprovalPending || !policy.Enabled || !policy.Explicit {
+	if (approval.State != core.ApprovalPending && approval.State != core.ApprovalResolving) || !policy.Enabled || !policy.Explicit {
 		return approval, nil
+	}
+	if approval.State == core.ApprovalResolving && (approval.ResolutionState != core.ApprovalApproved || approval.ResolutionResponse != "auto_approved") {
+		return approval, core.ErrApprovalResolutionConflict
 	}
 	if !policy.LocalNode || strings.TrimSpace(string(policy.Node)) == "" || string(policy.Node) != approval.NodeID {
 		return approval, core.ErrTrustedLocalApprovalDenied
@@ -311,9 +456,16 @@ func (s WorkerService) ApplyTrustedLocalApproval(ctx context.Context, requestID 
 	if err != nil {
 		return core.Approval{}, err
 	}
-	command, send, err := s.claimCommand(ctx, "respond", "request:"+approval.RequestID, worker, attempt)
+	command, send, err := s.claimCommand(ctx, "respond", "request:"+approval.RequestID, worker, attempt, nil)
 	if err != nil {
 		return core.Approval{}, err
+	}
+	intent, _, err := s.Store.BeginApprovalResolution(ctx, approval.RequestID, command.ID, core.ApprovalApproved, "trusted-local-policy", "auto_approved")
+	if err != nil {
+		return core.Approval{}, err
+	}
+	if intent.State != core.ApprovalResolving {
+		return intent, nil
 	}
 	if send {
 		if err := s.requireRuntime(); err != nil {
@@ -338,9 +490,20 @@ func (s WorkerService) ApplyTrustedLocalApproval(ctx context.Context, requestID 
 }
 
 func (s WorkerService) respondApproval(ctx context.Context, conversationID string, request MessageWorkerRequest, details core.WorkerDetails, attempt core.Phase4Attempt, approval core.Approval, state core.ApprovalState, clientID string) (core.WorkerDetails, error) {
-	command, send, err := s.claimCommand(ctx, "respond", "request:"+request.RequestID, details.Worker, attempt)
+	var origin *core.SecretaryOriginIdentity
+	if approval.State == core.ApprovalPending {
+		origin = s.secretaryOrigin(request.SecretaryTurnID, request.InputID)
+	}
+	command, send, err := s.claimCommand(ctx, "respond", "request:"+request.RequestID, details.Worker, attempt, origin)
 	if err != nil {
 		return core.WorkerDetails{}, err
+	}
+	intent, _, err := s.Store.BeginApprovalResolution(ctx, approval.RequestID, command.ID, state, clientID, request.Text)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if intent.State != core.ApprovalResolving {
+		return s.Store.WorkerDetailsForConversation(ctx, conversationID, request.WorkerRef)
 	}
 	if send {
 		if err := s.requireRuntime(); err != nil {
@@ -376,14 +539,15 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		return core.WorkerDetails{}, err
 	}
 	attempt := details.CurrentAttempt()
-	if attempt != nil && strings.TrimSpace(request.RequestID) != "" {
+	var actionTurnID string
+	if strings.TrimSpace(request.RequestID) != "" {
 		approval, approvalErr := s.Store.Approval(ctx, request.RequestID)
 		if approvalErr == nil {
-			if approval.WorkerID != details.Worker.ID || approval.AttemptID != attempt.ID {
+			if approval.WorkerID != details.Worker.ID {
 				return core.WorkerDetails{}, core.ErrInvalidTransition
 			}
-			if approval.State == core.ApprovalPending {
-				if approval.ExpiresAt != nil && !s.workerCommandNow().Before(*approval.ExpiresAt) {
+			if approval.State == core.ApprovalPending || approval.State == core.ApprovalResolving {
+				if approval.State == core.ApprovalPending && approval.ExpiresAt != nil && !s.workerCommandNow().Before(*approval.ExpiresAt) {
 					if _, _, err := s.Store.ExpireApproval(ctx, request.RequestID, s.workerCommandNow()); err != nil {
 						return core.WorkerDetails{}, err
 					}
@@ -393,11 +557,25 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 				if stateErr != nil {
 					return core.WorkerDetails{}, stateErr
 				}
+				if approval.State == core.ApprovalResolving && (approval.ResolutionState != state || approval.ResolutionResponse != request.Text) {
+					return core.WorkerDetails{}, core.ErrApprovalResolutionConflict
+				}
+				approvalAttempt, attemptErr := s.Store.Phase4Attempt(ctx, approval.AttemptID)
+				if attemptErr != nil || approvalAttempt.WorkerID != details.Worker.ID || approvalAttempt.TurnID != approval.TurnID {
+					if attemptErr != nil {
+						return core.WorkerDetails{}, attemptErr
+					}
+					return core.WorkerDetails{}, core.ErrInvalidTransition
+				}
 				clientID := strings.TrimSpace(request.ClientID)
 				if clientID == "" {
 					clientID = "client"
 				}
-				return s.respondApproval(ctx, conversation.ID, request, details, *attempt, approval, state, clientID)
+				responded, err := s.respondApproval(ctx, conversation.ID, request, details, approvalAttempt, approval, state, clientID)
+				if err == nil {
+					responded.ActionTurnID = approval.TurnID
+				}
+				return responded, err
 			}
 			// A terminal Approval is authoritative. In particular, denied,
 			// expired and revoked requests never trigger another machine action.
@@ -406,17 +584,24 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		if !errors.Is(approvalErr, core.ErrNotFound) {
 			return core.WorkerDetails{}, approvalErr
 		}
-		command, found, commandErr := s.Store.FindWorkerCommand(ctx, "respond", commandDedupeKey(request.IdempotencyKey, "request:"+request.RequestID), details.Worker.ID, attempt.ID)
-		if commandErr != nil {
-			return core.WorkerDetails{}, commandErr
-		}
-		if found && command.State == core.WorkerCommandDelivered {
-			if details.Worker.Status == core.WorkerNeedsInput {
-				if _, commandErr := s.Store.ResumePhase4Attempt(ctx, attempt.ID); commandErr != nil {
-					return core.WorkerDetails{}, commandErr
-				}
+		if attempt != nil {
+			command, found, commandErr := s.Store.FindWorkerCommand(ctx, "respond", commandDedupeKey(request.IdempotencyKey, "request:"+request.RequestID), details.Worker.ID, attempt.ID)
+			if commandErr != nil {
+				return core.WorkerDetails{}, commandErr
 			}
-			return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+			if found && command.State == core.WorkerCommandDelivered {
+				if details.Worker.Status == core.WorkerNeedsInput {
+					if _, commandErr := s.Store.ResumePhase4Attempt(ctx, attempt.ID); commandErr != nil {
+						return core.WorkerDetails{}, commandErr
+					}
+				}
+				updated, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+				if err != nil {
+					return core.WorkerDetails{}, err
+				}
+				updated.ActionTurnID = attempt.TurnID
+				return updated, nil
+			}
 		}
 	}
 	switch details.Worker.Status {
@@ -429,11 +614,12 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		if err := s.requireRuntime(); err != nil {
 			return core.WorkerDetails{}, err
 		}
+		actionTurnID = attempt.TurnID
 		dedupeKey, err := steeringDedupeKey(request.IdempotencyKey)
 		if err != nil {
 			return core.WorkerDetails{}, err
 		}
-		command, send, err := s.claimCommand(ctx, "steering", dedupeKey, details.Worker, *attempt)
+		command, send, err := s.claimCommand(ctx, "steering", dedupeKey, details.Worker, *attempt, s.secretaryOrigin(request.SecretaryTurnID, request.InputID))
 		if err != nil {
 			return core.WorkerDetails{}, err
 		}
@@ -452,9 +638,10 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		if err := s.requireRuntime(); err != nil {
 			return core.WorkerDetails{}, err
 		}
-		command, send, err := s.claimCommand(ctx, "respond", commandDedupeKey(request.IdempotencyKey, "request:"+request.RequestID), details.Worker, *attempt)
-		if err != nil {
-			return core.WorkerDetails{}, err
+		actionTurnID = attempt.TurnID
+		command, send, claimErr := s.claimCommand(ctx, "respond", commandDedupeKey(request.IdempotencyKey, "request:"+request.RequestID), details.Worker, *attempt, s.secretaryOrigin(request.SecretaryTurnID, request.InputID))
+		if claimErr != nil {
+			return core.WorkerDetails{}, claimErr
 		}
 		if send {
 			err = s.deliverCommand(ctx, command, func(commandID string) error {
@@ -473,12 +660,13 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			err = createErr
 			break
 		}
+		actionTurnID = turn.ID
 		binding, bindingErr := s.Store.ResolveWorkerBinding(ctx, details.Worker.ID)
 		if bindingErr != nil {
 			err = bindingErr
 			break
 		}
-		command, send, claimErr := s.claimCommand(ctx, "dispatch", "attempt", details.Worker, next)
+		command, send, claimErr := s.claimCommand(ctx, "dispatch", "attempt", details.Worker, next, s.secretaryOrigin(request.SecretaryTurnID, request.InputID))
 		if claimErr != nil {
 			err = claimErr
 			break
@@ -497,6 +685,7 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			err = createErr
 			break
 		}
+		actionTurnID = turn.ID
 		kind := "dispatch"
 		if _, found, findErr := s.Store.FindWorkerCommand(ctx, "resume", "attempt", details.Worker.ID, next.ID); findErr != nil {
 			err = findErr
@@ -504,7 +693,7 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		} else if found {
 			kind = "resume"
 		}
-		command, send, claimErr := s.claimCommand(ctx, kind, "attempt", details.Worker, next)
+		command, send, claimErr := s.claimCommand(ctx, kind, "attempt", details.Worker, next, s.secretaryOrigin(request.SecretaryTurnID, request.InputID))
 		if claimErr != nil {
 			err = claimErr
 			break
@@ -541,7 +730,8 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			err = createErr
 			break
 		}
-		command, send, claimErr := s.claimCommand(ctx, "resume", "attempt", details.Worker, next)
+		actionTurnID = turn.ID
+		command, send, claimErr := s.claimCommand(ctx, "resume", "attempt", details.Worker, next, s.secretaryOrigin(request.SecretaryTurnID, request.InputID))
 		if claimErr != nil {
 			err = claimErr
 			break
@@ -557,7 +747,12 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 	if err != nil {
 		return core.WorkerDetails{}, err
 	}
-	return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+	updated, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	updated.ActionTurnID = actionTurnID
+	return updated, nil
 }
 
 func (s WorkerService) CancelWorker(ctx context.Context, workerRef string) (core.WorkerDetails, error) {
@@ -574,7 +769,7 @@ func (s WorkerService) CancelWorker(ctx context.Context, workerRef string) (core
 		if err := s.requireRuntime(); err != nil {
 			return core.WorkerDetails{}, err
 		}
-		command, send, err := s.claimCommand(ctx, "cancel", "attempt", details.Worker, *attempt)
+		command, send, err := s.claimCommand(ctx, "cancel", "attempt", details.Worker, *attempt, nil)
 		if err != nil {
 			return core.WorkerDetails{}, err
 		}

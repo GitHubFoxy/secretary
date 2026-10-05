@@ -5,6 +5,7 @@ go 1.27.1
 require (
 	github.com/coder/websocket v1.8.14
 	github.com/pelletier/go-toml/v2 v2.2.4
+	github.com/rivo/uniseg v0.4.7
 	modernc.org/sqlite v1.47.0
 )
 

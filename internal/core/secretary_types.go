@@ -27,6 +27,15 @@ type SecretaryIdentity struct {
 
 type SecretaryTurnState string
 
+const SecretaryReplyContractAddressedV1 = "addressed-reply-v1"
+
+type SecretaryOriginIdentity struct {
+	PersonID        string `json:"-"`
+	Capability      string `json:"-"`
+	SecretaryTurnID string `json:"-"`
+	InputID         string `json:"-"`
+}
+
 const (
 	secretaryPromptPending  = "pending"
 	secretaryPromptStarted  = "started"
@@ -49,6 +58,7 @@ type SecretaryTurn struct {
 	IdentityID      string             `json:"identity_id"`
 	ConversationID  string             `json:"conversation_id"`
 	Input           string             `json:"input"`
+	InputID         string             `json:"input_id"`
 	ContextSnapshot string             `json:"-"`
 	PromptState     string             `json:"-"`
 	State           SecretaryTurnState `json:"state"`
@@ -96,20 +106,21 @@ type UserDocument struct {
 // when a Secretary turn is reconstructed. It intentionally has no session or
 // credential fields.
 type SecretaryPolicySnapshot struct {
-	Version          string    `json:"version,omitempty"`
-	Harness          string    `json:"harness,omitempty"`
-	Model            string    `json:"model,omitempty"`
-	Reasoning        string    `json:"reasoning,omitempty"`
-	ProfileVersion   string    `json:"profile_version,omitempty"`
-	ProfileName      string    `json:"profile_name,omitempty"`
-	ProfileHash      string    `json:"profile_hash,omitempty"`
-	ProfileContent   string    `json:"profile_content,omitempty"`
-	ProfileRuntime   string    `json:"profile_runtime,omitempty"`
-	ProfileModel     string    `json:"profile_model,omitempty"`
-	ProfileReasoning string    `json:"profile_reasoning,omitempty"`
-	ProfileDelivery  string    `json:"profile_delivery,omitempty"`
-	AllowedTools     []string  `json:"allowed_tools,omitempty"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	Version              string    `json:"version,omitempty"`
+	Harness              string    `json:"harness,omitempty"`
+	Model                string    `json:"model,omitempty"`
+	Reasoning            string    `json:"reasoning,omitempty"`
+	ProfileVersion       string    `json:"profile_version,omitempty"`
+	ProfileName          string    `json:"profile_name,omitempty"`
+	ProfileHash          string    `json:"profile_hash,omitempty"`
+	ProfileContent       string    `json:"profile_content,omitempty"`
+	ProfileRuntime       string    `json:"profile_runtime,omitempty"`
+	ProfileModel         string    `json:"profile_model,omitempty"`
+	ProfileReasoning     string    `json:"profile_reasoning,omitempty"`
+	ProfileDelivery      string    `json:"profile_delivery,omitempty"`
+	ReplyContractVersion string    `json:"reply_contract_version,omitempty"`
+	AllowedTools         []string  `json:"allowed_tools,omitempty"`
+	UpdatedAt            time.Time `json:"updated_at"`
 }
 
 // SecretaryNodeSnapshot is a safe read model. Node credentials and hashes are

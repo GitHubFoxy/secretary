@@ -16,6 +16,26 @@ _Avoid_: backend, coordinator process
 Opaque capability, ограниченная Task lifecycle operations одной persistent Secretary identity. Она меняется при создании нового Secretary runtime.
 _Avoid_: server token, adapter credential
 
+**Approval**:
+Durable server-owned запись запроса Worker или harness на разрешение либо пользовательский ввод. Связана с конкретным Worker, execution turn и Attempt, проходит через Execution node и Secretary server к владельцу и хранит request и lifecycle/decision state.
+_Avoid_: `needs_input` event, неявное разрешение, permission grant
+
+**Secretary input identity**:
+Server-issued `input_id`, который адресует конкретный пользовательский ввод внутри persistent Secretary turn. ACP message metadata, native tool names и сходство текста не определяют эту identity.
+_Avoid_: ACP message ID, inferred request ID
+
+**Addressed reply**:
+Пользовательский ответ Secretary, idempotently сохранённый для точной пары Secretary turn и input identity. Повтор той же identity с тем же текстом возвращает ту же запись; другой текст конфликтует.
+_Avoid_: untyped ACP Result, guessed echo
+
+**Worker origin link**:
+Durable связь явного принятого server-owned Worker action с точной Worker Turn и её canonical Result. Link строится по server-issued turn/input identity и lifecycle command, а не по содержимому сообщений.
+_Avoid_: inferred task relation, text match
+
+**Addressed reply v1**:
+Additive opt-in contract, который использует отдельный `reply_to_user` operation и обязательные origin identities для Worker actions. Default-off сохраняет legacy behavior; внешние Profiles не переписываются автоматически.
+_Avoid_: implicit response classifier, global echo filter
+
 **Person**:
 Владелец Personal Conversation. В первом thin slice существует один configured owner; позже Channel adapter identities связываются с ним через explicit account linking.
 _Avoid_: channel account, adapter user
@@ -73,7 +93,7 @@ _Avoid_: steering, delayed send
 _Avoid_: request, run
 
 **Worker**:
-Persistent agent, созданный для исполнения одного Task и сохранённый до явного закрытия Task. Первый Worker runtime - Codex по ACP; другие ACP runtimes, включая OpenCode, добавляются adapter-ами.
+Persistent agent, созданный для исполнения одного Task и сохранённый до явного закрытия Task. Default Worker runtime - OpenCode v2 по ACP; fx, Claude Code и Codex остаются selectable adapters.
 _Avoid_: subagent, child agent
 
 **Compaction**:
@@ -85,7 +105,7 @@ _Avoid_: history deletion, server cleanup
 _Avoid_: Project checkout, shared directory
 
 **Worker template**:
-Единый профиль Worker первого slice: Codex ACP на Linux с full access, provider-default model и отдельным Workspace.
+Единый профиль Worker первого slice: OpenCode v2 ACP на Linux с full access, default `openai/gpt-6-luna` / `xhigh` и отдельным Workspace. Явные preferences и Project pins имеют приоритет; existing bindings не мигрируют.
 _Avoid_: category, custom profile
 
 **Dispatch**:

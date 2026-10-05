@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 
 	"github.com/beruseruko/secretary/internal/config"
@@ -47,19 +48,31 @@ func main() {
 		log.Fatalf("find owner: %v", err)
 	}
 	var secretaryHandler mcp.Handler
+	replyContract := strings.TrimSpace(os.Getenv("SECRETARY_MCP_REPLY_CONTRACT"))
 	if serverURL := os.Getenv("SECRETARY_MCP_SERVER_URL"); serverURL != "" {
-		secretaryHandler = mcp.RemoteSecretary{BaseURL: serverURL, Capability: capability}
+		secretaryHandler = mcp.RemoteSecretary{BaseURL: serverURL, Capability: capability, ReplyContractVersion: replyContract}
 	} else {
 		manager, err := config.Open(filepath.Join(*dataDir, "config.toml"))
 		if err != nil {
 			log.Fatalf("load config: %v", err)
 		}
-		policy := manager.Snapshot().Config.EffectiveWorkerPolicy()
+		snapshot := manager.Snapshot()
+		replyContract = snapshot.Config.Secretary.ReplyContract
+		policy := snapshot.Config.EffectiveWorkerPolicy()
 		preferred := make([]core.HarnessKind, len(policy.PreferredHarnesses))
 		for i, kind := range policy.PreferredHarnesses {
 			preferred[i] = core.HarnessKind(kind)
 		}
-		secretaryHandler = mcp.Secretary{Workers: ctl.WorkerService{Store: store, PersonID: owner.ID, Capability: capability, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessKind(policy.DefaultHarness), PreferredHarnesses: preferred}}}
+		model := policy.Model
+		switch model {
+		case "default", "fast", "smart", "cheap":
+			model = ""
+		}
+		reasoning := policy.Reasoning
+		if reasoning == "default" {
+			reasoning = ""
+		}
+		secretaryHandler = mcp.Secretary{Workers: ctl.WorkerService{Store: store, PersonID: owner.ID, Capability: capability, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessKind(policy.DefaultHarness), PreferredHarnesses: preferred, ModelID: model, Reasoning: reasoning}}, ReplyContractVersion: replyContract}
 	}
 	handler := mcp.AuditedHandler{
 		Handler: secretaryHandler,

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -17,6 +18,7 @@ import (
 type fakeProbeRunner struct {
 	responses map[string]CommandResult
 	errors    map[string]error
+	acpError  error
 }
 
 func (r fakeProbeRunner) Run(_ context.Context, binary string, args ...string) (CommandResult, error) {
@@ -28,6 +30,18 @@ func (r fakeProbeRunner) Run(_ context.Context, binary string, args ...string) (
 		return result, nil
 	}
 	return CommandResult{ExitCode: -1}, fmt.Errorf("missing fake command %q", key)
+}
+
+func (r fakeProbeRunner) ProbeACP(context.Context, string, ...string) error { return r.acpError }
+
+func (r fakeProbeRunner) ObserveOpenCodeModels(ctx context.Context, command string) ([]core.ObservedModelID, []core.ObservedReasoningLevel, error) {
+	// This is explicit synthetic metadata; the production runner uses the V2
+	// model API and never infers reasoning from plaintext model IDs.
+	result, err := r.Run(ctx, command, "models")
+	if err != nil {
+		return nil, nil, err
+	}
+	return parseObservedModels(result.Stdout), parseObservedReasoning(result.Stdout), nil
 }
 
 func requiredProbeRunner(version, fxModel, codexModel string) fakeProbeRunner {
@@ -44,6 +58,15 @@ func requiredProbeRunner(version, fxModel, codexModel string) fakeProbeRunner {
 	}}
 }
 
+func TestOpenCodeProbeRequiresSelectedPersistentStore(t *testing.T) {
+	spec := DefaultOpenCodeProbeSpec()
+	spec.Binary = filepath.Join(t.TempDir(), "must-not-run-opencode")
+	result := (HarnessProbe{Node: "node-a", Runner: ExecCommandRunner{}, Spec: spec}).Probe(context.Background())
+	if result.ErrorCode != "native_store_unselected" || result.Instance.Status != core.HarnessUnavailable {
+		t.Fatal("OpenCode inventory ran without an explicitly selected persistent store")
+	}
+}
+
 func TestDefaultProbeCommandsAreExplicitContracts(t *testing.T) {
 	claude := DefaultClaudeCodeProbeSpec()
 	if !reflect.DeepEqual(claude.VersionArgs, []string{"--version"}) || !reflect.DeepEqual(claude.AuthenticationArgs, []string{"auth", "status"}) {
@@ -57,7 +80,7 @@ func TestDefaultProbeCommandsAreExplicitContracts(t *testing.T) {
 		t.Fatalf("Codex probe commands=%#v", codex)
 	}
 	open := DefaultOpenCodeProbeSpec()
-	if !reflect.DeepEqual(open.AuthenticationArgs, []string{"auth", "list"}) || !reflect.DeepEqual(open.ModelsArgs, []string{"models"}) {
+	if !reflect.DeepEqual(open.AuthenticationArgs, []string{"auth", "list"}) || !reflect.DeepEqual(open.ModelsArgs, []string{"models"}) || !reflect.DeepEqual(open.ACPArgs, []string{"acp"}) {
 		t.Fatalf("OpenCode probe commands=%#v", open)
 	}
 }
@@ -260,22 +283,28 @@ func TestRequiredProbesDiscoverDifferentInstancesOnTwoNodes(t *testing.T) {
 }
 
 func TestRequiredProbesAndOpenCodeCompatibilityAreIsolated(t *testing.T) {
-	if got := NewDefaultHarnessProbes("macbook", nil); len(got) != 3 {
-		t.Fatalf("mandatory probes=%d", len(got))
+	if got := NewDefaultHarnessProbes("macbook", nil); len(got) != 4 {
+		t.Fatalf("default probes=%d", len(got))
 	}
+	foundOpenCode := false
 	for _, probe := range NewDefaultHarnessProbes("macbook", nil) {
-		if probe.Spec.Kind == core.HarnessOpenCode {
-			t.Fatal("OpenCode leaked into mandatory probe set")
-		}
+		foundOpenCode = foundOpenCode || probe.Spec.Kind == core.HarnessOpenCode
+	}
+	if !foundOpenCode {
+		t.Fatal("OpenCode is missing from default probe set")
 	}
 	runner := fakeProbeRunner{responses: map[string]CommandResult{
-		"opencode --version": {Stdout: "1.0.0"},
-		"opencode auth list": {Stdout: "anthropic"},
-		"opencode models":    {Stdout: "provider/model-a"},
+		"opencode --version": {Stdout: "opencode v2.0.22"},
+		"opencode auth list": {Stdout: "openai"},
+		"opencode models":    {Stdout: "openai/model-a"},
 	}}
 	open := NewOpenCodeCompatibilityProbe("macbook", runner).Probe(context.Background())
 	if open.Instance.Kind != core.HarnessOpenCode || !open.Available() {
-		t.Fatalf("OpenCode compatibility result=%#v", open)
+		t.Fatalf("OpenCode v2 ACP result=%#v", open)
+	}
+	failedACP := NewOpenCodeCompatibilityProbe("macbook", fakeProbeRunner{responses: runner.responses, acpError: errors.New("synthetic ACP failure")}).Probe(context.Background())
+	if failedACP.Available() || failedACP.ErrorCode != "acp_unavailable" {
+		t.Fatal("OpenCode was advertised ready after ACP initialize failed")
 	}
 }
 
@@ -435,6 +464,36 @@ func TestToolSanitizersPreserveMultilineContentWhileRedactingSecrets(t *testing.
 	wantOutput := "first line\n  indented second line\nTOKEN=[redacted]"
 	if decodedOutput["content"] != wantOutput || strings.Contains(decodedOutput["content"], "synthetic-output-password") {
 		t.Fatalf("sanitized structured output lost whitespace or retained credential: %q", decodedOutput["content"])
+	}
+}
+
+func TestNormalizeRuntimeActivityPreservesOnlyAllowlistedToolFailureMetadata(t *testing.T) {
+	metadata := core.ActivityMetadata{EventID: "failure-event", Node: "node", HarnessInstanceID: "node/fx", AttemptID: "attempt", Sequence: 1, ObservedAt: time.Now().UTC()}
+	capabilities := core.HarnessCapabilities{Activity: []core.ActivityCapability{core.ActivityToolResult}}
+	failure := core.ToolFailureMetadata{Category: core.ToolFailureCategoryHTTP, Code: core.ToolFailureCodeHTTPError, HTTPStatus: 503}
+	activity, ok := NormalizeRuntimeActivity(Activity{
+		Kind: ActivityToolResult, Tool: "web_fetch", Status: "failed",
+		Arguments: json.RawMessage(`{"url":"https://example.invalid/?token=private-url-token"}`),
+		Result:    "private raw output", Error: "private error text Bearer private-error-token",
+		Failure: &failure,
+	}, metadata, capabilities)
+	if !ok || activity.ToolResult == nil || activity.ToolResult.Failure == nil {
+		t.Fatalf("normalized failure=%#v ok=%v", activity, ok)
+	}
+	if *activity.ToolResult.Failure != failure {
+		t.Fatalf("safe failure metadata=%#v want=%#v", activity.ToolResult.Failure, failure)
+	}
+	if activity.ToolResult.Error != "" || activity.ToolResult.Output != "" {
+		t.Fatalf("free-form failure data crossed the adapter: %#v", activity.ToolResult)
+	}
+	encoded, err := json.Marshal(activity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"private-url-token", "private raw output", "private error text", "private-error-token", `"arguments"`, `"error"`, `"output"`} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("normalized failure leaked %q: %s", forbidden, encoded)
+		}
 	}
 }
 

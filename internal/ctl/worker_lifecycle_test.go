@@ -152,7 +152,7 @@ func newWorkerServiceAt(t *testing.T, path string) (context.Context, *core.Store
 		t.Fatal(err)
 	}
 	runtime := &lifecycleRuntime{}
-	return ctx, store, WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: runtime}, project
+	return ctx, store, WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: runtime, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX}}, project
 }
 
 func spawnLifecycleWorker(t *testing.T, ctx context.Context, service WorkerService, project core.Project) core.WorkerDetails {
@@ -161,7 +161,7 @@ func spawnLifecycleWorker(t *testing.T, ctx context.Context, service WorkerServi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(details.Turns) != 1 || len(details.Attempts) != 1 || details.Worker.NodeID != "node" || details.Worker.HarnessInstanceID != "node/fx" {
+	if len(details.Turns) != 1 || len(details.Attempts) != 1 || details.Worker.NodeID != "node" || details.Worker.HarnessInstanceID != "node/fx" || details.ActionTurnID != details.Turns[0].ID {
 		t.Fatalf("spawned=%#v", details)
 	}
 	return details
@@ -177,21 +177,21 @@ func TestWorkerServiceMessageLifecycleMatrix(t *testing.T) {
 	}
 
 	active, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "prioritize tests"})
-	if err != nil || len(active.Turns) != 1 || runtime.count("steer") != 1 {
+	if err != nil || len(active.Turns) != 1 || runtime.count("steer") != 1 || active.ActionTurnID != first.TurnID {
 		t.Fatalf("active=%#v err=%v calls=%d", active, err, runtime.count("steer"))
 	}
 	if _, err := store.SetPhase4AttemptNeedsInput(ctx, first.ID); err != nil {
 		t.Fatal(err)
 	}
 	input, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "yes", RequestID: "ask-1"})
-	if err != nil || len(input.Turns) != 1 || runtime.count("respond") != 1 || input.Worker.Status != core.WorkerWorking {
+	if err != nil || len(input.Turns) != 1 || runtime.count("respond") != 1 || input.Worker.Status != core.WorkerWorking || input.ActionTurnID != first.TurnID {
 		t.Fatalf("input=%#v err=%v", input, err)
 	}
 	if _, _, _, err := store.RecordAttemptOutcome(ctx, first.ID, core.AttemptOutcomeInput{Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "done"}); err != nil {
 		t.Fatal(err)
 	}
 	idle, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "one more", IdempotencyKey: "follow-up"})
-	if err != nil || len(idle.Turns) != 2 || len(idle.Attempts) != 2 || runtime.count("dispatch") != 2 {
+	if err != nil || len(idle.Turns) != 2 || len(idle.Attempts) != 2 || runtime.count("dispatch") != 2 || idle.ActionTurnID != idle.Worker.CurrentTurnID {
 		t.Fatalf("idle=%#v err=%v", idle, err)
 	}
 	second := idle.CurrentAttempt()
@@ -205,7 +205,7 @@ func TestWorkerServiceMessageLifecycleMatrix(t *testing.T) {
 		t.Fatal(err)
 	}
 	interrupted, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "resume"})
-	if err != nil || interrupted.Worker.Status != core.WorkerQueued || runtime.count("resume") != 1 {
+	if err != nil || interrupted.Worker.Status != core.WorkerQueued || runtime.count("resume") != 1 || interrupted.ActionTurnID != interrupted.Worker.CurrentTurnID {
 		t.Fatalf("interrupted=%#v err=%v", interrupted, err)
 	}
 }
@@ -322,7 +322,7 @@ func TestWorkerServiceConcurrentCancelAcrossStoresSendsOneCommand(t *testing.T) 
 		t.Fatal(err)
 	}
 	firstRuntime := &lifecycleRuntime{}
-	first := WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: firstRuntime}
+	first := WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: firstRuntime, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX}}
 	details := spawnLifecycleWorker(t, ctx, first, project)
 	if _, err := store.SetPhase4AttemptActive(ctx, details.Attempts[0].ID); err != nil {
 		t.Fatal(err)
@@ -333,7 +333,7 @@ func TestWorkerServiceConcurrentCancelAcrossStoresSendsOneCommand(t *testing.T) 
 	}
 	defer other.Close()
 	secondRuntime := &lifecycleRuntime{}
-	second := WorkerService{Store: other, PersonID: person.ID, Capability: capability, Runtime: secondRuntime}
+	second := WorkerService{Store: other, PersonID: person.ID, Capability: capability, Runtime: secondRuntime, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX}}
 	var group sync.WaitGroup
 	errs := make(chan error, 2)
 	for _, service := range []WorkerService{first, second} {
@@ -384,7 +384,7 @@ func TestWorkerServiceSpawnReplayRedeliversPendingInitialDispatchAfterReopen(t *
 		t.Fatal(err)
 	}
 	key := "crash-before-dispatch-claim"
-	worker, turn, attempt, resolution, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "inspect", core.DispatchResolutionRequest{ProjectID: project.ID}, key)
+	worker, turn, attempt, resolution, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "inspect", core.DispatchResolutionRequest{ProjectID: project.ID, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX}}, key)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -482,7 +482,7 @@ func TestWorkerServiceSpawnReplayAfterProjectDeleteUsesDurableBinding(t *testing
 	}
 	service.Runtime = nil
 	replayed, err := service.SpawnWorker(ctx, request)
-	if err != nil || replayed.Worker.ID != first.Worker.ID || replayed.Turns[0].ID != first.Turns[0].ID || replayed.Attempts[0].ID != first.Attempts[0].ID || replayed.Worker.HarnessInstanceID != first.Worker.HarnessInstanceID {
+	if err != nil || replayed.Worker.ID != first.Worker.ID || replayed.Turns[0].ID != first.Turns[0].ID || replayed.Attempts[0].ID != first.Attempts[0].ID || replayed.Worker.HarnessInstanceID != first.Worker.HarnessInstanceID || replayed.ActionTurnID != first.Turns[0].ID {
 		t.Fatalf("replayed=%#v first=%#v err=%v", replayed, first, err)
 	}
 }

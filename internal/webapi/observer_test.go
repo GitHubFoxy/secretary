@@ -240,6 +240,63 @@ func TestWorkerObserverReplaysBurstActivityFromDurableStore(t *testing.T) {
 	}
 }
 
+func TestWorkerObserverExposesSafeToolFailureMetadataWithoutToolPayloads(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "failure-observer.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{WorkerRef: "failure-observer", Intent: "inspect weather", ProjectID: "project", NodeID: "local", HarnessInstanceID: "local/fx", PolicySnapshot: "safe"}, core.TurnSpec{Input: "inspect weather"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	activities := []core.Activity{
+		{Metadata: core.ActivityMetadata{EventID: "ticket30-call", Node: "local", HarnessInstanceID: "local/fx", WorkerRef: "failure-observer", TurnID: turn.ID, AttemptID: attempt.ID, Sequence: 1, ObservedAt: time.Now().UTC()}, Kind: core.ActivityKindToolCall, ToolCall: &core.ToolCall{Name: "web_fetch", Arguments: json.RawMessage(`{"url":"https://example.invalid/?token=raw-private-argument"}`), Preview: "example.invalid"}},
+		{Metadata: core.ActivityMetadata{EventID: "ticket30-result", Node: "local", HarnessInstanceID: "local/fx", WorkerRef: "failure-observer", TurnID: turn.ID, AttemptID: attempt.ID, Sequence: 2, ObservedAt: time.Now().UTC()}, Kind: core.ActivityKindToolResult, ToolResult: &core.ToolResult{Name: "web_fetch", Output: "raw private tool output", Status: "failed", Preview: "example.invalid", Failure: &core.ToolFailureMetadata{Category: core.ToolFailureCategoryHTTP, Code: core.ToolFailureCodeHTTPError, HTTPStatus: 503}}},
+	}
+	for _, activity := range activities {
+		if _, err := store.RecordNodeActivityReplay(ctx, activity); err != nil {
+			t.Fatal(err)
+		}
+	}
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	client := &http.Client{Jar: mustWebCookieJar(t)}
+	login(t, client, server.URL)
+	response, err := client.Get(server.URL + "/v1/workers/failure-observer/activity?after_seq=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(response.Body)
+	response.Body.Close()
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s err=%v", response.StatusCode, body, err)
+	}
+	text := string(body)
+	for _, want := range []string{`"category":"http"`, `"code":"http_error"`, `"http_status":503`, `"name":"web_fetch"`, `"status":"failed"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("public observer omitted %q: %s", want, text)
+		}
+	}
+	for _, forbidden := range []string{"raw-private-argument", "raw private tool output", `"arguments"`, `"output"`, `"error"`} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("public observer leaked %q: %s", forbidden, text)
+		}
+	}
+}
+
 func TestWorkerObserverStatusSteerStopAndActivity(t *testing.T) {
 	runtime := &observerRuntime{}
 	local := node.NewLocal(runtime)

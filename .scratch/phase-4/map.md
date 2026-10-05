@@ -2,7 +2,7 @@
 
 ## Destination
 
-Построить persistent personal AI поверх компьютеров и harnesses. Secretary хранит intent и Personal Conversation, а Workers выполняют работу на выбранных Projects, Nodes и HarnessInstances. Phase 4 должна дать один coherent API для Web и Telegram, два Execution Nodes, обязательные `fx`, Claude Code и Codex, безопасное восстановление и явную observability.
+Построить persistent personal AI поверх компьютеров и harnesses. Secretary хранит intent и Personal Conversation, а Workers выполняют работу на выбранных Projects, Nodes и HarnessInstances. Phase 4 должна дать один coherent API для Web и Telegram, два Execution Nodes, OpenCode v2 по умолчанию и selectable `fx`, Claude Code и Codex, безопасное восстановление и явную observability.
 
 `Task` не входит в новую product model. Он остаётся только legacy migration data.
 
@@ -31,13 +31,15 @@
 - `message_worker` сам выбирает steer для active Worker, ответ на pending `needs_input`, Follow-up для idle Worker или resume после interrupted state.
 - `respond_worker { request_id, response }` является единой Node command для Approval и `needs_input`.
 - Worker или harness не получают server callback capability. Terminal events идут через Node adapter и authenticated Node connection.
-- `fx`, Claude Code и Codex обязательны для MVP acceptance. OpenCode остаётся compatibility target и не заменяет Claude Code.
+- OpenCode v2 является default Worker и Secretary harness; `fx`, Claude Code и Codex остаются selectable adapters с explicit coverage.
 - `sex` и `sex setup` сохраняются как исторический CLI contract.
 - [Ticket 01](issues/01-worker-first-core-state-and-migration-contract.md) закрепляет Worker-first core persistence в `internal/core`: новые Worker, Turn, AttemptOutcome и Result records отделены от legacy Task tables, а recovery и retry имеют явные terminal semantics.
 - [Ticket 06b](issues/06b-dispatch-resolver-and-binding.md) закрепляет immutable Worker binding транзакционным сравнением Project revision, Node state и observed inventory; replay `worker.create` обходит текущие Project и inventory.
 - [Ticket 17](issues/17-generate-worker-topic-titles.md) использует отдельный OpenCode v2 для названий Telegram Topics. Harness/model/effort и внешний `title-generation-prompt.md` задаются в `[telegram]`, не меняют Secretary/Worker profiles и имеют детерминированный fallback.
 - [Ticket 19](issues/19-show-worker-prompt-in-topic.md) публикует dispatched intent первым сообщением Worker Topic через durable outbox; флаг доставки в TopicMapping предотвращает дубли при restart/replay и сохраняется после отправки последней части.
 - [Ticket 20](issues/20-map-acp-progress-titles-correctly.md), `resolved`: отделяет explicit ACP tool identity от progress `title`, коррелирует lifecycle updates по invocation и показывает в Telegram/Web только безопасный компактный preview без tool output.
+- [Ticket 22](issues/22-investigate-oversized-telegram-messages.md): owner подтвердил полный inline Result в Topic первым, затем General, с semantic/grapheme-aware splitting без file/preview. Local implementation и Bot API HTTP fixtures PASS; live Telegram acceptance pending.
+- [Ticket 30](issues/30-diagnose-worker-web-fetch-failure.md), `resolved`: Worker Activity принимает только явную allowlisted category/code/HTTP status при `failed`; свободные error text, arguments и outputs не публикуются. Историческая причина `web_fetch` остаётся неизвестной: сохранён только `failed`, поздний shell HTTP 200 не подтверждает native path.
 
 ## Work order
 
@@ -76,7 +78,7 @@
 - [19: Show the dispatched Worker prompt in its Topic](issues/19-show-worker-prompt-in-topic.md), `resolved`. Показывает задачу без внутренних инструкций; retry/replay и порядок сообщений покрыты тестами.
 - [20: Map ACP progress titles correctly](issues/20-map-acp-progress-titles-correctly.md), `resolved`.
 - [21: Keep Worker progress out of the final Result](issues/21-separate-worker-progress-from-telegram-result.md) исправляет смешивание progress, потерю переносов и неотформатированные Markdown-ссылки.
-- [22: Decide how to deliver oversized Worker messages](issues/22-investigate-oversized-telegram-messages.md) фиксирует диагностику и выбор поведения для длинных сообщений.
+- [22: Decide how to deliver oversized Worker messages](issues/22-investigate-oversized-telegram-messages.md), `claimed`: owner-approved inline delivery реализована локально с parsed UTF-16 limit, Markdown/grapheme boundaries и source-byte checkpoints; ждёт live Telegram acceptance.
 
 ### Сквозная продуктовая проверка
 
@@ -97,6 +99,33 @@
 - Ticket 16 ([Pi Client integration](issues/16-pi-client-integration.md)) оставлен только как историческая запись. Ticket 28 снял эту поддержку; его прежнее acceptance evidence не является текущим обязательством.
 - [28: Удаление Pi viewer и Secretary extension](issues/28-remove-pi-viewer-extension.md), `resolved`. Специализированные docs, Phase 5 gate и effort удалены; общие Client API и privacy coverage сохранены. Будущий Pi Worker harness из ticket 27 остаётся отдельной задачей.
 
+## Инциденты и изменения после deploy 459709c
+
+- [21: Чистый краткий Worker Result и Telegram formatting](issues/21-separate-worker-progress-from-telegram-result.md), `claimed`. Screenshot погоды сохранён. ACP test теперь проверяет публичную progress availability и final/turn boundaries без cross-channel order assertion; `-count=20` и race в пяти пакетах `-count=2` прошли. Финальный полный gate `p4-ticket15-domain-drain-459709c-20261005T105601Z` завершился FAIL на `TestTwoSecretaryNodeProcessesPairInventoryAndReconnect` (authenticated reconnect timeout); один изолированный rerun прошёл, но не отменял FAIL полного gate. Позднее корректный полный gate `p4-ticket15-opencode-probe-scope-459709c-20261005T113150Z` прошёл все 9 stages; process reconnect regression прошёл `-count=3`, combined race-пакет — `-count=2` (подробности в `docs/phase4-release-gate.md`). Ручная матрица остаётся pending: Ticket 29 General → Worker Topic → следующий turn — `NOT RUN`; Ticket 22 live Topic/General — `BLOCKED`; остальные `FAIL`/`BLOCKED`/`UNAVAILABLE`/`NOT RUN` сохранены.
+- [29: Не повторять Worker Result ответом Secretary](issues/29-stop-secretary-echo-after-worker-result.md), `claimed`. Owner одобрил additive opt-in `addressed-reply v1`; локально реализованы exact Core reply/origin links, atomic command-origin intent→delivery linking, pending/uncertain command→exact Worker Turn→Result join, queued spawn link в Worker/Turn transaction, server-owned MCP `reply_to_user`, managed profile instructions и transactional post-Result suppression. Исправлен late `respond_worker` ACK blocker: Runtime timeout остаётся uncertain, production ServerManager подключён к durable Core outcome sink, а authenticated receipt сверяется по Node/command/Turn/Attempt даже после удаления waiter; denial сохраняется до явного retry, terminal Turn не оживляется. Core/CTL/Node focused package tests, выбранные `-race`, `go vet` затронутых пакетов и build `secretaryd` прошли. Combined gate после owner-retry, strict-DTO, revoke-race и owner observer refresh fixes прошёл: `p4-ticket15-approval-auth-refresh-459709c-20261005T102708Z`, exit 0. Более поздний финальный gate после ACP test correction завершился FAIL на Node authenticated reconnect timeout; см. Ticket 21/Ticket 15 evidence. Real Telegram General → Worker Topic → следующий user turn остаётся pending; ранее один полный `internal/node` run имел `Node is offline` failure с успешным isolated rerun. External profiles и production не менялись; Standards/Spec reviews отложены.
+  - Дополнительно устранены оба approval blocking findings из Spec review: decision/response/actor/command ID durable до handoff; accepted exact receipt завершает исходный intent, а resolving не истекает. Conflicting retry возвращает 409; UI показывает `resolving` и использует публичный Approval ID; wrong Node/Turn/Attempt отвергается; resolution и late ACK не возобновляют terminal Turn и не заменяют canonical Result. README приведён в соответствие §4.6 Worker-first. Core/CTL/WebAPI packages, selected Node tests, race regressions, vet/build и `git diff --check` прошли. В последующем re-review fix resolving Approval после refresh/restart получил owner-only `POST /v1/approvals/{id}/retry`: только saved decision/response и прежний command/Attempt/Turn, без автоматического повтора или client payload; UI показывает явную disabled-while-in-flight кнопку, public DTO скрывает response. RED→GREEN Core/CTL/WebAPI/UI regressions покрывают restart, потерю connection/ACK, authenticated receipt, Result и независимую queued Turn, owner scope, отказ подмены payload и stale duplicate. Credential Client responses по всем approve/deny/retry branches общего handler-а используют strict allowlist `publicWorkerDetailsStrictFromDetails`; raw idempotency ledger не выходит в HTTP. Только approval:write не даёт worker/approval read; scopes не расширялись. Public HTTP regression с безопасными булевыми assertions покрывает resolving retry, duplicate idempotency, resolved no-handoff и соседний deny; отдельно UI передаёт public `approval.id`. Combined suite/gate15 после strict DTO прошёл в `p4-ticket15-approval-retry-privacy-459709c-20261005T095131Z`, exit 0; latest revoke/refresh gate — `p4-ticket15-approval-auth-refresh-459709c-20261005T102708Z`, exit 0. Revoke между auth checks теперь завершает запрос до mutation; owner refresh показывает saved approved/denied без response/actor/private command ID; approval:write scope, Owner capability, Client idempotency и public `approval.id` сохранены. RED public HTTP tests не используют sleep. Real Telegram General → Worker Topic → следующий user turn — `NOT RUN`; Ticket 22 Topic/General — `BLOCKED`; остальные manual `FAIL`/`BLOCKED`/`UNAVAILABLE`/`NOT RUN` сохранены. UI tests/build прошли. FX compatibility, profiles, restart/credential/permission поведения не менялись.
+  - Standards vocabulary finding grounded in `docs/agents/domain.md` and current GLOSSARY; added one definition for existing spec/Core `Approval`, no new entity/scope and no test rename. Re-review не запускался.
+- [30: Причина web_fetch failure](issues/30-diagnose-worker-web-fetch-failure.md), `resolved`. Реализована безопасная public-boundary metadata; historical incident остался без safe category/code/status, поэтому причина не установлена и ticket31 не объявлен исправлением.
+- [31: OpenCode v2 вместо default fx](issues/31-make-opencode-v2-default-harness.md), `claimed`; clean-install defaults, dispatch, observed v2 inventory и exact binary selection реализованы локально. Native Secretary MCP и Worker read/Follow-up/Resume в том же session прошли; stale Resume failure устранён ограниченным ожиданием exact managed profile/model registration и подтверждением echo. Ticket не resolved: product setup ещё зависит от отдельного persistent store (ticket33), ACP v2.0.22 не публикует explicit tool identity, а production/Telegram и live existing-fx Follow-up/restart не выполнялись.
+- [32: Telegram /model и /reasoning](issues/32-telegram-model-and-reasoning-commands.md), `needs-info`. Group/Topic routing, owner authorization и runtime application требуют согласованного UX.
+- [33: Отдельное persistent native state OpenCode](issues/33-isolate-opencode-native-state.md), `claimed`. Secretary и local/remote Worker Node используют разные stable stores; setup/runtime/inventory/Doctor/provider-login selection и migration-safe legacy path реализованы. Private unpaid native HTTP fixtures и unauthenticated native inventory isolation проходят. Owner login/authenticated live acceptance и production install/restart не выполнялись; ticket31 и release gate не закрыты.
+- [34: OpenCode → Codex и полный пользовательский путь](issues/34-switch-opencode-to-codex-and-check-full-path.md), подготовительный прогон заблокирован tickets31/21/22/29. На целевом Codex Node не наблюдаются exact pins `openai/gpt-6.1-sol` и `openai/gpt-6-luna`; не подменять модели и не выполнять owner login без решения. Прогон не заменяет текущую работу OpenCode.
+
+## Ближайший milestone: первая простая рабочая версия
+
+- Приоритет пользователя — довести Secretary до понятной, полностью end-to-end проверенной работы хотя бы на одном harness, а не расширять продукт новыми системами.
+- Утверждённый порядок: закончить ticket31 (OpenCode), затем tickets21/22/29 — чистый текст и оформление Result, понятная доставка длинных сообщений, отсутствие дополнительного пересказа Secretary; после этого human review с пользователем. Проверить живой Telegram путь General → Worker Topic → реальные tools/activity → terminal Result → следующий пользовательский запрос/Follow-up.
+- Worker Topic должен показывать настоящие identities используемых tools и исходное поручение; General остаётся доступным для сообщений Secretary. Не угадывать tool names из progress titles и не раскрывать внутренние инструкции, секреты или raw ACP.
+- Пользователь подтвердил: довести ticket31 с OpenCode; если полный путь работает правильно — остаёмся на OpenCode. Локальную реализацию продолжил субагент `gpt-6.1-sol` / `xhigh`; родитель проверил diff и повторил native/live acceptance. Resume исправлен; неоднозначный live test prompt выявлен независимым review и исправлен без ослабления gate. Ticket31 остаётся claimed до production/Telegram acceptance; explicit tool identities у native ACP пока отсутствуют. Далее локальная presentation работа21/22/29, без автоматического deployment. Rollout остаётся acceptance-gated, existing fx bindings/history не мигрировать. Проверка Codex заведена отдельно в ticket34 и сейчас не запускается.
+- Это ближайший операционный milestone, а не отмена остальных требований полного Phase4 release gate.
+
+## Будущие направления — после первой рабочей версии
+
+1. **Memory system** — долговременная память пользователя, предпочтений и значимого контекста между поручениями и сессиями. Нужна в будущем; scope, хранение и правила обновления пока не выбраны.
+2. **Skill system с самообновлением** — общая библиотека пользовательских способов выполнения задач: сохранять объяснённые процедуры, загружать их при следующих подходящих задачах и улучшать по опыту/исправлениям. Пользовательские инструкции предполагаются универсальными, без отдельных текстовых версий на каждый harness. Автоматическое создание/обновление и границы одобрения пока не выбраны.
+
+Вопросы GrillMe отложены, не являются принятыми решениями: записывать/обновлять skills автоматически или с подтверждением; как отличать новое поручение в General от уточнения предыдущего. До выбора сохраняется текущий утверждённый routing/ordered-input-queue contract. Реализацию этих систем не включать в текущие tickets21/22/29/31.
+
 ## Fog
 
 Fog содержит только implementation-level вопросы. Product decisions из `spec.md` не переоткрываются.
@@ -109,6 +138,8 @@ Fog содержит только implementation-level вопросы. Product d
 
 ## Release gate
 
+Ticket15 остаётся `claimed`, пока реальная обязательная matrix не полна. Локально подготовленные реализации31/21, private unpaid tests33 и deterministic suite не заменяют native owner-auth acceptance. Tickets22/29 получили owner approval; ticket29 остаётся claimed до отложенных Standards/Spec reviews, общего suite и real Telegram acceptance. Ticket30 остаётся resolved с историческим evidence gap; ticket34 заблокирован перечисленными dependencies и отсутствием точных target Codex pins. Manual evidence сохраняет наблюдавшиеся `FAIL`, `BLOCKED`, `UNAVAILABLE` и `NOT RUN`; fixtures и CLI help не дают real-harness `PASS`.
+
 Phase 4 готова после прохождения acceptance scenario из `spec.md` на чистой конфигурации и после restart:
 
 - два Nodes с observed HarnessInstances;
@@ -118,7 +149,7 @@ Phase 4 готова после прохождения acceptance scenario из 
 - изменение `user.md`, видимое в следующем Secretary context;
 - Worker-first lifecycle без Task и child Workers;
 - AttemptOutcomes для retries и ровно один Result на Turn;
-- default `fx`, explicit Claude Code, Codex и visible error для неизвестного model без fallback;
+- default OpenCode v2, explicit `fx`, Claude Code, Codex и visible error для неизвестного model без model substitution;
 - Approval и `needs_input` через Node `respond_worker`;
 - immutable Worker binding без migration;
 - durable Node outbox после network loss;

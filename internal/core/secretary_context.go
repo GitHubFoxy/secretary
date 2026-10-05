@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const secretaryTurnSelect = `SELECT id, identity_id, conversation_id, input, context_snapshot, prompt_state, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns`
+const secretaryTurnSelect = `SELECT id, identity_id, conversation_id, input, input_id, context_snapshot, prompt_state, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns`
 
 // SetSecretaryConversationSummary stores a replaceable server-owned summary
 // projection. The full Conversation remains the durable source of history.
@@ -51,6 +51,7 @@ func (s *Store) SetSecretaryPolicySnapshot(ctx context.Context, snapshot Secreta
 	snapshot.ProfileModel = strings.TrimSpace(snapshot.ProfileModel)
 	snapshot.ProfileReasoning = strings.TrimSpace(snapshot.ProfileReasoning)
 	snapshot.ProfileDelivery = strings.TrimSpace(snapshot.ProfileDelivery)
+	snapshot.ReplyContractVersion = strings.TrimSpace(snapshot.ReplyContractVersion)
 	snapshot.AllowedTools = append([]string(nil), snapshot.AllowedTools...)
 	snapshot.UpdatedAt = s.now()
 	encoded, err := json.Marshal(snapshot)

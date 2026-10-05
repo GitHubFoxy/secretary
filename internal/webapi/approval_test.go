@@ -2,11 +2,13 @@ package webapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +17,80 @@ import (
 	"github.com/beruseruko/secretary/internal/ctl"
 	"github.com/beruseruko/secretary/internal/node"
 )
+
+func TestPublicApprovalDTOShowsResolvingWithoutResponsePayload(t *testing.T) {
+	const secret = "never serialize this saved answer"
+	approval := core.Approval{
+		ID: "approval-id", State: core.ApprovalResolving, Response: secret,
+		ResolutionCommandID: "command-id", ResolutionState: core.ApprovalApproved,
+		ResolutionResponse: secret, ResolutionResolvedBy: "owner",
+	}
+	encoded, err := json.Marshal(publicApprovalDTOFromApproval(approval))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"state":"resolving"`) || !strings.Contains(string(encoded), `"resolution_state":"approved"`) || strings.Contains(string(encoded), secret) || strings.Contains(string(encoded), "resolution_response") || strings.Contains(string(encoded), "resolution_command_id") {
+		t.Fatal("public Approval DTO did not expose only the resolving state")
+	}
+	encodedCore, err := json.Marshal(approval)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encodedCore), secret) || strings.Contains(string(encodedCore), "resolution_") {
+		t.Fatal("internal Approval JSON serialization exposed a saved response or intent")
+	}
+}
+
+func TestApprovalAPIMapsDifferentInFlightDecisionToConflict(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "approval-conflict.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+		WorkerRef: "approval-conflict-worker", Intent: "approval conflict", ProjectID: "project",
+		NodeID: "node", HarnessInstanceID: "node/fx",
+	}, core.TurnSpec{Input: "approval conflict"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordNodeActivityReplay(ctx, core.Activity{Metadata: core.ActivityMetadata{
+		EventID: "approval-conflict-event", Node: "node", HarnessInstanceID: "node/fx", WorkerRef: worker.WorkerRef,
+		TurnID: turn.ID, AttemptID: attempt.ID, Sequence: 1, ObservedAt: time.Now().UTC(),
+	}, Kind: core.ActivityPermissionRequest, Request: &core.ActivityRequest{RequestID: "approval-conflict-request", Summary: "synthetic permission"}}); err != nil {
+		t.Fatal(err)
+	}
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api.AttachWorkerResponder(conflictingApprovalResponder{})
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	client := &http.Client{Jar: mustWebCookieJar(t)}
+	login(t, client, server.URL)
+	request, err := http.NewRequest(http.MethodPost, server.URL+"/v1/approvals/approval-conflict-request/approve", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Idempotency-Key", "different-answer")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("conflicting approval HTTP status=%d, want 409", response.StatusCode)
+	}
+}
 
 func TestApprovalAPIDenyUsesRealNodeRuntimeBeforeFinalization(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -195,7 +271,7 @@ func TestApprovalAPIDenyRespondsExactlyOnceBeforeDurableFinalization(t *testing.
 	}
 	runtime := &apiApprovalRuntime{}
 	service := ctl.WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: runtime}
-	details, err := service.SpawnWorker(ctx, ctl.SpawnWorkerRequest{Intent: "inspect", ProjectID: project.ID, IdempotencyKey: "deny-spawn"})
+	details, err := service.SpawnWorker(ctx, ctl.SpawnWorkerRequest{Intent: "inspect", ProjectID: project.ID, HarnessKind: core.HarnessFX, IdempotencyKey: "deny-spawn"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,6 +378,12 @@ func mustWebCookieJar(t *testing.T) *cookiejar.Jar {
 		t.Fatal(err)
 	}
 	return jar
+}
+
+type conflictingApprovalResponder struct{}
+
+func (conflictingApprovalResponder) RespondWorker(context.Context, ctl.MessageWorkerRequest) (core.WorkerDetails, error) {
+	return core.WorkerDetails{}, core.ErrApprovalResolutionConflict
 }
 
 type apiApprovalRuntime struct {

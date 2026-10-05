@@ -15,16 +15,18 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/beruseruko/secretary/internal/core"
 	"github.com/pelletier/go-toml/v2"
 )
 
 var ErrInvalid = errors.New("config: invalid")
 
 const (
-	DefaultTitleHarness        = "opencode"
-	DefaultTitlePrompt         = "title-generation-prompt.md"
-	DefaultTitleModel          = "gpt-6-luna"
-	DefaultTitleModelReasoning = "minimal"
+	DefaultTitleHarness               = "opencode"
+	DefaultTitlePrompt                = "title-generation-prompt.md"
+	DefaultTitleModel                 = "gpt-6-luna"
+	DefaultTitleModelReasoning        = "minimal"
+	SecretaryReplyContractAddressedV1 = core.SecretaryReplyContractAddressedV1
 )
 
 type Config struct {
@@ -40,14 +42,16 @@ type Config struct {
 }
 
 type SecretaryPolicy struct {
-	Harness   string `toml:"harness" json:"harness"`
-	Model     string `toml:"model" json:"model"`
-	Reasoning string `toml:"reasoning" json:"reasoning"`
+	Harness       string `toml:"harness" json:"harness"`
+	Model         string `toml:"model" json:"model"`
+	Reasoning     string `toml:"reasoning" json:"reasoning"`
+	ReplyContract string `toml:"reply_contract" json:"reply_contract,omitempty"`
 }
 
 type WorkerPolicy struct {
 	DefaultHarness     string   `toml:"default_harness" json:"default_harness"`
 	Model              string   `toml:"model" json:"model"`
+	Reasoning          string   `toml:"reasoning" json:"reasoning"`
 	FallbackModels     []string `toml:"fallback_models" json:"fallback_models"`
 	PreferredHarnesses []string `toml:"preferred_harnesses" json:"preferred_harnesses"`
 	ActiveAttempts     int      `toml:"active_attempts" json:"active_attempts"`
@@ -112,15 +116,16 @@ type Prompt struct {
 }
 
 type Profile struct {
-	Name       string   `json:"name"`
-	Path       string   `json:"path"`
-	Content    string   `json:"content"`
-	Skills     []Skill  `json:"skills"`
-	AllowTools []string `json:"allow_tools"`
-	Runtime    string   `json:"runtime"`
-	Model      string   `json:"model"`
-	Reasoning  string   `json:"reasoning"`
-	Hash       string   `json:"hash"`
+	Name                 string   `json:"name"`
+	Path                 string   `json:"path"`
+	Content              string   `json:"content"`
+	Skills               []Skill  `json:"skills"`
+	AllowTools           []string `json:"allow_tools"`
+	Runtime              string   `json:"runtime"`
+	Model                string   `json:"model"`
+	Reasoning            string   `json:"reasoning"`
+	ReplyContractVersion string   `json:"reply_contract_version,omitempty"`
+	Hash                 string   `json:"hash"`
 }
 type Skill struct {
 	Path    string `json:"path"`
@@ -185,6 +190,9 @@ func compile(base string, raw []byte, c Config, allowEmbeddedTitlePrompt bool) (
 		if name != "secretary" {
 			runtime = workerPolicy.DefaultHarness
 			model = workerPolicy.Model
+			if workerPolicy.Reasoning != "" {
+				reasoning = workerPolicy.Reasoning
+			}
 			if model == "" {
 				model = c.Models.Smart
 			}
@@ -192,8 +200,15 @@ func compile(base string, raw []byte, c Config, allowEmbeddedTitlePrompt bool) (
 				model = "default"
 			}
 		}
-		profile := Profile{Name: name, Path: resolved, Content: string(content), Skills: skills, AllowTools: append([]string(nil), c.Tools.Allow...), Runtime: runtime, Model: model, Reasoning: reasoning}
+		replyContractVersion := ""
+		if name == "secretary" {
+			replyContractVersion = c.Secretary.ReplyContract
+		}
+		profile := Profile{Name: name, Path: resolved, Content: string(content), Skills: skills, AllowTools: append([]string(nil), c.Tools.Allow...), Runtime: runtime, Model: model, Reasoning: reasoning, ReplyContractVersion: replyContractVersion}
 		profile.Hash = digest(profile.Content, profile.Runtime, profile.Model, profile.Reasoning, strings.Join(profile.AllowTools, "\n"), skillDigest(skills))
+		if replyContractVersion != "" {
+			profile.Hash = digest(profile.Hash, replyContractVersion)
+		}
 		profiles[name] = profile
 	}
 	return Snapshot{Version: digest(string(raw), profiles["secretary"].Hash, profiles["worker"].Hash, profiles["child_worker"].Hash, titlePrompt.Hash), Config: c, Profiles: profiles, TitlePrompt: titlePrompt}, nil
@@ -242,7 +257,7 @@ func (c Config) EffectiveWorkerPolicy() WorkerPolicy {
 			policy.DefaultHarness = c.Runtime.Harness
 		}
 		if policy.DefaultHarness == "" {
-			policy.DefaultHarness = "fx"
+			policy.DefaultHarness = "opencode"
 		}
 	}
 	return policy
@@ -306,6 +321,11 @@ func validateConfig(c Config) error {
 	if secretary.Reasoning == "" {
 		return fmt.Errorf("%w: secretary.reasoning is required", ErrInvalid)
 	}
+	switch c.Secretary.ReplyContract {
+	case "", SecretaryReplyContractAddressedV1:
+	default:
+		return fmt.Errorf("%w: secretary.reply_contract must be empty or %s", ErrInvalid, SecretaryReplyContractAddressedV1)
+	}
 	workerPolicy := c.EffectiveWorkerPolicy()
 	if err := validateHarness("worker_policy.default_harness", workerPolicy.DefaultHarness); err != nil {
 		return err
@@ -331,6 +351,11 @@ func validateConfig(c Config) error {
 	}
 	if !sort.StringsAreSorted(c.Tools.Allow) {
 		return fmt.Errorf("%w: tools.allow_tools must be sorted", ErrInvalid)
+	}
+	switch workerPolicy.Reasoning {
+	case "", "default", "none", "minimal", "low", "medium", "high", "xhigh":
+	default:
+		return fmt.Errorf("%w: worker_policy.reasoning is unsupported", ErrInvalid)
 	}
 	if workerPolicy.ActiveAttempts < 0 {
 		return fmt.Errorf("%w: worker_policy.active_attempts cannot be negative", ErrInvalid)
@@ -376,7 +401,7 @@ func Diff(previous, next Snapshot) map[string]any {
 	if previous.Config.Secretary != next.Config.Secretary {
 		changed["secretary"] = next.Config.Secretary
 	}
-	if previous.Config.WorkerPolicy.DefaultHarness != next.Config.WorkerPolicy.DefaultHarness || previous.Config.WorkerPolicy.Model != next.Config.WorkerPolicy.Model || strings.Join(previous.Config.WorkerPolicy.FallbackModels, ",") != strings.Join(next.Config.WorkerPolicy.FallbackModels, ",") || previous.Config.WorkerPolicy.ActiveAttempts != next.Config.WorkerPolicy.ActiveAttempts || strings.Join(previous.Config.WorkerPolicy.PreferredHarnesses, ",") != strings.Join(next.Config.WorkerPolicy.PreferredHarnesses, ",") {
+	if previous.Config.WorkerPolicy.DefaultHarness != next.Config.WorkerPolicy.DefaultHarness || previous.Config.WorkerPolicy.Model != next.Config.WorkerPolicy.Model || previous.Config.WorkerPolicy.Reasoning != next.Config.WorkerPolicy.Reasoning || strings.Join(previous.Config.WorkerPolicy.FallbackModels, ",") != strings.Join(next.Config.WorkerPolicy.FallbackModels, ",") || previous.Config.WorkerPolicy.ActiveAttempts != next.Config.WorkerPolicy.ActiveAttempts || strings.Join(previous.Config.WorkerPolicy.PreferredHarnesses, ",") != strings.Join(next.Config.WorkerPolicy.PreferredHarnesses, ",") {
 		changed["worker_policy"] = next.Config.WorkerPolicy
 	}
 	if previous.Config.Models != next.Config.Models {

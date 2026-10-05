@@ -29,7 +29,7 @@ func setupTitleProcessFixture(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("OPENCODE_SECRETARY_TITLE_TEST_PEER", "1")
+	t.Setenv("TICKET33_TITLE_TEST_PEER", "1")
 	t.Setenv("SECRETARY_TITLE_TEST_SECRET", "fixture-private")
 	t.Setenv("CODEX_CONFIG", "fixture-private")
 	t.Setenv("GORACE", "atexit_sleep_ms=0")
@@ -39,7 +39,7 @@ func TestOpenCodeTitleProcess(t *testing.T) {
 	setupTitleProcessFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	got, err := (OpenCodeTitleGenerator{Model: "fixture-provider/fixture-model", Reasoning: "minimal", Prompt: "Короткое название."}).Generate(ctx, "Проверь настройки.")
+	got, err := (OpenCodeTitleGenerator{Model: "fixture-provider/fixture-model", Reasoning: "minimal", Prompt: "Короткое название.", DataHome: filepath.Join(t.TempDir(), "native-data")}).Generate(ctx, "Проверь настройки.")
 	if err != nil || got != "Проверка настроек" {
 		t.Fatalf("title=%q err=%v", got, err)
 	}
@@ -47,18 +47,18 @@ func TestOpenCodeTitleProcess(t *testing.T) {
 
 func TestOpenCodeTitleProcessTimeoutKillsHarness(t *testing.T) {
 	setupTitleProcessFixture(t)
-	t.Setenv("OPENCODE_SECRETARY_TITLE_TEST_MODE", "slow")
+	t.Setenv("TICKET33_TITLE_TEST_MODE", "slow")
 	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 	defer cancel()
 	start := time.Now()
-	got, err := (OpenCodeTitleGenerator{Model: "fixture-provider/fixture-model", Reasoning: "minimal", Prompt: "Короткое название."}).Generate(ctx, "Проверь настройки.")
+	got, err := (OpenCodeTitleGenerator{Model: "fixture-provider/fixture-model", Reasoning: "minimal", Prompt: "Короткое название.", DataHome: filepath.Join(t.TempDir(), "native-data")}).Generate(ctx, "Проверь настройки.")
 	if err == nil || got != "" || time.Since(start) > 2*time.Second {
 		t.Fatalf("title=%q elapsed=%s err=%v", got, time.Since(start), err)
 	}
 }
 
 func init() {
-	if os.Getenv("OPENCODE_SECRETARY_TITLE_TEST_PEER") != "1" {
+	if os.Getenv("TICKET33_TITLE_TEST_PEER") != "1" {
 		return
 	}
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
@@ -69,7 +69,7 @@ func init() {
 		os.Exit(1)
 	}
 	fmt.Fprintln(os.Stderr, "fixture-private diagnostic")
-	if os.Getenv("OPENCODE_SECRETARY_TITLE_TEST_MODE") == "slow" {
+	if os.Getenv("TICKET33_TITLE_TEST_MODE") == "slow" {
 		signal.Ignore(syscall.SIGTERM)
 		time.Sleep(5 * time.Second)
 	}

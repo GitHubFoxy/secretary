@@ -30,7 +30,7 @@ type DeploymentConfig struct {
 	Workspaces      []WorkspaceMapping `json:"workspaces,omitempty"`
 	Capacity        int                `json:"capacity,omitempty"`
 	ListenAddress   string             `json:"listen_address,omitempty"`
-	IncludeOpenCode bool               `json:"include_opencode,omitempty"`
+	IncludeOpenCode bool               `json:"include_opencode"`
 }
 
 func LoadDeploymentConfig(path string) (DeploymentConfig, error) {
@@ -43,6 +43,13 @@ func LoadDeploymentConfig(path string) (DeploymentConfig, error) {
 	var config DeploymentConfig
 	if err := decoder.Decode(&config); err != nil {
 		return DeploymentConfig{}, fmt.Errorf("node deployment: decode config: %w", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		return DeploymentConfig{}, fmt.Errorf("node deployment: decode config: %w", err)
+	}
+	if _, specified := fields["include_opencode"]; !specified {
+		config.IncludeOpenCode = true
 	}
 	if err := config.Validate(); err != nil {
 		return DeploymentConfig{}, err

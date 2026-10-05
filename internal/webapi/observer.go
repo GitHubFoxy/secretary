@@ -367,7 +367,7 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, clien
 			writeJSON(w, http.StatusOK, sanitizePublicJSON(publicWorkerDetailsStrictFromDetails(details)))
 			return true
 		}
-		writeJSON(w, http.StatusOK, sanitizePublicJSON(details))
+		writeJSON(w, http.StatusOK, sanitizePublicJSON(ownerWorkerObserverDTOFromDetails(details)))
 		return true
 	}
 	if len(suffix) == 1 && suffix[0] == "turns" && r.Method == http.MethodGet {
@@ -598,9 +598,16 @@ func sanitizePublicValue(value any) any {
 	switch current := value.(type) {
 	case map[string]any:
 		result := make(map[string]any, len(current))
+		activityKind, _ := current["kind"].(string)
 		for key, child := range current {
-			if forbiddenPublicKey(key) {
+			if forbiddenPublicKey(key) || hiddenPublicToolField(activityKind, key) {
 				continue
+			}
+			switch {
+			case activityKind == "tool_call" && key == "tool_call":
+				child = sanitizePublicToolPayload(child, false)
+			case activityKind == "tool_result" && key == "tool_result":
+				child = sanitizePublicToolPayload(child, true)
 			}
 			result[key] = sanitizePublicValue(child)
 		}
@@ -630,6 +637,32 @@ func sanitizePublicValue(value any) any {
 	default:
 		return value
 	}
+}
+
+func hiddenPublicToolField(activityKind, key string) bool {
+	switch activityKind {
+	case "tool_call":
+		return key == "arguments"
+	case "tool_result":
+		return key == "arguments" || key == "result" || key == "output" || key == "error"
+	default:
+		return false
+	}
+}
+
+func sanitizePublicToolPayload(value any, result bool) any {
+	fields, ok := value.(map[string]any)
+	if !ok {
+		return value
+	}
+	clean := make(map[string]any, len(fields))
+	for key, child := range fields {
+		if key == "arguments" || (result && (key == "result" || key == "output" || key == "error")) {
+			continue
+		}
+		clean[key] = child
+	}
+	return clean
 }
 
 func forbiddenPublicText(value string) bool {

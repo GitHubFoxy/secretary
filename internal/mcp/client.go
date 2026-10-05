@@ -14,12 +14,15 @@ import (
 // The capability is sent only as an Authorization header to the private server
 // endpoint, never through model-visible tool arguments or prompts.
 type RemoteSecretary struct {
-	BaseURL    string
-	Capability string
-	Client     *http.Client
+	BaseURL              string
+	Capability           string
+	Client               *http.Client
+	ReplyContractVersion string
 }
 
-func (r RemoteSecretary) Tools() []Tool { return (Secretary{}).Tools() }
+func (r RemoteSecretary) Tools() []Tool {
+	return (Secretary{ReplyContractVersion: r.ReplyContractVersion}).Tools()
+}
 
 func (r RemoteSecretary) Call(ctx context.Context, name string, raw json.RawMessage) (any, error) {
 	base := strings.TrimRight(strings.TrimSpace(r.BaseURL), "/")

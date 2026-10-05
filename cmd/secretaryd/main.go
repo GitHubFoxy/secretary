@@ -29,11 +29,29 @@ import (
 )
 
 func main() {
+	_ = syscall.Umask(0o077)
 	dataDir := flag.String("data-dir", defaultDataDir(), "directory for Secretary durable state")
 	listen := flag.String("listen", "127.0.0.1:8081", "web listener address")
 	configPath := flag.String("config", "", "path to Secretary config.toml")
 	debug := flag.Bool("debug", false, "enable the local-only Control Room")
+	selectNativeStores := flag.Bool("select-opencode-stores", false, "initialize the selected private or legacy OpenCode stores and exit")
 	flag.Parse()
+	secretaryStore, workerStore, err := selectRuntimeNativeStores(*dataDir)
+	if err != nil {
+		log.Fatalf("select OpenCode native stores: %v", err)
+	}
+	if secretaryStore.MigrationRequired {
+		log.Print("Secretary OpenCode legacy native store preserved; owner-approved migration is required before switching stores")
+	}
+	if workerStore.MigrationRequired {
+		log.Print("local Worker Node OpenCode legacy store preserved; owner-approved migration is required before switching stores")
+	}
+	if *selectNativeStores {
+		if !secretaryStore.MigrationRequired && !workerStore.MigrationRequired {
+			log.Print("private Secretary and local Worker Node OpenCode stores selected")
+		}
+		return
+	}
 	if err := validateListen(*listen); err != nil {
 		log.Fatal(err)
 	}
@@ -84,6 +102,9 @@ func main() {
 	if err := store.RecoverInterrupted(context.Background()); err != nil {
 		log.Fatalf("recover interrupted Attempts: %v", err)
 	}
+	if _, err := store.RecoverApprovalResolutionCommands(context.Background()); err != nil {
+		log.Fatalf("recover Approval resolution handoffs: %v", err)
+	}
 	web, err := webapi.New(context.Background(), store, bootstrapToken)
 	if err != nil {
 		log.Fatalf("initialize web API: %v", err)
@@ -109,13 +130,14 @@ func main() {
 			log.Fatalf("initialize remote Node service: %v", err)
 		}
 		remoteNodes.SetEventSink(node.NewStoreEventSink(store))
+		remoteNodes.SetCommandOutcomeSink(node.NewStoreCommandOutcomeSink(store))
 		web.AttachNodeService(remoteNodes)
 		log.Printf("remote Node pairing and protocol service enabled")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if _, telegramErr := attachProductionTelegram(ctx, *dataDir, *listen, store, web, profiles); telegramErr != nil {
+	if _, telegramErr := attachProductionTelegram(ctx, *dataDir, *listen, store, web, profiles, secretaryStore); telegramErr != nil {
 		log.Fatalf("initialize Telegram adapter: %v", telegramErr)
 	} else if parseBoolEnv("SECRETARY_TELEGRAM_ENABLED") {
 		log.Printf("Telegram adapter enabled with polling and durable event bridge")
@@ -156,17 +178,24 @@ func main() {
 	}
 	var persistentSecretary *secretaryruntime.Runtime
 	var secretaryMu sync.Mutex
-	runtime, runtimeCommand := configuredRuntime(profiles.Snapshot(), *dataDir)
+	workerDataDir := filepath.Join(*dataDir, "node", "data")
+	if err := os.MkdirAll(workerDataDir, 0o700); err != nil || os.Chmod(workerDataDir, 0o700) != nil {
+		log.Fatalf("prepare local Worker Node data directory")
+	}
+	secretaryHarnessRuntime, runtimeCommand := configuredRuntimeWithStore(profiles.Snapshot(), *dataDir, secretaryStore)
+	workerHarnessRuntime, workerRuntimeCommand := configuredRuntimeWithStore(profiles.Snapshot(), workerDataDir, workerStore)
 	log.Printf("configured Secretary harness %s (%s)", profiles.Snapshot().Config.EffectiveSecretaryPolicy().Harness, runtimeCommand)
+	log.Printf("configured local Worker Node harness %s (%s)", profiles.Snapshot().Config.EffectiveWorkerPolicy().DefaultHarness, workerRuntimeCommand)
 	mcpCommand, mcpErr := secretaryMCPCommand()
 	if mcpErr != nil {
 		log.Fatalf("find secretary-mcp: %v", mcpErr)
 	}
-	local := node.NewLocal(runtime)
-	if err := recoverProductionPhase4Attempts(ctx, store, local, remoteNodes); err != nil {
+	workerLocal := node.NewLocal(workerHarnessRuntime)
+	secretaryLocal := node.NewLocal(secretaryHarnessRuntime)
+	if err := recoverProductionPhase4Attempts(ctx, store, workerLocal, remoteNodes); err != nil {
 		log.Fatalf("recover Phase 4 Attempts: %v", err)
 	}
-	web.AttachNode(local)
+	web.AttachNode(workerLocal)
 	conversation, conversationErr := store.ConversationForPerson(ctx, web.OwnerID())
 	if conversationErr != nil {
 		log.Fatalf("find owner conversation: %v", conversationErr)
@@ -175,7 +204,7 @@ func main() {
 	if identityErr != nil {
 		log.Fatalf("ensure Secretary identity: %v", identityErr)
 	}
-	dispatcher := &app.Dispatcher{Store: store, Node: local,
+	dispatcher := &app.Dispatcher{Store: store, Node: workerLocal,
 		Profile:             func() core.BindingProfile { return bindingProfile(managedProfile(profiles.Snapshot(), "worker")) },
 		ManagedProfile:      func() node.ManagedProfile { return managedProfile(profiles.Snapshot(), "worker") },
 		ChildProfile:        func() core.BindingProfile { return bindingProfile(managedProfile(profiles.Snapshot(), "child_worker")) },
@@ -200,7 +229,7 @@ func main() {
 			log.Printf("generated Secretary runtime credential")
 		}
 	}
-	attachProductionWorkerServices(web, store, web.OwnerID(), capability, local, remoteNodes, func(binding core.BindingProfile) node.ManagedProfile {
+	attachProductionWorkerServices(web, store, web.OwnerID(), capability, workerLocal, remoteNodes, func(binding core.BindingProfile) node.ManagedProfile {
 		compiled, err := store.ConfigVersion(ctx, binding.Version)
 		if err == nil {
 			var snapshot config.Snapshot
@@ -217,7 +246,8 @@ func main() {
 			profile.Delivery = binding.Delivery
 		}
 		return profile
-	})
+	}, func() core.HarnessPolicy { return configuredWorkerPolicy(profiles.Snapshot().Config) })
+	web.AttachSecretaryReplyContract(func() string { return profiles.Snapshot().Config.Secretary.ReplyContract })
 	if remoteNodes != nil {
 		trustedNode := core.NodeReference(strings.TrimSpace(os.Getenv("SECRETARY_TRUSTED_LOCAL_NODE")))
 		trustedPolicy := core.TrustedLocalApprovalPolicy{Enabled: trustedNode != "", Explicit: trustedNode != "", LocalNode: trustedNode != "", Node: trustedNode}
@@ -252,7 +282,7 @@ func main() {
 		if !allowed {
 			return errors.New("SECRETARY_CAPABILITY is not authorized")
 		}
-		persistentSecretary = secretaryruntime.NewRuntime(local, capability)
+		persistentSecretary = secretaryruntime.NewRuntime(secretaryLocal, capability)
 		persistentSecretary.AttachIdentity(secretaryIdentity)
 		persistentSecretary.AttachMCPServer(mcpCommand, *dataDir, secretaryMCPServerURL(*listen))
 		persistentSecretary.AttachProfile(func() node.ManagedProfile {
@@ -270,7 +300,7 @@ func main() {
 		func() string { return "default" },
 		func(string) error { return restartSecretary(context.Background()) },
 	)
-	controlService := ctl.Service{Store: store, PersonID: web.OwnerID(), Capability: capability, Dispatcher: dispatcher, Node: local}
+	controlService := ctl.Service{Store: store, PersonID: web.OwnerID(), Capability: capability, Dispatcher: dispatcher, Node: workerLocal}
 	web.AttachControl(webapi.ControlOptions{
 		ConfigPath:              profiles.Path(),
 		ConfigContent:           func() (string, error) { content, err := os.ReadFile(profiles.Path()); return string(content), err },
@@ -315,9 +345,14 @@ func main() {
 			log.Printf("stop persistent Secretary: %v", err)
 		}
 	}
-	if local != nil {
-		if err := local.Close(); err != nil {
+	if workerLocal != nil {
+		if err := workerLocal.Close(); err != nil {
 			log.Printf("stop local Workers: %v", err)
+		}
+	}
+	if secretaryLocal != nil {
+		if err := secretaryLocal.Close(); err != nil {
+			log.Printf("stop local Secretary runtime: %v", err)
 		}
 	}
 	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -389,10 +424,28 @@ func recoverProductionPhase4Attempts(ctx context.Context, store *core.Store, loc
 	return store.RecoverPhase4Attempts(ctx, resolver)
 }
 
-func attachProductionWorkerServices(web *webapi.Server, store *core.Store, personID, capability string, local *node.LocalNode, remote *node.ServerManager, managedProfile func(core.BindingProfile) node.ManagedProfile) {
+func configuredWorkerPolicy(c config.Config) core.HarnessPolicy {
+	policy := c.EffectiveWorkerPolicy()
+	preferred := make([]core.HarnessKind, len(policy.PreferredHarnesses))
+	for i, kind := range policy.PreferredHarnesses {
+		preferred[i] = core.HarnessKind(kind)
+	}
+	model := policy.Model
+	switch model {
+	case "default", "fast", "smart", "cheap":
+		model = ""
+	}
+	reasoning := policy.Reasoning
+	if reasoning == "default" {
+		reasoning = ""
+	}
+	return core.HarnessPolicy{DefaultHarness: core.HarnessKind(policy.DefaultHarness), PreferredHarnesses: preferred, ModelID: model, Reasoning: reasoning}
+}
+
+func attachProductionWorkerServices(web *webapi.Server, store *core.Store, personID, capability string, local *node.LocalNode, remote *node.ServerManager, managedProfile func(core.BindingProfile) node.ManagedProfile, workerPolicy func() core.HarnessPolicy) {
 	controller := &app.WorkerController{Store: store, Node: local, ManagedProfile: managedProfile}
 	web.AttachWorkerController(controller)
-	workerService := ctl.WorkerService{Store: store, PersonID: personID, Capability: capability, Runtime: ctl.NodeRuntime{Manager: remote, Local: local}}
+	workerService := ctl.WorkerService{Store: store, PersonID: personID, Capability: capability, WorkerPolicySource: workerPolicy, Runtime: ctl.NodeRuntime{Manager: remote, Local: local}}
 	web.AttachWorkerResponder(workerService)
 	web.AttachSecretaryWorkerTools(workerService)
 }
@@ -425,7 +478,55 @@ func secretaryMCPServerURL(listen string) string {
 	return "http://" + listen
 }
 
+func selectRuntimeNativeStores(dataDir string) (secretaryStore, workerStore node.OpenCodeNativeStore, err error) {
+	if strings.TrimSpace(dataDir) == "" {
+		return node.OpenCodeNativeStore{}, node.OpenCodeNativeStore{}, errors.New("Secretary data directory is required")
+	}
+	serverStateExists, err := fileExists(filepath.Join(dataDir, "secretary.db"))
+	if err != nil {
+		return node.OpenCodeNativeStore{}, node.OpenCodeNativeStore{}, err
+	}
+	workerDataDir := filepath.Join(dataDir, "node", "data")
+	nodeStateExists, err := fileExists(filepath.Join(workerDataDir, "node-state.json"))
+	if err != nil {
+		return node.OpenCodeNativeStore{}, node.OpenCodeNativeStore{}, err
+	}
+	legacyDataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
+	secretaryStore, err = node.SelectOpenCodeNativeStore(dataDir, serverStateExists, legacyDataHome)
+	if err != nil {
+		return node.OpenCodeNativeStore{}, node.OpenCodeNativeStore{}, err
+	}
+	workerStore, err = node.SelectOpenCodeNativeStore(workerDataDir, serverStateExists || nodeStateExists, legacyDataHome)
+	if err != nil {
+		return node.OpenCodeNativeStore{}, node.OpenCodeNativeStore{}, err
+	}
+	return secretaryStore, workerStore, nil
+}
+
+func fileExists(path string) (bool, error) {
+	_, err := os.Lstat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
+func configuredRuntimePair(snapshot config.Snapshot, dataDir string) (secretaryRuntime, workerRuntime node.Runtime, secretaryCommand, workerCommand string) {
+	secretaryStore := node.OpenCodeNativeStore{DataHome: node.OpenCodeNativeDataHome(dataDir)}
+	workerStore := node.OpenCodeNativeStore{DataHome: node.OpenCodeNativeDataHome(filepath.Join(dataDir, "node", "data"))}
+	secretaryRuntime, secretaryCommand = configuredRuntimeWithStore(snapshot, dataDir, secretaryStore)
+	workerRuntime, workerCommand = configuredRuntimeWithStore(snapshot, filepath.Join(dataDir, "node", "data"), workerStore)
+	return secretaryRuntime, workerRuntime, secretaryCommand, workerCommand
+}
+
 func configuredRuntime(snapshot config.Snapshot, dataDir string) (node.Runtime, string) {
+	return configuredRuntimeWithStore(snapshot, dataDir, node.OpenCodeNativeStore{DataHome: node.OpenCodeNativeDataHome(dataDir)})
+}
+
+func configuredRuntimeWithStore(snapshot config.Snapshot, dataDir string, store node.OpenCodeNativeStore) (node.Runtime, string) {
 	harness := snapshot.Config.EffectiveSecretaryPolicy().Harness
 	logDir := filepath.Join(dataDir, "logs", "acp")
 	codexCommand := os.Getenv("SECRETARY_ACP_COMMAND")
@@ -459,7 +560,7 @@ func configuredRuntime(snapshot config.Snapshot, dataDir string) (node.Runtime, 
 		ACP:            node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		Claude:         node.ClaudeCodeRuntime{Command: claudeCommand, Arguments: claudeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		FX:             node.FXRuntime{ACPRuntime: node.ACPRuntime{Command: fxCommand, Arguments: fxArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
-		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
+		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, DataHome: store.DataHome, LegacyDataHome: store.Legacy, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 	}
 	command := codexCommand
 	arguments := codexArgs
@@ -491,6 +592,7 @@ func managedProfile(snapshot config.Snapshot, name string) node.ManagedProfile {
 		Version: snapshot.Version, Name: profile.Name, Content: profile.Content, Skills: skills,
 		AllowTools: append([]string(nil), profile.AllowTools...), Hash: profile.Hash,
 		Runtime: profile.Runtime, Model: profile.Model, Reasoning: profile.Reasoning, Delivery: delivery,
+		ReplyContractVersion: profile.ReplyContractVersion,
 	}
 }
 
@@ -512,6 +614,12 @@ func secretaryModels(snapshot config.Snapshot) map[string]string {
 
 func secretaryProfile(snapshot config.Snapshot, store *core.Store) node.ManagedProfile {
 	profile := managedProfile(snapshot, "secretary")
+	if profile.ReplyContractVersion == core.SecretaryReplyContractAddressedV1 {
+		profile.Content = strings.TrimSpace(profile.Content) + `
+
+## Addressed reply v1
+Use the current server-issued secretary_turn_id and input_id from the runtime context. Send every independent user-facing answer, clarification, mixed answer plus Worker action, or error through reply_to_user exactly once. Include the same origin IDs in every spawn_worker and message_worker call. Do not use ordinary assistant text as the reply after a related canonical Worker Result; that Result is already delivered. Worker Results themselves must never be paraphrased as a second reply.`
+	}
 	selected, found, err := store.GetSetting(context.Background(), "secretary.model")
 	if err != nil || !found {
 		return profile

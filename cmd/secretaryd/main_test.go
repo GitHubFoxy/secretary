@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -16,10 +17,110 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/beruseruko/secretary/internal/config"
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
 	"github.com/beruseruko/secretary/internal/webapi"
 )
+
+func TestAddressedReplyInstructionsAreOptInAndDoNotRewriteExternalProfile(t *testing.T) {
+	ctx := context.Background()
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	manager, err := config.Open(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := manager.Snapshot()
+	externalPath := legacy.Profiles["secretary"].Path
+	externalBefore, err := os.ReadFile(externalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(externalBefore), "Addressed reply v1") || legacy.Profiles["secretary"].ReplyContractVersion != "" {
+		t.Fatal("legacy external Secretary profile unexpectedly contains addressed reply instructions")
+	}
+	configContent, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := strings.Replace(string(configContent), "reasoning = \"xhigh\"", "reasoning = \"xhigh\"\nreply_contract = \"addressed-reply-v1\"", 1)
+	if updated == string(configContent) {
+		t.Fatal("could not configure explicit reply contract")
+	}
+	if err := os.WriteFile(configPath, []byte(updated), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	optedIn, err := manager.Reload()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	profile := secretaryProfile(optedIn, store)
+	if profile.ReplyContractVersion != core.SecretaryReplyContractAddressedV1 || !strings.Contains(profile.Content, "## Addressed reply v1") {
+		t.Fatalf("opt-in managed Profile omitted instructions/version: %#v", profile)
+	}
+	files := profileFiles(optedIn)
+	if len(files) == 0 || strings.Contains(files[0].Content, "Addressed reply v1") {
+		t.Fatalf("API profile view rewrote external instructions: %#v", files)
+	}
+	externalAfter, err := os.ReadFile(externalPath)
+	if err != nil || string(externalAfter) != string(externalBefore) {
+		t.Fatalf("external Profile changed during opt-in: err=%v", err)
+	}
+}
+
+func TestExistingInstallationPinsLegacySecretaryAndWorkerStores(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "secretary.db"), []byte("existing server state"), 0o600); err != nil {
+		t.Fatal("existing installation fixture unavailable")
+	}
+	legacy := filepath.Join(t.TempDir(), "legacy-xdg")
+	t.Setenv("XDG_DATA_HOME", legacy)
+	secretaryStore, workerStore, err := selectRuntimeNativeStores(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !secretaryStore.Legacy || !secretaryStore.MigrationRequired || secretaryStore.DataHome != legacy {
+		t.Fatal("existing Secretary sessions were not pinned to the legacy OpenCode store")
+	}
+	if !workerStore.Legacy || !workerStore.MigrationRequired || workerStore.DataHome != legacy {
+		t.Fatal("existing local Worker sessions were not pinned to the legacy OpenCode store")
+	}
+	snapshot := config.Snapshot{Config: config.Config{Secretary: config.SecretaryPolicy{Harness: "opencode"}}}
+	secretaryRuntime, _ := configuredRuntimeWithStore(snapshot, root, secretaryStore)
+	workerRuntime, _ := configuredRuntimeWithStore(snapshot, filepath.Join(root, "node", "data"), workerStore)
+	secretaryOpenCode := secretaryRuntime.(node.RuntimeRouter).OpenCode.(node.OpenCodeRuntime)
+	workerOpenCode := workerRuntime.(node.RuntimeRouter).OpenCode.(node.OpenCodeRuntime)
+	if secretaryOpenCode.DataHome != legacy || !secretaryOpenCode.LegacyDataHome || workerOpenCode.DataHome != legacy || !workerOpenCode.LegacyDataHome {
+		t.Fatal("Secretary or Worker runtime switched away from the selected legacy store")
+	}
+	if _, err := os.Stat(node.OpenCodeNativeDataHome(root)); !os.IsNotExist(err) {
+		t.Fatal("legacy selection created an empty replacement Secretary store")
+	}
+	if _, err := os.Stat(node.OpenCodeNativeDataHome(filepath.Join(root, "node", "data"))); !os.IsNotExist(err) {
+		t.Fatal("legacy selection created an empty replacement Worker store")
+	}
+}
+
+func TestSecretaryRuntimeUsesDedicatedNativeStore(t *testing.T) {
+	serverRoot := filepath.Join(t.TempDir(), "secretary")
+	nodeRoot := filepath.Join(serverRoot, "node", "data")
+	snapshot := config.Snapshot{Config: config.Config{Secretary: config.SecretaryPolicy{Harness: "opencode"}}}
+	secretaryRuntime, workerRuntime, _, _ := configuredRuntimePair(snapshot, serverRoot)
+	secretaryRouter := secretaryRuntime.(node.RuntimeRouter)
+	workerRouter := workerRuntime.(node.RuntimeRouter)
+	secretaryOpenCode := secretaryRouter.OpenCode.(node.OpenCodeRuntime)
+	workerOpenCode := workerRouter.OpenCode.(node.OpenCodeRuntime)
+	serverStore := node.OpenCodeNativeDataHome(serverRoot)
+	workerStore := node.OpenCodeNativeDataHome(nodeRoot)
+	if secretaryOpenCode.DataHome != serverStore || workerOpenCode.DataHome != workerStore || serverStore == workerStore {
+		t.Fatal("Secretary and Node Worker do not have separate stable OpenCode stores")
+	}
+}
 
 func TestProductionStartupRecoversUnknownPhase4Attempt(t *testing.T) {
 	ctx := context.Background()
@@ -92,7 +193,7 @@ func TestProductionAssemblyRespondsWithoutManualResponderAttachment(t *testing.T
 		t.Fatal(err)
 	}
 	// This is the production assembly seam. The test must not attach a responder itself.
-	attachProductionWorkerServices(api, store, person.ID, capability, local, nil, nil)
+	attachProductionWorkerServices(api, store, person.ID, capability, local, nil, nil, nil)
 	server := httptest.NewServer(api.Handler())
 	defer server.Close()
 	client := &http.Client{Jar: mustProductionCookieJar(t)}

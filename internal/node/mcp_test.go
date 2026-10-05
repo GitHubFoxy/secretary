@@ -3,6 +3,8 @@ package node
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/beruseruko/secretary/internal/core"
 )
 
 func TestSecretaryMCPServerUsesScopedEnvironment(t *testing.T) {
@@ -38,6 +40,25 @@ func TestSecretaryMCPServerAtCarriesOnlyScopedServerURL(t *testing.T) {
 		if !contains(text, want) {
 			t.Fatalf("server=%s missing %q", text, want)
 		}
+	}
+}
+
+func TestSecretaryMCPReplyContractIsScopedAndOptIn(t *testing.T) {
+	legacy := SecretaryMCPServerAtWithReplyContract("secretary-mcp", "/state", "capability", "http://127.0.0.1:8081", "")
+	for _, entry := range legacy.Env {
+		if entry.Name == mcpReplyContractEnv {
+			t.Fatal("legacy MCP server received addressed reply contract")
+		}
+	}
+	versioned := SecretaryMCPServerAtWithReplyContract("secretary-mcp", "/state", "capability", "http://127.0.0.1:8081", core.SecretaryReplyContractAddressedV1)
+	found := false
+	for _, entry := range versioned.Env {
+		if entry.Name == mcpReplyContractEnv && entry.Value == core.SecretaryReplyContractAddressedV1 {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("versioned MCP env=%#v", versioned.Env)
 	}
 }
 

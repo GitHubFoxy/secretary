@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -58,7 +59,7 @@ func TestOpenCodeTitleNativeHTTPFixture(t *testing.T) {
 		fmt.Fprint(w, "data: [DONE]\n\n")
 	}))
 	defer server.Close()
-	generator := OpenCodeTitleGenerator{Model: "title-fixture/fixture-model", Reasoning: "minimal", Prompt: "fixture-system: Верни только название задачи.",
+	generator := OpenCodeTitleGenerator{Model: "title-fixture/fixture-model", Reasoning: "minimal", Prompt: "fixture-system: Верни только название задачи.", DataHome: filepath.Join(t.TempDir(), "secretary-native-data"),
 		run: func(ctx context.Context, command titleCommand) ([]byte, error) {
 			// Добавляется только fake endpoint; весь harness/config/stdio путь
 			// совпадает с генератором. Пользовательские configs не читаются.

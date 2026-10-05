@@ -1,5 +1,6 @@
 #!/bin/zsh
 set -euo pipefail
+umask 077
 
 ROOT="${0:A:h}"
 STATE="$HOME/.local/share/secretary"
@@ -38,10 +39,13 @@ Commands:
   node setup       Configure a private outbound Execution Node
   node start|stop|status|logs|doctor
                     Manage the local Execution Node process
+  node opencode login
+                    Explicitly log in to the selected Node OpenCode store
   node drain|revoke Safely drain or revoke the configured Node
                     revoke waits for remote active work; use --force only to override
   node install-service|uninstall-service
                     Manage the Node launchd service
+  opencode login   Explicitly log in to the Secretary OpenCode store
 EOF
 }
 
@@ -66,7 +70,7 @@ configured_harness() {
     harness="$(awk -F'=' '/^[[:space:]]*harness[[:space:]]*=/{gsub(/[ "\r]/, "", $2); print $2; exit}' "$config")"
     [[ -n "$harness" ]] && { print "$harness"; return 0; }
   fi
-  print "fx"
+  print "opencode"
 }
 
 path_command() {
@@ -123,39 +127,183 @@ node_config_value() {
   awk -F'"' -v wanted="$key" '$2 == wanted { print $4; exit }' "$NODE_CONFIG"
 }
 
+ensure_private_opencode_store() {
+  local root="$1" data_home="$1/opencode-native"
+  [[ ! -L "$root" && ! -L "$data_home" && ! -L "$data_home/opencode" ]] || { print -u2 "OpenCode native store path must not contain symlinks"; return 1; }
+  mkdir -p "$data_home/opencode"
+  chmod 700 "$root" "$data_home" "$data_home/opencode"
+}
+
+node_data_dir() {
+  local value="$(node_config_value data_dir 2>/dev/null || true)"
+  [[ -n "$value" ]] || value="$NODE_DATA"
+  print -r -- "$value"
+}
+
+secretary_opencode_store_mode() {
+  local root="$1" selection="$1/opencode-native-selection.json" mode=""
+  if [[ -L "$selection" ]]; then
+    mode="invalid"
+  elif [[ -f "$selection" ]]; then
+    mode="$(awk -F'"' '$2 == "mode" { print $4; exit }' "$selection")"
+  elif [[ -f "$root/secretary.db" ]]; then
+    mode="legacy"
+  else
+    mode="isolated"
+  fi
+  print -r -- "$mode"
+}
+
+secretary_opencode_store_data_home() {
+  local root="$1" selection="$1/opencode-native-selection.json" mode
+  mode="$(secretary_opencode_store_mode "$root")"
+  if [[ "$mode" == "legacy" && -f "$selection" ]]; then
+    awk -F'"' '$2 == "data_home" { print $4; exit }' "$selection"
+  elif [[ "$mode" == "legacy" ]]; then
+    print -r -- "${XDG_DATA_HOME:-$HOME/.local/share}"
+  else
+    print -r -- "$root/opencode-native"
+  fi
+}
+
+node_opencode_store_mode() {
+  local root="$1" selection="$1/opencode-native-selection.json" mode=""
+  if [[ -L "$selection" ]]; then
+    mode="invalid"
+  elif [[ -f "$selection" ]]; then
+    mode="$(awk -F'"' '$2 == "mode" { print $4; exit }' "$selection")"
+  elif [[ -f "$root/node-state.json" || ( "$root" == "$NODE_DATA" && -f "$STATE/secretary.db" ) ]]; then
+    mode="legacy"
+  else
+    mode="isolated"
+  fi
+  print -r -- "$mode"
+}
+
+node_opencode_store_data_home() {
+  local root="$1" selection="$1/opencode-native-selection.json" mode
+  mode="$(node_opencode_store_mode "$root")"
+  if [[ "$mode" == "legacy" && -f "$selection" ]]; then
+    awk -F'"' '$2 == "data_home" { print $4; exit }' "$selection"
+  elif [[ "$mode" == "legacy" ]]; then
+    print -r -- "${XDG_DATA_HOME:-$HOME/.local/share}"
+  else
+    print -r -- "$root/opencode-native"
+  fi
+}
+
+opencode_command() {
+  if [[ -n "${SECRETARY_OPENCODE_COMMAND:-}" ]]; then
+    print -r -- "$SECRETARY_OPENCODE_COMMAND"
+    return 0
+  fi
+  path_command opencode
+}
+
+opencode_store_command() {
+  local command="$1" data_home="$2"; shift 2
+  local home="$data_home/home" config_home="$data_home/config" state_home="$data_home/state" install_root="${data_home:h}"
+  [[ ! -L "$install_root" && ! -L "$data_home" && ! -L "$data_home/opencode" && ! -L "$home" && ! -L "$config_home" && ! -L "$config_home/opencode" && ! -L "$state_home" ]] || { print -u2 "OpenCode native store path must not contain symlinks"; return 1; }
+  mkdir -p "$data_home/opencode" "$home" "$config_home/opencode" "$state_home"
+  chmod 700 "$data_home" "$data_home/opencode" "$home" "$config_home" "$config_home/opencode" "$state_home"
+  (
+    local variable
+    for variable in ${(k)parameters}; do
+      case "$variable" in
+        HOME|XDG_*|OPENCODE_*|SECRETARY_*|CODEX_CONFIG|AWS_ACCESS_KEY_ID|AWS_PROFILE|AWS_DEFAULT_PROFILE|AWS_SHARED_CREDENTIALS_FILE|AWS_CONFIG_FILE|AWS_WEB_IDENTITY_TOKEN_FILE|AWS_CONTAINER_CREDENTIALS_FULL_URI|AWS_CONTAINER_CREDENTIALS_RELATIVE_URI|GOOGLE_APPLICATION_CREDENTIALS|AZURE_CONFIG_DIR|*_API_KEY|*_AUTH_TOKEN|*_ACCESS_TOKEN|*_REFRESH_TOKEN|*_CLIENT_SECRET|*_SECRET_ACCESS_KEY|*_SESSION_TOKEN|*_PASSWORD|*_CREDENTIALS_FILE|*_CREDENTIALS|*_TOKEN) unset "$variable" ;;
+      esac
+    done
+    umask 077
+    export HOME="$home" XDG_DATA_HOME="$data_home" XDG_CONFIG_HOME="$config_home" XDG_STATE_HOME="$state_home" XDG_CACHE_HOME="$home/.cache"
+    export OPENCODE_CONFIG_DIR="$config_home/opencode" OPENCODE_CONFIG= OPENCODE_CONFIG_CONTENT=
+    export OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_SERVER_URL= OPENCODE_SERVER_PASSWORD= OPENCODE_SERVER_USERNAME=
+    "$command" "$@"
+  )
+}
+
+opencode_auth_ready() {
+  local command="$1" data_home="$2" output lower
+  if ! output="$(opencode_store_command "$command" "$data_home" auth list 2>/dev/null)"; then
+    return 1
+  fi
+  lower="${output:l}"
+  [[ -n "${output//[[:space:]]/}" && "$lower" != *'[]'* && "$lower" != *'no authenticated'* && "$lower" != *'not authenticated'* && "$lower" != *'no auth'* ]]
+}
+
+opencode_login() {
+  local mode data_home command
+  mode="$(secretary_opencode_store_mode "$STATE")"
+  if [[ "$mode" == "legacy" ]]; then
+    print -u2 "Migration required: Secretary sessions remain pinned to the legacy OpenCode store. Login is not redirected to a new store."
+    return 1
+  fi
+  [[ "$mode" == "isolated" ]] || { print -u2 "Secretary OpenCode store selection is invalid"; return 1; }
+  command="$(opencode_command)" || { print -u2 "OpenCode v2 is unavailable; install it before provider login"; return 1; }
+  data_home="$(secretary_opencode_store_data_home "$STATE")"
+  print "Starting explicit provider login in the Secretary native store. No personal OpenCode credentials are imported."
+  opencode_store_command "$command" "$data_home" auth login
+}
+
+node_opencode_login() {
+  local root="$(node_data_dir)" mode command data_home
+  mode="$(node_opencode_store_mode "$root")"
+  if [[ "$mode" == "legacy" ]]; then
+    print -u2 "Migration required: Node is preserving its legacy OpenCode store. Provider login is not redirected to a new empty store."
+    return 1
+  fi
+  command="$(opencode_command)" || { print -u2 "OpenCode v2 is unavailable; install it before provider login"; return 1; }
+  data_home="$(node_opencode_store_data_home "$root")"
+  print "Starting explicit provider login in the selected Node native store. No personal OpenCode credentials are imported."
+  opencode_store_command "$command" "$data_home" auth login
+}
+
 json_safe_value() {
   [[ "$1" != *'"'* && "$1" != *'\\'* && "$1" != *$'\n'* && "$1" != *$'\r'* ]]
 }
 
 ensure_node_config() {
-  [[ -f "$NODE_CONFIG" ]] && return 0
-  mkdir -p "$NODE_DATA"
-  local server="${SECRETARY_NODE_SERVER:-$URL}"
-  local name="${SECRETARY_NODE_NAME:-$(hostname 2>/dev/null || print node)}"
-  name="$(print -r -- "$name" | tr -cd 'A-Za-z0-9._-')"
-  [[ -n "$name" ]] || name="node"
-  json_safe_value "$server" && json_safe_value "$name" || { print -u2 "Node config values contain unsupported characters"; return 1; }
-  umask 077
-  /bin/cat > "$NODE_CONFIG" <<EOF
+  [[ ! -L "$NODE_STATE" && ! -L "$NODE_DATA" ]] || { print -u2 "Node installation data path must not be a symlink"; return 1; }
+  mkdir -p "$NODE_STATE" "$NODE_DATA"
+  chmod 700 "$NODE_STATE" "$NODE_DATA"
+  if [[ ! -f "$NODE_CONFIG" ]]; then
+    local server="${SECRETARY_NODE_SERVER:-$URL}"
+    local name="${SECRETARY_NODE_NAME:-$(hostname 2>/dev/null || print node)}"
+    name="$(print -r -- "$name" | tr -cd 'A-Za-z0-9._-')"
+    [[ -n "$name" ]] || name="node"
+    json_safe_value "$server" && json_safe_value "$name" || { print -u2 "Node config values contain unsupported characters"; return 1; }
+    /bin/cat > "$NODE_CONFIG" <<EOF
 {
   "server_url": "$server",
   "node": "$name",
   "data_dir": "$NODE_DATA",
   "capacity": 1,
+  "include_opencode": true,
   "workspaces": []
 }
 EOF
-  chmod 600 "$NODE_CONFIG"
+    chmod 600 "$NODE_CONFIG"
+  fi
+  if [[ "$(node_opencode_store_mode "$NODE_DATA")" == "isolated" ]]; then
+    ensure_private_opencode_store "$NODE_DATA"
+  fi
 }
 
 setup() {
+  [[ ! -L "$STATE" ]] || { print -u2 "Secretary data directory must not be a symlink"; return 1; }
   mkdir -p "$BIN" "$STATE"
   chmod 700 "$STATE"
   build
+  "$BIN/secretaryd" --data-dir "$STATE" --select-opencode-stores
+  local secretary_store_mode="$(secretary_opencode_store_mode "$STATE")" secretary_data_home="$(secretary_opencode_store_data_home "$STATE")"
+  local node_store_mode="$(node_opencode_store_mode "$NODE_DATA")" node_data_home="$(node_opencode_store_data_home "$NODE_DATA")"
+  if [[ "$secretary_store_mode" == "isolated" ]]; then ensure_private_opencode_store "$STATE"; fi
   ensure_config
   write_bootstrap_environment
   ensure_node_config
-  local harness="$(configured_harness)"
+  if [[ "$node_store_mode" == "isolated" ]] && opencode_bin="$(opencode_command 2>/dev/null)"; then
+    opencode_store_command "$opencode_bin" "$node_data_home" auth list >/dev/null 2>&1 || true
+  fi
+  local harness="$(configured_harness)" opencode_bin
   case "$harness" in
     codex)
       if ! path_command codex-acp >/dev/null 2>&1; then
@@ -182,7 +330,15 @@ setup() {
       return 1
       ;;
   esac
+  if [[ "$secretary_store_mode" == "isolated" ]] && opencode_bin="$(opencode_command 2>/dev/null)"; then
+    opencode_store_command "$opencode_bin" "$secretary_data_home" auth list >/dev/null 2>&1 || true
+  fi
   ln -sfn "$ROOT/sex" "$BIN/sex"
+  if [[ "$secretary_store_mode" == "isolated" ]]; then
+    print "OpenCode Secretary native store: $secretary_data_home (provider login is separate; run: sex opencode login)"
+  else
+    print "Migration required: preserving the existing Secretary OpenCode store until owner-approved migration."
+  fi
   print "Setup complete. Run: sex start"
   print "Full-access trusted Node policy: explicit and enabled for local Node only."
 }
@@ -191,15 +347,20 @@ node_setup() {
   [[ -x "$NODE_BIN" ]] || build >/dev/null
   export PATH="$BIN:/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin"
   rehash
+  [[ ! -L "$NODE_STATE" && ! -L "$NODE_DATA" ]] || { print -u2 "Node installation data path must not be a symlink"; return 1; }
   mkdir -p "$NODE_STATE" "$NODE_DATA"
-  local server="${SECRETARY_NODE_SERVER:-$URL}" name="${SECRETARY_NODE_NAME:-$(hostname 2>/dev/null || print node)}" capacity=1 include_opencode=false workspace_json="" spec project path
+  chmod 700 "$NODE_STATE" "$NODE_DATA"
+  "$BIN/secretaryd" --data-dir "$STATE" --select-opencode-stores
+  "$NODE_BIN" --data-dir "$NODE_DATA" --select-opencode-store
+  local server="${SECRETARY_NODE_SERVER:-$URL}" name="${SECRETARY_NODE_NAME:-$(hostname 2>/dev/null || print node)}" capacity=1 include_opencode=true workspace_json="" spec project workspace_path opencode_bin
   while (($#)); do
     case "$1" in
       --server) shift; (($#)) || { print -u2 "--server requires a value"; return 2; }; server="$1" ;;
       --name) shift; (($#)) || { print -u2 "--name requires a value"; return 2; }; name="$1" ;;
       --capacity) shift; (($#)) || { print -u2 "--capacity requires a value"; return 2; }; capacity="$1" ;;
       --include-opencode) include_opencode=true ;;
-      --workspace) shift; (($#)) || { print -u2 "--workspace requires project=path"; return 2; }; spec="$1"; project="${spec%%=*}"; path="${spec#*=}"; [[ "$project" != "$spec" && "$path" == /* ]] || { print -u2 "--workspace requires project=absolute-path"; return 2; }; json_safe_value "$project" && json_safe_value "$path" || { print -u2 "workspace contains unsupported characters"; return 2; }; [[ -z "$workspace_json" ]] || workspace_json+=","; workspace_json+="{\"project_id\":\"$project\",\"path\":\"$path\"}" ;;
+      --exclude-opencode) include_opencode=false ;;
+      --workspace) shift; (($#)) || { print -u2 "--workspace requires project=path"; return 2; }; spec="$1"; project="${spec%%=*}"; workspace_path="${spec#*=}"; [[ "$project" != "$spec" && "$workspace_path" == /* ]] || { print -u2 "--workspace requires project=absolute-path"; return 2; }; json_safe_value "$project" && json_safe_value "$workspace_path" || { print -u2 "workspace contains unsupported characters"; return 2; }; [[ -z "$workspace_json" ]] || workspace_json+=","; workspace_json+="{\"project_id\":\"$project\",\"path\":\"$workspace_path\"}" ;;
       *) print -u2 "Unknown node setup option: $1"; return 2 ;;
     esac
     shift
@@ -218,6 +379,16 @@ node_setup() {
 }
 EOF
   /bin/chmod 600 "$NODE_CONFIG"
+  local store_mode="$(node_opencode_store_mode "$NODE_DATA")" data_home="$(node_opencode_store_data_home "$NODE_DATA")"
+  if [[ "$store_mode" == "isolated" ]]; then
+    ensure_private_opencode_store "$NODE_DATA"
+    if [[ "$include_opencode" == "true" ]] && opencode_bin="$(opencode_command 2>/dev/null)"; then
+      opencode_store_command "$opencode_bin" "$data_home" auth list >/dev/null 2>&1 || true
+    fi
+    print "OpenCode Node native store: $data_home (provider login is separate; run: sex node opencode login)"
+  else
+    print "Migration required: preserving the existing OpenCode native store until owner-approved migration."
+  fi
   print "Node setup complete: $name"
   print "Private-network-first: Node uses outbound connection only; no inbound Node port."
 }
@@ -255,10 +426,29 @@ node_doctor() {
   [[ -x "$NODE_BIN" ]] && print "ok: secretary-node" || { print "missing: $NODE_BIN"; failures=$((failures+1)); }
   [[ -f "$NODE_CONFIG" ]] && print "ok: Node deployment config" || { print "missing: $NODE_CONFIG"; failures=$((failures+1)); }
   if [[ -f "$NODE_CONFIG" ]]; then
-    local name="$(node_config_value node)"
+    local name="$(node_config_value node)" data_root="$(node_data_dir)" store_mode data_home include_opencode=true
     [[ -n "$name" ]] && print "ok: Node identity $name" || { print "missing: Node identity"; failures=$((failures+1)); }
     [[ "$(<"$NODE_CONFIG")" != *'"listen_address"'* ]] && print "ok: no inbound Node listener" || { print "invalid: inbound Node listener configured"; failures=$((failures+1)); }
     [[ -f "$NODE_DATA/identity.json" ]] && print "ok: paired Node identity" || print "pending: Node pairing (run with SECRETARY_NODE_PAIRING_TOKEN)"
+    store_mode="$(node_opencode_store_mode "$data_root")"
+    data_home="$(node_opencode_store_data_home "$data_root")"
+    if [[ "$(<"$NODE_CONFIG")" == *'"include_opencode": false'* ]]; then
+      print "ok: OpenCode probe explicitly disabled"
+    elif [[ "$store_mode" == "legacy" ]]; then
+      print "migration required: preserving existing OpenCode native store; owner approval is required before migration"
+      failures=$((failures+1))
+    elif [[ "$store_mode" != "isolated" || ! -d "$data_home/opencode" ]]; then
+      print "missing: private Node OpenCode native store; run: sex node setup"
+      failures=$((failures+1))
+    elif ! opencode_bin="$(opencode_command 2>/dev/null)"; then
+      print "missing: OpenCode binary for Node inventory"
+      failures=$((failures+1))
+    elif opencode_auth_ready "$opencode_bin" "$data_home"; then
+      print "ok: OpenCode provider auth in selected Node store"
+    else
+      print "missing: OpenCode provider auth in selected Node store. Owner may run: sex node opencode login"
+      failures=$((failures+1))
+    fi
   fi
   if (( failures > 0 )); then print -u2 "Node doctor found $failures problem(s)."; return 1; fi
   print "Node doctor found no problems."
@@ -381,6 +571,7 @@ node_serve() {
 
 doctor() {
   local failures=0
+  [[ ! -L "$STATE" ]] || { print "invalid: Secretary data directory is a symlink"; return 1; }
   mkdir -p "$STATE"
   if [[ ! -x "$BIN/secretaryd" ]]; then
     print "missing: $BIN/secretaryd"
@@ -394,6 +585,21 @@ doctor() {
   else
     print "ok: secretary-mcp"
   fi
+  local secretary_store_mode="$(secretary_opencode_store_mode "$STATE")" node_store_mode="$(node_opencode_store_mode "$NODE_DATA")"
+  if [[ "$secretary_store_mode" == "legacy" ]]; then
+    print "migration required: preserving existing Secretary OpenCode store; owner approval is required before migration"
+    failures=$((failures + 1))
+  elif [[ "$secretary_store_mode" != "isolated" ]]; then
+    print "invalid: Secretary OpenCode store selection"
+    failures=$((failures + 1))
+  fi
+  if [[ "$node_store_mode" == "legacy" ]]; then
+    print "migration required: preserving existing local Worker Node OpenCode store; owner approval is required before migration"
+    failures=$((failures + 1))
+  elif [[ "$node_store_mode" != "isolated" ]]; then
+    print "invalid: local Worker Node OpenCode store selection"
+    failures=$((failures + 1))
+  fi
   local harness="$(configured_harness)"
   if command_path="$(harness_command 2>/dev/null)"; then
     print "ok: $harness ($command_path)"
@@ -403,6 +609,16 @@ doctor() {
         print "ok: codex login"
       else
         print "missing: codex login. Run: codex login"
+        failures=$((failures + 1))
+      fi
+    elif [[ "$harness" == "opencode" ]]; then
+      local data_home="$(secretary_opencode_store_data_home "$STATE")"
+      if [[ "$secretary_store_mode" != "isolated" ]]; then
+        : # The store error was reported above; do not probe a legacy/personal store.
+      elif opencode_auth_ready "$command_path" "$data_home"; then
+        print "ok: OpenCode provider auth in selected Secretary store"
+      else
+        print "missing: OpenCode provider auth in selected Secretary store. Owner may run: sex opencode login"
         failures=$((failures + 1))
       fi
     fi
@@ -653,6 +869,13 @@ case "${1:-}" in
     ;;
   logs) tail -f "$LOG_FILE" ;;
   doctor) shift; doctor "$@" ;;
+  opencode)
+    shift
+    case "${1:-}" in
+      login) shift; opencode_login "$@" ;;
+      *) print -u2 "usage: sex opencode login"; return 2 ;;
+    esac
+    ;;
   node)
     shift
     case "${1:-}" in
@@ -664,6 +887,13 @@ case "${1:-}" in
         ;;
       logs) shift; tail -f "$NODE_LOG_FILE" ;;
       doctor) shift; node_doctor "$@" ;;
+      opencode)
+        shift
+        case "${1:-}" in
+          login) shift; node_opencode_login "$@" ;;
+          *) print -u2 "usage: sex node opencode login"; return 2 ;;
+        esac
+        ;;
       drain) shift; node_control drain "$@" ;;
       revoke) shift; node_revoke "$@" ;;
       install-service) shift; node_install_service "$@" ;;

@@ -32,12 +32,14 @@ type Runtime struct {
 	identity       core.SecretaryIdentity
 	turnLoader     func(context.Context, string) (core.SecretaryTurn, error)
 
-	mu           sync.Mutex
-	session      node.Session
-	busy         bool
-	activeTurnID string
-	queued       []string
-	errors       chan error
+	mu                   sync.Mutex
+	session              node.Session
+	busy                 bool
+	activeTurnID         string
+	activeInputID        string
+	replyContractVersion string
+	queued               []string
+	errors               chan error
 }
 
 func NewRuntime(local *node.LocalNode, capability string) *Runtime {
@@ -129,6 +131,10 @@ func (r *Runtime) Start(ctx context.Context) error {
 	request := node.StartRequest{WorkerRef: workerRef, Task: prompt, DeferInitialPrompt: true}
 	if profileFn != nil {
 		request.Profile = profileFn()
+		if request.Profile.ReplyContractVersion != "" && request.Profile.ReplyContractVersion != core.SecretaryReplyContractAddressedV1 {
+			return fmt.Errorf("secretary: unsupported reply contract version %q", request.Profile.ReplyContractVersion)
+		}
+		request.DrainOutputBeforeResult = request.Profile.ReplyContractVersion == core.SecretaryReplyContractAddressedV1
 		if store != nil && identity.ID != "" {
 			if err := r.persistPolicySnapshot(ctx, request.Profile); err != nil {
 				return err
@@ -137,7 +143,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 
 	}
 	if mcpCommand != "" {
-		request.MCPServers = []node.MCPServer{node.SecretaryMCPServerAt(mcpCommand, dataDir, r.capability, mcpServerURL)}
+		request.MCPServers = []node.MCPServer{node.SecretaryMCPServerAtWithReplyContract(mcpCommand, dataDir, r.capability, mcpServerURL, request.Profile.ReplyContractVersion)}
 	}
 	session, err := r.node.Dispatch(ctx, request)
 	if err != nil {
@@ -152,9 +158,14 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.mu.Lock()
 	r.session = session
 	r.busy = !request.DeferInitialPrompt
+	r.replyContractVersion = request.Profile.ReplyContractVersion
 	r.mu.Unlock()
-	go r.consumeResults(session)
-	go r.consumeActivity(session)
+	if request.Profile.ReplyContractVersion == core.SecretaryReplyContractAddressedV1 {
+		go r.consumeAddressedSession(session)
+	} else {
+		go r.consumeResults(session)
+		go r.consumeActivity(session)
+	}
 	// Telegram may persist a message while the Node session is still pairing.
 	// Start consumes that durable backlog once the ACP session is ready.
 	r.startNextDurable(context.Background())
@@ -229,125 +240,193 @@ func (r *Runtime) HandleMessage(ctx context.Context, text string) error {
 func (r *Runtime) consumeResults(session node.Session) {
 	initial := true
 	for result := range session.Result() {
-		r.mu.Lock()
-		if r.session != session {
-			r.mu.Unlock()
-			continue
-		}
-		store, conversationID, activeTurnID := r.store, r.conversationID, r.activeTurnID
-		r.busy = false
-		r.activeTurnID = ""
-		r.mu.Unlock()
-		if activeTurnID != "" && store != nil {
-			state := core.SecretaryTurnSucceeded
-			if result.Status == "failed" {
-				state = core.SecretaryTurnFailed
-			}
-			if result.Status == "canceled" || result.Status == "cancelled" {
-				state = core.SecretaryTurnCanceled
-			}
-			errorMessage := ""
-			response := ""
-			if state == core.SecretaryTurnSucceeded {
-				response = result.Summary
-			} else {
-				errorMessage = result.Summary
-			}
-			if _, _, err := store.FinishSecretaryTurnWithResponse(context.Background(), activeTurnID, state, errorMessage, response); err != nil {
-				r.reportError(err)
-			}
-		}
-		if activeTurnID == "" && !initial && store != nil && conversationID != "" && result.Summary != "" {
-			if _, err := store.AppendEntry(context.Background(), conversationID, core.EntrySecretary, result.Summary); err != nil {
-				r.reportError(err)
-			}
-		}
-		initial = false
-		r.startNextDurable(context.Background())
-		r.startNext(context.Background())
+		initial = r.consumeRuntimeResult(session, result, initial)
 	}
+}
+
+// consumeAddressedSession serializes the opt-in ACP Activity and Result streams.
+// The Node drains prior prompt events before sending Result; this consumer then
+// drains the queued Activity channel before terminalizing the durable turn.
+func (r *Runtime) consumeAddressedSession(session node.Session) {
+	activity, results := session.Activity(), session.Result()
+	initial := true
+	for activity != nil || results != nil {
+		select {
+		case item, ok := <-activity:
+			if !ok {
+				activity = nil
+				continue
+			}
+			r.consumeActivityEvent(session, item)
+		case result, ok := <-results:
+			if !ok {
+				results = nil
+				continue
+			}
+			for activity != nil {
+				select {
+				case item, ok := <-activity:
+					if !ok {
+						activity = nil
+						continue
+					}
+					r.consumeActivityEvent(session, item)
+				default:
+					goto activityDrained
+				}
+			}
+		activityDrained:
+			initial = r.consumeRuntimeResult(session, result, initial)
+		}
+	}
+}
+
+func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result, initial bool) bool {
+	r.mu.Lock()
+	if r.session != session {
+		r.mu.Unlock()
+		return initial
+	}
+	store, conversationID, activeTurnID := r.store, r.conversationID, r.activeTurnID
+	activeInputID, replyContractVersion := r.activeInputID, r.replyContractVersion
+	// A durable Secretary reply must belong to a user-owned active turn.
+	// Orphan/replayed runtime Results must not bypass turn completion by
+	// appending an automatic response directly to Personal Conversation.
+	if store != nil && r.identity.ID != "" && activeTurnID == "" {
+		r.mu.Unlock()
+		return initial
+	}
+	r.busy = false
+	r.activeTurnID = ""
+	r.activeInputID = ""
+	r.mu.Unlock()
+	if activeTurnID != "" && store != nil {
+		state := core.SecretaryTurnSucceeded
+		if result.Status == "failed" {
+			state = core.SecretaryTurnFailed
+		}
+		if result.Status == "canceled" || result.Status == "cancelled" {
+			state = core.SecretaryTurnCanceled
+		}
+		errorMessage := ""
+		response := ""
+		if state == core.SecretaryTurnSucceeded {
+			response = result.Summary
+		} else {
+			errorMessage = result.Summary
+		}
+		var finishErr error
+		if replyContractVersion == core.SecretaryReplyContractAddressedV1 && state == core.SecretaryTurnSucceeded {
+			if activeInputID == "" {
+				finishErr = core.ErrInvalidSecretaryOrigin
+			} else {
+				_, _, finishErr = store.FinishSecretaryTurnWithOutput(context.Background(), activeTurnID, activeInputID, state, errorMessage, response, nil)
+			}
+		} else {
+			_, _, finishErr = store.FinishSecretaryTurnWithResponse(context.Background(), activeTurnID, state, errorMessage, response)
+		}
+		if finishErr != nil {
+			r.reportError(finishErr)
+		}
+	}
+	if activeTurnID == "" && !initial && store != nil && conversationID != "" && result.Summary != "" {
+		if _, err := store.AppendEntry(context.Background(), conversationID, core.EntrySecretary, result.Summary); err != nil {
+			r.reportError(err)
+		}
+	}
+	r.startNextDurable(context.Background())
+	r.startNext(context.Background())
+	return false
 }
 
 func (r *Runtime) consumeActivity(session node.Session) {
 	for activity := range session.Activity() {
-		r.mu.Lock()
-		current := r.session == session
-		store, turnID := r.store, r.activeTurnID
-		r.mu.Unlock()
-		if !current {
-			continue
+		r.consumeActivityEvent(session, activity)
+	}
+}
+
+func (r *Runtime) consumeActivityEvent(session node.Session, activity node.Activity) {
+	r.mu.Lock()
+	current := r.session == session
+	store, turnID, inputID, replyContractVersion := r.store, r.activeTurnID, r.activeInputID, r.replyContractVersion
+	r.mu.Unlock()
+	if !current {
+		return
+	}
+	// Secretary has no approval or input UI round-trip. Answer every reverse
+	// request explicitly rather than leaving the harness blocked forever.
+	if activity.Kind == node.ActivityPermission || activity.Kind == node.ActivityUserInput {
+		responder, ok := session.(node.Responder)
+		if !ok || strings.TrimSpace(activity.RequestID) == "" {
+			r.reportError(errors.New("secretary: ACP interaction cannot be answered"))
+			return
 		}
-		// Secretary has no approval or input UI round-trip. Answer every reverse
-		// request explicitly rather than leaving the harness blocked forever.
-		if activity.Kind == node.ActivityPermission || activity.Kind == node.ActivityUserInput {
-			responder, ok := session.(node.Responder)
-			if !ok || strings.TrimSpace(activity.RequestID) == "" {
-				r.reportError(errors.New("secretary: ACP interaction cannot be answered"))
-				continue
-			}
-			response := "denied"
-			if activity.Kind == node.ActivityUserInput {
-				response = "cancel"
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			err := responder.Respond(ctx, activity.RequestID, response)
-			cancel()
-			if err != nil {
-				r.reportError(fmt.Errorf("secretary: deny ACP interaction: %w", err))
-			}
-			continue
+		response := "denied"
+		if activity.Kind == node.ActivityUserInput {
+			response = "cancel"
 		}
-		if store == nil || turnID == "" {
-			continue
-		}
-		var err error
-		switch activity.Kind {
-		case node.ActivityText:
-			_, err = store.RecordSecretaryTextDelta(context.Background(), turnID, activity.Text)
-		case node.ActivityThinkingSummary:
-			summary := strings.TrimSpace(activity.Summary)
-			if summary == "" {
-				summary = strings.TrimSpace(activity.Text)
-			}
-			if safeSecretarySummary(summary) {
-				_, err = store.RecordSecretaryThinkingSummary(context.Background(), turnID, summary)
-			}
-		case node.ActivityTool, node.ActivityToolCall:
-			tool := strings.TrimSpace(activity.Tool)
-			if tool == "" {
-				tool = strings.TrimSpace(activity.Text)
-			}
-			if tool != "" {
-				arguments, safe := node.SanitizeToolArguments(activity.Arguments)
-				if !safe {
-					continue
-				}
-				_, err = store.RecordSecretaryToolCall(context.Background(), turnID, tool, string(arguments))
-			}
-		case node.ActivityToolResult:
-			tool := strings.TrimSpace(activity.Tool)
-			if tool == "" {
-				tool = strings.TrimSpace(activity.Text)
-			}
-			if tool != "" {
-				status := strings.TrimSpace(activity.Status)
-				if status == "" {
-					status = "ok"
-				}
-				result, safe := node.SanitizeToolResult(activity.Result)
-				if !safe {
-					continue
-				}
-				errorText, safe := node.SanitizeToolResult(activity.Error)
-				if !safe {
-					continue
-				}
-				_, err = store.RecordSecretaryToolResult(context.Background(), turnID, tool, result, status, errorText)
-			}
-		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := responder.Respond(ctx, activity.RequestID, response)
+		cancel()
 		if err != nil {
-			r.reportError(err)
+			r.reportError(fmt.Errorf("secretary: deny ACP interaction: %w", err))
 		}
+		return
+	}
+	if store == nil || turnID == "" {
+		return
+	}
+	var err error
+	switch activity.Kind {
+	case node.ActivityText:
+		if replyContractVersion == core.SecretaryReplyContractAddressedV1 {
+			_, _, err = store.RecordAddressedSecretaryTextDelta(context.Background(), turnID, inputID, activity.Text)
+		} else {
+			_, err = store.RecordSecretaryTextDelta(context.Background(), turnID, activity.Text)
+		}
+	case node.ActivityThinkingSummary:
+		summary := strings.TrimSpace(activity.Summary)
+		if summary == "" {
+			summary = strings.TrimSpace(activity.Text)
+		}
+		if safeSecretarySummary(summary) {
+			_, err = store.RecordSecretaryThinkingSummary(context.Background(), turnID, summary)
+		}
+	case node.ActivityTool, node.ActivityToolCall:
+		tool := strings.TrimSpace(activity.Tool)
+		if tool == "" {
+			tool = strings.TrimSpace(activity.Text)
+		}
+		if tool != "" {
+			arguments, safe := node.SanitizeToolArguments(activity.Arguments)
+			if !safe {
+				return
+			}
+			_, err = store.RecordSecretaryToolCall(context.Background(), turnID, tool, string(arguments))
+		}
+	case node.ActivityToolResult:
+		tool := strings.TrimSpace(activity.Tool)
+		if tool == "" {
+			tool = strings.TrimSpace(activity.Text)
+		}
+		if tool != "" {
+			status := strings.TrimSpace(activity.Status)
+			if status == "" {
+				status = "ok"
+			}
+			result, safe := node.SanitizeToolResult(activity.Result)
+			if !safe {
+				return
+			}
+			errorText, safe := node.SanitizeToolResult(activity.Error)
+			if !safe {
+				return
+			}
+			_, err = store.RecordSecretaryToolResult(context.Background(), turnID, tool, result, status, errorText)
+		}
+	}
+	if err != nil {
+		r.reportError(err)
 	}
 }
 
@@ -406,6 +485,7 @@ func (r *Runtime) clearOwnedDurablePrompt(session node.Session, turnID string) b
 	}
 	r.busy = false
 	r.activeTurnID = ""
+	r.activeInputID = ""
 	return true
 }
 
@@ -422,6 +502,7 @@ func (r *Runtime) abandonDurablePrompt(store *core.Store, turnID string, release
 	if r.activeTurnID == turnID {
 		r.busy = false
 		r.activeTurnID = ""
+		r.activeInputID = ""
 	}
 	r.mu.Unlock()
 }
@@ -456,7 +537,7 @@ func (r *Runtime) persistPolicySnapshot(ctx context.Context, profile node.Manage
 		Version: profile.Version, Harness: harness, Model: model, Reasoning: reasoning,
 		ProfileVersion: profile.Version, ProfileName: profile.Name, ProfileHash: profile.Hash,
 		ProfileContent: profile.Content, ProfileRuntime: profile.Runtime, ProfileModel: profile.Model,
-		ProfileReasoning: profile.Reasoning, ProfileDelivery: profile.Delivery, AllowedTools: profile.AllowTools,
+		ProfileReasoning: profile.Reasoning, ProfileDelivery: profile.Delivery, ReplyContractVersion: profile.ReplyContractVersion, AllowedTools: profile.AllowTools,
 	})
 }
 
@@ -475,7 +556,15 @@ func (r *Runtime) startNextDurable(ctx context.Context) {
 		}
 	}
 	if profileFn != nil {
-		if err := r.persistPolicySnapshot(ctx, profileFn()); err != nil {
+		profile := profileFn()
+		r.mu.Lock()
+		replyContractVersion := r.replyContractVersion
+		r.mu.Unlock()
+		if profile.ReplyContractVersion != replyContractVersion {
+			r.reportError(fmt.Errorf("secretary: reply contract changed from %q to %q; restart the runtime before processing queued turns", replyContractVersion, profile.ReplyContractVersion))
+			return
+		}
+		if err := r.persistPolicySnapshot(ctx, profile); err != nil {
 			r.reportError(err)
 			return
 		}
@@ -498,7 +587,7 @@ func (r *Runtime) startNextDurable(ctx context.Context) {
 		go r.startNextDurable(context.Background())
 		return
 	}
-	r.busy, r.activeTurnID = true, turn.ID
+	r.busy, r.activeTurnID, r.activeInputID = true, turn.ID, turn.InputID
 	r.mu.Unlock()
 	r.runPrompt(ctx, session, turn.Input)
 }
@@ -524,7 +613,7 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 			r.mu.Unlock()
 			return
 		}
-		store, turnID := r.store, r.activeTurnID
+		store, turnID, activeInputID, replyContractVersion := r.store, r.activeTurnID, r.activeInputID, r.replyContractVersion
 		r.mu.Unlock()
 		prompt := text
 		if store != nil && turnID != "" {
@@ -537,12 +626,21 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 				if strings.TrimSpace(turn.ContextSnapshot) == "" {
 					err = errors.New("empty canonical Secretary context snapshot")
 				} else {
+					if replyContractVersion == core.SecretaryReplyContractAddressedV1 && (turn.ID != turnID || turn.InputID == "" || turn.InputID != activeInputID) {
+						err = errors.New("addressed reply v1 requires a server-issued active input identity")
+					}
 					var canonical core.SecretaryContext
-					if err = json.Unmarshal([]byte(turn.ContextSnapshot), &canonical); err == nil {
+					if err == nil {
+						err = json.Unmarshal([]byte(turn.ContextSnapshot), &canonical)
+					}
+					if err == nil {
 						err = canonical.Validate()
 					}
 					if err == nil {
 						prompt, err = core.SecretaryContextPrompt(canonical, text)
+					}
+					if err == nil && replyContractVersion == core.SecretaryReplyContractAddressedV1 {
+						prompt += fmt.Sprintf("\n\nActive addressed-reply v1 identity (server-issued; use these exact values):\nsecretary_turn_id=%s\ninput_id=%s", turn.ID, turn.InputID)
 					}
 				}
 			}
@@ -618,6 +716,7 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	r.session = nil
 	r.busy = false
 	r.activeTurnID = ""
+	r.activeInputID = ""
 	if !durable {
 		r.queued = nil
 	}

@@ -13,6 +13,7 @@ import (
 
 	"github.com/beruseruko/secretary/internal/config"
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/node"
 	"github.com/beruseruko/secretary/internal/telegram"
 	"github.com/beruseruko/secretary/internal/webapi"
 )
@@ -73,7 +74,7 @@ func parseBoolEnv(name string) bool {
 	return value == "1" || value == "true" || value == "yes" || value == "on"
 }
 
-func attachProductionTelegram(ctx context.Context, dataDir, listen string, store *core.Store, web *webapi.Server, profiles *config.Manager) (*telegram.Adapter, error) {
+func attachProductionTelegram(ctx context.Context, dataDir, listen string, store *core.Store, web *webapi.Server, profiles *config.Manager, nativeStore node.OpenCodeNativeStore) (*telegram.Adapter, error) {
 	deployment, err := configuredTelegramDeployment()
 	if err != nil {
 		return nil, err
@@ -93,6 +94,7 @@ func attachProductionTelegram(ctx context.Context, dataDir, listen string, store
 			}
 			return (telegram.OpenCodeTitleGenerator{
 				Model: policy.TitleModel, Reasoning: policy.TitleModelReasoning, Prompt: snapshot.TitlePrompt.Content,
+				DataHome: nativeStore.DataHome, LegacyDataHome: nativeStore.Legacy,
 			}).Generate(ctx, prompt)
 		},
 	}, &telegram.BotAPITransport{BaseURL: deployment.BaseURL, BotToken: deployment.BotToken}, &telegram.HTTPServerClient{
@@ -168,7 +170,7 @@ func telegramEvent(event core.Event) telegram.Event {
 	result := telegram.Event{EventID: event.ID, Sequence: event.Seq, Kind: event.Kind, Source: event.Source, WorkerRef: workerRef, Payload: event.Payload}
 	var payload map[string]any
 	_ = json.Unmarshal(event.Payload, &payload)
-	result.Title = stringField(payload, "title", "text", "summary")
+	result.Title = stringField(payload, "title")
 	result.Text = stringField(payload, "text", "summary", "result", "error", "response")
 	result.Tool = stringField(payload, "tool")
 	switch {

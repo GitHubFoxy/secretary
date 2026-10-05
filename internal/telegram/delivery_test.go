@@ -82,7 +82,7 @@ func TestLongWorkerResultResumesBothDestinationsAfterRestart(t *testing.T) {
 				}
 			}
 			want := safeText(text)
-			if topic.String() != want || general.String() != "worker-1:\n"+want {
+			if topic.String() != want || general.String() != "Worker:\n"+want {
 				t.Fatalf("lost or duplicated result chunks: topic=%d general=%d", topic.Len(), general.Len())
 			}
 			if adapter.LastEventSeq() != 1 || len(adapter.state.Outbox) != 0 {

@@ -35,6 +35,14 @@ func TestRespondWorkerCommandUsesTypedResponseAndDeduplicatesRuntimeAction(t *te
 	if err != nil || second.State != CommandAccepted || second.CommandID != "respond-2" {
 		t.Fatalf("duplicate=%#v first=%#v err=%v", second, first, err)
 	}
+	wrongTurnCommand := duplicateCommand
+	wrongTurnCommand.RespondWorker = &RespondWorkerCommand{Metadata: duplicateCommand.RespondWorker.Metadata, RequestID: "request-1", Response: `{"approved":true}`}
+	wrongTurnCommand.RespondWorker.Metadata.CommandID = "respond-3"
+	wrongTurnCommand.RespondWorker.Metadata.TurnID = "another-turn"
+	wrongTurn, err := execution.HandleCommand(context.Background(), wrongTurnCommand)
+	if err != nil || wrongTurn.State != CommandFailed || wrongTurn.ErrorCode != "request_turn_mismatch" || wrongTurn.TurnID != "another-turn" {
+		t.Fatalf("wrong-turn request replay was not rejected: outcome=%#v err=%v", wrongTurn, err)
+	}
 	if got := len(responder.responses); got != 1 {
 		t.Fatalf("runtime response count=%d", got)
 	}
@@ -81,7 +89,7 @@ func TestFailedRespondWorkerCanRetryAfterNodeReconnect(t *testing.T) {
 		t.Fatalf("dispatch=%#v err=%v", outcome, err)
 	}
 	command := Command{Kind: CommandRespondWorker, RespondWorker: &RespondWorkerCommand{Metadata: core.CommandMetadata{CommandID: "respond-retry", Node: "macbook", WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1"}, RequestID: "retry-request", Response: "denied"}}
-	if outcome, err := execution.HandleCommand(ctx, command); err != nil || outcome.State != CommandFailed {
+	if outcome, err := execution.HandleCommand(ctx, command); err != nil || outcome.State != CommandFailed || outcome.ErrorCode != "execution_state_unknown" {
 		t.Fatalf("first response=%#v err=%v", outcome, err)
 	}
 	if err := store.Close(); err != nil {

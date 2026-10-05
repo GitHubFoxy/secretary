@@ -130,6 +130,26 @@ type publicWorkerDetailsStrict struct {
 	Approvals []publicApprovalDTO      `json:"approvals,omitempty"`
 }
 
+type ownerWorkerObserverDTO struct {
+	Worker    core.Worker           `json:"worker"`
+	Turns     []core.Turn           `json:"turns"`
+	Attempts  []core.Phase4Attempt  `json:"attempts"`
+	Outcomes  []core.AttemptOutcome `json:"outcomes"`
+	Results   []core.Phase4Result   `json:"results"`
+	Approvals []publicApprovalDTO   `json:"approvals,omitempty"`
+}
+
+func ownerWorkerObserverDTOFromDetails(details core.WorkerDetails) ownerWorkerObserverDTO {
+	observer := ownerWorkerObserverDTO{
+		Worker: details.Worker, Turns: details.Turns, Attempts: details.Attempts,
+		Outcomes: details.Outcomes, Results: details.Results,
+	}
+	for _, approval := range details.Approvals {
+		observer.Approvals = append(observer.Approvals, publicApprovalDTOFromApproval(approval))
+	}
+	return observer
+}
+
 type publicTurnStrictDTO struct {
 	ID               string         `json:"id"`
 	WorkerID         string         `json:"worker_id"`
