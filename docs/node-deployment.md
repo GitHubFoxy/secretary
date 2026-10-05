@@ -13,26 +13,30 @@ export SECRETARY_NODE_ADMIN_TOKEN='отдельный-node-admin-token'
 
 Pairing token и admin token должны отличаться от Client bootstrap/credential, Secretary runtime credential и Telegram token. Не сохраняйте эти значения в Git или launchd plist.
 
-На каждой машине выполните в корне репозитория:
+На Secretary host выполните setup один раз, затем при необходимости настройте co-located Node:
 
 ```sh
 ./sex setup
+sex opencode login
 ./sex node setup \
   --server https://secretary.example.ts.net \
-  --name macbook \
+  --name secretary-host \
   --workspace frontend=/Users/me/src/frontend
 ```
 
-На home server используйте другое имя и локальный путь:
+`sex opencode login` авторизует один native store, общий для Secretary и co-located Node. Не запускайте второй login через `sex node opencode login` на той же машине.
+
+На отдельном home server настройте автономный remote Node; его native store будет локальным и отдельным:
 
 ```sh
-./sex node setup \
+./sex node setup --standalone \
   --server https://secretary.example.ts.net \
   --name home-server \
   --workspace frontend=/srv/src/frontend
+sex node opencode login
 ```
 
-`--workspace` задаёт mapping `Project ID -> абсолютный путь`. Server проверяет mapping против Project registry и сохраняет его в NodeRecord. При reconnect mapping остаётся durable, а dispatch использует только согласованный путь. Credentials не попадают в Worker envelope. `sex node setup` сохраняет только non-secret JSON-конфигурацию с правами `0600` и по умолчанию включает OpenCode probe. Если OpenCode не нужен, `sex node setup --exclude-opencode` задаёт explicit opt-out; старый config с `include_opencode:false` также сохраняет opt-out до rollout.
+`--workspace` задаёт mapping `Project ID -> абсолютный путь`. Server проверяет mapping против Project registry и сохраняет его в NodeRecord. При reconnect mapping остаётся durable, а dispatch использует только согласованный путь. Credentials не попадают в Worker envelope. `sex node setup` сохраняет только non-secret JSON-конфигурацию с правами `0600` и по умолчанию включает OpenCode probe. Флаг `--standalone` сохраняется в config; Node runtime и Doctor/login валидируют его через Go selection path и отказываются запускаться, если standalone Node ссылается на shared Secretary store. Для co-located Node setup/login/Doctor `sex` сравнивает проверенные Go records: canonical `data_dir`, scope, mode и store path с Secretary — до native CLI. Deployment config и manifests разбираются одним строгим Go decoder’ом: duplicate/escaped/case aliases и malformed JSON отклоняются, Shell не выбирает значения через awk. Standalone Node остаётся независимым и использует собственный `data_dir`/store. Если OpenCode не нужен, `sex node setup --exclude-opencode` задаёт explicit opt-out; старый config с `include_opencode:false` также сохраняет opt-out до rollout.
 
 Node отмечает OpenCode ready только после version v2, auth status, native model metadata и успешного ACP `initialize`; версия CLI отдельно readiness не подтверждает. Probe запускает частный `serve --stdio --port 0`, ждёт регистрации config plugins и читает только metadata enabled models/variant settings в том же provider store, что ACP. `xhigh` не выводится из plaintext model IDs или имени variant. Probe не делает model call и не доказывает provider entitlement; exact model/effort и profile marker повторно проверяются на Start/Resume. Dispatch использует только observed HarnessInstance capabilities. В v2.0.22 tool execution работает, но ACP не передаёт explicit tool name, поэтому normalized tool call/result не объявляются.
 
@@ -40,13 +44,13 @@ Runtime и inventory используют один binary: `SECRETARY_OPENCODE_C
 
 ## Native state OpenCode
 
-На чистой установке `sex setup` закрепляет разные persistent stores Secretary и local Worker Node; `sex node setup` закрепляет `<NODE_DATA>/opencode-native` для выбранного Node и инициализирует только новые private native DB без входа в provider. Это `XDG_DATA_HOME`; native DB/auth/WAL/SHM находятся под `opencode/`. Worker ACP runtime, actual Node model inventory/probes и `sex node doctor` используют именно этот путь. Каталоги имеют режим `0700`, файлы — `0600` под `umask 077`. Store находится вне Workspace и сохраняется при повторном setup, restart, reconnect, upgrade, Attempt и Follow-up. Другой Node использует собственный data directory. Secretary runtime на Secretary host имеет отдельный store `$HOME/.local/share/secretary/opencode-native`.
+На чистой установке `sex setup` выбирает один persistent store `$HOME/.local/share/secretary/opencode-native` для Secretary и co-located Worker Node. Он создаёт native DB настоящим `opencode serve --port 0 --stdio` с закрытым stdin, проверяет `opencode.db` и прекращает setup с видимой ошибкой при сбое; auth/login/provider call не выполняются. Локальный `sex node setup` закрепляет тот же path, не создавая вторую native DB. Отдельный Node на другой машине запускается с `--standalone` и выбирает собственный `<NODE_DATA>/opencode-native`. Каждый путь используется как `XDG_DATA_HOME`; native DB/auth/WAL/SHM находятся под `opencode/`. Runtime, model inventory/probes, title generator и Doctor co-located installation используют общий store; remote Node использует свой локальный. Каталоги имеют `0700`, файлы — `0600` под `umask 077`. Store находится вне Workspace и сохраняется при повторном setup, restart, reconnect, upgrade, Attempt и Follow-up.
 
-`sex node setup` и `sex setup` не запускают provider login. Owner может отдельно выполнить `sex node opencode login` на целевом Node; для Secretary server используется `sex opencode login`. Оба запускают OpenCode auth flow с точным выбранным `XDG_DATA_HOME` и изолированными HOME/config/state directories. Provider auth не копируется из обычной OpenCode DB и не передаётся через CLI args, prompt, Worker envelope или diagnostics; host API key/token/cloud credential environment очищается перед каждым OpenCode process. Только явно заданные narrow MCP server environment variables передаются конкретному MCP process. Если auth отсутствует, Doctor/inventory показывает это явно; OpenCode не переключается на другую базу или harness.
+`sex node setup` и `sex setup` не запускают provider login. На Secretary host один явный `sex opencode login` авторизует общий Secretary/local Node store; для автономного remote Node owner запускает `sex node opencode login` на его машине. Обе команды используют точный выбранный `XDG_DATA_HOME` и изолированные HOME/config/state directories. Provider auth не копируется из обычной OpenCode DB и не передаётся через CLI args, prompt, Worker envelope или diagnostics; host API key/token/cloud credential environment очищается перед каждым OpenCode process. Только явно заданные narrow MCP server environment variables передаются конкретному MCP process. Если auth отсутствует, Doctor/inventory показывает это явно; OpenCode не переключается на другую базу или harness.
 
-Для старого Secretary installation (существует `secretary.db`) либо старого Node state без `opencode-native-selection.json` setup/runtime закрепляет прежний `XDG_DATA_HOME` (если он не задан — `$HOME/.local/share`) и сохраняет legacy sessions. Старый server DB также переводит local Worker Node в legacy selection, если у неё ещё нет собственного record. Startup сообщает о migration requirement, `sex node doctor` блокирует readiness, а `sex node opencode login` отказывается перенаправлять owner в новую пустую базу. До отдельного owner approval нет backup/restore, копирования DB/credentials, сброса базы или изменения native session IDs. В том числе историческое удаление DB на omarchy не считается доказательством её corruption. Managed-mode race OpenCode v2.0.22 исправлена ticket31; этот старый диагноз не является текущим blocker.
+Старая установка (существует `secretary.db` или прежний `config.toml`) либо Node config/state без `opencode-native-selection.json` сохраняют прежний `XDG_DATA_HOME` (если он не задан — `$HOME/.local/share`) и получают migration requirement. Старый fx-only setup не переключается автоматически. Перед переходом остановите Secretary и co-located Node, убедитесь, что нет managed OpenCode sessions, затем запустите `sex opencode select-shared-store`. Команда проверяет Node session mappings, конфликтующие selections и непустой target, идемпотентно записывает два shared selection manifests и не переносит credentials/history, не меняет session IDs или fx state. При конфликте/частичной записи переход завершается fail-closed; повторите после ручной проверки только если target остаётся пустым. После выбора общего store выполните один `sex opencode login`. Удалённый Node не включайте в этот переход: он сохраняет собственный `<NODE_DATA>/opencode-native`. Историческое удаление DB на omarchy не считается доказательством corruption; managed-mode race v2.0.22 исправлена ticket31.
 
-Local setup/runtime/probe/Doctor/login regressions и private unpaid native HTTP fixtures реализованы в [ticket 33](../.scratch/phase-4/issues/33-isolate-opencode-native-state.md). Actual provider login, authenticated live acceptance и production rollout не выполнялись.
+Local setup/runtime/probe/Doctor/login regressions проверяют duplicate deployment fields, обычное расхождение co-located stores и standalone independence; Go отклоняет неоднозначный config до native CLI. Private unpaid native HTTP fixtures используют DB, созданную реальным public `sex setup`, и реализованы в [ticket 33](../.scratch/phase-4/issues/33-isolate-opencode-native-state.md). Actual provider login, authenticated live acceptance и production rollout не выполнялись.
 
 ## Pairing и запуск
 

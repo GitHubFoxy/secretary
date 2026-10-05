@@ -80,14 +80,15 @@ func TestExistingInstallationPinsLegacySecretaryAndWorkerStores(t *testing.T) {
 	}
 	legacy := filepath.Join(t.TempDir(), "legacy-xdg")
 	t.Setenv("XDG_DATA_HOME", legacy)
-	secretaryStore, workerStore, err := selectRuntimeNativeStores(root)
+	selection, err := selectRuntimeNativeStoreSelection(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !secretaryStore.Legacy || !secretaryStore.MigrationRequired || secretaryStore.DataHome != legacy {
+	secretaryStore, workerStore := selection.Secretary, selection.Worker
+	if secretaryStore.Mode != node.OpenCodeNativeStoreModeLegacy || secretaryStore.DataHome != legacy {
 		t.Fatal("existing Secretary sessions were not pinned to the legacy OpenCode store")
 	}
-	if !workerStore.Legacy || !workerStore.MigrationRequired || workerStore.DataHome != legacy {
+	if workerStore.Mode != node.OpenCodeNativeStoreModeLegacy || workerStore.DataHome != legacy {
 		t.Fatal("existing local Worker sessions were not pinned to the legacy OpenCode store")
 	}
 	snapshot := config.Snapshot{Config: config.Config{Secretary: config.SecretaryPolicy{Harness: "opencode"}}}
@@ -106,19 +107,112 @@ func TestExistingInstallationPinsLegacySecretaryAndWorkerStores(t *testing.T) {
 	}
 }
 
-func TestSecretaryRuntimeUsesDedicatedNativeStore(t *testing.T) {
+func TestRuntimeNativeStoreSelectionRejectsCoLocatedConflictAndKeepsStandaloneIndependent(t *testing.T) {
+	root := t.TempDir()
+	nodeDataDir := filepath.Join(root, "node", "data")
+	if err := os.MkdirAll(nodeDataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "config.toml"), []byte("harness = \"fx\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	legacyHome := filepath.Join(t.TempDir(), "legacy")
+	sharedHome := node.OpenCodeNativeDataHome(root)
+	externalStandaloneDataDir := filepath.Join(t.TempDir(), "standalone Node data")
+	standaloneHome := node.OpenCodeNativeDataHome(externalStandaloneDataDir)
+	t.Setenv("XDG_DATA_HOME", legacyHome)
+	deployment := node.DeploymentConfig{ServerURL: "http://127.0.0.1:8081", Node: core.NodeReference("local-node"), DataDir: nodeDataDir, IncludeOpenCode: true}
+	encodedDeployment, err := json.Marshal(deployment)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "node", "config.json")
+	if err := os.WriteFile(configPath, encodedDeployment, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeSelection := func(path, mode, dataHome string) {
+		t.Helper()
+		encoded, err := json.Marshal(map[string]any{"version": 1, "mode": mode, "data_home": dataHome})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, encoded, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	secretarySelectionPath := filepath.Join(root, "opencode-native-selection.json")
+	nodeSelectionPath := filepath.Join(nodeDataDir, "opencode-native-selection.json")
+	writeSelection(secretarySelectionPath, string(node.OpenCodeNativeStoreModeLegacy), legacyHome)
+	writeSelection(nodeSelectionPath, string(node.OpenCodeNativeStoreModeShared), sharedHome)
+	if _, err := selectRuntimeNativeStoreSelection(root); err == nil {
+		t.Fatal("co-located Node with a different shared store passed the Secretary pair check")
+	}
+	if err := node.SaveDeploymentConfig(configPath, node.DeploymentConfig{ServerURL: deployment.ServerURL, Node: deployment.Node, DataDir: externalStandaloneDataDir, IncludeOpenCode: true, Standalone: true}); err != nil {
+		t.Fatal(err)
+	}
+	externalNodeSelectionPath := filepath.Join(externalStandaloneDataDir, "opencode-native-selection.json")
+	writeSelection(externalNodeSelectionPath, string(node.OpenCodeNativeStoreModeIsolated), standaloneHome)
+	selection, err := selectRuntimeNativeStoreSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !selection.NodeStandalone || selection.NodeDataDir != externalStandaloneDataDir || selection.Secretary.Mode != node.OpenCodeNativeStoreModeLegacy || selection.Worker.Mode != node.OpenCodeNativeStoreModeIsolated || selection.Worker.DataHome != standaloneHome {
+		t.Fatalf("standalone Node did not retain its independent Go-selected store: %#v", selection)
+	}
+	if _, _, err := node.SelectSharedOpenCodeNativeStores(root, nodeDataDir); err == nil {
+		t.Fatal("owner shared-store transition accepted standalone Node deployment")
+	}
+}
+
+func TestRuntimeNativeStoreSelectionRejectsCoLocatedDataDirMismatch(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "node", "data"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := node.SaveDeploymentConfig(filepath.Join(root, "node", "config.json"), node.DeploymentConfig{
+		ServerURL: "http://127.0.0.1:8081", Node: core.NodeReference("local-node"), DataDir: filepath.Join(t.TempDir(), "external"), IncludeOpenCode: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := selectRuntimeNativeStoreSelection(root); err == nil || !strings.Contains(err.Error(), "data directory does not match") {
+		t.Fatalf("co-located data_dir mismatch was not rejected: %v", err)
+	}
+}
+
+func TestConfigOnlyExistingInstallationPinsLegacyStores(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.toml"), []byte("harness = \"fx\"\n"), 0o600); err != nil {
+		t.Fatal("existing FX installation fixture unavailable")
+	}
+	legacy := filepath.Join(t.TempDir(), "legacy-xdg")
+	t.Setenv("XDG_DATA_HOME", legacy)
+	selection, err := selectRuntimeNativeStoreSelection(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secretaryStore, workerStore := selection.Secretary, selection.Worker
+	if secretaryStore.Mode != node.OpenCodeNativeStoreModeLegacy || workerStore.Mode != node.OpenCodeNativeStoreModeLegacy || secretaryStore.DataHome != legacy || workerStore.DataHome != legacy {
+		t.Fatal("config-only existing installation was silently assigned a new native store")
+	}
+	if _, err := os.Stat(node.OpenCodeNativeDataHome(root)); !os.IsNotExist(err) {
+		t.Fatal("config-only legacy setup created a replacement native database")
+	}
+}
+
+func TestSecretaryAndLocalNodeRuntimeUseOneNativeStore(t *testing.T) {
 	serverRoot := filepath.Join(t.TempDir(), "secretary")
-	nodeRoot := filepath.Join(serverRoot, "node", "data")
 	snapshot := config.Snapshot{Config: config.Config{Secretary: config.SecretaryPolicy{Harness: "opencode"}}}
 	secretaryRuntime, workerRuntime, _, _ := configuredRuntimePair(snapshot, serverRoot)
 	secretaryRouter := secretaryRuntime.(node.RuntimeRouter)
 	workerRouter := workerRuntime.(node.RuntimeRouter)
 	secretaryOpenCode := secretaryRouter.OpenCode.(node.OpenCodeRuntime)
 	workerOpenCode := workerRouter.OpenCode.(node.OpenCodeRuntime)
-	serverStore := node.OpenCodeNativeDataHome(serverRoot)
-	workerStore := node.OpenCodeNativeDataHome(nodeRoot)
-	if secretaryOpenCode.DataHome != serverStore || workerOpenCode.DataHome != workerStore || serverStore == workerStore {
-		t.Fatal("Secretary and Node Worker do not have separate stable OpenCode stores")
+	sharedStore := node.OpenCodeNativeDataHome(serverRoot)
+	if secretaryOpenCode.DataHome != sharedStore || workerOpenCode.DataHome != sharedStore {
+		t.Fatal("Secretary and local Node Worker do not use the common OpenCode store")
 	}
 }
 

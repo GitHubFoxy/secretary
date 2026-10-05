@@ -143,6 +143,53 @@ func TestDeploymentConfigDefaultsOpenCodeProbeUnlessExplicitlyDisabled(t *testin
 	}
 }
 
+func TestLoadDeploymentConfigRejectsDuplicateAliasesAndMalformedJSON(t *testing.T) {
+	root := t.TempDir()
+	localDataDir := filepath.Join(root, "local", "node-data")
+	externalDataDir := filepath.Join(root, "external", "node-data")
+	base := `{"server_url":"http://127.0.0.1:8081","node":"local-node","data_dir":"` + localDataDir + `","include_opencode":true,"workspaces":[]}`
+	cases := map[string]string{
+		"duplicate data_dir":               `{"server_url":"http://127.0.0.1:8081","node":"local-node","data_dir":"` + externalDataDir + `","data_dir":"` + localDataDir + `","include_opencode":true}`,
+		"escaped duplicate data_dir":       `{"server_url":"http://127.0.0.1:8081","node":"local-node","data_dir":"` + externalDataDir + `","data\u005fdir":"` + localDataDir + `","include_opencode":true}`,
+		"case-insensitive data_dir alias":  `{"server_url":"http://127.0.0.1:8081","node":"local-node","DATA_DIR":"` + localDataDir + `","include_opencode":true}`,
+		"duplicate standalone alias":       `{"server_url":"http://127.0.0.1:8081","node":"local-node","data_dir":"` + localDataDir + `","standalone":false,"standalone":true}`,
+		"duplicate nested workspace field": `{"server_url":"http://127.0.0.1:8081","node":"local-node","data_dir":"` + localDataDir + `","workspaces":[{"project_id":"a","project\u005fid":"b","path":"/tmp/work"}]}`,
+		"malformed escape":                 `{"server_url":"http://127.0.0.1:8081","node":"local-node","data_dir":"\uZZZZ"}`,
+		"unpaired high surrogate path":     `{"server_url":"http://127.0.0.1:8081","node":"local-node","data_dir":"/tmp/node-\uD800"}`,
+		"unpaired low surrogate path":      `{"server_url":"http://127.0.0.1:8081","node":"local-node","data_dir":"/tmp/node-\uDC00"}`,
+		"escaped control path":             `{"server_url":"http://127.0.0.1:8081","node":"local-node","data_dir":"` + localDataDir + `\u000a"}`,
+		"duplicate include flag":           `{"server_url":"http://127.0.0.1:8081","node":"local-node","data_dir":"` + localDataDir + `","include_opencode":false,"include_opencode":true}`,
+		"trailing JSON":                    base + `{}`,
+		"unknown fallback field":           strings.TrimSuffix(base, `}`) + `,"fallback":"/tmp/personal"}`,
+	}
+	path := filepath.Join(root, "node-config.json")
+	for name, encoded := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := os.WriteFile(path, []byte(encoded), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := LoadDeploymentConfig(path); err == nil {
+				t.Fatal("duplicate or malformed deployment JSON was accepted")
+			}
+		})
+	}
+}
+
+func TestLoadDeploymentConfigDecodesEscapedCanonicalDataDirOnce(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "node data")
+	escaped := strings.ReplaceAll(dataDir, "/", `\/`)
+	encoded := `{"server_url":"http://127.0.0.1:8081","node":"local-node","data\u005fdir":"` + escaped + `","include_opencode":true}`
+	path := filepath.Join(root, "node-config.json")
+	if err := os.WriteFile(path, []byte(encoded), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := LoadDeploymentConfig(path)
+	if err != nil || loaded.DataDir != dataDir {
+		t.Fatalf("escaped deployment path was not decoded consistently: config=%#v err=%v", loaded, err)
+	}
+}
+
 func TestDeploymentConfigRejectsPublicAndInvalidServerURLs(t *testing.T) {
 	base := DeploymentConfig{ServerURL: "https://secretary.tailnet.ts.net", Node: core.NodeReference("home-server"), DataDir: "/srv/secretary/node"}
 	for _, serverURL := range []string{"", "localhost", "ftp://secretary.example", "https://"} {

@@ -20,9 +20,11 @@ cat > "$FAKE_BIN/opencode" <<'EOF'
 printf '%s|%s|openai=%s|aws=%s\n' "${XDG_DATA_HOME:-missing}" "$*" "${OPENAI_API_KEY:+present}" "${AWS_ACCESS_KEY_ID:+present}" >> "$TICKET33_OPENCODE_STORE_LOG"
 case "$1:$2" in
   --version:*) printf 'opencode v2.0.22\n' ;;
-  auth:list)
+  serve:--port)
     mkdir -p "$XDG_DATA_HOME/opencode"
     if [ ! -e "$XDG_DATA_HOME/opencode/opencode.db" ]; then printf 'native-db-initialized\n' > "$XDG_DATA_HOME/opencode/opencode.db"; fi
+    ;;
+  auth:list)
     if [ "${FAKE_OPENCODE_AUTH_MODE:-ready}" = "missing" ]; then printf '[]\n'; else printf 'provider authenticated\n'; fi
     ;;
   auth:login)
@@ -54,30 +56,38 @@ assert_file() { [[ -f "$1" ]] || fail "missing file: $1"; }
 output="$($ROOT/sex setup)" || fail "sex setup"
 assert_contains "$output" "Full-access trusted Node policy" "setup did not show trusted Node policy"
 assert_file "$HOME/.local/share/secretary/opencode-native/opencode/opencode.db"
-assert_file "$HOME/.local/share/secretary/node/data/opencode-native/opencode/opencode.db"
+[[ ! -e "$HOME/.local/share/secretary/node/data/opencode-native/opencode" ]] || fail "co-located Node initialized a second native DB"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$HOME/.local/share/opencode" "setup accessed personal OpenCode store"
 output="$($ROOT/sex node setup --server https://secretary.example.ts.net --name macbook --workspace frontend=/Users/me/src/frontend)" || fail "node setup"
 assert_contains "$output" "outbound connection only" "node setup did not state private networking"
 config="$HOME/.local/share/secretary/node/config.json"
 [[ -f "$config" ]] || fail "missing Node config"
+node_manifest="$HOME/.local/share/secretary/node/data/opencode-native-selection.json"
+shared_store="${HOME:a}/.local/share/secretary/opencode-native"
+assert_contains "$(cat "$node_manifest")" '"mode": "shared"' "co-located Node did not select the shared store"
+assert_contains "$(cat "$node_manifest")" "\"data_home\": \"$shared_store\"" "co-located Node selected a different store"
+[[ "$(grep -c '|serve --port 0 --stdio|' "$TICKET33_OPENCODE_STORE_LOG")" == "1" ]] || fail "setup initialized more than one OpenCode native store"
 assert_contains "$(cat "$config")" '"project_id":"frontend"' "workspace mapping missing"
 assert_contains "$(cat "$config")" '"include_opencode": true' "Node setup did not enable OpenCode discovery"
 for secret in credential token SECRETARY_; do
   assert_not_contains "$(cat "$config")" "$secret" "Node config contains credential fields: $secret"
 done
 if output="$(FAKE_OPENCODE_AUTH_MODE=missing "$ROOT/sex" node doctor 2>&1)"; then fail "Node doctor accepted missing provider auth"; fi
-assert_contains "$output" "missing: OpenCode provider auth in selected Node store" "Node doctor did not expose missing auth"
+assert_contains "$output" "missing: OpenCode provider auth in the shared store" "Node doctor did not expose missing auth"
 output="$($ROOT/sex node doctor)" || fail "node doctor"
 assert_contains "$output" "ok: OpenCode provider auth in selected Node store" "Node doctor did not check selected auth store"
 output="$($ROOT/sex node opencode login)" || fail "explicit Node provider login"
-assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$HOME/.local/share/secretary/node/data/opencode-native|auth login" "Node provider login used the wrong store"
+login_store="$(awk -F'|' '$2 == "auth login" { print $1; exit }' "$TICKET33_OPENCODE_STORE_LOG")"
+[[ "$login_store" == "$shared_store" ]] || fail "Node login selected a non-shared store: $login_store"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$HOME/.local/share/opencode" "Node provider login accessed personal store"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "|openai=|aws=" "Node OpenCode subprocess inherited ambient provider credentials"
 [[ "$(cat "$HOME/.local/share/opencode/opencode.db")" == "personal-store-canary" ]] || fail "Node setup/login modified personal OpenCode DB"
+$ROOT/sex node setup --server https://secretary.example.ts.net --name macbook --workspace frontend=/Users/me/src/frontend >/dev/null || fail "repeat node setup"
 $ROOT/sex node install-service >/dev/null || fail "node install-service"
-node_native="$HOME/.local/share/secretary/node/data/opencode-native/opencode"
+node_native="$HOME/.local/share/secretary/opencode-native/opencode"
 [[ "$(cat "$node_native/opencode.db")" == "native-db-initialized" ]] || fail "repeat Node setup reset native DB"
 [[ "$(cat "$node_native/auth.json")" == "owner login fixture" ]] || fail "repeat Node setup reset native auth"
+[[ ! -e "$HOME/.local/share/secretary/node/data/opencode-native/opencode" ]] || fail "repeat Node setup initialized a second native DB"
 [[ "$(cat "$HOME/.local/share/opencode/opencode.db")" == "personal-store-canary" ]] || fail "repeat Node setup modified personal DB"
 plist="$HOME/Library/LaunchAgents/dev.secretary.sex-node.plist"
 [[ -f "$plist" ]] || fail "missing Node launchd plist"

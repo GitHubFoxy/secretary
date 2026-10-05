@@ -33,6 +33,9 @@ func TestOpenCodeNativeProfilePersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal("native OpenCode unavailable")
 	}
+	sharedRoot := t.TempDir()
+	publicSetup := runPublicNativeSetup(t, sharedRoot, binary)
+	sharedDataHome := publicSetup.DataHome
 	for _, role := range []string{"worker", "secretary"} {
 		t.Run(role, func(t *testing.T) {
 			root := t.TempDir()
@@ -40,7 +43,7 @@ func TestOpenCodeNativeProfilePersistence(t *testing.T) {
 			if os.MkdirAll(workspace, 0o700) != nil {
 				t.Fatal("private workspace unavailable")
 			}
-			dataHome := filepath.Join(root, "secretary-native-data")
+			dataHome := sharedDataHome
 			personalDataHome := filepath.Join(root, "personal-data")
 			if os.MkdirAll(filepath.Join(personalDataHome, "opencode"), 0o700) != nil {
 				t.Fatal("personal-store canary directory unavailable")
@@ -60,7 +63,17 @@ func TestOpenCodeNativeProfilePersistence(t *testing.T) {
 				t.Fatal("private fixture command unavailable")
 			}
 			state := filepath.Join(root, "mcp-state")
-			profile := ManagedProfile{Name: role, Content: "private-persistence-system-marker", Model: "fixture/fixture-model", Reasoning: "low"}
+			otherRole := "secretary"
+			model, reasoning := "fixture/worker-model", "low"
+			profileContent := "private-persistence-worker-system-marker"
+			if role == "worker" {
+				otherRole = "secretary"
+			} else {
+				otherRole = "worker"
+				model, reasoning = "fixture/secretary-model", "high"
+				profileContent = "private-persistence-secretary-system-marker"
+			}
+			profile := ManagedProfile{Name: role, Content: profileContent, Model: model, Reasoning: reasoning}
 			var servers []MCPServer
 			toolName := "read"
 			toolArgs := `{"path":"fixture.txt"}`
@@ -71,6 +84,7 @@ func TestOpenCodeNativeProfilePersistence(t *testing.T) {
 				servers = []MCPServer{{Name: "secretary", Command: command, Args: []string{"-test.run=^TestOpenCodeConfigWrapperProcess$", "--", "mcp-server"}, Env: []MCPEnv{{Name: "SECRETARY_MCP_DATA_DIR", Value: state}, {Name: "SECRETARY_MCP_CAPABILITY", Value: "native-fixture-capability"}}}}
 			}
 			profile.Hash = HashProfile(profile.Content, nil, profile.Model, profile.Reasoning)
+			providerModel := strings.TrimPrefix(model, "fixture/")
 			var phase atomic.Int32
 			var checks [3]atomic.Int32
 			var policyFailure atomic.Bool
@@ -98,17 +112,18 @@ func TestOpenCodeNativeProfilePersistence(t *testing.T) {
 				p := int(phase.Load())
 				text := fixtureMessageText(messages)
 				encoded, _ := json.Marshal(body)
-				valid := body["model"] == "fixture-model" && body["reasoning_effort"] == "low" && strings.Contains(text, profile.Content) && !strings.Contains(string(encoded), "native-fixture-capability") && len(tools) == 1
+				otherProfileMarker := "private-persistence-" + otherRole + "-system-marker"
+				valid := body["model"] == providerModel && body["reasoning_effort"] == reasoning && strings.Contains(text, profile.Content) && !strings.Contains(text, otherProfileMarker) && !strings.Contains(text, fmt.Sprintf("fixture-%s-turn-0-completed", otherRole)) && !strings.Contains(string(encoded), "native-fixture-capability") && len(tools) == 1
 				for _, raw := range tools {
 					tool, _ := raw.(map[string]any)
 					function, _ := tool["function"].(map[string]any)
 					valid = valid && function["name"] == toolName
 				}
 				for earlier := 0; earlier < p; earlier++ {
-					valid = valid && strings.Contains(text, fmt.Sprintf("fixture-turn-%d-completed", earlier))
+					valid = valid && strings.Contains(text, fmt.Sprintf("fixture-%s-turn-%d-completed", role, earlier))
 				}
 				if !valid {
-					t.Logf("safe provider check: phase=%d model=%t effort=%t system=%t tools=%d credential_leak=%t", p, body["model"] == "fixture-model", body["reasoning_effort"] == "low", strings.Contains(text, profile.Content), len(tools), strings.Contains(string(encoded), "native-fixture-capability"))
+					t.Logf("safe provider check: role=%s phase=%d model=%t effort=%t system=%t tools=%d credential_leak=%t", role, p, body["model"] == providerModel, body["reasoning_effort"] == reasoning, strings.Contains(text, profile.Content), len(tools), strings.Contains(string(encoded), "native-fixture-capability"))
 					policyFailure.Store(true)
 				}
 				checks[p].Add(1)
@@ -144,7 +159,7 @@ func TestOpenCodeNativeProfilePersistence(t *testing.T) {
 					writeFixtureToolCall(w, fmt.Sprintf("forbidden-%d", p), "shell", `{"command":"touch forbidden-side-effect"}`)
 				default:
 					denied[p].Store(true)
-					writeFixtureCompletion(w, "fixture-final", fmt.Sprintf("fixture-turn-%d-completed", p))
+					writeFixtureCompletion(w, "fixture-final", fmt.Sprintf("fixture-%s-turn-%d-completed", role, p))
 				}
 			}))
 			defer server.Close()
@@ -155,6 +170,11 @@ func TestOpenCodeNativeProfilePersistence(t *testing.T) {
 			request := StartRequest{WorkerRef: "private-persistence-fixture", Workspace: workspace, Profile: profile, MCPServers: servers, DeferInitialPrompt: true}
 			session, err := runtime.Start(ctx, request)
 			if err != nil {
+				for _, marker := range []string{"model not found", "mode not found", "invalid params", "variant", "effort", "initialize", "process stopped", "deadline", "unauthorized", "401", "permission", "directory", "symlink"} {
+					if strings.Contains(strings.ToLower(err.Error()), marker) {
+						t.Logf("safe native startup error category: %s", marker)
+					}
+				}
 				t.Fatal("native managed profile startup failed")
 			}
 			defer func() {
@@ -180,14 +200,14 @@ func TestOpenCodeNativeProfilePersistence(t *testing.T) {
 				if os.WriteFile(filepath.Join(workspace, "fixture.txt"), []byte(nonces[p]), 0o600) != nil {
 					t.Fatal("private nonce file unavailable")
 				}
-				result := runNativeFixtureTurn(t, ctx, session, fmt.Sprintf("Perform private fixture turn %d.", p))
-				if result.Status != "succeeded" || result.Summary != fmt.Sprintf("fixture-turn-%d-completed", p) || checks[p].Load() < 3 || !denied[p].Load() || policyFailure.Load() {
+				result := runNativeFixtureTurn(t, ctx, session, fmt.Sprintf("Perform private %s fixture turn %d.", role, p))
+				if result.Status != "succeeded" || result.Summary != fmt.Sprintf("fixture-%s-turn-%d-completed", role, p) || checks[p].Load() < 3 || !denied[p].Load() || policyFailure.Load() {
 					t.Fatalf("safe persistence metadata: phase=%d status=%s calls=%d denied=%t policy_failure=%t", p, result.Status, checks[p].Load(), denied[p].Load(), policyFailure.Load())
 				}
 				if _, err := os.Stat(filepath.Join(workspace, "forbidden-side-effect")); !os.IsNotExist(err) {
 					t.Fatal("deny-first native policy permitted a forbidden side effect")
 				}
-				t.Logf("safe persistence metadata: phase=%d managed_system=true allowed_tool=true denied_builtin=true prior_history=true same_session=true", p)
+				t.Logf("safe persistence metadata: role=%s phase=%d managed_profile=true role_tool_only=true model_reasoning_isolated=true prior_role_history=true same_session=true", role, p)
 			}
 			canary, err := os.ReadFile(personalCanary)
 			if err != nil || string(canary) != "untouched-personal-store" {

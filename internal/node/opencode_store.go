@@ -6,24 +6,44 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"unicode"
 )
 
-const opencodeStoreSelectionFile = "opencode-native-selection.json"
+const (
+	opencodeStoreSelectionFile = "opencode-native-selection.json"
+
+	// OpenCodeNativeStoreRecordSeparator separates trusted fields emitted to the CLI.
+	OpenCodeNativeStoreRecordSeparator = "\x1f"
+)
+
+type OpenCodeNativeStoreMode string
+
+const (
+	OpenCodeNativeStoreModeIsolated OpenCodeNativeStoreMode = "isolated"
+	OpenCodeNativeStoreModeShared   OpenCodeNativeStoreMode = "shared"
+	OpenCodeNativeStoreModeLegacy   OpenCodeNativeStoreMode = "legacy"
+)
 
 // OpenCodeNativeStore keeps native harness data local to one Secretary server
-// installation or one Execution Node. DataHome is the XDG data home passed to
-// OpenCode, which stores its database below DataHome/opencode.
+// installation or one Execution Node. Mode is mutually exclusive by design.
 type OpenCodeNativeStore struct {
-	DataHome          string
-	Legacy            bool
-	MigrationRequired bool
+	DataHome string
+	Mode     OpenCodeNativeStoreMode
+}
+
+type OpenCodeNativeStoreOptions struct {
+	HasExistingState bool
+	LegacyDataHome   string
+	SharedDataHome   string
+	Standalone       bool
 }
 
 type openCodeStoreSelection struct {
-	Version  int    `json:"version"`
-	Mode     string `json:"mode"`
-	DataHome string `json:"data_home"`
+	Version  int                     `json:"version"`
+	Mode     OpenCodeNativeStoreMode `json:"mode"`
+	DataHome string                  `json:"data_home"`
 }
 
 func OpenCodeNativeDataHome(dataDir string) string {
@@ -37,11 +57,21 @@ func OpenCodeNativeDataHome(dataDir string) string {
 	return filepath.Join(root, "opencode-native")
 }
 
-// SelectOpenCodeNativeStore pins the store choice across installation restarts.
-// Existing application state without a selection record is treated as legacy
-// so managed OpenCode sessions keep their data home until owner-approved
-// migration; a clean installation gets a private store instead.
+// SelectOpenCodeNativeStore pins a server-role store. Existing application
+// state without a selection is treated as legacy so managed OpenCode sessions
+// keep their data home until owner-approved migration.
 func SelectOpenCodeNativeStore(dataDir string, hasExistingState bool, legacyDataHome string) (OpenCodeNativeStore, error) {
+	return SelectOpenCodeNativeStoreWithOptions(dataDir, OpenCodeNativeStoreOptions{
+		HasExistingState: hasExistingState,
+		LegacyDataHome:   legacyDataHome,
+		SharedDataHome:   OpenCodeNativeDataHome(dataDir),
+	})
+}
+
+// SelectOpenCodeNativeStoreWithOptions applies the same parser and canonical
+// path checks to Secretary and Node selections before touching the selected
+// native store. A standalone Node must not accept a shared Secretary store.
+func SelectOpenCodeNativeStoreWithOptions(dataDir string, options OpenCodeNativeStoreOptions) (OpenCodeNativeStore, error) {
 	root, err := filepath.Abs(strings.TrimSpace(dataDir))
 	if err != nil || strings.TrimSpace(dataDir) == "" {
 		return OpenCodeNativeStore{}, errors.New("opencode: installation data directory is required")
@@ -58,66 +88,193 @@ func SelectOpenCodeNativeStore(dataDir string, hasExistingState bool, legacyData
 		return OpenCodeNativeStore{}, errors.New("opencode: Node data directory permissions unavailable")
 	}
 
-	selectionPath := filepath.Join(root, opencodeStoreSelectionFile)
-	if info, statErr := os.Lstat(selectionPath); statErr == nil {
-		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return OpenCodeNativeStore{}, errors.New("opencode: invalid native store selection")
-		}
-		encoded, readErr := os.ReadFile(selectionPath)
-		if readErr != nil {
-			return OpenCodeNativeStore{}, errors.New("opencode: native store selection unavailable")
-		}
-		var selection openCodeStoreSelection
-		if json.Unmarshal(encoded, &selection) != nil || selection.Version != 1 || !filepath.IsAbs(selection.DataHome) {
-			return OpenCodeNativeStore{}, errors.New("opencode: invalid native store selection")
-		}
+	legacyHome, err := canonicalLegacyDataHome(options.LegacyDataHome)
+	if err != nil {
+		return OpenCodeNativeStore{}, err
+	}
+	selection, exists, err := readOpenCodeStoreSelection(root)
+	if err != nil {
+		return OpenCodeNativeStore{}, err
+	}
+	if exists {
 		switch selection.Mode {
-		case "isolated":
+		case OpenCodeNativeStoreModeIsolated:
 			privateHome := OpenCodeNativeDataHome(root)
-			if filepath.Clean(selection.DataHome) != filepath.Clean(privateHome) {
+			if !isCanonicalStoreHome(selection.DataHome, privateHome) {
 				return OpenCodeNativeStore{}, errors.New("opencode: isolated native store path does not match this installation")
 			}
 			if err := EnsurePrivateOpenCodeNativeDataHome(privateHome); err != nil {
 				return OpenCodeNativeStore{}, err
 			}
-			return OpenCodeNativeStore{DataHome: privateHome}, nil
-		case "legacy":
-			return OpenCodeNativeStore{DataHome: selection.DataHome, Legacy: true, MigrationRequired: true}, nil
+			return OpenCodeNativeStore{DataHome: privateHome, Mode: OpenCodeNativeStoreModeIsolated}, nil
+		case OpenCodeNativeStoreModeShared:
+			if options.Standalone {
+				return OpenCodeNativeStore{}, errors.New("opencode: standalone Node cannot use the shared Secretary store")
+			}
+			if strings.TrimSpace(options.SharedDataHome) == "" || !isCanonicalStoreHome(selection.DataHome, options.SharedDataHome) {
+				return OpenCodeNativeStore{}, errors.New("opencode: shared native store path does not match this installation")
+			}
+			sharedHome, err := filepath.Abs(options.SharedDataHome)
+			if err != nil {
+				return OpenCodeNativeStore{}, errors.New("opencode: shared native store path is unavailable")
+			}
+			if err := EnsurePrivateOpenCodeNativeDataHome(sharedHome); err != nil {
+				return OpenCodeNativeStore{}, err
+			}
+			return OpenCodeNativeStore{DataHome: sharedHome, Mode: OpenCodeNativeStoreModeShared}, nil
+		case OpenCodeNativeStoreModeLegacy:
+			if err := validateLegacyOpenCodeNativeDataHome(selection.DataHome); err != nil {
+				return OpenCodeNativeStore{}, err
+			}
+			return OpenCodeNativeStore{DataHome: selection.DataHome, Mode: OpenCodeNativeStoreModeLegacy}, nil
 		default:
 			return OpenCodeNativeStore{}, errors.New("opencode: invalid native store mode")
 		}
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return OpenCodeNativeStore{}, errors.New("opencode: native store selection unavailable")
 	}
 
-	selection := openCodeStoreSelection{Version: 1}
+	selection = openCodeStoreSelection{Version: 1}
 	store := OpenCodeNativeStore{}
-	if hasExistingState {
-		if strings.TrimSpace(legacyDataHome) == "" {
-			home, homeErr := os.UserHomeDir()
-			if homeErr != nil || strings.TrimSpace(home) == "" {
-				return OpenCodeNativeStore{}, errors.New("opencode: legacy native data home unavailable")
-			}
-			legacyDataHome = filepath.Join(home, ".local", "share")
+	if options.HasExistingState {
+		if err := validateLegacyOpenCodeNativeDataHome(legacyHome); err != nil {
+			return OpenCodeNativeStore{}, err
 		}
-		legacyDataHome, err = filepath.Abs(legacyDataHome)
-		if err != nil {
-			return OpenCodeNativeStore{}, errors.New("opencode: legacy native data home must be absolute")
-		}
-		selection.Mode, selection.DataHome = "legacy", legacyDataHome
-		store = OpenCodeNativeStore{DataHome: legacyDataHome, Legacy: true, MigrationRequired: true}
+		selection.Mode, selection.DataHome = OpenCodeNativeStoreModeLegacy, legacyHome
+		store = OpenCodeNativeStore{DataHome: legacyHome, Mode: OpenCodeNativeStoreModeLegacy}
 	} else {
-		selection.Mode = "isolated"
+		selection.Mode = OpenCodeNativeStoreModeIsolated
 		selection.DataHome = OpenCodeNativeDataHome(root)
 		if err := EnsurePrivateOpenCodeNativeDataHome(selection.DataHome); err != nil {
 			return OpenCodeNativeStore{}, err
 		}
-		store = OpenCodeNativeStore{DataHome: selection.DataHome}
+		store = OpenCodeNativeStore{DataHome: selection.DataHome, Mode: OpenCodeNativeStoreModeIsolated}
 	}
-	if err := writeOpenCodeStoreSelection(selectionPath, selection); err != nil {
+	if err := writeOpenCodeStoreSelection(filepath.Join(root, opencodeStoreSelectionFile), selection); err != nil {
 		return OpenCodeNativeStore{}, err
 	}
 	return store, nil
+}
+
+func readOpenCodeStoreSelection(root string) (openCodeStoreSelection, bool, error) {
+	path := filepath.Join(root, opencodeStoreSelectionFile)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return openCodeStoreSelection{}, false, nil
+	}
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return openCodeStoreSelection{}, false, errors.New("opencode: invalid native store selection")
+	}
+	encoded, err := os.ReadFile(path)
+	var selection openCodeStoreSelection
+	if err != nil || decodeStrictJSON(encoded, &selection) != nil || selection.Version != 1 || !filepath.IsAbs(selection.DataHome) || selection.DataHome != filepath.Clean(selection.DataHome) || strings.IndexFunc(selection.DataHome, unicode.IsControl) >= 0 {
+		return openCodeStoreSelection{}, false, errors.New("opencode: invalid native store selection")
+	}
+	if selection.Mode != OpenCodeNativeStoreModeIsolated && selection.Mode != OpenCodeNativeStoreModeLegacy && selection.Mode != OpenCodeNativeStoreModeShared {
+		return openCodeStoreSelection{}, false, errors.New("opencode: invalid native store mode")
+	}
+	return selection, true, nil
+}
+
+// EncodeSecretaryOpenCodeNativeStoreRecord emits the validated Secretary and
+// local Node stores plus the expected local Node data directory.
+func EncodeSecretaryOpenCodeNativeStoreRecord(secretary, worker OpenCodeNativeStore, workerDataDir string, workerStandalone bool) (string, error) {
+	secretaryFields, err := openCodeNativeStoreRecordFields(secretary)
+	if err != nil {
+		return "", err
+	}
+	workerFields, err := openCodeNativeStoreRecordFields(worker)
+	if err != nil {
+		return "", err
+	}
+	workerDataDir, err = canonicalCLIDataDir(workerDataDir)
+	if err != nil {
+		return "", err
+	}
+	fields := []string{"secretary"}
+	fields = append(fields, secretaryFields...)
+	fields = append(fields, workerFields...)
+	fields = append(fields, workerDataDir, strconv.FormatBool(workerStandalone))
+	return strings.Join(fields, OpenCodeNativeStoreRecordSeparator), nil
+}
+
+// EncodeNodeOpenCodeNativeStoreRecord emits one validated Node store together
+// with trusted deployment scope and probe policy from the same Go config read.
+func EncodeNodeOpenCodeNativeStoreRecord(store OpenCodeNativeStore, dataDir string, standalone, includeOpenCode bool) (string, error) {
+	storeFields, err := openCodeNativeStoreRecordFields(store)
+	if err != nil {
+		return "", err
+	}
+	dataDir, err = canonicalCLIDataDir(dataDir)
+	if err != nil {
+		return "", err
+	}
+	fields := []string{"node"}
+	fields = append(fields, storeFields...)
+	fields = append(fields, dataDir, strconv.FormatBool(standalone), strconv.FormatBool(includeOpenCode))
+	return strings.Join(fields, OpenCodeNativeStoreRecordSeparator), nil
+}
+
+func openCodeNativeStoreRecordFields(store OpenCodeNativeStore) ([]string, error) {
+	if store.Mode != OpenCodeNativeStoreModeIsolated && store.Mode != OpenCodeNativeStoreModeShared && store.Mode != OpenCodeNativeStoreModeLegacy {
+		return nil, errors.New("opencode: invalid selected native store mode")
+	}
+	if !filepath.IsAbs(store.DataHome) || store.DataHome != filepath.Clean(store.DataHome) || strings.IndexFunc(store.DataHome, unicode.IsControl) >= 0 {
+		return nil, errors.New("opencode: selected native store path cannot be safely emitted")
+	}
+	return []string{string(store.Mode), store.DataHome}, nil
+}
+
+func canonicalCLIDataDir(dataDir string) (string, error) {
+	if strings.TrimSpace(dataDir) == "" || strings.TrimSpace(dataDir) != dataDir || strings.IndexFunc(dataDir, unicode.IsControl) >= 0 {
+		return "", errors.New("opencode: selected Node data directory cannot be safely emitted")
+	}
+	absolute, err := filepath.Abs(dataDir)
+	if err != nil {
+		return "", errors.New("opencode: selected Node data directory is unavailable")
+	}
+	absolute = filepath.Clean(absolute)
+	if strings.IndexFunc(absolute, unicode.IsControl) >= 0 {
+		return "", errors.New("opencode: selected Node data directory cannot be safely emitted")
+	}
+	return absolute, nil
+}
+
+func canonicalLegacyDataHome(dataHome string) (string, error) {
+	if strings.TrimSpace(dataHome) == "" {
+		home, err := os.UserHomeDir()
+		if err != nil || strings.TrimSpace(home) == "" {
+			return "", errors.New("opencode: legacy native data home unavailable")
+		}
+		dataHome = filepath.Join(home, ".local", "share")
+	}
+	if !filepath.IsAbs(dataHome) {
+		absolute, err := filepath.Abs(dataHome)
+		if err != nil {
+			return "", errors.New("opencode: legacy native data home must be absolute")
+		}
+		dataHome = absolute
+	}
+	return filepath.Clean(dataHome), nil
+}
+
+func isCanonicalStoreHome(selected, expected string) bool {
+	if !filepath.IsAbs(expected) || selected != filepath.Clean(selected) {
+		return false
+	}
+	absolute, err := filepath.Abs(expected)
+	return err == nil && selected == filepath.Clean(absolute)
+}
+
+func validateLegacyOpenCodeNativeDataHome(dataHome string) error {
+	for _, path := range []string{filepath.Dir(dataHome), dataHome, filepath.Join(dataHome, "opencode")} {
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return errors.New("opencode: legacy native store path is unavailable or unsafe")
+		}
+	}
+	return nil
 }
 
 func writeOpenCodeStoreSelection(path string, selection openCodeStoreSelection) error {

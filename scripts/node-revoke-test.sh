@@ -32,7 +32,7 @@ export HOME="$TEST_HOME"
 export PATH="$FAKE_BIN:/usr/bin:/bin"
 export SECRETARY_NODE_ADMIN_TOKEN=admin
 mkdir -p "$HOME/.local/share/secretary/node"
-cat > "$HOME/.local/share/secretary/node/config.json" <<'EOF'
+cat > "$HOME/.local/share/secretary/node/config.json" <<EOF
 {
   "server_url": "http://secretary.test",
   "node": "test-node",

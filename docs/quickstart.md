@@ -10,7 +10,7 @@
 - установленный `mise`;
 - установленный OpenCode v2.
 
-Личная OpenCode authentication не используется. После setup owner отдельно войдёт в provider для Secretary store и local Worker Node store.
+Личная OpenCode authentication не используется. После setup owner один раз войдёт в provider для общего store Secretary и local Worker Node. Database создаётся локальной native serve operation без auth/provider call; setup не завершится успешно, если DB не появилась. Co-located Node setup/login/Doctor проверяют пару с Secretary, а standalone Node остаётся независимым. Duplicate и malformed deployment fields отклоняются до native CLI. Удалённый Node авторизуется в своём отдельном store.
 
 ## Запуск
 
@@ -37,24 +37,23 @@ export PATH="$HOME/.local/bin:$PATH"
 - собирает `secretary-node` и показывает явную full-access trusted Node policy;
 - проверяет выбранный harness;
 - проверяет наличие настроенного harness binary;
-- создаёт отдельные persistent native stores Secretary и local Node; `opencode auth list` только инициализирует DB и не запускает login;
+- создаёт один persistent native store для Secretary и co-located Worker Node; запускает `opencode serve --port 0 --stdio` с закрытым stdin, проверяет появление DB и останавливает setup с ошибкой, если инициализация не удалась; provider call/login не запускаются;
 - задаёт Secretary `openai/gpt-6.1-sol` / `xhigh`, а новым Workers — `openai/gpt-6-luna` / `xhigh`.
 
-Выполните provider login как явное действие owner; команда откроет OpenCode auth flow в выделенном Secretary store, не импортируя личные credentials:
+Выполните provider login как явное действие owner; команда откроет OpenCode auth flow в общем store, не импортируя личные credentials:
 
 ```sh
 sex opencode login
-sex node opencode login
 ```
 
-Проверьте оба runtime store:
+Проверьте общий runtime store с обеих сторон:
 
 ```sh
 sex doctor
 sex node doctor
 ```
 
-После явного provider login обе команды Doctor должны завершиться без ошибок. На чистой установке без login каждая показывает missing auth своего store и соответствующую команду; для старого managed state вместо этого появляется migration requirement.
+После явного provider login обе команды Doctor должны завершиться без ошибок. На чистой установке без login обе показывают отсутствие auth в общем store; выполните одну команду `sex opencode login`. Для старого managed state вместо этого появляется migration requirement.
 
 Запустите Secretary:
 
@@ -126,7 +125,7 @@ title_model = "gpt-6-luna"
 title_model_reasoning = "minimal"
 ```
 
-На Secretary server нужен OpenCode v2 с provider authentication. Генератор запускает отдельный `--standalone` вызов без tools и не меняет Secretary/Worker runtime. Bare model ID означает `openai/<model>`; другой provider задаётся явно.
+На Secretary server нужен OpenCode v2 с provider authentication в общем native store. Генератор запускает отдельный `--standalone` вызов без tools и не меняет Secretary/Worker runtime. Bare model ID означает `openai/<model>`; другой provider задаётся явно.
 
 `title-generation-prompt.md` создаётся рядом с `config.toml`; существующий файл не перезаписывается. Меняйте его и применяйте config reload, чтобы новые Topics использовали обновлённый prompt. Старые configs получают эти defaults автоматически. При ошибке или таймауте Topic получает название из текста задачи. Детали описаны в [справочнике конфигурации](configuration.md).
 
@@ -143,9 +142,10 @@ Secretary хранит данные в:
 - `config.toml`: runtime, модели, tools и пути Profiles;
 - `profiles/`: `secretary.md`, `worker.md`, `child-worker.md`;
 - `secretary.db`: durable Conversation, Tasks, Attempts и Events;
+- `opencode-native/`: общий persistent OpenCode native store Secretary и co-located Node;
 - `logs/` и `secretaryd.log`: runtime logs;
 - `environment`: bootstrap token и локальные capability values;
-- `node/`: non-secret deployment config, per-Node identity, local outbox и logs. Node использует только исходящее соединение.
+- `node/`: non-secret deployment config, per-Node identity, local outbox и logs. Co-located Node использует тот же OpenCode native store, что Secretary; remote Node хранит собственный store локально и подключается только исходящим соединением.
 
 Конфиг и Profiles можно менять вручную. Для применения изменений перезапустите сервер или используйте Config в Control Room.
 

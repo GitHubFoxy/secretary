@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
@@ -28,17 +29,41 @@ func main() {
 	nodeName := flag.String("name", envOr("SECRETARY_NODE_NAME", defaultNodeName()), "stable Node reference requested during pairing")
 	capacity := flag.Int("capacity", 1, "maximum advertised concurrent Worker capacity")
 	includeOpenCode := flag.Bool("include-opencode", true, "include the OpenCode ACP inventory probe")
-	selectOpenCodeStore := flag.Bool("select-opencode-store", false, "initialize the selected private or legacy OpenCode store and exit")
+	selectOpenCodeStore := flag.Bool("select-opencode-store", false, "initialize the selected shared, private, or legacy OpenCode store and exit")
+	standaloneSelection := flag.Bool("standalone", false, "select an independent host-local OpenCode store")
+	printStoreRecord := flag.Bool("print-opencode-store", false, "print the validated Node store and deployment config record")
 	flag.Parse()
+	if *printStoreRecord && !*selectOpenCodeStore {
+		log.Fatal("--print-opencode-store requires --select-opencode-store")
+	}
 	if *selectOpenCodeStore {
-		selectedStore, err := selectNodeNativeStore(*dataDir)
+		selectedDataDir, standalone, includeOpenCode := *dataDir, *standaloneSelection, *includeOpenCode
+		if strings.TrimSpace(*configPath) != "" {
+			deployment, err := node.LoadDeploymentConfig(*configPath)
+			if err != nil {
+				log.Fatalf("load Node deployment config: %v", err)
+			}
+			selectedDataDir, standalone, includeOpenCode = deployment.DataDir, deployment.Standalone, deployment.IncludeOpenCode
+		}
+		selectedStore, err := selectNodeNativeStore(selectedDataDir, standalone)
 		if err != nil {
 			log.Fatalf("select OpenCode native store: %v", err)
 		}
-		if selectedStore.MigrationRequired {
+		if selectedStore.Mode == node.OpenCodeNativeStoreModeLegacy {
 			log.Print("OpenCode legacy native store preserved; owner-approved migration is required before switching stores")
+		} else if selectedStore.Mode == node.OpenCodeNativeStoreModeShared {
+			log.Print("shared Secretary and local Node OpenCode store selected")
 		} else {
 			log.Print("private Node OpenCode store selected")
+		}
+		if *printStoreRecord {
+			record, err := node.EncodeNodeOpenCodeNativeStoreRecord(selectedStore, selectedDataDir, standalone, includeOpenCode)
+			if err != nil {
+				log.Fatalf("encode selected Node OpenCode native store: %v", err)
+			}
+			if _, err := fmt.Fprintln(os.Stdout, record); err != nil {
+				log.Fatalf("print selected Node OpenCode native store: %v", err)
+			}
 		}
 		return
 	}
@@ -65,11 +90,11 @@ func main() {
 		log.Fatalf("load Node workspace mappings: %v", err)
 	}
 
-	selectedStore, err := selectNodeNativeStore(*dataDir)
+	selectedStore, err := selectNodeNativeStore(*dataDir, deployment.Standalone)
 	if err != nil {
 		log.Fatalf("select OpenCode native store: %v", err)
 	}
-	if selectedStore.MigrationRequired {
+	if selectedStore.Mode == node.OpenCodeNativeStoreModeLegacy {
 		log.Printf("OpenCode legacy native store preserved; owner-approved migration is required before switching stores")
 	}
 	if err := os.MkdirAll(*dataDir, 0o700); err != nil {
@@ -118,13 +143,33 @@ func main() {
 	}
 }
 
-func selectNodeNativeStore(dataDir string) (node.OpenCodeNativeStore, error) {
+func selectNodeNativeStore(dataDir string, standalone bool) (node.OpenCodeNativeStore, error) {
 	_, stateErr := os.Stat(filepath.Join(dataDir, "node-state.json"))
 	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
 		return node.OpenCodeNativeStore{}, errors.New("inspect Node local state before selecting OpenCode store")
 	}
+	_, configErr := os.Stat(filepath.Join(filepath.Dir(filepath.Clean(dataDir)), "config.json"))
+	if configErr != nil && !errors.Is(configErr, os.ErrNotExist) {
+		return node.OpenCodeNativeStore{}, errors.New("inspect Node deployment config before selecting OpenCode store")
+	}
 	legacyDataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
-	return node.SelectOpenCodeNativeStore(dataDir, stateErr == nil, legacyDataHome)
+	sharedDataHome := ""
+	if !standalone {
+		absoluteDataDir, absErr := filepath.Abs(dataDir)
+		if absErr != nil {
+			return node.OpenCodeNativeStore{}, errors.New("opencode: Node data directory is unavailable")
+		}
+		serverRoot := filepath.Dir(filepath.Dir(absoluteDataDir))
+		if filepath.Clean(absoluteDataDir) == filepath.Join(serverRoot, "node", "data") {
+			sharedDataHome = node.OpenCodeNativeDataHome(serverRoot)
+		}
+	}
+	return node.SelectOpenCodeNativeStoreWithOptions(dataDir, node.OpenCodeNativeStoreOptions{
+		HasExistingState: stateErr == nil || configErr == nil,
+		LegacyDataHome:   legacyDataHome,
+		SharedDataHome:   sharedDataHome,
+		Standalone:       standalone,
+	})
 }
 
 func installedHarnesses() map[core.HarnessKind]string {
@@ -150,7 +195,7 @@ func configuredNodeRuntime(dataDir string) node.Runtime {
 func configuredNodeDiscovery(identity core.NodeReference, includeOpenCode bool, store node.OpenCodeNativeStore) node.HarnessDiscovery {
 	return node.HarnessDiscovery{
 		Node: identity, Runner: node.ExecCommandRunner{}, IncludeOpenCode: includeOpenCode,
-		OpenCodeDataHome: store.DataHome, LegacyOpenCodeDataHome: store.Legacy,
+		OpenCodeDataHome: store.DataHome, LegacyOpenCodeDataHome: store.Mode == node.OpenCodeNativeStoreModeLegacy,
 		BinaryOverrides: installedHarnesses(),
 	}
 }
@@ -176,7 +221,7 @@ func configuredNodeRuntimeWithStore(dataDir string, store node.OpenCodeNativeSto
 		ACP:            node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		Claude:         node.ClaudeCodeRuntime{Command: claudeCommand, Arguments: claudeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		FX:             node.FXRuntime{ACPRuntime: node.ACPRuntime{Command: fxCommand, Arguments: fxArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
-		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, DataHome: store.DataHome, LegacyDataHome: store.Legacy, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
+		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, DataHome: store.DataHome, LegacyDataHome: store.Mode == node.OpenCodeNativeStoreModeLegacy, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 	}
 }
 

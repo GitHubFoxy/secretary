@@ -34,21 +34,54 @@ func main() {
 	listen := flag.String("listen", "127.0.0.1:8081", "web listener address")
 	configPath := flag.String("config", "", "path to Secretary config.toml")
 	debug := flag.Bool("debug", false, "enable the local-only Control Room")
-	selectNativeStores := flag.Bool("select-opencode-stores", false, "initialize the selected private or legacy OpenCode stores and exit")
+	selectNativeStores := flag.Bool("select-opencode-stores", false, "initialize the selected shared, private, or legacy OpenCode stores and exit")
+	printNativeStores := flag.Bool("print-opencode-stores", false, "print validated Secretary and local Node store mode/path records")
+	selectSharedNativeStore := flag.Bool("select-shared-opencode-store", false, "explicitly select one private OpenCode store for Secretary and the co-located Node, then exit")
 	flag.Parse()
-	secretaryStore, workerStore, err := selectRuntimeNativeStores(*dataDir)
+	if *selectSharedNativeStore {
+		if *printNativeStores {
+			log.Fatal("--print-opencode-stores requires --select-opencode-stores")
+		}
+		secretaryStore, workerStore, err := node.SelectSharedOpenCodeNativeStores(*dataDir, filepath.Join(*dataDir, "node", "data"))
+		if err != nil {
+			log.Fatalf("select shared OpenCode native store: %v", err)
+		}
+		if secretaryStore.DataHome != workerStore.DataHome {
+			log.Fatal("select shared OpenCode native store: role selections do not agree")
+		}
+		log.Print("shared Secretary and local Worker Node OpenCode store selected")
+		return
+	}
+	selection, err := selectRuntimeNativeStoreSelection(*dataDir)
 	if err != nil {
 		log.Fatalf("select OpenCode native stores: %v", err)
 	}
-	if secretaryStore.MigrationRequired {
+	secretaryStore, workerStore := selection.Secretary, selection.Worker
+	if secretaryStore.Mode == node.OpenCodeNativeStoreModeLegacy {
 		log.Print("Secretary OpenCode legacy native store preserved; owner-approved migration is required before switching stores")
 	}
-	if workerStore.MigrationRequired {
+	if workerStore.Mode == node.OpenCodeNativeStoreModeLegacy {
 		log.Print("local Worker Node OpenCode legacy store preserved; owner-approved migration is required before switching stores")
 	}
+	if *printNativeStores && !*selectNativeStores {
+		log.Fatal("--print-opencode-stores requires --select-opencode-stores")
+	}
 	if *selectNativeStores {
-		if !secretaryStore.MigrationRequired && !workerStore.MigrationRequired {
-			log.Print("private Secretary and local Worker Node OpenCode stores selected")
+		if secretaryStore.Mode != node.OpenCodeNativeStoreModeLegacy && workerStore.Mode != node.OpenCodeNativeStoreModeLegacy {
+			if secretaryStore.Mode == node.OpenCodeNativeStoreModeShared && workerStore.Mode == node.OpenCodeNativeStoreModeShared {
+				log.Print("shared Secretary and local Worker Node OpenCode store selected")
+			} else {
+				log.Print("private Secretary and local Worker Node OpenCode stores selected")
+			}
+		}
+		if *printNativeStores {
+			record, err := node.EncodeSecretaryOpenCodeNativeStoreRecord(secretaryStore, workerStore, selection.NodeDataDir, selection.NodeStandalone)
+			if err != nil {
+				log.Fatalf("encode selected OpenCode native stores: %v", err)
+			}
+			if _, err := fmt.Fprintln(os.Stdout, record); err != nil {
+				log.Fatalf("print selected OpenCode native stores: %v", err)
+			}
 		}
 		return
 	}
@@ -478,29 +511,124 @@ func secretaryMCPServerURL(listen string) string {
 	return "http://" + listen
 }
 
-func selectRuntimeNativeStores(dataDir string) (secretaryStore, workerStore node.OpenCodeNativeStore, err error) {
+type runtimeNativeStoreSelection struct {
+	Secretary      node.OpenCodeNativeStore
+	Worker         node.OpenCodeNativeStore
+	NodeDataDir    string
+	NodeStandalone bool
+}
+
+func selectRuntimeNativeStoreSelection(dataDir string) (runtimeNativeStoreSelection, error) {
 	if strings.TrimSpace(dataDir) == "" {
-		return node.OpenCodeNativeStore{}, node.OpenCodeNativeStore{}, errors.New("Secretary data directory is required")
+		return runtimeNativeStoreSelection{}, errors.New("Secretary data directory is required")
 	}
+	absoluteDataDir, err := filepath.Abs(strings.TrimSpace(dataDir))
+	if err != nil {
+		return runtimeNativeStoreSelection{}, errors.New("Secretary data directory is unavailable")
+	}
+	dataDir = filepath.Clean(absoluteDataDir)
 	serverStateExists, err := fileExists(filepath.Join(dataDir, "secretary.db"))
 	if err != nil {
-		return node.OpenCodeNativeStore{}, node.OpenCodeNativeStore{}, err
+		return runtimeNativeStoreSelection{}, err
+	}
+	serverConfigExists, err := fileExists(filepath.Join(dataDir, "config.toml"))
+	if err != nil {
+		return runtimeNativeStoreSelection{}, err
 	}
 	workerDataDir := filepath.Join(dataDir, "node", "data")
+	nodeConfigPath := filepath.Join(dataDir, "node", "config.json")
+	nodeConfigExists, err := fileExists(nodeConfigPath)
+	if err != nil {
+		return runtimeNativeStoreSelection{}, err
+	}
+	nodeStandalone := false
+	if nodeConfigExists {
+		deployment, err := node.LoadDeploymentConfig(nodeConfigPath)
+		if err != nil {
+			return runtimeNativeStoreSelection{}, errors.New("opencode: local Node deployment config cannot be validated")
+		}
+		configuredNodeDataDir, err := filepath.Abs(deployment.DataDir)
+		if err != nil {
+			return runtimeNativeStoreSelection{}, errors.New("opencode: local Node data directory cannot be validated")
+		}
+		configuredNodeDataDir = filepath.Clean(configuredNodeDataDir)
+		nodeStandalone = deployment.Standalone
+		if nodeStandalone {
+			workerDataDir = configuredNodeDataDir
+		} else if configuredNodeDataDir != workerDataDir {
+			return runtimeNativeStoreSelection{}, errors.New("opencode: co-located Node data directory does not match this Secretary installation")
+		}
+	}
 	nodeStateExists, err := fileExists(filepath.Join(workerDataDir, "node-state.json"))
 	if err != nil {
-		return node.OpenCodeNativeStore{}, node.OpenCodeNativeStore{}, err
+		return runtimeNativeStoreSelection{}, err
+	}
+	secretarySelectionExists, err := fileExists(filepath.Join(dataDir, "opencode-native-selection.json"))
+	if err != nil {
+		return runtimeNativeStoreSelection{}, err
+	}
+	nodeSelectionExists, err := fileExists(filepath.Join(workerDataDir, "opencode-native-selection.json"))
+	if err != nil {
+		return runtimeNativeStoreSelection{}, errors.New("inspect local Node OpenCode selection")
+	}
+	if !serverStateExists && !serverConfigExists && !nodeStateExists && !nodeConfigExists && !secretarySelectionExists && !nodeSelectionExists {
+		secretaryStore, workerStore, err := node.SelectSharedOpenCodeNativeStores(dataDir, workerDataDir)
+		return runtimeNativeStoreSelection{Secretary: secretaryStore, Worker: workerStore, NodeDataDir: workerDataDir}, err
+	}
+	if !nodeStandalone && secretarySelectionExists != nodeSelectionExists {
+		return runtimeNativeStoreSelection{}, errors.New("opencode: shared store selection is incomplete; run sex opencode select-shared-store")
 	}
 	legacyDataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
-	secretaryStore, err = node.SelectOpenCodeNativeStore(dataDir, serverStateExists, legacyDataHome)
+	hasExistingInstallation := serverStateExists || serverConfigExists || nodeStateExists || nodeConfigExists
+	secretaryStore, err := node.SelectOpenCodeNativeStoreWithOptions(dataDir, node.OpenCodeNativeStoreOptions{
+		HasExistingState: hasExistingInstallation,
+		LegacyDataHome:   legacyDataHome,
+		SharedDataHome:   node.OpenCodeNativeDataHome(dataDir),
+	})
 	if err != nil {
-		return node.OpenCodeNativeStore{}, node.OpenCodeNativeStore{}, err
+		return runtimeNativeStoreSelection{}, err
 	}
-	workerStore, err = node.SelectOpenCodeNativeStore(workerDataDir, serverStateExists || nodeStateExists, legacyDataHome)
-	if err != nil {
-		return node.OpenCodeNativeStore{}, node.OpenCodeNativeStore{}, err
+	sharedNodeHome := ""
+	if !nodeStandalone {
+		sharedNodeHome = node.OpenCodeNativeDataHome(dataDir)
 	}
-	return secretaryStore, workerStore, nil
+	if secretaryStore.Mode == node.OpenCodeNativeStoreModeShared && !nodeStandalone {
+		if !nodeSelectionExists {
+			return runtimeNativeStoreSelection{}, errors.New("opencode: shared store selection is incomplete; run sex opencode select-shared-store")
+		}
+		workerStore, err := node.SelectOpenCodeNativeStoreWithOptions(workerDataDir, node.OpenCodeNativeStoreOptions{
+			HasExistingState: true, LegacyDataHome: legacyDataHome,
+			SharedDataHome: secretaryStore.DataHome,
+		})
+		if err != nil || workerStore.Mode != node.OpenCodeNativeStoreModeShared || workerStore.DataHome != secretaryStore.DataHome {
+			return runtimeNativeStoreSelection{}, errors.New("opencode: Secretary and local Node shared store selections do not match")
+		}
+		return runtimeNativeStoreSelection{Secretary: secretaryStore, Worker: workerStore, NodeDataDir: workerDataDir}, nil
+	}
+	if nodeSelectionExists {
+		workerStore, err := node.SelectOpenCodeNativeStoreWithOptions(workerDataDir, node.OpenCodeNativeStoreOptions{
+			HasExistingState: hasExistingInstallation, LegacyDataHome: legacyDataHome,
+			SharedDataHome: sharedNodeHome, Standalone: nodeStandalone,
+		})
+		if err != nil {
+			return runtimeNativeStoreSelection{}, err
+		}
+		if workerStore.Mode == node.OpenCodeNativeStoreModeShared {
+			return runtimeNativeStoreSelection{}, errors.New("opencode: local Node selected a shared store but Secretary did not; run sex opencode select-shared-store")
+		}
+		return runtimeNativeStoreSelection{Secretary: secretaryStore, Worker: workerStore, NodeDataDir: workerDataDir, NodeStandalone: nodeStandalone}, nil
+	}
+	if secretaryStore.Mode == node.OpenCodeNativeStoreModeLegacy || nodeStateExists || nodeConfigExists {
+		workerStore, err := node.SelectOpenCodeNativeStoreWithOptions(workerDataDir, node.OpenCodeNativeStoreOptions{
+			HasExistingState: true, LegacyDataHome: legacyDataHome, Standalone: nodeStandalone,
+		})
+		if err != nil {
+			return runtimeNativeStoreSelection{}, err
+		}
+		return runtimeNativeStoreSelection{Secretary: secretaryStore, Worker: workerStore, NodeDataDir: workerDataDir, NodeStandalone: nodeStandalone}, nil
+	}
+	secretaryStore, workerStore, err := node.SelectSharedOpenCodeNativeStores(dataDir, workerDataDir)
+	return runtimeNativeStoreSelection{Secretary: secretaryStore, Worker: workerStore, NodeDataDir: workerDataDir}, err
 }
 
 func fileExists(path string) (bool, error) {
@@ -515,8 +643,8 @@ func fileExists(path string) (bool, error) {
 }
 
 func configuredRuntimePair(snapshot config.Snapshot, dataDir string) (secretaryRuntime, workerRuntime node.Runtime, secretaryCommand, workerCommand string) {
-	secretaryStore := node.OpenCodeNativeStore{DataHome: node.OpenCodeNativeDataHome(dataDir)}
-	workerStore := node.OpenCodeNativeStore{DataHome: node.OpenCodeNativeDataHome(filepath.Join(dataDir, "node", "data"))}
+	secretaryStore := node.OpenCodeNativeStore{DataHome: node.OpenCodeNativeDataHome(dataDir), Mode: node.OpenCodeNativeStoreModeShared}
+	workerStore := secretaryStore
 	secretaryRuntime, secretaryCommand = configuredRuntimeWithStore(snapshot, dataDir, secretaryStore)
 	workerRuntime, workerCommand = configuredRuntimeWithStore(snapshot, filepath.Join(dataDir, "node", "data"), workerStore)
 	return secretaryRuntime, workerRuntime, secretaryCommand, workerCommand
@@ -560,7 +688,7 @@ func configuredRuntimeWithStore(snapshot config.Snapshot, dataDir string, store 
 		ACP:            node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		Claude:         node.ClaudeCodeRuntime{Command: claudeCommand, Arguments: claudeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		FX:             node.FXRuntime{ACPRuntime: node.ACPRuntime{Command: fxCommand, Arguments: fxArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
-		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, DataHome: store.DataHome, LegacyDataHome: store.Legacy, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
+		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, DataHome: store.DataHome, LegacyDataHome: store.Mode == node.OpenCodeNativeStoreModeLegacy, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 	}
 	command := codexCommand
 	arguments := codexArgs

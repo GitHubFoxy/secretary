@@ -94,7 +94,7 @@ func attachProductionTelegram(ctx context.Context, dataDir, listen string, store
 			}
 			return (telegram.OpenCodeTitleGenerator{
 				Model: policy.TitleModel, Reasoning: policy.TitleModelReasoning, Prompt: snapshot.TitlePrompt.Content,
-				DataHome: nativeStore.DataHome, LegacyDataHome: nativeStore.Legacy,
+				DataHome: nativeStore.DataHome, LegacyDataHome: nativeStore.Mode == node.OpenCodeNativeStoreModeLegacy,
 			}).Generate(ctx, prompt)
 		},
 	}, &telegram.BotAPITransport{BaseURL: deployment.BaseURL, BotToken: deployment.BotToken}, &telegram.HTTPServerClient{

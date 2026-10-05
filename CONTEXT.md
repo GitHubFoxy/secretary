@@ -49,7 +49,7 @@ _Avoid_: channel thread, client session, per-app chat
 _Avoid_: UI, frontend, extension
 
 **Execution node**:
-Host, который запускает Worker по Dispatch от Secretary server и сам держит outbound connection к нему. Он не владеет Conversation или Result routing; в первом slice default node является local Secretary host.
+Host, который запускает Worker по Dispatch от Secretary server и сам держит outbound connection к нему. Он не владеет Conversation или Result routing; в первом slice default node является local Secretary host. На co-located host Secretary и local Node используют один выделенный OpenCode native store; remote Node владеет собственным host-local store. Persisted `standalone` scope runtime запрещает standalone Node выбрать shared Secretary store.
 _Avoid_: client, server replica, remote Worker
 
 **Execution environment**:

@@ -42,13 +42,61 @@ func TestConfiguredNodeRuntimeUsesStableWorkerNativeStore(t *testing.T) {
 func TestConfiguredNodeRuntimeAndInventoryShareNativeStore(t *testing.T) {
 	for _, store := range []node.OpenCodeNativeStore{
 		{DataHome: filepath.Join(t.TempDir(), "private-native")},
-		{DataHome: filepath.Join(t.TempDir(), "legacy-xdg"), Legacy: true, MigrationRequired: true},
+		{DataHome: filepath.Join(t.TempDir(), "legacy-xdg"), Mode: node.OpenCodeNativeStoreModeLegacy},
 	} {
 		runtime := configuredNodeRuntimeWithStore(t.TempDir(), store).(node.RuntimeRouter).OpenCode.(node.OpenCodeRuntime)
 		inventory := configuredNodeDiscovery("node-a", true, store)
 		if runtime.DataHome != inventory.OpenCodeDataHome || runtime.LegacyDataHome != inventory.LegacyOpenCodeDataHome {
 			t.Fatal("Node runtime and actual inventory selected different native stores")
 		}
+	}
+}
+
+func TestSelectNodeNativeStoreValidatesSharedPathAndConfigOnlyLegacyState(t *testing.T) {
+	serverRoot := t.TempDir()
+	nodeDataDir := filepath.Join(serverRoot, "node", "data")
+	_, _, err := node.SelectSharedOpenCodeNativeStores(serverRoot, nodeDataDir)
+	if err != nil {
+		t.Fatal("could not prepare co-located shared store")
+	}
+	selected, err := selectNodeNativeStore(nodeDataDir, false)
+	if err != nil || selected.Mode != node.OpenCodeNativeStoreModeShared || selected.DataHome != node.OpenCodeNativeDataHome(serverRoot) {
+		t.Fatal("local Node did not validate and retain the co-located shared store")
+	}
+
+	wrongServerRoot := t.TempDir()
+	wrongNodeData := filepath.Join(wrongServerRoot, "node", "data")
+	wrongHome := filepath.Join(t.TempDir(), "opencode-native")
+	if err := os.MkdirAll(wrongHome, 0o700); err != nil {
+		t.Fatal("foreign store fixture unavailable")
+	}
+	selection := []byte(`{"version":1,"mode":"shared","data_home":"` + wrongHome + `"}`)
+	if err := os.MkdirAll(wrongNodeData, 0o700); err != nil {
+		t.Fatal("foreign Node fixture unavailable")
+	}
+	if err := os.WriteFile(filepath.Join(wrongNodeData, "opencode-native-selection.json"), selection, 0o600); err != nil {
+		t.Fatal("foreign Node selection fixture unavailable")
+	}
+	if _, err := selectNodeNativeStore(wrongNodeData, false); err == nil {
+		t.Fatal("Node accepted a shared store outside the co-located Secretary installation")
+	}
+
+	if _, err := selectNodeNativeStore(nodeDataDir, true); err == nil {
+		t.Fatal("standalone Node accepted the co-located Secretary shared store")
+	}
+
+	legacyDataDir := filepath.Join(t.TempDir(), "node", "data")
+	if err := os.MkdirAll(filepath.Dir(legacyDataDir), 0o700); err != nil {
+		t.Fatal("legacy Node config directory unavailable")
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(legacyDataDir), "config.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal("legacy Node config fixture unavailable")
+	}
+	legacyHome := filepath.Join(t.TempDir(), "legacy-xdg")
+	t.Setenv("XDG_DATA_HOME", legacyHome)
+	legacy, err := selectNodeNativeStore(legacyDataDir, false)
+	if err != nil || legacy.Mode != node.OpenCodeNativeStoreModeLegacy || legacy.DataHome != legacyHome {
+		t.Fatal("existing Node config without state was silently assigned an isolated store")
 	}
 }
 

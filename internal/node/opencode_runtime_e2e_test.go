@@ -606,11 +606,16 @@ func TestOpenCodeConfigWrapperProcess(t *testing.T) {
 	provider["env"] = []string{"FIXTURE_API_KEY"}
 	provider["settings"] = map[string]string{"baseURL": os.Getenv("TEST_FIXTURE_URL")}
 	models, _ := provider["models"].(map[string]any)
-	model, _ := models["fixture-model"].(map[string]any)
-	if model == nil {
+	if len(models) == 0 {
 		t.Fatal("private V2 config has no fixture model entry")
 	}
-	model["capabilities"] = map[string]any{"tools": true, "reasoning": true, "input": []string{"text"}, "output": []string{"text"}}
+	for _, configured := range models {
+		model, _ := configured.(map[string]any)
+		if model == nil {
+			t.Fatal("private V2 config has an invalid fixture model entry")
+		}
+		model["capabilities"] = map[string]any{"tools": true, "reasoning": true, "input": []string{"text"}, "output": []string{"text"}}
+	}
 	encoded, err := json.Marshal(config)
 	if err != nil || os.WriteFile(configPath, encoded, 0o600) != nil {
 		t.Fatal("could not update private V2 config")

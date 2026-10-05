@@ -1,7 +1,6 @@
 package node
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode"
 
 	"github.com/beruseruko/secretary/internal/core"
 )
@@ -31,6 +31,7 @@ type DeploymentConfig struct {
 	Capacity        int                `json:"capacity,omitempty"`
 	ListenAddress   string             `json:"listen_address,omitempty"`
 	IncludeOpenCode bool               `json:"include_opencode"`
+	Standalone      bool               `json:"standalone,omitempty"`
 }
 
 func LoadDeploymentConfig(path string) (DeploymentConfig, error) {
@@ -38,18 +39,9 @@ func LoadDeploymentConfig(path string) (DeploymentConfig, error) {
 	if err != nil {
 		return DeploymentConfig{}, err
 	}
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	decoder.DisallowUnknownFields()
-	var config DeploymentConfig
-	if err := decoder.Decode(&config); err != nil {
+	config := DeploymentConfig{IncludeOpenCode: true}
+	if err := decodeStrictJSON(encoded, &config); err != nil {
 		return DeploymentConfig{}, fmt.Errorf("node deployment: decode config: %w", err)
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(encoded, &fields); err != nil {
-		return DeploymentConfig{}, fmt.Errorf("node deployment: decode config: %w", err)
-	}
-	if _, specified := fields["include_opencode"]; !specified {
-		config.IncludeOpenCode = true
 	}
 	if err := config.Validate(); err != nil {
 		return DeploymentConfig{}, err
@@ -95,7 +87,7 @@ func (c DeploymentConfig) Validate() error {
 	if !validNodeReference(c.Node) {
 		return errors.New("node deployment: valid Node identity is required")
 	}
-	if strings.TrimSpace(c.DataDir) == "" || !filepath.IsAbs(c.DataDir) {
+	if strings.TrimSpace(c.DataDir) == "" || strings.TrimSpace(c.DataDir) != c.DataDir || !filepath.IsAbs(c.DataDir) || strings.IndexFunc(c.DataDir, unicode.IsControl) >= 0 {
 		return errors.New("node deployment: absolute data directory is required")
 	}
 	if strings.TrimSpace(c.ListenAddress) != "" {
