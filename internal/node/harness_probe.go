@@ -181,10 +181,16 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
 		result.Instance = instance
 		return result
 	}
-	authOutput := auth.Stdout + "\n" + auth.Stderr
-	ok, method := parseAuthentication(p.Spec.Kind, authOutput, p.Spec.AuthenticationMethod)
-	if !ok && p.Spec.Kind == core.HarnessCodex && auth.ExitCode == 0 && strings.TrimSpace(authOutput) == "" {
-		ok, method = true, "credential"
+	var ok bool
+	var method string
+	if p.Spec.Kind == core.HarnessOpenCode {
+		ok, method = openCodeAuthOutputHasStoredCredential(auth.Stdout), "provider"
+	} else {
+		authOutput := auth.Stdout + "\n" + auth.Stderr
+		ok, method = parseAuthentication(p.Spec.Kind, authOutput, p.Spec.AuthenticationMethod)
+		if !ok && p.Spec.Kind == core.HarnessCodex && auth.ExitCode == 0 && strings.TrimSpace(authOutput) == "" {
+			ok, method = true, "credential"
+		}
 	}
 	instance.Authentication = core.HarnessAuthentication{Authenticated: ok, Method: method}
 	if !ok {
@@ -360,7 +366,7 @@ func parseAuthentication(kind core.HarnessKind, output, fallbackMethod string) (
 	}
 
 	if kind == core.HarnessOpenCode {
-		return true, "provider"
+		return false, fallbackMethod
 	}
 	if kind == core.HarnessFX {
 		return true, "local"
@@ -656,7 +662,7 @@ func DefaultCodexProbeSpec() HarnessProbeSpec {
 
 func DefaultOpenCodeProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
-		Kind: core.HarnessOpenCode, Binary: "opencode", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"auth", "list"}, ModelsArgs: []string{"models"}, ACPArgs: []string{"acp"},
+		Kind: core.HarnessOpenCode, Binary: "opencode", VersionArgs: []string{"--version"}, AuthenticationArgs: append([]string(nil), openCodeAuthenticationArgs...), ModelsArgs: []string{"models"}, ACPArgs: []string{"acp"},
 		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel},
 		// V2.0.22 ACP translates native tools to title/kind/locations/rawInput,
 		// without explicit tool identity. Do not promise normalized tool cards

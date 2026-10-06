@@ -37,7 +37,22 @@ func main() {
 	selectNativeStores := flag.Bool("select-opencode-stores", false, "initialize the selected shared, private, or legacy OpenCode stores and exit")
 	printNativeStores := flag.Bool("print-opencode-stores", false, "print validated Secretary and local Node store mode/path records")
 	selectSharedNativeStore := flag.Bool("select-shared-opencode-store", false, "explicitly select one private OpenCode store for Secretary and the co-located Node, then exit")
+	checkOpenCodeAuth := flag.Bool("check-opencode-auth", false, "check stored OpenCode credentials in the selected Secretary store and exit")
+	opencodeCommand := flag.String("opencode-command", "opencode", "OpenCode executable used for the selected-store auth check")
 	flag.Parse()
+	if *checkOpenCodeAuth {
+		if *selectNativeStores || *printNativeStores || *selectSharedNativeStore {
+			log.Fatal("--check-opencode-auth cannot be combined with OpenCode store selection")
+		}
+		selection, err := selectRuntimeNativeStoreSelection(*dataDir)
+		if err != nil || (selection.Secretary.Mode != node.OpenCodeNativeStoreModeIsolated && selection.Secretary.Mode != node.OpenCodeNativeStoreModeShared) {
+			os.Exit(1)
+		}
+		if err := node.CheckOpenCodeAuthentication(context.Background(), *opencodeCommand, selection.Secretary.DataHome); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	if *selectSharedNativeStore {
 		if *printNativeStores {
 			log.Fatal("--print-opencode-stores requires --select-opencode-stores")

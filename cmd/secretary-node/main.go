@@ -32,7 +32,33 @@ func main() {
 	selectOpenCodeStore := flag.Bool("select-opencode-store", false, "initialize the selected shared, private, or legacy OpenCode store and exit")
 	standaloneSelection := flag.Bool("standalone", false, "select an independent host-local OpenCode store")
 	printStoreRecord := flag.Bool("print-opencode-store", false, "print the validated Node store and deployment config record")
+	checkOpenCodeAuth := flag.Bool("check-opencode-auth", false, "check stored OpenCode credentials in the selected Node store and exit")
+	opencodeCommand := flag.String("opencode-command", "opencode", "OpenCode executable used for the selected-store auth check")
 	flag.Parse()
+	if *checkOpenCodeAuth {
+		if *selectOpenCodeStore || *printStoreRecord {
+			log.Fatal("--check-opencode-auth cannot be combined with OpenCode store selection")
+		}
+		selectedDataDir, standalone, includeOpenCode := *dataDir, *standaloneSelection, *includeOpenCode
+		if strings.TrimSpace(*configPath) != "" {
+			deployment, err := node.LoadDeploymentConfig(*configPath)
+			if err != nil || !deployment.IncludeOpenCode {
+				os.Exit(1)
+			}
+			selectedDataDir, standalone, includeOpenCode = deployment.DataDir, deployment.Standalone, deployment.IncludeOpenCode
+		}
+		if !includeOpenCode {
+			os.Exit(1)
+		}
+		selectedStore, err := selectNodeNativeStore(selectedDataDir, standalone)
+		if err != nil || (selectedStore.Mode != node.OpenCodeNativeStoreModeIsolated && selectedStore.Mode != node.OpenCodeNativeStoreModeShared) {
+			os.Exit(1)
+		}
+		if err := node.CheckOpenCodeAuthentication(context.Background(), *opencodeCommand, selectedStore.DataHome); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	if *printStoreRecord && !*selectOpenCodeStore {
 		log.Fatal("--print-opencode-store requires --select-opencode-store")
 	}

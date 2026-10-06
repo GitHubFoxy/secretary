@@ -264,7 +264,9 @@ func TestOpenCodeConfigurationRegistrationAndFailClosed(t *testing.T) {
 				runtime := OpenCodeRuntime{Command: os.Args[0], Arguments: []string{"-test.run=^TestOpenCodeConfigCatalogProcess$"}, DataHome: filepath.Join(t.TempDir(), "native-data")}
 				profile := ManagedProfile{Name: "worker", Content: "managed instructions", AllowTools: []string{"read"}, Model: "fixture/fixture-model", Reasoning: "low"}
 				request := StartRequest{WorkerRef: "private", Workspace: t.TempDir(), Profile: profile, DeferInitialPrompt: true}
-				ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+				// Leave enough room for the helper process to initialize; the
+				// missing native catalog must be what reaches this bounded deadline.
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 				defer cancel()
 				var session Session
 				var err error

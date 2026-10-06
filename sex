@@ -253,12 +253,16 @@ opencode_store_initialize() {
 }
 
 opencode_auth_ready() {
-  local command="$1" data_home="$2" output lower
-  if ! output="$(opencode_store_command "$command" "$data_home" auth list 2>/dev/null)"; then
-    return 1
-  fi
-  lower="${output:l}"
-  [[ -n "${output//[[:space:]]/}" && "$lower" != *'[]'* && "$lower" != *'no authenticated'* && "$lower" != *'not authenticated'* && "$lower" != *'no auth'* ]]
+  local command="$1" scope="$2"
+  case "$scope" in
+    secretary)
+      "$BIN/secretaryd" --data-dir "$STATE" --check-opencode-auth --opencode-command "$command" >/dev/null 2>&1
+      ;;
+    node)
+      "$NODE_BIN" --config "$NODE_CONFIG" --check-opencode-auth --opencode-command "$command" >/dev/null 2>&1
+      ;;
+    *) return 1 ;;
+  esac
 }
 
 opencode_login() {
@@ -556,7 +560,7 @@ node_doctor() {
     elif ! opencode_bin="$(opencode_command 2>/dev/null)"; then
       print "missing: OpenCode binary for Node inventory"
       failures=$((failures+1))
-    elif opencode_auth_ready "$opencode_bin" "$data_home"; then
+    elif opencode_auth_ready "$opencode_bin" node; then
       print "ok: OpenCode provider auth in selected Node store"
     else
       if [[ "$store_mode" == "shared" ]]; then
@@ -755,7 +759,7 @@ doctor() {
         : # Go selector rejected the store; never probe native auth through an unvalidated path.
       elif [[ "$secretary_store_mode" != "isolated" && "$secretary_store_mode" != "shared" ]]; then
         : # The store error was reported above; do not probe a legacy/personal store.
-      elif opencode_auth_ready "$command_path" "$data_home"; then
+      elif opencode_auth_ready "$command_path" secretary; then
         print "ok: OpenCode provider auth in selected Secretary store"
       else
         print "missing: OpenCode provider auth in selected Secretary store. Owner may run: sex opencode login"

@@ -349,6 +349,47 @@ func TestOpenCodeNativeInventoryMissingAuthDoesNotFallback(t *testing.T) {
 	}
 }
 
+func TestOpenCodeSelectedStoreAuthCatalogAndACPReadiness(t *testing.T) {
+	if os.Getenv("SECRETARY_OPENCODE_SELECTED_STORE_E2E") != "1" {
+		t.Skip("read-only selected-store auth/catalog/ACP acceptance is opt-in")
+	}
+	dataHome := strings.TrimSpace(os.Getenv("TEST_OPENCODE_SELECTED_DATA_HOME"))
+	if dataHome == "" || !filepath.IsAbs(dataHome) {
+		t.Fatal("selected native data home must be supplied as an absolute path")
+	}
+	binary, err := exec.LookPath("opencode")
+	if err != nil {
+		t.Fatal("selected-store OpenCode v2 executable unavailable")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	if err := CheckOpenCodeAuthentication(ctx, binary, dataHome); err != nil {
+		t.Fatal("selected-store native credential check failed")
+	}
+	const nodeRef core.NodeReference = "private-selected-store"
+	inventory, err := (HarnessDiscovery{
+		Node: nodeRef, Runner: ExecCommandRunner{}, OpenCodeDataHome: dataHome, IncludeOpenCode: true,
+		Probes:          []HarnessProbe{{Node: nodeRef, Spec: DefaultOpenCodeProbeSpec()}},
+		BinaryOverrides: map[core.HarnessKind]string{core.HarnessOpenCode: binary},
+	}).Discover(ctx)
+	if err != nil || len(inventory.Instances) != 1 {
+		t.Fatal("selected-store OpenCode inventory unavailable")
+	}
+	instance := inventory.Instances[0]
+	if !instance.Available() || !instance.Authentication.Authenticated {
+		t.Fatal("selected-store OpenCode auth or ACP readiness failed")
+	}
+	for _, model := range []core.ObservedModelID{"openai/gpt-6.1-sol", "openai/gpt-6-luna"} {
+		if !instance.SupportsModel(model) {
+			t.Fatalf("selected-store native inventory omitted approved model %s", model)
+		}
+	}
+	if !instance.SupportsReasoning("xhigh") {
+		t.Fatal("selected-store native inventory omitted xhigh reasoning")
+	}
+	t.Logf("selected-store native metadata: status=%s authenticated=%t model_count=%d reasoning_count=%d model_ids=openai/gpt-6.1-sol,openai/gpt-6-luna reasoning=xhigh data_home=%s", instance.Status, instance.Authentication.Authenticated, len(instance.ModelIDs), len(instance.ReasoningLevels), dataHome)
+}
+
 func TestOpenCodeNativeInventory(t *testing.T) {
 	if os.Getenv("SECRETARY_OPENCODE_ACP_E2E") != "1" {
 		t.Skip("native OpenCode inventory acceptance is opt-in")

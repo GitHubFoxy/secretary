@@ -25,7 +25,15 @@ case "$1:$2" in
     if [ ! -e "$XDG_DATA_HOME/opencode/opencode.db" ]; then printf 'native-db-initialized\n' > "$XDG_DATA_HOME/opencode/opencode.db"; fi
     ;;
   auth:list)
-    if [ "${FAKE_OPENCODE_AUTH_MODE:-ready}" = "missing" ]; then printf '[]\n'; else printf 'provider authenticated\n'; fi
+    if [ "$3" != "--format" ] || [ "$4" != "json" ] || [ "$5" != "--standalone" ]; then
+      printf 'background service probe timed out\n' >&2
+      exit 124
+    fi
+    if [ "${FAKE_OPENCODE_AUTH_MODE:-ready}" = "missing" ]; then
+      printf '[]\n'
+    else
+      printf '[{"id":"openai","name":"OpenAI","connections":[{"type":"credential"}]}]\n'
+    fi
     ;;
   auth:login)
     mkdir -p "$XDG_DATA_HOME/opencode"
@@ -76,6 +84,8 @@ if output="$(FAKE_OPENCODE_AUTH_MODE=missing "$ROOT/sex" node doctor 2>&1)"; the
 assert_contains "$output" "missing: OpenCode provider auth in the shared store" "Node doctor did not expose missing auth"
 output="$($ROOT/sex node doctor)" || fail "node doctor"
 assert_contains "$output" "ok: OpenCode provider auth in selected Node store" "Node doctor did not check selected auth store"
+assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$shared_store|auth list --format json --standalone|openai=|aws=" "Node Doctor did not use standalone JSON in the selected store without ambient credentials"
+assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$HOME/.local/share/opencode|auth list" "Node Doctor probed the personal OpenCode store"
 output="$($ROOT/sex node opencode login)" || fail "explicit Node provider login"
 login_store="$(awk -F'|' '$2 == "auth login" { print $1; exit }' "$TICKET33_OPENCODE_STORE_LOG")"
 [[ "$login_store" == "$shared_store" ]] || fail "Node login selected a non-shared store: $login_store"

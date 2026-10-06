@@ -180,10 +180,14 @@ case "$1:$2" in
     if [ ! -e "$XDG_DATA_HOME/opencode/opencode.db" ]; then printf 'native-db-initialized\n' > "$XDG_DATA_HOME/opencode/opencode.db"; fi
     ;;
   auth:list)
+    if [ "$3" != "--format" ] || [ "$4" != "json" ] || [ "$5" != "--standalone" ]; then
+      printf 'background service probe timed out\n' >&2
+      exit 124
+    fi
     if [ "${FAKE_OPENCODE_AUTH_MODE:-ready}" = "missing" ]; then
       printf '[]\n'
     else
-      printf 'openai provider authenticated\n'
+      printf '[{"id":"openai","name":"OpenAI","connections":[{"type":"credential"}]}]\n'
     fi
     ;;
   auth:login)
@@ -254,8 +258,12 @@ assert_contains "$output" "missing: OpenCode provider auth in selected Secretary
 assert_not_contains "$output" "personal-store-canary" "doctor exposed personal store data"
 output="$($SEX doctor)" || fail "doctor command failed"
 assert_contains "$output" "ok: OpenCode provider auth in selected Secretary store" "doctor did not check selected auth store"
+assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$STATE_NORMALIZED/opencode-native|auth list --format json --standalone|openai=|aws=" "Secretary Doctor did not use standalone JSON in the selected store without ambient credentials"
+assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$TEST_HOME/.local/share/opencode|auth list" "Secretary Doctor probed the personal OpenCode store"
 output="$($SEX node doctor)" || fail "Node doctor command failed"
 assert_contains "$output" "ok: OpenCode provider auth in selected Node store" "Node doctor did not check the shared auth store"
+assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$STATE_NORMALIZED/opencode-native|auth list --format json --standalone|openai=|aws=" "Node Doctor did not use standalone JSON in the selected store without ambient credentials"
+assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$TEST_HOME/.local/share/opencode|auth list" "Node Doctor probed the personal OpenCode store"
 pass "doctor"
 
 existing_code="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/v1/web/session 2>/dev/null || true)"
@@ -754,7 +762,7 @@ output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node opencod
 output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" doctor 2>&1)" || fail "Secretary Doctor rejected a valid escaped canonical path: $output"
 output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node doctor 2>&1)" || fail "Node Doctor rejected a valid escaped canonical path: $output"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$DUPLICATE_SHARED|auth login" "escaped Secretary path was not resolved by Go producer"
-assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$DUPLICATE_SHARED|auth list" "escaped Doctor path was not resolved by Go producer"
+assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$DUPLICATE_SHARED|auth list --format json --standalone" "escaped Doctor path was not resolved by Go producer"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$DUPLICATE_PERSONAL" "valid escaped selection accessed the personal store"
 [[ "$(cat "$DUPLICATE_PERSONAL/opencode/opencode.db")" == "personal duplicate-key canary" && ! -e "$DUPLICATE_PERSONAL/opencode/auth.json" ]] || fail "valid escaped selection touched personal store"
 output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode select-shared-store 2>&1)" || fail "owner transition rejected valid escaped canonical selection"

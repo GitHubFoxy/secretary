@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -80,8 +83,194 @@ func TestDefaultProbeCommandsAreExplicitContracts(t *testing.T) {
 		t.Fatalf("Codex probe commands=%#v", codex)
 	}
 	open := DefaultOpenCodeProbeSpec()
-	if !reflect.DeepEqual(open.AuthenticationArgs, []string{"auth", "list"}) || !reflect.DeepEqual(open.ModelsArgs, []string{"models"}) || !reflect.DeepEqual(open.ACPArgs, []string{"acp"}) {
+	if !reflect.DeepEqual(open.AuthenticationArgs, []string{"auth", "list", "--format", "json", "--standalone"}) || !reflect.DeepEqual(open.ModelsArgs, []string{"models"}) || !reflect.DeepEqual(open.ACPArgs, []string{"acp"}) {
 		t.Fatalf("OpenCode probe commands=%#v", open)
+	}
+}
+
+func TestOpenCodeProbeRequiresStoredCredentialMetadata(t *testing.T) {
+	storedCredential := `[{"id":"openai","name":"OpenAI","connections":[{"type":"credential"}]}]`
+	for _, test := range []struct {
+		name   string
+		result CommandResult
+		want   bool
+	}{
+		{name: "stored credential", result: CommandResult{Stdout: storedCredential}, want: true},
+		{name: "only ambient credentials", result: CommandResult{Stdout: `[]`}},
+		{name: "empty output", result: CommandResult{}},
+		{name: "malformed output", result: CommandResult{Stdout: `[{"id":`}},
+		{name: "connection is not a credential", result: CommandResult{Stdout: `[{"id":"openai","name":"OpenAI","connections":[{"type":"oauth"}]}]`}},
+		{name: "credential output with failed exit", result: CommandResult{Stdout: storedCredential, ExitCode: 1}},
+		{name: "credential only on stderr", result: CommandResult{Stderr: storedCredential}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := fakeProbeRunner{responses: map[string]CommandResult{
+				"opencode --version":                            {Stdout: "opencode v2.0.22"},
+				"opencode auth list --format json --standalone": test.result,
+				"opencode models":                               {Stdout: "openai/model-a"},
+			}}
+			result := NewOpenCodeCompatibilityProbe("node-a", runner).Probe(context.Background())
+			if result.Available() != test.want || result.Instance.Authentication.Authenticated != test.want {
+				t.Fatalf("OpenCode auth result ready=%v authenticated=%v, want %v", result.Available(), result.Instance.Authentication.Authenticated, test.want)
+			}
+			if !test.want && result.ErrorCode != "unauthenticated" {
+				t.Fatalf("OpenCode auth error code=%q, want unauthenticated", result.ErrorCode)
+			}
+		})
+	}
+}
+
+func TestOpenCodeProbeRejectsUnsupportedVersionBeforeReadiness(t *testing.T) {
+	runner := fakeProbeRunner{responses: map[string]CommandResult{
+		"opencode --version":                            {Stdout: "opencode v1.18.29"},
+		"opencode auth list --format json --standalone": {Stdout: `[{"id":"openai","name":"OpenAI","connections":[{"type":"credential"}]}]`},
+	}}
+	result := NewOpenCodeCompatibilityProbe("node-a", runner).Probe(context.Background())
+	if result.Available() || result.Instance.Status == core.HarnessReady || result.ErrorCode != "unsupported_version" {
+		t.Fatalf("unsupported OpenCode version was ready: %#v", result)
+	}
+}
+
+type executableOpenCodeProbeRunner struct{ ExecCommandRunner }
+
+func (executableOpenCodeProbeRunner) ObserveOpenCodeModels(context.Context, string) ([]core.ObservedModelID, []core.ObservedReasoningLevel, error) {
+	return []core.ObservedModelID{"openai/model-a"}, []core.ObservedReasoningLevel{"xhigh"}, nil
+}
+
+func TestOpenCodeProbeUsesSelectedStoreAndIgnoresAmbientCredentials(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "opencode-fixture")
+	logPath := filepath.Join(root, "probe-metadata.log")
+	personalHome := filepath.Join(root, "personal-data")
+	selectedHome := filepath.Join(root, "selected-data")
+	if err := os.MkdirAll(filepath.Join(personalHome, "opencode"), 0o700); err != nil {
+		t.Fatal("personal canary directory unavailable")
+	}
+	if err := os.WriteFile(filepath.Join(personalHome, "opencode", "auth.json"), []byte(`[{"id":"openai","name":"OpenAI","connections":[{"type":"credential"}]}]`), 0o600); err != nil {
+		t.Fatal("personal canary unavailable")
+	}
+	if err := os.MkdirAll(filepath.Join(selectedHome, "opencode"), 0o700); err != nil {
+		t.Fatal("selected store unavailable")
+	}
+	script := `#!/bin/sh
+printf '%s|%s|%s|%s\n' "$XDG_DATA_HOME" "${OPENAI_API_KEY:+present}" "$HOME" "$*" >> "$AUTH_PROBE_LOG"
+case "$1" in
+  --version) printf 'opencode v2.0.22\n' ;;
+  auth)
+    if [ "$2" != "list" ] || [ "$3" != "--format" ] || [ "$4" != "json" ] || [ "$5" != "--standalone" ]; then exit 2; fi
+    if [ "${AUTH_PROBE_STALL:-false}" = "true" ]; then printf '%s\n' "$$" > "$AUTH_PROBE_PID"; exec /bin/sleep 30; fi
+    if [ -f "$XDG_DATA_HOME/opencode/auth.json" ]; then /bin/cat "$XDG_DATA_HOME/opencode/auth.json"; else printf '[]\n'; fi
+    ;;
+  *) exit 0 ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatal("OpenCode executable fixture unavailable")
+	}
+	t.Setenv("XDG_DATA_HOME", personalHome)
+	t.Setenv("OPENAI_API_KEY", "fixture-only-ambient-key")
+	t.Setenv("AUTH_PROBE_LOG", logPath)
+	t.Setenv("AUTH_PROBE_PID", filepath.Join(root, "probe.pid"))
+
+	writeSelectedCredential := func(home string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(home, "opencode"), 0o700); err != nil {
+			t.Fatal("selected native store unavailable")
+		}
+		if err := os.WriteFile(filepath.Join(home, "opencode", "auth.json"), []byte(`[{"id":"openai","name":"OpenAI","connections":[{"type":"credential"}]}]`), 0o600); err != nil {
+			t.Fatal("selected native credential fixture unavailable")
+		}
+	}
+	probe := func(home string, stepTimeout time.Duration) ProbeResult {
+		t.Helper()
+		spec := DefaultOpenCodeProbeSpec()
+		spec.Binary = binary
+		spec.ACPArgs = nil
+		spec.StepTimeout = stepTimeout
+		return (HarnessProbe{Node: "node-a", Spec: spec, Runner: executableOpenCodeProbeRunner{ExecCommandRunner{OpenCodeDataHome: home}}}).Probe(context.Background())
+	}
+	writeSelectedCredential(selectedHome)
+	ready := probe(selectedHome, time.Second)
+	if !ready.Available() || !ready.Instance.Authentication.Authenticated {
+		t.Fatalf("selected stored credential was not ready: status=%s error=%s", ready.Instance.Status, ready.ErrorCode)
+	}
+	lines, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal("probe did not reach the executable boundary")
+	}
+	var authRecord string
+	for _, line := range strings.Split(strings.TrimSpace(string(lines)), "\n") {
+		if strings.Contains(line, "auth list") {
+			authRecord = line
+			break
+		}
+	}
+	fields := strings.SplitN(authRecord, "|", 4)
+	if len(fields) != 4 || fields[0] != selectedHome || fields[1] != "" || fields[3] != "auth list --format json --standalone" {
+		t.Fatal("OpenCode auth probe used ambient credentials, wrong store, or wrong CLI flags")
+	}
+	if _, err := os.Stat(fields[2]); !os.IsNotExist(err) {
+		t.Fatal("temporary OpenCode probe environment was not removed")
+	}
+
+	if err := os.Remove(logPath); err != nil {
+		t.Fatal("could not reset private probe metadata")
+	}
+	emptySelectedHome := filepath.Join(root, "empty-selected-data")
+	unauthenticated := probe(emptySelectedHome, time.Second)
+	if unauthenticated.Available() || unauthenticated.Instance.Authentication.Authenticated || unauthenticated.ErrorCode != "unauthenticated" {
+		t.Fatal("credential from ambient personal store authenticated the selected empty store")
+	}
+}
+
+func TestOpenCodeProbeTimeoutStopsNativeProcessAndRemovesPrivateEnvironment(t *testing.T) {
+	root := t.TempDir()
+	binary := filepath.Join(root, "opencode-stall-fixture")
+	logPath := filepath.Join(root, "probe-metadata.log")
+	pidPath := filepath.Join(root, "probe.pid")
+	script := `#!/bin/sh
+printf '%s|%s|%s|%s\n' "$XDG_DATA_HOME" "${OPENAI_API_KEY:+present}" "$HOME" "$*" >> "$AUTH_PROBE_LOG"
+case "$1" in
+  --version) printf 'opencode v2.0.22\n' ;;
+  auth) printf '%s\n' "$$" > "$AUTH_PROBE_PID"; exec /bin/sleep 30 ;;
+  *) exit 0 ;;
+esac
+`
+	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
+		t.Fatal("OpenCode timeout fixture unavailable")
+	}
+	t.Setenv("AUTH_PROBE_LOG", logPath)
+	t.Setenv("AUTH_PROBE_PID", pidPath)
+	spec := DefaultOpenCodeProbeSpec()
+	spec.Binary = binary
+	spec.ACPArgs = nil
+	spec.StepTimeout = 500 * time.Millisecond
+	result := (HarnessProbe{Node: "node-a", Spec: spec, Runner: executableOpenCodeProbeRunner{ExecCommandRunner{OpenCodeDataHome: filepath.Join(root, "selected")}}}).Probe(context.Background())
+	if result.Available() || result.ErrorCode != "unauthenticated" || !strings.Contains(result.Err.Error(), "deadline exceeded") {
+		t.Fatalf("timed-out native auth command was accepted: status=%s error=%s detail=%v", result.Instance.Status, result.ErrorCode, result.Err)
+	}
+	pidBytes, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatal("native auth process did not start")
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(pidBytes)))
+	if err != nil {
+		t.Fatal("native auth process ID was unavailable")
+	}
+	process, err := os.FindProcess(pid)
+	if err != nil || process.Signal(syscall.Signal(0)) == nil {
+		t.Fatal("timed-out native auth process was not stopped")
+	}
+	line, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatal("native auth process did not record its temporary environment")
+	}
+	fields := strings.SplitN(strings.TrimSpace(string(line)), "|", 4)
+	if len(fields) != 4 || fields[2] == "" {
+		t.Fatal("temporary OpenCode probe environment metadata was incomplete")
+	}
+	if _, err := os.Stat(fields[2]); !os.IsNotExist(err) {
+		t.Fatal("timed-out OpenCode probe left its private environment behind")
 	}
 }
 
@@ -294,9 +483,9 @@ func TestRequiredProbesAndOpenCodeCompatibilityAreIsolated(t *testing.T) {
 		t.Fatal("OpenCode is missing from default probe set")
 	}
 	runner := fakeProbeRunner{responses: map[string]CommandResult{
-		"opencode --version": {Stdout: "opencode v2.0.22"},
-		"opencode auth list": {Stdout: "openai"},
-		"opencode models":    {Stdout: "openai/model-a"},
+		"opencode --version":                            {Stdout: "opencode v2.0.22"},
+		"opencode auth list --format json --standalone": {Stdout: `[{"id":"openai","name":"OpenAI","connections":[{"type":"credential"}]}]`},
+		"opencode models":                               {Stdout: "openai/model-a"},
 	}}
 	open := NewOpenCodeCompatibilityProbe("macbook", runner).Probe(context.Background())
 	if open.Instance.Kind != core.HarnessOpenCode || !open.Available() {
