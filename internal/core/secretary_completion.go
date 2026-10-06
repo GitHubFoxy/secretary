@@ -24,6 +24,17 @@ func (s *Store) FinishSecretaryTurnWithResponse(ctx context.Context, turnID stri
 // and completes a turn. Addressed replies and Results linked to this exact
 // turn/input identity suppress only unaddressed completion output.
 func (s *Store) FinishSecretaryTurnWithOutput(ctx context.Context, turnID, inputID string, state SecretaryTurnState, terminalError, response string, textDeltas []string) (SecretaryTurn, ConversationEntry, error) {
+	return s.finishSecretaryTurnWithOutput(ctx, turnID, inputID, state, terminalError, response, textDeltas, false)
+}
+
+// FinishSecretaryTurnWithAddressedReplyOnly succeeds only when exactly one
+// canonical reply entry is durably linked to this turn's exact input identity.
+func (s *Store) FinishSecretaryTurnWithAddressedReplyOnly(ctx context.Context, turnID, inputID string) (SecretaryTurn, error) {
+	turn, _, err := s.finishSecretaryTurnWithOutput(ctx, turnID, inputID, SecretaryTurnSucceeded, "", "", nil, true)
+	return turn, err
+}
+
+func (s *Store) finishSecretaryTurnWithOutput(ctx context.Context, turnID, inputID string, state SecretaryTurnState, terminalError, response string, textDeltas []string, requireAddressedReply bool) (SecretaryTurn, ConversationEntry, error) {
 	if !state.Terminal() {
 		return SecretaryTurn{}, ConversationEntry{}, errors.New("core: Secretary turn must finish in a terminal state")
 	}
@@ -44,6 +55,21 @@ func (s *Store) FinishSecretaryTurnWithOutput(ctx context.Context, turnID, input
 		}
 		if inputID != "" && turn.InputID != inputID {
 			return secretaryTurnCompletion{}, ErrInvalidSecretaryOrigin
+		}
+		if requireAddressedReply {
+			if state != SecretaryTurnSucceeded || inputID == "" || turn.InputID != inputID {
+				return secretaryTurnCompletion{}, ErrInvalidSecretaryOrigin
+			}
+			var replyCount int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*)
+FROM secretary_reply_entries r
+JOIN conversation_entries e ON e.id = r.entry_id
+WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conversation_id = ? AND e.kind = ?`, turnID, inputID, turn.ConversationID, EntrySecretary).Scan(&replyCount); err != nil {
+				return secretaryTurnCompletion{}, err
+			}
+			if replyCount != 1 {
+				return secretaryTurnCompletion{}, ErrAddressedReplyMissing
+			}
 		}
 		if state == SecretaryTurnSucceeded {
 			if _, err := tx.ExecContext(ctx, `UPDATE secretary_context_seen_results SET claim_state = 'accepted' WHERE turn_id = ? AND claim_state = 'claimed'`, turn.ID); err != nil {

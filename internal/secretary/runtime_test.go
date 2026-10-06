@@ -173,7 +173,13 @@ func TestRuntimeAddressedReplyPreservesPreResultDeltaAndSuppressesPostResultOutp
 		t.Fatal(err)
 	}
 	session.activities <- node.Activity{Kind: node.ActivityText, Text: "unaddressed after Worker Result"}
-	session.results <- node.Result{Status: "succeeded", Summary: "same result summary echo"}
+	session.results <- node.Result{
+		Status: "succeeded", Summary: "same result summary echo",
+		CompletionEvidence: &node.TerminalCompletionEvidence{
+			Contract: node.TerminalCompletionOpenCodeV2, StopReason: node.TerminalStopReasonEndTurn,
+			RPCSucceeded: true, DrainCompleted: true, AssistantChunks: 1,
+		},
+	}
 	close(session.results)
 	close(session.activities)
 	deadline = time.Now().Add(time.Second)

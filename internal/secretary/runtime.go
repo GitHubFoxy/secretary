@@ -315,15 +315,32 @@ func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result,
 		} else {
 			errorMessage = result.Summary
 		}
+		if replyContractVersion == core.SecretaryReplyContractAddressedV1 && state == core.SecretaryTurnSucceeded && (result.CompletionEvidence == nil || !result.CompletionEvidence.AllowsAssistantFinalText()) {
+			state = core.SecretaryTurnFailed
+			response = ""
+			errorMessage = "Secretary completion lacked authoritative native terminal evidence."
+		}
 		var finishErr error
-		if replyContractVersion == core.SecretaryReplyContractAddressedV1 && state == core.SecretaryTurnSucceeded {
-			if activeInputID == "" {
-				finishErr = core.ErrInvalidSecretaryOrigin
-			} else {
-				_, _, finishErr = store.FinishSecretaryTurnWithOutput(context.Background(), activeTurnID, activeInputID, state, errorMessage, response, nil)
+		addressedReplyOnlyCompleted := false
+		if state == core.SecretaryTurnFailed && replyContractVersion == core.SecretaryReplyContractAddressedV1 && activeInputID != "" && result.CompletionEvidence != nil && result.CompletionEvidence.AllowsAddressedReplyOnly() {
+			_, finishErr = store.FinishSecretaryTurnWithAddressedReplyOnly(context.Background(), activeTurnID, activeInputID)
+			addressedReplyOnlyCompleted = finishErr == nil
+			// Missing, foreign, or otherwise invalid reply identity is not
+			// completion evidence. Preserve the ordinary failed-turn path.
+			if !addressedReplyOnlyCompleted {
+				finishErr = nil
 			}
-		} else {
-			_, _, finishErr = store.FinishSecretaryTurnWithResponse(context.Background(), activeTurnID, state, errorMessage, response)
+		}
+		if !addressedReplyOnlyCompleted {
+			if replyContractVersion == core.SecretaryReplyContractAddressedV1 && state == core.SecretaryTurnSucceeded {
+				if activeInputID == "" {
+					finishErr = core.ErrInvalidSecretaryOrigin
+				} else {
+					_, _, finishErr = store.FinishSecretaryTurnWithOutput(context.Background(), activeTurnID, activeInputID, state, errorMessage, response, nil)
+				}
+			} else {
+				_, _, finishErr = store.FinishSecretaryTurnWithResponse(context.Background(), activeTurnID, state, errorMessage, response)
+			}
 		}
 		if finishErr != nil {
 			r.reportError(finishErr)

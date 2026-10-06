@@ -41,9 +41,19 @@ type ACPRuntime struct {
 	TerminalMessageGrouping bool
 }
 
+func (r ACPRuntime) validateReplyContract(profile ManagedProfile) error {
+	if profile.ReplyContractVersion != "" && (profile.ReplyContractVersion != core.SecretaryReplyContractAddressedV1 || !r.TerminalMessageGrouping) {
+		return errors.New("acp: addressed-reply-v1 requires the verified native terminal contract")
+	}
+	return nil
+}
+
 func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, error) {
 	profile, err := request.effectiveProfile()
 	if err != nil {
+		return nil, err
+	}
+	if err := r.validateReplyContract(profile); err != nil {
 		return nil, err
 	}
 	request.Profile = profile
@@ -88,6 +98,9 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
 	profile, err := request.effectiveProfile()
 	if err != nil {
+		return nil, err
+	}
+	if err := r.validateReplyContract(profile); err != nil {
 		return nil, err
 	}
 	request.Profile = profile
@@ -1397,30 +1410,47 @@ func (s *acpSession) promptTurn(ctx context.Context, task string) error {
 		return err
 	}
 	status := "succeeded"
-	if response.StopReason == "cancelled" || response.StopReason == "canceled" {
-		status = "canceled"
-	}
-	if s.terminalMessageGrouping && strings.TrimSpace(response.Summary) == "" {
-		// Strict finality is only the verified native OpenCode opt-in contract.
-		var complete bool
-		if answer != nil {
-			response.Summary, complete = answer.final(response.StopReason)
+	var completionEvidence *TerminalCompletionEvidence
+	if s.terminalMessageGrouping {
+		stopReason := parseTerminalStopReason(response.StopReason)
+		completionEvidence = &TerminalCompletionEvidence{
+			Contract: TerminalCompletionOpenCodeV2, StopReason: stopReason,
+			RPCSucceeded: true, DrainCompleted: true,
 		}
-		if !complete {
-			response.Summary = "Terminal answer unavailable: ACP did not provide authoritative final-answer metadata."
-			if status != "canceled" {
+		if answer != nil {
+			completionEvidence.AssistantChunks = answer.assistantChunks
+		}
+		switch stopReason {
+		case TerminalStopReasonCanceled:
+			status = "canceled"
+			response.Summary = "Terminal answer unavailable: ACP turn was canceled."
+		case TerminalStopReasonEndTurn:
+			var complete bool
+			if answer != nil {
+				response.Summary, complete = answer.final(response.StopReason)
+			}
+			if !complete {
+				response.Summary = "Terminal answer unavailable: ACP did not provide authoritative final-answer metadata."
 				status = "failed"
 			}
+		default:
+			response.Summary = "Terminal answer unavailable: ACP did not provide authoritative final-answer metadata."
+			status = "failed"
 		}
-	} else if response.Summary == "" {
-		// Non-opt-in adapters keep their historical terminal report/status.
-		// messageId does not imply finality for fx or arbitrary ACP adapters.
-		response.Summary = legacyText
+	} else {
+		if response.StopReason == "cancelled" || response.StopReason == "canceled" {
+			status = "canceled"
+		}
 		if response.Summary == "" {
-			response.Summary = "completed"
+			// Non-opt-in adapters keep their historical terminal report/status.
+			// messageId does not imply finality for fx or arbitrary ACP adapters.
+			response.Summary = legacyText
+			if response.Summary == "" {
+				response.Summary = "completed"
+			}
 		}
 	}
-	s.result <- Result{Status: status, Summary: response.Summary}
+	s.result <- Result{Status: status, Summary: response.Summary, CompletionEvidence: completionEvidence}
 	return nil
 }
 
@@ -1480,18 +1510,18 @@ func (s *acpSession) watch() {
 			continue
 		case "agent_message_chunk":
 			text := valueString(content["text"])
-			if text == "" {
-				continue
-			}
 			s.textMu.Lock()
 			metadata, _ := payload["_meta"].(map[string]any)
-			if s.turnAnswer != nil && metadata["opencode/child-session"] == nil {
+			if metadata["opencode/child-session"] == nil && s.turnAnswer != nil {
 				s.turnAnswer.text(valueString(payload["messageId"]), text)
 			}
-			if s.legacyTurnText != nil {
+			if s.legacyTurnText != nil && text != "" {
 				s.legacyTurnText.WriteString(text)
 			}
 			s.textMu.Unlock()
+			if text == "" {
+				continue
+			}
 			emit(Activity{Kind: ActivityText, Text: text})
 		case "agent_thought_chunk", "thinking", "thinking_summary":
 			// ACP thought chunks are not safe to display. Adapters may provide an

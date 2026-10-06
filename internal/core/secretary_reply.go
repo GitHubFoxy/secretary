@@ -11,6 +11,7 @@ import (
 var (
 	ErrInvalidSecretaryOrigin = errors.New("core: invalid Secretary origin")
 	ErrSecretaryReplyConflict = errors.New("core: reply identity already has different text")
+	ErrAddressedReplyMissing  = errors.New("core: exact durable addressed reply is missing")
 )
 
 // ValidateSecretaryOrigin requires a server-authorized active Secretary turn and

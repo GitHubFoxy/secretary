@@ -11,13 +11,32 @@ type acpTurnAnswer struct {
 	order           []string
 	progress        map[string]bool
 	missingIdentity bool
+	assistantChunks uint64
 }
 
 func newACPTurnAnswer() *acpTurnAnswer {
 	return &acpTurnAnswer{messages: make(map[string]*strings.Builder), progress: make(map[string]bool)}
 }
 
+func parseTerminalStopReason(value string) TerminalStopReason {
+	switch value {
+	case "end_turn":
+		return TerminalStopReasonEndTurn
+	case "max_tokens":
+		return TerminalStopReasonMaxTokens
+	case "refusal":
+		return TerminalStopReasonRefusal
+	case "cancelled", "canceled":
+		return TerminalStopReasonCanceled
+	case "":
+		return TerminalStopReasonUnspecified
+	default:
+		return TerminalStopReasonOther
+	}
+}
+
 func (a *acpTurnAnswer) text(id, text string) {
+	a.assistantChunks++
 	if id == "" {
 		a.missingIdentity = true
 		return

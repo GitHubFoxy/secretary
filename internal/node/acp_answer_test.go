@@ -155,10 +155,8 @@ func TestACPRuntimeDrainKeepsProgressAvailableAndTurnScoped(t *testing.T) {
 				t.Fatal("addressed output drain timed out")
 			}
 		}
-		wantSummary := "explicit terminal summary turn-1"
-		if turn == 2 {
-			wantSummary = "final-turn-2-part-one\nfinal-turn-2-part-two"
-		}
+		turnID := strconv.Itoa(turn)
+		wantSummary := "final-turn-" + turnID + "-part-one\nfinal-turn-" + turnID + "-part-two"
 		if result.Status != "succeeded" || result.Summary != wantSummary || strings.Contains(result.Summary, "progress") {
 			t.Fatalf("turn=%d terminal result contract mismatch: succeeded=%t exact_summary=%t contains_progress=%t", turn, result.Status == "succeeded", result.Summary == wantSummary, strings.Contains(result.Summary, "progress"))
 		}
@@ -209,7 +207,50 @@ func TestACPAnswerFixtureProcess(t *testing.T) {
 				update("agent_message_chunk", "old", "historical", nil)
 			}
 		case "session/prompt":
-			if scenario == "drain-boundary" {
+			if scenario == "mcp-only" || scenario == "missing-stop" || scenario == "malformed-stop" || scenario == "max-tokens" || scenario == "refusal" || scenario == "progress-only" || scenario == "empty-chunk" || scenario == "unknown-stop" || scenario == "canceled" || scenario == "assistant-final" || scenario == "summary-only" || scenario == "rpc-error" {
+				result := map[string]any{}
+				switch scenario {
+				case "mcp-only":
+					update("tool_call", "", "", nil)
+					result["stopReason"] = "end_turn"
+				case "missing-stop":
+					update("tool_call", "", "", nil)
+				case "malformed-stop":
+					update("tool_call", "", "", nil)
+					result["stopReason"] = []string{"end_turn"}
+				case "max-tokens", "refusal":
+					update("tool_call", "", "", nil)
+					if scenario == "max-tokens" {
+						result["stopReason"] = "max_tokens"
+					} else {
+						result["stopReason"] = "refusal"
+					}
+				case "progress-only":
+					update("agent_message_chunk", "progress", "nonterminal progress", nil)
+					update("tool_call", "", "", nil)
+					result["stopReason"] = "end_turn"
+				case "empty-chunk":
+					update("agent_message_chunk", "empty", "", nil)
+					result["stopReason"] = "end_turn"
+				case "unknown-stop":
+					update("tool_call", "", "", nil)
+					result["stopReason"] = "future_reason"
+				case "canceled":
+					update("tool_call", "", "", nil)
+					result["stopReason"] = "canceled"
+				case "assistant-final":
+					update("agent_message_chunk", "final", "actual assistant final text", nil)
+					result["stopReason"] = "end_turn"
+				case "summary-only":
+					result["stopReason"] = "end_turn"
+					result["summary"] = "unverified terminal response summary"
+				case "rpc-error":
+					update("tool_call", "", "", nil)
+					_ = encoder.Encode(map[string]any{"id": req.ID, "error": map[string]any{"code": -32000, "message": "synthetic provider failure"}})
+					continue
+				}
+				_ = encoder.Encode(map[string]any{"id": req.ID, "result": result})
+			} else if scenario == "drain-boundary" {
 				promptCount++
 				turnID := strconv.Itoa(promptCount)
 				update("user_message_chunk", "user", "user echo", nil)

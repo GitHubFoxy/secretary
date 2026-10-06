@@ -42,9 +42,48 @@ type Activity struct {
 	Failure       *core.ToolFailureMetadata `json:"failure,omitempty"`
 }
 
+type TerminalCompletionContract string
+
+type TerminalStopReason string
+
+const (
+	TerminalCompletionOpenCodeV2 TerminalCompletionContract = "opencode-v2-acp-terminal-v1"
+
+	TerminalStopReasonUnspecified TerminalStopReason = ""
+	TerminalStopReasonEndTurn     TerminalStopReason = "end_turn"
+	TerminalStopReasonMaxTokens   TerminalStopReason = "max_tokens"
+	TerminalStopReasonRefusal     TerminalStopReason = "refusal"
+	TerminalStopReasonCanceled    TerminalStopReason = "canceled"
+	TerminalStopReasonOther       TerminalStopReason = "other"
+)
+
+// TerminalCompletionEvidence is adapter/runtime-only evidence. Result keeps it
+// out of JSON and public DTOs; callers must still validate the exact turn/input
+// against the server-owned addressed-reply ledger before completing a turn.
+type TerminalCompletionEvidence struct {
+	Contract        TerminalCompletionContract
+	StopReason      TerminalStopReason
+	RPCSucceeded    bool
+	DrainCompleted  bool
+	AssistantChunks uint64
+}
+
+func (e TerminalCompletionEvidence) AllowsAssistantFinalText() bool {
+	return e.Contract == TerminalCompletionOpenCodeV2 &&
+		e.StopReason == TerminalStopReasonEndTurn &&
+		e.RPCSucceeded && e.DrainCompleted && e.AssistantChunks > 0
+}
+
+func (e TerminalCompletionEvidence) AllowsAddressedReplyOnly() bool {
+	return e.Contract == TerminalCompletionOpenCodeV2 &&
+		e.StopReason == TerminalStopReasonEndTurn &&
+		e.RPCSucceeded && e.DrainCompleted && e.AssistantChunks == 0
+}
+
 type Result struct {
-	Status  string `json:"status"`
-	Summary string `json:"summary"`
+	Status             string                      `json:"status"`
+	Summary            string                      `json:"summary"`
+	CompletionEvidence *TerminalCompletionEvidence `json:"-"`
 }
 
 type MCPEnv struct {

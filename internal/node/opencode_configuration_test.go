@@ -6,12 +6,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/beruseruko/secretary/internal/acp"
 	"github.com/beruseruko/secretary/internal/core"
 )
 
@@ -46,7 +50,24 @@ func TestOpenCodeConfigCatalogProcess(t *testing.T) {
 	if err != nil || json.Unmarshal(data, &config) != nil {
 		os.Exit(2)
 	}
+	if readyURL := os.Getenv("TEST_NATIVE_CONFIG_READY_URL"); readyURL != "" {
+		response, err := http.Get(readyURL)
+		if err != nil {
+			os.Exit(4)
+		}
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusNoContent {
+			os.Exit(4)
+		}
+	}
 	counts := map[string]int{}
+	writeCounts := func() {
+		if record := os.Getenv("TEST_NATIVE_CONFIG_RECORD"); record != "" {
+			encoded, _ := json.Marshal(counts)
+			_ = os.WriteFile(record, encoded, 0o600)
+		}
+	}
+	writeCounts()
 	encoder := json.NewEncoder(os.Stdout)
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
@@ -65,10 +86,7 @@ func TestOpenCodeConfigCatalogProcess(t *testing.T) {
 		if request.Method == "session/set_config_option" {
 			counts[request.Params.ConfigID]++
 		}
-		if record := os.Getenv("TEST_NATIVE_CONFIG_RECORD"); record != "" {
-			encoded, _ := json.Marshal(counts)
-			_ = os.WriteFile(record, encoded, 0o600)
-		}
+		writeCounts()
 		var result any = map[string]any{}
 		var rpcError any
 		switch request.Method {
@@ -261,43 +279,104 @@ func TestOpenCodeConfigurationRegistrationAndFailClosed(t *testing.T) {
 				t.Setenv("TEST_NATIVE_CONFIG_SCENARIO", scenario)
 				record := filepath.Join(t.TempDir(), "safe-counts.json")
 				t.Setenv("TEST_NATIVE_CONFIG_RECORD", record)
+				ready := make(chan struct{}, 1)
+				release := make(chan struct{})
+				var releaseOnce sync.Once
+				releaseFixture := func() { releaseOnce.Do(func() { close(release) }) }
+				t.Cleanup(releaseFixture)
+				fixtureServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					select {
+					case ready <- struct{}{}:
+					default:
+					}
+					select {
+					case <-release:
+						w.WriteHeader(http.StatusNoContent)
+					case <-r.Context().Done():
+					}
+				}))
+				defer fixtureServer.Close()
+				t.Setenv("TEST_NATIVE_CONFIG_READY_URL", fixtureServer.URL)
 				runtime := OpenCodeRuntime{Command: os.Args[0], Arguments: []string{"-test.run=^TestOpenCodeConfigCatalogProcess$"}, DataHome: filepath.Join(t.TempDir(), "native-data")}
 				profile := ManagedProfile{Name: "worker", Content: "managed instructions", AllowTools: []string{"read"}, Model: "fixture/fixture-model", Reasoning: "low"}
 				request := StartRequest{WorkerRef: "private", Workspace: t.TempDir(), Profile: profile, DeferInitialPrompt: true}
-				// Leave enough room for the helper process to initialize; the
-				// missing native catalog must be what reaches this bounded deadline.
-				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				// The fixture's HTTP barrier proves the child loaded its managed config
+				// before ACP traffic. This outer context only bounds process startup;
+				// OpenCodeRuntime's independent 5s ConfigReadyTimeout is unchanged.
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
+				type startResult struct {
+					session Session
+					err     error
+				}
+				started := make(chan startResult, 1)
+				go func() {
+					var result startResult
+					if resume {
+						result.session, result.err = runtime.Resume(ctx, request, "private-original-session")
+					} else {
+						result.session, result.err = runtime.Start(ctx, request)
+					}
+					started <- result
+				}()
+				select {
+				case <-ready:
+					releaseFixture()
+				case <-ctx.Done():
+					t.Fatal("fixture helper did not reach the managed-config ready barrier")
+				}
 				var session Session
 				var err error
-				if resume {
-					session, err = runtime.Resume(ctx, request, "private-original-session")
-				} else {
-					session, err = runtime.Start(ctx, request)
+				select {
+				case result := <-started:
+					session, err = result.session, result.err
+				case <-ctx.Done():
+					t.Fatal("OpenCode public fixture operation did not finish")
 				}
+				outerContextExpired := ctx.Err() != nil
 				if session != nil {
 					defer session.Close()
 				}
+				runtimeErr := err
 				if scenario == "delayed" {
-					if err != nil || session.ID() != "private-original-session" {
+					if runtimeErr != nil || session.ID() != "private-original-session" {
 						t.Fatal("delayed exact catalog configuration failed")
 					}
-				} else if err == nil {
+				} else if runtimeErr == nil {
 					t.Fatal("unconfirmed configuration was accepted")
 				}
-				if scenario == "missing-mode" && !errors.Is(err, context.DeadlineExceeded) {
-					t.Fatal("missing mode did not fail within startup deadline")
-				}
-				data, err := os.ReadFile(record)
+				data, readErr := os.ReadFile(record)
 				var counts map[string]int
-				if err != nil || json.Unmarshal(data, &counts) != nil {
+				if readErr != nil || json.Unmarshal(data, &counts) != nil {
 					t.Fatal("safe protocol counts unavailable")
+				}
+				if counts["initialize"] != 1 {
+					t.Fatalf("fixture initialize RPC count: got=%d want=1", counts["initialize"])
+				}
+				if resume {
+					if counts["session/load"] != 1 {
+						t.Fatalf("fixture session/load RPC count: got=%d want=1", counts["session/load"])
+					}
+					if counts["session/new"] != 0 {
+						t.Fatal("Resume silently replaced a missing native session")
+					}
+				} else if counts["session/new"] != 1 {
+					t.Fatalf("fixture session/new RPC count: got=%d want=1", counts["session/new"])
+				}
+				if scenario != "lost-session" && (counts["mode"] == 0 || counts["session/set_config_option"] == 0) {
+					t.Fatal("fixture did not observe managed-mode selection")
+				}
+				if scenario == "missing-mode" && (!errors.Is(runtimeErr, context.DeadlineExceeded) || outerContextExpired) {
+					var rpcErr *acp.RPCError
+					hasRPCError := errors.As(runtimeErr, &rpcErr)
+					rpcCode := 0
+					if rpcErr != nil {
+						rpcCode = rpcErr.Code
+					}
+					t.Fatalf("missing-mode deadline classification: config_deadline=%t context_canceled=%t outer_context_expired=%t error_type=%T rpc_error=%t rpc_code=%d initialize=%d load=%d new=%d mode=%d config_rpc=%d prompt=%d", errors.Is(runtimeErr, context.DeadlineExceeded), errors.Is(runtimeErr, context.Canceled), outerContextExpired, runtimeErr, hasRPCError, rpcCode, counts["initialize"], counts["session/load"], counts["session/new"], counts["mode"], counts["session/set_config_option"], counts["session/prompt"])
 				}
 				if counts["session/prompt"] != 0 {
 					t.Fatal("prompt sent before native configuration confirmation")
-				}
-				if resume && counts["session/new"] != 0 {
-					t.Fatal("Resume silently replaced a missing native session")
 				}
 				if scenario == "delayed" && (counts["mode"] != 3 || counts["model"] != 3) {
 					t.Fatalf("configuration retry counts: mode=%d model=%d", counts["mode"], counts["model"])
