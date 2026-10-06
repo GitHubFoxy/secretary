@@ -157,3 +157,13 @@ Phase 4 готова после прохождения acceptance scenario из 
 - command dedupe без второго process;
 - Telegram aggregation/throttling;
 - security, revoke, restart, frontend и Go checks из ticket 15.
+
+## Latest rollout evidence — acceptance remains blocked
+
+- Operational provenance: mixed-runtime deployment discrepancy зафиксирована как исторический факт и исправлена до live этапа; обе текущие роли соответствуют target `893` и healthy. FX defaults действуют, прежние 30 FX bindings и 31 Node mappings сохранены, auth/store/model readiness проверялись без повторного login. Telegram остаётся paused на время owner rotation.
+- На последнем actual Sol General turn был `succeeded`, но `spawn_worker=0`, `reply_to_user=0`, обычного ответа и реального Worker/Result не было: **functional FAIL**, не auth failure. WorkerResult, Follow-up/Resume, дополнительная FX проверка и Telegram — **NOT RUN**.
+- Target содержит reviewed Worker Profile-envelope source fix. Отдельный бесплатный synthetic native fixture подтвердил MCP и девять schemas у localhost mock provider, включая `spawn_worker`/`reply_to_user`; это не live acceptance. Реальный `tools/list` не аудирован, поэтому startup availability и actual provider tool choice остаются неизвестны.
+- Закрытый mismatch parser: `false / none`; буквального обязательного `create_worker` или args неверной схемы не найдено. Каноническое имя — `spawn_worker`.
+- Историческая mixed-runtime correction, functional dispatch FAIL, NOT RUN этапы и прежний Pi operator scopes mismatch сохранены как отдельные facts; последнее не подтверждает production auth failure.
+
+Tickets31/33 остаются `claimed` и acceptance-blocked; tickets15/22/29 не закрывать. Следующий шаг — bounded observation actual MCP startup/`tools/list` и addressed-reply failure path через только counts/booleans/schema/tool-call category, без повторного случайного live turn или раскрытия payload.
