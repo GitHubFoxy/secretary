@@ -79,6 +79,9 @@ func (n *ExecutionNode) SetInventory(inventory core.HarnessInventorySnapshot) er
 
 func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (CommandOutcome, error) {
 	if err := command.Validate(n.node); err != nil {
+		if code, message, ok := managedProfileFailure(err); ok {
+			return failedOutcome(command, code, message), nil
+		}
 		return CommandOutcome{}, err
 	}
 	record, duplicate, err := n.store.ClaimCommand(command)
@@ -156,6 +159,9 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	request.Profile = profile
 	session, err := n.runtime.Start(ctx, request)
 	if err != nil {
+		if code, message, ok := managedProfileFailure(err); ok {
+			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, code, message)
+		}
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "dispatch_failed", err.Error())
 	}
 	mapping := sessionMapping{WorkerRef: command.Envelope.WorkerRef, TurnID: command.Envelope.TurnID, AttemptID: command.Envelope.AttemptID, HarnessInstanceID: command.Envelope.HarnessInstance.ID, Workspace: workspace, RuntimeSessionID: session.ID()}
@@ -251,6 +257,17 @@ func validateProjectWorkspaceOnNode(envelope WorkerEnvelope) (string, error) {
 func pathWithin(root, path string) bool {
 	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
 	return err == nil && (rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)))
+}
+
+func managedProfileFailure(err error) (string, string, bool) {
+	switch {
+	case errors.Is(err, ErrManagedProfileRequired):
+		return "profile_missing", "managed Worker Profile is unavailable", true
+	case errors.Is(err, ErrManagedProfileInvalid):
+		return "profile_invalid", "managed Worker Profile is invalid or inconsistent with its binding", true
+	default:
+		return "", "", false
+	}
 }
 
 func (w WorkerEnvelope) ProjectSnapshotPathMapping() (core.ProjectPathMapping, bool) {

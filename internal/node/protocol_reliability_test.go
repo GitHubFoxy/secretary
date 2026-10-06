@@ -359,7 +359,7 @@ func dispatchFixture(commandID string) Command {
 	}
 	return Command{Kind: CommandDispatch, Dispatch: &DispatchCommand{
 		Metadata: core.CommandMetadata{CommandID: commandID, Node: "macbook", HarnessInstanceID: instance.ID, WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1", IssuedAt: time.Now()},
-		Envelope: WorkerEnvelope{WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1", OriginalUserIntent: "inspect", HarnessInstance: instance, Workspace: tWorkspace},
+		Envelope: WorkerEnvelope{WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1", OriginalUserIntent: "inspect", HarnessInstance: instance, Workspace: tWorkspace, Profile: workerTemplateFixture(instance, "", "")},
 	}}
 }
 

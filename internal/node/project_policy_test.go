@@ -40,7 +40,7 @@ func TestExecutionNodeRejectsProjectTraversalAndMissingWorkspaceBeforeRuntime(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := Command{Kind: CommandDispatch, Dispatch: &DispatchCommand{Metadata: core.CommandMetadata{CommandID: "missing", Node: "macbook", HarnessInstanceID: instance.ID, WorkerRef: "w", TurnID: "t", AttemptID: "a", IssuedAt: time.Now().UTC()}, Envelope: WorkerEnvelope{WorkerRef: "w", TurnID: "t", AttemptID: "a", OriginalUserIntent: "run", ProjectID: project.ID, ProjectSnapshot: project.Snapshot("macbook", project.Mappings[0].Path, instance), Workspace: project.Mappings[0].Path, HarnessInstance: instance}}}
+	command := Command{Kind: CommandDispatch, Dispatch: &DispatchCommand{Metadata: core.CommandMetadata{CommandID: "missing", Node: "macbook", HarnessInstanceID: instance.ID, WorkerRef: "w", TurnID: "t", AttemptID: "a", IssuedAt: time.Now().UTC()}, Envelope: WorkerEnvelope{WorkerRef: "w", TurnID: "t", AttemptID: "a", OriginalUserIntent: "run", ProjectID: project.ID, ProjectSnapshot: project.Snapshot("macbook", project.Mappings[0].Path, instance), Workspace: project.Mappings[0].Path, HarnessInstance: instance, Profile: workerTemplateFixture(instance, "", "")}}}
 	outcome, err := execution.HandleCommand(context.Background(), command)
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func TestExecutionNodeUsesRefreshedInventoryWithoutReconnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	command := Command{Kind: CommandDispatch, Dispatch: &DispatchCommand{Metadata: core.CommandMetadata{CommandID: "refreshed", Node: "macbook", HarnessInstanceID: instanceV2.ID, WorkerRef: "w", TurnID: "t", AttemptID: "a", IssuedAt: time.Now().UTC()}, Envelope: WorkerEnvelope{WorkerRef: "w", TurnID: "t", AttemptID: "a", OriginalUserIntent: "run", ProjectID: "p", ProjectSnapshot: snapshot, Workspace: root, HarnessInstance: instanceV2, Model: "new"}}}
+	command := Command{Kind: CommandDispatch, Dispatch: &DispatchCommand{Metadata: core.CommandMetadata{CommandID: "refreshed", Node: "macbook", HarnessInstanceID: instanceV2.ID, WorkerRef: "w", TurnID: "t", AttemptID: "a", IssuedAt: time.Now().UTC()}, Envelope: WorkerEnvelope{WorkerRef: "w", TurnID: "t", AttemptID: "a", OriginalUserIntent: "run", ProjectID: "p", ProjectSnapshot: snapshot, Workspace: root, HarnessInstance: instanceV2, Model: "new", Profile: workerTemplateFixture(instanceV2, "new", "")}}}
 	outcome, err := execution.HandleCommand(context.Background(), command)
 	if err != nil || outcome.State != CommandAccepted {
 		t.Fatalf("refreshed inventory outcome=%#v err=%v", outcome, err)
@@ -93,7 +93,7 @@ func TestWorkerEnvelopeRequiresExplicitApprovalPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	envelope := WorkerEnvelope{WorkerRef: "w", TurnID: "t", AttemptID: "a", OriginalUserIntent: "run", ProjectID: "p", ProjectSnapshot: snapshot, Workspace: root, HarnessInstance: instance}
+	envelope := WorkerEnvelope{WorkerRef: "w", TurnID: "t", AttemptID: "a", OriginalUserIntent: "run", ProjectID: "p", ProjectSnapshot: snapshot, Workspace: root, HarnessInstance: instance, Profile: workerTemplateFixture(instance, "", "")}
 	if err := envelope.Validate("macbook"); err == nil {
 		t.Fatal("accepted dispatch without explicit approval policy")
 	}

@@ -317,6 +317,13 @@ func orderedDispatchInstances(instances []HarnessInstance, request DispatchResol
 // It accepts preferences, never caller-built snapshots. A new call intentionally
 // creates a new Worker for the same intent when a different binding is wanted.
 func (s *Store) ResolveAndCreateWorker(ctx context.Context, conversationID, intent string, request DispatchResolutionRequest, idempotencyKey string, origins ...SecretaryOriginIdentity) (Worker, Turn, Phase4Attempt, DispatchResolution, error) {
+	return s.ResolveAndCreateWorkerWithProfileSnapshot(ctx, conversationID, intent, request, idempotencyKey, "", origins...)
+}
+
+// ResolveAndCreateWorkerWithProfileSnapshot atomically binds the managed Profile
+// selected for a new Worker. Existing callers that have no Profile source keep
+// the backward-compatible empty snapshot.
+func (s *Store) ResolveAndCreateWorkerWithProfileSnapshot(ctx context.Context, conversationID, intent string, request DispatchResolutionRequest, idempotencyKey, profileSnapshot string, origins ...SecretaryOriginIdentity) (Worker, Turn, Phase4Attempt, DispatchResolution, error) {
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if len(origins) > 1 {
 		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, ErrInvalidSecretaryOrigin
@@ -365,7 +372,7 @@ func (s *Store) ResolveAndCreateWorker(ctx context.Context, conversationID, inte
 	if resolved.Queued {
 		queuedOrigin = origin
 	}
-	worker, turn, attempt, err := s.createWorkerWithOrigin(ctx, conversationID, WorkerSpec{Title: intent, Intent: intent, ProjectID: resolved.Project.ID, NodeID: string(resolved.Node), HarnessInstanceID: string(resolved.HarnessInstance.ID), PolicySnapshot: string(policySnapshot), ProjectSnapshot: string(projectSnapshot), Workspace: resolved.Workspace, ProjectRevision: resolved.Project.Revision, IdempotencyKey: idempotencyKey, ExpectedNodeOnline: resolved.nodeState.online, ExpectedNodeDraining: resolved.nodeState.draining, ExpectedNodeRevoked: resolved.nodeState.revoked, ExpectedInventoryJSON: resolved.nodeState.inventoryJSON}, TurnSpec{Input: intent, IdempotencyKey: idempotencyKey}, idempotencyKey, queuedOrigin)
+	worker, turn, attempt, err := s.createWorkerWithOrigin(ctx, conversationID, WorkerSpec{Title: intent, Intent: intent, ProjectID: resolved.Project.ID, NodeID: string(resolved.Node), HarnessInstanceID: string(resolved.HarnessInstance.ID), PolicySnapshot: string(policySnapshot), ProjectSnapshot: string(projectSnapshot), ProfileSnapshot: profileSnapshot, Workspace: resolved.Workspace, ProjectRevision: resolved.Project.Revision, IdempotencyKey: idempotencyKey, ExpectedNodeOnline: resolved.nodeState.online, ExpectedNodeDraining: resolved.nodeState.draining, ExpectedNodeRevoked: resolved.nodeState.revoked, ExpectedInventoryJSON: resolved.nodeState.inventoryJSON}, TurnSpec{Input: intent, IdempotencyKey: idempotencyKey}, idempotencyKey, queuedOrigin)
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
 	}
@@ -409,6 +416,9 @@ func (s *Store) workerCreationReplay(ctx context.Context, idempotencyKey string)
 	var stored workerCreationOutcome
 	if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, false, fmt.Errorf("core: decode durable Worker outcome: %w", err)
+	}
+	if err := loadWorkerTemplateSnapshot(ctx, s.db, &stored.Worker); err != nil {
+		return Worker{}, Turn{}, Phase4Attempt{}, false, err
 	}
 	return stored.Worker, stored.Turn, stored.Attempt, true, nil
 }

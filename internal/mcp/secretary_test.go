@@ -11,6 +11,7 @@ import (
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
+	"github.com/beruseruko/secretary/internal/node"
 )
 
 func TestSecretaryToolsMatchWorkerLifecycleContract(t *testing.T) {
@@ -198,7 +199,9 @@ func TestMCPSpawnSuppressesExactResultBeforeDeliveryReceiptCommit(t *testing.T) 
 	}
 	runtime := &mcpReceiptGapRuntime{store: store}
 	handler := Secretary{
-		Workers:              ctl.WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: runtime},
+		Workers: ctl.WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: runtime, WorkerProfileSource: func() (node.ManagedProfile, error) {
+			return node.ManagedProfile{Version: "synthetic-worker-template-v1", Name: "worker", Content: "Synthetic fixture.", AllowTools: []string{"read"}, Hash: "synthetic-worker-template-source", Runtime: "fx"}, nil
+		}},
 		ReplyContractVersion: core.SecretaryReplyContractAddressedV1,
 	}
 	args, err := json.Marshal(map[string]any{

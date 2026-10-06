@@ -579,12 +579,13 @@ func TestInventoryRefreshUsesProtocolAndKeepsObservedBindingLocal(t *testing.T) 
 
 func TestWorkerEnvelopeUsesObservedInventoryForPins(t *testing.T) {
 	instance := core.HarnessInstance{ID: "macbook/codex", Node: "macbook", Kind: core.HarnessCodex, Version: "1.0.0", Authentication: core.HarnessAuthentication{Authenticated: true}, Status: core.HarnessReady, ModelIDs: []core.ObservedModelID{"gpt-5-codex"}, ReasoningLevels: []core.ObservedReasoningLevel{"high"}}
-	envelope := WorkerEnvelope{WorkerRef: "worker", TurnID: "turn", AttemptID: "attempt", OriginalUserIntent: "inspect", HarnessInstance: instance, Model: "gpt-5-codex", Reasoning: "high"}
+	envelope := WorkerEnvelope{WorkerRef: "worker", TurnID: "turn", AttemptID: "attempt", OriginalUserIntent: "inspect", HarnessInstance: instance, Model: "gpt-5-codex", Reasoning: "high", Profile: workerTemplateFixture(instance, "gpt-5-codex", "high")}
 	inventory := core.HarnessInventorySnapshot{Node: "macbook", Instances: []core.HarnessInstance{instance}, ObservedAt: time.Now().UTC()}
 	if err := envelope.ValidateAgainstInventory("macbook", inventory); err != nil {
 		t.Fatal(err)
 	}
 	envelope.Model = "not-observed"
+	envelope.Profile = workerTemplateFixture(instance, envelope.Model, envelope.Reasoning)
 	if err := envelope.ValidateAgainstInventory("macbook", inventory); !errors.Is(err, core.ErrObservedPinUnavailable) {
 		t.Fatalf("missing model pin err=%v", err)
 	}

@@ -373,6 +373,13 @@ func (s *Store) createWorkerWithOrigin(ctx context.Context, conversationID strin
 				}{}, err
 			}
 			if found {
+				if err := loadWorkerTemplateSnapshot(ctx, tx, &stored.Worker); err != nil {
+					return struct {
+						worker  Worker
+						turn    Turn
+						attempt Phase4Attempt
+					}{}, err
+				}
 				if queuedOrigin != nil && stored.Worker.Status == WorkerQueued {
 					if err := bindSecretaryWorkerCreationOriginTx(ctx, tx, *queuedOrigin, conversationID, stored.Turn.ID, s.now(), false); err != nil {
 						return struct {
@@ -464,8 +471,8 @@ func (s *Store) createWorkerWithOrigin(ctx context.Context, conversationID strin
 			}
 		}
 		now := s.now()
-		worker := Worker{ID: newID("wrk"), WorkerRef: spec.WorkerRef, Title: spec.Title, Intent: spec.Intent, ProjectID: spec.ProjectID, NodeID: spec.NodeID, HarnessInstanceID: spec.HarnessInstanceID, PolicySnapshot: spec.PolicySnapshot, ProjectSnapshot: spec.ProjectSnapshot, Workspace: spec.Workspace, Status: WorkerQueued, CreatedAt: now, UpdatedAt: now}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO workers(id, worker_ref, conversation_id, title, intent, project_id, node_id, harness_instance_id, policy_snapshot, project_snapshot, workspace, status, archived, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`, worker.ID, worker.WorkerRef, conversationID, worker.Title, worker.Intent, worker.ProjectID, worker.NodeID, worker.HarnessInstanceID, worker.PolicySnapshot, worker.ProjectSnapshot, worker.Workspace, worker.Status, timestamp(now), timestamp(now)); err != nil {
+		worker := Worker{ID: newID("wrk"), WorkerRef: spec.WorkerRef, Title: spec.Title, Intent: spec.Intent, ProjectID: spec.ProjectID, NodeID: spec.NodeID, HarnessInstanceID: spec.HarnessInstanceID, PolicySnapshot: spec.PolicySnapshot, ProjectSnapshot: spec.ProjectSnapshot, ProfileSnapshot: spec.ProfileSnapshot, WorkerTemplateRequired: true, Workspace: spec.Workspace, Status: WorkerQueued, CreatedAt: now, UpdatedAt: now}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO workers(id, worker_ref, conversation_id, title, intent, project_id, node_id, harness_instance_id, policy_snapshot, project_snapshot, profile_snapshot, worker_template_required, workspace, status, archived, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, 0, ?, ?)`, worker.ID, worker.WorkerRef, conversationID, worker.Title, worker.Intent, worker.ProjectID, worker.NodeID, worker.HarnessInstanceID, worker.PolicySnapshot, worker.ProjectSnapshot, worker.ProfileSnapshot, worker.Workspace, worker.Status, timestamp(now), timestamp(now)); err != nil {
 			return struct {
 				worker  Worker
 				turn    Turn
@@ -1717,13 +1724,24 @@ func (s *Store) Phase4Result(ctx context.Context, turnID string) (Phase4Result, 
 	return result, err
 }
 
+func loadWorkerTemplateSnapshot(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, worker *Worker) error {
+	var required int
+	if err := q.QueryRowContext(ctx, `SELECT profile_snapshot, worker_template_required FROM workers WHERE id = ?`, worker.ID).Scan(&worker.ProfileSnapshot, &required); err != nil {
+		return err
+	}
+	worker.WorkerTemplateRequired = required != 0
+	return nil
+}
+
 func getWorker(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, id string) (Worker, error) {
 	var worker Worker
 	var closed sql.NullString
-	var archived int
-	err := q.QueryRowContext(ctx, `SELECT id, worker_ref, title, intent, project_id, node_id, harness_instance_id, policy_snapshot, project_snapshot, workspace, status, COALESCE(current_turn_id, ''), last_result_summary, created_at, updated_at, closed_at, archived FROM workers WHERE id = ?`, id).Scan(&worker.ID, &worker.WorkerRef, &worker.Title, &worker.Intent, &worker.ProjectID, &worker.NodeID, &worker.HarnessInstanceID, &worker.PolicySnapshot, &worker.ProjectSnapshot, &worker.Workspace, &worker.Status, &worker.CurrentTurnID, &worker.LastResultSummary, newTimestampScanner(&worker.CreatedAt), newTimestampScanner(&worker.UpdatedAt), &closed, &archived)
+	var archived, templateRequired int
+	err := q.QueryRowContext(ctx, `SELECT id, worker_ref, title, intent, project_id, node_id, harness_instance_id, policy_snapshot, project_snapshot, profile_snapshot, worker_template_required, workspace, status, COALESCE(current_turn_id, ''), last_result_summary, created_at, updated_at, closed_at, archived FROM workers WHERE id = ?`, id).Scan(&worker.ID, &worker.WorkerRef, &worker.Title, &worker.Intent, &worker.ProjectID, &worker.NodeID, &worker.HarnessInstanceID, &worker.PolicySnapshot, &worker.ProjectSnapshot, &worker.ProfileSnapshot, &templateRequired, &worker.Workspace, &worker.Status, &worker.CurrentTurnID, &worker.LastResultSummary, newTimestampScanner(&worker.CreatedAt), newTimestampScanner(&worker.UpdatedAt), &closed, &archived)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Worker{}, ErrNotFound
 	}
@@ -1731,6 +1749,7 @@ func getWorker(ctx context.Context, q interface {
 		return Worker{}, err
 	}
 	worker.Archived = archived != 0
+	worker.WorkerTemplateRequired = templateRequired != 0
 	if closed.Valid {
 		t, parseErr := parseTimestamp(closed.String)
 		if parseErr != nil {

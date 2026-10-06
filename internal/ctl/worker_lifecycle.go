@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -30,13 +31,14 @@ type WorkerRuntime interface {
 }
 
 type WorkerService struct {
-	Store              *core.Store
-	PersonID           string
-	Capability         string
-	WorkerPolicy       core.HarnessPolicy
-	WorkerPolicySource func() core.HarnessPolicy
-	Runtime            WorkerRuntime
-	commandNow         func() time.Time
+	Store               *core.Store
+	PersonID            string
+	Capability          string
+	WorkerPolicy        core.HarnessPolicy
+	WorkerPolicySource  func() core.HarnessPolicy
+	WorkerProfileSource func() (node.ManagedProfile, error)
+	Runtime             WorkerRuntime
+	commandNow          func() time.Time
 }
 
 type WorkerPreferences struct {
@@ -387,11 +389,27 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 			return core.WorkerDetails{}, err
 		}
 	}
+	if s.WorkerProfileSource == nil {
+		return core.WorkerDetails{}, ErrWorkerProfileUnavailable
+	}
+	profile, profileErr := s.WorkerProfileSource()
+	if profileErr != nil {
+		return core.WorkerDetails{}, ErrWorkerProfileUnavailable
+	}
+	boundProfile, profileErr := bindManagedWorkerProfile(profile, preview)
+	if profileErr != nil {
+		return core.WorkerDetails{}, profileErr
+	}
+	encoded, encodeErr := json.Marshal(boundProfile)
+	if encodeErr != nil {
+		return core.WorkerDetails{}, ErrWorkerProfileInvalid
+	}
+	profileSnapshot := string(encoded)
 	origins := []core.SecretaryOriginIdentity(nil)
 	if origin != nil {
 		origins = append(origins, *origin)
 	}
-	worker, turn, attempt, resolution, err := s.Store.ResolveAndCreateWorker(ctx, conversation.ID, request.Intent, resolutionRequest, request.IdempotencyKey, origins...)
+	worker, turn, attempt, resolution, err := s.Store.ResolveAndCreateWorkerWithProfileSnapshot(ctx, conversation.ID, request.Intent, resolutionRequest, request.IdempotencyKey, profileSnapshot, origins...)
 	if err != nil {
 		return core.WorkerDetails{}, err
 	}

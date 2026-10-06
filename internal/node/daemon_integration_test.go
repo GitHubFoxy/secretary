@@ -290,6 +290,7 @@ func daemonDispatchFixture(nodeRef core.NodeReference, commandID string) Command
 		Envelope: WorkerEnvelope{
 			WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1",
 			OriginalUserIntent: "inspect repository", Workspace: tWorkspace, HarnessInstance: instance,
+			Profile: workerTemplateFixture(instance, "", ""),
 		},
 	}}
 }

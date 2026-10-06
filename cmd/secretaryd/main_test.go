@@ -287,7 +287,7 @@ func TestProductionAssemblyRespondsWithoutManualResponderAttachment(t *testing.T
 		t.Fatal(err)
 	}
 	// This is the production assembly seam. The test must not attach a responder itself.
-	attachProductionWorkerServices(api, store, person.ID, capability, local, nil, nil, nil)
+	attachProductionWorkerServices(api, store, person.ID, capability, local, nil, nil, nil, nil)
 	server := httptest.NewServer(api.Handler())
 	defer server.Close()
 	client := &http.Client{Jar: mustProductionCookieJar(t)}

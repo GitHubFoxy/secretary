@@ -163,6 +163,7 @@ func TestRespondWorkerRequestRebindsToNewSessionAfterNodeReconnect(t *testing.T)
 	dispatch.Dispatch.Metadata.HarnessInstanceID = "macbook/codex"
 	dispatch.Dispatch.Envelope.HarnessInstance.ID = "macbook/codex"
 	dispatch.Dispatch.Envelope.HarnessInstance.Kind = core.HarnessCodex
+	dispatch.Dispatch.Envelope.Profile = workerTemplateFixture(dispatch.Dispatch.Envelope.HarnessInstance, "", "")
 	dispatch.Dispatch.Envelope.HarnessInstance.Capabilities.Activity = []core.ActivityCapability{core.ActivitySessionStarted, core.ActivityAssistantTextDelta}
 	if _, err := execution.HandleCommand(ctx, dispatch); err != nil {
 		t.Fatal(err)

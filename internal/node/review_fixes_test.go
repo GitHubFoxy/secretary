@@ -290,7 +290,7 @@ func TestTerminalOutcomeUsesProductionSinkAndReachesConversation(t *testing.T) {
 		t.Fatal(err)
 	}
 	instance := daemonInventoryFixture("terminal-node").Instances[0]
-	command := Command{Kind: CommandDispatch, Dispatch: &DispatchCommand{Metadata: core.CommandMetadata{CommandID: "terminal-command", Node: "terminal-node", HarnessInstanceID: instance.ID, WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, IssuedAt: time.Now().UTC()}, Envelope: WorkerEnvelope{WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, OriginalUserIntent: "run", Workspace: tWorkspace, HarnessInstance: instance}}}
+	command := Command{Kind: CommandDispatch, Dispatch: &DispatchCommand{Metadata: core.CommandMetadata{CommandID: "terminal-command", Node: "terminal-node", HarnessInstanceID: instance.ID, WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, IssuedAt: time.Now().UTC()}, Envelope: WorkerEnvelope{WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, OriginalUserIntent: "run", Workspace: tWorkspace, HarnessInstance: instance, Profile: workerTemplateFixture(instance, "", "")}}}
 	if err := manager.SendCommand(ctx, "terminal-node", command); err != nil {
 		t.Fatal(err)
 	}

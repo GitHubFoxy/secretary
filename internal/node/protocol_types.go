@@ -236,23 +236,24 @@ type Heartbeat struct {
 }
 
 type WorkerEnvelope struct {
-	WorkerRef           string               `json:"worker_ref"`
-	TurnID              string               `json:"turn_id"`
-	AttemptID           string               `json:"attempt_id"`
-	OriginalUserIntent  string               `json:"original_user_intent"`
-	NormalizedGoal      string               `json:"normalized_goal,omitempty"`
-	CompletionContract  string               `json:"completion_contract,omitempty"`
-	ConversationContext []string             `json:"conversation_context,omitempty"`
-	ProjectID           string               `json:"project_id,omitempty"`
-	ProjectSnapshot     core.ProjectSnapshot `json:"project_snapshot,omitempty"`
-	Workspace           string               `json:"workspace"`
-	HarnessInstance     core.HarnessInstance `json:"harness_instance"`
-	Model               string               `json:"model,omitempty"`
-	Reasoning           string               `json:"reasoning,omitempty"`
-	AllowedTools        []string             `json:"allowed_tools,omitempty"`
-	Constraints         []string             `json:"constraints,omitempty"`
-	ApprovalPolicy      string               `json:"approval_policy,omitempty"`
-	Profile             ManagedProfile       `json:"profile,omitempty"`
+	WorkerRef            string               `json:"worker_ref"`
+	TurnID               string               `json:"turn_id"`
+	AttemptID            string               `json:"attempt_id"`
+	OriginalUserIntent   string               `json:"original_user_intent"`
+	NormalizedGoal       string               `json:"normalized_goal,omitempty"`
+	CompletionContract   string               `json:"completion_contract,omitempty"`
+	ConversationContext  []string             `json:"conversation_context,omitempty"`
+	ProjectID            string               `json:"project_id,omitempty"`
+	ProjectSnapshot      core.ProjectSnapshot `json:"project_snapshot,omitempty"`
+	Workspace            string               `json:"workspace"`
+	HarnessInstance      core.HarnessInstance `json:"harness_instance"`
+	Model                string               `json:"model,omitempty"`
+	Reasoning            string               `json:"reasoning,omitempty"`
+	AllowedTools         []string             `json:"allowed_tools,omitempty"`
+	Constraints          []string             `json:"constraints,omitempty"`
+	ApprovalPolicy       string               `json:"approval_policy,omitempty"`
+	Profile              ManagedProfile       `json:"profile,omitempty"`
+	LegacyWorkerTemplate bool                 `json:"legacy_worker_template,omitempty"`
 }
 
 func (w WorkerEnvelope) ValidateAgainstInventory(node core.NodeReference, inventory core.HarnessInventorySnapshot) error {
@@ -287,6 +288,23 @@ func (w WorkerEnvelope) Validate(node core.NodeReference) error {
 	}
 	if err := w.HarnessInstance.ValidatePins(w.Model, w.Reasoning); err != nil {
 		return fmt.Errorf("node protocol: %w", err)
+	}
+	profilePresent := !reflect.DeepEqual(w.Profile, ManagedProfile{})
+	if w.LegacyWorkerTemplate {
+		if profilePresent || w.HarnessInstance.Kind != core.HarnessFX {
+			return ErrManagedProfileInvalid
+		}
+	} else if !profilePresent {
+		return ErrManagedProfileRequired
+	}
+	if profilePresent {
+		policy := core.ProjectPolicy{}
+		if w.ProjectID != "" {
+			policy = w.ProjectSnapshot.Policy
+		}
+		if err := w.Profile.ValidateWorkerBinding(string(w.HarnessInstance.Kind), w.Model, w.Reasoning, policy); err != nil {
+			return ErrManagedProfileInvalid
+		}
 	}
 	if w.ProjectID != "" {
 		if w.ProjectSnapshot.ID == "" {

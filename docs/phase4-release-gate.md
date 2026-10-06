@@ -35,6 +35,18 @@
 
 Точные команды ticket31 находятся в его comments; private fixtures ticket33 и прежние authenticated/live evidence не закрывают полную acceptance matrix.
 
+### Ticket31: immutable Worker template envelope follow-up, 7 октября 2026
+
+Отдельное локальное изменение в uncommitted worktree `p4/31-worker-profile-envelope-7724b5`, база `8b58ecc12c5c80a2bbb04245841c6fe1fffffb1e`:
+
+- Новый Worker получает один managed Profile snapshot при binding: exact config version/instructions/skills/allow_tools/source hash плюс resolved Harness/model/reasoning/delivery и проверяемый snapshot hash. Snapshot сохраняется в private `workers.profile_snapshot`, исключён из Worker JSON/DTO/events и возвращается из durable idempotency replay.
+- Control/Core → Node command → OpenCodeRuntime test исполняет synthetic ACP-compatible external process. Он проверяет сгенерированный native config (точные synthetic instructions, worker identity, selected model/reasoning и deny-first/allowlisted permissions) по фактической границе процесса, не печатая Profile text/hash/session ID. После изменения текущего source Follow-up и Resume продолжают использовать сохранённый v1 Profile; Resume вызывает `session/load` исходного synthetic native ID, а не создаёт новую native session.
+- Negative public tests: отсутствующий/недоступный Worker template source и Project permission mismatch не создают Worker; Node отвергает missing, invalid hash, model mismatch и запрещённые permissions до runtime start. OpenCode direct Start guard сохранён. Новый FX Worker без source fail-closed до создания binding. Пустой template разрешён только у уже существующего legacy FX Worker с durable pre-marker binding; additive `worker_template_required` marker сохраняет старый binding, новый Worker получает required=true, общего FX bypass нет. Legacy FX regressions сохраняют исходную HarnessInstance при Dispatch, Follow-up и Resume; managed FX template сохраняет собственные tool names.
+- `go test -p 1 -count=1 ./...` прошёл; финальный release gate ниже включает полный Go race suite уже с итоговыми Resume/DTO assertions.
+- Сохранённый первый blocker-fix gate `/private/tmp/secretary-worker-profile-final-gate.log`: exit 1 на Stage 3 из-за прежних synthetic FX fixtures в `internal/mcp` и `internal/webapi`, где не был задан обязательный template source; stages 4–9 не запускались. Fixtures получили только synthetic sources, assertions не ослаблялись.
+- Финальный gate после последних source/test изменений: `umask 0022; ./scripts/phase4-release-gate.sh`, exit 0; все 9 stages PASS — release-gate contract, gofmt, полный Go suite, полный Go race suite, vet/build, frontend tests (10/10), production/embedded assets, CLI/deployment/revoke tests и `git diff --check`. Лог `/private/tmp/secretary-worker-profile-final-gate-rerun.log` (mode 0600). После gate менялись только docs/ledger/report; финальный `git diff --check` прошёл. Более ранний gate `/private/tmp/secretary-worker-profile-release-gate.log` сохранён отдельно.
+- Это deterministic synthetic executable evidence, а не настоящий provider/model, оплачиваемый call, production, Telegram или real FX/OpenCode acceptance. Эти сценарии не запускались; independent review, commit, merge и rollout также не выполнялись. Ticket31 и общая manual acceptance остаются `claimed`/pending.
+
 ## Ticket33: локальная изоляция native store
 
 Этот исторический прогон фиксирует прежний дизайн с раздельными Secretary/Node stores и `base_commit 459709c`; он superseded и не описывает реализацию в текущей ветке Ticket 33.

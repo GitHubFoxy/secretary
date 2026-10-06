@@ -143,7 +143,11 @@ func (r NodeRuntime) envelope(worker core.Worker, turn core.Turn, attempt core.P
 	if policy.EffectiveExecution().RequireApproval {
 		approvalPolicy = "required"
 	}
-	return node.WorkerEnvelope{WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, OriginalUserIntent: worker.Intent, NormalizedGoal: turn.NormalizedIntent, ProjectID: worker.ProjectID, ProjectSnapshot: binding.Snapshot, Workspace: binding.Workspace, HarnessInstance: binding.HarnessInstance, Model: model, Reasoning: reasoning, ApprovalPolicy: approvalPolicy}, nil
+	profile, err := managedWorkerProfileForBinding(worker, binding)
+	if err != nil {
+		return node.WorkerEnvelope{}, err
+	}
+	return node.WorkerEnvelope{WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, OriginalUserIntent: worker.Intent, NormalizedGoal: turn.NormalizedIntent, ProjectID: worker.ProjectID, ProjectSnapshot: binding.Snapshot, Workspace: binding.Workspace, HarnessInstance: binding.HarnessInstance, Model: model, Reasoning: reasoning, ApprovalPolicy: approvalPolicy, Profile: profile, LegacyWorkerTemplate: !worker.WorkerTemplateRequired && worker.ProfileSnapshot == "" && binding.HarnessInstance.Kind == core.HarnessFX}, nil
 }
 
 func bindingFromWorker(worker core.Worker) (core.ProjectDispatch, error) {

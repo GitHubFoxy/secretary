@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,24 +13,97 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
+var (
+	ErrManagedProfileRequired = errors.New("node: managed Worker Profile is required")
+	ErrManagedProfileInvalid  = errors.New("node: managed Worker Profile is invalid")
+)
+
 type ManagedSkill struct {
-	Path    string
-	Content string
-	Hash    string
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	Hash    string `json:"hash"`
 }
 
 type ManagedProfile struct {
-	Version              string
-	Name                 string
-	Content              string
-	Skills               []ManagedSkill
-	AllowTools           []string
-	Hash                 string
-	Runtime              string
-	Model                string
-	Reasoning            string
-	Delivery             string
-	ReplyContractVersion string
+	Version              string         `json:"version,omitempty"`
+	Name                 string         `json:"name,omitempty"`
+	Content              string         `json:"content,omitempty"`
+	Skills               []ManagedSkill `json:"skills,omitempty"`
+	AllowTools           []string       `json:"allow_tools,omitempty"`
+	Hash                 string         `json:"hash,omitempty"`
+	SourceHash           string         `json:"source_hash,omitempty"`
+	Runtime              string         `json:"runtime,omitempty"`
+	Model                string         `json:"model,omitempty"`
+	Reasoning            string         `json:"reasoning,omitempty"`
+	Delivery             string         `json:"delivery,omitempty"`
+	ReplyContractVersion string         `json:"reply_contract_version,omitempty"`
+}
+
+// SnapshotHash binds exact instructions, skills, permissions and resolved
+// execution pins to the source Profile identity.
+func (p ManagedProfile) SnapshotHash() string {
+	encoded, _ := json.Marshal(struct {
+		Version              string         `json:"version"`
+		Name                 string         `json:"name"`
+		Content              string         `json:"content"`
+		Skills               []ManagedSkill `json:"skills"`
+		AllowTools           []string       `json:"allow_tools"`
+		SourceHash           string         `json:"source_hash"`
+		Runtime              string         `json:"runtime"`
+		Model                string         `json:"model"`
+		Reasoning            string         `json:"reasoning"`
+		Delivery             string         `json:"delivery"`
+		ReplyContractVersion string         `json:"reply_contract_version"`
+	}{p.Version, p.Name, p.Content, p.Skills, p.AllowTools, p.SourceHash, p.Runtime, p.Model, p.Reasoning, p.Delivery, p.ReplyContractVersion})
+	digest := sha256.Sum256(encoded)
+	return hex.EncodeToString(digest[:])
+}
+
+func (p ManagedProfile) ValidateWorkerBinding(runtime, model, reasoning string, policy core.ProjectPolicy) error {
+	if p.Version == "" || p.Name != "worker" || strings.TrimSpace(p.Content) == "" || p.SourceHash == "" ||
+		p.Runtime != runtime || p.Model != model || p.Reasoning != reasoning || p.Hash == "" || p.Hash != p.SnapshotHash() {
+		return ErrManagedProfileInvalid
+	}
+	expectedDelivery := "workspace_instructions"
+	if runtime == string(core.HarnessOpenCode) {
+		expectedDelivery = "native"
+	}
+	if p.Delivery != expectedDelivery {
+		return ErrManagedProfileInvalid
+	}
+	if runtime == string(core.HarnessOpenCode) {
+		if _, err := p.openCodePermissions(nil); err != nil {
+			return ErrManagedProfileInvalid
+		}
+	}
+	execution := policy.EffectiveExecution()
+	for _, tool := range p.AllowTools {
+		var capability core.ExecutionCapability
+		switch tool {
+		case "bash", "shell":
+			capability = core.CapabilityShell
+		case "edit", "write", "patch":
+			capability = core.CapabilityEdit
+		}
+		if capability == "" {
+			continue
+		}
+		for _, denied := range execution.DeniedCapabilities {
+			if denied == capability {
+				return ErrManagedProfileInvalid
+			}
+		}
+		if len(execution.AllowedCapabilities) > 0 {
+			allowed := false
+			for _, value := range execution.AllowedCapabilities {
+				allowed = allowed || value == capability
+			}
+			if !allowed {
+				return ErrManagedProfileInvalid
+			}
+		}
+	}
+	return nil
 }
 
 func (p ManagedProfile) EffectivePrompt() string {

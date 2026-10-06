@@ -1,9 +1,11 @@
 package ctl
 
 import (
-	"github.com/beruseruko/secretary/internal/core"
 	"testing"
 	"time"
+
+	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/node"
 )
 
 func TestWorkerPolicyReloadAffectsNewBindingsOnlyAndNotReplay(t *testing.T) {
@@ -15,6 +17,10 @@ func TestWorkerPolicyReloadAffectsNewBindingsOnlyAndNotReplay(t *testing.T) {
 	policy := core.HarnessPolicy{DefaultHarness: core.HarnessOpenCode, ModelID: "openai/gpt-6-luna", Reasoning: "xhigh"}
 	calls := 0
 	service.WorkerPolicySource = func() core.HarnessPolicy { calls++; return policy }
+	service.WorkerProfileSource = func() (node.ManagedProfile, error) {
+		return node.ManagedProfile{Version: "synthetic-v1", Name: "worker", Content: "Synthetic policy fixture.",
+			AllowTools: []string{"read"}, Hash: "synthetic-source-hash", Runtime: "opencode"}, nil
+	}
 	request := SpawnWorkerRequest{Intent: "private policy fixture", ProjectID: project.ID, IdempotencyKey: "policy-first"}
 	first, err := service.SpawnWorker(ctx, request)
 	if err != nil {

@@ -294,7 +294,8 @@ func main() {
 			profile.Delivery = binding.Delivery
 		}
 		return profile
-	}, func() core.HarnessPolicy { return configuredWorkerPolicy(profiles.Snapshot().Config) })
+	}, func() (node.ManagedProfile, error) { return managedProfile(profiles.Snapshot(), "worker"), nil },
+		func() core.HarnessPolicy { return configuredWorkerPolicy(profiles.Snapshot().Config) })
 	web.AttachSecretaryReplyContract(func() string { return profiles.Snapshot().Config.Secretary.ReplyContract })
 	if remoteNodes != nil {
 		trustedNode := core.NodeReference(strings.TrimSpace(os.Getenv("SECRETARY_TRUSTED_LOCAL_NODE")))
@@ -490,10 +491,10 @@ func configuredWorkerPolicy(c config.Config) core.HarnessPolicy {
 	return core.HarnessPolicy{DefaultHarness: core.HarnessKind(policy.DefaultHarness), PreferredHarnesses: preferred, ModelID: model, Reasoning: reasoning}
 }
 
-func attachProductionWorkerServices(web *webapi.Server, store *core.Store, personID, capability string, local *node.LocalNode, remote *node.ServerManager, managedProfile func(core.BindingProfile) node.ManagedProfile, workerPolicy func() core.HarnessPolicy) {
+func attachProductionWorkerServices(web *webapi.Server, store *core.Store, personID, capability string, local *node.LocalNode, remote *node.ServerManager, managedProfile func(core.BindingProfile) node.ManagedProfile, workerProfile func() (node.ManagedProfile, error), workerPolicy func() core.HarnessPolicy) {
 	controller := &app.WorkerController{Store: store, Node: local, ManagedProfile: managedProfile}
 	web.AttachWorkerController(controller)
-	workerService := ctl.WorkerService{Store: store, PersonID: personID, Capability: capability, WorkerPolicySource: workerPolicy, Runtime: ctl.NodeRuntime{Manager: remote, Local: local}}
+	workerService := ctl.WorkerService{Store: store, PersonID: personID, Capability: capability, WorkerPolicySource: workerPolicy, WorkerProfileSource: workerProfile, Runtime: ctl.NodeRuntime{Manager: remote, Local: local}}
 	web.AttachWorkerResponder(workerService)
 	web.AttachSecretaryWorkerTools(workerService)
 }
@@ -733,7 +734,7 @@ func managedProfile(snapshot config.Snapshot, name string) node.ManagedProfile {
 	}
 	return node.ManagedProfile{
 		Version: snapshot.Version, Name: profile.Name, Content: profile.Content, Skills: skills,
-		AllowTools: append([]string(nil), profile.AllowTools...), Hash: profile.Hash,
+		AllowTools: append([]string(nil), profile.AllowTools...), Hash: profile.Hash, SourceHash: profile.Hash,
 		Runtime: profile.Runtime, Model: profile.Model, Reasoning: profile.Reasoning, Delivery: delivery,
 		ReplyContractVersion: profile.ReplyContractVersion,
 	}

@@ -152,7 +152,7 @@ func TestClaudeCodeSessionSteeringIsExplicitlyUnsupported(t *testing.T) {
 
 func TestClaudeBindingRejectsHarnessKindChangeAfterInventoryRefresh(t *testing.T) {
 	claude := core.HarnessInstance{ID: "node/claude", Node: "node", Kind: core.HarnessClaudeCode, Version: "1.0.0", Authentication: core.HarnessAuthentication{Authenticated: true}, Status: core.HarnessReady}
-	envelope := WorkerEnvelope{WorkerRef: "worker", TurnID: "turn", AttemptID: "attempt", OriginalUserIntent: "inspect", HarnessInstance: claude}
+	envelope := WorkerEnvelope{WorkerRef: "worker", TurnID: "turn", AttemptID: "attempt", OriginalUserIntent: "inspect", HarnessInstance: claude, Profile: workerTemplateFixture(claude, "", "")}
 	oldInventory := core.HarnessInventorySnapshot{Node: "node", Instances: []core.HarnessInstance{claude}, ObservedAt: time.Now().UTC()}
 	if err := envelope.ValidateAgainstInventory("node", oldInventory); err != nil {
 		t.Fatal(err)

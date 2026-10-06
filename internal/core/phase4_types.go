@@ -71,23 +71,25 @@ func (c OutcomeClassification) Valid() bool {
 // Worker is the Phase 4 product entity. Its execution binding and policy are
 // immutable after creation. Native runtime sessions are deliberately absent.
 type Worker struct {
-	ID                string       `json:"id"`
-	WorkerRef         string       `json:"worker_ref"`
-	Title             string       `json:"title"`
-	Intent            string       `json:"intent"`
-	ProjectID         string       `json:"project_id"`
-	NodeID            string       `json:"node_id"`
-	HarnessInstanceID string       `json:"harness_instance_id"`
-	PolicySnapshot    string       `json:"policy_snapshot"`
-	ProjectSnapshot   string       `json:"project_snapshot,omitempty"`
-	Workspace         string       `json:"workspace,omitempty"`
-	Status            WorkerStatus `json:"status"`
-	CurrentTurnID     string       `json:"current_turn_id,omitempty"`
-	LastResultSummary string       `json:"last_result_summary,omitempty"`
-	CreatedAt         time.Time    `json:"created_at"`
-	UpdatedAt         time.Time    `json:"updated_at"`
-	ClosedAt          *time.Time   `json:"closed_at,omitempty"`
-	Archived          bool         `json:"archived"`
+	ID                     string       `json:"id"`
+	WorkerRef              string       `json:"worker_ref"`
+	Title                  string       `json:"title"`
+	Intent                 string       `json:"intent"`
+	ProjectID              string       `json:"project_id"`
+	NodeID                 string       `json:"node_id"`
+	HarnessInstanceID      string       `json:"harness_instance_id"`
+	PolicySnapshot         string       `json:"policy_snapshot"`
+	ProjectSnapshot        string       `json:"project_snapshot,omitempty"`
+	ProfileSnapshot        string       `json:"-"`
+	WorkerTemplateRequired bool         `json:"-"`
+	Workspace              string       `json:"workspace,omitempty"`
+	Status                 WorkerStatus `json:"status"`
+	CurrentTurnID          string       `json:"current_turn_id,omitempty"`
+	LastResultSummary      string       `json:"last_result_summary,omitempty"`
+	CreatedAt              time.Time    `json:"created_at"`
+	UpdatedAt              time.Time    `json:"updated_at"`
+	ClosedAt               *time.Time   `json:"closed_at,omitempty"`
+	Archived               bool         `json:"archived"`
 }
 
 // Turn is a single user direction. Retries stay inside the same Turn.
@@ -272,6 +274,7 @@ type WorkerSpec struct {
 	HarnessInstanceID string
 	PolicySnapshot    string
 	ProjectSnapshot   string
+	ProfileSnapshot   string
 	Workspace         string
 	ProjectRevision   int64
 	// Expected Node fields are set only by ResolveAndCreateWorker. They bind

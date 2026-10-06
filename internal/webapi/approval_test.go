@@ -160,7 +160,9 @@ func TestApprovalAPIDenyUsesRealNodeRuntimeBeforeFinalization(t *testing.T) {
 		t.Fatal("Node did not connect")
 	}
 	time.Sleep(20 * time.Millisecond)
-	service := ctl.WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: ctl.NodeRuntime{Manager: manager}}
+	service := ctl.WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: ctl.NodeRuntime{Manager: manager}, WorkerProfileSource: func() (node.ManagedProfile, error) {
+		return node.ManagedProfile{Version: "synthetic-worker-template-v1", Name: "worker", Content: "Synthetic fixture.", AllowTools: []string{"shell"}, Hash: "synthetic-worker-template-source", Runtime: "fx"}, nil
+	}}
 	api, err := New(ctx, store, "bootstrap")
 	if err != nil {
 		t.Fatal(err)
@@ -270,7 +272,9 @@ func TestApprovalAPIDenyRespondsExactlyOnceBeforeDurableFinalization(t *testing.
 		t.Fatal(err)
 	}
 	runtime := &apiApprovalRuntime{}
-	service := ctl.WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: runtime}
+	service := ctl.WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: runtime, WorkerProfileSource: func() (node.ManagedProfile, error) {
+		return node.ManagedProfile{Version: "synthetic-worker-template-v1", Name: "worker", Content: "Synthetic fixture.", AllowTools: []string{"shell"}, Hash: "synthetic-worker-template-source", Runtime: "fx"}, nil
+	}}
 	details, err := service.SpawnWorker(ctx, ctl.SpawnWorkerRequest{Intent: "inspect", ProjectID: project.ID, HarnessKind: core.HarnessFX, IdempotencyKey: "deny-spawn"})
 	if err != nil {
 		t.Fatal(err)

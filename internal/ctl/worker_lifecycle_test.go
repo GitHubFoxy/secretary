@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/node"
 )
 
 type lifecycleRuntime struct {
@@ -152,7 +153,13 @@ func newWorkerServiceAt(t *testing.T, path string) (context.Context, *core.Store
 		t.Fatal(err)
 	}
 	runtime := &lifecycleRuntime{}
-	return ctx, store, WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: runtime, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX}}, project
+	return ctx, store, WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: runtime, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX}, WorkerProfileSource: syntheticWorkerTemplateSource()}, project
+}
+
+func syntheticWorkerTemplateSource() func() (node.ManagedProfile, error) {
+	return func() (node.ManagedProfile, error) {
+		return node.ManagedProfile{Version: "synthetic-worker-template-v1", Name: "worker", Content: "Synthetic Worker template fixture.", AllowTools: []string{"read"}, Hash: "synthetic-worker-template-source", Runtime: string(core.HarnessFX)}, nil
+	}
 }
 
 func spawnLifecycleWorker(t *testing.T, ctx context.Context, service WorkerService, project core.Project) core.WorkerDetails {
@@ -322,7 +329,7 @@ func TestWorkerServiceConcurrentCancelAcrossStoresSendsOneCommand(t *testing.T) 
 		t.Fatal(err)
 	}
 	firstRuntime := &lifecycleRuntime{}
-	first := WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: firstRuntime, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX}}
+	first := WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: firstRuntime, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX}, WorkerProfileSource: syntheticWorkerTemplateSource()}
 	details := spawnLifecycleWorker(t, ctx, first, project)
 	if _, err := store.SetPhase4AttemptActive(ctx, details.Attempts[0].ID); err != nil {
 		t.Fatal(err)
@@ -333,7 +340,7 @@ func TestWorkerServiceConcurrentCancelAcrossStoresSendsOneCommand(t *testing.T) 
 	}
 	defer other.Close()
 	secondRuntime := &lifecycleRuntime{}
-	second := WorkerService{Store: other, PersonID: person.ID, Capability: capability, Runtime: secondRuntime, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX}}
+	second := WorkerService{Store: other, PersonID: person.ID, Capability: capability, Runtime: secondRuntime, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX}, WorkerProfileSource: syntheticWorkerTemplateSource()}
 	var group sync.WaitGroup
 	errs := make(chan error, 2)
 	for _, service := range []WorkerService{first, second} {
