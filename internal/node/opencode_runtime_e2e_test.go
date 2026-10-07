@@ -98,6 +98,8 @@ func runOpenCodeACPNativeHTTPFixture(t *testing.T, progressFixture bool) {
 	var checkedToolResult atomic.Bool
 	var hasAnyToolDefinition atomic.Bool
 	var allowedReadTool atomic.Bool
+	var continuationPhase atomic.Int32
+	var continuationVerified [2]atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if json.NewDecoder(r.Body).Decode(&body) != nil {
@@ -135,6 +137,11 @@ func runOpenCodeACPNativeHTTPFixture(t *testing.T, progressFixture bool) {
 			}
 			hasAllowed = hasAllowed || name == "read"
 			hasBuiltin = hasBuiltin || name != "" && name != "read"
+		}
+		if phase := continuationPhase.Load(); phase > 0 && len(tools) > 0 {
+			continuationVerified[phase-1].Store(hasAllowed && !hasBuiltin && body["model"] == "fixture-model" && body["reasoning_effort"] == "low" &&
+				strings.Contains(messageText, "managed-secretary-fixture-system") && strings.Contains(messageText, "fixture ACP completed") &&
+				strings.Contains(messageText, "fixture file contents") && checkedNoLeak.Load())
 		}
 		if hasAllowed && !hasBuiltin {
 			allowedReadTool.Store(true)
@@ -195,10 +202,12 @@ func runOpenCodeACPNativeHTTPFixture(t *testing.T, progressFixture bool) {
 	defer server.Close()
 
 	fixtureProfile := ManagedProfile{
-		Name: "worker", Content: "managed-secretary-fixture-system", Model: "fixture/fixture-model", Reasoning: "low",
-		AllowTools: []string{"read"},
+		Version: "synthetic-v1", Name: "worker", Content: "managed-secretary-fixture-system", Model: "fixture/fixture-model", Reasoning: "low",
+		Runtime: "opencode", Delivery: "native", Skills: []ManagedSkill{}, AllowTools: []string{"read"},
 	}
-	fixtureProfile.Hash = HashProfile(fixtureProfile.Content, fixtureProfile.Skills, fixtureProfile.Model, fixtureProfile.Reasoning)
+	fixtureProfile.SourceHash = HashProfile(fixtureProfile.Content, fixtureProfile.Skills, fixtureProfile.Model, fixtureProfile.Reasoning)
+	fixtureProfile.Hash = fixtureProfile.SnapshotHash()
+	fixtureProfile = nativeWorkerTemplateJSONRoundTrip(t, fixtureProfile)
 	t.Setenv("TEST_OPENCODE_WRAPPER", "1")
 	t.Setenv("TEST_NATIVE_OPENCODE", binary)
 	t.Setenv("TEST_FIXTURE_URL", server.URL+"/v1")
@@ -268,9 +277,15 @@ func runOpenCodeACPNativeHTTPFixture(t *testing.T, progressFixture bool) {
 		t.Fatalf("native OpenCode profile checks failed: calls=%d model=%t reasoning=%t system=%t no_leak=%t tool_policy=%t tool_result=%t", calls.Load(), checkedModel.Load(), checkedReasoning.Load(), checkedSystem.Load(), checkedNoLeak.Load(), checkedToolPolicy.Load(), checkedToolResult.Load())
 	}
 	id := session.ID()
+	continuationPhase.Store(1)
+	followUp := runNativeFixtureTurn(t, ctx, session, "Continue the synthetic fixture with the same instructions and permissions.")
+	if followUp.Status != "succeeded" || followUp.Summary != "fixture ACP completed" || session.ID() != id || !continuationVerified[0].Load() {
+		t.Fatal("native Follow-up changed session, frozen profile/policy, or lost prior history")
+	}
 	if err := session.Close(); err != nil {
 		t.Fatal("native fixture close failed")
 	}
+	fixtureProfile = nativeWorkerTemplateJSONRoundTrip(t, fixtureProfile)
 	resumed, err := (OpenCodeRuntime{Command: mcpCommand, Arguments: []string{"-test.run=^TestOpenCodeConfigWrapperProcess$", "--", "acp"}, DataHome: dataHome}).Resume(ctx, StartRequest{
 		WorkerRef: "private-opencode-fixture", Workspace: workspace, Profile: fixtureProfile, DeferInitialPrompt: true,
 	}, id)
@@ -281,6 +296,12 @@ func runOpenCodeACPNativeHTTPFixture(t *testing.T, progressFixture bool) {
 	if resumed.ID() != id {
 		t.Fatal("native fixture Resume replaced its session")
 	}
+	continuationPhase.Store(2)
+	resumedResult := runNativeFixtureTurn(t, ctx, resumed, "Continue the synthetic fixture after process restart.")
+	if resumedResult.Status != "succeeded" || resumedResult.Summary != "fixture ACP completed" || !continuationVerified[1].Load() {
+		t.Fatal("native Resume changed frozen profile/policy or lost original history")
+	}
+	t.Log("safe native checks: empty_skills=true frozen_hash=true follow_up=true resume=true same_session=true prior_history=true permissions=true")
 	canary, err := os.ReadFile(personalCanary)
 	if err != nil || string(canary) != "untouched-personal-store" {
 		t.Fatal("private native ACP fixture touched the personal OpenCode store")

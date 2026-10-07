@@ -84,6 +84,11 @@ func TestOpenCodeNativeProfilePersistence(t *testing.T) {
 				servers = []MCPServer{{Name: "secretary", Command: command, Args: []string{"-test.run=^TestOpenCodeConfigWrapperProcess$", "--", "mcp-server"}, Env: []MCPEnv{{Name: "SECRETARY_MCP_DATA_DIR", Value: state}, {Name: "SECRETARY_MCP_CAPABILITY", Value: "native-fixture-capability"}}}}
 			}
 			profile.Hash = HashProfile(profile.Content, nil, profile.Model, profile.Reasoning)
+			if role == "worker" {
+				profile.Version, profile.SourceHash, profile.Runtime, profile.Delivery = "synthetic-v1", profile.Hash, "opencode", "native"
+				profile.Skills = []ManagedSkill{}
+				profile.Hash = profile.SnapshotHash()
+			}
 			providerModel := strings.TrimPrefix(model, "fixture/")
 			var phase atomic.Int32
 			var checks [3]atomic.Int32
@@ -168,6 +173,9 @@ func TestOpenCodeNativeProfilePersistence(t *testing.T) {
 			defer cancel()
 			runtime := OpenCodeRuntime{Command: command, Arguments: []string{"-test.run=^TestOpenCodeConfigWrapperProcess$", "--", "acp"}, DataHome: dataHome}
 			request := StartRequest{WorkerRef: "private-persistence-fixture", Workspace: workspace, Profile: profile, MCPServers: servers, DeferInitialPrompt: true}
+			if role == "worker" {
+				request.Profile = nativeWorkerTemplateJSONRoundTrip(t, profile)
+			}
 			session, err := runtime.Start(ctx, request)
 			if err != nil {
 				for _, marker := range []string{"model not found", "mode not found", "invalid params", "variant", "effort", "initialize", "process stopped", "deadline", "unauthorized", "401", "permission", "directory", "symlink"} {
@@ -185,6 +193,9 @@ func TestOpenCodeNativeProfilePersistence(t *testing.T) {
 			id := session.ID()
 			for p := 0; p < 3; p++ {
 				phase.Store(int32(p))
+				if role == "worker" {
+					request.Profile = nativeWorkerTemplateJSONRoundTrip(t, request.Profile)
+				}
 				if p == 2 {
 					if session.Close() != nil {
 						t.Fatal("native private close failed")
@@ -300,6 +311,20 @@ func runNativeFixtureTurn(t *testing.T, ctx context.Context, session Session, pr
 			t.Fatal("native fixture timed out")
 		}
 	}
+}
+
+func nativeWorkerTemplateJSONRoundTrip(t *testing.T, profile ManagedProfile) ManagedProfile {
+	t.Helper()
+	encoded, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal("native synthetic Worker template encoding failed")
+	}
+	var decoded ManagedProfile
+	if err := json.Unmarshal(encoded, &decoded); err != nil || decoded.Hash != profile.Hash || decoded.SourceHash != profile.SourceHash || decoded.Skills == nil ||
+		decoded.ValidateWorkerBinding(profile.Runtime, profile.Model, profile.Reasoning, core.ProjectPolicy{}) != nil {
+		t.Fatal("native Worker template lost frozen hash or empty Skills across JSON")
+	}
+	return decoded
 }
 
 func TestOpenCodeNativeInventoryMissingAuthDoesNotFallback(t *testing.T) {

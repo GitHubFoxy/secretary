@@ -50,6 +50,19 @@ func TestOpenCodeConfigCatalogProcess(t *testing.T) {
 	if err != nil || json.Unmarshal(data, &config) != nil {
 		os.Exit(2)
 	}
+	counts := map[string]int{}
+	writeCounts := func() {
+		if record := os.Getenv("TEST_NATIVE_CONFIG_RECORD"); record != "" {
+			encoded, err := json.Marshal(counts)
+			// A config deadline can kill the child at any instruction. Publish
+			// complete evidence atomically, never truncate the previous record.
+			pending := record + ".pending"
+			if err != nil || os.WriteFile(pending, encoded, 0o600) != nil || os.Rename(pending, record) != nil {
+				os.Exit(5)
+			}
+		}
+	}
+	writeCounts()
 	if readyURL := os.Getenv("TEST_NATIVE_CONFIG_READY_URL"); readyURL != "" {
 		response, err := http.Get(readyURL)
 		if err != nil {
@@ -60,14 +73,6 @@ func TestOpenCodeConfigCatalogProcess(t *testing.T) {
 			os.Exit(4)
 		}
 	}
-	counts := map[string]int{}
-	writeCounts := func() {
-		if record := os.Getenv("TEST_NATIVE_CONFIG_RECORD"); record != "" {
-			encoded, _ := json.Marshal(counts)
-			_ = os.WriteFile(record, encoded, 0o600)
-		}
-	}
-	writeCounts()
 	encoder := json.NewEncoder(os.Stdout)
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
@@ -348,7 +353,7 @@ func TestOpenCodeConfigurationRegistrationAndFailClosed(t *testing.T) {
 				data, readErr := os.ReadFile(record)
 				var counts map[string]int
 				if readErr != nil || json.Unmarshal(data, &counts) != nil {
-					t.Fatal("safe protocol counts unavailable")
+					t.Fatalf("safe protocol counts unavailable: read_ok=%t bytes=%d decode_ok=%t child_ready=true outer_expired=%t config_deadline=%t", readErr == nil, len(data), json.Valid(data), outerContextExpired, errors.Is(runtimeErr, context.DeadlineExceeded))
 				}
 				if counts["initialize"] != 1 {
 					t.Fatalf("fixture initialize RPC count: got=%d want=1", counts["initialize"])

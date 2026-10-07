@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -129,6 +130,8 @@ type workerProfileBoundaryEvidence struct {
 	ProfileName        string `json:"profile_name"`
 	ProfileVersion     string `json:"profile_version"`
 	ProfileHashPresent bool   `json:"profile_hash_present"`
+	ProfileHash        string `json:"profile_hash"`
+	ToolsMatch         bool   `json:"tools_match"`
 	InstructionsMatch  bool   `json:"instructions_match"`
 	ReadAllowed        bool   `json:"read_allowed"`
 	ShellNotGranted    bool   `json:"shell_not_granted"`
@@ -170,10 +173,16 @@ func inspectWorkerProfileAtProcessBoundary(path string, metadata map[string]stri
 	for _, permission := range config.Permissions {
 		globalDenyAll = globalDenyAll || permission.Action == "*" && permission.Effect == "deny"
 	}
+	expectedPrompt := syntheticManagedWorkerInstructions
+	if os.Getenv("TEST_WORKER_PROFILE_SKILL") == "nonempty" {
+		expectedPrompt += "\n\n## Managed skill: synthetic.md\n\nSynthetic managed skill."
+	}
 	return workerProfileBoundaryEvidence{
 		ProfileName: metadata["secretaryProfile"], ProfileVersion: metadata["secretaryProfileVersion"],
 		ProfileHashPresent: metadata["secretaryProfileHash"] != "" && agent.Description != "",
-		InstructionsMatch:  found && agent.System == syntheticManagedWorkerInstructions,
+		ProfileHash:        metadata["secretaryProfileHash"],
+		ToolsMatch:         readAllowed == (os.Getenv("TEST_WORKER_PROFILE_TOOLS") != "empty"),
+		InstructionsMatch:  found && agent.System == expectedPrompt,
 		ReadAllowed:        readAllowed, ShellNotGranted: globalDenyAll && !shellAllowed,
 		AgentName: config.DefaultAgent, ModeDescription: agent.Description,
 	}
@@ -231,8 +240,33 @@ func readWorkerProfileEvidence(t *testing.T, path string) []workerProfileProcess
 }
 
 func TestPhase4DispatchPassesAuthoritativeWorkerTemplateToRuntime(t *testing.T) {
+	for _, skills := range []struct {
+		name  string
+		value []node.ManagedSkill
+	}{
+		{"nil", nil}, {"empty", []node.ManagedSkill{}},
+		{"nonempty", []node.ManagedSkill{{Path: "synthetic.md", Content: "Synthetic managed skill.", Hash: "synthetic-skill-hash"}}},
+	} {
+		for _, tools := range []struct {
+			name  string
+			value []string
+		}{{"nil", nil}, {"empty", []string{}}, {"read", []string{"read"}}} {
+			t.Run(skills.name+"-skills/"+tools.name+"-tools", func(t *testing.T) {
+				t.Setenv("TEST_WORKER_PROFILE_SKILL", skills.name)
+				if len(tools.value) == 0 {
+					t.Setenv("TEST_WORKER_PROFILE_TOOLS", "empty")
+				}
+				workerTemplateRoundTrip(t, skills.value, tools.value)
+			})
+		}
+	}
+}
+
+func workerTemplateRoundTrip(t *testing.T, skills []node.ManagedSkill, tools []string) {
+	t.Helper()
 	ctx := context.Background()
-	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	databasePath := filepath.Join(t.TempDir(), "secretary.db")
+	store, err := core.Open(ctx, databasePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -274,8 +308,15 @@ func TestPhase4DispatchPassesAuthoritativeWorkerTemplateToRuntime(t *testing.T) 
 	local := node.NewLocal(runtime)
 	sourceProfile := node.ManagedProfile{
 		Version: "synthetic-config-v1", Name: "worker", Content: syntheticManagedWorkerInstructions,
-		AllowTools: []string{"read"}, Hash: "synthetic-source-hash", Runtime: "opencode",
+		Skills: skills, AllowTools: tools, Hash: "synthetic-source-hash", Runtime: "opencode",
 		Model: "fixture/model", Reasoning: "xhigh",
+	}
+	// The source template is valid before the actual persistence boundary.
+	beforeSave := sourceProfile
+	beforeSave.SourceHash, beforeSave.Delivery = sourceProfile.Hash, "native"
+	beforeSave.Hash = beforeSave.SnapshotHash()
+	if err := beforeSave.ValidateWorkerBinding("opencode", "fixture/model", "xhigh", core.ProjectPolicy{}); err != nil {
+		t.Fatal("synthetic template was invalid before save")
 	}
 	profileSourceCalls := 0
 	service := WorkerService{
@@ -303,6 +344,9 @@ func TestPhase4DispatchPassesAuthoritativeWorkerTemplateToRuntime(t *testing.T) 
 		storedProfile.Model != "fixture/model" || storedProfile.Reasoning != "xhigh" || storedProfile.Runtime != "opencode" {
 		t.Fatal("Worker did not retain the exact bound Profile snapshot")
 	}
+	if !reflect.DeepEqual(storedProfile, beforeSave) || storedProfile.Hash != storedProfile.SnapshotHash() || evidence[0].ProfileHash != beforeSave.Hash {
+		t.Fatal("storage changed hash, source identity, instructions, or collection representation")
+	}
 	publicWorker, err := json.Marshal(details.Worker)
 	if err != nil || bytes.Contains(publicWorker, []byte(syntheticManagedWorkerInstructions)) ||
 		bytes.Contains(publicWorker, []byte(`"profile_snapshot"`)) || bytes.Contains(publicWorker, []byte("synthetic-config-v1")) {
@@ -317,6 +361,18 @@ func TestPhase4DispatchPassesAuthoritativeWorkerTemplateToRuntime(t *testing.T) 
 	if err := local.Remove(details.Worker.WorkerRef); err != nil {
 		t.Fatal(err)
 	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err = core.Open(ctx, databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Store = store
+	reopened, err := store.Worker(ctx, details.Worker.ID)
+	if err != nil || reopened.ProfileSnapshot != details.Worker.ProfileSnapshot {
+		t.Fatal("Core reopen changed the frozen template")
+	}
 	// Editing the current source must not alter the Profile frozen on the Worker.
 	sourceProfile.Version = "synthetic-config-v2"
 	sourceProfile.Content = "Edited synthetic profile; must not reach the bound Worker."
@@ -326,7 +382,7 @@ func TestPhase4DispatchPassesAuthoritativeWorkerTemplateToRuntime(t *testing.T) 
 		t.Fatalf("frozen-profile Follow-up failed: action_turn=%t err=%v", followUp.ActionTurnID != "", err)
 	}
 	evidence = readWorkerProfileEvidence(t, reportPath)
-	if len(evidence) != 2 || !validWorkerProfileEvidence(evidence[1]) || evidence[1].ProfileVersion != "synthetic-config-v1" || profileSourceCalls != 1 {
+	if len(evidence) != 2 || !validWorkerProfileEvidence(evidence[1]) || evidence[1].ProfileVersion != "synthetic-config-v1" || evidence[1].ProfileHash != beforeSave.Hash || profileSourceCalls != 1 {
 		t.Fatal("Follow-up did not reuse the immutable Profile snapshot")
 	}
 	replayedWorker, _, _, _, found, err := store.ReplayWorkerCreation(ctx, "profile-dispatch-test")
@@ -345,7 +401,8 @@ func TestPhase4DispatchPassesAuthoritativeWorkerTemplateToRuntime(t *testing.T) 
 		Workspace: binding.Workspace, HarnessInstance: binding.HarnessInstance, Model: binding.Snapshot.Policy.ModelPin(),
 		Reasoning: binding.Snapshot.Policy.Reasoning, Profile: storedProfile,
 	}
-	nodeState, err := node.OpenLocalStore(filepath.Join(t.TempDir(), "node-state.json"))
+	nodeStatePath := filepath.Join(t.TempDir(), "node-state.json")
+	nodeState, err := node.OpenLocalStore(nodeStatePath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -360,6 +417,8 @@ func TestPhase4DispatchPassesAuthoritativeWorkerTemplateToRuntime(t *testing.T) 
 			WorkerRef: details.Worker.WorkerRef, TurnID: resumeEnvelope.TurnID, AttemptID: resumeEnvelope.AttemptID, IssuedAt: time.Now().UTC()}
 	}
 	startCommand := node.Command{Kind: node.CommandDispatch, Dispatch: &node.DispatchCommand{Metadata: metadata("profile-native-start"), Envelope: resumeEnvelope}}
+	assertWorkerTemplateTamperingRejected(t, ctx, service, details, binding, firstExecution, startCommand, reportPath)
+	startCommand = roundTripWorkerTemplateCommand(t, startCommand)
 	if outcome, err := firstExecution.HandleCommand(ctx, startCommand); err != nil || outcome.State != node.CommandAccepted {
 		t.Fatalf("Node did not start the bound Worker: accepted=%t err_present=%t", outcome.State == node.CommandAccepted, err != nil)
 	}
@@ -367,11 +426,19 @@ func TestPhase4DispatchPassesAuthoritativeWorkerTemplateToRuntime(t *testing.T) 
 	if outcome, err := firstExecution.HandleCommand(ctx, cancelCommand); err != nil || outcome.State != node.CommandAccepted {
 		t.Fatalf("synthetic Node restart boundary failed: accepted=%t err_present=%t", outcome.State == node.CommandAccepted, err != nil)
 	}
+	if err := nodeState.Close(); err != nil {
+		t.Fatal("Node store close failed")
+	}
+	nodeState, err = node.OpenLocalStore(nodeStatePath)
+	if err != nil {
+		t.Fatal("Node store reopen failed")
+	}
 	resumedExecution := node.NewExecutionNode("local", runtime, nodeState)
 	if err := resumedExecution.SetInventory(inventory); err != nil {
 		t.Fatal(err)
 	}
 	resumeCommand := node.Command{Kind: node.CommandResume, Resume: &node.ResumeCommand{Metadata: metadata("profile-native-resume"), Envelope: resumeEnvelope}}
+	resumeCommand = roundTripWorkerTemplateCommand(t, resumeCommand)
 	if outcome, err := resumedExecution.HandleCommand(ctx, resumeCommand); err != nil || outcome.State != node.CommandAccepted {
 		t.Fatalf("Node did not resume the original Worker session: accepted=%t err_present=%t", outcome.State == node.CommandAccepted, err != nil)
 	}
@@ -379,7 +446,7 @@ func TestPhase4DispatchPassesAuthoritativeWorkerTemplateToRuntime(t *testing.T) 
 	resumeEvidenceValid := len(evidence) >= 4 && evidence[2].SessionKind == "new" && validWorkerProfileEvidence(evidence[2])
 	for index := 3; index < len(evidence); index++ {
 		resumeEvidenceValid = resumeEvidenceValid && evidence[index].SessionKind == "load" && evidence[index].NativeIdentityReused &&
-			validWorkerProfileEvidence(evidence[index]) && evidence[index].ProfileVersion == "synthetic-config-v1"
+			validWorkerProfileEvidence(evidence[index]) && evidence[index].ProfileVersion == "synthetic-config-v1" && evidence[index].ProfileHash == beforeSave.Hash
 	}
 	if !resumeEvidenceValid {
 		phase2, phase3, version3 := "", "", ""
@@ -405,5 +472,74 @@ func TestPhase4DispatchPassesAuthoritativeWorkerTemplateToRuntime(t *testing.T) 
 
 func validWorkerProfileEvidence(evidence workerProfileProcessReport) bool {
 	return evidence.ProfileName == "worker" && evidence.ProfileVersion == "synthetic-config-v1" && evidence.ProfileHashPresent &&
-		evidence.InstructionsMatch && evidence.ReadAllowed && evidence.ShellNotGranted && evidence.ModeSelectionMatches && evidence.ModelSelectionMatches
+		evidence.InstructionsMatch && evidence.ToolsMatch && evidence.ShellNotGranted && evidence.ModeSelectionMatches && evidence.ModelSelectionMatches
+}
+
+func assertWorkerTemplateTamperingRejected(t *testing.T, ctx context.Context, service WorkerService, details core.WorkerDetails, binding core.ProjectDispatch, execution *node.ExecutionNode, base node.Command, reportPath string) {
+	t.Helper()
+	before := len(readWorkerProfileEvidence(t, reportPath))
+	for index, mutation := range []struct {
+		name  string
+		apply func(*node.WorkerEnvelope)
+	}{
+		{"instructions", func(e *node.WorkerEnvelope) { e.Profile.Content += " changed" }},
+		{"skills", func(e *node.WorkerEnvelope) {
+			e.Profile.Skills = []node.ManagedSkill{{Path: "tampered.md", Content: "tampered", Hash: "tampered"}}
+		}},
+		{"tools", func(e *node.WorkerEnvelope) { e.Profile.AllowTools = []string{"shell"} }},
+		{"hash", func(e *node.WorkerEnvelope) { e.Profile.Hash = "tampered" }},
+		{"source", func(e *node.WorkerEnvelope) { e.Profile.SourceHash += " changed" }},
+		{"version", func(e *node.WorkerEnvelope) { e.Profile.Version += " changed" }},
+		{"reply-contract", func(e *node.WorkerEnvelope) {
+			e.Profile.ReplyContractVersion = "unsupported"
+			e.Profile.Hash = e.Profile.SnapshotHash()
+		}},
+		{"model", func(e *node.WorkerEnvelope) {
+			e.Profile.Model = "fixture/other"
+			e.Profile.Hash = e.Profile.SnapshotHash()
+		}},
+		{"policy", func(e *node.WorkerEnvelope) {
+			e.Profile.AllowTools = []string{"shell"}
+			e.Profile.Hash = e.Profile.SnapshotHash()
+			e.ProjectSnapshot.Policy.Execution.DeniedCapabilities = []core.ExecutionCapability{core.CapabilityShell}
+		}},
+	} {
+		t.Run("reject-"+mutation.name, func(t *testing.T) {
+			command := roundTripWorkerTemplateCommand(t, base)
+			command.Dispatch.Metadata.CommandID = "tampered-template-" + string(rune('a'+index))
+			mutation.apply(&command.Dispatch.Envelope)
+			command = roundTripWorkerTemplateCommand(t, command)
+			worker := details.Worker
+			encoded, err := json.Marshal(command.Dispatch.Envelope.Profile)
+			if err != nil {
+				t.Fatal("tampered synthetic encoding failed")
+			}
+			worker.ProfileSnapshot = string(encoded)
+			changedBinding := binding
+			changedBinding.Snapshot = command.Dispatch.Envelope.ProjectSnapshot
+			if err := service.Runtime.Dispatch(ctx, command.Dispatch.Metadata.CommandID, worker, details.Turns[0], details.Attempts[0], core.DispatchResolution{ProjectDispatch: changedBinding}); !errors.Is(err, ErrWorkerProfileInvalid) {
+				t.Fatal("Core/NodeRuntime accepted a tampered stored template")
+			}
+			outcome, err := execution.HandleCommand(ctx, command)
+			if err != nil || outcome.State != node.CommandFailed || outcome.ErrorCode != "profile_invalid" {
+				t.Fatalf("Node tamper rejection state=%q code=%q err_present=%t", outcome.State, outcome.ErrorCode, err != nil)
+			}
+		})
+	}
+	if len(readWorkerProfileEvidence(t, reportPath)) != before {
+		t.Fatal("tampered template reached the external ACP process")
+	}
+}
+
+func roundTripWorkerTemplateCommand(t *testing.T, command node.Command) node.Command {
+	t.Helper()
+	encoded, err := json.Marshal(command)
+	if err != nil {
+		t.Fatal("Node command encoding failed")
+	}
+	var decoded node.Command
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal("Node command decoding failed")
+	}
+	return decoded
 }

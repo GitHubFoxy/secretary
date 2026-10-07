@@ -223,6 +223,22 @@ esac
 	}
 }
 
+// Only the external clock is controlled: HarnessProbe and ExecCommandRunner
+// still execute the exact version/auth fixture and perform real cancellation.
+// The default production step timeout remains the startup safety bound.
+type authFixtureDeadlineContext struct{ context.Context }
+
+// Do not expose the backing cancel context's private value: cancellation must
+// propagate this clock's Err, not the backing context's context.Canceled.
+func (authFixtureDeadlineContext) Value(any) any { return nil }
+
+func (c authFixtureDeadlineContext) Err() error {
+	if c.Context.Err() != nil {
+		return context.DeadlineExceeded
+	}
+	return nil
+}
+
 func TestOpenCodeProbeTimeoutStopsNativeProcessAndRemovesPrivateEnvironment(t *testing.T) {
 	root := t.TempDir()
 	binary := filepath.Join(root, "opencode-stall-fixture")
@@ -232,7 +248,10 @@ func TestOpenCodeProbeTimeoutStopsNativeProcessAndRemovesPrivateEnvironment(t *t
 printf '%s|%s|%s|%s\n' "$XDG_DATA_HOME" "${OPENAI_API_KEY:+present}" "$HOME" "$*" >> "$AUTH_PROBE_LOG"
 case "$1" in
   --version) printf 'opencode v2.0.22\n' ;;
-  auth) printf '%s\n' "$$" > "$AUTH_PROBE_PID"; exec /bin/sleep 30 ;;
+  auth)
+    if [ "$2" != "list" ] || [ "$3" != "--format" ] || [ "$4" != "json" ] || [ "$5" != "--standalone" ]; then exit 2; fi
+    printf '%s\n' "$$" > "$AUTH_PROBE_PID"; exec /bin/sleep 30 ;;
+
   *) exit 0 ;;
 esac
 `
@@ -244,8 +263,39 @@ esac
 	spec := DefaultOpenCodeProbeSpec()
 	spec.Binary = binary
 	spec.ACPArgs = nil
-	spec.StepTimeout = 500 * time.Millisecond
-	result := (HarnessProbe{Node: "node-a", Spec: spec, Runner: executableOpenCodeProbeRunner{ExecCommandRunner{OpenCodeDataHome: filepath.Join(root, "selected")}}}).Probe(context.Background())
+	selectedHome := filepath.Join(root, "selected")
+	caller, expire := context.WithCancel(context.Background())
+	defer expire()
+	resultReady := make(chan ProbeResult, 1)
+	go func() {
+		resultReady <- (HarnessProbe{Node: "node-a", Spec: spec, Runner: executableOpenCodeProbeRunner{ExecCommandRunner{OpenCodeDataHome: selectedHome}}}).Probe(authFixtureDeadlineContext{caller})
+	}()
+	// The fixture writes its PID only on the exact auth branch, immediately
+	// before exec (same PID). Version startup does not consume the stimulus.
+	startup, stopStartup := context.WithTimeout(context.Background(), defaultProbeStepTimeout)
+	defer stopStartup()
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+	for {
+		data, err := os.ReadFile(pidPath)
+		if err == nil && len(strings.TrimSpace(string(data))) > 0 {
+			break
+		}
+		select {
+		case <-ticker.C:
+		case result := <-resultReady:
+			t.Fatalf("auth fixture exited before readiness: status=%s code=%s", result.Instance.Status, result.ErrorCode)
+		case <-startup.Done():
+			t.Fatal("auth fixture did not reach its readiness barrier")
+		}
+	}
+	expire()
+	var result ProbeResult
+	select {
+	case result = <-resultReady:
+	case <-startup.Done():
+		t.Fatal("auth deadline did not finish subprocess cleanup")
+	}
 	if result.Available() || result.ErrorCode != "unauthenticated" || !strings.Contains(result.Err.Error(), "deadline exceeded") {
 		t.Fatalf("timed-out native auth command was accepted: status=%s error=%s detail=%v", result.Instance.Status, result.ErrorCode, result.Err)
 	}
@@ -265,13 +315,24 @@ esac
 	if err != nil {
 		t.Fatal("native auth process did not record its temporary environment")
 	}
-	fields := strings.SplitN(strings.TrimSpace(string(line)), "|", 4)
-	if len(fields) != 4 || fields[2] == "" {
-		t.Fatal("temporary OpenCode probe environment metadata was incomplete")
+	records := strings.Split(strings.TrimSpace(string(line)), "\n")
+	if len(records) != 2 || result.Instance.Version != "2.0.22" {
+		t.Fatal("timeout fixture did not execute exactly version then auth")
 	}
-	if _, err := os.Stat(fields[2]); !os.IsNotExist(err) {
-		t.Fatal("timed-out OpenCode probe left its private environment behind")
+	for index, record := range records {
+		fields := strings.SplitN(record, "|", 4)
+		wantArgs := "--version"
+		if index == 1 {
+			wantArgs = "auth list --format json --standalone"
+		}
+		if len(fields) != 4 || fields[0] != selectedHome || fields[1] != "" || fields[2] == "" || fields[3] != wantArgs {
+			t.Fatal("timeout fixture used incorrect command, store, or environment")
+		}
+		if _, err := os.Stat(fields[2]); !os.IsNotExist(err) {
+			t.Fatal("timed-out OpenCode probe left its private environment behind")
+		}
 	}
+	t.Log("safe timeout checks: exact_fixture=true version_before_auth=true auth_ready=true deadline=true subprocess_stopped=true both_private_homes_removed=true")
 }
 
 func TestClaudeCapabilitiesMatchImplementedRuntime(t *testing.T) {

@@ -25,11 +25,12 @@ type ManagedSkill struct {
 }
 
 type ManagedProfile struct {
-	Version              string         `json:"version,omitempty"`
-	Name                 string         `json:"name,omitempty"`
-	Content              string         `json:"content,omitempty"`
-	Skills               []ManagedSkill `json:"skills,omitempty"`
-	AllowTools           []string       `json:"allow_tools,omitempty"`
+	Version string `json:"version,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Content string `json:"content,omitempty"`
+	// Hash-significant collections must retain null versus [] across storage/wire.
+	Skills               []ManagedSkill `json:"skills"`
+	AllowTools           []string       `json:"allow_tools"`
 	Hash                 string         `json:"hash,omitempty"`
 	SourceHash           string         `json:"source_hash,omitempty"`
 	Runtime              string         `json:"runtime,omitempty"`
