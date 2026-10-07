@@ -873,3 +873,26 @@ umask 0022; ./scripts/phase4-release-gate.sh > /private/tmp/secretary-sol-review
 Фактический exit **0**, лог0600. Stages **1–9 PASS**: contract, gofmt, full deterministic Go tests, full race, vet/all-package build, frontend lock/tests10/10, production/embedded assets, CLI/deployment/revoke, diff check. Native/live flags выключены только в deterministic suite; separate actual native runs выше PASS. Stage8 login operations используют isolated fake CLI fixtures, не настоящий provider login. Предыдущий final gate `secretary-sol-release-gate.log` и все прежние RED/FAIL/PASS остаются сохранены, не перезаписаны.
 
 После этого gate менялись только docs/ledger/report; отдельный final `git diff --check` после документации — PASS. Исходный подробный implementation report сохранён в `/private/tmp/secretary-opencode-sol-implementation-before-review-fix.md`; актуальный краткий — `/private/tmp/secretary-opencode-sol-implementation.md`. Parent rerun Spec и Standards ещё **pending**; собственные/nested reviews, paid/prod/auth действия, commit/merge не выполнялись. Tickets29/31/33 остаются `claimed`; historical actual893 FAIL, manual NOT RUN и Telegram pause не изменены.
+
+## Итоговая живая приёмка — target9e3 / Luna6 / low
+
+Deployed SHA `9e3bc1e0ce0899dc5dc22741d6942c8b47c79e6d`, tree `5c86e1003075584090c45d1d6b8b03118f943c20`: committed source manifest 428/428 и оба real child hashes совпали; fresh private backup/SQLite integrity PASS. Secretary и новые Workers оставлены HEALTHY на OpenCode2.0.22 `openai/gpt-6-luna/low`, addressed-reply-v1 Secretary, Node include=true. Это production override; clean-install defaults Secretary `openai/gpt-6.1-sol/xhigh` и Worker `openai/gpt-6-luna/xhigh` неизменны.
+
+| Проверка | Результат |
+|---|---|
+| Fresh stored auth, native Luna6 variant low, ACP initialize | PASS; per-model evidence, не generic reasoning union |
+| Secretary completion/exact durable reply/no echo | PASS; succeeded/end_turn/RPC/drain, одна canonical reply |
+| Actual MCP startup/initialize/tools_list/current launch | PASS; count9, spawn/reply flags; successful audited spawn/reply |
+| Core→Node template JSON/hash и новый Worker read/Result | PASS; exact nonce equality true |
+| Idle Follow-up | PASS; новая Attempt, прежние binding/Profile/native identity, remembered nonce true |
+| Idle restart/reconnect и Resume/Follow-up | PASS; те же identity/frozen Profile/history и nonce, без replacement |
+| Независимый General после Results | PASS; один exact reply, без нового Worker |
+| Final processes/config/Doctor/health/UI/API/Node/DB/subsets | PASS; online/non-draining, active Attempts0, integrity ok |
+| Отдельный FX live test | NOT RUN; legacy FX readiness PASS |
+| Telegram | PENDING/BLOCKED до owner rotation; API/enable не выполнялись |
+
+Три per-Attempt mappings сопоставлены по значению worker_ref и имеют одну native session; все identity/nonce comparisons true. Fixture удалён только после первого Result; оба продолжения использовали remembered history. Пять конечных model inputs: 2 Secretary + 3 Worker, retries0; provider HTTP/title request counts не измерялись. Broker list не выдаётся за provider-schema capture; stable ACK/crash/negative replay fixtures не повторялись в production.
+
+Original 30 FX bindings/31 mappings и весь fresh pre-rollout subset (34 Workers/36 Attempts/33 mappings, pending command, Profiles, Node identity/selections) неизменны. Login/import/reset/rebind/DB restore отсутствовали; новая durable/native история сохранена. Parent независимо read-only подтвердил оба target process hashes, оба systemd active, health/UI200 и effective Secretary/Worker Luna6/low policy; остальные live gates — operator evidence, не приписываются parent проверке.
+
+Исторический ba40 **FAIL** сохранён: initial smoke PASS, idle Follow-up дал другую native identity и nonce mismatch; Resume/General тогда NOT RUN, config rollback на healthy FX без восстановления DB/history. Target9e3 проверял нового Worker, не retry старого. Tickets31/33 остаются claimed: эта canary не закрывает Telegram, полный product/adapter coverage, Worker shell и standalone owner/clean-install barriers. Это docs-only запись уже полученного evidence; новых full gate/review/model/prod checks не было.
