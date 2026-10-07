@@ -159,6 +159,29 @@ func (s *LocalStore) ClaimCommand(command Command) (CommandRecord, bool, error) 
 	return record, false, nil
 }
 
+// SaveCommandReadiness persists an ACK without completing execution. Recovery
+// must still interrupt a processing claim, even when its Outcome is accepted.
+func (s *LocalStore) SaveCommandReadiness(commandID string, outcome CommandOutcome) (CommandRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.state.Commands[commandID]
+	if !ok || outcome.State != CommandAccepted || outcome.CommandID != commandID || outcome.Kind != record.Kind {
+		return CommandRecord{}, errors.New("node: invalid command readiness")
+	}
+	if record.State != CommandProcessing {
+		return record, nil
+	}
+	previous := record
+	record.Outcome = outcome
+	record.UpdatedAt = time.Now().UTC()
+	s.state.Commands[commandID] = record
+	if err := s.persistLocked(); err != nil {
+		s.state.Commands[commandID] = previous
+		return CommandRecord{}, err
+	}
+	return record, nil
+}
+
 func (s *LocalStore) ClaimWorkerResponse(requestID string) (CommandOutcome, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -283,6 +306,43 @@ func (s *LocalStore) CommandForAttempt(attemptID string) (CommandRecord, error) 
 		return candidates[i].CommandID < candidates[j].CommandID
 	})
 	return candidates[0], nil
+}
+
+// lifecycleCommands returns every candidate for an exact checkpoint. The
+// caller must reject ambiguity instead of selecting by map order or timestamp.
+func (s *LocalStore) lifecycleCommands(attemptID string) []CommandRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var records []CommandRecord
+	for _, record := range s.state.Commands {
+		command, err := commandFromJSON(record.CommandJSON)
+		if err == nil && (command.Kind == CommandDispatch || command.Kind == CommandResume) && command.Metadata().AttemptID == attemptID {
+			records = append(records, record)
+		}
+	}
+	return records
+}
+
+func (s *LocalStore) hasWorkerMapping(workerRef string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, mapping := range s.state.Mappings {
+		if mapping.WorkerRef == workerRef {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *LocalStore) nativeSessionOwnedBy(mapping sessionMapping) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, other := range s.state.Mappings {
+		if other.RuntimeSessionID == mapping.RuntimeSessionID && (other.WorkerRef != mapping.WorkerRef || other.HarnessInstanceID != mapping.HarnessInstanceID) {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *LocalStore) SaveSessionMapping(mapping sessionMapping) error {
@@ -498,7 +558,7 @@ func (s *LocalStore) RecoverRunning(ctx context.Context, inspector ProcessInspec
 		if alive {
 			continue
 		}
-		outcome := CommandOutcome{CommandID: record.CommandID, Kind: record.Kind, State: CommandInterrupted, ErrorCode: "execution_state_unknown", ErrorMessage: "Node could not prove that the side effect is still running"}
+		outcome := CommandOutcome{CommandID: record.CommandID, Kind: record.Kind, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID, State: CommandInterrupted, ErrorCode: "execution_state_unknown", ErrorMessage: "Node could not prove that the side effect is still running"}
 		if _, err := s.CompleteCommand(record.CommandID, outcome); err != nil {
 			return err
 		}

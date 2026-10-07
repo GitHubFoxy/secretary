@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"reflect"
 	"sync"
 
 	"github.com/beruseruko/secretary/internal/core"
@@ -99,6 +100,8 @@ type MCPServer struct {
 }
 
 type StartRequest struct {
+	// AttemptID is Node-local lifecycle metadata; adapters do not send it to ACP.
+	AttemptID               string
 	WorkerRef               string
 	Task                    string
 	Workspace               string
@@ -176,13 +179,19 @@ type Queueer interface {
 }
 
 type LocalNode struct {
-	runtime Runtime
-	mu      sync.Mutex
-	workers map[string]Session
+	runtime     Runtime
+	mu          sync.Mutex
+	workers     map[string]Session
+	checkpoints map[string]localCheckpoint
+}
+
+type localCheckpoint struct {
+	request  StartRequest
+	nativeID string
 }
 
 func NewLocal(runtime Runtime) *LocalNode {
-	return &LocalNode{runtime: runtime, workers: make(map[string]Session)}
+	return &LocalNode{runtime: runtime, workers: make(map[string]Session), checkpoints: make(map[string]localCheckpoint)}
 }
 
 func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session, error) {
@@ -208,11 +217,60 @@ func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session
 	if _, exists := n.workers[request.WorkerRef]; exists {
 		return nil, errors.New("node: worker already exists")
 	}
+	if request.AttemptID != "" {
+		for _, checkpoint := range n.checkpoints {
+			if checkpoint.request.WorkerRef == request.WorkerRef {
+				return nil, ErrRuntimeSessionUnavailable
+			}
+		}
+	}
 	session, err := n.runtime.Start(ctx, request)
 	if err != nil {
 		return nil, err
 	}
 	n.workers[request.WorkerRef] = session
+	if request.AttemptID != "" {
+		n.checkpoints[request.AttemptID] = localCheckpoint{request: request, nativeID: session.ID()}
+	}
+	return session, nil
+}
+
+// Continue requires the exact previously executed Attempt on this local Node.
+// A fresh LocalNode without proof fails closed; it cannot borrow current defaults.
+func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previousAttemptID string) (Session, error) {
+	profile, err := request.effectiveProfile()
+	if err != nil {
+		return nil, err
+	}
+	request.Profile = profile
+	if request.AttemptID == "" || request.AttemptID == previousAttemptID {
+		return nil, ErrRuntimeSessionUnavailable
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	checkpoint, ok := n.checkpoints[previousAttemptID]
+	prior := checkpoint.request
+	if !ok || checkpoint.nativeID == "" || prior.WorkerRef != request.WorkerRef || prior.Workspace != request.Workspace || !reflect.DeepEqual(prior.Profile, request.Profile) || !reflect.DeepEqual(prior.HarnessInstance, request.HarnessInstance) || prior.Model != request.Model || prior.Reasoning != request.Reasoning || prior.ApprovalPolicy != request.ApprovalPolicy {
+		return nil, ErrRuntimeSessionUnavailable
+	}
+	resumer, ok := n.runtime.(Resumer)
+	if !ok {
+		return nil, ErrRuntimeSessionUnavailable
+	}
+	if previous, exists := n.workers[request.WorkerRef]; exists {
+		if err := previous.Close(); err != nil {
+			return nil, err
+		}
+		delete(n.workers, request.WorkerRef)
+	}
+	request.DeferInitialPrompt = true
+	session, err := resumeSameIdentity(ctx, resumer, request, checkpoint.nativeID)
+	if err != nil {
+		return nil, ErrRuntimeSessionUnavailable
+	}
+	n.workers[request.WorkerRef] = session
+	n.checkpoints[request.AttemptID] = localCheckpoint{request: request, nativeID: session.ID()}
+	go func() { _ = session.Prompt(context.Background(), request.Task) }()
 	return session, nil
 }
 

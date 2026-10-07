@@ -134,17 +134,28 @@ func TestClaudeCodeRuntimeRejectsCapabilityMismatch(t *testing.T) {
 }
 
 func TestClaudeCodeSessionSteeringIsExplicitlyUnsupported(t *testing.T) {
-	session := &claudeSession{}
+	session := &claudeSession{id: "synthetic-claude-native"}
 	injected, err := session.Steer(context.Background(), "continue")
 	if injected || !errors.Is(err, ErrClaudeCodeSteeringUnsupported) {
 		t.Fatalf("injected=%v err=%v, want explicit unsupported error", injected, err)
 	}
 
-	execution := &ExecutionNode{sessions: map[string]Session{"attempt": session}}
-	outcome := execution.steer(context.Background(), &SteeringCommand{
-		Metadata: core.CommandMetadata{CommandID: "steer", Node: "node", AttemptID: "attempt"},
-		Text:     "continue",
-	})
+	store, err := OpenLocalStore(t.TempDir() + "/node.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	execution := NewExecutionNode("macbook", &approvalRuntime{session: session}, store)
+	dispatch := dispatchFixture("unsupported-steering-dispatch")
+	if outcome, err := execution.HandleCommand(context.Background(), dispatch); err != nil || outcome.State != CommandAccepted {
+		t.Fatal("unsupported-steering fixture dispatch failed")
+	}
+	metadata := dispatch.Metadata()
+	metadata.CommandID = "steer"
+	outcome, err := execution.HandleCommand(context.Background(), Command{Kind: CommandSteering, Steering: &SteeringCommand{Metadata: metadata, Text: "continue"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if outcome.State != CommandFailed || outcome.ErrorCode != "runtime_not_steerable" {
 		t.Fatalf("steering outcome=%#v, want explicit unsupported failure", outcome)
 	}

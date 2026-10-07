@@ -236,6 +236,7 @@ type Heartbeat struct {
 }
 
 type WorkerEnvelope struct {
+	PreviousAttemptID    string               `json:"previous_attempt_id,omitempty"`
 	WorkerRef            string               `json:"worker_ref"`
 	TurnID               string               `json:"turn_id"`
 	AttemptID            string               `json:"attempt_id"`
@@ -421,7 +422,7 @@ func (c Command) Validate(node core.NodeReference) error {
 		if c.Dispatch == nil {
 			return errors.New("node protocol: dispatch payload is required")
 		}
-		if c.Dispatch.Metadata.HarnessInstanceID != c.Dispatch.Envelope.HarnessInstance.ID {
+		if !envelopeMatchesMetadata(c.Dispatch.Envelope, c.Dispatch.Metadata) {
 			return errors.New("node protocol: dispatch metadata binding mismatch")
 		}
 		return c.Dispatch.Envelope.Validate(node)
@@ -437,7 +438,7 @@ func (c Command) Validate(node core.NodeReference) error {
 		if c.Resume == nil {
 			return errors.New("node protocol: resume payload is required")
 		}
-		if c.Resume.Metadata.HarnessInstanceID != c.Resume.Envelope.HarnessInstance.ID {
+		if !envelopeMatchesMetadata(c.Resume.Envelope, c.Resume.Metadata) {
 			return errors.New("node protocol: resume metadata binding mismatch")
 		}
 		return c.Resume.Envelope.Validate(node)
@@ -452,6 +453,10 @@ func (c Command) Validate(node core.NodeReference) error {
 		return fmt.Errorf("node protocol: unknown command %q", c.Kind)
 	}
 	return nil
+}
+
+func envelopeMatchesMetadata(e WorkerEnvelope, m core.CommandMetadata) bool {
+	return e.WorkerRef == m.WorkerRef && e.TurnID == m.TurnID && e.AttemptID == m.AttemptID && e.HarnessInstance.ID == m.HarnessInstanceID && e.PreviousAttemptID != e.AttemptID
 }
 
 type CommandState string

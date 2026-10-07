@@ -100,7 +100,7 @@ func TestFailedRespondWorkerCanRetryAfterNodeReconnect(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	secondSession := &retryResponderSession{id: "native-reconnected"}
+	secondSession := &retryResponderSession{id: "native-first"}
 	reconnected := NewExecutionNode("macbook", &retryResponderRuntime{session: secondSession}, reopened)
 	outcome, err := reconnected.HandleCommand(ctx, command)
 	if err != nil || outcome.State != CommandAccepted {
@@ -185,7 +185,7 @@ func TestRespondWorkerRequestRebindsToNewSessionAfterNodeReconnect(t *testing.T)
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	resumed := newReconnectSession("native-1-reconnected")
+	resumed := newReconnectSession("native-1")
 	secondRuntime := &reconnectRuntime{session: resumed}
 	reconnected := NewExecutionNode("macbook", secondRuntime, reopened)
 	respond := Command{Kind: CommandRespondWorker, RespondWorker: &RespondWorkerCommand{Metadata: core.CommandMetadata{CommandID: "respond-reconnect", Node: "macbook", WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1"}, RequestID: "durable-request", Response: "denied"}}
@@ -302,7 +302,7 @@ func TestRespondWorkerRecoveryDoesNotTreatResumedSessionAsDelivered(t *testing.T
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	reconnectedSession := &recoveryResponderSession{id: "native-after-crash"}
+	reconnectedSession := &recoveryResponderSession{id: "native-before-crash"}
 	reconnected := NewExecutionNode("macbook", &recoveryResponderRuntime{session: reconnectedSession}, reopened)
 	if err := reconnected.Restore(ctx); err != nil {
 		t.Fatal(err)
@@ -362,13 +362,14 @@ func TestSessionForCommandUsesDispatchEnvelopeForNonDefaultHarness(t *testing.T)
 	}
 	defer store.Close()
 	dispatch := dispatchFixture("dispatch-envelope")
+	dispatch.Dispatch.Envelope.Workspace = t.TempDir()
 	if _, duplicate, err := store.ClaimCommand(dispatch); err != nil || duplicate {
 		t.Fatalf("claim dispatch duplicate=%v err=%v", duplicate, err)
 	}
 	if _, err := store.CompleteCommand(dispatch.Dispatch.Metadata.CommandID, acceptedOutcome(dispatch)); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.SaveSessionMapping(sessionMapping{WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1", HarnessInstanceID: dispatch.Dispatch.Envelope.HarnessInstance.ID, Workspace: t.TempDir(), RuntimeSessionID: "native-session"}); err != nil {
+	if err := store.SaveSessionMapping(sessionMapping{WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1", HarnessInstanceID: dispatch.Dispatch.Envelope.HarnessInstance.ID, Workspace: dispatch.Dispatch.Envelope.Workspace, RuntimeSessionID: "native-session"}); err != nil {
 		t.Fatal(err)
 	}
 	respond := Command{Kind: CommandRespondWorker, RespondWorker: &RespondWorkerCommand{
@@ -378,7 +379,7 @@ func TestSessionForCommandUsesDispatchEnvelopeForNonDefaultHarness(t *testing.T)
 	if _, duplicate, err := store.ClaimCommand(respond); err != nil || duplicate {
 		t.Fatalf("claim response duplicate=%v err=%v", duplicate, err)
 	}
-	expected := &recoveryResponderSession{id: "claude-resumed"}
+	expected := &recoveryResponderSession{id: "native-session"}
 	claude := &recoveryResponderRuntime{session: expected}
 	router := RuntimeRouter{DefaultHarness: "fx", Claude: claude}
 	execution := NewExecutionNode("macbook", router, store)

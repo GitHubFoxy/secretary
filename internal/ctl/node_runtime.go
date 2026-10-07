@@ -45,7 +45,13 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 			return node.CommandOutcome{}, errors.New("worker: local dispatch command is missing")
 		}
 		var err error
-		session, err = r.Local.Dispatch(ctx, node.StartRequest{WorkerRef: command.Dispatch.Envelope.WorkerRef, Task: command.Dispatch.Envelope.OriginalUserIntent, Workspace: command.Dispatch.Envelope.Workspace, Profile: command.Dispatch.Envelope.Profile, HarnessInstance: command.Dispatch.Envelope.HarnessInstance, Model: command.Dispatch.Envelope.Model, Reasoning: command.Dispatch.Envelope.Reasoning, ApprovalPolicy: command.Dispatch.Envelope.ApprovalPolicy})
+		envelope := command.Dispatch.Envelope
+		request := node.StartRequest{AttemptID: envelope.AttemptID, WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: envelope.Workspace, Profile: envelope.Profile, HarnessInstance: envelope.HarnessInstance, Model: envelope.Model, Reasoning: envelope.Reasoning, ApprovalPolicy: envelope.ApprovalPolicy}
+		if envelope.PreviousAttemptID != "" {
+			session, err = r.Local.Continue(ctx, request, envelope.PreviousAttemptID)
+		} else {
+			session, err = r.Local.Dispatch(ctx, request)
+		}
 		if err != nil {
 			return node.CommandOutcome{}, err
 		}
@@ -147,7 +153,7 @@ func (r NodeRuntime) envelope(worker core.Worker, turn core.Turn, attempt core.P
 	if err != nil {
 		return node.WorkerEnvelope{}, err
 	}
-	return node.WorkerEnvelope{WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, OriginalUserIntent: worker.Intent, NormalizedGoal: turn.NormalizedIntent, ProjectID: worker.ProjectID, ProjectSnapshot: binding.Snapshot, Workspace: binding.Workspace, HarnessInstance: binding.HarnessInstance, Model: model, Reasoning: reasoning, ApprovalPolicy: approvalPolicy, Profile: profile, LegacyWorkerTemplate: !worker.WorkerTemplateRequired && worker.ProfileSnapshot == "" && binding.HarnessInstance.Kind == core.HarnessFX}, nil
+	return node.WorkerEnvelope{PreviousAttemptID: turn.PreviousAttemptID, WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, OriginalUserIntent: turn.Input, NormalizedGoal: turn.NormalizedIntent, ProjectID: worker.ProjectID, ProjectSnapshot: binding.Snapshot, Workspace: binding.Workspace, HarnessInstance: binding.HarnessInstance, Model: model, Reasoning: reasoning, ApprovalPolicy: approvalPolicy, Profile: profile, LegacyWorkerTemplate: !worker.WorkerTemplateRequired && worker.ProfileSnapshot == "" && binding.HarnessInstance.Kind == core.HarnessFX}, nil
 }
 
 func bindingFromWorker(worker core.Worker) (core.ProjectDispatch, error) {

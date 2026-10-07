@@ -352,6 +352,7 @@ CREATE TABLE IF NOT EXISTS turns (
   context_snapshot TEXT NOT NULL DEFAULT '',
   state TEXT NOT NULL,
   current_attempt_id TEXT,
+  previous_attempt_id TEXT NOT NULL DEFAULT '',
   result_id TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -527,6 +528,7 @@ CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries(state, updated_at);
 		{"workers", "profile_snapshot TEXT NOT NULL DEFAULT ''", "managed Worker Profile snapshot"},
 		{"workers", "worker_template_required INTEGER NOT NULL DEFAULT 0", "legacy Worker template compatibility marker"},
 		{"workers", "workspace TEXT NOT NULL DEFAULT ''", "workspace"},
+		{"turns", "previous_attempt_id TEXT NOT NULL DEFAULT ''", "Follow-up predecessor checkpoint"},
 		{"conversation_entries", "worker_ref TEXT NOT NULL DEFAULT ''", "conversation entry worker reference"},
 		{"conversation_entries", "turn_id TEXT NOT NULL DEFAULT ''", "conversation entry turn"},
 		{"conversation_entries", "result_id TEXT NOT NULL DEFAULT ''", "conversation entry result"},

@@ -84,12 +84,31 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 		}
 		return CommandOutcome{}, err
 	}
+	pendingContinuation := command.Kind == CommandDispatch && command.Dispatch.Envelope.PreviousAttemptID != ""
+	if command.Kind == CommandResume && command.Resume.Envelope.PreviousAttemptID != "" {
+		_, mapped := n.store.SessionMapping(command.Metadata().AttemptID)
+		pendingContinuation = !mapped
+	}
 	record, duplicate, err := n.store.ClaimCommand(command)
 	if err != nil {
 		return CommandOutcome{}, err
 	}
 	if duplicate {
 		if record.State == CommandProcessing {
+			if record.Outcome.State == CommandAccepted {
+				if n.liveContinuationReadiness(command, record) {
+					return record.Outcome, nil
+				}
+				// The terminal watcher may have completed and removed the
+				// session since ClaimCommand took its processing snapshot.
+				if _, same := sameContinuationCommand(command, record); same {
+					completed, err := n.store.Command(command.Metadata().CommandID)
+					if err == nil && completed.State == CommandAccepted && completed.Outcome == record.Outcome {
+						return completed.Outcome, nil
+					}
+				}
+				return failedOutcome(command, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error()), nil
+			}
 			return failedOutcome(command, "execution_state_unknown", "command execution is already in progress"), nil
 		}
 		return bindCommandOutcomeIdentity(record.Outcome, command), nil
@@ -109,6 +128,12 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 	default:
 		outcome = failedOutcome(command, "unknown_command", "unknown command")
 	}
+	if pendingContinuation && outcome.State == CommandAccepted {
+		// Readiness ACK is durable, but execution stays processing until
+		// watchSession observes actual execution completion.
+		// A crash before/while Prompt therefore becomes explicit interruption.
+		return outcome, nil
+	}
 	stored, err := n.store.CompleteCommand(command.Metadata().CommandID, outcome)
 	if err != nil {
 		return CommandOutcome{}, err
@@ -117,6 +142,9 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 }
 
 func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) CommandOutcome {
+	if _, exists := n.store.SessionMapping(command.Envelope.AttemptID); exists {
+		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
+	}
 	n.mu.Lock()
 	inventory := n.inventory
 	n.mu.Unlock()
@@ -157,10 +185,28 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
-	session, err := n.runtime.Start(ctx, request)
+	var session Session
+	continuing := command.Envelope.PreviousAttemptID != ""
+	if continuing {
+		mapping, mappingErr := n.continuationMapping(command.Envelope, command.Envelope.PreviousAttemptID)
+		resumer, ok := n.runtime.(Resumer)
+		if mappingErr != nil || !ok || workspace != mapping.Workspace {
+			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
+		}
+		request.DeferInitialPrompt = true
+		session, err = resumeSameIdentity(ctx, resumer, request, mapping.RuntimeSessionID)
+	} else {
+		if n.store.hasWorkerMapping(command.Envelope.WorkerRef) {
+			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
+		}
+		session, err = n.runtime.Start(ctx, request)
+	}
 	if err != nil {
 		if code, message, ok := managedProfileFailure(err); ok {
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, code, message)
+		}
+		if continuing {
+			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 		}
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "dispatch_failed", err.Error())
 	}
@@ -169,8 +215,20 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		_ = session.Close()
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "mapping_persist_failed", err.Error())
 	}
+	if continuing {
+		ready, err := n.store.SaveCommandReadiness(command.Metadata.CommandID, acceptedOutcome(Command{Kind: CommandDispatch, Dispatch: command}))
+		if err != nil || ready.State != CommandProcessing || ready.Outcome.State != CommandAccepted {
+			_ = session.Close()
+			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
+		}
+	}
 	n.registerSession(mapping.AttemptID, session)
-	n.watchSession(session, command.Envelope)
+	if continuing {
+		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
+		go func() { _ = session.Prompt(context.Background(), command.Envelope.OriginalUserIntent) }()
+	} else {
+		n.watchSession(session, command.Envelope)
+	}
 	return acceptedOutcome(Command{Kind: CommandDispatch, Dispatch: command})
 }
 
@@ -316,8 +374,14 @@ func (n *ExecutionNode) steer(ctx context.Context, command *SteeringCommand) Com
 }
 
 func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) CommandOutcome {
-	mapping, ok := n.store.SessionMapping(command.Metadata.AttemptID)
-	if !ok || strings.TrimSpace(mapping.RuntimeSessionID) == "" {
+	checkpoint := command.Metadata.AttemptID
+	_, mapped := n.store.SessionMapping(checkpoint)
+	continuing := !mapped && command.Envelope.PreviousAttemptID != ""
+	if continuing {
+		checkpoint = command.Envelope.PreviousAttemptID
+	}
+	mapping, mappingErr := n.continuationMapping(command.Envelope, checkpoint)
+	if mappingErr != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 	}
 	if _, ok := n.session(command.Metadata.AttemptID); ok {
@@ -344,13 +408,32 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
-	session, err := resumer.Resume(ctx, request, mapping.RuntimeSessionID)
+	session, err := resumeSameIdentity(ctx, resumer, request, mapping.RuntimeSessionID)
 	if err != nil {
-		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", err.Error())
+		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
+	}
+	if continuing {
+		mapping.TurnID, mapping.AttemptID = command.Envelope.TurnID, command.Envelope.AttemptID
+		if err := n.store.SaveSessionMapping(mapping); err != nil {
+			_ = session.Close()
+			return failedOutcome(Command{Kind: CommandResume, Resume: command}, "mapping_persist_failed", "continuation mapping could not be persisted")
+		}
 	}
 	n.rebindPendingRequests(command.Metadata.AttemptID, session)
+	if continuing {
+		ready, err := n.store.SaveCommandReadiness(command.Metadata.CommandID, acceptedOutcome(Command{Kind: CommandResume, Resume: command}))
+		if err != nil || ready.State != CommandProcessing || ready.Outcome.State != CommandAccepted {
+			_ = session.Close()
+			return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
+		}
+	}
 	n.registerSession(command.Metadata.AttemptID, session)
-	n.watchSession(session, command.Envelope)
+	if continuing {
+		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
+		go func() { _ = session.Prompt(context.Background(), command.Envelope.OriginalUserIntent) }()
+	} else {
+		n.watchSession(session, command.Envelope)
+	}
 	return acceptedOutcome(Command{Kind: CommandResume, Resume: command})
 }
 
@@ -403,8 +486,8 @@ func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerComma
 }
 
 func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.CommandMetadata) (Session, error) {
-	if session, ok := n.session(metadata.AttemptID); ok {
-		return session, nil
+	if n.store == nil || metadata.Node != n.node {
+		return nil, ErrRuntimeSessionUnavailable
 	}
 	mapping, ok := n.store.SessionMapping(metadata.AttemptID)
 	if !ok || mapping.RuntimeSessionID == "" {
@@ -433,8 +516,18 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 	default:
 		return nil, ErrRuntimeSessionUnavailable
 	}
-	if envelope.AttemptID != metadata.AttemptID || envelope.WorkerRef != mapping.WorkerRef || envelope.TurnID != mapping.TurnID || envelope.HarnessInstance.ID != mapping.HarnessInstanceID {
+	if envelope.AttemptID != metadata.AttemptID || envelope.WorkerRef != metadata.WorkerRef || envelope.TurnID != metadata.TurnID || (metadata.HarnessInstanceID != "" && envelope.HarnessInstance.ID != metadata.HarnessInstanceID) {
 		return nil, ErrRuntimeSessionUnavailable
+	}
+	mapping, err = n.continuationMapping(envelope, metadata.AttemptID)
+	if err != nil {
+		return nil, ErrRuntimeSessionUnavailable
+	}
+	if session, ok := n.session(metadata.AttemptID); ok {
+		if session.ID() != mapping.RuntimeSessionID {
+			return nil, ErrRuntimeSessionUnavailable
+		}
+		return session, nil
 	}
 	resumer, ok := n.runtime.(Resumer)
 	if !ok {
@@ -449,7 +542,7 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 		return nil, ErrRuntimeSessionUnavailable
 	}
 	request.Profile = profile
-	session, err := resumer.Resume(ctx, request, mapping.RuntimeSessionID)
+	session, err := resumeSameIdentity(ctx, resumer, request, mapping.RuntimeSessionID)
 	if err != nil {
 		return nil, ErrRuntimeSessionUnavailable
 	}
@@ -471,6 +564,13 @@ func (n *ExecutionNode) Inspect(ctx context.Context, record CommandRecord) (bool
 	// Session resume is not evidence that a native Respond completed. The
 	// command must go through normal retry/re-dispatch with the same IDs.
 	if command.Kind == CommandRespondWorker {
+		return false, nil
+	}
+	// A saved native mapping (or session/load) proves a checkpoint, not
+	// delivery of this command input. In the mapping -> async Prompt crash
+	// window there is no execution receipt. RecoverRunning must interrupt,
+	// never replay an uncertain prompt or turn idle history into accepted.
+	if command.Kind == CommandDispatch || command.Kind == CommandResume {
 		return false, nil
 	}
 	metadata := command.Metadata()
@@ -519,7 +619,7 @@ func (n *ExecutionNode) removeSession(attemptID string) {
 	n.mu.Unlock()
 }
 
-func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope) {
+func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, pendingContinuation ...Command) {
 	go func() {
 		activity := session.Activity()
 		results := session.Result()
@@ -536,6 +636,15 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope) {
 					results = nil
 					continue
 				}
+				if len(pendingContinuation) != 0 {
+					command := pendingContinuation[0]
+					// A runtime terminal event is execution evidence, unlike
+					// mapping persistence or loading an idle native session.
+					if _, err := n.store.CompleteCommand(command.Metadata().CommandID, acceptedOutcome(command)); err != nil {
+						_ = session.Close()
+						return
+					}
+				}
 				n.removeSession(envelope.AttemptID)
 				status := core.OutcomeFailed
 				if result.Status == "succeeded" {
@@ -549,6 +658,12 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope) {
 					outcome.Summary = result.Status
 				}
 				_, _ = n.store.QueueOutcome(outcome)
+				// OpenCode continuation reloads durable native history into
+				// fresh Attempt channels. Other adapters retain their lifecycle
+				// (including FX interrupt-and-continue).
+				if envelope.HarnessInstance.Kind == core.HarnessOpenCode {
+					_ = session.Close()
+				}
 			}
 		}
 	}()

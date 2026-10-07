@@ -636,6 +636,14 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 				}{}, err
 			}
 			if found {
+				// Private checkpoint is deliberately absent from outcome JSON.
+				stored.Turn, err = getTurn(ctx, tx, stored.Turn.ID)
+				if err != nil {
+					return struct {
+						turn    Turn
+						attempt Phase4Attempt
+					}{}, err
+				}
 				if err := ensureLifecycleCommandIntentTx(ctx, tx, s.now(), lifecycleCommandKind(stored.CommandKind), stored.Attempt.WorkerID, stored.Attempt.ID); err != nil {
 					return struct {
 						turn    Turn
@@ -695,8 +703,25 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 				attempt Phase4Attempt
 			}{}, err
 		}
+		if worker.CurrentTurnID != "" {
+			previous, err := getTurn(ctx, tx, worker.CurrentTurnID)
+			if err != nil || previous.WorkerID != worker.ID || !previous.State.Terminal() || previous.CurrentAttemptID == "" {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, ErrInvalidTransition
+			}
+			checkpoint, err := getPhase4Attempt(ctx, tx, previous.CurrentAttemptID)
+			if err != nil || checkpoint.WorkerID != worker.ID || checkpoint.TurnID != previous.ID || checkpoint.NodeID != worker.NodeID || checkpoint.HarnessInstanceID != worker.HarnessInstanceID || !checkpoint.State.Terminal() {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, ErrInvalidTransition
+			}
+			turn.PreviousAttemptID = checkpoint.ID
+		}
 		turn.CurrentAttemptID = attempt.ID
-		if _, err := tx.ExecContext(ctx, `UPDATE turns SET current_attempt_id = ? WHERE id = ?`, attempt.ID, turn.ID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE turns SET current_attempt_id = ?, previous_attempt_id = ? WHERE id = ?`, attempt.ID, turn.PreviousAttemptID, turn.ID); err != nil {
 			return struct {
 				turn    Turn
 				attempt Phase4Attempt
@@ -1764,7 +1789,7 @@ func getTurn(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, id string) (Turn, error) {
 	var turn Turn
-	err := q.QueryRowContext(ctx, `SELECT id, worker_id, input, normalized_intent, context_snapshot, state, COALESCE(current_attempt_id, ''), COALESCE(result_id, ''), created_at, updated_at FROM turns WHERE id = ?`, id).Scan(&turn.ID, &turn.WorkerID, &turn.Input, &turn.NormalizedIntent, &turn.ContextSnapshot, &turn.State, &turn.CurrentAttemptID, &turn.ResultID, newTimestampScanner(&turn.CreatedAt), newTimestampScanner(&turn.UpdatedAt))
+	err := q.QueryRowContext(ctx, `SELECT id, worker_id, input, normalized_intent, context_snapshot, state, COALESCE(current_attempt_id, ''), COALESCE(result_id, ''), created_at, updated_at, previous_attempt_id FROM turns WHERE id = ?`, id).Scan(&turn.ID, &turn.WorkerID, &turn.Input, &turn.NormalizedIntent, &turn.ContextSnapshot, &turn.State, &turn.CurrentAttemptID, &turn.ResultID, newTimestampScanner(&turn.CreatedAt), newTimestampScanner(&turn.UpdatedAt), &turn.PreviousAttemptID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Turn{}, ErrNotFound
 	}

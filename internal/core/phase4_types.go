@@ -94,16 +94,19 @@ type Worker struct {
 
 // Turn is a single user direction. Retries stay inside the same Turn.
 type Turn struct {
-	ID               string    `json:"id"`
-	WorkerID         string    `json:"worker_id"`
-	Input            string    `json:"input"`
-	NormalizedIntent string    `json:"normalized_intent,omitempty"`
-	ContextSnapshot  string    `json:"context_snapshot,omitempty"`
-	State            TurnState `json:"state"`
-	CurrentAttemptID string    `json:"current_attempt_id,omitempty"`
-	ResultID         string    `json:"result_id,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	// PreviousAttemptID freezes the Worker current checkpoint at Turn creation.
+	// It is server/Node lifecycle metadata, never a public DTO field.
+	PreviousAttemptID string    `json:"-"`
+	ID                string    `json:"id"`
+	WorkerID          string    `json:"worker_id"`
+	Input             string    `json:"input"`
+	NormalizedIntent  string    `json:"normalized_intent,omitempty"`
+	ContextSnapshot   string    `json:"context_snapshot,omitempty"`
+	State             TurnState `json:"state"`
+	CurrentAttemptID  string    `json:"current_attempt_id,omitempty"`
+	ResultID          string    `json:"result_id,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // Attempt contains only server lifecycle metadata. It never contains a
