@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/beruseruko/secretary/internal/core"
 )
 
 type Tool struct {
@@ -18,7 +20,10 @@ type Handler interface {
 	Tools() []Tool
 	Call(context.Context, string, json.RawMessage) (any, error)
 }
-type Server struct{ Handler Handler }
+type Server struct {
+	Handler Handler
+	Observe func(context.Context, core.SecretaryMCPObservation) error
+}
 type request struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
@@ -29,6 +34,11 @@ type request struct {
 func (s Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 	if s.Handler == nil {
 		return fmt.Errorf("mcp: handler is required")
+	}
+	if s.Observe != nil {
+		if err := s.Observe(ctx, core.SecretaryMCPObservation{Phase: core.SecretaryMCPObservationStartup, Success: true}); err != nil {
+			return err
+		}
 	}
 	scanner := bufio.NewScanner(in)
 	scanner.Buffer(make([]byte, 4096), 1<<20)
@@ -55,8 +65,34 @@ func (s Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if _, err := out.Write(append(encoded, '\n')); err != nil {
-			return err
+		frame := append(encoded, '\n')
+		n, writeErr := out.Write(frame)
+		if writeErr == nil && n != len(frame) {
+			writeErr = io.ErrShortWrite
+		}
+		if flusher, ok := out.(interface{ Flush() error }); ok && writeErr == nil {
+			writeErr = flusher.Flush()
+		}
+		if s.Observe != nil && (req.Method == "initialize" || req.Method == "tools/list") {
+			observation := core.SecretaryMCPObservation{Phase: core.SecretaryMCPObservationInitialize, Success: writeErr == nil && rpcErr == nil}
+			if req.Method == "tools/list" {
+				observation.Phase = core.SecretaryMCPObservationToolsList
+				if observation.Success {
+					// Read the exact returned registry, not a second Tools() call.
+					listed := result.(map[string]any)["tools"].([]Tool)
+					observation.ToolCount = len(listed)
+					for _, tool := range listed {
+						observation.HasSpawnWorker = observation.HasSpawnWorker || tool.Name == "spawn_worker"
+						observation.HasReplyToUser = observation.HasReplyToUser || tool.Name == "reply_to_user"
+					}
+				}
+			}
+			if err := s.Observe(ctx, observation); err != nil {
+				return err
+			}
+		}
+		if writeErr != nil {
+			return writeErr
 		}
 	}
 	return scanner.Err()

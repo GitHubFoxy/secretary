@@ -32,12 +32,17 @@ type Runtime struct {
 	identity       core.SecretaryIdentity
 	turnLoader     func(context.Context, string) (core.SecretaryTurn, error)
 
+	lifecycleMu          sync.Mutex // serialize Start/Stop, not prompt consumption
 	mu                   sync.Mutex
 	session              node.Session
+	stopSession          node.Session
+	stopPending          bool
 	busy                 bool
 	activeTurnID         string
 	activeInputID        string
 	replyContractVersion string
+	launch               core.SecretaryRuntimeLaunch
+	deliveredProfileKey  string
 	queued               []string
 	errors               chan error
 }
@@ -102,10 +107,16 @@ func (r *Runtime) QueueMessage(ctx context.Context, text string) (core.Secretary
 }
 
 func (r *Runtime) Start(ctx context.Context) error {
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
 	if r.node == nil {
 		return errors.New("secretary: local node is required")
 	}
 	r.mu.Lock()
+	if r.stopPending {
+		r.mu.Unlock()
+		return errors.New("secretary: runtime cleanup pending; retry Stop before restart")
+	}
 	if r.session != nil {
 		r.mu.Unlock()
 		return nil
@@ -135,22 +146,45 @@ func (r *Runtime) Start(ctx context.Context) error {
 			return fmt.Errorf("secretary: unsupported reply contract version %q", request.Profile.ReplyContractVersion)
 		}
 		request.DrainOutputBeforeResult = request.Profile.ReplyContractVersion == core.SecretaryReplyContractAddressedV1
-		if store != nil && identity.ID != "" {
-			if err := r.persistPolicySnapshot(ctx, request.Profile); err != nil {
-				return err
-			}
+	}
+	var launch core.SecretaryRuntimeLaunch
+	registered := false
+	if store != nil && identity.ID != "" && (request.Profile.Runtime == "opencode" || request.Profile.ReplyContractVersion == core.SecretaryReplyContractAddressedV1) {
+		var err error
+		launch, err = store.BeginSecretaryRuntime(ctx, identity.ID, r.capability, request.Profile.Runtime, request.Profile.Model, request.Profile.Reasoning)
+		if err != nil {
+			return err
 		}
-
+		defer func() {
+			if !registered {
+				_ = store.EndSecretaryRuntime(context.Background(), launch)
+			}
+		}()
+		updated, err := store.SecretaryIdentity(ctx, identity.PersonID)
+		if err != nil {
+			return err
+		}
+		r.AttachIdentity(updated)
 	}
 	if mcpCommand != "" {
-		request.MCPServers = []node.MCPServer{node.SecretaryMCPServerAtWithReplyContract(mcpCommand, dataDir, r.capability, mcpServerURL, request.Profile.ReplyContractVersion)}
+		server := node.SecretaryMCPServerAtWithReplyContract(mcpCommand, dataDir, r.capability, mcpServerURL, request.Profile.ReplyContractVersion)
+		if launch.ObserverCapability != "" && mcpServerURL != "" {
+			server.Env = append(server.Env, node.MCPEnv{Name: "SECRETARY_MCP_OBSERVER_CAPABILITY", Value: launch.ObserverCapability})
+		}
+		request.MCPServers = []node.MCPServer{server}
 	}
 	session, err := r.node.Dispatch(ctx, request)
 	if err != nil {
 		return err
 	}
+	if profileFn != nil && store != nil && identity.ID != "" {
+		if err := r.persistPolicySnapshot(ctx, request.Profile); err != nil {
+			_ = r.node.Remove(workerRef)
+			return err
+		}
+	}
 	if request.Profile.Name != "" && store != nil {
-		_, _ = store.RecordEvent(ctx, "secretary.profile_delivery", workerRef, "", session.ID(), map[string]string{
+		_, _ = store.RecordEvent(ctx, "secretary.profile_delivery", workerRef, "", "", map[string]string{
 			"profile": request.Profile.Name, "profile_version": request.Profile.Version,
 			"profile_hash": request.Profile.Hash, "delivery": request.Profile.Delivery, "runtime": request.Profile.Runtime,
 		})
@@ -159,6 +193,9 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.session = session
 	r.busy = !request.DeferInitialPrompt
 	r.replyContractVersion = request.Profile.ReplyContractVersion
+	r.launch = launch
+	r.deliveredProfileKey = secretaryProfileDeliveryKey(request.Profile)
+	registered = true
 	r.mu.Unlock()
 	if request.Profile.ReplyContractVersion == core.SecretaryReplyContractAddressedV1 {
 		go r.consumeAddressedSession(session)
@@ -315,32 +352,31 @@ func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result,
 		} else {
 			errorMessage = result.Summary
 		}
-		if replyContractVersion == core.SecretaryReplyContractAddressedV1 && state == core.SecretaryTurnSucceeded && (result.CompletionEvidence == nil || !result.CompletionEvidence.AllowsAssistantFinalText()) {
-			state = core.SecretaryTurnFailed
-			response = ""
-			errorMessage = "Secretary completion lacked authoritative native terminal evidence."
-		}
 		var finishErr error
-		addressedReplyOnlyCompleted := false
-		if state == core.SecretaryTurnFailed && replyContractVersion == core.SecretaryReplyContractAddressedV1 && activeInputID != "" && result.CompletionEvidence != nil && result.CompletionEvidence.AllowsAddressedReplyOnly() {
-			_, finishErr = store.FinishSecretaryTurnWithAddressedReplyOnly(context.Background(), activeTurnID, activeInputID)
-			addressedReplyOnlyCompleted = finishErr == nil
-			// Missing, foreign, or otherwise invalid reply identity is not
-			// completion evidence. Preserve the ordinary failed-turn path.
-			if !addressedReplyOnlyCompleted {
-				finishErr = nil
+		if replyContractVersion == core.SecretaryReplyContractAddressedV1 {
+			evidence := core.SecretaryCompletionEvidence{Branch: "invalid"}
+			state = core.SecretaryTurnFailed
+			if result.Status == "canceled" || result.Status == "cancelled" {
+				state = core.SecretaryTurnCanceled
 			}
-		}
-		if !addressedReplyOnlyCompleted {
-			if replyContractVersion == core.SecretaryReplyContractAddressedV1 && state == core.SecretaryTurnSucceeded {
-				if activeInputID == "" {
-					finishErr = core.ErrInvalidSecretaryOrigin
-				} else {
-					_, _, finishErr = store.FinishSecretaryTurnWithOutput(context.Background(), activeTurnID, activeInputID, state, errorMessage, response, nil)
+			if native := result.CompletionEvidence; native != nil {
+				evidence.RPCSucceeded, evidence.DrainCompleted = native.RPCSucceeded, native.DrainCompleted
+				evidence.AssistantChunks = native.AssistantChunks
+				evidence.TerminalClass = string(native.StopReason)
+				switch {
+				case result.Status == "succeeded" && native.AllowsAssistantFinalText() && strings.TrimSpace(result.Summary) != "":
+					evidence.Branch, evidence.TerminalValid, evidence.ResponsePresent = "assistant_final", true, true
+					state = core.SecretaryTurnSucceeded
+				case result.Status == "failed" && native.AllowsAddressedReplyOnly():
+					// The adapter deliberately reports no final text as failed. Only
+					// its verified zero-chunk end_turn can enter the exact reply path.
+					evidence.Branch, evidence.TerminalValid = "addressed_reply_only", true
+					state = core.SecretaryTurnSucceeded
 				}
-			} else {
-				_, _, finishErr = store.FinishSecretaryTurnWithResponse(context.Background(), activeTurnID, state, errorMessage, response)
 			}
+			_, finishErr = store.FinishSecretaryTurnWithRequiredReply(context.Background(), activeTurnID, activeInputID, state, evidence)
+		} else {
+			_, _, finishErr = store.FinishSecretaryTurnWithResponse(context.Background(), activeTurnID, state, errorMessage, response)
 		}
 		if finishErr != nil {
 			r.reportError(finishErr)
@@ -541,14 +577,12 @@ func (r *Runtime) persistPolicySnapshot(ctx context.Context, profile node.Manage
 	if reasoning == "" {
 		reasoning = identity.RuntimeReasoning
 	}
-	if harness != "" && model != "" && reasoning != "" && (identity.RuntimeHarness != harness || identity.RuntimeModel != model || identity.RuntimeReasoning != reasoning) {
+	if profile.Runtime != "opencode" && profile.ReplyContractVersion == "" && harness != "" && model != "" && reasoning != "" && (identity.RuntimeHarness != harness || identity.RuntimeModel != model || identity.RuntimeReasoning != reasoning) {
 		updated, err := store.ReplaceSecretaryRuntime(ctx, identity.ID, harness, model, reasoning)
 		if err != nil {
 			return err
 		}
-		r.mu.Lock()
-		r.identity = updated
-		r.mu.Unlock()
+		r.AttachIdentity(updated)
 	}
 	return store.SetSecretaryPolicySnapshot(ctx, core.SecretaryPolicySnapshot{
 		Version: profile.Version, Harness: harness, Model: model, Reasoning: reasoning,
@@ -556,6 +590,10 @@ func (r *Runtime) persistPolicySnapshot(ctx context.Context, profile node.Manage
 		ProfileContent: profile.Content, ProfileRuntime: profile.Runtime, ProfileModel: profile.Model,
 		ProfileReasoning: profile.Reasoning, ProfileDelivery: profile.Delivery, ReplyContractVersion: profile.ReplyContractVersion, AllowedTools: profile.AllowTools,
 	})
+}
+
+func secretaryProfileDeliveryKey(profile node.ManagedProfile) string {
+	return node.HashProfile(profile.EffectivePrompt(), profile.Skills, profile.Name, profile.Runtime, profile.Model, profile.Reasoning, profile.Delivery, profile.ReplyContractVersion, strings.Join(profile.AllowTools, "\n"))
 }
 
 func (r *Runtime) startNextDurable(ctx context.Context) {
@@ -575,16 +613,18 @@ func (r *Runtime) startNextDurable(ctx context.Context) {
 	if profileFn != nil {
 		profile := profileFn()
 		r.mu.Lock()
-		replyContractVersion := r.replyContractVersion
+		replyContractVersion, deliveredKey := r.replyContractVersion, r.deliveredProfileKey
 		r.mu.Unlock()
+		if secretaryProfileDeliveryKey(profile) != deliveredKey {
+			r.reportError(errors.New("secretary: Profile changed; restart the runtime before processing queued turns"))
+			return
+		}
 		if profile.ReplyContractVersion != replyContractVersion {
 			r.reportError(fmt.Errorf("secretary: reply contract changed from %q to %q; restart the runtime before processing queued turns", replyContractVersion, profile.ReplyContractVersion))
 			return
 		}
-		if err := r.persistPolicySnapshot(ctx, profile); err != nil {
-			r.reportError(err)
-			return
-		}
+		// Canonical context keeps the exact snapshot delivered at Start. A new
+		// compiled config version alone is not a new native Profile delivery.
 		identity = r.Identity()
 	}
 	turn, err := store.StartNextSecretaryTurn(ctx, identity.ID)
@@ -604,8 +644,16 @@ func (r *Runtime) startNextDurable(ctx context.Context) {
 		go r.startNextDurable(context.Background())
 		return
 	}
+	launch := r.launch
 	r.busy, r.activeTurnID, r.activeInputID = true, turn.ID, turn.InputID
 	r.mu.Unlock()
+	if launch.ObserverCapability != "" {
+		if err := store.BindSecretaryRuntimeTurn(ctx, launch, turn.ID, turn.InputID); err != nil {
+			r.abandonDurablePrompt(store, turn.ID, false)
+			r.reportError(err)
+			return
+		}
+	}
 	r.runPrompt(ctx, session, turn.Input)
 }
 
@@ -727,9 +775,21 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 }
 
 func (r *Runtime) Stop(ctx context.Context) error {
+	r.lifecycleMu.Lock()
+	defer r.lifecycleMu.Unlock()
 	r.mu.Lock()
-	session := r.session
+	if r.session != nil {
+		r.stopSession = r.session
+		r.stopPending = true
+	}
+	if !r.stopPending {
+		r.mu.Unlock()
+		return nil
+	}
+	session := r.stopSession
+	store, launch := r.store, r.launch
 	durable := r.store != nil && r.identity.ID != ""
+	// Detach prompt consumption, but retain unfinished cleanup for the next Stop.
 	r.session = nil
 	r.busy = false
 	r.activeTurnID = ""
@@ -738,11 +798,35 @@ func (r *Runtime) Stop(ctx context.Context) error {
 		r.queued = nil
 	}
 	r.mu.Unlock()
-	if session == nil {
-		return nil
+
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	var revokeErr, cancelErr, closeErr error
+	if launch.ObserverCapability != "" {
+		if store == nil {
+			revokeErr = errors.New("secretary: runtime store is required for revoke")
+		} else {
+			revokeErr = store.EndSecretaryRuntime(cleanupCtx, launch)
+		}
 	}
-	if err := session.Cancel(ctx); err != nil {
-		return err
+	// A failed revoke or best-effort cancel must never leave the subprocess alive.
+	if session != nil {
+		cancelErr = session.Cancel(cleanupCtx)
+		if _, exists := r.node.Session(workerRef); exists {
+			closeErr = r.node.Remove(workerRef)
+		} else {
+			// Remove can fail after detaching LocalNode's reference; keep ours.
+			closeErr = session.Close()
+		}
 	}
-	return r.node.Remove(workerRef)
+	r.mu.Lock()
+	if closeErr == nil {
+		r.stopSession = nil
+	}
+	r.stopPending = revokeErr != nil || closeErr != nil
+	if !r.stopPending {
+		r.launch = core.SecretaryRuntimeLaunch{}
+	}
+	r.mu.Unlock()
+	return errors.Join(ctx.Err(), revokeErr, cancelErr, closeErr)
 }

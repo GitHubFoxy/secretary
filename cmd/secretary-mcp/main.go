@@ -79,7 +79,15 @@ func main() {
 		Store:   store,
 		Role:    "secretary",
 	}
-	if err := (mcp.Server{Handler: handler}).Serve(ctx, os.Stdin, os.Stdout); err != nil {
+	server := mcp.Server{Handler: handler}
+	if observerCapability := os.Getenv("SECRETARY_MCP_OBSERVER_CAPABILITY"); observerCapability != "" {
+		serverURL := os.Getenv("SECRETARY_MCP_SERVER_URL")
+		if serverURL == "" {
+			log.Fatal("MCP observation server is unavailable")
+		}
+		server.Observe = (mcp.RemoteMCPObserver{BaseURL: serverURL, Capability: observerCapability}).Observe
+	}
+	if err := server.Serve(ctx, os.Stdin, os.Stdout); err != nil {
 		if ctx.Err() == nil {
 			log.Fatal(fmt.Errorf("serve MCP: %w", err))
 		}

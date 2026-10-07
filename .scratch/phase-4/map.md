@@ -167,3 +167,17 @@ Phase 4 готова после прохождения acceptance scenario из 
 - Историческая mixed-runtime correction, functional dispatch FAIL, NOT RUN этапы и прежний Pi operator scopes mismatch сохранены как отдельные facts; последнее не подтверждает production auth failure.
 
 Tickets31/33 остаются `claimed` и acceptance-blocked; tickets15/22/29 не закрывать. Следующий шаг — bounded observation actual MCP startup/`tools/list` и addressed-reply failure path через только counts/booleans/schema/tool-call category, без повторного случайного live turn или раскрытия payload.
+
+### Local follow-up — 7 октября 2026
+
+Parent-approved Sol6.1/high implementation (`p4/31-opencode-default-sol-7f3adc`, base `e1efb91`) ужесточает только opt-in v1: final/MCP-only требуют atomic exact durable reply, missing reply становится failed без fallback/echo. Private launch/generation/turn registration и separate observation capability дают authoritative child startup/initialize/list evidence после write/flush, counts/expected-tool booleans и safe committed completion DTO. Same-pins restart получает новую generation; reload требует explicit restart, а lazy discovery не получает pre-prompt barrier. Defaults/store/Worker bindings и legacy Result gate не менялись.
+
+Public negative/reopen/privacy/race checks PASS; actual private unpaid OpenCode2.0.22 → built MCP → broker → Core fixture PASS, tools9 и одна addressed entry; existing native profile/Follow-up/Resume fixtures PASS. Один full release gate `p4-31-sol-required-reply-observer-e1efb91-20261007`, exit0/stages1–9 PASS, `/private/tmp/secretary-sol-release-gate.log` (0600). Initial RED и fixture FAIL сохранены в release ledger.
+
+Это local evidence, не live provider/Telegram acceptance: broker tools/list response не доказывает provider tool choice, полная причина actual893 отсутствующей ordinary entry остаётся неизвестной. Independent review, rollout и конечный owner-approved live sequence pending; tickets29/31/33 остаются `claimed`, manual FAIL/BLOCKED/NOT RUN не изменены.
+
+### Review follow-up — 7 октября 2026
+
+Parent review: Spec1 blocker, Standards0 blockers+2 nits. Stop/revoke публичный RED воспроизведён; repeatable cleanup теперь независим от broken caller context, не скрывает ошибки, закрывает старый subprocess и блокирует Start до завершения revoke/close. Valid retry/restart и stale authority rejection проверены через public executable ACP/Core reopen. Один transaction discovery snapshot и именованные validated phases сохраняют wire.
+
+Focused/race и actual private unpaid OpenCode2.0.22 observer/profile/Follow-up/Resume fixtures PASS. Один настоящий gate этого fix cycle `p4-31-sol-stop-revoke-review-fix-e1efb91-20261007`: exit0/stages1–9 PASS, `/private/tmp/secretary-sol-review-fix-release-gate.log` (0600); предыдущие PASS/FAIL и reviewer RED сохранены. После gate только docs/diffcheck. Source не reset, production/pins/store/history/bindings/auth не менялись; paid/own-review/nested/commit/merge отсутствуют. Final parent rerun Spec+Standards pending, live/manual gates и статусы tickets29/31/33 прежние.

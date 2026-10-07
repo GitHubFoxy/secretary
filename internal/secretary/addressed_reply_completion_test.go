@@ -30,6 +30,8 @@ func TestAddressedReplyOnlyEndTurnCompletesWithoutAssistantEcho(t *testing.T) {
 	}{
 		{name: "one exact durable reply", scenario: "mcp-only", replyMode: "exact", contractVersion: core.SecretaryReplyContractAddressedV1, wantState: core.SecretaryTurnSucceeded, wantCurrentResponse: "The answer is 42."},
 		{name: "no durable reply", scenario: "mcp-only", contractVersion: core.SecretaryReplyContractAddressedV1, wantState: core.SecretaryTurnFailed},
+		{name: "revoked MCP capability", scenario: "mcp-only", replyMode: "revoked", contractVersion: core.SecretaryReplyContractAddressedV1, wantState: core.SecretaryTurnFailed},
+		{name: "unknown native stop", scenario: "unknown-stop", replyMode: "exact", contractVersion: core.SecretaryReplyContractAddressedV1, wantState: core.SecretaryTurnFailed, wantCurrentResponse: "The answer is 42."},
 		{name: "terminal summary alone is not a reply", scenario: "summary-only", contractVersion: core.SecretaryReplyContractAddressedV1, wantState: core.SecretaryTurnFailed},
 		{name: "reply belongs to another turn", scenario: "mcp-only", replyMode: "foreign", contractVersion: core.SecretaryReplyContractAddressedV1, wantState: core.SecretaryTurnFailed, wantPriorResponse: "Reply belongs to a different turn."},
 		{name: "missing stop reason", scenario: "missing-stop", replyMode: "exact", contractVersion: core.SecretaryReplyContractAddressedV1, wantState: core.SecretaryTurnFailed, wantCurrentResponse: "The answer is 42."},
@@ -39,7 +41,9 @@ func TestAddressedReplyOnlyEndTurnCompletesWithoutAssistantEcho(t *testing.T) {
 		{name: "progress but no final text", scenario: "progress-only", replyMode: "exact", contractVersion: core.SecretaryReplyContractAddressedV1, wantState: core.SecretaryTurnFailed, wantCurrentResponse: "The answer is 42."},
 		{name: "native RPC error", scenario: "rpc-error", replyMode: "exact", contractVersion: core.SecretaryReplyContractAddressedV1, wantState: core.SecretaryTurnFailed, wantCurrentResponse: "The answer is 42."},
 		{name: "legacy contract remains fail closed", scenario: "mcp-only", wantState: core.SecretaryTurnFailed},
-		{name: "actual assistant final text", scenario: "assistant-final", contractVersion: core.SecretaryReplyContractAddressedV1, wantState: core.SecretaryTurnSucceeded, wantCurrentResponse: "actual assistant final text"},
+		{name: "assistant final without addressed reply", scenario: "assistant-final", contractVersion: core.SecretaryReplyContractAddressedV1, wantState: core.SecretaryTurnFailed},
+		{name: "assistant final with exact reply", scenario: "assistant-final", replyMode: "exact", contractVersion: core.SecretaryReplyContractAddressedV1, wantState: core.SecretaryTurnSucceeded, wantCurrentResponse: "The answer is 42."},
+		{name: "legacy assistant final remains compatible", scenario: "assistant-final", wantState: core.SecretaryTurnSucceeded, wantCurrentResponse: "actual assistant final text"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runAddressedReplyCompletionScenario(t, tc.scenario, tc.replyMode, tc.contractVersion, tc.wantState, tc.wantCurrentResponse, tc.wantPriorResponse)
@@ -152,6 +156,15 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 		t.Fatalf("durable originating turn count=%d err=%v", len(turns), err)
 	}
 	turn := turns[len(turns)-1]
+	if replyMode == "revoked" {
+		if _, err := store.RotateSecretaryCapability(ctx, person.ID); err != nil {
+			t.Fatal(err)
+		}
+		args, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "must not persist"})
+		if _, err := handler.Call(ctx, "reply_to_user", args); err == nil {
+			t.Fatal("revoked MCP capability persisted a reply")
+		}
+	}
 	if replyMode == "exact" {
 		args, err := json.Marshal(map[string]string{
 			"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "The answer is 42.",
@@ -289,6 +302,8 @@ func TestAddressedReplyACPFixtureProcess(t *testing.T) {
 				write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{}})
 			case "malformed-stop":
 				write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"stopReason": []string{"end_turn"}}})
+			case "unknown-stop":
+				write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"stopReason": "unknown_native_status"}})
 			case "max-tokens":
 				write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"stopReason": "max_tokens"}})
 			case "refusal":

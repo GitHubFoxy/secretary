@@ -762,7 +762,7 @@ func secretaryProfile(snapshot config.Snapshot, store *core.Store) node.ManagedP
 		profile.Content = strings.TrimSpace(profile.Content) + `
 
 ## Addressed reply v1
-Use the current server-issued secretary_turn_id and input_id from the runtime context. Send every independent user-facing answer, clarification, mixed answer plus Worker action, or error through reply_to_user exactly once. Include the same origin IDs in every spawn_worker and message_worker call. Do not use ordinary assistant text as the reply after a related canonical Worker Result; that Result is already delivered. Worker Results themselves must never be paraphrased as a second reply.`
+Use the current server-issued secretary_turn_id and input_id from the runtime context. Send every independent user-facing answer, clarification, mixed answer plus Worker action, or error through reply_to_user exactly once. Include the same origin IDs in every spawn_worker and message_worker call. Ordinary assistant text is activity, not a durable reply: an addressed turn cannot succeed without one exact reply_to_user for its active input, even when there is assistant final text or an already delivered Worker Result. Worker Results themselves must never be paraphrased as a second reply.`
 	}
 	selected, found, err := store.GetSetting(context.Background(), "secretary.model")
 	if err != nil || !found {

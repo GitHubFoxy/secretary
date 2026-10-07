@@ -720,3 +720,83 @@ Phase 4 можно назвать принятой только когда deter
 Historical facts remain separate: an earlier mixed-runtime provenance discrepancy was corrected before the live turn; the live functional dispatch failure above; later acceptance steps remain NOT RUN; and a prior Pi operator reported a scopes mismatch. That operator-session failure has no established source and does not prove a production authentication failure. Do not relabel it as provider/auth failure or claim a real-provider fix.
 
 **Remaining evidence gap:** the production turn has no audited native `tools/list`; MCP startup availability versus actual provider tool choice remains unknown. The source fix and synthetic schema fixture do not close this gap. Ticket31 and ticket33 remain `claimed`/acceptance-blocked; tickets15, 22 and 29 remain open. Bounded next step: observe actual MCP process startup, `initialize`, `tools/list`, provider schema booleans and addressed-reply/tool-call categories, recording counts only and no prompts, Profile text, arguments, payload, credentials or session IDs. Do not repeat a random live turn.
+
+## Локальный итог — mandatory addressed reply и narrow MCP observer
+
+- Ledger label: `p4-31-sol-required-reply-observer-e1efb91-20261007`. Worktree `/private/tmp/secretary-opencode-default-sol-7f3adc`, branch `p4/31-opencode-default-sol-7f3adc`, base/HEAD `e1efb919f81b5edc4221e0febbe5f39b99ce0239`; изменения uncommitted. После gate состояние зафиксировано в `2026-10-07T06:13:08Z`. Independent review не выполнялся.
+- Parent явно разрешил strict opt-in v1: assistant final и MCP-only end_turn требуют exact durable addressed reply в Core completion transaction. Историческая v1 assistant-final совместимость намеренно ужесточена; legacy Secretary/Worker gate сохранены. No fallback/echo; missing reply сохраняет `failed/addressed_reply_missing`. Persisted reply не скрывает native/provider failure или revoked launch.
+- Observer `POST /v1/internal/secretary/mcp/observe` использует отдельную observation-only capability: startup и фактические initialize/list после stdio response write/flush, returned registry count/expected-tool booleans, private immutable turn→launch связь и новое generation на same-pins restart. Stale/revoked observer и lifecycle/bootstrap fallback отвергаются; lazy discovery не получает pre-prompt barrier. Finished event содержит safe committed completion/discovery allowlist, без private links/native IDs/args/output/Profile/body/credentials/reasoning. Reload требует explicit restart, delivered snapshot не подменяется.
+
+### Публичные RED и сохранённые intermediate FAIL
+
+1. Required-reply RED: `go test ./internal/secretary -run '^TestAddressedReplyOnlyEndTurnCompletesWithoutAssistantEcho/assistant_final_without_addressed_reply$' -count=1`, exit1: `succeeded, want=failed`; `/private/tmp/secretary-sol-completion-red.log`.
+2. Discovery seam RED: `go test ./internal/webapi -run '^TestSecretaryMCPDiscoveryIsWrittenNativeEvidenceBoundToLaunchAndTurns$' -count=1`, exit1 на отсутствующих public Core/observer API; `/private/tmp/secretary-sol-discovery-red.log`.
+3. Launch/reload RED: `go test ./internal/secretary -run '^TestRuntimeLaunchGenerationAndReloadRequiresExplicitRestart$' -count=1`, exit1: same-pins restart reused generation; `/private/tmp/secretary-sol-launch-red.log`.
+4. Первый focused package suite, `/private/tmp/secretary-sol-focused-first.log`, exit1: новое registration authorization ошибочно затрагивало legacy synthetic runtime; исторический v1 linked-Result test всё ещё ожидал success без reply. Registration ограничили managed OpenCode/opt-in, legacy behavior сохранили; opt-in expectation намеренно обновили, Worker Result/дельты не изменяли.
+5. Второй focused suite, `/private/tmp/secretary-sol-focused-second.log`, exit1: timeout test завис в `httptest.Server.Close` и достиг стандартного 10m watchdog. Handler не прочитал request body и полагался только на server context cancellation. Fixture теперь читает body и имеет explicit release cleanup; production reporter timeout2s не увеличен и тест не skipped.
+6. Первый native run, `/private/tmp/secretary-sol-native-first.log`, exit1 до model request: fixture ожидал строку `v2.0.22`, реальная CLI печатает `opencode v2.0.22`. Исправлено точное ожидаемое значение, не ослаблена версия.
+7. Второй native run, `/private/tmp/secretary-sol-native-second.log`, overall exit1: actual observer/reply проверка прошла, но TempDir cleanup отказал на read-only Go module cache в private HOME. Build теперь использует original Go build/module caches, не создавая их под удаляемым HOME. Этот run не объявляется общим PASS.
+
+### GREEN перед финальным gate
+
+- `go test -p 1 ./internal/secretary ./internal/core ./internal/mcp ./internal/webapi ./cmd/secretary-mcp ./cmd/secretaryd -count=1` PASS; `/private/tmp/secretary-sol-focused-fourth.log`. Public Core completion/reopen покрывает exact/foreign input, unknown state/stop, reply replay, provider/RPC/drain/progress failures, отсутствие ordinary fallback и committed count/entry evidence. Public Runtime executable ACP покрывает exact/missing/foreign/revoked reply, assistant final/MCP-only и legacy opt-out.
+- `go test -race -p 1 ./internal/secretary ./internal/core ./internal/mcp ./internal/webapi ./cmd/secretary-mcp ./cmd/secretaryd -count=1` PASS; `/private/tmp/secretary-sol-focused-race-final.log`. Public stdio/authenticated HTTP проверяют write/short-write/flush failure, lazy/subsequent-turn catalogue, generation/reload, stale/revoked credential, observation/lifecycle/bootstrap разделение, timeout/redirect и точный finished DTO allowlist.
+- `SECRETARY_OPENCODE_ACP_E2E=1 go test ./internal/webapi -run '^TestOpenCodeNativeSecretaryObservedDiscoveryAndRequiredReply$' -count=1 -v` PASS; `/private/tmp/secretary-sol-native-third.log`: exact native OpenCode2.0.22 → настоящий built `secretary-mcp` → authorized broker/Core, 9 schemas и expected-tool booleans, native xhigh, actual reply, одна durable entry без assistant fallback. Три HTTP provider requests только к synthetic loopback fixture. Private HOME/native store, ambient auth strip и untouched personal-store canary подтверждены. Это unpaid fixture, не live provider acceptance.
+- `SECRETARY_OPENCODE_ACP_E2E=1 TEST_OPENCODE_SHARED_DATA_HOME= go test ./internal/node -run '^TestOpenCode(ACPNativeHTTPFixture|SecretaryMCPNativeHTTPFixture|NativeProfilePersistence)$' -count=1 -v` PASS; `/private/tmp/secretary-sol-native-compat.log`: private native Worker/Secretary instructions/permissions, real tool result, Follow-up и fresh-process Resume/history сохранили исходную session. Shared/personal production store не подключался. Все указанные логи private0600.
+
+### Единственный финальный полный gate
+
+После всех source/test changes выполнена одна полная проверка. Native/live opt-in flags явно выключены только для deterministic suite; отдельные actual native checks перечислены выше.
+
+```sh
+export SECRETARY_OPENCODE_LIVE_E2E=0 SECRETARY_OPENCODE_ACP_E2E=0
+umask 077; : > /private/tmp/secretary-sol-release-gate.log
+chmod 600 /private/tmp/secretary-sol-release-gate.log
+umask 0022; ./scripts/phase4-release-gate.sh > /private/tmp/secretary-sol-release-gate.log 2>&1
+```
+
+Фактический exit **0**, private log0600. Все stages **1–9 PASS**: contract test, gofmt, full `go test -p 1 ./...`, full race, vet/build, frontend lock/tests10/10, production/embedded assets, CLI/deployment/revoke, final diff check. Последняя строка: `Phase 4 deterministic release gate passed. Real harness proof remains manual; see docs/phase4-release-gate.md.` После gate менялись только docs/ledger/report; отдельный final `git diff --check` после документации — PASS.
+
+Production/config/Profiles/native store/auth/history/bindings не менялись, paid calls/provider login/commit/merge/review не выполнялись. Actual893 functional FAIL и NOT RUN этапы не переименованы в PASS; broker response observation не доказывает live provider choice, полная причина отсутствующей ordinary entry не установлена. Tickets29/31/33 остаются `claimed`; independent review, owner-approved rollout и real Worker/Follow-up/Resume/FX/Telegram gates pending.
+
+## Исправления после независимых review — 7 октября 2026
+
+Parent передал `/private/tmp/secretary-opencode-sol-review/spec.md` (1 blocker, changes-required) и `standards.md` (0 blockers, 2 nits, pass). Parent checksum всех исходных 23 working files совпадает с candidate; assertion reviewer о mismatched current bytes не подтверждён. Snapshot/overlay валидны, source reset не выполнялся. Эти исходные review outcomes не заменены собственной оценкой или новым review.
+
+### Stop/revoke: RED → GREEN
+
+- Reviewer regression из `/private/tmp/secretary-spec-snapshot.2GTUqu/review_stop_test.go` воспроизведён поверх текущих исходников, без замены source на snapshot. Команда `go test -overlay=/private/tmp/secretary-sol-stop-review-red-overlay.json ./internal/secretary -run '^TestSpecReviewStopRetryAllowsExplicitRestart$' -count=1`, exit **1**, `/private/tmp/secretary-sol-stop-review-red.log` (0600): valid Stop retry оставлял LocalNode session, explicit Start получал `node: worker already exists`. Original reviewer overlay не изменён.
+- Regression сохранён в `internal/secretary/runtime_stop_test.go`. `Runtime.Stop` отделяет prompt consumption от retained cleanup reference, выполняет bounded revoke/close независимо от caller cancellation и возвращает исходные ошибки. Revoke/cancel error не предотвращает subprocess cleanup. Незавершённые revoke/close остаются repeatable; lifecycle Start/Stop сериализованы, Start блокируется до successful cleanup. Отсоединённый Store не считается revoke success.
+- Public executable ACP regression дополнительно проверяет canceled context и closed DB через `Store.Close/Open`, `AttachConversation`, LocalNode.Session, фактический PID старого child и capability из реального `session/new` MCP wiring. Старый subprocess закрыт даже при ошибке Stop; восстановленный DB не позволяет Start обойти pending revoke; valid Stop retry и повторный completed Stop проходят. Same-pins Start получает generation+1/new capability, old observation authority отвергается до и после restart. Private Runtime/SQL state не используется в assertions, provider calls отсутствуют.
+- Initial narrow GREEN `go test ./internal/secretary -run '^Test(SpecReviewStopRetryAllowsExplicitRestart|RuntimeLaunchGenerationAndReloadRequiresExplicitRestart)$' -count=1`, exit0, `/private/tmp/secretary-sol-stop-review-green.log`. Никакого обхода revoke, скрытия error или universal cleanup framework.
+- Standards nits: один `secretaryMCPDiscoveryQuery` snapshot внутри completion transaction используется и для revoke gate, и для finished payload. `SecretaryMCPObservationPhase`, три constants и именованный validator объединяют producer/validator/transitions без JSON wire changes. Authenticated HTTP проверяет unknown/empty/nonstring phase, недопустимые count/presence/success fields и отсутствие изменения discovery после их отказа.
+
+### Focused/race и фактические native fixtures
+
+Все команды после последних source/tests, exit **0**:
+
+```sh
+go test -p 1 ./internal/secretary ./internal/core ./internal/mcp ./internal/webapi ./cmd/secretary-mcp ./cmd/secretaryd -count=1
+go test -race -p 1 ./internal/secretary ./internal/core ./internal/mcp ./internal/webapi ./cmd/secretary-mcp ./cmd/secretaryd -count=1
+SECRETARY_OPENCODE_ACP_E2E=1 go test ./internal/webapi -run '^TestOpenCodeNativeSecretaryObservedDiscoveryAndRequiredReply$' -count=1 -v
+SECRETARY_OPENCODE_ACP_E2E=1 TEST_OPENCODE_SHARED_DATA_HOME= go test ./internal/node -run '^TestOpenCode(ACPNativeHTTPFixture|SecretaryMCPNativeHTTPFixture|NativeProfilePersistence)$' -count=1 -v
+```
+
+Private0600 logs соответственно: `/private/tmp/secretary-sol-review-fix-focused-final.log`, `secretary-sol-review-fix-race.log`, `secretary-sol-review-fix-native.log`, `secretary-sol-review-fix-native-compat.log` в `/private/tmp/`. Предшествующий focused `secretary-sol-review-fix-focused.log` тоже exit0; source после него изменился только для fail-closed nil Store guard, затем все проверки выше повторены. В этом fix cycle intermediate FAIL кроме ожидаемого RED не было.
+
+Actual OpenCode2.0.22 → built MCP → authorized broker/Core: tools9/provider_requests3, exact durable reply/одна entry без fallback, synthetic xhigh и private HOME/native store/canary PASS. Native Worker/Secretary Profile/permissions, real MCP tool, Follow-up/fresh-process Resume/history compatibility PASS. Все provider requests — loopback synthetic, не paid/live acceptance; production/personal credentials/history не читались.
+
+### Один настоящий final gate после review fixes
+
+Ledger label `p4-31-sol-stop-revoke-review-fix-e1efb91-20261007`. Та же branch/worktree, HEAD `e1efb919f81b5edc4221e0febbe5f39b99ce0239`, uncommitted. После gate состояние зафиксировано `2026-10-07T06:51:50Z`.
+
+```sh
+export SECRETARY_OPENCODE_LIVE_E2E=0 SECRETARY_OPENCODE_ACP_E2E=0
+umask 077; : > /private/tmp/secretary-sol-review-fix-release-gate.log
+chmod 600 /private/tmp/secretary-sol-review-fix-release-gate.log
+umask 0022; ./scripts/phase4-release-gate.sh > /private/tmp/secretary-sol-review-fix-release-gate.log 2>&1
+```
+
+Фактический exit **0**, лог0600. Stages **1–9 PASS**: contract, gofmt, full deterministic Go tests, full race, vet/all-package build, frontend lock/tests10/10, production/embedded assets, CLI/deployment/revoke, diff check. Native/live flags выключены только в deterministic suite; separate actual native runs выше PASS. Stage8 login operations используют isolated fake CLI fixtures, не настоящий provider login. Предыдущий final gate `secretary-sol-release-gate.log` и все прежние RED/FAIL/PASS остаются сохранены, не перезаписаны.
+
+После этого gate менялись только docs/ledger/report; отдельный final `git diff --check` после документации — PASS. Исходный подробный implementation report сохранён в `/private/tmp/secretary-opencode-sol-implementation-before-review-fix.md`; актуальный краткий — `/private/tmp/secretary-opencode-sol-implementation.md`. Parent rerun Spec и Standards ещё **pending**; собственные/nested reviews, paid/prod/auth действия, commit/merge не выполнялись. Tickets29/31/33 остаются `claimed`; historical actual893 FAIL, manual NOT RUN и Telegram pause не изменены.

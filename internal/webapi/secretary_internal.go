@@ -2,12 +2,42 @@ package webapi
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
 )
+
+// secretaryMCPObserve accepts no tool arguments or caller-selected identities.
+// The credential resolves the exact current server-issued launch in Core.
+func (s *Server) secretaryMCPObserve(w http.ResponseWriter, r *http.Request) {
+	var observation core.SecretaryMCPObservation
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&observation); err != nil {
+		http.Error(w, "invalid MCP observation", http.StatusBadRequest)
+		return
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		http.Error(w, "invalid MCP observation", http.StatusBadRequest)
+		return
+	}
+	err := s.store.RecordSecretaryMCPObservation(r.Context(), s.owner.ID, strings.TrimSpace(bearerToken(r)), observation)
+	switch {
+	case errors.Is(err, core.ErrMCPObservationUnauthorized):
+		http.Error(w, "MCP observation unauthorized", http.StatusUnauthorized)
+	case errors.Is(err, core.ErrMCPObservationInvalid):
+		http.Error(w, "invalid MCP observation", http.StatusBadRequest)
+	case err != nil:
+		http.Error(w, "MCP observation unavailable", http.StatusInternalServerError)
+	default:
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
 
 type secretaryToolCallRequest struct {
 	Name      string          `json:"name"`

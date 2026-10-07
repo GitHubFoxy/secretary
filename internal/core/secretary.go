@@ -160,7 +160,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS secretary_context_seen_results_one_owner
 	}); err != nil {
 		return fmt.Errorf("migrate Secretary turn input identities: %w", err)
 	}
-	return nil
+	return s.migrateSecretaryMCPObservation(ctx)
 }
 
 func scanSecretaryIdentity(row interface{ Scan(...any) error }, identity *SecretaryIdentity) error {

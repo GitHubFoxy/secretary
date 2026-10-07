@@ -185,7 +185,7 @@ func TestRuntimeAddressedReplyPreservesPreResultDeltaAndSuppressesPostResultOutp
 	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
 		turn, err := store.SecretaryTurn(ctx, origin.ID)
-		if err == nil && turn.State == core.SecretaryTurnSucceeded {
+		if err == nil && turn.State == core.SecretaryTurnFailed && turn.Error == "addressed_reply_missing" {
 			entries, listErr := store.EntriesAfter(ctx, conversation.ID, 0)
 			if listErr != nil {
 				t.Fatal(listErr)

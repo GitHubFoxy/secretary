@@ -24,17 +24,39 @@ func (s *Store) FinishSecretaryTurnWithResponse(ctx context.Context, turnID stri
 // and completes a turn. Addressed replies and Results linked to this exact
 // turn/input identity suppress only unaddressed completion output.
 func (s *Store) FinishSecretaryTurnWithOutput(ctx context.Context, turnID, inputID string, state SecretaryTurnState, terminalError, response string, textDeltas []string) (SecretaryTurn, ConversationEntry, error) {
-	return s.finishSecretaryTurnWithOutput(ctx, turnID, inputID, state, terminalError, response, textDeltas, false)
+	return s.finishSecretaryTurnWithOutput(ctx, turnID, inputID, state, terminalError, response, textDeltas, false, nil)
 }
 
 // FinishSecretaryTurnWithAddressedReplyOnly succeeds only when exactly one
 // canonical reply entry is durably linked to this turn's exact input identity.
 func (s *Store) FinishSecretaryTurnWithAddressedReplyOnly(ctx context.Context, turnID, inputID string) (SecretaryTurn, error) {
-	turn, _, err := s.finishSecretaryTurnWithOutput(ctx, turnID, inputID, SecretaryTurnSucceeded, "", "", nil, true)
+	turn, _, err := s.finishSecretaryTurnWithOutput(ctx, turnID, inputID, SecretaryTurnSucceeded, "", "", nil, true, nil)
 	return turn, err
 }
 
-func (s *Store) finishSecretaryTurnWithOutput(ctx context.Context, turnID, inputID string, state SecretaryTurnState, terminalError, response string, textDeltas []string, requireAddressedReply bool) (SecretaryTurn, ConversationEntry, error) {
+// SecretaryCompletionEvidence contains only safe terminal classifications, never model text.
+type SecretaryCompletionEvidence struct {
+	Branch          string `json:"branch"`
+	TerminalClass   string `json:"terminal_class"`
+	AssistantChunks uint64 `json:"assistant_chunks"`
+	TerminalValid   bool   `json:"terminal_valid"`
+	RPCSucceeded    bool   `json:"rpc_succeeded"`
+	DrainCompleted  bool   `json:"drain_completed"`
+	ResponsePresent bool   `json:"response_present"`
+	ReplyCount      int    `json:"reply_count"`
+	EntryPresent    bool   `json:"entry_present"`
+	Committed       bool   `json:"committed"`
+	Code            string `json:"code"`
+}
+
+// FinishSecretaryTurnWithRequiredReply tightens only the opt-in addressed contract.
+// Missing replies commit a failed turn rather than falling back to assistant text.
+func (s *Store) FinishSecretaryTurnWithRequiredReply(ctx context.Context, turnID, inputID string, state SecretaryTurnState, evidence SecretaryCompletionEvidence) (SecretaryTurn, error) {
+	turn, _, err := s.finishSecretaryTurnWithOutput(ctx, turnID, inputID, state, "", "", nil, false, &evidence)
+	return turn, err
+}
+
+func (s *Store) finishSecretaryTurnWithOutput(ctx context.Context, turnID, inputID string, state SecretaryTurnState, terminalError, response string, textDeltas []string, requireAddressedReply bool, evidence *SecretaryCompletionEvidence) (SecretaryTurn, ConversationEntry, error) {
 	if !state.Terminal() {
 		return SecretaryTurn{}, ConversationEntry{}, errors.New("core: Secretary turn must finish in a terminal state")
 	}
@@ -55,6 +77,50 @@ func (s *Store) finishSecretaryTurnWithOutput(ctx context.Context, turnID, input
 		}
 		if inputID != "" && turn.InputID != inputID {
 			return secretaryTurnCompletion{}, ErrInvalidSecretaryOrigin
+		}
+		var discovery SecretaryMCPDiscovery
+		if evidence != nil {
+			if inputID == "" || turn.InputID != inputID {
+				return secretaryTurnCompletion{}, ErrInvalidSecretaryOrigin
+			}
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM secretary_reply_entries r JOIN conversation_entries e ON e.id = r.entry_id WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conversation_id = ? AND e.kind = ?`, turnID, inputID, turn.ConversationID, EntrySecretary).Scan(&evidence.ReplyCount); err != nil {
+				return secretaryTurnCompletion{}, err
+			}
+			evidence.EntryPresent = evidence.ReplyCount == 1
+			evidence.Code = "native_terminal_invalid"
+			switch evidence.Branch {
+			case "assistant_final", "addressed_reply_only", "progress", "invalid":
+			default:
+				evidence.Branch = "invalid"
+			}
+			switch evidence.TerminalClass {
+			case "end_turn", "max_tokens", "refusal", "canceled", "other":
+			default:
+				evidence.TerminalClass = "unknown"
+			}
+			var err error
+			discovery, err = secretaryMCPDiscoveryQuery(ctx, tx, turn.ID)
+			if err != nil {
+				return secretaryTurnCompletion{}, err
+			}
+			validBranch := evidence.Branch == "assistant_final" && evidence.ResponsePresent || evidence.Branch == "addressed_reply_only"
+			if state == SecretaryTurnSucceeded && discovery.Revoked {
+				state = SecretaryTurnFailed
+				evidence.Code = "mcp_launch_revoked"
+			} else if state == SecretaryTurnSucceeded && evidence.TerminalClass == "end_turn" && evidence.TerminalValid && evidence.RPCSucceeded && evidence.DrainCompleted && validBranch {
+				if evidence.ReplyCount == 1 {
+					evidence.Code = "completed"
+				} else {
+					state = SecretaryTurnFailed
+					evidence.Code = "addressed_reply_missing"
+				}
+			} else if state != SecretaryTurnCanceled {
+				state = SecretaryTurnFailed
+			}
+			if state != SecretaryTurnSucceeded {
+				terminalError = evidence.Code
+			}
+			evidence.Committed = true
 		}
 		if requireAddressedReply {
 			if state != SecretaryTurnSucceeded || inputID == "" || turn.InputID != inputID {
@@ -125,6 +191,10 @@ WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conve
 		}
 		if entry.ID != "" {
 			payload["conversation_entry_id"] = entry.ID
+		}
+		if evidence != nil {
+			payload["completion"] = *evidence
+			payload["mcp_discovery"] = discovery
 		}
 		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: SecretaryTurnFinishedEvent, AggregateType: "secretary_turn", AggregateID: turn.ID, Source: "server", CorrelationID: turn.ID, Payload: payload}, payload)
 		if err != nil {
