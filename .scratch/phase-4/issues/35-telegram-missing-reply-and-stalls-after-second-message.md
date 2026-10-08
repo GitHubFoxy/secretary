@@ -119,3 +119,10 @@ Tickets03a/03b — Secretary input queue/context; ticket12 — Telegram Channel 
 Добавлен `TestTelegramBridgeDeliversCanonicalAddressedRepliesForEveryTurn`: два последовательных turns дают ровно два Secretary replies; user и worker_result entries не отправляются. `go test ./cmd/secretaryd ./internal/telegram` и `git diff --check` прошли.
 
 Владелец поручил закоммитить все изменения, выполнить push и обновить omarchy. Отказ explicit FX/low и причина выбора FX не исправлялись. Реальный Telegram acceptance (input во время active turn и после idle) не выполнен; статус `needs-triage` сохраняется. Если runtime выдаст одновременно text deltas и canonical reply, возможное дублирование требует отдельной проверки. Старые пропущенные события автоматически не переотправляются, поскольку durable cursor уже прошёл их.
+
+
+### Развёртывание на omarchy — 2026-10-08
+
+Коммит `0d1ca27` отправлен в `origin/phase4-implementation` и развёрнут из точного Git archive в `/home/coder/projects/secretary-release-0d1ca27`. На omarchy собраны и установлены `secretaryd`, `secretaryctl`, `secretary-mcp`, `secretary-migrate`, `secretary-node`; `go test ./cmd/secretaryd ./internal/telegram` прошёл на Linux. Основной remote checkout с отдельной историей Git сохранён.
+
+Перед установкой сохранены прежние бинарники и SQLite backup в `/home/coder/.local/share/secretary/backups/p435-0d1ca27-20261008T045607Z`; integrity_check копии вернул `ok`. Службы перезапущены через systemd. Обе `active/running`, `NRestarts=0`; SHA256 установленных server/Node совпали со сборкой. Локальный `/v1/health` вернул `{"status":"ok"}`, `sex doctor` не обнаружил проблем. Действующие config, credentials, Worker bindings и native sessions не сбрасывались. Это проверка развёртывания, а не реальный Telegram acceptance; тикет остаётся `needs-triage`.
