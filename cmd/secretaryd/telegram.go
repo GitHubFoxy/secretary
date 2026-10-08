@@ -177,6 +177,14 @@ func telegramEvent(event core.Event) telegram.Event {
 	case event.Kind == "message.saved":
 		result.Text = stringField(payload, "body")
 		return result
+	case event.Kind == "conversation.entry":
+		if stringField(payload, "kind") == string(core.EntrySecretary) {
+			result.Kind = core.SecretaryTextDeltaEvent
+			result.Text, _ = payload["body"].(string)
+		} else {
+			result.Kind = ""
+		}
+		return result
 	case strings.HasPrefix(event.Kind, "secretary."):
 		if event.Kind == core.SecretaryTextDeltaEvent {
 			result.Text, _ = payload["text"].(string)

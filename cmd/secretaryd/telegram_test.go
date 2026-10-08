@@ -464,3 +464,32 @@ func TestTelegramEventBridgeMapsTerminalOutcomeOnceAndSkipsRetryable(t *testing.
 		t.Fatalf("retryable outcome became terminal notification: %#v", retryable)
 	}
 }
+
+func TestTelegramBridgeDeliversCanonicalAddressedRepliesForEveryTurn(t *testing.T) {
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, FlushInterval: time.Hour}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var seq int64
+	handle := func(kind, payload string) {
+		t.Helper()
+		seq++
+		if err := adapter.HandleDurableEvent(context.Background(), telegramEvent(core.Event{Seq: seq, Kind: kind, Source: "server", Payload: []byte(payload)})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, reply := range []string{"first reply", "second reply"} {
+		handle("conversation.entry", `{"kind":"user","body":"private user text"}`)
+		handle(core.SecretaryTurnStartedEvent, `{"turn_id":"t"}`)
+		handle("conversation.entry", `{"kind":"secretary","body":"`+reply+`"}`)
+		handle("conversation.entry", `{"kind":"worker_result","body":"worker summary"}`)
+		handle(core.SecretaryTurnFinishedEvent, `{"status":"succeeded","completion":{"branch":"addressed_reply_only","reply_count":1,"assistant_chunks":0}}`)
+		if err := adapter.Flush(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(transport.sent) != 2 || transport.sent[0].Text != "first reply" || transport.sent[1].Text != "second reply" {
+		t.Fatalf("sent=%#v, want exactly the two Secretary replies", transport.sent)
+	}
+}

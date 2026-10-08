@@ -1,0 +1,29 @@
+package main
+import (
+ "context"
+ "path/filepath"
+ "testing"
+ "time"
+ "github.com/beruseruko/secretary/internal/core"
+ "github.com/beruseruko/secretary/internal/telegram"
+)
+func TestP435Diagnostic(t *testing.T) {
+ for _, tc := range []struct{name string; turns int; started bool; replyKind string}{
+  {"two_inputs_typed_reply",2,true,"conversation.entry"},
+  {"minimal_typed_reply",1,false,"conversation.entry"},
+  {"legacy_delta_control",1,false,"secretary.text_delta"},
+ } { t.Run(tc.name,func(t *testing.T) {
+  ctx:=context.Background(); tr:=&bridgeTransport{}
+  a,err:=telegram.New(telegram.Config{StatePath:filepath.Join(t.TempDir(),"state.json"),OwnerChatID:100,FlushInterval:time.Hour},tr,&bridgeServer{});if err!=nil {t.Fatal(err)}
+  var seq int64
+  send:=func(kind,payload string) {seq++;e:=telegramEvent(core.Event{Seq:seq,Kind:kind,Source:"server",Payload:[]byte(payload)});if err:=a.HandleDurableEvent(ctx,e);err!=nil {t.Fatal(err)}}
+  for i:=0;i<tc.turns;i++ {
+   if tc.started {send("secretary.turn.started",`{"state":"active"}`)}
+   if tc.replyKind=="conversation.entry" {send(tc.replyKind,`{"kind":"secretary","body":"Synthetic addressed reply"}`)} else {send(tc.replyKind,`{"text":"Synthetic addressed reply"}`)}
+   send("secretary.turn.finished",`{"status":"succeeded","completion":{"branch":"addressed_reply_only","reply_count":1,"assistant_chunks":0}}`)
+   if err:=a.Flush(ctx);err!=nil {t.Fatal(err)}
+  }
+  t.Logf("consumed_events=%d cursor=%d sends=%d want=%d",seq,a.LastEventSeq(),len(tr.sent),tc.turns)
+  if len(tr.sent)!=tc.turns {t.Fatalf("missing Telegram replies: sends=%d want=%d",len(tr.sent),tc.turns)}
+ }) }
+}
