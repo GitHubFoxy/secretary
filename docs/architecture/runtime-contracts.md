@@ -1,0 +1,62 @@
+# Runtime contracts
+
+Здесь описано текущее поведение протоколов, runtime и lifecycle Secretary V2. Это не ADR и не долговременная архитектурная мотивация: устойчивые решения с известными альтернативами и причинами фиксируются отдельно в ADR.
+
+## Authority, owner и identity
+
+- Secretary server — единственный source of truth для Personal Conversation, Task, Worker binding, Result и lifecycle. Он не зависит от Channel adapter или Execution node.
+- Channel adapters показывают переписку, но не владеют Task, Worker binding или Dispatch rules.
+- Только Secretary решает, ответить самому, создать Task, направить Follow-up или закрыть Task.
+- Secretary capability ограничена Task lifecycle operations одной persistent Secretary identity и меняется при создании нового Secretary runtime.
+- Каждый пользовательский ввод внутри persistent Secretary turn адресуется server-issued `input_id`. ACP message metadata, native tool names и сходство текста не определяют input identity.
+- Addressed reply сохраняется idempotently для точной пары Secretary turn и input identity. Повтор с той же identity и тем же текстом возвращает ту же запись; другой текст для той же identity конфликтует.
+- Worker origin link связывает явный принятый server-owned Worker action с точной Worker Turn и её canonical Result. Link строится по server-issued turn/input identity и lifecycle command, а не по содержимому сообщений.
+- Addressed reply v1 — additive opt-in contract с отдельной операцией `reply_to_user` и обязательными origin identities для Worker actions. По умолчанию он выключен, сохраняя legacy behavior; внешние Profiles автоматически не переписываются.
+- В первом thin slice есть один configured owner. Позже identities разных Channel adapters связываются с Person через явный account linking.
+
+## Conversations и доставка сообщений
+
+- Personal Conversation имеет общий порядок entries для подключённых Channel adapters. Server сохраняет каждую Conversation entry один раз и синхронизирует её во все adapters Person.
+- Внешний Channel adapter регистрируется с server-issued credential. Web client аутентифицирует Person через owner session.
+- Origin Conversation передаётся в Bridge системными metadata; модель не выбирает место доставки Result.
+- Steering message сохраняется сразу и передаётся активному Secretary или Worker на ближайшей safe boundary текущего turn или Attempt. Если runtime временно не steerable, Node передаёт сообщение после перехода runtime в idle.
+- Queued message с prefix `/q` сохраняется сразу, но доставляется целевому runtime только в idle.
+
+## Execution node и окружение
+
+- Execution node запускает Workers по Dispatch от Secretary server и поддерживает outbound connection к серверу. Node не владеет Conversation или Result routing; в первом slice default node — local Secretary host.
+- Node enrollment происходит с явного owner-approved pairing через одноразовый code; после pairing Node получает собственную identity.
+- Первый Execution environment даёт Worker full access. Sandbox и isolated worktree могут стать другими вариантами; full access сам по себе не является sandbox или гарантией изоляции.
+- Worker получает отдельный пустой Workspace при запуске Task. Через shell Worker может создать или выбрать другой local path.
+
+## Локальный POC и AgentHub
+
+- Bridge — одноразовый local POC adapter между Secretary и AgentHub. В первом vertical slice Secretary, Bridge и Worker работают под текущим Unix user: это trusted-local prototype. Bridge принимает только ограниченные операции Secretary, но это ограничение не является технической security boundary.
+- Bridge CLI обслуживает локальные действия Secretary, Worker и operator; это не user-facing API.
+- Bridge operator — отдельный AgentHub user с минимальными capabilities. Его обновляемая session используется только Bridge.
+- AgentHub — временный POC control plane и Worker runtime, а не часть целевой архитектуры или определения product interface. Измеренный на нём contract может сохраниться после замены implementation.
+- Coordinator profile — POC Secretary policy в `AGENTS.md`, полученная из Coordinator Workspace. `spec.members[].prompt` хранит профиль Team, но сам по себе не меняет direct ACP input. После изменения `AGENTS.md` нужен новый provider ACP session.
+- Role-managed skills прикрепляются AgentHub к ACP session по Team role. Team spec не может изменить или отключить эти skills.
+
+## Worker profile и Dispatch
+
+- Default Worker runtime первого slice — OpenCode v2 по ACP на Linux с full access. `fx`, Claude Code и Codex остаются selectable adapters.
+- Compaction активного model context принадлежит runtime harness; она не удаляет durable Conversation entries, Task или Worker binding на Secretary server.
+- Worker template первого slice использует `openai/gpt-6-luna` с reasoning `xhigh` и отдельный Workspace. Явные preferences и Project pins имеют приоритет; существующие Worker bindings не мигрируют при смене defaults.
+- Dispatch передаёт Worker Task envelope с Task text, Worker reference и одноразовым Callback capability для terminal Result callback.
+- Dispatch считается accepted только после сохранения Worker binding и передачи Task в runtime.
+- Worker reference — opaque публичный идентификатор; он не является AgentHub `agent_id` или session ID. Worker binding сохраняет связь Task с Worker reference, Execution node и внутренними runtime identifiers.
+- Worker observer — opt-in client view по Worker reference; он сначала получает состояние Worker, затем live Worker activity. Из observer можно направить Steering message, Queued message или Cancel.
+- Worker activity состоит из ephemeral text, tool и status events. Эти события получает только открывший Worker observer; terminal Result не является Worker activity.
+
+## Attempt, Result и закрытие Task
+
+- Attempt — один execution cycle Worker для Task или Follow-up, заканчивающийся одним Result.
+- Restart Secretary server или Execution node не запускает active Attempt повторно автоматически. Attempt становится `interrupted`, а Task и Worker binding сохраняются.
+- Follow-up адресуется существующей idle Worker session через Worker binding и создаёт новую Attempt. После `interrupted` Node сначала загружает сохранённую runtime session. Если её нет, Node возвращает `runtime_session_unavailable`, не создавая незаметно новую session.
+- Cancel от owner из Worker observer best-effort останавливает active Attempt, но не закрывает Task или Worker binding. Worker может принять Follow-up позже.
+- Result — terminal report Worker, который server verbatim добавляет в Personal Conversation без automatic Secretary turn. Допустимые status: `succeeded`, `failed` и `canceled`; summary обязателен, artifact references опциональны. Server принимает Result idempotently по Worker reference и Attempt.
+- Result callback — private сообщение Worker в Bridge с terminal status, summary и artifact references, на основе которого формируется Result.
+- Callback capability — одноразовый token, выдаваемый Bridge Worker для Result callback и связанный с одним Worker binding.
+- Dispatch failure до accepted Dispatch сохраняет Task со status `dispatch_failed` в Personal Conversation, но не создаёт Worker binding и не запускает automatic retry.
+- Task closure явно закрывает Task и архивирует Worker binding, сохраняя историю. Для active Attempt Secretary сначала отправляет Cancel и ждёт terminal Result.

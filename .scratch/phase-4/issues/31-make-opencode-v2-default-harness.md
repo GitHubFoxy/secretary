@@ -1,7 +1,7 @@
 # 31 Сделать OpenCode v2 harness по умолчанию вместо fx
 
 Type: task
-Status: claimed
+Status: resolved
 
 ## Work
 
@@ -378,3 +378,9 @@ Target `9e3bc1e` оставлен HEALTHY: Secretary и новые Workers — O
 Source/оба child hashes/Doctor, health/UI/API, Node online/non-draining, zero active Attempts и SQLite integrity PASS; прежние 30 FX bindings/31 mappings и весь pre-rollout subset сохранены. Parent независимо read-only подтвердил target hashes обоих процессов, active systemd, health/UI 200 и effective Luna6/low policy.
 
 Это production override, не изменение clean-install defaults Secretary Sol6.1/xhigh и Worker Luna6/xhigh. Исторический ba40 Follow-up **FAIL** сохранён: replacement identity и nonce mismatch; новым canary он не переписан. Telegram paused до owner rotation, отдельный FX live test NOT RUN; полный product/adapter acceptance не объявлен завершённым. `Status: claimed` сохранён. В этой doc-only записи новых model/prod checks, review или full gate нет; подробные безопасные gates см. последний addendum в `docs/phase4-release-gate.md`.
+
+## Answer
+
+Тикет закрыт по прямому решению владельца. На target `9e3bc1e` Secretary и новые Workers работают через OpenCode `openai/gpt-6-luna/low`: actual MCP и addressed reply, Worker Result, idle Follow-up и Resume после restart прошли live acceptance с прежней native identity и памятью. Старые FX bindings и история сохранены. Clean-install pins и текущий production override различаются намеренно.
+
+Закрытие этого тикета не означает завершения общего Phase 4/Telegram acceptance и не превращает исторические FAIL/NOT RUN в PASS. Наблюдаемое пользователем отсутствие ответа и зависание Telegram после второго сообщения вынесено в [ticket35](35-telegram-missing-reply-and-stalls-after-second-message.md). Прежние комментарии о `claimed` и paused Telegram — история, а не текущий статус.

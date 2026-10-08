@@ -4,7 +4,8 @@
 
 ## Перед исследованием codebase
 
-- Прочитать `CONTEXT.md` в корне, либо `CONTEXT-MAP.md`, если он существует. `CONTEXT-MAP.md` указывает на `CONTEXT.md` отдельных contexts.
+- Прочитать `GLOSSARY.md` в корне либо `GLOSSARY-MAP.md`, если он существует. `GLOSSARY-MAP.md` указывает на `GLOSSARY.md` отдельных contexts.
+- Если задача затрагивает runtime, identity, доставку сообщений, Execution node или Worker lifecycle, прочитать `docs/architecture/runtime-contracts.md`.
 - Прочитать ADR из `docs/adr/`, относящиеся к текущей области.
 - Если этих файлов ещё нет, молча продолжить. Не создавать их заранее. `/domain-modeling`, `/grill-with-docs` и `/improve-codebase-architecture` добавят их, когда появятся устойчивые термины или решения.
 
@@ -14,14 +15,16 @@
 
 ```text
 /
-├── CONTEXT.md
-├── docs/adr/
+├── GLOSSARY.md
+├── docs/
+│   ├── architecture/runtime-contracts.md
+│   └── adr/
 └── src/
 ```
 
 ## Vocabulary
 
-В issue titles, предложениях рефакторинга, гипотезах и именах тестов использовать термины из `CONTEXT.md`. Если нужного термина там нет, не вводить его молча: это либо ненужный синоним, либо пробел, который надо обработать через `/domain-modeling`.
+В issue titles, предложениях рефакторинга, гипотезах и именах тестов использовать термины из `GLOSSARY.md`. Если нужного термина там нет, не вводить его молча: это либо ненужный синоним, либо пробел, который надо обработать через `/domain-modeling`.
 
 ## ADR conflicts
 

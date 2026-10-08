@@ -12,7 +12,7 @@
 - Первый runtime: Codex. ACP-compatible OpenCode остаётся будущим runtime adapter.
 - SQLite, один configured owner, local Node и full access входят в первый slice.
 - Remote Node, enrollment и sandbox должны быть предусмотрены contract-ами, но не реализуются в первом vertical slice.
-- Использовать `CONTEXT.md` как canonical glossary.
+- Использовать `GLOSSARY.md` как canonical glossary.
 
 ## Decisions so far
 

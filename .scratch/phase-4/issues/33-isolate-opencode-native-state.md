@@ -1,7 +1,7 @@
 # 33 Автоматически создавать отдельное persistent native state OpenCode
 
 Type: task
-Status: claimed
+Status: resolved
 
 ## Work
 
@@ -137,3 +137,9 @@ Public/race и повторные actual private unpaid OpenCode2.0.22 fixtures 
 На production OpenCode2.0.22/`openai/gpt-6-luna/low` fresh stored-auth, native per-model low и ACP readiness PASS в прежнем выбранном shared store. Новый Worker read/terminal Result, idle Follow-up и post-restart Resume/Follow-up PASS: fixture удалён после первого Result, remembered nonce совпал в обоих продолжениях; три per-Attempt mappings имеют одну native session, frozen Profile/binding сохранены. Native directories/files permissions, DB integrity и прежние identity/selections/Workers/Attempts/FX bindings/mappings PASS. Login/import/reset/migration/DB restore не выполнялись, native и durable история сохранены. Historical ba40 identity/nonce **FAIL** остаётся отдельным фактом.
 
 Luna6/low — текущий production override; clean-install pins Secretary Sol6.1/xhigh и Worker Luna6/xhigh не менялись. Это shared-host live evidence, не новый proof clean install, Worker shell, standalone owner login/transition или всех отрицательных barriers. Эти критерии не объявлены выполненными; Telegram pending owner rotation, отдельный FX live test NOT RUN. `Status: claimed` сохранён. Новых production/model проверок этим docs addendum нет; см. итоговую live запись в `docs/phase4-release-gate.md`.
+
+## Answer
+
+Тикет закрыт по прямому решению владельца. Отдельный persistent native store используется Secretary и co-located Execution node; readiness/auth, filesystem permissions, Worker Result, Follow-up и Resume после restart проверены на production target `9e3bc1e`. Три per-Attempt mappings сохраняют одну native session, frozen Profile и память; личный store, прежние bindings и история не мигрировались, login/import/reset не повторялись.
+
+Общая продуктовая приёмка и ранее не выполненные дополнительные сценарии не объявляются PASS этим закрытием. Telegram включён по явному запросу владельца; reported missing reply и зависание после второго сообщения отслеживаются отдельно в [ticket35](35-telegram-missing-reply-and-stalls-after-second-message.md). Прежние `claimed`/paused записи сохранены как история.

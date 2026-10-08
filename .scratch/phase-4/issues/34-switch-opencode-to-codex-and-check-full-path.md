@@ -1,8 +1,8 @@
 # 34 Переключить OpenCode на Codex и проверить полный пользовательский путь
 
 Type: task
-Status: claimed
-Blocked by: 31, 21, 22, 29
+Status: needs-triage
+Blocked by: 21, 22, 29
 
 ## Work
 
@@ -81,3 +81,7 @@ go test ./internal/core -run '^(TestObservedInventoryRejectsMissingModelAndReaso
 ```
 
 Результат: `internal/node` PASS 0.469s, `internal/core` PASS 0.284s. Полный batch suite не запускался. **Не объявлять Codex full-path PASS или dependencies resolved.**
+
+### Решение владельца о triage
+
+По прямому запросу владельца claim снят: текущий статус `needs-triage`. Ticket31 закрыт и больше не блокирует эту работу; tickets21/22/29 остаются зависимостями. Это отложенное сравнение с Codex, а не разрешение переключать production или начинать новый live прогон. Историческая подготовка и ограничения model/effort сохраняются.

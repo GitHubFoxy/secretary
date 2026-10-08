@@ -10,4 +10,4 @@
 
 ### Domain docs
 
-Single-context layout: `CONTEXT.md` и `docs/adr/`. См. `docs/agents/domain.md`.
+Single-context layout: `GLOSSARY.md`, `docs/architecture/runtime-contracts.md` и `docs/adr/`. См. `docs/agents/domain.md`.

@@ -26,6 +26,15 @@
 
 ## Decisions so far
 
+### Актуальные статусы по решению владельца
+
+- [31: OpenCode v2 по умолчанию](issues/31-make-opencode-v2-default-harness.md) — `resolved`. На target `9e3bc1e` Secretary/новые Workers, Result, Follow-up и Resume после restart прошли live acceptance с сохранением native session и памяти.
+- [33: Persistent native state OpenCode](issues/33-isolate-opencode-native-state.md) — `resolved`. Выбранный shared store, auth/readiness, permissions и сохранение history/session при restart подтверждены; старые bindings и история сохранены.
+- [34: Сравнение с Codex](issues/34-switch-opencode-to-codex-and-check-full-path.md) — `needs-triage`, claim снят. Оставшиеся зависимости: 21, 22, 29; переключение production не разрешено этим решением.
+- [35: Telegram без ответа и зависание после второго сообщения](issues/35-telegram-missing-reply-and-stalls-after-second-message.md) — `needs-triage`. Пользователь видит typing и 👀, но не ответ Secretary; после второго сообщения бот перестаёт отвечать. Причина пока не установлена, диагностика не запускалась.
+
+Telegram включён по прямому запросу владельца; включение и `getMe` не доказывают успешную доставку ответа. Ticket35 отслеживает reported Telegram failure отдельно от завершённого runtime/store scope31/33. Общий Phase4 acceptance и tickets15/21/22/29 не закрыты. Записи ниже о прежних `claimed`, pending rollout и paused Telegram сохранены как история; актуальные статусы задаёт этот раздел и заголовки issue files.
+
 - `spec.md` является утверждённым Phase 4 contract для domain model, lifecycle, Node boundary, Client API, deployment, migration и acceptance.
 - Secretary владеет intent, Worker владеет execution.
 - `message_worker` сам выбирает steer для active Worker, ответ на pending `needs_input`, Follow-up для idle Worker или resume после interrupted state.
