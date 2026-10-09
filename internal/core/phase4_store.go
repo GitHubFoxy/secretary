@@ -1957,7 +1957,7 @@ func (s *Store) RecordNodeActivity(ctx context.Context, instance HarnessInstance
 	if err := activity.ValidateFor(instance); err != nil {
 		return Event{}, err
 	}
-	return s.recordNodeActivity(ctx, activity)
+	return s.recordNodeActivity(ctx, activity, false)
 }
 
 // RecordNodeActivityReplay validates a buffered Activity using its normalized
@@ -1967,22 +1967,26 @@ func (s *Store) RecordNodeActivityReplay(ctx context.Context, activity Activity)
 	if err := activity.ValidatePayload(); err != nil {
 		return Event{}, err
 	}
-	return s.recordNodeActivity(ctx, activity)
+	return s.recordNodeActivity(ctx, activity, true)
 }
 
-func (s *Store) recordNodeActivity(ctx context.Context, activity Activity) (Event, error) {
-	attempt, err := s.Phase4Attempt(ctx, activity.Metadata.AttemptID)
-	if err != nil {
-		return Event{}, err
-	}
-	worker, err := s.Worker(ctx, attempt.WorkerID)
-	if err != nil {
-		return Event{}, err
-	}
-	if attempt.NodeID != string(activity.Metadata.Node) || attempt.HarnessInstanceID != string(activity.Metadata.HarnessInstanceID) || worker.WorkerRef != activity.Metadata.WorkerRef || attempt.TurnID != activity.Metadata.TurnID {
-		return Event{}, errors.New("core: Node activity does not match immutable Worker binding")
-	}
+func (s *Store) recordNodeActivity(ctx context.Context, activity Activity, tolerateTerminal bool) (Event, error) {
 	return withTx(s, ctx, func(tx *sql.Tx) (Event, error) {
+		attempt, err := getPhase4Attempt(ctx, tx, activity.Metadata.AttemptID)
+		if err != nil {
+			return Event{}, err
+		}
+		worker, err := getWorker(ctx, tx, attempt.WorkerID)
+		if err != nil {
+			return Event{}, err
+		}
+		if attempt.NodeID != string(activity.Metadata.Node) || attempt.HarnessInstanceID != string(activity.Metadata.HarnessInstanceID) || worker.WorkerRef != activity.Metadata.WorkerRef || attempt.TurnID != activity.Metadata.TurnID {
+			return Event{}, errors.New("core: Node activity does not match immutable Worker binding")
+		}
+		if tolerateTerminal && attempt.State.Terminal() {
+			return Event{}, nil
+		}
+
 		var encoded string
 		if err := tx.QueryRowContext(ctx, `SELECT outcome_json FROM idempotency_records WHERE operation = ? AND idempotency_key = ?`, "node.activity", activity.Metadata.EventID).Scan(&encoded); err == nil {
 			var event Event

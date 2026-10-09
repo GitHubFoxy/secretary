@@ -77,9 +77,12 @@ func NewStoreEventSinkWithTrustedLocalApproval(store *core.Store, apply TrustedL
 		if event.Kind != "activity" {
 			return fmt.Errorf("node server: invalid activity event kind %q", event.Kind)
 		}
-		_, err := store.RecordNodeActivityReplay(ctx, *event.Activity)
+		recorded, err := store.RecordNodeActivityReplay(ctx, *event.Activity)
 		if err != nil {
 			return err
+		}
+		if recorded.ID == "" {
+			return nil
 		}
 		if apply != nil && event.Activity.Kind == core.ActivityPermissionRequest && event.Activity.Request != nil {
 			handoffs.start(ctx, apply, event.Activity.Request.RequestID, event.Activity.Metadata.Node)

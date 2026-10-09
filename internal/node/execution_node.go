@@ -681,6 +681,7 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, p
 					}
 				}
 				_, _ = n.store.QueueOutcome(outcome)
+				return
 			}
 		}
 	}()
