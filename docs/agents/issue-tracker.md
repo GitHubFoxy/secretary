@@ -2,6 +2,9 @@
 
 Задачи и спецификации этого repo хранятся как Markdown-файлы в `.scratch/`.
 
+Активная работа: [Phase 5 — Minimal MVP](../../.scratch/phase-5/spec.md), [карта задач](../../.scratch/phase-5/map.md).
+Phase 1–4 находятся в [архиве](../../.scratch/.archived/README.md). Архивирование сохраняет историю и прежние статусы, но не означает прохождение незавершённых проверок.
+
 ## Conventions
 
 - Один feature на директорию: `.scratch/<feature-slug>/`.

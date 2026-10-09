@@ -121,7 +121,7 @@ Secretary MCP acceptance пока не подтверждён. Публичны�
 - `internal/node/opencode_{configuration,persistence_e2e,replay}_test.go`, existing `opencode_{runtime_e2e,live_e2e}_test.go`, `profile_test.go`, `harness_probe_test.go`: delayed/absent catalogs, wrong marker/effort, unsupported method, missing session без replacement, 256-frame replay, native read/MCP + Follow-up + Resume, authenticated system/history proof.
 - `cmd/secretary-node/main{,_test}.go`: explicit `SECRETARY_OPENCODE_COMMAND` одинаково применяется runtime и inventory; missing override не подменяется PATH binary. На omarchy `/usr/bin/opencode` оказался v1.18.29, а утверждённый v2.0.22 — `~/.local/bin/opencode`.
 - `cmd/fake-codex-acp/main.go`, `opencode_fixture{,_test}.go`: packaging protocol double подтверждает лишь choices, реально присутствующие в generated managed config. Первый CLI run падал, потому что старый double отвечал `{}` новому fail-closed gate; fixture исправлен, gate не ослаблен. Это mock evidence только для CLI assembly, не native acceptance.
-- `docs/{configuration,node-deployment,phase4-release-gate}.md`, `.scratch/phase-4/spec.md`, этот ticket: current contract/evidence и pending gates. Остальные предыдущие изменения сохранены.
+- `docs/{configuration,node-deployment,phase4-release-gate}.md`, `.scratch/.archived/phase-4/spec.md`, этот ticket: current contract/evidence и pending gates. Остальные предыдущие изменения сохранены.
 
 **Финальные локальные проверки — все PASS:**
 
@@ -232,7 +232,7 @@ SHA256 нового fixed Linux artifact: `7aab973663cffe2cb8dab35e682e1ab28f4a5
 
 - `docs/quickstart.md` теперь указывает точные defaults Secretary `openai/gpt-6.1-sol` / `xhigh` и новых Workers `openai/gpt-6-luna` / `xhigh`; model/reasoning pins по-прежнему требуют observed support и не подменяются.
 - `docs/phase4-release-gate.md` больше не требует `fx` как default и не помечает OpenCode optional. Default OpenCode v2 — обязательный manual acceptance; `fx`, Claude Code и Codex остаются explicit adapters.
-- `.scratch/phase-4/map.md` больше не показывает уже устранённый managed-mode Resume race как текущий blocker.
+- `.scratch/.archived/phase-4/map.md` больше не показывает уже устранённый managed-mode Resume race как текущий blocker.
 
 Текущие focused checks прошли:
 

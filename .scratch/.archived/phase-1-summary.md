@@ -242,7 +242,7 @@ Live evidence относилось к 2026-09-05. Historical copied-transcript a
 - `scripts/phase5-release-gate.sh`: шаг 4 требует `phase-1/node_modules` и запускает `npm run check:readonly`. После удаления gate останавливается на этом шаге. Его успешность не подтверждается этим документом.
 - `docs/pi-viewer-runbook.md`: команда `pi --extension .../phase-1/packages/coding-agent/src/extensions/secretary.ts` больше не указывает на существующий файл.
 - `docs/phase5-release-gate.md`: остаётся историческим ledger, а не действующей инструкцией сборки удалённого viewer.
-- `.scratch/phase-4/spec.md` и tickets 14/16: утверждения о сохранении snapshot и ссылки на его реализацию отражают старое состояние и требуют пересмотра при следующей работе над Pi.
+- `.scratch/.archived/phase-4/spec.md` и tickets 14/16: утверждения о сохранении snapshot и ссылки на его реализацию отражают старое состояние и требуют пересмотра при следующей работе над Pi.
 - `.scratch/phase-5-pi-viewer/`: сохраняется как история задач и принятых решений.
 
 Эти файлы не исправлялись автоматически: пользователь запросил описание и удаление snapshot, а не переработку gates или реализацию нового Pi Client.

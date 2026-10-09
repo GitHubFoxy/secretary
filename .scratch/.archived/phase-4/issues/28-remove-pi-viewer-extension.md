@@ -12,7 +12,7 @@ Pi как будущий Worker harness является отдельной за
 
 ## Исходное состояние
 
-- `phase-1/` уже удалён по просьбе пользователя. Его описание и точка восстановления сохранены в `.scratch/phase-1-summary.md`; исходники доступны в Git history.
+- `phase-1/` уже удалён по просьбе пользователя. Его описание и точка восстановления сохранены в `.scratch/.archived/phase-1-summary.md`; исходники доступны в Git history.
 - Старый `secretary.ts` снят с Pi autoload. В проекте не осталось его source directory, но остались связанные docs, gate, tests, comments и планы.
 - `scripts/phase5-release-gate.sh` всё ещё требует `phase-1/node_modules` и запускает TypeScript check. После удаления snapshot этот шаг не работает.
 - Runbook всё ещё предлагает загрузку extension из удалённого `phase-1/`.
@@ -36,13 +36,13 @@ Pi как будущий Worker harness является отдельной за
 
 - В `docs/always-on-runbook.md` убрать Pi extension setup, viewer credential path, Pi messaging-scope migration, MacBook viewer-specific examples и ссылки на удалённые docs.
 - Сохранить общие инструкции Client pairing/revoke, explicit grants, Idempotency-Key, service management, backup, health checks, loopback listener и Tailscale Serve. При необходимости изложить pairing как generic Client flow, без Pi branding и специальных viewer commands.
-- В `.scratch/phase-4/spec.md` убрать требования сохранять `phase-1/` и подключать Pi Client extension как продуктовую поверхность.
-- В `.scratch/phase-4/map.md` и других актуальных plans убрать Pi viewer work order и зависимости на него.
+- В `.scratch/.archived/phase-4/spec.md` убрать требования сохранять `phase-1/` и подключать Pi Client extension как продуктовую поверхность.
+- В `.scratch/.archived/phase-4/map.md` и других актуальных plans убрать Pi viewer work order и зависимости на него.
 - Исторический [ticket 16](16-pi-client-integration.md) пометить как снятую поддержку со ссылкой на этот тикет. Не превращать его старые acceptance результаты в действующие обещания.
 - Удалить `.scratch/phase-5-pi-viewer/` как отдельный действующий effort. Перед удалением перенести ещё актуальные общие требования к always-on deployment, Client privacy, DTO и Worker isolation в соответствующие Phase 4 docs/tickets, если они не покрыты там уже.
 - Устранить broken links и references во всех актуальных docs, scripts, configs и generated architecture documentation.
 
-История остаётся в Git и `.scratch/phase-1-summary.md`. Не переписывать исходные GitHub import snapshots и не стирать историческое evidence из этого summary. Упоминания Pi в новом harness ticket 27 и его будущей реализации не относятся к viewer.
+История остаётся в Git и `.scratch/.archived/phase-1-summary.md`. Не переписывать исходные GitHub import snapshots и не стирать историческое evidence из этого summary. Упоминания Pi в новом harness ticket 27 и его будущей реализации не относятся к viewer.
 
 ### 3. Удалить Pi-specific branches, сохранить общую безопасность
 
@@ -95,7 +95,7 @@ Pi как будущий Worker harness является отдельной за
 
 Снята поддержка Pi как Secretary viewer/Client extension. Удалены `docs/pi-viewer.md`, `docs/pi-viewer-runbook.md`, `docs/pi-viewer-release-note.md`, `docs/phase5-release-gate.md`, `scripts/phase5-release-gate.sh` и весь `.scratch/phase-5-pi-viewer/`. Устаревший Phase 5 gate не запускался и его прежнее PASS не переобъявляется.
 
-Обновлены `docs/always-on-runbook.md` и `docs/current-architecture.html`: оставлены generic Client pairing/revoke, explicit scopes, idempotency, loopback/Tailscale Serve, services, backup, health и privacy guidance; Pi-specific setup, credential path и broken doc links удалены. В `.scratch/phase-4/spec.md`, map и tickets 07/09/14 сохранены общие Client API/privacy/DTO и ACP workspace isolation требования. Ticket 16 помечен историческим со ссылкой на этот тикет; его прежние acceptance results не являются текущими обязательствами. Map обновлён. Ticket 27 не менялся.
+Обновлены `docs/always-on-runbook.md` и `docs/current-architecture.html`: оставлены generic Client pairing/revoke, explicit scopes, idempotency, loopback/Tailscale Serve, services, backup, health и privacy guidance; Pi-specific setup, credential path и broken doc links удалены. В `.scratch/.archived/phase-4/spec.md`, map и tickets 07/09/14 сохранены общие Client API/privacy/DTO и ACP workspace isolation требования. Ticket 16 помечен историческим со ссылкой на этот тикет; его прежние acceptance results не являются текущими обязательствами. Map обновлён. Ticket 27 не менялся.
 
 `internal/webapi/pi_readonly_surface_test.go` переименован в `internal/webapi/client_readonly_surface_test.go`; Pi fixtures и названия в Client/daemon/Telegram tests стали generic. Assertions сохранены: Client identity, pairing, explicit exact scopes, отказ за пределами read surface, owner-only pairing/revoke, HTTP и WebSocket authorization, revoke streams кодом 1008 с запретом reconnect, allowlisted Approval/Worker DTO, recursive redaction private fields, bounded snapshots с лимитами, forward/backward cursors и invalid cursor checks. Replay boundary, delayed-notify deduplication, reconnect/cursor, Worker/Conversation/Secretary APIs и credential separation от Node protocol остаются покрыты.
 
@@ -110,6 +110,6 @@ Pi как будущий Worker harness является отдельной за
 - Финальный `mise exec -- go test -race ./...`: PASS.
 - `mise exec -- go vet ./...`: PASS.
 - `mise exec -- go build ./cmd/...`: PASS.
-- Локальная проверка Markdown links в `docs/` и `.scratch/phase-4/` без оригинальных GitHub snapshots: PASS, 54 файла, broken targets не найдены.
+- Локальная проверка Markdown links в `docs/` и `.scratch/.archived/phase-4/` без оригинальных GitHub snapshots: PASS, 54 файла, broken targets не найдены.
 - Поиск активных references к `pi-viewer`, `secretary.ts`, Phase 5 gate и удалённым `phase-1/` путям: PASS, совпадений в активных коде/docs/scripts нет. Исторические ticket 16, removal ticket 28, ticket 27 и сохранённые summaries/snapshots исключены из этого критерия.
 - `git diff --check`: PASS.

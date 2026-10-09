@@ -32,12 +32,11 @@ its achieved via alias that leads to claude --tools read web, значит чт�
 У пользователя остается возможность открыть Worker thread в оригинальном харнессе через ghostty emulator lib 
 Но также мы показываем основной функционал харнессов, как это сделано в t3code
 
-# Перехват Workerа 
+# Перехват Workerа WILL NOT IMPLEMENT
 
 Как сравиться с рассинхроном между секретарем и Воркером?
 
-
-Решение: два режима воркера, Managed и Native. См. [[Режимы воркера Managed и Native]]. Прежний подход (отслеживать сообщения пользователя в сессии воркера) отклонён, краткое описание в той же заметке.
+WILL NOT IMPLEMENT: два режима воркера, Managed и Native. См. [[Режимы воркера Managed и Native]]. Прежний подход (отслеживать сообщения пользователя в сессии воркера) отклонён, краткое описание в той же заметке.
 
 # Skills
 
@@ -151,3 +150,19 @@ Workers threads могут существовать сколько угодно,
 
 Не задавать легальные и юридические вопросы. Они не относятся к спеку.
 
+> PSEUDO CODE BELOW:
+
+Уточнение занятому воркеру. MCP_STEER_WORKER: ID, QUERY: «Стоп, эту часть не меняй»
+
+
+# Minimal MVP
+
+Unified chat, where secretary could spawn diffrent harnesses (claude or codex, focus on those rn) on diffrent machines (same machine as secretary, and diffrent machine globally)
+
+User should be able to send messages directly to workeks via simplified UI. (Like T3CODE). There is no need to implement sync between what secretary knows and what user prompted to Worker. 
+
+Default behavier when sending message to Worker by user is immediatly steer, /q to put it as follow up. (queue)
+
+Telegram Group with topics. 
+Topics are for workers.
+Add secretary bot as admin.

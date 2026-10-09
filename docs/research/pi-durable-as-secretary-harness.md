@@ -28,7 +28,7 @@ Pi Durable похож на то, что Secretary уже ожидает от в�
 - В [`internal/core/phase4_types.go`](../../internal/core/phase4_types.go) есть самостоятельные `Worker`, `Turn`, `AttemptOutcome`, `Approval` и Result-модель. Worker сохраняет неизменяемую привязку к Node и `HarnessInstance`; серверные записи намеренно не содержат native runtime session ID.
 - [`internal/core/phase4_store.go`](../../internal/core/phase4_store.go) хранит Attempt/Outcome/Result/Approval в серверном SQLite. Есть уникальность одного Outcome на Attempt и одного Result на Turn; `FinishAttempt` атомарно записывает retryable Outcome, следующий Attempt и команду retry. `RecordNodeAttemptOutcome` проверяет Worker/Node/Harness binding и идемпотентно принимает терминальное событие.
 - [`internal/core/harness_contract.go`](../../internal/core/harness_contract.go) задаёт `HarnessInstance`, observed модели, reasoning и раздельные execution/activity capabilities. В текущем `HarnessKind` есть `opencode`, `fx`, `claude_code`, `codex`, но нет `pi_durable`.
-- Нормативный Phase 4 spec объявляет Server источником истины, а native runtime IDs — Node-local данными; clean-install default сейчас OpenCode v2. См. [`spec.md`](../../.scratch/phase-4/spec.md), разделы 4, 6–8.
+- Нормативный Phase 4 spec объявляет Server источником истины, а native runtime IDs — Node-local данными; clean-install default сейчас OpenCode v2. См. [`spec.md`](../../.scratch/.archived/phase-4/spec.md), разделы 4, 6–8.
 
 ### Node уже имеет подходящую точку расширения
 
@@ -53,7 +53,7 @@ Pi Durable похож на то, что Secretary уже ожидает от в�
 - `internal/node/opencode_persistence_e2e_test.go::TestOpenCodeNativeProfilePersistence` — opt-in native regression для managed profile, разрешённых/запрещённых инструментов, Follow-up и Resume того же session ID. `TestOpenCodeAuthenticatedWorkerReadAndResume` также opt-in.
 - Последние записи ticket 31 фиксируют успешные private native/live прогоны на OpenCode v2.0.22 в ранее выбранном авторизованном store. Это сильнее mock ACP fixture, но не production rollout.
 - Более поздняя [`docs/phase4-release-gate.md`](../../docs/phase4-release-gate.md) и ticket 33 отделяют новые изолированные stores: в них прошли private synthetic/unpaid persistence и missing-auth проверки, но login владельца, authenticated inventory/Worker acceptance в новых stores, production restart и legacy migration ещё не закрыты.
-- Ticket 31 остаётся `claimed`; реальный Telegram acceptance, production deployment и существующий fx Worker Follow-up/restart остаются вне завершённых gates. Его текущее состояние подробно записано в [`31-make-opencode-v2-default-harness.md`](../../.scratch/phase-4/issues/31-make-opencode-v2-default-harness.md). В рамках этого исследования тесты не запускались.
+- Ticket 31 остаётся `claimed`; реальный Telegram acceptance, production deployment и существующий fx Worker Follow-up/restart остаются вне завершённых gates. Его текущее состояние подробно записано в [`31-make-opencode-v2-default-harness.md`](../../.scratch/.archived/phase-4/issues/31-make-opencode-v2-default-harness.md). В рамках этого исследования тесты не запускались.
 
 OpenCode ACP v2.0.22 имеет известный предел: native source посылает progress без явного tool identity. Текущая документация поэтому не объявляет для него normalized tool-call/result capabilities и не угадывает имя из title. См. ticket 31 и `docs/node-deployment.md`. Pi Durable потенциально лучше в этой узкой точке, но только если его event API подключён и проверен.
 
@@ -236,7 +236,7 @@ PoC не должен затрагивать текущий OpenCode config, у�
 - [`internal/node/node.go`](../../internal/node/node.go), [`internal/node/runtime_router.go`](../../internal/node/runtime_router.go), [`internal/node/execution_node.go`](../../internal/node/execution_node.go), [`internal/node/local_store.go`](../../internal/node/local_store.go)
 - [`internal/node/opencode_runtime.go`](../../internal/node/opencode_runtime.go), [`internal/node/acp_runtime.go`](../../internal/node/acp_runtime.go), [`internal/node/opencode_persistence_e2e_test.go`](../../internal/node/opencode_persistence_e2e_test.go)
 - [`cmd/secretary-node/main.go`](../../cmd/secretary-node/main.go), [`docs/configuration.md`](../../docs/configuration.md), [`docs/node-deployment.md`](../../docs/node-deployment.md), [`docs/phase4-release-gate.md`](../../docs/phase4-release-gate.md)
-- [Ticket 31](../../.scratch/phase-4/issues/31-make-opencode-v2-default-harness.md), [Ticket 33](../../.scratch/phase-4/issues/33-isolate-opencode-native-state.md), [Phase 4 spec](../../.scratch/phase-4/spec.md)
+- [Ticket 31](../../.scratch/.archived/phase-4/issues/31-make-opencode-v2-default-harness.md), [Ticket 33](../../.scratch/.archived/phase-4/issues/33-isolate-opencode-native-state.md), [Phase 4 spec](../../.scratch/.archived/phase-4/spec.md)
 
 ## Может ли Pi Durable заменить Go Secretary v2? Полный перенос, гибрид или продолжение ACP
 
