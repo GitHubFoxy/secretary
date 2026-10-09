@@ -33,4 +33,4 @@
 
 Существующие исследования являются baseline, не новой live приёмкой. Каждый ticket добавляет проверенные ответы в `## Answer` и историю в `## Comments`; 05 разделяет scoped fixtures и реальные сценарии. В карту добавлять короткие ссылки на полученные решения, не копировать частные логи.
 
-- [CC streaming spike](reports/claude-streaming-spike-20261009.md): native process/MCP protocol confirmed; live model/steering blocked by existing provider HTTP403 quota. This is not a completed CC acceptance.
+- [CC streaming spike](reports/claude-streaming-spike-20261009.md): работа native процесса и MCP подтверждена; живой запуск модели и steering блокирует HTTP403 из-за квоты существующего провайдера. Приёмка CC не завершена.
