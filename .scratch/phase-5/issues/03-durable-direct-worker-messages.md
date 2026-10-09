@@ -1,7 +1,7 @@
 # 03: общий прямой ввод Worker и durable очередь /q
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: None
 
 ## What to build
@@ -26,7 +26,17 @@ Public seams: authenticated server HTTP/MCP и channel command/output. Пере�
 
 ## Answer
 
-Пока отсутствует.
+Реализован server-owned Worker-first `/q`: общий parser в `WorkerService.MessageWorker` перед request_id routing, durable FIFO записи `worker_queued_messages`, additive `queued_messages`/`action_mode`/`action_message_id` в read/mutation responses. Pending prompt не пересекает runtime boundary до terminal Result. Promotion атомарно сохраняет Turn/Attempt, immutable continuation checkpoint, command intent и принятую Secretary origin identity. Runtime pump использует прежний dispatch/resume путь; restart не повторяет неизвестное выполнение. История имеет состояния pending/delivering/delivered/blocked/canceled и WorkerRef-scoped durable events. Close сначала отменяет очередь, затем активную Attempt; Cancel сохраняет binding.
+
+Проверено:
+
+- Red: `TestWorkerQueueWaitsForTerminalAndPreservesFIFO` не компилировался без нового public API/read model; green проверяет отсутствие steering/delivery во время active, FIFO, replay, новый Turn и stripping prefix.
+- WorkerService public tests: restart с сохранением message identity и resume interrupted binding; pending input с request_id не получает queued text; recovery до transport handoff; разные inputs с одинаковым текстом; failed handoff видим как blocked без automatic retry; closure cancel queue; queued Result сохраняет origin после окончания Secretary turn.
+- Authenticated owner HTTP: POST `/v1/workers/:ref/message` принимает `/q`, replay сохраняет message ID, GET `/v1/workers/:ref` показывает очередь.
+- Controlled external ACP process (`TestPublicQueuedFollowUpRetainsNativeHistory`): idle `/q` по прежней session до/после Node reopen; active held prompt не получает queue до terminal; новый Follow-up вспоминает nonce в той же native session. Fixture не является live доказательством Codex/CC.
+- `go test ./internal/core ./internal/ctl ./internal/webapi ./internal/mcp` PASS; `go test -race ./internal/ctl ./internal/webapi ./internal/mcp` PASS. Дополнительный scoped queue race PASS.
+
+Осталось интегрировать вызов `RunQueuedWorkerMessages(ctx)` в main (ticket 01), показать queued/history в Web/Telegram (ticket 04) и пройти настоящую native/topology matrix (ticket 05). Поэтому live gate не объявлен пройденным, ticket остаётся claimed до интеграционной проверки.
 
 ## Comments
 

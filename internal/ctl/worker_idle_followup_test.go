@@ -164,7 +164,10 @@ func TestOpenCodeNativePublicIdleFollowUp(t *testing.T) {
 	runPublicIdleFollowUp(t, true)
 }
 
-func runPublicIdleFollowUp(t *testing.T, native bool) {
+func TestPublicQueuedFollowUpRetainsNativeHistory(t *testing.T) {
+	runPublicIdleFollowUp(t, false, true)
+}
+func runPublicIdleFollowUp(t *testing.T, native bool, queued ...bool) {
 	t.Helper()
 	fixtureTimeout := 20 * time.Second
 	if native {
@@ -307,7 +310,13 @@ func runPublicIdleFollowUp(t *testing.T, native bool) {
 			start()
 		}
 		request := MessageWorkerRequest{WorkerRef: ref, Text: "recall", IdempotencyKey: fmt.Sprintf("followup-%d", phase)}
+		if len(queued) > 0 && queued[0] {
+			request.Text = "/q recall"
+		}
 		_, err = service.MessageWorker(ctx, request)
+		if len(queued) > 0 && queued[0] && err == nil {
+			err = service.ProcessQueuedWorkerMessages(ctx)
+		}
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -430,6 +439,35 @@ func runPublicIdleFollowUp(t *testing.T, native bool) {
 	}
 	if _, err := store.SetPhase4AttemptActive(ctx, holdAttempt.ID); err != nil {
 		t.Fatal(err)
+	}
+	if len(queued) > 0 && queued[0] {
+		waiting, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: ref, Text: "/q recall", IdempotencyKey: "active-queue"})
+		if err != nil || waiting.ActionMode != "queued" || len(waiting.Attempts) != 4 {
+			t.Fatalf("active queue=%#v err=%v", waiting, err)
+		}
+		if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
+			t.Fatal(err)
+		}
+		unchanged, err := service.GetWorker(ctx, ref)
+		if err != nil || unchanged.CurrentAttempt().ID != holdAttempt.ID || len(unchanged.Attempts) != 4 {
+			t.Fatal("active queue replaced current Attempt")
+		}
+		if _, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: ref, Text: "finish-held", IdempotencyKey: "finish-held"}); err != nil {
+			t.Fatal(err)
+		}
+		await(4)
+		if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
+			t.Fatal(err)
+		}
+		completed := await(5)
+		mapping, ok := local.SessionMapping(completed.CurrentAttempt().ID)
+		if !ok || mapping.RuntimeSessionID != initialMapping.RuntimeSessionID || completed.CurrentTurn().Input != "recall" {
+			t.Fatal("terminal queue replaced native session")
+		}
+		if len(completed.Results) != 5 || completed.Results[4].Summary != "remembered=true" {
+			t.Fatalf("queue lost native history: %#v", completed.Results)
+		}
+		return
 	}
 	active, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: ref, Text: "active steering", IdempotencyKey: "active"})
 	if err != nil || active.CurrentAttempt().ID != holdAttempt.ID || len(active.Attempts) != 4 {

@@ -230,6 +230,9 @@ type WorkerCommand struct {
 }
 
 type WorkerDetails struct {
+	ActionMode      string                `json:"action_mode,omitempty"`
+	ActionMessageID string                `json:"action_message_id,omitempty"`
+	QueuedMessages  []QueuedWorkerMessage `json:"queued_messages"`
 	// ActionTurnID is populated only by ctl for the exact Worker Turn affected by an accepted Secretary action; it is never serialized or persisted.
 	ActionTurnID string           `json:"-"`
 	Worker       Worker           `json:"worker"`

@@ -556,6 +556,34 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 	if err != nil {
 		return core.WorkerDetails{}, err
 	}
+	if request.Text == "/q" || strings.HasPrefix(request.Text, "/q ") || strings.HasPrefix(request.Text, "/q\n") || strings.HasPrefix(request.Text, "/q\t") {
+		text := strings.TrimSpace(strings.TrimPrefix(request.Text, "/q"))
+		if text == "" {
+			return core.WorkerDetails{}, errors.New("worker: /q requires message text")
+		}
+		key := strings.TrimSpace(request.IdempotencyKey)
+		if key == "" {
+			key = request.InputID
+		}
+		if key == "" {
+			key, err = steeringDedupeKey("")
+			if err != nil {
+				return core.WorkerDetails{}, err
+			}
+		}
+		origins := []core.SecretaryOriginIdentity(nil)
+		if origin := s.secretaryOrigin(request.SecretaryTurnID, request.InputID); origin != nil {
+			origins = append(origins, *origin)
+		}
+		message, err := s.Store.EnqueueWorkerMessage(ctx, details.Worker.ID, text, key, origins...)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		details, err = s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+		details.ActionMode = "queued"
+		details.ActionMessageID = message.ID
+		return details, err
+	}
 	attempt := details.CurrentAttempt()
 	var actionTurnID string
 	if strings.TrimSpace(request.RequestID) != "" {
@@ -806,6 +834,13 @@ func (s WorkerService) CancelWorker(ctx context.Context, workerRef string) (core
 func (s WorkerService) CloseWorker(ctx context.Context, workerRef string) (core.WorkerDetails, error) {
 	conversation, err := s.authorize(ctx)
 	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	closing, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if err := s.Store.CancelQueuedWorkerMessages(ctx, closing.Worker.ID); err != nil {
 		return core.WorkerDetails{}, err
 	}
 	if _, err := s.CancelWorker(ctx, workerRef); err != nil {
