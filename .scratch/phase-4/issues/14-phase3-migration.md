@@ -18,7 +18,7 @@ Blocked by: 01, 02, 03a, 03b, 06a, 06b, 07, 09, 13a
 - Мигрировать `fast`, `smart` и `cheap` в явные model pins или adapter defaults без появления aliases в Phase 4 contract.
 - Разделить старую runtime config на `secretary.harness/model/reasoning` и `worker_policy.default_harness`.
 - Перед миграцией автоматически создавать backup и откатывать invalid config/schema migration.
-- Сохранить `phase-1/` Pi snapshot и `sex setup`.
+- Сохранить `phase-1/` Pi snapshot и `secretary setup`.
 
 ## Acceptance
 

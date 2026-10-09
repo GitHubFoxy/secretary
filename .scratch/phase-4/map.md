@@ -32,7 +32,7 @@
 - `respond_worker { request_id, response }` является единой Node command для Approval и `needs_input`.
 - Worker или harness не получают server callback capability. Terminal events идут через Node adapter и authenticated Node connection.
 - `fx`, Claude Code и Codex обязательны для MVP acceptance. OpenCode остаётся compatibility target и не заменяет Claude Code.
-- `sex` и `sex setup` сохраняются как исторический CLI contract.
+- `secretary` и `secretary setup` сохраняются как исторический CLI contract.
 
 ## Work order
 

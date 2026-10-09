@@ -3,14 +3,14 @@ set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
 ROOT="${SCRIPT_DIR:h}"
-SEX="$ROOT/sex"
+SECRETARY_CLI="$ROOT/secretary"
 ORIGINAL_HOME="$HOME"
 REAL_PATH="${PATH:-/usr/bin:/bin}"
-TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/secretary-sex-test.XXXXXX")"
+TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/secretary-cli-test.XXXXXX")"
 FAKE_BIN="$TEST_HOME/fake-bin"
 STATE="$TEST_HOME/.local/share/secretary"
 BIN="$TEST_HOME/.local/bin"
-PLIST="$TEST_HOME/Library/LaunchAgents/dev.secretary.sex.plist"
+PLIST="$TEST_HOME/Library/LaunchAgents/dev.secretary.cli.plist"
 LAUNCHCTL_LOG="$TEST_HOME/launchctl.log"
 OPEN_LOG="$TEST_HOME/open.log"
 
@@ -104,10 +104,10 @@ cleanup() {
   fi
   kill_matching_processes "$TEST_HOME"
   if [[ -f "$STATE/server.pid" ]]; then
-    HOME="$TEST_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" stop >/dev/null 2>&1 || true
+    HOME="$TEST_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" stop >/dev/null 2>&1 || true
   fi
   chmod -R u+w "$TEST_HOME" 2>/dev/null || true
-  if [[ "${SEX_TEST_KEEP:-0}" == "1" ]]; then
+  if [[ "${SECRETARY_CLI_TEST_KEEP:-0}" == "1" ]]; then
     print -u2 -- "Keeping test HOME: $TEST_HOME"
   else
     rm -rf "$TEST_HOME"
@@ -115,7 +115,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-[[ -x "$SEX" ]] || fail "sex is not executable: $SEX"
+[[ -x "$SECRETARY_CLI" ]] || fail "secretary is not executable: $SECRETARY_CLI"
 mkdir -p "$FAKE_BIN"
 
 cat > "$FAKE_BIN/codex" <<'EOF'
@@ -162,17 +162,17 @@ exec "$(dirname "$0")/codex-acp" "$@"
 EOF
 chmod +x "$FAKE_BIN/codex-acp" "$FAKE_BIN/fx"
 
-print "Testing sex commands in isolated HOME: $TEST_HOME"
+print "Testing secretary commands in isolated HOME: $TEST_HOME"
 
-output="$($SEX)" || fail "usage command failed"
-assert_contains "$output" "Usage: sex" "usage output"
+output="$($SECRETARY_CLI)" || fail "usage command failed"
+assert_contains "$output" "Usage: secretary" "usage output"
 pass "usage"
 
-output="$($SEX status)" || fail "status command failed"
+output="$($SECRETARY_CLI status)" || fail "status command failed"
 assert_contains "$output" "stopped" "initial status"
 pass "status when stopped"
 
-output="$($SEX setup)" || fail "setup command failed"
+output="$($SECRETARY_CLI setup)" || fail "setup command failed"
 assert_contains "$output" "Setup complete" "setup output"
 assert_executable "$BIN/secretaryd"
 assert_executable "$BIN/secretaryctl"
@@ -184,32 +184,32 @@ assert_file "$STATE/profiles/worker.md"
 assert_file "$STATE/profiles/child-worker.md"
 assert_contains "$(cat "$STATE/config.toml")" 'harness = "fx"' "default harness"
 assert_contains "$(cat "$STATE/config.toml")" 'secretary = "gpt-5.6-luna"' "default Secretary model"
-[[ -L "$BIN/sex" ]] || fail "setup did not install sex symlink"
+[[ -L "$BIN/secretary" ]] || fail "setup did not install secretary symlink"
 pass "setup"
 
-output="$($SEX doctor)" || fail "doctor command failed"
+output="$($SECRETARY_CLI doctor)" || fail "doctor command failed"
 assert_contains "$output" "Doctor found no problems" "doctor output"
 pass "doctor"
 
 existing_code="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/v1/web/session 2>/dev/null || true)"
 [[ "$existing_code" == "000" ]] || fail "port 8081 is already in use with HTTP $existing_code"
 
-output="$($SEX start)" || fail "start command failed"
+output="$($SECRETARY_CLI start)" || fail "start command failed"
 assert_contains "$output" "Secretary started" "start output"
 assert_not_contains "$output" "code=000" "start readiness output"
-status_output="$($SEX status)" || fail "status command failed while running"
+status_output="$($SECRETARY_CLI status)" || fail "status command failed while running"
 assert_contains "$status_output" "mode=normal" "normal running status"
 assert_http_code "http://127.0.0.1:8081/control-room" "404"
 assert_file "$OPEN_LOG"
 assert_contains "$(cat "$OPEN_LOG")" "#bootstrap=" "browser pairing URL"
 pass "start in normal mode"
 
-output="$($SEX start)" || fail "start reuse command failed"
+output="$($SECRETARY_CLI start)" || fail "start reuse command failed"
 assert_contains "$output" "already running" "start reuse output"
 pass "start reuses an existing server"
 
 logs_pid=""
-$SEX logs >"$TEST_HOME/logs.out" 2>&1 &
+$SECRETARY_CLI logs >"$TEST_HOME/logs.out" 2>&1 &
 logs_pid="$!"
 sleep 0.5
 stop_background "$logs_pid"
@@ -218,49 +218,49 @@ assert_file "$TEST_HOME/logs.out"
 assert_contains "$(cat "$TEST_HOME/logs.out")" "web API listening" "logs output"
 pass "logs"
 
-output="$($SEX stop)" || fail "stop command failed"
+output="$($SECRETARY_CLI stop)" || fail "stop command failed"
 assert_contains "$output" "Secretary stopped" "stop output"
-output="$($SEX stop)" || fail "stop command failed when already stopped"
+output="$($SECRETARY_CLI stop)" || fail "stop command failed when already stopped"
 assert_contains "$output" "not running" "stopped stop output"
 pass "stop"
 
-output="$($SEX restart --debug)" || fail "restart command failed"
+output="$($SECRETARY_CLI restart --debug)" || fail "restart command failed"
 assert_contains "$output" "Secretary started" "restart output"
 assert_not_contains "$output" "code=000" "restart readiness output"
-status_output="$($SEX status)" || fail "status command failed after restart"
+status_output="$($SECRETARY_CLI status)" || fail "status command failed after restart"
 assert_contains "$status_output" "mode=debug" "debug running status"
 assert_http_code "http://127.0.0.1:8081/control-room" "200"
 pass "restart --debug"
 
-output="$($SEX stop)" || fail "stop after restart failed"
+output="$($SECRETARY_CLI stop)" || fail "stop after restart failed"
 assert_contains "$output" "Secretary stopped" "stop after restart output"
 
-output="$($SEX install-service --debug)" || fail "install-service command failed"
+output="$($SECRETARY_CLI install-service --debug)" || fail "install-service command failed"
 assert_contains "$output" "Secretary will start" "install-service output"
 assert_file "$PLIST"
 assert_contains "$(cat "$PLIST")" "<string>serve</string><string>--debug</string>" "debug launchd plist"
 assert_contains "$(cat "$LAUNCHCTL_LOG")" "bootstrap" "launchd bootstrap call"
 pass "install-service --debug"
 
-output="$($SEX uninstall-service)" || fail "uninstall-service command failed"
+output="$($SECRETARY_CLI uninstall-service)" || fail "uninstall-service command failed"
 assert_contains "$output" "Service removed" "uninstall-service output"
 [[ ! -e "$PLIST" ]] || fail "uninstall-service left plist behind"
 assert_contains "$(cat "$LAUNCHCTL_LOG")" "bootout" "launchd bootout call"
 pass "uninstall-service"
 
 serve_pid=""
-$SEX serve --debug >"$TEST_HOME/serve.out" 2>&1 &
+$SECRETARY_CLI serve --debug >"$TEST_HOME/serve.out" 2>&1 &
 serve_pid="$!"
 wait_for_server "http://127.0.0.1:8081/v1/web/session" || fail "serve did not become ready"
-status_output="$($SEX status)" || fail "status command failed for serve"
+status_output="$($SECRETARY_CLI status)" || fail "status command failed for serve"
 assert_contains "$status_output" "mode=debug" "serve debug status"
 assert_http_code "http://127.0.0.1:8081/control-room" "200"
 stop_background "$serve_pid"
 serve_pid=""
 pass "serve --debug"
 
-output="$($SEX status)" || fail "final status command failed"
+output="$($SECRETARY_CLI status)" || fail "final status command failed"
 assert_contains "$output" "stopped" "final status"
 pass "final stopped status"
 
-print "All sex CLI command tests passed."
+print "All secretary CLI command tests passed."

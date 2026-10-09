@@ -313,7 +313,7 @@ Pi Client входит в целевую поверхность Phase 4, но п
 15. Approval приходит от Worker/harness через Node и server. Secretary не вызывает `request_approval` для собственных действий.
 16. Secretary обрабатывает один turn за раз. Входящие сообщения во время его работы сохраняются в порядке поступления и ждут очереди; Workers при этом работают параллельно.
 17. Phase 4 deployment является self-hosted/private-network-first. Hosted service откладывается.
-18. Команда `sex` и команда `sex setup` сохраняются как текущий исторический CLI contract.
+18. Команда `secretary` и команда `secretary setup` сохраняются как текущий исторический CLI contract.
 
 ## 9. Secretary context reconstruction
 
@@ -1268,7 +1268,7 @@ External Profiles остаются Markdown files. Profile reload атомаре
 11. Перед миграцией `secretary.db` автоматически архивируется.
 12. Невалидная новая конфигурация не заменяет активный snapshot.
 13. `phase-1/` остаётся сохранённым Pi source snapshot и не включается автоматически в Go build.
-14. Команда `sex setup` сохраняется без переименования.
+14. Команда `secretary setup` сохраняется без переименования.
 
 ## 23. Security boundary
 

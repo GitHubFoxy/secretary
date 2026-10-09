@@ -6,7 +6,7 @@
 
 ## Decisions so far
 
-- `sex` остаётся working CLI name. Local state остаётся в `~/.local/share/secretary`, binaries в `~/.local/bin`.
+- CLI называется `secretary`. Local state остаётся в `~/.local/share/secretary`, binaries в `~/.local/bin`.
 - User UI и Control Room собираются на Svelte + Tailwind, встраиваются в один Go binary. UI dark, readable и mobile-first website, без service worker и offline queue.
 - Control Room доступен только по `/control-room` при `--debug`; он показывает Overview, Workers tree, Events и Config.
 - Profiles: только `secretary`, `worker`, `child_worker`. Они живут в external Markdown; config хранит paths, runtime, model, reasoning, skills и `allow_tools`.
@@ -29,7 +29,7 @@
 - Ticket 06: Codex/fx share the ACP compatibility adapter. Codex uses managed `AGENTS.md`; fx steering interrupts, waits for idle, records a durable follow-up Attempt, and continues with the replacement prompt. Missing harnesses fail explicitly.
 - Ticket 07: Svelte/Tailwind User UI is embedded as static production assets. It has cookie login, four-page onboarding, model selection, Conversation, Worker cards, and mobile full-screen or desktop drawer observers.
 - Ticket 08: Debug-only Svelte/Tailwind Control Room exposes Overview, Worker actions, normalized Events, config edit/reload, model/runtime controls, raw logs, and export. Config edits preserve the active snapshot on failure and record version events.
-- Ticket 09: `sex` owns setup, preflight, start/stop/restart/status/logs/doctor and launchd install/uninstall. `--debug` gates Control Room, and pairing is passed through the URL fragment.
+- Ticket 09: `secretary` owns setup, preflight, start/stop/restart/status/logs/doctor and launchd install/uninstall. `--debug` gates Control Room, and pairing is passed through the URL fragment.
 - Ticket 10: Deterministic release gate and manual real-harness matrix are recorded in `scripts/phase3-release-gate.sh` and `docs/phase3-release-gate.md`.
 
 ## Work order
@@ -38,7 +38,7 @@
 2. Server-owned MCP lifecycle tools and Child Worker tree.
 3. Harness adapters: OpenCode first, then Codex/fx compatibility.
 4. Svelte foundation, User UI and Control Room.
-5. `sex` product lifecycle, launchd and debug mode.
+5. `secretary` product lifecycle, launchd and debug mode.
 6. Real acceptance suite for all three harnesses.
 
 ## Release gate

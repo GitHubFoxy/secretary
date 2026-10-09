@@ -24,12 +24,12 @@ test -s web/control-room/app.css
 test -s web/src/App.svelte
 test -s web/control-room/src/App.svelte
 grep -q 'control-room' web/embed.go
-zsh -n sex
-grep -q '^Usage: sex' <(./sex)
-grep -q -- '--debug' sex
-grep -q 'KeepAlive' sex
+zsh -n secretary
+grep -q '^Usage: secretary' <(./secretary)
+grep -q -- '--debug' secretary
+grep -q 'KeepAlive' secretary
 git diff --check
-echo "[6/6] sex CLI integration"
-./scripts/sex-cli-test.sh
+echo "[6/6] secretary CLI integration"
+./scripts/secretary-cli-test.sh
 
 echo "Phase 3 release gate passed. Real harness matrix remains a manual run; see docs/phase3-release-gate.md."

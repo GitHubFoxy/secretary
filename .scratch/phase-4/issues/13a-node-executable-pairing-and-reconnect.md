@@ -14,7 +14,7 @@ Blocked by: 04, 05b
 - Подключить HarnessInstance inventory из 05b и передавать его по protocol 04.
 - Сохранять native runtime session mappings и command dedupe/outbox локально на Node.
 - После reconnect не запускать старый Attempt повторно и не менять Worker binding.
-- Не включать сюда Tailscale packaging, launchd, `sex setup` и doctor. Они идут в 13b.
+- Не включать сюда Tailscale packaging, launchd, `secretary setup` и doctor. Они идут в 13b.
 
 ## Acceptance
 

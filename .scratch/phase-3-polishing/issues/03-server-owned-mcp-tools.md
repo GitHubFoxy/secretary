@@ -23,5 +23,5 @@ Implemented the server-owned MCP stdio path.
 - Added Worker capability rotation and authorization in SQLite. Worker MCP calls validate the Worker reference and capability before execution.
 - Added audited `mcp.tool_call` and `mcp.tool_result` events.
 - ACP `session/new` and `session/load` now receive per-session stdio MCP definitions with scoped environment values.
-- `sex setup` builds the helper binary. The actual Child spawn callback is completed by ticket 04.
+- `secretary setup` builds the helper binary. The actual Child spawn callback is completed by ticket 04.
 - Verified with `go test ./...`, `go test -race ./...`, `go vet ./...`.
