@@ -44,6 +44,35 @@ Node отмечает OpenCode ready только после version v2, stored 
 
 Runtime и inventory используют один binary: `SECRETARY_OPENCODE_COMMAND`, если он задан, иначе `opencode` из service PATH. Отсутствующий explicit binary не подменяется другим из PATH. На omarchy v2.0.22 находится в `~/.local/bin/opencode`; `/usr/bin/opencode` — другая, старая версия. Проверить binary и service PATH перед rollout, не считая интерактивный `opencode --version` доказательством версии Node.
 
+## MCP для Workers на Node
+
+В локальном `config.json` Node можно явно задать одобренные stdio MCP servers. Список по умолчанию пустой. Он относится к Workers этого Node и одинаково передаётся Codex и Claude при первоначальном запуске, idle Follow-up, resume после restart и восстановлении Session для команды.
+
+```json
+{
+  "server_url": "http://127.0.0.1:8081",
+  "node": "macbook",
+  "data_dir": "/Users/me/.local/share/secretary/node/data",
+  "include_opencode": false,
+  "mcp_servers": [
+    {
+      "name": "readonly",
+      "command": "python3",
+      "args": ["/Users/me/tools/read-marker-mcp.py"],
+      "env": [
+        {"name": "MCP_MARKER_FILE", "value": "/Users/me/markers/acceptance.txt"}
+      ]
+    }
+  ]
+}
+```
+
+`command`, пути в `args` и `env` разрешаются на host исполнения. `env` — массив объектов `name`/`value`, а не native MCP map. В конфигурации используются точные lowercase JSON field names. Server names содержат только буквы ASCII, цифры, `_` и `-`; пустые names/commands, duplicate servers/env names и некорректные env names отклоняются до запуска runtime. Имя `secretary`, переменные `SECRETARY_MCP_*` и `SECRETARY_CAPABILITY` зарезервированы и запрещены в Worker MCP config. Validation errors не выводят env values. Файл сохраняется через существующий private config путь с правами `0600`; значения локальных credentials не помещайте в Git или diagnostics.
+
+MCP list не входит в WorkerEnvelope, handshake или Secretary control plane. Server dispatch не может подменить эту конфигурацию и не получает её env values. Глобальная config native harness не меняется, credentials между Nodes не копируются. Worker не получает Secretary lifecycle authority: Secretary MCP остаётся отдельным per-session server-owned endpoint/capability. Node-local read-only tool не является product-owned Child Worker API; создание Child Workers этим изменением не добавлено. Native harness skills и внутренние subagents сохраняют прежнюю семантику.
+
+В Claude используется explicit strict MCP config. Возможные native MCP settings Codex не считаются свидетельством явной доставки этого списка; для gate требуется реальный вызов выбранного безопасного инструмента Worker на соответствующем Node. Передача списка в public Session fixture доказывает routing/config, а не native tool call или доступность provider.
+
 ## Native state OpenCode
 
 На чистой установке `secretary setup` выбирает один persistent store `$HOME/.local/share/secretary/opencode-native` для Secretary и co-located Worker Node. Он создаёт native DB настоящим `opencode serve --port 0 --stdio` с закрытым stdin, проверяет `opencode.db` и прекращает setup с видимой ошибкой при сбое; auth/login/provider call не выполняются. Локальный `secretary node setup` закрепляет тот же path, не создавая вторую native DB. Отдельный Node на другой машине запускается с `--standalone` и выбирает собственный `<NODE_DATA>/opencode-native`. Каждый путь используется как `XDG_DATA_HOME`; native DB/auth/WAL/SHM находятся под `opencode/`. Runtime, model inventory/probes, title generator и Doctor co-located installation используют общий store; remote Node использует свой локальный. Каталоги имеют `0700`, файлы — `0600` под `umask 077`. Store находится вне Workspace и сохраняется при повторном setup, restart, reconnect, upgrade, Attempt и Follow-up.
