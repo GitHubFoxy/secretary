@@ -435,10 +435,6 @@ func rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler htt
 				remoteNodes.ServeProtocolHTTP(w, r)
 				return
 			}
-			if r.URL.Path == "/v1/nodes" || strings.HasPrefix(r.URL.Path, "/v1/nodes/") {
-				remoteNodes.ServeHTTP(w, r)
-				return
-			}
 		}
 		if strings.HasPrefix(r.URL.Path, "/v1/control/") {
 			if !debug {
