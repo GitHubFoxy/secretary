@@ -269,15 +269,28 @@ func TestProductionAssemblyRespondsWithoutManualResponderAttachment(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	worker, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{WorkerRef: "production-worker", Title: "Production worker", ProjectID: "project", NodeID: "local", HarnessInstanceID: "local/fx", Intent: "inspect", PolicySnapshot: "{}"}, core.TurnSpec{Input: "inspect"})
+	workspace := t.TempDir()
+	instance := core.HarnessInstance{ID: "local/fx", Node: "local", Kind: core.HarnessFX, Version: "fixture", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}}
+	snapshot, err := json.Marshal(core.ProjectSnapshot{ID: "project", Node: "local", HarnessInstance: instance})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := node.ManagedProfile{Version: "fixture", Name: "worker", Content: "Synthetic instructions", SourceHash: "fixture", Runtime: "fx", Delivery: "workspace_instructions"}
+	profile.Hash = profile.SnapshotHash()
+	profileJSON, err := json.Marshal(profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{WorkerRef: "production-worker", Title: "Production worker", ProjectID: "project", NodeID: "local", HarnessInstanceID: "local/fx", Intent: "inspect", PolicySnapshot: "{}", ProjectSnapshot: string(snapshot), ProfileSnapshot: string(profileJSON), Workspace: workspace}, core.TurnSpec{Input: "inspect"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
 		t.Fatal(err)
 	}
-	local := node.NewLocal(&productionRuntime{})
-	if _, err := local.Dispatch(ctx, node.StartRequest{WorkerRef: worker.WorkerRef}); err != nil {
+	prompts := make(chan string, 3)
+	local := node.NewLocal(&productionRuntime{prompts: prompts})
+	if _, err := local.Dispatch(ctx, node.StartRequest{WorkerRef: worker.WorkerRef, AttemptID: attempt.ID, Task: "inspect", HarnessInstance: instance, Profile: profile, Workspace: workspace}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.RecordNodeActivityReplay(ctx, core.Activity{Metadata: core.ActivityMetadata{EventID: "production-approval", Node: "local", HarnessInstanceID: "local/fx", WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, Sequence: 1, ObservedAt: time.Now().UTC()}, Kind: core.ActivityPermissionRequest, Request: &core.ActivityRequest{RequestID: "production-request", Summary: "write file"}}); err != nil {
@@ -336,7 +349,7 @@ func TestProductionAssemblyRespondsWithoutManualResponderAttachment(t *testing.T
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(details.QueuedMessages) == 1 && details.QueuedMessages[0].State != "pending" {
+		if len(details.QueuedMessages) == 1 && details.QueuedMessages[0].State == "delivered" {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -344,18 +357,37 @@ func TestProductionAssemblyRespondsWithoutManualResponderAttachment(t *testing.T
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	for {
+		select {
+		case prompt := <-prompts:
+			if prompt == "continue" {
+				return
+			}
+		case <-time.After(time.Second):
+			t.Fatal("delivered queue did not prompt the resumed native session")
+		}
+	}
 }
 
-type productionRuntime struct{}
+type productionRuntime struct{ prompts chan string }
 
-func (*productionRuntime) Start(context.Context, node.StartRequest) (node.Session, error) {
-	return &productionSession{}, nil
+func (r *productionRuntime) Start(context.Context, node.StartRequest) (node.Session, error) {
+	return &productionSession{prompts: r.prompts}, nil
 }
 
-type productionSession struct{}
+func (r *productionRuntime) Resume(ctx context.Context, request node.StartRequest, _ string) (node.Session, error) {
+	return r.Start(ctx, request)
+}
 
-func (*productionSession) ID() string                                    { return "production-native" }
-func (*productionSession) Prompt(context.Context, string) error          { return nil }
+type productionSession struct{ prompts chan string }
+
+func (*productionSession) ID() string { return "production-native" }
+func (s *productionSession) Prompt(_ context.Context, text string) error {
+	if s.prompts != nil {
+		s.prompts <- text
+	}
+	return nil
+}
 func (*productionSession) Steer(context.Context, string) (bool, error)   { return true, nil }
 func (*productionSession) Cancel(context.Context) error                  { return nil }
 func (*productionSession) Activity() <-chan node.Activity                { return nil }

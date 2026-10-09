@@ -38,10 +38,12 @@ Public seams: authenticated server HTTP/MCP и channel command/output. Пере�
 
 Интеграция 01/03/04 завершена на `phase5-minimal-mvp`: production assembly запускает `RunQueuedWorkerMessages(ctx)`; Web читает `queued_messages` и `action_mode`, Telegram получает server-owned queue lifecycle events только в Worker topic. Разрешён конфликт общей ACP fixture с сохранением independent Codex/queue режимов; добавлен `TestPublicCodexQueuedFollowUpRetainsNativeHistory` с прежней native session до/после Node reopen и active terminal boundary.
 
-Integration red/green: production public HTTP regression воспроизвёл оставшуюся `pending` запись после terminal Result при отсутствии queue pump; после подключения сервиса очередь автоматически продвигается без ручного вызова Process. Эта fixture подтверждает wiring/promotion, а детальная доставка/FIFO/restart проверяется существующими WorkerService и external ACP fixtures.
+Integration red/green: production public HTTP regression воспроизвёл оставшуюся `pending` запись после terminal Result при отсутствии queue pump; после подключения сервиса очередь достигает `delivered` без ручного вызова Process, а controllable native Session наблюдает prompt `continue` после same-identity resume. Production fixture содержит валидные immutable Project/profile/Workspace и HarnessInstance bindings, поэтому `blocked` или `canceled` не засчитываются как успех. Детальная FIFO/restart семантика дополнительно проверяется существующими WorkerService и external ACP fixtures.
 
 Итоговая scoped проверка: `go test ./...`, `go build ./...`, `npm test --prefix web` (14 tests), `npm run build:all --prefix web` — PASS. Перед Web проверкой выполнен `npm ci` по merged lockfile; первый запуск без установленного `markdown-it` не прошёл, после установки dependency все renderer tests проходят. Checkboxes выше относятся к server/channel seams и deterministic fixtures. Настоящая cross-harness/native/topology matrix остаётся в ticket 05; live gate не объявлен пройденным.
 
 ## Comments
 
 Server владеет очередью. In-memory runtime queue и переименование кнопки Follow-up не удовлетворяют ticket.
+
+После усиления production regression отдельно повторён `go test ./cmd/secretaryd -run TestProductionAssemblyRespondsWithoutManualResponderAttachment -count=1` — PASS. Полный Go/Web набор ранее прошёл до изменения только fixture/assertions.
