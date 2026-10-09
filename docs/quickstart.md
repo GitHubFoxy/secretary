@@ -192,3 +192,7 @@ secretary logs
 ```
 
 Тесты используют временный `HOME`, fake ACP и fake `launchctl`.
+
+## Обновление имени CLI
+
+CLI называется `secretary`. Если ранее установлены macOS LaunchAgents, перед обновлением удалите их командами `uninstall-service` и `node uninstall-service` из прежней версии CLI. Затем установите службы заново через `secretary install-service` и при необходимости `secretary node install-service`. Данные и конфигурация остаются в прежних каталогах.
