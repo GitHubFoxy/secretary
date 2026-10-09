@@ -546,7 +546,8 @@ func TestNodesConnectRejectsClientCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := rootHandler(http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), manager, false)
+	api.AttachNodeService(manager)
+	handler := rootHandler(api.Handler(), http.NotFoundHandler(), http.NotFoundHandler(), http.NotFoundHandler(), manager, false)
 	server := httptest.NewServer(handler)
 	defer server.Close()
 

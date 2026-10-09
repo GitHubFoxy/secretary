@@ -66,10 +66,7 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 	var created struct {
 		SessionID string `json:"sessionId"`
 	}
-	mcpServers := request.MCPServers
-	if mcpServers == nil {
-		mcpServers = []MCPServer{}
-	}
+	mcpServers := acpMCPServers(request.MCPServers)
 	newParams := map[string]any{"cwd": request.Workspace, "mcpServers": mcpServers}
 	if metadata := profileMetadata(request.Profile); metadata != nil {
 		newParams["_meta"] = metadata
@@ -111,10 +108,7 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 	if err != nil {
 		return nil, err
 	}
-	mcpServers := request.MCPServers
-	if mcpServers == nil {
-		mcpServers = []MCPServer{}
-	}
+	mcpServers := acpMCPServers(request.MCPServers)
 	session := newACPSession(runtimeSessionID, client, false)
 	session.drainPromptEvents = r.DrainPromptEvents || request.DrainOutputBeforeResult
 	session.terminalMessageGrouping = r.TerminalMessageGrouping
@@ -143,6 +137,16 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 		return nil, err
 	}
 	return session, nil
+}
+
+func acpMCPServers(servers []MCPServer) []MCPServer {
+	normalized := make([]MCPServer, len(servers))
+	for i, server := range servers {
+		normalized[i] = server
+		normalized[i].Args = append([]string{}, server.Args...)
+		normalized[i].Env = append([]MCPEnv{}, server.Env...)
+	}
+	return normalized
 }
 
 type nativeConfigOption struct {

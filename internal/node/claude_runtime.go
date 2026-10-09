@@ -14,6 +14,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
 )
@@ -220,6 +222,8 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 		return nil, fmt.Errorf("%w: executable %q is unavailable: %v", ErrClaudeCodeUnavailable, command, err)
 	}
 	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.WaitDelay = 250 * time.Millisecond
 	cmd.Dir = request.Workspace
 	cmd.Env = append(os.Environ(), r.Environment...)
 	for index, server := range request.MCPServers {
@@ -237,9 +241,6 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 	}
 	stderr := &bytes.Buffer{}
 	cmd.Stderr = stderr
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("%w: start %q: %v", ErrClaudeCodeUnavailable, command, err)
-	}
 	session := &claudeSession{
 		id:        sessionID,
 		stdin:     stdin,
@@ -252,6 +253,10 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 		stderr:    stderr,
 		activity:  make(chan Activity, 64),
 		result:    make(chan Result, 16),
+	}
+	cmd.Cancel = session.stopProcess
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("%w: start %q: %v", ErrClaudeCodeUnavailable, command, err)
 	}
 	go session.run()
 	if len(resume) > 0 && resume[0] {
@@ -288,6 +293,8 @@ type claudeSession struct {
 	ready     chan error
 	stateMu   sync.Mutex
 	writeGate chan struct{}
+	stopOnce  sync.Once
+	stopErr   error
 	done      chan struct{}
 	closed    bool
 	cancel    bool
@@ -358,19 +365,30 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	return err
 }
 func (s *claudeSession) stopProcess() error {
-	s.stateMu.Lock()
-	s.closed = true
-	s.stateMu.Unlock()
-	_ = s.stdin.Close()
-	if err := s.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-		return err
-	}
-	return nil
+	s.stopOnce.Do(func() {
+		s.stateMu.Lock()
+		s.closed = true
+		s.stateMu.Unlock()
+		_ = s.stdin.Close()
+		_ = s.stdout.Close()
+		if err := syscall.Kill(-s.cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
+			s.stopErr = err
+		}
+	})
+	return s.stopErr
 }
 func (s *claudeSession) Close() error {
-	err := s.stopProcess()
-	<-s.done
-	return err
+	if err := s.stopProcess(); err != nil {
+		return err
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-s.done:
+		return nil
+	case <-timer.C:
+		return errors.New("claude: timed out waiting for native session shutdown")
+	}
 }
 func (s *claudeSession) writeMessage(ctx context.Context, message any) error {
 	select {
@@ -399,18 +417,18 @@ func (s *claudeSession) run() {
 	for scanner.Scan() {
 		s.handleLine(scanner.Bytes())
 	}
-	if scanner.Err() != nil {
-		_ = s.cmd.Process.Kill()
+	s.stateMu.Lock()
+	if s.inputID == "" && !s.closed {
+		s.active = true
 	}
+	s.stateMu.Unlock()
+	_ = s.stopProcess()
 	waitErr := s.cmd.Wait()
 	select {
 	case s.ready <- errors.New("Claude Code exited before resume initialization"):
 	default:
 	}
 	s.stateMu.Lock()
-	if s.inputID == "" && !s.closed {
-		s.active = true
-	}
 	active := s.active
 	canceled := s.cancel
 	s.closed = true
