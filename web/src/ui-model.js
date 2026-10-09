@@ -43,14 +43,14 @@ export function mergeSequenced(current = [], incoming = []) {
   return result.sort((left, right) => (left.seq ?? 0) - (right.seq ?? 0));
 }
 
-function eventPayload(event) {
+export function secretaryEventPayload(event) {
   if (!event?.payload) return event || {};
   if (typeof event.payload === 'object') return { ...event, ...event.payload };
   try { return { ...event, ...JSON.parse(event.payload) }; } catch (_) { return event; }
 }
 
 export function secretaryEventText(event) {
-  const value = eventPayload(event);
+  const value = secretaryEventPayload(event);
   switch (value.kind) {
     case 'secretary.text_delta': return value.text || value.delta || '';
     case 'secretary.thinking_summary': return value.summary || value.text || '';
@@ -102,7 +102,12 @@ export function formatActivityPayload(event) {
     const failure = failed ? safeToolFailureLabel(toolResult.failure) : '';
     return `${state} ${tool}${preview ? ` ${preview}` : ''}${failure}`;
   }
-  return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+  if (typeof value === 'string') return value;
+  if (['thinking', 'reasoning', 'thinking_delta'].includes(value?.kind)) return '';
+  if (typeof value?.text === 'string') return value.text;
+  if (typeof value?.status === 'string') return formatWorkerStatus(value.status);
+  if (typeof value?.summary === 'string') return value.summary;
+  return 'Activity';
 }
 
 export function inputRequest(request) {

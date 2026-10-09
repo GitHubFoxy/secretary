@@ -178,7 +178,7 @@ WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conve
 			}
 			if response != "" {
 				var err error
-				entry, err = appendEntry(ctx, tx, now, turn.ConversationID, EntrySecretary, response)
+				entry, err = appendEntryWithIdentity(ctx, tx, now, turn.ConversationID, EntrySecretary, response, "", turn.ID, "")
 				if err != nil {
 					return secretaryTurnCompletion{}, err
 				}

@@ -79,7 +79,7 @@ func TestFinishSecretaryTurnWithResponsePersistsCanonicalConversationEntry(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if finished.State != SecretaryTurnSucceeded || entry.Kind != EntrySecretary || entry.Body != "final answer" || entry.ConversationID != conversation.ID {
+	if finished.State != SecretaryTurnSucceeded || entry.Kind != EntrySecretary || entry.Body != "final answer" || entry.ConversationID != conversation.ID || entry.TurnID != turn.ID {
 		t.Fatalf("finished=%#v entry=%#v", finished, entry)
 	}
 
@@ -87,7 +87,7 @@ func TestFinishSecretaryTurnWithResponsePersistsCanonicalConversationEntry(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(entries) != 1 || entries[0].ID != entry.ID {
+	if len(entries) != 1 || entries[0].ID != entry.ID || entries[0].TurnID != turn.ID {
 		t.Fatalf("conversation entries=%#v", entries)
 	}
 	deliveries, err := store.DeliveriesForEntry(ctx, entry.ID)

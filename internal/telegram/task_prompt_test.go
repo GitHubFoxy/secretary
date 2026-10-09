@@ -85,3 +85,14 @@ func TestWorkerTopicPromptRetryResumesAfterRestart(t *testing.T) {
 		})
 	}
 }
+
+func TestDeterministicTopicKeepsSavedWorkerTitleWithoutExtraModelTurn(t *testing.T) {
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "state.json"))
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "worker.created", WorkerRef: "worker-1", Title: "Проверка сервера", TaskPrompt: "Прочитай большой task prompt и проверь сервер"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.topics) != 1 || transport.topics[0].Name != "Проверка сервера" {
+		t.Fatalf("saved title replaced: %#v", transport.topics)
+	}
+}

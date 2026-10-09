@@ -1,7 +1,7 @@
 # 04: читаемый единый чат и Telegram topics без дублей
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: None
 
 ## What to build
@@ -26,7 +26,17 @@ Public seams: Web rendering, canonical server events и Bot API channel output. 
 
 ## Answer
 
-Пока отсутствует.
+Код реализован; локальные публичные проверки проходят. Live acceptance остаётся открытой до integrated deploy в 05.
+
+Web использует один безопасный `Markdown.svelte` для Conversation, Results, объединённого Secretary stream и Worker text. `markdown-it` подключён без raw HTML; unsafe link schemes отклоняются штатным parser. Worker text/status читаются без JSON, tool previews сохраняются, raw diagnostics остаются отдельно. Stream скрывает текст после canonical entry по server-issued `turn_id` либо terminal; ошибки и отсутствие canonical reply видимы. Исторические entries не переписываются. Web отображает `queued_messages` по server state и подтверждает `action_mode=queued`, без собственной очереди.
+
+Telegram bridge доставляет только canonical `conversation.entry`, игнорирует native deltas и flush выполняет при terminal. Публичный regression воспроизвёл `first replyfirst reply`, после изменения — один reply. Другой regression воспроизвёл слияние разных turns с одинаковым текстом; теперь доставляются две отдельные identity, replay/restart их не повторяет. Failed/empty terminal показывает явную ошибку. Queue lifecycle notifications идут только в Worker topic. Worker Result terminal identity, formatter, UTF-16 splitting и parse fallback сохранены; дефект formatter не доказан, код formatter не менялся.
+
+Production topic creation не запускает OpenCode title model. Название берётся из безопасного сохранённого Worker title либо детерминированно из Task prompt; новые defaults используют `deterministic`. Исторические `opencode` config и title fields остаются совместимыми; mappings не пересоздаются. Ошибка createForumTopic указывает на forum/admin permissions.
+
+Проверки: `npm test --prefix web`, `npm run build:all --prefix web`; `go test ./internal/core ./internal/config ./internal/telegram ./cmd/secretaryd -count=1`. SSR tests проверяют наблюдаемый HTML Markdown, unsafe HTML/link, объединение chunks и identity suppression. Bot API seam проверяет canonical delivery, одинаковый текст разных turns, restart и queued topic output.
+
+Ещё требуется в 05: AXI browser visual acceptance, real Telegram forum/admin/routing/formatting, интеграционная очередь из 03 и cross-channel native round-trip. Эти проверки здесь не объявлены пройденными.
 
 ## Comments
 

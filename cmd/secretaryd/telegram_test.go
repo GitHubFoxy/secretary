@@ -111,6 +111,7 @@ func TestTelegramBridgeDelegationAndLongResultDoNotBlockReplay(t *testing.T) {
 		{Kind: core.SecretaryToolCallEvent, Payload: map[string]string{"tool": "mcp_secretary_spawn_worker"}},
 		{Kind: "worker.spawned", AggregateType: "worker", AggregateID: "worker-1", Payload: map[string]string{"title": strings.Repeat("я", 29) + "🍹" + strings.Repeat("р", 40)}},
 		{Kind: core.SecretaryTextDeltaEvent, Payload: map[string]string{"text": ack}},
+		{Kind: "conversation.entry", Payload: map[string]string{"kind": "secretary", "body": ack}},
 		{Kind: core.SecretaryTurnFinishedEvent, Payload: map[string]string{"status": "succeeded"}},
 		{Kind: "result.accepted", WorkerRef: "worker-1", CorrelationID: "turn-1", Payload: map[string]string{"summary": result, "status": "succeeded"}},
 	}
@@ -133,8 +134,14 @@ func TestTelegramBridgeDelegationAndLongResultDoNotBlockReplay(t *testing.T) {
 	if adapter.LastEventSeq() != int64(len(events)) || len(transport.sent) != 5 {
 		t.Fatalf("cursor=%d messages=%d, want 6 events and 5 messages", adapter.LastEventSeq(), len(transport.sent))
 	}
-	if transport.sent[4].Text != ack {
-		t.Fatalf("delegation acknowledgement missing: %q", transport.sent[4].Text)
+	foundAck := false
+	for _, sent := range transport.sent {
+		if sent.Text == ack {
+			foundAck = true
+		}
+	}
+	if !foundAck {
+		t.Fatalf("delegation acknowledgement missing: %#v", transport.sent)
 	}
 	if _, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil {
 		t.Fatal(err)
@@ -158,7 +165,8 @@ func TestTelegramBridgePreservesSecretaryDeltaWhitespace(t *testing.T) {
 		{Seq: 2, Kind: core.SecretaryTextDeltaEvent, Payload: []byte(`{"turn_id":"turn-1","text":"I'll create"}`)},
 		{Seq: 3, Kind: core.SecretaryTextDeltaEvent, Payload: []byte(`{"turn_id":"turn-1","text":" "}`)},
 		{Seq: 4, Kind: core.SecretaryTextDeltaEvent, Payload: []byte(`{"turn_id":"turn-1","text":"a new Worker"}`)},
-		{Seq: 5, Kind: core.SecretaryTurnFinishedEvent, Payload: []byte(`{"turn_id":"turn-1","status":"succeeded"}`)},
+		{Seq: 5, Kind: "conversation.entry", Payload: []byte(`{"kind":"secretary","body":"I'll create a new Worker"}`)},
+		{Seq: 6, Kind: core.SecretaryTurnFinishedEvent, Payload: []byte(`{"turn_id":"turn-1","status":"succeeded"}`)},
 	} {
 		if err := adapter.HandleDurableEvent(context.Background(), telegramEvent(event)); err != nil {
 			t.Fatal(err)
@@ -194,7 +202,8 @@ func TestTelegramBridgeKeepsSecretaryDeltasUntilTurnFinished(t *testing.T) {
 	}
 	for _, event := range []core.Event{
 		{Seq: 3, Kind: core.SecretaryTextDeltaEvent, Payload: []byte(`{"turn_id":"turn-1","text":" and finishes"}`)},
-		{Seq: 4, Kind: core.SecretaryTurnFinishedEvent, Payload: []byte(`{"turn_id":"turn-1","status":"succeeded"}`)},
+		{Seq: 4, Kind: "conversation.entry", Payload: []byte(`{"kind":"secretary","body":"Answer starts and finishes"}`)},
+		{Seq: 5, Kind: core.SecretaryTurnFinishedEvent, Payload: []byte(`{"turn_id":"turn-1","status":"succeeded"}`)},
 	} {
 		if err := adapter.HandleDurableEvent(context.Background(), telegramEvent(event)); err != nil {
 			t.Fatal(err)
@@ -482,6 +491,7 @@ func TestTelegramBridgeDeliversCanonicalAddressedRepliesForEveryTurn(t *testing.
 	for _, reply := range []string{"first reply", "second reply"} {
 		handle("conversation.entry", `{"kind":"user","body":"private user text"}`)
 		handle(core.SecretaryTurnStartedEvent, `{"turn_id":"t"}`)
+		handle(core.SecretaryTextDeltaEvent, `{"turn_id":"t","text":"`+reply+`"}`)
 		handle("conversation.entry", `{"kind":"secretary","body":"`+reply+`"}`)
 		handle("conversation.entry", `{"kind":"worker_result","body":"worker summary"}`)
 		handle(core.SecretaryTurnFinishedEvent, `{"status":"succeeded","completion":{"branch":"addressed_reply_only","reply_count":1,"assistant_chunks":0}}`)
@@ -491,5 +501,118 @@ func TestTelegramBridgeDeliversCanonicalAddressedRepliesForEveryTurn(t *testing.
 	}
 	if len(transport.sent) != 2 || transport.sent[0].Text != "first reply" || transport.sent[1].Text != "second reply" {
 		t.Fatalf("sent=%#v, want exactly the two Secretary replies", transport.sent)
+	}
+}
+
+func TestTelegramBridgeShowsFailedAndEmptySecretaryTurnsWithoutRetryOrRawOutput(t *testing.T) {
+	for _, terminal := range []string{`{"status":"succeeded"}`, `{"status":"failed","error":"native runtime failed"}`} {
+		t.Run(terminal, func(t *testing.T) {
+			transport := &bridgeTransport{}
+			adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, FlushInterval: time.Hour}, transport, &bridgeServer{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for index, event := range []core.Event{
+				{Kind: core.SecretaryTurnStartedEvent, Payload: []byte(`{"turn_id":"t"}`)},
+				{Kind: core.SecretaryTextDeltaEvent, Payload: []byte(`{"text":"uncanonical native output"}`)},
+				{Kind: core.SecretaryTurnFinishedEvent, Payload: []byte(terminal)},
+			} {
+				event.Seq = int64(index + 1)
+				if err := adapter.HandleDurableEvent(context.Background(), telegramEvent(event)); err != nil {
+					t.Fatal(err)
+				}
+				if index == 2 {
+					if err := adapter.HandleDurableEvent(context.Background(), telegramEvent(event)); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := adapter.Flush(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(transport.sent) != 1 || strings.Contains(transport.sent[0].Text, "uncanonical") || !strings.Contains(transport.sent[0].Text, "Secretary") {
+				t.Fatalf("visible failure missing or duplicated: %#v", transport.sent)
+			}
+		})
+	}
+}
+
+func TestTelegramBridgeKeepsDistinctSameTextRepliesAcrossTurnsAndRestart(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	for _, turn := range []string{"turn-1", "turn-2"} {
+		for _, event := range []core.EventInput{
+			{Kind: core.SecretaryTurnStartedEvent, Payload: map[string]string{"turn_id": turn}},
+			{Kind: core.SecretaryTextDeltaEvent, Payload: map[string]string{"text": "Готово"}},
+			{Kind: "conversation.entry", Payload: map[string]string{"kind": "secretary", "turn_id": turn, "body": "Готово"}},
+			{Kind: core.SecretaryTurnFinishedEvent, Payload: map[string]string{"status": "succeeded", "turn_id": turn}},
+		} {
+			if _, err := store.RecordEventWithMetadata(ctx, event); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	transport := &bridgeTransport{}
+	statePath := filepath.Join(t.TempDir(), "telegram.json")
+	for index := 0; index < 2; index++ {
+		adapter, err := telegram.New(telegram.Config{StatePath: statePath, OwnerChatID: 100, FlushInterval: time.Hour}, transport, &bridgeServer{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil {
+			t.Fatal(err)
+		}
+		if err := adapter.Flush(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(transport.sent) != 2 || transport.sent[0].Text != "Готово" || transport.sent[1].Text != "Готово" || transport.sent[0].Identity == transport.sent[1].Identity {
+		t.Fatalf("canonical replies conflated or replayed: %#v", transport.sent)
+	}
+}
+
+func TestTelegramBridgeShowsQueuedWorkerMessageOnlyInItsTopic(t *testing.T) {
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, FlushInterval: time.Hour}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []core.Event{
+		{Seq: 1, ID: "created", Kind: "worker.spawned", WorkerRef: "worker-1", Payload: []byte(`{"title":"Проверка"}`)},
+		{Seq: 2, ID: "queued", Kind: "worker.message.queued", WorkerRef: "worker-1", Payload: []byte(`{"id":"message-1","text":"Проверь тесты","state":"pending"}`)},
+	} {
+		if err := adapter.HandleDurableEvent(context.Background(), telegramEvent(event)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(transport.sent) != 1 || transport.sent[0].ThreadID != 1 || !strings.Contains(transport.sent[0].Text, "В очереди") || !strings.Contains(transport.sent[0].Text, "Проверь тесты") {
+		t.Fatalf("queue acknowledgement missing or mirrored to General: %#v", transport.sent)
+	}
+}
+
+func TestTelegramBridgeKeepsCanonicalReplyAndTerminalFailureReadable(t *testing.T) {
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, FlushInterval: time.Hour}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []core.Event{
+		{Seq: 1, Kind: core.SecretaryTurnStartedEvent},
+		{Seq: 2, Kind: "conversation.entry", Payload: []byte(`{"kind":"secretary","body":"Сохранённый ответ"}`)},
+		{Seq: 3, Kind: core.SecretaryTurnFinishedEvent, Payload: []byte(`{"status":"failed","error":"runtime failed"}`)},
+	} {
+		if err := adapter.HandleDurableEvent(context.Background(), telegramEvent(event)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := adapter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Сохранённый ответ\n\nSecretary: ошибка — runtime failed" {
+		t.Fatalf("reply/error hidden, repeated or concatenated: %#v", transport.sent)
 	}
 }

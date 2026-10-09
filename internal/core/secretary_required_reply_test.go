@@ -127,6 +127,9 @@ func TestRequiredAddressedReplyCompletionCommitsExactEvidenceAndSurvivesReopen(t
 			count := 0
 			for _, entry := range entries {
 				if entry.Kind == EntrySecretary {
+					if entry.TurnID != turn.ID {
+						t.Fatalf("canonical reply lost turn identity: %#v", entry)
+					}
 					count++
 					if entry.Body != "typed reply" {
 						t.Fatal("assistant fallback leaked")
