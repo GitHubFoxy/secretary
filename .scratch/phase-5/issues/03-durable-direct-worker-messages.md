@@ -1,7 +1,7 @@
 # 03: общий прямой ввод Worker и durable очередь /q
 
 Type: task
-Status: claimed
+Status: resolved
 Blocked by: None
 
 ## What to build
@@ -10,15 +10,15 @@ Blocked by: None
 
 ## Acceptance criteria
 
-- [ ] В актуальном Worker-first public path `/q` разбирается один раз, prefix удаляется из prompt; пустой `/q` даёт понятную validation error и не создаёт работу.
-- [ ] Обычный input working Worker вызывает steering текущей Attempt; unsupported/offline/неизвестное принятие не превращаются в скрытую очередь или automatic retry. Idle обычный input продолжает прежний Worker binding как Follow-up.
-- [ ] `/q` создаёт durable Queued message/Future Follow-up, ответ API и оба канала показывают queued. Во время active Attempt runtime не получает queued prompt и новая Attempt не запускается.
-- [ ] После terminal Result очередь FIFO создаёт новый Follow-up с новой Attempt и прежней native session; принятие очереди и переход к delivery устойчивы к crash между ними.
-- [ ] Server/Node restart сохраняют очередь и identities, не повторяют неизвестное выполнение или активную Attempt; interrupted Worker сначала восстанавливает прежнюю session по существующему контракту. Если resume невозможно, очередь остаётся видимой с ошибкой.
-- [ ] Повтор HTTP/MCP/Telegram input с той же identity не создаёт вторую queued запись/Attempt; разные inputs с одинаковым текстом остаются разными сообщениями.
-- [ ] Task closure не исполняет накопленный queue позже: pending записи завершаются явным отменённым состоянием, история сохраняется. Cancel active Attempt не закрывает Worker binding; доставка queue после terminal учитывает этот state.
-- [ ] Pending Approval/input response сохраняет request_id routing; `/q` не становится ответом старому Approval. Никакие прямые Worker inputs не добавляются в model context Secretary.
-- [ ] Web и Telegram General/topic routing дают один и тот же режим отправки без разных локальных парсеров или legacy Task-based queue обхода.
+- [x] В актуальном Worker-first public path `/q` разбирается один раз, prefix удаляется из prompt; пустой `/q` даёт понятную validation error и не создаёт работу.
+- [x] Обычный input working Worker вызывает steering текущей Attempt; unsupported/offline/неизвестное принятие не превращаются в скрытую очередь или automatic retry. Idle обычный input продолжает прежний Worker binding как Follow-up.
+- [x] `/q` создаёт durable Queued message/Future Follow-up, ответ API и оба канала показывают queued. Во время active Attempt runtime не получает queued prompt и новая Attempt не запускается.
+- [x] После terminal Result очередь FIFO создаёт новый Follow-up с новой Attempt и прежней native session; принятие очереди и переход к delivery устойчивы к crash между ними.
+- [x] Server/Node restart сохраняют очередь и identities, не повторяют неизвестное выполнение или активную Attempt; interrupted Worker сначала восстанавливает прежнюю session по существующему контракту. Если resume невозможно, очередь остаётся видимой с ошибкой.
+- [x] Повтор HTTP/MCP/Telegram input с той же identity не создаёт вторую queued запись/Attempt; разные inputs с одинаковым текстом остаются разными сообщениями.
+- [x] Task closure не исполняет накопленный queue позже: pending записи завершаются явным отменённым состоянием, история сохраняется. Cancel active Attempt не закрывает Worker binding; доставка queue после terminal учитывает этот state.
+- [x] Pending Approval/input response сохраняет request_id routing; `/q` не становится ответом старому Approval. Никакие прямые Worker inputs не добавляются в model context Secretary.
+- [x] Web и Telegram General/topic routing дают один и тот же режим отправки без разных локальных парсеров или legacy Task-based queue обхода.
 
 ## Проверка
 
@@ -36,7 +36,11 @@ Public seams: authenticated server HTTP/MCP и channel command/output. Пере�
 - Controlled external ACP process (`TestPublicQueuedFollowUpRetainsNativeHistory`): idle `/q` по прежней session до/после Node reopen; active held prompt не получает queue до terminal; новый Follow-up вспоминает nonce в той же native session. Fixture не является live доказательством Codex/CC.
 - `go test ./internal/core ./internal/ctl ./internal/webapi ./internal/mcp` PASS; `go test -race ./internal/ctl ./internal/webapi ./internal/mcp` PASS. Дополнительный scoped queue race PASS.
 
-Осталось интегрировать вызов `RunQueuedWorkerMessages(ctx)` в main (ticket 01), показать queued/history в Web/Telegram (ticket 04) и пройти настоящую native/topology matrix (ticket 05). Поэтому live gate не объявлен пройденным, ticket остаётся claimed до интеграционной проверки.
+Интеграция 01/03/04 завершена на `phase5-minimal-mvp`: production assembly запускает `RunQueuedWorkerMessages(ctx)`; Web читает `queued_messages` и `action_mode`, Telegram получает server-owned queue lifecycle events только в Worker topic. Разрешён конфликт общей ACP fixture с сохранением independent Codex/queue режимов; добавлен `TestPublicCodexQueuedFollowUpRetainsNativeHistory` с прежней native session до/после Node reopen и active terminal boundary.
+
+Integration red/green: production public HTTP regression воспроизвёл оставшуюся `pending` запись после terminal Result при отсутствии queue pump; после подключения сервиса очередь автоматически продвигается без ручного вызова Process. Эта fixture подтверждает wiring/promotion, а детальная доставка/FIFO/restart проверяется существующими WorkerService и external ACP fixtures.
+
+Итоговая scoped проверка: `go test ./...`, `go build ./...`, `npm test --prefix web` (14 tests), `npm run build:all --prefix web` — PASS. Перед Web проверкой выполнен `npm ci` по merged lockfile; первый запуск без установленного `markdown-it` не прошёл, после установки dependency все renderer tests проходят. Checkboxes выше относятся к server/channel seams и deterministic fixtures. Настоящая cross-harness/native/topology matrix остаётся в ticket 05; live gate не объявлен пройденным.
 
 ## Comments
 

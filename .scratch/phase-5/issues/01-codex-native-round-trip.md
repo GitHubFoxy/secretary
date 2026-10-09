@@ -30,3 +30,5 @@ Public seams: server HTTP/MCP и native Session. Переиспользоват�
 ## Comments
 
 Разбивка и минимальный ACP-first путь одобрены пользователем. Scope — Phase 5 spec; прежние Phase 4 defaults исторические.
+
+Интеграционная проверка 2026-10-10: ветки 01/03/04 объединены, `go test ./...`, `go build ./...`, Web tests и production build проходят. Queue public fixture включает Codex adapter; Web SSR и Telegram Bot API seam показывают server-owned queued state. Это scoped evidence, не live acceptance.

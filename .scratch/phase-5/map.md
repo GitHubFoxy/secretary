@@ -8,8 +8,8 @@
 | --- | --- | --- | --- |
 | [01](issues/01-codex-native-round-trip.md) | claimed | None | Codex Secretary → native local/remote Worker → Result и resume |
 | [02](issues/02-claude-interactive-runtime.md) | ready-for-agent | None | CC интерактивный runtime, MCP/profile/resume и доказанный steering |
-| [03](issues/03-durable-direct-worker-messages.md) | claimed | None | Web/Telegram direct message и durable `/q` |
-| [04](issues/04-readable-unified-chat.md) | ready-for-agent | None | Читаемый единый чат, canonical reply и topics без дублей |
+| [03](issues/03-durable-direct-worker-messages.md) | resolved | None | Web/Telegram direct message и durable `/q` |
+| [04](issues/04-readable-unified-chat.md) | claimed | None | Читаемый единый чат, canonical reply и topics без дублей |
 | [05](issues/05-deploy-and-live-acceptance.md) | blocked | 01, 02, 03, 04 | Развёрнутый MVP и реальная матрица приёмки |
 
 `Status:` — состояние работы; `Blocked by:` — номера реальных blockers. После выполнения blockers перевести 05 в `ready-for-agent`; перед работой — `claimed`, при выполнении acceptance — `resolved`. Не считать fixtures доказательством live результата.
@@ -34,3 +34,6 @@
 Существующие исследования являются baseline, не новой live приёмкой. Каждый ticket добавляет проверенные ответы в `## Answer` и историю в `## Comments`; 05 разделяет scoped fixtures и реальные сценарии. В карту добавлять короткие ссылки на полученные решения, не копировать частные логи.
 
 - [CC streaming spike](reports/claude-streaming-spike-20261009.md): работа native процесса и MCP подтверждена; живой запуск модели и steering блокирует HTTP403 из-за квоты существующего провайдера. Приёмка CC не завершена.
+
+- Интеграция 01/03/04: Codex merge `58e4fe9`, unified chat merge `fd90825`; queue production wiring и конфликт ACP fixtures исправлены. [03 resolved](issues/03-durable-direct-worker-messages.md#answer) по scoped server/channel criteria; 01/04 остаются claimed, 05 blocked из-за native/channel live требований и незавершённого CC steering.
+- Scoped integration checks 2026-10-10: `go test ./...`, `go build ./...`, Web tests (14), `npm run build:all` — PASS после `npm ci` по merged lockfile. External ACP и Bot API fixtures не засчитываются как live evidence. Browser visual, real Telegram permissions/routing и deployment matrix ещё не проверены.

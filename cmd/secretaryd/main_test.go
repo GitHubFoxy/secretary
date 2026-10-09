@@ -254,7 +254,8 @@ func TestProductionStartupRecoversUnknownPhase4Attempt(t *testing.T) {
 }
 
 func TestProductionAssemblyRespondsWithoutManualResponderAttachment(t *testing.T) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "production.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -287,7 +288,7 @@ func TestProductionAssemblyRespondsWithoutManualResponderAttachment(t *testing.T
 		t.Fatal(err)
 	}
 	// This is the production assembly seam. The test must not attach a responder itself.
-	attachProductionWorkerServices(api, store, person.ID, capability, local, nil, nil, nil, nil)
+	attachProductionWorkerServices(ctx, api, store, person.ID, capability, local, nil, nil, nil, nil)
 	server := httptest.NewServer(api.Handler())
 	defer server.Close()
 	client := &http.Client{Jar: mustProductionCookieJar(t)}
@@ -306,6 +307,42 @@ func TestProductionAssemblyRespondsWithoutManualResponderAttachment(t *testing.T
 	approval, err := store.Approval(ctx, "production-request")
 	if err != nil || approval.State != core.ApprovalApproved {
 		t.Fatalf("approval=%#v err=%v", approval, err)
+	}
+	request, _ = http.NewRequest(http.MethodPost, server.URL+"/v1/workers/production-worker/message", bytes.NewBufferString(`{"text":"/q continue"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "production-queue")
+	response, err = client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusAccepted {
+		t.Fatalf("queue status=%d", response.StatusCode)
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		response, err := client.Get(server.URL + "/v1/workers/production-worker")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var details struct {
+			QueuedMessages []core.QueuedWorkerMessage `json:"queued_messages"`
+		}
+		err = json.NewDecoder(response.Body).Decode(&details)
+		response.Body.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(details.QueuedMessages) == 1 && details.QueuedMessages[0].State != "pending" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("production queue pump did not promote terminal Follow-up: %#v", details)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

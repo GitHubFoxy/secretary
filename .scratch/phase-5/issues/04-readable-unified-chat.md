@@ -41,3 +41,5 @@ Production topic creation не запускает OpenCode title model. Назв
 ## Comments
 
 Canonical delivery исправлялась раньше; baseline исследования не доказывают текущий Telegram formatting defect. Scope ограничен читаемостью и доставкой согласованного MVP.
+
+Интеграционная проверка 2026-10-10: ветки 01/03/04 объединены, `go test ./...`, `go build ./...`, Web tests и production build проходят. Queue public fixture включает Codex adapter; Web SSR и Telegram Bot API seam показывают server-owned queued state. Это scoped evidence, не live acceptance.

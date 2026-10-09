@@ -19,7 +19,7 @@
 - Personal Conversation имеет общий порядок entries для подключённых Channel adapters. Server сохраняет каждую Conversation entry один раз и синхронизирует её во все adapters Person.
 - Внешний Channel adapter регистрируется с server-issued credential. Web client аутентифицирует Person через owner session.
 - Origin Conversation передаётся в Bridge системными metadata; модель не выбирает место доставки Result.
-- Steering message сохраняется сразу и передаётся активному Secretary или Worker на ближайшей safe boundary текущего turn или Attempt. Если runtime временно не steerable, Node передаёт сообщение после перехода runtime в idle.
+- Steering message сохраняется сразу и передаётся активному Secretary или Worker на ближайшей safe boundary текущего turn или Attempt. Неподдерживаемое steering, offline и неизвестное принятие возвращают явную ошибку; Node не превращает ввод в очередь, новый turn или скрытый retry. Принятие transport input само по себе не доказывает применение steering в той же Attempt.
 - Queued message с prefix `/q` сохраняется сразу, но доставляется целевому runtime только в idle. Worker-first HTTP, MCP и Telegram используют общий parser `WorkerService.MessageWorker`; пустой `/q` отклоняется, prefix не входит в prompt и не отвечает pending Approval даже при request_id.
 - Worker queue принадлежит Secretary server и хранит FIFO message identity независимо от Turn/Attempt. Promotion атомарно связывает message с новым Follow-up, durable command intent и прежним continuation checkpoint. Ответ mutation содержит `action_mode: queued` и `action_message_id`; observer snapshot — `queued_messages`. Direct Worker text не добавляется в model context Secretary.
 - Queue states: `pending`, `delivering`, `delivered`, `blocked`, `canceled`; durable events `worker.message.queued`, `.delivered`, `.blocked`, `.canceled` адресуют opaque Worker reference. Повтор input identity сохраняет ту же запись; одинаковый текст с разными identities сохраняется отдельно.
@@ -43,9 +43,9 @@
 
 ## Worker profile и Dispatch
 
-- Default Worker runtime первого slice — OpenCode v2 по ACP на Linux с full access. `fx`, Claude Code и Codex остаются selectable adapters.
+- В Minimal MVP default Secretary и новых Workers — Codex через native `codex-acp`; Claude Code выбирается через существующий harness policy. Workers на host Secretary и удалённой машине используют durable `secretary-node`. Исторические OpenCode/FX adapters и bindings сохраняются.
 - Compaction активного model context принадлежит runtime harness; она не удаляет durable Conversation entries, Task или Worker binding на Secretary server.
-- Worker template первого slice использует `openai/gpt-6-luna` с reasoning `xhigh` и отдельный Workspace. Явные preferences и Project pins имеют приоритет; существующие Worker bindings не мигрируют при смене defaults.
+- Secretary и новый Worker используют model/reasoning `default` своего native harness и отдельный Workspace; OpenCode pins не наследуются Codex или Claude Code. Явные preferences и Project pins имеют приоритет; существующие Worker bindings не мигрируют при смене defaults.
 - Dispatch передаёт Worker Task envelope с Task text, Worker reference и одноразовым Callback capability для terminal Result callback.
 - Dispatch считается accepted только после сохранения Worker binding и передачи Task в runtime.
 - Worker reference — opaque публичный идентификатор; он не является AgentHub `agent_id` или session ID. Worker binding сохраняет связь Task с Worker reference, Execution node и внутренними runtime identifiers.
