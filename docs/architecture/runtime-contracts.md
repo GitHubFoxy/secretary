@@ -56,7 +56,7 @@
 
 - Claude Code использует persistent JSONL stream input/output. Deferred Start не вызывает модель; Prompt принимает только idle Session. Secretary сохраняет process, Worker закрывает его после terminal Attempt и возобновляет прежний native transcript через `--resume`.
 - Profile/skills передаются в native system prompt, managed tools — в native allowlist. MCP config задан явно; секретные environment values не попадают в argv. Необслуживаемые native approvals отключены через dontAsk.
-- Resume требует initialize до Prompt; missing session и другая native identity дают явную ошибку. Error/empty terminal не считается успехом. Cancel ждёт native terminal; receipt не завершает Attempt. Partial и complete events не дублируют ответ.
+- Resume требует initialize до Prompt; missing session и другая native identity дают явную ошибку. Error/empty terminal не считается успехом. Cancel отправляет interrupt; receipt подтверждает только запрос отмены и не завершает Attempt. Native terminal определяет Result; Close ждёт его с ограниченным context. Partial и complete events не дублируют ответ.
 - CapabilitySteering для Claude не объявляется до live same-Attempt evidence. Обычный active input получает явный unsupported; silent queue и interrupt + новый turn не используются как замена. Текущая реальная приёмка заблокирована quota403 настроенного provider и отсутствием working first-party auth; [свидетельства](../../.scratch/phase-5/reports/claude-interactive-runtime-20261010.md).
 
 ## Attempt, Result и закрытие Task
@@ -64,9 +64,17 @@
 - Attempt — один execution cycle Worker для Task или Follow-up, заканчивающийся одним Result.
 - Restart Secretary server или Execution node не запускает active Attempt повторно автоматически. Attempt становится `interrupted`, а Task и Worker binding сохраняются.
 - Follow-up адресуется существующей idle Worker session через Worker binding и создаёт новую Attempt. После `interrupted` Node сначала загружает сохранённую runtime session. Если её нет, Node возвращает `runtime_session_unavailable`, не создавая незаметно новую session.
-- Cancel от owner из Worker observer best-effort останавливает active Attempt, но не закрывает Task или Worker binding. Worker может принять Follow-up позже.
+- Cancel от owner из Worker observer best-effort останавливает active Attempt, но не закрывает Task или Worker binding. Worker может принять Follow-up только после native terminal Result, а не после cancellation receipt. Cancel до доказанного отсутствующего handoff prepared queue Attempt завершается сервером без runtime выполнения.
 - Result — terminal report Worker, который server verbatim добавляет в Personal Conversation без automatic Secretary turn. Допустимые status: `succeeded`, `failed` и `canceled`; summary обязателен, artifact references опциональны. Server принимает Result idempotently по Worker reference и Attempt.
 - Result callback — private сообщение Worker в Bridge с terminal status, summary и artifact references, на основе которого формируется Result.
 - Callback capability — одноразовый token, выдаваемый Bridge Worker для Result callback и связанный с одним Worker binding.
 - Dispatch failure до accepted Dispatch сохраняет Task со status `dispatch_failed` в Personal Conversation, но не создаёт Worker binding и не запускает automatic retry.
 - Task closure явно закрывает Task и архивирует Worker binding, сохраняя историю. Для active Attempt Secretary сначала отправляет Cancel и ждёт terminal Result.
+
+## Согласование queue handoff и закрытия
+
+- Один Store сериализует promotion/claim/handoff Queued message и Close для каждого Worker. Gate общий для копий WorkerService; ожидание учитывает context, весь участок ограничен 30 секундами. Разные Workers независимы. Gate хранится до закрытия Store; при необходимости очищать историю сотен тысяч Workers можно заменить хранение на reference-counted gates.
+- Закрытие prepared очереди атомарно отменяет сообщение и неclaimed command intent. Claim проверяет canceled queue, terminal Attempt и закрытый Worker; cancelled intent не может быть заново принят после crash. Already claimed delivery не повторяется автоматически после restart.
+- Startup recovery сохраняет только queue-owned starting Attempt с pending command, пустыми lease/error и delivering message: этот intent ещё не проходил handoff. Claimed/active/unknown execution получает interrupted Result и остаётся без автоматического retry.
+- Authenticated dispatch/resume receipts сверяются с command/Node/Turn/Attempt bindings. Acceptance переводит starting в active; failure/interruption даёт один видимый Result и blocked queue. Поздняя transport запись не заменяет native receipt, а поздний acceptance не оживляет terminal Attempt.
+- Codex/Claude/OpenCode Worker освобождает native writer до публикации terminal Outcome; новый Follow-up не начинает resume параллельно старому writer. Claude stdin write учитывает context: отмена заблокированной записи закрывает Session/process, а Close не ждёт writer mutex.

@@ -270,7 +270,7 @@ func steeringDedupeKey(idempotencyKey string) (string, error) {
 
 func (s WorkerService) deliverCommand(ctx context.Context, command core.WorkerCommand, send func(string) error) error {
 	if err := send(command.ID); err != nil {
-		uncertain := command.Kind == "respond" && (errors.Is(err, node.ErrCommandOutcomeUnknown) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+		uncertain := (command.Kind == "respond" || command.Kind == "steer" || command.Kind == "cancel") && (errors.Is(err, node.ErrCommandOutcomeUnknown) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 		if uncertain {
 			if !errors.Is(err, node.ErrCommandOutcomeUnknown) {
 				err = fmt.Errorf("%w: %w", node.ErrCommandOutcomeUnknown, err)
@@ -834,8 +834,10 @@ func (s WorkerService) CancelWorker(ctx context.Context, workerRef string) (core
 				}
 			}
 		}
-		if _, _, _, err := s.Store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{Status: core.OutcomeCanceled, Classification: core.OutcomeFinal, ErrorCode: "canceled", FailureCode: "canceled", Summary: "Canceled by Secretary"}); err != nil {
-			return core.WorkerDetails{}, err
+		if canceledBeforeHandoff {
+			if _, _, _, err := s.Store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{Status: core.OutcomeCanceled, Classification: core.OutcomeFinal, ErrorCode: "canceled_before_handoff", FailureCode: "canceled_before_handoff", Summary: "Canceled before runtime handoff"}); err != nil {
+				return core.WorkerDetails{}, err
+			}
 		}
 	}
 	return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
@@ -858,6 +860,20 @@ func (s WorkerService) CloseWorker(ctx context.Context, workerRef string) (core.
 		}
 		if _, err := s.CancelWorker(ctx, workerRef); err != nil {
 			return err
+		}
+		for {
+			waiting, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
+			if err != nil {
+				return err
+			}
+			if attempt := waiting.CurrentAttempt(); attempt == nil || attempt.State.Terminal() {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(10 * time.Millisecond):
+			}
 		}
 		details, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
 		if err != nil {

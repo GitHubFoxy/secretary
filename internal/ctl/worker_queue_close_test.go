@@ -25,12 +25,12 @@ func (r *heldQueueRuntime) Dispatch(ctx context.Context, _ string, _ core.Worker
 		return ctx.Err()
 	}
 }
-func (r *heldQueueRuntime) Cancel(context.Context, string, core.Worker, core.Phase4Attempt) error {
+func (r *heldQueueRuntime) Cancel(ctx context.Context, _ string, _ core.Worker, attempt core.Phase4Attempt) error {
 	if r.count("dispatch") == 0 {
 		return node.ErrRuntimeSessionUnavailable
 	}
 	r.add("cancel")
-	return nil
+	return r.publishCanceled(ctx, attempt)
 }
 func TestCloseOrdersQueuedHandoffBeforeCancellation(t *testing.T) {
 	ctx, store, service, project := newWorkerService(t)
@@ -41,7 +41,7 @@ func TestCloseOrdersQueuedHandoffBeforeCancellation(t *testing.T) {
 	if _, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "/q queued work", IdempotencyKey: "held"}); err != nil {
 		t.Fatal(err)
 	}
-	runtime := &heldQueueRuntime{ready: make(chan struct{}), release: make(chan struct{})}
+	runtime := &heldQueueRuntime{lifecycleRuntime: lifecycleRuntime{store: store}, ready: make(chan struct{}), release: make(chan struct{})}
 	service.Runtime = runtime
 	pumpDone := make(chan error, 1)
 	go func() { pumpDone <- service.ProcessQueuedWorkerMessages(ctx) }()

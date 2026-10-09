@@ -81,6 +81,7 @@ func TestWorkerQueueSurvivesServerRestartAndClosure(t *testing.T) {
 	}
 	defer reopened.Close()
 	service.Store = reopened
+	service.Runtime.(*lifecycleRuntime).store = reopened
 	replay, err := service.MessageWorker(ctx, request)
 	if err != nil {
 		t.Fatal(err)

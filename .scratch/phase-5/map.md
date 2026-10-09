@@ -7,7 +7,7 @@
 | Ticket | Status | Blocked by | Проверяемый результат |
 | --- | --- | --- | --- |
 | [01](issues/01-codex-native-round-trip.md) | claimed | None | Codex Secretary → native local/remote Worker → Result и resume |
-| [02](issues/02-claude-interactive-runtime.md) | ready-for-agent | None | CC интерактивный runtime, MCP/profile/resume и доказанный steering |
+| [02](issues/02-claude-interactive-runtime.md) | claimed | None | CC интерактивный runtime, MCP/profile/resume и доказанный steering |
 | [03](issues/03-durable-direct-worker-messages.md) | resolved | None | Web/Telegram direct message и durable `/q` |
 | [04](issues/04-readable-unified-chat.md) | claimed | None | Читаемый единый чат, canonical reply и topics без дублей |
 | [05](issues/05-deploy-and-live-acceptance.md) | blocked | 01, 02, 03, 04 | Развёрнутый MVP и реальная матрица приёмки |
@@ -37,3 +37,5 @@
 
 - Интеграция 01/03/04: Codex merge `58e4fe9`, unified chat merge `fd90825`; queue production wiring и конфликт ACP fixtures исправлены. [03 resolved](issues/03-durable-direct-worker-messages.md#answer) по scoped server/channel criteria; 01/04 остаются claimed, 05 blocked из-за native/channel live требований и незавершённого CC steering.
 - Scoped integration checks 2026-10-10: `go test ./...`, `go build ./...`, Web tests (14), `npm run build:all` — PASS после `npm ci` по merged lockfile. External ACP и Bot API fixtures не засчитываются как live evidence. Browser visual, real Telegram permissions/routing и deployment matrix ещё не проверены.
+
+- [Review fixes](reports/review-fixes-20261010.md): 03 повторно открыт после Close/startup repro и resolved после исправлений и scoped/race checks. Дополнительно исправлены owner-cookie Node read, Codex writer lifecycle, native dispatch/resume receipts и CC backpressure/cancellation ordering. 01/02/04 остаются claimed, 05 blocked; новый live PASS не объявлен.

@@ -28,6 +28,11 @@ func (r NodeRuntime) send(ctx context.Context, nodeID core.NodeReference, comman
 	if r.Manager == nil {
 		return ErrWorkerRuntimeUnavailable
 	}
+	if command.Kind == node.CommandSteering || command.Kind == node.CommandCancel {
+		waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		return r.Manager.SendCommandAndWait(waitCtx, nodeID, command)
+	}
 	return r.Manager.SendCommand(ctx, nodeID, command)
 }
 

@@ -86,7 +86,6 @@ func (s WorkerService) processQueuedWorker(ctx context.Context, conversationID s
 			failures = append(failures, err)
 			break
 		}
-		// createTurn replay retains its original command kind after restart.
 		if _, found, findErr := s.Store.FindWorkerCommand(ctx, "resume", "attempt", worker.ID, attempt.ID); findErr != nil {
 			failures = append(failures, findErr)
 			break
@@ -111,7 +110,6 @@ func (s WorkerService) processQueuedWorker(ctx context.Context, conversationID s
 			}
 			break
 		}
-		// A live lease belongs to an in-flight handoff. Let its owner publish the receipt.
 		if found && !command.LeaseUntil.IsZero() {
 			break
 		}
