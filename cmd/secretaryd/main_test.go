@@ -43,7 +43,7 @@ func TestAddressedReplyInstructionsAreOptInAndDoNotRewriteExternalProfile(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated := strings.Replace(string(configContent), "reasoning = \"xhigh\"", "reasoning = \"xhigh\"\nreply_contract = \"addressed-reply-v1\"", 1)
+	updated := strings.Replace(string(configContent), "reasoning = \"default\"", "reasoning = \"default\"\nreply_contract = \"addressed-reply-v1\"", 1)
 	if updated == string(configContent) {
 		t.Fatal("could not configure explicit reply contract")
 	}

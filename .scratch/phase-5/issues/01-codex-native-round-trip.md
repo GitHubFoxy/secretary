@@ -1,7 +1,7 @@
 # 01: Codex Secretary и Workers на local/remote Nodes
 
 Type: task
-Status: ready-for-agent
+Status: in-progress
 Blocked by: None
 
 ## What to build
@@ -25,7 +25,7 @@ Public seams: server HTTP/MCP и native Session. Переиспользоват�
 
 ## Answer
 
-Пока отсутствует.
+Реализован минимальный Codex ACP adapter: native profile, phase-aware canonical final, fail-closed terminal/pins и различение injected/startedNewTurn. Clean defaults/setup/Doctor и Node discovery используют Codex/CC без обязательных FX/OpenCode; legacy bindings/config не удаляются. Scoped tests и локальные native profile/resume/active steering checks проходят. Свидетельства: `docs/research/phase5-codex-native-evidence.md`. Enrolled local/remote Secretary MCP, deployment/channel round-trip и остальные live criteria ещё требуют gate 05; ticket не закрыт.
 
 ## Comments
 

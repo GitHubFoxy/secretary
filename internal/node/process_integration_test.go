@@ -74,7 +74,7 @@ func TestTwoSecretaryNodeProcessesPairInventoryAndReconnect(t *testing.T) {
 		secondStatus, secondErr := manager.Status(ctx, "process-b")
 		return firstErr == nil && secondErr == nil && firstStatus.Online && secondStatus.Online &&
 			firstStatus.Inventory.Node == "process-a" && secondStatus.Inventory.Node == "process-b" &&
-			inventoryHasHarness(firstStatus.Inventory, core.HarnessFX) && inventoryHasHarness(secondStatus.Inventory, core.HarnessFX)
+			inventoryHasHarness(firstStatus.Inventory, core.HarnessClaudeCode) && inventoryHasHarness(secondStatus.Inventory, core.HarnessClaudeCode)
 	})
 
 	if err := first.Process.Signal(os.Interrupt); err != nil {
@@ -93,7 +93,7 @@ func TestTwoSecretaryNodeProcessesPairInventoryAndReconnect(t *testing.T) {
 	defer stopProcess(t, first)
 	waitFor(t, ctx, "first Node authenticated reconnect", func() bool {
 		status, err := manager.Status(ctx, "process-a")
-		return err == nil && status.Online && status.Inventory.Node == "process-a" && inventoryHasHarness(status.Inventory, core.HarnessFX)
+		return err == nil && status.Online && status.Inventory.Node == "process-a" && inventoryHasHarness(status.Inventory, core.HarnessClaudeCode)
 	})
 	if _, err := os.Stat(opencodeProbeMarker); err == nil {
 		t.Fatal("transport integration unexpectedly ran the OpenCode inventory probe")

@@ -10,20 +10,20 @@ allow_tools = ["bash", "edit", "find", "grep", "read", "write"]
 
 # Secretary and new Workers have independent explicit model/reasoning defaults.
 [models]
-secretary = "openai/gpt-6.1-sol"
+secretary = "default"
 
 [secretary]
-harness = "opencode"
-model = "openai/gpt-6.1-sol"
-reasoning = "xhigh"
+harness = "codex"
+model = "default"
+reasoning = "default"
 # Явное включение addressed reply v1 меняет MCP contract; после настройки перезапустите Secretary.
 # reply_contract = "addressed-reply-v1"
 
 [worker_policy]
-default_harness = "opencode"
-model = "openai/gpt-6-luna"
-reasoning = "xhigh"
-preferred_harnesses = ["opencode"]
+default_harness = "codex"
+model = "default"
+reasoning = "default"
+preferred_harnesses = ["codex", "claude_code"]
 active_attempts = 4
 
 # Только названия Telegram Worker Topics; Secretary и Worker profiles не меняются.

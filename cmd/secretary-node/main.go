@@ -28,13 +28,25 @@ func main() {
 	pairingToken := flag.String("pair-token", os.Getenv("SECRETARY_NODE_PAIRING_TOKEN"), "one-time/owner-approved Node pairing token")
 	nodeName := flag.String("name", envOr("SECRETARY_NODE_NAME", defaultNodeName()), "stable Node reference requested during pairing")
 	capacity := flag.Int("capacity", 1, "maximum advertised concurrent Worker capacity")
-	includeOpenCode := flag.Bool("include-opencode", true, "include the OpenCode ACP inventory probe")
+	checkCodex := flag.Bool("check-codex-readiness", false, "check actual Codex and ACP capabilities without a model call")
+	includeOpenCode := flag.Bool("include-opencode", false, "include the OpenCode ACP inventory probe")
 	selectOpenCodeStore := flag.Bool("select-opencode-store", false, "initialize the selected shared, private, or legacy OpenCode store and exit")
 	standaloneSelection := flag.Bool("standalone", false, "select an independent host-local OpenCode store")
 	printStoreRecord := flag.Bool("print-opencode-store", false, "print the validated Node store and deployment config record")
 	checkOpenCodeAuth := flag.Bool("check-opencode-auth", false, "check stored OpenCode credentials in the selected Node store and exit")
 	opencodeCommand := flag.String("opencode-command", "opencode", "OpenCode executable used for the selected-store auth check")
 	flag.Parse()
+	if *checkCodex {
+		spec := node.DefaultCodexProbeSpec()
+		spec.Binary = envOr("SECRETARY_CODEX_COMMAND", envOr("CODEX_PATH", "codex"))
+		result := node.ProbeHarness(context.Background(), "readiness", spec, node.ExecCommandRunner{})
+		if !result.Available() {
+			log.Printf("Codex readiness failed: %s", result.ErrorCode)
+			os.Exit(1)
+		}
+		fmt.Printf("Codex %s ready: ACP initialize/load/steering observed, native models=%d\n", result.Instance.Version, len(result.Instance.ModelIDs))
+		return
+	}
 	if *checkOpenCodeAuth {
 		if *selectOpenCodeStore || *printStoreRecord {
 			log.Fatal("--check-opencode-auth cannot be combined with OpenCode store selection")
@@ -116,9 +128,12 @@ func main() {
 		log.Fatalf("load Node workspace mappings: %v", err)
 	}
 
-	selectedStore, err := selectNodeNativeStore(*dataDir, deployment.Standalone)
-	if err != nil {
-		log.Fatalf("select OpenCode native store: %v", err)
+	var selectedStore node.OpenCodeNativeStore
+	if deployment.IncludeOpenCode {
+		selectedStore, err = selectNodeNativeStore(*dataDir, deployment.Standalone)
+		if err != nil {
+			log.Fatalf("select OpenCode native store: %v", err)
+		}
 	}
 	if selectedStore.Mode == node.OpenCodeNativeStoreModeLegacy {
 		log.Printf("OpenCode legacy native store preserved; owner-approved migration is required before switching stores")
@@ -200,13 +215,13 @@ func selectNodeNativeStore(dataDir string, standalone bool) (node.OpenCodeNative
 
 func installedHarnesses() map[core.HarnessKind]string {
 	commands := map[core.HarnessKind]string{
-		core.HarnessFX: "fx", core.HarnessClaudeCode: "claude", core.HarnessCodex: "codex", core.HarnessOpenCode: envOr("SECRETARY_OPENCODE_COMMAND", "opencode"),
+		core.HarnessFX: "fx", core.HarnessClaudeCode: "claude", core.HarnessCodex: envOr("SECRETARY_CODEX_COMMAND", envOr("CODEX_PATH", "codex")), core.HarnessOpenCode: envOr("SECRETARY_OPENCODE_COMMAND", "opencode"),
 	}
 	resolved := make(map[core.HarnessKind]string, len(commands))
 	for kind, command := range commands {
 		if path, err := exec.LookPath(command); err == nil {
 			resolved[kind] = path
-		} else if kind == core.HarnessOpenCode && strings.TrimSpace(os.Getenv("SECRETARY_OPENCODE_COMMAND")) != "" {
+		} else if kind == core.HarnessOpenCode && strings.TrimSpace(os.Getenv("SECRETARY_OPENCODE_COMMAND")) != "" || kind == core.HarnessCodex && (strings.TrimSpace(os.Getenv("SECRETARY_CODEX_COMMAND")) != "" || strings.TrimSpace(os.Getenv("CODEX_PATH")) != "") {
 			// Keep an unavailable explicit binary unavailable in discovery too.
 			resolved[kind] = command
 		}
@@ -243,8 +258,8 @@ func configuredNodeRuntimeWithStore(dataDir string, store node.OpenCodeNativeSto
 		openCodeArgs = []string{"acp"}
 	}
 	return node.RuntimeRouter{
-		DefaultHarness: "opencode",
-		ACP:            node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
+		DefaultHarness: "codex",
+		ACP:            node.CodexRuntime{ACPRuntime: node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 		Claude:         node.ClaudeCodeRuntime{Command: claudeCommand, Arguments: claudeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		FX:             node.FXRuntime{ACPRuntime: node.ACPRuntime{Command: fxCommand, Arguments: fxArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, DataHome: store.DataHome, LegacyDataHome: store.Mode == node.OpenCodeNativeStoreModeLegacy, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},

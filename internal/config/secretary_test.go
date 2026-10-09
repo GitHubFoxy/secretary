@@ -8,22 +8,22 @@ import (
 	"testing"
 )
 
-func TestCleanInstallDefaultsSecretaryAndWorkersToOpenCodeV2(t *testing.T) {
+func TestCleanInstallDefaultsSecretaryAndWorkersToCodex(t *testing.T) {
 	manager, err := Open(filepath.Join(t.TempDir(), "config.toml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	config := manager.Snapshot().Config
-	if config.Secretary.Harness != "opencode" || config.Secretary.Model != "openai/gpt-6.1-sol" || config.Secretary.Reasoning != "xhigh" {
+	if config.Secretary.Harness != "codex" || config.Secretary.Model != "default" || config.Secretary.Reasoning != "default" {
 		t.Fatalf("Secretary default policy=%#v", config.Secretary)
 	}
-	if config.WorkerPolicy.DefaultHarness != "opencode" || config.WorkerPolicy.Model != "openai/gpt-6-luna" || config.WorkerPolicy.Reasoning != "xhigh" || !reflect.DeepEqual(config.WorkerPolicy.PreferredHarnesses, []string{"opencode"}) {
+	if config.WorkerPolicy.DefaultHarness != "codex" || config.WorkerPolicy.Model != "default" || config.WorkerPolicy.Reasoning != "default" || !reflect.DeepEqual(config.WorkerPolicy.PreferredHarnesses, []string{"codex", "claude_code"}) {
 		t.Fatalf("Worker default policy=%#v", config.WorkerPolicy)
 	}
 	if config.Profiles.Secretary != "profiles/secretary.md" {
 		t.Fatalf("external profile path changed: %#v", config.Profiles)
 	}
-	if got := (Config{}).EffectiveWorkerPolicy().DefaultHarness; got != "opencode" {
+	if got := (Config{}).EffectiveWorkerPolicy().DefaultHarness; got != "codex" {
 		t.Fatalf("empty Worker policy fallback=%q", got)
 	}
 }
@@ -42,7 +42,7 @@ func TestAddressedReplyContractRequiresExplicitVersionedOptIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated := strings.Replace(string(content), `reasoning = "xhigh"`, "reasoning = \"xhigh\"\nreply_contract = \"addressed-reply-v1\"", 1)
+	updated := strings.Replace(string(content), `reasoning = "default"`, "reasoning = \"xhigh\"\nreply_contract = \"addressed-reply-v1\"", 1)
 	if updated == string(content) {
 		t.Fatal("test could not add the explicit addressed-reply setting")
 	}

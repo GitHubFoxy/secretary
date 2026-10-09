@@ -67,9 +67,13 @@ func main() {
 		log.Print("shared Secretary and local Worker Node OpenCode store selected")
 		return
 	}
-	selection, err := selectRuntimeNativeStoreSelection(*dataDir)
-	if err != nil {
-		log.Fatalf("select OpenCode native stores: %v", err)
+	var selection runtimeNativeStoreSelection
+	var err error
+	if *selectNativeStores {
+		selection, err = selectRuntimeNativeStoreSelection(*dataDir)
+		if err != nil {
+			log.Fatalf("select OpenCode native stores: %v", err)
+		}
 	}
 	secretaryStore, workerStore := selection.Secretary, selection.Worker
 	if secretaryStore.Mode == node.OpenCodeNativeStoreModeLegacy {
@@ -116,6 +120,13 @@ func main() {
 	profiles, err := config.Open(*configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
+	}
+	if profiles.Snapshot().Config.EffectiveSecretaryPolicy().Harness == "opencode" || profiles.Snapshot().Config.EffectiveWorkerPolicy().DefaultHarness == "opencode" {
+		selection, err = selectRuntimeNativeStoreSelection(*dataDir)
+		if err != nil {
+			log.Fatalf("select OpenCode native stores: %v", err)
+		}
+		secretaryStore, workerStore = selection.Secretary, selection.Worker
 	}
 	userDocument, err := config.OpenUserDocument(*dataDir)
 	if err != nil {
@@ -701,7 +712,7 @@ func configuredRuntimeWithStore(snapshot config.Snapshot, dataDir string, store 
 	}
 	runtime := node.RuntimeRouter{
 		DefaultHarness: harness,
-		ACP:            node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
+		ACP:            node.CodexRuntime{ACPRuntime: node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 		Claude:         node.ClaudeCodeRuntime{Command: claudeCommand, Arguments: claudeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		FX:             node.FXRuntime{ACPRuntime: node.ACPRuntime{Command: fxCommand, Arguments: fxArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, DataHome: store.DataHome, LegacyDataHome: store.Mode == node.OpenCodeNativeStoreModeLegacy, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
@@ -725,7 +736,7 @@ func managedProfile(snapshot config.Snapshot, name string) node.ManagedProfile {
 		return node.ManagedProfile{}
 	}
 	delivery := "workspace_instructions"
-	if profile.Runtime == "opencode" {
+	if profile.Runtime == "opencode" || profile.Runtime == "codex" {
 		delivery = "native"
 	}
 	skills := make([]node.ManagedSkill, 0, len(profile.Skills))

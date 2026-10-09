@@ -68,12 +68,12 @@ func TestHarnessDiscoveryUsesInstalledBinaryOverrides(t *testing.T) {
 		calls = append(calls, name+" "+strings.Join(args, " "))
 		return CommandResult{Stdout: "1.2.3\nmodels: test-model\nreasoning: medium\n"}, nil
 	})
-	inventory, err := (HarnessDiscovery{Node: "macbook", Runner: runner, BinaryOverrides: map[core.HarnessKind]string{core.HarnessFX: "/opt/fx"}}).Discover(context.Background())
+	inventory, err := (HarnessDiscovery{Node: "macbook", Runner: runner, BinaryOverrides: map[core.HarnessKind]string{core.HarnessClaudeCode: "/opt/claude"}}).Discover(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(inventory.Instances) == 0 || !strings.HasPrefix(calls[0], "/opt/fx ") {
-		t.Fatalf("discovery did not use installed FX path: calls=%v inventory=%#v", calls, inventory)
+	if len(inventory.Instances) == 0 || !strings.HasPrefix(calls[0], "/opt/claude ") {
+		t.Fatalf("discovery did not use installed Claude path: calls=%v inventory=%#v", calls, inventory)
 	}
 }
 

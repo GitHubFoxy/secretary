@@ -66,10 +66,10 @@ func (p ManagedProfile) ValidateWorkerBinding(runtime, model, reasoning string, 
 		return ErrManagedProfileInvalid
 	}
 	expectedDelivery := "workspace_instructions"
-	if runtime == string(core.HarnessOpenCode) {
+	if runtime == string(core.HarnessOpenCode) || runtime == string(core.HarnessCodex) {
 		expectedDelivery = "native"
 	}
-	if p.Delivery != expectedDelivery {
+	if p.Delivery != expectedDelivery && !(runtime == string(core.HarnessCodex) && p.Delivery == "workspace_instructions") {
 		return ErrManagedProfileInvalid
 	}
 	if runtime == string(core.HarnessOpenCode) {
