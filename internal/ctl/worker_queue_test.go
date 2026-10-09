@@ -260,3 +260,35 @@ func TestWorkerQueuePreservesSecretaryOriginAfterSecretaryTurnFinishes(t *testin
 		t.Fatalf("queued Result lost origin: hasResult=%v err=%v", hasResult, err)
 	}
 }
+
+func TestWorkerQueueDoesNotReplayInterruptedPromotedAttempt(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, details.Attempts[0].ID, core.AttemptOutcomeInput{Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "/q before crash", IdempotencyKey: "interrupted-queue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, attempt, err := store.PromoteQueuedWorkerMessage(ctx, queued.QueuedMessages[0], "dispatch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := store.InterruptPhase4Attempt(ctx, attempt.ID, "restart", "lost execution"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
+		t.Fatal(err)
+	}
+	current, err := service.GetWorker(ctx, details.Worker.WorkerRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.QueuedMessages[0].State != "blocked" || service.Runtime.(*lifecycleRuntime).count("dispatch") != 1 {
+		t.Fatal("interrupted promoted Attempt automatically replayed or lost visible failure")
+	}
+}

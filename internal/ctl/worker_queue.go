@@ -48,13 +48,31 @@ func (s WorkerService) ProcessQueuedWorkerMessages(ctx context.Context) error {
 			if message.State == "pending" && worker.Status != core.WorkerIdle && worker.Status != core.WorkerOffline {
 				break
 			}
-			if worker.Status == core.WorkerOffline {
+			if message.State == "pending" && worker.Status == core.WorkerOffline {
 				kind = "resume"
+			}
+			if message.State == "delivering" {
+				promoted, err := s.Store.Turn(ctx, message.TurnID)
+				if err != nil {
+					failures = append(failures, err)
+					break
+				}
+				if _, found, err := s.Store.FindWorkerCommand(ctx, "resume", "attempt", worker.ID, promoted.CurrentAttemptID); err != nil {
+					failures = append(failures, err)
+					break
+				} else if found {
+					kind = "resume"
+				}
 			}
 			turn, attempt, err := s.Store.PromoteQueuedWorkerMessage(ctx, message, kind)
 			if errors.Is(err, core.ErrInvalidTransition) {
 				break
 			}
+			if err != nil {
+				failures = append(failures, err)
+				break
+			}
+			attempt, err = s.Store.Phase4Attempt(ctx, attempt.ID)
 			if err != nil {
 				failures = append(failures, err)
 				break
