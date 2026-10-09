@@ -940,6 +940,9 @@ func (a *Adapter) queueSecretary(event Event) bool {
 			event.Text = "Secretary: завершённый запрос не содержит сохранённого ответа. Отправьте новое сообщение, чтобы продолжить."
 		}
 		if text := safeText(event.Text); text != "" {
+			if event.CanonicalReplyRequired && a.pending.SecretaryText.Len() > 0 {
+				a.pending.SecretaryText.WriteString("\n\n")
+			}
 			a.pending.SecretaryText.WriteString(text)
 			return true
 		}

@@ -593,3 +593,26 @@ func TestTelegramBridgeShowsQueuedWorkerMessageOnlyInItsTopic(t *testing.T) {
 		t.Fatalf("queue acknowledgement missing or mirrored to General: %#v", transport.sent)
 	}
 }
+
+func TestTelegramBridgeKeepsCanonicalReplyAndTerminalFailureReadable(t *testing.T) {
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, FlushInterval: time.Hour}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []core.Event{
+		{Seq: 1, Kind: core.SecretaryTurnStartedEvent},
+		{Seq: 2, Kind: "conversation.entry", Payload: []byte(`{"kind":"secretary","body":"Сохранённый ответ"}`)},
+		{Seq: 3, Kind: core.SecretaryTurnFinishedEvent, Payload: []byte(`{"status":"failed","error":"runtime failed"}`)},
+	} {
+		if err := adapter.HandleDurableEvent(context.Background(), telegramEvent(event)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := adapter.Flush(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Сохранённый ответ\n\nSecretary: ошибка — runtime failed" {
+		t.Fatalf("reply/error hidden, repeated or concatenated: %#v", transport.sent)
+	}
+}

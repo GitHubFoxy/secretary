@@ -184,7 +184,9 @@ func telegramEvent(event core.Event) telegram.Event {
 			result.CanonicalReplyRequired = true
 			result.Text = stringField(payload, "error")
 			if result.Text != "" {
-				result.Text = "\n\nSecretary: ошибка — " + result.Text
+				result.Text = "Secretary: ошибка — " + result.Text
+			} else if status := stringField(payload, "status"); status != "" && status != "succeeded" {
+				result.Text = "Secretary: запрос завершён со статусом " + status
 			}
 		}
 		if event.Kind == core.SecretaryTextDeltaEvent {
