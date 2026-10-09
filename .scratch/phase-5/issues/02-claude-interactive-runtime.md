@@ -1,7 +1,7 @@
 # 02: интерактивный Claude Code с MCP, profile и настоящим steering
 
 Type: task
-Status: ready-for-agent
+Status: claimed
 Blocked by: None
 
 ## What to build
@@ -25,7 +25,9 @@ Public seams: native Session и server HTTP/MCP. Использовать име
 
 ## Answer
 
-Пока отсутствует.
+Реализована native stream-json Session: deferred Start, сериализованный stdin Prompt, постоянный reader, profile/managed tools/MCP, interrupt с terminal drain, idle Follow-up, resume с initialize и отказом при missing session. Worker закрывает свой process после terminal Attempt и продолжает native history через прежний session ID; Secretary сохраняет persistent process. Partial frames не дублируют complete assistant blocks; пустой/error terminal не считается успехом.
+
+Scoped Session tests и полная Go suite проходят. Новая реальная проверка через Go public Session на Mac CC 2.1.295 получает явный failed Result при HTTP403 и rejects missing native resume. MCP handshake/list проходит, model tools/call отсутствует. Семантические profile recall, idle recall, Secretary lifecycle MCP и active same-Attempt steering остаются незакрытыми: configured provider возвращает quota403, штатный путь без proxy отвечает Not logged in. Steering capability не добавлена; операция возвращает explicit unsupported, не очередь и не interrupt+Follow-up. Evidence: [отчёт](../reports/claude-interactive-runtime-20261010.md). Ticket не закрыт.
 
 ## Comments
 

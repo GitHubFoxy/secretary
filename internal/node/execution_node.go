@@ -658,10 +658,7 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, p
 					outcome.Summary = result.Status
 				}
 				_, _ = n.store.QueueOutcome(outcome)
-				// OpenCode continuation reloads durable native history into
-				// fresh Attempt channels. Other adapters retain their lifecycle
-				// (including FX interrupt-and-continue).
-				if envelope.HarnessInstance.Kind == core.HarnessOpenCode {
+				if envelope.HarnessInstance.Kind == core.HarnessOpenCode || envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
 					_ = session.Close()
 				}
 			}
