@@ -400,7 +400,7 @@ func (s *Store) RecordSecretaryReply(ctx context.Context, personID, capability, 
 				duplicate bool
 			}{}, ErrInvalidSecretaryOrigin
 		}
-		entry, err := appendEntry(ctx, tx, s.now(), origin.ConversationID, EntrySecretary, text)
+		entry, err := appendEntryWithIdentity(ctx, tx, s.now(), origin.ConversationID, EntrySecretary, text, "", secretaryTurnID, "")
 		if err != nil {
 			return struct {
 				entry     ConversationEntry

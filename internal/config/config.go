@@ -22,7 +22,7 @@ import (
 var ErrInvalid = errors.New("config: invalid")
 
 const (
-	DefaultTitleHarness               = "opencode"
+	DefaultTitleHarness               = "deterministic"
 	DefaultTitlePrompt                = "title-generation-prompt.md"
 	DefaultTitleModel                 = "gpt-6-luna"
 	DefaultTitleModelReasoning        = "minimal"
@@ -273,8 +273,8 @@ func validateHarness(field, value string) error {
 }
 
 func validateTelegramPolicy(policy TelegramPolicy) error {
-	if policy.TitleHarness != "opencode" {
-		return fmt.Errorf("%w: telegram.title_harness must be opencode", ErrInvalid)
+	if policy.TitleHarness != "opencode" && policy.TitleHarness != "deterministic" {
+		return fmt.Errorf("%w: telegram.title_harness must be deterministic or opencode (legacy)", ErrInvalid)
 	}
 	if strings.TrimSpace(policy.TitlePrompt) == "" || strings.IndexFunc(policy.TitlePrompt, func(r rune) bool {
 		return unicode.IsControl(r) || unicode.Is(unicode.Cf, r)

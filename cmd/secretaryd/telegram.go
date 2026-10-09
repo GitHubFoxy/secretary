@@ -86,17 +86,6 @@ func attachProductionTelegram(ctx context.Context, dataDir, listen string, store
 	adapter, err := telegram.New(telegram.Config{
 		StatePath: filepath.Join(dataDir, "telegram", "state.json"), OwnerChatID: deployment.OwnerChatID,
 		PollInterval: deployment.PollInterval, FlushInterval: deployment.FlushInterval, BotUsername: deployment.BotUsername,
-		TitleGenerator: func(ctx context.Context, prompt string) (string, error) {
-			snapshot := profiles.Snapshot()
-			policy := snapshot.Config.Telegram
-			if policy.TitleHarness != "opencode" {
-				return "", errors.New("telegram: unsupported title harness")
-			}
-			return (telegram.OpenCodeTitleGenerator{
-				Model: policy.TitleModel, Reasoning: policy.TitleModelReasoning, Prompt: snapshot.TitlePrompt.Content,
-				DataHome: nativeStore.DataHome, LegacyDataHome: nativeStore.Mode == node.OpenCodeNativeStoreModeLegacy,
-			}).Generate(ctx, prompt)
-		},
 	}, &telegram.BotAPITransport{BaseURL: deployment.BaseURL, BotToken: deployment.BotToken}, &telegram.HTTPServerClient{
 		BaseURL: "http://" + listen, Credential: deployment.ServerCredential,
 	})
@@ -154,6 +143,11 @@ func bridgeTelegramEventsOnce(ctx context.Context, store *core.Store, adapter *t
 			if err := adapter.HandleDurableEvent(ctx, telegramEvent(event)); err != nil {
 				return event.Seq, err
 			}
+			if event.Kind == core.SecretaryTurnFinishedEvent {
+				if err := adapter.Flush(ctx); err != nil {
+					return event.Seq, err
+				}
+			}
 			cursor = event.Seq
 		}
 		if len(events) < 500 {
@@ -186,8 +180,17 @@ func telegramEvent(event core.Event) telegram.Event {
 		}
 		return result
 	case strings.HasPrefix(event.Kind, "secretary."):
+		if event.Kind == core.SecretaryTurnFinishedEvent {
+			result.CanonicalReplyRequired = true
+			result.Text = stringField(payload, "error")
+			if result.Text != "" {
+				result.Text = "\n\nSecretary: ошибка — " + result.Text
+			}
+		}
 		if event.Kind == core.SecretaryTextDeltaEvent {
-			result.Text, _ = payload["text"].(string)
+			// Canonical conversation.entry owns delivery; native deltas are live-only.
+			result.Kind = ""
+			result.Text = ""
 		}
 		return result
 	case event.Kind == "worker.spawned":
@@ -195,6 +198,12 @@ func telegramEvent(event core.Event) telegram.Event {
 		// Intent является OriginalUserIntent в Node Dispatch envelope.
 		// Не передаём генератору весь payload с Project/Policy snapshots.
 		result.TaskPrompt, _ = payload["intent"].(string)
+	case strings.HasPrefix(event.Kind, "worker.message."):
+		result.Kind = event.Kind
+		result.Text = stringField(payload, "text")
+		if failure := stringField(payload, "last_error"); failure != "" {
+			result.Text += "\n" + failure
+		}
 	case event.Kind == "worker.started":
 		result.Kind = "worker.started"
 	case event.Kind == "attempt.activity":

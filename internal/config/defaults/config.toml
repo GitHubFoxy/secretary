@@ -26,9 +26,10 @@ reasoning = "xhigh"
 preferred_harnesses = ["opencode"]
 active_attempts = 4
 
-# Только названия Telegram Worker Topics; Secretary и Worker profiles не меняются.
+# Названия из сохранённого Worker title или Task prompt; дополнительная модель не вызывается.
+# Остальные title_* поля сохранены для совместимости исторической конфигурации.
 [telegram]
-title_harness = "opencode"
+title_harness = "deterministic"
 title_prompt = "title-generation-prompt.md"
 title_model = "gpt-6-luna"
 # Допустимы none, minimal, low, medium, high, xhigh. Поддержка зависит от provider.

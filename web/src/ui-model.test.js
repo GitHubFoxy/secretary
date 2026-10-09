@@ -116,3 +116,10 @@ test('never exposes raw thinking as a Secretary stream label', () => {
   assert.equal(secretaryEventText({ kind: 'secretary.tool_call', tool: 'list_workers', arguments: '{}' }), 'list_workers');
   assert.equal(secretaryEventText({ kind: 'secretary.tool_result', tool: 'list_workers', result: 'ok' }), 'list_workers · ok');
 });
+
+test('Worker observer reads text and status activity without leaking generic payload', () => {
+  assert.equal(formatActivityPayload({payload: {kind: 'text', text: 'Проверяю сервер'}}), 'Проверяю сервер');
+  assert.equal(formatActivityPayload({payload: {kind: 'status', status: 'working'}}), 'Working');
+  assert.equal(formatActivityPayload({payload: {kind: 'thinking', text: 'private reasoning'}}), '');
+  assert.equal(formatActivityPayload({payload: {kind: 'unknown', secret: 'private metadata'}}), 'Activity');
+});

@@ -110,18 +110,19 @@ type Pairing struct {
 }
 
 type Event struct {
-	EventID          string
-	Sequence         int64
-	Kind             string
-	Source           string
-	WorkerRef        string
-	Title            string
-	TaskPrompt       string
-	Text             string
-	Tool             string
-	ToolPreview      string
-	TerminalIdentity string
-	Payload          json.RawMessage
+	EventID                string
+	Sequence               int64
+	Kind                   string
+	Source                 string
+	WorkerRef              string
+	Title                  string
+	TaskPrompt             string
+	Text                   string
+	Tool                   string
+	ToolPreview            string
+	TerminalIdentity       string
+	CanonicalReplyRequired bool
+	Payload                json.RawMessage
 }
 
 type TopicMapping struct {
@@ -798,6 +799,8 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			a.mu.Lock()
 			_, alreadyNotified = a.state.TerminalNotified[event.TerminalIdentity]
 			a.mu.Unlock()
+		case strings.HasPrefix(event.Kind, "worker.message."):
+			identity = "worker-message:" + event.EventID
 		case requestNotificationIdentity(event) != "":
 			identity = "request:" + requestNotificationIdentity(event)
 			a.mu.Lock()
@@ -844,11 +847,17 @@ func (a *Adapter) ensureTopic(ctx context.Context, workerRef, title string, prom
 	}
 	name := topicName(workerRef, title)
 	if len(prompts) > 0 && strings.TrimSpace(prompts[0]) != "" {
-		name = a.taskTopicTitle(ctx, prompts[0])
+		if a.config.TitleGenerator != nil {
+			name = a.taskTopicTitle(ctx, prompts[0])
+		} else if savedTitle := validTopicTitle(title); savedTitle != "" {
+			name = savedTitle
+		} else {
+			name = fallbackTopicTitle(prompts[0])
+		}
 	}
 	topic, err := a.transport.CreateForumTopic(ctx, owner, name)
 	if err != nil {
-		return TopicMapping{}, err
+		return TopicMapping{}, fmt.Errorf("telegram: не удалось создать Worker topic; проверьте, что группа поддерживает topics и бот имеет право управлять ими: %w", err)
 	}
 	mapping := TopicMapping{WorkerRef: workerRef, ChatID: topic.ChatID, ThreadID: topic.ThreadID, Title: name, CreatedAt: a.now()}
 	a.mu.Lock()
@@ -927,6 +936,9 @@ func (a *Adapter) queueSecretary(event Event) bool {
 			return true
 		}
 	case "secretary.turn.finished":
+		if event.CanonicalReplyRequired && strings.TrimSpace(a.pending.SecretaryText.String()) == "" && event.Text == "" {
+			event.Text = "Secretary: завершённый запрос не содержит сохранённого ответа. Отправьте новое сообщение, чтобы продолжить."
+		}
 		if text := safeText(event.Text); text != "" {
 			a.pending.SecretaryText.WriteString(text)
 			return true
@@ -961,6 +973,9 @@ func (a *Adapter) Flush(ctx context.Context) error {
 	turnOpen := a.pending.TurnOpen
 	ready := a.pending.Ready && !turnOpen
 	secretaryMessage, hasSecretary := secretaryBatchMessage(owner, text, tools)
+	if len(eventSeqs) > 0 {
+		secretaryMessage.Identity = fmt.Sprintf("secretary:%v", eventSeqs)
+	}
 	outboxIdentities := make(map[string]struct{}, len(a.state.Outbox))
 	for _, pending := range a.state.Outbox {
 		outboxIdentities[outgoingMessageIdentity(pending)] = struct{}{}
@@ -1553,11 +1568,11 @@ func isApprovalResolution(kind string) bool {
 }
 
 func importantWorkerEvent(kind string) bool {
-	return kind == "worker.tool_started" || kind == "worker.tool_finished" || kind == "worker.tool_failed" || strings.Contains(kind, "approval") || strings.Contains(kind, "needs_input") || strings.HasSuffix(kind, ".failed") || strings.HasSuffix(kind, ".completed") || strings.HasSuffix(kind, ".succeeded") || strings.HasSuffix(kind, ".canceled") || strings.HasSuffix(kind, ".offline") || strings.HasSuffix(kind, ".completion")
+	return strings.HasPrefix(kind, "worker.message.") || kind == "worker.tool_started" || kind == "worker.tool_finished" || kind == "worker.tool_failed" || strings.Contains(kind, "approval") || strings.Contains(kind, "needs_input") || strings.HasSuffix(kind, ".failed") || strings.HasSuffix(kind, ".completed") || strings.HasSuffix(kind, ".succeeded") || strings.HasSuffix(kind, ".canceled") || strings.HasSuffix(kind, ".offline") || strings.HasSuffix(kind, ".completion")
 }
 
 func workerEventLabel(kind string) string {
-	if label := map[string]string{"worker.approval_requested": "Нужно разрешение", "worker.needs_input": "Нужен ответ", "worker.failed": "Ошибка Worker", "worker.completed": "Worker завершён", "worker.succeeded": "Worker завершён", "worker.canceled": "Worker отменён", "worker.offline": "Node offline"}[kind]; label != "" {
+	if label := map[string]string{"worker.message.queued": "В очереди", "worker.message.delivered": "Передано Worker", "worker.message.blocked": "Сообщение заблокировано", "worker.message.canceled": "Сообщение отменено", "worker.approval_requested": "Нужно разрешение", "worker.needs_input": "Нужен ответ", "worker.failed": "Ошибка Worker", "worker.completed": "Worker завершён", "worker.succeeded": "Worker завершён", "worker.canceled": "Worker отменён", "worker.offline": "Node offline"}[kind]; label != "" {
 		return label
 	}
 	return "Статус Worker"
