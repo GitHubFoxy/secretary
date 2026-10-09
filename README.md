@@ -65,7 +65,7 @@ secretary stop
 
 Локальные данные находятся в `~/.local/share/secretary/`: `secretary.db`, `config.toml`, профили и журналы. Bootstrap-ссылки и credentials предназначены для владельца; не публикуйте их. Workers выполняют команды в доверенной локальной среде с доступом к файлам.
 
-Подробные инструкции: [быстрый старт](docs/quickstart.md), [конфигурация](docs/configuration.md), [контракты системы](CONTEXT.md).
+Подробные инструкции: [быстрый старт и конфигурация](docs/quickstart.md), [контракты системы](CONTEXT.md).
 
 ## Проверки
 
