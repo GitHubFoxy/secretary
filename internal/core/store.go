@@ -282,6 +282,12 @@ func (s *Store) notifyEntry(entry ConversationEntry) {
 
 func (s *Store) migrate(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
+CREATE TABLE IF NOT EXISTS worker_queued_messages (
+ id TEXT PRIMARY KEY, worker_id TEXT NOT NULL REFERENCES workers(id), sequence INTEGER NOT NULL,
+ text TEXT NOT NULL, state TEXT NOT NULL, turn_id TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '',
+ idempotency_key TEXT NOT NULL, secretary_turn_id TEXT NOT NULL DEFAULT '', input_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+ UNIQUE(worker_id, sequence), UNIQUE(worker_id,idempotency_key)
+);
 CREATE TABLE IF NOT EXISTS persons (
   id TEXT PRIMARY KEY,
   created_at TEXT NOT NULL

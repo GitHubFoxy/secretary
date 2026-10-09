@@ -599,7 +599,7 @@ func (s *Store) CreateTurn(ctx context.Context, workerID string, spec TurnSpec) 
 	return s.createTurn(ctx, workerID, spec, key)
 }
 
-func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, idempotencyKey string) (Turn, Phase4Attempt, error) {
+func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, idempotencyKey string, queueIDs ...string) (Turn, Phase4Attempt, error) {
 	fingerprintSpec := spec
 	fingerprintSpec.IdempotencyKey = ""
 	requestHash, err := idempotencyRequestHash(struct {
@@ -617,6 +617,15 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 		attempt Phase4Attempt
 	}, error) {
 		operation := "turn.create:" + workerID
+		if len(queueIDs) > 0 {
+			var head string
+			if err := tx.QueryRowContext(ctx, `SELECT id FROM worker_queued_messages WHERE worker_id=? AND state IN ('pending','delivering','blocked') ORDER BY sequence LIMIT 1`, workerID).Scan(&head); err != nil || head != queueIDs[0] {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, ErrInvalidTransition
+			}
+		}
 		if idempotencyKey != "" {
 			var stored turnCreationOutcome
 			found, err := lookupIdempotencyTx(ctx, tx, operation, idempotencyKey, requestHash, &stored)
@@ -754,6 +763,32 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 				}{}, fmt.Errorf("core: encode durable Turn outcome: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO idempotency_records(operation, idempotency_key, request_hash, outcome_json, created_at) VALUES(?, ?, ?, ?, ?)`, operation, idempotencyKey, requestHash, string(encoded), timestamp(now)); err != nil {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
+		}
+		if len(queueIDs) > 0 {
+			var originTurn, originInput string
+			if err := tx.QueryRowContext(ctx, `SELECT secretary_turn_id,input_id FROM worker_queued_messages WHERE id=?`, queueIDs[0]).Scan(&originTurn, &originInput); err != nil {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
+			if originTurn != "" {
+				// The origin was authorized at durable queue acceptance; its Secretary turn may now be terminal.
+				if _, err := tx.ExecContext(ctx, `INSERT INTO secretary_worker_command_origins(command_id,secretary_turn_id,input_id,worker_turn_id,created_at) SELECT id,?,?,?,? FROM phase4_worker_commands WHERE worker_id=? AND attempt_id=? AND kind=? AND dedupe_key='attempt'`, originTurn, originInput, turn.ID, timestamp(now), worker.ID, attempt.ID, lifecycleCommandKind(spec.CommandKind)); err != nil {
+					return struct {
+						turn    Turn
+						attempt Phase4Attempt
+					}{}, err
+				}
+			}
+		}
+		if len(queueIDs) > 0 {
+			if _, err := tx.ExecContext(ctx, `UPDATE worker_queued_messages SET state='delivering',turn_id=?,updated_at=? WHERE id=? AND state='pending'`, turn.ID, timestamp(now), queueIDs[0]); err != nil {
 				return struct {
 					turn    Turn
 					attempt Phase4Attempt
@@ -1583,6 +1618,9 @@ func (s *Store) CloseWorker(ctx context.Context, workerID string) (Worker, error
 			return Worker{}, ErrInvalidTransition
 		}
 		now := s.now()
+		if err := cancelQueuedWorkerMessagesTx(ctx, tx, worker.ID, now); err != nil {
+			return Worker{}, err
+		}
 		worker.Status, worker.Archived, worker.ClosedAt, worker.UpdatedAt = WorkerClosed, true, &now, now
 		_, err = tx.ExecContext(ctx, `UPDATE workers SET status = ?, archived = 1, closed_at = ?, updated_at = ? WHERE id = ?`, worker.Status, timestamp(now), timestamp(now), worker.ID)
 		return worker, err
@@ -1726,7 +1764,8 @@ func (s *Store) WorkerDetailsForConversation(ctx context.Context, conversationID
 		return WorkerDetails{}, err
 	}
 	approvalRows.Close()
-	return details, nil
+	details.QueuedMessages, err = s.QueuedWorkerMessages(ctx, worker.ID)
+	return details, err
 }
 func (s *Store) Turn(ctx context.Context, id string) (Turn, error) { return getTurn(ctx, s.db, id) }
 func (s *Store) Phase4Attempt(ctx context.Context, id string) (Phase4Attempt, error) {

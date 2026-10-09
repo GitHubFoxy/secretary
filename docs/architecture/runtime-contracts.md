@@ -20,7 +20,10 @@
 - Внешний Channel adapter регистрируется с server-issued credential. Web client аутентифицирует Person через owner session.
 - Origin Conversation передаётся в Bridge системными metadata; модель не выбирает место доставки Result.
 - Steering message сохраняется сразу и передаётся активному Secretary или Worker на ближайшей safe boundary текущего turn или Attempt. Если runtime временно не steerable, Node передаёт сообщение после перехода runtime в idle.
-- Queued message с prefix `/q` сохраняется сразу, но доставляется целевому runtime только в idle.
+- Queued message с prefix `/q` сохраняется сразу, но доставляется целевому runtime только в idle. Worker-first HTTP, MCP и Telegram используют общий parser `WorkerService.MessageWorker`; пустой `/q` отклоняется, prefix не входит в prompt и не отвечает pending Approval даже при request_id.
+- Worker queue принадлежит Secretary server и хранит FIFO message identity независимо от Turn/Attempt. Promotion атомарно связывает message с новым Follow-up, durable command intent и прежним continuation checkpoint. Ответ mutation содержит `action_mode: queued` и `action_message_id`; observer snapshot — `queued_messages`. Direct Worker text не добавляется в model context Secretary.
+- Queue states: `pending`, `delivering`, `delivered`, `blocked`, `canceled`; durable events `worker.message.queued`, `.delivered`, `.blocked`, `.canceled` адресуют opaque Worker reference. Повтор input identity сохраняет ту же запись; одинаковый текст с разными identities сохраняется отдельно.
+- После restart подготовленная перед handoff delivery восстанавливается по тому же command intent. Active/terminal Attempt и неизвестное принятие не повторяются; queue остаётся `blocked` с видимой ошибкой. Interrupted binding использует прежний resume contract. Close отменяет накопленные сообщения до остановки активной Attempt; Cancel сохраняет binding и разрешает следующий queued Follow-up после terminal Result.
 
 ## Execution node и окружение
 

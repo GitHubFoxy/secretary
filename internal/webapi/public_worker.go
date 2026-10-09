@@ -122,26 +122,29 @@ type publicAttemptStrictDTO struct {
 }
 
 type publicWorkerDetailsStrict struct {
-	Worker    publicWorkerStrictDTO    `json:"worker"`
-	Turns     []publicTurnStrictDTO    `json:"turns"`
-	Attempts  []publicAttemptStrictDTO `json:"attempts"`
-	Outcomes  []publicOutcomeStrictDTO `json:"outcomes"`
-	Results   []publicResultStrictDTO  `json:"results"`
-	Approvals []publicApprovalDTO      `json:"approvals,omitempty"`
+	QueuedMessages []publicQueuedMessageDTO `json:"queued_messages"`
+	Worker         publicWorkerStrictDTO    `json:"worker"`
+	Turns          []publicTurnStrictDTO    `json:"turns"`
+	Attempts       []publicAttemptStrictDTO `json:"attempts"`
+	Outcomes       []publicOutcomeStrictDTO `json:"outcomes"`
+	Results        []publicResultStrictDTO  `json:"results"`
+	Approvals      []publicApprovalDTO      `json:"approvals,omitempty"`
 }
 
 type ownerWorkerObserverDTO struct {
-	Worker    core.Worker           `json:"worker"`
-	Turns     []core.Turn           `json:"turns"`
-	Attempts  []core.Phase4Attempt  `json:"attempts"`
-	Outcomes  []core.AttemptOutcome `json:"outcomes"`
-	Results   []core.Phase4Result   `json:"results"`
-	Approvals []publicApprovalDTO   `json:"approvals,omitempty"`
+	QueuedMessages []publicQueuedMessageDTO `json:"queued_messages"`
+	Worker         core.Worker              `json:"worker"`
+	Turns          []core.Turn              `json:"turns"`
+	Attempts       []core.Phase4Attempt     `json:"attempts"`
+	Outcomes       []core.AttemptOutcome    `json:"outcomes"`
+	Results        []core.Phase4Result      `json:"results"`
+	Approvals      []publicApprovalDTO      `json:"approvals,omitempty"`
 }
 
 func ownerWorkerObserverDTOFromDetails(details core.WorkerDetails) ownerWorkerObserverDTO {
 	observer := ownerWorkerObserverDTO{
-		Worker: details.Worker, Turns: details.Turns, Attempts: details.Attempts,
+		QueuedMessages: publicQueuedMessages(details),
+		Worker:         details.Worker, Turns: details.Turns, Attempts: details.Attempts,
 		Outcomes: details.Outcomes, Results: details.Results,
 	}
 	for _, approval := range details.Approvals {
@@ -217,7 +220,8 @@ func publicTurnsStrict(details core.WorkerDetails) []publicTurnStrictDTO {
 
 func publicWorkerDetailsStrictFromDetails(details core.WorkerDetails) publicWorkerDetailsStrict {
 	strict := publicWorkerDetailsStrict{
-		Worker: publicWorkerStrictDTOFromDetails(details),
+		QueuedMessages: publicQueuedMessages(details),
+		Worker:         publicWorkerStrictDTOFromDetails(details),
 	}
 	strict.Turns = publicTurnsStrict(details)
 	strict.Outcomes = make([]publicOutcomeStrictDTO, 0, len(details.Outcomes))
@@ -262,4 +266,23 @@ func (s *Server) publicWorkersStrictForConversationLimit(ctx context.Context, co
 		public = append(public, publicWorkerStrictDTOFromDetails(details))
 	}
 	return public, nil
+}
+
+type publicQueuedMessageDTO struct {
+	ID        string    `json:"id"`
+	Sequence  int64     `json:"sequence"`
+	Text      string    `json:"text"`
+	State     string    `json:"state"`
+	TurnID    string    `json:"turn_id,omitempty"`
+	LastError string    `json:"last_error,omitempty"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+func publicQueuedMessages(details core.WorkerDetails) []publicQueuedMessageDTO {
+	result := make([]publicQueuedMessageDTO, 0, len(details.QueuedMessages))
+	for _, m := range details.QueuedMessages {
+		result = append(result, publicQueuedMessageDTO{ID: m.ID, Sequence: m.Sequence, Text: m.Text, State: m.State, TurnID: m.TurnID, LastError: m.LastError, CreatedAt: m.CreatedAt, UpdatedAt: m.UpdatedAt})
+	}
+	return result
 }
