@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -55,7 +56,7 @@ func TestClaudeCodeRuntimeUsesNativeCLIWithAuthoritativePins(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"--print", "--output-format", "stream-json", "--model", "claude-sonnet", "--effort", "extended", "--session-id", "inspect"} {
+	for _, want := range []string{"--print", "--output-format", "stream-json", "--model", "claude-sonnet", "--effort", "extended", "--session-id"} {
 		if !strings.Contains(string(args), want) {
 			t.Fatalf("Claude CLI args=%s, missing %q", args, want)
 		}
@@ -91,7 +92,7 @@ func TestClaudeCodeRuntimeAllowsOnlyDocumentedHarmlessStaticArgument(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--disable-slash-commands", "--print", "--output-format", "stream-json", "--verbose", "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id", "inspect"}
+	want := []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Claude CLI args=%#v, want %#v", got, want)
 	}
@@ -99,7 +100,7 @@ func TestClaudeCodeRuntimeAllowsOnlyDocumentedHarmlessStaticArgument(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = []string{"--disable-slash-commands", "--print", "--output-format", "stream-json", "--verbose", "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session", "inspect"}
+	want = []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Claude resume args=%#v, want %#v", got, want)
 	}
@@ -205,9 +206,278 @@ func TestFakeClaudeCodeProcess(t *testing.T) {
 			continue
 		}
 		encoder := json.NewEncoder(os.Stdout)
-		_ = encoder.Encode(map[string]any{"type": "system", "session_id": "native-session"})
+		var input map[string]any
+		_ = json.NewDecoder(os.Stdin).Decode(&input)
+		_ = encoder.Encode(map[string]any{"type": "system", "session_id": input["session_id"]})
 		_ = encoder.Encode(map[string]any{"type": "stream_event", "event": map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": "native activity"}}})
 		_ = encoder.Encode(map[string]any{"type": "result", "subtype": "success", "result": "native Claude result"})
 		return
+	}
+}
+
+func TestClaudeDeferredSessionAcceptsIdleFollowup(t *testing.T) {
+	launcher := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nexec \"$CLAUDE_TEST_BINARY\" -test.run=TestFakeClaudeInteractiveProcess\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := (ClaudeCodeRuntime{Command: launcher, Environment: []string{"CLAUDE_TEST_BINARY=" + os.Args[0]}}).Start(ctx, StartRequest{Workspace: t.TempDir(), DeferInitialPrompt: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	select {
+	case r := <-session.Result():
+		t.Fatalf("deferred Start executed: %#v", r)
+	case <-time.After(30 * time.Millisecond):
+	}
+	for _, text := range []string{"first marker", "recall marker"} {
+		if err := session.Prompt(ctx, text); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case r := <-session.Result():
+			if r.Status != "succeeded" || r.Summary != text {
+				t.Fatalf("result=%#v", r)
+			}
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		}
+	}
+}
+func TestFakeClaudeInteractiveProcess(t *testing.T) {
+	if !strings.Contains(strings.Join(os.Args, " "), "-test.run=TestFakeClaudeInteractiveProcess") {
+		return
+	}
+	scanner := bufio.NewScanner(os.Stdin)
+	enc := json.NewEncoder(os.Stdout)
+	for scanner.Scan() {
+		var input map[string]any
+		_ = json.Unmarshal(scanner.Bytes(), &input)
+		if input["type"] == "control_request" {
+			_ = enc.Encode(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": input["request_id"]}})
+		}
+		if input["type"] != "user" {
+			continue
+		}
+		message, _ := input["message"].(map[string]any)
+		_ = enc.Encode(map[string]any{"type": "result", "subtype": "success", "result": message["content"], "user_message_uuid": input["uuid"]})
+	}
+	os.Exit(0)
+}
+
+func TestClaudeSessionIgnoresPartialAndRejectsEmptyTerminal(t *testing.T) {
+	launcher := filepath.Join(t.TempDir(), "claude")
+	script := `#!/bin/sh
+read input
+printf '%s\n' '{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"partial"}}}' '{"type":"result","subtype":"success","result":""}'
+read input
+`
+	if err := os.WriteFile(launcher, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := (ClaudeCodeRuntime{Command: launcher}).Start(ctx, StartRequest{Workspace: t.TempDir(), Task: "answer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	select {
+	case r := <-session.Result():
+		if r.Status != "failed" {
+			t.Fatalf("empty terminal=%#v", r)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	select {
+	case a := <-session.Activity():
+		t.Fatalf("partial duplicated as final activity: %#v", a)
+	default:
+	}
+}
+func TestClaudeCancelDrainsTerminalBeforeNextPrompt(t *testing.T) {
+	launcher := filepath.Join(t.TempDir(), "claude")
+	script := `#!/bin/sh
+read input
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
+read interrupt
+printf '%s\n' '{"type":"result","subtype":"success","result":"interrupted"}'
+read input
+printf '%s\n' '{"type":"assistant","uuid":"final-text","message":{"content":[{"type":"text","text":"done"}]}}' '{"type":"assistant","uuid":"final-text","message":{"content":[{"type":"text","text":"done"}]}}' '{"type":"result","subtype":"success","result":"done"}'
+read input
+`
+	if err := os.WriteFile(launcher, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := (ClaudeCodeRuntime{Command: launcher}).Start(ctx, StartRequest{Workspace: t.TempDir(), Task: "work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	select {
+	case <-session.Activity():
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if err := session.Prompt(ctx, "too soon"); err == nil {
+		t.Fatal("active Attempt accepted another Prompt")
+	}
+	if err := session.Cancel(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-session.Result():
+		if r.Status != "canceled" {
+			t.Fatalf("cancel result=%#v", r)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	if err := session.Prompt(ctx, "follow up"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-session.Result():
+		if r.Status != "succeeded" || r.Summary != "done" {
+			t.Fatalf("followup result=%#v", r)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	a := <-session.Activity()
+	if a.Text != "done" {
+		t.Fatalf("activity=%#v", a)
+	}
+	select {
+	case a := <-session.Activity():
+		t.Fatalf("duplicate assistant=%#v", a)
+	default:
+	}
+}
+
+func TestClaudeProfileAndMCPReachNativeProcess(t *testing.T) {
+	capture := filepath.Join(t.TempDir(), "arguments.json")
+	launcher := filepath.Join(t.TempDir(), "claude")
+	script := `#!/bin/sh
+python3 -c 'import json,sys,os;json.dump(sys.argv[1:],open(os.environ["CLAUDE_CAPTURE"],"w"))' "$@"
+exec "$CLAUDE_TEST_BINARY" -test.run=TestFakeClaudeInteractiveProcess
+`
+	if err := os.WriteFile(launcher, []byte(script), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := (ClaudeCodeRuntime{Command: launcher, Environment: []string{"CLAUDE_CAPTURE=" + capture, "CLAUDE_TEST_BINARY=" + os.Args[0]}}).Start(ctx, StartRequest{Workspace: t.TempDir(), Task: "inspect", Profile: ManagedProfile{Content: "PROFILE_MARKER_624", AllowTools: []string{"read"}}, MCPServers: []MCPServer{{Name: "secretary", Command: "secretaryctl", Args: []string{"mcp"}, Env: []MCPEnv{{Name: "MCP_ENDPOINT", Value: "http://127.0.0.1:8080"}}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	select {
+	case <-session.Result():
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	body, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var args []string
+	if err := json.Unmarshal(body, &args); err != nil {
+		t.Fatal(err)
+	}
+	flag := func(name string) string {
+		for i, a := range args {
+			if a == name && i+1 < len(args) {
+				return args[i+1]
+			}
+		}
+		return "missing"
+	}
+	if strings.Contains(string(body), "http://127.0.0.1:8080") {
+		t.Fatal("MCP environment value leaked into process arguments")
+	}
+	if flag("--append-system-prompt") != "PROFILE_MARKER_624" || flag("--tools") != "Read" || flag("--permission-mode") != "dontAsk" {
+		t.Fatalf("profile/policy not delivered: %v", args)
+	}
+	var mcp struct {
+		Servers map[string]struct {
+			Command string
+			Env     map[string]string
+		} `json:"mcpServers"`
+	}
+	if err := json.Unmarshal([]byte(flag("--mcp-config")), &mcp); err != nil {
+		t.Fatal(err)
+	}
+	if mcp.Servers["secretary"].Command != "secretaryctl" || mcp.Servers["secretary"].Env["MCP_ENDPOINT"] != "${SECRETARY_CLAUDE_MCP_0_MCP_ENDPOINT}" {
+		t.Fatalf("MCP config=%#v", mcp)
+	}
+}
+
+func TestClaudeResumeContinuesTheNativeIdentity(t *testing.T) {
+	launcher := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nexec \"$CLAUDE_TEST_BINARY\" -test.run=TestFakeClaudeInteractiveProcess\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	runtime := ClaudeCodeRuntime{Command: launcher, Environment: []string{"CLAUDE_TEST_BINARY=" + os.Args[0]}}
+	request := StartRequest{Workspace: t.TempDir(), DeferInitialPrompt: true}
+	session, err := runtime.Resume(ctx, request, "42fb55f7-c238-42d4-a456-b299998f289e")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	if session.ID() != "42fb55f7-c238-42d4-a456-b299998f289e" {
+		t.Fatal("native identity changed")
+	}
+	if err := session.Prompt(ctx, "recall earlier marker"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case r := <-session.Result():
+		if r.Status != "succeeded" {
+			t.Fatalf("result=%#v", r)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+}
+func TestClaudeMissingResumeFailsBeforePrompt(t *testing.T) {
+	launcher := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"is_error\":true}'\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := (ClaudeCodeRuntime{Command: launcher}).Resume(ctx, StartRequest{Workspace: t.TempDir(), DeferInitialPrompt: true}, "missing")
+	if !errors.Is(err, ErrClaudeCodeUnavailable) {
+		t.Fatalf("missing native session err=%v", err)
+	}
+}
+
+func TestClaudeDeferredStartupFailureIsVisible(t *testing.T) {
+	launcher := filepath.Join(t.TempDir(), "claude")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nprintf '%s\\n' 'native configuration rejected' >&2\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := (ClaudeCodeRuntime{Command: launcher}).Start(ctx, StartRequest{Workspace: t.TempDir(), DeferInitialPrompt: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	select {
+	case r, ok := <-session.Result():
+		if !ok || r.Status != "failed" || !strings.Contains(r.Summary, "configuration rejected") {
+			t.Fatalf("startup failure lost: %#v open=%v", r, ok)
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
 	}
 }

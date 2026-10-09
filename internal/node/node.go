@@ -306,18 +306,22 @@ func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSes
 }
 
 func nativeProfileDelivery(runtime Runtime, profile ManagedProfile) bool {
-	if profile.Delivery == "native" || profile.Runtime == "opencode" {
+	if profile.Delivery == "native" || profile.Runtime == "opencode" || profile.Runtime == "claude_code" {
 		return true
 	}
 	switch selected := runtime.(type) {
+	case ClaudeCodeRuntime:
+		return true
+	case *ClaudeCodeRuntime:
+		return selected != nil
 	case OpenCodeRuntime:
 		return true
 	case *OpenCodeRuntime:
 		return selected != nil
 	case RuntimeRouter:
-		return profile.Runtime == "" && selected.DefaultHarness == "opencode"
+		return profile.Runtime == "" && (selected.DefaultHarness == "opencode" || selected.DefaultHarness == "claude_code")
 	case *RuntimeRouter:
-		return selected != nil && profile.Runtime == "" && selected.DefaultHarness == "opencode"
+		return selected != nil && profile.Runtime == "" && (selected.DefaultHarness == "opencode" || selected.DefaultHarness == "claude_code")
 	default:
 		return false
 	}

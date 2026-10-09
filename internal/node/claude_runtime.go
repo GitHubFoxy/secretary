@@ -18,29 +18,16 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-// ErrClaudeCodeUnavailable identifies a Claude Code process that cannot be
-// started. It is deliberately distinct from Codex ACP errors so callers never
-// turn a missing Claude executable into a different harness execution.
 var ErrClaudeCodeUnavailable = errors.New("claude_code runtime unavailable")
 
-// ErrClaudeCodeConfiguration identifies unsafe static CLI configuration that
-// would compete with the immutable Worker envelope or this adapter's parser.
 var ErrClaudeCodeConfiguration = errors.New("claude_code runtime configuration error")
 
-// ErrClaudeCodeSteeringUnsupported identifies the native CLI mode's lack of
-// an input channel for steering an active print attempt.
-var ErrClaudeCodeSteeringUnsupported = errors.New("claude: print session does not support steering")
+var ErrClaudeCodeSteeringUnsupported = errors.New("claude: same-Attempt steering has not been verified for this native runtime")
 
-// claudeStaticArgumentAllowlist is deliberately small. In documented Claude
-// print mode, disabling interactive slash commands cannot alter the Worker
-// envelope, workspace, permissions, tools, session, parser, or execution mode.
-// Every other configured argument is rejected, including aliases and values.
 var claudeStaticArgumentAllowlist = map[string]struct{}{
 	"--disable-slash-commands": {},
 }
 
-// ClaudeCodeRuntime runs the real Claude Code CLI in its documented headless
-// print mode with stream-json output. It is intentionally not an ACP adapter.
 type ClaudeCodeRuntime struct {
 	Command        string
 	Arguments      []string
@@ -50,7 +37,6 @@ type ClaudeCodeRuntime struct {
 	RawLogFiles    int
 }
 
-// ClaudeRuntime is kept as a descriptive compatibility name for the adapter.
 type ClaudeRuntime = ClaudeCodeRuntime
 
 func (r ClaudeCodeRuntime) Start(ctx context.Context, request StartRequest) (Session, error) {
@@ -62,6 +48,9 @@ func (r ClaudeCodeRuntime) Start(ctx context.Context, request StartRequest) (Ses
 		return nil, err
 	}
 	request.Profile = profile
+	if request.Profile.ReplyContractVersion != "" {
+		return nil, fmt.Errorf("%w: addressed reply grouping is not verified", ErrClaudeCodeConfiguration)
+	}
 	if err := validateClaudeRequest(request); err != nil {
 		return nil, err
 	}
@@ -85,6 +74,9 @@ func (r ClaudeCodeRuntime) Resume(ctx context.Context, request StartRequest, run
 		return nil, err
 	}
 	request.Profile = profile
+	if request.Profile.ReplyContractVersion != "" {
+		return nil, fmt.Errorf("%w: addressed reply grouping is not verified", ErrClaudeCodeConfiguration)
+	}
 	if err := validateClaudeRequest(request); err != nil {
 		return nil, err
 	}
@@ -95,7 +87,7 @@ func (r ClaudeCodeRuntime) Resume(ctx context.Context, request StartRequest, run
 	if err != nil {
 		return nil, err
 	}
-	return r.startProcess(ctx, request, runtimeSessionID, args)
+	return r.startProcess(ctx, request, runtimeSessionID, args, true)
 }
 
 func validateClaudeRequest(request StartRequest) error {
@@ -105,7 +97,7 @@ func validateClaudeRequest(request StartRequest) error {
 	if request.HarnessInstance.Kind == core.HarnessClaudeCode {
 		for _, capability := range []core.ExecutionCapability{core.CapabilitySteering, core.CapabilityApprovals} {
 			if request.HarnessInstance.Capabilities.SupportsExecution(capability) {
-				return fmt.Errorf("%w: Claude Code print runtime cannot provide %q", ErrClaudeCodeConfiguration, capability)
+				return fmt.Errorf("%w: Claude Code runtime cannot provide %q", ErrClaudeCodeConfiguration, capability)
 			}
 		}
 		if !request.HarnessInstance.Available() {
@@ -118,7 +110,7 @@ func validateClaudeRequest(request StartRequest) error {
 	if request.Workspace == "" {
 		return fmt.Errorf("%w: workspace is required", ErrClaudeCodeUnavailable)
 	}
-	if request.Task == "" && request.HarnessInstance.Kind != "" {
+	if request.Task == "" && request.HarnessInstance.Kind != "" && !request.DeferInitialPrompt {
 		return fmt.Errorf("%w: task is required", ErrClaudeCodeUnavailable)
 	}
 	return nil
@@ -145,7 +137,59 @@ func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionI
 		return nil, err
 	}
 	args := append([]string(nil), r.Arguments...)
-	args = append(args, "--print", "--output-format", "stream-json", "--verbose")
+	args = append(args, "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config")
+	args = append(args, "--permission-mode", "dontAsk")
+	toolNames := map[string]string{"read": "Read", "bash": "Bash", "shell": "Bash", "edit": "Edit", "write": "Write", "patch": "Edit", "glob": "Glob", "find": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch", "task": "Agent", "subagent": "Agent", "skill": "Skill"}
+	tools := []string{}
+	for _, tool := range request.Profile.AllowTools {
+		name, ok := toolNames[tool]
+		if !ok {
+			return nil, fmt.Errorf("%w: unsupported managed tool %q", ErrClaudeCodeConfiguration, tool)
+		}
+		tools = append(tools, name)
+	}
+	if request.Profile.Name != "" || request.Profile.Content != "" || len(tools) > 0 {
+		args = append(args, "--tools", strings.Join(tools, ","))
+	}
+	allowed := append([]string(nil), tools...)
+	for _, server := range request.MCPServers {
+		if request.Profile.Name == "secretary" && server.Name != "secretary" {
+			return nil, fmt.Errorf("%w: unexpected Secretary MCP identity", ErrClaudeCodeConfiguration)
+		}
+		allowed = append(allowed, "mcp__"+server.Name+"__*")
+	}
+	if len(allowed) > 0 {
+		args = append(args, "--allowedTools", strings.Join(allowed, ","))
+	}
+	if prompt := request.Profile.EffectivePrompt(); prompt != "" {
+		args = append(args, "--append-system-prompt", prompt)
+	}
+	servers := map[string]any{}
+	for index, server := range request.MCPServers {
+		if server.Name == "" || server.Command == "" {
+			return nil, fmt.Errorf("%w: MCP name and command required", ErrClaudeCodeConfiguration)
+		}
+		if _, exists := servers[server.Name]; exists {
+			return nil, fmt.Errorf("%w: duplicate MCP name", ErrClaudeCodeConfiguration)
+		}
+		environment := map[string]string{}
+		for _, variable := range server.Env {
+			if !validEnvironmentName(variable.Name) {
+				return nil, fmt.Errorf("%w: invalid MCP environment name", ErrClaudeCodeConfiguration)
+			}
+			if _, exists := environment[variable.Name]; exists {
+				return nil, fmt.Errorf("%w: duplicate MCP environment name", ErrClaudeCodeConfiguration)
+			}
+			environment[variable.Name] = fmt.Sprintf("${SECRETARY_CLAUDE_MCP_%d_%s}", index, variable.Name)
+		}
+		serverArgs := server.Args
+		if serverArgs == nil {
+			serverArgs = []string{}
+		}
+		servers[server.Name] = map[string]any{"command": server.Command, "args": serverArgs, "env": environment}
+	}
+	config, _ := json.Marshal(map[string]any{"mcpServers": servers})
+	args = append(args, "--mcp-config", string(config))
 	model, reasoning := request.Model, request.Reasoning
 	if request.HarnessInstance.Kind == "" {
 		if model == "" {
@@ -166,13 +210,11 @@ func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionI
 	} else {
 		args = append(args, "--session-id", sessionID)
 	}
-	if request.Task != "" {
-		args = append(args, request.Task)
-	}
+
 	return args, nil
 }
 
-func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartRequest, sessionID string, args []string) (*claudeSession, error) {
+func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartRequest, sessionID string, args []string, resume ...bool) (*claudeSession, error) {
 	command := r.command()
 	if _, err := exec.LookPath(command); err != nil {
 		return nil, fmt.Errorf("%w: executable %q is unavailable: %v", ErrClaudeCodeUnavailable, command, err)
@@ -180,6 +222,15 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 	cmd := exec.CommandContext(ctx, command, args...)
 	cmd.Dir = request.Workspace
 	cmd.Env = append(os.Environ(), r.Environment...)
+	for index, server := range request.MCPServers {
+		for _, variable := range server.Env {
+			cmd.Env = append(cmd.Env, fmt.Sprintf("SECRETARY_CLAUDE_MCP_%d_%s=%s", index, variable.Name, variable.Value))
+		}
+	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("%w: open stdin: %v", ErrClaudeCodeUnavailable, err)
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fmt.Errorf("%w: open stdout: %v", ErrClaudeCodeUnavailable, err)
@@ -191,6 +242,9 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 	}
 	session := &claudeSession{
 		id:       sessionID,
+		stdin:    stdin,
+		seen:     make(map[string]bool),
+		ready:    make(chan error, 1),
 		cmd:      cmd,
 		stdout:   stdout,
 		stderr:   stderr,
@@ -198,52 +252,114 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 		result:   make(chan Result, 16),
 	}
 	go session.run()
+	if len(resume) > 0 && resume[0] {
+		session.writeMu.Lock()
+		err = json.NewEncoder(session.stdin).Encode(map[string]any{"type": "control_request", "request_id": "resume-initialize", "request": map[string]any{"subtype": "initialize"}})
+		session.writeMu.Unlock()
+		if err == nil {
+			select {
+			case err = <-session.ready:
+			case <-ctx.Done():
+				err = ctx.Err()
+			}
+		}
+		if err != nil {
+			_ = session.Close()
+			return nil, fmt.Errorf("%w: resume initialization failed: %v", ErrClaudeCodeUnavailable, err)
+		}
+	}
+	if !request.DeferInitialPrompt && request.Task != "" {
+		if err := session.Prompt(ctx, request.Task); err != nil {
+			_ = session.Close()
+			return nil, err
+		}
+	}
 	return session, nil
 }
 
 type claudeSession struct {
 	id       string
 	cmd      *exec.Cmd
+	stdin    io.WriteCloser
 	stdout   io.ReadCloser
 	stderr   *bytes.Buffer
 	activity chan Activity
 	result   chan Result
-
-	stateMu    sync.Mutex
-	closed     bool
-	cancel     bool
-	seenResult bool
-	text       strings.Builder
+	ready    chan error
+	stateMu  sync.Mutex
+	writeMu  sync.Mutex
+	closed   bool
+	cancel   bool
+	active   bool
+	inputID  string
+	seen     map[string]bool
 }
 
 func (s *claudeSession) ID() string                { return s.id }
 func (s *claudeSession) Activity() <-chan Activity { return s.activity }
 func (s *claudeSession) Result() <-chan Result     { return s.result }
-
-func (s *claudeSession) Prompt(context.Context, string) error {
-	return errors.New("claude: print session requires a new Attempt for another prompt")
+func (s *claudeSession) Prompt(ctx context.Context, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if strings.TrimSpace(text) == "" {
+		return errors.New("claude: empty prompt")
+	}
+	id, err := newClaudeSessionID()
+	if err != nil {
+		return err
+	}
+	s.stateMu.Lock()
+	if s.closed || s.active {
+		s.stateMu.Unlock()
+		return errors.New("claude: session closed or Attempt still active")
+	}
+	s.active = true
+	s.cancel = false
+	s.inputID = id
+	s.stateMu.Unlock()
+	err = json.NewEncoder(s.stdin).Encode(map[string]any{"type": "user", "uuid": id, "session_id": s.id, "message": map[string]any{"role": "user", "content": text}, "parent_tool_use_id": nil})
+	if err != nil {
+		s.stateMu.Lock()
+		s.active = false
+		s.stateMu.Unlock()
+	}
+	return err
 }
-
 func (s *claudeSession) Steer(context.Context, string) (bool, error) {
 	return false, ErrClaudeCodeSteeringUnsupported
 }
 
 func (s *claudeSession) Queue(context.Context, string) error {
-	return errors.New("claude: print session requires a new Attempt for a queued prompt")
+	return errors.New("claude: queued input must remain server-owned until idle")
 }
-
-func (s *claudeSession) Cancel(context.Context) error {
+func (s *claudeSession) Cancel(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	s.stateMu.Lock()
-	if s.closed {
+	if s.closed || !s.active {
 		s.stateMu.Unlock()
 		return nil
 	}
 	s.cancel = true
-	s.closed = true
 	s.stateMu.Unlock()
-	return s.cmd.Process.Kill()
+	id, err := newClaudeSessionID()
+	if err != nil {
+		return err
+	}
+	err = json.NewEncoder(s.stdin).Encode(map[string]any{"type": "control_request", "request_id": id, "request": map[string]any{"subtype": "interrupt", "cancel_queued": true}})
+	if err != nil {
+		s.stateMu.Lock()
+		s.cancel = false
+		s.stateMu.Unlock()
+	}
+	return err
 }
-
 func (s *claudeSession) Close() error {
 	s.stateMu.Lock()
 	if s.closed {
@@ -252,27 +368,47 @@ func (s *claudeSession) Close() error {
 	}
 	s.closed = true
 	s.stateMu.Unlock()
-	return s.cmd.Process.Kill()
+	s.writeMu.Lock()
+	_ = s.stdin.Close()
+	s.writeMu.Unlock()
+	if err := s.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return err
+	}
+	return nil
 }
-
 func (s *claudeSession) run() {
 	defer close(s.activity)
 	defer close(s.result)
 	scanner := bufio.NewScanner(s.stdout)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		s.handleLine(scanner.Bytes())
 	}
+	if scanner.Err() != nil {
+		_ = s.cmd.Process.Kill()
+	}
 	waitErr := s.cmd.Wait()
+	select {
+	case s.ready <- errors.New("Claude Code exited before resume initialization"):
+	default:
+	}
 	s.stateMu.Lock()
+	if s.inputID == "" && !s.closed {
+		s.active = true
+	}
+	active := s.active
 	canceled := s.cancel
-	seenResult := s.seenResult
+	s.closed = true
 	s.stateMu.Unlock()
-	if !seenResult {
+	if active {
 		status := "failed"
 		if canceled {
 			status = "canceled"
 		}
 		summary := strings.TrimSpace(s.stderr.String())
+		if summary == "" && scanner.Err() != nil {
+			summary = scanner.Err().Error()
+		}
 		if summary == "" && waitErr != nil {
 			summary = waitErr.Error()
 		}
@@ -282,43 +418,77 @@ func (s *claudeSession) run() {
 		s.emitResult(Result{Status: status, Summary: summary})
 	}
 }
-
 func (s *claudeSession) handleLine(line []byte) {
 	var record map[string]any
 	if json.Unmarshal(line, &record) != nil {
-		text := strings.TrimSpace(string(line))
-		if text != "" {
-			s.emitText(text)
+		return
+	}
+	if valueString(record["type"]) == "control_response" {
+		response, _ := record["response"].(map[string]any)
+		if valueString(response["request_id"]) == "resume-initialize" {
+			var err error
+			if valueString(response["subtype"]) != "success" {
+				err = errors.New("native resume rejected")
+			}
+			select {
+			case s.ready <- err:
+			default:
+			}
 		}
 		return
 	}
-	switch fmt.Sprint(record["type"]) {
-	case "system":
+	if sid := valueString(record["session_id"]); sid != "" && sid != s.id {
+		_ = s.Close()
+		s.emitResult(Result{Status: "failed", Summary: "Claude Code returned a different native session identity"})
 		return
-	case "stream_event":
-		if event, ok := record["event"].(map[string]any); ok {
-			s.handleStreamEvent(event)
-		}
+	}
+	s.stateMu.Lock()
+	active := s.active
+	inputID := s.inputID
+	s.stateMu.Unlock()
+	if !active {
+		return
+	}
+	if input := valueString(record["user_message_uuid"]); input != "" && input != inputID {
+		return
+	}
+	if valueString(record["parent_tool_use_id"]) != "" {
+		return
+	}
+	switch valueString(record["type"]) {
 	case "assistant":
+		id := valueString(record["uuid"])
+		if id != "" {
+			if s.seen[id] {
+				return
+			}
+			s.seen[id] = true
+		}
 		if message, ok := record["message"].(map[string]any); ok {
 			s.handleContent(message["content"])
 		}
 	case "result":
 		summary := valueString(record["result"])
-		if summary == "" {
-			s.stateMu.Lock()
-			summary = strings.TrimSpace(s.text.String())
-			s.stateMu.Unlock()
-		}
-		if summary == "" {
-			summary = "completed"
-		}
 		status := "succeeded"
-		if subtype := strings.ToLower(valueString(record["subtype"])); subtype != "" && subtype != "success" {
+		if subtype := valueString(record["subtype"]); subtype != "success" {
 			status = "failed"
 		}
-		if isError, ok := record["is_error"].(bool); ok && isError {
+		if isError, _ := record["is_error"].(bool); isError {
 			status = "failed"
+		}
+		if reason := valueString(record["terminal_reason"]); strings.Contains(reason, "error") {
+			status = "failed"
+		}
+		s.stateMu.Lock()
+		if s.cancel {
+			status = "canceled"
+		}
+		s.stateMu.Unlock()
+		if summary == "" {
+			summary = "Claude Code returned no answer"
+			if status == "succeeded" {
+				status = "failed"
+			}
 		}
 		s.emitResult(Result{Status: status, Summary: summary})
 	case "error":
@@ -329,22 +499,6 @@ func (s *claudeSession) handleLine(line []byte) {
 		s.emitResult(Result{Status: "failed", Summary: summary})
 	}
 }
-
-func (s *claudeSession) handleStreamEvent(event map[string]any) {
-	switch valueString(event["type"]) {
-	case "content_block_delta":
-		delta, _ := event["delta"].(map[string]any)
-		if valueString(delta["type"]) == "text_delta" {
-			s.emitText(valueString(delta["text"]))
-		}
-	case "content_block_start":
-		block, _ := event["content_block"].(map[string]any)
-		if valueString(block["type"]) == "tool_use" {
-			s.emitActivity(Activity{Kind: ActivityTool, Text: valueString(block["name"])})
-		}
-	}
-}
-
 func (s *claudeSession) handleContent(content any) {
 	items, _ := content.([]any)
 	for _, item := range items {
@@ -357,17 +511,12 @@ func (s *claudeSession) handleContent(content any) {
 		}
 	}
 }
-
 func (s *claudeSession) emitText(text string) {
 	if text == "" {
 		return
 	}
-	s.stateMu.Lock()
-	s.text.WriteString(text)
-	s.stateMu.Unlock()
 	s.emitActivity(Activity{Kind: ActivityText, Text: text})
 }
-
 func (s *claudeSession) emitActivity(activity Activity) {
 	if (activity.Kind == ActivityText && activity.Text == "") || (activity.Kind != ActivityText && strings.TrimSpace(activity.Text) == "") {
 		return
@@ -377,14 +526,13 @@ func (s *claudeSession) emitActivity(activity Activity) {
 	default:
 	}
 }
-
 func (s *claudeSession) emitResult(result Result) {
 	s.stateMu.Lock()
-	if s.seenResult {
+	if !s.active {
 		s.stateMu.Unlock()
 		return
 	}
-	s.seenResult = true
+	s.active = false
 	s.stateMu.Unlock()
 	s.result <- result
 }
