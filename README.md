@@ -16,3 +16,5 @@ Secretary — персональный ассистент, который сох
 Это описание продуктового обещания; доступность каналов, harnesses и нескольких Execution Nodes зависит от конфигурации и этапа развёртывания. Текущая конфигурация по умолчанию использует OpenCode и модели OpenAI. Первый trusted-local deployment даёт Worker полный доступ в своём окружении и сам по себе не является sandbox или гарантией изоляции.
 
 См. [быстрый старт](docs/quickstart.md), [конфигурацию](docs/configuration.md), [словарь домена](GLOSSARY.md), [runtime-контракты](docs/architecture/runtime-contracts.md) и [критерии релизной проверки](docs/phase4-release-gate.md).
+
+Локальный CLI: `./secretary setup`, затем `./secretary start`. После setup команда доступна как `secretary` в `PATH`.

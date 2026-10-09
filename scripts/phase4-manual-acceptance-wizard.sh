@@ -290,7 +290,7 @@ step "Restart the server once and confirm the same Worker binding remains."
 pause "Press Enter after the server and both Nodes have been checked"
 
 stage "Harness authentication"
-say "On each required Node, inspect sex doctor and observed inventory for OpenCode v2, fx, Claude Code, and Codex."
+say "On each required Node, inspect secretary doctor and observed inventory for OpenCode v2, fx, Claude Code, and Codex."
 step "Do not copy credentials or access a personal native store. Owner login or legacy migration needs separate approval."
 step "If native owner auth/access is unavailable, record UNAVAILABLE; never substitute another harness or model."
 pause "Press Enter after harness status has been checked"

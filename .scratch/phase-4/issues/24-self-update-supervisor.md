@@ -216,7 +216,7 @@ conversation continues
 
 ## Notes
 
-The existing `sex` launcher already separates much of the persistent state from `~/.local/bin`, so it can serve as the starting point. The main architectural change is to stop building directly over the live installation and move lifecycle ownership into an independent supervisor with versioned releases and rollback.
+The existing `secretary` launcher already separates much of the persistent state from `~/.local/bin`, so it can serve as the starting point. The main architectural change is to stop building directly over the live installation and move lifecycle ownership into an independent supervisor with versioned releases and rollback.
 
 
 ## Comments

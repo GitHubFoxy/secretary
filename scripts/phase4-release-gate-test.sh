@@ -28,7 +28,7 @@ for command in \
   'clean-vite-assets.mjs "$BUILD_TMP/dist"' \
   'cmp -s' \
   'git diff --check' \
-  'scripts/sex-cli-test.sh' \
+  'scripts/secretary-cli-test.sh' \
   'scripts/node-deployment-test.sh' \
   'scripts/node-revoke-test.sh'; do
   grep -Fq -- "$command" "$GATE" || fail "gate does not run: $command"

@@ -34,7 +34,7 @@ Runbook для always-on Arch Linux сервера (omarchy), где посто�
 | `node/config.json`, `node/data` | состояние outbound Node |
 | `server.pid`, `server.mode` | runtime-файлы launcher (пишутся и под systemd) |
 
-Логи процессов под systemd уходят в journal, а не в `secretaryd.log` / `secretary-node.log` (эти файлы пишет только foreground-запуск через `sex start` / `sex node start`).
+Логи процессов под systemd уходят в journal, а не в `secretaryd.log` / `secretary-node.log` (эти файлы пишет только foreground-запуск через `secretary start` / `secretary node start`).
 
 ## Services
 
@@ -49,7 +49,7 @@ User-юниты: `~/.config/systemd/user/secretaryd.service` и `secretary-node.
 
   [Service]
   Type=simple
-  ExecStart=/usr/bin/zsh /home/coder/projects/secretary-v2/sex serve
+  ExecStart=/usr/bin/zsh /home/coder/projects/secretary-v2/secretary serve
   Restart=on-failure
   RestartSec=3
   Environment=PATH=/home/coder/.local/bin:/home/coder/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
@@ -59,7 +59,7 @@ User-юниты: `~/.config/systemd/user/secretaryd.service` и `secretary-node.
   ```
 
   В `ExecStart` только абсолютные пути: systemd не обязан раскрывать `~`.
-- Node: `ExecStart=/usr/bin/zsh /home/coder/projects/secretary-v2/sex node serve` с `Wants=` и `After=secretaryd.service`. Жёсткого `Requires=` нет: Node умеет reconnect при рестарте сервера.
+- Node: `ExecStart=/usr/bin/zsh /home/coder/projects/secretary-v2/secretary node serve` с `Wants=` и `After=secretaryd.service`. Жёсткого `Requires=` нет: Node умеет reconnect при рестарте сервера.
 - Оба: `Restart=on-failure`, `WantedBy=default.target`. Секретов в юнитах нет.
 - Linger включён (`loginctl enable-linger coder`, проверка: `loginctl show-user coder`), поэтому юниты поднимаются после reboot без входа пользователя.
 
@@ -81,7 +81,7 @@ Pairing token lifecycle: токен одноразовый и после enrollm
 
 ## Управление под systemd
 
-Процессами управляет только systemd. `sex stop` / `sex start` / `sex restart` / `sex node start` под systemd не использовать: они убивают процесс за спиной systemd по pid-файлу, и `Restart=on-failure` может тут же поднять его обратно.
+Процессами управляет только systemd. `secretary stop` / `secretary start` / `secretary restart` / `secretary node start` под systemd не использовать: они убивают процесс за спиной systemd по pid-файлу, и `Restart=on-failure` может тут же поднять его обратно.
 
 ```sh
 systemctl --user stop secretaryd.service secretary-node.service
@@ -91,23 +91,23 @@ systemctl --user status secretaryd.service secretary-node.service
 journalctl --user -u secretaryd -u secretary-node -n 50 --no-pager
 ```
 
-Для инспекции годятся `sex status`, `sex node status`, `sex doctor` (читают pid-файлы и конфиг, процессами не управляют).
+Для инспекции годятся `secretary status`, `secretary node status`, `secretary doctor` (читают pid-файлы и конфиг, процессами не управляют).
 
 Debug-режим (с Control Room): остановить юнит и запустить foreground вручную:
 
 ```sh
 systemctl --user stop secretaryd.service
-zsh ~/projects/secretary-v2/sex serve --debug   # Ctrl-C по окончании
+zsh ~/projects/secretary-v2/secretary serve --debug   # Ctrl-C по окончании
 systemctl --user start secretaryd.service
 ```
 
-После `git pull` с изменениями `sex` или Go-кода:
+После `git pull` с изменениями `secretary` или Go-кода:
 
 ```sh
-cd ~/projects/secretary-v2 && zsh ./sex setup   # пересборка бинарей, проверка harness
+cd ~/projects/secretary-v2 && zsh ./secretary setup   # пересборка бинарей, проверка harness
 systemctl --user daemon-reload                  # только если менялись сами unit files
 systemctl --user restart secretaryd.service secretary-node.service
-sex doctor
+secretary doctor
 ```
 
 ## Client pairing and revoke
@@ -186,7 +186,7 @@ rm -rf "$tmp"
 
 JSON-отчёт `secretary-migrate` содержит счётчики `Workers`, `Turns`, `Attempts`, `Results`. Restore-check пройден, когда `integrity_check` возвращает `ok`, счётчики выше нуля на рабочей базе, а таблицы `conversations`, `results` и `phase4_results` читаются. Миграция в destination заодно создаёт таблицы текущей схемы (`workers`, `phase4_*`), которых может не быть в копии, открывавшейся старой версией кода.
 
-Полный restore: `systemctl --user stop secretaryd.service secretary-node.service`, скопируйте бэкап в `secretary.db` (удалите соседние `secretary.db-wal` и `secretary.db-shm`), `systemctl --user start secretaryd.service secretary-node.service`, затем `sex doctor`.
+Полный restore: `systemctl --user stop secretaryd.service secretary-node.service`, скопируйте бэкап в `secretary.db` (удалите соседние `secretary.db-wal` и `secretary.db-shm`), `systemctl --user start secretaryd.service secretary-node.service`, затем `secretary doctor`.
 
 ## Health checks
 
@@ -234,7 +234,7 @@ go test ./internal/webapi ./cmd/secretaryd
 
 1. Reboot сервера без входа пользователя (linger включён): `systemctl --user is-active secretaryd.service secretary-node.service` показывает `active`.
 2. `curl -fsS https://<machine>.<tailnet>.ts.net/v1/health` с доверенного устройства возвращает `{"status":"ok"}`.
-3. Реальный fx HarnessInstance становится ready после restart: `sex doctor` без проблем.
+3. Реальный fx HarnessInstance становится ready после restart: `secretary doctor` без проблем.
 4. Restore-check на копии свежего бэкапа возвращает `ok` и ненулевые счётчики.
 
 ## macOS-вариант (не основной)
@@ -242,8 +242,8 @@ go test ./internal/webapi ./cmd/secretaryd
 На macOS вместо systemd используются launchd-сервисы:
 
 ```sh
-sex install-service        # server: ~/Library/LaunchAgents/dev.secretary.sex.plist
-sex node install-service   # node:   ~/Library/LaunchAgents/dev.secretary.sex-node.plist
+secretary install-service        # server: ~/Library/LaunchAgents/dev.secretary.cli.plist
+secretary node install-service   # node:   ~/Library/LaunchAgents/dev.secretary.cli-node.plist
 ```
 
-Оба plist содержат `RunAtLoad` и `KeepAlive`, секретов в них нет. LaunchAgent стартует после входа пользователя в систему: чтобы сервер поднимался после reboot без действий, включите auto-login. Логи: `sex logs`, управление: `sex start/stop/restart`.
+Оба plist содержат `RunAtLoad` и `KeepAlive`, секретов в них нет. LaunchAgent стартует после входа пользователя в систему: чтобы сервер поднимался после reboot без действий, включите auto-login. Логи: `secretary logs`, управление: `secretary start/stop/restart`.

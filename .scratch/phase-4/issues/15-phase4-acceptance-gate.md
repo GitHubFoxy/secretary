@@ -63,7 +63,7 @@ mise exec go@1.27.1 -- go build -p 1 ./...      # PASS
 (cd web/control-room && node ../scripts/clean-vite-assets.mjs "$BUILD_TMP/dist-control")
 # все 6 generated assets совпали с embedded files
 mise exec go@1.27.1 -- go test ./web            # PASS
-./scripts/sex-cli-test.sh                       # PASS
+./scripts/secretary-cli-test.sh                       # PASS
 ./scripts/node-deployment-test.sh               # PASS
 ./scripts/node-revoke-test.sh                   # PASS
 git diff --check                                # PASS
@@ -77,7 +77,7 @@ Gate включает `gofmt` и свой shell contract test; отдельно�
 - `./scripts/phase4-release-gate.sh` выполнен один раз после private native Ticket33 fixtures; exit 0.
 - PASS: `mise exec go@1.27.1 -- go test -p 1 ./...`; `mise exec go@1.27.1 -- go test -race -p 1 ./...`; `mise exec go@1.27.1 -- go vet -p 1 ./...`; `mise exec go@1.27.1 -- go build -p 1 ./...`.
 - PASS: frontend `npm test` — 10/10; main и Control Room Vite builds; все 6 embedded assets совпали; `go test ./web`.
-- PASS: gate contract, `gofmt`, `scripts/sex-cli-test.sh`, `scripts/node-deployment-test.sh`, `scripts/node-revoke-test.sh`, `git diff --check`; итоговое время фиксации `2026-10-05T05:25:25Z`.
+- PASS: gate contract, `gofmt`, `scripts/secretary-cli-test.sh`, `scripts/node-deployment-test.sh`, `scripts/node-revoke-test.sh`, `git diff --check`; итоговое время фиксации `2026-10-05T05:25:25Z`.
 - Manual matrix остаётся неполной: 22 live Telegram — `BLOCKED`; 29 addressed-reply live Telegram — `NOT RUN`; 33 owner login/authenticated inventory/Worker/migration approval — `NOT RUN`; прочие historical `FAIL`/`BLOCKED`/`UNAVAILABLE`/`NOT RUN` сохраняются. Ticket 15 не resolved.
 
 ### Combined gate после Ticket 29 late-ACK fix
@@ -85,7 +85,7 @@ Gate включает `gofmt` и свой shell contract test; отдельно�
 - `run_id`: `p4-ticket15-lateack-459709c-20261005T070605Z`; base `459709c`; branch `phase4-implementation`; изменения не закоммичены.
 - Единственный запуск `./scripts/phase4-release-gate.sh` завершился `PASS`, exit 0; записано `2026-10-05T07:06:05Z`.
 - `go test -p 1 ./...`, `go test -race -p 1 ./...`, `go vet -p 1 ./...`, `go build -p 1 ./...` — PASS, включая Core/CTL/Node/server integration late receipt regressions.
-- Frontend `npm test` — 10/10; обе Vite production builds и сравнение всех 6 embedded assets — PASS. `go test ./web`, release-gate contract, `gofmt`, `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh` и `git diff --check` — PASS.
+- Frontend `npm test` — 10/10; обе Vite production builds и сравнение всех 6 embedded assets — PASS. `go test ./web`, release-gate contract, `gofmt`, `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh` и `git diff --check` — PASS.
 - Native/live E2E opt-in flags были unset. Isolated store/privacy и CLI integration прошли; authenticated native login/acceptance не запускались.
 - Ticket 29 regressions для durable authenticated exact Node/command/Turn/Attempt receipts, late ACK после удаления waiter/reopen/replay, authoritative denial и запрета оживления terminal Turn входят в пройденный Go suite. Это не real Telegram proof.
 - Real matrix остаётся pending: 22 live Topic/General — `BLOCKED`; 29 General → Worker Topic → следующий turn — `NOT RUN`; owner login/authenticated native inventory/Worker и migration approval — `NOT RUN`. Исторический `Node is offline` timing failure не объявляется гарантированно исправленным. Ticket 15 остаётся `claimed`.
@@ -95,7 +95,7 @@ Gate включает `gofmt` и свой shell contract test; отдельно�
 - `run_id`: `p4-ticket15-approvalfix-459709c-20261005T081907Z`; base `459709c`; branch `phase4-implementation`; changes uncommitted. `./scripts/phase4-release-gate.sh` запускался один раз после этих fixes и завершился `PASS`, exit 0; результат записан `2026-10-05T08:19:07Z`.
 - PASS: `mise exec go@1.27.1 -- go test -p 1 ./...`; `mise exec go@1.27.1 -- go test -race -p 1 ./...`; `mise exec go@1.27.1 -- go vet -p 1 ./...`; `mise exec go@1.27.1 -- go build -p 1 ./...`.
 - PASS: frontend `npm test` — 10/10; обе Vite production builds и точное сравнение всех 6 embedded assets; `go test ./web`.
-- PASS: gate contract, `gofmt`, `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`; тесты использовали isolated HOME/temp outputs.
+- PASS: gate contract, `gofmt`, `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`; тесты использовали isolated HOME/temp outputs.
 - Approval intent/resolving, exact Node/command/Turn/Attempt receipt handling, response privacy, conflict behavior и отсутствие terminal-turn revival покрыты прошедшими Core/CTL/Node/WebAPI и frontend suites. Все native/live E2E opt-in flags были unset; provider login/paid calls/production mutation не выполнялись.
 - Manual gates остаются неизменными: real Ticket 29 flow — `NOT RUN`; live Ticket 22 Topic/General — `BLOCKED`; owner login, authenticated native inventory/Worker и migration approval — `NOT RUN`; остальные recorded `FAIL`/`BLOCKED`/`UNAVAILABLE`/`NOT RUN` не повышались до PASS. Ticket 15 остаётся `claimed`.
 
@@ -105,7 +105,7 @@ Gate включает `gofmt` и свой shell contract test; отдельно�
 - `./scripts/phase4-release-gate.sh` выполнен после финального recovery regression, exit 0; результат зафиксирован `2026-10-05T09:17:12Z`.
 - PASS: `go test -p 1 ./...`, `go test -race -p 1 ./...`, `go vet -p 1 ./...`, `go build -p 1 ./...`; все пакеты прошли, включая Core recovery, CTL saved-intent retry, WebAPI restart/connection-loss/authenticated-ACK regression и Node protocol tests.
 - PASS: `npm ci --ignore-scripts --no-audit --no-fund`, frontend tests 10/10, main и Control Room Vite production builds, все 6 embedded assets, `go test ./web`.
-- PASS: release-gate contract, `gofmt`, `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`.
+- PASS: release-gate contract, `gofmt`, `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`.
 - Local recovery evidence: явный owner retry через `POST /v1/approvals/{id}/retry` повторно использует сохранённые decision/response и прежние command/Turn/Attempt IDs после refresh/reconnect; auto-retry, новая команда и client payload replacement не допускаются. Public WebAPI/CTL regressions указаны в Ticket 29. Это не real Node/Telegram acceptance.
 - Synthetic protocol/API evidence не заменяет real acceptance. Row 17 (`needs_input`/`respond_worker`) остаётся `BLOCKED`: `p4-real-input7-20260914` не создал `user_input_request`; Ticket 29 General → Worker Topic → следующий turn — `NOT RUN`; Ticket 22 live Topic/General — `BLOCKED`. Другие `FAIL`/`BLOCKED`/`UNAVAILABLE`/`NOT RUN` не менялись. Production, provider login и auth mutation не выполнялись; Ticket 15 остаётся `claimed`.
 
@@ -115,7 +115,7 @@ Gate включает `gofmt` и свой shell contract test; отдельно�
 - `./scripts/phase4-release-gate.sh` выполнен один раз после последних API/UI patches, exit 0; `observed_at_utc`: `2026-10-05T09:51:31Z`.
 - PASS: `go test -p 1 ./...`, `go test -race -p 1 ./...`, `go vet -p 1 ./...`, `go build -p 1 ./...`; narrow approval-write-only HTTP privacy test входит в Go suite.
 - PASS: `npm ci --ignore-scripts --no-audit --no-fund`, frontend tests 10/10, обе Vite production builds, все шесть embedded assets и `go test ./web`.
-- PASS: gate contract, `gofmt`, `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`.
+- PASS: gate contract, `gofmt`, `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`.
 - Regression проверяет, что credential только с `approval:write` получает exact strict allowlisted response для resolving retry, cached duplicate, resolved no-handoff и соседнего deny; `/v1/workers` и `/v1/approvals` остаются `403`. Marker/shape assertions выводят только булевы итоги. Это deterministic test, не live acceptance.
 - Live Ticket 29 General → Worker Topic → следующий turn — `NOT RUN`; Ticket 22 Topic/General — `BLOCKED`; прочие manual statuses не менялись. Ticket 15 остаётся `claimed`.
 
@@ -125,7 +125,7 @@ Gate включает `gofmt` и свой shell contract test; отдельно�
 - `./scripts/phase4-release-gate.sh` запущен один раз после последних API/UI-test patches; exit 0; `observed_at_utc`: `2026-10-05T10:27:08Z`.
 - PASS: `go test -p 1 ./...`, `go test -race -p 1 ./...`, `go vet -p 1 ./...`, `go build -p 1 ./...`.
 - PASS: `npm ci --ignore-scripts --no-audit --no-fund`, frontend tests 10/10, обе Vite production builds, все 6 embedded assets, `go test ./web`.
-- PASS: release-gate contract, `gofmt`, `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`.
+- PASS: release-gate contract, `gofmt`, `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`.
 - Public HTTP race test делает реальный Client revoke между route auth checks без sleep; прежний handler воспроизводил продолжение после 401, mutation и второй body. Новый handler завершается после explicit auth rejection. Invalid scoped Client остаётся 403 без mutation/owner DTO. Public owner refresh показывает оба сохранённых решения, но не saved response, user/actor или private command ID; Client permissions/idempotency и public retry ID не менялись.
 - Pending: Ticket 29 live General → Worker Topic → следующий user turn — `NOT RUN`; Ticket 22 Topic/General — `BLOCKED`; остальные recorded `FAIL`/`BLOCKED`/`UNAVAILABLE`/`NOT RUN` не повышались до PASS. Ticket 15 остаётся `claimed`. Production/auth login/deploy не выполнялись.
 

@@ -99,7 +99,7 @@ func SelectSharedOpenCodeNativeStores(secretaryDataDir, nodeDataDir string) (Ope
 	if err := os.Rename(nodeTemp, nodePath); err != nil {
 		_ = os.Remove(nodeTemp)
 		if rollbackErr := restoreOpenCodeStoreSelection(secretaryPath, secretaryOld, secretaryHadOld); rollbackErr != nil {
-			return OpenCodeNativeStore{}, OpenCodeNativeStore{}, errors.New("opencode: shared-store selection is incomplete; keep Secretary and Node stopped and rerun sex opencode select-shared-store")
+			return OpenCodeNativeStore{}, OpenCodeNativeStore{}, errors.New("opencode: shared-store selection is incomplete; keep Secretary and Node stopped and rerun secretary opencode select-shared-store")
 		}
 		return OpenCodeNativeStore{}, OpenCodeNativeStore{}, errors.New("opencode: save shared-store selection failed; previous selection was restored")
 	}

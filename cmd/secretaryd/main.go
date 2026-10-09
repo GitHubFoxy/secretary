@@ -592,7 +592,7 @@ func selectRuntimeNativeStoreSelection(dataDir string) (runtimeNativeStoreSelect
 		return runtimeNativeStoreSelection{Secretary: secretaryStore, Worker: workerStore, NodeDataDir: workerDataDir}, err
 	}
 	if !nodeStandalone && secretarySelectionExists != nodeSelectionExists {
-		return runtimeNativeStoreSelection{}, errors.New("opencode: shared store selection is incomplete; run sex opencode select-shared-store")
+		return runtimeNativeStoreSelection{}, errors.New("opencode: shared store selection is incomplete; run secretary opencode select-shared-store")
 	}
 	legacyDataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME"))
 	hasExistingInstallation := serverStateExists || serverConfigExists || nodeStateExists || nodeConfigExists
@@ -610,7 +610,7 @@ func selectRuntimeNativeStoreSelection(dataDir string) (runtimeNativeStoreSelect
 	}
 	if secretaryStore.Mode == node.OpenCodeNativeStoreModeShared && !nodeStandalone {
 		if !nodeSelectionExists {
-			return runtimeNativeStoreSelection{}, errors.New("opencode: shared store selection is incomplete; run sex opencode select-shared-store")
+			return runtimeNativeStoreSelection{}, errors.New("opencode: shared store selection is incomplete; run secretary opencode select-shared-store")
 		}
 		workerStore, err := node.SelectOpenCodeNativeStoreWithOptions(workerDataDir, node.OpenCodeNativeStoreOptions{
 			HasExistingState: true, LegacyDataHome: legacyDataHome,
@@ -630,7 +630,7 @@ func selectRuntimeNativeStoreSelection(dataDir string) (runtimeNativeStoreSelect
 			return runtimeNativeStoreSelection{}, err
 		}
 		if workerStore.Mode == node.OpenCodeNativeStoreModeShared {
-			return runtimeNativeStoreSelection{}, errors.New("opencode: local Node selected a shared store but Secretary did not; run sex opencode select-shared-store")
+			return runtimeNativeStoreSelection{}, errors.New("opencode: local Node selected a shared store but Secretary did not; run secretary opencode select-shared-store")
 		}
 		return runtimeNativeStoreSelection{Secretary: secretaryStore, Worker: workerStore, NodeDataDir: workerDataDir, NodeStandalone: nodeStandalone}, nil
 	}

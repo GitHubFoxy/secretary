@@ -83,7 +83,7 @@ grep -q 'control-room/index\.html' web/embed.go
 run "${GO[@]}" test ./web
 
 printf '%s\n' '[8/9] profile-specific integration tests'
-run ./scripts/sex-cli-test.sh
+run ./scripts/secretary-cli-test.sh
 run ./scripts/node-deployment-test.sh
 run ./scripts/node-revoke-test.sh
 

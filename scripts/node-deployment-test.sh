@@ -61,12 +61,12 @@ assert_contains() { [[ "$1" == *"$2"* ]] || fail "$3"; }
 assert_not_contains() { [[ "$1" != *"$2"* ]] || fail "$3"; }
 assert_file() { [[ -f "$1" ]] || fail "missing file: $1"; }
 
-output="$($ROOT/sex setup)" || fail "sex setup"
+output="$($ROOT/secretary setup)" || fail "secretary setup"
 assert_contains "$output" "Full-access trusted Node policy" "setup did not show trusted Node policy"
 assert_file "$HOME/.local/share/secretary/opencode-native/opencode/opencode.db"
 [[ ! -e "$HOME/.local/share/secretary/node/data/opencode-native/opencode" ]] || fail "co-located Node initialized a second native DB"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$HOME/.local/share/opencode" "setup accessed personal OpenCode store"
-output="$($ROOT/sex node setup --server https://secretary.example.ts.net --name macbook --workspace frontend=/Users/me/src/frontend)" || fail "node setup"
+output="$($ROOT/secretary node setup --server https://secretary.example.ts.net --name macbook --workspace frontend=/Users/me/src/frontend)" || fail "node setup"
 assert_contains "$output" "outbound connection only" "node setup did not state private networking"
 config="$HOME/.local/share/secretary/node/config.json"
 [[ -f "$config" ]] || fail "missing Node config"
@@ -80,26 +80,26 @@ assert_contains "$(cat "$config")" '"include_opencode": true' "Node setup did no
 for secret in credential token SECRETARY_; do
   assert_not_contains "$(cat "$config")" "$secret" "Node config contains credential fields: $secret"
 done
-if output="$(FAKE_OPENCODE_AUTH_MODE=missing "$ROOT/sex" node doctor 2>&1)"; then fail "Node doctor accepted missing provider auth"; fi
+if output="$(FAKE_OPENCODE_AUTH_MODE=missing "$ROOT/secretary" node doctor 2>&1)"; then fail "Node doctor accepted missing provider auth"; fi
 assert_contains "$output" "missing: OpenCode provider auth in the shared store" "Node doctor did not expose missing auth"
-output="$($ROOT/sex node doctor)" || fail "node doctor"
+output="$($ROOT/secretary node doctor)" || fail "node doctor"
 assert_contains "$output" "ok: OpenCode provider auth in selected Node store" "Node doctor did not check selected auth store"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$shared_store|auth list --format json --standalone|openai=|aws=" "Node Doctor did not use standalone JSON in the selected store without ambient credentials"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$HOME/.local/share/opencode|auth list" "Node Doctor probed the personal OpenCode store"
-output="$($ROOT/sex node opencode login)" || fail "explicit Node provider login"
+output="$($ROOT/secretary node opencode login)" || fail "explicit Node provider login"
 login_store="$(awk -F'|' '$2 == "auth login" { print $1; exit }' "$TICKET33_OPENCODE_STORE_LOG")"
 [[ "$login_store" == "$shared_store" ]] || fail "Node login selected a non-shared store: $login_store"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$HOME/.local/share/opencode" "Node provider login accessed personal store"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "|openai=|aws=" "Node OpenCode subprocess inherited ambient provider credentials"
 [[ "$(cat "$HOME/.local/share/opencode/opencode.db")" == "personal-store-canary" ]] || fail "Node setup/login modified personal OpenCode DB"
-$ROOT/sex node setup --server https://secretary.example.ts.net --name macbook --workspace frontend=/Users/me/src/frontend >/dev/null || fail "repeat node setup"
-$ROOT/sex node install-service >/dev/null || fail "node install-service"
+$ROOT/secretary node setup --server https://secretary.example.ts.net --name macbook --workspace frontend=/Users/me/src/frontend >/dev/null || fail "repeat node setup"
+$ROOT/secretary node install-service >/dev/null || fail "node install-service"
 node_native="$HOME/.local/share/secretary/opencode-native/opencode"
 [[ "$(cat "$node_native/opencode.db")" == "native-db-initialized" ]] || fail "repeat Node setup reset native DB"
 [[ "$(cat "$node_native/auth.json")" == "owner login fixture" ]] || fail "repeat Node setup reset native auth"
 [[ ! -e "$HOME/.local/share/secretary/node/data/opencode-native/opencode" ]] || fail "repeat Node setup initialized a second native DB"
 [[ "$(cat "$HOME/.local/share/opencode/opencode.db")" == "personal-store-canary" ]] || fail "repeat Node setup modified personal DB"
-plist="$HOME/Library/LaunchAgents/dev.secretary.sex-node.plist"
+plist="$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
 [[ -f "$plist" ]] || fail "missing Node launchd plist"
 assert_contains "$(cat "$plist")" '<string>node</string><string>serve</string>' "Node plist does not use foreground serve"
 for secret in PAIRING_TOKEN credential SECRETARY_CAPABILITY; do

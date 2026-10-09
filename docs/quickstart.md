@@ -26,7 +26,7 @@ export PATH="$HOME/.local/bin:$PATH"
 Запустите setup:
 
 ```sh
-./sex setup
+./secretary setup
 ```
 
 Команда:
@@ -43,22 +43,22 @@ export PATH="$HOME/.local/bin:$PATH"
 Выполните provider login как явное действие owner; команда откроет OpenCode auth flow в общем store, не импортируя личные credentials:
 
 ```sh
-sex opencode login
+secretary opencode login
 ```
 
 Проверьте общий runtime store с обеих сторон:
 
 ```sh
-sex doctor
-sex node doctor
+secretary doctor
+secretary node doctor
 ```
 
-После явного provider login обе команды Doctor должны завершиться без ошибок. На чистой установке без login обе показывают отсутствие auth в общем store; выполните одну команду `sex opencode login`. Для старого managed state вместо этого появляется migration requirement.
+После явного provider login обе команды Doctor должны завершиться без ошибок. На чистой установке без login обе показывают отсутствие auth в общем store; выполните одну команду `secretary opencode login`. Для старого managed state вместо этого появляется migration requirement.
 
 Запустите Secretary:
 
 ```sh
-sex start
+secretary start
 ```
 
 Откроется User UI в браузере. Если браузер не открылся автоматически, команда сообщает адрес локального UI без печати bootstrap token. Bootstrap fragment передаётся только системному браузеру. Не публикуйте этот URL.
@@ -66,7 +66,7 @@ sex start
 Откройте Control Room только для debug-сеанса:
 
 ```sh
-sex restart --debug
+secretary restart --debug
 ```
 
 После запуска Control Room доступен по адресу:
@@ -86,11 +86,11 @@ http://127.0.0.1:8081/control-room
 ## Управление сервером
 
 ```sh
-sex status          # состояние и режим
-sex logs            # поток server log, остановить Ctrl-C
-sex restart         # перезапуск в normal mode
-sex restart --debug # перезапуск с Control Room
-sex stop            # остановка
+secretary status          # состояние и режим
+secretary logs            # поток server log, остановить Ctrl-C
+secretary restart         # перезапуск в normal mode
+secretary restart --debug # перезапуск с Control Room
+secretary stop            # остановка
 ```
 
 Обслуживание always-on сервера: data directory, backup, restore-check, Tailscale Serve и health checks описаны в `docs/always-on-runbook.md`.
@@ -152,19 +152,19 @@ Secretary хранит данные в:
 ## Автозапуск после входа в macOS
 
 ```sh
-sex install-service
+secretary install-service
 ```
 
 Для debug-режима:
 
 ```sh
-sex install-service --debug
+secretary install-service --debug
 ```
 
 Удалить LaunchAgent:
 
 ```sh
-sex uninstall-service
+secretary uninstall-service
 ```
 
 ## Если запуск не удался
@@ -172,8 +172,8 @@ sex uninstall-service
 Сначала выполните:
 
 ```sh
-sex doctor
-sex logs
+secretary doctor
+secretary logs
 ```
 
 Частые причины:
@@ -188,7 +188,7 @@ sex logs
 Для проверки самого CLI без изменения пользовательского состояния:
 
 ```sh
-./scripts/sex-cli-test.sh
+./scripts/secretary-cli-test.sh
 ```
 
 Тесты используют временный `HOME`, fake ACP и fake `launchctl`.

@@ -111,7 +111,7 @@ Owner попросил продолжить recoverable test/environment failure
 **Exact native2.0.22 — PASS, не2.0.24:**
 
 - Использован существующий binary `/home/coder/.local/share/secretary/toolchain/opencode-v2/2.0.22/opencode` на omarchy, reported `opencode v2.0.22`; SHA256 `32cf5aa0a69a650e36277e3315d189835ddc79fb9aa1d0aef5025be5af5ad122`. Binary/store/services/config/auth не изменялись; download не потребовался. Копия только текущих source/build files — private `/tmp/secretary-template-hash-sol-native.gj6QFu/repo`, собрана там Go1.27.1; test artifact SHA256 `2b628b9e8cc094d5a89384417cced828cae90da469ce1785f57ed0b2d3f615c9`. Compilation переиспользовала Go build/module cache, не native store. Tar xattr warnings были harmless, build exit0.
-- Native test process запущен через `env -i`: HOME и TMPDIR внутри private run root, PATH только private bin с symlink на exact2.0.22, pinned Go и system utilities; synthetic provider/MCP сеть только localhost. Ни personal/shared native store, ни provider auth не читались. Public `sex setup` создал отдельную DB без auth/login; native canary и role isolation assertions обязательны.
+- Native test process запущен через `env -i`: HOME и TMPDIR внутри private run root, PATH только private bin с symlink на exact2.0.22, pinned Go и system utilities; synthetic provider/MCP сеть только localhost. Ни personal/shared native store, ни provider auth не читались. Public `secretary setup` создал отдельную DB без auth/login; native canary и role isolation assertions обязательны.
 - Команда artifact: `SECRETARY_OPENCODE_ACP_E2E=1 node.test -test.run='^TestOpenCode(NativeProfilePersistence|ACPNativeHTTPFixture|ACPProgressFinalNativeHTTPFixture|SecretaryMCPNativeHTTPFixture)$' -test.count=1 -test.v` в указанном isolated environment, **exit0**. Лог `/private/tmp/secretary-template-hash-sol-native-pinned-2.0.22.log`, exit record `/private/tmp/secretary-template-hash-sol-native-pinned-2.0.22.exit`, оба0600. Worker и Secretary phases0/1/2 PASS: managed instructions/tools/model/reasoning, deny-first policy, actual read/MCP, forbidden-side-effect rejection, prior history, same-process Follow-up и fresh-process Resume SAME native ID. Worker empty-Skills bound snapshot/hash/source identity проходит JSON до native prepare. HTTP/progress fixtures также проверяют Follow-up/Resume/permissions/history; paid calls/provider login и live Workers отсутствуют.
 
 **Итоговые normal/race и новый final gate:**
@@ -124,9 +124,9 @@ Owner попросил продолжить recoverable test/environment failure
 
 Этот исторический прогон фиксирует прежний дизайн с раздельными Secretary/Node stores и `base_commit 459709c`; он superseded и не описывает реализацию в текущей ветке Ticket 33.
 
-Текущий контракт: одна private native DB для Secretary и co-located Node; remote Node владеет собственным локальным store. Старый `config.toml`/`secretary.db` и старый Node config/state без selection record остаются на прежнем `XDG_DATA_HOME`. Команда `sex opencode select-shared-store` выполняет явный owner transition без переноса auth/history/mappings и отказывается при managed OpenCode session mappings, конфликтующих выборах, частичной записи или непустом target. Fx selection, существующие mappings и runtime session IDs не меняются.
+Текущий контракт: одна private native DB для Secretary и co-located Node; remote Node владеет собственным локальным store. Старый `config.toml`/`secretary.db` и старый Node config/state без selection record остаются на прежнем `XDG_DATA_HOME`. Команда `secretary opencode select-shared-store` выполняет явный owner transition без переноса auth/history/mappings и отказывается при managed OpenCode session mappings, конфликтующих выборах, частичной записи или непустом target. Fx selection, существующие mappings и runtime session IDs не меняются.
 
-- `PASS local`: public `scripts/sex-cli-test.sh` проверяет единый initialization/login path, повторный setup/restart, Doctor, legacy fx continuity, explicit/idempotent owner selection, fail-closed managed-session/conflict/partial/symlink случаи, личный-store canary и private store автономного remote Node.
+- `PASS local`: public `scripts/secretary-cli-test.sh` проверяет единый initialization/login path, повторный setup/restart, Doctor, legacy fx continuity, explicit/idempotent owner selection, fail-closed managed-session/conflict/partial/symlink случаи, личный-store canary и private store автономного remote Node.
 - `PASS local`: новый реальный native unpaid HTTP fixture покрывает последовательную работу Secretary/Worker в одном DB и одновременные ACP sessions с role-specific Profiles, MCP/tools, models/reasoning и history. Отдельно проверен native missing-auth без fallback.
 - `NOT RUN`: owner provider login в новом store, authenticated inventory/Worker gate и production install/restart. Fixture не использовал credentials и не подтверждает доступ к платному provider.
 
@@ -146,33 +146,33 @@ Owner попросил продолжить recoverable test/environment failure
 - `PASS`: Worker и Secretary последовательно использовали один native data home; каждый выполнил Start, same-process Follow-up и fresh-process Resume с тем же session ID/history. Role-specific system Profile, model, reasoning, MCP/tool scope и history не смешались.
 - `HISTORICAL, superseded`: первоначальный concurrent fixture делал предварительный `Runtime.Start` для создания DB, поэтому не доказывал поведение public setup. Исправленный native run с public setup описан ниже; там `Runtime.Start` initializer удалён.
 - `PASS`: native missing-auth inventory вернул явный unavailable status без fallback к personal store.
-- `NOTE`: первая попытка с role-specific model остановилась на test wrapper, который изменял только literal `fixture-model`; wrapper расширен на все configured fixture models. Первая конкурентная попытка стартовала на пустой DB; последующая подготовка через `Runtime.Start` была признана недостаточной reviewer. Текущий fixture теперь использует native DB из настоящего public `sex setup`, см. ledger ниже. Raw ACP, prompts, tool payloads и reasoning в лог/evidence не выводились.
+- `NOTE`: первая попытка с role-specific model остановилась на test wrapper, который изменял только literal `fixture-model`; wrapper расширен на все configured fixture models. Первая конкурентная попытка стартовала на пустой DB; последующая подготовка через `Runtime.Start` была признана недостаточной reviewer. Текущий fixture теперь использует native DB из настоящего public `secretary setup`, см. ledger ниже. Raw ACP, prompts, tool payloads и reasoning в лог/evidence не выводились.
 - `NOT RUN`: owner provider login, authenticated inventory/Worker gate, production setup/restart и legacy migration approval.
 
 ### Ticket 33 review blocker fixes, 5 октября 2026 (последующие Spec findings)
 
 - `run_id`: `p4-33-duplicate-key-fullgate-20261005T170947Z`; ветка `p4/33-shared-opencode-store-b205fa`, база `5fcde24f95551d18ffb3a3832f567530f809e226`; изменения остаются незакоммиченными.
-- **Blocker 1 RED:** реальный `sex setup` в пустом private HOME с OpenCode v2.0.22 вернул exit 0 без `opencode.db`; personal canary не изменился. **Fix/GREEN:** setup вызывает `opencode serve --port 0 --stdio` с EOF на stdin, проверяет DB и aborts с явной ошибкой при отказе/отсутствии файла. CLI fake `auth list` больше не создаёт DB. `sex-cli-test.sh` проверяет как успех, так и видимый native init failure.
+- **Blocker 1 RED:** реальный `secretary setup` в пустом private HOME с OpenCode v2.0.22 вернул exit 0 без `opencode.db`; personal canary не изменился. **Fix/GREEN:** setup вызывает `opencode serve --port 0 --stdio` с EOF на stdin, проверяет DB и aborts с явной ошибкой при отказе/отсутствии файла. CLI fake `auth list` больше не создаёт DB. `secretary-cli-test.sh` проверяет как успех, так и видимый native init failure.
 - **Blocker 2 RED:** public Secretary login выполнил fake auth для manifest `mode=shared`, указывавшего на personal XDG path с basename `opencode-native`; Doctor также запустил fake `auth list`. **Fix/GREEN:** единый Go JSON selection parser и typed exclusive mode валидируют exact canonical path, malformed modes, symlinks и role conflict; Doctor/login/owner CLI выполняют Go preflight до native CLI. Публичные CLI cases проверяют личный canary и отсутствие fake CLI calls.
 - **Blocker 3 RED:** public `secretary-node --config` с `standalone=true` и shared manifest проходил selection и доходил до ошибки pairing. **Fix/GREEN:** Node runtime и Doctor/login применяют `DeploymentConfig.Standalone` до identity/auth; shared Secretary store отвергается до native CLI. Selection и DB canary сохраняются.
-- **PASS focused:** `go test -count=1 ./internal/node ./cmd/secretaryd ./cmd/secretary-node`, `./scripts/sex-cli-test.sh`, `./scripts/node-deployment-test.sh`.
+- **PASS focused:** `go test -count=1 ./internal/node ./cmd/secretaryd ./cmd/secretary-node`, `./scripts/secretary-cli-test.sh`, `./scripts/node-deployment-test.sh`.
 - **PASS native unpaid:** `MISE_TRUSTED_CONFIG_PATHS="$PWD/.mise.toml" SECRETARY_OPENCODE_ACP_E2E=1 mise exec -- go test -count=1 -v -run '^(TestOpenCodeNativeSetupCreatesDatabaseWithoutAuth|TestOpenCodeNativeSharedStoreConcurrentSecretaryAndWorker|TestOpenCodeNativeProfilePersistence)$' ./internal/node`. Настоящий v2.0.22 прошёл public setup без auth/provider call, concurrent Secretary/Worker на созданной этим setup DB и sequential Start/Follow-up/fresh-process Resume с прежним ID/history. HTTP provider/MCP — локальные unpaid fixtures, stores/workspaces — private temp directories; personal-store canary unchanged. Логи содержат только safe metadata.
 - **FAIL, сохранённый initial attempt:** `p4-33-reviewfix-fullgate-20261005T162922Z` остановился на `[2/9] gofmt`, потому что `mise` отклонил недоверенный `.mise.toml`. Stage 1 прошёл; stages 2–9 не запускались. Лог: `/private/tmp/p4-33-reviewfix-fullgate-20261005T162922Z.log`. Этот FAIL не переобозначается как PASS.
 - **PASS, corrected full gate:** `umask 0022 ./scripts/phase4-release-gate.sh`, run `p4-33-reviewfix-fullgate-trusted-20261005T163336Z`, exit 0. Прошли все девять stages: contract, gofmt, `go test -p 1 ./...`, `go test -race -p 1 ./...`, vet/build, frontend tests (10/10), production frontend/embedded assets, CLI/deployment/revoke tests, `git diff --check`. Лог: `/private/tmp/p4-33-reviewfix-fullgate-trusted-20261005T163336Z.log`.
-- **Blocker 4 RED:** public CLI regression с первым personal и последним canonical `data_home` прошла Go-проверку с last-wins, затем fake Secretary login был запущен на первом (personal) пути из shell `awk`. Использовались только изолированные временные HOME и fake CLI; реальный personal store не открывался. **Fix/GREEN:** общий Go parser отклоняет дубликаты верхнеуровневых ключей, в том числе эквивалентные escaped keys, malformed/trailing/unknown JSON и control characters; valid escaped canonical path декодируется единожды. Go selector печатает проверенные typed mode/path записи для Secretary+local Node и Node, а `sex` больше не читает selection manifests и не использует eval/fallback. Public regressions покрывают setup, обе Doctor/login ветви, owner transition, malformed/escaped values, canonical path со slash escapes и пробелами, canary и отсутствие native CLI при отказе. Неблокирующее duplicate-code замечание закрыто в той же правке.
+- **Blocker 4 RED:** public CLI regression с первым personal и последним canonical `data_home` прошла Go-проверку с last-wins, затем fake Secretary login был запущен на первом (personal) пути из shell `awk`. Использовались только изолированные временные HOME и fake CLI; реальный personal store не открывался. **Fix/GREEN:** общий Go parser отклоняет дубликаты верхнеуровневых ключей, в том числе эквивалентные escaped keys, malformed/trailing/unknown JSON и control characters; valid escaped canonical path декодируется единожды. Go selector печатает проверенные typed mode/path записи для Secretary+local Node и Node, а `secretary` больше не читает selection manifests и не использует eval/fallback. Public regressions покрывают setup, обе Doctor/login ветви, owner transition, malformed/escaped values, canonical path со slash escapes и пробелами, canary и отсутствие native CLI при отказе. Неблокирующее duplicate-code замечание закрыто в той же правке.
 - **Диагностированный focused FAIL:** первый `node-revoke-test.sh` остановился, потому что общий `ensure_node_config` вызывал OpenCode selector и требовал Node binary в фикстуре, не связанной с OpenCode. Убрана store selection из generic control/revoke setup; native validation осталась в OpenCode setup/runtime/Doctor/login. Фикстура deployment config также переведена с буквального `$HOME` на абсолютный `data_dir`. Повторный `node-revoke-test.sh` прошёл; внешний curl использовался только как fake.
-- **PASS focused:** `go test -count=1 ./internal/node ./cmd/secretaryd ./cmd/secretary-node`, `./scripts/sex-cli-test.sh`, `./scripts/node-deployment-test.sh`, `./scripts/node-revoke-test.sh`.
+- **PASS focused:** `go test -count=1 ./internal/node ./cmd/secretaryd ./cmd/secretary-node`, `./scripts/secretary-cli-test.sh`, `./scripts/node-deployment-test.sh`, `./scripts/node-revoke-test.sh`.
 - **PASS native unpaid:** `MISE_TRUSTED_CONFIG_PATHS="$PWD/.mise.toml" SECRETARY_OPENCODE_ACP_E2E=1 mise exec -- go test -count=1 -v -run '^(TestOpenCodeNativeSetupCreatesDatabaseWithoutAuth|TestOpenCodeNativeSharedStoreConcurrentSecretaryAndWorker|TestOpenCodeNativeProfilePersistence)$' ./internal/node`. OpenCode v2.0.22 подтвердил public setup, concurrent Secretary/Worker и Start/Follow-up/fresh-process Resume в той же DB; локальные unpaid HTTP fixtures, private temporary stores/workspaces, canary неизменен, только safe metadata в логах.
 - **FAIL, сохранённый initial attempt:** `p4-33-reviewfix-fullgate-20261005T162922Z` остановился на `[2/9] gofmt`, потому что `mise` отклонил недоверенный `.mise.toml`. Stage 1 прошёл; stages 2–9 не запускались. Лог: `/private/tmp/p4-33-reviewfix-fullgate-20261005T162922Z.log`. Этот FAIL не переобозначается как PASS.
 - **PASS, corrected pre-review gate:** `p4-33-reviewfix-fullgate-trusted-20261005T163336Z`, `umask 0022`, stages 1–9, exit 0; лог `/private/tmp/p4-33-reviewfix-fullgate-trusted-20261005T163336Z.log`.
-- **PASS, latest code full gate:** `umask 0022 ./scripts/phase4-release-gate.sh`, run `p4-33-duplicate-key-fullgate-20261005T170947Z`, exit 0. Contract, gofmt, all Go tests/race, vet/build, frontend tests (10/10), production frontend/embedded assets, sex CLI, Node deployment/revoke и diff check прошли. Лог: `/private/tmp/p4-33-duplicate-key-fullgate-20261005T170947Z.log`.
-- **PASS focused follow-up:** после gate добавлены assertions для co-located и standalone `sex node setup` при duplicate keys; повторный `./scripts/sex-cli-test.sh` прошёл. Между full gate и этой проверкой product code не менялся.
+- **PASS, latest code full gate:** `umask 0022 ./scripts/phase4-release-gate.sh`, run `p4-33-duplicate-key-fullgate-20261005T170947Z`, exit 0. Contract, gofmt, all Go tests/race, vet/build, frontend tests (10/10), production frontend/embedded assets, secretary CLI, Node deployment/revoke и diff check прошли. Лог: `/private/tmp/p4-33-duplicate-key-fullgate-20261005T170947Z.log`.
+- **PASS focused follow-up:** после gate добавлены assertions для co-located и standalone `secretary node setup` при duplicate keys; повторный `./scripts/secretary-cli-test.sh` прошёл. Между full gate и этой проверкой product code не менялся.
 
 ### Follow-up по duplicate deployment `data_dir` и co-located pair — 6 октября 2026
 
 - **RED:** public Node login fixture с первым external и последним canonical `data_dir`, legacy Secretary selection и shared Node selection до fix завершился `FAIL: Node login bypassed the local Secretary pair check through duplicate data_dir`. Команда вернулась успешно и вызвала только fake `auth login`; Go last-wins видел local path, shell first-wins пропускал pair validation. Canary/mappings были в private temp HOME; личный store не открывался. Первая версия fixture содержала noncanonical manifest path с `//` и корректно отклонялась раньше; это записано как fixture diagnostic, не как RED.
-- **GREEN:** deployment config и store manifests разбираются общим Go strict decoder’ом: duplicate decoded fields, escaped и case aliases, unknown/malformed/trailing JSON и controls отклоняются до native CLI. Selector records дают shell trusted mode/home/data_dir/standalone; Node record также даёт `include_opencode`. `sex` не разбирает эти поля через awk/eval/fallback. Co-located Node login/Doctor/setup сравнивают selection с Secretary; standalone Node работает независимо, включая отдельный configured data directory. Owner transition дополнительно проверяет deployment config и ambiguous managed-session mappings.
-- **PASS public matrix:** `sex-cli-test.sh` покрывает Secretary/Node setup, Doctor/login, owner, duplicate-data_dir RED→GREEN, escaped/case aliases, malformed configs, ordinary pair conflict, standalone independence, личный canary и отсутствие CLI invoke при отказе. Focused `go test -count=1 ./internal/node ./cmd/secretaryd ./cmd/secretary-node`, `./scripts/sex-cli-test.sh`, `./scripts/node-deployment-test.sh`, `./scripts/node-revoke-test.sh`, `git diff --check` прошли. Промежуточный неверный duplicate-mapping test fixture, parser assertion и fake PATH fixture исправлены; их диагностика записана в issue33 и implementation report.
+- **GREEN:** deployment config и store manifests разбираются общим Go strict decoder’ом: duplicate decoded fields, escaped и case aliases, unknown/malformed/trailing JSON и controls отклоняются до native CLI. Selector records дают shell trusted mode/home/data_dir/standalone; Node record также даёт `include_opencode`. `secretary` не разбирает эти поля через awk/eval/fallback. Co-located Node login/Doctor/setup сравнивают selection с Secretary; standalone Node работает независимо, включая отдельный configured data directory. Owner transition дополнительно проверяет deployment config и ambiguous managed-session mappings.
+- **PASS public matrix:** `secretary-cli-test.sh` покрывает Secretary/Node setup, Doctor/login, owner, duplicate-data_dir RED→GREEN, escaped/case aliases, malformed configs, ordinary pair conflict, standalone independence, личный canary и отсутствие CLI invoke при отказе. Focused `go test -count=1 ./internal/node ./cmd/secretaryd ./cmd/secretary-node`, `./scripts/secretary-cli-test.sh`, `./scripts/node-deployment-test.sh`, `./scripts/node-revoke-test.sh`, `git diff --check` прошли. Промежуточный неверный duplicate-mapping test fixture, parser assertion и fake PATH fixture исправлены; их диагностика записана в issue33 и implementation report.
 - **PASS native unpaid на финальном code tree:** с настоящим OpenCode v2.0.22 прошли public setup без login, concurrent Secretary/Worker на созданной DB и Start/Follow-up/fresh-process Resume прежнего ID/history. Использовались private temp stores/workspaces и local unpaid provider/MCP fixtures; canary не изменился, в логах только safe metadata.
 - **PASS latest full gate:** `p4-33-config-alias-fullgate-20261005T182746Z`, команда `MISE_TRUSTED_CONFIG_PATHS="$PWD/.mise.toml" MISE_YES=1 ./scripts/phase4-release-gate.sh` при `umask 0022`, exit 0. Все 9 stages PASS: contract, gofmt, Go tests/race, vet/build, frontend 10/10, production/embedded assets, CLI/deployment/revoke, diff check. Лог: `/private/tmp/p4-33-config-alias-fullgate-20261005T182746Z.log`. Full-gate FAIL `p4-33-reviewfix-fullgate-20261005T162922Z` и более ранние FAIL остаются отдельно сохранёнными.
 - После этого gate менялись только documentation/ledger files; code/tests не трогались. Owner login, authenticated inventory/Worker acceptance, production setup/restart и migration approval остаются pending. Независимый повторный review не запускался; ticket остаётся `claimed`.
@@ -181,7 +181,7 @@ Owner попросил продолжить recoverable test/environment failure
 
 - **RED из spec re-review:** private public selector получил raw `0xFF` в deployment `data_dir`; до fix он вернул success для `node-�/data/opencode-native` и создал selection manifest по replacement path. Личный store не открывался; auth/native CLI не запускались. Полный результат сохранён в issue 33 и implementation report.
 - **GREEN:** общий JSON pre-scan проверяет `utf8.Valid` до `json.Decoder` для deployment config, store manifests и duplicate-key state JSON. Малый escape scan отклоняет unpaired high/low surrogates. Public tests проверяют отсутствие selection/store/native CLI при malformed config/manifest и сохранность raw Unicode/paired escapes.
-- **Focused PASS:** Go (`internal/node`, `cmd/secretaryd`, `cmd/secretary-node`), `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`; повторён native unpaid setup/concurrent/resume на OpenCode v2.0.22 без provider login.
+- **Focused PASS:** Go (`internal/node`, `cmd/secretaryd`, `cmd/secretary-node`), `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`; повторён native unpaid setup/concurrent/resume на OpenCode v2.0.22 без provider login.
 - **Сохранённый тестовый FAIL:** первая Unicode acceptance попытка упала на missing parent directory в fixture; fixture исправлен, после чего полный CLI suite прошёл. Это не product regression.
 - **Единственный полный gate после code/tests:** ledger label `p4-33-invalid-utf8-fullgate-20261006` (его задал ledger: gate script run ID не печатает); uncommitted worktree на базе `5fcde24f95551d18ffb3a3832f567530f809e226`. При `umask 0022` команда `MISE_TRUSTED_CONFIG_PATHS="$PWD/.mise.toml" MISE_YES=1 ./scripts/phase4-release-gate.sh` завершилась exit 0; все 9 stages PASS, включая Go race, frontend 10/10, production assets и CLI/deployment/revoke. Вывод stages 8–9 был около 02:12 local 6 Oct; точное время завершения не записано, отдельный logfile не сохранялся. Ранее записанные full-gate FAIL и логи остались без изменений.
 - После gate изменяется только ledger; дальнейшая независимая review ещё не запускалась. Production/authenticated acceptance остаётся pending.
@@ -439,7 +439,7 @@ Evidence оставлено только во временном redacted run di
 - `command`: `./scripts/phase4-release-gate.sh`
 - `observed_at_utc`: `2026-09-14T05:22:27Z`–`2026-09-14T05:22:44Z`
 - `PASS`: release gate завершился с кодом 0, включая Go tests, race tests, vet, command builds, frontend tests/build, embedded assets, CLI, Node deployment/revoke tests и `git diff --check`.
-- `PASS`: `sex-cli-test.sh` изолированно завершает `logs` tail и не останавливает основной Secretary server.
+- `PASS`: `secretary-cli-test.sh` изолированно завершает `logs` tail и не останавливает основной Secretary server.
 
 ## Previous batch deterministic gate run
 
@@ -449,7 +449,7 @@ Evidence оставлено только во временном redacted run di
 - `observed_at_utc`: `2026-10-04T21:08:01Z`
 - `PASS`: `mise exec go@1.27.1 -- go test -p 1 ./...`, `go test -race -p 1 ./...`, `go vet -p 1 ./...` и `go build -p 1 ./...`; все пакеты прошли.
 - `PASS`: `npm ci --ignore-scripts --no-audit --no-fund`, frontend tests 10/10, два изолированных Vite production builds, сравнение всех шести embedded assets и `go test ./web`.
-- `PASS`: `scripts/sex-cli-test.sh`, `scripts/node-deployment-test.sh`, `scripts/node-revoke-test.sh`, gate contract, `gofmt` и `git diff --check`; итог gate exit 0.
+- `PASS`: `scripts/secretary-cli-test.sh`, `scripts/node-deployment-test.sh`, `scripts/node-revoke-test.sh`, gate contract, `gofmt` и `git diff --check`; итог gate exit 0.
 - `NOT RUN`: manual real-harness matrix не менялась этим запуском. Native owner login/migration, обязательные внешние сценарии и incomplete states остаются blockers; automated PASS не закрывает Ticket 15.
 - `NOTE`: первый gate attempt остановился на gofmt до запуска suite: `internal/telegram/long_message_research_test.go` имел только alignment diff. Применён gofmt без изменения тестовых ожиданий; повторный полный gate после этой точечной правки прошёл.
 
@@ -472,7 +472,7 @@ Evidence оставлено только во временном redacted run di
 - `observed_at_utc`: `2026-10-05T07:06:05Z`
 - `PASS`: `mise exec go@1.27.1 -- go test -p 1 ./...` и `mise exec go@1.27.1 -- go test -race -p 1 ./...`; все пакеты прошли, включая `internal/core`, `internal/ctl`, `internal/node`, `internal/secretary` и `internal/webapi`.
 - `PASS`: `go vet -p 1 ./...`, `go build -p 1 ./...`, frontend tests 10/10, обе Vite-сборки, сравнение всех шести embedded assets, `go test ./web`, CLI/deployment/revoke scripts, gate contract, `gofmt` и `git diff --check`; итоговый gate exit 0.
-- `PASS local integration/privacy`: isolated `sex-cli-test.sh` и `node-deployment-test.sh` прошли, включая выбор отдельных Secretary/Worker native stores и legacy-preservation gate. Все native/live opt-in flags были unset; authenticated native acceptance не запускалась.
+- `PASS local integration/privacy`: isolated `secretary-cli-test.sh` и `node-deployment-test.sh` прошли, включая выбор отдельных Secretary/Worker native stores и legacy-preservation gate. Все native/live opt-in flags были unset; authenticated native acceptance не запускалась.
 - `NOT RUN`: real Telegram General → Worker Topic → следующий user turn и оставшаяся manual real-harness matrix. Gate не закрывает Ticket 15.
 - `NOTE`: historical `Node is offline` timing failure остаётся в ledger; успешный serial suite не доказывает его гарантированное устранение.
 
@@ -484,7 +484,7 @@ Evidence оставлено только во временном redacted run di
 - `observed_at_utc`: `2026-10-05T08:19:07Z`
 - `PASS`: `mise exec go@1.27.1 -- go test -p 1 ./...`, `mise exec go@1.27.1 -- go test -race -p 1 ./...`, `go vet -p 1 ./...`, `go build -p 1 ./...`; все пакеты прошли, включая Core/CTL/Node/WebAPI approval и receipt paths.
 - `PASS`: `npm ci --ignore-scripts --no-audit --no-fund`, frontend tests 10/10, обе production Vite-сборки, сравнение всех шести embedded assets и `go test ./web`.
-- `PASS`: gate contract, `gofmt`, isolated `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`; общий gate завершился exit 0.
+- `PASS`: gate contract, `gofmt`, isolated `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`; общий gate завершился exit 0.
 - `PASS local`: durable Approval resolution, receipt, conflict/privacy, no-terminal-revival regressions входят в пройденный Core/CTL/Node/WebAPI suite. Это не подтверждает real provider/Node/Telegram acceptance.
 - `NOT RUN`: real Telegram General → Worker Topic → следующий user turn и вся оставшаяся manual real-harness matrix. Все opt-in native/live flags были unset; owner login и production mutation не выполнялись.
 - `NOTE`: historical `Node is offline` timing failure остаётся в ledger и не объявляется гарантированно устранённым.
@@ -497,7 +497,7 @@ Evidence оставлено только во временном redacted run di
 - `observed_at_utc`: `2026-10-05T09:17:12Z`
 - `PASS`: `go test -p 1 ./...`, `go test -race -p 1 ./...`, `go vet -p 1 ./...`, `go build -p 1 ./...`; все пакеты прошли, включая Core recovery, CTL saved-intent retry, WebAPI restart/connection-loss/authenticated-ACK и Node protocol tests.
 - `PASS`: frontend tests 10/10, обе Vite production builds, все шесть embedded asset comparisons и `go test ./web`.
-- `PASS`: release-gate contract, `gofmt`, `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`.
+- `PASS`: release-gate contract, `gofmt`, `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`.
 - `PASS local only`: явный owner retry после refresh/reconnect использует сохранённое решение и прежние command/Turn/Attempt IDs; нет auto-retry, новой команды или подмены payload. Evidence и focused regression описаны в Ticket 29; это не real Node/Telegram acceptance.
 - `NOT RUN` / `BLOCKED`: row 17 остаётся `BLOCKED` — `p4-real-input7-20260914` не создал `user_input_request`, поэтому live `respond_worker` round-trip не состоялся. Ticket 29 General → Worker Topic → следующий user turn — `NOT RUN`; live Telegram row 22 — `BLOCKED`. Ticket 15 не закрывается этим gate.
 
@@ -509,7 +509,7 @@ Evidence оставлено только во временном redacted run di
 ./scripts/phase4-release-gate.sh
 ```
 
-Gate останавливается на первой ошибке и выполняет ровно один полный последовательный Go suite: `mise exec go@1.27.1 -- go test -p 1 ./...`, `go test -race -p 1 ./...`, `go vet -p 1 ./...` и `go build -p 1 ./...`. Кроме того, он запускает gate contract test, `gofmt`-проверку, `npm ci --ignore-scripts --no-audit --no-fund` и `npm test`, изолированные production builds main и Control Room через Vite CLI с временными `--outDir`, обработку assets `clean-vite-assets.mjs`, сравнение шести файлов с embedded assets без записи поверх tracked assets, `go test ./web`, isolated `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh` и `git diff --check`. У frontend нет отдельной команды `typecheck`: исходники JS/Svelte, их production compile проверяет Vite build.
+Gate останавливается на первой ошибке и выполняет ровно один полный последовательный Go suite: `mise exec go@1.27.1 -- go test -p 1 ./...`, `go test -race -p 1 ./...`, `go vet -p 1 ./...` и `go build -p 1 ./...`. Кроме того, он запускает gate contract test, `gofmt`-проверку, `npm ci --ignore-scripts --no-audit --no-fund` и `npm test`, изолированные production builds main и Control Room через Vite CLI с временными `--outDir`, обработку assets `clean-vite-assets.mjs`, сравнение шести файлов с embedded assets без записи поверх tracked assets, `go test ./web`, isolated `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh` и `git diff --check`. У frontend нет отдельной команды `typecheck`: исходники JS/Svelte, их production compile проверяет Vite build.
 
 До запуска учитывайте локальные эффекты: `npm ci` заменяет `web/node_modules` и может загрузить зависимости из npm registry (install scripts отключены); Vite пишет в новый временный каталог под `${TMPDIR:-/tmp}`, сравнивает сборку с embedded assets и удаляет только этот каталог, оставляя существующие `web/dist`, `web/dist-control` и tracked bundles нетронутыми. CLI tests используют временный HOME и локальный HTTP server на `127.0.0.1:8081` только после проверки, что порт свободен. Node deploy/revoke tests используют fixtures и временные файлы. Gate не подключается по SSH, не читает credentials, не меняет production config/services/Workers.
 
@@ -538,26 +538,26 @@ export SERVER_URL="https://<private-tailscale-name-or-address>"
 На Secretary server:
 
 ```sh
-HOME="$GATE_RUN/server-home" ./sex setup
-HOME="$GATE_RUN/server-home" ./sex doctor
-HOME="$GATE_RUN/server-home" ./sex start
+HOME="$GATE_RUN/server-home" ./secretary setup
+HOME="$GATE_RUN/server-home" ./secretary doctor
+HOME="$GATE_RUN/server-home" ./secretary start
 ```
 
 `SERVER_URL` должен указывать на этот server. Pairing tokens передаются только через окружение первой команды и сразу удаляются:
 
 ```sh
-HOME="$GATE_RUN/macbook-home" ./sex node setup \
+HOME="$GATE_RUN/macbook-home" ./secretary node setup \
   --server "$SERVER_URL" --name macbook \
   --workspace frontend=/Users/<owner>/src/frontend
 SECRETARY_NODE_PAIRING_TOKEN='<one-time-macbook-token>' \
-  HOME="$GATE_RUN/macbook-home" ./sex node start
+  HOME="$GATE_RUN/macbook-home" ./secretary node start
 unset SECRETARY_NODE_PAIRING_TOKEN
 
-HOME="$GATE_RUN/home-server-home" ./sex node setup \
+HOME="$GATE_RUN/home-server-home" ./secretary node setup \
   --server "$SERVER_URL" --name home-server \
   --workspace frontend=/srv/<owner>/src/frontend
 SECRETARY_NODE_PAIRING_TOKEN='<one-time-home-token>' \
-  HOME="$GATE_RUN/home-server-home" ./sex node start
+  HOME="$GATE_RUN/home-server-home" ./secretary node start
 unset SECRETARY_NODE_PAIRING_TOKEN
 ```
 
@@ -566,31 +566,31 @@ unset SECRETARY_NODE_PAIRING_TOKEN
 Остановить и поднять server заново после первого набора проверок:
 
 ```sh
-HOME="$GATE_RUN/server-home" ./sex restart
-HOME="$GATE_RUN/server-home" ./sex status
+HOME="$GATE_RUN/server-home" ./secretary restart
+HOME="$GATE_RUN/server-home" ./secretary status
 ```
 
 Ожидается та же Personal Conversation, тот же Worker binding и отсутствие второго выполнения активного Attempt.
 
 ### 2. Clients и каналы
 
-Открыть Web только из bootstrap URL, напечатанного `sex start`, и не сохранять fragment в evidence. Проверить одну Personal Conversation в Web и в General chat Telegram. Telegram включается только в отдельном ручном окружении:
+Открыть Web только из bootstrap URL, напечатанного `secretary start`, и не сохранять fragment в evidence. Проверить одну Personal Conversation в Web и в General chat Telegram. Telegram включается только в отдельном ручном окружении:
 
 ```sh
 export SECRETARY_TELEGRAM_ENABLED=true
 export SECRETARY_TELEGRAM_BOT_TOKEN='<private-bot-token>'
 export SECRETARY_TELEGRAM_SERVER_CREDENTIAL='<separate-server-credential>'
 export SECRETARY_TELEGRAM_OWNER_CHAT_ID='<owner-chat-id>'
-HOME="$GATE_RUN/server-home" ./sex restart
+HOME="$GATE_RUN/server-home" ./secretary restart
 ```
 
-Pairing Telegram выполнять через `POST /v1/telegram/pairing` authenticated Client-ом, затем проверить General chat и Worker Topics. В ledger записывать только redacted response metadata. Control Room проверять отдельно после `HOME=... ./sex restart --debug`, а затем убедиться, что тот же URL в normal mode возвращает 404:
+Pairing Telegram выполнять через `POST /v1/telegram/pairing` authenticated Client-ом, затем проверить General chat и Worker Topics. В ledger записывать только redacted response metadata. Control Room проверять отдельно после `HOME=... ./secretary restart --debug`, а затем убедиться, что тот же URL в normal mode возвращает 404:
 
 ```sh
-HOME="$GATE_RUN/server-home" ./sex restart --debug
+HOME="$GATE_RUN/server-home" ./secretary restart --debug
 open http://127.0.0.1:8081/control-room
-HOME="$GATE_RUN/server-home" ./sex stop
-HOME="$GATE_RUN/server-home" ./sex start
+HOME="$GATE_RUN/server-home" ./secretary stop
+HOME="$GATE_RUN/server-home" ./secretary start
 curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  # 404
 ```
 
@@ -610,7 +610,7 @@ curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8081/control-room  #
 # ожидается видимая ошибка и отсутствие dispatch на другой harness
 ```
 
-Перед каждым новым harness можно сохранить конфигурацию и перезапустить server. Для отсутствующего бинарника сначала выполнить `sex doctor`, затем записать `BLOCKED`, а не заменять его другим harness. OpenCode v2 обязателен для default-сценария: отсутствие бинарника или ready inventory даёт `BLOCKED`, не `UNAVAILABLE`. OpenCode не используется как замена Claude Code.
+Перед каждым новым harness можно сохранить конфигурацию и перезапустить server. Для отсутствующего бинарника сначала выполнить `secretary doctor`, затем записать `BLOCKED`, а не заменять его другим harness. OpenCode v2 обязателен для default-сценария: отсутствие бинарника или ready inventory даёт `BLOCKED`, не `UNAVAILABLE`. OpenCode не используется как замена Claude Code.
 
 ### Security evidence beyond scenario 24
 
@@ -695,7 +695,7 @@ Phase 4 можно назвать принятой только когда deter
 - `observed_at_utc`: `2026-10-05T09:17:12Z`; финальный запуск после owner-retry fix и recovery regression: `./scripts/phase4-release-gate.sh`, exit 0.
 - PASS: `go test -p 1 ./...`, `go test -race -p 1 ./...`, `go vet -p 1 ./...`, `go build -p 1 ./...`; все Go пакеты прошли, включая end-to-end recovery/retry WebAPI test и Node protocol ACK path.
 - PASS: `npm ci --ignore-scripts --no-audit --no-fund`, frontend tests 10/10, обе Vite production builds, все шесть embedded asset comparisons и `go test ./web`.
-- PASS: gate contract, `gofmt`, `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh` и `git diff --check`.
+- PASS: gate contract, `gofmt`, `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh` и `git diff --check`.
 - Local-only evidence: retry после restart/connection loss повторяет saved decision с прежними command/Turn/Attempt identities; authenticated receipt сохраняет canonical Result и отдельную queued Turn. Тестовые protocol peers не являются real Node/Telegram acceptance.
 - `NOT RUN`: real Telegram General → Worker Topic → следующий user turn и остальная обязательная real-harness matrix. Ни production state, ни credentials, ни внешние profiles не менялись; Ticket 15 остаётся `claimed`.
 
@@ -705,7 +705,7 @@ Phase 4 можно назвать принятой только когда deter
 - `observed_at_utc`: `2026-10-05T09:51:31Z`; один полный запуск после последнего API/UI patch: `./scripts/phase4-release-gate.sh`, exit 0.
 - PASS: `go test -p 1 ./...`, `go test -race -p 1 ./...`, `go vet -p 1 ./...`, `go build -p 1 ./...`; включая narrow approval-write-only public HTTP regressions.
 - PASS: `npm ci --ignore-scripts --no-audit --no-fund`, frontend tests 10/10, обе Vite production builds, все 6 embedded assets и `go test ./web`.
-- PASS: gate contract, `gofmt`, `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`.
+- PASS: gate contract, `gofmt`, `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`.
 - Public credential responses для retry/idempotency/resolved no-handoff и adjacent approve/deny возвращают strict allowlisted DTO. Write-only Client по-прежнему получает 403 на worker/approval read. Это local deterministic evidence, не live Node/Telegram acceptance.
 - `NOT RUN`: real Telegram General → Worker Topic → следующий user turn и остальная real-harness matrix. Owner login/production/auth mutation не выполнялись; Ticket 15 остаётся `claimed`.
 
@@ -715,7 +715,7 @@ Phase 4 можно назвать принятой только когда deter
 - `observed_at_utc`: `2026-10-05T10:27:08Z`; один полный запуск после последних auth/observer/UI-test patches: `./scripts/phase4-release-gate.sh`, exit 0.
 - PASS: `go test -p 1 ./...`, `go test -race -p 1 ./...`, `go vet -p 1 ./...`, `go build -p 1 ./...`; все packages прошли, включая deterministic public HTTP revoke-between-checks test и Owner observer refresh regressions.
 - PASS: `npm ci --ignore-scripts --no-audit --no-fund`, frontend tests 10/10, main и Control Room Vite production builds, все 6 embedded-asset comparisons и `go test ./web`.
-- PASS: release-gate contract, `gofmt`, `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`.
+- PASS: release-gate contract, `gofmt`, `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, `git diff --check`.
 - RED→GREEN auth evidence: при временном воспроизведении старого ignored-auth-failure handler тест получил status 401, продолженную mutation, appended owner DTO и non-single body; после guard повторная auth ошибка завершает обработку без mutation/DTO/второй записи. Revoke выполняется настоящим public `/v1/clients/{id}/revoke` HTTP call через barrier, без sleep. Invalid approval scope остаётся 403 без mutation.
 - Owner `GET /v1/workers/{ref}` refresh показывает saved `approved` или `denied` через `resolution_state`; owner observer DTO не передаёт RequestID/actor, saved response или private command identity. Credential Client allowlist и `approval.id` retry не изменены. Это deterministic evidence, не live acceptance.
 - Pending matrix: Ticket 29 General → Worker Topic → следующий user turn — `NOT RUN`; Ticket 22 live Topic/General — `BLOCKED`; остальные `FAIL`/`BLOCKED`/`UNAVAILABLE`/`NOT RUN` сохранены; Ticket 15 остаётся `claimed`. Production, external credentials и auth state не менялись.
@@ -738,22 +738,22 @@ Phase 4 можно назвать принятой только когда deter
 - Изменён только scope `internal/node/process_integration_test.go`: native OpenCode probe отключён в transport/pairing test, его host invocation проверяется tripwire-маркером; production default и native acceptance expectations не менялись. Синтетический tripwire не засчитывается как OpenCode acceptance.
 - Combined-load check `go test -race -p 1 ./internal/node ./internal/acp ./internal/core ./internal/ctl ./internal/webapi -count=2` — PASS: node 18.787s, acp 1.363s, core 41.128s, ctl 13.721s, webapi 36.451s.
 - Один промежуточный gate wrapper был некорректен: run `p4-ticket15-opencode-probe-scope-459709c-20261005T112859Z` выставил `umask 077` ради временного лога. Stages 1–2 PASS, Stage 3 остановился на `TestOpenCodeNativeStorePreservesLegacySessionsUntilApprovedMigration`, потому что fixture создаёт каталог mode `0755`, а такой umask даёт `0700`; stages 4–9 не запускались. Это изменение окружения внесено wrapper-ом, не product code. Не считать этот запуск результатом acceptance.
-- Корректный запуск `./scripts/phase4-release-gate.sh` при исходном `umask=0022` прошёл все stages: **1/9** release-gate contract — PASS; **2/9** gofmt — PASS; **3/9** `go test -p 1 ./...` — PASS (все пакеты, включая internal/node 5.449s); **4/9** `go test -race -p 1 ./...` — PASS (все пакеты, включая internal/node 9.658s); **5/9** `go vet -p 1 ./...` и `go build -p 1 ./...` — PASS; **6/9** `npm ci --ignore-scripts --no-audit --no-fund` и `npm test` — PASS; **7/9** обе production Vite builds, очистка и сравнение всех 6 embedded assets, `go test ./web` — PASS; **8/9** `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh` — PASS; **9/9** `git diff --check` — PASS.
+- Корректный запуск `./scripts/phase4-release-gate.sh` при исходном `umask=0022` прошёл все stages: **1/9** release-gate contract — PASS; **2/9** gofmt — PASS; **3/9** `go test -p 1 ./...` — PASS (все пакеты, включая internal/node 5.449s); **4/9** `go test -race -p 1 ./...` — PASS (все пакеты, включая internal/node 9.658s); **5/9** `go vet -p 1 ./...` и `go build -p 1 ./...` — PASS; **6/9** `npm ci --ignore-scripts --no-audit --no-fund` и `npm test` — PASS; **7/9** обе production Vite builds, очистка и сравнение всех 6 embedded assets, `go test ./web` — PASS; **8/9** `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh` — PASS; **9/9** `git diff --check` — PASS.
 - Manual real-harness matrix не менялась: Ticket 29 General → Worker Topic → следующий turn — `NOT RUN`; Ticket 22 live Topic/General — `BLOCKED`; owner login, authenticated inventory/Worker run и native-store migration approval — `NOT RUN`; остальные `FAIL`/`BLOCKED`/`UNAVAILABLE`/`NOT RUN` сохранены. Diagnostic CLI timeout не является native acceptance. Ticket 15 остаётся `claimed`; production/auth/paid mutations не выполнялись.
 
 ## Ticket 33 branch release gate — PASS
 
 - `run_id`: `p4-33-shared-native-fullgate-final2-20261005`; branch `p4/33-shared-opencode-store-b205fa`; base/HEAD `5fcde24f95551d18ffb3a3832f567530f809e226`; рабочее дерево uncommitted; `observed_at_utc`: `2026-10-05T15:25:37Z`.
-- Final `./scripts/phase4-release-gate.sh`: stages **1–9 PASS** — release contract, gofmt, `go test -p 1 ./...`, `go test -race -p 1 ./...`, `go vet`, all-package build, frontend tests/builds/assets, `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, final `git diff --check`. Frontend tests: 10/10.
+- Final `./scripts/phase4-release-gate.sh`: stages **1–9 PASS** — release contract, gofmt, `go test -p 1 ./...`, `go test -race -p 1 ./...`, `go vet`, all-package build, frontend tests/builds/assets, `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, final `git diff --check`. Frontend tests: 10/10.
 - Первый полный запуск завершился FAIL на Stage 8: `node-deployment-test.sh` всё ещё ожидал прежний второй Node DB. Это была устаревшая проверка, а не product failure. Проверку обновили на общий путь; дополнительно Node LaunchAgent setup больше не запускает Secretary setup, чтобы standalone remote Node не создавал локальную Secretary installation. Public tests проверяют эту границу и config-only FX transition; финальный повтор прошёл 1–9.
 - Настоящие native unpaid fixtures указаны выше и запускались отдельно с opt-in flag; обычный release gate использовал default deterministic configuration.
 - Не выполнялись provider login в новом store, authenticated provider calls, production/service rollout или legacy data migration. Этот gate не закрывает manual real-harness matrix и не является независимым review.
 
 ## Ticket 31 production auth probe — final source/test gate PASS
 
-- Worktree `p4/31-opencode-auth-probe-3934bd`, base `204c466a4a74956331153f2136858d691b7fac19`. Первичный полный gate сохранил FAIL на Stage 3: `TestOpenCodeConfigurationRegistrationAndFailClosed/missing-mode/resume=true`. После исправления нестабильного synthetic helper deadline (300ms → 1s; assertions не ослаблены) повторный финальный gate прошёл stages 1–9: deterministic tests, race, vet/build, frontend tests/build/assets, `sex-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, diff check — PASS. Initial и final outputs сохранены в `/tmp/secretary-ticket31-auth-probe-fullgate.log` и `/tmp/secretary-ticket31-auth-probe-finalgate.log`.
-- RED→GREEN: старый `auth list` без флагов воспроизводил service timeout/ложный `sex node doctor` failure. Probe и обе public Doctor теперь используют `auth list --format json --standalone` в Go-validated selected store. Readiness требует exit 0 и корректный auth JSON с stored `connections[].type=credential`; пустой/ошибочный JSON, only-environment credentials, stderr-only, failed command, OAuth-shape и unsupported version не ready. Environment/personal-store fallback исключён; setup не выполняет auth/login.
-- Focused PASS: stored/empty/malformed/non-credential/failed-output/version/context cases; subprocess boundary проверяет exact flags, selected store, отсутствие ambient credentials, private HOME cleanup и kill при timeout. `./scripts/sex-cli-test.sh` и `./scripts/node-deployment-test.sh` PASS.
+- Worktree `p4/31-opencode-auth-probe-3934bd`, base `204c466a4a74956331153f2136858d691b7fac19`. Первичный полный gate сохранил FAIL на Stage 3: `TestOpenCodeConfigurationRegistrationAndFailClosed/missing-mode/resume=true`. После исправления нестабильного synthetic helper deadline (300ms → 1s; assertions не ослаблены) повторный финальный gate прошёл stages 1–9: deterministic tests, race, vet/build, frontend tests/build/assets, `secretary-cli-test.sh`, `node-deployment-test.sh`, `node-revoke-test.sh`, diff check — PASS. Initial и final outputs сохранены в `/tmp/secretary-ticket31-auth-probe-fullgate.log` и `/tmp/secretary-ticket31-auth-probe-finalgate.log`.
+- RED→GREEN: старый `auth list` без флагов воспроизводил service timeout/ложный `secretary node doctor` failure. Probe и обе public Doctor теперь используют `auth list --format json --standalone` в Go-validated selected store. Readiness требует exit 0 и корректный auth JSON с stored `connections[].type=credential`; пустой/ошибочный JSON, only-environment credentials, stderr-only, failed command, OAuth-shape и unsupported version не ready. Environment/personal-store fallback исключён; setup не выполняет auth/login.
+- Focused PASS: stored/empty/malformed/non-credential/failed-output/version/context cases; subprocess boundary проверяет exact flags, selected store, отсутствие ambient credentials, private HOME cleanup и kill при timeout. `./scripts/secretary-cli-test.sh` и `./scripts/node-deployment-test.sh` PASS.
 - Native selected-store PASS на настоящем OpenCode v2.0.22: `status=ready`, stored credential present, 28 models, 7 reasoning levels, обе exact model IDs (`openai/gpt-6.1-sol`, `openai/gpt-6-luna`) и `xhigh`; inventory использует native metadata и ACP `initialize`. Никакой `session/new`, login, paid model call, raw auth output или account value не использовались/выводились. Native private-store missing-auth test также PASS и personal-store canary неизменён.
 - Ручные gates остаются pending: owner login в новом store, production config/service rollout/restart, Telegram, paid Worker acceptance, existing fx Worker Follow-up/restart, migration approval и independent reviewer pass. Config/Profiles, existing bindings и production не менялись; ticket31 остаётся `claimed`.
 
@@ -767,7 +767,7 @@ Phase 4 можно назвать принятой только когда deter
 - Fixture-only fix: loopback HTTP ready/release barrier подтверждает, что helper стартовал и загрузил managed config, до того как тест разрешает ACP RPC; counters file создаётся до scanner, каждое обновление записывается до ответа. Тестовый outer watchdog теперь `10s`, а production config-ready deadline остаётся `5s`. Public assertions проверяют exact initialize/new/load/mode counts, отсутствие prompt и отсутствие replacement session при Resume; load завершается через FIFO drain до config selection.
 - Первая synchronized matrix выявила затенение: `data, err := os.ReadFile(record)` заменял runtime error при проверке deadline. Safe counts в той FAIL-попытке были Start: initialize1/new1/mode189/config RPC189/prompt0; Resume: initialize1/load1/new0/mode188/config RPC188/prompt0. Тест теперь сохраняет `runtimeErr` отдельно от `readErr` и подтверждает внутренний 5s deadline при ещё активном outer watchdog. Intermediate failure сохранён; runtime/production timeout не менялся.
 - Focused GREEN: весь `TestOpenCodeConfigurationRegistrationAndFailClosed -count=1` прошёл 11 применимых scenario/Resume cases; exact `missing-mode/resume=true -count=5` и `-race -count=3` прошли.
-- **Финальный корректный full gate после fixture fix:** run label `p4-29-addressed-reply-finalgate-20261006T094440Z`; команда `umask 0022; ./scripts/phase4-release-gate.sh > /tmp/p4-29-addressed-reply-finalgate-20261006T094440Z.log 2>&1`; exit **0**, private logfile mode `0600`. Все stages PASS: 1 release-gate contract; 2 gofmt; 3 `go test -p 1 ./...`; 4 `go test -race -p 1 ./...`; 5 `go vet -p 1 ./...` и `go build -p 1 ./...`; 6 `npm ci` и frontend tests; 7 production Vite builds, cleanup, embedded assets comparisons и web tests; 8 sex CLI, Node deployment и revoke integration; 9 `git diff --check`. Скрипт сообщил `Phase 4 deterministic release gate passed.` Прежний gate Stage3 FAIL и no-op umask invocation выше сохранены. После этого ledger update будет выполнен отдельный `git diff --check`.
+- **Финальный корректный full gate после fixture fix:** run label `p4-29-addressed-reply-finalgate-20261006T094440Z`; команда `umask 0022; ./scripts/phase4-release-gate.sh > /tmp/p4-29-addressed-reply-finalgate-20261006T094440Z.log 2>&1`; exit **0**, private logfile mode `0600`. Все stages PASS: 1 release-gate contract; 2 gofmt; 3 `go test -p 1 ./...`; 4 `go test -race -p 1 ./...`; 5 `go vet -p 1 ./...` и `go build -p 1 ./...`; 6 `npm ci` и frontend tests; 7 production Vite builds, cleanup, embedded assets comparisons и web tests; 8 secretary CLI, Node deployment и revoke integration; 9 `git diff --check`. Скрипт сообщил `Phase 4 deterministic release gate passed.` Прежний gate Stage3 FAIL и no-op umask invocation выше сохранены. После этого ledger update будет выполнен отдельный `git diff --check`.
 - The direct executable overflow attempt did not isolate the terminal-response/incomplete-drain seam and was removed; it is not counted as PASS. ACP FIFO barrier tests still verify that a request does not complete before event acknowledgement and that cancellation reports drain failure. At that earlier point no live Telegram, paid prompt, production/config/auth mutation, commit/deploy or independent review had occurred. Current review outcome and later gates are recorded below.
 
 ## Ticket 29 review follow-up: `response.Summary` is not final evidence

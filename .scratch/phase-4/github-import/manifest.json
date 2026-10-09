@@ -10,12 +10,16 @@
       "updated_at": "2026-10-02T10:05:59Z",
       "local_ticket": ".scratch/phase-4/issues/24-self-update-supervisor.md",
       "local_status": "needs-triage",
-      "body_sha256": "8c40de45394bff3913b32ff477647cad3262e281635ef3422b03b9a0fd4c58f2",
+      "body_sha256": "a9f3eb68c6ae616af3f04122b5c1052a2ad49b59c2145b7a7d5b04e943d1fa28",
       "comments_count": 0,
       "snapshots_sha256": {
-        "issue-1.json": "756998eb39ae85841252ad466aac92c258881dee49a994e603ad40c01887c7ba",
+        "issue-1.json": "d2567f2fb6e77ff18e1416d641828c4934c3ab74f983acacc476fa4ea4683b6c",
         "comments-1.json": "cf1cbb66a638b4860a516671fb74850e6ccf787fe6c4c8d29e9c04efe880bd05",
         "timeline-1.json": "9f296d6aa247dad0c91eb668ce552f756fd59d3c47cd213de99bbd22047bcbae"
+      },
+      "original_body_sha256": "8c40de45394bff3913b32ff477647cad3262e281635ef3422b03b9a0fd4c58f2",
+      "original_snapshots_sha256": {
+        "issue-1.json": "756998eb39ae85841252ad466aac92c258881dee49a994e603ad40c01887c7ba"
       }
     },
     {
@@ -48,5 +52,6 @@
         "timeline-3.json": "cf1cbb66a638b4860a516671fb74850e6ccf787fe6c4c8d29e9c04efe880bd05"
       }
     }
-  ]
+  ],
+  "normalization_note": "2026-10-09: CLI name in issue 1 normalized to secretary; original checksums retained for Git history verification."
 }

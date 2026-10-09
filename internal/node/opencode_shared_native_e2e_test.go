@@ -99,17 +99,17 @@ func runPublicNativeSetup(t *testing.T, root, opencodeBinary string) nativePubli
 			env = append(env, key+"="+value)
 		}
 	}
-	cmd := exec.Command(filepath.Join(repoRoot, "sex"), "setup")
+	cmd := exec.Command(filepath.Join(repoRoot, "secretary"), "setup")
 	cmd.Env = env
 	output, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "Setup complete") {
-		t.Fatal("public sex setup did not complete native store initialization")
+		t.Fatal("public secretary setup did not complete native store initialization")
 	}
 	dataHome := filepath.Join(home, ".local", "share", "secretary", "opencode-native")
 	database := filepath.Join(dataHome, "opencode", "opencode.db")
 	info, err := os.Lstat(database)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o600 {
-		t.Fatal("public sex setup did not create a private native database")
+		t.Fatal("public secretary setup did not create a private native database")
 	}
 	if _, err := os.Lstat(filepath.Join(dataHome, "opencode", "auth.json")); !os.IsNotExist(err) {
 		t.Fatal("public native setup unexpectedly performed provider login")
@@ -144,7 +144,7 @@ func TestOpenCodeNativeSetupCreatesDatabaseWithoutAuth(t *testing.T) {
 	t.Log("safe setup metadata: public_setup=true native_db=true provider_login=false personal_store_unchanged=true")
 }
 
-// Both actual OpenCode ACP processes use the DB created by public sex setup
+// Both actual OpenCode ACP processes use the DB created by public secretary setup
 // and make concurrent turns. The local unpaid HTTP provider checks safe
 // metadata only and never logs prompts, tool arguments, or response payloads.
 func TestOpenCodeNativeSharedStoreConcurrentSecretaryAndWorker(t *testing.T) {

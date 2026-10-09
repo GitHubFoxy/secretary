@@ -3,15 +3,15 @@ set -euo pipefail
 
 SCRIPT_DIR="${0:A:h}"
 ROOT="${SCRIPT_DIR:h}"
-SEX="$ROOT/sex"
+SECRETARY_CLI="$ROOT/secretary"
 ORIGINAL_HOME="$HOME"
 REAL_PATH="${PATH:-/usr/bin:/bin}"
-TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/secretary-sex-test.XXXXXX")"
+TEST_HOME="$(mktemp -d "${TMPDIR:-/tmp}/secretary-cli-test.XXXXXX")"
 FAKE_BIN="$TEST_HOME/fake-bin"
 STATE="$TEST_HOME/.local/share/secretary"
 STATE_NORMALIZED="${STATE:a}"
 BIN="$TEST_HOME/.local/bin"
-PLIST="$TEST_HOME/Library/LaunchAgents/dev.secretary.sex.plist"
+PLIST="$TEST_HOME/Library/LaunchAgents/dev.secretary.cli.plist"
 LAUNCHCTL_LOG="$TEST_HOME/launchctl.log"
 OPEN_LOG="$TEST_HOME/open.log"
 
@@ -107,10 +107,10 @@ cleanup() {
   fi
   kill_matching_processes "$TEST_HOME"
   if [[ -f "$STATE/server.pid" ]]; then
-    HOME="$TEST_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" stop >/dev/null 2>&1 || true
+    HOME="$TEST_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" stop >/dev/null 2>&1 || true
   fi
   chmod -R u+w "$TEST_HOME" 2>/dev/null || true
-  if [[ "${SEX_TEST_KEEP:-0}" == "1" ]]; then
+  if [[ "${SECRETARY_CLI_TEST_KEEP:-0}" == "1" ]]; then
     print -u2 -- "Keeping test HOME: $TEST_HOME"
   else
     rm -rf "$TEST_HOME"
@@ -118,7 +118,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-[[ -x "$SEX" ]] || fail "sex is not executable: $SEX"
+[[ -x "$SECRETARY_CLI" ]] || fail "secretary is not executable: $SECRETARY_CLI"
 mkdir -p "$FAKE_BIN"
 
 cat > "$FAKE_BIN/codex" <<'EOF'
@@ -200,17 +200,17 @@ esac
 EOF
 chmod +x "$FAKE_BIN/codex-acp" "$FAKE_BIN/fx" "$FAKE_BIN/opencode"
 
-print "Testing sex commands in isolated HOME: $TEST_HOME"
+print "Testing secretary commands in isolated HOME: $TEST_HOME"
 
-output="$($SEX)" || fail "usage command failed"
-assert_contains "$output" "Usage: sex" "usage output"
+output="$($SECRETARY_CLI)" || fail "usage command failed"
+assert_contains "$output" "Usage: secretary" "usage output"
 pass "usage"
 
-output="$($SEX status)" || fail "status command failed"
+output="$($SECRETARY_CLI status)" || fail "status command failed"
 assert_contains "$output" "stopped" "initial status"
 pass "status when stopped"
 
-output="$($SEX setup)" || fail "setup command failed"
+output="$($SECRETARY_CLI setup)" || fail "setup command failed"
 assert_contains "$output" "Setup complete" "setup output"
 assert_executable "$BIN/secretaryd"
 assert_executable "$BIN/secretaryctl"
@@ -229,7 +229,7 @@ assert_file "$STATE/opencode-native/opencode/opencode.db"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$STATE_NORMALIZED/opencode-native|serve --port 0 --stdio" "setup did not initialize the shared native DB"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$STATE_NORMALIZED/node/data/opencode-native" "local Node setup created a second native store"
 [[ "$(grep -c '|serve --port 0 --stdio|' "$TICKET33_OPENCODE_STORE_LOG")" == "1" ]] || fail "fresh setup did not initialize exactly one shared native DB"
-output="$($SEX node setup --name local-node)" || fail "local Node setup failed"
+output="$($SECRETARY_CLI node setup --name local-node)" || fail "local Node setup failed"
 assert_contains "$output" "Node setup complete: local-node" "local Node setup output"
 node_manifest="$(cat "$STATE/node/data/opencode-native-selection.json")"
 assert_contains "$node_manifest" '"mode": "shared"' "local Node did not keep the shared store selection"
@@ -242,25 +242,25 @@ assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "|auth login" "setup
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "|openai=|aws=" "OpenCode setup inherited ambient provider credentials"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "|auth list|" "setup used auth list as a native DB initialization substitute"
 [[ "$(cat "$TEST_HOME/.local/share/opencode/opencode.db")" == "personal-store-canary" ]] || fail "setup modified personal OpenCode DB"
-[[ -L "$BIN/sex" ]] || fail "setup did not install sex symlink"
+[[ -L "$BIN/secretary" ]] || fail "setup did not install secretary symlink"
 pass "setup"
 
 INIT_FAILURE_HOME="$TEST_HOME/native-init-failure-home"
 INIT_FAILURE_DB="$INIT_FAILURE_HOME/.local/share/secretary/opencode-native/opencode/opencode.db"
-if output="$(HOME="$INIT_FAILURE_HOME" PATH="$FAKE_BIN:$REAL_PATH" FAKE_OPENCODE_INIT_MODE=fail "$SEX" setup 2>&1)"; then fail "setup hid a native DB initialization failure"; fi
+if output="$(HOME="$INIT_FAILURE_HOME" PATH="$FAKE_BIN:$REAL_PATH" FAKE_OPENCODE_INIT_MODE=fail "$SECRETARY_CLI" setup 2>&1)"; then fail "setup hid a native DB initialization failure"; fi
 assert_contains "$output" "OpenCode native DB initialization failed; setup stopped" "native initialization failure was not visible"
 [[ ! -e "$INIT_FAILURE_DB" ]] || fail "failed native initialization left a purported DB"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "|auth list|" "setup fell back to auth list after initialization failure"
 pass "setup fails visibly when native DB initialization fails"
 
-if output="$(FAKE_OPENCODE_AUTH_MODE=missing "$SEX" doctor 2>&1)"; then fail "doctor accepted missing provider auth"; fi
+if output="$(FAKE_OPENCODE_AUTH_MODE=missing "$SECRETARY_CLI" doctor 2>&1)"; then fail "doctor accepted missing provider auth"; fi
 assert_contains "$output" "missing: OpenCode provider auth in selected Secretary store" "doctor did not expose missing auth"
 assert_not_contains "$output" "personal-store-canary" "doctor exposed personal store data"
-output="$($SEX doctor)" || fail "doctor command failed"
+output="$($SECRETARY_CLI doctor)" || fail "doctor command failed"
 assert_contains "$output" "ok: OpenCode provider auth in selected Secretary store" "doctor did not check selected auth store"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$STATE_NORMALIZED/opencode-native|auth list --format json --standalone|openai=|aws=" "Secretary Doctor did not use standalone JSON in the selected store without ambient credentials"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$TEST_HOME/.local/share/opencode|auth list" "Secretary Doctor probed the personal OpenCode store"
-output="$($SEX node doctor)" || fail "Node doctor command failed"
+output="$($SECRETARY_CLI node doctor)" || fail "Node doctor command failed"
 assert_contains "$output" "ok: OpenCode provider auth in selected Node store" "Node doctor did not check the shared auth store"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$STATE_NORMALIZED/opencode-native|auth list --format json --standalone|openai=|aws=" "Node Doctor did not use standalone JSON in the selected store without ambient credentials"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$TEST_HOME/.local/share/opencode|auth list" "Node Doctor probed the personal OpenCode store"
@@ -269,22 +269,22 @@ pass "doctor"
 existing_code="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/v1/web/session 2>/dev/null || true)"
 [[ "$existing_code" == "000" ]] || fail "port 8081 is already in use with HTTP $existing_code"
 
-output="$($SEX start)" || fail "start command failed"
+output="$($SECRETARY_CLI start)" || fail "start command failed"
 assert_contains "$output" "Secretary started" "start output"
 assert_not_contains "$output" "code=000" "start readiness output"
-status_output="$($SEX status)" || fail "status command failed while running"
+status_output="$($SECRETARY_CLI status)" || fail "status command failed while running"
 assert_contains "$status_output" "mode=normal" "normal running status"
 assert_http_code "http://127.0.0.1:8081/control-room" "404"
 assert_file "$OPEN_LOG"
 assert_contains "$(cat "$OPEN_LOG")" "#bootstrap=" "browser pairing URL"
 pass "start in normal mode"
 
-output="$($SEX start)" || fail "start reuse command failed"
+output="$($SECRETARY_CLI start)" || fail "start reuse command failed"
 assert_contains "$output" "already running" "start reuse output"
 pass "start reuses an existing server"
 
 logs_pid=""
-$SEX logs >"$TEST_HOME/logs.out" 2>&1 &
+$SECRETARY_CLI logs >"$TEST_HOME/logs.out" 2>&1 &
 logs_pid="$!"
 sleep 0.5
 stop_background "$logs_pid"
@@ -293,30 +293,30 @@ assert_file "$TEST_HOME/logs.out"
 assert_contains "$(cat "$TEST_HOME/logs.out")" "web API listening" "logs output"
 pass "logs"
 
-output="$($SEX stop)" || fail "stop command failed"
+output="$($SECRETARY_CLI stop)" || fail "stop command failed"
 assert_contains "$output" "Secretary stopped" "stop output"
-output="$($SEX stop)" || fail "stop command failed when already stopped"
+output="$($SECRETARY_CLI stop)" || fail "stop command failed when already stopped"
 assert_contains "$output" "not running" "stopped stop output"
 pass "stop"
 
-output="$($SEX restart --debug)" || fail "restart command failed"
+output="$($SECRETARY_CLI restart --debug)" || fail "restart command failed"
 assert_contains "$output" "Secretary started" "restart output"
 assert_not_contains "$output" "code=000" "restart readiness output"
-status_output="$($SEX status)" || fail "status command failed after restart"
+status_output="$($SECRETARY_CLI status)" || fail "status command failed after restart"
 assert_contains "$status_output" "mode=debug" "debug running status"
 assert_http_code "http://127.0.0.1:8081/control-room" "200"
 pass "restart --debug"
 
-output="$($SEX stop)" || fail "stop after restart failed"
+output="$($SECRETARY_CLI stop)" || fail "stop after restart failed"
 assert_contains "$output" "Secretary stopped" "stop after restart output"
 
-output="$($SEX opencode login)" || fail "explicit Secretary provider login failed"
+output="$($SECRETARY_CLI opencode login)" || fail "explicit Secretary provider login failed"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$STATE_NORMALIZED/opencode-native|auth login" "provider login did not use the selected Secretary store"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$TEST_HOME/.local/share/opencode" "provider login accessed personal store"
 [[ "$(cat "$TEST_HOME/.local/share/opencode/opencode.db")" == "personal-store-canary" ]] || fail "provider login modified personal OpenCode DB"
 pass "explicit Secretary provider login"
 
-output="$($SEX install-service --debug)" || fail "install-service command failed"
+output="$($SECRETARY_CLI install-service --debug)" || fail "install-service command failed"
 assert_contains "$output" "Secretary will start" "install-service output"
 [[ "$(cat "$STATE/opencode-native/opencode/opencode.db")" == "native-db-initialized" ]] || fail "repeat setup reset Secretary native DB"
 [[ "$(cat "$STATE/opencode-native/opencode/auth.json")" == "owner login fixture" ]] || fail "repeat setup reset Secretary native auth"
@@ -325,17 +325,17 @@ assert_contains "$(cat "$PLIST")" "<string>serve</string><string>--debug</string
 assert_contains "$(cat "$LAUNCHCTL_LOG")" "bootstrap" "launchd bootstrap call"
 pass "install-service --debug"
 
-output="$($SEX uninstall-service)" || fail "uninstall-service command failed"
+output="$($SECRETARY_CLI uninstall-service)" || fail "uninstall-service command failed"
 assert_contains "$output" "Service removed" "uninstall-service output"
 [[ ! -e "$PLIST" ]] || fail "uninstall-service left plist behind"
 assert_contains "$(cat "$LAUNCHCTL_LOG")" "bootout" "launchd bootout call"
 pass "uninstall-service"
 
 serve_pid=""
-$SEX serve --debug >"$TEST_HOME/serve.out" 2>&1 &
+$SECRETARY_CLI serve --debug >"$TEST_HOME/serve.out" 2>&1 &
 serve_pid="$!"
 wait_for_server "http://127.0.0.1:8081/v1/web/session" || fail "serve did not become ready"
-status_output="$($SEX status)" || fail "status command failed for serve"
+status_output="$($SECRETARY_CLI status)" || fail "status command failed for serve"
 assert_contains "$status_output" "mode=debug" "serve debug status"
 assert_http_code "http://127.0.0.1:8081/control-room" "200"
 stop_background "$serve_pid"
@@ -386,16 +386,16 @@ cat > "$LEGACY_STATE/node/config.json" <<EOF
 EOF
 chmod 600 "$LEGACY_STATE/config.toml" "$LEGACY_STATE/environment" "$LEGACY_STATE/node/config.json"
 log_lines_before="$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")"
-if output="$(HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" doctor 2>&1)"; then fail "Secretary doctor accepted an unmigrated legacy store"; fi
+if output="$(HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" doctor 2>&1)"; then fail "Secretary doctor accepted an unmigrated legacy store"; fi
 assert_contains "$output" "migration required: preserving existing Secretary OpenCode store" "legacy Secretary doctor warning"
-if output="$(HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node doctor 2>&1)"; then fail "Node doctor accepted an unmigrated legacy store"; fi
+if output="$(HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node doctor 2>&1)"; then fail "Node doctor accepted an unmigrated legacy store"; fi
 assert_contains "$output" "migration required: preserving existing OpenCode native store" "legacy Node doctor warning"
-if HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode login >/dev/null 2>&1; then fail "Secretary login redirected from legacy store"; fi
-if HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node opencode login >/dev/null 2>&1; then fail "Node login redirected from legacy store"; fi
+if HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode login >/dev/null 2>&1; then fail "Secretary login redirected from legacy store"; fi
+if HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node opencode login >/dev/null 2>&1; then fail "Node login redirected from legacy store"; fi
 [[ "$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")" == "$log_lines_before" ]] || fail "legacy Doctor/login accessed OpenCode"
 [[ "$(cat "$LEGACY_XDG/opencode/opencode.db")" == "legacy native sessions" ]] || fail "legacy Doctor/login changed native DB"
 
-output="$(HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode select-shared-store 2>&1)" || fail "owner could not select the shared store for an FX-only legacy installation"
+output="$(HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode select-shared-store 2>&1)" || fail "owner could not select the shared store for an FX-only legacy installation"
 assert_contains "$output" "shared Secretary and local Node store selected" "owner selection output"
 shared_manifest="$(cat "$LEGACY_STATE/opencode-native-selection.json")"
 node_shared_manifest="$(cat "$LEGACY_NODE_DATA/opencode-native-selection.json")"
@@ -405,17 +405,17 @@ assert_contains "$node_shared_manifest" "\"data_home\": \"$LEGACY_STATE_NORMALIZ
 [[ "$(cat "$LEGACY_XDG/opencode/opencode.db")" == "legacy native sessions" ]] || fail "owner selection changed the legacy OpenCode DB"
 [[ "$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")" == "$log_lines_before" ]] || fail "owner selection opened OpenCode before explicit login"
 before_idempotent_selection="$(cat "$LEGACY_STATE/opencode-native-selection.json")|$(cat "$LEGACY_NODE_DATA/opencode-native-selection.json")"
-output="$(HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode select-shared-store 2>&1)" || fail "repeating owner selection was not idempotent"
+output="$(HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode select-shared-store 2>&1)" || fail "repeating owner selection was not idempotent"
 assert_contains "$output" "shared Secretary and local Node store selected" "repeated owner selection output"
 after_idempotent_selection="$(cat "$LEGACY_STATE/opencode-native-selection.json")|$(cat "$LEGACY_NODE_DATA/opencode-native-selection.json")"
 [[ "$before_idempotent_selection" == "$after_idempotent_selection" ]] || fail "repeating owner selection changed the selection manifests"
-output="$(HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode login 2>&1)" || fail "owner could not log in to the selected shared store"
+output="$(HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode login 2>&1)" || fail "owner could not log in to the selected shared store"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$LEGACY_STATE_NORMALIZED/opencode-native|auth login" "owner login did not use the selected shared store"
 [[ "$(cat "$LEGACY_XDG/opencode/opencode.db")" == "legacy native sessions" ]] || fail "owner login changed the legacy OpenCode DB"
 assert_contains "$(cat "$LEGACY_STATE/config.toml")" 'harness = "fx"' "shared-store preparation changed the active FX harness"
-output="$(HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" doctor 2>&1)" || fail "FX doctor failed while preparing shared OpenCode auth"
+output="$(HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" doctor 2>&1)" || fail "FX doctor failed while preparing shared OpenCode auth"
 assert_contains "$output" "ok: fx" "FX doctor no longer recognizes the selected harness"
-output="$(HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node doctor 2>&1)" || fail "Node doctor did not accept the shared auth store: $output"
+output="$(HOME="$LEGACY_HOME" XDG_DATA_HOME="$LEGACY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node doctor 2>&1)" || fail "Node doctor did not accept the shared auth store: $output"
 assert_contains "$output" "ok: OpenCode provider auth in selected Node store" "Node doctor did not see the owner-provisioned shared auth"
 pass "legacy preservation, explicit shared-store selection, owner login, and FX continuity"
 
@@ -429,10 +429,10 @@ printf '[runtime]\nharness = "fx"\n' > "$FX_ONLY_STATE/config.toml"
 printf 'old FX-only host canary\n' > "$FX_ONLY_XDG/opencode/opencode.db"
 chmod 600 "$FX_ONLY_STATE/config.toml" "$FX_ONLY_XDG/opencode/opencode.db"
 fx_only_log_before="$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")"
-if output="$(HOME="$FX_ONLY_HOME" XDG_DATA_HOME="$FX_ONLY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" doctor 2>&1)"; then fail "Doctor accepted a config-only FX installation without owner transition"; fi
+if output="$(HOME="$FX_ONLY_HOME" XDG_DATA_HOME="$FX_ONLY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" doctor 2>&1)"; then fail "Doctor accepted a config-only FX installation without owner transition"; fi
 assert_contains "$output" "migration required: preserving existing Secretary OpenCode store" "config-only FX Doctor did not require owner transition"
 [[ "$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")" == "$fx_only_log_before" ]] || fail "config-only FX Doctor opened OpenCode"
-output="$(HOME="$FX_ONLY_HOME" XDG_DATA_HOME="$FX_ONLY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode select-shared-store 2>&1)" || fail "owner transition failed for config-only FX installation"
+output="$(HOME="$FX_ONLY_HOME" XDG_DATA_HOME="$FX_ONLY_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode select-shared-store 2>&1)" || fail "owner transition failed for config-only FX installation"
 assert_contains "$output" "shared Secretary and local Node store selected" "config-only FX owner transition output"
 assert_contains "$(cat "$FX_ONLY_STATE/opencode-native-selection.json")" '"mode": "shared"' "config-only FX Secretary did not select shared store"
 assert_contains "$(cat "$FX_ONLY_STATE/node/data/opencode-native-selection.json")" '"mode": "shared"' "config-only FX Node did not select shared store"
@@ -465,13 +465,13 @@ cat > "$UNTRUSTED_STATE/node/config.json" <<EOF
 EOF
 chmod 600 "$UNTRUSTED_STATE/config.toml" "$UNTRUSTED_STATE/opencode-native-selection.json" "$UNTRUSTED_NODE_DATA/opencode-native-selection.json" "$UNTRUSTED_STATE/node/config.json" "$UNTRUSTED_XDG/opencode/opencode.db"
 untrusted_log_before="$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")"
-if output="$(HOME="$UNTRUSTED_HOME" XDG_DATA_HOME="$UNTRUSTED_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode login 2>&1)"; then fail "login accepted a shared manifest pointing at personal XDG data"; fi
+if output="$(HOME="$UNTRUSTED_HOME" XDG_DATA_HOME="$UNTRUSTED_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode login 2>&1)"; then fail "login accepted a shared manifest pointing at personal XDG data"; fi
 assert_contains "$output" "store selection is invalid" "untrusted Secretary login refusal was unclear"
-if output="$(HOME="$UNTRUSTED_HOME" XDG_DATA_HOME="$UNTRUSTED_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node opencode login 2>&1)"; then fail "Node login accepted a shared manifest pointing at personal XDG data"; fi
+if output="$(HOME="$UNTRUSTED_HOME" XDG_DATA_HOME="$UNTRUSTED_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node opencode login 2>&1)"; then fail "Node login accepted a shared manifest pointing at personal XDG data"; fi
 assert_contains "$output" "store selection is invalid" "untrusted Node login refusal was unclear"
-if output="$(HOME="$UNTRUSTED_HOME" XDG_DATA_HOME="$UNTRUSTED_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" doctor 2>&1)"; then fail "Doctor accepted shared manifests pointing at personal XDG data"; fi
+if output="$(HOME="$UNTRUSTED_HOME" XDG_DATA_HOME="$UNTRUSTED_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" doctor 2>&1)"; then fail "Doctor accepted shared manifests pointing at personal XDG data"; fi
 assert_contains "$output" "store selection" "untrusted store Doctor refusal was unclear"
-if output="$(HOME="$UNTRUSTED_HOME" XDG_DATA_HOME="$UNTRUSTED_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode select-shared-store 2>&1)"; then fail "owner selection accepted conflicting personal-store manifests"; fi
+if output="$(HOME="$UNTRUSTED_HOME" XDG_DATA_HOME="$UNTRUSTED_XDG" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode select-shared-store 2>&1)"; then fail "owner selection accepted conflicting personal-store manifests"; fi
 assert_contains "$output" "conflicting native store selection" "owner selection conflict refusal was unclear"
 [[ "$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")" == "$untrusted_log_before" ]] || fail "Doctor/login opened the untrusted native store"
 [[ "$(cat "$UNTRUSTED_XDG/opencode/opencode.db")" == "personal DB canary" && ! -e "$UNTRUSTED_XDG/opencode/auth.json" ]] || fail "untrusted manifest touched the personal store"
@@ -518,21 +518,21 @@ chmod 600 "$DUPLICATE_STATE/config.toml" "$DUPLICATE_STATE/node/config.json" "$D
 duplicate_log_before="$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")"
 duplicate_secretary_manifest="$(cat "$DUPLICATE_STATE/opencode-native-selection.json")"
 duplicate_node_manifest="$(cat "$DUPLICATE_NODE_DATA/opencode-native-selection.json")"
-if output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" setup 2>&1)"; then fail "setup accepted duplicate data_home keys"; fi
+if output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" setup 2>&1)"; then fail "setup accepted duplicate data_home keys"; fi
 assert_contains "$output" "store selection is invalid" "duplicate-key setup refusal was unclear"
-if output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node setup 2>&1)"; then fail "co-located Node setup accepted duplicate data_home keys"; fi
+if output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node setup 2>&1)"; then fail "co-located Node setup accepted duplicate data_home keys"; fi
 assert_contains "$output" "Node OpenCode store selection is invalid" "duplicate-key co-located Node setup refusal was unclear"
-if output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node setup --standalone 2>&1)"; then fail "standalone Node setup accepted a conflicting duplicate shared selection"; fi
+if output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node setup --standalone 2>&1)"; then fail "standalone Node setup accepted a conflicting duplicate shared selection"; fi
 assert_contains "$output" "Node OpenCode store selection is invalid" "duplicate-key standalone Node setup refusal was unclear"
-if output="$(HOME="$DUPLICATE_HOME" XDG_DATA_HOME="$DUPLICATE_HOME/personal" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode login 2>&1)"; then fail "Secretary login accepted duplicate data_home keys and opened the first, personal value"; fi
+if output="$(HOME="$DUPLICATE_HOME" XDG_DATA_HOME="$DUPLICATE_HOME/personal" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode login 2>&1)"; then fail "Secretary login accepted duplicate data_home keys and opened the first, personal value"; fi
 assert_contains "$output" "store selection is invalid" "duplicate-key Secretary login refusal was unclear"
-if output="$(HOME="$DUPLICATE_HOME" XDG_DATA_HOME="$DUPLICATE_HOME/personal" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node opencode login 2>&1)"; then fail "Node login accepted duplicate data_home keys"; fi
+if output="$(HOME="$DUPLICATE_HOME" XDG_DATA_HOME="$DUPLICATE_HOME/personal" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node opencode login 2>&1)"; then fail "Node login accepted duplicate data_home keys"; fi
 assert_contains "$output" "store selection is invalid" "duplicate-key Node login refusal was unclear"
-if output="$(HOME="$DUPLICATE_HOME" XDG_DATA_HOME="$DUPLICATE_HOME/personal" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" doctor 2>&1)"; then fail "Secretary Doctor accepted duplicate data_home keys"; fi
+if output="$(HOME="$DUPLICATE_HOME" XDG_DATA_HOME="$DUPLICATE_HOME/personal" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" doctor 2>&1)"; then fail "Secretary Doctor accepted duplicate data_home keys"; fi
 assert_contains "$output" "store selection" "duplicate-key Secretary Doctor refusal was unclear"
-if output="$(HOME="$DUPLICATE_HOME" XDG_DATA_HOME="$DUPLICATE_HOME/personal" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node doctor 2>&1)"; then fail "Node Doctor accepted duplicate data_home keys"; fi
+if output="$(HOME="$DUPLICATE_HOME" XDG_DATA_HOME="$DUPLICATE_HOME/personal" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node doctor 2>&1)"; then fail "Node Doctor accepted duplicate data_home keys"; fi
 assert_contains "$output" "store selection" "duplicate-key Node Doctor refusal was unclear"
-if output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode select-shared-store 2>&1)"; then fail "owner transition accepted duplicate data_home keys"; fi
+if output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode select-shared-store 2>&1)"; then fail "owner transition accepted duplicate data_home keys"; fi
 [[ "$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")" == "$duplicate_log_before" ]] || fail "duplicate-key CLI flow launched native OpenCode"
 [[ "$(cat "$DUPLICATE_PERSONAL/opencode/opencode.db")" == "personal duplicate-key canary" && ! -e "$DUPLICATE_PERSONAL/opencode/auth.json" ]] || fail "duplicate-key CLI flow touched personal store"
 [[ "$(cat "$DUPLICATE_STATE/opencode-native-selection.json")" == "$duplicate_secretary_manifest" && "$(cat "$DUPLICATE_NODE_DATA/opencode-native-selection.json")" == "$duplicate_node_manifest" ]] || fail "duplicate-key owner transition rewrote selection manifests"
@@ -574,21 +574,21 @@ deployment_duplicate_log_before="$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")"
 deployment_duplicate_config_before="$(cat "$DEPLOYMENT_DUPLICATE_STATE/node/config.json")"
 deployment_duplicate_secretary_manifest_before="$(cat "$DEPLOYMENT_DUPLICATE_STATE/opencode-native-selection.json")"
 deployment_duplicate_node_manifest_before="$(cat "$DEPLOYMENT_DUPLICATE_NODE_DATA/opencode-native-selection.json")"
-if output="$(HOME="$DEPLOYMENT_DUPLICATE_HOME" XDG_DATA_HOME="$DEPLOYMENT_DUPLICATE_LEGACY" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node opencode login 2>&1)"; then
+if output="$(HOME="$DEPLOYMENT_DUPLICATE_HOME" XDG_DATA_HOME="$DEPLOYMENT_DUPLICATE_LEGACY" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node opencode login 2>&1)"; then
   fail "Node login bypassed the local Secretary pair check through duplicate data_dir"
 fi
 assert_contains "$output" "store selection is invalid" "duplicate deployment data_dir refusal was unclear"
-if output="$(HOME="$DEPLOYMENT_DUPLICATE_HOME" XDG_DATA_HOME="$DEPLOYMENT_DUPLICATE_LEGACY" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node setup 2>&1)"; then fail "Node setup accepted duplicate deployment data_dir"; fi
+if output="$(HOME="$DEPLOYMENT_DUPLICATE_HOME" XDG_DATA_HOME="$DEPLOYMENT_DUPLICATE_LEGACY" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node setup 2>&1)"; then fail "Node setup accepted duplicate deployment data_dir"; fi
 assert_contains "$output" "Node OpenCode store selection is invalid" "duplicate deployment Node setup refusal was unclear"
-if output="$(HOME="$DEPLOYMENT_DUPLICATE_HOME" XDG_DATA_HOME="$DEPLOYMENT_DUPLICATE_LEGACY" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" setup 2>&1)"; then fail "Secretary setup accepted duplicate Node deployment data_dir"; fi
+if output="$(HOME="$DEPLOYMENT_DUPLICATE_HOME" XDG_DATA_HOME="$DEPLOYMENT_DUPLICATE_LEGACY" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" setup 2>&1)"; then fail "Secretary setup accepted duplicate Node deployment data_dir"; fi
 assert_contains "$output" "store selection is invalid" "duplicate deployment Secretary setup refusal was unclear"
-if output="$(HOME="$DEPLOYMENT_DUPLICATE_HOME" XDG_DATA_HOME="$DEPLOYMENT_DUPLICATE_LEGACY" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" doctor 2>&1)"; then fail "Secretary Doctor accepted duplicate Node deployment data_dir"; fi
+if output="$(HOME="$DEPLOYMENT_DUPLICATE_HOME" XDG_DATA_HOME="$DEPLOYMENT_DUPLICATE_LEGACY" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" doctor 2>&1)"; then fail "Secretary Doctor accepted duplicate Node deployment data_dir"; fi
 assert_contains "$output" "store selection" "duplicate deployment Secretary Doctor refusal was unclear"
-if output="$(HOME="$DEPLOYMENT_DUPLICATE_HOME" XDG_DATA_HOME="$DEPLOYMENT_DUPLICATE_LEGACY" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node doctor 2>&1)"; then fail "Node Doctor accepted duplicate deployment data_dir"; fi
+if output="$(HOME="$DEPLOYMENT_DUPLICATE_HOME" XDG_DATA_HOME="$DEPLOYMENT_DUPLICATE_LEGACY" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node doctor 2>&1)"; then fail "Node Doctor accepted duplicate deployment data_dir"; fi
 assert_contains "$output" "store selection" "duplicate deployment Node Doctor refusal was unclear"
-if output="$(HOME="$DEPLOYMENT_DUPLICATE_HOME" XDG_DATA_HOME="$DEPLOYMENT_DUPLICATE_LEGACY" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode login 2>&1)"; then fail "Secretary login accepted duplicate Node deployment data_dir"; fi
+if output="$(HOME="$DEPLOYMENT_DUPLICATE_HOME" XDG_DATA_HOME="$DEPLOYMENT_DUPLICATE_LEGACY" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode login 2>&1)"; then fail "Secretary login accepted duplicate Node deployment data_dir"; fi
 assert_contains "$output" "store selection is invalid" "duplicate deployment Secretary login refusal was unclear"
-if output="$(HOME="$DEPLOYMENT_DUPLICATE_HOME" XDG_DATA_HOME="$DEPLOYMENT_DUPLICATE_LEGACY" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode select-shared-store 2>&1)"; then fail "owner transition accepted duplicate Node deployment data_dir"; fi
+if output="$(HOME="$DEPLOYMENT_DUPLICATE_HOME" XDG_DATA_HOME="$DEPLOYMENT_DUPLICATE_LEGACY" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode select-shared-store 2>&1)"; then fail "owner transition accepted duplicate Node deployment data_dir"; fi
 [[ "$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")" == "$deployment_duplicate_log_before" ]] || fail "duplicate deployment data_dir launched native CLI"
 [[ "$(cat "$DEPLOYMENT_DUPLICATE_LEGACY/opencode/opencode.db")" == "legacy session canary" ]] || fail "duplicate deployment config changed legacy native history"
 [[ "$(cat "$DEPLOYMENT_DUPLICATE_NODE_DATA/node-state.json")" == '{"mappings":{"attempt-a":{"harness_instance_id":"local/opencode","runtime_session_id":"retained-session"}}}' ]] || fail "duplicate deployment config changed managed session mappings"
@@ -622,7 +622,7 @@ fi
 pass "invalid UTF-8 deployment data_dir is rejected before store selection"
 [[ ! -e "$UTF8_LOSSY_DATA_DIR" ]] || fail "invalid UTF-8 deployment data_dir created a lossy replacement directory"
 utf8_native_log_before="$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")"
-if output="$(HOME="$UTF8_HOME" XDG_DATA_HOME="$UTF8_HOME/legacy" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node opencode login 2>&1)"; then fail "Node login accepted invalid UTF-8 deployment data_dir"; fi
+if output="$(HOME="$UTF8_HOME" XDG_DATA_HOME="$UTF8_HOME/legacy" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node opencode login 2>&1)"; then fail "Node login accepted invalid UTF-8 deployment data_dir"; fi
 assert_contains "$output" "Node OpenCode store selection is invalid" "invalid UTF-8 deployment login refusal was unclear"
 [[ "$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")" == "$utf8_native_log_before" ]] || fail "invalid UTF-8 deployment config launched native CLI"
 
@@ -659,7 +659,7 @@ PY
   assert_contains "$output" "invalid native store selection" "malformed manifest refusal was unclear ($invalid_unicode)"
   [[ ! -e "$UTF8_MANIFEST_LOSSY_HOME" ]] || fail "malformed manifest created the lossy legacy path ($invalid_unicode)"
   utf8_manifest_log_before="$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")"
-  if output="$(HOME="$UTF8_MANIFEST_HOME" XDG_DATA_HOME="$UTF8_MANIFEST_HOME/legacy-xdg" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node opencode login 2>&1)"; then fail "Node login accepted malformed manifest ($invalid_unicode)"; fi
+  if output="$(HOME="$UTF8_MANIFEST_HOME" XDG_DATA_HOME="$UTF8_MANIFEST_HOME/legacy-xdg" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node opencode login 2>&1)"; then fail "Node login accepted malformed manifest ($invalid_unicode)"; fi
   assert_contains "$output" "Node OpenCode store selection is invalid" "malformed manifest login refusal was unclear ($invalid_unicode)"
   [[ "$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")" == "$utf8_manifest_log_before" ]] || fail "malformed manifest launched native CLI ($invalid_unicode)"
 done
@@ -727,11 +727,11 @@ printf 'node native canary\n' > "$PAIR_NODE_STORE/opencode/opencode.db"
 printf 'personal native canary\n' > "$PAIR_PERSONAL_STORE/opencode.db"
 chmod 600 "$PAIR_STATE/config.toml" "$PAIR_STATE/node/config.json" "$PAIR_STATE/opencode-native-selection.json" "$PAIR_NODE_DATA/opencode-native-selection.json" "$PAIR_SECRETARY_STORE/opencode/opencode.db" "$PAIR_NODE_STORE/opencode/opencode.db" "$PAIR_PERSONAL_STORE/opencode.db"
 pair_log_before="$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")"
-if output="$(HOME="$PAIR_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node opencode login 2>&1)"; then fail "co-located Node login ignored conflicting Secretary store"; fi
+if output="$(HOME="$PAIR_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node opencode login 2>&1)"; then fail "co-located Node login ignored conflicting Secretary store"; fi
 assert_contains "$output" "Co-located Secretary/Node OpenCode store selection is invalid" "co-located Node login conflict was unclear"
-if output="$(HOME="$PAIR_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node doctor 2>&1)"; then fail "co-located Node Doctor ignored conflicting Secretary store"; fi
+if output="$(HOME="$PAIR_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node doctor 2>&1)"; then fail "co-located Node Doctor ignored conflicting Secretary store"; fi
 assert_contains "$output" "invalid: Node OpenCode store selection" "co-located Node Doctor conflict was unclear"
-if output="$(HOME="$PAIR_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node setup 2>&1)"; then fail "co-located Node setup ignored conflicting Secretary store"; fi
+if output="$(HOME="$PAIR_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node setup 2>&1)"; then fail "co-located Node setup ignored conflicting Secretary store"; fi
 assert_contains "$output" "Co-located Secretary/Node OpenCode store selection is invalid" "co-located Node setup conflict was unclear"
 [[ "$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")" == "$pair_log_before" ]] || fail "co-located conflict invoked native OpenCode"
 [[ "$(cat "$PAIR_NODE_STORE/opencode/opencode.db")" == "node native canary" ]] || fail "co-located conflict changed the Node store"
@@ -740,11 +740,11 @@ rm -f "$PAIR_NODE_STORE/opencode/opencode.db"
 cat > "$PAIR_STATE/node/config.json" <<EOF
 {"server_url":"http://127.0.0.1:8081","node":"pair-check-node","data_dir":"$PAIR_NODE_DATA","include_opencode":true,"standalone":true}
 EOF
-output="$(HOME="$PAIR_HOME" PATH="$FAKE_BIN:$REAL_PATH" SECRETARY_OPENCODE_COMMAND="$FAKE_BIN/opencode" "$SEX" node setup --standalone --name pair-check-node 2>&1)" || fail "standalone Node setup was not independent of Secretary: $output"
+output="$(HOME="$PAIR_HOME" PATH="$FAKE_BIN:$REAL_PATH" SECRETARY_OPENCODE_COMMAND="$FAKE_BIN/opencode" "$SECRETARY_CLI" node setup --standalone --name pair-check-node 2>&1)" || fail "standalone Node setup was not independent of Secretary: $output"
 assert_contains "$output" "Node setup complete: pair-check-node" "standalone Node setup output was unclear"
 assert_contains "$output" "OpenCode Node native store: $PAIR_NODE_STORE" "standalone setup selected an unexpected native store"
-output="$(HOME="$PAIR_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node opencode login 2>&1)" || fail "standalone Node login was not independent of Secretary: $output"
-output="$(HOME="$PAIR_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node doctor 2>&1)" || fail "standalone Node Doctor was not independent of Secretary: $output"
+output="$(HOME="$PAIR_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node opencode login 2>&1)" || fail "standalone Node login was not independent of Secretary: $output"
+output="$(HOME="$PAIR_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node doctor 2>&1)" || fail "standalone Node Doctor was not independent of Secretary: $output"
 assert_contains "$output" "ok: standalone Node uses an independent OpenCode store" "standalone Node Doctor did not report its scope"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$PAIR_NODE_STORE|serve --port 0 --stdio" "standalone setup did not initialize its selected native DB"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$PAIR_NODE_STORE|auth login" "standalone login used a different native store"
@@ -755,17 +755,17 @@ pass "co-located Node login/Doctor/setup enforce the Secretary pair; standalone 
 DUPLICATE_ESCAPED_SHARED="$(python3 -c 'import sys; print(sys.argv[1].replace("/", r"\u002f"))' "$DUPLICATE_SHARED")"
 printf '{\n  "version": 1,\n  "mode": "shared",\n  "data_home": "%s"\n}\n' "$DUPLICATE_ESCAPED_SHARED" > "$DUPLICATE_STATE/opencode-native-selection.json"
 printf '{\n  "version": 1,\n  "mode": "shared",\n  "data_home": "%s"\n}\n' "$DUPLICATE_SHARED" > "$DUPLICATE_NODE_DATA/opencode-native-selection.json"
-output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" setup 2>&1)" || fail "setup rejected a valid escaped canonical path: $output"
+output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" setup 2>&1)" || fail "setup rejected a valid escaped canonical path: $output"
 assert_contains "$output" "Setup complete" "setup did not consume validated escaped selection"
-output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode login 2>&1)" || fail "Secretary login rejected a valid escaped canonical path"
-output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node opencode login 2>&1)" || fail "Node login rejected a valid escaped canonical path"
-output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" doctor 2>&1)" || fail "Secretary Doctor rejected a valid escaped canonical path: $output"
-output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node doctor 2>&1)" || fail "Node Doctor rejected a valid escaped canonical path: $output"
+output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode login 2>&1)" || fail "Secretary login rejected a valid escaped canonical path"
+output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node opencode login 2>&1)" || fail "Node login rejected a valid escaped canonical path"
+output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" doctor 2>&1)" || fail "Secretary Doctor rejected a valid escaped canonical path: $output"
+output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node doctor 2>&1)" || fail "Node Doctor rejected a valid escaped canonical path: $output"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$DUPLICATE_SHARED|auth login" "escaped Secretary path was not resolved by Go producer"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$DUPLICATE_SHARED|auth list --format json --standalone" "escaped Doctor path was not resolved by Go producer"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$DUPLICATE_PERSONAL" "valid escaped selection accessed the personal store"
 [[ "$(cat "$DUPLICATE_PERSONAL/opencode/opencode.db")" == "personal duplicate-key canary" && ! -e "$DUPLICATE_PERSONAL/opencode/auth.json" ]] || fail "valid escaped selection touched personal store"
-output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode select-shared-store 2>&1)" || fail "owner transition rejected valid escaped canonical selection"
+output="$(HOME="$DUPLICATE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode select-shared-store 2>&1)" || fail "owner transition rejected valid escaped canonical selection"
 assert_contains "$output" "shared Secretary and local Node store selected" "owner transition did not normalize the Go-selected store"
 pass "setup, Doctor, login, and owner use one Go-resolved escaped canonical store"
 
@@ -841,13 +841,13 @@ EOF
       ;;
   esac
   invalid_log_before="$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")"
-  if output="$(HOME="$INVALID_HOME" XDG_DATA_HOME="$INVALID_PERSONAL" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode login 2>&1)"; then fail "$invalid_kind manifest passed Secretary login validation"; fi
+  if output="$(HOME="$INVALID_HOME" XDG_DATA_HOME="$INVALID_PERSONAL" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode login 2>&1)"; then fail "$invalid_kind manifest passed Secretary login validation"; fi
   assert_contains "$output" "store selection is invalid" "$invalid_kind Secretary login refusal was unclear"
-  if output="$(HOME="$INVALID_HOME" XDG_DATA_HOME="$INVALID_PERSONAL" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node opencode login 2>&1)"; then fail "$invalid_kind manifest passed Node login validation"; fi
+  if output="$(HOME="$INVALID_HOME" XDG_DATA_HOME="$INVALID_PERSONAL" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node opencode login 2>&1)"; then fail "$invalid_kind manifest passed Node login validation"; fi
   assert_contains "$output" "native CLI was not launched" "$invalid_kind Node login refusal was unclear"
-  if output="$(HOME="$INVALID_HOME" XDG_DATA_HOME="$INVALID_PERSONAL" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" doctor 2>&1)"; then fail "$invalid_kind manifest passed Doctor validation"; fi
+  if output="$(HOME="$INVALID_HOME" XDG_DATA_HOME="$INVALID_PERSONAL" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" doctor 2>&1)"; then fail "$invalid_kind manifest passed Doctor validation"; fi
   assert_contains "$output" "store selection" "$invalid_kind Doctor refusal was unclear"
-  if output="$(HOME="$INVALID_HOME" XDG_DATA_HOME="$INVALID_PERSONAL" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode select-shared-store 2>&1)"; then fail "$invalid_kind manifest passed owner validation"; fi
+  if output="$(HOME="$INVALID_HOME" XDG_DATA_HOME="$INVALID_PERSONAL" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode select-shared-store 2>&1)"; then fail "$invalid_kind manifest passed owner validation"; fi
   [[ "$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")" == "$invalid_log_before" ]] || fail "$invalid_kind manifest launched OpenCode CLI"
   [[ "$(cat "$INVALID_PERSONAL/opencode/opencode.db")" == "personal DB canary" && ! -e "$INVALID_PERSONAL/opencode/auth.json" ]] || fail "$invalid_kind manifest modified the personal store"
 done
@@ -874,7 +874,7 @@ printf '{\n  "version": 1,\n  "mode": "shared",\n  "data_home": "%s"\n}\n' "${ST
 printf 'selected Secretary DB canary\n' > "$STANDALONE_CONFLICT_STORE/opencode/opencode.db"
 chmod 600 "$STANDALONE_CONFLICT_STATE/node/config.json" "$STANDALONE_CONFLICT_NODE_DATA/opencode-native-selection.json" "$STANDALONE_CONFLICT_STORE/opencode/opencode.db"
 standalone_log_before="$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")"
-if output="$(HOME="$STANDALONE_CONFLICT_HOME" XDG_DATA_HOME="$STANDALONE_CONFLICT_HOME/personal" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node doctor 2>&1)"; then fail "standalone Node Doctor accepted Secretary shared-store selection"; fi
+if output="$(HOME="$STANDALONE_CONFLICT_HOME" XDG_DATA_HOME="$STANDALONE_CONFLICT_HOME/personal" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node doctor 2>&1)"; then fail "standalone Node Doctor accepted Secretary shared-store selection"; fi
 assert_contains "$output" "invalid: Node OpenCode store selection" "standalone Node Doctor conflict refusal was unclear"
 [[ "$(wc -l < "$TICKET33_OPENCODE_STORE_LOG")" == "$standalone_log_before" ]] || fail "standalone Node Doctor probed shared Secretary auth"
 if output="$(HOME="$STANDALONE_CONFLICT_HOME" "$BIN/secretary-node" --config "$STANDALONE_CONFLICT_STATE/node/config.json" 2>&1)"; then fail "standalone runtime accepted a Secretary shared-store selection"; fi
@@ -890,7 +890,7 @@ ln -s "$BIN/secretaryd" "$MANAGED_HOME/.local/bin/secretaryd"
 ln -s "$BIN/secretary-node" "$MANAGED_HOME/.local/bin/secretary-node"
 printf 'existing server state\n' > "$MANAGED_STATE/secretary.db"
 printf '{"mappings":{"attempt-1":{"harness_instance_id":"local/opencode","runtime_session_id":"private-session-id"}}}\n' > "$MANAGED_NODE_DATA/node-state.json"
-if output="$(HOME="$MANAGED_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode select-shared-store 2>&1)"; then fail "owner selection replaced a managed OpenCode session"; fi
+if output="$(HOME="$MANAGED_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode select-shared-store 2>&1)"; then fail "owner selection replaced a managed OpenCode session"; fi
 assert_contains "$output" "managed OpenCode sessions exist in Node mappings" "managed session refusal was unclear"
 assert_not_contains "$output" "private-session-id" "managed native session identity leaked to CLI output"
 [[ ! -e "$MANAGED_STATE/opencode-native-selection.json" && ! -e "$MANAGED_NODE_DATA/opencode-native-selection.json" ]] || fail "managed-session refusal partially changed selection"
@@ -908,7 +908,7 @@ printf '{"version":1,"mode":"isolated","data_home":"%s"}\n' "${CONFLICT_SECRETAR
 printf '{"version":1,"mode":"isolated","data_home":"%s"}\n' "${CONFLICT_NODE_STORE:a}" > "$CONFLICT_NODE_DATA/opencode-native-selection.json"
 printf 'old selected database\n' > "$CONFLICT_NODE_STORE/opencode/opencode.db"
 before_selection="$(shasum -a 256 "$CONFLICT_STATE/opencode-native-selection.json" "$CONFLICT_NODE_DATA/opencode-native-selection.json" "$CONFLICT_NODE_STORE/opencode/opencode.db")"
-if output="$(HOME="$CONFLICT_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode select-shared-store 2>&1)"; then fail "owner selection replaced conflicting role-specific stores"; fi
+if output="$(HOME="$CONFLICT_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode select-shared-store 2>&1)"; then fail "owner selection replaced conflicting role-specific stores"; fi
 assert_contains "$output" "Node has a conflicting native store selection" "conflicting selection refusal was unclear"
 after_selection="$(shasum -a 256 "$CONFLICT_STATE/opencode-native-selection.json" "$CONFLICT_NODE_DATA/opencode-native-selection.json" "$CONFLICT_NODE_STORE/opencode/opencode.db")"
 [[ "$before_selection" == "$after_selection" ]] || fail "conflicting selection failure changed an existing store or manifest"
@@ -927,7 +927,7 @@ printf '{"version":1,"mode":"legacy","data_home":"%s"}\n' "${PARTIAL_LEGACY:a}" 
 printf 'must stay private\n' > "$PARTIAL_CANARY"
 ln -s "$PARTIAL_CANARY" "$PARTIAL_NODE_DATA/opencode-native-selection.json.tmp"
 before_partial="$(shasum -a 256 "$PARTIAL_STATE/opencode-native-selection.json" "$PARTIAL_NODE_DATA/opencode-native-selection.json" "$PARTIAL_CANARY")"
-if output="$(HOME="$PARTIAL_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode select-shared-store 2>&1)"; then fail "owner selection ignored a partial-write obstruction"; fi
+if output="$(HOME="$PARTIAL_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode select-shared-store 2>&1)"; then fail "owner selection ignored a partial-write obstruction"; fi
 assert_contains "$output" "selection is incomplete" "partial selection failure was unclear"
 after_partial="$(shasum -a 256 "$PARTIAL_STATE/opencode-native-selection.json" "$PARTIAL_NODE_DATA/opencode-native-selection.json" "$PARTIAL_CANARY")"
 [[ "$before_partial" == "$after_partial" ]] || fail "partial selection failure changed old records or canary"
@@ -944,7 +944,7 @@ ln -s "$BIN/secretary-node" "$CRASH_HOME/.local/bin/secretary-node"
 printf '{"version":1,"mode":"shared","data_home":"%s"}\n' "${CRASH_SHARED:a}" > "$CRASH_STATE/opencode-native-selection.json"
 printf 'selected native session canary\n' > "$CRASH_SHARED/opencode/opencode.db"
 before_crash_repair="$(shasum -a 256 "$CRASH_STATE/opencode-native-selection.json" "$CRASH_SHARED/opencode/opencode.db")"
-if output="$(HOME="$CRASH_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" opencode select-shared-store 2>&1)"; then fail "owner command silently completed a partial selection over a nonempty target"; fi
+if output="$(HOME="$CRASH_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" opencode select-shared-store 2>&1)"; then fail "owner command silently completed a partial selection over a nonempty target"; fi
 assert_contains "$output" "target native store is nonempty and unselected" "partial active selection refusal was unclear"
 after_crash_repair="$(shasum -a 256 "$CRASH_STATE/opencode-native-selection.json" "$CRASH_SHARED/opencode/opencode.db")"
 [[ "$before_crash_repair" == "$after_crash_repair" && ! -e "$CRASH_NODE_DATA/opencode-native-selection.json" ]] || fail "partial active selection refusal changed selected data"
@@ -967,20 +967,20 @@ REMOTE_STATE="$REMOTE_HOME/.local/share/secretary"
 REMOTE_NODE_DATA="$REMOTE_STATE/node/data"
 mkdir -p "$REMOTE_HOME/.local/bin"
 ln -s "$BIN/secretary-node" "$REMOTE_HOME/.local/bin/secretary-node"
-output="$(HOME="$REMOTE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node setup --standalone --server https://secretary.example.invalid --name remote-node 2>&1)" || fail "standalone remote Node setup failed"
+output="$(HOME="$REMOTE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node setup --standalone --server https://secretary.example.invalid --name remote-node 2>&1)" || fail "standalone remote Node setup failed"
 assert_contains "$output" "Node setup complete: remote-node" "standalone Node setup output"
 assert_contains "$(cat "$REMOTE_STATE/node/config.json")" '"standalone": true' "standalone Node scope was not persisted"
 remote_manifest="$(cat "$REMOTE_NODE_DATA/opencode-native-selection.json")"
 assert_contains "$remote_manifest" '"mode": "isolated"' "remote Node did not select its own isolated store"
 assert_contains "$remote_manifest" "\"data_home\": \"${REMOTE_NODE_DATA:a}/opencode-native\"" "remote Node selected a non-local data home"
 [[ ! -e "$REMOTE_STATE/opencode-native-selection.json" ]] || fail "standalone Node created a local Secretary store selection"
-output="$(HOME="$REMOTE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SEX" node install-service 2>&1)" || fail "standalone Node service installation failed"
+output="$(HOME="$REMOTE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node install-service 2>&1)" || fail "standalone Node service installation failed"
 assert_contains "$output" "Node will start after macOS login" "standalone Node service output"
 [[ ! -e "$REMOTE_STATE/config.toml" && ! -e "$REMOTE_STATE/opencode-native-selection.json" ]] || fail "remote Node service installation created a local Secretary installation"
 pass "standalone remote Node keeps its own native store"
 
-output="$($SEX status)" || fail "final status command failed"
+output="$($SECRETARY_CLI status)" || fail "final status command failed"
 assert_contains "$output" "stopped" "final status"
 pass "final stopped status"
 
-print "All sex CLI command tests passed."
+print "All secretary CLI command tests passed."

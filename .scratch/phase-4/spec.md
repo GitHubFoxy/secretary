@@ -304,7 +304,7 @@ MVP должен включать:
 14. Approval приходит от Worker/harness через Node и server. Secretary не вызывает `request_approval` для собственных действий.
 15. Secretary обрабатывает один turn за раз. Входящие сообщения во время его работы сохраняются в порядке поступления и ждут очереди; Workers при этом работают параллельно.
 16. Phase 4 deployment является self-hosted/private-network-first. Hosted service откладывается.
-17. Команда `sex` и команда `sex setup` сохраняются как текущий исторический CLI contract.
+17. Команда `secretary` и команда `secretary setup` сохраняются как текущий исторический CLI contract.
 
 ## 9. Secretary context reconstruction
 
@@ -1268,7 +1268,7 @@ External Profiles остаются Markdown files. Profile reload атомаре
 10. Новые records `clients`, `nodes`, `projects`, `harness_instances`, `approvals` и `deliveries` создаются миграцией.
 11. Перед миграцией `secretary.db` автоматически архивируется.
 12. Невалидная новая конфигурация не заменяет активный snapshot.
-13. Команда `sex setup` сохраняется без переименования.
+13. Команда `secretary setup` сохраняется без переименования.
 
 ## 23. Security boundary
 

@@ -56,7 +56,7 @@ General показывает сохранённое пользовательск
 - `go test ./internal/telegram -run '^(TestTelegram|TestLongMessage|TestLongWorker)' -count=1 -v` — PASS0.874s: layouts/links/HTML escaping/unsafe schemes, parse rejection → fallback503 → restart/retry/dedup обеих destinations, no immediate non-format fallback, balanced current chunk tags, Unicode boundaries.
 - `go test ./...` — PASS; отдельно `go test ./... -count=1` — PASS без cache (node16.552s, telegram4.057s, secretary3.930s, secretaryd4.554s).
 - `go test -race -p 1 ./...` — PASS (node27.982s из focused race, secretary7.053s, secretaryd7.490s, webapi36.444s); `go vet ./...`, `go build ./...`, `git diff --check` — PASS.
-- `zsh scripts/sex-cli-test.sh` — все isolated HOME cases PASS; `zsh scripts/node-deployment-test.sh` — PASS. Это тестовые service commands в isolated HOME, не production mutations.
+- `zsh scripts/secretary-cli-test.sh` — все isolated HOME cases PASS; `zsh scripts/node-deployment-test.sh` — PASS. Это тестовые service commands в isolated HOME, не production mutations.
 
 Первый промежуточный run выявил compile issues formatter (исправлены), backpressure regression при generic burst с explicit summary (native FIFO оставлен, старый generic non-draining contract восстановлен), а полный suite — старые raw-apostrophe/internal-label assertions (уточнены под HTML/user-facing title). В одном раннем combined run legacy31 `missing-mode/resume=false` не прочитал safe counts; fixture делает in-place WriteFile у startup deadline, поэтому возможна interrupted metadata write. Native configuration policy/timeouts31 не менялись. Следующие focused suites, full uncached и full race PASS; этот ранний transient не скрывается и не считается доказанно устранённым unrelated fixture race.
 
@@ -128,7 +128,7 @@ go test -race -p 1 ./... -count=1
 go vet ./...
 go build ./...
 git diff --check
-zsh scripts/sex-cli-test.sh
+zsh scripts/secretary-cli-test.sh
 zsh scripts/node-deployment-test.sh
 ```
 

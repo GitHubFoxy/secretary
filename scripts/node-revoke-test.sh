@@ -47,7 +47,7 @@ EOF
 sleep 20 &
 WORK_PID=$!
 print -r -- "$WORK_PID" > "$HOME/.local/share/secretary/node/node.pid"
-output="$("$ROOT/sex" node revoke --timeout 2 --interval 0.01)"
+output="$("$ROOT/secretary" node revoke --timeout 2 --interval 0.01)"
 [[ "$output" == *"Node revoke requested: test-node"* ]] || { print -u2 "revoke did not complete: $output"; exit 1; }
 if kill -0 "$WORK_PID" 2>/dev/null; then
   print -u2 "revoke did not stop idle process"
@@ -64,7 +64,7 @@ export STATUS_MODE=timeout
 sleep 20 &
 WORK_PID=$!
 print -r -- "$WORK_PID" > "$HOME/.local/share/secretary/node/node.pid"
-if "$ROOT/sex" node revoke --timeout 0 --interval 0.01 >/dev/null 2>&1; then
+if "$ROOT/secretary" node revoke --timeout 0 --interval 0.01 >/dev/null 2>&1; then
   print -u2 "timeout revoke unexpectedly succeeded"
   exit 1
 fi
