@@ -52,6 +52,13 @@
 - Worker observer — opt-in client view по Worker reference; он сначала получает состояние Worker, затем live Worker activity. Из observer можно направить Steering message, Queued message или Cancel.
 - Worker activity состоит из ephemeral text, tool и status events. Эти события получает только открывший Worker observer; terminal Result не является Worker activity.
 
+## Claude Code native Session
+
+- Claude Code использует persistent JSONL stream input/output. Deferred Start не вызывает модель; Prompt принимает только idle Session. Secretary сохраняет process, Worker закрывает его после terminal Attempt и возобновляет прежний native transcript через `--resume`.
+- Profile/skills передаются в native system prompt, managed tools — в native allowlist. MCP config задан явно; секретные environment values не попадают в argv. Необслуживаемые native approvals отключены через dontAsk.
+- Resume требует initialize до Prompt; missing session и другая native identity дают явную ошибку. Error/empty terminal не считается успехом. Cancel ждёт native terminal; receipt не завершает Attempt. Partial и complete events не дублируют ответ.
+- CapabilitySteering для Claude не объявляется до live same-Attempt evidence. Обычный active input получает явный unsupported; silent queue и interrupt + новый turn не используются как замена. Текущая реальная приёмка заблокирована quota403 настроенного provider и отсутствием working first-party auth; [свидетельства](../../.scratch/phase-5/reports/claude-interactive-runtime-20261010.md).
+
 ## Attempt, Result и закрытие Task
 
 - Attempt — один execution cycle Worker для Task или Follow-up, заканчивающийся одним Result.
