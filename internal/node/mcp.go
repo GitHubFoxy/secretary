@@ -1,7 +1,10 @@
 package node
 
 import (
+	"errors"
 	"path/filepath"
+	"strings"
+	"unicode"
 
 	"github.com/beruseruko/secretary/internal/core"
 )
@@ -49,4 +52,52 @@ func RawACPLogPath(dir, workerRef string) string {
 		return ""
 	}
 	return filepath.Join(dir, workerRef+".jsonl")
+}
+
+func validateWorkerMCPServers(servers []MCPServer) error {
+	names := map[string]bool{}
+	for _, server := range servers {
+		if server.Name == "" || strings.EqualFold(server.Name, "secretary") {
+			return errors.New("node: invalid or reserved Worker MCP name")
+		}
+		for _, character := range server.Name {
+			if !(character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '_' || character == '-') {
+				return errors.New("node: invalid Worker MCP name")
+			}
+		}
+		if names[server.Name] {
+			return errors.New("node: duplicate Worker MCP name")
+		}
+		names[server.Name] = true
+		if strings.TrimSpace(server.Command) == "" || strings.TrimSpace(server.Command) != server.Command || strings.IndexFunc(server.Command, unicode.IsControl) >= 0 {
+			return errors.New("node: invalid Worker MCP command")
+		}
+		for _, arg := range server.Args {
+			if strings.ContainsRune(arg, 0) {
+				return errors.New("node: invalid Worker MCP argument")
+			}
+		}
+		environment := map[string]bool{}
+		for _, variable := range server.Env {
+			if !validEnvironmentName(variable.Name) || strings.HasPrefix(variable.Name, "SECRETARY_MCP_") || variable.Name == "SECRETARY_CAPABILITY" || strings.ContainsRune(variable.Value, 0) {
+				return errors.New("node: invalid or reserved Worker MCP environment")
+			}
+			if environment[variable.Name] {
+				return errors.New("node: duplicate Worker MCP environment name")
+			}
+			environment[variable.Name] = true
+		}
+	}
+	return nil
+}
+func cloneMCPServers(servers []MCPServer) []MCPServer {
+	if servers == nil {
+		return nil
+	}
+	cloned := append([]MCPServer{}, servers...)
+	for i, server := range servers {
+		cloned[i].Args = append([]string(nil), server.Args...)
+		cloned[i].Env = append([]MCPEnv(nil), server.Env...)
+	}
+	return cloned
 }

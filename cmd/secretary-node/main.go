@@ -22,7 +22,7 @@ var invalidNodeName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 func main() {
 	_ = syscall.Umask(0o077)
-	configPath := flag.String("config", "", "non-secret Node deployment config JSON")
+	configPath := flag.String("config", "", "Node-local deployment and approved Worker MCP config JSON")
 	dataDir := flag.String("data-dir", defaultNodeDataDir(), "directory for Node identity and durable local state")
 	serverURL := flag.String("server", envOr("SECRETARY_NODE_SERVER", "http://127.0.0.1:8081"), "Secretary server URL used for first pairing")
 	pairingToken := flag.String("pair-token", os.Getenv("SECRETARY_NODE_PAIRING_TOKEN"), "one-time/owner-approved Node pairing token")
@@ -173,6 +173,7 @@ func main() {
 		Runtime:    runtime,
 		Inventory:  discovery,
 		Workspaces: workspaces,
+		MCPServers: deployment.MCPServers,
 		Capacity:   *capacity,
 	}
 

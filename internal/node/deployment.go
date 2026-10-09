@@ -21,8 +21,6 @@ type WorkspaceMapping struct {
 	Path      string `json:"path"`
 }
 
-// DeploymentConfig is the non-secret configuration used to install a Node.
-// A Node has no listener. It only dials the Secretary server outbound.
 type DeploymentConfig struct {
 	ServerURL       string             `json:"server_url"`
 	Node            core.NodeReference `json:"node"`
@@ -32,6 +30,7 @@ type DeploymentConfig struct {
 	ListenAddress   string             `json:"listen_address,omitempty"`
 	IncludeOpenCode bool               `json:"include_opencode"`
 	Standalone      bool               `json:"standalone,omitempty"`
+	MCPServers      []MCPServer        `json:"mcp_servers,omitempty"`
 }
 
 func LoadDeploymentConfig(path string) (DeploymentConfig, error) {
@@ -79,6 +78,9 @@ func SaveDeploymentConfig(path string, config DeploymentConfig) error {
 }
 
 func (c DeploymentConfig) Validate() error {
+	if err := validateWorkerMCPServers(c.MCPServers); err != nil {
+		return err
+	}
 	serverURL := strings.TrimSpace(c.ServerURL)
 	parsed, err := url.Parse(serverURL)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || strings.TrimSpace(parsed.Host) == "" || parsed.User != nil {
