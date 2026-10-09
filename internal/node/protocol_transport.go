@@ -166,7 +166,7 @@ func (c *ProtocolConnection) readLoop(ctx context.Context, handler ProtocolHandl
 			_ = c.conn.Close(websocket.StatusPolicyViolation, "unexpected node message")
 			return
 		}
-		if envelope.Type != MessageCommandOutcome {
+		if envelope.Type != MessageCommandOutcome || envelope.Sequence != 0 {
 			if err := c.inbound.Accept(envelope); err != nil {
 				_ = c.conn.Close(websocket.StatusPolicyViolation, err.Error())
 				return
@@ -227,6 +227,9 @@ func (c *ProtocolConnection) readLoop(ctx context.Context, handler ProtocolHandl
 						return
 					}
 				}
+			}
+			if envelope.Sequence != 0 {
+				_ = c.writeAck(ctx, envelope.Sequence)
 			}
 		case MessageActivity, MessageAttemptOutcome:
 			var event NodeEvent
@@ -515,22 +518,7 @@ func (c *ProtocolConnection) SendInventory(ctx context.Context, inventory core.H
 }
 
 func (c *ProtocolConnection) SendPendingEvent(ctx context.Context, pending PendingEvent) error {
-	var event NodeEvent
-	if err := json.Unmarshal(pending.Payload, &event); err != nil {
-		return err
-	}
-	if err := event.Validate(); err != nil {
-		return err
-	}
-	kind := MessageActivity
-	if event.Outcome != nil {
-		kind = MessageAttemptOutcome
-	}
-	envelope, err := NewEnvelope(kind, c.node, pending.Sequence, 0, pending.Payload, c.auth)
-	if err != nil {
-		return err
-	}
-	if err := c.write(ctx, envelope); err != nil {
+	if err := sendPendingEventWithoutWaiting(ctx, c, pending); err != nil {
 		return err
 	}
 	data, err := c.read(ctx)

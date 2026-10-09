@@ -267,7 +267,11 @@ func (s *LocalStore) CompleteCommand(commandID string, outcome CommandOutcome) (
 	}
 	record.State, record.Outcome, record.UpdatedAt = outcome.State, outcome, time.Now().UTC()
 	s.state.Commands[commandID] = record
-	if err := s.persistLocked(); err != nil {
+	if outcome.State == CommandFailed && (outcome.Kind == CommandDispatch || outcome.Kind == CommandResume) {
+		if _, err := s.queueCommandOutcomeLocked(outcome); err != nil {
+			return CommandRecord{}, err
+		}
+	} else if err := s.persistLocked(); err != nil {
 		return CommandRecord{}, err
 	}
 	return record, nil
@@ -448,18 +452,43 @@ func (s *LocalStore) QueueOutcome(outcome core.AttemptOutcomeEnvelope) (PendingE
 	return s.queueEvent(outcomeEvent(outcome))
 }
 
+func (s *LocalStore) QueueCommandOutcome(outcome CommandOutcome) (PendingEvent, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.queueCommandOutcomeLocked(outcome)
+}
+
+func (s *LocalStore) queueCommandOutcomeLocked(outcome CommandOutcome) (PendingEvent, error) {
+	if outcome.CommandID == "" || outcome.Kind == "" || outcome.State == CommandProcessing {
+		return PendingEvent{}, errors.New("node: incomplete command outcome")
+	}
+	encoded, err := json.Marshal(outcome)
+	if err != nil {
+		return PendingEvent{}, err
+	}
+	return s.queuePendingEventLocked("command-outcome-"+outcome.CommandID, MessageCommandOutcome, encoded)
+}
+
 func (s *LocalStore) queueEvent(event NodeEvent) (PendingEvent, error) {
 	if err := event.Validate(); err != nil {
 		return PendingEvent{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	event.Sequence = s.state.NextSequence
+	if event.Sequence == 0 {
+		event.Sequence = 1
 	}
 	encoded, err := json.Marshal(event)
 	if err != nil {
 		return PendingEvent{}, err
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return s.queuePendingEventLocked(event.EventID, "", encoded)
+}
+
+func (s *LocalStore) queuePendingEventLocked(eventID string, kind MessageType, payload json.RawMessage) (PendingEvent, error) {
 	for _, pending := range s.state.Outbox {
-		if pending.EventID == event.EventID {
+		if pending.EventID == eventID {
 			return pending, nil
 		}
 	}
@@ -467,12 +496,7 @@ func (s *LocalStore) queueEvent(event NodeEvent) (PendingEvent, error) {
 	if sequence == 0 {
 		sequence = 1
 	}
-	event.Sequence = sequence
-	encoded, err = json.Marshal(event)
-	if err != nil {
-		return PendingEvent{}, err
-	}
-	pending := PendingEvent{Sequence: sequence, EventID: event.EventID, Payload: encoded, CreatedAt: time.Now().UTC()}
+	pending := PendingEvent{Type: kind, Sequence: sequence, EventID: eventID, Payload: payload, CreatedAt: time.Now().UTC()}
 	s.state.NextSequence = sequence + 1
 	s.state.Outbox = append(s.state.Outbox, pending)
 	if err := s.persistLocked(); err != nil {

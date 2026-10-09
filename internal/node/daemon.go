@@ -164,7 +164,11 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			if err != nil {
 				return err
 			}
-			if err := connection.SendCommandOutcome(ctx, outcome); err != nil {
+			if outcome.State == CommandFailed && (outcome.Kind == CommandDispatch || outcome.Kind == CommandResume) {
+				if _, err := d.Store.QueueCommandOutcome(outcome); err != nil {
+					return err
+				}
+			} else if err := connection.SendCommandOutcome(ctx, outcome); err != nil {
 				return err
 			}
 			lastProcessedCommand = command.Metadata().CommandID
@@ -288,19 +292,30 @@ func receiveServerMessage(ctx context.Context, connection *ProtocolConnection) (
 }
 
 func sendPendingEventWithoutWaiting(ctx context.Context, connection *ProtocolConnection, pending PendingEvent) error {
-	var event NodeEvent
-	if err := json.Unmarshal(pending.Payload, &event); err != nil {
-		return err
-	}
-	if err := event.Validate(); err != nil {
-		return err
-	}
-	if event.Sequence != pending.Sequence {
-		return errors.New("node protocol: pending event sequence mismatch")
-	}
-	kind := MessageActivity
-	if event.Outcome != nil {
-		kind = MessageAttemptOutcome
+	kind := pending.Type
+	if kind == MessageCommandOutcome {
+		var outcome CommandOutcome
+		if err := json.Unmarshal(pending.Payload, &outcome); err != nil {
+			return err
+		}
+		if outcome.CommandID == "" || outcome.Kind == "" || outcome.State == CommandProcessing {
+			return errors.New("node protocol: incomplete command outcome")
+		}
+	} else {
+		var event NodeEvent
+		if err := json.Unmarshal(pending.Payload, &event); err != nil {
+			return err
+		}
+		if err := event.Validate(); err != nil {
+			return err
+		}
+		if event.Sequence != pending.Sequence {
+			return errors.New("node protocol: pending event sequence mismatch")
+		}
+		kind = MessageActivity
+		if event.Outcome != nil {
+			kind = MessageAttemptOutcome
+		}
 	}
 	envelope, err := NewEnvelope(kind, connection.node, pending.Sequence, 0, pending.Payload, connection.auth)
 	if err != nil {
