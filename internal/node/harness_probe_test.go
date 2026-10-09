@@ -47,6 +47,14 @@ func (r fakeProbeRunner) ObserveOpenCodeModels(ctx context.Context, command stri
 	return parseObservedModels(result.Stdout), parseObservedReasoning(result.Stdout), nil
 }
 
+func (r fakeProbeRunner) ObserveCodexACP(ctx context.Context, command string) ([]core.ObservedModelID, []core.ObservedReasoningLevel, error) {
+	result, err := r.Run(ctx, command, "debug", "models")
+	if err != nil {
+		return nil, nil, err
+	}
+	return parseObservedModels(result.Stdout), parseObservedReasoning(result.Stdout), r.acpError
+}
+
 func requiredProbeRunner(version, fxModel, codexModel string) fakeProbeRunner {
 	codexCatalog := fmt.Sprintf(`{"models":[{"slug":%q,"visibility":"visible","selectable":true,"default_reasoning_level":"high","supported_reasoning_levels":[{"effort":"medium"},{"effort":"high"}]}]}`, codexModel)
 	return fakeProbeRunner{responses: map[string]CommandResult{
@@ -79,7 +87,7 @@ func TestDefaultProbeCommandsAreExplicitContracts(t *testing.T) {
 		t.Fatalf("Claude must not invent a model-list command: %#v", claude)
 	}
 	codex := DefaultCodexProbeSpec()
-	if !reflect.DeepEqual(codex.AuthenticationArgs, []string{"login", "status"}) || !reflect.DeepEqual(codex.HealthArgs, []string{"doctor"}) || !reflect.DeepEqual(codex.ModelsArgs, []string{"debug", "models"}) {
+	if !reflect.DeepEqual(codex.AuthenticationArgs, []string{"login", "status"}) || len(codex.HealthArgs) != 0 || len(codex.ModelsArgs) != 0 {
 		t.Fatalf("Codex probe commands=%#v", codex)
 	}
 	open := DefaultOpenCodeProbeSpec()
@@ -512,7 +520,7 @@ func TestRequiredProbesDiscoverDifferentInstancesOnTwoNodes(t *testing.T) {
 	if err := second.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if len(first.Instances) != 3 || len(second.Instances) != 3 {
+	if len(first.Instances) != 2 || len(second.Instances) != 2 {
 		t.Fatalf("required inventory sizes: %d and %d", len(first.Instances), len(second.Instances))
 	}
 	macClaude, ok := first.Instance("macbook/claude")
@@ -533,15 +541,15 @@ func TestRequiredProbesDiscoverDifferentInstancesOnTwoNodes(t *testing.T) {
 }
 
 func TestRequiredProbesAndOpenCodeCompatibilityAreIsolated(t *testing.T) {
-	if got := NewDefaultHarnessProbes("macbook", nil); len(got) != 4 {
+	if got := NewDefaultHarnessProbes("macbook", nil); len(got) != 2 {
 		t.Fatalf("default probes=%d", len(got))
 	}
 	foundOpenCode := false
 	for _, probe := range NewDefaultHarnessProbes("macbook", nil) {
 		foundOpenCode = foundOpenCode || probe.Spec.Kind == core.HarnessOpenCode
 	}
-	if !foundOpenCode {
-		t.Fatal("OpenCode is missing from default probe set")
+	if foundOpenCode {
+		t.Fatal("clean MVP unexpectedly requires OpenCode")
 	}
 	runner := fakeProbeRunner{responses: map[string]CommandResult{
 		"opencode --version":                            {Stdout: "opencode v2.0.22"},

@@ -32,6 +32,7 @@ type ACPRuntime struct {
 	Environment        []string
 	ExactEnvironment   bool
 	ModelSelection     string
+	ReasoningSelection string
 	ModeSelection      string
 	StartupDelay       time.Duration
 	ConfigReadyTimeout time.Duration
@@ -39,6 +40,7 @@ type ACPRuntime struct {
 	DrainPromptEvents  bool
 	// Enable only for the verified OpenCode v2 messageId/end_turn contract.
 	TerminalMessageGrouping bool
+	CodexMessagePhases      bool
 }
 
 func (r ACPRuntime) validateReplyContract(profile ManagedProfile) error {
@@ -87,6 +89,7 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 	session := newACPSession(created.SessionID, client, !request.DeferInitialPrompt)
 	session.drainPromptEvents = r.DrainPromptEvents || request.DrainOutputBeforeResult
 	session.terminalMessageGrouping = r.TerminalMessageGrouping
+	session.codexMessagePhases = r.CodexMessagePhases
 	session.setRequestHandler()
 	go session.watch()
 	if !request.DeferInitialPrompt {
@@ -115,6 +118,7 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 	session := newACPSession(runtimeSessionID, client, false)
 	session.drainPromptEvents = r.DrainPromptEvents || request.DrainOutputBeforeResult
 	session.terminalMessageGrouping = r.TerminalMessageGrouping
+	session.codexMessagePhases = r.CodexMessagePhases
 	// ACP may issue a permission/input request while session/load is still in
 	// flight. Install the handler and durable Node-local IDs first, otherwise
 	// the request gets a native ACP ID and cannot be answered after reconnect.
@@ -174,8 +178,17 @@ func (r ACPRuntime) configureSession(ctx context.Context, client *acp.Client, se
 		if err != nil {
 			return fmt.Errorf("acp: native model/variant selection failed: %w", err)
 		}
+		if r.CodexMessagePhases && !nativeConfigValueConfirmed(response, "model", r.ModelSelection) {
+			return fmt.Errorf("codex: requested model was not selected")
+		}
 		if r.ModeDescription != "" && (!nativeModelConfirmed(response, r.ModelSelection) || !nativeModeConfirmed(response, r.ModeSelection, r.ModeDescription)) {
 			return fmt.Errorf("acp: native model/variant or managed profile not confirmed")
+		}
+	}
+	if r.ReasoningSelection != "" {
+		response, err := r.selectNativeConfig(ctx, client, sessionID, "reasoning_effort", r.ReasoningSelection)
+		if err != nil || !nativeConfigValueConfirmed(response, "reasoning_effort", r.ReasoningSelection) {
+			return fmt.Errorf("codex: requested reasoning effort was not selected")
 		}
 	}
 	if r.StartupDelay > 0 {
@@ -528,6 +541,7 @@ type acpSession struct {
 	turnAnswer              *acpTurnAnswer
 	legacyTurnText          *strings.Builder
 	terminalMessageGrouping bool
+	codexMessagePhases      bool
 	replaying               atomic.Bool
 	drainPromptEvents       bool
 }
@@ -567,10 +581,28 @@ func (s *acpSession) emitActivity(activity Activity) bool {
 	}
 }
 func (s *acpSession) Steer(ctx context.Context, text string) (bool, error) {
+	if s.codexMessagePhases && !s.busyNow() {
+		return false, fmt.Errorf("codex: steering requires an active native turn")
+	}
 	var response struct {
 		Outcome string `json:"outcome"`
 	}
 	err := s.client.Request(ctx, "_session/steering", map[string]any{"sessionId": s.id, "prompt": []map[string]string{{"type": "text", "text": text}}}, &response)
+	if s.codexMessagePhases {
+		if err != nil {
+			return false, err
+		}
+		if response.Outcome == "injected" {
+			return true, nil
+		}
+		if response.Outcome == "startedNewTurn" {
+			// The adapter raced the terminal boundary and began another turn.
+			// Stop that unowned execution; never claim steering or retry it.
+			_ = s.Cancel(ctx)
+			return false, fmt.Errorf("codex: steering started a new native turn; cancellation requested, execution outcome requires reconciliation")
+		}
+		return false, fmt.Errorf("codex: native steering was not injected (%s)", response.Outcome)
+	}
 	return response.Outcome == "injected" || response.Outcome == "startedNewTurn", err
 }
 func (s *acpSession) Cancel(ctx context.Context) error {
@@ -1364,7 +1396,7 @@ func (s *acpSession) promptTurn(ctx context.Context, task string) error {
 	defer s.finishTurn()
 	s.textMu.Lock()
 	s.turnAnswer, s.legacyTurnText = nil, nil
-	if s.terminalMessageGrouping {
+	if s.terminalMessageGrouping || s.codexMessagePhases {
 		s.turnAnswer = newACPTurnAnswer()
 	} else {
 		// Compatibility only: preserve all assistant/operational text in wire
@@ -1411,13 +1443,16 @@ func (s *acpSession) promptTurn(ctx context.Context, task string) error {
 	}
 	status := "succeeded"
 	var completionEvidence *TerminalCompletionEvidence
-	if s.terminalMessageGrouping {
+	if s.terminalMessageGrouping || s.codexMessagePhases {
 		stopReason := parseTerminalStopReason(response.StopReason)
 		completionEvidence = &TerminalCompletionEvidence{
 			Contract: TerminalCompletionOpenCodeV2, StopReason: stopReason,
 			RPCSucceeded: true, DrainCompleted: true,
 		}
-		if answer != nil {
+		if s.codexMessagePhases {
+			completionEvidence = nil
+		}
+		if answer != nil && completionEvidence != nil {
 			completionEvidence.AssistantChunks = answer.assistantChunks
 		}
 		switch stopReason {
@@ -1427,7 +1462,11 @@ func (s *acpSession) promptTurn(ctx context.Context, task string) error {
 		case TerminalStopReasonEndTurn:
 			var complete bool
 			if answer != nil {
-				response.Summary, complete = answer.final(response.StopReason)
+				if s.codexMessagePhases {
+					response.Summary, complete = answer.codexFinal(response.StopReason)
+				} else {
+					response.Summary, complete = answer.final(response.StopReason)
+				}
 			}
 			if !complete {
 				response.Summary = "Terminal answer unavailable: ACP did not provide authoritative final-answer metadata."
@@ -1513,7 +1552,12 @@ func (s *acpSession) watch() {
 			s.textMu.Lock()
 			metadata, _ := payload["_meta"].(map[string]any)
 			if metadata["opencode/child-session"] == nil && s.turnAnswer != nil {
-				s.turnAnswer.text(valueString(payload["messageId"]), text)
+				if s.codexMessagePhases {
+					codex, _ := metadata["codex"].(map[string]any)
+					s.turnAnswer.codexText(valueString(payload["messageId"]), valueString(codex["phase"]), text)
+				} else {
+					s.turnAnswer.text(valueString(payload["messageId"]), text)
+				}
 			}
 			if s.legacyTurnText != nil && text != "" {
 				s.legacyTurnText.WriteString(text)
@@ -1881,4 +1925,13 @@ func jsonValueOptional(value map[string]any, keys ...string) json.RawMessage {
 		}
 	}
 	return nil
+}
+
+func nativeConfigValueConfirmed(response nativeConfigResponse, id, selection string) bool {
+	for _, option := range response.ConfigOptions {
+		if option.ID == id && option.CurrentValue == selection {
+			return true
+		}
+	}
+	return false
 }

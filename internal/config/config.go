@@ -257,7 +257,7 @@ func (c Config) EffectiveWorkerPolicy() WorkerPolicy {
 			policy.DefaultHarness = c.Runtime.Harness
 		}
 		if policy.DefaultHarness == "" {
-			policy.DefaultHarness = "opencode"
+			policy.DefaultHarness = "codex"
 		}
 	}
 	return policy

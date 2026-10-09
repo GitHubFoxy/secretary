@@ -100,7 +100,7 @@ func TestSelectNodeNativeStoreValidatesSharedPathAndConfigOnlyLegacyState(t *tes
 	}
 }
 
-func TestConfiguredNodeRuntimeDefaultsOpenCodeAndRetainsSelectableAdapters(t *testing.T) {
+func TestConfiguredNodeRuntimeDefaultsCodexAndRetainsHistoricalAdapters(t *testing.T) {
 	for _, key := range []string{
 		"SECRETARY_ACP_COMMAND", "SECRETARY_ACP_ARGS", "SECRETARY_CLAUDE_COMMAND", "SECRETARY_CLAUDE_ARGS",
 		"SECRETARY_FX_COMMAND", "SECRETARY_FX_ARGS", "SECRETARY_OPENCODE_COMMAND", "SECRETARY_OPENCODE_ARGS",
@@ -111,7 +111,7 @@ func TestConfiguredNodeRuntimeDefaultsOpenCodeAndRetainsSelectableAdapters(t *te
 	if !ok {
 		t.Fatal("Node runtime is not a harness router")
 	}
-	if runtime.DefaultHarness != "opencode" || runtime.OpenCode == nil || runtime.FX == nil || runtime.Claude == nil || runtime.ACP == nil {
+	if runtime.DefaultHarness != "codex" || runtime.OpenCode == nil || runtime.FX == nil || runtime.Claude == nil || runtime.ACP == nil {
 		t.Fatal("Node runtime defaults or selectable adapters are incomplete")
 	}
 }

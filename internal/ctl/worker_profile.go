@@ -29,7 +29,7 @@ func bindManagedWorkerProfile(profile node.ManagedProfile, resolution core.Dispa
 	profile.Runtime = string(resolution.HarnessInstance.Kind)
 	profile.Model = resolution.Snapshot.Policy.ModelPin()
 	profile.Reasoning = resolution.Snapshot.Policy.Reasoning
-	if profile.Runtime == string(core.HarnessOpenCode) {
+	if profile.Runtime == string(core.HarnessOpenCode) || profile.Runtime == string(core.HarnessCodex) {
 		profile.Delivery = "native"
 	} else {
 		profile.Delivery = "workspace_instructions"

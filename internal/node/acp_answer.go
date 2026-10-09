@@ -12,6 +12,7 @@ type acpTurnAnswer struct {
 	progress        map[string]bool
 	missingIdentity bool
 	assistantChunks uint64
+	codexPhases     map[string]string
 }
 
 func newACPTurnAnswer() *acpTurnAnswer {
@@ -68,4 +69,32 @@ func (a *acpTurnAnswer) final(stopReason string) (string, bool) {
 	}
 	text := strings.TrimSpace(a.messages[id].String())
 	return text, text != ""
+}
+
+func (a *acpTurnAnswer) codexText(id, phase, text string) {
+	a.text(id, text)
+	if a.codexPhases == nil {
+		a.codexPhases = map[string]string{}
+	}
+	if phase != "" {
+		if previous := a.codexPhases[id]; previous != "" && previous != phase {
+			a.missingIdentity = true
+		}
+		a.codexPhases[id] = phase
+	}
+}
+func (a *acpTurnAnswer) codexFinal(stopReason string) (string, bool) {
+	if stopReason != "end_turn" || a.missingIdentity {
+		return "", false
+	}
+	var final string
+	for _, id := range a.order {
+		if a.codexPhases[id] == "final_answer" {
+			if final != "" || a.progress[id] {
+				return "", false
+			}
+			final = strings.TrimSpace(a.messages[id].String())
+		}
+	}
+	return final, final != ""
 }

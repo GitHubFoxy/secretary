@@ -110,7 +110,7 @@ func (s HarnessProbeSpec) validate() error {
 	if len(s.VersionArgs) == 0 || len(s.AuthenticationArgs) == 0 {
 		return fmt.Errorf("harness probe: %s requires version and authentication commands", s.Kind)
 	}
-	if len(s.ModelsArgs) == 0 && !s.ModelsOptional {
+	if len(s.ModelsArgs) == 0 && !s.ModelsOptional && s.Kind != core.HarnessCodex {
 		return fmt.Errorf("harness probe: %s requires a model command", s.Kind)
 	}
 	return nil
@@ -191,6 +191,7 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
 		if !ok && p.Spec.Kind == core.HarnessCodex && auth.ExitCode == 0 && strings.TrimSpace(authOutput) == "" {
 			ok, method = true, "credential"
 		}
+
 	}
 	instance.Authentication = core.HarnessAuthentication{Authenticated: ok, Method: method}
 	if !ok {
@@ -209,7 +210,26 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
 	}
 
 	var modelOutput string
-	if p.Spec.Kind == core.HarnessOpenCode {
+	if p.Spec.Kind == core.HarnessCodex {
+		observer, ok := p.Runner.(CodexACPObserver)
+		if !ok {
+			result.Err, result.ErrorCode = ErrProbeUnhealthy, "codex_acp_probe_unavailable"
+			result.Instance = instance
+			return result
+		}
+		timeout := p.Spec.StepTimeout
+		if timeout <= 0 {
+			timeout = defaultProbeStepTimeout
+		}
+		probeCtx, cancel := context.WithTimeout(ctx, timeout)
+		instance.ModelIDs, instance.ReasoningLevels, err = observer.ObserveCodexACP(probeCtx, p.Spec.Binary)
+		cancel()
+		if err != nil || len(instance.ModelIDs) == 0 {
+			result.Err, result.ErrorCode = ErrProbeUnhealthy, "codex_acp_unavailable"
+			result.Instance = instance
+			return result
+		}
+	} else if p.Spec.Kind == core.HarnessOpenCode {
 		observer, ok := p.Runner.(OpenCodeModelObserver)
 		if !ok {
 			result.Err, result.ErrorCode = ErrProbeMetadata, "native_models_probe_unavailable"
@@ -611,10 +631,8 @@ func ProbeOpenCode(ctx context.Context, node core.NodeReference, runner CommandR
 
 func NewDefaultHarnessProbes(node core.NodeReference, runner CommandRunner) []HarnessProbe {
 	return []HarnessProbe{
-		{Node: node, Runner: runner, Spec: DefaultFXProbeSpec()},
 		{Node: node, Runner: runner, Spec: DefaultClaudeCodeProbeSpec()},
 		{Node: node, Runner: runner, Spec: DefaultCodexProbeSpec()},
-		{Node: node, Runner: runner, Spec: DefaultOpenCodeProbeSpec()},
 	}
 }
 
@@ -654,7 +672,7 @@ func DefaultClaudeCodeProbeSpec() HarnessProbeSpec {
 
 func DefaultCodexProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
-		Kind: core.HarnessCodex, Binary: "codex", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"login", "status"}, HealthArgs: []string{"doctor"}, ModelsArgs: []string{"debug", "models"}, ReasoningArgs: []string{"debug", "models"},
+		Kind: core.HarnessCodex, Binary: "codex", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"login", "status"}, ModelsOptional: true,
 		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilitySteering},
 		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedACPActivity...),
 	}
@@ -677,8 +695,8 @@ type HarnessDiscovery struct {
 	OpenCodeDataHome       string
 	LegacyOpenCodeDataHome bool
 	Probes                 []HarnessProbe
-	// IncludeOpenCode is enabled by default by Node deployment setup; false
-	// remains an explicit opt-out for legacy/custom discovery callers.
+	// IncludeOpenCode explicitly enables historical OpenCode bindings.
+	// Clean installations discover only Codex and Claude Code.
 	IncludeOpenCode bool
 	// BinaryOverrides lets packaging resolve installed harnesses without
 	// relying on a launchd process inheriting an interactive shell PATH.

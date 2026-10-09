@@ -24,6 +24,12 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 	if !testProcessHasArgument("-test.run=^TestIdleFollowUpACPProcess$") {
 		return
 	}
+	if os.Getenv("TEST_IDLE_CODEX") == "1" {
+		var overrides map[string]any
+		if json.Unmarshal([]byte(os.Getenv("CODEX_CONFIG")), &overrides) != nil || overrides["developer_instructions"] != "Synthetic instructions" {
+			os.Exit(2)
+		}
+	}
 	encoder := json.NewEncoder(os.Stdout)
 	scanner := bufio.NewScanner(os.Stdin)
 	id, workspace := "", ""
@@ -49,13 +55,22 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 			result = map[string]any{"protocolVersion": 1}
 		case "session/new", "session/load":
 			var p struct {
-				Cwd       string `json:"cwd"`
-				SessionID string `json:"sessionId"`
+				Cwd       string            `json:"cwd"`
+				Meta      map[string]string `json:"_meta"`
+				SessionID string            `json:"sessionId"`
 			}
 			if json.Unmarshal(req.Params, &p) != nil {
 				os.Exit(2)
 			}
+			if os.Getenv("TEST_IDLE_CODEX") == "1" && p.Meta["secretaryProfileDelivery"] != "native" {
+				os.Exit(2)
+			}
 			workspace = p.Cwd
+			if os.Getenv("TEST_IDLE_CODEX") == "1" {
+				if _, err := os.Stat(filepath.Join(workspace, "AGENTS.md")); err == nil {
+					os.Exit(2)
+				}
+			}
 			operation := "L"
 			if req.Method == "session/new" {
 				operation = "N"
@@ -92,7 +107,7 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 				os.Exit(2)
 			}
 			if len(p.Prompt) > 0 && p.Prompt[0].Text == "finish-held" && len(heldPromptID) > 0 {
-				encoder.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": id, "update": map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": "private-final", "content": map[string]string{"type": "text", "text": "held complete"}}}})
+				encoder.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": id, "update": map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": "private-final", "_meta": map[string]any{"codex": map[string]string{"phase": "final_answer"}}, "content": map[string]string{"type": "text", "text": "held complete"}}}})
 				encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": heldPromptID, "result": map[string]any{"stopReason": "end_turn"}})
 				heldPromptID = nil
 			}
@@ -138,7 +153,7 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 					summary = "remembered=true"
 				}
 			}
-			encoder.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": id, "update": map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": "private-final", "content": map[string]string{"type": "text", "text": summary}}}})
+			encoder.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": id, "update": map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": "private-final", "_meta": map[string]any{"codex": map[string]string{"phase": "final_answer"}}, "content": map[string]string{"type": "text", "text": summary}}}})
 			result = map[string]any{"stopReason": "end_turn"}
 		}
 		if encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": result}) != nil {
@@ -164,7 +179,19 @@ func TestOpenCodeNativePublicIdleFollowUp(t *testing.T) {
 	runPublicIdleFollowUp(t, true)
 }
 
-func runPublicIdleFollowUp(t *testing.T, native bool) {
+func TestPublicCodexIdleFollowUpRetainsNativeHistory(t *testing.T) {
+	runPublicIdleFollowUp(t, false, true)
+}
+
+func runPublicIdleFollowUp(t *testing.T, native bool, codexMode ...bool) {
+	codex := len(codexMode) > 0 && codexMode[0]
+	kind := core.HarnessOpenCode
+	modelPin := "fixture/model"
+	if codex {
+		kind = core.HarnessCodex
+		modelPin = ""
+		t.Setenv("TEST_IDLE_CODEX", "1")
+	}
 	t.Helper()
 	fixtureTimeout := 20 * time.Second
 	if native {
@@ -209,7 +236,7 @@ func runPublicIdleFollowUp(t *testing.T, native bool) {
 	if os.WriteFile(filepath.Join(workspace, "private-nonce"), []byte(nonce), 0600) != nil {
 		t.Fatal("nonce unavailable")
 	}
-	instance := core.HarnessInstance{ID: "synthetic-node/opencode", Node: identity.Node, Kind: core.HarnessOpenCode, Version: "2.0.22", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}, Capabilities: core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityCancel}}, ModelIDs: []core.ObservedModelID{"fixture/model"}}
+	instance := core.HarnessInstance{ID: "synthetic-node/opencode", Node: identity.Node, Kind: kind, Version: "2.0.22", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}, Capabilities: core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityCancel}}, ModelIDs: []core.ObservedModelID{"fixture/model"}}
 	inventory := core.HarnessInventorySnapshot{Node: identity.Node, ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{instance}}
 	statePath := filepath.Join(t.TempDir(), "node-state.json")
 	local, err := node.OpenLocalStore(statePath)
@@ -219,6 +246,9 @@ func runPublicIdleFollowUp(t *testing.T, native bool) {
 	defer func() { local.Close() }()
 	// ACPRuntime is used at the external wire boundary; no internal runtime mocks.
 	var runtime node.Runtime = node.ACPRuntime{Command: os.Args[0], Arguments: []string{"-test.run=^TestIdleFollowUpACPProcess$"}, DrainPromptEvents: true, TerminalMessageGrouping: true}
+	if codex {
+		runtime = node.CodexRuntime{ACPRuntime: node.ACPRuntime{Command: os.Args[0], Arguments: []string{"-test.run=^TestIdleFollowUpACPProcess$"}}}
+	}
 	var nativeCalls func() int32
 	if native {
 		runtime, nativeCalls = nativeIdleRuntime(t, nonce, &instance)
@@ -247,17 +277,17 @@ func runPublicIdleFollowUp(t *testing.T, native bool) {
 	}
 	start()
 	defer func() { stop(); <-done }()
-	project, err := store.CreateProject(ctx, core.ProjectSpec{ID: "idle-project", Name: "Idle", Mappings: []core.ProjectPathMapping{{Node: identity.Node, Path: workspace}}, Policy: core.ProjectPolicy{AllowedHarnessKinds: []core.HarnessKind{core.HarnessOpenCode}}})
+	project, err := store.CreateProject(ctx, core.ProjectSpec{ID: "idle-project", Name: "Idle", Mappings: []core.ProjectPathMapping{{Node: identity.Node, Path: workspace}}, Policy: core.ProjectPolicy{AllowedHarnessKinds: []core.HarnessKind{kind}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	service := WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: NodeRuntime{Manager: manager}, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessOpenCode, ModelID: "fixture/model", Reasoning: func() string {
+	service := WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: NodeRuntime{Manager: manager}, WorkerPolicy: core.HarnessPolicy{DefaultHarness: kind, ModelID: modelPin, Reasoning: func() string {
 		if native {
 			return "low"
 		}
 		return ""
 	}()}, WorkerProfileSource: func() (node.ManagedProfile, error) {
-		return node.ManagedProfile{Version: "synthetic-v1", Name: "worker", Content: "Synthetic instructions", Hash: "synthetic-source", Runtime: "opencode", Model: "fixture/model", Reasoning: func() string {
+		return node.ManagedProfile{Version: "synthetic-v1", Name: "worker", Content: "Synthetic instructions", Hash: "synthetic-source", Runtime: string(kind), Model: modelPin, Reasoning: func() string {
 			if native {
 				return "low"
 			}
