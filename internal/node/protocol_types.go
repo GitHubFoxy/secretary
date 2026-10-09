@@ -511,6 +511,7 @@ func (e NodeEvent) Validate() error {
 }
 
 type PendingEvent struct {
+	Type      MessageType     `json:"type,omitempty"`
 	Sequence  uint64          `json:"sequence"`
 	EventID   string          `json:"event_id"`
 	Payload   json.RawMessage `json:"payload"`

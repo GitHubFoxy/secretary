@@ -50,7 +50,7 @@
 - Dispatch считается accepted только после сохранения Worker binding и передачи Task в runtime.
 - Worker reference — opaque публичный идентификатор; он не является AgentHub `agent_id` или session ID. Worker binding сохраняет связь Task с Worker reference, Execution node и внутренними runtime identifiers.
 - Worker observer — opt-in client view по Worker reference; он сначала получает состояние Worker, затем live Worker activity. Из observer можно направить Steering message, Queued message или Cancel.
-- Worker activity состоит из ephemeral text, tool и status events. Эти события получает только открывший Worker observer; terminal Result не является Worker activity.
+- Worker activity состоит из ephemeral text, tool и status events. Эти события получает только открывший Worker observer; terminal Result не является Worker activity. После terminal Outcome Node прекращает публикацию activity этой Attempt. Server проверяет payload и immutable Node/HarnessInstance/Worker/Turn/Attempt binding в одной транзакции с terminal state; поздний replay корректной завершённой Attempt получает ACK без нового event, Approval или изменения Result. Неизвестная Attempt и неверная identity отклоняются.
 
 ## Claude Code native Session
 
@@ -76,5 +76,6 @@
 - Один Store сериализует promotion/claim/handoff Queued message и Close для каждого Worker. Gate общий для копий WorkerService; ожидание учитывает context, весь участок ограничен 30 секундами. Разные Workers независимы. Gate хранится до закрытия Store; при необходимости очищать историю сотен тысяч Workers можно заменить хранение на reference-counted gates.
 - Закрытие prepared очереди атомарно отменяет сообщение и неclaimed command intent. Claim проверяет canceled queue, terminal Attempt и закрытый Worker; cancelled intent не может быть заново принят после crash. Already claimed delivery не повторяется автоматически после restart.
 - Startup recovery сохраняет только queue-owned starting Attempt с pending command, пустыми lease/error и delivering message: этот intent ещё не проходил handoff. Claimed/active/unknown execution получает interrupted Result и остаётся без автоматического retry.
+- Node атомарно сохраняет failed Dispatch/Resume receipt вместе с completed command в своей outbox. Reconnect повторяет только delivery receipt с прежними identities; ACK отправляется после server sink и освобождает outbox. Native Start/Resume повторно не вызывается.
 - Authenticated dispatch/resume receipts сверяются с command/Node/Turn/Attempt bindings. Acceptance переводит starting в active; failure/interruption даёт один видимый Result и blocked queue. Поздняя transport запись не заменяет native receipt, а поздний acceptance не оживляет terminal Attempt.
 - Codex/Claude/OpenCode Worker освобождает native writer до публикации terminal Outcome; новый Follow-up не начинает resume параллельно старому writer. Claude stdin write учитывает context: отмена заблокированной записи закрывает Session/process, а Close не ждёт writer mutex.
