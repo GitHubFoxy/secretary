@@ -78,6 +78,9 @@ func (e Envelope) Validate() error {
 	if len(bytes.TrimSpace(e.Payload)) == 0 || bytes.Equal(bytes.TrimSpace(e.Payload), []byte("null")) {
 		return errors.New("node protocol: payload is required")
 	}
+	if !json.Valid(e.Payload) {
+		return errors.New("node protocol: invalid JSON payload")
+	}
 	return nil
 }
 
@@ -113,8 +116,16 @@ func NewAuthenticator(secret []byte) Authenticator {
 }
 
 func (a Authenticator) Sign(e Envelope) string {
+	payload, err := json.Marshal(e.Payload)
+	if err != nil {
+		return ""
+	}
+	return a.signPayload(e, payload)
+}
+
+func (a Authenticator) signPayload(e Envelope, payload []byte) string {
 	mac := hmac.New(sha256.New, a.secret)
-	_, _ = mac.Write([]byte(fmt.Sprintf("%d\n%s\n%s\n%d\n%d\n%s", e.Version, e.Type, e.Node, e.Sequence, e.Ack, e.Payload)))
+	_, _ = mac.Write([]byte(fmt.Sprintf("%d\n%s\n%s\n%d\n%d\n%s", e.Version, e.Type, e.Node, e.Sequence, e.Ack, payload)))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
@@ -139,7 +150,7 @@ func (a Authenticator) Verify(e Envelope) error {
 		return errors.New("node protocol: authentication failed")
 	}
 	expected := a.Sign(e)
-	if !hmac.Equal([]byte(expected), []byte(e.Signature)) {
+	if !hmac.Equal([]byte(expected), []byte(e.Signature)) && !hmac.Equal([]byte(a.signPayload(e, e.Payload)), []byte(e.Signature)) {
 		return errors.New("node protocol: authentication failed")
 	}
 	return nil
