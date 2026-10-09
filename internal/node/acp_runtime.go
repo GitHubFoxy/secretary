@@ -596,8 +596,6 @@ func (s *acpSession) Steer(ctx context.Context, text string) (bool, error) {
 			return true, nil
 		}
 		if response.Outcome == "startedNewTurn" {
-			// The adapter raced the terminal boundary and began another turn.
-			// Stop that unowned execution; never claim steering or retry it.
 			_ = s.Cancel(ctx)
 			return false, fmt.Errorf("codex: steering started a new native turn; cancellation requested, execution outcome requires reconciliation")
 		}

@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// CodexRuntime retains ACP transport but uses Codex's explicit message phase
-// and session-scoped instructions. It never rewrites user/global configuration.
 type CodexRuntime struct {
 	ACPRuntime
 	CodexCommand string

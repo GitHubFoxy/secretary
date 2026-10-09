@@ -695,9 +695,7 @@ type HarnessDiscovery struct {
 	OpenCodeDataHome       string
 	LegacyOpenCodeDataHome bool
 	Probes                 []HarnessProbe
-	// IncludeOpenCode explicitly enables historical OpenCode bindings.
-	// Clean installations discover only Codex and Claude Code.
-	IncludeOpenCode bool
+	IncludeOpenCode        bool
 	// BinaryOverrides lets packaging resolve installed harnesses without
 	// relying on a launchd process inheriting an interactive shell PATH.
 	BinaryOverrides map[core.HarnessKind]string

@@ -109,7 +109,6 @@ func (s *Store) EnqueueWorkerMessage(ctx context.Context, workerID, text, key st
 		if err != nil {
 			return m, err
 		}
-		// Queued acceptance has its own durable lifecycle; no Secretary model input.
 		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: "worker.message.queued", AggregateType: "worker", AggregateID: worker.WorkerRef, WorkerRef: worker.WorkerRef, Source: "server", CorrelationID: m.ID, Payload: m}, m)
 		if err != nil {
 			return m, err
@@ -119,8 +118,6 @@ func (s *Store) EnqueueWorkerMessage(ctx context.Context, workerID, text, key st
 	})
 }
 
-// PromoteQueuedWorkerMessage atomically creates the Follow-up and associates it
-// with its FIFO message. The durable command intent is created in the same transaction.
 func (s *Store) PromoteQueuedWorkerMessage(ctx context.Context, m QueuedWorkerMessage, kind string) (Turn, Phase4Attempt, error) {
 	s.idempotencyMu.Lock()
 	defer s.idempotencyMu.Unlock()
@@ -167,6 +164,11 @@ func cancelQueuedWorkerMessagesTx(ctx context.Context, tx *sql.Tx, workerID stri
 	for _, m := range messages {
 		m.State = "canceled"
 		m.UpdatedAt = now
+		if m.TurnID != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET state=?,last_error='canceled_before_handoff',updated_at=? WHERE worker_id=? AND attempt_id IN (SELECT id FROM phase4_attempts WHERE turn_id=?) AND kind IN ('dispatch','resume') AND state=? AND lease_until=''`, WorkerCommandFailed, timestamp(now), workerID, m.TurnID, WorkerCommandPending); err != nil {
+				return err
+			}
+		}
 		if _, err := tx.ExecContext(ctx, `UPDATE worker_queued_messages SET state='canceled',updated_at=? WHERE id=?`, timestamp(now), m.ID); err != nil {
 			return err
 		}
@@ -177,11 +179,28 @@ func cancelQueuedWorkerMessagesTx(ctx context.Context, tx *sql.Tx, workerID stri
 	return nil
 }
 
-// CancelQueuedWorkerMessages commits closure intent before runtime cancellation,
-// so the terminal callback cannot race the pump into starting a queued Follow-up.
 func (s *Store) CancelQueuedWorkerMessages(ctx context.Context, workerID string) error {
 	_, err := withTx(s, ctx, func(tx *sql.Tx) (struct{}, error) {
 		return struct{}{}, cancelQueuedWorkerMessagesTx(ctx, tx, workerID, s.now())
 	})
 	return err
+}
+
+func (s *Store) WithWorkerLifecycle(ctx context.Context, workerID string, action func(context.Context) error) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	gate := make(chan struct{}, 1)
+	gate <- struct{}{}
+	value, _ := s.workerLifecycleGates.LoadOrStore(workerID, gate)
+	gate = value.(chan struct{})
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-gate:
+	}
+	defer func() { gate <- struct{}{} }()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return action(ctx)
 }

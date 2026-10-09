@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-// Native Session seam: a process fixture reproduces codex-acp 1.12 phase metadata.
 func TestCodexSessionReturnsOnlyFinalAndRejectsEmptyTerminal(t *testing.T) {
 	for _, scenario := range []string{"final", "empty", "commentary", "max_tokens"} {
 		t.Run(scenario, func(t *testing.T) {

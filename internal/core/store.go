@@ -30,11 +30,12 @@ type Store struct {
 	observerMu sync.RWMutex
 	observer   func(ConversationEntry)
 
-	idempotencyMu     sync.Mutex
-	userDocumentMu    sync.Mutex
-	nodeEnrollmentMu  sync.Mutex
-	nodeRegistryMu    sync.Mutex
-	projectDispatchMu sync.Mutex
+	workerLifecycleGates sync.Map
+	idempotencyMu        sync.Mutex
+	userDocumentMu       sync.Mutex
+	nodeEnrollmentMu     sync.Mutex
+	nodeRegistryMu       sync.Mutex
+	projectDispatchMu    sync.Mutex
 
 	// beforeResolvedWorkerCreate is used by package tests to make the narrow
 	// resolution-to-creation race deterministic.
@@ -224,7 +225,14 @@ func (s *Store) RecoverPhase4Attempts(ctx context.Context, resolver Phase4Attemp
 	if resolver == nil {
 		return nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id FROM phase4_attempts WHERE state IN (?, ?)`, AttemptStarting, AttemptActive)
+	rows, err := s.db.QueryContext(ctx, `SELECT a.id FROM phase4_attempts a WHERE a.state IN (?, ?) AND NOT (
+ a.state = 'starting' AND EXISTS (
+  SELECT 1 FROM worker_queued_messages q JOIN phase4_worker_commands c ON c.attempt_id=a.id
+  WHERE q.worker_id=a.worker_id AND q.turn_id=a.turn_id AND q.state='delivering'
+   AND c.kind IN ('dispatch','resume') AND c.dedupe_key='attempt'
+   AND c.state='pending' AND c.lease_until='' AND c.last_error=''
+ )
+)`, AttemptStarting, AttemptActive)
 	if err != nil {
 		return err
 	}
