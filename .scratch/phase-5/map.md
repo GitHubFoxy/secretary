@@ -6,9 +6,9 @@
 
 | Ticket | Status | Blocked by | Проверяемый результат |
 | --- | --- | --- | --- |
-| [01](issues/01-codex-native-round-trip.md) | ready-for-agent | None | Codex Secretary → native local/remote Worker → Result и resume |
+| [01](issues/01-codex-native-round-trip.md) | claimed | None | Codex Secretary → native local/remote Worker → Result и resume |
 | [02](issues/02-claude-interactive-runtime.md) | ready-for-agent | None | CC интерактивный runtime, MCP/profile/resume и доказанный steering |
-| [03](issues/03-durable-direct-worker-messages.md) | ready-for-agent | None | Web/Telegram direct message и durable `/q` |
+| [03](issues/03-durable-direct-worker-messages.md) | claimed | None | Web/Telegram direct message и durable `/q` |
 | [04](issues/04-readable-unified-chat.md) | ready-for-agent | None | Читаемый единый чат, canonical reply и topics без дублей |
 | [05](issues/05-deploy-and-live-acceptance.md) | blocked | 01, 02, 03, 04 | Развёрнутый MVP и реальная матрица приёмки |
 
@@ -32,3 +32,5 @@
 ## Evidence
 
 Существующие исследования являются baseline, не новой live приёмкой. Каждый ticket добавляет проверенные ответы в `## Answer` и историю в `## Comments`; 05 разделяет scoped fixtures и реальные сценарии. В карту добавлять короткие ссылки на полученные решения, не копировать частные логи.
+
+- [CC streaming spike](reports/claude-streaming-spike-20261009.md): native process/MCP protocol confirmed; live model/steering blocked by existing provider HTTP403 quota. This is not a completed CC acceptance.
