@@ -778,7 +778,6 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 				}{}, err
 			}
 			if originTurn != "" {
-				// The origin was authorized at durable queue acceptance; its Secretary turn may now be terminal.
 				if _, err := tx.ExecContext(ctx, `INSERT INTO secretary_worker_command_origins(command_id,secretary_turn_id,input_id,worker_turn_id,created_at) SELECT id,?,?,?,? FROM phase4_worker_commands WHERE worker_id=? AND attempt_id=? AND kind=? AND dedupe_key='attempt'`, originTurn, originInput, turn.ID, timestamp(now), worker.ID, attempt.ID, lifecycleCommandKind(spec.CommandKind)); err != nil {
 					return struct {
 						turn    Turn
@@ -1409,10 +1408,38 @@ func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerI
 			}
 			return command, nil
 		}
+		validateHandoff := func() error {
+			if kind == "dispatch" || kind == "resume" {
+				attempt, err := getPhase4Attempt(ctx, tx, attemptID)
+				if err != nil {
+					return err
+				}
+				worker, err := getWorker(ctx, tx, workerID)
+				if err != nil {
+					return err
+				}
+				var canceled bool
+				if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM worker_queued_messages WHERE worker_id=? AND turn_id=? AND state='canceled')`, workerID, attempt.TurnID).Scan(&canceled); err != nil {
+					return err
+				}
+				if canceled || worker.Status == WorkerClosed || attempt.State.Terminal() {
+					return ErrInvalidTransition
+				}
+			}
+			return nil
+		}
 		var command WorkerCommand
 		query := `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, lease_until, created_at, updated_at FROM phase4_worker_commands WHERE kind = ? AND worker_id = ? AND attempt_id = ? AND dedupe_key = ?`
 		err := scanWorkerCommand(tx.QueryRowContext(ctx, query, kind, workerID, attemptID, dedupeKey), &command)
 		if err == nil {
+			if command.State == WorkerCommandFailed && command.LastError == "canceled_before_handoff" {
+				return WorkerCommand{}, ErrInvalidTransition
+			}
+			if command.State == WorkerCommandPending || command.State == WorkerCommandUncertain {
+				if err := validateHandoff(); err != nil {
+					return WorkerCommand{}, err
+				}
+			}
 			// A command inserted with the lifecycle state is an unowned intent.
 			// Its first claimant acquires the lease and performs the handoff.
 			if (command.State == WorkerCommandPending || command.State == WorkerCommandUncertain) && command.LeaseUntil.IsZero() {
@@ -1438,6 +1465,9 @@ func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerI
 			return bindOrigin(command)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
+			return WorkerCommand{}, err
+		}
+		if err := validateHandoff(); err != nil {
 			return WorkerCommand{}, err
 		}
 		now := s.now()
@@ -1568,6 +1598,16 @@ func (s *Store) updateWorkerCommand(ctx context.Context, commandID string, state
 			}
 			return WorkerCommand{}, err
 		}
+		if command.Kind == "dispatch" || command.Kind == "resume" {
+			var receipt bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM phase4_worker_command_outcomes WHERE command_id=?)`, command.ID).Scan(&receipt); err != nil {
+				return WorkerCommand{}, err
+			}
+			if receipt {
+				return command, nil
+			}
+		}
+
 		if command.State == WorkerCommandDelivered {
 			if state == WorkerCommandDelivered {
 				now := s.now()

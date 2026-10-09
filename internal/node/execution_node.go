@@ -657,10 +657,14 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, p
 				if strings.TrimSpace(outcome.Summary) == "" {
 					outcome.Summary = result.Status
 				}
-				_, _ = n.store.QueueOutcome(outcome)
-				if envelope.HarnessInstance.Kind == core.HarnessOpenCode || envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
-					_ = session.Close()
+				if envelope.HarnessInstance.Kind == core.HarnessOpenCode || envelope.HarnessInstance.Kind == core.HarnessClaudeCode || envelope.HarnessInstance.Kind == core.HarnessCodex {
+					if err := session.Close(); err != nil {
+						outcome.Status = core.OutcomeFailed
+						outcome.ErrorCode = "native_session_close_failed"
+						outcome.Summary = "Native session did not close cleanly: " + err.Error()
+					}
 				}
+				_, _ = n.store.QueueOutcome(outcome)
 			}
 		}
 	}()

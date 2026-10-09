@@ -81,6 +81,7 @@ func TestWorkerQueueSurvivesServerRestartAndClosure(t *testing.T) {
 	}
 	defer reopened.Close()
 	service.Store = reopened
+	service.Runtime.(*lifecycleRuntime).store = reopened
 	replay, err := service.MessageWorker(ctx, request)
 	if err != nil {
 		t.Fatal(err)
@@ -175,7 +176,6 @@ func TestWorkerQueueRecoversPreparedDeliveryAndDoesNotAnswerInputRequest(t *test
 	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "done"}); err != nil {
 		t.Fatal(err)
 	}
-	// Crash fixture: commit promotion and durable handoff intent, then lose process before transport.
 	if _, _, err := store.PromoteQueuedWorkerMessage(ctx, queued.QueuedMessages[0], "dispatch"); err != nil {
 		t.Fatal(err)
 	}

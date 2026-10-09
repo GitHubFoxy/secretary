@@ -13,6 +13,7 @@ import (
 )
 
 type lifecycleRuntime struct {
+	store *core.Store
 	mu    sync.Mutex
 	calls []string
 }
@@ -38,9 +39,16 @@ func (r *lifecycleRuntime) Resume(context.Context, string, core.Worker, core.Tur
 	r.add("resume")
 	return nil
 }
-func (r *lifecycleRuntime) Cancel(context.Context, string, core.Worker, core.Phase4Attempt) error {
+func (r *lifecycleRuntime) Cancel(ctx context.Context, _ string, _ core.Worker, attempt core.Phase4Attempt) error {
 	r.add("cancel")
-	return nil
+	return r.publishCanceled(ctx, attempt)
+}
+func (r *lifecycleRuntime) publishCanceled(ctx context.Context, attempt core.Phase4Attempt) error {
+	if r.store == nil {
+		return nil
+	}
+	_, _, _, err := r.store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{Status: core.OutcomeCanceled, Classification: core.OutcomeFinal, Summary: "Native fixture canceled"})
+	return err
 }
 
 type recordingLifecycleRuntime struct {
@@ -113,11 +121,11 @@ func (r *blockingLifecycleRuntime) Respond(context.Context, string, core.Worker,
 	return nil
 }
 
-func (r *blockingLifecycleRuntime) Cancel(context.Context, string, core.Worker, core.Phase4Attempt) error {
+func (r *blockingLifecycleRuntime) Cancel(ctx context.Context, _ string, _ core.Worker, attempt core.Phase4Attempt) error {
 	r.add("cancel")
 	close(r.cancelStarted)
 	<-r.cancelRelease
-	return nil
+	return r.publishCanceled(ctx, attempt)
 }
 
 func newWorkerService(t *testing.T) (context.Context, *core.Store, WorkerService, core.Project) {
@@ -152,7 +160,7 @@ func newWorkerServiceAt(t *testing.T, path string) (context.Context, *core.Store
 	if err := store.UpdateNodeHeartbeat(ctx, "node", core.HarnessInventorySnapshot{Node: "node", ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{instance}}, core.NodeHeartbeat{Capacity: 2}); err != nil {
 		t.Fatal(err)
 	}
-	runtime := &lifecycleRuntime{}
+	runtime := &lifecycleRuntime{store: store}
 	return ctx, store, WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: runtime, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX}, WorkerProfileSource: syntheticWorkerTemplateSource()}, project
 }
 
@@ -328,7 +336,7 @@ func TestWorkerServiceConcurrentCancelAcrossStoresSendsOneCommand(t *testing.T) 
 	if err := store.UpdateNodeHeartbeat(ctx, "node", core.HarnessInventorySnapshot{Node: "node", ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{instance}}, core.NodeHeartbeat{Capacity: 2}); err != nil {
 		t.Fatal(err)
 	}
-	firstRuntime := &lifecycleRuntime{}
+	firstRuntime := &lifecycleRuntime{store: store}
 	first := WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: firstRuntime, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX}, WorkerProfileSource: syntheticWorkerTemplateSource()}
 	details := spawnLifecycleWorker(t, ctx, first, project)
 	if _, err := store.SetPhase4AttemptActive(ctx, details.Attempts[0].ID); err != nil {
@@ -339,7 +347,7 @@ func TestWorkerServiceConcurrentCancelAcrossStoresSendsOneCommand(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer other.Close()
-	secondRuntime := &lifecycleRuntime{}
+	secondRuntime := &lifecycleRuntime{store: other}
 	second := WorkerService{Store: other, PersonID: person.ID, Capability: capability, Runtime: secondRuntime, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX}, WorkerProfileSource: syntheticWorkerTemplateSource()}
 	var group sync.WaitGroup
 	errs := make(chan error, 2)
@@ -670,7 +678,7 @@ func TestWorkerServicePendingRespondDoesNotResumeUntilDelivered(t *testing.T) {
 	if _, err := store.SetPhase4AttemptNeedsInput(ctx, attempt.ID); err != nil {
 		t.Fatal(err)
 	}
-	runtime := &blockingLifecycleRuntime{respondStarted: make(chan struct{}), respondRelease: make(chan struct{}), cancelStarted: make(chan struct{}), cancelRelease: make(chan struct{})}
+	runtime := &blockingLifecycleRuntime{lifecycleRuntime: lifecycleRuntime{store: store}, respondStarted: make(chan struct{}), respondRelease: make(chan struct{}), cancelStarted: make(chan struct{}), cancelRelease: make(chan struct{})}
 	service.Runtime = runtime
 	done := make(chan error, 1)
 	go func() {
@@ -699,7 +707,7 @@ func TestWorkerServicePendingCancelDoesNotFinalizeUntilDelivered(t *testing.T) {
 	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
 		t.Fatal(err)
 	}
-	runtime := &blockingLifecycleRuntime{respondStarted: make(chan struct{}), respondRelease: make(chan struct{}), cancelStarted: make(chan struct{}), cancelRelease: make(chan struct{})}
+	runtime := &blockingLifecycleRuntime{lifecycleRuntime: lifecycleRuntime{store: store}, respondStarted: make(chan struct{}), respondRelease: make(chan struct{}), cancelStarted: make(chan struct{}), cancelRelease: make(chan struct{})}
 	service.Runtime = runtime
 	first := make(chan error, 1)
 	go func() {

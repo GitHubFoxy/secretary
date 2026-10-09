@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -95,6 +96,13 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 				if _, err := os.Stat(filepath.Join(workspace, id)); err != nil {
 					os.Exit(2)
 				}
+			}
+			if os.Getenv("TEST_IDLE_CODEX") == "1" {
+				writer, err := os.OpenFile(filepath.Join(workspace, id+"-writer"), os.O_CREATE|os.O_RDWR, 0600)
+				if err != nil || syscall.Flock(int(writer.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+					os.Exit(2)
+				}
+				defer writer.Close()
 			}
 			result = map[string]any{"sessionId": id}
 		case "_session/steering":

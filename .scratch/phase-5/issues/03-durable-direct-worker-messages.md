@@ -47,3 +47,7 @@ Integration red/green: production public HTTP regression воспроизвёл 
 Server владеет очередью. In-memory runtime queue и переименование кнопки Follow-up не удовлетворяют ticket.
 
 После усиления production regression отдельно повторён `go test ./cmd/secretaryd -run TestProductionAssemblyRespondsWithoutManualResponderAttachment -count=1` — PASS. Полный Go/Web набор ранее прошёл до изменения только fixture/assertions.
+
+Review 2026-10-10: ticket вновь claimed после воспроизведения Close/handoff race и потери prepared queue при production recovery. Scoped criteria закрываются повторно после проверок review fixes.
+
+Review fixes завершены: [ответ и проверка](../reports/review-fixes-20261010.md). Общий per-Worker gate сериализует queue handoff и Close; durable cancellation запрещает новый claim после закрытия. Production recovery сохраняет prepared unclaimed intent, а claimed/unknown execution остаётся fail-closed. Cancel ACK не создаёт terminal и не освобождает `/q`; native Result определяет следующую Attempt, Close ждёт terminal с context. Scoped `go test ./...`, `go build ./...` и relevant race packages — PASS (ctl повторён отдельно после timing failure старой Approval fixture под общей нагрузкой). Ticket повторно resolved; live cross-harness/topology и channels gate остаётся незавершённым.

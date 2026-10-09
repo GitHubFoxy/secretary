@@ -23,6 +23,17 @@ type publicNode struct {
 }
 
 func (s *Server) nodeDispatch(w http.ResponseWriter, r *http.Request) {
+	if _, err := r.Cookie(sessionCookie); err == nil {
+		if r.URL.Path == "/v1/nodes" && r.Method == http.MethodGet {
+			s.nodeList(w, r)
+			return
+		}
+		parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/nodes/"), "/"), "/")
+		if len(parts) == 2 && r.Method == http.MethodPost && (parts[1] == "drain" || parts[1] == "revoke") {
+			s.nodeRoute(w, r)
+			return
+		}
+	}
 	header := strings.TrimSpace(r.Header.Get("Authorization"))
 	if strings.HasPrefix(strings.ToLower(header), "bearer ") {
 		credential := strings.TrimSpace(header[len("Bearer "):])

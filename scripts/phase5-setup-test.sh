@@ -1,5 +1,4 @@
 #!/bin/bash
-# Public CLI canary using executable fixtures, NOT native model acceptance.
 set -euo pipefail
 TASK_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TASK_TMP="$(mktemp -d)"

@@ -241,21 +241,21 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 		return nil, fmt.Errorf("%w: start %q: %v", ErrClaudeCodeUnavailable, command, err)
 	}
 	session := &claudeSession{
-		id:       sessionID,
-		stdin:    stdin,
-		seen:     make(map[string]bool),
-		ready:    make(chan error, 1),
-		cmd:      cmd,
-		stdout:   stdout,
-		stderr:   stderr,
-		activity: make(chan Activity, 64),
-		result:   make(chan Result, 16),
+		id:        sessionID,
+		stdin:     stdin,
+		seen:      make(map[string]bool),
+		ready:     make(chan error, 1),
+		writeGate: make(chan struct{}, 1),
+		done:      make(chan struct{}),
+		cmd:       cmd,
+		stdout:    stdout,
+		stderr:    stderr,
+		activity:  make(chan Activity, 64),
+		result:    make(chan Result, 16),
 	}
 	go session.run()
 	if len(resume) > 0 && resume[0] {
-		session.writeMu.Lock()
-		err = json.NewEncoder(session.stdin).Encode(map[string]any{"type": "control_request", "request_id": "resume-initialize", "request": map[string]any{"subtype": "initialize"}})
-		session.writeMu.Unlock()
+		err = session.writeMessage(ctx, map[string]any{"type": "control_request", "request_id": "resume-initialize", "request": map[string]any{"subtype": "initialize"}})
 		if err == nil {
 			select {
 			case err = <-session.ready:
@@ -278,21 +278,22 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 }
 
 type claudeSession struct {
-	id       string
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	stdout   io.ReadCloser
-	stderr   *bytes.Buffer
-	activity chan Activity
-	result   chan Result
-	ready    chan error
-	stateMu  sync.Mutex
-	writeMu  sync.Mutex
-	closed   bool
-	cancel   bool
-	active   bool
-	inputID  string
-	seen     map[string]bool
+	id        string
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stdout    io.ReadCloser
+	stderr    *bytes.Buffer
+	activity  chan Activity
+	result    chan Result
+	ready     chan error
+	stateMu   sync.Mutex
+	writeGate chan struct{}
+	done      chan struct{}
+	closed    bool
+	cancel    bool
+	active    bool
+	inputID   string
+	seen      map[string]bool
 }
 
 func (s *claudeSession) ID() string                { return s.id }
@@ -302,8 +303,6 @@ func (s *claudeSession) Prompt(ctx context.Context, text string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 	if strings.TrimSpace(text) == "" {
 		return errors.New("claude: empty prompt")
 	}
@@ -320,7 +319,7 @@ func (s *claudeSession) Prompt(ctx context.Context, text string) error {
 	s.cancel = false
 	s.inputID = id
 	s.stateMu.Unlock()
-	err = json.NewEncoder(s.stdin).Encode(map[string]any{"type": "user", "uuid": id, "session_id": s.id, "message": map[string]any{"role": "user", "content": text}, "parent_tool_use_id": nil})
+	err = s.writeMessage(ctx, map[string]any{"type": "user", "uuid": id, "session_id": s.id, "message": map[string]any{"role": "user", "content": text}, "parent_tool_use_id": nil})
 	if err != nil {
 		s.stateMu.Lock()
 		s.active = false
@@ -339,8 +338,6 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 	s.stateMu.Lock()
 	if s.closed || !s.active {
 		s.stateMu.Unlock()
@@ -352,7 +349,7 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	err = json.NewEncoder(s.stdin).Encode(map[string]any{"type": "control_request", "request_id": id, "request": map[string]any{"subtype": "interrupt", "cancel_queued": true}})
+	err = s.writeMessage(ctx, map[string]any{"type": "control_request", "request_id": id, "request": map[string]any{"subtype": "interrupt", "cancel_queued": true}})
 	if err != nil {
 		s.stateMu.Lock()
 		s.cancel = false
@@ -360,23 +357,41 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	}
 	return err
 }
-func (s *claudeSession) Close() error {
+func (s *claudeSession) stopProcess() error {
 	s.stateMu.Lock()
-	if s.closed {
-		s.stateMu.Unlock()
-		return nil
-	}
 	s.closed = true
 	s.stateMu.Unlock()
-	s.writeMu.Lock()
 	_ = s.stdin.Close()
-	s.writeMu.Unlock()
 	if err := s.cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		return err
 	}
 	return nil
 }
+func (s *claudeSession) Close() error {
+	err := s.stopProcess()
+	<-s.done
+	return err
+}
+func (s *claudeSession) writeMessage(ctx context.Context, message any) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case s.writeGate <- struct{}{}:
+	}
+	defer func() { <-s.writeGate }()
+	written := make(chan error, 1)
+	go func() { written <- json.NewEncoder(s.stdin).Encode(message) }()
+	select {
+	case err := <-written:
+		return err
+	case <-ctx.Done():
+		_ = s.stopProcess()
+		<-written
+		return ctx.Err()
+	}
+}
 func (s *claudeSession) run() {
+	defer close(s.done)
 	defer close(s.activity)
 	defer close(s.result)
 	scanner := bufio.NewScanner(s.stdout)
@@ -438,7 +453,7 @@ func (s *claudeSession) handleLine(line []byte) {
 		return
 	}
 	if sid := valueString(record["session_id"]); sid != "" && sid != s.id {
-		_ = s.Close()
+		_ = s.stopProcess()
 		s.emitResult(Result{Status: "failed", Summary: "Claude Code returned a different native session identity"})
 		return
 	}

@@ -14,8 +14,6 @@ type CodexACPObserver interface {
 	ObserveCodexACP(context.Context, string) ([]core.ObservedModelID, []core.ObservedReasoningLevel, error)
 }
 
-// No model call, credential export, or user configuration edit: initialize the
-// actual adapter and observe the configuration of a disposable native session.
 func (r ExecCommandRunner) ObserveCodexACP(ctx context.Context, binary string) ([]core.ObservedModelID, []core.ObservedReasoningLevel, error) {
 	command := strings.TrimSpace(os.Getenv("SECRETARY_ACP_COMMAND"))
 	if command == "" {
@@ -63,8 +61,6 @@ func (r ExecCommandRunner) ObserveCodexACP(ctx context.Context, binary string) (
 	if err := client.Request(ctx, "session/new", map[string]any{"cwd": workspace, "mcpServers": []MCPServer{}}, &created); err != nil || created.SessionID == "" {
 		return nil, nil, fmt.Errorf("codex: native session configuration unavailable")
 	}
-	// Model variants encode supported effort per model, independent of the current
-	// native default. Preserve every observed model/effort, never synthesize pins.
 	models := []core.ObservedModelID{}
 	levels := []core.ObservedReasoningLevel{}
 	seenModels := map[string]bool{}

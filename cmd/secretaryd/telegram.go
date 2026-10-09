@@ -190,7 +190,6 @@ func telegramEvent(event core.Event) telegram.Event {
 			}
 		}
 		if event.Kind == core.SecretaryTextDeltaEvent {
-			// Canonical conversation.entry owns delivery; native deltas are live-only.
 			result.Kind = ""
 			result.Text = ""
 		}

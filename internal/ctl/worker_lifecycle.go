@@ -270,7 +270,7 @@ func steeringDedupeKey(idempotencyKey string) (string, error) {
 
 func (s WorkerService) deliverCommand(ctx context.Context, command core.WorkerCommand, send func(string) error) error {
 	if err := send(command.ID); err != nil {
-		uncertain := command.Kind == "respond" && (errors.Is(err, node.ErrCommandOutcomeUnknown) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+		uncertain := (command.Kind == "respond" || command.Kind == "steer" || command.Kind == "cancel") && (errors.Is(err, node.ErrCommandOutcomeUnknown) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
 		if uncertain {
 			if !errors.Is(err, node.ErrCommandOutcomeUnknown) {
 				err = fmt.Errorf("%w: %w", node.ErrCommandOutcomeUnknown, err)
@@ -812,20 +812,32 @@ func (s WorkerService) CancelWorker(ctx context.Context, workerRef string) (core
 	}
 	attempt := details.CurrentAttempt()
 	if attempt != nil && !attempt.State.Terminal() {
-		if err := s.requireRuntime(); err != nil {
-			return core.WorkerDetails{}, err
-		}
-		command, send, err := s.claimCommand(ctx, "cancel", "attempt", details.Worker, *attempt, nil)
-		if err != nil {
-			return core.WorkerDetails{}, err
-		}
-		if send {
-			if err := s.deliverCommand(ctx, command, func(commandID string) error { return s.Runtime.Cancel(ctx, commandID, details.Worker, *attempt) }); err != nil {
+		canceledBeforeHandoff := false
+		for _, kind := range []string{"dispatch", "resume"} {
+			command, found, err := s.Store.FindWorkerCommand(ctx, kind, "attempt", details.Worker.ID, attempt.ID)
+			if err != nil {
 				return core.WorkerDetails{}, err
 			}
+			canceledBeforeHandoff = canceledBeforeHandoff || (found && command.State == core.WorkerCommandFailed && command.LastError == "canceled_before_handoff" && command.LeaseUntil.IsZero())
 		}
-		if _, _, _, err := s.Store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{Status: core.OutcomeCanceled, Classification: core.OutcomeFinal, ErrorCode: "canceled", FailureCode: "canceled", Summary: "Canceled by Secretary"}); err != nil {
-			return core.WorkerDetails{}, err
+		if !canceledBeforeHandoff {
+			if err := s.requireRuntime(); err != nil {
+				return core.WorkerDetails{}, err
+			}
+			command, send, err := s.claimCommand(ctx, "cancel", "attempt", details.Worker, *attempt, nil)
+			if err != nil {
+				return core.WorkerDetails{}, err
+			}
+			if send {
+				if err := s.deliverCommand(ctx, command, func(commandID string) error { return s.Runtime.Cancel(ctx, commandID, details.Worker, *attempt) }); err != nil {
+					return core.WorkerDetails{}, err
+				}
+			}
+		}
+		if canceledBeforeHandoff {
+			if _, _, _, err := s.Store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{Status: core.OutcomeCanceled, Classification: core.OutcomeFinal, ErrorCode: "canceled_before_handoff", FailureCode: "canceled_before_handoff", Summary: "Canceled before runtime handoff"}); err != nil {
+				return core.WorkerDetails{}, err
+			}
 		}
 	}
 	return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
@@ -840,18 +852,38 @@ func (s WorkerService) CloseWorker(ctx context.Context, workerRef string) (core.
 	if err != nil {
 		return core.WorkerDetails{}, err
 	}
-	if err := s.Store.CancelQueuedWorkerMessages(ctx, closing.Worker.ID); err != nil {
-		return core.WorkerDetails{}, err
-	}
-	if _, err := s.CancelWorker(ctx, workerRef); err != nil {
-		return core.WorkerDetails{}, err
-	}
-	details, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
-	if err != nil {
-		return core.WorkerDetails{}, err
-	}
-	if _, err := s.Store.CloseWorker(ctx, details.Worker.ID); err != nil {
-		return core.WorkerDetails{}, err
-	}
-	return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
+	var result core.WorkerDetails
+	err = s.Store.WithWorkerLifecycle(ctx, closing.Worker.ID, func(ctx context.Context) error {
+		var err error
+		if err := s.Store.CancelQueuedWorkerMessages(ctx, closing.Worker.ID); err != nil {
+			return err
+		}
+		if _, err := s.CancelWorker(ctx, workerRef); err != nil {
+			return err
+		}
+		for {
+			waiting, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
+			if err != nil {
+				return err
+			}
+			if attempt := waiting.CurrentAttempt(); attempt == nil || attempt.State.Terminal() {
+				break
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		details, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
+		if err != nil {
+			return err
+		}
+		if _, err := s.Store.CloseWorker(ctx, details.Worker.ID); err != nil {
+			return err
+		}
+		result, err = s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
+		return err
+	})
+	return result, err
 }

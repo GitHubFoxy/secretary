@@ -62,7 +62,7 @@ WHERE kind = 'respond' AND state = ? AND EXISTS (
 // uncertain handoff; denials remain terminal until an explicit Core retry
 // reopens the command. Duplicate and superseded receipts are idempotent.
 func (s *Store) ReconcileWorkerCommandReceipt(ctx context.Context, node NodeReference, receipt WorkerCommandReceipt) (WorkerCommand, error) {
-	if strings.TrimSpace(string(node)) == "" || strings.TrimSpace(receipt.CommandID) == "" || receipt.Kind != "respond" {
+	if strings.TrimSpace(string(node)) == "" || strings.TrimSpace(receipt.CommandID) == "" || (receipt.Kind != "respond" && receipt.Kind != "dispatch" && receipt.Kind != "resume") {
 		return WorkerCommand{}, ErrInvalidTransition
 	}
 	switch receipt.State {
@@ -71,7 +71,7 @@ func (s *Store) ReconcileWorkerCommandReceipt(ctx context.Context, node NodeRefe
 		return WorkerCommand{}, ErrInvalidTransition
 	}
 
-	return withTx(s, ctx, func(tx *sql.Tx) (WorkerCommand, error) {
+	command, err := withTx(s, ctx, func(tx *sql.Tx) (WorkerCommand, error) {
 		var command WorkerCommand
 		var attemptNode, turnID string
 		if err := tx.QueryRowContext(ctx, `SELECT c.id, c.kind, c.dedupe_key, c.worker_id, c.attempt_id, c.state, c.last_error, c.lease_until, c.created_at, c.updated_at, a.node_id, a.turn_id
@@ -112,7 +112,7 @@ FROM phase4_worker_commands c JOIN phase4_attempts a ON a.id = c.attempt_id WHER
 					return command, nil
 				}
 			}
-		} else if command.State == WorkerCommandDelivered && receipt.State != WorkerCommandReceiptAccepted {
+		} else if command.Kind == "respond" && command.State == WorkerCommandDelivered && receipt.State != WorkerCommandReceiptAccepted {
 			return command, nil
 		}
 
@@ -120,6 +120,9 @@ FROM phase4_worker_commands c JOIN phase4_attempts a ON a.id = c.attempt_id WHER
 		message := strings.TrimSpace(receipt.ErrorMessage)
 		if message == "" {
 			message = strings.TrimSpace(receipt.ErrorCode)
+		}
+		if message == "" {
+			message = "Node command " + string(receipt.State)
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_worker_command_outcomes(command_id, node_id, kind, turn_id, attempt_id, state, error_code, error_message, received_at)
 VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -141,6 +144,20 @@ ON CONFLICT(command_id) DO UPDATE SET node_id = excluded.node_id, kind = exclude
 			return WorkerCommand{}, err
 		}
 		command.State, command.LastError, command.LeaseUntil, command.UpdatedAt = nextState, lastError, time.Time{}, now
+		if command.Kind != "respond" && receipt.State != WorkerCommandReceiptAccepted {
+			message, err := scanQueuedWorker(tx.QueryRowContext(ctx, queuedWorkerSelect+` WHERE worker_id=? AND turn_id=? AND state IN ('delivering','delivered')`, command.WorkerID, turnID))
+			if err == nil {
+				message.State, message.LastError, message.UpdatedAt = "blocked", lastError, now
+				if _, err := tx.ExecContext(ctx, `UPDATE worker_queued_messages SET state='blocked',last_error=?,updated_at=? WHERE id=?`, lastError, timestamp(now), message.ID); err != nil {
+					return WorkerCommand{}, err
+				}
+				if err := queueEventTx(ctx, tx, message); err != nil {
+					return WorkerCommand{}, err
+				}
+			} else if !errors.Is(err, sql.ErrNoRows) {
+				return WorkerCommand{}, err
+			}
+		}
 		if receipt.State == WorkerCommandReceiptAccepted {
 			if err := linkSecretaryWorkerCommandOriginsTx(ctx, tx, command.ID, now); err != nil {
 				return WorkerCommand{}, err
@@ -149,7 +166,7 @@ ON CONFLICT(command_id) DO UPDATE SET node_id = excluded.node_id, kind = exclude
 			if err != nil {
 				return WorkerCommand{}, err
 			}
-			if !handled {
+			if !handled && command.Kind == "respond" {
 				if err := resumeAcceptedWorkerResponseTx(ctx, tx, command.AttemptID, now); err != nil {
 					return WorkerCommand{}, err
 				}
@@ -157,6 +174,21 @@ ON CONFLICT(command_id) DO UPDATE SET node_id = excluded.node_id, kind = exclude
 		}
 		return command, nil
 	})
+	if err != nil || receipt.Kind == "respond" {
+		return command, err
+	}
+	switch command.State {
+	case WorkerCommandDelivered:
+		_, err = s.SetPhase4AttemptActive(ctx, command.AttemptID)
+	case WorkerCommandFailed:
+		_, _, _, err = s.RecordAttemptOutcome(ctx, command.AttemptID, AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeFinal, ErrorCode: receipt.ErrorCode, ErrorMessage: command.LastError, FailureCode: receipt.ErrorCode, Summary: command.LastError})
+	case WorkerCommandUncertain:
+		_, _, _, err = s.InterruptPhase4Attempt(ctx, command.AttemptID, "runtime_execution_unknown", "Node could not prove command execution; automatic replay disabled")
+	}
+	if errors.Is(err, ErrInvalidTransition) {
+		err = nil
+	}
+	return command, err
 }
 
 func commitApprovalResolutionIntentTx(ctx context.Context, tx *sql.Tx, commandID string, now time.Time) (bool, error) {
