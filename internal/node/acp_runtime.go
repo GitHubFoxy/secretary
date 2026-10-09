@@ -1617,6 +1617,17 @@ func newACPToolTracker() *acpToolTracker {
 
 func (t *acpToolTracker) observe(kind string, payload map[string]any) []Activity {
 	name := firstString(payload, "name", "tool_name", "toolName", "tool")
+	input, _ := payload["rawInput"].(map[string]any)
+	metadata, _ := payload["_meta"].(map[string]any)
+	server, _ := input["server"].(string)
+	tool, _ := input["tool"].(string)
+	mcpName := ""
+	if strings.TrimSpace(server) != "" && strings.TrimSpace(tool) != "" {
+		mcpName = "mcp." + server + "." + tool
+	}
+	if name == "" && metadata["is_mcp_tool_call"] == true {
+		name = mcpName
+	}
 	callID := firstString(payload, "toolCallId", "tool_call_id", "callId", "call_id")
 	rawStatus := strings.TrimSpace(valueString(payload["status"]))
 	status := normalizeACPToolStatus(rawStatus)
@@ -1639,6 +1650,9 @@ func (t *acpToolTracker) observe(kind string, payload map[string]any) []Activity
 	}
 	if ambiguous {
 		return nil // Never guess between concurrent id-less invocations.
+	}
+	if mcpName != "" && (name == mcpName || invocation != nil && invocation.name == mcpName) {
+		arguments = jsonValueOptional(input, "arguments")
 	}
 	if kind == "tool_call" && invocation == nil {
 		if callID != "" && t.byID[callID] != nil {

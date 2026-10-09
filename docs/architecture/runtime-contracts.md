@@ -50,6 +50,7 @@
 - Dispatch считается accepted только после сохранения Worker binding и передачи Task в runtime.
 - Worker reference — opaque публичный идентификатор; он не является AgentHub `agent_id` или session ID. Worker binding сохраняет связь Task с Worker reference, Execution node и внутренними runtime identifiers.
 - Worker observer — opt-in client view по Worker reference; он сначала получает состояние Worker, затем live Worker activity. Из observer можно направить Steering message, Queued message или Cancel.
+- ACP tool identity берётся из явного native `name` либо из MCP provenance `_meta.is_mcp_tool_call` и semantic `rawInput.server/tool`. MCP arguments берутся из вложенного `rawInput.arguments`; sparse update связывается по прежнему `toolCallId`. Display title не определяет tool identity и не попадает в normalized telemetry. Completed native tool_call даёт один tool_result без выдуманного start; duplicate и ambiguous idless updates не создают новые tool events.
 - Worker activity состоит из ephemeral text, tool и status events. Эти события получает только открывший Worker observer; terminal Result не является Worker activity. После terminal Outcome Node прекращает публикацию activity этой Attempt. Server проверяет payload и immutable Node/HarnessInstance/Worker/Turn/Attempt binding в одной транзакции с terminal state; поздний replay корректной завершённой Attempt получает ACK без нового event, Approval или изменения Result. Неизвестная Attempt и неверная identity отклоняются.
 
 ## Claude Code native Session
