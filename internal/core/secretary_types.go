@@ -308,6 +308,9 @@ func (c SecretaryContext) Validate() error {
 			if err := projectSnapshot.Validate(); err != nil {
 				return fmt.Errorf("core: canonical Secretary context snapshot Worker %q has invalid Project snapshot: %w", worker.WorkerRef, err)
 			}
+			if projectSnapshot.ID != worker.ProjectID || projectSnapshot.Node != NodeReference(worker.NodeID) || projectSnapshot.HarnessInstance.ID != HarnessInstanceID(worker.HarnessInstanceID) {
+				return fmt.Errorf("core: canonical Secretary context snapshot Worker %q has mismatched Project snapshot binding", worker.WorkerRef)
+			}
 		}
 		if len(projects) > 0 {
 			if _, exists := projects[worker.ProjectID]; !exists {
