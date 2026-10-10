@@ -1,0 +1,12 @@
+## Проверка стандартов
+
+Проверен фиксированный snapshot `e8de503297ce7e85ef00a173412e27757d024a09`, diff `372bee3...e8de503`; commits `c08bfa3`, `832f419`, `7cb4677`, `a03cfb2`, `e8de503`. Проверка кода только для чтения; repo и пользовательские изменения не редактировались.
+
+**Замечаний: 0.** Нарушений документированных правил и обоснованных Fowler smells (оценочных эвристик) в новом diff не обнаружено. Прочитаны AGENTS, docs/agents, GLOSSARY, runtime-contracts и `.scratch/code-comment-policy/spec.md`; новых объясняющих code comments нет. `docs/adr/` отсутствует.
+
+- `protocol_types.go:119–153` приводит Payload к тому же `json.Marshal(RawMessage)`, что применяет Envelope wire serializer. Общий `signPayload` исключает дублирование подписывания. Порядок ключей, lexical numbers, значения и внутренние пробелы строк сохраняются. Validate проверяет JSON до fallback; Verify требует secret/signature и сравнивает обе допустимые HMAC через `hmac.Equal`. Старый raw-byte fallback не позволяет принимать неподписанный, повреждённый JSON или изменённую Node identity. Production ServerManager продолжает выбирать per-Node credential, metadata входят в подпись; nonce boundary не изменена. Это соответствует `docs/architecture/runtime-contracts.md`, разделу «Execution node и окружение».
+- `acp_runtime.go:1620–1657` получает MCP identity из explicit provenance и semantic server/tool, не из display title. Упаковка аргументов снимается для подтверждённой MCP identity; sparse completion продолжает связываться по toolCallId и сохраняет прежние arguments при отсутствующем rawInput. Existing duplicate/ambiguous-idless guards сохранены. Completed начальный frame создаёт один result. NormalizeRuntimeActivity продолжает использовать sanitizers; title не передаётся в telemetry. Это соответствует разделу «Worker-first», строке о ACP identity.
+
+Изучены публичные regressions для reopen → authenticated wire → ACK persistence, wire formatting, static legacy signatures и tamper rejection; MCP fixtures проходят ACP Session.Activity и normalized boundary, покрывают concurrent/sparse/idless lifecycle и privacy. `git diff --check 372bee3...e8de503` — PASS. Новых нерешённых подозрений для повторного запуска тестов не возникло.
+
+Проверка не закрывает live acceptance: восстановление старого outbox, свежий observer, Claude auth/quota и same-Attempt steering, remote Codex и Telegram требуют отдельных свидетельств.

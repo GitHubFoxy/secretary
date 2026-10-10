@@ -28,7 +28,9 @@ Public seams: server HTTP/MCP, native Session, Web rendering и Bot API. Про�
 
 ## Answer
 
-Пока отсутствует. Развёртывание и live acceptance ещё не проводились в Phase 5.
+Промежуточная живая приёмка проведена на собственных Mac server/Node runtime. [Отчёт и матрица](../reports/mac-native-acceptance-20261010.md) разделяют реальные PASS, FAIL и ещё не выполненные сценарии. Codex steering во время наблюдаемого sleep, active `/q` FIFO/replay, native MCP/profile/context, idle restart, missing session, Web renderer/observer и восстановление persisted outbox подтверждены на указанных сборках. Новый prepared queue restart FAIL возвращает 03 в claimed и требует ожидания готовности Node до promotion/claim.
+
+05 остаётся blocked: 01/02/03/04 не resolved, CC same-Attempt steering и доступ к модели не подтверждены, omarchy Codex auth/readiness и настоящая remote/Telegram матрица не пройдены. Промежуточные Mac PASS, reviews и fixtures не объявляются готовым MVP или активным production deployment.
 
 ## Comments
 

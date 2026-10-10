@@ -1,7 +1,7 @@
 # 03: общий прямой ввод Worker и durable очередь /q
 
 Type: task
-Status: resolved
+Status: claimed
 Blocked by: None
 
 ## What to build
@@ -14,7 +14,7 @@ Blocked by: None
 - [x] Обычный input working Worker вызывает steering текущей Attempt; unsupported/offline/неизвестное принятие не превращаются в скрытую очередь или automatic retry. Idle обычный input продолжает прежний Worker binding как Follow-up.
 - [x] `/q` создаёт durable Queued message/Future Follow-up, ответ API и оба канала показывают queued. Во время active Attempt runtime не получает queued prompt и новая Attempt не запускается.
 - [x] После terminal Result очередь FIFO создаёт новый Follow-up с новой Attempt и прежней native session; принятие очереди и переход к delivery устойчивы к crash между ними.
-- [x] Server/Node restart сохраняют очередь и identities, не повторяют неизвестное выполнение или активную Attempt; interrupted Worker сначала восстанавливает прежнюю session по существующему контракту. Если resume невозможно, очередь остаётся видимой с ошибкой.
+- [ ] Server/Node restart сохраняют очередь и identities, не повторяют неизвестное выполнение или активную Attempt; interrupted Worker сначала восстанавливает прежнюю session по существующему контракту. Если resume невозможно, очередь остаётся видимой с ошибкой.
 - [x] Повтор HTTP/MCP/Telegram input с той же identity не создаёт вторую queued запись/Attempt; разные inputs с одинаковым текстом остаются разными сообщениями.
 - [x] Task closure не исполняет накопленный queue позже: pending записи завершаются явным отменённым состоянием, история сохраняется. Cancel active Attempt не закрывает Worker binding; доставка queue после terminal учитывает этот state.
 - [x] Pending Approval/input response сохраняет request_id routing; `/q` не становится ответом старому Approval. Никакие прямые Worker inputs не добавляются в model context Secretary.
@@ -51,3 +51,5 @@ Server владеет очередью. In-memory runtime queue и переим�
 Review 2026-10-10: ticket вновь claimed после воспроизведения Close/handoff race и потери prepared queue при production recovery. Scoped criteria закрываются повторно после проверок review fixes.
 
 Review fixes завершены: [ответ и проверка](../reports/review-fixes-20261010.md). Общий per-Worker gate сериализует queue handoff и Close; durable cancellation запрещает новый claim после закрытия. Production recovery сохраняет prepared unclaimed intent, а claimed/unknown execution остаётся fail-closed. Cancel ACK не создаёт terminal и не освобождает `/q`; native Result определяет следующую Attempt, Close ждёт terminal с context. Scoped `go test ./...`, `go build ./...` и relevant race packages — PASS (ctl повторён отдельно после timing failure старой Approval fixture под общей нагрузкой). Ticket повторно resolved; live cross-harness/topology и channels gate остаётся незавершённым.
+
+Live 2026-10-10, build `e8de503`: ticket вновь claimed. Две публичные idle `/q` сохранены как pending/unclaimed до аварийного завершения собственного acceptance server. После restart immediate queue pump запускает promotion до переподключения Node: первый input становится blocked с `node server: Node is offline`, второй остаётся pending. Исходная очередь и failed Attempt не повторялись. Требуется проверять фактическую готовность Node до promotion/claim и сохранять pending при известном временном отсутствии соединения; unknown/claimed delivery по-прежнему не повторять автоматически.
