@@ -83,13 +83,39 @@ function safeToolFailureLabel(failure) {
   return labels.length ? ` · ${labels.join(' · ')}` : '';
 }
 
-export function formatActivityPayload(event) {
+function activityPayload(event) {
   const payload = event?.payload;
-  let value = payload;
   if (typeof payload === 'string') {
-    try { value = JSON.parse(payload); } catch (_) { value = payload; }
+    try { return JSON.parse(payload); } catch (_) { return payload; }
   }
-  if (value === undefined) value = event || {};
+  return payload === undefined ? event || {} : payload;
+}
+
+export function workerActivityRows(events = []) {
+  const rows = [];
+  let previousGroup = null;
+  for (const [index, event] of mergeSequenced([], events).entries()) {
+    const value = activityPayload(event);
+    const text = formatActivityPayload(event);
+    const isText = ['assistant_text_delta', 'text_delta', 'text'].includes(value?.kind);
+    const attempt = value?.metadata?.attempt_id || event?.attempt_id;
+    const group = isText && text && attempt ? JSON.stringify([
+      value?.metadata?.worker_ref || event?.worker_ref || '', attempt,
+      value?.metadata?.turn_id || event?.turn_id || '', value.channel || '', value.kind,
+    ]) : null;
+    if (group && group === previousGroup) rows.at(-1).text += text;
+    else if (text) rows.push({
+      key: event.id || event.seq || `activity-${index}`, text,
+      label: isText ? 'Text' : ['tool_call', 'tool_result'].includes(value?.kind) ? 'Tool' : value?.kind === 'status' ? 'Status' : 'Activity',
+    });
+    previousGroup = group;
+  }
+  return rows;
+}
+
+export function formatActivityPayload(event) {
+  const value = activityPayload(event);
+  if (['analysis', 'reasoning', 'thinking'].includes(value?.channel)) return '';
   if (value && typeof value === 'object' && (value.kind === 'tool_call' || value.kind === 'tool_result')) {
     const toolCall = value.tool_call || {};
     const toolResult = value.tool_result || {};
