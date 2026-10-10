@@ -157,6 +157,28 @@ func (s *Store) ReconstructSecretaryContext(ctx context.Context, identityID, use
 		})
 		harnessInstances = append(harnessInstances, record.Inventory.Instances...)
 	}
+	knownHarnesses := make(map[HarnessInstanceID]bool, len(harnessInstances))
+	for _, instance := range harnessInstances {
+		knownHarnesses[instance.ID] = true
+	}
+	for _, worker := range openWorkers {
+		id := HarnessInstanceID(worker.HarnessInstanceID)
+		if knownHarnesses[id] || strings.TrimSpace(worker.ProjectSnapshot) == "" {
+			continue
+		}
+		var snapshot ProjectSnapshot
+		if err := decodeStrictJSON([]byte(worker.ProjectSnapshot), &snapshot); err != nil {
+			return SecretaryContext{}, fmt.Errorf("core: decode historical Worker Project snapshot: %w", err)
+		}
+		if err := snapshot.Validate(); err != nil {
+			return SecretaryContext{}, err
+		}
+		if snapshot.ID != worker.ProjectID || snapshot.Node != NodeReference(worker.NodeID) || snapshot.HarnessInstance.ID != id {
+			return SecretaryContext{}, fmt.Errorf("core: historical Worker %q Project snapshot binding mismatch", worker.WorkerRef)
+		}
+		harnessInstances = append(harnessInstances, HarnessInstance{ID: id, Node: snapshot.Node, Kind: snapshot.HarnessInstance.Kind, Status: HarnessUnavailable})
+		knownHarnesses[id] = true
+	}
 	sortHarnessInstances(harnessInstances)
 	approvals, err := s.Approvals(ctx)
 	if err != nil {
