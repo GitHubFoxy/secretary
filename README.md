@@ -18,3 +18,24 @@ Secretary — персональный ассистент, который сох
 См. [быстрый старт](docs/quickstart.md), [конфигурацию](docs/configuration.md), [словарь домена](GLOSSARY.md), [runtime-контракты](docs/architecture/runtime-contracts.md) и [критерии релизной проверки](docs/phase4-release-gate.md).
 
 Локальный CLI: `./secretary setup`, затем `./secretary start`. После setup команда доступна как `secretary` в `PATH`.
+
+
+## Стек и архитектура
+
+Go, SQLite (`modernc.org/sqlite`), HTTP API, WebSocket, JSON-RPC, MCP и ACP; Svelte, Vite и Tailwind CSS для веб-интерфейса.
+
+- `secretaryd` — сервер, веб-сессии, переписка и управление Workers.
+- `secretaryctl` — CLI для операций с состоянием Secretary.
+- `secretary-node` — выполнение Workers на локальной или удалённой машине через исходящее соединение с сервером.
+- `secretary-mcp` — MCP-инструменты Secretary с проверкой роли и capability.
+- `internal/core` — SQLite, миграции и жизненный цикл Task, Worker, Attempt и Result.
+- `internal/acp` — JSON-RPC-соединение с native runtime агента.
+- `web/` — пользовательский интерфейс и Control Room для диагностики.
+
+## Проверки
+
+```sh
+mise exec -- go test ./...
+npm test --prefix web
+npm run build:all --prefix web
+```
