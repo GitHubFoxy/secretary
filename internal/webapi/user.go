@@ -12,10 +12,11 @@ import (
 const secretaryModelSetting = "secretary.model"
 
 type bootstrapResponse struct {
-	OwnerID        string              `json:"owner_id"`
-	ConversationID string              `json:"conversation_id"`
-	Secretary      secretaryModelState `json:"secretary"`
-	Workers        []publicWorkerDTO   `json:"workers"`
+	SecretaryTurnID string              `json:"secretary_turn_id,omitempty"`
+	OwnerID         string              `json:"owner_id"`
+	ConversationID  string              `json:"conversation_id"`
+	Secretary       secretaryModelState `json:"secretary"`
+	Workers         []publicWorkerDTO   `json:"workers"`
 }
 
 type secretaryModelState struct {
@@ -36,11 +37,17 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 	if workers == nil {
 		workers = []publicWorkerDTO{}
 	}
+	turnID, err := s.store.LatestSecretaryTurnID(r.Context(), conversation.ID)
+	if err != nil {
+		http.Error(w, "read Secretary turn", http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, sanitizePublicJSON(bootstrapResponse{
-		OwnerID:        s.owner.ID,
-		ConversationID: conversation.ID,
-		Secretary:      s.secretaryModelState(r),
-		Workers:        workers,
+		SecretaryTurnID: turnID,
+		OwnerID:         s.owner.ID,
+		ConversationID:  conversation.ID,
+		Secretary:       s.secretaryModelState(r),
+		Workers:         workers,
 	}))
 }
 
