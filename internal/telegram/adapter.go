@@ -726,7 +726,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if owner == 0 {
 			return nil
 		}
-		return a.sendMessage(ctx, OutgoingMessage{ChatID: owner, Text: event.Text, Identity: "acknowledgement:" + event.EventID})
+		return a.sendMessage(ctx, OutgoingMessage{ChatID: owner, Text: event.Text, Identity: "inbound:acknowledgement:" + event.EventID})
 	}
 	if strings.HasPrefix(event.Kind, "secretary.") {
 		return a.handleSecretaryEvent(event, 0)

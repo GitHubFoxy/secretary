@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -440,5 +441,81 @@ func TestAddressedCompletionSuppressesOnlyOriginLinkedOutput(t *testing.T) {
 	turns, err := store.SecretaryTurns(ctx, identity.ID)
 	if err != nil || len(turns) != 2 {
 		t.Fatalf("Result/output handling created or lost a Secretary turn: turns=%#v err=%v", turns, err)
+	}
+}
+
+func TestAcknowledgementAndConcurrentTextHaveOneDurableOrder(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, SecretaryPolicySnapshot{Version: "test", Harness: "fx", Model: "m", Reasoning: "high", ProfileVersion: "test", ProfileName: "secretary", ProfileHash: "hash", ProfileContent: "policy"}); err != nil {
+		t.Fatal(err)
+	}
+	for range 20 {
+		turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "work")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.StartSecretaryTurn(ctx, turn.ID); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		errs := make(chan error, 17)
+		var wg sync.WaitGroup
+		wg.Add(17)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, _, err := store.RecordSecretaryAcknowledgement(ctx, person.ID, capability, turn.ID, turn.InputID, "Сейчас проверю")
+			errs <- err
+		}()
+		for range 16 {
+			go func() {
+				defer wg.Done()
+				<-start
+				_, err := store.RecordSecretaryTextDelta(ctx, turn.ID, "native text")
+				errs <- err
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatal(err)
+			}
+		}
+		var ackSeq int64
+		if err := store.db.QueryRowContext(ctx, `SELECT e.seq FROM events e JOIN secretary_acknowledgements a ON e.correlation_id=a.entry_id WHERE a.secretary_turn_id=? AND e.kind='conversation.entry'`, turn.ID).Scan(&ackSeq); err != nil {
+			t.Fatal(err)
+		}
+		var late int
+		if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE kind=? AND aggregate_id=? AND seq>?`, SecretaryTextDeltaEvent, turn.ID, ackSeq).Scan(&late); err != nil {
+			t.Fatal(err)
+		}
+		if late != 0 {
+			t.Fatalf("%d native deltas committed after acknowledgement", late)
+		}
+		if _, _, err := store.FinishSecretaryTurnWithResponse(ctx, turn.ID, SecretaryTurnSucceeded, "", "Сейчас проверю"); err != nil {
+			t.Fatal(err)
+		}
 	}
 }

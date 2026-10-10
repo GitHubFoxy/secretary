@@ -1069,3 +1069,24 @@ func TestFlushSerializesConcurrentEventWithoutReplayingPrefix(t *testing.T) {
 		t.Fatalf("sent batches = %#v", sent)
 	}
 }
+
+func TestAcknowledgementReplayAfterSendCheckpointBeforeCursorSave(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "telegram.json")
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, path)
+	event := Event{EventID: "ack-entry-event", Sequence: 2, Kind: "secretary.acknowledged", Text: "Сейчас проверю"}
+	if err := adapter.HandleEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.LastEventSeq() != 0 || len(adapter.state.Outbox) != 0 || len(transport.sent) != 1 {
+		t.Fatal("send checkpoint fixture invalid")
+	}
+	adapter = newTestAdapter(t, transport, &fakeServer{}, path)
+	if err := adapter.HandleDurableEvent(ctx, event); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || adapter.LastEventSeq() != 2 {
+		t.Fatalf("ack replay duplicated persisted send: %#v", transport.sent)
+	}
+}

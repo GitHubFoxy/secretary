@@ -491,6 +491,15 @@ func (s *Store) AppendSecretaryEvent(ctx context.Context, input SecretaryEventIn
 		if turnState != SecretaryTurnActive {
 			return Event{}, ErrInvalidTransition
 		}
+		if input.Kind == SecretaryTextDeltaEvent {
+			var acknowledged bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM secretary_acknowledgements WHERE secretary_turn_id = ?)`, input.TurnID).Scan(&acknowledged); err != nil {
+				return Event{}, err
+			}
+			if acknowledged {
+				return Event{}, nil
+			}
+		}
 		if key != "" {
 			var encoded string
 			if err := tx.QueryRowContext(ctx, `SELECT outcome_json FROM idempotency_records WHERE operation = 'secretary.event' AND idempotency_key = ?`, key).Scan(&encoded); err == nil {
