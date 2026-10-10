@@ -1,6 +1,6 @@
 # Короткий ответ до делегирования и простой prompt Worker
 
-Status: claimed
+Status: resolved
 
 Пользователь поручил создать ticket, исправить через субагента, проверить, commit/push main и обновить production.
 
