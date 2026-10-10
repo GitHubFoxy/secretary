@@ -28,7 +28,7 @@
 ## Execution node и окружение
 
 - Execution node запускает Workers по Dispatch от Secretary server и поддерживает outbound connection к серверу. Node не владеет Conversation или Result routing; в первом slice default node — local Secretary host.
-- Node enrollment происходит с явного owner-approved pairing через одноразовый code; после pairing Node получает собственную identity.
+- Node enrollment происходит с явного owner-approved pairing через одноразовый code; после pairing Node получает собственную identity. Envelope HMAC подписывает payload после `json.Marshal(RawMessage)`, то есть в compact/HTML-escaped форме wire serializer. Форматирование durable JSON при reopen не меняет аутентификацию; пробелы внутри строк, порядок ключей, значения и identity остаются частью подписи. Verify сохраняет совместимость со старой raw-byte подписью только для валидного Envelope/JSON и действительного per-Node HMAC.
 - Первый Execution environment даёт Worker full access. Sandbox и isolated worktree могут стать другими вариантами; full access сам по себе не является sandbox или гарантией изоляции.
 - Worker получает отдельный пустой Workspace при запуске Task. Через shell Worker может создать или выбрать другой local path.
 
