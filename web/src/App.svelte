@@ -132,15 +132,17 @@
     onboardingOpen = !localStorage.getItem(ONBOARDING_KEY);
     loading = false;
     connectConversation();
+    if (state.secretary_turn_id) await connectSecretaryStream(state.secretary_turn_id);
     refreshTimer = setInterval(refreshState, 5000);
   }
 
   async function refreshState() {
     if (!authenticated) return;
     try {
-      const [workerList, nodeList] = await Promise.all([request('/v1/workers'), request('/v1/nodes')]);
+      const [workerList, nodeList, state] = await Promise.all([request('/v1/workers'), request('/v1/nodes'), request('/v1/bootstrap')]);
       workers = workerList || [];
       nodes = nodeList || [];
+      if (state.secretary_turn_id && state.secretary_turn_id !== secretaryTurnID) await connectSecretaryStream(state.secretary_turn_id);
       if (observer?.workerRef) await refreshObserver(observer.workerRef);
     } catch (_) { /* durable state stays visible while a refresh is unavailable */ }
   }

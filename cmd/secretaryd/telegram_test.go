@@ -616,3 +616,59 @@ func TestTelegramBridgeKeepsCanonicalReplyAndTerminalFailureReadable(t *testing.
 		t.Fatalf("reply/error hidden, repeated or concatenated: %#v", transport.sent)
 	}
 }
+
+func TestTelegramBridgeDeliversPrePromptFailureExactlyOnce(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, core.SecretaryPolicySnapshot{Version: "test", Harness: "fx", Model: "m", Reasoning: "high", ProfileVersion: "test", ProfileName: "secretary", ProfileHash: "hash", ProfileContent: "policy"}); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "Telegram-origin input")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishSecretaryTurn(ctx, turn.ID, core.SecretaryTurnFailed, "canonical Secretary context unavailable"); err != nil {
+		t.Fatal(err)
+	}
+	transport := &bridgeTransport{}
+	statePath := filepath.Join(t.TempDir(), "telegram.json")
+	config := telegram.Config{StatePath: statePath, OwnerChatID: 100, FlushInterval: time.Hour}
+	adapter, err := telegram.New(config, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Secretary: ошибка — canonical Secretary context unavailable" {
+		t.Fatalf("pre-Prompt failure hidden: %#v", transport.sent)
+	}
+	restarted, err := telegram.New(config, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bridgeTelegramEventsOnce(ctx, store, restarted); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 {
+		t.Fatal("pre-Prompt failure repeated after adapter restart")
+	}
+}
