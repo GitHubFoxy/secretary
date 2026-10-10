@@ -31,6 +31,8 @@
   let inputFormDrafts = {};
   let userSaveKey = '';
   let secretaryTurnID = '';
+  let secretaryConnectionGeneration = 0;
+  let refreshRequestGeneration = 0;
   let secretaryStream = [];
   let secretaryStreamError = '';
   let userDocument = null;
@@ -138,11 +140,14 @@
 
   async function refreshState() {
     if (!authenticated) return;
+    const generation = ++refreshRequestGeneration;
+    const streamGeneration = secretaryConnectionGeneration;
     try {
       const [workerList, nodeList, state] = await Promise.all([request('/v1/workers'), request('/v1/nodes'), request('/v1/bootstrap')]);
+      if (generation !== refreshRequestGeneration) return;
       workers = workerList || [];
       nodes = nodeList || [];
-      if (state.secretary_turn_id && state.secretary_turn_id !== secretaryTurnID) await connectSecretaryStream(state.secretary_turn_id);
+      if (streamGeneration === secretaryConnectionGeneration && state.secretary_turn_id && state.secretary_turn_id !== secretaryTurnID) await connectSecretaryStream(state.secretary_turn_id);
       if (observer?.workerRef) await refreshObserver(observer.workerRef);
     } catch (_) { /* durable state stays visible while a refresh is unavailable */ }
   }
@@ -206,23 +211,33 @@
   }
 
   async function connectSecretaryStream(turnID) {
+    const generation = ++secretaryConnectionGeneration;
     secretarySocket?.close();
     secretaryStreamError = '';
+    if (secretaryTurnID !== turnID) secretaryStream = [];
     secretaryTurnID = turnID;
     try {
       const replay = await request(`/v1/secretary/turns/${encodeURIComponent(turnID)}/stream?after_seq=0`);
+      if (generation !== secretaryConnectionGeneration) return;
       secretaryStream = mergeSequenced([], replay?.events || []);
       const cursor = secretaryStream.at(-1)?.seq || 0;
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      secretarySocket = new WebSocket(`${protocol}//${location.host}/v1/secretary/turns/${encodeURIComponent(turnID)}/stream/ws?after_seq=${cursor}`);
-      secretarySocket.onmessage = (event) => appendSecretaryEvent(JSON.parse(event.data));
-      secretarySocket.onerror = () => secretarySocket.close();
-      secretarySocket.onclose = () => {
-        if (secretaryTurnID !== turnID) return;
-        clearTimeout(secretaryReconnectTimer);
-        secretaryReconnectTimer = setTimeout(() => connectSecretaryStream(turnID), 1200);
+      const socket = new WebSocket(`${protocol}//${location.host}/v1/secretary/turns/${encodeURIComponent(turnID)}/stream/ws?after_seq=${cursor}`);
+      secretarySocket = socket;
+      socket.onmessage = (event) => {
+        if (generation === secretaryConnectionGeneration) appendSecretaryEvent(JSON.parse(event.data));
       };
-    } catch (error) { secretaryStreamError = error.message; }
+      socket.onerror = () => socket.close();
+      socket.onclose = () => {
+        if (generation !== secretaryConnectionGeneration) return;
+        clearTimeout(secretaryReconnectTimer);
+        secretaryReconnectTimer = setTimeout(() => {
+          if (generation === secretaryConnectionGeneration) void connectSecretaryStream(turnID);
+        }, 1200);
+      };
+    } catch (error) {
+      if (generation === secretaryConnectionGeneration) secretaryStreamError = error.message;
+    }
   }
 
   function handleMessageKeydown(event) {
