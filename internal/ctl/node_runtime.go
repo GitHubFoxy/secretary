@@ -20,6 +20,16 @@ type NodeRuntime struct {
 	Local   *node.LocalNode
 }
 
+func (r NodeRuntime) CommandReady(ctx context.Context, nodeID core.NodeReference) (bool, error) {
+	if r.Local != nil && nodeID == "local" {
+		return true, nil
+	}
+	if r.Manager == nil {
+		return false, ErrWorkerRuntimeUnavailable
+	}
+	return r.Manager.CommandReady(ctx, nodeID)
+}
+
 func (r NodeRuntime) send(ctx context.Context, nodeID core.NodeReference, command node.Command) error {
 	if r.Local != nil && nodeID == "local" {
 		_, err := r.LocalCommand(ctx, command)

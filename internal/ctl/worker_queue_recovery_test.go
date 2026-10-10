@@ -2,7 +2,9 @@ package ctl
 
 import (
 	"context"
+	"errors"
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/node"
 	"testing"
 )
 
@@ -67,5 +69,41 @@ func TestClaimedQueueIsNotReplayedAfterProductionRecovery(t *testing.T) {
 	}
 	if current.QueuedMessages[0].State != "blocked" || current.CurrentAttempt().State != core.AttemptInterrupted || service.Runtime.(*lifecycleRuntime).count("dispatch") != 1 {
 		t.Fatalf("unknown execution replayed: %#v", current)
+	}
+}
+
+func TestRevokedNodeBlocksQueueWithoutAutomaticRetry(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, details.Attempts[0].ID, core.AttemptOutcomeInput{Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "done"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "/q forbidden", IdempotencyKey: "revoked"}); err != nil {
+		t.Fatal(err)
+	}
+	manager, err := node.NewServerManager(ctx, store, "pair-token", "admin-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.Runtime = NodeRuntime{Manager: manager}
+	if _, err := store.RevokeNode(ctx, "node"); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ProcessQueuedWorkerMessages(ctx); !errors.Is(err, core.ErrNodeRevoked) {
+		t.Fatalf("revocation hidden: %v", err)
+	}
+	current, err := service.GetWorker(ctx, details.Worker.WorkerRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.QueuedMessages[0].State != "blocked" || current.QueuedMessages[0].LastError == "" {
+		t.Fatalf("revoked queue not blocked: %#v", current)
+	}
+	if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := service.GetWorker(ctx, details.Worker.WorkerRef)
+	if err != nil || len(replayed.Attempts) != len(current.Attempts) {
+		t.Fatal("revoked queue retried")
 	}
 }

@@ -341,6 +341,20 @@ func (m *ServerManager) SendCommandAndWait(ctx context.Context, nodeRef core.Nod
 	}
 }
 
+func (m *ServerManager) CommandReady(ctx context.Context, nodeRef core.NodeReference) (bool, error) {
+	record, err := m.store.NodeRecord(ctx, nodeRef)
+	if err != nil {
+		return false, err
+	}
+	if record.Revoked {
+		return false, core.ErrNodeRevoked
+	}
+	m.mu.Lock()
+	connected := m.connections[nodeRef] != nil
+	m.mu.Unlock()
+	return record.Online && connected && !record.Draining, nil
+}
+
 func (m *ServerManager) SendCommand(ctx context.Context, nodeRef core.NodeReference, command Command) error {
 	record, err := m.store.NodeRecord(ctx, nodeRef)
 	if err != nil {

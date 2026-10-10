@@ -177,29 +177,35 @@ func (i idleInventory) Discover(context.Context) (core.HarnessInventorySnapshot,
 }
 
 func TestPublicIdleFollowUpRetainsNativeHistory(t *testing.T) {
-	runPublicIdleFollowUp(t, false, false, false)
+	runPublicIdleFollowUp(t, false, false, false, "")
 }
 
 func TestOpenCodeNativePublicIdleFollowUp(t *testing.T) {
 	if os.Getenv("SECRETARY_OPENCODE_ACP_E2E") != "1" {
 		t.Skip("private native fixture is opt-in")
 	}
-	runPublicIdleFollowUp(t, true, false, false)
+	runPublicIdleFollowUp(t, true, false, false, "")
 }
 
 func TestPublicQueuedFollowUpRetainsNativeHistory(t *testing.T) {
-	runPublicIdleFollowUp(t, false, false, true)
+	runPublicIdleFollowUp(t, false, false, true, "")
 }
 
 func TestPublicCodexIdleFollowUpRetainsNativeHistory(t *testing.T) {
-	runPublicIdleFollowUp(t, false, true, false)
+	runPublicIdleFollowUp(t, false, true, false, "")
 }
 
 func TestPublicCodexQueuedFollowUpRetainsNativeHistory(t *testing.T) {
-	runPublicIdleFollowUp(t, false, true, true)
+	runPublicIdleFollowUp(t, false, true, true, "")
 }
 
-func runPublicIdleFollowUp(t *testing.T, native, codex, queued bool) {
+func TestPublicQueuedFollowUpWaitsForNodeReconnect(t *testing.T) {
+	for _, state := range []string{"pending", "prepared", "draining"} {
+		t.Run(state, func(t *testing.T) { runPublicIdleFollowUp(t, false, true, true, state) })
+	}
+}
+
+func runPublicIdleFollowUp(t *testing.T, native, codex, queued bool, reconnect string) {
 	kind := core.HarnessOpenCode
 	modelPin := "fixture/model"
 	if codex {
@@ -292,7 +298,12 @@ func runPublicIdleFollowUp(t *testing.T, native, codex, queued bool) {
 		}
 	}
 	start()
-	defer func() { stop(); <-done }()
+	defer func() {
+		stop()
+		if done != nil {
+			<-done
+		}
+	}()
 	project, err := store.CreateProject(ctx, core.ProjectSpec{ID: "idle-project", Name: "Idle", Mappings: []core.ProjectPathMapping{{Node: identity.Node, Path: workspace}}, Policy: core.ProjectPolicy{AllowedHarnessKinds: []core.HarnessKind{kind}}})
 	if err != nil {
 		t.Fatal(err)
@@ -332,6 +343,105 @@ func runPublicIdleFollowUp(t *testing.T, native, codex, queued bool) {
 		t.Fatal("initial mapping absent")
 	}
 	frozen := details.Worker.ProfileSnapshot
+	if reconnect != "" {
+		if reconnect == "draining" {
+			if _, err := store.SetNodeDraining(ctx, identity.Node, true); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			stop()
+			err := <-done
+			done = nil
+			if err != nil {
+				t.Fatal(err)
+			}
+			waitIdleFixture(t, ctx, func() bool { status, err := manager.Status(ctx, identity.Node); return err == nil && !status.Online })
+		}
+		var ids []string
+		for i := 0; i < 2; i++ {
+			accepted, err := service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: ref, Text: "/q recall", IdempotencyKey: fmt.Sprintf("reconnect-%d", i)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ids = append(ids, accepted.ActionMessageID)
+		}
+		if reconnect == "prepared" {
+			pending, err := service.GetWorker(ctx, ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := store.PromoteQueuedWorkerMessage(ctx, pending.QueuedMessages[0], "dispatch"); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.RecoverPhase4Attempts(ctx, core.Phase4AttemptRecoveryFunc(func(context.Context, core.Phase4Attempt) (core.Phase4RecoveryDecision, error) {
+				return core.Phase4RecoveryUnknown, nil
+			})); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := store.MarkNodeConnected(ctx, identity.Node, inventory); err != nil {
+			t.Fatal(err)
+		}
+		for i := 0; i < 2; i++ {
+			if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
+				t.Fatal(err)
+			}
+		}
+		waiting, err := service.GetWorker(ctx, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantAttempts, wantState := 1, "pending"
+		if reconnect == "prepared" {
+			wantAttempts, wantState = 2, "delivering"
+		}
+		if len(waiting.Attempts) != wantAttempts || waiting.QueuedMessages[0].State != wantState || waiting.QueuedMessages[1].State != "pending" || waiting.QueuedMessages[1].TurnID != "" {
+			t.Fatalf("offline queue changed: %#v", waiting)
+		}
+		if reconnect == "pending" && waiting.QueuedMessages[0].TurnID != "" {
+			t.Fatal("offline queue allocated Turn")
+		}
+		if reconnect == "prepared" {
+			command, found, err := store.FindWorkerCommand(ctx, "dispatch", "attempt", waiting.Worker.ID, waiting.CurrentAttempt().ID)
+			if err != nil || !found || !command.LeaseUntil.IsZero() {
+				t.Fatal("offline prepared intent claimed")
+			}
+		}
+		if _, err := os.Stat(filepath.Join(workspace, "private-recall-sent")); !os.IsNotExist(err) {
+			t.Fatal("offline queue reached native prompt")
+		}
+		if reconnect == "draining" {
+			if _, err := store.SetNodeDraining(ctx, identity.Node, false); err != nil {
+				t.Fatal(err)
+			}
+		} else {
+			if err := store.MarkNodeDisconnected(ctx, identity.Node); err != nil {
+				t.Fatal(err)
+			}
+			start()
+		}
+		for i := 0; i < 2; i++ {
+			if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
+				t.Fatal(err)
+			}
+			completed := await(i + 2)
+			mapping, ok := local.SessionMapping(completed.CurrentAttempt().ID)
+			if !ok || mapping.RuntimeSessionID != initialMapping.RuntimeSessionID || completed.QueuedMessages[i].ID != ids[i] || completed.QueuedMessages[i].State != "delivered" || completed.Results[i+1].Summary != "remembered=true" {
+				t.Fatalf("reconnected queue lost identity/history: %#v", completed)
+			}
+			if i == 0 && completed.QueuedMessages[1].State != "pending" {
+				t.Fatal("FIFO advanced before terminal")
+			}
+		}
+		if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
+			t.Fatal(err)
+		}
+		completed, err := service.GetWorker(ctx, ref)
+		if err != nil || len(completed.Attempts) != 3 || len(completed.Results) != 3 {
+			t.Fatal("queue replay duplicated execution")
+		}
+		return
+	}
 	service.WorkerProfileSource = func() (node.ManagedProfile, error) {
 		t.Error("Follow-up read current defaults")
 		return node.ManagedProfile{}, fmt.Errorf("unavailable")
