@@ -29,6 +29,11 @@ func (s Secretary) Tools() []Tool {
 		{Name: "cancel_worker", Description: "Cancel a Worker's active Attempt.", InputSchema: objectSchema("worker_ref")},
 		{Name: "close_worker", Description: "Close a Worker after safely stopping active work.", InputSchema: objectSchema("worker_ref")},
 	}
+	if s.ReplyContractVersion == "" {
+		tools = append(tools, Tool{Name: "acknowledge_user", Description: "Send one brief acknowledgement before any work or lifecycle tools. This is progress, not a completed answer; report failures in the final answer.", InputSchema: map[string]any{
+			"type": "object", "properties": map[string]any{"secretary_turn_id": map[string]string{"type": "string"}, "input_id": map[string]string{"type": "string"}, "text": map[string]string{"type": "string"}}, "required": []string{"secretary_turn_id", "input_id", "text"},
+		}})
+	}
 	if s.ReplyContractVersion == core.SecretaryReplyContractAddressedV1 {
 		addOriginFields(spawnSchema)
 		addOriginFields(messageSchema)
@@ -109,6 +114,15 @@ func (s Secretary) Call(ctx context.Context, name string, raw json.RawMessage) (
 			}
 		}
 		return details, nil
+	case "acknowledge_user":
+		if s.ReplyContractVersion != "" {
+			return nil, fmt.Errorf("unknown Secretary tool %q", name)
+		}
+		entry, duplicate, err := s.Workers.AcknowledgeUser(ctx, ctl.SecretaryReplyRequest{SecretaryTurnID: args.SecretaryTurnID, InputID: args.InputID, Text: args.Text})
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"entry_id": entry.ID, "duplicate": duplicate}, nil
 	case "reply_to_user":
 		if s.ReplyContractVersion != core.SecretaryReplyContractAddressedV1 {
 			return nil, fmt.Errorf("unknown Secretary tool %q", name)

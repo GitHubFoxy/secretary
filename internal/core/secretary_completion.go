@@ -162,6 +162,14 @@ WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conve
 			}
 			publishUnaddressedOutput = addressed == 0 && relatedResult == 0
 		}
+		var acknowledgement string
+		ackErr := tx.QueryRowContext(ctx, `SELECT body FROM secretary_acknowledgements WHERE secretary_turn_id = ? AND input_id = ?`, turn.ID, turn.InputID).Scan(&acknowledgement)
+		if ackErr != nil && !errors.Is(ackErr, sql.ErrNoRows) {
+			return secretaryTurnCompletion{}, ackErr
+		}
+		if acknowledgement != "" && evidence == nil && !requireAddressedReply {
+			publishUnaddressedOutput = publishUnaddressedOutput && response != acknowledgement
+		}
 		if publishUnaddressedOutput {
 			for _, delta := range textDeltas {
 				if delta == "" {
@@ -186,6 +194,9 @@ WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conve
 		}
 
 		payload := map[string]any{"turn_id": turn.ID, "status": string(state)}
+		if acknowledgement != "" {
+			payload["acknowledged"] = true
+		}
 		if turn.Error != "" {
 			payload["error"] = turn.Error
 		}

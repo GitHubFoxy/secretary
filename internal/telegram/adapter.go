@@ -694,10 +694,13 @@ func (a *Adapter) HandleDurableEvent(ctx context.Context, event Event) error {
 	}
 	a.mu.Unlock()
 
-	if strings.HasPrefix(event.Kind, "secretary.") {
+	if event.Kind == "secretary.acknowledged" {
+		if err := a.handleEvent(ctx, event); err != nil {
+			return err
+		}
+	} else if strings.HasPrefix(event.Kind, "secretary.") {
 		return a.handleSecretaryEvent(event, event.Sequence)
-	}
-	if err := a.handleEvent(ctx, event); err != nil {
+	} else if err := a.handleEvent(ctx, event); err != nil {
 		return err
 	}
 	a.mu.Lock()
@@ -716,6 +719,15 @@ func (a *Adapter) HandleEvent(ctx context.Context, event Event) error {
 }
 
 func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
+	if event.Kind == "secretary.acknowledged" {
+		a.mu.Lock()
+		owner := a.state.OwnerChat
+		a.mu.Unlock()
+		if owner == 0 {
+			return nil
+		}
+		return a.sendMessage(ctx, OutgoingMessage{ChatID: owner, Text: event.Text, Identity: "acknowledgement:" + event.EventID})
+	}
 	if strings.HasPrefix(event.Kind, "secretary.") {
 		return a.handleSecretaryEvent(event, 0)
 	}
@@ -750,7 +762,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if prompt := safeDelta(event.TaskPrompt); strings.TrimSpace(prompt) != "" {
 			return a.sendMessage(ctx, OutgoingMessage{
 				ChatID: mapping.ChatID, ThreadID: mapping.ThreadID,
-				Text: "Задача от Secretary:\n\n" + prompt, Identity: "task-prompt:" + event.WorkerRef,
+				Text: prompt, Identity: "task-prompt:" + event.WorkerRef,
 			})
 		}
 		return nil

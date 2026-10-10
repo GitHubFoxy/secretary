@@ -21,7 +21,7 @@ func TestSecretaryToolsMatchWorkerLifecycleContract(t *testing.T) {
 	for i, tool := range tools {
 		got[i] = tool.Name
 	}
-	want := []string{"list_nodes", "list_projects", "list_workers", "get_worker", "spawn_worker", "message_worker", "cancel_worker", "close_worker"}
+	want := []string{"list_nodes", "list_projects", "list_workers", "get_worker", "spawn_worker", "message_worker", "cancel_worker", "close_worker", "acknowledge_user"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("tools=%#v, want %#v", got, want)
 	}
@@ -281,5 +281,92 @@ func TestSecretaryToolCallRejectsWrongCapability(t *testing.T) {
 	handler := Secretary{Workers: ctl.WorkerService{Store: store, PersonID: person.ID, Capability: "wrong"}}
 	if _, err := handler.Call(ctx, "list_workers", json.RawMessage(`{}`)); err == nil {
 		t.Fatal("expected authorization error")
+	}
+}
+
+func TestSecretaryAcknowledgementPrecedesWorkAndDoesNotHideFinalErrors(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "synthetic owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, core.SecretaryPolicySnapshot{Version: "test", Harness: "fx", Model: "m", Reasoning: "high", ProfileVersion: "test", ProfileName: "secretary", ProfileHash: "hash", ProfileContent: "policy"}); err != nil {
+		t.Fatal(err)
+	}
+	turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "answer this")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	handler := Secretary{Workers: ctl.WorkerService{Store: store, PersonID: person.ID, Capability: capability}}
+	args, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Сейчас проверю"})
+	if _, err := handler.Call(ctx, "acknowledge_user", args); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := store.EntriesAfter(ctx, conversation.ID, 0)
+	if err != nil || len(entries) != 1 || entries[0].Body != "Сейчас проверю" {
+		t.Fatalf("ack not canonical before work: %#v %v", entries, err)
+	}
+	if _, err := store.RecordSecretaryToolCall(ctx, turn.ID, "spawn_worker", "{}"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.RecordSecretaryTextDelta(ctx, turn.ID, "Сейчас проверю"); err != nil {
+		t.Fatal(err)
+	}
+	finished, entry, err := store.FinishSecretaryTurnWithResponse(ctx, turn.ID, core.SecretaryTurnSucceeded, "", "Не удалось запустить задачу: узел недоступен.")
+	if err != nil || finished.State != core.SecretaryTurnSucceeded || entry.Body != "Не удалось запустить задачу: узел недоступен." {
+		t.Fatalf("dispatch error hidden after ack: %#v %#v %v", finished, entry, err)
+	}
+	if _, err := handler.Call(ctx, "acknowledge_user", args); err != nil {
+		t.Fatalf("exact replay rejected: %v", err)
+	}
+	entries, _ = store.EntriesAfter(ctx, conversation.ID, 0)
+	if len(entries) != 2 {
+		t.Fatalf("ack replay duplicated history: %#v", entries)
+	}
+	for _, tc := range []struct {
+		status   core.SecretaryTurnState
+		response string
+	}{
+		{core.SecretaryTurnSucceeded, "Сейчас проверю"},
+		{core.SecretaryTurnFailed, ""},
+	} {
+		next, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "next")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.StartSecretaryTurn(ctx, next.ID); err != nil {
+			t.Fatal(err)
+		}
+		ackArgs, _ := json.Marshal(map[string]string{"secretary_turn_id": next.ID, "input_id": next.InputID, "text": "Сейчас проверю"})
+		if _, err := handler.Call(ctx, "acknowledge_user", ackArgs); err != nil {
+			t.Fatal(err)
+		}
+		terminalError := ""
+		if tc.status == core.SecretaryTurnFailed {
+			terminalError = "native failure"
+		}
+		finished, entry, err := store.FinishSecretaryTurnWithResponse(ctx, next.ID, tc.status, terminalError, tc.response)
+		if err != nil || finished.State != tc.status || entry.ID != "" {
+			t.Fatalf("ack hid failure or duplicated echo: %#v %#v %v", finished, entry, err)
+		}
 	}
 }

@@ -276,7 +276,7 @@ func TestTelegramEventBridgePublishesOnlyDispatchedWorkerIntent(t *testing.T) {
 	if err := adapter.HandleDurableEvent(ctx, event); err != nil {
 		t.Fatal(err)
 	}
-	if len(transport.sent) != 1 || transport.sent[0].ThreadID != 1 || transport.sent[0].Text != "Задача от Secretary:\n\nFix the server.\nRun tests." {
+	if len(transport.sent) != 1 || transport.sent[0].ThreadID != 1 || transport.sent[0].Text != "Fix the server.\nRun tests." {
 		t.Fatalf("dispatched prompt delivery=%#v", transport.sent)
 	}
 }
@@ -670,5 +670,46 @@ func TestTelegramBridgeDeliversPrePromptFailureExactlyOnce(t *testing.T) {
 	}
 	if len(transport.sent) != 1 {
 		t.Fatal("pre-Prompt failure repeated after adapter restart")
+	}
+}
+
+func TestTelegramAcknowledgementIsImmediateAndReplaySafeBeforeTerminal(t *testing.T) {
+	ctx := context.Background()
+	transport := &bridgeTransport{}
+	path := filepath.Join(t.TempDir(), "telegram.json")
+	cfg := telegram.Config{StatePath: path, OwnerChatID: 100, FlushInterval: time.Hour}
+	adapter, err := telegram.New(cfg, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := core.Event{Seq: 1, Kind: core.SecretaryTurnStartedEvent}
+	ack := core.Event{ID: "ack-event", Seq: 2, Kind: "conversation.entry", Payload: []byte(`{"kind":"secretary","body":"Сейчас проверю","acknowledgement":true}`)}
+	for _, event := range []core.Event{started, ack} {
+		if err := adapter.HandleDurableEvent(ctx, telegramEvent(event)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Сейчас проверю" {
+		t.Fatalf("ack buffered until terminal: %#v", transport.sent)
+	}
+	adapter, err = telegram.New(cfg, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleDurableEvent(ctx, telegramEvent(ack)); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 {
+		t.Fatal("ack replay duplicated delivery")
+	}
+	finish := core.Event{Seq: 3, Kind: core.SecretaryTurnFinishedEvent, Payload: []byte(`{"status":"succeeded","acknowledged":true}`)}
+	if err := adapter.HandleDurableEvent(ctx, telegramEvent(finish)); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 {
+		t.Fatalf("terminal repeated ack: %#v", transport.sent)
 	}
 }

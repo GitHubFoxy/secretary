@@ -103,6 +103,14 @@ CREATE TABLE IF NOT EXISTS secretary_reply_entries (
   created_at TEXT NOT NULL,
   PRIMARY KEY(secretary_turn_id, input_id)
 );
+CREATE TABLE IF NOT EXISTS secretary_acknowledgements (
+  secretary_turn_id TEXT NOT NULL REFERENCES secretary_turns(id),
+  input_id TEXT NOT NULL,
+  body TEXT NOT NULL,
+  entry_id TEXT NOT NULL UNIQUE REFERENCES conversation_entries(id),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY(secretary_turn_id, input_id)
+);
 CREATE TABLE IF NOT EXISTS secretary_context_seen_results (
   turn_id TEXT NOT NULL REFERENCES secretary_turns(id),
   result_id TEXT NOT NULL REFERENCES phase4_results(id),

@@ -60,6 +60,11 @@ func TestRequiredAddressedReplyCompletionCommitsExactEvidenceAndSurvivesReopen(t
 			if err != nil {
 				t.Fatal(err)
 			}
+			if tc.name == "missing" {
+				if _, _, err := store.RecordSecretaryAcknowledgement(ctx, person.ID, capability, turn.ID, turn.InputID, "Сейчас проверю"); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if tc.reply {
 				if _, _, err := store.RecordSecretaryReply(ctx, person.ID, capability, turn.ID, turn.InputID, "typed reply"); err != nil {
 					t.Fatal(err)
@@ -126,7 +131,7 @@ func TestRequiredAddressedReplyCompletionCommitsExactEvidenceAndSurvivesReopen(t
 			}
 			count := 0
 			for _, entry := range entries {
-				if entry.Kind == EntrySecretary {
+				if entry.Kind == EntrySecretary && entry.Body != "Сейчас проверю" {
 					if entry.TurnID != turn.ID {
 						t.Fatalf("canonical reply lost turn identity: %#v", entry)
 					}

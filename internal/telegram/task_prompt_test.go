@@ -33,7 +33,7 @@ func TestWorkerTopicPromptPrecedesActivityAndSurvivesReplay(t *testing.T) {
 		t.Fatalf("topics=%#v messages=%#v", transport.topics, transport.sent)
 	}
 	first := transport.sent[0]
-	if first.Text != "Задача от Secretary:\n\n"+prompt || first.ThreadID != transport.topics[0].ThreadID {
+	if first.Text != prompt || first.ThreadID != transport.topics[0].ThreadID {
 		t.Fatalf("prompt lost text, formatting or destination: %#v", first)
 	}
 	for _, message := range transport.sent {
@@ -76,7 +76,7 @@ func TestWorkerTopicPromptRetryResumesAfterRestart(t *testing.T) {
 				}
 				text.WriteString(message.Text)
 			}
-			if text.String() != "Задача от Secretary:\n\n"+prompt {
+			if text.String() != prompt {
 				t.Fatal("lost or duplicated prompt chunks")
 			}
 			if len(transport.topics) != 1 || adapter.LastEventSeq() != 1 || len(adapter.state.Outbox) != 0 || !adapter.state.Topics["worker-1"].PromptDelivered {

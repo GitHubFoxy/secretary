@@ -175,13 +175,16 @@ func telegramEvent(event core.Event) telegram.Event {
 		if stringField(payload, "kind") == string(core.EntrySecretary) {
 			result.Kind = core.SecretaryTextDeltaEvent
 			result.Text, _ = payload["body"].(string)
+			if payload["acknowledgement"] == true {
+				result.Kind = "secretary.acknowledged"
+			}
 		} else {
 			result.Kind = ""
 		}
 		return result
 	case strings.HasPrefix(event.Kind, "secretary."):
 		if event.Kind == core.SecretaryTurnFinishedEvent {
-			result.CanonicalReplyRequired = true
+			result.CanonicalReplyRequired = payload["acknowledged"] != true
 			result.Text = stringField(payload, "error")
 			if result.Text != "" {
 				result.Text = "Secretary: ошибка — " + result.Text

@@ -204,6 +204,13 @@ func (s WorkerService) ReplyToUser(ctx context.Context, request SecretaryReplyRe
 	return s.Store.RecordSecretaryReply(ctx, s.PersonID, s.Capability, request.SecretaryTurnID, request.InputID, request.Text)
 }
 
+func (s WorkerService) AcknowledgeUser(ctx context.Context, request SecretaryReplyRequest) (core.ConversationEntry, bool, error) {
+	if _, err := s.authorize(ctx); err != nil {
+		return core.ConversationEntry{}, false, err
+	}
+	return s.Store.RecordSecretaryAcknowledgement(ctx, s.PersonID, s.Capability, request.SecretaryTurnID, request.InputID, request.Text)
+}
+
 // claimCommand commits the server-side command identity before handoff. The
 // same Worker, Attempt and command kind always reuse one ID. A duplicate
 // pending command is resent only after core atomically reclaims its expired

@@ -252,6 +252,9 @@ func TestPendingCommandOriginJoinsExactResultBeforeReceiptAndFailedDispatchDoesN
 	}
 
 	acceptedOrigin := createOrigin("dispatch worker")
+	if _, _, err := store.RecordSecretaryAcknowledgement(ctx, person.ID, capability, acceptedOrigin.ID, acceptedOrigin.InputID, "Сейчас проверю"); err != nil {
+		t.Fatal(err)
+	}
 	worker, previousAttempt := createWorker("accepted-worker")
 	_, previousResult, _, err := store.RecordAttemptOutcome(ctx, previousAttempt.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "previous turn result"})
 	if err != nil || previousResult == nil {

@@ -14,6 +14,16 @@
 - Addressed reply v1 — additive opt-in contract с отдельной операцией `reply_to_user` и обязательными origin identities для Worker actions. По умолчанию он выключен, сохраняя legacy behavior; внешние Profiles автоматически не переписываются.
 - В первом thin slice есть один configured owner. Позже identities разных Channel adapters связываются с Person через явный account linking.
 
+## Короткое подтверждение перед работой
+
+Legacy Secretary MCP предоставляет `acknowledge_user`: Secretary вызывает его с точной server-issued парой `secretary_turn_id`/`input_id` перед рабочими инструментами. Короткое подтверждение сразу становится canonical Conversation entry; повтор с тем же текстом не создаёт запись, другой текст конфликтует. Это отдельный progress slot, который не удовлетворяет addressed final reply или native completion guard. Addressed-reply-v1 остаётся отдельным opt-in контрактом и не получает этот инструмент.
+
+После подтверждения native assistant stream скрывается, чтобы terminal echo не появлялся повторно. Непустой final, точно совпадающий с подтверждением, не публикуется второй раз. Другой final, например ошибка Dispatch, сохраняется по прежним правилам; suppression связанных Worker Results и addressed replies остаётся в силе. Failed/canceled/interrupted terminal остаётся видимым. Короткое подтверждение не означает успешное выполнение Task.
+
+Web получает canonical entry сразу. Telegram отправляет acknowledgement через обычную durable отправку, не ожидая Secretary terminal; event cursor и send identity защищают replay/restart. Каналы асинхронны: commit подтверждения предшествует следующему рабочему вызову модели, но tool response не ждёт сетевого Telegram receipt. Общий порядок event delivery сохраняется. Task prompt в Telegram topic показывается без добавляемого заголовка; splitting и safe formatting не меняются.
+
+Общие правила краткого результата, сообщения о блокировке и проверки актуальных фактов хранятся во внешнем Worker profile через `profiles.worker`, а не в workspace `AGENTS.md`. Task prompt содержит суть запроса и важные пользовательские ограничения. При deploy нужно обновлять фактически настроенные внешние profile paths; embedded defaults не переписывают установленные profiles.
+
 ## Conversations и доставка сообщений
 
 - Personal Conversation имеет общий порядок entries для подключённых Channel adapters. Server сохраняет каждую Conversation entry один раз и синхронизирует её во все adapters Person.

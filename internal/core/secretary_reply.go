@@ -356,6 +356,18 @@ func (s *Store) RecordAddressedSecretaryTextDelta(ctx context.Context, turnID, i
 // server-issued Secretary turn/input identity. Exact replays return the same
 // Conversation entry without creating another entry or Secretary turn.
 func (s *Store) RecordSecretaryReply(ctx context.Context, personID, capability, secretaryTurnID, inputID, text string) (ConversationEntry, bool, error) {
+	return s.recordSecretaryReply(ctx, personID, capability, secretaryTurnID, inputID, text, false)
+}
+
+func (s *Store) RecordSecretaryAcknowledgement(ctx context.Context, personID, capability, secretaryTurnID, inputID, text string) (ConversationEntry, bool, error) {
+	return s.recordSecretaryReply(ctx, personID, capability, secretaryTurnID, inputID, text, true)
+}
+
+func (s *Store) recordSecretaryReply(ctx context.Context, personID, capability, secretaryTurnID, inputID, text string, acknowledgement bool) (ConversationEntry, bool, error) {
+	table := "secretary_reply_entries"
+	if acknowledgement {
+		table = "secretary_acknowledgements"
+	}
 	personID, capability = strings.TrimSpace(personID), strings.TrimSpace(capability)
 	secretaryTurnID, inputID = strings.TrimSpace(secretaryTurnID), strings.TrimSpace(inputID)
 	text = strings.TrimSpace(text)
@@ -374,7 +386,7 @@ func (s *Store) RecordSecretaryReply(ctx context.Context, personID, capability, 
 			}{}, err
 		}
 		var priorBody, priorEntryID string
-		err = tx.QueryRowContext(ctx, `SELECT body, entry_id FROM secretary_reply_entries WHERE secretary_turn_id = ? AND input_id = ?`, secretaryTurnID, inputID).Scan(&priorBody, &priorEntryID)
+		err = tx.QueryRowContext(ctx, `SELECT body, entry_id FROM `+table+` WHERE secretary_turn_id = ? AND input_id = ?`, secretaryTurnID, inputID).Scan(&priorBody, &priorEntryID)
 		if err == nil {
 			if priorBody != text {
 				return struct {
@@ -400,14 +412,14 @@ func (s *Store) RecordSecretaryReply(ctx context.Context, personID, capability, 
 				duplicate bool
 			}{}, ErrInvalidSecretaryOrigin
 		}
-		entry, err := appendEntryWithIdentity(ctx, tx, s.now(), origin.ConversationID, EntrySecretary, text, "", secretaryTurnID, "")
+		entry, err := appendEntryWithProgress(ctx, tx, s.now(), origin.ConversationID, EntrySecretary, text, "", secretaryTurnID, "", acknowledgement)
 		if err != nil {
 			return struct {
 				entry     ConversationEntry
 				duplicate bool
 			}{}, err
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO secretary_reply_entries(secretary_turn_id, input_id, body, entry_id, created_at) VALUES(?, ?, ?, ?, ?)`, secretaryTurnID, inputID, text, entry.ID, timestamp(entry.CreatedAt)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO `+table+`(secretary_turn_id, input_id, body, entry_id, created_at) VALUES(?, ?, ?, ?, ?)`, secretaryTurnID, inputID, text, entry.ID, timestamp(entry.CreatedAt)); err != nil {
 			return struct {
 				entry     ConversationEntry
 				duplicate bool

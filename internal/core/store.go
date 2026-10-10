@@ -1239,6 +1239,10 @@ func appendEntry(ctx context.Context, tx *sql.Tx, now time.Time, conversationID 
 }
 
 func appendEntryWithIdentity(ctx context.Context, tx *sql.Tx, now time.Time, conversationID string, kind EntryKind, body, workerRef, turnID, resultID string) (ConversationEntry, error) {
+	return appendEntryWithProgress(ctx, tx, now, conversationID, kind, body, workerRef, turnID, resultID, false)
+}
+
+func appendEntryWithProgress(ctx context.Context, tx *sql.Tx, now time.Time, conversationID string, kind EntryKind, body, workerRef, turnID, resultID string, acknowledgement bool) (ConversationEntry, error) {
 	var seq int64
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) + 1 FROM conversation_entries WHERE conversation_id = ?`, conversationID).Scan(&seq); err != nil {
 		return ConversationEntry{}, err
@@ -1247,7 +1251,11 @@ func appendEntryWithIdentity(ctx context.Context, tx *sql.Tx, now time.Time, con
 	if _, err := tx.ExecContext(ctx, `INSERT INTO conversation_entries(id, conversation_id, seq, kind, body, worker_ref, turn_id, result_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, entry.ID, entry.ConversationID, entry.Seq, entry.Kind, entry.Body, entry.WorkerRef, entry.TurnID, entry.ResultID, timestamp(now)); err != nil {
 		return ConversationEntry{}, err
 	}
-	event, err := appendEventTx(ctx, tx, now, EventInput{Kind: "conversation.entry", AggregateType: "conversation", AggregateID: conversationID, Source: "server", CorrelationID: entry.ID, Payload: entry}, entry)
+	payload := struct {
+		ConversationEntry
+		Acknowledgement bool `json:"acknowledgement,omitempty"`
+	}{entry, acknowledgement}
+	event, err := appendEventTx(ctx, tx, now, EventInput{Kind: "conversation.entry", AggregateType: "conversation", AggregateID: conversationID, Source: "server", CorrelationID: entry.ID, Payload: payload}, payload)
 	if err != nil {
 		return ConversationEntry{}, err
 	}

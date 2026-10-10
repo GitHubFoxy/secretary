@@ -153,6 +153,15 @@ func (s *Server) callSecretaryTool(r *http.Request, name string, raw json.RawMes
 			}
 		}
 		return details, nil
+	case "acknowledge_user":
+		if addressedReplyEnabled {
+			return nil, &unknownSecretaryToolError{name: name}
+		}
+		entry, duplicate, err := s.store.RecordSecretaryAcknowledgement(r.Context(), personID, capability, args.SecretaryTurnID, args.InputID, args.Text)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"entry_id": entry.ID, "duplicate": duplicate}, nil
 	case "reply_to_user":
 		if !addressedReplyEnabled {
 			return nil, &unknownSecretaryToolError{name: name}

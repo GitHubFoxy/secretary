@@ -704,8 +704,8 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 					if err == nil {
 						prompt, err = core.SecretaryContextPrompt(canonical, text)
 					}
-					if err == nil && replyContractVersion == core.SecretaryReplyContractAddressedV1 {
-						prompt += fmt.Sprintf("\n\nActive addressed-reply v1 identity (server-issued; use these exact values):\nsecretary_turn_id=%s\ninput_id=%s", turn.ID, turn.InputID)
+					if err == nil {
+						prompt += fmt.Sprintf("\n\nActive reply identity (server-issued; use these exact values):\nsecretary_turn_id=%s\ninput_id=%s", turn.ID, turn.InputID)
 					}
 				}
 			}

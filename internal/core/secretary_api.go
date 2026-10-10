@@ -133,6 +133,13 @@ func (s *Store) RecoverSecretaryTurn(ctx context.Context, identityID, errorMessa
 }
 
 func (s *Store) RecordSecretaryTextDelta(ctx context.Context, turnID, text string) (Event, error) {
+	var acknowledged bool
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM secretary_acknowledgements WHERE secretary_turn_id = ?)`, turnID).Scan(&acknowledged); err != nil {
+		return Event{}, err
+	}
+	if acknowledged {
+		return Event{}, nil
+	}
 	return s.AppendSecretaryEvent(ctx, SecretaryEventInput{TurnID: turnID, Kind: SecretaryTextDeltaEvent, Text: text})
 }
 
