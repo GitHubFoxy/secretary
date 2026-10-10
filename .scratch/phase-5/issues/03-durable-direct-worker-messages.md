@@ -1,7 +1,7 @@
 # 03: общий прямой ввод Worker и durable очередь /q
 
 Type: task
-Status: claimed
+Status: resolved
 Blocked by: None
 
 ## What to build
@@ -14,7 +14,7 @@ Blocked by: None
 - [x] Обычный input working Worker вызывает steering текущей Attempt; unsupported/offline/неизвестное принятие не превращаются в скрытую очередь или automatic retry. Idle обычный input продолжает прежний Worker binding как Follow-up.
 - [x] `/q` создаёт durable Queued message/Future Follow-up, ответ API и оба канала показывают queued. Во время active Attempt runtime не получает queued prompt и новая Attempt не запускается.
 - [x] После terminal Result очередь FIFO создаёт новый Follow-up с новой Attempt и прежней native session; принятие очереди и переход к delivery устойчивы к crash между ними.
-- [ ] Server/Node restart сохраняют очередь и identities, не повторяют неизвестное выполнение или активную Attempt; interrupted Worker сначала восстанавливает прежнюю session по существующему контракту. Если resume невозможно, очередь остаётся видимой с ошибкой.
+- [x] Server/Node restart сохраняют очередь и identities, не повторяют неизвестное выполнение или активную Attempt; interrupted Worker сначала восстанавливает прежнюю session по существующему контракту. Если resume невозможно, очередь остаётся видимой с ошибкой.
 - [x] Повтор HTTP/MCP/Telegram input с той же identity не создаёт вторую queued запись/Attempt; разные inputs с одинаковым текстом остаются разными сообщениями.
 - [x] Task closure не исполняет накопленный queue позже: pending записи завершаются явным отменённым состоянием, история сохраняется. Cancel active Attempt не закрывает Worker binding; доставка queue после terminal учитывает этот state.
 - [x] Pending Approval/input response сохраняет request_id routing; `/q` не становится ответом старому Approval. Никакие прямые Worker inputs не добавляются в model context Secretary.
@@ -53,3 +53,5 @@ Review 2026-10-10: ticket вновь claimed после воспроизведе
 Review fixes завершены: [ответ и проверка](../reports/review-fixes-20261010.md). Общий per-Worker gate сериализует queue handoff и Close; durable cancellation запрещает новый claim после закрытия. Production recovery сохраняет prepared unclaimed intent, а claimed/unknown execution остаётся fail-closed. Cancel ACK не создаёт terminal и не освобождает `/q`; native Result определяет следующую Attempt, Close ждёт terminal с context. Scoped `go test ./...`, `go build ./...` и relevant race packages — PASS (ctl повторён отдельно после timing failure старой Approval fixture под общей нагрузкой). Ticket повторно resolved; live cross-harness/topology и channels gate остаётся незавершённым.
 
 Live 2026-10-10, build `e8de503`: ticket вновь claimed. Две публичные idle `/q` сохранены как pending/unclaimed до аварийного завершения собственного acceptance server. После restart immediate queue pump запускает promotion до переподключения Node: первый input становится blocked с `node server: Node is offline`, второй остаётся pending. Исходная очередь и failed Attempt не повторялись. Требуется проверять фактическую готовность Node до promotion/claim и сохранять pending при известном временном отсутствии соединения; unknown/claimed delivery по-прежнему не повторять автоматически.
+
+Повторно resolved после `89e3135`: [исправление readiness](../reports/queued-node-readiness-fix-20261010.md), независимые проверки [стандартов](../reports/queue-readiness-review-standards-20261010.md) и [спецификации](../reports/queue-readiness-review-spec-20261010.md), [живая матрица](../reports/mac-native-acceptance-20261010.md). Readiness учитывает authenticated connection, persisted Online и draining до pending promotion/prepared claim; постоянные ошибки остаются видимыми, unknown/claimed commands не повторяются. Новый реальный server crash с двумя pending/unclaimed inputs сохранил IDs и доставил их FIFO после reconnect: ровно две новые Attempts/Results, прежняя native session; дополнительный явный Follow-up подтвердил правильный контекст этого Worker. Отдельно реальный active crash дал один interrupted Result без auto execution, явное resume сохранило context/session; missing session fail-closed. Исходный `e8de503` FAIL и оговорка о маркере другого Worker сохранены. Полный integration `go test ./...`, `go build ./...`, relevant race — PASS. Scoped ticket03 закрыт; это не завершает CC/native remote/Telegram gate05.

@@ -28,9 +28,9 @@ Public seams: server HTTP/MCP, native Session, Web rendering и Bot API. Про�
 
 ## Answer
 
-Промежуточная живая приёмка проведена на собственных Mac server/Node runtime. [Отчёт и матрица](../reports/mac-native-acceptance-20261010.md) разделяют реальные PASS, FAIL и ещё не выполненные сценарии. Codex steering во время наблюдаемого sleep, active `/q` FIFO/replay, native MCP/profile/context, idle restart, missing session, Web renderer/observer и восстановление persisted outbox подтверждены на указанных сборках. Новый prepared queue restart FAIL возвращает 03 в claimed и требует ожидания готовности Node до promotion/claim.
+Живая приёмка проведена на собственных Mac server/Node runtime. [Отчёт и матрица](../reports/mac-native-acceptance-20261010.md) разделяют реальные PASS, исходные FAIL и ещё не выполненные сценарии. Codex steering во время наблюдаемого sleep, active `/q` FIFO/replay, native MCP/profile/context, idle restart, active crash без auto execution, missing session, Web renderer/observer и восстановление persisted outbox подтверждены на указанных сборках. Prepared queue restart FAIL исправлен readiness guard; новый реальный сценарий на `89e3135` проходит FIFO после reconnect и сохраняет session/context. Scoped 03 resolved. Проверенный immutable Linux candidate с manifest/SHA256 размещён на omarchy; активное развёртывание не выполнялось.
 
-05 остаётся blocked: 01/02/03/04 не resolved, CC same-Attempt steering и доступ к модели не подтверждены, omarchy Codex auth/readiness и настоящая remote/Telegram матрица не пройдены. Промежуточные Mac PASS, reviews и fixtures не объявляются готовым MVP или активным production deployment.
+05 остаётся blocked: 01/02/04 не resolved, CC same-Attempt steering не подтверждён, свежий native CC probe на финальной сборке возвращает quota403, omarchy Codex auth/readiness и настоящая remote/Telegram матрица не пройдены. Mac PASS, reviews и fixtures не объявляются готовым MVP или активным production deployment. Собственные acceptance Workers закрыты штатным owner API, история и исходные FAIL сохранены; временный 8092 оставлен idle для просмотра, 8091 остановлен и его Node отозван.
 
 ## Comments
 
