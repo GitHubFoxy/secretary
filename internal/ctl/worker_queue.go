@@ -40,6 +40,17 @@ func (s WorkerService) ProcessQueuedWorkerMessages(ctx context.Context) error {
 	return errors.Join(failures...)
 }
 
+func (s WorkerService) queuedWorkerRuntimeUnavailable(ctx context.Context, worker core.Worker) bool {
+	runtime, ok := s.Runtime.(interface {
+		CommandReady(context.Context, core.NodeReference) (bool, error)
+	})
+	if !ok {
+		return false
+	}
+	ready, err := runtime.CommandReady(ctx, core.NodeReference(worker.NodeID))
+	return err == nil && !ready
+}
+
 func (s WorkerService) processQueuedWorker(ctx context.Context, conversationID string, worker core.Worker) error {
 	var failures []error
 	details, err := s.Store.WorkerDetailsForConversation(ctx, conversationID, worker.WorkerRef)
@@ -72,6 +83,9 @@ func (s WorkerService) processQueuedWorker(ctx context.Context, conversationID s
 			} else if found {
 				kind = "resume"
 			}
+		}
+		if message.State == "pending" && s.queuedWorkerRuntimeUnavailable(ctx, worker) {
+			break
 		}
 		turn, attempt, err := s.Store.PromoteQueuedWorkerMessage(ctx, message, kind)
 		if errors.Is(err, core.ErrInvalidTransition) {
@@ -111,6 +125,9 @@ func (s WorkerService) processQueuedWorker(ctx context.Context, conversationID s
 			break
 		}
 		if found && !command.LeaseUntil.IsZero() {
+			break
+		}
+		if s.queuedWorkerRuntimeUnavailable(ctx, worker) {
 			break
 		}
 		err = s.recoverLifecycleCommand(ctx, kind, worker, attempt, func(commandID string) error {
