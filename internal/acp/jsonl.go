@@ -2,6 +2,7 @@ package acp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -294,9 +295,13 @@ func (c *Client) read(stdout io.Reader) {
 	if closer, ok := c.log.(io.Closer); ok {
 		defer closer.Close()
 	}
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		raw := append([]byte(nil), scanner.Bytes()...)
+	reader := bufio.NewReader(stdout)
+	for {
+		raw, _ := reader.ReadBytes('\n')
+		if len(raw) == 0 {
+			break
+		}
+		raw = bytes.TrimSuffix(raw, []byte{'\n'})
 		c.writeRaw("rx", raw)
 		var message Message
 		if json.Unmarshal(raw, &message) != nil {
