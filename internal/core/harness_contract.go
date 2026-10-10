@@ -467,7 +467,11 @@ func (a Activity) ValidatePayload() error {
 
 func (a Activity) validatePayload() error {
 	switch a.Kind {
-	case ActivityKindThinkingSummary, ActivityKindAssistantTextDelta:
+	case ActivityKindAssistantTextDelta:
+		if a.Text == "" {
+			return fmt.Errorf("core: activity %q requires text", a.Kind)
+		}
+	case ActivityKindThinkingSummary:
 		if strings.TrimSpace(a.Text) == "" {
 			return fmt.Errorf("core: activity %q requires text", a.Kind)
 		}
