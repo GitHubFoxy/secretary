@@ -767,7 +767,7 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 	var activity core.Activity
 	switch item.Kind {
 	case ActivityText:
-		if !capabilities.SupportsActivity(core.ActivityAssistantTextDelta) || strings.TrimSpace(item.Text) == "" {
+		if !capabilities.SupportsActivity(core.ActivityAssistantTextDelta) || item.Text == "" {
 			return core.Activity{}, false
 		}
 		activity = core.Activity{Metadata: metadata, Kind: core.ActivityAssistantTextDelta, Text: item.Text}
