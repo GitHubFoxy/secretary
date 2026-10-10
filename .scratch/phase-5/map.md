@@ -8,7 +8,7 @@
 | --- | --- | --- | --- |
 | [01](issues/01-codex-native-round-trip.md) | claimed | None | Codex Secretary → native local/remote Worker → Result и resume |
 | [02](issues/02-claude-interactive-runtime.md) | claimed | None | CC интерактивный runtime, MCP/profile/resume и доказанный steering |
-| [03](issues/03-durable-direct-worker-messages.md) | resolved | None | Web/Telegram direct message и durable `/q` |
+| [03](issues/03-durable-direct-worker-messages.md) | claimed | None | Web/Telegram direct message и durable `/q` |
 | [04](issues/04-readable-unified-chat.md) | claimed | None | Читаемый единый чат, canonical reply и topics без дублей |
 | [05](issues/05-deploy-and-live-acceptance.md) | blocked | 01, 02, 03, 04 | Развёрнутый MVP и реальная матрица приёмки |
 
@@ -39,3 +39,7 @@
 - Scoped integration checks 2026-10-10: `go test ./...`, `go build ./...`, Web tests (14), `npm run build:all` — PASS после `npm ci` по merged lockfile. External ACP и Bot API fixtures не засчитываются как live evidence. Browser visual, real Telegram permissions/routing и deployment matrix ещё не проверены.
 
 - [Review fixes](reports/review-fixes-20261010.md): 03 повторно открыт после Close/startup repro и resolved после исправлений и scoped/race checks. Дополнительно исправлены owner-cookie Node read, Codex writer lifecycle, native dispatch/resume receipts и CC backpressure/cancellation ordering. 01/02/04 остаются claimed, 05 blocked; новый live PASS не объявлен.
+
+- Живая проверка выявила пропущенный production owner route, зависание Claude на дочерних процессах, потерю MCP с пустыми arrays, потерю failed receipt при reconnect, блокировку replay поздней activity, пропуск MCP tool activity и неверную HMAC подпись persisted JSON. Исправления интегрированы до `e8de503`; полный `go test ./...` и `go build ./...` — PASS. Независимые проверки [стандартов](reports/live-fixes-review-standards-20261010.md), [спецификации](reports/live-fixes-review-spec-20261010.md), [wire standards](reports/wire-review-standards-20261010.md) и [wire spec](reports/wire-review-spec-20261010.md) не нашли новых ошибок этих исправлений.
+- Native Mac Codex: same-Attempt steering во время наблюдаемого собственного `sleep`, две `/q` FIFO и idempotent replay, реальный Node-local MCP, прежняя native session и context после idle restart, missing session fail-closed — PASS на явно записанных промежуточных сборках. На `e8de503` прежние семь persisted late frames доставлены штатным replay/ACK, без повторного execution и изменения старой failed queue. Полная restart/observer матрица ещё проверяется; это не закрывает 01/04/05 и CC steering.
+- На `e8de503` реальный MCP tool виден в Activity API и Web observer. Однако idle pending `/q` после аварийного restart блокируется immediate pump до Node reconnect; 03 вновь claimed, критерий restart открыт. История прежних PASS сохранена, новый FAIL не заменён fixture результатом.
