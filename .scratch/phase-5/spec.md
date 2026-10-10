@@ -1,6 +1,6 @@
 # Phase 5: работающий Minimal MVP
 
-Status: ready-for-agent
+Status: resolved
 
 ## Цель и основание
 
@@ -8,7 +8,11 @@ Status: ready-for-agent
 
 Основание: [Minimal MVP](../../spec/THE%20spec.md#minimal-mvp), [словарь](../../GLOSSARY.md), [runtime contracts](../../docs/architecture/runtime-contracts.md), исследования [runtime](../../docs/research/minimal-mvp-runtime-audit.md), [чат](../../docs/research/minimal-mvp-chat-audit.md), [native protocols](../../docs/research/minimal-mvp-native-protocols.md) и [готовность](../../docs/research/minimal-mvp-readiness-20261009.md). Предыдущая [Phase 4](../.archived/phase-4/spec.md) — исторический контекст, а не дополнительные обязательные требования этого gate.
 
-Пять tickets и реализация до работающего MVP одобрены пользователем. Выбор public seams и минимального пути также одобрен; повторное подтверждение разбивки не требуется. Документ не утверждает, что live acceptance уже пройдена.
+Пять tickets и реализация до работающего MVP одобрены пользователем. Выбор public seams и минимального пути также одобрен; повторное подтверждение разбивки не требуется. Текущая Codex live acceptance завершена; результат и границы scope приведены ниже.
+
+### Текущая приёмка: Codex
+
+2026-10-10 пользователь явно поручил отложить Claude Code и довести Codex до работающего Minimal MVP. Текущий gate требует все перечисленные ниже сценарии для Codex Secretary и Codex Workers на local/remote Nodes, включая Web и настоящий Telegram. CC ticket 02 и его native steering отложены; прежние требования к CC сохранены как последующий этап и не считаются выполненными. Успешная текущая приёмка означает Codex MVP, а не доказанную поддержку обоих harness. Авторизация Codex на omarchy восстановлена; развёрнутый путь Secretary/Workers проверяется в gate 05.
 
 ## Сквозное поведение
 
@@ -42,9 +46,13 @@ FX/OpenCode/Pi не требуются для нового default, предла
 
 ## Definition of Done
 
-- [ ] Tickets 01–04 закрыты по своим критериям, scoped checks и сборка проходят.
-- [ ] На реальных enrolled Execution nodes проверены оба harness и обе топологии: local и remote относительно Secretary server. Минимальный доступный setup — Secretary и Codex Worker на omarchy, CC Worker на paired Mac с существующей авторизацией. Каждое сочетание harness × host не является обязательным требованием; credentials между машинами не копируются.
-- [ ] Для обоих harness на авторизованных Nodes доказаны profile delivery, MCP, Result, same-session idle Follow-up, steering в активной Attempt, durable `/q` и restart/resume без незаметной новой identity.
-- [ ] В Web и Telegram проходит одна общая Personal Conversation, canonical Secretary reply, прямой Worker input, readable text/code, отдельные Worker topics и Result без дублей.
-- [ ] Offline/auth/unsupported/empty terminal дают понятные ошибки и не вызывают hidden retry; исторические данные сохранены.
-- [ ] Развёрнутая версия и активные services проверены на работающих hosts; gate 05 содержит реальные свидетельства и PASS. Fixtures не засчитываются как live evidence. Непройденный CC steering оставляет Phase 5 незавершённой.
+- [x] Tickets 01, 03, 04 закрыты по своим критериям; 02 отложен по решению пользователя, scoped checks и сборка проходят.
+- [x] На реальных enrolled Execution nodes проверен Codex и обе топологии: local и remote относительно Secretary server. Минимальный доступный setup — Secretary и Codex Worker на omarchy, Codex Worker на paired Mac с существующей авторизацией. Каждое сочетание harness × host не является обязательным требованием; credentials между машинами не копируются.
+- [x] Для Codex на обоих авторизованных Nodes доказаны profile delivery, MCP, Result, same-session idle Follow-up, steering в активной Attempt, durable `/q` и restart/resume без незаметной новой identity.
+- [x] В Web и Telegram проходит одна общая Personal Conversation, canonical Secretary reply, прямой Worker input, readable text/code, отдельные Worker topics и Result без дублей.
+- [x] Offline/auth/unsupported/empty terminal дают понятные ошибки и не вызывают hidden retry; исторические данные сохранены.
+- [x] Развёрнутая версия и активные services проверены на работающих hosts; gate 05 содержит реальные свидетельства и PASS. Fixtures не засчитываются как live evidence. CC steering не входит в текущий Codex gate и остаётся отдельной незавершённой задачей.
+
+## Результат текущего scope
+
+2026-10-10: Codex Minimal MVP PASS, gate05 resolved. [Матрица](reports/codex-mvp-final-20261010.md). Поддержка Claude Code не объявлена доказанной;02 остаётся отложенным отдельным продолжением.

@@ -13,7 +13,7 @@ Secretary — персональный ассистент, который сох
 
 ## Важная граница
 
-Это описание продуктового обещания; доступность каналов, harnesses и нескольких Execution Nodes зависит от конфигурации и этапа развёртывания. Новая конфигурация по умолчанию использует Codex через `codex-acp` и native model/reasoning `default`; Claude Code выбирается отдельно. Полная live приёмка Minimal MVP ещё не завершена. Первый trusted-local deployment даёт Worker полный доступ в своём окружении и сам по себе не является sandbox или гарантией изоляции.
+Это описание продуктового обещания; доступность каналов, harnesses и нескольких Execution Nodes зависит от конфигурации и этапа развёртывания. Новая конфигурация по умолчанию использует Codex через `codex-acp` и native model/reasoning `default`; Claude Code выбирается отдельно. [Живая приёмка Codex Minimal MVP](.scratch/phase-5/reports/codex-mvp-final-20261010.md) завершена: Web/Telegram, Workers на omarchy и Mac, steering, очередь и resume. Claude Code отложен по решению пользователя; его приёмка не объявлена завершённой. Первый trusted-local deployment даёт Worker полный доступ в своём окружении и сам по себе не является sandbox или гарантией изоляции.
 
 См. [быстрый старт](docs/quickstart.md), [конфигурацию](docs/configuration.md), [словарь домена](GLOSSARY.md), [runtime-контракты](docs/architecture/runtime-contracts.md) и [критерии релизной проверки](docs/phase4-release-gate.md).
 
