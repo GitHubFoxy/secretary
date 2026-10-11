@@ -35,6 +35,8 @@ Blocked by: None
 
 ## Comments
 
+2026-10-11: тайминги установлены на production (`2264962`): download/ASR/formatter/processing в миллисекундах, статус форматтера, приватный журнал и persisted transcript metadata. Ревью и tests/race/build прошли, health ok. Formatter остаётся disabled. Следующий voice даст первые живые измерения; [отчёт](../timing-report.md).
+
 2026-10-11: живой EN voice пользователя №422 (9 секунд) успешно прошёл локальный ASR → Codex formatter → Secretary; formatted использован, один turn succeeded, доставка адаптером завершена. Formatter + передача — 9,421 с, ответ агента — 5,812 с; отдельный ASR-тайминг этого сообщения не сохранён. [Живая проверка](../live-acceptance.md). RU/Worker/show=true live остаются непроверенными, поэтому весь тикет пока не закрыт.
 
 2026-10-11: исправление подписочного форматтера закоммичено (`03ed107`) и установлено на production. Два независимых review без подтверждённых замечаний; полный Go suite/race/build прошли. Реальный RU Go formatter smoke — 9,048 с; после установки EN formatter с окружением работающего сервиса — 7,046 с, success, GPT-6 Luna none через Codex. Health ok, Secretary/Node/Hermes active. API-ключи не требуются. Остаётся voice пользователя в Telegram для приёмки и закрытия тикета. [Актуальный отчёт](../codex-formatter-deployment.md).

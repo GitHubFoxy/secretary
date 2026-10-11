@@ -32,3 +32,11 @@
 Tests проверяют persisted measurement до dispatch, success/failure/disabled/unavailable formatter, zero time невызываемой стадии, privacy и согласованность stored/log values, replay после обычной обработки и restart после неудачной server delivery, старую JSON запись, elapsed error logs и truthful not_run до formatter. Короткие искусственные задержки 2 мс дают измеримые интервалы без узких upper-bound thresholds.
 
 Логи suite: `/tmp/secretary-asr-timing-go-test.txt`, `/tmp/secretary-asr-timing-race-test.txt`. Код заморожен для независимого ревью. Production measurements появятся только после deployment и следующего voice; результаты synthetic tests не выданы за реальные ASR latency.
+
+## Установка родителем
+
+После двух независимых ревью без подтверждённых замечаний код закоммичен: `2264962e05ea21af44043b26f522c83979d59189`. Linux binaries собраны из чистого git archive и установлены на omarchy в `/home/coder/.local/share/secretary/candidates/asr-timing-2264962-20261011`. Manifest и source archive сохранены, SHA проверены после передачи. Backup: `/home/coder/.local/share/secretary/backups/asr-timing-2264962-20261011`.
+
+Перезапущен только Secretary. Health ok, Secretary/Node/Hermes active, выполняется новый binary, две старые расшифровки читаются, pending inputs отсутствуют. TOML, YAML и prompt побайтно совпадают с backup; форматтер остаётся выключенным. CPUQuota=200% сохранён. Для rollback восстановить `active.conf` из backup в ASR systemd drop-in, daemon-reload и restart Secretary; данные автоматически не откатывать.
+
+Смотреть новые измерения: `journalctl --user -u secretaryd.service -g 'telegram voice timing'` на omarchy; сохранённые значения — `transcripts[update_id].timing` в приватном Telegram state. Нужен следующий voice для первой живой записи с таймингами; старым сообщениям значения не приписывались.
