@@ -1,0 +1,19 @@
+package secretary
+
+import ("context"; "path/filepath"; "testing"; "github.com/beruseruko/secretary/internal/core")
+type diagnosisSteerSession struct { *fakeSession; steers chan string }
+func (s *diagnosisSteerSession) Steer(_ context.Context, text string) (bool, error) { s.steers <- text; return true, nil }
+func TestDiagnosisDurableActiveMessageSteers(t *testing.T) {
+ ctx:=context.Background()
+ store,err:=core.Open(ctx,filepath.Join(t.TempDir(),"diagnosis.db"));if err!=nil { t.Fatal(err) };defer store.Close()
+ person,conversation,err:=store.CreatePersonWithConversation(ctx);if err!=nil {t.Fatal(err)}
+ identity,err:=store.EnsureSecretaryIdentity(ctx,person.ID,conversation.ID);if err!=nil {t.Fatal(err)}
+ setRuntimeTestPolicy(t,store)
+ first,err:=store.EnqueueSecretaryTurn(ctx,identity.ID,"screen recording shortcut?");if err!=nil {t.Fatal(err)}
+ if _,err=store.StartSecretaryTurn(ctx,first.ID);err!=nil {t.Fatal(err)}
+ session:=&diagnosisSteerSession{fakeSession:&fakeSession{id:"diagnosis"},steers:make(chan string,1)}
+ runtime:=NewRuntime(nil,"diagnosis-cap");runtime.AttachConversation(store,conversation.ID);runtime.AttachIdentity(identity)
+ runtime.session=session;runtime.busy=true;runtime.activeTurnID=first.ID;runtime.activeInputID=first.InputID
+ if err:=runtime.HandleMessage(ctx,"i meant record a video");err!=nil {t.Fatal(err)}
+ select {case <-session.steers: default: t.Fatal("active durable Secretary queued clarification instead of calling Session.Steer")}
+}

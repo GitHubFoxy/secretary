@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Граница Парето: Топ-3 ультрабыстрых эндпоинта для Secretary</title>
+<style>
+  :root {
+    --bg: var(--background, #0f1117);
+    --fg: var(--foreground, #e5e7eb);
+    --muted-fg: var(--muted-foreground, #9ca3af);
+    --border-c: var(--border, #2d3748);
+    --card-bg: var(--card, #1a202c);
+    --card-fg: var(--card-foreground, #f7fafc);
+    --primary-c: var(--primary, #3b82f6);
+    --accent-c: var(--accent, #10b981);
+    --frontier-c: #f59e0b;
+    --radius-sm: var(--radius, 8px);
+    --font: var(--font-sans, system-ui, -apple-system, sans-serif);
+    --font-m: var(--font-mono, ui-monospace, monospace);
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font);
+    color: var(--fg);
+    background: transparent;
+    -webkit-font-smoothing: antialiased;
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  .container {
+    width: 100%;
+    max-width: 728px;
+    margin: 0 auto;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    border-bottom: 1px solid var(--border-c);
+    padding-bottom: 8px;
+  }
+
+  .title-group h2 {
+    margin: 0 0 2px 0;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--fg);
+    letter-spacing: -0.01em;
+  }
+
+  .title-group p {
+    margin: 0;
+    font-size: 12px;
+    color: var(--muted-fg);
+  }
+
+  .badge-source {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--frontier-c);
+    background: rgba(245, 158, 11, 0.12);
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+  }
+
+  .chart-wrapper {
+    background: var(--card-bg);
+    border: 1px solid var(--border-c);
+    border-radius: var(--radius-sm);
+    padding: 16px 14px 10px 14px;
+    position: relative;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  }
+
+  svg {
+    width: 100%;
+    height: 260px;
+    display: block;
+    overflow: visible;
+  }
+
+  .axis-line {
+    stroke: var(--border-c);
+    stroke-width: 1;
+  }
+
+  .grid-line {
+    stroke: var(--border-c);
+    stroke-width: 0.8;
+    stroke-dasharray: 3 3;
+    opacity: 0.5;
+  }
+
+  .axis-label {
+    fill: var(--muted-fg);
+    font-size: 10.5px;
+    font-family: var(--font);
+  }
+
+  .axis-title {
+    fill: var(--fg);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .frontier-path {
+    fill: none;
+    stroke: var(--frontier-c);
+    stroke-width: 2.2;
+    stroke-dasharray: 4 3;
+  }
+
+  .frontier-area {
+    fill: rgba(245, 158, 11, 0.08);
+  }
+
+  .node-point {
+    cursor: pointer;
+    transition: transform 0.15s ease, r 0.15s ease;
+  }
+
+  .node-point:hover {
+    r: 7;
+  }
+
+  .node-label {
+    font-size: 10px;
+    font-family: var(--font);
+    font-weight: 500;
+    pointer-events: none;
+  }
+
+  .tooltip {
+    position: absolute;
+    background: #111827;
+    border: 1px solid #374151;
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 11px;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.12s ease;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+    z-index: 10;
+    min-width: 200px;
+  }
+
+  .tooltip-title {
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 4px;
+    border-bottom: 1px solid #374151;
+    padding-bottom: 3px;
+  }
+
+  .tooltip-row {
+    display: flex;
+    justify-content: space-between;
+    margin: 2px 0;
+    color: #9ca3af;
+  }
+
+  .tooltip-row span:last-child {
+    font-weight: 500;
+    color: #e5e7eb;
+    font-family: var(--font-m);
+  }
+
+  .table-card {
+    background: var(--card-bg);
+    border: 1px solid var(--border-c);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 11px;
+    text-align: left;
+  }
+
+  th {
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--muted-fg);
+    font-weight: 600;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border-c);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+
+  td {
+    padding: 8px 10px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  }
+
+  tr:last-child td {
+    border-bottom: none;
+  }
+
+  tr.frontier-row {
+    background: rgba(245, 158, 11, 0.04);
+  }
+
+  .mono {
+    font-family: var(--font-m);
+  }
+
+  .tag-frontier {
+    display: inline-block;
+    padding: 1px 5px;
+    border-radius: 4px;
+    font-size: 9.5px;
+    font-weight: 500;
+    background: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+    border: 1px solid rgba(245, 158, 11, 0.3);
+  }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <div class="header">
+    <div class="title-group">
+      <h2>Топ-3 эндпоинта для Secretary (Inco & LithosAI)</h2>
+      <p>Сравнение скорости (ток/с), задержки TTFT и интеллекта</p>
+    </div>
+    <div class="badge-source">
+      <svg width="8" height="8" viewBox="0 0 8 8"><circle cx="4" cy="4" r="3" fill="#f59e0b"/></svg>
+      Финалисты
+    </div>
+  </div>
+
+  <div class="chart-wrapper">
+    <div id="tooltip" class="tooltip"></div>
+    <svg id="paretoChart" viewBox="0 0 680 260">
+      <g id="grid"></g>
+      <path id="frontierArea" class="frontier-area"></path>
+      <path id="frontierLine" class="frontier-path"></path>
+      <g id="points"></g>
+      <g id="axes"></g>
+    </svg>
+  </div>
+
+  <div class="table-card">
+    <table>
+      <thead>
+        <tr>
+          <th>Модель</th>
+          <th>Провайдер</th>
+          <th>Скорость (т/с)</th>
+          <th>TTFT (задержка)</th>
+          <th>Интеллект</th>
+          <th>Цена / Задачу</th>
+          <th>Оценка</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr class="frontier-row">
+          <td><strong>GLM-5.3-Flash (FP4 ULTRA CHAT)</strong></td>
+          <td>LithosAI</td>
+          <td class="mono"><strong>1 007</strong></td>
+          <td class="mono"><strong>0.43s</strong></td>
+          <td class="mono"><strong>42</strong></td>
+          <td class="mono">$0.56</td>
+          <td><span class="tag-frontier">Идеал для чата</span></td>
+        </tr>
+        <tr class="frontier-row">
+          <td><strong>DeepSeek V4.1 Flash (FAST)</strong></td>
+          <td>Inco</td>
+          <td class="mono">997</td>
+          <td class="mono">1.44s</td>
+          <td class="mono">39</td>
+          <td class="mono">$0.49</td>
+          <td><span class="tag-frontier">Пик скорости DeepSeek</span></td>
+        </tr>
+        <tr class="frontier-row">
+          <td><strong>DeepSeek V4.1 Flash (ULTRA CHAT)</strong></td>
+          <td>LithosAI</td>
+          <td class="mono">969</td>
+          <td class="mono">0.67s</td>
+          <td class="mono">39</td>
+          <td class="mono"><strong>$0.38</strong></td>
+          <td><span class="tag-frontier">Лучшая цена/отклик</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  const data = [
+    {
+      id: "deepseek-ultra",
+      name: "DeepSeek V4.1 Flash (ULTRA CHAT)",
+      provider: "LithosAI",
+      speed: 969,
+      intel: 39,
+      ttft: "0.67s",
+      cost: "$0.38",
+      labelPos: { dx: -190, dy: -12 }
+    },
+    {
+      id: "deepseek-inco",
+      name: "DeepSeek V4.1 Flash (FAST)",
+      provider: "Inco",
+      speed: 997,
+      intel: 39,
+      ttft: "1.44s",
+      cost: "$0.49",
+      labelPos: { dx: -70, dy: 18 }
+    },
+    {
+      id: "glm53-ultra",
+      name: "GLM-5.3-Flash (ULTRA CHAT)",
+      provider: "LithosAI",
+      speed: 1007,
+      intel: 42,
+      ttft: "0.43s",
+      cost: "$0.56",
+      labelPos: { dx: -170, dy: -14 }
+    }
+  ];
+
+  const W = 680, H = 260;
+  const pad = { left: 50, right: 40, top: 25, bottom: 40 };
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+
+  function scaleX(speed) {
+    const minS = 950, maxS = 1020;
+    return pad.left + ((speed - minS) / (maxS - minS)) * plotW;
+  }
+
+  function scaleY(intel) {
+    const minI = 37, maxI = 43;
+    return pad.top + plotH - (((intel - minI) / (maxI - minI)) * plotH);
+  }
+
+  const gridEl = document.getElementById("grid");
+  const axesEl = document.getElementById("axes");
+
+  const xTicks = [950, 970, 990, 1000, 1010, 1020];
+  xTicks.forEach(val => {
+    const x = scaleX(val);
+    gridEl.innerHTML += `<line x1="${x}" y1="${pad.top}" x2="${x}" y2="${pad.top + plotH}" class="grid-line" />`;
+    axesEl.innerHTML += `<text x="${x}" y="${pad.top + plotH + 16}" text-anchor="middle" class="axis-label">${val}</text>`;
+  });
+
+  const yTicks = [38, 39, 40, 41, 42, 43];
+  yTicks.forEach(val => {
+    const y = scaleY(val);
+    gridEl.innerHTML += `<line x1="${pad.left}" y1="${y}" x2="${pad.left + plotW}" y2="${y}" class="grid-line" />`;
+    axesEl.innerHTML += `<text x="${pad.left - 8}" y="${y + 3.5}" text-anchor="end" class="axis-label">${val}</text>`;
+  });
+
+  axesEl.innerHTML += `
+    <line x1="${pad.left}" y1="${pad.top + plotH}" x2="${pad.left + plotW}" y2="${pad.top + plotH}" class="axis-line" />
+    <line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${pad.top + plotH}" class="axis-line" />
+    <text x="${pad.left + plotW}" y="${pad.top + plotH + 34}" text-anchor="end" class="axis-title">Скорость (Токенов / сек) →</text>
+    <text x="${pad.left}" y="${pad.top - 10}" text-anchor="start" class="axis-title">↑ Индекс интеллекта</text>
+  `;
+
+  // Draw frontier line through the points
+  const p1 = data[0]; // 969, 39
+  const p2 = data[1]; // 997, 39
+  const p3 = data[2]; // 1007, 42
+
+  const x1 = scaleX(p1.speed), y1 = scaleY(p1.intel);
+  const x2 = scaleX(p2.speed), y2 = scaleY(p2.intel);
+  const x3 = scaleX(p3.speed), y3 = scaleY(p3.intel);
+
+  const pathD = `M ${x1} ${y1} L ${x2} ${y2} L ${x3} ${y3}`;
+  document.getElementById("frontierLine").setAttribute("d", pathD);
+
+  const areaD = `${pathD} L ${scaleX(1020)} ${y3} L ${scaleX(1020)} ${pad.top + plotH} L ${x1} ${pad.top + plotH} Z`;
+  document.getElementById("frontierArea").setAttribute("d", areaD);
+
+  const pointsEl = document.getElementById("points");
+  const tooltip = document.getElementById("tooltip");
+
+  data.forEach(d => {
+    const cx = scaleX(d.speed);
+    const cy = scaleY(d.intel);
+
+    const g = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    g.innerHTML = `
+      <circle cx="${cx}" cy="${cy}" r="6" fill="#f59e0b" stroke="#111827" stroke-width="2" class="node-point" />
+      <text x="${cx + d.labelPos.dx}" y="${cy + d.labelPos.dy}" fill="#f3f4f6" class="node-label">
+        ${d.name} (${d.speed} т/с)
+      </text>
+    `;
+
+    g.addEventListener("mouseenter", (e) => {
+      tooltip.innerHTML = `
+        <div class="tooltip-title">${d.name}</div>
+        <div class="tooltip-row"><span>Провайдер:</span><span>${d.provider}</span></div>
+        <div class="tooltip-row"><span>Скорость:</span><span>${d.speed} ток/с</span></div>
+        <div class="tooltip-row"><span>TTFT (задержка):</span><span>${d.ttft}</span></div>
+        <div class="tooltip-row"><span>Интеллект:</span><span>${d.intel}</span></div>
+        <div class="tooltip-row"><span>Цена за задачу:</span><span>${d.cost}</span></div>
+      `;
+      tooltip.style.opacity = "1";
+      const rect = document.querySelector(".chart-wrapper").getBoundingClientRect();
+      let left = e.clientX - rect.left + 12;
+      let top = e.clientY - rect.top - 20;
+      if (left + 210 > rect.width) left -= 220;
+      tooltip.style.left = left + "px";
+      tooltip.style.top = top + "px";
+    });
+
+    g.addEventListener("mousemove", (e) => {
+      const rect = document.querySelector(".chart-wrapper").getBoundingClientRect();
+      let left = e.clientX - rect.left + 12;
+      let top = e.clientY - rect.top - 20;
+      if (left + 210 > rect.width) left -= 220;
+      tooltip.style.left = left + "px";
+      tooltip.style.top = top + "px";
+    });
+
+    g.addEventListener("mouseleave", () => {
+      tooltip.style.opacity = "0";
+    });
+
+    pointsEl.appendChild(g);
+  });
+</script>
+
+</body>
+</html>

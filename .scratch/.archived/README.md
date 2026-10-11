@@ -1,12 +1,10 @@
 # Архив прежних фаз Secretary
 
-Phase 1–4 перенесены сюда 9 октября 2026 года при переходе к Phase 5 Minimal MVP. Это история решений, спецификаций, задач и проверок; её заменяет новый активный план Phase 5.
+Phase 1–4 заархивированы сюда 9 октября 2026 года при переходе к новому активному плану Phase 5 Minimal MVP. Все детальные каталоги фаз, тикеты и промежуточные отчёты были консолидированы в итоговые исторические документы (summary) для каждой фазы:
 
-Архивирование не означает завершение задач: исходные `Status:`, комментарии, FAIL, BLOCKED и NOT RUN сохранены. Невыполненные acceptance checks не объявлены успешными. Материалы можно использовать как исторические свидетельства, но не как текущий список обязательств.
+- [Phase 1: Описание удалённого Pi source snapshot](phase-1-summary.md) — Происхождение проекта из форка Pi, экспериментальный remote worker runtime, клиентское приложение и удаление исходного TS monorepo.
+- [Phase 2: Архитектура независимого Secretary и первый Thin Vertical Slice](phase-2-summary.md) — Формирование независимого Go-сервера на SQLite, одна Personal Conversation, контракт ноды и рантайма Codex ACP, CLI `secretaryctl` и первый сквозной Web-срез.
+- [Phase 3: Полировка Local-First Secretary, профили и multi-harness поддержка](phase-3-summary.md) — Единый CLI `secretary` с launchd, мобильный User UI и Control Room на Svelte + Tailwind, внешние Markdown-профили, дерево дочерних воркеров (`spawn_subagent`), адаптеры OpenCode, Codex и fx.
+- [Phase 4: Распределенный Secretary между машинами](phase-4-summary.md) — Переход к модели «Worker-First» (отказ от Task), распределенные ноды исполнения, Telegram Topics адаптер, OpenCode v2 по умолчанию, Addressed Reply v1, диагностика инцидентов и причины перехода к Phase 5 Minimal MVP.
 
-- [Phase 1: описание удалённого snapshot](phase-1-summary.md).
-- [Phase 2: спецификация](phase-2/spec.md) и [карта](phase-2/map.md).
-- [Phase 3: карта](phase-3-polishing/map.md) и задачи в `phase-3-polishing/issues/`.
-- [Phase 4: спецификация](phase-4/spec.md), [карта](phase-4/map.md), задачи, отчёты и неизменённые GitHub API snapshots.
-
-Сохранена прежняя структура внутри каждой фазы. Локальные ссылки и repo-root references обновлены для нового расположения; оригинальные GitHub snapshots сохранены побайтно.
+Архивирование фиксирует исторический путь развития, принятые решения, архитектурные ограничения и результаты проверок. Исходная история разработки сохранена в Git history.
