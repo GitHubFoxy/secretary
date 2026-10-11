@@ -23,6 +23,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/beruseruko/secretary/internal/config"
 	"github.com/rivo/uniseg"
 )
 
@@ -32,8 +33,9 @@ var (
 )
 
 type Update struct {
-	ID      int64    `json:"update_id"`
-	Message *Message `json:"message,omitempty"`
+	ID              int64    `json:"update_id"`
+	WorkerRequestID *string  `json:"worker_request_id,omitempty"`
+	Message         *Message `json:"message,omitempty"`
 }
 
 type Message struct {
@@ -42,16 +44,18 @@ type Message struct {
 	MessageID int64  `json:"message_id"`
 	ThreadID  int64  `json:"message_thread_id,omitempty"`
 	Text      string `json:"text,omitempty"`
+	Voice     *Voice `json:"voice,omitempty"`
 }
 
 type OutgoingMessage struct {
-	ChatID         int64
-	ThreadID       int64
-	Text           string
-	Identity       string `json:"identity,omitempty"`
-	DeliveredBytes int    `json:"delivered_bytes,omitempty"`
-	ParseMode      string `json:"parse_mode,omitempty"`
-	PlainFallback  bool   `json:"plain_fallback,omitempty"`
+	ChatID           int64
+	ThreadID         int64
+	Text             string
+	ReplyToMessageID int64  `json:"reply_to_message_id,omitempty"`
+	Identity         string `json:"identity,omitempty"`
+	DeliveredBytes   int    `json:"delivered_bytes,omitempty"`
+	ParseMode        string `json:"parse_mode,omitempty"`
+	PlainFallback    bool   `json:"plain_fallback,omitempty"`
 }
 
 type SentMessage struct{ OutgoingMessage }
@@ -98,6 +102,10 @@ type Config struct {
 	BotUsername    string
 	TitleGenerator func(context.Context, string) (string, error)
 	TitleTimeout   time.Duration
+	ASR            config.ASRConfig
+	ASRPrompt      string
+	ASRTranscriber ASRTranscriber
+	Formatter      TextFormatter
 }
 
 type Pairing struct {
@@ -136,27 +144,29 @@ type TopicMapping struct {
 }
 
 type persistedState struct {
-	Version               int                      `json:"version"`
-	OwnerChat             int64                    `json:"owner_chat_id"`
-	OwnerUser             int64                    `json:"owner_user_id,omitempty"`
-	Offset                int64                    `json:"offset"`
-	LastEventSeq          int64                    `json:"last_event_seq"`
-	Processed             map[string]time.Time     `json:"processed_updates"`
-	Topics                map[string]TopicMapping  `json:"topics"`
-	Pairings              map[string]pairingRecord `json:"pairings"`
-	Outbox                []OutgoingMessage        `json:"outbox,omitempty"`
-	PendingSecretaryText  string                   `json:"pending_secretary_text,omitempty"`
-	PendingSecretaryTools []string                 `json:"pending_secretary_tools,omitempty"`
-	PendingEventSeqs      []int64                  `json:"pending_event_seqs,omitempty"`
-	SecretaryReady        bool                     `json:"secretary_ready,omitempty"`
-	SecretaryDelegated    bool                     `json:"secretary_delegated,omitempty"`
-	TerminalNotified      map[string]time.Time     `json:"terminal_notified,omitempty"`
-	RequestNotified       map[string]time.Time     `json:"request_notified,omitempty"`
-	InboundNotified       map[string]time.Time     `json:"inbound_notified,omitempty"`
-	PreviousOwnerBound    bool                     `json:"previous_owner_bound,omitempty"`
-	ReboundAt             time.Time                `json:"rebound_at,omitempty"`
-	RebindReason          string                   `json:"rebind_reason,omitempty"`
-	RebindWatermark       int64                    `json:"rebind_watermark,omitempty"`
+	Version               int                        `json:"version"`
+	OwnerChat             int64                      `json:"owner_chat_id"`
+	OwnerUser             int64                      `json:"owner_user_id,omitempty"`
+	Offset                int64                      `json:"offset"`
+	LastEventSeq          int64                      `json:"last_event_seq"`
+	Processed             map[string]time.Time       `json:"processed_updates"`
+	Topics                map[string]TopicMapping    `json:"topics"`
+	Pairings              map[string]pairingRecord   `json:"pairings"`
+	Outbox                []OutgoingMessage          `json:"outbox,omitempty"`
+	PendingSecretaryText  string                     `json:"pending_secretary_text,omitempty"`
+	PendingSecretaryTools []string                   `json:"pending_secretary_tools,omitempty"`
+	PendingEventSeqs      []int64                    `json:"pending_event_seqs,omitempty"`
+	SecretaryReady        bool                       `json:"secretary_ready,omitempty"`
+	SecretaryDelegated    bool                       `json:"secretary_delegated,omitempty"`
+	TerminalNotified      map[string]time.Time       `json:"terminal_notified,omitempty"`
+	RequestNotified       map[string]time.Time       `json:"request_notified,omitempty"`
+	InboundNotified       map[string]time.Time       `json:"inbound_notified,omitempty"`
+	PreviousOwnerBound    bool                       `json:"previous_owner_bound,omitempty"`
+	ReboundAt             time.Time                  `json:"rebound_at,omitempty"`
+	RebindReason          string                     `json:"rebind_reason,omitempty"`
+	RebindWatermark       int64                      `json:"rebind_watermark,omitempty"`
+	PendingInputs         []Update                   `json:"pending_inputs,omitempty"`
+	Transcripts           map[string]VoiceTranscript `json:"transcripts,omitempty"`
 }
 
 type pairingRecord struct {
@@ -182,17 +192,24 @@ type Adapter struct {
 	transport Transport
 	server    ServerClient
 	config    Config
+	asr       ASRTranscriber
+	formatter TextFormatter
 
-	mu         sync.Mutex
-	topicMu    sync.Mutex
-	flushMu    sync.Mutex
-	typingMu   sync.Mutex
-	state      persistedState
-	pending    pendingBatch
-	lastTyping map[string]time.Time
-	claims     map[int64]*updateClaim
-	flushTimer *time.Timer
-	now        func() time.Time
+	mu           sync.Mutex
+	topicMu      sync.Mutex
+	flushMu      sync.Mutex
+	typingMu     sync.Mutex
+	state        persistedState
+	pending      pendingBatch
+	lastTyping   map[string]time.Time
+	outboxMu     sync.Mutex
+	inputWG      sync.WaitGroup
+	inputMu      sync.Mutex
+	inputLanes   map[string]*sync.Mutex
+	inputWorkers map[string]bool
+	claims       map[int64]*updateClaim
+	flushTimer   *time.Timer
+	now          func() time.Time
 }
 
 func New(config Config, transport Transport, server ServerClient) (*Adapter, error) {
@@ -212,10 +229,49 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 		config.TitleTimeout = 5 * time.Second
 	}
 	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), now: func() time.Time { return time.Now().UTC() }}
-	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, Outbox: []OutgoingMessage{}}
+	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}}
 	if err := adapter.load(); err != nil {
 		return nil, err
 	}
+	asr := config.ASRTranscriber
+	if asr == nil && config.ASR.Mode == "local" {
+		nemo := NewNemoASR(config.ASR.Engine, config.ASR.Model, time.Duration(config.ASR.TimeoutSeconds)*time.Second)
+		if err := nemo.Validate(); err != nil {
+			return nil, err
+		}
+		if config.ASR.MaxAudioSeconds > 0 {
+			nemo.MaxAudioSeconds = config.ASR.MaxAudioSeconds
+		}
+		nemo.TempRoot = filepath.Join(filepath.Dir(config.StatePath), "asr-tmp")
+		if err := os.MkdirAll(nemo.TempRoot, 0700); err != nil {
+			return nil, err
+		}
+		entries, err := os.ReadDir(nemo.TempRoot)
+		if err != nil {
+			return nil, err
+		}
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), "secretary-asr-") {
+				if err := os.RemoveAll(filepath.Join(nemo.TempRoot, entry.Name())); err != nil {
+					return nil, err
+				}
+			}
+		}
+		asr = nemo
+	}
+	formatter := config.Formatter
+	if formatter == nil && config.ASR.Formatter.Enabled {
+		formatter = &OpenAIFormatter{
+			Enabled:   config.ASR.Formatter.Enabled,
+			Model:     config.ASR.Formatter.Model,
+			Reasoning: config.ASR.Formatter.Reasoning,
+			Prompt:    config.ASRPrompt,
+			APIKeyEnv: config.ASR.Formatter.APIKeyEnv,
+			Timeout:   time.Duration(config.ASR.Formatter.TimeoutSeconds) * time.Second,
+		}
+	}
+	adapter.asr = asr
+	adapter.formatter = formatter
 	if config.OwnerChatID != 0 && adapter.state.OwnerChat != 0 && config.OwnerChatID != adapter.state.OwnerChat {
 		return nil, errors.New("telegram: configured owner does not match durable allowlist")
 	}
@@ -261,6 +317,9 @@ func (a *Adapter) load() error {
 	}
 	if a.state.InboundNotified == nil {
 		a.state.InboundNotified = map[string]time.Time{}
+	}
+	if a.state.Transcripts == nil {
+		a.state.Transcripts = map[string]VoiceTranscript{}
 	}
 	return nil
 }
@@ -354,6 +413,8 @@ func Rebind(statePath string, configOwner int64, reason string, watermark int64)
 	state.Topics = map[string]TopicMapping{}
 	state.Pairings = map[string]pairingRecord{}
 	state.Outbox = nil
+	state.PendingInputs = nil
+	state.Transcripts = nil
 	state.PendingSecretaryText = ""
 	state.PendingSecretaryTools = nil
 	state.PendingEventSeqs = nil
@@ -472,7 +533,7 @@ func (a *Adapter) senderAllowed(fromID int64) bool {
 	return fromID == a.state.OwnerChat
 }
 
-func (a *Adapter) HandleUpdate(ctx context.Context, update Update) error {
+func (a *Adapter) processUpdate(ctx context.Context, update Update) error {
 	if update.ID <= 0 || update.Message == nil {
 		return nil
 	}
@@ -516,6 +577,16 @@ func (a *Adapter) HandleUpdate(ctx context.Context, update Update) error {
 }
 
 func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool) error {
+	if update.Message == nil {
+		return nil
+	}
+	if update.Message.Voice != nil {
+		return a.deliverVoiceUpdate(ctx, update, allowed)
+	}
+	return a.deliverTextUpdate(ctx, update, allowed, nil)
+}
+
+func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed bool, requestOverride *string) error {
 	text := strings.TrimSpace(update.Message.Text)
 	if strings.HasPrefix(text, "/start ") {
 		// Possession of the short-lived deep-link code is the explicit owner
@@ -538,6 +609,15 @@ func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool
 				return nil
 			}
 		} else {
+			if requestOverride != nil {
+				mapping.PendingRequestID = *requestOverride
+			} else {
+				requestID, err := a.bindWorkerRequest(update.ID, mapping.PendingRequestID)
+				if err != nil {
+					return err
+				}
+				mapping.PendingRequestID = requestID
+			}
 			err := a.server.SendWorkerMessage(ctx, WorkerMessage{WorkerRef: mapping.WorkerRef, ExternalMessageID: externalID, RequestID: mapping.PendingRequestID, Text: text})
 			if err == nil {
 				a.reactToMessage(ctx, update.Message)
@@ -545,7 +625,7 @@ func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool
 			}
 			if err == nil && mapping.PendingRequestID != "" {
 				a.mu.Lock()
-				if current, exists := a.state.Topics[mapping.WorkerRef]; exists && current.ThreadID == mapping.ThreadID {
+				if current, exists := a.state.Topics[mapping.WorkerRef]; exists && current.ThreadID == mapping.ThreadID && current.PendingRequestID == mapping.PendingRequestID {
 					current.PendingRequestID = ""
 					a.state.Topics[mapping.WorkerRef] = current
 					_ = a.saveLocked()
@@ -608,31 +688,14 @@ func (a *Adapter) sendTyping(chatID, threadID int64) {
 }
 
 func (a *Adapter) PollOnce(ctx context.Context) error {
-	a.mu.Lock()
-	offset := a.state.Offset + 1
-	a.mu.Unlock()
-	updates, err := a.transport.GetUpdates(ctx, offset, a.config.PollInterval)
-	if err != nil {
+	if err := a.pollInputs(ctx); err != nil {
 		return err
 	}
-	for _, update := range updates {
-		if err := a.HandleUpdate(ctx, update); err != nil && !errors.Is(err, ErrUnauthorized) && !errors.Is(err, ErrPairingUsed) {
-			return err
-		}
-		a.mu.Lock()
-		if update.ID > a.state.Offset {
-			a.state.Offset = update.ID
-		}
-		err = a.saveLocked()
-		a.mu.Unlock()
-		if err != nil {
-			return err
-		}
-	}
-	return a.Flush(ctx)
+	return a.drainInputs(ctx)
 }
 
 func (a *Adapter) Run(ctx context.Context) error {
+	defer a.inputWG.Wait()
 	backoff := 100 * time.Millisecond
 	maxBackoff := a.config.PollInterval
 	if maxBackoff < backoff {
@@ -642,7 +705,11 @@ func (a *Adapter) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		err := a.PollOnce(ctx)
+		err := a.pollInputs(ctx)
+		a.startInputWorkers(ctx)
+		if err == nil {
+			err = a.Flush(ctx)
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
@@ -1168,6 +1235,8 @@ func (a *Adapter) sendMessage(ctx context.Context, message OutgoingMessage) erro
 }
 
 func (a *Adapter) drainOutbox(ctx context.Context) error {
+	a.outboxMu.Lock()
+	defer a.outboxMu.Unlock()
 	a.mu.Lock()
 	outbox := append([]OutgoingMessage(nil), a.state.Outbox...)
 	a.mu.Unlock()

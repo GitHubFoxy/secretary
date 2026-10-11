@@ -26,6 +26,9 @@ func Open(path string) (*Manager, error) {
 	if err := ensureDefaultTitlePrompt(filepath.Dir(path)); err != nil {
 		return nil, err
 	}
+	if err := ensureDefaultFormatterPrompt(filepath.Dir(path)); err != nil {
+		return nil, err
+	}
 	snapshot, err := Load(path)
 	if err != nil {
 		return nil, err

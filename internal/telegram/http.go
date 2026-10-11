@@ -92,6 +92,21 @@ type botUpdateDTO struct {
 	Message *botMessageDTO `json:"message,omitempty"`
 }
 
+type botVoiceDTO struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Duration     int    `json:"duration"`
+	MimeType     string `json:"mime_type,omitempty"`
+	FileSize     int64  `json:"file_size,omitempty"`
+}
+
+type TelegramFile struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileSize     int64  `json:"file_size"`
+	FilePath     string `json:"file_path"`
+}
+
 type botMessageDTO struct {
 	MessageID int64 `json:"message_id,omitempty"`
 	From      *struct {
@@ -100,8 +115,9 @@ type botMessageDTO struct {
 	Chat *struct {
 		ID int64 `json:"id"`
 	} `json:"chat,omitempty"`
-	ThreadID int64  `json:"message_thread_id,omitempty"`
-	Text     string `json:"text,omitempty"`
+	ThreadID int64        `json:"message_thread_id,omitempty"`
+	Text     string       `json:"text,omitempty"`
+	Voice    *botVoiceDTO `json:"voice,omitempty"`
 }
 
 func (dto botUpdateDTO) update() Update {
@@ -115,6 +131,15 @@ func (dto botUpdateDTO) update() Update {
 	}
 	if dto.Message.From != nil {
 		message.FromID = dto.Message.From.ID
+	}
+	if dto.Message.Voice != nil {
+		message.Voice = &Voice{
+			FileID:       dto.Message.Voice.FileID,
+			FileUniqueID: dto.Message.Voice.FileUniqueID,
+			Duration:     dto.Message.Voice.Duration,
+			MimeType:     dto.Message.Voice.MimeType,
+			FileSize:     dto.Message.Voice.FileSize,
+		}
 	}
 	update.Message = message
 	return update
@@ -146,6 +171,9 @@ func (t *BotAPITransport) GetUpdates(ctx context.Context, offset int64, timeout 
 
 func (t *BotAPITransport) SendMessage(ctx context.Context, message OutgoingMessage) error {
 	values := url.Values{"chat_id": {strconv.FormatInt(message.ChatID, 10)}, "text": {message.Text}}
+	if message.ReplyToMessageID != 0 {
+		values.Set("reply_parameters", fmt.Sprintf(`{"message_id":%d,"allow_sending_without_reply":true}`, message.ReplyToMessageID))
+	}
 	if message.ParseMode != "" {
 		values.Set("parse_mode", message.ParseMode)
 	}
@@ -189,6 +217,56 @@ func (t *BotAPITransport) CreateForumTopic(ctx context.Context, chatID int64, na
 		return ForumTopic{}, err
 	}
 	return ForumTopic{ChatID: chatID, ThreadID: result.MessageThreadID, Name: result.Name}, nil
+}
+
+func (t *BotAPITransport) GetFile(ctx context.Context, fileID string) (TelegramFile, error) {
+	if strings.TrimSpace(fileID) == "" {
+		return TelegramFile{}, errors.New("telegram: file_id is required")
+	}
+	values := url.Values{"file_id": {fileID}}
+	var file TelegramFile
+	if err := t.call(ctx, "getFile", values, &file); err != nil {
+		return TelegramFile{}, err
+	}
+	return file, nil
+}
+
+func (t *BotAPITransport) DownloadFile(ctx context.Context, filePath string, maxBytes int64) ([]byte, error) {
+	if strings.TrimSpace(t.BotToken) == "" {
+		return nil, errors.New("telegram: bot token is required")
+	}
+	if strings.TrimSpace(filePath) == "" {
+		return nil, errors.New("telegram: file_path is required")
+	}
+	base := strings.TrimRight(t.BaseURL, "/")
+	if base == "" {
+		base = "https://api.telegram.org"
+	}
+	endpoint := base + "/file/bot" + t.BotToken + "/" + strings.TrimLeft(filePath, "/")
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := t.client().Do(request)
+	if err != nil {
+		return nil, errors.New("telegram: file download request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("telegram: file download failed with status %d", response.StatusCode)
+	}
+	limit := maxBytes
+	if limit <= 0 {
+		limit = 10 * 1024 * 1024
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil {
+		return nil, fmt.Errorf("telegram: read downloaded file: %w", err)
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("telegram: file exceeds maximum size (%d bytes)", limit)
+	}
+	return data, nil
 }
 
 // HTTPServerClient speaks only the public Client API. It cannot call the Node

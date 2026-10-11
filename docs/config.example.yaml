@@ -1,0 +1,19 @@
+# ASR
+asr:
+  mode: local
+  show_asr_in_chat: false
+  engine: nemo-speech
+  model: /path/to/parakeet-tdt-0.6b-v3.q8_0.gguf
+  max_audio_seconds: 120
+  max_file_bytes: 10000000
+  timeout_seconds: 90
+
+  formatter:
+    enabled: true
+    mode: online
+    provider: openai
+    api_key_env: OPENAI_API_KEY
+    model: gpt-6-luna
+    reasoning: none
+    timeout_seconds: 20
+    prompt: formatter.md

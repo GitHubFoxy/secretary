@@ -4,6 +4,7 @@ package config
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -39,6 +40,7 @@ type Config struct {
 	WorkerPolicy WorkerPolicy    `toml:"worker_policy" json:"worker_policy"`
 	Telegram     TelegramPolicy  `toml:"telegram" json:"telegram"`
 	Retention    Retention       `toml:"retention" json:"retention"`
+	ASR          ASRConfig       `toml:"asr" json:"asr"`
 }
 
 type SecretaryPolicy struct {
@@ -107,6 +109,7 @@ type Snapshot struct {
 	Config      Config             `json:"config"`
 	Profiles    map[string]Profile `json:"profiles"`
 	TitlePrompt Prompt             `json:"title_prompt"`
+	ASRPrompt   Prompt             `json:"asr_prompt,omitempty"`
 }
 
 type Prompt struct {
@@ -138,10 +141,13 @@ func Load(path string) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, fmt.Errorf("read config %s: %w", path, err)
 	}
+	base := filepath.Dir(path)
 	c := Config{Telegram: TelegramPolicy{
 		TitleHarness: DefaultTitleHarness, TitlePrompt: DefaultTitlePrompt,
 		TitleModel: DefaultTitleModel, TitleModelReasoning: DefaultTitleModelReasoning,
 	}}
+	var explicitTitlePrompt *string
+
 	if err := toml.Unmarshal(data, &c); err != nil {
 		return Snapshot{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
@@ -153,7 +159,21 @@ func Load(path string) (Snapshot, error) {
 	if err := toml.Unmarshal(data, &explicit); err != nil {
 		return Snapshot{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	return compile(filepath.Dir(path), data, c, explicit.Telegram.TitlePrompt == nil)
+	explicitTitlePrompt = explicit.Telegram.TitlePrompt
+
+	yamlPath := filepath.Join(base, "config.yaml")
+	if _, statErr := os.Stat(yamlPath); statErr == nil {
+		asr, _, found, err := loadASRFromYAML(yamlPath)
+		if err != nil {
+			return Snapshot{}, err
+		}
+		if found {
+			c.ASR = asr
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return Snapshot{}, fmt.Errorf("read ASR sidecar: %w", statErr)
+	}
+	return compile(base, data, c, explicitTitlePrompt == nil)
 }
 
 func compile(base string, raw []byte, c Config, allowEmbeddedTitlePrompt bool) (Snapshot, error) {
@@ -163,6 +183,23 @@ func compile(base string, raw []byte, c Config, allowEmbeddedTitlePrompt bool) (
 	titlePrompt, err := loadTitlePrompt(base, c.Telegram.TitlePrompt, allowEmbeddedTitlePrompt)
 	if err != nil {
 		return Snapshot{}, err
+	}
+	var asrPrompt Prompt
+	if c.ASR.IsConfigured() {
+		if err := validateASRConfig(c.ASR); err != nil {
+			return Snapshot{}, err
+		}
+		if c.ASR.Formatter.Enabled {
+			promptPath := c.ASR.Formatter.Prompt
+			if promptPath == "" {
+				promptPath = DefaultFormatterPrompt
+			}
+			var promptErr error
+			asrPrompt, promptErr = loadFormatterPrompt(base, promptPath, false)
+			if promptErr != nil {
+				return Snapshot{}, promptErr
+			}
+		}
 	}
 	secretary := c.EffectiveSecretaryPolicy()
 	workerPolicy := c.EffectiveWorkerPolicy()
@@ -211,7 +248,12 @@ func compile(base string, raw []byte, c Config, allowEmbeddedTitlePrompt bool) (
 		}
 		profiles[name] = profile
 	}
-	return Snapshot{Version: digest(string(raw), profiles["secretary"].Hash, profiles["worker"].Hash, profiles["child_worker"].Hash, titlePrompt.Hash), Config: c, Profiles: profiles, TitlePrompt: titlePrompt}, nil
+	versionParts := []string{string(raw), profiles["secretary"].Hash, profiles["worker"].Hash, profiles["child_worker"].Hash, titlePrompt.Hash}
+	if c.ASR.IsConfigured() {
+		asrJSON, _ := json.Marshal(c.ASR)
+		versionParts = append(versionParts, string(asrJSON), asrPrompt.Hash)
+	}
+	return Snapshot{Version: digest(versionParts...), Config: c, Profiles: profiles, TitlePrompt: titlePrompt, ASRPrompt: asrPrompt}, nil
 }
 
 func loadTitlePrompt(base, path string, allowEmbedded bool) (Prompt, error) {
@@ -369,6 +411,9 @@ func validateConfig(c Config) error {
 	if _, _, _, err := c.Retention.RawLogPolicy(); err != nil {
 		return err
 	}
+	if err := validateASRConfig(c.ASR); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -412,6 +457,12 @@ func Diff(previous, next Snapshot) map[string]any {
 	}
 	if previous.TitlePrompt.Hash != next.TitlePrompt.Hash {
 		changed["telegram.title_prompt"] = next.TitlePrompt.Hash
+	}
+	if previous.Config.ASR != next.Config.ASR {
+		changed["asr"] = next.Config.ASR
+	}
+	if previous.ASRPrompt.Hash != next.ASRPrompt.Hash {
+		changed["asr.prompt"] = next.ASRPrompt.Hash
 	}
 	if strings.Join(previous.Config.Tools.Allow, ",") != strings.Join(next.Config.Tools.Allow, ",") {
 		changed["allow_tools"] = next.Config.Tools.Allow
