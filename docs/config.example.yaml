@@ -11,8 +11,7 @@ asr:
   formatter:
     enabled: true
     mode: online
-    provider: openai
-    api_key_env: OPENAI_API_KEY
+    provider: codex
     model: gpt-6-luna
     reasoning: none
     timeout_seconds: 20

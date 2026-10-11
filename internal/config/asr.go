@@ -21,7 +21,6 @@ const (
 	DefaultFormatterTimeout   = 20
 	DefaultFormatterModel     = "gpt-6-luna"
 	DefaultFormatterReasoning = "none"
-	DefaultFormatterAPIKeyEnv = "OPENAI_API_KEY"
 )
 
 type ASRConfig struct {
@@ -39,7 +38,6 @@ type FormatterConfig struct {
 	Enabled        bool   `toml:"enabled" yaml:"enabled" json:"enabled"`
 	Mode           string `toml:"mode" yaml:"mode" json:"mode"`
 	Provider       string `toml:"provider" yaml:"provider" json:"provider"`
-	APIKeyEnv      string `toml:"api_key_env" yaml:"api_key_env" json:"api_key_env"`
 	Model          string `toml:"model" yaml:"model" json:"model"`
 	Reasoning      string `toml:"reasoning" yaml:"reasoning" json:"reasoning"`
 	TimeoutSeconds int    `toml:"timeout_seconds" yaml:"timeout_seconds" json:"timeout_seconds"`
@@ -76,11 +74,8 @@ func validateASRConfig(c ASRConfig) error {
 		if c.Formatter.Mode != "online" {
 			return fmt.Errorf("%w: asr.formatter.mode must be online", ErrInvalid)
 		}
-		if c.Formatter.Provider != "openai" {
-			return fmt.Errorf("%w: asr.formatter.provider must be openai", ErrInvalid)
-		}
-		if strings.TrimSpace(c.Formatter.APIKeyEnv) == "" {
-			return fmt.Errorf("%w: asr.formatter.api_key_env is required", ErrInvalid)
+		if c.Formatter.Provider != "codex" {
+			return fmt.Errorf("%w: asr.formatter.provider must be codex", ErrInvalid)
 		}
 		if strings.TrimSpace(c.Formatter.Model) == "" {
 			return fmt.Errorf("%w: asr.formatter.model is required", ErrInvalid)
@@ -182,9 +177,6 @@ func loadASRFromYAML(yamlPath string) (ASRConfig, Prompt, bool, error) {
 	}
 	var prompt Prompt
 	if asr.Formatter.Enabled {
-		if asr.Formatter.APIKeyEnv == "" {
-			asr.Formatter.APIKeyEnv = DefaultFormatterAPIKeyEnv
-		}
 		if asr.Formatter.Model == "" {
 			asr.Formatter.Model = DefaultFormatterModel
 		}

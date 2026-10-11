@@ -33,8 +33,7 @@ asr:
   formatter:
     enabled: true
     mode: online
-    provider: openai
-    api_key_env: OPENAI_API_KEY
+    provider: codex
     model: gpt-6-luna
     reasoning: none
     timeout_seconds: 20
@@ -140,13 +139,12 @@ func TestASRConfig_ValidationErrors(t *testing.T) {
 					Enabled:        true,
 					Mode:           "online",
 					Provider:       "anthropic",
-					APIKeyEnv:      "KEY",
 					Model:          "claude",
 					TimeoutSeconds: 20,
 					Prompt:         "prompt.md",
 				},
 			},
-			wantErr: "asr.formatter.provider must be openai",
+			wantErr: "asr.formatter.provider must be codex",
 		},
 		{
 			name: "unsupported formatter mode",
@@ -160,8 +158,7 @@ func TestASRConfig_ValidationErrors(t *testing.T) {
 				Formatter: FormatterConfig{
 					Enabled:        true,
 					Mode:           "local",
-					Provider:       "openai",
-					APIKeyEnv:      "KEY",
+					Provider:       "codex",
 					Model:          "gpt-6-luna",
 					TimeoutSeconds: 20,
 					Prompt:         "prompt.md",
@@ -191,7 +188,7 @@ func TestASRSidecarReloadAndRelativePaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := "asr:\n  mode: local\n  engine: nemo-speech\n  model: weights.gguf\n  formatter:\n    enabled: true\n    mode: online\n    provider: openai\n    prompt: formatter.md\n"
+	body := "asr:\n  mode: local\n  engine: nemo-speech\n  model: weights.gguf\n  formatter:\n    enabled: true\n    mode: online\n    provider: codex\n    prompt: formatter.md\n"
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -219,5 +216,16 @@ func TestASRSidecarReloadAndRelativePaths(t *testing.T) {
 	}
 	if _, err = m.Reload(); err == nil {
 		t.Fatal("missing explicit prompt silently ignored")
+	}
+}
+
+func TestASRSidecarRejectsAPIKeySettings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	body := "asr:\n  mode: local\n  engine: nemo-speech\n  model: weights.gguf\n  formatter:\n    enabled: false\n    api_key_env: OPENAI_API_KEY\n"
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := loadASRFromYAML(path); err == nil {
+		t.Fatal("obsolete API key setting accepted")
 	}
 }

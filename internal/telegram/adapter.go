@@ -261,12 +261,11 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 	}
 	formatter := config.Formatter
 	if formatter == nil && config.ASR.Formatter.Enabled {
-		formatter = &OpenAIFormatter{
+		formatter = &CodexFormatter{
 			Enabled:   config.ASR.Formatter.Enabled,
 			Model:     config.ASR.Formatter.Model,
 			Reasoning: config.ASR.Formatter.Reasoning,
 			Prompt:    config.ASRPrompt,
-			APIKeyEnv: config.ASR.Formatter.APIKeyEnv,
 			Timeout:   time.Duration(config.ASR.Formatter.TimeoutSeconds) * time.Second,
 		}
 	}
