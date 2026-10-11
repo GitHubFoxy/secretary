@@ -202,10 +202,19 @@ func TestVoiceRetryReusesTranscriptAndNotices(t *testing.T) {
 	if len(tr.sent) != 1 {
 		t.Fatalf("notices=%v", tr.sent)
 	}
+	before, _ := a.Transcript("1")
+	if before.Timing == nil {
+		t.Fatal("missing timing before retry")
+	}
+	timing := *before.Timing
 	server.fail = false
 	a = voiceAdapter(t, path, tr, server, asr, nil, false)
 	if err := a.drainInputs(context.Background()); err != nil {
 		t.Fatal(err)
+	}
+	after, _ := a.Transcript("1")
+	if after.Timing == nil || *after.Timing != timing {
+		t.Fatal("durable retry changed processing metrics")
 	}
 	if calls != 1 || tr.downloads != 1 || len(tr.sent) != 1 || len(server.ids) != 1 {
 		t.Fatalf("retry calls=%d downloads=%d notices=%d delivery=%v", calls, tr.downloads, len(tr.sent), server.ids)

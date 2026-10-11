@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 )
@@ -18,16 +19,28 @@ type VoiceDownloadTransport interface {
 	GetFile(context.Context, string) (TelegramFile, error)
 	DownloadFile(context.Context, string, int64) ([]byte, error)
 }
+
+// VoiceTiming measures preprocessing wall time, before Telegram notices or agent dispatch.
+// ASR includes waiting for the local slot, conversion, model load and inference.
+type VoiceTiming struct {
+	DownloadMS      int64  `json:"download_ms"`
+	ASRMS           int64  `json:"asr_ms"`
+	FormatterMS     int64  `json:"formatter_ms"`
+	ProcessingMS    int64  `json:"processing_ms"`
+	FormatterStatus string `json:"formatter_status"`
+}
+
 type VoiceTranscript struct {
-	Raw              string    `json:"raw"`
-	Formatted        string    `json:"formatted,omitempty"`
-	Delivered        string    `json:"delivered"`
-	ChatID           int64     `json:"chat_id"`
-	ThreadID         int64     `json:"thread_id"`
-	MessageID        int64     `json:"message_id"`
-	WorkerRequestID  string    `json:"worker_request_id,omitempty"`
-	FormatterSkipped bool      `json:"formatter_skipped,omitempty"`
-	CreatedAt        time.Time `json:"created_at"`
+	Timing           *VoiceTiming `json:"timing,omitempty"`
+	Raw              string       `json:"raw"`
+	Formatted        string       `json:"formatted,omitempty"`
+	Delivered        string       `json:"delivered"`
+	ChatID           int64        `json:"chat_id"`
+	ThreadID         int64        `json:"thread_id"`
+	MessageID        int64        `json:"message_id"`
+	WorkerRequestID  string       `json:"worker_request_id,omitempty"`
+	FormatterSkipped bool         `json:"formatter_skipped,omitempty"`
+	CreatedAt        time.Time    `json:"created_at"`
 }
 
 func (a *Adapter) Transcript(id string) (VoiceTranscript, bool) {
@@ -75,39 +88,65 @@ func (a *Adapter) deliverVoiceUpdate(ctx context.Context, u Update, allowed bool
 	id := fmt.Sprint(u.ID)
 	transcript, ready := a.Transcript(id)
 	if !ready {
+		processingStart := time.Now()
+		timing := &VoiceTiming{FormatterStatus: "disabled"}
+		if a.config.ASR.Formatter.Enabled {
+			timing.FormatterStatus = "not_run"
+		}
+		recordTiming := func(stage, status string) {
+			timing.ProcessingMS = time.Since(processingStart).Milliseconds()
+			logVoiceTiming(u, stage, status, timing)
+		}
 		if a.asr == nil {
+			recordTiming("asr", "unavailable")
 			return fail("Локальное распознавание речи не настроено.")
 		}
 		vt, ok := a.transport.(VoiceDownloadTransport)
 		if !ok {
+			recordTiming("download", "unavailable")
 			return fail("Не удалось загрузить голосовое сообщение.")
 		}
+		downloadStart := time.Now()
 		downloadCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		file, err := vt.GetFile(downloadCtx, m.Voice.FileID)
 		if err != nil {
 			cancel()
+			timing.DownloadMS = time.Since(downloadStart).Milliseconds()
+			recordTiming("download", "failed")
 			return fail("Не удалось получить голосовое сообщение.")
 		}
 		if file.FileSize > maxBytes {
 			cancel()
+			timing.DownloadMS = time.Since(downloadStart).Milliseconds()
+			recordTiming("download", "failed")
 			return fail("Голосовое сообщение превышает лимит размера.")
 		}
 		data, err := vt.DownloadFile(downloadCtx, file.FilePath, maxBytes)
 		cancel()
+		timing.DownloadMS = time.Since(downloadStart).Milliseconds()
 		if err != nil || int64(len(data)) > maxBytes {
+			recordTiming("download", "failed")
 			return fail("Не удалось загрузить голосовое сообщение в пределах лимита размера.")
 		}
+		asrStart := time.Now()
 		raw, err := a.asr.Transcribe(ctx, data)
+		timing.ASRMS = time.Since(asrStart).Milliseconds()
 		if err != nil || strings.TrimSpace(raw) == "" {
+			recordTiming("asr", "failed")
 			return fail("Не удалось распознать речь в голосовом сообщении.")
 		}
-		transcript = VoiceTranscript{Raw: strings.TrimSpace(raw), Delivered: "raw", ChatID: m.ChatID, ThreadID: m.ThreadID, MessageID: m.MessageID, CreatedAt: a.now()}
+		transcript = VoiceTranscript{Raw: strings.TrimSpace(raw), Delivered: "raw", ChatID: m.ChatID, ThreadID: m.ThreadID, MessageID: m.MessageID, CreatedAt: a.now(), Timing: timing}
 		if a.config.ASR.Formatter.Enabled {
 			if a.formatter == nil {
+				timing.FormatterStatus = "unavailable"
 				transcript.FormatterSkipped = true
 			} else {
+				formatterStart := time.Now()
 				formatted, err := a.formatter.Format(ctx, transcript.Raw)
+				timing.FormatterMS = time.Since(formatterStart).Milliseconds()
+				timing.FormatterStatus = "failed"
 				if ctx.Err() != nil {
+					recordTiming("formatter", "failed")
 					return ctx.Err()
 				}
 				if err != nil || ValidateFormatting(transcript.Raw, formatted) != nil {
@@ -115,9 +154,11 @@ func (a *Adapter) deliverVoiceUpdate(ctx context.Context, u Update, allowed bool
 				} else {
 					transcript.Formatted = formatted
 					transcript.Delivered = "formatted"
+					timing.FormatterStatus = "succeeded"
 				}
 			}
 		}
+		timing.ProcessingMS = time.Since(processingStart).Milliseconds()
 		a.mu.Lock()
 		if a.state.Transcripts == nil {
 			a.state.Transcripts = map[string]VoiceTranscript{}
@@ -131,6 +172,7 @@ func (a *Adapter) deliverVoiceUpdate(ctx context.Context, u Update, allowed bool
 		if err != nil {
 			return err
 		}
+		logVoiceTiming(u, "processing", "completed", timing)
 	}
 	if transcript.FormatterSkipped {
 		if err := a.voiceNotice(ctx, u, "formatter", "Форматирование пропущено; используется исходная расшифровка."); err != nil {
@@ -152,4 +194,9 @@ func (a *Adapter) deliverVoiceUpdate(ctx context.Context, u Update, allowed bool
 	copyMessage.Text = final
 	u.Message = &copyMessage
 	return a.deliverTextUpdate(ctx, u, allowed, &transcript.WorkerRequestID)
+}
+
+// Only numeric Telegram identities, durations and fixed status values are logged.
+func logVoiceTiming(u Update, stage, status string, t *VoiceTiming) {
+	log.Printf("telegram voice timing update_id=%d message_id=%d stage=%s status=%s download_ms=%d asr_ms=%d formatter_ms=%d processing_ms=%d formatter_status=%s", u.ID, u.Message.MessageID, stage, status, t.DownloadMS, t.ASRMS, t.FormatterMS, t.ProcessingMS, t.FormatterStatus)
 }
