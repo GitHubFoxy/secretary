@@ -1,6 +1,6 @@
 # Telegram voice: локальный Parakeet и облачный форматтер
 
-Status: needs-triage
+Status: claimed
 Дата: 2026-10-11
 
 ## Назначение и состояние
