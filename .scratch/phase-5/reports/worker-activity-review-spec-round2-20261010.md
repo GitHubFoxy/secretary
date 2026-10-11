@@ -1,6 +1,6 @@
 # Worker activity: независимый Spec review, round 2
 
-Дата: 2026-10-10. Диапазон `43cd444...6bf4380219c39bf2622a86b78e0e6597053d2523`, commits `7adc71e` и `6bf4380`. Основание: [ticket 04](../issues/04-readable-unified-chat.md), пункт 7 Phase 5 и явно согласованный Codex-only scope. Реализация не изменялась reviewer.
+Дата: 2026-10-10. Диапазон `43cd444...6bf4380219c39bf2622a86b78e0e6597053d2523`, commits `7adc71e` и `6bf4380`. Основание: [ticket 04](https://github.com/GitHubFoxy/secretary/issues/21), пункт 7 Phase 5 и явно согласованный Codex-only scope. Реализация не изменялась reviewer.
 
 ## Findings
 

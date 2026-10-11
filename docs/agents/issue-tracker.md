@@ -1,33 +1,25 @@
-# Issue tracker: Local Markdown
+# Issue tracker: GitHub
 
-Задачи и спецификации этого repo хранятся как Markdown-файлы в `.scratch/`.
+Задачи и спецификации этого репозитория ведутся в [GitHub Issues](https://github.com/GitHubFoxy/secretary/issues). Для работы с ними используй `gh` из корня репозитория. `.scratch/` оставлен для исследований, спецификаций и отчётов, но не для новых тикетов.
 
-Активная работа: [Phase 5 — Minimal MVP](../../.scratch/phase-5/spec.md), [карта задач](../../.scratch/phase-5/map.md).
-Phase 1–4 находятся в [архиве](../../.scratch/.archived/README.md). Архивирование сохраняет историю и прежние статусы, но не означает прохождение незавершённых проверок.
+## Основные операции
 
-## Conventions
+- Создать задачу: `gh issue create --title "..." --body-file <file>`; для короткого текста можно использовать `--body`.
+- Прочитать задачу вместе с комментариями: `gh issue view <number> --comments`.
+- Найти открытые задачи: `gh issue list --state open --json number,title,body,labels,comments`.
+- Добавить комментарий: `gh issue comment <number> --body "..."`.
+- Назначить или снять метку: `gh issue edit <number> --add-label <label>` / `--remove-label <label>`.
+- Закрыть задачу: `gh issue close <number> --comment "..."`.
 
-- Один feature на директорию: `.scratch/<feature-slug>/`.
-- Спецификация: `.scratch/<feature-slug>/spec.md`.
-- Implementation issues: по одному файлу на ticket в `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, нумерация от `01`. Не создавать один общий файл tickets.
-- Triage state записывается строкой `Status:` вверху issue. Список ролей находится в `triage-labels.md`.
-- Комментарии и история обсуждения добавляются в конец файла под заголовком `## Comments`.
+Определи репозиторий по `git remote -v`; `gh` обычно выбирает его автоматически в этом клоне. Статусы triage отражаются метками из `triage-labels.md`. Для перенесённых задач со статусом `claimed` используется метка `in-progress`; завершённые задачи закрываются.
 
-## Когда skill говорит "publish to the issue tracker"
+## Wayfinding
 
-Создать файл в `.scratch/<feature-slug>/`, при необходимости создав директорию.
+Карты `/wayfinder` хранятся в GitHub как issues с меткой `wayfinder:map`. Дочерние задачи перечисляются в карте как список GitHub issues; в теле дочерней задачи указывается `Part of #<map>`. Если GitHub sub-issues доступны, их также можно связать через API.
 
-## Когда skill говорит "fetch the relevant ticket"
+- Блокирующие задачи указываются в теле как `Blocked by: #<number>` и, если API поддерживает зависимости, связываются нативной зависимостью GitHub. Задача разблокирована, когда все блокеры закрыты.
+- Frontier — открытая дочерняя задача без открытых блокеров и без исполнителя; порядок берётся из списка в карте.
+- Claim: назначить задачу текущему пользователю через `gh issue edit <number> --add-assignee @me`.
+- Resolve: оставить итоговый комментарий, закрыть issue и обновить Decisions so far в issue-карте.
 
-Прочитать файл по переданному пути или номеру issue.
-
-## Wayfinding operations
-
-Используются `/wayfinder`.
-
-- Map: `.scratch/<effort>/map.md`. В нём находятся Notes, Decisions so far и Fog.
-- Child ticket: `.scratch/<effort>/issues/NN-<slug>.md`. Вверху указываются `Type:` (`research`, `prototype`, `grilling` или `task`) и `Status:` (`claimed` или `resolved`).
-- Blocking: строка `Blocked by: NN, NN`. Ticket разблокирован, когда все указанные tickets имеют статус `resolved`.
-- Frontier: открытые, не заблокированные и не claimed файлы в `.scratch/<effort>/issues/`. Приоритет у меньшего номера.
-- Claim: до начала работы установить `Status: claimed` и сохранить файл.
-- Resolve: добавить ответ под `## Answer`, поставить `Status: resolved`, затем добавить краткую ссылку на решение в `Decisions so far` файла `map.md`.
+Для существующих исследований и отчётов можно хранить Markdown в `.scratch/`; ссылки на задачи оформляй как `#<number>` или полными GitHub URL.

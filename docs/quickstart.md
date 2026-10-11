@@ -1,6 +1,6 @@
 # Быстрый старт
 
-Этот quickstart запускает локальный Secretary на macOS с Codex через native `codex-acp`. Новые Secretary и Workers используют модель и reasoning по умолчанию выбранного harness. Claude Code доступен при явном выборе и собственной авторизации. Настройка outbound Nodes описана в [Private Node deployment](node-deployment.md). Полная live приёмка описана в [Phase 5](../.scratch/phase-5/issues/05-deploy-and-live-acceptance.md) и ещё не завершена.
+Этот quickstart запускает локальный Secretary на macOS с Codex через native `codex-acp`. Новые Secretary и Workers используют модель и reasoning по умолчанию выбранного harness. Claude Code доступен при явном выборе и собственной авторизации. Настройка outbound Nodes описана в [Private Node deployment](node-deployment.md). Полная live приёмка описана в [Phase 5](https://github.com/GitHubFoxy/secretary/issues/22) и ещё не завершена.
 
 ## Требования
 

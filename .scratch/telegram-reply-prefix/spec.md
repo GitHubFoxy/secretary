@@ -6,7 +6,7 @@ Status: ready-for-agent
 
 На [скриншоте](evidence/reported-prefix.png) перед ответом «„Пачкать“ по-английски — по-разному…» стоит отдельная строка «как будет пачкать по английски ? чтобы было разнве...:». Пользователь указал, что эта строка должна исчезнуть (`SHOULD BE GONE`).
 
-Трактовка: убрать автоматически добавленное название Worker topic из сообщения с Result в General. Сам ответ остаётся. Форматирование Markdown-таблицы на том же скриншоте относится к [отдельной задаче](../telegram-table-formatting/issues/01-readable-telegram-tables.md).
+Трактовка: убрать автоматически добавленное название Worker topic из сообщения с Result в General. Сам ответ остаётся. Форматирование Markdown-таблицы на том же скриншоте относится к [отдельной задаче](https://github.com/GitHubFoxy/secretary/issues/5).
 
 ## Исследованный источник
 
@@ -36,4 +36,4 @@ Status: ready-for-agent
 
 ## Реализация и проверка
 
-Один [implementation ticket](issues/01-remove-result-topic-prefix.md). Новые profiles, regex для удаления строк и изменения formatter не нужны. Проверки должны наблюдать отправленные сообщения, включая Bot API seam, а не только строку helper.
+Один [implementation ticket](https://github.com/GitHubFoxy/secretary/issues/28). Новые profiles, regex для удаления строк и изменения formatter не нужны. Проверки должны наблюдать отправленные сообщения, включая Bot API seam, а не только строку helper.

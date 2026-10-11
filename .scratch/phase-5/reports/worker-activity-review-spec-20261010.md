@@ -2,7 +2,7 @@
 
 Дата: 2026-10-10. Диапазон: `43cd444...7adc71e33fff6821e937a3cb5e850b8bfbcf44de`. Проверен commit `7adc71e` в отдельном worktree `secretary-p5-worker-activity`; реализация не изменялась.
 
-Основание: ticket [04](../issues/04-readable-unified-chat.md), критерий «Worker text activity отображается текстом, tool/status — компактно и понятно, generic payload не доминирует как сырой JSON», пункт 7 Phase 5 и текущий Codex-only scope integration checkout. CC отложен и здесь не оценивается.
+Основание: ticket [04](https://github.com/GitHubFoxy/secretary/issues/21), критерий «Worker text activity отображается текстом, tool/status — компактно и понятно, generic payload не доминирует как сырой JSON», пункт 7 Phase 5 и текущий Codex-only scope integration checkout. CC отложен и здесь не оценивается.
 
 ## Findings
 

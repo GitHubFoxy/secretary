@@ -1,6 +1,6 @@
 # Исследование: tool events в Telegram topic Worker
 
-Ticket: [01 — отсутствуют вызовы инструментов](issues/01-missing-worker-tool-calls.md). Спецификация: [spec.md](spec.md).
+Ticket: [01 — отсутствуют вызовы инструментов](https://github.com/GitHubFoxy/secretary/issues/30). Спецификация: [spec.md](spec.md).
 
 ## Краткий вывод
 

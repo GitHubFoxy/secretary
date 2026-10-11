@@ -20,7 +20,7 @@
 
 ## Lifecycle и гарантии
 
-`finishRetryableAttempt` уже поддерживает next Attempt одного Turn без Result. План расширяет атомарную transaction расписанием, checkpoint и command intent. Scheduled/manual hold сохраняют FIFO; command claim/receipt identities разделяют prepared и unknown handoff при crash. Native continuation prompt сохраняет history и не переотправляет original input. Подробные решения и проверки встроены в [implementation ticket](issues/01-auto-resume-after-usage-limit.md); они обязательны для реализации.
+`finishRetryableAttempt` уже поддерживает next Attempt одного Turn без Result. План расширяет атомарную transaction расписанием, checkpoint и command intent. Scheduled/manual hold сохраняют FIFO; command claim/receipt identities разделяют prepared и unknown handoff при crash. Native continuation prompt сохраняет history и не переотправляет original input. Подробные решения и проверки встроены в [implementation ticket](https://github.com/GitHubFoxy/secretary/issues/32); они обязательны для реализации.
 
 ## Ограничения исследования
 

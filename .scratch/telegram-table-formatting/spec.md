@@ -36,4 +36,4 @@ Status: needs-triage
 
 ## Задача
 
-[01 — Читаемое форматирование таблиц и структурированных данных в Telegram](issues/01-readable-telegram-tables.md).
+[01 — Читаемое форматирование таблиц и структурированных данных в Telegram](https://github.com/GitHubFoxy/secretary/issues/5).

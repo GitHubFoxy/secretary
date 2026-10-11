@@ -8,8 +8,8 @@ Status: ready-for-agent
 
 Продолжение создаёт next Attempt того же Turn; premature Result отсутствует. Scheduler, manual resume, cancel и recovery используют durable checkpoint/command identities, atomic CAS и текущие gates. FIFO `/q` ждёт завершения Turn; unknown execution не повторяется. Web и Telegram показывают причину, режим ожидания и controls. Scope — Worker, без Secretary/смены провайдера/покупки credits.
 
-- [Самодостаточная задача: исследование, решения, план и критерии](issues/01-auto-resume-after-usage-limit.md).
+- [Самодостаточная задача: исследование, решения, план и критерии](https://github.com/GitHubFoxy/secretary/issues/32).
 - [Исследование официального API](research.md).
-- [Предшествующая задача: понятные ошибки](../worker-error-diagnostics/issues/01-expose-worker-error-cause.md).
+- [Предшествующая задача: понятные ошибки](https://github.com/GitHubFoxy/secretary/issues/33).
 
 Порядок реализации: сначала типизированная диагностика, затем scheduler. Обе постановки готовы; это не объявление реализованного поведения.

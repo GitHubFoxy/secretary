@@ -29,6 +29,6 @@ Status: ready-for-agent
 
 ## Спецификация и зависимости
 
-- [Issue 01: Сохранить и показать исходную причину ошибки Worker](issues/01-expose-worker-error-cause.md).
+- [Issue 01: Сохранить и показать исходную причину ошибки Worker](https://github.com/GitHubFoxy/secretary/issues/33).
 - [Исследование пути ошибок и верификация инцидента](../../docs/research/worker-acp-incident-gemini-verification.md).
 - [Зависимая задача: автовозобновление после лимита](../usage-limit-auto-resume/spec.md). Порядок внедрения: сначала эта спецификация, затем планировщик автовозобновления.

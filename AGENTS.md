@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Задачи и спецификации лежат в `.scratch/`. См. `docs/agents/issue-tracker.md`.
+Задачи и спецификации ведутся в GitHub Issues через `gh`. См. `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

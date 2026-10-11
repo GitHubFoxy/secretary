@@ -18,4 +18,4 @@ Worker activity должна оставаться в topic соответств�
 
 ## Задача
 
-[01 — Выяснить и исправить отсутствие вызовов инструментов](issues/01-missing-worker-tool-calls.md).
+[01 — Выяснить и исправить отсутствие вызовов инструментов](https://github.com/GitHubFoxy/secretary/issues/30).

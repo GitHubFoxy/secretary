@@ -1,6 +1,6 @@
 # Steering активного Secretary
 
-Основание: [инцидент](incident.md). Реализация: [тикет 01](issues/01-durable-secretary-steering.md). Первичные источники и выбранный дизайн: [исследование](research.md).
+Основание: [инцидент](incident.md). Реализация: [тикет 01](https://github.com/GitHubFoxy/secretary/issues/24). Первичные источники и выбранный дизайн: [исследование](research.md).
 
 ## Результат для пользователя
 

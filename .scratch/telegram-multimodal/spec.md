@@ -37,5 +37,5 @@ An authorized Telegram user can send a photo/image, a regular video, or a round 
 
 ## References
 
-- [Issue 01: end-to-end Telegram media input](issues/01-telegram-media-input.md)
+- [Issue 01: end-to-end Telegram media input](https://github.com/GitHubFoxy/secretary/issues/26)
 - [Research findings](research.md)

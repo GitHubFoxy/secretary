@@ -1,14 +1,14 @@
 # Верификация инцидента ACP RPC -32603 у Worker (Gemini Verification)
 
-**Дата:** 11 октября 2026 г.  
-**Аналитик:** Gemini Agent (Research Subagent)  
-**Статус:** Расследование завершено. Причина подтверждена сопоставленными записями Result и нативной сессии.  
-**Связанные документы:**  
-- [Предыдущее исследование (потеря error.data)](worker-acp-errors-and-usage-limits.md)  
-- [Issue 01: Expose Worker error cause](../../.scratch/worker-error-diagnostics/issues/01-expose-worker-error-cause.md)  
-- [Issue 01: Auto-resume after usage limit](../../.scratch/usage-limit-auto-resume/issues/01-auto-resume-after-usage-limit.md)  
-- [Топология развёртывания Phase 5](../../.scratch/phase-5/reports/codex-deployment-20261010.md)  
-- [Runtime Contracts](../architecture/runtime-contracts.md)  
+**Дата:** 11 октября 2026 г.
+**Аналитик:** Gemini Agent (Research Subagent)
+**Статус:** Расследование завершено. Причина подтверждена сопоставленными записями Result и нативной сессии.
+**Связанные документы:**
+- [Предыдущее исследование (потеря error.data)](worker-acp-errors-and-usage-limits.md)
+- [Issue 01: Expose Worker error cause](https://github.com/GitHubFoxy/secretary/issues/33)
+- [Issue 01: Auto-resume after usage limit](https://github.com/GitHubFoxy/secretary/issues/32)
+- [Топология развёртывания Phase 5](../../.scratch/phase-5/reports/codex-deployment-20261010.md)
+- [Runtime Contracts](../architecture/runtime-contracts.md)
 
 ---
 
@@ -197,7 +197,7 @@ flowchart TD
 2. **Точки потери информации в кодовой базе**:
    - `internal/acp/jsonl.go`: потеря поля `data` в `RPCError`. Необходимо расширить структуру `RPCError` полем `Data json.RawMessage` (или структурированным объектом с безопасным извлечением `message`, `codexErrorInfo`, `resetAt`).
    - `internal/node/acp_runtime.go`: в ветке RPC-ошибки `session/prompt`, если `assistantText` уже содержал пояснение от harness (как в Event 11197), либо если `data` содержит `message`, сохранять это понятное сообщение в `Result.Summary` вместо абстрактного `-32603`.
-   - `internal/core`: типизировать сбои с `codex_error_info: usage_limit_exceeded` / `reset_at`, чтобы в задачах автовозобновления ([01-auto-resume-after-usage-limit.md](../../.scratch/usage-limit-auto-resume/issues/01-auto-resume-after-usage-limit.md)) было известно точное время планирования следующей попытки.
+   - `internal/core`: типизировать сбои с `codex_error_info: usage_limit_exceeded` / `reset_at`, чтобы в задачах автовозобновления ([01-auto-resume-after-usage-limit.md](https://github.com/GitHubFoxy/secretary/issues/32)) было известно точное время планирования следующей попытки.
 
 
 ## Повторная проверка основным агентом

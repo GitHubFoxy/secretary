@@ -41,7 +41,7 @@ Gemini нашёл production Result и соответствующий native tur
 
 ## Рекомендации для двух задач
 
-Созданы отдельные задачи: [показывать причину ошибки Worker](../../.scratch/worker-error-diagnostics/issues/01-expose-worker-error-cause.md) и [автоматически продолжать после лимита](../../.scratch/usage-limit-auto-resume/issues/01-auto-resume-after-usage-limit.md).
+Созданы отдельные задачи: [показывать причину ошибки Worker](https://github.com/GitHubFoxy/secretary/issues/33) и [автоматически продолжать после лимита](https://github.com/GitHubFoxy/secretary/issues/32).
 
 ### Показывать содержательную ошибку
 

@@ -22,4 +22,4 @@ Status: needs-triage
 
 ## Задача
 
-[01 — Убрать незапрошенные URL и форматировать запрошенные ссылки](issues/01-omit-unrequested-urls.md).
+[01 — Убрать незапрошенные URL и форматировать запрошенные ссылки](https://github.com/GitHubFoxy/secretary/issues/23).

@@ -34,4 +34,4 @@
 
 ## Задача
 
-[01 — Добавить Antigravity harness через официальный ACP server](issues/01-antigravity-acp-harness.md)
+[01 — Добавить Antigravity harness через официальный ACP server](https://github.com/GitHubFoxy/secretary/issues/6)

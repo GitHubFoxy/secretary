@@ -1,6 +1,6 @@
 # Исследование: форматирование таблиц и структурированных данных в Telegram
 
-Ticket: [01 — Читаемое форматирование таблиц в Telegram](issues/01-readable-telegram-tables.md). Спецификация: [spec.md](spec.md).
+Ticket: [01 — Читаемое форматирование таблиц в Telegram](https://github.com/GitHubFoxy/secretary/issues/5). Спецификация: [spec.md](spec.md).
 
 ## Краткий вывод
 
