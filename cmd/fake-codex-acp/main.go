@@ -35,10 +35,24 @@ func main() {
 				}
 			}
 			if request.Method == "initialize" {
-				result = map[string]any{"protocolVersion": 1}
+				result = map[string]any{
+					"protocolVersion": 1,
+					"agentInfo":       map[string]any{"version": "1.0.0"},
+					"agentCapabilities": map[string]any{
+						"loadSession": true,
+					},
+					"_meta": map[string]any{
+						"steering": map[string]any{"supported": true},
+					},
+				}
 			}
 			if request.Method == "session/new" {
-				result = map[string]any{"sessionId": "fake-session"}
+				result = map[string]any{
+					"sessionId": "fake-session",
+					"models": map[string]any{
+						"availableModels": []map[string]string{{"modelId": "gpt-5-codex"}},
+					},
+				}
 			}
 			if request.Method == "session/prompt" {
 				result = map[string]any{"summary": "fake task completed"}

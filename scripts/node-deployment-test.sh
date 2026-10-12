@@ -15,6 +15,13 @@ cat > "$FAKE_BIN/launchctl" <<'EOF'
 #!/bin/sh
 exit 0
 EOF
+cat > "$FAKE_BIN/codex" <<'EOF'
+#!/bin/sh
+case "$1:$2" in
+  --version:*) printf 'codex-cli 1.0.0\n' ;;
+  login:status|login:*) exit 0 ;;
+esac
+EOF
 cat > "$FAKE_BIN/opencode" <<'EOF'
 #!/bin/sh
 printf '%s|%s|openai=%s|aws=%s\n' "${XDG_DATA_HOME:-missing}" "$*" "${OPENAI_API_KEY:+present}" "${AWS_ACCESS_KEY_ID:+present}" >> "$TICKET33_OPENCODE_STORE_LOG"
@@ -43,6 +50,12 @@ case "$1:$2" in
 esac
 EOF
 chmod +x "$FAKE_BIN/fx" "$FAKE_BIN/launchctl" "$FAKE_BIN/opencode"
+mise exec -- go build -o "$FAKE_BIN/codex-acp-real" "$ROOT/cmd/fake-codex-acp"
+cat > "$FAKE_BIN/codex-acp" <<'EOF'
+#!/bin/sh
+exec "$(dirname "$0")/codex-acp-real" "$@"
+EOF
+chmod +x "$FAKE_BIN/codex" "$FAKE_BIN/codex-acp"
 export HOME="$TEST_HOME"
 export PATH="$FAKE_BIN:/usr/bin:/bin:/opt/homebrew/bin:/usr/local/bin:${PATH:-}"
 export MISE_DATA_DIR="${MISE_DATA_DIR:-$ORIGINAL_HOME/.local/share/mise}"
@@ -63,10 +76,15 @@ assert_file() { [[ -f "$1" ]] || fail "missing file: $1"; }
 
 output="$($ROOT/secretary setup)" || fail "secretary setup"
 assert_contains "$output" "Full-access trusted Node policy" "setup did not show trusted Node policy"
+# Setup now defaults to Codex and deliberately leaves OpenCode's native store
+# untouched. Select OpenCode explicitly before exercising its deployment path.
+perl -0pi -e 's/harness = "codex"/harness = "opencode"/g; s/default_harness = "codex"/default_harness = "opencode"/g; s/preferred_harnesses = \["codex", "claude_code"\]/preferred_harnesses = ["opencode"]/g' "$HOME/.local/share/secretary/config.toml"
+"$ROOT/secretary" opencode select-shared-store >/dev/null || fail "OpenCode compatibility setup could not select its shared store"
+"$ROOT/secretary" setup >/dev/null || fail "OpenCode compatibility setup failed"
 assert_file "$HOME/.local/share/secretary/opencode-native/opencode/opencode.db"
 [[ ! -e "$HOME/.local/share/secretary/node/data/opencode-native/opencode" ]] || fail "co-located Node initialized a second native DB"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$HOME/.local/share/opencode" "setup accessed personal OpenCode store"
-output="$($ROOT/secretary node setup --server https://secretary.example.ts.net --name macbook --workspace frontend=/Users/me/src/frontend)" || fail "node setup"
+output="$($ROOT/secretary node setup --include-opencode --server https://secretary.example.ts.net --name macbook --workspace frontend=/Users/me/src/frontend)" || fail "node setup"
 assert_contains "$output" "outbound connection only" "node setup did not state private networking"
 config="$HOME/.local/share/secretary/node/config.json"
 [[ -f "$config" ]] || fail "missing Node config"
