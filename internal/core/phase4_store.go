@@ -95,6 +95,25 @@ CREATE TABLE IF NOT EXISTS phase4_approvals (
 );
 CREATE INDEX IF NOT EXISTS phase4_approvals_state ON phase4_approvals(state, requested_at);
 CREATE UNIQUE INDEX IF NOT EXISTS phase4_approvals_one_pending_attempt ON phase4_approvals(attempt_id) WHERE state IN ('pending', 'resolving');
+CREATE TABLE IF NOT EXISTS phase4_attempt_schedules (
+  id TEXT PRIMARY KEY,
+  worker_id TEXT NOT NULL REFERENCES workers(id),
+  turn_id TEXT NOT NULL REFERENCES turns(id),
+  source_attempt_id TEXT NOT NULL UNIQUE REFERENCES phase4_attempts(id),
+  attempt_id TEXT NOT NULL UNIQUE REFERENCES phase4_attempts(id),
+  scheduled_at TEXT,
+  state TEXT NOT NULL,
+  failure_category TEXT NOT NULL DEFAULT '',
+  failure_code TEXT NOT NULL DEFAULT '',
+  failure_message TEXT NOT NULL DEFAULT '',
+  quota_scope TEXT NOT NULL DEFAULT '',
+  deadline_evidence TEXT NOT NULL DEFAULT '',
+  continuation_prompt TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS phase4_attempt_schedules_state_due
+  ON phase4_attempt_schedules(state, scheduled_at);
 `)
 	if err != nil {
 		return fmt.Errorf("migrate phase 4 lifecycle: %w", err)
@@ -930,7 +949,7 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 }
 
 func (s *Store) SetPhase4AttemptActive(ctx context.Context, attemptID string) (Phase4Attempt, error) {
-	return s.transitionPhase4Attempt(ctx, attemptID, []AttemptState{AttemptStarting}, AttemptActive)
+	return s.transitionPhase4Attempt(ctx, attemptID, []AttemptState{AttemptStarting, AttemptScheduled}, AttemptActive)
 }
 
 // SetPhase4AttemptNeedsInput records a durable safe boundary before the
@@ -1028,6 +1047,9 @@ func (s *Store) transitionPhase4Attempt(ctx context.Context, attemptID string, f
 				return Phase4Attempt{}, err
 			}
 			if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`, WorkerWorking, timestamp(now), attempt.WorkerID); err != nil {
+				return Phase4Attempt{}, err
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'completed', updated_at = ? WHERE attempt_id = ? AND state IN ('claimed', 'pending', 'manual_hold')`, timestamp(now), attempt.ID); err != nil {
 				return Phase4Attempt{}, err
 			}
 			workerRef, err := workerRefForID(ctx, tx, attempt.WorkerID)
@@ -1184,6 +1206,21 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 		return AttemptOutcome{}, nil, false, err
 	}
 	if input.Classification == OutcomeRetryable {
+		if input.FailureCategory == FailureCategoryUsageLimit {
+			return s.recordConfirmedUsageLimitOutcome(ctx, AttemptOutcomeEnvelope{
+				AttemptID:       attemptID,
+				Status:          input.Status,
+				Classification:  input.Classification,
+				ErrorCode:       input.ErrorCode,
+				ErrorMessage:    input.ErrorMessage,
+				Diagnostics:     input.Diagnostics,
+				Summary:         input.Summary,
+				FailureCode:     input.FailureCode,
+				FailureCategory: input.FailureCategory,
+				ResetsAt:        input.ResetsAt,
+				QuotaScope:      input.QuotaScope,
+			}, input.ArtifactRefs)
+		}
 		return AttemptOutcome{}, nil, false, errors.New("core: retryable outcome requires FinishAttempt with durable retry command id")
 	}
 	if input.Classification == OutcomeFinal && input.Status != OutcomeSucceeded {
@@ -1957,6 +1994,27 @@ func (s *Store) WorkerDetailsForConversation(ctx context.Context, conversationID
 		return WorkerDetails{}, err
 	}
 	attemptRows.Close()
+	var sched AttemptSchedule
+	var schedAt sql.NullString
+	var cat, code, msg, scope, evidence string
+	var schedCreated, schedUpdated string
+	if err := s.db.QueryRowContext(ctx, `SELECT id, worker_id, turn_id, source_attempt_id, attempt_id, scheduled_at, state, failure_category, failure_code, failure_message, quota_scope, deadline_evidence, continuation_prompt, created_at, updated_at FROM phase4_attempt_schedules WHERE worker_id = ? AND state IN ('pending', 'manual_hold')`, worker.ID).Scan(
+		&sched.ID, &sched.WorkerID, &sched.TurnID, &sched.SourceAttemptID, &sched.AttemptID, &schedAt, &sched.State, &cat, &code, &msg, &scope, &evidence, &sched.ContinuationPrompt, &schedCreated, &schedUpdated,
+	); err == nil {
+		sched.FailureCategory = FailureCategory(cat)
+		sched.FailureCode = code
+		sched.FailureMessage = msg
+		sched.QuotaScope = scope
+		sched.DeadlineEvidence = evidence
+		if schedAt.Valid && schedAt.String != "" {
+			t, _ := parseTimestamp(schedAt.String)
+			sched.ScheduledAt = &t
+		}
+		sched.CreatedAt, _ = parseTimestamp(schedCreated)
+		sched.UpdatedAt, _ = parseTimestamp(schedUpdated)
+		details.ActiveSchedule = &sched
+	}
+
 	for _, turn := range details.Turns {
 		if result, err := s.Phase4Result(ctx, turn.ID); err == nil {
 			details.Results = append(details.Results, result)
@@ -2205,9 +2263,13 @@ func (s *Store) RecordNodeAttemptOutcome(ctx context.Context, envelope AttemptOu
 		}
 		artifactRefs = string(encoded)
 	}
+	if envelope.Status == OutcomeFailed && envelope.FailureCategory == FailureCategoryUsageLimit {
+		return s.recordConfirmedUsageLimitOutcome(ctx, envelope, artifactRefs)
+	}
 	returnValue, result, duplicate, err := s.RecordAttemptOutcome(ctx, envelope.AttemptID, AttemptOutcomeInput{
 		Status: envelope.Status, Classification: envelope.Classification, ErrorCode: envelope.ErrorCode, ErrorMessage: envelope.ErrorMessage,
 		Diagnostics: envelope.Diagnostics, Summary: envelope.Summary, FailureCode: envelope.FailureCode, FailureCategory: envelope.FailureCategory, ArtifactRefs: artifactRefs,
+		ResetsAt: envelope.ResetsAt, QuotaScope: envelope.QuotaScope,
 	})
 	return returnValue, result, duplicate, err
 }
@@ -2278,4 +2340,530 @@ func (s *Store) recordNodeActivity(ctx context.Context, activity Activity, toler
 		}
 		return event, nil
 	})
+}
+
+func (s *Store) recordConfirmedUsageLimitOutcome(ctx context.Context, envelope AttemptOutcomeEnvelope, artifactRefs string) (AttemptOutcome, *Phase4Result, bool, error) {
+	returnValue, err := withTx(s, ctx, func(tx *sql.Tx) (struct {
+		outcome   AttemptOutcome
+		result    *Phase4Result
+		duplicate bool
+	}, error) {
+		var existingOutcome AttemptOutcome
+		err := scanPhase4Outcome(tx.QueryRowContext(ctx, `SELECT id, attempt_id, status, classification, error_code, error_message, diagnostics, failure_category, created_at FROM phase4_attempt_outcomes WHERE attempt_id = ?`, envelope.AttemptID), &existingOutcome)
+		if err == nil {
+			result, resultErr := phase4ResultForAttempt(ctx, tx, envelope.AttemptID)
+			if resultErr != nil {
+				return struct {
+					outcome   AttemptOutcome
+					result    *Phase4Result
+					duplicate bool
+				}{}, resultErr
+			}
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{outcome: existingOutcome, result: result, duplicate: true}, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{}, err
+		}
+
+		attempt, err := getPhase4Attempt(ctx, tx, envelope.AttemptID)
+		if err != nil {
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{}, err
+		}
+		if attempt.State.Terminal() {
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{}, ErrInvalidTransition
+		}
+		turn, err := getTurn(ctx, tx, attempt.TurnID)
+		if err != nil {
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{}, err
+		}
+		if turn.ResultID != "" || turn.CurrentAttemptID != attempt.ID {
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{}, ErrInvalidTransition
+		}
+		worker, err := getWorker(ctx, tx, attempt.WorkerID)
+		if err != nil {
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{}, err
+		}
+
+		now := s.now()
+		outcome := AttemptOutcome{
+			ID:              newID("aou"),
+			AttemptID:       attempt.ID,
+			Status:          OutcomeFailed,
+			Classification:  OutcomeRetryable,
+			ErrorCode:       envelope.ErrorCode,
+			ErrorMessage:    envelope.ErrorMessage,
+			Diagnostics:     envelope.Diagnostics,
+			FailureCategory: FailureCategoryUsageLimit,
+			CreatedAt:       now,
+		}
+
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempt_outcomes(id, attempt_id, status, classification, error_code, error_message, diagnostics, failure_category, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			outcome.ID, outcome.AttemptID, outcome.Status, outcome.Classification, outcome.ErrorCode, outcome.ErrorMessage, outcome.Diagnostics, string(outcome.FailureCategory), timestamp(now)); err != nil {
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{}, err
+		}
+
+		if _, err := tx.ExecContext(ctx, `UPDATE phase4_attempts SET state = ?, updated_at = ? WHERE id = ?`,
+			AttemptFailed, timestamp(now), attempt.ID); err != nil {
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{}, err
+		}
+
+		workerRef := worker.WorkerRef
+
+		next := Phase4Attempt{
+			ID:                newID("att"),
+			WorkerID:          attempt.WorkerID,
+			TurnID:            attempt.TurnID,
+			Number:            attempt.Number + 1,
+			NodeID:            attempt.NodeID,
+			HarnessInstanceID: attempt.HarnessInstanceID,
+			State:             AttemptScheduled,
+			CorrelationID:     attempt.CorrelationID,
+			CreatedAt:         now,
+			UpdatedAt:         now,
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempts(id, worker_id, turn_id, number, node_id, harness_instance_id, state, correlation_id, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			next.ID, next.WorkerID, next.TurnID, next.Number, next.NodeID, next.HarnessInstanceID, next.State, next.CorrelationID, timestamp(now), timestamp(now)); err != nil {
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{}, err
+		}
+
+		if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, current_attempt_id = ?, previous_attempt_id = ?, updated_at = ? WHERE id = ?`,
+			TurnSuspended, next.ID, attempt.ID, timestamp(now), turn.ID); err != nil {
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{}, err
+		}
+
+		if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`,
+			WorkerLimited, timestamp(now), attempt.WorkerID); err != nil {
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{}, err
+		}
+
+		autoResume := s.EffectiveAutoResumeOnLimit()
+		scheduleState := ScheduleManualHold
+		var scheduledAtStr sql.NullString
+		var scheduledAt *time.Time
+		if autoResume && envelope.ResetsAt != nil && envelope.ResetsAt.After(now) {
+			scheduleState = SchedulePending
+			due := envelope.ResetsAt.Add(60 * time.Second)
+			scheduledAt = &due
+			scheduledAtStr = sql.NullString{String: timestamp(due), Valid: true}
+		}
+
+		scheduleID := newID("asch")
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempt_schedules(id, worker_id, turn_id, source_attempt_id, attempt_id, scheduled_at, state, failure_category, failure_code, failure_message, quota_scope, deadline_evidence, continuation_prompt, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			scheduleID, attempt.WorkerID, attempt.TurnID, attempt.ID, next.ID, scheduledAtStr, string(scheduleState), string(FailureCategoryUsageLimit), envelope.FailureCode, envelope.Summary, envelope.QuotaScope, "", ContinuationPrompt, timestamp(now), timestamp(now)); err != nil {
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{}, err
+		}
+
+		if err := ensureLifecycleCommandIntentTx(ctx, tx, now, "resume", attempt.WorkerID, next.ID); err != nil {
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{}, err
+		}
+
+		payload := map[string]any{
+			"worker_ref":        workerRef,
+			"mode":              string(scheduleState),
+			"attempt_id":        next.ID,
+			"source_attempt_id": attempt.ID,
+			"failure": WorkerFailure{
+				Category:     FailureCategoryUsageLimit,
+				ProviderCode: envelope.FailureCode,
+				Message:      envelope.Summary,
+				Technical:    envelope.Diagnostics,
+			},
+			"scope": envelope.QuotaScope,
+		}
+		if scheduledAt != nil {
+			payload["deadline"] = scheduledAt.Format(time.RFC3339Nano)
+		}
+		if envelope.ResetsAt != nil {
+			payload["resets_at"] = envelope.ResetsAt.Format(time.RFC3339Nano)
+		}
+		if _, err := appendEventTx(ctx, tx, now, EventInput{
+			Kind:          "worker.limited",
+			AggregateType: "worker",
+			AggregateID:   attempt.WorkerID,
+			Source:        "server",
+			CorrelationID: attempt.CorrelationID,
+			WorkerRef:     workerRef,
+			Payload:       payload,
+		}, payload); err != nil {
+			return struct {
+				outcome   AttemptOutcome
+				result    *Phase4Result
+				duplicate bool
+			}{}, err
+		}
+
+		return struct {
+			outcome   AttemptOutcome
+			result    *Phase4Result
+			duplicate bool
+		}{outcome: outcome, result: nil, duplicate: false}, nil
+	})
+	if err != nil {
+		return AttemptOutcome{}, nil, false, err
+	}
+	return returnValue.outcome, returnValue.result, returnValue.duplicate, nil
+}
+
+func (s *Store) FindActiveScheduleForWorker(ctx context.Context, workerID string) (AttemptSchedule, bool, error) {
+	var sched AttemptSchedule
+	var schedAt sql.NullString
+	var cat, code, msg, scope, evidence string
+	var schedCreated, schedUpdated string
+	err := s.db.QueryRowContext(ctx, `SELECT id, worker_id, turn_id, source_attempt_id, attempt_id, scheduled_at, state, failure_category, failure_code, failure_message, quota_scope, deadline_evidence, continuation_prompt, created_at, updated_at FROM phase4_attempt_schedules WHERE worker_id = ? AND state IN ('pending', 'manual_hold')`, workerID).Scan(
+		&sched.ID, &sched.WorkerID, &sched.TurnID, &sched.SourceAttemptID, &sched.AttemptID, &schedAt, &sched.State, &cat, &code, &msg, &scope, &evidence, &sched.ContinuationPrompt, &schedCreated, &schedUpdated,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AttemptSchedule{}, false, nil
+	}
+	if err != nil {
+		return AttemptSchedule{}, false, err
+	}
+	sched.FailureCategory = FailureCategory(cat)
+	sched.FailureCode = code
+	sched.FailureMessage = msg
+	sched.QuotaScope = scope
+	sched.DeadlineEvidence = evidence
+	if schedAt.Valid && schedAt.String != "" {
+		t, _ := parseTimestamp(schedAt.String)
+		sched.ScheduledAt = &t
+	}
+	sched.CreatedAt, _ = parseTimestamp(schedCreated)
+	sched.UpdatedAt, _ = parseTimestamp(schedUpdated)
+	return sched, true, nil
+}
+
+func (s *Store) DueAttemptSchedules(ctx context.Context, now time.Time) ([]AttemptSchedule, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, worker_id, turn_id, source_attempt_id, attempt_id, scheduled_at, state, failure_category, failure_code, failure_message, quota_scope, deadline_evidence, continuation_prompt, created_at, updated_at FROM phase4_attempt_schedules WHERE state = 'pending' AND scheduled_at IS NOT NULL AND scheduled_at <= ? ORDER BY scheduled_at, id`, timestamp(now))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var schedules []AttemptSchedule
+	for rows.Next() {
+		var sched AttemptSchedule
+		var schedAt sql.NullString
+		var cat, code, msg, scope, evidence string
+		var schedCreated, schedUpdated string
+		if err := rows.Scan(&sched.ID, &sched.WorkerID, &sched.TurnID, &sched.SourceAttemptID, &sched.AttemptID, &schedAt, &sched.State, &cat, &code, &msg, &scope, &evidence, &sched.ContinuationPrompt, &schedCreated, &schedUpdated); err != nil {
+			return nil, err
+		}
+		sched.FailureCategory = FailureCategory(cat)
+		sched.FailureCode = code
+		sched.FailureMessage = msg
+		sched.QuotaScope = scope
+		sched.DeadlineEvidence = evidence
+		if schedAt.Valid && schedAt.String != "" {
+			t, _ := parseTimestamp(schedAt.String)
+			sched.ScheduledAt = &t
+		}
+		sched.CreatedAt, _ = parseTimestamp(schedCreated)
+		sched.UpdatedAt, _ = parseTimestamp(schedUpdated)
+		schedules = append(schedules, sched)
+	}
+	return schedules, rows.Err()
+}
+
+func (s *Store) ClaimAttemptSchedule(ctx context.Context, scheduleID string, now time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'claimed', updated_at = ? WHERE id = ? AND state IN ('pending', 'manual_hold')`, timestamp(now), scheduleID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+func (s *Store) ClaimAttemptScheduleTx(ctx context.Context, tx *sql.Tx, scheduleID string, now time.Time) (bool, error) {
+	res, err := tx.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'claimed', updated_at = ? WHERE id = ? AND state IN ('pending', 'manual_hold')`, timestamp(now), scheduleID)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+func (s *Store) CompleteAttemptSchedule(ctx context.Context, scheduleID string, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'completed', updated_at = ? WHERE id = ?`, timestamp(now), scheduleID)
+	return err
+}
+
+func (s *Store) CancelAttemptSchedule(ctx context.Context, scheduleID string, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'canceled', updated_at = ? WHERE id = ?`, timestamp(now), scheduleID)
+	return err
+}
+
+func (s *Store) SyncAttemptSchedulesPolicy(ctx context.Context, enabled bool, now time.Time) error {
+	if !enabled {
+		_, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'manual_hold', updated_at = ? WHERE state = 'pending'`, timestamp(now))
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'pending', updated_at = ? WHERE state = 'manual_hold' AND scheduled_at IS NOT NULL AND scheduled_at > ?`, timestamp(now), timestamp(now))
+	return err
+}
+
+func (s *Store) ReleaseAttemptSchedule(ctx context.Context, scheduleID string, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = CASE WHEN scheduled_at IS NOT NULL THEN 'pending' ELSE 'manual_hold' END, updated_at = ? WHERE id = ? AND state = 'claimed'`, timestamp(now), scheduleID)
+	return err
+}
+
+func (s *Store) PromoteScheduleToPending(ctx context.Context, scheduleID string, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'pending', scheduled_at = ?, updated_at = ? WHERE id = ? AND state = 'manual_hold'`, timestamp(now), timestamp(now), scheduleID)
+	return err
+}
+
+func (s *Store) ensureLifecycleCommandIntent(ctx context.Context, now time.Time, kind, workerID, attemptID string) error {
+	_, err := withTx(s, ctx, func(tx *sql.Tx) (struct{}, error) {
+		return struct{}{}, ensureLifecycleCommandIntentTx(ctx, tx, now, kind, workerID, attemptID)
+	})
+	return err
+}
+
+func (s *Store) CancelLimitedWorkerAttempt(ctx context.Context, workerID string, attemptID string, summary string) (AttemptOutcome, *Phase4Result, error) {
+	if strings.TrimSpace(workerID) == "" || strings.TrimSpace(attemptID) == "" {
+		return AttemptOutcome{}, nil, errors.New("core: workerID and attemptID are required")
+	}
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		summary = "Canceled before scheduled continuation"
+	}
+	s.idempotencyMu.Lock()
+	defer s.idempotencyMu.Unlock()
+
+	returnValue, err := withTx(s, ctx, func(tx *sql.Tx) (struct {
+		outcome AttemptOutcome
+		result  *Phase4Result
+	}, error) {
+		var existingOutcome AttemptOutcome
+		err := scanPhase4Outcome(tx.QueryRowContext(ctx, `SELECT id, attempt_id, status, classification, error_code, error_message, diagnostics, failure_category, created_at FROM phase4_attempt_outcomes WHERE attempt_id = ?`, attemptID), &existingOutcome)
+		if err == nil {
+			result, resultErr := phase4ResultForAttempt(ctx, tx, attemptID)
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{outcome: existingOutcome, result: result}, resultErr
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, err
+		}
+
+		attempt, err := getPhase4Attempt(ctx, tx, attemptID)
+		if err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, err
+		}
+		if attempt.WorkerID != workerID {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, ErrInvalidTransition
+		}
+		if attempt.State.Terminal() {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, ErrInvalidTransition
+		}
+
+		turn, err := getTurn(ctx, tx, attempt.TurnID)
+		if err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, err
+		}
+		if turn.ResultID != "" {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, ErrInvalidTransition
+		}
+
+		worker, err := getWorker(ctx, tx, workerID)
+		if err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, err
+		}
+
+		now := s.now()
+
+		if _, err := tx.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'canceled', updated_at = ? WHERE (attempt_id = ? OR source_attempt_id = ? OR worker_id = ?) AND state IN ('pending', 'manual_hold', 'claimed')`, timestamp(now), attemptID, attemptID, workerID); err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, err
+		}
+
+		if _, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET state = ?, last_error = 'canceled_before_handoff', lease_until = '', updated_at = ? WHERE worker_id = ? AND attempt_id = ? AND kind = 'resume' AND state IN (?, ?)`,
+			WorkerCommandFailed, timestamp(now), workerID, attemptID, WorkerCommandPending, WorkerCommandUncertain); err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, err
+		}
+
+		outcome := AttemptOutcome{
+			ID:              newID("aou"),
+			AttemptID:       attempt.ID,
+			Status:          OutcomeCanceled,
+			Classification:  OutcomeFinal,
+			ErrorCode:       "canceled",
+			ErrorMessage:    summary,
+			FailureCategory: "",
+			CreatedAt:       now,
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempt_outcomes(id, attempt_id, status, classification, error_code, error_message, diagnostics, failure_category, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			outcome.ID, outcome.AttemptID, outcome.Status, outcome.Classification, outcome.ErrorCode, outcome.ErrorMessage, outcome.Diagnostics, string(outcome.FailureCategory), timestamp(now)); err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, err
+		}
+
+		if _, err := tx.ExecContext(ctx, `UPDATE phase4_attempts SET state = ?, updated_at = ? WHERE id = ?`,
+			AttemptCanceled, timestamp(now), attempt.ID); err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, err
+		}
+
+		workerRef := worker.WorkerRef
+
+		if _, err := appendEventTx(ctx, tx, now, EventInput{
+			Kind:          "attempt.outcome_recorded",
+			AggregateType: "attempt",
+			AggregateID:   attempt.ID,
+			Source:        "server",
+			CorrelationID: attempt.CorrelationID,
+			WorkerRef:     workerRef,
+			Payload:       outcome,
+		}, outcome); err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, err
+		}
+
+		result := &Phase4Result{
+			ID:              newID("res"),
+			WorkerID:        attempt.WorkerID,
+			TurnID:          attempt.TurnID,
+			AttemptID:       attempt.ID,
+			Status:          ResultCanceled,
+			Summary:         summary,
+			FailureCode:     "canceled",
+			CorrelationID:   attempt.CorrelationID,
+			CreatedAt:       now,
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_results(id, worker_id, turn_id, attempt_id, status, summary, failure_code, failure_category, failure_details, artifact_refs, correlation_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			result.ID, result.WorkerID, result.TurnID, result.AttemptID, result.Status, result.Summary, result.FailureCode, string(result.FailureCategory), "", "", result.CorrelationID, timestamp(now)); err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, err
+		}
+
+		if _, err := appendEventTx(ctx, tx, now, EventInput{
+			Kind:          "result.accepted",
+			AggregateType: "result",
+			AggregateID:   result.ID,
+			Source:        "server",
+			CorrelationID: result.CorrelationID,
+			CausationID:   outcome.ID,
+			WorkerRef:     workerRef,
+			Payload:       result,
+		}, result); err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, err
+		}
+
+		if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, result_id = ?, updated_at = ? WHERE id = ?`,
+			TurnCanceled, result.ID, timestamp(now), turn.ID); err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, err
+		}
+
+		if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, last_result_summary = ?, updated_at = ? WHERE id = ?`,
+			WorkerIdle, result.Summary, timestamp(now), attempt.WorkerID); err != nil {
+			return struct {
+				outcome AttemptOutcome
+				result  *Phase4Result
+			}{}, err
+		}
+
+		return struct {
+			outcome AttemptOutcome
+			result  *Phase4Result
+		}{outcome: outcome, result: result}, nil
+	})
+	if err != nil {
+		return AttemptOutcome{}, nil, err
+	}
+	return returnValue.outcome, returnValue.result, nil
 }

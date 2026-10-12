@@ -133,6 +133,7 @@ func (s *orderedServer) SendMessage(_ context.Context, m InboundMessage) error {
 func (s *orderedServer) SendWorkerMessage(_ context.Context, m WorkerMessage) error {
 	return s.SendMessage(context.Background(), InboundMessage{ExternalMessageID: m.ExternalMessageID})
 }
+func (s *orderedServer) ResumeWorker(context.Context, string) error { return nil }
 func TestVoiceQueueFIFOIndependentTopicAndRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state")
 	tr := &voiceTransport{fakeTransport: &fakeTransport{}}

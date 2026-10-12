@@ -328,3 +328,8 @@ func (c *HTTPServerClient) SendWorkerMessage(ctx context.Context, message Worker
 	}
 	return c.post(ctx, path, body, "telegram:"+message.ExternalMessageID)
 }
+
+func (c *HTTPServerClient) ResumeWorker(ctx context.Context, workerRef string) error {
+	path := "/v1/workers/" + url.PathEscape(workerRef) + "/resume"
+	return c.post(ctx, path, map[string]string{}, "")
+}

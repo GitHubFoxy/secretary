@@ -14,6 +14,7 @@ export const STATUS_LABELS = {
   waitingApproval: 'Waiting for approval',
   needs_input: 'Needs input',
   needsInput: 'Needs input',
+  limited: 'Usage limit',
   succeeded: 'Succeeded',
   failed: 'Failed',
   canceled: 'Canceled',
@@ -228,6 +229,10 @@ export function workerCard(worker, projects = [], nodes = []) {
     resultIdentity: resultInfo.summary ? resultInfo : null,
     hasTerminalResult: Boolean(result),
     bindingImmutable: true,
+    scheduleMode: worker?.schedule_mode || '',
+    deadlineTo: worker?.deadline_to || '',
+    canResumeNow: Boolean(worker?.can_resume_now),
+    actionIdentity: worker?.action_identity || '',
   };
 }
 

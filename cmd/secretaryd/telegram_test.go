@@ -58,6 +58,7 @@ type bridgeServer struct{}
 
 func (bridgeServer) SendMessage(context.Context, telegram.InboundMessage) error      { return nil }
 func (bridgeServer) SendWorkerMessage(context.Context, telegram.WorkerMessage) error { return nil }
+func (bridgeServer) ResumeWorker(context.Context, string) error { return nil }
 
 type bridgeTransport struct {
 	mu   sync.Mutex

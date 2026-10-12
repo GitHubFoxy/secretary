@@ -81,6 +81,13 @@ Web получает canonical entry сразу. Telegram отправляет a
 - Callback capability — одноразовый token, выдаваемый Bridge Worker для Result callback и связанный с одним Worker binding.
 - Dispatch failure до accepted Dispatch сохраняет Task со status `dispatch_failed` в Personal Conversation, но не создаёт Worker binding и не запускает automatic retry.
 - Task closure явно закрывает Task и архивирует Worker binding, сохраняя историю. Для active Attempt Secretary сначала отправляет Cancel и ждёт terminal Result.
+- Исключение auto-resume при подтверждённом лимите использования (Usage Limit):
+  - При подтверждённом исчерпании лимита (RPC account/rateLimits/read возвращает usedPercent >= 100.0 или окно сброса resetsAt) исходная Attempt переходит в failed, Turn переходит в состояние suspended, Worker — в limited. Преждевременный Result в Personal Conversation не публикуется.
+  - Следующая Attempt создаётся атомарно в состоянии scheduled с незанятым command intent resume (dedupe_key='attempt').
+  - В таблице phase4_attempt_schedules создаётся запись расписания: в состоянии pending со временем resetsAt + 60s (если включена политика auto-resume и resetsAt в будущем) либо manual_hold (при отключённой политике, отсутствии resetsAt, либо блокировках spend-control / ordinaryUsageAllowed=false).
+  - При достижении дедлайна или ручном вызове /resume (API POST /v1/workers/{ref}/resume или команда Telegram /resume в топике Worker) единый CAS-шлюз переводит расписание в claimed, и Node возобновляет выполнение с ContinuationPrompt ("Continue previous work from the point where it was interrupted by usage limit.").
+  - Очередь FIFO (/q) сохраняется во время suspended Turn и не продвигается до завершения текущего Turn.
+  - Отмена (Cancel), закрытие (Close) или новый прямой ввод отменяют невыполненное расписание и завершают suspended Turn единым Result со статусом canceled.
 
 ## Согласование queue handoff и закрытия
 
