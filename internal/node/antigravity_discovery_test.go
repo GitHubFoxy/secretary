@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -522,6 +523,78 @@ func TestAntigravityProbe_AuthRequired_CompletedExchangeReportsMethod(t *testing
 
 	if !result.Available() {
 		t.Fatalf("expected available after auth exchange, got err=%v code=%s", result.Err, result.ErrorCode)
+	}
+	if result.Instance.Status != core.HarnessReady {
+		t.Fatalf("expected status HarnessReady, got %q", result.Instance.Status)
+	}
+	if !result.Instance.Authentication.Authenticated {
+		t.Fatal("expected Authenticated == true")
+	}
+	if result.Instance.Authentication.Method != "agent-login" {
+		t.Fatalf("expected Authentication.Method == agent-login after completed exchange, got %q", result.Instance.Authentication.Method)
+	}
+}
+
+func TestAntigravityProbe_AuthRequired_TerminalMethod_ActionableError(t *testing.T) {
+	ResetAntigravityProbeCache()
+	execPath, _ := createFakeAntigravityServer(t, "auth_terminal")
+	spec := DefaultAntigravityProbeSpec()
+	spec.Binary = execPath
+
+	probe := HarnessProbe{Node: "local", Spec: spec, Runner: ExecCommandRunner{}}
+	result := probe.Probe(context.Background())
+
+	if result.Available() {
+		t.Fatal("expected unavailable for terminal-only auth method")
+	}
+	if result.Instance.Status != core.HarnessUnavailable {
+		t.Fatalf("expected status HarnessUnavailable, got %q", result.Instance.Status)
+	}
+	if result.ErrorCode != "unauthenticated" {
+		t.Fatalf("expected ErrorCode unauthenticated, got %q", result.ErrorCode)
+	}
+	if !strings.Contains(result.Instance.DiagnosticReason, "login required via interactive terminal") {
+		t.Fatalf("expected actionable error message mentioning interactive terminal, got: %s", result.Instance.DiagnosticReason)
+	}
+	if !strings.Contains(result.Instance.DiagnosticReason, "cli-login") {
+		t.Fatalf("expected error mentioning cli-login, got: %s", result.Instance.DiagnosticReason)
+	}
+}
+
+func TestAntigravityProbe_AuthRequired_TerminalFirstMixedMethods(t *testing.T) {
+	ResetAntigravityProbeCache()
+	execPath, _ := createFakeAntigravityServer(t, "auth_terminal_first_mixed")
+	spec := DefaultAntigravityProbeSpec()
+	spec.Binary = execPath
+
+	probe := HarnessProbe{Node: "local", Spec: spec, Runner: ExecCommandRunner{}}
+	result := probe.Probe(context.Background())
+
+	if !result.Available() {
+		t.Fatalf("expected available after auth exchange, got err=%v code=%s diag=%s", result.Err, result.ErrorCode, result.Instance.DiagnosticReason)
+	}
+	if result.Instance.Status != core.HarnessReady {
+		t.Fatalf("expected status HarnessReady, got %q", result.Instance.Status)
+	}
+	if !result.Instance.Authentication.Authenticated {
+		t.Fatal("expected Authenticated == true")
+	}
+	if result.Instance.Authentication.Method != "oauth-personal" {
+		t.Fatalf("expected Authentication.Method == oauth-personal after completed exchange, got %q", result.Instance.Authentication.Method)
+	}
+}
+
+func TestAntigravityProbe_AuthRequired_TerminalFirstAgent(t *testing.T) {
+	ResetAntigravityProbeCache()
+	execPath, _ := createFakeAntigravityServer(t, "auth_terminal_first_agent")
+	spec := DefaultAntigravityProbeSpec()
+	spec.Binary = execPath
+
+	probe := HarnessProbe{Node: "local", Spec: spec, Runner: ExecCommandRunner{}}
+	result := probe.Probe(context.Background())
+
+	if !result.Available() {
+		t.Fatalf("expected available after auth exchange, got err=%v code=%s diag=%s", result.Err, result.ErrorCode, result.Instance.DiagnosticReason)
 	}
 	if result.Instance.Status != core.HarnessReady {
 		t.Fatalf("expected status HarnessReady, got %q", result.Instance.Status)

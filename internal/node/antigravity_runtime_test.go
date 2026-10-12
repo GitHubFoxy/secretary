@@ -471,6 +471,16 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 				authMethods = []map[string]string{{"id": "agent-login", "type": "agent"}}
 			case "auth_terminal":
 				authMethods = []map[string]string{{"id": "cli-login", "type": "terminal"}}
+			case "auth_terminal_first_mixed":
+				authMethods = []map[string]string{
+					{"id": "cli-login", "type": "terminal"},
+					{"id": "oauth-personal", "type": "oauth"},
+				}
+			case "auth_terminal_first_agent":
+				authMethods = []map[string]string{
+					{"id": "cli-login", "type": "terminal"},
+					{"id": "agent-login", "type": "agent"},
+				}
 			case "already_authenticated":
 				authMethods = []map[string]string{{"id": "agent-login", "type": "agent"}}
 			case "empty_catalog":
@@ -504,6 +514,14 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 				// ACP forbids authenticate for terminal methods!
 				os.Exit(99)
 			}
+			var authParams struct {
+				MethodID string `json:"methodId"`
+			}
+			_ = json.Unmarshal(req.Params, &authParams)
+			if authParams.MethodID == "cli-login" {
+				// Must not attempt authenticate on terminal method!
+				os.Exit(99)
+			}
 			if scenario == "already_authenticated" || scenario == "empty_catalog" {
 				// Client must not authenticate if session/new succeeds without it!
 				os.Exit(99)
@@ -516,7 +534,7 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 			})
 
 		case "session/new":
-			if (scenario == "auth_protocol" || scenario == "auth_terminal") && !authenticated {
+			if (scenario == "auth_protocol" || scenario == "auth_terminal" || scenario == "auth_terminal_first_mixed" || scenario == "auth_terminal_first_agent") && !authenticated {
 				emit(map[string]any{
 					"jsonrpc": "2.0",
 					"id":      req.ID,
@@ -893,6 +911,136 @@ func TestAntigravityRuntime_AuthRequired_TerminalMethod_ActionableError(t *testi
 	}
 	if !strings.Contains(err.Error(), "cli-login") {
 		t.Fatalf("expected error mentioning method ID cli-login, got: %v", err)
+	}
+}
+
+func TestAntigravityRuntime_AuthRequired_TerminalFirstMixedMethods(t *testing.T) {
+	execPath, _ := createFakeAntigravityServer(t, "auth_terminal_first_mixed")
+	rt := AntigravityRuntime{
+		AntigravityCommand: execPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sess, err := rt.Start(ctx, StartRequest{
+		WorkerRef:          "terminal-first-worker",
+		Workspace:          t.TempDir(),
+		Profile:            ManagedProfile{Name: "test-profile", Content: "instructions"},
+		DeferInitialPrompt: true,
+	})
+	if err != nil {
+		t.Fatalf("expected successful Start after authenticating via nonterminal method, got: %v", err)
+	}
+	defer sess.Close()
+}
+
+func TestAntigravityRuntime_AuthRequired_TerminalFirstAgent(t *testing.T) {
+	execPath, _ := createFakeAntigravityServer(t, "auth_terminal_first_agent")
+	rt := AntigravityRuntime{
+		AntigravityCommand: execPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sess, err := rt.Start(ctx, StartRequest{
+		WorkerRef:          "terminal-first-agent-worker",
+		Workspace:          t.TempDir(),
+		Profile:            ManagedProfile{Name: "test-profile", Content: "instructions"},
+		DeferInitialPrompt: true,
+	})
+	if err != nil {
+		t.Fatalf("expected successful Start after authenticating via agent method, got: %v", err)
+	}
+	defer sess.Close()
+}
+
+func TestSelectAuthMethod(t *testing.T) {
+	// 1. Empty methods returns error
+	if _, err := selectAuthMethod(nil); err == nil {
+		t.Fatal("expected error for empty auth methods")
+	}
+
+	// 2. Terminal-only returns terminal method
+	termOnly := []acpAuthMethod{
+		{ID: "cli-login", Type: "terminal"},
+	}
+	selected, err := selectAuthMethod(termOnly)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if selected.ID != "cli-login" || selected.Type != "terminal" {
+		t.Fatalf("expected cli-login terminal, got %#v", selected)
+	}
+
+	// 3. Multiple terminal methods returns first terminal method
+	multiTerm := []acpAuthMethod{
+		{ID: "term-1", Type: "terminal"},
+		{ID: "term-2", Type: "terminal"},
+	}
+	selected, err = selectAuthMethod(multiTerm)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if selected.ID != "term-1" {
+		t.Fatalf("expected term-1, got %#v", selected)
+	}
+
+	// 4. Terminal-first mixed with oauth selects oauth (supported nonterminal)
+	termOauth := []acpAuthMethod{
+		{ID: "cli-login", Type: "terminal"},
+		{ID: "oauth-personal", Type: "oauth"},
+	}
+	selected, err = selectAuthMethod(termOauth)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if selected.ID != "oauth-personal" {
+		t.Fatalf("expected oauth-personal, got %#v", selected)
+	}
+
+	// 5. Terminal-first mixed with api-key selects api-key (supported nonterminal)
+	termKey := []acpAuthMethod{
+		{ID: "cli-login", Type: "terminal"},
+		{ID: "gemini-api-key", Type: "api-key"},
+	}
+	selected, err = selectAuthMethod(termKey)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if selected.ID != "gemini-api-key" {
+		t.Fatalf("expected gemini-api-key, got %#v", selected)
+	}
+
+	// 6. Mixed terminal, oauth, and agent preserves preference for agent
+	mixed := []acpAuthMethod{
+		{ID: "cli-login", Type: "terminal"},
+		{ID: "oauth-personal", Type: "oauth"},
+		{ID: "agent-login", Type: "agent"},
+	}
+	selected, err = selectAuthMethod(mixed)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if selected.ID != "agent-login" {
+		t.Fatalf("expected agent-login, got %#v", selected)
+	}
+
+	// 7. Preferred env var override
+	t.Setenv("SECRETARY_ANTIGRAVITY_AUTH_METHOD", "gemini-api-key")
+	_, err = selectAuthMethod(mixed)
+	if err == nil {
+		t.Fatal("expected error when gemini-api-key is not in mixed list")
+	}
+
+	t.Setenv("SECRETARY_ANTIGRAVITY_AUTH_METHOD", "oauth-personal")
+	selected, err = selectAuthMethod(mixed)
+	if err != nil {
+		t.Fatalf("unexpected error with env override: %v", err)
+	}
+	if selected.ID != "oauth-personal" {
+		t.Fatalf("expected oauth-personal, got %#v", selected)
 	}
 }
 

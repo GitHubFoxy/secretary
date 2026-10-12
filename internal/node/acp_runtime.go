@@ -473,6 +473,14 @@ func parseAgentCapabilities(raw map[string]any) acpAgentCapabilities {
 	return caps
 }
 
+func isTerminalAuthMethod(m acpAuthMethod) bool {
+	return strings.EqualFold(strings.TrimSpace(m.Type), "terminal")
+}
+
+func isAgentAuthMethod(m acpAuthMethod) bool {
+	return strings.EqualFold(strings.TrimSpace(m.Type), "agent")
+}
+
 func selectAuthMethod(methods []acpAuthMethod) (*acpAuthMethod, error) {
 	if len(methods) == 0 {
 		return nil, errors.New("no authentication methods advertised by agent")
@@ -486,7 +494,12 @@ func selectAuthMethod(methods []acpAuthMethod) (*acpAuthMethod, error) {
 		return nil, fmt.Errorf("preferred auth method %q not advertised by agent", pref)
 	}
 	for _, m := range methods {
-		if m.Type == "" || strings.EqualFold(m.Type, "agent") {
+		if isAgentAuthMethod(m) {
+			return &m, nil
+		}
+	}
+	for _, m := range methods {
+		if !isTerminalAuthMethod(m) {
 			return &m, nil
 		}
 	}
@@ -498,7 +511,7 @@ func (r ACPRuntime) handleAuthRequired(ctx context.Context, client *acp.Client, 
 	if err != nil {
 		return fmt.Errorf("antigravity: authentication required; %w", err)
 	}
-	if strings.EqualFold(method.Type, "terminal") {
+	if isTerminalAuthMethod(*method) {
 		return fmt.Errorf("antigravity: login required via interactive terminal (%s); run interactive login or complete onboarding", method.ID)
 	}
 	var authResp map[string]any

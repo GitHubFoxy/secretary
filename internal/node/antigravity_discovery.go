@@ -250,7 +250,7 @@ func observeAntigravityACP(ctx context.Context, execPath, companionPath, profile
 		if selectErr != nil {
 			return version, false, "", nil, nil, "unauthenticated", fmt.Errorf("antigravity: authentication required: %w", selectErr)
 		}
-		if strings.EqualFold(method.Type, "terminal") {
+		if isTerminalAuthMethod(*method) {
 			return version, false, "", nil, nil, "unauthenticated", fmt.Errorf("antigravity: login required via interactive terminal (%s); run interactive login or complete onboarding", method.ID)
 		}
 		var authResp map[string]any
