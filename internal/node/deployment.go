@@ -20,15 +20,16 @@ type WorkspaceMapping struct {
 }
 
 type DeploymentConfig struct {
-	ServerURL       string             `json:"server_url"`
-	Node            core.NodeReference `json:"node"`
-	DataDir         string             `json:"data_dir"`
-	Workspaces      []WorkspaceMapping `json:"workspaces,omitempty"`
-	Capacity        int                `json:"capacity,omitempty"`
-	ListenAddress   string             `json:"listen_address,omitempty"`
-	IncludeOpenCode bool               `json:"include_opencode"`
-	Standalone      bool               `json:"standalone,omitempty"`
-	MCPServers      []MCPServer        `json:"mcp_servers,omitempty"`
+	ServerURL          string             `json:"server_url"`
+	Node               core.NodeReference `json:"node"`
+	DataDir            string             `json:"data_dir"`
+	Workspaces         []WorkspaceMapping `json:"workspaces,omitempty"`
+	Capacity           int                `json:"capacity,omitempty"`
+	ListenAddress      string             `json:"listen_address,omitempty"`
+	IncludeOpenCode    bool               `json:"include_opencode"`
+	IncludeAntigravity bool               `json:"include_antigravity,omitempty"`
+	Standalone         bool               `json:"standalone,omitempty"`
+	MCPServers         []MCPServer        `json:"mcp_servers,omitempty"`
 }
 
 func LoadDeploymentConfig(path string) (DeploymentConfig, error) {

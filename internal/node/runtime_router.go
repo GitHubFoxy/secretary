@@ -12,6 +12,7 @@ type RuntimeRouter struct {
 	ClaudeCode     Runtime
 	FX             Runtime
 	OpenCode       Runtime
+	Antigravity    Runtime
 }
 
 func (r RuntimeRouter) Start(ctx context.Context, request StartRequest) (Session, error) {
@@ -70,6 +71,8 @@ func (r RuntimeRouter) runtime(request StartRequest) Runtime {
 			return r.Claude
 		}
 		return r.ClaudeCode
+	case "antigravity":
+		return r.Antigravity
 	default:
 		return unavailableRuntime{harness: harness}
 	}
