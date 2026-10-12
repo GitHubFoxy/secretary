@@ -396,13 +396,14 @@ func (m ToolFailureMetadata) Validate() error {
 }
 
 type ToolResult struct {
-	CallID  string               `json:"call_id,omitempty"`
-	Name    string               `json:"name,omitempty"`
-	Output  string               `json:"output,omitempty"`
-	Error   string               `json:"-"`
-	Status  string               `json:"status,omitempty"`
-	Preview string               `json:"preview,omitempty"`
-	Failure *ToolFailureMetadata `json:"failure,omitempty"`
+	CallID        string               `json:"call_id,omitempty"`
+	Name          string               `json:"name,omitempty"`
+	Output        string               `json:"output,omitempty"`
+	OutputPresent bool                 `json:"output_present,omitempty"`
+	Error         string               `json:"-"`
+	Status        string               `json:"status,omitempty"`
+	Preview       string               `json:"preview,omitempty"`
+	Failure       *ToolFailureMetadata `json:"failure,omitempty"`
 }
 
 type SubagentActivity struct {

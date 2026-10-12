@@ -500,20 +500,265 @@ func TestSecretaryEventsAreThrottledAndWorkerEventsAreReadable(t *testing.T) {
 func TestWorkerToolEventsRenderActualNamePreviewAndLifecycle(t *testing.T) {
 	tool := "mcp__filesystem__read_file_with_a_long_but_real_name"
 	for _, test := range []struct {
-		kind, marker string
+		kind, want string
+		hasOutput  bool
 	}{
-		{"worker.tool_started", "▶"},
-		{"worker.tool_finished", "✓"},
-		{"worker.tool_failed", "✗"},
+		{"worker.tool_started", "▶ Запуск: " + tool + " src/config.toml", false},
+		{"worker.tool_finished", "✓ Выполнено: " + tool + " src/config.toml (без вывода)", false},
+		{"worker.tool_finished", "✓ Выполнено: " + tool + " src/config.toml (вывод скрыт)", true},
+		{"worker.tool_failed", "✗ Ошибка: " + tool + " src/config.toml (без вывода)", false},
+		{"worker.tool_failed", "✗ Ошибка: " + tool + " src/config.toml (вывод скрыт)", true},
 	} {
-		got := renderWorkerEvent(Event{Kind: test.kind, Tool: tool, ToolPreview: "src/config.toml", Text: "synthetic tool output must not appear"})
-		want := test.marker + " " + tool + " src/config.toml"
-		if got != want || strings.Contains(got, "Worker запускает") || strings.Contains(got, "synthetic") {
-			t.Fatalf("rendered tool event=%q want=%q", got, want)
+		got := renderWorkerEvent(Event{Kind: test.kind, Tool: tool, ToolPreview: "src/config.toml", HasOutput: test.hasOutput, Text: "synthetic tool output must not appear"})
+		if got != test.want || strings.Contains(got, "Worker запускает") || strings.Contains(got, "synthetic") {
+			t.Fatalf("rendered tool event=%q want=%q", got, test.want)
 		}
 	}
 	if got := renderWorkerEvent(Event{Kind: "worker.tool_started", ToolPreview: "src/config.toml"}); got != "" {
 		t.Fatalf("missing tool identity rendered as event: %q", got)
+	}
+}
+
+func TestWorkerToolCallIDCorrelationAndParallelExecution(t *testing.T) {
+	ctx := context.Background()
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "state.json"))
+
+	if err := adapter.HandleEvent(ctx, Event{Kind: "worker.created", WorkerRef: "worker-1", Title: "Worker"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two parallel calls to the same tool name "exec_command" with different call IDs and previews.
+	call1Start := Event{
+		Kind: "worker.tool_started", WorkerRef: "worker-1", CallID: "call-1",
+		Tool: "exec_command", ToolPreview: "python3 test.py",
+	}
+	call2Start := Event{
+		Kind: "worker.tool_started", WorkerRef: "worker-1", CallID: "call-2",
+		Tool: "exec_command", ToolPreview: "open https://example.com",
+	}
+
+	if err := adapter.HandleEvent(ctx, call1Start); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(ctx, call2Start); err != nil {
+		t.Fatal(err)
+	}
+
+	// Finish call-2 first (with empty output and no preview in result, relying on CallID correlation).
+	call2Finish := Event{
+		Kind: "worker.tool_finished", WorkerRef: "worker-1", CallID: "call-2",
+		Tool: "exec_command", HasOutput: false,
+	}
+	if err := adapter.HandleEvent(ctx, call2Finish); err != nil {
+		t.Fatal(err)
+	}
+
+	// Finish call-1 second (with nonempty output).
+	call1Finish := Event{
+		Kind: "worker.tool_finished", WorkerRef: "worker-1", CallID: "call-1",
+		Tool: "exec_command", HasOutput: true,
+	}
+	if err := adapter.HandleEvent(ctx, call1Finish); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(transport.sent) != 4 {
+		t.Fatalf("sent messages count=%d want 4: %#v", len(transport.sent), transport.sent)
+	}
+
+	// Sent order: call1 start, call2 start, call2 finish, call1 finish
+	if transport.sent[0].Text != "▶ Запуск: exec_command python3 test.py" {
+		t.Fatalf("call1 start message=%q", transport.sent[0].Text)
+	}
+	if transport.sent[1].Text != "▶ Запуск: exec_command open https://example.com" {
+		t.Fatalf("call2 start message=%q", transport.sent[1].Text)
+	}
+	// call2 completed with empty output: must correlate to call-2's preview and indicate (без вывода)
+	if transport.sent[2].Text != "✓ Выполнено: exec_command open https://example.com (без вывода)" {
+		t.Fatalf("call2 finish message=%q", transport.sent[2].Text)
+	}
+	// call1 completed with nonempty output: must correlate to call-1's preview and indicate (вывод скрыт)
+	if transport.sent[3].Text != "✓ Выполнено: exec_command python3 test.py (вывод скрыт)" {
+		t.Fatalf("call1 finish message=%q", transport.sent[3].Text)
+	}
+}
+
+func TestWorkerToolWithoutCallIDNeverMatchesByNameAlone(t *testing.T) {
+	ctx := context.Background()
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "state.json"))
+
+	if err := adapter.HandleEvent(ctx, Event{Kind: "worker.created", WorkerRef: "worker-1", Title: "Worker"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start call with call_id "call-1"
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.tool_started", WorkerRef: "worker-1", CallID: "call-1",
+		Tool: "exec_command", ToolPreview: "first command",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Result arrives without call_id and without preview
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.tool_finished", WorkerRef: "worker-1", CallID: "",
+		Tool: "exec_command", HasOutput: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(transport.sent) != 2 {
+		t.Fatalf("sent count=%d want 2", len(transport.sent))
+	}
+	// The id-less result must NOT steal "first command" preview by tool name alone.
+	if transport.sent[1].Text != "✓ Выполнено: exec_command (без вывода)" {
+		t.Fatalf("id-less result unexpectedly borrowed preview: %q", transport.sent[1].Text)
+	}
+}
+
+func TestWorkerToolReplayDeduplication(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.json")
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, path)
+
+	created := Event{Sequence: 1, Kind: "worker.created", WorkerRef: "worker-1", Title: "Worker"}
+	start := Event{Sequence: 2, Kind: "worker.tool_started", WorkerRef: "worker-1", CallID: "c1", Tool: "shell", ToolPreview: "ls"}
+	finish := Event{Sequence: 3, Kind: "worker.tool_finished", WorkerRef: "worker-1", CallID: "c1", Tool: "shell", HasOutput: false}
+
+	for _, ev := range []Event{created, start, finish} {
+		if err := adapter.HandleDurableEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(transport.sent) != 2 {
+		t.Fatalf("sent count=%d want 2", len(transport.sent))
+	}
+
+	// Replay after restart
+	adapter = newTestAdapter(t, transport, &fakeServer{}, path)
+	for _, ev := range []Event{created, start, finish} {
+		if err := adapter.HandleDurableEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(transport.sent) != 2 {
+		t.Fatalf("duplicate messages after restart replay: sent=%d want 2", len(transport.sent))
+	}
+}
+
+func TestWorkerTopicShowsExecutionNodeIDWhenKnown(t *testing.T) {
+	ctx := context.Background()
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "state.json"))
+
+	// Case 1: NodeID is known and configured
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.created", WorkerRef: "worker-1", Title: "Task 1",
+		NodeID: "execution-node-primary", TaskPrompt: "Run tests",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Узел: execution-node-primary\n\nRun tests" {
+		t.Fatalf("prompt with node ID delivery: %#v", transport.sent)
+	}
+
+	// Case 2: NodeID is empty (unknown) — must not invent machine name or OS
+	transport.sent = nil
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.created", WorkerRef: "worker-2", Title: "Task 2",
+		NodeID: "", TaskPrompt: "Run tests",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Run tests" {
+		t.Fatalf("prompt without node ID delivery: %#v", transport.sent)
+	}
+
+	// Case 3: NodeID looks like a filesystem path — must not leak filesystem paths
+	transport.sent = nil
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.created", WorkerRef: "worker-3", Title: "Task 3",
+		NodeID: "/Users/secret/path/node", TaskPrompt: "Run tests",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Run tests" {
+		t.Fatalf("prompt with filesystem path in node ID leaked path: %#v", transport.sent)
+	}
+
+	// Case 4: NodeID has sensitive token prefix
+	transport.sent = nil
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.created", WorkerRef: "worker-4", Title: "Task 4",
+		NodeID: "sk-token12345", TaskPrompt: "Run tests",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Run tests" {
+		t.Fatalf("token-like node ID must be rejected: %#v", transport.sent)
+	}
+
+	// Case 5: NodeID contains newline injection
+	transport.sent = nil
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.created", WorkerRef: "worker-5", Title: "Task 5",
+		NodeID: "node-primary\ninjected", TaskPrompt: "Run tests",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Run tests" {
+		t.Fatalf("newline in node ID must be rejected: %#v", transport.sent)
+	}
+}
+
+func TestWorkerToolAttemptIsolationReusedCallID(t *testing.T) {
+	ctx := context.Background()
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "state.json"))
+
+	if err := adapter.HandleEvent(ctx, Event{Kind: "worker.created", WorkerRef: "worker-1", Title: "Worker"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Attempt 1: CallID "call-1" runs "cat foo.txt" and completes with empty output
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.tool_started", WorkerRef: "worker-1", AttemptID: "att-1",
+		CallID: "call-1", Tool: "exec_command", ToolPreview: "cat foo.txt",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.tool_finished", WorkerRef: "worker-1", AttemptID: "att-1",
+		CallID: "call-1", Tool: "exec_command", HasOutput: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Attempt 2: Reuses same CallID "call-1" but with different preview "cat bar.txt" and nonempty output
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.tool_started", WorkerRef: "worker-1", AttemptID: "att-2",
+		CallID: "call-1", Tool: "exec_command", ToolPreview: "cat bar.txt",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.tool_finished", WorkerRef: "worker-1", AttemptID: "att-2",
+		CallID: "call-1", Tool: "exec_command", HasOutput: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(transport.sent) != 4 {
+		t.Fatalf("sent messages count=%d want 4 (attempt 2 was suppressed): %#v", len(transport.sent), transport.sent)
+	}
+	if transport.sent[2].Text != "▶ Запуск: exec_command cat bar.txt" {
+		t.Fatalf("att-2 start message=%q", transport.sent[2].Text)
+	}
+	if transport.sent[3].Text != "✓ Выполнено: exec_command cat bar.txt (вывод скрыт)" {
+		t.Fatalf("att-2 finish message=%q", transport.sent[3].Text)
 	}
 }
 

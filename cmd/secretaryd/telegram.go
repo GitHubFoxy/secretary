@@ -163,9 +163,21 @@ func telegramEvent(event core.Event) telegram.Event {
 	if workerRef == "" && event.AggregateType == "worker" {
 		workerRef = event.AggregateID
 	}
-	result := telegram.Event{EventID: event.ID, Sequence: event.Seq, Kind: event.Kind, Source: event.Source, WorkerRef: workerRef, Payload: event.Payload}
 	var payload map[string]any
 	_ = json.Unmarshal(event.Payload, &payload)
+	attemptID := event.AttemptID
+	if attemptID == "" {
+		attemptID = stringField(payload, "attempt_id")
+		if attemptID == "" {
+			if meta, ok := payload["metadata"].(map[string]any); ok {
+				attemptID = stringField(meta, "attempt_id")
+			}
+		}
+	}
+	result := telegram.Event{
+		EventID: event.ID, Sequence: event.Seq, Kind: event.Kind, Source: event.Source,
+		WorkerRef: workerRef, AttemptID: attemptID, Payload: event.Payload,
+	}
 	result.Title = stringField(payload, "title")
 	result.Text = stringField(payload, "text", "summary", "result", "error", "response")
 	result.Tool = stringField(payload, "tool")
@@ -204,6 +216,7 @@ func telegramEvent(event core.Event) telegram.Event {
 		// Intent является OriginalUserIntent в Node Dispatch envelope.
 		// Не передаём генератору весь payload с Project/Policy snapshots.
 		result.TaskPrompt, _ = payload["intent"].(string)
+		result.NodeID = stringField(payload, "node_id", "node")
 	case strings.HasPrefix(event.Kind, "worker.message."):
 		result.Kind = event.Kind
 		result.Text = stringField(payload, "text")
@@ -226,6 +239,7 @@ func telegramEvent(event core.Event) telegram.Event {
 				if result.Tool == "" {
 					result.Tool = stringField(call, "name")
 				}
+				result.CallID = stringField(call, "call_id", "callId")
 				result.ToolPreview = stringField(call, "preview")
 			}
 			if result.Tool == "" {
@@ -237,10 +251,16 @@ func telegramEvent(event core.Event) telegram.Event {
 				if result.Tool == "" {
 					result.Tool = stringField(toolResult, "name")
 				}
+				result.CallID = stringField(toolResult, "call_id", "callId")
 				result.ToolPreview = stringField(toolResult, "preview")
 				status := strings.ToLower(stringField(toolResult, "status"))
 				if status == "failed" || status == "error" || status == "canceled" || status == "cancelled" || stringField(toolResult, "error") != "" {
 					result.Kind = "worker.tool_failed"
+				}
+				if present, ok := toolResult["output_present"].(bool); ok {
+					result.HasOutput = present
+				} else {
+					result.HasOutput = hasSemanticToolOutput(toolResult)
 				}
 			}
 			if result.Tool == "" {
@@ -309,4 +329,86 @@ func stringField(values map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func hasSemanticToolOutput(toolResult map[string]any) bool {
+	if present, ok := toolResult["output_present"].(bool); ok && present {
+		return true
+	}
+	checkValue := func(val any) bool {
+		if val == nil {
+			return false
+		}
+		switch v := val.(type) {
+		case string:
+			trimmed := strings.TrimSpace(v)
+			if trimmed == "" {
+				return false
+			}
+			if strings.HasPrefix(trimmed, `"`) && strings.HasSuffix(trimmed, `"`) {
+				var decoded string
+				if json.Unmarshal([]byte(trimmed), &decoded) == nil {
+					return strings.TrimSpace(decoded) != ""
+				}
+			}
+			if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
+				(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+				var parsed any
+				if json.Unmarshal([]byte(trimmed), &parsed) == nil {
+					return hasParsedOutput(parsed)
+				}
+			}
+			return true
+		case map[string]any:
+			return hasParsedOutput(v)
+		case []any:
+			return hasParsedOutput(v)
+		default:
+			return true
+		}
+	}
+	return checkValue(toolResult["output"]) || checkValue(toolResult["result"]) || checkValue(toolResult["error"])
+}
+
+func hasParsedOutput(v any) bool {
+	switch current := v.(type) {
+	case string:
+		return strings.TrimSpace(current) != ""
+	case map[string]any:
+		if len(current) == 0 {
+			return false
+		}
+		hasOutputKeys := false
+		for _, key := range []string{"formatted_output", "output", "result", "stdout", "stderr", "error", "text"} {
+			if child, exists := current[key]; exists {
+				hasOutputKeys = true
+				if hasParsedOutput(child) {
+					return true
+				}
+			}
+		}
+		if hasOutputKeys {
+			return false
+		}
+		for _, child := range current {
+			if hasParsedOutput(child) {
+				return true
+			}
+		}
+		return false
+	case []any:
+		if len(current) == 0 {
+			return false
+		}
+		for _, child := range current {
+			if hasParsedOutput(child) {
+				return true
+			}
+		}
+		return false
+	case nil:
+		return false
+	default:
+		return true
+	}
 }

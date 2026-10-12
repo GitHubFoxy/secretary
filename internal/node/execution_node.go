@@ -794,7 +794,7 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 		if !safe {
 			return core.Activity{}, false
 		}
-		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolCall, ToolCall: &core.ToolCall{Name: tool, Arguments: arguments, Preview: ToolArgumentPreview(tool, arguments, workspacePath)}}
+		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolCall, ToolCall: &core.ToolCall{CallID: strings.TrimSpace(item.CallID), Name: tool, Arguments: arguments, Preview: ToolArgumentPreview(tool, arguments, workspacePath)}}
 	case ActivityToolResult:
 		tool := strings.TrimSpace(item.Tool)
 		if !capabilities.SupportsActivity(core.ActivityToolResult) || tool == "" {
@@ -817,7 +817,8 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 		if result == "" && strings.TrimSpace(item.Status) == "" && failure == nil {
 			return core.Activity{}, false
 		}
-		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolResult, ToolResult: &core.ToolResult{Name: tool, Output: result, Status: item.Status, Preview: ToolArgumentPreview(tool, item.Arguments, workspacePath), Failure: failure}}
+		outputPresent := item.OutputPresent || semanticOutputPresent(result)
+		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolResult, ToolResult: &core.ToolResult{CallID: strings.TrimSpace(item.CallID), Name: tool, Output: result, OutputPresent: outputPresent, Status: item.Status, Preview: ToolArgumentPreview(tool, item.Arguments, workspacePath), Failure: failure}}
 	case ActivityStatus:
 		if !capabilities.SupportsActivity(core.ActivityStatus) || strings.TrimSpace(item.Text) == "" {
 			return core.Activity{}, false
@@ -889,4 +890,68 @@ func bindCommandOutcomeIdentity(outcome CommandOutcome, command Command) Command
 }
 func nodeEventID(attempt string) string {
 	return fmt.Sprintf("node-event-%s-%d", attempt, time.Now().UnixNano())
+}
+
+func semanticOutputPresent(result string) bool {
+	trimmed := strings.TrimSpace(result)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, `"`) && strings.HasSuffix(trimmed, `"`) {
+		var decoded string
+		if json.Unmarshal([]byte(trimmed), &decoded) == nil {
+			return strings.TrimSpace(decoded) != ""
+		}
+	}
+	if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
+		(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+		var parsed any
+		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
+			return parsedSemanticOutput(parsed)
+		}
+	}
+	return true
+}
+
+func parsedSemanticOutput(v any) bool {
+	switch current := v.(type) {
+	case string:
+		return strings.TrimSpace(current) != ""
+	case map[string]any:
+		if len(current) == 0 {
+			return false
+		}
+		hasOutputKeys := false
+		for _, key := range []string{"formatted_output", "output", "result", "stdout", "stderr", "error", "text"} {
+			if child, exists := current[key]; exists {
+				hasOutputKeys = true
+				if parsedSemanticOutput(child) {
+					return true
+				}
+			}
+		}
+		if hasOutputKeys {
+			return false
+		}
+		for _, child := range current {
+			if parsedSemanticOutput(child) {
+				return true
+			}
+		}
+		return false
+	case []any:
+		if len(current) == 0 {
+			return false
+		}
+		for _, child := range current {
+			if parsedSemanticOutput(child) {
+				return true
+			}
+		}
+		return false
+	case nil:
+		return false
+	default:
+		return true
+	}
 }

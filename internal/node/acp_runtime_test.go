@@ -1353,3 +1353,108 @@ func TestFakeACPProcess(t *testing.T) {
 		_ = encoder.Encode(map[string]any{"id": request.ID, "result": result})
 	}
 }
+
+func TestACPToolTrackerIdlessTerminalDoesNotCorruptActiveCall(t *testing.T) {
+	tracker := newACPToolTracker()
+	// Start call A with ID and arguments
+	start := tracker.observe("tool_call", map[string]any{
+		"toolCallId": "call-A", "name": "exec_command",
+		"rawInput": map[string]any{"command": "make test"},
+	})
+	if len(start) != 1 || start[0].CallID != "call-A" {
+		t.Fatalf("start activity=%#v", start)
+	}
+
+	// Id-less terminal frame with same tool name arrives
+	idlessFinish := tracker.observe("tool_result", map[string]any{
+		"name": "exec_command", "status": "completed",
+	})
+	if len(idlessFinish) != 1 {
+		t.Fatalf("idlessFinish activities=%#v", idlessFinish)
+	}
+	if idlessFinish[0].CallID != "" {
+		t.Fatalf("id-less terminal must not inherit call ID by name alone: got %q, want empty", idlessFinish[0].CallID)
+	}
+
+	// Real terminal frame for A arrives with ID
+	realFinish := tracker.observe("tool_result", map[string]any{
+		"toolCallId": "call-A", "name": "exec_command", "status": "completed",
+	})
+	if len(realFinish) != 1 {
+		t.Fatalf("realFinish activities=%#v (call-A was corrupted or dropped)", realFinish)
+	}
+	if realFinish[0].CallID != "call-A" {
+		t.Fatalf("realFinish CallID=%q want call-A", realFinish[0].CallID)
+	}
+	if !strings.Contains(string(realFinish[0].Arguments), "make test") {
+		t.Fatalf("realFinish arguments lost: %s", string(realFinish[0].Arguments))
+	}
+}
+
+func TestACPToolTrackerOutputPresenceAtBoundary(t *testing.T) {
+	tracker := newACPToolTracker()
+
+	// 1. status=completed rawOutput="" stderr="warning" -> sets OutputPresent=true, Result=`""`
+	res1 := tracker.observe("tool_result", map[string]any{
+		"toolCallId": "c1",
+		"name":       "bash",
+		"status":     "completed",
+		"rawOutput":  "",
+		"stderr":     "warning: deprecation notice do-not-leak",
+	})
+	if len(res1) != 1 {
+		t.Fatalf("res1 len=%d", len(res1))
+	}
+	if !res1[0].OutputPresent {
+		t.Errorf("expected OutputPresent=true for stderr-only completed result")
+	}
+	if res1[0].Result != `""` {
+		t.Errorf("expected Result to be JSON empty string `\"\"`, got %q", res1[0].Result)
+	}
+
+	// 2. status=completed rawOutput="" stderr="" -> sets OutputPresent=false
+	res2 := tracker.observe("tool_result", map[string]any{
+		"toolCallId": "c2",
+		"name":       "bash",
+		"status":     "completed",
+		"rawOutput":  "",
+		"stderr":     "",
+	})
+	if len(res2) != 1 {
+		t.Fatalf("res2 len=%d", len(res2))
+	}
+	if res2[0].OutputPresent {
+		t.Errorf("expected OutputPresent=false for truly empty completed result")
+	}
+
+	// 3. status=completed formatted_output="" -> sets OutputPresent=false
+	res3 := tracker.observe("tool_result", map[string]any{
+		"toolCallId": "c3",
+		"name":       "bash",
+		"status":     "completed",
+		"output":     map[string]any{"formatted_output": ""},
+	})
+	if len(res3) != 1 {
+		t.Fatalf("res3 len=%d", len(res3))
+	}
+	if res3[0].OutputPresent {
+		t.Errorf("expected OutputPresent=false for empty formatted_output")
+	}
+
+	// 4. status=failed with stderr -> OutputPresent=true, but Result is empty
+	res4 := tracker.observe("tool_result", map[string]any{
+		"toolCallId": "c4",
+		"name":       "bash",
+		"status":     "failed",
+		"stderr":     "command failed with code 1 do-not-leak",
+	})
+	if len(res4) != 1 {
+		t.Fatalf("res4 len=%d", len(res4))
+	}
+	if !res4[0].OutputPresent {
+		t.Errorf("expected OutputPresent=true for failed status with stderr")
+	}
+	if res4[0].Result != "" {
+		t.Errorf("expected Result to be empty on failed status, got %q", res4[0].Result)
+	}
+}
