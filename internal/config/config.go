@@ -308,10 +308,10 @@ func (c Config) EffectiveWorkerPolicy() WorkerPolicy {
 
 func validateHarness(field, value string) error {
 	switch value {
-	case "opencode", "codex", "fx", "claude_code":
+	case "opencode", "codex", "fx", "claude_code", "antigravity":
 		return nil
 	default:
-		return fmt.Errorf("%w: %s must be opencode, codex, fx or claude_code", ErrInvalid, field)
+		return fmt.Errorf("%w: %s must be opencode, codex, fx, claude_code or antigravity", ErrInvalid, field)
 	}
 }
 

@@ -90,6 +90,7 @@ func (r ExecCommandRunner) ProbeACP(ctx context.Context, command string, args ..
 type HarnessProbeSpec struct {
 	Kind                  core.HarnessKind
 	Binary                string
+	ProfileDir            string
 	VersionArgs           []string
 	AuthenticationArgs    []string
 	HealthArgs            []string
@@ -106,6 +107,9 @@ type HarnessProbeSpec struct {
 func (s HarnessProbeSpec) validate() error {
 	if s.Kind == "" || strings.TrimSpace(s.Binary) == "" {
 		return errors.New("harness probe: kind and executable are required")
+	}
+	if s.Kind == core.HarnessAntigravity {
+		return nil
 	}
 	if len(s.VersionArgs) == 0 || len(s.AuthenticationArgs) == 0 {
 		return fmt.Errorf("harness probe: %s requires version and authentication commands", s.Kind)
@@ -140,6 +144,9 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
 	}
 	if p.Runner == nil {
 		p.Runner = ExecCommandRunner{}
+	}
+	if p.Spec.Kind == core.HarnessAntigravity {
+		return p.probeAntigravity(ctx)
 	}
 	if p.Spec.Kind == core.HarnessOpenCode {
 		switch runner := p.Runner.(type) {
@@ -694,8 +701,10 @@ type HarnessDiscovery struct {
 	Runner                 CommandRunner
 	OpenCodeDataHome       string
 	LegacyOpenCodeDataHome bool
+	AntigravityProfileDir  string
 	Probes                 []HarnessProbe
 	IncludeOpenCode        bool
+	IncludeAntigravity     bool
 	// BinaryOverrides lets packaging resolve installed harnesses without
 	// relying on a launchd process inheriting an interactive shell PATH.
 	BinaryOverrides map[core.HarnessKind]string
@@ -713,7 +722,7 @@ func (d HarnessDiscovery) Discover(ctx context.Context) (core.HarnessInventorySn
 	probes := append([]HarnessProbe(nil), d.Probes...)
 	if len(probes) == 0 {
 		probes = NewDefaultHarnessProbes(d.Node, runner)
-		if !d.IncludeOpenCode {
+	if !d.IncludeOpenCode {
 			filtered := probes[:0]
 			for _, probe := range probes {
 				if probe.Spec.Kind != core.HarnessOpenCode {
@@ -721,6 +730,9 @@ func (d HarnessDiscovery) Discover(ctx context.Context) (core.HarnessInventorySn
 				}
 			}
 			probes = filtered
+		}
+		if d.IncludeAntigravity || strings.TrimSpace(d.BinaryOverrides[core.HarnessAntigravity]) != "" {
+			probes = append(probes, NewAntigravityProbe(d.Node, runner))
 		}
 	}
 	if d.IncludeOpenCode {
@@ -732,9 +744,21 @@ func (d HarnessDiscovery) Discover(ctx context.Context) (core.HarnessInventorySn
 			probes = append(probes, NewOpenCodeCompatibilityProbe(d.Node, d.Runner))
 		}
 	}
+	if d.IncludeAntigravity {
+		found := false
+		for _, probe := range probes {
+			found = found || probe.Spec.Kind == core.HarnessAntigravity
+		}
+		if !found {
+			probes = append(probes, NewAntigravityProbe(d.Node, d.Runner))
+		}
+	}
 	for index := range probes {
 		if binary := strings.TrimSpace(d.BinaryOverrides[probes[index].Spec.Kind]); binary != "" {
 			probes[index].Spec.Binary = binary
+		}
+		if probes[index].Spec.Kind == core.HarnessAntigravity {
+			probes[index].Spec.ProfileDir = ResolveAntigravityProfileDir(d.AntigravityProfileDir, probes[index].Spec.ProfileDir)
 		}
 		if probes[index].Spec.Kind == core.HarnessOpenCode && d.OpenCodeDataHome != "" {
 			switch current := probes[index].Runner.(type) {
@@ -754,7 +778,15 @@ func (d HarnessDiscovery) Discover(ctx context.Context) (core.HarnessInventorySn
 	}
 	instances := make([]core.HarnessInstance, 0, len(probes))
 	for _, probe := range probes {
-		instances = append(instances, probe.Probe(ctx).Instance)
+		res := probe.Probe(ctx)
+		inst := res.Instance
+		if inst.ErrorCode == "" && res.ErrorCode != "" {
+			inst.ErrorCode = res.ErrorCode
+		}
+		if inst.DiagnosticReason == "" && res.Err != nil {
+			inst.DiagnosticReason = res.Err.Error()
+		}
+		instances = append(instances, inst)
 	}
 	now := time.Now
 	if d.Now != nil {

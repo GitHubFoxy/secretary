@@ -81,6 +81,63 @@ func TestRuntimeRouterNeverFallsBackFromClaudeToCodex(t *testing.T) {
 	}
 }
 
+func TestRuntimeRouterUsesDistinctAntigravityRuntime(t *testing.T) {
+	codex := recordingRuntime{started: make(chan StartRequest, 1)}
+	antigravity := recordingRuntime{started: make(chan StartRequest, 1)}
+	router := RuntimeRouter{DefaultHarness: "codex", ACP: codex, Antigravity: antigravity}
+	instance := core.HarnessInstance{
+		ID:             "node/antigravity",
+		Node:           "node",
+		Kind:           core.HarnessAntigravity,
+		Version:        "1.3.0",
+		Status:         core.HarnessReady,
+		Authentication: core.HarnessAuthentication{Authenticated: true},
+	}
+	if _, err := router.Start(context.Background(), StartRequest{HarnessInstance: instance, Model: "gemini-3.8-flash-high", Reasoning: "default", Profile: ManagedProfile{Runtime: "antigravity"}}); err != nil {
+		t.Fatal(err)
+	}
+	request := <-antigravity.started
+	if request.HarnessInstance.Kind != core.HarnessAntigravity || request.Model != "gemini-3.8-flash-high" || request.Reasoning != "default" {
+		t.Fatalf("Antigravity runtime lost immutable request: %#v", request)
+	}
+	select {
+	case <-codex.started:
+		t.Fatal("Codex runtime was selected for Antigravity binding")
+	default:
+	}
+}
+
+func TestRuntimeRouterNeverFallsBackFromAntigravityToOtherRuntimes(t *testing.T) {
+	codex := recordingRuntime{started: make(chan StartRequest, 1)}
+	router := RuntimeRouter{DefaultHarness: "codex", ACP: codex}
+	instance := core.HarnessInstance{
+		ID:             "node/antigravity",
+		Node:           "node",
+		Kind:           core.HarnessAntigravity,
+		Version:        "1.3.0",
+		Status:         core.HarnessReady,
+		Authentication: core.HarnessAuthentication{Authenticated: true},
+	}
+	_, err := router.Start(context.Background(), StartRequest{HarnessInstance: instance, Profile: ManagedProfile{Runtime: "codex"}})
+	if err == nil {
+		t.Fatal("Antigravity binding with conflicting profile was silently accepted")
+	}
+	select {
+	case <-codex.started:
+		t.Fatal("Codex runtime was used as Antigravity fallback")
+	default:
+	}
+	_, err = router.Start(context.Background(), StartRequest{HarnessInstance: instance})
+	if err == nil || !strings.Contains(err.Error(), `harness "antigravity" is unavailable`) {
+		t.Fatalf("missing Antigravity runtime error=%v", err)
+	}
+	select {
+	case <-codex.started:
+		t.Fatal("Codex runtime was used after Antigravity runtime was unavailable")
+	default:
+	}
+}
+
 func TestRuntimeRouterUsesProfileHarness(t *testing.T) {
 	compat := recordingRuntime{started: make(chan StartRequest, 1)}
 	fx := recordingRuntime{started: make(chan StartRequest, 1)}

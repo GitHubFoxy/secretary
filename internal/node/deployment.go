@@ -28,8 +28,9 @@ type DeploymentConfig struct {
 	Workspaces      []WorkspaceMapping `json:"workspaces,omitempty"`
 	Capacity        int                `json:"capacity,omitempty"`
 	ListenAddress   string             `json:"listen_address,omitempty"`
-	IncludeOpenCode bool               `json:"include_opencode"`
-	Standalone      bool               `json:"standalone,omitempty"`
+	IncludeOpenCode    bool               `json:"include_opencode"`
+	IncludeAntigravity bool               `json:"include_antigravity,omitempty"`
+	Standalone         bool               `json:"standalone,omitempty"`
 	MCPServers      []MCPServer        `json:"mcp_servers,omitempty"`
 }
 

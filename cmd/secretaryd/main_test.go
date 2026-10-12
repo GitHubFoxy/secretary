@@ -679,3 +679,25 @@ func pairedReadOnlyClientCredential(t *testing.T, server *httptest.Server) strin
 	}
 	return approved.Credential
 }
+
+func TestSecretaryRuntimeIncludesAntigravity(t *testing.T) {
+	serverRoot := filepath.Join(t.TempDir(), "secretary")
+	snapshot := config.Snapshot{Config: config.Config{Secretary: config.SecretaryPolicy{Harness: "antigravity"}}}
+	secretaryRuntime, workerRuntime, cmd, _ := configuredRuntimePair(snapshot, serverRoot)
+	secretaryRouter := secretaryRuntime.(node.RuntimeRouter)
+	workerRouter := workerRuntime.(node.RuntimeRouter)
+	if secretaryRouter.Antigravity == nil || workerRouter.Antigravity == nil {
+		t.Fatal("Antigravity runtime router is nil")
+	}
+	if !strings.Contains(cmd, "agy_acp_server") {
+		t.Fatalf("expected agy_acp_server in cmd, got %q", cmd)
+	}
+	secAgy, ok := secretaryRouter.Antigravity.(node.AntigravityRuntime)
+	if !ok || secAgy.ProfileDir == "" {
+		t.Fatalf("expected secretaryRouter Antigravity ProfileDir populated, got %#v", secretaryRouter.Antigravity)
+	}
+	wrkAgy, ok := workerRouter.Antigravity.(node.AntigravityRuntime)
+	if !ok || wrkAgy.ProfileDir == "" {
+		t.Fatalf("expected workerRouter Antigravity ProfileDir populated, got %#v", workerRouter.Antigravity)
+	}
+}

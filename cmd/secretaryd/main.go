@@ -723,16 +723,25 @@ func configuredRuntimeWithStore(snapshot config.Snapshot, dataDir string, store 
 	if len(openCodeArgs) == 0 {
 		openCodeArgs = []string{"acp"}
 	}
+	antigravityCommand := os.Getenv("SECRETARY_ANTIGRAVITY_COMMAND")
+	if antigravityCommand == "" {
+		antigravityCommand = "agy_acp_server"
+	}
+	antigravityArgs := node.BuildAntigravityPlatformArgs(strings.Fields(os.Getenv("SECRETARY_ANTIGRAVITY_ARGS")))
+	antigravityProfileDir := node.ResolveAntigravityProfileDir()
 	runtime := node.RuntimeRouter{
 		DefaultHarness: harness,
 		ACP:            node.CodexRuntime{ACPRuntime: node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 		Claude:         node.ClaudeCodeRuntime{Command: claudeCommand, Arguments: claudeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		FX:             node.FXRuntime{ACPRuntime: node.ACPRuntime{Command: fxCommand, Arguments: fxArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, DataHome: store.DataHome, LegacyDataHome: store.Mode == node.OpenCodeNativeStoreModeLegacy, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
+		Antigravity:    node.AntigravityRuntime{AntigravityCommand: antigravityCommand, ProfileDir: antigravityProfileDir, ACPRuntime: node.ACPRuntime{Arguments: antigravityArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 	}
 	command := codexCommand
 	arguments := codexArgs
 	switch harness {
+	case "antigravity":
+		command, arguments = antigravityCommand, antigravityArgs
 	case "opencode":
 		command, arguments = openCodeCommand, openCodeArgs
 	case "fx":

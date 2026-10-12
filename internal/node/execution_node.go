@@ -729,7 +729,7 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, t
 						outcome.Diagnostics = result.Technical
 					}
 				}
-				if envelope.HarnessInstance.Kind == core.HarnessOpenCode || envelope.HarnessInstance.Kind == core.HarnessClaudeCode || envelope.HarnessInstance.Kind == core.HarnessCodex {
+				if envelope.HarnessInstance.Kind == core.HarnessOpenCode || envelope.HarnessInstance.Kind == core.HarnessClaudeCode || envelope.HarnessInstance.Kind == core.HarnessCodex || envelope.HarnessInstance.Kind == core.HarnessAntigravity {
 					if err := session.Close(); err != nil {
 						outcome.Status = core.OutcomeFailed
 						if result.Status == "succeeded" {

@@ -129,3 +129,15 @@ func TestInvalidReloadPreservesActiveConfigSnapshot(t *testing.T) {
 		t.Fatal("invalid config replaced active snapshot")
 	}
 }
+
+func TestAntigravityHarnessConfigValidation(t *testing.T) {
+	if err := validateHarness("secretary.harness", "antigravity"); err != nil {
+		t.Fatalf("antigravity should be accepted: %v", err)
+	}
+	if err := validateHarness("worker_policy.default_harness", "antigravity"); err != nil {
+		t.Fatalf("antigravity should be accepted: %v", err)
+	}
+	if err := validateHarness("secretary.harness", "invalid_harness"); err == nil || !strings.Contains(err.Error(), "antigravity") {
+		t.Fatalf("invalid harness error should mention antigravity: %v", err)
+	}
+}

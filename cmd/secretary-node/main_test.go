@@ -111,7 +111,49 @@ func TestConfiguredNodeRuntimeDefaultsCodexAndRetainsHistoricalAdapters(t *testi
 	if !ok {
 		t.Fatal("Node runtime is not a harness router")
 	}
-	if runtime.DefaultHarness != "codex" || runtime.OpenCode == nil || runtime.FX == nil || runtime.Claude == nil || runtime.ACP == nil {
+	if runtime.DefaultHarness != "codex" || runtime.OpenCode == nil || runtime.FX == nil || runtime.Claude == nil || runtime.ACP == nil || runtime.Antigravity == nil {
 		t.Fatal("Node runtime defaults or selectable adapters are incomplete")
+	}
+}
+
+func TestInstalledHarnessesIncludesAntigravity(t *testing.T) {
+	missing := "/missing/agy_acp_server"
+	t.Setenv("SECRETARY_ANTIGRAVITY_COMMAND", missing)
+	installed := installedHarnesses()
+	if installed[core.HarnessAntigravity] != missing {
+		t.Fatalf("expected explicit missing Antigravity binary preserved, got %q", installed[core.HarnessAntigravity])
+	}
+}
+
+func TestConfiguredNodeWiring_AntigravityProfileDir(t *testing.T) {
+	customDir := filepath.Join(t.TempDir(), "node-custom-antigravity")
+	t.Setenv("SECRETARY_ANTIGRAVITY_PROFILE_DIR", customDir)
+
+	store := node.OpenCodeNativeStore{DataHome: t.TempDir()}
+	discovery := configuredNodeDiscoveryWithAntigravity("node-test", true, true, store)
+	if discovery.AntigravityProfileDir != customDir {
+		t.Fatalf("configuredNodeDiscoveryWithAntigravity AntigravityProfileDir = %q; want %q", discovery.AntigravityProfileDir, customDir)
+	}
+
+	runtimeRouter := configuredNodeRuntimeWithStore(t.TempDir(), store).(node.RuntimeRouter)
+	agyRuntime, ok := runtimeRouter.Antigravity.(node.AntigravityRuntime)
+	if !ok {
+		t.Fatal("expected Antigravity to be node.AntigravityRuntime")
+	}
+	if agyRuntime.ProfileDir != customDir {
+		t.Fatalf("configuredNodeRuntimeWithStore ProfileDir = %q; want %q", agyRuntime.ProfileDir, customDir)
+	}
+
+	t.Setenv("SECRETARY_ANTIGRAVITY_PROFILE_DIR", "")
+	t.Setenv("ANTIGRAVITY_PROFILE_DIR", "")
+	defaultDir := node.DefaultAntigravityProfileDir()
+
+	discoveryDefault := configuredNodeDiscoveryWithAntigravity("node-test", true, true, store)
+	if discoveryDefault.AntigravityProfileDir != defaultDir {
+		t.Fatalf("default discovery AntigravityProfileDir = %q; want %q", discoveryDefault.AntigravityProfileDir, defaultDir)
+	}
+	runtimeDefault := configuredNodeRuntimeWithStore(t.TempDir(), store).(node.RuntimeRouter)
+	if runtimeDefault.Antigravity.(node.AntigravityRuntime).ProfileDir != defaultDir {
+		t.Fatalf("default runtime ProfileDir = %q; want %q", runtimeDefault.Antigravity.(node.AntigravityRuntime).ProfileDir, defaultDir)
 	}
 }
