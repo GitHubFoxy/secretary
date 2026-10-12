@@ -112,6 +112,11 @@ func (p HarnessProbe) probeAntigravity(ctx context.Context) ProbeResult {
 	}
 	antigravityCacheMu.Unlock()
 
+	profileDir := strings.TrimSpace(p.Spec.ProfileDir)
+	if profileDir == "" {
+		profileDir = DefaultAntigravityProfileDir()
+	}
+
 	var version, authMethod, diagnosticCode string
 	var authenticated bool
 	var modelIDs []core.ObservedModelID
@@ -121,7 +126,7 @@ func (p HarnessProbe) probeAntigravity(ctx context.Context) ProbeResult {
 	if observer, ok := p.Runner.(AntigravityObserver); ok {
 		version, authenticated, authMethod, modelIDs, reasoning, diagnosticCode, probeErr = observer.ObserveAntigravity(ctx, p.Spec.Binary)
 	} else {
-		version, authenticated, authMethod, modelIDs, reasoning, diagnosticCode, probeErr = observeAntigravityACP(ctx, realExec, companion)
+		version, authenticated, authMethod, modelIDs, reasoning, diagnosticCode, probeErr = observeAntigravityACP(ctx, realExec, companion, profileDir)
 	}
 
 	if probeErr != nil || !authenticated {
@@ -175,16 +180,17 @@ func (p HarnessProbe) probeAntigravity(ctx context.Context) ProbeResult {
 	return result
 }
 
-func observeAntigravityACP(ctx context.Context, execPath, companionPath string) (string, bool, string, []core.ObservedModelID, []core.ObservedReasoningLevel, string, error) {
-	tempDir, err := os.MkdirTemp("", "secretary-antigravity-probe-")
-	if err != nil {
-		return "", false, "", nil, nil, "probe_failed", fmt.Errorf("antigravity: probe temp dir unavailable: %w", err)
+func observeAntigravityACP(ctx context.Context, execPath, companionPath, profileDir string) (string, bool, string, []core.ObservedModelID, []core.ObservedReasoningLevel, string, error) {
+	if strings.TrimSpace(profileDir) == "" {
+		profileDir = DefaultAntigravityProfileDir()
 	}
-	defer os.RemoveAll(tempDir)
-
-	profileDir := filepath.Join(tempDir, "gemini_home")
 	if err := os.MkdirAll(profileDir, 0o700); err != nil {
 		return "", false, "", nil, nil, "probe_failed", fmt.Errorf("antigravity: profile dir unavailable: %w", err)
+	}
+
+	tempDir := filepath.Join(profileDir, "tmp")
+	if err := os.MkdirAll(tempDir, 0o700); err != nil {
+		return "", false, "", nil, nil, "probe_failed", fmt.Errorf("antigravity: probe temp dir unavailable: %w", err)
 	}
 
 	env := BuildAntigravityEnvironment(os.Environ(), companionPath, profileDir, tempDir)
@@ -213,7 +219,8 @@ func observeAntigravityACP(ctx context.Context, execPath, companionPath string) 
 		"clientInfo":         map[string]string{"name": "secretary-probe", "version": "1.0"},
 		"clientCapabilities": acpClientCapabilities(),
 	}, &init); err != nil {
-		return "", false, "", nil, nil, "protocol_mismatch", fmt.Errorf("antigravity: ACP initialize failed: %w", err)
+		code, diagErr := classifyAntigravityError(err)
+		return "", false, "", nil, nil, code, diagErr
 	}
 
 	if init.ProtocolVersion != 1 {
@@ -223,6 +230,38 @@ func observeAntigravityACP(ctx context.Context, execPath, companionPath string) 
 	version := init.AgentInfo.Version
 	if version == "" {
 		version = "1.3.0"
+	}
+
+	var confirmedAuthMethod string
+	if len(init.AuthMethods) > 0 {
+		chosenMethod := init.AuthMethods[0].ID
+		for _, m := range init.AuthMethods {
+			if m.ID == "oauth-personal" {
+				chosenMethod = "oauth-personal"
+				break
+			}
+		}
+		if pref := os.Getenv("SECRETARY_ANTIGRAVITY_AUTH_METHOD"); pref != "" {
+			for _, m := range init.AuthMethods {
+				if m.ID == pref {
+					chosenMethod = pref
+					break
+				}
+			}
+		}
+
+		var authResp map[string]any
+		authErr := client.Request(ctx, "authenticate", map[string]any{
+			"methodId": chosenMethod,
+		}, &authResp)
+		if authErr != nil {
+			code, diagErr := classifyAntigravityError(authErr)
+			if code == "unauthenticated" || code == "auth_failed" {
+				return version, false, "", nil, nil, "unauthenticated", fmt.Errorf("antigravity: authentication required for %s: %w", chosenMethod, authErr)
+			}
+			return version, false, "", nil, nil, code, diagErr
+		}
+		confirmedAuthMethod = chosenMethod
 	}
 
 	var created struct {
@@ -235,23 +274,73 @@ func observeAntigravityACP(ctx context.Context, execPath, companionPath string) 
 		"mcpServers": []MCPServer{},
 	}
 
-	if err := client.Request(ctx, "session/new", newParams, &created); err != nil || created.SessionID == "" {
-		diag := "unauthenticated"
-		if err != nil && strings.Contains(strings.ToLower(err.Error()), "protocol") {
-			diag = "protocol_mismatch"
-		}
-		return version, false, "", nil, nil, diag, fmt.Errorf("antigravity: session/new failed: %w", err)
+	if err := client.Request(ctx, "session/new", newParams, &created); err != nil {
+		code, diagErr := classifyAntigravityError(err)
+		return version, false, "", nil, nil, code, diagErr
 	}
 
-	authMethod := "oauth-personal"
-	if len(init.AuthMethods) > 0 {
-		authMethod = init.AuthMethods[0].ID
+	if created.SessionID == "" {
+		return version, false, "", nil, nil, "session_setup_failed", fmt.Errorf("antigravity: session/new returned empty session ID")
 	}
 
 	models := parseAntigravityConfigModels(created.ConfigOptions)
 	reasoning := parseAntigravityConfigReasoning(created.ConfigOptions)
 
-	return version, true, authMethod, models, reasoning, "", nil
+	if len(models) == 0 && len(init.AuthMethods) > 0 && confirmedAuthMethod == "" {
+		return version, false, "", nil, nil, "unauthenticated", fmt.Errorf("antigravity: catalog requires authentication")
+	}
+
+	if confirmedAuthMethod == "" {
+		confirmedAuthMethod = "oauth-personal"
+	}
+
+	return version, true, confirmedAuthMethod, models, reasoning, "", nil
+}
+
+func classifyAntigravityError(err error) (string, error) {
+	if err == nil {
+		return "", nil
+	}
+	var rpcErr *acp.RPCError
+	if errors.As(err, &rpcErr) {
+		switch rpcErr.Code {
+		case -32000:
+			return "unauthenticated", fmt.Errorf("antigravity: authentication required: %s", rpcErr.Message)
+		case -32600, -32601, -32602:
+			return "protocol_mismatch", fmt.Errorf("antigravity: protocol mismatch (code %d): %s", rpcErr.Code, rpcErr.Message)
+		}
+		msgLower := strings.ToLower(rpcErr.Message)
+		switch {
+		case strings.Contains(msgLower, "auth") || strings.Contains(msgLower, "login") || strings.Contains(msgLower, "token") || strings.Contains(msgLower, "credential") || strings.Contains(msgLower, "unauthorized"):
+			return "unauthenticated", fmt.Errorf("antigravity: authentication required: %s", rpcErr.Message)
+		case strings.Contains(msgLower, "protocol") || strings.Contains(msgLower, "unsupported version") || strings.Contains(msgLower, "unknown method"):
+			return "protocol_mismatch", fmt.Errorf("antigravity: protocol mismatch: %s", rpcErr.Message)
+		case strings.Contains(msgLower, "mcp"):
+			return "mcp_setup_failed", fmt.Errorf("antigravity: MCP configuration failed: %s", rpcErr.Message)
+		case strings.Contains(msgLower, "config") || strings.Contains(msgLower, "option") || strings.Contains(msgLower, "catalog"):
+			return "config_failed", fmt.Errorf("antigravity: configuration catalog failed: %s", rpcErr.Message)
+		default:
+			return "session_setup_failed", fmt.Errorf("antigravity: ACP request failed (code %d): %s", rpcErr.Code, rpcErr.Message)
+		}
+	}
+
+	msgLower := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msgLower, "auth") || strings.Contains(msgLower, "login") || strings.Contains(msgLower, "token") || strings.Contains(msgLower, "credential") || strings.Contains(msgLower, "unauthorized"):
+		return "unauthenticated", fmt.Errorf("antigravity: authentication required: %w", err)
+	case strings.Contains(msgLower, "protocol") || strings.Contains(msgLower, "unsupported"):
+		return "protocol_mismatch", fmt.Errorf("antigravity: protocol mismatch: %w", err)
+	case strings.Contains(msgLower, "mcp"):
+		return "mcp_setup_failed", fmt.Errorf("antigravity: MCP setup failed: %w", err)
+	case strings.Contains(msgLower, "config") || strings.Contains(msgLower, "catalog"):
+		return "config_failed", fmt.Errorf("antigravity: configuration failed: %w", err)
+	case errors.Is(err, context.DeadlineExceeded):
+		return "probe_timeout", fmt.Errorf("antigravity: probe timed out: %w", err)
+	case errors.Is(err, context.Canceled):
+		return "probe_canceled", fmt.Errorf("antigravity: probe canceled: %w", err)
+	default:
+		return "session_setup_failed", fmt.Errorf("antigravity: session setup failed: %w", err)
+	}
 }
 
 func parseAntigravityConfigModels(options []nativeConfigOption) []core.ObservedModelID {

@@ -38,6 +38,17 @@ var ambientGoogleKeys = map[string]struct{}{
 	"PYTHONUNBUFFERED":               {},
 }
 
+func DefaultAntigravityProfileDir() string {
+	if env := strings.TrimSpace(os.Getenv("SECRETARY_ANTIGRAVITY_PROFILE_DIR")); env != "" {
+		return env
+	}
+	home, err := os.UserHomeDir()
+	if err == nil && strings.TrimSpace(home) != "" {
+		return filepath.Join(home, ".secretary", "antigravity")
+	}
+	return filepath.Join(os.TempDir(), "secretary-antigravity")
+}
+
 func AntigravityBinaryNames() []string {
 	if runtime.GOOS == "windows" {
 		return []string{"agy_acp_server.exe", "agy_acp_server"}
@@ -153,13 +164,13 @@ func BuildAntigravityPlatformArgs(baseArgs []string) []string {
 	if runtime.GOOS == "linux" {
 		hasUID := false
 		for _, arg := range args {
-			if strings.HasPrefix(arg, "--uid=") {
+			if arg == "--uid=" || strings.HasPrefix(arg, "--uid=") || arg == "--uid" {
 				hasUID = true
 				break
 			}
 		}
 		if !hasUID {
-			args = append(args, fmt.Sprintf("--uid=%d", os.Getuid()))
+			args = append(args, "--uid=")
 		}
 	}
 	return args

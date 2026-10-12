@@ -266,7 +266,7 @@ func configuredNodeRuntimeWithStore(dataDir string, store node.OpenCodeNativeSto
 		openCodeArgs = []string{"acp"}
 	}
 	antigravityCommand := envOr("SECRETARY_ANTIGRAVITY_COMMAND", "agy_acp_server")
-	antigravityArgs := strings.Fields(os.Getenv("SECRETARY_ANTIGRAVITY_ARGS"))
+	antigravityArgs := node.BuildAntigravityPlatformArgs(strings.Fields(os.Getenv("SECRETARY_ANTIGRAVITY_ARGS")))
 	return node.RuntimeRouter{
 		DefaultHarness: "codex",
 		ACP:            node.CodexRuntime{ACPRuntime: node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},

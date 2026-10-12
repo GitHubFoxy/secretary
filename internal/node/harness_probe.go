@@ -90,6 +90,7 @@ func (r ExecCommandRunner) ProbeACP(ctx context.Context, command string, args ..
 type HarnessProbeSpec struct {
 	Kind                  core.HarnessKind
 	Binary                string
+	ProfileDir            string
 	VersionArgs           []string
 	AuthenticationArgs    []string
 	HealthArgs            []string

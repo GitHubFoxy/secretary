@@ -711,7 +711,7 @@ func configuredRuntimeWithStore(snapshot config.Snapshot, dataDir string, store 
 	if antigravityCommand == "" {
 		antigravityCommand = "agy_acp_server"
 	}
-	antigravityArgs := strings.Fields(os.Getenv("SECRETARY_ANTIGRAVITY_ARGS"))
+	antigravityArgs := node.BuildAntigravityPlatformArgs(strings.Fields(os.Getenv("SECRETARY_ANTIGRAVITY_ARGS")))
 	runtime := node.RuntimeRouter{
 		DefaultHarness: harness,
 		ACP:            node.CodexRuntime{ACPRuntime: node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},

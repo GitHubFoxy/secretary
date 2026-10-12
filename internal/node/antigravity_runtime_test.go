@@ -17,6 +17,9 @@ import (
 func createFakeAntigravityServer(t *testing.T, scenario string) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
+	if eval, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = eval
+	}
 
 	companionName := "localharness_external"
 	execName := "agy_acp_server"
@@ -77,7 +80,7 @@ func TestAntigravityRuntime_Configured(t *testing.T) {
 		t.Fatalf("configured failed: %v", err)
 	}
 
-	if configured.Command != execPath {
+	if evalPath(t, configured.Command) != evalPath(t, execPath) {
 		t.Fatalf("expected Command %q, got %q", execPath, configured.Command)
 	}
 	if !configured.ExactEnvironment {
@@ -98,8 +101,11 @@ func TestAntigravityRuntime_Configured(t *testing.T) {
 		if strings.HasPrefix(env, "GEMINI_API_KEY=") {
 			t.Fatal("ambient GEMINI_API_KEY was not stripped")
 		}
-		if env == "ANTIGRAVITY_HARNESS_PATH="+companionPath {
-			foundCompanion = true
+		if strings.HasPrefix(env, "ANTIGRAVITY_HARNESS_PATH=") {
+			val := strings.TrimPrefix(env, "ANTIGRAVITY_HARNESS_PATH=")
+			if evalPath(t, val) == evalPath(t, companionPath) {
+				foundCompanion = true
+			}
 		}
 	}
 	if !foundCompanion {
@@ -672,4 +678,90 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 		}
 	}
 	os.Exit(0)
+}
+
+func TestResolveNativeConfigOption_DynamicCatalog(t *testing.T) {
+	catalog := []nativeConfigOption{
+		{
+			ID:           "active_model_id",
+			Category:     "model",
+			CurrentValue: "gemini-3.8-flash-high",
+			Options: []struct {
+				Value       string `json:"value"`
+				Name        string `json:"name,omitempty"`
+				Description string `json:"description"`
+			}{
+				{Value: "gemini-3.8-flash-high", Name: "Gemini 3.8 Flash"},
+				{Value: "gemini-3.8-pro", Name: "Gemini 3.8 Pro"},
+			},
+		},
+		{
+			ID:           "thought_budget",
+			Category:     "reasoning",
+			CurrentValue: "low",
+			Options: []struct {
+				Value       string `json:"value"`
+				Name        string `json:"name,omitempty"`
+				Description string `json:"description"`
+			}{
+				{Value: "low", Name: "Low"},
+				{Value: "high", Name: "High"},
+			},
+		},
+	}
+
+	opt, targetVal, err := resolveNativeConfigOption(catalog, "model", "gemini-3.8-pro")
+	if err != nil {
+		t.Fatalf("unexpected error resolving model: %v", err)
+	}
+	if opt.ID != "active_model_id" || targetVal != "gemini-3.8-pro" {
+		t.Fatalf("got opt.ID=%q targetVal=%q; want active_model_id / gemini-3.8-pro", opt.ID, targetVal)
+	}
+
+	optReason, targetReason, err := resolveNativeConfigOption(catalog, "reasoning", "high")
+	if err != nil {
+		t.Fatalf("unexpected error resolving reasoning: %v", err)
+	}
+	if optReason.ID != "thought_budget" || targetReason != "high" {
+		t.Fatalf("got opt.ID=%q targetVal=%q; want thought_budget / high", optReason.ID, targetReason)
+	}
+}
+
+func TestResolveNativeConfigOption_FailClosedOnUnknownOrAmbiguous(t *testing.T) {
+	catalog := []nativeConfigOption{
+		{
+			ID:           "model_a",
+			CurrentValue: "m1",
+			Options: []struct {
+				Value       string `json:"value"`
+				Name        string `json:"name,omitempty"`
+				Description string `json:"description"`
+			}{
+				{Value: "shared_choice"},
+			},
+		},
+		{
+			ID:           "model_b",
+			CurrentValue: "m2",
+			Options: []struct {
+				Value       string `json:"value"`
+				Name        string `json:"name,omitempty"`
+				Description string `json:"description"`
+			}{
+				{Value: "shared_choice"},
+			},
+		},
+	}
+
+	// Unknown pin
+	_, _, err := resolveNativeConfigOption(catalog, "model", "nonexistent")
+	if err == nil || !strings.Contains(err.Error(), "unknown") {
+		t.Fatalf("expected unknown error, got %v", err)
+	}
+
+	// Ambiguous pin present in both options
+	_, _, err = resolveNativeConfigOption(catalog, "model", "shared_choice")
+	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("expected ambiguous error, got %v", err)
+	}
 }

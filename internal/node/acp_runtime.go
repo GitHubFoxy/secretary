@@ -11,6 +11,7 @@ import (
 	"math"
 	"math/big"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -75,6 +76,13 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 	}
 	if err := client.Request(ctx, "session/new", newParams, &created); err != nil {
 		client.Close()
+		if r.PreferResumeSession {
+			code, diagErr := classifyAntigravityError(err)
+			if code == "unauthenticated" {
+				return nil, fmt.Errorf("antigravity: authentication required; run interactive login or configure credentials: %w", err)
+			}
+			return nil, diagErr
+		}
 		return nil, err
 	}
 	if created.SessionID == "" {
@@ -82,14 +90,17 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 		return nil, fmt.Errorf("acp: session/new returned no sessionId")
 	}
 	if r.PreferResumeSession {
-		if err := validateAntigravityConfigPins(created.ConfigOptions, r.ModelSelection, r.ReasoningSelection); err != nil {
+		updatedCatalog, err := r.applyAntigravityConfiguration(ctx, client, created.SessionID, created.ConfigOptions)
+		if err != nil {
 			client.Close()
 			return nil, err
 		}
-	}
-	if err := r.configureSession(ctx, client, created.SessionID); err != nil {
-		client.Close()
-		return nil, err
+		created.ConfigOptions = updatedCatalog
+	} else {
+		if err := r.configureSession(ctx, client, created.SessionID); err != nil {
+			client.Close()
+			return nil, err
+		}
 	}
 	session := newACPSession(created.SessionID, client, !request.DeferInitialPrompt)
 	session.setConfigOptions(created.ConfigOptions)
@@ -157,14 +168,18 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 	}
 	session.setConfigOptions(resumeResp.ConfigOptions)
 	if r.PreferResumeSession {
-		if err := validateAntigravityConfigPins(resumeResp.ConfigOptions, r.ModelSelection, r.ReasoningSelection); err != nil {
+		updatedCatalog, err := r.applyAntigravityConfiguration(ctx, client, runtimeSessionID, resumeResp.ConfigOptions)
+		if err != nil {
 			_ = session.Close()
 			return nil, err
 		}
-	}
-	if err := r.configureSession(ctx, client, runtimeSessionID); err != nil {
-		_ = session.Close()
-		return nil, err
+		resumeResp.ConfigOptions = updatedCatalog
+		session.setConfigOptions(updatedCatalog)
+	} else {
+		if err := r.configureSession(ctx, client, runtimeSessionID); err != nil {
+			_ = session.Close()
+			return nil, err
+		}
 	}
 	return session, nil
 }
@@ -181,9 +196,12 @@ func acpMCPServers(servers []MCPServer) []MCPServer {
 
 type nativeConfigOption struct {
 	ID           string `json:"id"`
+	Name         string `json:"name,omitempty"`
+	Category     string `json:"category,omitempty"`
 	CurrentValue string `json:"currentValue"`
 	Options      []struct {
 		Value       string `json:"value"`
+		Name        string `json:"name,omitempty"`
 		Description string `json:"description"`
 	} `json:"options"`
 }
@@ -397,6 +415,10 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 	}
 	var initialized struct {
 		ProtocolVersion *int `json:"protocolVersion"`
+		AuthMethods     []struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"authMethods"`
 	}
 	if err := client.Request(ctx, "initialize", map[string]any{
 		"protocolVersion":    1,
@@ -409,6 +431,28 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 	if initialized.ProtocolVersion == nil || *initialized.ProtocolVersion != 1 {
 		client.Close()
 		return nil, fmt.Errorf("acp: unsupported negotiated protocol version %v", initialized.ProtocolVersion)
+	}
+	if r.PreferResumeSession && len(initialized.AuthMethods) > 0 {
+		chosenMethod := initialized.AuthMethods[0].ID
+		for _, m := range initialized.AuthMethods {
+			if m.ID == "oauth-personal" {
+				chosenMethod = "oauth-personal"
+				break
+			}
+		}
+		if pref := os.Getenv("SECRETARY_ANTIGRAVITY_AUTH_METHOD"); pref != "" {
+			for _, m := range initialized.AuthMethods {
+				if m.ID == pref {
+					chosenMethod = pref
+					break
+				}
+			}
+		}
+		var authResp map[string]any
+		if err := client.Request(ctx, "authenticate", map[string]any{"methodId": chosenMethod}, &authResp); err != nil {
+			client.Close()
+			return nil, fmt.Errorf("antigravity: authentication required; run interactive login or configure credentials: %w", err)
+		}
 	}
 	return client, nil
 }
@@ -2151,49 +2195,173 @@ func (s *acpSession) setConfigOptions(options []nativeConfigOption) {
 
 func validateAntigravityConfigPins(options []nativeConfigOption, model, reasoning string) error {
 	if model != "" && !isModelAlias(model) {
-		hasModelOption := false
-		modelFound := false
-		for _, opt := range options {
-			if strings.EqualFold(opt.ID, "model") || strings.Contains(strings.ToLower(opt.ID), "model") {
-				hasModelOption = true
-				if opt.CurrentValue == model {
-					modelFound = true
-					break
-				}
-				for _, choice := range opt.Options {
-					if choice.Value == model {
-						modelFound = true
-						break
-					}
-				}
-			}
-		}
-		if hasModelOption && !modelFound {
-			return fmt.Errorf("antigravity: unknown model pin %q", model)
+		if _, _, err := resolveNativeConfigOption(options, "model", model); err != nil {
+			return err
 		}
 	}
 	if reasoning != "" && reasoning != "default" {
-		hasReasoningOption := false
-		reasoningFound := false
-		for _, opt := range options {
-			idLower := strings.ToLower(opt.ID)
-			if strings.Contains(idLower, "reason") || strings.Contains(idLower, "thought") || strings.Contains(idLower, "thinking") {
-				hasReasoningOption = true
-				if opt.CurrentValue == reasoning {
-					reasoningFound = true
-					break
-				}
-				for _, choice := range opt.Options {
-					if choice.Value == reasoning {
-						reasoningFound = true
-						break
-					}
-				}
-			}
-		}
-		if hasReasoningOption && !reasoningFound {
-			return fmt.Errorf("antigravity: unknown reasoning pin %q", reasoning)
+		if _, _, err := resolveNativeConfigOption(options, "reasoning", reasoning); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func resolveNativeConfigOption(catalog []nativeConfigOption, kind string, pin string) (nativeConfigOption, string, error) {
+	if len(catalog) == 0 {
+		return nativeConfigOption{}, "", fmt.Errorf("antigravity: server config catalog is empty; cannot resolve %s pin %q", kind, pin)
+	}
+
+	type matchCandidate struct {
+		option      nativeConfigOption
+		targetValue string
+		exactKind   bool
+	}
+	var candidates []matchCandidate
+
+	for _, opt := range catalog {
+		optIDLower := strings.ToLower(opt.ID)
+		optCatLower := strings.ToLower(opt.Category)
+		matchesKind := false
+		switch kind {
+		case "model":
+			matchesKind = optIDLower == "model" || optCatLower == "model" || strings.Contains(optIDLower, "model")
+		case "reasoning":
+			matchesKind = optIDLower == "reasoning_effort" || optCatLower == "reasoning" ||
+				strings.Contains(optIDLower, "reason") || strings.Contains(optIDLower, "thinking") || strings.Contains(optIDLower, "thought")
+		case "mode":
+			matchesKind = optIDLower == "mode" || optCatLower == "mode" || strings.Contains(optIDLower, "mode")
+		}
+
+		for _, choice := range opt.Options {
+			if strings.EqualFold(choice.Value, pin) || strings.EqualFold(choice.Name, pin) {
+				candidates = append(candidates, matchCandidate{
+					option:      opt,
+					targetValue: choice.Value,
+					exactKind:   matchesKind,
+				})
+			}
+		}
+
+		if strings.EqualFold(opt.CurrentValue, pin) {
+			alreadyFound := false
+			for _, c := range candidates {
+				if c.option.ID == opt.ID {
+					alreadyFound = true
+					break
+				}
+			}
+			if !alreadyFound {
+				candidates = append(candidates, matchCandidate{
+					option:      opt,
+					targetValue: opt.CurrentValue,
+					exactKind:   matchesKind,
+				})
+			}
+		}
+	}
+
+	if len(candidates) == 0 {
+		return nativeConfigOption{}, "", fmt.Errorf("antigravity: unknown %s pin %q; not found in server config options", kind, pin)
+	}
+
+	var kindMatches []matchCandidate
+	for _, c := range candidates {
+		if c.exactKind {
+			kindMatches = append(kindMatches, c)
+		}
+	}
+	if len(kindMatches) == 1 {
+		return kindMatches[0].option, kindMatches[0].targetValue, nil
+	}
+	if len(kindMatches) > 1 {
+		return nativeConfigOption{}, "", fmt.Errorf("antigravity: ambiguous config option for %s pin %q (%d matching options found)", kind, pin, len(kindMatches))
+	}
+
+	if len(candidates) == 1 {
+		return candidates[0].option, candidates[0].targetValue, nil
+	}
+
+	return nativeConfigOption{}, "", fmt.Errorf("antigravity: ambiguous config option for %s pin %q (%d options contain value)", kind, pin, len(candidates))
+}
+
+func (r ACPRuntime) applyAntigravityConfiguration(ctx context.Context, client *acp.Client, sessionID string, initialCatalog []nativeConfigOption) ([]nativeConfigOption, error) {
+	currentCatalog := append([]nativeConfigOption(nil), initialCatalog...)
+
+	if model := strings.TrimSpace(r.ModelSelection); model != "" && !isModelAlias(model) {
+		opt, targetVal, err := resolveNativeConfigOption(currentCatalog, "model", model)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := r.selectNativeConfig(ctx, client, sessionID, opt.ID, targetVal)
+		if err != nil {
+			return nil, fmt.Errorf("antigravity: set model option %q failed: %w", opt.ID, err)
+		}
+		if !nativeConfigValueConfirmed(resp, opt.ID, targetVal) {
+			return nil, fmt.Errorf("antigravity: server did not confirm model pin %q for option %q", targetVal, opt.ID)
+		}
+		currentCatalog = mergeConfigOptions(currentCatalog, resp.ConfigOptions)
+	}
+
+	if effort := strings.TrimSpace(r.ReasoningSelection); effort != "" && effort != "default" {
+		opt, targetVal, err := resolveNativeConfigOption(currentCatalog, "reasoning", effort)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := r.selectNativeConfig(ctx, client, sessionID, opt.ID, targetVal)
+		if err != nil {
+			return nil, fmt.Errorf("antigravity: set reasoning option %q failed: %w", opt.ID, err)
+		}
+		if !nativeConfigValueConfirmed(resp, opt.ID, targetVal) {
+			return nil, fmt.Errorf("antigravity: server did not confirm reasoning pin %q for option %q", targetVal, opt.ID)
+		}
+		currentCatalog = mergeConfigOptions(currentCatalog, resp.ConfigOptions)
+	}
+
+	if mode := strings.TrimSpace(r.ModeSelection); mode != "" {
+		opt, targetVal, err := resolveNativeConfigOption(currentCatalog, "mode", mode)
+		if err != nil {
+			return nil, err
+		}
+		resp, err := r.selectNativeConfig(ctx, client, sessionID, opt.ID, targetVal)
+		if err != nil {
+			return nil, fmt.Errorf("antigravity: set mode option %q failed: %w", opt.ID, err)
+		}
+		if !nativeConfigValueConfirmed(resp, opt.ID, targetVal) {
+			return nil, fmt.Errorf("antigravity: server did not confirm mode pin %q for option %q", targetVal, opt.ID)
+		}
+		currentCatalog = mergeConfigOptions(currentCatalog, resp.ConfigOptions)
+	}
+
+	return currentCatalog, nil
+}
+
+func mergeConfigOptions(existing []nativeConfigOption, updates []nativeConfigOption) []nativeConfigOption {
+	if len(updates) == 0 {
+		return existing
+	}
+	merged := append([]nativeConfigOption(nil), existing...)
+	for _, update := range updates {
+		found := false
+		for i := range merged {
+			if merged[i].ID == update.ID {
+				merged[i].CurrentValue = update.CurrentValue
+				if len(update.Options) > 0 {
+					merged[i].Options = update.Options
+				}
+				if update.Name != "" {
+					merged[i].Name = update.Name
+				}
+				if update.Category != "" {
+					merged[i].Category = update.Category
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			merged = append(merged, update)
+		}
+	}
+	return merged
 }

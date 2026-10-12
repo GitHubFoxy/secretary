@@ -11,6 +11,7 @@ import (
 type AntigravityRuntime struct {
 	ACPRuntime
 	AntigravityCommand string
+	ProfileDir         string
 }
 
 func (r AntigravityRuntime) configured(request StartRequest) (ACPRuntime, error) {
@@ -27,16 +28,15 @@ func (r AntigravityRuntime) configured(request StartRequest) (ACPRuntime, error)
 		return ACPRuntime{}, fmt.Errorf("antigravity: %w", err)
 	}
 
-	workerRef := request.WorkerRef
-	if workerRef == "" {
-		workerRef = "default"
+	profileDir := strings.TrimSpace(r.ProfileDir)
+	if profileDir == "" {
+		profileDir = DefaultAntigravityProfileDir()
 	}
-
-	profileDir := filepath.Join(os.TempDir(), "secretary-antigravity-"+workerRef)
 	if err := os.MkdirAll(profileDir, 0o700); err != nil {
 		return ACPRuntime{}, fmt.Errorf("antigravity: profile directory unavailable: %w", err)
 	}
-	tempDir := filepath.Join(os.TempDir(), "secretary-antigravity-tmp-"+workerRef)
+
+	tempDir := filepath.Join(profileDir, "tmp")
 	if err := os.MkdirAll(tempDir, 0o700); err != nil {
 		return ACPRuntime{}, fmt.Errorf("antigravity: temp directory unavailable: %w", err)
 	}

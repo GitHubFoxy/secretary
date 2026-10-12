@@ -8,6 +8,15 @@ import (
 	"testing"
 )
 
+func evalPath(t *testing.T, p string) string {
+	t.Helper()
+	eval, err := filepath.EvalSymlinks(p)
+	if err == nil {
+		return eval
+	}
+	return p
+}
+
 func TestResolveAntigravityExecutable_Success(t *testing.T) {
 	dir := t.TempDir()
 	companionName := "localharness_external"
@@ -30,10 +39,10 @@ func TestResolveAntigravityExecutable_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error resolving executable: %v", err)
 	}
-	if resolvedExec != execPath {
+	if evalPath(t, resolvedExec) != evalPath(t, execPath) {
 		t.Fatalf("got executable %q; want %q", resolvedExec, execPath)
 	}
-	if resolvedCompanion != companionPath {
+	if evalPath(t, resolvedCompanion) != evalPath(t, companionPath) {
 		t.Fatalf("got companion %q; want %q", resolvedCompanion, companionPath)
 	}
 }
@@ -63,13 +72,11 @@ func TestResolveAntigravityExecutable_Symlink(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error resolving symlink executable: %v", err)
 	}
-	evalExec, _ := filepath.EvalSymlinks(execPath)
-	if resolvedExec != evalExec {
-		t.Fatalf("got executable %q; want %q", resolvedExec, evalExec)
+	if evalPath(t, resolvedExec) != evalPath(t, execPath) {
+		t.Fatalf("got executable %q; want %q", resolvedExec, execPath)
 	}
-	evalCompanion, _ := filepath.EvalSymlinks(companionPath)
-	if resolvedCompanion != evalCompanion {
-		t.Fatalf("got companion %q; want %q", resolvedCompanion, evalCompanion)
+	if evalPath(t, resolvedCompanion) != evalPath(t, companionPath) {
+		t.Fatalf("got companion %q; want %q", resolvedCompanion, companionPath)
 	}
 }
 
@@ -178,5 +185,29 @@ func TestAntigravityPlatformArgs(t *testing.T) {
 				t.Fatalf("unexpected --uid= on non-linux platform %s: %v", runtime.GOOS, args)
 			}
 		}
+	}
+}
+
+func TestAntigravityPlatformArgs_PreservesUserUID(t *testing.T) {
+	args := BuildAntigravityPlatformArgs([]string{"--uid=1234", "--verbose"})
+	uidCount := 0
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "--uid") {
+			uidCount++
+		}
+	}
+	if uidCount != 1 {
+		t.Fatalf("expected exactly 1 --uid argument, got %d in %v", uidCount, args)
+	}
+	if args[0] != "--uid=1234" {
+		t.Fatalf("expected preserved --uid=1234, got %q", args[0])
+	}
+}
+
+func TestDefaultAntigravityProfileDir(t *testing.T) {
+	custom := filepath.Join(t.TempDir(), "custom-profile")
+	t.Setenv("SECRETARY_ANTIGRAVITY_PROFILE_DIR", custom)
+	if got := DefaultAntigravityProfileDir(); got != custom {
+		t.Fatalf("got %q; want %q", got, custom)
 	}
 }

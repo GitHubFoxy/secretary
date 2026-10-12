@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/beruseruko/secretary/internal/acp"
 	"github.com/beruseruko/secretary/internal/core"
 )
 
@@ -36,6 +37,9 @@ func (m *mockAntigravityObserver) ObserveAntigravity(ctx context.Context, comman
 func createFakeAntigravityInstall(t *testing.T) (string, string) {
 	t.Helper()
 	dir := t.TempDir()
+	if eval, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = eval
+	}
 	companionName := "localharness_external"
 	execName := "agy_acp_server"
 	if runtime.GOOS == "windows" {
@@ -378,5 +382,55 @@ func TestAntigravityDiscovery_PreservesDiagnosticsInInventory(t *testing.T) {
 	}
 	if found.DiagnosticReason != "antigravity: sign-in required" {
 		t.Fatalf("expected DiagnosticReason, got %q", found.DiagnosticReason)
+	}
+}
+
+func TestClassifyAntigravityError(t *testing.T) {
+	cases := []struct {
+		err      error
+		wantCode string
+	}{
+		{
+			err:      &acp.RPCError{Code: -32000, Message: "auth_required"},
+			wantCode: "unauthenticated",
+		},
+		{
+			err:      &acp.RPCError{Code: -32601, Message: "method not found"},
+			wantCode: "protocol_mismatch",
+		},
+		{
+			err:      &acp.RPCError{Code: -32001, Message: "mcp server failed"},
+			wantCode: "mcp_setup_failed",
+		},
+		{
+			err:      &acp.RPCError{Code: -32002, Message: "invalid config option"},
+			wantCode: "config_failed",
+		},
+		{
+			err:      &acp.RPCError{Code: -32603, Message: "internal server error"},
+			wantCode: "session_setup_failed",
+		},
+		{
+			err:      errors.New("connection reset by peer"),
+			wantCode: "session_setup_failed",
+		},
+		{
+			err:      errors.New("unauthorized request"),
+			wantCode: "unauthenticated",
+		},
+		{
+			err:      errors.New("mcp pipe broken"),
+			wantCode: "mcp_setup_failed",
+		},
+	}
+
+	for _, tc := range cases {
+		code, diag := classifyAntigravityError(tc.err)
+		if code != tc.wantCode {
+			t.Errorf("for error %v, got code %q, want %q", tc.err, code, tc.wantCode)
+		}
+		if diag == nil {
+			t.Errorf("for error %v, expected non-nil diagnostic error", tc.err)
+		}
 	}
 }
