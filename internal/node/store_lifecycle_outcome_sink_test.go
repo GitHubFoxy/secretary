@@ -3,10 +3,53 @@ package node
 import (
 	"context"
 	"errors"
-	"github.com/beruseruko/secretary/internal/core"
 	"path/filepath"
 	"testing"
+
+	"github.com/beruseruko/secretary/internal/core"
 )
+
+func TestUnknownSteeringOutcomeReceiptStaysUncertain(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "outcomes.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+		WorkerRef: "unknown-steering-worker", Intent: "steer", ProjectID: "project", NodeID: "node-a", HarnessInstanceID: "node-a/codex",
+	}, core.TurnSpec{Input: "start"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	command, _, err := store.ClaimWorkerCommand(ctx, "steering", "key:unknown-steering", worker.ID, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outcome := CommandOutcome{
+		CommandID: command.ID, Kind: CommandSteering, State: CommandFailed,
+		TurnID: turn.ID, AttemptID: attempt.ID, ErrorCode: "steering_failed",
+		ErrorMessage: "native steering timed out", AcceptanceUnknown: true,
+	}
+	sink := NewStoreCommandOutcomeSink(store)
+	for range 2 {
+		if err := sink(ctx, "node-a", outcome); err != nil {
+			t.Fatal(err)
+		}
+	}
+	current, found, err := store.FindWorkerCommand(ctx, "steering", "key:unknown-steering", worker.ID, attempt.ID)
+	if err != nil || !found || current.State != core.WorkerCommandUncertain {
+		t.Fatalf("command=%#v found=%v err=%v, want uncertain", current, found, err)
+	}
+	receipt, err := store.WorkerCommandReceiptOutcome(ctx, command.ID)
+	if err != nil || receipt.State != core.WorkerCommandReceiptUncertain {
+		t.Fatalf("receipt=%#v err=%v, want uncertain", receipt, err)
+	}
+}
 
 func TestAuthenticatedLifecycleReceiptsExposeAcceptanceAndFailure(t *testing.T) {
 	for _, kind := range []CommandKind{CommandDispatch, CommandResume} {

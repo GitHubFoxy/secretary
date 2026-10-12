@@ -146,3 +146,6 @@
 3. **Фаза 3 (On-Demand MicroVM Runner):**
    * Добавить диспетчер облачных контейнеров (Fly Machines API или E2B API).
    * Если локальные ноды пользователя недоступны более 15 секунд при получении задачи на код — поднимать временный контейнер с бинарником `secretary-node`, выполнять задачу и гасить контейнер.
+
+FireCracker VM can have virtual displays, so each agent can use its own screen! For browser for example.
+Grok bot uses Temporal

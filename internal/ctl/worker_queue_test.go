@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/node"
 	"path/filepath"
 	"testing"
 )
@@ -290,5 +291,117 @@ func TestWorkerQueueDoesNotReplayInterruptedPromotedAttempt(t *testing.T) {
 	}
 	if current.QueuedMessages[0].State != "blocked" || service.Runtime.(*lifecycleRuntime).count("dispatch") != 1 {
 		t.Fatal("interrupted promoted Attempt automatically replayed or lost visible failure")
+	}
+}
+
+func TestWorkerQueue_DeliveredQueueFollowUp_DeniedSteering_SuccessfulTerminal_FIFOContinues(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	if _, err := store.SetPhase4AttemptActive(ctx, details.Attempts[0].ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Configure runtime with error on Steer
+	runtime := &errorSteerLifecycleRuntime{
+		lifecycleRuntime: *service.Runtime.(*lifecycleRuntime),
+		steerErr: &node.NodeCommandError{
+			Outcome: node.CommandOutcome{
+				State:           node.CommandFailed,
+				ErrorCode:       "usage_limit_exceeded",
+				ErrorMessage:    "Quota exceeded",
+				FailureCategory: core.FailureCategoryUsageLimit,
+				ProviderCode:    "usage_limit_exceeded",
+			},
+		},
+	}
+	service.Runtime = runtime
+
+	// 1. Enqueue two /q messages
+	for _, key := range []string{"q-msg-1", "q-msg-2"} {
+		if _, err := service.MessageWorker(ctx, MessageWorkerRequest{
+			WorkerRef:      details.Worker.WorkerRef,
+			Text:           "/q text for " + key,
+			IdempotencyKey: key,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// 2. Finish attempt 1 with native terminal
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, details.Attempts[0].ID, core.AttemptOutcomeInput{
+		Status:         core.OutcomeSucceeded,
+		Classification: core.OutcomeFinal,
+		Summary:        "attempt 1 done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Process queued messages -> msg 1 is promoted and dispatched (Attempt 2)
+	if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
+		t.Fatal(err)
+	}
+	current, err := service.GetWorker(ctx, details.Worker.WorkerRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(current.Attempts) != 2 {
+		t.Fatalf("attempts = %d, want 2", len(current.Attempts))
+	}
+	if current.QueuedMessages[0].State != "delivered" || current.QueuedMessages[1].State != "pending" {
+		t.Fatalf("queued states before steering: msg0=%q msg1=%q", current.QueuedMessages[0].State, current.QueuedMessages[1].State)
+	}
+	attempt2 := current.Attempts[1]
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt2.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// 4. Steer is denied by Node on active Attempt 2
+	_, steerErr := service.MessageWorker(ctx, MessageWorkerRequest{
+		WorkerRef:      details.Worker.WorkerRef,
+		Text:           "steer instructions",
+		IdempotencyKey: "steer-failed-key",
+	})
+	if steerErr == nil {
+		t.Fatal("expected steer to fail with typed error, got nil")
+	}
+	var cmdErr *node.NodeCommandError
+	if !errors.As(steerErr, &cmdErr) {
+		t.Fatalf("expected *node.NodeCommandError, got: %T (%v)", steerErr, steerErr)
+	}
+
+	// 5. CRITICAL CHECK: Denied steering MUST NOT change delivered message to blocked!
+	currentAfterSteer, err := service.GetWorker(ctx, details.Worker.WorkerRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if currentAfterSteer.QueuedMessages[0].State != "delivered" {
+		t.Fatalf("msg 0 state after steering denial = %q, want delivered", currentAfterSteer.QueuedMessages[0].State)
+	}
+	if currentAfterSteer.QueuedMessages[1].State != "pending" {
+		t.Fatalf("msg 1 state after steering denial = %q, want pending", currentAfterSteer.QueuedMessages[1].State)
+	}
+
+	// 6. Native terminal completes Attempt 2 successfully
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt2.ID, core.AttemptOutcomeInput{
+		Status:         core.OutcomeSucceeded,
+		Classification: core.OutcomeFinal,
+		Summary:        "attempt 2 done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 7. ProcessQueuedWorkerMessages: FIFO continues, msg 2 is promoted to Attempt 3!
+	if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
+		t.Fatal(err)
+	}
+	finalWorker, err := service.GetWorker(ctx, details.Worker.WorkerRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(finalWorker.Attempts) != 3 {
+		t.Fatalf("attempts = %d, want 3 (FIFO promotion of second message)", len(finalWorker.Attempts))
+	}
+	if finalWorker.QueuedMessages[0].State != "delivered" || finalWorker.QueuedMessages[1].State != "delivered" {
+		t.Fatalf("final queued states: msg0=%q msg1=%q", finalWorker.QueuedMessages[0].State, finalWorker.QueuedMessages[1].State)
 	}
 }

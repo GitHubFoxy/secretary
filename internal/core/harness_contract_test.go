@@ -147,6 +147,31 @@ func TestAttemptOutcomeAndCommandMetadataAreTransportSafe(t *testing.T) {
 	}
 }
 
+func TestAttemptOutcomeBoundsTypedWorkerFailure(t *testing.T) {
+	outcome := AttemptOutcomeEnvelope{
+		AttemptID: "attempt-1", Status: OutcomeFailed, Classification: OutcomeFinal,
+		Summary: strings.Repeat("я", 1000), FailureCategory: FailureCategoryUsageLimit,
+		FailureCode: "usage_limit_exceeded",
+	}
+	if err := outcome.Validate(); err != nil {
+		t.Fatalf("valid bounded failure rejected: %v", err)
+	}
+	outcome.Summary += "я"
+	if err := outcome.Validate(); err == nil {
+		t.Fatal("oversize typed failure summary was accepted")
+	}
+	outcome.Summary = "Quota exhausted"
+	outcome.FailureCode = "custom_secret_code"
+	if err := outcome.Validate(); err == nil {
+		t.Fatal("unknown typed provider code was accepted")
+	}
+	outcome.FailureCode = "usage_limit_exceeded"
+	outcome.FailureCategory = "custom_category"
+	if err := outcome.Validate(); err == nil {
+		t.Fatal("unknown typed failure category was accepted")
+	}
+}
+
 func TestHarnessPolicyIsSeparateFromObservedInventory(t *testing.T) {
 	policy := HarnessPolicy{
 		DefaultHarness:                HarnessFX,

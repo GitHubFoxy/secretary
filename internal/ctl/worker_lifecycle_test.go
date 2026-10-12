@@ -738,3 +738,565 @@ func TestWorkerServiceRejectsInvalidSelectionWithoutFXFallback(t *testing.T) {
 		t.Fatalf("error=%v", err)
 	}
 }
+
+type errorSteerLifecycleRuntime struct {
+	lifecycleRuntime
+	steerErr error
+}
+
+func (r *errorSteerLifecycleRuntime) Steer(context.Context, string, core.Worker, core.Phase4Attempt, string) error {
+	r.add("steer")
+	return r.steerErr
+}
+
+func TestWorkerServiceSteeringFailure_IdempotentReplayPreservesTypedFailure(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	attempt := details.Attempts[0]
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &errorSteerLifecycleRuntime{
+		steerErr: &node.NodeCommandError{
+			Outcome: node.CommandOutcome{
+				State:           node.CommandFailed,
+				TurnID:          attempt.TurnID,
+				AttemptID:       attempt.ID,
+				ErrorCode:       "usage_limit_exceeded",
+				ErrorMessage:    "Usage limit reached",
+				FailureCategory: core.FailureCategoryUsageLimit,
+				ProviderCode:    "usage_limit_exceeded",
+				Technical:       "acp rpc -32603: Internal error",
+			},
+		},
+	}
+	service.Runtime = runtime
+
+	request := MessageWorkerRequest{
+		WorkerRef:      details.Worker.WorkerRef,
+		Text:           "steer instructions",
+		IdempotencyKey: "steer-err-key",
+	}
+
+	// First call fails with typed error
+	_, firstErr := service.MessageWorker(ctx, request)
+	if firstErr == nil {
+		t.Fatal("expected error on first steering call, got nil")
+	}
+	var firstCmdErr *node.NodeCommandError
+	if !errors.As(firstErr, &firstCmdErr) {
+		t.Fatalf("expected *node.NodeCommandError on first call, got: %T (%v)", firstErr, firstErr)
+	}
+	if firstCmdErr.Outcome.FailureCategory != core.FailureCategoryUsageLimit {
+		t.Fatalf("first category = %q, want %q", firstCmdErr.Outcome.FailureCategory, core.FailureCategoryUsageLimit)
+	}
+	if firstCmdErr.Outcome.ProviderCode != "usage_limit_exceeded" {
+		t.Fatalf("first provider_code = %q, want 'usage_limit_exceeded'", firstCmdErr.Outcome.ProviderCode)
+	}
+
+	// Second call with same idempotency key restores exact same typed error
+	_, replayErr := service.MessageWorker(ctx, request)
+	if replayErr == nil {
+		t.Fatal("expected error on replay call, got nil")
+	}
+	var replayCmdErr *node.NodeCommandError
+	if !errors.As(replayErr, &replayCmdErr) {
+		t.Fatalf("expected *node.NodeCommandError on replay call, got: %T (%v)", replayErr, replayErr)
+	}
+	if replayCmdErr.Outcome.FailureCategory != core.FailureCategoryUsageLimit {
+		t.Fatalf("replay category = %q, want %q", replayCmdErr.Outcome.FailureCategory, core.FailureCategoryUsageLimit)
+	}
+	if replayCmdErr.Outcome.ProviderCode != "usage_limit_exceeded" {
+		t.Fatalf("replay provider_code = %q, want 'usage_limit_exceeded'", replayCmdErr.Outcome.ProviderCode)
+	}
+	if replayCmdErr.Outcome.Technical != "acp rpc -32603: Internal error" {
+		t.Fatalf("replay technical = %q", replayCmdErr.Outcome.Technical)
+	}
+	if replayCmdErr.Outcome.ErrorMessage != "Usage limit reached" {
+		t.Fatalf("replay message = %q", replayCmdErr.Outcome.ErrorMessage)
+	}
+
+	// Verify that rejected steering did NOT finalize the attempt
+	attemptRecord, err := store.Phase4Attempt(ctx, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attemptRecord.State != core.AttemptActive {
+		t.Fatalf("attempt state = %q, want %q", attemptRecord.State, core.AttemptActive)
+	}
+
+	// Native terminal forms the single Result
+	_, terminalResult, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
+		Status:         core.OutcomeSucceeded,
+		Classification: core.OutcomeFinal,
+		Summary:        "completed successfully after steering rejection",
+	})
+	if err != nil || terminalResult == nil {
+		t.Fatalf("failed to record terminal outcome: result=%#v err=%v", terminalResult, err)
+	}
+	if terminalResult.Status != core.ResultSucceeded {
+		t.Fatalf("terminal result status = %q, want %q", terminalResult.Status, core.ResultSucceeded)
+	}
+
+	// 3. Worker is now Idle after successful native terminal.
+	// Replaying the old steering request MUST return the saved typed outcome
+	// without creating a new Turn or Dispatch!
+	idleDetails, err := service.GetWorker(ctx, details.Worker.WorkerRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idleDetails.Worker.Status != core.WorkerIdle {
+		t.Fatalf("worker status = %q, want %q", idleDetails.Worker.Status, core.WorkerIdle)
+	}
+
+	_, idleReplayErr := service.MessageWorker(ctx, request)
+	if idleReplayErr == nil {
+		t.Fatal("expected error on idle replay call, got nil")
+	}
+	var idleCmdErr *node.NodeCommandError
+	if !errors.As(idleReplayErr, &idleCmdErr) {
+		t.Fatalf("expected *node.NodeCommandError on idle replay call, got: %T (%v)", idleReplayErr, idleReplayErr)
+	}
+	if idleCmdErr.Outcome.FailureCategory != core.FailureCategoryUsageLimit || idleCmdErr.Outcome.ProviderCode != "usage_limit_exceeded" {
+		t.Fatalf("idle replay category=%q code=%q", idleCmdErr.Outcome.FailureCategory, idleCmdErr.Outcome.ProviderCode)
+	}
+	afterIdleReplay, err := service.GetWorker(ctx, details.Worker.WorkerRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterIdleReplay.Turns) != 1 {
+		t.Fatalf("turns count = %d, want 1 (idle replay must not create Turn)", len(afterIdleReplay.Turns))
+	}
+	if runtime.count("dispatch") != 0 {
+		t.Fatalf("dispatch count = %d, want 0 (idle replay must not dispatch)", runtime.count("dispatch"))
+	}
+
+	// 4. Start a legitimate second turn, making worker active on Attempt 2.
+	turn2, err := service.MessageWorker(ctx, MessageWorkerRequest{
+		WorkerRef:      details.Worker.WorkerRef,
+		Text:           "start second turn",
+		IdempotencyKey: "turn-2-key",
+	})
+	if err != nil {
+		t.Fatalf("failed to start turn 2: %v", err)
+	}
+	if len(turn2.Attempts) != 2 {
+		t.Fatalf("expected 2 attempts, got %d", len(turn2.Attempts))
+	}
+	attempt2 := turn2.Attempts[1]
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt2.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replaying the old steering request while a NEW Attempt is active MUST return the saved typed outcome
+	// without creating a Turn, Dispatch or new command identity for Attempt 2!
+	steerCountBefore := runtime.count("steer")
+	_, activeReplayErr := service.MessageWorker(ctx, request)
+	if activeReplayErr == nil {
+		t.Fatal("expected error on active replay call, got nil")
+	}
+	var activeCmdErr *node.NodeCommandError
+	if !errors.As(activeReplayErr, &activeCmdErr) {
+		t.Fatalf("expected *node.NodeCommandError on active replay call, got: %T (%v)", activeReplayErr, activeReplayErr)
+	}
+	if activeCmdErr.Outcome.FailureCategory != core.FailureCategoryUsageLimit || activeCmdErr.Outcome.ProviderCode != "usage_limit_exceeded" {
+		t.Fatalf("active replay category=%q code=%q", activeCmdErr.Outcome.FailureCategory, activeCmdErr.Outcome.ProviderCode)
+	}
+	if runtime.count("steer") != steerCountBefore {
+		t.Fatalf("steer was executed again on new attempt (%d != %d)", runtime.count("steer"), steerCountBefore)
+	}
+
+	// Verify no new command identity was created for Attempt 2 with this dedupe key:
+	_, foundOnAttempt2, err := store.FindWorkerCommand(ctx, "steering", "key:steer-err-key", details.Worker.ID, attempt2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if foundOnAttempt2 {
+		t.Fatal("steering command was erroneously created for new attempt 2")
+	}
+}
+
+func TestWorkerServiceSteeringCancellationRemainsUncertain(t *testing.T) {
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(cause.Error(), func(t *testing.T) {
+			ctx, store, service, project := newWorkerService(t)
+			details := spawnLifecycleWorker(t, ctx, service, project)
+			attempt := details.Attempts[0]
+			if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+				t.Fatal(err)
+			}
+			command, _, err := store.ClaimWorkerCommand(ctx, "steering", "key:cancelled-steer", details.Worker.ID, attempt.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			local := node.NewLocal(canceledSteeringRuntime{err: cause})
+			if _, err := local.Dispatch(ctx, node.StartRequest{WorkerRef: details.Worker.WorkerRef}); err != nil {
+				t.Fatal(err)
+			}
+			runtime := NodeRuntime{Local: local}
+			steering := node.Command{Kind: node.CommandSteering, Steering: &node.SteeringCommand{
+				Metadata: core.CommandMetadata{
+					CommandID: command.ID, Node: "local", HarnessInstanceID: "local/fx",
+					WorkerRef: details.Worker.WorkerRef, TurnID: attempt.TurnID, AttemptID: attempt.ID,
+				},
+				Text: "steer",
+			}}
+			err = service.deliverCommand(ctx, command, func(string) error {
+				_, sendErr := runtime.LocalCommand(ctx, steering)
+				return sendErr
+			})
+			if !errors.Is(err, node.ErrCommandOutcomeUnknown) || !errors.Is(err, cause) {
+				t.Fatalf("steering cancellation lost uncertainty/cause: %v", err)
+			}
+			command, found, err := store.FindWorkerCommand(ctx, "steering", "key:cancelled-steer", details.Worker.ID, attempt.ID)
+			if err != nil || !found || command.State != core.WorkerCommandUncertain {
+				t.Fatalf("command state=%#v found=%v err=%v, want uncertain", command, found, err)
+			}
+			if _, err := store.WorkerCommandReceiptOutcome(ctx, command.ID); !errors.Is(err, core.ErrNotFound) {
+				t.Fatalf("local cancellation was persisted as an authoritative Node refusal: %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkerServiceDoesNotHideSteeringReceiptStorageFailure(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	ctx, store, service, project := newWorkerServiceAt(t, path)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	attempt := details.Attempts[0]
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	command, _, err := store.ClaimWorkerCommand(ctx, "steering", "key:store-error", details.Worker.ID, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var handoffs int
+	outcomeErr := &node.NodeCommandError{Outcome: node.CommandOutcome{
+		CommandID: command.ID, Kind: node.CommandSteering, State: node.CommandFailed,
+		TurnID: attempt.TurnID, AttemptID: attempt.ID, ErrorCode: "steering_failed",
+		ErrorMessage: "provider refusal", FailureCategory: core.FailureCategoryInternalError,
+	}}
+	err = service.deliverCommand(ctx, command, func(string) error {
+		handoffs++
+		if err := store.Close(); err != nil {
+			t.Fatalf("close Core store to inject receipt failure: %v", err)
+		}
+		return outcomeErr
+	})
+	if err == nil || !errors.Is(err, node.ErrCommandOutcomeUnknown) {
+		t.Fatalf("receipt storage failure was hidden as a definitive refusal: %v", err)
+	}
+	if handoffs != 1 {
+		t.Fatalf("handoffs=%d, want one", handoffs)
+	}
+	reopened, err := core.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	service.Store = reopened
+	current, found, err := reopened.FindWorkerCommand(ctx, "steering", "key:store-error", details.Worker.ID, attempt.ID)
+	if err != nil || !found || current.State != core.WorkerCommandUncertain {
+		t.Fatalf("storage failure did not leave a durable uncertain command: command=%#v found=%v err=%v", current, found, err)
+	}
+	if _, err := reopened.WorkerCommandReceiptOutcome(ctx, command.ID); !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("failed storage write created an authoritative refusal: %v", err)
+	}
+	_, send, err := service.claimCommand(ctx, "steering", "key:store-error", details.Worker, attempt, nil)
+	if !errors.Is(err, node.ErrCommandOutcomeUnknown) || send {
+		t.Fatalf("same command was eligible for repeat delivery: send=%v err=%v", send, err)
+	}
+	if handoffs != 1 {
+		t.Fatalf("storage failure caused a repeated side effect: handoffs=%d", handoffs)
+	}
+}
+
+func TestWorkerServiceSteeringFailure_AuthenticatedOriginBinding(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	attempt := details.Attempts[0]
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	conversation, err := service.authorize(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, service.PersonID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "synthetic owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, core.SecretaryPolicySnapshot{Version: "test-v1", Harness: "fx", Model: "secretary", Reasoning: "high", ProfileVersion: "test-v1", ProfileName: "secretary", ProfileHash: "hash", ProfileContent: "synthetic"}); err != nil {
+		t.Fatal(err)
+	}
+	origin, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "steer origin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin, err = store.StartSecretaryTurn(ctx, origin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &errorSteerLifecycleRuntime{
+		steerErr: &node.NodeCommandError{
+			Outcome: node.CommandOutcome{
+				State:           node.CommandFailed,
+				TurnID:          attempt.TurnID,
+				AttemptID:       attempt.ID,
+				ErrorCode:       "usage_limit_exceeded",
+				ErrorMessage:    "Usage limit reached",
+				FailureCategory: core.FailureCategoryUsageLimit,
+				ProviderCode:    "usage_limit_exceeded",
+			},
+		},
+	}
+	service.Runtime = runtime
+
+	request := MessageWorkerRequest{
+		WorkerRef:       details.Worker.WorkerRef,
+		Text:            "steer with origin",
+		IdempotencyKey:  "steer-origin-key",
+		SecretaryTurnID: origin.ID,
+		InputID:         origin.InputID,
+	}
+
+	// First call with valid origin fails with typed error
+	_, err = service.MessageWorker(ctx, request)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	// Replay with identical origin returns typed error
+	_, err = service.MessageWorker(ctx, request)
+	if err == nil {
+		t.Fatal("expected error on replay, got nil")
+	}
+	var cmdErr *node.NodeCommandError
+	if !errors.As(err, &cmdErr) {
+		t.Fatalf("expected *node.NodeCommandError, got: %T (%v)", err, err)
+	}
+
+	// Replay with mismatched or missing origin returns ErrInvalidSecretaryOrigin
+	forgedRequest := request
+	forgedRequest.SecretaryTurnID = "foreign-turn"
+	_, err = service.MessageWorker(ctx, forgedRequest)
+	if !errors.Is(err, core.ErrInvalidSecretaryOrigin) {
+		t.Fatalf("expected ErrInvalidSecretaryOrigin for mismatched origin, got: %v", err)
+	}
+
+	unauthenticatedRequest := request
+	unauthenticatedRequest.SecretaryTurnID = ""
+	unauthenticatedRequest.InputID = ""
+	_, err = service.MessageWorker(ctx, unauthenticatedRequest)
+	if !errors.Is(err, core.ErrInvalidSecretaryOrigin) {
+		t.Fatalf("expected ErrInvalidSecretaryOrigin for unauthenticated replay, got: %v", err)
+	}
+
+	// Terminal replay after completed Secretary turn must succeed with identical origin and capability
+	if _, _, err := store.FinishSecretaryTurnWithOutput(ctx, origin.ID, origin.InputID, core.SecretaryTurnSucceeded, "", "Turn finished", nil); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = service.MessageWorker(ctx, request)
+	if err == nil {
+		t.Fatal("expected error on replay after turn completed, got nil")
+	}
+	var completedCmdErr *node.NodeCommandError
+	if !errors.As(err, &completedCmdErr) {
+		t.Fatalf("expected *node.NodeCommandError after completed turn, got: %T (%v)", err, err)
+	}
+
+	// Forged request after completion must still fail with ErrInvalidSecretaryOrigin
+	_, err = service.MessageWorker(ctx, forgedRequest)
+	if !errors.Is(err, core.ErrInvalidSecretaryOrigin) {
+		t.Fatalf("expected ErrInvalidSecretaryOrigin for forged request after turn completed, got: %v", err)
+	}
+}
+
+func TestWorkerServiceUncertainSteeringReplayValidatesOrigin(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	attempt := details.Attempts[0]
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	conversation, err := service.authorize(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, service.PersonID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "synthetic owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, core.SecretaryPolicySnapshot{Version: "test-v1", Harness: "fx", Model: "secretary", Reasoning: "high", ProfileVersion: "test-v1", ProfileName: "secretary", ProfileHash: "hash", ProfileContent: "synthetic"}); err != nil {
+		t.Fatal(err)
+	}
+	origin, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "uncertain steering origin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin, err = store.StartSecretaryTurn(ctx, origin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &errorSteerLifecycleRuntime{steerErr: &node.NodeCommandError{Outcome: node.CommandOutcome{
+		State: node.CommandFailed, TurnID: attempt.TurnID, AttemptID: attempt.ID,
+		ErrorCode: "execution_state_unknown", ErrorMessage: "steering acceptance is unknown", AcceptanceUnknown: true,
+	}}}
+	service.Runtime = runtime
+	request := MessageWorkerRequest{
+		WorkerRef: details.Worker.WorkerRef, Text: "continue", IdempotencyKey: "uncertain-steer-origin",
+		SecretaryTurnID: origin.ID, InputID: origin.InputID,
+	}
+	if _, err := service.MessageWorker(ctx, request); !errors.Is(err, node.ErrCommandOutcomeUnknown) {
+		t.Fatalf("first uncertain handoff err=%v", err)
+	}
+	if runtime.count("steer") != 1 {
+		t.Fatalf("initial native handoffs=%d, want 1", runtime.count("steer"))
+	}
+	for name, forged := range map[string]MessageWorkerRequest{
+		"missing origin": {WorkerRef: request.WorkerRef, Text: request.Text, IdempotencyKey: request.IdempotencyKey},
+		"foreign turn":   {WorkerRef: request.WorkerRef, Text: request.Text, IdempotencyKey: request.IdempotencyKey, SecretaryTurnID: "foreign-turn", InputID: origin.InputID},
+		"foreign input":  {WorkerRef: request.WorkerRef, Text: request.Text, IdempotencyKey: request.IdempotencyKey, SecretaryTurnID: origin.ID, InputID: "foreign-input"},
+	} {
+		if _, err := service.MessageWorker(ctx, forged); !errors.Is(err, core.ErrInvalidSecretaryOrigin) {
+			t.Errorf("%s replay err=%v, want invalid authenticated origin", name, err)
+		}
+	}
+	if _, err := service.MessageWorker(ctx, request); !errors.Is(err, node.ErrCommandOutcomeUnknown) {
+		t.Fatalf("identical uncertain replay err=%v", err)
+	}
+	if runtime.count("steer") != 1 {
+		t.Fatalf("uncertain replay repeated native steering: %d calls", runtime.count("steer"))
+	}
+	if _, _, err := store.FinishSecretaryTurnWithOutput(ctx, origin.ID, origin.InputID, core.SecretaryTurnSucceeded, "", "finished", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.MessageWorker(ctx, request); !errors.Is(err, node.ErrCommandOutcomeUnknown) {
+		t.Fatalf("historical exact-origin replay err=%v", err)
+	}
+	if runtime.count("steer") != 1 {
+		t.Fatalf("historical replay repeated native steering: %d calls", runtime.count("steer"))
+	}
+}
+
+func TestWorkerServiceSteering_LegacyReplayAndPendingOriginBinding(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	details := spawnLifecycleWorker(t, ctx, service, project)
+	attempt := details.Attempts[0]
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	identity, err := store.GetSecretaryIdentity(ctx, service.PersonID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "synthetic owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, core.SecretaryPolicySnapshot{Version: "test-v1", Harness: "fx", Model: "secretary", Reasoning: "high", ProfileVersion: "test-v1", ProfileName: "secretary", ProfileHash: "hash", ProfileContent: "synthetic"}); err != nil {
+		t.Fatal(err)
+	}
+	origin, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "valid origin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	origin, err = store.StartSecretaryTurn(ctx, origin.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &errorSteerLifecycleRuntime{
+		steerErr: &node.NodeCommandError{
+			Outcome: node.CommandOutcome{
+				State:           node.CommandFailed,
+				TurnID:          attempt.TurnID,
+				AttemptID:       attempt.ID,
+				ErrorCode:       "usage_limit_exceeded",
+				ErrorMessage:    "Usage limit reached",
+				FailureCategory: core.FailureCategoryUsageLimit,
+				ProviderCode:    "usage_limit_exceeded",
+			},
+		},
+	}
+	service.Runtime = runtime
+
+	// 1. Legacy command created without origin
+	legacyRequest := MessageWorkerRequest{
+		WorkerRef:      details.Worker.WorkerRef,
+		Text:           "legacy steer without origin",
+		IdempotencyKey: "legacy-steer-key",
+	}
+	_, err = service.MessageWorker(ctx, legacyRequest)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	var cmdErr *node.NodeCommandError
+	if !errors.As(err, &cmdErr) {
+		t.Fatalf("expected *node.NodeCommandError, got: %T (%v)", err, err)
+	}
+
+	// Replay with identical legacy request (no origin) succeeds and returns typed failure
+	_, err = service.MessageWorker(ctx, legacyRequest)
+	if err == nil {
+		t.Fatal("expected error on legacy replay, got nil")
+	}
+	if !errors.As(err, &cmdErr) {
+		t.Fatalf("expected *node.NodeCommandError on legacy replay, got: %T (%v)", err, err)
+	}
+
+	// Replay of legacy command with fabricated origin is rejected with ErrInvalidSecretaryOrigin
+	fabricatedRequest := legacyRequest
+	fabricatedRequest.SecretaryTurnID = "fabricated-turn"
+	fabricatedRequest.InputID = "fabricated-input"
+	_, err = service.MessageWorker(ctx, fabricatedRequest)
+	if !errors.Is(err, core.ErrInvalidSecretaryOrigin) {
+		t.Fatalf("expected ErrInvalidSecretaryOrigin for fabricated origin on legacy replay, got: %v", err)
+	}
+
+	// Replay of legacy command with a valid authenticated origin is ALSO rejected (cannot silently rebind legacy record)
+	validOriginRequest := legacyRequest
+	validOriginRequest.SecretaryTurnID = origin.ID
+	validOriginRequest.InputID = origin.InputID
+	_, err = service.MessageWorker(ctx, validOriginRequest)
+	if !errors.Is(err, core.ErrInvalidSecretaryOrigin) {
+		t.Fatalf("expected ErrInvalidSecretaryOrigin for rebinding legacy command, got: %v", err)
+	}
+
+	// 2. Pending command without origin cannot accept fabricated origin
+	// Create an unoriginated pending command
+	pendingCmd, _, err := store.ClaimWorkerCommand(ctx, "steering", "pending-dedupe-key", details.Worker.ID, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ValidateWorkerCommandOrigin(ctx, pendingCmd.ID, &core.SecretaryOriginIdentity{
+		PersonID:        service.PersonID,
+		Capability:      "invalid-cap",
+		SecretaryTurnID: "fabricated-turn",
+		InputID:         "fabricated-input",
+	}, true); !errors.Is(err, core.ErrInvalidSecretaryOrigin) {
+		t.Fatalf("expected ErrInvalidSecretaryOrigin for fabricated origin on pending command, got: %v", err)
+	}
+
+	// Cannot silently bind pending command without origin to valid origin via replay
+	if err := store.ValidateWorkerCommandOrigin(ctx, pendingCmd.ID, &core.SecretaryOriginIdentity{
+		PersonID:        service.PersonID,
+		Capability:      service.Capability,
+		SecretaryTurnID: origin.ID,
+		InputID:         origin.InputID,
+	}, true); !errors.Is(err, core.ErrInvalidSecretaryOrigin) {
+		t.Fatalf("expected ErrInvalidSecretaryOrigin for rebinding pending command, got: %v", err)
+	}
+}

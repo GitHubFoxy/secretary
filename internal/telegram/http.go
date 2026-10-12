@@ -277,6 +277,8 @@ type HTTPServerClient struct {
 	HTTPClient *http.Client
 }
 
+const maxServerErrorBody = 16 << 10
+
 func (c *HTTPServerClient) client() *http.Client {
 	if c.HTTPClient != nil {
 		return c.HTTPClient
@@ -302,7 +304,13 @@ func (c *HTTPServerClient) post(ctx context.Context, path string, body any, idem
 	}
 	defer response.Body.Close()
 	if response.StatusCode/100 != 2 {
-		body, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, maxServerErrorBody+1))
+		if readErr != nil {
+			return fmt.Errorf("telegram: read server error response: %w", readErr)
+		}
+		if len(body) > maxServerErrorBody {
+			return fmt.Errorf("telegram: server returned %s: error response exceeded %d bytes", response.Status, maxServerErrorBody)
+		}
 		return fmt.Errorf("telegram: server returned %s: %s", response.Status, redactBotSecret(c.Credential, strings.TrimSpace(string(body))))
 	}
 	return nil

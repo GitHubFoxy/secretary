@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // NodeReference and HarnessInstanceID are opaque references owned by the
@@ -396,13 +397,14 @@ func (m ToolFailureMetadata) Validate() error {
 }
 
 type ToolResult struct {
-	CallID  string               `json:"call_id,omitempty"`
-	Name    string               `json:"name,omitempty"`
-	Output  string               `json:"output,omitempty"`
-	Error   string               `json:"-"`
-	Status  string               `json:"status,omitempty"`
-	Preview string               `json:"preview,omitempty"`
-	Failure *ToolFailureMetadata `json:"failure,omitempty"`
+	CallID        string               `json:"call_id,omitempty"`
+	Name          string               `json:"name,omitempty"`
+	Output        string               `json:"output,omitempty"`
+	OutputPresent bool                 `json:"output_present,omitempty"`
+	Error         string               `json:"-"`
+	Status        string               `json:"status,omitempty"`
+	Preview       string               `json:"preview,omitempty"`
+	Failure       *ToolFailureMetadata `json:"failure,omitempty"`
 }
 
 type SubagentActivity struct {
@@ -587,6 +589,7 @@ type AttemptOutcomeEnvelope struct {
 	ErrorMessage      string                `json:"error_message,omitempty"`
 	Diagnostics       string                `json:"diagnostics,omitempty"`
 	FailureCode       string                `json:"failure_code,omitempty"`
+	FailureCategory   FailureCategory       `json:"failure_category,omitempty"`
 	ArtifactRefs      []ArtifactRef         `json:"artifact_refs,omitempty"`
 	CorrelationID     string                `json:"correlation_id,omitempty"`
 	OccurredAt        time.Time             `json:"occurred_at"`
@@ -607,6 +610,16 @@ func (o AttemptOutcomeEnvelope) Validate() error {
 	}
 	if o.Classification == OutcomeFinal && strings.TrimSpace(o.Summary) == "" {
 		return fmt.Errorf("core: final outcome summary is required")
+	}
+	if o.FailureCategory != "" {
+		if !o.FailureCategory.Valid() || (o.FailureCode != "" && SanitizeFailureProviderCode(o.FailureCode) == "") {
+			return fmt.Errorf("core: invalid typed Worker failure")
+		}
+		for _, message := range []string{o.Summary, o.ErrorMessage, o.Diagnostics} {
+			if utf8.RuneCountInString(message) > 1000 {
+				return fmt.Errorf("core: typed Worker failure message exceeds 1000 runes")
+			}
+		}
 	}
 	for _, artifact := range o.ArtifactRefs {
 		if err := artifact.Validate(); err != nil {

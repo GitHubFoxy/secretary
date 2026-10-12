@@ -11,7 +11,7 @@ import (
 const toolPreviewRunes = 25
 
 var (
-	toolSecretAssignment = regexp.MustCompile(`(?i)\b(api[_-]?key|api[_-]?token|access[_-]?(?:key|token)|private[_-]?key|authorization|bearer|token|secret|password|credential|client[_-]?secret|session[_-]?id|native[_-]?session[_-]?id|worker[_-]?(?:ref|id)|attempt[_-]?id|turn[_-]?id|node[_-]?id|request[_-]?id|call[_-]?id|analysis|reasoning|thought)\b(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;&]+)`)
+	toolSecretAssignment = regexp.MustCompile(`(?i)\b(api[_-]?key|api[_-]?token|access[_-]?(?:key|token)|private[_-]?key|authorization|bearer|token|secret|password|credential|client[_-]?secret|session[_-]?id|native[_-]?session[_-]?id|worker[_-]?(?:ref|id)|attempt[_-]?id|turn[_-]?id|node[_-]?id|request[_-]?id|call[_-]?id|analysis|reasoning|thought)\b("?\s*[:=]\s*)("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[^\s,;&}]+)`)
 	toolSecretFlag       = regexp.MustCompile(`(?i)(--?(?:api-key|access-key|private-key|authorization|bearer|token|secret|password|credential|session-id|worker-ref|attempt-id|turn-id|node-id|request-id|call-id)(?:\s+|=))("[^"]*"|'[^']*'|[^\s,;&]+)`)
 	toolBearerValue      = regexp.MustCompile(`(?i)\bBearer\s+[^\s,;&]+`)
 	toolCredentialPrefix = regexp.MustCompile(`(?i)(?:sk-[a-z0-9_-]{8,}|gh[pousr]_[a-z0-9]{8,}|xox[baprs]-[a-z0-9-]{8,})`)
@@ -79,7 +79,17 @@ func classifyPreviewTool(tool string) string {
 // normalizing whitespace. Normalized tool payloads and structured output use
 // this boundary; only user-facing previews additionally flatten lines.
 func redactToolSensitiveText(value string) string {
-	value = toolSecretAssignment.ReplaceAllString(value, "$1$2[redacted]")
+	value = redactAuthValues(value)
+	value = toolSecretAssignment.ReplaceAllStringFunc(value, func(match string) string {
+		parts := toolSecretAssignment.FindStringSubmatch(match)
+		replacement := "[redacted]"
+		if strings.Contains(parts[2], `"`) {
+			replacement = `"[redacted]"`
+		} else if strings.Contains(parts[2], "'") && strings.HasPrefix(strings.TrimSpace(parts[3]), "'") {
+			replacement = "'[redacted]'"
+		}
+		return parts[1] + parts[2] + replacement
+	})
 	value = toolSecretFlag.ReplaceAllString(value, "$1[redacted]")
 	value = toolCurlUserLong.ReplaceAllString(value, "$1[redacted]")
 	value = toolCurlUserShort.ReplaceAllString(value, "$1$2[redacted]")
@@ -116,14 +126,6 @@ func relativeToolPath(path, workspace string) string {
 	return filepath.ToSlash(relative)
 }
 
-func truncateToolPreview(value string) string {
-	runes := []rune(value)
-	if len(runes) <= toolPreviewRunes {
-		return value
-	}
-	return string(runes[:toolPreviewRunes]) + "…"
-}
-
 func compactToolPath(path string) string {
 	path = strings.ReplaceAll(path, `\`, "/")
 	path = strings.TrimSpace(path)
@@ -155,6 +157,14 @@ func compactToolPath(path string) string {
 	return compactToolBasename(base)
 }
 
+func truncateToolPreview(value string) string {
+	runes := []rune(value)
+	if len(runes) <= toolPreviewRunes {
+		return value
+	}
+	return string(runes[:toolPreviewRunes]) + "…"
+}
+
 func compactToolBasename(base string) string {
 	runes := []rune(base)
 	if len(runes) <= toolPreviewRunes {
@@ -166,8 +176,6 @@ func compactToolBasename(base string) string {
 	}
 	extRunes := []rune(extension)
 	if len(extRunes) > toolPreviewRunes-5 {
-		// Preserve the informative end of an unusually long extension while
-		// keeping the complete preview within the agreed bound.
 		extRunes = extRunes[len(extRunes)-(toolPreviewRunes-5):]
 		extension = string(extRunes)
 	}

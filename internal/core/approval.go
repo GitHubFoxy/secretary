@@ -425,7 +425,7 @@ func finalizeApprovalAttemptTx(ctx context.Context, tx *sql.Tx, now time.Time, a
 		return nil
 	}
 	var existingOutcome AttemptOutcome
-	if err := scanPhase4Outcome(tx.QueryRowContext(ctx, `SELECT id, attempt_id, status, classification, error_code, error_message, diagnostics, created_at FROM phase4_attempt_outcomes WHERE attempt_id = ?`, approval.AttemptID), &existingOutcome); err == nil {
+	if err := scanPhase4Outcome(tx.QueryRowContext(ctx, `SELECT id, attempt_id, status, classification, error_code, error_message, diagnostics, failure_category, created_at FROM phase4_attempt_outcomes WHERE attempt_id = ?`, approval.AttemptID), &existingOutcome); err == nil {
 		return nil
 	} else if !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -433,7 +433,7 @@ func finalizeApprovalAttemptTx(ctx context.Context, tx *sql.Tx, now time.Time, a
 	errorCode := "approval_" + string(state)
 	summary := "Worker request " + string(state)
 	outcome := AttemptOutcome{ID: newID("aou"), AttemptID: approval.AttemptID, Status: OutcomeFailed, Classification: OutcomeFinal, ErrorCode: errorCode, Diagnostics: "No machine action was rerun after Worker request resolution", CreatedAt: now}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempt_outcomes(id, attempt_id, status, classification, error_code, error_message, diagnostics, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, outcome.ID, outcome.AttemptID, outcome.Status, outcome.Classification, outcome.ErrorCode, outcome.ErrorMessage, outcome.Diagnostics, timestamp(now)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempt_outcomes(id, attempt_id, status, classification, error_code, error_message, diagnostics, failure_category, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, outcome.ID, outcome.AttemptID, outcome.Status, outcome.Classification, outcome.ErrorCode, outcome.ErrorMessage, outcome.Diagnostics, string(outcome.FailureCategory), timestamp(now)); err != nil {
 		return err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE phase4_attempts SET state = ?, updated_at = ? WHERE id = ? AND state NOT IN ('succeeded', 'failed', 'canceled', 'interrupted')`, AttemptFailed, timestamp(now), approval.AttemptID); err != nil {

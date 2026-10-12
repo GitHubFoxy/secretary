@@ -135,12 +135,12 @@ WHERE c.id = ?`, commandID).Scan(&state, &workerTurnID, &workerConversationID, &
 	if attemptState.Terminal() {
 		return ErrInvalidTransition
 	}
-	if state == WorkerCommandDelivered {
-		// A delivered legacy command without a pre-handoff intent cannot be
+	if state == WorkerCommandDelivered || state == WorkerCommandFailed {
+		// A completed legacy command without a pre-handoff intent cannot be
 		// retroactively attributed to a later Secretary input.
 		return ErrInvalidSecretaryOrigin
 	}
-	if state != WorkerCommandPending && state != WorkerCommandUncertain && state != WorkerCommandFailed {
+	if state != WorkerCommandPending && state != WorkerCommandUncertain {
 		return ErrInvalidTransition
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO secretary_worker_command_origins(command_id, secretary_turn_id, input_id, worker_turn_id, created_at) VALUES(?, ?, ?, ?, ?)`, commandID, origin.SecretaryTurnID, origin.InputID, workerTurnID, timestamp(now))

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS phase4_attempt_outcomes (
   error_code TEXT NOT NULL DEFAULT '',
   error_message TEXT NOT NULL DEFAULT '',
   diagnostics TEXT NOT NULL DEFAULT '',
+  failure_category TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS phase4_results (
@@ -48,6 +49,8 @@ CREATE TABLE IF NOT EXISTS phase4_results (
   status TEXT NOT NULL,
   summary TEXT NOT NULL,
   failure_code TEXT NOT NULL DEFAULT '',
+  failure_category TEXT NOT NULL DEFAULT '',
+  failure_details TEXT NOT NULL DEFAULT '',
   artifact_refs TEXT NOT NULL DEFAULT '',
   correlation_id TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL
@@ -111,11 +114,23 @@ CREATE UNIQUE INDEX IF NOT EXISTS phase4_approvals_one_pending_attempt ON phase4
   state TEXT NOT NULL,
   error_code TEXT NOT NULL DEFAULT '',
   error_message TEXT NOT NULL DEFAULT '',
+  failure_category TEXT NOT NULL DEFAULT '',
+  provider_code TEXT NOT NULL DEFAULT '',
+  technical TEXT NOT NULL DEFAULT '',
   received_at TEXT NOT NULL
 )`); err != nil {
 		return fmt.Errorf("create durable Worker command outcomes: %w", err)
 	}
 	if err := s.migratePhase4ApprovalResolution(ctx); err != nil {
+		return err
+	}
+	if err := s.migratePhase4ResultsFailure(ctx); err != nil {
+		return err
+	}
+	if err := s.migratePhase4AttemptOutcomesFailure(ctx); err != nil {
+		return err
+	}
+	if err := s.migratePhase4WorkerCommandOutcomesFailure(ctx); err != nil {
 		return err
 	}
 	return nil
@@ -161,6 +176,118 @@ func (s *Store) migratePhase4ApprovalResolution(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx, `DROP INDEX IF EXISTS phase4_approvals_one_pending_attempt;
 CREATE UNIQUE INDEX phase4_approvals_one_pending_attempt ON phase4_approvals(attempt_id) WHERE state IN ('pending', 'resolving');`); err != nil {
 			return fmt.Errorf("update unresolved Approval uniqueness: %w", err)
+		}
+		return nil
+	})
+}
+
+func (s *Store) migratePhase4ResultsFailure(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(phase4_results)`)
+	if err != nil {
+		return fmt.Errorf("inspect phase 4 results columns: %w", err)
+	}
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan phase 4 results columns: %w", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	return withTxErr(s, ctx, func(tx *sql.Tx) error {
+		for _, column := range []struct{ name, definition string }{
+			{name: "failure_category", definition: `TEXT NOT NULL DEFAULT ''`},
+			{name: "failure_details", definition: `TEXT NOT NULL DEFAULT ''`},
+		} {
+			if columns[column.name] {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `ALTER TABLE phase4_results ADD COLUMN `+column.name+` `+column.definition); err != nil {
+				return fmt.Errorf("add phase4_results column %s: %w", column.name, err)
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Store) migratePhase4AttemptOutcomesFailure(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(phase4_attempt_outcomes)`)
+	if err != nil {
+		return fmt.Errorf("inspect phase 4 attempt outcomes columns: %w", err)
+	}
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan phase 4 attempt outcomes columns: %w", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	return withTxErr(s, ctx, func(tx *sql.Tx) error {
+		if !columns["failure_category"] {
+			if _, err := tx.ExecContext(ctx, `ALTER TABLE phase4_attempt_outcomes ADD COLUMN failure_category TEXT NOT NULL DEFAULT ''`); err != nil {
+				return fmt.Errorf("add phase4_attempt_outcomes failure_category: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
+func (s *Store) migratePhase4WorkerCommandOutcomesFailure(ctx context.Context) error {
+	rows, err := s.db.QueryContext(ctx, `PRAGMA table_info(phase4_worker_command_outcomes)`)
+	if err != nil {
+		return fmt.Errorf("inspect phase 4 worker command outcomes columns: %w", err)
+	}
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			rows.Close()
+			return fmt.Errorf("scan phase 4 worker command outcomes columns: %w", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	return withTxErr(s, ctx, func(tx *sql.Tx) error {
+		for _, column := range []struct{ name, definition string }{
+			{name: "failure_category", definition: `TEXT NOT NULL DEFAULT ''`},
+			{name: "provider_code", definition: `TEXT NOT NULL DEFAULT ''`},
+			{name: "technical", definition: `TEXT NOT NULL DEFAULT ''`},
+		} {
+			if columns[column.name] {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `ALTER TABLE phase4_worker_command_outcomes ADD COLUMN `+column.name+` `+column.definition); err != nil {
+				return fmt.Errorf("add phase4_worker_command_outcomes column %s: %w", column.name, err)
+			}
 		}
 		return nil
 	})
@@ -923,7 +1050,7 @@ func (s *Store) transitionPhase4Attempt(ctx context.Context, attemptID string, f
 func (s *Store) finishRetryableAttempt(ctx context.Context, attemptID string, input FinishAttemptInput) (FinishAttemptResult, error) {
 	returnValue, err := withTx(s, ctx, func(tx *sql.Tx) (FinishAttemptResult, error) {
 		var outcome AttemptOutcome
-		err := scanPhase4Outcome(tx.QueryRowContext(ctx, `SELECT id, attempt_id, status, classification, error_code, error_message, diagnostics, created_at FROM phase4_attempt_outcomes WHERE attempt_id = ?`, attemptID), &outcome)
+		err := scanPhase4Outcome(tx.QueryRowContext(ctx, `SELECT id, attempt_id, status, classification, error_code, error_message, diagnostics, failure_category, created_at FROM phase4_attempt_outcomes WHERE attempt_id = ?`, attemptID), &outcome)
 		if err == nil {
 			if outcome.Classification != OutcomeRetryable {
 				return FinishAttemptResult{}, ErrInvalidTransition
@@ -972,8 +1099,11 @@ func (s *Store) finishRetryableAttempt(ctx context.Context, attemptID string, in
 			return FinishAttemptResult{}, ErrInvalidTransition
 		}
 		now := s.now()
-		outcome = AttemptOutcome{ID: newID("aou"), AttemptID: attempt.ID, Status: input.Status, Classification: input.Classification, ErrorCode: input.ErrorCode, ErrorMessage: input.ErrorMessage, Diagnostics: input.Diagnostics, CreatedAt: now}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempt_outcomes(id, attempt_id, status, classification, error_code, error_message, diagnostics, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, outcome.ID, outcome.AttemptID, outcome.Status, outcome.Classification, outcome.ErrorCode, outcome.ErrorMessage, outcome.Diagnostics, timestamp(now)); err != nil {
+		outcome = AttemptOutcome{ID: newID("aou"), AttemptID: attempt.ID, Status: input.Status, Classification: input.Classification, ErrorCode: input.ErrorCode, ErrorMessage: input.ErrorMessage, Diagnostics: input.Diagnostics, FailureCategory: input.FailureCategory, CreatedAt: now}
+		if outcome.FailureCategory == "" && outcome.ErrorCode == "usage_limit_exceeded" {
+			outcome.FailureCategory = FailureCategoryUsageLimit
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempt_outcomes(id, attempt_id, status, classification, error_code, error_message, diagnostics, failure_category, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, outcome.ID, outcome.AttemptID, outcome.Status, outcome.Classification, outcome.ErrorCode, outcome.ErrorMessage, outcome.Diagnostics, string(outcome.FailureCategory), timestamp(now)); err != nil {
 			return FinishAttemptResult{}, err
 		}
 		if _, err := tx.ExecContext(ctx, `UPDATE phase4_attempts SET state = ?, updated_at = ? WHERE id = ?`, AttemptState(input.Status), timestamp(now), attempt.ID); err != nil {
@@ -1008,6 +1138,7 @@ func (s *Store) finishRetryableAttempt(ctx context.Context, attemptID string, in
 // retryable outcome, its terminal Attempt state, the next Attempt, the durable
 // retry operation and Turn/Worker projections commit in one transaction.
 func (s *Store) FinishAttempt(ctx context.Context, attemptID string, input FinishAttemptInput) (FinishAttemptResult, error) {
+	input.AttemptOutcomeInput = sanitizeAttemptOutcomeInput(input.AttemptOutcomeInput)
 	if err := validateAttemptOutcomeInput(input.AttemptOutcomeInput); err != nil {
 		return FinishAttemptResult{}, err
 	}
@@ -1048,6 +1179,7 @@ func validateAttemptOutcomeInput(input AttemptOutcomeInput) error {
 // legacy callers. It deliberately rejects retryable outcomes so production
 // code cannot leave a Turn without an atomic next Attempt.
 func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, input AttemptOutcomeInput) (AttemptOutcome, *Phase4Result, bool, error) {
+	input = sanitizeAttemptOutcomeInput(input)
 	if err := validateAttemptOutcomeInput(input); err != nil {
 		return AttemptOutcome{}, nil, false, err
 	}
@@ -1070,7 +1202,7 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 		dup     bool
 	}, error) {
 		var outcome AttemptOutcome
-		err := scanPhase4Outcome(tx.QueryRowContext(ctx, `SELECT id, attempt_id, status, classification, error_code, error_message, diagnostics, created_at FROM phase4_attempt_outcomes WHERE attempt_id = ?`, attemptID), &outcome)
+		err := scanPhase4Outcome(tx.QueryRowContext(ctx, `SELECT id, attempt_id, status, classification, error_code, error_message, diagnostics, failure_category, created_at FROM phase4_attempt_outcomes WHERE attempt_id = ?`, attemptID), &outcome)
 		if err == nil {
 			result, resultErr := phase4ResultForAttempt(ctx, tx, attemptID)
 			return struct {
@@ -1102,8 +1234,11 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 			}{}, ErrInvalidTransition
 		}
 		now := s.now()
-		outcome = AttemptOutcome{ID: newID("aou"), AttemptID: attempt.ID, Status: input.Status, Classification: input.Classification, ErrorCode: input.ErrorCode, ErrorMessage: input.ErrorMessage, Diagnostics: input.Diagnostics, CreatedAt: now}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempt_outcomes(id, attempt_id, status, classification, error_code, error_message, diagnostics, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, outcome.ID, outcome.AttemptID, outcome.Status, outcome.Classification, outcome.ErrorCode, outcome.ErrorMessage, outcome.Diagnostics, timestamp(now)); err != nil {
+		outcome = AttemptOutcome{ID: newID("aou"), AttemptID: attempt.ID, Status: input.Status, Classification: input.Classification, ErrorCode: input.ErrorCode, ErrorMessage: input.ErrorMessage, Diagnostics: input.Diagnostics, FailureCategory: input.FailureCategory, CreatedAt: now}
+		if outcome.FailureCategory == "" && (outcome.ErrorCode == "usage_limit_exceeded" || input.FailureCode == "usage_limit_exceeded") {
+			outcome.FailureCategory = FailureCategoryUsageLimit
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_attempt_outcomes(id, attempt_id, status, classification, error_code, error_message, diagnostics, failure_category, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)`, outcome.ID, outcome.AttemptID, outcome.Status, outcome.Classification, outcome.ErrorCode, outcome.ErrorMessage, outcome.Diagnostics, string(outcome.FailureCategory), timestamp(now)); err != nil {
 			return struct {
 				outcome AttemptOutcome
 				result  *Phase4Result
@@ -1149,8 +1284,17 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 		}
 		turnState := TurnState(input.Status)
 		resultStatus := ResultStatus(input.Status)
-		result := &Phase4Result{ID: newID("res"), WorkerID: attempt.WorkerID, TurnID: attempt.TurnID, AttemptID: attempt.ID, Status: resultStatus, Summary: input.Summary, FailureCode: input.FailureCode, ArtifactRefs: input.ArtifactRefs, CorrelationID: attempt.CorrelationID, CreatedAt: now}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_results(id, worker_id, turn_id, attempt_id, status, summary, failure_code, artifact_refs, correlation_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, result.ID, result.WorkerID, result.TurnID, result.AttemptID, result.Status, result.Summary, result.FailureCode, result.ArtifactRefs, result.CorrelationID, timestamp(now)); err != nil {
+		result := &Phase4Result{ID: newID("res"), WorkerID: attempt.WorkerID, TurnID: attempt.TurnID, AttemptID: attempt.ID, Status: resultStatus, Summary: input.Summary, FailureCode: input.FailureCode, FailureCategory: input.FailureCategory, ArtifactRefs: input.ArtifactRefs, CorrelationID: attempt.CorrelationID, CreatedAt: now}
+		if result.Status != ResultSucceeded {
+			result.FailureCategory, result.Failure = hydrateWorkerFailure(result.FailureCategory, result.FailureCode, result.Summary, input.Diagnostics, "")
+		}
+		failureDetailsJSON := ""
+		if result.Failure != nil {
+			if encoded, err := json.Marshal(result.Failure); err == nil {
+				failureDetailsJSON = string(encoded)
+			}
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_results(id, worker_id, turn_id, attempt_id, status, summary, failure_code, failure_category, failure_details, artifact_refs, correlation_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, result.ID, result.WorkerID, result.TurnID, result.AttemptID, result.Status, result.Summary, result.FailureCode, string(result.FailureCategory), failureDetailsJSON, result.ArtifactRefs, result.CorrelationID, timestamp(now)); err != nil {
 			return struct {
 				outcome AttemptOutcome
 				result  *Phase4Result
@@ -1400,8 +1544,35 @@ func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerI
 	defer s.idempotencyMu.Unlock()
 	duplicate := false
 	command, err := withTx(s, ctx, func(tx *sql.Tx) (WorkerCommand, error) {
-		bindOrigin := func(command WorkerCommand) (WorkerCommand, error) {
+		bindOrigin := func(command WorkerCommand, allowInitialBinding bool) (WorkerCommand, error) {
+			var existingTurnID, existingInputID, existingWorkerTurnID string
+			err := tx.QueryRowContext(ctx, `SELECT secretary_turn_id, input_id, worker_turn_id FROM secretary_worker_command_origins WHERE command_id = ?`, command.ID).Scan(&existingTurnID, &existingInputID, &existingWorkerTurnID)
+			if err == nil {
+				if origin == nil {
+					if command.State == WorkerCommandPending || command.State == WorkerCommandUncertain {
+						queued, err := queuedWorkerCommandOriginTx(ctx, tx, command.ID, existingTurnID, existingInputID, existingWorkerTurnID)
+						if err != nil {
+							return WorkerCommand{}, err
+						}
+						if queued {
+							return command, nil
+						}
+					}
+					return WorkerCommand{}, ErrInvalidSecretaryOrigin
+				}
+				requireActive := command.State == WorkerCommandPending || command.State == WorkerCommandUncertain
+				if err := validateWorkerCommandOriginTx(ctx, tx, command.ID, origin, requireActive); err != nil {
+					return WorkerCommand{}, err
+				}
+				return command, nil
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return WorkerCommand{}, err
+			}
 			if origin != nil {
+				if !allowInitialBinding {
+					return WorkerCommand{}, ErrInvalidSecretaryOrigin
+				}
 				if err := bindSecretaryWorkerCommandOriginTx(ctx, tx, *origin, command.ID, s.now()); err != nil {
 					return WorkerCommand{}, err
 				}
@@ -1435,14 +1606,15 @@ func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerI
 			if command.State == WorkerCommandFailed && command.LastError == "canceled_before_handoff" {
 				return WorkerCommand{}, ErrInvalidTransition
 			}
-			if command.State == WorkerCommandPending || command.State == WorkerCommandUncertain {
+			if (command.State == WorkerCommandPending || command.State == WorkerCommandUncertain) && !(kind == "steering" && command.State == WorkerCommandUncertain) {
 				if err := validateHandoff(); err != nil {
 					return WorkerCommand{}, err
 				}
 			}
 			// A command inserted with the lifecycle state is an unowned intent.
 			// Its first claimant acquires the lease and performs the handoff.
-			if (command.State == WorkerCommandPending || command.State == WorkerCommandUncertain) && command.LeaseUntil.IsZero() {
+			if (command.State == WorkerCommandPending || command.State == WorkerCommandUncertain) && !(kind == "steering" && command.State == WorkerCommandUncertain) && command.LeaseUntil.IsZero() {
+				allowInitialBinding := command.State == WorkerCommandPending
 				now := s.now()
 				leaseUntil := now.Add(workerCommandLease)
 				result, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET state = ?, lease_until = ?, updated_at = ? WHERE id = ? AND state IN (?, ?) AND lease_until = ''`, WorkerCommandPending, timestamp(leaseUntil), timestamp(now), command.ID, WorkerCommandPending, WorkerCommandUncertain)
@@ -1455,14 +1627,14 @@ func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerI
 				}
 				if affected == 1 {
 					command.State, command.LeaseUntil, command.UpdatedAt = WorkerCommandPending, leaseUntil, now
-					return bindOrigin(command)
+					return bindOrigin(command, allowInitialBinding)
 				}
 				if err := scanWorkerCommand(tx.QueryRowContext(ctx, query, kind, workerID, attemptID, dedupeKey), &command); err != nil {
 					return WorkerCommand{}, err
 				}
 			}
 			duplicate = true
-			return bindOrigin(command)
+			return bindOrigin(command, false)
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return WorkerCommand{}, err
@@ -1481,13 +1653,13 @@ func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerI
 			return WorkerCommand{}, err
 		}
 		if affected == 1 {
-			return bindOrigin(command)
+			return bindOrigin(command, true)
 		}
 		duplicate = true
 		if err := scanWorkerCommand(tx.QueryRowContext(ctx, query, kind, workerID, attemptID, dedupeKey), &command); err != nil {
 			return WorkerCommand{}, err
 		}
-		return bindOrigin(command)
+		return bindOrigin(command, false)
 	})
 	return command, duplicate, err
 }
@@ -1503,7 +1675,7 @@ func (s *Store) ReclaimWorkerCommand(ctx context.Context, commandID string, now 
 	now = now.UTC()
 	result, err := withTx(s, ctx, func(tx *sql.Tx) (reclaimResult, error) {
 		leaseUntil := now.Add(workerCommandLease)
-		result, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET state = ?, lease_until = ?, updated_at = ? WHERE id = ? AND state IN (?, ?) AND (lease_until = '' OR lease_until <= ?)`, WorkerCommandPending, timestamp(leaseUntil), timestamp(now), commandID, WorkerCommandPending, WorkerCommandUncertain, timestamp(now))
+		result, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET state = ?, lease_until = ?, updated_at = ? WHERE id = ? AND (state = ? OR (state = ? AND kind <> 'steering')) AND (lease_until = '' OR lease_until <= ?)`, WorkerCommandPending, timestamp(leaseUntil), timestamp(now), commandID, WorkerCommandPending, WorkerCommandUncertain, timestamp(now))
 		if err != nil {
 			return reclaimResult{}, err
 		}
@@ -1590,6 +1762,7 @@ func (s *Store) RetryWorkerCommand(ctx context.Context, commandID string, now ti
 }
 
 func (s *Store) updateWorkerCommand(ctx context.Context, commandID string, state WorkerCommandState, message string) (WorkerCommand, error) {
+	message = SanitizeFailureMessage(message)
 	return withTx(s, ctx, func(tx *sql.Tx) (WorkerCommand, error) {
 		var command WorkerCommand
 		if err := scanWorkerCommand(tx.QueryRowContext(ctx, `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, lease_until, created_at, updated_at FROM phase4_worker_commands WHERE id = ?`, commandID), &command); err != nil {
@@ -1638,7 +1811,11 @@ func (s *Store) updateWorkerCommand(ctx context.Context, commandID string, state
 }
 
 func scanWorkerCommand(row interface{ Scan(...any) error }, command *WorkerCommand) error {
-	return row.Scan(&command.ID, &command.Kind, &command.DedupeKey, &command.WorkerID, &command.AttemptID, &command.State, &command.LastError, newTimestampScanner(&command.LeaseUntil), newTimestampScanner(&command.CreatedAt), newTimestampScanner(&command.UpdatedAt))
+	err := row.Scan(&command.ID, &command.Kind, &command.DedupeKey, &command.WorkerID, &command.AttemptID, &command.State, &command.LastError, newTimestampScanner(&command.LeaseUntil), newTimestampScanner(&command.CreatedAt), newTimestampScanner(&command.UpdatedAt))
+	if err == nil && command.LastError != "" {
+		command.LastError = SanitizeFailureMessage(command.LastError)
+	}
+	return err
 }
 
 func (s *Store) CloseWorker(ctx context.Context, workerID string) (Worker, error) {
@@ -1813,15 +1990,56 @@ func (s *Store) Phase4Attempt(ctx context.Context, id string) (Phase4Attempt, er
 }
 func (s *Store) AttemptOutcome(ctx context.Context, attemptID string) (AttemptOutcome, error) {
 	var outcome AttemptOutcome
-	err := scanPhase4Outcome(s.db.QueryRowContext(ctx, `SELECT id, attempt_id, status, classification, error_code, error_message, diagnostics, created_at FROM phase4_attempt_outcomes WHERE attempt_id = ?`, attemptID), &outcome)
+	err := scanPhase4Outcome(s.db.QueryRowContext(ctx, `SELECT id, attempt_id, status, classification, error_code, error_message, diagnostics, failure_category, created_at FROM phase4_attempt_outcomes WHERE attempt_id = ?`, attemptID), &outcome)
 	if errors.Is(err, sql.ErrNoRows) {
 		return AttemptOutcome{}, ErrNotFound
 	}
 	return outcome, err
 }
+
+const phase4OutcomeSelect = "id, attempt_id, status, classification, error_code, error_message, diagnostics, failure_category, created_at"
+const phase4ResultSelect = "id, worker_id, turn_id, attempt_id, status, summary, failure_code, failure_category, failure_details, artifact_refs, correlation_id, created_at"
+
+func hydrateWorkerFailure(category FailureCategory, failureCode, summary, diagnostics, detailsJSON string) (FailureCategory, *WorkerFailure) {
+	category = SanitizeFailureCategory(category)
+	failureCode = SanitizeFailureProviderCode(failureCode)
+	summary = SanitizeFailureMessage(summary)
+	diagnostics = SanitizeFailureMessage(diagnostics)
+	if category == "" && failureCode == "usage_limit_exceeded" {
+		category = FailureCategoryUsageLimit
+	}
+	providerCode := SanitizeFailureProviderCode(failureCode)
+	var failure *WorkerFailure
+	if detailsJSON != "" && strings.TrimSpace(detailsJSON) != "null" {
+		var decoded WorkerFailure
+		if err := json.Unmarshal([]byte(detailsJSON), &decoded); err == nil {
+			safe := SanitizeWorkerFailure(decoded)
+			failure = &safe
+			if failure.Category.Valid() {
+				category = failure.Category
+			} else {
+				failure.Category = category
+			}
+			failure.ProviderCode = SanitizeFailureProviderCode(failure.ProviderCode)
+		}
+	}
+	if failure == nil && (category != "" || providerCode != "") {
+		failure = &WorkerFailure{
+			Category:     category,
+			ProviderCode: providerCode,
+			Message:      summary,
+			Technical:    diagnostics,
+		}
+	}
+	if failure != nil && failure.Category == "" {
+		failure.Category = category
+	}
+	return category, failure
+}
+
 func (s *Store) Phase4Result(ctx context.Context, turnID string) (Phase4Result, error) {
 	var result Phase4Result
-	err := s.db.QueryRowContext(ctx, `SELECT id, worker_id, turn_id, attempt_id, status, summary, failure_code, artifact_refs, correlation_id, created_at FROM phase4_results WHERE turn_id = ?`, turnID).Scan(&result.ID, &result.WorkerID, &result.TurnID, &result.AttemptID, &result.Status, &result.Summary, &result.FailureCode, &result.ArtifactRefs, &result.CorrelationID, newTimestampScanner(&result.CreatedAt))
+	err := scanPhase4Result(s.db.QueryRowContext(ctx, `SELECT `+phase4ResultSelect+` FROM phase4_results WHERE turn_id = ?`, turnID), &result)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Phase4Result{}, ErrNotFound
 	}
@@ -1844,8 +2062,9 @@ func getWorker(ctx context.Context, q interface {
 }, id string) (Worker, error) {
 	var worker Worker
 	var closed sql.NullString
+	var lastResultStatus string
 	var archived, templateRequired int
-	err := q.QueryRowContext(ctx, `SELECT id, worker_ref, title, intent, project_id, node_id, harness_instance_id, policy_snapshot, project_snapshot, profile_snapshot, worker_template_required, workspace, status, COALESCE(current_turn_id, ''), last_result_summary, created_at, updated_at, closed_at, archived FROM workers WHERE id = ?`, id).Scan(&worker.ID, &worker.WorkerRef, &worker.Title, &worker.Intent, &worker.ProjectID, &worker.NodeID, &worker.HarnessInstanceID, &worker.PolicySnapshot, &worker.ProjectSnapshot, &worker.ProfileSnapshot, &templateRequired, &worker.Workspace, &worker.Status, &worker.CurrentTurnID, &worker.LastResultSummary, newTimestampScanner(&worker.CreatedAt), newTimestampScanner(&worker.UpdatedAt), &closed, &archived)
+	err := q.QueryRowContext(ctx, `SELECT id, worker_ref, title, intent, project_id, node_id, harness_instance_id, policy_snapshot, project_snapshot, profile_snapshot, worker_template_required, workspace, status, COALESCE(current_turn_id, ''), last_result_summary, COALESCE((SELECT status FROM phase4_results WHERE worker_id = workers.id ORDER BY created_at DESC, id DESC LIMIT 1), ''), created_at, updated_at, closed_at, archived FROM workers WHERE id = ?`, id).Scan(&worker.ID, &worker.WorkerRef, &worker.Title, &worker.Intent, &worker.ProjectID, &worker.NodeID, &worker.HarnessInstanceID, &worker.PolicySnapshot, &worker.ProjectSnapshot, &worker.ProfileSnapshot, &templateRequired, &worker.Workspace, &worker.Status, &worker.CurrentTurnID, &worker.LastResultSummary, &lastResultStatus, newTimestampScanner(&worker.CreatedAt), newTimestampScanner(&worker.UpdatedAt), &closed, &archived)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Worker{}, ErrNotFound
 	}
@@ -1854,6 +2073,9 @@ func getWorker(ctx context.Context, q interface {
 	}
 	worker.Archived = archived != 0
 	worker.WorkerTemplateRequired = templateRequired != 0
+	if lastResultStatus != "" && ResultStatus(lastResultStatus) != ResultSucceeded {
+		worker.LastResultSummary = SanitizeFailureMessage(worker.LastResultSummary)
+	}
 	if closed.Valid {
 		t, parseErr := parseTimestamp(closed.String)
 		if parseErr != nil {
@@ -1890,13 +2112,40 @@ func scanPhase4Attempt(row interface{ Scan(...any) error }, attempt *Phase4Attem
 	return row.Scan(&attempt.ID, &attempt.WorkerID, &attempt.TurnID, &attempt.Number, &attempt.NodeID, &attempt.HarnessInstanceID, &attempt.State, &attempt.CorrelationID, newTimestampScanner(&attempt.CreatedAt), newTimestampScanner(&attempt.UpdatedAt))
 }
 func scanPhase4Outcome(row interface{ Scan(...any) error }, outcome *AttemptOutcome) error {
-	return row.Scan(&outcome.ID, &outcome.AttemptID, &outcome.Status, &outcome.Classification, &outcome.ErrorCode, &outcome.ErrorMessage, &outcome.Diagnostics, newTimestampScanner(&outcome.CreatedAt))
+	var failureCategory string
+	err := row.Scan(&outcome.ID, &outcome.AttemptID, &outcome.Status, &outcome.Classification, &outcome.ErrorCode, &outcome.ErrorMessage, &outcome.Diagnostics, &failureCategory, newTimestampScanner(&outcome.CreatedAt))
+	if err == nil {
+		outcome.ErrorCode = SanitizeFailureMessage(outcome.ErrorCode)
+		outcome.ErrorMessage = SanitizeFailureMessage(outcome.ErrorMessage)
+		outcome.Diagnostics = SanitizeFailureMessage(outcome.Diagnostics)
+		outcome.FailureCategory = SanitizeFailureCategory(FailureCategory(failureCategory))
+		if outcome.ErrorCode == "usage_limit_exceeded" && outcome.FailureCategory == "" {
+			outcome.FailureCategory = FailureCategoryUsageLimit
+		}
+	}
+	return err
+}
+
+func scanPhase4Result(row interface{ Scan(...any) error }, result *Phase4Result) error {
+	var failureDetails string
+	err := row.Scan(&result.ID, &result.WorkerID, &result.TurnID, &result.AttemptID, &result.Status, &result.Summary, &result.FailureCode, &result.FailureCategory, &failureDetails, &result.ArtifactRefs, &result.CorrelationID, newTimestampScanner(&result.CreatedAt))
+	if err != nil || result.Status == ResultSucceeded {
+		return err
+	}
+	result.Summary = SanitizeFailureMessage(result.Summary)
+	result.FailureCategory, result.Failure = hydrateWorkerFailure(result.FailureCategory, result.FailureCode, result.Summary, "", failureDetails)
+	if result.FailureCategory == "" || result.FailureCategory == FailureCategoryInternalError {
+		result.FailureCode = SanitizeFailureMessage(result.FailureCode)
+	} else {
+		result.FailureCode = SanitizeFailureProviderCode(result.FailureCode)
+	}
+	return nil
 }
 func phase4ResultForAttempt(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, attemptID string) (*Phase4Result, error) {
 	var result Phase4Result
-	err := q.QueryRowContext(ctx, `SELECT id, worker_id, turn_id, attempt_id, status, summary, failure_code, artifact_refs, correlation_id, created_at FROM phase4_results WHERE attempt_id = ?`, attemptID).Scan(&result.ID, &result.WorkerID, &result.TurnID, &result.AttemptID, &result.Status, &result.Summary, &result.FailureCode, &result.ArtifactRefs, &result.CorrelationID, newTimestampScanner(&result.CreatedAt))
+	err := scanPhase4Result(q.QueryRowContext(ctx, `SELECT `+phase4ResultSelect+` FROM phase4_results WHERE attempt_id = ?`, attemptID), &result)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -1919,6 +2168,18 @@ func parseTimestamp(text string) (t time.Time, err error) { return time.Parse(ti
 // the idempotent lifecycle transaction. Native runtime identifiers never cross
 // this boundary.
 func (s *Store) RecordNodeAttemptOutcome(ctx context.Context, envelope AttemptOutcomeEnvelope) (AttemptOutcome, *Phase4Result, bool, error) {
+	if envelope.Status != OutcomeSucceeded {
+		hadSummary := strings.TrimSpace(envelope.Summary) != ""
+		envelope.Summary = SanitizeFailureMessage(envelope.Summary)
+		envelope.ErrorCode = SanitizeFailureMessage(envelope.ErrorCode)
+		envelope.ErrorMessage = SanitizeFailureMessage(envelope.ErrorMessage)
+		envelope.Diagnostics = SanitizeFailureMessage(envelope.Diagnostics)
+		envelope.FailureCategory = SanitizeFailureCategory(envelope.FailureCategory)
+		envelope.FailureCode = SanitizeFailureProviderCode(envelope.FailureCode)
+		if hadSummary && envelope.Classification == OutcomeFinal && envelope.Summary == "" {
+			envelope.Summary = string(envelope.Status)
+		}
+	}
 	if err := envelope.Validate(); err != nil {
 		return AttemptOutcome{}, nil, false, err
 	}
@@ -1946,7 +2207,7 @@ func (s *Store) RecordNodeAttemptOutcome(ctx context.Context, envelope AttemptOu
 	}
 	returnValue, result, duplicate, err := s.RecordAttemptOutcome(ctx, envelope.AttemptID, AttemptOutcomeInput{
 		Status: envelope.Status, Classification: envelope.Classification, ErrorCode: envelope.ErrorCode, ErrorMessage: envelope.ErrorMessage,
-		Diagnostics: envelope.Diagnostics, Summary: envelope.Summary, FailureCode: envelope.FailureCode, ArtifactRefs: artifactRefs,
+		Diagnostics: envelope.Diagnostics, Summary: envelope.Summary, FailureCode: envelope.FailureCode, FailureCategory: envelope.FailureCategory, ArtifactRefs: artifactRefs,
 	})
 	return returnValue, result, duplicate, err
 }

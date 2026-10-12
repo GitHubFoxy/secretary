@@ -30,16 +30,18 @@ type publicWorkerDTO struct {
 }
 
 type publicResultDTO struct {
-	ID            string            `json:"id"`
-	WorkerID      string            `json:"worker_id"`
-	WorkerRef     string            `json:"worker_ref"`
-	TurnID        string            `json:"turn_id"`
-	AttemptID     string            `json:"attempt_id,omitempty"`
-	Status        core.ResultStatus `json:"status"`
-	Summary       string            `json:"summary"`
-	FailureCode   string            `json:"failure_code,omitempty"`
-	CorrelationID string            `json:"correlation_id,omitempty"`
-	CreatedAt     time.Time         `json:"created_at"`
+	ID              string               `json:"id"`
+	WorkerID        string               `json:"worker_id"`
+	WorkerRef       string               `json:"worker_ref"`
+	TurnID          string               `json:"turn_id"`
+	AttemptID       string               `json:"attempt_id,omitempty"`
+	Status          core.ResultStatus    `json:"status"`
+	Summary         string               `json:"summary"`
+	FailureCode     string               `json:"failure_code,omitempty"`
+	FailureCategory core.FailureCategory `json:"failure_category,omitempty"`
+	Failure         *core.WorkerFailure  `json:"failure,omitempty"`
+	CorrelationID   string               `json:"correlation_id,omitempty"`
+	CreatedAt       time.Time            `json:"created_at"`
 }
 
 func publicWorkerDTOFromDetails(details core.WorkerDetails) publicWorkerDTO {
@@ -57,10 +59,28 @@ func publicWorkerDTOFromDetails(details core.WorkerDetails) publicWorkerDTO {
 	}
 	if len(details.Results) > 0 {
 		result := details.Results[len(details.Results)-1]
+		failureCategory := core.SanitizeFailureCategory(result.FailureCategory)
+		failureCode := core.SanitizeFailureProviderCode(result.FailureCode)
+		summary := result.Summary
+		var failure *core.WorkerFailure
+		if result.Status == core.ResultFailed {
+			summary = core.SanitizeFailureMessage(summary)
+			if result.Failure != nil {
+				safeFailure := core.SanitizeWorkerFailure(*result.Failure)
+				failure = &safeFailure
+				if failureCategory == "" {
+					failureCategory = safeFailure.Category
+				}
+				if failureCode == "" {
+					failureCode = safeFailure.ProviderCode
+				}
+			}
+		}
 		public.Result = &publicResultDTO{
 			ID: result.ID, WorkerID: result.WorkerID, WorkerRef: worker.WorkerRef, TurnID: result.TurnID,
-			AttemptID: result.AttemptID, Status: result.Status, Summary: result.Summary,
-			FailureCode: result.FailureCode, CorrelationID: result.CorrelationID, CreatedAt: result.CreatedAt,
+			AttemptID: result.AttemptID, Status: result.Status, Summary: summary,
+			FailureCode: failureCode, FailureCategory: failureCategory, Failure: failure,
+			CorrelationID: result.CorrelationID, CreatedAt: result.CreatedAt,
 		}
 	}
 	return public

@@ -98,3 +98,16 @@ func (a *acpTurnAnswer) codexFinal(stopReason string) (string, bool) {
 	}
 	return final, final != ""
 }
+
+func (a *acpTurnAnswer) collectedText() string {
+	if a == nil {
+		return ""
+	}
+	var b strings.Builder
+	for _, id := range a.order {
+		if msg := a.messages[id]; msg != nil {
+			b.WriteString(msg.String())
+		}
+	}
+	return strings.TrimSpace(b.String())
+}

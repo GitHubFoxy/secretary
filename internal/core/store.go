@@ -829,7 +829,7 @@ func (s *Store) AppendEntry(ctx context.Context, conversationID string, kind Ent
 }
 
 func (s *Store) EntriesAfter(ctx context.Context, conversationID string, afterSeq int64) ([]ConversationEntry, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, conversation_id, seq, kind, body, worker_ref, turn_id, result_id, created_at FROM conversation_entries WHERE conversation_id = ? AND seq > ? ORDER BY seq`, conversationID, afterSeq)
+	rows, err := s.db.QueryContext(ctx, `SELECT e.id, e.conversation_id, e.seq, e.kind, e.body, e.worker_ref, e.turn_id, e.result_id, COALESCE(r.status, ''), e.created_at FROM conversation_entries e LEFT JOIN phase4_results r ON r.id = e.result_id WHERE e.conversation_id = ? AND e.seq > ? ORDER BY e.seq`, conversationID, afterSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -849,7 +849,7 @@ func (s *Store) EntriesAfter(ctx context.Context, conversationID string, afterSe
 // afterSeq, ascending by seq. limit must be positive; the HTTP layer owns
 // defaults, clamping and validation.
 func (s *Store) EntriesForward(ctx context.Context, conversationID string, afterSeq int64, limit int) ([]ConversationEntry, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, conversation_id, seq, kind, body, worker_ref, turn_id, result_id, created_at FROM conversation_entries WHERE conversation_id = ? AND seq > ? ORDER BY seq LIMIT ?`, conversationID, afterSeq, limit)
+	rows, err := s.db.QueryContext(ctx, `SELECT e.id, e.conversation_id, e.seq, e.kind, e.body, e.worker_ref, e.turn_id, e.result_id, COALESCE(r.status, ''), e.created_at FROM conversation_entries e LEFT JOIN phase4_results r ON r.id = e.result_id WHERE e.conversation_id = ? AND e.seq > ? ORDER BY e.seq LIMIT ?`, conversationID, afterSeq, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -869,13 +869,13 @@ func (s *Store) EntriesForward(ctx context.Context, conversationID string, after
 // ascending by seq. A non-positive beforeSeq reads the latest tail. limit
 // must be positive; the HTTP layer owns defaults, clamping and validation.
 func (s *Store) EntriesTail(ctx context.Context, conversationID string, beforeSeq int64, limit int) ([]ConversationEntry, error) {
-	condition := `seq < ?`
+	condition := `e.seq < ?`
 	arguments := []any{conversationID, beforeSeq, limit}
 	if beforeSeq <= 0 {
 		condition = `1 = 1`
 		arguments = []any{conversationID, limit}
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, conversation_id, seq, kind, body, worker_ref, turn_id, result_id, created_at FROM conversation_entries WHERE conversation_id = ? AND `+condition+` ORDER BY seq DESC LIMIT ?`, arguments...)
+	rows, err := s.db.QueryContext(ctx, `SELECT e.id, e.conversation_id, e.seq, e.kind, e.body, e.worker_ref, e.turn_id, e.result_id, COALESCE(r.status, ''), e.created_at FROM conversation_entries e LEFT JOIN phase4_results r ON r.id = e.result_id WHERE e.conversation_id = ? AND `+condition+` ORDER BY e.seq DESC LIMIT ?`, arguments...)
 	if err != nil {
 		return nil, err
 	}
@@ -1310,16 +1310,24 @@ func getEntry(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, id string) (ConversationEntry, error) {
 	var entry ConversationEntry
-	err := q.QueryRowContext(ctx, `SELECT id, conversation_id, seq, kind, body, worker_ref, turn_id, result_id, created_at FROM conversation_entries WHERE id = ?`, id).Scan(&entry.ID, &entry.ConversationID, &entry.Seq, &entry.Kind, &entry.Body, &entry.WorkerRef, &entry.TurnID, &entry.ResultID, newTimestampScanner(&entry.CreatedAt))
+	var resultStatus string
+	err := q.QueryRowContext(ctx, `SELECT e.id, e.conversation_id, e.seq, e.kind, e.body, e.worker_ref, e.turn_id, e.result_id, COALESCE(r.status, ''), e.created_at FROM conversation_entries e LEFT JOIN phase4_results r ON r.id = e.result_id WHERE e.id = ?`, id).Scan(&entry.ID, &entry.ConversationID, &entry.Seq, &entry.Kind, &entry.Body, &entry.WorkerRef, &entry.TurnID, &entry.ResultID, &resultStatus, newTimestampScanner(&entry.CreatedAt))
 	if errors.Is(err, sql.ErrNoRows) {
 		return ConversationEntry{}, ErrNotFound
+	}
+	if err == nil && entry.Kind == EntryWorkerResult && resultStatus != "" && ResultStatus(resultStatus) != ResultSucceeded {
+		entry.Body = SanitizeFailureMessage(entry.Body)
 	}
 	return entry, err
 }
 
 func scanEntry(scanner interface{ Scan(...any) error }) (ConversationEntry, error) {
 	var entry ConversationEntry
-	err := scanner.Scan(&entry.ID, &entry.ConversationID, &entry.Seq, &entry.Kind, &entry.Body, &entry.WorkerRef, &entry.TurnID, &entry.ResultID, newTimestampScanner(&entry.CreatedAt))
+	var resultStatus string
+	err := scanner.Scan(&entry.ID, &entry.ConversationID, &entry.Seq, &entry.Kind, &entry.Body, &entry.WorkerRef, &entry.TurnID, &entry.ResultID, &resultStatus, newTimestampScanner(&entry.CreatedAt))
+	if err == nil && entry.Kind == EntryWorkerResult && resultStatus != "" && ResultStatus(resultStatus) != ResultSucceeded {
+		entry.Body = SanitizeFailureMessage(entry.Body)
+	}
 	return entry, err
 }
 

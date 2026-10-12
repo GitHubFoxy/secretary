@@ -230,3 +230,23 @@ export function workerCard(worker, projects = [], nodes = []) {
     bindingImmutable: true,
   };
 }
+
+export function parseApiError(body, fallbackText = "") {
+  const err = new Error(body?.error || fallbackText || "Request failed");
+  err.category = body?.category;
+  err.providerCode = body?.provider_code;
+  err.technical = body?.technical;
+  return err;
+}
+
+export function extractObserverFailure(error) {
+  if (!error) return null;
+  if (error.category || error.technical || error.providerCode) {
+    return {
+      category: error.category || "",
+      providerCode: error.providerCode || "",
+      technical: error.technical || "",
+    };
+  }
+  return null;
+}

@@ -123,11 +123,15 @@ type Event struct {
 	Kind                   string
 	Source                 string
 	WorkerRef              string
+	AttemptID              string
 	Title                  string
 	TaskPrompt             string
 	Text                   string
 	Tool                   string
 	ToolPreview            string
+	CallID                 string
+	NodeID                 string
+	HasOutput              bool
 	TerminalIdentity       string
 	CanonicalReplyRequired bool
 	Payload                json.RawMessage
@@ -161,6 +165,8 @@ type persistedState struct {
 	TerminalNotified      map[string]time.Time       `json:"terminal_notified,omitempty"`
 	RequestNotified       map[string]time.Time       `json:"request_notified,omitempty"`
 	InboundNotified       map[string]time.Time       `json:"inbound_notified,omitempty"`
+	ToolNotified          map[string]time.Time       `json:"tool_notified,omitempty"`
+	ToolPreviews          map[string]string          `json:"tool_previews,omitempty"`
 	PreviousOwnerBound    bool                       `json:"previous_owner_bound,omitempty"`
 	ReboundAt             time.Time                  `json:"rebound_at,omitempty"`
 	RebindReason          string                     `json:"rebind_reason,omitempty"`
@@ -229,7 +235,7 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 		config.TitleTimeout = 5 * time.Second
 	}
 	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), now: func() time.Time { return time.Now().UTC() }}
-	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}}
+	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, ToolNotified: map[string]time.Time{}, ToolPreviews: map[string]string{}, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}}
 	if err := adapter.load(); err != nil {
 		return nil, err
 	}
@@ -316,6 +322,12 @@ func (a *Adapter) load() error {
 	}
 	if a.state.InboundNotified == nil {
 		a.state.InboundNotified = map[string]time.Time{}
+	}
+	if a.state.ToolNotified == nil {
+		a.state.ToolNotified = map[string]time.Time{}
+	}
+	if a.state.ToolPreviews == nil {
+		a.state.ToolPreviews = map[string]string{}
 	}
 	if a.state.Transcripts == nil {
 		a.state.Transcripts = map[string]VoiceTranscript{}
@@ -618,11 +630,28 @@ func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed 
 				mapping.PendingRequestID = requestID
 			}
 			err := a.server.SendWorkerMessage(ctx, WorkerMessage{WorkerRef: mapping.WorkerRef, ExternalMessageID: externalID, RequestID: mapping.PendingRequestID, Text: text})
-			if err == nil {
-				a.reactToMessage(ctx, update.Message)
-				a.sendTyping(update.Message.ChatID, update.Message.ThreadID)
+			if err != nil {
+				if ctx.Err() != nil {
+					return ctx.Err()
+				}
+				if isSteerRejection(err) {
+					serviceText := formatWorkerSteerErrorMessage(err)
+					sendErr := a.sendMessage(ctx, OutgoingMessage{
+						Identity: fmt.Sprintf("steer-error:%d", update.ID),
+						ChatID:   update.Message.ChatID,
+						ThreadID: update.Message.ThreadID,
+						Text:     serviceText,
+					})
+					if sendErr != nil {
+						return sendErr
+					}
+					return nil
+				}
+				return err
 			}
-			if err == nil && mapping.PendingRequestID != "" {
+			a.reactToMessage(ctx, update.Message)
+			a.sendTyping(update.Message.ChatID, update.Message.ThreadID)
+			if mapping.PendingRequestID != "" {
 				a.mu.Lock()
 				if current, exists := a.state.Topics[mapping.WorkerRef]; exists && current.ThreadID == mapping.ThreadID && current.PendingRequestID == mapping.PendingRequestID {
 					current.PendingRequestID = ""
@@ -631,7 +660,7 @@ func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed 
 				}
 				a.mu.Unlock()
 			}
-			return err
+			return nil
 		}
 	}
 	if err := a.server.SendMessage(ctx, InboundMessage{ExternalMessageID: externalID, Body: text}); err != nil {
@@ -825,10 +854,17 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if err != nil {
 			return err
 		}
+		var parts []string
+		if nodeID := safePublicNodeID(event.NodeID); nodeID != "" {
+			parts = append(parts, "Узел: "+nodeID)
+		}
 		if prompt := safeDelta(event.TaskPrompt); strings.TrimSpace(prompt) != "" {
+			parts = append(parts, prompt)
+		}
+		if len(parts) > 0 {
 			return a.sendMessage(ctx, OutgoingMessage{
 				ChatID: mapping.ChatID, ThreadID: mapping.ThreadID,
-				Text: prompt, Identity: "task-prompt:" + event.WorkerRef,
+				Text: strings.Join(parts, "\n\n"), Identity: "task-prompt:" + event.WorkerRef,
 			})
 		}
 		return nil
@@ -857,6 +893,22 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		a.mu.Unlock()
 	}
 	if importantWorkerEvent(event.Kind) {
+		if event.Kind == "worker.tool_started" {
+			if event.CallID != "" && event.ToolPreview != "" {
+				a.mu.Lock()
+				a.state.ToolPreviews[toolPreviewKey(event.WorkerRef, event.AttemptID, event.CallID)] = event.ToolPreview
+				_ = a.saveLocked()
+				a.mu.Unlock()
+			}
+		} else if event.Kind == "worker.tool_finished" || event.Kind == "worker.tool_failed" {
+			if event.CallID != "" {
+				a.mu.Lock()
+				if saved, ok := a.state.ToolPreviews[toolPreviewKey(event.WorkerRef, event.AttemptID, event.CallID)]; ok && saved != "" {
+					event.ToolPreview = saved
+				}
+				a.mu.Unlock()
+			}
+		}
 		var body string
 		if event.TerminalIdentity != "" {
 			body = safeText(event.Text)
@@ -883,6 +935,18 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			identity = "request:" + requestNotificationIdentity(event)
 			a.mu.Lock()
 			_, alreadyNotified = a.state.RequestNotified[requestNotificationIdentity(event)]
+			a.mu.Unlock()
+		case event.Kind == "worker.tool_started" || event.Kind == "worker.tool_finished" || event.Kind == "worker.tool_failed":
+			callKey := event.CallID
+			if callKey == "" {
+				callKey = event.EventID
+				if callKey == "" {
+					callKey = fmt.Sprintf("seq:%d", event.Sequence)
+				}
+			}
+			identity = toolMessageIdentity(event.Kind, event.WorkerRef, event.AttemptID, callKey)
+			a.mu.Lock()
+			_, alreadyNotified = a.state.ToolNotified[strings.TrimPrefix(identity, "tool:")]
 			a.mu.Unlock()
 		}
 		// Each destination is deduplicated by sendMessage. A delivered Topic
@@ -1170,6 +1234,13 @@ func (a *Adapter) markDeliveredLocked(message OutgoingMessage) {
 		if identity != "" {
 			a.state.InboundNotified[identity] = a.now()
 		}
+	case strings.HasPrefix(message.Identity, "steer-error:"):
+		a.state.InboundNotified[message.Identity] = a.now()
+	case strings.HasPrefix(message.Identity, "tool:"):
+		identity := strings.TrimPrefix(message.Identity, "tool:")
+		if identity != "" {
+			a.state.ToolNotified[identity] = a.now()
+		}
 	}
 }
 
@@ -1209,6 +1280,18 @@ func (a *Adapter) sendMessage(ctx context.Context, message OutgoingMessage) erro
 		}
 		if strings.HasPrefix(message.Identity, "inbound:") {
 			if _, delivered := a.state.InboundNotified[strings.TrimPrefix(message.Identity, "inbound:")]; delivered {
+				a.mu.Unlock()
+				return nil
+			}
+		}
+		if strings.HasPrefix(message.Identity, "steer-error:") {
+			if _, delivered := a.state.InboundNotified[message.Identity]; delivered {
+				a.mu.Unlock()
+				return nil
+			}
+		}
+		if strings.HasPrefix(message.Identity, "tool:") {
+			if _, delivered := a.state.ToolNotified[strings.TrimPrefix(message.Identity, "tool:")]; delivered {
 				a.mu.Unlock()
 				return nil
 			}
@@ -1667,17 +1750,32 @@ func renderWorkerEvent(event Event) string {
 		if tool == "" {
 			return ""
 		}
-		state := "▶"
-		if event.Kind == "worker.tool_finished" {
-			state = "✓"
-		} else if event.Kind == "worker.tool_failed" {
-			state = "✗"
-		}
 		preview := safeText(event.ToolPreview)
-		if preview != "" {
-			return state + " " + tool + " " + preview
+		switch event.Kind {
+		case "worker.tool_started":
+			if preview != "" {
+				return "▶ Запуск: " + tool + " " + preview
+			}
+			return "▶ Запуск: " + tool
+		case "worker.tool_finished":
+			outputMarker := "(без вывода)"
+			if event.HasOutput {
+				outputMarker = "(вывод скрыт)"
+			}
+			if preview != "" {
+				return "✓ Выполнено: " + tool + " " + preview + " " + outputMarker
+			}
+			return "✓ Выполнено: " + tool + " " + outputMarker
+		case "worker.tool_failed":
+			outputMarker := "(без вывода)"
+			if event.HasOutput {
+				outputMarker = "(вывод скрыт)"
+			}
+			if preview != "" {
+				return "✗ Ошибка: " + tool + " " + preview + " " + outputMarker
+			}
+			return "✗ Ошибка: " + tool + " " + outputMarker
 		}
-		return state + " " + tool
 	}
 	label := workerEventLabel(event.Kind)
 	text := safeText(event.Text)
@@ -1877,4 +1975,114 @@ func uniqueStrings(values []string) []string {
 		result = append(result, value)
 	}
 	return result
+}
+
+func isSteerRejection(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	if isUncertainWorkerCommandResponse(errStr) {
+		return false
+	}
+	if strings.Contains(errStr, `"category"`) || strings.Contains(errStr, `"provider_code"`) || strings.Contains(errStr, `"error"`) {
+		return true
+	}
+	if strings.Contains(errStr, "400 Bad Request") || strings.Contains(errStr, "server returned 4") {
+		return true
+	}
+	if strings.Contains(errStr, "usage_limit") || strings.Contains(errStr, "usage_limit_exceeded") {
+		return true
+	}
+	return false
+}
+
+func isUncertainWorkerCommandResponse(errText string) bool {
+	start := strings.IndexByte(errText, '{')
+	end := strings.LastIndexByte(errText, '}')
+	if start < 0 || end <= start {
+		return false
+	}
+	var response struct {
+		Outcome   string `json:"outcome"`
+		Uncertain bool   `json:"uncertain"`
+	}
+	if json.Unmarshal([]byte(errText[start:end+1]), &response) != nil {
+		return false
+	}
+	return response.Uncertain || response.Outcome == "uncertain"
+}
+
+func formatWorkerSteerErrorMessage(err error) string {
+	if err == nil {
+		return "⚠️ Не удалось передать указание Worker."
+	}
+	errStr := strings.TrimSpace(err.Error())
+	if idx := strings.Index(errStr, "{"); idx != -1 {
+		if endIdx := strings.LastIndex(errStr, "}"); endIdx > idx {
+			var payload struct {
+				Error        string `json:"error"`
+				Category     string `json:"category"`
+				ProviderCode string `json:"provider_code"`
+			}
+			if json.Unmarshal([]byte(errStr[idx:endIdx+1]), &payload) == nil {
+				return formatSteerFailureMessage(payload.Category, payload.ProviderCode, payload.Error)
+			}
+		}
+	}
+	if strings.Contains(errStr, "usage_limit") {
+		return formatSteerFailureMessage("usage_limit", "usage_limit_exceeded", errStr)
+	}
+	return fmt.Sprintf("⚠️ Не удалось передать указание Worker: %s", errStr)
+}
+
+func formatSteerFailureMessage(category, code, msg string) string {
+	msg = strings.TrimSpace(msg)
+	if category == "usage_limit" || code == "usage_limit_exceeded" {
+		cleaned := msg
+		if strings.HasPrefix(strings.ToLower(cleaned), "usage_limit_exceeded:") {
+			cleaned = strings.TrimSpace(cleaned[len("usage_limit_exceeded:"):])
+		}
+		lower := strings.ToLower(cleaned)
+		hasResetTime := strings.Contains(lower, "try again") || strings.Contains(lower, "reset") || strings.Contains(lower, "retry") || strings.Contains(lower, "повтор") || strings.Contains(lower, "попробуй")
+		if hasResetTime && cleaned != "" {
+			return fmt.Sprintf("⚠️ Не удалось передать указание Worker: Лимит использования исчерпан (usage_limit_exceeded). %s", cleaned)
+		}
+		return "⚠️ Не удалось передать указание Worker: Лимит использования исчерпан (usage_limit_exceeded). Повторите попытку позже."
+	}
+	if msg != "" {
+		return fmt.Sprintf("⚠️ Не удалось передать указание Worker: %s", msg)
+	}
+	return "⚠️ Не удалось передать указание Worker."
+}
+
+var validNodeIDPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$`)
+var secretTokenMarker = regexp.MustCompile(`(?i)(?:token|secret|password|credential|bearer|apikey)`)
+
+func safePublicNodeID(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || strings.ContainsAny(raw, "\r\n/\\") {
+		return ""
+	}
+	if !validNodeIDPattern.MatchString(raw) {
+		return ""
+	}
+	if secretPrefix.MatchString(raw) || secretTokenMarker.MatchString(raw) || rawCoTMarker.MatchString(raw) {
+		return ""
+	}
+	return raw
+}
+
+func toolPreviewKey(workerRef, attemptID, callID string) string {
+	if attemptID != "" {
+		return workerRef + ":" + attemptID + ":" + callID
+	}
+	return workerRef + ":" + callID
+}
+
+func toolMessageIdentity(kind, workerRef, attemptID, callKey string) string {
+	if attemptID != "" {
+		return "tool:" + kind + ":" + workerRef + ":" + attemptID + ":" + callKey
+	}
+	return "tool:" + kind + ":" + workerRef + ":" + callKey
 }

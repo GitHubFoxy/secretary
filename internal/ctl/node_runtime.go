@@ -91,7 +91,30 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 		}
 		_, err := session.Steer(ctx, command.Steering.Text)
 		if err != nil {
-			return node.CommandOutcome{}, err
+			outcome := node.CommandOutcome{
+				CommandID:         metadata.CommandID,
+				Kind:              command.Kind,
+				State:             node.CommandFailed,
+				TurnID:            metadata.TurnID,
+				AttemptID:         metadata.AttemptID,
+				ErrorCode:         "steering_failed",
+				ErrorMessage:      err.Error(),
+				AcceptanceUnknown: errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded),
+			}
+			var steerErr *node.SteeringError
+			if errors.As(err, &steerErr) {
+				outcome.FailureCategory = steerErr.Failure.Category
+				outcome.ProviderCode = steerErr.Failure.ProviderCode
+				outcome.Technical = steerErr.Failure.Technical
+				if steerErr.Failure.Message != "" {
+					outcome.ErrorMessage = steerErr.Failure.Message
+				}
+			}
+			commandErr := &node.NodeCommandError{Outcome: outcome, Err: err}
+			if outcome.AcceptanceUnknown {
+				return outcome, errors.Join(node.ErrCommandOutcomeUnknown, commandErr)
+			}
+			return outcome, commandErr
 		}
 	case node.CommandCancel:
 		if err := session.Cancel(ctx); err != nil {

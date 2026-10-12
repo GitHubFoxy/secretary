@@ -1,11 +1,13 @@
 package webapi
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/node"
 )
 
 var (
@@ -34,6 +36,70 @@ func requireIdempotencyKey(w http.ResponseWriter, r *http.Request, bodyKey strin
 }
 
 func writeClientMutationError(w http.ResponseWriter, err error) {
+	if errors.Is(err, node.ErrCommandOutcomeUnknown) {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"error":     "Worker command outcome is uncertain; retry with the same idempotency key",
+			"outcome":   "uncertain",
+			"retryable": true,
+		})
+		return
+	}
+	var cmdErr *node.NodeCommandError
+	var steerErr *node.SteeringError
+	if errors.As(err, &cmdErr) {
+		status := http.StatusBadRequest
+		errorMessage := cmdErr.Outcome.ErrorMessage
+		if errorMessage == "" {
+			errorMessage = cmdErr.Error()
+		}
+		errorMessage = node.SanitizeFailureMessage(errorMessage)
+		category := core.SanitizeFailureCategory(cmdErr.Outcome.FailureCategory)
+		if category == "" {
+			category = core.FailureCategoryInternalError
+		}
+		payload := map[string]any{
+			"error":         errorMessage,
+			"category":      string(category),
+			"provider_code": core.SanitizeFailureProviderCode(cmdErr.Outcome.ProviderCode),
+		}
+		technical := cmdErr.Outcome.Technical
+		if technical == "" && cmdErr.Outcome.ErrorCode != "" && cmdErr.Outcome.ErrorCode != cmdErr.Outcome.ProviderCode {
+			technical = cmdErr.Outcome.ErrorCode
+		}
+		if technical != "" {
+			payload["technical"] = node.SanitizeFailureMessage(technical)
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(payload)
+		return
+	}
+	if errors.As(err, &steerErr) {
+		status := http.StatusBadRequest
+		errorMessage := steerErr.Failure.Message
+		if errorMessage == "" {
+			errorMessage = steerErr.Error()
+		}
+		errorMessage = node.SanitizeFailureMessage(errorMessage)
+		safeCategory := core.SanitizeFailureCategory(steerErr.Failure.Category)
+		if safeCategory == "" {
+			safeCategory = core.FailureCategoryInternalError
+		}
+		payload := map[string]any{
+			"error":         errorMessage,
+			"category":      string(safeCategory),
+			"provider_code": core.SanitizeFailureProviderCode(steerErr.Failure.ProviderCode),
+		}
+		if steerErr.Failure.Technical != "" {
+			payload["technical"] = node.SanitizeFailureMessage(steerErr.Failure.Technical)
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.WriteHeader(status)
+		_ = json.NewEncoder(w).Encode(payload)
+		return
+	}
 	status := http.StatusBadRequest
 	switch {
 	case errors.Is(err, core.ErrIdempotencyConflict):

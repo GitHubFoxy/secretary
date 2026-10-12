@@ -759,12 +759,12 @@ func TestNormalizeRuntimeActivityPreservesOnlyAllowlistedToolFailureMetadata(t *
 func TestNormalizeRuntimeActivityPreservesToolLifecycleAndSafePreview(t *testing.T) {
 	metadata := core.ActivityMetadata{EventID: "event", Node: "node", HarnessInstanceID: "node/fx", AttemptID: "attempt", Sequence: 1, ObservedAt: time.Now().UTC()}
 	capabilities := core.HarnessCapabilities{Activity: []core.ActivityCapability{core.ActivityToolCall, core.ActivityToolResult}}
-	call, ok := normalizeRuntimeActivity(Activity{Kind: ActivityToolCall, Tool: "read", Arguments: json.RawMessage(`{"path":"/worker/project/src/config.toml"}`)}, metadata, capabilities, "/worker/project")
-	if !ok || call.ToolCall.Name != "read" || call.ToolCall.Preview != "src/config.toml" {
+	call, ok := normalizeRuntimeActivity(Activity{Kind: ActivityToolCall, CallID: "call-123", Tool: "read", Arguments: json.RawMessage(`{"path":"/worker/project/src/config.toml"}`)}, metadata, capabilities, "/worker/project")
+	if !ok || call.ToolCall.Name != "read" || call.ToolCall.Preview != "src/config.toml" || call.ToolCall.CallID != "call-123" {
 		t.Fatalf("normalized tool call=%#v ok=%v", call, ok)
 	}
-	finished, ok := normalizeRuntimeActivity(Activity{Kind: ActivityToolResult, Tool: "bash", Arguments: json.RawMessage(`{"command":"make test"}`), Status: "failed", Error: "synthetic failure"}, metadata, capabilities)
-	if !ok || finished.ToolResult.Name != "bash" || finished.ToolResult.Status != "failed" || finished.ToolResult.Preview != "make test" || finished.ToolResult.Output != "" {
+	finished, ok := normalizeRuntimeActivity(Activity{Kind: ActivityToolResult, CallID: "call-456", Tool: "bash", Arguments: json.RawMessage(`{"command":"make test"}`), Status: "failed", Error: "synthetic failure"}, metadata, capabilities)
+	if !ok || finished.ToolResult.Name != "bash" || finished.ToolResult.Status != "failed" || finished.ToolResult.Preview != "make test" || finished.ToolResult.Output != "" || finished.ToolResult.CallID != "call-456" {
 		t.Fatalf("normalized tool failure=%#v ok=%v", finished, ok)
 	}
 	if activity, ok := normalizeRuntimeActivity(Activity{Kind: ActivityToolCall, Text: "Running"}, metadata, capabilities); ok || activity.Kind != "" {
@@ -790,5 +790,113 @@ func TestNormalizeRuntimeActivityNeverSynthesizesUnsupportedEvents(t *testing.T)
 		if activity, ok := normalizeRuntimeActivity(item, metadata, capabilities); ok || activity.Kind != "" {
 			t.Fatalf("synthetic activity=%#v ok=%v", activity, ok)
 		}
+	}
+}
+
+func TestNormalizeRuntimeActivityDistinguishesEmptyAndNonemptyOutput(t *testing.T) {
+	metadata := core.ActivityMetadata{EventID: "event", Node: "node", HarnessInstanceID: "node/fx", AttemptID: "attempt", Sequence: 1, ObservedAt: time.Now().UTC()}
+	capabilities := core.HarnessCapabilities{Activity: []core.ActivityCapability{core.ActivityToolResult}}
+
+	cases := []struct {
+		name        string
+		result      string
+		outputPres  bool
+		status      string
+		wantPresent bool
+	}{
+		{
+			name:        "raw empty",
+			result:      "",
+			outputPres:  false,
+			status:      "completed",
+			wantPresent: false,
+		},
+		{
+			name:        "json-encoded empty string",
+			result:      `""`,
+			outputPres:  false,
+			status:      "completed",
+			wantPresent: false,
+		},
+		{
+			name:        "acp empty formatted_output",
+			result:      `{"formatted_output":""}`,
+			outputPres:  false,
+			status:      "completed",
+			wantPresent: false,
+		},
+		{
+			name:        "nonempty result",
+			result:      "all tests passed",
+			outputPres:  false,
+			status:      "completed",
+			wantPresent: true,
+		},
+		{
+			name:        "nonempty acp formatted_output",
+			result:      `{"formatted_output":"some text"}`,
+			outputPres:  false,
+			status:      "completed",
+			wantPresent: true,
+		},
+		{
+			name:        "failed status with output present",
+			result:      "",
+			outputPres:  true,
+			status:      "failed",
+			wantPresent: true,
+		},
+		{
+			name:        "failed status with empty output",
+			result:      "",
+			outputPres:  false,
+			status:      "failed",
+			wantPresent: false,
+		},
+		{
+			name:        "stderr-only nonempty output with empty stdout json string",
+			result:      `""`,
+			outputPres:  true,
+			status:      "completed",
+			wantPresent: true,
+		},
+		{
+			name:        "nonempty json payload stripped to empty object",
+			result:      `{}`,
+			outputPres:  true,
+			status:      "completed",
+			wantPresent: true,
+		},
+		{
+			name:        "genuinely empty json object without output present",
+			result:      `{}`,
+			outputPres:  false,
+			status:      "completed",
+			wantPresent: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			act, ok := NormalizeRuntimeActivity(Activity{
+				Kind:          ActivityToolResult,
+				Tool:          "shell",
+				Result:        tc.result,
+				OutputPresent: tc.outputPres,
+				Status:        tc.status,
+			}, metadata, capabilities)
+			if !ok {
+				t.Fatalf("NormalizeRuntimeActivity returned !ok for %s", tc.name)
+			}
+			if act.ToolResult == nil {
+				t.Fatalf("ToolResult is nil for %s", tc.name)
+			}
+			if act.ToolResult.OutputPresent != tc.wantPresent {
+				t.Fatalf("OutputPresent=%v want %v for %s", act.ToolResult.OutputPresent, tc.wantPresent, tc.name)
+			}
+			if tc.status == "failed" && act.ToolResult.Output != "" {
+				t.Fatalf("failed tool output must be empty, got %q", act.ToolResult.Output)
+			}
+		})
 	}
 }

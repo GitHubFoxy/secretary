@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -254,6 +255,15 @@ func (s *LocalStore) CompleteCommand(commandID string, outcome CommandOutcome) (
 		return CommandRecord{}, errors.New("node: command claim not found")
 	}
 	if record.State != CommandProcessing {
+		record.Outcome = sanitizeCommandOutcome(record.Outcome)
+		s.state.Commands[commandID] = record
+		if record.State == CommandFailed && (record.Kind == CommandDispatch || record.Kind == CommandResume || record.Kind == CommandSteering) {
+			if _, err := s.queueCommandOutcomeLocked(record.Outcome); err != nil {
+				return CommandRecord{}, err
+			}
+		} else if err := s.persistLocked(); err != nil {
+			return CommandRecord{}, err
+		}
 		return record, nil
 	}
 	if outcome.CommandID == "" {
@@ -265,9 +275,10 @@ func (s *LocalStore) CompleteCommand(commandID string, outcome CommandOutcome) (
 	if outcome.State == CommandProcessing {
 		return CommandRecord{}, errors.New("node: command outcome is still processing")
 	}
+	outcome = sanitizeCommandOutcome(outcome)
 	record.State, record.Outcome, record.UpdatedAt = outcome.State, outcome, time.Now().UTC()
 	s.state.Commands[commandID] = record
-	if outcome.State == CommandFailed && (outcome.Kind == CommandDispatch || outcome.Kind == CommandResume) {
+	if (outcome.State == CommandFailed || (outcome.State == CommandInterrupted && outcome.Kind == CommandSteering)) && (outcome.Kind == CommandDispatch || outcome.Kind == CommandResume || outcome.Kind == CommandSteering) {
 		if _, err := s.queueCommandOutcomeLocked(outcome); err != nil {
 			return CommandRecord{}, err
 		}
@@ -275,6 +286,97 @@ func (s *LocalStore) CompleteCommand(commandID string, outcome CommandOutcome) (
 		return CommandRecord{}, err
 	}
 	return record, nil
+}
+
+// CompleteCommandWithOutcome stores lifecycle completion and its terminal
+// Attempt payload in one durable snapshot.
+func (s *LocalStore) CompleteCommandWithOutcome(commandID string, commandOutcome CommandOutcome, terminal core.AttemptOutcomeEnvelope) (CommandRecord, error) {
+	if err := terminal.Validate(); err != nil {
+		return CommandRecord{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record, ok := s.state.Commands[commandID]
+	if !ok {
+		return CommandRecord{}, errors.New("node: command claim not found")
+	}
+	command, err := commandFromJSON(record.CommandJSON)
+	if err != nil {
+		return CommandRecord{}, err
+	}
+	metadata := command.Metadata()
+	if (command.Kind != CommandDispatch && command.Kind != CommandResume) || (commandOutcome.State != CommandAccepted && commandOutcome.State != CommandInterrupted) ||
+		commandOutcome.CommandID != commandID || commandOutcome.Kind != command.Kind || commandOutcome.TurnID != metadata.TurnID || commandOutcome.AttemptID != metadata.AttemptID ||
+		(commandOutcome.State == CommandInterrupted && terminal.Status != core.OutcomeInterrupted) || terminal.Node != metadata.Node ||
+		terminal.HarnessInstanceID != metadata.HarnessInstanceID || terminal.WorkerRef != metadata.WorkerRef ||
+		terminal.TurnID != metadata.TurnID || terminal.AttemptID != metadata.AttemptID {
+		return CommandRecord{}, errors.New("node: terminal outcome does not match the completed command")
+	}
+	commandOutcome = sanitizeCommandOutcome(commandOutcome)
+	if record.State != CommandProcessing && record.State != CommandAccepted {
+		return CommandRecord{}, errors.New("node: command is not eligible for terminal completion")
+	}
+	if !compatibleCommandCompletion(record.Outcome, commandOutcome) {
+		return CommandRecord{}, errors.New("node: terminal completion conflicts with saved command outcome")
+	}
+
+	event := outcomeEvent(terminal)
+	if err := event.Validate(); err != nil {
+		return CommandRecord{}, err
+	}
+	previous := record
+	previousNextSequence := s.state.NextSequence
+	previousOutboxLength := len(s.state.Outbox)
+	record.State, record.Outcome, record.UpdatedAt = commandOutcome.State, commandOutcome, time.Now().UTC()
+	record.TerminalOutcomeQueued = true
+	s.state.Commands[commandID] = record
+	for _, pending := range s.state.Outbox {
+		if pending.EventID == event.EventID {
+			event.Sequence = pending.Sequence
+			break
+		}
+	}
+	if event.Sequence == 0 {
+		event.Sequence = s.state.NextSequence
+		if event.Sequence == 0 {
+			event.Sequence = 1
+		}
+	}
+	encodedEvent, err := json.Marshal(event)
+	if err != nil {
+		s.state.Commands[commandID] = previous
+		return CommandRecord{}, err
+	}
+	pending, added, err := s.appendPendingEventLocked(event.EventID, "", encodedEvent)
+	if err != nil {
+		s.state.Commands[commandID] = previous
+		s.state.NextSequence = previousNextSequence
+		return CommandRecord{}, err
+	}
+	if !added {
+		var saved NodeEvent
+		if err := json.Unmarshal(pending.Payload, &saved); err != nil || saved.EventID != event.EventID || saved.Node != event.Node || saved.Kind != event.Kind || saved.Activity != nil || !reflect.DeepEqual(saved.Outcome, event.Outcome) {
+			s.state.Commands[commandID] = previous
+			return CommandRecord{}, errors.New("node: terminal event conflicts with saved outbox payload")
+		}
+	}
+	if err := s.persistLocked(); err != nil {
+		s.state.Commands[commandID] = previous
+		s.state.Outbox = s.state.Outbox[:previousOutboxLength]
+		s.state.NextSequence = previousNextSequence
+		return CommandRecord{}, err
+	}
+	return record, nil
+}
+
+func compatibleCommandCompletion(existing, completed CommandOutcome) bool {
+	if existing.State != CommandProcessing && existing.State != CommandAccepted {
+		return false
+	}
+	return (existing.CommandID == "" || existing.CommandID == completed.CommandID) &&
+		(existing.Kind == "" || existing.Kind == completed.Kind) &&
+		(existing.TurnID == "" || existing.TurnID == completed.TurnID) &&
+		(existing.AttemptID == "" || existing.AttemptID == completed.AttemptID)
 }
 
 func (s *LocalStore) Command(commandID string) (CommandRecord, error) {
@@ -459,6 +561,7 @@ func (s *LocalStore) QueueCommandOutcome(outcome CommandOutcome) (PendingEvent, 
 }
 
 func (s *LocalStore) queueCommandOutcomeLocked(outcome CommandOutcome) (PendingEvent, error) {
+	outcome = sanitizeCommandOutcome(outcome)
 	if outcome.CommandID == "" || outcome.Kind == "" || outcome.State == CommandProcessing {
 		return PendingEvent{}, errors.New("node: incomplete command outcome")
 	}
@@ -487,9 +590,22 @@ func (s *LocalStore) queueEvent(event NodeEvent) (PendingEvent, error) {
 }
 
 func (s *LocalStore) queuePendingEventLocked(eventID string, kind MessageType, payload json.RawMessage) (PendingEvent, error) {
+	pending, added, err := s.appendPendingEventLocked(eventID, kind, payload)
+	if err != nil || !added {
+		return pending, err
+	}
+	if err := s.persistLocked(); err != nil {
+		s.state.Outbox = s.state.Outbox[:len(s.state.Outbox)-1]
+		s.state.NextSequence = pending.Sequence
+		return PendingEvent{}, err
+	}
+	return pending, nil
+}
+
+func (s *LocalStore) appendPendingEventLocked(eventID string, kind MessageType, payload json.RawMessage) (PendingEvent, bool, error) {
 	for _, pending := range s.state.Outbox {
 		if pending.EventID == eventID {
-			return pending, nil
+			return pending, false, nil
 		}
 	}
 	sequence := s.state.NextSequence
@@ -499,12 +615,7 @@ func (s *LocalStore) queuePendingEventLocked(eventID string, kind MessageType, p
 	pending := PendingEvent{Type: kind, Sequence: sequence, EventID: eventID, Payload: payload, CreatedAt: time.Now().UTC()}
 	s.state.NextSequence = sequence + 1
 	s.state.Outbox = append(s.state.Outbox, pending)
-	if err := s.persistLocked(); err != nil {
-		s.state.Outbox = s.state.Outbox[:len(s.state.Outbox)-1]
-		s.state.NextSequence = sequence
-		return PendingEvent{}, err
-	}
-	return pending, nil
+	return pending, true, nil
 }
 
 func (s *LocalStore) PendingEvents() ([]PendingEvent, error) {
@@ -522,6 +633,14 @@ func (s *LocalStore) AckThrough(sequence uint64) error {
 	for _, event := range s.state.Outbox {
 		if event.Sequence > sequence {
 			kept = append(kept, event)
+		} else if strings.HasPrefix(event.EventID, "command-outcome-") {
+			cmdID := strings.TrimPrefix(event.EventID, "command-outcome-")
+			if rec, ok := s.state.Commands[cmdID]; ok {
+				rec.Acknowledged = true
+				s.state.Commands[cmdID] = rec
+			}
+		} else if strings.HasPrefix(event.EventID, "attempt-outcome-") {
+			s.markAcceptedCommandTerminalQueuedLocked(event)
 		}
 	}
 	s.state.Outbox = kept
@@ -529,6 +648,28 @@ func (s *LocalStore) AckThrough(sequence uint64) error {
 		s.state.LastAcknowledgedSequence = sequence
 	}
 	return s.persistLocked()
+}
+
+func (s *LocalStore) markAcceptedCommandTerminalQueuedLocked(pending PendingEvent) {
+	var event NodeEvent
+	if json.Unmarshal(pending.Payload, &event) != nil || event.Outcome == nil || event.EventID != pending.EventID {
+		return
+	}
+	for id, record := range s.state.Commands {
+		if record.State != CommandAccepted || record.TerminalOutcomeQueued || (record.Kind != CommandDispatch && record.Kind != CommandResume) {
+			continue
+		}
+		command, err := commandFromJSON(record.CommandJSON)
+		if err != nil {
+			continue
+		}
+		metadata := command.Metadata()
+		outcome := event.Outcome
+		if metadata.Node == outcome.Node && metadata.HarnessInstanceID == outcome.HarnessInstanceID && metadata.WorkerRef == outcome.WorkerRef && metadata.TurnID == outcome.TurnID && metadata.AttemptID == outcome.AttemptID {
+			record.TerminalOutcomeQueued = true
+			s.state.Commands[id] = record
+		}
+	}
 }
 
 func (s *LocalStore) LastAcknowledgedSequence() uint64 {
@@ -541,7 +682,7 @@ func (s *LocalStore) RecoverRunning(ctx context.Context, inspector ProcessInspec
 	s.mu.Lock()
 	ids := make([]string, 0)
 	for id, record := range s.state.Commands {
-		if record.State == CommandProcessing {
+		if record.State == CommandProcessing || (record.State == CommandAccepted && !record.TerminalOutcomeQueued && (record.Kind == CommandDispatch || record.Kind == CommandResume)) {
 			ids = append(ids, id)
 		}
 	}
@@ -582,16 +723,74 @@ func (s *LocalStore) RecoverRunning(ctx context.Context, inspector ProcessInspec
 		if alive {
 			continue
 		}
-		outcome := CommandOutcome{CommandID: record.CommandID, Kind: record.Kind, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID, State: CommandInterrupted, ErrorCode: "execution_state_unknown", ErrorMessage: "Node could not prove that the side effect is still running"}
+		if command.Kind == CommandDispatch || command.Kind == CommandResume {
+			if record.State == CommandAccepted {
+				terminal, found, err := s.pendingTerminalOutcome(record.CommandID, metadata)
+				if err != nil {
+					return err
+				}
+				if found {
+					if _, err := s.CompleteCommandWithOutcome(record.CommandID, acceptedOutcome(command), terminal); err != nil {
+						return err
+					}
+					continue
+				}
+			}
+			terminal := core.AttemptOutcomeEnvelope{EventID: "interrupted-" + record.CommandID, Node: metadata.Node, HarnessInstanceID: metadata.HarnessInstanceID, WorkerRef: metadata.WorkerRef, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID, Status: core.OutcomeInterrupted, Classification: core.OutcomeFinal, Summary: "Attempt interrupted because execution state could not be proven", ErrorCode: "execution_state_unknown", OccurredAt: time.Now().UTC()}
+			outcome := CommandOutcome{CommandID: record.CommandID, Kind: record.Kind, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID, State: CommandInterrupted, ErrorCode: "execution_state_unknown", ErrorMessage: "Node could not prove that the side effect is still running"}
+			if _, err := s.CompleteCommandWithOutcome(record.CommandID, outcome, terminal); err != nil {
+				return err
+			}
+			continue
+		}
+		message := "Node could not prove that the side effect is still running"
+		outcome := CommandOutcome{CommandID: record.CommandID, Kind: record.Kind, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID, State: CommandInterrupted, ErrorCode: "execution_state_unknown", ErrorMessage: message}
+		if command.Kind == CommandSteering {
+			outcome.ErrorMessage = "Node could not prove whether steering reached the native runtime"
+			outcome.AcceptanceUnknown = true
+		}
 		if _, err := s.CompleteCommand(record.CommandID, outcome); err != nil {
 			return err
 		}
-		if command.Kind == CommandDispatch || command.Kind == CommandResume {
-			terminal := core.AttemptOutcomeEnvelope{EventID: "interrupted-" + record.CommandID, Node: metadata.Node, HarnessInstanceID: metadata.HarnessInstanceID, WorkerRef: metadata.WorkerRef, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID, Status: core.OutcomeInterrupted, Classification: core.OutcomeFinal, Summary: "Attempt interrupted because execution state could not be proven", ErrorCode: "execution_state_unknown", OccurredAt: time.Now().UTC()}
-			if _, err := s.QueueOutcome(terminal); err != nil {
-				return err
-			}
+	}
+	s.mu.Lock()
+	failedToRecover := make([]CommandOutcome, 0)
+	for _, record := range s.state.Commands {
+		if record.State == CommandFailed && (record.Kind == CommandDispatch || record.Kind == CommandResume || record.Kind == CommandSteering) && !record.Acknowledged {
+			failedToRecover = append(failedToRecover, record.Outcome)
 		}
 	}
+	for _, outcome := range failedToRecover {
+		if _, err := s.queueCommandOutcomeLocked(outcome); err != nil {
+			s.mu.Unlock()
+			return err
+		}
+	}
+	s.mu.Unlock()
 	return nil
+}
+
+func (s *LocalStore) pendingTerminalOutcome(commandID string, metadata core.CommandMetadata) (core.AttemptOutcomeEnvelope, bool, error) {
+	eventID := "attempt-outcome-" + metadata.AttemptID
+	events, err := s.PendingEvents()
+	if err != nil {
+		return core.AttemptOutcomeEnvelope{}, false, err
+	}
+	for _, pending := range events {
+		if pending.EventID != eventID {
+			continue
+		}
+		var event NodeEvent
+		if err := json.Unmarshal(pending.Payload, &event); err != nil {
+			return core.AttemptOutcomeEnvelope{}, false, err
+		}
+		if err := event.Validate(); err != nil || event.Outcome == nil || event.Node != metadata.Node ||
+			event.Outcome.EventID != eventID || event.Outcome.Node != metadata.Node ||
+			event.Outcome.HarnessInstanceID != metadata.HarnessInstanceID || event.Outcome.WorkerRef != metadata.WorkerRef ||
+			event.Outcome.TurnID != metadata.TurnID || event.Outcome.AttemptID != metadata.AttemptID {
+			return core.AttemptOutcomeEnvelope{}, false, fmt.Errorf("node: saved terminal payload does not match command %s", commandID)
+		}
+		return *event.Outcome, true, nil
+	}
+	return core.AttemptOutcomeEnvelope{}, false, nil
 }

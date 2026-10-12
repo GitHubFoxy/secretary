@@ -652,3 +652,142 @@ func TestPhase4RecoveryCreatesExplicitInterruptedResultAndBackup(t *testing.T) {
 		t.Fatalf("backup people=%d, want 1", people)
 	}
 }
+
+func TestPhase4Result_PreservesFailureAndCategoryAcrossReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "secretary.db")
+	store, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 1. Auth required failure
+	_, turn1, attempt1, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{
+		WorkerRef:         "worker-auth",
+		Title:             "Auth test",
+		Intent:            "Test auth failure",
+		ProjectID:         "project-1",
+		NodeID:            "node-1",
+		HarnessInstanceID: "node-1/fx",
+		PolicySnapshot:    `{"harness":"fx"}`,
+	}, TurnSpec{Input: "do work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt1.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	finishAuth := FinishAttemptInput{
+		AttemptOutcomeInput: AttemptOutcomeInput{
+			Status:          OutcomeFailed,
+			Classification:  OutcomeFinal,
+			Summary:         "Invalid API key provided",
+			ErrorCode:       "auth_failed",
+			ErrorMessage:    "authentication failed",
+			FailureCode:     "invalid_api_key",
+			FailureCategory: FailureCategoryAuthRequired,
+			Diagnostics:     "Bearer sk-test rejected by upstream",
+		},
+	}
+	finishRes1, err := store.FinishAttempt(ctx, attempt1.ID, finishAuth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finishRes1.Result == nil {
+		t.Fatal("expected non-nil Result")
+	}
+	if finishRes1.Result.FailureCategory != FailureCategoryAuthRequired {
+		t.Fatalf("immediate FailureCategory = %q, want %q", finishRes1.Result.FailureCategory, FailureCategoryAuthRequired)
+	}
+	if finishRes1.Result.Failure == nil {
+		t.Fatal("immediate Result.Failure is nil")
+	}
+	if finishRes1.Result.Failure.Category != FailureCategoryAuthRequired || finishRes1.Result.Failure.ProviderCode != "invalid_api_key" || finishRes1.Result.Failure.Technical != "Bearer [redacted] rejected by upstream" {
+		t.Fatalf("immediate Failure = %#v", finishRes1.Result.Failure)
+	}
+
+	// 2. Generic internal error without specific provider code
+	_, turn2, attempt2, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{
+		WorkerRef:         "worker-internal",
+		Title:             "Internal error test",
+		Intent:            "Test generic failure",
+		ProjectID:         "project-1",
+		NodeID:            "node-1",
+		HarnessInstanceID: "node-1/fx",
+		PolicySnapshot:    `{"harness":"fx"}`,
+	}, TurnSpec{Input: "do more work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt2.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	finishGeneric := FinishAttemptInput{
+		AttemptOutcomeInput: AttemptOutcomeInput{
+			Status:          OutcomeFailed,
+			Classification:  OutcomeFinal,
+			Summary:         "Internal server error",
+			ErrorCode:       "daemon_crash",
+			FailureCategory: FailureCategoryInternalError,
+			Diagnostics:     "rpc connection lost",
+		},
+	}
+	finishRes2, err := store.FinishAttempt(ctx, attempt2.ID, finishGeneric)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if finishRes2.Result == nil || finishRes2.Result.Failure == nil {
+		t.Fatalf("generic Failure = %#v", finishRes2.Result)
+	}
+	if finishRes2.Result.FailureCategory != FailureCategoryInternalError || finishRes2.Result.Failure.Category != FailureCategoryInternalError || finishRes2.Result.Failure.ProviderCode != "" || finishRes2.Result.Failure.Technical != "rpc connection lost" {
+		t.Fatalf("generic Failure = %#v", finishRes2.Result.Failure)
+	}
+
+	// Reopen DB to verify durability
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+
+	// Verify Auth error after reopen
+	storedRes1, err := reopened.Phase4Result(ctx, turn1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRes1.FailureCategory != FailureCategoryAuthRequired {
+		t.Fatalf("reopened FailureCategory = %q, want %q", storedRes1.FailureCategory, FailureCategoryAuthRequired)
+	}
+	if storedRes1.Failure == nil {
+		t.Fatal("reopened Result.Failure is nil for auth_required")
+	}
+	if storedRes1.Failure.Category != FailureCategoryAuthRequired || storedRes1.Failure.ProviderCode != "invalid_api_key" || storedRes1.Failure.Technical != "Bearer [redacted] rejected by upstream" {
+		t.Fatalf("reopened auth Failure = %#v", storedRes1.Failure)
+	}
+
+	// Verify Generic error after reopen
+	storedRes2, err := reopened.Phase4Result(ctx, turn2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedRes2.FailureCategory != FailureCategoryInternalError {
+		t.Fatalf("reopened FailureCategory = %q, want %q", storedRes2.FailureCategory, FailureCategoryInternalError)
+	}
+	if storedRes2.Failure == nil {
+		t.Fatal("reopened Result.Failure is nil for generic internal error")
+	}
+	if storedRes2.Failure.Category != FailureCategoryInternalError || storedRes2.Failure.ProviderCode != "" || storedRes2.Failure.Technical != "rpc connection lost" {
+		t.Fatalf("reopened generic Failure = %#v", storedRes2.Failure)
+	}
+}

@@ -41,11 +41,16 @@ type pendingRequest struct {
 }
 
 type RPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code    int             `json:"code"`
+	Message string          `json:"message"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 func (e *RPCError) Error() string { return fmt.Sprintf("acp rpc %d: %s", e.Code, e.Message) }
+
+func (e *RPCError) HasData() bool {
+	return len(e.Data) > 0 && string(e.Data) != "null"
+}
 
 type RequestError struct {
 	Code    int

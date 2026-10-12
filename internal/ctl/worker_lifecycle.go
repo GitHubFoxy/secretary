@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -224,6 +225,9 @@ func (s WorkerService) claimCommand(ctx context.Context, kind, dedupeKey string,
 	if err != nil {
 		return core.WorkerCommand{}, false, err
 	}
+	if duplicate && command.State == core.WorkerCommandUncertain && kind == "steering" {
+		return core.WorkerCommand{}, false, fmt.Errorf("%w: steering command %s has unknown acceptance", node.ErrCommandOutcomeUnknown, command.ID)
+	}
 	if duplicate && (command.State == core.WorkerCommandPending || command.State == core.WorkerCommandUncertain) {
 		reclaimed, send, err := s.Store.ReclaimWorkerCommand(ctx, command.ID, s.workerCommandNow())
 		if err != nil {
@@ -236,6 +240,23 @@ func (s WorkerService) claimCommand(ctx context.Context, kind, dedupeKey string,
 	}
 	if duplicate && command.State == core.WorkerCommandFailed {
 		if kind != "respond" {
+			receipt, err := s.Store.WorkerCommandReceiptOutcome(ctx, command.ID)
+			if err == nil {
+				return core.WorkerCommand{}, false, &node.NodeCommandError{
+					Outcome: node.CommandOutcome{
+						CommandID:       receipt.CommandID,
+						Kind:            node.CommandKind(receipt.Kind),
+						State:           node.CommandFailed,
+						TurnID:          receipt.TurnID,
+						AttemptID:       receipt.AttemptID,
+						ErrorCode:       receipt.ErrorCode,
+						ErrorMessage:    receipt.ErrorMessage,
+						FailureCategory: receipt.FailureCategory,
+						ProviderCode:    receipt.ProviderCode,
+						Technical:       receipt.Technical,
+					},
+				}
+			}
 			return core.WorkerCommand{}, false, fmt.Errorf("worker: prior %s command failed: %s", kind, command.LastError)
 		}
 		retried, retry, err := s.Store.RetryWorkerCommand(ctx, command.ID, s.workerCommandNow())
@@ -276,20 +297,92 @@ func steeringDedupeKey(idempotencyKey string) (string, error) {
 }
 
 func (s WorkerService) deliverCommand(ctx context.Context, command core.WorkerCommand, send func(string) error) error {
+	if command.Kind == "steering" || command.Kind == "steer" {
+		// Persist the point after which this exact command identity must not be
+		// handed to a local native Session a second time. A later receipt resolves
+		// this uncertain state; failures before this write never reach the runtime.
+		if _, err := s.Store.MarkWorkerCommandUncertain(context.Background(), command.ID, "steering handoff started; awaiting Node receipt"); err != nil {
+			return fmt.Errorf("worker: persist steering handoff boundary: %w", err)
+		}
+	}
 	if err := send(command.ID); err != nil {
-		uncertain := (command.Kind == "respond" || command.Kind == "steer" || command.Kind == "cancel") && (errors.Is(err, node.ErrCommandOutcomeUnknown) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded))
+		var cmdErr *node.NodeCommandError
+		uncertain := (command.Kind == "respond" || command.Kind == "steer" || command.Kind == "steering" || command.Kind == "cancel") && (errors.Is(err, node.ErrCommandOutcomeUnknown) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &cmdErr) && cmdErr.Outcome.AcceptanceUnknown))
 		if uncertain {
 			if !errors.Is(err, node.ErrCommandOutcomeUnknown) {
-				err = fmt.Errorf("%w: %w", node.ErrCommandOutcomeUnknown, err)
+				err = errors.Join(node.ErrCommandOutcomeUnknown, err)
 			}
-			_, _ = s.Store.MarkWorkerCommandUncertain(context.Background(), command.ID, err.Error())
+			if _, persistErr := s.Store.MarkWorkerCommandUncertain(context.Background(), command.ID, err.Error()); persistErr != nil {
+				return errors.Join(node.ErrCommandOutcomeUnknown, err, fmt.Errorf("worker: persist uncertain command receipt: %w", persistErr))
+			}
 		} else {
-			_, _ = s.Store.MarkWorkerCommandFailed(context.Background(), command.ID, err.Error())
+			var steerErr *node.SteeringError
+			if errors.As(err, &cmdErr) {
+				att, attErr := s.Store.Phase4Attempt(context.Background(), command.AttemptID)
+				if attErr != nil {
+					return s.uncertainCommandStorageError(command.ID, err, fmt.Errorf("worker: load Attempt for command receipt: %w", attErr))
+				}
+				receipt := core.WorkerCommandReceipt{
+					CommandID:       command.ID,
+					Kind:            command.Kind,
+					TurnID:          att.TurnID,
+					AttemptID:       att.ID,
+					State:           core.WorkerCommandReceiptDenied,
+					ErrorCode:       cmdErr.Outcome.ErrorCode,
+					ErrorMessage:    cmdErr.Outcome.ErrorMessage,
+					FailureCategory: cmdErr.Outcome.FailureCategory,
+					ProviderCode:    cmdErr.Outcome.ProviderCode,
+					Technical:       cmdErr.Outcome.Technical,
+				}
+				if _, reconcileErr := s.Store.ReconcileWorkerCommandReceipt(context.Background(), core.NodeReference(att.NodeID), receipt); reconcileErr != nil {
+					return s.uncertainCommandStorageError(command.ID, err, fmt.Errorf("worker: reconcile Node command refusal: %w", reconcileErr))
+				}
+			} else if errors.As(err, &steerErr) {
+				att, attErr := s.Store.Phase4Attempt(context.Background(), command.AttemptID)
+				if attErr != nil {
+					return s.uncertainCommandStorageError(command.ID, err, fmt.Errorf("worker: load Attempt for command receipt: %w", attErr))
+				}
+				msg := steerErr.Failure.Message
+				if msg == "" {
+					msg = steerErr.Error()
+				}
+				receipt := core.WorkerCommandReceipt{
+					CommandID:       command.ID,
+					Kind:            command.Kind,
+					TurnID:          att.TurnID,
+					AttemptID:       att.ID,
+					State:           core.WorkerCommandReceiptDenied,
+					ErrorCode:       "steering_failed",
+					ErrorMessage:    msg,
+					FailureCategory: steerErr.Failure.Category,
+					ProviderCode:    steerErr.Failure.ProviderCode,
+					Technical:       steerErr.Failure.Technical,
+				}
+				if _, reconcileErr := s.Store.ReconcileWorkerCommandReceipt(context.Background(), core.NodeReference(att.NodeID), receipt); reconcileErr != nil {
+					return s.uncertainCommandStorageError(command.ID, err, fmt.Errorf("worker: reconcile steering refusal: %w", reconcileErr))
+				}
+			} else {
+				if _, persistErr := s.Store.MarkWorkerCommandFailed(context.Background(), command.ID, err.Error()); persistErr != nil {
+					return s.uncertainCommandStorageError(command.ID, err, fmt.Errorf("worker: persist failed command receipt: %w", persistErr))
+				}
+			}
+		}
+		if errors.As(err, &cmdErr) && cmdErr.Outcome.FailureCategory != "" {
+			category := core.SanitizeFailureCategory(cmdErr.Outcome.FailureCategory)
+			code := core.SanitizeFailureProviderCode(cmdErr.Outcome.ProviderCode)
+			log.Printf("worker command %s failed category=%s code=%s", command.ID, category, code)
 		}
 		return err
 	}
-	_, err := s.Store.MarkWorkerCommandDelivered(ctx, command.ID)
-	return err
+	if _, err := s.Store.MarkWorkerCommandDelivered(ctx, command.ID); err != nil {
+		return s.uncertainCommandStorageError(command.ID, nil, fmt.Errorf("worker: persist accepted command receipt: %w", err))
+	}
+	return nil
+}
+
+func (s WorkerService) uncertainCommandStorageError(commandID string, cause, storageErr error) error {
+	_, uncertainErr := s.Store.MarkWorkerCommandUncertain(context.Background(), commandID, "command outcome could not be persisted")
+	return errors.Join(node.ErrCommandOutcomeUnknown, cause, storageErr, uncertainErr)
 }
 
 // recoverLifecycleCommand repairs pre-intent committed Attempts, then claims
@@ -657,6 +750,90 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			}
 		}
 	}
+	if key := strings.TrimSpace(request.IdempotencyKey); key != "" {
+		dedupeKey, keyErr := steeringDedupeKey(key)
+		if keyErr == nil {
+			command, found, findErr := s.Store.FindWorkerCommandByWorkerAndDedupeKey(ctx, "steering", dedupeKey, details.Worker.ID)
+			if findErr != nil {
+				return core.WorkerDetails{}, findErr
+			}
+			if found {
+				origin := s.secretaryOrigin(request.SecretaryTurnID, request.InputID)
+				if command.State == core.WorkerCommandUncertain {
+					if err := s.Store.ValidateWorkerCommandOrigin(ctx, command.ID, origin, false); err != nil {
+						return core.WorkerDetails{}, err
+					}
+					return core.WorkerDetails{}, fmt.Errorf("%w: steering command %s has unknown acceptance", node.ErrCommandOutcomeUnknown, command.ID)
+				}
+				if command.State == core.WorkerCommandFailed || command.State == core.WorkerCommandDelivered {
+					if err := s.Store.ValidateWorkerCommandOrigin(ctx, command.ID, origin, false); err != nil {
+						return core.WorkerDetails{}, err
+					}
+					if command.State == core.WorkerCommandFailed {
+						receipt, err := s.Store.WorkerCommandReceiptOutcome(ctx, command.ID)
+						if err == nil {
+							return core.WorkerDetails{}, &node.NodeCommandError{
+								Outcome: node.CommandOutcome{
+									CommandID:       receipt.CommandID,
+									Kind:            node.CommandKind(receipt.Kind),
+									State:           node.CommandFailed,
+									TurnID:          receipt.TurnID,
+									AttemptID:       receipt.AttemptID,
+									ErrorCode:       receipt.ErrorCode,
+									ErrorMessage:    receipt.ErrorMessage,
+									FailureCategory: receipt.FailureCategory,
+									ProviderCode:    receipt.ProviderCode,
+									Technical:       receipt.Technical,
+								},
+							}
+						}
+						return core.WorkerDetails{}, fmt.Errorf("worker: prior %s command failed: %s", command.Kind, command.LastError)
+					}
+					attemptRecord, err := s.Store.Phase4Attempt(ctx, command.AttemptID)
+					if err != nil {
+						return core.WorkerDetails{}, err
+					}
+					updated, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+					if err != nil {
+						return core.WorkerDetails{}, err
+					}
+					updated.ActionTurnID = attemptRecord.TurnID
+					return updated, nil
+				}
+				if command.State == core.WorkerCommandPending {
+					if err := s.Store.ValidateWorkerCommandOrigin(ctx, command.ID, origin, true); err != nil {
+						return core.WorkerDetails{}, err
+					}
+					attemptRecord, err := s.Store.Phase4Attempt(ctx, command.AttemptID)
+					if err == nil && !attemptRecord.State.Terminal() && attempt != nil && attempt.ID == command.AttemptID {
+						reclaimed, send, err := s.Store.ReclaimWorkerCommand(ctx, command.ID, s.workerCommandNow())
+						if err != nil {
+							return core.WorkerDetails{}, err
+						}
+						if !send {
+							return core.WorkerDetails{}, fmt.Errorf("%w: %s", ErrWorkerCommandPending, command.Kind)
+						}
+						if err := s.requireRuntime(); err != nil {
+							return core.WorkerDetails{}, err
+						}
+						err = s.deliverCommand(ctx, reclaimed, func(commandID string) error {
+							return s.Runtime.Steer(ctx, commandID, details.Worker, *attempt, request.Text)
+						})
+						if err != nil {
+							return core.WorkerDetails{}, err
+						}
+						updated, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+						if err != nil {
+							return core.WorkerDetails{}, err
+						}
+						updated.ActionTurnID = attempt.TurnID
+						return updated, nil
+					}
+					return core.WorkerDetails{}, fmt.Errorf("%w: %s", ErrWorkerCommandPending, command.Kind)
+				}
+			}
+		}
+	}
 	switch details.Worker.Status {
 	case core.WorkerWaitingApproval:
 		return core.WorkerDetails{}, errors.New("worker: approval request is required")
@@ -668,11 +845,13 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			return core.WorkerDetails{}, err
 		}
 		actionTurnID = attempt.TurnID
-		dedupeKey, err := steeringDedupeKey(request.IdempotencyKey)
-		if err != nil {
-			return core.WorkerDetails{}, err
+		dedupeKey, keyErr := steeringDedupeKey(request.IdempotencyKey)
+		if keyErr != nil {
+			return core.WorkerDetails{}, keyErr
 		}
-		command, send, err := s.claimCommand(ctx, "steering", dedupeKey, details.Worker, *attempt, s.secretaryOrigin(request.SecretaryTurnID, request.InputID))
+		var command core.WorkerCommand
+		var send bool
+		command, send, err = s.claimCommand(ctx, "steering", dedupeKey, details.Worker, *attempt, s.secretaryOrigin(request.SecretaryTurnID, request.InputID))
 		if err != nil {
 			return core.WorkerDetails{}, err
 		}

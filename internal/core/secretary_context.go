@@ -309,7 +309,7 @@ func (s *Store) unseenWorkerResults(ctx context.Context, conversationID string) 
 }
 
 func unseenWorkerResultsQuery(ctx context.Context, queryer contextQueryer, conversationID string) ([]Phase4Result, error) {
-	rows, err := queryer.QueryContext(ctx, `SELECT r.id, r.worker_id, r.turn_id, r.attempt_id, r.status, r.summary, r.failure_code, r.artifact_refs, r.correlation_id, r.created_at
+	rows, err := queryer.QueryContext(ctx, `SELECT r.id, r.worker_id, r.turn_id, r.attempt_id, r.status, r.summary, r.failure_code, r.failure_category, r.failure_details, r.artifact_refs, r.correlation_id, r.created_at
 FROM phase4_results r JOIN workers w ON w.id = r.worker_id
 LEFT JOIN secretary_context_seen_results seen ON seen.result_id = r.id
 WHERE w.conversation_id = ? AND (seen.result_id IS NULL OR seen.claim_state = 'released') ORDER BY r.created_at, r.id`, conversationID)
@@ -320,7 +320,7 @@ WHERE w.conversation_id = ? AND (seen.result_id IS NULL OR seen.claim_state = 'r
 	results := make([]Phase4Result, 0)
 	for rows.Next() {
 		var result Phase4Result
-		if err := rows.Scan(&result.ID, &result.WorkerID, &result.TurnID, &result.AttemptID, &result.Status, &result.Summary, &result.FailureCode, &result.ArtifactRefs, &result.CorrelationID, newTimestampScanner(&result.CreatedAt)); err != nil {
+		if err := scanPhase4Result(rows, &result); err != nil {
 			return nil, err
 		}
 		results = append(results, result)

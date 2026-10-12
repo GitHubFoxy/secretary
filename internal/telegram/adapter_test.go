@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type fakeTransport struct {
@@ -500,20 +503,265 @@ func TestSecretaryEventsAreThrottledAndWorkerEventsAreReadable(t *testing.T) {
 func TestWorkerToolEventsRenderActualNamePreviewAndLifecycle(t *testing.T) {
 	tool := "mcp__filesystem__read_file_with_a_long_but_real_name"
 	for _, test := range []struct {
-		kind, marker string
+		kind, want string
+		hasOutput  bool
 	}{
-		{"worker.tool_started", "▶"},
-		{"worker.tool_finished", "✓"},
-		{"worker.tool_failed", "✗"},
+		{"worker.tool_started", "▶ Запуск: " + tool + " src/config.toml", false},
+		{"worker.tool_finished", "✓ Выполнено: " + tool + " src/config.toml (без вывода)", false},
+		{"worker.tool_finished", "✓ Выполнено: " + tool + " src/config.toml (вывод скрыт)", true},
+		{"worker.tool_failed", "✗ Ошибка: " + tool + " src/config.toml (без вывода)", false},
+		{"worker.tool_failed", "✗ Ошибка: " + tool + " src/config.toml (вывод скрыт)", true},
 	} {
-		got := renderWorkerEvent(Event{Kind: test.kind, Tool: tool, ToolPreview: "src/config.toml", Text: "synthetic tool output must not appear"})
-		want := test.marker + " " + tool + " src/config.toml"
-		if got != want || strings.Contains(got, "Worker запускает") || strings.Contains(got, "synthetic") {
-			t.Fatalf("rendered tool event=%q want=%q", got, want)
+		got := renderWorkerEvent(Event{Kind: test.kind, Tool: tool, ToolPreview: "src/config.toml", HasOutput: test.hasOutput, Text: "synthetic tool output must not appear"})
+		if got != test.want || strings.Contains(got, "Worker запускает") || strings.Contains(got, "synthetic") {
+			t.Fatalf("rendered tool event=%q want=%q", got, test.want)
 		}
 	}
 	if got := renderWorkerEvent(Event{Kind: "worker.tool_started", ToolPreview: "src/config.toml"}); got != "" {
 		t.Fatalf("missing tool identity rendered as event: %q", got)
+	}
+}
+
+func TestWorkerToolCallIDCorrelationAndParallelExecution(t *testing.T) {
+	ctx := context.Background()
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "state.json"))
+
+	if err := adapter.HandleEvent(ctx, Event{Kind: "worker.created", WorkerRef: "worker-1", Title: "Worker"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two parallel calls to the same tool name "exec_command" with different call IDs and previews.
+	call1Start := Event{
+		Kind: "worker.tool_started", WorkerRef: "worker-1", CallID: "call-1",
+		Tool: "exec_command", ToolPreview: "python3 test.py",
+	}
+	call2Start := Event{
+		Kind: "worker.tool_started", WorkerRef: "worker-1", CallID: "call-2",
+		Tool: "exec_command", ToolPreview: "open https://example.com",
+	}
+
+	if err := adapter.HandleEvent(ctx, call1Start); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(ctx, call2Start); err != nil {
+		t.Fatal(err)
+	}
+
+	// Finish call-2 first (with empty output and no preview in result, relying on CallID correlation).
+	call2Finish := Event{
+		Kind: "worker.tool_finished", WorkerRef: "worker-1", CallID: "call-2",
+		Tool: "exec_command", HasOutput: false,
+	}
+	if err := adapter.HandleEvent(ctx, call2Finish); err != nil {
+		t.Fatal(err)
+	}
+
+	// Finish call-1 second (with nonempty output).
+	call1Finish := Event{
+		Kind: "worker.tool_finished", WorkerRef: "worker-1", CallID: "call-1",
+		Tool: "exec_command", HasOutput: true,
+	}
+	if err := adapter.HandleEvent(ctx, call1Finish); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(transport.sent) != 4 {
+		t.Fatalf("sent messages count=%d want 4: %#v", len(transport.sent), transport.sent)
+	}
+
+	// Sent order: call1 start, call2 start, call2 finish, call1 finish
+	if transport.sent[0].Text != "▶ Запуск: exec_command python3 test.py" {
+		t.Fatalf("call1 start message=%q", transport.sent[0].Text)
+	}
+	if transport.sent[1].Text != "▶ Запуск: exec_command open https://example.com" {
+		t.Fatalf("call2 start message=%q", transport.sent[1].Text)
+	}
+	// call2 completed with empty output: must correlate to call-2's preview and indicate (без вывода)
+	if transport.sent[2].Text != "✓ Выполнено: exec_command open https://example.com (без вывода)" {
+		t.Fatalf("call2 finish message=%q", transport.sent[2].Text)
+	}
+	// call1 completed with nonempty output: must correlate to call-1's preview and indicate (вывод скрыт)
+	if transport.sent[3].Text != "✓ Выполнено: exec_command python3 test.py (вывод скрыт)" {
+		t.Fatalf("call1 finish message=%q", transport.sent[3].Text)
+	}
+}
+
+func TestWorkerToolWithoutCallIDNeverMatchesByNameAlone(t *testing.T) {
+	ctx := context.Background()
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "state.json"))
+
+	if err := adapter.HandleEvent(ctx, Event{Kind: "worker.created", WorkerRef: "worker-1", Title: "Worker"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Start call with call_id "call-1"
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.tool_started", WorkerRef: "worker-1", CallID: "call-1",
+		Tool: "exec_command", ToolPreview: "first command",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Result arrives without call_id and without preview
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.tool_finished", WorkerRef: "worker-1", CallID: "",
+		Tool: "exec_command", HasOutput: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(transport.sent) != 2 {
+		t.Fatalf("sent count=%d want 2", len(transport.sent))
+	}
+	// The id-less result must NOT steal "first command" preview by tool name alone.
+	if transport.sent[1].Text != "✓ Выполнено: exec_command (без вывода)" {
+		t.Fatalf("id-less result unexpectedly borrowed preview: %q", transport.sent[1].Text)
+	}
+}
+
+func TestWorkerToolReplayDeduplication(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.json")
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, path)
+
+	created := Event{Sequence: 1, Kind: "worker.created", WorkerRef: "worker-1", Title: "Worker"}
+	start := Event{Sequence: 2, Kind: "worker.tool_started", WorkerRef: "worker-1", CallID: "c1", Tool: "shell", ToolPreview: "ls"}
+	finish := Event{Sequence: 3, Kind: "worker.tool_finished", WorkerRef: "worker-1", CallID: "c1", Tool: "shell", HasOutput: false}
+
+	for _, ev := range []Event{created, start, finish} {
+		if err := adapter.HandleDurableEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(transport.sent) != 2 {
+		t.Fatalf("sent count=%d want 2", len(transport.sent))
+	}
+
+	// Replay after restart
+	adapter = newTestAdapter(t, transport, &fakeServer{}, path)
+	for _, ev := range []Event{created, start, finish} {
+		if err := adapter.HandleDurableEvent(ctx, ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(transport.sent) != 2 {
+		t.Fatalf("duplicate messages after restart replay: sent=%d want 2", len(transport.sent))
+	}
+}
+
+func TestWorkerTopicShowsExecutionNodeIDWhenKnown(t *testing.T) {
+	ctx := context.Background()
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "state.json"))
+
+	// Case 1: NodeID is known and configured
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.created", WorkerRef: "worker-1", Title: "Task 1",
+		NodeID: "execution-node-primary", TaskPrompt: "Run tests",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Узел: execution-node-primary\n\nRun tests" {
+		t.Fatalf("prompt with node ID delivery: %#v", transport.sent)
+	}
+
+	// Case 2: NodeID is empty (unknown) — must not invent machine name or OS
+	transport.sent = nil
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.created", WorkerRef: "worker-2", Title: "Task 2",
+		NodeID: "", TaskPrompt: "Run tests",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Run tests" {
+		t.Fatalf("prompt without node ID delivery: %#v", transport.sent)
+	}
+
+	// Case 3: NodeID looks like a filesystem path — must not leak filesystem paths
+	transport.sent = nil
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.created", WorkerRef: "worker-3", Title: "Task 3",
+		NodeID: "/Users/secret/path/node", TaskPrompt: "Run tests",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Run tests" {
+		t.Fatalf("prompt with filesystem path in node ID leaked path: %#v", transport.sent)
+	}
+
+	// Case 4: NodeID has sensitive token prefix
+	transport.sent = nil
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.created", WorkerRef: "worker-4", Title: "Task 4",
+		NodeID: "sk-token12345", TaskPrompt: "Run tests",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Run tests" {
+		t.Fatalf("token-like node ID must be rejected: %#v", transport.sent)
+	}
+
+	// Case 5: NodeID contains newline injection
+	transport.sent = nil
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.created", WorkerRef: "worker-5", Title: "Task 5",
+		NodeID: "node-primary\ninjected", TaskPrompt: "Run tests",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Run tests" {
+		t.Fatalf("newline in node ID must be rejected: %#v", transport.sent)
+	}
+}
+
+func TestWorkerToolAttemptIsolationReusedCallID(t *testing.T) {
+	ctx := context.Background()
+	transport := &fakeTransport{}
+	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "state.json"))
+
+	if err := adapter.HandleEvent(ctx, Event{Kind: "worker.created", WorkerRef: "worker-1", Title: "Worker"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Attempt 1: CallID "call-1" runs "cat foo.txt" and completes with empty output
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.tool_started", WorkerRef: "worker-1", AttemptID: "att-1",
+		CallID: "call-1", Tool: "exec_command", ToolPreview: "cat foo.txt",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.tool_finished", WorkerRef: "worker-1", AttemptID: "att-1",
+		CallID: "call-1", Tool: "exec_command", HasOutput: false,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Attempt 2: Reuses same CallID "call-1" but with different preview "cat bar.txt" and nonempty output
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.tool_started", WorkerRef: "worker-1", AttemptID: "att-2",
+		CallID: "call-1", Tool: "exec_command", ToolPreview: "cat bar.txt",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(ctx, Event{
+		Kind: "worker.tool_finished", WorkerRef: "worker-1", AttemptID: "att-2",
+		CallID: "call-1", Tool: "exec_command", HasOutput: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(transport.sent) != 4 {
+		t.Fatalf("sent messages count=%d want 4 (attempt 2 was suppressed): %#v", len(transport.sent), transport.sent)
+	}
+	if transport.sent[2].Text != "▶ Запуск: exec_command cat bar.txt" {
+		t.Fatalf("att-2 start message=%q", transport.sent[2].Text)
+	}
+	if transport.sent[3].Text != "✓ Выполнено: exec_command cat bar.txt (вывод скрыт)" {
+		t.Fatalf("att-2 finish message=%q", transport.sent[3].Text)
 	}
 }
 
@@ -1088,5 +1336,238 @@ func TestAcknowledgementReplayAfterSendCheckpointBeforeCursorSave(t *testing.T) 
 	}
 	if len(transport.sent) != 1 || adapter.LastEventSeq() != 2 {
 		t.Fatalf("ack replay duplicated persisted send: %#v", transport.sent)
+	}
+}
+
+type errorSteerServer struct {
+	fakeServer
+	err            error
+	workerMessages []WorkerMessage
+}
+
+func (s *errorSteerServer) SendWorkerMessage(ctx context.Context, m WorkerMessage) error {
+	s.workerMessages = append(s.workerMessages, m)
+	return s.err
+}
+
+func TestWorkerSteerErrorSendsServiceMessageWithoutPollingDrop(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "telegram.json")
+	transport := &fakeTransport{}
+	server := &errorSteerServer{
+		err: errors.New(`telegram: server returned 400 Bad Request: {"error":"usage_limit_exceeded: Usage limit reached","category":"usage_limit","provider_code":"usage_limit_exceeded"}`),
+	}
+	adapter := newTestAdapter(t, transport, server, path)
+	adapter.state.Topics["w1"] = TopicMapping{
+		WorkerRef: "w1",
+		ChatID:    100,
+		ThreadID:  42,
+	}
+
+	update := Update{
+		ID: 10,
+		Message: &Message{
+			ChatID:   100,
+			FromID:   100,
+			ThreadID: 42,
+			Text:     "continue task",
+		},
+	}
+
+	err := adapter.HandleUpdate(ctx, update)
+	if err != nil {
+		t.Fatalf("expected nil error on steering failure, got: %v", err)
+	}
+
+	transport.mu.Lock()
+	sent := append([]SentMessage(nil), transport.sent...)
+	transport.mu.Unlock()
+
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 service message sent, got: %d", len(sent))
+	}
+	if !strings.Contains(sent[0].Text, "Лимит использования исчерпан (usage_limit_exceeded)") {
+		t.Fatalf("unexpected service message text: %s", sent[0].Text)
+	}
+	if sent[0].ThreadID != 42 {
+		t.Fatalf("expected service message to thread 42, got: %d", sent[0].ThreadID)
+	}
+
+	adapter.mu.Lock()
+	_, processed := adapter.state.Processed["10"]
+	pendingCount := len(adapter.state.PendingInputs)
+	adapter.mu.Unlock()
+
+	if !processed {
+		t.Fatal("update 10 was not marked as processed")
+	}
+	if pendingCount != 0 {
+		t.Fatalf("expected 0 pending inputs, got: %d", pendingCount)
+	}
+}
+
+func TestWorkerSteerErrorPreservesResetTime(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "telegram.json")
+	transport := &fakeTransport{}
+	server := &errorSteerServer{
+		err: errors.New(`telegram: server returned 400 Bad Request: {"error":"usage_limit_exceeded: try again at 4:37 PM","category":"usage_limit","provider_code":"usage_limit_exceeded"}`),
+	}
+	adapter := newTestAdapter(t, transport, server, path)
+	adapter.state.Topics["w1"] = TopicMapping{
+		WorkerRef: "w1",
+		ChatID:    100,
+		ThreadID:  42,
+	}
+
+	update := Update{
+		ID: 11,
+		Message: &Message{
+			ChatID:   100,
+			FromID:   100,
+			ThreadID: 42,
+			Text:     "continue task",
+		},
+	}
+
+	err := adapter.HandleUpdate(ctx, update)
+	if err != nil {
+		t.Fatalf("expected nil error on steering failure, got: %v", err)
+	}
+
+	transport.mu.Lock()
+	sent := append([]SentMessage(nil), transport.sent...)
+	transport.mu.Unlock()
+
+	if len(sent) != 1 {
+		t.Fatalf("expected 1 service message sent, got: %d", len(sent))
+	}
+	if !strings.Contains(sent[0].Text, "try again at 4:37 PM") {
+		t.Fatalf("expected reset time preserved in service message, got: %s", sent[0].Text)
+	}
+	if !strings.Contains(sent[0].Text, "Лимит использования исчерпан (usage_limit_exceeded)") {
+		t.Fatalf("expected usage limit header in service message, got: %s", sent[0].Text)
+	}
+}
+
+func TestWorkerSteerErrorReadsCompleteUnicodeJSONOverHTTP(t *testing.T) {
+	reset := " Попробуйте снова в 4:37 PM"
+	prefix := "Лимит."
+	errorMessage := prefix + strings.Repeat("界", 996-utf8.RuneCountInString(prefix+reset)) + reset
+	technical := strings.Repeat("界", 1000)
+	body, err := json.Marshal(map[string]string{
+		"error": errorMessage, "category": "usage_limit", "provider_code": "usage_limit_exceeded", "technical": technical,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) <= 4096 {
+		t.Fatalf("fixture body is only %d bytes; want to cover the old 4096-byte cap", len(body))
+	}
+	if utf8.RuneCountInString(errorMessage) != 996 || utf8.RuneCountInString(technical) != 1000 {
+		t.Fatalf("unexpected bounded payload sizes: error=%d technical=%d", utf8.RuneCountInString(errorMessage), utf8.RuneCountInString(technical))
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/workers/w1/message" {
+			t.Errorf("path=%q", r.URL.Path)
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(body)
+	}))
+	defer server.Close()
+
+	transport := &fakeTransport{}
+	client := &HTTPServerClient{BaseURL: server.URL, Credential: "fixture-credential"}
+	adapter := newTestAdapter(t, transport, client, filepath.Join(t.TempDir(), "telegram.json"))
+	adapter.state.Topics["w1"] = TopicMapping{WorkerRef: "w1", ChatID: 100, ThreadID: 42}
+	if err := adapter.HandleUpdate(context.Background(), Update{ID: 12, Message: &Message{
+		ChatID: 100, FromID: 100, ThreadID: 42, Text: "continue task",
+	}}); err != nil {
+		t.Fatalf("HandleUpdate: %v", err)
+	}
+	transport.mu.Lock()
+	sent := append([]SentMessage(nil), transport.sent...)
+	transport.mu.Unlock()
+	if len(sent) != 1 {
+		t.Fatalf("sent %d service messages, want one", len(sent))
+	}
+	if !strings.Contains(sent[0].Text, "Лимит использования исчерпан (usage_limit_exceeded)") || !strings.Contains(sent[0].Text, errorMessage) || !strings.Contains(sent[0].Text, reset) {
+		t.Fatalf("Telegram lost the complete typed failure/reset explanation: %q", sent[0].Text)
+	}
+}
+
+func TestUncertainWorkerSteerKeepsTelegramInputPendingForIdempotentReplay(t *testing.T) {
+	server := &errorSteerServer{err: errors.New(`telegram: server returned 503 Service Unavailable: {"error":"Worker command outcome is uncertain","outcome":"uncertain","retryable":true}`)}
+	adapter := newTestAdapter(t, &fakeTransport{}, server, filepath.Join(t.TempDir(), "telegram.json"))
+	adapter.state.Topics["w1"] = TopicMapping{WorkerRef: "w1", ChatID: 100, ThreadID: 42}
+	update := Update{ID: 13, Message: &Message{ChatID: 100, FromID: 100, ThreadID: 42, Text: "continue task"}}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if err := adapter.HandleUpdate(context.Background(), update); err == nil {
+			t.Fatal("uncertain steering error was treated as a terminal rejection")
+		}
+	}
+	adapter.mu.Lock()
+	_, processed := adapter.state.Processed["13"]
+	pending := append([]Update(nil), adapter.state.PendingInputs...)
+	adapter.mu.Unlock()
+	if processed || len(pending) != 1 || pending[0].ID != update.ID {
+		t.Fatalf("uncertain Telegram update was dropped or acknowledged: processed=%v pending=%#v", processed, pending)
+	}
+	if len(server.workerMessages) != 2 || server.workerMessages[0].ExternalMessageID != "13" || server.workerMessages[1].ExternalMessageID != "13" {
+		t.Fatalf("replay did not preserve the stable server idempotency identity: %#v", server.workerMessages)
+	}
+}
+
+func TestWorkerSteerErrorReplaySafeDoesNotDuplicate(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "telegram.json")
+	transport := &fakeTransport{}
+	server := &errorSteerServer{
+		err: errors.New(`telegram: server returned 400 Bad Request: {"error":"usage_limit_exceeded: Usage limit reached","category":"usage_limit","provider_code":"usage_limit_exceeded"}`),
+	}
+	adapter := newTestAdapter(t, transport, server, path)
+	adapter.state.Topics["w1"] = TopicMapping{
+		WorkerRef: "w1",
+		ChatID:    100,
+		ThreadID:  42,
+	}
+
+	update := Update{
+		ID: 12,
+		Message: &Message{
+			ChatID:   100,
+			FromID:   100,
+			ThreadID: 42,
+			Text:     "continue task",
+		},
+	}
+
+	// First attempt
+	err := adapter.HandleUpdate(ctx, update)
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+
+	transport.mu.Lock()
+	countFirst := len(transport.sent)
+	transport.mu.Unlock()
+	if countFirst != 1 {
+		t.Fatalf("expected 1 service message sent, got %d", countFirst)
+	}
+
+	// Simulate restart by reloading state from path
+	reopened := newTestAdapter(t, transport, server, path)
+	err = reopened.HandleUpdate(ctx, update)
+	if err != nil {
+		t.Fatalf("expected nil error on replay, got: %v", err)
+	}
+
+	transport.mu.Lock()
+	countSecond := len(transport.sent)
+	transport.mu.Unlock()
+
+	if countSecond != 1 {
+		t.Fatalf("expected exactly 1 service message sent across replays, got %d", countSecond)
 	}
 }

@@ -3,8 +3,10 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -230,12 +232,96 @@ func TestExecutionNodeClaimsBeforeDispatchAndDeduplicatesAfterRestart(t *testing
 	if !ok || mapping.RuntimeSessionID != "native-worker-1" {
 		t.Fatalf("mapping=%#v ok=%v", mapping, ok)
 	}
-	afterRestart := NewExecutionNode("macbook", &countingRuntime{}, reopened)
+	restartedRuntime := &countingRuntime{}
+	afterRestart := NewExecutionNode("macbook", restartedRuntime, reopened)
 	stored, err := afterRestart.HandleCommand(ctx, command)
-	if err != nil || stored != first {
-		t.Fatalf("restart duplicate=%#v first=%#v err=%v", stored, first, err)
+	if err != nil || stored.State != CommandFailed || stored.ErrorCode != "runtime_session_unavailable" {
+		t.Fatalf("restart duplicate=%#v err=%v, want unavailable without a recovered live session", stored, err)
+	}
+	if restartedRuntime.starts != 0 {
+		t.Fatalf("restart duplicate started a new runtime %d times", restartedRuntime.starts)
+	}
+	readiness, err := reopened.Command(command.Metadata().CommandID)
+	if err != nil || readiness.State != CommandAccepted || readiness.Outcome.State != CommandAccepted || readiness.TerminalOutcomeQueued {
+		t.Fatalf("restart changed durable readiness: %#v err=%v", readiness, err)
 	}
 }
+
+func TestExecutionNodePersistsUnknownSteeringAcceptanceAndDoesNotRepeat(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "node.json")
+	store, err := OpenLocalStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &unknownSteeringRuntime{}
+	execution := NewExecutionNode("macbook", runtime, store)
+	dispatch := dispatchFixture("dispatch-before-unknown-steering")
+	if outcome, err := execution.HandleCommand(ctx, dispatch); err != nil || outcome.State != CommandAccepted {
+		t.Fatalf("dispatch=%#v err=%v", outcome, err)
+	}
+	metadata := dispatch.Metadata()
+	metadata.CommandID = "steering-acceptance-unknown"
+	steering := Command{Kind: CommandSteering, Steering: &SteeringCommand{Metadata: metadata, Text: "continue"}}
+	first, err := execution.HandleCommand(ctx, steering)
+	if err != nil || first.State != CommandFailed || !first.AcceptanceUnknown {
+		t.Fatalf("steering outcome=%#v err=%v, want durable unknown acceptance", first, err)
+	}
+	second, err := execution.HandleCommand(ctx, steering)
+	if err != nil || second != first || runtime.steerCalls != 1 {
+		t.Fatalf("duplicate outcome=%#v first=%#v calls=%d err=%v", second, first, runtime.steerCalls, err)
+	}
+	record, err := store.Command(metadata.CommandID)
+	if err != nil || record.State != CommandFailed || !record.Outcome.AcceptanceUnknown {
+		t.Fatalf("durable Node command=%#v err=%v", record, err)
+	}
+	events, err := store.PendingEvents()
+	if err != nil || len(events) != 1 {
+		t.Fatalf("unknown receipt outbox=%#v err=%v", events, err)
+	}
+	var persisted CommandOutcome
+	if err := json.Unmarshal(events[0].Payload, &persisted); err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.AcceptanceUnknown || persisted.CommandID != metadata.CommandID {
+		t.Fatalf("wire receipt lost acceptance marker: %#v", persisted)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenLocalStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	restarted := NewExecutionNode("macbook", runtime, reopened)
+	third, err := restarted.HandleCommand(ctx, steering)
+	if err != nil || !third.AcceptanceUnknown || runtime.steerCalls != 1 {
+		t.Fatalf("reopened duplicate outcome=%#v calls=%d err=%v", third, runtime.steerCalls, err)
+	}
+}
+
+type unknownSteeringRuntime struct{ steerCalls int }
+
+func (r *unknownSteeringRuntime) Start(_ context.Context, request StartRequest) (Session, error) {
+	return &unknownSteeringSession{id: "native-" + request.WorkerRef, runtime: r}, nil
+}
+
+type unknownSteeringSession struct {
+	id      string
+	runtime *unknownSteeringRuntime
+}
+
+func (s *unknownSteeringSession) ID() string                         { return s.id }
+func (*unknownSteeringSession) Prompt(context.Context, string) error { return nil }
+func (s *unknownSteeringSession) Steer(context.Context, string) (bool, error) {
+	s.runtime.steerCalls++
+	return false, context.Canceled
+}
+func (*unknownSteeringSession) Cancel(context.Context) error { return nil }
+func (*unknownSteeringSession) Activity() <-chan Activity    { return nil }
+func (*unknownSteeringSession) Result() <-chan Result        { return nil }
+func (*unknownSteeringSession) Close() error                 { return nil }
 
 func TestExecutionNodeUnknownRunningDispatchBecomesInterrupted(t *testing.T) {
 	ctx := context.Background()
@@ -273,6 +359,68 @@ func TestExecutionNodeUnknownRunningDispatchBecomesInterrupted(t *testing.T) {
 	}
 	if event.Outcome == nil || event.Outcome.Status != core.OutcomeInterrupted {
 		t.Fatalf("interruption event=%#v", event)
+	}
+}
+
+func TestProcessingSteeringRecoveryRemainsUncertainWithLiveSession(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "node.json")
+	store, err := OpenLocalStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch := dispatchFixture("dispatch-before-processing-steer")
+	metadata := dispatch.Metadata()
+	metadata.CommandID = "processing-steer-after-restart"
+	steering := Command{Kind: CommandSteering, Steering: &SteeringCommand{Metadata: metadata, Text: "continue"}}
+	if _, duplicate, err := store.ClaimCommand(steering); err != nil || duplicate {
+		t.Fatalf("steering claim duplicate=%v err=%v", duplicate, err)
+	}
+	if err := store.SaveSessionMapping(LocalSessionMapping{
+		WorkerRef: metadata.WorkerRef, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID,
+		HarnessInstanceID: metadata.HarnessInstanceID, Workspace: dispatch.Dispatch.Envelope.Workspace,
+		RuntimeSessionID: "live-native-session",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenLocalStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	session := &failedCloseSession{steerErr: errors.New("must not be called during recovery")}
+	restarted := NewExecutionNode(metadata.Node, &approvalRuntime{session: session}, reopened)
+	restarted.registerSession(metadata.AttemptID, session)
+	claimed, err := reopened.Command(metadata.CommandID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live, err := restarted.Inspect(ctx, claimed); err != nil || live {
+		t.Fatalf("Inspect treated a live Session as steering acceptance: live=%v err=%v", live, err)
+	}
+	if err := reopened.RecoverRunning(ctx, restarted); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := reopened.Command(metadata.CommandID)
+	if err != nil || recovered.State != CommandInterrupted || !recovered.Outcome.AcceptanceUnknown || !uncertainCommandOutcome(recovered.Outcome) {
+		t.Fatalf("recovered steering command=%#v err=%v", recovered, err)
+	}
+	if outcome, err := restarted.HandleCommand(ctx, steering); err != nil || outcome.State != CommandInterrupted || !outcome.AcceptanceUnknown || session.steerCalls != 0 {
+		t.Fatalf("same-key replay=%#v steerCalls=%d err=%v", outcome, session.steerCalls, err)
+	}
+	events, err := reopened.PendingEvents()
+	if err != nil || len(events) != 1 || events[0].Type != MessageCommandOutcome {
+		t.Fatalf("uncertain steering receipt outbox=%#v err=%v", events, err)
+	}
+	var wire CommandOutcome
+	if err := json.Unmarshal(events[0].Payload, &wire); err != nil {
+		t.Fatal(err)
+	}
+	if !wire.AcceptanceUnknown || wire.State != CommandInterrupted || session.steerCalls != 0 {
+		t.Fatalf("recovered wire receipt=%#v steerCalls=%d", wire, session.steerCalls)
 	}
 }
 

@@ -90,7 +90,7 @@ func (n *ExecutionNode) continuationMapping(envelope WorkerEnvelope, attemptID s
 // The ACK is historical readiness, not execution proof. Only this process's
 // registered session can authorize replay while the durable claim is processing.
 func (n *ExecutionNode) liveContinuationReadiness(command Command, record CommandRecord) bool {
-	envelope, same := sameContinuationCommand(command, record)
+	envelope, same := sameCommandEnvelope(command, record)
 	if !same {
 		return false
 	}
@@ -102,7 +102,7 @@ func (n *ExecutionNode) liveContinuationReadiness(command Command, record Comman
 	return live && session.ID() == mapping.RuntimeSessionID
 }
 
-func sameContinuationCommand(command Command, record CommandRecord) (WorkerEnvelope, bool) {
+func sameCommandEnvelope(command Command, record CommandRecord) (WorkerEnvelope, bool) {
 	previous, err := commandFromJSON(record.CommandJSON)
 	if err != nil || previous.Kind != command.Kind {
 		return WorkerEnvelope{}, false
@@ -131,5 +131,5 @@ func sameContinuationCommand(command Command, record CommandRecord) (WorkerEnvel
 		return WorkerEnvelope{}, false
 	}
 	right, err := json.Marshal(envelope)
-	return envelope, err == nil && envelope.PreviousAttemptID != "" && bytes.Equal(left, right)
+	return envelope, err == nil && bytes.Equal(left, right)
 }

@@ -21,6 +21,8 @@ func NewStoreCommandOutcomeSink(store *core.Store) func(context.Context, core.No
 			kind = "dispatch"
 		case CommandResume:
 			kind = "resume"
+		case CommandSteering:
+			kind = "steering"
 		default:
 			return nil
 		}
@@ -29,7 +31,7 @@ func NewStoreCommandOutcomeSink(store *core.Store) func(context.Context, core.No
 		case CommandAccepted:
 			state = core.WorkerCommandReceiptAccepted
 		case CommandFailed:
-			if !uncertainRespondOutcome(outcome) {
+			if !uncertainCommandOutcome(outcome) {
 				state = core.WorkerCommandReceiptDenied
 			}
 		case CommandInterrupted:
@@ -38,8 +40,16 @@ func NewStoreCommandOutcomeSink(store *core.Store) func(context.Context, core.No
 			return nil
 		}
 		_, err := store.ReconcileWorkerCommandReceipt(ctx, nodeRef, core.WorkerCommandReceipt{
-			CommandID: outcome.CommandID, Kind: kind, TurnID: outcome.TurnID, AttemptID: outcome.AttemptID,
-			State: state, ErrorCode: outcome.ErrorCode, ErrorMessage: outcome.ErrorMessage,
+			CommandID:       outcome.CommandID,
+			Kind:            kind,
+			TurnID:          outcome.TurnID,
+			AttemptID:       outcome.AttemptID,
+			State:           state,
+			ErrorCode:       outcome.ErrorCode,
+			ErrorMessage:    outcome.ErrorMessage,
+			FailureCategory: outcome.FailureCategory,
+			ProviderCode:    outcome.ProviderCode,
+			Technical:       outcome.Technical,
 		})
 		if err != nil {
 			return fmt.Errorf("node: reconcile authenticated Worker command outcome: %w", err)

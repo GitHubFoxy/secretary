@@ -120,16 +120,18 @@ type Attempt struct {
 }
 
 type Result struct {
-	ID            string       `json:"id"`
-	WorkerID      string       `json:"worker_id,omitempty"`
-	TurnID        string       `json:"turn_id,omitempty"`
-	AttemptID     string       `json:"attempt_id,omitempty"`
-	Status        ResultStatus `json:"status"`
-	Summary       string       `json:"summary"`
-	FailureCode   string       `json:"failure_code,omitempty"`
-	ArtifactRefs  string       `json:"artifact_refs,omitempty"`
-	CorrelationID string       `json:"correlation_id,omitempty"`
-	CreatedAt     time.Time    `json:"created_at"`
+	ID              string          `json:"id"`
+	WorkerID        string          `json:"worker_id,omitempty"`
+	TurnID          string          `json:"turn_id,omitempty"`
+	AttemptID       string          `json:"attempt_id,omitempty"`
+	Status          ResultStatus    `json:"status"`
+	Summary         string          `json:"summary"`
+	FailureCode     string          `json:"failure_code,omitempty"`
+	FailureCategory FailureCategory `json:"failure_category,omitempty"`
+	Failure         *WorkerFailure  `json:"failure,omitempty"`
+	ArtifactRefs    string          `json:"artifact_refs,omitempty"`
+	CorrelationID   string          `json:"correlation_id,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
 }
 
 type TaskDetails struct {

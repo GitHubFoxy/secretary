@@ -3,7 +3,10 @@ package webapi
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
@@ -297,6 +300,163 @@ func TestWorkerObserverExposesSafeToolFailureMetadataWithoutToolPayloads(t *test
 	}
 }
 
+func TestLegacyWorkerFailureReadModelsSanitizeOnReopen(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-worker-failure.db")
+	store, err := core.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+		WorkerRef: "legacy-failure-reader", Intent: "inspect", ProjectID: "project", NodeID: "local", HarnessInstanceID: "local/fx",
+	}, core.TurnSpec{Input: "inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, result, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
+		Status: core.OutcomeFailed, Classification: core.OutcomeFinal, Summary: "safe failure",
+		ErrorCode: "internal_error", ErrorMessage: "safe error", Diagnostics: "safe diagnostic",
+		FailureCode: "usage_limit_exceeded", FailureCategory: core.FailureCategoryUsageLimit,
+	})
+	if err != nil || result == nil {
+		t.Fatalf("record terminal failure: result=%#v err=%v", result, err)
+	}
+	successWorker, _, successAttempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+		WorkerRef: "legacy-success-reader", Intent: "report", ProjectID: "project", NodeID: "local", HarnessInstanceID: "local/fx",
+	}, core.TurnSpec{Input: "report"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, successAttempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	successSummary := "Successful output keeps its literal Bearer demo wording"
+	if _, successResult, _, err := store.RecordAttemptOutcome(ctx, successAttempt.ID, core.AttemptOutcomeInput{
+		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: successSummary,
+	}); err != nil || successResult == nil {
+		t.Fatalf("record successful output: result=%#v err=%v", successResult, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Seed the SQLite file as a pre-sanitizer installation would: bypass the
+	// current write boundary, then reopen through the real Store read paths.
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawSummary := "Provider failed: Bearer legacy-bearer-secret; Digest username=owner, response=legacy-digest-secret"
+	rawDetails := `{"category":"usage_limit","provider_code":"usage_limit_exceeded","message":"Bearer details-bearer-secret","technical":"Digest username=owner, response=details-digest-secret"}`
+	if _, err := raw.ExecContext(ctx, `UPDATE phase4_results SET summary = ?, failure_code = ?, failure_details = ? WHERE id = ?`, rawSummary, "Bearer result-code-secret", rawDetails, result.ID); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, `UPDATE phase4_attempt_outcomes SET error_code = ?, error_message = ?, diagnostics = ? WHERE attempt_id = ?`,
+		"Digest username=owner, response=outcome-code-secret", "Bearer outcome-message-secret", "diagnostic "+strings.Repeat("Bearer sk-outcome-diagnostic-secret ", 60), attempt.ID); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, `UPDATE workers SET last_result_summary = ? WHERE id = ?`, rawSummary, worker.ID); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if _, err := raw.ExecContext(ctx, `UPDATE conversation_entries SET body = ? WHERE result_id = ?`, rawSummary, result.ID); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := core.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	details, err := reopened.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(details.Results) != 1 || len(details.Outcomes) != 1 {
+		t.Fatalf("read failure model: results=%d outcomes=%d", len(details.Results), len(details.Outcomes))
+	}
+	successDetails, err := reopened.WorkerDetailsForConversation(ctx, conversation.ID, successWorker.WorkerRef)
+	if err != nil || len(successDetails.Results) != 1 || successDetails.Results[0].Summary != successSummary || successDetails.Worker.LastResultSummary != successSummary {
+		t.Fatalf("successful output changed on read: details=%#v err=%v", successDetails, err)
+	}
+	encodedDetails, err := json.Marshal(details)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"legacy-bearer-secret", "legacy-digest-secret", "result-code-secret", "details-bearer-secret", "details-digest-secret", "outcome-code-secret", "outcome-message-secret", "sk-outcome-diagnostic-secret"} {
+		if strings.Contains(string(encodedDetails), secret) {
+			t.Errorf("WorkerDetails leaked legacy failure text %q: %s", secret, encodedDetails)
+		}
+	}
+	if details.Results[0].FailureCode != "" || details.Results[0].Summary == rawSummary || details.Outcomes[0].Diagnostics == "" {
+		t.Fatalf("legacy read fields were not sanitized: result=%#v outcome=%#v", details.Results[0], details.Outcomes[0])
+	}
+	entries, err := reopened.EntriesAfter(ctx, conversation.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundFailureEntry := false
+	for _, entry := range entries {
+		if entry.ResultID == result.ID {
+			foundFailureEntry = true
+			if entry.Body == rawSummary {
+				t.Fatalf("legacy Conversation result was not sanitized: %#v", entry)
+			}
+		}
+	}
+	if !foundFailureEntry {
+		t.Fatalf("legacy Conversation result missing from entries: %#v", entries)
+	}
+	replay, err := reopened.ReplayConversation(ctx, conversation.ID, 0)
+	foundFailureEntry = false
+	for _, entry := range replay.Entries {
+		if entry.ResultID == result.ID {
+			foundFailureEntry = entry.Body != rawSummary
+		}
+	}
+	if err != nil || !foundFailureEntry {
+		t.Fatalf("legacy Conversation replay was not sanitized: replay=%#v err=%v", replay, err)
+	}
+
+	api, err := New(ctx, reopened, "bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	client := &http.Client{Jar: mustWebCookieJar(t)}
+	login(t, client, server.URL)
+	for _, route := range []string{"/v1/workers/" + worker.WorkerRef, "/v1/conversation"} {
+		response, err := client.Get(server.URL + route)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, readErr := io.ReadAll(response.Body)
+		response.Body.Close()
+		if readErr != nil || response.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s status=%d err=%v body=%s", route, response.StatusCode, readErr, body)
+		}
+		for _, secret := range []string{"legacy-bearer-secret", "legacy-digest-secret", "result-code-secret", "details-bearer-secret", "details-digest-secret", "outcome-code-secret", "outcome-message-secret", "sk-outcome-diagnostic-secret"} {
+			if strings.Contains(string(body), secret) {
+				t.Errorf("owner API %s leaked legacy failure text %q: %s", route, secret, body)
+			}
+		}
+	}
+}
+
 func TestWorkerObserverStatusSteerStopAndActivity(t *testing.T) {
 	runtime := &observerRuntime{}
 	local := node.NewLocal(runtime)
@@ -381,5 +541,155 @@ func TestWorkerObserverStatusSteerStopAndActivity(t *testing.T) {
 	response.Body.Close()
 	if response.StatusCode != http.StatusAccepted {
 		t.Fatalf("stop status=%d", response.StatusCode)
+	}
+}
+
+type errorSteerSession struct {
+	observerSession
+	steerErr error
+}
+
+func (s *errorSteerSession) Steer(context.Context, string) (bool, error) {
+	return false, s.steerErr
+}
+
+type errorSteerRuntime struct {
+	session *errorSteerSession
+}
+
+func (r *errorSteerRuntime) Start(context.Context, node.StartRequest) (node.Session, error) {
+	r.session = &errorSteerSession{
+		observerSession: observerSession{activity: make(chan node.Activity, 2), result: make(chan node.Result, 1), queued: make(chan string, 2)},
+		steerErr: &node.SteeringError{
+			Failure: core.WorkerFailure{
+				Category:     core.FailureCategoryUsageLimit,
+				ProviderCode: "usage_limit_exceeded",
+				Message:      "Usage limit reached",
+				Technical:    "acp rpc -32603: Internal error",
+			},
+			Err: errors.New("usage_limit_exceeded"),
+		},
+	}
+	return r.session, nil
+}
+
+func TestWorkerSteerError_ReturnsStructuredJSON(t *testing.T) {
+	runtime := &errorSteerRuntime{}
+	local := node.NewLocal(runtime)
+	storeServer, client := observerTestServer(t, local)
+	defer storeServer.Close()
+	login(t, client, storeServer.URL)
+	if _, err := local.Dispatch(context.Background(), node.StartRequest{WorkerRef: "worker-steer-err"}); err != nil {
+		t.Fatal(err)
+	}
+
+	request, _ := http.NewRequest(http.MethodPost, storeServer.URL+"/v1/workers/worker-steer-err/steer", bytes.NewBufferString(`{"text":"continue"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "steer-err-key")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected status 400 Bad Request, got: %d", response.StatusCode)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+
+	if body["category"] != "usage_limit" {
+		t.Fatalf("expected category 'usage_limit', got: %#v", body["category"])
+	}
+	if body["provider_code"] != "usage_limit_exceeded" {
+		t.Fatalf("expected provider_code 'usage_limit_exceeded', got: %#v", body["provider_code"])
+	}
+	if body["technical"] != "acp rpc -32603: Internal error" {
+		t.Fatalf("expected technical 'acp rpc -32603: Internal error', got: %#v", body["technical"])
+	}
+	if !strings.Contains(fmt.Sprint(body["error"]), "Usage limit reached") {
+		t.Fatalf("expected error to contain 'Usage limit reached', got: %#v", body["error"])
+	}
+
+	// Idempotent repeat: verify the exact same typed failure is returned
+	repeatRequest, _ := http.NewRequest(http.MethodPost, storeServer.URL+"/v1/workers/worker-steer-err/steer", bytes.NewBufferString(`{"text":"continue"}`))
+	repeatRequest.Header.Set("Content-Type", "application/json")
+	repeatRequest.Header.Set("Idempotency-Key", "steer-err-key")
+	repeatResponse, err := client.Do(repeatRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repeatResponse.Body.Close()
+
+	if repeatResponse.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected status 400 Bad Request on repeat, got: %d", repeatResponse.StatusCode)
+	}
+
+	var repeatBody map[string]any
+	if err := json.NewDecoder(repeatResponse.Body).Decode(&repeatBody); err != nil {
+		t.Fatalf("decode repeat response body: %v", err)
+	}
+
+	if repeatBody["category"] != "usage_limit" {
+		t.Fatalf("expected repeat category 'usage_limit', got: %#v", repeatBody["category"])
+	}
+	if repeatBody["provider_code"] != "usage_limit_exceeded" {
+		t.Fatalf("expected repeat provider_code 'usage_limit_exceeded', got: %#v", repeatBody["provider_code"])
+	}
+	if repeatBody["technical"] != "acp rpc -32603: Internal error" {
+		t.Fatalf("expected repeat technical 'acp rpc -32603: Internal error', got: %#v", repeatBody["technical"])
+	}
+	if !strings.Contains(fmt.Sprint(repeatBody["error"]), "Usage limit reached") {
+		t.Fatalf("expected repeat error to contain 'Usage limit reached', got: %#v", repeatBody["error"])
+	}
+}
+
+func TestWorkerSteerError_UnknownMetadataSanitized(t *testing.T) {
+	runtime := &errorSteerRuntime{}
+	local := node.NewLocal(runtime)
+	storeServer, client := observerTestServer(t, local)
+	defer storeServer.Close()
+	login(t, client, storeServer.URL)
+	if _, err := local.Dispatch(context.Background(), node.StartRequest{WorkerRef: "worker-steer-unknown"}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.session.steerErr = &node.SteeringError{
+		Failure: core.WorkerFailure{
+			Category:     "sk-private-secret",
+			ProviderCode: "sk-private-secret-key",
+			Message:      "Bearer private-message-secret",
+			Technical:    "sk-technical-secret",
+		},
+		Err: errors.New("upstream unavailable"),
+	}
+
+	request, _ := http.NewRequest(http.MethodPost, storeServer.URL+"/v1/workers/worker-steer-unknown/steer", bytes.NewBufferString(`{"text":"continue"}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Idempotency-Key", "steer-unknown-key")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected status 400 Bad Request, got: %d", response.StatusCode)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+	if body["category"] != string(core.FailureCategoryInternalError) {
+		t.Fatalf("expected unknown failure category collapsed to internal_error, got: %#v", body["category"])
+	}
+	if body["provider_code"] != "" {
+		t.Fatalf("expected secret provider_code excluded, got: %#v", body["provider_code"])
+	}
+	if strings.Contains(fmt.Sprint(body), "private-message-secret") || strings.Contains(fmt.Sprint(body), "technical-secret") {
+		t.Fatalf("public error leaked Node metadata: %#v", body)
 	}
 }

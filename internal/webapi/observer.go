@@ -243,7 +243,7 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 			injected, err = session.Steer(r.Context(), request.Text)
 		}
 		if err != nil {
-			http.Error(w, "steer worker", http.StatusBadGateway)
+			writeClientMutationError(w, err)
 			return
 		}
 		_, _ = s.store.RecordEvent(r.Context(), "worker.steer_requested", workerRef, "", session.ID(), map[string]any{"text": request.Text, "injected": injected})

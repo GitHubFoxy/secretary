@@ -242,3 +242,40 @@ func TestACPServerRequestProcess(t *testing.T) {
 		}
 	}
 }
+
+func TestRPCErrorPreservesData(t *testing.T) {
+	rawObject := []byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error","data":{"message":"limit reached","codexErrorInfo":"usage_limit_exceeded"}}}`)
+	var msgObject Message
+	if err := json.Unmarshal(rawObject, &msgObject); err != nil {
+		t.Fatal(err)
+	}
+	if msgObject.Error == nil {
+		t.Fatal("expected error to be present")
+	}
+	if !msgObject.Error.HasData() {
+		t.Fatal("expected error to have data")
+	}
+	var dataObj map[string]string
+	if err := json.Unmarshal(msgObject.Error.Data, &dataObj); err != nil {
+		t.Fatal(err)
+	}
+	if dataObj["codexErrorInfo"] != "usage_limit_exceeded" {
+		t.Fatalf("unexpected data: %v", dataObj)
+	}
+
+	rawArray := []byte(`{"jsonrpc":"2.0","id":2,"error":{"code":-32600,"message":"Invalid Request","data":["item1","item2"]}}`)
+	var msgArray Message
+	if err := json.Unmarshal(rawArray, &msgArray); err != nil {
+		t.Fatal(err)
+	}
+	if msgArray.Error == nil || !msgArray.Error.HasData() {
+		t.Fatal("expected array data to be preserved")
+	}
+	var dataArr []string
+	if err := json.Unmarshal(msgArray.Error.Data, &dataArr); err != nil {
+		t.Fatal(err)
+	}
+	if len(dataArr) != 2 || dataArr[0] != "item1" {
+		t.Fatalf("unexpected data array: %v", dataArr)
+	}
+}

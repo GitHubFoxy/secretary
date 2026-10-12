@@ -1353,3 +1353,191 @@ func TestFakeACPProcess(t *testing.T) {
 		_ = encoder.Encode(map[string]any{"id": request.ID, "result": result})
 	}
 }
+
+func TestClassifyACPError_UsageLimit(t *testing.T) {
+	rpcErr := &acp.RPCError{
+		Code:    -32603,
+		Message: "Internal error",
+		Data:    json.RawMessage(`{"code":"usage_limit_exceeded","message":"You have exceeded your current quota. Check your plan and billing details."}`),
+	}
+	cf := classifyACPError(rpcErr, "")
+	if cf.Category != core.FailureCategoryUsageLimit {
+		t.Fatalf("expected Category %q, got %q", core.FailureCategoryUsageLimit, cf.Category)
+	}
+	if cf.ProviderCode != "usage_limit_exceeded" {
+		t.Fatalf("expected ProviderCode 'usage_limit_exceeded', got %q", cf.ProviderCode)
+	}
+	if !strings.Contains(cf.Message, "exceeded your current quota") {
+		t.Fatalf("expected Message to contain quota error, got %q", cf.Message)
+	}
+	if cf.Technical != "acp rpc -32603: Internal error" {
+		t.Fatalf("unexpected technical: %q", cf.Technical)
+	}
+}
+
+func TestClassifyACPError_TypedUsageLimitWithoutMessageUsesCategoryReason(t *testing.T) {
+	rpcErr := &acp.RPCError{
+		Code: -32603, Message: "Internal error",
+		Data: json.RawMessage(`{"codexErrorInfo":"usage_limit_exceeded"}`),
+	}
+	failure := classifyACPError(rpcErr, "Assistant wrote an unrelated private response")
+	if failure.Category != core.FailureCategoryUsageLimit || failure.ProviderCode != "usage_limit_exceeded" {
+		t.Fatalf("typed failure=%#v", failure)
+	}
+	if failure.Message != "Лимит использования исчерпан" {
+		t.Fatalf("missing safe category explanation: %q", failure.Message)
+	}
+}
+
+func TestClassifyACPError_FallbackFromActivity(t *testing.T) {
+	rpcErr := &acp.RPCError{
+		Code:    -32603,
+		Message: "Internal error",
+	}
+	// Assistant text mentioning provider error must NOT override RPC explanation
+	// without proven typed provider-origin signal in Data.
+	activity := "Streaming thoughts...\nprovider error: You have reached the monthly token limit for your account."
+	cf := classifyACPError(rpcErr, activity)
+	if cf.Category != core.FailureCategoryInternalError {
+		t.Fatalf("expected Category %q from activity fallback, got %q", core.FailureCategoryInternalError, cf.Category)
+	}
+	if cf.Message != "acp rpc -32603: Internal error" {
+		t.Fatalf("expected RPC explanation preserved without false activity fallback, got %q", cf.Message)
+	}
+}
+
+func TestClassifyACPError_UnknownAndOversizeCodeExcluded(t *testing.T) {
+	rpcErr := &acp.RPCError{
+		Code:    -32603,
+		Message: "Internal error",
+		Data:    json.RawMessage(`{"code":"sk-private-secret","message":"Upstream unavailable"}`),
+	}
+	cf := classifyACPError(rpcErr, "")
+	if cf.ProviderCode != "" {
+		t.Fatalf("expected secret/unknown provider_code excluded, got %q", cf.ProviderCode)
+	}
+	if cf.Message != "Upstream unavailable" {
+		t.Fatalf("expected message preserved, got %q", cf.Message)
+	}
+
+	oversizeCode := strings.Repeat("x", 1005)
+	rpcErrOversize := &acp.RPCError{
+		Code:    -32603,
+		Message: "Internal error",
+		Data:    json.RawMessage(`{"code":"` + oversizeCode + `","message":"Failed"}`),
+	}
+	cfOversize := classifyACPError(rpcErrOversize, "")
+	if cfOversize.ProviderCode != "" {
+		t.Fatalf("expected oversize provider code excluded, got %q", cfOversize.ProviderCode)
+	}
+}
+
+func TestClassifyACPError_NoFalsePositive(t *testing.T) {
+	rpcErr := &acp.RPCError{
+		Code:    -32603,
+		Message: "Internal error",
+	}
+	activity := "Here is how usage_limit_exceeded works in practice: you have reached your usage limit, try again."
+	cf := classifyACPError(rpcErr, activity)
+	if cf.Category != core.FailureCategoryInternalError {
+		t.Fatalf("expected conservative internal_error, got %q", cf.Category)
+	}
+	if cf.ProviderCode != "" {
+		t.Fatalf("expected empty provider code, got %q", cf.ProviderCode)
+	}
+	if cf.Message != "acp rpc -32603: Internal error" {
+		t.Fatalf("expected message 'acp rpc -32603: Internal error', got %q", cf.Message)
+	}
+}
+
+func TestClassifyACPError_UnknownDataMessage(t *testing.T) {
+	rpcErr := &acp.RPCError{
+		Code:    -32603,
+		Message: "Internal error",
+		Data:    json.RawMessage(`{"message":"Upstream unavailable"}`),
+	}
+	cf := classifyACPError(rpcErr, "")
+	if cf.Category != core.FailureCategoryInternalError {
+		t.Fatalf("expected conservative Category %q, got %q", core.FailureCategoryInternalError, cf.Category)
+	}
+	if cf.Message != "Upstream unavailable" {
+		t.Fatalf("expected preserved message 'Upstream unavailable', got %q", cf.Message)
+	}
+}
+
+func TestClassifyACPError_TechnicalSanitized(t *testing.T) {
+	rpcErr := &acp.RPCError{
+		Code:    -32603,
+		Message: "Internal error with Bearer secret-token-12345 and sk-ant-secret",
+	}
+	cf := classifyACPError(rpcErr, "")
+	if strings.Contains(cf.Technical, "secret-token") || strings.Contains(cf.Technical, "sk-ant-secret") {
+		t.Fatalf("technical leaked secrets: %s", cf.Technical)
+	}
+	if !strings.Contains(cf.Technical, "Bearer [redacted]") {
+		t.Fatalf("technical missing redaction: %s", cf.Technical)
+	}
+}
+
+func TestACPToolTrackerIdlessTerminalDoesNotCorruptActiveCall(t *testing.T) {
+	tracker := newACPToolTracker()
+	start := tracker.observe("tool_call", map[string]any{
+		"toolCallId": "call-A", "name": "exec_command",
+		"rawInput": map[string]any{"command": "make test"},
+	})
+	if len(start) != 1 || start[0].CallID != "call-A" {
+		t.Fatalf("start activity=%#v", start)
+	}
+
+	idlessFinish := tracker.observe("tool_result", map[string]any{
+		"name": "exec_command", "status": "completed",
+	})
+	if len(idlessFinish) != 1 || idlessFinish[0].CallID != "" {
+		t.Fatalf("id-less terminal activities=%#v", idlessFinish)
+	}
+
+	realFinish := tracker.observe("tool_result", map[string]any{
+		"toolCallId": "call-A", "name": "exec_command", "status": "completed",
+	})
+	if len(realFinish) != 1 || realFinish[0].CallID != "call-A" {
+		t.Fatalf("real terminal activities=%#v", realFinish)
+	}
+	if !strings.Contains(string(realFinish[0].Arguments), "make test") {
+		t.Fatalf("real terminal arguments lost: %s", string(realFinish[0].Arguments))
+	}
+}
+
+func TestACPToolTrackerOutputPresenceAtBoundary(t *testing.T) {
+	tracker := newACPToolTracker()
+	res1 := tracker.observe("tool_result", map[string]any{
+		"toolCallId": "c1", "name": "bash", "status": "completed",
+		"rawOutput": "", "stderr": "warning: deprecation notice do-not-leak",
+	})
+	if len(res1) != 1 || !res1[0].OutputPresent || res1[0].Result != `""` {
+		t.Fatalf("stderr-only completed result=%#v", res1)
+	}
+
+	res2 := tracker.observe("tool_result", map[string]any{
+		"toolCallId": "c2", "name": "bash", "status": "completed",
+		"rawOutput": "", "stderr": "",
+	})
+	if len(res2) != 1 || res2[0].OutputPresent {
+		t.Fatalf("truly empty completed result=%#v", res2)
+	}
+
+	res3 := tracker.observe("tool_result", map[string]any{
+		"toolCallId": "c3", "name": "bash", "status": "completed",
+		"output": map[string]any{"formatted_output": ""},
+	})
+	if len(res3) != 1 || res3[0].OutputPresent {
+		t.Fatalf("empty formatted_output result=%#v", res3)
+	}
+
+	res4 := tracker.observe("tool_result", map[string]any{
+		"toolCallId": "c4", "name": "bash", "status": "failed",
+		"stderr": "command failed with code 1 do-not-leak",
+	})
+	if len(res4) != 1 || !res4[0].OutputPresent || res4[0].Result != "" {
+		t.Fatalf("failed stderr result=%#v", res4)
+	}
+}

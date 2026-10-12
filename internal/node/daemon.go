@@ -164,7 +164,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			if err != nil {
 				return err
 			}
-			if outcome.State == CommandFailed && (outcome.Kind == CommandDispatch || outcome.Kind == CommandResume) {
+			if outcome.State == CommandFailed && (outcome.Kind == CommandDispatch || outcome.Kind == CommandResume || outcome.Kind == CommandSteering) {
 				if _, err := d.Store.QueueCommandOutcome(outcome); err != nil {
 					return err
 				}

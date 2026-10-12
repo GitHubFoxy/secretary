@@ -14,6 +14,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/node"
 	"github.com/beruseruko/secretary/internal/telegram"
 )
 
@@ -279,6 +280,21 @@ func TestTelegramEventBridgePublishesOnlyDispatchedWorkerIntent(t *testing.T) {
 	if len(transport.sent) != 1 || transport.sent[0].ThreadID != 1 || transport.sent[0].Text != "Fix the server.\nRun tests." {
 		t.Fatalf("dispatched prompt delivery=%#v", transport.sent)
 	}
+
+	spawnWithNode := telegramEvent(core.Event{
+		ID: "spawn-node", Seq: 2, Kind: "worker.spawned", AggregateType: "worker", AggregateID: "worker-node",
+		Payload: []byte(`{"intent":"Check node.","node_id":"node-primary"}`),
+	})
+	if spawnWithNode.NodeID != "node-primary" {
+		t.Fatalf("node_id mapping failed: %#v", spawnWithNode)
+	}
+	emptyResult := telegramEvent(core.Event{
+		Kind: "attempt.activity", WorkerRef: "worker-1",
+		Payload: []byte(`{"kind":"tool_result","tool_result":{"name":"shell","call_id":"c-empty","status":"completed","output":""}}`),
+	})
+	if emptyResult.HasOutput {
+		t.Fatalf("expected HasOutput=false for empty output: %#v", emptyResult)
+	}
 }
 
 func TestTelegramEventBridgeMapsOfflineTerminalEvent(t *testing.T) {
@@ -307,15 +323,18 @@ func TestTelegramEventBridgeMapsToolActivityWithoutArgumentsOrOutput(t *testing.
 		{"tool_result", "completed", "worker.tool_finished", "✓"},
 		{"tool_result", "failed", "worker.tool_failed", "✗"},
 	} {
-		mapped := telegramEvent(core.Event{Kind: "attempt.activity", WorkerRef: "worker-1", Payload: []byte(`{"kind":"` + tc.kind + `","tool_call":{"name":"shell","preview":"python3 - <<'PY' import…","arguments":{"token":"do-not-leak"}},"tool_result":{"name":"shell","preview":"make test","status":"` + tc.status + `","output":"do-not-leak"}}`)})
-		if mapped.Kind != tc.want || mapped.Tool != "shell" {
-			t.Fatalf("mapped event lost tool lifecycle: %#v", mapped)
+		mapped := telegramEvent(core.Event{Kind: "attempt.activity", WorkerRef: "worker-1", Payload: []byte(`{"kind":"` + tc.kind + `","tool_call":{"name":"shell","call_id":"call-test-1","preview":"python3 - <<'PY' import…","arguments":{"token":"do-not-leak"}},"tool_result":{"name":"shell","call_id":"call-test-1","preview":"make test","status":"` + tc.status + `","output":"do-not-leak"}}`)})
+		if mapped.Kind != tc.want || mapped.Tool != "shell" || mapped.CallID != "call-test-1" {
+			t.Fatalf("mapped event lost tool lifecycle or call_id: %#v", mapped)
 		}
 		if tc.kind == "tool_call" && mapped.ToolPreview != "python3 - <<'PY' import…" {
 			t.Fatalf("tool preview=%q", mapped.ToolPreview)
 		}
 		if tc.kind == "tool_result" && mapped.ToolPreview != "make test" {
 			t.Fatalf("result preview=%q", mapped.ToolPreview)
+		}
+		if tc.kind == "tool_result" && !mapped.HasOutput {
+			t.Fatalf("expected HasOutput=true for nonempty output: %#v", mapped)
 		}
 		transport := &bridgeTransport{}
 		adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100}, transport, &bridgeServer{})
@@ -711,5 +730,262 @@ func TestTelegramAcknowledgementIsImmediateAndReplaySafeBeforeTerminal(t *testin
 	}
 	if len(transport.sent) != 1 {
 		t.Fatalf("terminal repeated ack: %#v", transport.sent)
+	}
+}
+
+func TestTelegramBridgeFullACPPayloadOutputPresenceAndFailureSafety(t *testing.T) {
+	ctx := context.Background()
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(ctx, telegram.Event{Kind: "worker.created", WorkerRef: "w-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		name        string
+		payloadJSON string
+		wantKind    string
+		wantOutput  bool
+		wantMarker  string
+	}{
+		{
+			name:        "empty raw output string",
+			payloadJSON: `{"kind":"tool_result","tool_result":{"name":"shell","status":"completed","output":""}}`,
+			wantKind:    "worker.tool_finished",
+			wantOutput:  false,
+			wantMarker:  "(без вывода)",
+		},
+		{
+			name:        "json-encoded empty string quotes",
+			payloadJSON: `{"kind":"tool_result","tool_result":{"name":"shell","status":"completed","output":"\"\""}}`,
+			wantKind:    "worker.tool_finished",
+			wantOutput:  false,
+			wantMarker:  "(без вывода)",
+		},
+		{
+			name:        "acp object with empty formatted_output",
+			payloadJSON: `{"kind":"tool_result","tool_result":{"name":"shell","status":"completed","output":"{\"formatted_output\":\"\"}"}}`,
+			wantKind:    "worker.tool_finished",
+			wantOutput:  false,
+			wantMarker:  "(без вывода)",
+		},
+		{
+			name:        "nonempty acp output",
+			payloadJSON: `{"kind":"tool_result","tool_result":{"name":"shell","status":"completed","output":"{\"formatted_output\":\"secret token do-not-leak\"}"}}`,
+			wantKind:    "worker.tool_finished",
+			wantOutput:  true,
+			wantMarker:  "(вывод скрыт)",
+		},
+		{
+			name:        "failure with empty output",
+			payloadJSON: `{"kind":"tool_result","tool_result":{"name":"shell","status":"failed","output":""}}`,
+			wantKind:    "worker.tool_failed",
+			wantOutput:  false,
+			wantMarker:  "(без вывода)",
+		},
+		{
+			name:        "failure with error text",
+			payloadJSON: `{"kind":"tool_result","tool_result":{"name":"shell","status":"failed","error":"critical failure do-not-leak"}}`,
+			wantKind:    "worker.tool_failed",
+			wantOutput:  true,
+			wantMarker:  "(вывод скрыт)",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			transport.sent = nil
+			event := core.Event{
+				ID: "evt-" + tc.name, Seq: 100, Kind: "attempt.activity", WorkerRef: "w-1", AttemptID: "att-42",
+				Payload: []byte(tc.payloadJSON),
+			}
+			mapped := telegramEvent(event)
+			if mapped.Kind != tc.wantKind {
+				t.Fatalf("mapped kind=%q want %q", mapped.Kind, tc.wantKind)
+			}
+			if mapped.AttemptID != "att-42" {
+				t.Fatalf("attempt_id=%q want att-42", mapped.AttemptID)
+			}
+			if mapped.HasOutput != tc.wantOutput {
+				t.Fatalf("HasOutput=%v want %v", mapped.HasOutput, tc.wantOutput)
+			}
+			if err := adapter.HandleEvent(ctx, mapped); err != nil {
+				t.Fatal(err)
+			}
+			if len(transport.sent) != 1 {
+				t.Fatalf("sent count=%d want 1: %#v", len(transport.sent), transport.sent)
+			}
+			msg := transport.sent[0].Text
+			if !strings.Contains(msg, tc.wantMarker) {
+				t.Fatalf("message %q missing marker %q", msg, tc.wantMarker)
+			}
+			if strings.Contains(msg, "do-not-leak") || strings.Contains(msg, "secret") || strings.Contains(msg, "critical") {
+				t.Fatalf("raw output leaked into topic: %q", msg)
+			}
+		})
+	}
+}
+
+func TestTelegramBridgeEndToEndCoreToolResultPayload(t *testing.T) {
+	ctx := context.Background()
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(ctx, telegram.Event{Kind: "worker.created", WorkerRef: "worker-e2e"}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name          string
+		outputPresent bool
+		wantMarker    string
+	}{
+		{"failed with output present", true, "(вывод скрыт)"},
+		{"failed with empty output", false, "(без вывода)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			transport.sent = nil
+			activity := core.Activity{
+				Metadata: core.ActivityMetadata{
+					EventID: "evt-fail", Node: "local-node", HarnessInstanceID: "local/opencode",
+					WorkerRef: "worker-e2e", AttemptID: "att-e2e", Sequence: 5, ObservedAt: time.Now().UTC(),
+				},
+				Kind: core.ActivityToolResult,
+				ToolResult: &core.ToolResult{
+					CallID:        "call-fail-" + tc.name,
+					Name:          "exec_command",
+					Output:        "", // Node stripped the raw content
+					OutputPresent: tc.outputPresent,
+					Status:        "failed",
+					Preview:       "make test",
+				},
+			}
+			encoded, err := json.Marshal(activity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			event := core.Event{
+				ID: "evt-5", Seq: 5, Kind: "attempt.activity",
+				WorkerRef: "worker-e2e", AttemptID: "att-e2e",
+				Payload: encoded,
+			}
+			mapped := telegramEvent(event)
+			if mapped.Kind != "worker.tool_failed" {
+				t.Fatalf("mapped kind=%q want worker.tool_failed", mapped.Kind)
+			}
+			if mapped.CallID != "call-fail-"+tc.name {
+				t.Fatalf("mapped CallID=%q want call-fail-1", mapped.CallID)
+			}
+			if mapped.AttemptID != "att-e2e" {
+				t.Fatalf("mapped AttemptID=%q want att-e2e", mapped.AttemptID)
+			}
+			if mapped.HasOutput != tc.outputPresent {
+				t.Fatalf("mapped HasOutput=%v want %v", mapped.HasOutput, tc.outputPresent)
+			}
+			if err := adapter.HandleEvent(ctx, mapped); err != nil {
+				t.Fatal(err)
+			}
+			if len(transport.sent) != 1 {
+				t.Fatalf("sent count=%d want 1: %#v", len(transport.sent), transport.sent)
+			}
+			msg := transport.sent[0].Text
+			if !strings.Contains(msg, tc.wantMarker) {
+				t.Fatalf("rendered message %q missing %q", msg, tc.wantMarker)
+			}
+			if !strings.Contains(msg, "✗ Ошибка: exec_command make test") {
+				t.Fatalf("rendered message %q missing failure signature", msg)
+			}
+		})
+	}
+}
+
+func TestNormalizeRuntimeActivityThroughTelegramEventSerialization(t *testing.T) {
+	metadata := core.ActivityMetadata{
+		EventID: "evt-norm", Node: "local", HarnessInstanceID: "local/fx",
+		WorkerRef: "w-norm", AttemptID: "att-norm", Sequence: 1, ObservedAt: time.Now().UTC(),
+	}
+	capabilities := core.HarnessCapabilities{Activity: []core.ActivityCapability{core.ActivityToolResult}}
+
+	cases := []struct {
+		name        string
+		result      string
+		outputPres  bool
+		status      string
+		wantPresent bool
+		wantMarker  string
+		secret      string
+	}{
+		{name: "raw empty", result: "", outputPres: false, status: "completed", wantPresent: false, wantMarker: "(без вывода)"},
+		{name: "json-encoded empty", result: `""`, outputPres: false, status: "completed", wantPresent: false, wantMarker: "(без вывода)"},
+		{name: "acp empty formatted_output", result: `{"formatted_output":""}`, outputPres: false, status: "completed", wantPresent: false, wantMarker: "(без вывода)"},
+		{name: "genuinely empty json object", result: `{}`, outputPres: false, status: "completed", wantPresent: false, wantMarker: "(без вывода)"},
+		{name: "nonempty decoded text", result: "make test pass do-not-leak", outputPres: false, status: "completed", wantPresent: true, wantMarker: "(вывод скрыт)", secret: "do-not-leak"},
+		{name: "stderr-only nonempty semantic output with empty stdout", result: `""`, outputPres: true, status: "completed", wantPresent: true, wantMarker: "(вывод скрыт)", secret: "sensitive-warning-do-not-leak"},
+		{name: "nonempty json payload stripped to empty sanitized content", result: `{}`, outputPres: true, status: "completed", wantPresent: true, wantMarker: "(вывод скрыт)", secret: "secret-token-do-not-leak"},
+		{name: "failed with output present", result: "", outputPres: true, status: "failed", wantPresent: true, wantMarker: "(вывод скрыт)", secret: "critical-failure-do-not-leak"},
+		{name: "failed with empty output", result: "", outputPres: false, status: "failed", wantPresent: false, wantMarker: "(без вывода)"},
+	}
+
+	ctx := context.Background()
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(ctx, telegram.Event{Kind: "worker.created", WorkerRef: "w-norm"}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			transport.sent = nil
+			act, ok := node.NormalizeRuntimeActivity(node.Activity{
+				Kind:          node.ActivityToolResult,
+				Tool:          "shell",
+				CallID:        "c-" + tc.name,
+				Result:        tc.result,
+				OutputPresent: tc.outputPres,
+				Status:        tc.status,
+			}, metadata, capabilities)
+			if !ok {
+				t.Fatalf("NormalizeRuntimeActivity failed for %s", tc.name)
+			}
+			encoded, err := json.Marshal(act)
+			if err != nil {
+				t.Fatal(err)
+			}
+			event := core.Event{
+				ID: "evt-" + tc.name, Seq: 10, Kind: "attempt.activity",
+				WorkerRef: "w-norm", AttemptID: "att-norm",
+				Payload: encoded,
+			}
+			mapped := telegramEvent(event)
+			if mapped.HasOutput != tc.wantPresent {
+				t.Fatalf("mapped.HasOutput=%v want %v for %s", mapped.HasOutput, tc.wantPresent, tc.name)
+			}
+			if err := adapter.HandleEvent(ctx, mapped); err != nil {
+				t.Fatal(err)
+			}
+			if len(transport.sent) != 1 {
+				t.Fatalf("sent count=%d want 1: %#v", len(transport.sent), transport.sent)
+			}
+			msg := transport.sent[0].Text
+			if !strings.Contains(msg, tc.wantMarker) {
+				t.Fatalf("rendered message %q missing %q for %s", msg, tc.wantMarker, tc.name)
+			}
+			if tc.secret != "" && strings.Contains(msg, tc.secret) {
+				t.Fatalf("secret %q leaked into rendered message: %q", tc.secret, msg)
+			}
+			for _, leak := range []string{"do-not-leak", "secret", "sensitive", "critical"} {
+				if strings.Contains(msg, leak) {
+					t.Fatalf("leak %q found in rendered message: %q", leak, msg)
+				}
+			}
+		})
 	}
 }

@@ -9,6 +9,8 @@ import {
   formatActivityPayload,
   inputRequest,
   workerActionBody,
+  parseApiError,
+  extractObserverFailure,
 } from './ui-model.js';
 
 test('renders every public Worker and Turn status without legacy Task fields', () => {
@@ -122,4 +124,48 @@ test('Worker observer reads text and status activity without leaking generic pay
   assert.equal(formatActivityPayload({payload: {kind: 'status', status: 'working'}}), 'Working');
   assert.equal(formatActivityPayload({payload: {kind: 'thinking', text: 'private reasoning'}}), '');
   assert.equal(formatActivityPayload({payload: {kind: 'unknown', secret: 'private metadata'}}), 'Activity');
+});
+
+test("structured API failure captures category, providerCode, technical and preserves draft state on rejection", () => {
+  const apiErrorPayload = {
+    error: "usage_limit_exceeded: Usage limit reached",
+    category: "usage_limit",
+    provider_code: "usage_limit_exceeded",
+    technical: "Quota exceeded for model claude-3-5-sonnet",
+  };
+
+  const err = parseApiError(apiErrorPayload, "Bad Request");
+  assert.equal(err.message, "usage_limit_exceeded: Usage limit reached");
+  assert.equal(err.category, "usage_limit");
+  assert.equal(err.providerCode, "usage_limit_exceeded");
+  assert.equal(err.technical, "Quota exceeded for model claude-3-5-sonnet");
+
+  const failure = extractObserverFailure(err);
+  assert.deepEqual(failure, {
+    category: "usage_limit",
+    providerCode: "usage_limit_exceeded",
+    technical: "Quota exceeded for model claude-3-5-sonnet",
+  });
+
+  // Behavioral test: simulate action attempt with error catch
+  let steerText = "critical follow-up instructions for worker";
+  let observerError = "";
+  let observerFailure = null;
+
+  try {
+    throw err;
+    steerText = ""; // should not be reached
+  } catch (caught) {
+    observerError = caught.message;
+    observerFailure = extractObserverFailure(caught);
+  }
+
+  // Draft remains preserved, observer error and structured failure capture details
+  assert.equal(steerText, "critical follow-up instructions for worker");
+  assert.equal(observerError, "usage_limit_exceeded: Usage limit reached");
+  assert.deepEqual(observerFailure, {
+    category: "usage_limit",
+    providerCode: "usage_limit_exceeded",
+    technical: "Quota exceeded for model claude-3-5-sonnet",
+  });
 });

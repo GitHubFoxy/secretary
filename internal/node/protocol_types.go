@@ -480,23 +480,29 @@ const (
 )
 
 type CommandOutcome struct {
-	CommandID    string       `json:"command_id"`
-	Kind         CommandKind  `json:"kind"`
-	State        CommandState `json:"state"`
-	TurnID       string       `json:"turn_id,omitempty"`
-	AttemptID    string       `json:"attempt_id,omitempty"`
-	ErrorCode    string       `json:"error_code,omitempty"`
-	ErrorMessage string       `json:"error_message,omitempty"`
+	CommandID         string               `json:"command_id"`
+	Kind              CommandKind          `json:"kind"`
+	State             CommandState         `json:"state"`
+	TurnID            string               `json:"turn_id,omitempty"`
+	AttemptID         string               `json:"attempt_id,omitempty"`
+	ErrorCode         string               `json:"error_code,omitempty"`
+	ErrorMessage      string               `json:"error_message,omitempty"`
+	FailureCategory   core.FailureCategory `json:"failure_category,omitempty"`
+	ProviderCode      string               `json:"provider_code,omitempty"`
+	Technical         string               `json:"technical,omitempty"`
+	AcceptanceUnknown bool                 `json:"acceptance_unknown,omitempty"`
 }
 
 type CommandRecord struct {
-	CommandID   string          `json:"command_id"`
-	Kind        CommandKind     `json:"kind"`
-	State       CommandState    `json:"state"`
-	Outcome     CommandOutcome  `json:"outcome"`
-	CommandJSON json.RawMessage `json:"command_json,omitempty"`
-	ClaimedAt   time.Time       `json:"claimed_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	CommandID             string          `json:"command_id"`
+	Kind                  CommandKind     `json:"kind"`
+	State                 CommandState    `json:"state"`
+	Outcome               CommandOutcome  `json:"outcome"`
+	CommandJSON           json.RawMessage `json:"command_json,omitempty"`
+	Acknowledged          bool            `json:"acknowledged,omitempty"`
+	TerminalOutcomeQueued bool            `json:"terminal_outcome_queued,omitempty"`
+	ClaimedAt             time.Time       `json:"claimed_at"`
+	UpdatedAt             time.Time       `json:"updated_at"`
 }
 
 type NodeEvent struct {

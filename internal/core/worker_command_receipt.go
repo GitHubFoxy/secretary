@@ -13,6 +13,7 @@ import (
 // keeps the command retryable with the same ID and does not classify it as a
 // rejection.
 func (s *Store) MarkWorkerCommandUncertain(ctx context.Context, commandID, message string) (WorkerCommand, error) {
+	message = SanitizeFailureMessage(message)
 	return withTx(s, ctx, func(tx *sql.Tx) (WorkerCommand, error) {
 		var command WorkerCommand
 		if err := scanWorkerCommand(tx.QueryRowContext(ctx, `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, lease_until, created_at, updated_at FROM phase4_worker_commands WHERE id = ?`, commandID), &command); err != nil {
@@ -30,7 +31,6 @@ func (s *Store) MarkWorkerCommandUncertain(ctx context.Context, commandID, messa
 			return command, nil
 		}
 		now := s.now()
-		message = strings.TrimSpace(message)
 		if _, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands SET state = ?, last_error = ?, lease_until = '', updated_at = ? WHERE id = ?`, WorkerCommandUncertain, message, timestamp(now), command.ID); err != nil {
 			return WorkerCommand{}, err
 		}
@@ -62,7 +62,11 @@ WHERE kind = 'respond' AND state = ? AND EXISTS (
 // uncertain handoff; denials remain terminal until an explicit Core retry
 // reopens the command. Duplicate and superseded receipts are idempotent.
 func (s *Store) ReconcileWorkerCommandReceipt(ctx context.Context, node NodeReference, receipt WorkerCommandReceipt) (WorkerCommand, error) {
-	if strings.TrimSpace(string(node)) == "" || strings.TrimSpace(receipt.CommandID) == "" || (receipt.Kind != "respond" && receipt.Kind != "dispatch" && receipt.Kind != "resume") {
+	receipt = SanitizeWorkerCommandReceipt(receipt)
+	if receipt.Kind == "steer" {
+		receipt.Kind = "steering"
+	}
+	if strings.TrimSpace(string(node)) == "" || strings.TrimSpace(receipt.CommandID) == "" || (receipt.Kind != "respond" && receipt.Kind != "dispatch" && receipt.Kind != "resume" && receipt.Kind != "steering") {
 		return WorkerCommand{}, ErrInvalidTransition
 	}
 	switch receipt.State {
@@ -124,9 +128,9 @@ FROM phase4_worker_commands c JOIN phase4_attempts a ON a.id = c.attempt_id WHER
 		if message == "" {
 			message = "Node command " + string(receipt.State)
 		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_worker_command_outcomes(command_id, node_id, kind, turn_id, attempt_id, state, error_code, error_message, received_at)
-VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
-ON CONFLICT(command_id) DO UPDATE SET node_id = excluded.node_id, kind = excluded.kind, turn_id = excluded.turn_id, attempt_id = excluded.attempt_id, state = excluded.state, error_code = excluded.error_code, error_message = excluded.error_message, received_at = excluded.received_at`, command.ID, node, receipt.Kind, turnID, command.AttemptID, receipt.State, strings.TrimSpace(receipt.ErrorCode), strings.TrimSpace(receipt.ErrorMessage), timestamp(now)); err != nil {
+		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_worker_command_outcomes(command_id, node_id, kind, turn_id, attempt_id, state, error_code, error_message, failure_category, provider_code, technical, received_at)
+VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(command_id) DO UPDATE SET node_id = excluded.node_id, kind = excluded.kind, turn_id = excluded.turn_id, attempt_id = excluded.attempt_id, state = excluded.state, error_code = excluded.error_code, error_message = excluded.error_message, failure_category = excluded.failure_category, provider_code = excluded.provider_code, technical = excluded.technical, received_at = excluded.received_at`, command.ID, node, receipt.Kind, turnID, command.AttemptID, receipt.State, strings.TrimSpace(receipt.ErrorCode), strings.TrimSpace(receipt.ErrorMessage), string(receipt.FailureCategory), strings.TrimSpace(receipt.ProviderCode), strings.TrimSpace(receipt.Technical), timestamp(now)); err != nil {
 			return WorkerCommand{}, err
 		}
 
@@ -144,7 +148,7 @@ ON CONFLICT(command_id) DO UPDATE SET node_id = excluded.node_id, kind = exclude
 			return WorkerCommand{}, err
 		}
 		command.State, command.LastError, command.LeaseUntil, command.UpdatedAt = nextState, lastError, time.Time{}, now
-		if command.Kind != "respond" && receipt.State != WorkerCommandReceiptAccepted {
+		if (command.Kind == "dispatch" || command.Kind == "resume") && receipt.State != WorkerCommandReceiptAccepted {
 			message, err := scanQueuedWorker(tx.QueryRowContext(ctx, queuedWorkerSelect+` WHERE worker_id=? AND turn_id=? AND state IN ('delivering','delivered')`, command.WorkerID, turnID))
 			if err == nil {
 				message.State, message.LastError, message.UpdatedAt = "blocked", lastError, now
@@ -174,7 +178,7 @@ ON CONFLICT(command_id) DO UPDATE SET node_id = excluded.node_id, kind = exclude
 		}
 		return command, nil
 	})
-	if err != nil || receipt.Kind == "respond" {
+	if err != nil || receipt.Kind == "respond" || receipt.Kind == "steering" {
 		return command, err
 	}
 	switch command.State {
@@ -236,4 +240,29 @@ func resumeAcceptedWorkerResponseTx(ctx context.Context, tx *sql.Tx, attemptID s
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`, WorkerWorking, timestamp(now), attempt.WorkerID)
 	return err
+}
+
+func (s *Store) WorkerCommandReceiptOutcome(ctx context.Context, commandID string) (WorkerCommandReceipt, error) {
+	var receipt WorkerCommandReceipt
+	var nodeID string
+	err := s.db.QueryRowContext(ctx, `SELECT node_id, kind, turn_id, attempt_id, state, error_code, error_message, failure_category, provider_code, technical FROM phase4_worker_command_outcomes WHERE command_id = ?`, commandID).Scan(
+		&nodeID,
+		&receipt.Kind,
+		&receipt.TurnID,
+		&receipt.AttemptID,
+		&receipt.State,
+		&receipt.ErrorCode,
+		&receipt.ErrorMessage,
+		&receipt.FailureCategory,
+		&receipt.ProviderCode,
+		&receipt.Technical,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return WorkerCommandReceipt{}, ErrNotFound
+	}
+	if err != nil {
+		return WorkerCommandReceipt{}, err
+	}
+	receipt.CommandID = commandID
+	return SanitizeWorkerCommandReceipt(receipt), nil
 }

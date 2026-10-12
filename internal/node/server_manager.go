@@ -23,8 +23,22 @@ var nodeReferencePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$
 
 var ErrCommandOutcomeUnknown = errors.New("node server: command outcome is unknown")
 
-func uncertainRespondOutcome(outcome CommandOutcome) bool {
-	if outcome.State == CommandInterrupted {
+type NodeCommandError struct {
+	Outcome CommandOutcome
+	Err     error
+}
+
+func (e *NodeCommandError) Error() string {
+	if e.Outcome.ErrorMessage != "" {
+		return fmt.Sprintf("node command %s: %s", SanitizeFailureMessage(e.Outcome.ErrorCode), SanitizeFailureMessage(e.Outcome.ErrorMessage))
+	}
+	return fmt.Sprintf("node command %s", e.Outcome.State)
+}
+
+func (e *NodeCommandError) Unwrap() error { return e.Err }
+
+func uncertainCommandOutcome(outcome CommandOutcome) bool {
+	if outcome.AcceptanceUnknown || outcome.State == CommandInterrupted {
 		return true
 	}
 	switch outcome.ErrorCode {
@@ -327,13 +341,10 @@ func (m *ServerManager) SendCommandAndWait(ctx context.Context, nodeRef core.Nod
 	select {
 	case outcome := <-waiter.outcomes:
 		if outcome.State != CommandAccepted {
-			if uncertainRespondOutcome(outcome) {
-				return fmt.Errorf("%w: %s", ErrCommandOutcomeUnknown, outcome.ErrorMessage)
+			if uncertainCommandOutcome(outcome) {
+				return errors.Join(ErrCommandOutcomeUnknown, &NodeCommandError{Outcome: outcome})
 			}
-			if outcome.ErrorMessage != "" {
-				return fmt.Errorf("node command %s: %s", outcome.ErrorCode, outcome.ErrorMessage)
-			}
-			return fmt.Errorf("node command %s", outcome.State)
+			return &NodeCommandError{Outcome: outcome}
 		}
 		return nil
 	case <-ctx.Done():
@@ -651,6 +662,7 @@ func (h *serverProtocolHandler) HandleNodeEvent(ctx context.Context, event NodeE
 }
 
 func (h *serverProtocolHandler) HandleNodeCommandOutcome(ctx context.Context, outcome CommandOutcome) error {
+	outcome = sanitizeCommandOutcome(outcome)
 	h.manager.mu.Lock()
 	waiter := h.manager.waiters[outcome.CommandID]
 	if waiter != nil && (waiter.node != h.expected || waiter.kind != outcome.Kind) {
@@ -677,4 +689,13 @@ func (h *serverProtocolHandler) HandleNodeCommandOutcome(ctx context.Context, ou
 		}
 	}
 	return nil
+}
+
+func sanitizeCommandOutcome(outcome CommandOutcome) CommandOutcome {
+	outcome.FailureCategory = core.SanitizeFailureCategory(outcome.FailureCategory)
+	outcome.ProviderCode = core.SanitizeFailureProviderCode(outcome.ProviderCode)
+	outcome.ErrorCode = core.SanitizeFailureMessage(outcome.ErrorCode)
+	outcome.ErrorMessage = core.SanitizeFailureMessage(outcome.ErrorMessage)
+	outcome.Technical = core.SanitizeFailureMessage(outcome.Technical)
+	return outcome
 }

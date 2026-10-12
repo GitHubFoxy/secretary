@@ -36,6 +36,8 @@ type Activity struct {
 	Summary       string                    `json:"summary,omitempty"`
 	RequestSchema json.RawMessage           `json:"request_schema,omitempty"`
 	Tool          string                    `json:"tool,omitempty"`
+	CallID        string                    `json:"call_id,omitempty"`
+	OutputPresent bool                      `json:"output_present,omitempty"`
 	Arguments     json.RawMessage           `json:"arguments,omitempty"`
 	Result        string                    `json:"result,omitempty"`
 	Error         string                    `json:"-"`
@@ -84,6 +86,9 @@ func (e TerminalCompletionEvidence) AllowsAddressedReplyOnly() bool {
 type Result struct {
 	Status             string                      `json:"status"`
 	Summary            string                      `json:"summary"`
+	FailureCode        string                      `json:"-"`
+	FailureCategory    core.FailureCategory        `json:"-"`
+	Technical          string                      `json:"-"`
 	CompletionEvidence *TerminalCompletionEvidence `json:"-"`
 }
 

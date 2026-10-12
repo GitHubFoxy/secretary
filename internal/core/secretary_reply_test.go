@@ -337,6 +337,113 @@ func TestPendingCommandOriginJoinsExactResultBeforeReceiptAndFailedDispatchDoesN
 	}
 }
 
+func TestWorkerCommandOriginInitialBindingAndHistoricalOutcomeReplay(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "synthetic owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, SecretaryPolicySnapshot{
+		Version: "test-v1", Harness: "fx", Model: "secretary", Reasoning: "high",
+		ProfileVersion: "test-v1", ProfileName: "secretary", ProfileHash: "test-hash", ProfileContent: "test policy",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	origin, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "steer worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, origin.ID); err != nil {
+		t.Fatal(err)
+	}
+	worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{
+		WorkerRef: "origin-worker", Intent: "test", ProjectID: "p", NodeID: "n", HarnessInstanceID: "n/fx", PolicySnapshot: "test",
+	}, TurnSpec{Input: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	binding := SecretaryOriginIdentity{PersonID: person.ID, Capability: capability, SecretaryTurnID: origin.ID, InputID: origin.InputID}
+	command, duplicate, err := store.ClaimWorkerCommand(ctx, "steering", "steering:terminal-outcome", worker.ID, attempt.ID, binding)
+	if err != nil || duplicate {
+		t.Fatalf("initial authenticated binding command=%#v duplicate=%v err=%v", command, duplicate, err)
+	}
+	if replay, duplicate, err := store.ClaimWorkerCommand(ctx, "steering", "steering:terminal-outcome", worker.ID, attempt.ID, binding); err != nil || !duplicate || replay.ID != command.ID {
+		t.Fatalf("active pending replay command=%#v duplicate=%v err=%v", replay, duplicate, err)
+	}
+	if _, _, err := store.ClaimWorkerCommand(ctx, "steering", "steering:pending-after-turn", worker.ID, attempt.ID, binding); err != nil {
+		t.Fatal(err)
+	}
+
+	legacy, _, err := store.ClaimWorkerCommand(ctx, "steering", "steering:legacy", worker.ID, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.ClaimWorkerCommand(ctx, "steering", "steering:legacy", worker.ID, attempt.ID, binding); !errors.Is(err, ErrInvalidSecretaryOrigin) {
+		t.Fatalf("legacy command accepted a later origin binding: %v", err)
+	}
+	if err := store.ValidateWorkerCommandOrigin(ctx, legacy.ID, &binding, true); !errors.Is(err, ErrInvalidSecretaryOrigin) {
+		t.Fatalf("legacy command accepted authenticated replay origin: %v", err)
+	}
+
+	if _, err := store.ReconcileWorkerCommandReceipt(ctx, "n", WorkerCommandReceipt{
+		CommandID: command.ID, Kind: "steering", TurnID: attempt.TurnID, AttemptID: attempt.ID,
+		State: WorkerCommandReceiptDenied, ErrorCode: "usage_limit_exceeded", ErrorMessage: "Quota exceeded",
+		FailureCategory: FailureCategoryUsageLimit, ProviderCode: "usage_limit_exceeded", Technical: "acp rpc -32603: Internal error",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishSecretaryTurn(ctx, origin.ID, SecretaryTurnSucceeded, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ValidateWorkerCommandOrigin(ctx, command.ID, &binding, false); err != nil {
+		t.Fatalf("historical outcome rejected matching active capability after turn completion: %v", err)
+	}
+	if err := store.ValidateWorkerCommandOrigin(ctx, command.ID, &binding, true); !errors.Is(err, ErrInvalidSecretaryOrigin) {
+		t.Fatalf("completed origin accepted a new handoff: %v", err)
+	}
+	if _, _, err := store.ClaimWorkerCommand(ctx, "steering", "steering:pending-after-turn", worker.ID, attempt.ID, binding); !errors.Is(err, ErrInvalidSecretaryOrigin) {
+		t.Fatalf("pending handoff bypassed the completed-origin check: %v", err)
+	}
+	replay, duplicate, err := store.ClaimWorkerCommand(ctx, "steering", "steering:terminal-outcome", worker.ID, attempt.ID, binding)
+	if err != nil || !duplicate || replay.ID != command.ID || replay.State != WorkerCommandFailed {
+		t.Fatalf("historical command replay=%#v duplicate=%v err=%v", replay, duplicate, err)
+	}
+	receipt, err := store.WorkerCommandReceiptOutcome(ctx, command.ID)
+	if err != nil || receipt.FailureCategory != FailureCategoryUsageLimit || receipt.ProviderCode != "usage_limit_exceeded" {
+		t.Fatalf("historical typed outcome=%#v err=%v", receipt, err)
+	}
+	wrongOrigin, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "rebind worker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, wrongOrigin.ID); err != nil {
+		t.Fatal(err)
+	}
+	wrongBinding := SecretaryOriginIdentity{PersonID: person.ID, Capability: capability, SecretaryTurnID: wrongOrigin.ID, InputID: wrongOrigin.InputID}
+	if _, _, err := store.ClaimWorkerCommand(ctx, "steering", "steering:terminal-outcome", worker.ID, attempt.ID, wrongBinding); !errors.Is(err, ErrInvalidSecretaryOrigin) {
+		t.Fatalf("terminal command accepted a different authenticated origin: %v", err)
+	}
+}
+
 func TestAddressedCompletionSuppressesOnlyOriginLinkedOutput(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)

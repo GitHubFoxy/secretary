@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/beruseruko/secretary/internal/acp"
 	"github.com/beruseruko/secretary/internal/core"
 )
 
@@ -117,7 +119,7 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 				}
 				// The terminal watcher may have completed and removed the
 				// session since ClaimCommand took its processing snapshot.
-				if _, same := sameContinuationCommand(command, record); same {
+				if _, same := sameCommandEnvelope(command, record); same {
 					completed, err := n.store.Command(command.Metadata().CommandID)
 					if err == nil && completed.State == CommandAccepted && completed.Outcome == record.Outcome {
 						return completed.Outcome, nil
@@ -126,6 +128,12 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 				return failedOutcome(command, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error()), nil
 			}
 			return failedOutcome(command, "execution_state_unknown", "command execution is already in progress"), nil
+		}
+		if record.State == CommandAccepted && !record.TerminalOutcomeQueued && (command.Kind == CommandDispatch || command.Kind == CommandResume) {
+			if n.liveContinuationReadiness(command, record) {
+				return record.Outcome, nil
+			}
+			return failedOutcome(command, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error()), nil
 		}
 		return bindCommandOutcomeIdentity(record.Outcome, command), nil
 	}
@@ -146,7 +154,7 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 	}
 	if pendingContinuation && outcome.State == CommandAccepted {
 		// Readiness ACK is durable, but execution stays processing until
-		// watchSession observes actual execution completion.
+		// watchSession atomically stores its terminal Result in the outbox.
 		// A crash before/while Prompt therefore becomes explicit interruption.
 		return outcome, nil
 	}
@@ -243,7 +251,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
 		go func() { _ = session.Prompt(context.Background(), command.Envelope.OriginalUserIntent) }()
 	} else {
-		n.watchSession(session, command.Envelope)
+		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
 	}
 	return acceptedOutcome(Command{Kind: CommandDispatch, Dispatch: command})
 }
@@ -375,7 +383,29 @@ func (n *ExecutionNode) steer(ctx context.Context, command *SteeringCommand) Com
 		if errors.Is(err, ErrClaudeCodeSteeringUnsupported) {
 			code = "runtime_not_steerable"
 		}
-		return failedOutcome(Command{Kind: CommandSteering, Steering: command}, code, err.Error())
+		outcome := failedOutcome(Command{Kind: CommandSteering, Steering: command}, code, err.Error())
+		outcome.AcceptanceUnknown = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+		var steerErr *SteeringError
+		if errors.As(err, &steerErr) {
+			outcome.FailureCategory = steerErr.Failure.Category
+			outcome.ProviderCode = steerErr.Failure.ProviderCode
+			outcome.Technical = steerErr.Failure.Technical
+			if steerErr.Failure.Message != "" {
+				outcome.ErrorMessage = steerErr.Failure.Message
+			}
+		} else {
+			var rpcErr *acp.RPCError
+			if errors.As(err, &rpcErr) {
+				failure := classifyACPError(rpcErr, "")
+				outcome.FailureCategory = failure.Category
+				outcome.ProviderCode = failure.ProviderCode
+				outcome.Technical = failure.Technical
+				if failure.Message != "" {
+					outcome.ErrorMessage = failure.Message
+				}
+			}
+		}
+		return outcome
 	}
 	if !injected {
 		queue, ok := session.(Queueer)
@@ -383,7 +413,9 @@ func (n *ExecutionNode) steer(ctx context.Context, command *SteeringCommand) Com
 			return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "runtime_not_steerable", "runtime did not accept steering")
 		}
 		if err := queue.Queue(ctx, command.Text); err != nil {
-			return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "queue_failed", err.Error())
+			outcome := failedOutcome(Command{Kind: CommandSteering, Steering: command}, "queue_failed", err.Error())
+			outcome.AcceptanceUnknown = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+			return outcome
 		}
 	}
 	return acceptedOutcome(Command{Kind: CommandSteering, Steering: command})
@@ -448,7 +480,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
 		go func() { _ = session.Prompt(context.Background(), command.Envelope.OriginalUserIntent) }()
 	} else {
-		n.watchSession(session, command.Envelope)
+		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
 	}
 	return acceptedOutcome(Command{Kind: CommandResume, Resume: command})
 }
@@ -589,6 +621,12 @@ func (n *ExecutionNode) Inspect(ctx context.Context, record CommandRecord) (bool
 	if command.Kind == CommandDispatch || command.Kind == CommandResume {
 		return false, nil
 	}
+	// Session presence cannot prove whether this steering input crossed the
+	// native handoff boundary. Recovery must preserve uncertainty and never
+	// convert a claimed command into a false accepted receipt.
+	if command.Kind == CommandSteering {
+		return false, nil
+	}
 	metadata := command.Metadata()
 	mapping, ok := n.store.SessionMapping(metadata.AttemptID)
 	if !ok || mapping.RuntimeSessionID == "" {
@@ -635,7 +673,7 @@ func (n *ExecutionNode) removeSession(attemptID string) {
 	n.mu.Unlock()
 }
 
-func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, pendingContinuation ...Command) {
+func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, terminalCommand ...Command) {
 	go func() {
 		activity := session.Activity()
 		results := session.Result()
@@ -652,16 +690,6 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, p
 					results = nil
 					continue
 				}
-				if len(pendingContinuation) != 0 {
-					command := pendingContinuation[0]
-					// A runtime terminal event is execution evidence, unlike
-					// mapping persistence or loading an idle native session.
-					if _, err := n.store.CompleteCommand(command.Metadata().CommandID, acceptedOutcome(command)); err != nil {
-						_ = session.Close()
-						return
-					}
-				}
-				n.removeSession(envelope.AttemptID)
 				status := core.OutcomeFailed
 				if result.Status == "succeeded" {
 					status = core.OutcomeSucceeded
@@ -673,18 +701,128 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, p
 				if strings.TrimSpace(outcome.Summary) == "" {
 					outcome.Summary = result.Status
 				}
+				if result.Status == "failed" {
+					if result.FailureCode != "" {
+						outcome.FailureCode = result.FailureCode
+						outcome.ErrorCode = result.FailureCode
+					}
+					if result.FailureCategory != "" {
+						outcome.FailureCategory = result.FailureCategory
+					}
+					if result.Technical != "" {
+						outcome.Diagnostics = result.Technical
+					}
+				}
 				if envelope.HarnessInstance.Kind == core.HarnessOpenCode || envelope.HarnessInstance.Kind == core.HarnessClaudeCode || envelope.HarnessInstance.Kind == core.HarnessCodex {
 					if err := session.Close(); err != nil {
 						outcome.Status = core.OutcomeFailed
-						outcome.ErrorCode = "native_session_close_failed"
-						outcome.Summary = "Native session did not close cleanly: " + err.Error()
+						if result.Status == "succeeded" {
+							outcome.ErrorCode = "native_session_close_failed"
+							outcome.Summary = "Native session did not close cleanly"
+						}
+						outcome.Diagnostics = appendFailureDiagnostic(outcome.Diagnostics, "Native session close failed: "+SanitizeFailureMessage(err.Error()))
 					}
 				}
-				_, _ = n.store.QueueOutcome(outcome)
+				n.removeSession(envelope.AttemptID)
+				if outcome.Status == core.OutcomeFailed {
+					sanitizeTerminalFailureOutcome(&outcome)
+				}
+				if len(terminalCommand) != 0 {
+					command := terminalCommand[0]
+					n.completeTerminalCommandUntilPersisted(command, acceptedOutcome(command), outcome)
+				} else {
+					n.queueTerminalOutcome(outcome)
+				}
 				return
 			}
 		}
 	}()
+}
+
+func (n *ExecutionNode) completeTerminalCommandUntilPersisted(command Command, commandOutcome CommandOutcome, terminal core.AttemptOutcomeEnvelope) {
+	delay := 100 * time.Millisecond
+	loggedFailure := false
+	for {
+		if _, err := n.store.CompleteCommandWithOutcome(command.Metadata().CommandID, commandOutcome, terminal); err == nil {
+			return
+		} else if !loggedFailure {
+			log.Printf("node: persist terminal command receipt and outcome for attempt %s failed; retrying: %s", command.Metadata().AttemptID, SanitizeFailureMessage(err.Error()))
+			loggedFailure = true
+		}
+		time.Sleep(delay)
+		if delay < 5*time.Second {
+			delay *= 2
+			if delay > 5*time.Second {
+				delay = 5 * time.Second
+			}
+		}
+	}
+}
+
+func appendFailureDiagnostic(existing, secondary string) string {
+	existing = SanitizeFailureMessage(existing)
+	secondary = SanitizeFailureMessage(secondary)
+	if secondary == "" {
+		return existing
+	}
+	if existing == "" {
+		return secondary
+	}
+	secondaryRunes := []rune(secondary)
+	if len(secondaryRunes) > 300 {
+		secondary = string(secondaryRunes[:297]) + "..."
+		secondaryRunes = []rune(secondary)
+	}
+	const separator = "; "
+	current := []rune(existing)
+	maxCurrent := 1000 - len([]rune(separator)) - len(secondaryRunes)
+	if maxCurrent < 0 {
+		return string(secondaryRunes[:1000])
+	}
+	if len(current) > maxCurrent {
+		if maxCurrent > 3 {
+			existing = string(current[:maxCurrent-3]) + "..."
+		} else {
+			existing = string(current[:maxCurrent])
+		}
+	}
+	return SanitizeFailureMessage(existing + separator + secondary)
+}
+
+func (n *ExecutionNode) queueTerminalOutcome(outcome core.AttemptOutcomeEnvelope) {
+	if err := outcome.Validate(); err != nil {
+		log.Printf("node: invalid terminal outcome for attempt %s: %s", outcome.AttemptID, SanitizeFailureMessage(err.Error()))
+		return
+	}
+	delay := 100 * time.Millisecond
+	loggedFailure := false
+	for {
+		if _, err := n.store.QueueOutcome(outcome); err == nil {
+			return
+		} else if !loggedFailure {
+			log.Printf("node: queue terminal outcome for attempt %s failed; retrying: %s", outcome.AttemptID, SanitizeFailureMessage(err.Error()))
+			loggedFailure = true
+		}
+		time.Sleep(delay)
+		if delay < 5*time.Second {
+			delay *= 2
+			if delay > 5*time.Second {
+				delay = 5 * time.Second
+			}
+		}
+	}
+}
+
+func sanitizeTerminalFailureOutcome(outcome *core.AttemptOutcomeEnvelope) {
+	outcome.Summary = SanitizeFailureMessage(outcome.Summary)
+	outcome.ErrorCode = SanitizeFailureMessage(outcome.ErrorCode)
+	outcome.ErrorMessage = SanitizeFailureMessage(outcome.ErrorMessage)
+	outcome.Diagnostics = SanitizeFailureMessage(outcome.Diagnostics)
+	outcome.FailureCategory = core.SanitizeFailureCategory(outcome.FailureCategory)
+	outcome.FailureCode = core.SanitizeFailureProviderCode(outcome.FailureCode)
+	if strings.TrimSpace(outcome.Summary) == "" {
+		outcome.Summary = string(outcome.Status)
+	}
 }
 
 func (n *ExecutionNode) publishRuntimeActivity(envelope WorkerEnvelope, item Activity) {
@@ -794,7 +932,7 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 		if !safe {
 			return core.Activity{}, false
 		}
-		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolCall, ToolCall: &core.ToolCall{Name: tool, Arguments: arguments, Preview: ToolArgumentPreview(tool, arguments, workspacePath)}}
+		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolCall, ToolCall: &core.ToolCall{CallID: strings.TrimSpace(item.CallID), Name: tool, Arguments: arguments, Preview: ToolArgumentPreview(tool, arguments, workspacePath)}}
 	case ActivityToolResult:
 		tool := strings.TrimSpace(item.Tool)
 		if !capabilities.SupportsActivity(core.ActivityToolResult) || tool == "" {
@@ -817,7 +955,8 @@ func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, cap
 		if result == "" && strings.TrimSpace(item.Status) == "" && failure == nil {
 			return core.Activity{}, false
 		}
-		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolResult, ToolResult: &core.ToolResult{Name: tool, Output: result, Status: item.Status, Preview: ToolArgumentPreview(tool, item.Arguments, workspacePath), Failure: failure}}
+		outputPresent := item.OutputPresent || semanticOutputPresent(result)
+		activity = core.Activity{Metadata: metadata, Kind: core.ActivityToolResult, ToolResult: &core.ToolResult{CallID: strings.TrimSpace(item.CallID), Name: tool, Output: result, OutputPresent: outputPresent, Status: item.Status, Preview: ToolArgumentPreview(tool, item.Arguments, workspacePath), Failure: failure}}
 	case ActivityStatus:
 		if !capabilities.SupportsActivity(core.ActivityStatus) || strings.TrimSpace(item.Text) == "" {
 			return core.Activity{}, false
@@ -889,4 +1028,68 @@ func bindCommandOutcomeIdentity(outcome CommandOutcome, command Command) Command
 }
 func nodeEventID(attempt string) string {
 	return fmt.Sprintf("node-event-%s-%d", attempt, time.Now().UnixNano())
+}
+
+func semanticOutputPresent(result string) bool {
+	trimmed := strings.TrimSpace(result)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, `"`) && strings.HasSuffix(trimmed, `"`) {
+		var decoded string
+		if json.Unmarshal([]byte(trimmed), &decoded) == nil {
+			return strings.TrimSpace(decoded) != ""
+		}
+	}
+	if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
+		(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+		var parsed any
+		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
+			return parsedSemanticOutput(parsed)
+		}
+	}
+	return true
+}
+
+func parsedSemanticOutput(v any) bool {
+	switch current := v.(type) {
+	case string:
+		return strings.TrimSpace(current) != ""
+	case map[string]any:
+		if len(current) == 0 {
+			return false
+		}
+		hasOutputKeys := false
+		for _, key := range []string{"formatted_output", "output", "result", "stdout", "stderr", "error", "text"} {
+			if child, exists := current[key]; exists {
+				hasOutputKeys = true
+				if parsedSemanticOutput(child) {
+					return true
+				}
+			}
+		}
+		if hasOutputKeys {
+			return false
+		}
+		for _, child := range current {
+			if parsedSemanticOutput(child) {
+				return true
+			}
+		}
+		return false
+	case []any:
+		if len(current) == 0 {
+			return false
+		}
+		for _, child := range current {
+			if parsedSemanticOutput(child) {
+				return true
+			}
+		}
+		return false
+	case nil:
+		return false
+	default:
+		return true
+	}
 }

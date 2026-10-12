@@ -2,7 +2,9 @@ package core
 
 import (
 	"context"
+	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // WorkerStatus is the server-owned lifecycle of a persistent Worker.
@@ -68,6 +70,55 @@ func (c OutcomeClassification) Valid() bool {
 	return c == OutcomeRetryable || c == OutcomeFinal
 }
 
+type FailureCategory string
+
+const (
+	FailureCategoryUsageLimit     FailureCategory = "usage_limit"
+	FailureCategoryAuthRequired   FailureCategory = "auth_required"
+	FailureCategoryBillingCredits FailureCategory = "billing_credits"
+	FailureCategoryRateLimit      FailureCategory = "rate_limit"
+	FailureCategoryInternalError  FailureCategory = "internal_error"
+)
+
+func (c FailureCategory) Valid() bool {
+	switch c {
+	case FailureCategoryUsageLimit, FailureCategoryAuthRequired, FailureCategoryBillingCredits, FailureCategoryRateLimit, FailureCategoryInternalError:
+		return true
+	default:
+		return false
+	}
+}
+
+var workerFailureProviderCodes = map[string]string{
+	"usage_limit_exceeded":    "usage_limit_exceeded",
+	"usagelimitexceeded":      "usage_limit_exceeded",
+	"auth_required":           "auth_required",
+	"invalid_api_key":         "invalid_api_key",
+	"token_expired":           "token_expired",
+	"unauthorized":            "unauthorized",
+	"authentication_required": "authentication_required",
+	"insufficient_quota":      "insufficient_quota",
+	"billing_credits":         "billing_credits",
+	"rate_limit":              "rate_limit",
+	"rate_limit_exceeded":     "rate_limit_exceeded",
+	"too_many_requests":       "too_many_requests",
+}
+
+func SanitizeFailureProviderCode(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "" || utf8.RuneCountInString(code) > 1000 {
+		return ""
+	}
+	return workerFailureProviderCodes[strings.ToLower(code)]
+}
+
+type WorkerFailure struct {
+	Category     FailureCategory `json:"category"`
+	ProviderCode string          `json:"provider_code,omitempty"`
+	Message      string          `json:"message"`
+	Technical    string          `json:"technical,omitempty"`
+}
+
 // Worker is the Phase 4 product entity. Its execution binding and policy are
 // immutable after creation. Native runtime sessions are deliberately absent.
 type Worker struct {
@@ -117,14 +168,15 @@ type Phase4Attempt = Attempt
 // AttemptOutcome is stored separately from Result. Intermediate retryable
 // outcomes never become Conversation entries.
 type AttemptOutcome struct {
-	ID             string                `json:"id"`
-	AttemptID      string                `json:"attempt_id"`
-	Status         AttemptOutcomeStatus  `json:"status"`
-	Classification OutcomeClassification `json:"classification"`
-	ErrorCode      string                `json:"error_code,omitempty"`
-	ErrorMessage   string                `json:"error_message,omitempty"`
-	Diagnostics    string                `json:"diagnostics,omitempty"`
-	CreatedAt      time.Time             `json:"created_at"`
+	ID              string                `json:"id"`
+	AttemptID       string                `json:"attempt_id"`
+	Status          AttemptOutcomeStatus  `json:"status"`
+	Classification  OutcomeClassification `json:"classification"`
+	ErrorCode       string                `json:"error_code,omitempty"`
+	ErrorMessage    string                `json:"error_message,omitempty"`
+	Diagnostics     string                `json:"diagnostics,omitempty"`
+	FailureCategory FailureCategory       `json:"failure_category,omitempty"`
+	CreatedAt       time.Time             `json:"created_at"`
 }
 
 // Result is the one user-visible terminal outcome for a Turn.
@@ -205,13 +257,16 @@ const (
 // WorkerCommandReceipt is an authenticated Node outcome bound to one durable
 // command and its immutable Worker Turn/Attempt.
 type WorkerCommandReceipt struct {
-	CommandID    string
-	Kind         string
-	TurnID       string
-	AttemptID    string
-	State        WorkerCommandReceiptState
-	ErrorCode    string
-	ErrorMessage string
+	CommandID       string
+	Kind            string
+	TurnID          string
+	AttemptID       string
+	State           WorkerCommandReceiptState
+	ErrorCode       string
+	ErrorMessage    string
+	FailureCategory FailureCategory
+	ProviderCode    string
+	Technical       string
 }
 
 // WorkerCommand persists the server-side delivery decision for one immutable
@@ -308,14 +363,15 @@ type TurnSpec struct {
 
 // AttemptOutcomeInput is the only input accepted by terminal event handling.
 type AttemptOutcomeInput struct {
-	Status         AttemptOutcomeStatus
-	Classification OutcomeClassification
-	ErrorCode      string
-	ErrorMessage   string
-	Diagnostics    string
-	Summary        string
-	FailureCode    string
-	ArtifactRefs   string
+	Status          AttemptOutcomeStatus
+	Classification  OutcomeClassification
+	ErrorCode       string
+	ErrorMessage    string
+	Diagnostics     string
+	Summary         string
+	FailureCode     string
+	FailureCategory FailureCategory
+	ArtifactRefs    string
 }
 
 // FinishAttemptInput is the production completion contract. A retryable
