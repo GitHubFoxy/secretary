@@ -963,7 +963,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			owner := a.state.OwnerChat
 			a.mu.Unlock()
 			if owner != 0 {
-				mirror := OutgoingMessage{ChatID: owner, Text: topicName("", mapping.Title) + ":\n" + body, Identity: identity + ":general"}
+				mirror := OutgoingMessage{ChatID: owner, Text: body, Identity: identity + ":general"}
 				if err := a.sendMessage(ctx, mirror); err != nil {
 					return err
 				}
