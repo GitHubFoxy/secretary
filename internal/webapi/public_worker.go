@@ -23,6 +23,10 @@ type publicWorkerDTO struct {
 	TurnStatus        core.TurnState    `json:"turn_status,omitempty"`
 	LastResultSummary string            `json:"last_result_summary,omitempty"`
 	Result            *publicResultDTO  `json:"result,omitempty"`
+	ScheduleMode      string            `json:"schedule_mode,omitempty"`
+	DeadlineTo        *time.Time        `json:"deadline_to,omitempty"`
+	CanResumeNow      bool              `json:"can_resume_now,omitempty"`
+	ActionIdentity    string            `json:"action_identity,omitempty"`
 	CreatedAt         time.Time         `json:"created_at"`
 	UpdatedAt         time.Time         `json:"updated_at"`
 	ClosedAt          *time.Time        `json:"closed_at,omitempty"`
@@ -83,6 +87,14 @@ func publicWorkerDTOFromDetails(details core.WorkerDetails) publicWorkerDTO {
 			CorrelationID: result.CorrelationID, CreatedAt: result.CreatedAt,
 		}
 	}
+	if details.ActiveSchedule != nil {
+		public.ScheduleMode = string(details.ActiveSchedule.State)
+		public.DeadlineTo = details.ActiveSchedule.ScheduledAt
+		public.CanResumeNow = (details.Worker.Status == core.WorkerLimited)
+		public.ActionIdentity = details.ActiveSchedule.AttemptID
+	} else if details.Worker.Status == core.WorkerLimited {
+		public.CanResumeNow = true
+	}
 	return public
 }
 
@@ -127,6 +139,10 @@ type publicWorkerStrictDTO struct {
 	TurnStatus        core.TurnState         `json:"turn_status,omitempty"`
 	LastResultSummary string                 `json:"last_result_summary,omitempty"`
 	Result            *publicResultStrictDTO `json:"result,omitempty"`
+	ScheduleMode      string                 `json:"schedule_mode,omitempty"`
+	DeadlineTo        *time.Time             `json:"deadline_to,omitempty"`
+	CanResumeNow      bool                   `json:"can_resume_now,omitempty"`
+	ActionIdentity    string                 `json:"action_identity,omitempty"`
 	CreatedAt         time.Time              `json:"created_at"`
 	UpdatedAt         time.Time              `json:"updated_at"`
 	ClosedAt          *time.Time             `json:"closed_at,omitempty"`
@@ -159,6 +175,7 @@ type ownerWorkerObserverDTO struct {
 	Outcomes       []core.AttemptOutcome    `json:"outcomes"`
 	Results        []core.Phase4Result      `json:"results"`
 	Approvals      []publicApprovalDTO      `json:"approvals,omitempty"`
+	ActiveSchedule *core.AttemptSchedule    `json:"active_schedule,omitempty"`
 }
 
 func ownerWorkerObserverDTOFromDetails(details core.WorkerDetails) ownerWorkerObserverDTO {
@@ -166,6 +183,7 @@ func ownerWorkerObserverDTOFromDetails(details core.WorkerDetails) ownerWorkerOb
 		QueuedMessages: publicQueuedMessages(details),
 		Worker:         details.Worker, Turns: details.Turns, Attempts: details.Attempts,
 		Outcomes: details.Outcomes, Results: details.Results,
+		ActiveSchedule: details.ActiveSchedule,
 	}
 	for _, approval := range details.Approvals {
 		observer.Approvals = append(observer.Approvals, publicApprovalDTOFromApproval(approval))
@@ -222,6 +240,14 @@ func publicWorkerStrictDTOFromDetails(details core.WorkerDetails) publicWorkerSt
 			Status: result.Status, Summary: result.Summary,
 			FailureCode: result.FailureCode, CreatedAt: result.CreatedAt,
 		}
+	}
+	if details.ActiveSchedule != nil {
+		public.ScheduleMode = string(details.ActiveSchedule.State)
+		public.DeadlineTo = details.ActiveSchedule.ScheduledAt
+		public.CanResumeNow = (details.Worker.Status == core.WorkerLimited)
+		public.ActionIdentity = details.ActiveSchedule.AttemptID
+	} else if details.Worker.Status == core.WorkerLimited {
+		public.CanResumeNow = true
 	}
 	return public
 }

@@ -59,6 +59,7 @@ func (s *timingInspectionServer) SendMessage(_ context.Context, m InboundMessage
 func (s *timingInspectionServer) SendWorkerMessage(ctx context.Context, m WorkerMessage) error {
 	return s.SendMessage(ctx, InboundMessage{ExternalMessageID: m.ExternalMessageID})
 }
+func (s *timingInspectionServer) ResumeWorker(context.Context, string) error { return nil }
 
 func TestVoiceTimingsPersistBeforeDispatchAndReplay(t *testing.T) {
 	for _, status := range []string{"disabled", "succeeded", "failed", "unavailable"} {

@@ -203,14 +203,22 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "workspace_failed", err.Error())
 		}
 	}
-	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: command.Envelope.OriginalUserIntent, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
+	continuing := command.Envelope.PreviousAttemptID != ""
+	promptText := command.Envelope.OriginalUserIntent
+	if command.Envelope.ContinuationPrompt != "" {
+		promptText = command.Envelope.ContinuationPrompt
+	}
+	task := command.Envelope.OriginalUserIntent
+	if continuing {
+		task = promptText
+	}
+	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
 	var session Session
-	continuing := command.Envelope.PreviousAttemptID != ""
 	if continuing {
 		mapping, mappingErr := n.continuationMapping(command.Envelope, command.Envelope.PreviousAttemptID)
 		resumer, ok := n.runtime.(Resumer)
@@ -249,7 +257,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	n.registerSession(mapping.AttemptID, session)
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
-		go func() { _ = session.Prompt(context.Background(), command.Envelope.OriginalUserIntent) }()
+		go func() { _ = session.Prompt(context.Background(), promptText) }()
 	} else {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
 	}
@@ -450,7 +458,15 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		}
 		workspace = canonicalWorkspace
 	}
-	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: command.Envelope.OriginalUserIntent, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID)}
+	promptText := command.Envelope.OriginalUserIntent
+	if command.Envelope.ContinuationPrompt != "" {
+		promptText = command.Envelope.ContinuationPrompt
+	}
+	task := command.Envelope.OriginalUserIntent
+	if continuing {
+		task = promptText
+	}
+	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID), DeferInitialPrompt: continuing}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "binding_conflict", err.Error())
@@ -478,7 +494,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	n.registerSession(command.Metadata.AttemptID, session)
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
-		go func() { _ = session.Prompt(context.Background(), command.Envelope.OriginalUserIntent) }()
+		go func() { _ = session.Prompt(context.Background(), promptText) }()
 	} else {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
 	}
@@ -726,6 +742,25 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, t
 				n.removeSession(envelope.AttemptID)
 				if outcome.Status == core.OutcomeFailed {
 					sanitizeTerminalFailureOutcome(&outcome)
+					if outcome.FailureCategory == core.FailureCategoryUsageLimit && envelope.HarnessInstance.Kind == core.HarnessCodex {
+						commandBin := "codex"
+						var env []string
+						if n.runtime != nil {
+							if cr, ok := n.runtime.(CodexRuntime); ok {
+								if configured, err := cr.configured(StartRequest{Profile: envelope.Profile, Workspace: envelope.Workspace}); err == nil {
+									commandBin = configured.Command
+									env = configured.Environment
+								}
+							}
+						}
+						if resp, err := readCodexRateLimits(context.Background(), commandBin, env, envelope.Workspace); err == nil {
+							obs := evaluateCodexRateLimits(resp, envelope.Model, outcome.FailureCode, time.Now().UTC(), nil)
+							if obs.ResetsAt != nil {
+								outcome.ResetsAt = obs.ResetsAt
+								outcome.QuotaScope = obs.Scope
+							}
+						}
+					}
 				}
 				if len(terminalCommand) != 0 {
 					command := terminalCommand[0]

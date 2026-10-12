@@ -32,6 +32,9 @@ func (a *ticket09WorkerActions) CancelWorker(context.Context, string) (core.Work
 func (a *ticket09WorkerActions) CloseWorker(context.Context, string) (core.WorkerDetails, error) {
 	return a.details, nil
 }
+func (a *ticket09WorkerActions) ResumeWorker(context.Context, string) (core.WorkerDetails, error) {
+	return a.details, nil
+}
 
 func TestWorkerActionAPIExposesMessageFollowUpAndApprove(t *testing.T) {
 	ctx := context.Background()

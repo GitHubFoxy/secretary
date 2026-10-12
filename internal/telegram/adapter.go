@@ -92,6 +92,7 @@ type WorkerMessage struct {
 type ServerClient interface {
 	SendMessage(context.Context, InboundMessage) error
 	SendWorkerMessage(context.Context, WorkerMessage) error
+	ResumeWorker(context.Context, string) error
 }
 
 type Config struct {
@@ -608,6 +609,23 @@ func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed 
 		return nil
 	}
 	externalID := fmt.Sprint(update.ID)
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "/resume" {
+		if update.Message.ThreadID == 0 || update.Message.ThreadID == 1 {
+			return nil
+		}
+		a.mu.Lock()
+		mapping, ok := a.mappingForThreadLocked(update.Message.ChatID, update.Message.ThreadID)
+		a.mu.Unlock()
+		if !ok {
+			return nil
+		}
+		if err := a.server.ResumeWorker(ctx, mapping.WorkerRef); err != nil {
+			return err
+		}
+		a.reactToMessage(ctx, update.Message)
+		return nil
+	}
 	if update.Message.ThreadID != 0 {
 		a.mu.Lock()
 		mapping, ok := a.mappingForThreadLocked(update.Message.ChatID, update.Message.ThreadID)
@@ -929,6 +947,11 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			a.mu.Lock()
 			_, alreadyNotified = a.state.TerminalNotified[event.TerminalIdentity]
 			a.mu.Unlock()
+		case event.Kind == "worker.limited":
+			identity = "worker-limited:" + event.EventID
+			if identity == "worker-limited:" {
+				identity = fmt.Sprintf("worker-limited:%s:%d", event.WorkerRef, event.Sequence)
+			}
 		case strings.HasPrefix(event.Kind, "worker.message."):
 			identity = "worker-message:" + event.EventID
 		case requestNotificationIdentity(event) != "":
@@ -1734,17 +1757,43 @@ func isApprovalResolution(kind string) bool {
 }
 
 func importantWorkerEvent(kind string) bool {
-	return strings.HasPrefix(kind, "worker.message.") || kind == "worker.tool_started" || kind == "worker.tool_finished" || kind == "worker.tool_failed" || strings.Contains(kind, "approval") || strings.Contains(kind, "needs_input") || strings.HasSuffix(kind, ".failed") || strings.HasSuffix(kind, ".completed") || strings.HasSuffix(kind, ".succeeded") || strings.HasSuffix(kind, ".canceled") || strings.HasSuffix(kind, ".offline") || strings.HasSuffix(kind, ".completion")
+	return kind == "worker.limited" || strings.HasPrefix(kind, "worker.message.") || kind == "worker.tool_started" || kind == "worker.tool_finished" || kind == "worker.tool_failed" || strings.Contains(kind, "approval") || strings.Contains(kind, "needs_input") || strings.HasSuffix(kind, ".failed") || strings.HasSuffix(kind, ".completed") || strings.HasSuffix(kind, ".succeeded") || strings.HasSuffix(kind, ".canceled") || strings.HasSuffix(kind, ".offline") || strings.HasSuffix(kind, ".completion")
 }
 
 func workerEventLabel(kind string) string {
-	if label := map[string]string{"worker.message.queued": "В очереди", "worker.message.delivered": "Передано Worker", "worker.message.blocked": "Сообщение заблокировано", "worker.message.canceled": "Сообщение отменено", "worker.approval_requested": "Нужно разрешение", "worker.needs_input": "Нужен ответ", "worker.failed": "Ошибка Worker", "worker.completed": "Worker завершён", "worker.succeeded": "Worker завершён", "worker.canceled": "Worker отменён", "worker.offline": "Node offline"}[kind]; label != "" {
+	if label := map[string]string{"worker.limited": "Лимит использования", "worker.message.queued": "В очереди", "worker.message.delivered": "Передано Worker", "worker.message.blocked": "Сообщение заблокировано", "worker.message.canceled": "Сообщение отменено", "worker.approval_requested": "Нужно разрешение", "worker.needs_input": "Нужен ответ", "worker.failed": "Ошибка Worker", "worker.completed": "Worker завершён", "worker.succeeded": "Worker завершён", "worker.canceled": "Worker отменён", "worker.offline": "Node offline"}[kind]; label != "" {
 		return label
 	}
 	return "Статус Worker"
 }
 
 func renderWorkerEvent(event Event) string {
+	if event.Kind == "worker.limited" {
+		var p struct {
+			Mode        string `json:"mode"`
+			Cause       string `json:"cause"`
+			ResetsAt    string `json:"resets_at"`
+			ScheduledAt string `json:"scheduled_at"`
+			QuotaScope  string `json:"quota_scope"`
+		}
+		if len(event.Payload) > 0 {
+			_ = json.Unmarshal(event.Payload, &p)
+		}
+		modeLabel := "вручную"
+		if p.Mode == "pending" {
+			modeLabel = "автоматически"
+		}
+		causeText := p.Cause
+		if causeText == "" {
+			causeText = "исчерпан лимит использования"
+		}
+		msg := fmt.Sprintf("Лимит использования: %s\nРежим: %s", causeText, modeLabel)
+		if p.ScheduledAt != "" {
+			msg += fmt.Sprintf("\nПовтор: %s", p.ScheduledAt)
+		}
+		msg += "\nДля продолжения вручную отправьте /resume"
+		return msg
+	}
 	if event.Kind == "worker.tool_started" || event.Kind == "worker.tool_finished" || event.Kind == "worker.tool_failed" {
 		tool := safeText(event.Tool)
 		if tool == "" {

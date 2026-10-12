@@ -134,7 +134,7 @@ func (r NodeRuntime) Dispatch(ctx context.Context, commandID string, worker core
 	return r.send(ctx, core.NodeReference(attempt.NodeID), node.Command{Kind: node.CommandDispatch, Dispatch: &node.DispatchCommand{Metadata: r.metadata(commandID, worker, turn, attempt, resolution.HarnessInstance.ID), Envelope: envelope}})
 }
 
-func (r NodeRuntime) Resume(ctx context.Context, commandID string, worker core.Worker, turn core.Turn, attempt core.Phase4Attempt, _ string) error {
+func (r NodeRuntime) Resume(ctx context.Context, commandID string, worker core.Worker, turn core.Turn, attempt core.Phase4Attempt, prompt string) error {
 	binding, err := bindingFromWorker(worker)
 	if err != nil {
 		return err
@@ -142,6 +142,9 @@ func (r NodeRuntime) Resume(ctx context.Context, commandID string, worker core.W
 	envelope, err := r.envelope(worker, turn, attempt, binding)
 	if err != nil {
 		return err
+	}
+	if prompt != "" {
+		envelope.ContinuationPrompt = prompt
 	}
 	return r.send(ctx, core.NodeReference(attempt.NodeID), node.Command{Kind: node.CommandResume, Resume: &node.ResumeCommand{Metadata: r.metadata(commandID, worker, turn, attempt, envelope.HarnessInstance.ID), Envelope: envelope}})
 }

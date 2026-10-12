@@ -17,6 +17,7 @@ type AttemptState string
 const (
 	AttemptStarting    AttemptState = "starting"
 	AttemptActive      AttemptState = "active"
+	AttemptScheduled   AttemptState = "scheduled"
 	AttemptSucceeded   AttemptState = "succeeded"
 	AttemptFailed      AttemptState = "failed"
 	AttemptCanceled    AttemptState = "canceled"

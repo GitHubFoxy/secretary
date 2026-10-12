@@ -595,6 +595,8 @@ type AttemptOutcomeEnvelope struct {
 	FailureCategory   FailureCategory       `json:"failure_category,omitempty"`
 	ArtifactRefs      []ArtifactRef         `json:"artifact_refs,omitempty"`
 	CorrelationID     string                `json:"correlation_id,omitempty"`
+	ResetsAt          *time.Time            `json:"resets_at,omitempty"`
+	QuotaScope        string                `json:"quota_scope,omitempty"`
 	OccurredAt        time.Time             `json:"occurred_at"`
 }
 

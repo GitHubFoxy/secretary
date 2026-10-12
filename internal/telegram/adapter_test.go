@@ -115,6 +115,7 @@ func (f *fakeServer) SendWorkerMessage(_ context.Context, message WorkerMessage)
 	f.workers = append(f.workers, message)
 	return nil
 }
+func (f *fakeServer) ResumeWorker(_ context.Context, _ string) error { return nil }
 
 type retryServer struct {
 	mu        sync.Mutex
@@ -137,6 +138,7 @@ func (s *retryServer) SendMessage(context.Context, InboundMessage) error {
 	return nil
 }
 func (s *retryServer) SendWorkerMessage(context.Context, WorkerMessage) error { return nil }
+func (s *retryServer) ResumeWorker(context.Context, string) error { return nil }
 
 type retryPollingTransport struct {
 	mu    sync.Mutex
