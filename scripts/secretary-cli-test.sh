@@ -48,6 +48,14 @@ assert_executable() {
   [[ -x "$path" ]] || fail "missing executable: $path"
 }
 
+file_mode() {
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    stat -f '%Lp' "$1"
+  else
+    stat -c '%a' "$1"
+  fi
+}
+
 assert_http_code() {
   local url="$1"
   local expected="$2"
@@ -123,6 +131,10 @@ mkdir -p "$FAKE_BIN"
 
 cat > "$FAKE_BIN/codex" <<'EOF'
 #!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'codex-cli 1.0.0\n'
+  exit 0
+fi
 if [ "$1" = "login" ] && [ "$2" = "status" ]; then
   exit 0
 fi
@@ -154,8 +166,8 @@ export OPEN_LOG LAUNCHCTL_LOG
 TICKET33_OPENCODE_STORE_LOG="$TEST_HOME/opencode-store.log"
 export TICKET33_OPENCODE_STORE_LOG
 mkdir -p "$TEST_HOME/.local/share/opencode"
-printf 'personal-store-canary\n' > "$TEST_HOME/.local/share/opencode/opencode.db"
-chmod 600 "$TEST_HOME/.local/share/opencode/opencode.db"
+printf 'personal-store-canary\n' > "$TEST_HOME/.local/share/opencode/personal-store-canary.txt"
+chmod 600 "$TEST_HOME/.local/share/opencode/personal-store-canary.txt"
 unset SECRETARY_ACP_COMMAND SECRETARY_FX_COMMAND SECRETARY_OPENCODE_COMMAND SECRETARY_CAPABILITY SECRETARY_BOOTSTRAP_TOKEN
 export OPENAI_API_KEY=fixture-private-provider-key AWS_ACCESS_KEY_ID=fixture-private-access-id AWS_SECRET_ACCESS_KEY=fixture-private-cloud-key
 
@@ -200,6 +212,8 @@ esac
 EOF
 chmod +x "$FAKE_BIN/codex-acp" "$FAKE_BIN/fx" "$FAKE_BIN/opencode"
 
+"$ROOT/scripts/phase5-setup-test.sh"
+
 print "Testing secretary commands in isolated HOME: $TEST_HOME"
 
 output="$($SECRETARY_CLI)" || fail "usage command failed"
@@ -220,33 +234,53 @@ assert_file "$STATE/environment"
 assert_file "$STATE/profiles/secretary.md"
 assert_file "$STATE/profiles/worker.md"
 assert_file "$STATE/profiles/child-worker.md"
-assert_contains "$(cat "$STATE/config.toml")" 'harness = "opencode"' "default Secretary harness"
-assert_contains "$(cat "$STATE/config.toml")" 'secretary = "openai/gpt-6.1-sol"' "qualified default Secretary model"
-assert_contains "$(cat "$STATE/config.toml")" 'reasoning = "xhigh"' "explicit default reasoning"
-assert_contains "$(cat "$STATE/config.toml")" 'default_harness = "opencode"' "default Worker harness"
-assert_contains "$(cat "$STATE/config.toml")" 'model = "openai/gpt-6-luna"' "qualified default Worker model"
+assert_contains "$(cat "$STATE/config.toml")" 'harness = "codex"' "default Secretary harness"
+assert_contains "$(cat "$STATE/config.toml")" 'secretary = "default"' "default Secretary model"
+assert_contains "$(cat "$STATE/config.toml")" 'default_harness = "codex"' "default Worker harness"
+assert_contains "$(cat "$STATE/config.toml")" 'model = "default"' "default Worker model"
+[[ ! -e "$STATE/opencode-native/opencode/opencode.db" ]] || fail "clean Codex setup initialized an OpenCode DB"
+perl -0pi -e 's/\[models\]\nsecretary = "default"/[models]\nsecretary = "openai\/gpt-6.1-sol"/; s/\[secretary\]\nharness = "codex"\nmodel = "default"\nreasoning = "default"/[secretary]\nharness = "opencode"\nmodel = "openai\/gpt-6.1-sol"\nreasoning = "xhigh"/; s/\[worker_policy\]\ndefault_harness = "codex"\nmodel = "default"\nreasoning = "default"\npreferred_harnesses = \["codex", "claude_code"\]/[worker_policy]\ndefault_harness = "opencode"\nmodel = "openai\/gpt-6-luna"\nreasoning = "xhigh"\npreferred_harnesses = ["opencode"]/' "$STATE/config.toml"
+output="$($SECRETARY_CLI opencode select-shared-store)" || fail "owner could not select the shared OpenCode store for the compatibility tests"
+assert_contains "$output" "shared Secretary and local Node store selected" "OpenCode store selection output"
+output="$($SECRETARY_CLI setup)" || fail "OpenCode compatibility setup failed"
+assert_contains "$output" "Setup complete" "OpenCode compatibility setup output"
+assert_contains "$(cat "$STATE/config.toml")" 'harness = "opencode"' "explicit Secretary harness selection"
+assert_contains "$(cat "$STATE/config.toml")" 'secretary = "openai/gpt-6.1-sol"' "configured Secretary model"
+assert_contains "$(cat "$STATE/config.toml")" 'reasoning = "xhigh"' "configured reasoning"
+assert_contains "$(cat "$STATE/config.toml")" 'default_harness = "opencode"' "explicit Worker harness selection"
+assert_contains "$(cat "$STATE/config.toml")" 'model = "openai/gpt-6-luna"' "configured Worker model"
 assert_file "$STATE/opencode-native/opencode/opencode.db"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$STATE_NORMALIZED/opencode-native|serve --port 0 --stdio" "setup did not initialize the shared native DB"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$STATE_NORMALIZED/node/data/opencode-native" "local Node setup created a second native store"
 [[ "$(grep -c '|serve --port 0 --stdio|' "$TICKET33_OPENCODE_STORE_LOG")" == "1" ]] || fail "fresh setup did not initialize exactly one shared native DB"
-output="$($SECRETARY_CLI node setup --name local-node)" || fail "local Node setup failed"
+output="$($SECRETARY_CLI node setup --include-opencode --name local-node)" || fail "local Node setup failed"
 assert_contains "$output" "Node setup complete: local-node" "local Node setup output"
 node_manifest="$(cat "$STATE/node/data/opencode-native-selection.json")"
 assert_contains "$node_manifest" '"mode": "shared"' "local Node did not keep the shared store selection"
 assert_contains "$node_manifest" "\"data_home\": \"$STATE_NORMALIZED/opencode-native\"" "local Node setup diverged from Secretary store"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$STATE_NORMALIZED/node/data/opencode-native" "local Node setup initialized a second native store"
-[[ "$(stat -f '%Lp' "$STATE/opencode-native")" == "700" ]] || fail "shared native store directory is not mode 0700"
-[[ "$(stat -f '%Lp' "$STATE/opencode-native/opencode/opencode.db")" == "600" ]] || fail "shared native DB is not mode 0600"
+[[ "$(file_mode "$STATE/opencode-native")" == "700" ]] || fail "shared native store directory is not mode 0700"
+[[ "$(file_mode "$STATE/opencode-native/opencode/opencode.db")" == "600" ]] || fail "shared native DB is not mode 0600"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$TEST_HOME/.local/share/opencode" "setup accessed personal OpenCode store"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "|auth login" "setup started provider login without owner action"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "|openai=|aws=" "OpenCode setup inherited ambient provider credentials"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "|auth list|" "setup used auth list as a native DB initialization substitute"
-[[ "$(cat "$TEST_HOME/.local/share/opencode/opencode.db")" == "personal-store-canary" ]] || fail "setup modified personal OpenCode DB"
+[[ "$(cat "$TEST_HOME/.local/share/opencode/personal-store-canary.txt")" == "personal-store-canary" ]] || fail "setup modified personal OpenCode canary"
 [[ -L "$BIN/secretary" ]] || fail "setup did not install secretary symlink"
 pass "setup"
 
 INIT_FAILURE_HOME="$TEST_HOME/native-init-failure-home"
-INIT_FAILURE_DB="$INIT_FAILURE_HOME/.local/share/secretary/opencode-native/opencode/opencode.db"
+INIT_FAILURE_STATE="$INIT_FAILURE_HOME/.local/share/secretary"
+INIT_FAILURE_DB="$INIT_FAILURE_STATE/opencode-native/opencode/opencode.db"
+mkdir -p "$INIT_FAILURE_STATE"
+cat > "$INIT_FAILURE_STATE/config.toml" <<'EOF'
+[secretary]
+harness = "opencode"
+
+[worker_policy]
+default_harness = "opencode"
+EOF
+"$BIN/secretaryd" --data-dir "$INIT_FAILURE_STATE" --select-shared-opencode-store >/dev/null
 if output="$(HOME="$INIT_FAILURE_HOME" PATH="$FAKE_BIN:$REAL_PATH" FAKE_OPENCODE_INIT_MODE=fail "$SECRETARY_CLI" setup 2>&1)"; then fail "setup hid a native DB initialization failure"; fi
 assert_contains "$output" "OpenCode native DB initialization failed; setup stopped" "native initialization failure was not visible"
 [[ ! -e "$INIT_FAILURE_DB" ]] || fail "failed native initialization left a purported DB"
@@ -313,7 +347,7 @@ assert_contains "$output" "Secretary stopped" "stop after restart output"
 output="$($SECRETARY_CLI opencode login)" || fail "explicit Secretary provider login failed"
 assert_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$STATE_NORMALIZED/opencode-native|auth login" "provider login did not use the selected Secretary store"
 assert_not_contains "$(cat "$TICKET33_OPENCODE_STORE_LOG")" "$TEST_HOME/.local/share/opencode" "provider login accessed personal store"
-[[ "$(cat "$TEST_HOME/.local/share/opencode/opencode.db")" == "personal-store-canary" ]] || fail "provider login modified personal OpenCode DB"
+[[ "$(cat "$TEST_HOME/.local/share/opencode/personal-store-canary.txt")" == "personal-store-canary" ]] || fail "provider login modified personal OpenCode canary"
 pass "explicit Secretary provider login"
 
 output="$($SECRETARY_CLI install-service --debug)" || fail "install-service command failed"
@@ -718,7 +752,13 @@ ln -s "$BIN/secretaryd" "$PAIR_HOME/.local/bin/secretaryd"
 ln -s "$BIN/secretary-node" "$PAIR_HOME/.local/bin/secretary-node"
 printf '[runtime]\nharness = "opencode"\n' > "$PAIR_STATE/config.toml"
 cat > "$PAIR_STATE/node/config.json" <<EOF
-{"server_url":"http://127.0.0.1:8081","node":"pair-check-node","data_dir":"$PAIR_NODE_DATA","include_opencode":true,"standalone":false}
+{
+  "server_url": "http://127.0.0.1:8081",
+  "node": "pair-check-node",
+  "data_dir": "$PAIR_NODE_DATA",
+  "include_opencode": true,
+  "standalone": false
+}
 EOF
 printf '{"version":1,"mode":"isolated","data_home":"%s"}\n' "$PAIR_SECRETARY_STORE" > "$PAIR_STATE/opencode-native-selection.json"
 printf '{"version":1,"mode":"isolated","data_home":"%s"}\n' "$PAIR_NODE_STORE" > "$PAIR_NODE_DATA/opencode-native-selection.json"
@@ -738,7 +778,13 @@ assert_contains "$output" "Co-located Secretary/Node OpenCode store selection is
 rm -f "$PAIR_NODE_STORE/opencode/opencode.db"
 [[ ! -e "$PAIR_NODE_STORE/opencode/opencode.db" ]] || fail "could not clear the private Node DB before setup acceptance"
 cat > "$PAIR_STATE/node/config.json" <<EOF
-{"server_url":"http://127.0.0.1:8081","node":"pair-check-node","data_dir":"$PAIR_NODE_DATA","include_opencode":true,"standalone":true}
+{
+  "server_url": "http://127.0.0.1:8081",
+  "node": "pair-check-node",
+  "data_dir": "$PAIR_NODE_DATA",
+  "include_opencode": true,
+  "standalone": true
+}
 EOF
 output="$(HOME="$PAIR_HOME" PATH="$FAKE_BIN:$REAL_PATH" SECRETARY_OPENCODE_COMMAND="$FAKE_BIN/opencode" "$SECRETARY_CLI" node setup --standalone --name pair-check-node 2>&1)" || fail "standalone Node setup was not independent of Secretary: $output"
 assert_contains "$output" "Node setup complete: pair-check-node" "standalone Node setup output was unclear"
@@ -967,7 +1013,7 @@ REMOTE_STATE="$REMOTE_HOME/.local/share/secretary"
 REMOTE_NODE_DATA="$REMOTE_STATE/node/data"
 mkdir -p "$REMOTE_HOME/.local/bin"
 ln -s "$BIN/secretary-node" "$REMOTE_HOME/.local/bin/secretary-node"
-output="$(HOME="$REMOTE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node setup --standalone --server https://secretary.example.invalid --name remote-node 2>&1)" || fail "standalone remote Node setup failed"
+output="$(HOME="$REMOTE_HOME" PATH="$FAKE_BIN:$REAL_PATH" "$SECRETARY_CLI" node setup --include-opencode --standalone --server https://secretary.example.invalid --name remote-node 2>&1)" || fail "standalone remote Node setup failed"
 assert_contains "$output" "Node setup complete: remote-node" "standalone Node setup output"
 assert_contains "$(cat "$REMOTE_STATE/node/config.json")" '"standalone": true' "standalone Node scope was not persisted"
 remote_manifest="$(cat "$REMOTE_NODE_DATA/opencode-native-selection.json")"
