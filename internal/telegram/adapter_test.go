@@ -233,7 +233,7 @@ func TestClientMessageMirrorsToGeneralOnceWithoutTelegramEcho(t *testing.T) {
 	}
 }
 
-func TestTerminalResultMirrorsToGeneralWithWorkerLabel(t *testing.T) {
+func TestTerminalResultMirrorsToGeneral(t *testing.T) {
 	transport := &fakeTransport{}
 	server := &fakeServer{}
 	adapter := newTestAdapter(t, transport, server, filepath.Join(t.TempDir(), "telegram.json"))
@@ -249,7 +249,7 @@ func TestTerminalResultMirrorsToGeneralWithWorkerLabel(t *testing.T) {
 		switch {
 		case sent.ThreadID != 0 && sent.Text == "pong":
 			topic++
-		case sent.ThreadID == 0 && sent.Text == "Погода:\npong":
+		case sent.ThreadID == 0 && sent.Text == "pong":
 			general++
 		default:
 			t.Fatalf("unexpected terminal message=%#v", sent)
@@ -836,7 +836,7 @@ func TestOutboxSurvivesTransportFailureAndRestart(t *testing.T) {
 	if err := restarted.HandleDurableEvent(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
-	if len(transport.sent) != 2 || transport.sent[0].Text != "Task" || transport.sent[1].Text != "Worker:\nTask" {
+	if len(transport.sent) != 2 || transport.sent[0].Text != "Task" || transport.sent[1].Text != "Task" {
 		t.Fatalf("outbox after restart = %#v", transport.sent)
 	}
 }
