@@ -448,6 +448,7 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 	}
 
 	var sessionPromptID any
+	authenticated := false
 	for scanner.Scan() {
 		var req struct {
 			ID     any             `json:"id"`
@@ -460,23 +461,87 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 
 		switch req.Method {
 		case "initialize":
+			agentCaps := map[string]any{
+				"loadSession": true,
+				"resume":      true,
+			}
+			var authMethods []map[string]string
+			switch scenario {
+			case "auth_protocol":
+				authMethods = []map[string]string{{"id": "agent-login", "type": "agent"}}
+			case "auth_terminal":
+				authMethods = []map[string]string{{"id": "cli-login", "type": "terminal"}}
+			case "already_authenticated":
+				authMethods = []map[string]string{{"id": "agent-login", "type": "agent"}}
+			case "resume_only_load":
+				agentCaps = map[string]any{"loadSession": true}
+			case "resume_no_caps":
+				agentCaps = map[string]any{}
+			case "resume_failed_no_fallback":
+				agentCaps = map[string]any{"sessionCapabilities": map[string]any{"resume": true}}
+			}
+			initResult := map[string]any{
+				"protocolVersion": 1,
+				"agentInfo": map[string]string{
+					"name":    "antigravity-acp",
+					"version": "1.3.0",
+				},
+				"agentCapabilities": agentCaps,
+			}
+			if len(authMethods) > 0 {
+				initResult["authMethods"] = authMethods
+			}
+			emit(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req.ID,
+				"result":  initResult,
+			})
+
+		case "authenticate":
+			if scenario == "auth_terminal" {
+				// ACP forbids authenticate for terminal methods!
+				os.Exit(99)
+			}
+			if scenario == "already_authenticated" {
+				// Client must not authenticate if session/new succeeds without it!
+				os.Exit(99)
+			}
+			authenticated = true
+			emit(map[string]any{
+				"jsonrpc": "2.0",
+				"id":      req.ID,
+				"result":  map[string]any{},
+			})
+
+		case "session/new":
+			if (scenario == "auth_protocol" || scenario == "auth_terminal") && !authenticated {
+				emit(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"error": map[string]any{
+						"code":    -32000,
+						"message": "Authentication required",
+						"data": map[string]any{
+							"reason": "auth_required",
+						},
+					},
+				})
+				continue
+			}
 			emit(map[string]any{
 				"jsonrpc": "2.0",
 				"id":      req.ID,
 				"result": map[string]any{
-					"protocolVersion": 1,
-					"agentInfo": map[string]string{
-						"name":    "antigravity-acp",
-						"version": "1.3.0",
-					},
-					"agentCapabilities": map[string]any{
-						"loadSession": true,
-						"resume":      true,
-					},
+					"sessionId":     "agy-sess-1",
+					"configOptions": sampleConfigOptions,
 				},
 			})
 
-		case "session/new":
+		case "session/load":
+			if scenario == "resume_failed_no_fallback" {
+				// Client must not trial-call loadSession if resume fails!
+				os.Exit(66)
+			}
 			emit(map[string]any{
 				"jsonrpc": "2.0",
 				"id":      req.ID,
@@ -487,6 +552,17 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 			})
 
 		case "session/resume":
+			if scenario == "resume_failed_no_fallback" {
+				emit(map[string]any{
+					"jsonrpc": "2.0",
+					"id":      req.ID,
+					"error": map[string]any{
+						"code":    -32603,
+						"message": "failed to resume session",
+					},
+				})
+				continue
+			}
 			if scenario != "resume" {
 				os.Exit(3)
 			}
@@ -763,5 +839,220 @@ func TestResolveNativeConfigOption_FailClosedOnUnknownOrAmbiguous(t *testing.T) 
 	_, _, err = resolveNativeConfigOption(catalog, "model", "shared_choice")
 	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("expected ambiguous error, got %v", err)
+	}
+}
+
+func TestAntigravityRuntime_AuthRequired_ProtocolMethod(t *testing.T) {
+	execPath, _ := createFakeAntigravityServer(t, "auth_protocol")
+	rt := AntigravityRuntime{
+		AntigravityCommand: execPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sess, err := rt.Start(ctx, StartRequest{
+		WorkerRef:          "auth-worker",
+		Workspace:          t.TempDir(),
+		Profile:            ManagedProfile{Name: "test-profile", Content: "instructions"},
+		DeferInitialPrompt: true,
+	})
+	if err != nil {
+		t.Fatalf("expected successful Start after protocol authentication retry, got: %v", err)
+	}
+	defer sess.Close()
+}
+
+func TestAntigravityRuntime_AuthRequired_TerminalMethod_ActionableError(t *testing.T) {
+	execPath, _ := createFakeAntigravityServer(t, "auth_terminal")
+	rt := AntigravityRuntime{
+		AntigravityCommand: execPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sess, err := rt.Start(ctx, StartRequest{
+		WorkerRef:          "terminal-auth-worker",
+		Workspace:          t.TempDir(),
+		Profile:            ManagedProfile{Name: "test-profile", Content: "instructions"},
+		DeferInitialPrompt: true,
+	})
+	if err == nil {
+		sess.Close()
+		t.Fatal("expected error for terminal auth, got nil")
+	}
+	if !strings.Contains(err.Error(), "login required via interactive terminal") {
+		t.Fatalf("expected actionable error message mentioning interactive terminal, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "cli-login") {
+		t.Fatalf("expected error mentioning method ID cli-login, got: %v", err)
+	}
+}
+
+func TestAntigravityRuntime_AlreadyAuthenticated_DoesNotAuthenticate(t *testing.T) {
+	execPath, _ := createFakeAntigravityServer(t, "already_authenticated")
+	rt := AntigravityRuntime{
+		AntigravityCommand: execPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sess, err := rt.Start(ctx, StartRequest{
+		WorkerRef:          "already-auth-worker",
+		Workspace:          t.TempDir(),
+		Profile:            ManagedProfile{Name: "test-profile", Content: "instructions"},
+		DeferInitialPrompt: true,
+	})
+	if err != nil {
+		t.Fatalf("expected successful Start without calling authenticate, got: %v", err)
+	}
+	defer sess.Close()
+}
+
+func TestAntigravityRuntime_Resume_UsesSessionResumeWhenAdvertised(t *testing.T) {
+	execPath, _ := createFakeAntigravityServer(t, "resume")
+	rt := AntigravityRuntime{
+		AntigravityCommand: execPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sess, err := rt.Resume(ctx, StartRequest{
+		WorkerRef: "resume-worker",
+		Workspace: t.TempDir(),
+		Profile:   ManagedProfile{Name: "test-profile", Content: "instructions"},
+	}, "agy-sess-1")
+	if err != nil {
+		t.Fatalf("expected successful Resume via session/resume, got: %v", err)
+	}
+	defer sess.Close()
+}
+
+func TestAntigravityRuntime_Resume_UsesSessionLoadWhenOnlyLoadAdvertised(t *testing.T) {
+	execPath, _ := createFakeAntigravityServer(t, "resume_only_load")
+	rt := AntigravityRuntime{
+		AntigravityCommand: execPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sess, err := rt.Resume(ctx, StartRequest{
+		WorkerRef: "load-worker",
+		Workspace: t.TempDir(),
+		Profile:   ManagedProfile{Name: "test-profile", Content: "instructions"},
+	}, "agy-sess-1")
+	if err != nil {
+		t.Fatalf("expected successful Resume via session/load fallback, got: %v", err)
+	}
+	defer sess.Close()
+}
+
+func TestAntigravityRuntime_Resume_UnsupportedWhenNeitherAdvertised(t *testing.T) {
+	execPath, _ := createFakeAntigravityServer(t, "resume_no_caps")
+	rt := AntigravityRuntime{
+		AntigravityCommand: execPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sess, err := rt.Resume(ctx, StartRequest{
+		WorkerRef: "no-caps-worker",
+		Workspace: t.TempDir(),
+		Profile:   ManagedProfile{Name: "test-profile", Content: "instructions"},
+	}, "agy-sess-1")
+	if err == nil {
+		sess.Close()
+		t.Fatal("expected unsupported error when neither resume nor loadSession is advertised")
+	}
+	if !strings.Contains(err.Error(), "neither session/resume nor loadSession") {
+		t.Fatalf("expected actionable error message, got: %v", err)
+	}
+}
+
+func TestAntigravityRuntime_Resume_DoesNotTrialCallSessionLoadOnResumeFailure(t *testing.T) {
+	execPath, _ := createFakeAntigravityServer(t, "resume_failed_no_fallback")
+	rt := AntigravityRuntime{
+		AntigravityCommand: execPath,
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	sess, err := rt.Resume(ctx, StartRequest{
+		WorkerRef: "failed-resume-worker",
+		Workspace: t.TempDir(),
+		Profile:   ManagedProfile{Name: "test-profile", Content: "instructions"},
+	}, "agy-sess-1")
+	if err == nil {
+		sess.Close()
+		t.Fatal("expected resume error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to resume session") {
+		t.Fatalf("expected resume error, got: %v", err)
+	}
+}
+
+func TestAntigravityRuntime_ExplicitProfileDir(t *testing.T) {
+	execPath, _ := createFakeAntigravityServer(t, "basic")
+	customDir := filepath.Join(t.TempDir(), "custom-profile-dir")
+
+	rt := AntigravityRuntime{
+		AntigravityCommand: execPath,
+		ProfileDir:         customDir,
+	}
+
+	// 1. ProbeSpec preserves custom ProfileDir
+	spec := rt.ProbeSpec()
+	if spec.ProfileDir != customDir {
+		t.Fatalf("ProbeSpec ProfileDir = %q; want %q", spec.ProfileDir, customDir)
+	}
+
+	// 2. Configured wires profileDir into GEMINI_HOME and creates tmp
+	configured, err := rt.configured(StartRequest{
+		WorkerRef: "custom-prof-worker",
+		Workspace: t.TempDir(),
+		Profile:   ManagedProfile{Content: "instructions"},
+	})
+	if err != nil {
+		t.Fatalf("configured failed: %v", err)
+	}
+
+	if _, err := os.Stat(customDir); os.IsNotExist(err) {
+		t.Fatalf("expected custom profile directory %q to be created", customDir)
+	}
+	customTmp := filepath.Join(customDir, "tmp")
+	if _, err := os.Stat(customTmp); os.IsNotExist(err) {
+		t.Fatalf("expected custom temp directory %q to be created", customTmp)
+	}
+
+	foundGeminiHome := false
+	for _, env := range configured.Environment {
+		if env == "GEMINI_HOME="+customDir {
+			foundGeminiHome = true
+			break
+		}
+	}
+	if !foundGeminiHome {
+		t.Fatalf("expected GEMINI_HOME=%s in environment: %v", customDir, configured.Environment)
+	}
+
+	// 3. HarnessDiscovery with AntigravityProfileDir wires into HarnessProbeSpec
+	disc := HarnessDiscovery{
+		Node:                  "test-node",
+		Runner:                &mockAntigravityObserver{version: "1.3.0", authenticated: true},
+		IncludeAntigravity:    true,
+		AntigravityProfileDir: customDir,
+	}
+	snapshot, err := disc.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("Discover failed: %v", err)
+	}
+	if len(snapshot.Instances) == 0 {
+		t.Fatal("expected discovered instances")
 	}
 }

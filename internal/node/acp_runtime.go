@@ -61,7 +61,7 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 		return nil, err
 	}
 	request.Profile = profile
-	client, err := r.connect(ctx, request.WorkerRef, profile, request.Workspace)
+	client, negotiated, err := r.connect(ctx, request.WorkerRef, profile, request.Workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -74,16 +74,25 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 	if metadata := profileMetadata(request.Profile); metadata != nil {
 		newParams["_meta"] = metadata
 	}
-	if err := client.Request(ctx, "session/new", newParams, &created); err != nil {
+	newErr := client.Request(ctx, "session/new", newParams, &created)
+	if newErr != nil && r.PreferResumeSession && isACPAuthRequired(newErr) {
+		authErr := r.handleAuthRequired(ctx, client, negotiated.AuthMethods, newErr)
+		if authErr != nil {
+			client.Close()
+			return nil, authErr
+		}
+		newErr = client.Request(ctx, "session/new", newParams, &created)
+	}
+	if newErr != nil {
 		client.Close()
 		if r.PreferResumeSession {
-			code, diagErr := classifyAntigravityError(err)
+			code, diagErr := classifyAntigravityError(newErr)
 			if code == "unauthenticated" {
-				return nil, fmt.Errorf("antigravity: authentication required; run interactive login or configure credentials: %w", err)
+				return nil, fmt.Errorf("antigravity: authentication required; run interactive login or configure credentials: %w", newErr)
 			}
 			return nil, diagErr
 		}
-		return nil, err
+		return nil, newErr
 	}
 	if created.SessionID == "" {
 		client.Close()
@@ -124,7 +133,7 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 		return nil, err
 	}
 	request.Profile = profile
-	client, err := r.connect(ctx, request.WorkerRef, profile, request.Workspace)
+	client, negotiated, err := r.connect(ctx, request.WorkerRef, profile, request.Workspace)
 	if err != nil {
 		return nil, err
 	}
@@ -144,7 +153,15 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 	}
 	resumeMethod := "session/load"
 	if r.PreferResumeSession {
-		resumeMethod = "session/resume"
+		if negotiated.Capabilities.SessionCapabilities.Resume {
+			resumeMethod = "session/resume"
+		} else if negotiated.Capabilities.LoadSession {
+			resumeMethod = "session/load"
+			session.replaying.Store(true)
+		} else {
+			_ = session.Close()
+			return nil, fmt.Errorf("antigravity: session resume is not supported by agent (neither session/resume nor loadSession capability advertised)")
+		}
 	} else {
 		session.replaying.Store(true)
 	}
@@ -153,13 +170,22 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 		ConfigOptions []nativeConfigOption `json:"configOptions"`
 	}
 	var resumeErr error
-	if r.PreferResumeSession {
+	if resumeMethod == "session/resume" {
 		resumeErr = client.Request(ctx, resumeMethod, resumeParams, &resumeResp)
-		if resumeErr != nil {
-			resumeErr = client.RequestDrainingEvents(ctx, "session/load", resumeParams, &resumeResp)
-		}
 	} else {
 		resumeErr = client.RequestDrainingEvents(ctx, resumeMethod, resumeParams, &resumeResp)
+	}
+	if resumeErr != nil && r.PreferResumeSession && isACPAuthRequired(resumeErr) {
+		authErr := r.handleAuthRequired(ctx, client, negotiated.AuthMethods, resumeErr)
+		if authErr != nil {
+			_ = session.Close()
+			return nil, authErr
+		}
+		if resumeMethod == "session/resume" {
+			resumeErr = client.Request(ctx, resumeMethod, resumeParams, &resumeResp)
+		} else {
+			resumeErr = client.RequestDrainingEvents(ctx, resumeMethod, resumeParams, &resumeResp)
+		}
 	}
 	session.replaying.Store(false)
 	if resumeErr != nil {
@@ -381,13 +407,149 @@ func isModelAlias(value string) bool {
 	}
 }
 
-func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile ManagedProfile, workspace string) (*acp.Client, error) {
+type acpAuthMethod struct {
+	ID          string `json:"id"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	Type        string `json:"type,omitempty"`
+}
+
+type acpSessionCapabilities struct {
+	Resume bool
+	List   bool
+	Close  bool
+	Delete bool
+}
+
+type acpAgentCapabilities struct {
+	LoadSession         bool
+	SessionCapabilities acpSessionCapabilities
+}
+
+type acpNegotiated struct {
+	ProtocolVersion int
+	AuthMethods     []acpAuthMethod
+	Capabilities    acpAgentCapabilities
+}
+
+func parseAgentCapabilities(raw map[string]any) acpAgentCapabilities {
+	var caps acpAgentCapabilities
+	if raw == nil {
+		return caps
+	}
+	if val, ok := raw["loadSession"]; ok {
+		if b, ok := val.(bool); ok && b {
+			caps.LoadSession = true
+		} else if val != nil && val != false {
+			caps.LoadSession = true
+		}
+	}
+	if val, ok := raw["resume"]; ok {
+		if b, ok := val.(bool); ok && b {
+			caps.SessionCapabilities.Resume = true
+		} else if val != nil && val != false {
+			caps.SessionCapabilities.Resume = true
+		}
+	}
+	if sessVal, ok := raw["sessionCapabilities"]; ok {
+		if sessMap, ok := sessVal.(map[string]any); ok {
+			if r, ok := sessMap["resume"]; ok && r != nil && r != false {
+				caps.SessionCapabilities.Resume = true
+			}
+			if l, ok := sessMap["loadSession"]; ok && l != nil && l != false {
+				caps.LoadSession = true
+			}
+			if l, ok := sessMap["list"]; ok && l != nil && l != false {
+				caps.SessionCapabilities.List = true
+			}
+			if c, ok := sessMap["close"]; ok && c != nil && c != false {
+				caps.SessionCapabilities.Close = true
+			}
+			if d, ok := sessMap["delete"]; ok && d != nil && d != false {
+				caps.SessionCapabilities.Delete = true
+			}
+		}
+	}
+	return caps
+}
+
+func selectAuthMethod(methods []acpAuthMethod) (*acpAuthMethod, error) {
+	if len(methods) == 0 {
+		return nil, errors.New("no authentication methods advertised by agent")
+	}
+	if pref := os.Getenv("SECRETARY_ANTIGRAVITY_AUTH_METHOD"); pref != "" {
+		for _, m := range methods {
+			if m.ID == pref {
+				return &m, nil
+			}
+		}
+		return nil, fmt.Errorf("preferred auth method %q not advertised by agent", pref)
+	}
+	for _, m := range methods {
+		if m.Type == "" || strings.EqualFold(m.Type, "agent") {
+			return &m, nil
+		}
+	}
+	return &methods[0], nil
+}
+
+func (r ACPRuntime) handleAuthRequired(ctx context.Context, client *acp.Client, authMethods []acpAuthMethod, origErr error) error {
+	method, err := selectAuthMethod(authMethods)
+	if err != nil {
+		return fmt.Errorf("antigravity: authentication required; %w", err)
+	}
+	if strings.EqualFold(method.Type, "terminal") {
+		return fmt.Errorf("antigravity: login required via interactive terminal (%s); run interactive login or complete onboarding", method.ID)
+	}
+	var authResp map[string]any
+	if err := client.Request(ctx, "authenticate", map[string]any{"methodId": method.ID}, &authResp); err != nil {
+		return fmt.Errorf("antigravity: authentication failed for method %q: %w", method.ID, err)
+	}
+	return nil
+}
+
+func isACPAuthRequired(err error) bool {
+	if err == nil {
+		return false
+	}
+	var rpcErr *acp.RPCError
+	if errors.As(err, &rpcErr) {
+		if rpcErr.HasData() {
+			var dataObj struct {
+				Reason string `json:"reason"`
+				Error  string `json:"error"`
+				Code   string `json:"code"`
+				Type   string `json:"type"`
+			}
+			if err := json.Unmarshal(rpcErr.Data, &dataObj); err == nil {
+				if strings.EqualFold(dataObj.Reason, "auth_required") ||
+					strings.EqualFold(dataObj.Error, "auth_required") ||
+					strings.EqualFold(dataObj.Code, "auth_required") ||
+					strings.EqualFold(dataObj.Type, "auth_required") {
+					return true
+				}
+			}
+			var strData string
+			if err := json.Unmarshal(rpcErr.Data, &strData); err == nil {
+				if strings.EqualFold(strData, "auth_required") {
+					return true
+				}
+			}
+		}
+		if strings.EqualFold(strings.TrimSpace(rpcErr.Message), "auth_required") {
+			return true
+		}
+	}
+	return false
+}
+
+func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile ManagedProfile, workspace string) (*acp.Client, acpNegotiated, error) {
 	var rawLog io.WriteCloser
 	if r.RawLogDir != "" {
 		var err error
 		rawLog, err = openRotatingLog(filepath.Join(r.RawLogDir, workerRef+".jsonl"), r.RawLogMaxBytes, r.RawLogFiles)
 		if err != nil {
-			return nil, fmt.Errorf("open raw ACP log: %w", err)
+			return nil, acpNegotiated{}, fmt.Errorf("open raw ACP log: %w", err)
 		}
 		rawLog = newRedactingACPLog(rawLog)
 	}
@@ -399,7 +561,7 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 			if rawLog != nil {
 				_ = rawLog.Close()
 			}
-			return nil, err
+			return nil, acpNegotiated{}, err
 		}
 	}
 	start := acp.StartWithLogEnvDir
@@ -411,14 +573,14 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 		if rawLog != nil {
 			_ = rawLog.Close()
 		}
-		return nil, err
+		return nil, acpNegotiated{}, err
 	}
 	var initialized struct {
-		ProtocolVersion *int `json:"protocolVersion"`
-		AuthMethods     []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"authMethods"`
+		ProtocolVersion   *int            `json:"protocolVersion"`
+		AgentInfo         map[string]any  `json:"agentInfo"`
+		AgentCapabilities map[string]any  `json:"agentCapabilities"`
+		Capabilities      map[string]any  `json:"capabilities"`
+		AuthMethods       []acpAuthMethod `json:"authMethods"`
 	}
 	if err := client.Request(ctx, "initialize", map[string]any{
 		"protocolVersion":    1,
@@ -426,40 +588,32 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 		"clientCapabilities": acpClientCapabilities(),
 	}, &initialized); err != nil {
 		client.Close()
-		return nil, err
+		return nil, acpNegotiated{}, err
 	}
 	if initialized.ProtocolVersion == nil || *initialized.ProtocolVersion != 1 {
 		client.Close()
-		return nil, fmt.Errorf("acp: unsupported negotiated protocol version %v", initialized.ProtocolVersion)
+		return nil, acpNegotiated{}, fmt.Errorf("acp: unsupported negotiated protocol version %v", initialized.ProtocolVersion)
 	}
-	if r.PreferResumeSession && len(initialized.AuthMethods) > 0 {
-		chosenMethod := initialized.AuthMethods[0].ID
-		for _, m := range initialized.AuthMethods {
-			if m.ID == "oauth-personal" {
-				chosenMethod = "oauth-personal"
-				break
-			}
+	caps := parseAgentCapabilities(initialized.AgentCapabilities)
+	if !caps.LoadSession && !caps.SessionCapabilities.Resume {
+		fallbackCaps := parseAgentCapabilities(initialized.Capabilities)
+		if fallbackCaps.LoadSession {
+			caps.LoadSession = true
 		}
-		if pref := os.Getenv("SECRETARY_ANTIGRAVITY_AUTH_METHOD"); pref != "" {
-			for _, m := range initialized.AuthMethods {
-				if m.ID == pref {
-					chosenMethod = pref
-					break
-				}
-			}
-		}
-		var authResp map[string]any
-		if err := client.Request(ctx, "authenticate", map[string]any{"methodId": chosenMethod}, &authResp); err != nil {
-			client.Close()
-			return nil, fmt.Errorf("antigravity: authentication required; run interactive login or configure credentials: %w", err)
+		if fallbackCaps.SessionCapabilities.Resume {
+			caps.SessionCapabilities.Resume = true
 		}
 	}
-	return client, nil
+	negotiated := acpNegotiated{
+		ProtocolVersion: *initialized.ProtocolVersion,
+		AuthMethods:     initialized.AuthMethods,
+		Capabilities:    caps,
+	}
+	return client, negotiated, nil
 }
 
 func acpClientCapabilities() map[string]any {
 	return map[string]any{
-		"terminal":    false,
 		"elicitation": map[string]any{"form": map[string]any{}},
 	}
 }

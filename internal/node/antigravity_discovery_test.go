@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -393,6 +394,26 @@ func TestClassifyAntigravityError(t *testing.T) {
 		{
 			err:      &acp.RPCError{Code: -32000, Message: "auth_required"},
 			wantCode: "unauthenticated",
+		},
+		{
+			err:      &acp.RPCError{Code: -32000, Message: "Authentication required", Data: json.RawMessage(`{"reason":"auth_required"}`)},
+			wantCode: "unauthenticated",
+		},
+		{
+			err:      &acp.RPCError{Code: -32000, Message: "Authentication required", Data: json.RawMessage(`{"error":"auth_required"}`)},
+			wantCode: "unauthenticated",
+		},
+		{
+			err:      &acp.RPCError{Code: -32000, Message: "Authentication required", Data: json.RawMessage(`"auth_required"`)},
+			wantCode: "unauthenticated",
+		},
+		{
+			err:      &acp.RPCError{Code: -32000, Message: "generic failure"},
+			wantCode: "session_setup_failed",
+		},
+		{
+			err:      &acp.RPCError{Code: -32000, Message: "something broke on server"},
+			wantCode: "session_setup_failed",
 		},
 		{
 			err:      &acp.RPCError{Code: -32601, Message: "method not found"},

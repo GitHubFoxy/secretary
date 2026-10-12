@@ -136,7 +136,7 @@ func probeOpenCodeACPWithDataHome(ctx context.Context, command, dataHome string,
 	if err != nil {
 		return fmt.Errorf("opencode ACP probe: isolated environment unavailable")
 	}
-	client, err := (ACPRuntime{Command: command, Arguments: args, Environment: environment, ExactEnvironment: true}).connect(ctx, "opencode-probe", ManagedProfile{}, workspace)
+	client, _, err := (ACPRuntime{Command: command, Arguments: args, Environment: environment, ExactEnvironment: true}).connect(ctx, "opencode-probe", ManagedProfile{}, workspace)
 	if err != nil {
 		return fmt.Errorf("opencode ACP initialize failed")
 	}

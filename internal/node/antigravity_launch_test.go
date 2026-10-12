@@ -211,3 +211,98 @@ func TestDefaultAntigravityProfileDir(t *testing.T) {
 		t.Fatalf("got %q; want %q", got, custom)
 	}
 }
+
+func TestAntigravityPlatformArgs_CrossPlatform(t *testing.T) {
+	tests := []struct {
+		name     string
+		goos     string
+		goarch   string
+		base     []string
+		wantArgs []string
+	}{
+		{
+			name:     "linux amd64 empty appends uid",
+			goos:     "linux",
+			goarch:   "amd64",
+			base:     nil,
+			wantArgs: []string{"--uid="},
+		},
+		{
+			name:     "linux arm64 empty appends uid",
+			goos:     "linux",
+			goarch:   "arm64",
+			base:     nil,
+			wantArgs: []string{"--uid="},
+		},
+		{
+			name:     "linux amd64 uid alone insufficient appends uid",
+			goos:     "linux",
+			goarch:   "amd64",
+			base:     []string{"--uid"},
+			wantArgs: []string{"--uid", "--uid="},
+		},
+		{
+			name:     "linux amd64 uid followed by flag insufficient appends uid",
+			goos:     "linux",
+			goarch:   "amd64",
+			base:     []string{"--uid", "--verbose"},
+			wantArgs: []string{"--uid", "--verbose", "--uid="},
+		},
+		{
+			name:     "linux amd64 valid pair preserves and no append",
+			goos:     "linux",
+			goarch:   "amd64",
+			base:     []string{"--uid", "1000", "--verbose"},
+			wantArgs: []string{"--uid", "1000", "--verbose"},
+		},
+		{
+			name:     "linux amd64 valid flag value preserves and no append",
+			goos:     "linux",
+			goarch:   "amd64",
+			base:     []string{"--uid=1000", "--verbose"},
+			wantArgs: []string{"--uid=1000", "--verbose"},
+		},
+		{
+			name:     "linux amd64 exact registry uid flag preserves and no append",
+			goos:     "linux",
+			goarch:   "amd64",
+			base:     []string{"--uid="},
+			wantArgs: []string{"--uid="},
+		},
+		{
+			name:     "darwin amd64 no automatic args",
+			goos:     "darwin",
+			goarch:   "amd64",
+			base:     nil,
+			wantArgs: []string{},
+		},
+		{
+			name:     "darwin arm64 preserves base unmodified",
+			goos:     "darwin",
+			goarch:   "arm64",
+			base:     []string{"--uid"},
+			wantArgs: []string{"--uid"},
+		},
+		{
+			name:     "windows amd64 no automatic args",
+			goos:     "windows",
+			goarch:   "amd64",
+			base:     nil,
+			wantArgs: []string{},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := buildAntigravityPlatformArgsForOS(tc.base, tc.goos, tc.goarch)
+			if len(got) != len(tc.wantArgs) {
+				t.Fatalf("got %v; want %v", got, tc.wantArgs)
+			}
+			for i := range got {
+				if got[i] != tc.wantArgs[i] {
+					t.Fatalf("index %d: got %q; want %q in %v", i, got[i], tc.wantArgs[i], got)
+				}
+			}
+		})
+	}
+}

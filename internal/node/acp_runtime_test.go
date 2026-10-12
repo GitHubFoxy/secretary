@@ -33,6 +33,9 @@ func TestACPClientCapabilitiesAdvertiseFormOnly(t *testing.T) {
 	if _, ok := capabilities["fs"]; ok {
 		t.Fatalf("filesystem capability must not be advertised: %#v", capabilities)
 	}
+	if _, ok := capabilities["terminal"]; ok {
+		t.Fatalf("terminal capability must not be advertised: %#v", capabilities)
+	}
 }
 
 func TestRedactACPLogLineHidesUserInput(t *testing.T) {
@@ -131,7 +134,7 @@ func TestACPConnectStartsHarnessInRequestWorkspace(t *testing.T) {
 	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:], Environment: []string{"ACP_CWD_RECORD=" + record}}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client, err := runtime.connect(ctx, "worker-cwd", ManagedProfile{}, workspace)
+	client, _, err := runtime.connect(ctx, "worker-cwd", ManagedProfile{}, workspace)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +158,7 @@ func TestACPConnectWithoutWorkspaceInheritsDirectory(t *testing.T) {
 	runtime := ACPRuntime{Command: command.Path, Arguments: command.Args[1:], Environment: []string{"ACP_CWD_RECORD=" + record}}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	client, err := runtime.connect(ctx, "worker-cwd", ManagedProfile{}, "")
+	client, _, err := runtime.connect(ctx, "worker-cwd", ManagedProfile{}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/beruseruko/secretary/internal/core"
 )
 
 type AntigravityRuntime struct {
@@ -78,4 +80,22 @@ func (r AntigravityRuntime) Resume(ctx context.Context, request StartRequest, id
 		return nil, err
 	}
 	return base.Resume(ctx, request, id)
+}
+
+func (r AntigravityRuntime) ProbeSpec() HarnessProbeSpec {
+	spec := DefaultAntigravityProbeSpec()
+	if strings.TrimSpace(r.AntigravityCommand) != "" {
+		spec.Binary = r.AntigravityCommand
+	}
+	profileDir := strings.TrimSpace(r.ProfileDir)
+	if profileDir == "" {
+		profileDir = DefaultAntigravityProfileDir()
+	}
+	spec.ProfileDir = profileDir
+	return spec
+}
+
+func (r AntigravityRuntime) Probe(ctx context.Context, node core.NodeReference, runner CommandRunner) ProbeResult {
+	spec := r.ProbeSpec()
+	return HarnessProbe{Node: node, Spec: spec, Runner: runner}.Probe(ctx)
 }

@@ -160,16 +160,24 @@ func BuildAntigravityEnvironment(baseEnv []string, companionPath, profileDir, te
 }
 
 func BuildAntigravityPlatformArgs(baseArgs []string) []string {
+	return buildAntigravityPlatformArgsForOS(baseArgs, runtime.GOOS, runtime.GOARCH)
+}
+
+func buildAntigravityPlatformArgsForOS(baseArgs []string, goos, goarch string) []string {
 	args := append([]string(nil), baseArgs...)
-	if runtime.GOOS == "linux" {
-		hasUID := false
-		for _, arg := range args {
-			if arg == "--uid=" || strings.HasPrefix(arg, "--uid=") || arg == "--uid" {
-				hasUID = true
+	if goos == "linux" && (goarch == "amd64" || goarch == "arm64") {
+		hasValidUID := false
+		for i, arg := range args {
+			if strings.HasPrefix(arg, "--uid=") {
+				hasValidUID = true
+				break
+			}
+			if arg == "--uid" && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && strings.TrimSpace(args[i+1]) != "" {
+				hasValidUID = true
 				break
 			}
 		}
-		if !hasUID {
+		if !hasValidUID {
 			args = append(args, "--uid=")
 		}
 	}

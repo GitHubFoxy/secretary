@@ -203,15 +203,13 @@ func observeAntigravityACP(ctx context.Context, execPath, companionPath, profile
 	defer client.Close()
 
 	var init struct {
-		ProtocolVersion int `json:"protocolVersion"`
-		AgentInfo       struct {
+		ProtocolVersion   int             `json:"protocolVersion"`
+		AgentInfo         struct {
 			Name    string `json:"name"`
 			Version string `json:"version"`
 		} `json:"agentInfo"`
-		AuthMethods []struct {
-			ID   string `json:"id"`
-			Name string `json:"name"`
-		} `json:"authMethods"`
+		AgentCapabilities map[string]any  `json:"agentCapabilities"`
+		AuthMethods       []acpAuthMethod `json:"authMethods"`
 	}
 
 	if err := client.Request(ctx, "initialize", map[string]any{
@@ -233,37 +231,6 @@ func observeAntigravityACP(ctx context.Context, execPath, companionPath, profile
 	}
 
 	var confirmedAuthMethod string
-	if len(init.AuthMethods) > 0 {
-		chosenMethod := init.AuthMethods[0].ID
-		for _, m := range init.AuthMethods {
-			if m.ID == "oauth-personal" {
-				chosenMethod = "oauth-personal"
-				break
-			}
-		}
-		if pref := os.Getenv("SECRETARY_ANTIGRAVITY_AUTH_METHOD"); pref != "" {
-			for _, m := range init.AuthMethods {
-				if m.ID == pref {
-					chosenMethod = pref
-					break
-				}
-			}
-		}
-
-		var authResp map[string]any
-		authErr := client.Request(ctx, "authenticate", map[string]any{
-			"methodId": chosenMethod,
-		}, &authResp)
-		if authErr != nil {
-			code, diagErr := classifyAntigravityError(authErr)
-			if code == "unauthenticated" || code == "auth_failed" {
-				return version, false, "", nil, nil, "unauthenticated", fmt.Errorf("antigravity: authentication required for %s: %w", chosenMethod, authErr)
-			}
-			return version, false, "", nil, nil, code, diagErr
-		}
-		confirmedAuthMethod = chosenMethod
-	}
-
 	var created struct {
 		SessionID     string                `json:"sessionId"`
 		ConfigOptions []nativeConfigOption `json:"configOptions"`
@@ -274,8 +241,28 @@ func observeAntigravityACP(ctx context.Context, execPath, companionPath, profile
 		"mcpServers": []MCPServer{},
 	}
 
-	if err := client.Request(ctx, "session/new", newParams, &created); err != nil {
-		code, diagErr := classifyAntigravityError(err)
+	newErr := client.Request(ctx, "session/new", newParams, &created)
+	if newErr != nil && isACPAuthRequired(newErr) {
+		method, selectErr := selectAuthMethod(init.AuthMethods)
+		if selectErr != nil {
+			return version, false, "", nil, nil, "unauthenticated", fmt.Errorf("antigravity: authentication required: %w", selectErr)
+		}
+		if strings.EqualFold(method.Type, "terminal") {
+			return version, false, "", nil, nil, "unauthenticated", fmt.Errorf("antigravity: login required via interactive terminal (%s); run interactive login or complete onboarding", method.ID)
+		}
+		var authResp map[string]any
+		authErr := client.Request(ctx, "authenticate", map[string]any{
+			"methodId": method.ID,
+		}, &authResp)
+		if authErr != nil {
+			return version, false, "", nil, nil, "unauthenticated", fmt.Errorf("antigravity: authentication required for %s: %w", method.ID, authErr)
+		}
+		confirmedAuthMethod = method.ID
+		newErr = client.Request(ctx, "session/new", newParams, &created)
+	}
+
+	if newErr != nil {
+		code, diagErr := classifyAntigravityError(newErr)
 		return version, false, "", nil, nil, code, diagErr
 	}
 
@@ -290,8 +277,8 @@ func observeAntigravityACP(ctx context.Context, execPath, companionPath, profile
 		return version, false, "", nil, nil, "unauthenticated", fmt.Errorf("antigravity: catalog requires authentication")
 	}
 
-	if confirmedAuthMethod == "" {
-		confirmedAuthMethod = "oauth-personal"
+	if confirmedAuthMethod == "" && len(init.AuthMethods) > 0 {
+		confirmedAuthMethod = init.AuthMethods[0].ID
 	}
 
 	return version, true, confirmedAuthMethod, models, reasoning, "", nil
@@ -303,11 +290,15 @@ func classifyAntigravityError(err error) (string, error) {
 	}
 	var rpcErr *acp.RPCError
 	if errors.As(err, &rpcErr) {
-		switch rpcErr.Code {
-		case -32000:
+		if isACPAuthRequired(rpcErr) {
 			return "unauthenticated", fmt.Errorf("antigravity: authentication required: %s", rpcErr.Message)
+		}
+		switch rpcErr.Code {
 		case -32600, -32601, -32602:
 			return "protocol_mismatch", fmt.Errorf("antigravity: protocol mismatch (code %d): %s", rpcErr.Code, rpcErr.Message)
+		}
+		if rpcErr.Code == -32000 {
+			return "session_setup_failed", fmt.Errorf("antigravity: ACP request failed (code %d): %s", rpcErr.Code, rpcErr.Message)
 		}
 		msgLower := strings.ToLower(rpcErr.Message)
 		switch {
