@@ -380,3 +380,214 @@ func TestUsageLimit_CancelAndClose(t *testing.T) {
 		t.Fatalf("expected turn canceled, got %s", updated.Turns[0].State)
 	}
 }
+
+func TestUsageLimit_RepeatTerminalUsageLimitOutcome_Idempotent(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "repeat_terminal.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{
+		Intent:            "work",
+		ProjectID:         "proj",
+		NodeID:            "local",
+		HarnessInstanceID: "local/codex",
+	}, TurnSpec{Input: "do work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC()
+	envelope := AttemptOutcomeEnvelope{
+		EventID:           "env-1",
+		Node:              "local",
+		HarnessInstanceID: "local/codex",
+		WorkerRef:         worker.WorkerRef,
+		TurnID:            attempt.TurnID,
+		AttemptID:         attempt.ID,
+		Status:            OutcomeFailed,
+		Classification:    OutcomeRetryable,
+		FailureCategory:   FailureCategoryUsageLimit,
+		FailureCode:       "usage_limit_exceeded",
+		Summary:           "Usage limit reached - manual hold",
+		OccurredAt:        now,
+	}
+
+	// First call records usage limit outcome (manual hold because no resetsAt)
+	outcome1, result1, isDup1, err1 := store.RecordNodeAttemptOutcome(ctx, envelope)
+	if err1 != nil {
+		t.Fatalf("first FinishAttempt failed: %v", err1)
+	}
+	if isDup1 {
+		t.Fatal("first call should not be duplicate")
+	}
+	if outcome1.Status != OutcomeFailed {
+		t.Fatalf("expected failed outcome, got %s", outcome1.Status)
+	}
+	if result1 != nil {
+		t.Fatalf("expected nil result on retryable/suspended attempt, got %#v", result1)
+	}
+
+	// Repeat call with identical envelope must succeed as duplicate (not ErrInvalidTransition)
+	outcome2, result2, isDup2, err2 := store.RecordNodeAttemptOutcome(ctx, envelope)
+	if err2 != nil {
+		t.Fatalf("repeat FinishAttempt failed: %v", err2)
+	}
+	if !isDup2 {
+		t.Fatal("repeat call should return isDuplicate = true")
+	}
+	if outcome2.ID != outcome1.ID {
+		t.Fatalf("expected same outcome ID %s, got %s", outcome1.ID, outcome2.ID)
+	}
+	if result2 != nil {
+		t.Fatalf("expected nil result on duplicate, got %#v", result2)
+	}
+
+	// Now cancel the limited worker attempt to give it a terminal Result
+	details, err := store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextAttempt := details.Attempts[1]
+	cancelOutcome, cancelResult, cancelErr := store.CancelLimitedWorkerAttempt(ctx, worker.ID, nextAttempt.ID, "Canceled")
+	if cancelErr != nil {
+		t.Fatalf("CancelLimitedWorkerAttempt failed: %v", cancelErr)
+	}
+	if cancelResult == nil || cancelResult.Status != ResultCanceled {
+		t.Fatalf("expected canceled result, got %#v", cancelResult)
+	}
+	_ = cancelOutcome
+
+	// Calling FinishAttempt again for nextAttempt with usage limit must return duplicate with existing Result (not ErrInvalidTransition)
+	repeatNextEnv := AttemptOutcomeEnvelope{
+		EventID:           "env-2",
+		Node:              "local",
+		HarnessInstanceID: "local/codex",
+		WorkerRef:         worker.WorkerRef,
+		TurnID:            nextAttempt.TurnID,
+		AttemptID:         nextAttempt.ID,
+		Status:            OutcomeFailed,
+		Classification:    OutcomeRetryable,
+		FailureCategory:   FailureCategoryUsageLimit,
+		FailureCode:       "usage_limit_exceeded",
+		Summary:           "Usage limit after cancellation",
+		OccurredAt:        now,
+	}
+	outcome3, result3, isDup3, err3 := store.RecordNodeAttemptOutcome(ctx, repeatNextEnv)
+	if err3 != nil {
+		t.Fatalf("repeat FinishAttempt on terminal attempt failed: %v", err3)
+	}
+	if !isDup3 {
+		t.Fatal("expected isDuplicate = true on terminal attempt")
+	}
+	if result3 == nil || result3.ID != cancelResult.ID {
+		t.Fatalf("expected existing terminal result %v, got %v", cancelResult, result3)
+	}
+	_ = outcome3
+}
+
+func TestUsageLimit_CancelLimitedWorkerAttempt_AtomicAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "cancel_atomic.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{
+		Intent:            "work",
+		ProjectID:         "proj",
+		NodeID:            "local",
+		HarnessInstanceID: "local/codex",
+	}, TurnSpec{Input: "do work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	resetTime := time.Now().UTC().Add(15 * time.Minute)
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{
+		Status:          OutcomeFailed,
+		Classification:  OutcomeRetryable,
+		FailureCategory: FailureCategoryUsageLimit,
+		FailureCode:     "usage_limit_exceeded",
+		Summary:         "usage limit reached",
+		ResetsAt:        &resetTime,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	details, err := store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nextAttempt := details.Attempts[1]
+
+	// Perform atomic CancelLimitedWorkerAttempt
+	outcome, result, err := store.CancelLimitedWorkerAttempt(ctx, worker.ID, nextAttempt.ID, "Canceled before auto-resume")
+	if err != nil {
+		t.Fatalf("CancelLimitedWorkerAttempt failed: %v", err)
+	}
+	if outcome.Status != OutcomeCanceled || outcome.Classification != OutcomeFinal {
+		t.Fatalf("expected canceled final outcome, got %#v", outcome)
+	}
+	if result == nil || result.Status != ResultCanceled || result.Summary != "Canceled before auto-resume" {
+		t.Fatalf("expected canceled result with summary, got %#v", result)
+	}
+
+	// Verify all states atomically transitioned
+	detailsAfter, err := store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detailsAfter.Worker.Status != WorkerIdle {
+		t.Fatalf("expected worker idle, got %s", detailsAfter.Worker.Status)
+	}
+	if detailsAfter.Turns[0].State != TurnCanceled {
+		t.Fatalf("expected turn canceled, got %s", detailsAfter.Turns[0].State)
+	}
+	if detailsAfter.Turns[0].ResultID != result.ID {
+		t.Fatalf("expected turn result_id %s, got %s", result.ID, detailsAfter.Turns[0].ResultID)
+	}
+	if detailsAfter.ActiveSchedule != nil {
+		t.Fatalf("expected no active schedule after cancellation, got %#v", detailsAfter.ActiveSchedule)
+	}
+
+	// Check phase4_worker_commands for resume command failed
+	cmd, found, cmdErr := store.FindWorkerCommand(ctx, "resume", "attempt", worker.ID, nextAttempt.ID)
+	if cmdErr != nil || !found {
+		t.Fatalf("expected command, err=%v, found=%v", cmdErr, found)
+	}
+	if cmd.State != WorkerCommandFailed || cmd.LastError != "canceled_before_handoff" {
+		t.Fatalf("expected failed command with canceled_before_handoff, got state=%s, lastError=%s", cmd.State, cmd.LastError)
+	}
+
+	// Second call must be idempotent and return same outcome and result without error
+	outcome2, result2, err2 := store.CancelLimitedWorkerAttempt(ctx, worker.ID, nextAttempt.ID, "Canceled again")
+	if err2 != nil {
+		t.Fatalf("second call failed: %v", err2)
+	}
+	if outcome2.ID != outcome.ID {
+		t.Fatalf("expected same outcome ID %s, got %s", outcome.ID, outcome2.ID)
+	}
+	if result2 == nil || result2.ID != result.ID {
+		t.Fatalf("expected same result ID %s, got %#v", result.ID, result2)
+	}
+}

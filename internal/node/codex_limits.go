@@ -69,9 +69,42 @@ func evaluateCodexRateLimits(resp CodexGetAccountRateLimitsResponse, model strin
 		// Priority 1: Match by explicit confirmed limitID from error
 		if limitID != "" {
 			if snap, ok := resp.RateLimitsByLimitID[limitID]; ok {
+				if snap.LimitID != nil && *snap.LimitID != "" && *snap.LimitID != limitID {
+					obs.BlockerReason = "rate limit bucket identity conflicts with limitID"
+					return obs
+				}
+				if model != "" && snap.NormalModelSlug != nil && *snap.NormalModelSlug != "" && *snap.NormalModelSlug != model {
+					obs.BlockerReason = fmt.Sprintf("rate limit bucket model %q conflicts with worker model %q", *snap.NormalModelSlug, model)
+					return obs
+				}
 				s := snap
 				matched = &s
 				matchedScope = limitID
+			} else {
+				var matching []struct {
+					id   string
+					snap CodexRateLimitSnapshot
+				}
+				for k, snap := range resp.RateLimitsByLimitID {
+					if snap.LimitID != nil && *snap.LimitID == limitID {
+						if model != "" && snap.NormalModelSlug != nil && *snap.NormalModelSlug != "" && *snap.NormalModelSlug != model {
+							obs.BlockerReason = fmt.Sprintf("rate limit bucket model %q conflicts with worker model %q", *snap.NormalModelSlug, model)
+							return obs
+						}
+						matching = append(matching, struct {
+							id   string
+							snap CodexRateLimitSnapshot
+						}{k, snap})
+					}
+				}
+				if len(matching) == 1 {
+					s := matching[0].snap
+					matched = &s
+					matchedScope = matching[0].id
+				} else if len(matching) > 1 {
+					obs.BlockerReason = "ambiguous rate limit buckets matching limitID"
+					return obs
+				}
 			}
 		}
 		// Priority 2: Match by model slug
@@ -82,6 +115,9 @@ func evaluateCodexRateLimits(resp CodexGetAccountRateLimitsResponse, model strin
 			}
 			for k, snap := range resp.RateLimitsByLimitID {
 				if snap.NormalModelSlug != nil && *snap.NormalModelSlug == model {
+					if limitID != "" && snap.LimitID != nil && *snap.LimitID != "" && *snap.LimitID != limitID {
+						continue
+					}
 					matching = append(matching, struct {
 						id   string
 						snap CodexRateLimitSnapshot

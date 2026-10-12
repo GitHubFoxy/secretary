@@ -325,15 +325,25 @@ func (s *Store) RecoverPhase4Attempts(ctx context.Context, resolver Phase4Attemp
 		now := s.now()
 		autoResume := s.EffectiveAutoResumeOnLimit()
 		for _, cs := range claimedList {
-			var cmdState, leaseUntil, lastError string
-			err := s.db.QueryRowContext(ctx, `SELECT state, lease_until, last_error FROM phase4_worker_commands WHERE worker_id = ? AND attempt_id = ? AND kind = 'resume'`, cs.workerID, cs.attemptID).Scan(&cmdState, &leaseUntil, &lastError)
-			if err == nil && cmdState == string(WorkerCommandPending) && leaseUntil == "" && lastError == "" {
-				targetState := ScheduleManualHold
-				if autoResume && cs.scheduledAt != nil && cs.scheduledAt.After(now) {
-					targetState = SchedulePending
-				}
-				_, _ = s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = ?, updated_at = ? WHERE id = ?`, string(targetState), timestamp(now), cs.id)
+			attempt, attErr := s.Phase4Attempt(ctx, cs.attemptID)
+			if attErr == nil && attempt.State != AttemptScheduled {
+				_, _ = s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'completed', updated_at = ? WHERE id = ?`, timestamp(now), cs.id)
+				continue
 			}
+
+			var cmdID, cmdState, leaseUntil, lastError string
+			cmdErr := s.db.QueryRowContext(ctx, `SELECT id, state, lease_until, last_error FROM phase4_worker_commands WHERE worker_id = ? AND attempt_id = ? AND kind = 'resume'`, cs.workerID, cs.attemptID).Scan(&cmdID, &cmdState, &leaseUntil, &lastError)
+			if cmdErr == nil && (cmdState == string(WorkerCommandPending) || cmdState == string(WorkerCommandUncertain)) {
+				_, _ = s.db.ExecContext(ctx, `UPDATE phase4_worker_commands SET lease_until = '', updated_at = ? WHERE id = ?`, timestamp(now), cmdID)
+			} else if errors.Is(cmdErr, sql.ErrNoRows) {
+				_ = s.ensureLifecycleCommandIntent(ctx, now, "resume", cs.workerID, cs.attemptID)
+			}
+
+			targetState := ScheduleManualHold
+			if autoResume && cs.scheduledAt != nil {
+				targetState = SchedulePending
+			}
+			_, _ = s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = ?, updated_at = ? WHERE id = ?`, string(targetState), timestamp(now), cs.id)
 		}
 	}
 

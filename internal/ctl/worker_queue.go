@@ -57,16 +57,8 @@ func (s WorkerService) processDueSchedule(ctx context.Context, schedule core.Att
 	if err != nil {
 		return err
 	}
-	if s.queuedWorkerRuntimeUnavailable(ctx, worker) {
+	if !s.workerNodeReady(ctx, worker) {
 		return nil
-	}
-	if err := s.requireRuntime(); err != nil {
-		return nil
-	}
-	now := s.workerCommandNow()
-	claimed, err := s.Store.ClaimAttemptSchedule(ctx, schedule.ID, now)
-	if err != nil || !claimed {
-		return err
 	}
 	turn, err := s.Store.Turn(ctx, schedule.TurnID)
 	if err != nil {
@@ -76,8 +68,14 @@ func (s WorkerService) processDueSchedule(ctx context.Context, schedule core.Att
 	if err != nil {
 		return err
 	}
+	now := s.workerCommandNow()
+	claimed, err := s.Store.ClaimAttemptSchedule(ctx, schedule.ID, now)
+	if err != nil || !claimed {
+		return err
+	}
 	command, send, err := s.claimCommand(ctx, "resume", "attempt", worker, attempt, nil)
 	if err != nil {
+		_ = s.Store.ReleaseAttemptSchedule(ctx, schedule.ID, now)
 		return err
 	}
 	if send {
@@ -89,6 +87,7 @@ func (s WorkerService) processDueSchedule(ctx context.Context, schedule core.Att
 			return s.Runtime.Resume(ctx, commandID, worker, turn, attempt, continuationPrompt)
 		})
 		if err != nil {
+			_ = s.Store.ReleaseAttemptSchedule(ctx, schedule.ID, now)
 			return err
 		}
 	}
@@ -104,6 +103,20 @@ func (s WorkerService) queuedWorkerRuntimeUnavailable(ctx context.Context, worke
 	}
 	ready, err := runtime.CommandReady(ctx, core.NodeReference(worker.NodeID))
 	return err == nil && !ready
+}
+
+func (s WorkerService) workerNodeReady(ctx context.Context, worker core.Worker) bool {
+	if s.requireRuntime() != nil {
+		return false
+	}
+	runtime, ok := s.Runtime.(interface {
+		CommandReady(context.Context, core.NodeReference) (bool, error)
+	})
+	if !ok {
+		return true
+	}
+	ready, err := runtime.CommandReady(ctx, core.NodeReference(worker.NodeID))
+	return err == nil && ready
 }
 
 func (s WorkerService) processQueuedWorker(ctx context.Context, conversationID string, worker core.Worker) error {

@@ -125,6 +125,58 @@ func TestCodexRateLimits_MultiBucketAndLegacySingleFallback(t *testing.T) {
 			t.Fatalf("expected legacy match, got %#v", obs)
 		}
 	})
+
+	t.Run("conflict when snapshot limitID does not match requested limitID", func(t *testing.T) {
+		wrongID := "mismatched-id"
+		resp := CodexGetAccountRateLimitsResponse{
+			RateLimitsByLimitID: map[string]CodexRateLimitSnapshot{
+				"codex-fast": {
+					LimitID: &wrongID,
+					Primary: &CodexRateLimitWindow{UsedPercent: 100.0, ResetsAt: &futureReset},
+				},
+			},
+		}
+		obs := evaluateCodexRateLimits(resp, "", "codex-fast", now, nil)
+		if !obs.IsManualHold || obs.BlockerReason != "rate limit bucket identity conflicts with limitID" {
+			t.Fatalf("expected conflict on limitID identity, got %#v", obs)
+		}
+	})
+
+	t.Run("conflict when snapshot normalModelSlug does not match worker model", func(t *testing.T) {
+		slug := "o3-mini"
+		limitID := "codex-fast"
+		resp := CodexGetAccountRateLimitsResponse{
+			RateLimitsByLimitID: map[string]CodexRateLimitSnapshot{
+				"codex-fast": {
+					LimitID:         &limitID,
+					NormalModelSlug: &slug,
+					Primary:         &CodexRateLimitWindow{UsedPercent: 100.0, ResetsAt: &futureReset},
+				},
+			},
+		}
+		obs := evaluateCodexRateLimits(resp, "gpt-4o", "codex-fast", now, nil)
+		if !obs.IsManualHold || obs.BlockerReason != `rate limit bucket model "o3-mini" conflicts with worker model "gpt-4o"` {
+			t.Fatalf("expected conflict on model slug, got %#v", obs)
+		}
+	})
+
+	t.Run("matches by snapshot LimitID when map key differs", func(t *testing.T) {
+		limitID := "confirmed-limit"
+		slug := "o3-mini"
+		resp := CodexGetAccountRateLimitsResponse{
+			RateLimitsByLimitID: map[string]CodexRateLimitSnapshot{
+				"bucket-uuid-1": {
+					LimitID:         &limitID,
+					NormalModelSlug: &slug,
+					Primary:         &CodexRateLimitWindow{UsedPercent: 100.0, ResetsAt: &futureReset},
+				},
+			},
+		}
+		obs := evaluateCodexRateLimits(resp, "o3-mini", "confirmed-limit", now, nil)
+		if obs.IsManualHold || obs.Scope != "bucket-uuid-1" {
+			t.Fatalf("expected match by LimitID field on bucket-uuid-1, got %#v", obs)
+		}
+	})
 }
 
 func TestCodexRateLimits_WindowsSelectionAndBlockers(t *testing.T) {

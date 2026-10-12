@@ -686,32 +686,26 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 	}
 	attempt := details.CurrentAttempt()
 	if details.Worker.Status == core.WorkerLimited {
-		schedule, foundSchedule, err := s.Store.FindActiveScheduleForWorker(ctx, details.Worker.ID)
-		if err != nil {
-			return core.WorkerDetails{}, err
-		}
-		if foundSchedule && (schedule.State == core.SchedulePending || schedule.State == core.ScheduleManualHold) {
-			_ = s.Store.CancelAttemptSchedule(ctx, schedule.ID, s.workerCommandNow())
-			if attempt != nil && !attempt.State.Terminal() {
-				if cmd, found, _ := s.Store.FindWorkerCommand(ctx, "resume", "attempt", details.Worker.ID, attempt.ID); found {
-					_, _ = s.Store.MarkWorkerCommandFailed(ctx, cmd.ID, "canceled_before_handoff")
-				}
-				if _, _, _, err := s.Store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
-					Status:         core.OutcomeCanceled,
-					Classification: core.OutcomeFinal,
-					ErrorCode:      "canceled",
-					FailureCode:    "canceled",
-					Summary:        "Canceled by direct input",
-				}); err != nil {
-					return core.WorkerDetails{}, err
-				}
+		if attempt != nil && !attempt.State.Terminal() {
+			if _, _, err := s.Store.CancelLimitedWorkerAttempt(ctx, details.Worker.ID, attempt.ID, "Canceled by direct input"); err != nil {
+				return core.WorkerDetails{}, err
 			}
-			details, err = s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+		} else {
+			schedule, foundSchedule, err := s.Store.FindActiveScheduleForWorker(ctx, details.Worker.ID)
 			if err != nil {
 				return core.WorkerDetails{}, err
 			}
-			attempt = details.CurrentAttempt()
+			if foundSchedule {
+				if err := s.Store.CancelAttemptSchedule(ctx, schedule.ID, s.workerCommandNow()); err != nil {
+					return core.WorkerDetails{}, err
+				}
+			}
 		}
+		details, err = s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		attempt = details.CurrentAttempt()
 	}
 	var actionTurnID string
 	if strings.TrimSpace(request.RequestID) != "" {
@@ -1037,6 +1031,17 @@ func (s WorkerService) ResumeWorker(ctx context.Context, workerRef string) (core
 	if err := s.requireRuntime(); err != nil {
 		return core.WorkerDetails{}, err
 	}
+	if !s.workerNodeReady(ctx, details.Worker) {
+		return core.WorkerDetails{}, ErrWorkerRuntimeUnavailable
+	}
+	turn, err := s.Store.Turn(ctx, schedule.TurnID)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	attempt, err := s.Store.Phase4Attempt(ctx, schedule.AttemptID)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
 	now := s.workerCommandNow()
 	err = s.Store.WithWorkerLifecycle(ctx, details.Worker.ID, func(ctx context.Context) error {
 		claimed, err := s.Store.ClaimAttemptSchedule(ctx, schedule.ID, now)
@@ -1046,16 +1051,9 @@ func (s WorkerService) ResumeWorker(ctx context.Context, workerRef string) (core
 		if !claimed {
 			return nil
 		}
-		turn, err := s.Store.Turn(ctx, schedule.TurnID)
-		if err != nil {
-			return err
-		}
-		attempt, err := s.Store.Phase4Attempt(ctx, schedule.AttemptID)
-		if err != nil {
-			return err
-		}
 		command, send, err := s.claimCommand(ctx, "resume", "attempt", details.Worker, attempt, nil)
 		if err != nil {
+			_ = s.Store.ReleaseAttemptSchedule(ctx, schedule.ID, now)
 			return err
 		}
 		if send {
@@ -1067,6 +1065,7 @@ func (s WorkerService) ResumeWorker(ctx context.Context, workerRef string) (core
 				return s.Runtime.Resume(ctx, commandID, details.Worker, turn, attempt, continuationPrompt)
 			})
 			if err != nil {
+				_ = s.Store.ReleaseAttemptSchedule(ctx, schedule.ID, now)
 				return err
 			}
 		}
@@ -1089,22 +1088,18 @@ func (s WorkerService) CancelWorker(ctx context.Context, workerRef string) (core
 	}
 	attempt := details.CurrentAttempt()
 	if attempt != nil && !attempt.State.Terminal() {
+		if details.Worker.Status == core.WorkerLimited {
+			if _, _, err := s.Store.CancelLimitedWorkerAttempt(ctx, details.Worker.ID, attempt.ID, "Canceled before scheduled continuation"); err != nil {
+				return core.WorkerDetails{}, err
+			}
+			return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
+		}
 		schedule, foundSchedule, err := s.Store.FindActiveScheduleForWorker(ctx, details.Worker.ID)
 		if err != nil {
 			return core.WorkerDetails{}, err
 		}
 		if foundSchedule && (schedule.State == core.SchedulePending || schedule.State == core.ScheduleManualHold) {
-			_ = s.Store.CancelAttemptSchedule(ctx, schedule.ID, s.workerCommandNow())
-			if cmd, found, _ := s.Store.FindWorkerCommand(ctx, "resume", "attempt", details.Worker.ID, attempt.ID); found {
-				_, _ = s.Store.MarkWorkerCommandFailed(ctx, cmd.ID, "canceled_before_handoff")
-			}
-			if _, _, _, err := s.Store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
-				Status:         core.OutcomeCanceled,
-				Classification: core.OutcomeFinal,
-				ErrorCode:      "canceled",
-				FailureCode:    "canceled",
-				Summary:        "Canceled before scheduled continuation",
-			}); err != nil {
+			if _, _, err := s.Store.CancelLimitedWorkerAttempt(ctx, details.Worker.ID, attempt.ID, "Canceled before scheduled continuation"); err != nil {
 				return core.WorkerDetails{}, err
 			}
 			return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)

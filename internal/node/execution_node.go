@@ -203,14 +203,22 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "workspace_failed", err.Error())
 		}
 	}
-	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: command.Envelope.OriginalUserIntent, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
+	continuing := command.Envelope.PreviousAttemptID != ""
+	promptText := command.Envelope.OriginalUserIntent
+	if command.Envelope.ContinuationPrompt != "" {
+		promptText = command.Envelope.ContinuationPrompt
+	}
+	task := command.Envelope.OriginalUserIntent
+	if continuing {
+		task = promptText
+	}
+	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
 	var session Session
-	continuing := command.Envelope.PreviousAttemptID != ""
 	if continuing {
 		mapping, mappingErr := n.continuationMapping(command.Envelope, command.Envelope.PreviousAttemptID)
 		resumer, ok := n.runtime.(Resumer)
@@ -249,7 +257,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	n.registerSession(mapping.AttemptID, session)
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
-		go func() { _ = session.Prompt(context.Background(), command.Envelope.OriginalUserIntent) }()
+		go func() { _ = session.Prompt(context.Background(), promptText) }()
 	} else {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
 	}
@@ -450,7 +458,15 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		}
 		workspace = canonicalWorkspace
 	}
-	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: command.Envelope.OriginalUserIntent, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID)}
+	promptText := command.Envelope.OriginalUserIntent
+	if command.Envelope.ContinuationPrompt != "" {
+		promptText = command.Envelope.ContinuationPrompt
+	}
+	task := command.Envelope.OriginalUserIntent
+	if continuing {
+		task = promptText
+	}
+	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID), DeferInitialPrompt: continuing}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "binding_conflict", err.Error())
@@ -478,10 +494,6 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	n.registerSession(command.Metadata.AttemptID, session)
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
-		promptText := command.Envelope.OriginalUserIntent
-		if command.Envelope.ContinuationPrompt != "" {
-			promptText = command.Envelope.ContinuationPrompt
-		}
 		go func() { _ = session.Prompt(context.Background(), promptText) }()
 	} else {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})

@@ -1,6 +1,8 @@
 package node
 
 import (
+	"context"
+	"sync"
 	"encoding/json"
 	"path/filepath"
 	"testing"
@@ -120,5 +122,179 @@ func TestRateLimitWire_LocalStoreQueueAndReplay(t *testing.T) {
 	}
 	if stored.QuotaScope != "codex-primary" {
 		t.Fatalf("expected stored QuotaScope codex-primary, got %s", stored.QuotaScope)
+	}
+}
+
+type continuationTestSession struct {
+	id      string
+	mu      sync.Mutex
+	prompts []string
+	results chan Result
+}
+
+func (s *continuationTestSession) ID() string { return s.id }
+func (s *continuationTestSession) Prompt(_ context.Context, p string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prompts = append(s.prompts, p)
+	return nil
+}
+func (s *continuationTestSession) Steer(context.Context, string) (bool, error) { return true, nil }
+func (s *continuationTestSession) Cancel(context.Context) error                { return nil }
+func (s *continuationTestSession) Activity() <-chan Activity                   { return nil }
+func (s *continuationTestSession) Result() <-chan Result                       { return s.results }
+func (s *continuationTestSession) Close() error                                { return nil }
+
+type continuationTestRuntime struct {
+	requests chan StartRequest
+	session  *continuationTestSession
+}
+
+func (r *continuationTestRuntime) Start(_ context.Context, req StartRequest) (Session, error) {
+	r.requests <- req
+	return r.session, nil
+}
+
+func (r *continuationTestRuntime) Resume(_ context.Context, req StartRequest, _ string) (Session, error) {
+	r.requests <- req
+	return r.session, nil
+}
+
+func TestRateLimitWire_ResumeContinuationPromptSemantics(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	storePath := filepath.Join(t.TempDir(), "continuation_node.json")
+	store, err := OpenLocalStore(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	sess := &continuationTestSession{
+		id:      "native-sess-1",
+		results: make(chan Result, 2),
+	}
+	rt := &continuationTestRuntime{
+		requests: make(chan StartRequest, 4),
+		session:  sess,
+	}
+
+	execNode := NewExecutionNode("macbook", rt, store)
+
+	// 1. Initial Dispatch
+	initialCmd := dispatchFixture("limit-cont-init")
+	initialCmd.Dispatch.Envelope.HarnessInstance.Kind = core.HarnessCodex
+	initialCmd.Dispatch.Envelope.Profile = workerTemplateFixture(initialCmd.Dispatch.Envelope.HarnessInstance, "", "")
+	initialCmd.Dispatch.Envelope.OriginalUserIntent = "Initial original user task"
+
+	outcome, err := execNode.HandleCommand(ctx, initialCmd)
+	if err != nil || outcome.State != CommandAccepted {
+		t.Fatalf("initial dispatch failed: outcome=%#v err=%v", outcome, err)
+	}
+
+	// Wait for start request
+	select {
+	case req := <-rt.requests:
+		if req.Task != "Initial original user task" {
+			t.Fatalf("expected initial task to be original intent, got %q", req.Task)
+		}
+		if req.DeferInitialPrompt {
+			t.Fatal("expected DeferInitialPrompt=false for fresh dispatch")
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+
+	// Simulate initial attempt finishing with usage limit outcome
+	sess.results <- Result{
+		Status:          "failed",
+		Summary:         "usage limit reached",
+		FailureCode:     "usage_limit_exceeded",
+		FailureCategory: core.FailureCategoryUsageLimit,
+	}
+
+	// Wait for terminal outcome recorded in store
+	attempt1ID := initialCmd.Dispatch.Metadata.AttemptID
+	for {
+		events, err := store.PendingEvents()
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, ev := range events {
+			if ev.EventID == "attempt-outcome-"+attempt1ID {
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal("timeout waiting for initial outcome event")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+
+	// 2. Scheduled Continuation via ResumeCommand
+	resumeMeta := initialCmd.Metadata()
+	resumeMeta.CommandID = "cont-resume-cmd"
+	resumeMeta.AttemptID = "attempt-2"
+
+	resumeEnv := initialCmd.Dispatch.Envelope
+	resumeEnv.AttemptID = "attempt-2"
+	resumeEnv.PreviousAttemptID = attempt1ID
+	resumeEnv.ContinuationPrompt = "Continue after rate limit resets"
+	resumeEnv.OriginalUserIntent = "Initial original user task that must NOT be resent"
+
+	resumeCmd := Command{
+		Kind: CommandResume,
+		Resume: &ResumeCommand{
+			Metadata: resumeMeta,
+			Envelope: resumeEnv,
+		},
+	}
+
+	resumeOutcome, err := execNode.HandleCommand(ctx, resumeCmd)
+	if err != nil || resumeOutcome.State != CommandAccepted {
+		t.Fatalf("continuation resume failed: outcome=%#v err=%v", resumeOutcome, err)
+	}
+
+	// Verify StartRequest delivered to Resumer.Resume
+	select {
+	case req := <-rt.requests:
+		// Finding 1: Task must be ContinuationPrompt, NOT OriginalUserIntent
+		if req.Task != "Continue after rate limit resets" {
+			t.Fatalf("expected StartRequest.Task to be ContinuationPrompt %q, got %q", "Continue after rate limit resets", req.Task)
+		}
+		// Finding 1: DeferInitialPrompt must be true
+		if !req.DeferInitialPrompt {
+			t.Fatal("expected StartRequest.DeferInitialPrompt to be true for continuing resume")
+		}
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+
+	// Verify prompt delivered via session.Prompt(...)
+	deadline := time.Now().Add(2 * time.Second)
+	var gotPrompts []string
+	for time.Now().Before(deadline) {
+		sess.mu.Lock()
+		if len(sess.prompts) > 0 {
+			gotPrompts = append([]string(nil), sess.prompts...)
+			sess.mu.Unlock()
+			break
+		}
+		sess.mu.Unlock()
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if len(gotPrompts) != 1 {
+		t.Fatalf("expected exactly 1 prompt to session, got %v", gotPrompts)
+	}
+	if gotPrompts[0] != "Continue after rate limit resets" {
+		t.Fatalf("expected prompt %q, got %q", "Continue after rate limit resets", gotPrompts[0])
 	}
 }

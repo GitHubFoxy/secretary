@@ -2,6 +2,7 @@ package ctl
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"path/filepath"
 	"sync"
@@ -15,6 +16,7 @@ type testUsageLimitRuntime struct {
 	lifecycleRuntime
 	mu          sync.Mutex
 	ready       bool
+	resumeErr   error
 	resumeCalls int
 	resumeTexts []string
 }
@@ -27,9 +29,12 @@ func (r *testUsageLimitRuntime) CommandReady(context.Context, core.NodeReference
 
 func (r *testUsageLimitRuntime) Resume(ctx context.Context, commandID string, worker core.Worker, turn core.Turn, attempt core.Phase4Attempt, prompt string) error {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.resumeCalls++
 	r.resumeTexts = append(r.resumeTexts, prompt)
-	r.mu.Unlock()
+	if r.resumeErr != nil {
+		return r.resumeErr
+	}
 	return nil
 }
 
@@ -289,8 +294,119 @@ func TestLimitedWorker_NewDirectInputCancelsSchedule(t *testing.T) {
 	if firstTurn.State != core.TurnCanceled {
 		t.Fatalf("expected first turn canceled, got %s", firstTurn.State)
 	}
+	if firstTurn.ResultID == "" {
+		t.Fatal("expected first turn to have canceled ResultID")
+	}
+	res, resErr := store.Phase4Result(ctx, firstTurn.ID)
+	if resErr != nil {
+		t.Fatalf("load turn result: %v", resErr)
+	}
+	if res.Status != core.ResultCanceled {
+		t.Fatalf("expected canceled result status, got %s", res.Status)
+	}
 	newTurn := details.Turns[1]
 	if newTurn.Input != "start completely new task" {
 		t.Fatalf("expected new turn input %q, got %q", "start completely new task", newTurn.Input)
+	}
+}
+
+func TestLimitedWorker_CancelWorker_AtomicAndIdempotent(t *testing.T) {
+	ctx := context.Background()
+	store, service, _, worker, _, _, _ := setupLimitedWorker(t, 10*time.Minute)
+	defer store.Close()
+
+	// CancelWorker
+	canceled, err := service.CancelWorker(ctx, worker.WorkerRef)
+	if err != nil {
+		t.Fatalf("CancelWorker failed: %v", err)
+	}
+
+	if canceled.Worker.Status != core.WorkerIdle {
+		t.Fatalf("expected worker status idle, got %s", canceled.Worker.Status)
+	}
+	if len(canceled.Turns) == 0 {
+		t.Fatal("expected turns to be present")
+	}
+	turn := canceled.Turns[0]
+	if turn.State != core.TurnCanceled {
+		t.Fatalf("expected turn canceled, got %s", turn.State)
+	}
+	if turn.ResultID == "" {
+		t.Fatal("expected turn to have result_id populated")
+	}
+	res, resErr := store.Phase4Result(ctx, turn.ID)
+	if resErr != nil {
+		t.Fatalf("load result: %v", resErr)
+	}
+	if res.Status != core.ResultCanceled {
+		t.Fatalf("expected result status canceled, got %s", res.Status)
+	}
+
+	// Active schedule is canceled
+	_, found, err := store.FindActiveScheduleForWorker(ctx, worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Fatal("expected no active schedule after cancellation")
+	}
+
+	// Idempotent second cancel
+	canceled2, err2 := service.CancelWorker(ctx, worker.WorkerRef)
+	if err2 != nil {
+		t.Fatalf("second CancelWorker failed: %v", err2)
+	}
+	if canceled2.Worker.Status != core.WorkerIdle {
+		t.Fatalf("expected worker idle on duplicate cancel, got %s", canceled2.Worker.Status)
+	}
+}
+
+func TestLimitedWorker_ResumeWorkerOffline_NoClaim(t *testing.T) {
+	ctx := context.Background()
+	store, service, runtime, worker, _, _, _ := setupLimitedWorker(t, 10*time.Minute)
+	defer store.Close()
+
+	// Set node offline
+	runtime.mu.Lock()
+	runtime.ready = false
+	runtime.mu.Unlock()
+
+	// ResumeWorker must fail without claiming schedule
+	_, err := service.ResumeWorker(ctx, worker.WorkerRef)
+	if err == nil {
+		t.Fatal("expected error when resuming offline worker")
+	}
+
+	// Schedule remains pending (not claimed)
+	sched, found, schedErr := store.FindActiveScheduleForWorker(ctx, worker.ID)
+	if schedErr != nil || !found {
+		t.Fatalf("expected schedule to remain, err=%v, found=%v", schedErr, found)
+	}
+	if sched.State != core.SchedulePending {
+		t.Fatalf("expected schedule to remain pending, got %s", sched.State)
+	}
+}
+
+func TestScheduledResume_DeliverCommandFailureReleasesSchedule(t *testing.T) {
+	ctx := context.Background()
+	store, service, runtime, worker, _, _, _ := setupLimitedWorker(t, 10*time.Second)
+	service.commandNow = func() time.Time { return time.Now().UTC().Add(2 * time.Minute) }
+	defer store.Close()
+
+	// Inject error into Runtime.Resume
+	runtime.mu.Lock()
+	runtime.resumeErr = errors.New("simulated runtime connection failure")
+	runtime.mu.Unlock()
+
+	// Run process loop
+	_ = service.ProcessQueuedWorkerMessages(ctx)
+
+	// Schedule MUST have been released, NOT stuck in claimed!
+	sched, found, schedErr := store.FindActiveScheduleForWorker(ctx, worker.ID)
+	if schedErr != nil || !found {
+		t.Fatalf("expected schedule, err=%v, found=%v", schedErr, found)
+	}
+	if sched.State != core.SchedulePending {
+		t.Fatalf("expected schedule released to pending, got %s", sched.State)
 	}
 }
