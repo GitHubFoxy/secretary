@@ -24,7 +24,7 @@ func TestApprovalIntentWinsExpiryAndConflictingRetryAfterTerminalResult(t *testi
 		{name: "deny", decision: "deny", state: core.ApprovalDenied, conflict: "approve"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 			store, err := core.Open(ctx, filepath.Join(t.TempDir(), "approval-late.db"))
 			if err != nil {
@@ -82,7 +82,10 @@ func TestApprovalIntentWinsExpiryAndConflictingRetryAfterTerminalResult(t *testi
 			if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
 				t.Fatal(err)
 			}
-			expiresAt := time.Now().UTC().Add(120 * time.Millisecond)
+			// Expiry is triggered explicitly below after the durable decision
+			// intent is recorded. Keep the deadline far enough away that a slow
+			// CI runner cannot expire the request before the response is sent.
+			expiresAt := time.Now().UTC().Add(time.Hour)
 			requestID := "permission-" + testCase.name
 			activity := core.Activity{Metadata: core.ActivityMetadata{
 				EventID: "approval-event-" + testCase.name, Node: nodeRef, HarnessInstanceID: instance.ID,
@@ -93,7 +96,7 @@ func TestApprovalIntentWinsExpiryAndConflictingRetryAfterTerminalResult(t *testi
 			}
 			service := WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: NodeRuntime{Manager: manager}}
 
-			respondCtx, stopRespond := context.WithTimeout(ctx, 300*time.Millisecond)
+			respondCtx, stopRespond := context.WithTimeout(ctx, time.Second)
 			respondDone := make(chan error, 1)
 			go func() {
 				_, respondErr := service.RespondWorker(respondCtx, MessageWorkerRequest{WorkerRef: worker.WorkerRef, Text: testCase.decision, RequestID: requestID, ClientID: "owner"})
