@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -985,6 +987,95 @@ func TestNormalizeRuntimeActivityThroughTelegramEventSerialization(t *testing.T)
 				if strings.Contains(msg, leak) {
 					t.Fatalf("leak %q found in rendered message: %q", leak, msg)
 				}
+			}
+		})
+	}
+}
+
+func TestTelegramLegacyFailureEventReplayOnReopen(t *testing.T) {
+	for _, malformedStatus := range []bool{false, true} {
+		t.Run(fmt.Sprint(malformedStatus), func(t *testing.T) {
+			var legacyStatus any = "failed"
+			if malformedStatus {
+				legacyStatus = map[string]any{"message": "Digest username=owner, response=privatevalue https://unknown.invalid/private"}
+			}
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "legacy-events.db")
+			store, err := core.Open(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, err := store.RecordEvent(ctx, "result.accepted", "worker", "attempt", "", map[string]any{"status": "failed", "summary": "safe"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			successText := "Successful Bearer example https://unknown.invalid/output"
+			success, err := store.RecordEvent(ctx, "result.accepted", "worker", "success-attempt", "", map[string]any{"status": "succeeded", "summary": successText})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+			raw, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, _ := json.Marshal(map[string]any{"status": legacyStatus, "extra": map[string]any{"message": "Digest username=owner, response=privatevalue https://unknown.invalid/private"}, "text": "Digest username=owner, response=privatevalue https://unknown.invalid/private", "summary": "Digest username=owner, response=privatevalue; Bearer private-token https://unknown.invalid/private " + strings.Repeat("я", 1200), "failure": map[string]any{"category": 123, "message": "Digest username=owner, response=privatevalue https://unknown.invalid/private " + strings.Repeat("я", 1200)}, "failure_category": []any{"Digest username=owner, response=privatevalue https://unknown.invalid/private "}, "diagnostics": map[string]any{"message": "Digest username=owner, response=privatevalue https://unknown.invalid/private "}, "error_code": []any{"Digest username=owner, response=privatevalue https://unknown.invalid/private "}, "error_message": map[string]any{"message": "Digest username=owner, response=privatevalue https://unknown.invalid/private "}, "failure_code": []any{"Digest username=owner, response=privatevalue https://unknown.invalid/private "}})
+			if _, err := raw.ExecContext(ctx, `UPDATE events SET payload_json = ? WHERE id = ?`, string(payload), event.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := raw.Close(); err != nil {
+				t.Fatal(err)
+			}
+			store, err = core.Open(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			events, err := store.EventsAfterSeq(ctx, event.Seq-1, 500)
+			if err != nil || len(events) != 2 {
+				t.Fatalf("events=%#v err=%v", events, err)
+			}
+			delivered := telegramEvent(events[0])
+			if delivered.EventID != event.ID || delivered.Sequence != event.Seq || delivered.AttemptID != "attempt" || len([]rune(delivered.Text)) > 1000 {
+				t.Fatalf("identity/bound changed: %#v", delivered)
+			}
+			for _, secret := range []string{"username=owner", "privatevalue", "private-token", "unknown.invalid"} {
+				if strings.Contains(delivered.Text, secret) || strings.Contains(string(delivered.Payload), secret) {
+					t.Fatalf("Telegram consumer leaked %s", secret)
+				}
+			}
+			transport := &bridgeTransport{}
+			adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, FlushInterval: time.Hour}, transport, &bridgeServer{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := adapter.HandleEvent(ctx, telegram.Event{Kind: "worker.created", WorkerRef: "worker"}); err != nil {
+				t.Fatal(err)
+			}
+			transport.sent = nil
+			if err := adapter.HandleDurableEvent(ctx, delivered); err != nil {
+				t.Fatal(err)
+			}
+			if err := adapter.HandleDurableEvent(ctx, delivered); err != nil {
+				t.Fatal(err)
+			}
+			if err := adapter.Flush(ctx); err != nil {
+				t.Fatal(err)
+			}
+			if len(transport.sent) == 0 {
+				t.Fatal("failure notification missing")
+			}
+			for _, message := range transport.sent {
+				for _, secret := range []string{"privatevalue", "unknown.invalid", "username=owner"} {
+					if strings.Contains(message.Text, secret) {
+						t.Fatalf("notification leaked: %s", message.Text)
+					}
+				}
+			}
+			if got := telegramEvent(events[1]); got.EventID != success.ID || got.Text != successText {
+				t.Fatalf("successful output changed: %#v", got)
 			}
 		})
 	}

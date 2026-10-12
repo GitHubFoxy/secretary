@@ -166,14 +166,17 @@ type controlAttempt struct {
 }
 
 type controlOutcome struct {
-	ID             string    `json:"id"`
-	AttemptID      string    `json:"attempt_id"`
-	Status         string    `json:"status"`
-	Classification string    `json:"classification"`
-	ErrorCode      string    `json:"error_code,omitempty"`
-	ErrorMessage   string    `json:"error_message,omitempty"`
-	Diagnostics    string    `json:"diagnostics,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	Summary         string               `json:"summary,omitempty"`
+	FailureCategory core.FailureCategory `json:"failure_category,omitempty"`
+	Failure         *core.WorkerFailure  `json:"failure,omitempty"`
+	ID              string               `json:"id"`
+	AttemptID       string               `json:"attempt_id"`
+	Status          string               `json:"status"`
+	Classification  string               `json:"classification"`
+	ErrorCode       string               `json:"error_code,omitempty"`
+	ErrorMessage    string               `json:"error_message,omitempty"`
+	Diagnostics     string               `json:"diagnostics,omitempty"`
+	CreatedAt       time.Time            `json:"created_at"`
 }
 
 type controlResult struct {
@@ -999,7 +1002,18 @@ func (s *Server) controlDiagnostics(w http.ResponseWriter, r *http.Request) {
 func (s *Server) buildWorkerDiagnostics(details core.WorkerDetails) (workerDiagnosticResponse, error) {
 	outcomes := make([]controlOutcome, 0, len(details.Outcomes))
 	for _, value := range details.Outcomes {
-		outcomes = append(outcomes, controlOutcome{ID: value.ID, AttemptID: value.AttemptID, Status: string(value.Status), Classification: string(value.Classification), ErrorCode: sanitizeDiagnosticText(value.ErrorCode), ErrorMessage: sanitizeDiagnosticText(value.ErrorMessage), Diagnostics: sanitizeDiagnosticText(value.Diagnostics), CreatedAt: value.CreatedAt})
+		outcome := controlOutcome{ID: value.ID, AttemptID: value.AttemptID, Status: string(value.Status), Classification: string(value.Classification), ErrorCode: sanitizeDiagnosticText(value.ErrorCode), ErrorMessage: sanitizeDiagnosticText(value.ErrorMessage), Diagnostics: sanitizeDiagnosticText(core.SanitizeFailureMessage(value.Diagnostics)), FailureCategory: value.FailureCategory, CreatedAt: value.CreatedAt}
+		for _, result := range details.Results {
+			if result.AttemptID == value.AttemptID {
+				outcome.Summary = sanitizeDiagnosticText(result.Summary)
+				if result.Failure != nil {
+					safe := core.SanitizeWorkerFailure(*result.Failure)
+					outcome.Failure = &safe
+				}
+				break
+			}
+		}
+		outcomes = append(outcomes, outcome)
 	}
 	recovery := controlRecovery{State: "idle", Health: "unknown"}
 	if len(details.Attempts) > 0 {

@@ -104,7 +104,7 @@ func scanEvents(rows *sql.Rows) ([]Event, error) {
 		if err := rows.Scan(&event.ID, &event.Seq, &event.Kind, &event.AggregateType, &event.AggregateID, &event.Source, &event.CorrelationID, &event.CausationID, &event.WorkerRef, &event.AttemptID, &payload, newTimestampScanner(&event.CreatedAt)); err != nil {
 			return nil, err
 		}
-		event.Payload = json.RawMessage(payload)
+		event.Payload = sanitizeFailureEventPayload(event.Kind, json.RawMessage(payload))
 		events = append(events, event)
 	}
 	return events, rows.Err()
@@ -127,4 +127,62 @@ func (s *Store) PruneEvents(ctx context.Context, before time.Time) (int64, error
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+// Historical events bypass current write sanitizers. Clean failure fields at the
+// shared read boundary without changing successful output or event identity.
+func sanitizeFailureEventPayload(kind string, raw json.RawMessage) json.RawMessage {
+	if kind != "result.accepted" && kind != "attempt.outcome_recorded" {
+		return raw
+	}
+	var original map[string]json.RawMessage
+	if json.Unmarshal(raw, &original) != nil || original == nil {
+		return json.RawMessage(`{"status":"failed"}`)
+	}
+	var status string
+	if json.Unmarshal(original["status"], &status) == nil && status == "succeeded" {
+		return raw
+	}
+	// Rebuild from the terminal schema: never serialize unknown legacy fields.
+	// Identity strings remain verbatim; free-form failure strings are bounded.
+	payload := make(map[string]json.RawMessage)
+	for _, key := range []string{"id", "worker_id", "turn_id", "attempt_id", "correlation_id"} {
+		var value string
+		if json.Unmarshal(original[key], &value) == nil {
+			payload[key], _ = json.Marshal(value)
+		}
+	}
+	if !AttemptOutcomeStatus(status).Valid() {
+		status = "failed"
+	}
+	payload["status"], _ = json.Marshal(status)
+	var classification OutcomeClassification
+	if json.Unmarshal(original["classification"], &classification) == nil && classification.Valid() {
+		payload["classification"], _ = json.Marshal(classification)
+	}
+	var createdAt time.Time
+	if json.Unmarshal(original["created_at"], &createdAt) == nil {
+		payload["created_at"], _ = json.Marshal(createdAt)
+	}
+	for _, key := range []string{"summary", "error_code", "error_message", "diagnostics", "failure_code"} {
+		var value string
+		if json.Unmarshal(original[key], &value) == nil {
+			if key == "failure_code" {
+				value = SanitizeFailureProviderCode(value)
+			} else {
+				value = SanitizeFailureMessage(value)
+			}
+			payload[key], _ = json.Marshal(value)
+		}
+	}
+	var category FailureCategory
+	if json.Unmarshal(original["failure_category"], &category) == nil {
+		payload["failure_category"], _ = json.Marshal(SanitizeFailureCategory(category))
+	}
+	var failure WorkerFailure
+	if json.Unmarshal(original["failure"], &failure) == nil && string(original["failure"]) != "null" {
+		payload["failure"], _ = json.Marshal(SanitizeWorkerFailure(failure))
+	}
+	encoded, _ := json.Marshal(payload) // Only validated JSON values are retained.
+	return encoded
 }

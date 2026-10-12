@@ -250,3 +250,13 @@ export function extractObserverFailure(error) {
   }
   return null;
 }
+
+export function terminalDiagnostic(outcome) {
+  const bounded = (value) => Array.from(typeof value === 'string' ? value : '').slice(0, 1000).join('');
+  return {
+    message: bounded(outcome.failure?.message || outcome.summary || outcome.error_message),
+    category: bounded(outcome.failure?.category || outcome.failure_category),
+    providerCode: bounded(outcome.failure?.provider_code || outcome.error_code),
+    technical: bounded(outcome.failure?.technical || outcome.diagnostics),
+  };
+}

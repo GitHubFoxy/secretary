@@ -301,159 +301,221 @@ func TestWorkerObserverExposesSafeToolFailureMetadataWithoutToolPayloads(t *test
 }
 
 func TestLegacyWorkerFailureReadModelsSanitizeOnReopen(t *testing.T) {
-	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "legacy-worker-failure.db")
-	store, err := core.Open(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, conversation, err := store.CreatePersonWithConversation(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
-		WorkerRef: "legacy-failure-reader", Intent: "inspect", ProjectID: "project", NodeID: "local", HarnessInstanceID: "local/fx",
-	}, core.TurnSpec{Input: "inspect"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
-		t.Fatal(err)
-	}
-	_, result, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
-		Status: core.OutcomeFailed, Classification: core.OutcomeFinal, Summary: "safe failure",
-		ErrorCode: "internal_error", ErrorMessage: "safe error", Diagnostics: "safe diagnostic",
-		FailureCode: "usage_limit_exceeded", FailureCategory: core.FailureCategoryUsageLimit,
-	})
-	if err != nil || result == nil {
-		t.Fatalf("record terminal failure: result=%#v err=%v", result, err)
-	}
-	successWorker, _, successAttempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
-		WorkerRef: "legacy-success-reader", Intent: "report", ProjectID: "project", NodeID: "local", HarnessInstanceID: "local/fx",
-	}, core.TurnSpec{Input: "report"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SetPhase4AttemptActive(ctx, successAttempt.ID); err != nil {
-		t.Fatal(err)
-	}
-	successSummary := "Successful output keeps its literal Bearer demo wording"
-	if _, successResult, _, err := store.RecordAttemptOutcome(ctx, successAttempt.ID, core.AttemptOutcomeInput{
-		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: successSummary,
-	}); err != nil || successResult == nil {
-		t.Fatalf("record successful output: result=%#v err=%v", successResult, err)
-	}
-	if err := store.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	// Seed the SQLite file as a pre-sanitizer installation would: bypass the
-	// current write boundary, then reopen through the real Store read paths.
-	raw, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	rawSummary := "Provider failed: Bearer legacy-bearer-secret; Digest username=owner, response=legacy-digest-secret"
-	rawDetails := `{"category":"usage_limit","provider_code":"usage_limit_exceeded","message":"Bearer details-bearer-secret","technical":"Digest username=owner, response=details-digest-secret"}`
-	if _, err := raw.ExecContext(ctx, `UPDATE phase4_results SET summary = ?, failure_code = ?, failure_details = ? WHERE id = ?`, rawSummary, "Bearer result-code-secret", rawDetails, result.ID); err != nil {
-		raw.Close()
-		t.Fatal(err)
-	}
-	if _, err := raw.ExecContext(ctx, `UPDATE phase4_attempt_outcomes SET error_code = ?, error_message = ?, diagnostics = ? WHERE attempt_id = ?`,
-		"Digest username=owner, response=outcome-code-secret", "Bearer outcome-message-secret", "diagnostic "+strings.Repeat("Bearer sk-outcome-diagnostic-secret ", 60), attempt.ID); err != nil {
-		raw.Close()
-		t.Fatal(err)
-	}
-	if _, err := raw.ExecContext(ctx, `UPDATE workers SET last_result_summary = ? WHERE id = ?`, rawSummary, worker.ID); err != nil {
-		raw.Close()
-		t.Fatal(err)
-	}
-	if _, err := raw.ExecContext(ctx, `UPDATE conversation_entries SET body = ? WHERE result_id = ?`, rawSummary, result.ID); err != nil {
-		raw.Close()
-		t.Fatal(err)
-	}
-	if err := raw.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	reopened, err := core.Open(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer reopened.Close()
-	details, err := reopened.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(details.Results) != 1 || len(details.Outcomes) != 1 {
-		t.Fatalf("read failure model: results=%d outcomes=%d", len(details.Results), len(details.Outcomes))
-	}
-	successDetails, err := reopened.WorkerDetailsForConversation(ctx, conversation.ID, successWorker.WorkerRef)
-	if err != nil || len(successDetails.Results) != 1 || successDetails.Results[0].Summary != successSummary || successDetails.Worker.LastResultSummary != successSummary {
-		t.Fatalf("successful output changed on read: details=%#v err=%v", successDetails, err)
-	}
-	encodedDetails, err := json.Marshal(details)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, secret := range []string{"legacy-bearer-secret", "legacy-digest-secret", "result-code-secret", "details-bearer-secret", "details-digest-secret", "outcome-code-secret", "outcome-message-secret", "sk-outcome-diagnostic-secret"} {
-		if strings.Contains(string(encodedDetails), secret) {
-			t.Errorf("WorkerDetails leaked legacy failure text %q: %s", secret, encodedDetails)
-		}
-	}
-	if details.Results[0].FailureCode != "" || details.Results[0].Summary == rawSummary || details.Outcomes[0].Diagnostics == "" {
-		t.Fatalf("legacy read fields were not sanitized: result=%#v outcome=%#v", details.Results[0], details.Outcomes[0])
-	}
-	entries, err := reopened.EntriesAfter(ctx, conversation.ID, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	foundFailureEntry := false
-	for _, entry := range entries {
-		if entry.ResultID == result.ID {
-			foundFailureEntry = true
-			if entry.Body == rawSummary {
-				t.Fatalf("legacy Conversation result was not sanitized: %#v", entry)
+	for _, malformedStatus := range []bool{false, true} {
+		t.Run(fmt.Sprint(malformedStatus), func(t *testing.T) {
+			var legacyStatus any = "failed"
+			if malformedStatus {
+				legacyStatus = map[string]any{"message": "Digest username=owner, response=privatevalue https://unknown.invalid/private"}
 			}
-		}
-	}
-	if !foundFailureEntry {
-		t.Fatalf("legacy Conversation result missing from entries: %#v", entries)
-	}
-	replay, err := reopened.ReplayConversation(ctx, conversation.ID, 0)
-	foundFailureEntry = false
-	for _, entry := range replay.Entries {
-		if entry.ResultID == result.ID {
-			foundFailureEntry = entry.Body != rawSummary
-		}
-	}
-	if err != nil || !foundFailureEntry {
-		t.Fatalf("legacy Conversation replay was not sanitized: replay=%#v err=%v", replay, err)
-	}
-
-	api, err := New(ctx, reopened, "bootstrap")
-	if err != nil {
-		t.Fatal(err)
-	}
-	server := httptest.NewServer(api.Handler())
-	defer server.Close()
-	client := &http.Client{Jar: mustWebCookieJar(t)}
-	login(t, client, server.URL)
-	for _, route := range []string{"/v1/workers/" + worker.WorkerRef, "/v1/conversation"} {
-		response, err := client.Get(server.URL + route)
-		if err != nil {
-			t.Fatal(err)
-		}
-		body, readErr := io.ReadAll(response.Body)
-		response.Body.Close()
-		if readErr != nil || response.StatusCode != http.StatusOK {
-			t.Fatalf("GET %s status=%d err=%v body=%s", route, response.StatusCode, readErr, body)
-		}
-		for _, secret := range []string{"legacy-bearer-secret", "legacy-digest-secret", "result-code-secret", "details-bearer-secret", "details-digest-secret", "outcome-code-secret", "outcome-message-secret", "sk-outcome-diagnostic-secret"} {
-			if strings.Contains(string(body), secret) {
-				t.Errorf("owner API %s leaked legacy failure text %q: %s", route, secret, body)
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "legacy-worker-failure.db")
+			store, err := core.Open(ctx, path)
+			if err != nil {
+				t.Fatal(err)
 			}
-		}
+			_, conversation, err := store.CreatePersonWithConversation(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			worker, _, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+				WorkerRef: "legacy-failure-reader", Intent: "inspect", ProjectID: "project", NodeID: "local", HarnessInstanceID: "local/fx",
+			}, core.TurnSpec{Input: "inspect"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+				t.Fatal(err)
+			}
+			_, result, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
+				Status: core.OutcomeFailed, Classification: core.OutcomeFinal, Summary: "safe failure",
+				ErrorCode: "internal_error", ErrorMessage: "safe error", Diagnostics: "safe diagnostic",
+				FailureCode: "usage_limit_exceeded", FailureCategory: core.FailureCategoryUsageLimit,
+			})
+			if err != nil || result == nil {
+				t.Fatalf("record terminal failure: result=%#v err=%v", result, err)
+			}
+			successWorker, _, successAttempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+				WorkerRef: "legacy-success-reader", Intent: "report", ProjectID: "project", NodeID: "local", HarnessInstanceID: "local/fx",
+			}, core.TurnSpec{Input: "report"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.SetPhase4AttemptActive(ctx, successAttempt.ID); err != nil {
+				t.Fatal(err)
+			}
+			successSummary := "Successful output keeps its literal Bearer demo wording"
+			if _, successResult, _, err := store.RecordAttemptOutcome(ctx, successAttempt.ID, core.AttemptOutcomeInput{
+				Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: successSummary,
+			}); err != nil || successResult == nil {
+				t.Fatalf("record successful output: result=%#v err=%v", successResult, err)
+			}
+			if err := store.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			// Seed the SQLite file as a pre-sanitizer installation would: bypass the
+			// current write boundary, then reopen through the real Store read paths.
+			raw, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			rawSummary := "Provider failed: Bearer legacy-bearer-secret; Digest username=owner, response=legacy-digest-secret"
+			rawDetails := `{"category":"usage_limit","provider_code":"usage_limit_exceeded","message":"Usage limit exceeded; try again at 4:37 PM; Bearer details-bearer-secret","technical":"acp rpc -32603; Digest username=owner, response=details-digest-secret"}`
+			if _, err := raw.ExecContext(ctx, `UPDATE phase4_results SET summary = ?, failure_code = ?, failure_details = ? WHERE id = ?`, rawSummary, "Bearer result-code-secret", rawDetails, result.ID); err != nil {
+				raw.Close()
+				t.Fatal(err)
+			}
+			if _, err := raw.ExecContext(ctx, `UPDATE phase4_attempt_outcomes SET error_code = ?, error_message = ?, diagnostics = ? WHERE attempt_id = ?`,
+				"Digest username=owner, response=outcome-code-secret", "Bearer outcome-message-secret", "diagnostic "+strings.Repeat("Bearer sk-outcome-diagnostic-secret ", 60), attempt.ID); err != nil {
+				raw.Close()
+				t.Fatal(err)
+			}
+			if _, err := raw.ExecContext(ctx, `UPDATE workers SET last_result_summary = ? WHERE id = ?`, rawSummary, worker.ID); err != nil {
+				raw.Close()
+				t.Fatal(err)
+			}
+			if _, err := raw.ExecContext(ctx, `UPDATE conversation_entries SET body = ? WHERE result_id = ?`, rawSummary, result.ID); err != nil {
+				raw.Close()
+				t.Fatal(err)
+			}
+			var legacyEventID string
+			var legacyEventSeq int64
+			if err := raw.QueryRowContext(ctx, `SELECT id, seq FROM events WHERE kind = 'result.accepted' AND aggregate_id = ?`, result.ID).Scan(&legacyEventID, &legacyEventSeq); err != nil {
+				t.Fatal(err)
+			}
+			legacyPayload, _ := json.Marshal(map[string]any{"id": result.ID, "status": legacyStatus, "extra": map[string]any{"message": "Digest username=owner, response=privatevalue https://unknown.invalid/private"}, "text": "Digest username=owner, response=privatevalue https://unknown.invalid/private", "summary": rawSummary + " https://unknown.invalid/private " + strings.Repeat("я", 1200), "attempt_id": attempt.ID, "failure": map[string]any{"category": 123, "message": "Digest username=owner, response=privatevalue https://unknown.invalid/private " + strings.Repeat("я", 1200)}, "failure_category": []any{"Digest username=owner, response=privatevalue https://unknown.invalid/private "}, "diagnostics": map[string]any{"message": "Digest username=owner, response=privatevalue https://unknown.invalid/private "}, "error_code": []any{"Digest username=owner, response=privatevalue https://unknown.invalid/private "}, "error_message": map[string]any{"message": "Digest username=owner, response=privatevalue https://unknown.invalid/private "}, "failure_code": []any{"Digest username=owner, response=privatevalue https://unknown.invalid/private "}})
+			if _, err := raw.ExecContext(ctx, `UPDATE events SET payload_json = ? WHERE kind = 'result.accepted' AND aggregate_id = ?`, string(legacyPayload), result.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := raw.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			reopened, err := core.Open(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reopened.Close()
+			details, err := reopened.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(details.Results) != 1 || len(details.Outcomes) != 1 {
+				t.Fatalf("read failure model: results=%d outcomes=%d", len(details.Results), len(details.Outcomes))
+			}
+			successDetails, err := reopened.WorkerDetailsForConversation(ctx, conversation.ID, successWorker.WorkerRef)
+			if err != nil || len(successDetails.Results) != 1 || successDetails.Results[0].Summary != successSummary || successDetails.Worker.LastResultSummary != successSummary {
+				t.Fatalf("successful output changed on read: details=%#v err=%v", successDetails, err)
+			}
+			encodedDetails, err := json.Marshal(details)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, secret := range []string{"legacy-bearer-secret", "legacy-digest-secret", "result-code-secret", "details-bearer-secret", "details-digest-secret", "outcome-code-secret", "outcome-message-secret", "sk-outcome-diagnostic-secret"} {
+				if strings.Contains(string(encodedDetails), secret) {
+					t.Errorf("WorkerDetails leaked legacy failure text %q: %s", secret, encodedDetails)
+				}
+			}
+			if details.Results[0].FailureCode != "" || details.Results[0].Summary == rawSummary || details.Outcomes[0].Diagnostics == "" {
+				t.Fatalf("legacy read fields were not sanitized: result=%#v outcome=%#v", details.Results[0], details.Outcomes[0])
+			}
+			entries, err := reopened.EntriesAfter(ctx, conversation.ID, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			foundFailureEntry := false
+			for _, entry := range entries {
+				if entry.ResultID == result.ID {
+					foundFailureEntry = true
+					if entry.Body == rawSummary {
+						t.Fatalf("legacy Conversation result was not sanitized: %#v", entry)
+					}
+				}
+			}
+			if !foundFailureEntry {
+				t.Fatalf("legacy Conversation result missing from entries: %#v", entries)
+			}
+			replay, err := reopened.ReplayConversation(ctx, conversation.ID, 0)
+			foundFailureEntry = false
+			for _, entry := range replay.Entries {
+				if entry.ResultID == result.ID {
+					foundFailureEntry = entry.Body != rawSummary
+				}
+			}
+			if err != nil || !foundFailureEntry {
+				t.Fatalf("legacy Conversation replay was not sanitized: replay=%#v err=%v", replay, err)
+			}
+
+			api, err := New(ctx, reopened, "bootstrap")
+			if err != nil {
+				t.Fatal(err)
+			}
+			events, err := api.workerEventsWithContext(ctx, worker.WorkerRef, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			foundResultEvent := false
+			for _, event := range events {
+				if event.Kind != "result.accepted" {
+					continue
+				}
+				foundResultEvent = true
+				public := sanitizePublicEvent(event)
+				var payload core.Result
+				if err := json.Unmarshal(public.Payload, &payload); err != nil {
+					t.Fatal(err)
+				}
+				if payload.ID != result.ID || payload.AttemptID != attempt.ID || event.ID != legacyEventID || event.Seq != legacyEventSeq || len([]rune(payload.Summary)) > 1000 {
+					t.Fatalf("replay identity/bound: %#v %#v", event, payload)
+				}
+				for _, secret := range []string{"legacy-bearer-secret", "legacy-digest-secret", "privatevalue", "username=owner", "unknown.invalid"} {
+					if strings.Contains(string(public.Payload), secret) {
+						t.Fatalf("Web replay leaked %s", secret)
+					}
+				}
+			}
+			if !foundResultEvent {
+				t.Fatal("result event missing")
+			}
+			diagnostics, err := api.buildWorkerDiagnostics(details)
+			if err != nil || len(diagnostics.AttemptOutcomes) != 1 || diagnostics.AttemptOutcomes[0].Failure == nil || diagnostics.AttemptOutcomes[0].Summary == "" {
+				t.Fatalf("terminal diagnostic metadata missing: %#v %v", diagnostics, err)
+			}
+			server := httptest.NewServer(api.Handler())
+			defer server.Close()
+			client := &http.Client{Jar: mustWebCookieJar(t)}
+			login(t, client, server.URL)
+			for _, route := range []string{"/v1/workers/" + worker.WorkerRef, "/v1/workers/" + worker.WorkerRef + "/diagnostics", "/v1/conversation"} {
+				response, err := client.Get(server.URL + route)
+				if err != nil {
+					t.Fatal(err)
+				}
+				body, readErr := io.ReadAll(response.Body)
+				response.Body.Close()
+				if readErr != nil || response.StatusCode != http.StatusOK {
+					t.Fatalf("GET %s status=%d err=%v body=%s", route, response.StatusCode, readErr, body)
+				}
+				if strings.HasSuffix(route, "/diagnostics") {
+					var dto workerDiagnosticResponse
+					if err := json.Unmarshal(body, &dto); err != nil {
+						t.Fatal(err)
+					}
+					if len(dto.AttemptOutcomes) != 1 {
+						t.Fatalf("diagnostic outcomes: %#v", dto)
+					}
+					outcome := dto.AttemptOutcomes[0]
+					if outcome.Failure == nil || outcome.Failure.Category != core.FailureCategoryUsageLimit || outcome.Failure.ProviderCode != "usage_limit_exceeded" || !strings.Contains(outcome.Failure.Message, "4:37 PM") || !strings.Contains(outcome.Failure.Technical, "acp rpc -32603") || len([]rune(outcome.Diagnostics)) > 1000 {
+						t.Fatalf("terminal diagnostics lost reason/reset/technical: %#v", outcome)
+					}
+				}
+
+				for _, secret := range []string{"legacy-bearer-secret", "legacy-digest-secret", "result-code-secret", "details-bearer-secret", "details-digest-secret", "outcome-code-secret", "outcome-message-secret", "sk-outcome-diagnostic-secret"} {
+					if strings.Contains(string(body), secret) {
+						t.Errorf("owner API %s leaked legacy failure text %q: %s", route, secret, body)
+					}
+				}
+			}
+		})
 	}
 }
 

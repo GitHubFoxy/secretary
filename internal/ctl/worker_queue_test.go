@@ -303,7 +303,7 @@ func TestWorkerQueue_DeliveredQueueFollowUp_DeniedSteering_SuccessfulTerminal_FI
 
 	// Configure runtime with error on Steer
 	runtime := &errorSteerLifecycleRuntime{
-		lifecycleRuntime: *service.Runtime.(*lifecycleRuntime),
+		lifecycleRuntime: lifecycleRuntime{store: store},
 		steerErr: &node.NodeCommandError{
 			Outcome: node.CommandOutcome{
 				State:           node.CommandFailed,

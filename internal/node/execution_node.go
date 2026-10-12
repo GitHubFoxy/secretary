@@ -1045,51 +1045,8 @@ func semanticOutputPresent(result string) bool {
 		(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
 		var parsed any
 		if json.Unmarshal([]byte(trimmed), &parsed) == nil {
-			return parsedSemanticOutput(parsed)
+			return core.HasSemanticOutput(parsed)
 		}
 	}
 	return true
-}
-
-func parsedSemanticOutput(v any) bool {
-	switch current := v.(type) {
-	case string:
-		return strings.TrimSpace(current) != ""
-	case map[string]any:
-		if len(current) == 0 {
-			return false
-		}
-		hasOutputKeys := false
-		for _, key := range []string{"formatted_output", "output", "result", "stdout", "stderr", "error", "text"} {
-			if child, exists := current[key]; exists {
-				hasOutputKeys = true
-				if parsedSemanticOutput(child) {
-					return true
-				}
-			}
-		}
-		if hasOutputKeys {
-			return false
-		}
-		for _, child := range current {
-			if parsedSemanticOutput(child) {
-				return true
-			}
-		}
-		return false
-	case []any:
-		if len(current) == 0 {
-			return false
-		}
-		for _, child := range current {
-			if parsedSemanticOutput(child) {
-				return true
-			}
-		}
-		return false
-	case nil:
-		return false
-	default:
-		return true
-	}
 }

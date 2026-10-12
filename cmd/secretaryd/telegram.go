@@ -355,60 +355,17 @@ func hasSemanticToolOutput(toolResult map[string]any) bool {
 				(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
 				var parsed any
 				if json.Unmarshal([]byte(trimmed), &parsed) == nil {
-					return hasParsedOutput(parsed)
+					return core.HasSemanticOutput(parsed)
 				}
 			}
 			return true
 		case map[string]any:
-			return hasParsedOutput(v)
+			return core.HasSemanticOutput(v)
 		case []any:
-			return hasParsedOutput(v)
+			return core.HasSemanticOutput(v)
 		default:
 			return true
 		}
 	}
 	return checkValue(toolResult["output"]) || checkValue(toolResult["result"]) || checkValue(toolResult["error"])
-}
-
-func hasParsedOutput(v any) bool {
-	switch current := v.(type) {
-	case string:
-		return strings.TrimSpace(current) != ""
-	case map[string]any:
-		if len(current) == 0 {
-			return false
-		}
-		hasOutputKeys := false
-		for _, key := range []string{"formatted_output", "output", "result", "stdout", "stderr", "error", "text"} {
-			if child, exists := current[key]; exists {
-				hasOutputKeys = true
-				if hasParsedOutput(child) {
-					return true
-				}
-			}
-		}
-		if hasOutputKeys {
-			return false
-		}
-		for _, child := range current {
-			if hasParsedOutput(child) {
-				return true
-			}
-		}
-		return false
-	case []any:
-		if len(current) == 0 {
-			return false
-		}
-		for _, child := range current {
-			if hasParsedOutput(child) {
-				return true
-			}
-		}
-		return false
-	case nil:
-		return false
-	default:
-		return true
-	}
 }

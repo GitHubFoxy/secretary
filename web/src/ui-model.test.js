@@ -169,3 +169,19 @@ test("structured API failure captures category, providerCode, technical and pres
     technical: "Quota exceeded for model claude-3-5-sonnet",
   });
 });
+
+
+test('terminal diagnostics show the provider reason, reset text and bounded technical detail', async () => {
+  const { terminalDiagnostic } = await import('./ui-model.js');
+  const display = terminalDiagnostic({ status: 'failed', error_message: 'Internal error', failure: {
+    category: 'usage_limit', provider_code: 'usage_limit_exceeded',
+    message: 'Usage limit exceeded; try again at 4:37 PM', technical: '😀'.repeat(1200),
+  }});
+  assert.equal(display.message, 'Usage limit exceeded; try again at 4:37 PM');
+  assert.equal(display.category, 'usage_limit');
+  assert.equal(display.providerCode, 'usage_limit_exceeded');
+  assert.equal(Array.from(display.technical).length, 1000);
+  assert.deepEqual(terminalDiagnostic({summary: 'legacy reason', diagnostics: 'legacy detail'}), {
+    message: 'legacy reason', category: '', providerCode: '', technical: 'legacy detail',
+  });
+});
