@@ -212,6 +212,25 @@ func TestDefaultAntigravityProfileDir(t *testing.T) {
 	}
 }
 
+func TestResolveAntigravityProfileDir(t *testing.T) {
+	customExplicit := "/explicit/profile"
+	if got := ResolveAntigravityProfileDir(customExplicit); got != customExplicit {
+		t.Fatalf("got %q; want %q", got, customExplicit)
+	}
+
+	customEnv := filepath.Join(t.TempDir(), "custom-env-profile")
+	t.Setenv("SECRETARY_ANTIGRAVITY_PROFILE_DIR", customEnv)
+	if got := ResolveAntigravityProfileDir("", "  "); got != customEnv {
+		t.Fatalf("got %q; want %q", got, customEnv)
+	}
+
+	t.Setenv("SECRETARY_ANTIGRAVITY_PROFILE_DIR", "")
+	t.Setenv("ANTIGRAVITY_PROFILE_DIR", customEnv)
+	if got := ResolveAntigravityProfileDir(); got != customEnv {
+		t.Fatalf("got %q; want %q", got, customEnv)
+	}
+}
+
 func TestAntigravityPlatformArgs_CrossPlatform(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -235,18 +254,25 @@ func TestAntigravityPlatformArgs_CrossPlatform(t *testing.T) {
 			wantArgs: []string{"--uid="},
 		},
 		{
-			name:     "linux amd64 uid alone insufficient appends uid",
+			name:     "linux amd64 uid alone stripped and appends uid",
 			goos:     "linux",
 			goarch:   "amd64",
 			base:     []string{"--uid"},
-			wantArgs: []string{"--uid", "--uid="},
+			wantArgs: []string{"--uid="},
 		},
 		{
-			name:     "linux amd64 uid followed by flag insufficient appends uid",
+			name:     "linux amd64 uid followed by flag stripped and appends uid",
 			goos:     "linux",
 			goarch:   "amd64",
 			base:     []string{"--uid", "--verbose"},
-			wantArgs: []string{"--uid", "--verbose", "--uid="},
+			wantArgs: []string{"--verbose", "--uid="},
+		},
+		{
+			name:     "linux amd64 uid followed by empty value stripped and appends uid",
+			goos:     "linux",
+			goarch:   "amd64",
+			base:     []string{"--uid", "   ", "--verbose"},
+			wantArgs: []string{"--verbose", "--uid="},
 		},
 		{
 			name:     "linux amd64 valid pair preserves and no append",
@@ -280,8 +306,36 @@ func TestAntigravityPlatformArgs_CrossPlatform(t *testing.T) {
 			name:     "darwin arm64 preserves base unmodified",
 			goos:     "darwin",
 			goarch:   "arm64",
+			base:     []string{"--custom-flag"},
+			wantArgs: []string{"--custom-flag"},
+		},
+		{
+			name:     "darwin arm64 trailing malformed uid stripped",
+			goos:     "darwin",
+			goarch:   "arm64",
 			base:     []string{"--uid"},
-			wantArgs: []string{"--uid"},
+			wantArgs: []string{},
+		},
+		{
+			name:     "darwin arm64 flag-followed malformed uid stripped",
+			goos:     "darwin",
+			goarch:   "arm64",
+			base:     []string{"--uid", "--verbose"},
+			wantArgs: []string{"--verbose"},
+		},
+		{
+			name:     "darwin arm64 valid pair preserves",
+			goos:     "darwin",
+			goarch:   "arm64",
+			base:     []string{"--uid", "1000", "--verbose"},
+			wantArgs: []string{"--uid", "1000", "--verbose"},
+		},
+		{
+			name:     "darwin arm64 valid flag value preserves",
+			goos:     "darwin",
+			goarch:   "arm64",
+			base:     []string{"--uid=1000", "--verbose"},
+			wantArgs: []string{"--uid=1000", "--verbose"},
 		},
 		{
 			name:     "windows amd64 no automatic args",
@@ -289,6 +343,13 @@ func TestAntigravityPlatformArgs_CrossPlatform(t *testing.T) {
 			goarch:   "amd64",
 			base:     nil,
 			wantArgs: []string{},
+		},
+		{
+			name:     "windows amd64 malformed uid stripped",
+			goos:     "windows",
+			goarch:   "amd64",
+			base:     []string{"--uid", "--verbose"},
+			wantArgs: []string{"--verbose"},
 		},
 	}
 
@@ -304,5 +365,45 @@ func TestAntigravityPlatformArgs_CrossPlatform(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestAntigravityPlatformArgs_MalformedOptionsDoNotSurvive(t *testing.T) {
+	malformedInputs := [][]string{
+		{"--uid"},
+		{"--uid", "--verbose"},
+		{"--uid", "-v"},
+		{"--uid", ""},
+		{"--uid", "   "},
+		{"--custom", "--uid", "--verbose"},
+	}
+
+	platforms := []struct {
+		goos   string
+		goarch string
+	}{
+		{"linux", "amd64"},
+		{"linux", "arm64"},
+		{"darwin", "arm64"},
+		{"darwin", "amd64"},
+		{"windows", "amd64"},
+	}
+
+	for _, p := range platforms {
+		for _, input := range malformedInputs {
+			result := buildAntigravityPlatformArgsForOS(input, p.goos, p.goarch)
+			// Check that no standalone malformed "--uid" remains followed by a flag or at the end
+			for i, arg := range result {
+				if arg == "--uid" {
+					if i+1 >= len(result) {
+						t.Fatalf("platform %s/%s: dangling --uid at end of args: %v", p.goos, p.goarch, result)
+					}
+					next := result[i+1]
+					if strings.HasPrefix(next, "-") || strings.TrimSpace(next) == "" {
+						t.Fatalf("platform %s/%s: malformed --uid followed by %q survived: %v", p.goos, p.goarch, next, result)
+					}
+				}
+			}
+		}
 	}
 }

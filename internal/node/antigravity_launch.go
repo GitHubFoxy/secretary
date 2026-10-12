@@ -42,11 +42,25 @@ func DefaultAntigravityProfileDir() string {
 	if env := strings.TrimSpace(os.Getenv("SECRETARY_ANTIGRAVITY_PROFILE_DIR")); env != "" {
 		return env
 	}
+	if env := strings.TrimSpace(os.Getenv("ANTIGRAVITY_PROFILE_DIR")); env != "" {
+		return env
+	}
 	home, err := os.UserHomeDir()
 	if err == nil && strings.TrimSpace(home) != "" {
 		return filepath.Join(home, ".secretary", "antigravity")
 	}
 	return filepath.Join(os.TempDir(), "secretary-antigravity")
+}
+
+// ResolveAntigravityProfileDir returns the first non-empty explicit profile directory,
+// falling back to DefaultAntigravityProfileDir.
+func ResolveAntigravityProfileDir(explicit ...string) string {
+	for _, dir := range explicit {
+		if trimmed := strings.TrimSpace(dir); trimmed != "" {
+			return trimmed
+		}
+	}
+	return DefaultAntigravityProfileDir()
 }
 
 func AntigravityBinaryNames() []string {
@@ -164,22 +178,40 @@ func BuildAntigravityPlatformArgs(baseArgs []string) []string {
 }
 
 func buildAntigravityPlatformArgsForOS(baseArgs []string, goos, goarch string) []string {
-	args := append([]string(nil), baseArgs...)
-	if goos == "linux" && (goarch == "amd64" || goarch == "arm64") {
-		hasValidUID := false
-		for i, arg := range args {
-			if strings.HasPrefix(arg, "--uid=") {
-				hasValidUID = true
-				break
-			}
-			if arg == "--uid" && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") && strings.TrimSpace(args[i+1]) != "" {
-				hasValidUID = true
-				break
-			}
+	cleaned := make([]string, 0, len(baseArgs)+1)
+	hasValidUID := false
+
+	for i := 0; i < len(baseArgs); i++ {
+		arg := baseArgs[i]
+		if strings.HasPrefix(arg, "--uid=") {
+			hasValidUID = true
+			cleaned = append(cleaned, arg)
+			continue
 		}
+		if arg == "--uid" {
+			if i+1 < len(baseArgs) {
+				next := baseArgs[i+1]
+				if !strings.HasPrefix(next, "-") && strings.TrimSpace(next) != "" {
+					hasValidUID = true
+					cleaned = append(cleaned, arg, next)
+					i++
+					continue
+				}
+				if strings.TrimSpace(next) == "" {
+					i++ // consume empty/whitespace token
+					continue
+				}
+			}
+			// Malformed --uid (followed by another flag or at end of args) is stripped
+			continue
+		}
+		cleaned = append(cleaned, arg)
+	}
+
+	if goos == "linux" && (goarch == "amd64" || goarch == "arm64") {
 		if !hasValidUID {
-			args = append(args, "--uid=")
+			cleaned = append(cleaned, "--uid=")
 		}
 	}
-	return args
+	return cleaned
 }

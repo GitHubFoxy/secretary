@@ -30,10 +30,7 @@ func (r AntigravityRuntime) configured(request StartRequest) (ACPRuntime, error)
 		return ACPRuntime{}, fmt.Errorf("antigravity: %w", err)
 	}
 
-	profileDir := strings.TrimSpace(r.ProfileDir)
-	if profileDir == "" {
-		profileDir = DefaultAntigravityProfileDir()
-	}
+	profileDir := ResolveAntigravityProfileDir(r.ProfileDir)
 	if err := os.MkdirAll(profileDir, 0o700); err != nil {
 		return ACPRuntime{}, fmt.Errorf("antigravity: profile directory unavailable: %w", err)
 	}
@@ -87,11 +84,7 @@ func (r AntigravityRuntime) ProbeSpec() HarnessProbeSpec {
 	if strings.TrimSpace(r.AntigravityCommand) != "" {
 		spec.Binary = r.AntigravityCommand
 	}
-	profileDir := strings.TrimSpace(r.ProfileDir)
-	if profileDir == "" {
-		profileDir = DefaultAntigravityProfileDir()
-	}
-	spec.ProfileDir = profileDir
+	spec.ProfileDir = ResolveAntigravityProfileDir(r.ProfileDir)
 	return spec
 }
 

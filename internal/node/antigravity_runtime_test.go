@@ -473,6 +473,8 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 				authMethods = []map[string]string{{"id": "cli-login", "type": "terminal"}}
 			case "already_authenticated":
 				authMethods = []map[string]string{{"id": "agent-login", "type": "agent"}}
+			case "empty_catalog":
+				authMethods = []map[string]string{{"id": "agent-login", "type": "agent"}}
 			case "resume_only_load":
 				agentCaps = map[string]any{"loadSession": true}
 			case "resume_no_caps":
@@ -502,7 +504,7 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 				// ACP forbids authenticate for terminal methods!
 				os.Exit(99)
 			}
-			if scenario == "already_authenticated" {
+			if scenario == "already_authenticated" || scenario == "empty_catalog" {
 				// Client must not authenticate if session/new succeeds without it!
 				os.Exit(99)
 			}
@@ -528,12 +530,16 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 				})
 				continue
 			}
+			opts := sampleConfigOptions
+			if scenario == "empty_catalog" {
+				opts = []map[string]any{}
+			}
 			emit(map[string]any{
 				"jsonrpc": "2.0",
 				"id":      req.ID,
 				"result": map[string]any{
 					"sessionId":     "agy-sess-1",
-					"configOptions": sampleConfigOptions,
+					"configOptions": opts,
 				},
 			})
 

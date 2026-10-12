@@ -455,3 +455,81 @@ func TestClassifyAntigravityError(t *testing.T) {
 		}
 	}
 }
+
+func TestAntigravityProbe_AlreadyAuthenticatedProfile_DoesNotClaimAuthMethod(t *testing.T) {
+	ResetAntigravityProbeCache()
+	execPath, _ := createFakeAntigravityServer(t, "already_authenticated")
+	spec := DefaultAntigravityProbeSpec()
+	spec.Binary = execPath
+
+	probe := HarnessProbe{Node: "local", Spec: spec, Runner: ExecCommandRunner{}}
+	result := probe.Probe(context.Background())
+
+	if !result.Available() {
+		t.Fatalf("expected available, got err=%v code=%s", result.Err, result.ErrorCode)
+	}
+	if result.Instance.Status != core.HarnessReady {
+		t.Fatalf("expected status HarnessReady, got %q", result.Instance.Status)
+	}
+	if !result.Instance.Authentication.Authenticated {
+		t.Fatal("expected Authenticated == true")
+	}
+	if result.Instance.Authentication.Method != "" {
+		t.Fatalf("expected empty Authentication.Method when no authenticate exchange occurred, got %q", result.Instance.Authentication.Method)
+	}
+	if len(result.Instance.ModelIDs) == 0 {
+		t.Fatal("expected non-empty model catalog")
+	}
+}
+
+func TestAntigravityProbe_EmptyCatalog_SucceedsWithoutFalselyClaimingUnauthenticated(t *testing.T) {
+	ResetAntigravityProbeCache()
+	execPath, _ := createFakeAntigravityServer(t, "empty_catalog")
+	spec := DefaultAntigravityProbeSpec()
+	spec.Binary = execPath
+
+	probe := HarnessProbe{Node: "local", Spec: spec, Runner: ExecCommandRunner{}}
+	result := probe.Probe(context.Background())
+
+	if !result.Available() {
+		t.Fatalf("expected available with empty catalog, got err=%v code=%s", result.Err, result.ErrorCode)
+	}
+	if result.Instance.Status != core.HarnessReady {
+		t.Fatalf("expected status HarnessReady, got %q", result.Instance.Status)
+	}
+	if !result.Instance.Authentication.Authenticated {
+		t.Fatal("expected Authenticated == true")
+	}
+	if result.Instance.Authentication.Method != "" {
+		t.Fatalf("expected empty Authentication.Method, got %q", result.Instance.Authentication.Method)
+	}
+	if len(result.Instance.ModelIDs) != 0 {
+		t.Fatalf("expected 0 models for empty catalog, got %v", result.Instance.ModelIDs)
+	}
+	if result.ErrorCode != "" {
+		t.Fatalf("expected empty ErrorCode, got %q", result.ErrorCode)
+	}
+}
+
+func TestAntigravityProbe_AuthRequired_CompletedExchangeReportsMethod(t *testing.T) {
+	ResetAntigravityProbeCache()
+	execPath, _ := createFakeAntigravityServer(t, "auth_protocol")
+	spec := DefaultAntigravityProbeSpec()
+	spec.Binary = execPath
+
+	probe := HarnessProbe{Node: "local", Spec: spec, Runner: ExecCommandRunner{}}
+	result := probe.Probe(context.Background())
+
+	if !result.Available() {
+		t.Fatalf("expected available after auth exchange, got err=%v code=%s", result.Err, result.ErrorCode)
+	}
+	if result.Instance.Status != core.HarnessReady {
+		t.Fatalf("expected status HarnessReady, got %q", result.Instance.Status)
+	}
+	if !result.Instance.Authentication.Authenticated {
+		t.Fatal("expected Authenticated == true")
+	}
+	if result.Instance.Authentication.Method != "agent-login" {
+		t.Fatalf("expected Authentication.Method == agent-login after completed exchange, got %q", result.Instance.Authentication.Method)
+	}
+}

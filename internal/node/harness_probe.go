@@ -757,8 +757,8 @@ func (d HarnessDiscovery) Discover(ctx context.Context) (core.HarnessInventorySn
 		if binary := strings.TrimSpace(d.BinaryOverrides[probes[index].Spec.Kind]); binary != "" {
 			probes[index].Spec.Binary = binary
 		}
-		if probes[index].Spec.Kind == core.HarnessAntigravity && strings.TrimSpace(d.AntigravityProfileDir) != "" {
-			probes[index].Spec.ProfileDir = d.AntigravityProfileDir
+		if probes[index].Spec.Kind == core.HarnessAntigravity {
+			probes[index].Spec.ProfileDir = ResolveAntigravityProfileDir(d.AntigravityProfileDir, probes[index].Spec.ProfileDir)
 		}
 		if probes[index].Spec.Kind == core.HarnessOpenCode && d.OpenCodeDataHome != "" {
 			switch current := probes[index].Runner.(type) {

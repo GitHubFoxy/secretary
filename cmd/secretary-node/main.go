@@ -245,7 +245,8 @@ func configuredNodeDiscoveryWithAntigravity(identity core.NodeReference, include
 	return node.HarnessDiscovery{
 		Node: identity, Runner: node.ExecCommandRunner{}, IncludeOpenCode: includeOpenCode, IncludeAntigravity: includeAntigravity,
 		OpenCodeDataHome: store.DataHome, LegacyOpenCodeDataHome: store.Mode == node.OpenCodeNativeStoreModeLegacy,
-		BinaryOverrides: installedHarnesses(),
+		AntigravityProfileDir: node.ResolveAntigravityProfileDir(),
+		BinaryOverrides:       installedHarnesses(),
 	}
 }
 
@@ -267,13 +268,14 @@ func configuredNodeRuntimeWithStore(dataDir string, store node.OpenCodeNativeSto
 	}
 	antigravityCommand := envOr("SECRETARY_ANTIGRAVITY_COMMAND", "agy_acp_server")
 	antigravityArgs := node.BuildAntigravityPlatformArgs(strings.Fields(os.Getenv("SECRETARY_ANTIGRAVITY_ARGS")))
+	antigravityProfileDir := node.ResolveAntigravityProfileDir()
 	return node.RuntimeRouter{
 		DefaultHarness: "codex",
 		ACP:            node.CodexRuntime{ACPRuntime: node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 		Claude:         node.ClaudeCodeRuntime{Command: claudeCommand, Arguments: claudeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		FX:             node.FXRuntime{ACPRuntime: node.ACPRuntime{Command: fxCommand, Arguments: fxArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, DataHome: store.DataHome, LegacyDataHome: store.Mode == node.OpenCodeNativeStoreModeLegacy, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
-		Antigravity:    node.AntigravityRuntime{AntigravityCommand: antigravityCommand, ACPRuntime: node.ACPRuntime{Arguments: antigravityArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
+		Antigravity:    node.AntigravityRuntime{AntigravityCommand: antigravityCommand, ProfileDir: antigravityProfileDir, ACPRuntime: node.ACPRuntime{Arguments: antigravityArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 	}
 }
 

@@ -20,8 +20,9 @@ type AntigravityObserver interface {
 }
 
 type antigravityCacheKey struct {
-	node   core.NodeReference
-	binary string
+	node       core.NodeReference
+	binary     string
+	profileDir string
 }
 
 type antigravityCacheEntry struct {
@@ -51,6 +52,7 @@ func DefaultAntigravityProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
 		Kind:                  core.HarnessAntigravity,
 		Binary:                binary,
+		ProfileDir:            DefaultAntigravityProfileDir(),
 		VersionArgs:           []string{"--version"},
 		AuthenticationArgs:    []string{"auth", "status"},
 		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel},
@@ -59,7 +61,9 @@ func DefaultAntigravityProbeSpec() HarnessProbeSpec {
 }
 
 func NewAntigravityProbe(node core.NodeReference, runner CommandRunner) HarnessProbe {
-	return HarnessProbe{Node: node, Runner: runner, Spec: DefaultAntigravityProbeSpec()}
+	spec := DefaultAntigravityProbeSpec()
+	spec.ProfileDir = ResolveAntigravityProfileDir()
+	return HarnessProbe{Node: node, Runner: runner, Spec: spec}
 }
 
 func (p HarnessProbe) probeAntigravity(ctx context.Context) ProbeResult {
@@ -100,7 +104,13 @@ func (p HarnessProbe) probeAntigravity(ctx context.Context) ProbeResult {
 	execMtime := execStat.ModTime()
 	compMtime := compStat.ModTime()
 
-	cacheKey := antigravityCacheKey{node: p.Node, binary: realExec}
+	profileDir := ResolveAntigravityProfileDir(p.Spec.ProfileDir)
+	cacheKey := antigravityCacheKey{
+		node:       p.Node,
+		binary:     realExec,
+		profileDir: profileDir,
+	}
+
 	antigravityCacheMu.Lock()
 	if entry, found := antigravityCache[cacheKey]; found {
 		if time.Since(entry.cachedAt) < antigravityCacheTTL &&
@@ -111,11 +121,6 @@ func (p HarnessProbe) probeAntigravity(ctx context.Context) ProbeResult {
 		}
 	}
 	antigravityCacheMu.Unlock()
-
-	profileDir := strings.TrimSpace(p.Spec.ProfileDir)
-	if profileDir == "" {
-		profileDir = DefaultAntigravityProfileDir()
-	}
 
 	var version, authMethod, diagnosticCode string
 	var authenticated bool
@@ -181,9 +186,7 @@ func (p HarnessProbe) probeAntigravity(ctx context.Context) ProbeResult {
 }
 
 func observeAntigravityACP(ctx context.Context, execPath, companionPath, profileDir string) (string, bool, string, []core.ObservedModelID, []core.ObservedReasoningLevel, string, error) {
-	if strings.TrimSpace(profileDir) == "" {
-		profileDir = DefaultAntigravityProfileDir()
-	}
+	profileDir = ResolveAntigravityProfileDir(profileDir)
 	if err := os.MkdirAll(profileDir, 0o700); err != nil {
 		return "", false, "", nil, nil, "probe_failed", fmt.Errorf("antigravity: profile dir unavailable: %w", err)
 	}
@@ -272,14 +275,6 @@ func observeAntigravityACP(ctx context.Context, execPath, companionPath, profile
 
 	models := parseAntigravityConfigModels(created.ConfigOptions)
 	reasoning := parseAntigravityConfigReasoning(created.ConfigOptions)
-
-	if len(models) == 0 && len(init.AuthMethods) > 0 && confirmedAuthMethod == "" {
-		return version, false, "", nil, nil, "unauthenticated", fmt.Errorf("antigravity: catalog requires authentication")
-	}
-
-	if confirmedAuthMethod == "" && len(init.AuthMethods) > 0 {
-		confirmedAuthMethod = init.AuthMethods[0].ID
-	}
 
 	return version, true, confirmedAuthMethod, models, reasoning, "", nil
 }

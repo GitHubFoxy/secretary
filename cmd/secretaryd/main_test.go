@@ -692,4 +692,12 @@ func TestSecretaryRuntimeIncludesAntigravity(t *testing.T) {
 	if !strings.Contains(cmd, "agy_acp_server") {
 		t.Fatalf("expected agy_acp_server in cmd, got %q", cmd)
 	}
+	secAgy, ok := secretaryRouter.Antigravity.(node.AntigravityRuntime)
+	if !ok || secAgy.ProfileDir == "" {
+		t.Fatalf("expected secretaryRouter Antigravity ProfileDir populated, got %#v", secretaryRouter.Antigravity)
+	}
+	wrkAgy, ok := workerRouter.Antigravity.(node.AntigravityRuntime)
+	if !ok || wrkAgy.ProfileDir == "" {
+		t.Fatalf("expected workerRouter Antigravity ProfileDir populated, got %#v", workerRouter.Antigravity)
+	}
 }
