@@ -1,0 +1,52 @@
+name: CI
+
+"on":
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  release-gate:
+    name: Phase 4 Release Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      MISE_TRUSTED_CONFIG_PATHS: ${{ github.workspace }}/.mise.toml
+      MISE_YES: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure zsh is installed
+        run: |
+          which zsh >/dev/null || { sudo apt-get update && sudo apt-get install -y zsh; }
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Setup mise and Go
+        uses: jdx/mise-action@v2
+        with:
+          install: true
+          cache: true
+
+      - name: Check pull request whitespace
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: git diff --check "$BASE_SHA...HEAD"
+
+      - name: Run Phase 4 release gate
+        run: |
+          umask 0022
+          ./scripts/phase4-release-gate.sh
