@@ -60,9 +60,6 @@ const (
 	TerminalStopReasonOther       TerminalStopReason = "other"
 )
 
-// TerminalCompletionEvidence is adapter/runtime-only evidence. Result keeps it
-// out of JSON and public DTOs; callers must still validate the exact turn/input
-// against the server-owned addressed-reply ledger before completing a turn.
 type TerminalCompletionEvidence struct {
 	Contract        TerminalCompletionContract
 	StopReason      TerminalStopReason
@@ -105,7 +102,6 @@ type MCPServer struct {
 }
 
 type StartRequest struct {
-	// AttemptID is Node-local lifecycle metadata; adapters do not send it to ACP.
 	AttemptID               string
 	WorkerRef               string
 	Task                    string
@@ -119,14 +115,9 @@ type StartRequest struct {
 	ApprovalPolicy          string
 	DrainOutputBeforeResult bool
 	DeferInitialPrompt      bool
-	// PendingRequests is the durable request metadata used for reconnect.
-	PendingRequests []PendingRequest
-	// PendingRequestKinds preserves metadata when an older caller can only
-	// provide PendingRequestIDs.
-	PendingRequestKinds map[string]ActivityKind
-	// PendingRequestIDs is retained for older runtime adapters. New code must
-	// use PendingRequests so permission and input requests cannot cross-bind.
-	PendingRequestIDs []string
+	PendingRequests         []PendingRequest
+	PendingRequestKinds     map[string]ActivityKind
+	PendingRequestIDs       []string
 }
 
 func (r StartRequest) validateBinding() error {
@@ -240,8 +231,6 @@ func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session
 	return session, nil
 }
 
-// Continue requires the exact previously executed Attempt on this local Node.
-// A fresh LocalNode without proof fails closed; it cannot borrow current defaults.
 func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previousAttemptID string) (Session, error) {
 	profile, err := request.effectiveProfile()
 	if err != nil {

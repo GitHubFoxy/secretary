@@ -147,20 +147,18 @@ test("structured API failure captures category, providerCode, technical and pres
     technical: "Quota exceeded for model claude-3-5-sonnet",
   });
 
-  // Behavioral test: simulate action attempt with error catch
   let steerText = "critical follow-up instructions for worker";
   let observerError = "";
   let observerFailure = null;
 
   try {
     throw err;
-    steerText = ""; // should not be reached
+    steerText = "";
   } catch (caught) {
     observerError = caught.message;
     observerFailure = extractObserverFailure(caught);
   }
 
-  // Draft remains preserved, observer error and structured failure capture details
   assert.equal(steerText, "critical follow-up instructions for worker");
   assert.equal(observerError, "usage_limit_exceeded: Usage limit reached");
   assert.deepEqual(observerFailure, {

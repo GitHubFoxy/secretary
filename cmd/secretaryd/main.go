@@ -288,9 +288,6 @@ func main() {
 	go (app.Runner{Store: store, Dispatcher: dispatcher, Conversation: conversation.ID}).Run(ctx)
 	capability := os.Getenv("SECRETARY_CAPABILITY")
 	if capability == "" {
-		// Capability tokens are intentionally not recoverable from SQLite. A
-		// terminal or launchd start without the environment token rotates one,
-		// so the persistent Secretary is never silently omitted.
 		var capabilityErr error
 		capability, capabilityErr = store.RotateSecretaryCapability(context.Background(), web.OwnerID())
 		if capabilityErr != nil {
@@ -438,8 +435,6 @@ func main() {
 	}
 }
 
-// rootHandler keeps one loopback server for the whole product: control routes
-// stay debug-only, and every other /v1 path reaches the API where credential checks live.
 func rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler http.Handler, remoteNodes *node.ServerManager, debug bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if remoteNodes != nil {
@@ -476,9 +471,6 @@ func rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler htt
 	})
 }
 
-// validateListen enforces the supported topology: secretaryd binds loopback
-// only and remote access goes through the Tailscale Serve proxy. Only literal
-// loopback IPs are accepted, because localhost can resolve off-loopback.
 func validateListen(addr string) error {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
 	if err != nil {
@@ -849,7 +841,6 @@ func applyConfig(manager *config.Manager, content []byte) (any, error) {
 	}
 	snapshot, err := manager.Reload()
 	if err != nil {
-		// Keep the active config and restore the last known-good file.
 		_ = writeConfig(path, previous)
 		return nil, err
 	}

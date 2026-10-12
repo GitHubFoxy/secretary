@@ -8,8 +8,6 @@ import (
 	"strings"
 )
 
-// ApplyLifecycleAction records a side-effecting lifecycle action exactly once.
-// The returned outcome is the stored outcome on every duplicate delivery.
 func (s *Store) ApplyLifecycleAction(ctx context.Context, action LifecycleAction) (LifecycleOutcome, bool, error) {
 	key := strings.TrimSpace(action.IdempotencyKey)
 	if key == "" || strings.TrimSpace(action.Kind) == "" {
@@ -73,7 +71,6 @@ func (s *Store) ApplyLifecycleAction(ctx context.Context, action LifecycleAction
 	return result.outcome, result.duplicate, err
 }
 
-// RecordLifecycleAction is a descriptive alias for ApplyLifecycleAction.
 func (s *Store) RecordLifecycleAction(ctx context.Context, action LifecycleAction) (LifecycleOutcome, bool, error) {
 	return s.ApplyLifecycleAction(ctx, action)
 }

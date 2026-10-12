@@ -77,7 +77,6 @@ func TestSecretaryMCPDiscoveryIsWrittenNativeEvidenceBoundToLaunchAndTurns(t *te
 		t.Fatal("missing discovery was presented as ready")
 	}
 	observer := mcp.RemoteMCPObserver{BaseURL: server.URL, Capability: launch.ObserverCapability, Client: server.Client()}
-	// Lazy discovery starts after a turn is already active. No pre-prompt barrier.
 	var out bytes.Buffer
 	observed := func(ctx context.Context, observation core.SecretaryMCPObservation) error {
 		if observation.Phase == "initialize" || observation.Phase == "tools_list" {
@@ -117,8 +116,6 @@ func TestSecretaryMCPDiscoveryIsWrittenNativeEvidenceBoundToLaunchAndTurns(t *te
 			t.Fatal("discovery DTO leaked private linkage")
 		}
 	}
-	// Observer credential cannot invoke lifecycle operations, and lifecycle/bootstrap
-	// credentials cannot fabricate observation.
 	post := func(token, path, body string) int {
 		req, _ := http.NewRequest(http.MethodPost, server.URL+path, strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer "+token)
@@ -174,7 +171,6 @@ func TestSecretaryMCPDiscoveryIsWrittenNativeEvidenceBoundToLaunchAndTurns(t *te
 	if err != nil || !stale.Revoked || stale.GenerationMatches {
 		t.Fatal("old turn silently rebound to new launch")
 	}
-	// No observation/response on a new launch is missing, not an empty successful list.
 	if err := store.BindSecretaryRuntimeTurn(ctx, next, second.ID, second.InputID); !errors.Is(err, core.ErrInvalidSecretaryOrigin) {
 		t.Fatal("turn launch binding was mutable")
 	}

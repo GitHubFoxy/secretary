@@ -7,8 +7,6 @@ import (
 	"strings"
 )
 
-// PublishImportantNotification durably records a server notification and its
-// delivery row in one transaction. The target is a Client or channel identity.
 func (s *Store) PublishImportantNotification(ctx context.Context, kind, aggregateType, aggregateID, target, idempotencyKey string, payload any) (Event, Delivery, bool, error) {
 	if strings.TrimSpace(kind) == "" || strings.TrimSpace(target) == "" || strings.TrimSpace(idempotencyKey) == "" {
 		return Event{}, Delivery{}, false, errors.New("core: notification kind, target, and idempotency key are required")

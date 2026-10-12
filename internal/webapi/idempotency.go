@@ -15,8 +15,6 @@ var (
 	errIdempotencyKeyMismatch = errors.New("idempotency key in body and header must match")
 )
 
-// requireIdempotencyKey is shared by every Client-facing mutation. A body key
-// is accepted for JSON clients, while the standard header remains supported.
 func requireIdempotencyKey(w http.ResponseWriter, r *http.Request, bodyKey string) (string, bool) {
 	bodyKey = strings.TrimSpace(bodyKey)
 	headerKey := strings.TrimSpace(r.Header.Get("Idempotency-Key"))

@@ -43,7 +43,6 @@ type RateLimitObservation struct {
 	AccountID     string
 }
 
-// evaluateCodexRateLimits applies the strict scoped reset selection and blocker rules.
 func evaluateCodexRateLimits(resp CodexGetAccountRateLimitsResponse, model string, limitID string, now time.Time, previousDeadline *time.Time) RateLimitObservation {
 	obs := RateLimitObservation{
 		IsManualHold: true,
@@ -52,13 +51,11 @@ func evaluateCodexRateLimits(resp CodexGetAccountRateLimitsResponse, model strin
 		obs.AccountID = *resp.AccountID
 	}
 
-	// 1. Explicit permission blockers.
 	if resp.OrdinaryUsageAllowed != nil && !*resp.OrdinaryUsageAllowed {
 		obs.BlockerReason = "ordinary usage not allowed by account"
 		return obs
 	}
 
-	// 2. Multi-bucket or single-bucket resolution.
 	var matched *CodexRateLimitSnapshot
 	var matchedScope string
 
@@ -66,7 +63,6 @@ func evaluateCodexRateLimits(resp CodexGetAccountRateLimitsResponse, model strin
 	model = strings.TrimSpace(model)
 
 	if len(resp.RateLimitsByLimitID) > 0 {
-		// Priority 1: Match by explicit confirmed limitID from error
 		if limitID != "" {
 			if snap, ok := resp.RateLimitsByLimitID[limitID]; ok {
 				if snap.LimitID != nil && *snap.LimitID != "" && *snap.LimitID != limitID {
@@ -107,7 +103,6 @@ func evaluateCodexRateLimits(resp CodexGetAccountRateLimitsResponse, model strin
 				}
 			}
 		}
-		// Priority 2: Match by model slug
 		if matched == nil && model != "" {
 			var matching []struct {
 				id   string
@@ -130,10 +125,8 @@ func evaluateCodexRateLimits(resp CodexGetAccountRateLimitsResponse, model strin
 				matchedScope = matching[0].id
 			}
 		}
-		// Priority 3: Exactly one bucket in map - only if unambiguous
 		if matched == nil && len(resp.RateLimitsByLimitID) == 1 {
 			for k, snap := range resp.RateLimitsByLimitID {
-				// Only match if scope is unambiguous (limitID matches or is empty, and model matches or is empty)
 				limitMatches := limitID == "" || (snap.LimitID != nil && *snap.LimitID == limitID) || k == limitID
 				modelMatches := model == "" || (snap.NormalModelSlug != nil && *snap.NormalModelSlug == model)
 				if limitMatches && modelMatches {
@@ -144,7 +137,6 @@ func evaluateCodexRateLimits(resp CodexGetAccountRateLimitsResponse, model strin
 			}
 		}
 	} else if resp.RateLimits != nil {
-		// Backward-compatible single-bucket view; used ONLY if multi-bucket view is absent and single bucket is unambiguous
 		snap := resp.RateLimits
 		limitMatches := limitID == "" || (snap.LimitID != nil && *snap.LimitID == limitID)
 		modelMatches := model == "" || (snap.NormalModelSlug != nil && *snap.NormalModelSlug == model)
@@ -166,7 +158,6 @@ func evaluateCodexRateLimits(resp CodexGetAccountRateLimitsResponse, model strin
 	}
 	obs.Scope = matchedScope
 
-	// 3. Check spend control blockers and reached types
 	if matched.SpendControlReached != nil && *matched.SpendControlReached {
 		obs.BlockerReason = "spend control limit reached"
 		return obs
@@ -179,7 +170,6 @@ func evaluateCodexRateLimits(resp CodexGetAccountRateLimitsResponse, model strin
 		}
 	}
 
-	// 4. Collect all exhausted windows (usedPercent >= 100.0)
 	var exhausted []*CodexRateLimitWindow
 	if matched.Primary != nil && matched.Primary.UsedPercent >= 100.0 {
 		exhausted = append(exhausted, matched.Primary)
@@ -189,12 +179,10 @@ func evaluateCodexRateLimits(resp CodexGetAccountRateLimitsResponse, model strin
 	}
 
 	if len(exhausted) == 0 {
-		// Category is NOT changed to billing; reset time is unknown
 		obs.BlockerReason = "no exhausted rate limit windows found"
 		return obs
 	}
 
-	// 5. If at least one exhausted window lacks a valid resetsAt, time is unknown
 	var maxResetsAt int64
 	for _, w := range exhausted {
 		if w.ResetsAt == nil || *w.ResetsAt <= 0 {
@@ -209,7 +197,6 @@ func evaluateCodexRateLimits(resp CodexGetAccountRateLimitsResponse, model strin
 	resetsAtTime := time.Unix(maxResetsAt, 0).UTC()
 	obs.ResetsAt = &resetsAtTime
 
-	// 6. Check that reset time is in the future and later than previous deadline
 	if !resetsAtTime.After(now) {
 		obs.BlockerReason = "rate limit reset time is not in the future"
 		return obs
@@ -219,7 +206,6 @@ func evaluateCodexRateLimits(resp CodexGetAccountRateLimitsResponse, model strin
 		return obs
 	}
 
-	// 7. Add exactly 60 seconds (1 minute) for scheduled retry
 	scheduledAtTime := resetsAtTime.Add(60 * time.Second)
 	obs.ScheduledAt = &scheduledAtTime
 	obs.IsManualHold = false
@@ -235,7 +221,6 @@ func codexConfigArguments(environment []string) []string {
 			_ = json.Unmarshal([]byte(strings.TrimPrefix(value, "CODEX_CONFIG=")), &overrides)
 		}
 	}
-	// Sort keys for deterministic argument ordering
 	keys := make([]string, 0, len(overrides))
 	for k := range overrides {
 		if k == "developer_instructions" || k == "prompt" {
@@ -253,9 +238,6 @@ func codexConfigArguments(environment []string) []string {
 	return args
 }
 
-// readCodexRateLimits launches a short-lived Codex app-server client on stdio
-// using the selected binary and launch environment, queries account/rateLimits/read,
-// and ensures full cleanup within 5 seconds.
 func readCodexRateLimits(ctx context.Context, command string, environment []string, dir string) (CodexGetAccountRateLimitsResponse, error) {
 	if command == "" {
 		command = "codex"
@@ -266,7 +248,6 @@ func readCodexRateLimits(ctx context.Context, command string, environment []stri
 	configArgs := codexConfigArguments(environment)
 	arguments := append(configArgs, "app-server", "--listen", "stdio://")
 
-	// Filter out MCP-related environment variables so query client stays lightweight
 	var cleanEnv []string
 	for _, env := range environment {
 		if strings.HasPrefix(env, "SECRETARY_MCP_") || strings.HasPrefix(env, "CODEX_CONFIG=") {
@@ -283,13 +264,11 @@ func readCodexRateLimits(ctx context.Context, command string, environment []stri
 		_ = client.Close()
 	}()
 
-	// Drain incoming notifications concurrently so reader loop never stalls
 	go func() {
 		for range client.Events() {
 		}
 	}()
 
-	// Handshake: initialize
 	var initResp json.RawMessage
 	initParams := map[string]any{
 		"clientInfo": map[string]string{
@@ -303,12 +282,10 @@ func readCodexRateLimits(ctx context.Context, command string, environment []stri
 		return CodexGetAccountRateLimitsResponse{}, fmt.Errorf("codex rate limits initialize: %w", err)
 	}
 
-	// Handshake: initialized notification
 	if err := client.Notify("initialized", map[string]any{}); err != nil {
 		return CodexGetAccountRateLimitsResponse{}, fmt.Errorf("codex rate limits initialized notification: %w", err)
 	}
 
-	// Read account rate limits
 	var resp CodexGetAccountRateLimitsResponse
 	if err := client.Request(queryCtx, "account/rateLimits/read", map[string]any{}, &resp); err != nil {
 		return CodexGetAccountRateLimitsResponse{}, fmt.Errorf("codex rate limits read: %w", err)

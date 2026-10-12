@@ -56,7 +56,6 @@ func TestUsageLimit_AtomicScheduleCreationAndReplay(t *testing.T) {
 	if outcome.FailureCategory != FailureCategoryUsageLimit {
 		t.Fatalf("expected usage limit category, got %s", outcome.FailureCategory)
 	}
-	// Crucial: no premature Result on suspended turn
 	if result != nil {
 		t.Fatalf("expected nil result on suspended turn, got %#v", result)
 	}
@@ -99,7 +98,6 @@ func TestUsageLimit_AtomicScheduleCreationAndReplay(t *testing.T) {
 		t.Fatalf("expected prompt %q, got %q", ContinuationPrompt, sched.ContinuationPrompt)
 	}
 
-	// Verify unclaimed lifecycle command intent
 	cmd, found, err := store.FindWorkerCommand(ctx, "resume", "attempt", worker.ID, nextAttempt.ID)
 	if err != nil || !found {
 		t.Fatalf("expected pending resume command intent, err=%v, found=%v", err, found)
@@ -108,7 +106,6 @@ func TestUsageLimit_AtomicScheduleCreationAndReplay(t *testing.T) {
 		t.Fatalf("expected command pending, got %s", cmd.State)
 	}
 
-	// Verify replay is idempotent
 	outcome2, result2, isDup2, err2 := store.RecordAttemptOutcome(ctx, attempt.ID, input)
 	if err2 != nil || !isDup2 || result2 != nil || outcome2.ID != outcome.ID {
 		t.Fatalf("expected idempotent duplicate outcome, err=%v, dup=%v, result=%v", err2, isDup2, result2)
@@ -141,7 +138,6 @@ func TestUsageLimit_ManualHoldOnUnknownResetOrPolicyOff(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1. Without ResetsAt -> manual_hold
 	input := AttemptOutcomeInput{
 		Status:          OutcomeFailed,
 		Classification:  OutcomeRetryable,
@@ -213,13 +209,11 @@ func TestUsageLimit_RecoveryCrashBoundaries(t *testing.T) {
 		t.Fatal("expected schedule")
 	}
 
-	// Claim schedule simulating a crash right after claim before command was delivered
 	claimed, err := store.ClaimAttemptSchedule(ctx, sched.ID, time.Now().UTC())
 	if err != nil || !claimed {
 		t.Fatalf("claim failed: %v", err)
 	}
 
-	// RecoverPhase4Attempts should restore claimed schedule to pending
 	if err := store.RecoverPhase4Attempts(ctx, Phase4AttemptRecoveryFunc(func(context.Context, Phase4Attempt) (Phase4RecoveryDecision, error) { return Phase4RecoveryAlive, nil })); err != nil {
 		t.Fatal(err)
 	}
@@ -343,12 +337,10 @@ func TestUsageLimit_CancelAndClose(t *testing.T) {
 	}
 	nextAttempt := details.Attempts[1]
 
-	// Cancel attempt schedule
 	if err := store.CancelAttemptSchedule(ctx, details.ActiveSchedule.ID, time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 
-	// Finalize next attempt with canceled Result
 	outcome, result, isDup, err := store.RecordAttemptOutcome(ctx, nextAttempt.ID, AttemptOutcomeInput{
 		Status:         OutcomeCanceled,
 		Classification: OutcomeFinal,
@@ -423,7 +415,6 @@ func TestUsageLimit_RepeatTerminalUsageLimitOutcome_Idempotent(t *testing.T) {
 		OccurredAt:        now,
 	}
 
-	// First call records usage limit outcome (manual hold because no resetsAt)
 	outcome1, result1, isDup1, err1 := store.RecordNodeAttemptOutcome(ctx, envelope)
 	if err1 != nil {
 		t.Fatalf("first FinishAttempt failed: %v", err1)
@@ -438,7 +429,6 @@ func TestUsageLimit_RepeatTerminalUsageLimitOutcome_Idempotent(t *testing.T) {
 		t.Fatalf("expected nil result on retryable/suspended attempt, got %#v", result1)
 	}
 
-	// Repeat call with identical envelope must succeed as duplicate (not ErrInvalidTransition)
 	outcome2, result2, isDup2, err2 := store.RecordNodeAttemptOutcome(ctx, envelope)
 	if err2 != nil {
 		t.Fatalf("repeat FinishAttempt failed: %v", err2)
@@ -453,7 +443,6 @@ func TestUsageLimit_RepeatTerminalUsageLimitOutcome_Idempotent(t *testing.T) {
 		t.Fatalf("expected nil result on duplicate, got %#v", result2)
 	}
 
-	// Now cancel the limited worker attempt to give it a terminal Result
 	details, err := store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 	if err != nil {
 		t.Fatal(err)
@@ -468,7 +457,6 @@ func TestUsageLimit_RepeatTerminalUsageLimitOutcome_Idempotent(t *testing.T) {
 	}
 	_ = cancelOutcome
 
-	// Calling FinishAttempt again for nextAttempt with usage limit must return duplicate with existing Result (not ErrInvalidTransition)
 	repeatNextEnv := AttemptOutcomeEnvelope{
 		EventID:           "env-2",
 		Node:              "local",
@@ -540,7 +528,6 @@ func TestUsageLimit_CancelLimitedWorkerAttempt_AtomicAndIdempotent(t *testing.T)
 	}
 	nextAttempt := details.Attempts[1]
 
-	// Perform atomic CancelLimitedWorkerAttempt
 	outcome, result, err := store.CancelLimitedWorkerAttempt(ctx, worker.ID, nextAttempt.ID, "Canceled before auto-resume")
 	if err != nil {
 		t.Fatalf("CancelLimitedWorkerAttempt failed: %v", err)
@@ -552,7 +539,6 @@ func TestUsageLimit_CancelLimitedWorkerAttempt_AtomicAndIdempotent(t *testing.T)
 		t.Fatalf("expected canceled result with summary, got %#v", result)
 	}
 
-	// Verify all states atomically transitioned
 	detailsAfter, err := store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 	if err != nil {
 		t.Fatal(err)
@@ -570,7 +556,6 @@ func TestUsageLimit_CancelLimitedWorkerAttempt_AtomicAndIdempotent(t *testing.T)
 		t.Fatalf("expected no active schedule after cancellation, got %#v", detailsAfter.ActiveSchedule)
 	}
 
-	// Check phase4_worker_commands for resume command failed
 	cmd, found, cmdErr := store.FindWorkerCommand(ctx, "resume", "attempt", worker.ID, nextAttempt.ID)
 	if cmdErr != nil || !found {
 		t.Fatalf("expected command, err=%v, found=%v", cmdErr, found)
@@ -579,7 +564,6 @@ func TestUsageLimit_CancelLimitedWorkerAttempt_AtomicAndIdempotent(t *testing.T)
 		t.Fatalf("expected failed command with canceled_before_handoff, got state=%s, lastError=%s", cmd.State, cmd.LastError)
 	}
 
-	// Second call must be idempotent and return same outcome and result without error
 	outcome2, result2, err2 := store.CancelLimitedWorkerAttempt(ctx, worker.ID, nextAttempt.ID, "Canceled again")
 	if err2 != nil {
 		t.Fatalf("second call failed: %v", err2)

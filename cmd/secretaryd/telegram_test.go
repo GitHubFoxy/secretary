@@ -58,7 +58,7 @@ type bridgeServer struct{}
 
 func (bridgeServer) SendMessage(context.Context, telegram.InboundMessage) error      { return nil }
 func (bridgeServer) SendWorkerMessage(context.Context, telegram.WorkerMessage) error { return nil }
-func (bridgeServer) ResumeWorker(context.Context, string) error { return nil }
+func (bridgeServer) ResumeWorker(context.Context, string) error                      { return nil }
 
 type bridgeTransport struct {
 	mu   sync.Mutex
@@ -362,7 +362,6 @@ func TestTelegramEventBridgeMapsToolActivityWithoutArgumentsOrOutput(t *testing.
 	}
 }
 
-
 func TestTelegramEventBridgeParallelToolsWithCallIDAndReplay(t *testing.T) {
 	ctx := context.Background()
 	statePath := filepath.Join(t.TempDir(), "telegram.json")
@@ -408,7 +407,6 @@ func TestTelegramEventBridgeParallelToolsWithCallIDAndReplay(t *testing.T) {
 		t.Fatalf("call2 sent=%q", transport.sent[2].Text)
 	}
 
-	// call-2 finishes first with empty output (c-test)
 	res2 := core.Event{
 		ID: "res-2", Seq: 4, Kind: "attempt.activity", AggregateType: "attempt", WorkerRef: "worker-parallel",
 		Payload: []byte(`{"kind":"tool_result","tool_result":{"name":"exec_command","call_id":"c-test","status":"completed","output":""}}`),
@@ -420,7 +418,6 @@ func TestTelegramEventBridgeParallelToolsWithCallIDAndReplay(t *testing.T) {
 		t.Fatalf("res2 sent=%#v", transport.sent)
 	}
 
-	// call-1 finishes second with non-empty output that must not leak (c-open)
 	res1 := core.Event{
 		ID: "res-1", Seq: 5, Kind: "attempt.activity", AggregateType: "attempt", WorkerRef: "worker-parallel",
 		Payload: []byte(`{"kind":"tool_result","tool_result":{"name":"exec_command","call_id":"c-open","status":"completed","output":"secret stdout that must not leak"}}`),
@@ -435,7 +432,6 @@ func TestTelegramEventBridgeParallelToolsWithCallIDAndReplay(t *testing.T) {
 		t.Fatalf("res1 leaked stdout: %q", transport.sent[4].Text)
 	}
 
-	// Replay after restart: must not duplicate messages
 	restartedAdapter, err := telegram.New(telegram.Config{StatePath: statePath, OwnerChatID: 100}, transport, &bridgeServer{})
 	if err != nil {
 		t.Fatal(err)
@@ -956,7 +952,7 @@ func TestTelegramBridgeEndToEndCoreToolResultPayload(t *testing.T) {
 				ToolResult: &core.ToolResult{
 					CallID:        "call-fail-" + tc.name,
 					Name:          "exec_command",
-					Output:        "", // Node stripped the raw content
+					Output:        "",
 					OutputPresent: tc.outputPresent,
 					Status:        "failed",
 					Preview:       "make test",

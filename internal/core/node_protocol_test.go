@@ -83,7 +83,6 @@ func TestNodeTerminalFailureIsSanitizedBeforePersistenceAndConversation(t *testi
 		t.Fatalf("terminal outcome result=%#v duplicate=%v err=%v", result, duplicate, err)
 	}
 
-	// Success text is ordinary model output, even when it resembles a credential.
 	successSpec := phase4WorkerSpec()
 	successSpec.WorkerRef = "worker-terminal-success"
 	successSpec.NodeID = "macbook"

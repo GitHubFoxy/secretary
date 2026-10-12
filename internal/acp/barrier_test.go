@@ -18,7 +18,6 @@ func TestRequestDrainingEventsWaitsForFIFOConsumer(t *testing.T) {
 	defer cancel()
 	finished := make(chan error, 1)
 	go func() { finished <- client.RequestDrainingEvents(ctx, "session/load", map[string]string{}, nil) }()
-	// Wait for admission without relying on scheduler sleeps.
 	for {
 		if _, exists := client.pending.Load(uint64(1)); exists {
 			break

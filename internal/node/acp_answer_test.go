@@ -14,7 +14,7 @@ import (
 func TestACPTurnAnswerUsesIdentityNotWords(t *testing.T) {
 	a := newACPTurnAnswer()
 	a.text("progress", "Final answer: misleading progress")
-	a.tool() // also unnamed tools
+	a.tool()
 	a.text("answer", "Попробую получить — legitimate final answer.\n")
 	a.text("answer", "[source](https://example.org)")
 	a.text("progress", "late delta")
@@ -51,7 +51,6 @@ func TestACPAuthoritativeAnswerFIFOAndReplay(t *testing.T) {
 		{"native", true, "succeeded", "answer-one\nanswer-two"},
 		{"summary", false, "succeeded", "explicit terminal summary"},
 		{"idless", true, "failed", "Terminal answer unavailable"},
-		// Approved backward compatibility, not native fx/final-answer acceptance.
 		{"unverified-adapter", false, "succeeded", strings.Repeat("progress", 80) + "answer-one\nanswer-twochild output"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -94,8 +93,6 @@ func TestACPAuthoritativeAnswerFIFOAndReplay(t *testing.T) {
 				if result.Status != tc.wantStatus || (tc.wantStatus == "succeeded" && result.Summary != tc.want) || !strings.HasPrefix(result.Summary, tc.want) || progress != 80 {
 					t.Fatalf("metadata checks: status=%s expected_answer=%t progress_chunks=%d", result.Status, result.Summary == tc.want, progress)
 				}
-				// Result arrives before Prompt releases its busy latch. Wait for
-				// that boundary via the call, never a sleep before next Attempt.
 				if session.(*acpSession).busyNow() {
 					select {
 					case err := <-prompt:
@@ -121,9 +118,6 @@ func TestACPRuntimeDrainKeepsProgressAvailableAndTurnScoped(t *testing.T) {
 	}
 	defer session.Close()
 
-	// The ACP FIFO fence orders watcher processing, not reads from the separate
-	// public Activity and Result channels. Check eventual Activity availability
-	// and exact Result/turn boundaries instead of asserting select order.
 	progress := map[string]int{"1": 0, "2": 0}
 	finalDeltas := map[string]int{"1": 0, "2": 0}
 	recordActivity := func(activity Activity) {
@@ -161,8 +155,6 @@ func TestACPRuntimeDrainKeepsProgressAvailableAndTurnScoped(t *testing.T) {
 			t.Fatalf("turn=%d terminal result contract mismatch: succeeded=%t exact_summary=%t contains_progress=%t", turn, result.Status == "succeeded", result.Summary == wantSummary, strings.Contains(result.Summary, "progress"))
 		}
 	}
-	// The fixture's preceding notifications are available by the Result/fence
-	// boundary, though this consumer may receive Result first.
 	for progress["1"] != 80 || progress["2"] != 80 || finalDeltas["1"] != 2 || finalDeltas["2"] != 2 {
 		select {
 		case activity := <-session.Activity():
@@ -258,7 +250,7 @@ func TestACPAnswerFixtureProcess(t *testing.T) {
 				for i := 0; i < 80; i++ {
 					update("agent_message_chunk", "progress", "progress-turn-"+turnID, nil)
 				}
-				update("tool_call", "", "", nil) // no name: never invent tool cards
+				update("tool_call", "", "", nil)
 				id := "answer-" + turnID
 				update("agent_message_chunk", id, "final-turn-"+turnID+"-part-one\n", nil)
 				update("agent_message_chunk", id, "final-turn-"+turnID+"-part-two", nil)
@@ -272,7 +264,7 @@ func TestACPAnswerFixtureProcess(t *testing.T) {
 				for i := 0; i < 80; i++ {
 					update("agent_message_chunk", "progress", "progress", nil)
 				}
-				update("tool_call", "", "", nil) // no name: never invent tool cards
+				update("tool_call", "", "", nil)
 				id := "answer"
 				if scenario == "idless" {
 					id = ""

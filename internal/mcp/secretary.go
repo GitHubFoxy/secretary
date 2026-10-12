@@ -9,8 +9,6 @@ import (
 	"github.com/beruseruko/secretary/internal/ctl"
 )
 
-// Secretary exposes only the Worker-first lifecycle contract. Retry is an
-// internal terminal-event operation, not an MCP or client tool.
 type Secretary struct {
 	Workers              ctl.WorkerService
 	ReplyContractVersion string

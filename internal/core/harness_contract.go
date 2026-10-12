@@ -9,8 +9,6 @@ import (
 	"unicode/utf8"
 )
 
-// NodeReference and HarnessInstanceID are opaque references owned by the
-// server. A native runtime session is deliberately not part of this contract.
 type NodeReference string
 type HarnessInstanceID string
 type HarnessKind string
@@ -24,7 +22,6 @@ const (
 	HarnessOpenCode   HarnessKind = "opencode"
 )
 
-// HarnessAuthentication is observed by the adapter, not inferred by policy.
 type HarnessAuthentication struct {
 	Authenticated bool   `json:"authenticated"`
 	Method        string `json:"method,omitempty"`
@@ -39,7 +36,6 @@ const (
 	HarnessUnavailable HarnessStatus = "unavailable"
 )
 
-// ExecutionCapability names operations the Node can perform for this instance.
 type ExecutionCapability string
 
 const (
@@ -50,8 +46,6 @@ const (
 	CapabilityApprovals ExecutionCapability = "approvals"
 )
 
-// ActivityCapability names normalized observations the adapter can actually
-// produce. Unsupported observations must not be synthesized.
 type ActivityCapability string
 
 const (
@@ -74,8 +68,6 @@ const (
 	ActivityInternalSubagentCompleted = ActivitySubagentCompleted
 )
 
-// HarnessCapabilities keeps execution controls separate from normalized
-// activity observations.
 type HarnessCapabilities struct {
 	Execution []ExecutionCapability `json:"execution"`
 	Activity  []ActivityCapability  `json:"activity"`
@@ -99,8 +91,6 @@ func (c HarnessCapabilities) SupportsActivity(want ActivityCapability) bool {
 	return false
 }
 
-// HarnessInstance is one observed Node/harness combination. Model IDs and
-// reasoning levels are adapter observations, not a server-wide catalog.
 type HarnessInstance struct {
 	ID              HarnessInstanceID        `json:"id"`
 	Node            NodeReference            `json:"node"`
@@ -113,14 +103,12 @@ type HarnessInstance struct {
 	ReasoningLevels []ObservedReasoningLevel `json:"reasoning_levels"`
 }
 
-// HarnessInventorySnapshot is a point-in-time observed inventory for one Node.
 type HarnessInventorySnapshot struct {
 	Node       NodeReference     `json:"node"`
 	Instances  []HarnessInstance `json:"instances"`
 	ObservedAt time.Time         `json:"observed_at"`
 }
 
-// HarnessInventory is the short name used by Node adapters.
 type HarnessInventory = HarnessInventorySnapshot
 
 func (h HarnessInstance) Validate() error {
@@ -133,12 +121,8 @@ func (h HarnessInstance) Validate() error {
 	return validateCapabilities(h.Capabilities)
 }
 
-// ErrHarnessUnavailable is returned when an observed instance cannot accept
-// work. Its state remains visible in inventory instead of falling back.
 var ErrHarnessUnavailable = errors.New("core: harness instance is unavailable")
 
-// ErrObservedPinUnavailable is returned when a requested pin was not observed
-// by the selected HarnessInstance.
 var ErrObservedPinUnavailable = errors.New("core: requested harness pin is unavailable")
 
 func (h HarnessInstance) Available() bool {
@@ -163,8 +147,6 @@ func (h HarnessInstance) SupportsReasoning(reasoning ObservedReasoningLevel) boo
 	return false
 }
 
-// ValidatePins checks only explicit pins. Empty values mean that policy did
-// not pin that dimension, while a non-empty value must be observed locally.
 func (h HarnessInstance) ValidatePins(model string, reasoning string) error {
 	if !h.Available() {
 		return fmt.Errorf("%w: %s", ErrHarnessUnavailable, h.ID)
@@ -205,9 +187,6 @@ func (s HarnessInventorySnapshot) ValidateSelection(id HarnessInstanceID, model 
 	return instance.ValidateSelection(model, reasoning)
 }
 
-// ValidateHarnessSelection is the server-side selection boundary. Routing
-// policy chooses an instance elsewhere, while this function only checks that
-// the chosen observed record can honor explicit pins.
 func ValidateHarnessSelection(inventory HarnessInventorySnapshot, id HarnessInstanceID, model string, reasoning string) (HarnessInstance, error) {
 	if err := inventory.Validate(); err != nil {
 		return HarnessInstance{}, err
@@ -287,8 +266,6 @@ const (
 	ActivityKindAttemptOutcome     ActivityKind = ActivityAttemptOutcome
 )
 
-// ActivityMetadata identifies an observed event without exposing a native
-// runtime session identifier.
 type ActivityMetadata struct {
 	EventID           string            `json:"event_id"`
 	Node              NodeReference     `json:"node"`
@@ -301,8 +278,6 @@ type ActivityMetadata struct {
 	CorrelationID     string            `json:"correlation_id,omitempty"`
 }
 
-// Validate checks the identity and ordering fields required to transport an
-// observed activity safely from Node to server.
 func (m ActivityMetadata) Validate() error {
 	if strings.TrimSpace(m.EventID) == "" {
 		return fmt.Errorf("core: activity event id is required")
@@ -362,8 +337,6 @@ const (
 	ToolFailureCodeToolError             ToolFailureCode = "tool_error"
 )
 
-// ToolFailureMetadata contains only explicit producer-owned facts safe for the
-// public Worker observer. It is never inferred from tool text or output.
 type ToolFailureMetadata struct {
 	Category   ToolFailureCategory `json:"category,omitempty"`
 	Code       ToolFailureCode     `json:"code,omitempty"`
@@ -425,8 +398,6 @@ type ActivityProgressData struct {
 	Percent *float64 `json:"percent,omitempty"`
 }
 
-// Activity is a normalized observed event. Only the payload matching Kind is
-// populated by an adapter.
 type Activity struct {
 	Metadata   ActivityMetadata        `json:"metadata"`
 	Kind       ActivityKind            `json:"kind"`
@@ -454,9 +425,6 @@ func (a Activity) Validate(capabilities HarnessCapabilities) error {
 	return a.validatePayload()
 }
 
-// ValidatePayload checks the normalized kind and matching payload without
-// consulting mutable current inventory. Replay uses this for events observed
-// under an older HarnessInstance capability snapshot.
 func (a Activity) ValidatePayload() error {
 	if err := a.Metadata.Validate(); err != nil {
 		return err
@@ -523,8 +491,6 @@ func (a Activity) validatePayload() error {
 	return nil
 }
 
-// ValidateFor additionally binds an activity to the exact observed instance
-// that produced it, preventing cross-Node or cross-harness delivery.
 func (a Activity) ValidateFor(instance HarnessInstance) error {
 	if err := a.Validate(instance.Capabilities); err != nil {
 		return err
@@ -559,8 +525,6 @@ func activityCapabilityFor(kind ActivityKind) (ActivityCapability, bool) {
 	}
 }
 
-// ArtifactRef identifies a durable result reference produced by the Node,
-// such as a commit or a workspace path.
 type ArtifactRef struct {
 	Kind string `json:"kind"`
 	Ref  string `json:"ref"`
@@ -573,8 +537,6 @@ func (r ArtifactRef) Validate() error {
 	return nil
 }
 
-// AttemptOutcomeEnvelope is the Node transport form of a terminal Attempt
-// observation. The durable core AttemptOutcome remains a separate record.
 type AttemptOutcomeEnvelope struct {
 	EventID           string                `json:"event_id"`
 	Node              NodeReference         `json:"node"`
@@ -631,8 +593,6 @@ func (o AttemptOutcomeEnvelope) Validate() error {
 	return nil
 }
 
-// CommandMetadata is shared by server-to-Node commands. It contains routing
-// and idempotency metadata only, never credentials or callback capabilities.
 type CommandMetadata struct {
 	CommandID         string            `json:"command_id"`
 	Node              NodeReference     `json:"node"`
@@ -652,8 +612,6 @@ func (m CommandMetadata) Validate() error {
 	return nil
 }
 
-// HarnessPolicy contains server-owned selection constraints. It intentionally
-// has no observed inventory, health, model catalog, or activity fields.
 type HarnessPolicy struct {
 	DefaultHarness                HarnessKind           `json:"default_harness,omitempty"`
 	PreferredHarnesses            []HarnessKind         `json:"preferred_harnesses,omitempty"`

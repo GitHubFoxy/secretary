@@ -16,8 +16,6 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-// pairedReadOnlyClientCredential creates a read-only paired Client credential
-// with exactly conversation:read, worker:read, and approval:read.
 func pairedReadOnlyClientCredential(t *testing.T, server *httptest.Server) string {
 	t.Helper()
 	pair := postJSON(t, server.Client(), server.URL+"/v1/clients/pair",
@@ -51,7 +49,6 @@ func TestReadOnlyCredentialIsRefusedOutsideTheReadSurface(t *testing.T) {
 
 	client := &http.Client{}
 
-	// Positive control: the same credential reads the snapshot surface.
 	read, err := http.NewRequest(http.MethodGet, server.URL+"/v1/conversation", nil)
 	if err != nil {
 		t.Fatal(err)

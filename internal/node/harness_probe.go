@@ -83,10 +83,6 @@ func (r ExecCommandRunner) ProbeACP(ctx context.Context, command string, args ..
 	return probeOpenCodeACPWithDataHome(ctx, command, r.OpenCodeDataHome, r.LegacyOpenCodeDataHome, args...)
 }
 
-// HarnessProbeSpec describes direct, local observations. ModelsOptional is for
-// harnesses such as Claude Code that do not currently expose a documented model
-// catalog command; such a harness may be ready with an empty observed model set,
-// but explicit model pins remain rejected by the server contract.
 type HarnessProbeSpec struct {
 	Kind                  core.HarnessKind
 	Binary                string
@@ -682,10 +678,7 @@ func DefaultOpenCodeProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
 		Kind: core.HarnessOpenCode, Binary: "opencode", VersionArgs: []string{"--version"}, AuthenticationArgs: append([]string(nil), openCodeAuthenticationArgs...), ModelsArgs: []string{"models"}, ACPArgs: []string{"acp"},
 		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel},
-		// V2.0.22 ACP translates native tools to title/kind/locations/rawInput,
-		// without explicit tool identity. Do not promise normalized tool cards
-		// or guess identity from a human-readable progress title (ticket20).
-		ActivityCapabilities: []core.ActivityCapability{core.ActivityAssistantTextDelta, core.ActivityStatus, core.ActivityAttemptOutcome, core.ActivityPermissionRequest, core.ActivityUserInputRequest},
+		ActivityCapabilities:  []core.ActivityCapability{core.ActivityAssistantTextDelta, core.ActivityStatus, core.ActivityAttemptOutcome, core.ActivityPermissionRequest, core.ActivityUserInputRequest},
 	}
 }
 
@@ -696,10 +689,8 @@ type HarnessDiscovery struct {
 	LegacyOpenCodeDataHome bool
 	Probes                 []HarnessProbe
 	IncludeOpenCode        bool
-	// BinaryOverrides lets packaging resolve installed harnesses without
-	// relying on a launchd process inheriting an interactive shell PATH.
-	BinaryOverrides map[core.HarnessKind]string
-	Now             func() time.Time
+	BinaryOverrides        map[core.HarnessKind]string
+	Now                    func() time.Time
 }
 
 func (d HarnessDiscovery) Discover(ctx context.Context) (core.HarnessInventorySnapshot, error) {

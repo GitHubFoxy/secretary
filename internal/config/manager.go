@@ -41,8 +41,6 @@ func (m *Manager) OpenUserDocument() (*UserDocumentManager, error) {
 	return OpenUserDocument(filepath.Dir(m.path))
 }
 
-// SetChangeRecorder installs a durable recorder. A failed recorder prevents
-// the new configuration from becoming active.
 func (m *Manager) SetChangeRecorder(record func(previous, next Snapshot) error) {
 	m.mu.Lock()
 	m.record = record
@@ -51,8 +49,6 @@ func (m *Manager) SetChangeRecorder(record func(previous, next Snapshot) error) 
 
 func (m *Manager) Snapshot() Snapshot { m.mu.RLock(); defer m.mu.RUnlock(); return m.snapshot }
 
-// Reload leaves the active snapshot unchanged when parsing, validation, or
-// durable recording fails.
 func (m *Manager) Reload() (Snapshot, error) {
 	next, err := Load(m.path)
 	if err != nil {

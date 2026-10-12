@@ -21,8 +21,6 @@ import (
 	secretaryruntime "github.com/beruseruko/secretary/internal/secretary"
 )
 
-// Unpaid native process -> real secretary-mcp -> capability-authorized broker ->
-// Core. Only a synthetic loopback provider and private empty native store are used.
 func TestOpenCodeNativeSecretaryObservedDiscoveryAndRequiredReply(t *testing.T) {
 	if os.Getenv("SECRETARY_OPENCODE_ACP_E2E") != "1" {
 		t.Skip("opt-in private native fixture")

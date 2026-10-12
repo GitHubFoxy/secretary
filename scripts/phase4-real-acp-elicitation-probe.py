@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-"""Probe a real codex-acp elicitation round trip without recording payloads."""
 
 import json
 import os

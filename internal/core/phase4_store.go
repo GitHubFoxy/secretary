@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// Phase4Attempt and Phase4Result deliberately use separate storage from the
-// Phase 3 Attempt/Result tables. Those tables retain their foreign keys to
-// legacy worker_bindings, while this schema has no runtime-session column.
 func (s *Store) migratePhase4Lifecycle(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `
 CREATE TABLE IF NOT EXISTS phase4_attempts (
@@ -728,14 +725,10 @@ func (s *Store) createWorkerWithOrigin(ctx context.Context, conversationID strin
 	return created.worker, created.turn, created.attempt, err
 }
 
-// SpawnWorker is the product-named alias for the atomic Worker plus first Turn
-// operation. It is intentionally not a Task API.
 func (s *Store) SpawnWorker(ctx context.Context, conversationID string, spec WorkerSpec, turnSpec TurnSpec) (Worker, Turn, Phase4Attempt, error) {
 	return s.CreateWorker(ctx, conversationID, spec, turnSpec)
 }
 
-// CreateTurn creates a new user direction for an existing Worker. It never
-// changes the Worker's Project, Node, HarnessInstance, or policy snapshot.
 func (s *Store) CreateTurn(ctx context.Context, workerID string, spec TurnSpec) (Turn, Phase4Attempt, error) {
 	key := strings.TrimSpace(spec.IdempotencyKey)
 	if key != "" {
@@ -791,7 +784,6 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 				}{}, err
 			}
 			if found {
-				// Private checkpoint is deliberately absent from outcome JSON.
 				stored.Turn, err = getTurn(ctx, tx, stored.Turn.ID)
 				if err != nil {
 					return struct {
@@ -952,8 +944,6 @@ func (s *Store) SetPhase4AttemptActive(ctx context.Context, attemptID string) (P
 	return s.transitionPhase4Attempt(ctx, attemptID, []AttemptState{AttemptStarting, AttemptScheduled}, AttemptActive)
 }
 
-// SetPhase4AttemptNeedsInput records a durable safe boundary before the
-// Secretary responds. The Attempt remains active and no Turn is created.
 func (s *Store) SetPhase4AttemptNeedsInput(ctx context.Context, attemptID string) (Phase4Attempt, error) {
 	return withTx(s, ctx, func(tx *sql.Tx) (Phase4Attempt, error) {
 		attempt, err := getPhase4Attempt(ctx, tx, attemptID)
@@ -974,9 +964,6 @@ func (s *Store) SetPhase4AttemptNeedsInput(ctx context.Context, attemptID string
 	})
 }
 
-// ResumePhase4Attempt returns a needs_input Attempt to active state without
-// allocating another Turn or Attempt. Replaying an already committed resume
-// is an idempotent no-op.
 func (s *Store) ResumePhase4Attempt(ctx context.Context, attemptID string) (Phase4Attempt, error) {
 	return withTx(s, ctx, func(tx *sql.Tx) (Phase4Attempt, error) {
 		attempt, err := getPhase4Attempt(ctx, tx, attemptID)
@@ -990,9 +977,6 @@ func (s *Store) ResumePhase4Attempt(ctx context.Context, attemptID string) (Phas
 		if attempt.State != AttemptActive {
 			return Phase4Attempt{}, ErrInvalidTransition
 		}
-		// Replaying a delivered response after the transition already committed
-		// is a successful no-op. The state pair is durable, so a concurrent
-		// duplicate cannot turn this into an invalid transition.
 		if turn.State == TurnActive {
 			return attempt, nil
 		}
@@ -1156,9 +1140,6 @@ func (s *Store) finishRetryableAttempt(ctx context.Context, attemptID string, in
 	return returnValue, err
 }
 
-// FinishAttempt is the production terminal path for a Phase 4 Attempt. A
-// retryable outcome, its terminal Attempt state, the next Attempt, the durable
-// retry operation and Turn/Worker projections commit in one transaction.
 func (s *Store) FinishAttempt(ctx context.Context, attemptID string, input FinishAttemptInput) (FinishAttemptResult, error) {
 	input.AttemptOutcomeInput = sanitizeAttemptOutcomeInput(input.AttemptOutcomeInput)
 	if err := validateAttemptOutcomeInput(input.AttemptOutcomeInput); err != nil {
@@ -1197,9 +1178,6 @@ func validateAttemptOutcomeInput(input AttemptOutcomeInput) error {
 	return nil
 }
 
-// RecordAttemptOutcome remains available for terminal final outcomes and
-// legacy callers. It deliberately rejects retryable outcomes so production
-// code cannot leave a Turn without an atomic next Attempt.
 func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, input AttemptOutcomeInput) (AttemptOutcome, *Phase4Result, bool, error) {
 	input = sanitizeAttemptOutcomeInput(input)
 	if err := validateAttemptOutcomeInput(input); err != nil {
@@ -1398,9 +1376,6 @@ func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, inpu
 	return returnValue.outcome, returnValue.result, returnValue.dup, err
 }
 
-// RetryAttempt is retained as a read-only compatibility lookup. It never
-// creates a new Attempt; production execution must call FinishAttempt with a
-// durable RetryCommandID.
 func (s *Store) RetryAttempt(ctx context.Context, turnID string, idempotencyKeys ...string) (Phase4Attempt, error) {
 	if len(idempotencyKeys) > 1 {
 		return Phase4Attempt{}, errors.New("core: at most one retry idempotency key is allowed")
@@ -1415,9 +1390,6 @@ func (s *Store) RetryAttempt(ctx context.Context, turnID string, idempotencyKeys
 	return s.retryAttempt(ctx, turnID, key)
 }
 
-// RetryAttemptWithKey is a compatibility lookup for retries already created
-// by FinishAttempt. New production retries must use FinishAttempt, which
-// durably records the command and creates the next Attempt in one transaction.
 func (s *Store) RetryAttemptWithKey(ctx context.Context, turnID, idempotencyKey string) (Phase4Attempt, error) {
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if idempotencyKey == "" {
@@ -1495,9 +1467,6 @@ WHERE next.turn_id = ? ORDER BY operation.created_at DESC, operation.idempotency
 		if classification != OutcomeRetryable || !latest.State.Terminal() {
 			return Phase4Attempt{}, ErrInvalidTransition
 		}
-		// This compatibility method is intentionally read-only. It must not be a
-		// production execution path that can create a retry without an atomic
-		// outcome and next Attempt.
 		return Phase4Attempt{}, ErrInvalidTransition
 	})
 }
@@ -1527,10 +1496,6 @@ func lifecycleCommandID(kind, attemptID string) string {
 	return "cmd_" + lifecycleCommandKind(kind) + "_" + attemptID
 }
 
-// EnsureLifecycleCommandIntent restores the durable handoff record for a
-// starting Attempt. New Worker and Turn creation writes this in the same
-// transaction as the Attempt. This method also repairs databases committed by
-// older binaries before that invariant existed.
 func (s *Store) EnsureLifecycleCommandIntent(ctx context.Context, kind, workerID, attemptID string) (WorkerCommand, error) {
 	kind = lifecycleCommandKind(kind)
 	return withTx(s, ctx, func(tx *sql.Tx) (WorkerCommand, error) {
@@ -1559,9 +1524,6 @@ func ensureLifecycleCommandIntentTx(ctx context.Context, tx *sql.Tx, now time.Ti
 	return err
 }
 
-// ClaimWorkerCommand creates one durable command identity for an immutable
-// Worker Attempt. A pending command is owned until LeaseUntil. The lease makes
-// a crash between claim and handoff recoverable without changing command ID.
 func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerID, attemptID string, origins ...SecretaryOriginIdentity) (WorkerCommand, bool, error) {
 	if strings.TrimSpace(kind) == "" || strings.TrimSpace(dedupeKey) == "" || strings.TrimSpace(workerID) == "" || strings.TrimSpace(attemptID) == "" {
 		return WorkerCommand{}, false, errors.New("core: Worker command binding is required")
@@ -1648,8 +1610,6 @@ func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerI
 					return WorkerCommand{}, err
 				}
 			}
-			// A command inserted with the lifecycle state is an unowned intent.
-			// Its first claimant acquires the lease and performs the handoff.
 			if (command.State == WorkerCommandPending || command.State == WorkerCommandUncertain) && !(kind == "steering" && command.State == WorkerCommandUncertain) && command.LeaseUntil.IsZero() {
 				allowInitialBinding := command.State == WorkerCommandPending
 				now := s.now()
@@ -1701,9 +1661,6 @@ func (s *Store) ClaimWorkerCommand(ctx context.Context, kind, dedupeKey, workerI
 	return command, duplicate, err
 }
 
-// ReclaimWorkerCommand atomically renews an expired pending-command lease.
-// The command ID remains unchanged. A concurrent owner with a live lease
-// cannot be reclaimed and therefore cannot receive a second handoff.
 func (s *Store) ReclaimWorkerCommand(ctx context.Context, commandID string, now time.Time) (WorkerCommand, bool, error) {
 	type reclaimResult struct {
 		command   WorkerCommand
@@ -1732,8 +1689,6 @@ func (s *Store) ReclaimWorkerCommand(ctx context.Context, commandID string, now 
 	return result.command, result.reclaimed, err
 }
 
-// FindWorkerCommand returns a previously claimed command for this immutable
-// Worker Attempt. It does not create a new command.
 func (s *Store) FindWorkerCommand(ctx context.Context, kind, dedupeKey, workerID, attemptID string) (WorkerCommand, bool, error) {
 	var command WorkerCommand
 	err := scanWorkerCommand(s.db.QueryRowContext(ctx, `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, lease_until, created_at, updated_at FROM phase4_worker_commands WHERE kind = ? AND worker_id = ? AND attempt_id = ? AND dedupe_key = ?`, kind, workerID, attemptID, dedupeKey), &command)
@@ -1754,9 +1709,6 @@ func (s *Store) MarkWorkerCommandFailed(ctx context.Context, commandID, message 
 	return s.updateWorkerCommand(ctx, commandID, WorkerCommandFailed, strings.TrimSpace(message))
 }
 
-// RetryWorkerCommand reopens a failed handoff without changing its durable ID.
-// Node-side command and response dedupe make retrying that same ID safe after
-// a transport failure or a crash whose delivery result was ambiguous.
 func (s *Store) RetryWorkerCommand(ctx context.Context, commandID string, now time.Time) (WorkerCommand, bool, error) {
 	now = now.UTC()
 	returnValue, err := withTx(s, ctx, func(tx *sql.Tx) (struct {
@@ -1906,9 +1858,6 @@ func (s *Store) WorkersForConversation(ctx context.Context, conversationID strin
 	return workers, rows.Err()
 }
 
-// WorkersForConversationLimit bounds the conversation worker snapshot.
-// limit must be positive; the HTTP layer owns defaults, clamping and
-// validation.
 func (s *Store) WorkersForConversationLimit(ctx context.Context, conversationID string, limit int) ([]Worker, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT id FROM workers WHERE conversation_id = ? ORDER BY created_at, id LIMIT ?`, conversationID, limit)
 	if err != nil {
@@ -2221,10 +2170,6 @@ func conversationForWorker(ctx context.Context, q interface {
 }
 func parseTimestamp(text string) (t time.Time, err error) { return time.Parse(time.RFC3339Nano, text) }
 
-// RecordNodeAttemptOutcome is the authenticated Node boundary for terminal
-// Attempt events. It verifies the immutable server binding before delegating to
-// the idempotent lifecycle transaction. Native runtime identifiers never cross
-// this boundary.
 func (s *Store) RecordNodeAttemptOutcome(ctx context.Context, envelope AttemptOutcomeEnvelope) (AttemptOutcome, *Phase4Result, bool, error) {
 	if envelope.Status != OutcomeSucceeded {
 		hadSummary := strings.TrimSpace(envelope.Summary) != ""
@@ -2274,8 +2219,6 @@ func (s *Store) RecordNodeAttemptOutcome(ctx context.Context, envelope AttemptOu
 	return returnValue, result, duplicate, err
 }
 
-// RecordNodeActivity validates a normalized activity against the immutable
-// server Attempt binding and the currently observed capability inventory.
 func (s *Store) RecordNodeActivity(ctx context.Context, instance HarnessInstance, activity Activity) (Event, error) {
 	if err := activity.ValidateFor(instance); err != nil {
 		return Event{}, err
@@ -2283,9 +2226,6 @@ func (s *Store) RecordNodeActivity(ctx context.Context, instance HarnessInstance
 	return s.recordNodeActivity(ctx, activity, false)
 }
 
-// RecordNodeActivityReplay validates a buffered Activity using its normalized
-// payload and immutable Attempt binding. Current inventory is deliberately not
-// consulted because it may have changed after the event was observed.
 func (s *Store) RecordNodeActivityReplay(ctx context.Context, activity Activity) (Event, error) {
 	if err := activity.ValidatePayload(); err != nil {
 		return Event{}, err
@@ -2807,15 +2747,15 @@ func (s *Store) CancelLimitedWorkerAttempt(ctx context.Context, workerID string,
 		}
 
 		result := &Phase4Result{
-			ID:              newID("res"),
-			WorkerID:        attempt.WorkerID,
-			TurnID:          attempt.TurnID,
-			AttemptID:       attempt.ID,
-			Status:          ResultCanceled,
-			Summary:         summary,
-			FailureCode:     "canceled",
-			CorrelationID:   attempt.CorrelationID,
-			CreatedAt:       now,
+			ID:            newID("res"),
+			WorkerID:      attempt.WorkerID,
+			TurnID:        attempt.TurnID,
+			AttemptID:     attempt.ID,
+			Status:        ResultCanceled,
+			Summary:       summary,
+			FailureCode:   "canceled",
+			CorrelationID: attempt.CorrelationID,
+			CreatedAt:     now,
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO phase4_results(id, worker_id, turn_id, attempt_id, status, summary, failure_code, failure_category, failure_details, artifact_refs, correlation_id, created_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			result.ID, result.WorkerID, result.TurnID, result.AttemptID, result.Status, result.Summary, result.FailureCode, string(result.FailureCategory), "", "", result.CorrelationID, timestamp(now)); err != nil {

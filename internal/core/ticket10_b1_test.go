@@ -33,8 +33,6 @@ func TestTicket10MigrationBackfillsLegacyWorkerResultIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Rebuild only conversation_entries to the c431e4c shape. The durable
-	// Phase 4 Worker/Turn/Result relation remains available for migration.
 	raw, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatal(err)

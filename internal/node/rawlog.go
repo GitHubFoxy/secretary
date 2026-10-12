@@ -8,7 +8,6 @@ import (
 	"sync"
 )
 
-// rotatingLog keeps a bounded number of raw ACP JSONL files per Worker.
 type rotatingLog struct {
 	mu       sync.Mutex
 	path     string

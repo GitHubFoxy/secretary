@@ -11,10 +11,6 @@ import (
 	"time"
 )
 
-// Wire-shape regression, NOT native fx acceptance. The pinned fx0.0.8 source
-// types.zig emits 32-character lowercase hex messageId, text-only chunks, and
-// stopReason/usage without summary. prompt.zig:pushText sends assistant and
-// operational text under different IDs without publishing their phase.
 func TestACPLegacyFXWireShapeQueuedAndSecondAttempts(t *testing.T) {
 	for _, fx := range []bool{false, true} {
 		for _, queued := range []bool{false, true} {
@@ -31,8 +27,6 @@ func TestACPLegacyFXWireShapeQueuedAndSecondAttempts(t *testing.T) {
 					defer session.Close()
 					promptDone := make(chan error, 1)
 					go func() { promptDone <- session.Prompt(ctx, "first") }()
-					// Native reverse-request handshake holds prompt1 open while
-					// Queue is admitted. No sleeps or guessed idle boundaries.
 					for {
 						select {
 						case activity := <-session.Activity():
@@ -54,8 +48,6 @@ func TestACPLegacyFXWireShapeQueuedAndSecondAttempts(t *testing.T) {
 					}
 					results := make([]Result, 0, 2)
 					if explicitFirst {
-						// The 128 preceding activity events fill Activity + transport
-						// buffers. Summary must still arrive before draining them.
 						select {
 						case result := <-session.Result():
 							results = append(results, result)
@@ -77,16 +69,12 @@ func TestACPLegacyFXWireShapeQueuedAndSecondAttempts(t *testing.T) {
 						case result := <-session.Result():
 							results = append(results, result)
 							if !queued && len(results) == 1 {
-								// Keep consuming Activity until Prompt itself reaches
-								// the FIFO idle boundary, then start attempt2.
 								waitLegacyPrompt(t, ctx, session, promptDone)
 								go func() { promptDone <- session.Prompt(ctx, "second") }()
 							}
 						case <-ctx.Done():
 							t.Fatal("legacy queued/second Result timed out")
 						}
-						// With an early explicit Result the first append happened
-						// above, so direct attempt2 needs the same FIFO boundary.
 						if explicitFirst && !queued && len(results) == 1 {
 							waitLegacyPrompt(t, ctx, session, promptDone)
 							go func() { promptDone <- session.Prompt(ctx, "second") }()
@@ -155,7 +143,7 @@ func waitLegacyPrompt(t *testing.T, ctx context.Context, session Session, done <
 		select {
 		case <-session.Activity():
 		case <-done:
-			return // RPC error is asserted through the terminal Result.
+			return
 		case <-ctx.Done():
 			t.Fatal("legacy Prompt FIFO boundary timed out")
 		}
@@ -210,7 +198,6 @@ func TestACPLegacyAnswerFixtureProcess(t *testing.T) {
 			update("agent_message_chunk", fmt.Sprintf("%032x", attempt*10+1), fmt.Sprintf("assistant-%d\n", attempt))
 			update("agent_message_chunk", fmt.Sprintf("%032x", attempt*10+2), fmt.Sprintf("operational-%d\n", attempt))
 			update("agent_message_chunk", fmt.Sprintf("%032x", attempt*10+3), fmt.Sprintf("assistant-final-%d\n", attempt))
-			// An older messageId does not mean its late delta may be dropped.
 			update("agent_message_chunk", fmt.Sprintf("%032x", attempt*10+1), fmt.Sprintf("late-delta-%d", attempt))
 		}
 		if scenario == "rpc-error" {

@@ -39,8 +39,6 @@ var allowedFailureURLs = map[string]string{
 	"https://anthropic.com":                        "https://anthropic.com",
 }
 
-// SanitizeFailureMessage is the shared boundary for bounded, user-visible and
-// persisted Worker failure text. Unknown URLs and credentials are removed.
 func SanitizeFailureMessage(message string) string {
 	message = strings.TrimSpace(message)
 	if message == "" {
@@ -114,9 +112,6 @@ func sanitizeFailureJSONAtDepth(value any, nestedDepth int) any {
 }
 
 func sanitizeFailureTextWithEmbeddedJSON(message string, nestedDepth int) string {
-	// Remove the full Authorization/Digest value before splitting text around
-	// embedded JSON, so JSON-looking fragments inside credentials can't break
-	// the header's redaction context.
 	message = redactFailureAuthorization(message)
 	if sanitized, found := sanitizeFailureEmbeddedJSON(message, nestedDepth); found {
 		return sanitized
@@ -348,8 +343,6 @@ func sanitizeAttemptOutcomeInput(input AttemptOutcomeInput) AttemptOutcomeInput 
 	return input
 }
 
-// SanitizeWorkerCommandReceipt keeps authenticated Node text bounded and safe
-// before the receipt is stored or used in logs and public responses.
 func SanitizeWorkerCommandReceipt(receipt WorkerCommandReceipt) WorkerCommandReceipt {
 	receipt.FailureCategory = SanitizeFailureCategory(receipt.FailureCategory)
 	receipt.ProviderCode = SanitizeFailureProviderCode(receipt.ProviderCode)

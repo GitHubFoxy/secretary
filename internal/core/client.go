@@ -45,8 +45,6 @@ var (
 	ErrPairingAlreadyUsed = errors.New("core: Client pairing handoff already used")
 )
 
-// Client is the public, server-owned identity of a trusted user interface.
-// CredentialHash is deliberately never serialized.
 type Client struct {
 	ID             string        `json:"id"`
 	PersonID       string        `json:"person_id"`

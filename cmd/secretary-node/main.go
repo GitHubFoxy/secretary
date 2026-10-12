@@ -223,7 +223,6 @@ func installedHarnesses() map[core.HarnessKind]string {
 		if path, err := exec.LookPath(command); err == nil {
 			resolved[kind] = path
 		} else if kind == core.HarnessOpenCode && strings.TrimSpace(os.Getenv("SECRETARY_OPENCODE_COMMAND")) != "" || kind == core.HarnessCodex && (strings.TrimSpace(os.Getenv("SECRETARY_CODEX_COMMAND")) != "" || strings.TrimSpace(os.Getenv("CODEX_PATH")) != "") {
-			// Keep an unavailable explicit binary unavailable in discovery too.
 			resolved[kind] = command
 		}
 	}

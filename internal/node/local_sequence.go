@@ -4,10 +4,6 @@ import "errors"
 
 var ErrUnsentNodeEvents = errors.New("node: unsent durable events must be flushed first")
 
-// ReserveControlSequence reserves a durable sequence for heartbeat/inventory
-// only when every lower durable outbox event has already been written on this
-// connection. This prevents a concurrently queued Attempt event from arriving
-// after a higher heartbeat sequence and being rejected as a replay.
 func (s *LocalStore) ReserveControlSequence(sentThrough uint64) (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

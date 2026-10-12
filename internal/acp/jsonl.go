@@ -15,18 +15,15 @@ import (
 )
 
 type Message struct {
-	JSONRPC string          `json:"jsonrpc,omitempty"`
-	ID      json.RawMessage `json:"id,omitempty"`
-	Method  string          `json:"method,omitempty"`
-	Params  json.RawMessage `json:"params,omitempty"`
-	Result  json.RawMessage `json:"result,omitempty"`
-	Error   *RPCError       `json:"error,omitempty"`
-	// Local-only FIFO fence. It is never serialized to the native protocol.
+	JSONRPC      string          `json:"jsonrpc,omitempty"`
+	ID           json.RawMessage `json:"id,omitempty"`
+	Method       string          `json:"method,omitempty"`
+	Params       json.RawMessage `json:"params,omitempty"`
+	Result       json.RawMessage `json:"result,omitempty"`
+	Error        *RPCError       `json:"error,omitempty"`
 	eventBarrier chan struct{}
 }
 
-// AcknowledgeEventBarrier is called by the event consumer after all preceding
-// notifications have been handled. It is not a native/synthetic activity.
 func (m Message) AcknowledgeEventBarrier() bool {
 	if m.eventBarrier == nil {
 		return false
@@ -103,8 +100,6 @@ func (c *Client) HandleServerRequest(message Message) error {
 	return c.handleServerRequest(message)
 }
 
-// RetryServerRequest repeats a server-request reply with the original native
-// request ID and reports the write result through the delivery callback.
 func (c *Client) RetryServerRequest(message Message, result any, handlerErr error) error {
 	var deliveryErr error
 	if handlerErr != nil {
@@ -131,15 +126,10 @@ func StartWithLogEnv(ctx context.Context, rawLog io.Writer, environment []string
 	return StartWithLogEnvDir(ctx, rawLog, environment, "", command, arguments...)
 }
 
-// StartWithLogEnvDir starts the harness with process.Dir set to dir, so the
-// harness primary workspace matches the dispatched Project workspace. An
-// empty dir preserves the inherited working directory.
 func StartWithLogEnvDir(ctx context.Context, rawLog io.Writer, environment []string, dir string, command string, arguments ...string) (*Client, error) {
 	return startWithProcessEnvironment(ctx, rawLog, environment, true, dir, command, arguments...)
 }
 
-// StartWithLogExactEnvDir replaces the inherited environment. Callers supply
-// the complete allowlisted environment; excluded secrets must not reappear.
 func StartWithLogExactEnvDir(ctx context.Context, rawLog io.Writer, environment []string, dir string, command string, arguments ...string) (*Client, error) {
 	return startWithProcessEnvironment(ctx, rawLog, environment, false, dir, command, arguments...)
 }
@@ -178,8 +168,6 @@ func (c *Client) Events() <-chan Message { return c.events }
 
 func (c *Client) SetServerRequestHandler(handler ServerRequestHandler) { c.handler = handler }
 
-// SetServerRequestDeliveryHandler observes the result of writing a JSON-RPC
-// response to the native harness. The callback runs after the write returns.
 func (c *Client) SetServerRequestDeliveryHandler(handler ServerRequestDeliveryHandler) {
 	c.delivery = handler
 }
@@ -188,16 +176,10 @@ func (c *Client) Request(ctx context.Context, method string, params any, result 
 	return c.request(ctx, method, params, result, false)
 }
 
-// RequestDrainingEvents additionally waits for the event consumer to handle
-// every notification preceding the response. A consumer must already run.
 func (c *Client) RequestDrainingEvents(ctx context.Context, method string, params any, result any) error {
 	return c.request(ctx, method, params, result, true)
 }
 
-// RequestWithDeferredEventDrain places the same FIFO fence as
-// RequestDrainingEvents but lets the caller choose when to wait for it. The
-// caller must wait before beginning a request whose state replaces the prior
-// notification collector. This is a local ordering boundary, never a wire RPC.
 func (c *Client) RequestWithDeferredEventDrain(ctx context.Context, method string, params any, result any) (func(context.Context) error, error) {
 	return c.requestWithEventBarrier(ctx, method, params, result, true)
 }
@@ -312,15 +294,8 @@ func (c *Client) read(stdout io.Reader) {
 		if json.Unmarshal(raw, &message) != nil {
 			continue
 		}
-		// JSON-RPC is bidirectional. A peer can independently choose the same
-		// numeric request ID as an outstanding local request, so a frame with a
-		// method is always an inbound request or notification, never a response.
 		if message.Method != "" {
 			if len(message.ID) > 0 {
-				// A harness request can arrive while a client Request such as
-				// session/load is waiting for its response. Handle it outside
-				// the reader so the matching RPC response can still unblock the
-				// client, while the typed response remains pending in the session.
 				go func(request Message) { _ = c.handleServerRequest(request) }(message)
 				continue
 			}

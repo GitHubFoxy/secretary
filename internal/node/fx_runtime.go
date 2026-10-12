@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// FXRuntime adapts fx's ACP implementation. fx does not implement
-// _session/steering, so steering is expressed as cancel current turn, wait
-// for the terminal response, then start a replacement prompt.
 type FXRuntime struct {
 	ACPRuntime
 }
@@ -44,9 +41,6 @@ type fxSession struct {
 	steerMu sync.Mutex
 }
 
-// InterruptAndContinueSteerer lets the server create a durable follow-up
-// Attempt after fx has completed cancellation and before the replacement
-// prompt is sent.
 type InterruptAndContinueSteerer interface {
 	InterruptAndContinue(context.Context, string, func() error) (bool, error)
 }

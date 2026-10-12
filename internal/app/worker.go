@@ -11,8 +11,6 @@ import (
 
 var ErrRuntimeSessionUnavailable = errors.New("runtime_session_unavailable")
 
-// WorkerController is the server-facing boundary for observer commands. It
-// records Follow-up state before handing input to the runtime.
 type WorkerController struct {
 	Store          *core.Store
 	Node           *node.LocalNode

@@ -1,4 +1,3 @@
-/** @typedef {{seq?: number, id?: string}} Sequenced */
 
 const TOOL_FAILURE_CATEGORIES = new Set(['dns', 'tls', 'timeout', 'proxy', 'network', 'http', 'permission', 'provider', 'capability', 'tool']);
 const TOOL_FAILURE_CODES = new Set(['dns_lookup_failed', 'tls_handshake_failed', 'request_timeout', 'connection_failed', 'proxy_error', 'http_error', 'permission_denied', 'provider_error', 'capability_unavailable', 'tool_error']);

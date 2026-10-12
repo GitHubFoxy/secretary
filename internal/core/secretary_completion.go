@@ -12,29 +12,19 @@ type secretaryTurnCompletion struct {
 	entry ConversationEntry
 }
 
-// FinishSecretaryTurnWithResponse atomically terminalizes a durable Secretary
-// turn and, on success, stores the final assistant response in the canonical
-// Personal Conversation. The live Secretary stream remains an event log; it is
-// not a substitute for the durable conversation entry.
 func (s *Store) FinishSecretaryTurnWithResponse(ctx context.Context, turnID string, state SecretaryTurnState, terminalError, response string) (SecretaryTurn, ConversationEntry, error) {
 	return s.FinishSecretaryTurnWithOutput(ctx, turnID, "", state, terminalError, response, nil)
 }
 
-// FinishSecretaryTurnWithOutput atomically flushes buffered assistant deltas
-// and completes a turn. Addressed replies and Results linked to this exact
-// turn/input identity suppress only unaddressed completion output.
 func (s *Store) FinishSecretaryTurnWithOutput(ctx context.Context, turnID, inputID string, state SecretaryTurnState, terminalError, response string, textDeltas []string) (SecretaryTurn, ConversationEntry, error) {
 	return s.finishSecretaryTurnWithOutput(ctx, turnID, inputID, state, terminalError, response, textDeltas, false, nil)
 }
 
-// FinishSecretaryTurnWithAddressedReplyOnly succeeds only when exactly one
-// canonical reply entry is durably linked to this turn's exact input identity.
 func (s *Store) FinishSecretaryTurnWithAddressedReplyOnly(ctx context.Context, turnID, inputID string) (SecretaryTurn, error) {
 	turn, _, err := s.finishSecretaryTurnWithOutput(ctx, turnID, inputID, SecretaryTurnSucceeded, "", "", nil, true, nil)
 	return turn, err
 }
 
-// SecretaryCompletionEvidence contains only safe terminal classifications, never model text.
 type SecretaryCompletionEvidence struct {
 	Branch          string `json:"branch"`
 	TerminalClass   string `json:"terminal_class"`
@@ -49,8 +39,6 @@ type SecretaryCompletionEvidence struct {
 	Code            string `json:"code"`
 }
 
-// FinishSecretaryTurnWithRequiredReply tightens only the opt-in addressed contract.
-// Missing replies commit a failed turn rather than falling back to assistant text.
 func (s *Store) FinishSecretaryTurnWithRequiredReply(ctx context.Context, turnID, inputID string, state SecretaryTurnState, evidence SecretaryCompletionEvidence) (SecretaryTurn, error) {
 	turn, _, err := s.finishSecretaryTurnWithOutput(ctx, turnID, inputID, state, "", "", nil, false, &evidence)
 	return turn, err

@@ -13,8 +13,6 @@ import (
 	"github.com/beruseruko/secretary/internal/acp"
 )
 
-// harnessDiagnosticDetail contains only a typed, redacted summary of one raw
-// ACP record. It never carries the original JSON line or native session ID.
 type harnessDiagnosticDetail struct {
 	Sequence      int            `json:"sequence"`
 	Direction     string         `json:"direction"`
@@ -90,7 +88,6 @@ func parseHarnessDiagnostic(line []byte, sequence int) (harnessDiagnosticDetail,
 		detail.Status = diagnosticValueString(params["status"])
 	}
 	if isThoughtUpdate(detail.SessionUpdate) {
-		// Keep an audit marker, but never copy thought content into diagnostics.
 		detail.SessionUpdate = "thinking"
 		return detail, true
 	}

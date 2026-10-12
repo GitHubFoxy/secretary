@@ -213,8 +213,6 @@ func telegramEvent(event core.Event) telegram.Event {
 		return result
 	case event.Kind == "worker.spawned":
 		result.Kind = "worker.created"
-		// Intent является OriginalUserIntent в Node Dispatch envelope.
-		// Не передаём генератору весь payload с Project/Policy snapshots.
 		result.TaskPrompt, _ = payload["intent"].(string)
 		result.NodeID = stringField(payload, "node_id", "node")
 	case strings.HasPrefix(event.Kind, "worker.message."):
@@ -281,11 +279,6 @@ func telegramEvent(event core.Event) telegram.Event {
 			result.Kind = ""
 			break
 		}
-		// A final outcome carries no renderable text; the paired
-		// result.accepted event from the same transaction holds the summary.
-		// Skipping the empty outcome keeps the terminal identity free so the
-		// result delivers "Worker завершён: <summary>" instead of burning it
-		// on a textless status.
 		if event.Kind == "attempt.outcome_recorded" && stringField(payload, "text", "summary", "result", "error", "response") == "" {
 			result.Kind = ""
 			break

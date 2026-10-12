@@ -19,10 +19,6 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-// OpenCode's plaintext `models` command contains IDs only. V2's native model
-// API also exposes enabled state and provider-owned variant settings. Observe
-// those in the same isolated environment/provider store as the ACP runtime;
-// never manufacture reasoning support from a configured request or variant ID.
 type OpenCodeModelObserver interface {
 	ObserveOpenCodeModels(context.Context, string) ([]core.ObservedModelID, []core.ObservedReasoningLevel, error)
 }
@@ -50,8 +46,6 @@ func observeOpenCodeModels(ctx context.Context, command, dataHome string, legacy
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return nil, nil, fmt.Errorf("opencode inventory: private transport unavailable")
 	}
-	// Ephemeral control credential, not a provider credential. The stdio server
-	// consumes it before tool environment setup; no auth material is copied.
 	password := hex.EncodeToString(nonce[:])
 	env = append(env, "OPENCODE_PASSWORD="+password)
 	processCtx, cancel := context.WithCancel(ctx)
@@ -108,8 +102,6 @@ func observeOpenCodeModels(ctx context.Context, command, dataHome string, legacy
 		}
 		return nil
 	}
-	// Plugin inventory is published after activation. Catalog IDs alone can be
-	// visible earlier (the same race that affects ACP load/Resume).
 	for {
 		var plugins struct {
 			Data []struct {

@@ -38,8 +38,6 @@ func (r fakeProbeRunner) Run(_ context.Context, binary string, args ...string) (
 func (r fakeProbeRunner) ProbeACP(context.Context, string, ...string) error { return r.acpError }
 
 func (r fakeProbeRunner) ObserveOpenCodeModels(ctx context.Context, command string) ([]core.ObservedModelID, []core.ObservedReasoningLevel, error) {
-	// This is explicit synthetic metadata; the production runner uses the V2
-	// model API and never infers reasoning from plaintext model IDs.
 	result, err := r.Run(ctx, command, "models")
 	if err != nil {
 		return nil, nil, err
@@ -231,13 +229,8 @@ esac
 	}
 }
 
-// Only the external clock is controlled: HarnessProbe and ExecCommandRunner
-// still execute the exact version/auth fixture and perform real cancellation.
-// The default production step timeout remains the startup safety bound.
 type authFixtureDeadlineContext struct{ context.Context }
 
-// Do not expose the backing cancel context's private value: cancellation must
-// propagate this clock's Err, not the backing context's context.Canceled.
 func (authFixtureDeadlineContext) Value(any) any { return nil }
 
 func (c authFixtureDeadlineContext) Err() error {
@@ -278,8 +271,6 @@ esac
 	go func() {
 		resultReady <- (HarnessProbe{Node: "node-a", Spec: spec, Runner: executableOpenCodeProbeRunner{ExecCommandRunner{OpenCodeDataHome: selectedHome}}}).Probe(authFixtureDeadlineContext{caller})
 	}()
-	// The fixture writes its PID only on the exact auth branch, immediately
-	// before exec (same PID). Version startup does not consume the stimulus.
 	startup, stopStartup := context.WithTimeout(context.Background(), defaultProbeStepTimeout)
 	defer stopStartup()
 	ticker := time.NewTicker(time.Millisecond)

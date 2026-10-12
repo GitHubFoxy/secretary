@@ -12,9 +12,6 @@ var ErrOpenCodeCredentialUnavailable = errors.New("harness probe: OpenCode store
 
 var openCodeAuthenticationArgs = []string{"auth", "list", "--format", "json", "--standalone"}
 
-// CheckOpenCodeAuthentication checks stored provider metadata in one explicitly
-// selected native data home. The command runs without the background service or
-// ambient provider credentials; raw native output is never returned to callers.
 func CheckOpenCodeAuthentication(ctx context.Context, command, dataHome string) error {
 	if strings.TrimSpace(command) == "" || strings.TrimSpace(dataHome) == "" {
 		return ErrOpenCodeCredentialUnavailable

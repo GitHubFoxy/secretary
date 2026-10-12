@@ -14,8 +14,6 @@ import (
 	"time"
 )
 
-// Opt-in: настоящий OpenCode, но только локальный HTTP provider.
-// Реальные credentials и платные model requests не нужны.
 func TestOpenCodeTitleNativeHTTPFixture(t *testing.T) {
 	if os.Getenv("SECRETARY_OPENCODE_TITLE_E2E") != "1" {
 		t.Skip("set SECRETARY_OPENCODE_TITLE_E2E=1 for native OpenCode v2 check")
@@ -61,8 +59,6 @@ func TestOpenCodeTitleNativeHTTPFixture(t *testing.T) {
 	defer server.Close()
 	generator := OpenCodeTitleGenerator{Model: "title-fixture/fixture-model", Reasoning: "minimal", Prompt: "fixture-system: Верни только название задачи.", DataHome: filepath.Join(t.TempDir(), "secretary-native-data"),
 		run: func(ctx context.Context, command titleCommand) ([]byte, error) {
-			// Добавляется только fake endpoint; весь harness/config/stdio путь
-			// совпадает с генератором. Пользовательские configs не читаются.
 			path := ""
 			for _, entry := range command.Environment {
 				if strings.HasPrefix(entry, "OPENCODE_CONFIG=") {

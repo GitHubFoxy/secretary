@@ -10,8 +10,8 @@ import (
 
 func TestCodexRateLimits_EvaluationWindowsAndPlusOneMinute(t *testing.T) {
 	now := time.Date(2026, 10, 13, 2, 0, 0, 0, time.UTC)
-	futureReset := now.Add(20 * time.Minute).Unix() // 20 minutes in future
-	weeklyReset := now.Add(48 * time.Hour).Unix()   // 48 hours in future
+	futureReset := now.Add(20 * time.Minute).Unix()
+	weeklyReset := now.Add(48 * time.Hour).Unix()
 
 	limitID := "premium"
 	modelSlug := "gpt-5-codex"

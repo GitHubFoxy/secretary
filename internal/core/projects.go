@@ -144,8 +144,6 @@ func knownActivityCapability(capability ActivityCapability) bool {
 	}
 }
 
-// Project is a manually managed registry record. Its paths are metadata, not
-// proof that a directory exists. Only a Node may inspect the local filesystem.
 type Project struct {
 	ID           string                   `json:"id"`
 	Name         string                   `json:"name"`
@@ -760,7 +758,6 @@ func projectTx(ctx context.Context, tx *sql.Tx, id string) (Project, error) {
 	return p, err
 }
 
-// ProjectDispatchRequest is the narrow resolver seam used before immutable Worker creation.
 type ProjectDispatchRequest struct {
 	ProjectID         string
 	NodeID            NodeReference
@@ -929,8 +926,6 @@ func (s *Store) CreateWorkerFromDispatch(ctx context.Context, conversationID, in
 	record, err := s.NodeRecord(ctx, dispatch.Node)
 	instance := dispatch.HarnessInstance
 	if errors.Is(err, ErrNotFound) {
-		// Legacy in-process callers may create a Worker before Node enrollment.
-		// Once a Node registry record exists, only its observed instance is trusted.
 	} else if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, err
 	} else {

@@ -37,8 +37,6 @@ type Store struct {
 	nodeRegistryMu       sync.Mutex
 	projectDispatchMu    sync.Mutex
 
-	// beforeResolvedWorkerCreate is used by package tests to make the narrow
-	// resolution-to-creation race deterministic.
 	beforeResolvedWorkerCreate func()
 
 	autoResumeOnLimitMu    sync.RWMutex
@@ -93,13 +91,8 @@ func Open(ctx context.Context, dsn string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 
-// Ping checks that the SQLite connection is usable. The health endpoint uses
-// it as a bounded liveness probe for runbooks.
 func (s *Store) Ping(ctx context.Context) error { return s.db.PingContext(ctx) }
 
-// backupBeforeMigration keeps a recoverable copy before any schema work. The
-// SQLite VACUUM INTO snapshot includes committed WAL pages and produces a
-// standalone backup instead of copying only the main database file.
 func backupBeforeMigration(ctx context.Context, db *sql.DB, dsn string) error {
 	databasePath, ok := sqliteDatabasePath(dsn)
 	if !ok {
@@ -183,7 +176,6 @@ func sqliteStringLiteral(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
-// RecordConfigVersion keeps the exact compiled snapshot that a Worker binding references.
 func (s *Store) RecordConfigVersion(ctx context.Context, version, sourcePath, compiledJSON string) error {
 	if version == "" || compiledJSON == "" {
 		return errors.New("core: config version and compiled snapshot are required")
@@ -237,18 +229,11 @@ func (s *Store) ConfigVersion(ctx context.Context, version string) (string, erro
 	return compiled, err
 }
 
-// RecoverInterrupted preserves the legacy Phase 3 recovery contract. It does
-// not inspect Phase 4 Attempts because a server cannot prove the state of a
-// remote Node without an explicit resolver.
 func (s *Store) RecoverInterrupted(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE attempts SET state = ?, updated_at = ? WHERE state IN (?, ?)`, AttemptInterrupted, timestamp(s.now()), AttemptStarting, AttemptActive)
 	return err
 }
 
-// RecoverPhase4Attempts asks an explicit Node/harness resolver about every
-// starting or active Phase 4 Attempt. A nil resolver is a deliberate no-op,
-// not a claim that remote execution is dead. Only an unknown probe result is
-// converted to an interrupted Attempt and its final Result.
 func (s *Store) RecoverPhase4Attempts(ctx context.Context, resolver Phase4AttemptRecoveryResolver) error {
 	if resolver == nil {
 		return nil
@@ -300,7 +285,6 @@ func (s *Store) RecoverPhase4Attempts(ctx context.Context, resolver Phase4Attemp
 		}
 	}
 
-	// Claimed schedule with still unclaimed command returns to prepared pending/manual_hold with existing identities.
 	schedRows, err := s.db.QueryContext(ctx, `SELECT id, worker_id, attempt_id, scheduled_at FROM phase4_attempt_schedules WHERE state = 'claimed'`)
 	if err == nil {
 		type claimedSched struct {
@@ -649,10 +633,6 @@ CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries(state, updated_at);
 	return nil
 }
 
-// migrateConversationEntryResultIdentity repairs entries written before
-// worker_result identity columns existed. It only uses an unambiguous durable
-// Result relation. An ambiguous or orphaned row aborts migration instead of
-// manufacturing a Worker/Turn identity that could hide the wrong Result.
 func (s *Store) migrateConversationEntryResultIdentity(ctx context.Context) error {
 	return withTxErr(s, ctx, func(tx *sql.Tx) error {
 		rows, err := tx.QueryContext(ctx, `SELECT id, conversation_id, kind, body, worker_ref, turn_id, result_id, created_at FROM conversation_entries WHERE kind = ? AND (worker_ref = '' OR turn_id = '' OR result_id = '') ORDER BY conversation_id, seq, id`, EntryWorkerResult)
@@ -726,8 +706,6 @@ ORDER BY r.created_at, r.id`, entry.ConversationID, entry.Body)
 		return legacyResultIdentity{}, fmt.Errorf("migrate Worker Result entry %q: %d durable Results match summary, refusing ambiguous identity", entry.ID, len(candidates))
 	}
 
-	// Phase 3 has a durable Result -> Attempt -> WorkerBinding -> Task
-	// relation, but no Turn table. Keep that fact explicit in the namespace.
 	rows, err = tx.QueryContext(ctx, `SELECT b.worker_ref, a.id, r.id, r.created_at
 FROM results r
 JOIN attempts a ON a.id = r.attempt_id
@@ -922,9 +900,6 @@ func (s *Store) EntriesAfter(ctx context.Context, conversationID string, afterSe
 	return entries, rows.Err()
 }
 
-// EntriesForward returns at most limit entries with seq greater than
-// afterSeq, ascending by seq. limit must be positive; the HTTP layer owns
-// defaults, clamping and validation.
 func (s *Store) EntriesForward(ctx context.Context, conversationID string, afterSeq int64, limit int) ([]ConversationEntry, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT e.id, e.conversation_id, e.seq, e.kind, e.body, e.worker_ref, e.turn_id, e.result_id, COALESCE(r.status, ''), e.created_at FROM conversation_entries e LEFT JOIN phase4_results r ON r.id = e.result_id WHERE e.conversation_id = ? AND e.seq > ? ORDER BY e.seq LIMIT ?`, conversationID, afterSeq, limit)
 	if err != nil {
@@ -942,9 +917,6 @@ func (s *Store) EntriesForward(ctx context.Context, conversationID string, after
 	return entries, rows.Err()
 }
 
-// EntriesTail returns at most limit entries with seq smaller than beforeSeq,
-// ascending by seq. A non-positive beforeSeq reads the latest tail. limit
-// must be positive; the HTTP layer owns defaults, clamping and validation.
 func (s *Store) EntriesTail(ctx context.Context, conversationID string, beforeSeq int64, limit int) ([]ConversationEntry, error) {
 	condition := `e.seq < ?`
 	arguments := []any{conversationID, beforeSeq, limit}
@@ -980,8 +952,6 @@ func (s *Store) legacyTasksReadOnly(ctx context.Context) bool {
 	return s.db.QueryRowContext(ctx, `SELECT value FROM settings WHERE key = 'phase4.migration_complete'`).Scan(&migrated) == nil && migrated == "1"
 }
 
-// LegacyTasksReadOnly reports the one-way migration barrier. Runtime paths use
-// it before touching a legacy Task so they cannot start a Node session first.
 func (s *Store) LegacyTasksReadOnly(ctx context.Context) bool {
 	return s != nil && s.legacyTasksReadOnly(ctx)
 }

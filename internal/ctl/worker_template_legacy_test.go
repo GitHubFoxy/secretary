@@ -130,8 +130,6 @@ func TestExistingFXWorkerTemplateBindingSurvivesDispatchFollowUpAndResume(t *tes
 		t.Fatal(err)
 	}
 
-	// Reopen a database schema from before the generation marker existed. The
-	// existing Worker, Turn, Attempt and binding are left intact.
 	legacyDB, err := sql.Open("sqlite", databasePath)
 	if err != nil {
 		t.Fatal(err)

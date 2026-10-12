@@ -10,9 +10,6 @@ import (
 
 var ErrHandlerUnavailable = errors.New("mcp: handler is unavailable")
 
-// AuditedHandler makes each MCP invocation observable before and after the
-// underlying capability handler runs. The pre-event is the commit point for
-// the operation, so a storage failure prevents the tool from running.
 type AuditedHandler struct {
 	Handler   Handler
 	Store     *core.Store

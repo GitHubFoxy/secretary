@@ -410,8 +410,6 @@ func TestWorkerServiceSpawnReplayRedeliversPendingInitialDispatchAfterReopen(t *
 	if resolution.Queued {
 		t.Fatalf("new resolution=%#v", resolution)
 	}
-	// Reopen the same durable store after the Worker, Turn, Attempt and intent
-	// committed, but before any command claim or runtime handoff.
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -779,7 +777,6 @@ func TestWorkerServiceSteeringFailure_IdempotentReplayPreservesTypedFailure(t *t
 		IdempotencyKey: "steer-err-key",
 	}
 
-	// First call fails with typed error
 	_, firstErr := service.MessageWorker(ctx, request)
 	if firstErr == nil {
 		t.Fatal("expected error on first steering call, got nil")
@@ -795,7 +792,6 @@ func TestWorkerServiceSteeringFailure_IdempotentReplayPreservesTypedFailure(t *t
 		t.Fatalf("first provider_code = %q, want 'usage_limit_exceeded'", firstCmdErr.Outcome.ProviderCode)
 	}
 
-	// Second call with same idempotency key restores exact same typed error
 	_, replayErr := service.MessageWorker(ctx, request)
 	if replayErr == nil {
 		t.Fatal("expected error on replay call, got nil")
@@ -817,7 +813,6 @@ func TestWorkerServiceSteeringFailure_IdempotentReplayPreservesTypedFailure(t *t
 		t.Fatalf("replay message = %q", replayCmdErr.Outcome.ErrorMessage)
 	}
 
-	// Verify that rejected steering did NOT finalize the attempt
 	attemptRecord, err := store.Phase4Attempt(ctx, attempt.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -826,7 +821,6 @@ func TestWorkerServiceSteeringFailure_IdempotentReplayPreservesTypedFailure(t *t
 		t.Fatalf("attempt state = %q, want %q", attemptRecord.State, core.AttemptActive)
 	}
 
-	// Native terminal forms the single Result
 	_, terminalResult, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
 		Status:         core.OutcomeSucceeded,
 		Classification: core.OutcomeFinal,
@@ -839,9 +833,6 @@ func TestWorkerServiceSteeringFailure_IdempotentReplayPreservesTypedFailure(t *t
 		t.Fatalf("terminal result status = %q, want %q", terminalResult.Status, core.ResultSucceeded)
 	}
 
-	// 3. Worker is now Idle after successful native terminal.
-	// Replaying the old steering request MUST return the saved typed outcome
-	// without creating a new Turn or Dispatch!
 	idleDetails, err := service.GetWorker(ctx, details.Worker.WorkerRef)
 	if err != nil {
 		t.Fatal(err)
@@ -872,7 +863,6 @@ func TestWorkerServiceSteeringFailure_IdempotentReplayPreservesTypedFailure(t *t
 		t.Fatalf("dispatch count = %d, want 0 (idle replay must not dispatch)", runtime.count("dispatch"))
 	}
 
-	// 4. Start a legitimate second turn, making worker active on Attempt 2.
 	turn2, err := service.MessageWorker(ctx, MessageWorkerRequest{
 		WorkerRef:      details.Worker.WorkerRef,
 		Text:           "start second turn",
@@ -889,8 +879,6 @@ func TestWorkerServiceSteeringFailure_IdempotentReplayPreservesTypedFailure(t *t
 		t.Fatal(err)
 	}
 
-	// Replaying the old steering request while a NEW Attempt is active MUST return the saved typed outcome
-	// without creating a Turn, Dispatch or new command identity for Attempt 2!
 	steerCountBefore := runtime.count("steer")
 	_, activeReplayErr := service.MessageWorker(ctx, request)
 	if activeReplayErr == nil {
@@ -907,7 +895,6 @@ func TestWorkerServiceSteeringFailure_IdempotentReplayPreservesTypedFailure(t *t
 		t.Fatalf("steer was executed again on new attempt (%d != %d)", runtime.count("steer"), steerCountBefore)
 	}
 
-	// Verify no new command identity was created for Attempt 2 with this dedupe key:
 	_, foundOnAttempt2, err := store.FindWorkerCommand(ctx, "steering", "key:steer-err-key", details.Worker.ID, attempt2.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -1068,13 +1055,11 @@ func TestWorkerServiceSteeringFailure_AuthenticatedOriginBinding(t *testing.T) {
 		InputID:         origin.InputID,
 	}
 
-	// First call with valid origin fails with typed error
 	_, err = service.MessageWorker(ctx, request)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 
-	// Replay with identical origin returns typed error
 	_, err = service.MessageWorker(ctx, request)
 	if err == nil {
 		t.Fatal("expected error on replay, got nil")
@@ -1084,7 +1069,6 @@ func TestWorkerServiceSteeringFailure_AuthenticatedOriginBinding(t *testing.T) {
 		t.Fatalf("expected *node.NodeCommandError, got: %T (%v)", err, err)
 	}
 
-	// Replay with mismatched or missing origin returns ErrInvalidSecretaryOrigin
 	forgedRequest := request
 	forgedRequest.SecretaryTurnID = "foreign-turn"
 	_, err = service.MessageWorker(ctx, forgedRequest)
@@ -1100,7 +1084,6 @@ func TestWorkerServiceSteeringFailure_AuthenticatedOriginBinding(t *testing.T) {
 		t.Fatalf("expected ErrInvalidSecretaryOrigin for unauthenticated replay, got: %v", err)
 	}
 
-	// Terminal replay after completed Secretary turn must succeed with identical origin and capability
 	if _, _, err := store.FinishSecretaryTurnWithOutput(ctx, origin.ID, origin.InputID, core.SecretaryTurnSucceeded, "", "Turn finished", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -1114,7 +1097,6 @@ func TestWorkerServiceSteeringFailure_AuthenticatedOriginBinding(t *testing.T) {
 		t.Fatalf("expected *node.NodeCommandError after completed turn, got: %T (%v)", err, err)
 	}
 
-	// Forged request after completion must still fail with ErrInvalidSecretaryOrigin
 	_, err = service.MessageWorker(ctx, forgedRequest)
 	if !errors.Is(err, core.ErrInvalidSecretaryOrigin) {
 		t.Fatalf("expected ErrInvalidSecretaryOrigin for forged request after turn completed, got: %v", err)
@@ -1233,7 +1215,6 @@ func TestWorkerServiceSteering_LegacyReplayAndPendingOriginBinding(t *testing.T)
 	}
 	service.Runtime = runtime
 
-	// 1. Legacy command created without origin
 	legacyRequest := MessageWorkerRequest{
 		WorkerRef:      details.Worker.WorkerRef,
 		Text:           "legacy steer without origin",
@@ -1248,7 +1229,6 @@ func TestWorkerServiceSteering_LegacyReplayAndPendingOriginBinding(t *testing.T)
 		t.Fatalf("expected *node.NodeCommandError, got: %T (%v)", err, err)
 	}
 
-	// Replay with identical legacy request (no origin) succeeds and returns typed failure
 	_, err = service.MessageWorker(ctx, legacyRequest)
 	if err == nil {
 		t.Fatal("expected error on legacy replay, got nil")
@@ -1257,7 +1237,6 @@ func TestWorkerServiceSteering_LegacyReplayAndPendingOriginBinding(t *testing.T)
 		t.Fatalf("expected *node.NodeCommandError on legacy replay, got: %T (%v)", err, err)
 	}
 
-	// Replay of legacy command with fabricated origin is rejected with ErrInvalidSecretaryOrigin
 	fabricatedRequest := legacyRequest
 	fabricatedRequest.SecretaryTurnID = "fabricated-turn"
 	fabricatedRequest.InputID = "fabricated-input"
@@ -1266,7 +1245,6 @@ func TestWorkerServiceSteering_LegacyReplayAndPendingOriginBinding(t *testing.T)
 		t.Fatalf("expected ErrInvalidSecretaryOrigin for fabricated origin on legacy replay, got: %v", err)
 	}
 
-	// Replay of legacy command with a valid authenticated origin is ALSO rejected (cannot silently rebind legacy record)
 	validOriginRequest := legacyRequest
 	validOriginRequest.SecretaryTurnID = origin.ID
 	validOriginRequest.InputID = origin.InputID
@@ -1275,8 +1253,6 @@ func TestWorkerServiceSteering_LegacyReplayAndPendingOriginBinding(t *testing.T)
 		t.Fatalf("expected ErrInvalidSecretaryOrigin for rebinding legacy command, got: %v", err)
 	}
 
-	// 2. Pending command without origin cannot accept fabricated origin
-	// Create an unoriginated pending command
 	pendingCmd, _, err := store.ClaimWorkerCommand(ctx, "steering", "pending-dedupe-key", details.Worker.ID, attempt.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -1290,7 +1266,6 @@ func TestWorkerServiceSteering_LegacyReplayAndPendingOriginBinding(t *testing.T)
 		t.Fatalf("expected ErrInvalidSecretaryOrigin for fabricated origin on pending command, got: %v", err)
 	}
 
-	// Cannot silently bind pending command without origin to valid origin via replay
 	if err := store.ValidateWorkerCommandOrigin(ctx, pendingCmd.ID, &core.SecretaryOriginIdentity{
 		PersonID:        service.PersonID,
 		Capability:      service.Capability,

@@ -7,8 +7,6 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-// Runner is the single local dispatch loop. It makes a task created by
-// secretaryctl durable before asking the Node to execute it.
 type Runner struct {
 	Store        *core.Store
 	Dispatcher   *Dispatcher

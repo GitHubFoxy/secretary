@@ -10,9 +10,6 @@ import (
 	"github.com/beruseruko/secretary/internal/node"
 )
 
-// These synthetic chronology tests distinguish fixed orphan/replay handling
-// from the still-blocked ticket29 originating mixed-response contract. They
-// do not assert that a model followed a profile or that Telegram accepted it.
 func TestResultOriginLifecycleAndRemainingAmbiguity(t *testing.T) {
 	for _, order := range []string{"fast-result", "slow-result"} {
 		t.Run(order, func(t *testing.T) {
@@ -83,9 +80,6 @@ func TestResultOriginLifecycleAndRemainingAmbiguity(t *testing.T) {
 				close(session.results)
 				runtime.consumeResults(session)
 			}
-			// A legitimate direct answer AFTER dispatch must remain available.
-			// The same lifecycle would also accept a narration/echo here: ACP
-			// Summary has no reply/task/result scope. This is the pending blocker.
 			consume(origin.ID, "independent answer after dispatch", 2)
 			if order == "slow-result" {
 				finishWorkers()
@@ -209,7 +203,6 @@ func TestTicket29OriginatingEchoBlockerIsReproducible(t *testing.T) {
 	if _, _, _, err = store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "synthetic result"}); err != nil {
 		t.Fatal(err)
 	}
-	// The harness Result arrives while the original user-owned turn is active.
 	harness.session.results <- node.Result{Status: "succeeded", Summary: "synthetic result"}
 	deadline = time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {

@@ -15,9 +15,6 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-// ControlOptions contains server-owned operator actions. The normal User UI
-// never receives these routes. The main process supplies callbacks so this
-// package does not own config or runtime lifecycle state.
 type ControlOptions struct {
 	ConfigPath              string
 	ConfigContent           func() (string, error)
@@ -277,8 +274,6 @@ type controlCommand struct {
 	UpdatedAt  time.Time `json:"updated_at"`
 }
 
-// workerDiagnosticResponse is deliberately separate from WorkerDetails. Raw
-// harness state is an opt-in observer surface and never part of normal UI DTOs.
 type workerDiagnosticResponse struct {
 	WorkerRef         string                    `json:"worker_ref"`
 	Recovery          controlRecovery           `json:"recovery"`
@@ -1080,9 +1075,6 @@ func sanitizeControlAny(value any) any {
 	return sanitizeDiagnosticValue(decoded)
 }
 
-// redactControlText is kept as the config policy name for package-local callers.
-// Diagnostic payloads must continue to use sanitizeDiagnosticValue instead. Its
-// denylist intentionally has a different, stricter contract than editable text.
 func redactControlText(value string) string {
 	return redactControlConfigText(value)
 }
@@ -1140,9 +1132,6 @@ func controlTextSensitiveLine(line string) bool {
 	if controlTextSensitiveKey(key) || controlTextThoughtKey(key) {
 		return true
 	}
-	// Also reject an opaque value embedded in an otherwise ordinary value.
-	// This catches credentials in safe product keys and free Markdown without
-	// making ordinary `content`, `skills`, or `reasoning` fields read-only.
 	return containsKnownControlSensitiveValue(line)
 }
 

@@ -157,7 +157,7 @@
       nodes = nodeList || [];
       if (streamGeneration === secretaryConnectionGeneration && state.secretary_turn_id && state.secretary_turn_id !== secretaryTurnID) await connectSecretaryStream(state.secretary_turn_id);
       if (observer?.workerRef) await refreshObserver(observer.workerRef);
-    } catch (_) { /* durable state stays visible while a refresh is unavailable */ }
+    } catch (_) {  }
   }
 
   async function refreshObserver(workerRef) {
@@ -167,7 +167,7 @@
         request(`/v1/workers/${encodeURIComponent(workerRef)}/diagnostics`),
       ]);
       if (observer?.workerRef === workerRef) observer = { ...observer, details, diagnostics };
-    } catch (_) { /* observer reconnect will retry */ }
+    } catch (_) {  }
   }
 
   async function bootstrapSession(token) {
@@ -310,7 +310,7 @@
     } catch (error) {
       userStatus = 'error';
       userError = error.message;
-      try { userDocument = await request('/v1/user'); } catch (_) { /* keep the draft and error visible */ }
+      try { userDocument = await request('/v1/user'); } catch (_) {  }
     }
   }
 

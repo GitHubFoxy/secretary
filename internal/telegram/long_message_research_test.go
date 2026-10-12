@@ -8,9 +8,6 @@ import (
 	"testing"
 )
 
-// This exercises the exported Adapter event seam and the Telegram Transport
-// boundary. It documents current destination ordering and durable checkpoints;
-// it does not claim Telegram-side exactly-once delivery after an unknown ACK.
 type orderedResearchTransport struct {
 	*constrainedTransport
 	calls  []OutgoingMessage

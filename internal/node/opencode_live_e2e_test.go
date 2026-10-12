@@ -12,8 +12,6 @@ import (
 	"time"
 )
 
-// Opt-in paid acceptance. Requires an owner-selected native store that was
-// explicitly logged in; never falls back to or imports the personal OpenCode store.
 func TestOpenCodeAuthenticatedSecretaryMCP(t *testing.T) {
 	if os.Getenv("SECRETARY_OPENCODE_LIVE_E2E") != "1" {
 		t.Skip("set SECRETARY_OPENCODE_LIVE_E2E=1 for authenticated OpenCode MCP acceptance")

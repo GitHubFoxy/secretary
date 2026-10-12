@@ -8,9 +8,6 @@ import (
 	"strings"
 )
 
-// SelectSharedOpenCodeNativeStores is the explicit owner transition for a
-// co-located Secretary and Node. It preserves legacy data and never imports
-// credentials, history, or session mappings.
 func SelectSharedOpenCodeNativeStores(secretaryDataDir, nodeDataDir string) (OpenCodeNativeStore, OpenCodeNativeStore, error) {
 	if err := validateSharedStoreOwnerDeployment(nodeDataDir); err != nil {
 		return OpenCodeNativeStore{}, OpenCodeNativeStore{}, err

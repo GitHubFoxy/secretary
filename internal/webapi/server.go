@@ -65,15 +65,14 @@ type TelegramPairingService interface {
 }
 
 type Server struct {
-	store              *core.Store
-	bootstrapToken     string
-	internalCredential string
-	owner              core.Person
-	node               *node.LocalNode
-	remoteNodes        *node.ServerManager
-	workers            workerController
-	responder          workerResponder
-	// approvalAuthorizationCheckpoint is a nil-by-default test seam for deterministic revoke-race coverage.
+	store                           *core.Store
+	bootstrapToken                  string
+	internalCredential              string
+	owner                           core.Person
+	node                            *node.LocalNode
+	remoteNodes                     *node.ServerManager
+	workers                         workerController
+	responder                       workerResponder
 	approvalAuthorizationCheckpoint func()
 	actions                         workerActions
 	secretaryTools                  secretaryWorkerTools
@@ -99,11 +98,7 @@ type Server struct {
 }
 
 type activeStream struct {
-	cancel context.CancelFunc
-	// revoked is set only by the revoke stream sweep. The stream loop
-	// reports 1008 "Client revoked" solely on this flag, so a normal
-	// disconnect, server shutdown or transport failure never looks like
-	// a revoke to the reconnecting client.
+	cancel  context.CancelFunc
 	revoked atomic.Bool
 }
 
@@ -269,8 +264,6 @@ func (s *Server) currentWebSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"conversation_id": conversation.ID})
 }
 
-// conversationPage is the bounded Client snapshot envelope. Cursors the client
-// did not ask for stay null; an empty page carries no cursors at all.
 type conversationPage struct {
 	Entries       []core.ConversationEntry `json:"entries"`
 	NextBeforeSeq *int64                   `json:"next_before_seq"`
@@ -307,8 +300,6 @@ func (s *Server) conversation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page := conversationPage{Entries: []core.ConversationEntry{}}
-	// A bare limit reads the latest tail. An explicit after_seq, even zero,
-	// pages forward; before_seq pages backward.
 	if hasBefore || !query.Has("after_seq") {
 		beforeSeq := before
 		if !hasBefore {
@@ -410,7 +401,6 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 	if s.secretary != nil && !duplicate {
 		go func(message string) {
 			if err := s.secretary.HandleMessage(context.Background(), message); err != nil {
-				// The inbound entry is durable. A later reconnect or runtime recovery can retry delivery.
 			}
 		}(request.Body)
 	}
@@ -523,8 +513,6 @@ func (s *Server) publishLocked(entry core.ConversationEntry) {
 		if subscriber.enqueue(entry) {
 			continue
 		}
-		// Never drop a durable entry. Close the slow subscriber so it can
-		// reconnect from its last acknowledged entry_seq.
 		delete(s.subscribers, subscriber)
 		if subscriber.cancel != nil {
 			subscriber.cancel()
@@ -539,10 +527,6 @@ func (s *Server) registerStream(ctx context.Context, clientID, credential string
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Authentication happened before the WebSocket handshake. Recheck the
-	// credential and current Client state while holding the same lock used by
-	// revoke's stream sweep, so a revoked or re-paired generation cannot enter
-	// the stream registry after the initial check.
 	client, err := s.store.AuthenticateClient(ctx, credential)
 	if err != nil || client.ID != clientID {
 		return nil, false
@@ -569,7 +553,6 @@ func (s *Server) unregisterStream(clientID string, stream *activeStream) {
 	}
 }
 
-// closeRevokedStream preserves the revoke close code when cancellation races a store read or event write.
 func closeRevokedStream(connection *websocket.Conn, stream *activeStream) bool {
 	if stream == nil || !stream.revoked.Load() {
 		return false
@@ -713,8 +696,6 @@ func parseAfter(r *http.Request) (int64, error) {
 }
 
 const (
-	// defaultSnapshotLimit bounds every Client snapshot list. maximumSnapshotLimit
-	// caps a single response; larger limits clamp instead of failing.
 	defaultSnapshotLimit = 100
 	maximumSnapshotLimit = 500
 )

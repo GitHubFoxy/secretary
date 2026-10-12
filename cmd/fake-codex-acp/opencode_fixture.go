@@ -6,9 +6,6 @@ import (
 	"strings"
 )
 
-// Packaging tests use this protocol double, not a native acceptance result.
-// Echo only choices present in the generated managed config. Native OpenCode
-// prompt/permission/history proof lives in opt-in internal/node tests.
 func openCodeFixtureSelection(params json.RawMessage) (any, bool) {
 	var request struct {
 		ConfigID string `json:"configId"`

@@ -29,8 +29,6 @@ func TestOpenCodeLiveWorkerPromptDefinesSubstitutionsBeforeFormats(t *testing.T)
 	}
 }
 
-// This structure contains safe flags/lengths only. Never attach Summary, file
-// contents or the private system marker to diagnostics or test failures.
 type openCodeWorkerAnswerMetadata struct {
 	SummaryBytes         int
 	ActualCurrentPresent bool

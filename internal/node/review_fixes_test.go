@@ -62,7 +62,6 @@ func TestNodeWatchdogMarksSilentSocketOffline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The registry seam is deterministic and does not require a live socket.
 	if _, err := store.EnrollNodeWithPairing(ctx, "pair", "silent", bytesOf(32, 'x')); err != nil {
 		t.Fatal(err)
 	}

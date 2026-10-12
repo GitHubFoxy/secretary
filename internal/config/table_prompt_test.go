@@ -32,7 +32,6 @@ func TestWorkerAndSecretaryShareIdenticalCompactTableInstructions(t *testing.T) 
 		t.Fatalf("secretary.md missing expected table instruction:\nwant: %s\ngot: %s", expectedTableInstruction, secretaryPrompt)
 	}
 
-	// Verify key constraints required by issue #5
 	for _, requiredPhrase := range []string{
 		"Do not create tables unnecessarily",
 		"Never output Markdown pipe tables",
@@ -224,7 +223,6 @@ func validateCardList(text string) error {
 }
 
 func TestDictionaryResponseFormatCompliance(t *testing.T) {
-	// Example 1: Compact dictionary comparison with short columns inside a fenced code block.
 	const compactTableExample = "```\n" +
 		"Word   Meaning         Example\n" +
 		"soil   пачкать         Don't soil clothes\n" +
@@ -233,7 +231,6 @@ func TestDictionaryResponseFormatCompliance(t *testing.T) {
 		"\n" +
 		"soil используется для бытовой или внешней грязи (земля, пыль), а stain — для въевшихся пятен."
 
-	// Example 2: Detailed dictionary answer with sentences formatted as cards/list instead of a wide table.
 	const cardListExample = "• **soil** — испачкать, запачкать (землёй, грязью)\n" +
 		"  *Контекст:* бытовое загрязнение одежды или рук.\n" +
 		"  *Пример:* Don't get your clothes soiled.\n\n" +
@@ -257,7 +254,6 @@ func TestDictionaryResponseFormatCompliance(t *testing.T) {
 	})
 
 	t.Run("CompactTableRejectsInvalidFormats", func(t *testing.T) {
-		// Misaligned row (column 3 starts at offset 21 instead of 23)
 		const misalignedTable = "```\n" +
 			"Word   Meaning         Example\n" +
 			"soil   пачкать         Don't soil clothes\n" +
@@ -267,13 +263,11 @@ func TestDictionaryResponseFormatCompliance(t *testing.T) {
 			t.Error("expected misaligned table to fail validation, but it passed")
 		}
 
-		// Pipe table instead of fenced code block table
 		const pipeTable = "| Word | Meaning | Example |\n|---|---|---|\n| soil | dirt | clothes |"
 		if err := parseMonospaceTable(pipeTable, 25, 50); err == nil {
 			t.Error("expected pipe table to fail validation, but it passed")
 		}
 
-		// Cell with overly long explanation
 		const longCellTable = "```\n" +
 			"Word   Meaning\n" +
 			"soil   бытовое загрязнение одежды или рук землей, пылью и грязью\n" +
@@ -282,7 +276,6 @@ func TestDictionaryResponseFormatCompliance(t *testing.T) {
 			t.Error("expected table with long cell explanation to fail validation, but it passed")
 		}
 
-		// Missing detailed explanation below the table
 		const noDetailsTable = "```\n" +
 			"Word   Meaning         Example\n" +
 			"soil   пачкать         Don't soil clothes\n" +
@@ -293,25 +286,21 @@ func TestDictionaryResponseFormatCompliance(t *testing.T) {
 	})
 
 	t.Run("CardListRejectsInvalidFormats", func(t *testing.T) {
-		// Pipe table passed where card list expected
 		const pipeTable = "| Word | Meaning |\n|---|---|\n| soil | dirty |"
 		if err := validateCardList(pipeTable); err == nil {
 			t.Error("expected pipe table to fail card list validation, but it passed")
 		}
 
-		// Fenced code block table passed where card list expected
 		const fencedTable = "```\nWord   Meaning\nsoil   dirty\n```"
 		if err := validateCardList(fencedTable); err == nil {
 			t.Error("expected fenced table to fail card list validation, but it passed")
 		}
 
-		// Unstructured plain text
 		const unstructuredText = "soil means to get dirty with mud. stain means to leave a hard spot."
 		if err := validateCardList(unstructuredText); err == nil {
 			t.Error("expected unstructured text to fail card list validation, but it passed")
 		}
 
-		// Flat bullet list without card structure
 		const flatBullets = "• soil\n• stain\n• smear"
 		if err := validateCardList(flatBullets); err == nil {
 			t.Error("expected flat bullet list without card details to fail card list validation, but it passed")

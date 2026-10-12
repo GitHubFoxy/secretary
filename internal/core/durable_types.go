@@ -5,8 +5,6 @@ import (
 	"time"
 )
 
-// EventInput is the normalized server event contract. Aggregate and source
-// metadata are kept separately so clients can audit causation without parsing payloads.
 type EventInput struct {
 	Kind          string
 	AggregateType string
@@ -19,8 +17,6 @@ type EventInput struct {
 	Payload       any
 }
 
-// Event is an append-only, globally ordered durable event.
-// Keep descriptive aliases for callers that use the normalized-event name.
 type DurableEvent = Event
 type NormalizedEvent = Event
 
@@ -54,13 +50,11 @@ type ConversationReplay struct {
 }
 
 type EventReplay struct {
-	// SnapshotBoundarySeq is the highest event visible in this replay snapshot.
-	SnapshotBoundarySeq int64 `json:"snapshot_boundary_seq"`
-	// BoundarySeq is retained as a source-compatible alias.
-	BoundarySeq     int64   `json:"-"`
-	LastReturnedSeq int64   `json:"last_returned_seq"`
-	HasMore         bool    `json:"has_more"`
-	Events          []Event `json:"events"`
+	SnapshotBoundarySeq int64   `json:"snapshot_boundary_seq"`
+	BoundarySeq         int64   `json:"-"`
+	LastReturnedSeq     int64   `json:"last_returned_seq"`
+	HasMore             bool    `json:"has_more"`
+	Events              []Event `json:"events"`
 }
 
 type idempotencyRecord struct {

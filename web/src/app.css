@@ -16,7 +16,6 @@ button, input, textarea, select { font: inherit; }
 button { cursor: pointer; }
 option { background: #111827; color: #e2e8f0; }
 
-/* Keep the composer usable above the iOS home indicator. */
 @media (max-width: 640px) {
   section.fixed.bottom-0 { padding-bottom: max(0.75rem, env(safe-area-inset-bottom)); }
 }

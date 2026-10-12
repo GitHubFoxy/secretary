@@ -1,4 +1,3 @@
-// Package mcp implements the small MCP stdio surface owned by Secretary.
 package mcp
 
 import (
@@ -51,7 +50,6 @@ func (s Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			continue
 		}
 		result, rpcErr := s.handle(ctx, req)
-		// JSON-RPC notifications do not receive responses.
 		if len(req.ID) == 0 {
 			continue
 		}
@@ -78,7 +76,6 @@ func (s Server) Serve(ctx context.Context, in io.Reader, out io.Writer) error {
 			if req.Method == "tools/list" {
 				observation.Phase = core.SecretaryMCPObservationToolsList
 				if observation.Success {
-					// Read the exact returned registry, not a second Tools() call.
 					listed := result.(map[string]any)["tools"].([]Tool)
 					observation.ToolCount = len(listed)
 					for _, tool := range listed {

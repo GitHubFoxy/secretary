@@ -9,9 +9,6 @@ import (
 	"github.com/beruseruko/secretary/internal/node"
 )
 
-// Literals pin the pre-fix unversioned SHA256 contract, independently of the
-// implementation under test. Omitted old fields decode as nil; explicit []
-// snapshots keep their original distinct hashes. Neither requires migration.
 func TestWorkerTemplatePriorHashesSurviveJSON(t *testing.T) {
 	for _, fixture := range []struct {
 		name, collections, hash string
@@ -37,8 +34,6 @@ func TestWorkerTemplatePriorHashesSurviveJSON(t *testing.T) {
 			if err := json.Unmarshal(wire, &reopened); err != nil || !reflect.DeepEqual(prior, reopened) || reopened.SnapshotHash() != fixture.hash {
 				t.Fatal("wire changed a prior hash-significant representation")
 			}
-			// No compatibility fallback: changing a hash-significant field must
-			// still fail even when nil/empty Skills mean the same prompt.
 			for _, mutation := range []struct {
 				name  string
 				apply func(*node.ManagedProfile)
