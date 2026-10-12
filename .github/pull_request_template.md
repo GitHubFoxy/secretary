@@ -8,7 +8,7 @@ Closes #
 
 ## Verification
 
-- [ ] Checks run (list commands or link to CI)
+- [ ] Local checks run (list commands and results)
 - [ ] User-visible behavior checked, if applicable
 
 ## Risk or rollout notes
