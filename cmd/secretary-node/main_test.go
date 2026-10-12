@@ -111,7 +111,16 @@ func TestConfiguredNodeRuntimeDefaultsCodexAndRetainsHistoricalAdapters(t *testi
 	if !ok {
 		t.Fatal("Node runtime is not a harness router")
 	}
-	if runtime.DefaultHarness != "codex" || runtime.OpenCode == nil || runtime.FX == nil || runtime.Claude == nil || runtime.ACP == nil {
+	if runtime.DefaultHarness != "codex" || runtime.OpenCode == nil || runtime.FX == nil || runtime.Claude == nil || runtime.ACP == nil || runtime.Antigravity == nil {
 		t.Fatal("Node runtime defaults or selectable adapters are incomplete")
+	}
+}
+
+func TestInstalledHarnessesIncludesAntigravity(t *testing.T) {
+	missing := "/missing/agy_acp_server"
+	t.Setenv("SECRETARY_ANTIGRAVITY_COMMAND", missing)
+	installed := installedHarnesses()
+	if installed[core.HarnessAntigravity] != missing {
+		t.Fatalf("expected explicit missing Antigravity binary preserved, got %q", installed[core.HarnessAntigravity])
 	}
 }

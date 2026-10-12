@@ -537,7 +537,7 @@ func insertWorker(ctx context.Context, tx *sql.Tx, id, ref, conversation, intent
 func legacyHarnessInstance(node, runtime, model, reasoning string) core.HarnessInstance {
 	kind := core.HarnessKind(strings.TrimSpace(runtime))
 	switch kind {
-	case core.HarnessClaudeCode, core.HarnessCodex, core.HarnessFX, core.HarnessOpenCode:
+	case core.HarnessClaudeCode, core.HarnessCodex, core.HarnessFX, core.HarnessOpenCode, core.HarnessAntigravity:
 	default:
 		kind = core.HarnessFX
 	}

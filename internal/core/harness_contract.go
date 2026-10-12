@@ -18,10 +18,11 @@ type ObservedModelID string
 type ObservedReasoningLevel string
 
 const (
-	HarnessClaudeCode HarnessKind = "claude_code"
-	HarnessCodex      HarnessKind = "codex"
-	HarnessFX         HarnessKind = "fx"
-	HarnessOpenCode   HarnessKind = "opencode"
+	HarnessClaudeCode  HarnessKind = "claude_code"
+	HarnessCodex       HarnessKind = "codex"
+	HarnessFX          HarnessKind = "fx"
+	HarnessOpenCode    HarnessKind = "opencode"
+	HarnessAntigravity HarnessKind = "antigravity"
 )
 
 // HarnessAuthentication is observed by the adapter, not inferred by policy.
@@ -102,15 +103,17 @@ func (c HarnessCapabilities) SupportsActivity(want ActivityCapability) bool {
 // HarnessInstance is one observed Node/harness combination. Model IDs and
 // reasoning levels are adapter observations, not a server-wide catalog.
 type HarnessInstance struct {
-	ID              HarnessInstanceID        `json:"id"`
-	Node            NodeReference            `json:"node"`
-	Kind            HarnessKind              `json:"harness"`
-	Version         string                   `json:"version"`
-	Authentication  HarnessAuthentication    `json:"authentication"`
-	Status          HarnessStatus            `json:"status"`
-	Capabilities    HarnessCapabilities      `json:"capabilities"`
-	ModelIDs        []ObservedModelID        `json:"model_ids"`
-	ReasoningLevels []ObservedReasoningLevel `json:"reasoning_levels"`
+	ID               HarnessInstanceID        `json:"id"`
+	Node             NodeReference            `json:"node"`
+	Kind             HarnessKind              `json:"harness"`
+	Version          string                   `json:"version"`
+	Authentication   HarnessAuthentication    `json:"authentication"`
+	Status           HarnessStatus            `json:"status"`
+	Capabilities     HarnessCapabilities      `json:"capabilities"`
+	ModelIDs         []ObservedModelID        `json:"model_ids"`
+	ReasoningLevels  []ObservedReasoningLevel `json:"reasoning_levels"`
+	DiagnosticReason string                   `json:"diagnostic_reason,omitempty"`
+	ErrorCode        string                   `json:"error_code,omitempty"`
 }
 
 // HarnessInventorySnapshot is a point-in-time observed inventory for one Node.

@@ -41,6 +41,7 @@ type ACPRuntime struct {
 	// Enable only for the verified OpenCode v2 messageId/end_turn contract.
 	TerminalMessageGrouping bool
 	CodexMessagePhases      bool
+	PreferResumeSession     bool
 }
 
 func (r ACPRuntime) validateReplyContract(profile ManagedProfile) error {
@@ -64,7 +65,8 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 		return nil, err
 	}
 	var created struct {
-		SessionID string `json:"sessionId"`
+		SessionID     string                `json:"sessionId"`
+		ConfigOptions []nativeConfigOption `json:"configOptions"`
 	}
 	mcpServers := acpMCPServers(request.MCPServers)
 	newParams := map[string]any{"cwd": request.Workspace, "mcpServers": mcpServers}
@@ -79,11 +81,18 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 		client.Close()
 		return nil, fmt.Errorf("acp: session/new returned no sessionId")
 	}
+	if r.PreferResumeSession {
+		if err := validateAntigravityConfigPins(created.ConfigOptions, r.ModelSelection, r.ReasoningSelection); err != nil {
+			client.Close()
+			return nil, err
+		}
+	}
 	if err := r.configureSession(ctx, client, created.SessionID); err != nil {
 		client.Close()
 		return nil, err
 	}
 	session := newACPSession(created.SessionID, client, !request.DeferInitialPrompt)
+	session.setConfigOptions(created.ConfigOptions)
 	session.drainPromptEvents = r.DrainPromptEvents || request.DrainOutputBeforeResult
 	session.terminalMessageGrouping = r.TerminalMessageGrouping
 	session.codexMessagePhases = r.CodexMessagePhases
@@ -118,20 +127,41 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 	// the request gets a native ACP ID and cannot be answered after reconnect.
 	session.setRequestHandler()
 	session.RebindPendingRequests(effectivePendingRequests(request))
-	loadParams := map[string]any{"sessionId": runtimeSessionID, "cwd": request.Workspace, "mcpServers": mcpServers}
+	resumeParams := map[string]any{"sessionId": runtimeSessionID, "cwd": request.Workspace, "mcpServers": mcpServers}
 	if metadata := profileMetadata(request.Profile); metadata != nil {
-		loadParams["_meta"] = metadata
+		resumeParams["_meta"] = metadata
 	}
-	// Native load replays historical messages. Drain them while tagged as
-	// replay, even for histories larger than the transport buffer; they are
-	// not new Attempt activity and must not contaminate the next Result.
-	session.replaying.Store(true)
+	resumeMethod := "session/load"
+	if r.PreferResumeSession {
+		resumeMethod = "session/resume"
+	} else {
+		session.replaying.Store(true)
+	}
 	go session.watch()
-	if err := client.RequestDrainingEvents(ctx, "session/load", loadParams, &map[string]any{}); err != nil {
-		_ = session.Close()
-		return nil, err
+	var resumeResp struct {
+		ConfigOptions []nativeConfigOption `json:"configOptions"`
+	}
+	var resumeErr error
+	if r.PreferResumeSession {
+		resumeErr = client.Request(ctx, resumeMethod, resumeParams, &resumeResp)
+		if resumeErr != nil {
+			resumeErr = client.RequestDrainingEvents(ctx, "session/load", resumeParams, &resumeResp)
+		}
+	} else {
+		resumeErr = client.RequestDrainingEvents(ctx, resumeMethod, resumeParams, &resumeResp)
 	}
 	session.replaying.Store(false)
+	if resumeErr != nil {
+		_ = session.Close()
+		return nil, resumeErr
+	}
+	session.setConfigOptions(resumeResp.ConfigOptions)
+	if r.PreferResumeSession {
+		if err := validateAntigravityConfigPins(resumeResp.ConfigOptions, r.ModelSelection, r.ReasoningSelection); err != nil {
+			_ = session.Close()
+			return nil, err
+		}
+	}
 	if err := r.configureSession(ctx, client, runtimeSessionID); err != nil {
 		_ = session.Close()
 		return nil, err
@@ -548,6 +578,9 @@ type acpSession struct {
 	codexMessagePhases      bool
 	replaying               atomic.Bool
 	drainPromptEvents       bool
+
+	configMu      sync.Mutex
+	configOptions []nativeConfigOption
 }
 
 func (s *acpSession) ID() string                { return s.id }
@@ -776,16 +809,24 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 		summary = value
 	}
 	if message.Method == "session/request_permission" {
-		var permission struct {
-			Options []acpPermissionOption `json:"options"`
-		}
-		if err := json.Unmarshal(message.Params, &permission); err != nil {
-			return nil, errors.New("invalid permission request")
-		}
-		for _, option := range permission.Options {
-			if strings.TrimSpace(option.OptionID) != "" && strings.TrimSpace(option.Kind) != "" {
+		if isInteraction, question := isAntigravityInteractionRequest(params); isInteraction {
+			kind = ActivityUserInput
+			summary = question
+			if summary == "" {
+				summary = "Interaction request"
+			}
+		} else {
+			var permission struct {
+				Options []acpPermissionOption `json:"options"`
+			}
+			if err := json.Unmarshal(message.Params, &permission); err != nil {
+				return nil, errors.New("invalid permission request")
+			}
+			for _, option := range permission.Options {
+				if strings.TrimSpace(option.OptionID) != "" && strings.TrimSpace(option.Kind) != "" {
 				summary = "Permission request"
 				break
+				}
 			}
 		}
 	} else if message.Method == "session/request_input" || message.Method == "session/request_user_input" {
@@ -1157,22 +1198,92 @@ func (s *acpSession) serverRequestResponse(kind ActivityKind, rawParams json.Raw
 			}
 			return response, nil
 		}
+		var permission struct {
+			Options []struct {
+				OptionID    string `json:"optionId"`
+				Name        string `json:"name"`
+				Kind        string `json:"kind"`
+				Description string `json:"description"`
+			} `json:"options"`
+		}
+		if json.Unmarshal(rawParams, &permission) == nil && len(permission.Options) > 0 {
+			valTrimmed := strings.TrimSpace(value)
+			var matchedID string
+			for _, opt := range permission.Options {
+				if strings.EqualFold(opt.OptionID, valTrimmed) {
+					matchedID = opt.OptionID
+					break
+				}
+			}
+			if matchedID == "" {
+				for _, opt := range permission.Options {
+					if strings.EqualFold(opt.Name, valTrimmed) || strings.EqualFold(opt.Description, valTrimmed) {
+						matchedID = opt.OptionID
+						break
+					}
+				}
+			}
+			if matchedID == "" {
+				return nil, fmt.Errorf("antigravity: unknown interaction choice %q", valTrimmed)
+			}
+			return map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": matchedID}}, nil
+		}
 		return map[string]string{"input": value}, nil
 	}
 	var permission struct {
 		Options []acpPermissionOption `json:"options"`
 	}
 	_ = json.Unmarshal(rawParams, &permission)
-	valueLower := strings.ToLower(strings.TrimSpace(value))
+	valTrimmed := strings.TrimSpace(value)
+	for _, opt := range permission.Options {
+		if strings.EqualFold(opt.OptionID, valTrimmed) {
+			return map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": opt.OptionID}}, nil
+		}
+	}
+	valueLower := strings.ToLower(valTrimmed)
 	approved := strings.Contains(valueLower, "approve") || strings.Contains(valueLower, "allow") || strings.Contains(valueLower, `"approved":true`)
-	// Both ordinary approval and explicit trusted-local policy are one-shot.
-	// The policy audit is recorded by WorkerService, not encoded as a durable
-	// ACP permission choice.
 	selected := selectPermissionOption(permission.Options, approved, false)
 	if selected == "" {
 		return nil, errors.New("harness has no matching permission option")
 	}
 	return map[string]any{"outcome": map[string]string{"outcome": "selected", "optionId": selected}}, nil
+}
+
+func isAntigravityInteractionRequest(params map[string]any) (bool, string) {
+	if toolCallID, ok := params["toolCallId"].(string); ok && strings.HasPrefix(toolCallID, "interaction_") {
+		return true, extractQuestionSummary(params)
+	}
+	if tc, ok := params["toolCall"].(map[string]any); ok {
+		if id, ok := tc["toolCallId"].(string); ok && strings.HasPrefix(id, "interaction_") {
+			return true, extractQuestionSummary(params)
+		}
+	}
+	if rawOpts, ok := params["options"].([]any); ok {
+		for _, rawOpt := range rawOpts {
+			if optMap, ok := rawOpt.(map[string]any); ok {
+				if id, ok := optMap["optionId"].(string); ok && strings.HasPrefix(id, "interaction_") {
+					return true, extractQuestionSummary(params)
+				}
+			}
+		}
+	}
+	return false, ""
+}
+
+func extractQuestionSummary(params map[string]any) string {
+	for _, key := range []string{"message", "prompt", "question", "title"} {
+		if val, ok := params[key].(string); ok && strings.TrimSpace(val) != "" {
+			return strings.TrimSpace(val)
+		}
+	}
+	if tc, ok := params["toolCall"].(map[string]any); ok {
+		for _, key := range []string{"title", "message", "prompt"} {
+			if val, ok := tc[key].(string); ok && strings.TrimSpace(val) != "" {
+				return strings.TrimSpace(val)
+			}
+		}
+	}
+	return ""
 }
 
 func elicitationResponse(rawSchema json.RawMessage, value string) (any, error) {
@@ -1606,6 +1717,14 @@ func (s *acpSession) watch() {
 			if safeRuntimeSummary(summary) {
 				emit(Activity{Kind: ActivityThinkingSummary, Summary: summary})
 			}
+		case "config_option_update":
+			if rawOpts, ok := payload["configOptions"]; ok {
+				var opts []nativeConfigOption
+				rawBytes, _ := json.Marshal(rawOpts)
+				if json.Unmarshal(rawBytes, &opts) == nil {
+					s.setConfigOptions(opts)
+				}
+			}
 		case "tool_call", "tool_call_update", "tool_result":
 			s.textMu.Lock()
 			metadata, _ := payload["_meta"].(map[string]any)
@@ -2015,4 +2134,66 @@ func nativeConfigValueConfirmed(response nativeConfigResponse, id, selection str
 		}
 	}
 	return false
+}
+
+
+func (s *acpSession) ConfigOptions() []nativeConfigOption {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	return append([]nativeConfigOption(nil), s.configOptions...)
+}
+
+func (s *acpSession) setConfigOptions(options []nativeConfigOption) {
+	s.configMu.Lock()
+	defer s.configMu.Unlock()
+	s.configOptions = append([]nativeConfigOption(nil), options...)
+}
+
+func validateAntigravityConfigPins(options []nativeConfigOption, model, reasoning string) error {
+	if model != "" && !isModelAlias(model) {
+		hasModelOption := false
+		modelFound := false
+		for _, opt := range options {
+			if strings.EqualFold(opt.ID, "model") || strings.Contains(strings.ToLower(opt.ID), "model") {
+				hasModelOption = true
+				if opt.CurrentValue == model {
+					modelFound = true
+					break
+				}
+				for _, choice := range opt.Options {
+					if choice.Value == model {
+						modelFound = true
+						break
+					}
+				}
+			}
+		}
+		if hasModelOption && !modelFound {
+			return fmt.Errorf("antigravity: unknown model pin %q", model)
+		}
+	}
+	if reasoning != "" && reasoning != "default" {
+		hasReasoningOption := false
+		reasoningFound := false
+		for _, opt := range options {
+			idLower := strings.ToLower(opt.ID)
+			if strings.Contains(idLower, "reason") || strings.Contains(idLower, "thought") || strings.Contains(idLower, "thinking") {
+				hasReasoningOption = true
+				if opt.CurrentValue == reasoning {
+					reasoningFound = true
+					break
+				}
+				for _, choice := range opt.Options {
+					if choice.Value == reasoning {
+						reasoningFound = true
+						break
+					}
+				}
+			}
+		}
+		if hasReasoningOption && !reasoningFound {
+			return fmt.Errorf("antigravity: unknown reasoning pin %q", reasoning)
+		}
+	}
+	return nil
 }

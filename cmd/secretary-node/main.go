@@ -30,6 +30,7 @@ func main() {
 	capacity := flag.Int("capacity", 1, "maximum advertised concurrent Worker capacity")
 	checkCodex := flag.Bool("check-codex-readiness", false, "check actual Codex and ACP capabilities without a model call")
 	includeOpenCode := flag.Bool("include-opencode", false, "include the OpenCode ACP inventory probe")
+	includeAntigravity := flag.Bool("include-antigravity", false, "include the Antigravity ACP inventory probe")
 	selectOpenCodeStore := flag.Bool("select-opencode-store", false, "initialize the selected shared, private, or legacy OpenCode store and exit")
 	standaloneSelection := flag.Bool("standalone", false, "select an independent host-local OpenCode store")
 	printStoreRecord := flag.Bool("print-opencode-store", false, "print the validated Node store and deployment config record")
@@ -113,12 +114,12 @@ func main() {
 			log.Fatalf("load Node deployment config: %v", err)
 		}
 		deployment = loaded
-		*dataDir, *serverURL, *nodeName, *capacity, *includeOpenCode = loaded.DataDir, loaded.ServerURL, string(loaded.Node), loaded.Capacity, loaded.IncludeOpenCode
+		*dataDir, *serverURL, *nodeName, *capacity, *includeOpenCode, *includeAntigravity = loaded.DataDir, loaded.ServerURL, string(loaded.Node), loaded.Capacity, loaded.IncludeOpenCode, loaded.IncludeAntigravity
 		if *capacity == 0 {
 			*capacity = 1
 		}
 	} else {
-		deployment = node.DeploymentConfig{ServerURL: *serverURL, Node: core.NodeReference(normalizeNodeName(*nodeName)), DataDir: *dataDir, Capacity: *capacity, IncludeOpenCode: *includeOpenCode}
+		deployment = node.DeploymentConfig{ServerURL: *serverURL, Node: core.NodeReference(normalizeNodeName(*nodeName)), DataDir: *dataDir, Capacity: *capacity, IncludeOpenCode: *includeOpenCode, IncludeAntigravity: *includeAntigravity}
 	}
 	if err := deployment.Validate(); err != nil {
 		log.Fatalf("invalid Node deployment: %v", err)
@@ -166,7 +167,7 @@ func main() {
 	defer store.Close()
 
 	runtime := configuredNodeRuntimeWithStore(*dataDir, selectedStore)
-	discovery := configuredNodeDiscovery(identity.Node, *includeOpenCode, selectedStore)
+	discovery := configuredNodeDiscoveryWithAntigravity(identity.Node, *includeOpenCode, *includeAntigravity, selectedStore)
 	daemon := &node.Daemon{
 		Identity:   identity,
 		Store:      store,
@@ -216,13 +217,15 @@ func selectNodeNativeStore(dataDir string, standalone bool) (node.OpenCodeNative
 
 func installedHarnesses() map[core.HarnessKind]string {
 	commands := map[core.HarnessKind]string{
-		core.HarnessFX: "fx", core.HarnessClaudeCode: "claude", core.HarnessCodex: envOr("SECRETARY_CODEX_COMMAND", envOr("CODEX_PATH", "codex")), core.HarnessOpenCode: envOr("SECRETARY_OPENCODE_COMMAND", "opencode"),
+		core.HarnessFX: "fx", core.HarnessClaudeCode: "claude", core.HarnessCodex: envOr("SECRETARY_CODEX_COMMAND", envOr("CODEX_PATH", "codex")), core.HarnessOpenCode: envOr("SECRETARY_OPENCODE_COMMAND", "opencode"), core.HarnessAntigravity: envOr("SECRETARY_ANTIGRAVITY_COMMAND", "agy_acp_server"),
 	}
 	resolved := make(map[core.HarnessKind]string, len(commands))
 	for kind, command := range commands {
 		if path, err := exec.LookPath(command); err == nil {
 			resolved[kind] = path
-		} else if kind == core.HarnessOpenCode && strings.TrimSpace(os.Getenv("SECRETARY_OPENCODE_COMMAND")) != "" || kind == core.HarnessCodex && (strings.TrimSpace(os.Getenv("SECRETARY_CODEX_COMMAND")) != "" || strings.TrimSpace(os.Getenv("CODEX_PATH")) != "") {
+		} else if (kind == core.HarnessOpenCode && strings.TrimSpace(os.Getenv("SECRETARY_OPENCODE_COMMAND")) != "") ||
+			(kind == core.HarnessCodex && (strings.TrimSpace(os.Getenv("SECRETARY_CODEX_COMMAND")) != "" || strings.TrimSpace(os.Getenv("CODEX_PATH")) != "")) ||
+			(kind == core.HarnessAntigravity && strings.TrimSpace(os.Getenv("SECRETARY_ANTIGRAVITY_COMMAND")) != "") {
 			// Keep an unavailable explicit binary unavailable in discovery too.
 			resolved[kind] = command
 		}
@@ -235,8 +238,12 @@ func configuredNodeRuntime(dataDir string) node.Runtime {
 }
 
 func configuredNodeDiscovery(identity core.NodeReference, includeOpenCode bool, store node.OpenCodeNativeStore) node.HarnessDiscovery {
+	return configuredNodeDiscoveryWithAntigravity(identity, includeOpenCode, false, store)
+}
+
+func configuredNodeDiscoveryWithAntigravity(identity core.NodeReference, includeOpenCode, includeAntigravity bool, store node.OpenCodeNativeStore) node.HarnessDiscovery {
 	return node.HarnessDiscovery{
-		Node: identity, Runner: node.ExecCommandRunner{}, IncludeOpenCode: includeOpenCode,
+		Node: identity, Runner: node.ExecCommandRunner{}, IncludeOpenCode: includeOpenCode, IncludeAntigravity: includeAntigravity,
 		OpenCodeDataHome: store.DataHome, LegacyOpenCodeDataHome: store.Mode == node.OpenCodeNativeStoreModeLegacy,
 		BinaryOverrides: installedHarnesses(),
 	}
@@ -258,12 +265,15 @@ func configuredNodeRuntimeWithStore(dataDir string, store node.OpenCodeNativeSto
 	if len(openCodeArgs) == 0 {
 		openCodeArgs = []string{"acp"}
 	}
+	antigravityCommand := envOr("SECRETARY_ANTIGRAVITY_COMMAND", "agy_acp_server")
+	antigravityArgs := strings.Fields(os.Getenv("SECRETARY_ANTIGRAVITY_ARGS"))
 	return node.RuntimeRouter{
 		DefaultHarness: "codex",
 		ACP:            node.CodexRuntime{ACPRuntime: node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 		Claude:         node.ClaudeCodeRuntime{Command: claudeCommand, Arguments: claudeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		FX:             node.FXRuntime{ACPRuntime: node.ACPRuntime{Command: fxCommand, Arguments: fxArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, DataHome: store.DataHome, LegacyDataHome: store.Mode == node.OpenCodeNativeStoreModeLegacy, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
+		Antigravity:    node.AntigravityRuntime{AntigravityCommand: antigravityCommand, ACPRuntime: node.ACPRuntime{Arguments: antigravityArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 	}
 }
 

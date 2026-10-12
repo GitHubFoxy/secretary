@@ -224,6 +224,56 @@ func assertNoForbiddenFields(t *testing.T, typ reflect.Type, seen map[reflect.Ty
 	}
 }
 
+func TestAntigravityHarnessKindAndDiagnostics(t *testing.T) {
+	if HarnessAntigravity != "antigravity" {
+		t.Fatalf("HarnessAntigravity = %q; want %q", HarnessAntigravity, "antigravity")
+	}
+	instance := HarnessInstance{
+		ID:               "local/antigravity",
+		Node:             "local",
+		Kind:             HarnessAntigravity,
+		Version:          "1.3.0",
+		Authentication:   HarnessAuthentication{Authenticated: true, Method: "oauth-personal"},
+		Status:           HarnessReady,
+		ModelIDs:         []ObservedModelID{"gemini-3.8-flash-high"},
+		ReasoningLevels:  []ObservedReasoningLevel{"default"},
+		DiagnosticReason: "ok",
+		ErrorCode:        "",
+	}
+	if err := instance.Validate(); err != nil {
+		t.Fatalf("valid antigravity instance rejected: %v", err)
+	}
+	if err := instance.ValidateSelection("gemini-3.8-flash-high", "default"); err != nil {
+		t.Fatalf("valid selection rejected: %v", err)
+	}
+	if err := instance.ValidateSelection("unknown-model", ""); err == nil {
+		t.Fatal("unknown model pin must be rejected")
+	}
+
+	unavailableInstance := HarnessInstance{
+		ID:               "local/antigravity",
+		Node:             "local",
+		Kind:             HarnessAntigravity,
+		Status:           HarnessUnavailable,
+		DiagnosticReason: "antigravity companion localharness_external is missing beside executable",
+		ErrorCode:        "companion_missing",
+	}
+	if err := unavailableInstance.Validate(); err != nil {
+		t.Fatalf("unavailable instance without version should be valid: %v", err)
+	}
+	encoded, err := json.Marshal(unavailableInstance)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded HarnessInstance
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.DiagnosticReason != unavailableInstance.DiagnosticReason || decoded.ErrorCode != unavailableInstance.ErrorCode {
+		t.Fatalf("diagnostics not roundtripped: got reason=%q code=%q", decoded.DiagnosticReason, decoded.ErrorCode)
+	}
+}
+
 func contains[T comparable](values []T, want T) bool {
 	for _, value := range values {
 		if value == want {
