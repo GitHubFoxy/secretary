@@ -39,6 +39,6 @@ chmod +x "$TASK_TMP/bin/mise" "$TASK_TMP/bin/codex-acp"
 [[ "$(cat "$TEST_SETUP_MARKER")" != *legacy-call* ]]
 [[ ! -e "$HOME/.local/share/secretary/opencode-native-selection.json" ]]
 [[ ! -e "$HOME/.local/share/secretary/node/data/opencode-native-selection.json" ]]
-rg -q '^harness = "codex"$' "$HOME/.local/share/secretary/config.toml"
-rg -q '"include_opencode": false' "$HOME/.local/share/secretary/node/config.json"
+grep -Eq '^harness = "codex"$' "$HOME/.local/share/secretary/config.toml"
+grep -Eq '"include_opencode": false' "$HOME/.local/share/secretary/node/config.json"
 echo 'PASS: clean Codex setup/Doctor/standalone Node need no FX/OpenCode and preserve global config.'
