@@ -445,7 +445,7 @@ func TestTelegramEventBridgeSendsOneTerminalNotificationForOneTurn(t *testing.T)
 		if sent.ThreadID != 0 && sent.Text == "done" {
 			topicCompletions++
 		}
-		if sent.ThreadID == 0 && sent.Text == "Worker:\ndone" {
+		if sent.ThreadID == 0 && sent.Text == "done" {
 			generalMirrors++
 		}
 	}

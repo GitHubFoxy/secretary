@@ -81,7 +81,7 @@ func TestLongResultTopicThenGeneralCheckpointOrder(t *testing.T) {
 			topic.WriteString(sent.Text)
 		}
 	}
-	if topic.String() != text || general.String() != "Long Result:\n"+text {
+	if topic.String() != text || general.String() != text {
 		t.Fatal("retry/replay lost, reordered, or duplicated delivered Result text")
 	}
 	t.Log("attempts: Topic chunk 1, Topic chunk 2 (failed), Topic chunk 2 (retry), General chunks 1-2; post-checkpoint event replays sent nothing")
