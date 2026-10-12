@@ -118,8 +118,6 @@ func TestLateAcceptedRespondOutcomeReconcilesAfterWaiterRemoval(t *testing.T) {
 		t.Fatalf("response wait did not report an ambiguous handoff: %v", err)
 	}
 
-	// The authenticated outcome arrives only after SendCommandAndWait returned,
-	// so no in-memory waiter remains. The production Core sink must still commit it.
 	accepted := CommandOutcome{
 		CommandID: commandRecord.ID, Kind: CommandRespondWorker, State: CommandAccepted,
 		TurnID: turn.ID, AttemptID: attempt.ID,

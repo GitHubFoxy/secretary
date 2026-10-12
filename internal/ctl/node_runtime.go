@@ -12,9 +12,6 @@ import (
 	"github.com/beruseruko/secretary/internal/node"
 )
 
-// NodeRuntime is the server-side WorkerRuntime adapter. It translates only
-// server-owned Worker/Turn/Attempt fields into typed Node commands. Native
-// harness session IDs and callback capabilities never enter this boundary.
 type NodeRuntime struct {
 	Manager *node.ServerManager
 	Local   *node.LocalNode
@@ -46,9 +43,6 @@ func (r NodeRuntime) send(ctx context.Context, nodeID core.NodeReference, comman
 	return r.Manager.SendCommand(ctx, nodeID, command)
 }
 
-// LocalCommand is the trusted-local equivalent of the authenticated Node
-// protocol. It keeps the old local daemon path while exposing one runtime
-// adapter to WorkerService.
 func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (node.CommandOutcome, error) {
 	if r.Local == nil {
 		return node.CommandOutcome{}, ErrWorkerRuntimeUnavailable

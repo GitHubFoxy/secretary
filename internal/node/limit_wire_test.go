@@ -2,9 +2,9 @@ package node
 
 import (
 	"context"
-	"sync"
 	"encoding/json"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -182,7 +182,6 @@ func TestRateLimitWire_ResumeContinuationPromptSemantics(t *testing.T) {
 
 	execNode := NewExecutionNode("macbook", rt, store)
 
-	// 1. Initial Dispatch
 	initialCmd := dispatchFixture("limit-cont-init")
 	initialCmd.Dispatch.Envelope.HarnessInstance.Kind = core.HarnessCodex
 	initialCmd.Dispatch.Envelope.Profile = workerTemplateFixture(initialCmd.Dispatch.Envelope.HarnessInstance, "", "")
@@ -193,7 +192,6 @@ func TestRateLimitWire_ResumeContinuationPromptSemantics(t *testing.T) {
 		t.Fatalf("initial dispatch failed: outcome=%#v err=%v", outcome, err)
 	}
 
-	// Wait for start request
 	select {
 	case req := <-rt.requests:
 		if req.Task != "Initial original user task" {
@@ -206,7 +204,6 @@ func TestRateLimitWire_ResumeContinuationPromptSemantics(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 
-	// Simulate initial attempt finishing with usage limit outcome
 	sess.results <- Result{
 		Status:          "failed",
 		Summary:         "usage limit reached",
@@ -214,7 +211,6 @@ func TestRateLimitWire_ResumeContinuationPromptSemantics(t *testing.T) {
 		FailureCategory: core.FailureCategoryUsageLimit,
 	}
 
-	// Wait for terminal outcome recorded in store
 	attempt1ID := initialCmd.Dispatch.Metadata.AttemptID
 	for {
 		events, err := store.PendingEvents()
@@ -238,7 +234,6 @@ func TestRateLimitWire_ResumeContinuationPromptSemantics(t *testing.T) {
 		}
 	}
 
-	// 2. Scheduled Continuation via ResumeCommand
 	resumeMeta := initialCmd.Metadata()
 	resumeMeta.CommandID = "cont-resume-cmd"
 	resumeMeta.AttemptID = "attempt-2"
@@ -262,14 +257,11 @@ func TestRateLimitWire_ResumeContinuationPromptSemantics(t *testing.T) {
 		t.Fatalf("continuation resume failed: outcome=%#v err=%v", resumeOutcome, err)
 	}
 
-	// Verify StartRequest delivered to Resumer.Resume
 	select {
 	case req := <-rt.requests:
-		// Finding 1: Task must be ContinuationPrompt, NOT OriginalUserIntent
 		if req.Task != "Continue after rate limit resets" {
 			t.Fatalf("expected StartRequest.Task to be ContinuationPrompt %q, got %q", "Continue after rate limit resets", req.Task)
 		}
-		// Finding 1: DeferInitialPrompt must be true
 		if !req.DeferInitialPrompt {
 			t.Fatal("expected StartRequest.DeferInitialPrompt to be true for continuing resume")
 		}
@@ -277,7 +269,6 @@ func TestRateLimitWire_ResumeContinuationPromptSemantics(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 
-	// Verify prompt delivered via session.Prompt(...)
 	deadline := time.Now().Add(2 * time.Second)
 	var gotPrompts []string
 	for time.Now().Before(deadline) {

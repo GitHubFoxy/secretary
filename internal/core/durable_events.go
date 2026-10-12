@@ -83,8 +83,6 @@ func (s *Store) ReplayConversation(ctx context.Context, conversationID string, a
 	})
 }
 
-// ReplayEvents captures a server-side boundary and reads only events visible
-// at that boundary. A live subscriber can continue strictly after BoundarySeq.
 func (s *Store) ReplayEvents(ctx context.Context, afterSeq int64, limit int) (EventReplay, error) {
 	return withTx(s, ctx, func(tx *sql.Tx) (EventReplay, error) {
 		var snapshotBoundary int64
@@ -251,8 +249,6 @@ func (s *Store) RecordDeliveryFailure(ctx context.Context, id string, deliveryEr
 	})
 }
 
-// MarkDeliveryFailed records a terminal delivery failure. RetryDelivery moves
-// it back to pending without changing its idempotency key.
 func (s *Store) MarkDeliveryFailed(ctx context.Context, id string, deliveryErr error) (Delivery, error) {
 	message := "delivery failed"
 	if deliveryErr != nil {

@@ -295,9 +295,6 @@ func (c *ProtocolConnection) SendCommand(ctx context.Context, command Command) e
 	if err != nil {
 		return err
 	}
-	// Sequence allocation must share the same mutex as envelope creation and
-	// socket write. Otherwise concurrent SendCommand calls can race and put a
-	// lower sequence on the wire after a higher one.
 	c.writes.Lock()
 	defer c.writes.Unlock()
 	c.nextSequence++

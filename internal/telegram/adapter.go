@@ -1,7 +1,3 @@
-// Package telegram implements the polling-first Telegram Channel adapter.
-//
-// The adapter owns only Telegram delivery state. Personal Conversation,
-// Worker lifecycle and authorization remain server-owned through ServerClient.
 package telegram
 
 import (
@@ -110,12 +106,10 @@ type Config struct {
 }
 
 type Pairing struct {
-	Code      string    `json:"code"`
-	DeepLink  string    `json:"deep_link"`
-	ExpiresAt time.Time `json:"expires_at"`
-	// Credential is intentionally not part of the pairing flow. Telegram
-	// receives a one-time code, never a server or Client credential.
-	Credential string `json:"-"`
+	Code       string    `json:"code"`
+	DeepLink   string    `json:"deep_link"`
+	ExpiresAt  time.Time `json:"expires_at"`
+	Credential string    `json:"-"`
 }
 
 type Event struct {
@@ -410,7 +404,6 @@ func Rebind(statePath string, configOwner int64, reason string, watermark int64)
 	if err := json.Unmarshal(data, &state); err != nil {
 		return fmt.Errorf("telegram: decode state: %w", err)
 	}
-	// Preserve offset, validate watermark does not go backwards.
 	if watermark < state.LastEventSeq {
 		watermark = state.LastEventSeq
 	}
@@ -432,7 +425,6 @@ func Rebind(statePath string, configOwner int64, reason string, watermark int64)
 	state.PendingEventSeqs = nil
 	state.SecretaryReady = false
 	state.SecretaryDelegated = false
-	// Keep Offset, Processed, TerminalNotified, RequestNotified, Version, OwnerChat/OwnerUser updated.
 	encoded, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("telegram: encode state: %w", err)
@@ -601,8 +593,6 @@ func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool
 func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed bool, requestOverride *string) error {
 	text := strings.TrimSpace(update.Message.Text)
 	if strings.HasPrefix(text, "/start ") {
-		// Possession of the short-lived deep-link code is the explicit owner
-		// pairing proof. It is the only update accepted before allowlisting.
 		return a.RedeemPairingWithSender(strings.TrimSpace(strings.TrimPrefix(text, "/start ")), update.Message.ChatID, update.Message.FromID)
 	}
 	if !allowed || text == "/start" || text == "" {
@@ -631,9 +621,6 @@ func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed 
 		mapping, ok := a.mappingForThreadLocked(update.Message.ChatID, update.Message.ThreadID)
 		a.mu.Unlock()
 		if !ok {
-			// Forum General carries thread 1 on some clients; route it to
-			// Secretary like a thread-less General message. Any other
-			// unknown thread is dropped, never auto-promoted to Secretary.
 			if update.Message.ThreadID != 1 {
 				return nil
 			}
@@ -702,7 +689,6 @@ func (a *Adapter) mappingForThreadLocked(chatID, threadID int64) (TopicMapping, 
 	return TopicMapping{}, false
 }
 
-// reactToMessage is a best-effort visual acknowledgement after the server accepts the update.
 func (a *Adapter) reactToMessage(ctx context.Context, message *Message) {
 	if message == nil || message.MessageID <= 0 {
 		return
@@ -714,7 +700,6 @@ func (a *Adapter) reactToMessage(ctx context.Context, message *Message) {
 	_ = transport.SetMessageReaction(ctx, message.ChatID, message.MessageID, "👀")
 }
 
-// sendTyping is best-effort liveness: failures never block delivery.
 func (a *Adapter) sendTyping(chatID, threadID int64) {
 	if chatID == 0 {
 		return
@@ -972,8 +957,6 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			_, alreadyNotified = a.state.ToolNotified[strings.TrimPrefix(identity, "tool:")]
 			a.mu.Unlock()
 		}
-		// Each destination is deduplicated by sendMessage. A delivered Topic
-		// must not prevent retrying its still-pending General mirror.
 		if alreadyNotified && event.TerminalIdentity == "" {
 			return nil
 		}
@@ -1369,9 +1352,6 @@ func (a *Adapter) drainOutbox(ctx context.Context) error {
 			}
 			err := a.transport.SendMessage(ctx, chunk)
 			if errors.Is(err, ErrFormatting) && chunk.ParseMode != "" {
-				// A known parse rejection proves this send was not accepted.
-				// Persist fallback before attempting it; transport failures with
-				// uncertain acceptance must never trigger a second immediate send.
 				message.PlainFallback = true
 				a.mu.Lock()
 				for index, pending := range a.state.Outbox {
@@ -1390,8 +1370,6 @@ func (a *Adapter) drainOutbox(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			// Checkpoint only consumed original UTF-8 source bytes. Escaped HTML
-			// and generated balanced-fence tags are presentation, not source.
 			message.DeliveredBytes += prepared.sourceBytes
 			done := message.DeliveredBytes >= len(message.Text)
 			a.mu.Lock()
@@ -1517,8 +1495,6 @@ func telegramCodeBodyChunk(text string) string {
 	return telegramCodePointChunk(text, 4096)
 }
 
-// Keep chunks within Telegram's parsed-text limit. Source syntax is counted
-// conservatively; source-byte checkpoints exclude rendered HTML and synthetic tags.
 func telegramMessageChunk(text string) string {
 	graphemes := uniseg.NewGraphemes(text)
 	units, hardEnd := 0, 0
@@ -1720,9 +1696,6 @@ func telegramUTF16Units(text string) int {
 	return units
 }
 
-// A single extended grapheme can itself exceed Telegram's limit (for example,
-// a base followed by thousands of combining marks). In that impossible case,
-// split only at UTF-8 code-point boundaries so delivery always makes progress.
 func telegramCodePointChunk(text string, limit int) string {
 	units := 0
 	for index, r := range text {

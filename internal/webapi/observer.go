@@ -710,8 +710,6 @@ func forbiddenPublicKey(key string) bool {
 		}
 	}
 
-	// Uppercase acronyms such as RUNTIMESESSIONID have no case transition to
-	// split. Compare their compact spelling against the forbidden compound keys.
 	compact := strings.ToLower(strings.Map(func(character rune) rune {
 		if unicode.IsLetter(character) || unicode.IsDigit(character) {
 			return character

@@ -35,7 +35,5 @@ func (s *Server) telegramPairing(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "create Telegram pairing", http.StatusInternalServerError)
 		return
 	}
-	// Pairing response contains only a short-lived code and deep link. The
-	// server-issued Client credential stays in the adapter process.
 	writeJSON(w, http.StatusCreated, pairing)
 }

@@ -25,7 +25,6 @@ func TestWorkerTopicPromptPrecedesActivityAndSurvivesReplay(t *testing.T) {
 	if err := adapter.HandleDurableEvent(ctx, event); err != nil {
 		t.Fatal(err)
 	}
-	// Also exercise replay without the durable cursor shortcut.
 	if err := adapter.HandleEvent(ctx, event); err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +58,6 @@ func TestWorkerTopicPromptRetryResumesAfterRestart(t *testing.T) {
 				t.Fatalf("failed delivery advanced cursor or recreated Topic: cursor=%d topics=%d", adapter.LastEventSeq(), len(transport.topics))
 			}
 			adapter = newTestAdapter(t, transport, &fakeServer{}, path)
-			// Flush may deliver the pending prompt before the event is replayed.
 			if err := adapter.Flush(ctx); err != nil {
 				t.Fatal(err)
 			}

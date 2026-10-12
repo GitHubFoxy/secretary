@@ -46,8 +46,6 @@ func (s *timingInspectionServer) SendMessage(_ context.Context, m InboundMessage
 	if !ok || tr.Timing == nil || tr.Timing.FormatterStatus != s.expectedStatus {
 		s.t.Fatalf("metrics not persisted before dispatch: %+v", tr)
 	}
-	// Dispatch is deliberately blocked after inspecting persisted measurements;
-	// changing a stored value after this call would reveal a defer timing bug.
 	before := *tr.Timing
 	time.Sleep(2 * time.Millisecond)
 	after, _ := s.adapter.Transcript(m.ExternalMessageID)

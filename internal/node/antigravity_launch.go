@@ -52,8 +52,6 @@ func DefaultAntigravityProfileDir() string {
 	return filepath.Join(os.TempDir(), "secretary-antigravity")
 }
 
-// ResolveAntigravityProfileDir returns the first non-empty explicit profile directory,
-// falling back to DefaultAntigravityProfileDir.
 func ResolveAntigravityProfileDir(explicit ...string) string {
 	for _, dir := range explicit {
 		if trimmed := strings.TrimSpace(dir); trimmed != "" {
@@ -198,11 +196,10 @@ func buildAntigravityPlatformArgsForOS(baseArgs []string, goos, goarch string) [
 					continue
 				}
 				if strings.TrimSpace(next) == "" {
-					i++ // consume empty/whitespace token
+					i++
 					continue
 				}
 			}
-			// Malformed --uid (followed by another flag or at end of args) is stripped
 			continue
 		}
 		cleaned = append(cleaned, arg)

@@ -19,8 +19,6 @@ import (
 	"github.com/beruseruko/secretary/internal/node"
 )
 
-// The provider is an external executable, not a mock of a Secretary module.
-// Native identity and nonce stay private to its synthetic workspace.
 func TestIdleFollowUpACPProcess(t *testing.T) {
 	if !testProcessHasArgument("-test.run=^TestIdleFollowUpACPProcess$") {
 		return
@@ -142,7 +140,7 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 				if os.WriteFile(filepath.Join(workspace, "private-hold-ready"), []byte("ready"), 0600) != nil {
 					os.Exit(2)
 				}
-				continue // a real active ACP prompt, interrupted by the public Node Cancel below
+				continue
 			}
 			if p.Prompt[0].Text == "recall" {
 				if os.WriteFile(filepath.Join(workspace, "private-recall-sent"), []byte("sent"), 0600) != nil {
@@ -266,7 +264,6 @@ func runPublicIdleFollowUp(t *testing.T, native, codex, queued bool, reconnect s
 		t.Fatal(err)
 	}
 	defer func() { local.Close() }()
-	// ACPRuntime is used at the external wire boundary; no internal runtime mocks.
 	var runtime node.Runtime = node.ACPRuntime{Command: os.Args[0], Arguments: []string{"-test.run=^TestIdleFollowUpACPProcess$"}, DrainPromptEvents: true, TerminalMessageGrouping: true}
 	if codex {
 		runtime = node.CodexRuntime{ACPRuntime: node.ACPRuntime{Command: os.Args[0], Arguments: []string{"-test.run=^TestIdleFollowUpACPProcess$"}}}
@@ -282,8 +279,7 @@ func runPublicIdleFollowUp(t *testing.T, native, codex, queued bool, reconnect s
 		daemonCtx, c := context.WithCancel(ctx)
 		stop = c
 		done = make(chan error, 1)
-		d := node.Daemon{Identity: identity, Store: local, Runtime: runtime, Inventory: idleInventory{inventory}, // Heartbeat races are a separate transport seam; seed public Core
-			// inventory once per connection rather than racing SQLite writes.
+		d := node.Daemon{Identity: identity, Store: local, Runtime: runtime, Inventory: idleInventory{inventory},
 			HeartbeatInterval: time.Hour, OutboxPollInterval: 5 * time.Millisecond}
 		go func() { done <- d.Run(daemonCtx) }()
 		waitIdleFixture(t, ctx, func() bool {
@@ -483,7 +479,6 @@ func runPublicIdleFollowUp(t *testing.T, native, codex, queued bool, reconnect s
 				t.Fatal("idle Follow-up lost remembered nonce")
 			}
 		}
-		// Replay after completion must not create a Turn, Attempt or another Result.
 		if _, err := service.MessageWorker(ctx, request); err != nil {
 			t.Fatal(err)
 		}
@@ -497,8 +492,6 @@ func runPublicIdleFollowUp(t *testing.T, native, codex, queued bool, reconnect s
 		t.Fatal("private continuation metadata escaped public state")
 	}
 	if native {
-		// Inject only the durable crash state: native history already exists,
-		// but this Follow-up input has not crossed the external ACP boundary.
 		beforeCalls := nativeCalls()
 		turn, attempt, err := store.CreateTurn(ctx, details.Worker.ID, core.TurnSpec{Input: "recall", IdempotencyKey: "native-crash-window", CommandKind: "dispatch"})
 		if err != nil {
@@ -569,9 +562,6 @@ func runPublicIdleFollowUp(t *testing.T, native, codex, queued bool, reconnect s
 		}
 		return
 	}
-	// A public active message must steer the current Attempt, not allocate
-	// a new native session. Core's public recovery operation supplies the
-	// interrupted outcome, as after a lost Node process.
 	_, err = service.MessageWorker(ctx, MessageWorkerRequest{WorkerRef: ref, Text: "hold", IdempotencyKey: "hold"})
 	if err != nil {
 		t.Fatal(err)
@@ -661,8 +651,6 @@ func runPublicIdleFollowUp(t *testing.T, native, codex, queued bool, reconnect s
 			t.Fatal("explicit Resume lost prior history")
 		}
 	}
-	// Enrollment revocation is enforced before historical ACK delivery, even
-	// when the Node still has a connection and a saved accepted outcome.
 	last, found, err := store.FindWorkerCommand(ctx, "resume", "attempt", details.Worker.ID, details.CurrentAttempt().ID)
 	if err != nil || !found {
 		t.Fatal("resume intent missing")

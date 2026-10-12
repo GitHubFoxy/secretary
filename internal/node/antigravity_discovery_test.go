@@ -206,7 +206,6 @@ func TestAntigravityProbe_Ready(t *testing.T) {
 	if len(result.Instance.ModelIDs) != 2 || result.Instance.ModelIDs[0] != "gemini-3.8-flash-high" {
 		t.Fatalf("unexpected models: %v", result.Instance.ModelIDs)
 	}
-	// Capabilities checks: Steering, Approvals, multimodal must NOT be present
 	if result.Instance.Capabilities.SupportsExecution(core.CapabilitySteering) {
 		t.Fatal("Antigravity must not claim CapabilitySteering without verified contract")
 	}
@@ -231,7 +230,6 @@ func TestAntigravityProbe_CachingPreventsHeavyProcess(t *testing.T) {
 
 	probe := HarnessProbe{Node: "local", Spec: spec, Runner: observer}
 
-	// First probe: cache miss, observer invoked
 	res1 := probe.Probe(context.Background())
 	if !res1.Available() {
 		t.Fatalf("res1 failed: %v", res1.Err)
@@ -240,7 +238,6 @@ func TestAntigravityProbe_CachingPreventsHeavyProcess(t *testing.T) {
 		t.Fatalf("expected 1 call, got %d", observer.observeCalls.Load())
 	}
 
-	// Second probe within TTL: cache hit, observer NOT invoked again
 	res2 := probe.Probe(context.Background())
 	if !res2.Available() {
 		t.Fatalf("res2 failed: %v", res2.Err)
@@ -249,13 +246,11 @@ func TestAntigravityProbe_CachingPreventsHeavyProcess(t *testing.T) {
 		t.Fatalf("expected still 1 call (cache hit), got %d", observer.observeCalls.Load())
 	}
 
-	// Touch companion file to modify mtime -> cache invalidated
 	future := time.Now().Add(5 * time.Second)
 	if err := os.Chtimes(companionPath, future, future); err != nil {
 		t.Fatal(err)
 	}
 
-	// Third probe: cache miss due to mtime invalidation, observer invoked
 	res3 := probe.Probe(context.Background())
 	if !res3.Available() {
 		t.Fatalf("res3 failed: %v", res3.Err)
@@ -295,7 +290,6 @@ func TestHarnessDiscovery_PreservesAntigravityDiagnostics(t *testing.T) {
 		t.Fatal("expected non-empty DiagnosticReason")
 	}
 }
-
 
 func TestAntigravityDiscovery_IncludeAntigravity(t *testing.T) {
 	ResetAntigravityProbeCache()

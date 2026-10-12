@@ -6,8 +6,6 @@ import (
 	"errors"
 )
 
-// WorkerHandler remains available for a separate worker runtime integration.
-// secretary-mcp does not construct or expose this handler.
 type WorkerHandler struct {
 	Spawn     func(context.Context, string, string) (any, error)
 	Authorize func(context.Context, string) error

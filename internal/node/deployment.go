@@ -14,24 +14,22 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-// WorkspaceMapping is the local path for a server-owned Project on one Node.
-// Paths are operator configuration, never values supplied by a Worker.
 type WorkspaceMapping struct {
 	ProjectID string `json:"project_id"`
 	Path      string `json:"path"`
 }
 
 type DeploymentConfig struct {
-	ServerURL       string             `json:"server_url"`
-	Node            core.NodeReference `json:"node"`
-	DataDir         string             `json:"data_dir"`
-	Workspaces      []WorkspaceMapping `json:"workspaces,omitempty"`
-	Capacity        int                `json:"capacity,omitempty"`
-	ListenAddress   string             `json:"listen_address,omitempty"`
+	ServerURL          string             `json:"server_url"`
+	Node               core.NodeReference `json:"node"`
+	DataDir            string             `json:"data_dir"`
+	Workspaces         []WorkspaceMapping `json:"workspaces,omitempty"`
+	Capacity           int                `json:"capacity,omitempty"`
+	ListenAddress      string             `json:"listen_address,omitempty"`
 	IncludeOpenCode    bool               `json:"include_opencode"`
 	IncludeAntigravity bool               `json:"include_antigravity,omitempty"`
 	Standalone         bool               `json:"standalone,omitempty"`
-	MCPServers      []MCPServer        `json:"mcp_servers,omitempty"`
+	MCPServers         []MCPServer        `json:"mcp_servers,omitempty"`
 }
 
 func LoadDeploymentConfig(path string) (DeploymentConfig, error) {
@@ -128,8 +126,6 @@ func (c DeploymentConfig) ProtocolWorkspaces() ([]Workspace, error) {
 	return workspaces, nil
 }
 
-// CredentialSet names the four independent credential domains. The raw values
-// are accepted only at process boundaries and are never suitable for export.
 type CredentialSet struct {
 	Node             string `json:"-"`
 	Client           string `json:"-"`
@@ -177,8 +173,6 @@ func (c CredentialSet) Redacted() RedactedCredentialSet {
 	return RedactedCredentialSet{Node: redact(c.Node), Client: redact(c.Client), SecretaryRuntime: redact(c.SecretaryRuntime), Telegram: redact(c.Telegram)}
 }
 
-// RedactSecrets is used at log and diagnostic boundaries. It replaces longer
-// secrets first, so a shared prefix cannot reveal a suffix of a credential.
 func RedactSecrets(value string, secrets ...string) string {
 	unique := make([]string, 0, len(secrets))
 	seen := make(map[string]struct{}, len(secrets))

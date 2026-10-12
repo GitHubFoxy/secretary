@@ -116,7 +116,6 @@ func TestRequiredAddressedReplyCompletionCommitsExactEvidenceAndSurvivesReopen(t
 			if finished != 1 || !recorded.Committed || recorded.Code != tc.wantCode || recorded.ReplyCount != wantCount || recorded.EntryPresent != tc.reply || recorded.Branch != tc.evidence.Branch {
 				t.Fatal("committed evidence does not describe actual completion")
 			}
-			// Terminal replay cannot mutate state or invent a second entry/event.
 			if _, err := store.FinishSecretaryTurnWithRequiredReply(ctx, turn.ID, turn.InputID, tc.state, tc.evidence); !errors.Is(err, ErrInvalidTransition) {
 				t.Fatal("terminal completion replay changed state")
 			}

@@ -11,8 +11,6 @@ type followUpAttempt struct {
 	entry   ConversationEntry
 }
 
-// CreateFollowUpAttempt records queued Worker input before it is sent to the
-// runtime. A follow-up is allowed only after the previous Attempt is terminal.
 func (s *Store) CreateFollowUpAttempt(ctx context.Context, taskID, input string) (Attempt, error) {
 	if s.legacyTasksReadOnly(ctx) {
 		return Attempt{}, ErrLegacyTaskReadOnly

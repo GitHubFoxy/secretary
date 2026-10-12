@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// Event is an append-only normalized server event with a global sequence.
 type Event struct {
 	ID            string          `json:"id"`
 	Seq           int64           `json:"seq"`
@@ -25,13 +24,9 @@ type Event struct {
 }
 
 func (s *Store) RecordEvent(ctx context.Context, kind, workerRef, attemptID, runtimeSessionID string, payload any) (Event, error) {
-	// runtimeSessionID remains an ignored legacy argument. It is not persisted
-	// or exposed by the Phase 4 server event contract.
 	return s.RecordEventWithMetadata(ctx, EventInput{Kind: kind, AggregateType: "worker", AggregateID: workerRef, Source: "server", WorkerRef: workerRef, AttemptID: attemptID, Payload: payload})
 }
 
-// RecordEventWithMetadata appends one event and allocates its sequence in the
-// same transaction as the row, so sequence numbers survive restart and prune.
 func (s *Store) RecordEventWithMetadata(ctx context.Context, input EventInput) (Event, error) {
 	if input.Kind == "" {
 		return Event{}, fmt.Errorf("core: event kind is required")
@@ -129,8 +124,6 @@ func (s *Store) PruneEvents(ctx context.Context, before time.Time) (int64, error
 	return result.RowsAffected()
 }
 
-// Historical events bypass current write sanitizers. Clean failure fields at the
-// shared read boundary without changing successful output or event identity.
 func sanitizeFailureEventPayload(kind string, raw json.RawMessage) json.RawMessage {
 	if kind != "result.accepted" && kind != "attempt.outcome_recorded" {
 		return raw
@@ -143,8 +136,6 @@ func sanitizeFailureEventPayload(kind string, raw json.RawMessage) json.RawMessa
 	if json.Unmarshal(original["status"], &status) == nil && status == "succeeded" {
 		return raw
 	}
-	// Rebuild from the terminal schema: never serialize unknown legacy fields.
-	// Identity strings remain verbatim; free-form failure strings are bounded.
 	payload := make(map[string]json.RawMessage)
 	for _, key := range []string{"id", "worker_id", "turn_id", "attempt_id", "correlation_id"} {
 		var value string
@@ -183,6 +174,6 @@ func sanitizeFailureEventPayload(kind string, raw json.RawMessage) json.RawMessa
 	if json.Unmarshal(original["failure"], &failure) == nil && string(original["failure"]) != "null" {
 		payload["failure"], _ = json.Marshal(SanitizeWorkerFailure(failure))
 	}
-	encoded, _ := json.Marshal(payload) // Only validated JSON values are retained.
+	encoded, _ := json.Marshal(payload)
 	return encoded
 }

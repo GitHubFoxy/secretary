@@ -19,8 +19,6 @@ func inputLane(u Update) string {
 	return fmt.Sprintf("%d:%d", u.Message.ChatID, thread)
 }
 
-// Persist input before advancing the Telegram offset. The core's stable
-// telegram:update idempotency key covers a crash after acceptance by the server.
 func (a *Adapter) enqueueInputs(updates []Update, advance bool) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -154,8 +152,6 @@ func (a *Adapter) drainInputs(ctx context.Context) error {
 	return a.Flush(ctx)
 }
 
-// Run polls independently of slow voice processing; only a single worker owns
-// each chat/topic lane. Failures retain durable input for the next poll/restart.
 func (a *Adapter) startInputWorkers(ctx context.Context) {
 	for _, key := range a.inputKeys() {
 		a.inputMu.Lock()
@@ -179,9 +175,6 @@ func (a *Adapter) startInputWorkers(ctx context.Context) {
 	}
 }
 
-// Bind at dispatch, not enqueue: an earlier message can resolve the request
-// while this input is waiting. Once dispatched, replay must use the exact same
-// request ID even if the Worker subsequently asks a new question.
 func (a *Adapter) bindWorkerRequest(updateID int64, currentRequestID string) (string, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

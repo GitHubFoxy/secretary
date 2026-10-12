@@ -1,6 +1,3 @@
-// Package migration upgrades the durable Phase 3 SQLite state to the Phase 4
-// Worker-first schema. It deliberately does not use core.Open: opening a
-// legacy database must not first manufacture partially migrated state.
 package migration
 
 import (
@@ -569,8 +566,6 @@ func insertTurn(ctx context.Context, tx *sql.Tx, id, workerID, input, state, cre
 	case "open", "closing":
 		turnState = "active"
 	case "closed", "completed":
-		// A terminal legacy Task is not evidence of a successful Turn. The
-		// terminal Attempt projection below must supply exactly one Result.
 		turnState = "interrupted"
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO turns(id, worker_id, input, normalized_intent, context_snapshot, state, created_at, updated_at) VALUES(?, ?, ?, '', '', ?, ?, ?)`, id, workerID, input, turnState, created, updated)
@@ -744,12 +739,6 @@ type legacyFollowUpWorker struct {
 	nextAttempts []legacyFollowUpAttempt
 }
 
-// legacyFollowUpOwner uses the durable Phase 3 timeline when worker_ref was
-// not stored on a conversation entry. A follow-up Attempt and its worker_input
-// are created with the same now, so equality is a valid match. Each candidate
-// Attempt is consumed once while unscoped entries are assigned in seq order.
-// Equal-time candidates belonging to different roots are not a discriminator:
-// fail closed instead of using worker_ref or conversation seq to guess.
 func legacyFollowUpOwner(created string, workers []legacyFollowUpWorker, used map[string]struct{}) (string, error) {
 	if len(workers) == 0 {
 		return "", nil
@@ -1083,8 +1072,6 @@ func backupDatabase(path, backup string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	// VACUUM INTO reads the database through SQLite, so committed WAL pages
-	// are included and the backup is a standalone, queryable database.
 	return snapshotDatabase(path, backup)
 }
 
@@ -1097,9 +1084,6 @@ func backupFileIfMissing(path, backup string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	// Keep the original bytes. A VACUUM snapshot is semantically equivalent
-	// but changes SQLite page layout, which makes rollback observably mutate an
-	// otherwise untouched active database.
 	return copyFile(path, backup)
 }
 

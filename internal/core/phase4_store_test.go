@@ -667,7 +667,6 @@ func TestPhase4Result_PreservesFailureAndCategoryAcrossReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 1. Auth required failure
 	_, turn1, attempt1, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{
 		WorkerRef:         "worker-auth",
 		Title:             "Auth test",
@@ -713,7 +712,6 @@ func TestPhase4Result_PreservesFailureAndCategoryAcrossReopen(t *testing.T) {
 		t.Fatalf("immediate Failure = %#v", finishRes1.Result.Failure)
 	}
 
-	// 2. Generic internal error without specific provider code
 	_, turn2, attempt2, err := store.CreateWorker(ctx, conversation.ID, WorkerSpec{
 		WorkerRef:         "worker-internal",
 		Title:             "Internal error test",
@@ -751,7 +749,6 @@ func TestPhase4Result_PreservesFailureAndCategoryAcrossReopen(t *testing.T) {
 		t.Fatalf("generic Failure = %#v", finishRes2.Result.Failure)
 	}
 
-	// Reopen DB to verify durability
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -761,7 +758,6 @@ func TestPhase4Result_PreservesFailureAndCategoryAcrossReopen(t *testing.T) {
 	}
 	defer reopened.Close()
 
-	// Verify Auth error after reopen
 	storedRes1, err := reopened.Phase4Result(ctx, turn1.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -776,7 +772,6 @@ func TestPhase4Result_PreservesFailureAndCategoryAcrossReopen(t *testing.T) {
 		t.Fatalf("reopened auth Failure = %#v", storedRes1.Failure)
 	}
 
-	// Verify Generic error after reopen
 	storedRes2, err := reopened.Phase4Result(ctx, turn2.ID)
 	if err != nil {
 		t.Fatal(err)

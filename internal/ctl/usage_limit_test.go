@@ -2,8 +2,8 @@ package ctl
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -109,11 +109,10 @@ func setupLimitedWorker(t *testing.T, resetOffset time.Duration) (*core.Store, W
 
 func TestScheduledResume_RunsDueScheduleBeforeFIFO(t *testing.T) {
 	ctx := context.Background()
-	store, service, runtime, worker, conversation, _, _ := setupLimitedWorker(t, 10*time.Second) // future reset
-	service.commandNow = func() time.Time { return time.Now().UTC().Add(2 * time.Minute) } // simulate clock advancing past due
+	store, service, runtime, worker, conversation, _, _ := setupLimitedWorker(t, 10*time.Second)
+	service.commandNow = func() time.Time { return time.Now().UTC().Add(2 * time.Minute) }
 	defer store.Close()
 
-	// Enqueue a FIFO message (/q)
 	_, err := service.MessageWorker(ctx, MessageWorkerRequest{
 		WorkerRef:      worker.WorkerRef,
 		Text:           "/q next task",
@@ -123,7 +122,6 @@ func TestScheduledResume_RunsDueScheduleBeforeFIFO(t *testing.T) {
 		t.Fatalf("enqueue /q failed: %v", err)
 	}
 
-	// Verify the message is pending in queue
 	details, err := store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 	if err != nil {
 		t.Fatal(err)
@@ -132,12 +130,10 @@ func TestScheduledResume_RunsDueScheduleBeforeFIFO(t *testing.T) {
 		t.Fatalf("expected pending queued message, got %#v", details.QueuedMessages)
 	}
 
-	// Pump due schedules and queued worker messages
 	if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
 		t.Fatalf("process queued worker messages: %v", err)
 	}
 
-	// Runtime should receive Resume with ContinuationPrompt, NOT the queued message
 	runtime.mu.Lock()
 	calls := runtime.resumeCalls
 	var text string
@@ -153,7 +149,6 @@ func TestScheduledResume_RunsDueScheduleBeforeFIFO(t *testing.T) {
 		t.Fatalf("expected continuation prompt %q, got %q", core.ContinuationPrompt, text)
 	}
 
-	// The queued message MUST still be pending because the turn was suspended and not finished
 	detailsAfter, err := store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 	if err != nil {
 		t.Fatal(err)
@@ -169,17 +164,14 @@ func TestScheduledResume_OfflineLeavesPendingUntouched(t *testing.T) {
 	service.commandNow = func() time.Time { return time.Now().UTC().Add(2 * time.Minute) }
 	defer store.Close()
 
-	// Set node offline / not ready
 	runtime.mu.Lock()
 	runtime.ready = false
 	runtime.mu.Unlock()
 
-	// Run process loop
 	if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
 		t.Fatal(err)
 	}
 
-	// Runtime was not called
 	runtime.mu.Lock()
 	calls := runtime.resumeCalls
 	runtime.mu.Unlock()
@@ -187,7 +179,6 @@ func TestScheduledResume_OfflineLeavesPendingUntouched(t *testing.T) {
 		t.Fatalf("expected 0 resume calls on offline node, got %d", calls)
 	}
 
-	// Schedule remains untouched in pending state
 	sched, found, err := store.FindActiveScheduleForWorker(ctx, worker.ID)
 	if err != nil || !found {
 		t.Fatalf("expected schedule, err=%v, found=%v", err, found)
@@ -199,10 +190,9 @@ func TestScheduledResume_OfflineLeavesPendingUntouched(t *testing.T) {
 
 func TestManualResume_OwnerAPIAndTelegram(t *testing.T) {
 	ctx := context.Background()
-	store, service, runtime, worker, _, _, _ := setupLimitedWorker(t, 10*time.Minute) // not due yet
+	store, service, runtime, worker, _, _, _ := setupLimitedWorker(t, 10*time.Minute)
 	defer store.Close()
 
-	// Call ResumeWorker (which backs both POST /v1/workers/{ref}/resume and Telegram /resume)
 	updated, err := service.ResumeWorker(ctx, worker.WorkerRef)
 	if err != nil {
 		t.Fatalf("ResumeWorker failed: %v", err)
@@ -223,7 +213,6 @@ func TestManualResume_OwnerAPIAndTelegram(t *testing.T) {
 		t.Fatalf("expected continuation prompt %q, got %q", core.ContinuationPrompt, text)
 	}
 
-	// Idempotent second call
 	_, err2 := service.ResumeWorker(ctx, worker.WorkerRef)
 	if err2 != nil {
 		t.Fatalf("idempotent ResumeWorker failed: %v", err2)
@@ -233,19 +222,17 @@ func TestManualResume_OwnerAPIAndTelegram(t *testing.T) {
 
 func TestLimitedWorker_RaceManualAndAutomatic(t *testing.T) {
 	ctx := context.Background()
-	store, service, runtime, worker, _, _, _ := setupLimitedWorker(t, -1*time.Minute) // due now
+	store, service, runtime, worker, _, _, _ := setupLimitedWorker(t, -1*time.Minute)
 	defer store.Close()
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// One goroutine calls manual ResumeWorker
 	go func() {
 		defer wg.Done()
 		_, _ = service.ResumeWorker(ctx, worker.WorkerRef)
 	}()
 
-	// Another goroutine calls ProcessQueuedWorkerMessages
 	go func() {
 		defer wg.Done()
 		_ = service.ProcessQueuedWorkerMessages(ctx)
@@ -267,7 +254,6 @@ func TestLimitedWorker_NewDirectInputCancelsSchedule(t *testing.T) {
 	store, service, _, worker, _, _, _ := setupLimitedWorker(t, 10*time.Minute)
 	defer store.Close()
 
-	// User sends direct input (not /q)
 	details, err := service.MessageWorker(ctx, MessageWorkerRequest{
 		WorkerRef:      worker.WorkerRef,
 		Text:           "start completely new task",
@@ -277,7 +263,6 @@ func TestLimitedWorker_NewDirectInputCancelsSchedule(t *testing.T) {
 		t.Fatalf("MessageWorker failed: %v", err)
 	}
 
-	// Verify old schedule was canceled
 	_, found, err := store.FindActiveScheduleForWorker(ctx, worker.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -286,7 +271,6 @@ func TestLimitedWorker_NewDirectInputCancelsSchedule(t *testing.T) {
 		t.Fatal("expected active schedule to be canceled and not found")
 	}
 
-	// Suspended turn was finalized with canceled Result, and new turn was created
 	if len(details.Turns) < 2 {
 		t.Fatalf("expected at least 2 turns (canceled turn + new turn), got %d", len(details.Turns))
 	}
@@ -315,7 +299,6 @@ func TestLimitedWorker_CancelWorker_AtomicAndIdempotent(t *testing.T) {
 	store, service, _, worker, _, _, _ := setupLimitedWorker(t, 10*time.Minute)
 	defer store.Close()
 
-	// CancelWorker
 	canceled, err := service.CancelWorker(ctx, worker.WorkerRef)
 	if err != nil {
 		t.Fatalf("CancelWorker failed: %v", err)
@@ -342,7 +325,6 @@ func TestLimitedWorker_CancelWorker_AtomicAndIdempotent(t *testing.T) {
 		t.Fatalf("expected result status canceled, got %s", res.Status)
 	}
 
-	// Active schedule is canceled
 	_, found, err := store.FindActiveScheduleForWorker(ctx, worker.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -351,7 +333,6 @@ func TestLimitedWorker_CancelWorker_AtomicAndIdempotent(t *testing.T) {
 		t.Fatal("expected no active schedule after cancellation")
 	}
 
-	// Idempotent second cancel
 	canceled2, err2 := service.CancelWorker(ctx, worker.WorkerRef)
 	if err2 != nil {
 		t.Fatalf("second CancelWorker failed: %v", err2)
@@ -366,18 +347,15 @@ func TestLimitedWorker_ResumeWorkerOffline_NoClaim(t *testing.T) {
 	store, service, runtime, worker, _, _, _ := setupLimitedWorker(t, 10*time.Minute)
 	defer store.Close()
 
-	// Set node offline
 	runtime.mu.Lock()
 	runtime.ready = false
 	runtime.mu.Unlock()
 
-	// ResumeWorker must fail without claiming schedule
 	_, err := service.ResumeWorker(ctx, worker.WorkerRef)
 	if err == nil {
 		t.Fatal("expected error when resuming offline worker")
 	}
 
-	// Schedule remains pending (not claimed)
 	sched, found, schedErr := store.FindActiveScheduleForWorker(ctx, worker.ID)
 	if schedErr != nil || !found {
 		t.Fatalf("expected schedule to remain, err=%v, found=%v", schedErr, found)
@@ -393,15 +371,12 @@ func TestScheduledResume_DeliverCommandFailureReleasesSchedule(t *testing.T) {
 	service.commandNow = func() time.Time { return time.Now().UTC().Add(2 * time.Minute) }
 	defer store.Close()
 
-	// Inject error into Runtime.Resume
 	runtime.mu.Lock()
 	runtime.resumeErr = errors.New("simulated runtime connection failure")
 	runtime.mu.Unlock()
 
-	// Run process loop
 	_ = service.ProcessQueuedWorkerMessages(ctx)
 
-	// Schedule MUST have been released, NOT stuck in claimed!
 	sched, found, schedErr := store.FindActiveScheduleForWorker(ctx, worker.ID)
 	if schedErr != nil || !found {
 		t.Fatalf("expected schedule, err=%v, found=%v", schedErr, found)

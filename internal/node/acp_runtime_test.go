@@ -440,7 +440,7 @@ func TestACPToolTrackerHonorsInitialLifecycleStatus(t *testing.T) {
 		{"completed", ActivityToolResult},
 		{"failed", ActivityToolResult},
 		{"canceled", ActivityToolResult},
-		{"", ActivityToolCall}, // ACP tool_call itself proves start when status is absent.
+		{"", ActivityToolCall},
 	} {
 		t.Run("initial_"+test.status, func(t *testing.T) {
 			tracker := newACPToolTracker()
@@ -715,8 +715,6 @@ func TestACPSessionRebindsConcurrentRequestsByKindInsteadOfFIFO(t *testing.T) {
 	client := acp.NewClient(writer)
 	session := newACPSession("reordered-session", client, false)
 	session.setRequestHandler()
-	// Deliberately place input before permission. Native replay arrives in the
-	// opposite order, so a sorted/FIFO durable ID list cross-binds the requests.
 	session.RebindPendingRequests([]PendingRequest{{RequestID: "durable-input", Kind: ActivityUserInput}, {RequestID: "durable-permission", Kind: ActivityPermission}})
 	permission := acp.Message{ID: json.RawMessage("101"), Method: "session/request_permission", Params: json.RawMessage(`{"options":[{"optionId":"deny","kind":"reject_once"}]}`)}
 	input := acp.Message{ID: json.RawMessage("102"), Method: "session/request_input", Params: json.RawMessage(`{"prompt":"version?"}`)}
@@ -1397,8 +1395,6 @@ func TestClassifyACPError_FallbackFromActivity(t *testing.T) {
 		Code:    -32603,
 		Message: "Internal error",
 	}
-	// Assistant text mentioning provider error must NOT override RPC explanation
-	// without proven typed provider-origin signal in Data.
 	activity := "Streaming thoughts...\nprovider error: You have reached the monthly token limit for your account."
 	cf := classifyACPError(rpcErr, activity)
 	if cf.Category != core.FailureCategoryInternalError {

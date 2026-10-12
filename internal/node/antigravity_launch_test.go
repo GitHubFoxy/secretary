@@ -392,7 +392,6 @@ func TestAntigravityPlatformArgs_MalformedOptionsDoNotSurvive(t *testing.T) {
 	for _, p := range platforms {
 		for _, input := range malformedInputs {
 			result := buildAntigravityPlatformArgsForOS(input, p.goos, p.goarch)
-			// Check that no standalone malformed "--uid" remains followed by a flag or at the end
 			for i, arg := range result {
 				if arg == "--uid" {
 					if i+1 >= len(result) {

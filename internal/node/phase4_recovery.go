@@ -7,8 +7,6 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-// Phase4RecoveryResolver probes the server-owned local and remote runtime
-// wiring. It never starts, resumes, or substitutes a runtime during recovery.
 type Phase4RecoveryResolver struct {
 	Store        *core.Store
 	Local        *LocalNode

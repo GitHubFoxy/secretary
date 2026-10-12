@@ -7,9 +7,6 @@ import (
 	"testing"
 )
 
-// TestGeneralMirrorTruncatedRussianTaskPromptAndStandardTitle verifies that
-// both truncated Russian task prompt titles (like on the reported screenshot)
-// and standard topic titles do not prepend any title or prefix to the General mirror.
 func TestGeneralMirrorTruncatedRussianTaskPromptAndStandardTitle(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -76,8 +73,6 @@ func TestGeneralMirrorTruncatedRussianTaskPromptAndStandardTitle(t *testing.T) {
 	}
 }
 
-// TestGeneralMirrorTerminalKindsAndEmptyFallback verifies that success, failed, canceled
-// and follow-up events all mirror to General without prefix, and empty text preserves fallback.
 func TestGeneralMirrorTerminalKindsAndEmptyFallback(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -175,8 +170,6 @@ func TestGeneralMirrorTerminalKindsAndEmptyFallback(t *testing.T) {
 	}
 }
 
-// TestGeneralMirrorFollowUpTurnPreservesSameRule verifies that a second terminal turn
-// for an existing worker uses the same prefix-free mirror rule for General.
 func TestGeneralMirrorFollowUpTurnPreservesSameRule(t *testing.T) {
 	transport := &fakeTransport{}
 	server := &fakeServer{}
@@ -220,8 +213,6 @@ func TestGeneralMirrorFollowUpTurnPreservesSameRule(t *testing.T) {
 	}
 }
 
-// TestGeneralMirrorPreservesAuthorTopicPrefix verifies that if the result itself begins with
-// the topic title and a colon, this user-authored text is completely preserved.
 func TestGeneralMirrorPreservesAuthorTopicPrefix(t *testing.T) {
 	transport := &fakeTransport{}
 	server := &fakeServer{}
@@ -254,8 +245,6 @@ func TestGeneralMirrorPreservesAuthorTopicPrefix(t *testing.T) {
 	}
 }
 
-// TestGeneralMirrorDistinctResultsSameBodyNotMerged verifies that two distinct results
-// with different TerminalIdentities but identical bodies deliver independently to both destinations.
 func TestGeneralMirrorDistinctResultsSameBodyNotMerged(t *testing.T) {
 	transport := &fakeTransport{}
 	server := &fakeServer{}
@@ -285,7 +274,6 @@ func TestGeneralMirrorDistinctResultsSameBodyNotMerged(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Each worker should deliver 1 topic + 1 general = 4 messages total
 	if len(transport.sent) != 4 {
 		t.Fatalf("expected 4 sent messages, got %d: %#v", len(transport.sent), transport.sent)
 	}
@@ -309,15 +297,10 @@ func TestGeneralMirrorDistinctResultsSameBodyNotMerged(t *testing.T) {
 	}
 }
 
-// TestGeneralMirrorFailAfterTopicSuccessAndRecovery verifies that if General delivery fails
-// after successful Topic delivery, subsequent retry/restart delivers exactly one General message
-// without duplicating the Topic message.
 func TestGeneralMirrorFailAfterTopicSuccessAndRecovery(t *testing.T) {
 	ctx := context.Background()
 	statePath := filepath.Join(t.TempDir(), "telegram.json")
 
-	// Call 1: Topic sendMessage -> succeeds
-	// Call 2: General sendMessage -> fails
 	transport := &constrainedTransport{fakeTransport: &fakeTransport{}, failCall: 2}
 	adapter := newTestAdapter(t, transport, &fakeServer{}, statePath)
 	event := Event{
@@ -333,19 +316,16 @@ func TestGeneralMirrorFailAfterTopicSuccessAndRecovery(t *testing.T) {
 		t.Fatal("expected temporary failure on General")
 	}
 
-	// At this point, Topic was sent (1 message), General failed
 	if len(transport.sent) != 1 || transport.sent[0].ThreadID == 0 {
 		t.Fatalf("expected 1 delivered topic message before failure, got %#v", transport.sent)
 	}
 
-	// Restart adapter from saved state
-	transport.failCall = 0 // no more failures
+	transport.failCall = 0
 	restarted := newTestAdapter(t, transport, &fakeServer{}, statePath)
 
 	if err := restarted.HandleDurableEvent(ctx, event); err != nil {
 		t.Fatalf("recovery failed: %v", err)
 	}
-	// Replay should be no-op
 	if err := restarted.HandleDurableEvent(ctx, event); err != nil {
 		t.Fatalf("replay failed: %v", err)
 	}
@@ -369,14 +349,11 @@ func TestGeneralMirrorFailAfterTopicSuccessAndRecovery(t *testing.T) {
 	}
 }
 
-// TestGeneralMirrorLongBodySplittingAndPlainFallback verifies that a long formatted message
-// splits properly and mirrors to General without prefix on any chunk.
 func TestGeneralMirrorLongBodySplittingAndPlainFallback(t *testing.T) {
 	ctx := context.Background()
 	transport := &constrainedTransport{fakeTransport: &fakeTransport{}}
 	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "telegram.json"))
 
-	// Long text with unicode emojis and formatting
 	repeatBlock := "Рецепт 🍹 Напиток с цитрусом и мятой. Отличный освежающий вкус.\n\n"
 	text := strings.Repeat(repeatBlock, 100)
 	event := Event{

@@ -7,9 +7,6 @@ import (
 	"unicode/utf8"
 )
 
-// Генерация относится только к доставке в Telegram, не к Dispatch Worker.
-// Даже генератор, который не соблюдает context, не удерживает event bridge
-// после истечения таймаута. Поздний ответ уже не меняет название Topic.
 func (a *Adapter) taskTopicTitle(ctx context.Context, prompt string) string {
 	fallback := fallbackTopicTitle(prompt)
 	if a.config.TitleGenerator == nil {
@@ -38,8 +35,6 @@ func (a *Adapter) taskTopicTitle(ctx context.Context, prompt string) string {
 	return fallback
 }
 
-// Принимается только одна строка текста. JSON, Markdown, ссылки, служебные
-// маркеры и reasoning не становятся названием даже при успешном вызове.
 func validTopicTitle(text string) string {
 	if !utf8.ValidString(text) {
 		return ""

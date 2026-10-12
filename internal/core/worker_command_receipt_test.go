@@ -143,8 +143,6 @@ func TestAuthoritativeWorkerCommandDenialIsNotSupersededByLateAcceptance(t *test
 		t.Fatalf("denied response linked a Worker Result: related=%v err=%v", related, err)
 	}
 
-	// An explicit user retry reopens this exact command; a receipt for that
-	// retried handoff may then supersede the previous denial.
 	if retried, retry, err := store.RetryWorkerCommand(ctx, command.ID, time.Now().UTC()); err != nil || !retry || retried.State != WorkerCommandPending {
 		t.Fatalf("explicit response retry: command=%#v retry=%v err=%v", retried, retry, err)
 	}
@@ -229,8 +227,6 @@ func TestMarkWorkerCommandUncertainSanitizesStoredAndLegacyError(t *testing.T) {
 		t.Fatalf("uncertain error was not safely bounded: state=%q runes=%d error=%q", updated.State, len([]rune(updated.LastError)), updated.LastError)
 	}
 
-	// Legacy rows bypassed the new write boundary; the common command scanner
-	// must still protect every read and replay path.
 	legacy := "legacy Bearer legacy-private-token Digest username=owner, response=legacy-digest-secret " + strings.Repeat("oversized ", 140)
 	if _, err := store.db.ExecContext(ctx, `UPDATE phase4_worker_commands SET last_error = ? WHERE id = ?`, legacy, command.ID); err != nil {
 		t.Fatal(err)
@@ -309,7 +305,6 @@ func TestReconcileWorkerCommandReceipt_SteeringDeniedPreservesFailureAcrossReope
 		t.Fatalf("reopened outcome = %#v", reopenedOutcome)
 	}
 
-	// Verify that steering rejection did NOT finalize the active attempt:
 	attemptRecord, err := reopened.Phase4Attempt(ctx, attempt.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -318,13 +313,11 @@ func TestReconcileWorkerCommandReceipt_SteeringDeniedPreservesFailureAcrossReope
 		t.Fatalf("attempt state = %q, want %q (steering rejection must not finalize active attempt)", attemptRecord.State, AttemptActive)
 	}
 
-	// Verify that no Result exists yet before native terminal outcome:
 	_, err = reopened.Phase4Result(ctx, turn.ID)
 	if !errors.Is(err, ErrNotFound) {
 		t.Fatalf("expected ErrNotFound for Result before native terminal, got: %v", err)
 	}
 
-	// Native terminal forms the single Result:
 	_, terminalResult, _, err := reopened.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{
 		Status:         OutcomeSucceeded,
 		Classification: OutcomeFinal,
@@ -355,7 +348,6 @@ func TestReconcileWorkerCommandReceipt_DeniedSteeringDoesNotBlockDeliveredQueueF
 	store, _, worker, _, attempt1, _ := createReceiptFixture(t, ctx, path, "fifo-worker", "macbook")
 	defer store.Close()
 
-	// 1. Enqueue two follow-up messages
 	msg1, err := store.EnqueueWorkerMessage(ctx, worker.ID, "first follow-up", "key-q1")
 	if err != nil {
 		t.Fatal(err)
@@ -365,7 +357,6 @@ func TestReconcileWorkerCommandReceipt_DeniedSteeringDoesNotBlockDeliveredQueueF
 		t.Fatal(err)
 	}
 
-	// 2. Finish initial attempt, worker becomes idle
 	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt1.ID, AttemptOutcomeInput{
 		Status:         OutcomeSucceeded,
 		Classification: OutcomeFinal,
@@ -374,7 +365,6 @@ func TestReconcileWorkerCommandReceipt_DeniedSteeringDoesNotBlockDeliveredQueueF
 		t.Fatal(err)
 	}
 
-	// 3. Promote msg1 -> Turn 2, Attempt 2
 	turn2, attempt2, err := store.PromoteQueuedWorkerMessage(ctx, msg1, "dispatch")
 	if err != nil {
 		t.Fatal(err)
@@ -382,12 +372,10 @@ func TestReconcileWorkerCommandReceipt_DeniedSteeringDoesNotBlockDeliveredQueueF
 	if _, err := store.SetPhase4AttemptActive(ctx, attempt2.ID); err != nil {
 		t.Fatal(err)
 	}
-	// Mark msg1 as delivered (delivery to runtime succeeded)
 	if err := store.CompleteQueuedWorkerMessage(ctx, msg1.ID, "delivered", ""); err != nil {
 		t.Fatal(err)
 	}
 
-	// Verify msg1 is delivered, msg2 is pending
 	queued, err := store.QueuedWorkerMessages(ctx, worker.ID)
 	if err != nil || len(queued) != 2 {
 		t.Fatalf("queued messages=%#v err=%v", queued, err)
@@ -396,7 +384,6 @@ func TestReconcileWorkerCommandReceipt_DeniedSteeringDoesNotBlockDeliveredQueueF
 		t.Fatalf("queued states: msg1=%q msg2=%q", queued[0].State, queued[1].State)
 	}
 
-	// 4. Client issues steering on active Attempt 2, and steering is DENIED by Node
 	steeringCommand, _, err := store.ClaimWorkerCommand(ctx, "steering", "steering:update-1", worker.ID, attempt2.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -417,7 +404,6 @@ func TestReconcileWorkerCommandReceipt_DeniedSteeringDoesNotBlockDeliveredQueueF
 		t.Fatal(err)
 	}
 
-	// 5. CRITICAL CHECK: Denied steering MUST NOT alter delivered or pending queue messages!
 	queuedAfter, err := store.QueuedWorkerMessages(ctx, worker.ID)
 	if err != nil || len(queuedAfter) != 2 {
 		t.Fatalf("queuedAfter err=%v len=%d", err, len(queuedAfter))
@@ -429,7 +415,6 @@ func TestReconcileWorkerCommandReceipt_DeniedSteeringDoesNotBlockDeliveredQueueF
 		t.Fatalf("msg2 state after steering denial = %q, want pending", queuedAfter[1].State)
 	}
 
-	// 6. Native terminal successfully completes Attempt 2
 	_, terminalResult, _, err := store.RecordAttemptOutcome(ctx, attempt2.ID, AttemptOutcomeInput{
 		Status:         OutcomeSucceeded,
 		Classification: OutcomeFinal,
@@ -439,7 +424,6 @@ func TestReconcileWorkerCommandReceipt_DeniedSteeringDoesNotBlockDeliveredQueueF
 		t.Fatalf("attempt 2 native terminal failed: result=%#v err=%v", terminalResult, err)
 	}
 
-	// 7. Verify reopen preserves states
 	reopened, err := Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)
@@ -454,7 +438,6 @@ func TestReconcileWorkerCommandReceipt_DeniedSteeringDoesNotBlockDeliveredQueueF
 		t.Fatalf("reopened states: msg1=%q msg2=%q", reopenedQueued[0].State, reopenedQueued[1].State)
 	}
 
-	// 8. Queue FIFO continues: msg2 can now be promoted without being blocked!
 	turn3, attempt3, err := reopened.PromoteQueuedWorkerMessage(ctx, reopenedQueued[1], "dispatch")
 	if err != nil {
 		t.Fatalf("queue FIFO blocked: failed to promote msg2 after native terminal: %v", err)

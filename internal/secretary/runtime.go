@@ -18,8 +18,6 @@ const workerRef = "secretary"
 
 var ErrNotStarted = errors.New("secretary: runtime not started")
 
-// Runtime owns the single long-lived Secretary session. It never receives a
-// raw store handle. Task lifecycle authority is exposed only through ctl.
 type Runtime struct {
 	node           *node.LocalNode
 	capability     string
@@ -32,7 +30,7 @@ type Runtime struct {
 	identity       core.SecretaryIdentity
 	turnLoader     func(context.Context, string) (core.SecretaryTurn, error)
 
-	lifecycleMu          sync.Mutex // serialize Start/Stop, not prompt consumption
+	lifecycleMu          sync.Mutex
 	mu                   sync.Mutex
 	session              node.Session
 	stopSession          node.Session
@@ -76,8 +74,6 @@ func (r *Runtime) AttachConversation(store *core.Store, conversationID string) {
 	r.mu.Unlock()
 }
 
-// AttachIdentity binds a replaceable runtime to the durable Secretary identity.
-// It does not persist or expose the native runtime session identifier.
 func (r *Runtime) AttachIdentity(identity core.SecretaryIdentity) {
 	r.mu.Lock()
 	r.identity = identity
@@ -90,8 +86,6 @@ func (r *Runtime) Identity() core.SecretaryIdentity {
 	return r.identity
 }
 
-// QueueMessage persists an ordered Secretary turn. Execution is deliberately
-// separate so a restart cannot silently claim an unknown runtime continuation.
 func (r *Runtime) QueueMessage(ctx context.Context, text string) (core.SecretaryTurn, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -203,8 +197,6 @@ func (r *Runtime) Start(ctx context.Context) error {
 		go r.consumeResults(session)
 		go r.consumeActivity(session)
 	}
-	// Telegram may persist a message while the Node session is still pairing.
-	// Start consumes that durable backlog once the ACP session is ready.
 	r.startNextDurable(context.Background())
 	return nil
 }
@@ -229,7 +221,6 @@ func (r *Runtime) HandleMessage(ctx context.Context, text string) error {
 		}
 		_, err := r.QueueMessage(ctx, text)
 		if err == nil {
-			// The durable turn outlives the Telegram/HTTP acknowledgement context.
 			r.startNextDurable(context.Background())
 		}
 		return err
@@ -263,7 +254,6 @@ func (r *Runtime) HandleMessage(ctx context.Context, text string) error {
 	if injected {
 		return nil
 	}
-	// A runtime that cannot steer is handled at the next idle boundary.
 	r.mu.Lock()
 	r.queued = append(r.queued, text)
 	startNow := !r.busy
@@ -281,9 +271,6 @@ func (r *Runtime) consumeResults(session node.Session) {
 	}
 }
 
-// consumeAddressedSession serializes the opt-in ACP Activity and Result streams.
-// The Node drains prior prompt events before sending Result; this consumer then
-// drains the queued Activity channel before terminalizing the durable turn.
 func (r *Runtime) consumeAddressedSession(session node.Session) {
 	activity, results := session.Activity(), session.Result()
 	initial := true
@@ -326,9 +313,6 @@ func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result,
 	}
 	store, conversationID, activeTurnID := r.store, r.conversationID, r.activeTurnID
 	activeInputID, replyContractVersion := r.activeInputID, r.replyContractVersion
-	// A durable Secretary reply must belong to a user-owned active turn.
-	// Orphan/replayed runtime Results must not bypass turn completion by
-	// appending an automatic response directly to Personal Conversation.
 	if store != nil && r.identity.ID != "" && activeTurnID == "" {
 		r.mu.Unlock()
 		return initial
@@ -368,8 +352,6 @@ func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result,
 					evidence.Branch, evidence.TerminalValid, evidence.ResponsePresent = "assistant_final", true, true
 					state = core.SecretaryTurnSucceeded
 				case result.Status == "failed" && native.AllowsAddressedReplyOnly():
-					// The adapter deliberately reports no final text as failed. Only
-					// its verified zero-chunk end_turn can enter the exact reply path.
 					evidence.Branch, evidence.TerminalValid = "addressed_reply_only", true
 					state = core.SecretaryTurnSucceeded
 				}
@@ -406,8 +388,6 @@ func (r *Runtime) consumeActivityEvent(session node.Session, activity node.Activ
 	if !current {
 		return
 	}
-	// Secretary has no approval or input UI round-trip. Answer every reverse
-	// request explicitly rather than leaving the harness blocked forever.
 	if activity.Kind == node.ActivityPermission || activity.Kind == node.ActivityUserInput {
 		responder, ok := session.(node.Responder)
 		if !ok || strings.TrimSpace(activity.RequestID) == "" {
@@ -528,8 +508,6 @@ func (r *Runtime) ownsDurablePrompt(session node.Session, turnID string) bool {
 	return r.session == session && r.activeTurnID == turnID && r.busy
 }
 
-// clearOwnedDurablePrompt releases only the turn owned by this exact ACP
-// session. A late error from a stopped session must never clear a newer turn.
 func (r *Runtime) clearOwnedDurablePrompt(session node.Session, turnID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -623,8 +601,6 @@ func (r *Runtime) startNextDurable(ctx context.Context) {
 			r.reportError(fmt.Errorf("secretary: reply contract changed from %q to %q; restart the runtime before processing queued turns", replyContractVersion, profile.ReplyContractVersion))
 			return
 		}
-		// Canonical context keeps the exact snapshot delivered at Start. A new
-		// compiled config version alone is not a new native Profile delivery.
 		identity = r.Identity()
 	}
 	turn, err := store.StartNextSecretaryTurn(ctx, identity.ID)
@@ -746,8 +722,6 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 			return
 		}
 		if err := session.Prompt(ctx, prompt); err != nil {
-			// Prompt may return after Stop or replacement. That error belongs to
-			// the old session and must not mutate any current durable turn.
 			if store != nil && turnID != "" && !r.ownsDurablePrompt(session, turnID) {
 				return
 			}
@@ -789,7 +763,6 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	session := r.stopSession
 	store, launch := r.store, r.launch
 	durable := r.store != nil && r.identity.ID != ""
-	// Detach prompt consumption, but retain unfinished cleanup for the next Stop.
 	r.session = nil
 	r.busy = false
 	r.activeTurnID = ""
@@ -809,13 +782,11 @@ func (r *Runtime) Stop(ctx context.Context) error {
 			revokeErr = store.EndSecretaryRuntime(cleanupCtx, launch)
 		}
 	}
-	// A failed revoke or best-effort cancel must never leave the subprocess alive.
 	if session != nil {
 		cancelErr = session.Cancel(cleanupCtx)
 		if _, exists := r.node.Session(workerRef); exists {
 			closeErr = r.node.Remove(workerRef)
 		} else {
-			// Remove can fail after detaching LocalNode's reference; keep ours.
 			closeErr = session.Close()
 		}
 	}

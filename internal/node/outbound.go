@@ -7,9 +7,6 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-// OutboundNode joins the local execution core to an authenticated outbound
-// protocol connection. Pairing and reconnect orchestration remain outside this
-// slice, while replay and command handling are durable here.
 type InventorySource interface {
 	Discover(context.Context) (core.HarnessInventorySnapshot, error)
 }
@@ -39,9 +36,6 @@ func (n *OutboundNode) HandleNextCommand(ctx context.Context) error {
 	return n.Connection.SendCommandOutcome(ctx, outcome)
 }
 
-// RefreshInventory probes the local machine and sends the new observed
-// snapshot through the existing authenticated Node protocol. It has no access
-// to server Worker records, so reconnect cannot rewrite immutable bindings.
 func (n *OutboundNode) RefreshInventory(ctx context.Context, source InventorySource) (core.HarnessInventorySnapshot, error) {
 	if n.Connection == nil || n.Store == nil {
 		return core.HarnessInventorySnapshot{}, errors.New("node: inventory refresh has no connection or local store")

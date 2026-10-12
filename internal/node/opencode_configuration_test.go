@@ -19,9 +19,6 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-// Protocol fixture follows v2.0.22 acp/config-option.ts and error.ts. It models
-// the catalog race without a native binary or model call. Native tests separately
-// prove prompt/permission delivery; a fake protocol response is not that proof.
 func TestOpenCodeConfigCatalogProcess(t *testing.T) {
 	if record := os.Getenv("TEST_NATIVE_XDG_DATA_HOME_RECORD"); record != "" {
 		_ = os.WriteFile(record, []byte(os.Getenv("XDG_DATA_HOME")), 0o600)
@@ -54,8 +51,6 @@ func TestOpenCodeConfigCatalogProcess(t *testing.T) {
 	writeCounts := func() {
 		if record := os.Getenv("TEST_NATIVE_CONFIG_RECORD"); record != "" {
 			encoded, err := json.Marshal(counts)
-			// A config deadline can kill the child at any instruction. Publish
-			// complete evidence atomically, never truncate the previous record.
 			pending := record + ".pending"
 			if err != nil || os.WriteFile(pending, encoded, 0o600) != nil || os.Rename(pending, record) != nil {
 				os.Exit(5)
@@ -305,9 +300,6 @@ func TestOpenCodeConfigurationRegistrationAndFailClosed(t *testing.T) {
 				runtime := OpenCodeRuntime{Command: os.Args[0], Arguments: []string{"-test.run=^TestOpenCodeConfigCatalogProcess$"}, DataHome: filepath.Join(t.TempDir(), "native-data")}
 				profile := ManagedProfile{Name: "worker", Content: "managed instructions", AllowTools: []string{"read"}, Model: "fixture/fixture-model", Reasoning: "low"}
 				request := StartRequest{WorkerRef: "private", Workspace: t.TempDir(), Profile: profile, DeferInitialPrompt: true}
-				// The fixture's HTTP barrier proves the child loaded its managed config
-				// before ACP traffic. This outer context only bounds process startup;
-				// OpenCodeRuntime's independent 5s ConfigReadyTimeout is unchanged.
 				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer cancel()
 				type startResult struct {

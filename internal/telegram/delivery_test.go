@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 )
 
-// Enforce the Bot API constraints that the old permissive fake missed.
 type constrainedTransport struct {
 	*fakeTransport
 	calls    int

@@ -15,9 +15,6 @@ import (
 	"time"
 )
 
-// Opt-in unpaid native fx0.0.8 compatibility smoke. Provider endpoints, HOME,
-// config/cache/data and environment are private synthetic fixtures. This proves
-// legacy delivery, not progress/final separation or Telegram acceptance.
 func TestFXLegacyNativeHTTPFixture(t *testing.T) {
 	if os.Getenv("SECRETARY_FX_LEGACY_E2E") != "1" {
 		t.Skip("set SECRETARY_FX_LEGACY_E2E=1 for private native fx0.0.8 compatibility check")

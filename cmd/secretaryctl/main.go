@@ -131,7 +131,6 @@ func runTelegramRebind(dataDir string, args []string) error {
 	if err != nil || configOwner == 0 {
 		return errors.New("SECRETARY_TELEGRAM_OWNER_CHAT_ID must be a non-zero integer")
 	}
-	// Ensure daemon is stopped: check pid file if present
 	pidPath := filepath.Join(dataDir, "server.pid")
 	if data, err := os.ReadFile(pidPath); err == nil {
 		if pid, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil {
@@ -140,7 +139,6 @@ func runTelegramRebind(dataDir string, args []string) error {
 			}
 		}
 	}
-	// Also check systemd on hosts that use it
 	if _, err := os.Stat(filepath.Join(dataDir, "telegram", "state.json")); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -164,7 +162,6 @@ func processExists(pid int) bool {
 	if pid <= 0 {
 		return false
 	}
-	// Use syscall kill 0 to test existence without sending signal.
 	if err := syscall.Kill(pid, 0); err == nil {
 		return true
 	} else if err == syscall.ESRCH {
@@ -172,7 +169,6 @@ func processExists(pid int) bool {
 	} else if err == syscall.EPERM {
 		return true
 	}
-	// Fallback via os.FindProcess
 	if proc, err := os.FindProcess(pid); err == nil {
 		_ = proc
 		return true

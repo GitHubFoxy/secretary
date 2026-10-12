@@ -301,7 +301,6 @@ func TestWorkerQueue_DeliveredQueueFollowUp_DeniedSteering_SuccessfulTerminal_FI
 		t.Fatal(err)
 	}
 
-	// Configure runtime with error on Steer
 	runtime := &errorSteerLifecycleRuntime{
 		lifecycleRuntime: lifecycleRuntime{store: store},
 		steerErr: &node.NodeCommandError{
@@ -316,7 +315,6 @@ func TestWorkerQueue_DeliveredQueueFollowUp_DeniedSteering_SuccessfulTerminal_FI
 	}
 	service.Runtime = runtime
 
-	// 1. Enqueue two /q messages
 	for _, key := range []string{"q-msg-1", "q-msg-2"} {
 		if _, err := service.MessageWorker(ctx, MessageWorkerRequest{
 			WorkerRef:      details.Worker.WorkerRef,
@@ -327,7 +325,6 @@ func TestWorkerQueue_DeliveredQueueFollowUp_DeniedSteering_SuccessfulTerminal_FI
 		}
 	}
 
-	// 2. Finish attempt 1 with native terminal
 	if _, _, _, err := store.RecordAttemptOutcome(ctx, details.Attempts[0].ID, core.AttemptOutcomeInput{
 		Status:         core.OutcomeSucceeded,
 		Classification: core.OutcomeFinal,
@@ -336,7 +333,6 @@ func TestWorkerQueue_DeliveredQueueFollowUp_DeniedSteering_SuccessfulTerminal_FI
 		t.Fatal(err)
 	}
 
-	// 3. Process queued messages -> msg 1 is promoted and dispatched (Attempt 2)
 	if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -355,7 +351,6 @@ func TestWorkerQueue_DeliveredQueueFollowUp_DeniedSteering_SuccessfulTerminal_FI
 		t.Fatal(err)
 	}
 
-	// 4. Steer is denied by Node on active Attempt 2
 	_, steerErr := service.MessageWorker(ctx, MessageWorkerRequest{
 		WorkerRef:      details.Worker.WorkerRef,
 		Text:           "steer instructions",
@@ -369,7 +364,6 @@ func TestWorkerQueue_DeliveredQueueFollowUp_DeniedSteering_SuccessfulTerminal_FI
 		t.Fatalf("expected *node.NodeCommandError, got: %T (%v)", steerErr, steerErr)
 	}
 
-	// 5. CRITICAL CHECK: Denied steering MUST NOT change delivered message to blocked!
 	currentAfterSteer, err := service.GetWorker(ctx, details.Worker.WorkerRef)
 	if err != nil {
 		t.Fatal(err)
@@ -381,7 +375,6 @@ func TestWorkerQueue_DeliveredQueueFollowUp_DeniedSteering_SuccessfulTerminal_FI
 		t.Fatalf("msg 1 state after steering denial = %q, want pending", currentAfterSteer.QueuedMessages[1].State)
 	}
 
-	// 6. Native terminal completes Attempt 2 successfully
 	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt2.ID, core.AttemptOutcomeInput{
 		Status:         core.OutcomeSucceeded,
 		Classification: core.OutcomeFinal,
@@ -390,7 +383,6 @@ func TestWorkerQueue_DeliveredQueueFollowUp_DeniedSteering_SuccessfulTerminal_FI
 		t.Fatal(err)
 	}
 
-	// 7. ProcessQueuedWorkerMessages: FIFO continues, msg 2 is promoted to Attempt 3!
 	if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
 		t.Fatal(err)
 	}

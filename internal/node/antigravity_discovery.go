@@ -206,8 +206,8 @@ func observeAntigravityACP(ctx context.Context, execPath, companionPath, profile
 	defer client.Close()
 
 	var init struct {
-		ProtocolVersion   int             `json:"protocolVersion"`
-		AgentInfo         struct {
+		ProtocolVersion int `json:"protocolVersion"`
+		AgentInfo       struct {
 			Name    string `json:"name"`
 			Version string `json:"version"`
 		} `json:"agentInfo"`
@@ -235,7 +235,7 @@ func observeAntigravityACP(ctx context.Context, execPath, companionPath, profile
 
 	var confirmedAuthMethod string
 	var created struct {
-		SessionID     string                `json:"sessionId"`
+		SessionID     string               `json:"sessionId"`
 		ConfigOptions []nativeConfigOption `json:"configOptions"`
 	}
 

@@ -22,14 +22,10 @@ type Responder interface {
 	Respond(context.Context, string, string) error
 }
 
-// RequestRebinder lets a resumed Node-local session reuse durable request IDs
-// that were created before the transport or process reconnect.
 type RequestRebinder interface {
 	RebindRequests([]string)
 }
 
-// PendingRequestRebinder is the reconnect seam that retains request kind.
-// RequestRebinder remains for older runtime adapters.
 type PendingRequestRebinder interface {
 	RebindPendingRequests([]PendingRequest)
 }
@@ -117,8 +113,6 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 				if n.liveContinuationReadiness(command, record) {
 					return record.Outcome, nil
 				}
-				// The terminal watcher may have completed and removed the
-				// session since ClaimCommand took its processing snapshot.
 				if _, same := sameCommandEnvelope(command, record); same {
 					completed, err := n.store.Command(command.Metadata().CommandID)
 					if err == nil && completed.State == CommandAccepted && completed.Outcome == record.Outcome {
@@ -153,9 +147,6 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 		outcome = failedOutcome(command, "unknown_command", "unknown command")
 	}
 	if pendingContinuation && outcome.State == CommandAccepted {
-		// Readiness ACK is durable, but execution stays processing until
-		// watchSession atomically stores its terminal Result in the outbox.
-		// A crash before/while Prompt therefore becomes explicit interruption.
 		return outcome, nil
 	}
 	stored, err := n.store.CompleteCommand(command.Metadata().CommandID, outcome)
@@ -533,8 +524,6 @@ func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerComma
 		return outcome
 	}
 	if err := responder.Respond(ctx, command.RequestID, command.Response); err != nil {
-		// Responder errors can race with native acceptance. The server must wait
-		// for a later receipt/replay instead of treating this as authoritative denial.
 		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "execution_state_unknown", err.Error())
 		_ = n.store.CompleteWorkerResponse(command.RequestID, outcome)
 		return outcome
@@ -625,21 +614,12 @@ func (n *ExecutionNode) Inspect(ctx context.Context, record CommandRecord) (bool
 	if err != nil {
 		return false, nil
 	}
-	// Session resume is not evidence that a native Respond completed. The
-	// command must go through normal retry/re-dispatch with the same IDs.
 	if command.Kind == CommandRespondWorker {
 		return false, nil
 	}
-	// A saved native mapping (or session/load) proves a checkpoint, not
-	// delivery of this command input. In the mapping -> async Prompt crash
-	// window there is no execution receipt. RecoverRunning must interrupt,
-	// never replay an uncertain prompt or turn idle history into accepted.
 	if command.Kind == CommandDispatch || command.Kind == CommandResume {
 		return false, nil
 	}
-	// Session presence cannot prove whether this steering input crossed the
-	// native handoff boundary. Recovery must preserve uncertainty and never
-	// convert a claimed command into a false accepted receipt.
 	if command.Kind == CommandSteering {
 		return false, nil
 	}
@@ -879,9 +859,6 @@ func (n *ExecutionNode) publishRuntimeActivity(envelope WorkerEnvelope, item Act
 	_, _ = n.store.QueueActivity(activity)
 }
 
-// capabilitiesForObservedActivity keeps attempts dispatched with a pre-Phase-4
-// inventory compatible with a typed request emitted by the runtime. The event
-// itself is still validated for shape and binding before it is persisted.
 func capabilitiesForObservedActivity(instance core.HarnessInstance, kind ActivityKind) core.HarnessCapabilities {
 	capabilities := instance.Capabilities
 	if instance.Kind != core.HarnessFX && instance.Kind != core.HarnessCodex {
@@ -923,15 +900,10 @@ func (n *ExecutionNode) rebindPendingRequests(attemptID string, session Session)
 	}
 }
 
-// NormalizeRuntimeActivity is the adapter boundary for normalized activity.
-// Unsupported or unknown runtime observations are never synthesized.
 func NormalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, capabilities core.HarnessCapabilities, workspace ...string) (core.Activity, bool) {
 	return normalizeRuntimeActivity(item, metadata, capabilities, workspace...)
 }
 
-// normalizeRuntimeActivity is intentionally allow-list based. An adapter event
-// with no normalized representation is dropped rather than turned into fake
-// status or progress.
 func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, capabilities core.HarnessCapabilities, workspace ...string) (core.Activity, bool) {
 	workspacePath := ""
 	if len(workspace) > 0 {

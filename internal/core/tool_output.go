@@ -2,7 +2,6 @@ package core
 
 import "strings"
 
-// HasSemanticOutput ignores empty output fields even when tool metadata is present.
 func HasSemanticOutput(v any) bool {
 	switch current := v.(type) {
 	case string:

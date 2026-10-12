@@ -1,4 +1,3 @@
-// Package config loads and compiles Secretary's external runtime configuration.
 package config
 
 import (
@@ -35,7 +34,7 @@ type Config struct {
 	Skills       []string        `toml:"skills" json:"skills"`
 	Tools        Tools           `toml:"tools" json:"tools"`
 	Models       Models          `toml:"models" json:"models"`
-	Runtime      Runtime         `toml:"runtime" json:"-"` // legacy compatibility
+	Runtime      Runtime         `toml:"runtime" json:"-"`
 	Secretary    SecretaryPolicy `toml:"secretary" json:"secretary"`
 	WorkerPolicy WorkerPolicy    `toml:"worker_policy" json:"worker_policy"`
 	Telegram     TelegramPolicy  `toml:"telegram" json:"telegram"`
@@ -60,7 +59,6 @@ type WorkerPolicy struct {
 	AutoResumeOnLimit  *bool    `toml:"auto_resume_on_limit" json:"auto_resume_on_limit,omitempty"`
 }
 
-// TelegramPolicy задаёт только настройки генерации названий Worker Topics.
 type TelegramPolicy struct {
 	TitleHarness        string `toml:"title_harness" json:"title_harness"`
 	TitlePrompt         string `toml:"title_prompt" json:"title_prompt"`
@@ -78,9 +76,9 @@ type Tools struct {
 }
 type Models struct {
 	Secretary string `toml:"secretary" json:"secretary"`
-	Fast      string `toml:"fast" json:"-"`  // legacy compatibility
-	Smart     string `toml:"smart" json:"-"` // legacy compatibility
-	Cheap     string `toml:"cheap" json:"-"` // legacy compatibility
+	Fast      string `toml:"fast" json:"-"`
+	Smart     string `toml:"smart" json:"-"`
+	Cheap     string `toml:"cheap" json:"-"`
 }
 type Runtime struct {
 	Harness   string `toml:"harness" json:"harness"`
@@ -438,7 +436,6 @@ func loadSkills(paths []string) ([]Skill, error) {
 	return skills, nil
 }
 
-// Diff returns the observable changes between two immutable config versions.
 func Diff(previous, next Snapshot) map[string]any {
 	changed := make(map[string]any)
 	if previous.Config.Runtime != next.Config.Runtime {

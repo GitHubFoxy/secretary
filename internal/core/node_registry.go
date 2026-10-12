@@ -26,8 +26,6 @@ var (
 	ErrNodeActiveAttempts     = errors.New("core: Node has active attempts")
 )
 
-// NodeRecord is the server-owned durable view of one enrolled execution Node.
-// Native runtime session identifiers and harness credentials never belong here.
 type NodeActiveAttempt struct {
 	WorkerRef string `json:"worker_ref"`
 	TurnID    string `json:"turn_id"`
@@ -121,9 +119,6 @@ func execSQLiteWithBusyRetry(ctx context.Context, db *sql.DB, query string, args
 	}
 }
 
-// EnsureNodeTransportSecret returns the server-only master used to derive a
-// different protocol credential for every enrolled Node. The derived secret is
-// handed to the Node once during pairing; the master never leaves the server.
 func (s *Store) EnsureNodeTransportSecret(ctx context.Context) ([]byte, error) {
 	const key = "phase4.node_transport_secret.v1"
 	if encoded, ok, err := s.GetSetting(ctx, key); err != nil {
@@ -182,8 +177,6 @@ func (s *Store) enrollNode(ctx context.Context, node NodeReference, credential [
 	return NodeRecord{Node: node, EnrolledAt: now, CredentialHash: hash}, nil
 }
 
-// ConfigureNodePairingToken stores only a digest. The raw token remains in the
-// operator configuration and is consumed atomically by EnrollNodeWithPairing.
 func (s *Store) ConfigureNodePairingToken(ctx context.Context, token string) error {
 	token = strings.TrimSpace(token)
 	if token == "" {
@@ -196,8 +189,6 @@ func (s *Store) ConfigureNodePairingToken(ctx context.Context, token string) err
 	return err
 }
 
-// EnrollNodeWithPairing consumes the pairing token and creates the Node
-// credential in one transaction. A retry cannot enroll another Node.
 func (s *Store) EnrollNodeWithPairing(ctx context.Context, token string, node NodeReference, credential []byte) (NodeRecord, error) {
 	s.nodeEnrollmentMu.Lock()
 	defer s.nodeEnrollmentMu.Unlock()
@@ -547,9 +538,6 @@ func (s *Store) SetNodeDraining(ctx context.Context, node NodeReference, drainin
 	})
 }
 
-// RevokeNodeIfIdle refuses to revoke while the latest heartbeat reports work.
-// RevokeNode remains the low-level compatibility escape hatch for existing
-// callers; operator-facing control uses this safe method unless forced.
 func (s *Store) RevokeNodeIfIdle(ctx context.Context, node NodeReference, idempotencyKeys ...string) (NodeRecord, error) {
 	return s.revokeNode(ctx, node, false, idempotencyKeys...)
 }

@@ -73,8 +73,6 @@ func TestSpecReviewStopRetryAllowsExplicitRestart(t *testing.T) {
 	}
 }
 
-// Metadata comes from the executable fixture's actual session/new MCP wiring,
-// never from Runtime's private session/launch fields.
 type stopLaunchMetadata struct {
 	PID        int    `json:"pid"`
 	Capability string `json:"capability"`

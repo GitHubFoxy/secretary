@@ -20,8 +20,6 @@ func TestCodexFormatterTimeoutTerminatesWrapperAndChild(t *testing.T) {
 	heartbeat := filepath.Join(fixture, "heartbeat")
 	childPIDFile := filepath.Join(fixture, "child.pid")
 	wrapper := filepath.Join(fixture, "codex-wrapper")
-	// Both wrapper and child ignore TERM, reproducing a JS/native wrapper that
-	// outlives ordinary CommandContext cancellation. The child writes a heartbeat.
 	script := `#!/bin/sh
 trap '' TERM
 /bin/sh -c 'trap "" TERM; while :; do printf x >> "$FORMATTER_HEARTBEAT"; sleep 0.02; done' &
@@ -73,7 +71,6 @@ wait
 	if err != nil || len(after) != len(before) {
 		t.Fatal("child remained running after formatter timeout")
 	}
-	// Linux may briefly retain a killed orphan as a zombie; it cannot execute.
 	if err := syscall.Kill(pid, 0); err == nil {
 		status, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "stat"))
 		if err != nil || !strings.Contains(string(status), ") Z ") {

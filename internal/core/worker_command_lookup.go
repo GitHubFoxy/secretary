@@ -6,8 +6,6 @@ import (
 	"errors"
 )
 
-// FindWorkerCommandByWorkerAndDedupeKey returns a previously claimed command
-// for a worker by kind and dedupe key across any attempt.
 func (s *Store) FindWorkerCommandByWorkerAndDedupeKey(ctx context.Context, kind, dedupeKey, workerID string) (WorkerCommand, bool, error) {
 	var command WorkerCommand
 	err := scanWorkerCommand(s.db.QueryRowContext(ctx, `SELECT id, kind, dedupe_key, worker_id, attempt_id, state, last_error, lease_until, created_at, updated_at FROM phase4_worker_commands WHERE kind = ? AND worker_id = ? AND dedupe_key = ? ORDER BY created_at DESC LIMIT 1`, kind, workerID, dedupeKey), &command)
@@ -20,12 +18,6 @@ func (s *Store) FindWorkerCommandByWorkerAndDedupeKey(ctx context.Context, kind,
 	return command, true, nil
 }
 
-// ValidateWorkerCommandOrigin verifies that the command origin matches the supplied origin.
-// When requireActive is true (for pending handoff/reclaim), the Secretary turn must be active.
-// When requireActive is false (for reading historical terminal outcome), matching authenticated
-// origin with valid capability is accepted even if the Secretary turn has already completed.
-// A command created without origin rejects any supplied origin (fabricated or otherwise),
-// and an un-originated replay of an originated command is rejected.
 func (s *Store) ValidateWorkerCommandOrigin(ctx context.Context, commandID string, origin *SecretaryOriginIdentity, requireActive bool) error {
 	return withTxErr(s, ctx, func(tx *sql.Tx) error {
 		return validateWorkerCommandOriginTx(ctx, tx, commandID, origin, requireActive)

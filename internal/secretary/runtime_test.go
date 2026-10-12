@@ -799,7 +799,6 @@ func TestRuntimeQueuesFollowUpUntilIdle(t *testing.T) {
 	if err := secretary.HandleMessage(context.Background(), "/q follow up"); err != nil {
 		t.Fatal(err)
 	}
-	// Initial Secretary turn reaches its safe boundary here.
 	rt.session.results <- node.Result{Status: "succeeded", Summary: "ready"}
 	select {
 	case prompt := <-rt.session.prompts:

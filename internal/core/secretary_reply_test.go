@@ -110,8 +110,6 @@ func TestAddressedSecretaryReplyUsesServerOriginAndExactWorkerResults(t *testing
 		return *result
 	}
 
-	// The first Result is durable before its MCP origin link; the second follows
-	// the link. Both delivery orders must produce the same exact Result relation.
 	first := createResult("worker-fast", "fast result")
 	if _, err := store.LinkSecretaryWorkerTurn(ctx, person.ID, capability, origin.ID, origin.InputID, first.TurnID); err != nil {
 		t.Fatal(err)
@@ -521,7 +519,6 @@ func TestAddressedCompletionSuppressesOnlyOriginLinkedOutput(t *testing.T) {
 		t.Fatalf("v1 did not preserve exactly the accepted pre-Result delta: %#v", events)
 	}
 
-	// An unrelated Result cannot suppress a different user turn's legacy reply.
 	next, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "answer a new question")
 	if err != nil {
 		t.Fatal(err)

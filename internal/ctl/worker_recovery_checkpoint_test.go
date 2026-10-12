@@ -11,8 +11,6 @@ import (
 	"github.com/beruseruko/secretary/internal/node"
 )
 
-// These regressions integrate the independent Spec probes through public
-// ExecutionNode/LocalStore and a real external ACP executable.
 func TestNodeRecoveryDoesNotAcceptUnprovenFollowUp(t *testing.T) {
 	for _, kind := range []node.CommandKind{node.CommandDispatch, node.CommandResume} {
 		for _, fault := range []string{"", "ack-only", "foreign"} {

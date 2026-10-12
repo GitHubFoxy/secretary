@@ -15,8 +15,6 @@ import (
 const titleAgent = "secretary-topic-title"
 const titleVariant = "secretary-title"
 
-// OpenCodeTitleGenerator запускает отдельный OpenCode v2 с одним model step,
-// внешним system prompt и запретом всех tools. Worker runtime не используется.
 type OpenCodeTitleGenerator struct {
 	Model          string
 	Reasoning      string
@@ -155,9 +153,6 @@ func (g OpenCodeTitleGenerator) openCodeConfig(provider, model string) map[strin
 	}
 }
 
-// HOME и config/state отделены от пользовательских instructions, skills,
-// plugins и background service. Provider auth и native history остаются в
-// постоянном Secretary store; credentials не копируются.
 func titleEnvironment(root, home, configDir, path, dataHome string) ([]string, error) {
 	values := map[string]string{}
 	for _, entry := range os.Environ() {

@@ -25,21 +25,20 @@ import (
 )
 
 type ACPRuntime struct {
-	Command            string
-	Arguments          []string
-	RawLogDir          string
-	RawLogMaxBytes     int64
-	RawLogFiles        int
-	Environment        []string
-	ExactEnvironment   bool
-	ModelSelection     string
-	ReasoningSelection string
-	ModeSelection      string
-	StartupDelay       time.Duration
-	ConfigReadyTimeout time.Duration
-	ModeDescription    string
-	DrainPromptEvents  bool
-	// Enable only for the verified OpenCode v2 messageId/end_turn contract.
+	Command                 string
+	Arguments               []string
+	RawLogDir               string
+	RawLogMaxBytes          int64
+	RawLogFiles             int
+	Environment             []string
+	ExactEnvironment        bool
+	ModelSelection          string
+	ReasoningSelection      string
+	ModeSelection           string
+	StartupDelay            time.Duration
+	ConfigReadyTimeout      time.Duration
+	ModeDescription         string
+	DrainPromptEvents       bool
 	TerminalMessageGrouping bool
 	CodexMessagePhases      bool
 	PreferResumeSession     bool
@@ -66,7 +65,7 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 		return nil, err
 	}
 	var created struct {
-		SessionID     string                `json:"sessionId"`
+		SessionID     string               `json:"sessionId"`
 		ConfigOptions []nativeConfigOption `json:"configOptions"`
 	}
 	mcpServers := acpMCPServers(request.MCPServers)
@@ -142,9 +141,6 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 	session.drainPromptEvents = r.DrainPromptEvents || request.DrainOutputBeforeResult
 	session.terminalMessageGrouping = r.TerminalMessageGrouping
 	session.codexMessagePhases = r.CodexMessagePhases
-	// ACP may issue a permission/input request while session/load is still in
-	// flight. Install the handler and durable Node-local IDs first, otherwise
-	// the request gets a native ACP ID and cannot be answered after reconnect.
 	session.setRequestHandler()
 	session.RebindPendingRequests(effectivePendingRequests(request))
 	resumeParams := map[string]any{"sessionId": runtimeSessionID, "cwd": request.Workspace, "mcpServers": mcpServers}
@@ -165,6 +161,7 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 	} else {
 		session.replaying.Store(true)
 	}
+
 	go session.watch()
 	var resumeResp struct {
 		ConfigOptions []nativeConfigOption `json:"configOptions"`
@@ -289,10 +286,6 @@ func (r ACPRuntime) selectNativeConfig(ctx context.Context, client *acp.Client, 
 		if err == nil {
 			return response, nil
 		}
-		// OpenCode v2.0.22 boots config plugins asynchronously. Its ACP catalog
-		// considers build/plan ready before configured agents/models activate,
-		// and withReload retries only once, immediately. Retry the SAME explicit
-		// selection within a bounded startup window; never prompt or fall back.
 		var rpcErr *acp.RPCError
 		if r.ConfigReadyTimeout <= 0 || !errors.As(err, &rpcErr) || rpcErr.Code != -32602 ||
 			!(strings.HasSuffix(rpcErr.Message, id+" not found: "+value) || id == "model" && strings.Contains(rpcErr.Message, "effort not found:")) {
@@ -324,8 +317,6 @@ func nativeModeConfirmed(response nativeConfigResponse, mode, description string
 
 func nativeModelConfirmed(response nativeConfigResponse, selection string) bool {
 	model, effort := selection, ""
-	// OpenCode model IDs may themselves contain slashes. Compare against the
-	// native echoed model first; only its exact suffix is an effort selection.
 	for _, option := range response.ConfigOptions {
 		if option.ID == "model" && option.CurrentValue != "" {
 			if selection == option.CurrentValue {
@@ -1035,8 +1026,8 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 			}
 			for _, option := range permission.Options {
 				if strings.TrimSpace(option.OptionID) != "" && strings.TrimSpace(option.Kind) != "" {
-				summary = "Permission request"
-				break
+					summary = "Permission request"
+					break
 				}
 			}
 		}
@@ -1110,9 +1101,6 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 	s.nativeDeliveries[nativeID] = pending
 	s.requestMu.Unlock()
 	if !alreadyResponded {
-		// Requests are the durable approval/input boundary. Unlike optional
-		// activity updates, they must reach the Node outbox and cannot be
-		// silently dropped when the activity buffer is full.
 		activity := Activity{Kind: kind, RequestID: requestID, Summary: summary}
 		if message.Method == "elicitation/create" {
 			var elicitation acpElicitationRequest
@@ -1728,8 +1716,6 @@ func (s *acpSession) promptTurn(ctx context.Context, task string) error {
 	if s.terminalMessageGrouping || s.codexMessagePhases {
 		s.turnAnswer = newACPTurnAnswer()
 	} else {
-		// Compatibility only: preserve all assistant/operational text in wire
-		// order. This is not an authoritative final-answer classification.
 		s.legacyTurnText = &strings.Builder{}
 	}
 	s.textMu.Unlock()
@@ -1746,14 +1732,10 @@ func (s *acpSession) promptTurn(ctx context.Context, task string) error {
 		drain, err = s.client.RequestWithDeferredEventDrain(ctx, "session/prompt", params, &response)
 		if drain != nil {
 			if response.Summary == "" || err != nil {
-				// Text fallback needs every preceding delta before snapshotting.
 				if drainErr := drain(ctx); err == nil {
 					err = drainErr
 				}
 			} else {
-				// Explicit summaries retain the legacy early Result/backpressure
-				// behavior. Drain before finishTurn starts a queued/next prompt,
-				// so late preceding deltas cannot enter its new collector.
 				defer func() { _ = drain(ctx) }()
 			}
 		}
@@ -1829,8 +1811,6 @@ func (s *acpSession) promptTurn(ctx context.Context, task string) error {
 			status = "canceled"
 		}
 		if response.Summary == "" {
-			// Non-opt-in adapters keep their historical terminal report/status.
-			// messageId does not imply finality for fx or arbitrary ACP adapters.
 			response.Summary = legacyText
 			if response.Summary == "" {
 				response.Summary = "completed"
@@ -1893,7 +1873,6 @@ func (s *acpSession) watch() {
 		}
 		switch kind {
 		case "user_message_chunk":
-			// User history echoes are not assistant text or a terminal Result.
 			continue
 		case "agent_message_chunk":
 			text := valueString(content["text"])
@@ -1916,8 +1895,6 @@ func (s *acpSession) watch() {
 			}
 			emit(Activity{Kind: ActivityText, Text: text})
 		case "agent_thought_chunk", "thinking", "thinking_summary":
-			// ACP thought chunks are not safe to display. Adapters may provide an
-			// explicit short summary, but raw thought content is discarded.
 			summary := valueString(payload["summary"])
 			if summary == "" {
 				summary = valueString(payload["title"])
@@ -1947,7 +1924,6 @@ func (s *acpSession) watch() {
 				emit(activity)
 			}
 		default:
-			// Unknown ACP notifications are not converted into synthetic activity.
 		}
 	}
 }
@@ -2004,7 +1980,7 @@ func (t *acpToolTracker) observe(kind string, payload map[string]any) []Activity
 		invocation, ambiguous = t.findInvocation(callID, name)
 	}
 	if ambiguous {
-		return nil // Never guess between concurrent id-less invocations.
+		return nil
 	}
 	if mcpName != "" && (name == mcpName || invocation != nil && invocation.name == mcpName) {
 		arguments = jsonValueOptional(input, "arguments")
@@ -2015,7 +1991,6 @@ func (t *acpToolTracker) observe(kind string, payload map[string]any) []Activity
 		}
 		t.clearIdlessTerminalFrames(name)
 		if rawStatus == "" && status == "" {
-			// A tool_call frame with no status proves the call was issued.
 			status = "in_progress"
 		} else if rawStatus != "" && status == "" {
 			status = "unknown"
@@ -2079,7 +2054,7 @@ func (t *acpToolTracker) observe(kind string, payload map[string]any) []Activity
 		return nil
 	}
 	if invocation.done {
-		return nil // Replays of a terminal invocation are not new tool calls.
+		return nil
 	}
 	if invocation.callID == "" && callID != "" {
 		invocation.callID = callID
@@ -2164,7 +2139,7 @@ func (t *acpToolTracker) findInvocation(callID, name string) (*acpToolInvocation
 			continue
 		}
 		if match != nil {
-			return nil, true // Ambiguous id-less update: do not bind it by name alone.
+			return nil, true
 		}
 		match = invocation
 	}
@@ -2228,9 +2203,6 @@ func acpToolResult(name string, arguments json.RawMessage, payload map[string]an
 	}
 }
 
-// acpToolFailureMetadata consumes only the optional structured failure object
-// a producer may place in rawOutput.metadata. Failure text and tool output are
-// intentionally not parsed or copied into normalized Activity.
 func acpToolFailureMetadata(payload map[string]any, status string) *core.ToolFailureMetadata {
 	if status != "failed" {
 		return nil
@@ -2346,7 +2318,6 @@ func nativeConfigValueConfirmed(response nativeConfigResponse, id, selection str
 	}
 	return false
 }
-
 
 func (s *acpSession) ConfigOptions() []nativeConfigOption {
 	s.configMu.Lock()

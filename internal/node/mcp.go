@@ -15,15 +15,10 @@ const (
 	mcpReplyContractEnv = "SECRETARY_MCP_REPLY_CONTRACT"
 )
 
-// SecretaryMCPServer builds the Secretary-only per-session stdio MCP
-// definition. The token is passed only through ACP's env field, never in prompts.
 func SecretaryMCPServer(command, dataDir, capability string) MCPServer {
 	return SecretaryMCPServerAt(command, dataDir, capability, "")
 }
 
-// SecretaryMCPServerAt additionally points the MCP process at the in-process
-// server runtime. Keeping the URL in scoped environment avoids putting it or
-// the capability in the model prompt.
 func SecretaryMCPServerAt(command, dataDir, capability, serverURL string) MCPServer {
 	return SecretaryMCPServerAtWithReplyContract(command, dataDir, capability, serverURL, "")
 }

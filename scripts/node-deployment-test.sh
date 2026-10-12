@@ -76,8 +76,6 @@ assert_file() { [[ -f "$1" ]] || fail "missing file: $1"; }
 
 output="$($ROOT/secretary setup)" || fail "secretary setup"
 assert_contains "$output" "Full-access trusted Node policy" "setup did not show trusted Node policy"
-# Setup now defaults to Codex and deliberately leaves OpenCode's native store
-# untouched. Select OpenCode explicitly before exercising its deployment path.
 perl -0pi -e 's/harness = "codex"/harness = "opencode"/g; s/default_harness = "codex"/default_harness = "opencode"/g; s/preferred_harnesses = \["codex", "claude_code"\]/preferred_harnesses = ["opencode"]/g' "$HOME/.local/share/secretary/config.toml"
 "$ROOT/secretary" opencode select-shared-store >/dev/null || fail "OpenCode compatibility setup could not select its shared store"
 "$ROOT/secretary" setup >/dev/null || fail "OpenCode compatibility setup failed"

@@ -244,8 +244,6 @@ func waitForSecretaryTurn(t *testing.T, ctx context.Context, store *core.Store, 
 	}
 }
 
-// Executable ACP fixture: it pauses session/prompt until the test has called
-// the public MCP operation (when applicable), then emits terminal metadata.
 func TestAddressedReplyACPFixtureProcess(t *testing.T) {
 	if os.Getenv("TEST_ADDRESS_REPLY_ACP") != "1" {
 		return
@@ -286,7 +284,6 @@ func TestAddressedReplyACPFixtureProcess(t *testing.T) {
 				update("agent_message_chunk", "progress", "nonterminal progress")
 				update("tool_call", "", "")
 			case "summary-only":
-				// The unverified terminal Summary is the only text-like response.
 			case "assistant-final":
 				update("agent_message_chunk", "final", "actual assistant final text")
 			default:

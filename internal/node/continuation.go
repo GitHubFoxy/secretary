@@ -11,9 +11,6 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-// continuationMapping proves the exact server checkpoint against both the
-// Node-local mapping and its durable lifecycle command. No native identity
-// crosses the Node boundary and no current-default Profile is consulted.
 func (n *ExecutionNode) continuationMapping(envelope WorkerEnvelope, attemptID string) (LocalSessionMapping, error) {
 	mapping, ok := n.store.SessionMapping(attemptID)
 	if !ok || mapping.AttemptID != attemptID || strings.TrimSpace(mapping.RuntimeSessionID) == "" || mapping.WorkerRef != envelope.WorkerRef || mapping.HarnessInstanceID != envelope.HarnessInstance.ID {
@@ -30,11 +27,7 @@ func (n *ExecutionNode) continuationMapping(envelope WorkerEnvelope, attemptID s
 	}
 	var authoritative *WorkerEnvelope
 	for _, record := range n.store.lifecycleCommands(attemptID) {
-		// The current Resume claim is not prior evidence for its own checkpoint.
 		if record.State != CommandAccepted && record.State != CommandInterrupted {
-			// Active steering/cancel may use the session already registered by
-			// this process. A fresh Node has no such proof; processing mapping
-			// alone must never authorize loading/recovery of uncertain input.
 			session, live := n.session(attemptID)
 			if record.State != CommandProcessing || !live || session.ID() != mapping.RuntimeSessionID {
 				continue
@@ -51,9 +44,6 @@ func (n *ExecutionNode) continuationMapping(envelope WorkerEnvelope, attemptID s
 			prior = command.Resume.Envelope
 		}
 		if validationErr := command.Validate(n.node); validationErr != nil {
-			// Older durable FX commands predate the template marker. The
-			// authenticated current envelope must carry Core's explicit
-			// pre-marker proof; harness kind alone never grants this path.
 			if !errors.Is(validationErr, ErrManagedProfileRequired) || !envelope.LegacyWorkerTemplate || prior.HarnessInstance.Kind != core.HarnessFX || !reflect.DeepEqual(prior.Profile, ManagedProfile{}) {
 				return LocalSessionMapping{}, ErrRuntimeSessionUnavailable
 			}
@@ -87,8 +77,6 @@ func (n *ExecutionNode) continuationMapping(envelope WorkerEnvelope, attemptID s
 	return mapping, nil
 }
 
-// The ACK is historical readiness, not execution proof. Only this process's
-// registered session can authorize replay while the durable claim is processing.
 func (n *ExecutionNode) liveContinuationReadiness(command Command, record CommandRecord) bool {
 	envelope, same := sameCommandEnvelope(command, record)
 	if !same {

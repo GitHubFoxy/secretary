@@ -20,8 +20,6 @@ type VoiceDownloadTransport interface {
 	DownloadFile(context.Context, string, int64) ([]byte, error)
 }
 
-// VoiceTiming measures preprocessing wall time, before Telegram notices or agent dispatch.
-// ASR includes waiting for the local slot, conversion, model load and inference.
 type VoiceTiming struct {
 	DownloadMS      int64  `json:"download_ms"`
 	ASRMS           int64  `json:"asr_ms"`
@@ -188,7 +186,6 @@ func (a *Adapter) deliverVoiceUpdate(ctx context.Context, u Update, allowed bool
 			return err
 		}
 	}
-	// Reuse text routing, request/steering semantics and stable external identity.
 	copyMessage := *m
 	copyMessage.Voice = nil
 	copyMessage.Text = final
@@ -196,7 +193,6 @@ func (a *Adapter) deliverVoiceUpdate(ctx context.Context, u Update, allowed bool
 	return a.deliverTextUpdate(ctx, u, allowed, &transcript.WorkerRequestID)
 }
 
-// Only numeric Telegram identities, durations and fixed status values are logged.
 func logVoiceTiming(u Update, stage, status string, t *VoiceTiming) {
 	log.Printf("telegram voice timing update_id=%d message_id=%d stage=%s status=%s download_ms=%d asr_ms=%d formatter_ms=%d processing_ms=%d formatter_status=%s", u.ID, u.Message.MessageID, stage, status, t.DownloadMS, t.ASRMS, t.FormatterMS, t.ProcessingMS, t.FormatterStatus)
 }

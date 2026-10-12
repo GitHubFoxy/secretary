@@ -46,8 +46,6 @@ func lookupIdempotencyTx(ctx context.Context, tx *sql.Tx, operation, key, reques
 	return true, nil
 }
 
-// IdempotencyOutcome returns the serialized durable outcome for audit and
-// recovery tooling without exposing the table directly to callers.
 func (s *Store) RecordIdempotencyOutcome(ctx context.Context, operation, key string, outcome any) error {
 	return s.RecordIdempotencyOutcomeWithPayload(ctx, operation, key, nil, outcome)
 }

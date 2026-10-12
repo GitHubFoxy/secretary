@@ -29,8 +29,6 @@ func Handler() http.Handler {
 	})
 }
 
-// ControlHandler serves the debug-only operator console. The daemon decides
-// whether the route is reachable; this handler only serves embedded assets.
 func ControlHandler() http.Handler {
 	server := http.FileServer(http.FS(files))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

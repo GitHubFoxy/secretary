@@ -11,7 +11,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
 )
 
 func createFakeAntigravityServer(t *testing.T, scenario string) (string, string) {
@@ -283,13 +282,11 @@ Answer:
 		t.Fatalf("unexpected summary: %q", reqActivity.Summary)
 	}
 
-	// Try an invalid answer first -> must fail and not auto-approve
 	invalidErr := session.(Responder).Respond(ctx, reqActivity.RequestID, "invalid_stage")
 	if invalidErr == nil {
 		t.Fatal("expected error for invalid interaction choice")
 	}
 
-	// Valid answer matching option name
 	if err := session.(Responder).Respond(ctx, reqActivity.RequestID, "Staging"); err != nil {
 		t.Fatalf("Respond failed: %v", err)
 	}
@@ -348,7 +345,6 @@ func TestAntigravityRuntime_OrdinaryPermission_PreservesNativeOptionIDs(t *testi
 	}
 
 AnswerPerm:
-	// Answer with exact native option ID "allow_once"
 	if err := session.(Responder).Respond(ctx, reqActivity.RequestID, "allow_once"); err != nil {
 		t.Fatalf("Respond failed: %v", err)
 	}
@@ -511,7 +507,6 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 
 		case "authenticate":
 			if scenario == "auth_terminal" {
-				// ACP forbids authenticate for terminal methods!
 				os.Exit(99)
 			}
 			var authParams struct {
@@ -519,11 +514,9 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 			}
 			_ = json.Unmarshal(req.Params, &authParams)
 			if authParams.MethodID == "cli-login" {
-				// Must not attempt authenticate on terminal method!
 				os.Exit(99)
 			}
 			if scenario == "already_authenticated" || scenario == "empty_catalog" {
-				// Client must not authenticate if session/new succeeds without it!
 				os.Exit(99)
 			}
 			authenticated = true
@@ -563,7 +556,6 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 
 		case "session/load":
 			if scenario == "resume_failed_no_fallback" {
-				// Client must not trial-call loadSession if resume fails!
 				os.Exit(66)
 			}
 			emit(map[string]any{
@@ -616,13 +608,11 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 			})
 
 		case "session/cancel":
-			// cancellation handled
 
 		case "session/prompt":
 			sessionPromptID = req.ID
 
 			if scenario == "interaction" {
-				// Server requests permission with interaction_ tool call ID
 				emit(map[string]any{
 					"jsonrpc": "2.0",
 					"id":      999,
@@ -721,7 +711,6 @@ func TestAntigravityFixtureProcess(t *testing.T) {
 			})
 
 		default:
-			// Check if this is a response to our server request
 			if req.ID != nil {
 				var resp struct {
 					Result struct {
@@ -853,13 +842,11 @@ func TestResolveNativeConfigOption_FailClosedOnUnknownOrAmbiguous(t *testing.T) 
 		},
 	}
 
-	// Unknown pin
 	_, _, err := resolveNativeConfigOption(catalog, "model", "nonexistent")
 	if err == nil || !strings.Contains(err.Error(), "unknown") {
 		t.Fatalf("expected unknown error, got %v", err)
 	}
 
-	// Ambiguous pin present in both options
 	_, _, err = resolveNativeConfigOption(catalog, "model", "shared_choice")
 	if err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("expected ambiguous error, got %v", err)
@@ -957,12 +944,10 @@ func TestAntigravityRuntime_AuthRequired_TerminalFirstAgent(t *testing.T) {
 }
 
 func TestSelectAuthMethod(t *testing.T) {
-	// 1. Empty methods returns error
 	if _, err := selectAuthMethod(nil); err == nil {
 		t.Fatal("expected error for empty auth methods")
 	}
 
-	// 2. Terminal-only returns terminal method
 	termOnly := []acpAuthMethod{
 		{ID: "cli-login", Type: "terminal"},
 	}
@@ -974,7 +959,6 @@ func TestSelectAuthMethod(t *testing.T) {
 		t.Fatalf("expected cli-login terminal, got %#v", selected)
 	}
 
-	// 3. Multiple terminal methods returns first terminal method
 	multiTerm := []acpAuthMethod{
 		{ID: "term-1", Type: "terminal"},
 		{ID: "term-2", Type: "terminal"},
@@ -987,7 +971,6 @@ func TestSelectAuthMethod(t *testing.T) {
 		t.Fatalf("expected term-1, got %#v", selected)
 	}
 
-	// 4. Terminal-first mixed with oauth selects oauth (supported nonterminal)
 	termOauth := []acpAuthMethod{
 		{ID: "cli-login", Type: "terminal"},
 		{ID: "oauth-personal", Type: "oauth"},
@@ -1000,7 +983,6 @@ func TestSelectAuthMethod(t *testing.T) {
 		t.Fatalf("expected oauth-personal, got %#v", selected)
 	}
 
-	// 5. Terminal-first mixed with api-key selects api-key (supported nonterminal)
 	termKey := []acpAuthMethod{
 		{ID: "cli-login", Type: "terminal"},
 		{ID: "gemini-api-key", Type: "api-key"},
@@ -1013,7 +995,6 @@ func TestSelectAuthMethod(t *testing.T) {
 		t.Fatalf("expected gemini-api-key, got %#v", selected)
 	}
 
-	// 6. Mixed terminal, oauth, and agent preserves preference for agent
 	mixed := []acpAuthMethod{
 		{ID: "cli-login", Type: "terminal"},
 		{ID: "oauth-personal", Type: "oauth"},
@@ -1027,7 +1008,6 @@ func TestSelectAuthMethod(t *testing.T) {
 		t.Fatalf("expected agent-login, got %#v", selected)
 	}
 
-	// 7. Preferred env var override
 	t.Setenv("SECRETARY_ANTIGRAVITY_AUTH_METHOD", "gemini-api-key")
 	_, err = selectAuthMethod(mixed)
 	if err == nil {
@@ -1160,13 +1140,11 @@ func TestAntigravityRuntime_ExplicitProfileDir(t *testing.T) {
 		ProfileDir:         customDir,
 	}
 
-	// 1. ProbeSpec preserves custom ProfileDir
 	spec := rt.ProbeSpec()
 	if spec.ProfileDir != customDir {
 		t.Fatalf("ProbeSpec ProfileDir = %q; want %q", spec.ProfileDir, customDir)
 	}
 
-	// 2. Configured wires profileDir into GEMINI_HOME and creates tmp
 	configured, err := rt.configured(StartRequest{
 		WorkerRef: "custom-prof-worker",
 		Workspace: t.TempDir(),
@@ -1195,7 +1173,6 @@ func TestAntigravityRuntime_ExplicitProfileDir(t *testing.T) {
 		t.Fatalf("expected GEMINI_HOME=%s in environment: %v", customDir, configured.Environment)
 	}
 
-	// 3. HarnessDiscovery with AntigravityProfileDir wires into HarnessProbeSpec
 	disc := HarnessDiscovery{
 		Node:                  "test-node",
 		Runner:                &mockAntigravityObserver{version: "1.3.0", authenticated: true},

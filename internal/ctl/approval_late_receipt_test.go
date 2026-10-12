@@ -82,9 +82,6 @@ func TestApprovalIntentWinsExpiryAndConflictingRetryAfterTerminalResult(t *testi
 			if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
 				t.Fatal(err)
 			}
-			// Expiry is triggered explicitly below after the durable decision
-			// intent is recorded. Keep the deadline far enough away that a slow
-			// CI runner cannot expire the request before the response is sent.
 			expiresAt := time.Now().UTC().Add(time.Hour)
 			requestID := "permission-" + testCase.name
 			activity := core.Activity{Metadata: core.ActivityMetadata{
@@ -121,8 +118,6 @@ func TestApprovalIntentWinsExpiryAndConflictingRetryAfterTerminalResult(t *testi
 			if err != nil || approval.State != core.ApprovalResolving || approval.ResolutionState != testCase.state || approval.ResolutionCommandID != command.Metadata().CommandID {
 				t.Fatalf("approval intent was not durable before handoff: state=%q err=%v", approval.State, err)
 			}
-			// Model a Node which accepted the original command but has not delivered
-			// its authenticated receipt to the server yet.
 			if _, _, err := store.ExpireApproval(ctx, requestID, expiresAt.Add(time.Second)); err != nil {
 				t.Fatal(err)
 			}

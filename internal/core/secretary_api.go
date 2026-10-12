@@ -89,9 +89,6 @@ func (s *Store) AcceptSecretaryPrompt(ctx context.Context, turnID string) error 
 	return err
 }
 
-// ReleaseSecretaryTurnClaims is used only after a proven Prompt failure. It
-// releases claims only for an active turn whose Prompt was not accepted.
-// Releasing an accepted Prompt is rejected, and repeated release is a no-op.
 func (s *Store) ReleaseSecretaryTurnClaims(ctx context.Context, turnID string) error {
 	_, err := withTx(s, ctx, func(tx *sql.Tx) (struct{}, error) {
 		var state SecretaryTurnState
