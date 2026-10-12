@@ -469,6 +469,8 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, clien
 		result, err = s.actions.CancelWorker(r.Context(), details.Worker.WorkerRef)
 	case "close":
 		result, err = s.actions.CloseWorker(r.Context(), details.Worker.WorkerRef)
+	case "resume":
+		result, err = s.actions.ResumeWorker(r.Context(), details.Worker.WorkerRef)
 	default:
 		return false
 	}

@@ -46,6 +46,7 @@ type workerActions interface {
 	MessageWorker(context.Context, ctl.MessageWorkerRequest) (core.WorkerDetails, error)
 	CancelWorker(context.Context, string) (core.WorkerDetails, error)
 	CloseWorker(context.Context, string) (core.WorkerDetails, error)
+	ResumeWorker(context.Context, string) (core.WorkerDetails, error)
 }
 
 type secretaryWorkerTools interface {

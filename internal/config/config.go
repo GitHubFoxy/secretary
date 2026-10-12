@@ -57,6 +57,7 @@ type WorkerPolicy struct {
 	FallbackModels     []string `toml:"fallback_models" json:"fallback_models"`
 	PreferredHarnesses []string `toml:"preferred_harnesses" json:"preferred_harnesses"`
 	ActiveAttempts     int      `toml:"active_attempts" json:"active_attempts"`
+	AutoResumeOnLimit  *bool    `toml:"auto_resume_on_limit" json:"auto_resume_on_limit,omitempty"`
 }
 
 // TelegramPolicy задаёт только настройки генерации названий Worker Topics.
@@ -446,7 +447,7 @@ func Diff(previous, next Snapshot) map[string]any {
 	if previous.Config.Secretary != next.Config.Secretary {
 		changed["secretary"] = next.Config.Secretary
 	}
-	if previous.Config.WorkerPolicy.DefaultHarness != next.Config.WorkerPolicy.DefaultHarness || previous.Config.WorkerPolicy.Model != next.Config.WorkerPolicy.Model || previous.Config.WorkerPolicy.Reasoning != next.Config.WorkerPolicy.Reasoning || strings.Join(previous.Config.WorkerPolicy.FallbackModels, ",") != strings.Join(next.Config.WorkerPolicy.FallbackModels, ",") || previous.Config.WorkerPolicy.ActiveAttempts != next.Config.WorkerPolicy.ActiveAttempts || strings.Join(previous.Config.WorkerPolicy.PreferredHarnesses, ",") != strings.Join(next.Config.WorkerPolicy.PreferredHarnesses, ",") {
+	if previous.Config.WorkerPolicy.DefaultHarness != next.Config.WorkerPolicy.DefaultHarness || previous.Config.WorkerPolicy.Model != next.Config.WorkerPolicy.Model || previous.Config.WorkerPolicy.Reasoning != next.Config.WorkerPolicy.Reasoning || strings.Join(previous.Config.WorkerPolicy.FallbackModels, ",") != strings.Join(next.Config.WorkerPolicy.FallbackModels, ",") || previous.Config.WorkerPolicy.ActiveAttempts != next.Config.WorkerPolicy.ActiveAttempts || strings.Join(previous.Config.WorkerPolicy.PreferredHarnesses, ",") != strings.Join(next.Config.WorkerPolicy.PreferredHarnesses, ",") || !boolPtrEqual(previous.Config.WorkerPolicy.AutoResumeOnLimit, next.Config.WorkerPolicy.AutoResumeOnLimit) {
 		changed["worker_policy"] = next.Config.WorkerPolicy
 	}
 	if previous.Config.Models != next.Config.Models {
@@ -489,4 +490,14 @@ func digest(values ...string) string {
 		_, _ = h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func boolPtrEqual(a, b *bool) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
 }

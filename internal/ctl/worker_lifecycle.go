@@ -685,6 +685,34 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		return details, err
 	}
 	attempt := details.CurrentAttempt()
+	if details.Worker.Status == core.WorkerLimited {
+		schedule, foundSchedule, err := s.Store.FindActiveScheduleForWorker(ctx, details.Worker.ID)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		if foundSchedule && (schedule.State == core.SchedulePending || schedule.State == core.ScheduleManualHold) {
+			_ = s.Store.CancelAttemptSchedule(ctx, schedule.ID, s.workerCommandNow())
+			if attempt != nil && !attempt.State.Terminal() {
+				if cmd, found, _ := s.Store.FindWorkerCommand(ctx, "resume", "attempt", details.Worker.ID, attempt.ID); found {
+					_, _ = s.Store.MarkWorkerCommandFailed(ctx, cmd.ID, "canceled_before_handoff")
+				}
+				if _, _, _, err := s.Store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
+					Status:         core.OutcomeCanceled,
+					Classification: core.OutcomeFinal,
+					ErrorCode:      "canceled",
+					FailureCode:    "canceled",
+					Summary:        "Canceled by direct input",
+				}); err != nil {
+					return core.WorkerDetails{}, err
+				}
+			}
+			details, err = s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+			if err != nil {
+				return core.WorkerDetails{}, err
+			}
+			attempt = details.CurrentAttempt()
+		}
+	}
 	var actionTurnID string
 	if strings.TrimSpace(request.RequestID) != "" {
 		approval, approvalErr := s.Store.Approval(ctx, request.RequestID)
@@ -987,6 +1015,69 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 	return updated, nil
 }
 
+func (s WorkerService) ResumeWorker(ctx context.Context, workerRef string) (core.WorkerDetails, error) {
+	conversation, err := s.authorize(ctx)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	details, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if details.Worker.Status != core.WorkerLimited {
+		return details, nil
+	}
+	schedule, found, err := s.Store.FindActiveScheduleForWorker(ctx, details.Worker.ID)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if !found {
+		return details, nil
+	}
+	if err := s.requireRuntime(); err != nil {
+		return core.WorkerDetails{}, err
+	}
+	now := s.workerCommandNow()
+	err = s.Store.WithWorkerLifecycle(ctx, details.Worker.ID, func(ctx context.Context) error {
+		claimed, err := s.Store.ClaimAttemptSchedule(ctx, schedule.ID, now)
+		if err != nil {
+			return err
+		}
+		if !claimed {
+			return nil
+		}
+		turn, err := s.Store.Turn(ctx, schedule.TurnID)
+		if err != nil {
+			return err
+		}
+		attempt, err := s.Store.Phase4Attempt(ctx, schedule.AttemptID)
+		if err != nil {
+			return err
+		}
+		command, send, err := s.claimCommand(ctx, "resume", "attempt", details.Worker, attempt, nil)
+		if err != nil {
+			return err
+		}
+		if send {
+			continuationPrompt := schedule.ContinuationPrompt
+			if continuationPrompt == "" {
+				continuationPrompt = core.ContinuationPrompt
+			}
+			err = s.deliverCommand(ctx, command, func(commandID string) error {
+				return s.Runtime.Resume(ctx, commandID, details.Worker, turn, attempt, continuationPrompt)
+			})
+			if err != nil {
+				return err
+			}
+		}
+		return s.Store.CompleteAttemptSchedule(ctx, schedule.ID, now)
+	})
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
+}
+
 func (s WorkerService) CancelWorker(ctx context.Context, workerRef string) (core.WorkerDetails, error) {
 	conversation, err := s.authorize(ctx)
 	if err != nil {
@@ -998,6 +1089,26 @@ func (s WorkerService) CancelWorker(ctx context.Context, workerRef string) (core
 	}
 	attempt := details.CurrentAttempt()
 	if attempt != nil && !attempt.State.Terminal() {
+		schedule, foundSchedule, err := s.Store.FindActiveScheduleForWorker(ctx, details.Worker.ID)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		if foundSchedule && (schedule.State == core.SchedulePending || schedule.State == core.ScheduleManualHold) {
+			_ = s.Store.CancelAttemptSchedule(ctx, schedule.ID, s.workerCommandNow())
+			if cmd, found, _ := s.Store.FindWorkerCommand(ctx, "resume", "attempt", details.Worker.ID, attempt.ID); found {
+				_, _ = s.Store.MarkWorkerCommandFailed(ctx, cmd.ID, "canceled_before_handoff")
+			}
+			if _, _, _, err := s.Store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
+				Status:         core.OutcomeCanceled,
+				Classification: core.OutcomeFinal,
+				ErrorCode:      "canceled",
+				FailureCode:    "canceled",
+				Summary:        "Canceled before scheduled continuation",
+			}); err != nil {
+				return core.WorkerDetails{}, err
+			}
+			return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
+		}
 		canceledBeforeHandoff := false
 		for _, kind := range []string{"dispatch", "resume"} {
 			command, found, err := s.Store.FindWorkerCommand(ctx, kind, "attempt", details.Worker.ID, attempt.ID)

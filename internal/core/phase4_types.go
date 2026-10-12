@@ -16,6 +16,7 @@ const (
 	WorkerWorking         WorkerStatus = "working"
 	WorkerWaitingApproval WorkerStatus = "waiting_approval"
 	WorkerNeedsInput      WorkerStatus = "needs_input"
+	WorkerLimited         WorkerStatus = "limited"
 	WorkerOffline         WorkerStatus = "offline"
 	WorkerIdle            WorkerStatus = "idle"
 	WorkerClosed          WorkerStatus = "closed"
@@ -30,6 +31,7 @@ const (
 	TurnActive          TurnState = "active"
 	TurnWaitingApproval TurnState = "waiting_approval"
 	TurnNeedsInput      TurnState = "needs_input"
+	TurnSuspended       TurnState = "suspended"
 	TurnSucceeded       TurnState = "succeeded"
 	TurnFailed          TurnState = "failed"
 	TurnCanceled        TurnState = "canceled"
@@ -41,7 +43,7 @@ func (s TurnState) Terminal() bool {
 }
 
 func (s TurnState) Active() bool {
-	return s == TurnQueued || s == TurnStarting || s == TurnActive || s == TurnWaitingApproval || s == TurnNeedsInput
+	return s == TurnQueued || s == TurnStarting || s == TurnActive || s == TurnWaitingApproval || s == TurnNeedsInput || s == TurnSuspended
 }
 
 // AttemptOutcomeStatus is the terminal observation for an Attempt.
@@ -295,7 +297,8 @@ type WorkerDetails struct {
 	Attempts     []Phase4Attempt  `json:"attempts"`
 	Outcomes     []AttemptOutcome `json:"outcomes"`
 	Results      []Phase4Result   `json:"results"`
-	Approvals    []Approval       `json:"approvals,omitempty"`
+	Approvals      []Approval       `json:"approvals,omitempty"`
+	ActiveSchedule *AttemptSchedule `json:"active_schedule,omitempty"`
 }
 
 func (d WorkerDetails) CurrentAttempt() *Phase4Attempt {
@@ -372,6 +375,38 @@ type AttemptOutcomeInput struct {
 	FailureCode     string
 	FailureCategory FailureCategory
 	ArtifactRefs    string
+	ResetsAt        *time.Time
+	QuotaScope      string
+}
+
+const ContinuationPrompt = "Continue previous work from the point where it was interrupted by usage limit."
+
+type AttemptScheduleState string
+
+const (
+	SchedulePending    AttemptScheduleState = "pending"
+	ScheduleManualHold AttemptScheduleState = "manual_hold"
+	ScheduleClaimed    AttemptScheduleState = "claimed"
+	ScheduleCompleted  AttemptScheduleState = "completed"
+	ScheduleCanceled   AttemptScheduleState = "canceled"
+)
+
+type AttemptSchedule struct {
+	ID                 string               `json:"id"`
+	WorkerID           string               `json:"worker_id"`
+	TurnID             string               `json:"turn_id"`
+	SourceAttemptID    string               `json:"source_attempt_id"`
+	AttemptID          string               `json:"attempt_id"`
+	ScheduledAt        *time.Time           `json:"scheduled_at,omitempty"`
+	State              AttemptScheduleState `json:"state"`
+	FailureCategory    FailureCategory      `json:"failure_category,omitempty"`
+	FailureCode        string               `json:"failure_code,omitempty"`
+	FailureMessage     string               `json:"failure_message,omitempty"`
+	QuotaScope         string               `json:"quota_scope,omitempty"`
+	DeadlineEvidence   string               `json:"deadline_evidence,omitempty"`
+	ContinuationPrompt string               `json:"continuation_prompt"`
+	CreatedAt          time.Time            `json:"created_at"`
+	UpdatedAt          time.Time            `json:"updated_at"`
 }
 
 // FinishAttemptInput is the production completion contract. A retryable

@@ -24,6 +24,15 @@ func (s WorkerService) ProcessQueuedWorkerMessages(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	now := s.workerCommandNow()
+	dueSchedules, err := s.Store.DueAttemptSchedules(ctx, now)
+	if err == nil {
+		for _, schedule := range dueSchedules {
+			_ = s.Store.WithWorkerLifecycle(ctx, schedule.WorkerID, func(ctx context.Context) error {
+				return s.processDueSchedule(ctx, schedule)
+			})
+		}
+	}
 	workers, err := s.Store.WorkersForConversation(ctx, conversation.ID)
 	if err != nil {
 		return err
@@ -38,6 +47,52 @@ func (s WorkerService) ProcessQueuedWorkerMessages(ctx context.Context) error {
 		}
 	}
 	return errors.Join(failures...)
+}
+
+func (s WorkerService) processDueSchedule(ctx context.Context, schedule core.AttemptSchedule) error {
+	if !s.Store.EffectiveAutoResumeOnLimit() {
+		return nil
+	}
+	worker, err := s.Store.Worker(ctx, schedule.WorkerID)
+	if err != nil {
+		return err
+	}
+	if s.queuedWorkerRuntimeUnavailable(ctx, worker) {
+		return nil
+	}
+	if err := s.requireRuntime(); err != nil {
+		return nil
+	}
+	now := s.workerCommandNow()
+	claimed, err := s.Store.ClaimAttemptSchedule(ctx, schedule.ID, now)
+	if err != nil || !claimed {
+		return err
+	}
+	turn, err := s.Store.Turn(ctx, schedule.TurnID)
+	if err != nil {
+		return err
+	}
+	attempt, err := s.Store.Phase4Attempt(ctx, schedule.AttemptID)
+	if err != nil {
+		return err
+	}
+	command, send, err := s.claimCommand(ctx, "resume", "attempt", worker, attempt, nil)
+	if err != nil {
+		return err
+	}
+	if send {
+		continuationPrompt := schedule.ContinuationPrompt
+		if continuationPrompt == "" {
+			continuationPrompt = core.ContinuationPrompt
+		}
+		err = s.deliverCommand(ctx, command, func(commandID string) error {
+			return s.Runtime.Resume(ctx, commandID, worker, turn, attempt, continuationPrompt)
+		})
+		if err != nil {
+			return err
+		}
+	}
+	return s.Store.CompleteAttemptSchedule(ctx, schedule.ID, now)
 }
 
 func (s WorkerService) queuedWorkerRuntimeUnavailable(ctx context.Context, worker core.Worker) bool {

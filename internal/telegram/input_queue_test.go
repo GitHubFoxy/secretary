@@ -29,6 +29,7 @@ func (s *requestReplayServer) SendWorkerMessage(_ context.Context, m WorkerMessa
 	}
 	return nil
 }
+func (s *requestReplayServer) ResumeWorker(context.Context, string) error { return nil }
 func workerText(id int64, text string) Update {
 	return Update{ID: id, Message: &Message{ChatID: 100, FromID: 100, ThreadID: 7, Text: text}}
 }

@@ -266,6 +266,7 @@ type WorkerEnvelope struct {
 	ApprovalPolicy       string               `json:"approval_policy,omitempty"`
 	Profile              ManagedProfile       `json:"profile,omitempty"`
 	LegacyWorkerTemplate bool                 `json:"legacy_worker_template,omitempty"`
+	ContinuationPrompt   string               `json:"continuation_prompt,omitempty"`
 }
 
 func (w WorkerEnvelope) ValidateAgainstInventory(node core.NodeReference, inventory core.HarnessInventorySnapshot) error {

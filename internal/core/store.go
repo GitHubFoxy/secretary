@@ -40,6 +40,34 @@ type Store struct {
 	// beforeResolvedWorkerCreate is used by package tests to make the narrow
 	// resolution-to-creation race deterministic.
 	beforeResolvedWorkerCreate func()
+
+	autoResumeOnLimitMu    sync.RWMutex
+	autoResumeOnLimit      *bool
+	autoResumePolicySource func() bool
+}
+
+func (s *Store) SetAutoResumeOnLimit(enabled bool) {
+	s.autoResumeOnLimitMu.Lock()
+	defer s.autoResumeOnLimitMu.Unlock()
+	s.autoResumeOnLimit = &enabled
+}
+
+func (s *Store) SetAutoResumePolicySource(source func() bool) {
+	s.autoResumeOnLimitMu.Lock()
+	defer s.autoResumeOnLimitMu.Unlock()
+	s.autoResumePolicySource = source
+}
+
+func (s *Store) EffectiveAutoResumeOnLimit() bool {
+	s.autoResumeOnLimitMu.RLock()
+	defer s.autoResumeOnLimitMu.RUnlock()
+	if s.autoResumePolicySource != nil {
+		return s.autoResumePolicySource()
+	}
+	if s.autoResumeOnLimit != nil {
+		return *s.autoResumeOnLimit
+	}
+	return true
 }
 
 func Open(ctx context.Context, dsn string) (*Store, error) {
@@ -266,10 +294,49 @@ func (s *Store) RecoverPhase4Attempts(ctx context.Context, resolver Phase4Attemp
 			if _, _, _, err := s.InterruptPhase4Attempt(ctx, id, "runtime_execution_unknown", "Attempt execution could not be proven by the recovery resolver"); err != nil {
 				return err
 			}
+			_, _ = s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'completed', updated_at = ? WHERE attempt_id = ? OR source_attempt_id = ?`, timestamp(s.now()), id, id)
 		default:
 			return fmt.Errorf("core: invalid Phase 4 recovery decision %q", decision)
 		}
 	}
+
+	// Claimed schedule with still unclaimed command returns to prepared pending/manual_hold with existing identities.
+	schedRows, err := s.db.QueryContext(ctx, `SELECT id, worker_id, attempt_id, scheduled_at FROM phase4_attempt_schedules WHERE state = 'claimed'`)
+	if err == nil {
+		type claimedSched struct {
+			id, workerID, attemptID string
+			scheduledAt             *time.Time
+		}
+		var claimedList []claimedSched
+		for schedRows.Next() {
+			var cs claimedSched
+			var schedAtStr sql.NullString
+			if scanErr := schedRows.Scan(&cs.id, &cs.workerID, &cs.attemptID, &schedAtStr); scanErr == nil {
+				if schedAtStr.Valid && schedAtStr.String != "" {
+					if t, parseErr := parseTimestamp(schedAtStr.String); parseErr == nil {
+						cs.scheduledAt = &t
+					}
+				}
+				claimedList = append(claimedList, cs)
+			}
+		}
+		schedRows.Close()
+
+		now := s.now()
+		autoResume := s.EffectiveAutoResumeOnLimit()
+		for _, cs := range claimedList {
+			var cmdState, leaseUntil, lastError string
+			err := s.db.QueryRowContext(ctx, `SELECT state, lease_until, last_error FROM phase4_worker_commands WHERE worker_id = ? AND attempt_id = ? AND kind = 'resume'`, cs.workerID, cs.attemptID).Scan(&cmdState, &leaseUntil, &lastError)
+			if err == nil && cmdState == string(WorkerCommandPending) && leaseUntil == "" && lastError == "" {
+				targetState := ScheduleManualHold
+				if autoResume && cs.scheduledAt != nil && cs.scheduledAt.After(now) {
+					targetState = SchedulePending
+				}
+				_, _ = s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = ?, updated_at = ? WHERE id = ?`, string(targetState), timestamp(now), cs.id)
+			}
+		}
+	}
+
 	return nil
 }
 

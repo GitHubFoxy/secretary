@@ -369,7 +369,7 @@ func (c SecretaryContext) Validate() error {
 
 func validWorkerStatus(status WorkerStatus) bool {
 	switch status {
-	case WorkerQueued, WorkerStarting, WorkerWorking, WorkerWaitingApproval, WorkerNeedsInput, WorkerOffline, WorkerIdle, WorkerClosed:
+	case WorkerQueued, WorkerStarting, WorkerWorking, WorkerWaitingApproval, WorkerNeedsInput, WorkerLimited, WorkerOffline, WorkerIdle, WorkerClosed:
 		return true
 	default:
 		return false

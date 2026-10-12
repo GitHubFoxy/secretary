@@ -147,14 +147,30 @@ func main() {
 	if err := store.RecordConfigVersion(context.Background(), profiles.Snapshot().Version, profiles.Path(), string(compiledConfig)); err != nil {
 		log.Fatalf("record config version: %v", err)
 	}
+	initialAutoResume := true
+	if profiles.Snapshot().Config.WorkerPolicy.AutoResumeOnLimit != nil {
+		initialAutoResume = *profiles.Snapshot().Config.WorkerPolicy.AutoResumeOnLimit
+	}
+	store.SetAutoResumeOnLimit(initialAutoResume)
+	_ = store.SyncAttemptSchedulesPolicy(context.Background(), initialAutoResume, time.Now().UTC())
+
 	profiles.SetChangeRecorder(func(previous, next config.Snapshot) error {
 		compiled, err := json.Marshal(next)
 		if err != nil {
 			return err
 		}
-		diff, err := json.Marshal(config.Diff(previous, next))
+		diffMap := config.Diff(previous, next)
+		diff, err := json.Marshal(diffMap)
 		if err != nil {
 			return err
+		}
+		if _, ok := diffMap["worker_policy"]; ok {
+			autoResume := true
+			if next.Config.WorkerPolicy.AutoResumeOnLimit != nil {
+				autoResume = *next.Config.WorkerPolicy.AutoResumeOnLimit
+			}
+			store.SetAutoResumeOnLimit(autoResume)
+			_ = store.SyncAttemptSchedulesPolicy(context.Background(), autoResume, time.Now().UTC())
 		}
 		return store.RecordConfigChange(context.Background(), previous.Version, next.Version, profiles.Path(), string(compiled), string(diff))
 	})

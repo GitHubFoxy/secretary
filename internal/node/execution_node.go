@@ -478,7 +478,11 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	n.registerSession(command.Metadata.AttemptID, session)
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
-		go func() { _ = session.Prompt(context.Background(), command.Envelope.OriginalUserIntent) }()
+		promptText := command.Envelope.OriginalUserIntent
+		if command.Envelope.ContinuationPrompt != "" {
+			promptText = command.Envelope.ContinuationPrompt
+		}
+		go func() { _ = session.Prompt(context.Background(), promptText) }()
 	} else {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
 	}
@@ -726,6 +730,25 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, t
 				n.removeSession(envelope.AttemptID)
 				if outcome.Status == core.OutcomeFailed {
 					sanitizeTerminalFailureOutcome(&outcome)
+					if outcome.FailureCategory == core.FailureCategoryUsageLimit && envelope.HarnessInstance.Kind == core.HarnessCodex {
+						commandBin := "codex"
+						var env []string
+						if n.runtime != nil {
+							if cr, ok := n.runtime.(CodexRuntime); ok {
+								if configured, err := cr.configured(StartRequest{Profile: envelope.Profile, Workspace: envelope.Workspace}); err == nil {
+									commandBin = configured.Command
+									env = configured.Environment
+								}
+							}
+						}
+						if resp, err := readCodexRateLimits(context.Background(), commandBin, env, envelope.Workspace); err == nil {
+							obs := evaluateCodexRateLimits(resp, envelope.Model, outcome.FailureCode, time.Now().UTC(), nil)
+							if obs.ResetsAt != nil {
+								outcome.ResetsAt = obs.ResetsAt
+								outcome.QuotaScope = obs.Scope
+							}
+						}
+					}
 				}
 				if len(terminalCommand) != 0 {
 					command := terminalCommand[0]
