@@ -1,6 +1,3 @@
-// Package migration upgrades the durable Phase 3 SQLite state to the Phase 4
-// Worker-first schema. It deliberately does not use core.Open: opening a
-// legacy database must not first manufacture partially migrated state.
 package migration
 
 import (
@@ -537,7 +534,7 @@ func insertWorker(ctx context.Context, tx *sql.Tx, id, ref, conversation, intent
 func legacyHarnessInstance(node, runtime, model, reasoning string) core.HarnessInstance {
 	kind := core.HarnessKind(strings.TrimSpace(runtime))
 	switch kind {
-	case core.HarnessClaudeCode, core.HarnessCodex, core.HarnessFX, core.HarnessOpenCode:
+	case core.HarnessClaudeCode, core.HarnessCodex, core.HarnessFX, core.HarnessOpenCode, core.HarnessAntigravity:
 	default:
 		kind = core.HarnessFX
 	}
@@ -569,8 +566,6 @@ func insertTurn(ctx context.Context, tx *sql.Tx, id, workerID, input, state, cre
 	case "open", "closing":
 		turnState = "active"
 	case "closed", "completed":
-		// A terminal legacy Task is not evidence of a successful Turn. The
-		// terminal Attempt projection below must supply exactly one Result.
 		turnState = "interrupted"
 	}
 	_, err := tx.ExecContext(ctx, `INSERT INTO turns(id, worker_id, input, normalized_intent, context_snapshot, state, created_at, updated_at) VALUES(?, ?, ?, '', '', ?, ?, ?)`, id, workerID, input, turnState, created, updated)
@@ -744,12 +739,6 @@ type legacyFollowUpWorker struct {
 	nextAttempts []legacyFollowUpAttempt
 }
 
-// legacyFollowUpOwner uses the durable Phase 3 timeline when worker_ref was
-// not stored on a conversation entry. A follow-up Attempt and its worker_input
-// are created with the same now, so equality is a valid match. Each candidate
-// Attempt is consumed once while unscoped entries are assigned in seq order.
-// Equal-time candidates belonging to different roots are not a discriminator:
-// fail closed instead of using worker_ref or conversation seq to guess.
 func legacyFollowUpOwner(created string, workers []legacyFollowUpWorker, used map[string]struct{}) (string, error) {
 	if len(workers) == 0 {
 		return "", nil
@@ -1052,6 +1041,7 @@ CREATE TABLE IF NOT EXISTS phase4_node_pairing_tokens (token_hash TEXT PRIMARY K
 CREATE TABLE IF NOT EXISTS clients (id TEXT PRIMARY KEY, person_id TEXT NOT NULL, device_id TEXT NOT NULL UNIQUE, display_name TEXT NOT NULL, platform TEXT NOT NULL, scopes_json TEXT NOT NULL, status TEXT NOT NULL, credential_hash TEXT NOT NULL UNIQUE, credential_secret TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, revoked_at TEXT);
 CREATE TABLE IF NOT EXISTS client_pairings (id TEXT PRIMARY KEY, client_id TEXT NOT NULL UNIQUE, pending_token_hash TEXT NOT NULL DEFAULT '', pending_token_secret TEXT NOT NULL DEFAULT '', pending_token_redeemed INTEGER NOT NULL DEFAULT 0, generation INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS phase4_approvals (id TEXT PRIMARY KEY, request_id TEXT NOT NULL UNIQUE, worker_id TEXT NOT NULL, turn_id TEXT NOT NULL, attempt_id TEXT NOT NULL, node_id TEXT NOT NULL, project_id TEXT NOT NULL, kind TEXT NOT NULL, action_summary TEXT NOT NULL, risk_category TEXT NOT NULL DEFAULT '', requested_at TEXT NOT NULL, expires_at TEXT, state TEXT NOT NULL, response TEXT NOT NULL DEFAULT '', resolved_by TEXT NOT NULL DEFAULT '', resolved_at TEXT, audit_event_id TEXT NOT NULL DEFAULT '');
+CREATE TABLE IF NOT EXISTS phase4_attempt_schedules (id TEXT PRIMARY KEY, worker_id TEXT NOT NULL, turn_id TEXT NOT NULL, source_attempt_id TEXT NOT NULL UNIQUE, attempt_id TEXT NOT NULL UNIQUE, scheduled_at TEXT, state TEXT NOT NULL, failure_category TEXT NOT NULL DEFAULT '', failure_code TEXT NOT NULL DEFAULT '', failure_message TEXT NOT NULL DEFAULT '', quota_scope TEXT NOT NULL DEFAULT '', deadline_evidence TEXT NOT NULL DEFAULT '', continuation_prompt TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY, seq INTEGER, kind TEXT NOT NULL, aggregate_type TEXT NOT NULL DEFAULT '', aggregate_id TEXT NOT NULL DEFAULT '', source TEXT NOT NULL DEFAULT '', correlation_id TEXT NOT NULL DEFAULT '', causation_id TEXT NOT NULL DEFAULT '', worker_ref TEXT NOT NULL DEFAULT '', attempt_id TEXT NOT NULL DEFAULT '', runtime_session_id TEXT NOT NULL DEFAULT '', payload_json TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS event_sequence (id INTEGER PRIMARY KEY CHECK(id = 1), next_seq INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS deliveries (id TEXT PRIMARY KEY, event_id TEXT NOT NULL, entry_id TEXT, target TEXT NOT NULL, idempotency_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL, retry_count INTEGER NOT NULL DEFAULT 0, last_error TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, delivered_at TEXT);
@@ -1082,8 +1072,6 @@ func backupDatabase(path, backup string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	// VACUUM INTO reads the database through SQLite, so committed WAL pages
-	// are included and the backup is a standalone, queryable database.
 	return snapshotDatabase(path, backup)
 }
 
@@ -1096,9 +1084,6 @@ func backupFileIfMissing(path, backup string) error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	// Keep the original bytes. A VACUUM snapshot is semantically equivalent
-	// but changes SQLite page layout, which makes rollback observably mutate an
-	// otherwise untouched active database.
 	return copyFile(path, backup)
 }
 

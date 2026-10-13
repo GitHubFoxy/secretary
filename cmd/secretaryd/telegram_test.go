@@ -58,6 +58,7 @@ type bridgeServer struct{}
 
 func (bridgeServer) SendMessage(context.Context, telegram.InboundMessage) error      { return nil }
 func (bridgeServer) SendWorkerMessage(context.Context, telegram.WorkerMessage) error { return nil }
+func (bridgeServer) ResumeWorker(context.Context, string) error                      { return nil }
 
 type bridgeTransport struct {
 	mu   sync.Mutex
@@ -290,6 +291,12 @@ func TestTelegramEventBridgePublishesOnlyDispatchedWorkerIntent(t *testing.T) {
 	if spawnWithNode.NodeID != "node-primary" {
 		t.Fatalf("node_id mapping failed: %#v", spawnWithNode)
 	}
+	if err := adapter.HandleDurableEvent(ctx, spawnWithNode); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 2 || transport.sent[1].Text != "Узел: node-primary\n\nCheck node." {
+		t.Fatalf("dispatched node prompt delivery=%#v", transport.sent)
+	}
 	emptyResult := telegramEvent(core.Event{
 		Kind: "attempt.activity", WorkerRef: "worker-1",
 		Payload: []byte(`{"kind":"tool_result","tool_result":{"name":"shell","call_id":"c-empty","status":"completed","output":""}}`),
@@ -352,6 +359,90 @@ func TestTelegramEventBridgeMapsToolActivityWithoutArgumentsOrOutput(t *testing.
 		if len(transport.sent) != 1 || !strings.Contains(transport.sent[0].Text, tc.marker) || !strings.Contains(transport.sent[0].Text, "shell") || strings.Contains(transport.sent[0].Text, "do-not-leak") || strings.Contains(transport.sent[0].Text, "Worker запускает") {
 			t.Fatalf("unsafe or verbose tool progress message: %#v", transport.sent)
 		}
+	}
+}
+
+func TestTelegramEventBridgeParallelToolsWithCallIDAndReplay(t *testing.T) {
+	ctx := context.Background()
+	statePath := filepath.Join(t.TempDir(), "telegram.json")
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: statePath, OwnerChatID: 100}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	spawnEvent := core.Event{
+		ID: "spawn-parallel", Seq: 1, Kind: "worker.spawned", AggregateType: "worker", AggregateID: "worker-parallel",
+		Payload: []byte(`{"intent":"Run parallel tasks","node_id":"node-worker-1"}`),
+	}
+	if err := adapter.HandleDurableEvent(ctx, telegramEvent(spawnEvent)); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Узел: node-worker-1\n\nRun parallel tasks" {
+		t.Fatalf("spawn delivery=%#v", transport.sent)
+	}
+
+	call1 := core.Event{
+		ID: "call-1", Seq: 2, Kind: "attempt.activity", AggregateType: "attempt", WorkerRef: "worker-parallel",
+		Payload: []byte(`{"kind":"tool_call","tool_call":{"name":"exec_command","call_id":"c-open","preview":"open https://example.com","arguments":{"url":"https://example.com","token":"secret-token"}}}`),
+	}
+	call2 := core.Event{
+		ID: "call-2", Seq: 3, Kind: "attempt.activity", AggregateType: "attempt", WorkerRef: "worker-parallel",
+		Payload: []byte(`{"kind":"tool_call","tool_call":{"name":"exec_command","call_id":"c-test","preview":"python3 test.py","arguments":{"script":"test.py"}}}`),
+	}
+	if err := adapter.HandleDurableEvent(ctx, telegramEvent(call1)); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleDurableEvent(ctx, telegramEvent(call2)); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(transport.sent) != 3 {
+		t.Fatalf("calls sent=%d want 3", len(transport.sent))
+	}
+	if transport.sent[1].Text != "▶ Запуск: exec_command open https://example.com" {
+		t.Fatalf("call1 sent=%q", transport.sent[1].Text)
+	}
+	if transport.sent[2].Text != "▶ Запуск: exec_command python3 test.py" {
+		t.Fatalf("call2 sent=%q", transport.sent[2].Text)
+	}
+
+	res2 := core.Event{
+		ID: "res-2", Seq: 4, Kind: "attempt.activity", AggregateType: "attempt", WorkerRef: "worker-parallel",
+		Payload: []byte(`{"kind":"tool_result","tool_result":{"name":"exec_command","call_id":"c-test","status":"completed","output":""}}`),
+	}
+	if err := adapter.HandleDurableEvent(ctx, telegramEvent(res2)); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 4 || transport.sent[3].Text != "✓ Выполнено: exec_command python3 test.py (без вывода)" {
+		t.Fatalf("res2 sent=%#v", transport.sent)
+	}
+
+	res1 := core.Event{
+		ID: "res-1", Seq: 5, Kind: "attempt.activity", AggregateType: "attempt", WorkerRef: "worker-parallel",
+		Payload: []byte(`{"kind":"tool_result","tool_result":{"name":"exec_command","call_id":"c-open","status":"completed","output":"secret stdout that must not leak"}}`),
+	}
+	if err := adapter.HandleDurableEvent(ctx, telegramEvent(res1)); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 5 || transport.sent[4].Text != "✓ Выполнено: exec_command open https://example.com (вывод скрыт)" {
+		t.Fatalf("res1 sent=%#v", transport.sent)
+	}
+	if strings.Contains(transport.sent[4].Text, "secret") {
+		t.Fatalf("res1 leaked stdout: %q", transport.sent[4].Text)
+	}
+
+	restartedAdapter, err := telegram.New(telegram.Config{StatePath: statePath, OwnerChatID: 100}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range []core.Event{spawnEvent, call1, call2, res2, res1} {
+		if err := restartedAdapter.HandleDurableEvent(ctx, telegramEvent(ev)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(transport.sent) != 5 {
+		t.Fatalf("replay duplicated messages: sent=%d want 5", len(transport.sent))
 	}
 }
 
@@ -445,7 +536,7 @@ func TestTelegramEventBridgeSendsOneTerminalNotificationForOneTurn(t *testing.T)
 		if sent.ThreadID != 0 && sent.Text == "done" {
 			topicCompletions++
 		}
-		if sent.ThreadID == 0 && sent.Text == "Worker:\ndone" {
+		if sent.ThreadID == 0 && sent.Text == "done" {
 			generalMirrors++
 		}
 	}
@@ -861,7 +952,7 @@ func TestTelegramBridgeEndToEndCoreToolResultPayload(t *testing.T) {
 				ToolResult: &core.ToolResult{
 					CallID:        "call-fail-" + tc.name,
 					Name:          "exec_command",
-					Output:        "", // Node stripped the raw content
+					Output:        "",
 					OutputPresent: tc.outputPresent,
 					Status:        "failed",
 					Preview:       "make test",

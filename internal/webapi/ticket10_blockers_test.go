@@ -42,6 +42,10 @@ func (a *ticket10HostileWorkerActions) CloseWorker(context.Context, string) (cor
 	a.calls["close"]++
 	return a.details, nil
 }
+func (a *ticket10HostileWorkerActions) ResumeWorker(context.Context, string) (core.WorkerDetails, error) {
+	a.calls["resume"]++
+	return a.details, nil
+}
 
 func TestTicket10WorkerActionResponsesSanitizeFreshAndIdempotencyReplay(t *testing.T) {
 	ctx := context.Background()

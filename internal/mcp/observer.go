@@ -13,8 +13,6 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-// RemoteMCPObserver carries only a launch-scoped observation capability. It
-// cannot read Conversation, call tools or grant execution permissions.
 type RemoteMCPObserver struct {
 	BaseURL    string
 	Capability string
@@ -41,8 +39,6 @@ func (r RemoteMCPObserver) Observe(ctx context.Context, observation core.Secreta
 	if client == nil {
 		client = &http.Client{}
 	}
-	// Never forward this credential through a redirect, even if a supplied client
-	// would normally follow one. No response/error payload enters diagnostics.
 	bounded := *client
 	bounded.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := bounded.Do(request)

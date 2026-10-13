@@ -353,8 +353,6 @@ func TestLegacyWorkerFailureReadModelsSanitizeOnReopen(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			// Seed the SQLite file as a pre-sanitizer installation would: bypass the
-			// current write boundary, then reopen through the real Store read paths.
 			raw, err := sql.Open("sqlite", path)
 			if err != nil {
 				t.Fatal(err)
@@ -676,7 +674,6 @@ func TestWorkerSteerError_ReturnsStructuredJSON(t *testing.T) {
 		t.Fatalf("expected error to contain 'Usage limit reached', got: %#v", body["error"])
 	}
 
-	// Idempotent repeat: verify the exact same typed failure is returned
 	repeatRequest, _ := http.NewRequest(http.MethodPost, storeServer.URL+"/v1/workers/worker-steer-err/steer", bytes.NewBufferString(`{"text":"continue"}`))
 	repeatRequest.Header.Set("Content-Type", "application/json")
 	repeatRequest.Header.Set("Idempotency-Key", "steer-err-key")

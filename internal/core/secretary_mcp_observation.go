@@ -6,8 +6,6 @@ import (
 	"errors"
 )
 
-// SecretaryRuntimeLaunch is private process wiring, never a public DTO or prompt.
-// The observation capability has no Worker/lifecycle authority.
 type SecretaryRuntimeLaunch struct {
 	ObserverCapability string `json:"-"`
 	Generation         int64  `json:"-"`
@@ -48,8 +46,6 @@ func (o SecretaryMCPObservation) validate() error {
 	return nil
 }
 
-// SecretaryMCPDiscovery deliberately omits launch, turn, token and native identities.
-// A listed catalogue proves only the broker's written response, not provider choice.
 type SecretaryMCPDiscovery struct {
 	Started           bool   `json:"started"`
 	Initialized       bool   `json:"initialized"`
@@ -90,8 +86,6 @@ func (s *Store) migrateSecretaryMCPObservation(ctx context.Context) error {
 	return err
 }
 
-// BeginSecretaryRuntime registers an actual impending session launch. Every launch
-// advances generation, even with unchanged pins. Failed starts are explicitly revoked.
 func (s *Store) BeginSecretaryRuntime(ctx context.Context, identityID, capability, harness, model, reasoning string) (SecretaryRuntimeLaunch, error) {
 	return withTx(s, ctx, func(tx *sql.Tx) (SecretaryRuntimeLaunch, error) {
 		var generation int64

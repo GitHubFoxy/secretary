@@ -76,9 +76,6 @@ type ServerNodeStatus struct {
 	LastCommandOutcome   *CommandOutcome               `json:"last_command_outcome,omitempty"`
 }
 
-// ServerManager owns server-side Node enrollment and live protocol connections.
-// It never receives native runtime session IDs or local harness credentials.
-// Transport credentials are separate per-Node secrets used only by this boundary.
 type ServerConfig struct {
 	PairingTokens        []string
 	AdminToken           string
@@ -109,9 +106,6 @@ type ServerManager struct {
 	outcomeSink func(context.Context, core.NodeReference, CommandOutcome) error
 }
 
-// NewServerManager is kept as a narrow compatibility constructor. Production
-// wiring uses NewServerManagerWithConfig so Client bootstrap credentials cannot
-// cross the Node service boundary.
 func NewServerManager(ctx context.Context, store *core.Store, pairingToken, adminToken string) (*ServerManager, error) {
 	return NewServerManagerWithConfig(ctx, store, ServerConfig{PairingTokens: []string{pairingToken}, AdminToken: adminToken})
 }
@@ -191,9 +185,6 @@ func (m *ServerManager) SetCommandOutcomeSink(sink func(context.Context, core.No
 	m.mu.Unlock()
 }
 
-// ServeHTTP exposes only the minimal enrollment/control API needed by 13a.
-// Node protocol traffic uses ServeProtocolHTTP and never accepts web/client
-// session credentials as an authentication mechanism.
 func (m *ServerManager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimSuffix(r.URL.Path, "/")
 	if path == "/v1/nodes/pair" {
@@ -485,8 +476,6 @@ func (m *ServerManager) credential(nodeRef core.NodeReference) []byte {
 	return credential
 }
 
-// Run watches the last accepted heartbeat independently from socket lifetime.
-// This turns silent network loss into an explicit offline state.
 func (m *ServerManager) Run(ctx context.Context) error {
 	ticker := time.NewTicker(m.config.WatchdogInterval)
 	defer ticker.Stop()
@@ -616,9 +605,6 @@ func (h *serverProtocolHandler) HandleNodeHandshake(ctx context.Context, handsha
 	if err := h.manager.store.ReconcileNodeWorkspaces(ctx, h.expected, workspaces); err != nil {
 		return HandshakeAccepted{}, err
 	}
-	// Do not mark the Node online until the authenticated handshake response
-	// has been written and ProtocolServer has promoted this socket to a live
-	// connection. Otherwise a failed acceptance can leave a ghost online Node.
 	h.inventory = handshake.Inventory
 	return HandshakeAccepted{Node: h.expected, ProtocolVersion: ProtocolVersion, ReplayFromSequence: handshake.LastAcknowledgedSequence}, nil
 }
@@ -666,8 +652,6 @@ func (h *serverProtocolHandler) HandleNodeCommandOutcome(ctx context.Context, ou
 	h.manager.mu.Lock()
 	waiter := h.manager.waiters[outcome.CommandID]
 	if waiter != nil && (waiter.node != h.expected || waiter.kind != outcome.Kind) {
-		// A Node may replay or mis-type an outcome. Do not let it finalize a
-		// different command, and keep the connection alive for the valid outcome.
 		h.manager.mu.Unlock()
 		return nil
 	}

@@ -11,9 +11,6 @@ import (
 	"time"
 )
 
-// OpenCodeRuntime uses OpenCode's native agent configuration. The effective
-// Profile is written to a per-session opencode.json and selected as the
-// default primary agent, so it becomes OpenCode's agent system instruction.
 type OpenCodeRuntime struct {
 	Command        string
 	Arguments      []string
@@ -34,8 +31,6 @@ func (r OpenCodeRuntime) Start(ctx context.Context, request StartRequest) (Sessi
 	if err != nil {
 		return nil, err
 	}
-	// OpenCode consumes managed MCP definitions from its private native config;
-	// do not send their credentials a second time in ACP session parameters.
 	request.MCPServers = nil
 	return prepared.Start(ctx, request)
 }
@@ -96,9 +91,6 @@ func (r OpenCodeRuntime) prepare(request StartRequest) (ACPRuntime, error) {
 	} else if request.Profile.Reasoning != "" && request.Profile.Reasoning != "default" {
 		model += "/" + request.Profile.Reasoning
 	}
-	// V2 loads configured MCP asynchronously and debounces tool registration.
-	// ACP session/new acknowledges the binding before that registration ends.
-	// Keep the first prompt behind a short, context-cancellable startup barrier.
 	var startupDelay time.Duration
 	if len(request.MCPServers) > 0 {
 		startupDelay = 500 * time.Millisecond
@@ -136,7 +128,7 @@ func probeOpenCodeACPWithDataHome(ctx context.Context, command, dataHome string,
 	if err != nil {
 		return fmt.Errorf("opencode ACP probe: isolated environment unavailable")
 	}
-	client, err := (ACPRuntime{Command: command, Arguments: args, Environment: environment, ExactEnvironment: true}).connect(ctx, "opencode-probe", ManagedProfile{}, workspace)
+	client, _, err := (ACPRuntime{Command: command, Arguments: args, Environment: environment, ExactEnvironment: true}).connect(ctx, "opencode-probe", ManagedProfile{}, workspace)
 	if err != nil {
 		return fmt.Errorf("opencode ACP initialize failed")
 	}

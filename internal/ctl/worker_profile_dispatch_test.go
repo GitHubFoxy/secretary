@@ -21,9 +21,6 @@ import (
 
 const syntheticManagedWorkerInstructions = "Synthetic worker profile instructions: inspect the fixture and report its status."
 
-// TestWorkerTemplateACPProcess is the synthetic external OpenCode-compatible
-// executable used by the public Phase4 dispatch test. It reports only safe
-// booleans/metadata; Profile text is never written to test output or evidence.
 func TestWorkerTemplateACPProcess(t *testing.T) {
 	if !testProcessHasArgument("-test.run=^TestWorkerTemplateACPProcess$") {
 		return
@@ -311,7 +308,6 @@ func workerTemplateRoundTrip(t *testing.T, skills []node.ManagedSkill, tools []s
 		Skills: skills, AllowTools: tools, Hash: "synthetic-source-hash", Runtime: "opencode",
 		Model: "fixture/model", Reasoning: "xhigh",
 	}
-	// The source template is valid before the actual persistence boundary.
 	beforeSave := sourceProfile
 	beforeSave.SourceHash, beforeSave.Delivery = sourceProfile.Hash, "native"
 	beforeSave.Hash = beforeSave.SnapshotHash()
@@ -373,7 +369,6 @@ func workerTemplateRoundTrip(t *testing.T, skills []node.ManagedSkill, tools []s
 	if err != nil || reopened.ProfileSnapshot != details.Worker.ProfileSnapshot {
 		t.Fatal("Core reopen changed the frozen template")
 	}
-	// Editing the current source must not alter the Profile frozen on the Worker.
 	sourceProfile.Version = "synthetic-config-v2"
 	sourceProfile.Content = "Edited synthetic profile; must not reach the bound Worker."
 	sourceProfile.Hash = "synthetic-source-hash-v2"

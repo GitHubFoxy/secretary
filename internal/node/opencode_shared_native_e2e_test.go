@@ -144,9 +144,6 @@ func TestOpenCodeNativeSetupCreatesDatabaseWithoutAuth(t *testing.T) {
 	t.Log("safe setup metadata: public_setup=true native_db=true provider_login=false personal_store_unchanged=true")
 }
 
-// Both actual OpenCode ACP processes use the DB created by public secretary setup
-// and make concurrent turns. The local unpaid HTTP provider checks safe
-// metadata only and never logs prompts, tool arguments, or response payloads.
 func TestOpenCodeNativeSharedStoreConcurrentSecretaryAndWorker(t *testing.T) {
 	oldUmask := syscall.Umask(0o077)
 	defer syscall.Umask(oldUmask)

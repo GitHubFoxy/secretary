@@ -7,9 +7,6 @@ import (
 	"unicode"
 )
 
-// Format one existing size-only chunk, never the whole Result before splitting.
-// Emit only Telegram's supported HTML subset. Unknown/incomplete Markdown and
-// raw HTML remain escaped readable text. No user input becomes an HTML tag.
 func formatTelegramCodeBlock(text string) (formatted, plain string) {
 	return "<pre>" + html.EscapeString(text) + "</pre>", text
 }
@@ -34,7 +31,6 @@ func formatTelegramChunk(text string) (formatted, plain string) {
 				i = end
 				continue
 			}
-			// A split/unclosed fence cannot prove code scope in this chunk.
 			out.WriteString(html.EscapeString(strings.Join(lines[i:], "")))
 			fallback.WriteString(strings.Join(lines[i:], ""))
 			break
@@ -111,7 +107,6 @@ func telegramInline(text string) (string, string) {
 		if matched {
 			continue
 		}
-		// Escape runs of ordinary text, preserving Unicode/whitespace verbatim.
 		end := 1
 		for end < len(text) && !strings.ContainsRune("[`*_", rune(text[end])) {
 			end++

@@ -133,6 +133,7 @@ func (s *orderedServer) SendMessage(_ context.Context, m InboundMessage) error {
 func (s *orderedServer) SendWorkerMessage(_ context.Context, m WorkerMessage) error {
 	return s.SendMessage(context.Background(), InboundMessage{ExternalMessageID: m.ExternalMessageID})
 }
+func (s *orderedServer) ResumeWorker(context.Context, string) error { return nil }
 func TestVoiceQueueFIFOIndependentTopicAndRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state")
 	tr := &voiceTransport{fakeTransport: &fakeTransport{}}
@@ -175,7 +176,6 @@ func TestVoiceQueueFIFOIndependentTopicAndRestart(t *testing.T) {
 	if len(ids) != 3 || ids[1] != "1" || ids[2] != "2" {
 		t.Fatalf("order=%v", ids)
 	}
-	// Pending text survived offset advancement and can be delivered after restart.
 	next := Update{ID: 4, Message: &Message{ChatID: 100, FromID: 100, Text: "persisted"}}
 	if err := a.enqueueInputs([]Update{next}, true); err != nil {
 		t.Fatal(err)

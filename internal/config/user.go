@@ -13,7 +13,6 @@ import (
 
 const maxUserMarkdownBytes = 1 << 20
 
-// UserDocument is the validated external user.md snapshot.
 type UserDocument struct {
 	Path     string `json:"path"`
 	Revision int64  `json:"revision"`

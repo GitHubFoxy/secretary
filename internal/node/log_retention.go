@@ -12,7 +12,6 @@ type LogRetention struct {
 	MaxBytes int64
 }
 
-// PruneLogs deletes old files first, then oldest files until the size cap holds.
 func PruneLogs(dir string, retention LogRetention) error {
 	if retention.MaxAge <= 0 {
 		retention.MaxAge = 30 * 24 * time.Hour

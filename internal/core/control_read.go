@@ -2,8 +2,6 @@ package core
 
 import "context"
 
-// WorkerCommands returns durable server-side handoff records for diagnostics.
-// It intentionally exposes no Node credential or runtime session state.
 func (s *Store) WorkerCommands(ctx context.Context, limit int) ([]WorkerCommand, error) {
 	if limit <= 0 || limit > 500 {
 		limit = 500

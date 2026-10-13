@@ -11,8 +11,6 @@ import (
 
 var ErrUnauthorized = errors.New("secretaryctl: unauthorized")
 
-// Dispatcher is deliberately narrow. secretaryctl can ask the server to start
-// a Worker, but it cannot obtain generic Node or Channel control.
 type Dispatcher interface {
 	Dispatch(context.Context, core.Task, string) (core.WorkerBinding, core.Attempt, error)
 }
@@ -67,7 +65,6 @@ func (s Service) Create(ctx context.Context, text string) (core.Task, error) {
 		workerRef = s.WorkerRef(task)
 	}
 	if _, _, err := s.Dispatcher.Dispatch(ctx, task, workerRef); err != nil {
-		// The task is intentionally retained as dispatch_failed by Dispatcher.
 		failed, readErr := s.Store.Task(ctx, task.ID)
 		if readErr == nil {
 			return failed, err

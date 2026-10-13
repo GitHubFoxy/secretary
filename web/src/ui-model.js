@@ -1,4 +1,3 @@
-/** @typedef {{seq?: number, id?: string}} Sequenced */
 
 const TOOL_FAILURE_CATEGORIES = new Set(['dns', 'tls', 'timeout', 'proxy', 'network', 'http', 'permission', 'provider', 'capability', 'tool']);
 const TOOL_FAILURE_CODES = new Set(['dns_lookup_failed', 'tls_handshake_failed', 'request_timeout', 'connection_failed', 'proxy_error', 'http_error', 'permission_denied', 'provider_error', 'capability_unavailable', 'tool_error']);
@@ -14,6 +13,7 @@ export const STATUS_LABELS = {
   waitingApproval: 'Waiting for approval',
   needs_input: 'Needs input',
   needsInput: 'Needs input',
+  limited: 'Usage limit',
   succeeded: 'Succeeded',
   failed: 'Failed',
   canceled: 'Canceled',
@@ -228,6 +228,10 @@ export function workerCard(worker, projects = [], nodes = []) {
     resultIdentity: resultInfo.summary ? resultInfo : null,
     hasTerminalResult: Boolean(result),
     bindingImmutable: true,
+    scheduleMode: worker?.schedule_mode || '',
+    deadlineTo: worker?.deadline_to || '',
+    canResumeNow: Boolean(worker?.can_resume_now),
+    actionIdentity: worker?.action_identity || '',
   };
 }
 

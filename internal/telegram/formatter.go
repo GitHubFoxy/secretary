@@ -72,7 +72,6 @@ func (f *CodexFormatter) Format(ctx context.Context, raw string) (string, error)
 	}
 	args := []string{"exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--skip-git-repo-check", "--sandbox", "read-only", "--json", "-m", f.Model, "-o", result,
 		"-c", `approval_policy="never"`, "-c", `model_reasoning_effort="none"`, "-c", `model_instructions_file=` + strconv.Quote(instructions), "-c", `project_doc_max_bytes=0`, "-c", `forced_login_method="chatgpt"`, "-c", `features.skip_host_skill_discovery=true`, "-c", `suppress_unstable_features_warning=true`, "-c", `tools.update_plan.enabled=false`, "-c", `web_search="disabled"`}
-	// Disable execution/integrations rather than relying on the dictated text.
 	for _, feature := range []string{"shell_tool", "unified_exec", "apps", "multi_agent", "hooks", "plugins", "memories", "goals", "browser_use", "computer_use", "image_generation", "view_image", "shell_snapshot", "sleep_tool"} {
 		args = append(args, "-c", "features."+feature+"=false")
 	}
@@ -81,7 +80,6 @@ func (f *CodexFormatter) Format(ctx context.Context, raw string) (string, error)
 	cmd.Dir = dir
 	cmd.WaitDelay = time.Second
 	waitForTermination := configureTitleProcess(cmd)
-	// Retain Codex's existing subscription authentication, but never API-key auth.
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
 		if key != "OPENAI_API_KEY" && key != "CODEX_API_KEY" {
@@ -178,8 +176,6 @@ func validateFormatterEvents(output []byte) error {
 	return nil
 }
 
-// These conservative checks catch detectable changes; they do not prove semantic
-// equivalence. In particular, lower-case names and moved negation can escape them.
 var (
 	preambleRegex  = regexp.MustCompile(`(?i)^\s*(?:конечно|вот(?:\s+(?:исправленный|отформатированный))?\s+текст|отформатированный текст|расшифровка|как языковая модель|here is|certainly|sure|here's|formatted text)(?:\s|[:,.!\n]|$)`)
 	wordRegex      = regexp.MustCompile(`[\p{L}\p{N}]+(?:['’][\p{L}]+)?`)
@@ -208,14 +204,12 @@ func ValidateFormatting(rawText, formattedText string) error {
 	}
 
 	rawWords, formattedWords := wordCounts(rawText), wordCounts(formattedText)
-	// Preserve counts, not just existence: losing one of two negations is unsafe.
 	protected := strings.Fields("не нет ни никогда нигде никак ничуть нисколько нельзя без not no never none neither nor nowhere hardly barely cannot can't don't doesn't didn't won't shouldn't wouldn't isn't aren't wasn't weren't один одна одно два две три четыре пять шесть семь восемь девять десять одиннадцать двенадцать тринадцать четырнадцать пятнадцать шестнадцать семнадцать восемнадцать девятнадцать двадцать тридцать сорок пятьдесят шестьдесят семьдесят восемьдесят девяносто сто тысяча миллион zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty thirty forty fifty sixty seventy eighty ninety hundred thousand million rm sudo mv cp chmod chown git curl wget ssh")
 	for _, word := range protected {
 		if rawWords[word] != formattedWords[word] {
 			return errors.New("formatted text changed a protected word")
 		}
 	}
-	// Capitalized tokens are the detectable subset of names; tolerate casing changes.
 	for _, word := range wordRegex.FindAllString(rawText, -1) {
 		first, _ := utf8.DecodeRuneInString(word)
 		lower := strings.ToLower(word)
@@ -227,7 +221,6 @@ func ValidateFormatting(rawText, formattedText string) error {
 		counts := func(text string) map[string]int {
 			result := make(map[string]int)
 			for _, token := range re.FindAllString(text, -1) {
-				// Sentence punctuation is not part of a URL or path.
 				result[strings.TrimRight(token, ".,;!?")]++
 			}
 			return result

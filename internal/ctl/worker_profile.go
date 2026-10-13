@@ -43,7 +43,7 @@ func bindManagedWorkerProfile(profile node.ManagedProfile, resolution core.Dispa
 
 func validProfileHarness(harness string) bool {
 	switch core.HarnessKind(harness) {
-	case core.HarnessOpenCode, core.HarnessFX, core.HarnessClaudeCode, core.HarnessCodex:
+	case core.HarnessOpenCode, core.HarnessFX, core.HarnessClaudeCode, core.HarnessCodex, core.HarnessAntigravity:
 		return true
 	default:
 		return false

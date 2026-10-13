@@ -12,9 +12,6 @@ import (
 	"github.com/beruseruko/secretary/internal/node"
 )
 
-// NodeRuntime is the server-side WorkerRuntime adapter. It translates only
-// server-owned Worker/Turn/Attempt fields into typed Node commands. Native
-// harness session IDs and callback capabilities never enter this boundary.
 type NodeRuntime struct {
 	Manager *node.ServerManager
 	Local   *node.LocalNode
@@ -46,9 +43,6 @@ func (r NodeRuntime) send(ctx context.Context, nodeID core.NodeReference, comman
 	return r.Manager.SendCommand(ctx, nodeID, command)
 }
 
-// LocalCommand is the trusted-local equivalent of the authenticated Node
-// protocol. It keeps the old local daemon path while exposing one runtime
-// adapter to WorkerService.
 func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (node.CommandOutcome, error) {
 	if r.Local == nil {
 		return node.CommandOutcome{}, ErrWorkerRuntimeUnavailable
@@ -134,7 +128,7 @@ func (r NodeRuntime) Dispatch(ctx context.Context, commandID string, worker core
 	return r.send(ctx, core.NodeReference(attempt.NodeID), node.Command{Kind: node.CommandDispatch, Dispatch: &node.DispatchCommand{Metadata: r.metadata(commandID, worker, turn, attempt, resolution.HarnessInstance.ID), Envelope: envelope}})
 }
 
-func (r NodeRuntime) Resume(ctx context.Context, commandID string, worker core.Worker, turn core.Turn, attempt core.Phase4Attempt, _ string) error {
+func (r NodeRuntime) Resume(ctx context.Context, commandID string, worker core.Worker, turn core.Turn, attempt core.Phase4Attempt, prompt string) error {
 	binding, err := bindingFromWorker(worker)
 	if err != nil {
 		return err
@@ -142,6 +136,9 @@ func (r NodeRuntime) Resume(ctx context.Context, commandID string, worker core.W
 	envelope, err := r.envelope(worker, turn, attempt, binding)
 	if err != nil {
 		return err
+	}
+	if prompt != "" {
+		envelope.ContinuationPrompt = prompt
 	}
 	return r.send(ctx, core.NodeReference(attempt.NodeID), node.Command{Kind: node.CommandResume, Resume: &node.ResumeCommand{Metadata: r.metadata(commandID, worker, turn, attempt, envelope.HarnessInstance.ID), Envelope: envelope}})
 }

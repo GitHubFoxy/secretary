@@ -84,7 +84,7 @@ func TestTitleTimeoutDoesNotPreventResultOrAcceptLateAnswer(t *testing.T) {
 	adapter, err := New(Config{StatePath: filepath.Join(t.TempDir(), "state.json"), OwnerChatID: 100, TitleTimeout: 10 * time.Millisecond,
 		TitleGenerator: func(context.Context, string) (string, error) {
 			defer close(finished)
-			<-release // Намеренно не соблюдает context.
+			<-release
 			return "Поздний ответ", nil
 		},
 	}, transport, &fakeServer{})

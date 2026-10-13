@@ -38,7 +38,6 @@ test('Svelte app compiles and keeps the Worker-first API seams', () => {
   assert.match(source, /workerAction\('message', inputDrafts\[request\.requestId\].*request\.requestId/);
   assert.match(source, /request_id/);
 
-  // Steer error structured details and input preservation
   assert.match(source, /err\.category = body\?\.category/);
   assert.match(source, /err\.providerCode = body\?\.provider_code/);
   assert.match(source, /err\.technical = body\?\.technical/);

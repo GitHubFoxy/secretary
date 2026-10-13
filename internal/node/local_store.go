@@ -32,12 +32,8 @@ type pendingRequestMapping struct {
 	Kind              ActivityKind           `json:"kind"`
 }
 
-// LocalSessionMapping is intentionally a Node-only type. It is never part of
-// protocol payloads or server domain records.
 type LocalSessionMapping = sessionMapping
 
-// ProcessInspector is intentionally Node-local. The server never receives the
-// native session identifier or the result of this inspection directly.
 type ProcessInspector interface {
 	Inspect(context.Context, CommandRecord) (bool, error)
 }
@@ -53,8 +49,6 @@ type localState struct {
 	Outbox                   []PendingEvent                   `json:"outbox"`
 }
 
-// LocalStore is the Node-owned durable command table, session mapping and
-// normalized event outbox. It is deliberately separate from server delivery.
 type LocalStore struct {
 	mu    sync.Mutex
 	path  string
@@ -160,8 +154,6 @@ func (s *LocalStore) ClaimCommand(command Command) (CommandRecord, bool, error) 
 	return record, false, nil
 }
 
-// SaveCommandReadiness persists an ACK without completing execution. Recovery
-// must still interrupt a processing claim, even when its Outcome is accepted.
 func (s *LocalStore) SaveCommandReadiness(commandID string, outcome CommandOutcome) (CommandRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -219,8 +211,6 @@ func (s *LocalStore) ClaimWorkerResponse(requestID string) (CommandOutcome, bool
 	return outcome, false, nil
 }
 
-// RecoverWorkerResponse turns an uncertain native delivery into an explicit
-// retryable failure. An accepted response is never downgraded.
 func (s *LocalStore) RecoverWorkerResponse(requestID, commandID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -288,8 +278,6 @@ func (s *LocalStore) CompleteCommand(commandID string, outcome CommandOutcome) (
 	return record, nil
 }
 
-// CompleteCommandWithOutcome stores lifecycle completion and its terminal
-// Attempt payload in one durable snapshot.
 func (s *LocalStore) CompleteCommandWithOutcome(commandID string, commandOutcome CommandOutcome, terminal core.AttemptOutcomeEnvelope) (CommandRecord, error) {
 	if err := terminal.Validate(); err != nil {
 		return CommandRecord{}, err
@@ -414,8 +402,6 @@ func (s *LocalStore) CommandForAttempt(attemptID string) (CommandRecord, error) 
 	return candidates[0], nil
 }
 
-// lifecycleCommands returns every candidate for an exact checkpoint. The
-// caller must reject ambiguity instead of selecting by map order or timestamp.
 func (s *LocalStore) lifecycleCommands(attemptID string) []CommandRecord {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -526,8 +512,6 @@ func (s *LocalStore) NextEventSequence() uint64 {
 	return s.state.NextSequence
 }
 
-// ReserveEventSequence allocates a durable sequence for a Node message that
-// is not itself stored in the outbox, such as inventory or heartbeat.
 func (s *LocalStore) ReserveEventSequence() (uint64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -699,9 +683,6 @@ func (s *LocalStore) RecoverRunning(ctx context.Context, inspector ProcessInspec
 		}
 		metadata := command.Metadata()
 		if command.Kind == CommandRespondWorker {
-			// A resumed session proves only that the runtime exists. It cannot
-			// prove that Respond reached the native harness, so leave this
-			// command retryable with its original ID and request ID.
 			if command.RespondWorker != nil {
 				if err := s.RecoverWorkerResponse(command.RespondWorker.RequestID, record.CommandID); err != nil {
 					return err

@@ -362,7 +362,6 @@ func TestConversationReplayBoundaryDeduplicatesDelayedNotify(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Simulate a committed SQLite entry whose post-commit observer callback is delayed.
 	store.SetEntryObserver(nil)
 	conversation, err := store.ConversationForPerson(context.Background(), api.OwnerID())
 	if err != nil {
@@ -410,7 +409,6 @@ func TestConversationReplayBoundaryDeduplicatesDelayedNotify(t *testing.T) {
 		t.Fatalf("replay entry=%#v want=%#v", replayed, entry)
 	}
 
-	// This is the delayed notify from the same commit. It must be recognized as already replayed.
 	api.publishEntry(entry)
 	duplicateCtx, duplicateCancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer duplicateCancel()

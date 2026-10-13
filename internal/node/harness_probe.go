@@ -83,13 +83,10 @@ func (r ExecCommandRunner) ProbeACP(ctx context.Context, command string, args ..
 	return probeOpenCodeACPWithDataHome(ctx, command, r.OpenCodeDataHome, r.LegacyOpenCodeDataHome, args...)
 }
 
-// HarnessProbeSpec describes direct, local observations. ModelsOptional is for
-// harnesses such as Claude Code that do not currently expose a documented model
-// catalog command; such a harness may be ready with an empty observed model set,
-// but explicit model pins remain rejected by the server contract.
 type HarnessProbeSpec struct {
 	Kind                  core.HarnessKind
 	Binary                string
+	ProfileDir            string
 	VersionArgs           []string
 	AuthenticationArgs    []string
 	HealthArgs            []string
@@ -106,6 +103,9 @@ type HarnessProbeSpec struct {
 func (s HarnessProbeSpec) validate() error {
 	if s.Kind == "" || strings.TrimSpace(s.Binary) == "" {
 		return errors.New("harness probe: kind and executable are required")
+	}
+	if s.Kind == core.HarnessAntigravity {
+		return nil
 	}
 	if len(s.VersionArgs) == 0 || len(s.AuthenticationArgs) == 0 {
 		return fmt.Errorf("harness probe: %s requires version and authentication commands", s.Kind)
@@ -140,6 +140,9 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
 	}
 	if p.Runner == nil {
 		p.Runner = ExecCommandRunner{}
+	}
+	if p.Spec.Kind == core.HarnessAntigravity {
+		return p.probeAntigravity(ctx)
 	}
 	if p.Spec.Kind == core.HarnessOpenCode {
 		switch runner := p.Runner.(type) {
@@ -682,10 +685,7 @@ func DefaultOpenCodeProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
 		Kind: core.HarnessOpenCode, Binary: "opencode", VersionArgs: []string{"--version"}, AuthenticationArgs: append([]string(nil), openCodeAuthenticationArgs...), ModelsArgs: []string{"models"}, ACPArgs: []string{"acp"},
 		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel},
-		// V2.0.22 ACP translates native tools to title/kind/locations/rawInput,
-		// without explicit tool identity. Do not promise normalized tool cards
-		// or guess identity from a human-readable progress title (ticket20).
-		ActivityCapabilities: []core.ActivityCapability{core.ActivityAssistantTextDelta, core.ActivityStatus, core.ActivityAttemptOutcome, core.ActivityPermissionRequest, core.ActivityUserInputRequest},
+		ActivityCapabilities:  []core.ActivityCapability{core.ActivityAssistantTextDelta, core.ActivityStatus, core.ActivityAttemptOutcome, core.ActivityPermissionRequest, core.ActivityUserInputRequest},
 	}
 }
 
@@ -694,12 +694,12 @@ type HarnessDiscovery struct {
 	Runner                 CommandRunner
 	OpenCodeDataHome       string
 	LegacyOpenCodeDataHome bool
+	AntigravityProfileDir  string
 	Probes                 []HarnessProbe
 	IncludeOpenCode        bool
-	// BinaryOverrides lets packaging resolve installed harnesses without
-	// relying on a launchd process inheriting an interactive shell PATH.
-	BinaryOverrides map[core.HarnessKind]string
-	Now             func() time.Time
+	IncludeAntigravity     bool
+	BinaryOverrides        map[core.HarnessKind]string
+	Now                    func() time.Time
 }
 
 func (d HarnessDiscovery) Discover(ctx context.Context) (core.HarnessInventorySnapshot, error) {
@@ -722,6 +722,9 @@ func (d HarnessDiscovery) Discover(ctx context.Context) (core.HarnessInventorySn
 			}
 			probes = filtered
 		}
+		if d.IncludeAntigravity || strings.TrimSpace(d.BinaryOverrides[core.HarnessAntigravity]) != "" {
+			probes = append(probes, NewAntigravityProbe(d.Node, runner))
+		}
 	}
 	if d.IncludeOpenCode {
 		found := false
@@ -732,9 +735,21 @@ func (d HarnessDiscovery) Discover(ctx context.Context) (core.HarnessInventorySn
 			probes = append(probes, NewOpenCodeCompatibilityProbe(d.Node, d.Runner))
 		}
 	}
+	if d.IncludeAntigravity {
+		found := false
+		for _, probe := range probes {
+			found = found || probe.Spec.Kind == core.HarnessAntigravity
+		}
+		if !found {
+			probes = append(probes, NewAntigravityProbe(d.Node, d.Runner))
+		}
+	}
 	for index := range probes {
 		if binary := strings.TrimSpace(d.BinaryOverrides[probes[index].Spec.Kind]); binary != "" {
 			probes[index].Spec.Binary = binary
+		}
+		if probes[index].Spec.Kind == core.HarnessAntigravity {
+			probes[index].Spec.ProfileDir = ResolveAntigravityProfileDir(d.AntigravityProfileDir, probes[index].Spec.ProfileDir)
 		}
 		if probes[index].Spec.Kind == core.HarnessOpenCode && d.OpenCodeDataHome != "" {
 			switch current := probes[index].Runner.(type) {
@@ -754,7 +769,15 @@ func (d HarnessDiscovery) Discover(ctx context.Context) (core.HarnessInventorySn
 	}
 	instances := make([]core.HarnessInstance, 0, len(probes))
 	for _, probe := range probes {
-		instances = append(instances, probe.Probe(ctx).Instance)
+		res := probe.Probe(ctx)
+		inst := res.Instance
+		if inst.ErrorCode == "" && res.ErrorCode != "" {
+			inst.ErrorCode = res.ErrorCode
+		}
+		if inst.DiagnosticReason == "" && res.Err != nil {
+			inst.DiagnosticReason = res.Err.Error()
+		}
+		instances = append(instances, inst)
 	}
 	now := time.Now
 	if d.Now != nil {

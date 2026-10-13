@@ -22,14 +22,10 @@ type Responder interface {
 	Respond(context.Context, string, string) error
 }
 
-// RequestRebinder lets a resumed Node-local session reuse durable request IDs
-// that were created before the transport or process reconnect.
 type RequestRebinder interface {
 	RebindRequests([]string)
 }
 
-// PendingRequestRebinder is the reconnect seam that retains request kind.
-// RequestRebinder remains for older runtime adapters.
 type PendingRequestRebinder interface {
 	RebindPendingRequests([]PendingRequest)
 }
@@ -117,8 +113,6 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 				if n.liveContinuationReadiness(command, record) {
 					return record.Outcome, nil
 				}
-				// The terminal watcher may have completed and removed the
-				// session since ClaimCommand took its processing snapshot.
 				if _, same := sameCommandEnvelope(command, record); same {
 					completed, err := n.store.Command(command.Metadata().CommandID)
 					if err == nil && completed.State == CommandAccepted && completed.Outcome == record.Outcome {
@@ -153,9 +147,6 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 		outcome = failedOutcome(command, "unknown_command", "unknown command")
 	}
 	if pendingContinuation && outcome.State == CommandAccepted {
-		// Readiness ACK is durable, but execution stays processing until
-		// watchSession atomically stores its terminal Result in the outbox.
-		// A crash before/while Prompt therefore becomes explicit interruption.
 		return outcome, nil
 	}
 	stored, err := n.store.CompleteCommand(command.Metadata().CommandID, outcome)
@@ -203,14 +194,22 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "workspace_failed", err.Error())
 		}
 	}
-	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: command.Envelope.OriginalUserIntent, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
+	continuing := command.Envelope.PreviousAttemptID != ""
+	promptText := command.Envelope.OriginalUserIntent
+	if command.Envelope.ContinuationPrompt != "" {
+		promptText = command.Envelope.ContinuationPrompt
+	}
+	task := command.Envelope.OriginalUserIntent
+	if continuing {
+		task = promptText
+	}
+	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
 	var session Session
-	continuing := command.Envelope.PreviousAttemptID != ""
 	if continuing {
 		mapping, mappingErr := n.continuationMapping(command.Envelope, command.Envelope.PreviousAttemptID)
 		resumer, ok := n.runtime.(Resumer)
@@ -249,7 +248,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	n.registerSession(mapping.AttemptID, session)
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
-		go func() { _ = session.Prompt(context.Background(), command.Envelope.OriginalUserIntent) }()
+		go func() { _ = session.Prompt(context.Background(), promptText) }()
 	} else {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
 	}
@@ -450,7 +449,15 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		}
 		workspace = canonicalWorkspace
 	}
-	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: command.Envelope.OriginalUserIntent, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID)}
+	promptText := command.Envelope.OriginalUserIntent
+	if command.Envelope.ContinuationPrompt != "" {
+		promptText = command.Envelope.ContinuationPrompt
+	}
+	task := command.Envelope.OriginalUserIntent
+	if continuing {
+		task = promptText
+	}
+	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID), DeferInitialPrompt: continuing}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "binding_conflict", err.Error())
@@ -478,7 +485,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	n.registerSession(command.Metadata.AttemptID, session)
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
-		go func() { _ = session.Prompt(context.Background(), command.Envelope.OriginalUserIntent) }()
+		go func() { _ = session.Prompt(context.Background(), promptText) }()
 	} else {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
 	}
@@ -517,8 +524,6 @@ func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerComma
 		return outcome
 	}
 	if err := responder.Respond(ctx, command.RequestID, command.Response); err != nil {
-		// Responder errors can race with native acceptance. The server must wait
-		// for a later receipt/replay instead of treating this as authoritative denial.
 		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "execution_state_unknown", err.Error())
 		_ = n.store.CompleteWorkerResponse(command.RequestID, outcome)
 		return outcome
@@ -609,21 +614,12 @@ func (n *ExecutionNode) Inspect(ctx context.Context, record CommandRecord) (bool
 	if err != nil {
 		return false, nil
 	}
-	// Session resume is not evidence that a native Respond completed. The
-	// command must go through normal retry/re-dispatch with the same IDs.
 	if command.Kind == CommandRespondWorker {
 		return false, nil
 	}
-	// A saved native mapping (or session/load) proves a checkpoint, not
-	// delivery of this command input. In the mapping -> async Prompt crash
-	// window there is no execution receipt. RecoverRunning must interrupt,
-	// never replay an uncertain prompt or turn idle history into accepted.
 	if command.Kind == CommandDispatch || command.Kind == CommandResume {
 		return false, nil
 	}
-	// Session presence cannot prove whether this steering input crossed the
-	// native handoff boundary. Recovery must preserve uncertainty and never
-	// convert a claimed command into a false accepted receipt.
 	if command.Kind == CommandSteering {
 		return false, nil
 	}
@@ -713,7 +709,7 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, t
 						outcome.Diagnostics = result.Technical
 					}
 				}
-				if envelope.HarnessInstance.Kind == core.HarnessOpenCode || envelope.HarnessInstance.Kind == core.HarnessClaudeCode || envelope.HarnessInstance.Kind == core.HarnessCodex {
+				if envelope.HarnessInstance.Kind == core.HarnessOpenCode || envelope.HarnessInstance.Kind == core.HarnessClaudeCode || envelope.HarnessInstance.Kind == core.HarnessCodex || envelope.HarnessInstance.Kind == core.HarnessAntigravity {
 					if err := session.Close(); err != nil {
 						outcome.Status = core.OutcomeFailed
 						if result.Status == "succeeded" {
@@ -726,6 +722,25 @@ func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, t
 				n.removeSession(envelope.AttemptID)
 				if outcome.Status == core.OutcomeFailed {
 					sanitizeTerminalFailureOutcome(&outcome)
+					if outcome.FailureCategory == core.FailureCategoryUsageLimit && envelope.HarnessInstance.Kind == core.HarnessCodex {
+						commandBin := "codex"
+						var env []string
+						if n.runtime != nil {
+							if cr, ok := n.runtime.(CodexRuntime); ok {
+								if configured, err := cr.configured(StartRequest{Profile: envelope.Profile, Workspace: envelope.Workspace}); err == nil {
+									commandBin = configured.Command
+									env = configured.Environment
+								}
+							}
+						}
+						if resp, err := readCodexRateLimits(context.Background(), commandBin, env, envelope.Workspace); err == nil {
+							obs := evaluateCodexRateLimits(resp, envelope.Model, outcome.FailureCode, time.Now().UTC(), nil)
+							if obs.ResetsAt != nil {
+								outcome.ResetsAt = obs.ResetsAt
+								outcome.QuotaScope = obs.Scope
+							}
+						}
+					}
 				}
 				if len(terminalCommand) != 0 {
 					command := terminalCommand[0]
@@ -844,9 +859,6 @@ func (n *ExecutionNode) publishRuntimeActivity(envelope WorkerEnvelope, item Act
 	_, _ = n.store.QueueActivity(activity)
 }
 
-// capabilitiesForObservedActivity keeps attempts dispatched with a pre-Phase-4
-// inventory compatible with a typed request emitted by the runtime. The event
-// itself is still validated for shape and binding before it is persisted.
 func capabilitiesForObservedActivity(instance core.HarnessInstance, kind ActivityKind) core.HarnessCapabilities {
 	capabilities := instance.Capabilities
 	if instance.Kind != core.HarnessFX && instance.Kind != core.HarnessCodex {
@@ -888,15 +900,10 @@ func (n *ExecutionNode) rebindPendingRequests(attemptID string, session Session)
 	}
 }
 
-// NormalizeRuntimeActivity is the adapter boundary for normalized activity.
-// Unsupported or unknown runtime observations are never synthesized.
 func NormalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, capabilities core.HarnessCapabilities, workspace ...string) (core.Activity, bool) {
 	return normalizeRuntimeActivity(item, metadata, capabilities, workspace...)
 }
 
-// normalizeRuntimeActivity is intentionally allow-list based. An adapter event
-// with no normalized representation is dropped rather than turned into fake
-// status or progress.
 func normalizeRuntimeActivity(item Activity, metadata core.ActivityMetadata, capabilities core.HarnessCapabilities, workspace ...string) (core.Activity, bool) {
 	workspacePath := ""
 	if len(workspace) > 0 {

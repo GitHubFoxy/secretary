@@ -45,7 +45,6 @@ var knownMessageTypes = map[MessageType]bool{
 	MessageActivity: true, MessageAttemptOutcome: true, MessageEventAck: true,
 }
 
-// Envelope is the authenticated wire frame. Payloads are typed by Type.
 type Envelope struct {
 	Version   int                `json:"version"`
 	Type      MessageType        `json:"type"`
@@ -107,8 +106,6 @@ func DecodeEnvelope(encoded []byte) (Envelope, error) {
 	return e, nil
 }
 
-// Authenticator uses a per-Node secret. The signed input is deterministic and
-// does not include the signature itself.
 type Authenticator struct{ secret []byte }
 
 func NewAuthenticator(secret []byte) Authenticator {
@@ -266,6 +263,7 @@ type WorkerEnvelope struct {
 	ApprovalPolicy       string               `json:"approval_policy,omitempty"`
 	Profile              ManagedProfile       `json:"profile,omitempty"`
 	LegacyWorkerTemplate bool                 `json:"legacy_worker_template,omitempty"`
+	ContinuationPrompt   string               `json:"continuation_prompt,omitempty"`
 }
 
 func (w WorkerEnvelope) ValidateAgainstInventory(node core.NodeReference, inventory core.HarnessInventorySnapshot) error {

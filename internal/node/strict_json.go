@@ -9,9 +9,6 @@ import (
 	"unicode/utf8"
 )
 
-// decodeStrictJSON decodes one JSON value, rejecting duplicate decoded keys at
-// every object depth, non-canonical field aliases, unknown struct fields,
-// invalid UTF-8/unpaired surrogates, malformed syntax, and trailing values.
 func decodeStrictJSON(encoded []byte, destination any) error {
 	if err := scanJSONKeys(encoded, true); err != nil {
 		return err
@@ -57,8 +54,6 @@ func scanJSONKeys(encoded []byte, requireLowercaseKeys bool) error {
 	return nil
 }
 
-// validateJSONUnicodeEscapes rejects unpaired UTF-16 surrogates before
-// encoding/json can silently replace them with U+FFFD.
 func validateJSONUnicodeEscapes(encoded []byte) error {
 	inString := false
 	for index := 0; index < len(encoded); index++ {
@@ -78,7 +73,7 @@ func validateJSONUnicodeEscapes(encoded []byte) error {
 			}
 			codeUnit, end, ok := parseJSONUnicodeEscape(encoded, index)
 			if !ok {
-				return nil // encoding/json reports malformed escape syntax.
+				return nil
 			}
 			switch {
 			case codeUnit >= 0xD800 && codeUnit <= 0xDBFF:

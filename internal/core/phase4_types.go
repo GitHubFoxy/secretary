@@ -7,7 +7,6 @@ import (
 	"unicode/utf8"
 )
 
-// WorkerStatus is the server-owned lifecycle of a persistent Worker.
 type WorkerStatus string
 
 const (
@@ -16,12 +15,12 @@ const (
 	WorkerWorking         WorkerStatus = "working"
 	WorkerWaitingApproval WorkerStatus = "waiting_approval"
 	WorkerNeedsInput      WorkerStatus = "needs_input"
+	WorkerLimited         WorkerStatus = "limited"
 	WorkerOffline         WorkerStatus = "offline"
 	WorkerIdle            WorkerStatus = "idle"
 	WorkerClosed          WorkerStatus = "closed"
 )
 
-// TurnState describes one user intent or follow-up within a Worker.
 type TurnState string
 
 const (
@@ -30,6 +29,7 @@ const (
 	TurnActive          TurnState = "active"
 	TurnWaitingApproval TurnState = "waiting_approval"
 	TurnNeedsInput      TurnState = "needs_input"
+	TurnSuspended       TurnState = "suspended"
 	TurnSucceeded       TurnState = "succeeded"
 	TurnFailed          TurnState = "failed"
 	TurnCanceled        TurnState = "canceled"
@@ -41,10 +41,9 @@ func (s TurnState) Terminal() bool {
 }
 
 func (s TurnState) Active() bool {
-	return s == TurnQueued || s == TurnStarting || s == TurnActive || s == TurnWaitingApproval || s == TurnNeedsInput
+	return s == TurnQueued || s == TurnStarting || s == TurnActive || s == TurnWaitingApproval || s == TurnNeedsInput || s == TurnSuspended
 }
 
-// AttemptOutcomeStatus is the terminal observation for an Attempt.
 type AttemptOutcomeStatus string
 
 const (
@@ -58,7 +57,6 @@ func (s AttemptOutcomeStatus) Valid() bool {
 	return s == OutcomeSucceeded || s == OutcomeFailed || s == OutcomeCanceled || s == OutcomeInterrupted
 }
 
-// OutcomeClassification controls whether the Turn may be retried internally.
 type OutcomeClassification string
 
 const (
@@ -119,8 +117,6 @@ type WorkerFailure struct {
 	Technical    string          `json:"technical,omitempty"`
 }
 
-// Worker is the Phase 4 product entity. Its execution binding and policy are
-// immutable after creation. Native runtime sessions are deliberately absent.
 type Worker struct {
 	ID                     string       `json:"id"`
 	WorkerRef              string       `json:"worker_ref"`
@@ -143,10 +139,7 @@ type Worker struct {
 	Archived               bool         `json:"archived"`
 }
 
-// Turn is a single user direction. Retries stay inside the same Turn.
 type Turn struct {
-	// PreviousAttemptID freezes the Worker current checkpoint at Turn creation.
-	// It is server/Node lifecycle metadata, never a public DTO field.
 	PreviousAttemptID string    `json:"-"`
 	ID                string    `json:"id"`
 	WorkerID          string    `json:"worker_id"`
@@ -160,13 +153,8 @@ type Turn struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
-// Attempt contains only server lifecycle metadata. It never contains a
-// native runtime session identifier. The legacy-compatible Attempt type is
-// extended with the same Phase 4 fields.
 type Phase4Attempt = Attempt
 
-// AttemptOutcome is stored separately from Result. Intermediate retryable
-// outcomes never become Conversation entries.
 type AttemptOutcome struct {
 	ID              string                `json:"id"`
 	AttemptID       string                `json:"attempt_id"`
@@ -179,14 +167,8 @@ type AttemptOutcome struct {
 	CreatedAt       time.Time             `json:"created_at"`
 }
 
-// Result is the one user-visible terminal outcome for a Turn.
-// AttemptID identifies the final Attempt that produced it, not its identity.
-// It does not contain a native runtime session ID.
 type Phase4Result = Result
 
-// WorkerSpec is the creation contract for a Worker and its immutable binding.
-// WorkerDetails is the durable Secretary read model. It deliberately exposes
-// immutable bindings and lifecycle records, never Node-local session IDs.
 type ApprovalKind string
 
 const (
@@ -254,8 +236,6 @@ const (
 	WorkerCommandReceiptUncertain WorkerCommandReceiptState = "uncertain"
 )
 
-// WorkerCommandReceipt is an authenticated Node outcome bound to one durable
-// command and its immutable Worker Turn/Attempt.
 type WorkerCommandReceipt struct {
 	CommandID       string
 	Kind            string
@@ -269,8 +249,6 @@ type WorkerCommandReceipt struct {
 	Technical       string
 }
 
-// WorkerCommand persists the server-side delivery decision for one immutable
-// Worker Attempt command. It contains no Node-local runtime identifiers.
 type WorkerCommand struct {
 	ID         string             `json:"id"`
 	Kind       string             `json:"kind"`
@@ -288,14 +266,14 @@ type WorkerDetails struct {
 	ActionMode      string                `json:"action_mode,omitempty"`
 	ActionMessageID string                `json:"action_message_id,omitempty"`
 	QueuedMessages  []QueuedWorkerMessage `json:"queued_messages"`
-	// ActionTurnID is populated only by ctl for the exact Worker Turn affected by an accepted Secretary action; it is never serialized or persisted.
-	ActionTurnID string           `json:"-"`
-	Worker       Worker           `json:"worker"`
-	Turns        []Turn           `json:"turns"`
-	Attempts     []Phase4Attempt  `json:"attempts"`
-	Outcomes     []AttemptOutcome `json:"outcomes"`
-	Results      []Phase4Result   `json:"results"`
-	Approvals    []Approval       `json:"approvals,omitempty"`
+	ActionTurnID    string                `json:"-"`
+	Worker          Worker                `json:"worker"`
+	Turns           []Turn                `json:"turns"`
+	Attempts        []Phase4Attempt       `json:"attempts"`
+	Outcomes        []AttemptOutcome      `json:"outcomes"`
+	Results         []Phase4Result        `json:"results"`
+	Approvals       []Approval            `json:"approvals,omitempty"`
+	ActiveSchedule  *AttemptSchedule      `json:"active_schedule,omitempty"`
 }
 
 func (d WorkerDetails) CurrentAttempt() *Phase4Attempt {
@@ -327,41 +305,32 @@ func (d WorkerDetails) CurrentTurn() *Turn {
 }
 
 type WorkerSpec struct {
-	WorkerRef         string
-	Title             string
-	Intent            string
-	ProjectID         string
-	NodeID            string
-	HarnessInstanceID string
-	PolicySnapshot    string
-	ProjectSnapshot   string
-	ProfileSnapshot   string
-	Workspace         string
-	ProjectRevision   int64
-	// Expected Node fields are set only by ResolveAndCreateWorker. They bind
-	// creation to exactly the observed Node state and inventory snapshot.
+	WorkerRef             string
+	Title                 string
+	Intent                string
+	ProjectID             string
+	NodeID                string
+	HarnessInstanceID     string
+	PolicySnapshot        string
+	ProjectSnapshot       string
+	ProfileSnapshot       string
+	Workspace             string
+	ProjectRevision       int64
 	ExpectedNodeOnline    bool
 	ExpectedNodeDraining  bool
 	ExpectedNodeRevoked   bool
 	ExpectedInventoryJSON string
-	// IdempotencyKey makes Worker, first Turn, and first Attempt creation one
-	// durable operation. An empty key preserves the legacy non-idempotent API.
-	IdempotencyKey string
+	IdempotencyKey        string
 }
 
-// TurnSpec contains the durable input for a new Turn.
 type TurnSpec struct {
 	Input            string
 	NormalizedIntent string
 	ContextSnapshot  string
-	// IdempotencyKey makes follow-up Turn and Attempt creation one durable operation.
-	IdempotencyKey string
-	// CommandKind records the first recoverable handoff for this Attempt in the
-	// same transaction. Empty means dispatch.
-	CommandKind string
+	IdempotencyKey   string
+	CommandKind      string
 }
 
-// AttemptOutcomeInput is the only input accepted by terminal event handling.
 type AttemptOutcomeInput struct {
 	Status          AttemptOutcomeStatus
 	Classification  OutcomeClassification
@@ -372,19 +341,45 @@ type AttemptOutcomeInput struct {
 	FailureCode     string
 	FailureCategory FailureCategory
 	ArtifactRefs    string
+	ResetsAt        *time.Time
+	QuotaScope      string
 }
 
-// FinishAttemptInput is the production completion contract. A retryable
-// outcome must carry a durable command id so outcome, next Attempt and state
-// projections commit together. Retryable completion must not use
-// RecordAttemptOutcome.
+const ContinuationPrompt = "Continue previous work from the point where it was interrupted by usage limit."
+
+type AttemptScheduleState string
+
+const (
+	SchedulePending    AttemptScheduleState = "pending"
+	ScheduleManualHold AttemptScheduleState = "manual_hold"
+	ScheduleClaimed    AttemptScheduleState = "claimed"
+	ScheduleCompleted  AttemptScheduleState = "completed"
+	ScheduleCanceled   AttemptScheduleState = "canceled"
+)
+
+type AttemptSchedule struct {
+	ID                 string               `json:"id"`
+	WorkerID           string               `json:"worker_id"`
+	TurnID             string               `json:"turn_id"`
+	SourceAttemptID    string               `json:"source_attempt_id"`
+	AttemptID          string               `json:"attempt_id"`
+	ScheduledAt        *time.Time           `json:"scheduled_at,omitempty"`
+	State              AttemptScheduleState `json:"state"`
+	FailureCategory    FailureCategory      `json:"failure_category,omitempty"`
+	FailureCode        string               `json:"failure_code,omitempty"`
+	FailureMessage     string               `json:"failure_message,omitempty"`
+	QuotaScope         string               `json:"quota_scope,omitempty"`
+	DeadlineEvidence   string               `json:"deadline_evidence,omitempty"`
+	ContinuationPrompt string               `json:"continuation_prompt"`
+	CreatedAt          time.Time            `json:"created_at"`
+	UpdatedAt          time.Time            `json:"updated_at"`
+}
+
 type FinishAttemptInput struct {
 	AttemptOutcomeInput
 	RetryCommandID string
 }
 
-// FinishAttemptResult contains the durable state written by FinishAttempt.
-// NextAttempt is set only when a retryable outcome creates the next Attempt.
 type FinishAttemptResult struct {
 	Outcome     AttemptOutcome
 	Result      *Phase4Result
@@ -392,8 +387,6 @@ type FinishAttemptResult struct {
 	Duplicate   bool
 }
 
-// Phase4RecoveryDecision is returned by the Node or harness that can inspect
-// its own execution. The server must not infer a remote Attempt is dead.
 type Phase4RecoveryDecision string
 
 const (
@@ -401,13 +394,10 @@ const (
 	Phase4RecoveryUnknown Phase4RecoveryDecision = "unknown"
 )
 
-// Phase4AttemptRecoveryResolver is implemented by an explicit Node/harness
-// probe. A nil resolver means that Phase 4 recovery is not attempted.
 type Phase4AttemptRecoveryResolver interface {
 	ResolvePhase4Attempt(context.Context, Phase4Attempt) (Phase4RecoveryDecision, error)
 }
 
-// Phase4AttemptRecoveryFunc adapts a function into a recovery resolver.
 type Phase4AttemptRecoveryFunc func(context.Context, Phase4Attempt) (Phase4RecoveryDecision, error)
 
 func (f Phase4AttemptRecoveryFunc) ResolvePhase4Attempt(ctx context.Context, attempt Phase4Attempt) (Phase4RecoveryDecision, error) {

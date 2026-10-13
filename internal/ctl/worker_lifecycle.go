@@ -20,9 +20,6 @@ var (
 	ErrWorkerCommandPending     = errors.New("worker: runtime command delivery is pending recovery")
 )
 
-// WorkerRuntime delivers lifecycle commands to the immutable Worker binding.
-// commandID is durable and stable across duplicate Secretary tool delivery.
-// It deliberately has no retry operation and never receives a runtime session ID.
 type WorkerRuntime interface {
 	Dispatch(context.Context, string, core.Worker, core.Turn, core.Phase4Attempt, core.DispatchResolution) error
 	Steer(context.Context, string, core.Worker, core.Phase4Attempt, string) error
@@ -53,12 +50,11 @@ type WorkerPreferences struct {
 }
 
 type SpawnWorkerRequest struct {
-	Intent          string            `json:"intent"`
-	Preferences     WorkerPreferences `json:"preferences"`
-	SecretaryTurnID string            `json:"-"`
-	InputID         string            `json:"-"`
-	IdempotencyKey  string            `json:"idempotency_key,omitempty"`
-	// Flat fields preserve direct Go callers while MCP uses preferences.
+	Intent          string                 `json:"intent"`
+	Preferences     WorkerPreferences      `json:"preferences"`
+	SecretaryTurnID string                 `json:"-"`
+	InputID         string                 `json:"-"`
+	IdempotencyKey  string                 `json:"idempotency_key,omitempty"`
 	ProjectID       string                 `json:"project_id,omitempty"`
 	NodeID          core.NodeReference     `json:"node_id,omitempty"`
 	HarnessInstance core.HarnessInstanceID `json:"harness_instance_id,omitempty"`
@@ -84,16 +80,10 @@ type SecretaryReplyRequest struct {
 	Text            string `json:"text"`
 }
 
-// RespondWorker is the single server-side entry point for permission and input
-// responses. It intentionally delegates to the same generic Node command path
-// as Worker messages.
 func (s WorkerService) RespondWorker(ctx context.Context, request MessageWorkerRequest) (core.WorkerDetails, error) {
 	return s.MessageWorker(ctx, request)
 }
 
-// RetryApprovalResolution is an explicit owner action. It never accepts a
-// replacement response or command identity from the caller; it reuses the
-// saved decision and exact respond command for the original immutable Attempt.
 func (s WorkerService) RetryApprovalResolution(ctx context.Context, requestID, clientID string) (core.WorkerDetails, error) {
 	conversation, err := s.authorize(ctx)
 	if err != nil {
@@ -212,10 +202,6 @@ func (s WorkerService) AcknowledgeUser(ctx context.Context, request SecretaryRep
 	return s.Store.RecordSecretaryAcknowledgement(ctx, s.PersonID, s.Capability, request.SecretaryTurnID, request.InputID, request.Text)
 }
 
-// claimCommand commits the server-side command identity before handoff. The
-// same Worker, Attempt and command kind always reuse one ID. A duplicate
-// pending command is resent only after core atomically reclaims its expired
-// lease. Node command dedupe then protects the side effect of that handoff.
 func (s WorkerService) claimCommand(ctx context.Context, kind, dedupeKey string, worker core.Worker, attempt core.Phase4Attempt, origin *core.SecretaryOriginIdentity) (core.WorkerCommand, bool, error) {
 	origins := []core.SecretaryOriginIdentity(nil)
 	if origin != nil {
@@ -298,9 +284,6 @@ func steeringDedupeKey(idempotencyKey string) (string, error) {
 
 func (s WorkerService) deliverCommand(ctx context.Context, command core.WorkerCommand, send func(string) error) error {
 	if command.Kind == "steering" || command.Kind == "steer" {
-		// Persist the point after which this exact command identity must not be
-		// handed to a local native Session a second time. A later receipt resolves
-		// this uncertain state; failures before this write never reach the runtime.
 		if _, err := s.Store.MarkWorkerCommandUncertain(context.Background(), command.ID, "steering handoff started; awaiting Node receipt"); err != nil {
 			return fmt.Errorf("worker: persist steering handoff boundary: %w", err)
 		}
@@ -385,8 +368,6 @@ func (s WorkerService) uncertainCommandStorageError(commandID string, cause, sto
 	return errors.Join(node.ErrCommandOutcomeUnknown, cause, storageErr, uncertainErr)
 }
 
-// recoverLifecycleCommand repairs pre-intent committed Attempts, then claims
-// the stable command ID. The runtime is required only when a handoff is due.
 func (s WorkerService) recoverLifecycleCommand(ctx context.Context, kind string, worker core.Worker, attempt core.Phase4Attempt, send func(string) error, origin *core.SecretaryOriginIdentity) error {
 	if _, err := s.Store.EnsureLifecycleCommandIntent(ctx, kind, worker.ID, attempt.ID); err != nil {
 		return err
@@ -448,21 +429,14 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	resolutionRequest := core.DispatchResolutionRequest{ProjectID: preferences.ProjectID, NodeID: preferences.NodeID, HarnessInstanceID: preferences.HarnessInstance,
 		HarnessKind: preferences.HarnessKind, Workspace: preferences.Workspace, ModelID: preferences.ModelID,
 		Reasoning: preferences.Reasoning, WorkerPolicy: s.WorkerPolicy}
-	// Replay precedes the preview because the durable outcome is valid even if
-	// its Project, Node inventory, or dispatch preferences have since changed.
 	if worker, turn, attempt, resolution, found, err := s.Store.ReplayWorkerCreation(ctx, request.IdempotencyKey); err != nil {
 		return core.WorkerDetails{}, err
 	} else if found {
-		// Queued spawn acceptance is committed with its original input identity;
-		// retries must not reassign that durable action to a later user turn.
 		if origin != nil {
 			if _, err := s.Store.ValidateSecretaryWorkerCreationOriginIfPresent(ctx, *origin, turn.ID); err != nil {
 				return core.WorkerDetails{}, err
 			}
 		}
-		// A new Worker is stored queued until the Node acknowledges the initial
-		// dispatch. Its replay snapshot therefore cannot decide whether the
-		// durable pending handoff still needs delivery.
 		if err := s.recoverLifecycleCommand(ctx, "dispatch", worker, attempt, func(commandID string) error {
 			return s.Runtime.Dispatch(ctx, commandID, worker, turn, attempt, resolution)
 		}, origin); err != nil {
@@ -478,8 +452,6 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	if s.WorkerPolicySource != nil {
 		resolutionRequest.WorkerPolicy = s.WorkerPolicySource()
 	}
-	// Resolve before creation so the production MCP wiring with Runtime=nil
-	// cannot leave an online Worker/Turn/Attempt behind on a rejected spawn.
 	preview, err := s.Store.ResolveDispatch(ctx, resolutionRequest)
 	if err != nil {
 		return core.WorkerDetails{}, err
@@ -546,9 +518,6 @@ func approvalResponseState(kind core.ApprovalKind, response string) (core.Approv
 	}
 }
 
-// ApplyTrustedLocalApproval is the explicit policy-side local handoff. The
-// server commits approval only after the typed response reaches the Node
-// runtime, so local policy cannot leave the harness waiting forever.
 func (s WorkerService) ApplyTrustedLocalApproval(ctx context.Context, requestID string, policy core.TrustedLocalApprovalPolicy) (core.Approval, error) {
 	approval, err := s.Store.Approval(ctx, requestID)
 	if err != nil {
@@ -685,6 +654,28 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		return details, err
 	}
 	attempt := details.CurrentAttempt()
+	if details.Worker.Status == core.WorkerLimited {
+		if attempt != nil && !attempt.State.Terminal() {
+			if _, _, err := s.Store.CancelLimitedWorkerAttempt(ctx, details.Worker.ID, attempt.ID, "Canceled by direct input"); err != nil {
+				return core.WorkerDetails{}, err
+			}
+		} else {
+			schedule, foundSchedule, err := s.Store.FindActiveScheduleForWorker(ctx, details.Worker.ID)
+			if err != nil {
+				return core.WorkerDetails{}, err
+			}
+			if foundSchedule {
+				if err := s.Store.CancelAttemptSchedule(ctx, schedule.ID, s.workerCommandNow()); err != nil {
+					return core.WorkerDetails{}, err
+				}
+			}
+		}
+		details, err = s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		attempt = details.CurrentAttempt()
+	}
 	var actionTurnID string
 	if strings.TrimSpace(request.RequestID) != "" {
 		approval, approvalErr := s.Store.Approval(ctx, request.RequestID)
@@ -723,8 +714,6 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 				}
 				return responded, err
 			}
-			// A terminal Approval is authoritative. In particular, denied,
-			// expired and revoked requests never trigger another machine action.
 			return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, request.WorkerRef)
 		}
 		if !errors.Is(approvalErr, core.ErrNotFound) {
@@ -987,6 +976,74 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 	return updated, nil
 }
 
+func (s WorkerService) ResumeWorker(ctx context.Context, workerRef string) (core.WorkerDetails, error) {
+	conversation, err := s.authorize(ctx)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	details, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if details.Worker.Status != core.WorkerLimited {
+		return details, nil
+	}
+	schedule, found, err := s.Store.FindActiveScheduleForWorker(ctx, details.Worker.ID)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if !found {
+		return details, nil
+	}
+	if err := s.requireRuntime(); err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if !s.workerNodeReady(ctx, details.Worker) {
+		return core.WorkerDetails{}, ErrWorkerRuntimeUnavailable
+	}
+	turn, err := s.Store.Turn(ctx, schedule.TurnID)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	attempt, err := s.Store.Phase4Attempt(ctx, schedule.AttemptID)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	now := s.workerCommandNow()
+	err = s.Store.WithWorkerLifecycle(ctx, details.Worker.ID, func(ctx context.Context) error {
+		claimed, err := s.Store.ClaimAttemptSchedule(ctx, schedule.ID, now)
+		if err != nil {
+			return err
+		}
+		if !claimed {
+			return nil
+		}
+		command, send, err := s.claimCommand(ctx, "resume", "attempt", details.Worker, attempt, nil)
+		if err != nil {
+			_ = s.Store.ReleaseAttemptSchedule(ctx, schedule.ID, now)
+			return err
+		}
+		if send {
+			continuationPrompt := schedule.ContinuationPrompt
+			if continuationPrompt == "" {
+				continuationPrompt = core.ContinuationPrompt
+			}
+			err = s.deliverCommand(ctx, command, func(commandID string) error {
+				return s.Runtime.Resume(ctx, commandID, details.Worker, turn, attempt, continuationPrompt)
+			})
+			if err != nil {
+				_ = s.Store.ReleaseAttemptSchedule(ctx, schedule.ID, now)
+				return err
+			}
+		}
+		return s.Store.CompleteAttemptSchedule(ctx, schedule.ID, now)
+	})
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
+}
+
 func (s WorkerService) CancelWorker(ctx context.Context, workerRef string) (core.WorkerDetails, error) {
 	conversation, err := s.authorize(ctx)
 	if err != nil {
@@ -998,6 +1055,22 @@ func (s WorkerService) CancelWorker(ctx context.Context, workerRef string) (core
 	}
 	attempt := details.CurrentAttempt()
 	if attempt != nil && !attempt.State.Terminal() {
+		if details.Worker.Status == core.WorkerLimited {
+			if _, _, err := s.Store.CancelLimitedWorkerAttempt(ctx, details.Worker.ID, attempt.ID, "Canceled before scheduled continuation"); err != nil {
+				return core.WorkerDetails{}, err
+			}
+			return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
+		}
+		schedule, foundSchedule, err := s.Store.FindActiveScheduleForWorker(ctx, details.Worker.ID)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		if foundSchedule && (schedule.State == core.SchedulePending || schedule.State == core.ScheduleManualHold) {
+			if _, _, err := s.Store.CancelLimitedWorkerAttempt(ctx, details.Worker.ID, attempt.ID, "Canceled before scheduled continuation"); err != nil {
+				return core.WorkerDetails{}, err
+			}
+			return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
+		}
 		canceledBeforeHandoff := false
 		for _, kind := range []string{"dispatch", "resume"} {
 			command, found, err := s.Store.FindWorkerCommand(ctx, kind, "attempt", details.Worker.ID, attempt.ID)

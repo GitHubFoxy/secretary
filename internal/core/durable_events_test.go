@@ -204,15 +204,24 @@ func TestConcurrentFinalizationReturnsOriginalOutcome(t *testing.T) {
 			t.Fatalf("concurrent finalization: %v", err)
 		}
 	}
+	var duplicates, nonDuplicates int
 	for result := range results {
 		if result.Outcome.ID == "" || result.Result == nil {
 			t.Fatalf("empty result=%#v", result)
 		}
 		if outcomeID == "" {
 			outcomeID, resultID = result.Outcome.ID, result.Result.ID
-		} else if result.Outcome.ID != outcomeID || result.Result.ID != resultID || !result.Duplicate {
-			t.Fatalf("not original durable outcome: %#v", result)
+		} else if result.Outcome.ID != outcomeID || result.Result.ID != resultID {
+			t.Fatalf("mismatched outcome/result IDs: %#v", result)
 		}
+		if result.Duplicate {
+			duplicates++
+		} else {
+			nonDuplicates++
+		}
+	}
+	if nonDuplicates != 1 || duplicates != n-1 {
+		t.Fatalf("expected 1 original outcome and %d duplicates, got nonDuplicates=%d duplicates=%d", n-1, nonDuplicates, duplicates)
 	}
 	var outcomes, finalResults, entries int
 	if err := store.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM phase4_attempt_outcomes`).Scan(&outcomes); err != nil {

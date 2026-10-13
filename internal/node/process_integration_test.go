@@ -13,8 +13,6 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-// This acceptance test starts two independent secretary-node executables. The
-// test does not substitute Daemon goroutines for process boundaries.
 func TestTwoSecretaryNodeProcessesPairInventoryAndReconnect(t *testing.T) {
 	if testing.Short() {
 		t.Skip("process acceptance test")
@@ -46,8 +44,6 @@ func TestTwoSecretaryNodeProcessesPairInventoryAndReconnect(t *testing.T) {
 	firstDataDir := filepath.Join(t.TempDir(), "process-a")
 	secondDataDir := filepath.Join(t.TempDir(), "process-b")
 	startAt := func(name, token, dataDir string) *exec.Cmd {
-		// This process test covers transport and saved-identity reconnect. Keep
-		// native OpenCode probing in its dedicated checks, not in every restart.
 		cmd := exec.Command(binary, "--data-dir", dataDir, "--server", server.URL, "--name", name, "--capacity", "2", "--include-opencode=false")
 		cmd.Env = append(os.Environ(),
 			"SECRETARY_NODE_PAIRING_TOKEN="+token,
@@ -63,7 +59,6 @@ func TestTwoSecretaryNodeProcessesPairInventoryAndReconnect(t *testing.T) {
 		}
 		return cmd
 	}
-	// Keep the two processes on fixed durable directories so one can be restarted.
 	first := startAt("process-a", "process-pair-a", firstDataDir)
 	second := startAt("process-b", "process-pair-b", secondDataDir)
 	defer stopProcess(t, first)
@@ -87,8 +82,6 @@ func TestTwoSecretaryNodeProcessesPairInventoryAndReconnect(t *testing.T) {
 		status, err := manager.Status(ctx, "process-a")
 		return err == nil && !status.Online
 	})
-	// The identity file is durable. Restarting without the pairing token proves
-	// reconnect uses the saved per-Node credential rather than Client bootstrap.
 	first = startAt("process-a", "", firstDataDir)
 	defer stopProcess(t, first)
 	waitFor(t, ctx, "first Node authenticated reconnect", func() bool {
@@ -138,8 +131,6 @@ esac
 			t.Fatal(err)
 		}
 	}
-	// This tripwire only records accidental process-level probes. It does not
-	// emulate or claim any native OpenCode acceptance behavior.
 	opencode := `#!/bin/sh
 printf '%s\n' "$*" >> "$TEST_NATIVE_PROBE_MARKER"
 case "$*" in

@@ -11,8 +11,6 @@ import (
 	"time"
 )
 
-// SecretaryIdentity is the durable product identity. Runtime sessions are
-// replaceable and are represented only by the generation and selected policy.
 type SecretaryIdentity struct {
 	ID                string    `json:"id"`
 	PersonID          string    `json:"person_id"`
@@ -94,7 +92,6 @@ const (
 	SecretaryTurnFinishedEvent    = "secretary.turn.finished"
 )
 
-// UserDocument is the active external Markdown snapshot.
 type UserDocument struct {
 	Path      string    `json:"path"`
 	Revision  int64     `json:"revision"`
@@ -102,9 +99,6 @@ type UserDocument struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
-// SecretaryPolicySnapshot is the durable, non-runtime policy/profile view used
-// when a Secretary turn is reconstructed. It intentionally has no session or
-// credential fields.
 type SecretaryPolicySnapshot struct {
 	Version              string    `json:"version,omitempty"`
 	Harness              string    `json:"harness,omitempty"`
@@ -123,8 +117,6 @@ type SecretaryPolicySnapshot struct {
 	UpdatedAt            time.Time `json:"updated_at"`
 }
 
-// SecretaryNodeSnapshot is a safe read model. Node credentials and hashes are
-// not part of Secretary context, even though they exist in NodeRecord.
 type SecretaryNodeSnapshot struct {
 	Node                 NodeReference            `json:"node"`
 	Online               bool                     `json:"online"`
@@ -139,8 +131,6 @@ type SecretaryNodeSnapshot struct {
 	Inventory            HarnessInventorySnapshot `json:"inventory,omitempty"`
 }
 
-// SecretaryContext is reconstructed from durable server-owned sources for one
-// new Secretary turn. Native runtime sessions are deliberately absent.
 type SecretaryContext struct {
 	Identity            SecretaryIdentity       `json:"identity"`
 	UserDocument        UserDocument            `json:"user_document"`
@@ -155,9 +145,6 @@ type SecretaryContext struct {
 	PolicyProfile       SecretaryPolicySnapshot `json:"policy_profile"`
 }
 
-// UnmarshalJSON rejects fields outside the typed canonical context. This keeps
-// runtime sessions, credentials and capabilities out of the model prompt even
-// when a snapshot was tampered with after it was persisted.
 func (c *SecretaryContext) UnmarshalJSON(data []byte) error {
 	type plain SecretaryContext
 	var decoded plain
@@ -184,7 +171,6 @@ func decodeStrictJSON(data []byte, target any) error {
 	return nil
 }
 
-// Validate rejects syntactically valid JSON that is not a canonical context.
 func (c SecretaryContext) Validate() error {
 	if strings.TrimSpace(c.Identity.ID) == "" || strings.TrimSpace(c.Identity.PersonID) == "" || strings.TrimSpace(c.Identity.ConversationID) == "" {
 		return errors.New("core: canonical Secretary context snapshot is missing complete identity")
@@ -369,7 +355,7 @@ func (c SecretaryContext) Validate() error {
 
 func validWorkerStatus(status WorkerStatus) bool {
 	switch status {
-	case WorkerQueued, WorkerStarting, WorkerWorking, WorkerWaitingApproval, WorkerNeedsInput, WorkerOffline, WorkerIdle, WorkerClosed:
+	case WorkerQueued, WorkerStarting, WorkerWorking, WorkerWaitingApproval, WorkerNeedsInput, WorkerLimited, WorkerOffline, WorkerIdle, WorkerClosed:
 		return true
 	default:
 		return false

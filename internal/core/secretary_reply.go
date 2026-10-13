@@ -14,8 +14,6 @@ var (
 	ErrAddressedReplyMissing  = errors.New("core: exact durable addressed reply is missing")
 )
 
-// ValidateSecretaryOrigin requires a server-authorized active Secretary turn and
-// its exact server-issued input identity.
 func (s *Store) ValidateSecretaryOrigin(ctx context.Context, personID, capability, secretaryTurnID, inputID string) error {
 	personID, capability = strings.TrimSpace(personID), strings.TrimSpace(capability)
 	secretaryTurnID, inputID = strings.TrimSpace(secretaryTurnID), strings.TrimSpace(inputID)
@@ -34,8 +32,6 @@ func (s *Store) ValidateSecretaryOrigin(ctx context.Context, personID, capabilit
 	})
 }
 
-// LinkSecretaryWorkerTurn binds an accepted server-owned Secretary MCP action
-// to the exact Worker Turn it affected. Replays return duplicate=true.
 func (s *Store) LinkSecretaryWorkerTurn(ctx context.Context, personID, capability, secretaryTurnID, inputID, workerTurnID string) (duplicate bool, err error) {
 	personID, capability = strings.TrimSpace(personID), strings.TrimSpace(capability)
 	secretaryTurnID, inputID, workerTurnID = strings.TrimSpace(secretaryTurnID), strings.TrimSpace(inputID), strings.TrimSpace(workerTurnID)
@@ -136,8 +132,6 @@ WHERE c.id = ?`, commandID).Scan(&state, &workerTurnID, &workerConversationID, &
 		return ErrInvalidTransition
 	}
 	if state == WorkerCommandDelivered || state == WorkerCommandFailed {
-		// A completed legacy command without a pre-handoff intent cannot be
-		// retroactively attributed to a later Secretary input.
 		return ErrInvalidSecretaryOrigin
 	}
 	if state != WorkerCommandPending && state != WorkerCommandUncertain {
@@ -191,9 +185,6 @@ func bindSecretaryWorkerCreationOriginTx(ctx context.Context, tx *sql.Tx, origin
 	return linkSecretaryWorkerTurnTx(ctx, tx, origin.SecretaryTurnID, origin.InputID, workerTurnID, now)
 }
 
-// ValidateSecretaryWorkerCreationOrigin accepts only an exact replay of the
-// original queued spawn; it never retroactively assigns an origin to a legacy
-// or differently originated idempotency replay.
 func (s *Store) ValidateSecretaryWorkerCreationOrigin(ctx context.Context, origin SecretaryOriginIdentity, workerTurnID string) error {
 	found, err := s.ValidateSecretaryWorkerCreationOriginIfPresent(ctx, origin, workerTurnID)
 	if err != nil {
@@ -205,9 +196,6 @@ func (s *Store) ValidateSecretaryWorkerCreationOrigin(ctx context.Context, origi
 	return nil
 }
 
-// ValidateSecretaryWorkerCreationOriginIfPresent returns found=false when a
-// Worker Turn was not created as an addressed queued spawn; command-origin
-// intents cover online dispatch and its retries.
 func (s *Store) ValidateSecretaryWorkerCreationOriginIfPresent(ctx context.Context, origin SecretaryOriginIdentity, workerTurnID string) (found bool, err error) {
 	origin.PersonID, origin.Capability = strings.TrimSpace(origin.PersonID), strings.TrimSpace(origin.Capability)
 	origin.SecretaryTurnID, origin.InputID = strings.TrimSpace(origin.SecretaryTurnID), strings.TrimSpace(origin.InputID)
@@ -276,9 +264,6 @@ func linkSecretaryWorkerCommandOriginsTx(ctx context.Context, tx *sql.Tx, comman
 	return nil
 }
 
-// RecordAddressedSecretaryTextDelta publishes a stream delta only while the
-// exact originating turn/input has neither a typed reply nor a linked Result.
-// The check and event commit share one transaction, defining their ordering.
 func (s *Store) RecordAddressedSecretaryTextDelta(ctx context.Context, turnID, inputID, text string) (Event, bool, error) {
 	turnID, inputID = strings.TrimSpace(turnID), strings.TrimSpace(inputID)
 	if turnID == "" || inputID == "" || text == "" {
@@ -352,9 +337,6 @@ func (s *Store) RecordAddressedSecretaryTextDelta(ctx context.Context, turnID, i
 	return result.event, result.recorded, nil
 }
 
-// RecordSecretaryReply atomically persists one addressed user reply per
-// server-issued Secretary turn/input identity. Exact replays return the same
-// Conversation entry without creating another entry or Secretary turn.
 func (s *Store) RecordSecretaryReply(ctx context.Context, personID, capability, secretaryTurnID, inputID, text string) (ConversationEntry, bool, error) {
 	return s.recordSecretaryReply(ctx, personID, capability, secretaryTurnID, inputID, text, false)
 }
@@ -439,16 +421,12 @@ func (s *Store) recordSecretaryReply(ctx context.Context, personID, capability, 
 	return result.entry, result.duplicate, nil
 }
 
-// SecretaryOriginHasResult reports only canonical Worker Results linked by an
-// accepted MCP action to this exact originating turn/input pair.
 func (s *Store) SecretaryOriginHasResult(ctx context.Context, secretaryTurnID, inputID string) (bool, error) {
 	var exists int
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM secretary_origin_results WHERE secretary_turn_id = ? AND input_id = ?)`, strings.TrimSpace(secretaryTurnID), strings.TrimSpace(inputID)).Scan(&exists)
 	return exists != 0, err
 }
 
-// SecretaryHasAddressedReply reports whether the server already committed the
-// unique typed reply for this originating identity.
 func (s *Store) SecretaryHasAddressedReply(ctx context.Context, secretaryTurnID, inputID string) (bool, error) {
 	var exists int
 	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM secretary_reply_entries WHERE secretary_turn_id = ? AND input_id = ?)`, strings.TrimSpace(secretaryTurnID), strings.TrimSpace(inputID)).Scan(&exists)
@@ -484,10 +462,6 @@ WHERE o.secretary_turn_id = ? AND o.input_id = ? AND o.worker_turn_id = ?`, time
 }
 
 func recordSecretaryOriginResultsForWorkerTurnTx(ctx context.Context, tx *sql.Tx, workerTurnID string, now time.Time) error {
-	// Join explicit non-failed command intents to a Result only for the exact
-	// immutable Worker Turn they target, even if the delivery receipt has not
-	// committed yet. Earlier Turns/Results and inferred ACP/text identities do
-	// not participate in this relation.
 	if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO secretary_worker_origins(secretary_turn_id, input_id, worker_turn_id, created_at)
 SELECT o.secretary_turn_id, o.input_id, o.worker_turn_id, ?
 FROM secretary_worker_command_origins o

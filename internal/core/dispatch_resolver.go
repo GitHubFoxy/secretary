@@ -10,9 +10,6 @@ import (
 	"strings"
 )
 
-// Resolver errors distinguish a request that cannot be routed from a selected
-// binding that is deliberately waiting for its Node. They are never a signal to
-// silently select fx or another Node.
 var (
 	ErrNoProject               = errors.New("core: no Project selected")
 	ErrNoEligibleNode          = errors.New("core: no eligible Node")
@@ -21,9 +18,6 @@ var (
 	ErrMissingHarnessInventory = errors.New("core: HarnessInstance inventory is missing")
 )
 
-// DispatchResolutionRequest contains intent preferences, not a Project or
-// HarnessInstance snapshot. The resolver always reads those observations from
-// the server store before binding a Worker.
 type DispatchResolutionRequest struct {
 	ProjectID         string
 	NodeID            NodeReference
@@ -35,9 +29,6 @@ type DispatchResolutionRequest struct {
 	WorkerPolicy      HarnessPolicy
 }
 
-// DispatchResolution is the server-owned result used to create a Worker. A
-// queued result has a fully immutable binding but its Node cannot start work
-// right now.
 type DispatchResolution struct {
 	ProjectDispatch
 	Queued bool
@@ -72,9 +63,6 @@ func (s *Store) ResolveDispatch(ctx context.Context, request DispatchResolutionR
 	var firstUnavailable *DispatchResolution
 	var firstError error
 	for _, candidate := range candidates {
-		// An instance ID is globally unique in observed inventory. Without an
-		// explicit Node, ignore Nodes that did not report it and continue to its
-		// actual owner.
 		if request.NodeID == "" && request.HarnessInstanceID != "" {
 			if _, found := candidate.record.Inventory.Instance(request.HarnessInstanceID); !found {
 				continue
@@ -296,9 +284,6 @@ func orderedDispatchInstances(instances []HarnessInstance, request DispatchResol
 			}
 		}
 	}
-	// A model or reasoning pin is an adapter capability constraint, not a
-	// request to force the default harness. Try every observed adapter before
-	// reporting that no Node supports the pin.
 	if request.ModelID != "" || request.Reasoning != "" {
 		for _, instance := range ordered {
 			already := false
@@ -313,16 +298,10 @@ func orderedDispatchInstances(instances []HarnessInstance, request DispatchResol
 	return result
 }
 
-// ResolveAndCreateWorker is the only creation path exposed by this resolver.
-// It accepts preferences, never caller-built snapshots. A new call intentionally
-// creates a new Worker for the same intent when a different binding is wanted.
 func (s *Store) ResolveAndCreateWorker(ctx context.Context, conversationID, intent string, request DispatchResolutionRequest, idempotencyKey string, origins ...SecretaryOriginIdentity) (Worker, Turn, Phase4Attempt, DispatchResolution, error) {
 	return s.ResolveAndCreateWorkerWithProfileSnapshot(ctx, conversationID, intent, request, idempotencyKey, "", origins...)
 }
 
-// ResolveAndCreateWorkerWithProfileSnapshot atomically binds the managed Profile
-// selected for a new Worker. Existing callers that have no Profile source keep
-// the backward-compatible empty snapshot.
 func (s *Store) ResolveAndCreateWorkerWithProfileSnapshot(ctx context.Context, conversationID, intent string, request DispatchResolutionRequest, idempotencyKey, profileSnapshot string, origins ...SecretaryOriginIdentity) (Worker, Turn, Phase4Attempt, DispatchResolution, error) {
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if len(origins) > 1 {
@@ -384,8 +363,6 @@ func (s *Store) ResolveAndCreateWorkerWithProfileSnapshot(ctx context.Context, c
 	return worker, turn, attempt, resolved, nil
 }
 
-// ReplayWorkerCreation returns the durable outcome for an idempotent Worker
-// creation without reading the current Project, Node, or harness inventory.
 func (s *Store) ReplayWorkerCreation(ctx context.Context, idempotencyKey string) (Worker, Turn, Phase4Attempt, DispatchResolution, bool, error) {
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if idempotencyKey == "" {
@@ -423,8 +400,6 @@ func (s *Store) workerCreationReplay(ctx context.Context, idempotencyKey string)
 	return stored.Worker, stored.Turn, stored.Attempt, true, nil
 }
 
-// ResolveWorkerBinding returns the durable immutable binding for repeat calls.
-// It intentionally never reads current Node inventory or Project policy.
 func (s *Store) ResolveWorkerBinding(ctx context.Context, workerID string) (ProjectDispatch, error) {
 	worker, err := s.Worker(ctx, workerID)
 	if err != nil {

@@ -147,14 +147,30 @@ func main() {
 	if err := store.RecordConfigVersion(context.Background(), profiles.Snapshot().Version, profiles.Path(), string(compiledConfig)); err != nil {
 		log.Fatalf("record config version: %v", err)
 	}
+	initialAutoResume := true
+	if profiles.Snapshot().Config.WorkerPolicy.AutoResumeOnLimit != nil {
+		initialAutoResume = *profiles.Snapshot().Config.WorkerPolicy.AutoResumeOnLimit
+	}
+	store.SetAutoResumeOnLimit(initialAutoResume)
+	_ = store.SyncAttemptSchedulesPolicy(context.Background(), initialAutoResume, time.Now().UTC())
+
 	profiles.SetChangeRecorder(func(previous, next config.Snapshot) error {
 		compiled, err := json.Marshal(next)
 		if err != nil {
 			return err
 		}
-		diff, err := json.Marshal(config.Diff(previous, next))
+		diffMap := config.Diff(previous, next)
+		diff, err := json.Marshal(diffMap)
 		if err != nil {
 			return err
+		}
+		if _, ok := diffMap["worker_policy"]; ok {
+			autoResume := true
+			if next.Config.WorkerPolicy.AutoResumeOnLimit != nil {
+				autoResume = *next.Config.WorkerPolicy.AutoResumeOnLimit
+			}
+			store.SetAutoResumeOnLimit(autoResume)
+			_ = store.SyncAttemptSchedulesPolicy(context.Background(), autoResume, time.Now().UTC())
 		}
 		return store.RecordConfigChange(context.Background(), previous.Version, next.Version, profiles.Path(), string(compiled), string(diff))
 	})
@@ -272,9 +288,6 @@ func main() {
 	go (app.Runner{Store: store, Dispatcher: dispatcher, Conversation: conversation.ID}).Run(ctx)
 	capability := os.Getenv("SECRETARY_CAPABILITY")
 	if capability == "" {
-		// Capability tokens are intentionally not recoverable from SQLite. A
-		// terminal or launchd start without the environment token rotates one,
-		// so the persistent Secretary is never silently omitted.
 		var capabilityErr error
 		capability, capabilityErr = store.RotateSecretaryCapability(context.Background(), web.OwnerID())
 		if capabilityErr != nil {
@@ -422,8 +435,6 @@ func main() {
 	}
 }
 
-// rootHandler keeps one loopback server for the whole product: control routes
-// stay debug-only, and every other /v1 path reaches the API where credential checks live.
 func rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler http.Handler, remoteNodes *node.ServerManager, debug bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if remoteNodes != nil {
@@ -460,9 +471,6 @@ func rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler htt
 	})
 }
 
-// validateListen enforces the supported topology: secretaryd binds loopback
-// only and remote access goes through the Tailscale Serve proxy. Only literal
-// loopback IPs are accepted, because localhost can resolve off-loopback.
 func validateListen(addr string) error {
 	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
 	if err != nil {
@@ -707,16 +715,25 @@ func configuredRuntimeWithStore(snapshot config.Snapshot, dataDir string, store 
 	if len(openCodeArgs) == 0 {
 		openCodeArgs = []string{"acp"}
 	}
+	antigravityCommand := os.Getenv("SECRETARY_ANTIGRAVITY_COMMAND")
+	if antigravityCommand == "" {
+		antigravityCommand = "agy_acp_server"
+	}
+	antigravityArgs := node.BuildAntigravityPlatformArgs(strings.Fields(os.Getenv("SECRETARY_ANTIGRAVITY_ARGS")))
+	antigravityProfileDir := node.ResolveAntigravityProfileDir()
 	runtime := node.RuntimeRouter{
 		DefaultHarness: harness,
 		ACP:            node.CodexRuntime{ACPRuntime: node.ACPRuntime{Command: codexCommand, Arguments: codexArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 		Claude:         node.ClaudeCodeRuntime{Command: claudeCommand, Arguments: claudeArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
 		FX:             node.FXRuntime{ACPRuntime: node.ACPRuntime{Command: fxCommand, Arguments: fxArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 		OpenCode:       node.OpenCodeRuntime{Command: openCodeCommand, Arguments: openCodeArgs, DataHome: store.DataHome, LegacyDataHome: store.Mode == node.OpenCodeNativeStoreModeLegacy, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5},
+		Antigravity:    node.AntigravityRuntime{AntigravityCommand: antigravityCommand, ProfileDir: antigravityProfileDir, ACPRuntime: node.ACPRuntime{Arguments: antigravityArgs, RawLogDir: logDir, RawLogMaxBytes: 10 << 20, RawLogFiles: 5}},
 	}
 	command := codexCommand
 	arguments := codexArgs
 	switch harness {
+	case "antigravity":
+		command, arguments = antigravityCommand, antigravityArgs
 	case "opencode":
 		command, arguments = openCodeCommand, openCodeArgs
 	case "fx":
@@ -833,7 +850,6 @@ func applyConfig(manager *config.Manager, content []byte) (any, error) {
 	}
 	snapshot, err := manager.Reload()
 	if err != nil {
-		// Keep the active config and restore the last known-good file.
 		_ = writeConfig(path, previous)
 		return nil, err
 	}

@@ -8,10 +8,6 @@ import (
 	"time"
 )
 
-// MarkWorkerCommandUncertain records that handoff may have reached the Node,
-// but no authoritative outcome arrived before the caller stopped waiting. It
-// keeps the command retryable with the same ID and does not classify it as a
-// rejection.
 func (s *Store) MarkWorkerCommandUncertain(ctx context.Context, commandID, message string) (WorkerCommand, error) {
 	message = SanitizeFailureMessage(message)
 	return withTx(s, ctx, func(tx *sql.Tx) (WorkerCommand, error) {
@@ -39,9 +35,6 @@ func (s *Store) MarkWorkerCommandUncertain(ctx context.Context, commandID, messa
 	})
 }
 
-// RecoverApprovalResolutionCommands releases leases left by a server process
-// that stopped after persisting an Approval intent. It records uncertainty but
-// never sends a command; the owner must explicitly request the same saved retry.
 func (s *Store) RecoverApprovalResolutionCommands(ctx context.Context) (int64, error) {
 	returnValue, err := withTx(s, ctx, func(tx *sql.Tx) (int64, error) {
 		result, err := tx.ExecContext(ctx, `UPDATE phase4_worker_commands
@@ -57,10 +50,6 @@ WHERE kind = 'respond' AND state = ? AND EXISTS (
 	return returnValue, err
 }
 
-// ReconcileWorkerCommandReceipt commits an authenticated Node outcome against
-// the immutable command→Attempt→Turn binding. Accepted receipts supersede an
-// uncertain handoff; denials remain terminal until an explicit Core retry
-// reopens the command. Duplicate and superseded receipts are idempotent.
 func (s *Store) ReconcileWorkerCommandReceipt(ctx context.Context, node NodeReference, receipt WorkerCommandReceipt) (WorkerCommand, error) {
 	receipt = SanitizeWorkerCommandReceipt(receipt)
 	if receipt.Kind == "steer" {
@@ -106,8 +95,6 @@ FROM phase4_worker_commands c JOIN phase4_attempts a ON a.id = c.attempt_id WHER
 					return command, nil
 				}
 			case WorkerCommandReceiptDenied:
-				// Only an explicit Core retry reopens the command. Its handoff may
-				// already be uncertain when the corresponding receipt arrives.
 				if command.State != WorkerCommandPending && command.State != WorkerCommandUncertain {
 					return command, nil
 				}
@@ -231,8 +218,6 @@ func resumeAcceptedWorkerResponseTx(ctx context.Context, tx *sql.Tx, attemptID s
 		return err
 	}
 	if turn.State != TurnNeedsInput {
-		// A final Result or another lifecycle transition already superseded the
-		// response receipt. Never move a terminal Worker Turn back to active.
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, updated_at = ? WHERE id = ? AND state = ?`, TurnActive, timestamp(now), turn.ID, TurnNeedsInput); err != nil {

@@ -14,7 +14,6 @@ import (
 const (
 	opencodeStoreSelectionFile = "opencode-native-selection.json"
 
-	// OpenCodeNativeStoreRecordSeparator separates trusted fields emitted to the CLI.
 	OpenCodeNativeStoreRecordSeparator = "\x1f"
 )
 
@@ -26,8 +25,6 @@ const (
 	OpenCodeNativeStoreModeLegacy   OpenCodeNativeStoreMode = "legacy"
 )
 
-// OpenCodeNativeStore keeps native harness data local to one Secretary server
-// installation or one Execution Node. Mode is mutually exclusive by design.
 type OpenCodeNativeStore struct {
 	DataHome string
 	Mode     OpenCodeNativeStoreMode
@@ -57,9 +54,6 @@ func OpenCodeNativeDataHome(dataDir string) string {
 	return filepath.Join(root, "opencode-native")
 }
 
-// SelectOpenCodeNativeStore pins a server-role store. Existing application
-// state without a selection is treated as legacy so managed OpenCode sessions
-// keep their data home until owner-approved migration.
 func SelectOpenCodeNativeStore(dataDir string, hasExistingState bool, legacyDataHome string) (OpenCodeNativeStore, error) {
 	return SelectOpenCodeNativeStoreWithOptions(dataDir, OpenCodeNativeStoreOptions{
 		HasExistingState: hasExistingState,
@@ -68,9 +62,6 @@ func SelectOpenCodeNativeStore(dataDir string, hasExistingState bool, legacyData
 	})
 }
 
-// SelectOpenCodeNativeStoreWithOptions applies the same parser and canonical
-// path checks to Secretary and Node selections before touching the selected
-// native store. A standalone Node must not accept a shared Secretary store.
 func SelectOpenCodeNativeStoreWithOptions(dataDir string, options OpenCodeNativeStoreOptions) (OpenCodeNativeStore, error) {
 	root, err := filepath.Abs(strings.TrimSpace(dataDir))
 	if err != nil || strings.TrimSpace(dataDir) == "" {
@@ -174,8 +165,6 @@ func readOpenCodeStoreSelection(root string) (openCodeStoreSelection, bool, erro
 	return selection, true, nil
 }
 
-// EncodeSecretaryOpenCodeNativeStoreRecord emits the validated Secretary and
-// local Node stores plus the expected local Node data directory.
 func EncodeSecretaryOpenCodeNativeStoreRecord(secretary, worker OpenCodeNativeStore, workerDataDir string, workerStandalone bool) (string, error) {
 	secretaryFields, err := openCodeNativeStoreRecordFields(secretary)
 	if err != nil {
@@ -196,8 +185,6 @@ func EncodeSecretaryOpenCodeNativeStoreRecord(secretary, worker OpenCodeNativeSt
 	return strings.Join(fields, OpenCodeNativeStoreRecordSeparator), nil
 }
 
-// EncodeNodeOpenCodeNativeStoreRecord emits one validated Node store together
-// with trusted deployment scope and probe policy from the same Go config read.
 func EncodeNodeOpenCodeNativeStoreRecord(store OpenCodeNativeStore, dataDir string, standalone, includeOpenCode bool) (string, error) {
 	storeFields, err := openCodeNativeStoreRecordFields(store)
 	if err != nil {
@@ -312,8 +299,6 @@ func writeOpenCodeStoreSelection(path string, selection openCodeStoreSelection) 
 	return nil
 }
 
-// EnsurePrivateOpenCodeNativeDataHome creates only the selected Secretary-owned
-// native store. It deliberately never follows a symlink at the store/app root.
 func EnsurePrivateOpenCodeNativeDataHome(dataHome string) error {
 	if strings.TrimSpace(dataHome) == "" || !filepath.IsAbs(dataHome) {
 		return errors.New("opencode: absolute native data home is required")

@@ -122,7 +122,6 @@ func TestCompleteCommand_SteeringFailedPersistsOutcomeAtomicallyAndRecovers(t *t
 		Technical:       "acp rpc -32603: Internal error",
 	}
 
-	// 1. CompleteCommand atomically queues failed steering into outbox
 	rec, err := store.CompleteCommand("steer-cmd-1", outcome)
 	if err != nil {
 		t.Fatal(err)
@@ -142,7 +141,6 @@ func TestCompleteCommand_SteeringFailedPersistsOutcomeAtomicallyAndRecovers(t *t
 		t.Fatalf("expected eventID command-outcome-steer-cmd-1, got %q", events[0].EventID)
 	}
 
-	// 2. Reopening store preserves pending outbox event across restart
 	reopened, err := OpenLocalStore(storePath)
 	if err != nil {
 		t.Fatal(err)
@@ -155,7 +153,6 @@ func TestCompleteCommand_SteeringFailedPersistsOutcomeAtomicallyAndRecovers(t *t
 		t.Fatalf("reopened outbox mismatch: %#v", reopenedEvents)
 	}
 
-	// 3. Simulating crash gap: if completed failed command exists without outbox event
 	reopened.mu.Lock()
 	reopened.state.Outbox = nil
 	if err := reopened.persistLocked(); err != nil {
@@ -163,7 +160,6 @@ func TestCompleteCommand_SteeringFailedPersistsOutcomeAtomicallyAndRecovers(t *t
 	}
 	reopened.mu.Unlock()
 
-	// RecoverRunning recovers unacknowledged failed command outcome into outbox
 	if err := reopened.RecoverRunning(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +171,6 @@ func TestCompleteCommand_SteeringFailedPersistsOutcomeAtomicallyAndRecovers(t *t
 		t.Fatalf("expected recovered event in outbox after crash, got: %#v", recoveredEvents)
 	}
 
-	// 4. AckThrough marks command acknowledged and clears outbox
 	if err := reopened.AckThrough(recoveredEvents[0].Sequence); err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +182,6 @@ func TestCompleteCommand_SteeringFailedPersistsOutcomeAtomicallyAndRecovers(t *t
 		t.Fatalf("expected outbox cleared after ack, got %d events", len(clearedEvents))
 	}
 
-	// Subsequent RecoverRunning does not re-queue acknowledged command
 	if err := reopened.RecoverRunning(ctx, nil); err != nil {
 		t.Fatal(err)
 	}

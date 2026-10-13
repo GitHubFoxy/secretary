@@ -222,7 +222,7 @@ func TestSanitizeFailureMessage_URLAllowlist(t *testing.T) {
 }
 
 func TestSanitizeFailureMessage_RuneLimit(t *testing.T) {
-	longMsg := strings.Repeat("абвг", 300) // 1200 runes
+	longMsg := strings.Repeat("абвг", 300)
 	sanitized := SanitizeFailureMessage(longMsg)
 	runes := []rune(sanitized)
 	if len(runes) > 1000 {
@@ -265,7 +265,6 @@ func TestSanitizeFailureMessage_ArbitraryPathAndFragmentDisallowed(t *testing.T)
 }
 
 func TestSanitizeFailureMessage_UppercaseAndMixedCaseURLs(t *testing.T) {
-	// Disallowed uppercase/mixed-case URLs must be completely removed, no paths or fragments leaked
 	disallowedUpper := "Check HTTPS://evil.example/private/plainvalue for info"
 	if res := SanitizeFailureMessage(disallowedUpper); strings.Contains(res, "evil.example") || strings.Contains(res, "plainvalue") {
 		t.Fatalf("disallowed uppercase URL leaked: %s", res)
@@ -276,7 +275,6 @@ func TestSanitizeFailureMessage_UppercaseAndMixedCaseURLs(t *testing.T) {
 		t.Fatalf("disallowed mixed-case URL leaked: %s", res)
 	}
 
-	// Allowed uppercase/mixed-case URLs must be preserved in canonical HTTPS form without query/fragment
 	allowedUpper := "See HTTPS://CHATGPT.COM/SETTINGS/USAGE#fragment?token=secret for details"
 	resUpper := SanitizeFailureMessage(allowedUpper)
 	if !strings.Contains(resUpper, "https://chatgpt.com/settings/usage") {
@@ -288,7 +286,6 @@ func TestSanitizeFailureMessage_UppercaseAndMixedCaseURLs(t *testing.T) {
 }
 
 func TestSanitizeFailureMessage_AuthorizationBasicAndBearerCredentials(t *testing.T) {
-	// Authorization: Basic with credentials must be redacted completely without leaving credentials
 	basicInput := "Request failed: Authorization: Basic dXNlcjpwYXNz (status 401)"
 	basicRes := SanitizeFailureMessage(basicInput)
 	if strings.Contains(basicRes, "dXNlcjpwYXNz") {
@@ -298,7 +295,6 @@ func TestSanitizeFailureMessage_AuthorizationBasicAndBearerCredentials(t *testin
 		t.Fatalf("expected Authorization: [redacted], got: %s", basicRes)
 	}
 
-	// Standalone Basic credentials
 	standaloneBasic := "Failed with credentials Basic dXNlcjpwYXNz"
 	standaloneRes := SanitizeFailureMessage(standaloneBasic)
 	if strings.Contains(standaloneRes, "dXNlcjpwYXNz") {
@@ -308,7 +304,6 @@ func TestSanitizeFailureMessage_AuthorizationBasicAndBearerCredentials(t *testin
 		t.Fatalf("expected Basic [redacted], got: %s", standaloneRes)
 	}
 
-	// Authorization: Bearer with credentials
 	bearerInput := "HTTP Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"
 	bearerRes := SanitizeFailureMessage(bearerInput)
 	if strings.Contains(bearerRes, "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9") {
@@ -333,7 +328,6 @@ func TestSanitizeProviderCode_AllowlistAndLimit(t *testing.T) {
 		t.Fatalf("expected invalid_api_key, got %q", code)
 	}
 
-	// Disallowed / secret codes
 	if code := SanitizeProviderCode("sk-private-secret-12345"); code != "" {
 		t.Fatalf("expected unknown/secret code excluded, got %q", code)
 	}
@@ -341,7 +335,6 @@ func TestSanitizeProviderCode_AllowlistAndLimit(t *testing.T) {
 		t.Fatalf("expected unknown code excluded, got %q", code)
 	}
 
-	// Long code > 1000 runes
 	longCode := strings.Repeat("x", 1001)
 	if code := SanitizeProviderCode(longCode); code != "" {
 		t.Fatalf("expected oversize code excluded, got %q", code)
@@ -349,7 +342,6 @@ func TestSanitizeProviderCode_AllowlistAndLimit(t *testing.T) {
 }
 
 func TestSanitizeFailureMessage_MalformedUnknownURLsAndNonHTTPSchemes(t *testing.T) {
-	// URLs with comma in path and fragment
 	urlWithComma := "Exfiltration link https://evil.example/private/first,plainsecret#privatevalue"
 	resComma := SanitizeFailureMessage(urlWithComma)
 	if strings.Contains(resComma, "plainsecret") || strings.Contains(resComma, "privatevalue") || strings.Contains(resComma, "evil.example") {
@@ -362,7 +354,6 @@ func TestSanitizeFailureMessage_MalformedUnknownURLsAndNonHTTPSchemes(t *testing
 		t.Fatalf("URL with alpha comma leaked sensitive data: %s", resAlpha)
 	}
 
-	// Non-HTTP schemes: ftp, ws, git, ssh
 	ftpURL := "Download at ftp://evil.example/private/plainsecret"
 	resFTP := SanitizeFailureMessage(ftpURL)
 	if strings.Contains(resFTP, "plainsecret") || strings.Contains(resFTP, "evil.example") {
@@ -381,7 +372,6 @@ func TestSanitizeFailureMessage_MalformedUnknownURLsAndNonHTTPSchemes(t *testing
 		t.Fatalf("Git URL leaked: %s", resGit)
 	}
 
-	// Preserved allowed URL with comma in surrounding sentence
 	allowedWithComma := "Please visit https://chatgpt.com/settings/usage, then check billing."
 	resAllowed := SanitizeFailureMessage(allowedWithComma)
 	if !strings.Contains(resAllowed, "https://chatgpt.com/settings/usage,") {
@@ -390,7 +380,6 @@ func TestSanitizeFailureMessage_MalformedUnknownURLsAndNonHTTPSchemes(t *testing
 }
 
 func TestSanitizeFailureMessage_DigestAuthorizationCredentials(t *testing.T) {
-	// Authorization: Digest with multiple comma-separated parameters
 	digestMulti := `Request failed: Authorization: Digest username="user", realm="test", nonce="plainnonce", uri="/", response="plainresponse", qop=auth (status 401)`
 	resMulti := SanitizeFailureMessage(digestMulti)
 	if strings.Contains(resMulti, "plainnonce") || strings.Contains(resMulti, "plainresponse") || strings.Contains(resMulti, "user") {
@@ -400,7 +389,6 @@ func TestSanitizeFailureMessage_DigestAuthorizationCredentials(t *testing.T) {
 		t.Fatalf("expected Authorization: [redacted] (status 401), got: %s", resMulti)
 	}
 
-	// Authorization: Digest with owner and response
 	digestSimple := `HTTP error: Authorization: Digest username="owner", response="plaincredential"`
 	resSimple := SanitizeFailureMessage(digestSimple)
 	if strings.Contains(resSimple, "plaincredential") || strings.Contains(resSimple, "owner") {
@@ -410,7 +398,6 @@ func TestSanitizeFailureMessage_DigestAuthorizationCredentials(t *testing.T) {
 		t.Fatalf("expected Authorization: [redacted], got: %s", resSimple)
 	}
 
-	// Standalone Digest credentials
 	standaloneDigest := `Failed with credentials Digest username="owner", response="plaincredential"`
 	resStandalone := SanitizeFailureMessage(standaloneDigest)
 	if strings.Contains(resStandalone, "plaincredential") || strings.Contains(resStandalone, "owner") {

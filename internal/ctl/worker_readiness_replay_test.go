@@ -84,7 +84,6 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 			t.Fatal("live duplicate lost its accepted ACK")
 		}
 	}
-	// Exercise real filesystem failure at the public durable-store seam.
 	probeEnvelope := envelope
 	probeEnvelope.AttemptID = "store-failure-attempt"
 	probeEnvelope.TurnID = "store-failure-turn"
@@ -127,7 +126,6 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 	if local.SaveSessionMapping(mapping) != nil {
 		t.Fatal("mapping fixture restore failed")
 	}
-	// A fresh Node must not turn even a saved accepted ACK into execution proof.
 	reopened, err := node.OpenLocalStore(path)
 	if err != nil {
 		t.Fatal(err)
@@ -138,9 +136,6 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 		t.Fatal("restart reused live ACK without execution proof")
 	}
 	if restart {
-		// Retain the durable crash image while the real prompt is live.
-		// Stop the fixture process, discard observations that a crashed
-		// Node could not persist, and restore only that private image.
 		image, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -170,7 +165,6 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 			t.Fatal("uncertain replay lost explicit interruption")
 		}
 	} else {
-		// The live process can finish once; terminal replay retains its ACK.
 		finish := node.Command{Kind: node.CommandSteering, Steering: &node.SteeringCommand{Metadata: meta("finish", envelope), Text: "finish-held"}}
 		if o, e := execution.HandleCommand(ctx, finish); e != nil || o.State != node.CommandAccepted {
 			t.Fatal("held fixture finish failed")

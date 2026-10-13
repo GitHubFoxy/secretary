@@ -57,7 +57,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return nil
 		}
-		_ = err // reconnect is the recovery path for all transport failures.
+		_ = err
 		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():

@@ -20,9 +20,6 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 )
 
-// Native, unpaid regression: every turn must receive the managed system, the
-// deny-first tool catalog, real tool output and prior history. Phase 1 is a
-// same-process Follow-up; phase 2 reloads the SAME session in a fresh process.
 func TestOpenCodeNativeProfilePersistence(t *testing.T) {
 	oldUmask := syscall.Umask(0o077)
 	defer syscall.Umask(oldUmask)
@@ -146,16 +143,12 @@ func TestOpenCodeNativeProfilePersistence(t *testing.T) {
 					} else {
 						toolResult = toolResult || strings.Contains(one, `"workers":[]`)
 					}
-					// Native disabled tools produce an error result, not a file
-					// side effect. Never log its arguments or response content.
 					deniedResult = deniedResult || message["tool_call_id"] == fmt.Sprintf("forbidden-%d", p) && strings.Contains(one, "No tool named") && strings.Contains(one, "is currently available")
 				}
 				switch {
 				case !toolResult:
 					writeFixtureToolCall(w, fmt.Sprintf("allowed-%d", p), toolName, toolArgs)
 				case !deniedResult:
-					// A malicious provider can request an unadvertised builtin.
-					// It must remain unavailable both before and after restart.
 					if strings.Contains(toolText, "forbidden-") {
 						policyFailure.Store(true)
 						writeFixtureCompletion(w, "fixture-invalid", "invalid")
@@ -421,8 +414,6 @@ func TestOpenCodeNativeInventory(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	// Real production discovery seam, private observer only. No Node pairing,
-	// service configuration, Worker or Conversation mutation is performed.
 	dataHome := filepath.Join(t.TempDir(), "node-native-data")
 	if err := EnsurePrivateOpenCodeNativeDataHome(dataHome); err != nil {
 		t.Fatal("private native inventory store unavailable")

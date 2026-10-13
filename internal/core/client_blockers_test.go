@@ -264,8 +264,6 @@ func TestRedeemClientDoesNotReplayAcrossPairingGenerations(t *testing.T) {
 		t.Fatal("second generation did not receive a distinct credential")
 	}
 
-	// A duplicate of the first generation must replay its durable outcome,
-	// never the credential currently stored on the re-paired Client.
 	duplicateClient, duplicateCredential, err := store.RedeemClient(ctx, firstPairing.ID, firstPairing.PendingToken, "redeem-once")
 	if err != nil {
 		t.Fatal(err)

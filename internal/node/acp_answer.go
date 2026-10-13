@@ -2,10 +2,6 @@ package node
 
 import "strings"
 
-// acpTurnAnswer is private to one prompt, never a session history accumulator.
-// OpenCode v2.0.22 gives every assistant step its own messageId. end_turn
-// completes the last step; earlier steps (including text before a tool) remain
-// Activity. This contract must not be assumed for arbitrary ACP adapters.
 type acpTurnAnswer struct {
 	messages        map[string]*strings.Builder
 	order           []string
@@ -52,8 +48,6 @@ func (a *acpTurnAnswer) text(id, text string) {
 }
 
 func (a *acpTurnAnswer) tool() {
-	// Even unnamed native tool calls establish an execution boundary. Do not
-	// infer their identity from title/kind/arguments, or split a message by text.
 	for id := range a.messages {
 		a.progress[id] = true
 	}

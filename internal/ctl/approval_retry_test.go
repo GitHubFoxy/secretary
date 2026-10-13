@@ -28,8 +28,6 @@ func TestWorkerServiceRetriesSavedApprovalIntentAfterRestartWithSameCommand(t *t
 		t.Fatal(err)
 	}
 
-	// The service has no runtime after BeginApprovalResolution commits. This
-	// models a server stopping between the durable intent and Node handoff.
 	service.Runtime = nil
 	if _, err := service.RespondWorker(ctx, MessageWorkerRequest{
 		WorkerRef: details.Worker.WorkerRef, Text: "deny", RequestID: requestID, ClientID: "owner-client",

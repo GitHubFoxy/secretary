@@ -13,9 +13,6 @@ import (
 
 const maxSanitizedToolPayload = 16 << 10
 
-// SanitizeToolArguments is the production boundary for tool-call arguments.
-// Invalid or unsafe payloads are rejected, while forbidden fields are removed
-// recursively from otherwise useful JSON.
 func SanitizeToolArguments(raw json.RawMessage) (json.RawMessage, bool) {
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return json.RawMessage(`{}`), true
@@ -35,8 +32,6 @@ func SanitizeToolArguments(raw json.RawMessage) (json.RawMessage, bool) {
 	return encoded, true
 }
 
-// SanitizeToolResult applies the same fail-closed policy to a tool result or
-// error. JSON strings are decoded so nested ACP payloads cannot bypass it.
 func SanitizeToolResult(result string) (string, bool) {
 	result = strings.TrimSpace(result)
 	if result == "" {
@@ -204,8 +199,6 @@ func sanitizeURLsInText(text string) string {
 	})
 }
 
-// SanitizeFailureMessage masks secrets (e.g. sk-, bearer, xoxb-, URL queries/userinfo)
-// and limits the message length to at most 1000 runes.
 func SanitizeFailureMessage(msg string) string {
 	msg = strings.TrimSpace(msg)
 	if msg == "" {
@@ -221,8 +214,6 @@ func SanitizeFailureMessage(msg string) string {
 		}
 	}
 	if strings.ContainsAny(msg, "{[") {
-		// Core must parse JSON-like text before rewriting URLs. An escaped quote
-		// after a URL inside a JSON string is part of the enclosing JSON syntax.
 		return core.SanitizeFailureMessage(msg)
 	}
 	msg = sanitizeURLsInText(msg)
@@ -230,9 +221,6 @@ func SanitizeFailureMessage(msg string) string {
 	msg = redactXoxbToken.ReplaceAllString(msg, "[redacted]")
 	msg = redactGHPToken.ReplaceAllString(msg, "[redacted]")
 	msg = redactToolSensitiveText(msg)
-	// Core owns the shared receipt/public-text sanitizer. Running it after the
-	// Node-specific pass also handles JSON keys after encoding/json decodes
-	// Unicode escapes (for example, access\\u005ftoken).
 	msg = core.SanitizeFailureMessage(msg)
 
 	runes := []rune(msg)
@@ -295,9 +283,6 @@ func sanitizeFailureJSONStringsAtDepth(value any, nestedDepth int) any {
 	}
 }
 
-// redactAuthValues treats Authorization as an opaque field. Parsing individual
-// scheme parameters can leave credentials behind when providers vary spacing or
-// quote values differently, so only a known status suffix survives.
 func redactAuthValues(value string) string {
 	value = redactOpaqueAuthValue(value, redactAuthHeaderStart)
 	value = redactOpaqueAuthValue(value, redactDigestStart)

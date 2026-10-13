@@ -18,8 +18,6 @@ import (
 	"time"
 )
 
-// Opt-in native OpenCode v2 ACP round-trip. The only model endpoint is a local
-// synthetic HTTP fixture; no user provider credentials or paid requests are used.
 func TestOpenCodeACPNativeHTTPFixture(t *testing.T) {
 	runOpenCodeACPNativeHTTPFixture(t, false)
 }
@@ -174,7 +172,6 @@ func runOpenCodeACPNativeHTTPFixture(t *testing.T, progressFixture bool) {
 				"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}},
 			})
 		case hasAllowed && checkedToolResult.Load():
-			// Final deltas immediately precede terminal response. No sleeps.
 			for _, delta := range []string{"fixture ", "ACP ", "completed"} {
 				writeOpenAIStream(w, map[string]any{
 					"id": "fixture-final", "object": "chat.completion.chunk", "created": 1, "model": "fixture-model",
@@ -186,8 +183,6 @@ func runOpenCodeACPNativeHTTPFixture(t *testing.T, progressFixture bool) {
 				"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "stop"}},
 			})
 		default:
-			// Native ACP also makes a tool-free session-title request. It is not
-			// the managed agent turn and must not consume the tool-call response.
 			writeOpenAIStream(w, map[string]any{
 				"id": "fixture-title", "object": "chat.completion.chunk", "created": 1, "model": "fixture-model",
 				"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "content": "Fixture title"}, "finish_reason": nil}},
@@ -262,7 +257,6 @@ func runOpenCodeACPNativeHTTPFixture(t *testing.T, progressFixture bool) {
 			t.Fatal("native OpenCode ACP round-trip timed out")
 		}
 	}
-	// select may choose Result while prior Activity is still buffered.
 	for len(session.Activity()) > 0 {
 		activity := <-session.Activity()
 		sawProgress = sawProgress || activity.Kind == ActivityText && strings.Contains(activity.Text, "fixture progress before tool")
@@ -338,8 +332,6 @@ func fixtureMessageText(messages []any) string {
 	return strings.Join(values, "\n")
 }
 
-// Opt-in native OpenCode v2 Secretary MCP round-trip. The MCP server and model
-// endpoint are local synthetic fixtures; no Secretary service or credentials are used.
 func TestOpenCodeSecretaryMCPNativeHTTPFixture(t *testing.T) {
 	oldUmask := syscall.Umask(0o077)
 	defer syscall.Umask(oldUmask)
@@ -593,8 +585,6 @@ func testWrapperArguments() []string {
 	return nil
 }
 
-// This wrapper injects only the local HTTP provider into the per-session
-// configuration, then replaces itself with the real native OpenCode binary.
 func TestOpenCodeConfigWrapperProcess(t *testing.T) {
 	if os.Getenv("TEST_OPENCODE_WRAPPER") != "1" {
 		return

@@ -11,8 +11,6 @@ import (
 	"github.com/beruseruko/secretary/internal/ctl"
 )
 
-// secretaryMCPObserve accepts no tool arguments or caller-selected identities.
-// The credential resolves the exact current server-issued launch in Core.
 func (s *Server) secretaryMCPObserve(w http.ResponseWriter, r *http.Request) {
 	var observation core.SecretaryMCPObservation
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 512))
@@ -49,10 +47,6 @@ type secretaryToolCallResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
-// secretaryToolCall is an internal bridge for the local Secretary MCP process.
-// It is intentionally not a Client API: only the server-issued runtime
-// capability can authorize it, and the actual WorkerService remains in this
-// process where Node connections and runtimes are available.
 func (s *Server) secretaryToolCall(w http.ResponseWriter, r *http.Request) {
 	capability := strings.TrimSpace(bearerToken(r))
 	if capability == "" {

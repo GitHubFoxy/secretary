@@ -85,8 +85,6 @@ func runNodeCheckpointSelection(t *testing.T, legacyFX bool) {
 		t.Fatal("initial checkpoint missing")
 	}
 	if legacyFX {
-		// Model a pre-marker Node record while retaining the native history
-		// established by the real external executable above.
 		data, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
@@ -121,8 +119,6 @@ func runNodeCheckpointSelection(t *testing.T, legacyFX bool) {
 		}
 		execution = node.NewExecutionNode("synthetic-node", runtime, local)
 	}
-	// The newest mapping deliberately belongs to another real external session.
-	// Following map iteration order or a latest-session heuristic loses the nonce.
 	foreign := original
 	foreign.WorkerRef = "other-worker"
 	foreign.AttemptID = "other-attempt"

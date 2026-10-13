@@ -27,8 +27,6 @@ func (e *SteeringError) Unwrap() error {
 	return e.Err
 }
 
-// SanitizeProviderCode validates provider code against strict bounded allowlist.
-// Unknown codes, secrets or strings longer than 1000 runes are excluded and return empty string.
 func SanitizeProviderCode(code string) string {
 	return core.SanitizeFailureProviderCode(code)
 }
@@ -113,9 +111,6 @@ func classifyACPError(rpcErr *acp.RPCError, collectedText string) core.WorkerFai
 				return failure
 
 			default:
-				// Unknown provider code or no provider code with message in Data.
-				// Category remains core.FailureCategoryInternalError (conservative).
-				// Unknown provider code is excluded from the public model.
 				failure.ProviderCode = ""
 				failure.Message = providerMessage
 				if failure.Message != "" {
@@ -125,9 +120,6 @@ func classifyACPError(rpcErr *acp.RPCError, collectedText string) core.WorkerFai
 		}
 	}
 
-	// Activity text has no provider-origin marker, so it is never quoted as an
-	// error. A typed signal above already supplies a safe category explanation.
-	// Without one, keep the RPC explanation and conservative category.
 	failure.Message = SanitizeFailureMessage(technical)
 	return failure
 }

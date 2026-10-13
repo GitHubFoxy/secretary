@@ -13,7 +13,6 @@ import (
 	"time"
 )
 
-// ErrFormatting means Telegram rejected entity parsing before accepting a message.
 var ErrFormatting = errors.New("telegram: entity parsing rejected")
 
 func botAPIError(method string, code int, description string) error {
@@ -24,9 +23,6 @@ func botAPIError(method string, code int, description string) error {
 	return fmt.Errorf("telegram: Bot API %s failed (%d): %s", method, code, description)
 }
 
-// BotAPITransport is the production transport. It uses long polling and the
-// Telegram Bot API only. The bot token is kept in this process and is never
-// included in OutgoingMessage, Pairing or ServerClient payloads.
 type BotAPITransport struct {
 	BaseURL    string
 	BotToken   string
@@ -183,19 +179,6 @@ func (t *BotAPITransport) SendMessage(ctx context.Context, message OutgoingMessa
 	return t.call(ctx, "sendMessage", values, nil)
 }
 
-func (t *BotAPITransport) SetMessageReaction(ctx context.Context, chatID, messageID int64, emoji string) error {
-	reaction, err := json.Marshal([]map[string]string{{"type": "emoji", "emoji": emoji}})
-	if err != nil {
-		return err
-	}
-	values := url.Values{
-		"chat_id":    {strconv.FormatInt(chatID, 10)},
-		"message_id": {strconv.FormatInt(messageID, 10)},
-		"reaction":   {string(reaction)},
-	}
-	return t.call(ctx, "setMessageReaction", values, nil)
-}
-
 func (t *BotAPITransport) SendChatAction(ctx context.Context, chatID, threadID int64, action string) error {
 	if chatID == 0 || strings.TrimSpace(action) == "" {
 		return errors.New("telegram: chat id and action are required")
@@ -269,8 +252,6 @@ func (t *BotAPITransport) DownloadFile(ctx context.Context, filePath string, max
 	return data, nil
 }
 
-// HTTPServerClient speaks only the public Client API. It cannot call the Node
-// protocol and never sends a Node token or native runtime identifier.
 type HTTPServerClient struct {
 	BaseURL    string
 	Credential string
@@ -327,4 +308,9 @@ func (c *HTTPServerClient) SendWorkerMessage(ctx context.Context, message Worker
 		body["request_id"] = message.RequestID
 	}
 	return c.post(ctx, path, body, "telegram:"+message.ExternalMessageID)
+}
+
+func (c *HTTPServerClient) ResumeWorker(ctx context.Context, workerRef string) error {
+	path := "/v1/workers/" + url.PathEscape(workerRef) + "/resume"
+	return c.post(ctx, path, map[string]string{}, "")
 }

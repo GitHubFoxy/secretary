@@ -25,10 +25,9 @@ type ManagedSkill struct {
 }
 
 type ManagedProfile struct {
-	Version string `json:"version,omitempty"`
-	Name    string `json:"name,omitempty"`
-	Content string `json:"content,omitempty"`
-	// Hash-significant collections must retain null versus [] across storage/wire.
+	Version              string         `json:"version,omitempty"`
+	Name                 string         `json:"name,omitempty"`
+	Content              string         `json:"content,omitempty"`
 	Skills               []ManagedSkill `json:"skills"`
 	AllowTools           []string       `json:"allow_tools"`
 	Hash                 string         `json:"hash,omitempty"`
@@ -40,8 +39,6 @@ type ManagedProfile struct {
 	ReplyContractVersion string         `json:"reply_contract_version,omitempty"`
 }
 
-// SnapshotHash binds exact instructions, skills, permissions and resolved
-// execution pins to the source Profile identity.
 func (p ManagedProfile) SnapshotHash() string {
 	encoded, _ := json.Marshal(struct {
 		Version              string         `json:"version"`
@@ -134,8 +131,6 @@ func (p ManagedProfile) MaterializeInstructions(workspace string) (string, error
 }
 
 func (p ManagedProfile) openCodeDeliveryMarker(permissions []map[string]string) string {
-	// Hash the actual delivered content and ordered policy, including profiles
-	// whose domain hash is absent or predates an adapter/schema change.
 	encoded, _ := json.Marshal(struct {
 		Prompt               string
 		Name                 string

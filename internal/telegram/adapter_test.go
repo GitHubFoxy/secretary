@@ -59,23 +59,6 @@ func (f *fakeTransport) CreateForumTopic(_ context.Context, chatID int64, name s
 	return topic, nil
 }
 
-type reactionCall struct {
-	chatID    int64
-	messageID int64
-	emoji     string
-}
-
-type recordingReactionTransport struct {
-	*fakeTransport
-	reactions []reactionCall
-	err       error
-}
-
-func (t *recordingReactionTransport) SetMessageReaction(_ context.Context, chatID, messageID int64, emoji string) error {
-	t.reactions = append(t.reactions, reactionCall{chatID: chatID, messageID: messageID, emoji: emoji})
-	return t.err
-}
-
 type fakeServer struct {
 	messages []InboundMessage
 	workers  []WorkerMessage
@@ -115,6 +98,7 @@ func (f *fakeServer) SendWorkerMessage(_ context.Context, message WorkerMessage)
 	f.workers = append(f.workers, message)
 	return nil
 }
+func (f *fakeServer) ResumeWorker(_ context.Context, _ string) error { return nil }
 
 type retryServer struct {
 	mu        sync.Mutex
@@ -137,6 +121,7 @@ func (s *retryServer) SendMessage(context.Context, InboundMessage) error {
 	return nil
 }
 func (s *retryServer) SendWorkerMessage(context.Context, WorkerMessage) error { return nil }
+func (s *retryServer) ResumeWorker(context.Context, string) error             { return nil }
 
 type retryPollingTransport struct {
 	mu    sync.Mutex
@@ -233,7 +218,7 @@ func TestClientMessageMirrorsToGeneralOnceWithoutTelegramEcho(t *testing.T) {
 	}
 }
 
-func TestTerminalResultMirrorsToGeneralWithWorkerLabel(t *testing.T) {
+func TestTerminalResultMirrorsToGeneral(t *testing.T) {
 	transport := &fakeTransport{}
 	server := &fakeServer{}
 	adapter := newTestAdapter(t, transport, server, filepath.Join(t.TempDir(), "telegram.json"))
@@ -249,7 +234,7 @@ func TestTerminalResultMirrorsToGeneralWithWorkerLabel(t *testing.T) {
 		switch {
 		case sent.ThreadID != 0 && sent.Text == "pong":
 			topic++
-		case sent.ThreadID == 0 && sent.Text == "Погода:\npong":
+		case sent.ThreadID == 0 && sent.Text == "pong":
 			general++
 		default:
 			t.Fatalf("unexpected terminal message=%#v", sent)
@@ -382,27 +367,6 @@ func TestTypingActionOnInboundAndFlush(t *testing.T) {
 	}
 }
 
-func TestAcceptedSecretaryMessageGetsBestEffortReaction(t *testing.T) {
-	for _, reactionErr := range []error{nil, errors.New("reaction unavailable")} {
-		transport := &recordingReactionTransport{fakeTransport: &fakeTransport{}, err: reactionErr}
-		server := &fakeServer{}
-		adapter, err := New(Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, FlushInterval: time.Minute}, transport, server)
-		if err != nil {
-			t.Fatal(err)
-		}
-		update := Update{ID: 7, Message: &Message{ChatID: 100, FromID: 100, MessageID: 42, Text: "hello"}}
-		if err := adapter.HandleUpdate(context.Background(), update); err != nil {
-			t.Fatalf("reaction error %v blocked message: %v", reactionErr, err)
-		}
-		if len(server.messages) != 1 {
-			t.Fatalf("server messages=%#v", server.messages)
-		}
-		if len(transport.reactions) != 1 || transport.reactions[0] != (reactionCall{chatID: 100, messageID: 42, emoji: "👀"}) {
-			t.Fatalf("reactions=%#v", transport.reactions)
-		}
-	}
-}
-
 func TestDuplicateUpdateIsIgnoredAndUnauthorizedCannotChangeState(t *testing.T) {
 	transport := &fakeTransport{}
 	server := &fakeServer{}
@@ -531,7 +495,6 @@ func TestWorkerToolCallIDCorrelationAndParallelExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Two parallel calls to the same tool name "exec_command" with different call IDs and previews.
 	call1Start := Event{
 		Kind: "worker.tool_started", WorkerRef: "worker-1", CallID: "call-1",
 		Tool: "exec_command", ToolPreview: "python3 test.py",
@@ -548,7 +511,6 @@ func TestWorkerToolCallIDCorrelationAndParallelExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Finish call-2 first (with empty output and no preview in result, relying on CallID correlation).
 	call2Finish := Event{
 		Kind: "worker.tool_finished", WorkerRef: "worker-1", CallID: "call-2",
 		Tool: "exec_command", HasOutput: false,
@@ -557,7 +519,6 @@ func TestWorkerToolCallIDCorrelationAndParallelExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Finish call-1 second (with nonempty output).
 	call1Finish := Event{
 		Kind: "worker.tool_finished", WorkerRef: "worker-1", CallID: "call-1",
 		Tool: "exec_command", HasOutput: true,
@@ -570,18 +531,15 @@ func TestWorkerToolCallIDCorrelationAndParallelExecution(t *testing.T) {
 		t.Fatalf("sent messages count=%d want 4: %#v", len(transport.sent), transport.sent)
 	}
 
-	// Sent order: call1 start, call2 start, call2 finish, call1 finish
 	if transport.sent[0].Text != "▶ Запуск: exec_command python3 test.py" {
 		t.Fatalf("call1 start message=%q", transport.sent[0].Text)
 	}
 	if transport.sent[1].Text != "▶ Запуск: exec_command open https://example.com" {
 		t.Fatalf("call2 start message=%q", transport.sent[1].Text)
 	}
-	// call2 completed with empty output: must correlate to call-2's preview and indicate (без вывода)
 	if transport.sent[2].Text != "✓ Выполнено: exec_command open https://example.com (без вывода)" {
 		t.Fatalf("call2 finish message=%q", transport.sent[2].Text)
 	}
-	// call1 completed with nonempty output: must correlate to call-1's preview and indicate (вывод скрыт)
 	if transport.sent[3].Text != "✓ Выполнено: exec_command python3 test.py (вывод скрыт)" {
 		t.Fatalf("call1 finish message=%q", transport.sent[3].Text)
 	}
@@ -596,7 +554,6 @@ func TestWorkerToolWithoutCallIDNeverMatchesByNameAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Start call with call_id "call-1"
 	if err := adapter.HandleEvent(ctx, Event{
 		Kind: "worker.tool_started", WorkerRef: "worker-1", CallID: "call-1",
 		Tool: "exec_command", ToolPreview: "first command",
@@ -604,7 +561,6 @@ func TestWorkerToolWithoutCallIDNeverMatchesByNameAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Result arrives without call_id and without preview
 	if err := adapter.HandleEvent(ctx, Event{
 		Kind: "worker.tool_finished", WorkerRef: "worker-1", CallID: "",
 		Tool: "exec_command", HasOutput: false,
@@ -615,7 +571,6 @@ func TestWorkerToolWithoutCallIDNeverMatchesByNameAlone(t *testing.T) {
 	if len(transport.sent) != 2 {
 		t.Fatalf("sent count=%d want 2", len(transport.sent))
 	}
-	// The id-less result must NOT steal "first command" preview by tool name alone.
 	if transport.sent[1].Text != "✓ Выполнено: exec_command (без вывода)" {
 		t.Fatalf("id-less result unexpectedly borrowed preview: %q", transport.sent[1].Text)
 	}
@@ -640,7 +595,6 @@ func TestWorkerToolReplayDeduplication(t *testing.T) {
 		t.Fatalf("sent count=%d want 2", len(transport.sent))
 	}
 
-	// Replay after restart
 	adapter = newTestAdapter(t, transport, &fakeServer{}, path)
 	for _, ev := range []Event{created, start, finish} {
 		if err := adapter.HandleDurableEvent(ctx, ev); err != nil {
@@ -657,7 +611,6 @@ func TestWorkerTopicShowsExecutionNodeIDWhenKnown(t *testing.T) {
 	transport := &fakeTransport{}
 	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "state.json"))
 
-	// Case 1: NodeID is known and configured
 	if err := adapter.HandleEvent(ctx, Event{
 		Kind: "worker.created", WorkerRef: "worker-1", Title: "Task 1",
 		NodeID: "execution-node-primary", TaskPrompt: "Run tests",
@@ -668,7 +621,6 @@ func TestWorkerTopicShowsExecutionNodeIDWhenKnown(t *testing.T) {
 		t.Fatalf("prompt with node ID delivery: %#v", transport.sent)
 	}
 
-	// Case 2: NodeID is empty (unknown) — must not invent machine name or OS
 	transport.sent = nil
 	if err := adapter.HandleEvent(ctx, Event{
 		Kind: "worker.created", WorkerRef: "worker-2", Title: "Task 2",
@@ -680,7 +632,6 @@ func TestWorkerTopicShowsExecutionNodeIDWhenKnown(t *testing.T) {
 		t.Fatalf("prompt without node ID delivery: %#v", transport.sent)
 	}
 
-	// Case 3: NodeID looks like a filesystem path — must not leak filesystem paths
 	transport.sent = nil
 	if err := adapter.HandleEvent(ctx, Event{
 		Kind: "worker.created", WorkerRef: "worker-3", Title: "Task 3",
@@ -692,7 +643,6 @@ func TestWorkerTopicShowsExecutionNodeIDWhenKnown(t *testing.T) {
 		t.Fatalf("prompt with filesystem path in node ID leaked path: %#v", transport.sent)
 	}
 
-	// Case 4: NodeID has sensitive token prefix
 	transport.sent = nil
 	if err := adapter.HandleEvent(ctx, Event{
 		Kind: "worker.created", WorkerRef: "worker-4", Title: "Task 4",
@@ -704,7 +654,6 @@ func TestWorkerTopicShowsExecutionNodeIDWhenKnown(t *testing.T) {
 		t.Fatalf("token-like node ID must be rejected: %#v", transport.sent)
 	}
 
-	// Case 5: NodeID contains newline injection
 	transport.sent = nil
 	if err := adapter.HandleEvent(ctx, Event{
 		Kind: "worker.created", WorkerRef: "worker-5", Title: "Task 5",
@@ -726,7 +675,6 @@ func TestWorkerToolAttemptIsolationReusedCallID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Attempt 1: CallID "call-1" runs "cat foo.txt" and completes with empty output
 	if err := adapter.HandleEvent(ctx, Event{
 		Kind: "worker.tool_started", WorkerRef: "worker-1", AttemptID: "att-1",
 		CallID: "call-1", Tool: "exec_command", ToolPreview: "cat foo.txt",
@@ -740,7 +688,6 @@ func TestWorkerToolAttemptIsolationReusedCallID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Attempt 2: Reuses same CallID "call-1" but with different preview "cat bar.txt" and nonempty output
 	if err := adapter.HandleEvent(ctx, Event{
 		Kind: "worker.tool_started", WorkerRef: "worker-1", AttemptID: "att-2",
 		CallID: "call-1", Tool: "exec_command", ToolPreview: "cat bar.txt",
@@ -836,7 +783,7 @@ func TestOutboxSurvivesTransportFailureAndRestart(t *testing.T) {
 	if err := restarted.HandleDurableEvent(context.Background(), event); err != nil {
 		t.Fatal(err)
 	}
-	if len(transport.sent) != 2 || transport.sent[0].Text != "Task" || transport.sent[1].Text != "Worker:\nTask" {
+	if len(transport.sent) != 2 || transport.sent[0].Text != "Task" || transport.sent[1].Text != "Task" {
 		t.Fatalf("outbox after restart = %#v", transport.sent)
 	}
 }
@@ -1543,7 +1490,6 @@ func TestWorkerSteerErrorReplaySafeDoesNotDuplicate(t *testing.T) {
 		},
 	}
 
-	// First attempt
 	err := adapter.HandleUpdate(ctx, update)
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
@@ -1556,7 +1502,6 @@ func TestWorkerSteerErrorReplaySafeDoesNotDuplicate(t *testing.T) {
 		t.Fatalf("expected 1 service message sent, got %d", countFirst)
 	}
 
-	// Simulate restart by reloading state from path
 	reopened := newTestAdapter(t, transport, server, path)
 	err = reopened.HandleUpdate(ctx, update)
 	if err != nil {

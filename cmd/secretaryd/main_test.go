@@ -300,7 +300,6 @@ func TestProductionAssemblyRespondsWithoutManualResponderAttachment(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	// This is the production assembly seam. The test must not attach a responder itself.
 	attachProductionWorkerServices(ctx, api, store, person.ID, capability, local, nil, nil, nil, nil)
 	server := httptest.NewServer(api.Handler())
 	defer server.Close()
@@ -484,10 +483,6 @@ func TestControlRoutesStayDebugOnly(t *testing.T) {
 	}
 }
 
-// TestNodesConnectRequiresNodeReference pins only the gateway check: without a
-// valid ?node= parameter the protocol endpoint answers 400 before any
-// WebSocket upgrade or credential evaluation. It proves nothing about
-// credentials; TestNodesConnectRejectsClientCredential covers that.
 func TestNodesConnectRequiresNodeReference(t *testing.T) {
 	ctx := context.Background()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "nodes-connect.db"))
@@ -511,19 +506,6 @@ func TestNodesConnectRequiresNodeReference(t *testing.T) {
 	}
 }
 
-// TestNodesConnectRejectsClientCredential proves a paired Client credential
-// cannot stand in for a Node capability on /v1/nodes/connect:
-//  1. a real Node is enrolled, so ?node= is valid and its record exists;
-//  2. a positive control completes the handshake with the enrolled Node
-//     credential, proving routing, query parameter, and record lookup all pass;
-//  3. the negative case reuses the same valid ?node=, a real WebSocket upgrade,
-//     and the client credential in HTTP Authorization, but signs the protocol
-//     handshake with the client secret instead of the Node capability.
-//
-// The rejection must come from protocol authentication
-// (StatusPolicyViolation "node protocol: authentication failed"), not from the
-// missing-parameter 400. Note the protocol never reads the Authorization
-// header; carrying the client credential there must not grant access.
 func TestNodesConnectRejectsClientCredential(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -616,8 +598,6 @@ func TestNodesConnectRejectsClientCredential(t *testing.T) {
 	}
 }
 
-// pairedReadOnlyClientCredential mints a Client credential with exactly
-// conversation:read, worker:read, and approval:read.
 func pairedReadOnlyClientCredential(t *testing.T, server *httptest.Server) string {
 	t.Helper()
 	pairRequest, err := http.NewRequest(http.MethodPost, server.URL+"/v1/clients/pair", strings.NewReader(
@@ -678,4 +658,26 @@ func pairedReadOnlyClientCredential(t *testing.T, server *httptest.Server) strin
 		t.Fatal("approve returned no credential")
 	}
 	return approved.Credential
+}
+
+func TestSecretaryRuntimeIncludesAntigravity(t *testing.T) {
+	serverRoot := filepath.Join(t.TempDir(), "secretary")
+	snapshot := config.Snapshot{Config: config.Config{Secretary: config.SecretaryPolicy{Harness: "antigravity"}}}
+	secretaryRuntime, workerRuntime, cmd, _ := configuredRuntimePair(snapshot, serverRoot)
+	secretaryRouter := secretaryRuntime.(node.RuntimeRouter)
+	workerRouter := workerRuntime.(node.RuntimeRouter)
+	if secretaryRouter.Antigravity == nil || workerRouter.Antigravity == nil {
+		t.Fatal("Antigravity runtime router is nil")
+	}
+	if !strings.Contains(cmd, "agy_acp_server") {
+		t.Fatalf("expected agy_acp_server in cmd, got %q", cmd)
+	}
+	secAgy, ok := secretaryRouter.Antigravity.(node.AntigravityRuntime)
+	if !ok || secAgy.ProfileDir == "" {
+		t.Fatalf("expected secretaryRouter Antigravity ProfileDir populated, got %#v", secretaryRouter.Antigravity)
+	}
+	wrkAgy, ok := workerRouter.Antigravity.(node.AntigravityRuntime)
+	if !ok || wrkAgy.ProfileDir == "" {
+		t.Fatalf("expected workerRouter Antigravity ProfileDir populated, got %#v", workerRouter.Antigravity)
+	}
 }

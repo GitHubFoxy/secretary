@@ -11,9 +11,6 @@ import (
 	"github.com/beruseruko/secretary/internal/ctl"
 )
 
-// publicApprovalDTO is the allowlisted Approval shape for credential Clients
-// and the owner observer. Raw core.Approval carries additional request, node,
-// project, attempt and audit identifiers plus the saved response.
 type publicApprovalDTO struct {
 	ID              string             `json:"id"`
 	Kind            core.ApprovalKind  `json:"kind"`

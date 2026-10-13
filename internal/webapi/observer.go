@@ -469,6 +469,8 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, clien
 		result, err = s.actions.CancelWorker(r.Context(), details.Worker.WorkerRef)
 	case "close":
 		result, err = s.actions.CloseWorker(r.Context(), details.Worker.WorkerRef)
+	case "resume":
+		result, err = s.actions.ResumeWorker(r.Context(), details.Worker.WorkerRef)
 	default:
 		return false
 	}
@@ -708,8 +710,6 @@ func forbiddenPublicKey(key string) bool {
 		}
 	}
 
-	// Uppercase acronyms such as RUNTIMESESSIONID have no case transition to
-	// split. Compare their compact spelling against the forbidden compound keys.
 	compact := strings.ToLower(strings.Map(func(character rune) rune {
 		if unicode.IsLetter(character) || unicode.IsDigit(character) {
 			return character

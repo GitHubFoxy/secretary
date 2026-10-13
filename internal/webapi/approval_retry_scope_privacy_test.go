@@ -162,8 +162,6 @@ func TestApprovalRetryResponsesForApprovalWriteOnlyClientAreStrictlyAllowlisted(
 		}
 	}
 
-	// First call retries the resolving intent; the same ledger key exercises
-	// the cached response branch, and a fresh key exercises resolved no-handoff.
 	body, status := postRetry("scope-retry-once")
 	if status != http.StatusOK {
 		t.Fatalf("pending retry status=%d", status)

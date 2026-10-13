@@ -13,8 +13,6 @@ import (
 
 const secretaryTurnSelect = `SELECT id, identity_id, conversation_id, input, input_id, context_snapshot, prompt_state, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns`
 
-// SetSecretaryConversationSummary stores a replaceable server-owned summary
-// projection. The full Conversation remains the durable source of history.
 func (s *Store) SetSecretaryConversationSummary(ctx context.Context, conversationID, summary string) error {
 	conversationID = strings.TrimSpace(conversationID)
 	summary = strings.TrimSpace(summary)
@@ -37,8 +35,6 @@ func (s *Store) SecretaryConversationSummary(ctx context.Context, conversationID
 	return summary, err
 }
 
-// SetSecretaryPolicySnapshot persists the current policy and Profile metadata.
-// Runtime session details must never be put in this snapshot.
 func (s *Store) SetSecretaryPolicySnapshot(ctx context.Context, snapshot SecretaryPolicySnapshot) error {
 	snapshot.Version = strings.TrimSpace(snapshot.Version)
 	snapshot.Harness = strings.TrimSpace(snapshot.Harness)
@@ -76,8 +72,6 @@ func (s *Store) SecretaryPolicySnapshot(ctx context.Context) (SecretaryPolicySna
 	return snapshot, nil
 }
 
-// SecretaryTurns returns durable turn state in creation order, including turns
-// that were queued before a runtime restart.
 func (s *Store) SecretaryTurns(ctx context.Context, identityID string) ([]SecretaryTurn, error) {
 	rows, err := s.db.QueryContext(ctx, secretaryTurnSelect+` WHERE identity_id = ? ORDER BY created_at, id`, identityID)
 	if err != nil {
@@ -95,9 +89,6 @@ func (s *Store) SecretaryTurns(ctx context.Context, identityID string) ([]Secret
 	return turns, rows.Err()
 }
 
-// ReconstructSecretaryContext reads only durable server-owned state. It is a
-// pure read, so callers can inspect a context without accidentally consuming a
-// Worker Result. Results are consumed when a Secretary turn starts.
 func (s *Store) ReconstructSecretaryContext(ctx context.Context, identityID, userPath string, recentLimit int) (SecretaryContext, error) {
 	identity, err := s.secretaryIdentityByID(ctx, identityID)
 	if err != nil {
@@ -201,9 +192,6 @@ func (s *Store) ReconstructSecretaryContext(ctx context.Context, identityID, use
 	}, nil
 }
 
-// ReconstructSecretaryContextForTurn materializes canonical context exactly
-// once for the next eligible queued turn. Snapshot publication and durable
-// Result ownership happen in one transaction.
 func (s *Store) ReconstructSecretaryContextForTurn(ctx context.Context, turnID, userPath string, recentLimit int) (SecretaryContext, error) {
 	turn, err := s.SecretaryTurn(ctx, turnID)
 	if err != nil {
@@ -366,8 +354,6 @@ func releaseSecretaryResultsTx(ctx context.Context, tx *sql.Tx, turnID string) e
 	return err
 }
 
-// SecretaryContextPrompt places the editable Markdown profile before the
-// canonical read model and never adds native session state.
 func SecretaryContextPrompt(ctx SecretaryContext, input string) (string, error) {
 	if err := ctx.Validate(); err != nil {
 		return "", err

@@ -29,6 +29,7 @@ func (s *requestReplayServer) SendWorkerMessage(_ context.Context, m WorkerMessa
 	}
 	return nil
 }
+func (s *requestReplayServer) ResumeWorker(context.Context, string) error { return nil }
 func workerText(id int64, text string) Update {
 	return Update{ID: id, Message: &Message{ChatID: 100, FromID: 100, ThreadID: 7, Text: text}}
 }
@@ -44,8 +45,6 @@ func TestWorkerTextReplayKeepsRequestAfterMappingClear(t *testing.T) {
 	if len(a.state.PendingInputs) != 1 || a.state.PendingInputs[0].WorkerRequestID == nil || *a.state.PendingInputs[0].WorkerRequestID != "request-old" {
 		t.Fatal("dispatch request ID not persisted")
 	}
-	// Reproduce crash window: the server accepted this input and the adapter
-	// persisted clearing the mapping, but did not persist Processed/removal yet.
 	a.mu.Lock()
 	mapping := a.state.Topics["w"]
 	mapping.PendingRequestID = ""
@@ -55,7 +54,6 @@ func TestWorkerTextReplayKeepsRequestAfterMappingClear(t *testing.T) {
 	}
 	a.mu.Unlock()
 	a = newTestAdapter(t, transport, server, path)
-	// A new question must not change the replay body or get cleared by replay.
 	a.mu.Lock()
 	mapping = a.state.Topics["w"]
 	mapping.PendingRequestID = "request-new"

@@ -10,9 +10,6 @@ import (
 	"strings"
 )
 
-// RemoteSecretary is the MCP-side proxy for the server-owned Worker service.
-// The capability is sent only as an Authorization header to the private server
-// endpoint, never through model-visible tool arguments or prompts.
 type RemoteSecretary struct {
 	BaseURL              string
 	Capability           string

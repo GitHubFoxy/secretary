@@ -22,8 +22,6 @@ var (
 	toolReasoningTail    = regexp.MustCompile(`(?i)\b(analysis|reasoning|thought)\s*[:=].*$`)
 )
 
-// ToolArgumentPreview returns only one schema-recognized argument, after
-// redaction of the entire value. It never serializes an arbitrary argument map.
 func ToolArgumentPreview(tool string, raw json.RawMessage, workspace string) string {
 	var arguments map[string]any
 	if json.Unmarshal(raw, &arguments) != nil {
@@ -75,9 +73,6 @@ func classifyPreviewTool(tool string) string {
 	return "other"
 }
 
-// redactToolSensitiveText masks credentials and private identifiers without
-// normalizing whitespace. Normalized tool payloads and structured output use
-// this boundary; only user-facing previews additionally flatten lines.
 func redactToolSensitiveText(value string) string {
 	value = redactAuthValues(value)
 	value = toolSecretAssignment.ReplaceAllStringFunc(value, func(match string) string {
@@ -100,8 +95,6 @@ func redactToolSensitiveText(value string) string {
 	return value
 }
 
-// sanitizeToolPreviewText redacts the complete value before flattening and
-// truncation so a credential beyond the visible prefix cannot leak.
 func sanitizeToolPreviewText(value string) string {
 	return strings.Join(strings.Fields(redactToolSensitiveText(value)), " ")
 }
@@ -172,7 +165,7 @@ func compactToolBasename(base string) string {
 	}
 	extension := filepath.Ext(base)
 	if extension == base && strings.Count(base, ".") == 1 {
-		extension = "" // A long dotfile has no extension to preserve.
+		extension = ""
 	}
 	extRunes := []rune(extension)
 	if len(extRunes) > toolPreviewRunes-5 {
@@ -181,7 +174,7 @@ func compactToolBasename(base string) string {
 	}
 	stem := strings.TrimSuffix(base, filepath.Ext(base))
 	stemRunes := []rune(stem)
-	room := toolPreviewRunes + 1 - len(extRunes) - 1 // one middle ellipsis
+	room := toolPreviewRunes + 1 - len(extRunes) - 1
 	if room < 2 {
 		room = 2
 	}

@@ -50,8 +50,6 @@ func TestTelegramFormatterEscapesMarkupAndRejectsUnsafeLinks(t *testing.T) {
 	}
 }
 
-// Exercise the production HTTP encoding/classifier plus real adapter outbox.
-// The HTTP fixture is not real Telegram acceptance.
 func TestTelegramParseRejectionFallbackRetryAndDedup(t *testing.T) {
 	ctx := context.Background()
 	var modes []string

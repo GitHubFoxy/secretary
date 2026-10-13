@@ -577,8 +577,6 @@ func (s *Store) ReplaySecretaryEvents(ctx context.Context, turnID string, afterS
 	})
 }
 
-// SubscribeSecretaryEvents replays durable events and then polls the same log.
-// Sequence numbers make reconnects and repeated notifications idempotent.
 func (s *Store) SubscribeSecretaryEvents(ctx context.Context, turnID string, afterSeq int64) (<-chan Event, error) {
 	if strings.TrimSpace(turnID) == "" {
 		return nil, errors.New("core: Secretary turn is required")
@@ -618,8 +616,6 @@ func (s *Store) ReplaySecretaryStream(ctx context.Context, turnID string, afterS
 	return s.ReplaySecretaryEvents(ctx, turnID, afterSeq, limit)
 }
 
-// User document operations are kept in core because its revision is part of
-// the durable server snapshot, while the Markdown bytes remain external.
 func ValidateUserDocument(content string) error {
 	if !utf8.ValidString(content) {
 		return errors.New("core: user.md must be valid UTF-8")

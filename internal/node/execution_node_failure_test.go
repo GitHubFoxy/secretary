@@ -118,8 +118,6 @@ func TestWatchSessionRetriesTerminalOutboxPersistenceFailure(t *testing.T) {
 	}
 	go func() {
 		<-session.closeDone
-		// Let the watcher observe the temporary persistence failure before the
-		// outbox path becomes writable again.
 		time.Sleep(250 * time.Millisecond)
 		if err := os.Remove(storePath + ".tmp"); err != nil {
 			t.Errorf("remove temporary outbox blocker: %v", err)

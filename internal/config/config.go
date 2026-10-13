@@ -1,4 +1,3 @@
-// Package config loads and compiles Secretary's external runtime configuration.
 package config
 
 import (
@@ -35,7 +34,7 @@ type Config struct {
 	Skills       []string        `toml:"skills" json:"skills"`
 	Tools        Tools           `toml:"tools" json:"tools"`
 	Models       Models          `toml:"models" json:"models"`
-	Runtime      Runtime         `toml:"runtime" json:"-"` // legacy compatibility
+	Runtime      Runtime         `toml:"runtime" json:"-"`
 	Secretary    SecretaryPolicy `toml:"secretary" json:"secretary"`
 	WorkerPolicy WorkerPolicy    `toml:"worker_policy" json:"worker_policy"`
 	Telegram     TelegramPolicy  `toml:"telegram" json:"telegram"`
@@ -57,9 +56,9 @@ type WorkerPolicy struct {
 	FallbackModels     []string `toml:"fallback_models" json:"fallback_models"`
 	PreferredHarnesses []string `toml:"preferred_harnesses" json:"preferred_harnesses"`
 	ActiveAttempts     int      `toml:"active_attempts" json:"active_attempts"`
+	AutoResumeOnLimit  *bool    `toml:"auto_resume_on_limit" json:"auto_resume_on_limit,omitempty"`
 }
 
-// TelegramPolicy задаёт только настройки генерации названий Worker Topics.
 type TelegramPolicy struct {
 	TitleHarness        string `toml:"title_harness" json:"title_harness"`
 	TitlePrompt         string `toml:"title_prompt" json:"title_prompt"`
@@ -77,9 +76,9 @@ type Tools struct {
 }
 type Models struct {
 	Secretary string `toml:"secretary" json:"secretary"`
-	Fast      string `toml:"fast" json:"-"`  // legacy compatibility
-	Smart     string `toml:"smart" json:"-"` // legacy compatibility
-	Cheap     string `toml:"cheap" json:"-"` // legacy compatibility
+	Fast      string `toml:"fast" json:"-"`
+	Smart     string `toml:"smart" json:"-"`
+	Cheap     string `toml:"cheap" json:"-"`
 }
 type Runtime struct {
 	Harness   string `toml:"harness" json:"harness"`
@@ -307,10 +306,10 @@ func (c Config) EffectiveWorkerPolicy() WorkerPolicy {
 
 func validateHarness(field, value string) error {
 	switch value {
-	case "opencode", "codex", "fx", "claude_code":
+	case "opencode", "codex", "fx", "claude_code", "antigravity":
 		return nil
 	default:
-		return fmt.Errorf("%w: %s must be opencode, codex, fx or claude_code", ErrInvalid, field)
+		return fmt.Errorf("%w: %s must be opencode, codex, fx, claude_code or antigravity", ErrInvalid, field)
 	}
 }
 
@@ -437,7 +436,6 @@ func loadSkills(paths []string) ([]Skill, error) {
 	return skills, nil
 }
 
-// Diff returns the observable changes between two immutable config versions.
 func Diff(previous, next Snapshot) map[string]any {
 	changed := make(map[string]any)
 	if previous.Config.Runtime != next.Config.Runtime {
@@ -446,7 +444,7 @@ func Diff(previous, next Snapshot) map[string]any {
 	if previous.Config.Secretary != next.Config.Secretary {
 		changed["secretary"] = next.Config.Secretary
 	}
-	if previous.Config.WorkerPolicy.DefaultHarness != next.Config.WorkerPolicy.DefaultHarness || previous.Config.WorkerPolicy.Model != next.Config.WorkerPolicy.Model || previous.Config.WorkerPolicy.Reasoning != next.Config.WorkerPolicy.Reasoning || strings.Join(previous.Config.WorkerPolicy.FallbackModels, ",") != strings.Join(next.Config.WorkerPolicy.FallbackModels, ",") || previous.Config.WorkerPolicy.ActiveAttempts != next.Config.WorkerPolicy.ActiveAttempts || strings.Join(previous.Config.WorkerPolicy.PreferredHarnesses, ",") != strings.Join(next.Config.WorkerPolicy.PreferredHarnesses, ",") {
+	if previous.Config.WorkerPolicy.DefaultHarness != next.Config.WorkerPolicy.DefaultHarness || previous.Config.WorkerPolicy.Model != next.Config.WorkerPolicy.Model || previous.Config.WorkerPolicy.Reasoning != next.Config.WorkerPolicy.Reasoning || strings.Join(previous.Config.WorkerPolicy.FallbackModels, ",") != strings.Join(next.Config.WorkerPolicy.FallbackModels, ",") || previous.Config.WorkerPolicy.ActiveAttempts != next.Config.WorkerPolicy.ActiveAttempts || strings.Join(previous.Config.WorkerPolicy.PreferredHarnesses, ",") != strings.Join(next.Config.WorkerPolicy.PreferredHarnesses, ",") || !boolPtrEqual(previous.Config.WorkerPolicy.AutoResumeOnLimit, next.Config.WorkerPolicy.AutoResumeOnLimit) {
 		changed["worker_policy"] = next.Config.WorkerPolicy
 	}
 	if previous.Config.Models != next.Config.Models {
@@ -489,4 +487,14 @@ func digest(values ...string) string {
 		_, _ = h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+func boolPtrEqual(a, b *bool) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	if a == nil || b == nil {
+		return false
+	}
+	return *a == *b
 }
