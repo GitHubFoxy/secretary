@@ -69,10 +69,6 @@ type Transport interface {
 	CreateForumTopic(context.Context, int64, string) (ForumTopic, error)
 }
 
-type MessageReactionTransport interface {
-	SetMessageReaction(context.Context, int64, int64, string) error
-}
-
 type InboundMessage struct {
 	ExternalMessageID string
 	Body              string
@@ -613,7 +609,7 @@ func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed 
 		if err := a.server.ResumeWorker(ctx, mapping.WorkerRef); err != nil {
 			return err
 		}
-		a.reactToMessage(ctx, update.Message)
+		a.sendTyping(update.Message.ChatID, update.Message.ThreadID)
 		return nil
 	}
 	if update.Message.ThreadID != 0 {
@@ -654,7 +650,6 @@ func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed 
 				}
 				return err
 			}
-			a.reactToMessage(ctx, update.Message)
 			a.sendTyping(update.Message.ChatID, update.Message.ThreadID)
 			if mapping.PendingRequestID != "" {
 				a.mu.Lock()
@@ -671,7 +666,6 @@ func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed 
 	if err := a.server.SendMessage(ctx, InboundMessage{ExternalMessageID: externalID, Body: text}); err != nil {
 		return err
 	}
-	a.reactToMessage(ctx, update.Message)
 	thread := update.Message.ThreadID
 	if thread == 0 {
 		thread = 1
@@ -687,17 +681,6 @@ func (a *Adapter) mappingForThreadLocked(chatID, threadID int64) (TopicMapping, 
 		}
 	}
 	return TopicMapping{}, false
-}
-
-func (a *Adapter) reactToMessage(ctx context.Context, message *Message) {
-	if message == nil || message.MessageID <= 0 {
-		return
-	}
-	transport, ok := a.transport.(MessageReactionTransport)
-	if !ok {
-		return
-	}
-	_ = transport.SetMessageReaction(ctx, message.ChatID, message.MessageID, "👀")
 }
 
 func (a *Adapter) sendTyping(chatID, threadID int64) {

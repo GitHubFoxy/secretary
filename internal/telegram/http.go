@@ -179,19 +179,6 @@ func (t *BotAPITransport) SendMessage(ctx context.Context, message OutgoingMessa
 	return t.call(ctx, "sendMessage", values, nil)
 }
 
-func (t *BotAPITransport) SetMessageReaction(ctx context.Context, chatID, messageID int64, emoji string) error {
-	reaction, err := json.Marshal([]map[string]string{{"type": "emoji", "emoji": emoji}})
-	if err != nil {
-		return err
-	}
-	values := url.Values{
-		"chat_id":    {strconv.FormatInt(chatID, 10)},
-		"message_id": {strconv.FormatInt(messageID, 10)},
-		"reaction":   {string(reaction)},
-	}
-	return t.call(ctx, "setMessageReaction", values, nil)
-}
-
 func (t *BotAPITransport) SendChatAction(ctx context.Context, chatID, threadID int64, action string) error {
 	if chatID == 0 || strings.TrimSpace(action) == "" {
 		return errors.New("telegram: chat id and action are required")
