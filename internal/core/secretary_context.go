@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const secretaryTurnSelect = `SELECT id, identity_id, conversation_id, input, input_id, context_snapshot, prompt_state, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns`
+const secretaryTurnSelect = `SELECT id, identity_id, conversation_id, input, input_id, input_entry_id, input_seq, context_snapshot, prompt_state, state, queue_position, error, created_at, started_at, finished_at, updated_at FROM secretary_turns`
 
 func (s *Store) SetSecretaryConversationSummary(ctx context.Context, conversationID, summary string) error {
 	conversationID = strings.TrimSpace(conversationID)
@@ -73,7 +73,7 @@ func (s *Store) SecretaryPolicySnapshot(ctx context.Context) (SecretaryPolicySna
 }
 
 func (s *Store) SecretaryTurns(ctx context.Context, identityID string) ([]SecretaryTurn, error) {
-	rows, err := s.db.QueryContext(ctx, secretaryTurnSelect+` WHERE identity_id = ? ORDER BY created_at, id`, identityID)
+	rows, err := s.db.QueryContext(ctx, secretaryTurnSelect+` WHERE identity_id = ? ORDER BY CASE WHEN input_seq > 0 THEN input_seq ELSE queue_position END, created_at, id`, identityID)
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +325,7 @@ func secretaryTurnEligibleTx(ctx context.Context, tx *sql.Tx, turn SecretaryTurn
 		return false, nil
 	}
 	var earlier int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM secretary_turns WHERE identity_id = ? AND state = 'queued' AND queue_position < ?`, turn.IdentityID, turn.QueuePosition).Scan(&earlier); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM secretary_turns WHERE identity_id = ? AND state = 'queued' AND (CASE WHEN input_seq > 0 THEN input_seq ELSE queue_position END) < (CASE WHEN ? > 0 THEN ? ELSE ? END)`, turn.IdentityID, turn.InputSeq, turn.InputSeq, turn.QueuePosition).Scan(&earlier); err != nil {
 		return false, err
 	}
 	return earlier == 0, nil

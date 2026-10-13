@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS secretary_turns (
   conversation_id TEXT NOT NULL REFERENCES conversations(id),
   input TEXT NOT NULL,
   input_id TEXT NOT NULL DEFAULT '',
+  input_entry_id TEXT NOT NULL DEFAULT '',
+  input_seq INTEGER NOT NULL DEFAULT 0,
   context_snapshot TEXT NOT NULL DEFAULT '',
   prompt_state TEXT NOT NULL DEFAULT 'pending',
   state TEXT NOT NULL,
@@ -134,6 +136,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS secretary_context_seen_results_one_owner
 	}
 	if _, err := s.db.ExecContext(ctx, `ALTER TABLE secretary_turns ADD COLUMN prompt_state TEXT NOT NULL DEFAULT 'pending'`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 		return fmt.Errorf("migrate Secretary turn prompt state: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE secretary_turns ADD COLUMN input_entry_id TEXT NOT NULL DEFAULT ''`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return fmt.Errorf("migrate Secretary turn input entry: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE secretary_turns ADD COLUMN input_seq INTEGER NOT NULL DEFAULT 0`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
+		return fmt.Errorf("migrate Secretary turn input sequence: %w", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `CREATE UNIQUE INDEX IF NOT EXISTS secretary_turns_input_entry ON secretary_turns(input_entry_id) WHERE input_entry_id <> ''`); err != nil {
+		return fmt.Errorf("index Secretary turn input entries: %w", err)
 	}
 	if _, err := s.db.ExecContext(ctx, `ALTER TABLE secretary_context_seen_results ADD COLUMN claim_state TEXT NOT NULL DEFAULT 'accepted'`); err != nil && !strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
 		return fmt.Errorf("migrate Secretary result claim state: %w", err)
@@ -260,9 +271,84 @@ func (s *Store) EnqueueSecretaryTurn(ctx context.Context, identityID, input stri
 	})
 }
 
+func (s *Store) EnqueueSecretaryTurnForEntry(ctx context.Context, identityID, input string, entry ConversationEntry, interruption *SecretaryInterruptionTarget) (SecretaryTurn, bool, error) {
+	if strings.TrimSpace(identityID) == "" || strings.TrimSpace(input) == "" || strings.TrimSpace(entry.ID) == "" || entry.Seq <= 0 {
+		return SecretaryTurn{}, false, errors.New("core: Secretary identity, input, and conversation entry are required")
+	}
+	var turn SecretaryTurn
+	duplicate := false
+	err := withTxErr(s, ctx, func(tx *sql.Tx) error {
+		var conversationID string
+		if err := tx.QueryRowContext(ctx, `SELECT conversation_id FROM secretary_identities WHERE id = ?`, identityID).Scan(&conversationID); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		var actualConversationID string
+		var actualSeq int64
+		var actualKind, actualInput string
+		if err := tx.QueryRowContext(ctx, `SELECT conversation_id, seq, kind, body FROM conversation_entries WHERE id = ?`, entry.ID).Scan(&actualConversationID, &actualSeq, &actualKind, &actualInput); errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		} else if err != nil {
+			return err
+		}
+		if actualConversationID != conversationID || actualSeq != entry.Seq || actualKind != string(EntryUser) || actualInput != entry.Body {
+			return errors.New("core: conversation entry does not match Secretary input")
+		}
+		if err := scanSecretaryTurn(tx.QueryRowContext(ctx, secretaryTurnSelect+` WHERE input_entry_id = ?`, entry.ID), &turn); err == nil {
+			if turn.IdentityID != identityID || turn.Input != input || turn.InputSeq != entry.Seq {
+				return errors.New("core: conversation entry already has a different Secretary turn")
+			}
+			duplicate = true
+			return nil
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		var position int64
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(queue_position), 0) + 1 FROM secretary_turns WHERE identity_id = ? AND state = 'queued'`, identityID).Scan(&position); err != nil {
+			return err
+		}
+		now := s.now()
+		turn = SecretaryTurn{ID: newID("stn"), IdentityID: identityID, ConversationID: conversationID, Input: input, InputID: newID("sin"), InputEntryID: entry.ID, InputSeq: entry.Seq, State: SecretaryTurnQueued, QueuePosition: position, CreatedAt: now, UpdatedAt: now}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO secretary_turns(id, identity_id, conversation_id, input, input_id, input_entry_id, input_seq, state, queue_position, error, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)`, turn.ID, turn.IdentityID, turn.ConversationID, turn.Input, turn.InputID, turn.InputEntryID, turn.InputSeq, turn.State, turn.QueuePosition, timestamp(now), timestamp(now)); err != nil {
+			return err
+		}
+		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: SecretaryTurnQueuedEvent, AggregateType: "secretary_turn", AggregateID: turn.ID, Source: "server", CorrelationID: turn.ID, Payload: turn}, turn)
+		if err != nil {
+			return err
+		}
+		_, _, err = enqueueDeliveryTx(ctx, tx, now, event.ID, "", "conversation", "secretary-stream:"+event.ID)
+		if err != nil || interruption == nil || strings.TrimSpace(interruption.TurnID) == "" {
+			return err
+		}
+		var activeIdentity string
+		var activeState SecretaryTurnState
+		if err := tx.QueryRowContext(ctx, `SELECT identity_id, state FROM secretary_turns WHERE id = ?`, interruption.TurnID).Scan(&activeIdentity, &activeState); errors.Is(err, sql.ErrNoRows) {
+			return nil
+		} else if err != nil {
+			return err
+		}
+		if activeIdentity != identityID || activeState != SecretaryTurnActive {
+			return nil
+		}
+		request := map[string]any{
+			"active_turn_id": interruption.TurnID, "incoming_turn_id": turn.ID,
+			"input_entry_id": entry.ID, "input_seq": entry.Seq,
+			"runtime_generation": interruption.RuntimeGeneration, "session_id": interruption.SessionID,
+		}
+		requestEvent, err := appendEventTx(ctx, tx, now, EventInput{Kind: "secretary.interruption_requested", AggregateType: "secretary_turn", AggregateID: interruption.TurnID, Source: "server", CorrelationID: turn.ID, Payload: request}, request)
+		if err != nil {
+			return err
+		}
+		_, _, err = enqueueDeliveryTx(ctx, tx, now, requestEvent.ID, "", "conversation", "secretary-stream:"+requestEvent.ID)
+		return err
+	})
+	return turn, duplicate, err
+}
+
 func scanSecretaryTurn(row interface{ Scan(...any) error }, turn *SecretaryTurn) error {
 	var started, finished sql.NullString
-	if err := row.Scan(&turn.ID, &turn.IdentityID, &turn.ConversationID, &turn.Input, &turn.InputID, &turn.ContextSnapshot, &turn.PromptState, &turn.State, &turn.QueuePosition, &turn.Error, newTimestampScanner(&turn.CreatedAt), &started, &finished, newTimestampScanner(&turn.UpdatedAt)); err != nil {
+	if err := row.Scan(&turn.ID, &turn.IdentityID, &turn.ConversationID, &turn.Input, &turn.InputID, &turn.InputEntryID, &turn.InputSeq, &turn.ContextSnapshot, &turn.PromptState, &turn.State, &turn.QueuePosition, &turn.Error, newTimestampScanner(&turn.CreatedAt), &started, &finished, newTimestampScanner(&turn.UpdatedAt)); err != nil {
 		return err
 	}
 	if started.Valid {
@@ -367,7 +453,7 @@ func (s *Store) StartSecretaryTurn(ctx context.Context, turnID string) (Secretar
 
 func (s *Store) StartNextSecretaryTurn(ctx context.Context, identityID string) (SecretaryTurn, error) {
 	var turnID string
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM secretary_turns WHERE identity_id = ? AND state = 'queued' ORDER BY queue_position, created_at, id LIMIT 1`, identityID).Scan(&turnID)
+	err := s.db.QueryRowContext(ctx, `SELECT id FROM secretary_turns WHERE identity_id = ? AND state = 'queued' ORDER BY CASE WHEN input_seq > 0 THEN input_seq ELSE queue_position END, queue_position, created_at, id LIMIT 1`, identityID).Scan(&turnID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return SecretaryTurn{}, ErrNotFound
 	}
@@ -411,6 +497,13 @@ func (s *Store) FinishSecretaryTurn(ctx context.Context, turnID string, state Se
 		}
 		event, err := appendEventTx(ctx, tx, now, EventInput{Kind: SecretaryTurnFinishedEvent, AggregateType: "secretary_turn", AggregateID: turn.ID, Source: "server", CorrelationID: turn.ID, Payload: payload}, payload)
 		if err != nil {
+			return SecretaryTurn{}, err
+		}
+		if state == SecretaryTurnInterrupted && strings.Contains(turn.Error, "runtime restarted before completion was proven") {
+			if err := recordSecretaryRecoveryUnknownTx(ctx, tx, now, turn); err != nil {
+				return SecretaryTurn{}, err
+			}
+		} else if err := recordSecretaryInterruptionTerminalsTx(ctx, tx, now, turn.ID, state); err != nil {
 			return SecretaryTurn{}, err
 		}
 		if _, _, err := enqueueDeliveryTx(ctx, tx, now, event.ID, "", "conversation", "secretary-stream:"+event.ID); err != nil {

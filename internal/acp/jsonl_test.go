@@ -58,6 +58,41 @@ func (w *blockingReplyWriter) Write(payload []byte) (int, error) {
 }
 func (*blockingReplyWriter) Close() error { return nil }
 
+type contextBlockingWriter struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (w *contextBlockingWriter) Write([]byte) (int, error) {
+	<-w.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (w *contextBlockingWriter) Close() error {
+	w.once.Do(func() { close(w.closed) })
+	return nil
+}
+
+func TestNotifyContextClosesClientWhenWriteTimesOut(t *testing.T) {
+	writer := &contextBlockingWriter{closed: make(chan struct{})}
+	client := &Client{stdin: writer, events: make(chan Message, 1), done: make(chan struct{}), stop: make(chan struct{})}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := client.NotifyContext(ctx, "session/cancel", map[string]string{"sessionId": "session-1"})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("notify error = %v, want deadline exceeded", err)
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("notify context did not return after its deadline")
+	}
+	select {
+	case <-writer.closed:
+	case <-time.After(time.Second):
+		t.Fatal("timed out client writer was not closed")
+	}
+}
+
 func TestClientRoutesRequestBeforePendingResponseWithSameNumericID(t *testing.T) {
 	writer := &recordingWriter{}
 	stdout, peer := io.Pipe()
