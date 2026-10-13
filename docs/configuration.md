@@ -15,6 +15,8 @@ Secretary читает `config.toml` из data directory. При первом se
 
 ## Runtime defaults Secretary и Workers
 
+Bundled Secretary и Worker profiles задают русский как язык ответа по умолчанию независимо от языка входного сообщения или задачи. Secretary сохраняет в переданном Worker поручении явную просьбу пользователя о другом языке ответа, если она относится к этому ответу; язык самого поручения не считается такой просьбой. Новые profiles копируются только при первом setup, внешние profiles не обновляются автоматически, а существующие Worker bindings сохраняют свои profile snapshots. Обновление `profiles/secretary.md` и `profiles/worker.md` само по себе не меняет уже созданные Worker bindings.
+
 Чистый setup задаёт `secretary.harness = "opencode"` и `worker_policy.default_harness = "opencode"`. Secretary использует `openai/gpt-6.1-sol` / `xhigh`; новые Workers — `openai/gpt-6-luna` / `xhigh` из `worker_policy.model` и `worker_policy.reasoning`. fx, Claude Code и Codex остаются selectable через явный harness choice и Project policy.
 
 ```toml
