@@ -1726,29 +1726,29 @@ func workerEventLabel(kind string) string {
 func renderWorkerEvent(event Event) string {
 	if event.Kind == "worker.limited" {
 		var p struct {
-			Mode        string `json:"mode"`
-			Cause       string `json:"cause"`
-			ResetsAt    string `json:"resets_at"`
-			ScheduledAt string `json:"scheduled_at"`
-			QuotaScope  string `json:"quota_scope"`
+			Mode     string `json:"mode"`
+			ResetsAt string `json:"resets_at"`
+			Deadline string `json:"deadline"`
 		}
 		if len(event.Payload) > 0 {
 			_ = json.Unmarshal(event.Payload, &p)
 		}
-		modeLabel := "вручную"
+		resumeAt, _ := time.Parse(time.RFC3339Nano, p.Deadline)
+		if resumeAt.IsZero() {
+			if resetAt, err := time.Parse(time.RFC3339Nano, p.ResetsAt); err == nil {
+				resumeAt = resetAt.Add(time.Minute)
+			}
+		}
+		if resumeAt.IsZero() {
+			if p.Mode == "pending" {
+				return "Достигнут лимит Codex. Продолжу автоматически, когда лимит сбросится."
+			}
+			return "Достигнут лимит Codex. Вы можете продолжить, когда лимит сбросится."
+		}
 		if p.Mode == "pending" {
-			modeLabel = "автоматически"
+			return fmt.Sprintf("Достигнут лимит Codex. Продолжу автоматически после %s.", resumeAt.Local().Format("15:04"))
 		}
-		causeText := p.Cause
-		if causeText == "" {
-			causeText = "исчерпан лимит использования"
-		}
-		msg := fmt.Sprintf("Лимит использования: %s\nРежим: %s", causeText, modeLabel)
-		if p.ScheduledAt != "" {
-			msg += fmt.Sprintf("\nПовтор: %s", p.ScheduledAt)
-		}
-		msg += "\nДля продолжения вручную отправьте /resume"
-		return msg
+		return fmt.Sprintf("Достигнут лимит Codex. Вы можете продолжить после %s.", resumeAt.Local().Format("15:04"))
 	}
 	if event.Kind == "worker.tool_started" || event.Kind == "worker.tool_finished" || event.Kind == "worker.tool_failed" {
 		tool := safeText(event.Tool)

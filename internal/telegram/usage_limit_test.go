@@ -79,9 +79,8 @@ func TestTelegramResumeCommandRouting(t *testing.T) {
 
 func TestTelegramWorkerLimitedEventRendering(t *testing.T) {
 	payload, _ := json.Marshal(map[string]any{
-		"mode":         "pending",
-		"cause":        "tokens_depleted",
-		"scheduled_at": "2026-10-13T04:00:00Z",
+		"mode":      "pending",
+		"resets_at": "2026-10-13T04:00:00Z",
 	})
 
 	event := Event{
@@ -91,16 +90,19 @@ func TestTelegramWorkerLimitedEventRendering(t *testing.T) {
 	}
 
 	rendered := renderWorkerEvent(event)
-	if !strings.Contains(rendered, "tokens_depleted") {
-		t.Fatalf("expected cause in rendered message, got: %s", rendered)
+	expected := "Достигнут лимит Codex. Продолжу автоматически после " + time.Date(2026, 10, 13, 4, 1, 0, 0, time.UTC).Local().Format("15:04") + "."
+	if rendered != expected || strings.Contains(rendered, "\n") {
+		t.Fatalf("rendered = %q, want one-line %q", rendered, expected)
 	}
-	if !strings.Contains(rendered, "автоматически") {
-		t.Fatalf("expected mode in rendered message, got: %s", rendered)
-	}
-	if !strings.Contains(rendered, "2026-10-13T04:00:00Z") {
-		t.Fatalf("expected scheduled_at in rendered message, got: %s", rendered)
-	}
-	if !strings.Contains(rendered, "/resume") {
-		t.Fatalf("expected /resume instruction in rendered message, got: %s", rendered)
+
+	payload, _ = json.Marshal(map[string]any{
+		"mode":      "manual_hold",
+		"resets_at": "2026-10-13T04:00:00Z",
+	})
+	event.Payload = payload
+	rendered = renderWorkerEvent(event)
+	expected = "Достигнут лимит Codex. Вы можете продолжить после " + time.Date(2026, 10, 13, 4, 1, 0, 0, time.UTC).Local().Format("15:04") + "."
+	if rendered != expected || strings.Contains(rendered, "\n") {
+		t.Fatalf("rendered = %q, want one-line %q", rendered, expected)
 	}
 }
