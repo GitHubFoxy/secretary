@@ -57,6 +57,8 @@ type SecretaryTurn struct {
 	ConversationID  string             `json:"conversation_id"`
 	Input           string             `json:"input"`
 	InputID         string             `json:"input_id"`
+	InputEntryID    string             `json:"input_entry_id,omitempty"`
+	InputSeq        int64              `json:"input_seq,omitempty"`
 	ContextSnapshot string             `json:"-"`
 	PromptState     string             `json:"-"`
 	State           SecretaryTurnState `json:"state"`
@@ -66,6 +68,12 @@ type SecretaryTurn struct {
 	StartedAt       *time.Time         `json:"started_at,omitempty"`
 	FinishedAt      *time.Time         `json:"finished_at,omitempty"`
 	UpdatedAt       time.Time          `json:"updated_at"`
+}
+
+type SecretaryInterruptionTarget struct {
+	TurnID            string
+	SessionID         string
+	RuntimeGeneration int64
 }
 
 type SecretaryEventInput struct {

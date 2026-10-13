@@ -398,11 +398,20 @@ func (s *Server) message(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "store inbound message", http.StatusInternalServerError)
 		return
 	}
-	if s.secretary != nil && !duplicate {
-		go func(message string) {
-			if err := s.secretary.HandleMessage(context.Background(), message); err != nil {
+	if s.secretary != nil {
+		if entrySecretary, ok := s.secretary.(interface {
+			HandleInbound(context.Context, core.ConversationEntry) error
+		}); ok {
+			if err := entrySecretary.HandleInbound(r.Context(), entry); err != nil {
+				http.Error(w, "queue Secretary input", http.StatusInternalServerError)
+				return
 			}
-		}(request.Body)
+		} else if !duplicate {
+			go func(message string) {
+				if err := s.secretary.HandleMessage(context.Background(), message); err != nil {
+				}
+			}(request.Body)
+		}
 	}
 	acknowledgement := messageAcknowledgement{Entry: entry, MessageID: entry.ID, EntrySeq: entry.Seq, State: "saved", Duplicate: duplicate}
 	if err := s.store.RecordIdempotencyOutcomeWithPayload(r.Context(), operation, key, payload, acknowledgement); err != nil {

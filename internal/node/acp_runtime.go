@@ -848,8 +848,7 @@ func (s *acpSession) Steer(ctx context.Context, text string) (bool, error) {
 	return response.Outcome == "injected" || response.Outcome == "startedNewTurn", nil
 }
 func (s *acpSession) Cancel(ctx context.Context) error {
-	_ = ctx
-	return s.client.Notify("session/cancel", map[string]string{"sessionId": s.id})
+	return s.client.NotifyContext(ctx, "session/cancel", map[string]string{"sessionId": s.id})
 }
 
 func (s *acpSession) RebindRequests(requestIDs []string) {

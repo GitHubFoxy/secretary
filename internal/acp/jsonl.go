@@ -243,6 +243,23 @@ func (c *Client) Notify(method string, params any) error {
 	return c.send(Message{JSONRPC: "2.0", Method: method, Params: encoded})
 }
 
+func (c *Client) NotifyContext(ctx context.Context, method string, params any) error {
+	done := make(chan error, 1)
+	go func() { done <- c.Notify(method, params) }()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		select {
+		case err := <-done:
+			return err
+		default:
+		}
+		go func() { _ = c.Close() }()
+		return ctx.Err()
+	}
+}
+
 func (c *Client) Close() error {
 	c.stopOnce.Do(func() {
 		close(c.stop)

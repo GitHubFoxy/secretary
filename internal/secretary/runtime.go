@@ -31,6 +31,8 @@ type Runtime struct {
 	turnLoader     func(context.Context, string) (core.SecretaryTurn, error)
 
 	lifecycleMu          sync.Mutex
+	recoveryMu           sync.Mutex
+	startMu              sync.Mutex
 	mu                   sync.Mutex
 	session              node.Session
 	stopSession          node.Session
@@ -38,6 +40,14 @@ type Runtime struct {
 	busy                 bool
 	activeTurnID         string
 	activeInputID        string
+	nextPromptID         uint64
+	activePromptID       uint64
+	promptStartedID      uint64
+	cancelRequestedID    uint64
+	cancelInFlightID     uint64
+	cancelDone           chan struct{}
+	cancelTimeout        time.Duration
+	sessionUncertain     bool
 	replyContractVersion string
 	launch               core.SecretaryRuntimeLaunch
 	deliveredProfileKey  string
@@ -46,7 +56,7 @@ type Runtime struct {
 }
 
 func NewRuntime(local *node.LocalNode, capability string) *Runtime {
-	return &Runtime{node: local, capability: capability, errors: make(chan error, 8)}
+	return &Runtime{node: local, capability: capability, errors: make(chan error, 8), cancelTimeout: 5 * time.Second}
 }
 
 func (r *Runtime) AttachMCP(command, dataDir string) {
@@ -132,6 +142,14 @@ func (r *Runtime) Start(ctx context.Context) error {
 			return err
 		}
 	}
+	recoveryRequired := false
+	if store != nil && identity.ID != "" {
+		var err error
+		recoveryRequired, err = store.SecretaryRecoveryRequired(ctx, identity.ID)
+		if err != nil {
+			return err
+		}
+	}
 	prompt := "Persistent Secretary session; the first prompt is supplied by the user."
 	request := node.StartRequest{WorkerRef: workerRef, Task: prompt, DeferInitialPrompt: true}
 	if profileFn != nil {
@@ -186,6 +204,7 @@ func (r *Runtime) Start(ctx context.Context) error {
 	r.mu.Lock()
 	r.session = session
 	r.busy = !request.DeferInitialPrompt
+	r.sessionUncertain = recoveryRequired
 	r.replyContractVersion = request.Profile.ReplyContractVersion
 	r.launch = launch
 	r.deliveredProfileKey = secretaryProfileDeliveryKey(request.Profile)
@@ -197,6 +216,11 @@ func (r *Runtime) Start(ctx context.Context) error {
 		go r.consumeResults(session)
 		go r.consumeActivity(session)
 	}
+	if recoveryRequired && store != nil && identity.ID != "" {
+		if _, err := store.AppendEntry(ctx, identity.ConversationID, core.EntrySecretary, "После перезапуска я не могу подтвердить, что прежняя ACP-сессия остановилась. Сохранённые сообщения остаются в очереди. Убедитесь, что прежний процесс завершён, затем отправьте /recover, чтобы продолжить."); err != nil {
+			r.reportError(err)
+		}
+	}
 	r.startNextDurable(context.Background())
 	return nil
 }
@@ -204,64 +228,232 @@ func (r *Runtime) Start(ctx context.Context) error {
 func (r *Runtime) Errors() <-chan error { return r.errors }
 
 func (r *Runtime) HandleMessage(ctx context.Context, text string) error {
+	return r.handleMessage(ctx, text, nil)
+}
+
+func (r *Runtime) HandleInbound(ctx context.Context, entry core.ConversationEntry) error {
+	return r.handleMessage(ctx, entry.Body, &entry)
+}
+
+func (r *Runtime) handleMessage(ctx context.Context, text string, entry *core.ConversationEntry) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return errors.New("secretary: message is empty")
+	}
+	if text == "/recover" {
+		return r.confirmRecovery(ctx)
+	}
+	queuedOnly := strings.HasPrefix(text, "/q")
+	if queuedOnly {
+		text = strings.TrimSpace(strings.TrimPrefix(text, "/q"))
+		if text == "" {
+			return errors.New("secretary: queued message is empty")
+		}
 	}
 	r.mu.Lock()
 	session := r.session
 	durable := r.store != nil && r.identity.ID != ""
 	if durable {
-		r.mu.Unlock()
-		if strings.HasPrefix(text, "/q") {
-			text = strings.TrimSpace(strings.TrimPrefix(text, "/q"))
-			if text == "" {
-				return errors.New("secretary: queued message is empty")
-			}
+		store, identityID := r.store, r.identity.ID
+		promptID := r.activePromptID
+		var interruption *core.SecretaryInterruptionTarget
+		if !queuedOnly && session != nil && r.busy && r.activeTurnID != "" && r.activePromptID != 0 && !r.sessionUncertain {
+			interruption = &core.SecretaryInterruptionTarget{TurnID: r.activeTurnID, SessionID: session.ID(), RuntimeGeneration: r.launch.Generation}
 		}
-		_, err := r.QueueMessage(ctx, text)
-		if err == nil {
+		r.mu.Unlock()
+		var err error
+		duplicate := false
+		if entry != nil {
+			_, duplicate, err = store.EnqueueSecretaryTurnForEntry(ctx, identityID, text, *entry, interruption)
+		} else {
+			_, err = r.QueueMessage(ctx, text)
+		}
+		if err != nil {
+			return err
+		}
+		if !duplicate {
+			if !queuedOnly {
+				go r.cancelActivePrompt(context.Background(), session, promptID)
+			}
 			r.startNextDurable(context.Background())
 		}
-		return err
+		return nil
 	}
 	if session == nil {
 		r.mu.Unlock()
 		return ErrNotStarted
 	}
-	if strings.HasPrefix(text, "/q") {
-		queued := strings.TrimSpace(strings.TrimPrefix(text, "/q"))
-		if queued == "" {
-			r.mu.Unlock()
-			return errors.New("secretary: queued message is empty")
-		}
-		r.queued = append(r.queued, queued)
+	if r.sessionUncertain {
+		r.queued = append(r.queued, text)
+		r.mu.Unlock()
+		return nil
+	}
+	if queuedOnly {
+		r.queued = append(r.queued, text)
 		r.mu.Unlock()
 		return nil
 	}
 	if !r.busy {
 		r.busy = true
+		r.beginPromptLocked()
 		r.mu.Unlock()
 		r.runPrompt(ctx, session, text)
 		return nil
 	}
+	r.queued = append(r.queued, text)
+	promptID := r.activePromptID
 	r.mu.Unlock()
+	r.cancelActivePrompt(ctx, session, promptID)
+	return nil
+}
 
-	injected, err := session.Steer(ctx, text)
+func (r *Runtime) confirmRecovery(ctx context.Context) error {
+	r.recoveryMu.Lock()
+	defer r.recoveryMu.Unlock()
+	r.mu.Lock()
+	store, identity, session := r.store, r.identity, r.session
+	activeTurnID := r.activeTurnID
+	r.mu.Unlock()
+	if store == nil || identity.ID == "" {
+		return errors.New("secretary: recovery requires a durable identity")
+	}
+	required, err := store.SecretaryRecoveryRequired(ctx, identity.ID)
 	if err != nil {
 		return err
 	}
-	if injected {
-		return nil
+	if !required {
+		if session == nil {
+			r.mu.Lock()
+			stopPending := r.stopPending
+			r.mu.Unlock()
+			if stopPending {
+				if err := r.Stop(ctx); err != nil {
+					return err
+				}
+			}
+			return r.Start(ctx)
+		}
+		_, err := store.AppendEntry(ctx, identity.ConversationID, core.EntrySecretary, "Нет незавершённого восстановления ACP-сессии.")
+		return err
 	}
 	r.mu.Lock()
-	r.queued = append(r.queued, text)
-	startNow := !r.busy
-	r.mu.Unlock()
-	if startNow {
-		r.startNext(ctx)
+	if r.session == session {
+		r.sessionUncertain = true
 	}
-	return nil
+	r.mu.Unlock()
+	if err := r.Stop(ctx); err != nil {
+		return err
+	}
+	if activeTurnID == "" {
+		if activeTurn, err := store.ActiveSecretaryTurn(ctx, identity.ID); err == nil {
+			activeTurnID = activeTurn.ID
+		} else if !errors.Is(err, core.ErrNotFound) {
+			return err
+		}
+	}
+	if activeTurnID != "" {
+		if _, err := store.FinishSecretaryTurn(ctx, activeTurnID, core.SecretaryTurnInterrupted, "ACP session closed during explicit recovery"); err != nil {
+			turn, readErr := store.SecretaryTurn(ctx, activeTurnID)
+			if readErr != nil || !turn.State.Terminal() {
+				return errors.Join(err, readErr)
+			}
+		}
+	}
+	resolved, err := store.ConfirmSecretaryRecovery(ctx, identity.ID)
+	if err != nil {
+		return err
+	}
+	if !resolved {
+		if restartErr := r.Start(ctx); restartErr != nil {
+			return errors.Join(err, restartErr)
+		}
+		_, err := store.AppendEntry(ctx, identity.ConversationID, core.EntrySecretary, "Восстановление уже было подтверждено.")
+		return err
+	}
+	_, err = store.AppendEntry(ctx, identity.ConversationID, core.EntrySecretary, "Восстановление подтверждено. Продолжаю сохранённые сообщения по порядку.")
+	if err != nil {
+		return err
+	}
+	return r.Start(ctx)
+}
+
+func (r *Runtime) beginPromptLocked() uint64 {
+	r.nextPromptID++
+	r.activePromptID = r.nextPromptID
+	r.promptStartedID = 0
+	r.cancelRequestedID = 0
+	r.cancelInFlightID = 0
+	r.cancelDone = nil
+	return r.activePromptID
+}
+
+func (r *Runtime) cancelActivePrompt(ctx context.Context, session node.Session, promptID uint64) {
+	r.mu.Lock()
+	if session == nil || r.session != session || !r.busy || promptID == 0 || r.activePromptID != promptID || r.cancelRequestedID == promptID {
+		r.mu.Unlock()
+		return
+	}
+	r.cancelRequestedID = promptID
+	if r.promptStartedID != promptID {
+		r.mu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	r.cancelInFlightID, r.cancelDone = promptID, done
+	store, turnID := r.store, r.activeTurnID
+	timeout := r.cancelTimeout
+	r.mu.Unlock()
+
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), timeout)
+	result := make(chan error, 1)
+	go func() { result <- session.Cancel(cancelCtx) }()
+	var err error
+	select {
+	case err = <-result:
+		cancel()
+		r.finishCancelAttempt(promptID, done)
+	case <-cancelCtx.Done():
+		err = cancelCtx.Err()
+		cancel()
+		r.mu.Lock()
+		if r.session == session && r.activePromptID == promptID {
+			r.sessionUncertain = true
+		}
+		r.mu.Unlock()
+		go func() {
+			<-result
+			r.finishCancelAttempt(promptID, done)
+		}()
+	}
+	if err != nil {
+		r.reportCancelFailure(store, turnID, err)
+	}
+}
+
+func (r *Runtime) finishCancelAttempt(promptID uint64, done chan struct{}) {
+	r.mu.Lock()
+	if r.cancelInFlightID == promptID && r.cancelDone == done {
+		r.cancelInFlightID = 0
+		r.cancelDone = nil
+		close(done)
+	}
+	r.mu.Unlock()
+}
+
+func (r *Runtime) reportCancelFailure(store *core.Store, turnID string, err error) {
+	r.reportError(fmt.Errorf("secretary: cancel active prompt: %w", err))
+	if store != nil && turnID != "" {
+		_, eventErr := store.RecordEventWithMetadata(context.Background(), core.EventInput{
+			Kind: "secretary.interruption_failed", AggregateType: "secretary_turn", AggregateID: turnID,
+			Source: "server", CorrelationID: turnID, Payload: map[string]string{"error": core.SanitizeFailureMessage(err.Error())},
+		})
+		if eventErr != nil {
+			r.reportError(eventErr)
+		}
+	}
 }
 
 func (r *Runtime) consumeResults(session node.Session) {
@@ -306,12 +498,23 @@ func (r *Runtime) consumeAddressedSession(session node.Session) {
 }
 
 func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result, initial bool) bool {
-	r.mu.Lock()
-	if r.session != session {
-		r.mu.Unlock()
-		return initial
+	for {
+		r.mu.Lock()
+		if r.session != session {
+			r.mu.Unlock()
+			return initial
+		}
+		promptID := r.activePromptID
+		if promptID != 0 && r.cancelInFlightID == promptID && r.cancelDone != nil {
+			done := r.cancelDone
+			r.mu.Unlock()
+			<-done
+			continue
+		}
+		break
 	}
 	store, conversationID, activeTurnID := r.store, r.conversationID, r.activeTurnID
+	sessionUncertain := r.sessionUncertain
 	activeInputID, replyContractVersion := r.activeInputID, r.replyContractVersion
 	if store != nil && r.identity.ID != "" && activeTurnID == "" {
 		r.mu.Unlock()
@@ -320,6 +523,11 @@ func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result,
 	r.busy = false
 	r.activeTurnID = ""
 	r.activeInputID = ""
+	r.activePromptID = 0
+	r.promptStartedID = 0
+	r.cancelRequestedID = 0
+	r.cancelInFlightID = 0
+	r.cancelDone = nil
 	r.mu.Unlock()
 	if activeTurnID != "" && store != nil {
 		state := core.SecretaryTurnSucceeded
@@ -331,7 +539,9 @@ func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result,
 		}
 		errorMessage := ""
 		response := ""
-		if state == core.SecretaryTurnSucceeded {
+		if sessionUncertain && state != core.SecretaryTurnSucceeded {
+			errorMessage = "ACP cancellation timed out; session outcome is uncertain; restart required"
+		} else if state == core.SecretaryTurnSucceeded {
 			response = result.Summary
 		} else {
 			errorMessage = result.Summary
@@ -342,6 +552,9 @@ func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result,
 			state = core.SecretaryTurnFailed
 			if result.Status == "canceled" || result.Status == "cancelled" {
 				state = core.SecretaryTurnCanceled
+			}
+			if sessionUncertain {
+				state = core.SecretaryTurnFailed
 			}
 			if native := result.CompletionEvidence; native != nil {
 				evidence.RPCSucceeded, evidence.DrainCompleted = native.RPCSucceeded, native.DrainCompleted
@@ -369,8 +582,10 @@ func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result,
 			r.reportError(err)
 		}
 	}
-	r.startNextDurable(context.Background())
-	r.startNext(context.Background())
+	if !sessionUncertain {
+		r.startNextDurable(context.Background())
+		r.startNext(context.Background())
+	}
 	return false
 }
 
@@ -517,7 +732,44 @@ func (r *Runtime) clearOwnedDurablePrompt(session node.Session, turnID string) b
 	r.busy = false
 	r.activeTurnID = ""
 	r.activeInputID = ""
+	r.clearPromptLocked(r.activePromptID)
 	return true
+}
+
+func (r *Runtime) clearPromptLocked(promptID uint64) {
+	if promptID == 0 || r.activePromptID != promptID {
+		return
+	}
+	r.activePromptID = 0
+	r.promptStartedID = 0
+	r.cancelRequestedID = 0
+	r.cancelInFlightID = 0
+	r.cancelDone = nil
+}
+
+func (r *Runtime) finishCancelledBeforePrompt(store *core.Store, session node.Session, turnID string, promptID uint64) {
+	if store != nil && turnID != "" {
+		if err := store.ReleaseSecretaryTurnClaims(context.Background(), turnID); err != nil {
+			r.reportError(err)
+		}
+		if _, err := store.FinishSecretaryTurn(context.Background(), turnID, core.SecretaryTurnCanceled, "interrupted before prompt started"); err != nil {
+			r.reportError(err)
+		}
+	}
+	r.mu.Lock()
+	if r.session == session && r.activePromptID == promptID {
+		r.busy = false
+		r.activeTurnID = ""
+		r.activeInputID = ""
+		r.clearPromptLocked(promptID)
+	}
+	durable := r.store != nil && r.identity.ID != ""
+	r.mu.Unlock()
+	if durable {
+		r.startNextDurable(context.Background())
+	} else {
+		r.startNext(context.Background())
+	}
 }
 
 func (r *Runtime) abandonDurablePrompt(store *core.Store, turnID string, release bool) {
@@ -575,8 +827,10 @@ func secretaryProfileDeliveryKey(profile node.ManagedProfile) string {
 }
 
 func (r *Runtime) startNextDurable(ctx context.Context) {
+	r.startMu.Lock()
+	defer r.startMu.Unlock()
 	r.mu.Lock()
-	if r.busy || r.session == nil || r.store == nil || r.identity.ID == "" {
+	if r.busy || r.session == nil || r.sessionUncertain || r.store == nil || r.identity.ID == "" {
 		r.mu.Unlock()
 		return
 	}
@@ -622,6 +876,7 @@ func (r *Runtime) startNextDurable(ctx context.Context) {
 	}
 	launch := r.launch
 	r.busy, r.activeTurnID, r.activeInputID = true, turn.ID, turn.InputID
+	r.beginPromptLocked()
 	r.mu.Unlock()
 	if launch.ObserverCapability != "" {
 		if err := store.BindSecretaryRuntimeTurn(ctx, launch, turn.ID, turn.InputID); err != nil {
@@ -643,6 +898,7 @@ func (r *Runtime) startNext(ctx context.Context) {
 	r.queued = r.queued[1:]
 	session := r.session
 	r.busy = true
+	r.beginPromptLocked()
 	r.mu.Unlock()
 	r.runPrompt(ctx, session, text)
 }
@@ -654,6 +910,11 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 			r.mu.Unlock()
 			return
 		}
+		if r.activePromptID == 0 {
+			r.busy = true
+			r.beginPromptLocked()
+		}
+		promptID := r.activePromptID
 		store, turnID, activeInputID, replyContractVersion := r.store, r.activeTurnID, r.activeInputID, r.replyContractVersion
 		r.mu.Unlock()
 		prompt := text
@@ -721,7 +982,20 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 		if store != nil && turnID != "" && !r.ownsDurablePrompt(session, turnID) {
 			return
 		}
+		r.mu.Lock()
+		if r.session != session || r.activePromptID != promptID {
+			r.mu.Unlock()
+			return
+		}
+		if r.cancelRequestedID == promptID {
+			r.mu.Unlock()
+			r.finishCancelledBeforePrompt(store, session, turnID, promptID)
+			return
+		}
+		r.promptStartedID = promptID
+		r.mu.Unlock()
 		if err := session.Prompt(ctx, prompt); err != nil {
+			r.awaitPromptCancel(promptID)
 			if store != nil && turnID != "" && !r.ownsDurablePrompt(session, turnID) {
 				return
 			}
@@ -748,6 +1022,17 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 	}()
 }
 
+func (r *Runtime) awaitPromptCancel(promptID uint64) {
+	r.mu.Lock()
+	if promptID == 0 || r.cancelInFlightID != promptID || r.cancelDone == nil {
+		r.mu.Unlock()
+		return
+	}
+	done := r.cancelDone
+	r.mu.Unlock()
+	<-done
+}
+
 func (r *Runtime) Stop(ctx context.Context) error {
 	r.lifecycleMu.Lock()
 	defer r.lifecycleMu.Unlock()
@@ -763,12 +1048,18 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	session := r.stopSession
 	store, launch := r.store, r.launch
 	durable := r.store != nil && r.identity.ID != ""
+	sessionUncertain := r.sessionUncertain
+	cancelDone := r.cancelDone
 	r.session = nil
 	r.busy = false
 	r.activeTurnID = ""
 	r.activeInputID = ""
+	r.clearPromptLocked(r.activePromptID)
 	if !durable {
 		r.queued = nil
+	}
+	if cancelDone != nil {
+		close(cancelDone)
 	}
 	r.mu.Unlock()
 
@@ -783,7 +1074,9 @@ func (r *Runtime) Stop(ctx context.Context) error {
 		}
 	}
 	if session != nil {
-		cancelErr = session.Cancel(cleanupCtx)
+		if !sessionUncertain {
+			cancelErr = session.Cancel(cleanupCtx)
+		}
 		if _, exists := r.node.Session(workerRef); exists {
 			closeErr = r.node.Remove(workerRef)
 		} else {
@@ -797,6 +1090,7 @@ func (r *Runtime) Stop(ctx context.Context) error {
 	r.stopPending = revokeErr != nil || closeErr != nil
 	if !r.stopPending {
 		r.launch = core.SecretaryRuntimeLaunch{}
+		r.sessionUncertain = false
 	}
 	r.mu.Unlock()
 	return errors.Join(ctx.Err(), revokeErr, cancelErr, closeErr)

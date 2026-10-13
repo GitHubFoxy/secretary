@@ -249,3 +249,82 @@ func TestCodexNativeSteeringDuringSafeTool(t *testing.T) {
 	}
 	t.Logf("native session=%s injected=true applied_before_terminal=true prompt_calls=1 marker=STEER_APPLIED_NATIVE_87", session.ID())
 }
+
+func TestCodexNativeCancelThenPromptSameSession(t *testing.T) {
+	if os.Getenv("SECRETARY_NATIVE_CODEX_CANCEL_TEST") != "1" {
+		t.Skip("explicit native Codex cancellation test opt-in")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	runtime := CodexRuntime{ACPRuntime: ACPRuntime{Command: "codex-acp"}}
+	request := StartRequest{WorkerRef: "native-cancel-proof", Workspace: t.TempDir(), DeferInitialPrompt: true, Profile: ManagedProfile{Name: "worker", Runtime: "codex", Content: "Follow the user's instructions precisely. Use tools only when asked. Keep final answers short."}}
+	session, err := runtime.Start(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer session.Close()
+	initialSessionID := session.ID()
+	if initialSessionID == "" {
+		t.Fatal("native session identity missing")
+	}
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- session.Prompt(ctx, "Run the safe terminal command sleep 30. After it finishes, reply ORIGINAL_NATIVE_CANCEL_24. Do not run another tool.")
+	}()
+	toolStarted := false
+	for !toolStarted {
+		select {
+		case activity := <-session.Activity():
+			if activity.Kind == ActivityPermission {
+				if err := session.(Responder).Respond(ctx, activity.RequestID, "approved"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			toolStarted = activity.Kind == ActivityToolCall && activity.Status == "in_progress"
+		case <-ctx.Done():
+			t.Fatal("native safe tool did not start")
+		}
+	}
+	if err := session.Cancel(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var firstResult Result
+	firstReturned := false
+	for firstResult.Status == "" || !firstReturned {
+		select {
+		case firstResult = <-session.Result():
+		case err := <-firstDone:
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstReturned = true
+		case <-ctx.Done():
+			t.Fatal("cancelled native prompt did not reach terminal")
+		}
+	}
+	if firstResult.Status != "canceled" || session.ID() != initialSessionID {
+		t.Fatalf("first status=%s stable session=%t", firstResult.Status, session.ID() == initialSessionID)
+	}
+	secondDone := make(chan error, 1)
+	go func() {
+		secondDone <- session.Prompt(ctx, "Reply exactly CANCEL_REPLACEMENT_MARKER_24. Do not use tools.")
+	}()
+	var secondResult Result
+	secondReturned := false
+	for secondResult.Status == "" || !secondReturned {
+		select {
+		case secondResult = <-session.Result():
+		case err := <-secondDone:
+			if err != nil {
+				t.Fatal(err)
+			}
+			secondReturned = true
+		case <-ctx.Done():
+			t.Fatal("replacement native prompt timed out")
+		}
+	}
+	if secondResult.Status != "succeeded" || !strings.Contains(secondResult.Summary, "CANCEL_REPLACEMENT_MARKER_24") || session.ID() != initialSessionID {
+		t.Fatalf("second status=%s marker=%t stable session=%t", secondResult.Status, strings.Contains(secondResult.Summary, "CANCEL_REPLACEMENT_MARKER_24"), session.ID() == initialSessionID)
+	}
+	t.Logf("native cancellation verified: session=%s old=%s new=%s", initialSessionID, firstResult.Status, secondResult.Status)
+}

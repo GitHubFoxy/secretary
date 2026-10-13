@@ -134,6 +134,88 @@ func TestSecretaryQueueIsDurableOrderedAndHasPosition(t *testing.T) {
 	}
 }
 
+func TestSecretaryEntryQueueIsIdempotentAndOrderedByConversationSequence(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(ctx, filepath.Join(t.TempDir(), "secretary-entry-queue.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetSecretaryPolicySnapshot(ctx, SecretaryPolicySnapshot{Version: "test-v1", Harness: "fx", Model: "secretary", Reasoning: "high", ProfileVersion: "test-v1", ProfileName: "secretary", ProfileHash: "test-hash", ProfileContent: "test policy"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "durable user"); err != nil {
+		t.Fatal(err)
+	}
+	active, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "active prompt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, active.ID); err != nil {
+		t.Fatal(err)
+	}
+	firstEntry, _, err := store.AppendInbound(ctx, conversation.ID, "web", "first", "first")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondEntry, _, err := store.AppendInbound(ctx, conversation.ID, "web", "second", "second")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := &SecretaryInterruptionTarget{TurnID: active.ID, SessionID: "session-1", RuntimeGeneration: 7}
+	second, duplicate, err := store.EnqueueSecretaryTurnForEntry(ctx, identity.ID, secondEntry.Body, secondEntry, target)
+	if err != nil || duplicate {
+		t.Fatalf("enqueue second: turn=%#v duplicate=%v err=%v", second, duplicate, err)
+	}
+	first, duplicate, err := store.EnqueueSecretaryTurnForEntry(ctx, identity.ID, firstEntry.Body, firstEntry, target)
+	if err != nil || duplicate {
+		t.Fatalf("enqueue first: turn=%#v duplicate=%v err=%v", first, duplicate, err)
+	}
+	if _, duplicate, err := store.EnqueueSecretaryTurnForEntry(ctx, identity.ID, firstEntry.Body, firstEntry, target); err != nil || !duplicate {
+		t.Fatalf("replay first entry: duplicate=%v err=%v", duplicate, err)
+	}
+	if first.InputEntryID != firstEntry.ID || first.InputSeq != firstEntry.Seq {
+		t.Fatalf("entry identity was not retained: %#v", first)
+	}
+	events, err := store.EventsAfterSeq(ctx, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	interruptionEvents := 0
+	for _, event := range events {
+		if event.Kind == "secretary.interruption_requested" {
+			interruptionEvents++
+		}
+	}
+	if interruptionEvents != 2 {
+		t.Fatalf("durable interruption request count = %d, want 2", interruptionEvents)
+	}
+	if required, err := store.SecretaryRecoveryRequired(ctx, identity.ID); err != nil || !required {
+		t.Fatalf("recovery required before terminal: required=%v err=%v", required, err)
+	}
+	if _, err := store.FinishSecretaryTurn(ctx, active.ID, SecretaryTurnCanceled, "interrupted"); err != nil {
+		t.Fatal(err)
+	}
+	if required, err := store.SecretaryRecoveryRequired(ctx, identity.ID); err != nil || required {
+		t.Fatalf("terminal outcome did not resolve recovery: required=%v err=%v", required, err)
+	}
+	next, err := store.StartNextSecretaryTurn(ctx, identity.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.ID != first.ID {
+		t.Fatalf("started turn %q before lower-sequence turn %q", next.ID, first.ID)
+	}
+}
+
 func TestSecretaryStreamOrderReplayAndSafeThinkingSummary(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
@@ -204,6 +286,48 @@ func TestSecretaryStreamOrderReplayAndSafeThinkingSummary(t *testing.T) {
 	}
 	if len(page2.Events) != 5 {
 		t.Fatalf("page2=%#v", page2)
+	}
+}
+
+func TestSecretaryRecoveryUnknownBlocksUntilExplicitConfirmation(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "active")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, turn.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecoverSecretaryTurn(ctx, identity.ID, "runtime restarted before completion was proven"); err != nil {
+		t.Fatal(err)
+	}
+	if required, err := store.SecretaryRecoveryRequired(ctx, identity.ID); err != nil || !required {
+		t.Fatalf("recovery barrier missing: required=%v err=%v", required, err)
+	}
+	queued, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "queued")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if queued.State != SecretaryTurnQueued {
+		t.Fatalf("queued turn state=%s", queued.State)
+	}
+	if confirmed, err := store.ConfirmSecretaryRecovery(ctx, identity.ID); err != nil || !confirmed {
+		t.Fatalf("recovery confirmation=%v err=%v", confirmed, err)
+	}
+	if required, err := store.SecretaryRecoveryRequired(ctx, identity.ID); err != nil || required {
+		t.Fatalf("recovery barrier remained: required=%v err=%v", required, err)
+	}
+	if confirmed, err := store.ConfirmSecretaryRecovery(ctx, identity.ID); err != nil || confirmed {
+		t.Fatalf("duplicate confirmation=%v err=%v", confirmed, err)
 	}
 }
 

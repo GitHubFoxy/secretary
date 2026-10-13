@@ -199,6 +199,9 @@ WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conve
 		if err != nil {
 			return secretaryTurnCompletion{}, err
 		}
+		if err := recordSecretaryInterruptionTerminalsTx(ctx, tx, now, turn.ID, state); err != nil {
+			return secretaryTurnCompletion{}, err
+		}
 		if _, _, err := enqueueDeliveryTx(ctx, tx, now, event.ID, "", "conversation", "secretary-stream:"+event.ID); err != nil {
 			return secretaryTurnCompletion{}, err
 		}
