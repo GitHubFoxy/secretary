@@ -126,6 +126,7 @@ type Event struct {
 	HasOutput              bool
 	TerminalIdentity       string
 	CanonicalReplyRequired bool
+	WorkerAttemptTerminal  bool
 	Payload                json.RawMessage
 }
 
@@ -140,31 +141,40 @@ type TopicMapping struct {
 }
 
 type persistedState struct {
-	Version               int                        `json:"version"`
-	OwnerChat             int64                      `json:"owner_chat_id"`
-	OwnerUser             int64                      `json:"owner_user_id,omitempty"`
-	Offset                int64                      `json:"offset"`
-	LastEventSeq          int64                      `json:"last_event_seq"`
-	Processed             map[string]time.Time       `json:"processed_updates"`
-	Topics                map[string]TopicMapping    `json:"topics"`
-	Pairings              map[string]pairingRecord   `json:"pairings"`
-	Outbox                []OutgoingMessage          `json:"outbox,omitempty"`
-	PendingSecretaryText  string                     `json:"pending_secretary_text,omitempty"`
-	PendingSecretaryTools []string                   `json:"pending_secretary_tools,omitempty"`
-	PendingEventSeqs      []int64                    `json:"pending_event_seqs,omitempty"`
-	SecretaryReady        bool                       `json:"secretary_ready,omitempty"`
-	SecretaryDelegated    bool                       `json:"secretary_delegated,omitempty"`
-	TerminalNotified      map[string]time.Time       `json:"terminal_notified,omitempty"`
-	RequestNotified       map[string]time.Time       `json:"request_notified,omitempty"`
-	InboundNotified       map[string]time.Time       `json:"inbound_notified,omitempty"`
-	ToolNotified          map[string]time.Time       `json:"tool_notified,omitempty"`
-	ToolPreviews          map[string]string          `json:"tool_previews,omitempty"`
-	PreviousOwnerBound    bool                       `json:"previous_owner_bound,omitempty"`
-	ReboundAt             time.Time                  `json:"rebound_at,omitempty"`
-	RebindReason          string                     `json:"rebind_reason,omitempty"`
-	RebindWatermark       int64                      `json:"rebind_watermark,omitempty"`
-	PendingInputs         []Update                   `json:"pending_inputs,omitempty"`
-	Transcripts           map[string]VoiceTranscript `json:"transcripts,omitempty"`
+	Version                 int                            `json:"version"`
+	OwnerChat               int64                          `json:"owner_chat_id"`
+	OwnerUser               int64                          `json:"owner_user_id,omitempty"`
+	Offset                  int64                          `json:"offset"`
+	LastEventSeq            int64                          `json:"last_event_seq"`
+	Processed               map[string]time.Time           `json:"processed_updates"`
+	Topics                  map[string]TopicMapping        `json:"topics"`
+	Pairings                map[string]pairingRecord       `json:"pairings"`
+	Outbox                  []OutgoingMessage              `json:"outbox,omitempty"`
+	PendingSecretaryText    string                         `json:"pending_secretary_text,omitempty"`
+	PendingSecretaryTools   []string                       `json:"pending_secretary_tools,omitempty"`
+	PendingEventSeqs        []int64                        `json:"pending_event_seqs,omitempty"`
+	SecretaryReady          bool                           `json:"secretary_ready,omitempty"`
+	SecretaryDelegated      bool                           `json:"secretary_delegated,omitempty"`
+	TerminalNotified        map[string]time.Time           `json:"terminal_notified,omitempty"`
+	RequestNotified         map[string]time.Time           `json:"request_notified,omitempty"`
+	InboundNotified         map[string]time.Time           `json:"inbound_notified,omitempty"`
+	ToolNotified            map[string]time.Time           `json:"tool_notified,omitempty"`
+	ToolPreviews            map[string]string              `json:"tool_previews,omitempty"`
+	WorkerTyping            map[string]workerTypingAttempt `json:"worker_typing,omitempty"`
+	WorkerTypingInitialized bool                           `json:"worker_typing_initialized"`
+	PreviousOwnerBound      bool                           `json:"previous_owner_bound,omitempty"`
+	ReboundAt               time.Time                      `json:"rebound_at,omitempty"`
+	RebindReason            string                         `json:"rebind_reason,omitempty"`
+	RebindWatermark         int64                          `json:"rebind_watermark,omitempty"`
+	PendingInputs           []Update                       `json:"pending_inputs,omitempty"`
+	Transcripts             map[string]VoiceTranscript     `json:"transcripts,omitempty"`
+}
+
+type workerTypingAttempt struct {
+	WorkerRef string `json:"worker_ref"`
+	AttemptID string `json:"attempt_id"`
+	ChatID    int64  `json:"chat_id"`
+	ThreadID  int64  `json:"thread_id"`
 }
 
 type pairingRecord struct {
@@ -193,21 +203,22 @@ type Adapter struct {
 	asr       ASRTranscriber
 	formatter TextFormatter
 
-	mu           sync.Mutex
-	topicMu      sync.Mutex
-	flushMu      sync.Mutex
-	typingMu     sync.Mutex
-	state        persistedState
-	pending      pendingBatch
-	lastTyping   map[string]time.Time
-	outboxMu     sync.Mutex
-	inputWG      sync.WaitGroup
-	inputMu      sync.Mutex
-	inputLanes   map[string]*sync.Mutex
-	inputWorkers map[string]bool
-	claims       map[int64]*updateClaim
-	flushTimer   *time.Timer
-	now          func() time.Time
+	mu                         sync.Mutex
+	topicMu                    sync.Mutex
+	flushMu                    sync.Mutex
+	typingMu                   sync.Mutex
+	state                      persistedState
+	workerTypingRecoveryNeeded bool
+	pending                    pendingBatch
+	lastTyping                 map[string]time.Time
+	outboxMu                   sync.Mutex
+	inputWG                    sync.WaitGroup
+	inputMu                    sync.Mutex
+	inputLanes                 map[string]*sync.Mutex
+	inputWorkers               map[string]bool
+	claims                     map[int64]*updateClaim
+	flushTimer                 *time.Timer
+	now                        func() time.Time
 }
 
 func New(config Config, transport Transport, server ServerClient) (*Adapter, error) {
@@ -227,7 +238,7 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 		config.TitleTimeout = 5 * time.Second
 	}
 	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), now: func() time.Time { return time.Now().UTC() }}
-	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, ToolNotified: map[string]time.Time{}, ToolPreviews: map[string]string{}, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}}
+	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, ToolNotified: map[string]time.Time{}, ToolPreviews: map[string]string{}, WorkerTyping: map[string]workerTypingAttempt{}, WorkerTypingInitialized: true, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}}
 	if err := adapter.load(); err != nil {
 		return nil, err
 	}
@@ -291,8 +302,18 @@ func (a *Adapter) load() error {
 	if err != nil {
 		return fmt.Errorf("telegram: read state: %w", err)
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return fmt.Errorf("telegram: decode state: %w", err)
+	}
 	if err := json.Unmarshal(data, &a.state); err != nil {
 		return fmt.Errorf("telegram: decode state: %w", err)
+	}
+	if _, ok := fields["worker_typing_initialized"]; !ok {
+		a.workerTypingRecoveryNeeded = a.state.LastEventSeq > 0
+		a.state.WorkerTypingInitialized = !a.workerTypingRecoveryNeeded
+	} else {
+		a.workerTypingRecoveryNeeded = !a.state.WorkerTypingInitialized
 	}
 	if a.state.Version == 0 {
 		a.state.Version = 1
@@ -320,6 +341,9 @@ func (a *Adapter) load() error {
 	}
 	if a.state.ToolPreviews == nil {
 		a.state.ToolPreviews = map[string]string{}
+	}
+	if a.state.WorkerTyping == nil {
+		a.state.WorkerTyping = map[string]workerTypingAttempt{}
 	}
 	if a.state.Transcripts == nil {
 		a.state.Transcripts = map[string]VoiceTranscript{}
@@ -413,6 +437,8 @@ func Rebind(statePath string, configOwner int64, reason string, watermark int64)
 	state.OwnerChat = configOwner
 	state.OwnerUser = 0
 	state.Topics = map[string]TopicMapping{}
+	state.WorkerTyping = map[string]workerTypingAttempt{}
+	state.WorkerTypingInitialized = true
 	state.Pairings = map[string]pairingRecord{}
 	state.Outbox = nil
 	state.PendingInputs = nil
@@ -685,6 +711,10 @@ func (a *Adapter) mappingForThreadLocked(chatID, threadID int64) (TopicMapping, 
 }
 
 func (a *Adapter) sendTyping(chatID, threadID int64) {
+	a.sendTypingContext(context.Background(), chatID, threadID)
+}
+
+func (a *Adapter) sendTypingContext(ctx context.Context, chatID, threadID int64) {
 	if chatID == 0 {
 		return
 	}
@@ -699,7 +729,112 @@ func (a *Adapter) sendTyping(chatID, threadID int64) {
 	}
 	a.lastTyping[key] = a.now()
 	a.typingMu.Unlock()
-	_ = a.transport.SendChatAction(context.Background(), chatID, threadID, "typing")
+	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_ = a.transport.SendChatAction(requestCtx, chatID, threadID, "typing")
+}
+
+func (a *Adapter) refreshWorkerTypingLoop(ctx context.Context) {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.refreshWorkerTyping(ctx)
+		}
+	}
+}
+
+func (a *Adapter) refreshWorkerTyping(ctx context.Context) {
+	a.mu.Lock()
+	attempts := make([]workerTypingAttempt, 0, len(a.state.WorkerTyping))
+	for _, attempt := range a.state.WorkerTyping {
+		attempts = append(attempts, attempt)
+	}
+	a.mu.Unlock()
+	for _, attempt := range attempts {
+		a.sendTypingContext(ctx, attempt.ChatID, attempt.ThreadID)
+	}
+}
+
+func workerTypingKey(workerRef, attemptID string) string {
+	return fmt.Sprintf("%q:%q", workerRef, attemptID)
+}
+
+func isWorkerTerminalEvent(event Event) bool {
+	if event.WorkerAttemptTerminal {
+		return true
+	}
+	switch event.Kind {
+	case "worker.completed", "worker.succeeded", "worker.failed", "worker.canceled", "worker.offline":
+		return true
+	default:
+		return false
+	}
+}
+
+func (a *Adapter) WorkerTypingRecoveryNeeded() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.workerTypingRecoveryNeeded
+}
+
+func (a *Adapter) RestoreWorkerTyping(events []Event) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.workerTypingRecoveryNeeded {
+		return nil
+	}
+	active := make(map[string]workerTypingAttempt, len(events))
+	for _, event := range events {
+		if event.Kind != "worker.started" || event.WorkerRef == "" || event.AttemptID == "" {
+			continue
+		}
+		mapping, ok := a.state.Topics[event.WorkerRef]
+		if !ok {
+			continue
+		}
+		active[workerTypingKey(event.WorkerRef, event.AttemptID)] = workerTypingAttempt{WorkerRef: event.WorkerRef, AttemptID: event.AttemptID, ChatID: mapping.ChatID, ThreadID: mapping.ThreadID}
+	}
+	a.state.WorkerTyping = active
+	a.state.WorkerTypingInitialized = true
+	if err := a.saveLocked(); err != nil {
+		return err
+	}
+	a.workerTypingRecoveryNeeded = false
+	return nil
+}
+
+func (a *Adapter) updateWorkerTyping(event Event, mapping TopicMapping) error {
+	if event.WorkerRef == "" || event.AttemptID == "" {
+		return nil
+	}
+	key := workerTypingKey(event.WorkerRef, event.AttemptID)
+	a.mu.Lock()
+	if isWorkerTerminalEvent(event) {
+		if _, ok := a.state.WorkerTyping[key]; !ok {
+			a.mu.Unlock()
+			return nil
+		}
+		delete(a.state.WorkerTyping, key)
+		err := a.saveLocked()
+		a.mu.Unlock()
+		return err
+	}
+	if event.Kind != "worker.started" {
+		a.mu.Unlock()
+		return nil
+	}
+	a.state.WorkerTyping[key] = workerTypingAttempt{WorkerRef: event.WorkerRef, AttemptID: event.AttemptID, ChatID: mapping.ChatID, ThreadID: mapping.ThreadID}
+	err := a.saveLocked()
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	a.sendTyping(mapping.ChatID, mapping.ThreadID)
+	return nil
 }
 
 func (a *Adapter) PollOnce(ctx context.Context) error {
@@ -710,7 +845,15 @@ func (a *Adapter) PollOnce(ctx context.Context) error {
 }
 
 func (a *Adapter) Run(ctx context.Context) error {
-	defer a.inputWG.Wait()
+	refreshDone := make(chan struct{})
+	go func() {
+		defer close(refreshDone)
+		a.refreshWorkerTypingLoop(ctx)
+	}()
+	defer func() {
+		<-refreshDone
+		a.inputWG.Wait()
+	}()
 	backoff := 100 * time.Millisecond
 	maxBackoff := a.config.PollInterval
 	if maxBackoff < backoff {
@@ -801,6 +944,14 @@ func (a *Adapter) HandleEvent(ctx context.Context, event Event) error {
 }
 
 func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
+	if isWorkerTerminalEvent(event) {
+		if err := a.updateWorkerTyping(event, TopicMapping{}); err != nil {
+			return err
+		}
+		if event.Kind == "" {
+			return nil
+		}
+	}
 	if event.Kind == "secretary.acknowledged" {
 		a.mu.Lock()
 		owner := a.state.OwnerChat
@@ -835,6 +986,13 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 	}
 	if event.WorkerRef == "" {
 		return nil
+	}
+	if event.Kind == "worker.started" {
+		mapping, err := a.ensureTopic(ctx, event.WorkerRef, event.Title)
+		if err != nil {
+			return err
+		}
+		return a.updateWorkerTyping(event, mapping)
 	}
 	if event.Kind == "worker.created" {
 		mapping, err := a.ensureTopic(ctx, event.WorkerRef, event.Title, event.TaskPrompt)
@@ -945,7 +1103,9 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if alreadyNotified && event.TerminalIdentity == "" {
 			return nil
 		}
-		a.sendTyping(mapping.ChatID, mapping.ThreadID)
+		if !isWorkerTerminalEvent(event) {
+			a.sendTyping(mapping.ChatID, mapping.ThreadID)
+		}
 		if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: body, Identity: identity, DisableLinkPreview: true}); err != nil {
 			return err
 		}
