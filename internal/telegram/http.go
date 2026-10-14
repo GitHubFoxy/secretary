@@ -173,6 +173,9 @@ func (t *BotAPITransport) SendMessage(ctx context.Context, message OutgoingMessa
 	if message.ParseMode != "" {
 		values.Set("parse_mode", message.ParseMode)
 	}
+	if message.DisableLinkPreview {
+		values.Set("link_preview_options", `{"is_disabled":true}`)
+	}
 	if message.ThreadID != 0 {
 		values.Set("message_thread_id", strconv.FormatInt(message.ThreadID, 10))
 	}

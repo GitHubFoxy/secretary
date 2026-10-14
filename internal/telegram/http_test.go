@@ -30,10 +30,13 @@ func TestBotAPITransportPreservesTextInFormEncoding(t *testing.T) {
 		if got := r.Form.Get("text"); got != want {
 			t.Errorf("text=%q, want %q", got, want)
 		}
+		if got := r.Form.Get("link_preview_options"); got != `{"is_disabled":true}` {
+			t.Errorf("link_preview_options=%q", got)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
 	}))
 	defer server.Close()
-	if err := (&BotAPITransport{BaseURL: server.URL, BotToken: "fixture"}).SendMessage(context.Background(), OutgoingMessage{ChatID: 1, Text: want}); err != nil {
+	if err := (&BotAPITransport{BaseURL: server.URL, BotToken: "fixture"}).SendMessage(context.Background(), OutgoingMessage{ChatID: 1, Text: want, DisableLinkPreview: true}); err != nil {
 		t.Fatal(err)
 	}
 }

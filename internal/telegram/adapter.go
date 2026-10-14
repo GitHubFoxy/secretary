@@ -44,14 +44,15 @@ type Message struct {
 }
 
 type OutgoingMessage struct {
-	ChatID           int64
-	ThreadID         int64
-	Text             string
-	ReplyToMessageID int64  `json:"reply_to_message_id,omitempty"`
-	Identity         string `json:"identity,omitempty"`
-	DeliveredBytes   int    `json:"delivered_bytes,omitempty"`
-	ParseMode        string `json:"parse_mode,omitempty"`
-	PlainFallback    bool   `json:"plain_fallback,omitempty"`
+	ChatID             int64
+	ThreadID           int64
+	Text               string
+	ReplyToMessageID   int64  `json:"reply_to_message_id,omitempty"`
+	Identity           string `json:"identity,omitempty"`
+	DeliveredBytes     int    `json:"delivered_bytes,omitempty"`
+	ParseMode          string `json:"parse_mode,omitempty"`
+	PlainFallback      bool   `json:"plain_fallback,omitempty"`
+	DisableLinkPreview bool   `json:"disable_link_preview,omitempty"`
 }
 
 type SentMessage struct{ OutgoingMessage }
@@ -851,6 +852,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			return a.sendMessage(ctx, OutgoingMessage{
 				ChatID: mapping.ChatID, ThreadID: mapping.ThreadID,
 				Text: strings.Join(parts, "\n\n"), Identity: "task-prompt:" + event.WorkerRef,
+				DisableLinkPreview: true,
 			})
 		}
 		return nil
@@ -944,7 +946,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			return nil
 		}
 		a.sendTyping(mapping.ChatID, mapping.ThreadID)
-		if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: body, Identity: identity}); err != nil {
+		if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: body, Identity: identity, DisableLinkPreview: true}); err != nil {
 			return err
 		}
 		if event.TerminalIdentity != "" {
@@ -952,7 +954,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			owner := a.state.OwnerChat
 			a.mu.Unlock()
 			if owner != 0 {
-				mirror := OutgoingMessage{ChatID: owner, Text: body, Identity: identity + ":general"}
+				mirror := OutgoingMessage{ChatID: owner, Text: body, Identity: identity + ":general", DisableLinkPreview: true}
 				if err := a.sendMessage(ctx, mirror); err != nil {
 					return err
 				}

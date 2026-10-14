@@ -240,6 +240,11 @@ func TestTerminalResultMirrorsToGeneral(t *testing.T) {
 			t.Fatalf("unexpected terminal message=%#v", sent)
 		}
 	}
+	for _, sent := range transport.sent {
+		if !sent.DisableLinkPreview {
+			t.Fatalf("Worker result allows link preview: %#v", sent)
+		}
+	}
 	if topic != 1 || general != 1 {
 		t.Fatalf("terminal mirror topic=%d general=%d sent=%#v", topic, general, transport.sent)
 	}
@@ -264,7 +269,7 @@ func TestDelegatedTurnAcknowledgesBeforeWorkerCompletes(t *testing.T) {
 	if err := adapter.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if len(transport.sent) != 1 || transport.sent[0].ThreadID != 0 || transport.sent[0].Text != "I&#39;ll create a Workerdone narrating" {
+	if len(transport.sent) != 1 || transport.sent[0].ThreadID != 0 || transport.sent[0].Text != "I&#39;ll create a Workerdone narrating" || transport.sent[0].DisableLinkPreview {
 		t.Fatalf("missing delegation acknowledgement: %#v", transport.sent)
 	}
 	adapter.typingMu.Lock()
@@ -608,7 +613,7 @@ func TestWorkerTopicShowsExecutionNodeIDWhenKnown(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(transport.sent) != 1 || transport.sent[0].Text != "Узел: execution-node-primary\n\nRun tests" {
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Узел: execution-node-primary\n\nRun tests" || !transport.sent[0].DisableLinkPreview {
 		t.Fatalf("prompt with node ID delivery: %#v", transport.sent)
 	}
 
@@ -619,7 +624,7 @@ func TestWorkerTopicShowsExecutionNodeIDWhenKnown(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(transport.sent) != 1 || transport.sent[0].Text != "Run tests" {
+	if len(transport.sent) != 1 || transport.sent[0].Text != "Run tests" || !transport.sent[0].DisableLinkPreview {
 		t.Fatalf("prompt without node ID delivery: %#v", transport.sent)
 	}
 
