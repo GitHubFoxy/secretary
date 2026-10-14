@@ -470,11 +470,11 @@ func TestWorkerToolEventsRenderActualNamePreviewAndLifecycle(t *testing.T) {
 		kind, want string
 		hasOutput  bool
 	}{
-		{"worker.tool_started", "▶ Запуск: " + tool + " src/config.toml", false},
-		{"worker.tool_finished", "✓ Выполнено: " + tool + " src/config.toml (без вывода)", false},
-		{"worker.tool_finished", "✓ Выполнено: " + tool + " src/config.toml (вывод скрыт)", true},
-		{"worker.tool_failed", "✗ Ошибка: " + tool + " src/config.toml (без вывода)", false},
-		{"worker.tool_failed", "✗ Ошибка: " + tool + " src/config.toml (вывод скрыт)", true},
+		{"worker.tool_started", tool + " src/config.toml", false},
+		{"worker.tool_finished", "", false},
+		{"worker.tool_finished", "", true},
+		{"worker.tool_failed", "✗ Ошибка: " + tool + " src/config.toml", false},
+		{"worker.tool_failed", "✗ Ошибка: " + tool + " src/config.toml", true},
 	} {
 		got := renderWorkerEvent(Event{Kind: test.kind, Tool: tool, ToolPreview: "src/config.toml", HasOutput: test.hasOutput, Text: "synthetic tool output must not appear"})
 		if got != test.want || strings.Contains(got, "Worker запускает") || strings.Contains(got, "synthetic") {
@@ -527,21 +527,15 @@ func TestWorkerToolCallIDCorrelationAndParallelExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(transport.sent) != 4 {
-		t.Fatalf("sent messages count=%d want 4: %#v", len(transport.sent), transport.sent)
+	if len(transport.sent) != 2 {
+		t.Fatalf("sent messages count=%d want 2: %#v", len(transport.sent), transport.sent)
 	}
 
-	if transport.sent[0].Text != "▶ Запуск: exec_command python3 test.py" {
+	if transport.sent[0].Text != "exec_command python3 test.py" {
 		t.Fatalf("call1 start message=%q", transport.sent[0].Text)
 	}
-	if transport.sent[1].Text != "▶ Запуск: exec_command open https://example.com" {
+	if transport.sent[1].Text != "exec_command open https://example.com" {
 		t.Fatalf("call2 start message=%q", transport.sent[1].Text)
-	}
-	if transport.sent[2].Text != "✓ Выполнено: exec_command open https://example.com (без вывода)" {
-		t.Fatalf("call2 finish message=%q", transport.sent[2].Text)
-	}
-	if transport.sent[3].Text != "✓ Выполнено: exec_command python3 test.py (вывод скрыт)" {
-		t.Fatalf("call1 finish message=%q", transport.sent[3].Text)
 	}
 }
 
@@ -568,11 +562,8 @@ func TestWorkerToolWithoutCallIDNeverMatchesByNameAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(transport.sent) != 2 {
-		t.Fatalf("sent count=%d want 2", len(transport.sent))
-	}
-	if transport.sent[1].Text != "✓ Выполнено: exec_command (без вывода)" {
-		t.Fatalf("id-less result unexpectedly borrowed preview: %q", transport.sent[1].Text)
+	if len(transport.sent) != 1 {
+		t.Fatalf("sent count=%d want 1", len(transport.sent))
 	}
 }
 
@@ -591,8 +582,8 @@ func TestWorkerToolReplayDeduplication(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(transport.sent) != 2 {
-		t.Fatalf("sent count=%d want 2", len(transport.sent))
+	if len(transport.sent) != 1 {
+		t.Fatalf("sent count=%d want 1", len(transport.sent))
 	}
 
 	adapter = newTestAdapter(t, transport, &fakeServer{}, path)
@@ -601,8 +592,8 @@ func TestWorkerToolReplayDeduplication(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(transport.sent) != 2 {
-		t.Fatalf("duplicate messages after restart replay: sent=%d want 2", len(transport.sent))
+	if len(transport.sent) != 1 {
+		t.Fatalf("duplicate messages after restart replay: sent=%d want 1", len(transport.sent))
 	}
 }
 
@@ -701,14 +692,11 @@ func TestWorkerToolAttemptIsolationReusedCallID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if len(transport.sent) != 4 {
-		t.Fatalf("sent messages count=%d want 4 (attempt 2 was suppressed): %#v", len(transport.sent), transport.sent)
+	if len(transport.sent) != 2 {
+		t.Fatalf("sent messages count=%d want 2: %#v", len(transport.sent), transport.sent)
 	}
-	if transport.sent[2].Text != "▶ Запуск: exec_command cat bar.txt" {
-		t.Fatalf("att-2 start message=%q", transport.sent[2].Text)
-	}
-	if transport.sent[3].Text != "✓ Выполнено: exec_command cat bar.txt (вывод скрыт)" {
-		t.Fatalf("att-2 finish message=%q", transport.sent[3].Text)
+	if transport.sent[1].Text != "exec_command cat bar.txt" {
+		t.Fatalf("att-2 start message=%q", transport.sent[1].Text)
 	}
 }
 

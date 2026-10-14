@@ -27,6 +27,9 @@ preferred_harnesses = ["codex", "claude_code"]
 active_attempts = 4
 auto_resume_on_limit = true
 
+[worker_observer]
+show_tool_activity = true
+
 [telegram]
 title_harness = "deterministic"
 title_prompt = "title-generation-prompt.md"

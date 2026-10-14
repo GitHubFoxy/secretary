@@ -1759,27 +1759,16 @@ func renderWorkerEvent(event Event) string {
 		switch event.Kind {
 		case "worker.tool_started":
 			if preview != "" {
-				return "▶ Запуск: " + tool + " " + preview
+				return tool + " " + preview
 			}
-			return "▶ Запуск: " + tool
+			return tool
 		case "worker.tool_finished":
-			outputMarker := "(без вывода)"
-			if event.HasOutput {
-				outputMarker = "(вывод скрыт)"
-			}
-			if preview != "" {
-				return "✓ Выполнено: " + tool + " " + preview + " " + outputMarker
-			}
-			return "✓ Выполнено: " + tool + " " + outputMarker
+			return ""
 		case "worker.tool_failed":
-			outputMarker := "(без вывода)"
-			if event.HasOutput {
-				outputMarker = "(вывод скрыт)"
-			}
 			if preview != "" {
-				return "✗ Ошибка: " + tool + " " + preview + " " + outputMarker
+				return "✗ Ошибка: " + tool + " " + preview
 			}
-			return "✗ Ошибка: " + tool + " " + outputMarker
+			return "✗ Ошибка: " + tool
 		}
 	}
 	label := workerEventLabel(event.Kind)
