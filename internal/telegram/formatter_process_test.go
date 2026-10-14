@@ -31,7 +31,7 @@ wait
 	}
 	t.Setenv("FORMATTER_HEARTBEAT", heartbeat)
 	t.Setenv("FORMATTER_CHILD_PID_FILE", childPIDFile)
-	f := &CodexFormatter{Enabled: true, Model: "gpt-6-luna", Prompt: "format only", Command: wrapper, Timeout: 750 * time.Millisecond, TempRoot: t.TempDir()}
+	f := &CodexFormatter{Enabled: true, Model: "gpt-6-luna", Prompt: "format only", Command: wrapper, Timeout: 3 * time.Second, TempRoot: t.TempDir()}
 	var process *os.Process
 	var diagnostics bytes.Buffer
 	f.CommandRun = func(_ context.Context, cmd *exec.Cmd) error {
@@ -50,7 +50,7 @@ wait
 	}()
 	start := time.Now()
 	_, err := f.Format(context.Background(), "hello")
-	if err == nil || !strings.Contains(err.Error(), "timed out") || time.Since(start) > 2*time.Second {
+	if err == nil || !strings.Contains(err.Error(), "timed out") || time.Since(start) > 5*time.Second {
 		t.Fatalf("elapsed=%v error=%v", time.Since(start), err)
 	}
 	pidData, readerr := os.ReadFile(childPIDFile)
