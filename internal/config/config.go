@@ -30,16 +30,17 @@ const (
 )
 
 type Config struct {
-	Profiles     Profiles        `toml:"profiles" json:"profiles"`
-	Skills       []string        `toml:"skills" json:"skills"`
-	Tools        Tools           `toml:"tools" json:"tools"`
-	Models       Models          `toml:"models" json:"models"`
-	Runtime      Runtime         `toml:"runtime" json:"-"`
-	Secretary    SecretaryPolicy `toml:"secretary" json:"secretary"`
-	WorkerPolicy WorkerPolicy    `toml:"worker_policy" json:"worker_policy"`
-	Telegram     TelegramPolicy  `toml:"telegram" json:"telegram"`
-	Retention    Retention       `toml:"retention" json:"retention"`
-	ASR          ASRConfig       `toml:"asr" json:"asr"`
+	Profiles       Profiles        `toml:"profiles" json:"profiles"`
+	Skills         []string        `toml:"skills" json:"skills"`
+	Tools          Tools           `toml:"tools" json:"tools"`
+	Models         Models          `toml:"models" json:"models"`
+	Runtime        Runtime         `toml:"runtime" json:"-"`
+	Secretary      SecretaryPolicy `toml:"secretary" json:"secretary"`
+	WorkerPolicy   WorkerPolicy    `toml:"worker_policy" json:"worker_policy"`
+	WorkerObserver WorkerObserver  `toml:"worker_observer" json:"worker_observer"`
+	Telegram       TelegramPolicy  `toml:"telegram" json:"telegram"`
+	Retention      Retention       `toml:"retention" json:"retention"`
+	ASR            ASRConfig       `toml:"asr" json:"asr"`
 }
 
 type SecretaryPolicy struct {
@@ -57,6 +58,10 @@ type WorkerPolicy struct {
 	PreferredHarnesses []string `toml:"preferred_harnesses" json:"preferred_harnesses"`
 	ActiveAttempts     int      `toml:"active_attempts" json:"active_attempts"`
 	AutoResumeOnLimit  *bool    `toml:"auto_resume_on_limit" json:"auto_resume_on_limit,omitempty"`
+}
+
+type WorkerObserver struct {
+	ShowToolActivity bool `toml:"show_tool_activity" json:"show_tool_activity"`
 }
 
 type TelegramPolicy struct {
@@ -144,7 +149,7 @@ func Load(path string) (Snapshot, error) {
 	c := Config{Telegram: TelegramPolicy{
 		TitleHarness: DefaultTitleHarness, TitlePrompt: DefaultTitlePrompt,
 		TitleModel: DefaultTitleModel, TitleModelReasoning: DefaultTitleModelReasoning,
-	}}
+	}, WorkerObserver: WorkerObserver{ShowToolActivity: true}}
 	var explicitTitlePrompt *string
 
 	if err := toml.Unmarshal(data, &c); err != nil {
@@ -446,6 +451,9 @@ func Diff(previous, next Snapshot) map[string]any {
 	}
 	if previous.Config.WorkerPolicy.DefaultHarness != next.Config.WorkerPolicy.DefaultHarness || previous.Config.WorkerPolicy.Model != next.Config.WorkerPolicy.Model || previous.Config.WorkerPolicy.Reasoning != next.Config.WorkerPolicy.Reasoning || strings.Join(previous.Config.WorkerPolicy.FallbackModels, ",") != strings.Join(next.Config.WorkerPolicy.FallbackModels, ",") || previous.Config.WorkerPolicy.ActiveAttempts != next.Config.WorkerPolicy.ActiveAttempts || strings.Join(previous.Config.WorkerPolicy.PreferredHarnesses, ",") != strings.Join(next.Config.WorkerPolicy.PreferredHarnesses, ",") || !boolPtrEqual(previous.Config.WorkerPolicy.AutoResumeOnLimit, next.Config.WorkerPolicy.AutoResumeOnLimit) {
 		changed["worker_policy"] = next.Config.WorkerPolicy
+	}
+	if previous.Config.WorkerObserver != next.Config.WorkerObserver {
+		changed["worker_observer"] = next.Config.WorkerObserver
 	}
 	if previous.Config.Models != next.Config.Models {
 		changed["models"] = next.Config.Models

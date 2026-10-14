@@ -8,10 +8,18 @@ Secretary читает `config.toml` из data directory. При первом se
 - `[tools]`: разрешённые tools.
 - `[models]` и `[secretary]`: модель и runtime policy Secretary.
 - `[worker_policy]`: default harness, model policy и лимит active Attempts для Workers.
+- `[worker_observer]`: настройки отображения активности Worker в web observer.
 - `[telegram]`: отдельная модель для названий Worker Topics. Эта секция не включает Telegram polling и не хранит bot credentials.
 - `[retention]`: срок и предел хранения raw logs.
 
 Запуск и применение изменений описаны в [quickstart](quickstart.md). Telegram deployment и private credentials настраиваются отдельно, см. [always-on runbook](always-on-runbook.md).
+
+```toml
+[worker_observer]
+show_tool_activity = true
+```
+
+`worker_observer.show_tool_activity` управляет только строками вызова и результата инструментов в ленте Worker observer веб-приложения. Значение по умолчанию — `true`; при `false` текстовая и статусная активность, состояние Worker и остальные данные observer остаются видимыми. События продолжают поступать и храниться без изменений. После reload настройка применяется при ближайшем обновлении web UI.
 
 ## Runtime defaults Secretary и Workers
 

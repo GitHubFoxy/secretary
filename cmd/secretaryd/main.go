@@ -184,6 +184,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("initialize web API: %v", err)
 	}
+	web.AttachWorkerObserverPreference(func() bool { return profiles.Snapshot().Config.WorkerObserver.ShowToolActivity })
 	web.SetDebug(*debug)
 	web.AttachUserDocument(filepath.Join(*dataDir, "user.md"))
 	web.AttachDiagnosticLogDir(filepath.Join(*dataDir, "logs", "acp"))

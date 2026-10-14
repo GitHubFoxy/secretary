@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -217,6 +218,29 @@ func TestBootstrapAndSecretaryModelSelection(t *testing.T) {
 	response.Body.Close()
 	if bootstrap.ConversationID == "" || bootstrap.Secretary.Selected != "default" || bootstrap.Secretary.Models["fast"] != "provider/fast" {
 		t.Fatalf("bootstrap=%#v", bootstrap)
+	}
+	if !bootstrap.WorkerObserver.ShowToolActivity {
+		t.Fatal("bootstrap did not preserve the default Worker tool visibility")
+	}
+	api.AttachWorkerObserverPreference(func() bool { return false })
+	response, err = client.Get(httpServer.URL + "/v1/bootstrap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var refreshed bootstrapResponse
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(body, &refreshed); err != nil {
+		t.Fatal(err)
+	}
+	response.Body.Close()
+	if refreshed.WorkerObserver.ShowToolActivity {
+		t.Fatal("bootstrap did not return the current Worker observer preference")
+	}
+	if bytes.Contains(body, []byte(`"config"`)) {
+		t.Fatal("bootstrap exposed the full config snapshot")
 	}
 	payload := bytes.NewBufferString(`{"model":"fast","idempotency_key":"model-fast"}`)
 	response, err = client.Post(httpServer.URL+"/v1/secretary/model", "application/json", payload)

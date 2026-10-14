@@ -12,11 +12,16 @@ import (
 const secretaryModelSetting = "secretary.model"
 
 type bootstrapResponse struct {
-	SecretaryTurnID string              `json:"secretary_turn_id,omitempty"`
-	OwnerID         string              `json:"owner_id"`
-	ConversationID  string              `json:"conversation_id"`
-	Secretary       secretaryModelState `json:"secretary"`
-	Workers         []publicWorkerDTO   `json:"workers"`
+	SecretaryTurnID string                    `json:"secretary_turn_id,omitempty"`
+	OwnerID         string                    `json:"owner_id"`
+	ConversationID  string                    `json:"conversation_id"`
+	Secretary       secretaryModelState       `json:"secretary"`
+	WorkerObserver  workerObserverPreferences `json:"worker_observer"`
+	Workers         []publicWorkerDTO         `json:"workers"`
+}
+
+type workerObserverPreferences struct {
+	ShowToolActivity bool `json:"show_tool_activity"`
 }
 
 type secretaryModelState struct {
@@ -42,11 +47,16 @@ func (s *Server) bootstrap(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "read Secretary turn", http.StatusInternalServerError)
 		return
 	}
+	showToolActivity := true
+	if s.showToolActivity != nil {
+		showToolActivity = s.showToolActivity()
+	}
 	writeJSON(w, http.StatusOK, sanitizePublicJSON(bootstrapResponse{
 		SecretaryTurnID: turnID,
 		OwnerID:         s.owner.ID,
 		ConversationID:  conversation.ID,
 		Secretary:       s.secretaryModelState(r),
+		WorkerObserver:  workerObserverPreferences{ShowToolActivity: showToolActivity},
 		Workers:         workers,
 	}))
 }

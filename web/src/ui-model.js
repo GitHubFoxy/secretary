@@ -124,9 +124,10 @@ export function formatActivityPayload(event) {
     const preview = toolCall.preview || toolResult.preview || '';
     const failed = value.kind === 'tool_result'
       && (['failed', 'error', 'canceled', 'cancelled'].includes(String(toolResult.status || '').toLowerCase()) || Boolean(toolResult.error));
-    const state = value.kind === 'tool_call' ? '▶' : failed ? '✗' : '✓';
+    if (value.kind === 'tool_result' && !failed) return '';
+    const state = value.kind === 'tool_call' ? '' : '✗';
     const failure = failed ? safeToolFailureLabel(toolResult.failure) : '';
-    return `${state} ${tool}${preview ? ` ${preview}` : ''}${failure}`;
+    return `${state ? `${state} ` : ''}${tool}${preview ? ` ${preview}` : ''}${failure}`;
   }
   if (typeof value === 'string') return value;
   if (['thinking', 'reasoning', 'thinking_delta'].includes(value?.kind)) return '';

@@ -85,6 +85,7 @@ type Server struct {
 	modelCatalog     func() map[string]string
 	modelDefault     func() string
 	modelChanged     func(string) error
+	showToolActivity func() bool
 	control          ControlOptions
 	userPath         string
 	diagnosticLogDir string
@@ -191,6 +192,9 @@ func (s *Server) AttachSecretary(runtime *secretaryruntime.Runtime) { s.secretar
 func (s *Server) SetDebug(debug bool)                               { s.debug = debug }
 func (s *Server) AttachSecretaryModelCatalog(catalog func() map[string]string, defaultModel func() string, changed func(string) error) {
 	s.modelCatalog, s.modelDefault, s.modelChanged = catalog, defaultModel, changed
+}
+func (s *Server) AttachWorkerObserverPreference(showToolActivity func() bool) {
+	s.showToolActivity = showToolActivity
 }
 func (s *Server) AttachControl(options ControlOptions) { s.control = options }
 func (s *Server) OwnerID() string                      { return s.owner.ID }
