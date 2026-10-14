@@ -13,19 +13,19 @@ type contextWaitingTypingTransport struct {
 	once    sync.Once
 }
 
-func (contextWaitingTypingTransport) GetUpdates(context.Context, int64, time.Duration) ([]Update, error) {
+func (*contextWaitingTypingTransport) GetUpdates(context.Context, int64, time.Duration) ([]Update, error) {
 	return nil, nil
 }
 
-func (contextWaitingTypingTransport) SendMessage(context.Context, OutgoingMessage) error { return nil }
+func (*contextWaitingTypingTransport) SendMessage(context.Context, OutgoingMessage) error { return nil }
 
-func (t contextWaitingTypingTransport) SendChatAction(ctx context.Context, _, _ int64, _ string) error {
+func (t *contextWaitingTypingTransport) SendChatAction(ctx context.Context, _, _ int64, _ string) error {
 	t.once.Do(func() { close(t.started) })
 	<-ctx.Done()
 	return ctx.Err()
 }
 
-func (contextWaitingTypingTransport) CreateForumTopic(context.Context, int64, string) (ForumTopic, error) {
+func (*contextWaitingTypingTransport) CreateForumTopic(context.Context, int64, string) (ForumTopic, error) {
 	return ForumTopic{}, nil
 }
 
@@ -153,7 +153,7 @@ func TestWorkerTypingRefreshLoopRenewsTyping(t *testing.T) {
 }
 
 func TestWorkerTypingRefreshLoopStopsWhenContextIsCanceled(t *testing.T) {
-	transport := contextWaitingTypingTransport{started: make(chan struct{})}
+	transport := &contextWaitingTypingTransport{started: make(chan struct{})}
 	adapter := newTestAdapter(t, transport, &fakeServer{}, filepath.Join(t.TempDir(), "telegram.json"))
 	adapter.mu.Lock()
 	adapter.state.WorkerTyping[workerTypingKey("worker-1", "attempt-1")] = workerTypingAttempt{WorkerRef: "worker-1", AttemptID: "attempt-1", ChatID: 100, ThreadID: 1}
