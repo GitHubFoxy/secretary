@@ -41,6 +41,19 @@ reasoning = "high"
 	if snapshot.Version == "" || snapshot.Profiles["worker"].Content != "worker" || snapshot.Profiles["worker"].Model != "smart" {
 		t.Fatalf("snapshot = %#v", snapshot)
 	}
+	if !snapshot.Config.Telegram.ShowToolCalls {
+		t.Fatal("Telegram tool calls should be enabled by default")
+	}
+	if err := os.WriteFile(configPath, []byte(text+"\n[telegram]\nshow_tool_calls = false\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err = Load(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Config.Telegram.ShowToolCalls {
+		t.Fatal("Telegram tool calls should respect an explicit false value")
+	}
 	if got := snapshot.Profiles["secretary"].Skills; len(got) != 1 || got[0].Content != "skill" {
 		t.Fatalf("skills = %#v", got)
 	}

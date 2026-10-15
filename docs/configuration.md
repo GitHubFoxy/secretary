@@ -21,6 +21,15 @@ show_tool_activity = true
 
 `worker_observer.show_tool_activity` управляет только строками вызова и результата инструментов в ленте Worker observer веб-приложения. Значение по умолчанию — `true`; при `false` текстовая и статусная активность, состояние Worker и остальные данные observer остаются видимыми. События продолжают поступать и храниться без изменений. После reload настройка применяется при ближайшем обновлении web UI.
 
+В Telegram уведомления о вызовах инструментов в topic Worker управляются настройкой:
+
+```toml
+[telegram]
+show_tool_calls = true
+```
+
+Значение по умолчанию — `true`. При `false` уведомления о вызовах инструментов отключены; остальные Worker events продолжают отображаться. Изменение применяется после перезапуска Secretary.
+
 ## Runtime defaults Secretary и Workers
 
 Bundled Secretary и Worker profiles задают русский как язык ответа по умолчанию независимо от языка входного сообщения или задачи. Secretary сохраняет в переданном Worker поручении явную просьбу пользователя о другом языке ответа, если она относится к этому ответу; язык самого поручения не считается такой просьбой. Новые profiles копируются только при первом setup, внешние profiles не обновляются автоматически, а существующие Worker bindings сохраняют свои profile snapshots. Обновление `profiles/secretary.md` и `profiles/worker.md` само по себе не меняет уже созданные Worker bindings.
@@ -97,6 +106,7 @@ title_model_reasoning = "minimal"
 
 | Ключ | Default | Назначение |
 | --- | --- | --- |
+| `telegram.show_tool_calls` | `true` | Показывает вызовы инструментов в Telegram topic соответствующего Worker; успешное завершение отдельно не отправляется. |
 | `telegram.title_harness` | `opencode` | Harness только для названий Topics. Сейчас поддерживается OpenCode v2. |
 | `telegram.title_prompt` | `title-generation-prompt.md` | Внешний Markdown system prompt. Относительный путь считается от директории `config.toml`; абсолютный путь также разрешён. |
 | `telegram.title_model` | `gpt-6-luna` | Model ID. Bare ID означает `openai/<model>`; для другого provider задайте `provider/model-id`. |

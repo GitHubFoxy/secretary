@@ -91,6 +91,7 @@ type ServerClient interface {
 type Config struct {
 	StatePath      string
 	OwnerChatID    int64
+	ShowToolCalls  *bool
 	PollInterval   time.Duration
 	FlushInterval  time.Duration
 	BotUsername    string
@@ -944,6 +945,9 @@ func (a *Adapter) HandleEvent(ctx context.Context, event Event) error {
 }
 
 func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
+	if a.config.ShowToolCalls != nil && !*a.config.ShowToolCalls && (event.Kind == "worker.tool_started" || event.Kind == "worker.tool_finished" || event.Kind == "worker.tool_failed") {
+		return nil
+	}
 	if isWorkerTerminalEvent(event) {
 		if err := a.updateWorkerTyping(event, TopicMapping{}); err != nil {
 			return err
