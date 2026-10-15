@@ -16,3 +16,7 @@ Compiler and toolchain directives whose comment syntax is strictly required (suc
 ### Domain docs
 
 Single-context layout: `GLOSSARY.md`, `docs/architecture/runtime-contracts.md` и `docs/adr/`. См. `docs/agents/domain.md`.
+
+### Production deployment
+
+Перед обновлением production-сервера следуй `docs/always-on-runbook.md`. Сверяй эффективный `ExecStart` через `systemctl --user show` и все unit/drop-in через `systemctl --user cat`: обновление checkout или успешный `setup` сами по себе не подтверждают обновление работающего сервиса. После перезапуска проверь путь исполняемого файла у `MainPID`, встроенную revision, конфигурацию сервиса, число процессов, состояние systemd и health check. Отчитывайся об успешном обновлении только после совпадения запущенной revision с целевой.

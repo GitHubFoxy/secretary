@@ -38,7 +38,7 @@ Runbook для always-on Arch Linux сервера (omarchy), где посто�
 
 ## Services
 
-User-юниты: `~/.config/systemd/user/secretaryd.service` и `secretary-node.service`.
+User-юниты: `~/.config/systemd/user/secretaryd.service` и `secretary-node.service`. Файлы drop-in могут переопределять их, причём последнее по имени переопределение имеет приоритет. Поэтому содержимое unit-файла само по себе не показывает, что именно запускает systemd.
 
 - `secretaryd`: буквальный рабочий unit:
 
@@ -101,14 +101,33 @@ zsh ~/projects/secretary-v2/secretary serve --debug   # Ctrl-C по оконча
 systemctl --user start secretaryd.service
 ```
 
-После `git pull` с изменениями `secretary` или Go-кода:
+## Обновление production
+
+Не считай `git pull`, `secretary setup` или успешный перезапуск подтверждением выкладки: systemd может запускать отдельный candidate через drop-in, а `setup` соберёт бинарники в другом месте. Сначала установи эффективный запуск и целевой commit:
 
 ```sh
-cd ~/projects/secretary-v2 && zsh ./secretary setup   # пересборка бинарей, проверка harness
-systemctl --user daemon-reload                  # только если менялись сами unit files
-systemctl --user restart secretaryd.service secretary-node.service
-secretary doctor
+systemctl --user show secretaryd.service -p MainPID -p ExecStart -p ExecMainStartTimestamp
+systemctl --user cat secretaryd.service
+systemctl --user show secretary-node.service -p MainPID -p ExecStart -p ExecMainStartTimestamp
+systemctl --user cat secretary-node.service
 ```
+
+Проверь все перечисленные drop-in-файлы и найди тот, который задаёт эффективный `ExecStart`. Зафиксируй фактический путь запуска, data/config path и ожидаемый commit. Собери новую версию в отдельный candidate-каталог, сохранив текущий candidate для отката. Если сервис запускается не из checkout или стандартного `~/.local/bin`, обнови именно артефакт, на который указывает эффективный `ExecStart`; при необходимости добавь drop-in с более поздним именем. Не удаляй резервную версию до завершения проверки.
+
+После `daemon-reload` (если менялись unit/drop-in) перезапусти нужный сервис. Проверь работающий процесс, а не только файлы на диске:
+
+```sh
+systemctl --user is-active secretaryd.service
+pid=$(systemctl --user show secretaryd.service -p MainPID --value)
+readlink -f "/proc/$pid/exe"
+go version -m "/proc/$pid/exe" | grep vcs.revision
+systemctl --user show secretaryd.service -p ExecStart -p MainPID
+pgrep -x secretaryd | wc -l
+secretary doctor
+curl -fsS http://127.0.0.1:8081/v1/health
+```
+
+Для Node повтори проверку `is-active`, `MainPID`, `/proc/$pid/exe` и revision для `secretary-node.service`; проверь число процессов, чтобы не осталось второго экземпляра. Убедись, что сервис использует ожидаемые data/config path и требуемое значение изменённого параметра, не выводя секреты или весь конфиг. Если revision, путь, конфигурация или health check не совпали, обновление не завершено: исправь фактическую цель запуска либо откати drop-in на сохранённый candidate, затем повтори проверки. Только после совпадения всех проверок сообщай, что production обновлён.
 
 ## Client pairing and revoke
 
