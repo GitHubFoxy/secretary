@@ -43,7 +43,7 @@ test('compact Worker item includes Turn status, acknowledgement and terminal Res
   assert.equal(card.result, 'Deployed safely');
 });
 
-test('hides only the Worker Result represented by its compact card identity', () => {
+test('keeps Worker Results in the chronological conversation when a Worker card shows the same summary', () => {
   const durableEntries = [
     { id: 'worker-result-entry', seq: 1, kind: 'worker_result', worker_ref: 'wkr-result', turn_id: 'turn-1', result_id: 'result-1', body: 'Deployed safely' },
     { id: 'same-summary-other-turn', seq: 2, kind: 'worker_result', worker_ref: 'wkr-result', turn_id: 'turn-2', result_id: 'result-2', body: 'Deployed safely' },
@@ -54,14 +54,13 @@ test('hides only the Worker Result represented by its compact card identity', ()
     result: { id: 'result-1', worker_ref: 'wkr-result', turn_id: 'turn-1', summary: 'Deployed safely' },
   });
   const visible = visibleConversationEntries(durableEntries, [card]);
-  assert.deepEqual(visible.map((entry) => entry.id), ['same-summary-other-turn', 'secretary-entry']);
+  assert.deepEqual(visible.map((entry) => entry.id), ['worker-result-entry', 'same-summary-other-turn', 'secretary-entry']);
   assert.equal(card.result, 'Deployed safely');
 });
 
-test('dedupes same-summary replay for each represented Worker Turn, not across identities', () => {
+test('preserves Worker Result entries in their Personal Conversation sequence', () => {
   const durableEntries = [
     { id: 'a-turn-1', seq: 1, kind: 'worker_result', worker_ref: 'worker-a', turn_id: 'turn-a-1', result_id: 'result-a-1', body: 'Finished' },
-    { id: 'a-turn-1-replay', seq: 1, kind: 'worker_result', worker_ref: 'worker-a', turn_id: 'turn-a-1', result_id: 'result-a-1', body: 'Finished' },
     { id: 'a-turn-2', seq: 2, kind: 'worker_result', worker_ref: 'worker-a', turn_id: 'turn-a-2', result_id: 'result-a-2', body: 'Finished' },
     { id: 'b-turn-1', seq: 3, kind: 'worker_result', worker_ref: 'worker-b', turn_id: 'turn-b-1', result_id: 'result-b-1', body: 'Finished' },
     { id: 'unrepresented', seq: 4, kind: 'worker_result', worker_ref: 'worker-a', turn_id: 'turn-a-0', result_id: 'result-a-0', body: 'Finished' },
@@ -72,7 +71,8 @@ test('dedupes same-summary replay for each represented Worker Turn, not across i
     workerCard({ worker_ref: 'worker-b', current_turn_id: 'turn-b-1', result: { id: 'result-b-1', worker_ref: 'worker-b', turn_id: 'turn-b-1', summary: 'Finished' } }),
   ];
   const visible = visibleConversationEntries(durableEntries, cards);
-  assert.deepEqual(visible.map((entry) => entry.id), ['unrepresented']);
+  assert.deepEqual(visible.map((entry) => entry.id), ['a-turn-1', 'a-turn-2', 'b-turn-1', 'unrepresented']);
+  assert.deepEqual(visible.map((entry) => entry.seq), [1, 2, 3, 4]);
 });
 
 test('uses production-shaped input requests separately from approvals and preserves request_id', () => {
