@@ -162,6 +162,12 @@ ON CONFLICT(command_id) DO UPDATE SET node_id = excluded.node_id, kind = exclude
 					return WorkerCommand{}, err
 				}
 			}
+			if command.Kind == "dispatch" || command.Kind == "resume" {
+				_, activationErr := setPhase4AttemptActiveTx(ctx, tx, command.AttemptID, now)
+				if activationErr != nil && !errors.Is(activationErr, ErrInvalidTransition) {
+					return WorkerCommand{}, activationErr
+				}
+			}
 		}
 		return command, nil
 	})
@@ -170,7 +176,6 @@ ON CONFLICT(command_id) DO UPDATE SET node_id = excluded.node_id, kind = exclude
 	}
 	switch command.State {
 	case WorkerCommandDelivered:
-		_, err = s.SetPhase4AttemptActive(ctx, command.AttemptID)
 	case WorkerCommandFailed:
 		_, _, _, err = s.RecordAttemptOutcome(ctx, command.AttemptID, AttemptOutcomeInput{Status: OutcomeFailed, Classification: OutcomeFinal, ErrorCode: receipt.ErrorCode, ErrorMessage: command.LastError, FailureCode: receipt.ErrorCode, Summary: command.LastError})
 	case WorkerCommandUncertain:
