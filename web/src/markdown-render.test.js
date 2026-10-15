@@ -86,6 +86,8 @@ test('Worker activity joins native text fragments while preserving attempt and t
     const text = [...markdown].map((chunk) => event('assistant_text_delta', chunk));
     const events = [...text, text[0],
       event('tool_call', '', 'attempt-1', {tool_call: {name: 'mcp.read', preview: 'marker', arguments: 'private arguments'}}),
+      event('tool_result', '', 'attempt-1', {tool_result: {name: 'mcp.read', status: 'completed', output: 'private successful result'}}),
+      event('tool_result', '', 'attempt-1', {tool_result: {name: 'mcp.read', status: 'failed', preview: 'marker', error: 'private error'}}),
       event('assistant_text_delta', 'После инструмента'),
       event('status', '', 'attempt-1', {status: 'working'}),
       event('assistant_text_delta', 'Новая попытка', 'attempt-2'),
@@ -99,16 +101,18 @@ test('Worker activity joins native text fragments while preserving attempt and t
       event('assistant_text_delta', 'После ввода', 'attempt-3', {channel: 'commentary'}),
     ];
     const {body} = render(Activity, {props: {events}});
-    assert.equal((body.match(/aria-label="Worker activity item"/g) || []).length, 11);
+    assert.equal((body.match(/aria-label="Worker activity item"/g) || []).length, 12);
     assert.match(body, /<h1>Проверка<\/h1>/);
     assert.match(body, /<strong>готово<\/strong>/);
     assert.match(body, /Полный текст\. Полный текст\./);
     assert.equal((body.match(/Полный текст\./g) || []).length, 30);
     assert.match(body, /<pre><code class="language-javascript">console.log\(&quot;ok&quot;\);/);
-    assert.match(body, /▶ mcp.read marker/);
+    assert.match(body, /mcp.read marker/);
+    assert.doesNotMatch(body, /▶ mcp.read|✓ mcp.read|private successful result|private error/);
+    assert.match(body, /✗ mcp.read marker/);
     assert.match(body, /После инструмента/);
     assert.match(body, /Working/);
     assert.doesNotMatch(body, /private reasoning|analysis secret|private arguments|attempt.activity/);
-    assert.ok(body.indexOf('▶ mcp.read marker') < body.indexOf('После инструмента'));
+    assert.ok(body.indexOf('mcp.read marker') < body.indexOf('После инструмента'));
   } finally { await rm(directory, {recursive: true, force: true}); }
 });

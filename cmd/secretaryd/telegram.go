@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -132,6 +133,11 @@ func bridgeTelegramEvents(ctx context.Context, store *core.Store, adapter *teleg
 }
 
 func bridgeTelegramEventsOnce(ctx context.Context, store *core.Store, adapter *telegram.Adapter) (int64, error) {
+	if adapter.WorkerTypingRecoveryNeeded() {
+		if err := recoverTelegramWorkerTyping(ctx, store, adapter); err != nil {
+			return 0, err
+		}
+	}
 	cursor := adapter.LastEventSeq()
 	for {
 		events, err := store.EventsAfterSeq(ctx, cursor, 500)
@@ -158,6 +164,63 @@ func bridgeTelegramEventsOnce(ctx context.Context, store *core.Store, adapter *t
 	}
 }
 
+func recoverTelegramWorkerTyping(ctx context.Context, store *core.Store, adapter *telegram.Adapter) error {
+	watermark := adapter.LastEventSeq()
+	cursor := int64(0)
+	active := make(map[struct{ workerRef, attemptID string }]telegram.Event)
+	for cursor < watermark {
+		events, err := store.EventsAfterSeq(ctx, cursor, 500)
+		if err != nil {
+			return err
+		}
+		if len(events) == 0 {
+			return fmt.Errorf("telegram: worker typing recovery stopped at seq %d below cursor %d", cursor, watermark)
+		}
+		before := cursor
+		expectedSequence := cursor + 1
+		for _, event := range events {
+			if event.Seq > watermark {
+				break
+			}
+			if event.Seq != expectedSequence {
+				return fmt.Errorf("telegram: worker typing recovery found event sequence gap: expected %d, got %d before cursor %d", expectedSequence, event.Seq, watermark)
+			}
+			mapped := telegramEvent(event)
+			key := struct{ workerRef, attemptID string }{mapped.WorkerRef, mapped.AttemptID}
+			if mapped.Kind == "worker.started" && key.workerRef != "" && key.attemptID != "" {
+				active[key] = mapped
+			} else if telegramWorkerAttemptTerminal(mapped) && key.workerRef != "" && key.attemptID != "" {
+				delete(active, key)
+			}
+			cursor = event.Seq
+			expectedSequence++
+		}
+		if cursor == before && cursor < watermark {
+			return fmt.Errorf("telegram: worker typing recovery stopped at seq %d below cursor %d", cursor, watermark)
+		}
+		if cursor < watermark && len(events) < 500 {
+			return fmt.Errorf("telegram: worker typing recovery stopped at seq %d below cursor %d", cursor, watermark)
+		}
+	}
+	attempts := make([]telegram.Event, 0, len(active))
+	for _, event := range active {
+		attempts = append(attempts, event)
+	}
+	return adapter.RestoreWorkerTyping(attempts)
+}
+
+func telegramWorkerAttemptTerminal(event telegram.Event) bool {
+	if event.WorkerAttemptTerminal {
+		return true
+	}
+	switch event.Kind {
+	case "worker.completed", "worker.succeeded", "worker.failed", "worker.canceled", "worker.offline":
+		return true
+	default:
+		return false
+	}
+}
+
 func telegramEvent(event core.Event) telegram.Event {
 	workerRef := event.WorkerRef
 	if workerRef == "" && event.AggregateType == "worker" {
@@ -168,6 +231,12 @@ func telegramEvent(event core.Event) telegram.Event {
 	attemptID := event.AttemptID
 	if attemptID == "" {
 		attemptID = stringField(payload, "attempt_id")
+		if attemptID == "" && event.Kind == "worker.started" {
+			attemptID = stringField(payload, "id")
+		}
+		if attemptID == "" && event.Kind == "attempt.outcome_recorded" && event.AggregateType == "attempt" {
+			attemptID = event.AggregateID
+		}
 		if attemptID == "" {
 			if meta, ok := payload["metadata"].(map[string]any); ok {
 				attemptID = stringField(meta, "attempt_id")
@@ -274,6 +343,7 @@ func telegramEvent(event core.Event) telegram.Event {
 	case event.Kind == "approval.resolved" || event.Kind == "approval.approved" || event.Kind == "approval.denied" || event.Kind == "approval.revoked":
 		result.Kind = "worker.approval_resolved"
 	case event.Kind == "attempt.outcome_recorded" || event.Kind == "result.accepted":
+		result.WorkerAttemptTerminal = true
 		classification := strings.ToLower(stringField(payload, "classification"))
 		if classification == "retryable" {
 			result.Kind = ""

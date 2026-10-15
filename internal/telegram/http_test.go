@@ -22,13 +22,16 @@ func TestBotAPITransportErrorRedactsBotToken(t *testing.T) {
 }
 
 func TestBotAPITransportPreservesTextInFormEncoding(t *testing.T) {
-	const want = "I'll create a new Worker\nand preserve *format*."
+	const want = "I'll create a new Worker\nand preserve *format*. https://example.org"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)
 		}
 		if got := r.Form.Get("text"); got != want {
 			t.Errorf("text=%q, want %q", got, want)
+		}
+		if _, present := r.Form["link_preview_options"]; present {
+			t.Error("default message changed link preview behavior")
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "result": true})
 	}))

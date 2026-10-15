@@ -8,12 +8,22 @@ Secretary читает `config.toml` из data directory. При первом se
 - `[tools]`: разрешённые tools.
 - `[models]` и `[secretary]`: модель и runtime policy Secretary.
 - `[worker_policy]`: default harness, model policy и лимит active Attempts для Workers.
+- `[worker_observer]`: настройки отображения активности Worker в web observer.
 - `[telegram]`: отдельная модель для названий Worker Topics. Эта секция не включает Telegram polling и не хранит bot credentials.
 - `[retention]`: срок и предел хранения raw logs.
 
 Запуск и применение изменений описаны в [quickstart](quickstart.md). Telegram deployment и private credentials настраиваются отдельно, см. [always-on runbook](always-on-runbook.md).
 
+```toml
+[worker_observer]
+show_tool_activity = true
+```
+
+`worker_observer.show_tool_activity` управляет только строками вызова и результата инструментов в ленте Worker observer веб-приложения. Значение по умолчанию — `true`; при `false` текстовая и статусная активность, состояние Worker и остальные данные observer остаются видимыми. События продолжают поступать и храниться без изменений. После reload настройка применяется при ближайшем обновлении web UI.
+
 ## Runtime defaults Secretary и Workers
+
+Bundled Secretary и Worker profiles задают русский как язык ответа по умолчанию независимо от языка входного сообщения или задачи. Secretary сохраняет в переданном Worker поручении явную просьбу пользователя о другом языке ответа, если она относится к этому ответу; язык самого поручения не считается такой просьбой. Новые profiles копируются только при первом setup, внешние profiles не обновляются автоматически, а существующие Worker bindings сохраняют свои profile snapshots. Обновление `profiles/secretary.md` и `profiles/worker.md` само по себе не меняет уже созданные Worker bindings.
 
 Чистый setup задаёт `secretary.harness = "opencode"` и `worker_policy.default_harness = "opencode"`. Secretary использует `openai/gpt-6.1-sol` / `xhigh`; новые Workers — `openai/gpt-6-luna` / `xhigh` из `worker_policy.model` и `worker_policy.reasoning`. fx, Claude Code и Codex остаются selectable через явный harness choice и Project policy.
 

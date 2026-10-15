@@ -66,6 +66,9 @@ func TestTelegramParseRejectionFallbackRetryAndDedup(t *testing.T) {
 			return
 		}
 		mode := r.Form.Get("parse_mode")
+		if got := r.Form.Get("link_preview_options"); got != `{"is_disabled":true}` {
+			t.Errorf("link_preview_options=%q", got)
+		}
 		modes = append(modes, mode)
 		if mode != "" {
 			w.WriteHeader(400)
@@ -89,7 +92,7 @@ func TestTelegramParseRejectionFallbackRetryAndDedup(t *testing.T) {
 	if err := adapter.HandleDurableEvent(ctx, event); err == nil {
 		t.Fatal("non-format error from fallback was hidden")
 	}
-	if len(modes) != 2 || modes[0] != "HTML" || modes[1] != "" || len(adapter.state.Outbox) != 1 || !adapter.state.Outbox[0].PlainFallback {
+	if len(modes) != 2 || modes[0] != "HTML" || modes[1] != "" || len(adapter.state.Outbox) != 1 || !adapter.state.Outbox[0].PlainFallback || !adapter.state.Outbox[0].DisableLinkPreview {
 		t.Fatal("fallback was not checkpointed before retry")
 	}
 	adapter = newTestAdapter(t, transport, &fakeServer{}, state)

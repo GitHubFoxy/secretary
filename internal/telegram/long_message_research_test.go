@@ -61,6 +61,9 @@ func TestLongResultTopicThenGeneralCheckpointOrder(t *testing.T) {
 		t.Fatalf("send attempts=%d, want %d including one failed chunk and no duplicate replay; threads=%v", len(transport.calls), len(wantThreads), gotThreads)
 	}
 	for i, want := range wantThreads {
+		if !transport.calls[i].DisableLinkPreview {
+			t.Fatalf("send attempt %d enabled link previews", i+1)
+		}
 		if transport.calls[i].ThreadID != want {
 			t.Fatalf("send attempt %d thread=%d, want %d", i+1, transport.calls[i].ThreadID, want)
 		}
