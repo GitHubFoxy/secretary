@@ -162,44 +162,8 @@ function resultIdentity(worker, status, result) {
   };
 }
 
-function entryResultIdentity(entry) {
-  const value = entry?.result && typeof entry.result === 'object' ? entry.result : {};
-  return {
-    resultId: entry?.result_id || entry?.resultId || value.id || value.result_id || '',
-    workerId: entry?.worker_id || entry?.workerId || value.worker_id || value.workerId || '',
-    workerRef: entry?.worker_ref || entry?.workerRef || value.worker_ref || value.workerRef || '',
-    turnId: entry?.turn_id || entry?.turnId || value.turn_id || value.turnId || '',
-    summary: entry?.body ?? value.summary ?? '',
-  };
-}
-
-function cardResultIdentity(card) {
-  if (card?.resultIdentity) return card.resultIdentity;
-  const value = card?.result && typeof card.result === 'object' ? card.result : {};
-  return {
-    resultId: card?.result_id || card?.resultId || value.id || value.result_id || card?.worker?.result_id || card?.worker?.last_result_id || '',
-    workerId: card?.worker_id || card?.workerId || value.worker_id || value.workerId || card?.worker?.id || '',
-    workerRef: card?.worker_ref || card?.workerRef || value.worker_ref || value.workerRef || card?.worker?.worker_ref || '',
-    turnId: card?.turn_id || card?.turnId || value.turn_id || value.turnId || card?.worker?.last_result_turn_id || card?.worker?.result_turn_id || card?.worker?.current_turn_id || '',
-    summary: typeof card?.result === 'string' ? card.result : value.summary || '',
-  };
-}
-
-function resultIsRepresented(entry, card) {
-  const entryResult = entryResultIdentity(entry);
-  const cardResult = cardResultIdentity(card);
-  if (!cardResult.summary || !entryResult.summary || entryResult.summary !== cardResult.summary) return false;
-  if (entryResult.resultId && cardResult.resultId) return entryResult.resultId === cardResult.resultId;
-  const workerMatches = entryResult.workerRef && cardResult.workerRef
-    ? entryResult.workerRef === cardResult.workerRef
-    : entryResult.workerId && cardResult.workerId
-      ? entryResult.workerId === cardResult.workerId
-      : false;
-  return Boolean(workerMatches && entryResult.turnId && cardResult.turnId && entryResult.turnId === cardResult.turnId);
-}
-
-export function visibleConversationEntries(entries = [], workerCards = []) {
-  return entries.filter((entry) => entry?.kind !== 'worker_result' || !workerCards.some((card) => resultIsRepresented(entry, card)));
+export function visibleConversationEntries(entries = []) {
+  return entries;
 }
 
 export function workerCard(worker, projects = [], nodes = []) {

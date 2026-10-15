@@ -60,7 +60,7 @@
   let refreshTimer;
 
   $: workerCards = workers.map((worker) => workerCard(worker, projects, nodes));
-  $: visibleEntries = visibleConversationEntries(entries, workerCards);
+  $: visibleEntries = visibleConversationEntries(entries);
   $: modelEntries = Object.entries(modelOptions);
   $: onboardingTitle = ['Welcome to Secretary', 'Your private workbench', 'Choose a default model', 'You are ready'][onboardingStep];
   $: currentWorker = observer?.details?.worker;
@@ -510,10 +510,10 @@
           <div class="mb-3 flex items-center justify-between"><h2 class="text-sm font-medium text-slate-300">Conversation</h2><span class="text-xs text-slate-600">{entries.length} entries</span></div>
           <div class="space-y-3" aria-live="polite">
             <SecretaryStream events={secretaryStream} {entries} turnId={secretaryTurnID} error={secretaryStreamError} />
-            {#each workerCards as card (card.worker.worker_ref)}<article class="rounded-2xl border border-emerald-300/20 bg-emerald-300/[0.05] p-4" aria-label="Worker compact item"><div class="flex items-center justify-between gap-3"><span class="text-xs font-medium text-emerald-200">Worker {card.worker.worker_ref}</span><span class="rounded-full border px-2 py-1 text-[10px] uppercase tracking-wide {statusTone(card.status)}">{card.statusLabel}</span></div><div class="mt-2 grid gap-1 text-xs text-slate-400 sm:grid-cols-2"><span>Turn: {card.turnStatusLabel}</span><span>{card.project} · {card.node}</span></div><p class="mt-2 text-xs text-slate-300">{card.acknowledgement}</p>{#if card.result}<div class="mt-2 text-sm leading-6 text-emerald-100" aria-label="Terminal Result"><Markdown text={card.result} /></div>{/if}</article>{/each}
+            {#each workerCards as card (card.worker.worker_ref)}<article class="rounded-2xl border border-emerald-300/20 bg-emerald-300/[0.05] p-4" aria-label="Worker compact item"><div class="flex items-center justify-between gap-3"><span class="text-xs font-medium text-emerald-200">Worker {card.worker.worker_ref}</span><span class="rounded-full border px-2 py-1 text-[10px] uppercase tracking-wide {statusTone(card.status)}">{card.statusLabel}</span></div><div class="mt-2 grid gap-1 text-xs text-slate-400 sm:grid-cols-2"><span>Turn: {card.turnStatusLabel}</span><span>{card.project} · {card.node}</span></div><p class="mt-2 text-xs text-slate-300">{card.acknowledgement}</p></article>{/each}
             {#if entries.length === 0 && workerCards.length === 0}<div class="rounded-3xl border border-dashed border-white/10 p-8 text-center text-sm text-slate-500">Start with a question or a task.</div>{/if}
             {#each visibleEntries as entry (entry.id)}
-              <article class="rounded-2xl border border-white/10 p-4 {entry.kind === 'user' ? 'ml-4 bg-indigo-400/[0.08] sm:ml-16' : entry.kind === 'worker_result' ? 'mr-4 bg-emerald-400/[0.06] sm:mr-16' : 'bg-white/[0.035]'}"><div class="mb-2 flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.12em] text-slate-500"><span>{entry.kind.replaceAll('_', ' ')}</span><time>{formatDate(entry.created_at)}</time></div><div class="break-words leading-7 text-slate-200"><Markdown text={entry.body} /></div></article>
+              <article aria-label={entry.kind === 'worker_result' ? 'Terminal Result' : entry.kind.replaceAll('_', ' ')} class="rounded-2xl border border-white/10 p-4 {entry.kind === 'user' ? 'ml-4 bg-indigo-400/[0.08] sm:ml-16' : entry.kind === 'worker_result' ? 'mr-4 bg-emerald-400/[0.06] sm:mr-16' : 'bg-white/[0.035]'}"><div class="mb-2 flex items-center justify-between gap-3 text-[11px] uppercase tracking-[0.12em] text-slate-500"><span>{entry.kind.replaceAll('_', ' ')}</span><time>{formatDate(entry.created_at)}</time></div><div class="break-words leading-7 text-slate-200"><Markdown text={entry.body} /></div></article>
             {/each}
           </div>
         </section>
