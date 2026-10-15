@@ -806,7 +806,7 @@ func TestTelegramBridgeKeepsDistinctSameTextRepliesAcrossTurnsAndRestart(t *test
 	}
 }
 
-func TestTelegramBridgeShowsQueuedWorkerMessageOnlyInItsTopic(t *testing.T) {
+func TestTelegramBridgeShowsDeliveredWorkerMessageOnlyInItsTopic(t *testing.T) {
 	transport := &bridgeTransport{}
 	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, FlushInterval: time.Hour}, transport, &bridgeServer{})
 	if err != nil {
@@ -815,16 +815,14 @@ func TestTelegramBridgeShowsQueuedWorkerMessageOnlyInItsTopic(t *testing.T) {
 	for _, event := range []core.Event{
 		{Seq: 1, ID: "created", Kind: "worker.spawned", WorkerRef: "worker-1", Payload: []byte(`{"title":"Проверка"}`)},
 		{Seq: 2, ID: "queued", Kind: "worker.message.queued", WorkerRef: "worker-1", Payload: []byte(`{"id":"message-1","text":"Проверь тесты","state":"pending"}`)},
+		{Seq: 3, ID: "delivered", Kind: "worker.message.delivered", WorkerRef: "worker-1", Payload: []byte(`{"id":"message-1","text":"Проверь тесты","state":"delivered"}`)},
 	} {
 		if err := adapter.HandleDurableEvent(context.Background(), telegramEvent(event)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if len(transport.sent) != 1 || transport.sent[0].ThreadID != 1 || transport.sent[0].Text != "В очереди: Проверь тесты" {
-		t.Fatalf("queue acknowledgement missing or mirrored to General: %#v", transport.sent)
-	}
-	if strings.Contains(transport.sent[0].Text, "Передано Worker") {
-		t.Fatalf("queued-only message looked delivered: %#v", transport.sent[0])
+	if len(transport.sent) != 1 || transport.sent[0].ThreadID != 1 || transport.sent[0].Text != "Передано Worker: Проверь тесты" {
+		t.Fatalf("delivered message was not shown only in its Worker topic: %#v", transport.sent)
 	}
 }
 
@@ -907,17 +905,10 @@ func TestTelegramBridgeDoesNotShowQueuedOnlyFollowUpAsDelivered(t *testing.T) {
 	if err := adapter.Flush(ctx); err != nil {
 		t.Fatal(err)
 	}
-	queuedCount, deliveredCount := 0, 0
 	for _, message := range transport.sent {
-		if message.Text == "В очереди: "+prompt && message.ThreadID == 1 {
-			queuedCount++
+		if strings.Contains(message.Text, prompt) || strings.Contains(message.Text, "В очереди") {
+			t.Fatalf("queued-only message appeared in the Telegram topic: %#v", transport.sent)
 		}
-		if message.Text == "Передано Worker: "+prompt {
-			deliveredCount++
-		}
-	}
-	if queuedCount != 1 || deliveredCount != 0 {
-		t.Fatalf("queued-only follow-up was shown incorrectly: queued=%d delivered=%d messages=%#v", queuedCount, deliveredCount, transport.sent)
 	}
 }
 
