@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/ctl"
 	"github.com/beruseruko/secretary/internal/node"
 	"github.com/beruseruko/secretary/internal/telegram"
 )
@@ -86,6 +87,75 @@ type bridgeState struct {
 }
 
 type constrainedBridgeTransport struct{ bridgeTransport }
+
+type telegramBridgeWorkerRuntime struct{ store *core.Store }
+
+func (r telegramBridgeWorkerRuntime) Dispatch(ctx context.Context, commandID string, _ core.Worker, turn core.Turn, attempt core.Phase4Attempt, _ core.DispatchResolution) error {
+	_, err := r.store.ReconcileWorkerCommandReceipt(ctx, core.NodeReference(attempt.NodeID), core.WorkerCommandReceipt{CommandID: commandID, Kind: "dispatch", TurnID: turn.ID, AttemptID: attempt.ID, State: core.WorkerCommandReceiptAccepted})
+	return err
+}
+
+func (telegramBridgeWorkerRuntime) Steer(context.Context, string, core.Worker, core.Phase4Attempt, string) error {
+	return nil
+}
+
+func (telegramBridgeWorkerRuntime) Respond(context.Context, string, core.Worker, core.Phase4Attempt, string, string) error {
+	return nil
+}
+
+func (r telegramBridgeWorkerRuntime) Resume(ctx context.Context, commandID string, _ core.Worker, turn core.Turn, attempt core.Phase4Attempt, _ string) error {
+	_, err := r.store.ReconcileWorkerCommandReceipt(ctx, core.NodeReference(attempt.NodeID), core.WorkerCommandReceipt{CommandID: commandID, Kind: "resume", TurnID: turn.ID, AttemptID: attempt.ID, State: core.WorkerCommandReceiptAccepted})
+	return err
+}
+
+func (telegramBridgeWorkerRuntime) Cancel(context.Context, string, core.Worker, core.Phase4Attempt) error {
+	return nil
+}
+
+func newTelegramBridgeWorker(t *testing.T) (context.Context, *core.Store, ctl.WorkerService, core.WorkerDetails) {
+	t.Helper()
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	person, _, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := store.CreateProject(ctx, core.ProjectSpec{ID: "telegram-test", Name: "Telegram test", Mappings: []core.ProjectPathMapping{{Node: "node", Path: t.TempDir()}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnrollNode(ctx, "node"); err != nil && !errors.Is(err, core.ErrNodeAlreadyEnrolled) {
+		t.Fatal(err)
+	}
+	instance := core.HarnessInstance{
+		ID: "node/fx", Node: "node", Kind: core.HarnessFX, Version: "1", Status: core.HarnessReady,
+		Authentication: core.HarnessAuthentication{Authenticated: true},
+		Capabilities:   core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityShell}},
+	}
+	if err := store.UpdateNodeHeartbeat(ctx, "node", core.HarnessInventorySnapshot{Node: "node", ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{instance}}, core.NodeHeartbeat{Capacity: 2}); err != nil {
+		t.Fatal(err)
+	}
+	service := ctl.WorkerService{
+		Store: store, PersonID: person.ID, Capability: capability, Runtime: telegramBridgeWorkerRuntime{store: store},
+		WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX},
+		WorkerProfileSource: func() (node.ManagedProfile, error) {
+			return node.ManagedProfile{Version: "synthetic-worker-template-v1", Name: "worker", Content: "Synthetic Worker template fixture.", AllowTools: []string{"read"}, Hash: "synthetic-worker-template-source", Runtime: string(core.HarnessFX)}, nil
+		},
+	}
+	worker, err := service.SpawnWorker(ctx, ctl.SpawnWorkerRequest{Intent: "initial task prompt", ProjectID: project.ID, IdempotencyKey: "spawn"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ctx, store, service, worker
+}
 
 func (t *constrainedBridgeTransport) CreateForumTopic(ctx context.Context, chatID int64, name string) (telegram.ForumTopic, error) {
 	if !utf8.ValidString(name) {
@@ -303,6 +373,46 @@ func TestTelegramEventBridgePublishesOnlyDispatchedWorkerIntent(t *testing.T) {
 	})
 	if emptyResult.HasOutput {
 		t.Fatalf("expected HasOutput=false for empty output: %#v", emptyResult)
+	}
+}
+
+func TestTelegramBridgeRoutesDeliveredWorkerFollowUpTextToItsTopic(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	followUpText := "Continue with the focused regression."
+	for _, event := range []core.EventInput{
+		{Kind: "worker.spawned", AggregateType: "worker", AggregateID: "worker-followup", WorkerRef: "worker-followup", Payload: map[string]string{"intent": "Initial task"}},
+		{Kind: "worker.followup.delivered", AggregateType: "worker", AggregateID: "worker-followup", WorkerRef: "worker-followup", AttemptID: "attempt-followup", CorrelationID: "turn-followup", Payload: map[string]string{"text": followUpText}},
+	} {
+		if _, err := store.RecordEventWithMetadata(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := store.EventsAfterSeq(ctx, 0, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mapped := telegramEvent(events[1])
+	if mapped.Kind != "worker.followup.delivered" || mapped.WorkerRef != "worker-followup" || mapped.Text != followUpText {
+		t.Fatalf("mapped follow-up=%#v", mapped)
+	}
+	if seq, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil {
+		t.Fatalf("bridge failed at %d: %v", seq, err)
+	}
+	if seq, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil {
+		t.Fatalf("bridge replay failed at %d: %v", seq, err)
+	}
+	if len(transport.sent) != 2 || transport.sent[1].Text != followUpText || transport.sent[1].ThreadID != 1 || transport.sent[1].ChatID != 100 {
+		t.Fatalf("follow-up was not delivered once to the matching topic: %#v", transport.sent)
 	}
 }
 
@@ -710,8 +820,104 @@ func TestTelegramBridgeShowsQueuedWorkerMessageOnlyInItsTopic(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(transport.sent) != 1 || transport.sent[0].ThreadID != 1 || !strings.Contains(transport.sent[0].Text, "В очереди") || !strings.Contains(transport.sent[0].Text, "Проверь тесты") {
+	if len(transport.sent) != 1 || transport.sent[0].ThreadID != 1 || transport.sent[0].Text != "В очереди: Проверь тесты" {
 		t.Fatalf("queue acknowledgement missing or mirrored to General: %#v", transport.sent)
+	}
+	if strings.Contains(transport.sent[0].Text, "Передано Worker") {
+		t.Fatalf("queued-only message looked delivered: %#v", transport.sent[0])
+	}
+}
+
+func TestTelegramBridgeShowsAcceptedFollowUpInWorkerTopic(t *testing.T) {
+	ctx, store, service, worker := newTelegramBridgeWorker(t)
+	first := worker.CurrentAttempt()
+	if first == nil {
+		t.Fatal("initial Worker Attempt is missing")
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, first.ID, core.AttemptOutcomeInput{Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "initial work finished"}); err != nil {
+		t.Fatal(err)
+	}
+	prompt := "Continue with the focused regression."
+	if _, err := service.MessageWorker(ctx, ctl.MessageWorkerRequest{WorkerRef: worker.Worker.WorkerRef, Text: prompt, IdempotencyKey: "follow-up"}); err != nil {
+		t.Fatal(err)
+	}
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, FlushInterval: time.Hour}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seq, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil {
+		t.Fatalf("bridge failed at sequence %d: %v", seq, err)
+	}
+	if err := adapter.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := prompt
+	count := 0
+	for _, message := range transport.sent {
+		if message.Text == want {
+			count++
+			if message.ChatID != 100 || message.ThreadID != 1 {
+				t.Fatalf("follow-up was not sent to its Worker topic: %#v", message)
+			}
+		}
+	}
+	if count != 1 || adapter.LastEventSeq() == 0 {
+		t.Fatalf("follow-up message count=%d cursor=%d messages=%#v", count, adapter.LastEventSeq(), transport.sent)
+	}
+	if _, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	count = 0
+	for _, message := range transport.sent {
+		if message.Text == want {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("event replay duplicated follow-up: %#v", transport.sent)
+	}
+}
+
+func TestTelegramBridgeDoesNotShowQueuedOnlyFollowUpAsDelivered(t *testing.T) {
+	ctx, store, service, worker := newTelegramBridgeWorker(t)
+	first := worker.CurrentAttempt()
+	if first == nil {
+		t.Fatal("initial Worker Attempt is missing")
+	}
+	prompt := "Wait for the current run before continuing."
+	queued, err := service.MessageWorker(ctx, ctl.MessageWorkerRequest{WorkerRef: worker.Worker.WorkerRef, Text: "/q " + prompt, IdempotencyKey: "queued-follow-up"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(queued.QueuedMessages) != 1 || queued.QueuedMessages[0].State != "pending" {
+		t.Fatalf("queued message state=%#v", queued.QueuedMessages)
+	}
+	transport := &bridgeTransport{}
+	adapter, err := telegram.New(telegram.Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, FlushInterval: time.Hour}, transport, &bridgeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seq, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil {
+		t.Fatalf("bridge failed at sequence %d: %v", seq, err)
+	}
+	if err := adapter.Flush(ctx); err != nil {
+		t.Fatal(err)
+	}
+	queuedCount, deliveredCount := 0, 0
+	for _, message := range transport.sent {
+		if message.Text == "В очереди: "+prompt && message.ThreadID == 1 {
+			queuedCount++
+		}
+		if message.Text == "Передано Worker: "+prompt {
+			deliveredCount++
+		}
+	}
+	if queuedCount != 1 || deliveredCount != 0 {
+		t.Fatalf("queued-only follow-up was shown incorrectly: queued=%d delivered=%d messages=%#v", queuedCount, deliveredCount, transport.sent)
 	}
 }
 

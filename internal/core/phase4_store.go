@@ -941,7 +941,9 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 }
 
 func (s *Store) SetPhase4AttemptActive(ctx context.Context, attemptID string) (Phase4Attempt, error) {
-	return s.transitionPhase4Attempt(ctx, attemptID, []AttemptState{AttemptStarting, AttemptScheduled}, AttemptActive)
+	return withTx(s, ctx, func(tx *sql.Tx) (Phase4Attempt, error) {
+		return setPhase4AttemptActiveTx(ctx, tx, attemptID, s.now())
+	})
 }
 
 func (s *Store) SetPhase4AttemptNeedsInput(ctx context.Context, attemptID string) (Phase4Attempt, error) {
@@ -1009,48 +1011,66 @@ func (s *Store) ResumePhase4Attempt(ctx context.Context, attemptID string) (Phas
 	})
 }
 
-func (s *Store) transitionPhase4Attempt(ctx context.Context, attemptID string, from []AttemptState, to AttemptState) (Phase4Attempt, error) {
-	return withTx(s, ctx, func(tx *sql.Tx) (Phase4Attempt, error) {
-		attempt, err := getPhase4Attempt(ctx, tx, attemptID)
-		if err != nil {
+func setPhase4AttemptActiveTx(ctx context.Context, tx *sql.Tx, attemptID string, now time.Time) (Phase4Attempt, error) {
+	attempt, err := getPhase4Attempt(ctx, tx, attemptID)
+	if err != nil {
+		return Phase4Attempt{}, err
+	}
+	if attempt.State != AttemptStarting && attempt.State != AttemptScheduled {
+		return Phase4Attempt{}, ErrInvalidTransition
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE phase4_attempts SET state = ?, updated_at = ? WHERE id = ?`, AttemptActive, timestamp(now), attempt.ID); err != nil {
+		return Phase4Attempt{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, updated_at = ? WHERE id = ?`, TurnActive, timestamp(now), attempt.TurnID); err != nil {
+		return Phase4Attempt{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`, WorkerWorking, timestamp(now), attempt.WorkerID); err != nil {
+		return Phase4Attempt{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'completed', updated_at = ? WHERE attempt_id = ? AND state IN ('claimed', 'pending', 'manual_hold')`, timestamp(now), attempt.ID); err != nil {
+		return Phase4Attempt{}, err
+	}
+	workerRef, err := workerRefForID(ctx, tx, attempt.WorkerID)
+	if err != nil {
+		return Phase4Attempt{}, err
+	}
+	event, err := appendEventTx(ctx, tx, now, EventInput{Kind: "worker.started", AggregateType: "worker", AggregateID: workerRef, Source: "server", CorrelationID: attempt.TurnID, Payload: attempt}, attempt)
+	if err != nil {
+		return Phase4Attempt{}, err
+	}
+	if _, _, err := enqueueDeliveryTx(ctx, tx, now, event.ID, "", "conversation", "worker.started:"+attempt.ID); err != nil {
+		return Phase4Attempt{}, err
+	}
+	turn, err := getTurn(ctx, tx, attempt.TurnID)
+	if err != nil {
+		return Phase4Attempt{}, err
+	}
+	if turn.PreviousAttemptID != "" {
+		var queuedMessages, existingEvents int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM worker_queued_messages WHERE turn_id=?`, turn.ID).Scan(&queuedMessages); err != nil {
 			return Phase4Attempt{}, err
 		}
-		allowed := false
-		for _, state := range from {
-			allowed = allowed || attempt.State == state
-		}
-		if !allowed {
-			return Phase4Attempt{}, ErrInvalidTransition
-		}
-		now := s.now()
-		if _, err := tx.ExecContext(ctx, `UPDATE phase4_attempts SET state = ?, updated_at = ? WHERE id = ?`, to, timestamp(now), attempt.ID); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE kind='worker.followup.delivered' AND correlation_id=?`, turn.ID).Scan(&existingEvents); err != nil {
 			return Phase4Attempt{}, err
 		}
-		if to == AttemptActive {
-			if _, err := tx.ExecContext(ctx, `UPDATE turns SET state = ?, updated_at = ? WHERE id = ?`, TurnActive, timestamp(now), attempt.TurnID); err != nil {
-				return Phase4Attempt{}, err
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE id = ?`, WorkerWorking, timestamp(now), attempt.WorkerID); err != nil {
-				return Phase4Attempt{}, err
-			}
-			if _, err := tx.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'completed', updated_at = ? WHERE attempt_id = ? AND state IN ('claimed', 'pending', 'manual_hold')`, timestamp(now), attempt.ID); err != nil {
-				return Phase4Attempt{}, err
-			}
-			workerRef, err := workerRefForID(ctx, tx, attempt.WorkerID)
+		if queuedMessages == 0 && existingEvents == 0 {
+			payload := map[string]string{"text": turn.Input}
+			followUp, err := appendEventTx(ctx, tx, now, EventInput{
+				Kind: "worker.followup.delivered", AggregateType: "worker", AggregateID: workerRef,
+				Source: "server", CorrelationID: turn.ID, WorkerRef: workerRef, AttemptID: attempt.ID,
+				Payload: payload,
+			}, payload)
 			if err != nil {
 				return Phase4Attempt{}, err
 			}
-			event, err := appendEventTx(ctx, tx, now, EventInput{Kind: "worker.started", AggregateType: "worker", AggregateID: workerRef, Source: "server", CorrelationID: attempt.TurnID, Payload: attempt}, attempt)
-			if err != nil {
-				return Phase4Attempt{}, err
-			}
-			if _, _, err := enqueueDeliveryTx(ctx, tx, now, event.ID, "", "conversation", "worker.started:"+attempt.ID); err != nil {
+			if _, _, err := enqueueDeliveryTx(ctx, tx, now, followUp.ID, "", "conversation", "worker-followup:"+turn.ID); err != nil {
 				return Phase4Attempt{}, err
 			}
 		}
-		attempt.State, attempt.UpdatedAt = to, now
-		return attempt, nil
-	})
+	}
+	attempt.State, attempt.UpdatedAt = AttemptActive, now
+	return attempt, nil
 }
 
 func (s *Store) finishRetryableAttempt(ctx context.Context, attemptID string, input FinishAttemptInput) (FinishAttemptResult, error) {

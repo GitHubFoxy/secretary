@@ -1065,6 +1065,8 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			if body == "" {
 				body = workerEventLabel(event.Kind)
 			}
+		} else if event.Kind == "worker.followup.delivered" {
+			body = safeText(event.Text)
 		} else {
 			body = renderWorkerEvent(event)
 		}
@@ -1083,6 +1085,11 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			identity = "worker-limited:" + event.EventID
 			if identity == "worker-limited:" {
 				identity = fmt.Sprintf("worker-limited:%s:%d", event.WorkerRef, event.Sequence)
+			}
+		case event.Kind == "worker.followup.delivered":
+			identity = "worker-followup:" + event.EventID
+			if event.EventID == "" {
+				identity = fmt.Sprintf("worker-followup:%s:%d", event.WorkerRef, event.Sequence)
 			}
 		case strings.HasPrefix(event.Kind, "worker.message."):
 			identity = "worker-message:" + event.EventID
@@ -1879,7 +1886,7 @@ func isApprovalResolution(kind string) bool {
 }
 
 func importantWorkerEvent(kind string) bool {
-	return kind == "worker.limited" || strings.HasPrefix(kind, "worker.message.") || kind == "worker.tool_started" || kind == "worker.tool_finished" || kind == "worker.tool_failed" || strings.Contains(kind, "approval") || strings.Contains(kind, "needs_input") || strings.HasSuffix(kind, ".failed") || strings.HasSuffix(kind, ".completed") || strings.HasSuffix(kind, ".succeeded") || strings.HasSuffix(kind, ".canceled") || strings.HasSuffix(kind, ".offline") || strings.HasSuffix(kind, ".completion")
+	return kind == "worker.limited" || kind == "worker.followup.delivered" || strings.HasPrefix(kind, "worker.message.") || kind == "worker.tool_started" || kind == "worker.tool_finished" || kind == "worker.tool_failed" || strings.Contains(kind, "approval") || strings.Contains(kind, "needs_input") || strings.HasSuffix(kind, ".failed") || strings.HasSuffix(kind, ".completed") || strings.HasSuffix(kind, ".succeeded") || strings.HasSuffix(kind, ".canceled") || strings.HasSuffix(kind, ".offline") || strings.HasSuffix(kind, ".completion")
 }
 
 func workerEventLabel(kind string) string {

@@ -291,6 +291,8 @@ func telegramEvent(event core.Event) telegram.Event {
 		if failure := stringField(payload, "last_error"); failure != "" {
 			result.Text += "\n" + failure
 		}
+	case event.Kind == "worker.followup.delivered":
+		result.Text = stringField(payload, "text")
 	case event.Kind == "worker.started":
 		result.Kind = "worker.started"
 	case event.Kind == "attempt.activity":
