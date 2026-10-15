@@ -85,10 +85,11 @@ func attachProductionTelegram(ctx context.Context, dataDir, listen string, store
 	}
 	web.AttachInternalCredential(deployment.ServerCredential)
 	snapshot := profiles.Snapshot()
+	showToolCalls := snapshot.Config.Telegram.ShowToolCalls
 	adapter, err := telegram.New(telegram.Config{
 		StatePath: filepath.Join(dataDir, "telegram", "state.json"), OwnerChatID: deployment.OwnerChatID,
 		PollInterval: deployment.PollInterval, FlushInterval: deployment.FlushInterval, BotUsername: deployment.BotUsername,
-		ASR: snapshot.Config.ASR, ASRPrompt: snapshot.ASRPrompt.Content,
+		ASR: snapshot.Config.ASR, ASRPrompt: snapshot.ASRPrompt.Content, ShowToolCalls: &showToolCalls,
 	}, &telegram.BotAPITransport{BaseURL: deployment.BaseURL, BotToken: deployment.BotToken}, &telegram.HTTPServerClient{
 		BaseURL: "http://" + listen, Credential: deployment.ServerCredential,
 	})

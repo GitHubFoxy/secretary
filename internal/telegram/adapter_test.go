@@ -491,6 +491,27 @@ func TestWorkerToolEventsRenderActualNamePreviewAndLifecycle(t *testing.T) {
 	}
 }
 
+func TestWorkerToolCallsCanBeDisabled(t *testing.T) {
+	transport := &fakeTransport{}
+	showToolCalls := false
+	adapter, err := New(Config{StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100, ShowToolCalls: &showToolCalls}, transport, &fakeServer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "worker.created", WorkerRef: "worker-1", Title: "Worker"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "worker.tool_started", WorkerRef: "worker-1", CallID: "call-1", Tool: "exec_command", ToolPreview: "pwd"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.HandleEvent(context.Background(), Event{Kind: "worker.tool_failed", WorkerRef: "worker-1", CallID: "call-1", Tool: "exec_command", ToolPreview: "pwd"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 0 {
+		t.Fatalf("tool calls should be hidden: %#v", transport.sent)
+	}
+}
+
 func TestWorkerToolCallIDCorrelationAndParallelExecution(t *testing.T) {
 	ctx := context.Background()
 	transport := &fakeTransport{}

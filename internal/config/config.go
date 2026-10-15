@@ -69,6 +69,7 @@ type TelegramPolicy struct {
 	TitlePrompt         string `toml:"title_prompt" json:"title_prompt"`
 	TitleModel          string `toml:"title_model" json:"title_model"`
 	TitleModelReasoning string `toml:"title_model_reasoning" json:"title_model_reasoning"`
+	ShowToolCalls       bool   `toml:"show_tool_calls" json:"show_tool_calls"`
 }
 
 type Profiles struct {
@@ -148,7 +149,7 @@ func Load(path string) (Snapshot, error) {
 	base := filepath.Dir(path)
 	c := Config{Telegram: TelegramPolicy{
 		TitleHarness: DefaultTitleHarness, TitlePrompt: DefaultTitlePrompt,
-		TitleModel: DefaultTitleModel, TitleModelReasoning: DefaultTitleModelReasoning,
+		TitleModel: DefaultTitleModel, TitleModelReasoning: DefaultTitleModelReasoning, ShowToolCalls: true,
 	}, WorkerObserver: WorkerObserver{ShowToolActivity: true}}
 	var explicitTitlePrompt *string
 
