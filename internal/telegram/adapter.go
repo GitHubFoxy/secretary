@@ -1886,7 +1886,7 @@ func isApprovalResolution(kind string) bool {
 }
 
 func importantWorkerEvent(kind string) bool {
-	return kind == "worker.limited" || kind == "worker.followup.delivered" || strings.HasPrefix(kind, "worker.message.") || kind == "worker.tool_started" || kind == "worker.tool_finished" || kind == "worker.tool_failed" || strings.Contains(kind, "approval") || strings.Contains(kind, "needs_input") || strings.HasSuffix(kind, ".failed") || strings.HasSuffix(kind, ".completed") || strings.HasSuffix(kind, ".succeeded") || strings.HasSuffix(kind, ".canceled") || strings.HasSuffix(kind, ".offline") || strings.HasSuffix(kind, ".completion")
+	return kind == "worker.limited" || kind == "worker.followup.delivered" || kind == "worker.message.delivered" || kind == "worker.tool_started" || kind == "worker.tool_finished" || kind == "worker.tool_failed" || strings.Contains(kind, "approval") || strings.Contains(kind, "needs_input") || strings.HasSuffix(kind, ".failed") || strings.HasSuffix(kind, ".completed") || strings.HasSuffix(kind, ".succeeded") || strings.HasSuffix(kind, ".canceled") || strings.HasSuffix(kind, ".offline") || strings.HasSuffix(kind, ".completion")
 }
 
 func workerEventLabel(kind string) string {
