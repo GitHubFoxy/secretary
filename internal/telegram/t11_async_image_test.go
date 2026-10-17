@@ -391,3 +391,88 @@ func TestT11TransientGetFileErrorRetainsDurableImageUntilRetry(t *testing.T) {
 	defer mu.Unlock()
 	if calls!=2 || warnings!=0 {t.Fatalf("transient getFile was treated as permanent: calls=%d warnings=%d",calls,warnings)}
 }
+
+func TestT11PermanentGetFileErrorWithUndeliveredNoticeRecoversIndependently(t *testing.T) {
+	path:=filepath.Join(t.TempDir(),"telegram.json")
+	picture:=t11PNG(t)
+	var mu sync.Mutex
+	badCalls,goodCalls,warningAttempts,deliveredWarnings:=0,0,0,0
+	bot:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+		switch r.URL.Path {
+		case "/botTOKEN/getFile":
+			_ = r.ParseForm()
+			if r.Form.Get("file_id")=="permanent-bad" {
+				mu.Lock();badCalls++;mu.Unlock()
+				w.WriteHeader(http.StatusBadRequest)
+				_,_=fmt.Fprint(w,`{"ok":false,"error_code":400,"description":"Bad Request: file is too big"}`)
+			} else if r.Form.Get("file_id")=="good" {
+				mu.Lock();goodCalls++;mu.Unlock()
+				_,_=fmt.Fprint(w,`{"ok":true,"result":{"file_path":"good.png","file_size":0}}`)
+			} else {t.Errorf("unexpected file ID %s",r.Form.Get("file_id"))}
+		case "/file/botTOKEN/good.png":
+			_,_=w.Write(picture)
+		case "/botTOKEN/sendMessage":
+			mu.Lock()
+			warningAttempts++
+			n:=warningAttempts
+			if n!=1 {deliveredWarnings++}
+			mu.Unlock()
+			if n==1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_,_=fmt.Fprint(w,`{"ok":false,"error_code":503,"description":"Telegram temporarily unavailable"}`)
+			} else {
+				_,_=fmt.Fprint(w,`{"ok":true,"result":true}`)
+			}
+		case "/botTOKEN/sendChatAction":
+			_,_=fmt.Fprint(w,`{"ok":true,"result":true}`)
+		default:
+			t.Errorf("unexpected Bot API path %s",r.URL.Path)
+			http.NotFound(w,r)
+		}
+	}))
+	defer bot.Close()
+	server:=&t11SignalServer{delivered:make(chan string,3)}
+	open:=func()*Adapter{
+		t.Helper()
+		a,err:=New(Config{StatePath:path,OwnerChatID:100},&BotAPITransport{BaseURL:bot.URL,BotToken:"TOKEN"},server)
+		if err!=nil {t.Fatal(err)}
+		return a
+	}
+	adapter:=open()
+	bad:=t11Update(1600,100,0)
+	bad.Message.Image.FileSize=0
+	bad.Message.Image.FileID="permanent-bad"
+	good:=t11Update(1601,100,0)
+	good.Message.Image.FileSize=0
+	good.Message.Image.FileID="good"
+	if err:=adapter.HandleUpdate(context.Background(),bad);err!=nil {t.Fatal(err)}
+	adapter.imageWG.Wait()
+	adapter.mu.Lock()
+	queuedImages,queuedWarnings:=len(adapter.state.PendingImages),len(adapter.state.Outbox)
+	adapter.mu.Unlock()
+	if queuedImages!=0 || queuedWarnings!=1 {t.Fatalf("failed warning must not keep image pending: images=%d warnings=%d",queuedImages,queuedWarnings)}
+	// Simulate restart while Telegram still had not accepted the warning.
+	restored:=open()
+	if err:=restored.HandleUpdate(context.Background(),good);err!=nil {t.Fatal(err)}
+	restored.imageWG.Wait()
+	if err:=restored.Flush(context.Background());err!=nil {t.Fatal(err)}
+	if err:=restored.HandleUpdate(context.Background(),bad);err!=nil {t.Fatal(err)}
+	restored.imageWG.Wait()
+	mu.Lock()
+	badCount,goodCount,attempts,received:=badCalls,goodCalls,warningAttempts,deliveredWarnings
+	mu.Unlock()
+	if badCount!=1 || goodCount!=1 || attempts!=2 || received!=1 {
+		t.Fatalf("terminal retry or warning lost: getFile bad=%d good=%d notice attempts=%d delivered=%d",badCount,goodCount,attempts,received)
+	}
+	select {
+	case body:=<-server.delivered:
+		if !strings.Contains(body,"update 1601") || !strings.Contains(body,"artifact://art_t11_async") {
+			t.Fatalf("image behind failed warning not delivered: %q",body)
+		}
+	default:t.Fatal("next image blocked by failed notice")
+	}
+	restored.mu.Lock()
+	images,warnings:=len(restored.state.PendingImages),len(restored.state.Outbox)
+	restored.mu.Unlock()
+	if images!=0 || warnings!=0 {t.Fatalf("recovered state still pending: images=%d warnings=%d",images,warnings)}
+}

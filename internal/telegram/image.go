@@ -68,7 +68,7 @@ func (a *Adapter) imageNotice(ctx context.Context, u Update, text string) error 
 	if a.config.GroupChatID != nil {
 		_, alreadyDelivered = a.state.Delivered[identity]
 	} else {
-		_, alreadyDelivered = a.state.InboundNotified[message.Identity]
+		_, alreadyDelivered = a.state.InboundNotified[strings.TrimPrefix(message.Identity, "inbound:")]
 	}
 	alreadyQueued := false
 	for _, pending := range a.state.Outbox {
