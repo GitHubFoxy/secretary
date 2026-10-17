@@ -149,18 +149,29 @@ func TestT12WebVideoAsyncToRemoteNodeWorkerResultAndFailure(t *testing.T) {
 		"intent":"Describe the sampled video","idempotency_key":"t12-action",
 		"preferences":map[string]any{"node_id":identity.Node,"harness_kind":"fx"},
 	}})
-	actionReq,e:=http.NewRequestWithContext(ctx,http.MethodPost,server.URL+"/v1/internal/secretary/tools/call",bytes.NewReader(action))
-	if e!=nil{t.Fatal(e)}
-	actionReq.Header.Set("Authorization","Bearer "+credential)
-	actionReq.Header.Set("Content-Type","application/json")
-	actionRes,e:=client.Do(actionReq)
-	if e!=nil{t.Fatal(e)}
-	var toolResponse secretaryToolCallResponse
-	e=json.NewDecoder(actionRes.Body).Decode(&toolResponse)
-	actionRes.Body.Close()
-	if e!=nil||actionRes.StatusCode!=http.StatusOK||toolResponse.Error!=""{t.Fatalf("tool %d %v %#v",actionRes.StatusCode,e,toolResponse)}
-	select{case <-runtime.seen:t.Fatal("Worker started before video conversion succeeded");case <-time.After(100*time.Millisecond):}
+	actionDone:=make(chan error,1)
+	go func(){
+		actionReq,e:=http.NewRequestWithContext(ctx,http.MethodPost,server.URL+"/v1/internal/secretary/tools/call",bytes.NewReader(action))
+		if e!=nil {actionDone<-e;return}
+		actionReq.Header.Set("Authorization","Bearer "+credential)
+		actionReq.Header.Set("Content-Type","application/json")
+		actionRes,e:=client.Do(actionReq)
+		if e!=nil {actionDone<-e;return}
+		defer actionRes.Body.Close()
+		var toolResponse secretaryToolCallResponse
+		e=json.NewDecoder(actionRes.Body).Decode(&toolResponse)
+		if e!=nil||actionRes.StatusCode!=http.StatusOK||toolResponse.Error!=""{
+			actionDone<-fmt.Errorf("tool %d %v %#v",actionRes.StatusCode,e,toolResponse);return
+		}
+		actionDone<-nil
+	}()
+	select {
+	case e:=<-actionDone:t.Fatalf("dependent action returned before video processing finished: %v",e)
+	case <-time.After(100*time.Millisecond):
+	}
+	select {case <-runtime.seen:t.Fatal("Worker started before video conversion succeeded");default:}
 	close(processor.release)
+	select{case e:=<-actionDone:if e!=nil{t.Fatalf("dependent action failed after conversion: %v",e)};case <-ctx.Done():t.Fatal("dependent action remained blocked")}
 	select{case received:=<-runtime.seen:
 		if len(received.Images)!=2 || !strings.Contains(received.Task,uploaded.Reference){t.Fatalf("lost native video input: %+v",received)}
 	case <-ctx.Done():t.Fatal("remote Worker never received frame images")}
