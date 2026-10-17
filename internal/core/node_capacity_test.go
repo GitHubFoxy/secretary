@@ -183,3 +183,129 @@ func TestIdleFollowupReservesCapacityAtomicallyAgainstOtherWorkers(t *testing.T)
 		t.Fatalf("free slot was not reclaimed after Follow-up completion: attempt=%#v err=%v", next, err)
 	}
 }
+
+func TestRevokeNodeIfIdleIncludesUnreportedCapacityClaims(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	inventory := resolverInventory("single", []HarnessInstance{
+		resolverInstance("single/codex", "single", HarnessCodex),
+	})
+	resolverEnroll(t, store, "single", inventory, 1, nil)
+	conversation := mustConversation(t, store)
+	worker, _, attempt, selected, err := store.ResolveAndCreateWorker(
+		ctx, conversation.ID, "reserved before heartbeat", DispatchResolutionRequest{}, "reserved-worker",
+	)
+	if err != nil || selected.Queued {
+		t.Fatalf("automatic Spawn did not claim ready Node: worker=%#v selection=%#v err=%v", worker, selected, err)
+	}
+	record, err := store.NodeRecord(ctx, "single")
+	if err != nil || len(record.ActiveAttempts) != 0 {
+		t.Fatalf("expected heartbeat without the just-created Attempt: record=%#v err=%v", record, err)
+	}
+	if _, err := store.RevokeNodeIfIdle(ctx, "single", "safe-revoke"); !errors.Is(err, ErrNodeActiveAttempts) {
+		t.Fatalf("safe revoke ignored unreported Attempt reservation: %v", err)
+	}
+	record, err = store.NodeRecord(ctx, "single")
+	if err != nil || record.Revoked || !record.Online {
+		t.Fatalf("failed safe revoke modified Node state: record=%#v err=%v", record, err)
+	}
+	if used, err := nodeCapacityUsed(ctx, store.db, "single", nil); err != nil || used != 1 {
+		t.Fatalf("original reservation lost after rejected revoke: used=%d err=%v", used, err)
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{
+		Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "finished",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	revoked, err := store.RevokeNodeIfIdle(ctx, "single", "safe-revoke")
+	if err != nil || !revoked.Revoked || revoked.Online {
+		t.Fatalf("Node was not safely revoked after terminal Attempt: record=%#v err=%v", revoked, err)
+	}
+}
+
+func TestRevokeNodeIfIdleUnionsHeartbeatAndClaims(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	inventory := resolverInventory("single", []HarnessInstance{
+		resolverInstance("single/codex", "single", HarnessCodex),
+	})
+	resolverEnroll(t, store, "single", inventory, 1, nil)
+	conversation := mustConversation(t, store)
+	_, _, attempt, _, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "running", DispatchResolutionRequest{}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	heartbeat := []NodeActiveAttempt{{AttemptID: attempt.ID}}
+	if err := store.UpdateNodeHeartbeat(ctx, "single", inventory, NodeHeartbeat{Capacity: 1, ActiveAttempts: heartbeat}); err != nil {
+		t.Fatal(err)
+	}
+	if used, err := nodeCapacityUsed(ctx, store.db, "single", heartbeat); err != nil || used != 1 {
+		t.Fatalf("heartbeat and durable claim counted twice: used=%d err=%v", used, err)
+	}
+	if _, err := store.RevokeNodeIfIdle(ctx, "single"); !errors.Is(err, ErrNodeActiveAttempts) {
+		t.Fatalf("safe revoke accepted busy Node with duplicate heartbeat and claim: %v", err)
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, AttemptOutcomeInput{
+		Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// The Node may still report the running Attempt until its next heartbeat.
+	// Safe revocation must continue to honor that report.
+	if _, err := store.RevokeNodeIfIdle(ctx, "single"); !errors.Is(err, ErrNodeActiveAttempts) {
+		t.Fatalf("safe revoke ignored a still-active heartbeat: %v", err)
+	}
+	if err := store.UpdateNodeHeartbeat(ctx, "single", inventory, NodeHeartbeat{Capacity: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if revoked, err := store.RevokeNodeIfIdle(ctx, "single"); err != nil || !revoked.Revoked {
+		t.Fatalf("safe revoke failed after heartbeat and claim cleared: revoked=%#v err=%v", revoked, err)
+	}
+}
+
+func TestRevokeNodeIfIdleRacesWithAutomaticSpawn(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	inventory := resolverInventory("single", []HarnessInstance{
+		resolverInstance("single/codex", "single", HarnessCodex),
+	})
+	resolverEnroll(t, store, "single", inventory, 1, nil)
+	conversation := mustConversation(t, store)
+	resolved := make(chan struct{})
+	allowCreate := make(chan struct{})
+	type spawnResult struct {
+		worker Worker
+		err error
+	}
+	spawnDone := make(chan spawnResult, 1)
+	go func() {
+		worker, _, _, _, err := store.ResolveAndCreateWorkerWithProfileFactory(
+			ctx, conversation.ID, "concurrent spawn", DispatchResolutionRequest{}, "",
+			func(DispatchResolution) (string, error) {
+				close(resolved)
+				<-allowCreate
+				return "", nil
+			},
+		)
+		spawnDone <- spawnResult{worker: worker, err: err}
+	}()
+	select {
+	case <-resolved:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Spawn did not reach the stale availability preview")
+	}
+	// Revoke wins the race while Spawn has selected its Node but has not
+	// committed a reservation. The subsequent Spawn must fail closed.
+	revoked, err := store.RevokeNodeIfIdle(ctx, "single")
+	close(allowCreate)
+	got := <-spawnDone
+	if err != nil || !revoked.Revoked {
+		t.Fatalf("safe revoke lost idle race: record=%#v err=%v", revoked, err)
+	}
+	if got.err == nil || got.worker.ID != "" {
+		t.Fatalf("Spawn created Worker after atomic safe revoke: %#v", got)
+	}
+	if used, err := nodeCapacityUsed(ctx, store.db, "single", nil); err != nil || used != 0 {
+		t.Fatalf("failed concurrent Spawn persisted reservation: used=%d err=%v", used, err)
+	}
+}
