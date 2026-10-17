@@ -1344,3 +1344,79 @@ func TestMessageWorkerIdleFollowupsRespectNodeCapacity(t *testing.T) {
 		t.Fatalf("capacity=1 accepted=%d rejected=%d", accepted, denied)
 	}
 }
+
+func TestQueuedFollowupsWaitForCapacityInsteadOfOverbooking(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	record, err := store.NodeRecord(ctx, "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateNodeHeartbeat(ctx, "node", record.Inventory, core.NodeHeartbeat{Capacity: 1}); err != nil {
+		t.Fatal(err)
+	}
+	refs := make([]string, 2)
+	for i := range refs {
+		created, err := service.SpawnWorker(ctx, SpawnWorkerRequest{
+			Intent: "initial", ProjectID: project.ID, IdempotencyKey: "queue-initial-" + string(rune('a'+i)),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		attempt := created.CurrentAttempt()
+		if attempt == nil {
+			t.Fatal("missing initial Attempt")
+		}
+		if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
+			Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "idle",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		refs[i] = created.Worker.WorkerRef
+		if _, err := service.MessageWorker(ctx, MessageWorkerRequest{
+			WorkerRef: refs[i], Text: "/q new task", IdempotencyKey: "queue-followup",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime := service.Runtime.(*lifecycleRuntime)
+	before := runtime.count("dispatch")
+	if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
+		t.Fatalf("capacity exhaustion must backpressure, not fail or block queue: %v", err)
+	}
+	if runtime.count("dispatch") != before+1 {
+		t.Fatalf("capacity=1 allowed %d queued Follow-up dispatches", runtime.count("dispatch")-before)
+	}
+	var dispatched, waiting int
+	var activeID string
+	for _, ref := range refs {
+		details, err := service.GetWorker(ctx, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(details.QueuedMessages) != 1 {
+			t.Fatalf("missing queued message: %#v", details)
+		}
+		if details.QueuedMessages[0].State == "delivered" {
+			dispatched++
+			activeID = details.CurrentAttempt().ID
+		} else if details.QueuedMessages[0].State == "delivering" {
+			waiting++
+		} else {
+			t.Fatalf("capacity backpressure changed queue state: %#v", details.QueuedMessages)
+		}
+	}
+	if dispatched != 1 || waiting != 1 {
+		t.Fatalf("queued dispatch overbooked: delivered=%d waiting=%d", dispatched, waiting)
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, activeID, core.AttemptOutcomeInput{
+		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "finished",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.count("dispatch") != before+2 {
+		t.Fatalf("released capacity did not allow second queued Follow-up: dispatched=%d", runtime.count("dispatch")-before)
+	}
+}
