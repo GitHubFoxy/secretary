@@ -1,17 +1,20 @@
-function installArtifactUpload() {
-  const composer = document.querySelector('textarea#message');
-  const form = composer?.closest('form');
+const artifactFormats = '.txt,.md,.pdf,.csv,.json,.xml,.yaml,.yml,.html,.log,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.rtf,.zip,.png,.jpg,.jpeg,.webp';
+const imageFormats = '.png,.jpg,.jpeg,.webp';
+const imageFile = (file) => /\.(png|jpe?g|webp)$/i.test(file.name);
+
+function installUpload(composer, imageOnly) {
+  const form = composer.closest('form');
   if (!form || form.querySelector('[data-secretary-artifact-input]')) return;
 
   const label = document.createElement('label');
   label.textContent = 'Attach';
-  label.setAttribute('aria-label', 'Attach a document (up to 8 MiB)');
-  label.style.cssText = 'cursor:pointer;border:1px solid #475569;border-radius:12px;padding:12px;color:#cbd5e1;font-size:13px;white-space:nowrap';
+  label.setAttribute('aria-label', imageOnly ? 'Attach image to Worker' : 'Attach document or image (up to 8 MiB)');
+  label.style.cssText = 'cursor:pointer;border:1px solid #475569;border-radius:12px;padding:10px;color:#cbd5e1;font-size:12px;white-space:nowrap';
   const input = document.createElement('input');
   input.type = 'file';
   input.hidden = true;
   input.dataset.secretaryArtifactInput = '1';
-  input.accept = '.txt,.md,.pdf,.csv,.json,.xml,.yaml,.yml,.html,.log,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.rtf,.zip,.png,.jpg,.jpeg,.webp';
+  input.accept = imageOnly ? imageFormats : artifactFormats;
   label.append(input);
   const status = document.createElement('span');
   status.setAttribute('role', 'status');
@@ -31,6 +34,11 @@ function installArtifactUpload() {
       input.value = '';
       return;
     }
+    if (imageOnly && !imageFile(file)) {
+      status.textContent = 'Worker image input supports PNG, JPEG and WebP.';
+      input.value = '';
+      return;
+    }
     status.textContent = 'Uploading ' + file.name + '...';
     input.disabled = true;
     try {
@@ -43,9 +51,10 @@ function installArtifactUpload() {
       if (!response.ok) throw new Error((await response.text()).trim() || 'Upload failed');
       const result = await response.json();
       const ref = result.reference;
-      status.textContent = 'Ready: ' + file.name + ' (' + ref + '). Send a message to use it.';
+      status.textContent = 'Ready: ' + file.name + ' (' + ref + '). Send with a question for visual analysis.';
       const text = composer.value.trimEnd();
-      composer.value = text + (text ? '\n\n' : '') + 'Use attached file ' + ref + ' (' + file.name + ').';
+      const prefix = imageFile(file) ? 'Analyze attached image ' : 'Use attached file ';
+      composer.value = text + (text ? '\n\n' : '') + prefix + ref + ' (' + file.name + ').';
       composer.dispatchEvent(new Event('input', { bubbles: true }));
       composer.focus();
     } catch (error) {
@@ -55,6 +64,11 @@ function installArtifactUpload() {
       input.value = '';
     }
   });
+}
+
+function installArtifactUpload() {
+  for (const composer of document.querySelectorAll('textarea#message')) installUpload(composer, false);
+  for (const composer of document.querySelectorAll('input[placeholder="Message Worker · /q to queue"], input[placeholder="Follow-up for this Worker"]')) installUpload(composer, true);
 }
 
 if (typeof document !== 'undefined') {
