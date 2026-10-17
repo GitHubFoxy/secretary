@@ -152,9 +152,24 @@ interactive_config() {
         choose_harness "$current" || return 1
         set_config_harness "$SELECTED_HARNESS" || return 1 ;;
       2)
-        print "Node config: $NODE_CONFIG"
-        print "Use secretary node setup --server URL --name NAME --capacity N to reconfigure."
-        print "The menu will not overwrite existing Node workspace mappings." ;;
+        local workspaces="$(node_config_value workspaces 2>/dev/null || print unknown)"
+        if [[ "$workspaces" != "[]" ]]; then
+          print "Existing workspace mappings must be preserved. Edit $NODE_CONFIG manually or use explicit secretary node setup --workspace options."
+          continue
+        fi
+        local old_server="$(node_config_value server_url)" old_name="$(node_config_value node)" old_capacity="$(node_config_value capacity)"
+        local server name capacity
+        terminal_read "Node server URL" "$old_server" || return 1
+        server="$REPLY"
+        terminal_read "Node name" "$old_name" || return 1
+        name="$REPLY"
+        terminal_read "Maximum parallel Workers" "$old_capacity" || return 1
+        capacity="$REPLY"
+        if [[ -f "$NODE_DATA/identity.json" && ( "$server" != "$old_server" || "$name" != "$old_name" ) ]]; then
+          print -u2 "Paired Node identity cannot be silently changed; use explicit drain/revoke and re-enrollment."
+          continue
+        fi
+        node_setup --server "$server" --name "$name" --capacity "$capacity" || return 1 ;;
       3)
         configure_telegram || return 1
         load_environment ;;
