@@ -121,3 +121,16 @@ func TestProjectlessWorkerServiceDispatchToLocalNodeAndFollowup(t *testing.T) {
 		t.Fatalf("Follow-up did not reuse native session and workspace: %#v", native.resumes)
 	}
 }
+
+
+func TestWorkerServiceMergesLegacyProjectAndPartialOwnerPreferences(t *testing.T) {
+	ctx, _, service, project := newWorkerService(t)
+	details, err := service.SpawnWorker(ctx, SpawnWorkerRequest{
+		Intent: "inspect", ProjectID: project.ID,
+		Preferences: WorkerPreferences{NodeID: "node"},
+		IdempotencyKey: "mixed-legacy-project-preferences",
+	})
+	if err != nil || details.Worker.ProjectID != project.ID || details.Worker.NodeID != "node" || details.Worker.HarnessInstanceID != "node/fx" {
+		t.Fatalf("partial preferences discarded legacy Project selection: worker=%#v err=%v", details.Worker, err)
+	}
+}
