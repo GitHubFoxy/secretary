@@ -261,6 +261,7 @@ func TestFakeClaudeInteractiveProcess(t *testing.T) {
 		if input["type"] != "user" {
 			continue
 		}
+		if path := os.Getenv("CLAUDE_IMAGE_RECORD"); path != "" { _ = os.WriteFile(path, scanner.Bytes(), 0o600) }
 		message, _ := input["message"].(map[string]any)
 		_ = enc.Encode(map[string]any{"type": "result", "subtype": "success", "result": message["content"], "user_message_uuid": input["uuid"]})
 	}

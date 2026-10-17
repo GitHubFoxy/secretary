@@ -2,6 +2,7 @@ package webapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"errors"
 	"io"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
+	"github.com/beruseruko/secretary/internal/node"
 )
 
 func (s *Server) secretaryMCPObserve(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +87,27 @@ func (s *Server) secretaryToolCall(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, secretaryToolCallResponse{Value: value})
 }
 
+func (s *Server) secretaryWebImageIDs(r *http.Request, turnID, inputID string) ([]string, error) {
+	canonical, err := s.store.SecretaryWebInput(r.Context(), s.owner.ID, turnID, inputID)
+	if err != nil { return nil, err }
+	refs := node.ArtifactIDs(canonical)
+	if len(refs) > 16 { return nil, errors.New("web image: too many Artifact references (max 16)") }
+	images := make([]string, 0, len(refs))
+	for _, id := range refs {
+		artifact, body, err := s.store.ArtifactForPerson(r.Context(), s.owner.ID, id)
+		if err != nil { return nil, fmt.Errorf("web image: bound Artifact %s unavailable: %w", id, err) }
+		switch artifact.MediaType {
+		case "image/png", "image/jpeg", "image/webp":
+			if _, err := node.ValidateStillImage(artifact.Name, body); err != nil {
+				return nil, fmt.Errorf("web image: bound Artifact %s invalid: %w", id, err)
+			}
+			images = append(images, id)
+		}
+	}
+	if len(images) > node.MaxPromptImages { return nil, errors.New("web image: too many attached images") }
+	return images, nil
+}
+
 func (s *Server) callSecretaryTool(r *http.Request, name string, raw json.RawMessage, personID, capability string) (any, error) {
 	var args struct {
 		Kind            string `json:"kind"`
@@ -120,7 +143,10 @@ func (s *Server) callSecretaryTool(r *http.Request, name string, raw json.RawMes
 				return nil, err
 			}
 		}
+		imageIDs, err := s.secretaryWebImageIDs(r, args.SecretaryTurnID, args.InputID)
+		if err != nil { return nil, err }
 		spawnRequest := args.SpawnWorkerRequest
+		spawnRequest.WebImageArtifactIDs = imageIDs
 		if addressedReplyEnabled {
 			spawnRequest.SecretaryTurnID, spawnRequest.InputID = args.SecretaryTurnID, args.InputID
 		}
@@ -140,7 +166,9 @@ func (s *Server) callSecretaryTool(r *http.Request, name string, raw json.RawMes
 				return nil, err
 			}
 		}
-		messageRequest := ctl.MessageWorkerRequest{WorkerRef: args.WorkerRef, Text: args.Text, RequestID: args.RequestID, IdempotencyKey: args.IdempotencyKey}
+		imageIDs, err := s.secretaryWebImageIDs(r, args.SecretaryTurnID, args.InputID)
+		if err != nil { return nil, err }
+		messageRequest := ctl.MessageWorkerRequest{WorkerRef: args.WorkerRef, Text: args.Text, RequestID: args.RequestID, IdempotencyKey: args.IdempotencyKey, WebImageArtifactIDs: imageIDs}
 		if addressedReplyEnabled {
 			messageRequest.SecretaryTurnID, messageRequest.InputID = args.SecretaryTurnID, args.InputID
 		}

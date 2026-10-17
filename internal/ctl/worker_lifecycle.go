@@ -51,6 +51,7 @@ type WorkerPreferences struct {
 }
 
 type SpawnWorkerRequest struct {
+	WebImageArtifactIDs []string `json:"-"`
 	Intent          string                 `json:"intent"`
 	Preferences     WorkerPreferences      `json:"preferences"`
 	SecretaryTurnID string                 `json:"-"`
@@ -66,6 +67,7 @@ type SpawnWorkerRequest struct {
 }
 
 type MessageWorkerRequest struct {
+	WebImageArtifactIDs []string `json:"-"`
 	WorkerRef       string `json:"worker_ref"`
 	Text            string `json:"text"`
 	SecretaryTurnID string `json:"-"`
@@ -430,13 +432,21 @@ func (s WorkerService) GetWorker(ctx context.Context, workerRef string) (core.Wo
 	return s.Store.WorkerDetailsForConversation(ctx, conversation.ID, workerRef)
 }
 
+func bindWebImages(text string, ids []string) string {
+	if len(ids) == 0 { return text }
+	var suffix strings.Builder
+	suffix.WriteString("\n\nOriginal images attached to this Web input (server-bound; analyze these exact images):")
+	for _, id := range ids { suffix.WriteString(" artifact://"); suffix.WriteString(id) }
+	return text + suffix.String()
+}
+
 func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerRequest) (core.WorkerDetails, error) {
 	conversation, err := s.authorize(ctx)
 	if err != nil {
 		return core.WorkerDetails{}, err
 	}
 	origin := s.secretaryOrigin(request.SecretaryTurnID, request.InputID)
-	request.Intent = strings.TrimSpace(request.Intent)
+	request.Intent = bindWebImages(strings.TrimSpace(request.Intent), request.WebImageArtifactIDs)
 	if request.Intent == "" {
 		return core.WorkerDetails{}, errors.New("worker: intent is required")
 	}
@@ -668,7 +678,7 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 	if err != nil {
 		return core.WorkerDetails{}, err
 	}
-	request.Text = strings.TrimSpace(request.Text)
+	request.Text = bindWebImages(strings.TrimSpace(request.Text), request.WebImageArtifactIDs)
 	if request.Text == "" {
 		return core.WorkerDetails{}, errors.New("worker: message text is required")
 	}
