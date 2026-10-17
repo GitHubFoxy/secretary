@@ -38,6 +38,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 	execution := NewExecutionNode(d.Identity.Node, d.Runtime, d.Store)
+	execution.SetArtifactFetcher(d.Identity.FetchArtifact)
 	if err := execution.SetMCPServers(d.MCPServers); err != nil {
 		return err
 	}
