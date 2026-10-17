@@ -30,6 +30,7 @@ func TestNodeContinuationCheckpointFailsClosed(t *testing.T) {
 				profile := node.ManagedProfile{Version: "synthetic-v1", Name: "worker", Content: "Synthetic instructions", Runtime: "opencode", Model: "fixture/model", SourceHash: "synthetic-source", Delivery: "native", Skills: []node.ManagedSkill{}, AllowTools: []string{"read"}}
 				profile.Hash = profile.SnapshotHash()
 				envelope := node.WorkerEnvelope{WorkerRef: "fixture-worker", TurnID: "initial-turn", AttemptID: "initial-attempt", OriginalUserIntent: "remember synthetic-private-nonce", Workspace: t.TempDir(), HarnessInstance: instance, Model: "fixture/model", Profile: profile}
+				envelope = projectScopedNodeEnvelope(envelope)
 				meta := func(id string, e node.WorkerEnvelope) core.CommandMetadata {
 					return core.CommandMetadata{CommandID: id, Node: instance.Node, HarnessInstanceID: instance.ID, WorkerRef: e.WorkerRef, TurnID: e.TurnID, AttemptID: e.AttemptID, IssuedAt: time.Now().UTC()}
 				}
