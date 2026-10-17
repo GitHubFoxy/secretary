@@ -157,6 +157,9 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 }
 
 func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) CommandOutcome {
+	if command.Envelope.ProjectID == "" && command.Envelope.Workspace != "" {
+		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "workspace_forbidden", "projectless Workspace must be Node-managed")
+	}
 	if _, exists := n.store.SessionMapping(command.Envelope.AttemptID); exists {
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 	}
