@@ -9,6 +9,7 @@ import (
     "os/exec"
     "path/filepath"
     "strings"
+    "syscall"
 )
 
 // Resolve normal Windows executables and npm .cmd shims. A PowerShell
@@ -65,4 +66,18 @@ func invocation(command string, args []string) (string, []string, error) {
     // The /S switch removes exactly the outer quote pair. Quoted shim
     // paths then work even if npm lives under Program Files.
     return cmdExe, []string{"/d", "/s", "/c", "\"" + strings.Join(quoted, " ") + "\""}, nil
+}
+
+
+func configureCommandLine(cmd *exec.Cmd, executable string, argv []string) {
+    if !strings.EqualFold(filepath.Base(executable), "cmd.exe") || len(argv) != 4 {
+        return
+    }
+    // cmd.exe and batch files do not parse Go's standard Windows argv quoting.
+    // Pass the full command line verbatim, with /S stripping only the single
+    // outer pair of quotes around the inner, individually quoted shim/args.
+    cmd.Args = nil
+    cmd.SysProcAttr = &syscall.SysProcAttr{
+        CmdLine: "\"" + executable + "\" /d /s /c " + argv[3],
+    }
 }
