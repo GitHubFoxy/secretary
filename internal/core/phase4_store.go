@@ -2300,7 +2300,7 @@ func (s *Store) RecordNodeAttemptOutcome(ctx context.Context, envelope AttemptOu
 		if errors.Is(err, sql.ErrNoRows) { continue }
 		if err != nil { return AttemptOutcome{}, nil, false, err }
 		downloadURL := "/v1/artifacts/" + id + "?download=1"
-		if !strings.Contains(envelope.Summary, downloadURL) {
+		if !hasClickableArtifactDownload(envelope.Summary, downloadURL) {
 			envelope.Summary += "\n\n[Download output](" + downloadURL + ")"
 		}
 	}
