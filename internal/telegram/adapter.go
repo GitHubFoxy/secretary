@@ -606,7 +606,7 @@ func (a *Adapter) linkGroup(update Update) error {
 		return nil
 	}
 	if a.state.GroupChat != 0 && a.state.GroupChat != m.ChatID {
-		return ErrUnauthorized
+		return nil // Ignore attempts to replace the paired group.
 	}
 	a.state.GroupChat = m.ChatID
 	return a.saveLocked()
@@ -700,7 +700,7 @@ func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed 
 		}
 		return a.RedeemPairingWithSender(strings.TrimSpace(strings.TrimPrefix(text, "/start ")), update.Message.ChatID, update.Message.FromID)
 	}
-	if text == "/linkgroup" {
+	if text == "/linkgroup" || (a.config.BotUsername != "" && strings.EqualFold(text, "/linkgroup@"+strings.TrimPrefix(a.config.BotUsername, "@"))) {
 		return a.linkGroup(update)
 	}
 	if !allowed || text == "/start" || text == "" {
@@ -1065,7 +1065,9 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		return a.handleSecretaryEvent(event, 0)
 	}
 	if event.Kind == "message.saved" {
-		if !strings.HasPrefix(event.Source, "client:") || event.Source == "client:telegram-adapter" || strings.TrimPrefix(event.Source, "client:") == "" {
+		if event.Source == "client:telegram-adapter" ||
+			!(strings.HasPrefix(event.Source, "client:") && strings.TrimPrefix(event.Source, "client:") != "" ||
+				a.config.GroupChatID != nil && event.Source == "web") {
 			return nil
 		}
 		text := safeText(event.Text)
