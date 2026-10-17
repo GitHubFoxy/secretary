@@ -65,13 +65,13 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	// Escape as Scheme quoted literals; no interpolation into a shell.
 	quoted := func(path string) string { return "(subpath " + strconv.Quote(path) + ")" }
 	var profile strings.Builder
-	profile.WriteString("(version 1)\n(deny default)\n(allow process*)\n(allow network*)\n(allow mach-lookup)\n(allow sysctl-read)\n")
+	profile.WriteString("(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow network-outbound)\n(allow network-inbound)\n(allow mach-lookup)\n(allow sysctl-read)\n")
 	profile.WriteString("(allow file-read*")
 	for _, root := range reads { profile.WriteString(" "+quoted(root)) }
 	profile.WriteString(")\n(allow file-write*")
 	for _, root := range writes { profile.WriteString(" "+quoted(root)) }
 	profile.WriteString(")\n")
-	return seatbelt, append([]string{"-p", profile.String(), "--", executable}, args...), nil
+	return seatbelt, append([]string{"-p", profile.String(), executable}, args...), nil
 }
 
 func applyWorkerSandbox(_ WorkerSandbox, _ *exec.Cmd) error { return nil }
