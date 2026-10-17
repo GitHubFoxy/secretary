@@ -402,3 +402,66 @@ func TestT14UnknownDurationAudioDocumentIsProbedBeforeASR(t *testing.T) {
 		t.Fatalf("long audio repeated after replay: probes=%d downloads=%d notices=%d", probes, tr.downloads, len(tr.notices))
 	}
 }
+
+func TestT14AudioDocumentKnownOnlyAfterProbe(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "db.sqlite"))
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil { t.Fatal(err) }
+	api.AttachInternalCredential("t14-duration-positive")
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	tr := &t14TelegramTransport{audio: []byte("audio")}
+	asrCalls, probes := 0, 0
+	adapter, err := telegram.New(telegram.Config{
+		StatePath: filepath.Join(t.TempDir(), "telegram.json"), OwnerChatID: 100,
+		ASRTranscriber: t14ASR{calls: &asrCalls},
+		VoiceDurationProbe: func(_ context.Context, data []byte, name string) (float64, error) {
+			probes++
+			if !bytes.Equal(data, []byte("audio")) { t.Fatal("probe received incorrect audio") }
+			if name == "broken.mp3" { return 0, errors.New("corrupt media") }
+			if name != "short.mp3" { t.Fatalf("unexpected probed file: %q", name) }
+			return 10, nil
+		},
+	}, tr, &telegram.HTTPServerClient{BaseURL: server.URL, Credential: "t14-duration-positive"})
+	if err != nil { t.Fatal(err) }
+	short := telegram.Update{ID: 90, Message: &telegram.Message{
+		ChatID: 100, FromID: 100, MessageID: 91,
+		Voice: &telegram.Voice{FileID: "short", FileName: "short.mp3", MimeType: "audio/mpeg", FileSize: 5},
+	}}
+	if err := adapter.HandleUpdate(ctx, short); err != nil { t.Fatal(err) }
+	record, ok := adapter.Transcript("90")
+	if !ok || record.SourceArtifactID == "" || record.TranscriptArtifactID == "" || asrCalls != 1 || probes != 1 {
+		t.Fatalf("short audio not processed after duration probe: %+v calls=%d probes=%d", record, asrCalls, probes)
+	}
+	broken := telegram.Update{ID: 92, Message: &telegram.Message{
+		ChatID: 100, FromID: 100, MessageID: 93,
+		Voice: &telegram.Voice{FileID: "broken", FileName: "broken.mp3", MimeType: "audio/mpeg", FileSize: 5},
+	}}
+	if err := adapter.HandleUpdate(ctx, broken); err != nil { t.Fatal(err) }
+	if _, ok := adapter.Transcript("92"); ok { t.Fatal("unknown/corrupt duration bypassed ASR safety gate") }
+	if asrCalls != 1 || probes != 2 || tr.downloads != 2 || len(tr.notices) != 1 {
+		t.Fatalf("probe failure did not fail closed: asr=%d probes=%d downloads=%d notices=%d", asrCalls, probes, tr.downloads, len(tr.notices))
+	}
+	if err := adapter.HandleUpdate(ctx, broken); err != nil { t.Fatal(err) }
+	if asrCalls != 1 || probes != 2 || tr.downloads != 2 || len(tr.notices) != 1 {
+		t.Fatal("failed duration probe processed again on replay")
+	}
+	_, conv, err := store.EnsureOwner(ctx)
+	if err != nil { t.Fatal(err) }
+	entries, err := store.EntriesAfter(ctx, conv.ID, 0)
+	if err != nil { t.Fatal(err) }
+	found := false
+	for _, entry := range entries {
+		if entry.Kind != core.EntrySystem || !strings.Contains(entry.Body, "telegram-voice") { continue }
+		ref := strings.TrimPrefix(entry.Body[strings.LastIndex(entry.Body, "artifact://"):], "artifact://")
+		art, _, err := store.ArtifactForPerson(ctx, conv.PersonID, ref)
+		if err != nil { t.Fatal(err) }
+		if art.Name == "broken.mp3" && art.ProcessingStatus == "failed" && art.TranscriptArtifactID == "" {
+			found = true
+		}
+	}
+	if !found { t.Fatal("failed duration check did not preserve the original") }
+}
