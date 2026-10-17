@@ -369,6 +369,13 @@ func (s WorkerService) uncertainCommandStorageError(commandID string, cause, sto
 }
 
 func (s WorkerService) recoverLifecycleCommand(ctx context.Context, kind string, worker core.Worker, attempt core.Phase4Attempt, send func(string) error, origin *core.SecretaryOriginIdentity) error {
+	if kind == "dispatch" || kind == "resume" {
+		// Project-queued and offline Follow-up Attempts are persisted before
+		// execution capacity is available. Reserve before claiming/delivering.
+		if err := s.Store.ReserveAttemptCapacity(ctx, attempt.ID); err != nil {
+			return err
+		}
+	}
 	if _, err := s.Store.EnsureLifecycleCommandIntent(ctx, kind, worker.ID, attempt.ID); err != nil {
 		return err
 	}
@@ -929,6 +936,10 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		} else if found {
 			kind = "resume"
 		}
+		if capacityErr := s.Store.ReserveAttemptCapacity(ctx, next.ID); capacityErr != nil {
+			err = capacityErr
+			break
+		}
 		command, send, claimErr := s.claimCommand(ctx, kind, "attempt", details.Worker, next, s.secretaryOrigin(request.SecretaryTurnID, request.InputID))
 		if claimErr != nil {
 			err = claimErr
@@ -967,6 +978,10 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			break
 		}
 		actionTurnID = turn.ID
+		if capacityErr := s.Store.ReserveAttemptCapacity(ctx, next.ID); capacityErr != nil {
+			err = capacityErr
+			break
+		}
 		command, send, claimErr := s.claimCommand(ctx, "resume", "attempt", details.Worker, next, s.secretaryOrigin(request.SecretaryTurnID, request.InputID))
 		if claimErr != nil {
 			err = claimErr
