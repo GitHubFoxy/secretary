@@ -51,6 +51,7 @@ type OutgoingMessage struct {
 	Text               string
 	ReplyToMessageID   int64  `json:"reply_to_message_id,omitempty"`
 	Identity           string `json:"identity,omitempty"`
+	DurableSequence    int64  `json:"durable_sequence,omitempty"`
 	DeliveredBytes     int    `json:"delivered_bytes,omitempty"`
 	ParseMode          string `json:"parse_mode,omitempty"`
 	PlainFallback      bool   `json:"plain_fallback,omitempty"`
@@ -90,12 +91,20 @@ type ServerClient interface {
 	ResumeWorker(context.Context, string) error
 }
 
+type WorkerTopic struct {
+	WorkerRef string
+	Title     string
+	Intent    string
+}
+
 type Config struct {
 	StatePath      string
 	OwnerChatID    int64
 	// nil preserves the legacy one-chat mode; non-nil enables DM-first routing.
 	// Zero means the optional forum supergroup has not yet been linked.
 	GroupChatID    *int64
+	// ExistingWorkers reads the authoritative Server when linking a group.
+	ExistingWorkers func(context.Context) ([]WorkerTopic, error)
 	ShowToolCalls  *bool
 	PollInterval   time.Duration
 	FlushInterval  time.Duration
@@ -152,6 +161,7 @@ type persistedState struct {
 	OwnerUser               int64                          `json:"owner_user_id,omitempty"`
 	GroupChat               int64                          `json:"group_chat_id,omitempty"`
 	Delivered               map[string]time.Time           `json:"delivered_messages,omitempty"`
+	DeliveredSequence       map[string]int64               `json:"delivered_sequences,omitempty"`
 	Offset                  int64                          `json:"offset"`
 	LastEventSeq            int64                          `json:"last_event_seq"`
 	Processed               map[string]time.Time           `json:"processed_updates"`
@@ -217,6 +227,7 @@ type Adapter struct {
 	typingMu                   sync.Mutex
 	state                      persistedState
 	workerTypingRecoveryNeeded bool
+	topicsSynchronized         bool
 	pending                    pendingBatch
 	lastTyping                 map[string]time.Time
 	outboxMu                   sync.Mutex
@@ -246,7 +257,7 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 		config.TitleTimeout = 5 * time.Second
 	}
 	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), now: func() time.Time { return time.Now().UTC() }}
-	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Delivered: map[string]time.Time{}, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, ToolNotified: map[string]time.Time{}, ToolPreviews: map[string]string{}, WorkerTyping: map[string]workerTypingAttempt{}, WorkerTypingInitialized: true, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}}
+	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Delivered: map[string]time.Time{}, DeliveredSequence: map[string]int64{}, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, ToolNotified: map[string]time.Time{}, ToolPreviews: map[string]string{}, WorkerTyping: map[string]workerTypingAttempt{}, WorkerTypingInitialized: true, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}}
 	if err := adapter.load(); err != nil {
 		return nil, err
 	}
@@ -288,23 +299,43 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 	}
 	adapter.asr = asr
 	adapter.formatter = formatter
+	// Pre-T04 installations used OwnerChat for the forum itself. An
+	// explicit private owner ID upgrades durable state without clearing Topics,
+	// outbox, cursors or pairing metadata.
+	if adapter.state.OwnerChat < 0 && config.OwnerChatID <= 0 || config.OwnerChatID < 0 {
+		adapter.config.GroupChatID = nil
+	}
+	if adapter.state.OwnerChat < 0 && config.OwnerChatID > 0 {
+		if adapter.state.OwnerUser != 0 && adapter.state.OwnerUser != config.OwnerChatID {
+			return nil, errors.New("telegram: private owner differs from paired legacy owner user")
+		}
+		if adapter.state.GroupChat != 0 && adapter.state.GroupChat != adapter.state.OwnerChat {
+			return nil, errors.New("telegram: legacy forum differs from linked group")
+		}
+		if config.GroupChatID != nil && *config.GroupChatID != 0 && *config.GroupChatID != adapter.state.OwnerChat {
+			return nil, errors.New("telegram: configured forum differs from legacy owner chat")
+		}
+		adapter.state.GroupChat = adapter.state.OwnerChat
+		adapter.state.OwnerChat = config.OwnerChatID
+		adapter.state.OwnerUser = config.OwnerChatID
+	}
 	if config.OwnerChatID != 0 && adapter.state.OwnerChat != 0 && config.OwnerChatID != adapter.state.OwnerChat {
 		return nil, errors.New("telegram: configured owner does not match durable allowlist")
 	}
 	if adapter.state.OwnerChat == 0 {
 		adapter.state.OwnerChat = config.OwnerChatID
 	}
-	if config.GroupChatID != nil && *config.GroupChatID != 0 {
-		if *config.GroupChatID >= 0 {
+	if adapter.config.GroupChatID != nil && *adapter.config.GroupChatID != 0 {
+		if *adapter.config.GroupChatID >= 0 {
 			return nil, errors.New("telegram: forum group chat id must be negative")
 		}
-		if adapter.state.GroupChat != 0 && adapter.state.GroupChat != *config.GroupChatID {
+		if adapter.state.GroupChat != 0 && adapter.state.GroupChat != *adapter.config.GroupChatID {
 			return nil, errors.New("telegram: configured group does not match linked group")
 		}
-		adapter.state.GroupChat = *config.GroupChatID
-		if err := adapter.saveLocked(); err != nil {
-			return nil, err
-		}
+		adapter.state.GroupChat = *adapter.config.GroupChatID
+	}
+	if err := adapter.saveLocked(); err != nil {
+		return nil, err
 	}
 	adapter.pending.SecretaryText.WriteString(adapter.state.PendingSecretaryText)
 	adapter.pending.SecretaryTools = append([]string(nil), adapter.state.PendingSecretaryTools...)
@@ -343,6 +374,9 @@ func (a *Adapter) load() error {
 	}
 	if a.state.Delivered == nil {
 		a.state.Delivered = map[string]time.Time{}
+	}
+	if a.state.DeliveredSequence == nil {
+		a.state.DeliveredSequence = map[string]int64{}
 	}
 	if a.state.Topics == nil {
 		a.state.Topics = map[string]TopicMapping{}
@@ -595,21 +629,57 @@ func (a *Adapter) senderAllowed(fromID int64) bool {
 
 // linkGroup accepts a command only from the already-paired owner, sent from a
 // forum supergroup. Group membership alone never grants control.
-func (a *Adapter) linkGroup(update Update) error {
+func (a *Adapter) linkGroup(ctx context.Context, update Update) error {
 	m := update.Message
 	if a.config.GroupChatID == nil || m == nil || m.ChatID >= 0 || m.ChatType != "supergroup" || !m.IsForum || m.FromID == 0 {
 		return nil
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.state.OwnerChat <= 0 || !a.senderAllowed(m.FromID) {
+		a.mu.Unlock()
 		return nil
 	}
 	if a.state.GroupChat != 0 && a.state.GroupChat != m.ChatID {
-		return nil // Ignore attempts to replace the paired group.
+		a.mu.Unlock()
+		return nil
 	}
 	a.state.GroupChat = m.ChatID
-	return a.saveLocked()
+	a.topicsSynchronized = false
+	err := a.saveLocked()
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return a.SyncWorkerTopics(ctx)
+}
+
+// SyncWorkerTopics restores mappings for Workers created before the group was
+// linked. It can be retried after restart without duplicate Topic creation.
+func (a *Adapter) SyncWorkerTopics(ctx context.Context) error {
+	a.mu.Lock()
+	needed := a.config.GroupChatID != nil && a.state.GroupChat != 0 &&
+		!a.topicsSynchronized && a.config.ExistingWorkers != nil
+	lookup := a.config.ExistingWorkers
+	a.mu.Unlock()
+	if !needed {
+		return nil
+	}
+	workers, err := lookup(ctx)
+	if err != nil {
+		return err
+	}
+	for _, worker := range workers {
+		if worker.WorkerRef == "" {
+			continue
+		}
+		if _, err := a.ensureTopic(ctx, worker.WorkerRef, worker.Title, worker.Intent); err != nil {
+			return err
+		}
+	}
+	a.mu.Lock()
+	a.topicsSynchronized = true
+	a.mu.Unlock()
+	return nil
 }
 
 func (a *Adapter) personalChats() []int64 {
@@ -701,7 +771,7 @@ func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed 
 		return a.RedeemPairingWithSender(strings.TrimSpace(strings.TrimPrefix(text, "/start ")), update.Message.ChatID, update.Message.FromID)
 	}
 	if text == "/linkgroup" || (a.config.BotUsername != "" && strings.EqualFold(text, "/linkgroup@"+strings.TrimPrefix(a.config.BotUsername, "@"))) {
-		return a.linkGroup(update)
+		return a.linkGroup(ctx, update)
 	}
 	if !allowed || text == "/start" || text == "" {
 		return nil
@@ -935,6 +1005,9 @@ func (a *Adapter) updateWorkerTyping(event Event, mapping TopicMapping) error {
 }
 
 func (a *Adapter) PollOnce(ctx context.Context) error {
+	if err := a.SyncWorkerTopics(ctx); err != nil {
+		return err
+	}
 	if err := a.pollInputs(ctx); err != nil {
 		return err
 	}
@@ -960,7 +1033,10 @@ func (a *Adapter) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		err := a.pollInputs(ctx)
+		err := a.SyncWorkerTopics(ctx)
+		if err == nil {
+			err = a.pollInputs(ctx)
+		}
 		a.startInputWorkers(ctx)
 		if err == nil {
 			err = a.Flush(ctx)
@@ -1338,6 +1414,7 @@ func (a *Adapter) handleSecretaryEvent(event Event, sequence int64) error {
 			a.state.LastEventSeq = sequence
 		}
 	}
+	a.compactDeliveredLocked()
 	err := a.persistPendingLocked()
 	if err == nil {
 		err = a.saveLocked()
