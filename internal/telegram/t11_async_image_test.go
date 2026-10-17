@@ -340,3 +340,54 @@ func TestT11PhotoBeforeQuestionKeepsCausalOrderInSameConversation(t *testing.T) 
 		if body!="Что изображено?" {t.Fatalf("question was lost/reordered: %q",body)}
 	case <-ctx.Done():t.Fatal("dependent question never released")}
 }
+
+func TestT11TransientGetFileErrorRetainsDurableImageUntilRetry(t *testing.T) {
+	picture:=t11PNG(t)
+	var mu sync.Mutex
+	calls,warnings:=0,0
+	bot:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+		switch r.URL.Path {
+		case "/botTOKEN/getFile":
+			mu.Lock()
+			calls++
+			attempt:=calls
+			mu.Unlock()
+			if attempt==1 {
+				w.WriteHeader(http.StatusServiceUnavailable)
+				_,_=fmt.Fprint(w,`{"ok":false,"error_code":503,"description":"Temporary upstream problem"}`)
+				return
+			}
+			_,_=fmt.Fprint(w,`{"ok":true,"result":{"file_path":"recovered.png","file_size":0}}`)
+		case "/file/botTOKEN/recovered.png":
+			_,_=w.Write(picture)
+		case "/botTOKEN/sendMessage":
+			mu.Lock();warnings++;mu.Unlock()
+			_,_=fmt.Fprint(w,`{"ok":true,"result":true}`)
+		case "/botTOKEN/sendChatAction":
+			_,_=fmt.Fprint(w,`{"ok":true,"result":true}`)
+		default:
+			t.Errorf("unexpected API call %s",r.URL.Path)
+			http.NotFound(w,r)
+		}
+	}))
+	defer bot.Close()
+	server:=&t11SignalServer{delivered:make(chan string,2)}
+	adapter,err:=New(Config{StatePath:filepath.Join(t.TempDir(),"state.json"),OwnerChatID:100},&BotAPITransport{BaseURL:bot.URL,BotToken:"TOKEN"},server)
+	if err!=nil {t.Fatal(err)}
+	update:=t11Update(1500,100,0)
+	update.Message.Image.FileSize=0
+	if err:=adapter.HandleUpdate(context.Background(),update);err!=nil {t.Fatal(err)}
+	adapter.imageWG.Wait()
+	adapter.mu.Lock()
+	waiting:=len(adapter.state.PendingImages)
+	adapter.mu.Unlock()
+	if waiting!=1 {t.Fatalf("transient getFile error lost durable work: %d",waiting)}
+	adapter.startImageWorkers(context.Background())
+	adapter.imageWG.Wait()
+	select{case body:=<-server.delivered:
+		if !strings.Contains(body,"artifact://art_t11_async") {t.Fatalf("bad recovered image delivery %q",body)}
+	default:t.Fatal("transient image never retried")}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls!=2 || warnings!=0 {t.Fatalf("transient getFile was treated as permanent: calls=%d warnings=%d",calls,warnings)}
+}
