@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,6 +37,7 @@ func TestT08SlowArtifactDownloadDoesNotBlockHeartbeatOrACK(t *testing.T) {
 	hash := sha256.Sum256(source)
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
+	var releaseOnce sync.Once
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /v1/nodes/connect", manager.ServeProtocolHTTP)
 	mux.Handle("/v1/nodes", manager)
@@ -79,7 +81,7 @@ func TestT08SlowArtifactDownloadDoesNotBlockHeartbeatOrACK(t *testing.T) {
 	go func() { done <- daemon.Run(daemonCtx) }()
 	defer func() {
 		stop()
-		close(release)
+		releaseOnce.Do(func() { close(release) })
 		select {
 		case err := <-done:
 			if err != nil { t.Errorf("daemon exit: %v", err) }
@@ -114,7 +116,7 @@ func TestT08SlowArtifactDownloadDoesNotBlockHeartbeatOrACK(t *testing.T) {
 		return err == nil && len(pending) == 0
 	})
 	if runtime.starts.Load() != 0 { t.Fatal("Worker started before original bytes arrived") }
-	close(release)
+	releaseOnce.Do(func() { close(release) })
 	select {
 	case outcome := <-outcomes:
 		if outcome.CommandID != "slow-command" || outcome.State != CommandAccepted {
