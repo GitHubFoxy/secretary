@@ -87,6 +87,9 @@ func (s *Server) secretaryToolCall(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) callSecretaryTool(r *http.Request, name string, raw json.RawMessage, personID, capability string) (any, error) {
 	var args struct {
+		Kind            string `json:"kind"`
+		Entry           string `json:"entry"`
+		ExpectedRevision int64 `json:"expected_revision"`
 		WorkerRef       string `json:"worker_ref"`
 		Text            string `json:"text"`
 		RequestID       string `json:"request_id"`
@@ -99,6 +102,10 @@ func (s *Server) callSecretaryTool(r *http.Request, name string, raw json.RawMes
 	}
 	addressedReplyEnabled := s.addressedReplyEnabled()
 	switch name {
+	case "read_memory":
+		return s.store.ReadMemoryDocument(r.Context(), s.userPathname(), args.Kind)
+	case "remember":
+		return s.store.RememberOwnerMemory(r.Context(), s.userPathname(), args.Kind, args.Entry, args.ExpectedRevision, personID, capability, args.SecretaryTurnID, args.InputID)
 	case "list_nodes":
 		return s.secretaryTools.ListNodes(r.Context())
 	case "list_projects":
