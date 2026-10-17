@@ -30,6 +30,9 @@ func (n *ExecutionNode) prepareArtifactPrompt(ctx context.Context, workspace, pr
 }
 
 func (n *ExecutionNode) prepareArtifactInput(ctx context.Context, workspace, prompt string) (string, []ImageInput, error) {
+	n.mu.Lock()
+	fetch := n.artifactFetcher
+	n.mu.Unlock()
 	return PrepareArtifactInput(ctx, workspace, prompt, fetch)
 }
 
@@ -41,9 +44,6 @@ func PrepareArtifactInput(ctx context.Context, workspace, prompt string, fetch A
 	if len(ids) > 16 {
 		return "", nil, errors.New("node artifact: too many references in a Task (max 16)")
 	}
-	n.mu.Lock()
-	fetch := n.artifactFetcher
-	n.mu.Unlock()
 	if fetch == nil {
 		return "", nil, errors.New("node artifact: server Artifact transfer is unavailable")
 	}
