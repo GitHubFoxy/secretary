@@ -21,6 +21,6 @@ func workerPlatformEnvironment(ctx context.Context, entries []string) []string {
 		if name=="TMPDIR" || name=="TMP" || name=="TEMP" { continue }
 		out=append(out, entry)
 	}
-	temp := filepath.Join(policy.Workspace, ".secretary-worker-tmp")
+	temp := filepath.Join(policy.Workspace, ".worker-tmp")
 	return append(out,"TMPDIR="+temp,"TMP="+temp,"TEMP="+temp)
 }

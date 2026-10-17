@@ -38,7 +38,7 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	if err != nil { return "", nil, err }
 	home, err := os.UserHomeDir()
 	if err != nil { return "", nil, err }
-	workerTemp := filepath.Join(workspace, ".secretary-worker-tmp")
+	workerTemp := filepath.Join(workspace, ".worker-tmp")
 	if err := os.MkdirAll(workerTemp, 0700); err != nil {
 		return "", nil, errors.New("worker sandbox: create private Worker temp directory")
 	}
