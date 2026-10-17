@@ -76,7 +76,7 @@ func TestT01LiveSecretaryChoosesWorkerAndClarifies(t *testing.T) {
 	if existing := getEntries(); len(existing) != 0 {
 		t.Fatal("live acceptance requires a new, empty, disposable Secretary instance")
 	}
-	post := func(id, input string) {
+	post := func(id, input string) int64 {
 		t.Helper()
 		encoded, _ := json.Marshal(map[string]string{"external_message_id": id, "body": input})
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/messages", bytes.NewReader(encoded))
@@ -93,6 +93,16 @@ func TestT01LiveSecretaryChoosesWorkerAndClarifies(t *testing.T) {
 		if res.StatusCode != http.StatusAccepted {
 			t.Fatalf("live input %q was not accepted: %d", id, res.StatusCode)
 		}
+		var accepted struct {
+			EntrySeq int64 `json:"entry_seq"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&accepted); err != nil {
+			t.Fatal(err)
+		}
+		if accepted.EntrySeq <= 0 {
+			t.Fatal("input was accepted without a canonical Conversation sequence")
+		}
+		return accepted.EntrySeq
 	}
 	// Read from a fixed sequence boundary. A single HTTP page can contain
 	// several entries, so do not discard entries after the first match.
@@ -165,8 +175,8 @@ func TestT01LiveSecretaryChoosesWorkerAndClarifies(t *testing.T) {
 	if len(firstBefore.Results) != 1 || len(secondBefore.Results) != 1 {
 		t.Fatalf("both Workers must have terminal question Results before Yes")
 	}
-	post("t01-live-ambiguous-"+stamp, "Yes")
-	clarify := await(core.EntrySecretary, second.Seq, func(entry core.ConversationEntry) bool {
+	yesSeq := post("t01-live-ambiguous-"+stamp, "Yes")
+	clarify := await(core.EntrySecretary, yesSeq, func(entry core.ConversationEntry) bool {
 		body := strings.ToLower(strings.TrimSpace(entry.Body))
 		return strings.Contains(body, "?") &&
 			(strings.Contains(body, "which") || strings.Contains(body, "worker") ||
@@ -193,7 +203,7 @@ func TestT01LiveSecretaryChoosesWorkerAndClarifies(t *testing.T) {
 		}
 	}
 	for _, entry := range getEntries() {
-		if entry.Seq > second.Seq && entry.Kind == core.EntryWorkerResult {
+		if entry.Seq > yesSeq && entry.Kind == core.EntryWorkerResult {
 			t.Fatalf("neutral Yes caused a Worker Result before clarification: %#v", entry)
 		}
 	}
