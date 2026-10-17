@@ -18,7 +18,7 @@ func openPublishedFileNoFollow(workspace, relativePath string) (*os.File, error)
 	if !ValidPublishedSourcePath(filepath.ToSlash(relativePath)) {
 		return nil, errors.New("artifact publish: unsafe relative path")
 	}
-	directory, err := unix.Open(workspace, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	directory, err := unix.Open(workspace, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
 	if err != nil { return nil, err }
 	parts := strings.Split(filepath.ToSlash(relativePath), "/")
 	for _, part := range parts[:len(parts)-1] {
