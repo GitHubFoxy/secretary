@@ -19,6 +19,11 @@ func TestT09ClickableDownloadDedupDoesNotTrustRawURL(t *testing.T) {
     {"escaped-image-open-bracket", "!\\[Download]("+url+")", false},
     {"escaped-image-marker", "\\![Download]("+url+")", true},
     {"double-escaped-bracket", "\\\\[Download]("+url+")", true},
+    {"indented-code", "    [Download]("+url+")", false},
+    {"tab-indented-code", "\t[Download]("+url+")", false},
+    {"two-tick-inline-code", "Printed as ``[Download]("+url+")``", false},
+    {"three-tick-inline-code", "Printed as ```[Download]("+url+")```", false},
+    {"mismatched-inline-ticks", "``[Download]("+url+")` still code", false},
     {"fenced-image", "\x60\x60\x60md\n[Download]("+url+")\n\x60\x60\x60", false},
   }
   for _, tc := range cases { t.Run(tc.name, func(t *testing.T) {

@@ -54,8 +54,8 @@ func TestT09SandboxedNativeProviderHistorySurvivesProcessRestart(t *testing.T) {
 				if err != nil { t.Fatal(err) }
 				out, err := cmd.CombinedOutput()
 				if err != nil {
-					if strings.Contains(string(out),"Operation not permitted") {
-						t.Skipf("host OS sandbox unavailable (native dispatch must fail closed): %s",out)
+					if runtime.GOOS == "linux" && strings.Contains(string(out),"Creating new namespace failed") {
+						t.Skipf("host kernel denied unprivileged namespaces: %s",out)
 					}
 					t.Fatalf("native session state inaccessible on restart: %v: %s",err,out)
 				}

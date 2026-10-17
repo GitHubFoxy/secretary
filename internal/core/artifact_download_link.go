@@ -7,16 +7,24 @@ import "strings"
 func hasClickableArtifactDownload(summary, url string) bool {
   inFence := false
   var fence byte
+  inCode := false
+  codeRun := 0
   for _, line := range strings.Split(summary, "\n") {
+    if strings.HasPrefix(line, "    ") || strings.HasPrefix(line, "\t") { continue }
     trimmed := strings.TrimSpace(line)
     if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
       if !inFence { inFence, fence = true, trimmed[0] } else if trimmed[0] == fence { inFence = false }
       continue
     }
     if inFence { continue }
-    inCode := false
     for i := 0; i < len(line); i++ {
-      if line[i] == '`' { inCode = !inCode; continue }
+      if line[i] == '`' {
+        j := i
+        for j < len(line) && line[j] == '`' { j++ }
+        if !inCode { inCode = true; codeRun = j-i } else if j-i == codeRun { inCode=false; codeRun=0 }
+        i=j-1
+        continue
+      }
       if inCode || line[i] != '[' || markdownEscaped(line, i) { continue }
       // An image reference ![alt](url) is rendered as an image, not a
       // clickable owner-download link. Escaped ! is ordinary prose.

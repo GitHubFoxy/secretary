@@ -79,6 +79,9 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 			wrapped = append(wrapped, "--ro-bind", systemRoot, systemRoot)
 		}
 	}
+	// Hide the private Node root even if its administrator selected an
+	// alternate location INSIDE an otherwise shared system subtree.
+	wrapped = append(wrapped, "--tmpfs", protected)
 	wrapped = append(wrapped, "--proc", "/proc", "--tmpfs", "/tmp")
 
 	// Preserve native CLI authentication and session history while allowing

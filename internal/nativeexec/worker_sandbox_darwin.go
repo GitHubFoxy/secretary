@@ -4,6 +4,7 @@ package nativeexec
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +27,8 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	if err != nil { return "", nil, err }
 	workspace, err := filepath.EvalSymlinks(policy.Workspace)
 	if err != nil { return "", nil, err }
-	if workspace == protected || strings.HasPrefix(protected, workspace+string(filepath.Separator)) {
+	if workspace == protected || strings.HasPrefix(protected, workspace+string(filepath.Separator)) ||
+		strings.HasPrefix(workspace, protected+string(filepath.Separator)) {
 		return "", nil, errors.New("worker sandbox: Node data root cannot be shared as a Worker workspace")
 	}
 	executable := command
@@ -38,12 +40,14 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	if err != nil { return "", nil, err }
 	home, err := os.UserHomeDir()
 	if err != nil { return "", nil, err }
+	home, err = filepath.EvalSymlinks(home)
+	if err != nil { return "", nil, fmt.Errorf("worker sandbox: resolve native provider home: %w", err) }
 	workerTemp := filepath.Join(workspace, ".worker-tmp")
 	if err := os.MkdirAll(workerTemp, 0700); err != nil {
 		return "", nil, errors.New("worker sandbox: create private Worker temp directory")
 	}
-	reads := []string{workerTemp, "/private/tmp", "/tmp", "/opt/homebrew", "/private/var/db", "/System", "/usr", "/bin", "/sbin", "/Library", "/Applications", "/private/etc", "/private/var/db/dyld", "/dev", workspace, executable}
-	writes := []string{workspace, workerTemp, "/private/tmp", "/tmp"}
+	reads := []string{workerTemp, "/opt/homebrew", "/private/var/db", "/System", "/usr", "/bin", "/sbin", "/Library", "/Applications", "/private/etc", "/private/var/db/dyld", "/dev", workspace, executable}
+	writes := []string{workspace, workerTemp}
 	for _, name := range []string{".codex", ".claude", ".claude.json"} {
 		state := filepath.Join(home, name)
 		info, statErr := os.Lstat(state)
@@ -51,7 +55,8 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 		if statErr != nil || info.Mode()&os.ModeSymlink != 0 {
 			return "", nil, errors.New("worker sandbox: native state must not be a symlink")
 		}
-		if state == protected || strings.HasPrefix(protected, state+string(filepath.Separator)) {
+		if state == protected || strings.HasPrefix(protected, state+string(filepath.Separator)) ||
+			strings.HasPrefix(state, protected+string(filepath.Separator)) {
 			return "", nil, errors.New("worker sandbox: native state overlaps Node data")
 		}
 		reads = append(reads, state)
@@ -60,7 +65,8 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	if policy.WritableDataHome != "" {
 		state, err := filepath.EvalSymlinks(policy.WritableDataHome)
 		if err != nil { return "", nil, err }
-		if state == protected || strings.HasPrefix(protected, state+string(filepath.Separator)) {
+		if state == protected || strings.HasPrefix(protected, state+string(filepath.Separator)) ||
+			strings.HasPrefix(state, protected+string(filepath.Separator)) {
 			return "", nil, errors.New("worker sandbox: native provider state overlaps protected root")
 		}
 		reads = append(reads, state)
@@ -82,6 +88,11 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	for _, root := range writes {
 		profile.WriteString("(allow file-write* " + quoted(root) + ")\n")
 	}
+	// Explicit deny rules override broader system allows, including when a
+	// custom Node --data-dir lives below /System, /usr or /private/etc.
+	// Deny both directory metadata and descendants, never grant its contents.
+	profile.WriteString("(deny file-read* (subpath " + strconv.Quote(protected) + "))\n")
+	profile.WriteString("(deny file-write* (subpath " + strconv.Quote(protected) + "))\n")
 	return seatbelt, append([]string{"-p", profile.String(), executable}, args...), nil
 }
 
