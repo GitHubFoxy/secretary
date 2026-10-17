@@ -204,8 +204,6 @@ func TestT11RealTelegramBotAPIAdapterServerRemoteNodeAndTopic(t *testing.T) {
 	select {case request:=<-runtime.seen:
 		if !strings.Contains(entry.Body,"file_unique_id unique-photo-one") || !strings.Contains(request.Task,"artifact://"+request.Images[0].ArtifactID) {t.Fatalf("original image identity not preserved: entry=%q task=%q",entry.Body,request.Task)}
 	case <-ctx.Done():t.Fatal("Telegram DM photo not delivered to Node")}
-	again:=call()
-	if again["worker"].(map[string]any)["worker_ref"]!=worker {t.Fatal("replay created another Worker")}
 	for {
 		entries,err=store.EntriesTail(ctx,conversation.ID,0,40)
 		if err!=nil {t.Fatal(err)}
@@ -215,6 +213,8 @@ func TestT11RealTelegramBotAPIAdapterServerRemoteNodeAndTopic(t *testing.T) {
 		select {case <-ctx.Done():t.Fatal("Worker Result not visible in canonical conversation")
 		case <-time.After(20*time.Millisecond):}
 	}
+	again:=call()
+	if again["worker"].(map[string]any)["worker_ref"]!=worker {t.Fatal("replay created another Worker")}
 	if err:=adapter.HandleEvent(ctx,telegram.Event{Kind:"worker.created",WorkerRef:worker,Title:"photo-worker",TaskPrompt:"What is in the picture?"});err!=nil {t.Fatal(err)}
 	if err:=adapter.SyncWorkerTopics(ctx);err!=nil {t.Fatal(err)}
 	topic,err:=transport.GetUpdates(ctx,501,time.Second)
