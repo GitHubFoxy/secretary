@@ -50,7 +50,7 @@ func main() {
 	var secretaryHandler mcp.Handler
 	replyContract := strings.TrimSpace(os.Getenv("SECRETARY_MCP_REPLY_CONTRACT"))
 	if serverURL := os.Getenv("SECRETARY_MCP_SERVER_URL"); serverURL != "" {
-		secretaryHandler = mcp.RemoteSecretary{BaseURL: serverURL, Capability: capability, ReplyContractVersion: replyContract, UserPath: filepath.Join(*dataDir, "user.md")}
+		secretaryHandler = mcp.RemoteSecretary{BaseURL: serverURL, Capability: capability, ReplyContractVersion: replyContract}
 	} else {
 		manager, err := config.Open(filepath.Join(*dataDir, "config.toml"))
 		if err != nil {
@@ -72,7 +72,7 @@ func main() {
 		if reasoning == "default" {
 			reasoning = ""
 		}
-		secretaryHandler = mcp.Secretary{Workers: ctl.WorkerService{Store: store, PersonID: owner.ID, Capability: capability, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessKind(policy.DefaultHarness), PreferredHarnesses: preferred, ModelID: model, Reasoning: reasoning}}, ReplyContractVersion: replyContract}
+		secretaryHandler = mcp.Secretary{Workers: ctl.WorkerService{Store: store, PersonID: owner.ID, Capability: capability, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessKind(policy.DefaultHarness), PreferredHarnesses: preferred, ModelID: model, Reasoning: reasoning}}, ReplyContractVersion: replyContract, UserPath: filepath.Join(*dataDir, "user.md")}
 	}
 	handler := mcp.AuditedHandler{
 		Handler: secretaryHandler,
