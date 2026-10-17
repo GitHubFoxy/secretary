@@ -233,6 +233,7 @@ type Adapter struct {
 	pending                    pendingBatch
 	lastTyping                 map[string]time.Time
 	outboxMu                   sync.Mutex
+	topicOutboxMu              sync.Mutex
 	inputWG                    sync.WaitGroup
 	inputMu                    sync.Mutex
 	inputLanes                 map[string]*sync.Mutex
@@ -739,6 +740,9 @@ func (a *Adapter) SyncWorkerTopics(ctx context.Context) error {
 		a.mu.Lock()
 		a.topicsSynchronized = true
 		a.mu.Unlock()
+	}
+	if err := a.drainTopicOutbox(ctx); err != nil {
+		return err
 	}
 	for {
 		a.mu.Lock()
@@ -1970,16 +1974,41 @@ func (a *Adapter) sendMessage(ctx context.Context, message OutgoingMessage) erro
 		}
 	}
 	a.mu.Unlock()
+	if a.isWorkerTopicMessage(message) {
+		return a.drainTopicOutbox(ctx)
+	}
 	return a.drainOutbox(ctx)
 }
 
+// Worker Topic outbox delivery has an independent lock and transport path.
+// A stalled createForumTopic or sendMessage for a Worker Topic must not make
+// Secretary DM/General outbox delivery wait behind it.
+func (a *Adapter) isWorkerTopicMessage(message OutgoingMessage) bool {
+	return a.config.GroupChatID != nil && message.ChatID < 0 && message.ThreadID != 0
+}
+
 func (a *Adapter) drainOutbox(ctx context.Context) error {
-	a.outboxMu.Lock()
-	defer a.outboxMu.Unlock()
+	return a.drainOutboxKind(ctx, false)
+}
+
+func (a *Adapter) drainTopicOutbox(ctx context.Context) error {
+	return a.drainOutboxKind(ctx, true)
+}
+
+func (a *Adapter) drainOutboxKind(ctx context.Context, topicsOnly bool) error {
+	lock := &a.outboxMu
+	if topicsOnly {
+		lock = &a.topicOutboxMu
+	}
+	lock.Lock()
+	defer lock.Unlock()
 	a.mu.Lock()
 	outbox := append([]OutgoingMessage(nil), a.state.Outbox...)
 	a.mu.Unlock()
 	for _, message := range outbox {
+		if a.isWorkerTopicMessage(message) != topicsOnly {
+			continue
+		}
 		fences := telegramFenceBlocks(message.Text)
 		if message.ChatID == 0 {
 			a.mu.Lock()
