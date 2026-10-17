@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"time"
 )
 
 type VideoFrame struct {
@@ -160,4 +159,3 @@ func (s *Store) populateVideoRelation(ctx context.Context, personID string, a *A
 	return rows.Err()
 }
 
-var _ = time.Second
