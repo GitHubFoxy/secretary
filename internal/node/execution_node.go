@@ -394,7 +394,15 @@ func (n *ExecutionNode) steer(ctx context.Context, command *SteeringCommand) Com
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "runtime_session_unavailable", err.Error())
 	}
-	injected, err := session.Steer(ctx, command.Text)
+	mapping, ok := n.store.SessionMapping(command.Metadata.AttemptID)
+	if !ok {
+		return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
+	}
+	text, err := n.prepareArtifactPrompt(ctx, mapping.Workspace, command.Text)
+	if err != nil {
+		return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "artifact_unavailable", err.Error())
+	}
+	injected, err := session.Steer(ctx, text)
 	if err != nil {
 		code := "steering_failed"
 		if errors.Is(err, ErrClaudeCodeSteeringUnsupported) {
@@ -429,7 +437,7 @@ func (n *ExecutionNode) steer(ctx context.Context, command *SteeringCommand) Com
 		if !ok {
 			return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "runtime_not_steerable", "runtime did not accept steering")
 		}
-		if err := queue.Queue(ctx, command.Text); err != nil {
+		if err := queue.Queue(ctx, text); err != nil {
 			outcome := failedOutcome(Command{Kind: CommandSteering, Steering: command}, "queue_failed", err.Error())
 			outcome.AcceptanceUnknown = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 			return outcome
