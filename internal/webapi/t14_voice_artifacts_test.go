@@ -163,7 +163,7 @@ func TestT14TelegramVoiceArtifactToRemoteWorkerAndReconnect(t *testing.T) {
 	nextAPI.AttachNodeService(nextManager)
 	nextServer := httptest.NewServer(nextAPI.Handler())
 	defer nextServer.Close()
-	identity.ConnectURL = strings.Replace(identity.ConnectURL, server.URL, nextServer.URL, 1)
+	identity.ConnectURL = strings.Replace(identity.ConnectURL, strings.TrimPrefix(server.URL, "http://"), strings.TrimPrefix(nextServer.URL, "http://"), 1)
 	reconnectedOriginal, err := identity.FetchArtifact(ctx, original.ID)
 	if err != nil || !bytes.Equal(reconnectedOriginal.Data, originalBytes) { t.Fatalf("reconnected original: %v", err) }
 	reconnectedTranscript, err := identity.FetchArtifact(ctx, transcript.ID)
