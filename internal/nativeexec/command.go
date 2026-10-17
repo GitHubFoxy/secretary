@@ -19,8 +19,12 @@ func CommandContext(ctx context.Context, command string, args ...string) (*exec.
     }
     cmd := exec.CommandContext(ctx, executable, argv...)
     configureCommandLine(cmd, executable, argv)
-    if _, ok := workerSandboxFromContext(ctx); ok {
+    if policy, ok := workerSandboxFromContext(ctx); ok {
         cmd.Env = SecureWorkerEnvironment(ctx, nil)
+        // The current directory of the trusted parent must not leak into
+        // a filesystem-deny sandbox. All Worker processes enter their
+        // explicitly permitted workspace.
+        cmd.Dir = policy.Workspace
     }
     if policy, ok := workerSandboxFromContext(ctx); ok {
         if err := applyWorkerSandbox(policy, cmd); err != nil { return nil, err }
