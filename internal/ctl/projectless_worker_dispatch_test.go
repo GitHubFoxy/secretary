@@ -134,3 +134,21 @@ func TestWorkerServiceMergesLegacyProjectAndPartialOwnerPreferences(t *testing.T
 		t.Fatalf("partial preferences discarded legacy Project selection: worker=%#v err=%v", details.Worker, err)
 	}
 }
+
+
+func TestWorkerServiceRejectsProjectlessWorkspaceAtSpawnBoundary(t *testing.T) {
+	ctx, _, service, _ := newWorkerService(t)
+	runtime := service.Runtime.(*lifecycleRuntime)
+	for _, attempt := range []SpawnWorkerRequest{
+		{Intent: "inspect", Preferences: WorkerPreferences{Workspace: t.TempDir()}},
+		{Intent: "inspect", Workspace: "../outside"},
+		{Intent: "inspect", Preferences: WorkerPreferences{NodeID: "node", Workspace: "/"}},
+	} {
+		if _, err := service.SpawnWorker(ctx, attempt); !errors.Is(err, core.ErrWorkspaceOutsideRoot) {
+			t.Fatalf("workspace override was accepted: request=%#v err=%v", attempt, err)
+		}
+	}
+	if runtime.count("dispatch") != 0 {
+		t.Fatal("untrusted projectless Workspace reached runtime")
+	}
+}
