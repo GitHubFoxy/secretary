@@ -320,6 +320,7 @@ type WorkerSpec struct {
 	ExpectedNodeDraining  bool
 	ExpectedNodeRevoked   bool
 	ExpectedInventoryJSON string
+	ReserveNodeCapacity   bool
 	IdempotencyKey        string
 }
 
