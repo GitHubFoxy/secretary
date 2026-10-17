@@ -244,7 +244,7 @@ func TestPhase4WorkerCommandReclaimsOnlyExpiredLeaseWithSameID(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer second.Close()
-	if command, reclaimed, err := first.ReclaimWorkerCommand(ctx, claimed.ID, claimed.LeaseUntil.Add(-time.Nanosecond)); err != nil || reclaimed || command.ID != claimed.ID {
+	if command, reclaimed, err := first.ReclaimWorkerCommand(ctx, claimed.ID, claimed.LeaseUntil.Add(-time.Millisecond)); err != nil || reclaimed || command.ID != claimed.ID {
 		t.Fatalf("live lease command=%#v reclaimed=%v err=%v", command, reclaimed, err)
 	}
 

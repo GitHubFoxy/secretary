@@ -40,6 +40,7 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 	profile.Hash = profile.SnapshotHash()
 	workspace := t.TempDir()
 	envelope := node.WorkerEnvelope{WorkerRef: "fixture-worker", TurnID: "initial-turn", AttemptID: "initial-attempt", OriginalUserIntent: "remember synthetic-private-nonce", Workspace: workspace, HarnessInstance: instance, Model: "fixture/model", Profile: profile}
+	envelope = projectScopedNodeEnvelope(envelope)
 	meta := func(id string, e node.WorkerEnvelope) core.CommandMetadata {
 		return core.CommandMetadata{CommandID: id, Node: instance.Node, HarnessInstanceID: instance.ID, WorkerRef: e.WorkerRef, TurnID: e.TurnID, AttemptID: e.AttemptID, IssuedAt: time.Now().UTC()}
 	}

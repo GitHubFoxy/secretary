@@ -1275,3 +1275,205 @@ func TestWorkerServiceSteering_LegacyReplayAndPendingOriginBinding(t *testing.T)
 		t.Fatalf("expected ErrInvalidSecretaryOrigin for rebinding pending command, got: %v", err)
 	}
 }
+
+func TestMessageWorkerIdleFollowupsRespectNodeCapacity(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	record, err := store.NodeRecord(ctx, "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateNodeHeartbeat(ctx, "node", record.Inventory, core.NodeHeartbeat{Capacity: 1}); err != nil {
+		t.Fatal(err)
+	}
+	refs := make([]string, 2)
+	for i := range refs {
+		details, err := service.SpawnWorker(ctx, SpawnWorkerRequest{
+			Intent: "initial work", ProjectID: project.ID, IdempotencyKey: "initial-" + string(rune('a'+i)),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		current := details.CurrentAttempt()
+		if current == nil {
+			t.Fatal("missing initial Attempt")
+		}
+		if _, _, _, err := store.RecordAttemptOutcome(ctx, current.ID, core.AttemptOutcomeInput{
+			Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "idle",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		refs[i] = details.Worker.WorkerRef
+	}
+	// Both idle Workers race to start a new command on one available slot.
+	start := make(chan struct{})
+	type result struct {
+		ref string
+		details core.WorkerDetails
+		err error
+	}
+	completed := make(chan result, 2)
+	for _, ref := range refs {
+		go func(ref string) {
+			<-start
+			details, err := service.MessageWorker(ctx, MessageWorkerRequest{
+				WorkerRef: ref, Text: "follow up", IdempotencyKey: "parallel-followup",
+			})
+			completed <- result{ref: ref, details: details, err: err}
+		}(ref)
+	}
+	close(start)
+	var accepted, denied int
+	for i := 0; i < 2; i++ {
+		got := <-completed
+		if got.err == nil {
+			accepted++
+			if got.details.ActionTurnID == "" {
+				t.Fatalf("accepted Follow-up missing Turn: %#v", got.details)
+			}
+		} else if errors.Is(got.err, core.ErrSelectedNodeUnavailable) {
+			denied++
+			remaining, err := service.GetWorker(ctx, got.ref)
+			if err != nil || remaining.Worker.Status != core.WorkerIdle || len(remaining.Attempts) != 1 {
+				t.Fatalf("denied Follow-up created an Attempt: %#v err=%v", remaining, err)
+			}
+		} else {
+			t.Fatalf("unexpected Follow-up outcome: %v", got.err)
+		}
+	}
+	if accepted != 1 || denied != 1 {
+		t.Fatalf("capacity=1 accepted=%d rejected=%d", accepted, denied)
+	}
+}
+
+func TestQueuedFollowupsWaitForCapacityInsteadOfOverbooking(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	record, err := store.NodeRecord(ctx, "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateNodeHeartbeat(ctx, "node", record.Inventory, core.NodeHeartbeat{Capacity: 1}); err != nil {
+		t.Fatal(err)
+	}
+	refs := make([]string, 2)
+	for i := range refs {
+		created, err := service.SpawnWorker(ctx, SpawnWorkerRequest{
+			Intent: "initial", ProjectID: project.ID, IdempotencyKey: "queue-initial-" + string(rune('a'+i)),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		attempt := created.CurrentAttempt()
+		if attempt == nil {
+			t.Fatal("missing initial Attempt")
+		}
+		if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
+			Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "idle",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		refs[i] = created.Worker.WorkerRef
+		if _, err := service.MessageWorker(ctx, MessageWorkerRequest{
+			WorkerRef: refs[i], Text: "/q new task", IdempotencyKey: "queue-followup",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runtime := service.Runtime.(*lifecycleRuntime)
+	before := runtime.count("dispatch")
+	if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
+		t.Fatalf("capacity exhaustion must backpressure, not fail or block queue: %v", err)
+	}
+	if runtime.count("dispatch") != before+1 {
+		t.Fatalf("capacity=1 allowed %d queued Follow-up dispatches", runtime.count("dispatch")-before)
+	}
+	var dispatched, waiting int
+	var activeID string
+	for _, ref := range refs {
+		details, err := service.GetWorker(ctx, ref)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(details.QueuedMessages) != 1 {
+			t.Fatalf("missing queued message: %#v", details)
+		}
+		if details.QueuedMessages[0].State == "delivered" {
+			dispatched++
+			activeID = details.CurrentAttempt().ID
+		} else if details.QueuedMessages[0].State == "delivering" {
+			waiting++
+		} else {
+			t.Fatalf("capacity backpressure changed queue state: %#v", details.QueuedMessages)
+		}
+	}
+	if dispatched != 1 || waiting != 1 {
+		t.Fatalf("queued dispatch overbooked: delivered=%d waiting=%d", dispatched, waiting)
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, activeID, core.AttemptOutcomeInput{
+		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "finished",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.ProcessQueuedWorkerMessages(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.count("dispatch") != before+2 {
+		t.Fatalf("released capacity did not allow second queued Follow-up: dispatched=%d", runtime.count("dispatch")-before)
+	}
+}
+
+func TestSpawnWorkerIdempotentReplayAfterTerminalAttempt(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	record, err := store.NodeRecord(ctx, "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateNodeHeartbeat(ctx, "node", record.Inventory, core.NodeHeartbeat{Capacity: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := SpawnWorkerRequest{Intent: "complete once", ProjectID: project.ID, IdempotencyKey: "terminal-spawn-replay"}
+	initial, err := service.SpawnWorker(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialAttempt := initial.CurrentAttempt()
+	if initialAttempt == nil {
+		t.Fatal("initial Spawn did not create an Attempt")
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, initialAttempt.ID, core.AttemptOutcomeInput{
+		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "finished",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Occupy the only Node slot with a different Worker. Replaying the
+	// completed Spawn must not require capacity or dispatch again.
+	other, err := service.SpawnWorker(ctx, SpawnWorkerRequest{
+		Intent: "occupy node", ProjectID: project.ID, IdempotencyKey: "other-active-spawn",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.Worker.ID == initial.Worker.ID {
+		t.Fatal("second Spawn unexpectedly reused original Worker")
+	}
+	runtime := service.Runtime.(*lifecycleRuntime)
+	before := runtime.count("dispatch")
+	replayed, err := service.SpawnWorker(ctx, request)
+	if err != nil {
+		t.Fatalf("completed idempotent Spawn should replay, got %v", err)
+	}
+	if replayed.Worker.ID != initial.Worker.ID ||
+		replayed.Worker.WorkerRef != initial.Worker.WorkerRef ||
+		replayed.ActionTurnID != initial.ActionTurnID ||
+		len(replayed.Turns) != 1 || len(replayed.Attempts) != 1 ||
+		len(replayed.Results) != 1 {
+		t.Fatalf("completed Spawn returned changed Worker or lost result: %#v", replayed)
+	}
+	if replayed.CurrentAttempt().ID != initialAttempt.ID || !replayed.CurrentAttempt().State.Terminal() {
+		t.Fatalf("replayed Attempt is not the terminal original: %#v", replayed.CurrentAttempt())
+	}
+	if runtime.count("dispatch") != before {
+		t.Fatalf("completed Spawn was dispatched again: before=%d after=%d", before, runtime.count("dispatch"))
+	}
+}

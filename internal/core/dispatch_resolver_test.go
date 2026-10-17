@@ -220,8 +220,8 @@ func TestDispatchResolverQueuesExplicitUnavailableNodeAndKeepsImmutableBinding(t
 func TestDispatchResolverRejectsNoProjectMissingInventoryAndRevokedNodes(t *testing.T) {
 	ctx := context.Background()
 	store := newTestStore(t)
-	if _, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{}); !errors.Is(err, ErrNoProject) {
-		t.Fatalf("no project error=%v", err)
+	if _, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{}); !errors.Is(err, ErrNoEligibleNode) {
+		t.Fatalf("no eligible Node error=%v", err)
 	}
 	project, err := store.CreateProject(ctx, ProjectSpec{ID: "repo", Name: "Repo", Mappings: []ProjectPathMapping{{Node: "node", Path: t.TempDir()}}})
 	if err != nil {

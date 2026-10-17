@@ -102,7 +102,7 @@ func buildNodeBinary(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("mise", "exec", "--", "go", "build", "-o", path, "./cmd/secretary-node")
+	cmd := exec.Command("go", "build", "-o", path, "./cmd/secretary-node")
 	cmd.Dir = root
 	output, err := cmd.CombinedOutput()
 	if err != nil {

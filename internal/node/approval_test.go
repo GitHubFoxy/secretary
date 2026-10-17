@@ -363,6 +363,7 @@ func TestSessionForCommandUsesDispatchEnvelopeForNonDefaultHarness(t *testing.T)
 	defer store.Close()
 	dispatch := dispatchFixture("dispatch-envelope")
 	dispatch.Dispatch.Envelope.Workspace = t.TempDir()
+	dispatch.Dispatch.Envelope = authorizedNodeTestWorkspace(dispatch.Dispatch.Envelope)
 	if _, duplicate, err := store.ClaimCommand(dispatch); err != nil || duplicate {
 		t.Fatalf("claim dispatch duplicate=%v err=%v", duplicate, err)
 	}

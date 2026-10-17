@@ -43,7 +43,9 @@ func createFakeAntigravityServer(t *testing.T, scenario string) (string, string)
 			t.Fatal(err)
 		}
 	} else {
-		script := fmt.Sprintf("#!/bin/sh\nexport TEST_ANTIGRAVITY_FIXTURE=%q\nexec %q -test.run=^TestAntigravityFixtureProcess$ \"$@\"\n", scenario, self)
+		// The real Antigravity launch appends --uid= on Linux, but the
+		// synthetic subprocess is a Go test executable without that flag.
+		script := fmt.Sprintf("#!/bin/sh\nexport TEST_ANTIGRAVITY_FIXTURE=%q\nexec %q -test.run=^TestAntigravityFixtureProcess$\n", scenario, self)
 		if err := os.WriteFile(execPath, []byte(script), 0o755); err != nil {
 			t.Fatal(err)
 		}

@@ -65,7 +65,15 @@ func setupLimitedWorker(t *testing.T, resetOffset time.Duration) (*core.Store, W
 	if err != nil {
 		t.Fatal(err)
 	}
-	instance := core.HarnessInstance{ID: "local/codex", Node: "local", Kind: core.HarnessCodex}
+	instance := core.HarnessInstance{ID: "local/codex", Node: "local", Kind: core.HarnessCodex, Version: "1", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}}
+	if _, err := store.EnrollNode(ctx, "local"); err != nil && !errors.Is(err, core.ErrNodeAlreadyEnrolled) {
+		t.Fatal(err)
+	}
+	if err := store.UpdateNodeHeartbeat(ctx, "local", core.HarnessInventorySnapshot{
+		Node: "local", ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{instance},
+	}, core.NodeHeartbeat{Capacity: 1}); err != nil {
+		t.Fatal(err)
+	}
 	snapshot := project.Snapshot("local", projectDir, instance)
 	snapshotBytes, _ := json.Marshal(snapshot)
 

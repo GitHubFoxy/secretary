@@ -320,15 +320,17 @@ type WorkerSpec struct {
 	ExpectedNodeDraining  bool
 	ExpectedNodeRevoked   bool
 	ExpectedInventoryJSON string
+	ReserveNodeCapacity   bool
 	IdempotencyKey        string
 }
 
 type TurnSpec struct {
-	Input            string
-	NormalizedIntent string
-	ContextSnapshot  string
-	IdempotencyKey   string
-	CommandKind      string
+	Input               string
+	NormalizedIntent    string
+	ContextSnapshot     string
+	IdempotencyKey      string
+	CommandKind         string
+	ReserveNodeCapacity bool
 }
 
 type AttemptOutcomeInput struct {

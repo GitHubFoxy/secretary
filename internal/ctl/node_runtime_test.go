@@ -111,3 +111,32 @@ func TestLocalSteeringUnknownReplayDoesNotRepeatAndReceiptResolves(t *testing.T)
 		t.Fatalf("local native Session.Steer ran %d times after receipt, want once", steerCalls)
 	}
 }
+
+
+func TestLocalNodeRuntimeRejectsUntrustedProjectlessWorkspace(t *testing.T) {
+	remotePath := t.TempDir()
+	worker := core.Worker{ProjectID: "", NodeID: "local"}
+	binding := core.ProjectDispatch{Workspace: remotePath, HarnessInstance: core.HarnessInstance{ID: "local/codex"}}
+	if _, err := (NodeRuntime{}).envelope(worker, core.Turn{}, core.Phase4Attempt{}, binding); err == nil {
+		t.Fatal("invalid persisted projectless Workspace reached Node command envelope")
+	}
+	fake := &canceledSteeringRuntime{}
+	local := node.NewLocal(fake)
+	instance := core.HarnessInstance{
+		ID: "local/fx", Node: "local", Kind: core.HarnessFX, Version: "1",
+		Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true},
+	}
+	command := node.Command{
+		Kind: node.CommandDispatch,
+		Dispatch: &node.DispatchCommand{
+			Metadata: core.CommandMetadata{CommandID: "untrusted-local", WorkerRef: "worker", TurnID: "turn", AttemptID: "attempt"},
+			Envelope: node.WorkerEnvelope{WorkerRef: "worker", TurnID: "turn", AttemptID: "attempt", OriginalUserIntent: "inspect", Workspace: remotePath, HarnessInstance: instance},
+		},
+	}
+	if _, err := (NodeRuntime{Local: local}).LocalCommand(context.Background(), command); err == nil {
+		t.Fatal("untrusted projectless workspace reached local Node runtime")
+	}
+	if _, ok := local.Session("worker"); ok {
+		t.Fatal("blocked projectless dispatch started a session")
+	}
+}

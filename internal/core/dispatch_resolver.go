@@ -44,12 +44,17 @@ type dispatchNodeState struct {
 }
 
 func (s *Store) ResolveDispatch(ctx context.Context, request DispatchResolutionRequest) (DispatchResolution, error) {
-	if strings.TrimSpace(request.ProjectID) == "" {
-		return DispatchResolution{}, ErrNoProject
+	request.ProjectID = strings.TrimSpace(request.ProjectID)
+	if request.ProjectID == "" && request.Workspace != "" {
+		return DispatchResolution{}, fmt.Errorf("%w: projectless Workers require a Node-managed workspace; select an authorized Project to use an explicit path", ErrWorkspaceOutsideRoot)
 	}
-	project, err := s.Project(ctx, request.ProjectID)
-	if err != nil {
-		return DispatchResolution{}, err
+	var project Project
+	var err error
+	if request.ProjectID != "" {
+		project, err = s.Project(ctx, request.ProjectID)
+		if err != nil {
+			return DispatchResolution{}, err
+		}
 	}
 	model, reasoning, err := effectiveDispatchPins(project.Policy, request)
 	if err != nil {
@@ -61,6 +66,8 @@ func (s *Store) ResolveDispatch(ctx context.Context, request DispatchResolutionR
 	}
 
 	var firstUnavailable *DispatchResolution
+	var preferredReady *DispatchResolution
+	preferredRank := 1000
 	var firstError error
 	for _, candidate := range candidates {
 		if request.NodeID == "" && request.HarnessInstanceID != "" {
@@ -68,7 +75,11 @@ func (s *Store) ResolveDispatch(ctx context.Context, request DispatchResolutionR
 				continue
 			}
 		}
-		resolved, available, err := resolveDispatchOnNode(project, candidate, request, model, reasoning)
+		capacityUsed, err := nodeCapacityUsed(ctx, s.db, candidate.record.Node, candidate.record.ActiveAttempts)
+		if err != nil {
+			return DispatchResolution{}, err
+		}
+		resolved, available, err := resolveDispatchOnNode(project, candidate, request, model, reasoning, capacityUsed)
 		if err != nil {
 			if firstError == nil {
 				firstError = err
@@ -76,23 +87,44 @@ func (s *Store) ResolveDispatch(ctx context.Context, request DispatchResolutionR
 			continue
 		}
 		if available {
-			return resolved, nil
+			if project.ID != "" {
+				return resolved, nil
+			}
+			rank := projectlessHarnessRank(resolved.HarnessInstance.Kind, request.WorkerPolicy)
+			if preferredReady == nil || rank < preferredRank {
+				copy := resolved
+				preferredReady = &copy
+				preferredRank = rank
+			}
+			continue
 		}
 		if firstUnavailable == nil {
 			copy := resolved
 			firstUnavailable = &copy
 		}
 	}
+	if preferredReady != nil {
+		return *preferredReady, nil
+	}
 	if firstUnavailable != nil && (request.NodeID != "" || request.HarnessInstanceID != "") {
+		if project.ID == "" {
+			reason := "has no free execution capacity"
+			if !firstUnavailable.nodeState.online {
+				reason = "is offline"
+			} else if firstUnavailable.nodeState.draining {
+				reason = "is draining"
+			}
+			return DispatchResolution{}, fmt.Errorf("%w: Node %s %s; choose another available Node", ErrSelectedNodeUnavailable, firstUnavailable.Node, reason)
+		}
 		return *firstUnavailable, nil
 	}
 	if firstError != nil {
 		return DispatchResolution{}, firstError
 	}
 	if request.HarnessInstanceID != "" {
-		return DispatchResolution{}, fmt.Errorf("%w: HarnessInstance %q was not observed for this Project", ErrInvalidDispatchPin, request.HarnessInstanceID)
+		return DispatchResolution{}, fmt.Errorf("%w: HarnessInstance %q was not observed on an eligible Node; select an installed harness", ErrInvalidDispatchPin, request.HarnessInstanceID)
 	}
-	return DispatchResolution{}, ErrNoEligibleNode
+	return DispatchResolution{}, fmt.Errorf("%w: connect an online Node with an installed and authenticated Worker harness", ErrNoEligibleNode)
 }
 
 func effectiveDispatchPins(policy ProjectPolicy, request DispatchResolutionRequest) (string, string, error) {
@@ -127,14 +159,19 @@ type dispatchNodeCandidate struct {
 func (s *Store) dispatchNodeCandidates(ctx context.Context, project Project, explicit NodeReference) ([]dispatchNodeCandidate, error) {
 	if explicit != "" {
 		record, err := s.NodeRecord(ctx, explicit)
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNotFound) {
+			return nil, fmt.Errorf("%w: Node %s is not enrolled; pair this Node first", ErrSelectedNodeUnavailable, explicit)
+		}
 		if err != nil {
 			return nil, err
 		}
 		if record.Revoked {
 			return nil, ErrNodeRevoked
 		}
-		if _, ok := project.MappingForNode(explicit); !ok {
-			return nil, fmt.Errorf("%w: %s", ErrProjectMappingMissing, explicit)
+		if project.ID != "" {
+			if _, ok := project.MappingForNode(explicit); !ok {
+				return nil, fmt.Errorf("%w: %s", ErrProjectMappingMissing, explicit)
+			}
 		}
 		return []dispatchNodeCandidate{{record: record}}, nil
 	}
@@ -152,12 +189,17 @@ func (s *Store) dispatchNodeCandidates(ctx context.Context, project Project, exp
 		if record.Revoked || record.Draining {
 			continue
 		}
-		if _, ok := project.MappingForNode(record.Node); !ok {
-			continue
+		if project.ID != "" {
+			if _, ok := project.MappingForNode(record.Node); !ok {
+				continue
+			}
 		}
 		order, ok := rank[record.Node]
 		if !ok {
 			order = len(preference)
+		}
+		if project.ID == "" && record.Node == "local" {
+			order = -1
 		}
 		candidates = append(candidates, dispatchNodeCandidate{record: record, order: order})
 	}
@@ -195,7 +237,7 @@ func projectNodeOrder(project Project) []NodeReference {
 	return result
 }
 
-func resolveDispatchOnNode(project Project, candidate dispatchNodeCandidate, request DispatchResolutionRequest, model, reasoning string) (DispatchResolution, bool, error) {
+func resolveDispatchOnNode(project Project, candidate dispatchNodeCandidate, request DispatchResolutionRequest, model, reasoning string, capacityUsed int) (DispatchResolution, bool, error) {
 	record := candidate.record
 	if record.Inventory.Node == "" || record.Inventory.ObservedAt.IsZero() {
 		return DispatchResolution{}, false, fmt.Errorf("%w: Node %s", ErrMissingHarnessInventory, record.Node)
@@ -212,6 +254,31 @@ func resolveDispatchOnNode(project Project, candidate dispatchNodeCandidate, req
 		if request.HarnessKind != "" && instance.Kind != request.HarnessKind {
 			continue
 		}
+		if allowed := request.WorkerPolicy.AllowedHarnesses; len(allowed) > 0 && !containsHarnessKind(allowed, instance.Kind) {
+			if firstError == nil {
+				firstError = fmt.Errorf("%w: harness %q is not allowed by Worker preferences", ErrInvalidDispatchPin, instance.Kind)
+			}
+			continue
+		}
+		supported := true
+		for _, capability := range request.WorkerPolicy.RequiredExecutionCapabilities {
+			if !instance.Capabilities.SupportsExecution(capability) {
+				supported = false
+				break
+			}
+		}
+		for _, capability := range request.WorkerPolicy.RequiredActivityCapabilities {
+			if !instance.Capabilities.SupportsActivity(capability) {
+				supported = false
+				break
+			}
+		}
+		if !supported {
+			if firstError == nil {
+				firstError = fmt.Errorf("%w: harness %q lacks required Worker capabilities", ErrInvalidDispatchPin, instance.ID)
+			}
+			continue
+		}
 		if err := instance.ValidatePins(model, reasoning); err != nil {
 			if firstError == nil {
 				firstError = fmt.Errorf("%w: %w", ErrInvalidDispatchPin, err)
@@ -219,20 +286,26 @@ func resolveDispatchOnNode(project Project, candidate dispatchNodeCandidate, req
 			continue
 		}
 		workspace := request.Workspace
-		if workspace == "" {
+		if workspace == "" && project.ID != "" {
 			mapping, _ := project.MappingForNode(record.Node)
 			workspace = mapping.Path
 		}
 		policy := project.Policy
 		policy.ModelID, policy.Model, policy.Reasoning = model, "", reasoning
-		projectForSelection := project
-		projectForSelection.Policy = policy
-		snapshot, err := projectForSelection.ValidateDispatch(record.Node, instance, workspace)
-		if err != nil {
-			if firstError == nil {
-				firstError = err
+		var snapshot ProjectSnapshot
+		if project.ID == "" {
+			snapshot = ProjectSnapshot{Node: record.Node, Workspace: workspace, HarnessInstance: instance, Policy: policy}
+		} else {
+			projectForSelection := project
+			projectForSelection.Policy = policy
+			var err error
+			snapshot, err = projectForSelection.ValidateDispatch(record.Node, instance, workspace)
+			if err != nil {
+				if firstError == nil {
+					firstError = err
+				}
+				continue
 			}
-			continue
 		}
 		inventoryJSON, err := json.Marshal(record.Inventory)
 		if err != nil {
@@ -242,12 +315,15 @@ func resolveDispatchOnNode(project Project, candidate dispatchNodeCandidate, req
 			ProjectDispatch: ProjectDispatch{Project: project, Node: record.Node, Workspace: workspace, HarnessInstance: instance, Snapshot: snapshot},
 			nodeState:       dispatchNodeState{online: record.Online, draining: record.Draining, revoked: record.Revoked, inventoryJSON: string(inventoryJSON)},
 		}
-		available := record.Online && !record.Draining && !record.Revoked && record.Capacity > len(record.ActiveAttempts)
+		available := record.Online && !record.Draining && !record.Revoked && record.Capacity > capacityUsed
 		resolved.Queued = !available
 		return resolved, available, nil
 	}
 	if firstError != nil {
 		return DispatchResolution{}, false, firstError
+	}
+	if request.HarnessInstanceID != "" || request.HarnessKind != "" {
+		return DispatchResolution{}, false, fmt.Errorf("%w: selected harness %q (%q) is not installed on Node %s", ErrInvalidDispatchPin, request.HarnessInstanceID, request.HarnessKind, record.Node)
 	}
 	return DispatchResolution{}, false, fmt.Errorf("%w: no eligible HarnessInstance", ErrNoEligibleNode)
 }
@@ -265,9 +341,16 @@ func orderedDispatchInstances(instances []HarnessInstance, request DispatchResol
 		defaultKind := request.WorkerPolicy.DefaultHarness
 		if defaultKind == "" {
 			defaultKind = HarnessOpenCode
+			if request.ProjectID == "" {
+				defaultKind = HarnessCodex
+			}
 		}
 		kinds = append(kinds, defaultKind)
 		kinds = append(kinds, request.WorkerPolicy.PreferredHarnesses...)
+		if request.ProjectID == "" {
+			kinds = append(kinds, HarnessCodex, HarnessClaudeCode)
+			kinds = append(kinds, request.WorkerPolicy.AllowedHarnesses...)
+		}
 	}
 	result := make([]HarnessInstance, 0, len(ordered))
 	for _, kind := range kinds {
@@ -298,11 +381,36 @@ func orderedDispatchInstances(instances []HarnessInstance, request DispatchResol
 	return result
 }
 
+func projectlessHarnessRank(kind HarnessKind, policy HarnessPolicy) int {
+	defaultKind := policy.DefaultHarness
+	if defaultKind == "" {
+		defaultKind = HarnessCodex
+	}
+	order := []HarnessKind{defaultKind}
+	order = append(order, policy.PreferredHarnesses...)
+	order = append(order, HarnessCodex, HarnessClaudeCode)
+	for rank, candidate := range order {
+		if candidate == kind {
+			return rank
+		}
+	}
+	return len(order)
+}
+
 func (s *Store) ResolveAndCreateWorker(ctx context.Context, conversationID, intent string, request DispatchResolutionRequest, idempotencyKey string, origins ...SecretaryOriginIdentity) (Worker, Turn, Phase4Attempt, DispatchResolution, error) {
 	return s.ResolveAndCreateWorkerWithProfileSnapshot(ctx, conversationID, intent, request, idempotencyKey, "", origins...)
 }
 
 func (s *Store) ResolveAndCreateWorkerWithProfileSnapshot(ctx context.Context, conversationID, intent string, request DispatchResolutionRequest, idempotencyKey, profileSnapshot string, origins ...SecretaryOriginIdentity) (Worker, Turn, Phase4Attempt, DispatchResolution, error) {
+	return s.ResolveAndCreateWorkerWithProfileFactory(ctx, conversationID, intent, request, idempotencyKey, func(DispatchResolution) (string, error) {
+		return profileSnapshot, nil
+	}, origins...)
+}
+
+// ResolveAndCreateWorkerWithProfileFactory resolves the final Node/harness once and
+// builds its managed Profile against the very same immutable dispatch selection.
+// The factory is not called on idempotent replays.
+func (s *Store) ResolveAndCreateWorkerWithProfileFactory(ctx context.Context, conversationID, intent string, request DispatchResolutionRequest, idempotencyKey string, profileFactory func(DispatchResolution) (string, error), origins ...SecretaryOriginIdentity) (Worker, Turn, Phase4Attempt, DispatchResolution, error) {
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if len(origins) > 1 {
 		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, ErrInvalidSecretaryOrigin
@@ -336,6 +444,13 @@ func (s *Store) ResolveAndCreateWorkerWithProfileSnapshot(ctx context.Context, c
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
 	}
+	if profileFactory == nil {
+		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, errors.New("core: Worker profile factory is required")
+	}
+	profileSnapshot, err := profileFactory(resolved)
+	if err != nil {
+		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
+	}
 	projectSnapshot, err := json.Marshal(resolved.Snapshot)
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
@@ -351,7 +466,7 @@ func (s *Store) ResolveAndCreateWorkerWithProfileSnapshot(ctx context.Context, c
 	if resolved.Queued {
 		queuedOrigin = origin
 	}
-	worker, turn, attempt, err := s.createWorkerWithOrigin(ctx, conversationID, WorkerSpec{Title: intent, Intent: intent, ProjectID: resolved.Project.ID, NodeID: string(resolved.Node), HarnessInstanceID: string(resolved.HarnessInstance.ID), PolicySnapshot: string(policySnapshot), ProjectSnapshot: string(projectSnapshot), ProfileSnapshot: profileSnapshot, Workspace: resolved.Workspace, ProjectRevision: resolved.Project.Revision, IdempotencyKey: idempotencyKey, ExpectedNodeOnline: resolved.nodeState.online, ExpectedNodeDraining: resolved.nodeState.draining, ExpectedNodeRevoked: resolved.nodeState.revoked, ExpectedInventoryJSON: resolved.nodeState.inventoryJSON}, TurnSpec{Input: intent, IdempotencyKey: idempotencyKey}, idempotencyKey, queuedOrigin)
+	worker, turn, attempt, err := s.createWorkerWithOrigin(ctx, conversationID, WorkerSpec{Title: intent, Intent: intent, ProjectID: resolved.Project.ID, NodeID: string(resolved.Node), HarnessInstanceID: string(resolved.HarnessInstance.ID), PolicySnapshot: string(policySnapshot), ProjectSnapshot: string(projectSnapshot), ProfileSnapshot: profileSnapshot, Workspace: resolved.Workspace, ProjectRevision: resolved.Project.Revision, IdempotencyKey: idempotencyKey, ExpectedNodeOnline: resolved.nodeState.online, ExpectedNodeDraining: resolved.nodeState.draining, ExpectedNodeRevoked: resolved.nodeState.revoked, ExpectedInventoryJSON: resolved.nodeState.inventoryJSON, ReserveNodeCapacity: !resolved.Queued}, TurnSpec{Input: intent, IdempotencyKey: idempotencyKey}, idempotencyKey, queuedOrigin)
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
 	}

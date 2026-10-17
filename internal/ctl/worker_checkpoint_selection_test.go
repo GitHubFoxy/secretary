@@ -52,6 +52,7 @@ func runNodeCheckpointSelection(t *testing.T, legacyFX bool) {
 		original.LegacyWorkerTemplate = true
 		instance = original.HarnessInstance
 	}
+	original = projectScopedNodeEnvelope(original)
 	metadata := func(id string, e node.WorkerEnvelope) core.CommandMetadata {
 		return core.CommandMetadata{CommandID: id, Node: instance.Node, HarnessInstanceID: instance.ID, WorkerRef: e.WorkerRef, TurnID: e.TurnID, AttemptID: e.AttemptID, IssuedAt: time.Now().UTC()}
 	}
