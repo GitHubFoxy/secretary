@@ -22,7 +22,7 @@ func (s Secretary) Tools() []Tool {
 		{Name: "list_projects", Description: "List registered Projects.", InputSchema: map[string]any{"type": "object"}},
 		{Name: "list_workers", Description: "List persistent Workers in the Personal Conversation.", InputSchema: map[string]any{"type": "object"}},
 		{Name: "get_worker", Description: "Read one Worker lifecycle and immutable binding.", InputSchema: objectSchema("worker_ref")},
-		{Name: "spawn_worker", Description: "Create one bound Worker and its first Turn.", InputSchema: spawnSchema},
+		{Name: "spawn_worker", Description: "Dispatch a persistent Worker automatically to a ready Node and harness. Only intent is required; preferences can override node_id, harness_kind, harness_instance_id, model or Project.", InputSchema: spawnSchema},
 		{Name: "message_worker", Description: "Steer, answer, follow up, or resume a Worker.", InputSchema: messageSchema},
 		{Name: "cancel_worker", Description: "Cancel a Worker's active Attempt.", InputSchema: objectSchema("worker_ref")},
 		{Name: "close_worker", Description: "Close a Worker after safely stopping active work.", InputSchema: objectSchema("worker_ref")},
@@ -157,11 +157,11 @@ func spawnWorkerSchema() map[string]any {
 		"harness_instance_id": map[string]string{"type": "string"}, "harness_kind": map[string]string{"type": "string"},
 		"workspace": map[string]string{"type": "string"}, "model_id": map[string]string{"type": "string"},
 		"reasoning": map[string]string{"type": "string"},
-	}, "required": []string{"project_id"}}
+	}}
 	return map[string]any{"type": "object", "properties": map[string]any{
 		"intent": map[string]string{"type": "string"}, "preferences": preferences,
 		"idempotency_key": map[string]string{"type": "string"},
-	}, "required": []string{"intent", "preferences"}}
+	}, "required": []string{"intent"}}
 }
 
 func messageWorkerSchema() map[string]any {
