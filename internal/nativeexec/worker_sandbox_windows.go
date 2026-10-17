@@ -6,6 +6,7 @@ import (
 	"errors"
 	"encoding/base64"
 	"encoding/json"
+ "context"
 	"unicode/utf16"
 	"fmt"
 	"os"
