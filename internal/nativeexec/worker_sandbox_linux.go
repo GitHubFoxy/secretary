@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -64,25 +65,69 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 			return "", nil, errors.New("worker sandbox: OpenCode data home is unavailable")
 		}
 	}
+	// Default-deny filesystem: a co-located Server database (and its WAL,
+	// journal, backups, transport key or alternate data-dir) must never be
+	// readable merely because Server and Node run as the same outer UID.
+	// In particular, do not bind /, /home, /Users or /tmp wholesale.
 	wrapped := []string{
 		"--die-with-parent", "--new-session",
 		"--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
-		"--ro-bind", "/", "/",
-		"--proc", "/proc", "--dev", "/dev",
-		// Keep native harness toolchains and test launchers installed under
-		// /tmp reachable. The Node-private directory is masked afterwards.
-		"--bind", "/tmp", "/tmp",
-		"--tmpfs", protected,
-		"--bind", workspace, workspace,
-		"--chdir", workspace,
-		"--", command,
+		"--tmpfs", "/", "--dev", "/dev",
+	}
+	for _, systemRoot := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"} {
+		if _, statErr := os.Stat(systemRoot); statErr == nil {
+			wrapped = append(wrapped, "--ro-bind", systemRoot, systemRoot)
+		}
+	}
+	wrapped = append(wrapped, "--proc", "/proc", "--tmpfs", "/tmp")
+
+	// Preserve native CLI authentication and session history while allowing
+	// writes ONLY in explicitly selected provider-owned locations.
+	// No ancestor directory is shared, including the default Server root
+	// ~/.secretary. Node's own private dir is never mounted.
+	home, homeErr := os.UserHomeDir()
+	if homeErr != nil || !filepath.IsAbs(home) {
+		return "", nil, errors.New("worker sandbox: home directory unavailable")
+	}
+	for _, name := range []string{".codex", ".claude", ".claude.json"} {
+		state := filepath.Join(home, name)
+		info, statErr := os.Lstat(state)
+		if os.IsNotExist(statErr) { continue }
+		if statErr != nil || info.Mode()&os.ModeSymlink != 0 {
+			return "", nil, errors.New("worker sandbox: native state must not be a symlink")
+		}
+		if state == protected || strings.HasPrefix(protected, state+string(filepath.Separator)) ||
+			state == workspace || strings.HasPrefix(workspace, state+string(filepath.Separator)) {
+			return "", nil, errors.New("worker sandbox: native state overlaps protected Node data or Worker workspace")
+		}
+		wrapped = append(wrapped, "--bind", state, state)
 	}
 	if nativeStore != "" {
-		// This exact, trusted model store stays writable even if its parent
-		// private Node directory is masked by tmpfs.
-		wrapped = append(wrapped[:len(wrapped)-2],
-			"--bind", nativeStore, nativeStore, "--chdir", workspace,
-			"--", command)
+		wrapped = append(wrapped, "--bind", nativeStore, nativeStore)
 	}
+	wrapped = append(wrapped, "--bind", workspace, workspace)
+
+	// Native harnesses and fake CLI test fixtures can live outside /usr;
+	// expose only their executable, never their containing user home or /tmp.
+	executable := command
+	if !filepath.IsAbs(executable) {
+		executable, err = exec.LookPath(executable)
+		if err != nil { return "", nil, fmt.Errorf("worker sandbox: harness executable unavailable: %w", err) }
+	}
+	executable, err = filepath.EvalSymlinks(executable)
+	if err != nil { return "", nil, fmt.Errorf("worker sandbox: resolve harness executable: %w", err) }
+	executable, err = filepath.Abs(executable)
+	if err != nil { return "", nil, err }
+	if executable == protected || strings.HasPrefix(executable, protected+string(filepath.Separator)) {
+		return "", nil, errors.New("worker sandbox: executable cannot reside in Node private state")
+	}
+	inSystem := false
+	for _, prefix := range []string{"/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/"} {
+		if strings.HasPrefix(executable, prefix) { inSystem = true; break }
+	}
+	if !inSystem {
+		wrapped = append(wrapped, "--ro-bind", executable, executable)
+	}
+	wrapped = append(wrapped, "--chdir", workspace, "--", executable)
 	return bwrap, append(wrapped, args...), nil
 }
