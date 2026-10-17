@@ -35,6 +35,8 @@ type Update struct {
 }
 
 type Message struct {
+	ChatType  string `json:"chat_type,omitempty"`
+	IsForum   bool   `json:"is_forum,omitempty"`
 	ChatID    int64  `json:"chat_id"`
 	FromID    int64  `json:"from_id"`
 	MessageID int64  `json:"message_id"`
@@ -91,6 +93,9 @@ type ServerClient interface {
 type Config struct {
 	StatePath      string
 	OwnerChatID    int64
+	// nil preserves the legacy one-chat mode; non-nil enables DM-first routing.
+	// Zero means the optional forum supergroup has not yet been linked.
+	GroupChatID    *int64
 	ShowToolCalls  *bool
 	PollInterval   time.Duration
 	FlushInterval  time.Duration
@@ -145,6 +150,8 @@ type persistedState struct {
 	Version                 int                            `json:"version"`
 	OwnerChat               int64                          `json:"owner_chat_id"`
 	OwnerUser               int64                          `json:"owner_user_id,omitempty"`
+	GroupChat               int64                          `json:"group_chat_id,omitempty"`
+	Delivered               map[string]time.Time           `json:"delivered_messages,omitempty"`
 	Offset                  int64                          `json:"offset"`
 	LastEventSeq            int64                          `json:"last_event_seq"`
 	Processed               map[string]time.Time           `json:"processed_updates"`
@@ -239,7 +246,7 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 		config.TitleTimeout = 5 * time.Second
 	}
 	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), now: func() time.Time { return time.Now().UTC() }}
-	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, ToolNotified: map[string]time.Time{}, ToolPreviews: map[string]string{}, WorkerTyping: map[string]workerTypingAttempt{}, WorkerTypingInitialized: true, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}}
+	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Delivered: map[string]time.Time{}, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, ToolNotified: map[string]time.Time{}, ToolPreviews: map[string]string{}, WorkerTyping: map[string]workerTypingAttempt{}, WorkerTypingInitialized: true, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}}
 	if err := adapter.load(); err != nil {
 		return nil, err
 	}
@@ -287,6 +294,18 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 	if adapter.state.OwnerChat == 0 {
 		adapter.state.OwnerChat = config.OwnerChatID
 	}
+	if config.GroupChatID != nil && *config.GroupChatID != 0 {
+		if *config.GroupChatID >= 0 {
+			return nil, errors.New("telegram: forum group chat id must be negative")
+		}
+		if adapter.state.GroupChat != 0 && adapter.state.GroupChat != *config.GroupChatID {
+			return nil, errors.New("telegram: configured group does not match linked group")
+		}
+		adapter.state.GroupChat = *config.GroupChatID
+		if err := adapter.saveLocked(); err != nil {
+			return nil, err
+		}
+	}
 	adapter.pending.SecretaryText.WriteString(adapter.state.PendingSecretaryText)
 	adapter.pending.SecretaryTools = append([]string(nil), adapter.state.PendingSecretaryTools...)
 	adapter.pending.EventSeqs = append([]int64(nil), adapter.state.PendingEventSeqs...)
@@ -321,6 +340,9 @@ func (a *Adapter) load() error {
 	}
 	if a.state.Processed == nil {
 		a.state.Processed = map[string]time.Time{}
+	}
+	if a.state.Delivered == nil {
+		a.state.Delivered = map[string]time.Time{}
 	}
 	if a.state.Topics == nil {
 		a.state.Topics = map[string]TopicMapping{}
@@ -516,6 +538,9 @@ func (a *Adapter) RedeemPairingWithSender(code string, chatID int64, fromID int6
 	if strings.TrimSpace(code) == "" || chatID == 0 {
 		return ErrPairingUsed
 	}
+	if a.config.GroupChatID != nil && (chatID < 0 || fromID == 0 || fromID != chatID) {
+		return ErrUnauthorized
+	}
 	hash := sha256.Sum256([]byte(strings.TrimSpace(code)))
 	key := hex.EncodeToString(hash[:])
 	a.mu.Lock()
@@ -548,10 +573,17 @@ func (a *Adapter) RedeemPairingWithSender(code string, chatID int64, fromID int6
 }
 
 func (a *Adapter) ownerAllowed(chatID int64) bool {
-	return chatID != 0 && a.state.OwnerChat != 0 && chatID == a.state.OwnerChat
+	if chatID == 0 || a.state.OwnerChat == 0 {
+		return false
+	}
+	return chatID == a.state.OwnerChat ||
+		(a.config.GroupChatID != nil && chatID < 0 && chatID == a.state.GroupChat)
 }
 
 func (a *Adapter) senderAllowed(fromID int64) bool {
+	if fromID == 0 && a.config.GroupChatID != nil {
+		return false
+	}
 	if fromID == 0 {
 		return true
 	}
@@ -559,6 +591,52 @@ func (a *Adapter) senderAllowed(fromID int64) bool {
 		return fromID == a.state.OwnerUser
 	}
 	return fromID == a.state.OwnerChat
+}
+
+// linkGroup accepts a command only from the already-paired owner, sent from a
+// forum supergroup. Group membership alone never grants control.
+func (a *Adapter) linkGroup(update Update) error {
+	m := update.Message
+	if a.config.GroupChatID == nil || m == nil || m.ChatID >= 0 || m.ChatType != "supergroup" || !m.IsForum || m.FromID == 0 {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state.OwnerChat <= 0 || !a.senderAllowed(m.FromID) {
+		return nil
+	}
+	if a.state.GroupChat != 0 && a.state.GroupChat != m.ChatID {
+		return ErrUnauthorized
+	}
+	a.state.GroupChat = m.ChatID
+	return a.saveLocked()
+}
+
+func (a *Adapter) personalChats() []int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state.OwnerChat == 0 {
+		return nil
+	}
+	chats := []int64{a.state.OwnerChat}
+	if a.config.GroupChatID != nil && a.state.GroupChat != 0 && a.state.GroupChat != a.state.OwnerChat {
+		chats = append(chats, a.state.GroupChat)
+	}
+	return chats
+}
+
+// sendPersonal sends projections, never another canonical Server input.
+func (a *Adapter) sendPersonal(ctx context.Context, message OutgoingMessage) error {
+	for _, chatID := range a.personalChats() {
+		copy := message
+		copy.ChatID = chatID
+		copy.ThreadID = 0
+		copy.ReplyToMessageID = 0
+		if err := a.sendMessage(ctx, copy); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *Adapter) processUpdate(ctx context.Context, update Update) error {
@@ -617,7 +695,13 @@ func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool
 func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed bool, requestOverride *string) error {
 	text := strings.TrimSpace(update.Message.Text)
 	if strings.HasPrefix(text, "/start ") {
+		if a.config.GroupChatID != nil && ((update.Message.ChatType != "" && update.Message.ChatType != "private") || update.Message.ChatID != update.Message.FromID) {
+			return nil
+		}
 		return a.RedeemPairingWithSender(strings.TrimSpace(strings.TrimPrefix(text, "/start ")), update.Message.ChatID, update.Message.FromID)
+	}
+	if text == "/linkgroup" {
+		return a.linkGroup(update)
 	}
 	if !allowed || text == "/start" || text == "" {
 		return nil
@@ -694,8 +778,20 @@ func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed 
 	if err := a.server.SendMessage(ctx, InboundMessage{ExternalMessageID: externalID, Body: text}); err != nil {
 		return err
 	}
+	// The Server receives each Telegram update once. Mirrored messages only
+	// create outbox deliveries; they never re-enter the input queue.
+	if a.config.GroupChatID != nil {
+		for _, target := range a.personalChats() {
+			if target == update.Message.ChatID {
+				continue
+			}
+			if err := a.sendMessage(ctx, OutgoingMessage{ChatID: target, Text: text, Identity: "mirror-input:" + externalID}); err != nil {
+				return err
+			}
+		}
+	}
 	thread := update.Message.ThreadID
-	if thread == 0 {
+	if thread == 0 && a.config.GroupChatID == nil {
 		thread = 1
 	}
 	a.sendTyping(update.Message.ChatID, thread)
@@ -963,7 +1059,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if owner == 0 {
 			return nil
 		}
-		return a.sendMessage(ctx, OutgoingMessage{ChatID: owner, Text: event.Text, Identity: "inbound:acknowledgement:" + event.EventID})
+		return a.sendPersonal(ctx, OutgoingMessage{Text: event.Text, Identity: "inbound:acknowledgement:" + event.EventID})
 	}
 	if strings.HasPrefix(event.Kind, "secretary.") {
 		return a.handleSecretaryEvent(event, 0)
@@ -986,7 +1082,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if identity == "" {
 			identity = fmt.Sprintf("seq:%d", event.Sequence)
 		}
-		return a.sendMessage(ctx, OutgoingMessage{ChatID: owner, Text: text, Identity: "inbound:" + identity})
+		return a.sendPersonal(ctx, OutgoingMessage{Text: text, Identity: "inbound:" + identity})
 	}
 	if event.WorkerRef == "" {
 		return nil
@@ -996,12 +1092,18 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if err != nil {
 			return err
 		}
+		if mapping.ChatID == 0 {
+			return nil
+		}
 		return a.updateWorkerTyping(event, mapping)
 	}
 	if event.Kind == "worker.created" {
 		mapping, err := a.ensureTopic(ctx, event.WorkerRef, event.Title, event.TaskPrompt)
 		if err != nil {
 			return err
+		}
+		if mapping.ChatID == 0 {
+			return nil
 		}
 		var parts []string
 		if nodeID := safePublicNodeID(event.NodeID); nodeID != "" {
@@ -1023,24 +1125,29 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 	if err != nil {
 		return err
 	}
-	if isApprovalResolution(event.Kind) {
-		a.mu.Lock()
-		mapping.PendingRequestID = ""
-		a.state.Topics[event.WorkerRef] = mapping
-		if err := a.saveLocked(); err != nil {
+	if mapping.ChatID == 0 && event.TerminalIdentity == "" {
+		return nil
+	}
+	if mapping.ChatID != 0 {
+		if isApprovalResolution(event.Kind) {
+			a.mu.Lock()
+			mapping.PendingRequestID = ""
+			a.state.Topics[event.WorkerRef] = mapping
+			if err := a.saveLocked(); err != nil {
+				a.mu.Unlock()
+				return err
+			}
 			a.mu.Unlock()
-			return err
-		}
-		a.mu.Unlock()
-	} else if requestID := requestIDFromPayload(event.Payload); requestID != "" && isRequestEvent(event.Kind) {
-		a.mu.Lock()
-		mapping.PendingRequestID = requestID
-		a.state.Topics[event.WorkerRef] = mapping
-		if err := a.saveLocked(); err != nil {
+		} else if requestID := requestIDFromPayload(event.Payload); requestID != "" && isRequestEvent(event.Kind) {
+			a.mu.Lock()
+			mapping.PendingRequestID = requestID
+			a.state.Topics[event.WorkerRef] = mapping
+			if err := a.saveLocked(); err != nil {
+				a.mu.Unlock()
+				return err
+			}
 			a.mu.Unlock()
-			return err
 		}
-		a.mu.Unlock()
 	}
 	if importantWorkerEvent(event.Kind) {
 		if event.Kind == "worker.tool_started" {
@@ -1111,23 +1218,31 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			_, alreadyNotified = a.state.ToolNotified[strings.TrimPrefix(identity, "tool:")]
 			a.mu.Unlock()
 		}
-		if alreadyNotified && event.TerminalIdentity == "" {
+		if alreadyNotified && event.TerminalIdentity == "" && a.config.GroupChatID == nil {
 			return nil
 		}
-		if !isWorkerTerminalEvent(event) {
-			a.sendTyping(mapping.ChatID, mapping.ThreadID)
-		}
-		if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: body, Identity: identity, DisableLinkPreview: true}); err != nil {
-			return err
+		if mapping.ChatID != 0 {
+			if !isWorkerTerminalEvent(event) {
+				a.sendTyping(mapping.ChatID, mapping.ThreadID)
+			}
+			if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: body, Identity: identity, DisableLinkPreview: true}); err != nil {
+				return err
+			}
 		}
 		if event.TerminalIdentity != "" {
-			a.mu.Lock()
-			owner := a.state.OwnerChat
-			a.mu.Unlock()
-			if owner != 0 {
-				mirror := OutgoingMessage{ChatID: owner, Text: body, Identity: identity + ":general", DisableLinkPreview: true}
-				if err := a.sendMessage(ctx, mirror); err != nil {
+			if a.config.GroupChatID != nil {
+				if err := a.sendPersonal(ctx, OutgoingMessage{Text: body, Identity: identity + ":personal", DisableLinkPreview: true}); err != nil {
 					return err
+				}
+			} else {
+				a.mu.Lock()
+				owner := a.state.OwnerChat
+				a.mu.Unlock()
+				if owner != 0 {
+					mirror := OutgoingMessage{ChatID: owner, Text: body, Identity: identity + ":general", DisableLinkPreview: true}
+					if err := a.sendMessage(ctx, mirror); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -1145,9 +1260,12 @@ func (a *Adapter) ensureTopic(ctx context.Context, workerRef, title string, prom
 		return mapping, nil
 	}
 	owner := a.state.OwnerChat
+	if a.config.GroupChatID != nil {
+		owner = a.state.GroupChat
+	}
 	a.mu.Unlock()
 	if owner == 0 {
-		return TopicMapping{}, ErrUnauthorized
+		return TopicMapping{}, nil // DM-only: no Worker Topics to create.
 	}
 	name := topicName(workerRef, title)
 	if len(prompts) > 0 && strings.TrimSpace(prompts[0]) != "" {
@@ -1292,12 +1410,20 @@ func (a *Adapter) Flush(ctx context.Context) error {
 		return err
 	}
 	if owner != 0 && (hasSecretary || turnOpen) {
-		a.sendTyping(owner, 1)
+		thread := int64(1)
+		if a.config.GroupChatID != nil {
+			thread = 0
+		}
+		a.sendTyping(owner, thread)
 	}
 	if hasSecretary && ready {
-		if _, queued := outboxIdentities[outgoingMessageIdentity(secretaryMessage)]; !queued {
-			if err := a.sendMessage(ctx, secretaryMessage); err != nil {
-				return err
+		for _, target := range a.personalChats() {
+			destination := secretaryMessage
+			destination.ChatID = target
+			if _, queued := outboxIdentities[outgoingMessageIdentity(destination)]; !queued {
+				if err := a.sendMessage(ctx, destination); err != nil {
+					return err
+				}
 			}
 		}
 		if err := a.clearSecretaryPending(text, tools, eventSeqs); err != nil {
@@ -1367,13 +1493,16 @@ func sameStrings(left, right []string) bool {
 
 func outgoingMessageIdentity(message OutgoingMessage) string {
 	if message.Identity != "" {
-		return message.Identity
+		return fmt.Sprintf("%d:%d:%s", message.ChatID, message.ThreadID, message.Identity)
 	}
 	hash := sha256.Sum256([]byte(fmt.Sprintf("%d:%d:%s", message.ChatID, message.ThreadID, message.Text)))
 	return "message:" + hex.EncodeToString(hash[:])
 }
 
 func (a *Adapter) markDeliveredLocked(message OutgoingMessage) {
+	if message.Identity != "" {
+		a.state.Delivered[outgoingMessageIdentity(message)] = a.now()
+	}
 	switch {
 	case strings.HasPrefix(message.Identity, "task-prompt:"):
 		workerRef := strings.TrimPrefix(message.Identity, "task-prompt:")
@@ -1421,7 +1550,13 @@ func (a *Adapter) sendMessage(ctx context.Context, message OutgoingMessage) erro
 		return ErrUnauthorized
 	}
 	a.mu.Lock()
-	if message.Identity != "" {
+	if message.Identity != "" && a.config.GroupChatID != nil {
+		if _, delivered := a.state.Delivered[outgoingMessageIdentity(message)]; delivered {
+			a.mu.Unlock()
+			return nil
+		}
+	}
+	if message.Identity != "" && a.config.GroupChatID == nil {
 		if strings.HasPrefix(message.Identity, "task-prompt:") {
 			if a.state.Topics[strings.TrimPrefix(message.Identity, "task-prompt:")].PromptDelivered {
 				a.mu.Unlock()
