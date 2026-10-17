@@ -30,7 +30,8 @@ func (r OpenCodeRuntime) Start(ctx context.Context, request StartRequest) (Sessi
 		return nil, err
 	}
 	request.Profile = profile
-	r = r.withWorkerOSDataHome(ctx)
+	r, err = r.withWorkerOSDataHome(ctx)
+	if err != nil { return nil, err }
 	prepared, err := r.prepare(request)
 	if err != nil {
 		return nil, err
@@ -45,7 +46,8 @@ func (r OpenCodeRuntime) Resume(ctx context.Context, request StartRequest, runti
 		return nil, err
 	}
 	request.Profile = profile
-	r = r.withWorkerOSDataHome(ctx)
+	r, err = r.withWorkerOSDataHome(ctx)
+	if err != nil { return nil, err }
 	prepared, err := r.prepare(request)
 	if err != nil {
 		return nil, err
@@ -245,7 +247,7 @@ func openCodeEnvironment(workspace, configPath, configContent string, mcpServers
 	return environment, nil
 }
 
-func (r OpenCodeRuntime) withWorkerOSDataHome(ctx context.Context) OpenCodeRuntime {
+func (r OpenCodeRuntime) withWorkerOSDataHome(ctx context.Context) (OpenCodeRuntime,error) {
 	if runtime.GOOS == "windows" && nativeexec.IsWorkerSandboxed(ctx) {
 		home := strings.TrimSpace(os.Getenv("SECRETARY_WORKER_HOME"))
 		if home != "" {
@@ -253,13 +255,10 @@ func (r OpenCodeRuntime) withWorkerOSDataHome(ctx context.Context) OpenCodeRunti
 			// write within its protected identity/state directory.
 			destination := filepath.Join(home, "opencode-native")
 			if err := nativeexec.MigrateWindowsNativeStore(r.DataHome, destination); err != nil {
-				// Migration failures cannot safely fall back to Node's
-				// privileged provider store. The runtime reports this
-				// through its existing native-store validation.
-				return OpenCodeRuntime{Command: r.Command, Arguments: r.Arguments, DataHome: filepath.Join(home, "missing-unmigrated-native-data")}
+				return r,fmt.Errorf("OpenCode native provider credentials/history migration failed: %w",err)
 			}
 			r.DataHome = destination
 		}
 	}
-	return r
+	return r,nil
 }

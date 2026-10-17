@@ -58,5 +58,5 @@ jobs:
           $env:SECRETARY_WORKER_HOME = $workerHome
           $env:SECRETARY_WORKER_TEST_WORKSPACE = $workspace
           $env:SECRETARY_WORKER_TEST_PROTECTED_DIR = $protected
-          go test ./internal/nativeexec -run 'TestT09WindowsSeparateAccountStateAndResume' -count=1 -v
+          go test ./internal/nativeexec -run 'TestT09WindowsSeparateAccountStateAndResume|TestT09WindowsCancelKillsNativeWorkerTree|TestT09WindowsNativeProviderStateMigrationPreservesHistory' -count=1 -v
           if ($LASTEXITCODE -ne 0) { throw 'native Worker security and resume acceptance failed' }
