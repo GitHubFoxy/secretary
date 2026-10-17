@@ -1058,34 +1058,10 @@ func (s WorkerService) ResumeWorker(ctx context.Context, workerRef string) (core
 	if err != nil {
 		return core.WorkerDetails{}, err
 	}
-	now := s.workerCommandNow()
 	err = s.Store.WithWorkerLifecycle(ctx, details.Worker.ID, func(ctx context.Context) error {
-		claimed, err := s.Store.ClaimAttemptSchedule(ctx, schedule.ID, now)
-		if err != nil {
-			return err
-		}
-		if !claimed {
-			return nil
-		}
-		command, send, err := s.claimCommand(ctx, "resume", "attempt", details.Worker, attempt, nil)
-		if err != nil {
-			_ = s.Store.ReleaseAttemptSchedule(ctx, schedule.ID, now)
-			return err
-		}
-		if send {
-			continuationPrompt := schedule.ContinuationPrompt
-			if continuationPrompt == "" {
-				continuationPrompt = core.ContinuationPrompt
-			}
-			err = s.deliverCommand(ctx, command, func(commandID string) error {
-				return s.Runtime.Resume(ctx, commandID, details.Worker, turn, attempt, continuationPrompt)
-			})
-			if err != nil {
-				_ = s.Store.ReleaseAttemptSchedule(ctx, schedule.ID, now)
-				return err
-			}
-		}
-		return s.Store.CompleteAttemptSchedule(ctx, schedule.ID, now)
+		// A capacity error remains retryable for the owner; the shared
+		// helper restores the schedule and never hands off the command.
+		return s.resumeScheduledAttempt(ctx, schedule, details.Worker, turn, attempt, false)
 	})
 	if err != nil {
 		return core.WorkerDetails{}, err
