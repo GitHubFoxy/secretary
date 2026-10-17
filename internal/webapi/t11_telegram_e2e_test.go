@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -189,6 +190,9 @@ func TestT11RealTelegramBotAPIAdapterServerRemoteNodeAndTopic(t *testing.T) {
 	topic,err:=transport.GetUpdates(ctx,501,time.Second)
 	if err!=nil || len(topic)!=1 {t.Fatalf("topic Bot API update: %v %+v",err,topic)}
 	if err:=adapter.HandleUpdate(ctx,topic[0]);err!=nil {t.Fatal(err)}
+	stateBytes,_:=os.ReadFile(adapterPath)
+	details,detailsErr:=store.WorkerDetailsForConversation(ctx,conversation.ID,worker)
+	t.Logf("T11 direct routing state=%s worker=%+v err=%v",stateBytes,details.Worker,detailsErr)
 	select {case received:=<-runtime.seen:
 		if !strings.Contains(received.Task,"update 501, chat -200, message 52") {t.Fatalf("wrong direct Worker source: %s",received.Task)}
 	case <-ctx.Done():t.Fatal("direct Worker Topic photo did not reach Node")}
