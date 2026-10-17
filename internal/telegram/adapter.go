@@ -168,6 +168,7 @@ type persistedState struct {
 	Topics                  map[string]TopicMapping        `json:"topics"`
 	Pairings                map[string]pairingRecord       `json:"pairings"`
 	Outbox                  []OutgoingMessage              `json:"outbox,omitempty"`
+	PendingTopicEvents      []Event                        `json:"pending_topic_events,omitempty"`
 	PendingSecretaryText    string                         `json:"pending_secretary_text,omitempty"`
 	PendingSecretaryTools   []string                       `json:"pending_secretary_tools,omitempty"`
 	PendingEventSeqs        []int64                        `json:"pending_event_seqs,omitempty"`
@@ -713,29 +714,103 @@ func (a *Adapter) topicSyncLoop(ctx context.Context) {
 // linked. It can be retried after restart without duplicate Topic creation.
 func (a *Adapter) SyncWorkerTopics(ctx context.Context) error {
 	a.mu.Lock()
-	needed := a.config.GroupChatID != nil && a.state.GroupChat != 0 &&
-		!a.topicsSynchronized && a.config.ExistingWorkers != nil
+	linked := a.config.GroupChatID != nil && a.state.GroupChat != 0
+	needsInventory := linked && !a.topicsSynchronized && a.config.ExistingWorkers != nil
 	lookup := a.config.ExistingWorkers
 	a.mu.Unlock()
-	if !needed {
+	if !linked {
 		return nil
 	}
-	workers, err := lookup(ctx)
-	if err != nil {
-		return err
-	}
-	for _, worker := range workers {
-		if worker.WorkerRef == "" {
-			continue
+	// Inventory recovery and pending Topic delivery run ONLY from the
+	// independent topic-sync loop, never in HandleDurableEvent / DM polling.
+	if needsInventory {
+		workers, err := lookup(ctx)
+		if err != nil {
+			return err
 		}
-		if _, err := a.ensureTopic(ctx, worker.WorkerRef, worker.Title, worker.Intent); err != nil {
+		for _, worker := range workers {
+			if worker.WorkerRef == "" {
+				continue
+			}
+			if _, err := a.ensureTopic(ctx, worker.WorkerRef, worker.Title, worker.Intent); err != nil {
+				return err
+			}
+		}
+		a.mu.Lock()
+		a.topicsSynchronized = true
+		a.mu.Unlock()
+	}
+	for {
+		a.mu.Lock()
+		if len(a.state.PendingTopicEvents) == 0 {
+			a.mu.Unlock()
+			return nil
+		}
+		event := a.state.PendingTopicEvents[0]
+		a.mu.Unlock()
+		if _, err := a.ensureTopic(ctx, event.WorkerRef, event.Title, event.TaskPrompt); err != nil {
+			return err
+		}
+		// May send/retry topic messages but never acquires flushMu or sends
+		// any DM projection. The outbox provides crash-safe retries.
+		if err := a.handleWorkerTopicEvent(ctx, event, true); err != nil {
+			return err
+		}
+		a.mu.Lock()
+		if len(a.state.PendingTopicEvents) > 0 && topicEventKey(a.state.PendingTopicEvents[0]) == topicEventKey(event) {
+			a.state.PendingTopicEvents = a.state.PendingTopicEvents[1:]
+		}
+		a.compactDeliveredLocked()
+		err := a.saveLocked()
+		a.mu.Unlock()
+		if err != nil {
 			return err
 		}
 	}
+}
+
+func topicEventKey(event Event) string {
+	if event.Sequence > 0 {
+		return fmt.Sprintf("sequence:%d", event.Sequence)
+	}
+	if event.EventID != "" {
+		return "event:" + event.EventID
+	}
+	if event.TerminalIdentity != "" {
+		return "terminal:" + event.TerminalIdentity
+	}
+	if id := requestNotificationIdentity(event); id != "" {
+		return "request:" + id
+	}
+	return fmt.Sprintf("%s:%s:%s:%s:%s", event.Kind, event.WorkerRef, event.AttemptID, event.Text, event.TaskPrompt)
+}
+
+// deferWorkerTopicEvent persists the full event before the bridge can advance
+// its cursor. Thus a restart recovers topic messages even if the Bot API was
+// unavailable when the Worker event arrived.
+func (a *Adapter) deferWorkerTopicEvent(event Event) error {
 	a.mu.Lock()
-	a.topicsSynchronized = true
+	if a.state.GroupChat == 0 {
+		a.mu.Unlock()
+		return nil // DM-only until a forum is linked.
+	}
+	key := topicEventKey(event)
+	for _, queued := range a.state.PendingTopicEvents {
+		if topicEventKey(queued) == key {
+			a.mu.Unlock()
+			return nil
+		}
+	}
+	a.state.PendingTopicEvents = append(a.state.PendingTopicEvents, event)
+	if event.Kind == "worker.created" {
+		a.topicsSynchronized = false // Worker may not exist in last inventory.
+	}
+	err := a.saveLocked()
 	a.mu.Unlock()
-	return nil
+	if err == nil {
+		a.requestTopicSync()
+	}
+	return err
 }
 
 func (a *Adapter) personalChats() []int64 {
@@ -1227,6 +1302,48 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 	if event.WorkerRef == "" {
 		return nil
 	}
+	// In two-chat mode all Worker Topic messages (including worker.created)
+	// are durably deferred to the independent topic-sync loop. A failing or
+	// stalled forum API must never stop the serial Server event bridge from
+	// reaching subsequent Secretary messages and Worker Results in DM.
+	if a.config.GroupChatID != nil {
+		if event.Kind == "worker.created" || event.Kind == "worker.started" || importantWorkerEvent(event.Kind) {
+			if err := a.deferWorkerTopicEvent(event); err != nil {
+				return err
+			}
+		}
+		if event.TerminalIdentity == "" || !importantWorkerEvent(event.Kind) {
+			return nil
+		}
+		a.mu.Lock()
+		_, done := a.state.TerminalNotified["complete:"+event.TerminalIdentity]
+		a.mu.Unlock()
+		if done {
+			return nil
+		}
+		body := safeText(event.Text)
+		if body == "" {
+			body = workerEventLabel(event.Kind)
+		}
+		if err := a.sendPersonal(ctx, OutgoingMessage{
+			Text: body, Identity: "terminal:"+event.TerminalIdentity+":personal",
+			DisableLinkPreview: true, DurableSequence: event.Sequence,
+		}); err != nil {
+			return err
+		}
+		a.mu.Lock()
+		a.state.TerminalNotified["complete:"+event.TerminalIdentity] = a.now()
+		err := a.saveLocked()
+		a.mu.Unlock()
+		return err
+	}
+	return a.handleWorkerTopicEvent(ctx, event, false)
+}
+
+// handleWorkerTopicEvent is called inline only by the legacy forum-only
+// adapter; in two-chat mode it is exclusively a background recovery action.
+// topicOnly prevents replaying the DM/General projection of Worker Results.
+func (a *Adapter) handleWorkerTopicEvent(ctx context.Context, event Event, topicOnly bool) error {
 	if event.Kind == "worker.started" {
 		mapping, err := a.ensureTopic(ctx, event.WorkerRef, event.Title)
 		if err != nil {
@@ -1373,6 +1490,11 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		// A terminal notification in legacy mode still needs its separate
 		// General mirror; two-chat terminal receipts mean both projections
 		// were successfully delivered.
+		if topicOnly && event.TerminalIdentity != "" {
+			a.mu.Lock()
+			_, alreadyNotified = a.state.TerminalNotified["topic:"+event.TerminalIdentity]
+			a.mu.Unlock()
+		}
 		if alreadyNotified && (event.TerminalIdentity == "" || a.config.GroupChatID != nil) {
 			return nil
 		}
@@ -1384,7 +1506,16 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 				return err
 			}
 		}
-		if event.TerminalIdentity != "" {
+		if topicOnly && event.TerminalIdentity != "" {
+			a.mu.Lock()
+			a.state.TerminalNotified["topic:"+event.TerminalIdentity] = a.now()
+			err := a.saveLocked()
+			a.mu.Unlock()
+			if err != nil {
+				return err
+			}
+		}
+		if event.TerminalIdentity != "" && !topicOnly {
 			if a.config.GroupChatID != nil {
 				if err := a.sendPersonal(ctx, OutgoingMessage{Text: body, Identity: identity + ":personal", DisableLinkPreview: true, DurableSequence: event.Sequence}); err != nil {
 					return err
@@ -1723,6 +1854,18 @@ func (a *Adapter) compactDeliveredLocked() {
 			continue
 		}
 		if _, queued := pending[key]; queued {
+			continue
+		}
+		// While a Topic event is still queued, its successful earlier send
+		// must remain deduplicated even after the Server cursor advances.
+		stillDeferred := false
+		for _, event := range a.state.PendingTopicEvents {
+			if event.Sequence == seq {
+				stillDeferred = true
+				break
+			}
+		}
+		if stillDeferred {
 			continue
 		}
 		delete(a.state.Delivered, key)
