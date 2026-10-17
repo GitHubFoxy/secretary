@@ -16,6 +16,7 @@ func SecureWorkerEnvironment(ctx context.Context, entries []string) []string {
   name, _, _ := strings.Cut(entry,"=")
   switch {
   case strings.HasPrefix(name,"SECRETARY_NODE_"):
+  case strings.HasPrefix(name,"SECRETARY_WORKER_"):
   case name == "SECRETARY_ARTIFACT_CAPABILITY":
   case name == "SECRETARY_ADMIN_TOKEN":
   case name == "SECRETARY_SERVER_ADMIN_TOKEN":
@@ -23,5 +24,5 @@ func SecureWorkerEnvironment(ctx context.Context, entries []string) []string {
   default: result = append(result,entry)
   }
  }
- return result
+ return workerPlatformEnvironment(ctx, result)
 }

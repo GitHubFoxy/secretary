@@ -53,6 +53,17 @@ func applyWorkerSandbox(policy WorkerSandbox, cmd *exec.Cmd) error {
 		windowsWorkerToken.key = key
 	}
 	token := windowsWorkerToken.token
+	if token.IsElevated() {
+		return errors.New("worker sandbox: privileged Windows Worker account is forbidden")
+	}
+	workerHome := strings.TrimSpace(os.Getenv("SECRETARY_WORKER_HOME"))
+	if workerHome == "" || !filepath.IsAbs(workerHome) {
+		return errors.New("worker sandbox: persistent SECRETARY_WORKER_HOME is required")
+	}
+	if filepath.Clean(workerHome) == filepath.Clean(policy.ProtectedDir) ||
+		strings.HasPrefix(strings.ToLower(filepath.Clean(policy.ProtectedDir)), strings.ToLower(filepath.Clean(workerHome)+string(filepath.Separator))) {
+		return errors.New("worker sandbox: private Node data overlaps Worker home")
+	}
 	trustedUser, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil { return err }
 	workerUser, err := token.GetTokenUser()
@@ -80,6 +91,12 @@ func applyWorkerSandbox(policy WorkerSandbox, cmd *exec.Cmd) error {
 				break
 			}
 		}
+	}
+	if guardErr == nil {
+		fd, homeErr := os.Open(workerHome)
+		if homeErr != nil {
+			guardErr = fmt.Errorf("worker sandbox: Windows Worker home inaccessible to separate account: %w", homeErr)
+		} else { _ = fd.Close() }
 	}
 	if guardErr == nil {
 		fd, workspaceErr := os.Open(policy.Workspace)
