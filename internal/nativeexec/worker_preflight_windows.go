@@ -5,6 +5,8 @@ package nativeexec
 import (
  "context"
  "encoding/json"
+ "encoding/base64"
+ "unicode/utf16"
  "errors"
  "fmt"
  "os"
@@ -26,7 +28,10 @@ func PreflightWorkerSandbox(protectedDir string) error {
  ctx,cancel:=context.WithTimeout(context.Background(),10*time.Second)
  defer cancel()
  ctx=WithWorkerSandbox(ctx,WorkerSandbox{ProtectedDir:protectedDir,Workspace:home})
- cmd,err:=CommandContext(ctx,"cmd.exe","/C","exit","0")
+ encoded:=utf16.Encode([]rune("exit 0"))
+	command:=make([]byte,0,len(encoded)*2)
+	for _,unit:=range encoded{command=append(command,byte(unit),byte(unit>>8))}
+	cmd,err:=CommandContext(ctx,"powershell.exe","-NoProfile","-NonInteractive","-EncodedCommand",base64.StdEncoding.EncodeToString(command))
  if err!=nil{return fmt.Errorf("Windows Worker security preflight: %w",err)}
  output,err:=cmd.CombinedOutput()
  if err!=nil{return fmt.Errorf("Windows Worker cross-SID process preflight failed: %w: %s",err,output)}

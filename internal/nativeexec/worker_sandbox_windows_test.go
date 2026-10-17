@@ -4,6 +4,7 @@ package nativeexec
 
 import (
 	"context"
+ "encoding/json"
  "time"
  "strconv"
  "fmt"
@@ -137,4 +138,22 @@ func TestT09WindowsPreexistingEmptyProviderDirectoriesAreMigrated(t *testing.T) 
 		body,err:=os.ReadFile(filepath.Join(dst,name,"history.json"))
 		if err!=nil||string(body)!="OLD-HISTORY"{t.Fatalf("lost %s existing native history: %q %v",name,body,err)}
 	}
+}
+
+
+func TestT09WindowsPersistedAccountConfigWithoutEnvironment(t *testing.T) {
+	workspace:=os.Getenv("SECRETARY_WORKER_TEST_WORKSPACE")
+	protected:=os.Getenv("SECRETARY_WORKER_TEST_PROTECTED_DIR")
+	home:=os.Getenv("SECRETARY_WORKER_HOME")
+	user:=os.Getenv("SECRETARY_WORKER_USERNAME")
+	password:=os.Getenv("SECRETARY_WORKER_PASSWORD")
+	if workspace==""||protected==""||home==""||user==""||password==""{t.Skip("separate SID fixture missing")}
+	credentials,err:=json.Marshal(map[string]string{"username":user,"password":password,"domain":".","home":home})
+	if err!=nil{t.Fatal(err)}
+	if err:=os.WriteFile(filepath.Join(protected,"worker-account.json"),credentials,0600);err!=nil{t.Fatal(err)}
+	t.Setenv("SECRETARY_WORKER_USERNAME","")
+	t.Setenv("SECRETARY_WORKER_PASSWORD","")
+	t.Setenv("SECRETARY_WORKER_HOME","")
+	t.Setenv("SECRETARY_WORKER_DOMAIN","")
+	if err:=PreflightWorkerSandbox(protected);err!=nil{t.Fatalf("persisted Worker account preflight/dispatch failed: %v",err)}
 }
