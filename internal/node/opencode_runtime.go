@@ -249,7 +249,8 @@ func openCodeEnvironment(workspace, configPath, configContent string, mcpServers
 
 func (r OpenCodeRuntime) withWorkerOSDataHome(ctx context.Context) (OpenCodeRuntime,error) {
 	if runtime.GOOS == "windows" && nativeexec.IsWorkerSandboxed(ctx) {
-		home := strings.TrimSpace(os.Getenv("SECRETARY_WORKER_HOME"))
+		home, homeErr := nativeexec.WindowsWorkerHome(ctx)
+		if homeErr != nil {return r,homeErr}
 		if home != "" {
 			// OpenCode must not share the privileged Node profile and cannot
 			// write within its protected identity/state directory.

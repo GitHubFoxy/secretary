@@ -206,3 +206,18 @@ func revertWorkerToken() error {
 	}
 	return nil
 }
+
+// WindowsWorkerHome loads the persisted isolated Worker profile location
+// from the protected Node state when environment overrides are absent.
+func WindowsWorkerHome(ctx context.Context) (string,error) {
+	policy,ok:=workerSandboxFromContext(ctx)
+	if !ok{return "",nil}
+	home:=strings.TrimSpace(os.Getenv("SECRETARY_WORKER_HOME"))
+	if home!="" {return home,nil}
+	raw,err:=os.ReadFile(filepath.Join(policy.ProtectedDir,"worker-account.json"))
+	if err!=nil{return "",fmt.Errorf("Worker profile not provisioned: %w",err)}
+	var config struct {Home string}
+	if err:=json.Unmarshal(raw,&config);err!=nil{return "",err}
+	if !filepath.IsAbs(config.Home){return "",errors.New("Windows Worker home must be absolute")}
+	return config.Home,nil
+}
