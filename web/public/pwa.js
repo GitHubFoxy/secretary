@@ -24,7 +24,12 @@
         cache: 'no-store', credentials: 'same-origin', signal: controller.signal,
       });
       if (!response.ok) throw new Error('Server health check failed');
-      if (current === generation) report('');
+      if (current === generation) {
+        report('');
+        // The Web app may have loaded while the server was unreachable.
+        // Notify it on each successful health probe so missed startup events recover too.
+        window.dispatchEvent(new Event('secretary:server-available'));
+      }
     } catch (_) {
       if (current === generation) {
         report('Secretary Server is unreachable. Conversation and Worker controls require a connection.');

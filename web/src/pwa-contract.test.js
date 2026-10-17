@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
+import { createSessionRecovery } from './session-recovery.js';
 
 const src = (path) => readFileSync(new URL(path, import.meta.url), 'utf8');
 const manifest = JSON.parse(src('../public/manifest.webmanifest'));
@@ -38,6 +39,11 @@ test('PWA keeps existing owner credentials and shows connection failures, withou
   assert.match(pwa, /role', 'alert'/);
   assert.match(pwa, /You are offline/);
   assert.match(pwa, /Secretary Server is unreachable/);
+  assert.match(pwa, /secretary:server-available/);
+  assert.match(app, /window.addEventListener\('secretary:server-available', recoverCookieSession\)/);
+  assert.match(app, /sessionRecovery.onServerAvailable\(\)/);
+  assert.match(app, /createSessionRecovery\(/);
+  assert.equal(typeof createSessionRecovery, 'function');
   assert.match(sw, /fetch\(event\.request\)/);
   assert.doesNotMatch(sw, /caches\.|\.cache\.put|push/);
 });
