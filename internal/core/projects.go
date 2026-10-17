@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -246,24 +245,6 @@ func (p Project) Validate() error {
 	return nil
 }
 
-func validateRootPath(path string) error {
-	path = strings.TrimSpace(path)
-	if path == "" || !filepath.IsAbs(path) {
-		return errors.New("path must be absolute")
-	}
-	if path != filepath.Clean(path) {
-		return errors.New("path must be clean")
-	}
-	if path == string(filepath.Separator) {
-		return errors.New("filesystem root is not an allowed workspace root")
-	}
-	for _, part := range strings.Split(filepath.ToSlash(path), "/") {
-		if part == ".." {
-			return errors.New("path traversal is not allowed")
-		}
-	}
-	return nil
-}
 func validatePolicyAliases(policy ProjectPolicy) error {
 	if policy.ModelID != "" && policy.Model != "" && policy.ModelID != policy.Model {
 		return errors.New("model and model_id policy aliases conflict")
@@ -471,14 +452,6 @@ func validateWorkspaceWithin(mappingRoot, policyRoot, workspace string) error {
 	}
 	return nil
 }
-func pathContained(root, path string) bool {
-	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
-}
-
 func (s *Store) migratePhase4Projects(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS phase4_projects (
  id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, description TEXT NOT NULL DEFAULT '', mappings_json TEXT NOT NULL,
@@ -809,7 +782,7 @@ func (s *Store) ResolveProjectDispatch(ctx context.Context, request ProjectDispa
 		found := false
 		for _, nodeMapping := range record.Workspaces {
 			if nodeMapping.ProjectID == project.ID {
-				if filepath.Clean(nodeMapping.Path) != filepath.Clean(mapping.Path) {
+				if !workspacePathsEqual(nodeMapping.Path, mapping.Path) {
 					return ProjectDispatch{}, fmt.Errorf("%w: Project %q path changed on Node %s", ErrNodeWorkspaceMismatch, project.ID, node)
 				}
 				mapping.Path = nodeMapping.Path

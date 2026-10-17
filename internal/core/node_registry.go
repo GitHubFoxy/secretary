@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 )
@@ -282,7 +281,8 @@ func (s *Store) ReconcileNodeWorkspaces(ctx context.Context, node NodeReference,
 	seen := make(map[string]struct{}, len(mappings))
 	for i := range mappings {
 		mappings[i].ProjectID = strings.TrimSpace(mappings[i].ProjectID)
-		mappings[i].Path = filepath.Clean(strings.TrimSpace(mappings[i].Path))
+		// Paths belong to the Node OS: never normalize them using the Server filesystem rules.
+		mappings[i].Path = strings.TrimSpace(mappings[i].Path)
 		if mappings[i].ProjectID == "" {
 			return fmt.Errorf("%w: Project ID is required", ErrNodeWorkspaceMismatch)
 		}
@@ -298,7 +298,7 @@ func (s *Store) ReconcileNodeWorkspaces(ctx context.Context, node NodeReference,
 			return fmt.Errorf("%w: Project %q: %v", ErrNodeWorkspaceMismatch, mappings[i].ProjectID, err)
 		}
 		projectMapping, ok := project.MappingForNode(node)
-		if !ok || filepath.Clean(projectMapping.Path) != mappings[i].Path {
+		if !ok || !workspacePathsEqual(projectMapping.Path, mappings[i].Path) {
 			return fmt.Errorf("%w: Project %q path does not match Node %s", ErrNodeWorkspaceMismatch, mappings[i].ProjectID, node)
 		}
 	}

@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
@@ -21,7 +20,7 @@ import (
 var invalidNodeName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 func main() {
-	_ = syscall.Umask(0o077)
+	setPrivateNodeUmask()
 	configPath := flag.String("config", "", "Node-local deployment and approved Worker MCP config JSON")
 	dataDir := flag.String("data-dir", defaultNodeDataDir(), "directory for Node identity and durable local state")
 	serverURL := flag.String("server", envOr("SECRETARY_NODE_SERVER", "http://127.0.0.1:8081"), "Secretary server URL used for first pairing")
@@ -178,7 +177,7 @@ func main() {
 		Capacity:   *capacity,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), nodeShutdownSignals()...)
 	defer stop()
 	log.Printf("secretary-node %s connecting outbound to %s", identity.Node, identity.ConnectURL)
 	if err := daemon.Run(ctx); err != nil {
