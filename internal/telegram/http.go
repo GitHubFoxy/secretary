@@ -15,6 +15,7 @@ import (
 )
 
 var ErrFormatting = errors.New("telegram: entity parsing rejected")
+var ErrFileTooLarge = errors.New("telegram: file exceeds maximum size")
 
 func botAPIError(method string, code int, description string) error {
 	lower := strings.ToLower(description)
@@ -280,7 +281,7 @@ func (t *BotAPITransport) DownloadFile(ctx context.Context, filePath string, max
 		return nil, fmt.Errorf("telegram: read downloaded file: %w", err)
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("telegram: file exceeds maximum size (%d bytes)", limit)
+		return nil, fmt.Errorf("%w (%d bytes)", ErrFileTooLarge, limit)
 	}
 	return data, nil
 }

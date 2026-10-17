@@ -911,6 +911,15 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			})
 		}
 	case core.WorkerNeedsInput:
+		for _, artifactID := range node.ArtifactIDs(request.Text) {
+			artifact, _, artifactErr := s.Store.ArtifactForPerson(ctx, s.PersonID, artifactID)
+			if artifactErr != nil {
+				return core.WorkerDetails{}, fmt.Errorf("worker: attached Artifact unavailable: %w", artifactErr)
+			}
+			if strings.HasPrefix(artifact.MediaType, "image/") {
+				return core.WorkerDetails{}, errors.New("worker: image attachments cannot answer needs_input yet; send a text answer or start a new Worker turn with the image")
+			}
+		}
 		if attempt == nil {
 			return core.WorkerDetails{}, core.ErrInvalidTransition
 		}

@@ -2,6 +2,11 @@ package telegram
 
 import (
 	"context"
+	"bytes"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
+	_ "golang.org/x/image/webp"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -36,6 +41,9 @@ func imageArtifactName(u Update) (string, error) {
 		return "", errors.New("telegram: missing image")
 	}
 	name := u.Message.Image.FileName
+	if name == "" {
+		return "", nil
+	}
 	if filepath.Base(name) != name || strings.ContainsAny(name, "/\\") {
 		return "", errors.New("telegram: invalid image filename")
 	}
@@ -100,10 +108,24 @@ func (a *Adapter) deliverImageUpdate(ctx context.Context, u Update, allowed bool
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		if errors.Is(err, ErrFileTooLarge) {
+			return fail("файл превышает лимит 8 МиБ.")
+		}
 		return fmt.Errorf("telegram: download image: %w", err)
 	}
 	if len(data) == 0 || len(data) > core.MaxArtifactBytes {
 		return fail("изображение пустое или превышает лимит 8 МиБ.")
+	}
+	if name == "" {
+		_, format, probeErr := image.DecodeConfig(bytes.NewReader(data))
+		if probeErr != nil {
+			return fail("не удалось определить формат изображения.")
+		}
+		extension := map[string]string{"jpeg": ".jpg", "png": ".png", "webp": ".webp"}[format]
+		if extension == "" {
+			return fail("поддерживаются только PNG, JPEG и WebP.")
+		}
+		name = fmt.Sprintf("telegram-image-%d-%d%s", u.ID, m.MessageID, extension)
 	}
 	artifactID, err := artifactStore.StoreImageOriginal(ctx, u.ID, *m, name, data)
 	if err != nil {

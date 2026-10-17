@@ -45,7 +45,11 @@ func (s *Server) telegramImageSource(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnprocessableEntity)
 		return
 	}
-	if declared := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Image-Mime-Type"))); declared != "" && declared != validated.MediaType {
+	declared := strings.ToLower(strings.TrimSpace(r.Header.Get("X-Image-Mime-Type")))
+	if declared == "image/jpg" || declared == "image/pjpeg" {
+		declared = "image/jpeg"
+	}
+	if declared != "" && declared != "application/octet-stream" && declared != "binary/octet-stream" && declared != validated.MediaType {
 		http.Error(w, "Telegram image MIME type and image content disagree", http.StatusUnprocessableEntity)
 		return
 	}
