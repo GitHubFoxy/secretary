@@ -133,3 +133,20 @@ func (i NodeIdentity) FetchArtifact(ctx context.Context, id string) (ArtifactPay
 	}
 	return ArtifactPayload{ID: id, Name: string(name), SHA256: expected, Data: data}, nil
 }
+
+func (a Authenticator) SignPublishCapability(nodeRef core.NodeReference, workerRef, attemptID string) string {
+	mac := hmac.New(sha256.New, a.secret)
+	_, _ = fmt.Fprintf(mac, "artifact-publish-v1\\n%s\\n%s\\n%s", nodeRef, workerRef, attemptID)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (a Authenticator) VerifyPublishCapability(nodeRef core.NodeReference, workerRef, attemptID, token string) error {
+	if len(a.secret) < 32 || nodeRef == "" || workerRef == "" || attemptID == "" {
+		return errors.New("node artifact: invalid publish authorization")
+	}
+	provided, err := hex.DecodeString(token)
+	if err != nil || !hmac.Equal(provided, mustDecodeArtifactSignature(a.SignPublishCapability(nodeRef, workerRef, attemptID))) {
+		return errors.New("node artifact: invalid publish authorization")
+	}
+	return nil
+}

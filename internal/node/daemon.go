@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
@@ -45,6 +46,13 @@ func (d *Daemon) Run(ctx context.Context) error {
 	}
 	execution := NewExecutionNode(d.Identity.Node, d.Runtime, d.Store)
 	execution.SetArtifactFetcher(d.Identity.FetchArtifact)
+	binary, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := execution.SetArtifactPublisher(d.Identity, binary); err != nil {
+		return err
+	}
 	if err := execution.SetMCPServers(d.MCPServers); err != nil {
 		return err
 	}
