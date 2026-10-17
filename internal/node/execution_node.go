@@ -40,6 +40,7 @@ type ExecutionNode struct {
 	inventory         core.HarnessInventorySnapshot
 	workspaces        map[string]string
 	mcpServers        []MCPServer
+	artifactFetcher    ArtifactFetcher
 }
 
 func NewExecutionNode(node core.NodeReference, runtime Runtime, store *LocalStore) *ExecutionNode {
@@ -211,6 +212,14 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	task := command.Envelope.OriginalUserIntent
 	if continuing {
 		task = promptText
+	}
+	prepared, artifactErr := n.prepareArtifactPrompt(ctx, workspace, task)
+	if artifactErr != nil {
+		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "artifact_unavailable", artifactErr.Error())
+	}
+	task = prepared
+	if continuing {
+		promptText = prepared
 	}
 	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
 	profile, err := request.effectiveProfile()
@@ -465,6 +474,14 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	task := command.Envelope.OriginalUserIntent
 	if continuing {
 		task = promptText
+	}
+	prepared, artifactErr := n.prepareArtifactPrompt(ctx, workspace, task)
+	if artifactErr != nil {
+		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "artifact_unavailable", artifactErr.Error())
+	}
+	task = prepared
+	if continuing {
+		promptText = prepared
 	}
 	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID), DeferInitialPrompt: continuing}
 	profile, err := request.effectiveProfile()
