@@ -77,3 +77,24 @@ func TestT04ServerEventBridgeProjectsToDMAndForumWithoutReplay(t *testing.T) {
 		t.Fatalf("durable event replay duplicated sends: before=%d after=%d", len(sent), len(transport.sent))
 	}
 }
+
+func TestT04DeploymentAllowsDMWithoutGroupAndValidatesForumID(t *testing.T) {
+	t.Setenv("SECRETARY_TELEGRAM_ENABLED", "true")
+	t.Setenv("SECRETARY_TELEGRAM_BOT_TOKEN", "fixture")
+	t.Setenv("SECRETARY_TELEGRAM_SERVER_CREDENTIAL", "fixture")
+	t.Setenv("SECRETARY_TELEGRAM_OWNER_CHAT_ID", "100")
+	t.Setenv("SECRETARY_TELEGRAM_GROUP_CHAT_ID", "")
+	config, err := configuredTelegramDeployment()
+	if err != nil || config.OwnerChatID != 100 || config.GroupChatID != 0 {
+		t.Fatalf("DM-only deployment=%#v err=%v", config, err)
+	}
+	t.Setenv("SECRETARY_TELEGRAM_GROUP_CHAT_ID", "-200")
+	config, err = configuredTelegramDeployment()
+	if err != nil || config.GroupChatID != -200 {
+		t.Fatalf("forum deployment=%#v err=%v", config, err)
+	}
+	t.Setenv("SECRETARY_TELEGRAM_GROUP_CHAT_ID", "200")
+	if _, err := configuredTelegramDeployment(); err == nil {
+		t.Fatal("positive group id accepted")
+	}
+}
