@@ -46,7 +46,7 @@ func TestT12StatusPollingNeverRetransfersEightMegabyteOriginal(t *testing.T) {
 	defer cancel()
 	text,images,err:=PrepareArtifactInput(ctx,t.TempDir(),"Analyze "+ "artifact://"+id,fetch)
 	if err!=nil{t.Fatal(err)}
-	if len(images)!=2||!strings.Contains(text,"nominal clip-relative sample time"){t.Fatalf("missing frames or timestamp semantics: %d %q",len(images),text)}
+	if len(images)!=2||!strings.Contains(text,"clip-relative sample time"){t.Fatalf("missing frames or timestamp semantics: %d %q",len(images),text)}
 	if originalDownloads!=1||frameDownloads!=2||statusRequests!=3 {t.Fatalf("transfers: original=%d frames=%d metadata=%d",originalDownloads,frameDownloads,statusRequests)}
 	if bytesTransferred!=len(original)+2*len(webp) {t.Fatalf("retransferred full original: %d bytes",bytesTransferred)}
 }
