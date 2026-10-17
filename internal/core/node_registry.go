@@ -502,34 +502,89 @@ func (s *Store) UpdateNodeHeartbeat(ctx context.Context, node NodeReference, inv
 		return err
 	}
 	now := s.now()
-	result, err := s.db.ExecContext(ctx, `UPDATE phase4_nodes SET online = 1, last_seen_at = ?, last_heartbeat_at = ?, capacity = ?, active_attempts_json = ?, last_processed_command = ?, inventory_json = ? WHERE node_ref = ? AND revoked = 0`, timestamp(now), timestamp(now), status.Capacity, string(encodedAttempts), status.LastProcessedCommand, string(encodedInventory), node)
-	if err != nil {
-		return err
-	}
-	if err := s.requireActiveNode(ctx, node, result); err != nil {
-		return err
-	}
-	for _, active := range status.ActiveAttempts {
-		// An exact binding, not merely a connected Node, proves liveness.
-		if active.WorkerRef == "" || active.TurnID == "" || active.AttemptID == "" {
-			continue
-		}
-		if _, err := s.db.ExecContext(ctx, `UPDATE workers SET status = CASE
-			WHEN (SELECT state FROM turns WHERE id = ?) = 'waiting_approval' THEN ?
-			WHEN (SELECT state FROM turns WHERE id = ?) = 'needs_input' THEN ?
-			ELSE ? END, updated_at = ? WHERE worker_ref = ? AND node_id = ? AND status = ? AND EXISTS (
-			SELECT 1 FROM phase4_attempts a JOIN turns t ON t.id = a.turn_id
-			WHERE a.id = ? AND a.worker_id = workers.id AND a.node_id = ?
-			AND a.turn_id = ? AND a.state IN (?, ?) AND t.current_attempt_id = a.id
-		)`, active.TurnID, WorkerWaitingApproval, active.TurnID, WorkerNeedsInput,
-			WorkerWorking, timestamp(now), active.WorkerRef, node, WorkerOffline,
-			active.AttemptID, node, active.TurnID, AttemptStarting, AttemptActive); err != nil {
+	return withTxErr(s, ctx, func(tx *sql.Tx) error {
+		// Reconcile against the PREVIOUS heartbeat, not all nonterminal
+		// Attempts: a newly dispatched Attempt may not yet have reached the
+		// native runtime when its first heartbeat arrives. Serialize both
+		// snapshots and Worker status changes with the Node registry update.
+		var previousJSON string
+		var revoked bool
+		if err := tx.QueryRowContext(ctx, `SELECT active_attempts_json, revoked FROM phase4_nodes WHERE node_ref = ?`, node).Scan(&previousJSON, &revoked); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return ErrNotFound
+			}
 			return err
 		}
-	}
-	return nil
-}
+		if revoked {
+			return ErrNodeRevoked
+		}
+		var previous []NodeActiveAttempt
+		if previousJSON != "" {
+			if err := json.Unmarshal([]byte(previousJSON), &previous); err != nil {
+				return err
+			}
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE phase4_nodes SET online = 1, last_seen_at = ?, last_heartbeat_at = ?, capacity = ?, active_attempts_json = ?, last_processed_command = ?, inventory_json = ? WHERE node_ref = ? AND revoked = 0`,
+			timestamp(now), timestamp(now), status.Capacity, string(encodedAttempts), status.LastProcessedCommand, string(encodedInventory), node)
+		if err != nil {
+			return err
+		}
+		if affected, err := result.RowsAffected(); err != nil {
+			return err
+		} else if affected == 0 {
+			return ErrNodeRevoked
+		}
 
+		current := make(map[NodeActiveAttempt]struct{}, len(status.ActiveAttempts))
+		for _, active := range status.ActiveAttempts {
+			current[active] = struct{}{}
+		}
+		for _, missing := range previous {
+			if missing.WorkerRef == "" || missing.TurnID == "" || missing.AttemptID == "" {
+				continue
+			}
+			if _, stillRunning := current[missing]; stillRunning {
+				continue
+			}
+			// The Node can disappear an Attempt before its terminal event is
+			// delivered. Remove only the ability to address its native session;
+			// keep its persisted Attempt nonterminal for a late Result or
+			// explicit owner-controlled AbandonAttempt.
+			if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ?
+				WHERE worker_ref = ? AND node_id = ? AND status IN (?, ?, ?, ?)
+				AND EXISTS (
+					SELECT 1 FROM phase4_attempts a JOIN turns t ON t.id = a.turn_id
+					WHERE a.id = ? AND a.worker_id = workers.id AND a.node_id = ?
+					AND a.turn_id = ? AND a.state IN (?, ?) AND t.current_attempt_id = a.id
+				)`, WorkerOffline, timestamp(now), missing.WorkerRef, node,
+				WorkerStarting, WorkerWorking, WorkerWaitingApproval, WorkerNeedsInput,
+				missing.AttemptID, node, missing.TurnID, AttemptStarting, AttemptActive); err != nil {
+				return err
+			}
+		}
+
+		for _, active := range status.ActiveAttempts {
+			// A fresh exact binding, not Node connectivity alone, proves
+			// continued access to the previous native Worker session.
+			if active.WorkerRef == "" || active.TurnID == "" || active.AttemptID == "" {
+				continue
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE workers SET status = CASE
+				WHEN (SELECT state FROM turns WHERE id = ?) = 'waiting_approval' THEN ?
+				WHEN (SELECT state FROM turns WHERE id = ?) = 'needs_input' THEN ?
+				ELSE ? END, updated_at = ? WHERE worker_ref = ? AND node_id = ? AND status = ? AND EXISTS (
+				SELECT 1 FROM phase4_attempts a JOIN turns t ON t.id = a.turn_id
+				WHERE a.id = ? AND a.worker_id = workers.id AND a.node_id = ?
+				AND a.turn_id = ? AND a.state IN (?, ?) AND t.current_attempt_id = a.id
+			)`, active.TurnID, WorkerWaitingApproval, active.TurnID, WorkerNeedsInput,
+				WorkerWorking, timestamp(now), active.WorkerRef, node, WorkerOffline,
+				active.AttemptID, node, active.TurnID, AttemptStarting, AttemptActive); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
 func (s *Store) UpdateNodeInventory(ctx context.Context, node NodeReference, inventory HarnessInventorySnapshot) error {
 	if err := inventory.Validate(); err != nil {
 		return err
