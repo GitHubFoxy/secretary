@@ -172,3 +172,30 @@ func TestT11ImageDocumentWithoutFileNameDecodedFromImageMIME(t *testing.T){
 	if u.Message==nil || u.Message.Image==nil || u.Message.Image.FileName!="" {t.Fatalf("image document without filename rejected: %+v",u)}
 	_,_ = json.Marshal(u)
 }
+
+func TestT11RestartDrainsPersistedImageWithoutReplayingUpdate(t *testing.T) {
+	path:=filepath.Join(t.TempDir(),"durable.json")
+	tr:=&t11Transport{fakeTransport:&fakeTransport{},data:t11PNG(t)}
+	srv:=&t11SignalServer{delivered:make(chan string,2)}
+	old,err:=New(Config{StatePath:path,OwnerChatID:100},tr,srv)
+	if err!=nil {t.Fatal(err)}
+	update:=t11Update(980,100,0)
+	old.mu.Lock()
+	old.state.PendingImages=append(old.state.PendingImages,update)
+	old.state.Processed[fmt.Sprint(update.ID)]=old.now()
+	err=old.saveLocked()
+	old.mu.Unlock()
+	if err!=nil {t.Fatal(err)}
+	restored,err:=New(Config{StatePath:path,OwnerChatID:100},tr,srv)
+	if err!=nil {t.Fatal(err)}
+	if err:=restored.PollOnce(context.Background());err!=nil {t.Fatal(err)}
+	restored.imageWG.Wait()
+	select{case body:=<-srv.delivered:
+		if !strings.Contains(body,"artifact://art_t11_async") {t.Fatalf("restored image lost: %q",body)}
+	default:t.Fatal("restored job not executed")}
+	if err:=restored.HandleUpdate(context.Background(),update);err!=nil {t.Fatal(err)}
+	restored.imageWG.Wait()
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	if srv.images!=1 || len(srv.texts)!=1 {t.Fatalf("recovery duplicated source or inbound: %+v",srv)}
+}
