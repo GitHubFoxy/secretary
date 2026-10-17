@@ -334,6 +334,12 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 		}
 		adapter.state.GroupChat = *adapter.config.GroupChatID
 	}
+	// A persisted two-chat installation must keep both projections even if
+	// callers omit the newly added optional config field on a later restart.
+	if adapter.config.GroupChatID == nil && adapter.state.OwnerChat > 0 && adapter.state.GroupChat < 0 {
+		linked := adapter.state.GroupChat
+		adapter.config.GroupChatID = &linked
+	}
 	if err := adapter.saveLocked(); err != nil {
 		return nil, err
 	}
@@ -1654,11 +1660,20 @@ func (a *Adapter) compactDeliveredLocked() {
 // for their DM/General projections are no longer needed after that update's
 // processed marker has been saved. Never compact a failed/queued update.
 func (a *Adapter) compactProcessedReceiptsLocked(updateID int64) {
-	suffix := ":mirror-input:" + fmt.Sprint(updateID)
+	id := fmt.Sprint(updateID)
+	suffixes := []string{
+		":mirror-input:" + id,
+		":steer-error:" + id,
+		":inbound:voice-error:" + id,
+		":inbound:voice-formatter:" + id,
+	}
 	for key := range a.state.Delivered {
-		if strings.HasSuffix(key, suffix) {
-			delete(a.state.Delivered, key)
-			delete(a.state.DeliveredSequence, key)
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(key, suffix) {
+				delete(a.state.Delivered, key)
+				delete(a.state.DeliveredSequence, key)
+				break
+			}
 		}
 	}
 }
