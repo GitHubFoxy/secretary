@@ -84,6 +84,7 @@ func testFailedReceiptSurvivesReconnect(t *testing.T, resume bool) {
 	rt.disconnected.Store(first)
 	command := daemonDispatchFixture("macbook", "lost-failure")
 	command.Dispatch.Envelope.Workspace = t.TempDir()
+	command.Dispatch.Envelope = authorizedNodeTestWorkspace(command.Dispatch.Envelope)
 	if resume {
 		checkpoint := *command.Dispatch
 		checkpoint.Metadata.CommandID = "saved-dispatch"
