@@ -410,6 +410,11 @@ func runPublicIdleFollowUp(t *testing.T, native, codex, queued bool, reconnect s
 			if _, err := store.SetNodeDraining(ctx, identity.Node, false); err != nil {
 				t.Fatal(err)
 			}
+			// This fixture reenrolls the existing socket without a new daemon
+			// handshake. Supply the fresh capacity report the daemon now emits.
+			if err := store.UpdateNodeHeartbeat(ctx, identity.Node, inventory, core.NodeHeartbeat{Capacity: 1}); err != nil {
+				t.Fatal(err)
+			}
 		} else {
 			if err := store.MarkNodeDisconnected(ctx, identity.Node); err != nil {
 				t.Fatal(err)

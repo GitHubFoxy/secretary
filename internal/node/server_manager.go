@@ -354,7 +354,7 @@ func (m *ServerManager) CommandReady(ctx context.Context, nodeRef core.NodeRefer
 	m.mu.Lock()
 	connected := m.connections[nodeRef] != nil
 	m.mu.Unlock()
-	return record.Online && connected && !record.Draining, nil
+	return record.Online && connected && !record.Draining && !record.LastHeartbeatAt.IsZero() && record.Capacity > 0, nil
 }
 
 func (m *ServerManager) SendCommand(ctx context.Context, nodeRef core.NodeReference, command Command) error {
