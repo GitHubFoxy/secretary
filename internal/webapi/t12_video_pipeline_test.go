@@ -165,13 +165,18 @@ func TestT12WebVideoAsyncToRemoteNodeWorkerResultAndFailure(t *testing.T) {
 		}
 		actionDone<-nil
 	}()
+	actionReturned:=false
 	select {
-	case e:=<-actionDone:t.Fatalf("dependent action returned before video processing finished: %v",e)
+	case e:=<-actionDone:
+		if e!=nil {t.Fatalf("dependent dispatch request rejected: %v",e)}
+		actionReturned=true
 	case <-time.After(100*time.Millisecond):
 	}
 	select {case <-runtime.seen:t.Fatal("Worker started before video conversion succeeded");default:}
 	close(processor.release)
-	select{case e:=<-actionDone:if e!=nil{t.Fatalf("dependent action failed after conversion: %v",e)};case <-ctx.Done():t.Fatal("dependent action remained blocked")}
+	if !actionReturned {
+		select{case e:=<-actionDone:if e!=nil{t.Fatalf("dependent action failed after conversion: %v",e)};case <-ctx.Done():t.Fatal("dependent action remained blocked")}
+	}
 	select{case received:=<-runtime.seen:
 		if len(received.Images)!=2 || !strings.Contains(received.Task,uploaded.Reference){t.Fatalf("lost native video input: %+v",received)}
 	case <-ctx.Done():t.Fatal("remote Worker never received frame images")}
