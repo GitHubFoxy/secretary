@@ -743,6 +743,10 @@ func (a *Adapter) processUpdate(ctx context.Context, update Update) error {
 		if err == nil {
 			a.state.Processed[fmt.Sprint(update.ID)] = a.now()
 			err = a.saveLocked()
+			if err == nil {
+				a.compactProcessedReceiptsLocked(update.ID)
+				err = a.saveLocked()
+			}
 			claim.err = err
 		}
 		delete(a.claims, update.ID)
@@ -1086,6 +1090,7 @@ func (a *Adapter) HandleDurableEvent(ctx context.Context, event Event) error {
 	}
 	if containsEventSeq(a.pending.EventSeqs, event.Sequence) {
 		a.state.LastEventSeq = event.Sequence
+		a.compactDeliveredLocked()
 		err := a.saveLocked()
 		a.mu.Unlock()
 		return err
@@ -1105,6 +1110,7 @@ func (a *Adapter) HandleDurableEvent(ctx context.Context, event Event) error {
 	if event.Sequence > a.state.LastEventSeq {
 		a.state.LastEventSeq = event.Sequence
 	}
+	a.compactDeliveredLocked()
 	err := a.saveLocked()
 	a.mu.Unlock()
 	return err
@@ -1135,7 +1141,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if owner == 0 {
 			return nil
 		}
-		return a.sendPersonal(ctx, OutgoingMessage{Text: event.Text, Identity: "inbound:acknowledgement:" + event.EventID})
+		return a.sendPersonal(ctx, OutgoingMessage{Text: event.Text, Identity: "inbound:acknowledgement:" + event.EventID, DurableSequence: event.Sequence})
 	}
 	if strings.HasPrefix(event.Kind, "secretary.") {
 		return a.handleSecretaryEvent(event, 0)
@@ -1160,7 +1166,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if identity == "" {
 			identity = fmt.Sprintf("seq:%d", event.Sequence)
 		}
-		return a.sendPersonal(ctx, OutgoingMessage{Text: text, Identity: "inbound:" + identity})
+		return a.sendPersonal(ctx, OutgoingMessage{Text: text, Identity: "inbound:" + identity, DurableSequence: event.Sequence})
 	}
 	if event.WorkerRef == "" {
 		return nil
@@ -1194,7 +1200,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			return a.sendMessage(ctx, OutgoingMessage{
 				ChatID: mapping.ChatID, ThreadID: mapping.ThreadID,
 				Text: strings.Join(parts, "\n\n"), Identity: "task-prompt:" + event.WorkerRef,
-				DisableLinkPreview: true,
+				DisableLinkPreview: true, DurableSequence: event.Sequence,
 			})
 		}
 		return nil
@@ -1303,13 +1309,13 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			if !isWorkerTerminalEvent(event) {
 				a.sendTyping(mapping.ChatID, mapping.ThreadID)
 			}
-			if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: body, Identity: identity, DisableLinkPreview: true}); err != nil {
+			if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: body, Identity: identity, DisableLinkPreview: true, DurableSequence: event.Sequence}); err != nil {
 				return err
 			}
 		}
 		if event.TerminalIdentity != "" {
 			if a.config.GroupChatID != nil {
-				if err := a.sendPersonal(ctx, OutgoingMessage{Text: body, Identity: identity + ":personal", DisableLinkPreview: true}); err != nil {
+				if err := a.sendPersonal(ctx, OutgoingMessage{Text: body, Identity: identity + ":personal", DisableLinkPreview: true, DurableSequence: event.Sequence}); err != nil {
 					return err
 				}
 			} else {
@@ -1317,7 +1323,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 				owner := a.state.OwnerChat
 				a.mu.Unlock()
 				if owner != 0 {
-					mirror := OutgoingMessage{ChatID: owner, Text: body, Identity: identity + ":general", DisableLinkPreview: true}
+					mirror := OutgoingMessage{ChatID: owner, Text: body, Identity: identity + ":general", DisableLinkPreview: true, DurableSequence: event.Sequence}
 					if err := a.sendMessage(ctx, mirror); err != nil {
 						return err
 					}
@@ -1479,6 +1485,7 @@ func (a *Adapter) Flush(ctx context.Context) error {
 	secretaryMessage, hasSecretary := secretaryBatchMessage(owner, text, tools)
 	if len(eventSeqs) > 0 {
 		secretaryMessage.Identity = fmt.Sprintf("secretary:%v", eventSeqs)
+		secretaryMessage.DurableSequence = eventSeqs[len(eventSeqs)-1]
 	}
 	outboxIdentities := make(map[string]struct{}, len(a.state.Outbox))
 	for _, pending := range a.state.Outbox {
@@ -1542,6 +1549,7 @@ func (a *Adapter) clearSecretaryPending(text string, tools []string, seqs []int6
 	a.pending.EventSeqs = removeEventSeqs(a.pending.EventSeqs, seqs)
 	a.pending.Ready = false
 	_ = a.persistPendingLocked()
+	a.compactDeliveredLocked()
 	return a.saveLocked()
 }
 
@@ -1580,7 +1588,11 @@ func outgoingMessageIdentity(message OutgoingMessage) string {
 
 func (a *Adapter) markDeliveredLocked(message OutgoingMessage) {
 	if message.Identity != "" {
-		a.state.Delivered[outgoingMessageIdentity(message)] = a.now()
+		key := outgoingMessageIdentity(message)
+		a.state.Delivered[key] = a.now()
+		if message.DurableSequence > 0 {
+			a.state.DeliveredSequence[key] = message.DurableSequence
+		}
 	}
 	switch {
 	case strings.HasPrefix(message.Identity, "task-prompt:"):
@@ -1610,6 +1622,43 @@ func (a *Adapter) markDeliveredLocked(message OutgoingMessage) {
 		identity := strings.TrimPrefix(message.Identity, "tool:")
 		if identity != "" {
 			a.state.ToolNotified[identity] = a.now()
+		}
+	}
+}
+
+// compactDeliveredLocked removes a delivery proof only after the durable
+// Server cursor has advanced beyond its event AND no pending outbox or
+// Secretary batch could cause the same event to be sent again. This is safe
+// for partial group/DM sends and for restart between individual sends.
+func (a *Adapter) compactDeliveredLocked() {
+	if len(a.state.DeliveredSequence) == 0 {
+		return
+	}
+	pending := make(map[string]struct{}, len(a.state.Outbox))
+	for _, msg := range a.state.Outbox {
+		pending[outgoingMessageIdentity(msg)] = struct{}{}
+	}
+	for key, seq := range a.state.DeliveredSequence {
+		if seq <= 0 || seq > a.state.LastEventSeq || containsEventSeq(a.pending.EventSeqs, seq) {
+			continue
+		}
+		if _, queued := pending[key]; queued {
+			continue
+		}
+		delete(a.state.Delivered, key)
+		delete(a.state.DeliveredSequence, key)
+	}
+}
+
+// Processed Telegram updates cannot be replayed into the Server, so receipts
+// for their DM/General projections are no longer needed after that update's
+// processed marker has been saved. Never compact a failed/queued update.
+func (a *Adapter) compactProcessedReceiptsLocked(updateID int64) {
+	suffix := ":mirror-input:" + fmt.Sprint(updateID)
+	for key := range a.state.Delivered {
+		if strings.HasSuffix(key, suffix) {
+			delete(a.state.Delivered, key)
+			delete(a.state.DeliveredSequence, key)
 		}
 	}
 }
@@ -1746,6 +1795,7 @@ func (a *Adapter) drainOutbox(ctx context.Context) error {
 			if done {
 				a.state.Outbox = removeOutboxMessage(a.state.Outbox, message)
 				a.markDeliveredLocked(message)
+				a.compactDeliveredLocked()
 			} else {
 				for index, pending := range a.state.Outbox {
 					if outgoingMessageIdentity(pending) == outgoingMessageIdentity(message) {
