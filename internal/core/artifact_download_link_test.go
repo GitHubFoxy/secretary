@@ -13,6 +13,13 @@ func TestT09ClickableDownloadDedupDoesNotTrustRawURL(t *testing.T) {
     {"other-artifact", "[Download](/v1/artifacts/xyz?download=1)", false},
     {"other-query", "[Download](/v1/artifacts/abc?download=0)", false},
     {"existing-clickable", "plain "+url+" then [Get file]("+url+")", true},
+    {"image-only", "![Preview]("+url+")", false},
+    {"image-and-link", "![Preview]("+url+") and [Download]("+url+")", true},
+    {"escaped-open-bracket", "\\[Download]("+url+")", false},
+    {"escaped-image-open-bracket", "!\\[Download]("+url+")", false},
+    {"escaped-image-marker", "\\![Download]("+url+")", true},
+    {"double-escaped-bracket", "\\\\[Download]("+url+")", true},
+    {"fenced-image", "\x60\x60\x60md\\n[Download]("+url+")\\n\x60\x60\x60", false},
   }
   for _, tc := range cases { t.Run(tc.name, func(t *testing.T) {
     if got := hasClickableArtifactDownload(tc.summary,url); got != tc.want {

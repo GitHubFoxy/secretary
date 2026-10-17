@@ -17,7 +17,10 @@ func hasClickableArtifactDownload(summary, url string) bool {
     inCode := false
     for i := 0; i < len(line); i++ {
       if line[i] == '`' { inCode = !inCode; continue }
-      if inCode || line[i] != '[' { continue }
+      if inCode || line[i] != '[' || markdownEscaped(line, i) { continue }
+      // An image reference ![alt](url) is rendered as an image, not a
+      // clickable owner-download link. Escaped ! is ordinary prose.
+      if i > 0 && line[i-1] == '!' && !markdownEscaped(line, i-1) { continue }
       closing := strings.Index(line[i+1:], "](")
       if closing < 0 { continue }
       destination := i + 1 + closing + 2
@@ -25,4 +28,12 @@ func hasClickableArtifactDownload(summary, url string) bool {
     }
   }
   return false
+}
+
+func markdownEscaped(line string, position int) bool {
+	slashes := 0
+	for i := position-1; i >= 0 && line[i] == '\\'; i-- {
+		slashes++
+	}
+	return slashes%2 == 1
 }
