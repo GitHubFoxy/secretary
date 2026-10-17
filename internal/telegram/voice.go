@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 	"regexp"
 
@@ -46,6 +47,12 @@ type VoiceTranscript struct {
 	TranscriptArtifactID string `json:"transcript_artifact_id,omitempty"`
 	FormatterSkipped bool         `json:"formatter_skipped,omitempty"`
 	CreatedAt        time.Time    `json:"created_at"`
+}
+
+type VoiceFailure struct {
+	SourceArtifactID string `json:"source_artifact_id,omitempty"`
+	Notice string `json:"notice"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type VoiceArtifactResult struct {
@@ -110,11 +117,47 @@ func (a *Adapter) Transcript(id string) (VoiceTranscript, bool) {
 func (a *Adapter) voiceNotice(ctx context.Context, u Update, kind, text string) error {
 	return a.sendMessage(ctx, OutgoingMessage{ChatID: u.Message.ChatID, ThreadID: u.Message.ThreadID, ReplyToMessageID: u.Message.MessageID, Text: text, Identity: fmt.Sprintf("inbound:voice-%s:%d", kind, u.ID)})
 }
+
+func (a *Adapter) deliverVoiceFailure(ctx context.Context, u Update, failure VoiceFailure) error {
+	if store, ok := a.server.(VoiceArtifactStore); ok && failure.SourceArtifactID != "" {
+		if _, err := store.CompleteVoice(ctx, VoiceArtifactResult{
+			UpdateID: u.ID, ChatID: u.Message.ChatID, MessageID: u.Message.MessageID,
+			SourceArtifactID: failure.SourceArtifactID, Failed: true,
+		}); err != nil {
+			return err
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return a.voiceNotice(ctx, u, "error", failure.Notice)
+}
+
+func (a *Adapter) persistVoiceFailure(ctx context.Context, u Update, sourceID, notice string) error {
+	failure := VoiceFailure{SourceArtifactID: sourceID, Notice: notice, CreatedAt: a.now()}
+	a.mu.Lock()
+	if a.state.VoiceFailures == nil {
+		a.state.VoiceFailures = map[string]VoiceFailure{}
+	}
+	a.state.VoiceFailures[fmt.Sprint(u.ID)] = failure
+	err := a.saveLocked()
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return a.deliverVoiceFailure(ctx, u, failure)
+}
 func (a *Adapter) deliverVoiceUpdate(ctx context.Context, u Update, allowed bool) error {
 	if !allowed || u.Message == nil || u.Message.Voice == nil {
 		return nil
 	}
 	m := u.Message
+	a.mu.Lock()
+	failure, previouslyFailed := a.state.VoiceFailures[fmt.Sprint(u.ID)]
+	a.mu.Unlock()
+	if previouslyFailed {
+		return a.deliverVoiceFailure(ctx, u, failure)
+	}
 	if m.ThreadID != 0 && m.ThreadID != 1 {
 		a.mu.Lock()
 		_, ok := a.mappingForThreadLocked(m.ChatID, m.ThreadID)
@@ -193,26 +236,33 @@ func (a *Adapter) deliverVoiceUpdate(ctx context.Context, u Update, allowed bool
 				return fmt.Errorf("telegram: persist original voice artifact: %w", err)
 			}
 		}
-		if a.asr == nil {
-			if hasArtifacts {
-				if _, err := artifactStore.CompleteVoice(ctx, VoiceArtifactResult{UpdateID: u.ID, ChatID: m.ChatID, MessageID: m.MessageID, SourceArtifactID: sourceArtifactID, Failed: true}); err != nil {
-					return err
-				}
+		if m.Voice.Duration == 0 {
+			probe := a.config.VoiceDurationProbe
+			if probe == nil {
+				probe = probeVoiceDuration
 			}
+			probeCtx, stopProbe := context.WithTimeout(ctx, 15*time.Second)
+			duration, probeErr := probe(probeCtx, data, voiceArtifactName(u))
+			stopProbe()
+			if probeErr != nil || duration <= 0 || math.IsNaN(duration) || math.IsInf(duration, 0) {
+				recordTiming("duration", "failed")
+				return a.persistVoiceFailure(ctx, u, sourceArtifactID, "Не удалось определить длительность аудио. Оригинал сохранён; распознавание не запускалось.")
+			}
+			if duration > float64(maxSeconds) {
+				recordTiming("duration", "over_limit")
+				return a.persistVoiceFailure(ctx, u, sourceArtifactID, fmt.Sprintf("Аудио превышает лимит длительности (%d сек). Оригинал сохранён.", maxSeconds))
+			}
+		}
+		if a.asr == nil {
 			recordTiming("asr", "unavailable")
-			return fail("Локальное распознавание речи не настроено. Оригинал аудио сохранён.")
+			return a.persistVoiceFailure(ctx, u, sourceArtifactID, "Локальное распознавание речи не настроено. Оригинал аудио сохранён.")
 		}
 		asrStart := time.Now()
 		raw, err := a.asr.Transcribe(ctx, data)
 		timing.ASRMS = time.Since(asrStart).Milliseconds()
 		if err != nil || strings.TrimSpace(raw) == "" {
-			if hasArtifacts {
-				if _, saveErr := artifactStore.CompleteVoice(ctx, VoiceArtifactResult{UpdateID: u.ID, ChatID: m.ChatID, MessageID: m.MessageID, SourceArtifactID: sourceArtifactID, Failed: true}); saveErr != nil {
-					return saveErr
-				}
-			}
 			recordTiming("asr", "failed")
-			return fail("Не удалось распознать речь. Оригинал аудио сохранён.")
+			return a.persistVoiceFailure(ctx, u, sourceArtifactID, "Не удалось распознать речь. Оригинал аудио сохранён.")
 		}
 		transcript = VoiceTranscript{Raw: strings.TrimSpace(raw), SourceArtifactID: sourceArtifactID, Delivered: "raw", ChatID: m.ChatID, ThreadID: m.ThreadID, MessageID: m.MessageID, CreatedAt: a.now(), Timing: timing}
 		if a.config.ASR.Formatter.Enabled {
