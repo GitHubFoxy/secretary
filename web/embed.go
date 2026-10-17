@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-//go:embed index.html app.js app.css control-room/index.html control-room/app.js control-room/app.css
+//go:embed index.html app.js app.css artifact-upload.js control-room/index.html control-room/app.js control-room/app.css
 var files embed.FS
 
 func Handler() http.Handler {
