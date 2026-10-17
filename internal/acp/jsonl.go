@@ -137,6 +137,7 @@ func StartWithLogExactEnvDir(ctx context.Context, rawLog io.Writer, environment 
 func startWithProcessEnvironment(ctx context.Context, rawLog io.Writer, environment []string, inherit bool, dir string, command string, arguments ...string) (*Client, error) {
 	processCtx, cancel := context.WithCancel(ctx)
 	process := exec.CommandContext(processCtx, command, arguments...)
+	configureACPProcess(process)
 	if inherit && environment != nil {
 		process.Env = append(os.Environ(), environment...)
 	} else if !inherit {
