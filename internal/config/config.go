@@ -207,8 +207,7 @@ func compile(base string, raw []byte, c Config, allowEmbeddedTitlePrompt bool) (
 	}
 	var asrPrompt Prompt
 	if c.ASR.IsConfigured() {
-		if err := c.Video.Validate(); err != nil { return err }
-	if err := validateASRConfig(c.ASR); err != nil {
+		if err := validateASRConfig(c.ASR); err != nil {
 			return Snapshot{}, err
 		}
 		if c.ASR.Formatter.Enabled {
