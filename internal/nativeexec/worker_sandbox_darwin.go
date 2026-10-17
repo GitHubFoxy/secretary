@@ -38,7 +38,7 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	if err != nil { return "", nil, err }
 	home, err := os.UserHomeDir()
 	if err != nil { return "", nil, err }
-	reads := []string{"/System", "/usr", "/bin", "/sbin", "/Library", "/Applications", "/private/etc", "/dev", workspace, executable}
+	reads := []string{"/System", "/usr", "/bin", "/sbin", "/Library", "/Applications", "/private/etc", "/private/var/db/dyld", "/dev", workspace, executable}
 	writes := []string{workspace, "/private/tmp", "/tmp"}
 	for _, name := range []string{".codex", ".claude", ".claude.json"} {
 		state := filepath.Join(home, name)
@@ -65,7 +65,7 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	// Escape as Scheme quoted literals; no interpolation into a shell.
 	quoted := func(path string) string { return "(subpath " + strconv.Quote(path) + ")" }
 	var profile strings.Builder
-	profile.WriteString("(version 1)\n(deny default)\n(allow process-exec)\n(allow process-fork)\n(allow network-outbound)\n(allow network-inbound)\n(allow mach-lookup)\n(allow sysctl-read)\n")
+	profile.WriteString("(version 1)\n(deny default)\n(allow process*)\n(allow network*)\n(allow mach-lookup)\n(allow mach-host*)\n(allow sysctl-read)\n(allow iokit-open)\n(allow ipc-posix*)\n(allow file-read-metadata)\n(allow file-ioctl)\n(allow signal)\n")
 	profile.WriteString("(allow file-read*")
 	for _, root := range reads { profile.WriteString(" "+quoted(root)) }
 	profile.WriteString(")\n(allow file-write*")
