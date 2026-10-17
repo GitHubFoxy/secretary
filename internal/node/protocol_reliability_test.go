@@ -512,6 +512,8 @@ func dispatchFixture(commandID string) Command {
 }
 
 
+const tWorkspace = "/tmp/secretary-test-workspace"
+
 func outcomeFixture(eventID string) core.AttemptOutcomeEnvelope {
 	return core.AttemptOutcomeEnvelope{EventID: eventID, Node: "home-server", HarnessInstanceID: "home-server/fx", WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1", Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "done", OccurredAt: time.Now()}
 }
