@@ -24,6 +24,8 @@ type Artifact struct {
 	TranscriptArtifactID string `json:"transcript_artifact_id,omitempty"`
 	SourceIdentity string `json:"source_identity,omitempty"`
 	ProcessingStatus string `json:"processing_status,omitempty"`
+	VideoFrames []VideoFrame `json:"video_frames,omitempty"`
+	ProcessingError string `json:"processing_error,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -57,7 +59,8 @@ func (s *Store) migrateArtifacts(ctx context.Context) error {
 		UNIQUE(person_id, source_identity)
 	);
 	CREATE INDEX IF NOT EXISTS voice_links_transcript ON voice_artifact_links(transcript_artifact_id);`)
-	return err
+	if err != nil { return err }
+	return s.migrateVideoArtifacts(ctx)
 }
 
 func (s *Store) SaveArtifact(ctx context.Context, personID, conversationID, key, name, mediaType string, body []byte) (Artifact, bool, error) {
@@ -137,6 +140,7 @@ func (s *Store) ArtifactForPerson(ctx context.Context, personID, artifactID stri
 	if err := s.populateVoiceRelation(ctx, personID, &a); err != nil {
 		return Artifact{}, nil, err
 	}
+	if err := s.populateVideoRelation(ctx, personID, &a); err != nil { return Artifact{}, nil, err }
 	if len(body) != int(a.Size) {
 		return Artifact{}, nil, fmt.Errorf("artifact %s: body size mismatch", a.ID)
 	}
