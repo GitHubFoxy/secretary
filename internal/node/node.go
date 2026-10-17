@@ -221,12 +221,15 @@ func (n *LocalNode) PrepareWorkerSteering(ctx context.Context, workerRef, text s
 	n.mu.Lock()
 	fetch := n.artifactFetcher
 	workspace := ""
+	allowed := false
 	for _, mapping := range n.checkpoints {
 		if mapping.request.WorkerRef == workerRef {
 			workspace = mapping.request.Workspace
+			allowed = supportsImageHarness(mapping.request.HarnessInstance)
 		}
 	}
 	n.mu.Unlock()
+	if !allowed { return "", nil, errors.New("image_input_unsupported: local Worker harness does not advertise image input") }
 	if workspace == "" {
 		return "", nil, fmt.Errorf("image: local Worker workspace not found")
 	}
