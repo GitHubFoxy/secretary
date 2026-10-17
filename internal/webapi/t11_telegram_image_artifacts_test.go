@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -67,8 +70,9 @@ func TestT11TelegramImageSourceAuthValidationAndDurableIdempotency(t *testing.T)
 
 func t11OtherPNG(t *testing.T) []byte {
 	t.Helper()
-	first:=t10WebPNG(t)
-	other:=append([]byte(nil),first...)
-	other[len(other)-5] ^= 0x01
-	return other
+	picture:=image.NewRGBA(image.Rect(0,0,2,2))
+	picture.Set(1,1,color.RGBA{G:255,A:255})
+	var output bytes.Buffer
+	if err:=png.Encode(&output,picture);err!=nil {t.Fatal(err)}
+	return output.Bytes()
 }
