@@ -103,3 +103,16 @@ func TestProjectlessDispatchPrefersConfiguredHarnessAcrossNodes(t *testing.T) {
 		t.Fatalf("configured harness preference lost to Node preference: %#v err=%v", selected, err)
 	}
 }
+
+
+func TestProjectlessExplicitBusyNodeFailsVisibly(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	resolverEnroll(t, store, "busy", resolverInventory("busy", []HarnessInstance{
+		resolverInstance("busy/codex", "busy", HarnessCodex),
+	}), 1, []NodeActiveAttempt{{AttemptID: "other-attempt"}})
+	_, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{NodeID: "busy", HarnessKind: HarnessCodex})
+	if !errors.Is(err, ErrSelectedNodeUnavailable) {
+		t.Fatalf("busy selected Node must not silently queue or migrate: %v", err)
+	}
+}
