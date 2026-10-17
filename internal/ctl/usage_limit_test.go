@@ -434,8 +434,10 @@ func TestManualResumeDoesNotOvercommitNodeCapacity(t *testing.T) {
 		t.Fatalf("capacity error lost scheduled retry: %#v found=%v err=%v", after, found, err)
 	}
 	command, found, err := store.FindWorkerCommand(ctx, "resume", "attempt", limited.ID, schedule.AttemptID)
-	if err != nil || found {
-		t.Fatalf("capacity denial created a resume command: %#v found=%v err=%v", command, found, err)
+	// Usage-limit scheduling may persist a pending command intent before
+	// admission. The denial must not claim/deliver that intent.
+	if err != nil || (found && (command.State != core.WorkerCommandPending || !command.LeaseUntil.IsZero())) {
+		t.Fatalf("capacity denial claimed or delivered resume command: %#v found=%v err=%v", command, found, err)
 	}
 
 	if _, _, _, err := store.RecordAttemptOutcome(ctx, busyAttempt.ID, core.AttemptOutcomeInput{
