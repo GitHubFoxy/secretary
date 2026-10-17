@@ -227,4 +227,36 @@ func TestMCPWorkerResultQuestionAndOwnerAnswerReusePersistentWorker(t *testing.T
 	if results != 2 {
 		t.Fatalf("follow-up emitted %d Worker Results, want 2", results)
 	}
+	newTopic, duplicate, err := store.AppendInbound(ctx, conversation.ID, "web", "unrelated-research", "Research local history")
+	if err != nil || duplicate {
+		t.Fatalf("new topic input: duplicate=%v err=%v", duplicate, err)
+	}
+	independentTurn, duplicate, err := store.EnqueueSecretaryTurnForEntry(ctx, identity.ID, newTopic.Body, newTopic, nil)
+	if err != nil || duplicate {
+		t.Fatalf("independent Secretary turn: duplicate=%v err=%v", duplicate, err)
+	}
+	if _, err := store.StartSecretaryTurn(ctx, independentTurn.ID); err != nil {
+		t.Fatal(err)
+	}
+	independentSpawn, _ := json.Marshal(map[string]any{
+		"intent": "Research local history",
+		"preferences": map[string]string{
+			"project_id": project.ID, "node_id": "node",
+			"harness_instance_id": "node/fx", "harness_kind": "fx",
+		},
+		"idempotency_key": "unrelated-research",
+		"secretary_turn_id": independentTurn.ID, "input_id": independentTurn.InputID,
+	})
+	independentResult, err := handler.Call(ctx, "spawn_worker", independentSpawn)
+	if err != nil {
+		t.Fatalf("dispatch independent Task: %v", err)
+	}
+	independent := independentResult.(core.WorkerDetails)
+	if independent.Worker.ID == firstWorker.Worker.ID {
+		t.Fatal("unrelated Task incorrectly reused the website Worker")
+	}
+	preserved, err := store.WorkerDetailsForConversation(ctx, conversation.ID, firstWorker.Worker.WorkerRef)
+	if err != nil || len(preserved.Results) != 2 || preserved.Worker.Status != core.WorkerIdle {
+		t.Fatalf("website Worker was lost when topic changed: worker=%#v err=%v", preserved, err)
+	}
 }
