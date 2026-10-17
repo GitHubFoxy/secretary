@@ -2662,7 +2662,17 @@ func (s *Store) SyncAttemptSchedulesPolicy(ctx context.Context, enabled bool, no
 	return err
 }
 
-func (s *Store) ReleaseAttemptSchedule(ctx context.Context, scheduleID string, now time.Time) error {
+func (s *Store) ReleaseAttemptSchedule(ctx context.Context, scheduleID string, now time.Time, originalState ...AttemptScheduleState) error {
+	// A failed manual Resume must retain manual_hold rather than promoting
+	// the schedule to pending automatic retry. Existing callers that do not
+	// provide the original state keep the historic scheduled_at behavior.
+	if len(originalState) > 0 {
+		if originalState[0] != SchedulePending && originalState[0] != ScheduleManualHold {
+			return ErrInvalidTransition
+		}
+		_, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = ?, updated_at = ? WHERE id = ? AND state = 'claimed'`, originalState[0], timestamp(now), scheduleID)
+		return err
+	}
 	_, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = CASE WHEN scheduled_at IS NOT NULL THEN 'pending' ELSE 'manual_hold' END, updated_at = ? WHERE id = ? AND state = 'claimed'`, timestamp(now), scheduleID)
 	return err
 }
