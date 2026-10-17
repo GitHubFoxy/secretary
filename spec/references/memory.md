@@ -1,4 +1,4 @@
-# Secretary V2 — Persistent Memory Architecture
+# Secretary — Persistent Memory Architecture
 
 > **Status:** Design proposal / future extension, **not** an amendment to the approved Phase 4 MVP.
 > **Related:** [skills.md](./skills.md) · [Secretary Phase 4 spec](https://github.com/GitHubFoxy/secretary/blob/main/.scratch/phase-4/spec.md)

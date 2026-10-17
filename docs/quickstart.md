@@ -17,7 +17,7 @@ codex login status
 Перейдите в корень репозитория и добавьте локальные бинарники в `PATH`:
 
 ```sh
-cd /Users/beruseruko/projects/secretary-v2
+cd /Users/beruseruko/projects/secretary
 export PATH="$HOME/.local/bin:$PATH"
 ```
 

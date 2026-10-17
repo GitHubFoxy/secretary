@@ -49,7 +49,7 @@ User-юниты: `~/.config/systemd/user/secretaryd.service` и `secretary-node.
 
   [Service]
   Type=simple
-  ExecStart=/usr/bin/zsh /home/coder/projects/secretary-v2/secretary serve
+  ExecStart=/usr/bin/zsh /home/coder/projects/secretary/secretary serve
   Restart=on-failure
   RestartSec=3
   Environment=PATH=/home/coder/.local/bin:/home/coder/.local/share/mise/shims:/usr/local/bin:/usr/bin:/bin
@@ -59,7 +59,7 @@ User-юниты: `~/.config/systemd/user/secretaryd.service` и `secretary-node.
   ```
 
   В `ExecStart` только абсолютные пути: systemd не обязан раскрывать `~`.
-- Node: `ExecStart=/usr/bin/zsh /home/coder/projects/secretary-v2/secretary node serve` с `Wants=` и `After=secretaryd.service`. Жёсткого `Requires=` нет: Node умеет reconnect при рестарте сервера.
+- Node: `ExecStart=/usr/bin/zsh /home/coder/projects/secretary/secretary node serve` с `Wants=` и `After=secretaryd.service`. Жёсткого `Requires=` нет: Node умеет reconnect при рестарте сервера.
 - Оба: `Restart=on-failure`, `WantedBy=default.target`. Секретов в юнитах нет.
 - Linger включён (`loginctl enable-linger coder`, проверка: `loginctl show-user coder`), поэтому юниты поднимаются после reboot без входа пользователя.
 
@@ -97,7 +97,7 @@ Debug-режим (с Control Room): остановить юнит и запус�
 
 ```sh
 systemctl --user stop secretaryd.service
-zsh ~/projects/secretary-v2/secretary serve --debug   # Ctrl-C по окончании
+zsh ~/projects/secretary/secretary serve --debug   # Ctrl-C по окончании
 systemctl --user start secretaryd.service
 ```
 

@@ -1,8 +1,8 @@
 # Аудит чата Minimal MVP
 
-Дата: 2026-10-09. Локальный checkout `42721bb`; `spec/THE spec.md` имеет пользовательские незакоммиченные изменения. Production omarchy этим аудитом не проверялся. Изменён только этот документ; код, конфигурация, runtime и credentials не менялись.
+Дата: 2026-10-09. Локальный checkout `42721bb`; `spec/old_spec.md` имеет пользовательские незакоммиченные изменения. Production omarchy этим аудитом не проверялся. Изменён только этот документ; код, конфигурация, runtime и credentials не менялись.
 
-Область: [Minimal MVP](../../spec/THE%20spec.md#minimal-mvp), строки 158–170: общая переписка, Workers на разных машинах в Codex/Claude Code, прямой ввод через простой UI, active steering по умолчанию и `/q` для очереди, Telegram group topics и бот-администратор. Прочитаны `AGENTS.md`, `GLOSSARY.md`, `docs/agents/domain.md`, `docs/architecture/runtime-contracts.md`; каталога `docs/adr/` нет. Этот документ исследует доставку и представление чата; фактическая готовность удалённых Nodes и native auth требует отдельной проверки.
+Область: [Minimal MVP](../../spec/old_spec.md#minimal-mvp), строки 158–170: общая переписка, Workers на разных машинах в Codex/Claude Code, прямой ввод через простой UI, active steering по умолчанию и `/q` для очереди, Telegram group topics и бот-администратор. Прочитаны `AGENTS.md`, `GLOSSARY.md`, `docs/agents/domain.md`, `docs/architecture/runtime-contracts.md`; каталога `docs/adr/` нет. Этот документ исследует доставку и представление чата; фактическая готовность удалённых Nodes и native auth требует отдельной проверки.
 
 `done` означает реализацию с проходящей локальной проверкой, `partial` — реализованную часть без полного acceptance, `missing` — конкретный отсутствующий путь. Прохождение fixtures не означает live Telegram/native acceptance.
 

@@ -1,6 +1,6 @@
 # Аудит runtime для Minimal MVP
 
-Дата: 9 октября 2026. Область: Secretary, Workers Codex/Claude Code, local/remote Dispatch, steering, `/q`, Follow-up и resume. Основание — [Minimal MVP](../../spec/THE%20spec.md), [GLOSSARY](../../GLOSSARY.md), [runtime contracts](../architecture/runtime-contracts.md). `docs/adr/` отсутствует. Это исследование: код и конфигурация не изменены, production omarchy не затронут.
+Дата: 9 октября 2026. Область: Secretary, Workers Codex/Claude Code, local/remote Dispatch, steering, `/q`, Follow-up и resume. Основание — [Minimal MVP](../../spec/old_spec.md), [GLOSSARY](../../GLOSSARY.md), [runtime contracts](../architecture/runtime-contracts.md). `docs/adr/` отсутствует. Это исследование: код и конфигурация не изменены, production omarchy не затронут.
 
 ## Вывод
 

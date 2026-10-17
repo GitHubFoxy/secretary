@@ -162,7 +162,7 @@ flowchart TD
      Поскольку `additionalMessage` не передан, поле `message` формируется как `"Internal error"`, а детали (`message` и `codexErrorInfo`) помещаются в поле `data`.
    - При этом `codex-acp` также отправляет текст ошибки как обычный текстовый чанк:
      `return createAgentTextMessageChunk(`${params.error.message}\n\n`);`
-3. **Клиент ACP в `secretary-v2` (`internal/acp/jsonl.go`)**:
+3. **Клиент ACP в `secretary` (`internal/acp/jsonl.go`)**:
    ```go
    type RPCError struct {
        Code    int    `json:"code"`

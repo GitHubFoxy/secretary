@@ -1,4 +1,4 @@
-# Secretary V2 — Skills Learning & Evolution
+# Secretary — Skills Learning & Evolution
 
 > **Status:** Design proposal / later-phase extension; not part of the approved Phase 4 MVP acceptance gate.
 > **Related:** [memory.md](./memory.md) · [Secretary Phase 4 spec](https://github.com/GitHubFoxy/secretary/blob/main/.scratch/phase-4/spec.md)

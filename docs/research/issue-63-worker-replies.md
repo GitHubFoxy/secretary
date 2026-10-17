@@ -8,7 +8,7 @@
 
 Если потребуется показывать Worker reply до завершения Attempt, нужен отдельный типизированный контракт с явным пользовательским назначением и серверной input identity. Нельзя считать каждый текстовый Activity ответом пользователю или переиспользовать `Result`, который по glossary является terminal report одной Attempt.
 
-Исследование выполнено в worktree `/Users/beruseruko/projects/secretary-v2/.worktrees/issue-63-worker-replies`, ветка `codex/issue-63-worker-replies`, исходный код не менялся. Тесты и проверки описаны ниже. В этой ревизии нет каталога `docs/adr/`, применимых ADR нет.
+Исследование выполнено в worktree `/Users/beruseruko/projects/secretary/.worktrees/issue-63-worker-replies`, ветка `codex/issue-63-worker-replies`, исходный код не менялся. Тесты и проверки описаны ниже. В этой ревизии нет каталога `docs/adr/`, применимых ADR нет.
 
 ## Scope и терминология
 
