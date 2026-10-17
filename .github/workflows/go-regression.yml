@@ -13,10 +13,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
           cache: true
-      - name: Test Secretary, Worker routing and public API
-        run: go test ./internal/e2e ./internal/core ./internal/secretary ./internal/mcp ./internal/config ./internal/ctl
+      - name: Test all Go packages
+        run: go test ./...
