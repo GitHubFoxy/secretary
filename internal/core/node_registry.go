@@ -571,6 +571,19 @@ func (s *Store) revokeNode(ctx context.Context, node NodeReference, allowActive 
 			}
 		}
 		if !allowActive {
+			// Serialize safe revocation with SpawnWorker/Follow-up reservations.
+			// Lock the Node row before reading both the heartbeat and durable
+			// Attempt claims; a concurrent capacity admission cannot commit
+			// between our idle check and the revoke UPDATE.
+			locked, err := tx.ExecContext(ctx, `UPDATE phase4_nodes SET revoked = revoked WHERE node_ref = ? AND revoked = 0`, node)
+			if err != nil {
+				return NodeRecord{}, err
+			}
+			if affected, err := locked.RowsAffected(); err != nil {
+				return NodeRecord{}, err
+			} else if affected != 1 {
+				return NodeRecord{}, ErrNotFound
+			}
 			var activeAttemptsJSON string
 			if err := tx.QueryRowContext(ctx, `SELECT active_attempts_json FROM phase4_nodes WHERE node_ref = ? AND revoked = 0`, node).Scan(&activeAttemptsJSON); err != nil {
 				if errors.Is(err, sql.ErrNoRows) {
@@ -584,7 +597,11 @@ func (s *Store) revokeNode(ctx context.Context, node NodeReference, allowActive 
 					return NodeRecord{}, fmt.Errorf("core: decode Node active attempts: %w", err)
 				}
 			}
-			if len(activeAttempts) > 0 {
+			activeCount, err := nodeCapacityUsed(ctx, tx, node, activeAttempts)
+			if err != nil {
+				return NodeRecord{}, err
+			}
+			if activeCount > 0 {
 				return NodeRecord{}, ErrNodeActiveAttempts
 			}
 		}
