@@ -312,6 +312,9 @@ func resolveDispatchOnNode(project Project, candidate dispatchNodeCandidate, req
 	if firstError != nil {
 		return DispatchResolution{}, false, firstError
 	}
+	if request.HarnessInstanceID != "" || request.HarnessKind != "" {
+		return DispatchResolution{}, false, fmt.Errorf("%w: selected harness %q (%q) is not installed on Node %s", ErrInvalidDispatchPin, request.HarnessInstanceID, request.HarnessKind, record.Node)
+	}
 	return DispatchResolution{}, false, fmt.Errorf("%w: no eligible HarnessInstance", ErrNoEligibleNode)
 }
 
