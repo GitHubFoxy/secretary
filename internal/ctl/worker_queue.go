@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/node"
 	"time"
 )
 
@@ -92,6 +93,11 @@ func (s WorkerService) resumeScheduledAttempt(ctx context.Context, schedule core
 	prior, found, err := s.Store.FindWorkerCommand(ctx, "resume", "attempt", worker.ID, attempt.ID)
 	if err != nil {
 		return release(err)
+	}
+	if found && prior.State == core.WorkerCommandUncertain {
+		// An unknown accepted Resume must be reconciled by its receipt or
+		// a terminal Node event, never sent a second time on manual retry.
+		return release(node.ErrCommandOutcomeUnknown)
 	}
 	if !found || prior.State != core.WorkerCommandDelivered {
 		if err := s.Store.ReserveAttemptCapacity(ctx, attempt.ID); err != nil {

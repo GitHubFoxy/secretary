@@ -44,6 +44,9 @@ func (r Phase4RecoveryResolver) ResolvePhase4Attempt(ctx context.Context, attemp
 	if status.Revoked {
 		return core.Phase4RecoveryUnknown, nil
 	}
+	if !status.Online {
+		return core.Phase4RecoveryAwaiting, nil
+	}
 	for _, active := range status.ActiveAttempts {
 		if active.AttemptID == attempt.ID && active.TurnID == attempt.TurnID && active.WorkerRef == worker.WorkerRef {
 			return core.Phase4RecoveryAlive, nil

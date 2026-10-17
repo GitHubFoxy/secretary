@@ -328,17 +328,33 @@ func (s *Store) RecoverPhase4Attempts(ctx context.Context, resolver Phase4Attemp
 
 			var cmdID, cmdState, leaseUntil, lastError string
 			cmdErr := s.db.QueryRowContext(ctx, `SELECT id, state, lease_until, last_error FROM phase4_worker_commands WHERE worker_id = ? AND attempt_id = ? AND kind = 'resume'`, cs.workerID, cs.attemptID).Scan(&cmdID, &cmdState, &leaseUntil, &lastError)
-			if cmdErr == nil && (cmdState == string(WorkerCommandPending) || cmdState == string(WorkerCommandUncertain)) {
-				_, _ = s.db.ExecContext(ctx, `UPDATE phase4_worker_commands SET lease_until = '', updated_at = ? WHERE id = ?`, timestamp(now), cmdID)
-			} else if errors.Is(cmdErr, sql.ErrNoRows) {
-				_ = s.ensureLifecycleCommandIntent(ctx, now, "resume", cs.workerID, cs.attemptID)
+			preparedOnly := false
+			switch {
+			case errors.Is(cmdErr, sql.ErrNoRows):
+				if err := s.ensureLifecycleCommandIntent(ctx, now, "resume", cs.workerID, cs.attemptID); err != nil {
+					return err
+				}
+				preparedOnly = true
+			case cmdErr != nil:
+				return cmdErr
+			case cmdState == string(WorkerCommandPending) && leaseUntil == "" && lastError == "":
+				// Intent persisted, but never leased to a sender.
+				preparedOnly = true
+			case cmdState == string(WorkerCommandPending):
+				// A leased command might already have reached the Node. Never
+				// clear its lease and automatically replay it after restart.
+				if _, err := s.MarkWorkerCommandUncertain(ctx, cmdID, "resume acceptance unknown after server restart"); err != nil {
+					return err
+				}
 			}
 
 			targetState := ScheduleManualHold
-			if autoResume && cs.scheduledAt != nil {
+			if preparedOnly && autoResume && cs.scheduledAt != nil {
 				targetState = SchedulePending
 			}
-			_, _ = s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = ?, updated_at = ? WHERE id = ?`, string(targetState), timestamp(now), cs.id)
+			if _, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = ?, updated_at = ? WHERE id = ?`, string(targetState), timestamp(now), cs.id); err != nil {
+				return err
+			}
 		}
 	}
 
