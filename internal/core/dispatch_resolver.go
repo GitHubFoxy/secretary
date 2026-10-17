@@ -63,6 +63,8 @@ func (s *Store) ResolveDispatch(ctx context.Context, request DispatchResolutionR
 	}
 
 	var firstUnavailable *DispatchResolution
+	var preferredReady *DispatchResolution
+	preferredRank := 1000
 	var firstError error
 	for _, candidate := range candidates {
 		if request.NodeID == "" && request.HarnessInstanceID != "" {
@@ -78,12 +80,24 @@ func (s *Store) ResolveDispatch(ctx context.Context, request DispatchResolutionR
 			continue
 		}
 		if available {
-			return resolved, nil
+			if project.ID != "" {
+				return resolved, nil
+			}
+			rank := projectlessHarnessRank(resolved.HarnessInstance.Kind, request.WorkerPolicy)
+			if preferredReady == nil || rank < preferredRank {
+				copy := resolved
+				preferredReady = &copy
+				preferredRank = rank
+			}
+			continue
 		}
 		if firstUnavailable == nil {
 			copy := resolved
 			firstUnavailable = &copy
 		}
+	}
+	if preferredReady != nil {
+		return *preferredReady, nil
 	}
 	if firstUnavailable != nil && (request.NodeID != "" || request.HarnessInstanceID != "") {
 		if project.ID == "" && (!firstUnavailable.nodeState.online || firstUnavailable.nodeState.draining || firstUnavailable.nodeState.revoked) {
@@ -315,7 +329,7 @@ func orderedDispatchInstances(instances []HarnessInstance, request DispatchResol
 		kinds = append(kinds, defaultKind)
 		kinds = append(kinds, request.WorkerPolicy.PreferredHarnesses...)
 		if request.ProjectID == "" {
-			kinds = append(kinds, HarnessCodex, HarnessClaudeCode, HarnessOpenCode, HarnessFX, HarnessAntigravity)
+			kinds = append(kinds, HarnessCodex, HarnessClaudeCode)
 		}
 	}
 	result := make([]HarnessInstance, 0, len(ordered))
@@ -345,6 +359,22 @@ func orderedDispatchInstances(instances []HarnessInstance, request DispatchResol
 		}
 	}
 	return result
+}
+
+func projectlessHarnessRank(kind HarnessKind, policy HarnessPolicy) int {
+	defaultKind := policy.DefaultHarness
+	if defaultKind == "" {
+		defaultKind = HarnessCodex
+	}
+	order := []HarnessKind{defaultKind}
+	order = append(order, policy.PreferredHarnesses...)
+	order = append(order, HarnessCodex, HarnessClaudeCode)
+	for rank, candidate := range order {
+		if candidate == kind {
+			return rank
+		}
+	}
+	return len(order)
 }
 
 func (s *Store) ResolveAndCreateWorker(ctx context.Context, conversationID, intent string, request DispatchResolutionRequest, idempotencyKey string, origins ...SecretaryOriginIdentity) (Worker, Turn, Phase4Attempt, DispatchResolution, error) {
