@@ -11,6 +11,8 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    env:
+      GOFLAGS: -p=1
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
