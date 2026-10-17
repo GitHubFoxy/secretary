@@ -45,6 +45,9 @@ type dispatchNodeState struct {
 
 func (s *Store) ResolveDispatch(ctx context.Context, request DispatchResolutionRequest) (DispatchResolution, error) {
 	request.ProjectID = strings.TrimSpace(request.ProjectID)
+	if request.ProjectID == "" && request.Workspace != "" {
+		return DispatchResolution{}, fmt.Errorf("%w: projectless Workers require a Node-managed workspace; select an authorized Project to use an explicit path", ErrWorkspaceOutsideRoot)
+	}
 	var project Project
 	var err error
 	if request.ProjectID != "" {
