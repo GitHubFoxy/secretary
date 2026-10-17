@@ -184,3 +184,24 @@ func TestT09WindowsPersistedAccountConfigWithoutEnvironment(t *testing.T) {
 		t.Fatalf("persisted Worker config failed to isolate USERPROFILE: %v %s",err,out)
 	}
 }
+
+
+func TestT09WindowsProjectlessWorkspaceStaysInProvisionedWorkerHome(t *testing.T) {
+	home:=os.Getenv("SECRETARY_WORKER_HOME")
+	protected:=os.Getenv("SECRETARY_WORKER_TEST_PROTECTED_DIR")
+	user:=os.Getenv("SECRETARY_WORKER_USERNAME")
+	password:=os.Getenv("SECRETARY_WORKER_PASSWORD")
+	if home==""||protected==""||user==""||password==""{t.Skip("separate SID fixture required")}
+	encoded,err:=json.Marshal(map[string]string{"username":user,"password":password,"domain":".","home":home})
+	if err!=nil{t.Fatal(err)}
+	if err:=os.WriteFile(filepath.Join(protected,"worker-account.json"),encoded,0600);err!=nil{t.Fatal(err)}
+	t.Setenv("SECRETARY_WORKER_HOME","")
+	root,err:=ManagedWorkerWorkspaceRoot(protected)
+	if err!=nil{t.Fatal(err)}
+	want:=filepath.Join(home,"workspaces")
+	if !strings.EqualFold(root,want){t.Fatalf("projectless Workspaces unexpectedly moved into trusted Node filesystem: %s",root)}
+	workspace,err:=os.MkdirTemp(root,"projectless-")
+	if err!=nil{t.Fatal(err)}
+	if err:=os.WriteFile(filepath.Join(workspace,"resume.txt"),[]byte("persisted"),0600);err!=nil{t.Fatal(err)}
+	if b,err:=os.ReadFile(filepath.Join(workspace,"resume.txt"));err!=nil||string(b)!="persisted"{t.Fatalf("projectless resume state lost: %q %v",b,err)}
+}
