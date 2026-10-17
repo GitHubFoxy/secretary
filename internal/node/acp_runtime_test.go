@@ -1317,9 +1317,6 @@ func TestFakeACPProcess(t *testing.T) {
 		switch request.Method {
 		case "session/prompt":
 			if path := os.Getenv("ACP_IMAGE_RECORD"); path != "" { _ = os.WriteFile(path, request.Params, 0o600) }
-			if os.Getenv("ACP_T11_ASK_IMAGE") == "1" {
-				_ = encoder.Encode(map[string]any{"jsonrpc":"2.0","id":912,"method":"session/request_input","params":map[string]any{"request_id":"t11-native-input","prompt":"Please attach the image"}})
-			}
 			if os.Getenv("ACP_BURST") != "" {
 				count, _ := strconv.Atoi(os.Getenv("ACP_BURST"))
 				for index := 0; index < count; index++ {
@@ -1360,7 +1357,6 @@ func TestFakeACPProcess(t *testing.T) {
 		case "session/prompt":
 			result = map[string]any{"summary": "fake task completed"}
 		case "_session/steering":
-			if path:=os.Getenv("ACP_T11_STEERING_RECORD");path!="" { _=os.WriteFile(path,request.Params,0o600) }
 			outcome := os.Getenv("ACP_STEER_OUTCOME")
 			if outcome == "" {
 				outcome = "injected"
