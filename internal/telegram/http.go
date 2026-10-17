@@ -1,10 +1,8 @@
 package telegram
 
 import (
-	"context"
 	"bytes"
-	"errors"
-	"strconv"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
