@@ -186,8 +186,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, code, err.Error())
 		}
 		workspace = canonicalWorkspace
-	} else if workspace == "" {
-
+	} else if workspace == "" && command.Envelope.PreviousAttemptID == "" {
 		var err error
 		workspace, err = os.MkdirTemp("", "secretary-worker-")
 		if err != nil {
@@ -195,6 +194,13 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		}
 	}
 	continuing := command.Envelope.PreviousAttemptID != ""
+	if continuing && command.Envelope.ProjectID == "" && workspace == "" {
+		mapping, err := n.continuationMapping(command.Envelope, command.Envelope.PreviousAttemptID)
+		if err != nil {
+			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
+		}
+		workspace = mapping.Workspace
+	}
 	promptText := command.Envelope.OriginalUserIntent
 	if command.Envelope.ContinuationPrompt != "" {
 		promptText = command.Envelope.ContinuationPrompt
