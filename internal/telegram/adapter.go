@@ -35,6 +35,8 @@ type Update struct {
 }
 
 type Message struct {
+	ChatType  string `json:"chat_type,omitempty"`
+	IsForum   bool   `json:"is_forum,omitempty"`
 	ChatID    int64  `json:"chat_id"`
 	FromID    int64  `json:"from_id"`
 	MessageID int64  `json:"message_id"`
@@ -49,6 +51,7 @@ type OutgoingMessage struct {
 	Text               string
 	ReplyToMessageID   int64  `json:"reply_to_message_id,omitempty"`
 	Identity           string `json:"identity,omitempty"`
+	DurableSequence    int64  `json:"durable_sequence,omitempty"`
 	DeliveredBytes     int    `json:"delivered_bytes,omitempty"`
 	ParseMode          string `json:"parse_mode,omitempty"`
 	PlainFallback      bool   `json:"plain_fallback,omitempty"`
@@ -88,9 +91,20 @@ type ServerClient interface {
 	ResumeWorker(context.Context, string) error
 }
 
+type WorkerTopic struct {
+	WorkerRef string
+	Title     string
+	Intent    string
+}
+
 type Config struct {
 	StatePath      string
 	OwnerChatID    int64
+	// nil preserves the legacy one-chat mode; non-nil enables DM-first routing.
+	// Zero means the optional forum supergroup has not yet been linked.
+	GroupChatID    *int64
+	// ExistingWorkers reads the authoritative Server when linking a group.
+	ExistingWorkers func(context.Context) ([]WorkerTopic, error)
 	ShowToolCalls  *bool
 	PollInterval   time.Duration
 	FlushInterval  time.Duration
@@ -145,12 +159,16 @@ type persistedState struct {
 	Version                 int                            `json:"version"`
 	OwnerChat               int64                          `json:"owner_chat_id"`
 	OwnerUser               int64                          `json:"owner_user_id,omitempty"`
+	GroupChat               int64                          `json:"group_chat_id,omitempty"`
+	Delivered               map[string]time.Time           `json:"delivered_messages,omitempty"`
+	DeliveredSequence       map[string]int64               `json:"delivered_sequences,omitempty"`
 	Offset                  int64                          `json:"offset"`
 	LastEventSeq            int64                          `json:"last_event_seq"`
 	Processed               map[string]time.Time           `json:"processed_updates"`
 	Topics                  map[string]TopicMapping        `json:"topics"`
 	Pairings                map[string]pairingRecord       `json:"pairings"`
 	Outbox                  []OutgoingMessage              `json:"outbox,omitempty"`
+	PendingTopicEvents      []Event                        `json:"pending_topic_events,omitempty"`
 	PendingSecretaryText    string                         `json:"pending_secretary_text,omitempty"`
 	PendingSecretaryTools   []string                       `json:"pending_secretary_tools,omitempty"`
 	PendingEventSeqs        []int64                        `json:"pending_event_seqs,omitempty"`
@@ -210,9 +228,12 @@ type Adapter struct {
 	typingMu                   sync.Mutex
 	state                      persistedState
 	workerTypingRecoveryNeeded bool
+	topicsSynchronized         bool
+	topicSyncWake              chan struct{}
 	pending                    pendingBatch
 	lastTyping                 map[string]time.Time
 	outboxMu                   sync.Mutex
+	topicOutboxMu              sync.Mutex
 	inputWG                    sync.WaitGroup
 	inputMu                    sync.Mutex
 	inputLanes                 map[string]*sync.Mutex
@@ -238,8 +259,8 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 	if config.TitleTimeout <= 0 {
 		config.TitleTimeout = 5 * time.Second
 	}
-	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), now: func() time.Time { return time.Now().UTC() }}
-	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, ToolNotified: map[string]time.Time{}, ToolPreviews: map[string]string{}, WorkerTyping: map[string]workerTypingAttempt{}, WorkerTypingInitialized: true, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}}
+	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), topicSyncWake: make(chan struct{}, 1), now: func() time.Time { return time.Now().UTC() }}
+	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Delivered: map[string]time.Time{}, DeliveredSequence: map[string]int64{}, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, ToolNotified: map[string]time.Time{}, ToolPreviews: map[string]string{}, WorkerTyping: map[string]workerTypingAttempt{}, WorkerTypingInitialized: true, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}}
 	if err := adapter.load(); err != nil {
 		return nil, err
 	}
@@ -281,11 +302,49 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 	}
 	adapter.asr = asr
 	adapter.formatter = formatter
+	// Pre-T04 installations used OwnerChat for the forum itself. An
+	// explicit private owner ID upgrades durable state without clearing Topics,
+	// outbox, cursors or pairing metadata.
+	if adapter.state.OwnerChat < 0 && config.OwnerChatID <= 0 || config.OwnerChatID < 0 {
+		adapter.config.GroupChatID = nil
+	}
+	if adapter.state.OwnerChat < 0 && config.OwnerChatID > 0 {
+		if adapter.state.OwnerUser != 0 && adapter.state.OwnerUser != config.OwnerChatID {
+			return nil, errors.New("telegram: private owner differs from paired legacy owner user")
+		}
+		if adapter.state.GroupChat != 0 && adapter.state.GroupChat != adapter.state.OwnerChat {
+			return nil, errors.New("telegram: legacy forum differs from linked group")
+		}
+		if config.GroupChatID != nil && *config.GroupChatID != 0 && *config.GroupChatID != adapter.state.OwnerChat {
+			return nil, errors.New("telegram: configured forum differs from legacy owner chat")
+		}
+		adapter.state.GroupChat = adapter.state.OwnerChat
+		adapter.state.OwnerChat = config.OwnerChatID
+		adapter.state.OwnerUser = config.OwnerChatID
+	}
 	if config.OwnerChatID != 0 && adapter.state.OwnerChat != 0 && config.OwnerChatID != adapter.state.OwnerChat {
 		return nil, errors.New("telegram: configured owner does not match durable allowlist")
 	}
 	if adapter.state.OwnerChat == 0 {
 		adapter.state.OwnerChat = config.OwnerChatID
+	}
+	if adapter.config.GroupChatID != nil && *adapter.config.GroupChatID != 0 {
+		if *adapter.config.GroupChatID >= 0 {
+			return nil, errors.New("telegram: forum group chat id must be negative")
+		}
+		if adapter.state.GroupChat != 0 && adapter.state.GroupChat != *adapter.config.GroupChatID {
+			return nil, errors.New("telegram: configured group does not match linked group")
+		}
+		adapter.state.GroupChat = *adapter.config.GroupChatID
+	}
+	// A persisted two-chat installation must keep both projections even if
+	// callers omit the newly added optional config field on a later restart.
+	if adapter.config.GroupChatID == nil && adapter.state.OwnerChat > 0 && adapter.state.GroupChat < 0 {
+		linked := adapter.state.GroupChat
+		adapter.config.GroupChatID = &linked
+	}
+	if err := adapter.saveLocked(); err != nil {
+		return nil, err
 	}
 	adapter.pending.SecretaryText.WriteString(adapter.state.PendingSecretaryText)
 	adapter.pending.SecretaryTools = append([]string(nil), adapter.state.PendingSecretaryTools...)
@@ -321,6 +380,12 @@ func (a *Adapter) load() error {
 	}
 	if a.state.Processed == nil {
 		a.state.Processed = map[string]time.Time{}
+	}
+	if a.state.Delivered == nil {
+		a.state.Delivered = map[string]time.Time{}
+	}
+	if a.state.DeliveredSequence == nil {
+		a.state.DeliveredSequence = map[string]int64{}
 	}
 	if a.state.Topics == nil {
 		a.state.Topics = map[string]TopicMapping{}
@@ -516,6 +581,9 @@ func (a *Adapter) RedeemPairingWithSender(code string, chatID int64, fromID int6
 	if strings.TrimSpace(code) == "" || chatID == 0 {
 		return ErrPairingUsed
 	}
+	if a.config.GroupChatID != nil && (chatID < 0 || fromID == 0 || fromID != chatID) {
+		return ErrUnauthorized
+	}
 	hash := sha256.Sum256([]byte(strings.TrimSpace(code)))
 	key := hex.EncodeToString(hash[:])
 	a.mu.Lock()
@@ -548,10 +616,17 @@ func (a *Adapter) RedeemPairingWithSender(code string, chatID int64, fromID int6
 }
 
 func (a *Adapter) ownerAllowed(chatID int64) bool {
-	return chatID != 0 && a.state.OwnerChat != 0 && chatID == a.state.OwnerChat
+	if chatID == 0 || a.state.OwnerChat == 0 {
+		return false
+	}
+	return chatID == a.state.OwnerChat ||
+		(a.config.GroupChatID != nil && chatID < 0 && chatID == a.state.GroupChat)
 }
 
 func (a *Adapter) senderAllowed(fromID int64) bool {
+	if fromID == 0 && a.config.GroupChatID != nil {
+		return false
+	}
 	if fromID == 0 {
 		return true
 	}
@@ -559,6 +634,214 @@ func (a *Adapter) senderAllowed(fromID int64) bool {
 		return fromID == a.state.OwnerUser
 	}
 	return fromID == a.state.OwnerChat
+}
+
+// linkGroup accepts a command only from the already-paired owner, sent from a
+// forum supergroup. Group membership alone never grants control.
+func (a *Adapter) linkGroup(ctx context.Context, update Update) error {
+	m := update.Message
+	if a.config.GroupChatID == nil || m == nil || m.ChatID >= 0 || m.ChatType != "supergroup" || !m.IsForum || m.FromID == 0 {
+		return nil
+	}
+	a.mu.Lock()
+	if a.state.OwnerChat <= 0 || !a.senderAllowed(m.FromID) {
+		a.mu.Unlock()
+		return nil
+	}
+	if a.state.GroupChat != 0 && a.state.GroupChat != m.ChatID {
+		a.mu.Unlock()
+		return nil
+	}
+	a.state.GroupChat = m.ChatID
+	a.topicsSynchronized = false
+	err := a.saveLocked()
+	a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	a.requestTopicSync()
+	return nil
+}
+
+// requestTopicSync wakes the independent topic-recovery loop without blocking
+// Telegram updates on forum permissions or the Server worker lookup.
+func (a *Adapter) requestTopicSync() {
+	select {
+	case a.topicSyncWake <- struct{}{}:
+	default:
+	}
+}
+
+// topicSyncLoop retries forum reconciliation independently of the DM poll,
+// input workers, outbox flush and their own transport backoff. Successful
+// reconciliation sleeps until the next /linkgroup request; failures are
+// retried with bounded backoff.
+func (a *Adapter) topicSyncLoop(ctx context.Context) {
+	retry := time.Second
+	for ctx.Err() == nil {
+		err := a.SyncWorkerTopics(ctx)
+		if err == nil {
+			retry = time.Second
+			select {
+			case <-ctx.Done():
+				return
+			case <-a.topicSyncWake:
+				continue
+			}
+		}
+		timer := time.NewTimer(retry)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-a.topicSyncWake:
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-timer.C:
+		}
+		if retry < 30*time.Second {
+			retry *= 2
+			if retry > 30*time.Second {
+				retry = 30 * time.Second
+			}
+		}
+	}
+}
+
+// SyncWorkerTopics restores mappings for Workers created before the group was
+// linked. It can be retried after restart without duplicate Topic creation.
+func (a *Adapter) SyncWorkerTopics(ctx context.Context) error {
+	a.mu.Lock()
+	linked := a.config.GroupChatID != nil && a.state.GroupChat != 0
+	needsInventory := linked && !a.topicsSynchronized && a.config.ExistingWorkers != nil
+	lookup := a.config.ExistingWorkers
+	a.mu.Unlock()
+	if !linked {
+		return nil
+	}
+	// Inventory recovery and pending Topic delivery run ONLY from the
+	// independent topic-sync loop, never in HandleDurableEvent / DM polling.
+	if needsInventory {
+		workers, err := lookup(ctx)
+		if err != nil {
+			return err
+		}
+		for _, worker := range workers {
+			if worker.WorkerRef == "" {
+				continue
+			}
+			if _, err := a.ensureTopic(ctx, worker.WorkerRef, worker.Title, worker.Intent); err != nil {
+				return err
+			}
+		}
+		a.mu.Lock()
+		a.topicsSynchronized = true
+		a.mu.Unlock()
+	}
+	if err := a.drainTopicOutbox(ctx); err != nil {
+		return err
+	}
+	for {
+		a.mu.Lock()
+		if len(a.state.PendingTopicEvents) == 0 {
+			a.mu.Unlock()
+			return nil
+		}
+		event := a.state.PendingTopicEvents[0]
+		a.mu.Unlock()
+		if _, err := a.ensureTopic(ctx, event.WorkerRef, event.Title, event.TaskPrompt); err != nil {
+			return err
+		}
+		// May send/retry topic messages but never acquires flushMu or sends
+		// any DM projection. The outbox provides crash-safe retries.
+		if err := a.handleWorkerTopicEvent(ctx, event, true); err != nil {
+			return err
+		}
+		a.mu.Lock()
+		if len(a.state.PendingTopicEvents) > 0 && topicEventKey(a.state.PendingTopicEvents[0]) == topicEventKey(event) {
+			a.state.PendingTopicEvents = a.state.PendingTopicEvents[1:]
+		}
+		a.compactDeliveredLocked()
+		err := a.saveLocked()
+		a.mu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func topicEventKey(event Event) string {
+	if event.Sequence > 0 {
+		return fmt.Sprintf("sequence:%d", event.Sequence)
+	}
+	if event.EventID != "" {
+		return "event:" + event.EventID
+	}
+	if event.TerminalIdentity != "" {
+		return "terminal:" + event.TerminalIdentity
+	}
+	if id := requestNotificationIdentity(event); id != "" {
+		return "request:" + id
+	}
+	return fmt.Sprintf("%s:%s:%s:%s:%s", event.Kind, event.WorkerRef, event.AttemptID, event.Text, event.TaskPrompt)
+}
+
+// deferWorkerTopicEvent persists the full event before the bridge can advance
+// its cursor. Thus a restart recovers topic messages even if the Bot API was
+// unavailable when the Worker event arrived.
+func (a *Adapter) deferWorkerTopicEvent(event Event) error {
+	a.mu.Lock()
+	if a.state.GroupChat == 0 {
+		a.mu.Unlock()
+		return nil // DM-only until a forum is linked.
+	}
+	key := topicEventKey(event)
+	for _, queued := range a.state.PendingTopicEvents {
+		if topicEventKey(queued) == key {
+			a.mu.Unlock()
+			return nil
+		}
+	}
+	a.state.PendingTopicEvents = append(a.state.PendingTopicEvents, event)
+	if event.Kind == "worker.created" {
+		a.topicsSynchronized = false // Worker may not exist in last inventory.
+	}
+	err := a.saveLocked()
+	a.mu.Unlock()
+	if err == nil {
+		a.requestTopicSync()
+	}
+	return err
+}
+
+func (a *Adapter) personalChats() []int64 {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.state.OwnerChat == 0 {
+		return nil
+	}
+	chats := []int64{a.state.OwnerChat}
+	if a.config.GroupChatID != nil && a.state.GroupChat != 0 && a.state.GroupChat != a.state.OwnerChat {
+		chats = append(chats, a.state.GroupChat)
+	}
+	return chats
+}
+
+// sendPersonal sends projections, never another canonical Server input.
+func (a *Adapter) sendPersonal(ctx context.Context, message OutgoingMessage) error {
+	for _, chatID := range a.personalChats() {
+		copy := message
+		copy.ChatID = chatID
+		copy.ThreadID = 0
+		copy.ReplyToMessageID = 0
+		if err := a.sendMessage(ctx, copy); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *Adapter) processUpdate(ctx context.Context, update Update) error {
@@ -595,6 +878,10 @@ func (a *Adapter) processUpdate(ctx context.Context, update Update) error {
 		if err == nil {
 			a.state.Processed[fmt.Sprint(update.ID)] = a.now()
 			err = a.saveLocked()
+			if err == nil {
+				a.compactProcessedReceiptsLocked(update.ID)
+				err = a.saveLocked()
+			}
 			claim.err = err
 		}
 		delete(a.claims, update.ID)
@@ -617,7 +904,13 @@ func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool
 func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed bool, requestOverride *string) error {
 	text := strings.TrimSpace(update.Message.Text)
 	if strings.HasPrefix(text, "/start ") {
+		if a.config.GroupChatID != nil && ((update.Message.ChatType != "" && update.Message.ChatType != "private") || update.Message.ChatID != update.Message.FromID) {
+			return nil
+		}
 		return a.RedeemPairingWithSender(strings.TrimSpace(strings.TrimPrefix(text, "/start ")), update.Message.ChatID, update.Message.FromID)
+	}
+	if text == "/linkgroup" || (a.config.BotUsername != "" && strings.EqualFold(text, "/linkgroup@"+strings.TrimPrefix(a.config.BotUsername, "@"))) {
+		return a.linkGroup(ctx, update)
 	}
 	if !allowed || text == "/start" || text == "" {
 		return nil
@@ -694,8 +987,20 @@ func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed 
 	if err := a.server.SendMessage(ctx, InboundMessage{ExternalMessageID: externalID, Body: text}); err != nil {
 		return err
 	}
+	// The Server receives each Telegram update once. Mirrored messages only
+	// create outbox deliveries; they never re-enter the input queue.
+	if a.config.GroupChatID != nil {
+		for _, target := range a.personalChats() {
+			if target == update.Message.ChatID {
+				continue
+			}
+			if err := a.sendMessage(ctx, OutgoingMessage{ChatID: target, Text: text, Identity: "mirror-input:" + externalID}); err != nil {
+				return err
+			}
+		}
+	}
 	thread := update.Message.ThreadID
-	if thread == 0 {
+	if thread == 0 && a.config.GroupChatID == nil {
 		thread = 1
 	}
 	a.sendTyping(update.Message.ChatID, thread)
@@ -847,12 +1152,18 @@ func (a *Adapter) PollOnce(ctx context.Context) error {
 
 func (a *Adapter) Run(ctx context.Context) error {
 	refreshDone := make(chan struct{})
+	syncDone := make(chan struct{})
 	go func() {
 		defer close(refreshDone)
 		a.refreshWorkerTypingLoop(ctx)
 	}()
+	go func() {
+		defer close(syncDone)
+		a.topicSyncLoop(ctx)
+	}()
 	defer func() {
 		<-refreshDone
+		<-syncDone
 		a.inputWG.Wait()
 	}()
 	backoff := 100 * time.Millisecond
@@ -914,6 +1225,7 @@ func (a *Adapter) HandleDurableEvent(ctx context.Context, event Event) error {
 	}
 	if containsEventSeq(a.pending.EventSeqs, event.Sequence) {
 		a.state.LastEventSeq = event.Sequence
+		a.compactDeliveredLocked()
 		err := a.saveLocked()
 		a.mu.Unlock()
 		return err
@@ -933,6 +1245,7 @@ func (a *Adapter) HandleDurableEvent(ctx context.Context, event Event) error {
 	if event.Sequence > a.state.LastEventSeq {
 		a.state.LastEventSeq = event.Sequence
 	}
+	a.compactDeliveredLocked()
 	err := a.saveLocked()
 	a.mu.Unlock()
 	return err
@@ -963,13 +1276,15 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if owner == 0 {
 			return nil
 		}
-		return a.sendMessage(ctx, OutgoingMessage{ChatID: owner, Text: event.Text, Identity: "inbound:acknowledgement:" + event.EventID})
+		return a.sendPersonal(ctx, OutgoingMessage{Text: event.Text, Identity: "inbound:acknowledgement:" + event.EventID, DurableSequence: event.Sequence})
 	}
 	if strings.HasPrefix(event.Kind, "secretary.") {
 		return a.handleSecretaryEvent(event, 0)
 	}
 	if event.Kind == "message.saved" {
-		if !strings.HasPrefix(event.Source, "client:") || event.Source == "client:telegram-adapter" || strings.TrimPrefix(event.Source, "client:") == "" {
+		if event.Source == "client:telegram-adapter" ||
+			!(strings.HasPrefix(event.Source, "client:") && strings.TrimPrefix(event.Source, "client:") != "" ||
+				a.config.GroupChatID != nil && event.Source == "web") {
 			return nil
 		}
 		text := safeText(event.Text)
@@ -986,15 +1301,60 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if identity == "" {
 			identity = fmt.Sprintf("seq:%d", event.Sequence)
 		}
-		return a.sendMessage(ctx, OutgoingMessage{ChatID: owner, Text: text, Identity: "inbound:" + identity})
+		return a.sendPersonal(ctx, OutgoingMessage{Text: text, Identity: "inbound:" + identity, DurableSequence: event.Sequence})
 	}
 	if event.WorkerRef == "" {
 		return nil
 	}
+	// In two-chat mode all Worker Topic messages (including worker.created)
+	// are durably deferred to the independent topic-sync loop. A failing or
+	// stalled forum API must never stop the serial Server event bridge from
+	// reaching subsequent Secretary messages and Worker Results in DM.
+	if a.config.GroupChatID != nil {
+		if event.Kind == "worker.created" || event.Kind == "worker.started" || importantWorkerEvent(event.Kind) {
+			if err := a.deferWorkerTopicEvent(event); err != nil {
+				return err
+			}
+		}
+		if event.TerminalIdentity == "" || !importantWorkerEvent(event.Kind) {
+			return nil
+		}
+		a.mu.Lock()
+		_, done := a.state.TerminalNotified["complete:"+event.TerminalIdentity]
+		a.mu.Unlock()
+		if done {
+			return nil
+		}
+		body := safeText(event.Text)
+		if body == "" {
+			body = workerEventLabel(event.Kind)
+		}
+		if err := a.sendPersonal(ctx, OutgoingMessage{
+			Text: body, Identity: "terminal:"+event.TerminalIdentity+":personal",
+			DisableLinkPreview: true, DurableSequence: event.Sequence,
+		}); err != nil {
+			return err
+		}
+		a.mu.Lock()
+		a.state.TerminalNotified["complete:"+event.TerminalIdentity] = a.now()
+		err := a.saveLocked()
+		a.mu.Unlock()
+		return err
+	}
+	return a.handleWorkerTopicEvent(ctx, event, false)
+}
+
+// handleWorkerTopicEvent is called inline only by the legacy forum-only
+// adapter; in two-chat mode it is exclusively a background recovery action.
+// topicOnly prevents replaying the DM/General projection of Worker Results.
+func (a *Adapter) handleWorkerTopicEvent(ctx context.Context, event Event, topicOnly bool) error {
 	if event.Kind == "worker.started" {
 		mapping, err := a.ensureTopic(ctx, event.WorkerRef, event.Title)
 		if err != nil {
 			return err
+		}
+		if mapping.ChatID == 0 {
+			return nil
 		}
 		return a.updateWorkerTyping(event, mapping)
 	}
@@ -1002,6 +1362,9 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		mapping, err := a.ensureTopic(ctx, event.WorkerRef, event.Title, event.TaskPrompt)
 		if err != nil {
 			return err
+		}
+		if mapping.ChatID == 0 {
+			return nil
 		}
 		var parts []string
 		if nodeID := safePublicNodeID(event.NodeID); nodeID != "" {
@@ -1014,7 +1377,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			return a.sendMessage(ctx, OutgoingMessage{
 				ChatID: mapping.ChatID, ThreadID: mapping.ThreadID,
 				Text: strings.Join(parts, "\n\n"), Identity: "task-prompt:" + event.WorkerRef,
-				DisableLinkPreview: true,
+				DisableLinkPreview: true, DurableSequence: event.Sequence,
 			})
 		}
 		return nil
@@ -1023,24 +1386,35 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 	if err != nil {
 		return err
 	}
-	if isApprovalResolution(event.Kind) {
-		a.mu.Lock()
-		mapping.PendingRequestID = ""
-		a.state.Topics[event.WorkerRef] = mapping
-		if err := a.saveLocked(); err != nil {
+	if mapping.ChatID == 0 && event.TerminalIdentity == "" {
+		return nil
+	}
+	if mapping.ChatID != 0 {
+		if isApprovalResolution(event.Kind) {
+			a.mu.Lock()
+			mapping.PendingRequestID = ""
+			a.state.Topics[event.WorkerRef] = mapping
+			if err := a.saveLocked(); err != nil {
+				a.mu.Unlock()
+				return err
+			}
 			a.mu.Unlock()
-			return err
-		}
-		a.mu.Unlock()
-	} else if requestID := requestIDFromPayload(event.Payload); requestID != "" && isRequestEvent(event.Kind) {
-		a.mu.Lock()
-		mapping.PendingRequestID = requestID
-		a.state.Topics[event.WorkerRef] = mapping
-		if err := a.saveLocked(); err != nil {
+		} else if requestID := requestIDFromPayload(event.Payload); requestID != "" && isRequestEvent(event.Kind) {
+			a.mu.Lock()
+			// A repeat durable event may carry the same semantic request ID
+			// but a new sequence. Do not revive an already-notified request
+			// or overwrite a newer Topic pending request.
+			_, notified := a.state.RequestNotified[requestNotificationIdentity(event)]
+			if !notified {
+				mapping.PendingRequestID = requestID
+				a.state.Topics[event.WorkerRef] = mapping
+				if err := a.saveLocked(); err != nil {
+					a.mu.Unlock()
+					return err
+				}
+			}
 			a.mu.Unlock()
-			return err
 		}
-		a.mu.Unlock()
 	}
 	if importantWorkerEvent(event.Kind) {
 		if event.Kind == "worker.tool_started" {
@@ -1079,7 +1453,11 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		case event.TerminalIdentity != "":
 			identity = "terminal:" + event.TerminalIdentity
 			a.mu.Lock()
-			_, alreadyNotified = a.state.TerminalNotified[event.TerminalIdentity]
+			key := event.TerminalIdentity
+			if a.config.GroupChatID != nil {
+				key = "complete:" + key
+			}
+			_, alreadyNotified = a.state.TerminalNotified[key]
 			a.mu.Unlock()
 		case event.Kind == "worker.limited":
 			identity = "worker-limited:" + event.EventID
@@ -1111,23 +1489,59 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			_, alreadyNotified = a.state.ToolNotified[strings.TrimPrefix(identity, "tool:")]
 			a.mu.Unlock()
 		}
-		if alreadyNotified && event.TerminalIdentity == "" {
+		// Nonterminal request/tool receipts are semantic and durable, unlike
+		// the per-event delivery receipts removed after the cursor advances.
+		// A terminal notification in legacy mode still needs its separate
+		// General mirror; two-chat terminal receipts mean both projections
+		// were successfully delivered.
+		if topicOnly && event.TerminalIdentity != "" {
+			a.mu.Lock()
+			_, alreadyNotified = a.state.TerminalNotified["topic:"+event.TerminalIdentity]
+			a.mu.Unlock()
+		}
+		if alreadyNotified && (event.TerminalIdentity == "" || a.config.GroupChatID != nil) {
 			return nil
 		}
-		if !isWorkerTerminalEvent(event) {
-			a.sendTyping(mapping.ChatID, mapping.ThreadID)
+		if mapping.ChatID != 0 {
+			if !isWorkerTerminalEvent(event) {
+				a.sendTyping(mapping.ChatID, mapping.ThreadID)
+			}
+			if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: body, Identity: identity, DisableLinkPreview: true, DurableSequence: event.Sequence}); err != nil {
+				return err
+			}
 		}
-		if err := a.sendMessage(ctx, OutgoingMessage{ChatID: mapping.ChatID, ThreadID: mapping.ThreadID, Text: body, Identity: identity, DisableLinkPreview: true}); err != nil {
-			return err
-		}
-		if event.TerminalIdentity != "" {
+		if topicOnly && event.TerminalIdentity != "" {
 			a.mu.Lock()
-			owner := a.state.OwnerChat
+			a.state.TerminalNotified["topic:"+event.TerminalIdentity] = a.now()
+			err := a.saveLocked()
 			a.mu.Unlock()
-			if owner != 0 {
-				mirror := OutgoingMessage{ChatID: owner, Text: body, Identity: identity + ":general", DisableLinkPreview: true}
-				if err := a.sendMessage(ctx, mirror); err != nil {
+			if err != nil {
+				return err
+			}
+		}
+		if event.TerminalIdentity != "" && !topicOnly {
+			if a.config.GroupChatID != nil {
+				if err := a.sendPersonal(ctx, OutgoingMessage{Text: body, Identity: identity + ":personal", DisableLinkPreview: true, DurableSequence: event.Sequence}); err != nil {
 					return err
+				}
+				// Topic success alone is not completion: only commit this
+				// semantic receipt after every Personal projection succeeded.
+				a.mu.Lock()
+				a.state.TerminalNotified["complete:"+event.TerminalIdentity] = a.now()
+				err := a.saveLocked()
+				a.mu.Unlock()
+				if err != nil {
+					return err
+				}
+			} else {
+				a.mu.Lock()
+				owner := a.state.OwnerChat
+				a.mu.Unlock()
+				if owner != 0 {
+					mirror := OutgoingMessage{ChatID: owner, Text: body, Identity: identity + ":general", DisableLinkPreview: true, DurableSequence: event.Sequence}
+					if err := a.sendMessage(ctx, mirror); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -1145,9 +1559,12 @@ func (a *Adapter) ensureTopic(ctx context.Context, workerRef, title string, prom
 		return mapping, nil
 	}
 	owner := a.state.OwnerChat
+	if a.config.GroupChatID != nil {
+		owner = a.state.GroupChat
+	}
 	a.mu.Unlock()
 	if owner == 0 {
-		return TopicMapping{}, ErrUnauthorized
+		return TopicMapping{}, nil // DM-only: no Worker Topics to create.
 	}
 	name := topicName(workerRef, title)
 	if len(prompts) > 0 && strings.TrimSpace(prompts[0]) != "" {
@@ -1218,6 +1635,7 @@ func (a *Adapter) handleSecretaryEvent(event Event, sequence int64) error {
 			a.state.LastEventSeq = sequence
 		}
 	}
+	a.compactDeliveredLocked()
 	err := a.persistPendingLocked()
 	if err == nil {
 		err = a.saveLocked()
@@ -1282,6 +1700,7 @@ func (a *Adapter) Flush(ctx context.Context) error {
 	secretaryMessage, hasSecretary := secretaryBatchMessage(owner, text, tools)
 	if len(eventSeqs) > 0 {
 		secretaryMessage.Identity = fmt.Sprintf("secretary:%v", eventSeqs)
+		secretaryMessage.DurableSequence = eventSeqs[len(eventSeqs)-1]
 	}
 	outboxIdentities := make(map[string]struct{}, len(a.state.Outbox))
 	for _, pending := range a.state.Outbox {
@@ -1292,12 +1711,20 @@ func (a *Adapter) Flush(ctx context.Context) error {
 		return err
 	}
 	if owner != 0 && (hasSecretary || turnOpen) {
-		a.sendTyping(owner, 1)
+		thread := int64(1)
+		if a.config.GroupChatID != nil {
+			thread = 0
+		}
+		a.sendTyping(owner, thread)
 	}
 	if hasSecretary && ready {
-		if _, queued := outboxIdentities[outgoingMessageIdentity(secretaryMessage)]; !queued {
-			if err := a.sendMessage(ctx, secretaryMessage); err != nil {
-				return err
+		for _, target := range a.personalChats() {
+			destination := secretaryMessage
+			destination.ChatID = target
+			if _, queued := outboxIdentities[outgoingMessageIdentity(destination)]; !queued {
+				if err := a.sendMessage(ctx, destination); err != nil {
+					return err
+				}
 			}
 		}
 		if err := a.clearSecretaryPending(text, tools, eventSeqs); err != nil {
@@ -1337,6 +1764,7 @@ func (a *Adapter) clearSecretaryPending(text string, tools []string, seqs []int6
 	a.pending.EventSeqs = removeEventSeqs(a.pending.EventSeqs, seqs)
 	a.pending.Ready = false
 	_ = a.persistPendingLocked()
+	a.compactDeliveredLocked()
 	return a.saveLocked()
 }
 
@@ -1367,13 +1795,20 @@ func sameStrings(left, right []string) bool {
 
 func outgoingMessageIdentity(message OutgoingMessage) string {
 	if message.Identity != "" {
-		return message.Identity
+		return fmt.Sprintf("%d:%d:%s", message.ChatID, message.ThreadID, message.Identity)
 	}
 	hash := sha256.Sum256([]byte(fmt.Sprintf("%d:%d:%s", message.ChatID, message.ThreadID, message.Text)))
 	return "message:" + hex.EncodeToString(hash[:])
 }
 
 func (a *Adapter) markDeliveredLocked(message OutgoingMessage) {
+	if message.Identity != "" {
+		key := outgoingMessageIdentity(message)
+		a.state.Delivered[key] = a.now()
+		if message.DurableSequence > 0 {
+			a.state.DeliveredSequence[key] = message.DurableSequence
+		}
+	}
 	switch {
 	case strings.HasPrefix(message.Identity, "task-prompt:"):
 		workerRef := strings.TrimPrefix(message.Identity, "task-prompt:")
@@ -1383,7 +1818,7 @@ func (a *Adapter) markDeliveredLocked(message OutgoingMessage) {
 		}
 	case strings.HasPrefix(message.Identity, "terminal:"):
 		identity := strings.TrimPrefix(message.Identity, "terminal:")
-		if identity != "" {
+		if identity != "" && a.config.GroupChatID == nil {
 			a.state.TerminalNotified[identity] = a.now()
 		}
 	case strings.HasPrefix(message.Identity, "request:"):
@@ -1406,6 +1841,64 @@ func (a *Adapter) markDeliveredLocked(message OutgoingMessage) {
 	}
 }
 
+// compactDeliveredLocked removes a delivery proof only after the durable
+// Server cursor has advanced beyond its event AND no pending outbox or
+// Secretary batch could cause the same event to be sent again. This is safe
+// for partial group/DM sends and for restart between individual sends.
+func (a *Adapter) compactDeliveredLocked() {
+	if len(a.state.DeliveredSequence) == 0 {
+		return
+	}
+	pending := make(map[string]struct{}, len(a.state.Outbox))
+	for _, msg := range a.state.Outbox {
+		pending[outgoingMessageIdentity(msg)] = struct{}{}
+	}
+	for key, seq := range a.state.DeliveredSequence {
+		if seq <= 0 || seq > a.state.LastEventSeq || containsEventSeq(a.pending.EventSeqs, seq) {
+			continue
+		}
+		if _, queued := pending[key]; queued {
+			continue
+		}
+		// While a Topic event is still queued, its successful earlier send
+		// must remain deduplicated even after the Server cursor advances.
+		stillDeferred := false
+		for _, event := range a.state.PendingTopicEvents {
+			if event.Sequence == seq {
+				stillDeferred = true
+				break
+			}
+		}
+		if stillDeferred {
+			continue
+		}
+		delete(a.state.Delivered, key)
+		delete(a.state.DeliveredSequence, key)
+	}
+}
+
+// Processed Telegram updates cannot be replayed into the Server, so receipts
+// for their DM/General projections are no longer needed after that update's
+// processed marker has been saved. Never compact a failed/queued update.
+func (a *Adapter) compactProcessedReceiptsLocked(updateID int64) {
+	id := fmt.Sprint(updateID)
+	suffixes := []string{
+		":mirror-input:" + id,
+		":steer-error:" + id,
+		":inbound:voice-error:" + id,
+		":inbound:voice-formatter:" + id,
+	}
+	for key := range a.state.Delivered {
+		for _, suffix := range suffixes {
+			if strings.HasSuffix(key, suffix) {
+				delete(a.state.Delivered, key)
+				delete(a.state.DeliveredSequence, key)
+				break
+			}
+		}
+	}
+}
+
 func removeOutboxMessage(outbox []OutgoingMessage, wanted OutgoingMessage) []OutgoingMessage {
 	identity := outgoingMessageIdentity(wanted)
 	for index, pending := range outbox {
@@ -1421,7 +1914,13 @@ func (a *Adapter) sendMessage(ctx context.Context, message OutgoingMessage) erro
 		return ErrUnauthorized
 	}
 	a.mu.Lock()
-	if message.Identity != "" {
+	if message.Identity != "" && a.config.GroupChatID != nil {
+		if _, delivered := a.state.Delivered[outgoingMessageIdentity(message)]; delivered {
+			a.mu.Unlock()
+			return nil
+		}
+	}
+	if message.Identity != "" && a.config.GroupChatID == nil {
 		if strings.HasPrefix(message.Identity, "task-prompt:") {
 			if a.state.Topics[strings.TrimPrefix(message.Identity, "task-prompt:")].PromptDelivered {
 				a.mu.Unlock()
@@ -1475,16 +1974,41 @@ func (a *Adapter) sendMessage(ctx context.Context, message OutgoingMessage) erro
 		}
 	}
 	a.mu.Unlock()
+	if a.isWorkerTopicMessage(message) {
+		return a.drainTopicOutbox(ctx)
+	}
 	return a.drainOutbox(ctx)
 }
 
+// Worker Topic outbox delivery has an independent lock and transport path.
+// A stalled createForumTopic or sendMessage for a Worker Topic must not make
+// Secretary DM/General outbox delivery wait behind it.
+func (a *Adapter) isWorkerTopicMessage(message OutgoingMessage) bool {
+	return a.config.GroupChatID != nil && message.ChatID < 0 && message.ThreadID != 0
+}
+
 func (a *Adapter) drainOutbox(ctx context.Context) error {
-	a.outboxMu.Lock()
-	defer a.outboxMu.Unlock()
+	return a.drainOutboxKind(ctx, false)
+}
+
+func (a *Adapter) drainTopicOutbox(ctx context.Context) error {
+	return a.drainOutboxKind(ctx, true)
+}
+
+func (a *Adapter) drainOutboxKind(ctx context.Context, topicsOnly bool) error {
+	lock := &a.outboxMu
+	if topicsOnly {
+		lock = &a.topicOutboxMu
+	}
+	lock.Lock()
+	defer lock.Unlock()
 	a.mu.Lock()
 	outbox := append([]OutgoingMessage(nil), a.state.Outbox...)
 	a.mu.Unlock()
 	for _, message := range outbox {
+		if a.isWorkerTopicMessage(message) != topicsOnly {
+			continue
+		}
 		fences := telegramFenceBlocks(message.Text)
 		if message.ChatID == 0 {
 			a.mu.Lock()
@@ -1532,6 +2056,7 @@ func (a *Adapter) drainOutbox(ctx context.Context) error {
 			if done {
 				a.state.Outbox = removeOutboxMessage(a.state.Outbox, message)
 				a.markDeliveredLocked(message)
+				a.compactDeliveredLocked()
 			} else {
 				for index, pending := range a.state.Outbox {
 					if outgoingMessageIdentity(pending) == outgoingMessageIdentity(message) {

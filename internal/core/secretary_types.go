@@ -142,6 +142,8 @@ type SecretaryNodeSnapshot struct {
 type SecretaryContext struct {
 	Identity            SecretaryIdentity       `json:"identity"`
 	UserDocument        UserDocument            `json:"user_document"`
+	MemoryDocument      *UserDocument           `json:"memory_document,omitempty"`
+	PreferencesDocument *UserDocument           `json:"user_preferences_document,omitempty"`
 	ConversationSummary string                  `json:"conversation_summary,omitempty"`
 	RecentEntries       []ConversationEntry     `json:"recent_entries"`
 	UnseenWorkerResults []Phase4Result          `json:"unseen_worker_results"`
@@ -198,6 +200,18 @@ func (c SecretaryContext) Validate() error {
 		return fmt.Errorf("core: canonical Secretary context snapshot has invalid user document: %w", err)
 	}
 
+	for name, doc := range map[string]*UserDocument{"memory": c.MemoryDocument, "preferences": c.PreferencesDocument} {
+		// Old canonical snapshots predate these fields and remain readable.
+		if doc == nil {
+			continue
+		}
+		if doc.Path == "" || !filepath.IsAbs(doc.Path) || filepath.Clean(doc.Path) != doc.Path || doc.Revision < 1 || doc.UpdatedAt.IsZero() {
+			return fmt.Errorf("core: invalid %s document metadata", name)
+		}
+		if err := validateMemoryContent(name, doc.Content); err != nil {
+			return err
+		}
+	}
 	policy := c.PolicyProfile
 	for name, value := range map[string]string{
 		"version": policy.Version, "harness": policy.Harness, "model": policy.Model,

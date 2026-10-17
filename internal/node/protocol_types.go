@@ -9,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -184,7 +183,7 @@ func (w Workspace) Validate() error {
 	if strings.TrimSpace(w.ProjectID) == "" {
 		return errors.New("node protocol: workspace Project ID is required")
 	}
-	if strings.TrimSpace(w.Path) == "" || !filepath.IsAbs(w.Path) {
+	if err := core.ValidateWorkspaceRootPath(w.Path); err != nil {
 		return fmt.Errorf("node protocol: workspace %q must use an absolute path", w.ProjectID)
 	}
 	return nil

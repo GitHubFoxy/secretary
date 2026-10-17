@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
@@ -21,7 +20,7 @@ import (
 var invalidNodeName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 func main() {
-	_ = syscall.Umask(0o077)
+	setPrivateNodeUmask()
 	configPath := flag.String("config", "", "Node-local deployment and approved Worker MCP config JSON")
 	dataDir := flag.String("data-dir", defaultNodeDataDir(), "directory for Node identity and durable local state")
 	serverURL := flag.String("server", envOr("SECRETARY_NODE_SERVER", "http://127.0.0.1:8081"), "Secretary server URL used for first pairing")
@@ -36,7 +35,35 @@ func main() {
 	printStoreRecord := flag.Bool("print-opencode-store", false, "print the validated Node store and deployment config record")
 	checkOpenCodeAuth := flag.Bool("check-opencode-auth", false, "check stored OpenCode credentials in the selected Node store and exit")
 	opencodeCommand := flag.String("opencode-command", "opencode", "OpenCode executable used for the selected-store auth check")
+	editDeployment := flag.Bool("edit-deployment-config", false, "update existing Node config without resetting unrelated fields")
+	clearWorkspaces := flag.Bool("clear-workspaces", false, "explicitly remove existing workspace mappings when editing a deployment")
+	var requestedWorkspaces workspaceEdits
+	flag.Var(&requestedWorkspaces, "workspace", "project=absolute-path mapping to add or replace in deployment config")
 	flag.Parse()
+	if *editDeployment {
+		if *checkCodex || *checkOpenCodeAuth || *selectOpenCodeStore || *printStoreRecord {
+			log.Fatal("--edit-deployment-config is incompatible with runtime diagnostics or store selection")
+		}
+		seen := map[string]bool{}
+		flag.Visit(func(f *flag.Flag) { seen[f.Name] = true })
+		edits := deploymentEdits{ClearWorkspaces: *clearWorkspaces, Workspaces: requestedWorkspaces}
+		if seen["server"] {
+			edits.ServerURL = serverURL
+		}
+		if seen["name"] {
+			edits.NodeName = nodeName
+		}
+		if seen["capacity"] {
+			edits.Capacity = capacity
+		}
+		if seen["standalone"] {
+			edits.Standalone = standaloneSelection
+		}
+		if err := editDeploymentConfig(*configPath, edits); err != nil {
+			log.Fatalf("edit Node deployment: %v", err)
+		}
+		return
+	}
 	if *checkCodex {
 		spec := node.DefaultCodexProbeSpec()
 		spec.Binary = envOr("SECRETARY_CODEX_COMMAND", envOr("CODEX_PATH", "codex"))
@@ -178,7 +205,7 @@ func main() {
 		Capacity:   *capacity,
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), nodeShutdownSignals()...)
 	defer stop()
 	log.Printf("secretary-node %s connecting outbound to %s", identity.Node, identity.ConnectURL)
 	if err := daemon.Run(ctx); err != nil {

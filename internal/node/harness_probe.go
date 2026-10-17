@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/nativeexec"
 )
 
 var (
@@ -51,7 +52,10 @@ type ExecCommandRunner struct {
 type LocalCommandRunner = ExecCommandRunner
 
 func (r ExecCommandRunner) Run(ctx context.Context, name string, args ...string) (CommandResult, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd, err := nativeexec.CommandContext(ctx, name, args...)
+	if err != nil {
+		return CommandResult{ExitCode: -1}, err
+	}
 	if r.OpenCodeDataHome != "" {
 		sandboxRoot, err := os.MkdirTemp("", "secretary-opencode-probe-")
 		if err != nil {

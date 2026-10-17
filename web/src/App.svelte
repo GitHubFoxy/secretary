@@ -5,6 +5,7 @@
   import WorkerMessages from './WorkerMessages.svelte';
   import WorkerActivity from './WorkerActivity.svelte';
   import { terminalDiagnostic, formatWorkerStatus, inputRequest, mergeSequenced, secretaryEventText, secretaryEventPayload, visibleConversationEntries, workerActionBody, workerCard } from './ui-model.js';
+  import { createSessionRecovery } from './session-recovery.js';
 
   const ONBOARDING_KEY = 'secretary-onboarding-v1';
   let authenticated = false;
@@ -81,6 +82,7 @@
       err.category = body?.category;
       err.providerCode = body?.provider_code;
       err.technical = body?.technical;
+      err.status = response.status;
       throw err;
     }
     return body;
@@ -180,23 +182,34 @@
     });
   }
 
-  async function restoreSession() {
-    loading = true;
-    const hash = new URLSearchParams(location.hash.slice(1));
-    const token = hash.get('bootstrap');
-    try {
+  const sessionRecovery = createSessionRecovery({
+    restore: async (token) => {
+      loading = true;
       if (token) {
         await bootstrapSession(token);
         history.replaceState(null, '', `${location.pathname}${location.search}`);
-      } else await request('/v1/web/session');
+      } else {
+        await request('/v1/web/session');
+      }
       await loadState();
-    } catch (_) {
+    },
+    onFailure: () => {
       loading = false;
       authenticated = false;
-    }
+    },
+  });
+
+  async function restoreSession() {
+    const token = new URLSearchParams(location.hash.slice(1)).get('bootstrap') || '';
+    await sessionRecovery.attempt(token);
+  }
+
+  function recoverCookieSession() {
+    if (!authenticated) void sessionRecovery.onServerAvailable();
   }
 
   async function login() {
+    sessionRecovery.cancelRetry();
     loginError = '';
     try {
       await bootstrapSession(loginToken.trim());
@@ -475,8 +488,11 @@
   }
 
   onMount(() => {
-    restoreSession();
+    window.addEventListener('secretary:server-available', recoverCookieSession);
+    void restoreSession();
     return () => {
+      sessionRecovery.dispose();
+      window.removeEventListener('secretary:server-available', recoverCookieSession);
       clearTimeout(reconnectTimer);
       clearTimeout(secretaryReconnectTimer);
       clearTimeout(activityReconnectTimer);

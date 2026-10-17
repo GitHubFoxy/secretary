@@ -171,6 +171,9 @@ func inspectWorkerProfileAtProcessBoundary(path string, metadata map[string]stri
 		globalDenyAll = globalDenyAll || permission.Action == "*" && permission.Effect == "deny"
 	}
 	expectedPrompt := syntheticManagedWorkerInstructions
+	if fromTest := os.Getenv("TEST_WORKER_PROFILE_EXPECTED_PROMPT"); fromTest != "" {
+		expectedPrompt = fromTest
+	}
 	if os.Getenv("TEST_WORKER_PROFILE_SKILL") == "nonempty" {
 		expectedPrompt += "\n\n## Managed skill: synthetic.md\n\nSynthetic managed skill."
 	}

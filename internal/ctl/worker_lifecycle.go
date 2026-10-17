@@ -35,6 +35,7 @@ type WorkerService struct {
 	WorkerPolicy        core.HarnessPolicy
 	WorkerPolicySource  func() core.HarnessPolicy
 	WorkerProfileSource func() (node.ManagedProfile, error)
+	MemoryUserPath       string // server-owned path to legacy user.md; empty disables injection
 	Runtime             WorkerRuntime
 	commandNow          func() time.Time
 }
@@ -502,6 +503,15 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	profile, profileErr := s.WorkerProfileSource()
 	if profileErr != nil {
 		return core.WorkerDetails{}, ErrWorkerProfileUnavailable
+	}
+	// Bind the owner's saved context to the initial Worker profile snapshot.
+	// Continuations reuse that immutable snapshot; normal Turns never write memory.
+	if s.MemoryUserPath != "" {
+		var memoryErr error
+		profile, memoryErr = s.withOwnerMemory(ctx, profile)
+		if memoryErr != nil {
+			return core.WorkerDetails{}, fmt.Errorf("load owner memory for Worker: %w", memoryErr)
+		}
 	}
 	origins := []core.SecretaryOriginIdentity(nil)
 	if origin != nil {

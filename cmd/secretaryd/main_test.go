@@ -300,7 +300,7 @@ func TestProductionAssemblyRespondsWithoutManualResponderAttachment(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	attachProductionWorkerServices(ctx, api, store, person.ID, capability, local, nil, nil, nil, nil)
+	attachProductionWorkerServices(ctx, api, store, person.ID, capability, "", local, nil, nil, nil, nil)
 	server := httptest.NewServer(api.Handler())
 	defer server.Close()
 	client := &http.Client{Jar: mustProductionCookieJar(t)}

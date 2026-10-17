@@ -302,7 +302,7 @@ func main() {
 			log.Printf("generated Secretary runtime credential")
 		}
 	}
-	attachProductionWorkerServices(ctx, web, store, web.OwnerID(), capability, workerLocal, remoteNodes, func(binding core.BindingProfile) node.ManagedProfile {
+	attachProductionWorkerServices(ctx, web, store, web.OwnerID(), capability, filepath.Join(*dataDir, "user.md"), workerLocal, remoteNodes, func(binding core.BindingProfile) node.ManagedProfile {
 		compiled, err := store.ConfigVersion(ctx, binding.Version)
 		if err == nil {
 			var snapshot config.Snapshot
@@ -507,10 +507,10 @@ func configuredWorkerPolicy(c config.Config) core.HarnessPolicy {
 	return core.HarnessPolicy{DefaultHarness: core.HarnessKind(policy.DefaultHarness), PreferredHarnesses: preferred, ModelID: model, Reasoning: reasoning}
 }
 
-func attachProductionWorkerServices(ctx context.Context, web *webapi.Server, store *core.Store, personID, capability string, local *node.LocalNode, remote *node.ServerManager, managedProfile func(core.BindingProfile) node.ManagedProfile, workerProfile func() (node.ManagedProfile, error), workerPolicy func() core.HarnessPolicy) {
+func attachProductionWorkerServices(ctx context.Context, web *webapi.Server, store *core.Store, personID, capability, memoryUserPath string, local *node.LocalNode, remote *node.ServerManager, managedProfile func(core.BindingProfile) node.ManagedProfile, workerProfile func() (node.ManagedProfile, error), workerPolicy func() core.HarnessPolicy) {
 	controller := &app.WorkerController{Store: store, Node: local, ManagedProfile: managedProfile}
 	web.AttachWorkerController(controller)
-	workerService := ctl.WorkerService{Store: store, PersonID: personID, Capability: capability, WorkerPolicySource: workerPolicy, WorkerProfileSource: workerProfile, Runtime: ctl.NodeRuntime{Manager: remote, Local: local}}
+	workerService := ctl.WorkerService{Store: store, PersonID: personID, Capability: capability, MemoryUserPath: memoryUserPath, WorkerPolicySource: workerPolicy, WorkerProfileSource: workerProfile, Runtime: ctl.NodeRuntime{Manager: remote, Local: local}}
 	web.AttachWorkerResponder(workerService)
 	web.AttachSecretaryWorkerTools(workerService)
 	go workerService.RunQueuedWorkerMessages(ctx)

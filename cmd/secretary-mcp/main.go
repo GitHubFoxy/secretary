@@ -72,7 +72,7 @@ func main() {
 		if reasoning == "default" {
 			reasoning = ""
 		}
-		secretaryHandler = mcp.Secretary{Workers: ctl.WorkerService{Store: store, PersonID: owner.ID, Capability: capability, WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessKind(policy.DefaultHarness), PreferredHarnesses: preferred, ModelID: model, Reasoning: reasoning}}, ReplyContractVersion: replyContract}
+		secretaryHandler = mcp.Secretary{Workers: ctl.WorkerService{Store: store, PersonID: owner.ID, Capability: capability, MemoryUserPath: filepath.Join(*dataDir, "user.md"), WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessKind(policy.DefaultHarness), PreferredHarnesses: preferred, ModelID: model, Reasoning: reasoning}}, ReplyContractVersion: replyContract, UserPath: filepath.Join(*dataDir, "user.md")}
 	}
 	handler := mcp.AuditedHandler{
 		Handler: secretaryHandler,

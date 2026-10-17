@@ -83,6 +83,50 @@ MCP list не входит в WorkerEnvelope, handshake или Secretary control
 
 Local setup/runtime/probe/Doctor/login regressions проверяют duplicate deployment fields, обычное расхождение co-located stores и standalone independence; Go отклоняет неоднозначный config до native CLI. Private unpaid native HTTP fixtures используют DB, созданную реальным public `secretary setup`, и реализованы в [ticket 33](../.scratch/.archived/phase-4/issues/33-isolate-opencode-native-state.md). Actual provider login, authenticated live acceptance и production rollout не выполнялись.
 
+## Windows Execution node (macOS/Linux Server)
+
+Windows 10/11 или Windows Server может запускать **только Execution Node**; Secretary Server остаётся на macOS/Linux. Обязательно используйте нативный Windows Go binary, а не Unix `./secretary` shell installer. Node инициирует исходящее WebSocket-соединение к серверу; входящий порт и port forwarding не нужны. Нужен доступный с Windows HTTPS URL Server (например, приватный Tailscale HTTPS), корректный TLS и отдельный одноразовый pairing token, зарегистрированный в `SECRETARY_NODE_PAIRING_TOKENS` на Server.
+
+В PowerShell **на Windows Node** из корня репозитория:
+
+```powershell
+go build -o secretary-node.exe ./cmd/secretary-node
+# Установите и авторизуйте поддерживаемые native Codex и codex-acp отдельно.
+# npm может устанавливать одновременно .ps1 и .cmd; .ps1 не запускается через Go exec.
+$codex = @("codex.exe", "codex.cmd") | ForEach-Object {
+  Get-Command $_ -CommandType Application -ErrorAction SilentlyContinue
+} | Select-Object -First 1
+$acp = @("codex-acp.exe", "codex-acp.cmd") | ForEach-Object {
+  Get-Command $_ -CommandType Application -ErrorAction SilentlyContinue
+} | Select-Object -First 1
+if (-not $codex -or -not $acp) { throw "Native Codex/Codex ACP .exe or .cmd not found in PATH" }
+$env:SECRETARY_CODEX_COMMAND = $codex.Source
+$env:SECRETARY_ACP_COMMAND = $acp.Source
+.\secretary-node.exe --check-codex-readiness
+
+$root = Join-Path $env:LOCALAPPDATA "Secretary\Node"
+New-Item -ItemType Directory -Force -Path $root | Out-Null
+$config = @{
+  server_url = "https://secretary.example.ts.net"
+  node = "windows-node"
+  data_dir = (Join-Path $root "data")
+  capacity = 1
+  standalone = $true
+  include_opencode = $false
+  workspaces = @(@{ project_id = "project-id"; path = "C:\src\project" })
+}
+$configPath = Join-Path $root "config.json"
+[System.IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 8), [System.Text.UTF8Encoding]::new($false))
+$env:SECRETARY_NODE_PAIRING_TOKEN = Read-Host "One-time Windows Node pairing token"
+.\secretary-node.exe --config $configPath
+```
+
+`data_dir` и `workspaces[].path` должны быть абсолютными **Windows** путями, доступными запускающему пользователю; Project ID должен совпадать с зарегистрированным на Server. Конфиг сохраняйте в личном каталоге с закрытым ACL (Windows не поддерживает Unix `umask`/`0600` semantics). **Никогда** не записывайте pairing token или native credentials в `config.json`, службу, Git или shared directory. После первого успешного pairing остановите Node через Ctrl+C, удалите токен из текущего PowerShell (`Remove-Item Env:\SECRETARY_NODE_PAIRING_TOKEN`) и запустите ту же команду без токена. `identity.json` и `node-state.json` остаются в выбранном `data_dir` для reconnect и durable native session mapping. Не удаляйте их между запусками. Не запускайте две копии Node с одним identity/data_dir.
+
+Для Windows CLI и ACP выбирайте только `.exe` либо npm `.cmd` shim, **не** PowerShell `.ps1`; runtime и readiness теперь используют один platform-aware launcher. `.cmd` запускается через `cmd.exe` и отклоняет опасные shell metacharacters в аргументах вместо неявного выполнения команд. На Windows непроверенные/подменённые пути не должны обходить Project mapping: Server выполняет только платформенно-независимую лексическую проверку, а реальное существование папки и symlink containment проверяет сам Windows Node.\n\nЕсли OpenCode не используется, явный `include_opencode = false` избегает выбора его native store. Обязательно сохраните установленный ACP executable в PATH или `SECRETARY_ACP_COMMAND` при запуске Node из планировщика; интерактивный PATH и PATH службы отличаются. Для Claude Code аналогично нужен `SECRETARY_CLAUDE_COMMAND`; его runtime использует Windows process termination, а не Unix process groups. Доступность CLI сама по себе не означает authenticated/ready: проверяйте Node inventory и реальные native capability/model pins. Dispatch к отсутствующему/не-ready harness должен завершаться явной ошибкой, без молчаливого fallback.
+
+**Acceptance:** на Server выберите Windows Node с готовым native harness, дайте простой Task и убедитесь, что один терминальный Result появляется в Personal Conversation. После завершения/idle отключите Node, запустите снова с тем же `data_dir`, отправьте Follow-up исходному Worker и проверьте сохранение native session ID. На неподдерживаемом resume получите явную ошибку. Активный Attempt при потере связи не повторяется вслепую: статус offline/uncertain требует восстановления или ручного решения владельца. Тесты на реальном Windows runner проверяют сборку, сетевой Node-протокол, reconnect/deduplication и запуск ACP subprocess с session resume, **но используют protocol fixture, не авторизованный provider**. Реальный authenticated harness Task+Follow-up нужно отдельно выполнить и документировать перед закрытием T17; см. [Windows acceptance ledger](t17-windows-acceptance.md).
+
 ## Pairing и запуск
 
 На сервере заранее создайте отдельный одноразовый `SECRETARY_NODE_PAIRING_TOKEN` для каждого Node. Передайте token только первой команде запуска:

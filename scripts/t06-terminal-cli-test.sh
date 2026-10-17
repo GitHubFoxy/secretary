@@ -1,0 +1,328 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+export T06_NODE_BINARY="$TMP/secretary-node-real"
+(cd "$ROOT" && go build -o "$T06_NODE_BINARY" ./cmd/secretary-node)
+
+fail() {
+  printf 'FAIL: %s\n' "$1" >&2
+  exit 1
+}
+
+make_mise() {
+  local directory="$1"
+  cat > "$directory/mise" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" == exec && "$2" == -- && "$3" == go && "$4" == build && "$5" == -o ]]
+cat > "$6" <<'BINARY'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == --check-codex-readiness ]]; then
+  if [[ "${T06_REQUIRE_CODEX_ACP:-0}" == 1 ]]; then
+    command -v codex-acp >/dev/null 2>&1 || exit 1
+  fi
+  [[ "${T06_CODEX_AUTH_FAIL:-0}" != 1 ]]
+  exit $?
+fi
+if [[ "$0" == */secretary-node ]]; then
+  exec "$T06_NODE_BINARY" "$@"
+fi
+exit 0
+BINARY
+chmod 700 "$6"
+STUB
+  chmod +x "$directory/mise"
+}
+
+CODBIN="$TMP/codex-bin"
+CLAUDEBIN="$TMP/claude-bin"
+mkdir -p "$CODBIN" "$CLAUDEBIN"
+make_mise "$CODBIN"
+make_mise "$CLAUDEBIN"
+cat > "$CODBIN/codex-acp" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+cat > "$CODBIN/codex" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == 'login status' ]]; then
+  [[ "${T06_CODEX_AUTH_FAIL:-0}" != 1 ]]
+  exit $?
+fi
+if [[ "$*" == 'login' ]]; then exit 0; fi
+exit 2
+STUB
+cat > "$CLAUDEBIN/claude" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == '--version' ]]; then exit 0; fi
+if [[ "$*" == 'auth status' ]]; then [[ "${CLAUDE_AUTH_FAIL:-0}" != 1 ]]; exit $?; fi
+exit 1
+STUB
+chmod +x "$CODBIN/codex-acp" "$CODBIN/codex" "$CLAUDEBIN/claude"
+cat > "$CODBIN/systemctl" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$TEST_SYSTEMD_LOG"
+exit 0
+STUB
+chmod +x "$CODBIN/systemctl"
+cp "$CODBIN/systemctl" "$CLAUDEBIN/systemctl"
+
+export HOME="$TMP/codex-home" PATH="$CODBIN:/usr/bin:/bin" TEST_SYSTEMD_LOG="$TMP/systemd.log"
+mkdir -p "$HOME/.codex"
+printf 'personal codex config\n' > "$HOME/.codex/config.toml"
+"$ROOT/secretary" setup --non-interactive
+STATE="$HOME/.local/share/secretary"
+[[ -f "$STATE/environment" && -f "$STATE/node/config.json" ]] || fail "setup did not create private deployment"
+grep -q '^harness = "codex"$' "$STATE/config.toml" || fail "Codex not selected"
+grep -q '^default_harness = "codex"$' "$STATE/config.toml" || fail "Worker Codex default missing"
+grep -q 'SECRETARY_NODE_PAIRING_TOKEN' "$STATE/environment" || fail "local Node pairing credential missing"
+grep -q 'SECRETARY_NODE_ADMIN_TOKEN' "$STATE/environment" || fail "local Node admin credential missing"
+[[ "$(stat -c '%a' "$STATE/environment" 2>/dev/null || stat -f '%Lp' "$STATE/environment")" == 600 ]] || fail "insecure private environment permissions"
+[[ "$(cat "$HOME/.codex/config.toml")" == 'personal codex config' ]] || fail "native Codex config overwritten"
+"$ROOT/secretary" doctor >/dev/null
+"$ROOT/secretary" node doctor >/dev/null
+cp "$CLAUDEBIN/claude" "$CODBIN/claude"
+before_auth="$(cat "$STATE/config.toml")"
+export CLAUDE_AUTH_FAIL=1
+if "$ROOT/secretary" setup --non-interactive --harness claude_code >"$TMP/denied-auth-log" 2>&1; then
+  fail "setup switched harness when Claude auth status failed"
+fi
+[[ "$(cat "$STATE/config.toml")" == "$before_auth" ]] || fail "failed Claude auth modified the original Codex config"
+grep -q '^default_harness = "codex"$' "$STATE/config.toml" || fail "failed auth switched worker defaults"
+"$ROOT/secretary" doctor >/dev/null || fail "Codex doctor stopped working after denied Claude auth"
+unset CLAUDE_AUTH_FAIL
+"$ROOT/secretary" setup --non-interactive --harness claude_code >/dev/null
+grep -q '^harness = "claude_code"$' "$STATE/config.toml" || fail "authorized Claude switch failed"
+"$ROOT/secretary" setup --non-interactive --harness codex >/dev/null
+before="$(cat "$STATE/environment")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$STATE/environment")" == "$before" ]] || fail "repeat setup rotated credentials"
+if "$ROOT/secretary" config >"$TMP/config-log" 2>&1; then fail "config unexpectedly accepted without TTY"; fi
+grep -q 'terminal' "$TMP/config-log" || fail "missing config TTY diagnostic"
+if command -v script >/dev/null 2>&1 && [[ "$(uname -s)" == Linux ]]; then
+  if ! printf '2\n\nwizard-node\n2\n5\n' | script -qec "$ROOT/secretary config" /dev/null >"$TMP/pty-log" 2>&1; then
+    cat "$TMP/pty-log" >&2
+    fail "interactive terminal wizard failed"
+  fi
+  grep -q '"node": "wizard-node"' "$STATE/node/config.json" || fail "interactive Node name not applied"
+  grep -q '"capacity": 2' "$STATE/node/config.json" || fail "interactive Node capacity not applied"
+fi
+"$ROOT/secretary" node setup --standalone --name test-node >/dev/null
+grep -q '"standalone": true' "$STATE/node/config.json" || fail "standalone config lost"
+"$ROOT/secretary" node setup --workspace frontend=/src/frontend --workspace backend=/src/backend >/dev/null
+"$ROOT/secretary" node setup --capacity 2 >/dev/null
+grep -q '"capacity": 2' "$STATE/node/config.json" || fail "node capacity was not updated"
+grep -q '"project_id": "frontend"' "$STATE/node/config.json" || fail "frontend mapping dropped by capacity edit"
+grep -q '"project_id": "backend"' "$STATE/node/config.json" || fail "backend mapping dropped by capacity edit"
+"$ROOT/secretary" node setup --workspace frontend=/new/frontend --workspace docs=/src/docs >/dev/null
+grep -q '"path": "/new/frontend"' "$STATE/node/config.json" || fail "explicit workspace update failed"
+grep -q '"project_id": "backend"' "$STATE/node/config.json" || fail "unmodified workspace disappeared"
+grep -q '"project_id": "docs"' "$STATE/node/config.json" || fail "second explicit workspace missing"
+before_node="$(cat "$STATE/node/config.json")"
+if "$ROOT/secretary" node setup --capacity -1 >/dev/null 2>&1; then fail "invalid capacity was accepted"; fi
+[[ "$(cat "$STATE/node/config.json")" == "$before_node" ]] || fail "invalid capacity altered Node config"
+"$ROOT/secretary" node setup --clear-workspaces >/dev/null
+if grep -q '"project_id"' "$STATE/node/config.json"; then fail "explicit workspace clear was ignored"; fi
+
+"$ROOT/secretary" install-service
+[[ -f "$HOME/.config/systemd/user/secretary.service" ]] || fail "Linux service unit missing"
+grep -q 'enable --now secretary.service' "$TEST_SYSTEMD_LOG" || fail "systemd service not enabled"
+"$ROOT/secretary" status | grep -q 'systemd' || fail "service status missing"
+"$ROOT/secretary" restart
+grep -q 'restart secretary.service' "$TEST_SYSTEMD_LOG" || fail "systemd restart not invoked"
+mkdir -p "$STATE/node/data"
+printf '{"node":"test-node"}\n' > "$STATE/node/data/identity.json"
+"$ROOT/secretary" node install-service
+[[ -f "$HOME/.config/systemd/user/secretary-node.service" ]] || fail "Linux Node unit missing"
+"$ROOT/secretary" node status | grep -q 'systemd' || fail "Node service status missing"
+"$ROOT/secretary" node restart
+grep -q 'stop secretary-node.service' "$TEST_SYSTEMD_LOG" || fail "Node restart did not stop unit"
+grep -q 'start secretary-node.service' "$TEST_SYSTEMD_LOG" || fail "Node restart did not start unit"
+"$ROOT/secretary" node uninstall-service
+"$ROOT/secretary" uninstall-service
+[[ ! -e "$HOME/.config/systemd/user/secretary.service" ]] || fail "service unit retained after uninstall"
+
+# Existing config.toml or a previously paired identity must not suppress
+# recovery of missing Node secrets on upgrade or an interrupted prior setup.
+export HOME="$TMP/upgrade-home" PATH="$CODBIN:/usr/bin:/bin"
+UPGRADE_STATE="$HOME/.local/share/secretary"
+mkdir -p "$UPGRADE_STATE/node/data"
+cp "$ROOT/internal/config/defaults/config.toml" "$UPGRADE_STATE/config.toml"
+printf "export SECRETARY_BOOTSTRAP_TOKEN='existing-bootstrap'\nexport SECRETARY_CUSTOM_VALUE='keep-me'\n" > "$UPGRADE_STATE/environment"
+printf '{"node":"legacy-paired"}\n' > "$UPGRADE_STATE/node/data/identity.json"
+export SECRETARY_NODE_PAIRING_TOKEN="ambient-not-persisted"
+export SECRETARY_NODE_ADMIN_TOKEN="ambient-not-persisted"
+before_upgrade_config="$(cat "$UPGRADE_STATE/config.toml")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$UPGRADE_STATE/config.toml")" == "$before_upgrade_config" ]] || fail "upgrade rewrote original config"
+grep -q '^export SECRETARY_BOOTSTRAP_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade lost bootstrap secret"
+grep -q "existing-bootstrap" "$UPGRADE_STATE/environment" || fail "upgrade rotated bootstrap"
+grep -q "keep-me" "$UPGRADE_STATE/environment" || fail "upgrade modified unrelated environment"
+grep -q '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade did not create pairing token"
+grep -q '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade did not create admin token"
+if grep -q 'ambient-not-persisted' "$UPGRADE_STATE/environment"; then fail "inherited environment was treated as persisted credentials"; fi
+before_upgrade_env="$(cat "$UPGRADE_STATE/environment")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$UPGRADE_STATE/environment")" == "$before_upgrade_env" ]] || fail "repeat upgrade rotated existing secrets"
+
+# A partial setup or manually incomplete environment is repaired one field
+# at a time, without rewriting valid credentials.
+grep -v '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" > "$TMP/retry-env"
+cp "$TMP/retry-env" "$UPGRADE_STATE/environment"
+pair_before="$(grep '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(grep '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment")" == "$pair_before" ]] || fail "retry rotated existing pairing token"
+grep -q '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" || fail "retry did not repair missing admin token"
+admin_before="$(grep '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment")"
+grep -v '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" > "$TMP/retry-env"
+cp "$TMP/retry-env" "$UPGRADE_STATE/environment"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(grep '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment")" == "$admin_before" ]] || fail "retry rotated existing admin token"
+grep -q '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" || fail "retry did not repair missing pairing token"
+unset SECRETARY_NODE_PAIRING_TOKEN SECRETARY_NODE_ADMIN_TOKEN
+
+# Codex-only clean install: the native CLI is already authorized, npm is
+# available, but codex-acp must be installed during prepare_harness().
+# Auto-selection must not require the missing adapter before this install.
+MISSING_ACP_BIN="$TMP/codex-needs-acp-bin"
+mkdir -p "$MISSING_ACP_BIN"
+make_mise "$MISSING_ACP_BIN"
+cp "$CODBIN/codex" "$MISSING_ACP_BIN/codex"
+cat > "$MISSING_ACP_BIN/npm" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$*" == 'install -g @agentclientprotocol/codex-acp@1.12.0' ]] || exit 2
+printf '%s\n' "$*" >> "$T06_NPM_INSTALL_LOG"
+[[ "${T06_NPM_INSTALL_FAIL:-0}" != 1 ]] || exit 17
+cat > "$(dirname "$0")/codex-acp" <<'ADAPTER'
+#!/usr/bin/env bash
+exit 0
+ADAPTER
+chmod +x "$(dirname "$0")/codex-acp"
+STUB
+chmod +x "$MISSING_ACP_BIN/npm"
+export HOME="$TMP/codex-missing-acp-home" PATH="$MISSING_ACP_BIN:/usr/bin:/bin"
+export T06_REQUIRE_CODEX_ACP=1 T06_NPM_INSTALL_LOG="$TMP/npm-install.log"
+[[ ! -e "$MISSING_ACP_BIN/codex-acp" ]] || fail "missing ACP test precondition violated"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+MISSING_ACP_STATE="$HOME/.local/share/secretary"
+grep -q '^harness = "codex"$' "$MISSING_ACP_STATE/config.toml" || fail "authorized Codex without ACP was not selected"
+grep -q '^default_harness = "codex"$' "$MISSING_ACP_STATE/config.toml" || fail "missing-ACP setup did not configure Codex worker"
+[[ -x "$MISSING_ACP_BIN/codex-acp" ]] || fail "npm was not used to install missing codex-acp"
+[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq 1 ]] || fail "expected exactly one adapter installation"
+"$ROOT/secretary" doctor >/dev/null || fail "installed adapter was not ready after setup"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq 1 ]] || fail "repeat setup reinstalled codex-acp"
+unset T06_REQUIRE_CODEX_ACP
+
+# If Codex authentication is valid but npm cannot install its missing ACP
+# adapter, automatically select an already-authorized Claude Code. Do not
+# persist Codex defaults before adapter provisioning has succeeded.
+FAILING_NPM_BIN="$TMP/failing-npm-bin"
+mkdir -p "$FAILING_NPM_BIN"
+make_mise "$FAILING_NPM_BIN"
+cp "$CODBIN/codex" "$FAILING_NPM_BIN/codex"
+cp "$MISSING_ACP_BIN/npm" "$FAILING_NPM_BIN/npm"
+export HOME="$TMP/npm-fails-claude-fallback-home" PATH="$FAILING_NPM_BIN:$CLAUDEBIN:/usr/bin:/bin"
+export T06_REQUIRE_CODEX_ACP=1 T06_NPM_INSTALL_FAIL=1
+before_fail_attempts="$(wc -l < "$T06_NPM_INSTALL_LOG")"
+"$ROOT/secretary" setup --non-interactive >"$TMP/npm-fails-fallback.log" 2>&1 ||
+  fail "authorized Claude fallback did not recover from failed npm ACP installation"
+FALLBACK_STATE="$HOME/.local/share/secretary"
+[[ ! -e "$FAILING_NPM_BIN/codex-acp" ]] || fail "failing npm unexpectedly installed ACP"
+[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq "$((before_fail_attempts + 1))" ]] || fail "Codex ACP installation failure was not exercised"
+grep -q '^harness = "claude_code"$' "$FALLBACK_STATE/config.toml" || fail "npm error left Codex configured instead of Claude"
+grep -q '^default_harness = "claude_code"$' "$FALLBACK_STATE/config.toml" || fail "npm error left Codex worker default"
+grep -q "using authorized Claude Code instead" "$TMP/npm-fails-fallback.log" || fail "missing explicit fallback diagnostic"
+fallback_config_before="$(cat "$FALLBACK_STATE/config.toml")"
+fallback_env_before="$(cat "$FALLBACK_STATE/environment")"
+fallback_attempts_before="$(wc -l < "$T06_NPM_INSTALL_LOG")"
+"$ROOT/secretary" setup --non-interactive >/dev/null ||
+  fail "repeat setup failed after falling back to Claude"
+[[ "$(cat "$FALLBACK_STATE/config.toml")" == "$fallback_config_before" ]] || fail "repeat setup reverted persisted Claude fallback"
+[[ "$(cat "$FALLBACK_STATE/environment")" == "$fallback_env_before" ]] || fail "repeat setup rotated credentials after Claude fallback"
+[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq "$fallback_attempts_before" ]] || fail "repeat setup incorrectly retried failed Codex npm install"
+
+# An explicit Codex choice is not automatic selection: even with authorized
+# Claude available, failed npm must fail rather than silently switching harness.
+export HOME="$TMP/npm-fails-explicit-codex-home" PATH="$FAILING_NPM_BIN:$CLAUDEBIN:/usr/bin:/bin"
+explicit_attempts_before="$(wc -l < "$T06_NPM_INSTALL_LOG")"
+if "$ROOT/secretary" setup --non-interactive --harness codex >"$TMP/npm-fails-explicit-codex.log" 2>&1; then
+  fail "explicit --harness codex silently succeeded after failed npm install"
+fi
+EXPLICIT_STATE="$HOME/.local/share/secretary"
+[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq "$((explicit_attempts_before + 1))" ]] || fail "explicit Codex choice did not attempt ACP installation"
+[[ ! -e "$FAILING_NPM_BIN/codex-acp" ]] || fail "failed explicit Codex install unexpectedly produced ACP"
+[[ ! -e "$EXPLICIT_STATE/config.toml" ]] || fail "explicit Codex failure persisted a harness config"
+[[ ! -e "$EXPLICIT_STATE/environment" ]] || fail "explicit Codex failure persisted bootstrap credentials"
+if grep -q 'using authorized Claude Code instead' "$TMP/npm-fails-explicit-codex.log"; then
+  fail "explicit Codex choice unexpectedly fell back to Claude"
+fi
+
+# With no authorized fallback, failed npm must not write a Codex config.
+# A subsequent retry with npm working must still take the fresh Codex path.
+export HOME="$TMP/npm-fails-no-fallback-home" PATH="$FAILING_NPM_BIN:/usr/bin:/bin"
+if "$ROOT/secretary" setup --non-interactive >"$TMP/npm-fails-only.log" 2>&1; then
+  fail "Codex-only setup succeeded despite failed ACP installation"
+fi
+NO_FALLBACK_STATE="$HOME/.local/share/secretary"
+[[ ! -e "$NO_FALLBACK_STATE/config.toml" ]] || fail "failed npm provision persisted an unusable Codex config"
+[[ ! -e "$NO_FALLBACK_STATE/environment" ]] || fail "failed npm provision persisted bootstrap environment before harness readiness"
+unset T06_NPM_INSTALL_FAIL
+"$ROOT/secretary" setup --non-interactive >/dev/null || fail "retry after npm recovery failed"
+grep -q '^harness = "codex"$' "$NO_FALLBACK_STATE/config.toml" || fail "retry did not select authorized Codex"
+[[ -x "$FAILING_NPM_BIN/codex-acp" ]] || fail "retry did not install Codex ACP"
+unset T06_REQUIRE_CODEX_ACP
+
+# An unauthorized Codex with an installable but absent adapter must NOT
+# win auto-selection over a ready Claude Code or trigger npm installation.
+UNAUTHORIZED_BIN="$TMP/codex-unauthorized-no-acp-bin"
+mkdir -p "$UNAUTHORIZED_BIN"
+make_mise "$UNAUTHORIZED_BIN"
+cp "$CODBIN/codex" "$UNAUTHORIZED_BIN/codex"
+cp "$MISSING_ACP_BIN/npm" "$UNAUTHORIZED_BIN/npm"
+export HOME="$TMP/unauthorized-codex-no-acp-home" PATH="$UNAUTHORIZED_BIN:$CLAUDEBIN:/usr/bin:/bin"
+export T06_CODEX_AUTH_FAIL=1 T06_REQUIRE_CODEX_ACP=1
+before_installs="$(wc -l < "$T06_NPM_INSTALL_LOG")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+UNAUTHORIZED_STATE="$HOME/.local/share/secretary"
+grep -q '^harness = "claude_code"$' "$UNAUTHORIZED_STATE/config.toml" || fail "unready Codex without ACP preempted authorized Claude"
+[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq "$before_installs" ]] || fail "unauthorized Codex caused unwanted npm installation"
+unset T06_CODEX_AUTH_FAIL T06_REQUIRE_CODEX_ACP
+
+# Fresh unattended setup should reject an installed but unready Codex and
+# choose a genuinely authenticated Claude Code instead.
+export HOME="$TMP/auto-choice-home" PATH="$CODBIN:$CLAUDEBIN:/usr/bin:/bin"
+export T06_CODEX_AUTH_FAIL=1
+"$ROOT/secretary" setup --non-interactive >/dev/null
+AUTO_STATE="$HOME/.local/share/secretary"
+grep -q '^harness = "claude_code"$' "$AUTO_STATE/config.toml" || fail "unauthorized Codex wrongly won auto-selection"
+grep -q '^default_harness = "claude_code"$' "$AUTO_STATE/config.toml" || fail "auto-selection did not set Claude Worker defaults"
+unset T06_CODEX_AUTH_FAIL
+
+# codex-acp is only the adapter, not proof that the Codex CLI is installed.
+ACPONLYBIN="$TMP/acp-only-bin"
+mkdir -p "$ACPONLYBIN"
+make_mise "$ACPONLYBIN"
+cp "$CODBIN/codex-acp" "$ACPONLYBIN/codex-acp"
+export HOME="$TMP/acp-only-home" PATH="$ACPONLYBIN:/usr/bin:/bin"
+if "$ROOT/secretary" setup --non-interactive >"$TMP/acp-only.log" 2>&1; then
+  fail "codex-acp alone was incorrectly treated as a ready Codex harness"
+fi
+[[ ! -e "$HOME/.local/share/secretary/config.toml" ]] || fail "ACP-only failure created a misleading active config"
+
+export HOME="$TMP/claude-home" PATH="$CLAUDEBIN:/usr/bin:/bin"
+"$ROOT/secretary" setup --non-interactive
+STATE="$HOME/.local/share/secretary"
+grep -q '^harness = "claude_code"$' "$STATE/config.toml" || fail "Claude-only setup selected Codex"
+grep -q '^default_harness = "claude_code"$' "$STATE/config.toml" || fail "Claude worker default missing"
+"$ROOT/secretary" doctor >/dev/null
+"$ROOT/secretary" node doctor >/dev/null
+before="$(cat "$STATE/config.toml")"
+if "$ROOT/secretary" setup --non-interactive --harness unsupported >/dev/null 2>&1; then fail "invalid harness accepted"; fi
+[[ "$(cat "$STATE/config.toml")" == "$before" ]] || fail "invalid harness modified config"
+printf 'PASS: T06 Codex/Claude setup, upgrade/retry credential repair, authenticated auto-selection, workspace persistence and Linux lifecycle\n'
