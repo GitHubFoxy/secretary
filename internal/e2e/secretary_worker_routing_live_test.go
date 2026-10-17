@@ -151,6 +151,41 @@ func TestT01LiveSecretaryChoosesWorkerAndClarifies(t *testing.T) {
 		return details
 	}
 
+	// Wait for the addressed Secretary Turn to finish before asserting that
+	// no Worker action was sent. A visible clarification alone is not sufficient.
+	waitTurnFinished := func(turnID string) {
+		t.Helper()
+		if turnID == "" {
+			t.Fatal("clarification is missing its Secretary Turn ID")
+		}
+		tick := time.NewTicker(350 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/secretary/turns/"+turnID+"/stream?after_seq=0", nil)
+			if err != nil { t.Fatal(err) }
+			res, err := client.Do(req)
+			if err != nil { t.Fatal(err) }
+			if res.StatusCode != http.StatusOK {
+				res.Body.Close()
+				t.Fatalf("read Secretary Turn %s failed: %d", turnID, res.StatusCode)
+			}
+			var replay struct {
+				Events []core.Event `json:"events"`
+			}
+			err = json.NewDecoder(res.Body).Decode(&replay)
+			res.Body.Close()
+			if err != nil { t.Fatal(err) }
+			for _, event := range replay.Events {
+				if event.Kind == core.SecretaryTurnFinishedEvent { return }
+			}
+			select {
+			case <-ctx.Done():
+				t.Fatalf("Secretary Turn %s did not finish: %v", turnID, ctx.Err())
+			case <-tick.C:
+			}
+		}
+	}
+
 	stamp := strconv.FormatInt(time.Now().UnixNano(), 36)
 	post("t01-live-website-"+stamp,
 		"I want a fictional website. Do not create or edit any files or run shell commands. Delegate this as a new Task. Ask me what the website should be about before planning it.")
@@ -178,15 +213,16 @@ func TestT01LiveSecretaryChoosesWorkerAndClarifies(t *testing.T) {
 	yesSeq := post("t01-live-ambiguous-"+stamp, "Yes")
 	clarify := await(core.EntrySecretary, yesSeq, func(entry core.ConversationEntry) bool {
 		body := strings.ToLower(strings.TrimSpace(entry.Body))
+		// The question must identify BOTH candidate Tasks, not merely ask
+		// a generic unrelated question.
 		return strings.Contains(body, "?") &&
-			(strings.Contains(body, "which") || strings.Contains(body, "worker") ||
-				strings.Contains(body, "website") || strings.Contains(body, "vacation") ||
-				strings.Contains(body, "task") || strings.Contains(body, "mean"))
+			((strings.Contains(body, "website") && strings.Contains(body, "vacation")) ||
+				(strings.Contains(body, strings.ToLower(first.WorkerRef)) &&
+					strings.Contains(body, strings.ToLower(second.WorkerRef))))
 	})
-	// The model must ask which Worker to continue. No Worker may receive the
-	// neutral reply, and it must not start a third Worker.
-	// Allow the Secretary turn to finish before checking asynchronous actions.
-	time.Sleep(750 * time.Millisecond)
+	// The model must identify the ambiguity itself, with both candidates.
+	// Check after the Secretary Turn finishes, not while it can still use tools.
+	waitTurnFinished(clarify.TurnID)
 	if workers := getWorkers(); len(workers) != 2 {
 		t.Fatalf("neutral Yes created a new Worker: count=%d", len(workers))
 	}
