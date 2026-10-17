@@ -228,6 +228,7 @@ type Adapter struct {
 	state                      persistedState
 	workerTypingRecoveryNeeded bool
 	topicsSynchronized         bool
+	topicSyncWake              chan struct{}
 	pending                    pendingBatch
 	lastTyping                 map[string]time.Time
 	outboxMu                   sync.Mutex
@@ -256,7 +257,7 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 	if config.TitleTimeout <= 0 {
 		config.TitleTimeout = 5 * time.Second
 	}
-	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), now: func() time.Time { return time.Now().UTC() }}
+	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), topicSyncWake: make(chan struct{}, 1), now: func() time.Time { return time.Now().UTC() }}
 	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Delivered: map[string]time.Time{}, DeliveredSequence: map[string]int64{}, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, ToolNotified: map[string]time.Time{}, ToolPreviews: map[string]string{}, WorkerTyping: map[string]workerTypingAttempt{}, WorkerTypingInitialized: true, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}}
 	if err := adapter.load(); err != nil {
 		return nil, err
@@ -656,7 +657,56 @@ func (a *Adapter) linkGroup(ctx context.Context, update Update) error {
 	if err != nil {
 		return err
 	}
-	return a.SyncWorkerTopics(ctx)
+	a.requestTopicSync()
+	return nil
+}
+
+// requestTopicSync wakes the independent topic-recovery loop without blocking
+// Telegram updates on forum permissions or the Server worker lookup.
+func (a *Adapter) requestTopicSync() {
+	select {
+	case a.topicSyncWake <- struct{}{}:
+	default:
+	}
+}
+
+// topicSyncLoop retries forum reconciliation independently of the DM poll,
+// input workers, outbox flush and their own transport backoff. Successful
+// reconciliation sleeps until the next /linkgroup request; failures are
+// retried with bounded backoff.
+func (a *Adapter) topicSyncLoop(ctx context.Context) {
+	retry := time.Second
+	for ctx.Err() == nil {
+		err := a.SyncWorkerTopics(ctx)
+		if err == nil {
+			retry = time.Second
+			select {
+			case <-ctx.Done():
+				return
+			case <-a.topicSyncWake:
+				continue
+			}
+		}
+		timer := time.NewTimer(retry)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return
+		case <-a.topicSyncWake:
+			if !timer.Stop() {
+				<-timer.C
+			}
+		case <-timer.C:
+		}
+		if retry < 30*time.Second {
+			retry *= 2
+			if retry > 30*time.Second {
+				retry = 30 * time.Second
+			}
+		}
+	}
 }
 
 // SyncWorkerTopics restores mappings for Workers created before the group was
@@ -1015,9 +1065,6 @@ func (a *Adapter) updateWorkerTyping(event Event, mapping TopicMapping) error {
 }
 
 func (a *Adapter) PollOnce(ctx context.Context) error {
-	if err := a.SyncWorkerTopics(ctx); err != nil {
-		return err
-	}
 	if err := a.pollInputs(ctx); err != nil {
 		return err
 	}
@@ -1026,12 +1073,18 @@ func (a *Adapter) PollOnce(ctx context.Context) error {
 
 func (a *Adapter) Run(ctx context.Context) error {
 	refreshDone := make(chan struct{})
+	syncDone := make(chan struct{})
 	go func() {
 		defer close(refreshDone)
 		a.refreshWorkerTypingLoop(ctx)
 	}()
+	go func() {
+		defer close(syncDone)
+		a.topicSyncLoop(ctx)
+	}()
 	defer func() {
 		<-refreshDone
+		<-syncDone
 		a.inputWG.Wait()
 	}()
 	backoff := 100 * time.Millisecond
@@ -1043,10 +1096,7 @@ func (a *Adapter) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		err := a.SyncWorkerTopics(ctx)
-		if err == nil {
-			err = a.pollInputs(ctx)
-		}
+		err := a.pollInputs(ctx)
 		a.startInputWorkers(ctx)
 		if err == nil {
 			err = a.Flush(ctx)
@@ -1230,11 +1280,17 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			a.mu.Unlock()
 		} else if requestID := requestIDFromPayload(event.Payload); requestID != "" && isRequestEvent(event.Kind) {
 			a.mu.Lock()
-			mapping.PendingRequestID = requestID
-			a.state.Topics[event.WorkerRef] = mapping
-			if err := a.saveLocked(); err != nil {
-				a.mu.Unlock()
-				return err
+			// A repeat durable event may carry the same semantic request ID
+			// but a new sequence. Do not revive an already-notified request
+			// or overwrite a newer Topic pending request.
+			_, notified := a.state.RequestNotified[requestNotificationIdentity(event)]
+			if !notified {
+				mapping.PendingRequestID = requestID
+				a.state.Topics[event.WorkerRef] = mapping
+				if err := a.saveLocked(); err != nil {
+					a.mu.Unlock()
+					return err
+				}
 			}
 			a.mu.Unlock()
 		}
@@ -1312,8 +1368,12 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			_, alreadyNotified = a.state.ToolNotified[strings.TrimPrefix(identity, "tool:")]
 			a.mu.Unlock()
 		}
-		if alreadyNotified && ((event.TerminalIdentity != "" && a.config.GroupChatID != nil) ||
-			(event.TerminalIdentity == "" && a.config.GroupChatID == nil)) {
+		// Nonterminal request/tool receipts are semantic and durable, unlike
+		// the per-event delivery receipts removed after the cursor advances.
+		// A terminal notification in legacy mode still needs its separate
+		// General mirror; two-chat terminal receipts mean both projections
+		// were successfully delivered.
+		if alreadyNotified && (event.TerminalIdentity == "" || a.config.GroupChatID != nil) {
 			return nil
 		}
 		if mapping.ChatID != 0 {
