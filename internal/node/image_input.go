@@ -37,6 +37,13 @@ type ImageQueueSession interface {
 	QueueImages(context.Context, string, []ImageInput) error
 }
 
+// ImageResponseSession handles a pending native needs_input request. It must
+// guarantee image bytes are accepted by the native model BEFORE signaling
+// success, instead of responding with an artifact:// string alone.
+type ImageResponseSession interface {
+	RespondImages(context.Context, string, string, []ImageInput) error
+}
+
 func ValidateStillImage(name string, data []byte) (ImageInput, error) {
 	if len(data) == 0 || len(data) > core.MaxArtifactBytes {
 		return ImageInput{}, errors.New("image: empty or oversized original (maximum 8 MiB)")

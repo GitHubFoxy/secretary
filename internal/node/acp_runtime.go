@@ -920,6 +920,33 @@ func (s *acpSession) RebindPendingRequests(requests []PendingRequest) {
 	}
 }
 
+// ACP's interaction reply is textual. Deliver the actual image through
+// the negotiated multimodal steering channel first, and acknowledge the
+// pending interaction ONLY if the native turn confirms injection.
+func (s *acpSession) RespondImages(ctx context.Context, requestID, response string, images []ImageInput) error {
+	if len(images) == 0 {
+		return s.Respond(ctx, requestID, response)
+	}
+	if !s.imageSupported {
+		return errors.New("image_input_unsupported: ACP agent does not support native image blocks")
+	}
+	s.requestMu.Lock()
+	_, pending := s.pending[requestID]
+	_, rebound := s.reboundResponses[requestID]
+	s.requestMu.Unlock()
+	if !pending && !rebound {
+		return errors.New("acp: no active native interaction to receive an image response")
+	}
+	injected, err := s.SteerImages(ctx, response, images)
+	if err != nil {
+		return err
+	}
+	if !injected {
+		return errors.New("image_input_unsupported: ACP did not inject image blocks into the native turn")
+	}
+	return s.Respond(ctx, requestID, response)
+}
+
 func (s *acpSession) Respond(ctx context.Context, requestID, response string) error {
 	if strings.TrimSpace(requestID) == "" || strings.TrimSpace(response) == "" {
 		return errors.New("acp: request_id and response are required")

@@ -20,6 +20,12 @@ var (
 	ErrWorkerCommandPending     = errors.New("worker: runtime command delivery is pending recovery")
 )
 
+// ImageResponseWorkerRuntime is optional for legacy runtimes. A Worker
+// needs_input photo must never be delivered through text-only Respond.
+type ImageResponseWorkerRuntime interface {
+	RespondImages(context.Context, string, core.Worker, core.Phase4Attempt, string, string) error
+}
+
 type WorkerRuntime interface {
 	Dispatch(context.Context, string, core.Worker, core.Turn, core.Phase4Attempt, core.DispatchResolution) error
 	Steer(context.Context, string, core.Worker, core.Phase4Attempt, string) error
@@ -911,13 +917,26 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			})
 		}
 	case core.WorkerNeedsInput:
+		hasImages := false
 		for _, artifactID := range node.ArtifactIDs(request.Text) {
-			artifact, _, artifactErr := s.Store.ArtifactForPerson(ctx, s.PersonID, artifactID)
+			artifact, data, artifactErr := s.Store.ArtifactForPerson(ctx, s.PersonID, artifactID)
 			if artifactErr != nil {
 				return core.WorkerDetails{}, fmt.Errorf("worker: attached Artifact unavailable: %w", artifactErr)
 			}
 			if strings.HasPrefix(artifact.MediaType, "image/") {
-				return core.WorkerDetails{}, errors.New("worker: image attachments cannot answer needs_input yet; send a text answer or start a new Worker turn with the image")
+				image, validationErr := node.ValidateStillImage(artifact.Name, data)
+				if validationErr != nil || image.MediaType != artifact.MediaType {
+					return core.WorkerDetails{}, errors.New("worker: image attachment content does not match a supported original")
+				}
+				hasImages = true
+			}
+		}
+		var imageRuntime ImageResponseWorkerRuntime
+		if hasImages {
+			var ok bool
+			imageRuntime, ok = s.Runtime.(ImageResponseWorkerRuntime)
+			if !ok {
+				return core.WorkerDetails{}, errors.New("worker: native runtime cannot answer needs_input with image bytes")
 			}
 		}
 		if attempt == nil {
@@ -936,6 +955,9 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		}
 		if send {
 			err = s.deliverCommand(ctx, command, func(commandID string) error {
+				if hasImages {
+					return imageRuntime.RespondImages(ctx, commandID, details.Worker, *attempt, request.RequestID, request.Text)
+				}
 				return s.Runtime.Respond(ctx, commandID, details.Worker, *attempt, request.RequestID, request.Text)
 			})
 		}
