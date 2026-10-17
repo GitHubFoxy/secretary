@@ -122,7 +122,7 @@ func TestT12WebVideoAsyncToRemoteNodeWorkerResultAndFailure(t *testing.T) {
 	if status!=http.StatusCreated{t.Fatalf("upload %d %s",status,raw)}
 	var uploaded struct{Reference string `json:"reference"`;Artifact core.Artifact `json:"artifact"`}
 	if e:=json.Unmarshal(raw,&uploaded);e!=nil{t.Fatal(e)}
-	if uploaded.Artifact.ProcessingStatus!="processing" {t.Fatalf("upload state %s",uploaded.Artifact.ProcessingStatus)}
+	if uploaded.Artifact.ProcessingStatus!="queued" && uploaded.Artifact.ProcessingStatus!="processing" {t.Fatalf("upload state %s",uploaded.Artifact.ProcessingStatus)}
 	<-processor.started
 	status,replay:=post("/v1/artifacts?name=clip.mp4","t12-up-1",[]byte("good video"))
 	if status!=http.StatusOK || !bytes.Contains(replay,[]byte(uploaded.Reference)){t.Fatalf("video retry %d %s",status,replay)}

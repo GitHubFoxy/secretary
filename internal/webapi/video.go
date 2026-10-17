@@ -84,7 +84,7 @@ func (p ffmpegVideoProcessor) Process(ctx context.Context, original []byte, opti
 	}
 	pattern:=filepath.Join(dir,"frame_%05d.webp")
 	rate:=strconv.FormatFloat(options.FPS,'f',-1,64)
-	filter:="setpts=PTS-STARTPTS,fps="+rate+":start_time=0,scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease"
+	filter:="setpts=PTS-STARTPTS,fps="+rate+":start_time=0:eof_action=pass,scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease"
 	command:=exec.CommandContext(ctx,"ffmpeg","-nostdin","-hide_banner","-loglevel","error","-threads","1","-i",input,
 		"-an","-vf",filter,"-frames:v",strconv.Itoa(count+1),"-c:v","libwebp","-quality","70",pattern)
 	output,err:=command.CombinedOutput()
