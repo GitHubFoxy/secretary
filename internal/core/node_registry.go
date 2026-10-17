@@ -338,13 +338,42 @@ func (s *Store) MarkNodeConnected(ctx context.Context, node NodeReference, inven
 		return err
 	}
 	now := s.now()
-	// A new socket is not proof that previously heartbeated Attempts are
-	// still running. Require a fresh heartbeat before trusting its inventory.
-	result, err := s.db.ExecContext(ctx, `UPDATE phase4_nodes SET online = 1, last_seen_at = ?, last_heartbeat_at = '', active_attempts_json = '[]', capacity = 0, inventory_json = ? WHERE node_ref = ? AND revoked = 0`, timestamp(now), string(encoded), node)
-	if err != nil {
+	// A new authenticated socket is not proof that the previous runtime
+	// sessions survived. Invalidate Node telemetry AND the actionability of
+	// bound nonterminal Workers in one transaction, before the new connection
+	// can deliver a fresh heartbeat. Only an exact heartbeat binding may
+	// subsequently restore a Worker's previous working/waiting status.
+	return withTxErr(s, ctx, func(tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `UPDATE phase4_nodes SET online = 1, last_seen_at = ?, last_heartbeat_at = '', active_attempts_json = '[]', capacity = 0, inventory_json = ? WHERE node_ref = ? AND revoked = 0`, timestamp(now), string(encoded), node)
+		if err != nil {
+			return err
+		}
+		affected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			var revoked bool
+			if err := tx.QueryRowContext(ctx, `SELECT revoked FROM phase4_nodes WHERE node_ref = ?`, node).Scan(&revoked); err != nil {
+				if errors.Is(err, sql.ErrNoRows) {
+					return ErrNotFound
+				}
+				return err
+			}
+			if revoked {
+				return ErrNodeRevoked
+			}
+			return ErrSelectedNodeUnavailable
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE node_id = ? AND status IN (?, ?, ?, ?) AND EXISTS (
+			SELECT 1 FROM phase4_attempts a JOIN turns t ON t.id = a.turn_id
+			WHERE a.worker_id = workers.id AND a.node_id = ? AND a.state IN (?, ?)
+			AND t.current_attempt_id = a.id
+		)`, WorkerOffline, timestamp(now), node,
+			WorkerStarting, WorkerWorking, WorkerWaitingApproval, WorkerNeedsInput,
+			node, AttemptStarting, AttemptActive)
 		return err
-	}
-	return s.requireActiveNode(ctx, node, result)
+	})
 }
 
 func (s *Store) MarkSilentNodesOffline(ctx context.Context, before time.Time) error {
