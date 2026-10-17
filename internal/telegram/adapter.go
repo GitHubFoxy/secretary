@@ -1312,7 +1312,8 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			_, alreadyNotified = a.state.ToolNotified[strings.TrimPrefix(identity, "tool:")]
 			a.mu.Unlock()
 		}
-		if alreadyNotified && (event.TerminalIdentity != "" || a.config.GroupChatID == nil) {
+		if alreadyNotified && ((event.TerminalIdentity != "" && a.config.GroupChatID != nil) ||
+			(event.TerminalIdentity == "" && a.config.GroupChatID == nil)) {
 			return nil
 		}
 		if mapping.ChatID != 0 {
