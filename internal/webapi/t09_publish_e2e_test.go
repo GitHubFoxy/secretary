@@ -27,54 +27,52 @@ type t09PublishingRuntime struct {
 }
 
 func (r *t09PublishingRuntime) Start(ctx context.Context, request node.StartRequest) (node.Session, error) {
-	var publisher node.ArtifactPublisher
+	var endpoint string
 	found := false
 	for _, server := range request.MCPServers {
-		if server.Name != "secretary_artifacts" {
-			continue
-		}
+		if server.Name != "secretary_artifacts" { continue }
 		found = true
-		for _, env := range server.Env {
-			switch env.Name {
-			case "SECRETARY_ARTIFACT_SERVER":
-				publisher.ServerURL = env.Value
-			case "SECRETARY_ARTIFACT_NODE":
-				publisher.Node = core.NodeReference(env.Value)
-			case "SECRETARY_ARTIFACT_WORKER":
-				publisher.WorkerRef = env.Value
-			case "SECRETARY_ARTIFACT_ATTEMPT":
-				publisher.AttemptID = env.Value
-			case "SECRETARY_ARTIFACT_WORKSPACE":
-				publisher.Workspace = env.Value
-			case "SECRETARY_ARTIFACT_CAPABILITY":
-				publisher.Capability = env.Value
-			}
+		if len(server.Env) != 1 || server.Env[0].Name != "SECRETARY_ARTIFACT_BROKER_URL" {
+			return nil, errors.New("Worker runtime inherited a Server-valid publication secret or Node identity")
 		}
+		endpoint = server.Env[0].Value
 	}
-	if !found || publisher.Workspace != request.Workspace || publisher.WorkerRef != request.WorkerRef {
-		return nil, errors.New("Worker did not receive its scoped Artifact publisher")
+	if !found || endpoint == "" {
+		return nil, errors.New("Worker did not receive a local Node broker")
+	}
+	if _, err := node.RequestWorkerArtifact(ctx, endpoint, "../outside.zip", "outside.zip"); err == nil {
+		return nil, errors.New("Node broker published an out-of-workspace path")
+	}
+	direct, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader([]byte("forged binary payload")))
+	if err != nil { return nil, err }
+	direct.Header.Set("Content-Type", "application/octet-stream")
+	resp, err := http.DefaultClient.Do(direct)
+	if err != nil { return nil, err }
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		return nil, errors.New("Node broker accepted caller-controlled binary bytes")
 	}
 	path := filepath.Join(request.Workspace, "result.zip")
 	if err := os.WriteFile(path, r.data, 0o600); err != nil {
 		return nil, err
 	}
-	artifact, err := publisher.Publish(ctx, "result.zip", "result.zip")
+	artifact, err := node.RequestWorkerArtifact(ctx, endpoint, "result.zip", "result.zip")
 	if err != nil {
 		return nil, err
 	}
-	again, err := publisher.Publish(ctx, "result.zip", "result.zip")
+	again, err := node.RequestWorkerArtifact(ctx, endpoint, "result.zip", "result.zip")
 	if err != nil || again.ID != artifact.ID {
 		return nil, fmt.Errorf("duplicate publish not idempotent: %v", err)
 	}
 	if err := os.WriteFile(path, []byte("changed"), 0o600); err != nil {
 		return nil, err
 	}
-	if _, err := publisher.Publish(ctx, "result.zip", "result.zip"); err == nil {
+	if _, err := node.RequestWorkerArtifact(ctx, endpoint, "result.zip", "result.zip"); err == nil {
 		return nil, errors.New("changed output was accepted under same publication key")
 	}
 	r.ready <- artifact
 	out := make(chan node.Result, 1)
-	out <- node.Result{Status: "succeeded", Summary: "Generated archive"}
+	out <- node.Result{Status: "succeeded", Summary: "Generated archive artifact://" + artifact.ID}
 	return &artifactWorkerSession{result: out}, nil
 }
 
