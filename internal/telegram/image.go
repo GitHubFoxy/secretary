@@ -54,8 +54,49 @@ func imageArtifactName(u Update) (string, error) {
 	return name, nil
 }
 
+// Persist a terminal image warning independently of Bot API availability.
+// Never retry the original getFile operation because Telegram sendMessage
+// temporarily failed. The regular outbox is responsible for delivery/retry.
 func (a *Adapter) imageNotice(ctx context.Context, u Update, text string) error {
-	return a.sendMessage(ctx, OutgoingMessage{ChatID:u.Message.ChatID,ThreadID:u.Message.ThreadID,ReplyToMessageID:u.Message.MessageID,Identity:fmt.Sprintf("inbound:image-warning:%d",u.ID),Text:text})
+	message := OutgoingMessage{ChatID:u.Message.ChatID,ThreadID:u.Message.ThreadID,ReplyToMessageID:u.Message.MessageID,Identity:fmt.Sprintf("inbound:image-warning:%d",u.ID),Text:text}
+	if message.ChatID == 0 {
+		return ErrUnauthorized
+	}
+	a.mu.Lock()
+	identity := outgoingMessageIdentity(message)
+	alreadyDelivered := false
+	if a.config.GroupChatID != nil {
+		_, alreadyDelivered = a.state.Delivered[identity]
+	} else {
+		_, alreadyDelivered = a.state.InboundNotified[message.Identity]
+	}
+	alreadyQueued := false
+	for _, pending := range a.state.Outbox {
+		if outgoingMessageIdentity(pending) == identity {
+			alreadyQueued = true
+			break
+		}
+	}
+	var err error
+	if !alreadyDelivered && !alreadyQueued {
+		a.state.Outbox = append(a.state.Outbox, message)
+		err = a.saveLocked()
+	}
+	a.mu.Unlock()
+	if err != nil {
+		return err // durable warning was NOT recorded; retry is required
+	}
+	if alreadyDelivered {
+		return nil
+	}
+	// Sending is best effort after the durable checkpoint. The outbox
+	// remains queued if Telegram is temporarily unavailable.
+	if a.isWorkerTopicMessage(message) {
+		_ = a.drainTopicOutbox(ctx)
+	} else {
+		_ = a.drainOutbox(ctx)
+	}
+	return nil
 }
 
 // Re-evaluate authorization on every durable replay; a queued update must
