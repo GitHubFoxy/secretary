@@ -49,6 +49,9 @@ func TestT04ServerEventBridgeProjectsToDMAndForumWithoutReplay(t *testing.T) {
 	if failedSeq, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil {
 		t.Fatalf("bridge failed at %d: %v", failedSeq, err)
 	}
+	if err := adapter.SyncWorkerTopics(ctx); err != nil {
+		t.Fatalf("deferred forum topic recovery: %v", err)
+	}
 	transport.mu.Lock()
 	sent := append([]telegram.OutgoingMessage(nil), transport.sent...)
 	transport.mu.Unlock()
@@ -261,5 +264,136 @@ func TestT04TopicRecoveryRetriesAfterFailedLinkAndRestart(t *testing.T) {
 	}
 	if transport.topicCalls != 2 {
 		t.Fatal("sync is not idempotent")
+	}
+}
+
+type t04BlockedForumBridgeTransport struct {
+	bridgeTransport
+	muForum sync.Mutex
+	attempts int
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (t *t04BlockedForumBridgeTransport) CreateForumTopic(ctx context.Context, chatID int64, _ string) (telegram.ForumTopic, error) {
+	t.muForum.Lock()
+	t.attempts++
+	attempt := t.attempts
+	t.muForum.Unlock()
+	if attempt == 1 {
+		close(t.entered)
+		select {
+		case <-t.release:
+			return telegram.ForumTopic{}, fmt.Errorf("Telegram forum temporarily unavailable")
+		case <-ctx.Done():
+			return telegram.ForumTopic{}, ctx.Err()
+		}
+	}
+	return telegram.ForumTopic{ChatID: chatID, ThreadID: 9}, nil
+}
+
+func TestT04DurableBridgeDeliversDMAndResultDespiteBlockedForumThenRecoversTopics(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	record := func(event core.EventInput) {
+		t.Helper()
+		if _, err := store.RecordEventWithMetadata(ctx, event); err != nil { t.Fatal(err) }
+	}
+	// Create the Worker first, so its pending Topic creation can fail before
+	// the Secretary reply and Worker Result reach the serial event bridge.
+	record(core.EventInput{Kind: "worker.spawned", AggregateType: "worker", AggregateID: "worker-1", WorkerRef: "worker-1", Payload: map[string]any{"intent": "Research"}})
+	group := int64(-200)
+	statePath := filepath.Join(t.TempDir(), "telegram.json")
+	tr := &t04BlockedForumBridgeTransport{entered: make(chan struct{}), release: make(chan struct{})}
+	makeAdapter := func() *telegram.Adapter {
+		t.Helper()
+		adapter, err := telegram.New(telegram.Config{
+			StatePath: statePath, OwnerChatID: 100, GroupChatID: &group, FlushInterval: time.Hour,
+		}, tr, &bridgeServer{})
+		if err != nil { t.Fatal(err) }
+		return adapter
+	}
+	adapter := makeAdapter()
+	if failedSeq, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil {
+		t.Fatalf("worker.created bridge blocked at %d: %v", failedSeq, err)
+	}
+	if adapter.LastEventSeq() != 1 {
+		t.Fatalf("worker.created wasn't checkpointed: %d", adapter.LastEventSeq())
+	}
+	recoveryDone := make(chan error, 1)
+	go func() { recoveryDone <- adapter.SyncWorkerTopics(ctx) }()
+	select {
+	case <-tr.entered:
+	case <-time.After(3*time.Second):
+		t.Fatal("forum Topic creation did not start")
+	}
+	record(core.EventInput{Kind: core.SecretaryTurnStartedEvent})
+	record(core.EventInput{Kind: "conversation.entry", Payload: map[string]any{"kind": "secretary", "body": "Secretary while forum blocked"}})
+	record(core.EventInput{Kind: core.SecretaryTurnFinishedEvent, Payload: map[string]any{"status": "succeeded"}})
+	record(core.EventInput{Kind: "result.accepted", AggregateType: "result", AggregateID: "result-1", WorkerRef: "worker-1", CorrelationID: "turn-1", Payload: map[string]any{"turn_id": "turn-1", "summary": "Worker while forum blocked", "status": "succeeded"}})
+
+	// This is the actual Server Store -> durable bridge, not a fake
+	// HandleEvent call. It must complete BEFORE the forum API is released.
+	bridgeDone := make(chan error, 1)
+	go func() {
+		_, err := bridgeTelegramEventsOnce(ctx, store, adapter)
+		bridgeDone <- err
+	}()
+	select {
+	case err := <-bridgeDone:
+		if err != nil { t.Fatalf("bridge blocked or failed with forum unavailable: %v", err) }
+	case <-time.After(3*time.Second):
+		t.Fatal("forum CreateForumTopic blocked the durable Server event bridge")
+	}
+	tr.mu.Lock()
+	before := append([]telegram.OutgoingMessage(nil), tr.sent...)
+	tr.mu.Unlock()
+	count := func(messages []telegram.OutgoingMessage, text string, chat, thread int64) int {
+		total := 0
+		for _, msg := range messages {
+			if msg.Text == text && msg.ChatID == chat && msg.ThreadID == thread { total++ }
+		}
+		return total
+	}
+	for _, body := range []string{"Secretary while forum blocked", "Worker while forum blocked"} {
+		if count(before, body, 100, 0) != 1 {
+			t.Fatalf("%q not delivered to DM while forum hung: %#v", body, before)
+		}
+	}
+	if count(before, "Worker while forum blocked", -200, 9) != 0 {
+		t.Fatalf("forum Topic somehow delivered before recovery: %#v", before)
+	}
+	close(tr.release)
+	select {
+	case err := <-recoveryDone:
+		if err == nil { t.Fatal("expected forum API failure on first recovery attempt") }
+	case <-time.After(3*time.Second):
+		t.Fatal("forum recovery remained blocked after API failure")
+	}
+	// Recovery from durable telegram/state.json must create the Topic and
+	// drain BOTH the original worker.created prompt and the later Result,
+	// without sending the DM/General mirrors a second time.
+	adapter = makeAdapter()
+	if err := adapter.SyncWorkerTopics(ctx); err != nil { t.Fatal(err) }
+	tr.mu.Lock()
+	after := append([]telegram.OutgoingMessage(nil), tr.sent...)
+	tr.mu.Unlock()
+	if count(after, "Research", -200, 9) != 1 || count(after, "Worker while forum blocked", -200, 9) != 1 {
+		t.Fatalf("deferred Topic prompt/Result lost on recovery: %#v", after)
+	}
+	for _, body := range []string{"Secretary while forum blocked", "Worker while forum blocked"} {
+		if count(after, body, 100, 0) != 1 {
+			t.Fatalf("%q duplicated in DM after forum recovery: %#v", body, after)
+		}
+	}
+	if _, err := bridgeTelegramEventsOnce(ctx, store, adapter); err != nil { t.Fatal(err) }
+	if err := adapter.SyncWorkerTopics(ctx); err != nil { t.Fatal(err) }
+	tr.mu.Lock()
+	defer tr.mu.Unlock()
+	if len(tr.sent) != len(after) {
+		t.Fatalf("bridge replay after Topic recovery duplicated messages: before=%d after=%d", len(after), len(tr.sent))
 	}
 }
