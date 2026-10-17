@@ -439,12 +439,16 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, clien
 	}
 	request.IdempotencyKey = key
 	operation := "worker.action:" + suffix[0] + ":" + details.Worker.WorkerRef
-	payloadFingerprint := struct {
-		Text                    string
-		RequestID               string
-		AttemptID               string
-		ConfirmUnknownExecution bool
-	}{request.Text, request.RequestID, payload.AttemptID, payload.ConfirmUnknownExecution}
+	var payloadFingerprint any = struct {
+		Text      string
+		RequestID string
+	}{request.Text, request.RequestID}
+	if suffix[0] == "abandon" {
+		payloadFingerprint = struct {
+			AttemptID               string
+			ConfirmUnknownExecution bool
+		}{payload.AttemptID, payload.ConfirmUnknownExecution}
+	}
 	s.idempotencyMu.Lock()
 	defer s.idempotencyMu.Unlock()
 	if encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), operation, request.IdempotencyKey, payloadFingerprint); lookupErr != nil {
