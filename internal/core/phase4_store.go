@@ -2266,6 +2266,44 @@ func (s *Store) RecordNodeAttemptOutcome(ctx context.Context, envelope AttemptOu
 	if attempt.NodeID != string(envelope.Node) || attempt.HarnessInstanceID != string(envelope.HarnessInstanceID) || worker.WorkerRef != envelope.WorkerRef || attempt.TurnID != envelope.TurnID {
 		return AttemptOutcome{}, nil, false, errors.New("core: Node terminal event does not match immutable Worker binding")
 	}
+	published, err := s.PublishedArtifactsForAttempt(ctx, envelope.AttemptID)
+	if err != nil {
+		return AttemptOutcome{}, nil, false, err
+	}
+	// Deduplicate by Artifact ID. An existing artifact:// mention is NOT
+	// evidence of a downloadable URL in the Web conversation.
+	seen := make(map[string]bool, len(envelope.ArtifactRefs)+len(published))
+	for _, ref := range envelope.ArtifactRefs {
+		seen[ref.Ref] = true
+	}
+	for _, artifact := range published {
+		reference := "artifact://" + artifact.ID
+		if !seen[reference] {
+			envelope.ArtifactRefs = append(envelope.ArtifactRefs, ArtifactRef{Kind: "file", Ref: reference})
+			seen[reference] = true
+		}
+	}
+	var ownerID string
+	if err := s.db.QueryRowContext(ctx, `SELECT c.person_id FROM conversations c
+		JOIN workers w ON c.id = w.conversation_id WHERE w.id = ?`, worker.ID).Scan(&ownerID); err != nil {
+		return AttemptOutcome{}, nil, false, err
+	}
+	shown := make(map[string]bool, len(envelope.ArtifactRefs))
+	for _, ref := range envelope.ArtifactRefs {
+		if !strings.HasPrefix(ref.Ref, "artifact://") { continue }
+		id := strings.TrimPrefix(ref.Ref, "artifact://")
+		if shown[id] { continue }
+		shown[id] = true
+		// Only link real Artifacts owned by the same Person as this Worker.
+		var present int
+		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM artifacts WHERE id = ? AND person_id = ?`, id, ownerID).Scan(&present)
+		if errors.Is(err, sql.ErrNoRows) { continue }
+		if err != nil { return AttemptOutcome{}, nil, false, err }
+		downloadURL := "/v1/artifacts/" + id + "?download=1"
+		if !hasClickableArtifactDownload(envelope.Summary, downloadURL) {
+			envelope.Summary += "\n\n[Download output](" + downloadURL + ")"
+		}
+	}
 	artifactRefs := ""
 	if len(envelope.ArtifactRefs) > 0 {
 		encoded, encodeErr := json.Marshal(envelope.ArtifactRefs)

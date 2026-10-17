@@ -1,0 +1,54 @@
+name: macOS Native Worker sandbox acceptance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  macos-node:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Confirm available Seatbelt sandbox
+        shell: bash
+        run: |
+          test -x /usr/bin/sandbox-exec
+          /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true
+      - name: Diagnose Seatbelt minimum process permissions (no deployment changes)
+        shell: bash
+        run: |
+          set +e
+          for policy in \
+            '(version 1)(allow default)' \
+            '(version 1)(deny default)(allow process*)(allow file-read*)(allow file-write*)(allow network*)(allow mach-lookup)(allow sysctl-read)(allow mach-host*)(allow iokit-open)(allow ipc-posix*)(allow file-read-metadata)(allow file-ioctl)(allow signal)' \
+            '(version 1)(deny default)(allow process*)(allow mach-lookup)(allow sysctl-read)(allow mach-host*)(allow ipc-posix*)(allow file-read-metadata)(allow file-read* (subpath "/System") (subpath "/usr") (subpath "/bin") (subpath "/Library") (subpath "/private/etc") (subpath "/dev"))'; do
+            /usr/bin/sandbox-exec -p "$policy" /bin/sh -c 'echo T09-SEATBELT-SHELL-OK'
+            echo "Seatbelt diagnostic exit=$?"
+          done
+          baseline='(version 1)(deny default)(allow process*)(allow network*)(allow mach-lookup)(allow mach-host*)(allow sysctl-read)(allow ipc-posix*)(allow iokit-open)(allow file-read-metadata)(allow file-ioctl)(allow signal)(allow file-read* (subpath "/System") (subpath "/usr") (subpath "/bin") (subpath "/sbin") (subpath "/Library") (subpath "/Applications") (subpath "/private/etc") (subpath "/dev"))'
+          for extra in \
+            '(allow file-read* (subpath "/private/var"))' \
+            '(allow file-read* (subpath "/private/var") (subpath "/Users/runner/work"))' \
+            '(allow file-read* (subpath "/private/var") (subpath "/Users"))'; do
+            /usr/bin/sandbox-exec -p "${baseline}${extra}" /bin/sh -c 'echo T09-EXTRA-READS-OK'
+            echo "Seatbelt extra-path diagnostic exit=$?"
+          done
+          exit 0
+      - name: Test macOS Worker isolation, file publication and provider history
+        shell: bash
+        run: |
+          go test ./internal/nativeexec ./internal/node ./internal/core -run 'TestT09' -count=1 -timeout=10m -v
+      - name: Build production macOS Node and Server
+        shell: bash
+        run: |
+          go build ./cmd/secretary-node
+          go build ./cmd/secretaryd

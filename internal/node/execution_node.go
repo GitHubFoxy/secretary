@@ -15,6 +15,7 @@ import (
 
 	"github.com/beruseruko/secretary/internal/acp"
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/nativeexec"
 )
 
 var ErrRuntimeSessionUnavailable = errors.New("runtime_session_unavailable")
@@ -42,6 +43,8 @@ type ExecutionNode struct {
 	workspaces        map[string]string
 	mcpServers        []MCPServer
 	artifactFetcher    ArtifactFetcher
+	publishBroker *workerPublishBroker
+	artifactPublisherCommand string
 }
 
 func NewExecutionNode(node core.NodeReference, runtime Runtime, store *LocalStore) *ExecutionNode {
@@ -222,12 +225,19 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	if continuing {
 		promptText = prepared
 	}
-	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
+	servers, publishErr := n.workerArtifactMCPServers(command.Envelope.WorkerRef, command.Envelope.AttemptID, workspace)
+	if publishErr != nil {
+		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "artifact_publish_unavailable", publishErr.Error())
+	}
+	activatedPublisher := false
+	defer func() { if !activatedPublisher { n.unregisterArtifactPublisher(command.Envelope.AttemptID) } }()
+	request := StartRequest{MCPServers: servers, WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
+	ctx = n.securedWorkerContext(ctx, workspace)
 	var session Session
 	if continuing {
 		mapping, mappingErr := n.continuationMapping(command.Envelope, command.Envelope.PreviousAttemptID)
@@ -265,6 +275,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		}
 	}
 	n.registerSession(mapping.AttemptID, session)
+	activatedPublisher = true
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
 		go func() { _ = session.Prompt(context.Background(), promptText) }()
@@ -498,12 +509,19 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	if continuing {
 		promptText = prepared
 	}
-	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID), DeferInitialPrompt: continuing}
+	servers, publishErr := n.workerArtifactMCPServers(command.Envelope.WorkerRef, command.Envelope.AttemptID, workspace)
+	if publishErr != nil {
+		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "artifact_publish_unavailable", publishErr.Error())
+	}
+	activatedPublisher := false
+	defer func() { if !activatedPublisher { n.unregisterArtifactPublisher(command.Envelope.AttemptID) } }()
+	request := StartRequest{MCPServers: servers, WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID), DeferInitialPrompt: continuing}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
+	ctx = n.securedWorkerContext(ctx, workspace)
 	session, err := resumeSameIdentity(ctx, resumer, request, mapping.RuntimeSessionID)
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
@@ -524,6 +542,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		}
 	}
 	n.registerSession(command.Metadata.AttemptID, session)
+	activatedPublisher = true
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
 		go func() { _ = session.Prompt(context.Background(), promptText) }()
@@ -630,18 +649,24 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 	if err := n.validateReconciledWorkspace(envelope); err != nil {
 		return nil, ErrRuntimeSessionUnavailable
 	}
-	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: mapping.Workspace, Profile: envelope.Profile, HarnessInstance: envelope.HarnessInstance, Model: envelope.Model, Reasoning: envelope.Reasoning, ApprovalPolicy: envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(metadata.AttemptID)}
+	servers, publishErr := n.workerArtifactMCPServers(envelope.WorkerRef, envelope.AttemptID, mapping.Workspace)
+	if publishErr != nil { return nil, ErrRuntimeSessionUnavailable }
+	activatedPublisher := false
+	defer func() { if !activatedPublisher { n.unregisterArtifactPublisher(envelope.AttemptID) } }()
+	request := StartRequest{MCPServers: servers, WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: mapping.Workspace, Profile: envelope.Profile, HarnessInstance: envelope.HarnessInstance, Model: envelope.Model, Reasoning: envelope.Reasoning, ApprovalPolicy: envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(metadata.AttemptID)}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return nil, ErrRuntimeSessionUnavailable
 	}
 	request.Profile = profile
+	ctx = n.securedWorkerContext(ctx, mapping.Workspace)
 	session, err := resumeSameIdentity(ctx, resumer, request, mapping.RuntimeSessionID)
 	if err != nil {
 		return nil, ErrRuntimeSessionUnavailable
 	}
 	n.rebindPendingRequests(metadata.AttemptID, session)
 	n.registerSession(metadata.AttemptID, session)
+	activatedPublisher = true
 	n.watchSession(session, envelope)
 	return session, nil
 }
@@ -708,6 +733,7 @@ func (n *ExecutionNode) removeSession(attemptID string) {
 	n.mu.Lock()
 	delete(n.sessions, attemptID)
 	n.mu.Unlock()
+	n.unregisterArtifactPublisher(attemptID)
 }
 
 func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, terminalCommand ...Command) {
@@ -1097,4 +1123,22 @@ func semanticOutputPresent(result string) bool {
 		}
 	}
 	return true
+}
+
+ 
+// Native subprocesses (and their shell/MCP descendants) are isolated from
+// the persisted Node credential and state. No daemon fallbacks are permitted.
+func (n *ExecutionNode) securedWorkerContext(ctx context.Context, workspace string) context.Context {
+	n.mu.Lock()
+	hasCredentialBroker := n.publishBroker != nil
+	n.mu.Unlock()
+	if !hasCredentialBroker {
+		// In-process test-only Nodes have neither an enrolled Node credential
+		// nor a Server Artifact publisher. Real Daemons always initialize one.
+		return ctx
+	}
+	return nativeexec.WithWorkerSandbox(ctx, nativeexec.WorkerSandbox{
+		ProtectedDir: filepath.Dir(n.store.path),
+		Workspace: workspace,
+	})
 }

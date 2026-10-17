@@ -212,6 +212,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/conversation/ws", s.websocket)
 	mux.HandleFunc("POST /v1/messages", s.message)
 	mux.HandleFunc("POST /v1/artifacts", s.uploadArtifact)
+	mux.HandleFunc("POST /v1/artifacts/publish", s.publishWorkerArtifact)
 	mux.HandleFunc("GET /v1/artifacts/{id}", s.artifactRoute)
 	mux.HandleFunc("POST /v1/internal/secretary/tools/call", s.secretaryToolCall)
 	mux.HandleFunc("POST /v1/internal/secretary/mcp/observe", s.secretaryMCPObserve)

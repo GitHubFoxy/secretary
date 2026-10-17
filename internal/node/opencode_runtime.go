@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/beruseruko/secretary/internal/nativeexec"
 )
 
 type OpenCodeRuntime struct {
@@ -27,12 +30,13 @@ func (r OpenCodeRuntime) Start(ctx context.Context, request StartRequest) (Sessi
 		return nil, err
 	}
 	request.Profile = profile
+	r = r.withWorkerOSDataHome(ctx)
 	prepared, err := r.prepare(request)
 	if err != nil {
 		return nil, err
 	}
 	request.MCPServers = nil
-	return prepared.Start(ctx, request)
+	return prepared.Start(nativeexec.WithWorkerWritableDataHome(ctx, r.DataHome), request)
 }
 
 func (r OpenCodeRuntime) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
@@ -41,12 +45,13 @@ func (r OpenCodeRuntime) Resume(ctx context.Context, request StartRequest, runti
 		return nil, err
 	}
 	request.Profile = profile
+	r = r.withWorkerOSDataHome(ctx)
 	prepared, err := r.prepare(request)
 	if err != nil {
 		return nil, err
 	}
 	request.MCPServers = nil
-	return prepared.Resume(ctx, request, runtimeSessionID)
+	return prepared.Resume(nativeexec.WithWorkerWritableDataHome(ctx, r.DataHome), request, runtimeSessionID)
 }
 
 func (r OpenCodeRuntime) prepare(request StartRequest) (ACPRuntime, error) {
@@ -238,4 +243,16 @@ func openCodeEnvironment(workspace, configPath, configContent string, mcpServers
 		environment = append(environment, key+"="+values[key])
 	}
 	return environment, nil
+}
+
+func (r OpenCodeRuntime) withWorkerOSDataHome(ctx context.Context) OpenCodeRuntime {
+	if runtime.GOOS == "windows" && nativeexec.IsWorkerSandboxed(ctx) {
+		home := strings.TrimSpace(os.Getenv("SECRETARY_WORKER_HOME"))
+		if home != "" {
+			// OpenCode must not share the privileged Node profile and cannot
+			// write within its protected identity/state directory.
+			r.DataHome = filepath.Join(home, "opencode-native")
+		}
+	}
+	return r
 }

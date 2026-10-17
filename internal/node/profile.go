@@ -250,7 +250,10 @@ func (p ManagedProfile) openCodePermissions(mcpServers []MCPServer) ([]map[strin
 		return permissions, nil
 	}
 	if len(mcpServers) > 0 {
-		return nil, fmt.Errorf("opencode: managed profile %q cannot attach MCP servers", p.Name)
+		if len(mcpServers) != 1 || mcpServers[0].Name != "secretary_artifacts" {
+			return nil, fmt.Errorf("opencode: managed Worker profile accepts only the Node-scoped Artifact publisher")
+		}
+		allow("secretary_artifacts_publish_artifact")
 	}
 	actions := map[string][]string{
 		"bash":               {"shell"},
