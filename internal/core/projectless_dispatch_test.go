@@ -119,3 +119,33 @@ func TestProjectlessExplicitBusyNodeFailsVisibly(t *testing.T) {
 		t.Fatalf("busy selected Node must not silently queue or migrate: %v", err)
 	}
 }
+
+
+func TestProjectlessDispatchRejectsUntrustedWorkspaceBeforeCreatingWorker(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	resolverEnroll(t, store, "node", resolverInventory("node", []HarnessInstance{
+		resolverInstance("node/codex", "node", HarnessCodex),
+	}), 1, nil)
+	conversation := mustConversation(t, store)
+	for _, workspace := range []string{t.TempDir(), "../private", " ", "/"} {
+		request := DispatchResolutionRequest{Workspace: workspace}
+		if _, err := store.ResolveDispatch(ctx, request); !errors.Is(err, ErrWorkspaceOutsideRoot) {
+			t.Fatalf("untrusted workspace %q was resolved: %v", workspace, err)
+		}
+		if _, _, _, _, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "read secrets", request, ""); !errors.Is(err, ErrWorkspaceOutsideRoot) {
+			t.Fatalf("untrusted workspace %q created Worker: %v", workspace, err)
+		}
+	}
+	approvedRoot := t.TempDir()
+	project, err := store.CreateProject(ctx, ProjectSpec{
+		ID: "approved-workspace", Name: "Approved", Mappings: []ProjectPathMapping{{Node: "node", Path: approvedRoot}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{ProjectID: project.ID, Workspace: approvedRoot, HarnessKind: HarnessCodex})
+	if err != nil || allowed.Workspace != approvedRoot {
+		t.Fatalf("Project-authorized workspace rejected: resolution=%#v err=%v", allowed, err)
+	}
+}
