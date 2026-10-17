@@ -64,7 +64,7 @@ func TestT04ServerEventBridgeProjectsToDMAndForumWithoutReplay(t *testing.T) {
 			t.Fatalf("%q not mirrored once in DM and General: %#v", text, sent)
 		}
 	}
-	if len(sent) != 7 { // 3 DM + 3 General + one Worker Topic result.
+	if len(sent) != 8 { // 3 DM + 3 General + Worker Topic prompt and result.
 		t.Fatalf("unexpected Telegram deliveries: %#v", sent)
 	}
 	adapter = makeAdapter()
