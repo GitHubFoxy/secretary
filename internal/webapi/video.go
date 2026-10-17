@@ -84,7 +84,7 @@ func (p ffmpegVideoProcessor) Process(ctx context.Context, original []byte, opti
 	}
 	pattern:=filepath.Join(dir,"frame_%05d.webp")
 	rate:=strconv.FormatFloat(options.FPS,'f',-1,64)
-	filter:="fps="+rate+":start_time=0,scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease"
+	filter:="setpts=PTS-STARTPTS,fps="+rate+":start_time=0,scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease"
 	command:=exec.CommandContext(ctx,"ffmpeg","-nostdin","-hide_banner","-loglevel","error","-threads","1","-i",input,
 		"-an","-vf",filter,"-frames:v",strconv.Itoa(count+1),"-c:v","libwebp","-quality","70",pattern)
 	output,err:=command.CombinedOutput()
@@ -114,10 +114,35 @@ func (s *Server) AttachVideoOptions(options VideoOptions) error {
 func (s *Server) AttachVideoProcessor(processor VideoProcessor) { s.videoProcessor=processor }
 
 func (s *Server) recoverVideoJobs(ctx context.Context) error {
+	if err:=s.store.RecoverVideoJobs(ctx,s.owner.ID);err!=nil{return err}
 	jobs,err:=s.store.PendingVideoJobs(ctx,s.owner.ID)
 	if err!=nil{return err}
-	for _,job:=range jobs { go s.processVideo(job) }
+	if len(jobs)>0 {s.signalVideoWork()}
 	return nil
+}
+
+// A durable SQLite queue allows 32 pending jobs, and exactly two workers run
+// ffmpeg concurrently. Duplicate uploads only wake the scheduler.
+func (s *Server) signalVideoWork() {
+	s.videoWorkersOnce.Do(func(){
+		for i:=0;i<2;i++ {go s.videoWorkLoop()}
+	})
+	for i:=0;i<2;i++ {
+		select {case s.videoWake<-struct{}{}:default:}
+	}
+}
+
+func (s *Server) videoWorkLoop() {
+	for range s.videoWake {
+		for {
+			ctx,cancel:=context.WithTimeout(context.Background(),5*time.Second)
+			job,found,err:=s.store.ClaimVideoJob(ctx,s.owner.ID)
+			cancel()
+			if err!=nil {time.Sleep(100*time.Millisecond);s.signalVideoWork();break}
+			if !found {break}
+			s.processVideo(job)
+		}
+	}
 }
 
 func (s *Server) processVideo(job core.VideoJob) {

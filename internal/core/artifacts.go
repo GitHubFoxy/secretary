@@ -169,3 +169,17 @@ func (s *Store) ArtifactForPerson(ctx context.Context, personID, artifactID stri
 	}
 	return a, body, nil
 }
+
+
+// ArtifactMetadataForPerson reads public metadata without reading binary BLOBs.
+func (s *Store) ArtifactMetadataForPerson(ctx context.Context, personID, artifactID string) (Artifact,error) {
+	var a Artifact
+	err:=s.db.QueryRowContext(ctx,`SELECT id,person_id,name,media_type,size,sha256,created_at FROM artifacts WHERE person_id=? AND id=?`,personID,artifactID).
+		Scan(&a.ID,&a.PersonID,&a.Name,&a.MediaType,&a.Size,&a.SHA256,newTimestampScanner(&a.CreatedAt))
+	if errors.Is(err,sql.ErrNoRows){return Artifact{},ErrNotFound}
+	if err!=nil{return Artifact{},err}
+	a.Status="ready"
+	if err=s.populateVoiceRelation(ctx,personID,&a);err!=nil{return Artifact{},err}
+	if err=s.populateVideoRelation(ctx,personID,&a);err!=nil{return Artifact{},err}
+	return a,nil
+}

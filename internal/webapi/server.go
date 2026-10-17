@@ -67,6 +67,8 @@ type TelegramPairingService interface {
 type Server struct {
 	videoOptions VideoOptions
 	videoProcessor VideoProcessor
+	videoWorkersOnce sync.Once
+	videoWake chan struct{}
 	store                           *core.Store
 	bootstrapToken                  string
 	internalCredential              string
@@ -153,6 +155,7 @@ func New(ctx context.Context, store *core.Store, bootstrapToken string) (*Server
 	server := &Server{store: store, bootstrapToken: bootstrapToken, owner: owner, workerStates: make(map[string]string), subscribers: make(map[*subscription]struct{}), streams: make(map[string]map[*activeStream]struct{})}
 	store.SetEntryObserver(server.publishEntry)
 	server.videoOptions=VideoOptions{}.Defaults()
+	server.videoWake=make(chan struct{},2)
 	if err:=server.recoverVideoJobs(ctx);err!=nil {return nil,err}
 	return server,nil
 }
@@ -219,6 +222,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/internal/telegram/voice/source", s.telegramVoiceSource)
 	mux.HandleFunc("POST /v1/internal/telegram/voice/result", s.telegramVoiceResult)
 	mux.HandleFunc("GET /v1/artifacts/{id}", s.artifactRoute)
+	mux.HandleFunc("GET /v1/artifacts/{id}/status", s.artifactRoute)
+	mux.HandleFunc("POST /v1/artifacts/{id}/retry",s.retryVideoArtifact)
 	mux.HandleFunc("POST /v1/internal/secretary/tools/call", s.secretaryToolCall)
 	mux.HandleFunc("POST /v1/internal/secretary/mcp/observe", s.secretaryMCPObserve)
 	mux.HandleFunc("POST /v1/telegram/pairing", s.telegramPairing)

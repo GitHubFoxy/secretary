@@ -153,7 +153,7 @@ func (s *Store) VideoJob(ctx context.Context, personID, artifactID string) (Vide
 }
 
 func (s *Store) PendingVideoJobs(ctx context.Context, personID string) ([]VideoJob,error) {
-	rows,err:=s.db.QueryContext(ctx, `SELECT source_artifact_id FROM video_artifact_jobs WHERE person_id=? AND status='processing'`, personID)
+	rows,err:=s.db.QueryContext(ctx, `SELECT source_artifact_id FROM video_artifact_jobs WHERE person_id=? AND status IN ('queued','processing')`, personID)
 	if err!=nil { return nil,err }
 	var ids []string
 	for rows.Next() { var id string; if err=rows.Scan(&id);err!=nil { rows.Close();return nil,err };ids=append(ids,id) }
