@@ -10,7 +10,15 @@ Issue: [#79](https://github.com/GitHubFoxy/secretary/issues/79). This page disti
 - Windows host run: **PASS**, 17 October 2026, [GitHub Actions #39045653404](https://github.com/GitHubFoxy/secretary/actions/runs/39045653404) on real `windows-latest`; Windows `.exe` build, configuration, Windows ACP native child process Start/Resume and protocol reconnect tests passed at revision `639849fecf1ddf529b5b2bd34b84094e6e23e50a`. Corresponding [full Go tests #39045653391](https://github.com/GitHubFoxy/secretary/actions/runs/39045653391) and [Linux regression #39045653389](https://github.com/GitHubFoxy/secretary/actions/runs/39045653389) passed.
 - Native harness used: local in-process ACP protocol fixture **spawned as a Windows process**. This verifies host/process compatibility and transport semantics, **not** authenticated Codex/Claude model execution.
 
-## Authenticated native harness manual gate (not yet performed)
+## Authenticated native harness manual gate — BLOCKED (17 October 2026)
+
+**Status: NOT RUN / BLOCKED — P1 acceptance gate remains open.** This work session has GitHub repository access and a GitHub Actions Windows runner, but **no access to a persistent owner-controlled Windows host with authenticated Codex/Claude credentials, and no reachable owner-controlled macOS/Linux Secretary Server**. Public CI secrets/providers are not available for this gate. Simulated ACP child processes are not an authenticated model call and cannot prove cross-host live resume. **No real native session ID, Worker ID, Attempt ID or end-to-end Result exists to record; do not manufacture these.**
+
+Unblock by running the Windows setup documented in [Node deployment](node-deployment.md) against an actual macOS/Linux Server, authorizing Codex or Claude on Windows, then recording these observations with timestamps and minimally-redacted IDs: online Node inventory, Task → single Result, persisted native session ID, Node offline/online without re-pairing, Follow-up → same native session ID and new Result, plus missing-binary / interrupted-execution errors. Include Server revision and harness versions. Credentials, auth stores and prompts containing secrets must not be uploaded.
+
+### Pending manual evidence (no identifiers observed)
+
+
 
 Prerequisites: Windows host, current supported native Codex + codex-acp (or Claude Code) installed and authenticated on the Node; reachable real Secretary Server running on macOS or Linux; private pairing token; a registered Project/workspace if selected. Never commit credentials, prompts with secrets or native auth files.
 
