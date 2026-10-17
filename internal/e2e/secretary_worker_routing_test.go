@@ -227,13 +227,13 @@ func newT01RoutingFixture(t *testing.T) *t01RoutingFixture {
 	runtime := secretaryruntime.NewRuntime(node.NewLocal(fake), capability)
 	runtime.AttachConversation(store, conversation.ID)
 	runtime.AttachIdentity(identity)
-	runtime.AttachProfile(func() node.ManagedProfile {
-		return node.ManagedProfile{
-			Version: "fixture", Name: "secretary", Content: policy.ProfileContent,
-			Model: "fixture", Reasoning: "high",
-			ReplyContractVersion: core.SecretaryReplyContractAddressedV1,
-		}
-	})
+	secretaryProfile := node.ManagedProfile{
+		Version: "fixture", Name: "secretary", Content: policy.ProfileContent,
+		Runtime: "opencode", Model: "fixture", Reasoning: "high",
+		ReplyContractVersion: core.SecretaryReplyContractAddressedV1,
+	}
+	secretaryProfile.Hash = node.HashProfile(secretaryProfile.Content, nil, secretaryProfile.Model, secretaryProfile.Reasoning)
+	runtime.AttachProfile(func() node.ManagedProfile { return secretaryProfile })
 	runtime.AttachMCP("fake-mcp", dataDir)
 	if err := runtime.Start(ctx); err != nil { t.Fatal(err) }
 	t.Cleanup(func() { _ = runtime.Stop(context.Background()) })
