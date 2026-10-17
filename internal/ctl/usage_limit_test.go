@@ -393,3 +393,115 @@ func TestScheduledResume_DeliverCommandFailureReleasesSchedule(t *testing.T) {
 		t.Fatalf("expected schedule released to pending, got %s", sched.State)
 	}
 }
+
+func TestManualResumeDoesNotOvercommitNodeCapacity(t *testing.T) {
+	ctx := context.Background()
+	store, service, runtime, limited, conversation, _, _ := setupLimitedWorker(t, 10*time.Minute)
+	defer store.Close()
+
+	schedule, found, err := store.FindActiveScheduleForWorker(ctx, limited.ID)
+	if err != nil || !found {
+		t.Fatalf("missing limited Worker schedule: found=%v err=%v", found, err)
+	}
+	persisted, err := store.Worker(ctx, limited.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	busy, _, busyAttempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+		Intent: "occupy single slot", ProjectID: persisted.ProjectID,
+		NodeID: persisted.NodeID, HarnessInstanceID: persisted.HarnessInstanceID,
+		ProjectSnapshot: persisted.ProjectSnapshot, ReserveNodeCapacity: true,
+	}, core.TurnSpec{Input: "keep node occupied"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if busy.ID == limited.ID {
+		t.Fatal("busy Worker accidentally reused limited Worker")
+	}
+
+	_, err = service.ResumeWorker(ctx, limited.WorkerRef)
+	if !errors.Is(err, core.ErrNodeCapacityExhausted) {
+		t.Fatalf("manual resume should reject a full Node: %v", err)
+	}
+	runtime.mu.Lock()
+	resumeCalls := runtime.resumeCalls
+	runtime.mu.Unlock()
+	if resumeCalls != 0 {
+		t.Fatalf("manual Resume dispatched on an occupied Node: %d calls", resumeCalls)
+	}
+	after, found, err := store.FindActiveScheduleForWorker(ctx, limited.ID)
+	if err != nil || !found || after.ID != schedule.ID || after.State != schedule.State {
+		t.Fatalf("capacity error lost scheduled retry: %#v found=%v err=%v", after, found, err)
+	}
+	command, found, err := store.FindWorkerCommand(ctx, "resume", "attempt", limited.ID, schedule.AttemptID)
+	if err != nil || found {
+		t.Fatalf("capacity denial created a resume command: %#v found=%v err=%v", command, found, err)
+	}
+
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, busyAttempt.ID, core.AttemptOutcomeInput{
+		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "slot freed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ResumeWorker(ctx, limited.WorkerRef); err != nil {
+		t.Fatalf("retry after capacity is freed: %v", err)
+	}
+	runtime.mu.Lock()
+	resumeCalls = runtime.resumeCalls
+	runtime.mu.Unlock()
+	if resumeCalls != 1 {
+		t.Fatalf("expected exactly one resumed Attempt, got %d", resumeCalls)
+	}
+	if _, found, err := store.FindActiveScheduleForWorker(ctx, limited.ID); err != nil || found {
+		t.Fatalf("resumed schedule remained active: found=%v err=%v", found, err)
+	}
+	if _, err := service.ResumeWorker(ctx, limited.WorkerRef); err != nil {
+		t.Fatalf("idempotent manual replay failed: %v", err)
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.resumeCalls != 1 {
+		t.Fatalf("idempotent manual replay dispatched twice: %d", runtime.resumeCalls)
+	}
+}
+
+func TestManualResumeDeliveredCommandReplayDoesNotNeedFreshCapacity(t *testing.T) {
+	ctx := context.Background()
+	store, service, runtime, limited, conversation, _, _ := setupLimitedWorker(t, 10*time.Minute)
+	defer store.Close()
+	schedule, found, err := store.FindActiveScheduleForWorker(ctx, limited.ID)
+	if err != nil || !found {
+		t.Fatalf("missing limited schedule: found=%v err=%v", found, err)
+	}
+	persisted, err := store.Worker(ctx, limited.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err = store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+		Intent: "occupy single slot", ProjectID: persisted.ProjectID,
+		NodeID: persisted.NodeID, HarnessInstanceID: persisted.HarnessInstanceID,
+		ProjectSnapshot: persisted.ProjectSnapshot, ReserveNodeCapacity: true,
+	}, core.TurnSpec{Input: "busy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate a resume accepted by Node before the schedule was completed.
+	command, duplicate, err := store.ClaimWorkerCommand(ctx, "resume", "attempt", limited.ID, schedule.AttemptID)
+	if err != nil || duplicate {
+		t.Fatalf("failed to persist prior resume: %#v dup=%v err=%v", command, duplicate, err)
+	}
+	if _, err := store.MarkWorkerCommandDelivered(ctx, command.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ResumeWorker(ctx, limited.WorkerRef); err != nil {
+		t.Fatalf("already-delivered resume must complete schedule without capacity: %v", err)
+	}
+	if _, found, err := store.FindActiveScheduleForWorker(ctx, limited.ID); err != nil || found {
+		t.Fatalf("delivered command schedule not completed: found=%v err=%v", found, err)
+	}
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if runtime.resumeCalls != 0 {
+		t.Fatalf("delivered command unexpectedly resent: %d calls", runtime.resumeCalls)
+	}
+}
