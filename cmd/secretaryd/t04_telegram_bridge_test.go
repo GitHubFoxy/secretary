@@ -25,7 +25,7 @@ func TestT04ServerEventBridgeProjectsToDMAndForumWithoutReplay(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	record(core.EventInput{Kind: "message.saved", Source: "client:web", Payload: map[string]any{"body": "Web message"}})
+	record(core.EventInput{Kind: "message.saved", Source: "web", Payload: map[string]any{"body": "Web message"}})
 	record(core.EventInput{Kind: core.SecretaryTurnStartedEvent})
 	record(core.EventInput{Kind: "conversation.entry", Payload: map[string]any{"kind": "secretary", "body": "Secretary answer"}})
 	record(core.EventInput{Kind: core.SecretaryTurnFinishedEvent, Payload: map[string]any{"status": "succeeded"}})
