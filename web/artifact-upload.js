@@ -2,7 +2,12 @@ const artifactFormats = '.txt,.md,.pdf,.csv,.json,.xml,.yaml,.yml,.html,.log,.do
 const imageFormats = '.png,.jpg,.jpeg,.webp';
 const imageFile = (file) => /\.(png|jpe?g|webp)$/i.test(file.name);
 
-function installUpload(composer, imageOnly) {
+async function uploadFingerprint(file) {
+  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+  return file.name + ':' + file.size + ':' + Array.from(new Uint8Array(digest), value => value.toString(16).padStart(2, '0')).join('');
+}
+
+export function installUpload(composer, imageOnly) {
   const form = composer.closest('form');
   if (!form || form.querySelector('[data-secretary-artifact-input]')) return;
 
@@ -25,6 +30,7 @@ function installUpload(composer, imageOnly) {
   form.insertBefore(label, composer);
   form.append(status);
 
+  let pendingUpload = null;
   input.addEventListener('change', async () => {
     const file = input.files?.[0];
     if (!file) return;
@@ -42,15 +48,25 @@ function installUpload(composer, imageOnly) {
     status.textContent = 'Uploading ' + file.name + '...';
     input.disabled = true;
     try {
+      const fingerprint = await uploadFingerprint(file);
+      const storageKey = 'secretary-upload:' + fingerprint;
+      if (!pendingUpload || pendingUpload.fingerprint !== fingerprint) {
+        let previousKey = '';
+        try { previousKey = sessionStorage.getItem(storageKey) || ''; } catch {}
+        pendingUpload = { fingerprint, storageKey, key: previousKey || crypto.randomUUID() };
+        try { sessionStorage.setItem(storageKey, pendingUpload.key); } catch {}
+      }
       const response = await fetch('/v1/artifacts?name=' + encodeURIComponent(file.name), {
         method: 'POST',
         credentials: 'same-origin',
-        headers: { 'Idempotency-Key': crypto.randomUUID(), 'Content-Type': 'application/octet-stream' },
+        headers: { 'Idempotency-Key': pendingUpload.key, 'Content-Type': 'application/octet-stream' },
         body: file
       });
       if (!response.ok) throw new Error((await response.text()).trim() || 'Upload failed');
       const result = await response.json();
       const ref = result.reference;
+      try { sessionStorage.removeItem(pendingUpload.storageKey); } catch {}
+      pendingUpload = null;
       status.textContent = 'Ready: ' + file.name + ' (' + ref + '). Send with a question for visual analysis.';
       const text = composer.value.trimEnd();
       const prefix = imageFile(file) ? 'Analyze attached image ' : 'Use attached file ';
