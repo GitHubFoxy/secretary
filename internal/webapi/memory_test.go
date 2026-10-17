@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/http/cookiejar"
 	"os"
 	"path/filepath"
 	"testing"
@@ -36,7 +37,10 @@ func TestOwnerMemoryAPIWriteReadConflictAndInvalidFile(t *testing.T) {
 	if anonymous.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unauthorized memory GET: %d", anonymous.StatusCode)
 	}
+	jar, err := cookiejar.New(nil)
+	if err != nil { t.Fatal(err) }
 	client := server.Client()
+	client.Jar = jar
 	// Session auth and the existing single-owner web login.
 	login(t, client, server.URL)
 	get := func(kind string) (core.UserDocument, int) {
