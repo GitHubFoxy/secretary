@@ -9,7 +9,7 @@ fail() {
 command -v git >/dev/null 2>&1 || fail "Git is required; install git and retry."
 command -v zsh >/dev/null 2>&1 || fail "zsh is required (macOS includes it; on Debian/Ubuntu: sudo apt install zsh)."
 if ! command -v mise >/dev/null 2>&1 && ! command -v go >/dev/null 2>&1; then
-  fail "Go 1.23+ or mise is required to build Secretary."
+  fail "Go 1.27.1+ or mise is required to build Secretary."
 fi
 command -v openssl >/dev/null 2>&1 || fail "OpenSSL is required to create private bootstrap credentials."
 case "$(uname -s)" in
