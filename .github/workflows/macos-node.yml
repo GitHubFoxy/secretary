@@ -43,6 +43,21 @@ jobs:
             echo "Seatbelt extra-path diagnostic exit=$?"
           done
           exit 0
+      - name: Diagnose read versus write Seatbelt startup restriction
+        shell: bash
+        run: |
+          set +e
+          base='(version 1)(deny default)(allow process*)(allow network*)(allow mach-lookup)(allow mach-host*)(allow sysctl-read)(allow iokit-open)(allow ipc-posix*)(allow file-read-metadata)(allow file-ioctl)(allow signal)'
+          reads='(allow file-read* (subpath "/usr"))(allow file-read* (subpath "/System"))(allow file-read* (subpath "/Library"))(allow file-read* (subpath "/bin"))(allow file-read* (subpath "/sbin"))(allow file-read* (subpath "/private/etc"))(allow file-read* (subpath "/private/var"))(allow file-read* (subpath "/Users"))(allow file-read* (subpath "/dev"))'
+          for profile in \
+            "${base}${reads}(allow file-write*)" \
+            "${base}(allow file-read*)(allow file-write* (subpath \"/private/tmp\"))(allow file-write* (literal \"/dev/null\"))" \
+            "${base}${reads}(allow file-write*)(allow file-read* (subpath \"/private/tmp\"))"; do
+            /usr/bin/sandbox-exec -p "$profile" /bin/sh -c 'echo T09-PROFILE-STARTED'
+            echo "Seatbelt read/write diagnostic exit=$?"
+          done
+          log show --last 2m --style compact --predicate 'eventMessage CONTAINS[c] "sandbox" OR eventMessage CONTAINS[c] "deny"' 2>/dev/null | tail -30 || true
+          exit 0
       - name: Test macOS Worker isolation, file publication and provider history
         shell: bash
         run: |
