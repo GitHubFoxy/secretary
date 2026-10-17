@@ -32,6 +32,21 @@ export function installUpload(composer, imageOnly) {
   form.append(status);
 
   let pendingUpload = null;
+  let uploadInFlight = false;
+  // Capture both Svelte submit and Enter before a reference exists. Once the
+  // HTTP upload is acknowledged, sending during conversion is safe: Worker waits.
+  form.addEventListener?.('submit', (event) => {
+    if (!uploadInFlight) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    status.hidden = false;
+    status.textContent = 'File is still uploading; send once its Artifact reference appears.';
+  }, true);
+  composer.addEventListener?.('keydown', (event) => {
+    if (!uploadInFlight || event.key !== 'Enter' || event.shiftKey) return;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
   input.addEventListener('change', async () => {
     const file = input.files?.[0];
     if (!file) return;
@@ -47,6 +62,7 @@ export function installUpload(composer, imageOnly) {
       return;
     }
     status.textContent = 'Uploading ' + file.name + '...';
+    uploadInFlight = true;
     input.disabled = true;
     try {
       const fingerprint = await uploadFingerprint(file);
@@ -67,30 +83,49 @@ export function installUpload(composer, imageOnly) {
       const result = await response.json();
 
       const ref = result.reference;
+      if (!ref || !result.artifact?.id) {
+        // Legacy image upload responses also include artifact; reject malformed replies.
+        throw new Error('Artifact response has no durable ID');
+      }
+      const text = composer.value.trimEnd();
+      const prefix = imageFile(file) ? 'Analyze attached image ' : videoFile(file) ? 'Analyze sampled frames of attached video ' : 'Use attached file ';
+      if (!composer.value.includes(ref)) {
+        composer.value = text + (text ? '\\n\\n' : '') + prefix + ref + ' (' + file.name + ').';
+        composer.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      uploadInFlight = false; // the canonical reference is already in the message
+      composer.focus();
+
       if (videoFile(file)) {
-        status.textContent = 'Processing video ' + file.name + ' (you can continue other chats)...';
+        status.textContent = 'Video attached (' + ref + '). Processing in the background; you can send now.';
+        // Re-selecting the failed file is an explicit retry of that original,
+        // not a new upload; the same idempotency key remains in sessionStorage.
+        if (result.duplicate && result.artifact.processing_status === 'failed') {
+          const retry = await fetch('/v1/artifacts/' + encodeURIComponent(result.artifact.id) + '/retry', {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Idempotency-Key': crypto.randomUUID() }
+          });
+          if (!retry.ok) throw new Error('Could not retry video: ' + (await retry.text()).trim());
+          status.textContent = 'Retrying video ' + file.name + ' (' + ref + ')...';
+        }
         const deadline = Date.now() + 125000;
         while (true) {
-          const check = await fetch('/v1/artifacts/' + encodeURIComponent(result.artifact.id), { credentials: 'same-origin' });
+          const check = await fetch('/v1/artifacts/' + encodeURIComponent(result.artifact.id) + '/status', { credentials: 'same-origin' });
           if (!check.ok) throw new Error('Could not read video processing status: HTTP ' + check.status);
           const metadata = await check.json();
-          if (metadata.processing_status === 'failed') throw new Error('Video processing failed: ' + (metadata.processing_error || 'unknown error') + '. Original retained: ' + ref);
+          if (metadata.processing_status === 'failed') throw new Error('Video processing failed: ' + (metadata.processing_error || 'unknown error') + '. Original retained: ' + ref + '. Select the same file to retry.');
           if (metadata.processing_status === 'ready' && metadata.video_frames?.length) break;
-          if (Date.now() > deadline) throw new Error('Video still processing; original retained: ' + ref + '. Check status before sending.');
+          if (Date.now() > deadline) throw new Error('Video still processing; original retained: ' + ref + '. You can send a question; Worker waits for conversion.');
           await new Promise(resolve => setTimeout(resolve, 500));
         }
       }
       try { sessionStorage.removeItem(pendingUpload.storageKey); } catch {}
       pendingUpload = null;
       status.textContent = 'Ready: ' + file.name + ' (' + ref + '). Send with a question. Videos are sampled: moments between frames are not covered.';
-      const text = composer.value.trimEnd();
-      const prefix = imageFile(file) ? 'Analyze attached image ' : videoFile(file) ? 'Analyze sampled frames of attached video ' : 'Use attached file ';
-      composer.value = text + (text ? '\n\n' : '') + prefix + ref + ' (' + file.name + ').';
-      composer.dispatchEvent(new Event('input', { bubbles: true }));
-      composer.focus();
     } catch (error) {
       status.textContent = 'Upload failed: ' + error.message;
     } finally {
+      uploadInFlight = false;
       input.disabled = false;
       input.value = '';
     }
