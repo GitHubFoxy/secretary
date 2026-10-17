@@ -19,6 +19,13 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Install native Worker sandbox prerequisite
-        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y bubblewrap
+          # Ubuntu 24+ AppArmor can otherwise block unprivileged userns.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev -- /bin/sh -c 'exit 0'
       - name: Test Secretary routing and lifecycle
         run: go test ./internal/e2e ./internal/core ./internal/secretary ./internal/mcp ./internal/config ./internal/ctl
