@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -96,5 +98,150 @@ func TestT04DeploymentAllowsDMWithoutGroupAndValidatesForumID(t *testing.T) {
 	t.Setenv("SECRETARY_TELEGRAM_GROUP_CHAT_ID", "200")
 	if _, err := configuredTelegramDeployment(); err == nil {
 		t.Fatal("positive group id accepted")
+	}
+}
+
+type t04WorkerMessages struct {
+	mu sync.Mutex
+	received []telegram.WorkerMessage
+}
+func (*t04WorkerMessages) SendMessage(context.Context, telegram.InboundMessage) error { return nil }
+func (s *t04WorkerMessages) SendWorkerMessage(_ context.Context, m telegram.WorkerMessage) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.received = append(s.received, m)
+	return nil
+}
+func (*t04WorkerMessages) ResumeWorker(context.Context, string) error { return nil }
+
+type t04ForumTransport struct {
+	bridgeTransport
+	failTopics bool
+	topicCalls int
+}
+func (t *t04ForumTransport) CreateForumTopic(_ context.Context, chatID int64, name string) (telegram.ForumTopic, error) {
+	t.topicCalls++
+	if t.failTopics {
+		return telegram.ForumTopic{}, fmt.Errorf("forum permission temporarily unavailable")
+	}
+	return telegram.ForumTopic{ChatID: chatID, ThreadID: int64(9 + t.topicCalls), Name: name}, nil
+}
+
+func TestT04LinkGroupRestoresPreexistingWorkersFromServerAndRoutesTopics(t *testing.T) {
+	ctx, store, _, details := newTelegramBridgeWorker(t)
+	_, conversation, err := store.EnsureOwner(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workerRef := details.Worker.WorkerRef
+	listWorkers := func(ctx context.Context) ([]telegram.WorkerTopic, error) {
+		workers, err := store.WorkersForConversation(ctx, conversation.ID)
+		if err != nil {
+			return nil, err
+		}
+		topics := make([]telegram.WorkerTopic, 0, len(workers))
+		for _, worker := range workers {
+			if !worker.Archived {
+				topics = append(topics, telegram.WorkerTopic{WorkerRef: worker.WorkerRef, Title: worker.Title, Intent: worker.Intent})
+			}
+		}
+		return topics, nil
+	}
+	statePath := filepath.Join(t.TempDir(), "telegram.json")
+	group := int64(0)
+	transport := &t04ForumTransport{}
+	server := &t04WorkerMessages{}
+	makeAdapter := func() *telegram.Adapter {
+		t.Helper()
+		a, err := telegram.New(telegram.Config{
+			StatePath: statePath, OwnerChatID: 100, GroupChatID: &group,
+			ExistingWorkers: listWorkers,
+		}, transport, server)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	adapter := makeAdapter()
+	// Processing the Worker event while DM-only must not create a Topic.
+	if err := adapter.HandleEvent(ctx, telegram.Event{Kind: "worker.created", WorkerRef: workerRef, Title: details.Worker.Title, TaskPrompt: details.Worker.Intent}); err != nil {
+		t.Fatal(err)
+	}
+	if transport.topicCalls != 0 {
+		t.Fatal("created topic before a group was linked")
+	}
+	link := telegram.Update{ID: 1001, Message: &telegram.Message{
+		ChatID: -200, ChatType: "supergroup", IsForum: true,
+		FromID: 100, ThreadID: 1, Text: "/linkgroup",
+	}}
+	if err := adapter.HandleUpdate(ctx, link); err != nil {
+		t.Fatal(err)
+	}
+	if transport.topicCalls != 1 {
+		t.Fatalf("existing Worker Topic not restored at link: calls=%d", transport.topicCalls)
+	}
+	if err := adapter.HandleUpdate(ctx, telegram.Update{ID: 1002, Message: &telegram.Message{
+		ChatID: -200, FromID: 100, ThreadID: 10, Text: "direct Worker instruction",
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.received) != 1 || server.received[0].WorkerRef != workerRef {
+		t.Fatalf("restored Worker Topic did not route correctly: %#v", server.received)
+	}
+	adapter = makeAdapter()
+	if err := adapter.SyncWorkerTopics(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if transport.topicCalls != 1 {
+		t.Fatalf("restart duplicated a durable topic mapping: calls=%d", transport.topicCalls)
+	}
+}
+
+func TestT04TopicRecoveryRetriesAfterFailedLinkAndRestart(t *testing.T) {
+	ctx, store, _, details := newTelegramBridgeWorker(t)
+	_, conversation, err := store.EnsureOwner(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lookup := func(ctx context.Context) ([]telegram.WorkerTopic, error) {
+		workers, err := store.WorkersForConversation(ctx, conversation.ID)
+		if err != nil {
+			return nil, err
+		}
+		out := make([]telegram.WorkerTopic, 0, len(workers))
+		for _, worker := range workers {
+			out = append(out, telegram.WorkerTopic{WorkerRef: worker.WorkerRef, Title: worker.Title, Intent: worker.Intent})
+		}
+		return out, nil
+	}
+	path := filepath.Join(t.TempDir(), "state.json")
+	group := int64(0)
+	transport := &t04ForumTransport{failTopics: true}
+	newAdapter := func() *telegram.Adapter {
+		t.Helper()
+		a, err := telegram.New(telegram.Config{StatePath: path, OwnerChatID: 100, GroupChatID: &group, ExistingWorkers: lookup}, transport, &bridgeServer{})
+		if err != nil { t.Fatal(err) }
+		return a
+	}
+	a := newAdapter()
+	err = a.HandleUpdate(ctx, telegram.Update{ID: 99, Message: &telegram.Message{ChatID: -200, ChatType: "supergroup", IsForum: true, FromID: 100, Text: "/linkgroup"}})
+	if err == nil {
+		t.Fatal("expected transient createForumTopic failure")
+	}
+	transport.failTopics = false
+	a = newAdapter()
+	if err := a.SyncWorkerTopics(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if transport.topicCalls != 2 || details.Worker.WorkerRef == "" {
+		t.Fatalf("reconnect did not restore existing Worker: calls=%d ref=%q", transport.topicCalls, details.Worker.WorkerRef)
+	}
+	if err := a.SyncWorkerTopics(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if transport.topicCalls != 2 {
+		t.Fatal("sync is not idempotent")
 	}
 }
