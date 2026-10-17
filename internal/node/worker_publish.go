@@ -132,24 +132,13 @@ func (p ArtifactPublisher) Publish(ctx context.Context, relativePath, name strin
 	if p.Node == "" || p.WorkerRef == "" || p.AttemptID == "" || p.Capability == "" || p.Workspace == "" {
 		return core.Artifact{}, errors.New("artifact publish: Worker binding is unavailable")
 	}
-	// os.Root anchors path resolution in the Worker workspace even when the
-	// Worker races symlink creation or directory renames after validation.
-	root, err := os.OpenRoot(p.Workspace)
+	// Each component is opened via a pinned directory descriptor with
+	// O_NOFOLLOW. No separated Lstat/Open checks: renaming a component into
+	// a symlink between operations cannot redirect an already-open directory.
+	file, err := openPublishedFileNoFollow(p.Workspace, relativePath)
 	if err != nil {
-		return core.Artifact{}, errors.New("artifact publish: Worker workspace unavailable")
+		return core.Artifact{}, errors.New("artifact publish: unsafe or unreadable workspace file")
 	}
-	defer root.Close()
-	parts := strings.Split(relativePath, string(filepath.Separator))
-	for i := range parts {
-		prefix := filepath.Join(parts[:i+1]...)
-		info, err := root.Lstat(prefix)
-		if err != nil { return core.Artifact{}, errors.New("artifact publish: output file not found") }
-		if info.Mode()&os.ModeSymlink != 0 {
-			return core.Artifact{}, errors.New("artifact publish: symlink paths are forbidden")
-		}
-	}
-	file, err := root.Open(relativePath)
-	if err != nil { return core.Artifact{}, errors.New("artifact publish: output file not readable") }
 	defer file.Close()
 	stat, err := file.Stat()
 	if err != nil || !stat.Mode().IsRegular() {
