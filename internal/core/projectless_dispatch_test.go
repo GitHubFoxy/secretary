@@ -149,3 +149,87 @@ func TestProjectlessDispatchRejectsUntrustedWorkspaceBeforeCreatingWorker(t *tes
 		t.Fatalf("Project-authorized workspace rejected: resolution=%#v err=%v", allowed, err)
 	}
 }
+
+func TestFinalDispatchProfileFactorySharesBindingAndIsNotRerunOnReplay(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	resolverEnroll(t, store, "codex-node", resolverInventory("codex-node", []HarnessInstance{
+		resolverInstance("codex-node/codex", "codex-node", HarnessCodex),
+	}), 1, nil)
+	resolverEnroll(t, store, "claude-node", resolverInventory("claude-node", []HarnessInstance{
+		resolverInstance("claude-node/claude", "claude-node", HarnessClaudeCode),
+	}), 1, nil)
+	policy := HarnessPolicy{DefaultHarness: HarnessCodex, PreferredHarnesses: []HarnessKind{HarnessClaudeCode}}
+	initial, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{WorkerPolicy: policy})
+	if err != nil || initial.HarnessInstance.Kind != HarnessCodex {
+		t.Fatalf("initial available harness=%#v err=%v", initial, err)
+	}
+	if err := store.MarkNodeDisconnected(ctx, "codex-node"); err != nil {
+		t.Fatal(err)
+	}
+	conversation := mustConversation(t, store)
+	calls := 0
+	factory := func(selection DispatchResolution) (string, error) {
+		calls++
+		if selection.Node != "claude-node" || selection.HarnessInstance.Kind != HarnessClaudeCode {
+			t.Fatalf("factory received stale selection: %#v", selection)
+		}
+		return string(selection.HarnessInstance.Kind), nil
+	}
+	worker, _, _, resolved, err := store.ResolveAndCreateWorkerWithProfileFactory(
+		ctx, conversation.ID, "review", DispatchResolutionRequest{WorkerPolicy: policy},
+		"resolved-factory", factory,
+	)
+	if err != nil || calls != 1 || resolved.HarnessInstance.ID != "claude-node/claude" ||
+		worker.HarnessInstanceID != "claude-node/claude" || worker.ProfileSnapshot != string(HarnessClaudeCode) {
+		t.Fatalf("factory and persisted Worker diverged: worker=%#v selection=%#v calls=%d err=%v", worker, resolved, calls, err)
+	}
+	replayed, _, _, _, err := store.ResolveAndCreateWorkerWithProfileFactory(
+		ctx, conversation.ID, "ignored", DispatchResolutionRequest{WorkerPolicy: policy},
+		"resolved-factory", func(DispatchResolution) (string, error) {
+			t.Fatal("idempotent replay must not rebuild the immutable Profile")
+			return "", nil
+		},
+	)
+	if err != nil || replayed.ID != worker.ID {
+		t.Fatalf("factory replay changed Worker: %#v err=%v", replayed, err)
+	}
+}
+
+func TestFinalDispatchProfileFactoryRejectsFailureAndConcurrentNodeChange(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	resolverEnroll(t, store, "node", resolverInventory("node", []HarnessInstance{
+		resolverInstance("node/codex", "node", HarnessCodex),
+	}), 1, nil)
+	conversation := mustConversation(t, store)
+	profileFailure := errors.New("cannot bind managed Profile")
+	_, _, _, _, err := store.ResolveAndCreateWorkerWithProfileFactory(
+		ctx, conversation.ID, "inspect", DispatchResolutionRequest{}, "invalid-profile",
+		func(DispatchResolution) (string, error) { return "", profileFailure },
+	)
+	if !errors.Is(err, profileFailure) {
+		t.Fatalf("profile factory error was not propagated: %v", err)
+	}
+	if _, _, _, _, found, err := store.ReplayWorkerCreation(ctx, "invalid-profile"); err != nil || found {
+		t.Fatalf("failed factory persisted a Worker: found=%v err=%v", found, err)
+	}
+	var disconnectErr error
+	store.beforeResolvedWorkerCreate = func() {
+		disconnectErr = store.MarkNodeDisconnected(ctx, "node")
+	}
+	defer func() { store.beforeResolvedWorkerCreate = nil }()
+	_, _, _, _, err = store.ResolveAndCreateWorkerWithProfileFactory(
+		ctx, conversation.ID, "inspect", DispatchResolutionRequest{}, "stale-node",
+		func(DispatchResolution) (string, error) { return "bound", nil },
+	)
+	if disconnectErr != nil {
+		t.Fatal(disconnectErr)
+	}
+	if !errors.Is(err, ErrSelectedNodeUnavailable) {
+		t.Fatalf("Node changed after binding, Worker must not persist: %v", err)
+	}
+	if _, _, _, _, found, err := store.ReplayWorkerCreation(ctx, "stale-node"); err != nil || found {
+		t.Fatalf("failed Node freshness check persisted Worker: found=%v err=%v", found, err)
+	}
+}
