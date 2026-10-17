@@ -155,7 +155,7 @@ type dispatchNodeCandidate struct {
 func (s *Store) dispatchNodeCandidates(ctx context.Context, project Project, explicit NodeReference) ([]dispatchNodeCandidate, error) {
 	if explicit != "" {
 		record, err := s.NodeRecord(ctx, explicit)
-		if errors.Is(err, sql.ErrNoRows) {
+		if errors.Is(err, sql.ErrNoRows) || errors.Is(err, ErrNotFound) {
 			return nil, fmt.Errorf("%w: Node %s is not enrolled; pair this Node first", ErrSelectedNodeUnavailable, explicit)
 		}
 		if err != nil {
