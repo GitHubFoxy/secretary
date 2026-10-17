@@ -2,7 +2,6 @@ package telegram
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"path/filepath"
 	"testing"
@@ -46,6 +45,12 @@ func TestT04UpgradeLegacyForumPreservesState(t *testing.T) {
 	again, err := New(Config{StatePath: path, OwnerChatID: 100, GroupChatID: &group}, transport, &fakeServer{})
 	if err != nil || again.state.OwnerChat != 100 || again.state.GroupChat != -200 {
 		t.Fatalf("migration was not persistent/idempotent: state=%#v err=%v", again.state, err)
+	}
+	// The persisted group remains active if a subsequent caller omits the
+	// optional GroupChatID field.
+	withoutOption, err := New(Config{StatePath: path, OwnerChatID: 100}, transport, &fakeServer{})
+	if err != nil || withoutOption.config.GroupChatID == nil || withoutOption.state.GroupChat != -200 {
+		t.Fatalf("persisted group lost on restart: state=%#v err=%v", withoutOption.state, err)
 	}
 }
 
@@ -206,5 +211,3 @@ func TestT04ReceiptCompactionDoesNotDiscardLegacyUnattributedReceipt(t *testing.
 		t.Fatal("unattributed pre-upgrade receipt cannot be safely tied to a cursor")
 	}
 }
-
-var _ = errors.New
