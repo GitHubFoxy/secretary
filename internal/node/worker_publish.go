@@ -28,6 +28,8 @@ type ArtifactPublisher struct {
 	AttemptID string
 	Workspace string
 	Capability string
+	// Auth is private Node-only material, never copied into a Worker MCP env.
+	Auth *Authenticator
 	Client *http.Client
 }
 
@@ -102,6 +104,11 @@ func ValidPublishedName(name string) bool {
 	return false
 }
 
+func (p ArtifactPublisher) authority() (Authenticator, error) {
+	if p.Auth == nil { return Authenticator{}, errors.New("artifact publish: trusted Node signing authority unavailable") }
+	return *p.Auth, nil
+}
+
 func (p ArtifactPublisher) Publish(ctx context.Context, relativePath, name string) (core.Artifact, error) {
 	if len(relativePath) == 0 || len(relativePath) > 1024 || filepath.IsAbs(relativePath) ||
 		!filepath.IsLocal(relativePath) || filepath.Clean(relativePath) != relativePath ||
@@ -118,6 +125,9 @@ func (p ArtifactPublisher) Publish(ctx context.Context, relativePath, name strin
 	}
 	if !ValidPublishedName(name) {
 		return core.Artifact{}, errors.New("artifact publish: unsupported or unsafe output name")
+	}
+	if !ValidPublishedSourcePath(filepath.ToSlash(relativePath)) {
+		return core.Artifact{}, errors.New("artifact publish: unsafe source path")
 	}
 	if p.Node == "" || p.WorkerRef == "" || p.AttemptID == "" || p.Capability == "" || p.Workspace == "" {
 		return core.Artifact{}, errors.New("artifact publish: Worker binding is unavailable")
@@ -152,7 +162,7 @@ func (p ArtifactPublisher) Publish(ctx context.Context, relativePath, name strin
 	if err != nil || len(data) == 0 || len(data) > core.MaxArtifactBytes {
 		return core.Artifact{}, errors.New("artifact publish: file read failed or size limit exceeded")
 	}
-	sum := sha256.Sum256([]byte(p.AttemptID + "\x00" + rel))
+	sum := sha256.Sum256([]byte(p.AttemptID + "\x00" + relativePath))
 	key := "publish:" + hex.EncodeToString(sum[:])
 	endpoint, err := url.Parse(p.ServerURL)
 	if err != nil || endpoint.Host == "" {
@@ -175,7 +185,13 @@ func (p ArtifactPublisher) Publish(ctx context.Context, relativePath, name strin
 	request.Header.Set("X-Secretary-Node", string(p.Node))
 	request.Header.Set("X-Artifact-Worker", p.WorkerRef)
 	request.Header.Set("X-Artifact-Attempt", p.AttemptID)
+	auth, err := p.authority()
+	if err != nil { return core.Artifact{}, err }
+	sourcePath := filepath.ToSlash(relativePath)
+	checksum := sha256.Sum256(data)
 	request.Header.Set("X-Artifact-Publish-Token", p.Capability)
+	request.Header.Set("X-Artifact-Source-Path", sourcePath)
+	request.Header.Set("X-Artifact-Source-Signature", auth.SignPublishedSource(p.Node, p.WorkerRef, p.AttemptID, sourcePath, name, hex.EncodeToString(checksum[:])))
 	request.Header.Set("X-Artifact-Name", name)
 	request.Header.Set("Idempotency-Key", key)
 	request.Header.Set("Content-Type", "application/octet-stream")

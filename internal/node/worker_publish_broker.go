@@ -147,6 +147,7 @@ func (b *workerPublishBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		AttemptID: binding.attemptID, Workspace: binding.workspace,
 		ServerURL: b.identity.ConnectURL,
 		Capability: auth.SignPublishCapability(b.identity.Node, binding.workerRef, binding.attemptID),
+		Auth: &auth,
 	}
 	artifact, err := publisher.Publish(r.Context(), request.Path, request.Name)
 	if err != nil {

@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"io/fs"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -149,4 +151,48 @@ func (a Authenticator) VerifyPublishCapability(nodeRef core.NodeReference, worke
 		return errors.New("node artifact: invalid publish authorization")
 	}
 	return nil
+}
+
+func ValidPublishedSourcePath(relative string) bool {
+	if len(relative) == 0 || len(relative) > 1024 || !fs.ValidPath(relative) || relative == "." ||
+		path.Clean(relative) != relative {
+		return false
+	}
+	for _, component := range strings.Split(relative, "/") {
+		if strings.HasPrefix(component, ".") {
+			return false
+		}
+	}
+	return true
+}
+
+// A Server-valid publication must carry a second, file-specific attestation
+// generated only after the trusted Node has opened and verified the file.
+// The path-only broker URL cannot create this attestation.
+func (a Authenticator) SignPublishedSource(nodeRef core.NodeReference, workerRef, attemptID, relativePath, name, checksum string) string {
+	mac := hmac.New(sha256.New, a.secret)
+	_, _ = fmt.Fprintf(mac, "artifact-source-v1\n%s\n%s\n%s\n%s\n%s\n%s",
+		nodeRef, workerRef, attemptID, relativePath, name, checksum)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (a Authenticator) VerifyPublishedSource(nodeRef core.NodeReference, workerRef, attemptID, relativePath, name, checksum, signature string) error {
+	if len(a.secret) < 32 || !ValidPublishedSourcePath(relativePath) || !ValidArtifactIDFormatForChecksum(checksum) {
+		return errors.New("node artifact: invalid signed publication source")
+	}
+	provided, err := hex.DecodeString(signature)
+	if err != nil || !hmac.Equal(provided, mustDecodeArtifactSignature(a.SignPublishedSource(nodeRef, workerRef, attemptID, relativePath, name, checksum))) {
+		return errors.New("node artifact: invalid signed publication source")
+	}
+	return nil
+}
+
+func ValidArtifactIDFormatForChecksum(checksum string) bool {
+	if len(checksum) != 64 { return false }
+	for _, r := range checksum {
+		if r < '0' || r > '9' {
+			if r < 'a' || r > 'f' { return false }
+		}
+	}
+	return true
 }

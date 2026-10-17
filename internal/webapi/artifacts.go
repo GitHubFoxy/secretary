@@ -2,6 +2,8 @@ package webapi
 
 import (
 	"encoding/base64"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -188,6 +190,14 @@ func (s *Server) publishWorkerArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(body) == 0 {
 		http.Error(w, "Empty output file", http.StatusBadRequest)
+		return
+	}
+	source := r.Header.Get("X-Artifact-Source-Path")
+	checksum := sha256.Sum256(body)
+	auth := node.NewAuthenticator(credential)
+	if auth.VerifyPublishedSource(nodeRef, workerRef, attemptID, source, name, hex.EncodeToString(checksum[:]),
+		r.Header.Get("X-Artifact-Source-Signature")) != nil {
+		http.Error(w, "Missing or invalid Node-attested workspace file", http.StatusUnauthorized)
 		return
 	}
 	mediaType := mime.TypeByExtension(strings.ToLower(filepath.Ext(name)))
