@@ -1420,3 +1420,60 @@ func TestQueuedFollowupsWaitForCapacityInsteadOfOverbooking(t *testing.T) {
 		t.Fatalf("released capacity did not allow second queued Follow-up: dispatched=%d", runtime.count("dispatch")-before)
 	}
 }
+
+func TestSpawnWorkerIdempotentReplayAfterTerminalAttempt(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	record, err := store.NodeRecord(ctx, "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateNodeHeartbeat(ctx, "node", record.Inventory, core.NodeHeartbeat{Capacity: 1}); err != nil {
+		t.Fatal(err)
+	}
+
+	request := SpawnWorkerRequest{Intent: "complete once", ProjectID: project.ID, IdempotencyKey: "terminal-spawn-replay"}
+	initial, err := service.SpawnWorker(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialAttempt := initial.CurrentAttempt()
+	if initialAttempt == nil {
+		t.Fatal("initial Spawn did not create an Attempt")
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, initialAttempt.ID, core.AttemptOutcomeInput{
+		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "finished",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Occupy the only Node slot with a different Worker. Replaying the
+	// completed Spawn must not require capacity or dispatch again.
+	other, err := service.SpawnWorker(ctx, SpawnWorkerRequest{
+		Intent: "occupy node", ProjectID: project.ID, IdempotencyKey: "other-active-spawn",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.Worker.ID == initial.Worker.ID {
+		t.Fatal("second Spawn unexpectedly reused original Worker")
+	}
+	runtime := service.Runtime.(*lifecycleRuntime)
+	before := runtime.count("dispatch")
+	replayed, err := service.SpawnWorker(ctx, request)
+	if err != nil {
+		t.Fatalf("completed idempotent Spawn should replay, got %v", err)
+	}
+	if replayed.Worker.ID != initial.Worker.ID ||
+		replayed.Worker.WorkerRef != initial.Worker.WorkerRef ||
+		replayed.ActionTurnID != initial.ActionTurnID ||
+		len(replayed.Turns) != 1 || len(replayed.Attempts) != 1 ||
+		len(replayed.Results) != 1 {
+		t.Fatalf("completed Spawn returned changed Worker or lost result: %#v", replayed)
+	}
+	if replayed.CurrentAttempt().ID != initialAttempt.ID || !replayed.CurrentAttempt().State.Terminal() {
+		t.Fatalf("replayed Attempt is not the terminal original: %#v", replayed.CurrentAttempt())
+	}
+	if runtime.count("dispatch") != before {
+		t.Fatalf("completed Spawn was dispatched again: before=%d after=%d", before, runtime.count("dispatch"))
+	}
+}
