@@ -370,6 +370,16 @@ func (s WorkerService) uncertainCommandStorageError(commandID string, cause, sto
 
 func (s WorkerService) recoverLifecycleCommand(ctx context.Context, kind string, worker core.Worker, attempt core.Phase4Attempt, send func(string) error, origin *core.SecretaryOriginIdentity) error {
 	if kind == "dispatch" || kind == "resume" {
+		// Idempotency snapshots may contain an obsolete nonterminal state.
+		// A terminal Attempt needs neither a capacity claim nor redispatch.
+		current, err := s.Store.Phase4Attempt(ctx, attempt.ID)
+		if err != nil {
+			return err
+		}
+		if current.State.Terminal() {
+			return nil
+		}
+		attempt = current
 		// Project-queued and offline Follow-up Attempts are persisted before
 		// execution capacity is available. Reserve before claiming/delivering.
 		if err := s.Store.ReserveAttemptCapacity(ctx, attempt.ID); err != nil {
