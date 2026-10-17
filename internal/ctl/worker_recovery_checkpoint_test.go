@@ -45,6 +45,7 @@ func runRecoveryCheckpointFixture(t *testing.T, kind node.CommandKind, fault str
 	workspace := t.TempDir()
 	os.WriteFile(filepath.Join(workspace, "private-nonce"), []byte("synthetic-private-nonce"), 0600)
 	original := node.WorkerEnvelope{WorkerRef: "fixture-worker", TurnID: "initial-turn", AttemptID: "initial-attempt", OriginalUserIntent: "remember synthetic-private-nonce", Workspace: workspace, HarnessInstance: instance, Model: "fixture/model", Profile: profile}
+	original = projectScopedNodeEnvelope(original)
 	metadata := func(id string, e node.WorkerEnvelope) core.CommandMetadata {
 		return core.CommandMetadata{CommandID: id, Node: instance.Node, HarnessInstanceID: instance.ID, WorkerRef: e.WorkerRef, TurnID: e.TurnID, AttemptID: e.AttemptID, IssuedAt: time.Now().UTC()}
 	}
