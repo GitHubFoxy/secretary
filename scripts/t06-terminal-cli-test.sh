@@ -197,6 +197,7 @@ cat > "$MISSING_ACP_BIN/npm" <<'STUB'
 set -euo pipefail
 [[ "$*" == 'install -g @agentclientprotocol/codex-acp@1.12.0' ]] || exit 2
 printf '%s\n' "$*" >> "$T06_NPM_INSTALL_LOG"
+[[ "${T06_NPM_INSTALL_FAIL:-0}" != 1 ]] || exit 17
 cat > "$(dirname "$0")/codex-acp" <<'ADAPTER'
 #!/usr/bin/env bash
 exit 0
@@ -216,6 +217,49 @@ grep -q '^default_harness = "codex"$' "$MISSING_ACP_STATE/config.toml" || fail "
 "$ROOT/secretary" doctor >/dev/null || fail "installed adapter was not ready after setup"
 "$ROOT/secretary" setup --non-interactive >/dev/null
 [[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq 1 ]] || fail "repeat setup reinstalled codex-acp"
+unset T06_REQUIRE_CODEX_ACP
+
+# If Codex authentication is valid but npm cannot install its missing ACP
+# adapter, automatically select an already-authorized Claude Code. Do not
+# persist Codex defaults before adapter provisioning has succeeded.
+FAILING_NPM_BIN="$TMP/failing-npm-bin"
+mkdir -p "$FAILING_NPM_BIN"
+make_mise "$FAILING_NPM_BIN"
+cp "$CODBIN/codex" "$FAILING_NPM_BIN/codex"
+cp "$MISSING_ACP_BIN/npm" "$FAILING_NPM_BIN/npm"
+export HOME="$TMP/npm-fails-claude-fallback-home" PATH="$FAILING_NPM_BIN:$CLAUDEBIN:/usr/bin:/bin"
+export T06_REQUIRE_CODEX_ACP=1 T06_NPM_INSTALL_FAIL=1
+before_fail_attempts="$(wc -l < "$T06_NPM_INSTALL_LOG")"
+"$ROOT/secretary" setup --non-interactive >"$TMP/npm-fails-fallback.log" 2>&1 ||
+  fail "authorized Claude fallback did not recover from failed npm ACP installation"
+FALLBACK_STATE="$HOME/.local/share/secretary"
+[[ ! -e "$FAILING_NPM_BIN/codex-acp" ]] || fail "failing npm unexpectedly installed ACP"
+[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq "$((before_fail_attempts + 1))" ]] || fail "Codex ACP installation failure was not exercised"
+grep -q '^harness = "claude_code"$' "$FALLBACK_STATE/config.toml" || fail "npm error left Codex configured instead of Claude"
+grep -q '^default_harness = "claude_code"$' "$FALLBACK_STATE/config.toml" || fail "npm error left Codex worker default"
+grep -q "using authorized Claude Code instead" "$TMP/npm-fails-fallback.log" || fail "missing explicit fallback diagnostic"
+fallback_config_before="$(cat "$FALLBACK_STATE/config.toml")"
+fallback_env_before="$(cat "$FALLBACK_STATE/environment")"
+fallback_attempts_before="$(wc -l < "$T06_NPM_INSTALL_LOG")"
+"$ROOT/secretary" setup --non-interactive >/dev/null ||
+  fail "repeat setup failed after falling back to Claude"
+[[ "$(cat "$FALLBACK_STATE/config.toml")" == "$fallback_config_before" ]] || fail "repeat setup reverted persisted Claude fallback"
+[[ "$(cat "$FALLBACK_STATE/environment")" == "$fallback_env_before" ]] || fail "repeat setup rotated credentials after Claude fallback"
+[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq "$fallback_attempts_before" ]] || fail "repeat setup incorrectly retried failed Codex npm install"
+
+# With no authorized fallback, failed npm must not write a Codex config.
+# A subsequent retry with npm working must still take the fresh Codex path.
+export HOME="$TMP/npm-fails-no-fallback-home" PATH="$FAILING_NPM_BIN:/usr/bin:/bin"
+if "$ROOT/secretary" setup --non-interactive >"$TMP/npm-fails-only.log" 2>&1; then
+  fail "Codex-only setup succeeded despite failed ACP installation"
+fi
+NO_FALLBACK_STATE="$HOME/.local/share/secretary"
+[[ ! -e "$NO_FALLBACK_STATE/config.toml" ]] || fail "failed npm provision persisted an unusable Codex config"
+[[ ! -e "$NO_FALLBACK_STATE/environment" ]] || fail "failed npm provision persisted bootstrap environment before harness readiness"
+unset T06_NPM_INSTALL_FAIL
+"$ROOT/secretary" setup --non-interactive >/dev/null || fail "retry after npm recovery failed"
+grep -q '^harness = "codex"$' "$NO_FALLBACK_STATE/config.toml" || fail "retry did not select authorized Codex"
+[[ -x "$FAILING_NPM_BIN/codex-acp" ]] || fail "retry did not install Codex ACP"
 unset T06_REQUIRE_CODEX_ACP
 
 # An unauthorized Codex with an installable but absent adapter must NOT
