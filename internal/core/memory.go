@@ -222,31 +222,18 @@ func (s *Store) saveMemoryDocumentUnlocked(ctx context.Context, q memorySQL, use
 	return UserDocument{Path: previous.Path, Revision: previous.Revision+1, Content: content, UpdatedAt: now}, revert, nil
 }
 
-// ExplicitMemoryRequest rejects normal conversation as a write authorization.
-// An explicit "remember" request is required in the originating owner turn.
+// ExplicitMemoryRequest is a deliberately conservative authorization check,
+// not a semantic fact extractor. Recognize a direct owner command followed by
+// one unambiguous statement. Apostrophes and quotes *inside* that statement
+// are data ("I don't like coffee"), not evidence of a quoted command.
 func ExplicitMemoryRequest(input string) bool {
 	text := strings.ToLower(strings.TrimSpace(input))
-	if text == "" || strings.ContainsAny(text, "\n\r") {
+	if text == "" || strings.ContainsAny(text, "\r\n") {
 		return false
 	}
-	// Quoted/translated/negated examples do not authorize a durable write.
-	if strings.ContainsAny(text, "\"'“”«»") {
-		return false
-	}
-	for _, ambiguous := range []string{
-		"translate", "переведи", "перевести", "перевод", "quote", "цитат",
-		"do not remember", "don't remember", "do not save", "don't save",
-		"не запоминай", "не сохраняй", "not a request", "не просьба",
-		"instead", "вместо этого", "или лучше", "or should", "just an example",
-		"просто пример", "hypothetical", "гипотетическ",
-	} {
-		if strings.Contains(text, ambiguous) {
-			return false
-		}
-	}
-	if strings.ContainsAny(text, "?;—") || strings.Contains(text, " - ") {
-		return false
-	}
+	// Normalize contractions only for matching directives. Do not strip or
+	// reject punctuation from the owner's preference itself.
+	text = strings.NewReplacer("’", "'", "‘", "'").Replace(text)
 	for _, prefix := range []string{"пожалуйста, ", "пожалуйста ", "please, ", "please "} {
 		if strings.HasPrefix(text, prefix) {
 			text = strings.TrimSpace(strings.TrimPrefix(text, prefix))
@@ -256,13 +243,80 @@ func ExplicitMemoryRequest(input string) bool {
 	for _, prefix := range []string{
 		"запомни ", "запомни,", "запиши в память ", "сохрани в память ", "сохрани как предпочтение ",
 		"на будущее запомни ", "хочу, чтобы ты запомнил ", "я хочу, чтобы ты запомнил ",
-		"remember ", "please remember ", "save to memory ", "save in memory ",
-		"can you remember ", "could you remember ", "remember that ",
+		"remember that ", "remember ", "save to memory ", "save in memory ",
+		"can you remember ", "could you remember ",
 		"/remember ", "/memory ",
 	} {
 		if strings.HasPrefix(text, prefix) {
 			body := strings.TrimSpace(strings.TrimPrefix(text, prefix))
-			return body != "" && !strings.HasPrefix(body, "not ") && !strings.HasPrefix(body, "не ")
+			return body != "" && !memoryHasConflictingDirective(body)
+		}
+	}
+	// A quoted "Remember ..." example, a question about memory, or a
+	// statement without a direct command is not a write authorization.
+	return false
+}
+
+// memoryHasConflictingDirective protects the original request against
+// trailing withdrawals/second instructions. Crucially, negation in an owner
+// *fact* ("I don't like coffee", "I don't save passwords") is not withdrawal.
+func memoryHasConflictingDirective(body string) bool {
+	if strings.ContainsAny(body, "\r\n?;—") || strings.Contains(body, " - ") {
+		return true
+	}
+	// More than one sentence is ambiguous for a durable write. Terminal
+	// punctuation is fine, as are contractions and quotes in the statement.
+	for _, separator := range []string{". ", "! "} {
+		if strings.Contains(body, separator) {
+			return true
+		}
+	}
+
+	// Look for secondary commands at clause boundaries, not arbitrary words
+	// inside the preference (e.g. "I don't save passwords").
+	clauses := []string{body}
+	for _, boundary := range []string{",", " and ", " but ", " however ", " or ", " и ", " но ", " а ", " затем ", " then "} {
+		index := 0
+		for {
+			at := strings.Index(body[index:], boundary)
+			if at < 0 {
+				break
+			}
+			index += at + len(boundary)
+			clauses = append(clauses, strings.TrimSpace(body[index:]))
+		}
+	}
+	for _, clause := range clauses {
+		clause = strings.TrimSpace(clause)
+		for {
+			changed := false
+			for _, lead := range []string{"actually,", "actually ", "please ", "then ", "just ", "а теперь ", "вообще-то ", "ладно, ", "нет, "} {
+				if strings.HasPrefix(clause, lead) {
+					clause = strings.TrimSpace(strings.TrimPrefix(clause, lead))
+					changed = true
+					break
+				}
+			}
+			if !changed {
+				break
+			}
+		}
+		for _, directive := range []string{
+			"ignore that request", "ignore this request", "ignore my request", "ignore that",
+			"ignore it", "forget that", "forget it", "cancel that", "cancel this",
+			"scratch that", "nevermind", "never mind", "take that back",
+			"do not remember", "don't remember", "do not save", "don't save",
+			"translate ", "translate this", "quote ", "not a request",
+			"just an example", "only an example", "hypothetical",
+			"instead ", "or should ",
+			"не запоминай", "не сохраняй", "отмени ", "отменяю", "передумал",
+			"игнорируй ", "забудь это", "переведи ", "перевести ", "перевод ",
+			"цитата", "это не просьба", "не просьба", "просто пример",
+			"гипотетическ", "вместо этого", "или лучше",
+		} {
+			if strings.HasPrefix(clause, directive) {
+				return true
+			}
 		}
 	}
 	return false
