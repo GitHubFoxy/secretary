@@ -61,10 +61,10 @@ func (s *t01SecretarySession) Prompt(_ context.Context, prompt string) error {
 	return nil
 }
 func (*t01SecretarySession) Steer(context.Context, string) (bool, error) { return false, nil }
-func (*t01SecretarySession) Cancel(context.Context) error              { return nil }
-func (s *t01SecretarySession) Activity() <-chan node.Activity          { return s.activity }
-func (s *t01SecretarySession) Result() <-chan node.Result              { return s.results }
-func (*t01SecretarySession) Close() error                              { return nil }
+func (*t01SecretarySession) Cancel(context.Context) error                { return nil }
+func (s *t01SecretarySession) Activity() <-chan node.Activity            { return s.activity }
+func (s *t01SecretarySession) Result() <-chan node.Result                { return s.results }
+func (*t01SecretarySession) Close() error                                { return nil }
 
 type t01WorkerHarness struct {
 	store *core.Store
@@ -171,32 +171,50 @@ func newT01RoutingFixture(t *testing.T) *t01RoutingFixture {
 	t.Helper()
 	ctx := context.Background()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "t01.db"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = store.Close() })
 
 	api, err := webapi.New(ctx, store, "bootstrap")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	owner, conversation, err := store.EnsureOwner(ctx)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	identity, err := store.EnsureSecretaryIdentity(ctx, owner.ID, conversation.ID)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	capability, err := store.RotateSecretaryCapability(ctx, owner.ID)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	dataDir := t.TempDir()
-	if _, err := store.SaveUserDocument(ctx, filepath.Join(dataDir, "user.md"), "one owner"); err != nil { t.Fatal(err) }
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(dataDir, "user.md"), "one owner"); err != nil {
+		t.Fatal(err)
+	}
 	policy := core.SecretaryPolicySnapshot{
 		Version: "test", Harness: "opencode", Model: "fixture", Reasoning: "high",
 		ProfileVersion: "test", ProfileName: "secretary", ProfileHash: "fixture",
-		ProfileContent: "Always use canonical context to route a user answer; clarify if two Workers match.",
+		ProfileContent:       "Always use canonical context to route a user answer; clarify if two Workers match.",
 		ReplyContractVersion: core.SecretaryReplyContractAddressedV1,
 	}
-	if err := store.SetSecretaryPolicySnapshot(ctx, policy); err != nil { t.Fatal(err) }
+	if err := store.SetSecretaryPolicySnapshot(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
 	project, err := store.CreateProject(ctx, core.ProjectSpec{
 		ID: "test-workspace", Name: "Test workspace",
 		Mappings: []core.ProjectPathMapping{{Node: "test-node", Path: t.TempDir()}},
 	})
-	if err != nil { t.Fatal(err) }
-	if _, err := store.EnrollNode(ctx, "test-node"); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.EnrollNode(ctx, "test-node"); err != nil {
+		t.Fatal(err)
+	}
 	inventory := core.HarnessInventorySnapshot{
 		Node: "test-node", ObservedAt: time.Now().UTC(),
 		Instances: []core.HarnessInstance{{
@@ -208,7 +226,9 @@ func newT01RoutingFixture(t *testing.T) *t01RoutingFixture {
 			}},
 		}},
 	}
-	if err := store.UpdateNodeHeartbeat(ctx, "test-node", inventory, core.NodeHeartbeat{Capacity: 4}); err != nil { t.Fatal(err) }
+	if err := store.UpdateNodeHeartbeat(ctx, "test-node", inventory, core.NodeHeartbeat{Capacity: 4}); err != nil {
+		t.Fatal(err)
+	}
 
 	workerRuntime := &t01WorkerHarness{store: store}
 	handler := mcp.Secretary{
@@ -235,7 +255,9 @@ func newT01RoutingFixture(t *testing.T) *t01RoutingFixture {
 	secretaryProfile.Hash = node.HashProfile(secretaryProfile.Content, nil, secretaryProfile.Model, secretaryProfile.Reasoning)
 	runtime.AttachProfile(func() node.ManagedProfile { return secretaryProfile })
 	runtime.AttachMCP("fake-mcp", dataDir)
-	if err := runtime.Start(ctx); err != nil { t.Fatal(err) }
+	if err := runtime.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { _ = runtime.Stop(context.Background()) })
 	api.AttachSecretary(runtime)
 	server := httptest.NewServer(api.Handler())
@@ -254,7 +276,10 @@ func newT01RoutingFixture(t *testing.T) *t01RoutingFixture {
 
 func (f *t01RoutingFixture) handleSecretaryPrompt(prompt string) error {
 	snapshot, input, turnID, inputID, err := t01DecodePrompt(prompt)
-	if err != nil { f.errs <- err; return err }
+	if err != nil {
+		f.errs <- err
+		return err
+	}
 	if !strings.Contains(prompt, "ask the owner which Worker") {
 		err := errors.New("Secretary prompt lost ambiguous-Worker safeguard")
 		f.errs <- err
@@ -263,14 +288,19 @@ func (f *t01RoutingFixture) handleSecretaryPrompt(prompt string) error {
 	call := func(name string, args map[string]any) (any, error) {
 		args["secretary_turn_id"], args["input_id"] = turnID, inputID
 		data, err := json.Marshal(args)
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		return f.mcp.Call(f.ctx, name, data)
 	}
 	if input == "Create a website" || input == "Plan a vacation" {
 		// An optional acknowledgement precedes delegation; it is not a
 		// second reply after the Worker's terminal Result.
 		_, err = call("reply_to_user", map[string]any{"text": "Request received."})
-		if err != nil { f.errs <- err; return err }
+		if err != nil {
+			f.errs <- err
+			return err
+		}
 		_, err = call("spawn_worker", map[string]any{
 			"intent": strings.ToLower(strings.TrimPrefix(input, "Create a ")),
 			"preferences": map[string]string{
@@ -307,27 +337,38 @@ func (f *t01RoutingFixture) handleSecretaryPrompt(prompt string) error {
 			})
 		} else {
 			_, err = call("reply_to_user", map[string]any{"text": "Request received."})
-			if err != nil { f.errs <- err; return err }
+			if err != nil {
+				f.errs <- err
+				return err
+			}
 			_, err = call("message_worker", map[string]any{
 				"worker_ref": matches[0].WorkerRef, "text": input,
 				"idempotency_key": inputID,
 			})
 		}
 	}
-	if err != nil { f.errs <- err }
+	if err != nil {
+		f.errs <- err
+	}
 	return err
 }
 
 func (f *t01RoutingFixture) post(t *testing.T, id, message string) {
 	t.Helper()
 	body, err := json.Marshal(map[string]string{"external_message_id": id, "body": message})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	req, err := http.NewRequest(http.MethodPost, f.server.URL+"/v1/messages", bytes.NewReader(body))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Idempotency-Key", "t01-"+id)
 	resp, err := f.client.Do(req)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("POST /v1/messages %q: status=%d", id, resp.StatusCode)
@@ -344,10 +385,14 @@ func (f *t01RoutingFixture) wait(t *testing.T, wantTurns int) []core.Worker {
 		default:
 		}
 		turns, err := f.store.SecretaryTurns(f.ctx, f.identity.ID)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(turns) == wantTurns && turns[len(turns)-1].State == core.SecretaryTurnSucceeded {
 			workers, err := f.mcp.Workers.ListWorkers(f.ctx)
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			return workers
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -399,18 +444,24 @@ func TestT01WebToSecretaryHarnessClarifiesAmbiguousWorker(t *testing.T) {
 	_ = f.wait(t, 1)
 	f.post(t, "trip", "Plan a vacation")
 	workers := f.wait(t, 2)
-	if len(workers) != 2 { t.Fatalf("need two candidate Workers: %#v", workers) }
+	if len(workers) != 2 {
+		t.Fatalf("need two candidate Workers: %#v", workers)
+	}
 
 	before := make(map[string]int)
 	for _, w := range workers {
 		d, err := f.mcp.Workers.GetWorker(f.ctx, w.WorkerRef)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		before[w.ID] = len(d.Turns)
 	}
 	f.post(t, "ambiguous", "Yes")
 	_ = f.wait(t, 3)
 	entries, err := f.store.EntriesAfter(f.ctx, f.identity.ConversationID, 0)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	clarifications := 0
 	for _, entry := range entries {
 		if entry.Kind == core.EntrySecretary && strings.Contains(entry.Body, "Which Worker") {
@@ -422,7 +473,9 @@ func TestT01WebToSecretaryHarnessClarifiesAmbiguousWorker(t *testing.T) {
 	}
 	for _, w := range workers {
 		d, err := f.mcp.Workers.GetWorker(f.ctx, w.WorkerRef)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(d.Turns) != before[w.ID] {
 			t.Fatalf("ambiguous input was sent to Worker %s", w.WorkerRef)
 		}
@@ -431,15 +484,18 @@ func TestT01WebToSecretaryHarnessClarifiesAmbiguousWorker(t *testing.T) {
 	workers = f.wait(t, 4)
 	for _, w := range workers {
 		d, err := f.mcp.Workers.GetWorker(f.ctx, w.WorkerRef)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		want := before[w.ID]
-		if strings.Contains(w.Intent, "website") { want++ }
+		if strings.Contains(w.Intent, "website") {
+			want++
+		}
 		if len(d.Turns) != want {
 			t.Fatalf("clarified answer routed to wrong Worker: %s turns=%d want=%d", w.WorkerRef, len(d.Turns), want)
 		}
 	}
 }
-
 
 func TestT01WebToSecretaryHarnessClarifiesTwoWorkersWithSameTopic(t *testing.T) {
 	f := newT01RoutingFixture(t)
@@ -453,14 +509,18 @@ func TestT01WebToSecretaryHarnessClarifiesTwoWorkersWithSameTopic(t *testing.T) 
 	before := make(map[string]int)
 	for _, w := range workers {
 		details, err := f.mcp.Workers.GetWorker(f.ctx, w.WorkerRef)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		before[w.WorkerRef] = len(details.Turns)
 	}
 	// Mentioning the shared topic is insufficient to identify one Worker.
 	f.post(t, "website-ambiguous", "For the website, use blue")
 	_ = f.wait(t, 3)
 	entries, err := f.store.EntriesAfter(f.ctx, f.identity.ConversationID, 0)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	found := false
 	for _, entry := range entries {
 		if entry.Kind != core.EntrySecretary || !strings.Contains(entry.Body, "Which Worker") {
@@ -474,7 +534,9 @@ func TestT01WebToSecretaryHarnessClarifiesTwoWorkersWithSameTopic(t *testing.T) 
 	}
 	for _, w := range workers {
 		details, err := f.mcp.Workers.GetWorker(f.ctx, w.WorkerRef)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		if len(details.Turns) != before[w.WorkerRef] {
 			t.Fatalf("ambiguous website answer was dispatched to Worker %s", w.WorkerRef)
 		}
