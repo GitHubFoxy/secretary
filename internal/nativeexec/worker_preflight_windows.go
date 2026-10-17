@@ -39,6 +39,15 @@ func PreflightWorkerSandbox(protectedDir string) error {
 }
 
 func ManagedWorkerWorkspaceRoot(protectedDir string)(string,error){
+	// Test/in-process harness Daemons (and already queued text-only paths)
+	// may have a broker but never start a native subprocess. Preserve their
+	// original workspace behavior before Windows Worker provisioning.
+	// The native process launcher independently fails closed without a SID.
+	if strings.TrimSpace(os.Getenv("SECRETARY_WORKER_HOME"))=="" {
+		if _,statErr:=os.Stat(filepath.Join(protectedDir,"worker-account.json"));os.IsNotExist(statErr) {
+			return "",nil
+		}else if statErr!=nil{return "",statErr}
+	}
 	ctx:=WithWorkerSandbox(context.Background(),WorkerSandbox{ProtectedDir:protectedDir})
 	home,err:=WindowsWorkerHome(ctx)
 	if err!=nil{return "",err}
