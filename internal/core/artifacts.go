@@ -21,6 +21,10 @@ type Artifact struct {
 	Size      int64     `json:"size"`
 	SHA256    string    `json:"sha256"`
 	Status    string    `json:"status"`
+	SourceArtifactID string `json:"source_artifact_id,omitempty"`
+	TranscriptArtifactID string `json:"transcript_artifact_id,omitempty"`
+	SourceIdentity string `json:"source_identity,omitempty"`
+	ProcessingStatus string `json:"processing_status,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -44,7 +48,16 @@ func (s *Store) migrateArtifacts(ctx context.Context) error {
 		created_at TEXT NOT NULL,
 		UNIQUE(person_id, idempotency_key)
 	);
-	CREATE INDEX IF NOT EXISTS artifacts_by_person ON artifacts(person_id, created_at);`)
+	CREATE INDEX IF NOT EXISTS artifacts_by_person ON artifacts(person_id, created_at);
+	CREATE TABLE IF NOT EXISTS voice_artifact_links (
+		source_artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id),
+		person_id TEXT NOT NULL REFERENCES persons(id),
+		source_identity TEXT NOT NULL,
+		transcript_artifact_id TEXT UNIQUE REFERENCES artifacts(id),
+		status TEXT NOT NULL CHECK(status IN ('processing', 'ready', 'failed')),
+		UNIQUE(person_id, source_identity)
+	);
+	CREATE INDEX IF NOT EXISTS voice_links_transcript ON voice_artifact_links(transcript_artifact_id);`)
 	if err != nil {
 		return err
 	}
@@ -130,6 +143,9 @@ func (s *Store) ArtifactForPerson(ctx context.Context, personID, artifactID stri
 		return Artifact{}, nil, err
 	}
 	a.Status = "ready"
+	if err := s.populateVoiceRelation(ctx, personID, &a); err != nil {
+		return Artifact{}, nil, err
+	}
 	if len(body) != int(a.Size) {
 		return Artifact{}, nil, fmt.Errorf("artifact %s: body size mismatch", a.ID)
 	}

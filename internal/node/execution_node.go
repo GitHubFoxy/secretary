@@ -217,9 +217,12 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	if continuing {
 		task = promptText
 	}
-	prepared, artifactErr := n.prepareArtifactPrompt(ctx, workspace, task)
+	prepared, images, artifactErr := n.prepareArtifactInput(ctx, workspace, task)
 	if artifactErr != nil {
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "artifact_unavailable", artifactErr.Error())
+	}
+	if len(images) > 0 && !supportsImageHarness(command.Envelope.HarnessInstance) {
+		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "image_input_unsupported", "selected Worker harness does not advertise image input capability")
 	}
 	task = prepared
 	if continuing {
@@ -231,7 +234,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	}
 	activatedPublisher := false
 	defer func() { if !activatedPublisher { n.unregisterArtifactPublisher(command.Envelope.AttemptID) } }()
-	request := StartRequest{MCPServers: servers, WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
+	request := StartRequest{MCPServers: servers, WorkerRef: command.Envelope.WorkerRef, Task: task, Images: images, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "binding_conflict", err.Error())
@@ -278,7 +281,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	activatedPublisher = true
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
-		go func() { _ = session.Prompt(context.Background(), promptText) }()
+		go func() { _ = promptWithImages(context.Background(), session, promptText, images) }()
 	} else {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
 	}
@@ -416,11 +419,20 @@ func (n *ExecutionNode) steer(ctx context.Context, command *SteeringCommand) Com
 	if !ok {
 		return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 	}
-	text, err := n.prepareArtifactPrompt(ctx, mapping.Workspace, command.Text)
+	text, images, err := n.prepareArtifactInput(ctx, mapping.Workspace, command.Text)
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "artifact_unavailable", err.Error())
 	}
-	injected, err := session.Steer(ctx, text)
+	var injected bool
+	if len(images) > 0 {
+		if multimodal, ok := session.(ImageSteeringSession); ok {
+			injected, err = multimodal.SteerImages(ctx, text, images)
+		} else {
+			return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "image_input_unsupported", "selected Worker session cannot steer image content")
+		}
+	} else {
+		injected, err = session.Steer(ctx, text)
+	}
 	if err != nil {
 		code := "steering_failed"
 		if errors.Is(err, ErrClaudeCodeSteeringUnsupported) {
@@ -455,7 +467,15 @@ func (n *ExecutionNode) steer(ctx context.Context, command *SteeringCommand) Com
 		if !ok {
 			return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "runtime_not_steerable", "runtime did not accept steering")
 		}
-		if err := queue.Queue(ctx, text); err != nil {
+		var queueErr error
+		if len(images) > 0 {
+			multimodal, ok := session.(ImageQueueSession)
+			if !ok { return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "image_input_unsupported", "selected Worker session cannot queue image content") }
+			queueErr = multimodal.QueueImages(ctx, text, images)
+		} else {
+			queueErr = queue.Queue(ctx, text)
+		}
+		if err := queueErr; err != nil {
 			outcome := failedOutcome(Command{Kind: CommandSteering, Steering: command}, "queue_failed", err.Error())
 			outcome.AcceptanceUnknown = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 			return outcome
@@ -501,9 +521,12 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	if continuing {
 		task = promptText
 	}
-	prepared, artifactErr := n.prepareArtifactPrompt(ctx, workspace, task)
+	prepared, images, artifactErr := n.prepareArtifactInput(ctx, workspace, task)
 	if artifactErr != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "artifact_unavailable", artifactErr.Error())
+	}
+	if len(images) > 0 && !supportsImageHarness(command.Envelope.HarnessInstance) {
+		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "image_input_unsupported", "selected Worker harness does not advertise image input capability")
 	}
 	task = prepared
 	if continuing {
@@ -515,7 +538,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	}
 	activatedPublisher := false
 	defer func() { if !activatedPublisher { n.unregisterArtifactPublisher(command.Envelope.AttemptID) } }()
-	request := StartRequest{MCPServers: servers, WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID), DeferInitialPrompt: continuing}
+	request := StartRequest{MCPServers: servers, WorkerRef: command.Envelope.WorkerRef, Task: task, Images: images, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID), DeferInitialPrompt: continuing}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "binding_conflict", err.Error())
@@ -545,7 +568,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	activatedPublisher = true
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
-		go func() { _ = session.Prompt(context.Background(), promptText) }()
+		go func() { _ = promptWithImages(context.Background(), session, promptText, images) }()
 	} else {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
 	}

@@ -275,6 +275,11 @@ func main() {
 		log.Fatalf("find secretary-mcp: %v", mcpErr)
 	}
 	workerLocal := node.NewLocal(workerHarnessRuntime)
+	workerLocal.SetArtifactFetcher(func(ctx context.Context, id string) (node.ArtifactPayload, error) {
+		artifact, body, err := store.ArtifactForPerson(ctx, web.OwnerID(), id)
+		if err != nil { return node.ArtifactPayload{}, err }
+		return node.ArtifactPayload{ID: artifact.ID, Name: artifact.Name, SHA256: artifact.SHA256, Data: body}, nil
+	})
 	secretaryLocal := node.NewLocal(secretaryHarnessRuntime)
 	if err := recoverProductionPhase4Attempts(ctx, store, workerLocal, remoteNodes); err != nil {
 		log.Fatalf("recover Phase 4 Attempts: %v", err)

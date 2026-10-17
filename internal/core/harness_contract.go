@@ -45,6 +45,7 @@ const (
 	CapabilityCancel    ExecutionCapability = "cancel"
 	CapabilitySteering  ExecutionCapability = "steering"
 	CapabilityApprovals ExecutionCapability = "approvals"
+	CapabilityImageInput ExecutionCapability = "image_input"
 )
 
 type ActivityCapability string

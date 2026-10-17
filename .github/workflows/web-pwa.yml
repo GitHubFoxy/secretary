@@ -22,8 +22,12 @@ jobs:
         run: npm ci --prefix web
       - name: Run Web tests
         run: npm test --prefix web
+      - name: Verify checked-in production Web attachment
+        run: node web/scripts/verify-embedded-upload.mjs
       - name: Build Web and Control Room
         run: npm run build:all --prefix web
+      - name: Verify generated Go-embedded production bundle
+        run: node web/scripts/verify-embedded-upload.mjs --require-bundled
       - name: Verify bundled PWA metadata
         run: |
           test -s web/index.html

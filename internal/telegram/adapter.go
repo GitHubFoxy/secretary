@@ -42,6 +42,7 @@ type Message struct {
 	MessageID int64  `json:"message_id"`
 	ThreadID  int64  `json:"message_thread_id,omitempty"`
 	Text      string `json:"text,omitempty"`
+	Caption   string `json:"caption,omitempty"`
 	Voice     *Voice `json:"voice,omitempty"`
 }
 
@@ -115,6 +116,7 @@ type Config struct {
 	ASRPrompt      string
 	ASRTranscriber ASRTranscriber
 	Formatter      TextFormatter
+	VoiceDurationProbe func(context.Context, []byte, string) (float64, error)
 }
 
 type Pairing struct {
@@ -187,6 +189,7 @@ type persistedState struct {
 	RebindWatermark         int64                          `json:"rebind_watermark,omitempty"`
 	PendingInputs           []Update                       `json:"pending_inputs,omitempty"`
 	Transcripts             map[string]VoiceTranscript     `json:"transcripts,omitempty"`
+	VoiceFailures          map[string]VoiceFailure        `json:"voice_failures,omitempty"`
 }
 
 type workerTypingAttempt struct {
@@ -260,7 +263,7 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 		config.TitleTimeout = 5 * time.Second
 	}
 	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), topicSyncWake: make(chan struct{}, 1), now: func() time.Time { return time.Now().UTC() }}
-	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Delivered: map[string]time.Time{}, DeliveredSequence: map[string]int64{}, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, ToolNotified: map[string]time.Time{}, ToolPreviews: map[string]string{}, WorkerTyping: map[string]workerTypingAttempt{}, WorkerTypingInitialized: true, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}}
+	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Delivered: map[string]time.Time{}, DeliveredSequence: map[string]int64{}, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, ToolNotified: map[string]time.Time{}, ToolPreviews: map[string]string{}, WorkerTyping: map[string]workerTypingAttempt{}, WorkerTypingInitialized: true, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}, VoiceFailures: map[string]VoiceFailure{}}
 	if err := adapter.load(); err != nil {
 		return nil, err
 	}
@@ -413,6 +416,9 @@ func (a *Adapter) load() error {
 	}
 	if a.state.Transcripts == nil {
 		a.state.Transcripts = map[string]VoiceTranscript{}
+	}
+	if a.state.VoiceFailures == nil {
+		a.state.VoiceFailures = map[string]VoiceFailure{}
 	}
 	return nil
 }

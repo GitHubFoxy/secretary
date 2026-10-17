@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"fmt"
 	"reflect"
 	"sync"
 
@@ -105,6 +106,7 @@ type StartRequest struct {
 	AttemptID               string
 	WorkerRef               string
 	Task                    string
+	Images                  []ImageInput
 	Workspace               string
 	RawLogPath              string
 	MCPServers              []MCPServer
@@ -179,6 +181,7 @@ type LocalNode struct {
 	mu          sync.Mutex
 	workers     map[string]Session
 	checkpoints map[string]localCheckpoint
+	artifactFetcher ArtifactFetcher
 }
 
 type localCheckpoint struct {
@@ -188,6 +191,55 @@ type localCheckpoint struct {
 
 func NewLocal(runtime Runtime) *LocalNode {
 	return &LocalNode{runtime: runtime, workers: make(map[string]Session), checkpoints: make(map[string]localCheckpoint)}
+}
+
+func (n *LocalNode) SetArtifactFetcher(fetcher ArtifactFetcher) {
+	n.mu.Lock()
+	n.artifactFetcher = fetcher
+	n.mu.Unlock()
+}
+
+func (n *LocalNode) prepareInput(ctx context.Context, request *StartRequest) error {
+	n.mu.Lock()
+	fetch := n.artifactFetcher
+	n.mu.Unlock()
+	return prepareLocalInput(ctx, request, fetch)
+}
+
+func prepareLocalInput(ctx context.Context, request *StartRequest, fetch ArtifactFetcher) error {
+	text, images, err := PrepareArtifactInput(ctx, request.Workspace, request.Task, fetch)
+	if err != nil { return err }
+	if len(images) > 0 && !supportsImageHarness(request.HarnessInstance) {
+		return errors.New("image_input_unsupported: selected local Worker harness does not support images")
+	}
+	request.Task, request.Images = text, images
+	return nil
+}
+
+func (n *LocalNode) PrepareWorkerSteering(ctx context.Context, workerRef, text string) (string, []ImageInput, error) {
+	if len(ArtifactIDs(text)) == 0 { return text, nil, nil }
+	n.mu.Lock()
+	fetch := n.artifactFetcher
+	workspace := ""
+	allowed := false
+	for _, mapping := range n.checkpoints {
+		if mapping.request.WorkerRef == workerRef {
+			workspace = mapping.request.Workspace
+			allowed = supportsImageHarness(mapping.request.HarnessInstance)
+		}
+	}
+	n.mu.Unlock()
+	if workspace == "" {
+		return "", nil, fmt.Errorf("artifact: local Worker workspace not found")
+	}
+	preparedText, images, err := PrepareArtifactInput(ctx, workspace, text, fetch)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(images) > 0 && !allowed {
+		return "", nil, errors.New("image_input_unsupported: local Worker harness does not advertise image input")
+	}
+	return preparedText, images, nil
 }
 
 func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session, error) {
@@ -203,6 +255,7 @@ func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session
 		}
 		request.Workspace = workspace
 	}
+	if err := n.prepareInput(ctx, &request); err != nil { return nil, err }
 	if request.Profile.Name != "" && !nativeProfileDelivery(n.runtime, request.Profile) {
 		if _, err := request.Profile.MaterializeInstructions(request.Workspace); err != nil {
 			return nil, err
@@ -250,6 +303,7 @@ func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previous
 	if !ok || checkpoint.nativeID == "" || prior.WorkerRef != request.WorkerRef || prior.Workspace != request.Workspace || !reflect.DeepEqual(prior.Profile, request.Profile) || !reflect.DeepEqual(prior.HarnessInstance, request.HarnessInstance) || prior.Model != request.Model || prior.Reasoning != request.Reasoning || prior.ApprovalPolicy != request.ApprovalPolicy {
 		return nil, ErrRuntimeSessionUnavailable
 	}
+	if err := prepareLocalInput(ctx, &request, n.artifactFetcher); err != nil { return nil, err }
 	resumer, ok := n.runtime.(Resumer)
 	if !ok {
 		return nil, ErrRuntimeSessionUnavailable
@@ -267,7 +321,7 @@ func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previous
 	}
 	n.workers[request.WorkerRef] = session
 	n.checkpoints[request.AttemptID] = localCheckpoint{request: request, nativeID: session.ID()}
-	go func() { _ = session.Prompt(context.Background(), request.Task) }()
+	go func() { _ = promptWithImages(context.Background(), session, request.Task, request.Images) }()
 	return session, nil
 }
 

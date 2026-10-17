@@ -1,6 +1,7 @@
 package node
 
 import (
+	"encoding/base64"
 	"bufio"
 	"bytes"
 	"context"
@@ -278,7 +279,7 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 		}
 	}
 	if !request.DeferInitialPrompt && request.Task != "" {
-		if err := session.Prompt(ctx, request.Task); err != nil {
+		if err := promptWithImages(ctx, session, request.Task, request.Images); err != nil {
 			_ = session.Close()
 			return nil, err
 		}
@@ -311,6 +312,10 @@ func (s *claudeSession) ID() string                { return s.id }
 func (s *claudeSession) Activity() <-chan Activity { return s.activity }
 func (s *claudeSession) Result() <-chan Result     { return s.result }
 func (s *claudeSession) Prompt(ctx context.Context, text string) error {
+	return s.PromptImages(ctx, text, nil)
+}
+
+func (s *claudeSession) PromptImages(ctx context.Context, text string, images []ImageInput) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -330,7 +335,17 @@ func (s *claudeSession) Prompt(ctx context.Context, text string) error {
 	s.cancel = false
 	s.inputID = id
 	s.stateMu.Unlock()
-	err = s.writeMessage(ctx, map[string]any{"type": "user", "uuid": id, "session_id": s.id, "message": map[string]any{"role": "user", "content": text}, "parent_tool_use_id": nil})
+	var content any = text
+	if len(images) > 0 {
+		blocks := []any{map[string]any{"type": "text", "text": text}}
+		for _, image := range images {
+			blocks = append(blocks, map[string]any{"type": "image", "source": map[string]any{
+				"type": "base64", "media_type": image.MediaType, "data": base64.StdEncoding.EncodeToString(image.Data),
+			}})
+		}
+		content = blocks
+	}
+	err = s.writeMessage(ctx, map[string]any{"type": "user", "uuid": id, "session_id": s.id, "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil})
 	if err != nil {
 		s.stateMu.Lock()
 		s.active = false

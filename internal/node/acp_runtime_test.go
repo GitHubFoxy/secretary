@@ -1309,12 +1309,14 @@ func TestFakeACPProcess(t *testing.T) {
 		var request struct {
 			ID     json.RawMessage `json:"id,omitempty"`
 			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &request) != nil {
 			continue
 		}
 		switch request.Method {
 		case "session/prompt":
+			if path := os.Getenv("ACP_IMAGE_RECORD"); path != "" { _ = os.WriteFile(path, request.Params, 0o600) }
 			if os.Getenv("ACP_BURST") != "" {
 				count, _ := strconv.Atoi(os.Getenv("ACP_BURST"))
 				for index := 0; index < count; index++ {
@@ -1326,6 +1328,11 @@ func TestFakeACPProcess(t *testing.T) {
 				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"update": map[string]any{"sessionUpdate": "tool_call_update", "toolCallId": "fixture-call-1", "title": "Reading", "status": "completed", "rawOutput": map[string]string{"status": "ok"}}}})
 			} else {
 				_ = encoder.Encode(map[string]any{"method": "session/update", "params": map[string]any{"sessionId": "fake-session", "update": map[string]any{"sessionUpdate": "agent_message_chunk", "content": map[string]string{"type": "text", "text": "fake activity"}}}})
+			}
+		}
+		if request.Method == "session/cancel" {
+			if record := os.Getenv("ACP_CANCEL_RECORD"); record != "" {
+				_ = os.WriteFile(record, []byte("cancelled"), 0o600)
 			}
 		}
 		if len(request.ID) == 0 {
@@ -1344,12 +1351,17 @@ func TestFakeACPProcess(t *testing.T) {
 				}
 			}
 			result = map[string]any{"protocolVersion": version}
+			if os.Getenv("ACP_IMAGE_RECORD") != "" { result["agentCapabilities"] = map[string]any{"promptCapabilities": map[string]any{"image": true}} }
 		case "session/new":
 			result = map[string]any{"sessionId": "fake-session"}
 		case "session/prompt":
 			result = map[string]any{"summary": "fake task completed"}
 		case "_session/steering":
-			result = map[string]any{"outcome": "injected"}
+			outcome := os.Getenv("ACP_STEER_OUTCOME")
+			if outcome == "" {
+				outcome = "injected"
+			}
+			result = map[string]any{"outcome": outcome}
 		}
 		_ = encoder.Encode(map[string]any{"id": request.ID, "result": result})
 	}
@@ -1538,5 +1550,69 @@ func TestACPToolTrackerOutputPresenceAtBoundary(t *testing.T) {
 	})
 	if len(res4) != 1 || !res4[0].OutputPresent || res4[0].Result != "" {
 		t.Fatalf("failed stderr result=%#v", res4)
+	}
+}
+
+func TestACPStartedNewTurnSteeringFailsClosedAndCancelsUntrackedTurn(t *testing.T) {
+	for _, withImage := range []bool{false, true} {
+		name := "text"
+		if withImage {
+			name = "image"
+		}
+		t.Run(name, func(t *testing.T) {
+			command := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
+			cancelRecord := filepath.Join(t.TempDir(), "native-turn-cancel")
+			env := []string{
+				"ACP_STEER_OUTCOME=startedNewTurn",
+				"ACP_CANCEL_RECORD=" + cancelRecord,
+			}
+			if withImage {
+				env = append(env, "ACP_IMAGE_RECORD="+filepath.Join(t.TempDir(), "image-prompt"))
+			}
+			runtime := ACPRuntime{
+				Command: command.Path,
+				Arguments: command.Args[1:],
+				Environment: env,
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			session, err := runtime.Start(ctx, StartRequest{
+				WorkerRef: "untracked-native-turn", Workspace: t.TempDir(),
+				Task: "initial", DeferInitialPrompt: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer session.Close()
+			var accepted bool
+			if withImage {
+				native, ok := session.(ImageSteeringSession)
+				if !ok {
+					t.Fatal("ACP session has no native image steering")
+				}
+				accepted, err = native.SteerImages(ctx, "inspect", []ImageInput{{
+					ArtifactID: "art_test",
+					MediaType: "image/png",
+					Data: []byte("fixture-image-bytes"),
+				}})
+			} else {
+				accepted, err = session.Steer(ctx, "follow-up")
+			}
+			if accepted || err == nil || !strings.Contains(err.Error(), "untracked native turn") {
+				t.Fatalf("startedNewTurn was acknowledged despite missing turn tracking: accepted=%v err=%v", accepted, err)
+			}
+			// Cancellation is best effort, but the bridge must attempt to stop
+			// the untracked native turn rather than report successful injection.
+			for {
+				data, readErr := os.ReadFile(cancelRecord)
+				if readErr == nil && string(data) == "cancelled" {
+					break
+				}
+				if ctx.Err() != nil {
+					t.Fatalf("native cancellation not requested after startedNewTurn: %v", ctx.Err())
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		})
 	}
 }
