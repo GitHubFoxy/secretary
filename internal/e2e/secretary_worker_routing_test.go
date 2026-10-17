@@ -402,6 +402,25 @@ func (f *t01RoutingFixture) wait(t *testing.T, wantTurns int) []core.Worker {
 	return nil
 }
 
+func (f *t01RoutingFixture) publicConversation(t *testing.T) []core.ConversationEntry {
+	t.Helper()
+	response, err := f.client.Get(f.server.URL + "/v1/conversation?after_seq=0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("GET /v1/conversation returned %d", response.StatusCode)
+	}
+	var page struct {
+		Entries []core.ConversationEntry `json:"entries"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil {
+		t.Fatal(err)
+	}
+	return page.Entries
+}
+
 func TestT01WebToSecretaryHarnessRoutesWorkerFollowUpAndSeparateTask(t *testing.T) {
 	f := newT01RoutingFixture(t)
 	f.post(t, "create-site", "Create a website")
@@ -411,6 +430,16 @@ func TestT01WebToSecretaryHarnessRoutesWorkerFollowUpAndSeparateTask(t *testing.
 	}
 	website := workers[0].ID
 	websiteRef := workers[0].WorkerRef
+	questionCount := 0
+	for _, entry := range f.publicConversation(t) {
+		if entry.Kind == core.EntryWorkerResult && entry.WorkerRef == websiteRef &&
+			entry.Body == "What should the website be about?" {
+			questionCount++
+		}
+	}
+	if questionCount != 1 {
+		t.Fatalf("public Personal Conversation did not show one attributed Worker question: count=%d", questionCount)
+	}
 	f.post(t, "answer-site", "A bookshop")
 	workers = f.wait(t, 2)
 	if len(workers) != 1 || workers[0].ID != website {
@@ -426,6 +455,19 @@ func TestT01WebToSecretaryHarnessRoutesWorkerFollowUpAndSeparateTask(t *testing.
 	details, err = f.mcp.Workers.GetWorker(f.ctx, websiteRef)
 	if err != nil || len(details.Turns) != 2 {
 		t.Fatalf("replay created another Worker Turn: %#v err=%v", details, err)
+	}
+	resultCount := 0
+	for _, entry := range f.publicConversation(t) {
+		if entry.Kind == core.EntryWorkerResult && entry.WorkerRef == websiteRef {
+			resultCount++
+		}
+		if entry.Kind == core.EntrySecretary &&
+			(entry.Body == "What should the website be about?" || entry.Body == "Website requirements recorded.") {
+			t.Fatal("Secretary echoed the Worker Result into Personal Conversation")
+		}
+	}
+	if resultCount != 2 {
+		t.Fatalf("public replay created %d Worker Results, want 2", resultCount)
 	}
 	f.post(t, "new-topic", "Plan a vacation")
 	workers = f.wait(t, 3)
@@ -458,10 +500,7 @@ func TestT01WebToSecretaryHarnessClarifiesAmbiguousWorker(t *testing.T) {
 	}
 	f.post(t, "ambiguous", "Yes")
 	_ = f.wait(t, 3)
-	entries, err := f.store.EntriesAfter(f.ctx, f.identity.ConversationID, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	entries := f.publicConversation(t)
 	clarifications := 0
 	for _, entry := range entries {
 		if entry.Kind == core.EntrySecretary && strings.Contains(entry.Body, "Which Worker") {
@@ -517,10 +556,7 @@ func TestT01WebToSecretaryHarnessClarifiesTwoWorkersWithSameTopic(t *testing.T) 
 	// Mentioning the shared topic is insufficient to identify one Worker.
 	f.post(t, "website-ambiguous", "For the website, use blue")
 	_ = f.wait(t, 3)
-	entries, err := f.store.EntriesAfter(f.ctx, f.identity.ConversationID, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	entries := f.publicConversation(t)
 	found := false
 	for _, entry := range entries {
 		if entry.Kind != core.EntrySecretary || !strings.Contains(entry.Body, "Which Worker") {
