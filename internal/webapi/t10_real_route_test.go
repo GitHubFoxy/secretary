@@ -143,8 +143,10 @@ func TestT10RealWebToSecretaryActionToRemoteDaemonAndConversation(t *testing.T) 
 	second := tool()
 	firstAction := first.Value.(map[string]any)
 	secondAction := second.Value.(map[string]any)
-	if firstAction["action_turn_id"] != secondAction["action_turn_id"] || runtime.starts != 1 {
-		t.Fatalf("Secretary action replay changed native execution: %d, first=%v second=%v",runtime.starts,firstAction["action_turn_id"],secondAction["action_turn_id"])
+	firstWorker := firstAction["worker"].(map[string]any)["worker_ref"]
+	secondWorker := secondAction["worker"].(map[string]any)["worker_ref"]
+	if firstWorker == "" || firstWorker != secondWorker || runtime.starts != 1 {
+		t.Fatalf("Secretary action replay changed Worker identity: %d, first=%v second=%v",runtime.starts,firstWorker,secondWorker)
 	}
 	for {
 		req,err := http.NewRequestWithContext(ctx,http.MethodGet,server.URL+"/v1/conversation",nil)
