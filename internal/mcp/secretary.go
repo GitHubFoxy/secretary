@@ -155,7 +155,7 @@ func spawnWorkerSchema() map[string]any {
 	preferences := map[string]any{"type": "object", "properties": map[string]any{
 		"project_id": map[string]string{"type": "string"}, "node_id": map[string]string{"type": "string"},
 		"harness_instance_id": map[string]string{"type": "string"}, "harness_kind": map[string]string{"type": "string"},
-		"workspace": map[string]string{"type": "string"}, "model_id": map[string]string{"type": "string"},
+		"workspace": map[string]string{"type": "string", "description": "Only valid with an authorized project_id; projectless Workers always get a Node-created workspace."}, "model_id": map[string]string{"type": "string"},
 		"reasoning": map[string]string{"type": "string"},
 	}}
 	return map[string]any{"type": "object", "properties": map[string]any{
