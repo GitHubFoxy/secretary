@@ -15,12 +15,12 @@ func SecureWorkerEnvironment(ctx context.Context, entries []string) []string {
  for _, entry := range entries {
   name, _, _ := strings.Cut(entry,"=")
   switch {
-  case strings.HasPrefix(name,"SECRETARY_NODE_"):
-  case strings.HasPrefix(name,"SECRETARY_WORKER_"):
-  case name == "SECRETARY_ARTIFACT_CAPABILITY":
-  case name == "SECRETARY_ADMIN_TOKEN":
-  case name == "SECRETARY_SERVER_ADMIN_TOKEN":
-  case name == "SECRETARY_PAIRING_TOKEN":
+  // The trusted Node may be co-located with secretaryd. Do not inherit
+  // any Server/Node token, bootstrap credential, transport key or password.
+  // Only explicit, Worker-authorized MCP configuration crosses the boundary.
+  case strings.HasPrefix(name,"SECRETARY_") &&
+       name != "SECRETARY_ARTIFACT_BROKER_URL" &&
+       !strings.HasPrefix(name,"SECRETARY_CLAUDE_MCP_"):
   default: result = append(result,entry)
   }
  }

@@ -18,9 +18,9 @@ func TestT09WorkerSandboxFailsClosedWhenCredentialStorageOverlapsWorkspace(t *te
 
 func TestT09WorkerSandboxDoesNotInheritNodeCredentials(t *testing.T) {
  ctx := WithWorkerSandbox(context.Background(), WorkerSandbox{ProtectedDir:"/private",Workspace:"/workspace"})
- env := SecureWorkerEnvironment(ctx,[]string{"SECRETARY_NODE_PAIRING_TOKEN=secret","SECRETARY_ARTIFACT_CAPABILITY=signer","SECRETARY_ARTIFACT_BROKER_URL=http://127.0.0.1","PATH=/usr/bin"})
+ env := SecureWorkerEnvironment(ctx,[]string{"SECRETARY_NODE_PAIRING_TOKEN=secret","SECRETARY_ARTIFACT_CAPABILITY=signer","SECRETARY_BOOTSTRAP_TOKEN=ownersecret","SECRETARY_CAPABILITY=serversecret","SECRETARY_WORKER_PASSWORD=accpass","SECRETARY_ARTIFACT_BROKER_URL=http://127.0.0.1","PATH=/usr/bin"})
  combined := strings.Join(env,";")
- if strings.Contains(combined,"secret") || strings.Contains(combined,"signer") { t.Fatal("Node authority leaked into native Worker environment") }
+ if strings.Contains(combined,"secret") || strings.Contains(combined,"signer") || strings.Contains(combined,"accpass") { t.Fatal("Node authority leaked into native Worker environment") }
  if !strings.Contains(combined,"SECRETARY_ARTIFACT_BROKER_URL") { t.Fatal("lost scoped local artifact broker") }
 }
 
