@@ -2658,7 +2658,14 @@ func (s *Store) SyncAttemptSchedulesPolicy(ctx context.Context, enabled bool, no
 		_, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'manual_hold', updated_at = ? WHERE state = 'pending'`, timestamp(now))
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'pending', updated_at = ? WHERE state = 'manual_hold' AND scheduled_at IS NOT NULL AND scheduled_at > ?`, timestamp(now), timestamp(now))
+	// Policy changes must not rearm a Resume whose Node acceptance is unknown
+	// (including across repeated server restarts).
+	_, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'pending', updated_at = ? WHERE state = 'manual_hold' AND scheduled_at IS NOT NULL AND scheduled_at > ?
+		AND NOT EXISTS (SELECT 1 FROM phase4_worker_commands c
+		WHERE c.worker_id = phase4_attempt_schedules.worker_id
+		AND c.attempt_id = phase4_attempt_schedules.attempt_id AND c.kind = 'resume'
+		AND (c.state IN ('uncertain', 'delivered') OR (c.state = 'pending' AND c.lease_until <> ''))
+		)`, timestamp(now), timestamp(now))
 	return err
 }
 

@@ -54,6 +54,7 @@ func TestClaimedResumeWithUnknownAcceptanceIsNotRearmedOnRecovery(t *testing.T) 
 		t.Fatalf("unproven Resume lost: found=%v command=%#v err=%v", found, persisted, err)
 	}
 	if err := reopened.RecoverPhase4Attempts(ctx, resolver); err != nil { t.Fatal(err) }
+	if err := reopened.SyncAttemptSchedulesPolicy(ctx, true, time.Now().UTC()); err != nil { t.Fatal(err) }
 	if due, err := reopened.DueAttemptSchedules(ctx, reset.Add(2*time.Hour)); err != nil || len(due) != 0 {
 		t.Fatalf("uncertain Resume became due: schedules=%#v err=%v", due, err)
 	}

@@ -338,7 +338,9 @@ func (s *Store) MarkNodeConnected(ctx context.Context, node NodeReference, inven
 		return err
 	}
 	now := s.now()
-	result, err := s.db.ExecContext(ctx, `UPDATE phase4_nodes SET online = 1, last_seen_at = ?, inventory_json = ? WHERE node_ref = ? AND revoked = 0`, timestamp(now), string(encoded), node)
+	// A new socket is not proof that previously heartbeated Attempts are
+	// still running. Require a fresh heartbeat before trusting its inventory.
+	result, err := s.db.ExecContext(ctx, `UPDATE phase4_nodes SET online = 1, last_seen_at = ?, last_heartbeat_at = '', active_attempts_json = '[]', capacity = 0, inventory_json = ? WHERE node_ref = ? AND revoked = 0`, timestamp(now), string(encoded), node)
 	if err != nil {
 		return err
 	}
