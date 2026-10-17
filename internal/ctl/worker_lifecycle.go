@@ -423,8 +423,26 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 		return core.WorkerDetails{}, errors.New("worker: intent is required")
 	}
 	preferences := request.Preferences
-	if preferences == (WorkerPreferences{}) {
-		preferences = WorkerPreferences{ProjectID: request.ProjectID, NodeID: request.NodeID, HarnessInstance: request.HarnessInstance, HarnessKind: request.HarnessKind, Workspace: request.Workspace, ModelID: request.ModelID, Reasoning: request.Reasoning}
+	if preferences.ProjectID == "" {
+		preferences.ProjectID = request.ProjectID
+	}
+	if preferences.NodeID == "" {
+		preferences.NodeID = request.NodeID
+	}
+	if preferences.HarnessInstance == "" {
+		preferences.HarnessInstance = request.HarnessInstance
+	}
+	if preferences.HarnessKind == "" {
+		preferences.HarnessKind = request.HarnessKind
+	}
+	if preferences.Workspace == "" {
+		preferences.Workspace = request.Workspace
+	}
+	if preferences.ModelID == "" {
+		preferences.ModelID = request.ModelID
+	}
+	if preferences.Reasoning == "" {
+		preferences.Reasoning = request.Reasoning
 	}
 	resolutionRequest := core.DispatchResolutionRequest{ProjectID: preferences.ProjectID, NodeID: preferences.NodeID, HarnessInstanceID: preferences.HarnessInstance,
 		HarnessKind: preferences.HarnessKind, Workspace: preferences.Workspace, ModelID: preferences.ModelID,
