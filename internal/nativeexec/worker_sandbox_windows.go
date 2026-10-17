@@ -157,6 +157,7 @@ func applyWorkerSandbox(policy WorkerSandbox, cmd *exec.Cmd) error {
 	if len(cmd.Args) < 2 { return errors.New("worker sandbox: missing launch specification") }
 	spec := cmd.Args[len(cmd.Args)-1]
 	cmd.Args = cmd.Args[:len(cmd.Args)-1]
+	cmd.Env = windowsWorkerProfileEnvironment(cmd.Env, workerHome)
 	cmd.Env = append(cmd.Env,
 		"SECRETARY_WORKER_LAUNCH_SPEC="+spec,
 		"SECRETARY_WORKER_USERNAME="+username,

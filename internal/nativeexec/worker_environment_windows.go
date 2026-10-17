@@ -13,7 +13,14 @@ import (
 // profiles, never the trusted Node account's user profile paths.
 func workerPlatformEnvironment(_ context.Context, entries []string) []string {
 	home := strings.TrimSpace(os.Getenv("SECRETARY_WORKER_HOME"))
-	if home == "" { return entries } // Startup validates account-specific HOME.
+	return windowsWorkerProfileEnvironment(entries,home)
+}
+
+// The trusted proxy and the different-SID native process must use the
+// provisioned Worker home even when it was loaded from private Node JSON
+// instead of exported SECRETARY_WORKER_HOME.
+func windowsWorkerProfileEnvironment(entries []string, home string) []string {
+	if home == "" { return entries }
 	out := make([]string, 0, len(entries)+6)
 	for _, entry := range entries {
 		key, _, _ := strings.Cut(entry, "=")

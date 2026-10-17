@@ -156,4 +156,15 @@ func TestT09WindowsPersistedAccountConfigWithoutEnvironment(t *testing.T) {
 	t.Setenv("SECRETARY_WORKER_HOME","")
 	t.Setenv("SECRETARY_WORKER_DOMAIN","")
 	if err:=PreflightWorkerSandbox(protected);err!=nil{t.Fatalf("persisted Worker account preflight/dispatch failed: %v",err)}
+	ctx:=WithWorkerSandbox(context.Background(),WorkerSandbox{ProtectedDir:protected,Workspace:home})
+	script:="[Console]::WriteLine($env:USERPROFILE)"
+	units:=utf16.Encode([]rune(script))
+	payload:=make([]byte,0,2*len(units))
+	for _,u:=range units{payload=append(payload,byte(u),byte(u>>8))}
+	cmd,err:=CommandContext(ctx,"powershell.exe","-NoProfile","-NonInteractive","-EncodedCommand",base64.StdEncoding.EncodeToString(payload))
+	if err!=nil{t.Fatal(err)}
+	out,err:=cmd.CombinedOutput()
+	if err!=nil||!strings.Contains(strings.ToLower(string(out)),strings.ToLower(home)){
+		t.Fatalf("persisted Worker config failed to isolate USERPROFILE: %v %s",err,out)
+	}
 }
