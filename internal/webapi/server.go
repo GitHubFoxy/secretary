@@ -65,6 +65,8 @@ type TelegramPairingService interface {
 }
 
 type Server struct {
+	videoOptions VideoOptions
+	videoProcessor VideoProcessor
 	store                           *core.Store
 	bootstrapToken                  string
 	internalCredential              string
@@ -150,7 +152,9 @@ func New(ctx context.Context, store *core.Store, bootstrapToken string) (*Server
 	}
 	server := &Server{store: store, bootstrapToken: bootstrapToken, owner: owner, workerStates: make(map[string]string), subscribers: make(map[*subscription]struct{}), streams: make(map[string]map[*activeStream]struct{})}
 	store.SetEntryObserver(server.publishEntry)
-	return server, nil
+	server.videoOptions=VideoOptions{}.Defaults()
+	if err:=server.recoverVideoJobs(ctx);err!=nil {return nil,err}
+	return server,nil
 }
 
 func (s *Server) AttachNode(local *node.LocalNode)              { s.node = local }

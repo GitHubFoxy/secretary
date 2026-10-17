@@ -2,6 +2,7 @@ package webapi
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -23,7 +24,7 @@ var artifactExtensions = map[string]bool{
 	".doc": true, ".docx": true, ".xls": true, ".xlsx": true,
 	".ppt": true, ".pptx": true, ".odt": true, ".ods": true,
 	".rtf": true, ".zip": true, ".png": true, ".jpg": true,
-	".jpeg": true, ".webp": true,
+	".jpeg": true, ".webp": true, ".mp4": true, ".webm": true, ".mov": true,
 }
 
 func artifactNameValid(name string) bool {
@@ -46,7 +47,7 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 	name := strings.TrimSpace(r.URL.Query().Get("name"))
 	if !artifactNameValid(name) {
-		http.Error(w, "Unsupported file type or invalid filename. Allowed: documents, text, images, ZIP (max 8 MiB).", http.StatusUnsupportedMediaType)
+		http.Error(w, "Unsupported file type or invalid filename. Allowed: documents, text, images, MP4/WebM/MOV video, ZIP (max 8 MiB).", http.StatusUnsupportedMediaType)
 		return
 	}
 	key := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
@@ -77,6 +78,9 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 		}
 		mediaType = validated.MediaType
 	}
+	if ext:=strings.ToLower(filepath.Ext(name));ext==".mp4"||ext==".webm"||ext==".mov" {
+		mediaType=map[string]string{".mp4":"video/mp4",".webm":"video/webm",".mov":"video/quicktime"}[ext]
+	}
 	if mediaType == "" {
 		mediaType = "application/octet-stream"
 	}
@@ -88,6 +92,14 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, "Could not save uploaded original", http.StatusInternalServerError)
 		return
+	}
+	if strings.HasPrefix(mediaType,"video/") {
+		options:=s.videoOptions.Defaults()
+		job,videoErr:=s.store.RegisterVideo(r.Context(),conversation.PersonID,artifact.ID,options.FPS,options.MaxFrames,options.MaxDurationSeconds,options.TimeoutSeconds)
+		if videoErr!=nil {http.Error(w,"Could not register video processing",http.StatusInternalServerError);return}
+		if !duplicate && job.Status=="processing" {go s.processVideo(job)}
+		artifact,_,videoErr=s.store.ArtifactForPerson(r.Context(),conversation.PersonID,artifact.ID)
+		if videoErr!=nil {http.Error(w,"Could not read video processing status",http.StatusInternalServerError);return}
 	}
 	status := http.StatusCreated
 	if duplicate {
@@ -145,6 +157,14 @@ func (s *Server) artifactRoute(w http.ResponseWriter, r *http.Request) {
 	if !byNode && r.URL.Query().Get("download") != "1" {
 		writeJSON(w, http.StatusOK, artifact)
 		return
+	}
+	if byNode && strings.HasPrefix(artifact.MediaType,"video/") {
+		w.Header().Set("X-Artifact-Video-Status",artifact.ProcessingStatus)
+		if artifact.ProcessingStatus=="failed" {w.Header().Set("X-Artifact-Video-Error",artifact.ProcessingError)}
+		if artifact.ProcessingStatus=="ready" {
+			frames,_:=json.Marshal(artifact.VideoFrames)
+			w.Header().Set("X-Artifact-Video-Frames",base64.RawURLEncoding.EncodeToString(frames))
+		}
 	}
 	w.Header().Set("Content-Type", artifact.MediaType)
 	w.Header().Set("Content-Length", fmt.Sprint(artifact.Size))

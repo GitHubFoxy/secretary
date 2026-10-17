@@ -185,6 +185,7 @@ func main() {
 		log.Fatalf("initialize web API: %v", err)
 	}
 	web.AttachWorkerObserverPreference(func() bool { return profiles.Snapshot().Config.WorkerObserver.ShowToolActivity })
+	if err:=web.AttachVideoOptions(webapi.VideoOptions{FPS:profiles.Snapshot().Config.Video.FPS,MaxDurationSeconds:profiles.Snapshot().Config.Video.MaxDurationSeconds,MaxFrames:profiles.Snapshot().Config.Video.MaxFrames,TimeoutSeconds:profiles.Snapshot().Config.Video.TimeoutSeconds});err!=nil {log.Fatalf("configure video processing: %v",err)}
 	web.SetDebug(*debug)
 	web.AttachUserDocument(filepath.Join(*dataDir, "user.md"))
 	web.AttachDiagnosticLogDir(filepath.Join(*dataDir, "logs", "acp"))
