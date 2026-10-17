@@ -62,23 +62,30 @@ func TestT11DurableImageIngestionDoesNotBlockFollowingDMText(t *testing.T) {
 	path:=filepath.Join(t.TempDir(),"telegram-state.json")
 	tr:=&t11BlockedDownload{fakeTransport:&fakeTransport{},entered:make(chan struct{}),unblock:make(chan struct{}),data:t11PNG(t)}
 	srv:=&t11SignalServer{delivered:make(chan string,4)}
+	group:=int64(-200)
 	newAdapter:=func()*Adapter{
 		t.Helper()
-		a,err:=New(Config{StatePath:path,OwnerChatID:100},tr,srv)
+		a,err:=New(Config{StatePath:path,OwnerChatID:100,GroupChatID:&group},tr,srv)
 		if err!=nil {t.Fatal(err)}
 		return a
 	}
 	a:=newAdapter()
+	a.mu.Lock()
+	a.state.GroupChat=group
+	a.state.OwnerUser=100
+	err:=a.saveLocked()
+	a.mu.Unlock()
+	if err!=nil {t.Fatal(err)}
 	photo:=t11Update(800,100,0)
 	if err:=a.HandleUpdate(context.Background(),photo);err!=nil {t.Fatal(err)}
 	select {case <-tr.entered:case <-time.After(2*time.Second):t.Fatal("image download did not start")}
-	text:=Update{ID:801,Message:&Message{ChatID:100,FromID:100,MessageID:801,Text:"independent text while image downloads"}}
+	text:=Update{ID:801,Message:&Message{ChatID:group,FromID:100,MessageID:801,Text:"independent text in another authorized chat"}}
 	if err:=a.HandleUpdate(context.Background(),text);err!=nil {t.Fatal(err)}
 	select {
 	case body:=<-srv.delivered:
 		if body!=text.Message.Text {t.Fatalf("text overtaken by blocked image: %q",body)}
 	case <-time.After(time.Second):
-		t.Fatal("dependent lane blocked unrelated text while Bot API was slow")
+		t.Fatal("unrelated chat was blocked while Bot API was slow")
 	}
 	a.mu.Lock()
 	queued:=len(a.state.PendingImages)
@@ -198,4 +205,138 @@ func TestT11RestartDrainsPersistedImageWithoutReplayingUpdate(t *testing.T) {
 	srv.mu.Lock()
 	defer srv.mu.Unlock()
 	if srv.images!=1 || len(srv.texts)!=1 {t.Fatalf("recovery duplicated source or inbound: %+v",srv)}
+}
+
+
+func TestT11GetFilePermanent400WarnsOnceAndUnblocksNextImage(t *testing.T) {
+	var mu sync.Mutex
+	noticeCount, firstGetFile, secondGetFile := 0, 0, 0
+	png := t11PNG(t)
+	bot:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+		switch r.URL.Path {
+		case "/botTOKEN/getFile":
+			_ = r.ParseForm()
+			switch r.Form.Get("file_id") {
+			case "too-large":
+				mu.Lock();firstGetFile++;mu.Unlock()
+				w.WriteHeader(http.StatusBadRequest)
+				_,_=fmt.Fprint(w,`{"ok":false,"error_code":400,"description":"Bad Request: file is too big"}`)
+			case "valid":
+				mu.Lock();secondGetFile++;mu.Unlock()
+				_,_=fmt.Fprint(w,`{"ok":true,"result":{"file_path":"second.png","file_size":0}}`)
+			default:
+				t.Errorf("unexpected file_id: %s",r.Form.Get("file_id"))
+			}
+		case "/file/botTOKEN/second.png":
+			_,_=w.Write(png)
+		case "/botTOKEN/sendMessage":
+			mu.Lock();noticeCount++;mu.Unlock()
+			_,_=fmt.Fprint(w,`{"ok":true,"result":true}`)
+		case "/botTOKEN/sendChatAction":
+			_,_=fmt.Fprint(w,`{"ok":true,"result":true}`)
+		default:
+			t.Errorf("unexpected Bot API method: %s",r.URL.Path)
+			http.NotFound(w,r)
+		}
+	}))
+	defer bot.Close()
+	client:=&BotAPITransport{BaseURL:bot.URL,BotToken:"TOKEN"}
+	server:=&t11SignalServer{delivered:make(chan string,4)}
+	a,err:=New(Config{StatePath:filepath.Join(t.TempDir(),"state.json"),OwnerChatID:100},client,server)
+	if err!=nil {t.Fatal(err)}
+	bad:=t11Update(1200,100,0)
+	bad.Message.Image.FileSize=0
+	bad.Message.Image.FileID="too-large"
+	good:=t11Update(1201,100,0)
+	good.Message.Image.FileSize=0
+	good.Message.Image.FileID="valid"
+	if err:=a.HandleUpdate(context.Background(),bad);err!=nil {t.Fatal(err)}
+	if err:=a.HandleUpdate(context.Background(),good);err!=nil {t.Fatal(err)}
+	a.imageWG.Wait()
+	if err:=a.HandleUpdate(context.Background(),bad);err!=nil {t.Fatal(err)}
+	a.imageWG.Wait()
+	mu.Lock()
+	badCount,goodCount,warnings:=firstGetFile,secondGetFile,noticeCount
+	mu.Unlock()
+	if badCount!=1 || goodCount!=1 || warnings!=1 {t.Fatalf("getFile 400 was retried or blocked next image: bad=%d good=%d notices=%d",badCount,goodCount,warnings)}
+	select {
+	case body:=<-server.delivered:
+		if !strings.Contains(body,"update 1201") {t.Fatalf("wrong image delivered: %q",body)}
+	default:
+		t.Fatal("image after permanent getFile rejection never delivered")
+	}
+	a.mu.Lock()
+	pending:=len(a.state.PendingImages)
+	a.mu.Unlock()
+	if pending!=0 {t.Fatalf("permanent rejection blocked image lane: %d",pending)}
+}
+
+func TestT11RebindDiscardsQueuedImagesAcrossRestart(t *testing.T) {
+	path:=filepath.Join(t.TempDir(),"state.json")
+	transport:=&t11Transport{fakeTransport:&fakeTransport{},data:t11PNG(t)}
+	server:=&t11SignalServer{delivered:make(chan string,2)}
+	old,err:=New(Config{StatePath:path,OwnerChatID:100},transport,server)
+	if err!=nil {t.Fatal(err)}
+	oldPhoto:=t11Update(1300,100,0)
+	old.mu.Lock()
+	old.state.PendingImages=append(old.state.PendingImages,oldPhoto)
+	old.state.Processed[fmt.Sprint(oldPhoto.ID)]=old.now()
+	err=old.saveLocked()
+	old.mu.Unlock()
+	if err!=nil {t.Fatal(err)}
+	if err:=Rebind(path,200,"private-to-forum",0);err!=nil {t.Fatal(err)}
+	next,err:=New(Config{StatePath:path,OwnerChatID:200},transport,server)
+	if err!=nil {t.Fatal(err)}
+	next.mu.Lock()
+	if n:=len(next.state.PendingImages);n!=0 {t.Fatalf("Rebind left previous owner's images queued: %d",n)}
+	// A stale/corrupt state file must also fail closed after a restart.
+	next.state.PendingImages=append(next.state.PendingImages,oldPhoto)
+	err=next.saveLocked()
+	next.mu.Unlock()
+	if err!=nil {t.Fatal(err)}
+	restarted,err:=New(Config{StatePath:path,OwnerChatID:200},transport,server)
+	if err!=nil {t.Fatal(err)}
+	if err:=restarted.PollOnce(context.Background());err!=nil {t.Fatal(err)}
+	restarted.imageWG.Wait()
+	server.mu.Lock()
+	calls:=server.images
+	server.mu.Unlock()
+	if transport.downloads!=0 || calls!=0 {t.Fatalf("previous owner's photo leaked: downloads=%d uploads=%d",transport.downloads,calls)}
+	restarted.mu.Lock()
+	pending:=len(restarted.state.PendingImages)
+	restarted.mu.Unlock()
+	if pending!=0 {t.Fatalf("unauthorized queued image not removed: %d",pending)}
+}
+
+func TestT11PhotoBeforeQuestionKeepsCausalOrderInSameConversation(t *testing.T) {
+	ctx,cancel:=context.WithTimeout(context.Background(),5*time.Second)
+	defer cancel()
+	download:=&t11BlockedDownload{fakeTransport:&fakeTransport{},entered:make(chan struct{}),unblock:make(chan struct{}),data:t11PNG(t)}
+	server:=&t11SignalServer{delivered:make(chan string,3)}
+	a,err:=New(Config{StatePath:filepath.Join(t.TempDir(),"state.json"),OwnerChatID:100},download,server)
+	if err!=nil {t.Fatal(err)}
+	photo:=t11Update(1400,100,0)
+	question:=Update{ID:1401,Message:&Message{ChatID:100,FromID:100,MessageID:1401,Text:"Что изображено?"}}
+	if err:=a.HandleUpdate(ctx,photo);err!=nil {t.Fatal(err)}
+	select {case <-download.entered:case <-ctx.Done():t.Fatal("slow download not reached")}
+	// Processing a dependent message must checkpoint it without blocking
+	// the handler, but must NOT dispatch it before the image.
+	done:=make(chan error,1)
+	go func(){done<-a.HandleUpdate(ctx,question)}()
+	select{case err:=<-done:if err!=nil {t.Fatal(err)}
+	case <-time.After(time.Second):t.Fatal("dependent input was not durably parked")}
+	select{case body:=<-server.delivered:t.Fatalf("question overtook its image: %q",body)
+	default:}
+	a.mu.Lock()
+	pendingInputs,pendingImages:=len(a.state.PendingInputs),len(a.state.PendingImages)
+	a.mu.Unlock()
+	if pendingInputs!=1 || pendingImages!=1 {t.Fatalf("dependency was not persisted: inputs=%d images=%d",pendingInputs,pendingImages)}
+	close(download.unblock)
+	a.imageWG.Wait()
+	select{case body:=<-server.delivered:
+		if !strings.Contains(body,"artifact://art_t11_async") {t.Fatalf("image wasn't first: %q",body)}
+	case <-ctx.Done():t.Fatal("image never delivered")}
+	select{case body:=<-server.delivered:
+		if body!="Что изображено?" {t.Fatalf("question was lost/reordered: %q",body)}
+	case <-ctx.Done():t.Fatal("dependent question never released")}
 }

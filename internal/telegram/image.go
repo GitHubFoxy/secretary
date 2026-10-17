@@ -75,9 +75,8 @@ func (a *Adapter) imageAuthorized(u Update) bool {
 		if !known {
 			return false
 		}
-		if u.WorkerRequestID != nil && mapping.PendingRequestID != *u.WorkerRequestID {
-			// An old request reference must not be delivered to a different
-			// needs_input prompt after a topic was rebound.
+		if u.ImageWorkerRef != "" && mapping.WorkerRef != u.ImageWorkerRef {
+			// Do not deliver a previously queued image into a reused topic.
 			return false
 		}
 	}
@@ -174,7 +173,20 @@ func (a *Adapter) deliverImageUpdate(ctx context.Context, u Update, allowed bool
 	copyMessage.Image = nil
 	copyMessage.Text = prompt
 	u.Message = &copyMessage
-	return a.deliverTextUpdate(ctx, u, allowed, u.WorkerRequestID)
+	request := u.WorkerRequestID
+	if m.ThreadID != 0 && m.ThreadID != 1 {
+		a.mu.Lock()
+		mapping, exists := a.mappingForThreadLocked(m.ChatID, m.ThreadID)
+		a.mu.Unlock()
+		if !exists || (u.ImageWorkerRef != "" && mapping.WorkerRef != u.ImageWorkerRef) {
+			return nil
+		}
+		if request == nil || *request != mapping.PendingRequestID {
+			current := mapping.PendingRequestID
+			request = &current
+		}
+	}
+	return a.deliverTextUpdate(ctx, u, allowed, request)
 }
 
 func (a *Adapter) queueImageUpdate(u Update, allowed bool) error {
@@ -190,6 +202,7 @@ func (a *Adapter) queueImageUpdate(u Update, allowed bool) error {
 		}
 		requestID := mapping.PendingRequestID
 		u.WorkerRequestID = &requestID
+		u.ImageWorkerRef = mapping.WorkerRef
 	}
 	for _, queued := range a.state.PendingImages {
 		if queued.ID == u.ID {

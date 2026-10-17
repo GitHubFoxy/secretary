@@ -31,6 +31,7 @@ var (
 type Update struct {
 	ID              int64    `json:"update_id"`
 	WorkerRequestID *string  `json:"worker_request_id,omitempty"`
+	ImageWorkerRef string   `json:"image_worker_ref,omitempty"`
 	Message         *Message `json:"message,omitempty"`
 }
 
