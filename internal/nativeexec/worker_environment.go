@@ -3,6 +3,7 @@ package nativeexec
 import (
  "context"
  "os"
+ "runtime"
  "strings"
 )
 
@@ -18,6 +19,11 @@ func SecureWorkerEnvironment(ctx context.Context, entries []string) []string {
   // The trusted Node may be co-located with secretaryd. Do not inherit
   // any Server/Node token, bootstrap credential, transport key or password.
   // Only explicit, Worker-authorized MCP configuration crosses the boundary.
+  case runtime.GOOS == "windows" && strings.HasPrefix(name,"SECRETARY_WORKER_"):
+    // Only the trusted Windows launcher receives its OS-logon inputs;
+    // CreateProcessWithLogonW starts a separate SID with a fresh, filtered
+    // environment. Never pass these fields to that native child.
+    result = append(result,entry)
   case strings.HasPrefix(name,"SECRETARY_") &&
        name != "SECRETARY_ARTIFACT_BROKER_URL" &&
        !strings.HasPrefix(name,"SECRETARY_CLAUDE_MCP_"):
