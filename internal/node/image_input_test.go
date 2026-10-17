@@ -92,3 +92,40 @@ func TestT10ACPActualSubprocessImagePayload(t *testing.T) {
 	original, err := base64.StdEncoding.DecodeString(received.Prompt[1]["data"])
 	if err != nil || !bytes.Equal(original, picture) { t.Fatalf("native ACP process did not receive exact image bytes: %v",err) }
 }
+
+func TestT10ClaudeActualSubprocessImagePayload(t *testing.T) {
+	launcher := filepath.Join(t.TempDir(), "claude")
+	script := "#!/bin/sh\nexec \"$CLAUDE_TEST_BINARY\" -test.run=TestFakeClaudeInteractiveProcess\n"
+	if err := os.WriteFile(launcher, []byte(script), 0o700); err != nil { t.Fatal(err) }
+	record := filepath.Join(t.TempDir(), "claude-image.json")
+	picture := t10PNG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	runtime := ClaudeCodeRuntime{Command: launcher, Environment: []string{"CLAUDE_TEST_BINARY=" + os.Args[0], "CLAUDE_IMAGE_RECORD=" + record}}
+	session, err := runtime.Start(ctx, StartRequest{WorkerRef: "visual-claude", Workspace: t.TempDir(), Task: "What is in this picture?", Images: []ImageInput{{MediaType: "image/png", Data: picture}}})
+	if err != nil { t.Fatal(err) }
+	defer session.Close()
+	var raw []byte
+	for {
+		raw, err = os.ReadFile(record)
+		if err == nil { break }
+		select { case <-ctx.Done(): t.Fatalf("Claude subprocess did not receive image: %v",ctx.Err()); case <-time.After(10*time.Millisecond): }
+	}
+	var received struct {
+		Message struct { Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+			Source struct {
+				Type string `json:"type"`
+				MediaType string `json:"media_type"`
+				Data string `json:"data"`
+			} `json:"source"`
+		} `json:"content"` } `json:"message"`
+	}
+	if err := json.Unmarshal(raw, &received); err != nil { t.Fatal(err) }
+	if len(received.Message.Content) != 2 || received.Message.Content[0].Text != "What is in this picture?" || received.Message.Content[1].Type != "image" || received.Message.Content[1].Source.MediaType != "image/png" || received.Message.Content[1].Source.Type != "base64" {
+		t.Fatalf("Claude multimodal wire payload = %#v", received)
+	}
+	original, err := base64.StdEncoding.DecodeString(received.Message.Content[1].Source.Data)
+	if err != nil || !bytes.Equal(original, picture) { t.Fatalf("Claude process did not receive image bytes: %v", err) }
+}
