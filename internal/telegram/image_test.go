@@ -70,6 +70,7 @@ func TestT11PhotoPreservesCaptionAndReplayAcrossRestart(t *testing.T) {
 	adapter:=open()
 	update:=t11Update(50,100,0)
 	if err:=adapter.HandleUpdate(context.Background(),update);err!=nil {t.Fatal(err)}
+	adapter.imageWG.Wait()
 	if server.uploads!=1 || transport.downloads!=1 || len(server.messages)!=1 {t.Fatalf("uploads=%d downloads=%d messages=%+v",server.uploads,transport.downloads,server.messages)}
 	body:=server.messages[0].Body
 	if !strings.Contains(body,"What is in the picture?") || !strings.Contains(body,"artifact://art_t11_fixture") || !strings.Contains(body,"update 50, chat 100, message 9, file_unique_id unique-image") {t.Fatalf("image/caption/source missing: %q",body)}
@@ -97,6 +98,7 @@ func TestT11OwnerAuthorizationTopicRoutingAndWarnings(t *testing.T) {
 	if transport.downloads!=0 {t.Fatal("unauthorized sender downloaded image")}
 	update=t11Update(53,group,77)
 	if err:=a.HandleUpdate(context.Background(),update);err!=nil {t.Fatal(err)}
+	a.imageWG.Wait()
 	if len(server.workers)!=1 || server.workers[0].WorkerRef!="worker-t11" || server.workers[0].RequestID!="request-t11" || !strings.Contains(server.workers[0].Text,"artifact://art_t11_fixture") {t.Fatalf("topic did not receive image: %+v",server.workers)}
 	update=t11Update(54,group,77)
 	update.Message.Image.FileSize=9<<20
@@ -104,10 +106,12 @@ func TestT11OwnerAuthorizationTopicRoutingAndWarnings(t *testing.T) {
 	update=t11Update(55,group,77)
 	update.Message.Image.FileName="unhandled.svg"
 	if err:=a.HandleUpdate(context.Background(),update);err!=nil {t.Fatal(err)}
+	a.imageWG.Wait()
 	if len(transport.sent)!=2 || transport.downloads!=1 || server.uploads!=1 {t.Fatalf("warnings not isolated: sent=%+v downloads=%d uploads=%d",transport.sent,transport.downloads,server.uploads)}
 	server.reject=&ImageSourceRejection{Reason:"image: corrupt JPEG"}
 	update=t11Update(56,group,77)
 	if err:=a.HandleUpdate(context.Background(),update);err!=nil {t.Fatal(err)}
+	a.imageWG.Wait()
 	if len(server.workers)!=1 || len(transport.sent)!=3 || !strings.Contains(transport.sent[2].Text,"corrupt JPEG") {t.Fatal("invalid image fell through into text-only Worker")}
 }
 

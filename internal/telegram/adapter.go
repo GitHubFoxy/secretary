@@ -1157,6 +1157,7 @@ func (a *Adapter) updateWorkerTyping(event Event, mapping TopicMapping) error {
 }
 
 func (a *Adapter) PollOnce(ctx context.Context) error {
+	a.startImageWorkers(ctx)
 	if err := a.pollInputs(ctx); err != nil {
 		return err
 	}

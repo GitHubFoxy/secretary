@@ -162,10 +162,16 @@ func TestT11RealTelegramBotAPIAdapterServerRemoteNodeAndTopic(t *testing.T) {
 	if err:=adapter.HandleUpdate(ctx,inbound[0]);err!=nil {t.Fatal(err)}
 	conversation,err:=store.ConversationForPerson(ctx,api.OwnerID())
 	if err!=nil {t.Fatal(err)}
-	entries,err:=store.EntriesTail(ctx,conversation.ID,0,30)
-	if err!=nil {t.Fatal(err)}
+	var entries []core.ConversationEntry
 	var entry core.ConversationEntry
-	for _,v:=range entries {if strings.Contains(v.Body,"update 500, chat 100, message 51") {entry=v;break}}
+	for entry.ID == "" {
+		entries,err=store.EntriesTail(ctx,conversation.ID,0,30)
+		if err!=nil {t.Fatal(err)}
+		for _,v:=range entries {if strings.Contains(v.Body,"update 500, chat 100, message 51") {entry=v;break}}
+		if entry.ID!="" {break}
+		select {case <-ctx.Done():t.Fatalf("Telegram image was not persisted: %v",ctx.Err())
+		case <-time.After(10*time.Millisecond):}
+	}
 	if entry.ID=="" || !strings.Contains(entry.Body,"What is in the picture?") || !strings.Contains(entry.Body,"artifact://art_") {t.Fatalf("Telegram image did not reach canonical conversation: %+v",entries)}
 	secretaryID,err:=store.EnsureSecretaryIdentity(ctx,api.OwnerID(),conversation.ID)
 	if err!=nil {t.Fatal(err)}
