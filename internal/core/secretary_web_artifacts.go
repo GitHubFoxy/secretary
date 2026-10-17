@@ -22,7 +22,7 @@ func (s *Store) SecretaryWebInput(ctx context.Context, personID, turnID, inputID
 	if turnID == "" {
 		err = s.db.QueryRowContext(ctx, lookup, personID).Scan(&originalInput, &actualInputID, &entryID)
 	} else {
-		err = s.db.QueryRowContext(ctx, lookup, personID, turnID).Scan(&body, &actualInputID, &entryID)
+		err = s.db.QueryRowContext(ctx, lookup, personID, turnID).Scan(&originalInput, &actualInputID, &entryID)
 	}
 	if errors.Is(err, sql.ErrNoRows) {
 		if turnID != "" { return "", ErrNotFound }
