@@ -180,7 +180,7 @@ func ExplicitMemoryRequest(input string) bool {
 		}
 	}
 	for _, prefix := range []string{
-		"запомни ", "запиши в память ", "сохрани в память ", "сохрани как предпочтение ",
+		"запомни ", "запомни,", "запиши в память ", "сохрани в память ", "сохрани как предпочтение ",
 		"на будущее запомни ", "хочу, чтобы ты запомнил ", "я хочу, чтобы ты запомнил ",
 		"remember ", "please remember ", "save to memory ", "save in memory ",
 		"can you remember ", "could you remember ", "remember that ",
