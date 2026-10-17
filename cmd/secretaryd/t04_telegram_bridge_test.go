@@ -187,6 +187,11 @@ func TestT04LinkGroupRestoresPreexistingWorkersFromServerAndRoutesTopics(t *test
 	if err := adapter.HandleUpdate(ctx, link); err != nil {
 		t.Fatal(err)
 	}
+	// /linkgroup commits the forum link without waiting on Telegram forum
+	// permissions; in production the independent Run loop does this sync.
+	if err := adapter.SyncWorkerTopics(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if transport.topicCalls != 1 {
 		t.Fatalf("existing Worker Topic not restored at link: calls=%d", transport.topicCalls)
 	}
@@ -237,8 +242,11 @@ func TestT04TopicRecoveryRetriesAfterFailedLinkAndRestart(t *testing.T) {
 	}
 	a := newAdapter()
 	err = a.HandleUpdate(ctx, telegram.Update{ID: 99, Message: &telegram.Message{ChatID: -200, ChatType: "supergroup", IsForum: true, FromID: 100, Text: "/linkgroup"}})
-	if err == nil {
-		t.Fatal("expected transient createForumTopic failure")
+	if err != nil {
+		t.Fatalf("link should persist despite unavailable forum: %v", err)
+	}
+	if err := a.SyncWorkerTopics(ctx); err == nil {
+		t.Fatal("expected transient createForumTopic failure on independent sync")
 	}
 	transport.failTopics = false
 	a = newAdapter()
