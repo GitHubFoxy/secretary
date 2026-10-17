@@ -43,6 +43,26 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	if bwrap == "" {
 		return "", nil, errors.New("worker sandbox: trusted bubblewrap is required (no unsandboxed fallback)")
 	}
+	// An isolated OpenCode install keeps its model/provider store under Node
+	// data. Remount only the explicitly selected native store, never the Node
+	// parent directory that contains identity.json and node-state.json.
+	var nativeStore string
+	if policy.WritableDataHome != "" {
+		nativeStore, err = filepath.EvalSymlinks(policy.WritableDataHome)
+		if err != nil { return "", nil, fmt.Errorf("worker sandbox: OpenCode data home unavailable: %w", err) }
+		nativeStore, err = filepath.Abs(nativeStore)
+		if err != nil { return "", nil, err }
+		if nativeStore == protected || nativeStore == workspace ||
+			strings.HasPrefix(protected, nativeStore+string(filepath.Separator)) ||
+			strings.HasPrefix(workspace, nativeStore+string(filepath.Separator)) ||
+			strings.HasPrefix(nativeStore, workspace+string(filepath.Separator)) {
+			return "", nil, errors.New("worker sandbox: unsafe OpenCode writable data home")
+		}
+		stat, statErr := os.Stat(nativeStore)
+		if statErr != nil || !stat.IsDir() {
+			return "", nil, errors.New("worker sandbox: OpenCode data home is unavailable")
+		}
+	}
 	wrapped := []string{
 		"--die-with-parent", "--new-session",
 		"--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
@@ -53,6 +73,13 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 		"--bind", workspace, workspace,
 		"--chdir", workspace,
 		"--", command,
+	}
+	if nativeStore != "" {
+		// This exact, trusted model store stays writable even if its parent
+		// private Node directory is masked by tmpfs.
+		wrapped = append(wrapped[:len(wrapped)-2],
+			"--bind", nativeStore, nativeStore, "--chdir", workspace,
+			"--", command)
 	}
 	return bwrap, append(wrapped, args...), nil
 }

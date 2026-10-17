@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/beruseruko/secretary/internal/nativeexec"
 )
 
 type OpenCodeRuntime struct {
@@ -32,7 +34,7 @@ func (r OpenCodeRuntime) Start(ctx context.Context, request StartRequest) (Sessi
 		return nil, err
 	}
 	request.MCPServers = nil
-	return prepared.Start(ctx, request)
+	return prepared.Start(nativeexec.WithWorkerWritableDataHome(ctx, r.DataHome), request)
 }
 
 func (r OpenCodeRuntime) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
@@ -46,7 +48,7 @@ func (r OpenCodeRuntime) Resume(ctx context.Context, request StartRequest, runti
 		return nil, err
 	}
 	request.MCPServers = nil
-	return prepared.Resume(ctx, request, runtimeSessionID)
+	return prepared.Resume(nativeexec.WithWorkerWritableDataHome(ctx, r.DataHome), request, runtimeSessionID)
 }
 
 func (r OpenCodeRuntime) prepare(request StartRequest) (ACPRuntime, error) {
