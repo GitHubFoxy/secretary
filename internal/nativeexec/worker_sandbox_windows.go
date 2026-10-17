@@ -75,7 +75,7 @@ func applyWorkerSandbox(policy WorkerSandbox, cmd *exec.Cmd) error {
 	// process. A world-readable identity/state directory is a hard error.
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	if err := windows.ImpersonateLoggedOnUser(token); err != nil { return err }
+	if err := impersonateWorkerToken(token); err != nil { return err }
 	var guardErr error
 	if handle, readErr := os.Open(policy.ProtectedDir); readErr == nil {
 		_ = handle.Close()
@@ -104,7 +104,7 @@ func applyWorkerSandbox(policy WorkerSandbox, cmd *exec.Cmd) error {
 			guardErr = fmt.Errorf("worker sandbox: Worker account cannot access assigned workspace: %w", workspaceErr)
 		} else { _ = fd.Close() }
 	}
-	if err := windows.RevertToSelf(); err != nil { return err }
+	if err := revertWorkerToken(); err != nil { return err }
 	if guardErr != nil { return guardErr }
 	if cmd.SysProcAttr == nil { cmd.SysProcAttr = &syscall.SysProcAttr{} }
 	cmd.SysProcAttr.Token = syscall.Token(token)
@@ -130,4 +130,24 @@ func logonWindowsWorker(username, domain, password string) (windows.Token, error
 		return 0, errors.New("Windows Worker logon rejected")
 	}
 	return windows.Token(token), nil
+}
+
+func impersonateWorkerToken(token windows.Token) error {
+	fn := syscall.NewLazyDLL("advapi32.dll").NewProc("ImpersonateLoggedOnUser")
+	ok, _, callErr := fn.Call(uintptr(token))
+	if ok == 0 {
+		if callErr != syscall.Errno(0) { return callErr }
+		return errors.New("worker sandbox: Windows impersonation denied")
+	}
+	return nil
+}
+
+func revertWorkerToken() error {
+	fn := syscall.NewLazyDLL("advapi32.dll").NewProc("RevertToSelf")
+	ok, _, callErr := fn.Call()
+	if ok == 0 {
+		if callErr != syscall.Errno(0) { return callErr }
+		return errors.New("worker sandbox: Windows revert impersonation failed")
+	}
+	return nil
 }
