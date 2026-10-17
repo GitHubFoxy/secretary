@@ -12,12 +12,15 @@ import (
 type Secretary struct {
 	Workers              ctl.WorkerService
 	ReplyContractVersion string
+	UserPath string
 }
 
 func (s Secretary) Tools() []Tool {
 	spawnSchema := spawnWorkerSchema()
 	messageSchema := messageWorkerSchema()
 	tools := []Tool{
+		{Name: "read_memory", Description: "Read owner Markdown memory or preferences and their current revision. kind is memory or preferences.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"memory", "preferences"}}}, "required": []string{"kind"}}},
+		{Name: "remember", Description: "Append an explicitly owner-requested memory or preference. First call read_memory, then supply its expected_revision and the active owner's secretary_turn_id/input_id. Normal conversation is not permission to write.", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"kind": map[string]any{"type": "string", "enum": []string{"memory", "preferences"}}, "entry": map[string]string{"type": "string"}, "expected_revision": map[string]string{"type": "integer"}, "secretary_turn_id": map[string]string{"type": "string"}, "input_id": map[string]string{"type": "string"}}, "required": []string{"kind", "entry", "expected_revision", "secretary_turn_id", "input_id"}}},
 		{Name: "list_nodes", Description: "List durable Execution Node records.", InputSchema: map[string]any{"type": "object"}},
 		{Name: "list_projects", Description: "List registered Projects.", InputSchema: map[string]any{"type": "object"}},
 		{Name: "list_workers", Description: "List persistent Workers in the Personal Conversation.", InputSchema: map[string]any{"type": "object"}},
@@ -53,6 +56,9 @@ func (s Secretary) Tools() []Tool {
 
 func (s Secretary) Call(ctx context.Context, name string, raw json.RawMessage) (any, error) {
 	var args struct {
+		Kind            string `json:"kind"`
+		Entry           string `json:"entry"`
+		ExpectedRevision int64 `json:"expected_revision"`
 		WorkerRef       string `json:"worker_ref"`
 		Text            string `json:"text"`
 		RequestID       string `json:"request_id"`
@@ -64,6 +70,16 @@ func (s Secretary) Call(ctx context.Context, name string, raw json.RawMessage) (
 		return nil, err
 	}
 	switch name {
+	case "read_memory":
+		if s.Workers.Store == nil {
+			return nil, fmt.Errorf("memory store unavailable")
+		}
+		return s.Workers.Store.ReadMemoryDocument(ctx, s.UserPath, args.Kind)
+	case "remember":
+		if s.Workers.Store == nil {
+			return nil, fmt.Errorf("memory store unavailable")
+		}
+		return s.Workers.Store.RememberOwnerMemory(ctx, s.UserPath, args.Kind, args.Entry, args.ExpectedRevision, s.Workers.PersonID, s.Workers.Capability, args.SecretaryTurnID, args.InputID)
 	case "list_nodes":
 		return s.Workers.ListNodes(ctx)
 	case "list_projects":
