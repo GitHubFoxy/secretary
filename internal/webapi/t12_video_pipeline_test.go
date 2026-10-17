@@ -172,7 +172,7 @@ func TestT12WebVideoAsyncToRemoteNodeWorkerResultAndFailure(t *testing.T) {
 		actionReturned=true
 	case <-time.After(100*time.Millisecond):
 	}
-	select {case <-runtime.seen:t.Fatal("Worker started before video conversion succeeded");default:}
+	select {case early:=<-runtime.seen:t.Fatalf("Worker started before video conversion succeeded: Task=%q Images=%d",early.Task,len(early.Images));default:}
 	close(processor.release)
 	if !actionReturned {
 		select{case e:=<-actionDone:if e!=nil{t.Fatalf("dependent action failed after conversion: %v",e)};case <-ctx.Done():t.Fatal("dependent action remained blocked")}
