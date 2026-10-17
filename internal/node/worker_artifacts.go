@@ -30,6 +30,10 @@ func (n *ExecutionNode) prepareArtifactPrompt(ctx context.Context, workspace, pr
 }
 
 func (n *ExecutionNode) prepareArtifactInput(ctx context.Context, workspace, prompt string) (string, []ImageInput, error) {
+	return PrepareArtifactInput(ctx, workspace, prompt, fetch)
+}
+
+func PrepareArtifactInput(ctx context.Context, workspace, prompt string, fetch ArtifactFetcher) (string, []ImageInput, error) {
 	ids := ArtifactIDs(prompt)
 	if len(ids) == 0 {
 		return prompt, nil, nil
