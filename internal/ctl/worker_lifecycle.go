@@ -891,7 +891,7 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		if err := s.requireRuntime(); err != nil {
 			return core.WorkerDetails{}, err
 		}
-		turn, next, createErr := s.Store.CreateTurn(ctx, details.Worker.ID, core.TurnSpec{Input: request.Text, IdempotencyKey: request.IdempotencyKey, CommandKind: "dispatch"})
+		turn, next, createErr := s.Store.CreateTurn(ctx, details.Worker.ID, core.TurnSpec{Input: request.Text, IdempotencyKey: request.IdempotencyKey, CommandKind: "dispatch", ReserveNodeCapacity: true})
 		if createErr != nil {
 			err = createErr
 			break
