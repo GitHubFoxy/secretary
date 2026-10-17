@@ -488,7 +488,7 @@ func (s *Store) createWorkerWithOrigin(ctx context.Context, conversationID strin
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, err
 	}
-	if strings.TrimSpace(conversationID) == "" || strings.TrimSpace(spec.Intent) == "" || strings.TrimSpace(spec.ProjectID) == "" || strings.TrimSpace(spec.NodeID) == "" || strings.TrimSpace(spec.HarnessInstanceID) == "" {
+	if strings.TrimSpace(conversationID) == "" || strings.TrimSpace(spec.Intent) == "" || strings.TrimSpace(spec.NodeID) == "" || strings.TrimSpace(spec.HarnessInstanceID) == "" {
 		return Worker{}, Turn{}, Phase4Attempt{}, errors.New("core: complete Worker binding and intent are required")
 	}
 	if spec.WorkerRef == "" {
