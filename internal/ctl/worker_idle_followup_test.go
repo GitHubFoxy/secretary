@@ -284,14 +284,8 @@ func runPublicIdleFollowUp(t *testing.T, native, codex, queued bool, reconnect s
 		go func() { done <- d.Run(daemonCtx) }()
 		waitIdleFixture(t, ctx, func() bool {
 			status, e := manager.Status(ctx, identity.Node)
-			if e != nil || !status.Online {
-				return false
-			}
-			return true
+			return e == nil && status.Online && !status.LastHeartbeatAt.IsZero() && status.Capacity == 1
 		})
-		if err := store.UpdateNodeHeartbeat(ctx, identity.Node, inventory, core.NodeHeartbeat{Capacity: 1}); err != nil {
-			t.Fatal(err)
-		}
 	}
 	start()
 	defer func() {
