@@ -25,7 +25,7 @@ func TestProjectlessWorkspaceOverrideRejectedByNodeBeforeRuntimeStart(t *testing
 	if err := os.Symlink(outsideRoot, link); err != nil {
 		t.Fatal(err)
 	}
-	for _, workspace := range []string{outsideRoot, link, "../outside", "/", " "} {
+	for _, workspace := range []string{outsideRoot, link, "../outside", "/", " ", tWorkspace} {
 		command := dispatchFixture("invalid-projectless-" + workspace)
 		command.Dispatch.Envelope.Workspace = workspace
 		if err := command.Validate("macbook"); err == nil {
