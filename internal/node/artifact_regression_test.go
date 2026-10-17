@@ -1,0 +1,124 @@
+package node
+
+import (
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/beruseruko/secretary/internal/core"
+)
+
+func TestT08ArtifactIDsIncludeUniqueAfterRepeatedReferences(t *testing.T) {
+	first := "art_" + strings.Repeat("a", 32)
+	last := "art_" + strings.Repeat("b", 32)
+	text := strings.Repeat("artifact://"+first+" ", 45) + "artifact://" + last
+	ids := ArtifactIDs(text)
+	if len(ids) != 2 || ids[0] != first || ids[1] != last {
+		t.Fatalf("references after duplicate prefix were dropped: %#v", ids)
+	}
+	var many strings.Builder
+	for i := range 17 {
+		fmt.Fprintf(&many, "artifact://art_%032x ", i)
+	}
+	if len(ArtifactIDs(many.String())) != 17 {
+		t.Fatal("16 unique Artifact limit can be bypassed")
+	}
+	store, err := OpenLocalStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	execution := NewExecutionNode("test-node", &fakeRuntime{}, store)
+	execution.SetArtifactFetcher(func(context.Context, string) (ArtifactPayload, error) {
+		t.Fatal("over-limit Task must not start downloads")
+		return ArtifactPayload{}, nil
+	})
+	_, err = execution.prepareArtifactPrompt(context.Background(), t.TempDir(), many.String())
+	if err == nil || !strings.Contains(err.Error(), "max 16") {
+		t.Fatalf("over-limit Task accepted: %v", err)
+	}
+}
+
+type t08SteeringRuntime struct {
+	queued bool
+	workspace string
+	received chan string
+}
+
+type t08SteeringSession struct {
+	queued bool
+	received chan string
+}
+
+func (r *t08SteeringRuntime) Start(_ context.Context, request StartRequest) (Session, error) {
+	r.workspace = request.Workspace
+	return &t08SteeringSession{queued: r.queued, received: r.received}, nil
+}
+func (*t08SteeringSession) ID() string { return "t08-steering-session" }
+func (*t08SteeringSession) Prompt(context.Context, string) error { return nil }
+func (s *t08SteeringSession) Steer(_ context.Context, text string) (bool, error) {
+	if s.queued { return false, nil }
+	s.received <- text
+	return true, nil
+}
+func (s *t08SteeringSession) Queue(_ context.Context, text string) error { s.received <- text; return nil }
+func (*t08SteeringSession) Cancel(context.Context) error { return nil }
+func (*t08SteeringSession) Activity() <-chan Activity { return nil }
+func (*t08SteeringSession) Result() <-chan Result { return nil }
+func (*t08SteeringSession) Close() error { return nil }
+
+func TestT08SteerAndRuntimeQueueStageAttachments(t *testing.T) {
+	for _, queued := range []bool{false, true} {
+		t.Run(fmt.Sprintf("queued-%t", queued), func(t *testing.T) {
+			store, err := OpenLocalStore(filepath.Join(t.TempDir(), "state.json"))
+			if err != nil { t.Fatal(err) }
+			defer store.Close()
+			runtime := &t08SteeringRuntime{queued: queued, received: make(chan string, 2)}
+			execution := NewExecutionNode("remote", runtime, store)
+			dispatch := daemonDispatchFixture("remote", "initial")
+			outcome, err := execution.HandleCommand(context.Background(), dispatch)
+			if err != nil || outcome.State != CommandAccepted { t.Fatalf("initial dispatch: %#v %v", outcome, err) }
+			id := "art_" + strings.Repeat("a", 32)
+			data := []byte("original attached to steering")
+			hash := sha256.Sum256(data)
+			execution.SetArtifactFetcher(func(_ context.Context, requested string) (ArtifactPayload, error) {
+				if requested != id { t.Fatalf("requested %q", requested) }
+				return ArtifactPayload{ID: id, Name: "doc.txt", SHA256: hex.EncodeToString(hash[:]), Data: data}, nil
+			})
+			message := "Read artifact://" + id
+			command := Command{Kind: CommandSteering, Steering: &SteeringCommand{
+				Metadata: core.CommandMetadata{
+					CommandID: "steering", Node: "remote", WorkerRef: "worker-1",
+					TurnID: "turn-1", AttemptID: "attempt-1", HarnessInstanceID: "remote/fx",
+					IssuedAt: time.Now().UTC(),
+				},
+				Text: message,
+			}}
+			outcome, err = execution.HandleCommand(context.Background(), command)
+			if err != nil || outcome.State != CommandAccepted { t.Fatalf("steering: %#v %v", outcome, err) }
+			var received string
+			select {
+			case received = <-runtime.received:
+			case <-time.After(time.Second):
+				t.Fatal("steering or queued attachment not delivered")
+			}
+			if !strings.Contains(received, ".secretary-artifacts") || !strings.Contains(received, "artifact://"+id) {
+				t.Fatalf("missing staged file reference: %q", received)
+			}
+			matches, err := filepath.Glob(filepath.Join(runtime.workspace, ".secretary-artifacts", id+"_*"))
+			if err != nil || len(matches) != 1 { t.Fatalf("staged files: %v %v", matches, err) }
+			staged, err := os.ReadFile(matches[0])
+			if err != nil || !bytes.Equal(staged, data) { t.Fatalf("staged bytes: %q %v", staged, err) }
+			outcome, err = execution.HandleCommand(context.Background(), command)
+			if err != nil || outcome.State != CommandAccepted { t.Fatalf("duplicate steering: %#v %v", outcome, err) }
+			if len(runtime.received) != 0 { t.Fatal("duplicate steering or queued message") }
+		})
+	}
+}

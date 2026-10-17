@@ -659,6 +659,9 @@ CREATE INDEX IF NOT EXISTS deliveries_state ON deliveries(state, updated_at);
 	if err := s.migrateSecretarySchema(ctx); err != nil {
 		return err
 	}
+	if err := s.migrateArtifacts(ctx); err != nil {
+		return err
+	}
 	return nil
 }
 

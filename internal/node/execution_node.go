@@ -41,6 +41,7 @@ type ExecutionNode struct {
 	inventory         core.HarnessInventorySnapshot
 	workspaces        map[string]string
 	mcpServers        []MCPServer
+	artifactFetcher    ArtifactFetcher
 }
 
 func NewExecutionNode(node core.NodeReference, runtime Runtime, store *LocalStore) *ExecutionNode {
@@ -212,6 +213,14 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	task := command.Envelope.OriginalUserIntent
 	if continuing {
 		task = promptText
+	}
+	prepared, artifactErr := n.prepareArtifactPrompt(ctx, workspace, task)
+	if artifactErr != nil {
+		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "artifact_unavailable", artifactErr.Error())
+	}
+	task = prepared
+	if continuing {
+		promptText = prepared
 	}
 	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
 	profile, err := request.effectiveProfile()
@@ -392,7 +401,15 @@ func (n *ExecutionNode) steer(ctx context.Context, command *SteeringCommand) Com
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "runtime_session_unavailable", err.Error())
 	}
-	injected, err := session.Steer(ctx, command.Text)
+	mapping, ok := n.store.SessionMapping(command.Metadata.AttemptID)
+	if !ok {
+		return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
+	}
+	text, err := n.prepareArtifactPrompt(ctx, mapping.Workspace, command.Text)
+	if err != nil {
+		return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "artifact_unavailable", err.Error())
+	}
+	injected, err := session.Steer(ctx, text)
 	if err != nil {
 		code := "steering_failed"
 		if errors.Is(err, ErrClaudeCodeSteeringUnsupported) {
@@ -427,7 +444,7 @@ func (n *ExecutionNode) steer(ctx context.Context, command *SteeringCommand) Com
 		if !ok {
 			return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "runtime_not_steerable", "runtime did not accept steering")
 		}
-		if err := queue.Queue(ctx, command.Text); err != nil {
+		if err := queue.Queue(ctx, text); err != nil {
 			outcome := failedOutcome(Command{Kind: CommandSteering, Steering: command}, "queue_failed", err.Error())
 			outcome.AcceptanceUnknown = errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 			return outcome
@@ -472,6 +489,14 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	task := command.Envelope.OriginalUserIntent
 	if continuing {
 		task = promptText
+	}
+	prepared, artifactErr := n.prepareArtifactPrompt(ctx, workspace, task)
+	if artifactErr != nil {
+		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "artifact_unavailable", artifactErr.Error())
+	}
+	task = prepared
+	if continuing {
+		promptText = prepared
 	}
 	request := StartRequest{MCPServers: n.workerMCPServers(), WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID), DeferInitialPrompt: continuing}
 	profile, err := request.effectiveProfile()
