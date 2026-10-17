@@ -229,9 +229,9 @@ func TestT14TelegramVoiceArtifactToRemoteWorkerAndReconnect(t *testing.T) {
 		}
 		return nil
 	})
-	instance := core.HarnessInstance{ID: core.HarnessInstanceID(string(identity.Node)+"/fx"),
-		Node: identity.Node, Kind: core.HarnessFX, Version: "test", Status: core.HarnessReady,
-		Authentication: core.HarnessAuthentication{Authenticated: true}}
+	observed, err := (t14InventorySource{nodeRef: identity.Node}).Discover(ctx)
+	if err != nil { t.Fatal(err) }
+	instance := observed.Instances[0]
 	refs := inbound
 	envelope := node.WorkerEnvelope{WorkerRef: "voice-worker", TurnID: "turn-t14", AttemptID: "attempt-t14",
 		OriginalUserIntent: refs, HarnessInstance: instance, LegacyWorkerTemplate: true}
