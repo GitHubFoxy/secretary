@@ -103,3 +103,22 @@ func TestT09WindowsCancelKillsNativeWorkerTree(t *testing.T) {
 	}
 	t.Fatalf("orphan native child PID %d is still running after CommandContext cancel",pid)
 }
+
+
+func TestT09WindowsNativeProviderStateMigrationPreservesHistory(t *testing.T) {
+	root:=t.TempDir()
+	legacy:=filepath.Join(root,"legacy")
+	worker:=filepath.Join(root,"worker-home")
+	for _,name:=range []string{".codex",".claude","opencode-private"}{
+		if err:=os.MkdirAll(filepath.Join(legacy,name),0700);err!=nil{t.Fatal(err)}
+		if err:=os.WriteFile(filepath.Join(legacy,name,"auth.json"),[]byte("session-"+name),0600);err!=nil{t.Fatal(err)}
+	}
+	if err:=os.WriteFile(filepath.Join(legacy,".claude.json"),[]byte("{\"history\":1}"),0600);err!=nil{t.Fatal(err)}
+	if err:=migrateWindowsNativeProviderHome(legacy,worker);err!=nil{t.Fatal(err)}
+	if err:=MigrateWindowsNativeStore(filepath.Join(legacy,"opencode-private"),filepath.Join(worker,"opencode-native"));err!=nil{t.Fatal(err)}
+	for _,name:=range []string{".codex",".claude","opencode-native"}{
+		b,err:=os.ReadFile(filepath.Join(worker,name,"auth.json"));if err!=nil||!strings.Contains(string(b),"session-"){t.Fatalf("%s auth/history not migrated: %q %v",name,b,err)}
+	}
+	b,err:=os.ReadFile(filepath.Join(worker,".claude.json"))
+	if err!=nil||!strings.Contains(string(b),"history"){t.Fatalf("Claude config not migrated: %s %v",b,err)}
+}

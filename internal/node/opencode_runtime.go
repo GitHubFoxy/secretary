@@ -251,7 +251,14 @@ func (r OpenCodeRuntime) withWorkerOSDataHome(ctx context.Context) OpenCodeRunti
 		if home != "" {
 			// OpenCode must not share the privileged Node profile and cannot
 			// write within its protected identity/state directory.
-			r.DataHome = filepath.Join(home, "opencode-native")
+			destination := filepath.Join(home, "opencode-native")
+			if err := nativeexec.MigrateWindowsNativeStore(r.DataHome, destination); err != nil {
+				// Migration failures cannot safely fall back to Node's
+				// privileged provider store. The runtime reports this
+				// through its existing native-store validation.
+				return OpenCodeRuntime{Command: r.Command, Arguments: r.Arguments, DataHome: filepath.Join(home, "missing-unmigrated-native-data")}
+			}
+			r.DataHome = destination
 		}
 	}
 	return r

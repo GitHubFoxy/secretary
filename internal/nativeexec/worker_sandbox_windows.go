@@ -61,7 +61,7 @@ func applyWorkerSandbox(policy WorkerSandbox, cmd *exec.Cmd) error {
 	password := os.Getenv("SECRETARY_WORKER_PASSWORD")
 	domain := strings.TrimSpace(os.Getenv("SECRETARY_WORKER_DOMAIN"))
 	if username == "" || password == "" {
-		return errors.New("worker sandbox: a separate Windows Worker account must be configured")
+		return errors.New("worker sandbox: secure Windows Worker account is not provisioned; run the Windows Node setup/preflight and migrate provider state before Dispatch")
 	}
 	if domain == "" { domain = "." }
 	key := domain + "\\" + username
@@ -128,6 +128,12 @@ func applyWorkerSandbox(policy WorkerSandbox, cmd *exec.Cmd) error {
 	}
 	if err := revertWorkerToken(); err != nil { return err }
 	if guardErr != nil { return guardErr }
+	// Migrate the current Node user's existing Codex/Claude auth and
+	// checkpoint history into the separate account's persistent profile.
+	// Copy only selected provider trees, never Node identity or Server DB.
+	legacyHome, homeErr := os.UserHomeDir()
+	if homeErr != nil { return homeErr }
+	if err := migrateWindowsNativeProviderHome(legacyHome, workerHome); err != nil { return err }
 	if cmd.SysProcAttr == nil { cmd.SysProcAttr = &syscall.SysProcAttr{} }
 	// The Go os/exec Token path uses CreateProcessAsUser, which is not
 	// available to ordinary Windows Node users (SE_INCREASE_QUOTA absent).
