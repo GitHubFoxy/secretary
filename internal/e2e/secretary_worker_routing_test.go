@@ -267,6 +267,10 @@ func (f *t01RoutingFixture) handleSecretaryPrompt(prompt string) error {
 		return f.mcp.Call(f.ctx, name, data)
 	}
 	if input == "Create a website" || input == "Plan a vacation" {
+		// An optional acknowledgement precedes delegation; it is not a
+		// second reply after the Worker's terminal Result.
+		_, err = call("reply_to_user", map[string]any{"text": "Request received."})
+		if err != nil { f.errs <- err; return err }
 		_, err = call("spawn_worker", map[string]any{
 			"intent": strings.ToLower(strings.TrimPrefix(input, "Create a ")),
 			"preferences": map[string]string{
@@ -298,18 +302,15 @@ func (f *t01RoutingFixture) handleSecretaryPrompt(prompt string) error {
 				"text": "Which Worker should I continue: website or vacation?",
 			})
 		} else {
+			_, err = call("reply_to_user", map[string]any{"text": "Request received."})
+			if err != nil { f.errs <- err; return err }
 			_, err = call("message_worker", map[string]any{
 				"worker_ref": matches[0].WorkerRef, "text": input,
 				"idempotency_key": inputID,
 			})
 		}
 	}
-	if err != nil { f.errs <- err; return err }
-	// A short acknowledgement is not a copy of the Worker Result.
-	if input != "Yes" {
-		_, err = call("reply_to_user", map[string]any{"text": "Request received."})
-		if err != nil { f.errs <- err }
-	}
+	if err != nil { f.errs <- err }
 	return err
 }
 
