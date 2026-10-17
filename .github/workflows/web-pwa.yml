@@ -1,0 +1,33 @@
+name: Web PWA checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install Web dependencies
+        run: npm ci --prefix web
+      - name: Run Web tests
+        run: npm test --prefix web
+      - name: Build Web and Control Room
+        run: npm run build:all --prefix web
+      - name: Verify bundled PWA metadata
+        run: |
+          test -s web/index.html
+          test -s web/public/manifest.webmanifest
+          test -s web/public/icons/icon-192.png
+          test -s web/public/icons/icon-512.png
+          grep -q 'manifest.webmanifest' web/index.html
