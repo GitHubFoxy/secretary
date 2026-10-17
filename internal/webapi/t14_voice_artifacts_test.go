@@ -137,11 +137,18 @@ func TestT14TelegramVoiceArtifactToRemoteWorkerAndReconnect(t *testing.T) {
 	entries, err := store.EntriesAfter(ctx, conversation.ID, 0)
 	if err != nil { t.Fatal(err) }
 	nOriginal, nTranscript := 0, 0
+	inbound := ""
 	for _, entry := range entries {
-		if strings.Contains(entry.Body, "artifact://"+original.ID) { nOriginal++ }
-		if strings.Contains(entry.Body, "artifact://"+transcript.ID) { nTranscript++ }
+		if entry.Kind == core.EntryUser {
+			inbound = entry.Body
+		}
+		if entry.Kind == core.EntrySystem && strings.Contains(entry.Body, "artifact://"+original.ID) { nOriginal++ }
+		if entry.Kind == core.EntrySystem && strings.Contains(entry.Body, "artifact://"+transcript.ID) { nTranscript++ }
 	}
 	if nOriginal != 1 || nTranscript != 1 { t.Fatalf("duplicate Artifact announcements: %d %d", nOriginal, nTranscript) }
+	if !strings.Contains(inbound, "artifact://"+original.ID) || !strings.Contains(inbound, "artifact://"+transcript.ID) || !strings.Contains(inbound, "Привет, мир.") {
+		t.Fatalf("canonical Telegram inbound lost transcript or references: %q", inbound)
+	}
 	server.Close()
 	if err := store.Close(); err != nil { t.Fatal(err) }
 	restarted, err := core.Open(ctx, dbPath)
@@ -171,7 +178,7 @@ func TestT14TelegramVoiceArtifactToRemoteWorkerAndReconnect(t *testing.T) {
 	instance := core.HarnessInstance{ID: core.HarnessInstanceID(string(identity.Node)+"/fx"),
 		Node: identity.Node, Kind: core.HarnessFX, Version: "test", Status: core.HarnessReady,
 		Authentication: core.HarnessAuthentication{Authenticated: true}}
-	refs := "Transcribe and inspect artifact://"+transcript.ID+" and artifact://"+original.ID
+	refs := inbound
 	envelope := node.WorkerEnvelope{WorkerRef: "voice-worker", TurnID: "turn-t14", AttemptID: "attempt-t14",
 		OriginalUserIntent: refs, HarnessInstance: instance, LegacyWorkerTemplate: true}
 	cmd := node.Command{Kind: node.CommandDispatch, Dispatch: &node.DispatchCommand{
