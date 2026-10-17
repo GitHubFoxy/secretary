@@ -13,6 +13,10 @@ func CommandContext(ctx context.Context, command string, args ...string) (*exec.
     if err != nil {
         return nil, err
     }
+    if policy, ok := workerSandboxFromContext(ctx); ok {
+        executable, argv, err = sandboxInvocation(policy, executable, argv)
+        if err != nil { return nil, err }
+    }
     cmd := exec.CommandContext(ctx, executable, argv...)
     configureCommandLine(cmd, executable, argv)
     return cmd, nil

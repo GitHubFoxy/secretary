@@ -15,6 +15,7 @@ import (
 
 	"github.com/beruseruko/secretary/internal/acp"
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/nativeexec"
 )
 
 var ErrRuntimeSessionUnavailable = errors.New("runtime_session_unavailable")
@@ -236,6 +237,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
+	ctx = n.securedWorkerContext(ctx, workspace)
 	var session Session
 	if continuing {
 		mapping, mappingErr := n.continuationMapping(command.Envelope, command.Envelope.PreviousAttemptID)
@@ -519,6 +521,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
+	ctx = n.securedWorkerContext(ctx, workspace)
 	session, err := resumeSameIdentity(ctx, resumer, request, mapping.RuntimeSessionID)
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
@@ -656,6 +659,7 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 		return nil, ErrRuntimeSessionUnavailable
 	}
 	request.Profile = profile
+	ctx = n.securedWorkerContext(ctx, mapping.Workspace)
 	session, err := resumeSameIdentity(ctx, resumer, request, mapping.RuntimeSessionID)
 	if err != nil {
 		return nil, ErrRuntimeSessionUnavailable
@@ -1119,4 +1123,14 @@ func semanticOutputPresent(result string) bool {
 		}
 	}
 	return true
+}
+
+ 
+// Native subprocesses (and their shell/MCP descendants) are isolated from
+// the persisted Node credential and state. No daemon fallbacks are permitted.
+func (n *ExecutionNode) securedWorkerContext(ctx context.Context, workspace string) context.Context {
+	return nativeexec.WithWorkerSandbox(ctx, nativeexec.WorkerSandbox{
+		ProtectedDir: filepath.Dir(n.store.path),
+		Workspace: workspace,
+	})
 }
