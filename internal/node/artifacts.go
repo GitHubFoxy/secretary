@@ -32,15 +32,22 @@ type ArtifactPayload struct {
 type ArtifactFetcher func(context.Context, string) (ArtifactPayload, error)
 
 func ArtifactIDs(text string) []string {
-	matches := artifactReference.FindAllString(text, 32)
-	seen := make(map[string]bool, len(matches))
-	ids := make([]string, 0, len(matches))
-	for _, value := range matches {
-		id := strings.TrimPrefix(value, "artifact://")
+	seen := make(map[string]bool)
+	ids := make([]string, 0, 17)
+	for len(text) > 0 {
+		bounds := artifactReference.FindStringIndex(text)
+		if bounds == nil {
+			break
+		}
+		id := strings.TrimPrefix(text[bounds[0]:bounds[1]], "artifact://")
 		if !seen[id] {
 			seen[id] = true
 			ids = append(ids, id)
+			if len(ids) > 16 {
+				break
+			}
 		}
+		text = text[bounds[1]:]
 	}
 	return ids
 }
