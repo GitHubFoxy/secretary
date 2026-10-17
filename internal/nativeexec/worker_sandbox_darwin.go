@@ -70,11 +70,15 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	quoted := func(path string) string { return "(subpath " + strconv.Quote(path) + ")" }
 	var profile strings.Builder
 	profile.WriteString("(version 1)\n(deny default)\n(allow process*)\n(allow network*)\n(allow mach-lookup)\n(allow mach-host*)\n(allow sysctl-read)\n(allow iokit-open)\n(allow ipc-posix*)\n(allow file-read-metadata)\n(allow file-ioctl)\n(allow signal)\n")
-	profile.WriteString("(allow file-read*")
-	for _, root := range reads { profile.WriteString(" "+quoted(root)) }
-	profile.WriteString(")\n(allow file-write*")
-	for _, root := range writes { profile.WriteString(" "+quoted(root)) }
-	profile.WriteString(")\n")
+	// Seatbelt filters inside one allow clause are conjunctive. Combining
+	// disjoint subpaths there silently denies *all* reads and aborts dyld.
+	// Each permitted root must be its own rule (a union of grants).
+	for _, root := range reads {
+		profile.WriteString("(allow file-read* " + quoted(root) + ")\n")
+	}
+	for _, root := range writes {
+		profile.WriteString("(allow file-write* " + quoted(root) + ")\n")
+	}
 	return seatbelt, append([]string{"-p", profile.String(), executable}, args...), nil
 }
 
