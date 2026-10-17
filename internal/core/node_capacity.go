@@ -92,12 +92,3 @@ func recordNodeCapacityClaimTx(ctx context.Context, tx *sql.Tx, attemptID string
 	_, err := tx.ExecContext(ctx, `INSERT INTO phase4_node_capacity_claims(attempt_id, node_id) VALUES(?, ?)`, attemptID, node)
 	return err
 }
-
-func workerHasCapacityClaimsTx(ctx context.Context, tx *sql.Tx, workerID string) (bool, error) {
-	var exists bool
-	err := tx.QueryRowContext(ctx, `SELECT EXISTS(
-SELECT 1 FROM phase4_node_capacity_claims claim
-JOIN phase4_attempts attempt ON attempt.id = claim.attempt_id
-WHERE attempt.worker_id = ?)`, workerID).Scan(&exists)
-	return exists, err
-}
