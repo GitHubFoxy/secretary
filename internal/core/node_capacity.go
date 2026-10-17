@@ -70,6 +70,10 @@ WHERE node_ref = ? AND online = 1 AND draining = 0 AND revoked = 0`, node)
 		return err
 	}
 	if changed != 1 {
+		var revoked bool
+		if err := tx.QueryRowContext(ctx, `SELECT revoked FROM phase4_nodes WHERE node_ref = ?`, node).Scan(&revoked); err == nil && revoked {
+			return fmt.Errorf("%w: Node %s", ErrNodeRevoked, node)
+		}
 		return fmt.Errorf("%w: Node %s is offline, draining or unavailable", ErrSelectedNodeUnavailable, node)
 	}
 	var capacity int
