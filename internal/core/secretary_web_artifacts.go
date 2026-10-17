@@ -11,7 +11,7 @@ func (s *Store) SecretaryWebInput(ctx context.Context, personID, turnID, inputID
 	if strings.TrimSpace(personID) == "" { return "", ErrNotFound }
 	lookup := `SELECT t.input, t.input_id, t.input_entry_id
 		FROM secretary_turns t JOIN secretary_identities i ON i.id = t.identity_id
-		WHERE i.person_id = ? AND t.id = ?`
+		WHERE i.person_id = ? AND t.id = ? AND t.state = 'active'`
 	if turnID == "" {
 		lookup = `SELECT t.input, t.input_id, t.input_entry_id
 			FROM secretary_turns t JOIN secretary_identities i ON i.id = t.identity_id
