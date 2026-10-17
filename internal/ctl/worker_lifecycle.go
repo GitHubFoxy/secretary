@@ -462,10 +462,19 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 				return core.WorkerDetails{}, err
 			}
 		}
-		if err := s.recoverLifecycleCommand(ctx, "dispatch", worker, attempt, func(commandID string) error {
-			return s.Runtime.Dispatch(ctx, commandID, worker, turn, attempt, resolution)
-		}, origin); err != nil {
-			return core.WorkerDetails{}, fmt.Errorf("recover dispatch Worker: %w", err)
+		// The idempotency outcome contains the initial Attempt snapshot, not
+		// its current state. A completed Spawn is a read-only replay: do not
+		// reserve capacity or redeliver the original dispatch command.
+		currentAttempt, err := s.Store.Phase4Attempt(ctx, attempt.ID)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		if !currentAttempt.State.Terminal() {
+			if err := s.recoverLifecycleCommand(ctx, "dispatch", worker, currentAttempt, func(commandID string) error {
+				return s.Runtime.Dispatch(ctx, commandID, worker, turn, currentAttempt, resolution)
+			}, origin); err != nil {
+				return core.WorkerDetails{}, fmt.Errorf("recover dispatch Worker: %w", err)
+			}
 		}
 		details, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 		if err != nil {
