@@ -19,10 +19,11 @@ import (
 // scripted harness and cannot measure semantic Worker selection. Run this
 // against a DEDICATED, throwaway Secretary instance with a configured, logged-in
 // Codex or Claude Code harness. Never point it at your personal production data.
-//   SECRETARY_T01_LIVE_E2E=1
-//   SECRETARY_T01_LIVE_URL=https://test-secretary.example
-//   SECRETARY_T01_LIVE_BOOTSTRAP=<the test instance's bootstrap token>
-//   go test ./internal/e2e -run '^TestT01LiveSecretaryChoosesWorkerAndClarifies$' -v
+//
+//	SECRETARY_T01_LIVE_E2E=1
+//	SECRETARY_T01_LIVE_URL=https://test-secretary.example
+//	SECRETARY_T01_LIVE_BOOTSTRAP=<the test instance's bootstrap token>
+//	go test ./internal/e2e -run '^TestT01LiveSecretaryChoosesWorkerAndClarifies$' -v
 func TestT01LiveSecretaryChoosesWorkerAndClarifies(t *testing.T) {
 	if os.Getenv("SECRETARY_T01_LIVE_E2E") != "1" {
 		t.Skip("opt in to real native Secretary routing acceptance on a disposable instance")
@@ -35,11 +36,15 @@ func TestT01LiveSecretaryChoosesWorkerAndClarifies(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	jar, err := cookiejar.New(nil)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	client := &http.Client{Jar: jar, Timeout: 15 * time.Second}
 	encoded, _ := json.Marshal(map[string]string{"bootstrap_token": token})
 	response, err := client.Post(base+"/v1/web/session", "application/json", bytes.NewReader(encoded))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	response.Body.Close()
 	if response.StatusCode != http.StatusCreated {
 		t.Fatalf("live test instance authentication failed: status=%d", response.StatusCode)
@@ -49,15 +54,23 @@ func TestT01LiveSecretaryChoosesWorkerAndClarifies(t *testing.T) {
 	getEntries := func() []core.ConversationEntry {
 		t.Helper()
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/conversation?after_seq="+strconv.FormatInt(after, 10), nil)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		res, err := client.Do(req)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer res.Body.Close()
 		if res.StatusCode != http.StatusOK {
 			t.Fatalf("conversation read failed: %d", res.StatusCode)
 		}
-		var page struct { Entries []core.ConversationEntry `json:"entries"` }
-		if err := json.NewDecoder(res.Body).Decode(&page); err != nil { t.Fatal(err) }
+		var page struct {
+			Entries []core.ConversationEntry `json:"entries"`
+		}
+		if err := json.NewDecoder(res.Body).Decode(&page); err != nil {
+			t.Fatal(err)
+		}
 		return page.Entries
 	}
 	// This test needs an isolated instance with no existing tasks or entries.
@@ -68,11 +81,15 @@ func TestT01LiveSecretaryChoosesWorkerAndClarifies(t *testing.T) {
 		t.Helper()
 		encoded, _ := json.Marshal(map[string]string{"external_message_id": id, "body": input})
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, base+"/v1/messages", bytes.NewReader(encoded))
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Idempotency-Key", id)
 		res, err := client.Do(req)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 		defer res.Body.Close()
 		if res.StatusCode != http.StatusAccepted {
 			t.Fatalf("live input %q was not accepted: %d", id, res.StatusCode)
@@ -84,7 +101,9 @@ func TestT01LiveSecretaryChoosesWorkerAndClarifies(t *testing.T) {
 		defer tick.Stop()
 		for {
 			for _, entry := range getEntries() {
-				if entry.Seq > after { after = entry.Seq }
+				if entry.Seq > after {
+					after = entry.Seq
+				}
 				if entry.Kind == kind {
 					return entry
 				}
