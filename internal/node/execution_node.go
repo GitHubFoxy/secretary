@@ -196,7 +196,19 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		workspace = canonicalWorkspace
 	} else if workspace == "" && command.Envelope.PreviousAttemptID == "" {
 		var err error
-		workspace, err = os.MkdirTemp("", "secretary-worker-")
+		// Production Windows native Workers use their separate SID's own
+		// writable workspace root, not the trusted Node user's temp tree.
+		// This preserves projectless Dispatch/Resume after provisioning.
+		tempRoot := ""
+		n.mu.Lock()
+		brokered := n.publishBroker != nil
+		n.mu.Unlock()
+		if brokered {
+			var rootErr error
+			tempRoot, rootErr = nativeexec.ManagedWorkerWorkspaceRoot(filepath.Dir(n.store.path))
+			if rootErr != nil { return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "workspace_failed", rootErr.Error()) }
+		}
+		workspace, err = os.MkdirTemp(tempRoot, "secretary-worker-")
 		if err != nil {
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "workspace_failed", err.Error())
 		}

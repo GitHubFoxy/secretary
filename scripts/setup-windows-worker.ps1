@@ -21,7 +21,7 @@ $bytes=New-Object byte[] 30
 [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
 $password=[Convert]::ToBase64String($bytes).Replace('+','A').Replace('/','B')+'a1!'
 $account="$env:COMPUTERNAME\$WorkerUsername"
-& net user $WorkerUsername $password /add /Y 2>$null | Out-Null
+& net user $WorkerUsername $password /add 2>$null | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Could not create local Worker user; refusing to overwrite existing credentials.' }
 & icacls $NodeDataDir /deny "$($account):(OI)(CI)R" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Failed to seal Node data ACL' }
@@ -34,5 +34,6 @@ $configPath=Join-Path $NodeDataDir 'worker-account.json'
 [IO.File]::WriteAllText($configPath,$config,[Text.UTF8Encoding]::new($false))
 & icacls $configPath /inheritance:r /grant:r "$($env:USERNAME):F" 'SYSTEM:F' /deny "$($account):R" | Out-Null
 if($LASTEXITCODE -ne 0){throw 'Failed to restrict Worker account settings'}
-Write-Host 'Worker account provisioned. Existing native provider history is migrated on first Dispatch.'
+Write-Host 'Worker account provisioned. Projectless workspaces are created under WorkerHome/workspaces; named project workspaces must be granted explicitly.'
+Write-Host 'Existing native provider history is migrated on first Dispatch.'
 Write-Host "Verify: secretary-node.exe --data-dir '$NodeDataDir' --check-worker-sandbox"

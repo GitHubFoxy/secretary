@@ -37,3 +37,13 @@ func PreflightWorkerSandbox(protectedDir string) error {
  if err!=nil{return fmt.Errorf("Windows Worker cross-SID process preflight failed: %w: %s",err,output)}
  return nil
 }
+
+func ManagedWorkerWorkspaceRoot(protectedDir string)(string,error){
+	ctx:=WithWorkerSandbox(context.Background(),WorkerSandbox{ProtectedDir:protectedDir})
+	home,err:=WindowsWorkerHome(ctx)
+	if err!=nil{return "",err}
+	if home==""{return "",errors.New("Windows Worker is not provisioned")}
+	dir:=filepath.Join(home,"workspaces")
+	if err:=os.MkdirAll(dir,0700);err!=nil{return "",err}
+	return dir,nil
+}
