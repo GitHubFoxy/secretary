@@ -79,7 +79,13 @@ if "$ROOT/secretary" setup --non-interactive --harness claude_code >"$TMP/denied
   fail "setup switched harness when Claude auth status failed"
 fi
 [[ "$(cat "$STATE/config.toml")" == "$before_auth" ]] || fail "failed Claude auth modified the original Codex config"
-grep -q '^default_harness = "codex"
+grep -q '^default_harness = "codex"$' "$STATE/config.toml" || fail "failed auth switched worker defaults"
+"$ROOT/secretary" doctor >/dev/null || fail "Codex doctor stopped working after denied Claude auth"
+unset CLAUDE_AUTH_FAIL
+"$ROOT/secretary" setup --non-interactive --harness claude_code >/dev/null
+grep -q '^harness = "claude_code"$' "$STATE/config.toml" || fail "authorized Claude switch failed"
+"$ROOT/secretary" setup --non-interactive --harness codex >/dev/null
+before="$(cat "$STATE/environment")"
 "$ROOT/secretary" setup --non-interactive >/dev/null
 [[ "$(cat "$STATE/environment")" == "$before" ]] || fail "repeat setup rotated credentials"
 if "$ROOT/secretary" config >"$TMP/config-log" 2>&1; then fail "config unexpectedly accepted without TTY"; fi
@@ -108,102 +114,6 @@ if "$ROOT/secretary" node setup --capacity -1 >/dev/null 2>&1; then fail "invali
 [[ "$(cat "$STATE/node/config.json")" == "$before_node" ]] || fail "invalid capacity altered Node config"
 "$ROOT/secretary" node setup --clear-workspaces >/dev/null
 if grep -q '"project_id"' "$STATE/node/config.json"; then fail "explicit workspace clear was ignored"; fi
-
-"$ROOT/secretary" install-service
-[[ -f "$HOME/.config/systemd/user/secretary.service" ]] || fail "Linux service unit missing"
-grep -q 'enable --now secretary.service' "$TEST_SYSTEMD_LOG" || fail "systemd service not enabled"
-"$ROOT/secretary" status | grep -q 'systemd' || fail "service status missing"
-"$ROOT/secretary" restart
-grep -q 'restart secretary.service' "$TEST_SYSTEMD_LOG" || fail "systemd restart not invoked"
-mkdir -p "$STATE/node/data"
-printf '{"node":"test-node"}\n' > "$STATE/node/data/identity.json"
-"$ROOT/secretary" node install-service
-[[ -f "$HOME/.config/systemd/user/secretary-node.service" ]] || fail "Linux Node unit missing"
-"$ROOT/secretary" node status | grep -q 'systemd' || fail "Node service status missing"
-"$ROOT/secretary" node restart
-grep -q 'stop secretary-node.service' "$TEST_SYSTEMD_LOG" || fail "Node restart did not stop unit"
-grep -q 'start secretary-node.service' "$TEST_SYSTEMD_LOG" || fail "Node restart did not start unit"
-"$ROOT/secretary" node uninstall-service
-"$ROOT/secretary" uninstall-service
-[[ ! -e "$HOME/.config/systemd/user/secretary.service" ]] || fail "service unit retained after uninstall"
-
-export HOME="$TMP/claude-home" PATH="$CLAUDEBIN:/usr/bin:/bin"
-"$ROOT/secretary" setup --non-interactive
-STATE="$HOME/.local/share/secretary"
-grep -q '^harness = "claude_code"$' "$STATE/config.toml" || fail "Claude-only setup selected Codex"
-grep -q '^default_harness = "claude_code"$' "$STATE/config.toml" || fail "Claude worker default missing"
-"$ROOT/secretary" doctor >/dev/null
-"$ROOT/secretary" node doctor >/dev/null
-before="$(cat "$STATE/config.toml")"
-if "$ROOT/secretary" setup --non-interactive --harness unsupported >/dev/null 2>&1; then fail "invalid harness accepted"; fi
-[[ "$(cat "$STATE/config.toml")" == "$before" ]] || fail "invalid harness modified config"
-printf 'PASS: clean Codex and Claude-only terminal setup, protected state, non-TTY failures and Linux service lifecycle\n'
- "$STATE/config.toml" || fail "failed auth switched worker defaults"
-"$ROOT/secretary" doctor >/dev/null || fail "Codex doctor stopped working after denied Claude auth"
-unset CLAUDE_AUTH_FAIL
-"$ROOT/secretary" setup --non-interactive --harness claude_code >/dev/null
-grep -q '^harness = "claude_code"
-"$ROOT/secretary" setup --non-interactive >/dev/null
-[[ "$(cat "$STATE/environment")" == "$before" ]] || fail "repeat setup rotated credentials"
-if "$ROOT/secretary" config >"$TMP/config-log" 2>&1; then fail "config unexpectedly accepted without TTY"; fi
-grep -q 'terminal' "$TMP/config-log" || fail "missing config TTY diagnostic"
-if command -v script >/dev/null 2>&1 && [[ "$(uname -s)" == Linux ]]; then
-  if ! printf '2\n\nwizard-node\n2\n5\n' | script -qec "$ROOT/secretary config" /dev/null >"$TMP/pty-log" 2>&1; then
-    cat "$TMP/pty-log" >&2
-    fail "interactive terminal wizard failed"
-  fi
-  grep -q '"node": "wizard-node"' "$STATE/node/config.json" || fail "interactive Node name not applied"
-  grep -q '"capacity": 2' "$STATE/node/config.json" || fail "interactive Node capacity not applied"
-fi
-"$ROOT/secretary" node setup --standalone --name test-node >/dev/null
-grep -q '"standalone": true' "$STATE/node/config.json" || fail "standalone config lost"
-
-"$ROOT/secretary" install-service
-[[ -f "$HOME/.config/systemd/user/secretary.service" ]] || fail "Linux service unit missing"
-grep -q 'enable --now secretary.service' "$TEST_SYSTEMD_LOG" || fail "systemd service not enabled"
-"$ROOT/secretary" status | grep -q 'systemd' || fail "service status missing"
-"$ROOT/secretary" restart
-grep -q 'restart secretary.service' "$TEST_SYSTEMD_LOG" || fail "systemd restart not invoked"
-mkdir -p "$STATE/node/data"
-printf '{"node":"test-node"}\n' > "$STATE/node/data/identity.json"
-"$ROOT/secretary" node install-service
-[[ -f "$HOME/.config/systemd/user/secretary-node.service" ]] || fail "Linux Node unit missing"
-"$ROOT/secretary" node status | grep -q 'systemd' || fail "Node service status missing"
-"$ROOT/secretary" node restart
-grep -q 'stop secretary-node.service' "$TEST_SYSTEMD_LOG" || fail "Node restart did not stop unit"
-grep -q 'start secretary-node.service' "$TEST_SYSTEMD_LOG" || fail "Node restart did not start unit"
-"$ROOT/secretary" node uninstall-service
-"$ROOT/secretary" uninstall-service
-[[ ! -e "$HOME/.config/systemd/user/secretary.service" ]] || fail "service unit retained after uninstall"
-
-export HOME="$TMP/claude-home" PATH="$CLAUDEBIN:/usr/bin:/bin"
-"$ROOT/secretary" setup --non-interactive
-STATE="$HOME/.local/share/secretary"
-grep -q '^harness = "claude_code"$' "$STATE/config.toml" || fail "Claude-only setup selected Codex"
-grep -q '^default_harness = "claude_code"$' "$STATE/config.toml" || fail "Claude worker default missing"
-"$ROOT/secretary" doctor >/dev/null
-"$ROOT/secretary" node doctor >/dev/null
-before="$(cat "$STATE/config.toml")"
-if "$ROOT/secretary" setup --non-interactive --harness unsupported >/dev/null 2>&1; then fail "invalid harness accepted"; fi
-[[ "$(cat "$STATE/config.toml")" == "$before" ]] || fail "invalid harness modified config"
-printf 'PASS: clean Codex and Claude-only terminal setup, protected state, non-TTY failures and Linux service lifecycle\n'
- "$STATE/config.toml" || fail "authorized Claude switch failed"
-"$ROOT/secretary" setup --non-interactive --harness codex >/dev/null
-before="$(cat "$STATE/environment")"
-"$ROOT/secretary" setup --non-interactive >/dev/null
-[[ "$(cat "$STATE/environment")" == "$before" ]] || fail "repeat setup rotated credentials"
-if "$ROOT/secretary" config >"$TMP/config-log" 2>&1; then fail "config unexpectedly accepted without TTY"; fi
-grep -q 'terminal' "$TMP/config-log" || fail "missing config TTY diagnostic"
-if command -v script >/dev/null 2>&1 && [[ "$(uname -s)" == Linux ]]; then
-  if ! printf '2\n\nwizard-node\n2\n5\n' | script -qec "$ROOT/secretary config" /dev/null >"$TMP/pty-log" 2>&1; then
-    cat "$TMP/pty-log" >&2
-    fail "interactive terminal wizard failed"
-  fi
-  grep -q '"node": "wizard-node"' "$STATE/node/config.json" || fail "interactive Node name not applied"
-  grep -q '"capacity": 2' "$STATE/node/config.json" || fail "interactive Node capacity not applied"
-fi
-"$ROOT/secretary" node setup --standalone --name test-node >/dev/null
-grep -q '"standalone": true' "$STATE/node/config.json" || fail "standalone config lost"
 
 "$ROOT/secretary" install-service
 [[ -f "$HOME/.config/systemd/user/secretary.service" ]] || fail "Linux service unit missing"
