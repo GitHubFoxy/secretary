@@ -203,6 +203,10 @@ func (n *LocalNode) prepareInput(ctx context.Context, request *StartRequest) err
 	n.mu.Lock()
 	fetch := n.artifactFetcher
 	n.mu.Unlock()
+	return prepareLocalInput(ctx, request, fetch)
+}
+
+func prepareLocalInput(ctx context.Context, request *StartRequest, fetch ArtifactFetcher) error {
 	text, images, err := PrepareArtifactInput(ctx, request.Workspace, request.Task, fetch)
 	if err != nil { return err }
 	if len(images) > 0 && !supportsImageHarness(request.HarnessInstance) {
@@ -213,6 +217,7 @@ func (n *LocalNode) prepareInput(ctx context.Context, request *StartRequest) err
 }
 
 func (n *LocalNode) PrepareWorkerSteering(ctx context.Context, workerRef, text string) (string, []ImageInput, error) {
+	if len(ArtifactIDs(text)) == 0 { return text, nil, nil }
 	n.mu.Lock()
 	fetch := n.artifactFetcher
 	workspace := ""
@@ -289,7 +294,7 @@ func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previous
 	if !ok || checkpoint.nativeID == "" || prior.WorkerRef != request.WorkerRef || prior.Workspace != request.Workspace || !reflect.DeepEqual(prior.Profile, request.Profile) || !reflect.DeepEqual(prior.HarnessInstance, request.HarnessInstance) || prior.Model != request.Model || prior.Reasoning != request.Reasoning || prior.ApprovalPolicy != request.ApprovalPolicy {
 		return nil, ErrRuntimeSessionUnavailable
 	}
-	if err := n.prepareInput(ctx, &request); err != nil { return nil, err }
+	if err := prepareLocalInput(ctx, &request, n.artifactFetcher); err != nil { return nil, err }
 	resumer, ok := n.runtime.(Resumer)
 	if !ok {
 		return nil, ErrRuntimeSessionUnavailable
