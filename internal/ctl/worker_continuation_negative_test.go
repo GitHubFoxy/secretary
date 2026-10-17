@@ -82,6 +82,9 @@ func TestNodeContinuationCheckpointFailsClosed(t *testing.T) {
 					mapping.Workspace = t.TempDir()
 				case "binding":
 					next.ApprovalPolicy = "required"
+					// Keep the envelope valid while making its immutable
+					// policy/approval binding differ from the checkpoint.
+					next.ProjectSnapshot.Policy.Execution.RequireApproval = true
 				case "template":
 					next.Profile.Content = "Other valid frozen profile"
 					next.Profile.Hash = next.Profile.SnapshotHash()
