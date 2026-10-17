@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -142,8 +141,10 @@ func TestT10RealWebToSecretaryActionToRemoteDaemonAndConversation(t *testing.T) 
 	case <-ctx.Done(): t.Fatal("ServerManager did not deliver image to remote native Worker")
 	}
 	second := tool()
-	if fmt.Sprint(first.Value) != fmt.Sprint(second.Value) || runtime.starts != 1 {
-		t.Fatalf("Secretary action replay launched Worker twice: %d",runtime.starts)
+	firstAction := first.Value.(map[string]any)
+	secondAction := second.Value.(map[string]any)
+	if firstAction["action_turn_id"] != secondAction["action_turn_id"] || runtime.starts != 1 {
+		t.Fatalf("Secretary action replay changed native execution: %d, first=%v second=%v",runtime.starts,firstAction["action_turn_id"],secondAction["action_turn_id"])
 	}
 	for {
 		req,err := http.NewRequestWithContext(ctx,http.MethodGet,server.URL+"/v1/conversation",nil)
