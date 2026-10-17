@@ -55,6 +55,9 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 		}
 		var err error
 		envelope := command.Dispatch.Envelope
+		if envelope.ProjectID == "" && envelope.Workspace != "" {
+			return node.CommandOutcome{}, errors.New("worker: projectless Workspace must be Node-managed")
+		}
 		request := node.StartRequest{AttemptID: envelope.AttemptID, WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: envelope.Workspace, Profile: envelope.Profile, HarnessInstance: envelope.HarnessInstance, Model: envelope.Model, Reasoning: envelope.Reasoning, ApprovalPolicy: envelope.ApprovalPolicy}
 		if envelope.PreviousAttemptID != "" {
 			session, err = r.Local.Continue(ctx, request, envelope.PreviousAttemptID)
@@ -176,6 +179,9 @@ func (r NodeRuntime) metadata(commandID string, worker core.Worker, turn core.Tu
 func (r NodeRuntime) envelope(worker core.Worker, turn core.Turn, attempt core.Phase4Attempt, binding core.ProjectDispatch) (node.WorkerEnvelope, error) {
 	if binding.HarnessInstance.ID == "" {
 		return node.WorkerEnvelope{}, errors.New("worker: immutable HarnessInstance binding is missing")
+	}
+	if worker.ProjectID == "" && binding.Workspace != "" {
+		return node.WorkerEnvelope{}, errors.New("worker: projectless Workspace must be Node-managed")
 	}
 	policy := binding.Snapshot.Policy
 	model := policy.ModelPin()
