@@ -160,10 +160,18 @@ func awaitVideoProcessing(ctx context.Context, id string, artifact *ArtifactPayl
 	if artifact.CheckVideoStatus==nil {return errors.New("video: authenticated metadata polling unavailable")}
 	if pollInterval<0 {return errors.New("video: invalid polling interval")}
 	for artifact.VideoStatus=="queued" || artifact.VideoStatus=="processing" {
+		if err:=ctx.Err();err!=nil {
+			return fmt.Errorf("video: waiting for artifact://%s interrupted: %w",id,err)
+		}
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("video: waiting for artifact://%s interrupted: %w",id,ctx.Err())
 		case <-time.After(pollInterval):
+		}
+		// If a zero-interval test timer and cancellation become ready together,
+		// cancellation must win before starting another metadata request.
+		if err:=ctx.Err();err!=nil {
+			return fmt.Errorf("video: waiting for artifact://%s interrupted: %w",id,err)
 		}
 		meta,err:=artifact.CheckVideoStatus(ctx)
 		if err!=nil {return fmt.Errorf("video: metadata status unavailable: %w",err)}
