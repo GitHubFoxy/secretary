@@ -3,9 +3,10 @@ package ctl
 import (
 	"context"
 	"errors"
+	"time"
+
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
-	"time"
 )
 
 func (s WorkerService) RunQueuedWorkerMessages(ctx context.Context) {

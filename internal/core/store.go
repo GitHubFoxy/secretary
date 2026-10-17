@@ -327,7 +327,7 @@ func (s *Store) RecoverPhase4Attempts(ctx context.Context, resolver Phase4Attemp
 			}
 
 			var cmdID, cmdState, leaseUntil, lastError string
-			cmdErr := s.db.QueryRowContext(ctx, `SELECT id, state, lease_until, last_error FROM phase4_worker_commands WHERE worker_id = ? AND attempt_id = ? AND kind = 'resume'`, cs.workerID, cs.attemptID).Scan(&cmdID, &cmdState, &leaseUntil, &lastError)
+			cmdErr := s.db.QueryRowContext(ctx, `SELECT id, state, lease_until, last_error FROM phase4_worker_commands WHERE worker_id = ? AND attempt_id = ? AND kind = 'resume' AND dedupe_key = 'attempt'`, cs.workerID, cs.attemptID).Scan(&cmdID, &cmdState, &leaseUntil, &lastError)
 			preparedOnly := false
 			switch {
 			case errors.Is(cmdErr, sql.ErrNoRows):
