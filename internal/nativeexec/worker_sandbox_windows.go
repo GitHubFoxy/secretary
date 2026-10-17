@@ -4,6 +4,9 @@ package nativeexec
 
 import (
 	"errors"
+	"encoding/base64"
+	"encoding/json"
+	"unicode/utf16"
 	"fmt"
 	"os"
 	"os/exec"
@@ -31,7 +34,26 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	if policy.ProtectedDir == "" || policy.Workspace == "" {
 		return "", nil, errors.New("worker sandbox: Node private directory and Worker workspace required")
 	}
-	return command, args, nil
+	spec, err := json.Marshal(struct {
+		Command string
+		Arguments string
+		Workspace string
+	}{command, windowsArgumentLine(args), policy.Workspace})
+	if err != nil { return "", nil, err }
+	encodedSpec := base64.StdEncoding.EncodeToString(spec)
+	psCommand := "$ErrorActionPreference = 'Stop'\ntry {\n    $raw = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($env:SECRETARY_WORKER_LAUNCH_SPEC))\n    $spec = $raw | ConvertFrom-Json\n    $p = New-Object System.Diagnostics.ProcessStartInfo\n    $p.FileName = [string]$spec.Command\n    $p.Arguments = [string]$spec.Arguments\n    $p.WorkingDirectory = [string]$spec.Workspace\n    $p.UseShellExecute = $false\n    $p.RedirectStandardInput = $true\n    $p.RedirectStandardOutput = $true\n    $p.RedirectStandardError = $true\n    $p.UserName = $env:SECRETARY_WORKER_USERNAME\n    $p.Domain = $env:SECRETARY_WORKER_DOMAIN\n    $p.Password = ConvertTo-SecureString $env:SECRETARY_WORKER_PASSWORD -AsPlainText -Force\n    $p.LoadUserProfile = $true\n    $p.EnvironmentVariables.Clear()\n    foreach ($entry in [Environment]::GetEnvironmentVariables().GetEnumerator()) {\n        $name = [string]$entry.Key\n        if ($name.StartsWith('SECRETARY_') -and $name -ne 'SECRETARY_ARTIFACT_BROKER_URL' -and -not $name.StartsWith('SECRETARY_CLAUDE_MCP_')) {\n            continue\n        }\n        $p.EnvironmentVariables[$name] = [string]$entry.Value\n    }\n    $child = [System.Diagnostics.Process]::Start($p)\n    $out = $child.StandardOutput.BaseStream.CopyToAsync([Console]::OpenStandardOutput())\n    $err = $child.StandardError.BaseStream.CopyToAsync([Console]::OpenStandardError())\n    $inputStream = [Console]::OpenStandardInput()\n    $inputTask = $inputStream.CopyToAsync($child.StandardInput.BaseStream)\n    $child.WaitForExit()\n    $out.GetAwaiter().GetResult()\n    $err.GetAwaiter().GetResult()\n    exit $child.ExitCode\n} catch {\n    [Console]::Error.WriteLine('Worker launch blocked: ' + $_.Exception.Message)\n    exit 1\n}"
+	utf16Command := utf16.Encode([]rune(psCommand))
+	rawCommand := make([]byte,0,len(utf16Command)*2)
+	for _, value := range utf16Command { rawCommand=append(rawCommand,byte(value),byte(value>>8)) }
+	encodedPS := base64.StdEncoding.EncodeToString(rawCommand)
+	return filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+		[]string{"-NoLogo","-NoProfile","-NonInteractive","-EncodedCommand",encodedPS,encodedSpec}, nil
+}
+
+func windowsArgumentLine(args []string) string {
+	escaped := make([]string,0,len(args))
+	for _, arg := range args { escaped = append(escaped,syscall.EscapeArg(arg)) }
+	return strings.Join(escaped," ")
 }
 
 func applyWorkerSandbox(policy WorkerSandbox, cmd *exec.Cmd) error {
@@ -107,7 +129,20 @@ func applyWorkerSandbox(policy WorkerSandbox, cmd *exec.Cmd) error {
 	if err := revertWorkerToken(); err != nil { return err }
 	if guardErr != nil { return guardErr }
 	if cmd.SysProcAttr == nil { cmd.SysProcAttr = &syscall.SysProcAttr{} }
-	cmd.SysProcAttr.Token = syscall.Token(token)
+	// The Go os/exec Token path uses CreateProcessAsUser, which is not
+	// available to ordinary Windows Node users (SE_INCREASE_QUOTA absent).
+	// A trusted PowerShell/.NET proxy uses CreateProcessWithLogonW instead,
+	// retaining stream redirection while the child runs as the separate SID.
+	if len(cmd.Args) < 2 { return errors.New("worker sandbox: missing launch specification") }
+	spec := cmd.Args[len(cmd.Args)-1]
+	cmd.Args = cmd.Args[:len(cmd.Args)-1]
+	cmd.Env = append(cmd.Env,
+		"SECRETARY_WORKER_LAUNCH_SPEC="+spec,
+		"SECRETARY_WORKER_USERNAME="+username,
+		"SECRETARY_WORKER_PASSWORD="+password,
+		"SECRETARY_WORKER_DOMAIN="+domain,
+		"SECRETARY_WORKER_HOME="+workerHome,
+	)
 	return nil
 }
 
