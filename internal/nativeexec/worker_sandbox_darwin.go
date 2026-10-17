@@ -38,8 +38,13 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	if err != nil { return "", nil, err }
 	home, err := os.UserHomeDir()
 	if err != nil { return "", nil, err }
-	reads := []string{"/System", "/usr", "/bin", "/sbin", "/Library", "/Applications", "/private/etc", "/private/var/db/dyld", "/dev", workspace, executable}
-	writes := []string{workspace, "/private/tmp", "/tmp"}
+	tempRoot, tempErr := filepath.EvalSymlinks(os.TempDir())
+	if tempErr != nil { return "", nil, tempErr }
+	if protected == tempRoot || strings.HasPrefix(protected, tempRoot+string(filepath.Separator)) {
+		return "", nil, errors.New("worker sandbox: Node secrets cannot be located in native temporary directory")
+	}
+	reads := []string{tempRoot, "/opt/homebrew", "/private/var/db", "/System", "/usr", "/bin", "/sbin", "/Library", "/Applications", "/private/etc", "/private/var/db/dyld", "/dev", workspace, executable}
+	writes := []string{workspace, tempRoot, "/private/tmp", "/tmp"}
 	for _, name := range []string{".codex", ".claude", ".claude.json"} {
 		state := filepath.Join(home, name)
 		info, statErr := os.Lstat(state)
