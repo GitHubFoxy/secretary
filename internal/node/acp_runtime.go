@@ -1,6 +1,7 @@
 package node
 
 import (
+	"encoding/base64"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -64,6 +65,10 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 	if err != nil {
 		return nil, err
 	}
+	if len(request.Images) > 0 && !negotiated.Capabilities.PromptImage {
+		client.Close()
+		return nil, errors.New("image: selected ACP agent does not advertise promptCapabilities.image")
+	}
 	var created struct {
 		SessionID     string               `json:"sessionId"`
 		ConfigOptions []nativeConfigOption `json:"configOptions"`
@@ -111,6 +116,7 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 		}
 	}
 	session := newACPSession(created.SessionID, client, !request.DeferInitialPrompt)
+	session.imageSupported = negotiated.Capabilities.PromptImage
 	session.setConfigOptions(created.ConfigOptions)
 	session.drainPromptEvents = r.DrainPromptEvents || request.DrainOutputBeforeResult
 	session.terminalMessageGrouping = r.TerminalMessageGrouping
@@ -118,7 +124,7 @@ func (r ACPRuntime) Start(ctx context.Context, request StartRequest) (Session, e
 	session.setRequestHandler()
 	go session.watch()
 	if !request.DeferInitialPrompt {
-		go func() { _ = session.promptTurn(context.Background(), request.Task) }()
+		go func() { _ = session.promptTurnImages(context.Background(), request.Task, request.Images) }()
 	}
 	return session, nil
 }
@@ -136,8 +142,13 @@ func (r ACPRuntime) Resume(ctx context.Context, request StartRequest, runtimeSes
 	if err != nil {
 		return nil, err
 	}
+	if len(request.Images) > 0 && !negotiated.Capabilities.PromptImage {
+		client.Close()
+		return nil, errors.New("image: selected ACP agent does not advertise promptCapabilities.image")
+	}
 	mcpServers := acpMCPServers(request.MCPServers)
 	session := newACPSession(runtimeSessionID, client, false)
+	session.imageSupported = negotiated.Capabilities.PromptImage
 	session.drainPromptEvents = r.DrainPromptEvents || request.DrainOutputBeforeResult
 	session.terminalMessageGrouping = r.TerminalMessageGrouping
 	session.codexMessagePhases = r.CodexMessagePhases
@@ -413,6 +424,7 @@ type acpSessionCapabilities struct {
 }
 
 type acpAgentCapabilities struct {
+	PromptImage         bool
 	LoadSession         bool
 	SessionCapabilities acpSessionCapabilities
 }
@@ -427,6 +439,9 @@ func parseAgentCapabilities(raw map[string]any) acpAgentCapabilities {
 	var caps acpAgentCapabilities
 	if raw == nil {
 		return caps
+	}
+	if prompt, ok := raw["promptCapabilities"].(map[string]any); ok {
+		caps.PromptImage = prompt["image"] == true
 	}
 	if val, ok := raw["loadSession"]; ok {
 		if b, ok := val.(bool); ok && b {
@@ -599,6 +614,9 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 		return nil, acpNegotiated{}, fmt.Errorf("acp: unsupported negotiated protocol version %v", initialized.ProtocolVersion)
 	}
 	caps := parseAgentCapabilities(initialized.AgentCapabilities)
+	if !caps.PromptImage {
+		caps.PromptImage = parseAgentCapabilities(initialized.Capabilities).PromptImage
+	}
 	if !caps.LoadSession && !caps.SessionCapabilities.Resume {
 		fallbackCaps := parseAgentCapabilities(initialized.Capabilities)
 		if fallbackCaps.LoadSession {
@@ -750,7 +768,13 @@ func newACPSession(id string, client *acp.Client, busy bool) *acpSession {
 	return session
 }
 
+type acpPendingPrompt struct {
+	text string
+	images []ImageInput
+}
+
 type acpSession struct {
+	imageSupported bool
 	id       string
 	client   *acp.Client
 	activity chan Activity
@@ -771,7 +795,7 @@ type acpSession struct {
 
 	turnMu sync.Mutex
 	busy   bool
-	queued []string
+	queued []acpPendingPrompt
 
 	textMu                  sync.Mutex
 	turnAnswer              *acpTurnAnswer
@@ -820,13 +844,18 @@ func (s *acpSession) emitActivity(activity Activity) bool {
 	}
 }
 func (s *acpSession) Steer(ctx context.Context, text string) (bool, error) {
+	return s.SteerImages(ctx, text, nil)
+}
+
+func (s *acpSession) SteerImages(ctx context.Context, text string, images []ImageInput) (bool, error) {
+	if len(images) > 0 && !s.imageSupported { return false, errors.New("image: selected ACP agent does not advertise promptCapabilities.image") }
 	if s.codexMessagePhases && !s.busyNow() {
 		return false, fmt.Errorf("codex: steering requires an active native turn")
 	}
 	var response struct {
 		Outcome string `json:"outcome"`
 	}
-	err := s.client.Request(ctx, "_session/steering", map[string]any{"sessionId": s.id, "prompt": []map[string]string{{"type": "text", "text": text}}}, &response)
+	err := s.client.Request(ctx, "_session/steering", map[string]any{"sessionId": s.id, "prompt": acpPromptBlocks(text, images)}, &response)
 	if err != nil {
 		var rpcErr *acp.RPCError
 		if errors.As(err, &rpcErr) {
@@ -1676,25 +1705,32 @@ func selectPermissionOption(options []acpPermissionOption, approved, persistent 
 }
 
 func (s *acpSession) Prompt(ctx context.Context, task string) error {
-	if !s.beginTurn() {
-		return errors.New("acp: session is already busy")
-	}
-	return s.promptTurn(ctx, task)
+	return s.PromptImages(ctx, task, nil)
+}
+
+func (s *acpSession) PromptImages(ctx context.Context, task string, images []ImageInput) error {
+	if len(images) > 0 && !s.imageSupported { return errors.New("image: selected ACP agent does not advertise promptCapabilities.image") }
+	if !s.beginTurn() { return errors.New("acp: session is already busy") }
+	return s.promptTurnImages(ctx, task, images)
 }
 
 func (s *acpSession) Queue(ctx context.Context, task string) error {
-	if task == "" {
-		return errors.New("acp: queued prompt is empty")
-	}
+	return s.QueueImages(ctx, task, nil)
+}
+
+func (s *acpSession) QueueImages(ctx context.Context, task string, images []ImageInput) error {
+	if task == "" { return errors.New("acp: queued prompt is empty") }
+	if len(images) > 0 && !s.imageSupported { return errors.New("image: selected ACP agent does not advertise promptCapabilities.image") }
+	next := acpPendingPrompt{text: task, images: images}
 	s.turnMu.Lock()
 	if s.busy {
-		s.queued = append(s.queued, task)
+		s.queued = append(s.queued, next)
 		s.turnMu.Unlock()
 		return nil
 	}
 	s.busy = true
 	s.turnMu.Unlock()
-	go func() { _ = s.promptTurn(ctx, task) }()
+	go func() { _ = s.promptTurnImages(ctx, task, images) }()
 	return nil
 }
 
@@ -1709,6 +1745,18 @@ func (s *acpSession) beginTurn() bool {
 }
 
 func (s *acpSession) promptTurn(ctx context.Context, task string) error {
+	return s.promptTurnImages(ctx, task, nil)
+}
+
+func acpPromptBlocks(text string, images []ImageInput) []map[string]string {
+	blocks := []map[string]string{{"type": "text", "text": text}}
+	for _, image := range images {
+		blocks = append(blocks, map[string]string{"type": "image", "mimeType": image.MediaType, "data": base64.StdEncoding.EncodeToString(image.Data)})
+	}
+	return blocks
+}
+
+func (s *acpSession) promptTurnImages(ctx context.Context, task string, images []ImageInput) error {
 	defer s.finishTurn()
 	s.textMu.Lock()
 	s.turnAnswer, s.legacyTurnText = nil, nil
@@ -1722,7 +1770,7 @@ func (s *acpSession) promptTurn(ctx context.Context, task string) error {
 		Summary    string `json:"summary"`
 		StopReason string `json:"stopReason"`
 	}
-	params := map[string]any{"sessionId": s.id, "prompt": []map[string]string{{"type": "text", "text": task}}}
+	params := map[string]any{"sessionId": s.id, "prompt": acpPromptBlocks(task, images)}
 	var err error
 	if s.drainPromptEvents || s.terminalMessageGrouping {
 		err = s.client.RequestDrainingEvents(ctx, "session/prompt", params, &response)
@@ -1823,15 +1871,15 @@ func (s *acpSession) promptTurn(ctx context.Context, task string) error {
 func (s *acpSession) finishTurn() {
 	s.turnMu.Lock()
 	s.busy = false
-	var next string
+	var next acpPendingPrompt
 	if len(s.queued) > 0 {
 		next = s.queued[0]
 		s.queued = s.queued[1:]
 		s.busy = true
 	}
 	s.turnMu.Unlock()
-	if next != "" {
-		go func() { _ = s.promptTurn(context.Background(), next) }()
+	if next.text != "" {
+		go func() { _ = s.promptTurnImages(context.Background(), next.text, next.images) }()
 	}
 }
 func (s *acpSession) watch() {
