@@ -72,7 +72,7 @@ func (r *t09PublishingRuntime) Start(ctx context.Context, request node.StartRequ
 	}
 	r.ready <- artifact
 	out := make(chan node.Result, 1)
-	out <- node.Result{Status: "succeeded", Summary: "Generated archive artifact://" + artifact.ID}
+	out <- node.Result{Status: "succeeded", Summary: "Generated archive artifact://" + artifact.ID + " bare URL: /v1/artifacts/" + artifact.ID + "?download=1"}
 	return &artifactWorkerSession{result: out}, nil
 }
 
@@ -214,7 +214,7 @@ func TestT09RemoteWorkerPublishToWebResultAndRestart(t *testing.T) {
 		}
 		for _, entry := range page.Entries {
 			if entry.Kind == core.EntryWorkerResult && strings.Contains(entry.Body, "Generated archive") &&
-				strings.Contains(entry.Body, ref) && strings.Count(entry.Body, "/v1/artifacts/"+artifact.ID+"?download=1") == 1 {
+				strings.Contains(entry.Body, ref) && strings.Count(entry.Body, "[Download output](/v1/artifacts/"+artifact.ID+"?download=1)") == 1 {
 				return true
 			}
 		}
