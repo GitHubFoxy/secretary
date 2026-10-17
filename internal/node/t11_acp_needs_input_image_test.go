@@ -27,9 +27,11 @@ func TestT11ACPNeedsInputDeliversImageBlocksBeforeNativeResponse(t *testing.T) {
 			"ACP_STEER_OUTCOME=injected",
 		},
 	}
-	session,err:=runtime.Start(ctx,StartRequest{WorkerRef:"t11-needs-input-native",Task:"Ask the owner for a photo",Workspace:t.TempDir()})
+	session,err:=runtime.Start(ctx,StartRequest{WorkerRef:"t11-needs-input-native",Task:"Ask the owner for a photo",Workspace:t.TempDir(),DeferInitialPrompt:true})
 	if err!=nil {t.Fatal(err)}
 	defer session.Close()
+	promptErr:=make(chan error,1)
+	go func(){promptErr<-session.Prompt(ctx,"Ask the owner for a photo")}()
 	var requestID string
 	for requestID=="" {
 		select {
