@@ -33,6 +33,12 @@ type serverMessage struct {
 	Ack     uint64
 }
 
+type commandCompletion struct {
+	command Command
+	outcome CommandOutcome
+	err     error
+}
+
 func (d *Daemon) Run(ctx context.Context) error {
 	if err := d.validate(); err != nil {
 		return err
@@ -113,6 +119,25 @@ func (d *Daemon) runConnection(ctx context.Context, execution *ExecutionNode) er
 func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, connection *ProtocolConnection, inventory core.HarnessInventorySnapshot) error {
 	messages := make(chan serverMessage, 16)
 	readErrors := make(chan error, 1)
+	commands := make(chan Command, 32)
+	completions := make(chan commandCompletion, 1)
+	commandCtx, stopCommands := context.WithCancel(ctx)
+	defer stopCommands()
+	go func() {
+		for {
+			select {
+			case <-commandCtx.Done():
+				return
+			case command := <-commands:
+				outcome, err := execution.HandleCommand(commandCtx, command)
+				select {
+				case completions <- commandCompletion{command: command, outcome: outcome, err: err}:
+				case <-commandCtx.Done():
+					return
+				}
+			}
+		}
+	}()
 	go func() {
 		for {
 			message, err := receiveServerMessage(ctx, connection)
@@ -180,11 +205,16 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			if message.Command == nil {
 				continue
 			}
-			command := *message.Command
-			outcome, err := execution.HandleCommand(ctx, command)
-			if err != nil {
-				return err
+			select {
+			case commands <- *message.Command:
+			default:
+				return errors.New("node: command queue full")
 			}
+		case completed := <-completions:
+			if completed.err != nil {
+				return completed.err
+			}
+			outcome := completed.outcome
 			if outcome.State == CommandFailed && (outcome.Kind == CommandDispatch || outcome.Kind == CommandResume || outcome.Kind == CommandSteering) {
 				if _, err := d.Store.QueueCommandOutcome(outcome); err != nil {
 					return err
@@ -192,7 +222,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			} else if err := connection.SendCommandOutcome(ctx, outcome); err != nil {
 				return err
 			}
-			lastProcessedCommand = command.Metadata().CommandID
+			lastProcessedCommand = completed.command.Metadata().CommandID
 			if err := d.flushOutbox(ctx, connection, &sentThrough); err != nil {
 				return err
 			}
