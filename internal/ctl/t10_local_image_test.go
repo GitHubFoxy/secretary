@@ -18,7 +18,7 @@ import (
 
 type t10LocalVisionRuntime struct {
 	started chan node.StartRequest
-	session *t10LocalVisionSession
+	session node.Session
 }
 func (r *t10LocalVisionRuntime) Start(_ context.Context, request node.StartRequest) (node.Session, error) {
 	r.started <- request
@@ -26,13 +26,15 @@ func (r *t10LocalVisionRuntime) Start(_ context.Context, request node.StartReque
 }
 type t10LocalVisionSession struct {
 	steered chan []node.ImageInput
+	injected bool
+	texts chan string
 }
 func (*t10LocalVisionSession) ID() string { return "native-vision" }
 func (*t10LocalVisionSession) Prompt(context.Context,string) error { return nil }
-func (*t10LocalVisionSession) Steer(context.Context,string) (bool,error) { return true,nil }
+func (s *t10LocalVisionSession) Steer(_ context.Context,text string) (bool,error) { if s.texts != nil { s.texts <- text }; return true,nil }
 func (s *t10LocalVisionSession) SteerImages(_ context.Context, _ string, images []node.ImageInput) (bool,error) {
 	s.steered <- images
-	return true,nil
+	return s.injected,nil
 }
 func (*t10LocalVisionSession) Cancel(context.Context) error { return nil }
 func (*t10LocalVisionSession) Activity() <-chan node.Activity { return nil }
@@ -49,7 +51,7 @@ func TestT10LocalDispatchAndSteeringUseOriginalImageBytes(t *testing.T) {
 	id := "art_"+strings.Repeat("a",32)
 	runtime := &t10LocalVisionRuntime{
 		started:make(chan node.StartRequest,1),
-		session:&t10LocalVisionSession{steered:make(chan []node.ImageInput,1)},
+		session:&t10LocalVisionSession{steered:make(chan []node.ImageInput,1), injected:true},
 	}
 	local := node.NewLocal(runtime)
 	defer local.Close()
@@ -81,7 +83,7 @@ func TestT10LocalDispatchAndSteeringUseOriginalImageBytes(t *testing.T) {
 	outcome,err=nruntime.LocalCommand(context.Background(),steer)
 	if err!=nil || outcome.State!=node.CommandAccepted { t.Fatalf("local steer = %#v %v",outcome,err) }
 	select {
-	case images:=<-runtime.session.steered:
+	case images:=<-runtime.session.(*t10LocalVisionSession).steered:
 		if len(images)!=1 || images[0].ArtifactID!=id || !bytes.Equal(images[0].Data,original) { t.Fatalf("local steer lost image bytes: %#v",images) }
 	default: t.Fatal("local image was not steered")
 	}
