@@ -74,12 +74,12 @@ flowchart TD
 ## Быстрый старт и запуск
 
 ### Требования
-- Go 1.23+
+- Go 1.27.1+
 - Node.js 20+ (для веб-интерфейса)
 
 ### Установка и настройка
 
-На macOS/Linux с Git, zsh, OpenSSL и Go 1.23+ (или mise) доступна установка одной командой:
+На macOS/Linux с Git, zsh, OpenSSL и Go 1.27.1+ (или mise) доступна установка одной командой:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install.sh | bash
