@@ -81,7 +81,6 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	}
 	// Hide the private Node root even if its administrator selected an
 	// alternate location INSIDE an otherwise shared system subtree.
-	wrapped = append(wrapped, "--tmpfs", protected)
 	wrapped = append(wrapped, "--proc", "/proc", "--tmpfs", "/tmp")
 
 	// Preserve native CLI authentication and session history while allowing
@@ -105,9 +104,6 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 		}
 		wrapped = append(wrapped, "--bind", state, state)
 	}
-	if nativeStore != "" {
-		wrapped = append(wrapped, "--bind", nativeStore, nativeStore)
-	}
 	wrapped = append(wrapped, "--bind", workspace, workspace)
 
 	// Native harnesses and fake CLI test fixtures can live outside /usr;
@@ -129,7 +125,33 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 		if strings.HasPrefix(executable, prefix) { inSystem = true; break }
 	}
 	if !inSystem {
-		wrapped = append(wrapped, "--ro-bind", executable, executable)
+		// User-installed Codex/Claude/OpenCode entrypoints may read sibling
+		// assets, a package.json, and hoisted node_modules. A single-file
+		// bind loses these dependencies. Share only the trusted package
+		// installation subtree, never the containing HOME or Node state.
+		install := filepath.Dir(executable)
+		components := strings.Split(filepath.Clean(executable), string(filepath.Separator))
+		for i, component := range components {
+			if component == "node_modules" && i > 0 {
+				install = string(filepath.Separator) + filepath.Join(components[:i+1]...)
+				break
+			}
+		}
+		if install == "/" || install == protected ||
+			strings.HasPrefix(executable, protected+string(filepath.Separator)) ||
+			strings.HasPrefix(protected, install+string(filepath.Separator)) && install == string(filepath.Separator) {
+			return "", nil, errors.New("worker sandbox: unsafe native CLI install root")
+		}
+		wrapped = append(wrapped, "--ro-bind", install, install)
+	}
+	// Mask after ALL shared binds. An arbitrary --data-dir (including one
+	// nested under /etc, /usr, or a CLI installation) cannot be exposed by
+	// a later mount. Explicit OpenCode and workspace binds were checked.
+	wrapped = append(wrapped, "--tmpfs", protected)
+	if nativeStore != "" {
+		// The narrowly authorized provider state may live within the
+		// otherwise hidden Node directory, unlike its signing keys.
+		wrapped = append(wrapped, "--bind", nativeStore, nativeStore)
 	}
 	wrapped = append(wrapped, "--chdir", workspace, "--", executable)
 	return bwrap, append(wrapped, args...), nil
