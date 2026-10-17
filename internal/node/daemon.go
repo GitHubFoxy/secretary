@@ -119,25 +119,44 @@ func (d *Daemon) runConnection(ctx context.Context, execution *ExecutionNode) er
 func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, connection *ProtocolConnection, inventory core.HarnessInventorySnapshot) error {
 	messages := make(chan serverMessage, 16)
 	readErrors := make(chan error, 1)
-	commands := make(chan Command, 32)
-	completions := make(chan commandCompletion, 1)
+	completions := make(chan commandCompletion, 4)
 	commandCtx, stopCommands := context.WithCancel(ctx)
 	defer stopCommands()
-	go func() {
-		for {
-			select {
-			case <-commandCtx.Done():
-				return
-			case command := <-commands:
+	pendingCommands := make([]Command, 0, 32)
+	runningWorkers := make(map[string]bool)
+	runningCommands := 0
+	commandWorkerKey := func(command Command) string {
+		worker := command.Metadata().WorkerRef
+		if worker != "" {
+			return worker
+		}
+		return command.Metadata().CommandID
+	}
+	startPending := func() {
+		for runningCommands < 4 {
+			index := -1
+			for i, command := range pendingCommands {
+				if !runningWorkers[commandWorkerKey(command)] {
+					index = i
+					break
+				}
+			}
+			if index < 0 {
+				break
+			}
+			command := pendingCommands[index]
+			pendingCommands = append(pendingCommands[:index], pendingCommands[index+1:]...)
+			runningWorkers[commandWorkerKey(command)] = true
+			runningCommands++
+			go func() {
 				outcome, err := execution.HandleCommand(commandCtx, command)
 				select {
 				case completions <- commandCompletion{command: command, outcome: outcome, err: err}:
 				case <-commandCtx.Done():
-					return
 				}
-			}
+			}()
 		}
-	}()
+	}
 	go func() {
 		for {
 			message, err := receiveServerMessage(ctx, connection)
@@ -205,12 +224,15 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			if message.Command == nil {
 				continue
 			}
-			select {
-			case commands <- *message.Command:
-			default:
+			if len(pendingCommands) >= 32 {
 				return errors.New("node: command queue full")
 			}
+			pendingCommands = append(pendingCommands, *message.Command)
+			startPending()
 		case completed := <-completions:
+			delete(runningWorkers, commandWorkerKey(completed.command))
+			runningCommands--
+			startPending()
 			if completed.err != nil {
 				return completed.err
 			}
