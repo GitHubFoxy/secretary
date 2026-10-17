@@ -221,6 +221,9 @@ func TestT04CompactionDoesNotResendSameWorkerResultFromLaterDurableEvent(t *test
 	if err := adapter.HandleDurableEvent(ctx, first); err != nil {
 		t.Fatal(err)
 	}
+	if err := adapter.SyncWorkerTopics(ctx); err != nil {
+		t.Fatal(err)
+	}
 	if len(transport.sent) != 3 || len(adapter.state.Delivered) != 0 {
 		t.Fatalf("first result must reach Topic, DM and General before compacting: %#v receipts=%#v", transport.sent, adapter.state.Delivered)
 	}
@@ -229,6 +232,9 @@ func TestT04CompactionDoesNotResendSameWorkerResultFromLaterDurableEvent(t *test
 	later.Sequence = 2
 	later.EventID = "result-accepted-2"
 	if err := adapter.HandleDurableEvent(ctx, later); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.SyncWorkerTopics(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if len(transport.sent) != 3 || adapter.LastEventSeq() != 2 {
