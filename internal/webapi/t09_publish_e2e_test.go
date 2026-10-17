@@ -214,7 +214,7 @@ func TestT09RemoteWorkerPublishToWebResultAndRestart(t *testing.T) {
 		}
 		for _, entry := range page.Entries {
 			if entry.Kind == core.EntryWorkerResult && strings.Contains(entry.Body, "Generated archive") &&
-				strings.Contains(entry.Body, ref) && strings.Contains(entry.Body, "/v1/artifacts/"+artifact.ID+"?download=1") {
+				strings.Contains(entry.Body, ref) && strings.Count(entry.Body, "/v1/artifacts/"+artifact.ID+"?download=1") == 1 {
 				return true
 			}
 		}
@@ -254,6 +254,26 @@ func TestT09RemoteWorkerPublishToWebResultAndRestart(t *testing.T) {
 	denied.Body.Close()
 	if denied.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("unauthorized publication succeeded: %d", denied.StatusCode)
+	}
+	// Even a leaked v1 publication capability cannot upload raw harness bytes:
+	// the Server also requires a Node-private signature of a verified path,
+	// filename and the exact SHA256 content.
+	nodeAuth, err := identity.Authenticator()
+	if err != nil { t.Fatal(err) }
+	forged, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/artifacts/publish", bytes.NewReader([]byte("secret outside workspace")))
+	if err != nil { t.Fatal(err) }
+	forged.Header.Set("X-Secretary-Node", string(nodeID))
+	forged.Header.Set("X-Artifact-Worker", spawned.Value.Worker.WorkerRef)
+	forged.Header.Set("X-Artifact-Attempt", spawned.Value.Attempts[0].ID)
+	forged.Header.Set("X-Artifact-Publish-Token", nodeAuth.SignPublishCapability(nodeID, spawned.Value.Worker.WorkerRef, spawned.Value.Attempts[0].ID))
+	forged.Header.Set("X-Artifact-Name", "unverified.zip")
+	forged.Header.Set("X-Artifact-Source-Path", "result.zip")
+	forged.Header.Set("Idempotency-Key", "forged-from-runtime")
+	forgedResponse, err := server.Client().Do(forged)
+	if err != nil { t.Fatal(err) }
+	forgedResponse.Body.Close()
+	if forgedResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("Server accepted raw bytes with only a Worker publish token: HTTP %d", forgedResponse.StatusCode)
 	}
 	turnID := spawned.Value.Turns[0].ID
 	currentResult, err := store.Phase4Result(ctx, turnID)
