@@ -2270,20 +2270,38 @@ func (s *Store) RecordNodeAttemptOutcome(ctx context.Context, envelope AttemptOu
 	if err != nil {
 		return AttemptOutcome{}, nil, false, err
 	}
+	// Deduplicate by Artifact ID. An existing artifact:// mention is NOT
+	// evidence of a downloadable URL in the Web conversation.
+	seen := make(map[string]bool, len(envelope.ArtifactRefs)+len(published))
+	for _, ref := range envelope.ArtifactRefs {
+		seen[ref.Ref] = true
+	}
 	for _, artifact := range published {
 		reference := "artifact://" + artifact.ID
-		if !strings.Contains(envelope.Summary, reference) {
-			envelope.Summary += "\n\nPublished: [Download output](/v1/artifacts/" + artifact.ID + "?download=1) (" + artifact.Name + "; " + reference + ")"
-		}
-		present := false
-		for _, existing := range envelope.ArtifactRefs {
-			if existing.Ref == reference {
-				present = true
-				break
-			}
-		}
-		if !present {
+		if !seen[reference] {
 			envelope.ArtifactRefs = append(envelope.ArtifactRefs, ArtifactRef{Kind: "file", Ref: reference})
+			seen[reference] = true
+		}
+	}
+	var ownerID string
+	if err := s.db.QueryRowContext(ctx, `SELECT c.person_id FROM conversations c
+		JOIN workers w ON c.id = w.conversation_id WHERE w.id = ?`, worker.ID).Scan(&ownerID); err != nil {
+		return AttemptOutcome{}, nil, false, err
+	}
+	shown := make(map[string]bool, len(envelope.ArtifactRefs))
+	for _, ref := range envelope.ArtifactRefs {
+		if !strings.HasPrefix(ref.Ref, "artifact://") { continue }
+		id := strings.TrimPrefix(ref.Ref, "artifact://")
+		if shown[id] { continue }
+		shown[id] = true
+		// Only link real Artifacts owned by the same Person as this Worker.
+		var present int
+		err := s.db.QueryRowContext(ctx, `SELECT 1 FROM artifacts WHERE id = ? AND person_id = ?`, id, ownerID).Scan(&present)
+		if errors.Is(err, sql.ErrNoRows) { continue }
+		if err != nil { return AttemptOutcome{}, nil, false, err }
+		downloadURL := "/v1/artifacts/" + id + "?download=1"
+		if !strings.Contains(envelope.Summary, downloadURL) {
+			envelope.Summary += "\n\n[Download output](" + downloadURL + ")"
 		}
 	}
 	artifactRefs := ""
