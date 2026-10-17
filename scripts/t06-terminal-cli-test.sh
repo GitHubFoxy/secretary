@@ -22,7 +22,8 @@ cat > "$6" <<'BINARY'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == --check-codex-readiness ]]; then
-  exit 0
+  [[ "${T06_CODEX_AUTH_FAIL:-0}" != 1 ]]
+  exit $?
 fi
 if [[ "$0" == */secretary-node ]]; then
   exec "$T06_NODE_BINARY" "$@"
@@ -43,13 +44,17 @@ cat > "$CODBIN/codex-acp" <<'STUB'
 #!/usr/bin/env bash
 exit 0
 STUB
+cat > "$CODBIN/codex" <<'STUB'
+#!/usr/bin/env bash
+[[ "${T06_CODEX_AUTH_FAIL:-0}" != 1 ]]
+STUB
 cat > "$CLAUDEBIN/claude" <<'STUB'
 #!/usr/bin/env bash
 if [[ "$*" == '--version' ]]; then exit 0; fi
 if [[ "$*" == 'auth status' ]]; then [[ "${CLAUDE_AUTH_FAIL:-0}" != 1 ]]; exit $?; fi
 exit 1
 STUB
-chmod +x "$CODBIN/codex-acp" "$CLAUDEBIN/claude"
+chmod +x "$CODBIN/codex-acp" "$CODBIN/codex" "$CLAUDEBIN/claude"
 cat > "$CODBIN/systemctl" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "$TEST_SYSTEMD_LOG"
@@ -133,6 +138,66 @@ grep -q 'start secretary-node.service' "$TEST_SYSTEMD_LOG" || fail "Node restart
 "$ROOT/secretary" uninstall-service
 [[ ! -e "$HOME/.config/systemd/user/secretary.service" ]] || fail "service unit retained after uninstall"
 
+# Existing config.toml or a previously paired identity must not suppress
+# recovery of missing Node secrets on upgrade or an interrupted prior setup.
+export HOME="$TMP/upgrade-home" PATH="$CODBIN:/usr/bin:/bin"
+UPGRADE_STATE="$HOME/.local/share/secretary"
+mkdir -p "$UPGRADE_STATE/node/data"
+cp "$ROOT/internal/config/defaults/config.toml" "$UPGRADE_STATE/config.toml"
+printf "export SECRETARY_BOOTSTRAP_TOKEN='existing-bootstrap'\nexport SECRETARY_CUSTOM_VALUE='keep-me'\n" > "$UPGRADE_STATE/environment"
+printf '{"node":"legacy-paired"}\n' > "$UPGRADE_STATE/node/data/identity.json"
+export SECRETARY_NODE_PAIRING_TOKEN="ambient-not-persisted"
+export SECRETARY_NODE_ADMIN_TOKEN="ambient-not-persisted"
+before_upgrade_config="$(cat "$UPGRADE_STATE/config.toml")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$UPGRADE_STATE/config.toml")" == "$before_upgrade_config" ]] || fail "upgrade rewrote original config"
+grep -q '^export SECRETARY_BOOTSTRAP_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade lost bootstrap secret"
+grep -q "existing-bootstrap" "$UPGRADE_STATE/environment" || fail "upgrade rotated bootstrap"
+grep -q "keep-me" "$UPGRADE_STATE/environment" || fail "upgrade modified unrelated environment"
+grep -q '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade did not create pairing token"
+grep -q '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade did not create admin token"
+if grep -q 'ambient-not-persisted' "$UPGRADE_STATE/environment"; then fail "inherited environment was treated as persisted credentials"; fi
+before_upgrade_env="$(cat "$UPGRADE_STATE/environment")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$UPGRADE_STATE/environment")" == "$before_upgrade_env" ]] || fail "repeat upgrade rotated existing secrets"
+
+# A partial setup or manually incomplete environment is repaired one field
+# at a time, without rewriting valid credentials.
+grep -v '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" > "$TMP/retry-env"
+cp "$TMP/retry-env" "$UPGRADE_STATE/environment"
+pair_before="$(grep '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(grep '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment")" == "$pair_before" ]] || fail "retry rotated existing pairing token"
+grep -q '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" || fail "retry did not repair missing admin token"
+admin_before="$(grep '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment")"
+grep -v '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" > "$TMP/retry-env"
+cp "$TMP/retry-env" "$UPGRADE_STATE/environment"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(grep '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment")" == "$admin_before" ]] || fail "retry rotated existing admin token"
+grep -q '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" || fail "retry did not repair missing pairing token"
+unset SECRETARY_NODE_PAIRING_TOKEN SECRETARY_NODE_ADMIN_TOKEN
+
+# Fresh unattended setup should reject an installed but unready Codex and
+# choose a genuinely authenticated Claude Code instead.
+export HOME="$TMP/auto-choice-home" PATH="$CODBIN:$CLAUDEBIN:/usr/bin:/bin"
+export T06_CODEX_AUTH_FAIL=1
+"$ROOT/secretary" setup --non-interactive >/dev/null
+AUTO_STATE="$HOME/.local/share/secretary"
+grep -q '^harness = "claude_code"$' "$AUTO_STATE/config.toml" || fail "unauthorized Codex wrongly won auto-selection"
+grep -q '^default_harness = "claude_code"$' "$AUTO_STATE/config.toml" || fail "auto-selection did not set Claude Worker defaults"
+unset T06_CODEX_AUTH_FAIL
+
+# codex-acp is only the adapter, not proof that the Codex CLI is installed.
+ACPONLYBIN="$TMP/acp-only-bin"
+mkdir -p "$ACPONLYBIN"
+make_mise "$ACPONLYBIN"
+cp "$CODBIN/codex-acp" "$ACPONLYBIN/codex-acp"
+export HOME="$TMP/acp-only-home" PATH="$ACPONLYBIN:/usr/bin:/bin"
+if "$ROOT/secretary" setup --non-interactive >"$TMP/acp-only.log" 2>&1; then
+  fail "codex-acp alone was incorrectly treated as a ready Codex harness"
+fi
+[[ ! -e "$HOME/.local/share/secretary/config.toml" ]] || fail "ACP-only failure created a misleading active config"
+
 export HOME="$TMP/claude-home" PATH="$CLAUDEBIN:/usr/bin:/bin"
 "$ROOT/secretary" setup --non-interactive
 STATE="$HOME/.local/share/secretary"
@@ -143,4 +208,4 @@ grep -q '^default_harness = "claude_code"$' "$STATE/config.toml" || fail "Claude
 before="$(cat "$STATE/config.toml")"
 if "$ROOT/secretary" setup --non-interactive --harness unsupported >/dev/null 2>&1; then fail "invalid harness accepted"; fi
 [[ "$(cat "$STATE/config.toml")" == "$before" ]] || fail "invalid harness modified config"
-printf 'PASS: clean Codex and Claude-only terminal setup, protected state, non-TTY failures and Linux service lifecycle\n'
+printf 'PASS: T06 Codex/Claude setup, upgrade/retry credential repair, authenticated auto-selection, workspace persistence and Linux lifecycle\n'
