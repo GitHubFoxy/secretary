@@ -853,6 +853,17 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 				attempt Phase4Attempt
 			}{}, ErrInvalidTransition
 		}
+		// The reservation shares a transaction with the new Attempt. The
+		// Node row write lock and live-claim check exclude concurrent
+		// Follow-ups and Spawns competing for the last capacity slot.
+		if spec.ReserveNodeCapacity {
+			if err := requireNodeCapacityTx(ctx, tx, NodeReference(worker.NodeID)); err != nil {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
+		}
 		now := s.now()
 		turn := Turn{ID: newID("trn"), WorkerID: worker.ID, Input: spec.Input, NormalizedIntent: spec.NormalizedIntent, ContextSnapshot: spec.ContextSnapshot, State: TurnStarting, CreatedAt: now, UpdatedAt: now}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO turns(id, worker_id, input, normalized_intent, context_snapshot, state, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, turn.ID, turn.WorkerID, turn.Input, turn.NormalizedIntent, turn.ContextSnapshot, turn.State, timestamp(now), timestamp(now)); err != nil {
@@ -867,6 +878,14 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 				turn    Turn
 				attempt Phase4Attempt
 			}{}, err
+		}
+		if spec.ReserveNodeCapacity {
+			if err := recordNodeCapacityClaimTx(ctx, tx, attempt.ID, NodeReference(worker.NodeID)); err != nil {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
 		}
 		if err := ensureLifecycleCommandIntentTx(ctx, tx, now, lifecycleCommandKind(spec.CommandKind), worker.ID, attempt.ID); err != nil {
 			return struct {
