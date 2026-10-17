@@ -50,10 +50,9 @@ func TestT01LiveSecretaryChoosesWorkerAndClarifies(t *testing.T) {
 		t.Fatalf("live test instance authentication failed: status=%d", response.StatusCode)
 	}
 
-	var after int64
 	getEntries := func() []core.ConversationEntry {
 		t.Helper()
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/conversation?after_seq="+strconv.FormatInt(after, 10), nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/conversation?after_seq=0", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -95,52 +94,112 @@ func TestT01LiveSecretaryChoosesWorkerAndClarifies(t *testing.T) {
 			t.Fatalf("live input %q was not accepted: %d", id, res.StatusCode)
 		}
 	}
-	await := func(kind core.EntryKind) core.ConversationEntry {
+	// Read from a fixed sequence boundary. A single HTTP page can contain
+	// several entries, so do not discard entries after the first match.
+	await := func(kind core.EntryKind, afterSeq int64, match func(core.ConversationEntry) bool) core.ConversationEntry {
 		t.Helper()
 		tick := time.NewTicker(350 * time.Millisecond)
 		defer tick.Stop()
 		for {
 			for _, entry := range getEntries() {
-				if entry.Seq > after {
-					after = entry.Seq
-				}
-				if entry.Kind == kind {
+				if entry.Seq > afterSeq && entry.Kind == kind && (match == nil || match(entry)) {
 					return entry
 				}
 			}
 			select {
 			case <-ctx.Done():
-				t.Fatalf("live Secretary did not produce %s: %v", kind, ctx.Err())
+				t.Fatalf("live Secretary did not produce %s after seq %d: %v", kind, afterSeq, ctx.Err())
 			case <-tick.C:
 			}
 		}
 	}
 
+	// Public Worker observer endpoints let the test verify that a clarification
+	// did not secretly create a new Task, Turn or Attempt.
+	getWorkers := func() []core.Worker {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/workers", nil)
+		if err != nil { t.Fatal(err) }
+		res, err := client.Do(req)
+		if err != nil { t.Fatal(err) }
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK { t.Fatalf("list Workers failed: %d", res.StatusCode) }
+		var workers []core.Worker
+		if err := json.NewDecoder(res.Body).Decode(&workers); err != nil { t.Fatal(err) }
+		return workers
+	}
+	getWorker := func(ref string) core.WorkerDetails {
+		t.Helper()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/v1/workers/"+ref, nil)
+		if err != nil { t.Fatal(err) }
+		res, err := client.Do(req)
+		if err != nil { t.Fatal(err) }
+		defer res.Body.Close()
+		if res.StatusCode != http.StatusOK { t.Fatalf("read Worker %q failed: %d", ref, res.StatusCode) }
+		var details core.WorkerDetails
+		if err := json.NewDecoder(res.Body).Decode(&details); err != nil { t.Fatal(err) }
+		return details
+	}
+
 	stamp := strconv.FormatInt(time.Now().UnixNano(), 36)
 	post("t01-live-website-"+stamp,
 		"I want a fictional website. Do not create or edit any files or run shell commands. Delegate this as a new Task. Ask me what the website should be about before planning it.")
-	first := await(core.EntryWorkerResult)
+	first := await(core.EntryWorkerResult, 0, nil)
 	if first.WorkerRef == "" || !strings.Contains(first.Body, "?") {
 		t.Fatalf("first Worker did not ask a question: %#v", first)
 	}
 	post("t01-live-vacation-"+stamp,
 		"New, unrelated Task: help me plan a fictional vacation. Do not create or edit files or run commands. Delegate this to a different Worker and ask where I want to go.")
-	second := await(core.EntryWorkerResult)
+	second := await(core.EntryWorkerResult, first.Seq, nil)
 	if second.WorkerRef == "" || second.WorkerRef == first.WorkerRef || !strings.Contains(second.Body, "?") {
 		t.Fatalf("Secretary did not start an independent Worker asking a question: %#v", second)
 	}
 
-	// Both Workers have asked questions. This reply deliberately omits which
-	// task is intended, and explicitly requires Secretary to clarify.
-	post("t01-live-ambiguous-"+stamp,
-		"Yes. I have not said whether that is for the website or vacation. Ask me which Worker I mean. Do not guess.")
-	clarify := await(core.EntrySecretary)
-	if !strings.Contains(clarify.Body, "?") {
-		t.Fatalf("Secretary did not ask for Worker clarification: %#v", clarify)
+	// Both Workers asked questions and remain available for Follow-ups.
+	// The next input is deliberately neutral. The model must discover the
+	// ambiguity itself; do not tell it to ask for clarification in the input.
+	if workers := getWorkers(); len(workers) != 2 {
+		t.Fatalf("expected two available Workers before ambiguity, got %d", len(workers))
+	}
+	firstBefore, secondBefore := getWorker(first.WorkerRef), getWorker(second.WorkerRef)
+	if len(firstBefore.Results) != 1 || len(secondBefore.Results) != 1 {
+		t.Fatalf("both Workers must have terminal question Results before Yes")
+	}
+	post("t01-live-ambiguous-"+stamp, "Yes")
+	clarify := await(core.EntrySecretary, second.Seq, func(entry core.ConversationEntry) bool {
+		body := strings.ToLower(strings.TrimSpace(entry.Body))
+		return strings.Contains(body, "?") &&
+			(strings.Contains(body, "which") || strings.Contains(body, "worker") ||
+				strings.Contains(body, "website") || strings.Contains(body, "vacation") ||
+				strings.Contains(body, "task") || strings.Contains(body, "mean"))
+	})
+	// The model must ask which Worker to continue. No Worker may receive the
+	// neutral reply, and it must not start a third Worker.
+	// Allow the Secretary turn to finish before checking asynchronous actions.
+	time.Sleep(750 * time.Millisecond)
+	if workers := getWorkers(); len(workers) != 2 {
+		t.Fatalf("neutral Yes created a new Worker: count=%d", len(workers))
+	}
+	for _, before := range []core.WorkerDetails{firstBefore, secondBefore} {
+		after := getWorker(before.Worker.WorkerRef)
+		if len(after.Turns) != len(before.Turns) ||
+			len(after.Attempts) != len(before.Attempts) ||
+			len(after.Results) != len(before.Results) {
+			t.Fatalf("neutral Yes was sent to Worker %s: turns %d→%d, attempts %d→%d, results %d→%d",
+				before.Worker.WorkerRef,
+				len(before.Turns), len(after.Turns),
+				len(before.Attempts), len(after.Attempts),
+				len(before.Results), len(after.Results))
+		}
+	}
+	for _, entry := range getEntries() {
+		if entry.Seq > second.Seq && entry.Kind == core.EntryWorkerResult {
+			t.Fatalf("neutral Yes caused a Worker Result before clarification: %#v", entry)
+		}
 	}
 	post("t01-live-website-answer-"+stamp,
 		"For the website Worker: it should be an online bookshop. Please ask any remaining questions. Do not create or edit files.")
-	continued := await(core.EntryWorkerResult)
+	continued := await(core.EntryWorkerResult, clarify.Seq, nil)
 	if continued.WorkerRef != first.WorkerRef {
 		t.Fatalf("Secretary sent website answer to Worker %q; want %q", continued.WorkerRef, first.WorkerRef)
 	}
