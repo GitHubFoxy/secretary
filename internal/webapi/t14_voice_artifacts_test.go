@@ -455,7 +455,7 @@ func TestT14AudioDocumentKnownOnlyAfterProbe(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	found := false
 	for _, entry := range entries {
-		if entry.Kind != core.EntrySystem || !strings.Contains(entry.Body, "telegram-voice") { continue }
+		if entry.Kind != core.EntrySystem || !strings.Contains(entry.Body, "artifact://") { continue }
 		ref := strings.TrimPrefix(entry.Body[strings.LastIndex(entry.Body, "artifact://"):], "artifact://")
 		art, _, err := store.ArtifactForPerson(ctx, conv.PersonID, ref)
 		if err != nil { t.Fatal(err) }
