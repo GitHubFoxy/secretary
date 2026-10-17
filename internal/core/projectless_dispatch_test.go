@@ -86,3 +86,20 @@ func TestProjectlessDispatchExplainsIncompatibleAndOfflineOverrides(t *testing.T
 		t.Fatalf("offline automatic selection: %v", err)
 	}
 }
+
+func TestProjectlessDispatchPrefersConfiguredHarnessAcrossNodes(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	resolverEnroll(t, store, "local", resolverInventory("local", []HarnessInstance{
+		resolverInstance("local/claude", "local", HarnessClaudeCode),
+	}), 1, nil)
+	resolverEnroll(t, store, "remote", resolverInventory("remote", []HarnessInstance{
+		resolverInstance("remote/codex", "remote", HarnessCodex),
+	}), 1, nil)
+	selected, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{
+		WorkerPolicy: HarnessPolicy{DefaultHarness: HarnessCodex, PreferredHarnesses: []HarnessKind{HarnessClaudeCode}},
+	})
+	if err != nil || selected.Node != "remote" || selected.HarnessInstance.ID != "remote/codex" {
+		t.Fatalf("configured harness preference lost to Node preference: %#v err=%v", selected, err)
+	}
+}
