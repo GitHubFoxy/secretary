@@ -46,13 +46,41 @@ func TestT08ArtifactIDsIncludeUniqueAfterRepeatedReferences(t *testing.T) {
 	}
 }
 
+type t08SteeringRuntime struct {
+	queued bool
+	workspace string
+	received chan string
+}
+
+type t08SteeringSession struct {
+	queued bool
+	received chan string
+}
+
+func (r *t08SteeringRuntime) Start(_ context.Context, request StartRequest) (Session, error) {
+	r.workspace = request.Workspace
+	return &t08SteeringSession{queued: r.queued, received: r.received}, nil
+}
+func (*t08SteeringSession) ID() string { return "t08-steering-session" }
+func (*t08SteeringSession) Prompt(context.Context, string) error { return nil }
+func (s *t08SteeringSession) Steer(_ context.Context, text string) (bool, error) {
+	if s.queued { return false, nil }
+	s.received <- text
+	return true, nil
+}
+func (s *t08SteeringSession) Queue(_ context.Context, text string) error { s.received <- text; return nil }
+func (*t08SteeringSession) Cancel(context.Context) error { return nil }
+func (*t08SteeringSession) Activity() <-chan Activity { return nil }
+func (*t08SteeringSession) Result() <-chan Result { return nil }
+func (*t08SteeringSession) Close() error { return nil }
+
 func TestT08SteerAndRuntimeQueueStageAttachments(t *testing.T) {
 	for _, queued := range []bool{false, true} {
 		t.Run(fmt.Sprintf("queued-%t", queued), func(t *testing.T) {
 			store, err := OpenLocalStore(filepath.Join(t.TempDir(), "state.json"))
 			if err != nil { t.Fatal(err) }
 			defer store.Close()
-			runtime := &fakeRuntime{nonSteerable: queued}
+			runtime := &t08SteeringRuntime{queued: queued, received: make(chan string, 2)}
 			execution := NewExecutionNode("remote", runtime, store)
 			dispatch := daemonDispatchFixture("remote", "initial")
 			outcome, err := execution.HandleCommand(context.Background(), dispatch)
@@ -76,11 +104,10 @@ func TestT08SteerAndRuntimeQueueStageAttachments(t *testing.T) {
 			outcome, err = execution.HandleCommand(context.Background(), command)
 			if err != nil || outcome.State != CommandAccepted { t.Fatalf("steering: %#v %v", outcome, err) }
 			var received string
-			if queued {
-				select { case received = <-runtime.session.queued: case <-time.After(time.Second): t.Fatal("queued attachment not delivered") }
-			} else {
-				select { case <-runtime.session.activity: case <-time.After(time.Second): t.Fatal("missing ready event") }
-				select { case item := <-runtime.session.activity: received = item.Text; case <-time.After(time.Second): t.Fatal("steering attachment not delivered") }
+			select {
+			case received = <-runtime.received:
+			case <-time.After(time.Second):
+				t.Fatal("steering or queued attachment not delivered")
 			}
 			if !strings.Contains(received, ".secretary-artifacts") || !strings.Contains(received, "artifact://"+id) {
 				t.Fatalf("missing staged file reference: %q", received)
@@ -91,7 +118,7 @@ func TestT08SteerAndRuntimeQueueStageAttachments(t *testing.T) {
 			if err != nil || !bytes.Equal(staged, data) { t.Fatalf("staged bytes: %q %v", staged, err) }
 			outcome, err = execution.HandleCommand(context.Background(), command)
 			if err != nil || outcome.State != CommandAccepted { t.Fatalf("duplicate steering: %#v %v", outcome, err) }
-			if queued && len(runtime.session.queued) != 0 { t.Fatal("duplicate queued message") }
+			if len(runtime.received) != 0 { t.Fatal("duplicate steering or queued message") }
 		})
 	}
 }
