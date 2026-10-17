@@ -122,7 +122,7 @@ func TestPhase4NodeCommandFailsClosedForInvalidWorkerTemplate(t *testing.T) {
 	}
 	legacy := WorkerEnvelope{
 		WorkerRef: "legacy-fx-worker", TurnID: "legacy-fx-turn", AttemptID: "legacy-fx-attempt",
-		OriginalUserIntent: "legacy FX compatibility", Workspace: root, HarnessInstance: fx,
+		OriginalUserIntent: "legacy FX compatibility", HarnessInstance: fx,
 	}
 	partialLegacyTemplate := legacy
 	partialLegacyTemplate.WorkerRef, partialLegacyTemplate.TurnID, partialLegacyTemplate.AttemptID = "legacy-fx-partial", "legacy-fx-partial-turn", "legacy-fx-partial-attempt"
