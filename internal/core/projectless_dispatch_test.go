@@ -70,6 +70,9 @@ func TestProjectlessDispatchExplainsIncompatibleAndOfflineOverrides(t *testing.T
 	if _, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{NodeID: "node", HarnessInstanceID: "node/missing"}); !errors.Is(err, ErrInvalidDispatchPin) {
 		t.Fatalf("uninstalled harness override: %v", err)
 	}
+	if _, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{NodeID: "unknown"}); !errors.Is(err, ErrSelectedNodeUnavailable) {
+		t.Fatalf("unenrolled Node override: %v", err)
+	}
 	if _, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{WorkerPolicy: HarnessPolicy{
 		DefaultHarness: HarnessClaudeCode,
 		RequiredActivityCapabilities: []ActivityCapability{ActivityCapability("nonexistent")},
