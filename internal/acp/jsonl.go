@@ -9,9 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/exec"
 	"sync"
 	"sync/atomic"
+
+	"github.com/beruseruko/secretary/internal/nativeexec"
 )
 
 type Message struct {
@@ -136,7 +137,11 @@ func StartWithLogExactEnvDir(ctx context.Context, rawLog io.Writer, environment 
 
 func startWithProcessEnvironment(ctx context.Context, rawLog io.Writer, environment []string, inherit bool, dir string, command string, arguments ...string) (*Client, error) {
 	processCtx, cancel := context.WithCancel(ctx)
-	process := exec.CommandContext(processCtx, command, arguments...)
+	process, err := nativeexec.CommandContext(processCtx, command, arguments...)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	configureACPProcess(process)
 	if inherit && environment != nil {
 		process.Env = append(os.Environ(), environment...)
