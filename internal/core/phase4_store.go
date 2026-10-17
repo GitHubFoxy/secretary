@@ -2266,6 +2266,26 @@ func (s *Store) RecordNodeAttemptOutcome(ctx context.Context, envelope AttemptOu
 	if attempt.NodeID != string(envelope.Node) || attempt.HarnessInstanceID != string(envelope.HarnessInstanceID) || worker.WorkerRef != envelope.WorkerRef || attempt.TurnID != envelope.TurnID {
 		return AttemptOutcome{}, nil, false, errors.New("core: Node terminal event does not match immutable Worker binding")
 	}
+	published, err := s.PublishedArtifactsForAttempt(ctx, envelope.AttemptID)
+	if err != nil {
+		return AttemptOutcome{}, nil, false, err
+	}
+	for _, artifact := range published {
+		reference := "artifact://" + artifact.ID
+		if !strings.Contains(envelope.Summary, reference) {
+			envelope.Summary += "\\n\\nPublished: " + reference + " (" + artifact.Name + ")"
+		}
+		present := false
+		for _, existing := range envelope.ArtifactRefs {
+			if existing == reference {
+				present = true
+				break
+			}
+		}
+		if !present {
+			envelope.ArtifactRefs = append(envelope.ArtifactRefs, reference)
+		}
+	}
 	artifactRefs := ""
 	if len(envelope.ArtifactRefs) > 0 {
 		encoded, encodeErr := json.Marshal(envelope.ArtifactRefs)

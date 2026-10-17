@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -44,6 +45,14 @@ func (s *Store) migrateArtifacts(ctx context.Context) error {
 		UNIQUE(person_id, idempotency_key)
 	);
 	CREATE INDEX IF NOT EXISTS artifacts_by_person ON artifacts(person_id, created_at);`)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `ALTER TABLE artifacts ADD COLUMN source_attempt_id TEXT NOT NULL DEFAULT ''`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS artifacts_by_attempt ON artifacts(source_attempt_id, created_at)`)
 	return err
 }
 
@@ -129,4 +138,90 @@ func (s *Store) ArtifactForPerson(ctx context.Context, personID, artifactID stri
 		return Artifact{}, nil, fmt.Errorf("artifact %s: checksum mismatch", a.ID)
 	}
 	return a, body, nil
+}
+
+func (s *Store) SavePublishedArtifact(ctx context.Context, nodeID, workerRef, attemptID, key, name, mediaType string, body []byte) (Artifact, bool, error) {
+	if nodeID == "" || workerRef == "" || attemptID == "" || key == "" || len(key) > 160 ||
+		len(body) == 0 || len(body) > MaxArtifactBytes || name == "" || len(name) > 180 ||
+		mediaType == "" || len(mediaType) > 120 {
+		return Artifact{}, false, errors.New("core: invalid or over-limit published artifact")
+	}
+	digest := sha256.Sum256(body)
+	checksum := hex.EncodeToString(digest[:])
+	type saved struct {
+		artifact Artifact
+		duplicate bool
+	}
+	value, err := withTx(s, ctx, func(tx *sql.Tx) (saved, error) {
+		var owner, conversationID, boundNode, boundWorker, state string
+		err := tx.QueryRowContext(ctx, `SELECT c.person_id, c.id, a.node_id, w.worker_ref, a.state
+			FROM phase4_attempts a JOIN workers w ON w.id = a.worker_id
+			JOIN conversations c ON c.id = w.conversation_id WHERE a.id = ?`, attemptID).
+			Scan(&owner, &conversationID, &boundNode, &boundWorker, &state)
+		if errors.Is(err, sql.ErrNoRows) {
+			return saved{}, ErrNotFound
+		}
+		if err != nil {
+			return saved{}, err
+		}
+		if boundNode != nodeID || boundWorker != workerRef {
+			return saved{}, ErrNotFound
+		}
+		if state != string(AttemptStarting) && state != string(AttemptActive) {
+			return saved{}, ErrInvalidTransition
+		}
+		existing, found, err := readArtifact(ctx, tx, owner, key)
+		if err != nil {
+			return saved{}, err
+		}
+		if found {
+			var source string
+			if err := tx.QueryRowContext(ctx, `SELECT source_attempt_id FROM artifacts WHERE id = ?`, existing.ID).Scan(&source); err != nil {
+				return saved{}, err
+			}
+			if source != attemptID || existing.Name != name || existing.MediaType != mediaType || existing.SHA256 != checksum || existing.Size != int64(len(body)) {
+				return saved{}, ErrIdempotencyConflict
+			}
+			return saved{artifact: existing, duplicate: true}, nil
+		}
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts WHERE source_attempt_id = ?`, attemptID).Scan(&count); err != nil {
+			return saved{}, err
+		}
+		if count >= 16 {
+			return saved{}, errors.New("core: maximum 16 published Artifacts per Attempt")
+		}
+		now := s.now()
+		artifact := Artifact{ID: newID("art"), PersonID: owner, Name: name, MediaType: mediaType, Size: int64(len(body)), SHA256: checksum, Status: "ready", CreatedAt: now}
+		_, err = tx.ExecContext(ctx, `INSERT INTO artifacts(id, person_id, conversation_id, idempotency_key, name, media_type, size, sha256, body, created_at, source_attempt_id)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			artifact.ID, owner, conversationID, key, name, mediaType, artifact.Size, checksum, body, timestamp(now), attemptID)
+		if err != nil {
+			return saved{}, err
+		}
+		return saved{artifact: artifact}, nil
+	})
+	if err != nil {
+		return Artifact{}, false, err
+	}
+	return value.artifact, value.duplicate, nil
+}
+
+func (s *Store) PublishedArtifactsForAttempt(ctx context.Context, attemptID string) ([]Artifact, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, person_id, name, media_type, size, sha256, created_at
+		FROM artifacts WHERE source_attempt_id = ? ORDER BY created_at, id`, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var artifacts []Artifact
+	for rows.Next() {
+		var a Artifact
+		if err := rows.Scan(&a.ID, &a.PersonID, &a.Name, &a.MediaType, &a.Size, &a.SHA256, newTimestampScanner(&a.CreatedAt)); err != nil {
+			return nil, err
+		}
+		a.Status = "ready"
+		artifacts = append(artifacts, a)
+	}
+	return artifacts, rows.Err()
 }
