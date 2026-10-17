@@ -33,7 +33,7 @@ func TestT04DMOnlyDoesNotRequireForumTopics(t *testing.T) {
 	if err := adapter.HandleEvent(ctx, Event{Kind: "worker.completed", WorkerRef: "w1", Text: "result", TerminalIdentity: "turn-1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := adapter.HandleEvent(ctx, Event{Kind: "message.saved", EventID: "web-entry", Source: "client:web", Text: "from web"}); err != nil {
+	if err := adapter.HandleEvent(ctx, Event{Kind: "message.saved", EventID: "web-entry", Source: "web", Text: "from web"}); err != nil {
 		t.Fatal(err)
 	}
 	if len(transport.topics) != 0 {
@@ -107,7 +107,7 @@ func TestT04LinkedForumGeneralAndWorkerTopics(t *testing.T) {
 	if len(server.workers) != 1 || server.workers[0].WorkerRef != "w1" || server.workers[0].Text != "worker steer" {
 		t.Fatalf("Worker Topic routing=%#v", server.workers)
 	}
-	if err := adapter.HandleEvent(ctx, Event{Kind: "message.saved", EventID: "web-42", Source: "client:web", Text: "Web input"}); err != nil {
+	if err := adapter.HandleEvent(ctx, Event{Kind: "message.saved", EventID: "web-42", Source: "web", Text: "Web input"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := adapter.HandleEvent(ctx, Event{Kind: "secretary.turn.started"}); err != nil {
@@ -148,7 +148,7 @@ func TestT04LinkedForumGeneralAndWorkerTopics(t *testing.T) {
 	if err := adapter.HandleUpdate(ctx, Update{ID: 3, Message: &Message{ChatID: 100, FromID: 100, Text: "DM input"}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, replay := range []Event{{Kind: "message.saved", EventID: "web-42", Source: "client:web", Text: "Web input"}, result} {
+	for _, replay := range []Event{{Kind: "message.saved", EventID: "web-42", Source: "web", Text: "Web input"}, result} {
 		if err := adapter.HandleEvent(ctx, replay); err != nil {
 			t.Fatal(err)
 		}
