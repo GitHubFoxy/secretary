@@ -189,6 +189,7 @@ type persistedState struct {
 	RebindReason            string                         `json:"rebind_reason,omitempty"`
 	RebindWatermark         int64                          `json:"rebind_watermark,omitempty"`
 	PendingInputs           []Update                       `json:"pending_inputs,omitempty"`
+	PendingImages           []Update                       `json:"pending_images,omitempty"`
 	Transcripts             map[string]VoiceTranscript     `json:"transcripts,omitempty"`
 	VoiceFailures          map[string]VoiceFailure        `json:"voice_failures,omitempty"`
 }
@@ -242,6 +243,8 @@ type Adapter struct {
 	inputMu                    sync.Mutex
 	inputLanes                 map[string]*sync.Mutex
 	inputWorkers               map[string]bool
+	imageWorkers               map[string]bool
+	imageWG                    sync.WaitGroup
 	claims                     map[int64]*updateClaim
 	flushTimer                 *time.Timer
 	now                        func() time.Time
@@ -903,7 +906,7 @@ func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool
 		return nil
 	}
 	if update.Message.Image != nil {
-		return a.deliverImageUpdate(ctx, update, allowed)
+		return a.queueImageUpdate(update, allowed)
 	}
 	if update.Message.Voice != nil {
 		return a.deliverVoiceUpdate(ctx, update, allowed)
@@ -1175,6 +1178,7 @@ func (a *Adapter) Run(ctx context.Context) error {
 		<-refreshDone
 		<-syncDone
 		a.inputWG.Wait()
+		a.imageWG.Wait()
 	}()
 	backoff := 100 * time.Millisecond
 	maxBackoff := a.config.PollInterval
@@ -1185,6 +1189,7 @@ func (a *Adapter) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		a.startImageWorkers(ctx)
 		err := a.pollInputs(ctx)
 		a.startInputWorkers(ctx)
 		if err == nil {

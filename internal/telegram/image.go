@@ -149,3 +149,107 @@ func (a *Adapter) deliverImageUpdate(ctx context.Context, u Update, allowed bool
 	u.Message = &copyMessage
 	return a.deliverTextUpdate(ctx, u, allowed, u.WorkerRequestID)
 }
+
+func (a *Adapter) queueImageUpdate(u Update, allowed bool) error {
+	if !allowed || u.Message == nil || u.Message.Image == nil {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if u.Message.ThreadID != 0 && u.Message.ThreadID != 1 {
+		mapping, exists := a.mappingForThreadLocked(u.Message.ChatID, u.Message.ThreadID)
+		if !exists {
+			return nil
+		}
+		requestID := mapping.PendingRequestID
+		u.WorkerRequestID = &requestID
+	}
+	for _, queued := range a.state.PendingImages {
+		if queued.ID == u.ID {
+			return nil
+		}
+	}
+	a.state.PendingImages = append(a.state.PendingImages, u)
+	return a.saveLocked()
+}
+
+func (a *Adapter) imageKeys() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	seen := map[string]bool{}
+	var keys []string
+	for _, u := range a.state.PendingImages {
+		key := inputLane(u)
+		if !seen[key] {
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	return keys
+}
+
+func (a *Adapter) startImageWorkers(ctx context.Context) {
+	for _, key := range a.imageKeys() {
+		a.inputMu.Lock()
+		if a.imageWorkers == nil {
+			a.imageWorkers = map[string]bool{}
+		}
+		if a.imageWorkers[key] {
+			a.inputMu.Unlock()
+			continue
+		}
+		a.imageWorkers[key] = true
+		a.imageWG.Add(1)
+		a.inputMu.Unlock()
+		go func(lane string) {
+			defer a.imageWG.Done()
+			defer func() {
+				a.inputMu.Lock()
+				delete(a.imageWorkers, lane)
+				a.inputMu.Unlock()
+			}()
+			_ = a.drainImageLane(ctx, lane)
+		}(key)
+	}
+}
+
+func (a *Adapter) drainImageLane(ctx context.Context, lane string) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		a.mu.Lock()
+		var next Update
+		for _, u := range a.state.PendingImages {
+			if inputLane(u) == lane {
+				next = u
+				break
+			}
+		}
+		a.mu.Unlock()
+		if next.ID == 0 {
+			return nil
+		}
+		if err := a.deliverImageUpdate(ctx, next, true); err != nil {
+			return err
+		}
+		a.mu.Lock()
+		if len(a.state.PendingImages) != 0 {
+			index := -1
+			for i, queued := range a.state.PendingImages {
+				if queued.ID == next.ID {
+					index = i
+					break
+				}
+			}
+			if index >= 0 {
+				a.state.PendingImages = append(a.state.PendingImages[:index], a.state.PendingImages[index+1:]...)
+			}
+		}
+		err := a.saveLocked()
+		a.mu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
+}

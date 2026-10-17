@@ -95,6 +95,9 @@ func (a *Adapter) drainLane(ctx context.Context, key string) error {
 		if err != nil {
 			return err
 		}
+		if next.Message != nil && next.Message.Image != nil {
+			a.startImageWorkers(ctx)
+		}
 	}
 }
 
