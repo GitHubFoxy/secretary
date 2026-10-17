@@ -64,6 +64,19 @@ func (s *Store) migrateArtifacts(ctx context.Context) error {
 }
 
 func (s *Store) SaveArtifact(ctx context.Context, personID, conversationID, key, name, mediaType string, body []byte) (Artifact, bool, error) {
+	return s.saveArtifact(ctx, personID, conversationID, key, name, mediaType, body, nil)
+}
+
+func (s *Store) SaveVideoArtifact(ctx context.Context, personID, conversationID, key, name, mediaType string, body []byte, fps float64, maxFrames, maxDuration, timeout int) (Artifact, bool, error) {
+	if mediaType != "video/mp4" && mediaType != "video/webm" && mediaType != "video/quicktime" {
+		return Artifact{}, false, errors.New("video: unsupported media type")
+	}
+	job := &VideoJob{FPS:fps, MaxFrames:maxFrames, MaxDuration:maxDuration, TimeoutSeconds:timeout}
+	if err := validateVideoJob(*job); err != nil { return Artifact{}, false, err }
+	return s.saveArtifact(ctx, personID, conversationID, key, name, mediaType, body, job)
+}
+
+func (s *Store) saveArtifact(ctx context.Context, personID, conversationID, key, name, mediaType string, body []byte, video *VideoJob) (Artifact, bool, error) {
 	if personID == "" || conversationID == "" || key == "" || len(key) > 160 || len(body) == 0 || len(body) > MaxArtifactBytes || len(name) == 0 || len(name) > 180 || len(mediaType) == 0 || len(mediaType) > 120 {
 		return Artifact{}, false, errors.New("core: invalid or over-limit artifact")
 	}
@@ -77,6 +90,9 @@ func (s *Store) SaveArtifact(ctx context.Context, personID, conversationID, key,
 		if found {
 			if existing.Name != name || existing.MediaType != mediaType || existing.SHA256 != checksum || existing.Size != int64(len(body)) {
 				return artifactSaved{}, ErrIdempotencyConflict
+			}
+			if video != nil {
+				if err := insertVideoJobTx(ctx, tx, existing.ID, personID, *video, s.now()); err != nil { return artifactSaved{}, err }
 			}
 			return artifactSaved{Artifact: existing, Duplicate: true}, nil
 		}
@@ -93,6 +109,9 @@ func (s *Store) SaveArtifact(ctx context.Context, personID, conversationID, key,
 			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, a.ID, a.PersonID, conversationID, key, a.Name, a.MediaType, a.Size, a.SHA256, body, timestamp(now))
 		if err != nil {
 			return artifactSaved{}, err
+		}
+		if video != nil {
+			if err := insertVideoJobTx(ctx, tx, a.ID, personID, *video, now); err != nil { return artifactSaved{}, err }
 		}
 		entry, err := appendEntry(ctx, tx, now, conversationID, EntrySystem, fmt.Sprintf("File uploaded: %q (%d bytes). Ready: artifact://%s", name, len(body), a.ID))
 		if err != nil {

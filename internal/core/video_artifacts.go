@@ -7,11 +7,13 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 )
 
 type VideoFrame struct {
 	ArtifactID string  `json:"artifact_id"`
 	TimestampMS int64  `json:"timestamp_ms"`
+	TimestampKind string `json:"timestamp_kind"`
 }
 
 type VideoFrameData struct {
@@ -34,7 +36,7 @@ func (s *Store) migrateVideoArtifacts(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS video_artifact_jobs (
 		source_artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id),
 		person_id TEXT NOT NULL REFERENCES persons(id),
-		status TEXT NOT NULL CHECK(status IN ('processing','ready','failed')),
+		status TEXT NOT NULL CHECK(status IN ('queued','processing','ready','failed')),
 		error TEXT NOT NULL DEFAULT '',
 		fps REAL NOT NULL,
 		max_frames INTEGER NOT NULL,
@@ -55,20 +57,88 @@ func (s *Store) migrateVideoArtifacts(ctx context.Context) error {
 	return err
 }
 
-func (s *Store) RegisterVideo(ctx context.Context, personID, artifactID string, fps float64, maxFrames, maxDuration, timeout int) (VideoJob, error) {
-	if personID == "" || artifactID == "" || fps < .25 || fps > 4 || maxFrames < 1 || maxFrames > 16 || maxDuration < 1 || maxDuration > 60 || timeout < 1 || timeout > 120 {
-		return VideoJob{}, errors.New("video: invalid processing limits")
+
+const MaxPendingVideoJobs = 32
+
+var ErrVideoQueueFull = errors.New("video: processing queue full")
+
+func validateVideoJob(j VideoJob) error {
+	if j.FPS < .25 || j.FPS > 4 || j.MaxFrames < 1 || j.MaxFrames > 16 || j.MaxDuration < 1 || j.MaxDuration > 60 || j.TimeoutSeconds < 1 || j.TimeoutSeconds > 120 {
+		return errors.New("video: invalid processing limits")
 	}
+	return nil
+}
+
+func insertVideoJobTx(ctx context.Context, tx *sql.Tx, artifactID, personID string, job VideoJob, now time.Time) error {
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM video_artifact_jobs WHERE source_artifact_id=? AND person_id=?`, artifactID,personID).Scan(&exists); err != nil { return err }
+	if exists > 0 { return nil }
+	var pending int
+	if err := tx.QueryRowContext(ctx,`SELECT COUNT(*) FROM video_artifact_jobs WHERE status IN ('queued','processing')`).Scan(&pending);err!=nil{return err}
+	if pending >= MaxPendingVideoJobs { return ErrVideoQueueFull }
+	_,err:=tx.ExecContext(ctx,`INSERT INTO video_artifact_jobs
+		(source_artifact_id,person_id,status,fps,max_frames,max_duration,timeout_seconds,created_at,updated_at)
+		VALUES(?,?,'queued',?,?,?,?,?,?)`,
+		artifactID,personID,job.FPS,job.MaxFrames,job.MaxDuration,job.TimeoutSeconds,timestamp(now),timestamp(now))
+	return err
+}
+
+// Requeue in-flight work after process restart. Originals are never removed.
+func (s *Store) RecoverVideoJobs(ctx context.Context, personID string) error {
+	_,err:=s.db.ExecContext(ctx,`UPDATE video_artifact_jobs SET status='queued',updated_at=? WHERE person_id=? AND status='processing'`,timestamp(s.now()),personID)
+	return err
+}
+
+// Claim one queued conversion transactionally so two conversion workers never transcode the same job.
+func (s *Store) ClaimVideoJob(ctx context.Context, personID string) (VideoJob, bool, error) {
+	var id string
+	err:=withTxErr(s,ctx,func(tx *sql.Tx) error {
+		err:=tx.QueryRowContext(ctx,`SELECT source_artifact_id FROM video_artifact_jobs WHERE person_id=? AND status='queued' ORDER BY created_at,source_artifact_id LIMIT 1`,personID).Scan(&id)
+		if errors.Is(err,sql.ErrNoRows){id="";return nil}
+		if err!=nil{return err}
+		res,err:=tx.ExecContext(ctx,`UPDATE video_artifact_jobs SET status='processing',updated_at=? WHERE person_id=? AND source_artifact_id=? AND status='queued'`,timestamp(s.now()),personID,id)
+		if err!=nil{return err}
+		n,err:=res.RowsAffected()
+		if err!=nil{return err}
+		if n!=1 {id="";return nil}
+		return nil
+	})
+	if err!=nil{return VideoJob{},false,err}
+	if id=="" {return VideoJob{},false,nil}
+	j,err:=s.VideoJob(ctx,personID,id)
+	return j,err==nil,err
+}
+
+func (s *Store) RetryFailedVideo(ctx context.Context, personID, artifactID string) (VideoJob, bool, error) {
+	var restarted bool
+	err:=withTxErr(s,ctx,func(tx *sql.Tx) error {
+		var status string
+		if err:=tx.QueryRowContext(ctx,`SELECT status FROM video_artifact_jobs WHERE person_id=? AND source_artifact_id=?`,personID,artifactID).Scan(&status);err!=nil{return err}
+		if status!="failed" {return nil}
+		var pending int
+		if err:=tx.QueryRowContext(ctx,`SELECT COUNT(*) FROM video_artifact_jobs WHERE status IN ('queued','processing')`).Scan(&pending);err!=nil{return err}
+		if pending>=MaxPendingVideoJobs{return ErrVideoQueueFull}
+		res,err:=tx.ExecContext(ctx,`UPDATE video_artifact_jobs SET status='queued',error='',updated_at=? WHERE person_id=? AND source_artifact_id=? AND status='failed'`,timestamp(s.now()),personID,artifactID)
+		if err!=nil{return err}
+		n,e:=res.RowsAffected()
+		restarted=n==1
+		return e
+	})
+	if err!=nil{return VideoJob{},false,err}
+	j,err:=s.VideoJob(ctx,personID,artifactID)
+	return j,restarted,err
+}
+
+func (s *Store) RegisterVideo(ctx context.Context, personID, artifactID string, fps float64, maxFrames, maxDuration, timeout int) (VideoJob, error) {
+	if personID == "" || artifactID == "" { return VideoJob{}, errors.New("video: missing identity") }
+	if err := validateVideoJob(VideoJob{FPS:fps, MaxFrames:maxFrames, MaxDuration:maxDuration, TimeoutSeconds:timeout}); err != nil { return VideoJob{}, err }
 	err := withTxErr(s, ctx, func(tx *sql.Tx) error {
 		var mediaType string
 		if err := tx.QueryRowContext(ctx, `SELECT media_type FROM artifacts WHERE person_id = ? AND id = ?`, personID, artifactID).Scan(&mediaType); err != nil { return err }
 		if mediaType != "video/mp4" && mediaType != "video/webm" && mediaType != "video/quicktime" {
 			return errors.New("video: unsupported original media type")
 		}
-		_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO video_artifact_jobs
-			(source_artifact_id,person_id,status,fps,max_frames,max_duration,timeout_seconds,created_at,updated_at)
-			VALUES(?,?,'processing',?,?,?,?,?,?)`, artifactID, personID, fps, maxFrames, maxDuration, timeout, timestamp(s.now()), timestamp(s.now()))
-		return err
+		return insertVideoJobTx(ctx, tx, artifactID, personID, VideoJob{FPS:fps,MaxFrames:maxFrames,MaxDuration:maxDuration,TimeoutSeconds:timeout}, s.now())
 	})
 	if err != nil { return VideoJob{}, err }
 	return s.VideoJob(ctx, personID, artifactID)
@@ -154,6 +224,7 @@ func (s *Store) populateVideoRelation(ctx context.Context, personID string, a *A
 	for rows.Next() {
 		var frame VideoFrame
 		if err:=rows.Scan(&frame.ArtifactID,&frame.TimestampMS);err!=nil{return err}
+		frame.TimestampKind="nominal-grid"
 		a.VideoFrames=append(a.VideoFrames,frame)
 	}
 	return rows.Err()
