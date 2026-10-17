@@ -1309,12 +1309,14 @@ func TestFakeACPProcess(t *testing.T) {
 		var request struct {
 			ID     json.RawMessage `json:"id,omitempty"`
 			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &request) != nil {
 			continue
 		}
 		switch request.Method {
 		case "session/prompt":
+			if path := os.Getenv("ACP_IMAGE_RECORD"); path != "" { _ = os.WriteFile(path, request.Params, 0o600) }
 			if os.Getenv("ACP_BURST") != "" {
 				count, _ := strconv.Atoi(os.Getenv("ACP_BURST"))
 				for index := 0; index < count; index++ {
@@ -1344,6 +1346,7 @@ func TestFakeACPProcess(t *testing.T) {
 				}
 			}
 			result = map[string]any{"protocolVersion": version}
+			if os.Getenv("ACP_IMAGE_RECORD") != "" { result["agentCapabilities"] = map[string]any{"promptCapabilities": map[string]any{"image": true}} }
 		case "session/new":
 			result = map[string]any{"sessionId": "fake-session"}
 		case "session/prompt":
