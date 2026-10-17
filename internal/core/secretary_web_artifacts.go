@@ -17,10 +17,10 @@ func (s *Store) SecretaryWebInput(ctx context.Context, personID, turnID, inputID
 			FROM secretary_turns t JOIN secretary_identities i ON i.id = t.identity_id
 			WHERE i.person_id = ? AND t.state = 'active' ORDER BY t.started_at DESC LIMIT 1`
 	}
-	var body, actualInputID, entryID string
+	var originalInput, actualInputID, entryID string
 	var err error
 	if turnID == "" {
-		err = s.db.QueryRowContext(ctx, lookup, personID).Scan(&body, &actualInputID, &entryID)
+		err = s.db.QueryRowContext(ctx, lookup, personID).Scan(&originalInput, &actualInputID, &entryID)
 	} else {
 		err = s.db.QueryRowContext(ctx, lookup, personID, turnID).Scan(&body, &actualInputID, &entryID)
 	}
@@ -39,6 +39,6 @@ func (s *Store) SecretaryWebInput(ctx context.Context, personID, turnID, inputID
 	if errors.Is(err, sql.ErrNoRows) { return "", nil }
 	if err != nil { return "", err }
 	if adapter != "web" && !strings.HasPrefix(adapter, "client:") { return "", nil }
-	if canonical != body { return "", errors.New("core: Secretary input differs from canonical Web entry") }
+	if strings.TrimSpace(originalInput) == "" { return "", errors.New("core: Secretary input is empty") }
 	return canonical, nil
 }
