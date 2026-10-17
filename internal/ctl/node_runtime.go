@@ -89,10 +89,25 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 		text, images, prepErr := r.Local.PrepareWorkerSteering(ctx, metadata.WorkerRef, command.Steering.Text)
 		if prepErr != nil { return node.CommandOutcome{}, prepErr }
 		var err error
+		failureCode := "steering_failed"
 		if len(images) > 0 {
 			multimodal, supports := session.(node.ImageSteeringSession)
-			if !supports { return node.CommandOutcome{}, errors.New("image_input_unsupported: local Worker does not support image steering") }
-			_, err = multimodal.SteerImages(ctx, text, images)
+			if !supports {
+				failureCode = "image_input_unsupported"
+				err = errors.New("image: local Worker does not support image steering")
+			} else {
+				var injected bool
+				injected, err = multimodal.SteerImages(ctx, text, images)
+				if err == nil && !injected {
+					if queued, ok := session.(node.ImageQueueSession); ok {
+						failureCode = "queue_failed"
+						err = queued.QueueImages(ctx, text, images)
+					} else {
+						failureCode = "image_input_unsupported"
+						err = errors.New("image: native Worker did not inject steering and cannot queue image content")
+					}
+				}
+			}
 		} else {
 			_, err = session.Steer(ctx, text)
 		}
@@ -103,7 +118,7 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 				State:             node.CommandFailed,
 				TurnID:            metadata.TurnID,
 				AttemptID:         metadata.AttemptID,
-				ErrorCode:         "steering_failed",
+				ErrorCode:         failureCode,
 				ErrorMessage:      err.Error(),
 				AcceptanceUnknown: errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded),
 			}
