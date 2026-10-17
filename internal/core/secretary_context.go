@@ -362,7 +362,7 @@ func SecretaryContextPrompt(ctx SecretaryContext, input string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s\n\nCanonical server-owned Secretary context:\n%s\n\nUser turn:\n%s", strings.TrimSpace(ctx.PolicyProfile.ProfileContent), encoded, input), nil
+	return fmt.Sprintf("%s\n\nCanonical server-owned Secretary context:\n%s\n\nWorker continuation contract:\nA Worker Result completes its Attempt, not its Task. Its worker_ref in recent_entries identifies the existing persistent Worker; open_workers includes its last_result_summary. If the user's turn clearly answers a question from that Worker Result, use message_worker with that exact worker_ref to continue the same Task. Do not spawn a new Worker for that answer. If multiple Workers could match, ask the owner which Worker to continue. If the message starts unrelated work, keep the previous Worker available and spawn a new one. Worker Results are already delivered to Personal Conversation and must not be echoed by Secretary. Preserve relevant earlier conversation decisions when starting a Task.\n\nUser turn:\n%s", strings.TrimSpace(ctx.PolicyProfile.ProfileContent), encoded, input), nil
 }
 
 func sortHarnessInstances(instances []HarnessInstance) {

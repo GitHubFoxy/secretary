@@ -22,8 +22,8 @@ func (s Secretary) Tools() []Tool {
 		{Name: "list_projects", Description: "List registered Projects.", InputSchema: map[string]any{"type": "object"}},
 		{Name: "list_workers", Description: "List persistent Workers in the Personal Conversation.", InputSchema: map[string]any{"type": "object"}},
 		{Name: "get_worker", Description: "Read one Worker lifecycle and immutable binding.", InputSchema: objectSchema("worker_ref")},
-		{Name: "spawn_worker", Description: "Dispatch a persistent Worker automatically to a ready Node and harness. Only intent is required; preferences can override node_id, harness_kind, harness_instance_id, model or Project.", InputSchema: spawnSchema},
-		{Name: "message_worker", Description: "Steer, answer, follow up, or resume a Worker.", InputSchema: messageSchema},
+		{Name: "spawn_worker", Description: "Start a new Task with a persistent Worker, automatically dispatched to a ready Node and harness. Only intent is required; preferences can override node_id, harness_kind, harness_instance_id, model or Project. Do not use for an answer to an existing Worker's question; use message_worker with that worker_ref instead.", InputSchema: spawnSchema},
+		{Name: "message_worker", Description: "Send an owner's answer or new instruction to an existing Worker by worker_ref. An idle Worker starts a Follow-up Turn in the same Task; an active Worker receives steering; /q explicitly queues. Use this when answering a Worker Result question, not spawn_worker.", InputSchema: messageSchema},
 		{Name: "cancel_worker", Description: "Cancel a Worker's active Attempt.", InputSchema: objectSchema("worker_ref")},
 		{Name: "close_worker", Description: "Close a Worker after safely stopping active work.", InputSchema: objectSchema("worker_ref")},
 	}
