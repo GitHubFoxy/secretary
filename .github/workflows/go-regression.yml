@@ -18,5 +18,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Install native Worker sandbox prerequisite
+        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
       - name: Test Secretary routing and lifecycle
         run: go test ./internal/e2e ./internal/core ./internal/secretary ./internal/mcp ./internal/config ./internal/ctl

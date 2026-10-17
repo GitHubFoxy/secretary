@@ -19,5 +19,7 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      - name: Install native Worker sandbox prerequisite
+        run: sudo apt-get update -qq && sudo apt-get install -y bubblewrap
       - name: Run Go tests
         run: go test ./...

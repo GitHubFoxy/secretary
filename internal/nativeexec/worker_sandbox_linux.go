@@ -69,7 +69,9 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 		"--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
 		"--ro-bind", "/", "/",
 		"--proc", "/proc", "--dev", "/dev",
-		"--tmpfs", "/tmp",
+		// Keep native harness toolchains and test launchers installed under
+		// /tmp reachable. The Node-private directory is masked afterwards.
+		"--bind", "/tmp", "/tmp",
 		"--tmpfs", protected,
 		"--bind", workspace, workspace,
 		"--chdir", workspace,

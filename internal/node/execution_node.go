@@ -1129,6 +1129,14 @@ func semanticOutputPresent(result string) bool {
 // Native subprocesses (and their shell/MCP descendants) are isolated from
 // the persisted Node credential and state. No daemon fallbacks are permitted.
 func (n *ExecutionNode) securedWorkerContext(ctx context.Context, workspace string) context.Context {
+	n.mu.Lock()
+	hasCredentialBroker := n.publishBroker != nil
+	n.mu.Unlock()
+	if !hasCredentialBroker {
+		// In-process test-only Nodes have neither an enrolled Node credential
+		// nor a Server Artifact publisher. Real Daemons always initialize one.
+		return ctx
+	}
 	return nativeexec.WithWorkerSandbox(ctx, nativeexec.WorkerSandbox{
 		ProtectedDir: filepath.Dir(n.store.path),
 		Workspace: workspace,
