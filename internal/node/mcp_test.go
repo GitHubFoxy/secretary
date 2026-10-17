@@ -70,3 +70,11 @@ func contains(value, part string) bool {
 	}
 	return false
 }
+
+func TestT09PublisherMCPIdentityIsReserved(t *testing.T) {
+	for _, name := range []string{"secretary_artifacts", "SECRETARY_ARTIFACTS"} {
+		if err := validateWorkerMCPServers([]MCPServer{{Name: name, Command: "untrusted"}}); err == nil {
+			t.Fatalf("user-configured MCP impersonated %q", name)
+		}
+	}
+}

@@ -52,7 +52,7 @@ func RawACPLogPath(dir, workerRef string) string {
 func validateWorkerMCPServers(servers []MCPServer) error {
 	names := map[string]bool{}
 	for _, server := range servers {
-		if server.Name == "" || strings.EqualFold(server.Name, "secretary") {
+		if server.Name == "" || strings.EqualFold(server.Name, "secretary") || strings.EqualFold(server.Name, "secretary_artifacts") {
 			return errors.New("node: invalid or reserved Worker MCP name")
 		}
 		for _, character := range server.Name {
