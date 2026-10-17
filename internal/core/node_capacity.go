@@ -54,7 +54,7 @@ WHERE claim.node_id = ? AND attempt.state IN ('starting', 'scheduled', 'active')
 
 // The UPDATE is a SQLite write lock before reading capacity and claims.
 // Concurrent SpawnWorker transactions cannot both observe the last free slot.
-func requireNodeCapacityTx(ctx context.Context, tx *sql.Tx, node NodeReference) error {
+func requireNodeCapacityTx(ctx context.Context, tx *sql.Tx, node NodeReference, excludeHeartbeatAttemptID ...string) error {
 	result, err := tx.ExecContext(ctx, `UPDATE phase4_nodes SET online = online
 WHERE node_ref = ? AND online = 1 AND draining = 0 AND revoked = 0`, node)
 	if err != nil {
@@ -78,6 +78,18 @@ WHERE node_ref = ? AND online = 1 AND draining = 0 AND revoked = 0`, node)
 			return err
 		}
 	}
+	if len(excludeHeartbeatAttemptID) > 0 && excludeHeartbeatAttemptID[0] != "" {
+		// An already-executing Attempt may arrive in a heartbeat before
+		// its server-side claim has been durably established on replay.
+		// Reserving that same Attempt must not count its heartbeat twice.
+		filtered := make([]NodeActiveAttempt, 0, len(heartbeat))
+		for _, existing := range heartbeat {
+			if existing.AttemptID != excludeHeartbeatAttemptID[0] {
+				filtered = append(filtered, existing)
+			}
+		}
+		heartbeat = filtered
+	}
 	used, err := nodeCapacityUsed(ctx, tx, node, heartbeat)
 	if err != nil {
 		return err
@@ -91,4 +103,31 @@ WHERE node_ref = ? AND online = 1 AND draining = 0 AND revoked = 0`, node)
 func recordNodeCapacityClaimTx(ctx context.Context, tx *sql.Tx, attemptID string, node NodeReference) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO phase4_node_capacity_claims(attempt_id, node_id) VALUES(?, ?)`, attemptID, node)
 	return err
+}
+
+ 
+// ReserveAttemptCapacity claims capacity for a previously persisted (possibly
+// queued) Attempt before any dispatch/resume command may be handed to the Node.
+// Replays keep the same claim; no second slot is consumed.
+func (s *Store) ReserveAttemptCapacity(ctx context.Context, attemptID string) error {
+	return withTxErr(s, ctx, func(tx *sql.Tx) error {
+		attempt, err := getPhase4Attempt(ctx, tx, attemptID)
+		if err != nil {
+			return err
+		}
+		if attempt.State.Terminal() {
+			return ErrInvalidTransition
+		}
+		var reserved bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM phase4_node_capacity_claims WHERE attempt_id = ?)`, attemptID).Scan(&reserved); err != nil {
+			return err
+		}
+		if reserved {
+			return nil
+		}
+		if err := requireNodeCapacityTx(ctx, tx, NodeReference(attempt.NodeID), attemptID); err != nil {
+			return err
+		}
+		return recordNodeCapacityClaimTx(ctx, tx, attemptID, NodeReference(attempt.NodeID))
+	})
 }
