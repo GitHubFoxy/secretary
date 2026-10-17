@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -375,7 +376,13 @@ func (n *ExecutionNode) cancel(ctx context.Context, command *CancelCommand) Comm
 		return failedOutcome(Command{Kind: CommandCancel, Cancel: command}, "runtime_session_unavailable", err.Error())
 	}
 	if err := session.Cancel(ctx); err != nil {
-		return failedOutcome(Command{Kind: CommandCancel, Cancel: command}, "cancel_failed", err.Error())
+		code := "cancel_failed"
+		if errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe) {
+			// The native process exited between lookup and Cancel. Report its
+			// lost session explicitly; do not pretend the interrupt was delivered.
+			code = "runtime_session_unavailable"
+		}
+		return failedOutcome(Command{Kind: CommandCancel, Cancel: command}, code, err.Error())
 	}
 	return acceptedOutcome(Command{Kind: CommandCancel, Cancel: command})
 }
