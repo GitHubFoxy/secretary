@@ -42,7 +42,7 @@ type ExecutionNode struct {
 	workspaces        map[string]string
 	mcpServers        []MCPServer
 	artifactFetcher    ArtifactFetcher
-	artifactPublisher *NodeIdentity
+	publishBroker *workerPublishBroker
 	artifactPublisherCommand string
 }
 
@@ -224,7 +224,13 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	if continuing {
 		promptText = prepared
 	}
-	request := StartRequest{MCPServers: n.workerArtifactMCPServers(command.Envelope.WorkerRef, command.Envelope.AttemptID, workspace), WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
+	servers, publishErr := n.workerArtifactMCPServers(command.Envelope.WorkerRef, command.Envelope.AttemptID, workspace)
+	if publishErr != nil {
+		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "artifact_publish_unavailable", publishErr.Error())
+	}
+	activatedPublisher := false
+	defer func() { if !activatedPublisher { n.unregisterArtifactPublisher(command.Envelope.AttemptID) } }()
+	request := StartRequest{MCPServers: servers, WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "binding_conflict", err.Error())
@@ -267,6 +273,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		}
 	}
 	n.registerSession(mapping.AttemptID, session)
+	activatedPublisher = true
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
 		go func() { _ = session.Prompt(context.Background(), promptText) }()
@@ -500,7 +507,13 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	if continuing {
 		promptText = prepared
 	}
-	request := StartRequest{MCPServers: n.workerArtifactMCPServers(command.Envelope.WorkerRef, command.Envelope.AttemptID, workspace), WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID), DeferInitialPrompt: continuing}
+	servers, publishErr := n.workerArtifactMCPServers(command.Envelope.WorkerRef, command.Envelope.AttemptID, workspace)
+	if publishErr != nil {
+		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "artifact_publish_unavailable", publishErr.Error())
+	}
+	activatedPublisher := false
+	defer func() { if !activatedPublisher { n.unregisterArtifactPublisher(command.Envelope.AttemptID) } }()
+	request := StartRequest{MCPServers: servers, WorkerRef: command.Envelope.WorkerRef, Task: task, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID), DeferInitialPrompt: continuing}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "binding_conflict", err.Error())
@@ -526,6 +539,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		}
 	}
 	n.registerSession(command.Metadata.AttemptID, session)
+	activatedPublisher = true
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
 		go func() { _ = session.Prompt(context.Background(), promptText) }()
@@ -632,7 +646,11 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 	if err := n.validateReconciledWorkspace(envelope); err != nil {
 		return nil, ErrRuntimeSessionUnavailable
 	}
-	request := StartRequest{MCPServers: n.workerArtifactMCPServers(envelope.WorkerRef, envelope.AttemptID, mapping.Workspace), WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: mapping.Workspace, Profile: envelope.Profile, HarnessInstance: envelope.HarnessInstance, Model: envelope.Model, Reasoning: envelope.Reasoning, ApprovalPolicy: envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(metadata.AttemptID)}
+	servers, publishErr := n.workerArtifactMCPServers(envelope.WorkerRef, envelope.AttemptID, mapping.Workspace)
+	if publishErr != nil { return nil, ErrRuntimeSessionUnavailable }
+	activatedPublisher := false
+	defer func() { if !activatedPublisher { n.unregisterArtifactPublisher(envelope.AttemptID) } }()
+	request := StartRequest{MCPServers: servers, WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: mapping.Workspace, Profile: envelope.Profile, HarnessInstance: envelope.HarnessInstance, Model: envelope.Model, Reasoning: envelope.Reasoning, ApprovalPolicy: envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(metadata.AttemptID)}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return nil, ErrRuntimeSessionUnavailable
@@ -644,6 +662,7 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 	}
 	n.rebindPendingRequests(metadata.AttemptID, session)
 	n.registerSession(metadata.AttemptID, session)
+	activatedPublisher = true
 	n.watchSession(session, envelope)
 	return session, nil
 }
@@ -710,6 +729,7 @@ func (n *ExecutionNode) removeSession(attemptID string) {
 	n.mu.Lock()
 	delete(n.sessions, attemptID)
 	n.mu.Unlock()
+	n.unregisterArtifactPublisher(attemptID)
 }
 
 func (n *ExecutionNode) watchSession(session Session, envelope WorkerEnvelope, terminalCommand ...Command) {

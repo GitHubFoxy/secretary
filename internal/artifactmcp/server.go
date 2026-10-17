@@ -6,28 +6,20 @@ import (
 	"errors"
 	"os"
 
-	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/mcp"
 	"github.com/beruseruko/secretary/internal/node"
 )
 
 type Handler struct {
-	Publisher node.ArtifactPublisher
+	Endpoint string
 }
 
 func FromEnvironment() (Handler, error) {
-	publisher := node.ArtifactPublisher{
-		ServerURL: os.Getenv("SECRETARY_ARTIFACT_SERVER"),
-		Node: core.NodeReference(os.Getenv("SECRETARY_ARTIFACT_NODE")),
-		WorkerRef: os.Getenv("SECRETARY_ARTIFACT_WORKER"),
-		AttemptID: os.Getenv("SECRETARY_ARTIFACT_ATTEMPT"),
-		Workspace: os.Getenv("SECRETARY_ARTIFACT_WORKSPACE"),
-		Capability: os.Getenv("SECRETARY_ARTIFACT_CAPABILITY"),
+	endpoint := os.Getenv("SECRETARY_ARTIFACT_BROKER_URL")
+	if endpoint == "" {
+		return Handler{}, errors.New("artifact MCP: scoped Node broker is unavailable")
 	}
-	if publisher.ServerURL == "" || publisher.Node == "" || publisher.WorkerRef == "" || publisher.AttemptID == "" || publisher.Workspace == "" || publisher.Capability == "" {
-		return Handler{}, errors.New("artifact MCP: missing scoped Worker publication configuration")
-	}
-	return Handler{Publisher: publisher}, nil
+	return Handler{Endpoint: endpoint}, nil
 }
 
 func (h Handler) Tools() []mcp.Tool {
@@ -56,7 +48,7 @@ func (h Handler) Call(ctx context.Context, name string, raw json.RawMessage) (an
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return nil, errors.New("artifact MCP: invalid input")
 	}
-	artifact, err := h.Publisher.Publish(ctx, args.Path, args.Name)
+	artifact, err := node.RequestWorkerArtifact(ctx, h.Endpoint, args.Path, args.Name)
 	if err != nil {
 		return nil, err
 	}

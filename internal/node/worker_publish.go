@@ -32,44 +32,55 @@ type ArtifactPublisher struct {
 }
 
 func (n *ExecutionNode) SetArtifactPublisher(identity NodeIdentity, command string) error {
-	if err := identity.Validate(); err != nil {
-		return err
-	}
-	if command == "" {
-		return errors.New("node artifact: publisher command required")
-	}
+	if err := identity.Validate(); err != nil { return err }
+	if command == "" { return errors.New("node artifact: publisher executable required") }
+	broker, err := newWorkerPublishBroker(identity)
+	if err != nil { return err }
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	copy := identity
-	n.artifactPublisher = &copy
+	if n.publishBroker != nil {
+		_ = broker.Close()
+		return errors.New("node artifact: publisher already initialized")
+	}
+	n.publishBroker = broker
 	n.artifactPublisherCommand = command
 	return nil
 }
 
-func (n *ExecutionNode) workerArtifactMCPServers(workerRef, attemptID, workspace string) []MCPServer {
+func (n *ExecutionNode) CloseArtifactPublisher() error {
+	n.mu.Lock()
+	broker := n.publishBroker
+	n.publishBroker = nil
+	n.mu.Unlock()
+	if broker != nil { return broker.Close() }
+	return nil
+}
+
+func (n *ExecutionNode) unregisterArtifactPublisher(attemptID string) {
+	n.mu.Lock()
+	broker := n.publishBroker
+	n.mu.Unlock()
+	if broker != nil { broker.Unregister(attemptID) }
+}
+
+func (n *ExecutionNode) workerArtifactMCPServers(workerRef, attemptID, workspace string) ([]MCPServer, error) {
 	servers := n.workerMCPServers()
 	n.mu.Lock()
-	identity := n.artifactPublisher
+	broker := n.publishBroker
 	binary := n.artifactPublisherCommand
 	n.mu.Unlock()
-	if identity == nil || workerRef == "" || attemptID == "" || workspace == "" {
-		return servers
+	if broker == nil { return servers, nil }
+	if workerRef == "" || attemptID == "" || workspace == "" {
+		return nil, errors.New("node artifact: incomplete Worker publication binding")
 	}
-	auth, err := identity.Authenticator()
-	if err != nil {
-		return servers
-	}
+	endpoint, err := broker.Register(workerRef, attemptID, workspace)
+	if err != nil { return nil, err }
+	// The harness and its MCP children receive only a loopback path-limited broker URL.
+	// Neither the Node credential nor a Server-valid publish signature is exported.
 	return append(servers, MCPServer{
 		Name: "secretary_artifacts", Command: binary, Args: []string{"--artifact-mcp"},
-		Env: []MCPEnv{
-			{Name: "SECRETARY_ARTIFACT_SERVER", Value: identity.ConnectURL},
-			{Name: "SECRETARY_ARTIFACT_NODE", Value: string(identity.Node)},
-			{Name: "SECRETARY_ARTIFACT_WORKER", Value: workerRef},
-			{Name: "SECRETARY_ARTIFACT_ATTEMPT", Value: attemptID},
-			{Name: "SECRETARY_ARTIFACT_WORKSPACE", Value: workspace},
-			{Name: "SECRETARY_ARTIFACT_CAPABILITY", Value: auth.SignPublishCapability(identity.Node, workerRef, attemptID)},
-		},
-	})
+		Env: []MCPEnv{{Name: "SECRETARY_ARTIFACT_BROKER_URL", Value: endpoint}},
+	}), nil
 }
 
 func ValidPublishedName(name string) bool {
@@ -92,12 +103,13 @@ func ValidPublishedName(name string) bool {
 }
 
 func (p ArtifactPublisher) Publish(ctx context.Context, relativePath, name string) (core.Artifact, error) {
-	if len(relativePath) == 0 || len(relativePath) > 1024 || !filepath.IsLocal(relativePath) || filepath.IsAbs(relativePath) ||
+	if len(relativePath) == 0 || len(relativePath) > 1024 || filepath.IsAbs(relativePath) ||
+		!filepath.IsLocal(relativePath) || filepath.Clean(relativePath) != relativePath ||
 		strings.Contains(relativePath, "\\") && os.PathSeparator != '\\' {
-		return core.Artifact{}, errors.New("artifact publish: path must be relative to the Worker workspace")
+		return core.Artifact{}, errors.New("artifact publish: path must be a clean relative workspace path")
 	}
-	for _, component := range strings.FieldsFunc(filepath.ToSlash(relativePath), func(r rune) bool { return r == '/' }) {
-		if component == ".." || strings.HasPrefix(component, ".") {
+	for _, component := range strings.Split(filepath.ToSlash(relativePath), "/") {
+		if component == "" || component == "." || component == ".." || strings.HasPrefix(component, ".") {
 			return core.Artifact{}, errors.New("artifact publish: hidden or parent paths are forbidden")
 		}
 	}
@@ -110,34 +122,24 @@ func (p ArtifactPublisher) Publish(ctx context.Context, relativePath, name strin
 	if p.Node == "" || p.WorkerRef == "" || p.AttemptID == "" || p.Capability == "" || p.Workspace == "" {
 		return core.Artifact{}, errors.New("artifact publish: Worker binding is unavailable")
 	}
-	root, err := filepath.EvalSymlinks(p.Workspace)
+	// os.Root anchors path resolution in the Worker workspace even when the
+	// Worker races symlink creation or directory renames after validation.
+	root, err := os.OpenRoot(p.Workspace)
 	if err != nil {
-		return core.Artifact{}, errors.New("artifact publish: Worker workspace is unavailable")
+		return core.Artifact{}, errors.New("artifact publish: Worker workspace unavailable")
 	}
-	root, err = filepath.Abs(root)
-	if err != nil {
-		return core.Artifact{}, err
-	}
-	target := filepath.Join(root, relativePath)
-	rel, err := filepath.Rel(root, target)
-	if err != nil || !filepath.IsLocal(rel) || rel == "." {
-		return core.Artifact{}, errors.New("artifact publish: path escapes Worker workspace")
-	}
-	current := root
-	for _, component := range strings.Split(rel, string(filepath.Separator)) {
-		current = filepath.Join(current, component)
-		info, err := os.Lstat(current)
-		if err != nil {
-			return core.Artifact{}, errors.New("artifact publish: output file not found")
-		}
+	defer root.Close()
+	parts := strings.Split(relativePath, string(filepath.Separator))
+	for i := range parts {
+		prefix := filepath.Join(parts[:i+1]...)
+		info, err := root.Lstat(prefix)
+		if err != nil { return core.Artifact{}, errors.New("artifact publish: output file not found") }
 		if info.Mode()&os.ModeSymlink != 0 {
 			return core.Artifact{}, errors.New("artifact publish: symlink paths are forbidden")
 		}
 	}
-	file, err := os.Open(target)
-	if err != nil {
-		return core.Artifact{}, errors.New("artifact publish: output file not readable")
-	}
+	file, err := root.Open(relativePath)
+	if err != nil { return core.Artifact{}, errors.New("artifact publish: output file not readable") }
 	defer file.Close()
 	stat, err := file.Stat()
 	if err != nil || !stat.Mode().IsRegular() {

@@ -53,6 +53,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 	if err := execution.SetArtifactPublisher(d.Identity, binary); err != nil {
 		return err
 	}
+	defer execution.CloseArtifactPublisher()
 	if err := execution.SetMCPServers(d.MCPServers); err != nil {
 		return err
 	}
