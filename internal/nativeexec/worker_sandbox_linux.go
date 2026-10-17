@@ -104,8 +104,9 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 		}
 		wrapped = append(wrapped, "--bind", state, state)
 	}
-	wrapped = append(wrapped, "--bind", workspace, workspace)
-
+	// Workspace is remounted AFTER the protected Node root is hidden, so
+	// a workspace located inside the private root stays writable without
+	// accidentally exposing sibling credential files.
 	// Native harnesses and fake CLI test fixtures can live outside /usr;
 	// expose only their executable, never their containing user home or /tmp.
 	executable := command
@@ -153,6 +154,7 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 		// otherwise hidden Node directory, unlike its signing keys.
 		wrapped = append(wrapped, "--bind", nativeStore, nativeStore)
 	}
+	wrapped = append(wrapped, "--bind", workspace, workspace)
 	wrapped = append(wrapped, "--chdir", workspace, "--", executable)
 	return bwrap, append(wrapped, args...), nil
 }

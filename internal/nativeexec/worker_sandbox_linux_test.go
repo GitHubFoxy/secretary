@@ -47,3 +47,18 @@ func TestT09AlternateSystemNodeRootIsMasked(t *testing.T) {
 		})
 	}
 }
+
+
+func TestT09LinuxNestedWorkspaceRemountedAfterProtectedNodeRoot(t *testing.T) {
+	privateRoot:=t.TempDir()
+	workspace:=filepath.Join(privateRoot,"workspace")
+	if err:=os.MkdirAll(workspace,0700);err!=nil{t.Fatal(err)}
+	if err:=os.WriteFile(filepath.Join(privateRoot,"identity.json"),[]byte("NODE-KEY"),0600);err!=nil{t.Fatal(err)}
+	if err:=os.WriteFile(filepath.Join(workspace,"output.txt"),[]byte("PROJECT-DATA"),0600);err!=nil{t.Fatal(err)}
+	ctx:=WithWorkerSandbox(context.Background(),WorkerSandbox{ProtectedDir:privateRoot,Workspace:workspace})
+	cmd,err:=CommandContext(ctx,"/bin/sh","-c","test ! -r \"$1\" && test \"$(cat \"$2\")\" = PROJECT-DATA","worker",
+		filepath.Join(privateRoot,"identity.json"),filepath.Join(workspace,"output.txt"))
+	if err!=nil{t.Fatal(err)}
+	out,err:=cmd.CombinedOutput()
+	if err!=nil{t.Fatalf("nested Workspace was not remounted safely: %v %s",err,out)}
+}
