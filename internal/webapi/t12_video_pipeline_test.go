@@ -118,11 +118,26 @@ func TestT12WebVideoAsyncToRemoteNodeWorkerResultAndFailure(t *testing.T) {
 		if _,e=buf.ReadFrom(res.Body);e!=nil{t.Fatal(e)}
 		return res.StatusCode,buf.Bytes()
 	}
+	// Saturate both ffmpeg workers. A third upload must remain queued while
+	// Secretary dispatches its Worker; the Node will wait for conversion.
+	for i:=0;i<2;i++ {
+		name:=fmt.Sprintf("blocker-%d.mp4",i)
+		code,result:=post("/v1/artifacts?name="+name,fmt.Sprintf("t12-block-%d",i),[]byte("good video"))
+		if code!=http.StatusCreated {t.Fatalf("blocking upload %d: HTTP %d %s",i,code,result)}
+	}
+	for {
+		jobs,err:=store.PendingVideoJobs(ctx,api.OwnerID())
+		if err!=nil {t.Fatal(err)}
+		processing:=0
+		for _,job:=range jobs {if job.Status=="processing"{processing++}}
+		if processing==2 {break}
+		select {case <-ctx.Done():t.Fatal("could not saturate both video conversion slots");case <-time.After(10*time.Millisecond):}
+	}
 	status,raw:=post("/v1/artifacts?name=clip.mp4","t12-up-1",[]byte("good video"),)
 	if status!=http.StatusCreated{t.Fatalf("upload %d %s",status,raw)}
 	var uploaded struct{Reference string `json:"reference"`;Artifact core.Artifact `json:"artifact"`}
 	if e:=json.Unmarshal(raw,&uploaded);e!=nil{t.Fatal(e)}
-	if uploaded.Artifact.ProcessingStatus!="queued" && uploaded.Artifact.ProcessingStatus!="processing" {t.Fatalf("upload state %s",uploaded.Artifact.ProcessingStatus)}
+	if uploaded.Artifact.ProcessingStatus!="queued" {t.Fatalf("third video should remain queued until a ffmpeg slot frees: %s",uploaded.Artifact.ProcessingStatus)}
 	<-processor.started
 	status,replay:=post("/v1/artifacts?name=clip.mp4","t12-up-1",[]byte("good video"))
 	if status!=http.StatusOK || !bytes.Contains(replay,[]byte(uploaded.Reference)){t.Fatalf("video retry %d %s",status,replay)}
@@ -170,7 +185,7 @@ func TestT12WebVideoAsyncToRemoteNodeWorkerResultAndFailure(t *testing.T) {
 	case e:=<-actionDone:
 		if e!=nil {t.Fatalf("dependent dispatch request rejected: %v",e)}
 		actionReturned=true
-	case <-time.After(100*time.Millisecond):
+	case <-time.After(200*time.Millisecond):
 	}
 	select {case early:=<-runtime.seen:t.Fatalf("Worker started before video conversion succeeded: Task=%q Images=%d",early.Task,len(early.Images));default:}
 	close(processor.release)

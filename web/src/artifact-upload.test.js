@@ -63,6 +63,7 @@ test('actual Web attachment change/retry retains idempotency key after lost uplo
     assert.equal(keys[1], keys[0], 'retry must use the committed upload idempotency key');
     assert.equal(memory.size, 0, 'key must clear after acknowledged success');
     assert.equal((composer.value.match(/artifact:\/\//g) || []).length, 1);
+    assert.equal(composer.value, 'What is this?\\n\\nAnalyze attached image artifact://art_' + 'a'.repeat(32) + ' (image.png).');
 
     selectedInput.files = [file];
     await selectedInput.events.change();
@@ -171,6 +172,7 @@ test('T12 binds video before conversion, blocks premature Send and retries faile
     assert.equal(prematureBlocked, false, 'Send during conversion is allowed with durable reference');
     const capturedSentText = composer.value;
     assert.ok(capturedSentText.includes(originalRef));
+    assert.equal(capturedSentText, 'Explain the clip\\n\\nAnalyze sampled frames of attached video ' + originalRef + ' (clip.mp4).');
     unblockStatus();
     await first;
     assert.equal(memory.size, 1, 'failed processing must retain upload identity for retry');

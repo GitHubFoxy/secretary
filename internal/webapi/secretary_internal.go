@@ -107,7 +107,7 @@ func (s *Server) secretaryWebImageIDs(r *http.Request, turnID, inputID string) (
 			maxNativeFrames++
 			mediaIDs = append(mediaIDs, id)
 		case "video/mp4", "video/webm", "video/quicktime":
-			if artifact.ProcessingStatus != "processing" && artifact.ProcessingStatus != "ready" && artifact.ProcessingStatus != "failed" {
+			if artifact.ProcessingStatus != "queued" && artifact.ProcessingStatus != "processing" && artifact.ProcessingStatus != "ready" && artifact.ProcessingStatus != "failed" {
 				return nil, fmt.Errorf("web video: Artifact %s has no valid processing record", id)
 			}
 			if artifact.ProcessingStatus == "ready" {

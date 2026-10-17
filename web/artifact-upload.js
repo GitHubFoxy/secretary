@@ -90,7 +90,7 @@ export function installUpload(composer, imageOnly) {
       const text = composer.value.trimEnd();
       const prefix = imageFile(file) ? 'Analyze attached image ' : videoFile(file) ? 'Analyze sampled frames of attached video ' : 'Use attached file ';
       if (!composer.value.includes(ref)) {
-        composer.value = text + (text ? '\\n\\n' : '') + prefix + ref + ' (' + file.name + ').';
+        composer.value = text + (text ? '\n\n' : '') + prefix + ref + ' (' + file.name + ').';
         composer.dispatchEvent(new Event('input', { bubbles: true }));
       }
       uploadInFlight = false; // the canonical reference is already in the message
