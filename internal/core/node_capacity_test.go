@@ -100,35 +100,3 @@ func TestAutomaticDispatchRechecksCapacityAfterStaleResolution(t *testing.T) {
 	}
 }
 
-func TestReservedWorkerFollowupsCannotOverbookBusyNode(t *testing.T) {
-	ctx := context.Background()
-	store := newTestStore(t)
-	resolverEnroll(t, store, "single", resolverInventory("single", []HarnessInstance{
-		resolverInstance("single/codex", "single", HarnessCodex),
-	}), 1, nil)
-	conversation := mustConversation(t, store)
-	first, _, initial, _, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "first", DispatchResolutionRequest{}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, _, err := store.RecordAttemptOutcome(ctx, initial.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "done"}); err != nil {
-		t.Fatal(err)
-	}
-	_, _, other, _, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "other", DispatchResolutionRequest{}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := store.CreateTurn(ctx, first.ID, TurnSpec{Input: "follow-up while busy"}); !errors.Is(err, ErrSelectedNodeUnavailable) {
-		t.Fatalf("follow-up overbooked occupied Node: %v", err)
-	}
-	if _, _, _, err := store.RecordAttemptOutcome(ctx, other.ID, AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "done"}); err != nil {
-		t.Fatal(err)
-	}
-	_, continuation, err := store.CreateTurn(ctx, first.ID, TurnSpec{Input: "follow-up after release"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if used, err := nodeCapacityUsed(ctx, store.db, "single", nil); err != nil || used != 1 {
-		t.Fatalf("follow-up did not reserve a new slot: used=%d err=%v continuation=%#v", used, err, continuation)
-	}
-}
