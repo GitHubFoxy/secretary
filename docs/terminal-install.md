@@ -10,7 +10,7 @@ On an existing developer host with Git, zsh, OpenSSL and Go 1.27.1+ (or mise):
 curl -fsSL https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install.sh | bash
 ```
 
-The installer checks prerequisites, clones into `~/.local/src/secretary` by default (override with `SECRETARY_INSTALL_DIR`), preserves an existing clean checkout and invokes the interactive terminal setup. It never modifies global Codex or Claude Code configuration. On a headless host, setup auto-selects an installed native harness; when neither is found it fails with an actionable message rather than silently selecting an unavailable provider. Codex requires its authorized CLI and `codex-acp`; Claude Code requires its own CLI and native authorization. Only the selected harness is required.
+The installer checks prerequisites, clones into `~/.local/src/secretary` by default (override with `SECRETARY_INSTALL_DIR`), preserves an existing clean checkout and invokes the interactive terminal setup. It never modifies global Codex or Claude Code configuration. On a headless host, fresh setup automatically selects only a **ready, authenticated** native harness (Codex first, then Claude Code); an installed but unauthorized Codex is skipped if Claude Code is ready. A standalone `codex-acp` adapter is never treated as an installed Codex CLI. When no harness is ready, setup fails with an actionable message rather than saving an unusable default. Codex requires its authorized CLI and `codex-acp`; Claude Code requires its own CLI and native authorization. Only the selected harness is required.
 
 To run setup explicitly in an existing source checkout:
 
@@ -19,7 +19,7 @@ To run setup explicitly in an existing source checkout:
 ./secretary setup --non-interactive --harness claude_code
 ```
 
-The interactive flow selects a detected harness, verifies readiness (and offers the native login step if necessary), writes private local credentials, configures an outbound local Execution Node and offers optional Telegram DM setup. It does not copy native provider credentials. Running setup again preserves existing configuration, Node identity, credentials and native sessions.
+The interactive flow selects a detected harness, verifies readiness (and offers the native login step if necessary), writes private local credentials, configures an outbound local Execution Node and offers optional Telegram DM setup. It does not copy native provider credentials. Running setup again preserves existing configuration, Node identity, credentials and native sessions. For existing or partially installed deployments it checks the persisted `environment` and provisions **only missing** local Node pairing/admin tokens, including if `config.toml` or an already-paired Node identity exists; no existing secret or bootstrap token is rotated.
 
 ## Terminal operations
 
@@ -62,4 +62,4 @@ Pair the local Node (`secretary node start`) **before** enabling its persistent 
 
 ## Acceptance
 
-`scripts/t06-terminal-cli-test.sh` uses fresh temporary homes, fake native CLIs, safe-failure cases and mock systemd commands. `.github/workflows/t06-terminal-cli.yml` runs shell syntax checks and these fixtures on Ubuntu. This is not a substitute for **manual** clean-user installs on both macOS and Linux, nor live Codex/Claude Code authorization and end-to-end model calls; record those checks separately before marking T06 release-accepted.
+`scripts/t06-terminal-cli-test.sh` uses fresh temporary homes, fake native CLIs, upgrade/retry fixtures for missing Node secrets, ready-only auto-selection (including unauthorized Codex and adapter-only negatives), safe-failure cases and mock systemd commands. `.github/workflows/t06-terminal-cli.yml` runs shell syntax checks and these fixtures on Ubuntu. This is not a substitute for **manual** clean-user installs on both macOS and Linux, nor live Codex/Claude Code authorization and end-to-end model calls; record those checks separately before marking T06 release-accepted.
