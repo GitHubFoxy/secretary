@@ -47,9 +47,11 @@ or **"Remember that I prefer Go"**. Secretary calls `read_memory` to choose
 `remember` with an entry, `expected_revision` and the active originating
 `secretary_turn_id` / `input_id`. The server verifies current owner
 capability, active origin and the original explicit owner request. Quoted
-examples, translation requests, negations, multi-line/multi-command messages
-and ambiguous instructions are deliberately refused by this conservative
-authorization check; a direct standalone memory request is required. Ordinary
+command examples, translation requests, later cancellations (such as
+"Actually, ignore that request"), and ambiguous follow-up instructions are
+refused. Negation **inside a preference** is allowed: "Remember that I don’t
+like coffee" is an explicit request, not a withdrawal. The conservative
+authorization check requires a direct standalone memory request. Ordinary
 conversation, third-party content, Worker results and inferred preferences
 cannot invoke a permitted write. Conflicts and failures must be reported rather
 than claimed saved. An explicit remembered fact is appended as a Markdown list
