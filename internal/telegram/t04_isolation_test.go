@@ -154,6 +154,7 @@ func TestT04DistinctDurableEventsSameRequestIDAreNotSentAgain(t *testing.T) {
 			a := newT04Adapter(t, path, tr, &fakeServer{}, -200)
 			first := Event{Sequence: 1, EventID: "first", Kind: tc.firstKind, WorkerRef: "w1", Payload: tc.payload}
 			if err := a.HandleDurableEvent(ctx, first); err != nil { t.Fatal(err) }
+			if err := a.SyncWorkerTopics(ctx); err != nil { t.Fatal(err) }
 			if len(tr.sent) != 1 || len(a.state.Delivered) != 0 || len(a.state.RequestNotified) != 1 {
 				t.Fatalf("first request must deliver once and compact event receipt: sent=%#v receipts=%#v semantic=%#v", tr.sent, a.state.Delivered, a.state.RequestNotified)
 			}
@@ -163,6 +164,7 @@ func TestT04DistinctDurableEventsSameRequestIDAreNotSentAgain(t *testing.T) {
 			replayed.Sequence = 2
 			replayed.EventID = "different-event"
 			if err := a.HandleDurableEvent(ctx, replayed); err != nil { t.Fatal(err) }
+			if err := a.SyncWorkerTopics(ctx); err != nil { t.Fatal(err) }
 			if len(tr.sent) != 1 || a.LastEventSeq() != 2 {
 				t.Fatalf("same request produced duplicate notification: sent=%#v cursor=%d", tr.sent, a.LastEventSeq())
 			}
@@ -171,6 +173,7 @@ func TestT04DistinctDurableEventsSameRequestIDAreNotSentAgain(t *testing.T) {
 			different.EventID = "new-request"
 			different.Payload = json.RawMessage(`{"request_id":"req-2","kind":"permission"}`)
 			if err := a.HandleDurableEvent(ctx, different); err != nil { t.Fatal(err) }
+			if err := a.SyncWorkerTopics(ctx); err != nil { t.Fatal(err) }
 			if len(tr.sent) != 2 || a.state.Topics["w1"].PendingRequestID != "req-2" {
 				t.Fatalf("new request incorrectly suppressed: sent=%#v pending=%#v", tr.sent, a.state.Topics["w1"])
 			}
@@ -178,6 +181,7 @@ func TestT04DistinctDurableEventsSameRequestIDAreNotSentAgain(t *testing.T) {
 			oldAgain.Sequence = 4
 			oldAgain.EventID = fmt.Sprintf("stale-%s", tc.name)
 			if err := a.HandleDurableEvent(ctx, oldAgain); err != nil { t.Fatal(err) }
+			if err := a.SyncWorkerTopics(ctx); err != nil { t.Fatal(err) }
 			if len(tr.sent) != 2 || a.state.Topics["w1"].PendingRequestID != "req-2" {
 				t.Fatalf("stale request replay resurrected old pending ID: sent=%#v pending=%#v", tr.sent, a.state.Topics["w1"])
 			}
@@ -191,14 +195,16 @@ func TestT04FailedRequestDeliveryIsRetriedBeforeSemanticReceipt(t *testing.T) {
 	tr := &t04FlakyTransport{failAt: 1}
 	a := newT04Adapter(t, path, tr, &fakeServer{}, -200)
 	event := Event{Sequence: 1, Kind: "worker.needs_input", EventID: "request", WorkerRef: "w1", Payload: json.RawMessage(`{"request_id":"id-1"}`)}
-	if err := a.HandleDurableEvent(ctx, event); err == nil {
-		t.Fatal("expected initial topic send failure")
+	if err := a.HandleDurableEvent(ctx, event); err != nil { t.Fatal(err) }
+	if err := a.SyncWorkerTopics(ctx); err == nil {
+		t.Fatal("expected initial deferred topic send failure")
 	}
-	if len(a.state.RequestNotified) != 0 || a.LastEventSeq() != 0 {
+	if len(a.state.RequestNotified) != 0 || a.LastEventSeq() != 1 {
 		t.Fatalf("premature semantic receipt: %#v seq=%d", a.state.RequestNotified, a.LastEventSeq())
 	}
 	tr.failAt = 0
 	a = newT04Adapter(t, path, tr, &fakeServer{}, -200)
+	if err := a.SyncWorkerTopics(ctx); err != nil { t.Fatal(err) }
 	if err := a.HandleDurableEvent(ctx, event); err != nil { t.Fatal(err) }
 	if len(tr.sent) != 1 || len(a.state.RequestNotified) != 1 || a.LastEventSeq() != 1 {
 		t.Fatalf("failed request wasn't safely retried: sent=%#v receipts=%#v", tr.sent, a.state.RequestNotified)
