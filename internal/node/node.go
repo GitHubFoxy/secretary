@@ -244,6 +244,9 @@ func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previous
 	defer n.mu.Unlock()
 	checkpoint, ok := n.checkpoints[previousAttemptID]
 	prior := checkpoint.request
+	if request.Workspace == "" && ok {
+		request.Workspace = prior.Workspace
+	}
 	if !ok || checkpoint.nativeID == "" || prior.WorkerRef != request.WorkerRef || prior.Workspace != request.Workspace || !reflect.DeepEqual(prior.Profile, request.Profile) || !reflect.DeepEqual(prior.HarnessInstance, request.HarnessInstance) || prior.Model != request.Model || prior.Reasoning != request.Reasoning || prior.ApprovalPolicy != request.ApprovalPolicy {
 		return nil, ErrRuntimeSessionUnavailable
 	}

@@ -370,3 +370,33 @@ func TestSecretaryAcknowledgementPrecedesWorkAndDoesNotHideFinalErrors(t *testin
 		}
 	}
 }
+
+
+func TestSpawnWorkerSchemaAllowsAutomaticDispatchWithoutProject(t *testing.T) {
+	for _, handler := range []Secretary{{}, {ReplyContractVersion: core.SecretaryReplyContractAddressedV1}} {
+		var schema map[string]any
+		for _, tool := range handler.Tools() {
+			if tool.Name == "spawn_worker" {
+				schema = tool.InputSchema
+				break
+			}
+		}
+		if schema == nil {
+			t.Fatal("spawn_worker tool missing")
+		}
+		properties := schema["properties"].(map[string]any)
+		required := schema["required"].([]string)
+		if properties["preferences"] == nil || len(required) == 0 || required[0] != "intent" {
+			t.Fatalf("schema cannot auto-dispatch: %#v", schema)
+		}
+		for _, field := range required {
+			if field == "preferences" || field == "project_id" {
+				t.Fatalf("schema still mandates Worker selection: %#v", schema)
+			}
+		}
+		preferences := properties["preferences"].(map[string]any)
+		if _, required := preferences["required"]; required {
+			t.Fatalf("Project is still required in preferences: %#v", preferences)
+		}
+	}
+}

@@ -1,0 +1,256 @@
+package ctl
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/node"
+)
+
+type projectlessExecutionRuntime struct {
+	lifecycleRuntime
+	executor *node.ExecutionNode
+	envelope node.WorkerEnvelope
+	calls    int
+}
+
+func (r *projectlessExecutionRuntime) Dispatch(ctx context.Context, commandID string, worker core.Worker, turn core.Turn, attempt core.Phase4Attempt, resolved core.DispatchResolution) error {
+	envelope, err := (NodeRuntime{}).envelope(worker, turn, attempt, resolved.ProjectDispatch)
+	if err != nil {
+		return err
+	}
+	metadata := core.CommandMetadata{
+		CommandID: commandID, Node: core.NodeReference(worker.NodeID),
+		HarnessInstanceID: envelope.HarnessInstance.ID, WorkerRef: worker.WorkerRef,
+		TurnID: turn.ID, AttemptID: attempt.ID, CorrelationID: attempt.CorrelationID, IssuedAt: time.Now().UTC(),
+	}
+	outcome, err := r.executor.HandleCommand(ctx, node.Command{
+		Kind: node.CommandDispatch, Dispatch: &node.DispatchCommand{Metadata: metadata, Envelope: envelope},
+	})
+	if err != nil {
+		return err
+	}
+	if outcome.State != node.CommandAccepted {
+		return fmt.Errorf("Execution Node rejected selected Worker binding: %#v", outcome)
+	}
+	r.calls++
+	r.envelope = envelope
+	return nil
+}
+
+func TestProjectlessServerDispatchPreservesOwnerExecutionNodeOverride(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "server.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, _, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	localHarness := core.HarnessInstance{
+		ID: "local/codex", Node: "local", Kind: core.HarnessCodex, Version: "1", Status: core.HarnessReady,
+		Authentication: core.HarnessAuthentication{Authenticated: true},
+		Capabilities: core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityShell}},
+	}
+	remoteHarness := localHarness
+	remoteHarness.ID, remoteHarness.Node, remoteHarness.Kind = "remote/claude", "remote", core.HarnessClaudeCode
+	for _, fixture := range []struct {
+		name     core.NodeReference
+		instance core.HarnessInstance
+	}{
+		{name: "local", instance: localHarness},
+		{name: "remote", instance: remoteHarness},
+	} {
+		if _, err := store.EnrollNode(ctx, fixture.name); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.UpdateNodeHeartbeat(ctx, fixture.name, core.HarnessInventorySnapshot{
+			Node: fixture.name, ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{fixture.instance},
+		}, core.NodeHeartbeat{Capacity: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	native := &projectlessNativeRuntime{}
+	localStore, err := node.OpenLocalStore(filepath.Join(t.TempDir(), "node.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer localStore.Close()
+	executor := node.NewExecutionNode("remote", native, localStore)
+	if err := executor.SetInventory(core.HarnessInventorySnapshot{
+		Node: "remote", ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{remoteHarness},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &projectlessExecutionRuntime{executor: executor}
+	service := WorkerService{
+		Store: store, PersonID: person.ID, Capability: capability,
+		WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessCodex, PreferredHarnesses: []core.HarnessKind{core.HarnessClaudeCode}},
+		WorkerProfileSource: syntheticWorkerTemplateSource(),
+		Runtime: runtime,
+	}
+	automatic, err := store.ResolveDispatch(ctx, core.DispatchResolutionRequest{WorkerPolicy: service.WorkerPolicy})
+	if err != nil || automatic.Node != "local" || automatic.HarnessInstance.ID != localHarness.ID {
+		t.Fatalf("automatic Node/harness preference: %#v err=%v", automatic, err)
+	}
+	created, err := service.SpawnWorker(ctx, SpawnWorkerRequest{
+		Intent: "review this repository", IdempotencyKey: "remote-owner-override",
+		Preferences: WorkerPreferences{NodeID: "remote", HarnessKind: core.HarnessClaudeCode},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.calls != 1 || created.Worker.ProjectID != "" || created.Worker.NodeID != "remote" ||
+		created.Worker.HarnessInstanceID != "remote/claude" || runtime.envelope.ProjectID != "" ||
+		runtime.envelope.HarnessInstance.ID != remoteHarness.ID {
+		t.Fatalf("Server to Execution Node override mismatch: worker=%#v envelope=%#v", created.Worker, runtime.envelope)
+	}
+	native.mu.Lock()
+	starts := append([]node.StartRequest(nil), native.starts...)
+	native.mu.Unlock()
+	if len(starts) != 1 || starts[0].HarnessInstance.ID != remoteHarness.ID || starts[0].Workspace == "" {
+		t.Fatalf("Execution Node did not start selected harness in its own workspace: %#v", starts)
+	}
+	bound, err := store.ResolveWorkerBinding(ctx, created.Worker.ID)
+	if err != nil || bound.Node != "remote" || bound.HarnessInstance.ID != remoteHarness.ID {
+		t.Fatalf("Server did not persist actual selected binding: %#v err=%v", bound, err)
+	}
+	if _, err := service.SpawnWorker(ctx, SpawnWorkerRequest{
+		Intent: "different harness", IdempotencyKey: "bad-override",
+		Preferences: WorkerPreferences{NodeID: "remote", HarnessKind: core.HarnessCodex},
+	}); !errors.Is(err, core.ErrInvalidDispatchPin) {
+		t.Fatalf("incompatible Node/harness override should fail visibly: %v", err)
+	}
+	if runtime.calls != 1 {
+		t.Fatal("incompatible override was sent to Execution Node")
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, created.Attempts[0].ID, core.AttemptOutcomeInput{
+		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "Ready for a follow-up",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	continued, err := service.MessageWorker(ctx, MessageWorkerRequest{
+		WorkerRef: created.Worker.WorkerRef, Text: "Continue the review", IdempotencyKey: "remote-follow-up",
+	})
+	if err != nil || continued.Worker.ID != created.Worker.ID || continued.Worker.NodeID != "remote" {
+		t.Fatalf("remote Follow-up lost immutable binding: worker=%#v err=%v", continued.Worker, err)
+	}
+	native.mu.Lock()
+	resumes := append([]node.StartRequest(nil), native.resumes...)
+	native.mu.Unlock()
+	if runtime.calls != 2 || len(resumes) != 1 || resumes[0].Workspace != starts[0].Workspace || resumes[0].HarnessInstance.ID != remoteHarness.ID {
+		t.Fatalf("remote Follow-up did not resume same native session and Workspace: %#v", resumes)
+	}
+}
+
+func TestProjectlessSpawnBindsProfileToFinalHarnessAfterNodeAvailabilityChange(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "server.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, _, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	codex := core.HarnessInstance{
+		ID: "local/codex", Node: "local", Kind: core.HarnessCodex, Version: "1", Status: core.HarnessReady,
+		Authentication: core.HarnessAuthentication{Authenticated: true},
+		Capabilities: core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityShell}},
+	}
+	claude := codex
+	claude.ID, claude.Node, claude.Kind = "remote/claude", "remote", core.HarnessClaudeCode
+	for _, fixture := range []struct {
+		name core.NodeReference
+		instance core.HarnessInstance
+	}{{"local", codex}, {"remote", claude}} {
+		if _, err := store.EnrollNode(ctx, fixture.name); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.UpdateNodeHeartbeat(ctx, fixture.name, core.HarnessInventorySnapshot{
+			Node: fixture.name, ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{fixture.instance},
+		}, core.NodeHeartbeat{Capacity: 1}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	policy := core.HarnessPolicy{DefaultHarness: core.HarnessCodex, PreferredHarnesses: []core.HarnessKind{core.HarnessClaudeCode}}
+	initial, err := store.ResolveDispatch(ctx, core.DispatchResolutionRequest{WorkerPolicy: policy})
+	if err != nil || initial.HarnessInstance.ID != codex.ID {
+		t.Fatalf("expected Codex before availability change: %#v err=%v", initial, err)
+	}
+	native := &projectlessNativeRuntime{}
+	localStore, err := node.OpenLocalStore(filepath.Join(t.TempDir(), "node.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer localStore.Close()
+	executor := node.NewExecutionNode("remote", native, localStore)
+	if err := executor.SetInventory(core.HarnessInventorySnapshot{
+		Node: "remote", ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{claude},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &projectlessExecutionRuntime{executor: executor}
+	profileCalls := 0
+	service := WorkerService{
+		Store: store, PersonID: person.ID, Capability: capability,
+		WorkerPolicy: policy,
+		WorkerProfileSource: func() (node.ManagedProfile, error) {
+			profileCalls++
+			// Old SpawnWorker performed the first resolution before this callback,
+			// binding a Codex Profile while the final resolution picked Claude.
+			if err := store.MarkNodeDisconnected(ctx, "local"); err != nil {
+				return node.ManagedProfile{}, err
+			}
+			return syntheticWorkerTemplateSource()()
+		},
+		Runtime: runtime,
+	}
+	details, err := service.SpawnWorker(ctx, SpawnWorkerRequest{
+		Intent: "review code", IdempotencyKey: "profile-final-binding-race",
+	})
+	if err != nil {
+		t.Fatalf("selected harness and managed Profile diverged: %v", err)
+	}
+	if profileCalls != 1 || runtime.calls != 1 || details.Worker.HarnessInstanceID != string(claude.ID) ||
+		details.Worker.NodeID != "remote" {
+		t.Fatalf("final selected binding mismatch: worker=%#v profileCalls=%d dispatched=%d", details.Worker, profileCalls, runtime.calls)
+	}
+	binding, err := store.ResolveWorkerBinding(ctx, details.Worker.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved node.ManagedProfile
+	if err := json.Unmarshal([]byte(details.Worker.ProfileSnapshot), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Runtime != string(core.HarnessClaudeCode) || saved.Hash != saved.SnapshotHash() ||
+		saved.Delivery != "native" || saved.Runtime != runtime.envelope.Profile.Runtime {
+		t.Fatalf("persisted Profile does not match final harness: %#v envelope=%#v", saved, runtime.envelope.Profile)
+	}
+	if _, err := managedWorkerProfileForBinding(details.Worker, binding); err != nil {
+		t.Fatalf("persisted binding is not resumable: %v", err)
+	}
+	if _, err := service.SpawnWorker(ctx, SpawnWorkerRequest{
+		Intent: "replay request", IdempotencyKey: "profile-final-binding-race",
+	}); err != nil || profileCalls != 1 || runtime.calls != 1 {
+		t.Fatalf("idempotent replay unexpectedly changed Profile: err=%v calls=%d dispatched=%d", err, profileCalls, runtime.calls)
+	}
+}

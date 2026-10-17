@@ -1,0 +1,235 @@
+package core
+
+import (
+	"context"
+	"errors"
+	"testing"
+)
+
+func TestProjectlessDispatchChoosesReadyHarnessAndHonorsOwnerOverride(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	resolverEnroll(t, store, "remote", resolverInventory("remote", []HarnessInstance{
+		resolverInstance("remote/claude", "remote", HarnessClaudeCode),
+	}), 2, nil)
+	resolverEnroll(t, store, "local", resolverInventory("local", []HarnessInstance{
+		resolverInstance("local/codex", "local", HarnessCodex),
+		resolverInstance("local/claude", "local", HarnessClaudeCode),
+	}), 2, nil)
+
+	request := DispatchResolutionRequest{WorkerPolicy: HarnessPolicy{
+		DefaultHarness: HarnessCodex,
+		PreferredHarnesses: []HarnessKind{HarnessClaudeCode},
+		RequiredExecutionCapabilities: []ExecutionCapability{CapabilityShell},
+	}}
+	selected, err := store.ResolveDispatch(ctx, request)
+	if err != nil || selected.Node != "local" || selected.HarnessInstance.ID != "local/codex" || selected.Workspace != "" || selected.Project.ID != "" {
+		t.Fatalf("automatic selection: %#v err=%v", selected, err)
+	}
+	conversation := mustConversation(t, store)
+	worker, _, _, resolved, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "build a site", request, "projectless-default")
+	if err != nil || resolved.Queued || worker.ProjectID != "" {
+		t.Fatalf("projectless Worker: %#v selection=%#v err=%v", worker, resolved, err)
+	}
+	binding, err := store.ResolveWorkerBinding(ctx, worker.ID)
+	if err != nil || binding.Node != "local" || binding.HarnessInstance.ID != "local/codex" || binding.Workspace != "" {
+		t.Fatalf("immutable Worker binding: %#v err=%v", binding, err)
+	}
+
+	override := request
+	override.NodeID = "remote"
+	override.HarnessKind = HarnessClaudeCode
+	override.HarnessInstanceID = "remote/claude"
+	other, _, _, selection, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "review the site", override, "projectless-override")
+	if err != nil || other.NodeID != "remote" || other.HarnessInstanceID != "remote/claude" || selection.Node != "remote" || selection.Project.ID != "" {
+		t.Fatalf("owner override: worker=%#v selection=%#v err=%v", other, selection, err)
+	}
+	original, err := store.ResolveWorkerBinding(ctx, worker.ID)
+	if err != nil || original.Node != binding.Node || original.HarnessInstance.ID != binding.HarnessInstance.ID {
+		t.Fatalf("override migrated existing Worker: %#v err=%v", original, err)
+	}
+	repeated, _, _, replay, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "ignored duplicate", override, "projectless-default")
+	if err != nil || repeated.ID != worker.ID || replay.Node != "local" || replay.HarnessInstance.ID != "local/codex" {
+		t.Fatalf("replay changed immutable selection: %#v %#v err=%v", repeated, replay, err)
+	}
+}
+
+func TestProjectlessDispatchExplainsIncompatibleAndOfflineOverrides(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	installed := resolverInstance("node/claude", "node", HarnessClaudeCode)
+	resolverEnroll(t, store, "node", resolverInventory("node", []HarnessInstance{installed}), 2, nil)
+
+	auto, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{WorkerPolicy: HarnessPolicy{DefaultHarness: HarnessCodex}})
+	if err != nil || auto.HarnessInstance.ID != installed.ID {
+		t.Fatalf("fallback to installed supported harness: %#v err=%v", auto, err)
+	}
+	if _, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{NodeID: "node", HarnessKind: HarnessCodex}); !errors.Is(err, ErrInvalidDispatchPin) {
+		t.Fatalf("incompatible harness override: %v", err)
+	}
+	if _, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{NodeID: "node", HarnessInstanceID: "node/missing"}); !errors.Is(err, ErrInvalidDispatchPin) {
+		t.Fatalf("uninstalled harness override: %v", err)
+	}
+	if _, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{NodeID: "unknown"}); !errors.Is(err, ErrSelectedNodeUnavailable) {
+		t.Fatalf("unenrolled Node override: %v", err)
+	}
+	if _, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{WorkerPolicy: HarnessPolicy{
+		DefaultHarness: HarnessClaudeCode,
+		RequiredActivityCapabilities: []ActivityCapability{ActivityCapability("nonexistent")},
+	}}); !errors.Is(err, ErrInvalidDispatchPin) {
+		t.Fatalf("incompatible capability: %v", err)
+	}
+	if err := store.MarkNodeDisconnected(ctx, "node"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{NodeID: "node", HarnessKind: HarnessClaudeCode}); !errors.Is(err, ErrSelectedNodeUnavailable) {
+		t.Fatalf("offline Node override: %v", err)
+	}
+	if _, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{}); !errors.Is(err, ErrNoEligibleNode) {
+		t.Fatalf("offline automatic selection: %v", err)
+	}
+}
+
+func TestProjectlessDispatchPrefersConfiguredHarnessAcrossNodes(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	resolverEnroll(t, store, "local", resolverInventory("local", []HarnessInstance{
+		resolverInstance("local/claude", "local", HarnessClaudeCode),
+	}), 1, nil)
+	resolverEnroll(t, store, "remote", resolverInventory("remote", []HarnessInstance{
+		resolverInstance("remote/codex", "remote", HarnessCodex),
+	}), 1, nil)
+	selected, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{
+		WorkerPolicy: HarnessPolicy{DefaultHarness: HarnessCodex, PreferredHarnesses: []HarnessKind{HarnessClaudeCode}},
+	})
+	if err != nil || selected.Node != "remote" || selected.HarnessInstance.ID != "remote/codex" {
+		t.Fatalf("configured harness preference lost to Node preference: %#v err=%v", selected, err)
+	}
+}
+
+
+func TestProjectlessExplicitBusyNodeFailsVisibly(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	resolverEnroll(t, store, "busy", resolverInventory("busy", []HarnessInstance{
+		resolverInstance("busy/codex", "busy", HarnessCodex),
+	}), 1, []NodeActiveAttempt{{AttemptID: "other-attempt"}})
+	_, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{NodeID: "busy", HarnessKind: HarnessCodex})
+	if !errors.Is(err, ErrSelectedNodeUnavailable) {
+		t.Fatalf("busy selected Node must not silently queue or migrate: %v", err)
+	}
+}
+
+
+func TestProjectlessDispatchRejectsUntrustedWorkspaceBeforeCreatingWorker(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	resolverEnroll(t, store, "node", resolverInventory("node", []HarnessInstance{
+		resolverInstance("node/codex", "node", HarnessCodex),
+	}), 1, nil)
+	conversation := mustConversation(t, store)
+	for _, workspace := range []string{t.TempDir(), "../private", " ", "/"} {
+		request := DispatchResolutionRequest{Workspace: workspace}
+		if _, err := store.ResolveDispatch(ctx, request); !errors.Is(err, ErrWorkspaceOutsideRoot) {
+			t.Fatalf("untrusted workspace %q was resolved: %v", workspace, err)
+		}
+		if _, _, _, _, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "read secrets", request, ""); !errors.Is(err, ErrWorkspaceOutsideRoot) {
+			t.Fatalf("untrusted workspace %q created Worker: %v", workspace, err)
+		}
+	}
+	approvedRoot := t.TempDir()
+	project, err := store.CreateProject(ctx, ProjectSpec{
+		ID: "approved-workspace", Name: "Approved", Mappings: []ProjectPathMapping{{Node: "node", Path: approvedRoot}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{ProjectID: project.ID, Workspace: approvedRoot, HarnessKind: HarnessCodex})
+	if err != nil || allowed.Workspace != approvedRoot {
+		t.Fatalf("Project-authorized workspace rejected: resolution=%#v err=%v", allowed, err)
+	}
+}
+
+func TestFinalDispatchProfileFactorySharesBindingAndIsNotRerunOnReplay(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	resolverEnroll(t, store, "codex-node", resolverInventory("codex-node", []HarnessInstance{
+		resolverInstance("codex-node/codex", "codex-node", HarnessCodex),
+	}), 1, nil)
+	resolverEnroll(t, store, "claude-node", resolverInventory("claude-node", []HarnessInstance{
+		resolverInstance("claude-node/claude", "claude-node", HarnessClaudeCode),
+	}), 1, nil)
+	policy := HarnessPolicy{DefaultHarness: HarnessCodex, PreferredHarnesses: []HarnessKind{HarnessClaudeCode}}
+	initial, err := store.ResolveDispatch(ctx, DispatchResolutionRequest{WorkerPolicy: policy})
+	if err != nil || initial.HarnessInstance.Kind != HarnessCodex {
+		t.Fatalf("initial available harness=%#v err=%v", initial, err)
+	}
+	if err := store.MarkNodeDisconnected(ctx, "codex-node"); err != nil {
+		t.Fatal(err)
+	}
+	conversation := mustConversation(t, store)
+	calls := 0
+	factory := func(selection DispatchResolution) (string, error) {
+		calls++
+		if selection.Node != "claude-node" || selection.HarnessInstance.Kind != HarnessClaudeCode {
+			t.Fatalf("factory received stale selection: %#v", selection)
+		}
+		return string(selection.HarnessInstance.Kind), nil
+	}
+	worker, _, _, resolved, err := store.ResolveAndCreateWorkerWithProfileFactory(
+		ctx, conversation.ID, "review", DispatchResolutionRequest{WorkerPolicy: policy},
+		"resolved-factory", factory,
+	)
+	if err != nil || calls != 1 || resolved.HarnessInstance.ID != "claude-node/claude" ||
+		worker.HarnessInstanceID != "claude-node/claude" || worker.ProfileSnapshot != string(HarnessClaudeCode) {
+		t.Fatalf("factory and persisted Worker diverged: worker=%#v selection=%#v calls=%d err=%v", worker, resolved, calls, err)
+	}
+	replayed, _, _, _, err := store.ResolveAndCreateWorkerWithProfileFactory(
+		ctx, conversation.ID, "ignored", DispatchResolutionRequest{WorkerPolicy: policy},
+		"resolved-factory", func(DispatchResolution) (string, error) {
+			t.Fatal("idempotent replay must not rebuild the immutable Profile")
+			return "", nil
+		},
+	)
+	if err != nil || replayed.ID != worker.ID {
+		t.Fatalf("factory replay changed Worker: %#v err=%v", replayed, err)
+	}
+}
+
+func TestFinalDispatchProfileFactoryRejectsFailureAndConcurrentNodeChange(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	resolverEnroll(t, store, "node", resolverInventory("node", []HarnessInstance{
+		resolverInstance("node/codex", "node", HarnessCodex),
+	}), 1, nil)
+	conversation := mustConversation(t, store)
+	profileFailure := errors.New("cannot bind managed Profile")
+	_, _, _, _, err := store.ResolveAndCreateWorkerWithProfileFactory(
+		ctx, conversation.ID, "inspect", DispatchResolutionRequest{}, "invalid-profile",
+		func(DispatchResolution) (string, error) { return "", profileFailure },
+	)
+	if !errors.Is(err, profileFailure) {
+		t.Fatalf("profile factory error was not propagated: %v", err)
+	}
+	if _, _, _, _, found, err := store.ReplayWorkerCreation(ctx, "invalid-profile"); err != nil || found {
+		t.Fatalf("failed factory persisted a Worker: found=%v err=%v", found, err)
+	}
+	var disconnectErr error
+	store.beforeResolvedWorkerCreate = func() {
+		disconnectErr = store.MarkNodeDisconnected(ctx, "node")
+	}
+	defer func() { store.beforeResolvedWorkerCreate = nil }()
+	_, _, _, _, err = store.ResolveAndCreateWorkerWithProfileFactory(
+		ctx, conversation.ID, "inspect", DispatchResolutionRequest{}, "stale-node",
+		func(DispatchResolution) (string, error) { return "bound", nil },
+	)
+	if disconnectErr != nil {
+		t.Fatal(disconnectErr)
+	}
+	if !errors.Is(err, ErrSelectedNodeUnavailable) {
+		t.Fatalf("Node changed after binding, Worker must not persist: %v", err)
+	}
+	if _, _, _, _, found, err := store.ReplayWorkerCreation(ctx, "stale-node"); err != nil || found {
+		t.Fatalf("failed Node freshness check persisted Worker: found=%v err=%v", found, err)
+	}
+}

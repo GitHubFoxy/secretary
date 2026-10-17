@@ -27,6 +27,12 @@ CREATE TABLE IF NOT EXISTS phase4_attempts (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS phase4_attempts_one_active
   ON phase4_attempts(turn_id) WHERE state IN ('starting', 'active');
+CREATE TABLE IF NOT EXISTS phase4_node_capacity_claims (
+  attempt_id TEXT PRIMARY KEY REFERENCES phase4_attempts(id),
+  node_id TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS phase4_node_capacity_claims_node
+  ON phase4_node_capacity_claims(node_id);
 CREATE TABLE IF NOT EXISTS phase4_attempt_outcomes (
   id TEXT PRIMARY KEY,
   attempt_id TEXT NOT NULL UNIQUE REFERENCES phase4_attempts(id),
@@ -488,7 +494,7 @@ func (s *Store) createWorkerWithOrigin(ctx context.Context, conversationID strin
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, err
 	}
-	if strings.TrimSpace(conversationID) == "" || strings.TrimSpace(spec.Intent) == "" || strings.TrimSpace(spec.ProjectID) == "" || strings.TrimSpace(spec.NodeID) == "" || strings.TrimSpace(spec.HarnessInstanceID) == "" {
+	if strings.TrimSpace(conversationID) == "" || strings.TrimSpace(spec.Intent) == "" || strings.TrimSpace(spec.NodeID) == "" || strings.TrimSpace(spec.HarnessInstanceID) == "" {
 		return Worker{}, Turn{}, Phase4Attempt{}, errors.New("core: complete Worker binding and intent are required")
 	}
 	if spec.WorkerRef == "" {
@@ -590,6 +596,15 @@ func (s *Store) createWorkerWithOrigin(ctx context.Context, conversationID strin
 				}{}, fmt.Errorf("%w: selected HarnessInstance changed before binding", ErrMissingHarnessInventory)
 			}
 		}
+		if spec.ReserveNodeCapacity {
+			if err := requireNodeCapacityTx(ctx, tx, NodeReference(spec.NodeID)); err != nil {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
+		}
 		if spec.ProjectRevision > 0 {
 			result, err := tx.ExecContext(ctx, `UPDATE phase4_projects SET revision = revision WHERE id = ? AND revision = ?`, spec.ProjectID, spec.ProjectRevision)
 			if err != nil {
@@ -637,6 +652,15 @@ func (s *Store) createWorkerWithOrigin(ctx context.Context, conversationID strin
 				turn    Turn
 				attempt Phase4Attempt
 			}{}, err
+		}
+		if spec.ReserveNodeCapacity {
+			if err := recordNodeCapacityClaimTx(ctx, tx, attempt.ID, NodeReference(spec.NodeID)); err != nil {
+				return struct {
+					worker  Worker
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
 		}
 		if err := ensureLifecycleCommandIntentTx(ctx, tx, now, "dispatch", worker.ID, attempt.ID); err != nil {
 			return struct {
@@ -741,6 +765,9 @@ func (s *Store) CreateTurn(ctx context.Context, workerID string, spec TurnSpec) 
 func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, idempotencyKey string, queueIDs ...string) (Turn, Phase4Attempt, error) {
 	fingerprintSpec := spec
 	fingerprintSpec.IdempotencyKey = ""
+	// Capacity reservation is an internal handoff constraint, not part of
+	// the user's logical idempotent Turn request.
+	fingerprintSpec.ReserveNodeCapacity = false
 	requestHash, err := idempotencyRequestHash(struct {
 		WorkerID string
 		Spec     TurnSpec
@@ -829,6 +856,17 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 				attempt Phase4Attempt
 			}{}, ErrInvalidTransition
 		}
+		// The reservation shares a transaction with the new Attempt. The
+		// Node row write lock and live-claim check exclude concurrent
+		// Follow-ups and Spawns competing for the last capacity slot.
+		if spec.ReserveNodeCapacity {
+			if err := requireNodeCapacityTx(ctx, tx, NodeReference(worker.NodeID)); err != nil {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
+		}
 		now := s.now()
 		turn := Turn{ID: newID("trn"), WorkerID: worker.ID, Input: spec.Input, NormalizedIntent: spec.NormalizedIntent, ContextSnapshot: spec.ContextSnapshot, State: TurnStarting, CreatedAt: now, UpdatedAt: now}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO turns(id, worker_id, input, normalized_intent, context_snapshot, state, created_at, updated_at) VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, turn.ID, turn.WorkerID, turn.Input, turn.NormalizedIntent, turn.ContextSnapshot, turn.State, timestamp(now), timestamp(now)); err != nil {
@@ -843,6 +881,14 @@ func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, 
 				turn    Turn
 				attempt Phase4Attempt
 			}{}, err
+		}
+		if spec.ReserveNodeCapacity {
+			if err := recordNodeCapacityClaimTx(ctx, tx, attempt.ID, NodeReference(worker.NodeID)); err != nil {
+				return struct {
+					turn    Turn
+					attempt Phase4Attempt
+				}{}, err
+			}
 		}
 		if err := ensureLifecycleCommandIntentTx(ctx, tx, now, lifecycleCommandKind(spec.CommandKind), worker.ID, attempt.ID); err != nil {
 			return struct {

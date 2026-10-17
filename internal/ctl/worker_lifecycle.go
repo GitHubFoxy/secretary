@@ -369,6 +369,23 @@ func (s WorkerService) uncertainCommandStorageError(commandID string, cause, sto
 }
 
 func (s WorkerService) recoverLifecycleCommand(ctx context.Context, kind string, worker core.Worker, attempt core.Phase4Attempt, send func(string) error, origin *core.SecretaryOriginIdentity) error {
+	if kind == "dispatch" || kind == "resume" {
+		// Idempotency snapshots may contain an obsolete nonterminal state.
+		// A terminal Attempt needs neither a capacity claim nor redispatch.
+		current, err := s.Store.Phase4Attempt(ctx, attempt.ID)
+		if err != nil {
+			return err
+		}
+		if current.State.Terminal() {
+			return nil
+		}
+		attempt = current
+		// Project-queued and offline Follow-up Attempts are persisted before
+		// execution capacity is available. Reserve before claiming/delivering.
+		if err := s.Store.ReserveAttemptCapacity(ctx, attempt.ID); err != nil {
+			return err
+		}
+	}
 	if _, err := s.Store.EnsureLifecycleCommandIntent(ctx, kind, worker.ID, attempt.ID); err != nil {
 		return err
 	}
@@ -424,7 +441,25 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	}
 	preferences := request.Preferences
 	if preferences.ProjectID == "" {
-		preferences = WorkerPreferences{ProjectID: request.ProjectID, NodeID: request.NodeID, HarnessInstance: request.HarnessInstance, HarnessKind: request.HarnessKind, Workspace: request.Workspace, ModelID: request.ModelID, Reasoning: request.Reasoning}
+		preferences.ProjectID = request.ProjectID
+	}
+	if preferences.NodeID == "" {
+		preferences.NodeID = request.NodeID
+	}
+	if preferences.HarnessInstance == "" {
+		preferences.HarnessInstance = request.HarnessInstance
+	}
+	if preferences.HarnessKind == "" {
+		preferences.HarnessKind = request.HarnessKind
+	}
+	if preferences.Workspace == "" {
+		preferences.Workspace = request.Workspace
+	}
+	if preferences.ModelID == "" {
+		preferences.ModelID = request.ModelID
+	}
+	if preferences.Reasoning == "" {
+		preferences.Reasoning = request.Reasoning
 	}
 	resolutionRequest := core.DispatchResolutionRequest{ProjectID: preferences.ProjectID, NodeID: preferences.NodeID, HarnessInstanceID: preferences.HarnessInstance,
 		HarnessKind: preferences.HarnessKind, Workspace: preferences.Workspace, ModelID: preferences.ModelID,
@@ -437,10 +472,19 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 				return core.WorkerDetails{}, err
 			}
 		}
-		if err := s.recoverLifecycleCommand(ctx, "dispatch", worker, attempt, func(commandID string) error {
-			return s.Runtime.Dispatch(ctx, commandID, worker, turn, attempt, resolution)
-		}, origin); err != nil {
-			return core.WorkerDetails{}, fmt.Errorf("recover dispatch Worker: %w", err)
+		// The idempotency outcome contains the initial Attempt snapshot, not
+		// its current state. A completed Spawn is a read-only replay: do not
+		// reserve capacity or redeliver the original dispatch command.
+		currentAttempt, err := s.Store.Phase4Attempt(ctx, attempt.ID)
+		if err != nil {
+			return core.WorkerDetails{}, err
+		}
+		if !currentAttempt.State.Terminal() {
+			if err := s.recoverLifecycleCommand(ctx, "dispatch", worker, currentAttempt, func(commandID string) error {
+				return s.Runtime.Dispatch(ctx, commandID, worker, turn, currentAttempt, resolution)
+			}, origin); err != nil {
+				return core.WorkerDetails{}, fmt.Errorf("recover dispatch Worker: %w", err)
+			}
 		}
 		details, err := s.Store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 		if err != nil {
@@ -452,15 +496,6 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	if s.WorkerPolicySource != nil {
 		resolutionRequest.WorkerPolicy = s.WorkerPolicySource()
 	}
-	preview, err := s.Store.ResolveDispatch(ctx, resolutionRequest)
-	if err != nil {
-		return core.WorkerDetails{}, err
-	}
-	if !preview.Queued {
-		if err := s.requireRuntime(); err != nil {
-			return core.WorkerDetails{}, err
-		}
-	}
 	if s.WorkerProfileSource == nil {
 		return core.WorkerDetails{}, ErrWorkerProfileUnavailable
 	}
@@ -468,20 +503,26 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	if profileErr != nil {
 		return core.WorkerDetails{}, ErrWorkerProfileUnavailable
 	}
-	boundProfile, profileErr := bindManagedWorkerProfile(profile, preview)
-	if profileErr != nil {
-		return core.WorkerDetails{}, profileErr
-	}
-	encoded, encodeErr := json.Marshal(boundProfile)
-	if encodeErr != nil {
-		return core.WorkerDetails{}, ErrWorkerProfileInvalid
-	}
-	profileSnapshot := string(encoded)
 	origins := []core.SecretaryOriginIdentity(nil)
 	if origin != nil {
 		origins = append(origins, *origin)
 	}
-	worker, turn, attempt, resolution, err := s.Store.ResolveAndCreateWorkerWithProfileSnapshot(ctx, conversation.ID, request.Intent, resolutionRequest, request.IdempotencyKey, profileSnapshot, origins...)
+	worker, turn, attempt, resolution, err := s.Store.ResolveAndCreateWorkerWithProfileFactory(ctx, conversation.ID, request.Intent, resolutionRequest, request.IdempotencyKey, func(selected core.DispatchResolution) (string, error) {
+		if !selected.Queued {
+			if err := s.requireRuntime(); err != nil {
+				return "", err
+			}
+		}
+		boundProfile, err := bindManagedWorkerProfile(profile, selected)
+		if err != nil {
+			return "", err
+		}
+		encoded, err := json.Marshal(boundProfile)
+		if err != nil {
+			return "", ErrWorkerProfileInvalid
+		}
+		return string(encoded), nil
+	}, origins...)
 	if err != nil {
 		return core.WorkerDetails{}, err
 	}
@@ -876,7 +917,7 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		if err := s.requireRuntime(); err != nil {
 			return core.WorkerDetails{}, err
 		}
-		turn, next, createErr := s.Store.CreateTurn(ctx, details.Worker.ID, core.TurnSpec{Input: request.Text, IdempotencyKey: request.IdempotencyKey, CommandKind: "dispatch"})
+		turn, next, createErr := s.Store.CreateTurn(ctx, details.Worker.ID, core.TurnSpec{Input: request.Text, IdempotencyKey: request.IdempotencyKey, CommandKind: "dispatch", ReserveNodeCapacity: true})
 		if createErr != nil {
 			err = createErr
 			break
@@ -913,6 +954,10 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			break
 		} else if found {
 			kind = "resume"
+		}
+		if capacityErr := s.Store.ReserveAttemptCapacity(ctx, next.ID); capacityErr != nil {
+			err = capacityErr
+			break
 		}
 		command, send, claimErr := s.claimCommand(ctx, kind, "attempt", details.Worker, next, s.secretaryOrigin(request.SecretaryTurnID, request.InputID))
 		if claimErr != nil {
@@ -952,6 +997,10 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 			break
 		}
 		actionTurnID = turn.ID
+		if capacityErr := s.Store.ReserveAttemptCapacity(ctx, next.ID); capacityErr != nil {
+			err = capacityErr
+			break
+		}
 		command, send, claimErr := s.claimCommand(ctx, "resume", "attempt", details.Worker, next, s.secretaryOrigin(request.SecretaryTurnID, request.InputID))
 		if claimErr != nil {
 			err = claimErr

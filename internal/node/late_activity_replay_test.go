@@ -220,6 +220,7 @@ func TestExecutionNodeStopsActivityAfterTerminal(t *testing.T) {
 	envelope.Workspace = t.TempDir()
 	envelope.HarnessInstance.Kind = core.HarnessCodex
 	envelope.Profile = workerTemplateFixture(envelope.HarnessInstance, "", "")
+	*envelope = authorizedNodeTestWorkspace(*envelope)
 	execution := NewExecutionNode("macbook", reviewLateRuntime{}, local)
 	if outcome, err := execution.HandleCommand(ctx, command); err != nil || outcome.State != CommandAccepted {
 		t.Fatalf("dispatch=%#v err=%v", outcome, err)

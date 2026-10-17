@@ -73,6 +73,13 @@ func (s WorkerService) processDueSchedule(ctx context.Context, schedule core.Att
 	if err != nil || !claimed {
 		return err
 	}
+	if err := s.Store.ReserveAttemptCapacity(ctx, attempt.ID); err != nil {
+		_ = s.Store.ReleaseAttemptSchedule(ctx, schedule.ID, now)
+		if errors.Is(err, core.ErrNodeCapacityExhausted) {
+			return nil // retry when Node capacity becomes available
+		}
+		return err
+	}
 	command, send, err := s.claimCommand(ctx, "resume", "attempt", worker, attempt, nil)
 	if err != nil {
 		_ = s.Store.ReleaseAttemptSchedule(ctx, schedule.ID, now)
@@ -211,7 +218,9 @@ func (s WorkerService) processQueuedWorker(ctx context.Context, conversationID s
 			}
 			return s.Runtime.Dispatch(ctx, commandID, worker, turn, attempt, core.DispatchResolution{ProjectDispatch: binding})
 		}, nil)
-		if errors.Is(err, ErrWorkerCommandPending) {
+		if errors.Is(err, ErrWorkerCommandPending) || errors.Is(err, core.ErrNodeCapacityExhausted) {
+			// Preserve a prepared Turn/Attempt while waiting for another
+			// Worker to release capacity. No handoff command was claimed.
 			break
 		}
 		state, lastError := "delivered", ""
