@@ -204,7 +204,10 @@ func (s *Server) retryVideoArtifact(w http.ResponseWriter,r *http.Request) {
 	if errors.Is(err,core.ErrNotFound) {http.NotFound(w,r);return}
 	if errors.Is(err,core.ErrVideoQueueFull) {http.Error(w,"Video queue full",http.StatusTooManyRequests);return}
 	if err!=nil {http.Error(w,"Could not retry video",http.StatusInternalServerError);return}
-	if !restarted {http.Error(w,"Video is not failed; retry unnecessary",http.StatusConflict);return}
+	if !restarted && job.Status!="queued" && job.Status!="processing" {
+		http.Error(w,"Video has already completed; retry unnecessary",http.StatusConflict)
+		return
+	}
 	s.signalVideoWork()
-	writeJSON(w,http.StatusAccepted,map[string]any{"artifact_id":id,"processing_status":job.Status})
+	writeJSON(w,http.StatusAccepted,map[string]any{"artifact_id":id,"processing_status":job.Status,"restarted":restarted})
 }

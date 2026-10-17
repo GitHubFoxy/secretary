@@ -113,7 +113,10 @@ func (s *Store) RetryFailedVideo(ctx context.Context, personID, artifactID strin
 	var restarted bool
 	err:=withTxErr(s,ctx,func(tx *sql.Tx) error {
 		var status string
-		if err:=tx.QueryRowContext(ctx,`SELECT status FROM video_artifact_jobs WHERE person_id=? AND source_artifact_id=?`,personID,artifactID).Scan(&status);err!=nil{return err}
+		if err:=tx.QueryRowContext(ctx,`SELECT status FROM video_artifact_jobs WHERE person_id=? AND source_artifact_id=?`,personID,artifactID).Scan(&status);err!=nil{
+			if errors.Is(err,sql.ErrNoRows){return ErrNotFound}
+			return err
+		}
 		if status!="failed" {return nil}
 		var pending int
 		if err:=tx.QueryRowContext(ctx,`SELECT COUNT(*) FROM video_artifact_jobs WHERE status IN ('queued','processing')`).Scan(&pending);err!=nil{return err}
