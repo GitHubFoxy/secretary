@@ -68,34 +68,49 @@ func (s WorkerService) processDueSchedule(ctx context.Context, schedule core.Att
 	if err != nil {
 		return err
 	}
+	return s.resumeScheduledAttempt(ctx, schedule, worker, turn, attempt, true)
+}
+
+// resumeScheduledAttempt is the common manual/automatic admission boundary.
+// Callers hold the Worker's lifecycle lock. Delivered command replays only
+// complete the schedule; a new runtime handoff must claim capacity first.
+func (s WorkerService) resumeScheduledAttempt(ctx context.Context, schedule core.AttemptSchedule, worker core.Worker, turn core.Turn, attempt core.Phase4Attempt, deferWhenFull bool) error {
 	now := s.workerCommandNow()
 	claimed, err := s.Store.ClaimAttemptSchedule(ctx, schedule.ID, now)
 	if err != nil || !claimed {
 		return err
 	}
-	if err := s.Store.ReserveAttemptCapacity(ctx, attempt.ID); err != nil {
-		_ = s.Store.ReleaseAttemptSchedule(ctx, schedule.ID, now)
-		if errors.Is(err, core.ErrNodeCapacityExhausted) {
-			return nil // retry when Node capacity becomes available
+	release := func(cause error) error {
+		if releaseErr := s.Store.ReleaseAttemptSchedule(ctx, schedule.ID, now, schedule.State); releaseErr != nil {
+			return errors.Join(cause, releaseErr)
 		}
-		return err
+		if deferWhenFull && errors.Is(cause, core.ErrNodeCapacityExhausted) {
+			return nil // Automatic retry when Node capacity becomes available.
+		}
+		return cause
+	}
+	prior, found, err := s.Store.FindWorkerCommand(ctx, "resume", "attempt", worker.ID, attempt.ID)
+	if err != nil {
+		return release(err)
+	}
+	if !found || prior.State != core.WorkerCommandDelivered {
+		if err := s.Store.ReserveAttemptCapacity(ctx, attempt.ID); err != nil {
+			return release(err)
+		}
 	}
 	command, send, err := s.claimCommand(ctx, "resume", "attempt", worker, attempt, nil)
 	if err != nil {
-		_ = s.Store.ReleaseAttemptSchedule(ctx, schedule.ID, now)
-		return err
+		return release(err)
 	}
 	if send {
 		continuationPrompt := schedule.ContinuationPrompt
 		if continuationPrompt == "" {
 			continuationPrompt = core.ContinuationPrompt
 		}
-		err = s.deliverCommand(ctx, command, func(commandID string) error {
+		if err := s.deliverCommand(ctx, command, func(commandID string) error {
 			return s.Runtime.Resume(ctx, commandID, worker, turn, attempt, continuationPrompt)
-		})
-		if err != nil {
-			_ = s.Store.ReleaseAttemptSchedule(ctx, schedule.ID, now)
-			return err
+		}); err != nil {
+			return release(err)
 		}
 	}
 	return s.Store.CompleteAttemptSchedule(ctx, schedule.ID, now)
