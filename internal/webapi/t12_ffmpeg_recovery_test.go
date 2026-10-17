@@ -32,15 +32,18 @@ func t12RealVFRClip(t *testing.T) []byte {
 	return data
 }
 
-func TestT12RealFFmpegNonzeroPTSAndVFRNominalSampling(t *testing.T) {
+func TestT12RealFFmpegNonzeroPTSAndVFRSourcePTS(t *testing.T) {
 	clip:=t12RealVFRClip(t)
 	ctx,cancel:=context.WithTimeout(context.Background(),20*time.Second)
 	defer cancel()
 	frames,err:=(ffmpegVideoProcessor{}).Process(ctx,clip,VideoOptions{FPS:1,MaxDurationSeconds:12,MaxFrames:12,TimeoutSeconds:20})
 	if err!=nil{t.Fatalf("VFR sample should work: %v",err)}
-	if len(frames)!=3 {t.Fatalf("expected 3 nominal samples from 2.25s clip, got %d",len(frames))}
+	if len(frames)!=2 {t.Fatalf("expected 2 actual source samples from VFR clip, got %d",len(frames))}
 	for i,frame:=range frames {
-		if frame.TimestampMS!=int64(i*1000) {t.Fatalf("nominal sample %d timestamp = %d",i,frame.TimestampMS)}
+		expected:=[]int64{0,1250}
+		if frame.TimestampMS!=expected[i] || frame.TimestampKind!="source-pts-relative" {
+			t.Fatalf("frame %d: got actual PTS %d (%s), want %d source-pts-relative",i,frame.TimestampMS,frame.TimestampKind,expected[i])
+		}
 		valid,e:=node.ValidateStillImage("frame.webp",frame.Data)
 		if e!=nil||valid.MediaType!="image/webp"{t.Fatalf("invalid sampled WebP: %v",e)}
 	}
@@ -76,7 +79,7 @@ func TestT12ServerRestartsUnfinishedVideoJobAndPreservesOriginal(t *testing.T) {
 		meta,e:=reopened.ArtifactMetadataForPerson(ctx,person.ID,source.ID)
 		if e!=nil && !errors.Is(e,core.ErrNotFound){t.Fatal(e)}
 		if e==nil && meta.ProcessingStatus=="ready"{
-			if len(meta.VideoFrames)!=3 || meta.VideoFrames[2].TimestampMS!=2000 || meta.VideoFrames[0].TimestampKind!="nominal-grid" {
+			if len(meta.VideoFrames)!=2 || meta.VideoFrames[1].TimestampMS!=1250 || meta.VideoFrames[1].TimestampKind!="source-pts-relative" {
 				t.Fatalf("recovered frames: %+v",meta.VideoFrames)
 			}
 			saved,original,e:=reopened.ArtifactForPerson(ctx,person.ID,source.ID)

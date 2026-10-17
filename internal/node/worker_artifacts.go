@@ -112,9 +112,9 @@ func PrepareArtifactInput(ctx context.Context, workspace, prompt string, fetch A
 				if e!=nil || validated.MediaType!="image/webp" {return "",nil,fmt.Errorf("video: invalid WebP frame %s: %v",frame.ArtifactID,e)}
 				validated.ArtifactID=frame.ArtifactID
 				images=append(images,validated)
-				fmt.Fprintf(&additional,"\n- video artifact://%s at nominal clip-relative sample time %.3f s: frame artifact://%s (native image supplied)",id,float64(frame.TimestampMS)/1000,frame.ArtifactID)
+				fmt.Fprintf(&additional,"\n- video artifact://%s at clip-relative sample time %.3f s: frame artifact://%s (native image supplied)",id,float64(frame.TimestampMS)/1000,frame.ArtifactID)
 			}
-			fmt.Fprintf(&additional,"\n- Video artifact://%s is sampled on a nominal time grid (not exact VFR source-frame PTS); events between frames were NOT observed.",id)
+			fmt.Fprintf(&additional,"\n- Video artifact://%s has sampled frame timestamps (timestamp_kind distinguishes source-pts-relative from legacy nominal-grid); events between frames were NOT observed.",id)
 		}
 		ext := strings.ToLower(filepath.Ext(artifact.Name))
 		if ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" {

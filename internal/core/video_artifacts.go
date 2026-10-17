@@ -18,6 +18,7 @@ type VideoFrame struct {
 
 type VideoFrameData struct {
 	TimestampMS int64
+	TimestampKind string
 	Data []byte
 }
 
@@ -49,11 +50,30 @@ func (s *Store) migrateVideoArtifacts(ctx context.Context) error {
 		source_artifact_id TEXT NOT NULL REFERENCES video_artifact_jobs(source_artifact_id),
 		frame_artifact_id TEXT PRIMARY KEY REFERENCES artifacts(id),
 		timestamp_ms INTEGER NOT NULL CHECK(timestamp_ms >= 0),
+		timestamp_kind TEXT NOT NULL DEFAULT 'nominal-grid',
 		ordinal INTEGER NOT NULL,
 		UNIQUE(source_artifact_id,ordinal),
 		UNIQUE(source_artifact_id,timestamp_ms)
 	);
 	CREATE INDEX IF NOT EXISTS video_jobs_person ON video_artifact_jobs(person_id,status);`)
+	if err!=nil{return err}
+	// Older T12 databases persist i/FPS timestamps and have no kind column.
+	// Retain their nominal-grid marker; do not relabel them as source PTS.
+	rows,err:=s.db.QueryContext(ctx,`PRAGMA table_info(video_artifact_frames)`)
+	if err!=nil{return err}
+	hasKind:=false
+	for rows.Next(){
+		var number,required,primary int
+		var name,kind string
+		var defaultValue sql.NullString
+		if err=rows.Scan(&number,&name,&kind,&required,&defaultValue,&primary);err!=nil{break}
+		if name=="timestamp_kind"{hasKind=true}
+	}
+	if err==nil{err=rows.Err()}
+	rows.Close()
+	if err!=nil{return err}
+	if hasKind{return nil}
+	_,err=s.db.ExecContext(ctx,`ALTER TABLE video_artifact_frames ADD COLUMN timestamp_kind TEXT NOT NULL DEFAULT 'nominal-grid'`)
 	return err
 }
 
@@ -188,13 +208,16 @@ func (s *Store) CompleteVideo(ctx context.Context, personID, artifactID string, 
 		for i,frame:=range frames {
 			if frame.TimestampMS<=last || len(frame.Data)==0 || len(frame.Data)>MaxArtifactBytes {return fmt.Errorf("video: invalid frame %d",i)}
 			last=frame.TimestampMS
+			kind:=frame.TimestampKind
+			if kind=="" {kind="nominal-grid"} // legacy/manual processor inputs
+			if kind!="nominal-grid" && kind!="source-pts-relative" {return fmt.Errorf("video: invalid timestamp kind %q",kind)}
 			id:=newID("art")
 			digest:=sha256.Sum256(frame.Data)
 			name:=fmt.Sprintf("video_%s_%03d.webp",artifactID,i)
 			_,err=tx.ExecContext(ctx, `INSERT INTO artifacts(id,person_id,conversation_id,idempotency_key,name,media_type,size,sha256,body,created_at)
 				VALUES(?,?,?,?,?,?,?,?,?,?)`,id,personID,conversationID,fmt.Sprintf("video-frame:%s:%d",artifactID,i),name,"image/webp",len(frame.Data),hex.EncodeToString(digest[:]),frame.Data,timestamp(s.now()))
 			if err!=nil{return err}
-			_,err=tx.ExecContext(ctx, `INSERT INTO video_artifact_frames(source_artifact_id,frame_artifact_id,timestamp_ms,ordinal) VALUES(?,?,?,?)`,artifactID,id,frame.TimestampMS,i)
+			_,err=tx.ExecContext(ctx, `INSERT INTO video_artifact_frames(source_artifact_id,frame_artifact_id,timestamp_ms,timestamp_kind,ordinal) VALUES(?,?,?,?,?)`,artifactID,id,frame.TimestampMS,kind,i)
 			if err!=nil{return err}
 		}
 		_,err=tx.ExecContext(ctx, `UPDATE video_artifact_jobs SET status='ready',error='',updated_at=? WHERE source_artifact_id=? AND status='processing'`,timestamp(s.now()),artifactID)
@@ -219,15 +242,14 @@ func (s *Store) populateVideoRelation(ctx context.Context, personID string, a *A
 	a.ProcessingStatus=status
 	a.ProcessingError=reason
 	if status!="ready" {return nil}
-	rows,err:=s.db.QueryContext(ctx, `SELECT frame_artifact_id,timestamp_ms FROM video_artifact_frames
+	rows,err:=s.db.QueryContext(ctx, `SELECT frame_artifact_id,timestamp_ms,timestamp_kind FROM video_artifact_frames
 		WHERE source_artifact_id=? ORDER BY ordinal`,a.ID)
 	if err!=nil{return err}
 	defer rows.Close()
 	a.VideoFrames=[]VideoFrame{}
 	for rows.Next() {
 		var frame VideoFrame
-		if err:=rows.Scan(&frame.ArtifactID,&frame.TimestampMS);err!=nil{return err}
-		frame.TimestampKind="nominal-grid"
+		if err:=rows.Scan(&frame.ArtifactID,&frame.TimestampMS,&frame.TimestampKind);err!=nil{return err}
 		a.VideoFrames=append(a.VideoFrames,frame)
 	}
 	return rows.Err()

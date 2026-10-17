@@ -82,24 +82,35 @@ func (p ffmpegVideoProcessor) Process(ctx context.Context, original []byte, opti
 	if duration>float64(options.MaxDurationSeconds) || count<1 || count>options.MaxFrames {
 		return nil,fmt.Errorf("video: %.2f s requires %d frames at %.2f FPS; limits are %d s and %d frames",duration,count,options.FPS,options.MaxDurationSeconds,options.MaxFrames)
 	}
-	pattern:=filepath.Join(dir,"frame_%05d.webp")
-	rate:=strconv.FormatFloat(options.FPS,'f',-1,64)
-	filter:="setpts=PTS-STARTPTS,fps="+rate+":start_time=0:eof_action=pass,scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease"
+	pattern:=filepath.Join(dir,"frame_%012d.webp")
+	interval:=strconv.FormatFloat(1/options.FPS,'f',9,64)
+	// PTS is normalized relative to the first decoded video frame. Select
+	// decoded source frames at the configured minimum interval, retaining their
+	// actual VFR presentation timestamps instead of fabricating i/FPS times.
+	filter:="settb=1/1000,setpts=PTS-STARTPTS,select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,"+interval+")',scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease"
 	command:=exec.CommandContext(ctx,"ffmpeg","-nostdin","-hide_banner","-loglevel","error","-threads","1","-i",input,
-		"-an","-vf",filter,"-frames:v",strconv.Itoa(count+1),"-c:v","libwebp","-quality","70",pattern)
+		"-an","-vf",filter,"-frames:v",strconv.Itoa(count+1),"-fps_mode","passthrough","-enc_time_base","1/1000","-frame_pts","1","-c:v","libwebp","-quality","70",pattern)
 	output,err:=command.CombinedOutput()
 	if err!=nil{return nil,fmt.Errorf("video: transcoding failed: %w (%s)",err,strings.TrimSpace(string(output)))}
 	files,err:=filepath.Glob(filepath.Join(dir,"frame_*.webp"))
 	if err!=nil{return nil,err}
 	sort.Strings(files)
-	if len(files)!=count {return nil,fmt.Errorf("video: extracted %d frames, expected %d; rejecting incomplete/extra samples",len(files),count)}
-	frames:=make([]core.VideoFrameData,0,count)
+	if len(files)==0 || len(files)>count || len(files)>options.MaxFrames {
+		return nil,fmt.Errorf("video: extracted %d source frames, permitted maximum is %d; rejecting incomplete/extra samples",len(files),count)
+	}
+	frames:=make([]core.VideoFrameData,0,len(files))
+	previous:=int64(-1)
 	for i,p:=range files {
 		data,err:=os.ReadFile(p)
 		if err!=nil{return nil,err}
 		if _,err=node.ValidateStillImage(filepath.Base(p),data);err!=nil{return nil,fmt.Errorf("video frame %d: %w",i,err)}
-		timestamp:=int64(math.Round(float64(i)*1000/options.FPS))
-		frames=append(frames,core.VideoFrameData{TimestampMS:timestamp,Data:data})
+		stem:=strings.TrimSuffix(strings.TrimPrefix(filepath.Base(p),"frame_"),".webp")
+		timestamp,parseErr:=strconv.ParseInt(stem,10,64)
+		if parseErr!=nil || timestamp<0 || timestamp<=previous || float64(timestamp)>duration*1000+1000 {
+			return nil,fmt.Errorf("video: invalid or nonmonotonic source PTS in frame %d (%s)",i,stem)
+		}
+		previous=timestamp
+		frames=append(frames,core.VideoFrameData{TimestampMS:timestamp,TimestampKind:"source-pts-relative",Data:data})
 	}
 	return frames,nil
 }
