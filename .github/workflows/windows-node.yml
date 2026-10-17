@@ -35,7 +35,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $worker = 'secretary_worker_ci'
-          $password = 'T09-CI-Temporary-Account-8531!'
+          $password = 'T09-ci-Safe1!'
           net user $worker $password /add | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'could not provision Windows test Worker account' }
           $principal = "$($env:COMPUTERNAME)\$worker"
