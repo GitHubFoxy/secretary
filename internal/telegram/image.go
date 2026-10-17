@@ -58,19 +58,37 @@ func (a *Adapter) imageNotice(ctx context.Context, u Update, text string) error 
 	return a.sendMessage(ctx, OutgoingMessage{ChatID:u.Message.ChatID,ThreadID:u.Message.ThreadID,ReplyToMessageID:u.Message.MessageID,Identity:fmt.Sprintf("inbound:image-warning:%d",u.ID),Text:text})
 }
 
+// Re-evaluate authorization on every durable replay; a queued update must
+// never inherit an authorization decision from a previous owner or topic.
+func (a *Adapter) imageAuthorized(u Update) bool {
+	if u.Message == nil || u.Message.Image == nil {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	m := u.Message
+	if !a.ownerAllowed(m.ChatID) || !a.senderAllowed(m.FromID) {
+		return false
+	}
+	if m.ThreadID != 0 && m.ThreadID != 1 {
+		mapping, known := a.mappingForThreadLocked(m.ChatID, m.ThreadID)
+		if !known {
+			return false
+		}
+		if u.WorkerRequestID != nil && mapping.PendingRequestID != *u.WorkerRequestID {
+			// An old request reference must not be delivered to a different
+			// needs_input prompt after a topic was rebound.
+			return false
+		}
+	}
+	return true
+}
+
 func (a *Adapter) deliverImageUpdate(ctx context.Context, u Update, allowed bool) error {
-	if !allowed || u.Message == nil || u.Message.Image == nil {
+	if !allowed || !a.imageAuthorized(u) {
 		return nil
 	}
 	m := u.Message
-	if m.ThreadID != 0 && m.ThreadID != 1 {
-		a.mu.Lock()
-		_, known := a.mappingForThreadLocked(m.ChatID, m.ThreadID)
-		a.mu.Unlock()
-		if !known {
-			return nil
-		}
-	}
 	fail := func(reason string) error {
 		return a.imageNotice(ctx, u, "Не удалось обработать изображение: "+reason)
 	}
@@ -96,6 +114,9 @@ func (a *Adapter) deliverImageUpdate(ctx context.Context, u Update, allowed bool
 	file, err := download.GetFile(downloadCtx, m.Image.FileID)
 	if err != nil {
 		stop()
+		if errors.Is(err, ErrTelegramFileRejected) || errors.Is(err, ErrFileTooLarge) {
+			return fail("Telegram отклонил файл (недоступен, слишком большой или некорректный file_id).")
+		}
 		return fmt.Errorf("telegram: get image: %w", err)
 	}
 	if file.FileSize < 0 || file.FileSize > core.MaxArtifactBytes {
@@ -127,6 +148,9 @@ func (a *Adapter) deliverImageUpdate(ctx context.Context, u Update, allowed bool
 		}
 		name = fmt.Sprintf("telegram-image-%d-%d%s", u.ID, m.MessageID, extension)
 	}
+	if !a.imageAuthorized(u) {
+		return nil
+	}
 	artifactID, err := artifactStore.StoreImageOriginal(ctx, u.ID, *m, name, data)
 	if err != nil {
 		var rejected *ImageSourceRejection
@@ -143,6 +167,9 @@ func (a *Adapter) deliverImageUpdate(ctx context.Context, u Update, allowed bool
 		caption = "Проанализируй прикреплённое изображение."
 	}
 	prompt := fmt.Sprintf("%s\n\nTelegram image (update %d, chat %d, message %d, file_unique_id %s): artifact://%s", caption, u.ID, m.ChatID, m.MessageID, m.Image.FileUniqueID, artifactID)
+	if !a.imageAuthorized(u) {
+		return nil
+	}
 	copyMessage := *m
 	copyMessage.Image = nil
 	copyMessage.Text = prompt
@@ -230,7 +257,7 @@ func (a *Adapter) drainImageLane(ctx context.Context, lane string) error {
 		if next.ID == 0 {
 			return nil
 		}
-		if err := a.deliverImageUpdate(ctx, next, true); err != nil {
+		if err := a.deliverImageUpdate(ctx, next, a.imageAuthorized(next)); err != nil {
 			return err
 		}
 		a.mu.Lock()
@@ -250,6 +277,13 @@ func (a *Adapter) drainImageLane(ctx context.Context, lane string) error {
 		a.mu.Unlock()
 		if err != nil {
 			return err
+		}
+		// Completing the image releases messages that were durably blocked
+		// behind it. Other chats never waited for this download.
+		for _, pendingLane := range a.inputLanesForChat(next.Message.ChatID) {
+			if err := a.drainLane(ctx, pendingLane); err != nil {
+				return err
+			}
 		}
 	}
 }

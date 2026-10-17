@@ -79,6 +79,15 @@ func (a *Adapter) drainLane(ctx context.Context, key string) error {
 		if next.ID == 0 {
 			return nil
 		}
+		// Keep the PendingInput as a durable dependency. The image worker
+		// will resume this lane only after all earlier photos in its chat
+		// have been delivered (or permanently rejected).
+		a.mu.Lock()
+		blocked := a.hasEarlierPendingImageLocked(next)
+		a.mu.Unlock()
+		if blocked {
+			return nil
+		}
 		err := a.processUpdate(ctx, next)
 		if err != nil && !errors.Is(err, ErrUnauthorized) && !errors.Is(err, ErrPairingUsed) {
 			return err
@@ -193,4 +202,33 @@ func (a *Adapter) bindWorkerRequest(updateID int64, currentRequestID string) (st
 		return *pending.WorkerRequestID, a.saveLocked()
 	}
 	return "", errors.New("telegram: dispatched Worker input is not durably queued")
+}
+
+func (a *Adapter) hasEarlierPendingImageLocked(u Update) bool {
+	if u.Message == nil {
+		return false
+	}
+	for _, image := range a.state.PendingImages {
+		if image.Message != nil && image.Message.ChatID == u.Message.ChatID && image.ID < u.ID {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Adapter) inputLanesForChat(chatID int64) []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	seen := make(map[string]bool)
+	var lanes []string
+	for _, pending := range a.state.PendingInputs {
+		if pending.Message != nil && pending.Message.ChatID == chatID {
+			key := inputLane(pending)
+			if !seen[key] {
+				seen[key] = true
+				lanes = append(lanes, key)
+			}
+		}
+	}
+	return lanes
 }

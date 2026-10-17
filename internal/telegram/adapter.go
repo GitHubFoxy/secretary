@@ -518,6 +518,7 @@ func Rebind(statePath string, configOwner int64, reason string, watermark int64)
 	state.Pairings = map[string]pairingRecord{}
 	state.Outbox = nil
 	state.PendingInputs = nil
+	state.PendingImages = nil
 	state.Transcripts = nil
 	state.PendingSecretaryText = ""
 	state.PendingSecretaryTools = nil

@@ -16,11 +16,15 @@ import (
 
 var ErrFormatting = errors.New("telegram: entity parsing rejected")
 var ErrFileTooLarge = errors.New("telegram: file exceeds maximum size")
+var ErrTelegramFileRejected = errors.New("telegram: file permanently rejected by Bot API")
 
 func botAPIError(method string, code int, description string) error {
 	lower := strings.ToLower(description)
 	if method == "sendMessage" && code == 400 && (strings.Contains(lower, "can't parse entities") || strings.Contains(lower, "cannot parse entities")) {
 		return ErrFormatting
+	}
+	if method == "getFile" && (code == 400 || code == 404 || code == 413) {
+		return fmt.Errorf("%w (%d): %s", ErrTelegramFileRejected, code, description)
 	}
 	return fmt.Errorf("telegram: Bot API %s failed (%d): %s", method, code, description)
 }
