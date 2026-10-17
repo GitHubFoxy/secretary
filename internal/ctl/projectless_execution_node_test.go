@@ -135,4 +135,21 @@ func TestProjectlessServerDispatchPreservesOwnerExecutionNodeOverride(t *testing
 	if runtime.calls != 1 {
 		t.Fatal("incompatible override was sent to Execution Node")
 	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, created.Attempts[0].ID, core.AttemptOutcomeInput{
+		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "Ready for a follow-up",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	continued, err := service.MessageWorker(ctx, MessageWorkerRequest{
+		WorkerRef: created.Worker.WorkerRef, Text: "Continue the review", IdempotencyKey: "remote-follow-up",
+	})
+	if err != nil || continued.Worker.ID != created.Worker.ID || continued.Worker.NodeID != "remote" {
+		t.Fatalf("remote Follow-up lost immutable binding: worker=%#v err=%v", continued.Worker, err)
+	}
+	native.mu.Lock()
+	resumes := append([]node.StartRequest(nil), native.resumes...)
+	native.mu.Unlock()
+	if runtime.calls != 2 || len(resumes) != 1 || resumes[0].Workspace != starts[0].Workspace || resumes[0].HarnessInstance.ID != remoteHarness.ID {
+		t.Fatalf("remote Follow-up did not resume same native session and Workspace: %#v", resumes)
+	}
 }
