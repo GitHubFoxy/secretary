@@ -44,6 +44,7 @@ type Message struct {
 	Text      string `json:"text,omitempty"`
 	Caption   string `json:"caption,omitempty"`
 	Voice     *Voice `json:"voice,omitempty"`
+	Image     *Image `json:"image,omitempty"`
 }
 
 type OutgoingMessage struct {
@@ -900,6 +901,9 @@ func (a *Adapter) processUpdate(ctx context.Context, update Update) error {
 func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool) error {
 	if update.Message == nil {
 		return nil
+	}
+	if update.Message.Image != nil {
+		return a.deliverImageUpdate(ctx, update, allowed)
 	}
 	if update.Message.Voice != nil {
 		return a.deliverVoiceUpdate(ctx, update, allowed)

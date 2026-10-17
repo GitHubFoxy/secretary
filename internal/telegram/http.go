@@ -105,6 +105,14 @@ type TelegramFile struct {
 	FilePath     string `json:"file_path"`
 }
 
+type botPhotoDTO struct {
+	FileID string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileSize int64 `json:"file_size,omitempty"`
+	Width int `json:"width"`
+	Height int `json:"height"`
+}
+
 type botMessageDTO struct {
 	MessageID int64 `json:"message_id,omitempty"`
 	From      *struct {
@@ -117,6 +125,7 @@ type botMessageDTO struct {
 	} `json:"chat,omitempty"`
 	ThreadID int64        `json:"message_thread_id,omitempty"`
 	Text     string       `json:"text,omitempty"`
+	Photo    []botPhotoDTO `json:"photo,omitempty"`
 	Voice    *botVoiceDTO `json:"voice,omitempty"`
 	Audio    *botVoiceDTO `json:"audio,omitempty"`
 	Document *botVoiceDTO `json:"document,omitempty"`
@@ -149,6 +158,14 @@ func (dto botUpdateDTO) update() Update {
 			FileSize:     media.FileSize,
 			FileName:     media.FileName,
 		}
+	}
+
+	if len(dto.Message.Photo) != 0 {
+		p := dto.Message.Photo[len(dto.Message.Photo)-1]
+		message.Image = &Image{FileID:p.FileID, FileUniqueID:p.FileUniqueID, FileSize:p.FileSize, FileName:fmt.Sprintf("telegram-photo-%d.jpg",dto.ID), MimeType:"image/jpeg"}
+	} else if dto.Message.Document != nil && (strings.HasPrefix(strings.ToLower(dto.Message.Document.MimeType), "image/") || isStillImageName(dto.Message.Document.FileName)) {
+		d := dto.Message.Document
+		message.Image = &Image{FileID:d.FileID, FileUniqueID:d.FileUniqueID, FileSize:d.FileSize, FileName:d.FileName, MimeType:d.MimeType}
 	}
 	update.Message = message
 	return update
