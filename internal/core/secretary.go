@@ -50,6 +50,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS secretary_turns_one_active
   ON secretary_turns(identity_id) WHERE state = 'active';
 CREATE UNIQUE INDEX IF NOT EXISTS secretary_turns_queue_position
   ON secretary_turns(identity_id, queue_position) WHERE state = 'queued';
+CREATE TABLE IF NOT EXISTS secretary_memory_documents (
+  kind TEXT PRIMARY KEY CHECK(kind IN ('memory', 'preferences')),
+  path TEXT NOT NULL,
+  revision INTEGER NOT NULL CHECK(revision >= 1),
+  content TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS secretary_user_documents (
   id INTEGER PRIMARY KEY CHECK(id = 1),
   path TEXT NOT NULL,
