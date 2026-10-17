@@ -470,15 +470,6 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	if s.WorkerPolicySource != nil {
 		resolutionRequest.WorkerPolicy = s.WorkerPolicySource()
 	}
-	preview, err := s.Store.ResolveDispatch(ctx, resolutionRequest)
-	if err != nil {
-		return core.WorkerDetails{}, err
-	}
-	if !preview.Queued {
-		if err := s.requireRuntime(); err != nil {
-			return core.WorkerDetails{}, err
-		}
-	}
 	if s.WorkerProfileSource == nil {
 		return core.WorkerDetails{}, ErrWorkerProfileUnavailable
 	}
@@ -486,20 +477,26 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	if profileErr != nil {
 		return core.WorkerDetails{}, ErrWorkerProfileUnavailable
 	}
-	boundProfile, profileErr := bindManagedWorkerProfile(profile, preview)
-	if profileErr != nil {
-		return core.WorkerDetails{}, profileErr
-	}
-	encoded, encodeErr := json.Marshal(boundProfile)
-	if encodeErr != nil {
-		return core.WorkerDetails{}, ErrWorkerProfileInvalid
-	}
-	profileSnapshot := string(encoded)
 	origins := []core.SecretaryOriginIdentity(nil)
 	if origin != nil {
 		origins = append(origins, *origin)
 	}
-	worker, turn, attempt, resolution, err := s.Store.ResolveAndCreateWorkerWithProfileSnapshot(ctx, conversation.ID, request.Intent, resolutionRequest, request.IdempotencyKey, profileSnapshot, origins...)
+	worker, turn, attempt, resolution, err := s.Store.ResolveAndCreateWorkerWithProfileFactory(ctx, conversation.ID, request.Intent, resolutionRequest, request.IdempotencyKey, func(selected core.DispatchResolution) (string, error) {
+		if !selected.Queued {
+			if err := s.requireRuntime(); err != nil {
+				return "", err
+			}
+		}
+		boundProfile, err := bindManagedWorkerProfile(profile, selected)
+		if err != nil {
+			return "", err
+		}
+		encoded, err := json.Marshal(boundProfile)
+		if err != nil {
+			return "", ErrWorkerProfileInvalid
+		}
+		return string(encoded), nil
+	}, origins...)
 	if err != nil {
 		return core.WorkerDetails{}, err
 	}
