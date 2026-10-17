@@ -3,7 +3,7 @@ name: Web PWA checks
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, feat/t09-worker-publish-artifacts]
 
 permissions:
   contents: read

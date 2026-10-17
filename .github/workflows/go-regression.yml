@@ -3,7 +3,7 @@ name: Secretary Go regression tests
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, feat/t09-worker-publish-artifacts]
 
 permissions:
   contents: read
