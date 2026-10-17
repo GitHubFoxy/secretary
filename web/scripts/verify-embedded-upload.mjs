@@ -35,7 +35,7 @@ assert(appIsLoaded, 'Go embedded index.html does not load app.js as a module');
 
 const expectedBundleMarkers = [
   'secretaryArtifactInput', '/v1/artifacts?name=', 'Idempotency-Key',
-  'Attach image to Worker', 'Uploading '
+  'Attach image or video to Worker', 'Uploading '
 ];
 const bundledUploader = expectedBundleMarkers.every((marker) => app.includes(marker));
 assert(bundledUploader || (!strictBundle && directModule),

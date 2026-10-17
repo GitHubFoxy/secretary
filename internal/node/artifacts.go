@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,9 @@ type ArtifactPayload struct {
 	Name   string
 	SHA256 string
 	Data   []byte
+	VideoStatus string
+	VideoError string
+	VideoFrames []core.VideoFrame
 }
 
 type ArtifactFetcher func(context.Context, string) (ArtifactPayload, error)
@@ -131,5 +135,14 @@ func (i NodeIdentity) FetchArtifact(ctx context.Context, id string) (ArtifactPay
 	if err != nil || len(name) == 0 || len(name) > 180 {
 		return ArtifactPayload{}, errors.New("node artifact: invalid filename metadata")
 	}
-	return ArtifactPayload{ID: id, Name: string(name), SHA256: expected, Data: data}, nil
+	
+	payload:=ArtifactPayload{ID:id,Name:string(name),SHA256:expected,Data:data,VideoStatus:response.Header.Get("X-Artifact-Video-Status"),VideoError:response.Header.Get("X-Artifact-Video-Error")}
+	if payload.VideoStatus=="ready" {
+		encoded:=response.Header.Get("X-Artifact-Video-Frames")
+		decoded,decodeErr:=base64.RawURLEncoding.DecodeString(encoded)
+		if decodeErr!=nil || len(decoded)==0 || json.Unmarshal(decoded,&payload.VideoFrames)!=nil || len(payload.VideoFrames)==0 || len(payload.VideoFrames)>16 {
+			return ArtifactPayload{}, errors.New("node artifact: missing or invalid video frame metadata")
+		}
+	}
+	return payload,nil
 }

@@ -1,5 +1,6 @@
-const artifactFormats = '.txt,.md,.pdf,.csv,.json,.xml,.yaml,.yml,.html,.log,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.rtf,.zip,.png,.jpg,.jpeg,.webp';
-const imageFormats = '.png,.jpg,.jpeg,.webp';
+const artifactFormats = '.txt,.md,.pdf,.csv,.json,.xml,.yaml,.yml,.html,.log,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.rtf,.zip,.png,.jpg,.jpeg,.webp,.mp4,.webm,.mov';
+const imageFormats = '.png,.jpg,.jpeg,.webp,.mp4,.webm,.mov';
+const videoFile = (file) => /\.(mp4|webm|mov)$/i.test(file.name);
 const imageFile = (file) => /\.(png|jpe?g|webp)$/i.test(file.name);
 
 async function uploadFingerprint(file) {
@@ -13,7 +14,7 @@ export function installUpload(composer, imageOnly) {
 
   const label = document.createElement('label');
   label.textContent = 'Attach';
-  label.setAttribute('aria-label', imageOnly ? 'Attach image to Worker' : 'Attach document or image (up to 8 MiB)');
+  label.setAttribute('aria-label', imageOnly ? 'Attach image or video to Worker' : 'Attach document, image or video (up to 8 MiB)');
   label.style.cssText = 'cursor:pointer;border:1px solid #475569;border-radius:12px;padding:10px;color:#cbd5e1;font-size:12px;white-space:nowrap';
   const input = document.createElement('input');
   input.type = 'file';
@@ -40,8 +41,8 @@ export function installUpload(composer, imageOnly) {
       input.value = '';
       return;
     }
-    if (imageOnly && !imageFile(file)) {
-      status.textContent = 'Worker image input supports PNG, JPEG and WebP.';
+    if (imageOnly && !imageFile(file) && !videoFile(file)) {
+      status.textContent = 'Worker vision input supports PNG, JPEG, WebP, MP4, WebM and MOV.';
       input.value = '';
       return;
     }
@@ -64,12 +65,26 @@ export function installUpload(composer, imageOnly) {
       });
       if (!response.ok) throw new Error((await response.text()).trim() || 'Upload failed');
       const result = await response.json();
+
       const ref = result.reference;
+      if (videoFile(file)) {
+        status.textContent = 'Processing video ' + file.name + ' (you can continue other chats)...';
+        const deadline = Date.now() + 125000;
+        while (true) {
+          const check = await fetch('/v1/artifacts/' + encodeURIComponent(result.artifact.id), { credentials: 'same-origin' });
+          if (!check.ok) throw new Error('Could not read video processing status: HTTP ' + check.status);
+          const metadata = await check.json();
+          if (metadata.processing_status === 'failed') throw new Error('Video processing failed: ' + (metadata.processing_error || 'unknown error') + '. Original retained: ' + ref);
+          if (metadata.processing_status === 'ready' && metadata.video_frames?.length) break;
+          if (Date.now() > deadline) throw new Error('Video still processing; original retained: ' + ref + '. Check status before sending.');
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+      }
       try { sessionStorage.removeItem(pendingUpload.storageKey); } catch {}
       pendingUpload = null;
-      status.textContent = 'Ready: ' + file.name + ' (' + ref + '). Send with a question for visual analysis.';
+      status.textContent = 'Ready: ' + file.name + ' (' + ref + '). Send with a question. Videos are sampled: moments between frames are not covered.';
       const text = composer.value.trimEnd();
-      const prefix = imageFile(file) ? 'Analyze attached image ' : 'Use attached file ';
+      const prefix = imageFile(file) ? 'Analyze attached image ' : videoFile(file) ? 'Analyze sampled frames of attached video ' : 'Use attached file ';
       composer.value = text + (text ? '\n\n' : '') + prefix + ref + ' (' + file.name + ').';
       composer.dispatchEvent(new Event('input', { bubbles: true }));
       composer.focus();

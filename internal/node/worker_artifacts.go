@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
 )
@@ -66,12 +67,50 @@ func PrepareArtifactInput(ctx context.Context, workspace, prompt string, fetch A
 		if err != nil {
 			return "", nil, fmt.Errorf("node artifact %s: %w", id, err)
 		}
+
+		if artifact.VideoStatus=="processing" {
+			waitCtx,cancel:=context.WithTimeout(ctx,120*time.Second)
+			for artifact.VideoStatus=="processing" {
+				select {
+				case <-waitCtx.Done(): cancel();return "",nil,fmt.Errorf("video: processing timeout for artifact://%s: %w",id,waitCtx.Err())
+				case <-time.After(250*time.Millisecond):
+				}
+				artifact,err=fetch(waitCtx,id)
+				if err!=nil {cancel();return "",nil,fmt.Errorf("video: processing status fetch: %w",err)}
+			}
+			cancel()
+		}
+		if artifact.VideoStatus=="failed" { return "",nil,fmt.Errorf("video: original artifact://%s could not be processed: %s",id,artifact.VideoError) }
 		if artifact.ID != id || len(artifact.Data) == 0 || len(artifact.Data) > core.MaxArtifactBytes {
 			return "", nil, errors.New("node artifact: mismatched or oversized transfer")
 		}
 		sum := sha256.Sum256(artifact.Data)
 		if hex.EncodeToString(sum[:]) != artifact.SHA256 {
 			return "", nil, errors.New("node artifact: transfer integrity failure")
+		}
+
+		if artifact.VideoStatus=="ready" {
+			if len(images)+len(artifact.VideoFrames)>16 {return "",nil,errors.New("video: at most 16 frames can be delivered in a Worker turn")}
+			var previous int64=-1
+			seenFrames:=make(map[string]bool)
+			for _,frame:=range artifact.VideoFrames {
+				if !ValidArtifactID(frame.ArtifactID) || frame.ArtifactID==id || seenFrames[frame.ArtifactID] || frame.TimestampMS<=previous {
+					return "",nil,errors.New("video: invalid frame identities or timestamps")
+				}
+				seenFrames[frame.ArtifactID]=true
+				previous=frame.TimestampMS
+				child,e:=fetch(ctx,frame.ArtifactID)
+				if e!=nil {return "",nil,fmt.Errorf("video: fetch frame %s: %w",frame.ArtifactID,e)}
+				if child.ID!=frame.ArtifactID || len(child.Data)==0 || len(child.Data)>core.MaxArtifactBytes {return "",nil,errors.New("video: invalid frame Artifact payload")}
+				sha:=sha256.Sum256(child.Data)
+				if hex.EncodeToString(sha[:])!=child.SHA256 {return "",nil,errors.New("video: frame checksum mismatch")}
+				validated,e:=ValidateStillImage(child.Name,child.Data)
+				if e!=nil || validated.MediaType!="image/webp" {return "",nil,fmt.Errorf("video: invalid WebP frame %s: %v",frame.ArtifactID,e)}
+				validated.ArtifactID=frame.ArtifactID
+				images=append(images,validated)
+				fmt.Fprintf(&additional,"\n- video artifact://%s sample at %.3f s: frame artifact://%s (native image supplied)",id,float64(frame.TimestampMS)/1000,frame.ArtifactID)
+			}
+			fmt.Fprintf(&additional,"\n- Video artifact://%s is sampled at discrete timestamps only; events between frames were NOT observed.",id)
 		}
 		ext := strings.ToLower(filepath.Ext(artifact.Name))
 		if ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" {
