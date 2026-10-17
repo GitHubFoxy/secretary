@@ -1,13 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { webcrypto } from 'node:crypto';
 import { installUpload } from '../artifact-upload.js';
 
 test('actual Web attachment change/retry retains idempotency key after lost upload response', async () => {
   const oldDocument = globalThis.document;
   const oldStorage = globalThis.sessionStorage;
   const oldFetch = globalThis.fetch;
-  const oldCrypto = globalThis.crypto;
   const oldEvent = globalThis.Event;
   const memory = new Map();
   let selectedInput;
@@ -40,7 +38,6 @@ test('actual Web attachment change/retry retains idempotency key after lost uplo
     setItem(key, value) { memory.set(key, value); },
     removeItem(key) { memory.delete(key); }
   };
-  globalThis.crypto = webcrypto;
   globalThis.Event = class { constructor(type) { this.type = type; } };
   const keys = [];
   globalThis.fetch = async (_url, options) => {
@@ -74,7 +71,6 @@ test('actual Web attachment change/retry retains idempotency key after lost uplo
     globalThis.document = oldDocument;
     globalThis.sessionStorage = oldStorage;
     globalThis.fetch = oldFetch;
-    globalThis.crypto = oldCrypto;
     globalThis.Event = oldEvent;
   }
 });
