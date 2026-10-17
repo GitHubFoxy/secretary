@@ -325,11 +325,12 @@ type WorkerSpec struct {
 }
 
 type TurnSpec struct {
-	Input            string
-	NormalizedIntent string
-	ContextSnapshot  string
-	IdempotencyKey   string
-	CommandKind      string
+	Input               string
+	NormalizedIntent    string
+	ContextSnapshot     string
+	IdempotencyKey      string
+	CommandKind         string
+	ReserveNodeCapacity bool
 }
 
 type AttemptOutcomeInput struct {
