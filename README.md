@@ -74,19 +74,27 @@ flowchart TD
 ## Быстрый старт и запуск
 
 ### Требования
-- Go 1.23+
+- Go 1.27.1+
 - Node.js 20+ (для веб-интерфейса)
 
 ### Установка и настройка
 
-```sh
-# Настройка окружения
-./secretary setup
+На macOS/Linux с Git, zsh, OpenSSL и Go 1.27.1+ (или mise) доступна установка одной командой:
 
-# Запуск сервера и интерфейса
-./secretary start
+```sh
+curl -fsSL https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install.sh | bash
 ```
-*После первоначальной настройки утилита доступна в `PATH` как `secretary`.*
+
+В существующем checkout: `./secretary setup --interactive`. Можно выбрать **Codex или Claude Code** — оба одновременно не требуются. `secretary config` открывает терминальную конфигурацию harness, локального Node и Telegram; браузер и отдельный аккаунт Secretary не нужны.
+
+```sh
+secretary start --no-open
+secretary node start
+secretary doctor
+secretary install-service
+```
+
+На Linux используется systemd user, на macOS — launchd. Подробнее: [терминальная установка](docs/terminal-install.md) и [быстрый старт](docs/quickstart.md).
 
 ### Тестирование и сборка
 
