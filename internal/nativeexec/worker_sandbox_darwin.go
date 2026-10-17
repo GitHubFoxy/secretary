@@ -42,7 +42,7 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	if err := os.MkdirAll(workerTemp, 0700); err != nil {
 		return "", nil, errors.New("worker sandbox: create private Worker temp directory")
 	}
-	reads := []string{workerTemp, "/opt/homebrew", "/private/var/db", "/System", "/usr", "/bin", "/sbin", "/Library", "/Applications", "/private/etc", "/private/var/db/dyld", "/dev", workspace, executable}
+	reads := []string{workerTemp, "/private/tmp", "/tmp", "/opt/homebrew", "/private/var/db", "/System", "/usr", "/bin", "/sbin", "/Library", "/Applications", "/private/etc", "/private/var/db/dyld", "/dev", workspace, executable}
 	writes := []string{workspace, workerTemp, "/private/tmp", "/tmp"}
 	for _, name := range []string{".codex", ".claude", ".claude.json"} {
 		state := filepath.Join(home, name)
