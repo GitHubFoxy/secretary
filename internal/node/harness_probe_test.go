@@ -344,7 +344,7 @@ func TestClaudeCapabilitiesMatchImplementedRuntime(t *testing.T) {
 			t.Fatalf("Claude advertises unsupported execution capability %q", unsupported)
 		}
 	}
-	want := []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel}
+	want := []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilityImageInput}
 	if !reflect.DeepEqual(spec.ExecutionCapabilities, want) {
 		t.Fatalf("Claude execution capabilities=%#v, want %#v", spec.ExecutionCapabilities, want)
 	}
