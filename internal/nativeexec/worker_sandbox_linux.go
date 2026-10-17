@@ -131,3 +131,5 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	wrapped = append(wrapped, "--chdir", workspace, "--", executable)
 	return bwrap, append(wrapped, args...), nil
 }
+
+func applyWorkerSandbox(_ WorkerSandbox, _ *exec.Cmd) error { return nil }
