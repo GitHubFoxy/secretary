@@ -2,6 +2,7 @@ package node
 
 import (
     "context"
+    "errors"
     "net/http"
     "net/http/httptest"
     "path/filepath"
@@ -61,12 +62,54 @@ func TestReplacementSocketInvalidatesWorkerUntilMatchingHeartbeat(t *testing.T) 
         return err == nil && !record.LastHeartbeatAt.IsZero() && len(record.ActiveAttempts) == 1
     })
 
+    // Simulate a decoded heartbeat from the old socket that is already
+    // in flight, but pauses before it reaches the Store. A replacement
+    // must invalidate this handler even if its old socket hasn't called
+    // unregisterConnection yet.
+    manager.mu.Lock()
+    oldServerSocket := manager.connections[identity.Node]
+    manager.mu.Unlock()
+    if oldServerSocket == nil { t.Fatal("old server socket was not registered") }
+    staleHandler := &serverProtocolHandler{
+        manager: manager, expected: identity.Node,
+        inventory: inventory, connection: oldServerSocket,
+    }
+    staleReady := make(chan struct{})
+    releaseStale := make(chan struct{})
+    staleDone := make(chan error, 1)
+    go func() {
+        close(staleReady)
+        <-releaseStale
+        staleDone <- staleHandler.HandleNodeHeartbeat(ctx, Heartbeat{
+            Node: identity.Node, Online: true, Capacity: 1, Inventory: inventory,
+            ActiveAttempts: matching,
+        })
+    }()
+    <-staleReady
+
     // Deliberately open a second authenticated socket BEFORE the old one has
     // disconnected. Its registration must make the existing Worker offline.
     replacement := connect("replacement-socket")
     defer replacement.Close()
+    close(releaseStale)
+    select {
+    case err := <-staleDone:
+        if !errors.Is(err, errStaleNodeConnection) {
+            t.Fatalf("old socket updated liveness after replacement: %v", err)
+        }
+    case <-ctx.Done():
+        t.Fatal("in-flight stale heartbeat was not rejected")
+    }
+    if err := staleHandler.HandleNodeInventory(ctx, inventory); !errors.Is(err, errStaleNodeConnection) {
+        t.Fatalf("old socket updated inventory after replacement: %v", err)
+    }
     details, err := store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
     if err != nil { t.Fatal(err) }
+    record, err := store.NodeRecord(ctx, identity.Node)
+    if err != nil { t.Fatal(err) }
+    if !record.LastHeartbeatAt.IsZero() || record.Capacity != 0 || len(record.ActiveAttempts) != 0 {
+        t.Fatalf("stale heartbeat contaminated fresh socket telemetry: %#v", record)
+    }
     if details.Worker.Status != core.WorkerOffline || details.CurrentAttempt().State != core.AttemptActive {
         t.Fatalf("Worker remained actionable on replaced native socket: %#v", details)
     }

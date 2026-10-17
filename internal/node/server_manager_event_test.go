@@ -209,6 +209,10 @@ func TestHeartbeatTelemetryIsAvailableToServerStatusAndResolver(t *testing.T) {
 		t.Fatal(err)
 	}
 	handler := &serverProtocolHandler{manager: manager, expected: "heartbeat-node"}
+	// A telemetry callback is valid only for the currently registered socket.
+	connection := &ProtocolConnection{node: "heartbeat-node"}
+	handler.connection = connection
+	manager.registerConnection("heartbeat-node", connection)
 	if err := handler.HandleNodeHeartbeat(ctx, Heartbeat{
 		Node: "heartbeat-node", Online: true, Capacity: 3,
 		ActiveAttempts:       []ActiveAttempt{{WorkerRef: "worker", TurnID: "turn", AttemptID: "attempt"}},
