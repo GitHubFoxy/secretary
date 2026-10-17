@@ -398,6 +398,15 @@ func (s *Store) ResolveAndCreateWorker(ctx context.Context, conversationID, inte
 }
 
 func (s *Store) ResolveAndCreateWorkerWithProfileSnapshot(ctx context.Context, conversationID, intent string, request DispatchResolutionRequest, idempotencyKey, profileSnapshot string, origins ...SecretaryOriginIdentity) (Worker, Turn, Phase4Attempt, DispatchResolution, error) {
+	return s.ResolveAndCreateWorkerWithProfileFactory(ctx, conversationID, intent, request, idempotencyKey, func(DispatchResolution) (string, error) {
+		return profileSnapshot, nil
+	}, origins...)
+}
+
+// ResolveAndCreateWorkerWithProfileFactory resolves the final Node/harness once and
+// builds its managed Profile against the very same immutable dispatch selection.
+// The factory is not called on idempotent replays.
+func (s *Store) ResolveAndCreateWorkerWithProfileFactory(ctx context.Context, conversationID, intent string, request DispatchResolutionRequest, idempotencyKey string, profileFactory func(DispatchResolution) (string, error), origins ...SecretaryOriginIdentity) (Worker, Turn, Phase4Attempt, DispatchResolution, error) {
 	idempotencyKey = strings.TrimSpace(idempotencyKey)
 	if len(origins) > 1 {
 		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, ErrInvalidSecretaryOrigin
@@ -428,6 +437,13 @@ func (s *Store) ResolveAndCreateWorkerWithProfileSnapshot(ctx context.Context, c
 	}
 
 	resolved, err := s.ResolveDispatch(ctx, request)
+	if err != nil {
+		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
+	}
+	if profileFactory == nil {
+		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, errors.New("core: Worker profile factory is required")
+	}
+	profileSnapshot, err := profileFactory(resolved)
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
 	}
