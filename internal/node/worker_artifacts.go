@@ -68,19 +68,23 @@ func PrepareArtifactInput(ctx context.Context, workspace, prompt string, fetch A
 			return "", nil, fmt.Errorf("node artifact %s: %w", id, err)
 		}
 
-		if artifact.VideoStatus=="processing" {
+		if artifact.VideoStatus=="processing" || artifact.VideoStatus=="queued" {
+			if artifact.CheckVideoStatus==nil {return "",nil,errors.New("video: authenticated metadata polling unavailable")}
 			waitCtx,cancel:=context.WithTimeout(ctx,120*time.Second)
-			for artifact.VideoStatus=="processing" {
+			for artifact.VideoStatus=="queued" || artifact.VideoStatus=="processing" {
 				select {
-				case <-waitCtx.Done(): cancel();return "",nil,fmt.Errorf("video: processing timeout for artifact://%s: %w",id,waitCtx.Err())
+				case <-waitCtx.Done():cancel();return "",nil,fmt.Errorf("video: processing timeout for artifact://%s: %w",id,waitCtx.Err())
 				case <-time.After(250*time.Millisecond):
 				}
-				artifact,err=fetch(waitCtx,id)
-				if err!=nil {cancel();return "",nil,fmt.Errorf("video: processing status fetch: %w",err)}
+				meta,e:=artifact.CheckVideoStatus(waitCtx)
+				if e!=nil {cancel();return "",nil,fmt.Errorf("video: metadata status unavailable: %w",e)}
+				artifact.VideoStatus=meta.ProcessingStatus
+				artifact.VideoError=meta.ProcessingError
+				artifact.VideoFrames=meta.VideoFrames
 			}
 			cancel()
 		}
-		if artifact.VideoStatus=="failed" { return "",nil,fmt.Errorf("video: original artifact://%s could not be processed: %s",id,artifact.VideoError) }
+		if artifact.VideoStatus=="failed" {return "",nil,fmt.Errorf("video: original artifact://%s could not be processed: %s",id,artifact.VideoError)}
 		if artifact.ID != id || len(artifact.Data) == 0 || len(artifact.Data) > core.MaxArtifactBytes {
 			return "", nil, errors.New("node artifact: mismatched or oversized transfer")
 		}
@@ -108,9 +112,9 @@ func PrepareArtifactInput(ctx context.Context, workspace, prompt string, fetch A
 				if e!=nil || validated.MediaType!="image/webp" {return "",nil,fmt.Errorf("video: invalid WebP frame %s: %v",frame.ArtifactID,e)}
 				validated.ArtifactID=frame.ArtifactID
 				images=append(images,validated)
-				fmt.Fprintf(&additional,"\n- video artifact://%s sample at %.3f s: frame artifact://%s (native image supplied)",id,float64(frame.TimestampMS)/1000,frame.ArtifactID)
+				fmt.Fprintf(&additional,"\n- video artifact://%s at nominal clip-relative sample time %.3f s: frame artifact://%s (native image supplied)",id,float64(frame.TimestampMS)/1000,frame.ArtifactID)
 			}
-			fmt.Fprintf(&additional,"\n- Video artifact://%s is sampled at discrete timestamps only; events between frames were NOT observed.",id)
+			fmt.Fprintf(&additional,"\n- Video artifact://%s is sampled on a nominal time grid (not exact VFR source-frame PTS); events between frames were NOT observed.",id)
 		}
 		ext := strings.ToLower(filepath.Ext(artifact.Name))
 		if ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" {

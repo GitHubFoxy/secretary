@@ -31,6 +31,7 @@ type ArtifactPayload struct {
 	VideoStatus string
 	VideoError string
 	VideoFrames []core.VideoFrame
+	CheckVideoStatus func(context.Context) (core.Artifact,error)
 }
 
 type ArtifactFetcher func(context.Context, string) (ArtifactPayload, error)
@@ -144,5 +145,32 @@ func (i NodeIdentity) FetchArtifact(ctx context.Context, id string) (ArtifactPay
 			return ArtifactPayload{}, errors.New("node artifact: missing or invalid video frame metadata")
 		}
 	}
+	payload.CheckVideoStatus=func(c context.Context)(core.Artifact,error){return i.FetchArtifactStatus(c,id)}
 	return payload,nil
+}
+
+// FetchArtifactStatus polls only signed metadata; never downloads the original video BLOB.
+func (i NodeIdentity) FetchArtifactStatus(ctx context.Context, id string) (core.Artifact,error) {
+	if !ValidArtifactID(id) {return core.Artifact{},errors.New("node artifact: invalid identifier")}
+	auth,err:=i.Authenticator()
+	if err!=nil{return core.Artifact{},err}
+	u,err:=url.Parse(i.ConnectURL)
+	if err!=nil || !strings.HasSuffix(u.Path,"/v1/nodes/connect") {return core.Artifact{},errors.New("node artifact: invalid server endpoint")}
+	switch u.Scheme {case "wss":u.Scheme="https";case "ws":u.Scheme="http";default:return core.Artifact{},errors.New("node artifact: invalid connect URL scheme")}
+	u.Path=strings.TrimSuffix(u.Path,"/v1/nodes/connect")+"/v1/artifacts/"+id+"/status"
+	u.RawQuery,u.Fragment="",""
+	req,err:=http.NewRequestWithContext(ctx,http.MethodGet,u.String(),nil)
+	if err!=nil{return core.Artifact{},err}
+	now:=time.Now().Unix()
+	req.Header.Set("X-Secretary-Node",string(i.Node))
+	req.Header.Set("X-Artifact-Timestamp",strconv.FormatInt(now,10))
+	req.Header.Set("X-Artifact-Signature",auth.SignArtifactRequest(i.Node,id,now))
+	response,err:=(&http.Client{Timeout:10*time.Second}).Do(req)
+	if err!=nil{return core.Artifact{},err}
+	defer response.Body.Close()
+	if response.StatusCode!=http.StatusOK{return core.Artifact{},fmt.Errorf("video status: HTTP %d",response.StatusCode)}
+	var metadata core.Artifact
+	if err=json.NewDecoder(io.LimitReader(response.Body,16<<10)).Decode(&metadata);err!=nil{return core.Artifact{},err}
+	if metadata.ID!=id {return core.Artifact{},errors.New("video status: mismatched Artifact identifier")}
+	return metadata,nil
 }

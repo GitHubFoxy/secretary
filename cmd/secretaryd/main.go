@@ -271,7 +271,11 @@ func main() {
 	workerLocal.SetArtifactFetcher(func(ctx context.Context, id string) (node.ArtifactPayload, error) {
 		artifact, body, err := store.ArtifactForPerson(ctx, web.OwnerID(), id)
 		if err != nil { return node.ArtifactPayload{}, err }
-		return node.ArtifactPayload{ID: artifact.ID, Name: artifact.Name, SHA256: artifact.SHA256, Data: body, VideoStatus: artifact.ProcessingStatus, VideoError: artifact.ProcessingError, VideoFrames: artifact.VideoFrames}, nil
+		return node.ArtifactPayload{
+			ID:artifact.ID,Name:artifact.Name,SHA256:artifact.SHA256,Data:body,
+			VideoStatus:artifact.ProcessingStatus,VideoError:artifact.ProcessingError,VideoFrames:artifact.VideoFrames,
+			CheckVideoStatus:func(c context.Context)(core.Artifact,error){return store.ArtifactMetadataForPerson(c,web.OwnerID(),id)},
+		},nil
 	})
 	secretaryLocal := node.NewLocal(secretaryHarnessRuntime)
 	if err := recoverProductionPhase4Attempts(ctx, store, workerLocal, remoteNodes); err != nil {
