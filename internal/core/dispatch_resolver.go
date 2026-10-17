@@ -100,8 +100,14 @@ func (s *Store) ResolveDispatch(ctx context.Context, request DispatchResolutionR
 		return *preferredReady, nil
 	}
 	if firstUnavailable != nil && (request.NodeID != "" || request.HarnessInstanceID != "") {
-		if project.ID == "" && (!firstUnavailable.nodeState.online || firstUnavailable.nodeState.draining || firstUnavailable.nodeState.revoked) {
-			return DispatchResolution{}, fmt.Errorf("%w: Node %s is offline or draining; choose an online Node", ErrSelectedNodeUnavailable, firstUnavailable.Node)
+		if project.ID == "" {
+			reason := "has no free execution capacity"
+			if !firstUnavailable.nodeState.online {
+				reason = "is offline"
+			} else if firstUnavailable.nodeState.draining {
+				reason = "is draining"
+			}
+			return DispatchResolution{}, fmt.Errorf("%w: Node %s %s; choose another available Node", ErrSelectedNodeUnavailable, firstUnavailable.Node, reason)
 		}
 		return *firstUnavailable, nil
 	}
@@ -330,6 +336,7 @@ func orderedDispatchInstances(instances []HarnessInstance, request DispatchResol
 		kinds = append(kinds, request.WorkerPolicy.PreferredHarnesses...)
 		if request.ProjectID == "" {
 			kinds = append(kinds, HarnessCodex, HarnessClaudeCode)
+			kinds = append(kinds, request.WorkerPolicy.AllowedHarnesses...)
 		}
 	}
 	result := make([]HarnessInstance, 0, len(ordered))
