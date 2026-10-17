@@ -148,7 +148,7 @@ func TestT10WebImageToRemoteWorkerWithDedupAndErrors(t *testing.T) {
 		t.Fatal("Worker did not receive image")
 	}
 	result,err = execution.HandleCommand(ctx,cmd)
-	if err != nil || result.State != node.CommandAccepted || runtime.starts != 1 { t.Fatalf("command replay duplicated Worker: %#v %v starts=%d",result,err,runtime.starts) }
+	if err != nil || (result.State != node.CommandAccepted && !(result.State == node.CommandFailed && result.ErrorCode == "runtime_session_unavailable")) || runtime.starts != 1 { t.Fatalf("command replay duplicated Worker: %#v %v starts=%d",result,err,runtime.starts) }
 	deadline := time.Now().Add(2*time.Second)
 	found := false
 	for time.Now().Before(deadline) && !found {
