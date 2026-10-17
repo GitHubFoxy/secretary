@@ -99,6 +99,16 @@ func TestT04DeploymentAllowsDMWithoutGroupAndValidatesForumID(t *testing.T) {
 	if _, err := configuredTelegramDeployment(); err == nil {
 		t.Fatal("positive group id accepted")
 	}
+	t.Setenv("SECRETARY_TELEGRAM_GROUP_CHAT_ID", "")
+	t.Setenv("SECRETARY_TELEGRAM_OWNER_CHAT_ID", "-200")
+	legacy, err := configuredTelegramDeployment()
+	if err != nil || legacy.OwnerChatID != -200 {
+		t.Fatalf("legacy forum-only config rejected: %#v %v", legacy, err)
+	}
+	t.Setenv("SECRETARY_TELEGRAM_GROUP_CHAT_ID", "-201")
+	if _, err := configuredTelegramDeployment(); err == nil {
+		t.Fatal("conflicting legacy and new group ids accepted")
+	}
 }
 
 type t04WorkerMessages struct {
