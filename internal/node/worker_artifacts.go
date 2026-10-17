@@ -69,20 +69,12 @@ func PrepareArtifactInput(ctx context.Context, workspace, prompt string, fetch A
 		}
 
 		if artifact.VideoStatus=="processing" || artifact.VideoStatus=="queued" {
-			if artifact.CheckVideoStatus==nil {return "",nil,errors.New("video: authenticated metadata polling unavailable")}
-			waitCtx,cancel:=context.WithTimeout(ctx,120*time.Second)
-			for artifact.VideoStatus=="queued" || artifact.VideoStatus=="processing" {
-				select {
-				case <-waitCtx.Done():cancel();return "",nil,fmt.Errorf("video: processing timeout for artifact://%s: %w",id,waitCtx.Err())
-				case <-time.After(250*time.Millisecond):
-				}
-				meta,e:=artifact.CheckVideoStatus(waitCtx)
-				if e!=nil {cancel();return "",nil,fmt.Errorf("video: metadata status unavailable: %w",e)}
-				artifact.VideoStatus=meta.ProcessingStatus
-				artifact.VideoError=meta.ProcessingError
-				artifact.VideoFrames=meta.VideoFrames
+			// Jobs are bounded but may spend minutes waiting for one of the two
+			// FFmpeg slots. The Node connection/command context, not a fixed
+			// wall-clock deadline, owns cancellation of this dependent dispatch.
+			if err:=awaitVideoProcessing(ctx,id,&artifact,250*time.Millisecond);err!=nil {
+				return "",nil,err
 			}
-			cancel()
 		}
 		if artifact.VideoStatus=="failed" {return "",nil,fmt.Errorf("video: original artifact://%s could not be processed: %s",id,artifact.VideoError)}
 		if artifact.ID != id || len(artifact.Data) == 0 || len(artifact.Data) > core.MaxArtifactBytes {
@@ -112,9 +104,18 @@ func PrepareArtifactInput(ctx context.Context, workspace, prompt string, fetch A
 				if e!=nil || validated.MediaType!="image/webp" {return "",nil,fmt.Errorf("video: invalid WebP frame %s: %v",frame.ArtifactID,e)}
 				validated.ArtifactID=frame.ArtifactID
 				images=append(images,validated)
-				fmt.Fprintf(&additional,"\n- video artifact://%s at clip-relative sample time %.3f s: frame artifact://%s (native image supplied)",id,float64(frame.TimestampMS)/1000,frame.ArtifactID)
+				switch frame.TimestampKind {
+				case "source-pts-relative":
+					fmt.Fprintf(&additional,"\n- video artifact://%s source-frame PTS (relative to clip start) %.3f s [timestamp_kind=source-pts-relative]: frame artifact://%s (native image supplied)",id,float64(frame.TimestampMS)/1000,frame.ArtifactID)
+				case "nominal-grid", "":
+					// Empty kind can come from old frame metadata. Never imply the
+					// nominal time is the presentation timestamp of the source.
+					fmt.Fprintf(&additional,"\n- video artifact://%s approximate nominal-grid sample time %.3f s [timestamp_kind=nominal-grid; NOT actual source-frame PTS]: frame artifact://%s (native image supplied)",id,float64(frame.TimestampMS)/1000,frame.ArtifactID)
+				default:
+					return "",nil,fmt.Errorf("video: frame artifact://%s has unknown timestamp kind %q",frame.ArtifactID,frame.TimestampKind)
+				}
 			}
-			fmt.Fprintf(&additional,"\n- Video artifact://%s has sampled frame timestamps (timestamp_kind distinguishes source-pts-relative from legacy nominal-grid); events between frames were NOT observed.",id)
+			fmt.Fprintf(&additional,"\n- Video artifact://%s contains discrete frame samples only; events between frames were NOT observed. Each frame's timestamp_kind identifies whether its time is source-frame PTS or an approximate legacy nominal grid.",id)
 		}
 		ext := strings.ToLower(filepath.Ext(artifact.Name))
 		if ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" {
@@ -143,6 +144,35 @@ func PrepareArtifactInput(ctx context.Context, workspace, prompt string, fetch A
 		fmt.Fprintf(&additional, "\n- artifact://%s => %s", id, path)
 	}
 	return prompt + additional.String(), images, nil
+}
+
+// awaitVideoProcessing polls signed metadata only. It never imposes a hidden
+// 120-second ceiling: a queued video remains pending until ready, failed, or
+// the connected Node's command context is canceled (e.g. on disconnect).
+// pollInterval is injectable to cover queues longer than 120 seconds without
+// slowing down regression tests.
+func awaitVideoProcessing(ctx context.Context, id string, artifact *ArtifactPayload, pollInterval time.Duration) error {
+	if artifact.CheckVideoStatus==nil {return errors.New("video: authenticated metadata polling unavailable")}
+	if pollInterval<0 {return errors.New("video: invalid polling interval")}
+	for artifact.VideoStatus=="queued" || artifact.VideoStatus=="processing" {
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("video: waiting for artifact://%s interrupted: %w",id,ctx.Err())
+		case <-time.After(pollInterval):
+		}
+		meta,err:=artifact.CheckVideoStatus(ctx)
+		if err!=nil {return fmt.Errorf("video: metadata status unavailable: %w",err)}
+		if meta.ID!=id {return errors.New("video: status metadata identifier mismatch")}
+		switch meta.ProcessingStatus {
+		case "queued","processing","ready","failed":
+		default:
+			return fmt.Errorf("video: unexpected processing status %q for artifact://%s",meta.ProcessingStatus,id)
+		}
+		artifact.VideoStatus=meta.ProcessingStatus
+		artifact.VideoError=meta.ProcessingError
+		artifact.VideoFrames=meta.VideoFrames
+	}
+	return nil
 }
 
 func saveStagedArtifact(dir, destination string, data []byte) error {

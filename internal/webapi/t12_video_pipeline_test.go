@@ -44,6 +44,7 @@ func (r *t12Runtime) Start(_ context.Context, req node.StartRequest) (node.Sessi
 		req.Images[0].MediaType!="image/webp" || req.Images[1].MediaType!="image/webp" ||
 		!strings.Contains(req.Task,"0.000 s") || !strings.Contains(req.Task,"1.000 s") ||
 		!strings.Contains(req.Task,"between frames were NOT observed") ||
+		strings.Count(req.Task,"timestamp_kind=nominal-grid; NOT actual source-frame PTS")!=2 ||
 		!strings.Contains(req.Task,"Describe the sampled video") {
 		return nil,fmt.Errorf("video native image input/caption mismatch: %+v",req)
 	}
