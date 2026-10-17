@@ -2277,13 +2277,13 @@ func (s *Store) RecordNodeAttemptOutcome(ctx context.Context, envelope AttemptOu
 		}
 		present := false
 		for _, existing := range envelope.ArtifactRefs {
-			if existing == reference {
+			if existing.Ref == reference {
 				present = true
 				break
 			}
 		}
 		if !present {
-			envelope.ArtifactRefs = append(envelope.ArtifactRefs, reference)
+			envelope.ArtifactRefs = append(envelope.ArtifactRefs, ArtifactRef{Kind: "file", Ref: reference})
 		}
 	}
 	artifactRefs := ""
