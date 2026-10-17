@@ -93,7 +93,7 @@ func TestT07RememberRestartWorkerACPReceivesMemory(t *testing.T) {
 			t.Fatalf("missing %q from new Worker owner context", item)
 		}
 	}
-	t.Setenv("TEST_WORKER_PROFILE_EXPECTED_PROMPT", expected.Content)
+	t.Setenv("TEST_WORKER_PROFILE_EXPECTED_PROMPT", strings.TrimSpace(expected.Content))
 	details, err := service.SpawnWorker(ctx, SpawnWorkerRequest{
 		Intent: "Explain a Go function", ProjectID: project.ID, IdempotencyKey: "t07-native-acp",
 	})
