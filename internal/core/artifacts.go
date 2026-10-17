@@ -167,9 +167,6 @@ func (s *Store) SavePublishedArtifact(ctx context.Context, nodeID, workerRef, at
 		if boundNode != nodeID || boundWorker != workerRef {
 			return saved{}, ErrNotFound
 		}
-		if state != string(AttemptStarting) && state != string(AttemptActive) {
-			return saved{}, ErrInvalidTransition
-		}
 		existing, found, err := readArtifact(ctx, tx, owner, key)
 		if err != nil {
 			return saved{}, err
@@ -183,6 +180,9 @@ func (s *Store) SavePublishedArtifact(ctx context.Context, nodeID, workerRef, at
 				return saved{}, ErrIdempotencyConflict
 			}
 			return saved{artifact: existing, duplicate: true}, nil
+		}
+		if state != string(AttemptStarting) && state != string(AttemptActive) {
+			return saved{}, ErrInvalidTransition
 		}
 		var count int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts WHERE source_attempt_id = ?`, attemptID).Scan(&count); err != nil {

@@ -142,7 +142,7 @@ func (s *Server) artifactRoute(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Length", fmt.Sprint(artifact.Size))
 	w.Header().Set("X-Artifact-SHA256", artifact.SHA256)
 	w.Header().Set("X-Artifact-Name", base64.RawURLEncoding.EncodeToString([]byte(artifact.Name)))
-	w.Header().Set("Content-Disposition", "attachment")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": artifact.Name}))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)

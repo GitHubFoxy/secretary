@@ -31,7 +31,7 @@ func TestT09WorkerPublicationRejectsUnsafeLocalFiles(t *testing.T) {
 		{"../outside.zip", "outside.zip"},
 		{filepath.Join(root, "safe.zip"), "absolute.zip"},
 		{".env", "secret.txt"},
-		{filepath.Join("folder", "..", "safe.zip"), "safe.zip"},
+		{"folder/../safe.zip", "safe.zip"},
 		{"folder", "folder.zip"},
 		{"large.zip", "large.zip"},
 		{"safe.zip", "secret.exe"},
