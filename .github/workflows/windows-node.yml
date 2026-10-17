@@ -1,0 +1,32 @@
+name: Windows Execution Node acceptance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-node:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    env:
+      GOFLAGS: -p=1
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Compile actual Windows Node executable
+        run: go build -o secretary-node.exe ./cmd/secretary-node
+      - name: Test Windows Node configuration
+        run: go test ./cmd/secretary-node -run 'TestConfiguredNodeRuntime|TestSelectNodeNativeStore' -count=1
+      - name: Windows host protocol, failure, native process and reconnect acceptance
+        run: >
+          go test ./internal/node
+          -run 'TestWindowsNativeACPProcessStartAndResume|TestACPRuntimeResumesExistingSession|TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke|TestServerRestartNodeReconnectDeliversQueuedLateResultExactlyOnce|TestReplacementSocketInvalidatesWorkerUntilMatchingHeartbeat'
+          -count=1 -timeout=10m -v
