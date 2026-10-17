@@ -50,7 +50,7 @@ func main() {
 	var secretaryHandler mcp.Handler
 	replyContract := strings.TrimSpace(os.Getenv("SECRETARY_MCP_REPLY_CONTRACT"))
 	if serverURL := os.Getenv("SECRETARY_MCP_SERVER_URL"); serverURL != "" {
-		secretaryHandler = mcp.RemoteSecretary{BaseURL: serverURL, Capability: capability, ReplyContractVersion: replyContract}
+		secretaryHandler = mcp.RemoteSecretary{BaseURL: serverURL, Capability: capability, ReplyContractVersion: replyContract, UserPath: filepath.Join(*dataDir, "user.md")}
 	} else {
 		manager, err := config.Open(filepath.Join(*dataDir, "config.toml"))
 		if err != nil {
