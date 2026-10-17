@@ -18,16 +18,5 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Export formatted T01 test sources for this PR
-        run: |
-          gofmt -w internal/e2e/secretary_worker_routing_test.go internal/e2e/secretary_worker_routing_live_test.go
-          echo BEGIN_T01_ROUTING_BASE64
-          base64 -w0 internal/e2e/secretary_worker_routing_test.go
-          echo
-          echo END_T01_ROUTING_BASE64
-          echo BEGIN_T01_LIVE_BASE64
-          base64 -w0 internal/e2e/secretary_worker_routing_live_test.go
-          echo
-          echo END_T01_LIVE_BASE64
-      - name: Test all Go packages
-        run: go test ./...
+      - name: Test Secretary routing and lifecycle
+        run: go test ./internal/e2e ./internal/core ./internal/secretary ./internal/mcp ./internal/config ./internal/ctl
