@@ -507,11 +507,10 @@ func dispatchFixture(commandID string) Command {
 	}
 	return Command{Kind: CommandDispatch, Dispatch: &DispatchCommand{
 		Metadata: core.CommandMetadata{CommandID: commandID, Node: "macbook", HarnessInstanceID: instance.ID, WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1", IssuedAt: time.Now()},
-		Envelope: WorkerEnvelope{WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1", OriginalUserIntent: "inspect", HarnessInstance: instance, Workspace: tWorkspace, Profile: workerTemplateFixture(instance, "", "")},
+		Envelope: WorkerEnvelope{WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1", OriginalUserIntent: "inspect", HarnessInstance: instance, Profile: workerTemplateFixture(instance, "", "")},
 	}}
 }
 
-const tWorkspace = "/tmp/secretary-test-workspace"
 
 func outcomeFixture(eventID string) core.AttemptOutcomeEnvelope {
 	return core.AttemptOutcomeEnvelope{EventID: eventID, Node: "home-server", HarnessInstanceID: "home-server/fx", WorkerRef: "worker-1", TurnID: "turn-1", AttemptID: "attempt-1", Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "done", OccurredAt: time.Now()}
