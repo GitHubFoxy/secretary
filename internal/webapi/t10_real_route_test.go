@@ -140,14 +140,6 @@ func TestT10RealWebToSecretaryActionToRemoteDaemonAndConversation(t *testing.T) 
 		}
 	case <-ctx.Done(): t.Fatal("ServerManager did not deliver image to remote native Worker")
 	}
-	second := tool()
-	firstAction := first.Value.(map[string]any)
-	secondAction := second.Value.(map[string]any)
-	firstWorker := firstAction["worker"].(map[string]any)["worker_ref"]
-	secondWorker := secondAction["worker"].(map[string]any)["worker_ref"]
-	if firstWorker == "" || firstWorker != secondWorker || runtime.starts != 1 {
-		t.Fatalf("Secretary action replay changed Worker identity: %d, first=%v second=%v",runtime.starts,firstWorker,secondWorker)
-	}
 	for {
 		req,err := http.NewRequestWithContext(ctx,http.MethodGet,server.URL+"/v1/conversation",nil)
 		if err != nil { t.Fatal(err) }
@@ -159,5 +151,14 @@ func TestT10RealWebToSecretaryActionToRemoteDaemonAndConversation(t *testing.T) 
 		if res.StatusCode == http.StatusOK && strings.Contains(body.String(),"Grounded result: picture contains a colored pixel") { break }
 		select { case <-ctx.Done(): t.Fatalf("Worker Result did not reach Personal Conversation: %v last=%s",ctx.Err(),body.String())
 		case <-time.After(20*time.Millisecond): }
+	}
+	// Replay only after the remote terminal event has been committed to the Personal Conversation.
+	second := tool()
+	firstAction := first.Value.(map[string]any)
+	secondAction := second.Value.(map[string]any)
+	firstWorker := firstAction["worker"].(map[string]any)["worker_ref"]
+	secondWorker := secondAction["worker"].(map[string]any)["worker_ref"]
+	if firstWorker == "" || firstWorker != secondWorker || runtime.starts != 1 {
+		t.Fatalf("Secretary action replay changed Worker identity: %d, first=%v second=%v",runtime.starts,firstWorker,secondWorker)
 	}
 }
