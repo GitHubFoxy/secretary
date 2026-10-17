@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/beruseruko/secretary/internal/artifactmcp"
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
 )
@@ -21,6 +22,7 @@ var invalidNodeName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 func main() {
 	setPrivateNodeUmask()
+	artifactMCP := flag.Bool("artifact-mcp", false, "serve the scoped Worker Artifact MCP tool")
 	configPath := flag.String("config", "", "Node-local deployment and approved Worker MCP config JSON")
 	dataDir := flag.String("data-dir", defaultNodeDataDir(), "directory for Node identity and durable local state")
 	serverURL := flag.String("server", envOr("SECRETARY_NODE_SERVER", "http://127.0.0.1:8081"), "Secretary server URL used for first pairing")
@@ -40,6 +42,12 @@ func main() {
 	var requestedWorkspaces workspaceEdits
 	flag.Var(&requestedWorkspaces, "workspace", "project=absolute-path mapping to add or replace in deployment config")
 	flag.Parse()
+	if *artifactMCP {
+		if err := artifactmcp.Serve(context.Background()); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if *editDeployment {
 		if *checkCodex || *checkOpenCodeAuth || *selectOpenCodeStore || *printStoreRecord {
 			log.Fatal("--edit-deployment-config is incompatible with runtime diagnostics or store selection")

@@ -20,6 +20,7 @@ import (
 
 	"github.com/beruseruko/secretary/internal/app"
 	"github.com/beruseruko/secretary/internal/config"
+	"github.com/beruseruko/secretary/internal/artifactmcp"
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
 	"github.com/beruseruko/secretary/internal/node"
@@ -30,6 +31,7 @@ import (
 
 func main() {
 	_ = syscall.Umask(0o077)
+	artifactMCP := flag.Bool("artifact-mcp", false, "serve the scoped Worker Artifact MCP tool")
 	dataDir := flag.String("data-dir", defaultDataDir(), "directory for Secretary durable state")
 	listen := flag.String("listen", "127.0.0.1:8081", "web listener address")
 	configPath := flag.String("config", "", "path to Secretary config.toml")
@@ -40,6 +42,12 @@ func main() {
 	checkOpenCodeAuth := flag.Bool("check-opencode-auth", false, "check stored OpenCode credentials in the selected Secretary store and exit")
 	opencodeCommand := flag.String("opencode-command", "opencode", "OpenCode executable used for the selected-store auth check")
 	flag.Parse()
+	if *artifactMCP {
+		if err := artifactmcp.Serve(context.Background()); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if *checkOpenCodeAuth {
 		if *selectNativeStores || *printNativeStores || *selectSharedNativeStore {
 			log.Fatal("--check-opencode-auth cannot be combined with OpenCode store selection")
