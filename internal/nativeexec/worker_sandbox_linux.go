@@ -25,8 +25,9 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	if err != nil { return "", nil, err }
 	if protected == "/" || workspace == "/" ||
 		protected == workspace ||
-		strings.HasPrefix(protected, workspace+string(filepath.Separator)) ||
-		strings.HasPrefix(workspace, protected+string(filepath.Separator)) {
+		// A workspace may live *inside* private Node data; only this bound
+		// subtree is remounted after the private parent has been hidden.
+		strings.HasPrefix(protected, workspace+string(filepath.Separator)) {
 		return "", nil, errors.New("worker sandbox: private Node data and Worker workspace must be disjoint")
 	}
 	// No PATH lookup: a Worker-controlled executable cannot replace the
