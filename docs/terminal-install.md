@@ -4,7 +4,7 @@ Developer Edition runs locally on macOS or Linux. An owner authorizes **one** na
 
 ## One-command source install
 
-On an existing developer host with Git, zsh, OpenSSL and Go 1.23+ (or mise):
+On an existing developer host with Git, zsh, OpenSSL and Go 1.27.1+ (or mise):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install.sh | bash
