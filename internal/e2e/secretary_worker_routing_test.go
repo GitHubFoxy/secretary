@@ -297,9 +297,13 @@ func (f *t01RoutingFixture) handleSecretaryPrompt(prompt string) error {
 			matches = pending
 		}
 		if len(matches) != 1 {
-			// No Worker is selected when more than one may be the recipient.
+			// Do not infer the recipient when multiple Workers can match.
+			refs := make([]string, 0, len(pending))
+			for _, worker := range pending {
+				refs = append(refs, worker.WorkerRef)
+			}
 			_, err = call("reply_to_user", map[string]any{
-				"text": "Which Worker should I continue: website or vacation?",
+				"text": "Which Worker should I continue: " + strings.Join(refs, ", ") + "?",
 			})
 		} else {
 			_, err = call("reply_to_user", map[string]any{"text": "Request received."})
@@ -432,6 +436,47 @@ func TestT01WebToSecretaryHarnessClarifiesAmbiguousWorker(t *testing.T) {
 		if strings.Contains(w.Intent, "website") { want++ }
 		if len(d.Turns) != want {
 			t.Fatalf("clarified answer routed to wrong Worker: %s turns=%d want=%d", w.WorkerRef, len(d.Turns), want)
+		}
+	}
+}
+
+
+func TestT01WebToSecretaryHarnessClarifiesTwoWorkersWithSameTopic(t *testing.T) {
+	f := newT01RoutingFixture(t)
+	f.post(t, "website-first", "Create a website")
+	_ = f.wait(t, 1)
+	f.post(t, "website-second", "Create a website")
+	workers := f.wait(t, 2)
+	if len(workers) != 2 {
+		t.Fatalf("two distinct website Tasks did not create two Workers: %#v", workers)
+	}
+	before := make(map[string]int)
+	for _, w := range workers {
+		details, err := f.mcp.Workers.GetWorker(f.ctx, w.WorkerRef)
+		if err != nil { t.Fatal(err) }
+		before[w.WorkerRef] = len(details.Turns)
+	}
+	// Mentioning the shared topic is insufficient to identify one Worker.
+	f.post(t, "website-ambiguous", "For the website, use blue")
+	_ = f.wait(t, 3)
+	entries, err := f.store.EntriesAfter(f.ctx, f.identity.ConversationID, 0)
+	if err != nil { t.Fatal(err) }
+	found := false
+	for _, entry := range entries {
+		if entry.Kind != core.EntrySecretary || !strings.Contains(entry.Body, "Which Worker") {
+			continue
+		}
+		found = strings.Contains(entry.Body, workers[0].WorkerRef) &&
+			strings.Contains(entry.Body, workers[1].WorkerRef)
+	}
+	if !found {
+		t.Fatal("ambiguous routing must ask for a Worker identity, not choose one")
+	}
+	for _, w := range workers {
+		details, err := f.mcp.Workers.GetWorker(f.ctx, w.WorkerRef)
+		if err != nil { t.Fatal(err) }
+		if len(details.Turns) != before[w.WorkerRef] {
+			t.Fatalf("ambiguous website answer was dispatched to Worker %s", w.WorkerRef)
 		}
 	}
 }
