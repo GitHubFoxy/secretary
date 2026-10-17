@@ -75,7 +75,11 @@ func (s *Store) ResolveDispatch(ctx context.Context, request DispatchResolutionR
 				continue
 			}
 		}
-		resolved, available, err := resolveDispatchOnNode(project, candidate, request, model, reasoning)
+		capacityUsed, err := nodeCapacityUsed(ctx, s.db, candidate.record.Node, candidate.record.ActiveAttempts)
+		if err != nil {
+			return DispatchResolution{}, err
+		}
+		resolved, available, err := resolveDispatchOnNode(project, candidate, request, model, reasoning, capacityUsed)
 		if err != nil {
 			if firstError == nil {
 				firstError = err
@@ -233,7 +237,7 @@ func projectNodeOrder(project Project) []NodeReference {
 	return result
 }
 
-func resolveDispatchOnNode(project Project, candidate dispatchNodeCandidate, request DispatchResolutionRequest, model, reasoning string) (DispatchResolution, bool, error) {
+func resolveDispatchOnNode(project Project, candidate dispatchNodeCandidate, request DispatchResolutionRequest, model, reasoning string, capacityUsed int) (DispatchResolution, bool, error) {
 	record := candidate.record
 	if record.Inventory.Node == "" || record.Inventory.ObservedAt.IsZero() {
 		return DispatchResolution{}, false, fmt.Errorf("%w: Node %s", ErrMissingHarnessInventory, record.Node)
@@ -311,7 +315,7 @@ func resolveDispatchOnNode(project Project, candidate dispatchNodeCandidate, req
 			ProjectDispatch: ProjectDispatch{Project: project, Node: record.Node, Workspace: workspace, HarnessInstance: instance, Snapshot: snapshot},
 			nodeState:       dispatchNodeState{online: record.Online, draining: record.Draining, revoked: record.Revoked, inventoryJSON: string(inventoryJSON)},
 		}
-		available := record.Online && !record.Draining && !record.Revoked && record.Capacity > len(record.ActiveAttempts)
+		available := record.Online && !record.Draining && !record.Revoked && record.Capacity > capacityUsed
 		resolved.Queued = !available
 		return resolved, available, nil
 	}
@@ -462,7 +466,7 @@ func (s *Store) ResolveAndCreateWorkerWithProfileFactory(ctx context.Context, co
 	if resolved.Queued {
 		queuedOrigin = origin
 	}
-	worker, turn, attempt, err := s.createWorkerWithOrigin(ctx, conversationID, WorkerSpec{Title: intent, Intent: intent, ProjectID: resolved.Project.ID, NodeID: string(resolved.Node), HarnessInstanceID: string(resolved.HarnessInstance.ID), PolicySnapshot: string(policySnapshot), ProjectSnapshot: string(projectSnapshot), ProfileSnapshot: profileSnapshot, Workspace: resolved.Workspace, ProjectRevision: resolved.Project.Revision, IdempotencyKey: idempotencyKey, ExpectedNodeOnline: resolved.nodeState.online, ExpectedNodeDraining: resolved.nodeState.draining, ExpectedNodeRevoked: resolved.nodeState.revoked, ExpectedInventoryJSON: resolved.nodeState.inventoryJSON}, TurnSpec{Input: intent, IdempotencyKey: idempotencyKey}, idempotencyKey, queuedOrigin)
+	worker, turn, attempt, err := s.createWorkerWithOrigin(ctx, conversationID, WorkerSpec{Title: intent, Intent: intent, ProjectID: resolved.Project.ID, NodeID: string(resolved.Node), HarnessInstanceID: string(resolved.HarnessInstance.ID), PolicySnapshot: string(policySnapshot), ProjectSnapshot: string(projectSnapshot), ProfileSnapshot: profileSnapshot, Workspace: resolved.Workspace, ProjectRevision: resolved.Project.Revision, IdempotencyKey: idempotencyKey, ExpectedNodeOnline: resolved.nodeState.online, ExpectedNodeDraining: resolved.nodeState.draining, ExpectedNodeRevoked: resolved.nodeState.revoked, ExpectedInventoryJSON: resolved.nodeState.inventoryJSON, ReserveNodeCapacity: !resolved.Queued}, TurnSpec{Input: intent, IdempotencyKey: idempotencyKey}, idempotencyKey, queuedOrigin)
 	if err != nil {
 		return Worker{}, Turn{}, Phase4Attempt{}, DispatchResolution{}, err
 	}
