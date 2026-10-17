@@ -99,6 +99,19 @@ func TestT08SlowArtifactDownloadDoesNotBlockHeartbeatOrACK(t *testing.T) {
 	case <-started:
 	case <-ctx.Done(): t.Fatal("file fetch did not start")
 	}
+	fast := daemonDispatchFixture(identity.Node, "fast-command")
+	fast.Dispatch.Metadata.WorkerRef, fast.Dispatch.Envelope.WorkerRef = "independent-worker", "independent-worker"
+	fast.Dispatch.Metadata.TurnID, fast.Dispatch.Envelope.TurnID = "independent-turn", "independent-turn"
+	fast.Dispatch.Metadata.AttemptID, fast.Dispatch.Envelope.AttemptID = "independent-attempt", "independent-attempt"
+	fast.Dispatch.Envelope.OriginalUserIntent = "independent work"
+	if err := manager.SendCommand(ctx, identity.Node, fast); err != nil { t.Fatal(err) }
+	select {
+	case outcome := <-outcomes:
+		if outcome.CommandID != "fast-command" || outcome.State != CommandAccepted {
+			t.Fatalf("unrelated command was blocked by staging: %#v", outcome)
+		}
+	case <-ctx.Done(): t.Fatal("unrelated Worker did not dispatch during slow transfer")
+	}
 	before, err := manager.Status(ctx, identity.Node)
 	if err != nil { t.Fatal(err) }
 	_, err = nodeStore.QueueOutcome(core.AttemptOutcomeEnvelope{
@@ -115,7 +128,7 @@ func TestT08SlowArtifactDownloadDoesNotBlockHeartbeatOrACK(t *testing.T) {
 		pending, err := nodeStore.PendingEvents()
 		return err == nil && len(pending) == 0
 	})
-	if runtime.starts.Load() != 0 { t.Fatal("Worker started before original bytes arrived") }
+	if runtime.starts.Load() != 1 { t.Fatalf("expected only unrelated Worker to start, got %d", runtime.starts.Load()) }
 	releaseOnce.Do(func() { close(release) })
 	select {
 	case outcome := <-outcomes:
@@ -124,5 +137,5 @@ func TestT08SlowArtifactDownloadDoesNotBlockHeartbeatOrACK(t *testing.T) {
 		}
 	case <-ctx.Done(): t.Fatal("Worker was not dispatched after slow download completed")
 	}
-	if runtime.starts.Load() != 1 { t.Fatalf("runtime started %d times", runtime.starts.Load()) }
+	if runtime.starts.Load() != 2 { t.Fatalf("both Workers should start exactly once, got %d", runtime.starts.Load()) }
 }
