@@ -11,7 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -36,6 +35,31 @@ func (rt *t11ImageRuntime) Start(_ context.Context, request node.StartRequest) (
 	out:=make(chan node.Result,1)
 	out<-node.Result{Status:"succeeded",Summary:"T11 native Worker analyzed the Telegram photo"}
 	return &artifactWorkerSession{result:out},nil
+}
+
+type t11FollowupSession struct {
+	*artifactWorkerSession
+	expected []byte
+	seen chan node.StartRequest
+}
+
+func (s *t11FollowupSession) PromptImages(_ context.Context, prompt string, images []node.ImageInput) error {
+	if len(images)!=1 || images[0].MediaType!="image/jpeg" || !bytes.Equal(images[0].Data,s.expected) || !strings.Contains(prompt,"artifact://"+images[0].ArtifactID) {
+		return fmt.Errorf("continued native Worker received no Telegram image: %d",len(images))
+	}
+	s.seen <- node.StartRequest{Task:prompt,Images:images}
+	s.result <- node.Result{Status:"succeeded",Summary:"T11 continued Worker analyzed the Telegram Topic photo"}
+	return nil
+}
+
+func (rt *t11ImageRuntime) Resume(_ context.Context, _ node.StartRequest, runtimeSessionID string) (node.Session,error) {
+	if runtimeSessionID!="artifact-worker-session" {
+		return nil,fmt.Errorf("unexpected native session identity: %s",runtimeSessionID)
+	}
+	return &t11FollowupSession{
+		artifactWorkerSession:&artifactWorkerSession{result:make(chan node.Result,1)},
+		expected:rt.expected,seen:rt.seen,
+	},nil
 }
 
 func TestT11RealTelegramBotAPIAdapterServerRemoteNodeAndTopic(t *testing.T) {
@@ -190,9 +214,6 @@ func TestT11RealTelegramBotAPIAdapterServerRemoteNodeAndTopic(t *testing.T) {
 	topic,err:=transport.GetUpdates(ctx,501,time.Second)
 	if err!=nil || len(topic)!=1 {t.Fatalf("topic Bot API update: %v %+v",err,topic)}
 	if err:=adapter.HandleUpdate(ctx,topic[0]);err!=nil {t.Fatal(err)}
-	stateBytes,_:=os.ReadFile(adapterPath)
-	details,detailsErr:=store.WorkerDetailsForConversation(ctx,conversation.ID,worker)
-	t.Logf("T11 direct routing state=%s worker=%+v err=%v",stateBytes,details.Worker,detailsErr)
 	select {case received:=<-runtime.seen:
 		if !strings.Contains(received.Task,"update 501, chat -200, message 52") {t.Fatalf("wrong direct Worker source: %s",received.Task)}
 	case <-ctx.Done():t.Fatal("direct Worker Topic photo did not reach Node")}
