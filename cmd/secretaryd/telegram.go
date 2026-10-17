@@ -25,6 +25,7 @@ type telegramDeploymentConfig struct {
 	BotUsername      string
 	ServerCredential string
 	OwnerChatID      int64
+	GroupChatID      int64
 	BaseURL          string
 	PollInterval     time.Duration
 	FlushInterval    time.Duration
@@ -52,6 +53,16 @@ func configuredTelegramDeployment() (telegramDeploymentConfig, error) {
 			return telegramDeploymentConfig{}, errors.New("SECRETARY_TELEGRAM_OWNER_CHAT_ID must be a non-zero integer")
 		}
 		config.OwnerChatID = owner
+	}
+	if value := strings.TrimSpace(os.Getenv("SECRETARY_TELEGRAM_GROUP_CHAT_ID")); value != "" {
+		group, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || group >= 0 {
+			return telegramDeploymentConfig{}, errors.New("SECRETARY_TELEGRAM_GROUP_CHAT_ID must be a negative supergroup id")
+		}
+		config.GroupChatID = group
+	}
+	if config.OwnerChatID < 0 {
+		return telegramDeploymentConfig{}, errors.New("SECRETARY_TELEGRAM_OWNER_CHAT_ID must identify the owner's private chat")
 	}
 	if value := strings.TrimSpace(os.Getenv("SECRETARY_TELEGRAM_POLL_INTERVAL")); value != "" {
 		interval, err := time.ParseDuration(value)
@@ -87,7 +98,7 @@ func attachProductionTelegram(ctx context.Context, dataDir, listen string, store
 	snapshot := profiles.Snapshot()
 	showToolCalls := snapshot.Config.Telegram.ShowToolCalls
 	adapter, err := telegram.New(telegram.Config{
-		StatePath: filepath.Join(dataDir, "telegram", "state.json"), OwnerChatID: deployment.OwnerChatID,
+		StatePath: filepath.Join(dataDir, "telegram", "state.json"), OwnerChatID: deployment.OwnerChatID, GroupChatID: &deployment.GroupChatID,
 		PollInterval: deployment.PollInterval, FlushInterval: deployment.FlushInterval, BotUsername: deployment.BotUsername,
 		ASR: snapshot.Config.ASR, ASRPrompt: snapshot.ASRPrompt.Content, ShowToolCalls: &showToolCalls,
 	}, &telegram.BotAPITransport{BaseURL: deployment.BaseURL, BotToken: deployment.BotToken}, &telegram.HTTPServerClient{
