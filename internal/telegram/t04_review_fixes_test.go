@@ -211,3 +211,27 @@ func TestT04ReceiptCompactionDoesNotDiscardLegacyUnattributedReceipt(t *testing.
 		t.Fatal("unattributed pre-upgrade receipt cannot be safely tied to a cursor")
 	}
 }
+
+func TestT04CompactionDoesNotResendSameWorkerResultFromLaterDurableEvent(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "state.json")
+	transport := &fakeTransport{}
+	adapter := newT04Adapter(t, path, transport, &fakeServer{}, -200)
+	first := Event{Sequence: 1, EventID: "outcome-1", Kind: "worker.completed", WorkerRef: "w1", TerminalIdentity: "turn:1", Text: "completed"}
+	if err := adapter.HandleDurableEvent(ctx, first); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 3 || len(adapter.state.Delivered) != 0 {
+		t.Fatalf("first result must reach Topic, DM and General before compacting: %#v receipts=%#v", transport.sent, adapter.state.Delivered)
+	}
+	adapter = newT04Adapter(t, path, transport, &fakeServer{}, -200)
+	later := first
+	later.Sequence = 2
+	later.EventID = "result-accepted-2"
+	if err := adapter.HandleDurableEvent(ctx, later); err != nil {
+		t.Fatal(err)
+	}
+	if len(transport.sent) != 3 || adapter.LastEventSeq() != 2 {
+		t.Fatalf("later outcome for the same terminal identity duplicated output: %#v", transport.sent)
+	}
+}
