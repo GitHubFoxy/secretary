@@ -171,7 +171,7 @@ func TestT11RealTelegramBotAPIAdapterServerRemoteNodeAndTopic(t *testing.T) {
 	created:=call()
 	worker:=created["worker"].(map[string]any)["worker_ref"].(string)
 	select {case request:=<-runtime.seen:
-		if !strings.Contains(request.Task,"unique-photo-one") {t.Fatalf("Telegram source identity not sent to Worker: %q",request.Task)}
+		if !strings.Contains(entry.Body,"file_unique_id unique-photo-one") || !strings.Contains(request.Task,"artifact://"+request.Images[0].ArtifactID) {t.Fatalf("original image identity not preserved: entry=%q task=%q",entry.Body,request.Task)}
 	case <-ctx.Done():t.Fatal("Telegram DM photo not delivered to Node")}
 	again:=call()
 	if again["worker"].(map[string]any)["worker_ref"]!=worker {t.Fatal("replay created another Worker")}
