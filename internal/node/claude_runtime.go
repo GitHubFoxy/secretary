@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/nativeexec"
 )
 
 var ErrClaudeCodeUnavailable = errors.New("claude_code runtime unavailable")
@@ -220,7 +221,10 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 	if _, err := exec.LookPath(command); err != nil {
 		return nil, fmt.Errorf("%w: executable %q is unavailable: %v", ErrClaudeCodeUnavailable, command, err)
 	}
-	cmd := exec.CommandContext(ctx, command, args...)
+	cmd, err := nativeexec.CommandContext(ctx, command, args...)
+	if err != nil {
+		return nil, fmt.Errorf("%w: start %q: %v", ErrClaudeCodeUnavailable, command, err)
+	}
 	configureClaudeProcess(cmd)
 	cmd.WaitDelay = 250 * time.Millisecond
 	cmd.Dir = request.Workspace
