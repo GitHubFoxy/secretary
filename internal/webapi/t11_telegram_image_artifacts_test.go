@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"image/jpeg"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -75,4 +77,43 @@ func t11OtherPNG(t *testing.T) []byte {
 	var output bytes.Buffer
 	if err:=png.Encode(&output,picture);err!=nil {t.Fatal(err)}
 	return output.Bytes()
+}
+
+func TestT11TelegramImageGenericAndAliasMIMEs(t *testing.T) {
+	ctx:=context.Background()
+	store,err:=core.Open(ctx,filepath.Join(t.TempDir(),"images.db"))
+	if err!=nil {t.Fatal(err)}
+	defer store.Close()
+	api,err:=New(ctx,store,"bootstrap")
+	if err!=nil {t.Fatal(err)}
+	api.AttachInternalCredential("telegram-images")
+	server:=httptest.NewServer(api.Handler())
+	defer server.Close()
+	picture:=image.NewRGBA(image.Rect(0,0,3,3))
+	var original bytes.Buffer
+	if err:=jpeg.Encode(&original,picture,&jpeg.Options{Quality:80});err!=nil {t.Fatal(err)}
+	tests:=[]struct{mime string;want int}{
+		{"application/octet-stream",http.StatusCreated},
+		{"image/jpg",http.StatusCreated},
+		{"image/pjpeg",http.StatusCreated},
+		{"image/jpeg",http.StatusCreated},
+		{"image/png",http.StatusUnprocessableEntity},
+		{"image/gif",http.StatusUnprocessableEntity},
+	}
+	for i,tc:=range tests {
+		t.Run(tc.mime,func(t *testing.T){
+			req,err:=http.NewRequestWithContext(ctx,http.MethodPost,server.URL+"/v1/internal/telegram/image/source",bytes.NewReader(original.Bytes()))
+			if err!=nil {t.Fatal(err)}
+			req.Header.Set("Authorization","Bearer telegram-images")
+			req.Header.Set("X-Image-Update-ID",fmt.Sprint(5000+i))
+			req.Header.Set("X-Image-Chat-ID","100")
+			req.Header.Set("X-Image-Message-ID","10")
+			req.Header.Set("X-Image-Name","telegram-document.jpg")
+			req.Header.Set("X-Image-Mime-Type",tc.mime)
+			res,err:=server.Client().Do(req)
+			if err!=nil {t.Fatal(err)}
+			res.Body.Close()
+			if res.StatusCode!=tc.want {t.Fatalf("MIME %s status=%d want=%d",tc.mime,res.StatusCode,tc.want)}
+		})
+	}
 }
