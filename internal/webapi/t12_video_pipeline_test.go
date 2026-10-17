@@ -39,6 +39,7 @@ type t12Runtime struct {
 	seen chan node.StartRequest
 }
 func (r *t12Runtime) Start(_ context.Context, req node.StartRequest) (node.Session,error) {
+	r.seen<-req
 	if len(req.Images)!=2 || !bytes.Equal(req.Images[0].Data,videoTestWebP) || !bytes.Equal(req.Images[1].Data,videoTestWebP) ||
 		req.Images[0].MediaType!="image/webp" || req.Images[1].MediaType!="image/webp" ||
 		!strings.Contains(req.Task,"0.000 s") || !strings.Contains(req.Task,"1.000 s") ||
@@ -46,7 +47,6 @@ func (r *t12Runtime) Start(_ context.Context, req node.StartRequest) (node.Sessi
 		!strings.Contains(req.Task,"Describe the sampled video") {
 		return nil,fmt.Errorf("video native image input/caption mismatch: %+v",req)
 	}
-	r.seen<-req
 	result:=make(chan node.Result,1)
 	result<-node.Result{Status:"succeeded",Summary:"Observed sampled frames at 0.000 and 1.000 seconds; gaps unobserved"}
 	return &artifactWorkerSession{result:result},nil
@@ -179,6 +179,12 @@ func TestT12WebVideoAsyncToRemoteNodeWorkerResultAndFailure(t *testing.T) {
 	}
 	select{case received:=<-runtime.seen:
 		if len(received.Images)!=2 || !strings.Contains(received.Task,uploaded.Reference){t.Fatalf("lost native video input: %+v",received)}
+	case <-time.After(8*time.Second):
+		job,_:=store.VideoJob(context.Background(),api.OwnerID(),uploaded.Artifact.ID)
+		workers,_:=store.WorkersForConversation(context.Background(),conversation.ID)
+		var detail any
+		if len(workers)>0 { detail,_=store.WorkerDetailsForConversation(context.Background(),conversation.ID,workers[0].WorkerRef) }
+		t.Fatalf("remote Worker did not start: job=%+v details=%+v",job,detail)
 	case <-ctx.Done():t.Fatal("remote Worker never received frame images")}
 	original,body,e:=store.ArtifactForPerson(ctx,api.OwnerID(),uploaded.Artifact.ID)
 	if e!=nil || !bytes.Equal(body,[]byte("good video")) || original.ProcessingStatus!="ready" ||
