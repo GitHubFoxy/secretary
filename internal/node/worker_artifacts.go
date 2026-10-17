@@ -38,6 +38,11 @@ func (n *ExecutionNode) prepareArtifactInput(ctx context.Context, workspace, pro
 }
 
 func PrepareArtifactInput(ctx context.Context, workspace, prompt string, fetch ArtifactFetcher) (string, []ImageInput, error) {
+	return prepareArtifactInputWithPoll(ctx, workspace, prompt, fetch, 250*time.Millisecond)
+}
+
+// Same preparation path for real dispatch and accelerated queue regression.
+func prepareArtifactInputWithPoll(ctx context.Context, workspace, prompt string, fetch ArtifactFetcher, pollInterval time.Duration) (string, []ImageInput, error) {
 	ids := ArtifactIDs(prompt)
 	if len(ids) == 0 {
 		return prompt, nil, nil
@@ -72,7 +77,7 @@ func PrepareArtifactInput(ctx context.Context, workspace, prompt string, fetch A
 			// Jobs are bounded but may spend minutes waiting for one of the two
 			// FFmpeg slots. The Node connection/command context, not a fixed
 			// wall-clock deadline, owns cancellation of this dependent dispatch.
-			if err:=awaitVideoProcessing(ctx,id,&artifact,250*time.Millisecond);err!=nil {
+			if err:=awaitVideoProcessing(ctx,id,&artifact,pollInterval);err!=nil {
 				return "",nil,err
 			}
 		}

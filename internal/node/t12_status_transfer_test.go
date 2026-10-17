@@ -57,6 +57,49 @@ func TestT12StatusPollingNeverRetransfersEightMegabyteOriginal(t *testing.T) {
 	if bytesTransferred!=len(original)+2*len(webp) {t.Fatalf("retransferred full original: %d bytes",bytesTransferred)}
 }
 
+// The full prompt preparation path must remain pending for the equivalent of
+// 125 seconds of queued/processing polls and deliver its native frame afterward.
+// Poll intervals are accelerated; a real dispatch uses 250 ms per poll.
+func TestT12FullArtifactPreparationAcceptsLongQueuedVideo(t *testing.T) {
+	id:="art_"+strings.Repeat("4",32)
+	frameID:="art_"+strings.Repeat("5",32)
+	webp,err:=base64.StdEncoding.DecodeString("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA")
+	if err!=nil{t.Fatal(err)}
+	original:=[]byte("durable video source")
+	sum:=func(data []byte)string{h:=sha256.Sum256(data);return hex.EncodeToString(h[:])}
+	const queueChecks=500
+	var polls,originalDownloads int
+	fetch:=func(_ context.Context,key string)(ArtifactPayload,error){
+		if key==id {
+			originalDownloads++
+			return ArtifactPayload{
+				ID:id,Name:"queued.mp4",Data:original,SHA256:sum(original),
+				VideoStatus:"queued",
+				CheckVideoStatus:func(context.Context)(core.Artifact,error){
+					polls++
+					if polls<=queueChecks {
+						state:="queued"
+						if polls>300 {state="processing"}
+						return core.Artifact{ID:id,ProcessingStatus:state},nil
+					}
+					return core.Artifact{ID:id,ProcessingStatus:"ready",VideoFrames:[]core.VideoFrame{
+						{ArtifactID:frameID,TimestampMS:1250,TimestampKind:"source-pts-relative"},
+					}},nil
+				},
+			},nil
+		}
+		if key!=frameID {return ArtifactPayload{},errors.New("unexpected frame")}
+		return ArtifactPayload{ID:frameID,Name:"frame.webp",Data:webp,SHA256:sum(webp)},nil
+	}
+	ctx,cancel:=context.WithTimeout(context.Background(),3*time.Second)
+	defer cancel()
+	task,images,err:=prepareArtifactInputWithPoll(ctx,t.TempDir(),"Describe artifact://"+id,fetch,0)
+	if err!=nil{t.Fatalf("dispatch would return artifact_unavailable after long queue: %v",err)}
+	if polls!=queueChecks+1 || originalDownloads!=1 || len(images)!=1 || !strings.Contains(task,"1.250 s [timestamp_kind=source-pts-relative]"){
+		t.Fatalf("dependent Worker started incorrectly: polls=%d original=%d images=%d task=%q",polls,originalDownloads,len(images),task)
+	}
+}
+
 // Simulate a full two-converter queue exceeding 120 seconds: at 250 ms per
 // poll, 500 queued/processing status checks represent more than 125 seconds.
 // The test uses a zero-delay injectable poll rather than sleeping 125 seconds.
