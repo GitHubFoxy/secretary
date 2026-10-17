@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -125,10 +124,11 @@ func t01DecodePrompt(prompt string) (core.SecretaryContext, string, string, stri
 	const routingHead = "\n\nWorker continuation contract:"
 	const userHead = "\n\nUser turn:\n"
 	const identityHead = "\n\nActive reply identity (server-issued; use these exact values):\n"
-	after, found := strings.CutPrefix(prompt, prompt[:strings.Index(prompt, contextHead)+len(contextHead)])
-	if !found || !strings.Contains(prompt, contextHead) {
+	contextStart := strings.Index(prompt, contextHead)
+	if contextStart < 0 {
 		return core.SecretaryContext{}, "", "", "", errors.New("missing canonical context")
 	}
+	after := prompt[contextStart+len(contextHead):]
 	raw, _, ok := strings.Cut(after, routingHead)
 	if !ok {
 		return core.SecretaryContext{}, "", "", "", errors.New("missing Worker continuation contract")
