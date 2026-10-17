@@ -217,6 +217,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/ws", s.websocket)
 	mux.HandleFunc("GET /v1/user", s.user)
 	mux.HandleFunc("PUT /v1/user", s.user)
+	mux.HandleFunc("/v1/memory/", s.memoryDocument)
 	mux.HandleFunc("GET /v1/secretary/stream", s.secretaryStream)
 	mux.HandleFunc("GET /v1/secretary/ws", s.secretaryWebsocket)
 	mux.HandleFunc("/v1/secretary/turns/", s.secretaryTurnRoute)

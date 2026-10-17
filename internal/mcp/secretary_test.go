@@ -21,7 +21,7 @@ func TestSecretaryToolsMatchWorkerLifecycleContract(t *testing.T) {
 	for i, tool := range tools {
 		got[i] = tool.Name
 	}
-	want := []string{"list_nodes", "list_projects", "list_workers", "get_worker", "spawn_worker", "message_worker", "cancel_worker", "close_worker", "acknowledge_user"}
+	want := []string{"read_memory", "remember", "list_nodes", "list_projects", "list_workers", "get_worker", "spawn_worker", "message_worker", "cancel_worker", "close_worker", "acknowledge_user"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("tools=%#v, want %#v", got, want)
 	}

@@ -98,8 +98,9 @@ func TestSecretaryMCPDiscoveryIsWrittenNativeEvidenceBoundToLaunchAndTurns(t *te
 	if err := (mcp.Server{Handler: mcp.Secretary{ReplyContractVersion: core.SecretaryReplyContractAddressedV1}, Observe: observed}).Serve(ctx, input, &out); err != nil {
 		t.Fatal("stdio discovery failed")
 	}
+	expectedTools := len((mcp.Secretary{ReplyContractVersion: core.SecretaryReplyContractAddressedV1}).Tools())
 	discovery, err := store.SecretaryMCPDiscovery(ctx, turn.ID)
-	if err != nil || !discovery.Started || !discovery.Initialized || !discovery.ToolsListed || discovery.ToolCount != 9 || !discovery.HasSpawnWorker || !discovery.HasReplyToUser || !discovery.GenerationMatches {
+	if err != nil || !discovery.Started || !discovery.Initialized || !discovery.ToolsListed || discovery.ToolCount != expectedTools || !discovery.HasSpawnWorker || !discovery.HasReplyToUser || !discovery.GenerationMatches {
 		t.Fatalf("discovery allowlist mismatch=%t", true)
 	}
 	if _, err := store.FinishSecretaryTurn(ctx, turn.ID, core.SecretaryTurnFailed, "synthetic"); err != nil {
@@ -234,7 +235,7 @@ func TestSecretaryMCPDiscoveryIsWrittenNativeEvidenceBoundToLaunchAndTurns(t *te
 		t.Fatal(err)
 	}
 	persisted, err := store.SecretaryMCPDiscovery(ctx, second.ID)
-	if err != nil || !persisted.Revoked || persisted.ToolCount != 9 {
+	if err != nil || !persisted.Revoked || persisted.ToolCount != expectedTools {
 		t.Fatal("discovery did not survive reopen")
 	}
 }

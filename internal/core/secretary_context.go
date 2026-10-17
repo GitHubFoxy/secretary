@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -98,6 +99,16 @@ func (s *Store) ReconstructSecretaryContext(ctx context.Context, identityID, use
 	if err != nil {
 		return SecretaryContext{}, err
 	}
+	// Retain user.md verbatim as legacy context. The new editable files are
+	// independent and never overwrite or destructively migrate its contents.
+	memory, err := s.ReadMemoryDocument(ctx, filepath.Join(filepath.Dir(user.Path), "user.md"), MemoryFacts)
+	if err != nil {
+		return SecretaryContext{}, fmt.Errorf("load memory.md: %w", err)
+	}
+	preferences, err := s.ReadMemoryDocument(ctx, filepath.Join(filepath.Dir(user.Path), "user.md"), MemoryPreferences)
+	if err != nil {
+		return SecretaryContext{}, fmt.Errorf("load user_preferences.md: %w", err)
+	}
 	summary, err := s.SecretaryConversationSummary(ctx, identity.ConversationID)
 	if err != nil {
 		return SecretaryContext{}, err
@@ -186,7 +197,7 @@ func (s *Store) ReconstructSecretaryContext(ctx context.Context, identityID, use
 		return SecretaryContext{}, err
 	}
 	return SecretaryContext{
-		Identity: identity, UserDocument: user, ConversationSummary: summary, RecentEntries: entries,
+		Identity: identity, UserDocument: user, MemoryDocument: &memory, PreferencesDocument: &preferences, ConversationSummary: summary, RecentEntries: entries,
 		UnseenWorkerResults: results, OpenWorkers: openWorkers, Projects: projects, Nodes: nodes,
 		HarnessInstances: harnessInstances, ActiveApprovals: activeApprovals, PolicyProfile: policy,
 	}, nil
