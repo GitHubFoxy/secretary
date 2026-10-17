@@ -91,21 +91,34 @@ func (s *Server) secretaryWebImageIDs(r *http.Request, turnID, inputID string) (
 	canonical, err := s.store.SecretaryWebInput(r.Context(), s.owner.ID, turnID, inputID)
 	if err != nil { return nil, err }
 	refs := node.ArtifactIDs(canonical)
-	if len(refs) > 16 { return nil, errors.New("web image: too many Artifact references (max 16)") }
-	images := make([]string, 0, len(refs))
+	if len(refs) > 16 { return nil, errors.New("web media: too many Artifact references (max 16)") }
+	mediaIDs := make([]string, 0, len(refs))
+	imageCount := 0
+	maxNativeFrames := 0
 	for _, id := range refs {
 		artifact, body, err := s.store.ArtifactForPerson(r.Context(), s.owner.ID, id)
-		if err != nil { return nil, fmt.Errorf("web image: bound Artifact %s unavailable: %w", id, err) }
+		if err != nil { return nil, fmt.Errorf("web media: bound Artifact %s unavailable: %w", id, err) }
 		switch artifact.MediaType {
 		case "image/png", "image/jpeg", "image/webp":
 			if _, err := node.ValidateStillImage(artifact.Name, body); err != nil {
-				return nil, fmt.Errorf("web image: bound Artifact %s invalid: %w", id, err)
+				return nil, fmt.Errorf("web media: bound Artifact %s invalid: %w", id, err)
 			}
-			images = append(images, id)
+			imageCount++
+			maxNativeFrames++
+			mediaIDs = append(mediaIDs, id)
+		case "video/mp4", "video/webm", "video/quicktime":
+			if artifact.ProcessingStatus != "processing" && artifact.ProcessingStatus != "ready" && artifact.ProcessingStatus != "failed" {
+				return nil, fmt.Errorf("web video: Artifact %s has no valid processing record", id)
+			}
+			if artifact.ProcessingStatus == "ready" {
+				maxNativeFrames += len(artifact.VideoFrames)
+			}
+			mediaIDs = append(mediaIDs, id)
 		}
 	}
-	if len(images) > node.MaxPromptImages { return nil, errors.New("web image: too many attached images") }
-	return images, nil
+	if imageCount > node.MaxPromptImages { return nil, errors.New("web media: too many attached still images") }
+	if maxNativeFrames > 16 { return nil, errors.New("web media: too many video frames in one Worker turn") }
+	return mediaIDs, nil
 }
 
 func (s *Server) callSecretaryTool(r *http.Request, name string, raw json.RawMessage, personID, capability string) (any, error) {

@@ -435,7 +435,7 @@ func (s WorkerService) GetWorker(ctx context.Context, workerRef string) (core.Wo
 func bindWebImages(text string, ids []string) string {
 	if len(ids) == 0 { return text }
 	var suffix strings.Builder
-	suffix.WriteString("\n\nOriginal images attached to this Web input (server-bound; analyze these exact images):")
+	suffix.WriteString("\n\nOriginal media attached to this Web input (server-bound; analyze exact supported images/video samples):")
 	for _, id := range ids { suffix.WriteString(" artifact://"); suffix.WriteString(id) }
 	return text + suffix.String()
 }
