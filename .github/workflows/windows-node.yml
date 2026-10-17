@@ -39,23 +39,23 @@ jobs:
           net user $worker $password /add | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'could not provision Windows test Worker account' }
           $principal = "$($env:COMPUTERNAME)\$worker"
-          $home = Join-Path $env:RUNNER_TEMP 't09-worker-home'
+          $workerHome = Join-Path $env:RUNNER_TEMP 't09-worker-home'
           $workspace = Join-Path $env:RUNNER_TEMP 't09-worker-workspace'
           $protected = Join-Path $env:RUNNER_TEMP 't09-node-private'
-          foreach ($p in @($home,$workspace,$protected)) { New-Item -ItemType Directory -Path $p -Force | Out-Null }
-          foreach ($p in @($home,$workspace)) {
+          foreach ($p in @($workerHome,$workspace,$protected)) { New-Item -ItemType Directory -Path $p -Force | Out-Null }
+          foreach ($p in @($workerHome,$workspace)) {
             & icacls $p /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" "$($principal):(OI)(CI)M" 'SYSTEM:(OI)(CI)F' | Out-Host
             if ($LASTEXITCODE -ne 0) { throw "could not grant Worker access to $p" }
           }
           & icacls $protected /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" 'SYSTEM:(OI)(CI)F' | Out-Host
           if ($LASTEXITCODE -ne 0) { throw 'could not seal Node secret directory' }
           foreach ($provider in @('.codex','.claude','opencode-native')) {
-            New-Item -ItemType Directory -Path (Join-Path $home $provider) -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $workerHome $provider) -Force | Out-Null
           }
           $env:SECRETARY_WORKER_USERNAME = $worker
           $env:SECRETARY_WORKER_PASSWORD = $password
           $env:SECRETARY_WORKER_DOMAIN = '.'
-          $env:SECRETARY_WORKER_HOME = $home
+          $env:SECRETARY_WORKER_HOME = $workerHome
           $env:SECRETARY_WORKER_TEST_WORKSPACE = $workspace
           $env:SECRETARY_WORKER_TEST_PROTECTED_DIR = $protected
           go test ./internal/nativeexec -run 'TestT09WindowsSeparateAccountStateAndResume' -count=1 -v
