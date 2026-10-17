@@ -65,10 +65,12 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	if policy.WritableDataHome != "" {
 		state, err := filepath.EvalSymlinks(policy.WritableDataHome)
 		if err != nil { return "", nil, err }
-		if state == protected || strings.HasPrefix(protected, state+string(filepath.Separator)) ||
-			strings.HasPrefix(state, protected+string(filepath.Separator)) {
-			return "", nil, errors.New("worker sandbox: native provider state overlaps protected root")
+		if state == protected || strings.HasPrefix(protected, state+string(filepath.Separator)) {
+			return "", nil, errors.New("worker sandbox: native provider state includes protected Node root")
 		}
+		// A narrow, purpose-built OpenCode store may be inside the Node
+		// parent folder: only that explicit subtree is granted, not the
+		// credential and registry files alongside it.
 		reads = append(reads, state)
 		writes = append(writes, state)
 	}
@@ -88,11 +90,29 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	for _, root := range writes {
 		profile.WriteString("(allow file-write* " + quoted(root) + ")\n")
 	}
-	// Explicit deny rules override broader system allows, including when a
-	// custom Node --data-dir lives below /System, /usr or /private/etc.
-	// Deny both directory metadata and descendants, never grant its contents.
-	profile.WriteString("(deny file-read* (subpath " + strconv.Quote(protected) + "))\n")
-	profile.WriteString("(deny file-write* (subpath " + strconv.Quote(protected) + "))\n")
+	// Most Node data dirs are not shared by any allow rule; the default-deny
+	// profile already protects them while allowing an explicit, narrow
+	// OpenCode store beneath the same parent. If the administrator places
+	// Node state INSIDE an allowed system directory, add an explicit deny.
+	// Fail closed rather than granting an overlapping OpenCode store there.
+	exposed := false
+	for _, root := range reads {
+		if root == protected || strings.HasPrefix(protected, root+string(filepath.Separator)) {
+			exposed = true
+			break
+		}
+	}
+	if exposed {
+		if policy.WritableDataHome != "" {
+			nativePath, nativeErr := filepath.EvalSymlinks(policy.WritableDataHome)
+			if nativeErr != nil { return "", nil, nativeErr }
+			if strings.HasPrefix(nativePath, protected+string(filepath.Separator)) {
+				return "", nil, errors.New("worker sandbox: move native provider state out of a broadly shared Node system root")
+			}
+		}
+		profile.WriteString("(deny file-read* (subpath " + strconv.Quote(protected) + "))\n")
+		profile.WriteString("(deny file-write* (subpath " + strconv.Quote(protected) + "))\n")
+	}
 	return seatbelt, append([]string{"-p", profile.String(), executable}, args...), nil
 }
 
