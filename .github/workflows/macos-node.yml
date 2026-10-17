@@ -58,6 +58,24 @@ jobs:
           done
           log show --last 2m --style compact --predicate 'eventMessage CONTAINS[c] "sandbox" OR eventMessage CONTAINS[c] "deny"' 2>/dev/null | tail -30 || true
           exit 0
+      - name: Diagnose Seatbelt system executable mappings and missing mounts
+        shell: bash
+        run: |
+          set +e
+          base='(version 1)(deny default)(allow process*)(allow network*)(allow mach-lookup)(allow mach-host*)(allow sysctl-read)(allow iokit-open)(allow ipc-posix*)(allow file-read-metadata)(allow file-ioctl)(allow signal)'
+          readroots='(allow file-read* (subpath "/usr"))(allow file-read* (subpath "/System"))(allow file-read* (subpath "/Library"))(allow file-read* (subpath "/bin"))(allow file-read* (subpath "/sbin"))(allow file-read* (subpath "/private/etc"))(allow file-read* (subpath "/private/var"))(allow file-read* (subpath "/private/tmp"))(allow file-read* (subpath "/Users"))(allow file-read* (subpath "/dev"))'
+          for addition in \
+            '(allow file-map-executable)' \
+            '(allow file-read* (literal "/"))' \
+            '(allow file-read* (subpath "/opt"))' \
+            '(allow file-read* (subpath "/Volumes"))' \
+            '(allow file-read* (subpath "/private"))' \
+            '(allow file-read* (subpath "/opt"))(allow file-read* (subpath "/Volumes"))(allow file-read* (literal "/"))(allow file-map-executable)' ; do
+            echo "macOS diagnose addition: $addition"
+            /usr/bin/sandbox-exec -p "${base}${readroots}(allow file-write*)${addition}" /bin/sh -c 'echo T09-START-PASS'
+            echo "exit=$?"
+          done
+          exit 0
       - name: Test macOS Worker isolation, file publication and provider history
         shell: bash
         run: |
