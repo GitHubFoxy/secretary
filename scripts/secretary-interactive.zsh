@@ -150,13 +150,10 @@ interactive_config() {
       1)
         current="$(configured_harness)"
         choose_harness "$current" || return 1
+        prepare_harness "$SELECTED_HARNESS" true || return 1
         set_config_harness "$SELECTED_HARNESS" || return 1 ;;
       2)
-        local workspaces="$(node_config_value workspaces 2>/dev/null || print unknown)"
-        if [[ "$workspaces" != "[]" ]]; then
-          print "Existing workspace mappings must be preserved. Edit $NODE_CONFIG manually or use explicit secretary node setup --workspace options."
-          continue
-        fi
+        print "Existing workspace mappings are retained unless explicitly changed with --workspace or --clear-workspaces."
         local old_server="$(node_config_value server_url)" old_name="$(node_config_value node)" old_capacity="$(node_config_value capacity)"
         local server name capacity
         terminal_read "Node server URL" "$old_server" || return 1
