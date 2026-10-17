@@ -21,7 +21,7 @@ terminal_secret() {
 
 native_harness_detected() {
   case "$1" in
-    codex) path_command codex >/dev/null 2>&1 || path_command codex-acp >/dev/null 2>&1 ;;
+    codex) path_command codex >/dev/null 2>&1 ;;
     claude_code) path_command claude >/dev/null 2>&1 ;;
     *) return 1 ;;
   esac
@@ -88,19 +88,28 @@ set_environment_value() {
 }
 
 ensure_local_node_credentials() {
-  [[ -f "$NODE_DATA/identity.json" ]] && return 0
-  load_environment
-  local pair="${SECRETARY_NODE_PAIRING_TOKEN:-}" admin="${SECRETARY_NODE_ADMIN_TOKEN:-}"
-  if [[ -z "$pair" && -z "$admin" ]]; then
-    pair="$(openssl rand -hex 32)" || return 1
-    admin="$(openssl rand -hex 32)" || return 1
-    set_environment_value SECRETARY_NODE_PAIRING_TOKEN "$pair" || return 1
-    set_environment_value SECRETARY_NODE_ADMIN_TOKEN "$admin" || return 1
-    print "Created separate private local Node pairing and admin credentials."
-  elif [[ -z "$pair" || -z "$admin" ]]; then
-    print -u2 "Local Node requires both SECRETARY_NODE_PAIRING_TOKEN and SECRETARY_NODE_ADMIN_TOKEN"
-    return 1
+  [[ -f "$ENV_FILE" && ! -L "$ENV_FILE" ]] || { print -u2 "Missing or unsafe private environment file"; return 1; }
+  # Read from the persisted file only; inherited shell values must not mask a
+  # missing credential in the service environment on an upgraded installation.
+  local pair admin created=false
+  pair="$( (unset SECRETARY_NODE_PAIRING_TOKEN SECRETARY_NODE_ADMIN_TOKEN; source "$ENV_FILE"; print -r -- "${SECRETARY_NODE_PAIRING_TOKEN:-}") )" || return 1
+  admin="$( (unset SECRETARY_NODE_PAIRING_TOKEN SECRETARY_NODE_ADMIN_TOKEN; source "$ENV_FILE"; print -r -- "${SECRETARY_NODE_ADMIN_TOKEN:-}") )" || return 1
+  if [[ -n "$pair" && -n "$admin" ]]; then
+    [[ "$pair" != "$admin" ]] || { print -u2 "Local Node pairing and admin credentials must differ"; return 1; }
+    return 0
   fi
+  if [[ -z "$pair" ]]; then
+    pair="$(openssl rand -hex 32)" || return 1
+    set_environment_value SECRETARY_NODE_PAIRING_TOKEN "$pair" || return 1
+    created=true
+  fi
+  if [[ -z "$admin" ]]; then
+    admin="$(openssl rand -hex 32)" || return 1
+    set_environment_value SECRETARY_NODE_ADMIN_TOKEN "$admin" || return 1
+    created=true
+  fi
+  [[ "$pair" != "$admin" ]] || { print -u2 "Local Node credentials must differ"; return 1; }
+  [[ "$created" == true ]] && print "Provisioned missing local Node credentials without rotating existing secrets."
 }
 
 configure_telegram() {
