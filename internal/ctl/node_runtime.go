@@ -86,7 +86,16 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 		if command.Steering == nil {
 			return node.CommandOutcome{}, errors.New("worker: local steering command is missing")
 		}
-		_, err := session.Steer(ctx, command.Steering.Text)
+		text, images, prepErr := r.Local.PrepareWorkerSteering(ctx, metadata.WorkerRef, command.Steering.Text)
+		if prepErr != nil { return node.CommandOutcome{}, prepErr }
+		var err error
+		if len(images) > 0 {
+			multimodal, supports := session.(node.ImageSteeringSession)
+			if !supports { return node.CommandOutcome{}, errors.New("image_input_unsupported: local Worker does not support image steering") }
+			_, err = multimodal.SteerImages(ctx, text, images)
+		} else {
+			_, err = session.Steer(ctx, text)
+		}
 		if err != nil {
 			outcome := node.CommandOutcome{
 				CommandID:         metadata.CommandID,
