@@ -105,6 +105,7 @@ type StartRequest struct {
 	AttemptID               string
 	WorkerRef               string
 	Task                    string
+	Images                  []ImageInput
 	Workspace               string
 	RawLogPath              string
 	MCPServers              []MCPServer
