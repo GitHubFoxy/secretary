@@ -664,7 +664,7 @@ var observedACPActivity = append(append([]core.ActivityCapability(nil), observed
 func DefaultFXProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
 		Kind: core.HarnessFX, Binary: "fx", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"models"}, ModelsArgs: []string{"models"}, AuthenticationMethod: "local",
-		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel},
+		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilityImageInput},
 		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedACPActivity...),
 	}
 }
@@ -672,7 +672,7 @@ func DefaultFXProbeSpec() HarnessProbeSpec {
 func DefaultClaudeCodeProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
 		Kind: core.HarnessClaudeCode, Binary: "claude", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"auth", "status"}, ModelsOptional: true,
-		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel},
+		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilityImageInput},
 		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedRuntimeActivity...),
 	}
 }
@@ -680,7 +680,7 @@ func DefaultClaudeCodeProbeSpec() HarnessProbeSpec {
 func DefaultCodexProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
 		Kind: core.HarnessCodex, Binary: "codex", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"login", "status"}, ModelsOptional: true,
-		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilitySteering},
+		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilityImageInput, core.CapabilitySteering},
 		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedACPActivity...),
 	}
 }
@@ -688,7 +688,7 @@ func DefaultCodexProbeSpec() HarnessProbeSpec {
 func DefaultOpenCodeProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
 		Kind: core.HarnessOpenCode, Binary: "opencode", VersionArgs: []string{"--version"}, AuthenticationArgs: append([]string(nil), openCodeAuthenticationArgs...), ModelsArgs: []string{"models"}, ACPArgs: []string{"acp"},
-		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel},
+		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilityImageInput},
 		ActivityCapabilities:  []core.ActivityCapability{core.ActivityAssistantTextDelta, core.ActivityStatus, core.ActivityAttemptOutcome, core.ActivityPermissionRequest, core.ActivityUserInputRequest},
 	}
 }
