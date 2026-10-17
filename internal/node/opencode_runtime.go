@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"runtime"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -29,6 +30,7 @@ func (r OpenCodeRuntime) Start(ctx context.Context, request StartRequest) (Sessi
 		return nil, err
 	}
 	request.Profile = profile
+	r = r.withWorkerOSDataHome(ctx)
 	prepared, err := r.prepare(request)
 	if err != nil {
 		return nil, err
@@ -43,6 +45,7 @@ func (r OpenCodeRuntime) Resume(ctx context.Context, request StartRequest, runti
 		return nil, err
 	}
 	request.Profile = profile
+	r = r.withWorkerOSDataHome(ctx)
 	prepared, err := r.prepare(request)
 	if err != nil {
 		return nil, err
@@ -240,4 +243,16 @@ func openCodeEnvironment(workspace, configPath, configContent string, mcpServers
 		environment = append(environment, key+"="+values[key])
 	}
 	return environment, nil
+}
+
+func (r OpenCodeRuntime) withWorkerOSDataHome(ctx context.Context) OpenCodeRuntime {
+	if runtime.GOOS == "windows" && nativeexec.IsWorkerSandboxed(ctx) {
+		home := strings.TrimSpace(os.Getenv("SECRETARY_WORKER_HOME"))
+		if home != "" {
+			// OpenCode must not share the privileged Node profile and cannot
+			// write within its protected identity/state directory.
+			r.DataHome = filepath.Join(home, "opencode-native")
+		}
+	}
+	return r
 }

@@ -29,3 +29,8 @@ func workerSandboxFromContext(ctx context.Context) (WorkerSandbox, bool) {
 	policy, ok := ctx.Value(workerSandboxContextKey{}).(WorkerSandbox)
 	return policy, ok
 }
+
+func IsWorkerSandboxed(ctx context.Context) bool {
+	_, ok := workerSandboxFromContext(ctx)
+	return ok
+}
