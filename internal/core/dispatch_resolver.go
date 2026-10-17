@@ -44,12 +44,14 @@ type dispatchNodeState struct {
 }
 
 func (s *Store) ResolveDispatch(ctx context.Context, request DispatchResolutionRequest) (DispatchResolution, error) {
-	if strings.TrimSpace(request.ProjectID) == "" {
-		return DispatchResolution{}, ErrNoProject
-	}
-	project, err := s.Project(ctx, request.ProjectID)
-	if err != nil {
-		return DispatchResolution{}, err
+	request.ProjectID = strings.TrimSpace(request.ProjectID)
+	var project Project
+	var err error
+	if request.ProjectID != "" {
+		project, err = s.Project(ctx, request.ProjectID)
+		if err != nil {
+			return DispatchResolution{}, err
+		}
 	}
 	model, reasoning, err := effectiveDispatchPins(project.Policy, request)
 	if err != nil {
@@ -84,15 +86,18 @@ func (s *Store) ResolveDispatch(ctx context.Context, request DispatchResolutionR
 		}
 	}
 	if firstUnavailable != nil && (request.NodeID != "" || request.HarnessInstanceID != "") {
+		if project.ID == "" && (!firstUnavailable.nodeState.online || firstUnavailable.nodeState.draining || firstUnavailable.nodeState.revoked) {
+			return DispatchResolution{}, fmt.Errorf("%w: Node %s is offline or draining; choose an online Node", ErrSelectedNodeUnavailable, firstUnavailable.Node)
+		}
 		return *firstUnavailable, nil
 	}
 	if firstError != nil {
 		return DispatchResolution{}, firstError
 	}
 	if request.HarnessInstanceID != "" {
-		return DispatchResolution{}, fmt.Errorf("%w: HarnessInstance %q was not observed for this Project", ErrInvalidDispatchPin, request.HarnessInstanceID)
+		return DispatchResolution{}, fmt.Errorf("%w: HarnessInstance %q was not observed on an eligible Node; select an installed harness", ErrInvalidDispatchPin, request.HarnessInstanceID)
 	}
-	return DispatchResolution{}, ErrNoEligibleNode
+	return DispatchResolution{}, fmt.Errorf("%w: connect an online Node with an installed and authenticated Worker harness", ErrNoEligibleNode)
 }
 
 func effectiveDispatchPins(policy ProjectPolicy, request DispatchResolutionRequest) (string, string, error) {
@@ -133,8 +138,10 @@ func (s *Store) dispatchNodeCandidates(ctx context.Context, project Project, exp
 		if record.Revoked {
 			return nil, ErrNodeRevoked
 		}
-		if _, ok := project.MappingForNode(explicit); !ok {
-			return nil, fmt.Errorf("%w: %s", ErrProjectMappingMissing, explicit)
+		if project.ID != "" {
+			if _, ok := project.MappingForNode(explicit); !ok {
+				return nil, fmt.Errorf("%w: %s", ErrProjectMappingMissing, explicit)
+			}
 		}
 		return []dispatchNodeCandidate{{record: record}}, nil
 	}
@@ -152,12 +159,17 @@ func (s *Store) dispatchNodeCandidates(ctx context.Context, project Project, exp
 		if record.Revoked || record.Draining {
 			continue
 		}
-		if _, ok := project.MappingForNode(record.Node); !ok {
-			continue
+		if project.ID != "" {
+			if _, ok := project.MappingForNode(record.Node); !ok {
+				continue
+			}
 		}
 		order, ok := rank[record.Node]
 		if !ok {
 			order = len(preference)
+		}
+		if project.ID == "" && record.Node == "local" {
+			order = -1
 		}
 		candidates = append(candidates, dispatchNodeCandidate{record: record, order: order})
 	}
@@ -212,6 +224,31 @@ func resolveDispatchOnNode(project Project, candidate dispatchNodeCandidate, req
 		if request.HarnessKind != "" && instance.Kind != request.HarnessKind {
 			continue
 		}
+		if allowed := request.WorkerPolicy.AllowedHarnesses; len(allowed) > 0 && !containsHarnessKind(allowed, instance.Kind) {
+			if firstError == nil {
+				firstError = fmt.Errorf("%w: harness %q is not allowed by Worker preferences", ErrInvalidDispatchPin, instance.Kind)
+			}
+			continue
+		}
+		supported := true
+		for _, capability := range request.WorkerPolicy.RequiredExecutionCapabilities {
+			if !instance.Capabilities.SupportsExecution(capability) {
+				supported = false
+				break
+			}
+		}
+		for _, capability := range request.WorkerPolicy.RequiredActivityCapabilities {
+			if !instance.Capabilities.SupportsActivity(capability) {
+				supported = false
+				break
+			}
+		}
+		if !supported {
+			if firstError == nil {
+				firstError = fmt.Errorf("%w: harness %q lacks required Worker capabilities", ErrInvalidDispatchPin, instance.ID)
+			}
+			continue
+		}
 		if err := instance.ValidatePins(model, reasoning); err != nil {
 			if firstError == nil {
 				firstError = fmt.Errorf("%w: %w", ErrInvalidDispatchPin, err)
@@ -219,20 +256,26 @@ func resolveDispatchOnNode(project Project, candidate dispatchNodeCandidate, req
 			continue
 		}
 		workspace := request.Workspace
-		if workspace == "" {
+		if workspace == "" && project.ID != "" {
 			mapping, _ := project.MappingForNode(record.Node)
 			workspace = mapping.Path
 		}
 		policy := project.Policy
 		policy.ModelID, policy.Model, policy.Reasoning = model, "", reasoning
-		projectForSelection := project
-		projectForSelection.Policy = policy
-		snapshot, err := projectForSelection.ValidateDispatch(record.Node, instance, workspace)
-		if err != nil {
-			if firstError == nil {
-				firstError = err
+		var snapshot ProjectSnapshot
+		if project.ID == "" {
+			snapshot = ProjectSnapshot{Node: record.Node, Workspace: workspace, HarnessInstance: instance, Policy: policy}
+		} else {
+			projectForSelection := project
+			projectForSelection.Policy = policy
+			var err error
+			snapshot, err = projectForSelection.ValidateDispatch(record.Node, instance, workspace)
+			if err != nil {
+				if firstError == nil {
+					firstError = err
+				}
+				continue
 			}
-			continue
 		}
 		inventoryJSON, err := json.Marshal(record.Inventory)
 		if err != nil {
@@ -265,9 +308,15 @@ func orderedDispatchInstances(instances []HarnessInstance, request DispatchResol
 		defaultKind := request.WorkerPolicy.DefaultHarness
 		if defaultKind == "" {
 			defaultKind = HarnessOpenCode
+			if request.ProjectID == "" {
+				defaultKind = HarnessCodex
+			}
 		}
 		kinds = append(kinds, defaultKind)
 		kinds = append(kinds, request.WorkerPolicy.PreferredHarnesses...)
+		if request.ProjectID == "" {
+			kinds = append(kinds, HarnessCodex, HarnessClaudeCode, HarnessOpenCode, HarnessFX, HarnessAntigravity)
+		}
 	}
 	result := make([]HarnessInstance, 0, len(ordered))
 	for _, kind := range kinds {
