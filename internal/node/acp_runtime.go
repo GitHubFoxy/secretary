@@ -864,17 +864,22 @@ func (s *acpSession) SteerImages(ctx context.Context, text string, images []Imag
 		}
 		return false, err
 	}
+	// The bridge tracks results only for turns launched through promptTurnImages.
+	// A native turn started implicitly by steering has no registered prompt/result
+	// lifecycle and must never be acknowledged as an injected steering command.
+	if response.Outcome == "startedNewTurn" {
+		if cancelErr := s.Cancel(ctx); cancelErr != nil {
+			return false, fmt.Errorf("acp: steering started an untracked native turn and cancellation failed; outcome requires reconciliation: %w", cancelErr)
+		}
+		return false, errors.New("acp: steering started an untracked native turn; cancellation requested, outcome requires reconciliation")
+	}
 	if s.codexMessagePhases {
 		if response.Outcome == "injected" {
 			return true, nil
 		}
-		if response.Outcome == "startedNewTurn" {
-			_ = s.Cancel(ctx)
-			return false, fmt.Errorf("codex: steering started a new native turn; cancellation requested, execution outcome requires reconciliation")
-		}
 		return false, fmt.Errorf("codex: native steering was not injected (%s)", response.Outcome)
 	}
-	return response.Outcome == "injected" || response.Outcome == "startedNewTurn", nil
+	return response.Outcome == "injected", nil
 }
 func (s *acpSession) Cancel(ctx context.Context) error {
 	return s.client.NotifyContext(ctx, "session/cancel", map[string]string{"sessionId": s.id})
