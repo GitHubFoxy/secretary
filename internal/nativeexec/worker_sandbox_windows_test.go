@@ -122,3 +122,19 @@ func TestT09WindowsNativeProviderStateMigrationPreservesHistory(t *testing.T) {
 	b,err:=os.ReadFile(filepath.Join(worker,".claude.json"))
 	if err!=nil||!strings.Contains(string(b),"history"){t.Fatalf("Claude config not migrated: %s %v",b,err)}
 }
+
+func TestT09WindowsPreexistingEmptyProviderDirectoriesAreMigrated(t *testing.T) {
+	root:=t.TempDir()
+	src:=filepath.Join(root,"legacy")
+	dst:=filepath.Join(root,"new-home")
+	for _,name:=range []string{".codex",".claude"}{
+		_ = os.MkdirAll(filepath.Join(src,name),0700)
+		_ = os.MkdirAll(filepath.Join(dst,name),0700)
+		if err:=os.WriteFile(filepath.Join(src,name,"history.json"),[]byte("OLD-HISTORY"),0600);err!=nil{t.Fatal(err)}
+	}
+	if err:=migrateWindowsNativeProviderHome(src,dst);err!=nil{t.Fatal(err)}
+	for _,name:=range []string{".codex",".claude"} {
+		body,err:=os.ReadFile(filepath.Join(dst,name,"history.json"))
+		if err!=nil||string(body)!="OLD-HISTORY"{t.Fatalf("lost %s existing native history: %q %v",name,body,err)}
+	}
+}

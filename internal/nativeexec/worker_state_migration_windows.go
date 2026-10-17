@@ -28,7 +28,28 @@ func MigrateWindowsNativeStore(source, destination string) error {
 	if errors.Is(err,fs.ErrNotExist) {return nil}
 	if err!=nil {return err}
 	if info.Mode()&os.ModeSymlink!=0 {return errors.New("native state migration: source symlink forbidden")}
-	if _,err:=os.Lstat(dst);err==nil {return nil}else if !errors.Is(err,fs.ErrNotExist){return err}
+	if dstInfo,dstErr:=os.Lstat(dst);dstErr==nil {
+		// First-run provisioning may create empty provider directories.
+		// Merge missing files (never overwrite newer Worker checkpoints)
+		// instead of silently treating an empty destination as migrated.
+		if !info.IsDir() || !dstInfo.IsDir() { return nil }
+		return filepath.WalkDir(src,func(path string,d fs.DirEntry,walkErr error)error{
+			if walkErr!=nil{return walkErr}
+			if d.Type()&os.ModeSymlink!=0 {return fmt.Errorf("native state migration: symlink forbidden: %s",path)}
+			rel,err:=filepath.Rel(src,path);if err!=nil{return err}
+			if rel=="."{return nil}
+			to:=filepath.Join(dst,rel)
+			if d.IsDir(){return os.MkdirAll(to,0700)}
+			if !d.Type().IsRegular(){return errors.New("native state migration: unsupported file type")}
+			if _,statErr:=os.Lstat(to);statErr==nil{return nil}else if !errors.Is(statErr,fs.ErrNotExist){return statErr}
+			temp:=to+".t09-copying"
+			_ = os.Remove(temp)
+			if copyErr:=copyWindowsNativeStateFile(path,temp);copyErr!=nil{return copyErr}
+			if _,statErr:=os.Lstat(to);statErr==nil {_ = os.Remove(temp);return nil}
+			if renameErr:=os.Rename(temp,to);renameErr!=nil {_ = os.Remove(temp);return renameErr}
+			return nil
+		})
+	}else if !errors.Is(dstErr,fs.ErrNotExist){return dstErr}
 	if err:=os.MkdirAll(filepath.Dir(dst),0700);err!=nil{return err}
 	temp:=dst+".t09-migrating"
 	// Only clean up this known, deliberately separate staging destination.

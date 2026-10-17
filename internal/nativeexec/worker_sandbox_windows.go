@@ -60,6 +60,20 @@ func applyWorkerSandbox(policy WorkerSandbox, cmd *exec.Cmd) error {
 	username := strings.TrimSpace(os.Getenv("SECRETARY_WORKER_USERNAME"))
 	password := os.Getenv("SECRETARY_WORKER_PASSWORD")
 	domain := strings.TrimSpace(os.Getenv("SECRETARY_WORKER_DOMAIN"))
+	workerHomeConfig := strings.TrimSpace(os.Getenv("SECRETARY_WORKER_HOME"))
+	if username=="" || password=="" || workerHomeConfig=="" {
+		// Offline one-time Windows provisioning persists configuration only
+		// inside the ACL-protected Node directory, never in Worker env.
+		raw,readErr:=os.ReadFile(filepath.Join(policy.ProtectedDir,"worker-account.json"))
+		if readErr==nil {
+			var saved struct { Username string `json:"username"`; Password string `json:"password"`; Domain string `json:"domain"`; Home string `json:"home"` }
+			if json.Unmarshal(raw,&saved)!=nil {return errors.New("worker sandbox: invalid protected worker-account.json")}
+			if username=="" {username=saved.Username}
+			if password=="" {password=saved.Password}
+			if domain=="" {domain=saved.Domain}
+			if workerHomeConfig=="" {workerHomeConfig=saved.Home}
+		}
+	}
 	if username == "" || password == "" {
 		return errors.New("worker sandbox: secure Windows Worker account is not provisioned; run the Windows Node setup/preflight and migrate provider state before Dispatch")
 	}
@@ -78,7 +92,7 @@ func applyWorkerSandbox(policy WorkerSandbox, cmd *exec.Cmd) error {
 	if token.IsElevated() {
 		return errors.New("worker sandbox: privileged Windows Worker account is forbidden")
 	}
-	workerHome := strings.TrimSpace(os.Getenv("SECRETARY_WORKER_HOME"))
+	workerHome := workerHomeConfig
 	if workerHome == "" || !filepath.IsAbs(workerHome) {
 		return errors.New("worker sandbox: persistent SECRETARY_WORKER_HOME is required")
 	}
