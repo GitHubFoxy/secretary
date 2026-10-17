@@ -4,6 +4,8 @@ package nativeexec
 
 import (
 	"context"
+	"encoding/base64"
+	"unicode/utf16"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,15 +34,18 @@ func TestT09WindowsSeparateAccountStateAndResume(t *testing.T) {
 		t.Run(tc.name,func(t *testing.T) {
 			state := filepath.Join(tc.dir,"resume.txt")
 			for _, script := range []string{
-				`echo SESSION-READY>"`+state+`"`,
-				`type "`+state+`"`,
+				`Set-Content -NoNewline -LiteralPath '`+state+`' -Value 'SESSION-READY'`,
+				`Get-Content -LiteralPath '`+state+`'`,
 			} {
-				cmd, err := CommandContext(ctx,"cmd.exe","/C",script)
+				encoded := utf16.Encode([]rune(script))
+				command := make([]byte, 0, len(encoded)*2)
+				for _, unit := range encoded { command = append(command, byte(unit), byte(unit>>8)) }
+				cmd, err := CommandContext(ctx,"powershell.exe","-NoProfile","-NonInteractive","-EncodedCommand",base64.StdEncoding.EncodeToString(command))
 				if err != nil { t.Fatal(err) }
 				cmd.Env = SecureWorkerEnvironment(ctx,cmd.Env)
 				out, err := cmd.CombinedOutput()
 				if err != nil { t.Fatalf("worker Start/Resume failed: %v: %s",err,out) }
-				if strings.Contains(script,"type") && !strings.Contains(string(out),"SESSION-READY") {
+				if strings.Contains(script,"Get-Content") && !strings.Contains(string(out),"SESSION-READY") {
 					t.Fatalf("persistent Worker state lost across process restart: %s",out)
 				}
 			}
