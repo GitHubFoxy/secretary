@@ -229,11 +229,17 @@ func (n *LocalNode) PrepareWorkerSteering(ctx context.Context, workerRef, text s
 		}
 	}
 	n.mu.Unlock()
-	if !allowed { return "", nil, errors.New("image_input_unsupported: local Worker harness does not advertise image input") }
 	if workspace == "" {
-		return "", nil, fmt.Errorf("image: local Worker workspace not found")
+		return "", nil, fmt.Errorf("artifact: local Worker workspace not found")
 	}
-	return PrepareArtifactInput(ctx, workspace, text, fetch)
+	preparedText, images, err := PrepareArtifactInput(ctx, workspace, text, fetch)
+	if err != nil {
+		return "", nil, err
+	}
+	if len(images) > 0 && !allowed {
+		return "", nil, errors.New("image_input_unsupported: local Worker harness does not advertise image input")
+	}
+	return preparedText, images, nil
 }
 
 func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session, error) {
