@@ -13,5 +13,7 @@ func CommandContext(ctx context.Context, command string, args ...string) (*exec.
     if err != nil {
         return nil, err
     }
-    return exec.CommandContext(ctx, executable, argv...), nil
+    cmd := exec.CommandContext(ctx, executable, argv...)
+    configureCommandLine(cmd, executable, argv)
+    return cmd, nil
 }
