@@ -988,6 +988,10 @@ func (s WorkerService) MessageWorker(ctx context.Context, request MessageWorkerR
 		if attempt == nil {
 			return core.WorkerDetails{}, core.ErrInvalidTransition
 		}
+		if !attempt.State.Terminal() {
+			// A disconnected Node may already have accepted this operation.
+			return core.WorkerDetails{}, fmt.Errorf("%w: Worker execution is awaiting Node reconciliation", node.ErrCommandOutcomeUnknown)
+		}
 		if err := s.requireRuntime(); err != nil {
 			return core.WorkerDetails{}, err
 		}

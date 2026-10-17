@@ -154,6 +154,11 @@ func (s WorkerService) processQueuedWorker(ctx context.Context, conversationID s
 		if message.State == "blocked" {
 			break
 		}
+		if worker.Status == core.WorkerOffline {
+			if current := details.CurrentAttempt(); current != nil && !current.State.Terminal() {
+				break // Never replay queued input into an unresolved Attempt.
+			}
+		}
 		kind := "dispatch"
 		if message.State == "pending" && worker.Status != core.WorkerIdle && worker.Status != core.WorkerOffline {
 			break

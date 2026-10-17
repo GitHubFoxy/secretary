@@ -392,8 +392,9 @@ type FinishAttemptResult struct {
 type Phase4RecoveryDecision string
 
 const (
-	Phase4RecoveryAlive   Phase4RecoveryDecision = "alive"
-	Phase4RecoveryUnknown Phase4RecoveryDecision = "unknown"
+	Phase4RecoveryAlive    Phase4RecoveryDecision = "alive"
+	Phase4RecoveryAwaiting Phase4RecoveryDecision = "awaiting_node"
+	Phase4RecoveryUnknown  Phase4RecoveryDecision = "unknown"
 )
 
 type Phase4AttemptRecoveryResolver interface {

@@ -275,6 +275,17 @@ func (s *Store) RecoverPhase4Attempts(ctx context.Context, resolver Phase4Attemp
 		switch decision {
 		case Phase4RecoveryAlive:
 			continue
+		case Phase4RecoveryAwaiting:
+			// A disconnected enrolled Node can still have an accepted command
+			// or a terminal event in its durable outbox. Keep the Attempt
+			// nonterminal so the real receipt can settle it after reconnect.
+			// Do not dispatch, resume, or manufacture a terminal Result.
+			if _, err := s.db.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE id = ? AND status IN (?, ?) AND EXISTS (
+				SELECT 1 FROM phase4_attempts a WHERE a.id = ? AND a.worker_id = workers.id AND a.state IN (?, ?)
+			)`, WorkerOffline, timestamp(s.now()), attempt.WorkerID, WorkerStarting, WorkerWorking, attempt.ID, AttemptStarting, AttemptActive); err != nil {
+				return err
+			}
+			continue
 		case Phase4RecoveryUnknown:
 			if _, _, _, err := s.InterruptPhase4Attempt(ctx, id, "runtime_execution_unknown", "Attempt execution could not be proven by the recovery resolver"); err != nil {
 				return err

@@ -347,6 +347,15 @@ func (s *Store) MarkNodeConnected(ctx context.Context, node NodeReference, inven
 
 func (s *Store) MarkSilentNodesOffline(ctx context.Context, before time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE phase4_nodes SET online = 0 WHERE online = 1 AND revoked = 0 AND COALESCE(NULLIF(last_heartbeat_at, ''), last_seen_at) <> '' AND COALESCE(NULLIF(last_heartbeat_at, ''), last_seen_at) < ?`, timestamp(before))
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE status IN (?, ?) AND EXISTS (
+		SELECT 1 FROM phase4_nodes n JOIN phase4_attempts a ON a.node_id = n.node_ref
+		JOIN turns t ON t.id = a.turn_id
+		WHERE n.node_ref = workers.node_id AND n.online = 0 AND a.worker_id = workers.id
+		AND a.state IN (?, ?) AND t.current_attempt_id = a.id
+	)`, WorkerOffline, timestamp(s.now()), WorkerStarting, WorkerWorking, AttemptStarting, AttemptActive)
 	return err
 }
 
@@ -429,7 +438,11 @@ func (s *Store) MarkNodeDisconnected(ctx context.Context, node NodeReference) er
 	if affected, _ := result.RowsAffected(); affected == 0 {
 		return ErrNotFound
 	}
-	return nil
+	_, err = s.db.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE node_id = ? AND status IN (?, ?) AND EXISTS (
+		SELECT 1 FROM phase4_attempts a JOIN turns t ON t.id = a.turn_id
+		WHERE a.worker_id = workers.id AND a.state IN (?, ?) AND t.current_attempt_id = a.id
+	)`, WorkerOffline, timestamp(s.now()), node, WorkerStarting, WorkerWorking, AttemptStarting, AttemptActive)
+	return err
 }
 
 func (s *Store) UpdateNodeHeartbeat(ctx context.Context, node NodeReference, inventory HarnessInventorySnapshot, statuses ...NodeHeartbeat) error {
@@ -462,7 +475,24 @@ func (s *Store) UpdateNodeHeartbeat(ctx context.Context, node NodeReference, inv
 	if err != nil {
 		return err
 	}
-	return s.requireActiveNode(ctx, node, result)
+	if err := s.requireActiveNode(ctx, node, result); err != nil {
+		return err
+	}
+	for _, active := range status.ActiveAttempts {
+		// An exact binding, not merely a connected Node, proves liveness.
+		if active.WorkerRef == "" || active.TurnID == "" || active.AttemptID == "" {
+			continue
+		}
+		if _, err := s.db.ExecContext(ctx, `UPDATE workers SET status = ?, updated_at = ? WHERE worker_ref = ? AND node_id = ? AND status = ? AND EXISTS (
+			SELECT 1 FROM phase4_attempts a JOIN turns t ON t.id = a.turn_id
+			WHERE a.id = ? AND a.worker_id = workers.id AND a.node_id = ?
+			AND a.turn_id = ? AND a.state IN (?, ?) AND t.current_attempt_id = a.id
+		)`, WorkerWorking, timestamp(now), active.WorkerRef, node, WorkerOffline,
+			active.AttemptID, node, active.TurnID, AttemptStarting, AttemptActive); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) UpdateNodeInventory(ctx context.Context, node NodeReference, inventory HarnessInventorySnapshot) error {
