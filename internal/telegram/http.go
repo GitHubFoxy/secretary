@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -89,6 +90,7 @@ type botUpdateDTO struct {
 }
 
 type botVoiceDTO struct {
+	FileName string `json:"file_name,omitempty"`
 	FileID       string `json:"file_id"`
 	FileUniqueID string `json:"file_unique_id"`
 	Duration     int    `json:"duration"`
@@ -116,6 +118,9 @@ type botMessageDTO struct {
 	ThreadID int64        `json:"message_thread_id,omitempty"`
 	Text     string       `json:"text,omitempty"`
 	Voice    *botVoiceDTO `json:"voice,omitempty"`
+	Audio    *botVoiceDTO `json:"audio,omitempty"`
+	Document *botVoiceDTO `json:"document,omitempty"`
+	Caption  string `json:"caption,omitempty"`
 }
 
 func (dto botUpdateDTO) update() Update {
@@ -123,7 +128,7 @@ func (dto botUpdateDTO) update() Update {
 	if dto.Message == nil {
 		return update
 	}
-	message := &Message{MessageID: dto.Message.MessageID, ThreadID: dto.Message.ThreadID, Text: dto.Message.Text}
+	message := &Message{MessageID: dto.Message.MessageID, ThreadID: dto.Message.ThreadID, Text: dto.Message.Text, Caption: dto.Message.Caption}
 	if dto.Message.Chat != nil {
 		message.ChatID = dto.Message.Chat.ID
 		message.ChatType = dto.Message.Chat.Type
@@ -132,13 +137,17 @@ func (dto botUpdateDTO) update() Update {
 	if dto.Message.From != nil {
 		message.FromID = dto.Message.From.ID
 	}
-	if dto.Message.Voice != nil {
+	media := dto.Message.Voice
+	if media == nil { media = dto.Message.Audio }
+	if media == nil && dto.Message.Document != nil && supportedAudioDocument(dto.Message.Document.FileName, dto.Message.Document.MimeType) { media = dto.Message.Document }
+	if media != nil {
 		message.Voice = &Voice{
-			FileID:       dto.Message.Voice.FileID,
-			FileUniqueID: dto.Message.Voice.FileUniqueID,
-			Duration:     dto.Message.Voice.Duration,
-			MimeType:     dto.Message.Voice.MimeType,
-			FileSize:     dto.Message.Voice.FileSize,
+			FileID:       media.FileID,
+			FileUniqueID: media.FileUniqueID,
+			Duration:     media.Duration,
+			MimeType:     media.MimeType,
+			FileSize:     media.FileSize,
+			FileName:     media.FileName,
 		}
 	}
 	update.Message = message

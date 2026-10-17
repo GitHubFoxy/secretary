@@ -3,6 +3,10 @@ package telegram
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"regexp"
+
+	"github.com/beruseruko/secretary/internal/core"
 	"log"
 	"strings"
 	"time"
@@ -10,6 +14,7 @@ import (
 
 type Voice struct {
 	FileID       string `json:"file_id"`
+	FileName     string `json:"file_name,omitempty"`
 	FileUniqueID string `json:"file_unique_id"`
 	Duration     int    `json:"duration"`
 	MimeType     string `json:"mime_type,omitempty"`
@@ -37,8 +42,63 @@ type VoiceTranscript struct {
 	ThreadID         int64        `json:"thread_id"`
 	MessageID        int64        `json:"message_id"`
 	WorkerRequestID  string       `json:"worker_request_id,omitempty"`
+	SourceArtifactID string `json:"source_artifact_id,omitempty"`
+	TranscriptArtifactID string `json:"transcript_artifact_id,omitempty"`
 	FormatterSkipped bool         `json:"formatter_skipped,omitempty"`
 	CreatedAt        time.Time    `json:"created_at"`
+}
+
+type VoiceArtifactResult struct {
+	UpdateID int64 `json:"update_id"`
+	ChatID int64 `json:"chat_id"`
+	MessageID int64 `json:"message_id"`
+	SourceArtifactID string `json:"source_artifact_id"`
+	Transcript string `json:"transcript,omitempty"`
+	Raw string `json:"raw,omitempty"`
+	Failed bool `json:"failed,omitempty"`
+}
+
+type VoiceArtifactStore interface {
+	StoreVoiceOriginal(context.Context, int64, Message, string, []byte) (string, error)
+	CompleteVoice(context.Context, VoiceArtifactResult) (string, error)
+}
+
+var voiceNameUnsafe = regexp.MustCompile(`[^A-Za-z0-9._-]`)
+
+func supportedAudioDocument(name, mimeType string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	switch ext {
+	case ".oga", ".ogg", ".opus", ".mp3", ".m4a", ".mp4", ".wav", ".flac", ".webm", ".aac":
+		return strings.HasPrefix(strings.ToLower(mimeType), "audio/")
+	default:
+		return false
+	}
+}
+
+func voiceArtifactName(u Update) string {
+	name := ""
+	if u.Message != nil && u.Message.Voice != nil {
+		name = u.Message.Voice.FileName
+	}
+	name = voiceNameUnsafe.ReplaceAllString(filepath.Base(name), "_")
+	if len(name) > 130 {
+		name = name[:130]
+	}
+	if !supportedAudioDocument(name, "audio/octet-stream") {
+		ext := ".oga"
+		if u.Message != nil && u.Message.Voice != nil {
+			switch strings.ToLower(u.Message.Voice.MimeType) {
+			case "audio/mpeg": ext = ".mp3"
+			case "audio/mp4", "audio/x-m4a": ext = ".m4a"
+			case "audio/wav", "audio/x-wav": ext = ".wav"
+			case "audio/flac", "audio/x-flac": ext = ".flac"
+			case "audio/webm": ext = ".webm"
+			case "audio/aac": ext = ".aac"
+			}
+		}
+		name = fmt.Sprintf("telegram-voice-%d%s", u.ID, ext)
+	}
+	return name
 }
 
 func (a *Adapter) Transcript(id string) (VoiceTranscript, bool) {
@@ -77,6 +137,9 @@ func (a *Adapter) deliverVoiceUpdate(ctx context.Context, u Update, allowed bool
 	if maxBytes <= 0 {
 		maxBytes = 10000000
 	}
+	if maxBytes > core.MaxArtifactBytes {
+		maxBytes = core.MaxArtifactBytes
+	}
 	if m.Voice.Duration < 0 || m.Voice.Duration > maxSeconds {
 		return fail(fmt.Sprintf("Голосовое сообщение превышает лимит длительности (%d сек).", maxSeconds))
 	}
@@ -94,10 +157,6 @@ func (a *Adapter) deliverVoiceUpdate(ctx context.Context, u Update, allowed bool
 		recordTiming := func(stage, status string) {
 			timing.ProcessingMS = time.Since(processingStart).Milliseconds()
 			logVoiceTiming(u, stage, status, timing)
-		}
-		if a.asr == nil {
-			recordTiming("asr", "unavailable")
-			return fail("Локальное распознавание речи не настроено.")
 		}
 		vt, ok := a.transport.(VoiceDownloadTransport)
 		if !ok {
@@ -126,14 +185,36 @@ func (a *Adapter) deliverVoiceUpdate(ctx context.Context, u Update, allowed bool
 			recordTiming("download", "failed")
 			return fail("Не удалось загрузить голосовое сообщение в пределах лимита размера.")
 		}
+		sourceArtifactID := ""
+		artifactStore, hasArtifacts := a.server.(VoiceArtifactStore)
+		if hasArtifacts {
+			sourceArtifactID, err = artifactStore.StoreVoiceOriginal(ctx, u.ID, *m, voiceArtifactName(u), data)
+			if err != nil {
+				return fmt.Errorf("telegram: persist original voice artifact: %w", err)
+			}
+		}
+		if a.asr == nil {
+			if hasArtifacts {
+				if _, err := artifactStore.CompleteVoice(ctx, VoiceArtifactResult{UpdateID: u.ID, ChatID: m.ChatID, MessageID: m.MessageID, SourceArtifactID: sourceArtifactID, Failed: true}); err != nil {
+					return err
+				}
+			}
+			recordTiming("asr", "unavailable")
+			return fail("Локальное распознавание речи не настроено. Оригинал аудио сохранён.")
+		}
 		asrStart := time.Now()
 		raw, err := a.asr.Transcribe(ctx, data)
 		timing.ASRMS = time.Since(asrStart).Milliseconds()
 		if err != nil || strings.TrimSpace(raw) == "" {
+			if hasArtifacts {
+				if _, saveErr := artifactStore.CompleteVoice(ctx, VoiceArtifactResult{UpdateID: u.ID, ChatID: m.ChatID, MessageID: m.MessageID, SourceArtifactID: sourceArtifactID, Failed: true}); saveErr != nil {
+					return saveErr
+				}
+			}
 			recordTiming("asr", "failed")
-			return fail("Не удалось распознать речь в голосовом сообщении.")
+			return fail("Не удалось распознать речь. Оригинал аудио сохранён.")
 		}
-		transcript = VoiceTranscript{Raw: strings.TrimSpace(raw), Delivered: "raw", ChatID: m.ChatID, ThreadID: m.ThreadID, MessageID: m.MessageID, CreatedAt: a.now(), Timing: timing}
+		transcript = VoiceTranscript{Raw: strings.TrimSpace(raw), SourceArtifactID: sourceArtifactID, Delivered: "raw", ChatID: m.ChatID, ThreadID: m.ThreadID, MessageID: m.MessageID, CreatedAt: a.now(), Timing: timing}
 		if a.config.ASR.Formatter.Enabled {
 			if a.formatter == nil {
 				timing.FormatterStatus = "unavailable"
@@ -172,6 +253,29 @@ func (a *Adapter) deliverVoiceUpdate(ctx context.Context, u Update, allowed bool
 		}
 		logVoiceTiming(u, "processing", "completed", timing)
 	}
+	if store, ok := a.server.(VoiceArtifactStore); ok && transcript.SourceArtifactID != "" {
+		finalText := transcript.Raw
+		if transcript.Delivered == "formatted" {
+			finalText = transcript.Formatted
+		}
+		ref, err := store.CompleteVoice(ctx, VoiceArtifactResult{
+			UpdateID: u.ID, ChatID: m.ChatID, MessageID: m.MessageID,
+			SourceArtifactID: transcript.SourceArtifactID, Transcript: finalText, Raw: transcript.Raw,
+		})
+		if err != nil {
+			return err
+		}
+		if transcript.TranscriptArtifactID != ref {
+			transcript.TranscriptArtifactID = ref
+			a.mu.Lock()
+			a.state.Transcripts[id] = transcript
+			err = a.saveLocked()
+			a.mu.Unlock()
+			if err != nil {
+				return err
+			}
+		}
+	}
 	if transcript.FormatterSkipped {
 		if err := a.voiceNotice(ctx, u, "formatter", "Форматирование пропущено; используется исходная расшифровка."); err != nil {
 			return err
@@ -189,6 +293,12 @@ func (a *Adapter) deliverVoiceUpdate(ctx context.Context, u Update, allowed bool
 	copyMessage := *m
 	copyMessage.Voice = nil
 	copyMessage.Text = final
+	if strings.TrimSpace(copyMessage.Caption) != "" {
+		copyMessage.Text = strings.TrimSpace(copyMessage.Caption) + "\n\n" + copyMessage.Text
+	}
+	if transcript.SourceArtifactID != "" && transcript.TranscriptArtifactID != "" {
+		copyMessage.Text += "\n\nVoice transcript: artifact://" + transcript.TranscriptArtifactID + "\nOriginal audio: artifact://" + transcript.SourceArtifactID
+	}
 	u.Message = &copyMessage
 	return a.deliverTextUpdate(ctx, u, allowed, &transcript.WorkerRequestID)
 }

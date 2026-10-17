@@ -42,6 +42,7 @@ type Message struct {
 	MessageID int64  `json:"message_id"`
 	ThreadID  int64  `json:"message_thread_id,omitempty"`
 	Text      string `json:"text,omitempty"`
+	Caption   string `json:"caption,omitempty"`
 	Voice     *Voice `json:"voice,omitempty"`
 }
 
