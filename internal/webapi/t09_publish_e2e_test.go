@@ -285,10 +285,31 @@ func TestT09RemoteWorkerPublishToWebResultAndRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	stopDaemon()
+	// Stop request handlers before restarting the durable store. A late
+	// heartbeat / HTTP handler can otherwise race the SQLite journal-mode
+	// PRAGMA while the test is simulating Server restart.
+	server.CloseClientConnections()
+	server.Close()
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	restarted, err := core.Open(ctx, db)
+	// SQLite can briefly retain an outstanding WAL reader after a shutdown.
+	// Retry only SQLITE_BUSY (not unrelated initialization failures).
+	restartCtx, cancelRestart := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRestart()
+	var restarted *core.Store
+	for {
+		restarted, err = core.Open(restartCtx, db)
+		if err == nil || !(strings.Contains(strings.ToLower(err.Error()), "database is locked") ||
+			strings.Contains(strings.ToLower(err.Error()), "sqlite_busy")) {
+			break
+		}
+		select {
+		case <-restartCtx.Done():
+			t.Fatalf("restart SQLite remained busy: %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
