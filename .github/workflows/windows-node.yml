@@ -3,7 +3,7 @@ name: Windows Execution Node acceptance
 on:
   pull_request:
   push:
-    branches: [main, feat/t09-worker-publish-artifacts]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
