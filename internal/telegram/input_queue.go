@@ -213,6 +213,14 @@ func (a *Adapter) hasEarlierPendingImageLocked(u Update) bool {
 			return true
 		}
 	}
+	// An earlier photo may still be in another input lane and not yet have
+	// moved into PendingImages. Do not let later topic text overtake it.
+	for _, pending := range a.state.PendingInputs {
+		if pending.Message != nil && pending.Message.Image != nil &&
+			pending.Message.ChatID == u.Message.ChatID && pending.ID < u.ID {
+			return true
+		}
+	}
 	return false
 }
 
