@@ -211,6 +211,9 @@ func TestRememberOwnerMemoryAcceptsNegationButRejectsCancellation(t *testing.T) 
 	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
 	if err != nil { t.Fatal(err) }
 	path := filepath.Join(dir, "user.md")
+	// StartSecretaryTurn rebuilds canonical context using the legacy owner's
+	// bound document path; bind it before initializing the new Markdown files.
+	if _, err := store.SaveUserDocument(ctx, path, ""); err != nil { t.Fatal(err) }
 	before, err := store.ReadMemoryDocument(ctx, path, MemoryPreferences)
 	if err != nil { t.Fatal(err) }
 	for _, input := range []string{
