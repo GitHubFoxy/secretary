@@ -7,7 +7,7 @@ Issue: [#79](https://github.com/GitHubFoxy/secretary/issues/79). This page disti
 - Workflow: [Windows Execution Node acceptance](../.github/workflows/windows-node.yml), `windows-latest` (actual Windows VM).
 - Builds `secretary-node.exe` and runs Windows-specific ACP child-process Start + native session ID Resume tests.
 - Runs real Node WebSocket pairing/reconnect, late terminal Result ACK/deduplication, and stale socket / offline transition tests.
-- CI run URL and pass/fail: **pending first pull request run**.
+- Windows host run: **PASS**, 17 October 2026, [GitHub Actions #39045653404](https://github.com/GitHubFoxy/secretary/actions/runs/39045653404) on real `windows-latest`; Windows `.exe` build, configuration, Windows ACP native child process Start/Resume and protocol reconnect tests passed at revision `639849fecf1ddf529b5b2bd34b84094e6e23e50a`. Corresponding [full Go tests #39045653391](https://github.com/GitHubFoxy/secretary/actions/runs/39045653391) and [Linux regression #39045653389](https://github.com/GitHubFoxy/secretary/actions/runs/39045653389) passed.
 - Native harness used: local in-process ACP protocol fixture **spawned as a Windows process**. This verifies host/process compatibility and transport semantics, **not** authenticated Codex/Claude model execution.
 
 ## Authenticated native harness manual gate (not yet performed)
