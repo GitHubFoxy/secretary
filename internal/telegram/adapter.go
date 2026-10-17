@@ -1276,7 +1276,11 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		case event.TerminalIdentity != "":
 			identity = "terminal:" + event.TerminalIdentity
 			a.mu.Lock()
-			_, alreadyNotified = a.state.TerminalNotified[event.TerminalIdentity]
+			key := event.TerminalIdentity
+			if a.config.GroupChatID != nil {
+				key = "complete:" + key
+			}
+			_, alreadyNotified = a.state.TerminalNotified[key]
 			a.mu.Unlock()
 		case event.Kind == "worker.limited":
 			identity = "worker-limited:" + event.EventID
@@ -1308,7 +1312,7 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 			_, alreadyNotified = a.state.ToolNotified[strings.TrimPrefix(identity, "tool:")]
 			a.mu.Unlock()
 		}
-		if alreadyNotified && event.TerminalIdentity == "" && a.config.GroupChatID == nil {
+		if alreadyNotified && (event.TerminalIdentity != "" || a.config.GroupChatID == nil) {
 			return nil
 		}
 		if mapping.ChatID != 0 {
@@ -1322,6 +1326,15 @@ func (a *Adapter) handleEvent(ctx context.Context, event Event) error {
 		if event.TerminalIdentity != "" {
 			if a.config.GroupChatID != nil {
 				if err := a.sendPersonal(ctx, OutgoingMessage{Text: body, Identity: identity + ":personal", DisableLinkPreview: true, DurableSequence: event.Sequence}); err != nil {
+					return err
+				}
+				// Topic success alone is not completion: only commit this
+				// semantic receipt after every Personal projection succeeded.
+				a.mu.Lock()
+				a.state.TerminalNotified["complete:"+event.TerminalIdentity] = a.now()
+				err := a.saveLocked()
+				a.mu.Unlock()
+				if err != nil {
 					return err
 				}
 			} else {
@@ -1609,7 +1622,7 @@ func (a *Adapter) markDeliveredLocked(message OutgoingMessage) {
 		}
 	case strings.HasPrefix(message.Identity, "terminal:"):
 		identity := strings.TrimPrefix(message.Identity, "terminal:")
-		if identity != "" {
+		if identity != "" && a.config.GroupChatID == nil {
 			a.state.TerminalNotified[identity] = a.now()
 		}
 	case strings.HasPrefix(message.Identity, "request:"):
