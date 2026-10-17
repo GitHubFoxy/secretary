@@ -151,11 +151,27 @@ func TestT09WindowsPersistedAccountConfigWithoutEnvironment(t *testing.T) {
 	credentials,err:=json.Marshal(map[string]string{"username":user,"password":password,"domain":".","home":home})
 	if err!=nil{t.Fatal(err)}
 	if err:=os.WriteFile(filepath.Join(protected,"worker-account.json"),credentials,0600);err!=nil{t.Fatal(err)}
+	// Simulate an existing Node upgrade: legacy provider state is present
+	// under the original profile, while the new Worker home was already
+	// provisioned. The real dispatch preflight must migrate it safely.
+	legacyHome:=filepath.Join(workspace,"original-node-profile")
+	for _,provider:=range []string{".codex",".claude"}{
+		dir:=filepath.Join(legacyHome,provider)
+		if err:=os.MkdirAll(dir,0700);err!=nil{t.Fatal(err)}
+		if err:=os.WriteFile(filepath.Join(dir,"t09-upgrade-checkpoint"),[]byte("PREEXISTING-SESSION"),0600);err!=nil{t.Fatal(err)}
+	}
+	t.Setenv("USERPROFILE",legacyHome)
 	t.Setenv("SECRETARY_WORKER_USERNAME","")
 	t.Setenv("SECRETARY_WORKER_PASSWORD","")
 	t.Setenv("SECRETARY_WORKER_HOME","")
 	t.Setenv("SECRETARY_WORKER_DOMAIN","")
 	if err:=PreflightWorkerSandbox(protected);err!=nil{t.Fatalf("persisted Worker account preflight/dispatch failed: %v",err)}
+	for _,provider:=range []string{".codex",".claude"}{
+		content,err:=os.ReadFile(filepath.Join(home,provider,"t09-upgrade-checkpoint"))
+		if err!=nil||string(content)!="PREEXISTING-SESSION"{
+			t.Fatalf("existing %s checkpoint not preserved during account migration: %v %q",provider,err,content)
+		}
+	}
 	ctx:=WithWorkerSandbox(context.Background(),WorkerSandbox{ProtectedDir:protected,Workspace:home})
 	script:="[Console]::WriteLine($env:USERPROFILE)"
 	units:=utf16.Encode([]rune(script))
