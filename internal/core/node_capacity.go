@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -52,6 +53,10 @@ WHERE claim.node_id = ? AND attempt.state IN ('starting', 'scheduled', 'active')
 	return count, nil
 }
 
+// ErrNodeCapacityExhausted distinguishes a temporarily full Node from a
+// disconnected or revoked Node, which must not be silently retried by the queue.
+var ErrNodeCapacityExhausted = errors.New("core: Node execution capacity exhausted")
+
 // The UPDATE is a SQLite write lock before reading capacity and claims.
 // Concurrent SpawnWorker transactions cannot both observe the last free slot.
 func requireNodeCapacityTx(ctx context.Context, tx *sql.Tx, node NodeReference, excludeHeartbeatAttemptID ...string) error {
@@ -95,7 +100,7 @@ WHERE node_ref = ? AND online = 1 AND draining = 0 AND revoked = 0`, node)
 		return err
 	}
 	if used >= capacity {
-		return fmt.Errorf("%w: Node %s has no free execution capacity (%d/%d slots in use)", ErrSelectedNodeUnavailable, node, used, capacity)
+		return fmt.Errorf("%w: %w: Node %s has no free execution capacity (%d/%d slots in use)", ErrSelectedNodeUnavailable, ErrNodeCapacityExhausted, node, used, capacity)
 	}
 	return nil
 }
@@ -117,6 +122,16 @@ func (s *Store) ReserveAttemptCapacity(ctx context.Context, attemptID string) er
 		}
 		if attempt.State.Terminal() {
 			return ErrInvalidTransition
+		}
+		// Legacy direct-runtime Workers may exist in stores that have never
+		// enrolled a Node, and therefore have no Node capacity contract.
+		// Automatic Dispatch always enrolls its Node and uses strict claims.
+		var registryTable bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='phase4_nodes')`).Scan(&registryTable); err != nil {
+			return err
+		}
+		if !registryTable {
+			return nil
 		}
 		var reserved bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM phase4_node_capacity_claims WHERE attempt_id = ?)`, attemptID).Scan(&reserved); err != nil {
