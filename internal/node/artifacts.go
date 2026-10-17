@@ -136,7 +136,7 @@ func (i NodeIdentity) FetchArtifact(ctx context.Context, id string) (ArtifactPay
 
 func (a Authenticator) SignPublishCapability(nodeRef core.NodeReference, workerRef, attemptID string) string {
 	mac := hmac.New(sha256.New, a.secret)
-	_, _ = fmt.Fprintf(mac, "artifact-publish-v1\\n%s\\n%s\\n%s", nodeRef, workerRef, attemptID)
+	_, _ = fmt.Fprintf(mac, "artifact-publish-v1\n%s\n%s\n%s", nodeRef, workerRef, attemptID)
 	return hex.EncodeToString(mac.Sum(nil))
 }
 

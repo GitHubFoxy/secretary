@@ -150,7 +150,7 @@ func (p ArtifactPublisher) Publish(ctx context.Context, relativePath, name strin
 	if err != nil || len(data) == 0 || len(data) > core.MaxArtifactBytes {
 		return core.Artifact{}, errors.New("artifact publish: file read failed or size limit exceeded")
 	}
-	sum := sha256.Sum256([]byte(p.AttemptID + "\\x00" + rel))
+	sum := sha256.Sum256([]byte(p.AttemptID + "\x00" + rel))
 	key := "publish:" + hex.EncodeToString(sum[:])
 	endpoint, err := url.Parse(p.ServerURL)
 	if err != nil || endpoint.Host == "" {

@@ -2273,7 +2273,7 @@ func (s *Store) RecordNodeAttemptOutcome(ctx context.Context, envelope AttemptOu
 	for _, artifact := range published {
 		reference := "artifact://" + artifact.ID
 		if !strings.Contains(envelope.Summary, reference) {
-			envelope.Summary += "\\n\\nPublished: " + reference + " (" + artifact.Name + ")"
+			envelope.Summary += "\n\nPublished: [Download output](/v1/artifacts/" + artifact.ID + "?download=1) (" + artifact.Name + "; " + reference + ")"
 		}
 		present := false
 		for _, existing := range envelope.ArtifactRefs {
