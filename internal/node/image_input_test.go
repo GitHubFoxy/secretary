@@ -7,6 +7,11 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"encoding/json"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"time"
 	"strings"
 	"testing"
 )
@@ -61,4 +66,29 @@ func (t10TextOnlySession) Close() error { return nil }
 func TestT10NoSilentTextOnlyFallback(t *testing.T) {
 	err := promptWithImages(context.Background(), t10TextOnlySession{}, "what's pictured", []ImageInput{{MediaType: "image/png", Data: t10PNG(t)}})
 	if err == nil || !strings.Contains(err.Error(), "does not support image") { t.Fatalf("false visual analysis accepted: %v", err) }
+}
+
+func TestT10ACPActualSubprocessImagePayload(t *testing.T) {
+	record := filepath.Join(t.TempDir(), "image-prompt.json")
+	binary := exec.Command(os.Args[0], "-test.run=TestFakeACPProcess")
+	runtime := ACPRuntime{Command: binary.Path, Arguments: binary.Args[1:], Environment: []string{"ACP_IMAGE_RECORD=" + record}}
+	picture := t10PNG(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	session, err := runtime.Start(ctx, StartRequest{WorkerRef: "visual-worker", Workspace: t.TempDir(), Task: "Identify the pictured object", Images: []ImageInput{{MediaType: "image/png", Data: picture}}})
+	if err != nil { t.Fatal(err) }
+	defer session.Close()
+	var raw []byte
+	for {
+		raw, err = os.ReadFile(record)
+		if err == nil { break }
+		select { case <-ctx.Done(): t.Fatalf("ACP subprocess did not get image: %v", ctx.Err()); case <-time.After(10*time.Millisecond): }
+	}
+	var received struct { Prompt []map[string]string `json:"prompt"` }
+	if err := json.Unmarshal(raw, &received); err != nil { t.Fatal(err) }
+	if len(received.Prompt) != 2 || received.Prompt[0]["text"] != "Identify the pictured object" || received.Prompt[1]["type"] != "image" || received.Prompt[1]["mimeType"] != "image/png" {
+		t.Fatalf("ACP image wire payload: %#v",received.Prompt)
+	}
+	original, err := base64.StdEncoding.DecodeString(received.Prompt[1]["data"])
+	if err != nil || !bytes.Equal(original, picture) { t.Fatalf("native ACP process did not receive exact image bytes: %v",err) }
 }
