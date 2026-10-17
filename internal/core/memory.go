@@ -226,11 +226,11 @@ func (s *Store) saveMemoryDocumentUnlocked(ctx context.Context, q memorySQL, use
 // An explicit "remember" request is required in the originating owner turn.
 func ExplicitMemoryRequest(input string) bool {
 	text := strings.ToLower(strings.TrimSpace(input))
-	if text == "" || strings.ContainsAny(text, "\\n\\r") {
+	if text == "" || strings.ContainsAny(text, "\n\r") {
 		return false
 	}
 	// Quoted/translated/negated examples do not authorize a durable write.
-	if strings.ContainsAny(text, "\"“”«»") {
+	if strings.ContainsAny(text, "\"'“”«»") {
 		return false
 	}
 	for _, ambiguous := range []string{
