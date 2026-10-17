@@ -55,7 +55,7 @@ func openNtNoFollow(parent syscall.Handle, name string, isDir bool) (syscall.Han
 	if err != nil { return syscall.InvalidHandle, err }
 	attr := windows.OBJECT_ATTRIBUTES{
 		ObjectName: encoded,
-		RootDirectory: parent,
+		RootDirectory: windows.Handle(parent),
 		Attributes: windows.OBJ_DONT_REPARSE,
 	}
 	attr.Length = uint32(unsafe.Sizeof(attr))
