@@ -1,0 +1,34 @@
+name: macOS Native Worker sandbox acceptance
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  macos-node:
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Confirm available Seatbelt sandbox
+        shell: bash
+        run: |
+          test -x /usr/bin/sandbox-exec
+          /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true
+      - name: Test macOS Worker isolation, file publication and provider history
+        shell: bash
+        run: |
+          go test ./internal/nativeexec ./internal/node ./internal/core -run 'TestT09' -count=1 -timeout=10m -v
+      - name: Build production macOS Node and Server
+        shell: bash
+        run: |
+          go build ./cmd/secretary-node
+          go build ./cmd/secretaryd
