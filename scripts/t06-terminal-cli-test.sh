@@ -247,6 +247,22 @@ fallback_attempts_before="$(wc -l < "$T06_NPM_INSTALL_LOG")"
 [[ "$(cat "$FALLBACK_STATE/environment")" == "$fallback_env_before" ]] || fail "repeat setup rotated credentials after Claude fallback"
 [[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq "$fallback_attempts_before" ]] || fail "repeat setup incorrectly retried failed Codex npm install"
 
+# An explicit Codex choice is not automatic selection: even with authorized
+# Claude available, failed npm must fail rather than silently switching harness.
+export HOME="$TMP/npm-fails-explicit-codex-home" PATH="$FAILING_NPM_BIN:$CLAUDEBIN:/usr/bin:/bin"
+explicit_attempts_before="$(wc -l < "$T06_NPM_INSTALL_LOG")"
+if "$ROOT/secretary" setup --non-interactive --harness codex >"$TMP/npm-fails-explicit-codex.log" 2>&1; then
+  fail "explicit --harness codex silently succeeded after failed npm install"
+fi
+EXPLICIT_STATE="$HOME/.local/share/secretary"
+[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq "$((explicit_attempts_before + 1))" ]] || fail "explicit Codex choice did not attempt ACP installation"
+[[ ! -e "$FAILING_NPM_BIN/codex-acp" ]] || fail "failed explicit Codex install unexpectedly produced ACP"
+[[ ! -e "$EXPLICIT_STATE/config.toml" ]] || fail "explicit Codex failure persisted a harness config"
+[[ ! -e "$EXPLICIT_STATE/environment" ]] || fail "explicit Codex failure persisted bootstrap credentials"
+if grep -q 'using authorized Claude Code instead' "$TMP/npm-fails-explicit-codex.log"; then
+  fail "explicit Codex choice unexpectedly fell back to Claude"
+fi
+
 # With no authorized fallback, failed npm must not write a Codex config.
 # A subsequent retry with npm working must still take the fresh Codex path.
 export HOME="$TMP/npm-fails-no-fallback-home" PATH="$FAILING_NPM_BIN:/usr/bin:/bin"
