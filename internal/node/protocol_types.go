@@ -316,6 +316,9 @@ func (w WorkerEnvelope) Validate(node core.NodeReference) error {
 			return ErrManagedProfileInvalid
 		}
 	}
+	if w.ProjectID == "" && w.Workspace != "" {
+		return errors.New("node protocol: projectless Worker workspace must be allocated by the Execution Node")
+	}
 	if w.ProjectID != "" {
 		if w.ProjectSnapshot.ID == "" {
 			return errors.New("node protocol: Project policy snapshot is required")
