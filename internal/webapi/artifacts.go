@@ -69,6 +69,14 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	mediaType := mime.TypeByExtension(strings.ToLower(filepath.Ext(name)))
+	if ext := strings.ToLower(filepath.Ext(name)); ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" {
+		validated, imageErr := node.ValidateStillImage(name, data)
+		if imageErr != nil {
+			http.Error(w, imageErr.Error(), http.StatusUnprocessableEntity)
+			return
+		}
+		mediaType = validated.MediaType
+	}
 	if mediaType == "" {
 		mediaType = "application/octet-stream"
 	}
