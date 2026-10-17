@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 export T06_NODE_BINARY="$TMP/secretary-node-real"
-go build -o "$T06_NODE_BINARY" "$ROOT/cmd/secretary-node"
+(cd "$ROOT" && go build -o "$T06_NODE_BINARY" ./cmd/secretary-node)
 
 fail() {
   printf 'FAIL: %s\n' "$1" >&2
