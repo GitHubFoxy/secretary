@@ -24,6 +24,7 @@ func TestMemoryMCPRemoteRequiresExplicitActiveOwnerRequest(t *testing.T) {
 		t.Fatal(err)
 	}
 	api.AttachUserDocument(filepath.Join(dir, "user.md"))
+	if _, err := store.SaveUserDocument(ctx, filepath.Join(dir, "user.md"), "# Legacy owner context\n"); err != nil { t.Fatal(err) }
 	api.AttachSecretaryWorkerTools(fakeSecretaryWorkerTools{})
 	capability, err := store.RotateSecretaryCapability(ctx, api.OwnerID())
 	if err != nil {
