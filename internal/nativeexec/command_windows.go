@@ -52,8 +52,7 @@ func invocation(command string, args []string) (string, []string, error) {
     tokens := append([]string{path}, args...)
     quoted := make([]string, 0, len(tokens))
     for _, token := range tokens {
-        if strings.ContainsAny(token, "\"
-%&|<>^!") {
+        if strings.ContainsAny(token, "\"\r\n%&|<>^!") {
             return "", nil, errors.New("unsafe argument or path for Windows .cmd native shim")
         }
         quoted = append(quoted, "\"" + token + "\"")
