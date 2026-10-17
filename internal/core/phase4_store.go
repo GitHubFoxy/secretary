@@ -765,6 +765,9 @@ func (s *Store) CreateTurn(ctx context.Context, workerID string, spec TurnSpec) 
 func (s *Store) createTurn(ctx context.Context, workerID string, spec TurnSpec, idempotencyKey string, queueIDs ...string) (Turn, Phase4Attempt, error) {
 	fingerprintSpec := spec
 	fingerprintSpec.IdempotencyKey = ""
+	// Capacity reservation is an internal handoff constraint, not part of
+	// the user's logical idempotent Turn request.
+	fingerprintSpec.ReserveNodeCapacity = false
 	requestHash, err := idempotencyRequestHash(struct {
 		WorkerID string
 		Spec     TurnSpec
