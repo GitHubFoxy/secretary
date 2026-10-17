@@ -3,6 +3,8 @@ package telegram
 import (
 	"context"
 	"bytes"
+	"errors"
+	"strconv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -329,4 +331,62 @@ func (c *HTTPServerClient) SendWorkerMessage(ctx context.Context, message Worker
 func (c *HTTPServerClient) ResumeWorker(ctx context.Context, workerRef string) error {
 	path := "/v1/workers/" + url.PathEscape(workerRef) + "/resume"
 	return c.post(ctx, path, map[string]string{}, "")
+}
+
+func (c *HTTPServerClient) voiceRequest(ctx context.Context, path string, body []byte, headers map[string]string) (string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(c.BaseURL, "/")+path, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	request.Header.Set("Authorization", "Bearer "+c.Credential)
+	for key, value := range headers {
+		request.Header.Set(key, value)
+	}
+	response, err := c.client().Do(request)
+	if err != nil {
+		return "", fmt.Errorf("telegram: voice Artifact server request: %w", err)
+	}
+	defer response.Body.Close()
+	limited, err := io.ReadAll(io.LimitReader(response.Body, maxServerErrorBody+1))
+	if err != nil {
+		return "", err
+	}
+	if response.StatusCode/100 != 2 {
+		return "", fmt.Errorf("telegram: voice Artifact server HTTP %d: %s", response.StatusCode, redactBotSecret(c.Credential, strings.TrimSpace(string(limited))))
+	}
+	if len(limited) > maxServerErrorBody {
+		return "", errors.New("telegram: invalid Artifact server response")
+	}
+	var result struct {
+		Artifact struct { ID string `json:"id"` } `json:"artifact"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(limited, &result); err != nil {
+		return "", err
+	}
+	if result.Status == "failed" {
+		return "", nil
+	}
+	if !strings.HasPrefix(result.Artifact.ID, "art_") {
+		return "", errors.New("telegram: invalid server Artifact reference")
+	}
+	return result.Artifact.ID, nil
+}
+
+func (c *HTTPServerClient) StoreVoiceOriginal(ctx context.Context, updateID int64, message Message, name string, data []byte) (string, error) {
+	return c.voiceRequest(ctx, "/v1/internal/telegram/voice/source", data, map[string]string{
+		"Content-Type": "application/octet-stream",
+		"X-Voice-Update-ID": strconv.FormatInt(updateID, 10),
+		"X-Voice-Chat-ID": strconv.FormatInt(message.ChatID, 10),
+		"X-Voice-Message-ID": strconv.FormatInt(message.MessageID, 10),
+		"X-Voice-Name": name,
+	})
+}
+
+func (c *HTTPServerClient) CompleteVoice(ctx context.Context, result VoiceArtifactResult) (string, error) {
+	data, err := json.Marshal(result)
+	if err != nil {
+		return "", err
+	}
+	return c.voiceRequest(ctx, "/v1/internal/telegram/voice/result", data, map[string]string{"Content-Type": "application/json"})
 }
