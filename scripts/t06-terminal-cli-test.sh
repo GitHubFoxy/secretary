@@ -22,6 +22,9 @@ cat > "$6" <<'BINARY'
 #!/usr/bin/env bash
 set -euo pipefail
 if [[ "${1:-}" == --check-codex-readiness ]]; then
+  if [[ "${T06_REQUIRE_CODEX_ACP:-0}" == 1 ]]; then
+    command -v codex-acp >/dev/null 2>&1 || exit 1
+  fi
   [[ "${T06_CODEX_AUTH_FAIL:-0}" != 1 ]]
   exit $?
 fi
@@ -46,7 +49,12 @@ exit 0
 STUB
 cat > "$CODBIN/codex" <<'STUB'
 #!/usr/bin/env bash
-[[ "${T06_CODEX_AUTH_FAIL:-0}" != 1 ]]
+if [[ "$*" == 'login status' ]]; then
+  [[ "${T06_CODEX_AUTH_FAIL:-0}" != 1 ]]
+  exit $?
+fi
+if [[ "$*" == 'login' ]]; then exit 0; fi
+exit 2
 STUB
 cat > "$CLAUDEBIN/claude" <<'STUB'
 #!/usr/bin/env bash
@@ -176,6 +184,55 @@ cp "$TMP/retry-env" "$UPGRADE_STATE/environment"
 [[ "$(grep '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment")" == "$admin_before" ]] || fail "retry rotated existing admin token"
 grep -q '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" || fail "retry did not repair missing pairing token"
 unset SECRETARY_NODE_PAIRING_TOKEN SECRETARY_NODE_ADMIN_TOKEN
+
+# Codex-only clean install: the native CLI is already authorized, npm is
+# available, but codex-acp must be installed during prepare_harness().
+# Auto-selection must not require the missing adapter before this install.
+MISSING_ACP_BIN="$TMP/codex-needs-acp-bin"
+mkdir -p "$MISSING_ACP_BIN"
+make_mise "$MISSING_ACP_BIN"
+cp "$CODBIN/codex" "$MISSING_ACP_BIN/codex"
+cat > "$MISSING_ACP_BIN/npm" <<'STUB'
+#!/usr/bin/env bash
+set -euo pipefail
+[[ "$*" == 'install -g @agentclientprotocol/codex-acp@1.12.0' ]] || exit 2
+printf '%s\n' "$*" >> "$T06_NPM_INSTALL_LOG"
+cat > "$(dirname "$0")/codex-acp" <<'ADAPTER'
+#!/usr/bin/env bash
+exit 0
+ADAPTER
+chmod +x "$(dirname "$0")/codex-acp"
+STUB
+chmod +x "$MISSING_ACP_BIN/npm"
+export HOME="$TMP/codex-missing-acp-home" PATH="$MISSING_ACP_BIN:/usr/bin:/bin"
+export T06_REQUIRE_CODEX_ACP=1 T06_NPM_INSTALL_LOG="$TMP/npm-install.log"
+[[ ! -e "$MISSING_ACP_BIN/codex-acp" ]] || fail "missing ACP test precondition violated"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+MISSING_ACP_STATE="$HOME/.local/share/secretary"
+grep -q '^harness = "codex"$' "$MISSING_ACP_STATE/config.toml" || fail "authorized Codex without ACP was not selected"
+grep -q '^default_harness = "codex"$' "$MISSING_ACP_STATE/config.toml" || fail "missing-ACP setup did not configure Codex worker"
+[[ -x "$MISSING_ACP_BIN/codex-acp" ]] || fail "npm was not used to install missing codex-acp"
+[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq 1 ]] || fail "expected exactly one adapter installation"
+"$ROOT/secretary" doctor >/dev/null || fail "installed adapter was not ready after setup"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq 1 ]] || fail "repeat setup reinstalled codex-acp"
+unset T06_REQUIRE_CODEX_ACP
+
+# An unauthorized Codex with an installable but absent adapter must NOT
+# win auto-selection over a ready Claude Code or trigger npm installation.
+UNAUTHORIZED_BIN="$TMP/codex-unauthorized-no-acp-bin"
+mkdir -p "$UNAUTHORIZED_BIN"
+make_mise "$UNAUTHORIZED_BIN"
+cp "$CODBIN/codex" "$UNAUTHORIZED_BIN/codex"
+cp "$MISSING_ACP_BIN/npm" "$UNAUTHORIZED_BIN/npm"
+export HOME="$TMP/unauthorized-codex-no-acp-home" PATH="$UNAUTHORIZED_BIN:$CLAUDEBIN:/usr/bin:/bin"
+export T06_CODEX_AUTH_FAIL=1 T06_REQUIRE_CODEX_ACP=1
+before_installs="$(wc -l < "$T06_NPM_INSTALL_LOG")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+UNAUTHORIZED_STATE="$HOME/.local/share/secretary"
+grep -q '^harness = "claude_code"$' "$UNAUTHORIZED_STATE/config.toml" || fail "unready Codex without ACP preempted authorized Claude"
+[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq "$before_installs" ]] || fail "unauthorized Codex caused unwanted npm installation"
+unset T06_CODEX_AUTH_FAIL T06_REQUIRE_CODEX_ACP
 
 # Fresh unattended setup should reject an installed but unready Codex and
 # choose a genuinely authenticated Claude Code instead.
