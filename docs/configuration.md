@@ -14,6 +14,15 @@ Secretary читает `config.toml` из data directory. При первом se
 
 Запуск и применение изменений описаны в [quickstart](quickstart.md). Telegram deployment и private credentials настраиваются отдельно, см. [always-on runbook](always-on-runbook.md).
 
+### Telegram Personal Conversation: DM и необязательная группа (T04)
+
+Telegram-бот работает в личных сообщениях без группы. Для включения нужны `SECRETARY_TELEGRAM_ENABLED=true`, токен бота и `SECRETARY_TELEGRAM_SERVER_CREDENTIAL`; владельца привязывают через Web pairing и `/start <code>` **в личном чате**. При желании ID приватного чата можно явно задать через `SECRETARY_TELEGRAM_OWNER_CHAT_ID` (положительное число). Только этот Telegram-пользователь может отправлять команды Secretary и Workers. Старые установки **forum-only** с отрицательным `SECRETARY_TELEGRAM_OWNER_CHAT_ID` продолжают работать без группы в новой конфигурации: настройка и сохранённые Topics не сбрасываются. Для перехода на DM укажите положительный ID владельца (совпадающий с сохранённым `owner_user_id`, если он есть) и перезапустите Server: прежний отрицательный `owner_chat_id` автоматически станет привязанной группой; Topics, cursor и pending outbox сохраняются. Автоматическая миграция не перезаписывает несовпадающего владельца или другую группу.
+
+Чтобы дополнительно видеть ту же переписку в группе, добавьте бота **администратором** в Telegram forum supergroup с включёнными Topics и от имени привязанного владельца отправьте `/linkgroup` в группе. Вместо команды можно установить `SECRETARY_TELEGRAM_GROUP_CHAT_ID` (отрицательный ID супергруппы) и перезапустить Server. Привязка хранится в `telegram/state.json`; смена ID уже привязанной группы не делается неявно.
+
+Личные сообщения владельца и General группы транслируются друг другу; Web-сообщения, ответы Secretary и финальные Worker Results отображаются в обеих проекциях. Worker Topics создаются только при наличии группы: сообщения в них адресуются конкретному Worker и **не** превращаются в дополнительные сообщения Secretary. Telegram-delivery receipts переживают перезапуск и предотвращают повторные отправки при обычном replay. Как и в большинстве систем без транзакционной поддержки отправки Telegram, исходный таймаут после принятия сообщения Telegram оставляет результат доставки неопределённым.
+
+
 ```toml
 [worker_observer]
 show_tool_activity = true

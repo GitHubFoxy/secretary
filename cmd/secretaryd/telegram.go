@@ -25,6 +25,7 @@ type telegramDeploymentConfig struct {
 	BotUsername      string
 	ServerCredential string
 	OwnerChatID      int64
+	GroupChatID      int64
 	BaseURL          string
 	PollInterval     time.Duration
 	FlushInterval    time.Duration
@@ -52,6 +53,17 @@ func configuredTelegramDeployment() (telegramDeploymentConfig, error) {
 			return telegramDeploymentConfig{}, errors.New("SECRETARY_TELEGRAM_OWNER_CHAT_ID must be a non-zero integer")
 		}
 		config.OwnerChatID = owner
+	}
+	if value := strings.TrimSpace(os.Getenv("SECRETARY_TELEGRAM_GROUP_CHAT_ID")); value != "" {
+		group, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || group >= 0 {
+			return telegramDeploymentConfig{}, errors.New("SECRETARY_TELEGRAM_GROUP_CHAT_ID must be a negative supergroup id")
+		}
+		config.GroupChatID = group
+	}
+	// Negative owner chat IDs remain supported for pre-T04 forum-only installations.
+	if config.OwnerChatID < 0 && config.GroupChatID != 0 && config.OwnerChatID != config.GroupChatID {
+		return telegramDeploymentConfig{}, errors.New("legacy owner forum differs from configured Telegram group")
 	}
 	if value := strings.TrimSpace(os.Getenv("SECRETARY_TELEGRAM_POLL_INTERVAL")); value != "" {
 		interval, err := time.ParseDuration(value)
@@ -87,7 +99,25 @@ func attachProductionTelegram(ctx context.Context, dataDir, listen string, store
 	snapshot := profiles.Snapshot()
 	showToolCalls := snapshot.Config.Telegram.ShowToolCalls
 	adapter, err := telegram.New(telegram.Config{
-		StatePath: filepath.Join(dataDir, "telegram", "state.json"), OwnerChatID: deployment.OwnerChatID,
+		StatePath: filepath.Join(dataDir, "telegram", "state.json"), OwnerChatID: deployment.OwnerChatID, GroupChatID: &deployment.GroupChatID,
+		ExistingWorkers: func(ctx context.Context) ([]telegram.WorkerTopic, error) {
+			_, conversation, err := store.EnsureOwner(ctx)
+			if err != nil {
+				return nil, err
+			}
+			workers, err := store.WorkersForConversation(ctx, conversation.ID)
+			if err != nil {
+				return nil, err
+			}
+			topics := make([]telegram.WorkerTopic, 0, len(workers))
+			for _, worker := range workers {
+				if worker.Archived {
+					continue
+				}
+				topics = append(topics, telegram.WorkerTopic{WorkerRef: worker.WorkerRef, Title: worker.Title, Intent: worker.Intent})
+			}
+			return topics, nil
+		},
 		PollInterval: deployment.PollInterval, FlushInterval: deployment.FlushInterval, BotUsername: deployment.BotUsername,
 		ASR: snapshot.Config.ASR, ASRPrompt: snapshot.ASRPrompt.Content, ShowToolCalls: &showToolCalls,
 	}, &telegram.BotAPITransport{BaseURL: deployment.BaseURL, BotToken: deployment.BotToken}, &telegram.HTTPServerClient{

@@ -109,7 +109,9 @@ type botMessageDTO struct {
 		ID int64 `json:"id"`
 	} `json:"from,omitempty"`
 	Chat *struct {
-		ID int64 `json:"id"`
+		ID      int64  `json:"id"`
+		Type    string `json:"type"`
+		IsForum bool   `json:"is_forum"`
 	} `json:"chat,omitempty"`
 	ThreadID int64        `json:"message_thread_id,omitempty"`
 	Text     string       `json:"text,omitempty"`
@@ -124,6 +126,8 @@ func (dto botUpdateDTO) update() Update {
 	message := &Message{MessageID: dto.Message.MessageID, ThreadID: dto.Message.ThreadID, Text: dto.Message.Text}
 	if dto.Message.Chat != nil {
 		message.ChatID = dto.Message.Chat.ID
+		message.ChatType = dto.Message.Chat.Type
+		message.IsForum = dto.Message.Chat.IsForum
 	}
 	if dto.Message.From != nil {
 		message.FromID = dto.Message.From.ID
