@@ -143,7 +143,18 @@ func TestExplicitMemoryAndLegacyContextSurviveRestart(t *testing.T) {
 }
 
 func TestMemoryKindAndExplicitOwnerGrammar(t *testing.T) {
-	for _, input := range []string{"Запомни, что я люблю Go", "Please remember I prefer short replies", "/remember that I prefer Go", "Сохрани в память это правило"} {
+	for _, input := range []string{
+		"Запомни, что я люблю Go",
+		"Please remember I prefer short replies",
+		"/remember that I prefer Go",
+		"Сохрани в память это правило",
+		"Remember that I don't like coffee",
+		"Remember that I don’t like coffee",
+		"Remember that I don't save passwords.",
+		"Remember that my catchphrase is 'don't panic'",
+		"Remember that \"don't panic\" is my catchphrase",
+		"Запомни, что я не люблю кофе",
+	} {
 		if !ExplicitMemoryRequest(input) {
 			t.Fatalf("explicit request rejected: %q", input)
 		}
@@ -165,6 +176,15 @@ func TestMemoryKindAndExplicitOwnerGrammar(t *testing.T) {
 		"Запомни, что я люблю Go\nА теперь переведи",
 		"Remember that I prefer Go. Just an example",
 		"Remember that I prefer Go — or should I?",
+		"Remember that I prefer Go. Actually, ignore that request.",
+		"Remember that I prefer Go, actually ignore that request.",
+		"Remember that I prefer Go, but don't save it.",
+		"Remember that I prefer Go, but don’t save it.",
+		"Remember that I prefer Go and then forget that.",
+		"Remember that I prefer Go, scratch that.",
+		"Remember that I prefer Go. Never mind.",
+		"Remember that I prefer Go and translate the sentence",
+		"Запомни, что я люблю Go, но не сохраняй это.",
 	} {
 		if ExplicitMemoryRequest(input) {
 			t.Fatalf("normal conversation accepted: %q", input)
@@ -172,6 +192,54 @@ func TestMemoryKindAndExplicitOwnerGrammar(t *testing.T) {
 	}
 	if _, err := MemoryDocumentPath("user.md", "../secret"); !errors.Is(err, ErrInvalidMemory) {
 		t.Fatalf("unknown memory kind err=%v", err)
+	}
+}
+
+// Authorization is checked against the persisted original owner turn, not
+// merely by the tool's supplied entry. Cancellation must leave both SQLite
+// and the Markdown file unchanged; a real negative preference must persist.
+func TestRememberOwnerMemoryAcceptsNegationButRejectsCancellation(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	store, err := Open(ctx, filepath.Join(dir, "memory-intent.db"))
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil { t.Fatal(err) }
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil { t.Fatal(err) }
+	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+	if err != nil { t.Fatal(err) }
+	path := filepath.Join(dir, "user.md")
+	before, err := store.ReadMemoryDocument(ctx, path, MemoryPreferences)
+	if err != nil { t.Fatal(err) }
+	for _, input := range []string{
+		"Remember that I prefer Go. Actually, ignore that request.",
+		"Remember that I prefer Go, actually ignore that request.",
+	} {
+		turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, input)
+		if err != nil { t.Fatal(err) }
+		if _, err := store.StartSecretaryTurn(ctx, turn.ID); err != nil { t.Fatal(err) }
+		_, err = store.RememberOwnerMemory(ctx, path, MemoryPreferences, "Prefer Go", before.Revision, person.ID, capability, turn.ID, turn.InputID)
+		if !errors.Is(err, ErrMemoryWriteNotRequested) {
+			t.Fatalf("cancelled owner request %q was authorized: %v", input, err)
+		}
+		if _, err := store.FinishSecretaryTurn(ctx, turn.ID, SecretaryTurnSucceeded, ""); err != nil { t.Fatal(err) }
+		after, err := store.ReadMemoryDocument(ctx, path, MemoryPreferences)
+		if err != nil || after.Revision != before.Revision || after.Content != before.Content {
+			t.Fatalf("cancelled command changed memory: %+v err=%v", after, err)
+		}
+	}
+	turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "Remember that I don’t like coffee")
+	if err != nil { t.Fatal(err) }
+	if _, err := store.StartSecretaryTurn(ctx, turn.ID); err != nil { t.Fatal(err) }
+	saved, err := store.RememberOwnerMemory(ctx, path, MemoryPreferences, "I don't like coffee", before.Revision, person.ID, capability, turn.ID, turn.InputID)
+	if err != nil || saved.Revision != before.Revision+1 || !strings.Contains(saved.Content, "don't like coffee") {
+		t.Fatalf("valid negative preference was rejected: %+v err=%v", saved, err)
+	}
+	onDisk, err := os.ReadFile(saved.Path)
+	if err != nil || string(onDisk) != saved.Content {
+		t.Fatalf("negative preference not persisted to Markdown: %q err=%v", onDisk, err)
 	}
 }
 
