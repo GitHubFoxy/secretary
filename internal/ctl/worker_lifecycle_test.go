@@ -1275,3 +1275,72 @@ func TestWorkerServiceSteering_LegacyReplayAndPendingOriginBinding(t *testing.T)
 		t.Fatalf("expected ErrInvalidSecretaryOrigin for rebinding pending command, got: %v", err)
 	}
 }
+
+func TestMessageWorkerIdleFollowupsRespectNodeCapacity(t *testing.T) {
+	ctx, store, service, project := newWorkerService(t)
+	record, err := store.NodeRecord(ctx, "node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateNodeHeartbeat(ctx, "node", record.Inventory, core.NodeHeartbeat{Capacity: 1}); err != nil {
+		t.Fatal(err)
+	}
+	refs := make([]string, 2)
+	for i := range refs {
+		details, err := service.SpawnWorker(ctx, SpawnWorkerRequest{
+			Intent: "initial work", ProjectID: project.ID, IdempotencyKey: "initial-" + string(rune('a'+i)),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		current := details.CurrentAttempt()
+		if current == nil {
+			t.Fatal("missing initial Attempt")
+		}
+		if _, _, _, err := store.RecordAttemptOutcome(ctx, current.ID, core.AttemptOutcomeInput{
+			Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "idle",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		refs[i] = details.Worker.WorkerRef
+	}
+	// Both idle Workers race to start a new command on one available slot.
+	start := make(chan struct{})
+	type result struct {
+		ref string
+		details core.WorkerDetails
+		err error
+	}
+	completed := make(chan result, 2)
+	for _, ref := range refs {
+		go func(ref string) {
+			<-start
+			details, err := service.MessageWorker(ctx, MessageWorkerRequest{
+				WorkerRef: ref, Text: "follow up", IdempotencyKey: "parallel-followup",
+			})
+			completed <- result{ref: ref, details: details, err: err}
+		}(ref)
+	}
+	close(start)
+	var accepted, denied int
+	for i := 0; i < 2; i++ {
+		got := <-completed
+		if got.err == nil {
+			accepted++
+			if got.details.ActionTurnID == "" {
+				t.Fatalf("accepted Follow-up missing Turn: %#v", got.details)
+			}
+		} else if errors.Is(got.err, core.ErrSelectedNodeUnavailable) {
+			denied++
+			remaining, err := service.GetWorker(ctx, got.ref)
+			if err != nil || remaining.Worker.Status != core.WorkerIdle || len(remaining.Attempts) != 1 {
+				t.Fatalf("denied Follow-up created an Attempt: %#v err=%v", remaining, err)
+			}
+		} else {
+			t.Fatalf("unexpected Follow-up outcome: %v", got.err)
+		}
+	}
+	if accepted != 1 || denied != 1 {
+		t.Fatalf("capacity=1 accepted=%d rejected=%d", accepted, denied)
+	}
+}
