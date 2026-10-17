@@ -131,7 +131,29 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 	}()
 
 	sentThrough := d.Store.LastAcknowledgedSequence()
-	if err := d.flushOutbox(ctx, connection, &sentThrough); err != nil {
+	lastProcessedCommand := ""
+	sendHeartbeat := func() error {
+		if err := execution.SetInventory(inventory); err != nil {
+			return fmt.Errorf("node: refresh execution inventory: %w", err)
+		}
+		if err := d.flushOutbox(ctx, connection, &sentThrough); err != nil {
+			return err
+		}
+		sequence, err := d.reserveControlSequence(ctx, connection, &sentThrough)
+		if err != nil {
+			return err
+		}
+		heartbeat := Heartbeat{
+			Node: d.Identity.Node, Online: true, Capacity: d.capacity(), Inventory: inventory,
+			ActiveAttempts: execution.ActiveAttempts(), LastProcessedCommand: lastProcessedCommand,
+		}
+		if err := connection.SendHeartbeat(ctx, heartbeat, sequence); err != nil {
+			return err
+		}
+		sentThrough = sequence
+		return nil
+	}
+	if err := sendHeartbeat(); err != nil {
 		return err
 	}
 
@@ -141,8 +163,6 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 	defer heartbeats.Stop()
 	defer inventories.Stop()
 	defer outbox.Stop()
-	lastProcessedCommand := ""
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -180,24 +200,9 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 				return err
 			}
 		case <-heartbeats.C:
-			if err := execution.SetInventory(inventory); err != nil {
-				return fmt.Errorf("node: refresh execution inventory: %w", err)
-			}
-			if err := d.flushOutbox(ctx, connection, &sentThrough); err != nil {
+			if err := sendHeartbeat(); err != nil {
 				return err
 			}
-			sequence, err := d.reserveControlSequence(ctx, connection, &sentThrough)
-			if err != nil {
-				return err
-			}
-			heartbeat := Heartbeat{
-				Node: d.Identity.Node, Online: true, Capacity: d.capacity(), Inventory: inventory,
-				ActiveAttempts: execution.ActiveAttempts(), LastProcessedCommand: lastProcessedCommand,
-			}
-			if err := connection.SendHeartbeat(ctx, heartbeat, sequence); err != nil {
-				return err
-			}
-			sentThrough = sequence
 		case <-inventories.C:
 			refreshed, err := d.Inventory.Discover(ctx)
 			if err != nil {

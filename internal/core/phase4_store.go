@@ -2595,7 +2595,11 @@ func (s *Store) FindActiveScheduleForWorker(ctx context.Context, workerID string
 }
 
 func (s *Store) DueAttemptSchedules(ctx context.Context, now time.Time) ([]AttemptSchedule, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, worker_id, turn_id, source_attempt_id, attempt_id, scheduled_at, state, failure_category, failure_code, failure_message, quota_scope, deadline_evidence, continuation_prompt, created_at, updated_at FROM phase4_attempt_schedules WHERE state = 'pending' AND scheduled_at IS NOT NULL AND scheduled_at <= ? ORDER BY scheduled_at, id`, timestamp(now))
+	rows, err := s.db.QueryContext(ctx, `SELECT id, worker_id, turn_id, source_attempt_id, attempt_id, scheduled_at, state, failure_category, failure_code, failure_message, quota_scope, deadline_evidence, continuation_prompt, created_at, updated_at FROM phase4_attempt_schedules WHERE state = 'pending' AND scheduled_at IS NOT NULL AND scheduled_at <= ?
+	AND NOT EXISTS (SELECT 1 FROM phase4_worker_commands c
+	WHERE c.worker_id = phase4_attempt_schedules.worker_id AND c.attempt_id = phase4_attempt_schedules.attempt_id
+	AND c.kind = 'resume' AND c.state = 'uncertain')
+	ORDER BY scheduled_at, id`, timestamp(now))
 	if err != nil {
 		return nil, err
 	}
@@ -2658,7 +2662,14 @@ func (s *Store) SyncAttemptSchedulesPolicy(ctx context.Context, enabled bool, no
 		_, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'manual_hold', updated_at = ? WHERE state = 'pending'`, timestamp(now))
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'pending', updated_at = ? WHERE state = 'manual_hold' AND scheduled_at IS NOT NULL AND scheduled_at > ?`, timestamp(now), timestamp(now))
+	// Policy changes must not rearm a Resume whose Node acceptance is unknown
+	// (including across repeated server restarts).
+	_, err := s.db.ExecContext(ctx, `UPDATE phase4_attempt_schedules SET state = 'pending', updated_at = ? WHERE state = 'manual_hold' AND scheduled_at IS NOT NULL AND scheduled_at > ?
+		AND NOT EXISTS (SELECT 1 FROM phase4_worker_commands c
+		WHERE c.worker_id = phase4_attempt_schedules.worker_id
+		AND c.attempt_id = phase4_attempt_schedules.attempt_id AND c.kind = 'resume'
+		AND (c.state IN ('uncertain', 'delivered') OR (c.state = 'pending' AND c.lease_until <> ''))
+		)`, timestamp(now), timestamp(now))
 	return err
 }
 

@@ -41,13 +41,18 @@ func (r Phase4RecoveryResolver) ResolvePhase4Attempt(ctx context.Context, attemp
 	if err != nil {
 		return core.Phase4RecoveryUnknown, err
 	}
-	if !status.Online || status.Revoked {
+	if status.Revoked {
 		return core.Phase4RecoveryUnknown, nil
+	}
+	if !status.Online {
+		return core.Phase4RecoveryAwaiting, nil
 	}
 	for _, active := range status.ActiveAttempts {
 		if active.AttemptID == attempt.ID && active.TurnID == attempt.TurnID && active.WorkerRef == worker.WorkerRef {
 			return core.Phase4RecoveryAlive, nil
 		}
 	}
-	return core.Phase4RecoveryUnknown, nil
+	// The Node can still have an accepted command or a terminal event
+	// in its durable outbox even when its heartbeat lists no Attempt.
+	return core.Phase4RecoveryAwaiting, nil
 }

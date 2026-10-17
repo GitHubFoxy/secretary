@@ -97,7 +97,12 @@ type ServerManager struct {
 	config     ServerConfig
 	now        func() time.Time
 
-	mu          sync.Mutex
+	mu sync.Mutex
+	// Serialize socket replacement, heartbeat/inventory persistence and
+	// disconnect. Holding this lock through the Store write prevents an old
+	// socket's already-in-flight heartbeat from committing after a new
+	// socket has reset its liveness state.
+	connectionLifecycleMu sync.Mutex
 	connections map[core.NodeReference]*ProtocolConnection
 	outcomes    map[core.NodeReference]CommandOutcome
 	waiters     map[string]*commandWaiter
@@ -354,7 +359,7 @@ func (m *ServerManager) CommandReady(ctx context.Context, nodeRef core.NodeRefer
 	m.mu.Lock()
 	connected := m.connections[nodeRef] != nil
 	m.mu.Unlock()
-	return record.Online && connected && !record.Draining, nil
+	return record.Online && connected && !record.Draining && !record.LastHeartbeatAt.IsZero() && record.Capacity > 0, nil
 }
 
 func (m *ServerManager) SendCommand(ctx context.Context, nodeRef core.NodeReference, command Command) error {
@@ -506,6 +511,8 @@ func (m *ServerManager) registerConnection(nodeRef core.NodeReference, connectio
 }
 
 func (m *ServerManager) unregisterConnection(nodeRef core.NodeReference, connection *ProtocolConnection) {
+	m.connectionLifecycleMu.Lock()
+	defer m.connectionLifecycleMu.Unlock()
 	m.mu.Lock()
 	current := m.connections[nodeRef]
 	if current == connection {
@@ -513,15 +520,19 @@ func (m *ServerManager) unregisterConnection(nodeRef core.NodeReference, connect
 	}
 	m.mu.Unlock()
 	if current == connection {
+		// The disconnect update must not commit after a replacement socket
+		// has already made the Node online again.
 		_ = m.store.MarkNodeDisconnected(context.Background(), nodeRef)
 	}
 }
 
 func (m *ServerManager) closeConnection(nodeRef core.NodeReference) {
+	m.connectionLifecycleMu.Lock()
 	m.mu.Lock()
 	connection := m.connections[nodeRef]
 	delete(m.connections, nodeRef)
 	m.mu.Unlock()
+	m.connectionLifecycleMu.Unlock()
 	if connection != nil {
 		_ = connection.Close()
 	}
@@ -610,17 +621,40 @@ func (h *serverProtocolHandler) HandleNodeHandshake(ctx context.Context, handsha
 }
 
 func (h *serverProtocolHandler) HandleNodeConnection(connection *ProtocolConnection) {
+	h.manager.connectionLifecycleMu.Lock()
 	if err := h.manager.store.MarkNodeConnected(context.Background(), h.expected, h.inventory); err != nil {
+		h.manager.connectionLifecycleMu.Unlock()
 		_ = connection.Close()
 		return
 	}
 	h.connection = connection
 	h.manager.registerConnection(h.expected, connection)
+	h.manager.connectionLifecycleMu.Unlock()
+}
+
+var errStaleNodeConnection = errors.New("node server: stale Node connection")
+
+// checkCurrentConnection is called with connectionLifecycleMu held. The
+// physical authenticated socket, not just its Node reference, owns liveness
+// updates. Terminal Results intentionally remain independent of this check.
+func (h *serverProtocolHandler) checkCurrentConnection() error {
+	h.manager.mu.Lock()
+	current := h.manager.connections[h.expected]
+	h.manager.mu.Unlock()
+	if h.connection == nil || current != h.connection {
+		return errStaleNodeConnection
+	}
+	return nil
 }
 
 func (h *serverProtocolHandler) HandleNodeHeartbeat(ctx context.Context, heartbeat Heartbeat) error {
 	if heartbeat.Node != h.expected {
 		return errors.New("node server: heartbeat identity mismatch")
+	}
+	h.manager.connectionLifecycleMu.Lock()
+	defer h.manager.connectionLifecycleMu.Unlock()
+	if err := h.checkCurrentConnection(); err != nil {
+		return err
 	}
 	return h.manager.store.UpdateNodeHeartbeat(ctx, h.expected, heartbeat.Inventory, core.NodeHeartbeat{
 		Capacity: heartbeat.Capacity, ActiveAttempts: heartbeat.ActiveAttempts, LastProcessedCommand: heartbeat.LastProcessedCommand,
@@ -630,6 +664,11 @@ func (h *serverProtocolHandler) HandleNodeHeartbeat(ctx context.Context, heartbe
 func (h *serverProtocolHandler) HandleNodeInventory(ctx context.Context, inventory core.HarnessInventorySnapshot) error {
 	if inventory.Node != h.expected {
 		return errors.New("node server: inventory identity mismatch")
+	}
+	h.manager.connectionLifecycleMu.Lock()
+	defer h.manager.connectionLifecycleMu.Unlock()
+	if err := h.checkCurrentConnection(); err != nil {
+		return err
 	}
 	return h.manager.store.UpdateNodeInventory(ctx, h.expected, inventory)
 }

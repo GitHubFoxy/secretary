@@ -3,8 +3,10 @@ package ctl
 import (
 	"context"
 	"errors"
-	"github.com/beruseruko/secretary/internal/core"
 	"time"
+
+	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/node"
 )
 
 func (s WorkerService) RunQueuedWorkerMessages(ctx context.Context) {
@@ -93,6 +95,11 @@ func (s WorkerService) resumeScheduledAttempt(ctx context.Context, schedule core
 	if err != nil {
 		return release(err)
 	}
+	if found && prior.State == core.WorkerCommandUncertain {
+		// An unknown accepted Resume must be reconciled by its receipt or
+		// a terminal Node event, never sent a second time on manual retry.
+		return release(node.ErrCommandOutcomeUnknown)
+	}
 	if !found || prior.State != core.WorkerCommandDelivered {
 		if err := s.Store.ReserveAttemptCapacity(ctx, attempt.ID); err != nil {
 			return release(err)
@@ -153,6 +160,11 @@ func (s WorkerService) processQueuedWorker(ctx context.Context, conversationID s
 		}
 		if message.State == "blocked" {
 			break
+		}
+		if worker.Status == core.WorkerOffline {
+			if current := details.CurrentAttempt(); current != nil && !current.State.Terminal() {
+				break // Never replay queued input into an unresolved Attempt.
+			}
 		}
 		kind := "dispatch"
 		if message.State == "pending" && worker.Status != core.WorkerIdle && worker.Status != core.WorkerOffline {

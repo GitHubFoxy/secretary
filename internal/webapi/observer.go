@@ -402,6 +402,10 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, clien
 	if len(suffix) != 1 || r.Method != http.MethodPost || s.actions == nil {
 		return false
 	}
+	if suffix[0] == "abandon" && client != nil {
+		http.Error(w, "only the owner Web session can abandon unknown execution", http.StatusForbidden)
+		return true
+	}
 	authenticatedClientID, _ := r.Context().Value(authenticatedClientContextKey{}).(string)
 	if spoofed := strings.TrimSpace(r.Header.Get("X-Client-ID")); spoofed != "" && spoofed != authenticatedClientID {
 		http.Error(w, "X-Client-ID does not match authenticated Client", http.StatusBadRequest)
@@ -412,14 +416,20 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, clien
 	}
 	request := ctl.MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, ClientID: authenticatedClientID}
 	var payload struct {
-		Text           string `json:"text,omitempty"`
-		RequestID      string `json:"request_id,omitempty"`
-		IdempotencyKey string `json:"idempotency_key,omitempty"`
+		Text                    string `json:"text,omitempty"`
+		RequestID               string `json:"request_id,omitempty"`
+		IdempotencyKey          string `json:"idempotency_key,omitempty"`
+		AttemptID               string `json:"attempt_id,omitempty"`
+		ConfirmUnknownExecution bool   `json:"confirm_unknown_execution,omitempty"`
 	}
 	if !decodeJSON(w, r, &payload) {
 		return true
 	}
 	request.Text, request.RequestID = payload.Text, payload.RequestID
+	if suffix[0] == "abandon" && (!payload.ConfirmUnknownExecution || strings.TrimSpace(payload.AttemptID) == "") {
+		http.Error(w, "attempt_id and confirm_unknown_execution=true are required; prior side effects may have completed", http.StatusBadRequest)
+		return true
+	}
 	if suffix[0] == "approve" && strings.TrimSpace(request.Text) == "" {
 		request.Text = "approve"
 	}
@@ -429,10 +439,16 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, clien
 	}
 	request.IdempotencyKey = key
 	operation := "worker.action:" + suffix[0] + ":" + details.Worker.WorkerRef
-	payloadFingerprint := struct {
+	var payloadFingerprint any = struct {
 		Text      string
 		RequestID string
 	}{request.Text, request.RequestID}
+	if suffix[0] == "abandon" {
+		payloadFingerprint = struct {
+			AttemptID               string
+			ConfirmUnknownExecution bool
+		}{payload.AttemptID, payload.ConfirmUnknownExecution}
+	}
 	s.idempotencyMu.Lock()
 	defer s.idempotencyMu.Unlock()
 	if encoded, found, lookupErr := s.store.IdempotencyOutcomeForPayload(r.Context(), operation, request.IdempotencyKey, payloadFingerprint); lookupErr != nil {
@@ -471,6 +487,15 @@ func (s *Server) phase4WorkerRoute(w http.ResponseWriter, r *http.Request, clien
 		result, err = s.actions.CloseWorker(r.Context(), details.Worker.WorkerRef)
 	case "resume":
 		result, err = s.actions.ResumeWorker(r.Context(), details.Worker.WorkerRef)
+	case "abandon":
+		abandoner, supported := s.actions.(interface {
+			AbandonAttempt(context.Context, string, string) (core.WorkerDetails, error)
+		})
+		if !supported {
+			http.Error(w, "Worker recovery service is unavailable", http.StatusServiceUnavailable)
+			return true
+		}
+		result, err = abandoner.AbandonAttempt(r.Context(), details.Worker.WorkerRef, payload.AttemptID)
 	default:
 		return false
 	}
