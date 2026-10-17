@@ -73,6 +73,9 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	// Seatbelt filters inside one allow clause are conjunctive. Combining
 	// disjoint subpaths there silently denies *all* reads and aborts dyld.
 	// Each permitted root must be its own rule (a union of grants).
+	// macOS dyld/shell startup reads the root directory itself. Granting
+	// the literal "/" does not grant its descendants, unlike subpath("/").
+	profile.WriteString("(allow file-read* (literal \"/\"))\n")
 	for _, root := range reads {
 		profile.WriteString("(allow file-read* " + quoted(root) + ")\n")
 	}
