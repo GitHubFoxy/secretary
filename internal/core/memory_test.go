@@ -214,6 +214,10 @@ func TestRememberOwnerMemoryAcceptsNegationButRejectsCancellation(t *testing.T) 
 	// StartSecretaryTurn rebuilds canonical context using the legacy owner's
 	// bound document path; bind it before initializing the new Markdown files.
 	if _, err := store.SaveUserDocument(ctx, path, ""); err != nil { t.Fatal(err) }
+	if err := store.SetSecretaryPolicySnapshot(ctx, SecretaryPolicySnapshot{
+		Version: "v1", Harness: "fx", Model: "m", Reasoning: "high",
+		ProfileVersion: "v1", ProfileName: "secretary", ProfileHash: "hash", ProfileContent: "policy",
+	}); err != nil { t.Fatal(err) }
 	before, err := store.ReadMemoryDocument(ctx, path, MemoryPreferences)
 	if err != nil { t.Fatal(err) }
 	for _, input := range []string{
