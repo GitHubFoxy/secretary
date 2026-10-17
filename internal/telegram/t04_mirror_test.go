@@ -92,6 +92,9 @@ func TestT04LinkedForumGeneralAndWorkerTopics(t *testing.T) {
 	if err := adapter.HandleEvent(ctx, Event{Kind: "worker.created", WorkerRef: "w1", TaskPrompt: "research"}); err != nil {
 		t.Fatal(err)
 	}
+	if err := adapter.SyncWorkerTopics(ctx); err != nil {
+		t.Fatal(err)
+	}
 	mapping := adapter.state.Topics["w1"]
 	if mapping.ChatID != -200 || mapping.ThreadID != 2 {
 		t.Fatalf("Worker Topic mapping=%#v", mapping)
@@ -126,6 +129,9 @@ func TestT04LinkedForumGeneralAndWorkerTopics(t *testing.T) {
 	if err := adapter.HandleEvent(ctx, result); err != nil {
 		t.Fatal(err)
 	}
+	if err := adapter.SyncWorkerTopics(ctx); err != nil {
+		t.Fatal(err)
+	}
 	count := func(body string, chatID, threadID int64) int {
 		n := 0
 		for _, item := range transport.sent {
@@ -152,6 +158,9 @@ func TestT04LinkedForumGeneralAndWorkerTopics(t *testing.T) {
 		if err := adapter.HandleEvent(ctx, replay); err != nil {
 			t.Fatal(err)
 		}
+	}
+	if err := adapter.SyncWorkerTopics(ctx); err != nil {
+		t.Fatal(err)
 	}
 	if err := adapter.Flush(ctx); err != nil {
 		t.Fatal(err)
