@@ -100,3 +100,86 @@ func TestAutomaticDispatchRechecksCapacityAfterStaleResolution(t *testing.T) {
 	}
 }
 
+
+func TestIdleFollowupReservesCapacityAtomicallyAgainstOtherWorkers(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	resolverEnroll(t, store, "single", resolverInventory("single", []HarnessInstance{
+		resolverInstance("single/codex", "single", HarnessCodex),
+	}), 1, nil)
+	conversation := mustConversation(t, store)
+	request := DispatchResolutionRequest{}
+
+	// Both Workers exist and are idle before the capacity=1 race.
+	workers := make([]Worker, 2)
+	for i := range workers {
+		worker, _, initial, _, err := store.ResolveAndCreateWorker(ctx, conversation.ID, "initial", request, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, _, _, err := store.RecordAttemptOutcome(ctx, initial.ID, AttemptOutcomeInput{
+			Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "idle",
+		}); err != nil {
+			t.Fatal(err)
+		}
+		workers[i] = worker
+	}
+	start := make(chan struct{})
+	type outcome struct {
+		index int
+		attempt Phase4Attempt
+		err error
+	}
+	events := make(chan outcome, 2)
+	for i, worker := range workers {
+		go func(index int, id string) {
+			<-start
+			_, attempt, err := store.CreateTurn(ctx, id, TurnSpec{
+				Input: "new follow-up", IdempotencyKey: "followup-capacity",
+				CommandKind: "dispatch", ReserveNodeCapacity: true,
+			})
+			events <- outcome{index: index, attempt: attempt, err: err}
+		}(i, worker.ID)
+	}
+	close(start)
+	first, second := <-events, <-events
+	var accepted, denied int
+	var successful outcome
+	for _, entry := range []outcome{first, second} {
+		switch {
+		case entry.err == nil:
+			successful = entry
+			accepted++
+		case errors.Is(entry.err, ErrSelectedNodeUnavailable):
+			denied++
+		default:
+			t.Fatalf("unexpected concurrent follow-up error for Worker %d: %v", entry.index, entry.err)
+		}
+	}
+	if accepted != 1 || denied != 1 {
+		t.Fatalf("capacity=1 overbooked: accepted=%d denied=%d", accepted, denied)
+	}
+	if used, err := nodeCapacityUsed(ctx, store.db, "single", nil); err != nil || used != 1 {
+		t.Fatalf("concurrent Follow-ups reserved %d slots, err=%v", used, err)
+	}
+	_, replayed, err := store.CreateTurn(ctx, workers[successful.index].ID, TurnSpec{
+		Input: "new follow-up", IdempotencyKey: "followup-capacity",
+		CommandKind: "dispatch", ReserveNodeCapacity: true,
+	})
+	if err != nil || replayed.ID != successful.attempt.ID {
+		t.Fatalf("replaying a Follow-up must not consume another slot: attempt=%#v err=%v", replayed, err)
+	}
+	if _, _, _, err := store.RecordAttemptOutcome(ctx, successful.attempt.ID, AttemptOutcomeInput{
+		Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "follow-up done",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	loser := 1 - successful.index
+	_, next, err := store.CreateTurn(ctx, workers[loser].ID, TurnSpec{
+		Input: "new follow-up", IdempotencyKey: "followup-capacity",
+		CommandKind: "dispatch", ReserveNodeCapacity: true,
+	})
+	if err != nil || next.ID == "" {
+		t.Fatalf("free slot was not reclaimed after Follow-up completion: attempt=%#v err=%v", next, err)
+	}
+}
