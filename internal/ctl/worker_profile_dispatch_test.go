@@ -418,8 +418,11 @@ func workerTemplateRoundTrip(t *testing.T, skills []node.ManagedSkill, tools []s
 		t.Fatalf("Node did not start the bound Worker: accepted=%t err_present=%t", outcome.State == node.CommandAccepted, err != nil)
 	}
 	cancelCommand := node.Command{Kind: node.CommandCancel, Cancel: &node.CancelCommand{Metadata: metadata("profile-native-stop"), Reason: "synthetic restart boundary"}}
-	if outcome, err := firstExecution.HandleCommand(ctx, cancelCommand); err != nil || outcome.State != node.CommandAccepted {
-		t.Fatalf("synthetic Node restart boundary failed: accepted=%t err_present=%t", outcome.State == node.CommandAccepted, err != nil)
+	if outcome, err := firstExecution.HandleCommand(ctx, cancelCommand); err != nil ||
+		(outcome.State != node.CommandAccepted && !(outcome.State == node.CommandFailed && outcome.ErrorCode == "runtime_session_unavailable")) {
+		// The synthetic native process may exit just before Cancel. In that
+		// case the checkpoint still exists and a closed session needs no cancel.
+		t.Fatalf("synthetic Node restart boundary failed: outcome=%#v err=%v", outcome, err)
 	}
 	if err := nodeState.Close(); err != nil {
 		t.Fatal("Node store close failed")
