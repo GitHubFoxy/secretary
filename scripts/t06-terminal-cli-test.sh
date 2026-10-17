@@ -71,6 +71,14 @@ before="$(cat "$STATE/environment")"
 [[ "$(cat "$STATE/environment")" == "$before" ]] || fail "repeat setup rotated credentials"
 if "$ROOT/secretary" config >"$TMP/config-log" 2>&1; then fail "config unexpectedly accepted without TTY"; fi
 grep -q 'terminal' "$TMP/config-log" || fail "missing config TTY diagnostic"
+if command -v script >/dev/null 2>&1 && [[ "$(uname -s)" == Linux ]]; then
+  if ! printf '2\n\nwizard-node\n2\n5\n' | script -qec "$ROOT/secretary config" /dev/null >"$TMP/pty-log" 2>&1; then
+    cat "$TMP/pty-log" >&2
+    fail "interactive terminal wizard failed"
+  fi
+  grep -q '"node": "wizard-node"' "$STATE/node/config.json" || fail "interactive Node name not applied"
+  grep -q '"capacity": 2' "$STATE/node/config.json" || fail "interactive Node capacity not applied"
+fi
 "$ROOT/secretary" node setup --standalone --name test-node >/dev/null
 grep -q '"standalone": true' "$STATE/node/config.json" || fail "standalone config lost"
 
