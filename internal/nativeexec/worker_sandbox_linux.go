@@ -241,9 +241,9 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
  case "@anthropic-ai/claude-code": provider="claude"
  case "opencode-ai": provider="opencode"
  default:
-  // Other CLI layouts must be reviewed and provisioned explicitly.
-  return fmt.Errorf("worker sandbox: unsupported CLI package %q",packageName)
+  if strings.HasPrefix(packageName,"@openai/codex-linux-") {provider="codex"} else if strings.HasPrefix(packageName,"@anthropic-ai/claude-code-linux-") {provider="claude"} else if strings.HasPrefix(packageName,"opencode-linux-") {provider="opencode"}
  }
+ if provider=="" {return fmt.Errorf("worker sandbox: unsupported CLI package %q",packageName)}
  packageJSON, err:=os.ReadFile(filepath.Join(packageRoot,"package.json"))
  if err!=nil{return fmt.Errorf("worker sandbox: package identity missing: %w",err)}
  var metadata struct {Name string `json:"name"`; Version string `json:"version"`}
