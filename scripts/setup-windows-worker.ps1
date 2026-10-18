@@ -17,12 +17,23 @@ New-Item -ItemType Directory -Path $WorkerHome -Force | Out-Null
 $WorkerHome=(Resolve-Path -LiteralPath $WorkerHome).Path
 if ($NodeDataDir -eq $WorkerHome -or $NodeDataDir.StartsWith($WorkerHome+'\')) { throw 'Worker home overlaps Node data.' }
 if ($NodeDataDir -eq $Workspace -or $NodeDataDir.StartsWith($Workspace+'\')) { throw 'Workspace overlaps Node data.' }
-$bytes=New-Object byte[] 30
-[Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
-$password=[Convert]::ToBase64String($bytes).Replace('+','A').Replace('/','B')+'a1!'
+$configPath=Join-Path $NodeDataDir 'worker-account.json'
 $account="$env:COMPUTERNAME\$WorkerUsername"
-& net user $WorkerUsername $password /add 2>$null | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'Could not create local Worker user; refusing to overwrite existing credentials.' }
+if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+ $saved=Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+ if ($saved.username -ne $WorkerUsername -or $saved.home -ne $WorkerHome -or $saved.domain -ne '.' -or [string]::IsNullOrWhiteSpace($saved.password)) {
+  throw 'Existing Worker account configuration differs; refusing to rotate credentials or replace provider state.'
+ }
+ $password=[string]$saved.password
+ & net user $WorkerUsername *> $null
+ if ($LASTEXITCODE -ne 0) { throw 'Saved Worker account no longer exists; restore it or explicitly repair the installation.' }
+} else {
+ $bytes=New-Object byte[] 30
+ [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+ $password=[Convert]::ToBase64String($bytes).Replace('+','A').Replace('/','B')+'a1!'
+ & net user $WorkerUsername $password /add 2>$null | Out-Null
+ if ($LASTEXITCODE -ne 0) { throw 'Could not create local Worker user; refusing to overwrite existing credentials.' }
+}
 & icacls $NodeDataDir /deny "$($account):(OI)(CI)R" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Failed to seal Node data ACL' }
 foreach($dir in @($WorkerHome,$Workspace)) {
@@ -51,9 +62,10 @@ if (Test-Path -LiteralPath $nodeProfileNpm -PathType Container) {
     }
   }
 }
-$config=@{username=$WorkerUsername;password=$password;domain='.';home=$WorkerHome}|ConvertTo-Json -Compress
-$configPath=Join-Path $NodeDataDir 'worker-account.json'
-[IO.File]::WriteAllText($configPath,$config,[Text.UTF8Encoding]::new($false))
+if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+ $config=@{username=$WorkerUsername;password=$password;domain='.';home=$WorkerHome}|ConvertTo-Json -Compress
+ [IO.File]::WriteAllText($configPath,$config,[Text.UTF8Encoding]::new($false))
+}
 & icacls $configPath /inheritance:r /grant:r "$($env:USERNAME):F" 'SYSTEM:F' /deny "$($account):R" | Out-Null
 if($LASTEXITCODE -ne 0){throw 'Failed to restrict Worker account settings'}
 Write-Host 'Worker account provisioned. Projectless workspaces are created under WorkerHome/workspaces; named project workspaces must be granted explicitly.'
