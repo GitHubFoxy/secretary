@@ -25,7 +25,7 @@ func PreflightWorkerSandbox(protectedDir string) error {
   home=c.Home
  }
  if home==""{return errors.New("Windows Worker account home missing")}
- ctx,cancel:=context.WithTimeout(context.Background(),10*time.Second)
+ ctx,cancel:=context.WithTimeout(context.Background(),90*time.Second)
  defer cancel()
  ctx=WithWorkerSandbox(ctx,WorkerSandbox{ProtectedDir:protectedDir,Workspace:home})
  encoded:=utf16.Encode([]rune("exit 0"))
