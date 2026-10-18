@@ -1249,6 +1249,7 @@ func TestFakeACPReconnectProcess(t *testing.T) {
 		var request struct {
 			ID     json.RawMessage `json:"id,omitempty"`
 			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &request) != nil {
 			continue
