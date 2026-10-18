@@ -87,13 +87,14 @@ func TestT15OwnerArtifactFallbackIsDownloadableButNotPublic(t *testing.T){
  body:=[]byte("Worker original saved on central Server")
  artifact,_,err:=store.SaveArtifact(ctx,owner.ID,conversation.ID,"fallback-t15","published.zip","application/zip",body)
  if err!=nil{t.Fatal(err)}
- client:=&telegram.HTTPServerClient{BaseURL:web.URL,Credential:"t15-adapter-credential",OwnerWebBaseURL:web.URL}
+ client:=&telegram.HTTPServerClient{BaseURL:web.URL,Credential:"t15-adapter-credential",OwnerWebBaseURL:"https://owner.example"}
  link,err:=client.OwnerArtifactDownloadURL(ctx,artifact.ID)
  if err!=nil{t.Fatal(err)}
- if link!=web.URL+"/v1/artifacts/"+artifact.ID+"?download=1"{
+ if link!="https://owner.example/v1/artifacts/"+artifact.ID+"?download=1"{
   t.Fatalf("fallback URL must refer to owner-authorized Web route: %s",link)
  }
- unauthorized,err:=http.Get(link)
+ localDownload:=web.URL+"/v1/artifacts/"+artifact.ID+"?download=1"
+ unauthorized,err:=http.Get(localDownload)
  if err!=nil{t.Fatal(err)}
  unauthorized.Body.Close()
  if unauthorized.StatusCode!=http.StatusUnauthorized{
@@ -103,7 +104,7 @@ func TestT15OwnerArtifactFallbackIsDownloadableButNotPublic(t *testing.T){
  if err!=nil{t.Fatal(err)}
  browser:=&http.Client{Jar:jar}
  login(t,browser,web.URL)
- response,err:=browser.Get(link)
+ response,err:=browser.Get(localDownload)
  if err!=nil{t.Fatal(err)}
  got,readErr:=io.ReadAll(response.Body)
  response.Body.Close()
