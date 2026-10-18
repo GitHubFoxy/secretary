@@ -80,7 +80,7 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
  secRuntime:=secretaryruntime.NewRuntime(node.NewLocal(harness),capability)
  secRuntime.AttachConversation(store,conversation.ID)
  secRuntime.AttachIdentity(secretaryID)
- profile:=node.ManagedProfile{Version:"t13",Name:"secretary",Content:"Delegate Telegram video to a Worker via MCP.",Runtime:"fx",
+ profile:=node.ManagedProfile{Version:"t13",Name:"secretary",Content:"Delegate Telegram video to a Worker via MCP.",Runtime:"fx",Model:"fixture",Reasoning:"high",
   ReplyContractVersion:core.SecretaryReplyContractAddressedV1}
  profile.Hash=node.HashProfile(profile.Content,nil,profile.Model,profile.Reasoning)
  secRuntime.AttachProfile(func()node.ManagedProfile{return profile})
