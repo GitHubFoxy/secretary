@@ -37,6 +37,16 @@ func (a *Adapter) enqueueInputs(updates []Update, advance bool) error {
 			}
 		}
 		if !exists && u.Message != nil {
+			// Freeze the native needs_input identity at initial durable
+			// ingress, not when an earlier image finally unblocks this lane.
+			// Both fields belong to the same state checkpoint as the update.
+			if u.Message.Image != nil && u.Message.ThreadID != 0 && u.Message.ThreadID != 1 {
+				if mapping, ok := a.mappingForThreadLocked(u.Message.ChatID, u.Message.ThreadID); ok {
+					requestID := mapping.PendingRequestID
+					u.WorkerRequestID = &requestID
+					u.ImageWorkerRef = mapping.WorkerRef
+				}
+			}
 			a.state.PendingInputs = append(a.state.PendingInputs, u)
 		}
 		if advance && u.ID > a.state.Offset {
@@ -79,6 +89,15 @@ func (a *Adapter) drainLane(ctx context.Context, key string) error {
 		if next.ID == 0 {
 			return nil
 		}
+		// Keep the PendingInput as a durable dependency. The image worker
+		// will resume this lane only after all earlier photos in its chat
+		// have been delivered (or permanently rejected).
+		a.mu.Lock()
+		blocked := a.hasEarlierPendingImageLocked(next)
+		a.mu.Unlock()
+		if blocked {
+			return nil
+		}
 		err := a.processUpdate(ctx, next)
 		if err != nil && !errors.Is(err, ErrUnauthorized) && !errors.Is(err, ErrPairingUsed) {
 			return err
@@ -94,6 +113,9 @@ func (a *Adapter) drainLane(ctx context.Context, key string) error {
 		a.mu.Unlock()
 		if err != nil {
 			return err
+		}
+		if next.Message != nil && next.Message.Image != nil {
+			a.startImageWorkers(ctx)
 		}
 	}
 }
@@ -190,4 +212,41 @@ func (a *Adapter) bindWorkerRequest(updateID int64, currentRequestID string) (st
 		return *pending.WorkerRequestID, a.saveLocked()
 	}
 	return "", errors.New("telegram: dispatched Worker input is not durably queued")
+}
+
+func (a *Adapter) hasEarlierPendingImageLocked(u Update) bool {
+	if u.Message == nil {
+		return false
+	}
+	for _, image := range a.state.PendingImages {
+		if image.Message != nil && inputLane(image) == inputLane(u) && image.ID < u.ID {
+			return true
+		}
+	}
+	// An earlier photo may still be in another input lane and not yet have
+	// moved into PendingImages. Do not let later topic text overtake it.
+	for _, pending := range a.state.PendingInputs {
+		if pending.Message != nil && pending.Message.Image != nil &&
+			inputLane(pending) == inputLane(u) && pending.ID < u.ID {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *Adapter) inputLanesForChat(chatID int64) []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	seen := make(map[string]bool)
+	var lanes []string
+	for _, pending := range a.state.PendingInputs {
+		if pending.Message != nil && pending.Message.ChatID == chatID {
+			key := inputLane(pending)
+			if !seen[key] {
+				seen[key] = true
+				lanes = append(lanes, key)
+			}
+		}
+	}
+	return lanes
 }

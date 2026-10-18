@@ -31,6 +31,7 @@ var (
 type Update struct {
 	ID              int64    `json:"update_id"`
 	WorkerRequestID *string  `json:"worker_request_id,omitempty"`
+	ImageWorkerRef string   `json:"image_worker_ref,omitempty"`
 	Message         *Message `json:"message,omitempty"`
 }
 
@@ -44,6 +45,7 @@ type Message struct {
 	Text      string `json:"text,omitempty"`
 	Caption   string `json:"caption,omitempty"`
 	Voice     *Voice `json:"voice,omitempty"`
+	Image     *Image `json:"image,omitempty"`
 }
 
 type OutgoingMessage struct {
@@ -188,6 +190,7 @@ type persistedState struct {
 	RebindReason            string                         `json:"rebind_reason,omitempty"`
 	RebindWatermark         int64                          `json:"rebind_watermark,omitempty"`
 	PendingInputs           []Update                       `json:"pending_inputs,omitempty"`
+	PendingImages           []Update                       `json:"pending_images,omitempty"`
 	Transcripts             map[string]VoiceTranscript     `json:"transcripts,omitempty"`
 	VoiceFailures          map[string]VoiceFailure        `json:"voice_failures,omitempty"`
 }
@@ -241,6 +244,9 @@ type Adapter struct {
 	inputMu                    sync.Mutex
 	inputLanes                 map[string]*sync.Mutex
 	inputWorkers               map[string]bool
+	imageWorkers               map[string]bool
+	imageSlots                 chan struct{}
+	imageWG                    sync.WaitGroup
 	claims                     map[int64]*updateClaim
 	flushTimer                 *time.Timer
 	now                        func() time.Time
@@ -262,7 +268,7 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 	if config.TitleTimeout <= 0 {
 		config.TitleTimeout = 5 * time.Second
 	}
-	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), topicSyncWake: make(chan struct{}, 1), now: func() time.Time { return time.Now().UTC() }}
+	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), topicSyncWake: make(chan struct{}, 1), imageSlots: make(chan struct{}, maxConcurrentTelegramImages), now: func() time.Time { return time.Now().UTC() }}
 	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Delivered: map[string]time.Time{}, DeliveredSequence: map[string]int64{}, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, ToolNotified: map[string]time.Time{}, ToolPreviews: map[string]string{}, WorkerTyping: map[string]workerTypingAttempt{}, WorkerTypingInitialized: true, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}, VoiceFailures: map[string]VoiceFailure{}}
 	if err := adapter.load(); err != nil {
 		return nil, err
@@ -514,6 +520,7 @@ func Rebind(statePath string, configOwner int64, reason string, watermark int64)
 	state.Pairings = map[string]pairingRecord{}
 	state.Outbox = nil
 	state.PendingInputs = nil
+	state.PendingImages = nil
 	state.Transcripts = nil
 	state.PendingSecretaryText = ""
 	state.PendingSecretaryTools = nil
@@ -901,6 +908,9 @@ func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool
 	if update.Message == nil {
 		return nil
 	}
+	if update.Message.Image != nil {
+		return a.queueImageUpdate(update, allowed)
+	}
 	if update.Message.Voice != nil {
 		return a.deliverVoiceUpdate(ctx, update, allowed)
 	}
@@ -964,6 +974,12 @@ func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed 
 				}
 				if isSteerRejection(err) {
 					serviceText := formatWorkerSteerErrorMessage(err)
+					if update.ImageWorkerRef != "" {
+						// Image ingestion has a separate durable completion.
+						// Do not repeat getFile after a terminal native rejection
+						// merely because Telegram failed to deliver the warning.
+						return a.imageNotice(ctx, update, serviceText)
+					}
 					sendErr := a.sendMessage(ctx, OutgoingMessage{
 						Identity: fmt.Sprintf("steer-error:%d", update.ID),
 						ChatID:   update.Message.ChatID,
@@ -1150,6 +1166,7 @@ func (a *Adapter) updateWorkerTyping(event Event, mapping TopicMapping) error {
 }
 
 func (a *Adapter) PollOnce(ctx context.Context) error {
+	a.startImageWorkers(ctx)
 	if err := a.pollInputs(ctx); err != nil {
 		return err
 	}
@@ -1171,6 +1188,7 @@ func (a *Adapter) Run(ctx context.Context) error {
 		<-refreshDone
 		<-syncDone
 		a.inputWG.Wait()
+		a.imageWG.Wait()
 	}()
 	backoff := 100 * time.Millisecond
 	maxBackoff := a.config.PollInterval
@@ -1181,6 +1199,7 @@ func (a *Adapter) Run(ctx context.Context) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
+		a.startImageWorkers(ctx)
 		err := a.pollInputs(ctx)
 		a.startInputWorkers(ctx)
 		if err == nil {
@@ -2683,16 +2702,27 @@ func isSteerRejection(err error) bool {
 	if isUncertainWorkerCommandResponse(errStr) {
 		return false
 	}
-	if strings.Contains(errStr, `"category"`) || strings.Contains(errStr, `"provider_code"`) || strings.Contains(errStr, `"error"`) {
-		return true
+	var serverErr *ServerHTTPError
+	if errors.As(err, &serverErr) {
+		// HTTP 5xx, throttling and timeout are retryable regardless of
+		// whether their body includes a JSON "error" property.
+		if serverErr.StatusCode >= 500 || serverErr.StatusCode == 429 ||
+			serverErr.StatusCode == 408 || serverErr.StatusCode < 400 {
+			return false
+		}
+		return serverErr.StatusCode < 500
+	}
+	// Legacy in-process clients may return untyped provider refusals. Do
+	// not infer permanence from a generic JSON "error" field.
+	if strings.Contains(errStr, "server returned 429") || strings.Contains(errStr, "server returned 408") ||
+		strings.Contains(errStr, "server returned 5") {
+		return false
 	}
 	if strings.Contains(errStr, "400 Bad Request") || strings.Contains(errStr, "server returned 4") {
 		return true
 	}
-	if strings.Contains(errStr, "usage_limit") || strings.Contains(errStr, "usage_limit_exceeded") {
-		return true
-	}
-	return false
+	return strings.Contains(errStr, `"category"`) || strings.Contains(errStr, `"provider_code"`) ||
+		strings.Contains(errStr, "usage_limit_exceeded")
 }
 
 func isUncertainWorkerCommandResponse(errText string) bool {
