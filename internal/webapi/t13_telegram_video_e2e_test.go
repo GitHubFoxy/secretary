@@ -64,8 +64,12 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
   defer func(){if err!=nil{select{case secretaryErrors<-err:default:}}}()
   body,turnID,inputID,e:=t13SecretaryPromptIdentity(prompt)
   if e!=nil{return e}
-  if !strings.Contains(body,"Telegram video (update 500")||!strings.Contains(body,"Describe the sampled video"){
-   return fmt.Errorf("automatic Secretary routing lost Telegram ingress context")
+  const userHead="\n\nUser turn:\n"
+  inputStart:=strings.LastIndex(body,userHead)
+  if inputStart<0{return fmt.Errorf("automatic Secretary prompt has no canonical user turn")}
+  input:=strings.TrimSpace(body[inputStart+len(userHead):])
+  if !strings.Contains(input,"Telegram video (update 500")||!strings.Contains(input,"Describe the sampled video")||!strings.Contains(input,"artifact://"){
+   return fmt.Errorf("automatic Secretary routing lost Telegram video artifact or caption")
   }
   reply,e:=json.Marshal(map[string]any{
    "text":"Video request received.",
@@ -74,7 +78,7 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
   if e!=nil{return e}
   if _,e=tool.Call(ctx,"reply_to_user",reply);e!=nil{return e}
   args,e:=json.Marshal(map[string]any{
-   "intent":"Describe the sampled video",
+   "intent":input,
    "idempotency_key":inputID,
    "secretary_turn_id":turnID,"input_id":inputID,
    "preferences":map[string]any{"node_id":"t13-remote","harness_kind":"fx"},
