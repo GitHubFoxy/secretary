@@ -89,6 +89,6 @@ func TestT12LocalCommandCancelBeforeArtifactReadyIsDurableAndNoNativeStart(t *te
  if persisted.LocalPrestartState(meta.AttemptID)!="canceled"{
   t.Fatal("cancellation checkpoint not durable across Node state reload")
  }
- _,err=persisted.BeginLocalPrestart(meta.AttemptID,meta.WorkerRef)
+ err=persisted.BeginLocalPrestart(meta.AttemptID,meta.WorkerRef)
  if !errors.Is(err,node.ErrLocalPrestartCanceled){t.Fatalf("old canceled Attempt accepted after restart: %v",err)}
 }
