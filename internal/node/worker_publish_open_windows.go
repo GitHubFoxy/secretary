@@ -20,7 +20,14 @@ func openPublishedFileNoFollow(workspace, relativePath string) (*os.File, error)
 	if !ValidPublishedSourcePath(filepath.ToSlash(relativePath)) {
 		return nil, errors.New("artifact publish: invalid Windows workspace path")
 	}
-	rootName, err := syscall.UTF16PtrFromString(workspace)
+	// Pin the entire configured Workspace path, starting at the volume
+	// root. OpenExisting(Workspace) alone follows ancestor junctions before
+	// FILE_FLAG_OPEN_REPARSE_POINT can inspect the last component.
+	if !filepath.IsAbs(workspace) { return nil, errors.New("artifact publish: Workspace must be absolute") }
+	clean:=filepath.Clean(workspace)
+	volume:=filepath.VolumeName(clean)
+	if volume=="" { return nil, errors.New("artifact publish: Workspace volume missing") }
+	rootName, err := syscall.UTF16PtrFromString(volume+"\\")
 	if err != nil { return nil, err }
 	directory, err := syscall.CreateFile(rootName, syscall.GENERIC_READ,
 		syscall.FILE_SHARE_READ|syscall.FILE_SHARE_WRITE|syscall.FILE_SHARE_DELETE,
@@ -35,7 +42,15 @@ func openPublishedFileNoFollow(workspace, relativePath string) (*os.File, error)
 	if rootInfo.FileAttributes&syscall.FILE_ATTRIBUTE_REPARSE_POINT != 0 ||
 		rootInfo.FileAttributes&syscall.FILE_ATTRIBUTE_DIRECTORY == 0 {
 		_ = syscall.CloseHandle(directory)
-		return nil, errors.New("artifact publish: workspace root is not a regular directory")
+		return nil, errors.New("artifact publish: volume root is a reparse point")
+	}
+	relativeRoot:=strings.TrimLeft(clean[len(volume):], "\\\\/")
+	for _, part := range strings.FieldsFunc(relativeRoot,func(r rune)bool{return r=='\\\\'||r=='/'}) {
+		if part=="." || part==".." || part=="" {_=syscall.CloseHandle(directory);return nil, errors.New("artifact publish: invalid Workspace component")}
+		next,openErr:=openNtNoFollow(directory,part,true)
+		_ = syscall.CloseHandle(directory)
+		if openErr!=nil {return nil,openErr}
+		directory=next
 	}
 	parts := strings.Split(filepath.ToSlash(relativePath), "/")
 	for _, part := range parts[:len(parts)-1] {
