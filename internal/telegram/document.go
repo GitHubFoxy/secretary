@@ -8,6 +8,7 @@ import(
  "fmt"
  "io"
  "net/http"
+ "net"
  "net/url"
  "mime"
  "mime/multipart"
@@ -104,6 +105,25 @@ func documentFailure(kind documentFailureKind,err error)error{
 // exactly-once delivery. Telegram offers neither an idempotency key for
 // sendDocument nor a query for a lost response. A warning directs the owner
 // to inspect the chat and explicitly request resend if necessary.
+// ValidateOwnerWebBaseURL forbids localhost/private addresses for links intended
+// for an owner on a different device. TLS is required for owner credentials.
+func ValidateOwnerWebBaseURL(raw string)error{
+ if strings.TrimSpace(raw)==""{return errors.New("required when Telegram is enabled; configure public HTTPS Web/PWA origin")}
+ u,err:=url.Parse(raw)
+ if err!=nil||u.Scheme!="https"||u.Hostname()==""||u.User!=nil||u.RawQuery!=""||u.Fragment!=""||u.Path!=""{
+  return errors.New("must be a clean HTTPS origin without credentials, path, query or fragment")
+ }
+ hostname:=strings.ToLower(u.Hostname())
+ if hostname=="localhost"||strings.HasSuffix(hostname,".localhost")||strings.HasSuffix(hostname,".local"){
+  return errors.New("localhost or local-only hostname is not owner-reachable")
+ }
+ if ip:=net.ParseIP(hostname);ip!=nil{
+  if ip.IsLoopback()||ip.IsPrivate()||ip.IsLinkLocalUnicast()||ip.IsUnspecified() {
+   return errors.New("private, loopback or link-local address is not owner-reachable")
+  }
+ }
+ return nil
+}
 // OwnerArtifactLink is a Web/PWA link protected by the existing owner session.
 // It is deliberately not a public signed URL or the adapter's bearer token.
 type OwnerArtifactLink interface {
@@ -122,10 +142,7 @@ func(c *HTTPServerClient)OwnerArtifactDownloadURL(ctx context.Context,id string)
  if resp.StatusCode!=http.StatusOK{return "",fmt.Errorf("output Artifact unavailable HTTP %d",resp.StatusCode)}
  origin:=strings.TrimRight(strings.TrimSpace(c.OwnerWebBaseURL),"/")
  if origin==""{return "",errors.New("SECRETARY_TELEGRAM_WEB_BASE_URL is required for owner-reachable Artifact fallback")}
- parsed,err:=url.Parse(origin)
- if err!=nil||parsed.Host==""||(parsed.Scheme!="https"&&parsed.Scheme!="http")||parsed.User!=nil||parsed.RawQuery!=""||parsed.Fragment!=""{
-  return "",errors.New("owner Web base URL must be a clean HTTP(S) origin")
- }
+ if err:=ValidateOwnerWebBaseURL(origin);err!=nil{return "",err}
  // No secret: /v1/artifacts/{id} requires an owner-authenticated Web/PWA session.
  return origin+"/v1/artifacts/"+url.PathEscape(id)+"?download=1",nil
 }
