@@ -242,7 +242,13 @@ func wrapLocalPublishedSession(session Session, revoke func()) Session {
 	go func(){
 		defer close(out.result)
 		defer out.once.Do(out.revoke)
-		for result := range session.Result() { out.result <- result }
+		for result := range session.Result() {
+			out.result <- result
+			// A native terminal Result ends this Attempt's publication authority,
+			// even if the provider leaves its result channel open until Close.
+			out.once.Do(out.revoke)
+			return
+		}
 	}()
 	return out
 }
