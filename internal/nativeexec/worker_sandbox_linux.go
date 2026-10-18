@@ -264,13 +264,14 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
  validIdentity:=metadata.Name==packageName
  if strings.HasPrefix(packageName,"@openai/codex-linux-") && metadata.Name=="@openai/codex" {validIdentity=true}
  if strings.HasPrefix(packageName,"@anthropic-ai/claude-code-linux-") && metadata.Name=="@anthropic-ai/claude-code" {validIdentity=true}
+ if strings.HasPrefix(packageName,"@openai/codex-linux-") && !strings.HasSuffix(metadata.Version,"-"+strings.TrimPrefix(packageName,"@openai/codex-")) {validIdentity=false}
  if !validIdentity || metadata.Version=="" || strings.ContainsAny(metadata.Version,"/\\\\") || strings.Contains(metadata.Version,"..") {
    return errors.New("worker sandbox: invalid CLI package identity")
  }
  // Root ownership is mandatory even when the Node and Server use the same UID.
  // Provision this outside user-writable npm caches, with a package archive
  // verified against its published registry integrity before hashing files.
- packageID:=strings.ReplaceAll(metadata.Name,"/","__")
+ packageID:=strings.ReplaceAll(packageName,"/","__")
  manifestPath:=filepath.Join("/etc/secretary/cli-manifests",provider,packageID,metadata.Version+".json")
  info,err:=os.Lstat(manifestPath)
  if err!=nil{return fmt.Errorf("worker sandbox: trusted CLI provenance unavailable: %w",err)}
