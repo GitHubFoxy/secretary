@@ -190,7 +190,12 @@ func TestT11CrashAfterDurableTerminalWarningDoesNotRepeatGetFile(t *testing.T) {
 	if pending!=0 || warnings!=1 {
 		t.Fatalf("terminal warning not atomic with queue removal: images=%d warnings=%d",pending,warnings)
 	}
-	// Simulated hard crash at this exact checkpoint (no drainImageLane).
+	// Simulate the independent outbox loop attempting delivery while the
+	// Bot API returns 503; the terminal image remains completed.
+	if err:=beforeCrash.drainOutbox(context.Background());err==nil {
+		t.Fatal("first Telegram warning delivery must fail with 503")
+	}
+	// Simulated hard crash without ever invoking drainImageLane cleanup.
 	restored:=open()
 	restored.mu.Lock()
 	images,queuedWarnings:=len(restored.state.PendingImages),len(restored.state.Outbox)
