@@ -224,8 +224,24 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
   if outcome.ID!=""{break}
   select{case <-ctx.Done():t.Fatal("native Topic Result not recorded");case <-time.After(20*time.Millisecond):}
  }
- terminal:=telegram.Event{Sequence:9000,Kind:"worker.completed",WorkerRef:workerRef,Title:"video-worker",
-  Text:outcome.Summary,TerminalIdentity:"turn:"+outcome.TurnID}
+ // Bridge the actual durable Server Result event, not a fabricated Result.
+ events,err:=store.EventsAfterSeq(ctx,0,500)
+ if err!=nil{t.Fatal(err)}
+ var terminal telegram.Event
+ for _,source:=range events{
+  if source.Kind!="attempt.outcome_recorded"&&source.Kind!="result.accepted"{continue}
+  if !strings.Contains(string(source.Payload),outcome.Summary){continue}
+  ref:=source.WorkerRef
+  if ref==""&&source.AggregateType=="worker"{ref=source.AggregateID}
+  if ref!=workerRef{continue}
+  identity:="turn:"+outcome.TurnID
+  if source.CorrelationID!=""{identity="turn:"+source.CorrelationID}
+  terminal=telegram.Event{EventID:source.ID,Sequence:source.Seq,Kind:"worker.completed",
+   WorkerRef:workerRef,Title:"video-worker",Text:outcome.Summary,
+   TerminalIdentity:identity,Payload:source.Payload}
+  break
+ }
+ if terminal.Sequence==0{t.Fatal("no canonical Server terminal event for native Telegram Topic Worker")}
  if err:=adapter.HandleDurableEvent(ctx,terminal);err!=nil{t.Fatal(err)}
  if err:=adapter.SyncWorkerTopics(ctx);err!=nil{t.Fatal(err)}
  if err:=adapter.HandleDurableEvent(ctx,terminal);err!=nil{t.Fatal(err)}
