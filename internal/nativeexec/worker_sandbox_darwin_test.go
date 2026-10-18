@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -29,7 +30,7 @@ func TestT09SeatbeltProtectsAlternateNodeDataRoots(t *testing.T) {
 				allowPath,err:=filepath.EvalSymlinks(allow)
 				if err!=nil{continue}
 				if (rootPath==allowPath||strings.HasPrefix(rootPath,allowPath+string(filepath.Separator))) &&
-					strings.Contains(profile,"(allow file-read* (subpath \\""+allow+"\\"))") {exposed=true}
+					strings.Contains(profile, "(allow file-read* (subpath " + strconv.Quote(allow) + "))") {exposed=true}
 			}
 			if exposed && !strings.Contains(profile,"(deny file-read* (subpath "){
 				t.Fatalf("alternate Node root %s exposed by system allowlist",root)
