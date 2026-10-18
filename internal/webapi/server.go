@@ -224,6 +224,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/internal/telegram/video/source", s.telegramVideoSource)
 	mux.HandleFunc("GET /v1/internal/telegram/video/status", s.telegramVideoStatus)
 	mux.HandleFunc("GET /v1/internal/telegram/video/limits", s.telegramVideoLimits)
+	mux.HandleFunc("GET /v1/internal/telegram/video/capability", s.telegramVideoCapability)
 	mux.HandleFunc("POST /v1/internal/telegram/voice/result", s.telegramVoiceResult)
 	mux.HandleFunc("POST /v1/artifacts/publish", s.publishWorkerArtifact)
 	mux.HandleFunc("GET /v1/artifacts/{id}", s.artifactRoute)
