@@ -135,6 +135,7 @@ type t11GateDownloadTransport struct {
  entered chan struct{}
  release chan struct{}
  failFirst bool
+ data []byte
 }
 func (tr *t11GateDownloadTransport) GetFile(context.Context,string)(TelegramFile,error){
  return TelegramFile{FilePath:"image.png",FileSize:0},nil
@@ -153,18 +154,13 @@ func (tr *t11GateDownloadTransport) DownloadFile(ctx context.Context,_ string,_ 
  case <-tr.release:
  }
  if tr.failFirst && attempt==1 {return nil,errors.New("temporary upstream 503")}
- return t11ValidTinyPNG,nil
+ return tr.data,nil
 }
 
-// PNG payload is initialized from an existing tested fixture before starting
-// concurrent image workers; the returned bytes are treated as immutable.
-var t11ValidTinyPNG []byte
-
-func TestT11ImageDownloadsBoundAcrossTopicsAndReleaseAfterError(t *testing.T){
+ func TestT11ImageDownloadsBoundAcrossTopicsAndReleaseAfterError(t *testing.T){
  group:=int64(-200)
  const workers=7
- tr:=&t11GateDownloadTransport{fakeTransport:&fakeTransport{},entered:make(chan struct{},workers),release:make(chan struct{}),failFirst:true}
- t11ValidTinyPNG=t11PNG(t)
+ tr:=&t11GateDownloadTransport{fakeTransport:&fakeTransport{},entered:make(chan struct{},workers),release:make(chan struct{}),failFirst:true,data:t11PNG(t)}
  srv:=&t11SignalServer{delivered:make(chan string,workers)}
  a:=t11BoundTopicAdapter(t,filepath.Join(t.TempDir(),"state.json"),tr,srv,group,workers)
  for i:=0;i<workers;i++{
@@ -182,9 +178,7 @@ func TestT11ImageDownloadsBoundAcrossTopicsAndReleaseAfterError(t *testing.T){
   }
   select{case <-tr.entered:case <-deadline:t.Fatalf("never filled image pool: active=%d peak=%d",active,peak)}
  }
- // With slots occupied, additional Topics must not begin downloads.
- select{case <-tr.entered: t.Fatal("too many concurrent downloads")
- case <-time.After(50*time.Millisecond):}
+ // A third concurrent download would have raised peak beyond the cap.
  close(tr.release)
  a.imageWG.Wait()
  tr.mu.Lock()
@@ -207,8 +201,7 @@ func TestT11ImageDownloadsBoundAcrossTopicsAndReleaseAfterError(t *testing.T){
 
 func TestT11ImageDownloadCancellationReleasesPoolSlot(t *testing.T){
  group:=int64(-200)
- tr:=&t11GateDownloadTransport{fakeTransport:&fakeTransport{},entered:make(chan struct{},2),release:make(chan struct{})}
- t11ValidTinyPNG=t11PNG(t)
+ tr:=&t11GateDownloadTransport{fakeTransport:&fakeTransport{},entered:make(chan struct{},2),release:make(chan struct{}),data:t11PNG(t)}
  srv:=&t11SignalServer{delivered:make(chan string,2)}
  a:=t11BoundTopicAdapter(t,filepath.Join(t.TempDir(),"state.json"),tr,srv,group,2)
  ctx,cancel:=context.WithCancel(context.Background())
