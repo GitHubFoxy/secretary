@@ -326,6 +326,7 @@ func (e *ServerHTTPError) Error() string {
 }
 
 type HTTPServerClient struct {
+	OwnerWebBaseURL string // owner-reachable Web/PWA origin, never a bearer credential
 	BaseURL    string
 	Credential string
 	HTTPClient *http.Client
