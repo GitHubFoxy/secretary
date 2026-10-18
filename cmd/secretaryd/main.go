@@ -33,6 +33,8 @@ import (
 func main() {
 	_ = syscall.Umask(0o077)
 	artifactMCP := flag.Bool("artifact-mcp", false, "serve the scoped Worker Artifact MCP tool")
+	backupTo := flag.String("backup-to", "", "offline: write verified central Server backup to a new archive")
+	restoreFrom := flag.String("restore-from", "", "offline: restore verified backup into an empty Server data directory")
 	dataDir := flag.String("data-dir", defaultDataDir(), "directory for Secretary durable state")
 	listen := flag.String("listen", "127.0.0.1:8081", "web listener address")
 	configPath := flag.String("config", "", "path to Secretary config.toml")
@@ -43,6 +45,34 @@ func main() {
 	checkOpenCodeAuth := flag.Bool("check-opencode-auth", false, "check stored OpenCode credentials in the selected Secretary store and exit")
 	opencodeCommand := flag.String("opencode-command", "opencode", "OpenCode executable used for the selected-store auth check")
 	flag.Parse()
+	if *backupTo != "" || *restoreFrom != "" {
+		if (*backupTo != "") == (*restoreFrom != "") { log.Fatal("choose exactly one of --backup-to or --restore-from") }
+		if *configPath == "" { *configPath = filepath.Join(*dataDir, "config.toml") }
+		extras := map[string]string{}
+		for _,name := range []string{"config.toml", "user.md", "memory.md", "preferences.md"} {
+			path := filepath.Join(*dataDir,name)
+			if name == "config.toml" { path = *configPath }
+			if info,e:=os.Lstat(path);e==nil && info.Mode().IsRegular() { extras[name]=path } else if e!=nil && !os.IsNotExist(e) { log.Fatal(e) }
+		}
+		if *backupTo != "" {
+			store,e:=core.Open(context.Background(),filepath.Join(*dataDir,"secretary.db"))
+			if e!=nil { log.Fatal(e) }
+			defer store.Close()
+			if e=store.CreateServerBackup(context.Background(),*backupTo,extras);e!=nil { log.Fatal(e) }
+			log.Print("verified Server backup created; remote Node-native processes are not included")
+			return
+		}
+		if _,e:=os.Stat(*dataDir);e==nil {
+			entries,e:=os.ReadDir(*dataDir);if e!=nil { log.Fatal(e) }
+			if len(entries)!=0 { log.Fatal("restore requires an empty destination data directory") }
+		} else if !os.IsNotExist(e) { log.Fatal(e) }
+		if e:=os.MkdirAll(*dataDir,0o700);e!=nil { log.Fatal(e) }
+		// A restore can only install the extras listed in the archive manifest.
+		// For a standalone restore, use the known optional files when present.
+		if e:=core.RestoreServerBackupAuto(context.Background(),*restoreFrom,*dataDir);e!=nil { log.Fatal(e) }
+		log.Print("central Server restored; remote Node-native sessions must reconnect and be reconciled")
+		return
+	}
 	if *artifactMCP {
 		if err := artifactmcp.Serve(context.Background()); err != nil {
 			log.Fatal(err)
