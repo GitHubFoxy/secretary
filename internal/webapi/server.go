@@ -222,6 +222,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /v1/internal/telegram/voice/source", s.telegramVoiceSource)
 	mux.HandleFunc("POST /v1/internal/telegram/image/source", s.telegramImageSource)
 	mux.HandleFunc("POST /v1/internal/telegram/video/source", s.telegramVideoSource)
+	mux.HandleFunc("POST /v1/internal/telegram/document/source", s.telegramDocumentSource)
+	mux.HandleFunc("GET /v1/internal/telegram/document/{id}", s.telegramDocumentDownload)
 	mux.HandleFunc("GET /v1/internal/telegram/video/status", s.telegramVideoStatus)
 	mux.HandleFunc("GET /v1/internal/telegram/video/limits", s.telegramVideoLimits)
 	mux.HandleFunc("GET /v1/internal/telegram/video/capability", s.telegramVideoCapability)

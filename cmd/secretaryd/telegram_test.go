@@ -42,6 +42,7 @@ func TestTelegramDeploymentIsExplicitlyGated(t *testing.T) {
 }
 
 func TestTelegramDeploymentDefaultsToTwoSecondPolling(t *testing.T) {
+ t.Setenv("SECRETARY_TELEGRAM_WEB_BASE_URL","https://owner.example")
 	t.Setenv("SECRETARY_TELEGRAM_ENABLED", "true")
 	t.Setenv("SECRETARY_TELEGRAM_BOT_TOKEN", "fixture")
 	t.Setenv("SECRETARY_TELEGRAM_SERVER_CREDENTIAL", "fixture")
@@ -1374,4 +1375,21 @@ func TestTelegramLegacyFailureEventReplayOnReopen(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestT15EnabledTelegramRequiresExternalOwnerWebOrigin(t *testing.T){
+ t.Setenv("SECRETARY_TELEGRAM_ENABLED","true")
+ t.Setenv("SECRETARY_TELEGRAM_BOT_TOKEN","fixture")
+ t.Setenv("SECRETARY_TELEGRAM_SERVER_CREDENTIAL","fixture")
+ t.Setenv("SECRETARY_TELEGRAM_WEB_BASE_URL","")
+ if _,err:=configuredTelegramDeployment();err==nil||!strings.Contains(err.Error(),"SECRETARY_TELEGRAM_WEB_BASE_URL"){
+  t.Fatalf("enabled deployment accepted unset external Web origin: %v",err)
+ }
+ for _,invalid:=range []string{"http://127.0.0.1:8080","https://localhost:8080","https://192.168.1.20"}{
+  t.Setenv("SECRETARY_TELEGRAM_WEB_BASE_URL",invalid)
+  if _,err:=configuredTelegramDeployment();err==nil{t.Fatalf("accepted unusable owner Web origin %s",invalid)}
+ }
+ t.Setenv("SECRETARY_TELEGRAM_WEB_BASE_URL","https://owner.example")
+ conf,err:=configuredTelegramDeployment()
+ if err!=nil||conf.OwnerWebBaseURL!="https://owner.example"{t.Fatalf("external HTTPS owner origin rejected: %#v %v",conf,err)}
 }

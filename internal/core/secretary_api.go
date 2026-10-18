@@ -130,6 +130,9 @@ func (s *Store) RecoverSecretaryTurn(ctx context.Context, identityID, errorMessa
 }
 
 func (s *Store) RecordSecretaryTextDelta(ctx context.Context, turnID, text string) (Event, error) {
+	gate := s.secretaryOutputGate(turnID)
+	gate.Lock()
+	defer gate.Unlock()
 	return s.AppendSecretaryEvent(ctx, SecretaryEventInput{TurnID: turnID, Kind: SecretaryTextDeltaEvent, Text: text})
 }
 

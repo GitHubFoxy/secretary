@@ -40,7 +40,7 @@ func (a *Adapter) enqueueInputs(updates []Update, advance bool) error {
 			// Freeze the native needs_input identity at initial durable
 			// ingress, not when an earlier image finally unblocks this lane.
 			// Both fields belong to the same state checkpoint as the update.
-			if (u.Message.Image != nil || u.Message.Video != nil) && u.Message.ThreadID != 0 && u.Message.ThreadID != 1 {
+			if (u.Message.Image != nil || u.Message.Video != nil || u.Message.Document != nil) && u.Message.ThreadID != 0 && u.Message.ThreadID != 1 {
 				if mapping, ok := a.mappingForThreadLocked(u.Message.ChatID, u.Message.ThreadID); ok {
 					requestID := mapping.PendingRequestID
 					u.WorkerRequestID = &requestID
@@ -114,7 +114,7 @@ func (a *Adapter) drainLane(ctx context.Context, key string) error {
 		if err != nil {
 			return err
 		}
-		if next.Message != nil && (next.Message.Image != nil || next.Message.Video != nil) {
+		if next.Message != nil && (next.Message.Image != nil || next.Message.Video != nil || next.Message.Document != nil) {
 			a.startImageWorkers(ctx)
 		}
 	}

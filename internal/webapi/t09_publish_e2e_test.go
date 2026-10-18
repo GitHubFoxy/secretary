@@ -280,6 +280,11 @@ func TestT09RemoteWorkerPublishToWebResultAndRestart(t *testing.T) {
 	if err != nil || !strings.Contains(currentResult.ArtifactRefs, ref) {
 		t.Fatalf("terminal Result has no ArtifactRefs: %#v %v", currentResult, err)
 	}
+	// T15 proves the actual T09 publication reaches the Telegram adapter via
+	// the production durable Server relay (no synthesized Worker Result).
+	t15VerifyPublishedDocumentRelay(t, ctx, api, store, server.URL,
+		spawned.Value.Worker.WorkerRef, artifact.ID, data)
+
 	owner, _, err := store.EnsureOwner(ctx)
 	if err != nil {
 		t.Fatal(err)
