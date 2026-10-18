@@ -58,8 +58,10 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
   ReplyContractVersion:core.SecretaryReplyContractAddressedV1,
  });err!=nil{t.Fatal(err)}
  harness:=&t13SecretaryHarness{}
+ secretaryErrors:=make(chan error,8)
  tool:=mcp.Secretary{Workers:svc,ReplyContractVersion:core.SecretaryReplyContractAddressedV1}
- harness.onPrompt=func(prompt string)error{
+ harness.onPrompt=func(prompt string)(err error){
+  defer func(){if err!=nil{select{case secretaryErrors<-err:default:}}}()
   body,turnID,inputID,e:=t13SecretaryPromptIdentity(prompt)
   if e!=nil{return e}
   if !strings.Contains(body,"Telegram video (update 500")||!strings.Contains(body,"Describe the sampled video"){
@@ -157,6 +159,7 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
  if originalArtifact.VideoFrames[1].TimestampMS!=1000{t.Fatalf("timestamps: %+v",originalArtifact.VideoFrames)}
  select{case native:=<-runtime.seen:
   if len(native.Images)!=2||!strings.Contains(native.Task,"Describe the sampled video") {t.Fatalf("native Worker did not see frames: %+v",native)}
+ case e:=<-secretaryErrors:t.Fatalf("automatic Secretary MCP routing: %v",e)
  case <-ctx.Done():t.Fatal("Worker never received frames")}
  for {
   entries,e:=store.EntriesTail(ctx,conversation.ID,0,40)
