@@ -45,3 +45,20 @@ func TestT16DeletionIsOwnerScopedAndPreservesHistory(t *testing.T){
  var count int
  if err=s.db.QueryRowContext(ctx,"SELECT COUNT(*) FROM conversation_entries WHERE conversation_id=? AND body LIKE '%artifact://%'",conv.ID).Scan(&count);err!=nil||count==0{t.Fatalf("result reference history lost: count %d error %v",count,err)}
 }
+
+func TestT16ArchiveWorkerPreservesPublishedArtifact(t *testing.T){
+ ctx:=context.Background();s:=newTestStore(t)
+ owner,conv,err:=s.CreatePersonWithConversation(ctx);if err!=nil{t.Fatal(err)}
+ worker,turn,attempt,err:=s.CreateWorker(ctx,conv.ID,phase4WorkerSpec(),TurnSpec{Input:"produce a report"})
+ if err!=nil{t.Fatal(err)}
+ if _,err=s.SetPhase4AttemptActive(ctx,attempt.ID);err!=nil{t.Fatal(err)}
+ artifact,_,err:=s.SavePublishedArtifact(ctx,attempt.NodeID,worker.WorkerRef,attempt.ID,"t16-published-report","report.txt","text/plain",[]byte("durable output"))
+ if err!=nil{t.Fatal(err)}
+ _,result,_,err:=s.RecordAttemptOutcome(ctx,attempt.ID,AttemptOutcomeInput{Status:OutcomeSucceeded,Classification:OutcomeFinal,Summary:"result artifact://"+artifact.ID})
+ if err!=nil||result==nil{t.Fatalf("result %v %v",result,err)}
+ closed,err:=s.CloseWorker(ctx,worker.ID);if err!=nil||!closed.Archived{t.Fatalf("archive %v %v",closed,err)}
+ got,body,err:=s.ArtifactForPerson(ctx,owner.ID,artifact.ID)
+ if err!=nil||got.ID!=artifact.ID||string(body)!="durable output"{t.Fatalf("archive lost bytes %v %q %v",got,body,err)}
+ after,err:=s.Phase4Result(ctx,turn.ID)
+ if err!=nil||after.ID!=result.ID{t.Fatalf("archive lost result %v %v",after,err)}
+}
