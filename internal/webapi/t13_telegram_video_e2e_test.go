@@ -177,6 +177,12 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
   if len(native.Images)!=2||!strings.Contains(native.Task,"Describe the sampled video") {t.Fatalf("native Worker did not see frames: %+v",native)}
  case e:=<-secretaryErrors:t.Fatalf("automatic Secretary MCP routing: %v",e)
  case e:=<-secRuntime.Errors():t.Fatalf("Secretary runtime failed before routing: %v",e)
+ case <-time.After(8*time.Second):
+  checkCtx,stop:=context.WithTimeout(context.Background(),time.Second)
+  defer stop()
+  turns,_:=store.SecretaryTurns(checkCtx,secretaryID.ID)
+  workers,_:=store.WorkersForConversation(checkCtx,conversation.ID)
+  t.Fatalf("automatic Telegram ingress did not dispatch: SecretaryTurns=%+v Workers=%+v",turns,workers)
  case <-ctx.Done():t.Fatal("Worker never received frames")}
  for {
   entries,e:=store.EntriesTail(ctx,conversation.ID,0,40)
