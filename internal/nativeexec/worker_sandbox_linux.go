@@ -281,20 +281,24 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
      strings.Contains(rel,"\\\\") || len(expected)!=64 {
       return errors.New("worker sandbox: invalid CLI manifest entry")
    }
-   file:=filepath.Join(packageRoot,rel)
-   info,err:=os.Lstat(file);if err!=nil{return err}
-   if !info.Mode().IsRegular(){return errors.New("worker sandbox: nonregular CLI asset")}
-   fd,err:=os.Open(file);if err!=nil{return err}
+   // The host-side package is only a locator. Never bind its potentially
+   // mutable files: materialize the independently verified tarball in a
+   // root-owned store and bind those exact bytes at the expected CLI path.
+   target:=filepath.Join(packageRoot,rel)
+   source:=filepath.Join("/opt/secretary/cli-store",provider,metadata.Version,rel)
+   info,err:=os.Lstat(source);if err!=nil{return fmt.Errorf("worker sandbox: verified CLI asset unavailable: %w",err)}
+   owner,ok:=info.Sys().(*syscall.Stat_t)
+   if !ok || owner.Uid!=0 || !info.Mode().IsRegular() || info.Mode().Perm()&022!=0 || info.Size()>128<<20 {
+     return errors.New("worker sandbox: untrusted or oversized provisioned CLI asset")
+   }
+   fd,err:=os.Open(source);if err!=nil{return err}
    digest:=sha256.New()
-   if info.Size()>128<<20 { fd.Close(); return errors.New("worker sandbox: CLI asset exceeds size limit") }
    _,copyErr:=io.Copy(digest,fd)
    closeErr:=fd.Close()
    if copyErr!=nil{return copyErr};if closeErr!=nil{return closeErr}
    wanted,err:=hex.DecodeString(expected)
-   if err!=nil || !equalDigests(digest.Sum(nil),wanted){return fmt.Errorf("worker sandbox: CLI package content mismatches trusted manifest: %s",rel)}
-   if filepath.Base(file)=="codex" || filepath.Base(file)=="claude" || filepath.Base(file)=="opencode" {
-     if err:=mountRuntimeExecutable(wrapped,file);err!=nil{return err}
-   } else if err:=mountRuntimeFile(wrapped,file);err!=nil{return err}
+   if err!=nil || !equalDigests(digest.Sum(nil),wanted){return fmt.Errorf("worker sandbox: verified CLI bytes mismatch trusted manifest: %s",rel)}
+   *wrapped=append(*wrapped,"--ro-bind",source,target)
  }
  return nil
 }
