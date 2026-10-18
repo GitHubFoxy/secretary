@@ -19,10 +19,12 @@ import (
 	"time"
 
 	"github.com/beruseruko/secretary/internal/app"
+	"github.com/beruseruko/secretary/internal/artifactmcp"
 	"github.com/beruseruko/secretary/internal/config"
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
 	"github.com/beruseruko/secretary/internal/node"
+	"github.com/beruseruko/secretary/internal/nativeexec"
 	secretaryruntime "github.com/beruseruko/secretary/internal/secretary"
 	"github.com/beruseruko/secretary/internal/webapi"
 	webclient "github.com/beruseruko/secretary/web"
@@ -30,6 +32,7 @@ import (
 
 func main() {
 	_ = syscall.Umask(0o077)
+	artifactMCP := flag.Bool("artifact-mcp", false, "serve the scoped Worker Artifact MCP tool")
 	dataDir := flag.String("data-dir", defaultDataDir(), "directory for Secretary durable state")
 	listen := flag.String("listen", "127.0.0.1:8081", "web listener address")
 	configPath := flag.String("config", "", "path to Secretary config.toml")
@@ -40,6 +43,12 @@ func main() {
 	checkOpenCodeAuth := flag.Bool("check-opencode-auth", false, "check stored OpenCode credentials in the selected Secretary store and exit")
 	opencodeCommand := flag.String("opencode-command", "opencode", "OpenCode executable used for the selected-store auth check")
 	flag.Parse()
+	if *artifactMCP {
+		if err := artifactmcp.Serve(context.Background()); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if *checkOpenCodeAuth {
 		if *selectNativeStores || *printNativeStores || *selectSharedNativeStore {
 			log.Fatal("--check-opencode-auth cannot be combined with OpenCode store selection")
@@ -185,7 +194,9 @@ func main() {
 		log.Fatalf("initialize web API: %v", err)
 	}
 	web.AttachWorkerObserverPreference(func() bool { return profiles.Snapshot().Config.WorkerObserver.ShowToolActivity })
-	if err:=web.AttachVideoOptions(webapi.VideoOptions{FPS:profiles.Snapshot().Config.Video.FPS,MaxDurationSeconds:profiles.Snapshot().Config.Video.MaxDurationSeconds,MaxFrames:profiles.Snapshot().Config.Video.MaxFrames,TimeoutSeconds:profiles.Snapshot().Config.Video.TimeoutSeconds});err!=nil {log.Fatalf("configure video processing: %v",err)}
+	if err := web.AttachVideoOptions(webapi.VideoOptions{FPS: profiles.Snapshot().Config.Video.FPS, MaxDurationSeconds: profiles.Snapshot().Config.Video.MaxDurationSeconds, MaxFrames: profiles.Snapshot().Config.Video.MaxFrames, TimeoutSeconds: profiles.Snapshot().Config.Video.TimeoutSeconds}); err != nil {
+		log.Fatalf("configure video processing: %v", err)
+	}
 	web.SetDebug(*debug)
 	web.AttachUserDocument(filepath.Join(*dataDir, "user.md"))
 	web.AttachDiagnosticLogDir(filepath.Join(*dataDir, "logs", "acp"))
@@ -268,20 +279,42 @@ func main() {
 		log.Fatalf("find secretary-mcp: %v", mcpErr)
 	}
 	workerLocal := node.NewLocal(workerHarnessRuntime)
+	// Unlike in-process tests, production local Worker processes must not
+	// inherit the Server UID's unrestricted filesystem. Start/Resume fail
+	// closed if Seatbelt/bubblewrap (or an equivalent host boundary) fails.
+	if err := workerLocal.SetNativeWorkerSandbox(nativeexec.WorkerSandbox{
+		ProtectedDir: workerDataDir, ServerDataDir: *dataDir,
+	}); err != nil { log.Fatalf("configure local Worker OS sandbox: %v", err) }
 	// Native needs_input image delivery uses the same durable injection
 	// protocol as a standalone ExecutionNode, scoped to protected Node data.
 	localImageStore, err := node.OpenLocalStore(filepath.Join(workerDataDir, "local-image-responses.json"))
-	if err != nil { log.Fatalf("open local Worker image response checkpoints: %v", err) }
+	if err != nil {
+		log.Fatalf("open local Worker image response checkpoints: %v", err)
+	}
 	workerLocal.SetImageResponseStore(localImageStore)
+	localPublisherBinary, binaryErr := os.Executable()
+	if binaryErr != nil {
+		log.Fatalf("resolve local Worker Artifact MCP: %v", binaryErr)
+	}
+	if err := workerLocal.SetLocalArtifactPublisher(func(saveCtx context.Context, workerRef, attemptID, key, name, media string, data []byte) (core.Artifact, error) {
+		artifact, _, saveErr := store.SavePublishedArtifact(saveCtx, "local", workerRef, attemptID, key, name, media, data)
+		return artifact, saveErr
+	}, localPublisherBinary); err != nil {
+		log.Fatalf("initialize local Worker publication broker: %v", err)
+	}
 	workerLocal.SetPrestartStore(localImageStore)
 	workerLocal.SetArtifactFetcher(func(ctx context.Context, id string) (node.ArtifactPayload, error) {
 		artifact, body, err := store.ArtifactForPerson(ctx, web.OwnerID(), id)
-		if err != nil { return node.ArtifactPayload{}, err }
+		if err != nil {
+			return node.ArtifactPayload{}, err
+		}
 		return node.ArtifactPayload{
-			ID:artifact.ID,Name:artifact.Name,SHA256:artifact.SHA256,Data:body,
-			VideoStatus:artifact.ProcessingStatus,VideoError:artifact.ProcessingError,VideoFrames:artifact.VideoFrames,
-			CheckVideoStatus:func(c context.Context)(core.Artifact,error){return store.ArtifactMetadataForPerson(c,web.OwnerID(),id)},
-		},nil
+			ID: artifact.ID, Name: artifact.Name, SHA256: artifact.SHA256, Data: body,
+			VideoStatus: artifact.ProcessingStatus, VideoError: artifact.ProcessingError, VideoFrames: artifact.VideoFrames,
+			CheckVideoStatus: func(c context.Context) (core.Artifact, error) {
+				return store.ArtifactMetadataForPerson(c, web.OwnerID(), id)
+			},
+		}, nil
 	})
 	secretaryLocal := node.NewLocal(secretaryHarnessRuntime)
 	if err := recoverProductionPhase4Attempts(ctx, store, workerLocal, remoteNodes); err != nil {

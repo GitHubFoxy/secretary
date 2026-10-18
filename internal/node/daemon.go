@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 	"sync"
 
@@ -73,6 +74,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// reconnects and ends only when the daemon is actually stopped.
 	execution.SetNativeLifetime(ctx)
 	execution.SetArtifactFetcher(d.Identity.FetchArtifact)
+	binary, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	if err := execution.SetArtifactPublisher(d.Identity, binary); err != nil {
+		return err
+	}
+	defer execution.CloseArtifactPublisher()
 	if err := execution.SetMCPServers(d.MCPServers); err != nil {
 		return err
 	}

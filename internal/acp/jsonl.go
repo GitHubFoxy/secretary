@@ -151,6 +151,7 @@ func startWithProcessEnvironment(ctx context.Context, rawLog io.Writer, environm
 	if dir != "" {
 		process.Dir = dir
 	}
+	process.Env = nativeexec.SecureWorkerEnvironment(processCtx, process.Env)
 	stdin, err := process.StdinPipe()
 	if err != nil {
 		cancel()

@@ -229,3 +229,32 @@ func TestManagedProfileMaterializesPortableInstructions(t *testing.T) {
 		t.Fatalf("body=%q", body)
 	}
 }
+
+func TestT09OpenCodeWorkerCanUseOnlyScopedArtifactPublication(t *testing.T) {
+	profile := ManagedProfile{Name: "worker", Content: "Create a document", AllowTools: []string{"read"}}
+	allowed := MCPServer{Name: "secretary_artifacts", Command: "/usr/bin/secretary-node", Args: []string{"--artifact-mcp"}}
+	permissions, err := profile.openCodePermissions([]MCPServer{allowed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasPublisher, hasRead := false, false
+	for _, rule := range permissions {
+		if rule["action"] == "secretary_artifacts_publish_artifact" && rule["effect"] == "allow" {
+			hasPublisher = true
+		}
+		if rule["action"] == "read" && rule["effect"] == "allow" {
+			hasRead = true
+		}
+	}
+	if !hasPublisher || !hasRead {
+		t.Fatalf("Worker publisher or read permission absent: %#v", permissions)
+	}
+	for _, servers := range [][]MCPServer{
+		{{Name: "other", Command: "untrusted"}},
+		{allowed, {Name: "other", Command: "untrusted"}},
+	} {
+		if _, err := profile.openCodePermissions(servers); err == nil {
+			t.Fatalf("unapproved Worker MCP accepted: %#v", servers)
+		}
+	}
+}

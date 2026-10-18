@@ -7,26 +7,27 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
 const MaxArtifactBytes = 8 << 20
 
 type Artifact struct {
-	ID        string    `json:"id"`
-	PersonID  string    `json:"-"`
-	Name      string    `json:"name"`
-	MediaType string    `json:"media_type"`
-	Size      int64     `json:"size"`
-	SHA256    string    `json:"sha256"`
-	Status    string    `json:"status"`
-	SourceArtifactID string `json:"source_artifact_id,omitempty"`
-	TranscriptArtifactID string `json:"transcript_artifact_id,omitempty"`
-	SourceIdentity string `json:"source_identity,omitempty"`
-	ProcessingStatus string `json:"processing_status,omitempty"`
-	VideoFrames []VideoFrame `json:"video_frames,omitempty"`
-	ProcessingError string `json:"processing_error,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
+	ID                   string       `json:"id"`
+	PersonID             string       `json:"-"`
+	Name                 string       `json:"name"`
+	MediaType            string       `json:"media_type"`
+	Size                 int64        `json:"size"`
+	SHA256               string       `json:"sha256"`
+	Status               string       `json:"status"`
+	SourceArtifactID     string       `json:"source_artifact_id,omitempty"`
+	TranscriptArtifactID string       `json:"transcript_artifact_id,omitempty"`
+	SourceIdentity       string       `json:"source_identity,omitempty"`
+	ProcessingStatus     string       `json:"processing_status,omitempty"`
+	VideoFrames          []VideoFrame `json:"video_frames,omitempty"`
+	ProcessingError      string       `json:"processing_error,omitempty"`
+	CreatedAt            time.Time    `json:"created_at"`
 }
 
 type artifactSaved struct {
@@ -59,7 +60,17 @@ func (s *Store) migrateArtifacts(ctx context.Context) error {
 		UNIQUE(person_id, source_identity)
 	);
 	CREATE INDEX IF NOT EXISTS voice_links_transcript ON voice_artifact_links(transcript_artifact_id);`)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `ALTER TABLE artifacts ADD COLUMN source_attempt_id TEXT NOT NULL DEFAULT ''`)
+	if err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS artifacts_by_attempt ON artifacts(source_attempt_id, created_at)`)
+	if err != nil {
+		return err
+	}
 	return s.migrateVideoArtifacts(ctx)
 }
 
@@ -71,8 +82,10 @@ func (s *Store) SaveVideoArtifact(ctx context.Context, personID, conversationID,
 	if mediaType != "video/mp4" && mediaType != "video/webm" && mediaType != "video/quicktime" {
 		return Artifact{}, false, errors.New("video: unsupported media type")
 	}
-	job := &VideoJob{FPS:fps, MaxFrames:maxFrames, MaxDuration:maxDuration, TimeoutSeconds:timeout}
-	if err := validateVideoJob(*job); err != nil { return Artifact{}, false, err }
+	job := &VideoJob{FPS: fps, MaxFrames: maxFrames, MaxDuration: maxDuration, TimeoutSeconds: timeout}
+	if err := validateVideoJob(*job); err != nil {
+		return Artifact{}, false, err
+	}
 	return s.saveArtifact(ctx, personID, conversationID, key, name, mediaType, body, job)
 }
 
@@ -92,7 +105,9 @@ func (s *Store) saveArtifact(ctx context.Context, personID, conversationID, key,
 				return artifactSaved{}, ErrIdempotencyConflict
 			}
 			if video != nil {
-				if err := insertVideoJobTx(ctx, tx, existing.ID, personID, *video, s.now()); err != nil { return artifactSaved{}, err }
+				if err := insertVideoJobTx(ctx, tx, existing.ID, personID, *video, s.now()); err != nil {
+					return artifactSaved{}, err
+				}
 			}
 			return artifactSaved{Artifact: existing, Duplicate: true}, nil
 		}
@@ -111,7 +126,9 @@ func (s *Store) saveArtifact(ctx context.Context, personID, conversationID, key,
 			return artifactSaved{}, err
 		}
 		if video != nil {
-			if err := insertVideoJobTx(ctx, tx, a.ID, personID, *video, now); err != nil { return artifactSaved{}, err }
+			if err := insertVideoJobTx(ctx, tx, a.ID, personID, *video, now); err != nil {
+				return artifactSaved{}, err
+			}
 		}
 		entry, err := appendEntry(ctx, tx, now, conversationID, EntrySystem, fmt.Sprintf("File uploaded: %q (%d bytes). Ready: artifact://%s", name, len(body), a.ID))
 		if err != nil {
@@ -159,7 +176,9 @@ func (s *Store) ArtifactForPerson(ctx context.Context, personID, artifactID stri
 	if err := s.populateVoiceRelation(ctx, personID, &a); err != nil {
 		return Artifact{}, nil, err
 	}
-	if err := s.populateVideoRelation(ctx, personID, &a); err != nil { return Artifact{}, nil, err }
+	if err := s.populateVideoRelation(ctx, personID, &a); err != nil {
+		return Artifact{}, nil, err
+	}
 	if len(body) != int(a.Size) {
 		return Artifact{}, nil, fmt.Errorf("artifact %s: body size mismatch", a.ID)
 	}
@@ -170,16 +189,109 @@ func (s *Store) ArtifactForPerson(ctx context.Context, personID, artifactID stri
 	return a, body, nil
 }
 
+func (s *Store) SavePublishedArtifact(ctx context.Context, nodeID, workerRef, attemptID, key, name, mediaType string, body []byte) (Artifact, bool, error) {
+	if nodeID == "" || workerRef == "" || attemptID == "" || key == "" || len(key) > 160 ||
+		len(body) == 0 || len(body) > MaxArtifactBytes || name == "" || len(name) > 180 ||
+		mediaType == "" || len(mediaType) > 120 {
+		return Artifact{}, false, errors.New("core: invalid or over-limit published artifact")
+	}
+	digest := sha256.Sum256(body)
+	checksum := hex.EncodeToString(digest[:])
+	type saved struct {
+		artifact  Artifact
+		duplicate bool
+	}
+	value, err := withTx(s, ctx, func(tx *sql.Tx) (saved, error) {
+		var owner, conversationID, boundNode, boundWorker, state string
+		err := tx.QueryRowContext(ctx, `SELECT c.person_id, c.id, a.node_id, w.worker_ref, a.state
+			FROM phase4_attempts a JOIN workers w ON w.id = a.worker_id
+			JOIN conversations c ON c.id = w.conversation_id WHERE a.id = ?`, attemptID).
+			Scan(&owner, &conversationID, &boundNode, &boundWorker, &state)
+		if errors.Is(err, sql.ErrNoRows) {
+			return saved{}, ErrNotFound
+		}
+		if err != nil {
+			return saved{}, err
+		}
+		if boundNode != nodeID || boundWorker != workerRef {
+			return saved{}, ErrNotFound
+		}
+		existing, found, err := readArtifact(ctx, tx, owner, key)
+		if err != nil {
+			return saved{}, err
+		}
+		if found {
+			var source string
+			if err := tx.QueryRowContext(ctx, `SELECT source_attempt_id FROM artifacts WHERE id = ?`, existing.ID).Scan(&source); err != nil {
+				return saved{}, err
+			}
+			if source != attemptID || existing.Name != name || existing.MediaType != mediaType || existing.SHA256 != checksum || existing.Size != int64(len(body)) {
+				return saved{}, ErrIdempotencyConflict
+			}
+			return saved{artifact: existing, duplicate: true}, nil
+		}
+		if state != string(AttemptStarting) && state != string(AttemptActive) {
+			return saved{}, ErrInvalidTransition
+		}
+		var count int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM artifacts WHERE source_attempt_id = ?`, attemptID).Scan(&count); err != nil {
+			return saved{}, err
+		}
+		if count >= 16 {
+			return saved{}, errors.New("core: maximum 16 published Artifacts per Attempt")
+		}
+		now := s.now()
+		artifact := Artifact{ID: newID("art"), PersonID: owner, Name: name, MediaType: mediaType, Size: int64(len(body)), SHA256: checksum, Status: "ready", CreatedAt: now}
+		_, err = tx.ExecContext(ctx, `INSERT INTO artifacts(id, person_id, conversation_id, idempotency_key, name, media_type, size, sha256, body, created_at, source_attempt_id)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			artifact.ID, owner, conversationID, key, name, mediaType, artifact.Size, checksum, body, timestamp(now), attemptID)
+		if err != nil {
+			return saved{}, err
+		}
+		return saved{artifact: artifact}, nil
+	})
+	if err != nil {
+		return Artifact{}, false, err
+	}
+	return value.artifact, value.duplicate, nil
+}
+
+func (s *Store) PublishedArtifactsForAttempt(ctx context.Context, attemptID string) ([]Artifact, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, person_id, name, media_type, size, sha256, created_at
+		FROM artifacts WHERE source_attempt_id = ? ORDER BY created_at, id`, attemptID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var artifacts []Artifact
+	for rows.Next() {
+		var a Artifact
+		if err := rows.Scan(&a.ID, &a.PersonID, &a.Name, &a.MediaType, &a.Size, &a.SHA256, newTimestampScanner(&a.CreatedAt)); err != nil {
+			return nil, err
+		}
+		a.Status = "ready"
+		artifacts = append(artifacts, a)
+	}
+	return artifacts, rows.Err()
+}
 
 // ArtifactMetadataForPerson reads public metadata without reading binary BLOBs.
-func (s *Store) ArtifactMetadataForPerson(ctx context.Context, personID, artifactID string) (Artifact,error) {
+func (s *Store) ArtifactMetadataForPerson(ctx context.Context, personID, artifactID string) (Artifact, error) {
 	var a Artifact
-	err:=s.db.QueryRowContext(ctx,`SELECT id,person_id,name,media_type,size,sha256,created_at FROM artifacts WHERE person_id=? AND id=?`,personID,artifactID).
-		Scan(&a.ID,&a.PersonID,&a.Name,&a.MediaType,&a.Size,&a.SHA256,newTimestampScanner(&a.CreatedAt))
-	if errors.Is(err,sql.ErrNoRows){return Artifact{},ErrNotFound}
-	if err!=nil{return Artifact{},err}
-	a.Status="ready"
-	if err=s.populateVoiceRelation(ctx,personID,&a);err!=nil{return Artifact{},err}
-	if err=s.populateVideoRelation(ctx,personID,&a);err!=nil{return Artifact{},err}
-	return a,nil
+	err := s.db.QueryRowContext(ctx, `SELECT id,person_id,name,media_type,size,sha256,created_at FROM artifacts WHERE person_id=? AND id=?`, personID, artifactID).
+		Scan(&a.ID, &a.PersonID, &a.Name, &a.MediaType, &a.Size, &a.SHA256, newTimestampScanner(&a.CreatedAt))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Artifact{}, ErrNotFound
+	}
+	if err != nil {
+		return Artifact{}, err
+	}
+	a.Status = "ready"
+	if err = s.populateVoiceRelation(ctx, personID, &a); err != nil {
+		return Artifact{}, err
+	}
+	if err = s.populateVideoRelation(ctx, personID, &a); err != nil {
+		return Artifact{}, err
+	}
+	return a, nil
 }

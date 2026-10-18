@@ -1,7 +1,9 @@
 package webapi
 
 import (
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -78,19 +80,19 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 		}
 		mediaType = validated.MediaType
 	}
-	if ext:=strings.ToLower(filepath.Ext(name));ext==".mp4"||ext==".webm"||ext==".mov" {
-		mediaType=map[string]string{".mp4":"video/mp4",".webm":"video/webm",".mov":"video/quicktime"}[ext]
+	if ext := strings.ToLower(filepath.Ext(name)); ext == ".mp4" || ext == ".webm" || ext == ".mov" {
+		mediaType = map[string]string{".mp4": "video/mp4", ".webm": "video/webm", ".mov": "video/quicktime"}[ext]
 	}
 	if mediaType == "" {
 		mediaType = "application/octet-stream"
 	}
 	var artifact core.Artifact
 	var duplicate bool
-	if strings.HasPrefix(mediaType,"video/") {
-		opts:=s.videoOptions.Defaults()
-		artifact,duplicate,err=s.store.SaveVideoArtifact(r.Context(),conversation.PersonID,conversation.ID,key,name,mediaType,data,opts.FPS,opts.MaxFrames,opts.MaxDurationSeconds,opts.TimeoutSeconds)
+	if strings.HasPrefix(mediaType, "video/") {
+		opts := s.videoOptions.Defaults()
+		artifact, duplicate, err = s.store.SaveVideoArtifact(r.Context(), conversation.PersonID, conversation.ID, key, name, mediaType, data, opts.FPS, opts.MaxFrames, opts.MaxDurationSeconds, opts.TimeoutSeconds)
 	} else {
-		artifact,duplicate,err=s.store.SaveArtifact(r.Context(), conversation.PersonID, conversation.ID, key, name, mediaType, data)
+		artifact, duplicate, err = s.store.SaveArtifact(r.Context(), conversation.PersonID, conversation.ID, key, name, mediaType, data)
 	}
 	if err != nil {
 		if errors.Is(err, core.ErrVideoQueueFull) {
@@ -104,10 +106,13 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Could not save uploaded original", http.StatusInternalServerError)
 		return
 	}
-	if strings.HasPrefix(mediaType,"video/") {
+	if strings.HasPrefix(mediaType, "video/") {
 		s.signalVideoWork()
-		artifact,err=s.store.ArtifactMetadataForPerson(r.Context(),conversation.PersonID,artifact.ID)
-		if err!=nil {http.Error(w,"Could not read video processing status",http.StatusInternalServerError);return}
+		artifact, err = s.store.ArtifactMetadataForPerson(r.Context(), conversation.PersonID, artifact.ID)
+		if err != nil {
+			http.Error(w, "Could not read video processing status", http.StatusInternalServerError)
+			return
+		}
 	}
 	status := http.StatusCreated
 	if duplicate {
@@ -118,8 +123,10 @@ func (s *Server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) artifactRoute(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/artifacts/")
-	statusOnly:=strings.HasSuffix(id,"/status")
-	if statusOnly {id=strings.TrimSuffix(id,"/status")}
+	statusOnly := strings.HasSuffix(id, "/status")
+	if statusOnly {
+		id = strings.TrimSuffix(id, "/status")
+	}
 	if !node.ValidArtifactID(id) {
 		http.Error(w, "Invalid artifact reference", http.StatusBadRequest)
 		return
@@ -158,11 +165,11 @@ func (s *Server) artifactRoute(w http.ResponseWriter, r *http.Request) {
 	var artifact core.Artifact
 	var body []byte
 	var err error
-	metadataOnly:=statusOnly || (!byNode && r.URL.Query().Get("download")!="1")
+	metadataOnly := statusOnly || (!byNode && r.URL.Query().Get("download") != "1")
 	if metadataOnly {
-		artifact,err=s.store.ArtifactMetadataForPerson(r.Context(),personID,id)
+		artifact, err = s.store.ArtifactMetadataForPerson(r.Context(), personID, id)
 	} else {
-		artifact,body,err=s.store.ArtifactForPerson(r.Context(),personID,id)
+		artifact, body, err = s.store.ArtifactForPerson(r.Context(), personID, id)
 	}
 	if errors.Is(err, core.ErrNotFound) {
 		http.Error(w, "Artifact not found", http.StatusNotFound)
@@ -176,38 +183,128 @@ func (s *Server) artifactRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, artifact)
 		return
 	}
-	if byNode && strings.HasPrefix(artifact.MediaType,"video/") {
-		w.Header().Set("X-Artifact-Video-Status",artifact.ProcessingStatus)
-		if artifact.ProcessingStatus=="failed" {w.Header().Set("X-Artifact-Video-Error",artifact.ProcessingError)}
-		if artifact.ProcessingStatus=="ready" {
-			frames,_:=json.Marshal(artifact.VideoFrames)
-			w.Header().Set("X-Artifact-Video-Frames",base64.RawURLEncoding.EncodeToString(frames))
+	if byNode && strings.HasPrefix(artifact.MediaType, "video/") {
+		w.Header().Set("X-Artifact-Video-Status", artifact.ProcessingStatus)
+		if artifact.ProcessingStatus == "failed" {
+			w.Header().Set("X-Artifact-Video-Error", artifact.ProcessingError)
+		}
+		if artifact.ProcessingStatus == "ready" {
+			frames, _ := json.Marshal(artifact.VideoFrames)
+			w.Header().Set("X-Artifact-Video-Frames", base64.RawURLEncoding.EncodeToString(frames))
 		}
 	}
 	w.Header().Set("Content-Type", artifact.MediaType)
 	w.Header().Set("Content-Length", fmt.Sprint(artifact.Size))
 	w.Header().Set("X-Artifact-SHA256", artifact.SHA256)
 	w.Header().Set("X-Artifact-Name", base64.RawURLEncoding.EncodeToString([]byte(artifact.Name)))
-	w.Header().Set("Content-Disposition", "attachment")
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": artifact.Name}))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
 }
 
+func (s *Server) publishWorkerArtifact(w http.ResponseWriter, r *http.Request) {
+	nodeRef := core.NodeReference(r.Header.Get("X-Secretary-Node"))
+	workerRef := r.Header.Get("X-Artifact-Worker")
+	attemptID := r.Header.Get("X-Artifact-Attempt")
+	if nodeRef == "" || workerRef == "" || attemptID == "" || len(workerRef) > 160 || len(attemptID) > 160 {
+		http.Error(w, "Invalid Worker publication identity", http.StatusUnauthorized)
+		return
+	}
+	record, err := s.store.NodeRecord(r.Context(), nodeRef)
+	if err != nil || record.Revoked {
+		http.Error(w, "Node not authorized", http.StatusForbidden)
+		return
+	}
+	credential, err := s.store.NodeCredential(r.Context(), nodeRef)
+	if err != nil || node.NewAuthenticator(credential).VerifyPublishCapability(nodeRef, workerRef, attemptID, r.Header.Get("X-Artifact-Publish-Token")) != nil {
+		http.Error(w, "Invalid Worker publication authorization", http.StatusUnauthorized)
+		return
+	}
+	name := r.Header.Get("X-Artifact-Name")
+	if !artifactNameValid(name) {
+		http.Error(w, "Unsupported or unsafe output filename", http.StatusUnsupportedMediaType)
+		return
+	}
+	key := r.Header.Get("Idempotency-Key")
+	if len(key) == 0 || len(key) > 160 {
+		http.Error(w, "Idempotency-Key is required", http.StatusBadRequest)
+		return
+	}
+	if r.ContentLength > core.MaxArtifactBytes {
+		http.Error(w, "File exceeds 8 MiB", http.StatusRequestEntityTooLarge)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, core.MaxArtifactBytes+1)
+	body, err := io.ReadAll(r.Body)
+	if err != nil || len(body) > core.MaxArtifactBytes {
+		http.Error(w, "File exceeds 8 MiB", http.StatusRequestEntityTooLarge)
+		return
+	}
+	if len(body) == 0 {
+		http.Error(w, "Empty output file", http.StatusBadRequest)
+		return
+	}
+	source := r.Header.Get("X-Artifact-Source-Path")
+	checksum := sha256.Sum256(body)
+	auth := node.NewAuthenticator(credential)
+	if auth.VerifyPublishedSource(nodeRef, workerRef, attemptID, source, name, hex.EncodeToString(checksum[:]),
+		r.Header.Get("X-Artifact-Source-Signature")) != nil {
+		http.Error(w, "Missing or invalid Node-attested workspace file", http.StatusUnauthorized)
+		return
+	}
+	mediaType := mime.TypeByExtension(strings.ToLower(filepath.Ext(name)))
+	if mediaType == "" {
+		mediaType = "application/octet-stream"
+	}
+	artifact, duplicate, err := s.store.SavePublishedArtifact(r.Context(), string(nodeRef), workerRef, attemptID, key, name, mediaType, body)
+	if err != nil {
+		switch {
+		case errors.Is(err, core.ErrNotFound):
+			http.Error(w, "Worker not authorized for Attempt", http.StatusForbidden)
+		case errors.Is(err, core.ErrInvalidTransition):
+			http.Error(w, "Attempt is no longer active", http.StatusConflict)
+		case errors.Is(err, core.ErrIdempotencyConflict):
+			http.Error(w, "Publication key belongs to another file", http.StatusConflict)
+		default:
+			http.Error(w, "Could not publish Worker output", http.StatusUnprocessableEntity)
+		}
+		return
+	}
+	status := http.StatusCreated
+	if duplicate {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]any{"artifact": artifact, "duplicate": duplicate, "reference": "artifact://" + artifact.ID})
+}
 
-func (s *Server) retryVideoArtifact(w http.ResponseWriter,r *http.Request) {
-	conversation,ok:=s.authorizedConversationScope(w,r,core.ScopeConversationWrite)
-	if !ok {return}
-	id:=r.PathValue("id")
-	if !node.ValidArtifactID(id) {http.Error(w,"Invalid Artifact ID",http.StatusBadRequest);return}
-	job,restarted,err:=s.store.RetryFailedVideo(r.Context(),conversation.PersonID,id)
-	if errors.Is(err,core.ErrNotFound) {http.NotFound(w,r);return}
-	if errors.Is(err,core.ErrVideoQueueFull) {http.Error(w,"Video queue full",http.StatusTooManyRequests);return}
-	if err!=nil {http.Error(w,"Could not retry video",http.StatusInternalServerError);return}
-	if !restarted && job.Status!="queued" && job.Status!="processing" {
-		http.Error(w,"Video has already completed; retry unnecessary",http.StatusConflict)
+func (s *Server) retryVideoArtifact(w http.ResponseWriter, r *http.Request) {
+	conversation, ok := s.authorizedConversationScope(w, r, core.ScopeConversationWrite)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if !node.ValidArtifactID(id) {
+		http.Error(w, "Invalid Artifact ID", http.StatusBadRequest)
+		return
+	}
+	job, restarted, err := s.store.RetryFailedVideo(r.Context(), conversation.PersonID, id)
+	if errors.Is(err, core.ErrNotFound) {
+		http.NotFound(w, r)
+		return
+	}
+	if errors.Is(err, core.ErrVideoQueueFull) {
+		http.Error(w, "Video queue full", http.StatusTooManyRequests)
+		return
+	}
+	if err != nil {
+		http.Error(w, "Could not retry video", http.StatusInternalServerError)
+		return
+	}
+	if !restarted && job.Status != "queued" && job.Status != "processing" {
+		http.Error(w, "Video has already completed; retry unnecessary", http.StatusConflict)
 		return
 	}
 	s.signalVideoWork()
-	writeJSON(w,http.StatusAccepted,map[string]any{"artifact_id":id,"processing_status":job.Status,"restarted":restarted})
+	writeJSON(w, http.StatusAccepted, map[string]any{"artifact_id": id, "processing_status": job.Status, "restarted": restarted})
 }

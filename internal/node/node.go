@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"fmt"
+	"os"
 	"reflect"
 	"sync"
+	"path/filepath"
+	"strings"
 
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/nativeexec"
 )
 
 type ActivityKind string
@@ -177,21 +180,26 @@ type Queueer interface {
 }
 
 type LocalNode struct {
-	runtime     Runtime
-	mu          sync.Mutex
-	workers     map[string]Session
+	runtime Runtime
+	mu      sync.Mutex
+	workers map[string]Session
 	// activeAttempts binds the currently registered native Session to its
 	// owning Attempt; old durable checkpoints are not proof of ownership.
 	activeAttempts map[string]string
 	// Direct native Resume inherits an Attempt-scoped cancellable Context.
 	// Keep its cancel function until the Session is removed or Node closes.
-	resumeCancels map[string]context.CancelFunc
-	checkpoints map[string]localCheckpoint
-	artifactFetcher ArtifactFetcher
-	imageResponseStore *LocalStore
-	prestartStore *LocalStore
-	prestarts map[string]*localPending
-	workerGates map[string]chan struct{}
+	resumeCancels            map[string]context.CancelFunc
+	checkpoints              map[string]localCheckpoint
+	artifactFetcher          ArtifactFetcher
+	imageResponseStore       *LocalStore
+	publishBroker            *workerPublishBroker
+	artifactPublisherCommand string
+	// Required for every production native Worker (Start, Continue, Resume).
+	// Only Secretary startup configures it; nil preserves in-process test runtimes.
+	workerSandbox *nativeexec.WorkerSandbox
+	prestartStore            *LocalStore
+	prestarts                map[string]*localPending
+	workerGates              map[string]chan struct{}
 }
 
 type localCheckpoint struct {
@@ -200,14 +208,14 @@ type localCheckpoint struct {
 }
 
 func NewLocal(runtime Runtime) *LocalNode {
-	return &LocalNode{runtime: runtime, workers: make(map[string]Session), activeAttempts: make(map[string]string), resumeCancels: make(map[string]context.CancelFunc), checkpoints: make(map[string]localCheckpoint),prestarts:make(map[string]*localPending),workerGates:make(map[string]chan struct{})}
+	return &LocalNode{runtime: runtime, workers: make(map[string]Session), activeAttempts: make(map[string]string), resumeCancels: make(map[string]context.CancelFunc), checkpoints: make(map[string]localCheckpoint), prestarts: make(map[string]*localPending), workerGates: make(map[string]chan struct{})}
 }
 
 // SetPrestartStore binds local pre-native cancellation to protected Node-owned
 // durable state. Production binds the same Node state store used for image ACKs.
 func (n *LocalNode) SetPrestartStore(store *LocalStore) {
 	n.mu.Lock()
-	n.prestartStore=store
+	n.prestartStore = store
 	n.mu.Unlock()
 }
 
@@ -225,6 +233,157 @@ func (n *LocalNode) ImageResponseStore() *LocalStore {
 	return n.imageResponseStore
 }
 
+// SetLocalArtifactPublisher wires a private Server-side Attempt-validated
+// publication saver into the same path-only broker used by remote Nodes.
+func (n *LocalNode) SetLocalArtifactPublisher(save LocalArtifactSaver, command string) error {
+	if command == "" {
+		return errors.New("node artifact: local MCP executable required")
+	}
+	broker, err := newLocalWorkerPublishBroker(save)
+	if err != nil {
+		return err
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.publishBroker != nil {
+		_ = broker.Close()
+		return errors.New("node artifact: local publisher already set")
+	}
+	n.publishBroker = broker
+	n.artifactPublisherCommand = command
+	return nil
+}
+
+// Called with LocalNode.mu held; each Attempt gets a private, unguessable
+// registration that is revoked on terminal Result, Close or launch failure.
+func (n *LocalNode) bindLocalPublisher(request *StartRequest) (func(), error) {
+	if n.publishBroker == nil {
+		return func() {}, nil
+	}
+	if request.WorkerRef == "" || request.AttemptID == "" || request.Workspace == "" {
+		return nil, errors.New("node artifact: local Attempt binding incomplete")
+	}
+	endpoint, err := n.publishBroker.Register(request.WorkerRef, request.AttemptID, request.Workspace)
+	if err != nil {
+		return nil, err
+	}
+	request.MCPServers = append(request.MCPServers, MCPServer{
+		Name: "secretary_artifacts", Command: n.artifactPublisherCommand,
+		Args: []string{"--artifact-mcp"},
+		Env:  []MCPEnv{{Name: "SECRETARY_ARTIFACT_BROKER_URL", Value: endpoint}},
+	})
+	return func() { n.publishBroker.Unregister(request.AttemptID) }, nil
+}
+
+type localPublishedSession struct {
+	Session
+	result chan Result
+	once   sync.Once
+	revoke func()
+}
+
+func (s *localPublishedSession) Result() <-chan Result { return s.result }
+
+// Preserve native session extension behavior (ACP response, image steering,
+// queued input and image prompts) across the terminal-publication wrapper.
+// An unsupported extension fails explicitly rather than silently dropping it.
+func (s *localPublishedSession) Respond(ctx context.Context, requestID, response string) error {
+	if underlying, ok := s.Session.(Responder); ok {
+		return underlying.Respond(ctx, requestID, response)
+	}
+	return errors.New("node: local native session cannot respond to input")
+}
+func (s *localPublishedSession) PromptImages(ctx context.Context, text string, images []ImageInput) error {
+	if underlying, ok := s.Session.(ImagePromptSession); ok {
+		return underlying.PromptImages(ctx, text, images)
+	}
+	return errors.New("image_input_unsupported: local session cannot prompt with images")
+}
+func (s *localPublishedSession) SteerImages(ctx context.Context, text string, images []ImageInput) (bool, error) {
+	if underlying, ok := s.Session.(ImageSteeringSession); ok {
+		return underlying.SteerImages(ctx, text, images)
+	}
+	return false, errors.New("image_input_unsupported: local session cannot steer images")
+}
+func (s *localPublishedSession) QueueImages(ctx context.Context, text string, images []ImageInput) error {
+	if underlying, ok := s.Session.(ImageQueueSession); ok {
+		return underlying.QueueImages(ctx, text, images)
+	}
+	return errors.New("image_input_unsupported: local session cannot queue images")
+}
+func (s *localPublishedSession) Queue(ctx context.Context, text string) error {
+	if underlying, ok := s.Session.(Queueer); ok {
+		return underlying.Queue(ctx, text)
+	}
+	return errors.New("node: local native session cannot queue")
+}
+func (s *localPublishedSession) Close() error {
+	s.once.Do(s.revoke)
+	return s.Session.Close()
+}
+func wrapLocalPublishedSession(session Session, revoke func()) Session {
+	out := &localPublishedSession{Session: session, result: make(chan Result, 1), revoke: revoke}
+	go func() {
+		defer close(out.result)
+		defer out.once.Do(out.revoke)
+		for result := range session.Result() {
+			out.result <- result
+			// A native terminal Result ends this Attempt's publication authority,
+			// even if the provider leaves its result channel open until Close.
+			out.once.Do(out.revoke)
+			return
+		}
+	}()
+	return out
+}
+
+// SetNativeWorkerSandbox makes the OS boundary mandatory for all subsequent
+// local Worker runtime launches. Trusted Secretary config supplies both
+// protected Node and Server roots; neither is passed to Worker processes.
+func (n *LocalNode) SetNativeWorkerSandbox(policy nativeexec.WorkerSandbox) error {
+	if policy.ProtectedDir == "" || policy.ServerDataDir == "" {
+		return errors.New("node: native Worker sandbox requires Node and Server protected roots")
+	}
+	if !filepath.IsAbs(policy.ProtectedDir) || !filepath.IsAbs(policy.ServerDataDir) {
+		return errors.New("node: native Worker sandbox roots must be absolute")
+	}
+	if _, err := os.Stat(policy.ProtectedDir); err != nil { return err }
+	if _, err := os.Stat(policy.ServerDataDir); err != nil { return err }
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.workerSandbox != nil { return errors.New("node: native Worker sandbox already configured") }
+	copy := policy
+	n.workerSandbox = &copy
+	return nil
+}
+
+// Runtime contexts are constructed after Workspace resolution. A missing
+// boundary in production must never silently degrade to same-UID native code.
+func (n *LocalNode) nativeWorkerContext(ctx context.Context, workspace string) (context.Context, error) {
+	n.mu.Lock()
+	config := n.workerSandbox
+	n.mu.Unlock()
+	if config == nil { return ctx, nil }
+	if workspace == "" || !filepath.IsAbs(workspace) {
+		return nil, errors.New("node: sandboxed Worker requires absolute Workspace")
+	}
+	ws, err := filepath.EvalSymlinks(workspace)
+	if err != nil { return nil, err }
+	server, err := filepath.EvalSymlinks(config.ServerDataDir)
+	if err != nil { return nil, err }
+	protected, err := filepath.EvalSymlinks(config.ProtectedDir)
+	if err != nil { return nil, err }
+	within := func(path, parent string) bool {
+		return path == parent || strings.HasPrefix(path, parent+string(filepath.Separator))
+	}
+	if within(ws, server) || within(server, ws) || within(ws, protected) || within(protected, ws) {
+		return nil, errors.New("node: Worker Workspace overlaps Server or Node protected state")
+	}
+	policy := *config
+	policy.Workspace = ws
+	return nativeexec.WithWorkerSandbox(ctx, policy), nil
+}
+
 func (n *LocalNode) SetArtifactFetcher(fetcher ArtifactFetcher) {
 	n.mu.Lock()
 	n.artifactFetcher = fetcher
@@ -240,7 +399,9 @@ func (n *LocalNode) prepareInput(ctx context.Context, request *StartRequest) err
 
 func prepareLocalInput(ctx context.Context, request *StartRequest, fetch ArtifactFetcher) error {
 	text, images, err := PrepareArtifactInput(ctx, request.Workspace, request.Task, fetch)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if len(images) > 0 && !supportsImageHarness(request.HarnessInstance) {
 		return errors.New("image_input_unsupported: selected local Worker harness does not support images")
 	}
@@ -249,7 +410,9 @@ func prepareLocalInput(ctx context.Context, request *StartRequest, fetch Artifac
 }
 
 func (n *LocalNode) PrepareWorkerSteering(ctx context.Context, workerRef, text string) (string, []ImageInput, error) {
-	if len(ArtifactIDs(text)) == 0 { return text, nil, nil }
+	if len(ArtifactIDs(text)) == 0 {
+		return text, nil, nil
+	}
 	n.mu.Lock()
 	fetch := n.artifactFetcher
 	workspace := ""
@@ -275,100 +438,177 @@ func (n *LocalNode) PrepareWorkerSteering(ctx context.Context, workerRef, text s
 }
 
 func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session, error) {
-	profile,err:=request.effectiveProfile()
-	if err!=nil{return nil,err}
-	request.Profile=profile
+	profile, err := request.effectiveProfile()
+	if err != nil {
+		return nil, err
+	}
+	request.Profile = profile
 	// Same-Worker commands are serialized, but media download/polling and
 	// runtime Start never hold LocalNode's global mutex.
-	unlock,err:=n.lockWorker(ctx,request.WorkerRef)
-	if err!=nil{return nil,err}
+	unlock, err := n.lockWorker(ctx, request.WorkerRef)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
-	if request.Workspace==""{
-		workspace,e:=os.MkdirTemp("","secretary-worker-")
-		if e!=nil{return nil,e}
-		request.Workspace=workspace
+	if request.Workspace == "" {
+		workspace, e := os.MkdirTemp("", "secretary-worker-")
+		if e != nil {
+			return nil, e
+		}
+		request.Workspace = workspace
 	}
 	n.mu.Lock()
-	_,exists:=n.workers[request.WorkerRef]
-	hasCheckpoint:=false
-	if request.AttemptID!=""{
-		for _,c:=range n.checkpoints{if c.request.WorkerRef==request.WorkerRef{hasCheckpoint=true;break}}
+	_, exists := n.workers[request.WorkerRef]
+	hasCheckpoint := false
+	if request.AttemptID != "" {
+		for _, c := range n.checkpoints {
+			if c.request.WorkerRef == request.WorkerRef {
+				hasCheckpoint = true
+				break
+			}
+		}
 	}
 	n.mu.Unlock()
-	if exists{return nil,errors.New("node: worker already exists")}
-	if hasCheckpoint{return nil,ErrRuntimeSessionUnavailable}
-	prepCtx,finish,err:=n.beginLocalPrestart(ctx,request.AttemptID,request.WorkerRef)
-	if err!=nil{return nil,err}
+	if exists {
+		return nil, errors.New("node: worker already exists")
+	}
+	if hasCheckpoint {
+		return nil, ErrRuntimeSessionUnavailable
+	}
+	prepCtx, finish, err := n.beginLocalPrestart(ctx, request.AttemptID, request.WorkerRef)
+	if err != nil {
+		return nil, err
+	}
 	defer finish()
-	if err:=n.prepareInput(prepCtx,&request);err!=nil{return nil,err}
-	if request.Profile.Name!="" && !nativeProfileDelivery(n.runtime,request.Profile){
-		if _,err:=request.Profile.MaterializeInstructions(request.Workspace);err!=nil{return nil,err}
+	if err := n.prepareInput(prepCtx, &request); err != nil {
+		return nil, err
 	}
-	if err:=n.commitLocalHandoff(prepCtx,request.AttemptID,request.WorkerRef);err!=nil{return nil,err}
-	session,err:=n.runtime.Start(ctx,request)
-	if err!=nil{return nil,err}
+	if request.Profile.Name != "" && !nativeProfileDelivery(n.runtime, request.Profile) {
+		if _, err := request.Profile.MaterializeInstructions(request.Workspace); err != nil {
+			return nil, err
+		}
+	}
+	if err := n.commitLocalHandoff(prepCtx, request.AttemptID, request.WorkerRef); err != nil {
+		return nil, err
+	}
 	n.mu.Lock()
-	n.workers[request.WorkerRef]=session
-	n.activeAttempts[request.WorkerRef]=request.AttemptID
-	if request.AttemptID!=""{n.checkpoints[request.AttemptID]=localCheckpoint{request:request,nativeID:session.ID()}}
+	revoke, err := n.bindLocalPublisher(&request)
 	n.mu.Unlock()
-	return session,nil
+	if err != nil {
+		return nil, err
+	}
+	workerCtx, err := n.nativeWorkerContext(ctx, request.Workspace)
+	if err != nil { revoke(); return nil, err }
+	session, err := n.runtime.Start(workerCtx, request)
+	if err != nil {
+		revoke()
+		return nil, err
+	}
+	n.mu.Lock()
+	hasPublisher := n.publishBroker != nil
+	n.mu.Unlock()
+	if hasPublisher {
+		session = wrapLocalPublishedSession(session, revoke)
+	}
+	n.mu.Lock()
+	n.workers[request.WorkerRef] = session
+	n.activeAttempts[request.WorkerRef] = request.AttemptID
+	if request.AttemptID != "" {
+		n.checkpoints[request.AttemptID] = localCheckpoint{request: request, nativeID: session.ID()}
+	}
+	n.mu.Unlock()
+	return session, nil
 }
 
-func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previousAttemptID string) (Session,error) {
-	profile,err:=request.effectiveProfile()
-	if err!=nil{return nil,err}
-	request.Profile=profile
-	if request.AttemptID=="" || request.AttemptID==previousAttemptID{return nil,ErrRuntimeSessionUnavailable}
-	unlock,err:=n.lockWorker(ctx,request.WorkerRef)
-	if err!=nil{return nil,err}
+func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previousAttemptID string) (Session, error) {
+	profile, err := request.effectiveProfile()
+	if err != nil {
+		return nil, err
+	}
+	request.Profile = profile
+	if request.AttemptID == "" || request.AttemptID == previousAttemptID {
+		return nil, ErrRuntimeSessionUnavailable
+	}
+	unlock, err := n.lockWorker(ctx, request.WorkerRef)
+	if err != nil {
+		return nil, err
+	}
 	defer unlock()
 	n.mu.Lock()
-	checkpoint,ok:=n.checkpoints[previousAttemptID]
-	fetch:=n.artifactFetcher
+	checkpoint, ok := n.checkpoints[previousAttemptID]
+	fetch := n.artifactFetcher
 	n.mu.Unlock()
-	prior:=checkpoint.request
-	if request.Workspace=="" && ok{request.Workspace=prior.Workspace}
-	if !ok || checkpoint.nativeID=="" || prior.WorkerRef!=request.WorkerRef || prior.Workspace!=request.Workspace ||
-		!reflect.DeepEqual(prior.Profile,request.Profile) || !reflect.DeepEqual(prior.HarnessInstance,request.HarnessInstance) ||
-		prior.Model!=request.Model || prior.Reasoning!=request.Reasoning || prior.ApprovalPolicy!=request.ApprovalPolicy {
-		return nil,ErrRuntimeSessionUnavailable
+	prior := checkpoint.request
+	if request.Workspace == "" && ok {
+		request.Workspace = prior.Workspace
 	}
-	resumer,ok:=n.runtime.(Resumer)
-	if !ok{return nil,ErrRuntimeSessionUnavailable}
-	prepCtx,finish,err:=n.beginLocalPrestart(ctx,request.AttemptID,request.WorkerRef)
-	if err!=nil{return nil,err}
+	if !ok || checkpoint.nativeID == "" || prior.WorkerRef != request.WorkerRef || prior.Workspace != request.Workspace ||
+		!reflect.DeepEqual(prior.Profile, request.Profile) || !reflect.DeepEqual(prior.HarnessInstance, request.HarnessInstance) ||
+		prior.Model != request.Model || prior.Reasoning != request.Reasoning || prior.ApprovalPolicy != request.ApprovalPolicy {
+		return nil, ErrRuntimeSessionUnavailable
+	}
+	resumer, ok := n.runtime.(Resumer)
+	if !ok {
+		return nil, ErrRuntimeSessionUnavailable
+	}
+	prepCtx, finish, err := n.beginLocalPrestart(ctx, request.AttemptID, request.WorkerRef)
+	if err != nil {
+		return nil, err
+	}
 	defer finish()
 	// Do not hold n.mu while waiting in awaitVideoProcessing: other Workers'
 	// Dispatch, Session, Steer and Cancel remain independent.
-	if err:=prepareLocalInput(prepCtx,&request,fetch);err!=nil{return nil,err}
-	if err:=n.commitLocalHandoff(prepCtx,request.AttemptID,request.WorkerRef);err!=nil{return nil,err}
+	if err := prepareLocalInput(prepCtx, &request, fetch); err != nil {
+		return nil, err
+	}
+	if err := n.commitLocalHandoff(prepCtx, request.AttemptID, request.WorkerRef); err != nil {
+		return nil, err
+	}
 	n.mu.Lock()
-	previous,hadPrevious:=n.workers[request.WorkerRef]
+	previous, hadPrevious := n.workers[request.WorkerRef]
 	n.mu.Unlock()
 	if hadPrevious {
-		if err:=previous.Close();err!=nil{return nil,err}
+		if err := previous.Close(); err != nil {
+			return nil, err
+		}
 		n.mu.Lock()
-		if current,ok:=n.workers[request.WorkerRef];ok && current==previous{
-			delete(n.workers,request.WorkerRef)
-			delete(n.activeAttempts,request.WorkerRef)
-			if cancel := n.resumeCancels[request.WorkerRef]; cancel!=nil{
+		if current, ok := n.workers[request.WorkerRef]; ok && current == previous {
+			delete(n.workers, request.WorkerRef)
+			delete(n.activeAttempts, request.WorkerRef)
+			if cancel := n.resumeCancels[request.WorkerRef]; cancel != nil {
 				cancel()
-				delete(n.resumeCancels,request.WorkerRef)
+				delete(n.resumeCancels, request.WorkerRef)
 			}
 		}
 		n.mu.Unlock()
 	}
-	request.DeferInitialPrompt=true
-	session,err:=resumeSameIdentity(ctx,resumer,request,checkpoint.nativeID)
-	if err!=nil{return nil,ErrRuntimeSessionUnavailable}
+	request.DeferInitialPrompt = true
 	n.mu.Lock()
-	n.workers[request.WorkerRef]=session
-	n.activeAttempts[request.WorkerRef]=request.AttemptID
-	n.checkpoints[request.AttemptID]=localCheckpoint{request:request,nativeID:session.ID()}
+	revoke, err := n.bindLocalPublisher(&request)
 	n.mu.Unlock()
-	go func(){_=promptWithImages(context.Background(),session,request.Task,request.Images)}()
-	return session,nil
+	if err != nil {
+		return nil, err
+	}
+	workerCtx, err := n.nativeWorkerContext(ctx, request.Workspace)
+	if err != nil { revoke(); return nil, err }
+	session, err := resumeSameIdentity(workerCtx, resumer, request, checkpoint.nativeID)
+	if err != nil {
+		revoke()
+		return nil, ErrRuntimeSessionUnavailable
+	}
+	n.mu.Lock()
+	hasPublisher := n.publishBroker != nil
+	n.mu.Unlock()
+	if hasPublisher {
+		session = wrapLocalPublishedSession(session, revoke)
+	}
+	n.mu.Lock()
+	n.workers[request.WorkerRef] = session
+	n.activeAttempts[request.WorkerRef] = request.AttemptID
+	n.checkpoints[request.AttemptID] = localCheckpoint{request: request, nativeID: session.ID()}
+	n.mu.Unlock()
+	go func() { _ = promptWithImages(context.Background(), session, request.Task, request.Images) }()
+	return session, nil
 }
 
 func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
@@ -402,40 +642,50 @@ func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSes
 	if exists {
 		return nil, errors.New("node: worker already exists")
 	}
-	// Direct Resume has no Session until the native provider returns, and
-	// may block indefinitely. Register an Attempt-scoped cancelable prestart
-	// before native I/O, so Cancel bypasses the occupied per-Worker gate.
 	prepCtx, finish, err := n.beginLocalPrestart(ctx, request.AttemptID, request.WorkerRef)
 	if err != nil {
 		return nil, err
 	}
 	defer finish()
-	// Once native Resume is invoked, a crash could leave an unknown native
-	// side effect. Persist this boundary before calling the provider, but keep
-	// the Attempt cancelable until native Session registration.
 	if err := n.markLocalResuming(prepCtx, request.AttemptID, request.WorkerRef); err != nil {
 		return nil, err
 	}
-	session, err := resumer.Resume(prepCtx, request, runtimeSessionID)
+	n.mu.Lock()
+	revoke, err := n.bindLocalPublisher(&request)
+	n.mu.Unlock()
 	if err != nil {
 		return nil, err
 	}
-	// The provider may ignore ctx.Done() and return a Session AFTER Cancel
-	// was accepted. Never register it; explicitly close the late result.
+	workerCtx, err := n.nativeWorkerContext(prepCtx, request.Workspace)
+	if err != nil { revoke(); return nil, err }
+	session, err := resumer.Resume(workerCtx, request, runtimeSessionID)
+	if err != nil {
+		revoke()
+		return nil, err
+	}
 	if err := n.commitLocalHandoff(prepCtx, request.AttemptID, request.WorkerRef); err != nil {
 		_ = session.Close()
+		revoke()
 		return nil, err
+	}
+	n.mu.Lock()
+	hasPublisher := n.publishBroker != nil
+	n.mu.Unlock()
+	if hasPublisher {
+		session = wrapLocalPublishedSession(session, revoke)
 	}
 	n.mu.Lock()
 	n.workers[request.WorkerRef] = session
 	n.activeAttempts[request.WorkerRef] = request.AttemptID
 	key := request.AttemptID
-	if key == "" {key="worker:"+request.WorkerRef}
+	if key == "" {
+		key = "worker:" + request.WorkerRef
+	}
 	// The native provider may retain prepCtx after Resume returns.
 	// Do not auto-cancel an accepted Session from finish().
-	if pending:=n.prestarts[key];pending!=nil&&pending.workerRef==request.WorkerRef&&pending.stage=="handoff"{
-		pending.keepContext=true
-		n.resumeCancels[request.WorkerRef]=pending.cancel
+	if pending := n.prestarts[key]; pending != nil && pending.workerRef == request.WorkerRef && pending.stage == "handoff" {
+		pending.keepContext = true
+		n.resumeCancels[request.WorkerRef] = pending.cancel
 	}
 	n.mu.Unlock()
 	return session, nil
@@ -475,11 +725,18 @@ func (n *LocalNode) Close() error {
 	workers := n.workers
 	resumeCancels := n.resumeCancels
 	n.workers = make(map[string]Session)
+	broker := n.publishBroker
+	n.publishBroker = nil
 	n.activeAttempts = make(map[string]string)
 	n.resumeCancels = make(map[string]context.CancelFunc)
 	n.mu.Unlock()
-	for _, cancel := range resumeCancels {cancel()}
+	for _, cancel := range resumeCancels {
+		cancel()
+	}
 	var first error
+	if broker != nil {
+		first = broker.Close()
+	}
 	for _, session := range workers {
 		if err := session.Close(); err != nil && first == nil {
 			first = err
@@ -495,13 +752,15 @@ func (n *LocalNode) Remove(workerRef string) error {
 	if ok {
 		delete(n.workers, workerRef)
 		delete(n.activeAttempts, workerRef)
-		cancel=n.resumeCancels[workerRef]
-		delete(n.resumeCancels,workerRef)
+		cancel = n.resumeCancels[workerRef]
+		delete(n.resumeCancels, workerRef)
 	}
 	n.mu.Unlock()
 	if !ok {
 		return nil
 	}
-	if cancel!=nil {cancel()}
+	if cancel != nil {
+		cancel()
+	}
 	return session.Close()
 }

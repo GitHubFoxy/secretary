@@ -13,20 +13,24 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/beruseruko/secretary/internal/artifactmcp"
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
+	"github.com/beruseruko/secretary/internal/nativeexec"
 )
 
 var invalidNodeName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
 
 func main() {
 	setPrivateNodeUmask()
+	artifactMCP := flag.Bool("artifact-mcp", false, "serve the scoped Worker Artifact MCP tool")
 	configPath := flag.String("config", "", "Node-local deployment and approved Worker MCP config JSON")
 	dataDir := flag.String("data-dir", defaultNodeDataDir(), "directory for Node identity and durable local state")
 	serverURL := flag.String("server", envOr("SECRETARY_NODE_SERVER", "http://127.0.0.1:8081"), "Secretary server URL used for first pairing")
 	pairingToken := flag.String("pair-token", os.Getenv("SECRETARY_NODE_PAIRING_TOKEN"), "one-time/owner-approved Node pairing token")
 	nodeName := flag.String("name", envOr("SECRETARY_NODE_NAME", defaultNodeName()), "stable Node reference requested during pairing")
 	capacity := flag.Int("capacity", 1, "maximum advertised concurrent Worker capacity")
+	checkWorkerSandbox := flag.Bool("check-worker-sandbox", false, "preflight native OS sandbox and Worker provider-state handoff")
 	checkCodex := flag.Bool("check-codex-readiness", false, "check actual Codex and ACP capabilities without a model call")
 	includeOpenCode := flag.Bool("include-opencode", false, "include the OpenCode ACP inventory probe")
 	includeAntigravity := flag.Bool("include-antigravity", false, "include the Antigravity ACP inventory probe")
@@ -40,6 +44,12 @@ func main() {
 	var requestedWorkspaces workspaceEdits
 	flag.Var(&requestedWorkspaces, "workspace", "project=absolute-path mapping to add or replace in deployment config")
 	flag.Parse()
+	if *artifactMCP {
+		if err := artifactmcp.Serve(context.Background()); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if *editDeployment {
 		if *checkCodex || *checkOpenCodeAuth || *selectOpenCodeStore || *printStoreRecord {
 			log.Fatal("--edit-deployment-config is incompatible with runtime diagnostics or store selection")
@@ -150,6 +160,11 @@ func main() {
 	}
 	if err := deployment.Validate(); err != nil {
 		log.Fatalf("invalid Node deployment: %v", err)
+	}
+	if *checkWorkerSandbox {
+		if err := nativeexec.PreflightWorkerSandbox(*dataDir); err != nil { log.Fatalf("native Worker preflight: %v", err) }
+		fmt.Println("native Worker security preflight passed")
+		return
 	}
 	workspaces, err := deployment.ProtocolWorkspaces()
 	if err != nil {

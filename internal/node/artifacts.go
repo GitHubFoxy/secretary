@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,14 +26,14 @@ var artifactReference = regexp.MustCompile(`artifact://art_[a-f0-9]{32}\b`)
 var artifactIDPattern = regexp.MustCompile(`^art_[a-f0-9]{32}$`)
 
 type ArtifactPayload struct {
-	ID     string
-	Name   string
-	SHA256 string
-	Data   []byte
-	VideoStatus string
-	VideoError string
-	VideoFrames []core.VideoFrame
-	CheckVideoStatus func(context.Context) (core.Artifact,error)
+	ID               string
+	Name             string
+	SHA256           string
+	Data             []byte
+	VideoStatus      string
+	VideoError       string
+	VideoFrames      []core.VideoFrame
+	CheckVideoStatus func(context.Context) (core.Artifact, error)
 }
 
 type ArtifactFetcher func(context.Context, string) (ArtifactPayload, error)
@@ -88,24 +90,33 @@ func mustDecodeArtifactSignature(value string) []byte {
 // FetchArtifact tolerates transient Node-to-Server transport failures during
 // original/derivative transfer. Authentication, 4xx, size, checksum and
 // schema failures remain terminal. Every retry signs a fresh GET request.
-func (i NodeIdentity) FetchArtifact(ctx context.Context,id string) (ArtifactPayload,error) {
+func (i NodeIdentity) FetchArtifact(ctx context.Context, id string) (ArtifactPayload, error) {
 	// Transient 408/429/5xx/network exhaustion is not a permanent Artifact
 	// failure: a pre-native Dispatch must remain pending until its Context is
 	// canceled or the server returns a permanent response. Retries are spaced
 	// with a bounded backoff; the number of attempts is intentionally unbounded.
-	delay:=150*time.Millisecond
+	delay := 150 * time.Millisecond
 	for {
-		if err:=ctx.Err();err!=nil{return ArtifactPayload{},err}
-		payload,err:=i.fetchArtifactOnce(ctx,id)
-		if err==nil{return payload,nil}
-		if !errors.Is(err,ErrTransientArtifactStatus){return ArtifactPayload{},err}
+		if err := ctx.Err(); err != nil {
+			return ArtifactPayload{}, err
+		}
+		payload, err := i.fetchArtifactOnce(ctx, id)
+		if err == nil {
+			return payload, nil
+		}
+		if !errors.Is(err, ErrTransientArtifactStatus) {
+			return ArtifactPayload{}, err
+		}
 		select {
-		case <-ctx.Done():return ArtifactPayload{},ctx.Err()
+		case <-ctx.Done():
+			return ArtifactPayload{}, ctx.Err()
 		case <-time.After(delay):
 		}
-		if delay<3*time.Second {
-			delay*=2
-			if delay>3*time.Second {delay=3*time.Second}
+		if delay < 3*time.Second {
+			delay *= 2
+			if delay > 3*time.Second {
+				delay = 3 * time.Second
+			}
 		}
 	}
 }
@@ -139,23 +150,27 @@ func (i NodeIdentity) fetchArtifactOnce(ctx context.Context, id string) (Artifac
 	client := &http.Client{Timeout: 20 * time.Second}
 	response, err := client.Do(req)
 	if err != nil {
-		if ctx.Err()!=nil{return ArtifactPayload{},ctx.Err()}
-		return ArtifactPayload{},fmt.Errorf("%w: transfer network failure: %v",ErrTransientArtifactStatus,err)
+		if ctx.Err() != nil {
+			return ArtifactPayload{}, ctx.Err()
+		}
+		return ArtifactPayload{}, fmt.Errorf("%w: transfer network failure: %v", ErrTransientArtifactStatus, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		if response.StatusCode==http.StatusRequestTimeout || response.StatusCode==http.StatusTooManyRequests || response.StatusCode>=500 {
-			return ArtifactPayload{},fmt.Errorf("%w: GET HTTP %d",ErrTransientArtifactStatus,response.StatusCode)
+		if response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
+			return ArtifactPayload{}, fmt.Errorf("%w: GET HTTP %d", ErrTransientArtifactStatus, response.StatusCode)
 		}
-		return ArtifactPayload{},fmt.Errorf("node artifact: HTTP %d",response.StatusCode)
+		return ArtifactPayload{}, fmt.Errorf("node artifact: HTTP %d", response.StatusCode)
 	}
 	if response.ContentLength > core.MaxArtifactBytes {
 		return ArtifactPayload{}, errors.New("node artifact: response exceeds size limit")
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, core.MaxArtifactBytes+1))
-	if err!=nil {
-		if ctx.Err()!=nil{return ArtifactPayload{},ctx.Err()}
-		return ArtifactPayload{},fmt.Errorf("%w: GET response interrupted: %v",ErrTransientArtifactStatus,err)
+	if err != nil {
+		if ctx.Err() != nil {
+			return ArtifactPayload{}, ctx.Err()
+		}
+		return ArtifactPayload{}, fmt.Errorf("%w: GET response interrupted: %v", ErrTransientArtifactStatus, err)
 	}
 	if len(data) == 0 || len(data) > core.MaxArtifactBytes {
 		return ArtifactPayload{}, errors.New("node artifact: invalid byte count")
@@ -169,52 +184,138 @@ func (i NodeIdentity) fetchArtifactOnce(ctx context.Context, id string) (Artifac
 	if err != nil || len(name) == 0 || len(name) > 180 {
 		return ArtifactPayload{}, errors.New("node artifact: invalid filename metadata")
 	}
-	
-	payload:=ArtifactPayload{ID:id,Name:string(name),SHA256:expected,Data:data,VideoStatus:response.Header.Get("X-Artifact-Video-Status"),VideoError:response.Header.Get("X-Artifact-Video-Error")}
-	if payload.VideoStatus=="ready" {
-		encoded:=response.Header.Get("X-Artifact-Video-Frames")
-		decoded,decodeErr:=base64.RawURLEncoding.DecodeString(encoded)
-		if decodeErr!=nil || len(decoded)==0 || json.Unmarshal(decoded,&payload.VideoFrames)!=nil || len(payload.VideoFrames)==0 || len(payload.VideoFrames)>16 {
+
+	payload := ArtifactPayload{ID: id, Name: string(name), SHA256: expected, Data: data, VideoStatus: response.Header.Get("X-Artifact-Video-Status"), VideoError: response.Header.Get("X-Artifact-Video-Error")}
+	if payload.VideoStatus == "ready" {
+		encoded := response.Header.Get("X-Artifact-Video-Frames")
+		decoded, decodeErr := base64.RawURLEncoding.DecodeString(encoded)
+		if decodeErr != nil || len(decoded) == 0 || json.Unmarshal(decoded, &payload.VideoFrames) != nil || len(payload.VideoFrames) == 0 || len(payload.VideoFrames) > 16 {
 			return ArtifactPayload{}, errors.New("node artifact: missing or invalid video frame metadata")
 		}
 	}
-	payload.CheckVideoStatus=func(c context.Context)(core.Artifact,error){return i.FetchArtifactStatus(c,id)}
-	return payload,nil
+	payload.CheckVideoStatus = func(c context.Context) (core.Artifact, error) { return i.FetchArtifactStatus(c, id) }
+	return payload, nil
 }
 
 // FetchArtifactStatus polls only signed metadata; never downloads the original video BLOB.
-func (i NodeIdentity) FetchArtifactStatus(ctx context.Context, id string) (core.Artifact,error) {
-	if !ValidArtifactID(id) {return core.Artifact{},errors.New("node artifact: invalid identifier")}
-	auth,err:=i.Authenticator()
-	if err!=nil{return core.Artifact{},err}
-	u,err:=url.Parse(i.ConnectURL)
-	if err!=nil || !strings.HasSuffix(u.Path,"/v1/nodes/connect") {return core.Artifact{},errors.New("node artifact: invalid server endpoint")}
-	switch u.Scheme {case "wss":u.Scheme="https";case "ws":u.Scheme="http";default:return core.Artifact{},errors.New("node artifact: invalid connect URL scheme")}
-	u.Path=strings.TrimSuffix(u.Path,"/v1/nodes/connect")+"/v1/artifacts/"+id+"/status"
-	u.RawQuery,u.Fragment="",""
-	req,err:=http.NewRequestWithContext(ctx,http.MethodGet,u.String(),nil)
-	if err!=nil{return core.Artifact{},err}
-	now:=time.Now().Unix()
-	req.Header.Set("X-Secretary-Node",string(i.Node))
-	req.Header.Set("X-Artifact-Timestamp",strconv.FormatInt(now,10))
-	req.Header.Set("X-Artifact-Signature",auth.SignArtifactRequest(i.Node,id,now))
-	response,err:=(&http.Client{Timeout:10*time.Second}).Do(req)
-	if err!=nil{
-		if ctx.Err()!=nil{return core.Artifact{},ctx.Err()}
-		return core.Artifact{},fmt.Errorf("%w: request interrupted: %v",ErrTransientArtifactStatus,err)
+func (i NodeIdentity) FetchArtifactStatus(ctx context.Context, id string) (core.Artifact, error) {
+	if !ValidArtifactID(id) {
+		return core.Artifact{}, errors.New("node artifact: invalid identifier")
+	}
+	auth, err := i.Authenticator()
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	u, err := url.Parse(i.ConnectURL)
+	if err != nil || !strings.HasSuffix(u.Path, "/v1/nodes/connect") {
+		return core.Artifact{}, errors.New("node artifact: invalid server endpoint")
+	}
+	switch u.Scheme {
+	case "wss":
+		u.Scheme = "https"
+	case "ws":
+		u.Scheme = "http"
+	default:
+		return core.Artifact{}, errors.New("node artifact: invalid connect URL scheme")
+	}
+	u.Path = strings.TrimSuffix(u.Path, "/v1/nodes/connect") + "/v1/artifacts/" + id + "/status"
+	u.RawQuery, u.Fragment = "", ""
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return core.Artifact{}, err
+	}
+	now := time.Now().Unix()
+	req.Header.Set("X-Secretary-Node", string(i.Node))
+	req.Header.Set("X-Artifact-Timestamp", strconv.FormatInt(now, 10))
+	req.Header.Set("X-Artifact-Signature", auth.SignArtifactRequest(i.Node, id, now))
+	response, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		if ctx.Err() != nil {
+			return core.Artifact{}, ctx.Err()
+		}
+		return core.Artifact{}, fmt.Errorf("%w: request interrupted: %v", ErrTransientArtifactStatus, err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode!=http.StatusOK{
-		if response.StatusCode==http.StatusRequestTimeout || response.StatusCode==http.StatusTooManyRequests || response.StatusCode>=500 {
-			return core.Artifact{},fmt.Errorf("%w: HTTP %d",ErrTransientArtifactStatus,response.StatusCode)
+	if response.StatusCode != http.StatusOK {
+		if response.StatusCode == http.StatusRequestTimeout || response.StatusCode == http.StatusTooManyRequests || response.StatusCode >= 500 {
+			return core.Artifact{}, fmt.Errorf("%w: HTTP %d", ErrTransientArtifactStatus, response.StatusCode)
 		}
-		return core.Artifact{},fmt.Errorf("video status: HTTP %d",response.StatusCode)
+		return core.Artifact{}, fmt.Errorf("video status: HTTP %d", response.StatusCode)
 	}
 	var metadata core.Artifact
-	if err=json.NewDecoder(io.LimitReader(response.Body,16<<10)).Decode(&metadata);err!=nil{
-		if ctx.Err()!=nil{return core.Artifact{},ctx.Err()}
-		return core.Artifact{},fmt.Errorf("%w: interrupted metadata response: %v",ErrTransientArtifactStatus,err)
+	if err = json.NewDecoder(io.LimitReader(response.Body, 16<<10)).Decode(&metadata); err != nil {
+		if ctx.Err() != nil {
+			return core.Artifact{}, ctx.Err()
+		}
+		return core.Artifact{}, fmt.Errorf("%w: interrupted metadata response: %v", ErrTransientArtifactStatus, err)
 	}
-	if metadata.ID!=id {return core.Artifact{},errors.New("video status: mismatched Artifact identifier")}
-	return metadata,nil
+	if metadata.ID != id {
+		return core.Artifact{}, errors.New("video status: mismatched Artifact identifier")
+	}
+	return metadata, nil
+}
+
+func (a Authenticator) SignPublishCapability(nodeRef core.NodeReference, workerRef, attemptID string) string {
+	mac := hmac.New(sha256.New, a.secret)
+	_, _ = fmt.Fprintf(mac, "artifact-publish-v1\n%s\n%s\n%s", nodeRef, workerRef, attemptID)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (a Authenticator) VerifyPublishCapability(nodeRef core.NodeReference, workerRef, attemptID, token string) error {
+	if len(a.secret) < 32 || nodeRef == "" || workerRef == "" || attemptID == "" {
+		return errors.New("node artifact: invalid publish authorization")
+	}
+	provided, err := hex.DecodeString(token)
+	if err != nil || !hmac.Equal(provided, mustDecodeArtifactSignature(a.SignPublishCapability(nodeRef, workerRef, attemptID))) {
+		return errors.New("node artifact: invalid publish authorization")
+	}
+	return nil
+}
+
+func ValidPublishedSourcePath(relative string) bool {
+	if len(relative) == 0 || len(relative) > 1024 || !fs.ValidPath(relative) || relative == "." ||
+		path.Clean(relative) != relative {
+		return false
+	}
+	for _, component := range strings.Split(relative, "/") {
+		if strings.HasPrefix(component, ".") {
+			return false
+		}
+	}
+	return true
+}
+
+// A Server-valid publication must carry a second, file-specific attestation
+// generated only after the trusted Node has opened and verified the file.
+// The path-only broker URL cannot create this attestation.
+func (a Authenticator) SignPublishedSource(nodeRef core.NodeReference, workerRef, attemptID, relativePath, name, checksum string) string {
+	mac := hmac.New(sha256.New, a.secret)
+	_, _ = fmt.Fprintf(mac, "artifact-source-v1\n%s\n%s\n%s\n%s\n%s\n%s",
+		nodeRef, workerRef, attemptID, relativePath, name, checksum)
+	return hex.EncodeToString(mac.Sum(nil))
+}
+
+func (a Authenticator) VerifyPublishedSource(nodeRef core.NodeReference, workerRef, attemptID, relativePath, name, checksum, signature string) error {
+	if len(a.secret) < 32 || !ValidPublishedSourcePath(relativePath) || !ValidArtifactIDFormatForChecksum(checksum) {
+		return errors.New("node artifact: invalid signed publication source")
+	}
+	provided, err := hex.DecodeString(signature)
+	if err != nil || !hmac.Equal(provided, mustDecodeArtifactSignature(a.SignPublishedSource(nodeRef, workerRef, attemptID, relativePath, name, checksum))) {
+		return errors.New("node artifact: invalid signed publication source")
+	}
+	return nil
+}
+
+func ValidArtifactIDFormatForChecksum(checksum string) bool {
+	if len(checksum) != 64 {
+		return false
+	}
+	for _, r := range checksum {
+		if r < '0' || r > '9' {
+			if r < 'a' || r > 'f' {
+				return false
+			}
+		}
+	}
+	return true
 }
