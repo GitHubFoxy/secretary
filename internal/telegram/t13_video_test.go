@@ -199,3 +199,7 @@ func TestT13RestartWhileVideoProcessingRecoversSingleDispatch(t *testing.T){
  restored.imageWG.Wait()
  if len(srv.messages)!=1||srv.uploads!=1{t.Fatal("duplicate Telegram replay after recovery")}
 }
+
+func(s *t13FixtureServer)WorkerSupportsVideo(context.Context,string)(bool,error){return true,nil}
+func(s *t13RejectServer)WorkerSupportsVideo(context.Context,string)(bool,error){return true,nil}
+func(s *t13RecoverableServer)WorkerSupportsVideo(context.Context,string)(bool,error){return true,nil}
