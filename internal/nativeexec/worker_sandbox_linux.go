@@ -158,7 +158,7 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 				entryVerified:=false
 				for j:=0;j+2<len(wrapped);j++ {
 					if wrapped[j]=="--ro-bind" && wrapped[j+2]==executable &&
-						strings.HasPrefix(wrapped[j+1],"/opt/secretary/cli-store/") {entryVerified=true;break}
+						strings.HasPrefix(wrapped[j+1],"/etc/secretary/cli-store/") {entryVerified=true;break}
 				}
 				if !entryVerified {return "",nil,errors.New("worker sandbox: CLI executable missing from verified package manifest")}
 				// Official CLIs use npm optional platform distributions beside
@@ -295,7 +295,7 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
    // mutable files: materialize the independently verified tarball in a
    // root-owned store and bind those exact bytes at the expected CLI path.
    target:=filepath.Join(packageRoot,rel)
-   source:=filepath.Join("/opt/secretary/cli-store",provider,packageID,metadata.Version,rel)
+   source:=filepath.Join("/etc/secretary/cli-store",provider,packageID,metadata.Version,rel)
    info,err:=os.Lstat(source);if err!=nil{return fmt.Errorf("worker sandbox: verified CLI asset unavailable: %w",err)}
    owner,ok:=info.Sys().(*syscall.Stat_t)
    if !ok || owner.Uid!=0 || !info.Mode().IsRegular() || info.Mode().Perm()&022!=0 || info.Size()>512<<20 || !trustedCLIParents(source) {
