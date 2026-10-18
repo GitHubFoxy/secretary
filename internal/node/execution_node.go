@@ -2,9 +2,7 @@ package node
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
+ 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -612,50 +610,7 @@ func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerComma
 	}
 	var respondErr error
 	if len(preparedImages) > 0 {
-		// Fingerprint the native payload, including original image bytes, so
-		// the same RequestID cannot be reused with a different image/turn.
-		digest := sha256.New()
-		fmt.Fprintf(digest, "%d:%s:%s:%s", len(preparedText), preparedText, command.Metadata.TurnID, command.Metadata.AttemptID)
-		for _, img := range preparedImages {
-			fmt.Fprintf(digest, "|%s|%s|%d|", img.ArtifactID, img.MediaType, len(img.Data))
-			_, _ = digest.Write(img.Data)
-		}
-		fingerprint := hex.EncodeToString(digest.Sum(nil))
-		stage, stageErr := n.store.BeginImageResponse(command.RequestID, command.Metadata.AttemptID, fingerprint)
-		if stageErr != nil {
-			respondErr = fmt.Errorf("image_response_checkpoint_failed: %w", stageErr)
-		} else if stage == "started" {
-			// May have reached native ACP before a crash or timeout. Never
-			// blindly repeat this unconfirmed injection.
-			respondErr = errors.New("image_response_injection_unknown: native image acceptance requires reconciliation")
-		} else {
-			if stage == "started-new" {
-				if injector, ok := session.(ImageResponseInjector); ok {
-					respondErr = injector.InjectResponseImages(ctx, command.RequestID, preparedText, preparedImages)
-					if respondErr == nil {
-						respondErr = n.store.ConfirmImageResponse(command.RequestID, command.Metadata.AttemptID, fingerprint)
-					}
-				} else {
-					// Legacy native sessions are atomic from this caller's
-					// perspective: an unknown ACK must block future reinjection.
-					respondErr = session.(ImageResponseSession).RespondImages(ctx, command.RequestID, preparedText, preparedImages)
-					if respondErr == nil {
-						respondErr = n.store.ConfirmImageResponse(command.RequestID, command.Metadata.AttemptID, fingerprint)
-					}
-					if respondErr == nil {
-						goto imageResponseDelivered
-					}
-				}
-			}
-			if respondErr == nil {
-				responder, ok := session.(Responder)
-				if !ok {
-					respondErr = errors.New("image_response_unsupported: native interaction response not available")
-				} else {
-					respondErr = responder.Respond(ctx, command.RequestID, preparedText)
-				}
-			}
-		}
+		respondErr = DeliverImageResponse(ctx, n.store, session, command.Metadata, command.RequestID, preparedText, preparedImages)
 	} else {
 		responder, ok := session.(Responder)
 		if !ok {
@@ -669,7 +624,6 @@ func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerComma
 		}
 		respondErr = responder.Respond(ctx, command.RequestID, response)
 	}
-	imageResponseDelivered:
 	if err := respondErr; err != nil {
 		code := "execution_state_unknown"
 		if errors.Is(err, ErrImageResponseUnsupported) {

@@ -91,7 +91,8 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 			if capability, ok := session.(node.ImageResponseCapability); ok && !capability.SupportsImageResponse() {
 				return node.CommandOutcome{}, node.ErrImageResponseUnsupported
 			}
-			err = multimodal.RespondImages(ctx, response.RequestID, text, images)
+			_ = multimodal // capability is validated above; shared helper performs delivery.
+			err = node.DeliverImageResponse(ctx, r.Local.ImageResponseStore(), session, metadata, response.RequestID, text, images)
 		} else {
 			responder, ok := session.(node.Responder)
 			if !ok {

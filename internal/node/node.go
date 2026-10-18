@@ -182,6 +182,7 @@ type LocalNode struct {
 	workers     map[string]Session
 	checkpoints map[string]localCheckpoint
 	artifactFetcher ArtifactFetcher
+	imageResponseStore *LocalStore
 }
 
 type localCheckpoint struct {
@@ -191,6 +192,20 @@ type localCheckpoint struct {
 
 func NewLocal(runtime Runtime) *LocalNode {
 	return &LocalNode{runtime: runtime, workers: make(map[string]Session), checkpoints: make(map[string]localCheckpoint)}
+}
+
+// SetImageResponseStore binds a durable Node-owned checkpoint file. It must
+// reside in protected Node state, never in a Worker-controlled workspace.
+func (n *LocalNode) SetImageResponseStore(store *LocalStore) {
+	n.mu.Lock()
+	n.imageResponseStore = store
+	n.mu.Unlock()
+}
+
+func (n *LocalNode) ImageResponseStore() *LocalStore {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return n.imageResponseStore
 }
 
 func (n *LocalNode) SetArtifactFetcher(fetcher ArtifactFetcher) {
