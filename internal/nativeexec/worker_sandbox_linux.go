@@ -264,7 +264,7 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
  validIdentity:=metadata.Name==packageName
  if strings.HasPrefix(packageName,"@openai/codex-linux-") && metadata.Name=="@openai/codex" {validIdentity=true}
  if strings.HasPrefix(packageName,"@anthropic-ai/claude-code-linux-") && metadata.Name=="@anthropic-ai/claude-code" {validIdentity=true}
- if !validIdentity || metadata.Version=="" || strings.ContainsAny(metadata.Version,"/\\\\.") && strings.Contains(metadata.Version,"..") {
+ if !validIdentity || metadata.Version=="" || strings.ContainsAny(metadata.Version,"/\\\\") || strings.Contains(metadata.Version,"..") {
    return errors.New("worker sandbox: invalid CLI package identity")
  }
  // Root ownership is mandatory even when the Node and Server use the same UID.
@@ -275,7 +275,7 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
  info,err:=os.Lstat(manifestPath)
  if err!=nil{return fmt.Errorf("worker sandbox: trusted CLI provenance unavailable: %w",err)}
  stat,ok:=info.Sys().(*syscall.Stat_t)
- if !ok || stat.Uid!=0 || info.Mode()&os.ModeSymlink!=0 || info.Mode().Perm()&022!=0 {
+ if !ok || stat.Uid!=0 || info.Mode()&os.ModeSymlink!=0 || info.Mode().Perm()&022!=0 || !trustedCLIParents(manifestPath) {
    return errors.New("worker sandbox: untrusted CLI provenance manifest")
  }
  bytes,err:=os.ReadFile(manifestPath);if err!=nil{return err}
@@ -298,8 +298,8 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
    source:=filepath.Join("/opt/secretary/cli-store",provider,packageID,metadata.Version,rel)
    info,err:=os.Lstat(source);if err!=nil{return fmt.Errorf("worker sandbox: verified CLI asset unavailable: %w",err)}
    owner,ok:=info.Sys().(*syscall.Stat_t)
-   if !ok || owner.Uid!=0 || !info.Mode().IsRegular() || info.Mode().Perm()&022!=0 || info.Size()>512<<20 {
-     return fmt.Errorf("worker sandbox: untrusted or oversized provisioned CLI asset %s uid=%d mode=%s size=%d",rel,owner.Uid,info.Mode(),info.Size())
+   if !ok || owner.Uid!=0 || !info.Mode().IsRegular() || info.Mode().Perm()&022!=0 || info.Size()>512<<20 || !trustedCLIParents(source) {
+     return fmt.Errorf("worker sandbox: untrusted or oversized provisioned CLI asset %s mode=%s size=%d",rel,info.Mode(),info.Size())
    }
    fd,err:=os.Open(source);if err!=nil{return err}
    digest:=sha256.New()
@@ -311,6 +311,22 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
    *wrapped=append(*wrapped,"--ro-bind",source,target)
  }
  return nil
+}
+
+// All ancestors must be immutable to the Worker UID. A root-owned file
+// inside a user-writable directory can be atomically replaced after hashing.
+func trustedCLIParents(path string) bool {
+ dir:=filepath.Dir(path)
+ for {
+  info,err:=os.Lstat(dir)
+  if err!=nil || !info.IsDir() || info.Mode()&os.ModeSymlink!=0 || info.Mode().Perm()&022!=0{return false}
+  owner,ok:=info.Sys().(*syscall.Stat_t)
+  if !ok || owner.Uid!=0{return false}
+  if dir=="/"{return true}
+  next:=filepath.Dir(dir)
+  if next==dir{return false}
+  dir=next
+ }
 }
 
 func equalDigests(a,b []byte) bool {
