@@ -180,6 +180,9 @@ type LocalNode struct {
 	runtime     Runtime
 	mu          sync.Mutex
 	workers     map[string]Session
+	// activeAttempts binds the currently registered native Session to its
+	// owning Attempt; old durable checkpoints are not proof of ownership.
+	activeAttempts map[string]string
 	checkpoints map[string]localCheckpoint
 	artifactFetcher ArtifactFetcher
 	imageResponseStore *LocalStore
@@ -194,7 +197,7 @@ type localCheckpoint struct {
 }
 
 func NewLocal(runtime Runtime) *LocalNode {
-	return &LocalNode{runtime: runtime, workers: make(map[string]Session), checkpoints: make(map[string]localCheckpoint),prestarts:make(map[string]*localPending),workerGates:make(map[string]chan struct{})}
+	return &LocalNode{runtime: runtime, workers: make(map[string]Session), activeAttempts: make(map[string]string), checkpoints: make(map[string]localCheckpoint),prestarts:make(map[string]*localPending),workerGates:make(map[string]chan struct{})}
 }
 
 // SetPrestartStore binds local pre-native cancellation to protected Node-owned
@@ -303,6 +306,7 @@ func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session
 	if err!=nil{return nil,err}
 	n.mu.Lock()
 	n.workers[request.WorkerRef]=session
+	n.activeAttempts[request.WorkerRef]=request.AttemptID
 	if request.AttemptID!=""{n.checkpoints[request.AttemptID]=localCheckpoint{request:request,nativeID:session.ID()}}
 	n.mu.Unlock()
 	return session,nil
@@ -350,6 +354,7 @@ func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previous
 	if err!=nil{return nil,ErrRuntimeSessionUnavailable}
 	n.mu.Lock()
 	n.workers[request.WorkerRef]=session
+	n.activeAttempts[request.WorkerRef]=request.AttemptID
 	n.checkpoints[request.AttemptID]=localCheckpoint{request:request,nativeID:session.ID()}
 	n.mu.Unlock()
 	go func(){_=promptWithImages(context.Background(),session,request.Task,request.Images)}()
@@ -384,6 +389,7 @@ func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSes
 		return nil, err
 	}
 	n.workers[request.WorkerRef] = session
+	n.activeAttempts[request.WorkerRef] = request.AttemptID
 	return session, nil
 }
 
@@ -420,6 +426,7 @@ func (n *LocalNode) Close() error {
 	n.mu.Lock()
 	workers := n.workers
 	n.workers = make(map[string]Session)
+	n.activeAttempts = make(map[string]string)
 	n.mu.Unlock()
 	var first error
 	for _, session := range workers {
@@ -435,6 +442,7 @@ func (n *LocalNode) Remove(workerRef string) error {
 	session, ok := n.workers[workerRef]
 	if ok {
 		delete(n.workers, workerRef)
+		delete(n.activeAttempts, workerRef)
 	}
 	n.mu.Unlock()
 	if !ok {

@@ -107,13 +107,10 @@ func (n *LocalNode) CancelLocalAttempt(ctx context.Context,workerRef,attemptID s
 	defer unlock()
 	n.mu.Lock()
 	session,ok:=n.workers[workerRef]
-	if attemptID!="" {
-		if checkpoint,has:=n.checkpoints[attemptID];has {
-			ok=ok && checkpoint.request.WorkerRef==workerRef
-		} else if n.prestartStore!=nil && n.prestartStore.LocalPrestartState(attemptID)=="canceled" {
-			n.mu.Unlock();return true,nil
-		}
-	}
+	// A historical checkpoint may refer to a previous Attempt on this
+	// same Worker. Only the Attempt bound to the current native session
+	// may be canceled; an empty/unknown/stale ID is never authorized.
+	ok=ok && attemptID!="" && n.activeAttempts[workerRef]==attemptID
 	n.mu.Unlock()
 	if !ok{return false,nil}
 	return true,session.Cancel(ctx)
