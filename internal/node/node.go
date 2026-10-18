@@ -182,6 +182,9 @@ type LocalNode struct {
 	workers     map[string]Session
 	checkpoints map[string]localCheckpoint
 	artifactFetcher ArtifactFetcher
+	prestartStore *LocalStore
+	prestarts map[string]*localPending
+	workerGates map[string]chan struct{}
 }
 
 type localCheckpoint struct {
@@ -190,7 +193,15 @@ type localCheckpoint struct {
 }
 
 func NewLocal(runtime Runtime) *LocalNode {
-	return &LocalNode{runtime: runtime, workers: make(map[string]Session), checkpoints: make(map[string]localCheckpoint)}
+	return &LocalNode{runtime: runtime, workers: make(map[string]Session), checkpoints: make(map[string]localCheckpoint),prestarts:make(map[string]*localPending),workerGates:make(map[string]chan struct{})}
+}
+
+// SetPrestartStore binds local pre-native cancellation to protected Node-owned
+// durable state. Production binds the same Node state store used for image ACKs.
+func (n *LocalNode) SetPrestartStore(store *LocalStore) {
+	n.mu.Lock()
+	n.prestartStore=store
+	n.mu.Unlock()
 }
 
 func (n *LocalNode) SetArtifactFetcher(fetcher ArtifactFetcher) {
@@ -243,86 +254,91 @@ func (n *LocalNode) PrepareWorkerSteering(ctx context.Context, workerRef, text s
 }
 
 func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session, error) {
-	profile, err := request.effectiveProfile()
-	if err != nil {
-		return nil, err
-	}
-	request.Profile = profile
-	if request.Workspace == "" {
-		workspace, err := os.MkdirTemp("", "secretary-worker-")
-		if err != nil {
-			return nil, err
-		}
-		request.Workspace = workspace
-	}
-	if err := n.prepareInput(ctx, &request); err != nil { return nil, err }
-	if request.Profile.Name != "" && !nativeProfileDelivery(n.runtime, request.Profile) {
-		if _, err := request.Profile.MaterializeInstructions(request.Workspace); err != nil {
-			return nil, err
-		}
+	profile,err:=request.effectiveProfile()
+	if err!=nil{return nil,err}
+	request.Profile=profile
+	// Same-Worker commands are serialized, but media download/polling and
+	// runtime Start never hold LocalNode's global mutex.
+	unlock,err:=n.lockWorker(ctx,request.WorkerRef)
+	if err!=nil{return nil,err}
+	defer unlock()
+	if request.Workspace==""{
+		workspace,e:=os.MkdirTemp("","secretary-worker-")
+		if e!=nil{return nil,e}
+		request.Workspace=workspace
 	}
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	if _, exists := n.workers[request.WorkerRef]; exists {
-		return nil, errors.New("node: worker already exists")
+	_,exists:=n.workers[request.WorkerRef]
+	hasCheckpoint:=false
+	if request.AttemptID!=""{
+		for _,c:=range n.checkpoints{if c.request.WorkerRef==request.WorkerRef{hasCheckpoint=true;break}}
 	}
-	if request.AttemptID != "" {
-		for _, checkpoint := range n.checkpoints {
-			if checkpoint.request.WorkerRef == request.WorkerRef {
-				return nil, ErrRuntimeSessionUnavailable
-			}
-		}
+	n.mu.Unlock()
+	if exists{return nil,errors.New("node: worker already exists")}
+	if hasCheckpoint{return nil,ErrRuntimeSessionUnavailable}
+	prepCtx,finish,err:=n.beginLocalPrestart(ctx,request.AttemptID,request.WorkerRef)
+	if err!=nil{return nil,err}
+	defer finish()
+	if err:=n.prepareInput(prepCtx,&request);err!=nil{return nil,err}
+	if request.Profile.Name!="" && !nativeProfileDelivery(n.runtime,request.Profile){
+		if _,err:=request.Profile.MaterializeInstructions(request.Workspace);err!=nil{return nil,err}
 	}
-	session, err := n.runtime.Start(ctx, request)
-	if err != nil {
-		return nil, err
-	}
-	n.workers[request.WorkerRef] = session
-	if request.AttemptID != "" {
-		n.checkpoints[request.AttemptID] = localCheckpoint{request: request, nativeID: session.ID()}
-	}
-	return session, nil
+	if err:=n.commitLocalHandoff(prepCtx,request.AttemptID,request.WorkerRef);err!=nil{return nil,err}
+	session,err:=n.runtime.Start(ctx,request)
+	if err!=nil{return nil,err}
+	n.mu.Lock()
+	n.workers[request.WorkerRef]=session
+	if request.AttemptID!=""{n.checkpoints[request.AttemptID]=localCheckpoint{request:request,nativeID:session.ID()}}
+	n.mu.Unlock()
+	return session,nil
 }
 
-func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previousAttemptID string) (Session, error) {
-	profile, err := request.effectiveProfile()
-	if err != nil {
-		return nil, err
-	}
-	request.Profile = profile
-	if request.AttemptID == "" || request.AttemptID == previousAttemptID {
-		return nil, ErrRuntimeSessionUnavailable
-	}
+func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previousAttemptID string) (Session,error) {
+	profile,err:=request.effectiveProfile()
+	if err!=nil{return nil,err}
+	request.Profile=profile
+	if request.AttemptID=="" || request.AttemptID==previousAttemptID{return nil,ErrRuntimeSessionUnavailable}
+	unlock,err:=n.lockWorker(ctx,request.WorkerRef)
+	if err!=nil{return nil,err}
+	defer unlock()
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	checkpoint, ok := n.checkpoints[previousAttemptID]
-	prior := checkpoint.request
-	if request.Workspace == "" && ok {
-		request.Workspace = prior.Workspace
+	checkpoint,ok:=n.checkpoints[previousAttemptID]
+	fetch:=n.artifactFetcher
+	n.mu.Unlock()
+	prior:=checkpoint.request
+	if request.Workspace=="" && ok{request.Workspace=prior.Workspace}
+	if !ok || checkpoint.nativeID=="" || prior.WorkerRef!=request.WorkerRef || prior.Workspace!=request.Workspace ||
+		!reflect.DeepEqual(prior.Profile,request.Profile) || !reflect.DeepEqual(prior.HarnessInstance,request.HarnessInstance) ||
+		prior.Model!=request.Model || prior.Reasoning!=request.Reasoning || prior.ApprovalPolicy!=request.ApprovalPolicy {
+		return nil,ErrRuntimeSessionUnavailable
 	}
-	if !ok || checkpoint.nativeID == "" || prior.WorkerRef != request.WorkerRef || prior.Workspace != request.Workspace || !reflect.DeepEqual(prior.Profile, request.Profile) || !reflect.DeepEqual(prior.HarnessInstance, request.HarnessInstance) || prior.Model != request.Model || prior.Reasoning != request.Reasoning || prior.ApprovalPolicy != request.ApprovalPolicy {
-		return nil, ErrRuntimeSessionUnavailable
+	resumer,ok:=n.runtime.(Resumer)
+	if !ok{return nil,ErrRuntimeSessionUnavailable}
+	prepCtx,finish,err:=n.beginLocalPrestart(ctx,request.AttemptID,request.WorkerRef)
+	if err!=nil{return nil,err}
+	defer finish()
+	// Do not hold n.mu while waiting in awaitVideoProcessing: other Workers'
+	// Dispatch, Session, Steer and Cancel remain independent.
+	if err:=prepareLocalInput(prepCtx,&request,fetch);err!=nil{return nil,err}
+	if err:=n.commitLocalHandoff(prepCtx,request.AttemptID,request.WorkerRef);err!=nil{return nil,err}
+	n.mu.Lock()
+	previous,hadPrevious:=n.workers[request.WorkerRef]
+	n.mu.Unlock()
+	if hadPrevious {
+		if err:=previous.Close();err!=nil{return nil,err}
+		n.mu.Lock()
+		if current,ok:=n.workers[request.WorkerRef];ok && current==previous{delete(n.workers,request.WorkerRef)}
+		n.mu.Unlock()
 	}
-	if err := prepareLocalInput(ctx, &request, n.artifactFetcher); err != nil { return nil, err }
-	resumer, ok := n.runtime.(Resumer)
-	if !ok {
-		return nil, ErrRuntimeSessionUnavailable
-	}
-	if previous, exists := n.workers[request.WorkerRef]; exists {
-		if err := previous.Close(); err != nil {
-			return nil, err
-		}
-		delete(n.workers, request.WorkerRef)
-	}
-	request.DeferInitialPrompt = true
-	session, err := resumeSameIdentity(ctx, resumer, request, checkpoint.nativeID)
-	if err != nil {
-		return nil, ErrRuntimeSessionUnavailable
-	}
-	n.workers[request.WorkerRef] = session
-	n.checkpoints[request.AttemptID] = localCheckpoint{request: request, nativeID: session.ID()}
-	go func() { _ = promptWithImages(context.Background(), session, request.Task, request.Images) }()
-	return session, nil
+	request.DeferInitialPrompt=true
+	session,err:=resumeSameIdentity(ctx,resumer,request,checkpoint.nativeID)
+	if err!=nil{return nil,ErrRuntimeSessionUnavailable}
+	n.mu.Lock()
+	n.workers[request.WorkerRef]=session
+	n.checkpoints[request.AttemptID]=localCheckpoint{request:request,nativeID:session.ID()}
+	n.mu.Unlock()
+	go func(){_=promptWithImages(context.Background(),session,request.Task,request.Images)}()
+	return session,nil
 }
 
 func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
