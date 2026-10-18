@@ -170,3 +170,23 @@ func TestT09SystemSecretMarkersNotReachableInSandbox(t *testing.T) {
   }
  }
 }
+
+func TestT09MarkerSecretsBesideRuntimeFilesNotMounted(t *testing.T) {
+ root:=t.TempDir()
+ // Simulate three independent, arbitrarily located Server data directories
+ // below historically shared system roots; Node data lives elsewhere.
+ for _,name:=range []string{"usr/lib","usr/lib64","usr/share/nodejs"} {
+  dir:=filepath.Join(root,name)
+  if err:=os.MkdirAll(dir,0700);err!=nil {t.Fatal(err)}
+  runtime:=filepath.Join(dir,"runtime.so")
+  marker:=filepath.Join(dir,"secretary.db")
+  if err:=os.WriteFile(runtime,[]byte("runtime"),0600);err!=nil{t.Fatal(err)}
+  if err:=os.WriteFile(marker,[]byte("HMAC-MARKER"),0600);err!=nil{t.Fatal(err)}
+  args:=[]string{}
+  if err:=mountRuntimeFile(&args,runtime);err!=nil{t.Fatal(err)}
+  for i:=0;i+2<len(args);i++ {
+   if args[i]!="--ro-bind" {continue}
+   if args[i+1]==dir || args[i+1]==marker {t.Fatalf("exposed independent Server marker under %s",name)}
+  }
+ }
+}
