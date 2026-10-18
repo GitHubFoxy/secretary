@@ -292,7 +292,9 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
    if copyErr!=nil{return copyErr};if closeErr!=nil{return closeErr}
    wanted,err:=hex.DecodeString(expected)
    if err!=nil || !equalDigests(digest.Sum(nil),wanted){return fmt.Errorf("worker sandbox: CLI package content mismatches trusted manifest: %s",rel)}
-   if err:=mountRuntimeExecutable(wrapped,file);err!=nil{return err}
+   if filepath.Base(file)=="codex" || filepath.Base(file)=="claude" || filepath.Base(file)=="opencode" {
+     if err:=mountRuntimeExecutable(wrapped,file);err!=nil{return err}
+   } else if err:=mountRuntimeFile(wrapped,file);err!=nil{return err}
  }
  return nil
 }
