@@ -10,11 +10,18 @@ $principal=[Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdent
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
  throw 'Run one-time Worker setup in elevated PowerShell.'
 }
-foreach($path in @($NodeDataDir,$Workspace)) { if (-not (Test-Path -LiteralPath $path -PathType Container)) { throw "Missing folder: $path" } }
+if (-not (Test-Path -LiteralPath $NodeDataDir -PathType Container)) { throw "Missing Node folder: $NodeDataDir" }
 $NodeDataDir=(Resolve-Path -LiteralPath $NodeDataDir).Path
-$Workspace=(Resolve-Path -LiteralPath $Workspace).Path
+$WorkerHome=[IO.Path]::GetFullPath($WorkerHome)
 New-Item -ItemType Directory -Path $WorkerHome -Force | Out-Null
 $WorkerHome=(Resolve-Path -LiteralPath $WorkerHome).Path
+$Workspace=[IO.Path]::GetFullPath($Workspace)
+if (-not (Test-Path -LiteralPath $Workspace -PathType Container)) {
+ if ($Workspace.StartsWith($WorkerHome+'\',[StringComparison]::OrdinalIgnoreCase)) {
+  New-Item -ItemType Directory -Path $Workspace -Force | Out-Null
+ } else { throw "Missing named project Workspace: $Workspace" }
+}
+$Workspace=(Resolve-Path -LiteralPath $Workspace).Path
 if ($NodeDataDir -eq $WorkerHome -or $NodeDataDir.StartsWith($WorkerHome+'\')) { throw 'Worker home overlaps Node data.' }
 if ($NodeDataDir -eq $Workspace -or $NodeDataDir.StartsWith($Workspace+'\')) { throw 'Workspace overlaps Node data.' }
 $configPath=Join-Path $NodeDataDir 'worker-account.json'

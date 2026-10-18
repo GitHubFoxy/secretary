@@ -15,15 +15,11 @@ if (-not (Test-Path -LiteralPath $NodeDataDir -PathType Container)) {
  New-Item -Path $NodeDataDir -ItemType Directory -Force | Out-Null
 }
 $NodeDataDir=(Resolve-Path -LiteralPath $NodeDataDir).Path
-if (-not (Test-Path -LiteralPath $WorkerHome -PathType Container)) {
- New-Item -Path $WorkerHome -ItemType Directory -Force | Out-Null
-}
-$WorkerHome=(Resolve-Path -LiteralPath $WorkerHome).Path
+# Do not attempt to create ProgramData/Worker ACL roots as the
+# unelevated Node owner. The UAC stage creates them with privileged ACLs.
+$WorkerHome=[IO.Path]::GetFullPath($WorkerHome)
 if ([string]::IsNullOrWhiteSpace($Workspace)) { $Workspace=(Join-Path $WorkerHome 'workspaces') }
-if (-not (Test-Path -LiteralPath $Workspace -PathType Container)) {
- New-Item -Path $Workspace -ItemType Directory -Force | Out-Null
-}
-$Workspace=(Resolve-Path -LiteralPath $Workspace).Path
+$Workspace=[IO.Path]::GetFullPath($Workspace)
 if ([string]::IsNullOrWhiteSpace($NodeBinary)) {
  $found=Get-Command 'secretary-node.exe' -ErrorAction SilentlyContinue
  if ($found) { $NodeBinary=$found.Source }
