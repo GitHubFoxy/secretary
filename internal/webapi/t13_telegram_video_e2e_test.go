@@ -204,7 +204,11 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
  workers,err:=store.WorkersForConversation(ctx,conversation.ID)
  if err!=nil||len(workers)!=1{t.Fatalf("automatic Telegram ingress did not route to exactly one Worker: %+v %v",workers,err)}
  workerRef:=workers[0].WorkerRef
- if err:=adapter.HandleEvent(ctx,telegram.Event{Kind:"worker.created",WorkerRef:workerRef,Title:"video-worker",TaskPrompt:"Describe the sampled video"});err!=nil{t.Fatal(err)}
+ relay:=func(source core.Event)telegram.Event{
+  if projected,ok:=telegram.ProjectCoreWorkerEvent(source);ok{return projected}
+  return telegram.Event{EventID:source.ID,Sequence:source.Seq}
+ }
+ if _,err:=telegram.RelayCoreEventsOnce(ctx,store,adapter,relay);err!=nil{t.Fatal(err)}
  if err:=adapter.SyncWorkerTopics(ctx);err!=nil{t.Fatal(err)}
  topic,err:=transport.GetUpdates(ctx,501,time.Second)
  if err!=nil||len(topic)!=1||topic[0].Message.Video==nil{t.Fatalf("Bot API topic ingress failed: %+v %v",topic,err)}
@@ -224,29 +228,11 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
   if outcome.ID!=""{break}
   select{case <-ctx.Done():t.Fatal("native Topic Result not recorded");case <-time.After(20*time.Millisecond):}
  }
- // Bridge the actual durable Server Result event, not a fabricated Result.
- events,err:=store.EventsAfterSeq(ctx,0,500)
- if err!=nil{t.Fatal(err)}
- var terminal telegram.Event
- for _,source:=range events{
-  if source.Kind!="attempt.outcome_recorded"&&source.Kind!="result.accepted"{continue}
-  if !strings.Contains(string(source.Payload),outcome.Summary){continue}
-  ref:=source.WorkerRef
-  if ref==""&&source.AggregateType=="worker"{ref=source.AggregateID}
-  if ref!=workerRef{continue}
-  identity:="turn:"+outcome.TurnID
-  if source.CorrelationID!=""{identity="turn:"+source.CorrelationID}
-  terminal=telegram.Event{EventID:source.ID,Sequence:source.Seq,Kind:"worker.completed",
-   WorkerRef:workerRef,Title:"video-worker",Text:outcome.Summary,
-   TerminalIdentity:identity,Payload:source.Payload}
-  break
- }
- if terminal.Sequence==0{t.Fatal("no canonical Server terminal event for native Telegram Topic Worker")}
- if err:=adapter.HandleDurableEvent(ctx,terminal);err!=nil{t.Fatal(err)}
+ // The same production durable relay that runs in secretaryd delivers actual
+ // persisted Server lifecycle events with a replay-safe event cursor.
+ if _,err:=telegram.RelayCoreEventsOnce(ctx,store,adapter,relay);err!=nil{t.Fatal(err)}
  if err:=adapter.SyncWorkerTopics(ctx);err!=nil{t.Fatal(err)}
- if err:=adapter.HandleDurableEvent(ctx,terminal);err!=nil{t.Fatal(err)}
- terminal.Sequence++
- if err:=adapter.HandleDurableEvent(ctx,terminal);err!=nil{t.Fatal(err)}
+ if _,err:=telegram.RelayCoreEventsOnce(ctx,store,adapter,relay);err!=nil{t.Fatal(err)}
  if err:=adapter.SyncWorkerTopics(ctx);err!=nil{t.Fatal(err)}
  counts:=map[string]int{}
  for {select{case p:=<-delivered:
