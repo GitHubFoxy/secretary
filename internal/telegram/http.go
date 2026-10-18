@@ -184,6 +184,13 @@ func (dto botUpdateDTO) update() Update {
 		if name == "" { name = fmt.Sprintf("telegram-video-%d.mp4", dto.ID) }
 		message.Video = &Video{FileID:video.FileID, FileUniqueID:video.FileUniqueID, FileName:name, MimeType:video.MimeType, FileSize:video.FileSize, Duration:video.Duration}
 	}
+	if dto.Message.Document != nil && message.Voice == nil && message.Image == nil {
+		d := dto.Message.Document
+		message.Document = &Document{
+			FileID: d.FileID, FileUniqueID: d.FileUniqueID,
+			FileName: d.FileName, MimeType: d.MimeType, FileSize: d.FileSize,
+		}
+	}
 	update.Message = message
 	return update
 }
