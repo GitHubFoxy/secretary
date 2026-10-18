@@ -64,6 +64,7 @@ func (s *Store) CreateServerBackup(ctx context.Context, destination string, extr
  if e=output.Sync();e!=nil{output.Close();return e}
  if e=output.Close();e!=nil{return e}
  if e=os.Link(tmp,destination);e!=nil{return fmt.Errorf("publish backup without overwrite: %w",e)}
+ if e=syncBackupDirectory(dir);e!=nil{return fmt.Errorf("sync published backup directory: %w",e)}
  return nil
 }
 
@@ -89,59 +90,92 @@ func verifySnapshot(ctx context.Context,path string) error {
  return rows.Err()
 }
 
-// RestoreServerBackup restores to NEW paths only while Server is stopped.
-// All archive members are verified before installation. No existing Server state
-// is overwritten. On failure any newly installed paths are rolled back.
-func RestoreServerBackup(ctx context.Context,archive,dbDestination string,extraDestinations map[string]string) (err error){
+// restoreInstallHook is a test-only crash/failure injection seam. Real publication
+// remains a single directory rename, never a series of per-file installs.
+var restoreInstallHook func(string) error
+
+func syncBackupDirectory(path string) error {
+ f,err:=os.Open(path);if err!=nil{return err};defer f.Close()
+ return f.Sync()
+}
+
+// RestoreServerBackup verifies the complete archive in a private sibling directory,
+// syncs every file and that directory, then publishes the entire Server state
+// through one atomic same-filesystem directory rename. Call only while offline.
+// Destination directory must NOT exist; a crash before publication leaves only
+// an ignored staging directory, which the next restore removes and reconstructs.
+func RestoreServerBackup(ctx context.Context,archive,dbDestination string,extraDestinations map[string]string) error {
  if archive==""||dbDestination==""{return errors.New("restore paths are required")}
- zr,e:=zip.OpenReader(archive);if e!=nil{return e}
- defer zr.Close()
+ destinationDir:=filepath.Clean(filepath.Dir(dbDestination))
+ if destinationDir=="."||destinationDir==string(filepath.Separator){return errors.New("restore requires a dedicated new Server directory")}
+ base:=filepath.Base(dbDestination)
+ if base=="."||base==".." {return errors.New("invalid database destination")}
+ if _,err:=os.Lstat(destinationDir);err==nil{return errors.New("restore requires a nonexistent destination directory")}else if !errors.Is(err,os.ErrNotExist){return err}
+ parent:=filepath.Dir(destinationDir)
+ if info,err:=os.Lstat(parent);err!=nil||!info.IsDir(){return fmt.Errorf("restore parent unavailable: %v",err)}
+ targets:=map[string]string{"server.sqlite":base}
+ for name,path:=range extraDestinations{
+  if filepath.Base(name)!=name||name==""||path==""||filepath.Clean(filepath.Dir(path))!=destinationDir{
+   return fmt.Errorf("restore extras must be within the new Server directory: %q",name)
+  }
+  targets["extras/"+name]=filepath.Base(path)
+ }
+ used:=map[string]bool{}
+ for _,name:=range targets{
+  if used[name]{return errors.New("restore filenames collide")}
+  used[name]=true
+ }
+ zr,err:=zip.OpenReader(archive);if err!=nil{return err};defer zr.Close()
  entries:=map[string]*zip.File{}
- var manifest serverBackupManifest
  for _,f:=range zr.File{
   if _,ok:=entries[f.Name];ok{return fmt.Errorf("duplicate archive member %s",f.Name)}
-  if f.Name=="manifest.json"||f.Name=="server.sqlite"||strings.HasPrefix(f.Name,"extras/")&&filepath.Base(f.Name)==strings.TrimPrefix(f.Name,"extras/") {
-   entries[f.Name]=f
-  }else{return fmt.Errorf("unexpected archive member %s",f.Name)}
+  if f.Name!="manifest.json"&&f.Name!="server.sqlite"&&!(strings.HasPrefix(f.Name,"extras/")&&filepath.Base(f.Name)==strings.TrimPrefix(f.Name,"extras/")){
+   return fmt.Errorf("unexpected archive member %s",f.Name)
+  }
+  entries[f.Name]=f
  }
  mf:=entries["manifest.json"];if mf==nil{return errors.New("missing backup manifest")}
- reader,e:=mf.Open();if e!=nil{return e}
- data,e:=io.ReadAll(io.LimitReader(reader,1<<20));reader.Close();if e!=nil{return e}
- if e=json.Unmarshal(data,&manifest);e!=nil{return e}
- if manifest.Version!=1||len(manifest.Files)==0||manifest.Files["server.sqlite"]==""||len(entries)!=len(manifest.Files)+1{return errors.New("unsupported or incomplete backup manifest")}
- destinations:=map[string]string{"server.sqlite":dbDestination}
- for name,path:=range extraDestinations{
-  if filepath.Base(name)!=name||name==""||path==""{return errors.New("invalid restore extra")}
-  destinations["extras/"+name]=path
+ reader,err:=mf.Open();if err!=nil{return err}
+ data,err:=io.ReadAll(io.LimitReader(reader,1<<20));reader.Close();if err!=nil{return err}
+ var manifest serverBackupManifest
+ if err=json.Unmarshal(data,&manifest);err!=nil{return err}
+ if manifest.Version!=1||len(manifest.Files)!=len(targets)||len(entries)!=len(targets)+1||manifest.Files["server.sqlite"]=="" {
+  return errors.New("unsupported or incomplete backup manifest")
  }
- if len(destinations)!=len(manifest.Files){return errors.New("restore destinations do not match manifest")}
- staged:=map[string]string{}
- defer func(){for _,p:=range staged{os.Remove(p)}}()
- for name,hash:=range manifest.Files{
-  f:=entries[name];dst:=destinations[name]
-  if f==nil||dst==""||len(hash)!=64{return fmt.Errorf("missing or unexpected backup member %s",name)}
-  if _,e=os.Lstat(dst);e==nil{return fmt.Errorf("restore destination already exists: %s",dst)}else if !errors.Is(e,os.ErrNotExist){return e}
+ staging:=filepath.Join(parent,"."+filepath.Base(destinationDir)+".secretary-restore-staging")
+ // Old staging can only be discarded for an offline, unpublished restoration.
+ if info,err:=os.Lstat(staging);err==nil {
+  if !info.IsDir()||info.Mode()&os.ModeSymlink!=0{return errors.New("unsafe restore staging path")}
+  if err=os.RemoveAll(staging);err!=nil{return err}
+ }else if !errors.Is(err,os.ErrNotExist){return err}
+ if err=os.Mkdir(staging,0700);err!=nil{return err}
+ defer os.RemoveAll(staging)
+ if err:=syncBackupDirectory(parent);err!=nil{return err}
+ for name,destName:=range targets{
+  f:=entries[name];hash:=manifest.Files[name]
+  if f==nil||len(hash)!=64{return fmt.Errorf("missing backup member or checksum: %s",name)}
   if f.UncompressedSize64>1<<34{return errors.New("backup member exceeds size limit")}
-  tmp,e:=os.CreateTemp(filepath.Dir(dst),".secretary-restore-*")
-  if e!=nil{return e}
-  staged[dst]=tmp.Name()
-  reader,e:=f.Open();if e!=nil{tmp.Close();return e}
+  dest:=filepath.Join(staging,destName)
+  out,err:=os.OpenFile(dest,os.O_WRONLY|os.O_CREATE|os.O_EXCL,0600);if err!=nil{return err}
+  reader,err:=f.Open();if err!=nil{out.Close();return err}
   h:=sha256.New()
-  n,e:=io.Copy(io.MultiWriter(tmp,h),io.LimitReader(reader,1<<34+1))
-  reader.Close()
-  if e!=nil||uint64(n)!=f.UncompressedSize64||hex.EncodeToString(h.Sum(nil))!=hash{tmp.Close();return fmt.Errorf("backup member failed integrity check: %s",name)}
-  if e=tmp.Sync();e!=nil{tmp.Close();return e}
-  if e=tmp.Close();e!=nil{return e}
- }
- if e=verifySnapshot(ctx,staged[dbDestination]);e!=nil{return e}
- installed:=[]string{}
- for dst,src:=range staged{
-  if e=os.Link(src,dst);e!=nil{
-   for _,p:=range installed{os.Remove(p)}
-   return fmt.Errorf("install restored file: %w",e)
+  n,copyErr:=io.Copy(io.MultiWriter(out,h),io.LimitReader(reader,(1<<34)+1))
+  closeErr:=reader.Close()
+  if copyErr!=nil||closeErr!=nil||uint64(n)!=f.UncompressedSize64||hex.EncodeToString(h.Sum(nil))!=hash{
+   out.Close();return fmt.Errorf("backup member failed integrity check: %s",name)
   }
-  installed=append(installed,dst)
+  if err=out.Sync();err!=nil{out.Close();return err}
+  if err=out.Close();err!=nil{return err}
+  if restoreInstallHook!=nil{if err=restoreInstallHook("staged:"+name);err!=nil{return err}}
  }
+ if err:=verifySnapshot(ctx,filepath.Join(staging,base));err!=nil{return err}
+ if err:=syncBackupDirectory(staging);err!=nil{return err}
+ if restoreInstallHook!=nil{if err:=restoreInstallHook("before-publication");err!=nil{return err}}
+ if _,err:=os.Lstat(destinationDir);err==nil{return errors.New("restore destination appeared during staging")}else if !errors.Is(err,os.ErrNotExist){return err}
+ if err:=os.Rename(staging,destinationDir);err!=nil{return fmt.Errorf("publish restored Server: %w",err)}
+ // Rename is the atomic visibility boundary. Even if fsync fails, never
+ // destructively roll back the already published complete directory.
+ if err:=syncBackupDirectory(parent);err!=nil{return fmt.Errorf("restored Server is published but parent directory sync failed: %w",err)}
  return nil
 }
 
