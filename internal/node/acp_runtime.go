@@ -920,6 +920,52 @@ func (s *acpSession) RebindPendingRequests(requests []PendingRequest) {
 	}
 }
 
+func (s *acpSession) SupportsImageResponse() bool { return s.imageSupported }
+
+// ACP's interaction reply is textual. Deliver the actual image through
+// the negotiated multimodal steering channel first, and acknowledge the
+// pending interaction ONLY if the native turn confirms injection.
+func (s *acpSession) RespondImages(ctx context.Context, requestID, response string, images []ImageInput) error {
+	if err := s.InjectResponseImages(ctx, requestID, response, images); err != nil {
+		return err
+	}
+	return s.Respond(ctx, requestID, response)
+}
+
+// InjectResponseImages only performs ACP multimodal steering. Its confirmed
+// outcome is durably recorded by ExecutionNode before the textual native ACK.
+// A replay may call Respond, but must never steer the same image again.
+func (s *acpSession) InjectResponseImages(ctx context.Context, requestID, response string, images []ImageInput) error {
+	if len(images) == 0 {
+		return nil
+	}
+	if !s.imageSupported {
+		return errors.New("image_input_unsupported: ACP agent does not support native image blocks")
+	}
+	s.requestMu.Lock()
+	_, pending := s.pending[requestID]
+	_, rebound := s.reboundResponses[requestID]
+	restored := false
+	for _, request := range s.rebound {
+		if request.RequestID == requestID && (request.Kind == "" || request.Kind == ActivityUserInput) {
+			restored = true
+			break
+		}
+	}
+	s.requestMu.Unlock()
+	if !pending && !rebound && !restored {
+		return errors.New("acp: no active native interaction to receive an image response")
+	}
+	injected, err := s.SteerImages(ctx, response, images)
+	if err != nil {
+		return err
+	}
+	if !injected {
+		return errors.New("image_input_unsupported: ACP did not inject image blocks into the native turn")
+	}
+	return nil
+}
+
 func (s *acpSession) Respond(ctx context.Context, requestID, response string) error {
 	if strings.TrimSpace(requestID) == "" || strings.TrimSpace(response) == "" {
 		return errors.New("acp: request_id and response are required")
