@@ -5,6 +5,7 @@ import(
  "context"
  "encoding/json"
  "fmt"
+ "errors"
  "path/filepath"
  "strings"
  "testing"
@@ -189,4 +190,70 @@ func TestT15DocumentTopicPendingDispatchRestartsWithoutDuplicate(t *testing.T){
  if err:=restarted.HandleUpdate(context.Background(),u);err!=nil{t.Fatal(err)}
  restarted.imageWG.Wait()
  if len(srv.workers)!=1{t.Fatal("duplicate Telegram update redelivered document")}
+}
+
+type t15AmbiguousTransport struct {
+ *fakeTransport
+ attempts int
+}
+func(t *t15AmbiguousTransport)SendDocument(context.Context,int64,int64,string,string,[]byte,string)error{
+ t.attempts++
+ return context.DeadlineExceeded // Bot accepted bytes before response disappeared
+}
+func TestT15AmbiguousAcceptedDocumentNeverAutoResentAfterRestart(t *testing.T){
+ path:=filepath.Join(t.TempDir(),"telegram.json")
+ tr:=&t15AmbiguousTransport{fakeTransport:&fakeTransport{}}
+ srv:=&t15DeliveryServer{bytes:[]byte("sensitive output")}
+ open:=func()*Adapter{t.Helper();a,e:=New(Config{StatePath:path,OwnerChatID:100},tr,srv);if e!=nil{t.Fatal(e)};return a}
+ a:=open()
+ file:=OutgoingMessage{ChatID:100,Identity:"file-result:res_uncertain:art_test",DocumentArtifactID:"art_test",Text:"result"}
+ // The ambiguous outcome is not retried, but subsequent outbox entries
+ // and a durable warning MUST still make progress.
+ if err:=a.sendMessage(context.Background(),file);err!=nil{t.Fatal(err)}
+ if tr.attempts!=1{t.Fatalf("first attempt count=%d",tr.attempts)}
+ restored:=open()
+ if err:=restored.sendMessage(context.Background(),OutgoingMessage{ChatID:100,Identity:"after-document",Text:"Later message"});err!=nil{t.Fatal(err)}
+ if tr.attempts!=1{t.Fatalf("ambiguous accepted document was resent: %d",tr.attempts)}
+ sawWarning,sawLater:=false,false
+ for _,m:=range tr.sent{
+  sawWarning=sawWarning||strings.Contains(m.Text,"неизвестен")
+  sawLater=sawLater||m.Text=="Later message"
+ }
+ if !sawWarning||!sawLater{t.Fatalf("warning or later message blocked: %+v",tr.sent)}
+}
+
+type t15RejectDocumentTransport struct{*fakeTransport;attempts int}
+func(t *t15RejectDocumentTransport)SendDocument(context.Context,int64,int64,string,string,[]byte,string)error{
+ t.attempts++
+ return documentFailure(documentFailurePermanent,errors.New("Telegram sendDocument HTTP 400"))
+}
+func TestT15PermanentFileErrorDoesNotPoisonOutbox(t *testing.T){
+ tr:=&t15RejectDocumentTransport{fakeTransport:&fakeTransport{}}
+ srv:=&t15DeliveryServer{bytes:[]byte("output")}
+ a,e:=New(Config{StatePath:filepath.Join(t.TempDir(),"state.json"),OwnerChatID:100},tr,srv)
+ if e!=nil{t.Fatal(e)}
+ err:=a.sendMessage(context.Background(),OutgoingMessage{ChatID:100,Identity:"file-result:res_bad:art_bad",DocumentArtifactID:"art_bad",Text:"result"})
+ if err!=nil{t.Fatal(err)}
+ if err:=a.sendMessage(context.Background(),OutgoingMessage{ChatID:100,Text:"Unrelated message",Identity:"unrelated"});err!=nil{t.Fatal(err)}
+ if tr.attempts!=1{t.Fatalf("permanent file retried %d times",tr.attempts)}
+ seenNotice,seenUnrelated:=false,false
+ for _,msg:=range tr.sent{
+  seenNotice=seenNotice||strings.Contains(msg.Text,"невозможно доставить")
+  seenUnrelated=seenUnrelated||msg.Text=="Unrelated message"
+ }
+ if !seenNotice||!seenUnrelated{t.Fatalf("poison message blocked other traffic: %+v",tr.sent)}
+}
+func TestT15CrashBeforeFileSendDoesNotResendUnknownAttempt(t *testing.T){
+ path:=filepath.Join(t.TempDir(),"state.json")
+ tr:=&t15AmbiguousTransport{fakeTransport:&fakeTransport{}}
+ srv:=&t15DeliveryServer{bytes:[]byte("output")}
+ a,e:=New(Config{StatePath:path,OwnerChatID:100},tr,srv);if e!=nil{t.Fatal(e)}
+ pending:=OutgoingMessage{ChatID:100,Identity:"file-result:res_crash:art_crash",DocumentArtifactID:"art_crash",DocumentAttemptStarted:true}
+ a.mu.Lock();a.state.Outbox=append(a.state.Outbox,pending);e=a.saveLocked();a.mu.Unlock();if e!=nil{t.Fatal(e)}
+ b,e:=New(Config{StatePath:path,OwnerChatID:100},tr,srv);if e!=nil{t.Fatal(e)}
+ if e:=b.drainOutbox(context.Background());e!=nil{t.Fatal(e)}
+ if tr.attempts!=0{t.Fatal("restart reattempted a possibly already accepted Telegram document")}
+ if len(tr.sent)!=0{t.Fatal("warning must be durably queued and not yet claimed delivered")}
+ if e:=b.drainOutbox(context.Background());e!=nil{t.Fatal(e)}
+ if len(tr.sent)!=1||!strings.Contains(tr.sent[0].Text,"неизвестен"){t.Fatalf("unknown outcome notification missing: %+v",tr.sent)}
 }
