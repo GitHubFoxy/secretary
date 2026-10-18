@@ -124,7 +124,7 @@ func (a *Adapter) imageNotice(ctx context.Context, u Update, text string) error 
 // Re-evaluate authorization on every durable replay; a queued update must
 // never inherit an authorization decision from a previous owner or topic.
 func (a *Adapter) imageAuthorized(u Update) bool {
-	if u.Message == nil || u.Message.Image == nil && u.Message.Video == nil {
+	if u.Message == nil || u.Message.Image == nil && u.Message.Video == nil && u.Message.Document == nil {
 		return false
 	}
 	a.mu.Lock()
@@ -282,7 +282,7 @@ func (a *Adapter) deliverImageUpdate(ctx context.Context, u Update, allowed bool
 }
 
 func (a *Adapter) queueImageUpdate(u Update, allowed bool) error {
-	if !allowed || u.Message == nil || u.Message.Image == nil && u.Message.Video == nil {
+	if !allowed || u.Message == nil || u.Message.Image == nil && u.Message.Video == nil && u.Message.Document == nil {
 		return nil
 	}
 	a.mu.Lock()
