@@ -137,3 +137,36 @@ func(t *BotAPITransport)SendDocument(ctx context.Context,chatID,threadID int64,n
  _=mediaType
  return nil
 }
+
+func(a *Adapter)deliverEventDocuments(ctx context.Context,event Event)error{
+ if event.WorkerRef=="" || event.TerminalIdentity=="" || len(event.Payload)==0{return nil}
+ // Only accepted Results, not provisional Attempt outcomes, may announce
+ // output Artifacts to Telegram. Both events share the same Turn identity.
+ var payload struct{
+  ID string `json:"id"`
+  ArtifactRefs []string `json:"artifact_refs"`
+ }
+ if err:=json.Unmarshal(event.Payload,&payload);err!=nil{return nil}
+ if !strings.HasPrefix(payload.ID,"res_"){return nil}
+ seen:=map[string]bool{}
+ for _,ref:=range payload.ArtifactRefs{
+  id:=strings.TrimPrefix(ref,"artifact://")
+  if !strings.HasPrefix(id,"art_")||seen[id]{continue}
+  seen[id]=true
+  message:=OutgoingMessage{Text:"Файл результата Worker",Identity:"file-result:"+payload.ID+":"+id,
+   DocumentArtifactID:id,DurableSequence:event.Sequence}
+  for _,chat:=range a.personalChats(){
+   copy:=message;copy.ChatID=chat
+   if err:=a.sendMessage(ctx,copy);err!=nil{return err}
+  }
+  if a.config.GroupChatID!=nil{
+   mapping,err:=a.ensureTopic(ctx,event.WorkerRef,event.Title)
+   if err!=nil{return err}
+   if mapping.ChatID!=0{
+    copy:=message;copy.ChatID=mapping.ChatID;copy.ThreadID=mapping.ThreadID
+    if err:=a.sendMessage(ctx,copy);err!=nil{return err}
+   }
+  }
+ }
+ return nil
+}
