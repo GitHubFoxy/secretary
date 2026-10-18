@@ -43,7 +43,7 @@ jobs:
           sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0-linux-x64
       - name: Diagnose protected official CLI store permissions
         run: |
-          namei -l /opt/secretary/cli-store/codex/@openai__codex/0.163.0/bin/codex.js
+          namei -l /etc/secretary/cli-store/codex/@openai__codex/0.163.0/bin/codex.js
           namei -l /etc/secretary/cli-manifests/codex/@openai__codex/0.163.0.json
       - name: Real Codex package sandbox Start and Resume smoke
         env:
