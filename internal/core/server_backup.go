@@ -74,6 +74,9 @@ func verifySnapshot(ctx context.Context,path string) error {
  var result string
  if e=db.QueryRowContext(ctx,"PRAGMA integrity_check").Scan(&result);e!=nil{return e}
  if result!="ok"{return fmt.Errorf("sqlite integrity check: %s",result)}
+ var invalid int
+ if e=db.QueryRowContext(ctx,"SELECT COUNT(*) FROM pragma_foreign_key_check").Scan(&invalid);e!=nil{return e}
+ if invalid!=0{return fmt.Errorf("sqlite foreign-key integrity check found %d broken references",invalid)}
  rows,e:=db.QueryContext(ctx,"SELECT id,size,sha256,body FROM artifacts")
  if e!=nil{return e}
  defer rows.Close()
