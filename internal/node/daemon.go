@@ -162,8 +162,12 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			individualCtx,interrupt:=context.WithCancelCause(commandCtx)
 			runningDetails[key]=runningNodeCommand{kind:command.Kind,attemptID:command.Metadata().AttemptID,interrupt:interrupt}
 			go func() {
-				defer interrupt(nil)
 				outcome, err := execution.HandleCommand(individualCtx, command)
+				// An accepted dispatch's native session can keep using its
+				// runtime.Start context after this command returns. Do not
+				// cancel that context on ACK (it would kill Codex/Claude
+				// follow-ups). The connection parent owns its lifetime.
+				if err!=nil || outcome.State!=CommandAccepted {interrupt(nil)}
 				select {
 				case completions <- commandCompletion{command: command, outcome: outcome, err: err}:
 				case <-commandCtx.Done():
