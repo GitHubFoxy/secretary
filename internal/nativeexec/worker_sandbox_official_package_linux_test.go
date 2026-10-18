@@ -87,7 +87,7 @@ func TestT09RealCodexPersistedSessionResume(t *testing.T) {
    f,_:=w.(http.Flusher)
    send:=func(kind string,payload any) {
      b,_:=json.Marshal(payload)
-     fmt.Fprintf(w,"event: %s\\ndata: %s\\n\\n",kind,b)
+     fmt.Fprintf(w,"event: %s\ndata: %s\n\n",kind,b)
      if f!=nil{f.Flush()}
    }
    base:=map[string]any{"id":responseID,"object":"response","created_at":1730000000,"model":"t09-local","status":"completed","output":[]any{map[string]any{"id":"msg_t09","type":"message","role":"assistant","status":"completed","content":[]any{map[string]any{"type":"output_text","text":text,"annotations":[]any{}}}}},"usage":map[string]any{"input_tokens":10,"output_tokens":5,"total_tokens":15}}
@@ -104,7 +104,7 @@ func TestT09RealCodexPersistedSessionResume(t *testing.T) {
  for _,dir:=range []string{home,ws,node,filepath.Join(home,".codex")} {
    if err:=os.MkdirAll(dir,0700);err!=nil{t.Fatal(err)}
  }
- config:=fmt.Sprintf("model = \"t09-local\"\\nmodel_provider = \"t09mock\"\\napproval_policy = \"never\"\\nmodel_reasoning_effort = \"low\"\\n[model_providers.t09mock]\\nname = \"T09 CI Fake Responses Backend\"\\nbase_url = %q\\nwire_api = \"responses\"\\nrequires_openai_auth = false\\nrequest_max_retries = 0\\nstream_max_retries = 0\\n",server.URL+"/v1")
+ config:=fmt.Sprintf("model = \"t09-local\"\nmodel_provider = \"t09mock\"\napproval_policy = \"never\"\nmodel_reasoning_effort = \"low\"\n[model_providers.t09mock]\nname = \"T09 CI Fake Responses Backend\"\nbase_url = %q\nwire_api = \"responses\"\nrequires_openai_auth = false\nrequest_max_retries = 0\nstream_max_retries = 0\n",server.URL+"/v1")
  if err:=os.WriteFile(filepath.Join(home,".codex","config.toml"),[]byte(config),0600);err!=nil{t.Fatal(err)}
  t.Setenv("HOME",home)
  runCtx,cancel:=context.WithTimeout(context.Background(),90*time.Second)
@@ -115,7 +115,7 @@ func TestT09RealCodexPersistedSessionResume(t *testing.T) {
   cmd,err:=CommandContext(ctx,cli,args...)
   if err!=nil{t.Fatal(err)}
   output,err:=cmd.CombinedOutput()
-  if err!=nil{t.Fatalf("real Codex command %v failed: %v\\n%s",args,err,output)}
+  if err!=nil{t.Fatalf("real Codex command %v failed: %v\n%s",args,err,output)}
   return string(output)
  }
  first:=run("exec","--json","--skip-git-repo-check","First turn: remember ALPHA")
