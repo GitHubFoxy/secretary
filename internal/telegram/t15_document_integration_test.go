@@ -8,6 +8,8 @@ import(
  "path/filepath"
  "strings"
  "testing"
+ "time"
+ "sync"
 )
 
 type t15Store struct {
@@ -128,4 +130,63 @@ func TestT15WorkerDocumentResultAllTelegramProjectionsReconnect(t *testing.T){
   counts[fmt.Sprintf("%d:%d",m.ChatID,m.ThreadID)]++
  }
  if counts["100:0"]!=1||counts["-200:0"]!=1||counts["-200:77"]!=1{t.Fatalf("missing or duplicate Worker Artifact projection: %+v",counts)}
+}
+
+type t15PendingDispatchStore struct {
+ t15Store
+ started chan struct{}
+ unblock chan struct{}
+ once sync.Once
+}
+func(s *t15PendingDispatchStore)SendWorkerMessage(ctx context.Context,m WorkerMessage)error{
+ s.once.Do(func(){close(s.started)})
+ select{
+ case <-ctx.Done():return ctx.Err()
+ case <-s.unblock:
+ }
+ return s.fakeServer.SendWorkerMessage(ctx,m)
+}
+func TestT15DocumentTopicPendingDispatchRestartsWithoutDuplicate(t *testing.T){
+ group:=int64(-200)
+ tr:=&t11Transport{fakeTransport:&fakeTransport{},data:[]byte("document payload")}
+ srv:=&t15PendingDispatchStore{started:make(chan struct{}),unblock:make(chan struct{})}
+ path:=filepath.Join(t.TempDir(),"pending.json")
+ open:=func()*Adapter{
+  t.Helper();a,e:=New(Config{StatePath:path,OwnerChatID:100,GroupChatID:&group},tr,srv)
+  if e!=nil{t.Fatal(e)};return a
+ }
+ first:=open()
+ first.mu.Lock()
+ first.state.OwnerUser=100
+ first.state.GroupChat=group
+ first.state.Topics["worker-document"]=TopicMapping{
+  WorkerRef:"worker-document",ChatID:group,ThreadID:97,PendingRequestID:"document-request",
+ }
+ err:=first.saveLocked()
+ first.mu.Unlock()
+ if err!=nil{t.Fatal(err)}
+ u:=Update{ID:922,Message:&Message{
+  ChatID:group,ChatType:"supergroup",FromID:100,MessageID:922,ThreadID:97,
+  Caption:"Read document",Document:&Document{
+   FileID:"doc",FileUniqueID:"doc-unique",FileName:"data.json",MimeType:"application/json",FileSize:16,
+  },
+ }}
+ ctx,cancel:=context.WithCancel(context.Background())
+ if err:=first.HandleUpdate(ctx,u);err!=nil{t.Fatal(err)}
+ select{case <-srv.started:case <-time.After(3*time.Second):t.Fatal("document dispatch never reached Worker")}
+ if err:=first.HandleUpdate(ctx,u);err!=nil{t.Fatal(err)}
+ first.mu.Lock();pending:=len(first.state.PendingImages);first.mu.Unlock()
+ if pending!=1{t.Fatalf("pending document not durable: %d",pending)}
+ cancel()
+ first.imageWG.Wait()
+ restarted:=open()
+ close(srv.unblock)
+ restarted.startImageWorkers(context.Background())
+ restarted.imageWG.Wait()
+ if len(srv.workers)!=1||srv.workers[0].WorkerRef!="worker-document"||srv.workers[0].RequestID!="document-request"{
+  t.Fatalf("document was not recovered to original Worker and request: %+v",srv.workers)
+ }
+ if err:=restarted.HandleUpdate(context.Background(),u);err!=nil{t.Fatal(err)}
+ restarted.imageWG.Wait()
+ if len(srv.workers)!=1{t.Fatal("duplicate Telegram update redelivered document")}
 }
