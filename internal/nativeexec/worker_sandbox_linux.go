@@ -273,7 +273,8 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
    if !info.Mode().IsRegular(){return errors.New("worker sandbox: nonregular CLI asset")}
    fd,err:=os.Open(file);if err!=nil{return err}
    digest:=sha256.New()
-   _,copyErr:=io.Copy(digest,io.LimitReader(fd,128<<20))
+   if info.Size()>128<<20 { fd.Close(); return errors.New("worker sandbox: CLI asset exceeds size limit") }
+   _,copyErr:=io.Copy(digest,fd)
    closeErr:=fd.Close()
    if copyErr!=nil{return copyErr};if closeErr!=nil{return closeErr}
    wanted,err:=hex.DecodeString(expected)
