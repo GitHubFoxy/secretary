@@ -2300,10 +2300,11 @@ func (s *Store) RecordNodeAttemptOutcome(ctx context.Context, envelope AttemptOu
 		if errors.Is(err, sql.ErrNoRows) { continue }
 		if err != nil { return AttemptOutcome{}, nil, false, err }
 		downloadURL := "/v1/artifacts/" + id + "?download=1"
-		// Always append the canonical owner-scoped link for each unique
-		// Artifact ID. Text parsed as Markdown code, image, or escaped syntax
-		// must never suppress the real download control.
-		envelope.Summary += "\n\n[Download output](" + downloadURL + ")"
+		// A real Markdown link already provides the owner download control.
+		// Bare URLs, images, escaped text and code must not suppress it.
+		if !hasClickableArtifactDownload(envelope.Summary, downloadURL) {
+			envelope.Summary += "\n\n[Download output](" + downloadURL + ")"
+		}
 	}
 	artifactRefs := ""
 	if len(envelope.ArtifactRefs) > 0 {

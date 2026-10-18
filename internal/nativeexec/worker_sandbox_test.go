@@ -52,3 +52,22 @@ func TestT09WorkerSandboxBlocksIdentityAndStateReads(t *testing.T) {
   t.Fatalf("sandbox failed or secrets were readable: %v: %s",err,out)
  }
 }
+
+func TestT09NativeWorkerEnvironmentExplicitAllowlist(t *testing.T) {
+	ctx:=WithWorkerSandbox(context.Background(),WorkerSandbox{ProtectedDir:"/private",Workspace:"/workspace"})
+	env:=SecureWorkerEnvironment(ctx,[]string{
+		"PATH=/usr/bin", "HOME=/home/worker", "LANG=en_US.UTF-8",
+		"DATABASE_URL=postgres://user:secret@localhost/private",
+		"AWS_SECRET_ACCESS_KEY=AWS-SECRET",
+		"CUSTOM_PRIVATE_TOKEN=PRIVATE",
+		"ANTHROPIC_API_KEY=NODE-API-TOKEN",
+		"SECRETARY_ARTIFACT_BROKER_URL=http://127.0.0.1:42000",
+	})
+	all:=strings.Join(env,"\n")
+	for _,secret:=range []string{"DATABASE_URL=","AWS_SECRET_ACCESS_KEY=","CUSTOM_PRIVATE_TOKEN=","ANTHROPIC_API_KEY=","NODE-API-TOKEN"} {
+		if strings.Contains(all,secret){t.Fatalf("Node-only secret leaked through Worker environment: %q",secret)}
+	}
+	for _,safe:=range []string{"PATH=/usr/bin","HOME=/home/worker","SECRETARY_ARTIFACT_BROKER_URL="} {
+		if !strings.Contains(all,safe){t.Fatalf("Worker runtime env lost required variable %q",safe)}
+	}
+}
