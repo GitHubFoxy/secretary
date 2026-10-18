@@ -52,3 +52,20 @@ func TestT09DarwinDeniedNodeCredentialsForPrivateTempDataDir(t *testing.T) {
 	output,err:=cmd.CombinedOutput()
 	if err!=nil{t.Fatalf("Worker escaped Node data dir: %v %s",err,output)}
 }
+
+
+func TestT09SeatbeltDoesNotGrantBroadThirdPartySystemRoots(t *testing.T) {
+ root:=t.TempDir()
+ workspace:=filepath.Join(root,"workspace")
+ node:=filepath.Join(root,"node")
+ if err:=os.MkdirAll(workspace,0700);err!=nil{t.Fatal(err)}
+ if err:=os.MkdirAll(node,0700);err!=nil{t.Fatal(err)}
+ _,args,err:=sandboxInvocation(WorkerSandbox{ProtectedDir:node,Workspace:workspace},"/bin/sh",nil)
+ if err!=nil{t.Fatal(err)}
+ profile:=args[1]
+ for _,root:=range []string{"/Applications","/Library/Frameworks","/Library/Developer","/opt/homebrew/lib","/opt/homebrew/bin"} {
+   if strings.Contains(profile,"(allow file-read* (subpath \""+root+"\"))") {
+     t.Fatalf("broad Seatbelt grant exposes co-located Server files: %s",root)
+   }
+ }
+}
