@@ -238,6 +238,11 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
 // individual files. Do not export the parent lib directory: it may contain
 // an unrelated Server database owned by the same UID.
 func mountRuntimeExecutable(wrapped *[]string, executable string) error {
+  if _, err := os.Lstat(executable); os.IsNotExist(err) {
+    // Optional runtime candidates differ by distribution. The actual
+    // selected command must still exist (checked by sandboxInvocation).
+    return nil
+  } else if err != nil { return err }
   seen := make(map[string]bool)
   var visit func(string) error
   visit = func(path string) error {
