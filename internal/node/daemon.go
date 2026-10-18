@@ -208,9 +208,11 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 					receipt,queueErr:=d.Store.QueueLifecycleCommandOutcome(outcome)
 					if queueErr!=nil {
 						err=fmt.Errorf("node: persist native command outcome: %w",queueErr)
-					} else if receipt.Sequence==0 && outcome.State==CommandAccepted {
-						// The original event was already acknowledged; this
-						// is an explicit command replay, not a new receipt.
+					} else if receipt.Sequence==0 {
+						// The original terminal receipt (ACCEPTED or FAILED)
+						// was already acknowledged. Answer this explicit
+						// replay from the cached outcome without creating
+						// another durable event.
 						replyAfterAck=true
 					}
 				}
