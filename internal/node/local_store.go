@@ -192,7 +192,11 @@ func (s *LocalStore) MarkNativeHandoff(ctx context.Context, id string) error {
 	defer s.mu.Unlock()
 	if e:=ctx.Err();e!=nil{return e}
 	rec,ok:=s.state.Commands[id]
-	if !ok || rec.State!=CommandProcessing || !rec.SafePrestart || rec.Replayable{return errors.New("node: missing active pre-native claim")}
+	if !ok || rec.State!=CommandProcessing{return errors.New("node: missing active command claim")}
+	// Ordinary non-Artifact commands retain their existing unknown-execution
+	// recovery behavior. They have no safe prestart marker to close.
+	if !rec.SafePrestart{return nil}
+	if rec.Replayable{return errors.New("node: pre-native command was not claimed for this execution")}
 	prev:=rec
 	rec.SafePrestart=false
 	rec.UpdatedAt=time.Now().UTC()
