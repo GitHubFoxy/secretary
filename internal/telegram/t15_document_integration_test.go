@@ -291,3 +291,28 @@ func TestT15CrashBeforeFileSendDoesNotResendUnknownAttempt(t *testing.T){
  if e:=b.drainOutbox(context.Background());e!=nil{t.Fatal(e)}
  if len(tr.sent)!=1||!strings.Contains(tr.sent[0].Text,"неизвестен"){t.Fatalf("unknown outcome notification missing: %+v",tr.sent)}
 }
+
+func TestT15MissingOwnerWebOriginNeverAdvertisesInternalLocalhost(t *testing.T){
+ for _,origin:=range []string{"","http://127.0.0.1:8080","https://localhost:8080","https://192.168.1.20"}{
+  if err:=ValidateOwnerWebBaseURL(origin);err==nil{t.Fatalf("accepted unreachable owner URL %q",origin)}
+ }
+ tr:=&t15RejectDocumentTransport{fakeTransport:&fakeTransport{}}
+ srv:=&t15DeliveryServer{bytes:[]byte("original remains on Server")}
+ a,err:=New(Config{StatePath:filepath.Join(t.TempDir(),"missing-web-url.json"),OwnerChatID:100},tr,srv)
+ if err!=nil{t.Fatal(err)}
+ // A production-like HTTPServerClient has a loopback internal URL but no
+ // configured external Web origin. Never claim that URL is a valid fallback.
+ client:=&HTTPServerClient{BaseURL:"http://127.0.0.1:8080",Credential:"private"}
+ if _,err:=client.OwnerArtifactDownloadURL(context.Background(),"art_output");err==nil{
+  t.Fatal("advertised an owner-unreachable localhost URL")
+ }
+ if err:=a.sendMessage(context.Background(),OutgoingMessage{
+  ChatID:100,Identity:"file-result:res_missing:art_output",
+  DocumentArtifactID:"art_output",Text:"result",
+ });err!=nil{t.Fatal(err)}
+ if err:=a.drainOutbox(context.Background());err!=nil{t.Fatal(err)}
+ if len(tr.sent)!=1||strings.Contains(tr.sent[0].Text,"127.0.0.1")||
+ !strings.Contains(tr.sent[0].Text,"SECRETARY_TELEGRAM_WEB_BASE_URL"){
+  t.Fatalf("default config incorrectly claimed a usable fallback: %+v",tr.sent)
+ }
+}
