@@ -154,9 +154,17 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
  if !strings.Contains(entry.Body,"Describe the sampled video")||!strings.Contains(entry.Body,"file_unique_id unique-video"){t.Fatalf("caption/identity lost: %q",entry.Body)}
  artifactIDs:=node.ArtifactIDs(entry.Body)
  if len(artifactIDs)!=1{t.Fatalf("missing original Artifact: %q",entry.Body)}
- originalArtifact,body,err:=store.ArtifactForPerson(ctx,api.OwnerID(),artifactIDs[0])
- if err!=nil||!bytes.Equal(body,original)||originalArtifact.ProcessingStatus!="ready"||len(originalArtifact.VideoFrames)!=2{t.Fatalf("T12 pipeline failed: %+v %v",originalArtifact,err)}
- if originalArtifact.VideoFrames[1].TimestampMS!=1000{t.Fatalf("timestamps: %+v",originalArtifact.VideoFrames)}
+ for {
+  originalArtifact,body,e:=store.ArtifactForPerson(ctx,api.OwnerID(),artifactIDs[0])
+  if e!=nil&&strings.Contains(e.Error(),"database is locked"){
+   select{case <-ctx.Done():t.Fatal("artifact read blocked by SQLite writer");case <-time.After(10*time.Millisecond):continue}
+  }
+  if e!=nil||!bytes.Equal(body,original)||originalArtifact.ProcessingStatus!="ready"||len(originalArtifact.VideoFrames)!=2{
+   t.Fatalf("T12 pipeline failed: %+v %v",originalArtifact,e)
+  }
+  if originalArtifact.VideoFrames[1].TimestampMS!=1000{t.Fatalf("timestamps: %+v",originalArtifact.VideoFrames)}
+  break
+ }
  select{case native:=<-runtime.seen:
   if len(native.Images)!=2||!strings.Contains(native.Task,"Describe the sampled video") {t.Fatalf("native Worker did not see frames: %+v",native)}
  case e:=<-secretaryErrors:t.Fatalf("automatic Secretary MCP routing: %v",e)
