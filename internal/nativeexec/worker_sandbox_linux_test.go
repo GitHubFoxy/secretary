@@ -201,7 +201,7 @@ func TestT09CLIAssetManifestExcludesIndependentServerJSONAndExtensionless(t *tes
  for _,dir:=range []string{node,workspace,bin,assets} {if err:=os.MkdirAll(dir,0700);err!=nil{t.Fatal(err)}}
  for name,content:=range map[string]string{
   "model.dat":"ASSET-OK",
-  "runtime.js":"module.exports = true",
+  "index.js":"module.exports = true",
   "server-secret.json":"SERVER-HMAC-JSON",
    "secret.dat":"SERVER-HMAC-DAT",
    "secret.txt":"SERVER-HMAC-TXT",
@@ -214,7 +214,7 @@ func TestT09CLIAssetManifestExcludesIndependentServerJSONAndExtensionless(t *tes
  if err!=nil{t.Fatal(err)}
  mounts:=map[string]bool{}
  for i:=0;i+2<len(args);i++ {if args[i]=="--ro-bind"{mounts[args[i+2]]=true}}
- for _,name:=range []string{"model.dat","runtime.js"} {
+ for _,name:=range []string{"model.dat","index.js"} {
   if !mounts[filepath.Join(assets,name)] {t.Fatalf("runtime asset %q not mounted",name)}
  }
  for _,name:=range []string{"server-secret.json","transport-token","secret.dat","secret.txt"} {
