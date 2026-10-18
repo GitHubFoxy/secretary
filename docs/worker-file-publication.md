@@ -75,6 +75,4 @@ user-writable `node_modules` tree.
 CI installs a pinned official Codex npm release, provisions its Linux
 platform package, checks a fresh sandbox entrypoint and the `exec resume`
 command's startup path, and tests that injected same-extension marker secrets
-cannot be read from that namespace. This is a **package/startup compatibility
-smoke test**, not an authenticated live inference and session-resumption
-acceptance test; live provider credentials/network/session tests remain separate.
+cannot be read from that namespace. CI additionally runs the real pinned Codex CLI twice through nativeexec's Linux sandbox, first creating a persisted thread and then invoking Resume on that exact thread ID with a second task. A local Responses-compatible HTTP backend supplies deterministic model replies; the test asserts the second turn completes and contains prior-turn context. This is **same-session native CLI continuity acceptance with a mocked model**, not an authenticated external provider/API acceptance test.
