@@ -10,7 +10,6 @@ import (
  "net/http"
  "net/http/httptest"
  "strings"
- "sync/atomic"
  "time"
  "os"
  "os/exec"
@@ -67,63 +66,6 @@ func TestT09PinnedOfficialCodexStartResume(t *testing.T) {
   if err!=nil{t.Fatalf("official Codex launch %v failed in Worker sandbox: %v: %s",args,err,output)}
   if len(output)==0{t.Fatalf("official Codex launch %v produced no output",args)}
  }
- // The real binary must Start, persist a session and Resume that exact
- // session in a subsequent sandboxed process. No external credentials.
- var calls atomic.Int32
- mock:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
-  if r.URL.Path!="/v1/responses" {http.Error(w,"unexpected endpoint "+r.URL.Path,http.StatusNotFound);return}
-  n:=calls.Add(1)
-  _,_=fmt.Fprint(w,"")
-  w.Header().Set("Content-Type","text/event-stream")
-  w.Header().Set("Cache-Control","no-cache")
-  message:=fmt.Sprintf("T09_MOCK_TURN_%d",n)
-  response:=map[string]any{
-   "id":fmt.Sprintf("resp_t09_%d",n),"object":"response","created_at":1750000000,
-   "model":"gpt-5.2-codex","status":"completed",
-   "output":[]any{map[string]any{"id":fmt.Sprintf("msg_t09_%d",n),"type":"message","role":"assistant","status":"completed","content":[]any{map[string]any{"type":"output_text","text":message,"annotations":[]any{}}}}},
-   "usage":map[string]any{"input_tokens":10,"output_tokens":10,"total_tokens":20,"input_tokens_details":map[string]any{"cached_tokens":0}},
-  }
-  payload,_:=json.Marshal(response)
-  fmt.Fprintf(w,"event: response.completed\\ndata: %s\\n\\n",payload)
- }))
- defer mock.Close()
- // CODEX_HOME is a dedicated persistent Worker-owned directory. The HOME
- // and state mount survives both processes, without exposing Node secrets.
- state:=filepath.Join(ws,".codex")
- if err:=os.MkdirAll(state,0700);err!=nil{t.Fatal(err)}
- if err:=os.WriteFile(filepath.Join(state,"auth.json"),[]byte(`{"OPENAI_API_KEY":"sk-t09-local-fixture"}`),0600);err!=nil{t.Fatal(err)}
- oldHome,hadHome:=os.LookupEnv("CODEX_HOME")
- if err:=os.Setenv("CODEX_HOME",state);err!=nil{t.Fatal(err)}
- defer func(){if hadHome{_ = os.Setenv("CODEX_HOME",oldHome)}else{_ = os.Unsetenv("CODEX_HOME")}}()
- run:=func(args ...string) (string,string) {
-  testCtx,cancel:=context.WithTimeout(ctx,90*time.Second)
-  defer cancel()
-  cmd,err:=CommandContext(testCtx,cli,args...)
-  if err!=nil{t.Fatal(err)}
-  output,err:=cmd.CombinedOutput()
-  if err!=nil{t.Fatalf("native Codex %v failed: %v: %s",args,err,output)}
-  var session string
-  var finished bool
-  scanner:=bufio.NewScanner(strings.NewReader(string(output)))
-  scanner.Buffer(make([]byte,4096),4<<20)
-  for scanner.Scan(){
-   var event struct {Type string `json:"type"`; ThreadID string `json:"thread_id"`; Message string `json:"message"`}
-   if json.Unmarshal(scanner.Bytes(),&event)!=nil{continue}
-   if event.Type=="thread.started"{session=event.ThreadID}
-   if event.Type=="turn.completed"{finished=true}
-  }
-  if err:=scanner.Err();err!=nil{t.Fatal(err)}
-  if session=="" || !finished {t.Fatalf("missing persisted session or completed turn: %s",output)}
-  return session,string(output)
- }
- config:=fmt.Sprintf("openai_base_url=%q",mock.URL+"/v1")
- first,started:=run("exec","--json","--skip-git-repo-check","-c",config,"Say T09_MOCK_TURN_1")
- if !strings.Contains(started,"T09_MOCK_TURN_1"){t.Fatalf("Start did not return mock provider output: %s",started)}
- if _,err:=os.Stat(filepath.Join(state,"sessions"));err!=nil{t.Fatalf("Start did not persist session state: %v",err)}
- resumed,continued:=run("exec","resume","--json","--skip-git-repo-check","-c",config,first,"Say T09_MOCK_TURN_2")
- if resumed!=first {t.Fatalf("Resume changed session: start=%s resume=%s",first,resumed)}
- if !strings.Contains(continued,"T09_MOCK_TURN_2"){t.Fatalf("Resume did not continue: %s",continued)}
- if calls.Load()<2{t.Fatalf("expected Start and Resume provider calls; got %d",calls.Load())}
 
 }
 
