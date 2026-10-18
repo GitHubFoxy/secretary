@@ -63,3 +63,19 @@ func TestT09OpenNoFollowResistsDirectorySwap(t *testing.T) {
 		if string(b[:n])!="PUBLIC" {t.Fatalf("out-of-workspace symlink race returned %q",b[:n])}
 	}
 }
+
+func TestT09OpenNoFollowRejectsSymlinkWorkspaceAncestor(t *testing.T) {
+	base:=t.TempDir()
+	outside:=t.TempDir()
+	nested:=filepath.Join(base,"trusted","workspace")
+	if err:=os.MkdirAll(nested,0700);err!=nil{t.Fatal(err)}
+	if err:=os.WriteFile(filepath.Join(nested,"output.zip"),[]byte("PROJECT"),0600);err!=nil{t.Fatal(err)}
+	if err:=os.WriteFile(filepath.Join(outside,"output.zip"),[]byte("SERVER-SECRET"),0600);err!=nil{t.Fatal(err)}
+	original:=filepath.Join(base,"trusted")
+	bak:=filepath.Join(base,"trusted-hold")
+	if err:=os.Rename(original,bak);err!=nil{t.Fatal(err)}
+	if err:=os.Symlink(outside,original);err!=nil{t.Fatal(err)}
+	defer func(){_ = os.Remove(original);_ = os.Rename(bak,original)}()
+	f,err:=openPublishedFileNoFollow(nested,"output.zip")
+	if err==nil {f.Close();t.Fatal("symlink in Workspace ancestor was accepted")}
+}
