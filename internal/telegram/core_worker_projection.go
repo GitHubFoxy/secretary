@@ -33,12 +33,15 @@ func ProjectCoreWorkerEvent(source core.Event)(Event,bool){
   return out,true
  }
  out.WorkerAttemptTerminal=true
- if source.Kind=="attempt.outcome_recorded"&&get("summary")==""{return out,true}
+ message:=get("text")
+ if message==""{message=get("summary")}
+ if message==""{message=get("result")}
+ if message==""{message=get("error")}
+ if message==""{message=get("response")}
+ if source.Kind=="attempt.outcome_recorded"&&message==""{return out,true}
  if source.Kind=="attempt.outcome_recorded"&&get("classification")=="retryable"{return out,true}
  out.Kind="worker.completed"
- out.Text=get("summary")
- if out.Text==""{out.Text=get("result")}
- if out.Text==""{out.Text=get("error")}
+ out.Text=message
  status:=strings.ToLower(get("status"))
  if strings.Contains(status,"cancel"){out.Kind="worker.canceled"}else if strings.Contains(status,"offline")||strings.Contains(status,"interrupt"){out.Kind="worker.offline"}else if strings.Contains(status,"fail")||strings.Contains(status,"error"){out.Kind="worker.failed"}
  id:=strings.TrimSpace(source.CorrelationID)
