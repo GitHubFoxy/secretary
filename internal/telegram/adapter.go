@@ -62,6 +62,7 @@ type OutgoingMessage struct {
 	PlainFallback      bool   `json:"plain_fallback,omitempty"`
 	DisableLinkPreview bool   `json:"disable_link_preview,omitempty"`
 	DocumentArtifactID string `json:"document_artifact_id,omitempty"`
+	DocumentAttemptStarted bool `json:"document_attempt_started,omitempty"`
 }
 
 type SentMessage struct{ OutgoingMessage }
@@ -2039,12 +2040,58 @@ func (a *Adapter) drainOutboxKind(ctx context.Context, topicsOnly bool) error {
 			continue
 		}
 		if message.DocumentArtifactID != "" {
-			if err:=a.sendDocumentAttachment(ctx,message);err!=nil{return err}
+			// Telegram sendDocument has no idempotency key or delivery lookup
+			// for an HTTP request whose result was lost. Checkpoint BEFORE
+			// network I/O: after a restart an unacknowledged attempt is
+			// uncertain and MUST NOT silently send the same file again.
+			if message.DocumentAttemptStarted {
+				if err:=a.finishDocumentDelivery(message, "Telegram: исход отправки файла неизвестен после прерывания. Проверьте чат перед ручной повторной отправкой.");err!=nil{return err}
+				continue
+			}
+			a.mu.Lock()
+			for i:=range a.state.Outbox {
+				if outgoingMessageIdentity(a.state.Outbox[i])==outgoingMessageIdentity(message) {
+					a.state.Outbox[i].DocumentAttemptStarted=true
+					break
+				}
+			}
+			err:=a.saveLocked()
+			a.mu.Unlock()
+			if err!=nil{return err}
+			err=a.sendDocumentAttachment(ctx,message)
+			if err!=nil {
+				var failure *documentDeliveryFailure
+				notice:="Telegram: файл не доставлен; можно запросить повторную отправку."
+				if errors.As(err,&failure) {
+					switch failure.Kind {
+					case documentFailurePermanent: notice="Telegram: файл невозможно доставить: "+failure.Error()
+					case documentFailureUncertain: notice="Telegram: результат отправки файла неизвестен; проверьте чат перед повтором."
+					case documentFailureRetryable:
+						// Explicit rejection confirms Telegram did not accept
+						// this attempt; later outbox passes may retry it.
+						a.mu.Lock()
+						for i:=range a.state.Outbox {
+							if outgoingMessageIdentity(a.state.Outbox[i])==outgoingMessageIdentity(message) {
+								a.state.Outbox[i].DocumentAttemptStarted=false
+								break
+							}
+						}
+						saveErr:=a.saveLocked()
+						a.mu.Unlock()
+						if saveErr!=nil{return saveErr}
+						continue
+					}
+				} else {
+					notice="Telegram: исход отправки файла неизвестен; проверьте чат перед повтором."
+				}
+				if err:=a.finishDocumentDelivery(message,notice);err!=nil{return err}
+				continue
+			}
 			a.mu.Lock()
 			a.state.Outbox=removeOutboxMessage(a.state.Outbox,message)
 			a.markDeliveredLocked(message)
 			a.compactDeliveredLocked()
-			err:=a.saveLocked()
+			err=a.saveLocked()
 			a.mu.Unlock()
 			if err!=nil{return err}
 			continue
