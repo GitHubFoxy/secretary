@@ -55,6 +55,8 @@ func main() {
 			if info,e:=os.Lstat(path);e==nil && info.Mode().IsRegular() { extras[name]=path } else if e!=nil && !os.IsNotExist(e) { log.Fatal(e) }
 		}
 		if *backupTo != "" {
+			info,e:=os.Lstat(filepath.Join(*dataDir,"secretary.db"))
+			if e!=nil || !info.Mode().IsRegular() { log.Fatal("backup requires an existing regular secretary.db") }
 			store,e:=core.Open(context.Background(),filepath.Join(*dataDir,"secretary.db"))
 			if e!=nil { log.Fatal(e) }
 			defer store.Close()
