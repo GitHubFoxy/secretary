@@ -3,6 +3,8 @@
 # backed Claude session or native steering. Never classify it as live acceptance.
 set -euo pipefail
 
+original_mod_cache="$(go env GOMODCACHE)"
+original_build_cache="$(go env GOCACHE)"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 home="$(mktemp -d)"
 trap 'rm -rf "$home"' EXIT
