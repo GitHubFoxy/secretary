@@ -48,10 +48,14 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	}
 	// Do not grant entire /Library, /private/etc or /private/tmp: those
 	// locations can hold the co-located Server's SQLite/HMAC state.
-	reads := []string{workerTemp, "/opt/homebrew/bin", "/opt/homebrew/lib",
+	reads := []string{workerTemp,
 		"/private/var/db/dyld", "/System", "/usr/bin", "/usr/lib", "/bin",
-		"/sbin", "/Library/Frameworks", "/Library/Developer", "/Applications",
-		"/private/etc/ssl", "/dev", workspace, executable}
+		"/sbin", "/private/etc/ssl", "/dev", workspace, executable}
+	// /Applications, /Library/Frameworks, /Library/Developer and
+	// /opt/homebrew/lib can contain independent Server credentials.
+	// Do not grant their entire trees to support optional provider runtimes.
+	// A provider requiring additional assets must receive an audited
+	// per-file grant instead of a broad system directory.
 	// A configured Node root that is itself a parent of an essential OS
 	// library/package mount cannot be masked without breaking native CLI
 	// startup. Refuse launch rather than silently exposing its files.
