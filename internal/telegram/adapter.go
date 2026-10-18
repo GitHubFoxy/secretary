@@ -910,7 +910,7 @@ func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool
 	if update.Message == nil {
 		return nil
 	}
-	if update.Message.Image != nil || update.Message.Video != nil {
+	if update.Message.Image != nil || update.Message.Video != nil || update.Message.Document != nil {
 		return a.queueImageUpdate(update, allowed)
 	}
 	if update.Message.Voice != nil {
