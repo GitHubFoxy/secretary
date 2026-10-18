@@ -47,6 +47,7 @@ type Message struct {
 	Voice     *Voice `json:"voice,omitempty"`
 	Image     *Image `json:"image,omitempty"`
 	Video     *Video `json:"video,omitempty"`
+	Document  *Document `json:"document,omitempty"`
 }
 
 type OutgoingMessage struct {
