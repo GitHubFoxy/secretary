@@ -8,7 +8,6 @@ import (
  "net/http"
  "net/http/httptest"
  "path/filepath"
- "strings"
  "testing"
 
  "github.com/beruseruko/secretary/internal/core"
