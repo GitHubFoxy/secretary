@@ -50,3 +50,27 @@ func TestT09WorkerPublicationRejectsUnsafeLocalFiles(t *testing.T) {
 		t.Fatal("published filename validation broken")
 	}
 }
+
+func TestT09PinnedWorkspaceCannotBeReplacedAfterRegistration(t *testing.T) {
+	base:=t.TempDir()
+	workspace:=filepath.Join(base,"workspace")
+	if err:=os.Mkdir(workspace,0700);err!=nil{t.Fatal(err)}
+	if err:=os.WriteFile(filepath.Join(workspace,"result.zip"),[]byte("AUTHORIZED"),0600);err!=nil{t.Fatal(err)}
+	pinned,err:=os.OpenRoot(workspace)
+	if err!=nil{t.Fatal(err)}
+	defer pinned.Close()
+	if err:=os.Rename(workspace,filepath.Join(base,"old-workspace"));err!=nil{t.Fatal(err)}
+	if err:=os.Mkdir(workspace,0700);err!=nil{t.Fatal(err)}
+	if err:=os.WriteFile(filepath.Join(workspace,"result.zip"),[]byte("OUTSIDE-SECRET"),0600);err!=nil{t.Fatal(err)}
+	file,err:=openPublishedFromPinnedRoot(pinned,"result.zip")
+	if err!=nil{t.Fatal(err)}
+	defer file.Close()
+	content,err:=os.ReadFile(file.Name())
+	// The result is read through the pinned handle, never through the path
+	// which has now been replaced by an attacker-controlled directory.
+	_ = content;_ = err
+	buf:=make([]byte,32)
+	n,err:=file.Read(buf)
+	if err!=nil && n==0{t.Fatal(err)}
+	if string(buf[:n])!="AUTHORIZED"{t.Fatalf("privileged Node read from swapped workspace %q",buf[:n])}
+}
