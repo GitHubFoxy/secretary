@@ -86,3 +86,22 @@ func TestT09LocalBinCLIReadsSelectedLocalShareAssets(t *testing.T) {
 		t.Fatalf("user-installed ~/.local/share native CLI runtime inaccessible: %v %s",err,out)
 	}
 }
+
+func TestT09LinuxExplicitServerDataRootMaskedEvenInsideSharedSystemDirectory(t *testing.T) {
+	root:=t.TempDir()
+	workspace:=filepath.Join(root,"workspace")
+	node:=filepath.Join(root,"node")
+	server:=filepath.Join(root,"server")
+	for _,p:=range []string{workspace,node,server}{if err:=os.MkdirAll(p,0700);err!=nil{t.Fatal(err)}}
+	cmd,args,err:=sandboxInvocation(WorkerSandbox{ProtectedDir:node,ServerDataDir:server,Workspace:workspace},"/bin/sh",[]string{"-c","true"})
+	if err!=nil{t.Fatal(err)}
+	if cmd==""{t.Fatal("missing trusted sandbox binary")}
+	seen:=false
+	for i:=0;i+1<len(args);i++{
+		if args[i]=="--tmpfs" && args[i+1]==server{seen=true}
+		if args[i]=="--ro-bind" && (args[i+1]=="/etc" || args[i+1]=="/usr"){
+			t.Fatalf("whole system secret-bearing subtree still readable by Worker: %s",args[i+1])
+		}
+	}
+	if !seen{t.Fatal("co-located Server SQLite/HMAC state was not masked")}
+}

@@ -48,7 +48,7 @@ func TestT09CoLocatedServerNodeWorkerCannotReadSQLiteOrHMAC(t *testing.T) {
 		test "$(cat "$6")" = "workspace-only"`
 	nodeState := filepath.Join(nodeDir,"node-state.json")
 	nodeIdentity := filepath.Join(nodeDir,"identity.json")
-	sandbox := nativeexec.WithWorkerSandbox(ctx,nativeexec.WorkerSandbox{ProtectedDir:nodeDir,Workspace:workspace})
+	sandbox := nativeexec.WithWorkerSandbox(ctx,nativeexec.WorkerSandbox{ProtectedDir:nodeDir,ServerDataDir:serverDir,Workspace:workspace})
 	cmd, err := nativeexec.CommandContext(sandbox,"/bin/sh","-c",script,"worker-test",db,db+"-wal",db+"-shm",nodeIdentity,nodeState,visibleFile)
 	if err != nil { t.Fatal(err) }
 	output, err := cmd.CombinedOutput()

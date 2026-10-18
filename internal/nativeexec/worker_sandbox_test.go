@@ -71,3 +71,25 @@ func TestT09NativeWorkerEnvironmentExplicitAllowlist(t *testing.T) {
 		if !strings.Contains(all,safe){t.Fatalf("Worker runtime env lost required variable %q",safe)}
 	}
 }
+
+func TestT09NativeSubprocessCannotReadArbitraryNodeEnvironmentSecrets(t *testing.T) {
+	if runtime.GOOS=="windows" {t.Skip("Windows cross-SID fixture requires provisioned account")}
+	root:=t.TempDir()
+	nodeDir:=filepath.Join(root,"node")
+	workspace:=filepath.Join(root,"workspace")
+	for _,p:=range []string{nodeDir,workspace}{if err:=os.MkdirAll(p,0700);err!=nil{t.Fatal(err)}}
+	t.Setenv("DATABASE_URL","postgres://node-only-secret")
+	t.Setenv("AWS_SECRET_ACCESS_KEY","aws-node-secret")
+	t.Setenv("CUSTOM_PRIVATE_TOKEN","custom-node-secret")
+	ctx:=WithWorkerSandbox(context.Background(),WorkerSandbox{ProtectedDir:nodeDir,Workspace:workspace})
+	command,err:=CommandContext(ctx,"/bin/sh","-c",
+		"test -z \"$DATABASE_URL\" && test -z \"$AWS_SECRET_ACCESS_KEY\" && test -z \"$CUSTOM_PRIVATE_TOKEN\" && test -n \"$PATH\"")
+	if err!=nil{t.Fatal(err)}
+	out,err:=command.CombinedOutput()
+	if err!=nil{
+		if runtime.GOOS=="linux" && strings.Contains(string(out),"Creating new namespace failed"){
+			t.Skip("CI kernel unprivileged user namespaces unavailable")
+		}
+		t.Fatalf("Worker child shell inherited Node secret or failed: %v %s",err,out)
+	}
+}
