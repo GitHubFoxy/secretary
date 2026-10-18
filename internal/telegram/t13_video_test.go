@@ -136,7 +136,7 @@ func TestT13DurationLimitRejectedBeforeDownload(t *testing.T) {
  srv:=&t13FixtureServer{status:"ready"}
  a,err:=New(Config{StatePath:filepath.Join(t.TempDir(),"duration.json"),OwnerChatID:100},tr,srv)
  if err!=nil{t.Fatal(err)}
- u:=t13Update(407);u.Message.Video.Duration=61
+ u:=t13Update(407);u.Message.Video.Duration=13
  if err:=a.HandleUpdate(context.Background(),u);err!=nil{t.Fatal(err)}
  a.imageWG.Wait()
  if tr.downloads!=0||srv.uploads!=0||len(tr.sent)!=1||!strings.Contains(tr.sent[0].Text,"длительность"){t.Fatalf("duration rejection failed: downloads=%d uploads=%d warnings=%+v",tr.downloads,srv.uploads,tr.sent)}
@@ -151,3 +151,6 @@ func TestT13ProcessorUnavailableRejectsBeforeDownload(t *testing.T) {
  a.imageWG.Wait()
  if tr.downloads!=0||len(srv.messages)!=0||len(tr.sent)!=1||!strings.Contains(tr.sent[0].Text,"pipeline"){t.Fatalf("unavailable pipeline dispatched: %+v",srv.messages)}
 }
+
+func(s *t13FixtureServer)VideoLimits(context.Context)(int,error){return 12,nil}
+func(s *t13RejectServer)VideoLimits(context.Context)(int,error){return 12,nil}
