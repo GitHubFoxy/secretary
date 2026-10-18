@@ -22,12 +22,18 @@ def command(*args):
     return subprocess.check_output(args, text=True).strip()
 
 def main():
-    if len(sys.argv) != 3 or sys.argv[1] not in PACKAGES:
+    if len(sys.argv) not in (3, 4) or sys.argv[1] not in PACKAGES:
         raise SystemExit("usage: provision-cli-manifest.py codex|claude|opencode VERSION")
     if os.geteuid() != 0:
         raise SystemExit("run as root: manifest must not be worker-writable")
     provider, version = sys.argv[1:]
     package = PACKAGES[provider]
+    if len(sys.argv) == 4:
+        override = sys.argv[3]
+        valid = (provider == "claude" and override.startswith("@anthropic-ai/claude-code-linux-")) or (provider == "opencode" and override.startswith("opencode-linux-"))
+        if not valid or "/" in override.strip("@").split("/", 1)[-1] and not override.startswith("@anthropic-ai/"):
+            raise SystemExit("unsupported official platform package")
+        package = override
     if not version or "/" in version or ".." in version:
         raise SystemExit("invalid package version")
     registry = json.loads(command("npm", "view", f"{package}@{version}", "dist", "--json"))
@@ -67,7 +73,17 @@ def main():
                 target.parent.mkdir(parents=True, exist_ok=True)
                 target.write_bytes(raw)
                 target.chmod(0o555 if item.mode & 0o111 else 0o444)
-        trusted = Path("/opt/secretary/cli-store", provider)
+        package_identity = json.loads((staging / "package.json").read_text())
+        official_name = package_identity["name"]
+        official_version = package_identity["version"]
+        if official_version != version:
+            raise SystemExit("archive package version mismatch")
+        if not (official_name == PACKAGES[provider] or
+                (provider == "claude" and official_name.startswith("@anthropic-ai/claude-code-linux-")) or
+                (provider == "opencode" and official_name.startswith("opencode-linux-"))):
+            raise SystemExit("archive package identity mismatch")
+        package_id = official_name.replace("/", "__")
+        trusted = Path("/opt/secretary/cli-store", provider, package_id)
         trusted.mkdir(parents=True, exist_ok=True)
         os.chmod(trusted, 0o755)
         location = trusted / version
@@ -76,13 +92,13 @@ def main():
         shutil.copytree(staging, location, symlinks=False)
         for folder, _, _ in os.walk(location):
             os.chmod(folder, 0o755)
-        destination = Path("/etc/secretary/cli-manifests", provider)
+        destination = Path("/etc/secretary/cli-manifests", provider, package_id)
         destination.mkdir(parents=True, exist_ok=True)
         os.chmod(destination, 0o755)
         manifest = destination / (version + ".json")
         if manifest.is_symlink():
             raise SystemExit("refusing symlink manifest")
-        payload = {"provider": package, "version": version, "files": entries}
+        payload = {"provider": official_name, "version": version, "files": entries}
         temporary = destination / (version + ".json.new")
         with open(temporary, "x", encoding="utf8") as handle:
             json.dump(payload, handle, sort_keys=True)
