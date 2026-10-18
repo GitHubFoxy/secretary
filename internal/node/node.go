@@ -182,6 +182,8 @@ type LocalNode struct {
 	workers     map[string]Session
 	checkpoints map[string]localCheckpoint
 	artifactFetcher ArtifactFetcher
+	publishBroker *workerPublishBroker
+	artifactPublisherCommand string
 }
 
 type localCheckpoint struct {
@@ -191,6 +193,58 @@ type localCheckpoint struct {
 
 func NewLocal(runtime Runtime) *LocalNode {
 	return &LocalNode{runtime: runtime, workers: make(map[string]Session), checkpoints: make(map[string]localCheckpoint)}
+}
+
+// SetLocalArtifactPublisher wires a private Server-side Attempt-validated
+// publication saver into the same path-only broker used by remote Nodes.
+func (n *LocalNode) SetLocalArtifactPublisher(save LocalArtifactSaver, command string) error {
+	if command == "" { return errors.New("node artifact: local MCP executable required") }
+	broker, err := newLocalWorkerPublishBroker(save)
+	if err != nil { return err }
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.publishBroker != nil { _ = broker.Close(); return errors.New("node artifact: local publisher already set") }
+	n.publishBroker = broker
+	n.artifactPublisherCommand = command
+	return nil
+}
+
+// Called with LocalNode.mu held; each Attempt gets a private, unguessable
+// registration that is revoked on terminal Result, Close or launch failure.
+func (n *LocalNode) bindLocalPublisher(request *StartRequest) (func(), error) {
+	if n.publishBroker == nil { return func(){}, nil }
+	if request.WorkerRef == "" || request.AttemptID == "" || request.Workspace == "" {
+		return nil, errors.New("node artifact: local Attempt binding incomplete")
+	}
+	endpoint, err := n.publishBroker.Register(request.WorkerRef, request.AttemptID, request.Workspace)
+	if err != nil { return nil, err }
+	request.MCPServers = append(request.MCPServers, MCPServer{
+		Name: "secretary_artifacts", Command: n.artifactPublisherCommand,
+		Args: []string{"--artifact-mcp"},
+		Env: []MCPEnv{{Name: "SECRETARY_ARTIFACT_BROKER_URL", Value: endpoint}},
+	})
+	return func(){ n.publishBroker.Unregister(request.AttemptID) }, nil
+}
+
+type localPublishedSession struct {
+	Session
+	result chan Result
+	once sync.Once
+	revoke func()
+}
+func (s *localPublishedSession) Result() <-chan Result { return s.result }
+func (s *localPublishedSession) Close() error {
+	s.once.Do(s.revoke)
+	return s.Session.Close()
+}
+func wrapLocalPublishedSession(session Session, revoke func()) Session {
+	out := &localPublishedSession{Session:session, result:make(chan Result,1), revoke:revoke}
+	go func(){
+		defer close(out.result)
+		defer out.once.Do(out.revoke)
+		for result := range session.Result() { out.result <- result }
+	}()
+	return out
 }
 
 func (n *LocalNode) SetArtifactFetcher(fetcher ArtifactFetcher) {
@@ -273,10 +327,11 @@ func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session
 			}
 		}
 	}
+	revoke, err := n.bindLocalPublisher(&request)
+	if err != nil { return nil, err }
 	session, err := n.runtime.Start(ctx, request)
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { revoke(); return nil, err }
+	if n.publishBroker != nil { session = wrapLocalPublishedSession(session, revoke) }
 	n.workers[request.WorkerRef] = session
 	if request.AttemptID != "" {
 		n.checkpoints[request.AttemptID] = localCheckpoint{request: request, nativeID: session.ID()}
@@ -315,10 +370,11 @@ func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previous
 		delete(n.workers, request.WorkerRef)
 	}
 	request.DeferInitialPrompt = true
+	revoke, err := n.bindLocalPublisher(&request)
+	if err != nil { return nil, err }
 	session, err := resumeSameIdentity(ctx, resumer, request, checkpoint.nativeID)
-	if err != nil {
-		return nil, ErrRuntimeSessionUnavailable
-	}
+	if err != nil { revoke(); return nil, ErrRuntimeSessionUnavailable }
+	if n.publishBroker != nil { session = wrapLocalPublishedSession(session, revoke) }
 	n.workers[request.WorkerRef] = session
 	n.checkpoints[request.AttemptID] = localCheckpoint{request: request, nativeID: session.ID()}
 	go func() { _ = promptWithImages(context.Background(), session, request.Task, request.Images) }()
@@ -348,10 +404,11 @@ func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSes
 	if _, exists := n.workers[request.WorkerRef]; exists {
 		return nil, errors.New("node: worker already exists")
 	}
+	revoke, err := n.bindLocalPublisher(&request)
+	if err != nil { return nil, err }
 	session, err := resumer.Resume(ctx, request, runtimeSessionID)
-	if err != nil {
-		return nil, err
-	}
+	if err != nil { revoke(); return nil, err }
+	if n.publishBroker != nil { session = wrapLocalPublishedSession(session, revoke) }
 	n.workers[request.WorkerRef] = session
 	return session, nil
 }
@@ -389,8 +446,11 @@ func (n *LocalNode) Close() error {
 	n.mu.Lock()
 	workers := n.workers
 	n.workers = make(map[string]Session)
+	broker := n.publishBroker
+	n.publishBroker = nil
 	n.mu.Unlock()
 	var first error
+	if broker != nil { first = broker.Close() }
 	for _, session := range workers {
 		if err := session.Close(); err != nil && first == nil {
 			first = err

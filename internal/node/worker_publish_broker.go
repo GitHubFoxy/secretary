@@ -26,12 +26,17 @@ import (
 type workerPublishBroker struct {
 	mu          sync.Mutex
 	identity    NodeIdentity
+	localSave LocalArtifactSaver
 	listener    net.Listener
 	server      *http.Server
 	registrations map[string]workerPublishBinding
 	byAttempt   map[string]string
 	closed      bool
 }
+
+// LocalArtifactSaver is trusted Server code, never exposed through Worker MCP.
+// It must verify the bound Worker and active Attempt before persisting bytes.
+type LocalArtifactSaver func(context.Context, string, string, string, string, string, []byte) (core.Artifact, error)
 
 type workerPublishBinding struct {
 	workerRef string
@@ -42,10 +47,19 @@ type workerPublishBinding struct {
 
 func newWorkerPublishBroker(identity NodeIdentity) (*workerPublishBroker, error) {
 	if err := identity.Validate(); err != nil { return nil, err }
+	return newPublishBroker(identity, nil)
+}
+
+func newLocalWorkerPublishBroker(save LocalArtifactSaver) (*workerPublishBroker, error) {
+	if save == nil { return nil, errors.New("node artifact: trusted local saver required") }
+	return newPublishBroker(NodeIdentity{}, save)
+}
+
+func newPublishBroker(identity NodeIdentity, save LocalArtifactSaver) (*workerPublishBroker, error) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil { return nil, fmt.Errorf("node artifact: bind private publisher: %w", err) }
 	broker := &workerPublishBroker{
-		identity: identity, listener: listener,
+		identity: identity, localSave: save, listener: listener,
 		registrations: make(map[string]workerPublishBinding),
 		byAttempt: make(map[string]string),
 	}
@@ -148,15 +162,17 @@ func (b *workerPublishBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "publication Attempt is not active", http.StatusForbidden)
 		return
 	}
-	auth, err := b.identity.Authenticator()
-	if err != nil { http.Error(w, "Node credential unavailable", http.StatusServiceUnavailable); return }
 	publisher := ArtifactPublisher{
 		Node: b.identity.Node, WorkerRef: binding.workerRef,
 		AttemptID: binding.attemptID, Workspace: binding.workspace,
 		ServerURL: b.identity.ConnectURL,
-		WorkspaceRoot: binding.root,
-		Capability: auth.SignPublishCapability(b.identity.Node, binding.workerRef, binding.attemptID),
-		Auth: &auth,
+		WorkspaceRoot: binding.root, LocalSave: b.localSave,
+	}
+	if b.localSave == nil {
+		auth, authErr := b.identity.Authenticator()
+		if authErr != nil { http.Error(w, "Node credential unavailable", http.StatusServiceUnavailable); return }
+		publisher.Capability = auth.SignPublishCapability(b.identity.Node, binding.workerRef, binding.attemptID)
+		publisher.Auth = &auth
 	}
 	artifact, err := publisher.Publish(r.Context(), request.Path, request.Name)
 	if err != nil {

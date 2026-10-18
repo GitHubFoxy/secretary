@@ -275,6 +275,14 @@ func main() {
 		log.Fatalf("find secretary-mcp: %v", mcpErr)
 	}
 	workerLocal := node.NewLocal(workerHarnessRuntime)
+	localPublisherBinary, binaryErr := os.Executable()
+	if binaryErr != nil { log.Fatalf("resolve local Worker Artifact MCP: %v", binaryErr) }
+	if err := workerLocal.SetLocalArtifactPublisher(func(saveCtx context.Context, workerRef, attemptID, key, name, media string, data []byte) (core.Artifact, error) {
+		artifact, _, saveErr := store.SavePublishedArtifact(saveCtx, "local", workerRef, attemptID, key, name, media, data)
+		return artifact, saveErr
+	}, localPublisherBinary); err != nil {
+		log.Fatalf("initialize local Worker publication broker: %v", err)
+	}
 	workerLocal.SetArtifactFetcher(func(ctx context.Context, id string) (node.ArtifactPayload, error) {
 		artifact, body, err := store.ArtifactForPerson(ctx, web.OwnerID(), id)
 		if err != nil { return node.ArtifactPayload{}, err }

@@ -31,6 +31,7 @@ type ArtifactPublisher struct {
 	// ancestor *after* an Attempt is authorized, including real directory
 	// renames (not merely symlink/junction changes).
 	WorkspaceRoot *os.Root
+	LocalSave LocalArtifactSaver
 	Capability string
 	// Auth is private Node-only material, never copied into a Worker MCP env.
 	Auth *Authenticator
@@ -133,7 +134,8 @@ func (p ArtifactPublisher) Publish(ctx context.Context, relativePath, name strin
 	if !ValidPublishedSourcePath(filepath.ToSlash(relativePath)) {
 		return core.Artifact{}, errors.New("artifact publish: unsafe source path")
 	}
-	if p.Node == "" || p.WorkerRef == "" || p.AttemptID == "" || p.Capability == "" || p.Workspace == "" {
+	if p.WorkerRef == "" || p.AttemptID == "" || p.Workspace == "" ||
+		(p.LocalSave == nil && (p.Node == "" || p.Capability == "")) {
 		return core.Artifact{}, errors.New("artifact publish: Worker binding is unavailable")
 	}
 	// Each component is opened via a pinned directory descriptor with
@@ -163,6 +165,15 @@ func (p ArtifactPublisher) Publish(ctx context.Context, relativePath, name strin
 	}
 	sum := sha256.Sum256([]byte(p.AttemptID + "\x00" + relativePath))
 	key := "publish:" + hex.EncodeToString(sum[:])
+	if p.LocalSave != nil {
+		artifact, saveErr := p.LocalSave(ctx, p.WorkerRef, p.AttemptID, key, name, PublishedMediaType(name), data)
+		if saveErr != nil { return core.Artifact{}, saveErr }
+		checksum := sha256.Sum256(data)
+		if artifact.SHA256 != hex.EncodeToString(checksum[:]) || artifact.Size != int64(len(data)) || artifact.Name != name {
+			return core.Artifact{}, errors.New("artifact publish: local Store acknowledgement mismatched bytes")
+		}
+		return artifact, nil
+	}
 	endpoint, err := url.Parse(p.ServerURL)
 	if err != nil || endpoint.Host == "" {
 		return core.Artifact{}, errors.New("artifact publish: server URL invalid")
