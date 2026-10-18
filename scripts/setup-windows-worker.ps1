@@ -36,7 +36,8 @@ if (Test-Path -LiteralPath $configPath -PathType Leaf) {
  if ($LASTEXITCODE -ne 0) { throw 'Saved Worker account no longer exists; restore it or explicitly repair the installation.' }
 } else {
  $bytes=New-Object byte[] 30
- [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+ $rng=[Security.Cryptography.RandomNumberGenerator]::Create()
+ try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
  $password=[Convert]::ToBase64String($bytes).Replace('+','A').Replace('/','B')+'a1!'
  # Create through the LocalAccounts API rather than passing a random
  # password via cmd.exe/net.exe command-line parsing or process arguments.
