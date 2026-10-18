@@ -44,7 +44,17 @@ func (s *Store) DeleteOwnerArtifact(ctx context.Context,owner,id string) error {
     +(SELECT COUNT(*) FROM video_artifact_jobs WHERE source_artifact_id=?)`,derived,derived,derived,derived).Scan(&references)
    if err!=nil{return err}
    if references==0{
-    if _,err=tx.ExecContext(ctx,"DELETE FROM artifacts WHERE id=? AND person_id=?",derived,owner);err!=nil{return err}
+    // An otherwise orphaned derivative can still be shared by a durable
+    // Worker Result or canonical conversation. Do not invalidate that Result.
+    var used int
+    err=tx.QueryRowContext(ctx,`SELECT
+      (SELECT COUNT(*) FROM phase4_results WHERE instr(summary,?)>0 OR instr(artifact_refs,?)>0)
+     +(SELECT COUNT(*) FROM conversation_entries WHERE instr(body,?)>0)
+     +(SELECT COUNT(*) FROM turns WHERE instr(input,?)>0)`,derived,derived,derived,derived).Scan(&used)
+    if err!=nil{return err}
+    if used==0{
+     if _,err=tx.ExecContext(ctx,"DELETE FROM artifacts WHERE id=? AND person_id=?",derived,owner);err!=nil{return err}
+    }
    }
   }
   return nil
