@@ -41,6 +41,10 @@ jobs:
           npm install --prefix "$RUNNER_TEMP/t09-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.163.0
           sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0
           sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0-linux-x64
+      - name: Diagnose protected official CLI store permissions
+        run: |
+          namei -l /opt/secretary/cli-store/codex/@openai__codex/0.163.0/bin/codex.js
+          namei -l /etc/secretary/cli-manifests/codex/@openai__codex/0.163.0.json
       - name: Real Codex package sandbox Start and Resume smoke
         env:
           T09_REAL_CODEX: ${{ runner.temp }}/t09-codex/node_modules/@openai/codex/bin/codex.js
