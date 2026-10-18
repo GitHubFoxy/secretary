@@ -29,9 +29,15 @@ func hasClickableArtifactDownload(summary, url string) bool {
       // An image reference ![alt](url) is rendered as an image, not a
       // clickable owner-download link. Escaped ! is ordinary prose.
       if i > 0 && line[i-1] == '!' && !markdownEscaped(line, i-1) { continue }
-      closing := strings.Index(line[i+1:], "](")
+      closing := -1
+      for j := i + 1; j + 1 < len(line); j++ {
+        if line[j] == ']' && line[j+1] == '(' && !markdownEscaped(line, j) {
+          closing = j
+          break
+        }
+      }
       if closing < 0 { continue }
-      destination := i + 1 + closing + 2
+      destination := closing + 2
       if strings.HasPrefix(line[destination:], url+")") { return true }
     }
   }
