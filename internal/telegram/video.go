@@ -45,6 +45,7 @@ func (a *Adapter) deliverVideoUpdate(ctx context.Context,u Update,allowed bool) 
  if m.Video==nil || m.Video.FileID=="" { return fail("Telegram не передал video file_id.") }
  if m.Video.FileSize<0 || m.Video.FileSize>core.MaxArtifactBytes { return fail("файл превышает лимит 8 МиБ.") }
  if !telegramVideoName(m.Video.FileName) { return fail("поддерживаются только MP4, WebM и MOV.") }
+ if m.Video.Duration > 60 { return fail("длительность видео превышает максимальные 60 секунд.") }
  download,ok:=a.transport.(VoiceDownloadTransport)
  if !ok { return fail("Bot API download недоступен.") }
  store,ok:=a.server.(VideoArtifactStore)
