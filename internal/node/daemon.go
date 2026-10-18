@@ -58,6 +58,10 @@ type commandCompletion struct {
 	command Command
 	outcome CommandOutcome
 	err     error
+	// An explicitly replayed CommandID whose original receipt was already
+	// ACKed gets its cached response directly; it must not create another
+	// outbox event. New native completions always use the durable outbox.
+	replyAfterAck bool
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
@@ -199,13 +203,19 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 				// selecting completions would silently discard the result.
 				// All lifecycle receipts are sent only via the durable outbox,
 				// including the normal connected path.
+				replyAfterAck:=false
 				if err==nil && (command.Kind==CommandDispatch || command.Kind==CommandResume) && outcome.State!=CommandProcessing {
-					if _, queueErr:=d.Store.QueueLifecycleCommandOutcome(outcome);queueErr!=nil {
+					receipt,queueErr:=d.Store.QueueLifecycleCommandOutcome(outcome)
+					if queueErr!=nil {
 						err=fmt.Errorf("node: persist native command outcome: %w",queueErr)
+					} else if receipt.Sequence==0 && outcome.State==CommandAccepted {
+						// The original event was already acknowledged; this
+						// is an explicit command replay, not a new receipt.
+						replyAfterAck=true
 					}
 				}
 				select {
-				case completions <- commandCompletion{command: command, outcome: outcome, err: err}:
+				case completions <- commandCompletion{command: command, outcome: outcome, err: err, replyAfterAck:replyAfterAck}:
 				case <-commandCtx.Done():
 					// The native outcome is already durable and the new
 					// socket's outbox poll will deliver it.
@@ -312,8 +322,12 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			}
 			outcome := completed.outcome
 			if outcome.Kind==CommandDispatch || outcome.Kind==CommandResume {
-				// The command goroutine persisted this receipt before
-				// reporting completion. Never also send it directly.
+				// A new native receipt was persisted before this channel
+				// send. Preserve the established response for an explicit
+				// replay of an ALREADY-ACKed CommandID without requeuing it.
+				if completed.replyAfterAck {
+					if err := connection.SendCommandOutcome(ctx,outcome);err!=nil{return err}
+				}
 			} else if outcome.State == CommandFailed && outcome.Kind == CommandSteering {
 				if _, err := d.Store.QueueCommandOutcome(outcome); err != nil {
 					return err
