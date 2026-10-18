@@ -18,7 +18,7 @@ The target archive must not exist. The file must be protected like Server creden
 secretaryd --data-dir /private/restored-server --restore-from /private/backups/secretary-2026-10-18.zip
 ```
 
-Destination must be empty and Server must not be running. Manifest checksums, member names, SQLite integrity and Artifact contents are checked before any file is installed. A failed restore rolls back installed files; existing databases are never overwritten. Use a new data directory for recovery, then configure transport credentials and reconnect Nodes as required. A Server-only restore does not resurrect remote native Worker processes. Treat historical runtime sessions as needing Node reconnection/verification, not as live sessions.
+Destination directory must not exist, and Server must not be running. All files are staged as a sibling directory and atomically published with one rename; an interrupted staging directory can be cleared during the next attempt. Manifest checksums, member names, SQLite integrity and Artifact contents are checked before any file is installed. Before publication, a failed restore exposes no Server files; after publication, the entire verified directory is visible. Parent directories are synced for durable publication, and existing databases are never overwritten. Use a new data directory for recovery, then configure transport credentials and reconnect Nodes as required. A Server-only restore does not resurrect remote native Worker processes. Treat historical runtime sessions as needing Node reconnection/verification, not as live sessions.
 
 ## Artifact deletion
 
