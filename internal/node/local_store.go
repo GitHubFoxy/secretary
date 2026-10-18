@@ -202,7 +202,7 @@ func (s *LocalStore) MarkNativeHandoff(ctx context.Context, id string) error {
 	rec.UpdatedAt=time.Now().UTC()
 	s.state.Commands[id]=rec
 	if e:=s.persistLocked();e!=nil{s.state.Commands[id]=prev;return e}
-	return ctx.Err()
+	return nil
 }
 
 // YieldPrestart keeps the original claim/idempotency and makes it retryable.
