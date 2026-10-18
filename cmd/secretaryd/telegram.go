@@ -46,7 +46,10 @@ func configuredTelegramDeployment() (telegramDeploymentConfig, error) {
 		PollInterval:     2 * time.Second,
 		FlushInterval:    2 * time.Second,
 	}
-	if config.BotToken == "" || config.ServerCredential == "" {
+	if err:=telegram.ValidateOwnerWebBaseURL(config.OwnerWebBaseURL);err!=nil {
+  return telegramDeploymentConfig{},fmt.Errorf("SECRETARY_TELEGRAM_WEB_BASE_URL: %w",err)
+ }
+ if config.BotToken == "" || config.ServerCredential == "" {
 		return telegramDeploymentConfig{}, errors.New("Telegram is enabled but private Bot token and server credential are not configured")
 	}
 	if value := strings.TrimSpace(os.Getenv("SECRETARY_TELEGRAM_OWNER_CHAT_ID")); value != "" {
