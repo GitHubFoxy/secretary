@@ -239,3 +239,29 @@ func TestT09NodeModulesPackageExcludesServerJSONAndExtensionless(t *testing.T) {
   if seen[filepath.Join(packageDir,name)] {t.Fatalf("unexpected secret mount: %s",name)}
  }
 }
+
+
+func TestT09CLIManifestRejectsExecutableLookingServerSecrets(t *testing.T) {
+ root:=t.TempDir()
+ pkg:=filepath.Join(root,"node_modules","@openai","codex")
+ if err:=os.MkdirAll(filepath.Join(pkg,"assets"),0700);err!=nil{t.Fatal(err)}
+ files:=[]string{"index.js","dist/index.js","assets/model.dat",
+ "transport-secret.js","transport-secret.mjs","transport-secret.cjs",
+ "transport-secret.wasm","transport-secret.node","transport-secret.map",
+ "transport-secret.css","transport-secret.html","assets/transport-secret.js"}
+ for _,name:=range files {
+   p:=filepath.Join(pkg,name)
+   if err:=os.MkdirAll(filepath.Dir(p),0700);err!=nil{t.Fatal(err)}
+   if err:=os.WriteFile(p,[]byte(name),0600);err!=nil{t.Fatal(err)}
+ }
+ args:=[]string{}
+ if err:=mountRuntimePackageFiles(&args,pkg);err!=nil{t.Fatal(err)}
+ mounted:=map[string]bool{}
+ for i:=0;i+2<len(args);i++ {if args[i]=="--ro-bind"{mounted[args[i+2]]=true}}
+ for _,name:=range []string{"index.js","dist/index.js","assets/model.dat"} {
+   if !mounted[filepath.Join(pkg,name)]{t.Fatalf("missing declared runtime asset: %s",name)}
+ }
+ for _,name:=range files[3:] {
+   if mounted[filepath.Join(pkg,name)]{t.Fatalf("secret-looking executable asset exposed: %s",name)}
+ }
+}
