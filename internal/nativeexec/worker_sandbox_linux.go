@@ -151,6 +151,32 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 		}
 		wrapped = append(wrapped, "--ro-bind", install, install)
 	}
+	// Portable user installs may keep only an entrypoint in ~/.local/bin,
+	// with trusted runtime assets under ~/.local/share/<harness>. Mount
+	// per-harness packages, never ~/.local/share wholesale (which can
+	// contain unrelated Server/Node credentials for the same OS UID).
+	harnessName := strings.ToLower(strings.TrimSuffix(filepath.Base(executable),filepath.Ext(executable)))
+	if harnessName == "codex" || harnessName == "claude" || harnessName == "opencode" {
+		for _, packageName := range []string{harnessName} {
+			assets := filepath.Join(home,".local","share",packageName)
+			resolved, resolveErr := filepath.EvalSymlinks(assets)
+			if os.IsNotExist(resolveErr) {continue}
+			if resolveErr != nil {return "",nil,fmt.Errorf("worker sandbox: inspect user-installed CLI runtime assets: %w",resolveErr)}
+			if resolved==protected || strings.HasPrefix(protected,resolved+string(filepath.Separator)) ||
+				strings.HasPrefix(resolved,protected+string(filepath.Separator)) {
+				return "",nil,errors.New("worker sandbox: CLI runtime assets overlap Node signing data")
+			}
+			if policy.ServerDataDir != "" {
+				serverRoot, serverErr:=filepath.EvalSymlinks(policy.ServerDataDir)
+				if serverErr!=nil {return "",nil,serverErr}
+				if resolved==serverRoot || strings.HasPrefix(serverRoot,resolved+string(filepath.Separator)) ||
+					strings.HasPrefix(resolved,serverRoot+string(filepath.Separator)) {
+					return "",nil,errors.New("worker sandbox: CLI runtime assets overlap Server signing data")
+				}
+			}
+			wrapped=append(wrapped,"--ro-bind",resolved,resolved)
+		}
+	}
 	// Mask after ALL shared binds. An arbitrary --data-dir (including one
 	// nested under /etc, /usr, or a CLI installation) cannot be exposed by
 	// a later mount. Explicit OpenCode and workspace binds were checked.

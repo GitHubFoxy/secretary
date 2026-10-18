@@ -62,3 +62,27 @@ func TestT09LinuxNestedWorkspaceRemountedAfterProtectedNodeRoot(t *testing.T) {
 	out,err:=cmd.CombinedOutput()
 	if err!=nil{t.Fatalf("nested Workspace was not remounted safely: %v %s",err,out)}
 }
+
+func TestT09LocalBinCLIReadsSelectedLocalShareAssets(t *testing.T) {
+	base:=t.TempDir()
+	t.Setenv("HOME",base)
+	nodeDir:=filepath.Join(base,"node-private")
+	workspace:=filepath.Join(base,"workspace")
+	installBin:=filepath.Join(base,".local","bin")
+	assets:=filepath.Join(base,".local","share","codex")
+	for _,d:=range []string{nodeDir,workspace,installBin,assets}{
+		if err:=os.MkdirAll(d,0700);err!=nil {t.Fatal(err)}
+	}
+	if err:=os.WriteFile(filepath.Join(nodeDir,"identity.json"),[]byte("SECRET"),0600);err!=nil{t.Fatal(err)}
+	if err:=os.WriteFile(filepath.Join(assets,"model.dat"),[]byte("CLI-ASSETS-OK"),0600);err!=nil{t.Fatal(err)}
+	command:=filepath.Join(installBin,"codex")
+	script:="#!/bin/sh\ncat '"+filepath.Join(assets,"model.dat")+"'\n"
+	if err:=os.WriteFile(command,[]byte(script),0700);err!=nil {t.Fatal(err)}
+	ctx:=WithWorkerSandbox(context.Background(),WorkerSandbox{ProtectedDir:nodeDir,Workspace:workspace})
+	cmd,err:=CommandContext(ctx,command)
+	if err!=nil{t.Fatal(err)}
+	out,err:=cmd.CombinedOutput()
+	if err!=nil||!strings.Contains(string(out),"CLI-ASSETS-OK"){
+		t.Fatalf("user-installed ~/.local/share native CLI runtime inaccessible: %v %s",err,out)
+	}
+}
