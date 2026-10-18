@@ -142,6 +142,13 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 	}
 	if duplicate {
 		if record.State == CommandProcessing {
+			// A re-delivered Resume cannot determine native success. Preserve
+			// the original claim until its provider goroutine commits the
+			// actual outcome; even the handoff-to-completion transition must
+			// not manufacture a terminal receipt.
+			if command.Kind==CommandResume && !record.Replayable && !record.SafePrestart {
+				return CommandOutcome{CommandID:command.Metadata().CommandID,Kind:command.Kind,TurnID:command.Metadata().TurnID,AttemptID:command.Metadata().AttemptID,State:CommandProcessing},nil
+			}
 			if (command.Kind==CommandResume || command.Kind==CommandDispatch) && n.nativeResumeRunning(command.Metadata().AttemptID,command.Metadata().WorkerRef,command.Metadata().CommandID) {
 				// Same durable command is still running at the provider.
 				// This is NOT terminal acceptance: the original execution
