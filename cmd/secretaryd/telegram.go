@@ -230,6 +230,7 @@ func telegramWorkerAttemptTerminal(event telegram.Event) bool {
 }
 
 func telegramEvent(event core.Event) telegram.Event {
+	if projected, ok := telegram.ProjectCoreWorkerEvent(event); ok { return projected }
 	workerRef := event.WorkerRef
 	if workerRef == "" && event.AggregateType == "worker" {
 		workerRef = event.AggregateID
