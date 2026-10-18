@@ -152,6 +152,15 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 				if strings.HasPrefix(components[i+1], "@") && i+2 < len(components) { end++ }
 				pkg := string(filepath.Separator)+filepath.Join(components[:end]...)
 				if err := mountRuntimePackageFiles(&wrapped, pkg); err != nil { return "", nil, err }
+				// The selected entrypoint itself must come from the verified
+				// distribution; otherwise the initial executable bind could
+				// expose a same-extension Server secret from the package tree.
+				entryVerified:=false
+				for j:=0;j+2<len(wrapped);j++ {
+					if wrapped[j]=="--ro-bind" && wrapped[j+2]==executable &&
+						strings.HasPrefix(wrapped[j+1],"/opt/secretary/cli-store/") {entryVerified=true;break}
+				}
+				if !entryVerified {return "",nil,errors.New("worker sandbox: CLI executable missing from verified package manifest")}
 				// Official CLIs use npm optional platform distributions beside
 				// their main entrypoint. Only listed official package names with
 				// independently verified manifests may be mounted.
