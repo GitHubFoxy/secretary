@@ -45,7 +45,7 @@ func openPublishedFileNoFollow(workspace, relativePath string) (*os.File, error)
 		return nil, errors.New("artifact publish: volume root is a reparse point")
 	}
 	relativeRoot:=strings.TrimLeft(clean[len(volume):], "\\\\/")
-	for _, part := range strings.FieldsFunc(relativeRoot,func(r rune)bool{return r=='\\\\'||r=='/'}) {
+	for _, part := range strings.FieldsFunc(relativeRoot,func(r rune)bool{return r=='\\'||r=='/'}) {
 		if part=="." || part==".." || part=="" {_=syscall.CloseHandle(directory);return nil, errors.New("artifact publish: invalid Workspace component")}
 		next,openErr:=openNtNoFollow(directory,part,true)
 		_ = syscall.CloseHandle(directory)
