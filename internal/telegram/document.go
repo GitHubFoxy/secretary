@@ -121,7 +121,7 @@ func(c *HTTPServerClient)OwnerArtifactDownloadURL(ctx context.Context,id string)
  defer resp.Body.Close()
  if resp.StatusCode!=http.StatusOK{return "",fmt.Errorf("output Artifact unavailable HTTP %d",resp.StatusCode)}
  origin:=strings.TrimRight(strings.TrimSpace(c.OwnerWebBaseURL),"/")
- if origin==""{origin=strings.TrimRight(c.BaseURL,"/")}
+ if origin==""{return "",errors.New("SECRETARY_TELEGRAM_WEB_BASE_URL is required for owner-reachable Artifact fallback")}
  parsed,err:=url.Parse(origin)
  if err!=nil||parsed.Host==""||(parsed.Scheme!="https"&&parsed.Scheme!="http")||parsed.User!=nil||parsed.RawQuery!=""||parsed.Fragment!=""{
   return "",errors.New("owner Web base URL must be a clean HTTP(S) origin")
@@ -134,6 +134,8 @@ func(a *Adapter)finishDocumentDelivery(ctx context.Context,message OutgoingMessa
   link,err:=source.OwnerArtifactDownloadURL(ctx,message.DocumentArtifactID)
   if err==nil && link!=""{
    reason += "\nСкачать файл через авторизованный Web/PWA: "+link+" (требуется вход владельца)."
+  } else {
+   reason += "\nСсылка на файл недоступна: настройте SECRETARY_TELEGRAM_WEB_BASE_URL на адрес Web/PWA, доступный с другого устройства; исходный Artifact сохранён на Server."
   }
  }
  notice:=OutgoingMessage{ChatID:message.ChatID,ThreadID:message.ThreadID,
