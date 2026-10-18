@@ -2,6 +2,7 @@ package core
 
 import (
  "context"
+ "errors"
  "os"
  "path/filepath"
  "testing"
@@ -17,8 +18,9 @@ func TestT16BackupRestoreArtifactsAndOwner(t *testing.T) {
  if err=os.WriteFile(extra,[]byte("persistent memory"),0600);err!=nil{t.Fatal(err)}
  archive:=filepath.Join(dir,"server.zip")
  if err=source.CreateServerBackup(ctx,archive,map[string]string{"memory.md":extra});err!=nil{t.Fatal(err)}
- restoredDB:=filepath.Join(dir,"restored.db")
- restoredMemory:=filepath.Join(dir,"restored-memory.md")
+ restoredDir:=filepath.Join(dir,"restored")
+ restoredDB:=filepath.Join(restoredDir,"secretary.db")
+ restoredMemory:=filepath.Join(restoredDir,"memory.md")
  if err=RestoreServerBackup(ctx,archive,restoredDB,map[string]string{"memory.md":restoredMemory});err!=nil{t.Fatal(err)}
  restored,err:=Open(ctx,restoredDB);if err!=nil{t.Fatal(err)}
  a,body,err:=restored.ArtifactForPerson(ctx,owner.ID,original.ID)
@@ -27,8 +29,8 @@ func TestT16BackupRestoreArtifactsAndOwner(t *testing.T) {
  data,err:=os.ReadFile(restoredMemory);if err!=nil||string(data)!="persistent memory"{t.Fatalf("restored memory %q: %v",data,err)}
  if err=RestoreServerBackup(ctx,archive,restoredDB,map[string]string{"memory.md":restoredMemory});err==nil{t.Fatal("restore overwrote existing Server")}
  if err=os.WriteFile(archive,[]byte("corrupt"),0600);err!=nil{t.Fatal(err)}
- fresh:=filepath.Join(dir,"corrupt-restored.db")
- if err=RestoreServerBackup(ctx,archive,fresh,map[string]string{"memory.md":filepath.Join(dir,"corrupt-memory.md")});err==nil{t.Fatal("corrupt archive restored")}
+ fresh:=filepath.Join(dir,"corrupt-restored","secretary.db")
+ if err=RestoreServerBackup(ctx,archive,fresh,map[string]string{"memory.md":filepath.Join(dir,"corrupt-restored","memory.md")});err==nil{t.Fatal("corrupt archive restored")}
  if _,err=os.Stat(fresh);!os.IsNotExist(err){t.Fatalf("corrupt restore installed Server: %v",err)}
  source.Close()
 }
@@ -63,7 +65,7 @@ func TestT16ArchiveWorkerPreservesPublishedArtifact(t *testing.T){
  if err!=nil||after.ID!=result.ID{t.Fatalf("archive lost result %v %v",after,err)}
 }
 
-func TestT16VoiceDeletionCleansUnreferencedTranscript(t *testing.T){
+func TestT16VoiceDeletionPreservesCanonicalUploadTranscript(t *testing.T){
  ctx:=context.Background();s:=newTestStore(t)
  owner,conversation,err:=s.CreatePersonWithConversation(ctx);if err!=nil{t.Fatal(err)}
  source,_,err:=s.SaveArtifact(ctx,owner.ID,conversation.ID,"voice-source","voice.ogg","audio/ogg",[]byte("audio bytes"))
@@ -74,7 +76,7 @@ func TestT16VoiceDeletionCleansUnreferencedTranscript(t *testing.T){
  if err=s.LinkVoiceTranscript(ctx,owner.ID,source.ID,transcript.ID,"voice-key");err!=nil{t.Fatal(err)}
  if err=s.DeleteOwnerArtifact(ctx,owner.ID,source.ID);err!=nil{t.Fatal(err)}
  if _,_,err=s.ArtifactForPerson(ctx,owner.ID,source.ID);err!=ErrNotFound{t.Fatalf("source retained: %v",err)}
- if _,_,err=s.ArtifactForPerson(ctx,owner.ID,transcript.ID);err!=ErrNotFound{t.Fatalf("orphan transcript retained: %v",err)}
+ if _,bytes,err:=s.ArtifactForPerson(ctx,owner.ID,transcript.ID);err!=nil||string(bytes)!="transcribed words"{t.Fatalf("canonical upload reference lost: %q %v",bytes,err)}
 }
 
 func TestT16VoiceDeletionPreservesResultReferencedTranscript(t *testing.T){
@@ -99,4 +101,42 @@ func TestT16BackupRefusesCorruptArtifactWithoutPublishingArchive(t *testing.T){
  dest:=filepath.Join(t.TempDir(),"must-not-exist.zip")
  if err=s.CreateServerBackup(ctx,dest,nil);err==nil{t.Fatal("backup succeeded despite corrupt Artifact")}
  if _,err=os.Stat(dest);!os.IsNotExist(err){t.Fatalf("backup published corrupt snapshot: %v",err)}
+}
+
+func TestT16RestoreInterruptionRecoversWithoutPartialPublication(t *testing.T) {
+ ctx:=context.Background()
+ source,err:=Open(ctx,filepath.Join(t.TempDir(),"source.db"));if err!=nil{t.Fatal(err)};defer source.Close()
+ owner,conv,err:=source.CreatePersonWithConversation(ctx);if err!=nil{t.Fatal(err)}
+ original,_,err:=source.SaveArtifact(ctx,owner.ID,conv.ID,"interruption","report.txt","text/plain",[]byte("preserved"))
+ if err!=nil{t.Fatal(err)}
+ base:=t.TempDir()
+ memory:=filepath.Join(base,"memory.md")
+ if err=os.WriteFile(memory,[]byte("memory"),0600);err!=nil{t.Fatal(err)}
+ archive:=filepath.Join(base,"backup.zip")
+ if err=source.CreateServerBackup(ctx,archive,map[string]string{"memory.md":memory});err!=nil{t.Fatal(err)}
+ for _,failAt:=range []string{"staged:server.sqlite","staged:extras/memory.md","before-publication"}{
+  destination:=filepath.Join(base,"restored-"+filepath.Base(failAt))
+  database:=filepath.Join(destination,"secretary.db")
+  extras:=map[string]string{"memory.md":filepath.Join(destination,"memory.md")}
+  restoreInstallHook=func(stage string)error{if stage==failAt{return errors.New("injected power loss")};return nil}
+  if err=RestoreServerBackup(ctx,archive,database,extras);err==nil{t.Fatalf("fault at %s did not stop restore",failAt)}
+  restoreInstallHook=nil
+  if _,err=os.Lstat(destination);!os.IsNotExist(err){t.Fatalf("partially published Server after %s: %v",failAt,err)}
+  if err=RestoreServerBackup(ctx,archive,database,extras);err!=nil{t.Fatalf("recovery after %s: %v",failAt,err)}
+  restored,err:=Open(ctx,database);if err!=nil{t.Fatal(err)}
+  _,body,err:=restored.ArtifactForPerson(ctx,owner.ID,original.ID)
+  restored.Close()
+  if err!=nil||string(body)!="preserved"{t.Fatalf("recovery lost Artifact: %q %v",body,err)}
+ }
+}
+
+func TestT16BackupAndRestoreAreDurablyPublished(t *testing.T){
+ ctx:=context.Background();source,err:=Open(ctx,filepath.Join(t.TempDir(),"source.db"))
+ if err!=nil{t.Fatal(err)};defer source.Close()
+ dir:=t.TempDir();archive:=filepath.Join(dir,"backup.zip")
+ if err=source.CreateServerBackup(ctx,archive,nil);err!=nil{t.Fatal(err)}
+ if info,err:=os.Stat(archive);err!=nil||info.Size()==0{t.Fatalf("backup missing: %v",err)}
+ restored:=filepath.Join(dir,"complete")
+ if err=RestoreServerBackup(ctx,archive,filepath.Join(restored,"secretary.db"),nil);err!=nil{t.Fatal(err)}
+ if _,err=os.Stat(filepath.Join(restored,"secretary.db"));err!=nil{t.Fatal(err)}
 }
