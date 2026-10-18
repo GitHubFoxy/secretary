@@ -74,11 +74,11 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 		"--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
 		"--tmpfs", "/", "--dev", "/dev",
 	}
-	// Do not share user-writable system configuration roots wholesale.
+	// Do not mount /usr/local/lib or /usr/local/bin wholesale: an independent\n\t// Server root such as /usr/local/lib/secretary must stay invisible even\n\t// when ServerDataDir is unspecified. Native executables and their runtime\n\t// assets are mounted selectively below.\n\t// Do not share user-writable system configuration roots wholesale.
 	// A Server --data-dir can be /etc/secretary or /usr/local/share/secretary.
 	for _, systemRoot := range []string{"/usr/bin", "/usr/lib", "/usr/lib64",
 		"/usr/share/nodejs", "/usr/share/zoneinfo", "/usr/share/ca-certificates",
-		"/usr/local/bin", "/usr/local/lib", "/bin", "/sbin", "/lib", "/lib64",
+		"/bin", "/sbin", "/lib", "/lib64",
 		"/etc/ssl", "/etc/hosts", "/etc/resolv.conf", "/etc/nsswitch.conf",
 		"/etc/passwd", "/etc/group"} {
 		if _, statErr := os.Stat(systemRoot); statErr == nil {
