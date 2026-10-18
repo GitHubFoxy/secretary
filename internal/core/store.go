@@ -31,6 +31,7 @@ type Store struct {
 	observer   func(ConversationEntry)
 
 	workerLifecycleGates sync.Map
+	secretaryOutputGates sync.Map // per-turn acknowledgement/text ordering without SQLite read-to-write races
 	idempotencyMu        sync.Mutex
 	userDocumentMu       sync.Mutex
 	nodeEnrollmentMu     sync.Mutex
