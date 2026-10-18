@@ -31,7 +31,7 @@ type Store struct {
 	observer   func(ConversationEntry)
 
 	workerLifecycleGates sync.Map
-	secretaryOutputGates sync.Map // per-turn acknowledgement/text ordering without SQLite read-to-write races
+	secretaryOutputGates [256]sync.Mutex // bounded striped gates for Secretary event/acknowledgement ordering
 	idempotencyMu        sync.Mutex
 	userDocumentMu       sync.Mutex
 	nodeEnrollmentMu     sync.Mutex
@@ -1464,12 +1464,17 @@ func (s *timestampScanner) Scan(value any) error {
 	return err
 }
 
-// secretaryOutputGate serializes writes which determine the cutoff between
-// native Secretary text and a durable acknowledgement for one turn. Unlike
-// a global database lock it does not serialize independent Workers/turns.
+// secretaryOutputGate serializes writes that define the cutoff between
+// native text and an acknowledgement for the same Secretary turn. A bounded
+// lock stripe avoids unbounded memory growth from completed turn IDs. Hash
+// collisions only serialize independent turns, never change their ordering.
 func (s *Store) secretaryOutputGate(turnID string) *sync.Mutex {
- gate, _ := s.secretaryOutputGates.LoadOrStore(turnID, &sync.Mutex{})
- return gate.(*sync.Mutex)
+ var hash uint64 = 14695981039346656037
+ for i := 0; i < len(turnID); i++ {
+  hash ^= uint64(turnID[i])
+  hash *= 1099511628211
+ }
+ return &s.secretaryOutputGates[hash%uint64(len(s.secretaryOutputGates))]
 }
 
 func withTx[T any](store *Store, ctx context.Context, fn func(*sql.Tx) (T, error)) (T, error) {
