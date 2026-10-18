@@ -64,6 +64,20 @@ jobs:
           $env:SECRETARY_WORKER_TEST_PROTECTED_DIR = $data
           go test ./internal/nativeexec -run TestT09WindowsSeparateAccountStateAndResume -count=1 -timeout=3m -v
           if ($LASTEXITCODE -ne 0) { throw 'installer-created Worker SID did not preserve native Start/Resume' }
+      - name: Verify installer on stock Windows PowerShell 5.1 without pwsh
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($PSVersionTable.PSVersion.Major -ne 5) { throw 'Expected Windows PowerShell 5.1' }
+          $scriptText = Get-Content -LiteralPath ./scripts/install-windows-node.ps1 -Raw
+          if ($scriptText -match 'pwsh\\.exe|ConvertFrom-Json\\s+-AsHashtable') { throw 'Installer requires PowerShell 7' }
+          $node = Join-Path $env:RUNNER_TEMP 't09-ps51-clean-node'
+          $home = Join-Path $env:RUNNER_TEMP 't09-ps51-clean-home'
+          $workspace = Join-Path $env:RUNNER_TEMP 't09-ps51-clean-workspace'
+          New-Item -ItemType Directory -Force -Path $node,$workspace | Out-Null
+          & ./scripts/install-windows-node.ps1 -NodeDataDir $node -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_ps51_ci' -NodeBinary (Join-Path $PWD 'secretary-node.exe')
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 clean install failed' }
+          if (-not (Test-Path (Join-Path $node 'worker-account.json'))) { throw 'Worker SID was not provisioned' }
       - name: Verify native Workers use a separate Windows security principal
         shell: pwsh
         run: |
