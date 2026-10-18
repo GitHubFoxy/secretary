@@ -392,8 +392,28 @@ func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSes
 	if exists {
 		return nil, errors.New("node: worker already exists")
 	}
-	session, err := resumer.Resume(ctx, request, runtimeSessionID)
+	// Direct Resume has no Session until the native provider returns, and
+	// may block indefinitely. Register an Attempt-scoped cancelable prestart
+	// before native I/O, so Cancel bypasses the occupied per-Worker gate.
+	prepCtx, finish, err := n.beginLocalPrestart(ctx, request.AttemptID, request.WorkerRef)
 	if err != nil {
+		return nil, err
+	}
+	defer finish()
+	// Once native Resume is invoked, a crash could leave an unknown native
+	// side effect. Persist this boundary before calling the provider, but keep
+	// the Attempt cancelable until native Session registration.
+	if err := n.markLocalResuming(prepCtx, request.AttemptID, request.WorkerRef); err != nil {
+		return nil, err
+	}
+	session, err := resumer.Resume(prepCtx, request, runtimeSessionID)
+	if err != nil {
+		return nil, err
+	}
+	// The provider may ignore ctx.Done() and return a Session AFTER Cancel
+	// was accepted. Never register it; explicitly close the late result.
+	if err := n.commitLocalHandoff(prepCtx, request.AttemptID, request.WorkerRef); err != nil {
+		_ = session.Close()
 		return nil, err
 	}
 	n.mu.Lock()

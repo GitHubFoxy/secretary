@@ -170,7 +170,7 @@ func (s *LocalStore) BeginLocalPrestart(attemptID,workerRef string) error {
 	if prev,ok:=s.state.LocalPrestarts[attemptID];ok {
 		if prev.WorkerRef!=workerRef{return errors.New("node: local prestart Worker identity conflict")}
 		if prev.Stage=="canceled"{return ErrLocalPrestartCanceled}
-		if prev.Stage=="handoff"{return errors.New("node: local native handoff may already have occurred")}
+		if prev.Stage=="handoff" || prev.Stage=="resuming"{return errors.New("node: local native handoff may already have occurred")}
 		// A previous 'preparing' claim can safely be restarted: it never
 		// crossed the durably marked native handoff boundary.
 		return nil
@@ -179,13 +179,30 @@ func (s *LocalStore) BeginLocalPrestart(attemptID,workerRef string) error {
 	if err:=s.persistLocked();err!=nil{delete(s.state.LocalPrestarts,attemptID);return err}
 	return nil
 }
+// MarkLocalResumeInFlight closes the crash/restart replay window while the
+// native provider is still blocking. Unlike a confirmed handoff, this state
+// remains cancelable by its exact AttemptID.
+func (s *LocalStore) MarkLocalResumeInFlight(attemptID, workerRef string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev,ok:=s.state.LocalPrestarts[attemptID]
+	if !ok || prev.WorkerRef!=workerRef{return errors.New("node: local Resume prestart state missing")}
+	if prev.Stage=="canceled"{return ErrLocalPrestartCanceled}
+	if prev.Stage!="preparing"{return errors.New("node: native Resume already attempted")}
+	next:=prev
+	next.Stage="resuming"
+	s.state.LocalPrestarts[attemptID]=next
+	if err:=s.persistLocked();err!=nil{s.state.LocalPrestarts[attemptID]=prev;return err}
+	return nil
+}
+
 func (s *LocalStore) CancelLocalPrestart(attemptID,workerRef string) (bool,error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	prev,ok:=s.state.LocalPrestarts[attemptID]
 	if !ok || prev.WorkerRef!=workerRef{return false,nil}
 	if prev.Stage=="canceled"{return true,nil}
-	if prev.Stage!="preparing"{return false,nil}
+	if prev.Stage!="preparing" && prev.Stage!="resuming"{return false,nil}
 	next:=prev;next.Stage="canceled"
 	s.state.LocalPrestarts[attemptID]=next
 	if err:=s.persistLocked();err!=nil{s.state.LocalPrestarts[attemptID]=prev;return false,err}
@@ -197,7 +214,7 @@ func (s *LocalStore) MarkLocalHandoff(attemptID,workerRef string) error {
 	prev,ok:=s.state.LocalPrestarts[attemptID]
 	if !ok || prev.WorkerRef!=workerRef{return errors.New("node: local prestart state missing")}
 	if prev.Stage=="canceled"{return ErrLocalPrestartCanceled}
-	if prev.Stage!="preparing"{return errors.New("node: local prestart handoff already attempted")}
+	if prev.Stage!="preparing" && prev.Stage!="resuming"{return errors.New("node: local prestart handoff already attempted")}
 	next:=prev;next.Stage="handoff"
 	s.state.LocalPrestarts[attemptID]=next
 	if err:=s.persistLocked();err!=nil{s.state.LocalPrestarts[attemptID]=prev;return err}

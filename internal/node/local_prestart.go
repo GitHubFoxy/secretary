@@ -75,6 +75,26 @@ func (n *LocalNode) commitLocalHandoff(ctx context.Context,attemptID,workerRef s
 	return nil
 }
 
+// markLocalResuming records the uncertain native entry boundary before
+// calling a provider. The Attempt stays in stage "preparing" in memory so
+// Cancel can interrupt a blocked native Resume without waiting for its gate.
+func (n *LocalNode) markLocalResuming(ctx context.Context, attemptID, workerRef string) error {
+	if err := ctx.Err(); err != nil {return err}
+	key := attemptID
+	if key == "" {key="worker:"+workerRef}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	pending := n.prestarts[key]
+	if pending == nil || pending.workerRef != workerRef {return errors.New("node: local Resume prestart lost")}
+	if pending.stage == "canceled" {return ErrLocalPrestartCanceled}
+	if pending.stage != "preparing" {return errors.New("node: local Resume already handed off")}
+	if err := ctx.Err(); err != nil {return err}
+	if n.prestartStore != nil && attemptID != "" {
+		if err := n.prestartStore.MarkLocalResumeInFlight(attemptID,workerRef); err != nil {return err}
+	}
+	return nil
+}
+
 // CancelLocalAttempt is also valid BEFORE a Session exists. Cancellation is
 // persisted under Node control before interrupting an in-flight media GET.
 // If handoff already occurred, it waits only for the same Worker's semaphore
