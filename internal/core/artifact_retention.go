@@ -49,7 +49,7 @@ func (s *Store) DeleteOwnerArtifact(ctx context.Context,owner,id string) error {
     var used int
     err=tx.QueryRowContext(ctx,`SELECT
       (SELECT COUNT(*) FROM phase4_results WHERE instr(summary,?)>0 OR instr(artifact_refs,?)>0)
-     +(SELECT COUNT(*) FROM conversation_entries WHERE instr(body,?)>0)
+     +(SELECT COUNT(*) FROM conversation_entries WHERE instr(body,?)>0 AND body NOT LIKE 'File uploaded:%')
      +(SELECT COUNT(*) FROM turns WHERE instr(input,?)>0)`,derived,derived,derived,derived).Scan(&used)
     if err!=nil{return err}
     if used==0{
