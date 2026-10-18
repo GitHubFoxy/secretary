@@ -49,9 +49,9 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
  # transaction, rather than failing Dispatch later with missing credentials.
  $encodedArgs=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($arguments|ConvertTo-Json -Compress)))
  $escapedScript=$setupScript.Replace("'","''")
- $elevatedScript="$"+"a=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encodedArgs')) | ConvertFrom-Json -AsHashtable; & '$escapedScript' @a"
+ $elevatedScript="$"+"json=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$encodedArgs')); $"+"a=@{}; ($"+"json | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $"+"a[$"+"_.Name]=$"+"_.Value }; & '$escapedScript' @a; if (-not $"+ "?) { exit 1 }"
  $encodedCommand=[Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($elevatedScript))
- $elevated=Start-Process -FilePath 'pwsh.exe' -Verb RunAs -ArgumentList "-NoProfile -NonInteractive -EncodedCommand $encodedCommand" -Wait -PassThru
+ $elevated=Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -Verb RunAs -ArgumentList "-NoProfile -NonInteractive -EncodedCommand $encodedCommand" -Wait -PassThru
  if ($elevated.ExitCode -ne 0) { throw 'Worker account/ACL provisioning was declined or failed. Node state was not reset.' }
 }
 if ($identityBefore -and ((Get-FileHash -LiteralPath $identityPath -Algorithm SHA256).Hash -ne $identityBefore)) {
