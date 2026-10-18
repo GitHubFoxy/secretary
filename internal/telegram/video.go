@@ -46,13 +46,13 @@ func (a *Adapter) deliverVideoUpdate(ctx context.Context,u Update,allowed bool) 
  if m.Video==nil || m.Video.FileID=="" { return fail("Telegram не передал video file_id.") }
  if m.Video.FileSize<0 || m.Video.FileSize>core.MaxArtifactBytes { return fail("файл превышает лимит 8 МиБ.") }
  if !telegramVideoName(m.Video.FileName) { return fail("поддерживаются только MP4, WebM и MOV.") }
+ store,ok:=a.server.(VideoArtifactStore)
+ if !ok { return fail("Server video pipeline недоступен.") }
  maxDuration,limitErr:=store.VideoLimits(ctx)
  if limitErr!=nil { return fmt.Errorf("telegram video limits: %w",limitErr) }
  if m.Video.Duration > maxDuration { return fail(fmt.Sprintf("длительность видео превышает настроенный предел %d секунд.",maxDuration)) }
  download,ok:=a.transport.(VoiceDownloadTransport)
  if !ok { return fail("Bot API download недоступен.") }
- store,ok:=a.server.(VideoArtifactStore)
- if !ok { return fail("Server video pipeline недоступен.") }
  downloadCtx,stop:=context.WithTimeout(ctx,30*time.Second)
  file,err:=download.GetFile(downloadCtx,m.Video.FileID)
  if err!=nil {
