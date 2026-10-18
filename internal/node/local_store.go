@@ -798,6 +798,29 @@ func (s *LocalStore) QueueOutcome(outcome core.AttemptOutcomeEnvelope) (PendingE
 	return s.queueEvent(outcomeEvent(outcome))
 }
 
+// QueueLifecycleCommandOutcome is the single durable delivery path for
+// Dispatch/Resume receipts, regardless of WebSocket state. A repeated native
+// command with the same CommandID cannot enqueue a second receipt after its
+// first event is ACKed; before ACK, the pending event ID deduplicates it.
+func (s *LocalStore) QueueLifecycleCommandOutcome(outcome CommandOutcome) (PendingEvent,error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if outcome.Kind!=CommandDispatch && outcome.Kind!=CommandResume {
+		return PendingEvent{},errors.New("node: not a lifecycle command receipt")
+	}
+	if outcome.CommandID=="" || outcome.State==CommandProcessing {
+		return PendingEvent{},errors.New("node: incomplete lifecycle receipt")
+	}
+	record,ok:=s.state.Commands[outcome.CommandID]
+	if !ok || record.Kind!=outcome.Kind {
+		return PendingEvent{},errors.New("node: lifecycle receipt has no matching durable claim")
+	}
+	if record.Acknowledged {
+		return PendingEvent{},nil
+	}
+	return s.queueCommandOutcomeLocked(outcome)
+}
+
 func (s *LocalStore) QueueCommandOutcome(outcome CommandOutcome) (PendingEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

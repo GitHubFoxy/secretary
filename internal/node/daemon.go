@@ -193,14 +193,22 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 				defer close(finished)
 				outcome, err := execution.HandleCommand(context.WithValue(individualCtx,nativeHandoffKey{},signal), command)
 				if err!=nil || outcome.State!=CommandAccepted {interrupt(nil)}
+				// Native Dispatch/Resume can complete after this socket
+				// disconnects. Persist the receipt BEFORE selecting a
+				// connection-owned channel: when both cases are ready,
+				// selecting completions would silently discard the result.
+				// All lifecycle receipts are sent only via the durable outbox,
+				// including the normal connected path.
+				if err==nil && (command.Kind==CommandDispatch || command.Kind==CommandResume) && outcome.State!=CommandProcessing {
+					if _, queueErr:=d.Store.QueueLifecycleCommandOutcome(outcome);queueErr!=nil {
+						err=fmt.Errorf("node: persist native command outcome: %w",queueErr)
+					}
+				}
 				select {
 				case completions <- commandCompletion{command: command, outcome: outcome, err: err}:
 				case <-commandCtx.Done():
-					// Native completion on a dead socket still needs its
-					// durable command receipt delivered after reconnect.
-					if err==nil && outcome.State!=CommandProcessing {
-						_,_ = d.Store.QueueCommandOutcome(outcome)
-					}
+					// The native outcome is already durable and the new
+					// socket's outbox poll will deliver it.
 				}
 			}()
 		}
@@ -303,7 +311,10 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 				return completed.err
 			}
 			outcome := completed.outcome
-			if outcome.State == CommandFailed && (outcome.Kind == CommandDispatch || outcome.Kind == CommandResume || outcome.Kind == CommandSteering) {
+			if outcome.Kind==CommandDispatch || outcome.Kind==CommandResume {
+				// The command goroutine persisted this receipt before
+				// reporting completion. Never also send it directly.
+			} else if outcome.State == CommandFailed && outcome.Kind == CommandSteering {
 				if _, err := d.Store.QueueCommandOutcome(outcome); err != nil {
 					return err
 				}
