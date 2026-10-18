@@ -8,6 +8,9 @@ import(
  "fmt"
  "io"
  "net/http"
+ "net/url"
+ "mime"
+ "mime/multipart"
  "path/filepath"
  "strconv"
  "strings"
@@ -76,4 +79,61 @@ func(c *HTTPServerClient)StoreDocumentOriginal(ctx context.Context,updateID int6
  if err=json.Unmarshal(body,&result);err!=nil{return "",err}
  if !strings.HasPrefix(result.Artifact.ID,"art_"){return "",errors.New("invalid document Artifact ID")}
  return result.Artifact.ID,nil
+}
+
+type DocumentDownloadStore interface {
+ DownloadDocument(context.Context,string)(string,string,[]byte,error)
+}
+type DocumentSendTransport interface{
+ SendDocument(context.Context,int64,int64,string,string,[]byte,string)error
+}
+func(a *Adapter)sendDocumentAttachment(ctx context.Context,message OutgoingMessage)error{
+ source,ok:=a.server.(DocumentDownloadStore)
+ if !ok{return errors.New("telegram: Server document retrieval unavailable")}
+ sender,ok:=a.transport.(DocumentSendTransport)
+ if !ok{return errors.New("telegram: Bot sendDocument unavailable")}
+ name,mediaType,data,err:=source.DownloadDocument(ctx,message.DocumentArtifactID)
+ if err!=nil{return err}
+ if len(data)==0||len(data)>core.MaxArtifactBytes{return errors.New("telegram: published document exceeds 8 MiB or is empty")}
+ return sender.SendDocument(ctx,message.ChatID,message.ThreadID,name,mediaType,data,message.Text)
+}
+func(c *HTTPServerClient)DownloadDocument(ctx context.Context,id string)(string,string,[]byte,error){
+ if !strings.HasPrefix(id,"art_"){return "","",nil,errors.New("invalid Artifact ID")}
+ req,err:=http.NewRequestWithContext(ctx,http.MethodGet,strings.TrimRight(c.BaseURL,"/")+"/v1/internal/telegram/document/"+url.PathEscape(id),nil)
+ if err!=nil{return "","",nil,err}
+ req.Header.Set("Authorization","Bearer "+c.Credential)
+ res,err:=c.client().Do(req);if err!=nil{return "","",nil,err};defer res.Body.Close()
+ if res.StatusCode!=200{return "","",nil,fmt.Errorf("telegram document retrieval HTTP %d",res.StatusCode)}
+ data,err:=io.ReadAll(io.LimitReader(res.Body,core.MaxArtifactBytes+1));if err!=nil{return "","",nil,err}
+ if len(data)==0||len(data)>core.MaxArtifactBytes{return "","",nil,errors.New("document exceeds 8 MiB")}
+ _,params,err:=mime.ParseMediaType(res.Header.Get("Content-Disposition"))
+ if err!=nil{return "","",nil,err}
+ name:=params["filename"]
+ if name==""||filepath.Base(name)!=name{return "","",nil,errors.New("invalid published filename")}
+ return name,res.Header.Get("Content-Type"),data,nil
+}
+func(t *BotAPITransport)SendDocument(ctx context.Context,chatID,threadID int64,name,mediaType string,data []byte,caption string)error{
+ if chatID==0||len(data)==0||len(data)>core.MaxArtifactBytes{return errors.New("invalid Telegram document delivery")}
+ var body bytes.Buffer
+ writer:=multipart.NewWriter(&body)
+ _=writer.WriteField("chat_id",strconv.FormatInt(chatID,10))
+ if threadID!=0{_=writer.WriteField("message_thread_id",strconv.FormatInt(threadID,10))}
+ if caption!=""{if len(caption)>1024{caption=caption[:1024]};_=writer.WriteField("caption",caption)}
+ part,err:=writer.CreateFormFile("document",name)
+ if err!=nil{return err}
+ if _,err=part.Write(data);err!=nil{return err}
+ if err=writer.Close();err!=nil{return err}
+ base:=strings.TrimRight(t.BaseURL,"/")
+ if base==""{base="https://api.telegram.org"}
+ req,err:=http.NewRequestWithContext(ctx,http.MethodPost,base+"/bot"+t.BotToken+"/sendDocument",&body)
+ if err!=nil{return err}
+ req.Header.Set("Content-Type",writer.FormDataContentType())
+ res,err:=t.client().Do(req);if err!=nil{return err};defer res.Body.Close()
+ reply,err:=io.ReadAll(io.LimitReader(res.Body,4096));if err!=nil{return err}
+ if res.StatusCode<200||res.StatusCode>=300{return fmt.Errorf("Telegram sendDocument HTTP %d",res.StatusCode)}
+ var envelope struct{OK bool `json:"ok"`}
+ if err=json.Unmarshal(reply,&envelope);err!=nil{return err}
+ if !envelope.OK{return errors.New("Telegram rejected document upload")}
+ _=mediaType
+ return nil
 }
