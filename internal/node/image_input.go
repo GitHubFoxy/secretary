@@ -37,6 +37,28 @@ type ImageQueueSession interface {
 	QueueImages(context.Context, string, []ImageInput) error
 }
 
+// ImageResponseSession handles a pending native needs_input request. It must
+// guarantee image bytes are accepted by the native model BEFORE signaling
+// success, instead of responding with an artifact:// string alone.
+type ImageResponseSession interface {
+	RespondImages(context.Context, string, string, []ImageInput) error
+}
+
+// Native runtimes supporting a split image-steering/reply protocol can
+// confirm injection separately from the subsequent needs_input reply ACK.
+type ImageResponseInjector interface {
+	InjectResponseImages(context.Context, string, string, []ImageInput) error
+}
+
+// A runtime may implement the image-response interface while a particular
+// native session has negotiated text-only capabilities (notably ACP).
+// Check this before claiming the durable needs_input response.
+type ImageResponseCapability interface {
+	SupportsImageResponse() bool
+}
+
+var ErrImageResponseUnsupported = errors.New("image_input_unsupported: native session cannot accept image responses")
+
 func ValidateStillImage(name string, data []byte) (ImageInput, error) {
 	if len(data) == 0 || len(data) > core.MaxArtifactBytes {
 		return ImageInput{}, errors.New("image: empty or oversized original (maximum 8 MiB)")

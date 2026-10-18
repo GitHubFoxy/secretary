@@ -15,11 +15,19 @@ import (
 )
 
 var ErrFormatting = errors.New("telegram: entity parsing rejected")
+var ErrFileTooLarge = errors.New("telegram: file exceeds maximum size")
+var ErrTelegramFileRejected = errors.New("telegram: file permanently rejected by Bot API")
+var ErrTelegramDownloadRejected = errors.New("telegram: file download permanently rejected")
 
 func botAPIError(method string, code int, description string) error {
 	lower := strings.ToLower(description)
 	if method == "sendMessage" && code == 400 && (strings.Contains(lower, "can't parse entities") || strings.Contains(lower, "cannot parse entities")) {
 		return ErrFormatting
+	}
+	// A permanent Bot API 4xx rejects this file_id (including 403).
+	// 408 and 429 are temporary, as are 5xx and transport failures.
+	if method == "getFile" && code >= 400 && code < 500 && code != 408 && code != 429 {
+		return fmt.Errorf("%w (%d): %s", ErrTelegramFileRejected, code, description)
 	}
 	return fmt.Errorf("telegram: Bot API %s failed (%d): %s", method, code, description)
 }
@@ -105,6 +113,14 @@ type TelegramFile struct {
 	FilePath     string `json:"file_path"`
 }
 
+type botPhotoDTO struct {
+	FileID string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileSize int64 `json:"file_size,omitempty"`
+	Width int `json:"width"`
+	Height int `json:"height"`
+}
+
 type botMessageDTO struct {
 	MessageID int64 `json:"message_id,omitempty"`
 	From      *struct {
@@ -117,6 +133,7 @@ type botMessageDTO struct {
 	} `json:"chat,omitempty"`
 	ThreadID int64        `json:"message_thread_id,omitempty"`
 	Text     string       `json:"text,omitempty"`
+	Photo    []botPhotoDTO `json:"photo,omitempty"`
 	Voice    *botVoiceDTO `json:"voice,omitempty"`
 	Audio    *botVoiceDTO `json:"audio,omitempty"`
 	Document *botVoiceDTO `json:"document,omitempty"`
@@ -149,6 +166,14 @@ func (dto botUpdateDTO) update() Update {
 			FileSize:     media.FileSize,
 			FileName:     media.FileName,
 		}
+	}
+
+	if len(dto.Message.Photo) != 0 {
+		p := dto.Message.Photo[len(dto.Message.Photo)-1]
+		message.Image = &Image{FileID:p.FileID, FileUniqueID:p.FileUniqueID, FileSize:p.FileSize, FileName:fmt.Sprintf("telegram-photo-%d.jpg",dto.ID), MimeType:"image/jpeg"}
+	} else if dto.Message.Document != nil && (strings.HasPrefix(strings.ToLower(dto.Message.Document.MimeType), "image/") || isStillImageName(dto.Message.Document.FileName)) {
+		d := dto.Message.Document
+		message.Image = &Image{FileID:d.FileID, FileUniqueID:d.FileUniqueID, FileSize:d.FileSize, FileName:d.FileName, MimeType:d.MimeType}
 	}
 	update.Message = message
 	return update
@@ -252,6 +277,10 @@ func (t *BotAPITransport) DownloadFile(ctx context.Context, filePath string, max
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		if response.StatusCode >= 400 && response.StatusCode < 500 &&
+			response.StatusCode != http.StatusRequestTimeout && response.StatusCode != http.StatusTooManyRequests {
+			return nil, fmt.Errorf("%w (HTTP %d)", ErrTelegramDownloadRejected, response.StatusCode)
+		}
 		return nil, fmt.Errorf("telegram: file download failed with status %d", response.StatusCode)
 	}
 	limit := maxBytes
@@ -263,9 +292,21 @@ func (t *BotAPITransport) DownloadFile(ctx context.Context, filePath string, max
 		return nil, fmt.Errorf("telegram: read downloaded file: %w", err)
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("telegram: file exceeds maximum size (%d bytes)", limit)
+		return nil, fmt.Errorf("%w (%d bytes)", ErrFileTooLarge, limit)
 	}
 	return data, nil
+}
+
+// ServerHTTPError preserves the transport status separately from any
+// untrusted JSON error body. Transient 5xx must never be classified as a
+// terminal Worker rejection merely because the body has an "error" field.
+type ServerHTTPError struct {
+	StatusCode int
+	Status string
+	Body string
+}
+func (e *ServerHTTPError) Error() string {
+	return fmt.Sprintf("telegram: server returned %s: %s", e.Status, e.Body)
 }
 
 type HTTPServerClient struct {
@@ -308,7 +349,11 @@ func (c *HTTPServerClient) post(ctx context.Context, path string, body any, idem
 		if len(body) > maxServerErrorBody {
 			return fmt.Errorf("telegram: server returned %s: error response exceeded %d bytes", response.Status, maxServerErrorBody)
 		}
-		return fmt.Errorf("telegram: server returned %s: %s", response.Status, redactBotSecret(c.Credential, strings.TrimSpace(string(body))))
+		return &ServerHTTPError{
+			StatusCode: response.StatusCode,
+			Status: response.Status,
+			Body: redactBotSecret(c.Credential, strings.TrimSpace(string(body))),
+		}
 	}
 	return nil
 }

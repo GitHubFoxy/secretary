@@ -32,6 +32,9 @@ func t10LocalSteeringSetup(t *testing.T, session node.Session, supportsImages bo
 	t.Helper()
 	started := make(chan node.StartRequest, 1)
 	local := node.NewLocal(&t10LocalVisionRuntime{started: started, session: session})
+	checkpoint, err := node.OpenLocalStore(filepath.Join(t.TempDir(), "local-image-responses.json"))
+	if err != nil { t.Fatal(err) }
+	local.SetImageResponseStore(checkpoint)
 	t.Cleanup(func() { _ = local.Close() })
 	local.SetArtifactFetcher(fetch)
 	capabilities := []core.ExecutionCapability{core.CapabilityCancel}

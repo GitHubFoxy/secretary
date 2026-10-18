@@ -275,6 +275,11 @@ func main() {
 		log.Fatalf("find secretary-mcp: %v", mcpErr)
 	}
 	workerLocal := node.NewLocal(workerHarnessRuntime)
+	// Native needs_input image delivery uses the same durable injection
+	// protocol as a standalone ExecutionNode, scoped to protected Node data.
+	localImageStore, err := node.OpenLocalStore(filepath.Join(workerDataDir, "local-image-responses.json"))
+	if err != nil { log.Fatalf("open local Worker image response checkpoints: %v", err) }
+	workerLocal.SetImageResponseStore(localImageStore)
 	localPublisherBinary, binaryErr := os.Executable()
 	if binaryErr != nil { log.Fatalf("resolve local Worker Artifact MCP: %v", binaryErr) }
 	if err := workerLocal.SetLocalArtifactPublisher(func(saveCtx context.Context, workerRef, attemptID, key, name, media string, data []byte) (core.Artifact, error) {

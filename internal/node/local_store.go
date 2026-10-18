@@ -38,6 +38,16 @@ type ProcessInspector interface {
 	Inspect(context.Context, CommandRecord) (bool, error)
 }
 
+// An image response has two distinct native side effects: image steering and
+// the interaction reply. Checkpoint steering independently of the reply ACK.
+// "started" forbids a blind re-injection after a crash/timeout; "injected"
+// allows retrying ONLY the still-pending native textual response.
+type imageResponseCheckpoint struct {
+	AttemptID string `json:"attempt_id"`
+	Digest string `json:"digest"`
+	Stage string `json:"stage"`
+}
+
 type localState struct {
 	Version                  int                              `json:"version"`
 	NextSequence             uint64                           `json:"next_sequence"`
@@ -46,6 +56,7 @@ type localState struct {
 	Mappings                 map[string]sessionMapping        `json:"mappings"`
 	PendingRequests          map[string]pendingRequestMapping `json:"pending_requests"`
 	WorkerResponses          map[string]CommandOutcome        `json:"worker_responses"`
+	ImageResponses           map[string]imageResponseCheckpoint `json:"image_responses,omitempty"`
 	Outbox                   []PendingEvent                   `json:"outbox"`
 }
 
@@ -60,7 +71,7 @@ func OpenLocalStore(path string) (*LocalStore, error) {
 	if path == "" {
 		return nil, errors.New("node: local store path is required")
 	}
-	store := &LocalStore{path: path, state: localState{Version: 1, NextSequence: 1, Commands: map[string]CommandRecord{}, Mappings: map[string]sessionMapping{}, PendingRequests: map[string]pendingRequestMapping{}, WorkerResponses: map[string]CommandOutcome{}, Outbox: []PendingEvent{}}}
+	store := &LocalStore{path: path, state: localState{Version: 1, NextSequence: 1, Commands: map[string]CommandRecord{}, Mappings: map[string]sessionMapping{}, PendingRequests: map[string]pendingRequestMapping{}, WorkerResponses: map[string]CommandOutcome{}, ImageResponses: map[string]imageResponseCheckpoint{}, Outbox: []PendingEvent{}}}
 	encoded, err := os.ReadFile(path)
 	if err == nil {
 		if len(encoded) > 0 {
@@ -78,6 +89,9 @@ func OpenLocalStore(path string) (*LocalStore, error) {
 			}
 			if store.state.WorkerResponses == nil {
 				store.state.WorkerResponses = map[string]CommandOutcome{}
+			}
+			if store.state.ImageResponses == nil {
+				store.state.ImageResponses = map[string]imageResponseCheckpoint{}
 			}
 			if store.state.NextSequence == 0 {
 				store.state.NextSequence = 1
@@ -173,6 +187,45 @@ func (s *LocalStore) SaveCommandReadiness(commandID string, outcome CommandOutco
 		return CommandRecord{}, err
 	}
 	return record, nil
+}
+
+// BeginImageResponse persists an irreversible guard BEFORE the first native
+// image injection. A replay after an unconfirmed start requires reconciliation,
+// never a second injection. The digest also fences different payloads and turns.
+func (s *LocalStore) BeginImageResponse(requestID, attemptID, digest string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if requestID == "" || attemptID == "" || digest == "" {
+		return "", errors.New("node: incomplete image-response identity")
+	}
+	if prior, ok := s.state.ImageResponses[requestID]; ok {
+		if prior.AttemptID != attemptID || prior.Digest != digest {
+			return "", errors.New("node: image-response identity mismatch")
+		}
+		return prior.Stage, nil
+	}
+	s.state.ImageResponses[requestID] = imageResponseCheckpoint{AttemptID: attemptID, Digest: digest, Stage: "started"}
+	if err := s.persistLocked(); err != nil {
+		delete(s.state.ImageResponses, requestID)
+		return "", err
+	}
+	return "started-new", nil
+}
+
+func (s *LocalStore) ConfirmImageResponse(requestID, attemptID, digest string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prior, ok := s.state.ImageResponses[requestID]
+	if !ok || prior.AttemptID != attemptID || prior.Digest != digest || prior.Stage != "started" {
+		return errors.New("node: image-response injection checkpoint mismatch")
+	}
+	prior.Stage = "injected"
+	s.state.ImageResponses[requestID] = prior
+	if err := s.persistLocked(); err != nil {
+		s.state.ImageResponses[requestID] = imageResponseCheckpoint{AttemptID: attemptID, Digest: digest, Stage: "started"}
+		return err
+	}
+	return nil
 }
 
 func (s *LocalStore) ClaimWorkerResponse(requestID string) (CommandOutcome, bool, error) {

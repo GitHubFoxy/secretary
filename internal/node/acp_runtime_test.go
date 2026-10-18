@@ -1249,15 +1249,26 @@ func TestFakeACPReconnectProcess(t *testing.T) {
 		var request struct {
 			ID     json.RawMessage `json:"id,omitempty"`
 			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &request) != nil {
 			continue
 		}
 		if request.Method == "initialize" {
-			_ = encoder.Encode(map[string]any{"id": json.RawMessage(request.ID), "result": map[string]any{"protocolVersion": 1}})
+			capabilities:=map[string]any{"protocolVersion": 1}
+			if os.Getenv("ACP_RECONNECT_IMAGE") == "1" {
+				capabilities["agentCapabilities"]=map[string]any{"promptCapabilities":map[string]any{"image":true}}
+			}
+			_ = encoder.Encode(map[string]any{"id": json.RawMessage(request.ID), "result": capabilities})
 			continue
 		}
 		if request.Method == "session/load" {
+			if os.Getenv("ACP_RECONNECT_IMAGE") == "1" {
+				// Resume returns before the native input request reappears.
+				// A later multimodal steer must inject original bytes first.
+				_ = encoder.Encode(map[string]any{"id": json.RawMessage(request.ID), "result": map[string]any{}})
+				continue
+			}
 			method := "session/request_permission"
 			params := map[string]any{"options": []map[string]string{{"optionId": "deny", "kind": "reject_once"}}}
 			if os.Getenv("ACP_RECONNECT_KIND") == "input" {
@@ -1272,6 +1283,12 @@ func TestFakeACPReconnectProcess(t *testing.T) {
 			if os.Getenv("ACP_RECONNECT_LATE") != "1" {
 				_ = encoder.Encode(map[string]any{"id": json.RawMessage(request.ID), "result": map[string]any{}})
 			}
+			continue
+		}
+		if request.Method == "_session/steering" && os.Getenv("ACP_RECONNECT_IMAGE") == "1" {
+			if path := os.Getenv("ACP_STEERING_RECORD");path!="" {_=os.WriteFile(path,request.Params,0o600)}
+			_ = encoder.Encode(map[string]any{"id":json.RawMessage(request.ID),"result":map[string]any{"outcome":"injected"}})
+			_ = encoder.Encode(map[string]any{"jsonrpc":"2.0","id":77,"method":"session/request_input","params":map[string]any{"request_id":"durable-input","question":"which image?"}})
 			continue
 		}
 		if len(request.ID) > 0 {
