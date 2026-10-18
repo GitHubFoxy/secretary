@@ -171,4 +171,47 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
  if err!=nil{t.Fatal(err)}
  if err:=restored.HandleUpdate(ctx,update);err!=nil{t.Fatal(err)}
  select{case <-runtime.seen:t.Fatal("replay started another Worker");case <-time.After(100*time.Millisecond):}
+ workers,err:=store.WorkersForConversation(ctx,conversation.ID)
+ if err!=nil||len(workers)!=1{t.Fatalf("automatic Telegram ingress did not route to exactly one Worker: %+v %v",workers,err)}
+ workerRef:=workers[0].WorkerRef
+ if err:=adapter.HandleEvent(ctx,telegram.Event{Kind:"worker.created",WorkerRef:workerRef,Title:"video-worker",TaskPrompt:"Describe the sampled video"});err!=nil{t.Fatal(err)}
+ if err:=adapter.SyncWorkerTopics(ctx);err!=nil{t.Fatal(err)}
+ topic,err:=transport.GetUpdates(ctx,501,time.Second)
+ if err!=nil||len(topic)!=1||topic[0].Message.Video==nil{t.Fatalf("Bot API topic ingress failed: %+v %v",topic,err)}
+ if err:=adapter.HandleUpdate(ctx,topic[0]);err!=nil{t.Fatal(err)}
+ select{case native:=<-runtime.seen:
+  if len(native.Images)!=2||!strings.Contains(native.Task,"update 501, chat -200, message 52")||!strings.Contains(native.Task,"1.000 s"){
+   t.Fatalf("assigned Topic -> resumed native Worker lost frame mapping: %+v",native)
+  }
+ case <-ctx.Done():t.Fatal("Telegram Topic video never reached assigned native Worker")}
+ var outcome core.Phase4Result
+ for {
+  details,e:=store.WorkerDetailsForConversation(ctx,conversation.ID,workerRef)
+  if e!=nil{t.Fatal(e)}
+  for _,result:=range details.Results {
+   if strings.Contains(result.Summary,"T13 topic native Worker analyzed sampled video"){outcome=result}
+  }
+  if outcome.ID!=""{break}
+  select{case <-ctx.Done():t.Fatal("native Topic Result not recorded");case <-time.After(20*time.Millisecond):}
+ }
+ terminal:=telegram.Event{Sequence:9000,Kind:"worker.completed",WorkerRef:workerRef,Title:"video-worker",
+  Text:outcome.Summary,TerminalIdentity:"turn:"+outcome.TurnID}
+ if err:=adapter.HandleDurableEvent(ctx,terminal);err!=nil{t.Fatal(err)}
+ if err:=adapter.SyncWorkerTopics(ctx);err!=nil{t.Fatal(err)}
+ if err:=adapter.HandleDurableEvent(ctx,terminal);err!=nil{t.Fatal(err)}
+ terminal.Sequence++
+ if err:=adapter.HandleDurableEvent(ctx,terminal);err!=nil{t.Fatal(err)}
+ if err:=adapter.SyncWorkerTopics(ctx);err!=nil{t.Fatal(err)}
+ counts:=map[string]int{}
+ for {select{case p:=<-delivered:
+  if strings.Contains(p.text,"T13 topic native Worker analyzed sampled video"){counts[p.chat+":"+p.thread]++}
+ default:goto counted}}
+ counted:
+ if counts["100:"]!=1||counts["-200:"]!=1||counts["-200:77"]!=1{
+  t.Fatalf("Topic native Result projections are missing or duplicated: %+v",counts)
+ }
+ if err:=adapter.HandleUpdate(ctx,topic[0]);err!=nil{t.Fatal(err)}
+ if err:=restored.HandleUpdate(ctx,topic[0]);err!=nil{t.Fatal(err)}
+ select{case duplicate:=<-runtime.seen:t.Fatalf("Topic replay produced duplicate native execution: %+v",duplicate)
+ case <-time.After(100*time.Millisecond):}
 }
