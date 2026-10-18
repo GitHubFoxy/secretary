@@ -7,6 +7,9 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"fmt"
 	"strings"
 	"testing"
@@ -224,4 +227,84 @@ func TestT12MetadataFailedIsTerminalNotTransient(t *testing.T) {
 	}}
 	if err:=awaitVideoProcessing(context.Background(),id,&a,0);err!=nil{t.Fatal(err)}
 	if requests!=1 || a.VideoStatus!="failed"{t.Fatalf("conversion failure was retried: %+v %d",a,requests)}
+}
+
+func TestT12SignedVideoMetadata503IsTransientBut404IsPermanent(t *testing.T) {
+	id:="art_"+strings.Repeat("d",32)
+	var requests int
+	server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+		if r.Header.Get("X-Artifact-Signature")=="" || r.Header.Get("X-Secretary-Node")!="macbook" {
+			http.Error(w,"missing signed Node credentials",http.StatusUnauthorized);return
+		}
+		requests++
+		switch requests {
+		case 1:
+			http.Error(w,"Server restarting",http.StatusServiceUnavailable)
+		case 2:
+			w.Header().Set("Content-Type","application/json")
+			_,_=fmt.Fprintf(w,`{"id":%q,"processing_status":"ready"}`,id)
+		default:
+			http.NotFound(w,r)
+		}
+	}))
+	defer server.Close()
+	credential:=base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0x42},32))
+	identity:=NodeIdentity{
+		Node:"macbook",Credential:credential,
+		ConnectURL:"ws"+strings.TrimPrefix(server.URL,"http")+"/v1/nodes/connect",
+	}
+	ctx:=context.Background()
+	if _,err:=identity.FetchArtifactStatus(ctx,id);!errors.Is(err,ErrTransientArtifactStatus) {
+		t.Fatalf("signed HTTP 503 must retry, got %v",err)
+	}
+	ready,err:=identity.FetchArtifactStatus(ctx,id)
+	if err!=nil || ready.ID!=id || ready.ProcessingStatus!="ready" {
+		t.Fatalf("signed 503→200 retry failed: %+v %v",ready,err)
+	}
+	if _,err:=identity.FetchArtifactStatus(ctx,id);err==nil||errors.Is(err,ErrTransientArtifactStatus) {
+		t.Fatalf("HTTP 404 must remain terminal, got %v",err)
+	}
+}
+
+func TestT12DispatchAfter503StartsExactlyOneNativeSession(t *testing.T) {
+	id:="art_"+strings.Repeat("e",32)
+	frameID:="art_"+strings.Repeat("f",32)
+	webp,err:=base64.StdEncoding.DecodeString("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA")
+	if err!=nil{t.Fatal(err)}
+	original:=[]byte("video")
+	digest:=func(data []byte)string{hash:=sha256.Sum256(data);return hex.EncodeToString(hash[:])}
+	checked:=0
+	fetched:=0
+	local,err:=OpenLocalStore(filepath.Join(t.TempDir(),"state.json"))
+	if err!=nil{t.Fatal(err)}
+	defer local.Close()
+	runtime:=&daemonCountingRuntime{}
+	execution:=NewExecutionNode("macbook",runtime,local)
+	execution.SetArtifactFetcher(func(ctx context.Context,key string)(ArtifactPayload,error){
+		if key==frameID{return ArtifactPayload{ID:frameID,Name:"frame.webp",Data:webp,SHA256:digest(webp)},nil}
+		if key!=id{return ArtifactPayload{},errors.New("unrecognized original")}
+		fetched++
+		return ArtifactPayload{
+			ID:id,Name:"clip.mp4",Data:original,SHA256:digest(original),VideoStatus:"queued",
+			CheckVideoStatus:func(context.Context)(core.Artifact,error){
+				checked++
+				if checked==1 {return core.Artifact{},fmt.Errorf("%w: HTTP 503",ErrTransientArtifactStatus)}
+				return core.Artifact{ID:id,ProcessingStatus:"ready",VideoFrames:[]core.VideoFrame{
+					{ArtifactID:frameID,TimestampMS:0,TimestampKind:"source-pts-relative"},
+				}},nil
+			},
+		},nil
+	})
+	cmd:=daemonDispatchFixture("macbook","dispatch-after-503")
+	cmd.Dispatch.Envelope.OriginalUserIntent="Inspect artifact://"+id
+	cmd.Dispatch.Envelope.HarnessInstance.Capabilities.Execution=append(cmd.Dispatch.Envelope.HarnessInstance.Capabilities.Execution,core.CapabilityImageInput)
+	ctx,cancel:=context.WithTimeout(context.Background(),5*time.Second)
+	defer cancel()
+	result,err:=execution.HandleCommand(ctx,cmd)
+	if err!=nil||result.State!=CommandAccepted {
+		t.Fatalf("native Worker dispatch rejected after recoverable status error: %+v %v",result,err)
+	}
+	if fetched!=1 || checked!=2 || runtime.starts.Load()!=1 {
+		t.Fatalf("dispatch was lost or replayed: original=%d status=%d starts=%d",fetched,checked,runtime.starts.Load())
+	}
 }
