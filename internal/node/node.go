@@ -233,6 +233,29 @@ type localPublishedSession struct {
 	revoke func()
 }
 func (s *localPublishedSession) Result() <-chan Result { return s.result }
+// Preserve native session extension behavior (ACP response, image steering,
+// queued input and image prompts) across the terminal-publication wrapper.
+// An unsupported extension fails explicitly rather than silently dropping it.
+func (s *localPublishedSession) Respond(ctx context.Context, requestID, response string) error {
+	if underlying, ok := s.Session.(Responder); ok { return underlying.Respond(ctx, requestID, response) }
+	return errors.New("node: local native session cannot respond to input")
+}
+func (s *localPublishedSession) PromptImages(ctx context.Context, text string, images []ImageInput) error {
+	if underlying, ok := s.Session.(ImagePromptSession); ok { return underlying.PromptImages(ctx,text,images) }
+	return errors.New("image_input_unsupported: local session cannot prompt with images")
+}
+func (s *localPublishedSession) SteerImages(ctx context.Context, text string, images []ImageInput) (bool,error) {
+	if underlying, ok := s.Session.(ImageSteeringSession); ok { return underlying.SteerImages(ctx,text,images) }
+	return false,errors.New("image_input_unsupported: local session cannot steer images")
+}
+func (s *localPublishedSession) QueueImages(ctx context.Context, text string, images []ImageInput) error {
+	if underlying, ok := s.Session.(ImageQueueSession); ok { return underlying.QueueImages(ctx,text,images) }
+	return errors.New("image_input_unsupported: local session cannot queue images")
+}
+func (s *localPublishedSession) Queue(ctx context.Context, text string) error {
+	if underlying, ok := s.Session.(Queueer); ok { return underlying.Queue(ctx,text) }
+	return errors.New("node: local native session cannot queue")
+}
 func (s *localPublishedSession) Close() error {
 	s.once.Do(s.revoke)
 	return s.Session.Close()
