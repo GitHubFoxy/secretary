@@ -27,6 +27,7 @@ type telegramDeploymentConfig struct {
 	OwnerChatID      int64
 	GroupChatID      int64
 	BaseURL          string
+	OwnerWebBaseURL string
 	PollInterval     time.Duration
 	FlushInterval    time.Duration
 }
@@ -41,6 +42,7 @@ func configuredTelegramDeployment() (telegramDeploymentConfig, error) {
 		BotUsername:      strings.TrimSpace(os.Getenv("SECRETARY_TELEGRAM_BOT_USERNAME")),
 		ServerCredential: strings.TrimSpace(os.Getenv("SECRETARY_TELEGRAM_SERVER_CREDENTIAL")),
 		BaseURL:          strings.TrimRight(strings.TrimSpace(os.Getenv("SECRETARY_TELEGRAM_API_BASE_URL")), "/"),
+		OwnerWebBaseURL: strings.TrimRight(strings.TrimSpace(os.Getenv("SECRETARY_TELEGRAM_WEB_BASE_URL")), "/"),
 		PollInterval:     2 * time.Second,
 		FlushInterval:    2 * time.Second,
 	}
@@ -122,6 +124,7 @@ func attachProductionTelegram(ctx context.Context, dataDir, listen string, store
 		ASR: snapshot.Config.ASR, ASRPrompt: snapshot.ASRPrompt.Content, ShowToolCalls: &showToolCalls,
 	}, &telegram.BotAPITransport{BaseURL: deployment.BaseURL, BotToken: deployment.BotToken}, &telegram.HTTPServerClient{
 		BaseURL: "http://" + listen, Credential: deployment.ServerCredential,
+		OwnerWebBaseURL: deployment.OwnerWebBaseURL,
 	})
 	if err != nil {
 		return nil, err
