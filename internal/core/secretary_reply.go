@@ -346,6 +346,12 @@ func (s *Store) RecordSecretaryAcknowledgement(ctx context.Context, personID, ca
 }
 
 func (s *Store) recordSecretaryReply(ctx context.Context, personID, capability, secretaryTurnID, inputID, text string, acknowledgement bool) (ConversationEntry, bool, error) {
+	// Serialize the acknowledgement commit with native text events on the same
+	// Secretary turn. This preserves the event-sequence cutoff and prevents
+	// competing SQLite read snapshots from exhausting busy retries.
+	gate := s.secretaryOutputGate(secretaryTurnID)
+	gate.Lock()
+	defer gate.Unlock()
 	table := "secretary_reply_entries"
 	if acknowledgement {
 		table = "secretary_acknowledgements"
