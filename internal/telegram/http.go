@@ -277,9 +277,8 @@ func (t *BotAPITransport) DownloadFile(ctx context.Context, filePath string, max
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		if response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusForbidden ||
-			response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone ||
-			response.StatusCode == http.StatusRequestEntityTooLarge || response.StatusCode == http.StatusUnprocessableEntity {
+		if response.StatusCode >= 400 && response.StatusCode < 500 &&
+			response.StatusCode != http.StatusRequestTimeout && response.StatusCode != http.StatusTooManyRequests {
 			return nil, fmt.Errorf("%w (HTTP %d)", ErrTelegramDownloadRejected, response.StatusCode)
 		}
 		return nil, fmt.Errorf("telegram: file download failed with status %d", response.StatusCode)

@@ -44,6 +44,12 @@ type ImageResponseSession interface {
 	RespondImages(context.Context, string, string, []ImageInput) error
 }
 
+// Native runtimes supporting a split image-steering/reply protocol can
+// confirm injection separately from the subsequent needs_input reply ACK.
+type ImageResponseInjector interface {
+	InjectResponseImages(context.Context, string, string, []ImageInput) error
+}
+
 // A runtime may implement the image-response interface while a particular
 // native session has negotiated text-only capabilities (notably ACP).
 // Check this before claiming the durable needs_input response.

@@ -115,12 +115,9 @@ func (a *Adapter) imageNotice(ctx context.Context, u Update, text string) error 
 	if alreadyDelivered {
 		return nil
 	}
-	// The durable checkpoint is committed regardless of Bot API success.
-	if a.isWorkerTopicMessage(message) {
-		_ = a.drainTopicOutbox(ctx)
-	} else {
-		_ = a.drainOutbox(ctx)
-	}
+	// No network IO here: imageNotice runs under the bounded image slot.
+	// The lane will flush the durable warning independently after releasing
+	// that slot; crash recovery uses the normal outbox loops.
 	return nil
 }
 
@@ -378,6 +375,25 @@ func (a *Adapter) drainImageLane(ctx context.Context, lane string) error {
 		}
 		if err := a.processImageWithSlot(ctx, next); err != nil {
 			return err
+		}
+		// processImageWithSlot has released its permit. A terminal failure
+		// already removed this image and persisted its warning atomically.
+		a.mu.Lock()
+		terminal := true
+		for _, queued := range a.state.PendingImages {
+			if queued.ID == next.ID {
+				terminal = false
+				break
+			}
+		}
+		a.mu.Unlock()
+		if terminal {
+			warning := OutgoingMessage{ChatID:next.Message.ChatID, ThreadID:next.Message.ThreadID}
+			if a.isWorkerTopicMessage(warning) {
+				_ = a.drainTopicOutbox(ctx)
+			} else {
+				_ = a.drainOutbox(ctx)
+			}
 		}
 		a.mu.Lock()
 		if len(a.state.PendingImages) != 0 {

@@ -926,8 +926,18 @@ func (s *acpSession) SupportsImageResponse() bool { return s.imageSupported }
 // the negotiated multimodal steering channel first, and acknowledge the
 // pending interaction ONLY if the native turn confirms injection.
 func (s *acpSession) RespondImages(ctx context.Context, requestID, response string, images []ImageInput) error {
+	if err := s.InjectResponseImages(ctx, requestID, response, images); err != nil {
+		return err
+	}
+	return s.Respond(ctx, requestID, response)
+}
+
+// InjectResponseImages only performs ACP multimodal steering. Its confirmed
+// outcome is durably recorded by ExecutionNode before the textual native ACK.
+// A replay may call Respond, but must never steer the same image again.
+func (s *acpSession) InjectResponseImages(ctx context.Context, requestID, response string, images []ImageInput) error {
 	if len(images) == 0 {
-		return s.Respond(ctx, requestID, response)
+		return nil
 	}
 	if !s.imageSupported {
 		return errors.New("image_input_unsupported: ACP agent does not support native image blocks")
@@ -953,7 +963,7 @@ func (s *acpSession) RespondImages(ctx context.Context, requestID, response stri
 	if !injected {
 		return errors.New("image_input_unsupported: ACP did not inject image blocks into the native turn")
 	}
-	return s.Respond(ctx, requestID, response)
+	return nil
 }
 
 func (s *acpSession) Respond(ctx context.Context, requestID, response string) error {
