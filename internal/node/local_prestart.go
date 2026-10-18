@@ -84,6 +84,7 @@ func (n *LocalNode) CancelLocalAttempt(ctx context.Context,workerRef,attemptID s
 	if key==""{key="worker:"+workerRef}
 	n.mu.Lock()
 	pending:=n.prestarts[key]
+	if pending!=nil && pending.workerRef==workerRef && pending.stage=="canceled" {n.mu.Unlock();return true,nil}
 	if pending!=nil && pending.workerRef==workerRef && pending.stage=="preparing" {
 		if n.prestartStore!=nil && attemptID!=""{
 			ok,err:=n.prestartStore.CancelLocalPrestart(attemptID,workerRef)
@@ -106,6 +107,13 @@ func (n *LocalNode) CancelLocalAttempt(ctx context.Context,workerRef,attemptID s
 	defer unlock()
 	n.mu.Lock()
 	session,ok:=n.workers[workerRef]
+	if attemptID!="" {
+		if checkpoint,has:=n.checkpoints[attemptID];has {
+			ok=ok && checkpoint.request.WorkerRef==workerRef
+		} else if n.prestartStore!=nil && n.prestartStore.LocalPrestartState(attemptID)=="canceled" {
+			n.mu.Unlock();return true,nil
+		}
+	}
 	n.mu.Unlock()
 	if !ok{return false,nil}
 	return true,session.Cancel(ctx)
