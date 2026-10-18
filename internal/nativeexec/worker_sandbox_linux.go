@@ -222,18 +222,16 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
     if entry.Type()&os.ModeSymlink != 0 { return fmt.Errorf("worker sandbox: symlink in CLI package: %s", path) }
     if entry.IsDir() { return nil }
     if !entry.Type().IsRegular() { return fmt.Errorf("worker sandbox: unsupported CLI package asset: %s", path) }
-    // A package tree is not a trust boundary: adjacent .txt/.dat may be
-    // Server SQLite/HMAC material under a legitimate user install. Grant
-    // executable code formats and only explicitly recognized static assets.
-    // Unknown data resources need a reviewed manifest update, never a
-    // wildcard extension rule or whole-directory mount.
-    extension := strings.ToLower(filepath.Ext(path))
-    switch extension {
-    case ".js", ".mjs", ".cjs", ".wasm", ".node", ".map", ".css", ".html":
-    case ".txt", ".dat":
-      // Explicit T09 native CLI runtime asset allowlist, NOT all .txt/.dat.
-      name := strings.ToLower(filepath.Base(path))
-      if name != "model.txt" && name != "model.dat" { return nil }
+    // Installed package directories are not security principals: a Server
+    // secret may have any extension, including executable .js/.wasm.
+    // Only explicitly audited relative paths are allowed, never extension
+    // globs or arbitrary same-extension files in a package subtree.
+    rel, relErr := filepath.Rel(packageRoot, path)
+    if relErr != nil { return relErr }
+    switch filepath.ToSlash(rel) {
+    case "index.js", "dist/index.js", "bin/codex.js",
+         "bin/claude.js", "bin/opencode.js", "model.txt", "model.dat",
+         "assets/model.txt", "assets/model.dat":
     default:
       return nil
     }
