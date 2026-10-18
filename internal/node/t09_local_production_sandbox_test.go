@@ -52,8 +52,8 @@ func TestT09ProductionLocalNodeNativeStartAndResumeDenySameUIDServerSecrets(t *t
  secret:=filepath.Join(server,"secretary.db")
  if err:=os.WriteFile(secret,[]byte("SQLITE-CONTAINS-NODE-HMAC"),0600);err!=nil{t.Fatal(err)}
  if err:=os.WriteFile(filepath.Join(server,"transport.secret"),[]byte("HMAC-SIGNING-SECRET"),0600);err!=nil{t.Fatal(err)}
- runtime:=&t09NativeSandboxRuntime{secret:secret}
- local:=NewLocal(runtime)
+ harness:=&t09NativeSandboxRuntime{secret:secret}
+ local:=NewLocal(harness)
  defer local.Close()
  if err:=local.SetNativeWorkerSandbox(nativeexec.WorkerSandbox{ProtectedDir:protected,ServerDataDir:server});err!=nil{t.Fatal(err)}
  start:=StartRequest{WorkerRef:"t09-native-local",AttemptID:"t09-start",Workspace:workspace}
