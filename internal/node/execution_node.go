@@ -42,10 +42,31 @@ type ExecutionNode struct {
 	workspaces        map[string]string
 	mcpServers        []MCPServer
 	artifactFetcher    ArtifactFetcher
+	// nativeLifetime is the Node process lifetime, not an individual
+	// WebSocket connection or an individual Dispatch command.
+	nativeLifetime context.Context
 }
 
 func NewExecutionNode(node core.NodeReference, runtime Runtime, store *LocalStore) *ExecutionNode {
 	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, activitySequences: map[string]uint64{}, workspaces: map[string]string{}}
+}
+
+// SetNativeLifetime binds accepted native sessions to the Node daemon
+// lifetime. Before durable handoff Artifact preparation remains cancellable
+// by the connection/command context; after handoff a socket reconnect must
+// not cancel nativeexec.CommandContext (Claude/Codex/OpenCode).
+func (n *ExecutionNode) SetNativeLifetime(ctx context.Context) {
+	n.mu.Lock()
+	n.nativeLifetime=ctx
+	n.mu.Unlock()
+}
+func (n *ExecutionNode) nativeStartContext(commandCtx context.Context) context.Context {
+	n.mu.Lock()
+	lifetime:=n.nativeLifetime
+	n.mu.Unlock()
+	if lifetime!=nil{return lifetime}
+	// Preserve existing direct-ExecutionNode callers that own their context.
+	return commandCtx
 }
 
 func (n *ExecutionNode) SetMCPServers(servers []MCPServer) error {
@@ -251,6 +272,9 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		if outcome,ok:=n.beforeNativeHandoff(ctx,Command{Kind:CommandDispatch,Dispatch:command});ok{return outcome}
 		return failedOutcome(Command{Kind:CommandDispatch,Dispatch:command},"native_handoff_record_failed",e.Error())
 	}
+	// Irreversible boundary has been persisted. Native session and initial
+	// prompt now live across WebSocket reconnections.
+	nativeCtx:=n.nativeStartContext(ctx)
 	var session Session
 	if continuing {
 		mapping, mappingErr := n.continuationMapping(command.Envelope, command.Envelope.PreviousAttemptID)
@@ -259,12 +283,12 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 		}
 		request.DeferInitialPrompt = true
-		session, err = resumeSameIdentity(ctx, resumer, request, mapping.RuntimeSessionID)
+		session, err = resumeSameIdentity(nativeCtx, resumer, request, mapping.RuntimeSessionID)
 	} else {
 		if n.store.hasWorkerMapping(command.Envelope.WorkerRef) {
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 		}
-		session, err = n.runtime.Start(ctx, request)
+		session, err = n.runtime.Start(nativeCtx, request)
 	}
 	if err != nil {
 		if code, message, ok := managedProfileFailure(err); ok {
@@ -565,7 +589,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		if outcome,ok:=n.beforeNativeHandoff(ctx,Command{Kind:CommandResume,Resume:command});ok{return outcome}
 		return failedOutcome(Command{Kind:CommandResume,Resume:command},"native_handoff_record_failed",e.Error())
 	}
-	session, err := resumeSameIdentity(ctx, resumer, request, mapping.RuntimeSessionID)
+	session, err := resumeSameIdentity(n.nativeStartContext(ctx), resumer, request, mapping.RuntimeSessionID)
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 	}
@@ -697,7 +721,7 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 		return nil, ErrRuntimeSessionUnavailable
 	}
 	request.Profile = profile
-	session, err := resumeSameIdentity(ctx, resumer, request, mapping.RuntimeSessionID)
+	session, err := resumeSameIdentity(n.nativeStartContext(ctx), resumer, request, mapping.RuntimeSessionID)
 	if err != nil {
 		return nil, ErrRuntimeSessionUnavailable
 	}

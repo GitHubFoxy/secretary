@@ -54,6 +54,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 	execution := NewExecutionNode(d.Identity.Node, d.Runtime, d.Store)
+	// Unlike serveConnection's commandCtx, this context survives WebSocket
+	// reconnects and ends only when the daemon is actually stopped.
+	execution.SetNativeLifetime(ctx)
 	execution.SetArtifactFetcher(d.Identity.FetchArtifact)
 	if err := execution.SetMCPServers(d.MCPServers); err != nil {
 		return err
