@@ -36,6 +36,6 @@ jobs:
         run: |
           npm install --prefix "$RUNNER_TEMP/t09-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.163.0
           sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0
-          sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0-linux-x64
+          sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0-linux-x64 @openai/codex-linux-x64
       - name: Start, persist, and resume the SAME Codex session in native sandbox
         run: go test ./internal/nativeexec -run '^TestT09RealCodexPersistedSessionResume$' -count=1 -v -timeout 120s
