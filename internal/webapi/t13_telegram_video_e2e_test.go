@@ -242,6 +242,20 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
  if counts["100:"]!=1||counts["-200:"]!=1||counts["-200:77"]!=1{
   t.Fatalf("Topic native Result projections are missing or duplicated: %+v",counts)
  }
+ // Simulate bridge reconnect after a fully acknowledged terminal Result.
+ // Replaying the same durable Server stream must not emit any projection.
+ reconnected,err:=telegram.New(telegram.Config{StatePath:state,OwnerChatID:100,GroupChatID:&group},transport,
+  &telegram.HTTPServerClient{BaseURL:server.URL,Credential:"t13-secret"})
+ if err!=nil{t.Fatal(err)}
+ if _,err:=telegram.RelayCoreEventsOnce(ctx,store,reconnected,relay);err!=nil{t.Fatal(err)}
+ if err:=reconnected.SyncWorkerTopics(ctx);err!=nil{t.Fatal(err)}
+ select{
+ case projection:=<-delivered:
+  if strings.Contains(projection.text,"T13 topic native Worker analyzed sampled video"){
+   t.Fatalf("reconnect duplicated terminal projection: %+v",projection)
+  }
+ default:
+ }
  if err:=adapter.HandleUpdate(ctx,topic[0]);err!=nil{t.Fatal(err)}
  afterTopicRestart,err:=telegram.New(telegram.Config{StatePath:state,OwnerChatID:100,GroupChatID:&group},transport,
   &telegram.HTTPServerClient{BaseURL:server.URL,Credential:"t13-secret"})
