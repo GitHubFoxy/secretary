@@ -203,6 +203,8 @@ func TestT09CLIAssetManifestExcludesIndependentServerJSONAndExtensionless(t *tes
   "model.dat":"ASSET-OK",
   "runtime.js":"module.exports = true",
   "server-secret.json":"SERVER-HMAC-JSON",
+   "secret.dat":"SERVER-HMAC-DAT",
+   "secret.txt":"SERVER-HMAC-TXT",
   "transport-token":"SERVER-HMAC-NO-EXT",
  } { if err:=os.WriteFile(filepath.Join(assets,name),[]byte(content),0600);err!=nil{t.Fatal(err)} }
  executable:=filepath.Join(bin,"codex")
@@ -215,7 +217,7 @@ func TestT09CLIAssetManifestExcludesIndependentServerJSONAndExtensionless(t *tes
  for _,name:=range []string{"model.dat","runtime.js"} {
   if !mounts[filepath.Join(assets,name)] {t.Fatalf("runtime asset %q not mounted",name)}
  }
- for _,name:=range []string{"server-secret.json","transport-token"} {
+ for _,name:=range []string{"server-secret.json","transport-token","secret.dat","secret.txt"} {
   if mounts[filepath.Join(assets,name)] {t.Fatalf("Server secret %q exposed to Worker",name)}
  }
 }
@@ -224,7 +226,7 @@ func TestT09NodeModulesPackageExcludesServerJSONAndExtensionless(t *testing.T) {
  root:=t.TempDir()
  packageDir:=filepath.Join(root,"node_modules","@openai","codex")
  if err:=os.MkdirAll(packageDir,0700);err!=nil{t.Fatal(err)}
- for name:=range map[string]bool{"index.js":true,"secret.json":true,"secret":true} {
+ for name:=range map[string]bool{"index.js":true,"secret.json":true,"secret":true,"secret.dat":true,"secret.txt":true,"model.dat":true} {
   if err:=os.WriteFile(filepath.Join(packageDir,name),[]byte(name),0600);err!=nil{t.Fatal(err)}
  }
  args:=[]string{}
@@ -232,7 +234,8 @@ func TestT09NodeModulesPackageExcludesServerJSONAndExtensionless(t *testing.T) {
  seen:=map[string]bool{}
  for i:=0;i+2<len(args);i++ {if args[i]=="--ro-bind"{seen[args[i+2]]=true}}
  if !seen[filepath.Join(packageDir,"index.js")] {t.Fatal("missing package JS runtime")}
- for _,name:=range []string{"secret.json","secret"} {
+ if !seen[filepath.Join(packageDir,"model.dat")] {t.Fatal("declared model.dat runtime asset missing")}
+ for _,name:=range []string{"secret.json","secret","secret.dat","secret.txt"} {
   if seen[filepath.Join(packageDir,name)] {t.Fatalf("unexpected secret mount: %s",name)}
  }
 }

@@ -222,12 +222,18 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
     if entry.Type()&os.ModeSymlink != 0 { return fmt.Errorf("worker sandbox: symlink in CLI package: %s", path) }
     if entry.IsDir() { return nil }
     if !entry.Type().IsRegular() { return fmt.Errorf("worker sandbox: unsupported CLI package asset: %s", path) }
-    // Allow only executable package code and known non-secret static resources.
-    // JSON (including arbitrary Server state) and extensionless files are
-    // never guessed to be runtime assets. Unsupported installs fail closed.
-    switch strings.ToLower(filepath.Ext(path)) {
-    case ".js", ".mjs", ".cjs", ".wasm", ".node", ".map",
-         ".txt", ".dat", ".css", ".html":
+    // A package tree is not a trust boundary: adjacent .txt/.dat may be
+    // Server SQLite/HMAC material under a legitimate user install. Grant
+    // executable code formats and only explicitly recognized static assets.
+    // Unknown data resources need a reviewed manifest update, never a
+    // wildcard extension rule or whole-directory mount.
+    extension := strings.ToLower(filepath.Ext(path))
+    switch extension {
+    case ".js", ".mjs", ".cjs", ".wasm", ".node", ".map", ".css", ".html":
+    case ".txt", ".dat":
+      // Explicit T09 native CLI runtime asset allowlist, NOT all .txt/.dat.
+      name := strings.ToLower(filepath.Base(path))
+      if name != "model.txt" && name != "model.dat" { return nil }
     default:
       return nil
     }
