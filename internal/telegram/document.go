@@ -104,7 +104,38 @@ func documentFailure(kind documentFailureKind,err error)error{
 // exactly-once delivery. Telegram offers neither an idempotency key for
 // sendDocument nor a query for a lost response. A warning directs the owner
 // to inspect the chat and explicitly request resend if necessary.
-func(a *Adapter)finishDocumentDelivery(message OutgoingMessage,reason string)error{
+// OwnerArtifactLink is a Web/PWA link protected by the existing owner session.
+// It is deliberately not a public signed URL or the adapter's bearer token.
+type OwnerArtifactLink interface {
+ OwnerArtifactDownloadURL(context.Context,string)(string,error)
+}
+func(c *HTTPServerClient)OwnerArtifactDownloadURL(ctx context.Context,id string)(string,error){
+ if !strings.HasPrefix(id,"art_"){return "",errors.New("invalid output Artifact")}
+ // The internal Server validates existence/ownership before a Telegram
+ // message advertises the owner-login-protected Web download URL.
+ req,err:=http.NewRequestWithContext(ctx,http.MethodGet,strings.TrimRight(c.BaseURL,"/")+"/v1/internal/telegram/document/"+url.PathEscape(id),nil)
+ if err!=nil{return "",err}
+ req.Header.Set("Authorization","Bearer "+c.Credential)
+ resp,err:=c.client().Do(req)
+ if err!=nil{return "",err}
+ defer resp.Body.Close()
+ if resp.StatusCode!=http.StatusOK{return "",fmt.Errorf("output Artifact unavailable HTTP %d",resp.StatusCode)}
+ origin:=strings.TrimRight(strings.TrimSpace(c.OwnerWebBaseURL),"/")
+ if origin==""{origin=strings.TrimRight(c.BaseURL,"/")}
+ parsed,err:=url.Parse(origin)
+ if err!=nil||parsed.Host==""||(parsed.Scheme!="https"&&parsed.Scheme!="http")||parsed.User!=nil||parsed.RawQuery!=""||parsed.Fragment!=""{
+  return "",errors.New("owner Web base URL must be a clean HTTP(S) origin")
+ }
+ // No secret: /v1/artifacts/{id} requires an owner-authenticated Web/PWA session.
+ return origin+"/v1/artifacts/"+url.PathEscape(id)+"?download=1",nil
+}
+func(a *Adapter)finishDocumentDelivery(ctx context.Context,message OutgoingMessage,reason string)error{
+ if source,ok:=a.server.(OwnerArtifactLink);ok && message.DocumentArtifactID!="" {
+  link,err:=source.OwnerArtifactDownloadURL(ctx,message.DocumentArtifactID)
+  if err==nil && link!=""{
+   reason += "\nСкачать файл через авторизованный Web/PWA: "+link+" (требуется вход владельца)."
+  }
+ }
  notice:=OutgoingMessage{ChatID:message.ChatID,ThreadID:message.ThreadID,
   Identity:"file-delivery-notice:"+message.Identity,Text:reason}
  a.mu.Lock()
