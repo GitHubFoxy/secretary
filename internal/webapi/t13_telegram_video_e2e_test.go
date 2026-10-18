@@ -67,6 +67,12 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
   if !strings.Contains(body,"Telegram video (update 500")||!strings.Contains(body,"Describe the sampled video"){
    return fmt.Errorf("automatic Secretary routing lost Telegram ingress context")
   }
+  reply,e:=json.Marshal(map[string]any{
+   "text":"Video request received.",
+   "secretary_turn_id":turnID,"input_id":inputID,
+  })
+  if e!=nil{return e}
+  if _,e=tool.Call(ctx,"reply_to_user",reply);e!=nil{return e}
   args,e:=json.Marshal(map[string]any{
    "intent":"Describe the sampled video",
    "idempotency_key":inputID,
