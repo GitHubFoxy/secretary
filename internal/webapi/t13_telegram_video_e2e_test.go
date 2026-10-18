@@ -90,7 +90,9 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
   ReplyContractVersion:core.SecretaryReplyContractAddressedV1}
  profile.Hash=node.HashProfile(profile.Content,nil,profile.Model,profile.Reasoning)
  secRuntime.AttachProfile(func()node.ManagedProfile{return profile})
- secRuntime.AttachMCP("fixture",t.TempDir())
+ dataDir:=t.TempDir()
+ if _,e:=store.SaveUserDocument(ctx,filepath.Join(dataDir,"user.md"),"one owner");e!=nil{t.Fatal(e)}
+ secRuntime.AttachMCP("fixture",dataDir)
  if err:=secRuntime.Start(ctx);err!=nil{t.Fatal(err)}
  defer secRuntime.Stop(context.Background())
  api.AttachSecretary(secRuntime)
@@ -174,6 +176,7 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
  select{case native:=<-runtime.seen:
   if len(native.Images)!=2||!strings.Contains(native.Task,"Describe the sampled video") {t.Fatalf("native Worker did not see frames: %+v",native)}
  case e:=<-secretaryErrors:t.Fatalf("automatic Secretary MCP routing: %v",e)
+ case e:=<-secRuntime.Errors():t.Fatalf("Secretary runtime failed before routing: %v",e)
  case <-ctx.Done():t.Fatal("Worker never received frames")}
  for {
   entries,e:=store.EntriesTail(ctx,conversation.ID,0,40)
