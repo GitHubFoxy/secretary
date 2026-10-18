@@ -4,6 +4,10 @@ package nativeexec
 
 import (
 	"debug/elf"
+ "crypto/sha256"
+ "encoding/hex"
+ "encoding/json"
+ "io"
 	"errors"
 	"fmt"
 	"os"
@@ -212,33 +216,78 @@ func mountRuntimeFile(wrapped *[]string, path string) error {
   return nil
 }
 
-// A CLI package may use adjacent code/assets. Enumerate individual files,
-// rejecting symlink traversal; do not share any directory, even read-only.
+// A root-provisioned, immutable manifest records byte digests from a
+// verified provider distribution. The runtime never trusts a manifest
+// obtained from the user-writable package tree.
+type cliRuntimeManifest struct {
+ Provider string `json:"provider"`
+ Version string `json:"version"`
+ Files map[string]string `json:"files"`
+}
+
 func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
-  const maxFiles = 8192
-  count := 0
-  return filepath.WalkDir(packageRoot, func(path string, entry os.DirEntry, err error) error {
-    if err != nil { return err }
-    if entry.Type()&os.ModeSymlink != 0 { return fmt.Errorf("worker sandbox: symlink in CLI package: %s", path) }
-    if entry.IsDir() { return nil }
-    if !entry.Type().IsRegular() { return fmt.Errorf("worker sandbox: unsupported CLI package asset: %s", path) }
-    // Installed package directories are not security principals: a Server
-    // secret may have any extension, including executable .js/.wasm.
-    // Only explicitly audited relative paths are allowed, never extension
-    // globs or arbitrary same-extension files in a package subtree.
-    rel, relErr := filepath.Rel(packageRoot, path)
-    if relErr != nil { return relErr }
-    switch filepath.ToSlash(rel) {
-    case "index.js", "dist/index.js", "bin/codex.js",
-         "bin/claude.js", "bin/opencode.js", "model.txt", "model.dat",
-         "assets/model.txt", "assets/model.dat":
-    default:
-      return nil
-    }
-    count++
-    if count > maxFiles { return errors.New("worker sandbox: CLI package exceeds bounded runtime manifest") }
-    return mountRuntimeFile(wrapped, path)
-  })
+ packageName := filepath.Base(packageRoot)
+ parent := filepath.Base(filepath.Dir(packageRoot))
+ if strings.HasPrefix(parent, "@") { packageName = parent + "/" + packageName }
+ provider := ""
+ switch packageName {
+ case "@openai/codex": provider="codex"
+ case "@anthropic-ai/claude-code": provider="claude"
+ case "opencode-ai": provider="opencode"
+ default:
+  // Other CLI layouts must be reviewed and provisioned explicitly.
+  return fmt.Errorf("worker sandbox: unsupported CLI package %q",packageName)
+ }
+ packageJSON, err:=os.ReadFile(filepath.Join(packageRoot,"package.json"))
+ if err!=nil{return fmt.Errorf("worker sandbox: package identity missing: %w",err)}
+ var metadata struct {Name string `json:"name"`; Version string `json:"version"`}
+ if err=json.Unmarshal(packageJSON,&metadata);err!=nil{return err}
+ if metadata.Name!=packageName || metadata.Version=="" || strings.ContainsAny(metadata.Version,"/\\\\.") && strings.Contains(metadata.Version,"..") {
+   return errors.New("worker sandbox: invalid CLI package identity")
+ }
+ // Root ownership is mandatory even when the Node and Server use the same UID.
+ // Provision this outside user-writable npm caches, with a package archive
+ // verified against its published registry integrity before hashing files.
+ manifestPath:=filepath.Join("/etc/secretary/cli-manifests",provider,metadata.Version+".json")
+ info,err:=os.Lstat(manifestPath)
+ if err!=nil{return fmt.Errorf("worker sandbox: trusted CLI provenance unavailable: %w",err)}
+ stat,ok:=info.Sys().(*syscall.Stat_t)
+ if !ok || stat.Uid!=0 || info.Mode()&os.ModeSymlink!=0 || info.Mode().Perm()&022!=0 {
+   return errors.New("worker sandbox: untrusted CLI provenance manifest")
+ }
+ bytes,err:=os.ReadFile(manifestPath);if err!=nil{return err}
+ var manifest cliRuntimeManifest
+ if err=json.Unmarshal(bytes,&manifest);err!=nil{return err}
+ if manifest.Provider!=packageName || manifest.Version!=metadata.Version || len(manifest.Files)==0 || len(manifest.Files)>8192 {
+   return errors.New("worker sandbox: CLI provenance identity or file count mismatch")
+ }
+ // Only signed-off paths in the published package are allowed. A malicious
+ // same-extension file, including transport-secret.js or .wasm, cannot enter.
+ for rel,expected:=range manifest.Files {
+   if rel=="" || filepath.IsAbs(rel) || filepath.Clean(rel)!=rel || rel==".." || strings.HasPrefix(rel,"../") ||
+     strings.Contains(rel,"\\\\") || len(expected)!=64 {
+      return errors.New("worker sandbox: invalid CLI manifest entry")
+   }
+   file:=filepath.Join(packageRoot,rel)
+   info,err:=os.Lstat(file);if err!=nil{return err}
+   if !info.Mode().IsRegular(){return errors.New("worker sandbox: nonregular CLI asset")}
+   fd,err:=os.Open(file);if err!=nil{return err}
+   digest:=sha256.New()
+   _,copyErr:=io.Copy(digest,io.LimitReader(fd,128<<20))
+   closeErr:=fd.Close()
+   if copyErr!=nil{return copyErr};if closeErr!=nil{return closeErr}
+   wanted,err:=hex.DecodeString(expected)
+   if err!=nil || !equalDigests(digest.Sum(nil),wanted){return fmt.Errorf("worker sandbox: CLI package content mismatches trusted manifest: %s",rel)}
+   if err:=mountRuntimeFile(wrapped,file);err!=nil{return err}
+ }
+ return nil
+}
+
+func equalDigests(a,b []byte) bool {
+ if len(a)!=len(b){return false}
+ var value byte
+ for i:=range a { value |= a[i]^b[i] }
+ return value==0
 }
 
 // Recursively expose the ELF interpreter and DT_NEEDED shared libraries as
