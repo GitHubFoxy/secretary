@@ -21,19 +21,15 @@ $WorkerHome=[IO.Path]::GetFullPath($WorkerHome)
 if ([string]::IsNullOrWhiteSpace($Workspace)) { $Workspace=(Join-Path $WorkerHome 'workspaces') }
 $Workspace=[IO.Path]::GetFullPath($Workspace)
 if ([string]::IsNullOrWhiteSpace($NodeBinary)) {
- $found=Get-Command 'secretary-node.exe' -ErrorAction SilentlyContinue
- if ($found) { $NodeBinary=$found.Source }
- else {
-  $NodeBinary=Join-Path $env:LOCALAPPDATA 'Secretary\bin\secretary-node.exe'
-  if (-not (Test-Path -LiteralPath $NodeBinary -PathType Leaf)) {
-   $go=Get-Command go -ErrorAction SilentlyContinue
-   if (-not $go) { throw 'Windows Node installer requires Go or an existing secretary-node.exe; use -NodeBinary.' }
-   New-Item -ItemType Directory -Path (Split-Path $NodeBinary -Parent) -Force | Out-Null
-   Push-Location $repositoryRoot
-   try { & go build -o $NodeBinary ./cmd/secretary-node; if ($LASTEXITCODE -ne 0) { throw 'Windows Node build failed' } }
-   finally { Pop-Location }
-  }
- }
+ # A repeat install is an upgrade: compile this checkout even when an older
+ # secretary-node.exe already exists on PATH or under LocalAppData.
+ $go=Get-Command go -ErrorAction SilentlyContinue
+ if (-not $go) { throw 'Windows Node source install/upgrade requires Go; otherwise supply an already-updated -NodeBinary.' }
+ $NodeBinary=Join-Path $env:LOCALAPPDATA 'Secretary\bin\secretary-node.exe'
+ New-Item -ItemType Directory -Path (Split-Path $NodeBinary -Parent) -Force | Out-Null
+ Push-Location $repositoryRoot
+ try { & go build -o $NodeBinary ./cmd/secretary-node; if ($LASTEXITCODE -ne 0) { throw 'Windows Node build failed' } }
+ finally { Pop-Location }
 }
 $NodeBinary=(Resolve-Path -LiteralPath $NodeBinary).Path
 $arguments=@{
