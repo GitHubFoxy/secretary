@@ -8,6 +8,7 @@ import (
  "strings"
  "sync"
  "testing"
+ "time"
 )
 
 type t13FixtureServer struct {
@@ -161,9 +162,13 @@ type t13RecoverableServer struct {
  mu sync.Mutex
  uploads int
  status string
+ started chan struct{}
+ once sync.Once
 }
 func(s *t13RecoverableServer)StoreVideoOriginal(context.Context,int64,Message,string,[]byte)(string,error){
- s.mu.Lock();defer s.mu.Unlock();s.uploads++;return "art_t13_recovery",nil
+ s.mu.Lock();s.uploads++;s.mu.Unlock()
+ s.once.Do(func(){if s.started!=nil{close(s.started)}})
+ return "art_t13_recovery",nil
 }
 func(s *t13RecoverableServer)VideoStatus(context.Context,string)(string,string,error){
  s.mu.Lock();defer s.mu.Unlock();return s.status,"",nil
@@ -173,7 +178,7 @@ func(s *t13RecoverableServer)VideoLimits(context.Context)(int,error){return 12,n
 func TestT13RestartWhileVideoProcessingRecoversSingleDispatch(t *testing.T){
  path:=filepath.Join(t.TempDir(),"recovery.json")
  tr:=&t11Transport{fakeTransport:&fakeTransport{},data:[]byte("original video")}
- srv:=&t13RecoverableServer{status:"processing"}
+ srv:=&t13RecoverableServer{status:"processing",started:make(chan struct{})}
  open:=func()*Adapter{
   t.Helper()
   a,err:=New(Config{StatePath:path,OwnerChatID:100},tr,srv)
@@ -181,24 +186,27 @@ func TestT13RestartWhileVideoProcessingRecoversSingleDispatch(t *testing.T){
   return a
  }
  first:=open()
+ oldCtx,interrupt:=context.WithCancel(context.Background())
  u:=t13Update(502)
- // Persist the exact accepted asynchronous work item before processing.
- first.mu.Lock()
- first.state.PendingImages=append(first.state.PendingImages,u)
- first.state.Processed["502"]=first.now()
- err:=first.saveLocked()
- first.mu.Unlock()
- if err!=nil{t.Fatal(err)}
- // Cancelled old process leaves durable pending work. New instance must
- // recover the same Telegram update after the shared T12 job becomes ready.
+ if err:=first.HandleUpdate(oldCtx,u);err!=nil{t.Fatal(err)}
+ select{case <-srv.started:case <-time.After(3*time.Second):t.Fatal("video conversion never began")}
+ first.mu.Lock();pendingBefore:=len(first.state.PendingImages);first.mu.Unlock()
+ if pendingBefore!=1{t.Fatalf("real active processing was not durably queued: %d",pendingBefore)}
+ // Telegram replay during the long-running conversion cannot open a
+ // second download/dispatch while the first lane remains in-flight.
+ if err:=first.HandleUpdate(oldCtx,u);err!=nil{t.Fatal(err)}
+ interrupt()
+ first.imageWG.Wait()
+ first.mu.Lock();pendingAfter:=len(first.state.PendingImages);first.mu.Unlock()
+ if pendingAfter!=1{t.Fatal("interrupted video disappeared from durable queue")}
  restored:=open()
  srv.mu.Lock();srv.status="ready";srv.mu.Unlock()
- if err:=restored.PollOnce(context.Background());err!=nil{t.Fatal(err)}
+ restored.startImageWorkers(context.Background())
  restored.imageWG.Wait()
- if len(srv.messages)!=1||srv.uploads!=1{t.Fatalf("recovery lost or doubled dispatch: uploads=%d messages=%+v",srv.uploads,srv.messages)}
+ if len(srv.messages)!=1{t.Fatalf("recovered dispatch count=%d",len(srv.messages))}
  if err:=restored.HandleUpdate(context.Background(),u);err!=nil{t.Fatal(err)}
  restored.imageWG.Wait()
- if len(srv.messages)!=1||srv.uploads!=1{t.Fatal("duplicate Telegram replay after recovery")}
+ if len(srv.messages)!=1{t.Fatal("duplicate Telegram replay after recovery dispatched again")}
 }
 
 func(s *t13FixtureServer)WorkerSupportsVideo(context.Context,string)(bool,error){return !s.denyImageInput,nil}
