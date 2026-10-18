@@ -61,6 +61,7 @@ type OutgoingMessage struct {
 	ParseMode          string `json:"parse_mode,omitempty"`
 	PlainFallback      bool   `json:"plain_fallback,omitempty"`
 	DisableLinkPreview bool   `json:"disable_link_preview,omitempty"`
+	DocumentArtifactID string `json:"document_artifact_id,omitempty"`
 }
 
 type SentMessage struct{ OutgoingMessage }
@@ -2034,6 +2035,17 @@ func (a *Adapter) drainOutboxKind(ctx context.Context, topicsOnly bool) error {
 	a.mu.Unlock()
 	for _, message := range outbox {
 		if a.isWorkerTopicMessage(message) != topicsOnly {
+			continue
+		}
+		if message.DocumentArtifactID != "" {
+			if err:=a.sendDocumentAttachment(ctx,message);err!=nil{return err}
+			a.mu.Lock()
+			a.state.Outbox=removeOutboxMessage(a.state.Outbox,message)
+			a.markDeliveredLocked(message)
+			a.compactDeliveredLocked()
+			err:=a.saveLocked()
+			a.mu.Unlock()
+			if err!=nil{return err}
 			continue
 		}
 		fences := telegramFenceBlocks(message.Text)
