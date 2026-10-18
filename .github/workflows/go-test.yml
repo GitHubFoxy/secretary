@@ -44,15 +44,12 @@ jobs:
       - name: Diagnose protected official CLI store permissions
         run: |
           namei -l /etc/secretary/cli-store/codex/@openai__codex/0.163.0/bin/codex.js
-          namei -l /etc/secretary/cli-manifests/codex/@openai__codex/0.163.0.json\n          namei -l /etc/secretary/cli-store/codex/@openai__codex-linux-x64/0.163.0-linux-x64/vendor\n          namei -l /etc/secretary/cli-manifests/codex/@openai__codex-linux-x64/0.163.0-linux-x64.json
-      - name: Real Codex package sandbox Start and Resume smoke
+          namei -l /etc/secretary/cli-manifests/codex/@openai__codex/0.163.0.json
+          namei -l /etc/secretary/cli-store/codex/@openai__codex-linux-x64/0.163.0-linux-x64/vendor
+          namei -l /etc/secretary/cli-manifests/codex/@openai__codex-linux-x64/0.163.0-linux-x64.json
+      - name: Native Codex sandbox persisted Start to Resume integration
         env:
           T09_REAL_CODEX: ${{ runner.temp }}/t09-codex/node_modules/@openai/codex/bin/codex.js
-        run: go test ./internal/nativeexec -run TestT09PinnedOfficialCodexStartResume -count=1 -v
-      - name: Real Codex persisted session Start and Resume integration
-        env:
-          T09_REAL_CODEX: ${{ runner.temp }}/t09-codex/node_modules/@openai/codex/bin/codex.js
-        run: go test ./internal/nativeexec -run '^TestT09RealCodexPersistedSessionResume        run: go test ./...
- -count=1 -v
+        run: go test ./internal/nativeexec -run '^TestT09PinnedOfficialCodexStartResume$' -count=1 -v
       - name: Run Go tests
         run: go test ./...
