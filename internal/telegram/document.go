@@ -17,6 +17,13 @@ import(
  "time"
  "github.com/beruseruko/secretary/internal/core"
 )
+type Document struct {
+ FileID string `json:"file_id"`
+ FileUniqueID string `json:"file_unique_id,omitempty"`
+ FileName string `json:"file_name,omitempty"`
+ MimeType string `json:"mime_type,omitempty"`
+ FileSize int64 `json:"file_size,omitempty"`
+}
 type DocumentArtifactStore interface {
  StoreDocumentOriginal(context.Context,int64,Message,string,[]byte)(string,error)
 }
