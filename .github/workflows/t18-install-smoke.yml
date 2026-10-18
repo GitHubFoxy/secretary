@@ -1,0 +1,35 @@
+name: T18 cross-platform fresh terminal installation fixture
+
+on:
+  pull_request:
+    paths:
+      - 'secretary'
+      - 'scripts/t18-install-smoke.sh'
+      - '.github/workflows/t18-install-smoke.yml'
+      - 'internal/config/**'
+      - 'cmd/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server-terminal-setup:
+    name: Fresh Server setup (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install terminal prerequisite on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq zsh
+      - name: Run real build and fake-auth clean owner setup
+        run: bash scripts/t18-install-smoke.sh
