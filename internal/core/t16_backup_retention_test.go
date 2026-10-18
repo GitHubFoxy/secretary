@@ -86,7 +86,7 @@ func TestT16VoiceDeletionPreservesResultReferencedTranscript(t *testing.T){
  if err!=nil{t.Fatal(err)}
  if err=s.RegisterVoiceSource(ctx,owner.ID,source.ID,"shared-voice-key");err!=nil{t.Fatal(err)}
  if err=s.LinkVoiceTranscript(ctx,owner.ID,source.ID,transcript.ID,"shared-voice-key");err!=nil{t.Fatal(err)}
- if _,err=s.db.ExecContext(ctx,"INSERT INTO conversation_entries(id,conversation_id,kind,body,created_at) VALUES(?,?,?,?,?)",newID("entry"),conversation.ID,"system","Referenced derivative artifact://"+transcript.ID,timestamp(s.now()));err!=nil{t.Fatal(err)}
+ if _,err=s.db.ExecContext(ctx,"INSERT INTO conversation_entries(id,conversation_id,seq,kind,body,created_at) VALUES(?,?,(SELECT COALESCE(MAX(seq),0)+1 FROM conversation_entries WHERE conversation_id=?),?,?,?)",newID("entry"),conversation.ID,conversation.ID,"system","Referenced derivative artifact://"+transcript.ID,timestamp(s.now()));err!=nil{t.Fatal(err)}
  if err=s.DeleteOwnerArtifact(ctx,owner.ID,source.ID);err!=nil{t.Fatal(err)}
  if _,bytes,err:=s.ArtifactForPerson(ctx,owner.ID,transcript.ID);err!=nil||string(bytes)!="shared words"{t.Fatalf("shared derivative lost: %q, %v",bytes,err)}
 }
