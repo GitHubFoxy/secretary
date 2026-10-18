@@ -1,0 +1,34 @@
+name: T18 diagnostic baseline Go suite
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/t18-baseline-diagnostic.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  baseline-go:
+    strategy:
+      fail-fast: false
+      matrix:
+        repetition: [1, 2, 3]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      GOFLAGS: -p=1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 6904d4a72fcb675f9484bb6fb1560f06a02d2524
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install video prerequisites
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg
+      - name: Baseline exact unmodified Go suite
+        run: go test ./...
