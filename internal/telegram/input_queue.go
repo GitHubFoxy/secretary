@@ -219,7 +219,7 @@ func (a *Adapter) hasEarlierPendingImageLocked(u Update) bool {
 		return false
 	}
 	for _, image := range a.state.PendingImages {
-		if image.Message != nil && image.Message.ChatID == u.Message.ChatID && image.ID < u.ID {
+		if image.Message != nil && inputLane(image) == inputLane(u) && image.ID < u.ID {
 			return true
 		}
 	}
@@ -227,7 +227,7 @@ func (a *Adapter) hasEarlierPendingImageLocked(u Update) bool {
 	// moved into PendingImages. Do not let later topic text overtake it.
 	for _, pending := range a.state.PendingInputs {
 		if pending.Message != nil && pending.Message.Image != nil &&
-			pending.Message.ChatID == u.Message.ChatID && pending.ID < u.ID {
+			inputLane(pending) == inputLane(u) && pending.ID < u.ID {
 			return true
 		}
 	}

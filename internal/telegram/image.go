@@ -372,12 +372,10 @@ func (a *Adapter) drainImageLane(ctx context.Context, lane string) error {
 		if err != nil {
 			return err
 		}
-		// Completing the image releases messages that were durably blocked
-		// behind it. Other chats never waited for this download.
-		for _, pendingLane := range a.inputLanesForChat(next.Message.ChatID) {
-			if err := a.drainLane(ctx, pendingLane); err != nil {
-				return err
-			}
+		// Only this conversation lane depends on the preceding image.
+		// Other Worker Topics sharing the group chat are independent.
+		if err := a.drainLane(ctx, lane); err != nil {
+			return err
 		}
 	}
 }
