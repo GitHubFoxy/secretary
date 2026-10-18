@@ -143,9 +143,10 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 	if duplicate {
 		if record.State == CommandProcessing {
 			if (command.Kind==CommandResume || command.Kind==CommandDispatch) && n.nativeResumeRunning(command.Metadata().AttemptID,command.Metadata().WorkerRef,command.Metadata().CommandID) {
-				// Same durable command, already handed to the native
-				// provider. A reconnect must never run Resume twice.
-				return acceptedOutcome(command),nil
+				// Same durable command is still running at the provider.
+				// This is NOT terminal acceptance: the original execution
+				// owns the sole final receipt after Resume returns.
+				return CommandOutcome{CommandID:command.Metadata().CommandID,Kind:command.Kind,TurnID:command.Metadata().TurnID,AttemptID:command.Metadata().AttemptID,State:CommandProcessing},nil
 			}
 			if record.Outcome.State == CommandAccepted {
 				if n.liveContinuationReadiness(command, record) {
