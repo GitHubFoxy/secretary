@@ -113,7 +113,7 @@ func TestT12LocalDispatchCanceledBeforeReadyNeverStartsAndStateDurable(t *testin
 	if stage:=reopened.LocalPrestartState(req.AttemptID);stage!="canceled"{
 		t.Fatalf("pre-native cancellation not durable after reopen: %q",stage)
 	}
-	if _,err:=reopened.BeginLocalPrestart(req.AttemptID,req.WorkerRef);!errors.Is(err,ErrLocalPrestartCanceled) {
+	if err:=reopened.BeginLocalPrestart(req.AttemptID,req.WorkerRef);!errors.Is(err,ErrLocalPrestartCanceled) {
 		t.Fatalf("late re-dispatch bypassed canceled checkpoint: %v",err)
 	}
 }
