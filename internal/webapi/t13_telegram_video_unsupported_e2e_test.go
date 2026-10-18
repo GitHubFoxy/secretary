@@ -124,10 +124,10 @@ func TestT13DMTelegramVideoUnsupportedAutoWorkerWarnsBothPersonalProjections(t *
   if source.Kind==core.SecretaryTurnFinishedEvent{out.Kind=source.Kind}
   return out
  }
+ counts:=map[string]int{}
  for {
   if _,err=telegram.RelayCoreEventsOnce(ctx,store,adapter,projection);err!=nil{t.Fatal(err)}
   if err=adapter.Flush(ctx);err!=nil{t.Fatal(err)}
-  counts:=map[string]int{}
   drain:=true
   for drain {select{case m:=<-sent:
    if strings.Contains(m.text,"CapabilityImageInput"){counts[m.chat]++}
