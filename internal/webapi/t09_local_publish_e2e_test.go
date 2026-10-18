@@ -80,7 +80,7 @@ func TestT09LocalWorkerPublishToOwnerDownload(t *testing.T) {
  summary:="Generated archive artifact://"+artifact.ID+" bare URL: /v1/artifacts/"+artifact.ID+"?download=1"
  if _,_,_,err:=store.RecordNodeAttemptOutcome(ctx,core.AttemptOutcomeEnvelope{
   Node:"local",WorkerRef:details.Worker.WorkerRef,AttemptID:details.Attempts[0].ID,
-  TurnID:details.Turns[0].ID,HarnessInstanceID:details.Worker.HarnessInstanceID,
+  TurnID:details.Turns[0].ID,HarnessInstanceID:core.HarnessInstanceID(details.Worker.HarnessInstanceID),
   Status:core.OutcomeSucceeded,Classification:core.OutcomeFinal,Summary:summary,
  });err!=nil{t.Fatal(err)}
  result,err:=store.Phase4Result(ctx,details.Turns[0].ID)

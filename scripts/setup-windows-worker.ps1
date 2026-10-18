@@ -31,8 +31,15 @@ if (Test-Path -LiteralPath $configPath -PathType Leaf) {
  $bytes=New-Object byte[] 30
  [Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
  $password=[Convert]::ToBase64String($bytes).Replace('+','A').Replace('/','B')+'a1!'
- & net user $WorkerUsername $password /add 2>$null | Out-Null
- if ($LASTEXITCODE -ne 0) { throw 'Could not create local Worker user; refusing to overwrite existing credentials.' }
+ # Create through the LocalAccounts API rather than passing a random
+ # password via cmd.exe/net.exe command-line parsing or process arguments.
+ # Fail closed if the host denies non-admin account provisioning.
+ $securePassword=ConvertTo-SecureString $password -AsPlainText -Force
+ try {
+  New-LocalUser -Name $WorkerUsername -Password $securePassword -PasswordNeverExpires -ErrorAction Stop | Out-Null
+ } catch {
+  throw ('Could not create local Worker user; refusing to overwrite existing credentials: ' + $_.Exception.GetType().Name)
+ }
 }
 & icacls $NodeDataDir /deny "$($account):(OI)(CI)R" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Failed to seal Node data ACL' }
