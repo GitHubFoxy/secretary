@@ -60,7 +60,7 @@ sudo python3 scripts/provision-cli-manifest.py codex 0.163.0-linux-x64
 
 Provisioning downloads the official npm archive, checks its SHA-512 against the
 registry's published `dist.integrity`, extracts only regular files into the
-root-owned `/opt/secretary/cli-store/<provider>/<package>/<version>/` tree,
+root-owned `/etc/secretary/cli-store/<provider>/<package>/<version>/` tree,
 and records each file's SHA-256 in a root-owned manifest under
 `/etc/secretary/cli-manifests/`. Provider and exact package identity/version
 must match. For platform-specific distributions, provision their corresponding
