@@ -379,17 +379,27 @@ func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSes
 			return nil, err
 		}
 	}
+	// Serialize only operations for this Worker. A native Resume can block on
+	// provider I/O indefinitely, so never hold the global Node mutex across it.
+	unlock, err := n.lockWorker(ctx, request.WorkerRef)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	if _, exists := n.workers[request.WorkerRef]; exists {
+	_, exists := n.workers[request.WorkerRef]
+	n.mu.Unlock()
+	if exists {
 		return nil, errors.New("node: worker already exists")
 	}
 	session, err := resumer.Resume(ctx, request, runtimeSessionID)
 	if err != nil {
 		return nil, err
 	}
+	n.mu.Lock()
 	n.workers[request.WorkerRef] = session
 	n.activeAttempts[request.WorkerRef] = request.AttemptID
+	n.mu.Unlock()
 	return session, nil
 }
 
