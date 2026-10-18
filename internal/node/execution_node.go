@@ -146,7 +146,7 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 			// the original claim until its provider goroutine commits the
 			// actual outcome; even the handoff-to-completion transition must
 			// not manufacture a terminal receipt.
-			if command.Kind==CommandResume && !record.Replayable && !record.SafePrestart {
+			if command.Kind==CommandResume && record.Outcome.State==CommandProcessing && !record.Replayable && !record.SafePrestart {
 				return CommandOutcome{CommandID:command.Metadata().CommandID,Kind:command.Kind,TurnID:command.Metadata().TurnID,AttemptID:command.Metadata().AttemptID,State:CommandProcessing},nil
 			}
 			if (command.Kind==CommandResume || command.Kind==CommandDispatch) && n.nativeResumeRunning(command.Metadata().AttemptID,command.Metadata().WorkerRef,command.Metadata().CommandID) {
