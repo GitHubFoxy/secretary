@@ -20,6 +20,13 @@ type serverBackupManifest struct {
  Files map[string]string `json:"files"`
 }
 
+// ErrBackupPublishedDurabilityUnconfirmed means destination exists and is complete,
+// but parent-directory fsync failed. Do not retry using the same name blindly.
+var ErrBackupPublishedDurabilityUnconfirmed = errors.New("backup published but durability is unconfirmed")
+
+// Test-only injection at the post-link backup directory-sync boundary.
+var backupPublicationSyncHook func(string) error
+
 // CreateServerBackup writes a consistent SQLite snapshot (including Artifact BLOBs,
 // ownership, results and memory/config records) into a checked archive. The caller
 // must separately supply any external memory/config files as named regular files.
@@ -64,7 +71,8 @@ func (s *Store) CreateServerBackup(ctx context.Context, destination string, extr
  if e=output.Sync();e!=nil{output.Close();return e}
  if e=output.Close();e!=nil{return e}
  if e=os.Link(tmp,destination);e!=nil{return fmt.Errorf("publish backup without overwrite: %w",e)}
- if e=syncBackupDirectory(dir);e!=nil{return fmt.Errorf("sync published backup directory: %w",e)}
+ if backupPublicationSyncHook!=nil { e=backupPublicationSyncHook(dir) } else { e=syncBackupDirectory(dir) }
+ if e!=nil{return fmt.Errorf("%w: %s: %v",ErrBackupPublishedDurabilityUnconfirmed,destination,e)}
  return nil
 }
 
@@ -142,13 +150,12 @@ func RestoreServerBackup(ctx context.Context,archive,dbDestination string,extraD
  if manifest.Version!=1||len(manifest.Files)!=len(targets)||len(entries)!=len(targets)+1||manifest.Files["server.sqlite"]=="" {
   return errors.New("unsupported or incomplete backup manifest")
  }
- staging:=filepath.Join(parent,"."+filepath.Base(destinationDir)+".secretary-restore-staging")
- // Old staging can only be discarded for an offline, unpublished restoration.
- if info,err:=os.Lstat(staging);err==nil {
-  if !info.IsDir()||info.Mode()&os.ModeSymlink!=0{return errors.New("unsafe restore staging path")}
-  if err=os.RemoveAll(staging);err!=nil{return err}
- }else if !errors.Is(err,os.ErrNotExist){return err}
- if err=os.Mkdir(staging,0700);err!=nil{return err}
+ // A unique, securely created directory avoids collisions with user data.
+ // Interrupted, unpublished staging is never assumed to be ours and never
+ // recursively deleted by a subsequent restore. An administrator may inspect
+ // and remove abandoned private directories explicitly.
+ staging,err:=os.MkdirTemp(parent,".secretary-restore-*")
+ if err!=nil{return err}
  defer os.RemoveAll(staging)
  if err:=syncBackupDirectory(parent);err!=nil{return err}
  for name,destName:=range targets{
