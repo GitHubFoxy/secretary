@@ -3,6 +3,8 @@ package webapi
 import (
  "context"
  "errors"
+ "bytes"
+ "fmt"
  "strings"
 
  "github.com/beruseruko/secretary/internal/node"
@@ -45,4 +47,27 @@ func t13SecretaryPromptIdentity(prompt string)(string,string,string,error){
   return "","","",errors.New("invalid Server-issued identity")
  }
  return prompt[:i],strings.TrimPrefix(payload[0],"secretary_turn_id="),strings.TrimPrefix(payload[1],"input_id="),nil
+}
+
+type t13VideoNativeRuntime struct { t12Runtime }
+func(r *t13VideoNativeRuntime)Resume(_ context.Context,_ node.StartRequest,id string)(node.Session,error){
+ if id!="artifact-worker-session"{return nil,fmt.Errorf("unexpected native session %s",id)}
+ return &t13VideoFollowupSession{
+  artifactWorkerSession:&artifactWorkerSession{result:make(chan node.Result,1)},
+  seen:r.seen,
+ },nil
+}
+type t13VideoFollowupSession struct{
+ *artifactWorkerSession
+ seen chan node.StartRequest
+}
+func(s *t13VideoFollowupSession)PromptImages(_ context.Context,prompt string,images []node.ImageInput)error{
+ if len(images)!=2||images[0].MediaType!="image/webp"||images[1].MediaType!="image/webp"||
+ !bytes.Equal(images[0].Data,videoTestWebP)||!bytes.Equal(images[1].Data,videoTestWebP)||
+ !strings.Contains(prompt,"1.000 s")||!strings.Contains(prompt,"Describe the sampled video"){
+  return fmt.Errorf("Telegram Topic native Worker lost video frames/timestamps: images=%d prompt=%q",len(images),prompt)
+ }
+ s.seen<-node.StartRequest{Task:prompt,Images:images}
+ s.result<-node.Result{Status:"succeeded",Summary:"T13 topic native Worker analyzed sampled video"}
+ return nil
 }
