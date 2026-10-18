@@ -105,3 +105,29 @@ func TestT09LinuxExplicitServerDataRootMaskedEvenInsideSharedSystemDirectory(t *
 	}
 	if !seen{t.Fatal("co-located Server SQLite/HMAC state was not masked")}
 }
+
+// Independent Server/Node roots must remain isolated even without the Node
+// knowing the Server's --data-dir. Production layout may put Node and Server
+// under a shared system prefix, but never expose its unselected siblings.
+func TestT09IndependentServerRootNotSharedWithoutServerDataDir(t *testing.T) {
+  root:=t.TempDir()
+  node:=filepath.Join(root,"node","data")
+  workspace:=filepath.Join(root,"workspace")
+  for _, p:=range []string{node,workspace}{if err:=os.MkdirAll(p,0700);err!=nil{t.Fatal(err)}}
+  _,args,err:=sandboxInvocation(WorkerSandbox{ProtectedDir:node,Workspace:workspace},"/bin/sh",nil)
+  if err!=nil{t.Fatal(err)}
+  for i:=0;i+2<len(args);i++ {
+    if args[i]=="--ro-bind" {
+      root:=args[i+1]
+      if root=="/usr/local/lib" || root=="/usr/local/bin" || root=="/usr/local" {
+        t.Fatalf("unselected Server state exposed through broad mount %s",root)
+      }
+    }
+  }
+  // A separate server root under /usr/local/lib/secretary must not be
+  // reachable when the Node was started with an unrelated data directory.
+  ctx:=WithWorkerSandbox(context.Background(),WorkerSandbox{ProtectedDir:node,Workspace:workspace})
+  cmd,err:=CommandContext(ctx,"/bin/sh","-c","test ! -e /usr/local/lib/secretary/secretary.db && test ! -e /usr/local/lib/secretary/hmac.key")
+  if err!=nil{t.Fatal(err)}
+  out,err:=cmd.CombinedOutput();if err!=nil{t.Fatalf("independent Server root leaked: %v %s",err,out)}
+}
