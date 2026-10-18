@@ -42,10 +42,11 @@ type ExecutionNode struct {
 	workspaces        map[string]string
 	mcpServers        []MCPServer
 	artifactFetcher    ArtifactFetcher
+	prestartCancelled map[string]bool
 }
 
 func NewExecutionNode(node core.NodeReference, runtime Runtime, store *LocalStore) *ExecutionNode {
-	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, activitySequences: map[string]uint64{}, workspaces: map[string]string{}}
+	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, activitySequences: map[string]uint64{}, workspaces: map[string]string{}, prestartCancelled:map[string]bool{}}
 }
 
 func (n *ExecutionNode) SetMCPServers(servers []MCPServer) error {
@@ -158,6 +159,17 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 	return stored.Outcome, nil
 }
 
+// dispatchCanceledBeforeStart marks a Cancel received while dependent media
+// was being prepared, before a native session existed. Only this explicit
+// cause, not an unrelated Node disconnect, permits a pre-start Cancel ACK.
+func (n *ExecutionNode) dispatchCanceledBeforeStart(ctx context.Context, command *DispatchCommand) (CommandOutcome,bool) {
+	if !errors.Is(context.Cause(ctx),errWorkerDispatchCanceled) {return CommandOutcome{},false}
+	n.mu.Lock()
+	n.prestartCancelled[command.Metadata.AttemptID]=true
+	n.mu.Unlock()
+	return failedOutcome(Command{Kind:CommandDispatch,Dispatch:command},"canceled_before_handoff","Worker canceled before native session start"),true
+}
+
 func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) CommandOutcome {
 	if command.Envelope.ProjectID == "" && command.Envelope.Workspace != "" {
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "workspace_forbidden", "projectless Workspace must be Node-managed")
@@ -216,6 +228,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	}
 	prepared, images, artifactErr := n.prepareArtifactInput(ctx, workspace, task)
 	if artifactErr != nil {
+		if outcome,ok:=n.dispatchCanceledBeforeStart(ctx,command);ok {return outcome}
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "artifact_unavailable", artifactErr.Error())
 	}
 	if len(images) > 0 && !supportsImageHarness(command.Envelope.HarnessInstance) {
@@ -231,6 +244,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
+	if outcome,ok:=n.dispatchCanceledBeforeStart(ctx,command);ok {return outcome}
 	var session Session
 	if continuing {
 		mapping, mappingErr := n.continuationMapping(command.Envelope, command.Envelope.PreviousAttemptID)
@@ -247,6 +261,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		session, err = n.runtime.Start(ctx, request)
 	}
 	if err != nil {
+		if outcome,ok:=n.dispatchCanceledBeforeStart(ctx,command);ok {return outcome}
 		if code, message, ok := managedProfileFailure(err); ok {
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, code, message)
 		}
@@ -385,6 +400,13 @@ func (w WorkerEnvelope) ProjectSnapshotPathMapping() (core.ProjectPathMapping, b
 func (n *ExecutionNode) cancel(ctx context.Context, command *CancelCommand) CommandOutcome {
 	session, err := n.sessionForCommand(ctx, command.Metadata)
 	if err != nil {
+		n.mu.Lock()
+		prestart:=n.prestartCancelled[command.Metadata.AttemptID]
+		if prestart {delete(n.prestartCancelled,command.Metadata.AttemptID)}
+		n.mu.Unlock()
+		if prestart {
+			return acceptedOutcome(Command{Kind:CommandCancel,Cancel:command})
+		}
 		return failedOutcome(Command{Kind: CommandCancel, Cancel: command}, "runtime_session_unavailable", err.Error())
 	}
 	if err := session.Cancel(ctx); err != nil {

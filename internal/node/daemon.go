@@ -33,6 +33,15 @@ type serverMessage struct {
 	Ack     uint64
 }
 
+// The user can cancel a dispatched Worker before its queued video becomes ready.
+var errWorkerDispatchCanceled = errors.New("worker: dispatch canceled before native start")
+
+type runningNodeCommand struct {
+	kind CommandKind
+	attemptID string
+	interrupt context.CancelCauseFunc
+}
+
 type commandCompletion struct {
 	command Command
 	outcome CommandOutcome
@@ -124,6 +133,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 	defer stopCommands()
 	pendingCommands := make([]Command, 0, 32)
 	runningWorkers := make(map[string]bool)
+	runningDetails := make(map[string]runningNodeCommand)
 	runningCommands := 0
 	commandWorkerKey := func(command Command) string {
 		worker := command.Metadata().WorkerRef
@@ -146,10 +156,14 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			}
 			command := pendingCommands[index]
 			pendingCommands = append(pendingCommands[:index], pendingCommands[index+1:]...)
-			runningWorkers[commandWorkerKey(command)] = true
+			key:=commandWorkerKey(command)
+			runningWorkers[key] = true
 			runningCommands++
+			individualCtx,interrupt:=context.WithCancelCause(commandCtx)
+			runningDetails[key]=runningNodeCommand{kind:command.Kind,attemptID:command.Metadata().AttemptID,interrupt:interrupt}
 			go func() {
-				outcome, err := execution.HandleCommand(commandCtx, command)
+				defer interrupt(nil)
+				outcome, err := execution.HandleCommand(individualCtx, command)
 				select {
 				case completions <- commandCompletion{command: command, outcome: outcome, err: err}:
 				case <-commandCtx.Done():
@@ -224,13 +238,26 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			if message.Command == nil {
 				continue
 			}
+			// A Cancel for the same Attempt preempts a dispatched command
+			// waiting for video conversion. It must not remain blocked by the
+			// per-Worker FIFO lane it is meant to interrupt. Other Workers and
+			// attempts remain unaffected.
+			if message.Command.Kind==CommandCancel && message.Command.Cancel!=nil {
+				key:=commandWorkerKey(*message.Command)
+				if running,ok:=runningDetails[key];ok && (running.kind==CommandDispatch || running.kind==CommandResume) &&
+					running.attemptID==message.Command.Cancel.Metadata.AttemptID {
+					running.interrupt(errWorkerDispatchCanceled)
+				}
+			}
 			if len(pendingCommands) >= 32 {
 				return errors.New("node: command queue full")
 			}
 			pendingCommands = append(pendingCommands, *message.Command)
 			startPending()
 		case completed := <-completions:
-			delete(runningWorkers, commandWorkerKey(completed.command))
+			key:=commandWorkerKey(completed.command)
+			delete(runningWorkers,key)
+			delete(runningDetails,key)
 			runningCommands--
 			startPending()
 			if completed.err != nil {
