@@ -190,3 +190,49 @@ func TestT09MarkerSecretsBesideRuntimeFilesNotMounted(t *testing.T) {
   }
  }
 }
+
+
+func TestT09CLIAssetManifestExcludesIndependentServerJSONAndExtensionless(t *testing.T) {
+ root:=t.TempDir()
+ node:=filepath.Join(root,"node-private")
+ workspace:=filepath.Join(root,"workspace")
+ bin:=filepath.Join(root,".local","bin")
+ assets:=filepath.Join(root,".local","share","codex")
+ for _,dir:=range []string{node,workspace,bin,assets} {if err:=os.MkdirAll(dir,0700);err!=nil{t.Fatal(err)}}
+ for name,content:=range map[string]string{
+  "model.dat":"ASSET-OK",
+  "runtime.js":"module.exports = true",
+  "server-secret.json":"SERVER-HMAC-JSON",
+  "transport-token":"SERVER-HMAC-NO-EXT",
+ } { if err:=os.WriteFile(filepath.Join(assets,name),[]byte(content),0600);err!=nil{t.Fatal(err)} }
+ executable:=filepath.Join(bin,"codex")
+ if err:=os.WriteFile(executable,[]byte("#!/bin/sh\ncat "+filepath.Join(assets,"model.dat")+"\n"),0700);err!=nil{t.Fatal(err)}
+ t.Setenv("HOME",root)
+ _,args,err:=sandboxInvocation(WorkerSandbox{ProtectedDir:node,Workspace:workspace},executable,nil)
+ if err!=nil{t.Fatal(err)}
+ mounts:=map[string]bool{}
+ for i:=0;i+2<len(args);i++ {if args[i]=="--ro-bind"{mounts[args[i+2]]=true}}
+ for _,name:=range []string{"model.dat","runtime.js"} {
+  if !mounts[filepath.Join(assets,name)] {t.Fatalf("runtime asset %q not mounted",name)}
+ }
+ for _,name:=range []string{"server-secret.json","transport-token"} {
+  if mounts[filepath.Join(assets,name)] {t.Fatalf("Server secret %q exposed to Worker",name)}
+ }
+}
+
+func TestT09NodeModulesPackageExcludesServerJSONAndExtensionless(t *testing.T) {
+ root:=t.TempDir()
+ packageDir:=filepath.Join(root,"node_modules","@openai","codex")
+ if err:=os.MkdirAll(packageDir,0700);err!=nil{t.Fatal(err)}
+ for name:=range map[string]bool{"index.js":true,"secret.json":true,"secret":true} {
+  if err:=os.WriteFile(filepath.Join(packageDir,name),[]byte(name),0600);err!=nil{t.Fatal(err)}
+ }
+ args:=[]string{}
+ if err:=mountRuntimePackageFiles(&args,packageDir);err!=nil{t.Fatal(err)}
+ seen:=map[string]bool{}
+ for i:=0;i+2<len(args);i++ {if args[i]=="--ro-bind"{seen[args[i+2]]=true}}
+ if !seen[filepath.Join(packageDir,"index.js")] {t.Fatal("missing package JS runtime")}
+ for _,name:=range []string{"secret.json","secret"} {
+  if seen[filepath.Join(packageDir,name)] {t.Fatalf("unexpected secret mount: %s",name)}
+ }
+}
