@@ -116,8 +116,9 @@ func (a *Adapter) imageAuthorized(u Update) bool {
 		if !known {
 			return false
 		}
-		if u.ImageWorkerRef != "" && mapping.WorkerRef != u.ImageWorkerRef {
-			// Do not deliver a previously queued image into a reused topic.
+		if u.ImageWorkerRef == "" || u.WorkerRequestID == nil || mapping.WorkerRef != u.ImageWorkerRef {
+			// Unbound legacy queue entries and reused topics fail closed.
+			// Never acquire a binding from the latest pending question.
 			return false
 		}
 	}
@@ -263,13 +264,11 @@ func (a *Adapter) queueImageUpdate(u Update, allowed bool) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if u.Message.ThreadID != 0 && u.Message.ThreadID != 1 {
-		mapping, exists := a.mappingForThreadLocked(u.Message.ChatID, u.Message.ThreadID)
-		if !exists {
+		// Binding was saved atomically with PendingInputs. Never replace it
+		// with whatever question is pending when this image finally drains.
+		if u.ImageWorkerRef == "" || u.WorkerRequestID == nil {
 			return nil
 		}
-		requestID := mapping.PendingRequestID
-		u.WorkerRequestID = &requestID
-		u.ImageWorkerRef = mapping.WorkerRef
 	}
 	for _, queued := range a.state.PendingImages {
 		if queued.ID == u.ID {
@@ -293,6 +292,21 @@ func (a *Adapter) imageKeys() []string {
 		}
 	}
 	return keys
+}
+
+// Decoding a 24-megapixel image can allocate far more than its compressed
+// 8 MiB original. Only a few images may download/decode/store at once,
+// independent of the number of Telegram Topics.
+const maxConcurrentTelegramImages = 2
+
+func (a *Adapter) processImageWithSlot(ctx context.Context, u Update) error {
+	select {
+	case a.imageSlots <- struct{}{}:
+		defer func() { <-a.imageSlots }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return a.deliverImageUpdate(ctx, u, a.imageAuthorized(u))
 }
 
 func (a *Adapter) startImageWorkers(ctx context.Context) {
@@ -337,7 +351,7 @@ func (a *Adapter) drainImageLane(ctx context.Context, lane string) error {
 		if next.ID == 0 {
 			return nil
 		}
-		if err := a.deliverImageUpdate(ctx, next, a.imageAuthorized(next)); err != nil {
+		if err := a.processImageWithSlot(ctx, next); err != nil {
 			return err
 		}
 		a.mu.Lock()

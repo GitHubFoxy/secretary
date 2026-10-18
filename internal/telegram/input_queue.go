@@ -37,6 +37,16 @@ func (a *Adapter) enqueueInputs(updates []Update, advance bool) error {
 			}
 		}
 		if !exists && u.Message != nil {
+			// Freeze the native needs_input identity at initial durable
+			// ingress, not when an earlier image finally unblocks this lane.
+			// Both fields belong to the same state checkpoint as the update.
+			if u.Message.Image != nil && u.Message.ThreadID != 0 && u.Message.ThreadID != 1 {
+				if mapping, ok := a.mappingForThreadLocked(u.Message.ChatID, u.Message.ThreadID); ok {
+					requestID := mapping.PendingRequestID
+					u.WorkerRequestID = &requestID
+					u.ImageWorkerRef = mapping.WorkerRef
+				}
+			}
 			a.state.PendingInputs = append(a.state.PendingInputs, u)
 		}
 		if advance && u.ID > a.state.Offset {

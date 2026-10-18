@@ -245,6 +245,7 @@ type Adapter struct {
 	inputLanes                 map[string]*sync.Mutex
 	inputWorkers               map[string]bool
 	imageWorkers               map[string]bool
+	imageSlots                 chan struct{}
 	imageWG                    sync.WaitGroup
 	claims                     map[int64]*updateClaim
 	flushTimer                 *time.Timer
@@ -267,7 +268,7 @@ func New(config Config, transport Transport, server ServerClient) (*Adapter, err
 	if config.TitleTimeout <= 0 {
 		config.TitleTimeout = 5 * time.Second
 	}
-	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), topicSyncWake: make(chan struct{}, 1), now: func() time.Time { return time.Now().UTC() }}
+	adapter := &Adapter{transport: transport, server: server, config: config, claims: make(map[int64]*updateClaim), topicSyncWake: make(chan struct{}, 1), imageSlots: make(chan struct{}, maxConcurrentTelegramImages), now: func() time.Time { return time.Now().UTC() }}
 	adapter.state = persistedState{Version: 1, OwnerChat: config.OwnerChatID, Delivered: map[string]time.Time{}, DeliveredSequence: map[string]int64{}, Processed: map[string]time.Time{}, Topics: map[string]TopicMapping{}, Pairings: map[string]pairingRecord{}, TerminalNotified: map[string]time.Time{}, RequestNotified: map[string]time.Time{}, InboundNotified: map[string]time.Time{}, ToolNotified: map[string]time.Time{}, ToolPreviews: map[string]string{}, WorkerTyping: map[string]workerTypingAttempt{}, WorkerTypingInitialized: true, Outbox: []OutgoingMessage{}, Transcripts: map[string]VoiceTranscript{}, VoiceFailures: map[string]VoiceFailure{}}
 	if err := adapter.load(); err != nil {
 		return nil, err
@@ -2701,16 +2702,27 @@ func isSteerRejection(err error) bool {
 	if isUncertainWorkerCommandResponse(errStr) {
 		return false
 	}
-	if strings.Contains(errStr, `"category"`) || strings.Contains(errStr, `"provider_code"`) || strings.Contains(errStr, `"error"`) {
-		return true
+	var serverErr *ServerHTTPError
+	if errors.As(err, &serverErr) {
+		// HTTP 5xx, throttling and timeout are retryable regardless of
+		// whether their body includes a JSON "error" property.
+		if serverErr.StatusCode >= 500 || serverErr.StatusCode == 429 ||
+			serverErr.StatusCode == 408 || serverErr.StatusCode < 400 {
+			return false
+		}
+		return serverErr.StatusCode < 500
+	}
+	// Legacy in-process clients may return untyped provider refusals. Do
+	// not infer permanence from a generic JSON "error" field.
+	if strings.Contains(errStr, "server returned 429") || strings.Contains(errStr, "server returned 408") ||
+		strings.Contains(errStr, "server returned 5") {
+		return false
 	}
 	if strings.Contains(errStr, "400 Bad Request") || strings.Contains(errStr, "server returned 4") {
 		return true
 	}
-	if strings.Contains(errStr, "usage_limit") || strings.Contains(errStr, "usage_limit_exceeded") {
-		return true
-	}
-	return false
+	return strings.Contains(errStr, `"category"`) || strings.Contains(errStr, `"provider_code"`) ||
+		strings.Contains(errStr, "usage_limit_exceeded")
 }
 
 func isUncertainWorkerCommandResponse(errText string) bool {

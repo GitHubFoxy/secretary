@@ -296,6 +296,18 @@ func (t *BotAPITransport) DownloadFile(ctx context.Context, filePath string, max
 	return data, nil
 }
 
+// ServerHTTPError preserves the transport status separately from any
+// untrusted JSON error body. Transient 5xx must never be classified as a
+// terminal Worker rejection merely because the body has an "error" field.
+type ServerHTTPError struct {
+	StatusCode int
+	Status string
+	Body string
+}
+func (e *ServerHTTPError) Error() string {
+	return fmt.Sprintf("telegram: server returned %s: %s", e.Status, e.Body)
+}
+
 type HTTPServerClient struct {
 	BaseURL    string
 	Credential string
@@ -336,7 +348,11 @@ func (c *HTTPServerClient) post(ctx context.Context, path string, body any, idem
 		if len(body) > maxServerErrorBody {
 			return fmt.Errorf("telegram: server returned %s: error response exceeded %d bytes", response.Status, maxServerErrorBody)
 		}
-		return fmt.Errorf("telegram: server returned %s: %s", response.Status, redactBotSecret(c.Credential, strings.TrimSpace(string(body))))
+		return &ServerHTTPError{
+			StatusCode: response.StatusCode,
+			Status: response.Status,
+			Body: redactBotSecret(c.Credential, strings.TrimSpace(string(body))),
+		}
 	}
 	return nil
 }
