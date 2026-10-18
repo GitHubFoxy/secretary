@@ -167,6 +167,7 @@ func (a *Adapter) imageRequestStillCurrent(u Update) bool {
 
 func (a *Adapter) deliverImageUpdate(ctx context.Context, u Update, allowed bool) error {
 	if u.Message != nil && u.Message.Video != nil { return a.deliverVideoUpdate(ctx, u, allowed) }
+ if u.Message != nil && u.Message.Document != nil { return a.deliverDocumentUpdate(ctx,u,allowed) }
 	if !allowed || !a.imageAuthorized(u) {
 		return nil
 	}
