@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -173,4 +174,54 @@ func TestT12FrameKindsShownIndividuallyToWorker(t *testing.T) {
 		!strings.Contains(task,"source-frame PTS (relative to clip start) 1.250 s [timestamp_kind=source-pts-relative]") {
 		t.Fatalf("mixed timestamp semantics lost in native Worker prompt: %s",task)
 	}
+}
+
+func TestT12QueuedVideoHTTP503ThenReconnectReadyNativeDispatchOnce(t *testing.T) {
+	id:="art_"+strings.Repeat("a",32)
+	frameID:="art_"+strings.Repeat("b",32)
+	data:=[]byte("original")
+	webp,err:=base64.StdEncoding.DecodeString("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA")
+	if err!=nil{t.Fatal(err)}
+	digest:=func(data []byte)string{v:=sha256.Sum256(data);return hex.EncodeToString(v[:])}
+	var statusRequests,downloads,frameDownloads int
+	fetch:=func(ctx context.Context,key string)(ArtifactPayload,error) {
+		switch key {
+		case id:
+			downloads++
+			return ArtifactPayload{ID:id,Name:"clip.mp4",Data:data,SHA256:digest(data),VideoStatus:"queued",
+				CheckVideoStatus:func(ctx context.Context)(core.Artifact,error){
+					statusRequests++
+					switch statusRequests {
+					case 1,2: return core.Artifact{},fmt.Errorf("%w: HTTP 503",ErrTransientArtifactStatus)
+					case 3: return core.Artifact{ID:id,ProcessingStatus:"queued"},nil
+					case 4: return core.Artifact{},fmt.Errorf("%w: server reconnect",ErrTransientArtifactStatus)
+					default: return core.Artifact{ID:id,ProcessingStatus:"ready",VideoFrames:[]core.VideoFrame{
+						{ArtifactID:frameID,TimestampMS:1250,TimestampKind:"source-pts-relative"},
+					}},nil
+					}
+				}},nil
+		case frameID:
+			frameDownloads++
+			return ArtifactPayload{ID:frameID,Name:"frame.webp",Data:webp,SHA256:digest(webp)},nil
+		}
+		return ArtifactPayload{},errors.New("unrecognized artifact")
+	}
+	ctx,cancel:=context.WithTimeout(context.Background(),5*time.Second)
+	defer cancel()
+	task,images,err:=prepareArtifactInputWithPoll(ctx,t.TempDir(),"Describe artifact://"+id,fetch,0)
+	if err!=nil{t.Fatalf("transient metadata failure permanently rejected dispatch: %v",err)}
+	if downloads!=1 || statusRequests!=5 || frameDownloads!=1 || len(images)!=1 || !strings.Contains(task,"1.250 s [timestamp_kind=source-pts-relative]"){
+		t.Fatalf("native dispatch duplicated or missing: original=%d status=%d frames=%d images=%d task=%q",downloads,statusRequests,frameDownloads,len(images),task)
+	}
+}
+
+func TestT12MetadataFailedIsTerminalNotTransient(t *testing.T) {
+	id:="art_"+strings.Repeat("c",32)
+	var requests int
+	a:=ArtifactPayload{ID:id,VideoStatus:"processing",CheckVideoStatus:func(context.Context)(core.Artifact,error){
+		requests++
+		return core.Artifact{ID:id,ProcessingStatus:"failed",ProcessingError:"invalid media"},nil
+	}}
+	if err:=awaitVideoProcessing(context.Background(),id,&a,0);err!=nil{t.Fatal(err)}
+	if requests!=1 || a.VideoStatus!="failed"{t.Fatalf("conversion failure was retried: %+v %d",a,requests)}
 }
