@@ -29,6 +29,7 @@ type Video struct {
 type VideoArtifactStore interface {
  StoreVideoOriginal(context.Context, int64, Message, string, []byte) (string,error)
  VideoStatus(context.Context,string) (string,string,error)
+ VideoLimits(context.Context) (int,error)
 }
 
 func telegramVideoName(name string) bool {
@@ -45,7 +46,9 @@ func (a *Adapter) deliverVideoUpdate(ctx context.Context,u Update,allowed bool) 
  if m.Video==nil || m.Video.FileID=="" { return fail("Telegram не передал video file_id.") }
  if m.Video.FileSize<0 || m.Video.FileSize>core.MaxArtifactBytes { return fail("файл превышает лимит 8 МиБ.") }
  if !telegramVideoName(m.Video.FileName) { return fail("поддерживаются только MP4, WebM и MOV.") }
- if m.Video.Duration > 60 { return fail("длительность видео превышает максимальные 60 секунд.") }
+ maxDuration,limitErr:=store.VideoLimits(ctx)
+ if limitErr!=nil { return fmt.Errorf("telegram video limits: %w",limitErr) }
+ if m.Video.Duration > maxDuration { return fail(fmt.Sprintf("длительность видео превышает настроенный предел %d секунд.",maxDuration)) }
  download,ok:=a.transport.(VoiceDownloadTransport)
  if !ok { return fail("Bot API download недоступен.") }
  store,ok:=a.server.(VideoArtifactStore)
@@ -142,4 +145,18 @@ func (c *HTTPServerClient) VideoStatus(ctx context.Context,id string)(string,str
  var result struct{ ProcessingStatus string `json:"processing_status"`; ProcessingError string `json:"processing_error"` }
  if err=json.NewDecoder(io.LimitReader(res.Body,16<<10)).Decode(&result);err!=nil{return "","",err}
  return result.ProcessingStatus,result.ProcessingError,nil
+}
+
+func (c *HTTPServerClient) VideoLimits(ctx context.Context)(int,error){
+ req,err:=http.NewRequestWithContext(ctx,http.MethodGet,strings.TrimRight(c.BaseURL,"/")+"/v1/internal/telegram/video/limits",nil)
+ if err!=nil{return 0,err}
+ req.Header.Set("Authorization","Bearer "+c.Credential)
+ res,err:=c.client().Do(req)
+ if err!=nil{return 0,err}
+ defer res.Body.Close()
+ if res.StatusCode!=http.StatusOK{return 0,fmt.Errorf("video limits HTTP %d",res.StatusCode)}
+ var out struct{MaxDurationSeconds int `json:"max_duration_seconds"`}
+ if err=json.NewDecoder(io.LimitReader(res.Body,1024)).Decode(&out);err!=nil{return 0,err}
+ if out.MaxDurationSeconds<1{return 0,errors.New("invalid video duration configuration")}
+ return out.MaxDurationSeconds,nil
 }
