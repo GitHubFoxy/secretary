@@ -20,7 +20,7 @@ func TestT09PinnedOfficialCodexStartResume(t *testing.T) {
  // and Resume subcommand parsing without credentials/network calls.
  ctx:=WithWorkerSandbox(context.Background(),WorkerSandbox{ProtectedDir:node,Workspace:ws})
  for _,args:=range [][]string{{"--help"},{"exec","resume","--help"}} {
-  cmd,err:=CommandContext(ctx,"/usr/bin/node",append([]string{cli},args...)...)
+  cmd,err:=CommandContext(ctx,cli,args...)
   if err!=nil{t.Fatal(err)}
   output,err:=cmd.CombinedOutput()
   if err!=nil{t.Fatalf("official Codex launch %v failed in Worker sandbox: %v: %s",args,err,output)}
