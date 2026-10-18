@@ -222,7 +222,10 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
   t.Fatalf("Topic native Result projections are missing or duplicated: %+v",counts)
  }
  if err:=adapter.HandleUpdate(ctx,topic[0]);err!=nil{t.Fatal(err)}
- if err:=restored.HandleUpdate(ctx,topic[0]);err!=nil{t.Fatal(err)}
+ afterTopicRestart,err:=telegram.New(telegram.Config{StatePath:state,OwnerChatID:100,GroupChatID:&group},transport,
+  &telegram.HTTPServerClient{BaseURL:server.URL,Credential:"t13-secret"})
+ if err!=nil{t.Fatal(err)}
+ if err:=afterTopicRestart.HandleUpdate(ctx,topic[0]);err!=nil{t.Fatal(err)}
  select{case duplicate:=<-runtime.seen:t.Fatalf("Topic replay produced duplicate native execution: %+v",duplicate)
  case <-time.After(100*time.Millisecond):}
 }
