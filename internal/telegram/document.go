@@ -12,6 +12,7 @@ import(
  "mime"
  "mime/multipart"
  "path/filepath"
+ "regexp"
  "strconv"
  "strings"
  "time"
@@ -145,18 +146,20 @@ func(t *BotAPITransport)SendDocument(ctx context.Context,chatID,threadID int64,n
  return nil
 }
 
+var t15ArtifactRefs=regexp.MustCompile(`artifact://art_[A-Za-z0-9]+`)
+
 func(a *Adapter)deliverEventDocuments(ctx context.Context,event Event)error{
  if event.WorkerRef=="" || event.TerminalIdentity=="" || len(event.Payload)==0{return nil}
  // Only accepted Results, not provisional Attempt outcomes, may announce
  // output Artifacts to Telegram. Both events share the same Turn identity.
  var payload struct{
   ID string `json:"id"`
-  ArtifactRefs []string `json:"artifact_refs"`
+  ArtifactRefs string `json:"artifact_refs"`
  }
  if err:=json.Unmarshal(event.Payload,&payload);err!=nil{return nil}
  if !strings.HasPrefix(payload.ID,"res_"){return nil}
  seen:=map[string]bool{}
- for _,ref:=range payload.ArtifactRefs{
+ for _,ref:=range t15ArtifactRefs.FindAllString(payload.ArtifactRefs,-1){
   id:=strings.TrimPrefix(ref,"artifact://")
   if !strings.HasPrefix(id,"art_")||seen[id]{continue}
   seen[id]=true
