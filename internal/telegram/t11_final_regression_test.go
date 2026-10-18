@@ -162,7 +162,7 @@ func TestT11Download401TerminalUnblocksFollowingImageAndText(t *testing.T){
 	case <-time.After(time.Second):t.Fatal("HTTP 401 blocked following text C")
 	}
 	reopened:=open()
-	if err:=reopened.PollOnce(context.Background());err!=nil{t.Fatal(err)}
+	if err:=reopened.HandleUpdate(context.Background(),bad);err!=nil{t.Fatal(err)}
 	reopened.imageWG.Wait()
 	mu.Lock()
 	b,g,n:=badDownloads,goodDownloads,warnings
