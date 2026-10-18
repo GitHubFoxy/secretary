@@ -84,6 +84,7 @@ func TestT04ServerEventBridgeProjectsToDMAndForumWithoutReplay(t *testing.T) {
 }
 
 func TestT04DeploymentAllowsDMWithoutGroupAndValidatesForumID(t *testing.T) {
+ t.Setenv("SECRETARY_TELEGRAM_WEB_BASE_URL","https://owner.example")
 	t.Setenv("SECRETARY_TELEGRAM_ENABLED", "true")
 	t.Setenv("SECRETARY_TELEGRAM_BOT_TOKEN", "fixture")
 	t.Setenv("SECRETARY_TELEGRAM_SERVER_CREDENTIAL", "fixture")
