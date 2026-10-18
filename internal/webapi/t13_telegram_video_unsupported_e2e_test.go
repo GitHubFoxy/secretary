@@ -121,6 +121,7 @@ func TestT13DMTelegramVideoUnsupportedAutoWorkerWarnsBothPersonalProjections(t *
   _=json.Unmarshal(source.Payload,&payload)
   if source.Kind=="conversation.entry"&&payload["kind"]==string(core.EntrySecretary){
    out.Kind=core.SecretaryTextDeltaEvent
+   if payload["acknowledgement"]==true{out.Kind="secretary.acknowledged"}
    out.Text,_=payload["body"].(string)
   }
   if source.Kind==core.SecretaryTurnFinishedEvent{out.Kind=source.Kind}
