@@ -270,7 +270,8 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
  // Root ownership is mandatory even when the Node and Server use the same UID.
  // Provision this outside user-writable npm caches, with a package archive
  // verified against its published registry integrity before hashing files.
- manifestPath:=filepath.Join("/etc/secretary/cli-manifests",provider,metadata.Version+".json")
+ packageID:=strings.ReplaceAll(metadata.Name,"/","__")
+ manifestPath:=filepath.Join("/etc/secretary/cli-manifests",provider,packageID,metadata.Version+".json")
  info,err:=os.Lstat(manifestPath)
  if err!=nil{return fmt.Errorf("worker sandbox: trusted CLI provenance unavailable: %w",err)}
  stat,ok:=info.Sys().(*syscall.Stat_t)
@@ -294,7 +295,7 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
    // mutable files: materialize the independently verified tarball in a
    // root-owned store and bind those exact bytes at the expected CLI path.
    target:=filepath.Join(packageRoot,rel)
-   source:=filepath.Join("/opt/secretary/cli-store",provider,metadata.Version,rel)
+   source:=filepath.Join("/opt/secretary/cli-store",provider,packageID,metadata.Version,rel)
    info,err:=os.Lstat(source);if err!=nil{return fmt.Errorf("worker sandbox: verified CLI asset unavailable: %w",err)}
    owner,ok:=info.Sys().(*syscall.Stat_t)
    if !ok || owner.Uid!=0 || !info.Mode().IsRegular() || info.Mode().Perm()&022!=0 || info.Size()>512<<20 {
@@ -324,13 +325,17 @@ func equalDigests(a,b []byte) bool {
 func mountPlatformCLIPackages(wrapped *[]string, mainPackage string) error {
  packageName:=filepath.Base(mainPackage)
  scope:=filepath.Base(filepath.Dir(mainPackage))
- if !strings.HasPrefix(scope,"@"){return nil}
+ if scope!="@openai" && scope!="@anthropic-ai" && packageName!="opencode-ai" {return nil}
  var accepted []string
- switch scope+"/"+packageName {
+ identity:=scope+"/"+packageName
+ if packageName=="opencode-ai" { identity="opencode-ai" }
+ switch identity {
  case "@openai/codex":
    accepted=[]string{"codex-linux-x64","codex-linux-arm64"}
  case "@anthropic-ai/claude-code":
    accepted=[]string{"claude-code-linux-x64","claude-code-linux-arm64","claude-code-linux-x64-musl","claude-code-linux-arm64-musl"}
+ case "opencode-ai":
+   accepted=[]string{"opencode-linux-x64","opencode-linux-arm64","opencode-linux-x64-baseline","opencode-linux-arm64-baseline"}
  default: return nil
  }
  for _,name:=range accepted {
