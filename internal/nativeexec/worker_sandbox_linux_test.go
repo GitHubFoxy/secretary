@@ -131,3 +131,42 @@ func TestT09IndependentServerRootNotSharedWithoutServerDataDir(t *testing.T) {
   if err!=nil{t.Fatal(err)}
   out,err:=cmd.CombinedOutput();if err!=nil{t.Fatalf("independent Server root leaked: %v %s",err,out)}
 }
+
+func TestT09NoBroadSystemOrCLIInstallMounts(t *testing.T) {
+ base:=t.TempDir()
+ node:=filepath.Join(base,"independent-node")
+ ws:=filepath.Join(base,"workspace")
+ bin:=filepath.Join(base,".local","bin")
+ for _,dir:=range []string{node,ws,bin} { if err:=os.MkdirAll(dir,0700);err!=nil {t.Fatal(err)} }
+ cli:=filepath.Join(bin,"codex")
+ if err:=os.WriteFile(cli,[]byte("#!/bin/sh\necho ok\n"),0700);err!=nil {t.Fatal(err)}
+ if err:=os.MkdirAll(filepath.Join(bin,"server-data"),0700);err!=nil {t.Fatal(err)}
+ secret:=filepath.Join(bin,"server-data","secretary.db")
+ if err:=os.WriteFile(secret,[]byte("HMAC-SECRET"),0600);err!=nil {t.Fatal(err)}
+ _,args,err:=sandboxInvocation(WorkerSandbox{ProtectedDir:node,Workspace:ws},cli,nil)
+ if err!=nil {t.Fatal(err)}
+ banned:=[]string{"/usr/bin","/usr/lib","/usr/lib64","/usr/share/nodejs","/usr/share/zoneinfo","/usr/share/ca-certificates","/lib","/lib64","/bin",bin}
+ for i:=0;i+2<len(args);i++ {
+  if args[i]!="--ro-bind" && args[i]!="--bind" {continue}
+  for _,root:=range banned {if args[i+1]==root {t.Fatalf("broad bind to %s exposes independent Server: %v",root,args)}}
+  if args[i+1]==secret {t.Fatal("independent Server database mounted")}
+ }
+ // The main runtime entrypoint remains accessible as an individual file.
+ found:=false
+ for i:=0;i+2<len(args);i++ { if args[i]=="--ro-bind" && args[i+2]==cli {found=true} }
+ if !found {t.Fatal("CLI executable not individually mounted")}
+}
+
+func TestT09SystemSecretMarkersNotReachableInSandbox(t *testing.T) {
+ base:=t.TempDir()
+ node:=filepath.Join(base,"node")
+ ws:=filepath.Join(base,"workspace")
+ for _,dir:=range []string{node,ws} {if err:=os.MkdirAll(dir,0700);err!=nil {t.Fatal(err)}}
+ _,args,err:=sandboxInvocation(WorkerSandbox{ProtectedDir:node,Workspace:ws},"/bin/sh",nil)
+ if err!=nil {t.Fatal(err)}
+ for _,prefix:=range []string{"/usr/lib","/usr/lib64","/usr/share/nodejs","/usr/bin"} {
+  for i:=0;i+2<len(args);i++ {
+   if args[i]=="--ro-bind" && args[i+1]==prefix {t.Fatalf("secret marker under %s would leak via full-root bind",prefix)}
+  }
+ }
+}
