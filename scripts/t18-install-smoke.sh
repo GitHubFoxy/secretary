@@ -18,8 +18,8 @@ EOF
 chmod +x "$home/fake-bin/claude"
 export HOME="$home"
 export PATH="$home/fake-bin:$PATH"
-export GOCACHE="${GOCACHE:-$(go env GOCACHE)}"
-export GOMODCACHE="${GOMODCACHE:-$(go env GOMODCACHE)}"
+export GOCACHE="$original_build_cache"
+export GOMODCACHE="$original_mod_cache"
 
 # Only Claude is discoverable in the clean-user fixture. Actual binaries built
 # are Secretary binaries; fake provider authentication is never live proof.
