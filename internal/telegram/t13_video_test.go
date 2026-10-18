@@ -17,6 +17,7 @@ type t13FixtureServer struct {
  originals [][]byte
  status string
  reason string
+ denyImageInput bool
 }
 func (s *t13FixtureServer) StoreVideoOriginal(_ context.Context,_ int64,_ Message,_ string,data []byte)(string,error){
  s.mu.Lock();defer s.mu.Unlock()
@@ -200,6 +201,27 @@ func TestT13RestartWhileVideoProcessingRecoversSingleDispatch(t *testing.T){
  if len(srv.messages)!=1||srv.uploads!=1{t.Fatal("duplicate Telegram replay after recovery")}
 }
 
-func(s *t13FixtureServer)WorkerSupportsVideo(context.Context,string)(bool,error){return true,nil}
+func(s *t13FixtureServer)WorkerSupportsVideo(context.Context,string)(bool,error){return !s.denyImageInput,nil}
 func(s *t13RejectServer)WorkerSupportsVideo(context.Context,string)(bool,error){return true,nil}
 func(s *t13RecoverableServer)WorkerSupportsVideo(context.Context,string)(bool,error){return true,nil}
+
+func TestT13WorkerWithoutImageCapabilityWarnsBeforeDownload(t *testing.T){
+ group:=int64(-200)
+ tr:=&t11Transport{fakeTransport:&fakeTransport{},data:[]byte("good video")}
+ srv:=&t13FixtureServer{status:"ready",denyImageInput:true}
+ a,err:=New(Config{StatePath:filepath.Join(t.TempDir(),"no-video-capability.json"),OwnerChatID:100,GroupChatID:&group},tr,srv)
+ if err!=nil{t.Fatal(err)}
+ a.mu.Lock()
+ a.state.OwnerUser=100
+ a.state.GroupChat=group
+ a.state.Topics["worker-no-image"]=TopicMapping{WorkerRef:"worker-no-image",ChatID:group,ThreadID:91,PendingRequestID:"request-image"}
+ err=a.saveLocked()
+ a.mu.Unlock()
+ if err!=nil{t.Fatal(err)}
+ u:=t13Update(550);u.Message.ChatID=group;u.Message.ThreadID=91
+ if err:=a.HandleUpdate(context.Background(),u);err!=nil{t.Fatal(err)}
+ a.imageWG.Wait()
+ if tr.downloads!=0||srv.uploads!=0||len(srv.workers)!=0||len(tr.sent)!=1||!strings.Contains(tr.sent[0].Text,"CapabilityImageInput"){
+  t.Fatalf("unsupported Worker was not rejected: downloads=%d uploads=%d worker=%+v warnings=%+v",tr.downloads,srv.uploads,srv.workers,tr.sent)
+ }
+}
