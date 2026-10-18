@@ -1269,6 +1269,7 @@ func (a *Adapter) HandleDurableEvent(ctx context.Context, event Event) error {
 	} else if err := a.handleEvent(ctx, event); err != nil {
 		return err
 	}
+	if err:=a.deliverEventDocuments(ctx,event);err!=nil{return err}
 	a.mu.Lock()
 	if event.Sequence > a.state.LastEventSeq {
 		a.state.LastEventSeq = event.Sequence
