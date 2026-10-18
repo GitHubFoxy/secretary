@@ -90,3 +90,13 @@ func TestT16VoiceDeletionPreservesResultReferencedTranscript(t *testing.T){
  if err=s.DeleteOwnerArtifact(ctx,owner.ID,source.ID);err!=nil{t.Fatal(err)}
  if _,bytes,err:=s.ArtifactForPerson(ctx,owner.ID,transcript.ID);err!=nil||string(bytes)!="shared words"{t.Fatalf("shared derivative lost: %q, %v",bytes,err)}
 }
+
+func TestT16BackupRefusesCorruptArtifactWithoutPublishingArchive(t *testing.T){
+ ctx:=context.Background();s:=newTestStore(t)
+ owner,conv,err:=s.CreatePersonWithConversation(ctx);if err!=nil{t.Fatal(err)}
+ a,_,err:=s.SaveArtifact(ctx,owner.ID,conv.ID,"corrupt-original","report.txt","text/plain",[]byte("correct bytes"));if err!=nil{t.Fatal(err)}
+ if _,err=s.db.ExecContext(ctx,"UPDATE artifacts SET body=? WHERE id=?",[]byte("tampered"),a.ID);err!=nil{t.Fatal(err)}
+ dest:=filepath.Join(t.TempDir(),"must-not-exist.zip")
+ if err=s.CreateServerBackup(ctx,dest,nil);err==nil{t.Fatal("backup succeeded despite corrupt Artifact")}
+ if _,err=os.Stat(dest);!os.IsNotExist(err){t.Fatalf("backup published corrupt snapshot: %v",err)}
+}
