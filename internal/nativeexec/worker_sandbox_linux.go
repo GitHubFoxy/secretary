@@ -222,11 +222,14 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
     if entry.Type()&os.ModeSymlink != 0 { return fmt.Errorf("worker sandbox: symlink in CLI package: %s", path) }
     if entry.IsDir() { return nil }
     if !entry.Type().IsRegular() { return fmt.Errorf("worker sandbox: unsupported CLI package asset: %s", path) }
-    // Known data/credential file formats are never exported as runtime assets.
-    ext := strings.ToLower(filepath.Ext(path))
-    switch ext {
-    case ".db", ".sqlite", ".sqlite3", ".key", ".pem", ".env":
-      return fmt.Errorf("worker sandbox: private data inside CLI package: %s", path)
+    // Allow only executable package code and known non-secret static resources.
+    // JSON (including arbitrary Server state) and extensionless files are
+    // never guessed to be runtime assets. Unsupported installs fail closed.
+    switch strings.ToLower(filepath.Ext(path)) {
+    case ".js", ".mjs", ".cjs", ".wasm", ".node", ".map",
+         ".txt", ".dat", ".css", ".html":
+    default:
+      return nil
     }
     count++
     if count > maxFiles { return errors.New("worker sandbox: CLI package exceeds bounded runtime manifest") }
