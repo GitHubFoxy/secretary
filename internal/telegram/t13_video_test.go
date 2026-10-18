@@ -104,3 +104,29 @@ func TestT13VideoSourceRejectionIsTerminal(t *testing.T){
 type t13RejectServer struct{fakeServer}
 func (*t13RejectServer) StoreVideoOriginal(context.Context,int64,Message,string,[]byte)(string,error){return "",&ImageSourceRejection{Reason:"invalid video"}}
 func (*t13RejectServer) VideoStatus(context.Context,string)(string,string,error){return "","",errors.New("unexpected status request")}
+
+func TestT13TopicVideoAuthorizedAndBoundToOriginalWorker(t *testing.T) {
+ group:=int64(-200)
+ tr:=&t11Transport{fakeTransport:&fakeTransport{},data:[]byte("good video")}
+ srv:=&t13FixtureServer{status:"ready"}
+ a,err:=New(Config{StatePath:filepath.Join(t.TempDir(),"state.json"),OwnerChatID:100,GroupChatID:&group},tr,srv)
+ if err!=nil{t.Fatal(err)}
+ a.mu.Lock()
+ a.state.OwnerUser=100
+ a.state.GroupChat=group
+ a.state.Topics["worker-t13"]=TopicMapping{WorkerRef:"worker-t13",ChatID:group,ThreadID:77,PendingRequestID:"request-t13"}
+ err=a.saveLocked()
+ a.mu.Unlock()
+ if err!=nil{t.Fatal(err)}
+ unauth:=t13Update(405);unauth.Message.ChatID=group;unauth.Message.ThreadID=77;unauth.Message.FromID=99
+ if err:=a.HandleUpdate(context.Background(),unauth);err!=nil{t.Fatal(err)}
+ good:=t13Update(406);good.Message.ChatID=group;good.Message.ThreadID=77
+ if err:=a.HandleUpdate(context.Background(),good);err!=nil{t.Fatal(err)}
+ a.imageWG.Wait()
+ if tr.downloads!=1||srv.uploads!=1||len(srv.workers)!=1||len(srv.messages)!=0{t.Fatalf("topic video wrong route: downloads=%d uploads=%d workers=%+v messages=%+v",tr.downloads,srv.uploads,srv.workers,srv.messages)}
+ worker:=srv.workers[0]
+ if worker.WorkerRef!="worker-t13"||worker.RequestID!="request-t13"||!strings.Contains(worker.Text,"artifact://art_t13_fixture"){t.Fatalf("topic lost original binding: %+v",worker)}
+ if err:=a.HandleUpdate(context.Background(),good);err!=nil{t.Fatal(err)}
+ a.imageWG.Wait()
+ if len(srv.workers)!=1{t.Fatal("duplicate topic dispatch")}
+}
