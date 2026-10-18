@@ -84,12 +84,36 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 	}
 	switch command.Kind {
 	case node.CommandRespondWorker:
-		responder, ok := session.(node.Responder)
-		if !ok || command.RespondWorker == nil {
+		if command.RespondWorker == nil {
 			return node.CommandOutcome{}, ErrWorkerRuntimeUnavailable
 		}
-		err := responder.Respond(ctx, command.RespondWorker.RequestID, command.RespondWorker.Response)
+		response := command.RespondWorker
+		text, images, prepErr := r.Local.PrepareWorkerSteering(ctx, metadata.WorkerRef, response.Response)
+		if prepErr != nil {
+			return node.CommandOutcome{}, prepErr
+		}
+		var err error
+		if len(images) > 0 {
+			multimodal, ok := session.(node.ImageResponseSession)
+			if !ok {
+				return node.CommandOutcome{}, node.ErrImageResponseUnsupported
+			}
+			if capability, ok := session.(node.ImageResponseCapability); ok && !capability.SupportsImageResponse() {
+				return node.CommandOutcome{}, node.ErrImageResponseUnsupported
+			}
+			_ = multimodal // capability is validated above; shared helper performs delivery.
+			err = node.DeliverImageResponse(ctx, r.Local.ImageResponseStore(), session, metadata, response.RequestID, text, images)
+		} else {
+			responder, ok := session.(node.Responder)
+			if !ok {
+				return node.CommandOutcome{}, ErrWorkerRuntimeUnavailable
+			}
+			err = responder.Respond(ctx, response.RequestID, text)
+		}
 		if err != nil {
+			if errors.Is(err, node.ErrImageResponseUnsupported) {
+				return node.CommandOutcome{}, err
+			}
 			return node.CommandOutcome{}, fmt.Errorf("%w: %w", node.ErrCommandOutcomeUnknown, err)
 		}
 	case node.CommandSteering:
@@ -197,6 +221,12 @@ func (r NodeRuntime) Respond(ctx context.Context, commandID string, worker core.
 		return ErrWorkerRuntimeUnavailable
 	}
 	return r.Manager.SendCommandAndWait(ctx, core.NodeReference(attempt.NodeID), command)
+}
+
+// The response command carries canonical Artifact IDs. The receiving Node
+// fetches and verifies original bytes, then invokes ImageResponseSession.
+func (r NodeRuntime) RespondImages(ctx context.Context, commandID string, worker core.Worker, attempt core.Phase4Attempt, requestID, response string) error {
+	return r.Respond(ctx, commandID, worker, attempt, requestID, response)
 }
 
 func (r NodeRuntime) Cancel(ctx context.Context, commandID string, worker core.Worker, attempt core.Phase4Attempt) error {
