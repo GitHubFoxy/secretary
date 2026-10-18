@@ -183,6 +183,9 @@ type LocalNode struct {
 	// activeAttempts binds the currently registered native Session to its
 	// owning Attempt; old durable checkpoints are not proof of ownership.
 	activeAttempts map[string]string
+	// Direct native Resume inherits an Attempt-scoped cancellable Context.
+	// Keep its cancel function until the Session is removed or Node closes.
+	resumeCancels map[string]context.CancelFunc
 	checkpoints map[string]localCheckpoint
 	artifactFetcher ArtifactFetcher
 	imageResponseStore *LocalStore
@@ -197,7 +200,7 @@ type localCheckpoint struct {
 }
 
 func NewLocal(runtime Runtime) *LocalNode {
-	return &LocalNode{runtime: runtime, workers: make(map[string]Session), activeAttempts: make(map[string]string), checkpoints: make(map[string]localCheckpoint),prestarts:make(map[string]*localPending),workerGates:make(map[string]chan struct{})}
+	return &LocalNode{runtime: runtime, workers: make(map[string]Session), activeAttempts: make(map[string]string), resumeCancels: make(map[string]context.CancelFunc), checkpoints: make(map[string]localCheckpoint),prestarts:make(map[string]*localPending),workerGates:make(map[string]chan struct{})}
 }
 
 // SetPrestartStore binds local pre-native cancellation to protected Node-owned
@@ -346,7 +349,14 @@ func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previous
 	if hadPrevious {
 		if err:=previous.Close();err!=nil{return nil,err}
 		n.mu.Lock()
-		if current,ok:=n.workers[request.WorkerRef];ok && current==previous{delete(n.workers,request.WorkerRef)}
+		if current,ok:=n.workers[request.WorkerRef];ok && current==previous{
+			delete(n.workers,request.WorkerRef)
+			delete(n.activeAttempts,request.WorkerRef)
+			if cancel := n.resumeCancels[request.WorkerRef]; cancel!=nil{
+				cancel()
+				delete(n.resumeCancels,request.WorkerRef)
+			}
+		}
 		n.mu.Unlock()
 	}
 	request.DeferInitialPrompt=true
@@ -419,6 +429,14 @@ func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSes
 	n.mu.Lock()
 	n.workers[request.WorkerRef] = session
 	n.activeAttempts[request.WorkerRef] = request.AttemptID
+	key := request.AttemptID
+	if key == "" {key="worker:"+request.WorkerRef}
+	// The native provider may retain prepCtx after Resume returns.
+	// Do not auto-cancel an accepted Session from finish().
+	if pending:=n.prestarts[key];pending!=nil&&pending.workerRef==request.WorkerRef&&pending.stage=="handoff"{
+		pending.keepContext=true
+		n.resumeCancels[request.WorkerRef]=pending.cancel
+	}
 	n.mu.Unlock()
 	return session, nil
 }
@@ -455,9 +473,12 @@ func (n *LocalNode) Session(workerRef string) (Session, bool) {
 func (n *LocalNode) Close() error {
 	n.mu.Lock()
 	workers := n.workers
+	resumeCancels := n.resumeCancels
 	n.workers = make(map[string]Session)
 	n.activeAttempts = make(map[string]string)
+	n.resumeCancels = make(map[string]context.CancelFunc)
 	n.mu.Unlock()
+	for _, cancel := range resumeCancels {cancel()}
 	var first error
 	for _, session := range workers {
 		if err := session.Close(); err != nil && first == nil {
@@ -470,13 +491,17 @@ func (n *LocalNode) Close() error {
 func (n *LocalNode) Remove(workerRef string) error {
 	n.mu.Lock()
 	session, ok := n.workers[workerRef]
+	var cancel context.CancelFunc
 	if ok {
 		delete(n.workers, workerRef)
 		delete(n.activeAttempts, workerRef)
+		cancel=n.resumeCancels[workerRef]
+		delete(n.resumeCancels,workerRef)
 	}
 	n.mu.Unlock()
 	if !ok {
 		return nil
 	}
+	if cancel!=nil {cancel()}
 	return session.Close()
 }

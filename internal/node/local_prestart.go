@@ -12,6 +12,10 @@ type localPending struct {
 	workerRef string
 	stage string // preparing, canceled, handoff
 	cancel context.CancelFunc
+	// A successful direct native Resume uses this Context for the entire
+	// native Session lifetime. Ownership transfers from pending prestart to
+	// LocalNode on handoff, and Remove/Close performs the final cancellation.
+	keepContext bool
 }
 
 func (n *LocalNode) lockWorker(ctx context.Context,workerRef string)(func(),error){
@@ -52,8 +56,9 @@ func (n *LocalNode) beginLocalPrestart(ctx context.Context,attemptID,workerRef s
 			}
 			delete(n.prestarts,key)
 		}
+		keep := pending.keepContext
 		n.mu.Unlock()
-		cancel()
+		if !keep { cancel() }
 	}
 	return prep,finish,nil
 }
