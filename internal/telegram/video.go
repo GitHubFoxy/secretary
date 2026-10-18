@@ -8,6 +8,7 @@ import (
  "fmt"
  "io"
  "net/http"
+ "net/url"
  "path/filepath"
  "strconv"
  "strings"
@@ -30,6 +31,7 @@ type VideoArtifactStore interface {
  StoreVideoOriginal(context.Context, int64, Message, string, []byte) (string,error)
  VideoStatus(context.Context,string) (string,string,error)
  VideoLimits(context.Context) (int,error)
+ WorkerSupportsVideo(context.Context,string) (bool,error)
 }
 
 func telegramVideoName(name string) bool {
@@ -48,6 +50,7 @@ func (a *Adapter) deliverVideoUpdate(ctx context.Context,u Update,allowed bool) 
  if !telegramVideoName(m.Video.FileName) { return fail("поддерживаются только MP4, WebM и MOV.") }
  store,ok:=a.server.(VideoArtifactStore)
  if !ok { return fail("Server video pipeline недоступен.") }
+ if u.ImageWorkerRef!="" { supports,e:=store.WorkerSupportsVideo(ctx,u.ImageWorkerRef); if e!=nil { return fmt.Errorf("telegram Worker video capability: %w",e) }; if !supports { return fail("назначенный Worker не поддерживает CapabilityImageInput.") } }
  maxDuration,limitErr:=store.VideoLimits(ctx)
  if limitErr!=nil { return fmt.Errorf("telegram video limits: %w",limitErr) }
  if m.Video.Duration > maxDuration { return fail(fmt.Sprintf("длительность видео превышает настроенный предел %d секунд.",maxDuration)) }
@@ -159,4 +162,15 @@ func (c *HTTPServerClient) VideoLimits(ctx context.Context)(int,error){
  if err=json.NewDecoder(io.LimitReader(res.Body,1024)).Decode(&out);err!=nil{return 0,err}
  if out.MaxDurationSeconds<1{return 0,errors.New("invalid video duration configuration")}
  return out.MaxDurationSeconds,nil
+}
+
+func(c *HTTPServerClient)WorkerSupportsVideo(ctx context.Context,workerRef string)(bool,error){
+ req,err:=http.NewRequestWithContext(ctx,http.MethodGet,strings.TrimRight(c.BaseURL,"/")+"/v1/internal/telegram/video/capability?worker_ref="+url.QueryEscape(workerRef),nil)
+ if err!=nil{return false,err}
+ req.Header.Set("Authorization","Bearer "+c.Credential)
+ res,err:=c.client().Do(req);if err!=nil{return false,err};defer res.Body.Close()
+ if res.StatusCode!=http.StatusOK{return false,fmt.Errorf("Worker capability HTTP %d",res.StatusCode)}
+ var result struct{Supported bool `json:"supported"`}
+ if err=json.NewDecoder(io.LimitReader(res.Body,1024)).Decode(&result);err!=nil{return false,err}
+ return result.Supported,nil
 }
