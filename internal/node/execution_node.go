@@ -1172,8 +1172,17 @@ func (n *ExecutionNode) securedWorkerContext(ctx context.Context, workspace stri
 		// nor a Server Artifact publisher. Real Daemons always initialize one.
 		return ctx
 	}
+	nodeDir := filepath.Dir(n.store.path)
+	// A Server-owned Node is conventionally stored at
+	// <server-data-dir>/node/data/node-state.json. Protect the Server's
+	// entire state root too, including secretary.db, WAL/SHM and settings.
+	serverRoot := ""
+	if filepath.Base(nodeDir) == "data" && filepath.Base(filepath.Dir(nodeDir)) == "node" {
+		serverRoot = filepath.Dir(filepath.Dir(nodeDir))
+	}
 	return nativeexec.WithWorkerSandbox(ctx, nativeexec.WorkerSandbox{
-		ProtectedDir: filepath.Dir(n.store.path),
+		ProtectedDir: nodeDir,
+		ServerDataDir: serverRoot,
 		Workspace: workspace,
 	})
 }

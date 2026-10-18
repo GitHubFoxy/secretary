@@ -74,7 +74,13 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 		"--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
 		"--tmpfs", "/", "--dev", "/dev",
 	}
-	for _, systemRoot := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"} {
+	// Do not share user-writable system configuration roots wholesale.
+	// A Server --data-dir can be /etc/secretary or /usr/local/share/secretary.
+	for _, systemRoot := range []string{"/usr/bin", "/usr/lib", "/usr/lib64",
+		"/usr/share/nodejs", "/usr/share/zoneinfo", "/usr/share/ca-certificates",
+		"/usr/local/bin", "/usr/local/lib", "/bin", "/sbin", "/lib", "/lib64",
+		"/etc/ssl", "/etc/hosts", "/etc/resolv.conf", "/etc/nsswitch.conf",
+		"/etc/passwd", "/etc/group"} {
 		if _, statErr := os.Stat(systemRoot); statErr == nil {
 			wrapped = append(wrapped, "--ro-bind", systemRoot, systemRoot)
 		}
@@ -149,6 +155,14 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	// nested under /etc, /usr, or a CLI installation) cannot be exposed by
 	// a later mount. Explicit OpenCode and workspace binds were checked.
 	wrapped = append(wrapped, "--tmpfs", protected)
+	if policy.ServerDataDir != "" {
+		serverRoot, resolveErr := filepath.EvalSymlinks(policy.ServerDataDir)
+		if resolveErr != nil { return "", nil, fmt.Errorf("worker sandbox: Server private data root unavailable: %w",resolveErr) }
+		if serverRoot == "/" || serverRoot == workspace || strings.HasPrefix(serverRoot,workspace+string(filepath.Separator)) {
+			return "", nil, errors.New("worker sandbox: Server data root overlaps Worker workspace")
+		}
+		wrapped = append(wrapped, "--tmpfs", serverRoot)
+	}
 	if nativeStore != "" {
 		// The narrowly authorized provider state may live within the
 		// otherwise hidden Node directory, unlike its signing keys.

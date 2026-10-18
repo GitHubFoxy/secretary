@@ -46,7 +46,12 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	if err := os.MkdirAll(workerTemp, 0700); err != nil {
 		return "", nil, errors.New("worker sandbox: create private Worker temp directory")
 	}
-	reads := []string{workerTemp, "/opt/homebrew", "/private/var/db", "/System", "/usr", "/bin", "/sbin", "/Library", "/Applications", "/private/etc", "/private/var/db/dyld", "/dev", workspace, executable}
+	// Do not grant entire /Library, /private/etc or /private/tmp: those
+	// locations can hold the co-located Server's SQLite/HMAC state.
+	reads := []string{workerTemp, "/opt/homebrew/bin", "/opt/homebrew/lib",
+		"/private/var/db/dyld", "/System", "/usr/bin", "/usr/lib", "/bin",
+		"/sbin", "/Library/Frameworks", "/Library/Developer", "/Applications",
+		"/private/etc/ssl", "/dev", workspace, executable}
 	writes := []string{workspace, workerTemp}
 	for _, name := range []string{".codex", ".claude", ".claude.json"} {
 		state := filepath.Join(home, name)
@@ -95,6 +100,22 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	// OpenCode store beneath the same parent. If the administrator places
 	// Node state INSIDE an allowed system directory, add an explicit deny.
 	// Fail closed rather than granting an overlapping OpenCode store there.
+	if policy.ServerDataDir != "" {
+		serverRoot, err := filepath.EvalSymlinks(policy.ServerDataDir)
+		if err != nil { return "", nil, fmt.Errorf("worker sandbox: Server data root unavailable: %w",err) }
+		if serverRoot == workspace || strings.HasPrefix(serverRoot,workspace+string(filepath.Separator)) {
+			return "", nil, errors.New("worker sandbox: Worker workspace overlaps Server data")
+		}
+		for _, shared := range reads {
+			if shared == serverRoot || strings.HasPrefix(serverRoot,shared+string(filepath.Separator)) {
+				// Deny the Server root regardless of which allowlisted system
+				// package subtree contains its SQLite secret material.
+				profile.WriteString("(deny file-read* (subpath " + strconv.Quote(serverRoot) + "))\n")
+				profile.WriteString("(deny file-write* (subpath " + strconv.Quote(serverRoot) + "))\n")
+				break
+			}
+		}
+	}
 	exposed := false
 	for _, root := range reads {
 		if root == protected || strings.HasPrefix(protected, root+string(filepath.Separator)) {

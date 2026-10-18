@@ -6,6 +6,9 @@ import "context"
 // Worker subprocesses, including shells and MCP child processes.
 type WorkerSandbox struct {
 	ProtectedDir string
+	// Co-located Secretary Server state: its SQLite DB contains encrypted
+	// Node credentials and the transport secret needed to decrypt them.
+	ServerDataDir string
 	Workspace string
 	WritableDataHome string
 }
