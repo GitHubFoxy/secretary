@@ -51,6 +51,12 @@ func t15VerifyPublishedDocumentRelay(t *testing.T,ctx context.Context,api *Serve
   return a
  }
  adapter:=open()
+ // Pair the optional General forum through the real Telegram adapter path.
+ // Configuring GroupChatID alone does not authorize or link that forum.
+ if err:=adapter.HandleUpdate(ctx,telegram.Update{ID:710,Message:&telegram.Message{
+  MessageID:710,ChatID:-200,ChatType:"supergroup",IsForum:true,FromID:100,
+  Text:"/linkgroup",
+ }});err!=nil{t.Fatal(err)}
  project:=func(source core.Event)telegram.Event{
   if event,ok:=telegram.ProjectCoreWorkerEvent(source);ok{return event}
   return telegram.Event{EventID:source.ID,Sequence:source.Seq}
