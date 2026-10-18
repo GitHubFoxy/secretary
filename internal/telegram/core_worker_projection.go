@@ -1,0 +1,36 @@
+package telegram
+
+import (
+ "encoding/json"
+ "strings"
+ "github.com/beruseruko/secretary/internal/core"
+)
+
+// ProjectCoreWorkerEvent maps Server-issued Worker lifecycle records to
+// canonical Telegram messages. Both production bridge and E2E use it.
+func ProjectCoreWorkerEvent(source core.Event)(Event,bool){
+ if source.Kind!="worker.spawned"&&source.Kind!="attempt.outcome_recorded"&&source.Kind!="result.accepted"{return Event{},false}
+ var p map[string]any
+ _=json.Unmarshal(source.Payload,&p)
+ ref:=source.WorkerRef
+ if ref==""&&source.AggregateType=="worker"{ref=source.AggregateID}
+ get:=func(k string)string{v,_:=p[k].(string);return strings.TrimSpace(v)}
+ out:=Event{EventID:source.ID,Sequence:source.Seq,WorkerRef:ref,Payload:source.Payload,
+  AttemptID:source.AttemptID,Title:get("title")}
+ if source.Kind=="worker.spawned"{
+  out.Kind="worker.created";out.TaskPrompt=get("intent");out.NodeID=get("node_id")
+  return out,true
+ }
+ if source.Kind=="attempt.outcome_recorded"&&get("summary")==""{return out,true}
+ if source.Kind=="attempt.outcome_recorded"&&get("classification")=="retryable"{return out,true}
+ out.Kind="worker.completed"
+ out.Text=get("summary")
+ if out.Text==""{out.Text=get("result")}
+ if out.Text==""{out.Text=get("error")}
+ status:=strings.ToLower(get("status"))
+ if strings.Contains(status,"cancel"){out.Kind="worker.canceled"}else if strings.Contains(status,"offline")||strings.Contains(status,"interrupt"){out.Kind="worker.offline"}else if strings.Contains(status,"fail")||strings.Contains(status,"error"){out.Kind="worker.failed"}
+ id:=strings.TrimSpace(source.CorrelationID)
+ if id!=""{out.TerminalIdentity="turn:"+id}else if turnID:=get("turn_id");turnID!=""{out.TerminalIdentity="turn:"+turnID}else if resultID:=get("id");resultID!=""{out.TerminalIdentity="result:"+resultID}else if source.AggregateID!=""{out.TerminalIdentity=source.AggregateType+":"+source.AggregateID}
+ out.WorkerAttemptTerminal=true
+ return out,true
+}
