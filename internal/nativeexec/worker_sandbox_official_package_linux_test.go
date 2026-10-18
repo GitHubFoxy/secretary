@@ -127,8 +127,16 @@ func TestT09RealCodexPersistedSessionResume(t *testing.T) {
  if !strings.Contains(first,"T09-CONTINUED-1"){t.Fatalf("first real session did not complete: %s",first)}
  entries,err:=os.ReadDir(filepath.Join(home,".codex","sessions"))
  if err!=nil || len(entries)==0{t.Fatalf("no persisted Codex sessions after Start: %v",err)}
- second:=run("exec","resume","--json","--skip-git-repo-check",session,"Second turn: confirm ALPHA was in our earlier exchange")
+ second:=run("exec","resume","--json","--skip-git-repo-check",session,"Second turn: continue the previous conversation without repeating its marker")
  if !strings.Contains(second,"T09-CONTINUED-2"){t.Fatalf("same-session native Resume did not continue: %s",second)}
+ resumedID:=""
+ for scan:=bufio.NewScanner(strings.NewReader(second));scan.Scan();{
+  var event struct{Type string `json:"type"`;ThreadID string `json:"thread_id"`}
+  if json.Unmarshal(scan.Bytes(),&event)==nil && event.Type=="thread.started"{resumedID=event.ThreadID}
+ }
+ if resumedID!=session{t.Fatalf("resumed a different thread: start=%q resume=%q output=%s",session,resumedID,second)}
  if len(inputs)!=2{t.Fatalf("expected exactly two real provider calls, got %d",len(inputs))}
- if !strings.Contains(inputs[1],"ALPHA"){t.Fatalf("resumed model context omitted the prior turn: %s",inputs[1])}
+ if strings.Contains(inputs[1],"Second turn: confirm ALPHA"){t.Fatal("resume prompt accidentally leaked marker")}
+ if !strings.Contains(inputs[0],"ALPHA"){t.Fatalf("first request did not contain marker: %s",inputs[0])}
+ if !strings.Contains(inputs[1],"ALPHA"){t.Fatalf("restored backend input omitted marker found only in first prompt: %s",inputs[1])}
 }
