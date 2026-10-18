@@ -66,9 +66,9 @@ func main() {
 		}
 		if _,e:=os.Stat(*dataDir);e==nil {
 			entries,e:=os.ReadDir(*dataDir);if e!=nil { log.Fatal(e) }
-			if len(entries)!=0 { log.Fatal("restore requires an empty destination data directory") }
+			if len(entries)!=0 { log.Fatal("restore requires a nonexistent destination data directory") }
+            if e=os.Remove(*dataDir);e!=nil {log.Fatal(e)}
 		} else if !os.IsNotExist(e) { log.Fatal(e) }
-		if e:=os.MkdirAll(*dataDir,0o700);e!=nil { log.Fatal(e) }
 		// A restore can only install the extras listed in the archive manifest.
 		// For a standalone restore, use the known optional files when present.
 		if e:=core.RestoreServerBackupAuto(context.Background(),*restoreFrom,*dataDir);e!=nil { log.Fatal(e) }
