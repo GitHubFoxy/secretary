@@ -920,6 +920,8 @@ func (s *acpSession) RebindPendingRequests(requests []PendingRequest) {
 	}
 }
 
+func (s *acpSession) SupportsImageResponse() bool { return s.imageSupported }
+
 // ACP's interaction reply is textual. Deliver the actual image through
 // the negotiated multimodal steering channel first, and acknowledge the
 // pending interaction ONLY if the native turn confirms injection.
@@ -933,8 +935,15 @@ func (s *acpSession) RespondImages(ctx context.Context, requestID, response stri
 	s.requestMu.Lock()
 	_, pending := s.pending[requestID]
 	_, rebound := s.reboundResponses[requestID]
+	restored := false
+	for _, request := range s.rebound {
+		if request.RequestID == requestID && (request.Kind == "" || request.Kind == ActivityUserInput) {
+			restored = true
+			break
+		}
+	}
 	s.requestMu.Unlock()
-	if !pending && !rebound {
+	if !pending && !rebound && !restored {
 		return errors.New("acp: no active native interaction to receive an image response")
 	}
 	injected, err := s.SteerImages(ctx, response, images)

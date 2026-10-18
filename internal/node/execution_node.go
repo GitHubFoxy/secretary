@@ -579,6 +579,9 @@ func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerComma
 			if _, ok := session.(ImageResponseSession); !ok {
 				return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "image_input_unsupported", "selected native Worker does not support image needs_input responses")
 			}
+			if capability, ok := session.(ImageResponseCapability); ok && !capability.SupportsImageResponse() {
+				return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "image_input_unsupported", ErrImageResponseUnsupported.Error())
+			}
 		}
 	}
 	storedResponse, duplicate, err := n.store.ClaimWorkerResponse(command.RequestID)
@@ -622,7 +625,11 @@ func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerComma
 		respondErr = responder.Respond(ctx, command.RequestID, response)
 	}
 	if err := respondErr; err != nil {
-		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "execution_state_unknown", err.Error())
+		code := "execution_state_unknown"
+		if errors.Is(err, ErrImageResponseUnsupported) {
+			code = "image_input_unsupported"
+		}
+		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, code, err.Error())
 		_ = n.store.CompleteWorkerResponse(command.RequestID, outcome)
 		return outcome
 	}

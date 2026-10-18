@@ -17,6 +17,7 @@ import (
 var ErrFormatting = errors.New("telegram: entity parsing rejected")
 var ErrFileTooLarge = errors.New("telegram: file exceeds maximum size")
 var ErrTelegramFileRejected = errors.New("telegram: file permanently rejected by Bot API")
+var ErrTelegramDownloadRejected = errors.New("telegram: file download permanently rejected")
 
 func botAPIError(method string, code int, description string) error {
 	lower := strings.ToLower(description)
@@ -274,6 +275,11 @@ func (t *BotAPITransport) DownloadFile(ctx context.Context, filePath string, max
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
+		if response.StatusCode == http.StatusBadRequest || response.StatusCode == http.StatusForbidden ||
+			response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusGone ||
+			response.StatusCode == http.StatusRequestEntityTooLarge || response.StatusCode == http.StatusUnprocessableEntity {
+			return nil, fmt.Errorf("%w (HTTP %d)", ErrTelegramDownloadRejected, response.StatusCode)
+		}
 		return nil, fmt.Errorf("telegram: file download failed with status %d", response.StatusCode)
 	}
 	limit := maxBytes

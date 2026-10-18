@@ -86,7 +86,10 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 		if len(images) > 0 {
 			multimodal, ok := session.(node.ImageResponseSession)
 			if !ok {
-				return node.CommandOutcome{}, errors.New("image_input_unsupported: local Worker cannot respond to needs_input with images")
+				return node.CommandOutcome{}, node.ErrImageResponseUnsupported
+			}
+			if capability, ok := session.(node.ImageResponseCapability); ok && !capability.SupportsImageResponse() {
+				return node.CommandOutcome{}, node.ErrImageResponseUnsupported
 			}
 			err = multimodal.RespondImages(ctx, response.RequestID, text, images)
 		} else {
@@ -97,6 +100,9 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 			err = responder.Respond(ctx, response.RequestID, text)
 		}
 		if err != nil {
+			if errors.Is(err, node.ErrImageResponseUnsupported) {
+				return node.CommandOutcome{}, err
+			}
 			return node.CommandOutcome{}, fmt.Errorf("%w: %w", node.ErrCommandOutcomeUnknown, err)
 		}
 	case node.CommandSteering:

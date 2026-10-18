@@ -973,6 +973,12 @@ func (a *Adapter) deliverTextUpdate(ctx context.Context, update Update, allowed 
 				}
 				if isSteerRejection(err) {
 					serviceText := formatWorkerSteerErrorMessage(err)
+					if update.ImageWorkerRef != "" {
+						// Image ingestion has a separate durable completion.
+						// Do not repeat getFile after a terminal native rejection
+						// merely because Telegram failed to deliver the warning.
+						return a.imageNotice(ctx, update, serviceText)
+					}
 					sendErr := a.sendMessage(ctx, OutgoingMessage{
 						Identity: fmt.Sprintf("steer-error:%d", update.ID),
 						ChatID:   update.Message.ChatID,

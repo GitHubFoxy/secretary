@@ -44,6 +44,15 @@ type ImageResponseSession interface {
 	RespondImages(context.Context, string, string, []ImageInput) error
 }
 
+// A runtime may implement the image-response interface while a particular
+// native session has negotiated text-only capabilities (notably ACP).
+// Check this before claiming the durable needs_input response.
+type ImageResponseCapability interface {
+	SupportsImageResponse() bool
+}
+
+var ErrImageResponseUnsupported = errors.New("image_input_unsupported: native session cannot accept image responses")
+
 func ValidateStillImage(name string, data []byte) (ImageInput, error) {
 	if len(data) == 0 || len(data) > core.MaxArtifactBytes {
 		return ImageInput{}, errors.New("image: empty or oversized original (maximum 8 MiB)")

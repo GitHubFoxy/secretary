@@ -124,6 +124,24 @@ func (a *Adapter) imageAuthorized(u Update) bool {
 	return true
 }
 
+// A delayed Telegram photo belongs to its original needs_input request.
+// Never silently rebind it to another pending question while downloading.
+func (a *Adapter) imageRequestStillCurrent(u Update) bool {
+	if u.Message == nil || u.Message.ThreadID == 0 || u.Message.ThreadID == 1 {
+		return true
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	mapping, ok := a.mappingForThreadLocked(u.Message.ChatID, u.Message.ThreadID)
+	if !ok || (u.ImageWorkerRef != "" && u.ImageWorkerRef != mapping.WorkerRef) {
+		return false
+	}
+	if u.WorkerRequestID == nil {
+		return false
+	}
+	return *u.WorkerRequestID == mapping.PendingRequestID
+}
+
 func (a *Adapter) deliverImageUpdate(ctx context.Context, u Update, allowed bool) error {
 	if !allowed || !a.imageAuthorized(u) {
 		return nil
@@ -131,6 +149,9 @@ func (a *Adapter) deliverImageUpdate(ctx context.Context, u Update, allowed bool
 	m := u.Message
 	fail := func(reason string) error {
 		return a.imageNotice(ctx, u, "Не удалось обработать изображение: "+reason)
+	}
+	if !a.imageRequestStillCurrent(u) {
+		return fail("вопрос Worker изменился до обработки фотографии; отправьте фотографию заново для текущего вопроса.")
 	}
 	name, err := imageArtifactName(u)
 	if err != nil {
@@ -172,6 +193,9 @@ func (a *Adapter) deliverImageUpdate(ctx context.Context, u Update, allowed bool
 		if errors.Is(err, ErrFileTooLarge) {
 			return fail("файл превышает лимит 8 МиБ.")
 		}
+		if errors.Is(err, ErrTelegramDownloadRejected) {
+			return fail("Telegram отклонил скачивание файла (постоянная ошибка).")
+		}
 		return fmt.Errorf("telegram: download image: %w", err)
 	}
 	if len(data) == 0 || len(data) > core.MaxArtifactBytes {
@@ -190,6 +214,9 @@ func (a *Adapter) deliverImageUpdate(ctx context.Context, u Update, allowed bool
 	}
 	if !a.imageAuthorized(u) {
 		return nil
+	}
+	if !a.imageRequestStillCurrent(u) {
+		return fail("вопрос Worker изменился во время загрузки; отправьте фотографию заново для текущего вопроса.")
 	}
 	artifactID, err := artifactStore.StoreImageOriginal(ctx, u.ID, *m, name, data)
 	if err != nil {
@@ -223,8 +250,7 @@ func (a *Adapter) deliverImageUpdate(ctx context.Context, u Update, allowed bool
 			return nil
 		}
 		if request == nil || *request != mapping.PendingRequestID {
-			current := mapping.PendingRequestID
-			request = &current
+			return fail("вопрос Worker изменился; исходная фотография не может отвечать на другой вопрос.")
 		}
 	}
 	return a.deliverTextUpdate(ctx, u, allowed, request)
