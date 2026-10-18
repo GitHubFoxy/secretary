@@ -62,3 +62,31 @@ func TestT16ArchiveWorkerPreservesPublishedArtifact(t *testing.T){
  after,err:=s.Phase4Result(ctx,turn.ID)
  if err!=nil||after.ID!=result.ID{t.Fatalf("archive lost result %v %v",after,err)}
 }
+
+func TestT16VoiceDeletionCleansUnreferencedTranscript(t *testing.T){
+ ctx:=context.Background();s:=newTestStore(t)
+ owner,conversation,err:=s.CreatePersonWithConversation(ctx);if err!=nil{t.Fatal(err)}
+ source,_,err:=s.SaveArtifact(ctx,owner.ID,conversation.ID,"voice-source","voice.ogg","audio/ogg",[]byte("audio bytes"))
+ if err!=nil{t.Fatal(err)}
+ transcript,_,err:=s.SaveArtifact(ctx,owner.ID,conversation.ID,"voice-transcript","transcript.md","text/markdown",[]byte("transcribed words"))
+ if err!=nil{t.Fatal(err)}
+ if err=s.RegisterVoiceSource(ctx,owner.ID,source.ID,"voice-key");err!=nil{t.Fatal(err)}
+ if err=s.LinkVoiceTranscript(ctx,owner.ID,source.ID,transcript.ID,"voice-key");err!=nil{t.Fatal(err)}
+ if err=s.DeleteOwnerArtifact(ctx,owner.ID,source.ID);err!=nil{t.Fatal(err)}
+ if _,_,err=s.ArtifactForPerson(ctx,owner.ID,source.ID);err!=ErrNotFound{t.Fatalf("source retained: %v",err)}
+ if _,_,err=s.ArtifactForPerson(ctx,owner.ID,transcript.ID);err!=ErrNotFound{t.Fatalf("orphan transcript retained: %v",err)}
+}
+
+func TestT16VoiceDeletionPreservesResultReferencedTranscript(t *testing.T){
+ ctx:=context.Background();s:=newTestStore(t)
+ owner,conversation,err:=s.CreatePersonWithConversation(ctx);if err!=nil{t.Fatal(err)}
+ source,_,err:=s.SaveArtifact(ctx,owner.ID,conversation.ID,"shared-voice","voice.ogg","audio/ogg",[]byte("audio bytes"))
+ if err!=nil{t.Fatal(err)}
+ transcript,_,err:=s.SaveArtifact(ctx,owner.ID,conversation.ID,"shared-transcript","transcript.md","text/markdown",[]byte("shared words"))
+ if err!=nil{t.Fatal(err)}
+ if err=s.RegisterVoiceSource(ctx,owner.ID,source.ID,"shared-voice-key");err!=nil{t.Fatal(err)}
+ if err=s.LinkVoiceTranscript(ctx,owner.ID,source.ID,transcript.ID,"shared-voice-key");err!=nil{t.Fatal(err)}
+ if _,err=s.db.ExecContext(ctx,"INSERT INTO conversation_entries(id,conversation_id,kind,body,created_at) VALUES(?,?,?,?,?)",newID("entry"),conversation.ID,"system","Referenced derivative artifact://"+transcript.ID,timestamp(s.now()));err!=nil{t.Fatal(err)}
+ if err=s.DeleteOwnerArtifact(ctx,owner.ID,source.ID);err!=nil{t.Fatal(err)}
+ if _,bytes,err:=s.ArtifactForPerson(ctx,owner.ID,transcript.ID);err!=nil||string(bytes)!="shared words"{t.Fatalf("shared derivative lost: %q, %v",bytes,err)}
+}
