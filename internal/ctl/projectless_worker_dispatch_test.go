@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"sync"
+ "strings"
 	"testing"
 	"time"
 
@@ -176,6 +177,13 @@ func TestT13AutomaticTelegramVideoRequiresImageInputCapability(t *testing.T) {
  if !errors.Is(err,core.ErrInvalidDispatchPin){t.Fatalf("unsupported automatic Worker selection not rejected: %v",err)}
  workers,err:=store.WorkersForConversation(ctx,conversation.ID)
  if err!=nil||len(workers)!=0{t.Fatalf("unsupported video created Worker: workers=%+v err=%v",workers,err)}
+ entries,err:=store.EntriesTail(ctx,conversation.ID,0,20)
+ if err!=nil{t.Fatal(err)}
+ warned:=false
+ for _,entry:=range entries {
+  if entry.Kind==core.EntrySecretary && strings.Contains(entry.Body,"CapabilityImageInput") { warned=true }
+ }
+ if !warned{t.Fatal("unsupported DM video did not publish a durable Telegram-visible rejection")}
  native.mu.Lock();defer native.mu.Unlock()
  if len(native.starts)!=0{t.Fatal("unsupported native Worker received Telegram video")}
 }
