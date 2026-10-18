@@ -131,7 +131,11 @@ func(a *Adapter)sendDocumentAttachment(ctx context.Context,message OutgoingMessa
  sender,ok:=a.transport.(DocumentSendTransport)
  if !ok{return documentFailure(documentFailurePermanent,errors.New("Bot sendDocument unavailable"))}
  name,mediaType,data,err:=source.DownloadDocument(ctx,message.DocumentArtifactID)
- if err!=nil{return err}
+ if err!=nil{
+  var classified *documentDeliveryFailure
+  if errors.As(err,&classified){return err}
+  return documentFailure(documentFailureRetryable,err)
+ }
  if len(data)==0||len(data)>core.MaxArtifactBytes{return documentFailure(documentFailurePermanent,errors.New("published document exceeds 8 MiB or is empty"))}
  return sender.SendDocument(ctx,message.ChatID,message.ThreadID,name,mediaType,data,message.Text)
 }
@@ -140,13 +144,13 @@ func(c *HTTPServerClient)DownloadDocument(ctx context.Context,id string)(string,
  req,err:=http.NewRequestWithContext(ctx,http.MethodGet,strings.TrimRight(c.BaseURL,"/")+"/v1/internal/telegram/document/"+url.PathEscape(id),nil)
  if err!=nil{return "","",nil,err}
  req.Header.Set("Authorization","Bearer "+c.Credential)
- res,err:=c.client().Do(req);if err!=nil{return "","",nil,err};defer res.Body.Close()
+ res,err:=c.client().Do(req);if err!=nil{return "","",nil,documentFailure(documentFailureRetryable,err)};defer res.Body.Close()
  if res.StatusCode!=200{
   kind:=documentFailurePermanent
   if res.StatusCode==429||res.StatusCode>=500{kind=documentFailureRetryable}
   return "","",nil,documentFailure(kind,fmt.Errorf("document retrieval HTTP %d",res.StatusCode))
  }
- data,err:=io.ReadAll(io.LimitReader(res.Body,core.MaxArtifactBytes+1));if err!=nil{return "","",nil,err}
+ data,err:=io.ReadAll(io.LimitReader(res.Body,core.MaxArtifactBytes+1));if err!=nil{return "","",nil,documentFailure(documentFailureRetryable,err)}
  if len(data)==0||len(data)>core.MaxArtifactBytes{return "","",nil,documentFailure(documentFailurePermanent,errors.New("document exceeds 8 MiB"))}
  _,params,err:=mime.ParseMediaType(res.Header.Get("Content-Disposition"))
  if err!=nil{return "","",nil,err}
