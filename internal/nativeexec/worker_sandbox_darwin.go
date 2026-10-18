@@ -52,6 +52,14 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 		"/private/var/db/dyld", "/System", "/usr/bin", "/usr/lib", "/bin",
 		"/sbin", "/Library/Frameworks", "/Library/Developer", "/Applications",
 		"/private/etc/ssl", "/dev", workspace, executable}
+	// A configured Node root that is itself a parent of an essential OS
+	// library/package mount cannot be masked without breaking native CLI
+	// startup. Refuse launch rather than silently exposing its files.
+	for _, allowedRoot := range reads {
+		if protected == allowedRoot || strings.HasPrefix(allowedRoot,protected+string(filepath.Separator)) {
+			return "",nil,errors.New("worker sandbox: protected Node root overlaps a required system runtime directory")
+		}
+	}
 	writes := []string{workspace, workerTemp}
 	for _, name := range []string{".codex", ".claude", ".claude.json"} {
 		state := filepath.Join(home, name)
