@@ -31,11 +31,10 @@ jobs:
         run: |
           npm install --prefix "$RUNNER_TEMP/t09-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.163.0
           sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0
-          sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0-linux-x64
+          sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0-linux-x64 @openai/codex-linux-x64
       - name: Real Codex session persistence and same-session Resume
         env:
           T09_REAL_CODEX: ${{ runner.temp }}/t09-codex/node_modules/@openai/codex/bin/codex.js
-        run: go test ./internal/nativeexec -run '^TestT09RealCodexPersistedSessionResume        run: go test ./internal/e2e ./internal/core ./internal/secretary ./internal/mcp ./internal/config ./internal/ctl
- -count=1 -v -timeout 120s
+        run: go test ./internal/nativeexec -run '^TestT09RealCodexPersistedSessionResume$' -count=1 -v -timeout 120s
       - name: Test Secretary routing and lifecycle
         run: go test ./internal/e2e ./internal/core ./internal/secretary ./internal/mcp ./internal/config ./internal/ctl
