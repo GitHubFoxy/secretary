@@ -141,3 +141,23 @@ func RestoreServerBackup(ctx context.Context,archive,dbDestination string,extraD
  }
  return nil
 }
+
+// RestoreServerBackupAuto discovers archive extras and installs them only under
+// a fresh Server data directory. This deliberately excludes Node-native data.
+func RestoreServerBackupAuto(ctx context.Context, archive, dataDir string) error {
+ zr,err:=zip.OpenReader(archive);if err!=nil{return err}
+ extras:=map[string]string{}
+ for _,f:=range zr.File {
+  if !strings.HasPrefix(f.Name,"extras/"){continue}
+  name:=strings.TrimPrefix(f.Name,"extras/")
+  switch name {
+  case "config.toml","user.md","memory.md","preferences.md":
+   extras[name]=filepath.Join(dataDir,name)
+  default:
+   zr.Close()
+   return fmt.Errorf("unsupported restore extra: %s",name)
+  }
+ }
+ zr.Close()
+ return RestoreServerBackup(ctx,archive,filepath.Join(dataDir,"secretary.db"),extras)
+}
