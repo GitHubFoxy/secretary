@@ -126,6 +126,8 @@ func TestT16RestoreInterruptionRecoversWithoutPartialPublication(t *testing.T) {
   if err=os.Mkdir(stale,0700);err!=nil{t.Fatal(err)}
   if err=os.WriteFile(filepath.Join(stale,"incomplete"),[]byte("crash residue"),0600);err!=nil{t.Fatal(err)}
   if err=RestoreServerBackup(ctx,archive,database,extras);err!=nil{t.Fatalf("recovery after %s: %v",failAt,err)}
+  kept,err:=os.ReadFile(filepath.Join(stale,"incomplete"))
+  if err!=nil||string(kept)!="crash residue"{t.Fatalf("unowned colliding staging was modified: %q %v",kept,err)}
   restored,err:=Open(ctx,database);if err!=nil{t.Fatal(err)}
   _,body,err:=restored.ArtifactForPerson(ctx,owner.ID,original.ID)
   restored.Close()
@@ -142,4 +144,20 @@ func TestT16BackupAndRestoreAreDurablyPublished(t *testing.T){
  restored:=filepath.Join(dir,"complete")
  if err=RestoreServerBackup(ctx,archive,filepath.Join(restored,"secretary.db"),nil);err!=nil{t.Fatal(err)}
  if _,err=os.Stat(filepath.Join(restored,"secretary.db"));err!=nil{t.Fatal(err)}
+}
+
+func TestT16BackupPublishedButDirectorySyncFailed(t *testing.T){
+ ctx:=context.Background()
+ source,err:=Open(ctx,filepath.Join(t.TempDir(),"source.db"));if err!=nil{t.Fatal(err)};defer source.Close()
+ dest:=filepath.Join(t.TempDir(),"backup.zip")
+ backupPublicationSyncHook=func(string)error{return errors.New("injected directory fsync failure")}
+ defer func(){backupPublicationSyncHook=nil}()
+ err=source.CreateServerBackup(ctx,dest,nil)
+ if !errors.Is(err,ErrBackupPublishedDurabilityUnconfirmed){t.Fatalf("must report published-but-durability-unconfirmed: %v",err)}
+ data,readErr:=os.ReadFile(dest)
+ if readErr!=nil||len(data)==0{t.Fatalf("published backup lost: %v",readErr)}
+ backupPublicationSyncHook=nil
+ restored:=filepath.Join(t.TempDir(),"restored")
+ if err=RestoreServerBackup(ctx,dest,filepath.Join(restored,"secretary.db"),nil);err!=nil{t.Fatalf("published archive not usable: %v",err)}
+ if err=source.CreateServerBackup(ctx,dest,nil);err==nil{t.Fatal("retry must not silently replace existing archive")}
 }
