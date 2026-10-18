@@ -36,12 +36,13 @@ def main():
         package = override
     if not version or "/" in version or ".." in version:
         raise SystemExit("invalid package version")
-    registry = json.loads(command("npm", "view", f"{package}@{version}", "dist", "--json"))
+    registry_package = PACKAGES[provider] if provider == "codex" and len(sys.argv) == 4 else package
+    registry = json.loads(command("npm", "view", f"{registry_package}@{version}", "dist", "--json"))
     if not registry.get("integrity", "").startswith("sha512-"):
         raise SystemExit("registry must provide sha512 integrity")
     with tempfile.TemporaryDirectory() as temp:
         packed = subprocess.check_output(
-            ["npm", "pack", f"{package}@{version}", "--pack-destination", temp, "--json"],
+            ["npm", "pack", f"{registry_package}@{version}", "--pack-destination", temp, "--json"],
             text=True,
         )
         item = json.loads(packed)[0]
