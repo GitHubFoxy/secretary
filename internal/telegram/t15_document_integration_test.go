@@ -250,6 +250,7 @@ type t15FallbackServer struct{
 }
 func(s *t15FallbackServer)OwnerArtifactDownloadURL(_ context.Context,id string)(string,error){
  if id==""{return "",errors.New("missing Artifact")}
+ if err:=ValidateOwnerWebBaseURL(s.ownerURL);err!=nil{return "",err}
  return s.ownerURL+"/v1/artifacts/"+id+"?download=1",nil
 }
 func TestT15OversizeOutputKeepsOwnerAuthorizedDownloadFallback(t *testing.T){
@@ -297,7 +298,7 @@ func TestT15MissingOwnerWebOriginNeverAdvertisesInternalLocalhost(t *testing.T){
   if err:=ValidateOwnerWebBaseURL(origin);err==nil{t.Fatalf("accepted unreachable owner URL %q",origin)}
  }
  tr:=&t15RejectDocumentTransport{fakeTransport:&fakeTransport{}}
- srv:=&t15DeliveryServer{bytes:[]byte("original remains on Server")}
+ srv:=&t15FallbackServer{t15DeliveryServer:t15DeliveryServer{bytes:[]byte("original remains on Server")}}
  a,err:=New(Config{StatePath:filepath.Join(t.TempDir(),"missing-web-url.json"),OwnerChatID:100},tr,srv)
  if err!=nil{t.Fatal(err)}
  // A production-like HTTPServerClient has a loopback internal URL but no
