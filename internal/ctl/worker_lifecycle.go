@@ -570,8 +570,18 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 			// A DM/General video has no bound Topic worker at Telegram ingress.
 			// Emit an explicit durable Secretary-facing rejection once automatic
 			// selection discovers that no eligible Worker accepts image frames.
-			_, noticeErr := s.Store.AppendEntry(ctx, conversation.ID, core.EntrySecretary,
-				"Не удалось обработать видео: выбранный Worker не поддерживает CapabilityImageInput. Выберите Worker с поддержкой изображений.")
+			message := "Не удалось обработать видео: выбранный Worker не поддерживает CapabilityImageInput. Выберите Worker с поддержкой изображений."
+			var noticeErr error
+			if origin != nil {
+				// An acknowledgement is a durable, independently projected
+				// Secretary response. It reaches DM/General without waiting
+				// for the failed tool turn's final text batch, and replay is
+				// idempotent for the originating Secretary input.
+				_, _, noticeErr = s.Store.RecordSecretaryAcknowledgement(ctx,
+					s.PersonID, s.Capability, origin.SecretaryTurnID, origin.InputID, message)
+			} else {
+				_, noticeErr = s.Store.AppendEntry(ctx, conversation.ID, core.EntrySecretary, message)
+			}
 			if noticeErr != nil {
 				return core.WorkerDetails{}, fmt.Errorf("video capability rejection notice: %w (selection: %v)", noticeErr, err)
 			}
