@@ -119,6 +119,23 @@ func (s *LocalStore) persistLocked() error {
 	return os.Rename(tmp, s.path)
 }
 
+// Preserve conservative unknown-execution recovery for commands unrelated to
+// Artifact preparation. T12 video/image references can be proven unstarted
+// while blocked on media, but ordinary Worker actions cannot.
+func hasPrestartArtifactReference(command Command) bool {
+	switch command.Kind {
+	case CommandDispatch:
+		if command.Dispatch==nil{return false}
+		env:=command.Dispatch.Envelope
+		return len(ArtifactIDs(env.OriginalUserIntent))>0 || len(ArtifactIDs(env.ContinuationPrompt))>0
+	case CommandResume:
+		if command.Resume==nil{return false}
+		env:=command.Resume.Envelope
+		return len(ArtifactIDs(env.OriginalUserIntent))>0 || len(ArtifactIDs(env.ContinuationPrompt))>0
+	}
+	return false
+}
+
 func (s *LocalStore) ClaimCommand(command Command) (CommandRecord, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -159,7 +176,7 @@ func (s *LocalStore) ClaimCommand(command Command) (CommandRecord, bool, error) 
 		return CommandRecord{}, false, err
 	}
 	now := time.Now().UTC()
-	record := CommandRecord{CommandID: metadata.CommandID, Kind: command.Kind, State: CommandProcessing, SafePrestart:command.Kind==CommandDispatch||command.Kind==CommandResume, Outcome: CommandOutcome{CommandID: metadata.CommandID, Kind: command.Kind, State: CommandProcessing}, CommandJSON: encoded, ClaimedAt: now, UpdatedAt: now}
+	record := CommandRecord{CommandID: metadata.CommandID, Kind: command.Kind, State: CommandProcessing, SafePrestart:hasPrestartArtifactReference(command), Outcome: CommandOutcome{CommandID: metadata.CommandID, Kind: command.Kind, State: CommandProcessing}, CommandJSON: encoded, ClaimedAt: now, UpdatedAt: now}
 	s.state.Commands[record.CommandID] = record
 	if err := s.persistLocked(); err != nil {
 		delete(s.state.Commands, record.CommandID)
