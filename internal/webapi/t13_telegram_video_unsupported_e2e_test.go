@@ -107,7 +107,9 @@ func TestT13DMTelegramVideoUnsupportedAutoWorkerWarnsBothPersonalProjections(t *
  updates,err:=tr.GetUpdates(ctx,700,time.Second)
  if err!=nil||len(updates)!=1{t.Fatalf("Bot DM video: %+v %v",updates,err)}
  if err:=adapter.HandleUpdate(ctx,updates[0]);err!=nil{t.Fatal(err)}
+ var selectionErr error
  select{case e:=<-failed:
+  selectionErr=e
   if e==nil||!strings.Contains(e.Error(),"capabilit"){t.Fatalf("automatic unsupported Worker was not rejected: %v",e)}
  case <-ctx.Done():t.Fatal("Secretary did not select unsupported Worker")}
  workers,err:=store.WorkersForConversation(ctx,conversation.ID)
@@ -136,7 +138,12 @@ func TestT13DMTelegramVideoUnsupportedAutoWorkerWarnsBothPersonalProjections(t *
    if _,err=telegram.RelayCoreEventsOnce(ctx,store,adapter,projection);err!=nil{t.Fatal(err)}
    return
   }
-  select{case <-ctx.Done():t.Fatalf("missing Telegram rejection in DM/General: %+v",counts)
+  select{case <-ctx.Done():
+   entries,_:=store.EntriesTail(context.Background(),conversation.ID,0,20)
+   events,_:=store.EventsAfterSeq(context.Background(),0,100)
+   kinds:=make([]string,0,len(events))
+   for _,ev:=range events{kinds=append(kinds,ev.Kind)}
+   t.Fatalf("missing Telegram rejection in DM/General: counts=%+v selection=%v entries=%+v events=%+v",counts,selectionErr,entries,kinds)
   case <-time.After(20*time.Millisecond):}
  }
 }
