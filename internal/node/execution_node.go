@@ -42,11 +42,10 @@ type ExecutionNode struct {
 	workspaces        map[string]string
 	mcpServers        []MCPServer
 	artifactFetcher    ArtifactFetcher
-	prestartCancelled map[string]bool
 }
 
 func NewExecutionNode(node core.NodeReference, runtime Runtime, store *LocalStore) *ExecutionNode {
-	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, activitySequences: map[string]uint64{}, workspaces: map[string]string{}, prestartCancelled:map[string]bool{}}
+	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, activitySequences: map[string]uint64{}, workspaces: map[string]string{}}
 }
 
 func (n *ExecutionNode) SetMCPServers(servers []MCPServer) error {
@@ -149,9 +148,11 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 	default:
 		outcome = failedOutcome(command, "unknown_command", "unknown command")
 	}
-	if pendingContinuation && outcome.State == CommandAccepted {
-		return outcome, nil
+	if outcome.State==CommandProcessing && (command.Kind==CommandDispatch || command.Kind==CommandResume){
+		if e:=n.store.YieldPrestart(command.Metadata().CommandID);e!=nil{return CommandOutcome{},e}
+		return CommandOutcome{},ctx.Err()
 	}
+	if pendingContinuation && outcome.State == CommandAccepted {return outcome,nil}
 	stored, err := n.store.CompleteCommand(command.Metadata().CommandID, outcome)
 	if err != nil {
 		return CommandOutcome{}, err
@@ -159,15 +160,16 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 	return stored.Outcome, nil
 }
 
-// dispatchCanceledBeforeStart marks a Cancel received while dependent media
-// was being prepared, before a native session existed. Only this explicit
-// cause, not an unrelated Node disconnect, permits a pre-start Cancel ACK.
-func (n *ExecutionNode) dispatchCanceledBeforeStart(ctx context.Context, command *DispatchCommand) (CommandOutcome,bool) {
-	if !errors.Is(context.Cause(ctx),errWorkerDispatchCanceled) {return CommandOutcome{},false}
-	n.mu.Lock()
-	n.prestartCancelled[command.Metadata.AttemptID]=true
-	n.mu.Unlock()
-	return failedOutcome(Command{Kind:CommandDispatch,Dispatch:command},"canceled_before_handoff","Worker canceled before native session start"),true
+// beforeNativeHandoff distinguishes a terminal owner Cancel from a transport
+// interruption. The latter is yielded as replayable, not artifact_unavailable.
+func (n *ExecutionNode) beforeNativeHandoff(ctx context.Context, command Command) (CommandOutcome,bool) {
+	if errors.Is(context.Cause(ctx),errWorkerDispatchCanceled) {
+		return failedOutcome(command,"canceled_before_handoff","Worker canceled before native session start"),true
+	}
+	if ctx.Err()!=nil{
+		return CommandOutcome{CommandID:command.Metadata().CommandID,Kind:command.Kind,State:CommandProcessing},true
+	}
+	return CommandOutcome{},false
 }
 
 func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) CommandOutcome {
@@ -228,7 +230,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	}
 	prepared, images, artifactErr := n.prepareArtifactInput(ctx, workspace, task)
 	if artifactErr != nil {
-		if outcome,ok:=n.dispatchCanceledBeforeStart(ctx,command);ok {return outcome}
+		if outcome,ok:=n.beforeNativeHandoff(ctx,Command{Kind:CommandDispatch,Dispatch:command});ok {return outcome}
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "artifact_unavailable", artifactErr.Error())
 	}
 	if len(images) > 0 && !supportsImageHarness(command.Envelope.HarnessInstance) {
@@ -244,7 +246,11 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
-	if outcome,ok:=n.dispatchCanceledBeforeStart(ctx,command);ok {return outcome}
+	if outcome,ok:=n.beforeNativeHandoff(ctx,Command{Kind:CommandDispatch,Dispatch:command});ok{return outcome}
+	if e:=n.store.MarkNativeHandoff(ctx,command.Metadata.CommandID);e!=nil{
+		if outcome,ok:=n.beforeNativeHandoff(ctx,Command{Kind:CommandDispatch,Dispatch:command});ok{return outcome}
+		return failedOutcome(Command{Kind:CommandDispatch,Dispatch:command},"native_handoff_record_failed",e.Error())
+	}
 	var session Session
 	if continuing {
 		mapping, mappingErr := n.continuationMapping(command.Envelope, command.Envelope.PreviousAttemptID)
@@ -261,7 +267,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		session, err = n.runtime.Start(ctx, request)
 	}
 	if err != nil {
-		if outcome,ok:=n.dispatchCanceledBeforeStart(ctx,command);ok {return outcome}
+		if outcome,ok:=n.beforeNativeHandoff(ctx,Command{Kind:CommandDispatch,Dispatch:command});ok {return outcome}
 		if code, message, ok := managedProfileFailure(err); ok {
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, code, message)
 		}
@@ -400,10 +406,7 @@ func (w WorkerEnvelope) ProjectSnapshotPathMapping() (core.ProjectPathMapping, b
 func (n *ExecutionNode) cancel(ctx context.Context, command *CancelCommand) CommandOutcome {
 	session, err := n.sessionForCommand(ctx, command.Metadata)
 	if err != nil {
-		n.mu.Lock()
-		prestart:=n.prestartCancelled[command.Metadata.AttemptID]
-		if prestart {delete(n.prestartCancelled,command.Metadata.AttemptID)}
-		n.mu.Unlock()
+		prestart:=n.store.PrestartCanceled(command.Metadata.AttemptID)
 		if prestart {
 			return acceptedOutcome(Command{Kind:CommandCancel,Cancel:command})
 		}
@@ -534,6 +537,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	}
 	prepared, images, artifactErr := n.prepareArtifactInput(ctx, workspace, task)
 	if artifactErr != nil {
+		if outcome,ok:=n.beforeNativeHandoff(ctx,Command{Kind:CommandResume,Resume:command});ok{return outcome}
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "artifact_unavailable", artifactErr.Error())
 	}
 	if len(images) > 0 && !supportsImageHarness(command.Envelope.HarnessInstance) {
@@ -549,6 +553,11 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
+	if outcome,ok:=n.beforeNativeHandoff(ctx,Command{Kind:CommandResume,Resume:command});ok{return outcome}
+	if e:=n.store.MarkNativeHandoff(ctx,command.Metadata.CommandID);e!=nil{
+		if outcome,ok:=n.beforeNativeHandoff(ctx,Command{Kind:CommandResume,Resume:command});ok{return outcome}
+		return failedOutcome(Command{Kind:CommandResume,Resume:command},"native_handoff_record_failed",e.Error())
+	}
 	session, err := resumeSameIdentity(ctx, resumer, request, mapping.RuntimeSessionID)
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
