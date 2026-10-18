@@ -654,23 +654,9 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		if wasCanceled{return failedOutcome(Command{Kind:CommandResume,Resume:command},"native_resume_canceled","Native Resume canceled before Session registration")}
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 	}
-	if continuing {
-		mapping.TurnID, mapping.AttemptID = command.Envelope.TurnID, command.Envelope.AttemptID
-		if err := n.store.SaveSessionMapping(mapping); err != nil {
-			_ = session.Close()
-			return failedOutcome(Command{Kind: CommandResume, Resume: command}, "mapping_persist_failed", "continuation mapping could not be persisted")
-		}
-	}
-	n.rebindPendingRequests(command.Metadata.AttemptID, session)
-	if continuing {
-		ready, err := n.store.SaveCommandReadiness(command.Metadata.CommandID, acceptedOutcome(Command{Kind: CommandResume, Resume: command}))
-		if err != nil || ready.State != CommandProcessing || ready.Outcome.State != CommandAccepted {
-			_ = session.Close()
-			return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
-		}
-	}
-	// Protect the final registration against a Cancel racing with the provider
-	// return. Cancel and Session registration share n.mu.
+	// Cancellation and final durable mapping/readiness + Session registration
+	// share one lock: a Cancel accepted before registration cannot leave a
+	// late mapping or native session, even when it races with persistence.
 	n.mu.Lock()
 	if pending.canceled || nativeCtx.Err()!=nil {
 		delete(n.nativeResumes,command.Metadata.AttemptID)
@@ -679,9 +665,28 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		_ = session.Close()
 		return failedOutcome(Command{Kind:CommandResume,Resume:command},"native_resume_canceled","Native Resume canceled before Session registration")
 	}
+	if continuing {
+		mapping.TurnID, mapping.AttemptID = command.Envelope.TurnID, command.Envelope.AttemptID
+		if err := n.store.SaveSessionMapping(mapping); err != nil {
+			delete(n.nativeResumes,command.Metadata.AttemptID)
+			n.mu.Unlock()
+			nativeCancel()
+			_ = session.Close()
+			return failedOutcome(Command{Kind: CommandResume, Resume: command}, "mapping_persist_failed", "continuation mapping could not be persisted")
+		}
+		ready, err := n.store.SaveCommandReadiness(command.Metadata.CommandID, acceptedOutcome(Command{Kind: CommandResume, Resume: command}))
+		if err != nil || ready.State != CommandProcessing || ready.Outcome.State != CommandAccepted {
+			delete(n.nativeResumes,command.Metadata.AttemptID)
+			n.mu.Unlock()
+			nativeCancel()
+			_ = session.Close()
+			return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
+		}
+	}
 	n.sessions[command.Metadata.AttemptID]=session
 	delete(n.nativeResumes,command.Metadata.AttemptID)
 	n.mu.Unlock()
+	n.rebindPendingRequests(command.Metadata.AttemptID, session)
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
 		go func() { _ = promptWithImages(context.Background(), session, promptText, images) }()
