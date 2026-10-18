@@ -2,7 +2,7 @@ package node
 
 import (
 	"context"
-	"encoding/json"
+ 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -619,6 +619,33 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 }
 
 func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerCommand) CommandOutcome {
+	// Validate and stage image attachments before claiming the request. If
+	// unsupported, the owner can still provide an ordinary text response.
+	var preparedText string
+	var preparedImages []ImageInput
+	if len(ArtifactIDs(command.Response)) > 0 {
+		mapping, ok := n.store.SessionMapping(command.Metadata.AttemptID)
+		if !ok {
+			return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "runtime_session_unavailable", "no Worker session mapping")
+		}
+		var prepareErr error
+		preparedText, preparedImages, prepareErr = n.prepareArtifactInput(ctx, mapping.Workspace, command.Response)
+		if prepareErr != nil {
+			return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "artifact_unavailable", prepareErr.Error())
+		}
+		if len(preparedImages) > 0 {
+			session, sessionErr := n.sessionForCommand(ctx, command.Metadata)
+			if sessionErr != nil {
+				return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "runtime_session_unavailable", sessionErr.Error())
+			}
+			if _, ok := session.(ImageResponseSession); !ok {
+				return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "image_input_unsupported", "selected native Worker does not support image needs_input responses")
+			}
+			if capability, ok := session.(ImageResponseCapability); ok && !capability.SupportsImageResponse() {
+				return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "image_input_unsupported", ErrImageResponseUnsupported.Error())
+			}
+		}
+	}
 	storedResponse, duplicate, err := n.store.ClaimWorkerResponse(command.RequestID)
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "response_claim_failed", err.Error())
@@ -643,14 +670,28 @@ func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerComma
 		_ = n.store.CompleteWorkerResponse(command.RequestID, outcome)
 		return outcome
 	}
-	responder, ok := session.(Responder)
-	if !ok {
-		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "runtime_does_not_accept_response", "runtime does not accept worker responses")
-		_ = n.store.CompleteWorkerResponse(command.RequestID, outcome)
-		return outcome
+	var respondErr error
+	if len(preparedImages) > 0 {
+		respondErr = DeliverImageResponse(ctx, n.store, session, command.Metadata, command.RequestID, preparedText, preparedImages)
+	} else {
+		responder, ok := session.(Responder)
+		if !ok {
+			outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "runtime_does_not_accept_response", "runtime does not accept worker responses")
+			_ = n.store.CompleteWorkerResponse(command.RequestID, outcome)
+			return outcome
+		}
+		response := command.Response
+		if preparedText != "" {
+			response = preparedText
+		}
+		respondErr = responder.Respond(ctx, command.RequestID, response)
 	}
-	if err := responder.Respond(ctx, command.RequestID, command.Response); err != nil {
-		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, "execution_state_unknown", err.Error())
+	if err := respondErr; err != nil {
+		code := "execution_state_unknown"
+		if errors.Is(err, ErrImageResponseUnsupported) {
+			code = "image_input_unsupported"
+		}
+		outcome := failedOutcome(Command{Kind: CommandRespondWorker, RespondWorker: command}, code, err.Error())
 		_ = n.store.CompleteWorkerResponse(command.RequestID, outcome)
 		return outcome
 	}
