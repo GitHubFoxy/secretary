@@ -93,6 +93,12 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	for _, runtime := range []string{"/bin/sh", "/usr/bin/env", "/usr/bin/node", "/usr/bin/nodejs", "/usr/bin/bash", "/usr/bin/cat", "/usr/bin/dirname", "/usr/bin/test"} {
 		if err := mountRuntimeExecutable(&wrapped, runtime); err != nil { return "", nil, err }
 	}
+	// Node installed by setup-node/asdf/nvm is not necessarily /usr/bin/node.
+	// The command is independently resolved to a single executable file;
+	// never share its containing toolcache/bin directory.
+	if runtimeNode, lookupErr := exec.LookPath("node"); lookupErr == nil {
+		if err := mountRuntimeExecutable(&wrapped, runtimeNode); err != nil { return "",nil,err }
+	}
 	// Hide the private Node root even if its administrator selected an
 	// alternate location INSIDE an otherwise shared system subtree.
 	wrapped = append(wrapped, "--proc", "/proc", "--tmpfs", "/tmp")
