@@ -253,3 +253,140 @@ func TestT12CancelNewResumeAttemptWithoutMapping(t *testing.T) {
 	if runtime.resumes.Load()!=0{t.Fatal("late conversion resumed canceled Attempt")}
 	if !f.local.PrestartCanceled(newMeta.AttemptID){t.Fatal("durable cancellation record not retained")}
 }
+
+
+// A native runtime may continue doing work long after the Dispatch receipt.
+// Its process CommandContext must be bound to Daemon.Run, not to the transient
+// socket used to receive the command.
+type t12SurvivingRuntime struct {
+	starts atomic.Int32
+	cancels atomic.Int32
+	mu sync.Mutex
+	startCtx context.Context
+	session *t12SurvivingSession
+}
+type t12SurvivingSession struct {
+	runtime *t12SurvivingRuntime
+	activity chan Activity
+	results chan Result
+}
+func (r *t12SurvivingRuntime) Start(ctx context.Context, _ StartRequest) (Session,error) {
+	r.starts.Add(1)
+	s:=&t12SurvivingSession{runtime:r,activity:make(chan Activity),results:make(chan Result,1)}
+	r.mu.Lock()
+	r.startCtx=ctx
+	r.session=s
+	r.mu.Unlock()
+	return s,nil
+}
+func (r *t12SurvivingRuntime) snapshot()(context.Context,*t12SurvivingSession){
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.startCtx,r.session
+}
+func (s *t12SurvivingSession) ID()string{return "long-running-native-session"}
+func (s *t12SurvivingSession) Prompt(context.Context,string)error{return nil}
+func (s *t12SurvivingSession) Steer(context.Context,string)(bool,error){return true,nil}
+func (s *t12SurvivingSession) Cancel(context.Context)error{
+	s.runtime.cancels.Add(1)
+	s.results<-Result{Status:"canceled",Summary:"canceled after reconnect"}
+	return nil
+}
+func (s *t12SurvivingSession) Activity()<-chan Activity{return s.activity}
+func (s *t12SurvivingSession) Result()<-chan Result{return s.results}
+func (s *t12SurvivingSession) Close()error{return nil}
+
+func TestT12AcceptedNativeWorkerSurvivesWebSocketReconnectAndTerminalResult(t *testing.T) {
+	for _,scenario:=range []string{"native_result","cancel_after_reconnect"} {
+		t.Run(scenario,func(t *testing.T){
+			runtime:=&t12SurvivingRuntime{}
+			f:=t12SocketWithQueuedVideo(t,runtime)
+			ctx,cancel:=context.WithTimeout(context.Background(),9*time.Second)
+			defer cancel()
+			f.ready.Store(true)
+			receipts:=make(chan CommandOutcome,5)
+			terminals:=make(chan core.AttemptOutcomeEnvelope,5)
+			var terminalDeliveries atomic.Int32
+			f.manager.SetCommandOutcomeSink(func(_ context.Context,_ core.NodeReference,o CommandOutcome)error {
+				receipts<-o
+				return nil
+			})
+			f.manager.SetEventSink(func(_ context.Context,event NodeEvent)error {
+				if event.Outcome!=nil && event.Outcome.AttemptID=="attempt-1" {
+					terminalDeliveries.Add(1)
+					terminals<-*event.Outcome
+				}
+				return nil
+			})
+			dispatch:=f.dispatchCommand("t12-dispatch-survives-ws-"+scenario)
+			dispatch.Dispatch.Envelope.OriginalUserIntent="Inspect artifact://"+f.originalID
+			if err:=f.manager.SendCommand(ctx,f.identity.Node,dispatch);err!=nil{t.Fatal(err)}
+			accepted:=waitCommandOutcome(t,ctx,receipts)
+			if accepted.CommandID!=dispatch.Metadata().CommandID || accepted.State!=CommandAccepted {
+				t.Fatalf("native Start was not accepted: %+v",accepted)
+			}
+			nativeCtx,nativeSession:=runtime.snapshot()
+			if nativeCtx==nil || nativeSession==nil || runtime.starts.Load()!=1 {
+				t.Fatalf("missing native process after handoff: ctx=%v starts=%d",nativeCtx,runtime.starts.Load())
+			}
+			if err:=nativeCtx.Err();err!=nil{t.Fatalf("native process canceled before disconnect: %v",err)}
+			f.manager.mu.Lock()
+			oldSocket:=f.manager.connections[f.identity.Node]
+			f.manager.mu.Unlock()
+			if oldSocket==nil{t.Fatal("original socket missing")}
+			f.manager.closeConnection(f.identity.Node)
+			waitFor(t,ctx,"new authenticated socket",func()bool{
+				f.manager.mu.Lock()
+				sock:=f.manager.connections[f.identity.Node]
+				f.manager.mu.Unlock()
+				return sock!=nil && sock!=oldSocket
+			})
+			if err:=nativeCtx.Err();err!=nil {
+				t.Fatalf("transport disconnect killed accepted native CommandContext: %v",err)
+			}
+			if runtime.starts.Load()!=1{t.Fatalf("reconnect launched duplicate native worker: %d",runtime.starts.Load())}
+			// The same durable CommandID must not restart a native process.
+			if err:=f.manager.SendCommand(ctx,f.identity.Node,dispatch);err!=nil{t.Fatal(err)}
+			duplicate:=waitCommandOutcome(t,ctx,receipts)
+			if duplicate.CommandID!=accepted.CommandID || duplicate.State!=CommandAccepted {
+				t.Fatalf("duplicate native dispatch changed outcome: %+v",duplicate)
+			}
+			if runtime.starts.Load()!=1{t.Fatalf("duplicate native Start: %d",runtime.starts.Load())}
+
+			if scenario=="native_result"{
+				nativeSession.results<-Result{Status:"succeeded",Summary:"video frames processed after reconnect"}
+			}else{
+				meta:=dispatch.Metadata()
+				meta.CommandID="t12-owner-cancel-after-reconnect"
+				meta.IssuedAt=time.Now().UTC()
+				cancelCommand:=Command{Kind:CommandCancel,Cancel:&CancelCommand{Metadata:meta,Reason:"owner cancellation after reconnect"}}
+				if err:=f.manager.SendCommand(ctx,f.identity.Node,cancelCommand);err!=nil{t.Fatal(err)}
+				cancelReceipt:=waitCommandOutcome(t,ctx,receipts)
+				if cancelReceipt.CommandID!=meta.CommandID || cancelReceipt.State!=CommandAccepted {
+					t.Fatalf("native Cancel after reconnect not accepted: %+v",cancelReceipt)
+				}
+				if runtime.cancels.Load()!=1{t.Fatalf("Cancel delivered %d times",runtime.cancels.Load())}
+			}
+			select {
+			case result:=<-terminals:
+				expected:=core.OutcomeSucceeded
+				if scenario=="cancel_after_reconnect"{expected=core.OutcomeCanceled}
+				if result.Status!=expected || result.AttemptID!="attempt-1" {
+					t.Fatalf("wrong terminal outcome after reconnect: %+v",result)
+				}
+			case <-ctx.Done():t.Fatal("accepted native session lost terminal Result")
+			}
+			waitFor(t,ctx,"durable terminal receipt",func()bool{
+				record,err:=f.local.Command(dispatch.Metadata().CommandID)
+				return err==nil && record.TerminalOutcomeQueued
+			})
+			waitFor(t,ctx,"terminal outbox acknowledged",func()bool{
+				remaining,err:=f.local.PendingEvents()
+				return err==nil && len(remaining)==0
+			})
+			if terminalDeliveries.Load()!=1 || runtime.starts.Load()!=1 {
+				t.Fatalf("terminal duplicated or Worker relaunched: terminal=%d starts=%d",terminalDeliveries.Load(),runtime.starts.Load())
+			}
+		})
+	}
+}
