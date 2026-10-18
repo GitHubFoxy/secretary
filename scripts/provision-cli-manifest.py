@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import os
+import shutil
 from pathlib import Path, PurePosixPath
 import stat
 import subprocess
@@ -43,6 +44,8 @@ def main():
         if "sha512-" + digest != registry["integrity"]:
             raise SystemExit("npm archive integrity does not match registry")
         entries = {}
+        staging = Path(temp, "verified-assets")
+        staging.mkdir(mode=0o700)
         with tarfile.open(archive, "r:gz") as tar:
             for item in tar:
                 if item.isdir():
@@ -58,7 +61,21 @@ def main():
                 stream = tar.extractfile(item)
                 if stream is None:
                     raise SystemExit("missing archive content")
-                entries[str(rel)] = hashlib.sha256(stream.read()).hexdigest()
+                raw = stream.read()
+                entries[str(rel)] = hashlib.sha256(raw).hexdigest()
+                target = staging.joinpath(*rel.parts)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(raw)
+                target.chmod(0o555 if item.mode & 0o111 else 0o444)
+        trusted = Path("/opt/secretary/cli-store", provider)
+        trusted.mkdir(parents=True, exist_ok=True)
+        os.chmod(trusted, 0o755)
+        location = trusted / version
+        if location.exists() or location.is_symlink():
+            raise SystemExit("refusing to replace existing verified runtime")
+        shutil.copytree(staging, location, symlinks=False)
+        for folder, _, _ in os.walk(location):
+            os.chmod(folder, 0o755)
         destination = Path("/etc/secretary/cli-manifests", provider)
         destination.mkdir(parents=True, exist_ok=True)
         os.chmod(destination, 0o755)
