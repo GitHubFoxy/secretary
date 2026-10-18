@@ -17,6 +17,17 @@ func ProjectCoreWorkerEvent(source core.Event)(Event,bool){
  get:=func(k string)string{v,_:=p[k].(string);return strings.TrimSpace(v)}
  out:=Event{EventID:source.ID,Sequence:source.Seq,WorkerRef:ref,Payload:source.Payload,
   AttemptID:source.AttemptID,Title:get("title")}
+ if out.AttemptID=="" {
+  out.AttemptID=get("attempt_id")
+  if out.AttemptID=="" && source.Kind=="attempt.outcome_recorded" && source.AggregateType=="attempt"{
+   out.AttemptID=source.AggregateID
+  }
+  if out.AttemptID=="" {
+   if meta,ok:=p["metadata"].(map[string]any);ok {
+    out.AttemptID,_=meta["attempt_id"].(string)
+   }
+  }
+ }
  if source.Kind=="worker.spawned"{
   out.Kind="worker.created";out.TaskPrompt=get("intent");out.NodeID=get("node_id")
   return out,true
