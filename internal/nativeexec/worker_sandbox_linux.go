@@ -76,14 +76,17 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	}
 	// Do not mount /usr/local/lib or /usr/local/bin wholesale: an independent\n\t// Server root such as /usr/local/lib/secretary must stay invisible even\n\t// when ServerDataDir is unspecified. Native executables and their runtime\n\t// assets are mounted selectively below.\n\t// Do not share user-writable system configuration roots wholesale.
 	// A Server --data-dir can be /etc/secretary or /usr/local/share/secretary.
-	for _, systemRoot := range []string{"/usr/bin", "/usr/lib", "/usr/lib64",
-		"/usr/share/nodejs", "/usr/share/zoneinfo", "/usr/share/ca-certificates",
-		"/bin", "/sbin", "/lib", "/lib64",
-		"/etc/ssl", "/etc/hosts", "/etc/resolv.conf", "/etc/nsswitch.conf",
+	for _, systemRoot := range []string{"/etc/hosts", "/etc/resolv.conf", "/etc/nsswitch.conf",
 		"/etc/passwd", "/etc/group"} {
 		if _, statErr := os.Stat(systemRoot); statErr == nil {
 			wrapped = append(wrapped, "--ro-bind", systemRoot, systemRoot)
 		}
+	}
+	// Mount individual executable/runtime files only. No system library or
+	// JavaScript package directory is ever shared wholesale: the Server may
+	// have an independent data root anywhere under those directories.
+	for _, runtime := range []string{"/bin/sh", "/usr/bin/env", "/usr/bin/node", "/usr/bin/nodejs", "/usr/bin/bash", "/usr/bin/cat", "/usr/bin/dirname", "/usr/bin/test"} {
+		if err := mountRuntimeFile(&wrapped, runtime); err != nil { return "", nil, err }
 	}
 	// Hide the private Node root even if its administrator selected an
 	// alternate location INSIDE an otherwise shared system subtree.
@@ -127,29 +130,20 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	if executable == protected || strings.HasPrefix(executable, protected+string(filepath.Separator)) {
 		return "", nil, errors.New("worker sandbox: executable cannot reside in Node private state")
 	}
-	inSystem := false
-	for _, prefix := range []string{"/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/"} {
-		if strings.HasPrefix(executable, prefix) { inSystem = true; break }
-	}
-	if !inSystem {
-		// User-installed Codex/Claude/OpenCode entrypoints may read sibling
-		// assets, a package.json, and hoisted node_modules. A single-file
-		// bind loses these dependencies. Share only the trusted package
-		// installation subtree, never the containing HOME or Node state.
-		install := filepath.Dir(executable)
+	// Entrypoint and its own package assets are explicit file mounts. Never
+	// bind the entrypoint's parent (e.g. ~/.local/bin) or all node_modules.
+	if err := mountRuntimeFile(&wrapped, executable); err != nil { return "", nil, err }
+	if !strings.HasPrefix(executable, "/usr/") && !strings.HasPrefix(executable, "/bin/") {
 		components := strings.Split(filepath.Clean(executable), string(filepath.Separator))
 		for i, component := range components {
-			if component == "node_modules" && i > 0 {
-				install = string(filepath.Separator) + filepath.Join(components[:i+1]...)
+			if component == "node_modules" && i+1 < len(components) {
+				end := i+2
+				if strings.HasPrefix(components[i+1], "@") && i+2 < len(components) { end++ }
+				pkg := string(filepath.Separator)+filepath.Join(components[:end]...)
+				if err := mountRuntimePackageFiles(&wrapped, pkg); err != nil { return "", nil, err }
 				break
 			}
 		}
-		if install == "/" || install == protected ||
-			strings.HasPrefix(executable, protected+string(filepath.Separator)) ||
-			strings.HasPrefix(protected, install+string(filepath.Separator)) && install == string(filepath.Separator) {
-			return "", nil, errors.New("worker sandbox: unsafe native CLI install root")
-		}
-		wrapped = append(wrapped, "--ro-bind", install, install)
 	}
 	// Portable user installs may keep only an entrypoint in ~/.local/bin,
 	// with trusted runtime assets under ~/.local/share/<harness>. Mount
@@ -174,7 +168,7 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 					return "",nil,errors.New("worker sandbox: CLI runtime assets overlap Server signing data")
 				}
 			}
-			wrapped=append(wrapped,"--ro-bind",resolved,resolved)
+			if err := mountRuntimePackageFiles(&wrapped, resolved); err != nil { return "", nil, err }
 		}
 	}
 	// Mask after ALL shared binds. An arbitrary --data-dir (including one
@@ -200,3 +194,41 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 }
 
 func applyWorkerSandbox(_ WorkerSandbox, _ *exec.Cmd) error { return nil }
+
+// mountRuntimeFile exposes a single regular file, never its containing
+// directory. Resolved symlinks (such as /bin/sh -> /usr/bin/dash) are mounted
+// at both the requested location and the concrete runtime path.
+func mountRuntimeFile(wrapped *[]string, path string) error {
+  info, err := os.Stat(path)
+  if os.IsNotExist(err) { return nil }
+  if err != nil { return err }
+  if !info.Mode().IsRegular() { return fmt.Errorf("worker sandbox: runtime is not a regular file: %s", path) }
+  resolved, err := filepath.EvalSymlinks(path)
+  if err != nil { return err }
+  for _, dest := range []string{resolved, path} {
+    *wrapped = append(*wrapped, "--ro-bind", resolved, dest)
+  }
+  return nil
+}
+
+// A CLI package may use adjacent code/assets. Enumerate individual files,
+// rejecting symlink traversal; do not share any directory, even read-only.
+func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
+  const maxFiles = 8192
+  count := 0
+  return filepath.WalkDir(packageRoot, func(path string, entry os.DirEntry, err error) error {
+    if err != nil { return err }
+    if entry.Type()&os.ModeSymlink != 0 { return fmt.Errorf("worker sandbox: symlink in CLI package: %s", path) }
+    if entry.IsDir() { return nil }
+    if !entry.Type().IsRegular() { return fmt.Errorf("worker sandbox: unsupported CLI package asset: %s", path) }
+    // Known data/credential file formats are never exported as runtime assets.
+    ext := strings.ToLower(filepath.Ext(path))
+    switch ext {
+    case ".db", ".sqlite", ".sqlite3", ".key", ".pem", ".env":
+      return fmt.Errorf("worker sandbox: private data inside CLI package: %s", path)
+    }
+    count++
+    if count > maxFiles { return errors.New("worker sandbox: CLI package exceeds bounded runtime manifest") }
+    return mountRuntimeFile(wrapped, path)
+  })
+}
