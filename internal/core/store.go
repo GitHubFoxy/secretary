@@ -1464,6 +1464,14 @@ func (s *timestampScanner) Scan(value any) error {
 	return err
 }
 
+// secretaryOutputGate serializes writes which determine the cutoff between
+// native Secretary text and a durable acknowledgement for one turn. Unlike
+// a global database lock it does not serialize independent Workers/turns.
+func (s *Store) secretaryOutputGate(turnID string) *sync.Mutex {
+ gate, _ := s.secretaryOutputGates.LoadOrStore(turnID, &sync.Mutex{})
+ return gate.(*sync.Mutex)
+}
+
 func withTx[T any](store *Store, ctx context.Context, fn func(*sql.Tx) (T, error)) (T, error) {
 	var zero T
 	for try := 0; try < 8; try++ {
