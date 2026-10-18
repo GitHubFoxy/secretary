@@ -3,6 +3,7 @@
 package nativeexec
 
 import (
+	"debug/elf"
 	"errors"
 	"fmt"
 	"os"
@@ -86,7 +87,7 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	// JavaScript package directory is ever shared wholesale: the Server may
 	// have an independent data root anywhere under those directories.
 	for _, runtime := range []string{"/bin/sh", "/usr/bin/env", "/usr/bin/node", "/usr/bin/nodejs", "/usr/bin/bash", "/usr/bin/cat", "/usr/bin/dirname", "/usr/bin/test"} {
-		if err := mountRuntimeFile(&wrapped, runtime); err != nil { return "", nil, err }
+		if err := mountRuntimeExecutable(&wrapped, runtime); err != nil { return "", nil, err }
 	}
 	// Hide the private Node root even if its administrator selected an
 	// alternate location INSIDE an otherwise shared system subtree.
@@ -132,7 +133,7 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 	}
 	// Entrypoint and its own package assets are explicit file mounts. Never
 	// bind the entrypoint's parent (e.g. ~/.local/bin) or all node_modules.
-	if err := mountRuntimeFile(&wrapped, executable); err != nil { return "", nil, err }
+	if err := mountRuntimeExecutable(&wrapped, executable); err != nil { return "", nil, err }
 	if !strings.HasPrefix(executable, "/usr/") && !strings.HasPrefix(executable, "/bin/") {
 		components := strings.Split(filepath.Clean(executable), string(filepath.Separator))
 		for i, component := range components {
@@ -231,4 +232,46 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
     if count > maxFiles { return errors.New("worker sandbox: CLI package exceeds bounded runtime manifest") }
     return mountRuntimeFile(wrapped, path)
   })
+}
+
+// Recursively expose the ELF interpreter and DT_NEEDED shared libraries as
+// individual files. Do not export the parent lib directory: it may contain
+// an unrelated Server database owned by the same UID.
+func mountRuntimeExecutable(wrapped *[]string, executable string) error {
+  seen := make(map[string]bool)
+  var visit func(string) error
+  visit = func(path string) error {
+    resolved, err := filepath.EvalSymlinks(path)
+    if err != nil { return err }
+    if seen[resolved] { return mountRuntimeFile(wrapped,path) }
+    seen[resolved] = true
+    if err := mountRuntimeFile(wrapped,path); err != nil { return err }
+    binary, err := elf.Open(resolved)
+    if err != nil { return nil } // scripts/assets are bound as files
+    defer binary.Close()
+    for _,prog := range binary.Progs {
+      if prog.Type != elf.PT_INTERP { continue }
+      buf := make([]byte,prog.Filesz)
+      if _,err:=prog.ReadAt(buf,0);err!=nil {return err}
+      interpreter:=strings.TrimRight(string(buf),"\x00")
+      if err:=visit(interpreter);err!=nil{return err}
+    }
+    libs,err:=binary.ImportedLibraries()
+    if err!=nil {return fmt.Errorf("worker sandbox: ELF dependency list: %w",err)}
+    for _,lib:=range libs {
+      // Resolve against trusted architecture-specific linker roots only.
+      // Search includes typical Debian/Ubuntu, Fedora, and Alpine layouts.
+      found:=""
+      for _,dir:=range []string{"/lib/x86_64-linux-gnu","/usr/lib/x86_64-linux-gnu",
+        "/lib/aarch64-linux-gnu","/usr/lib/aarch64-linux-gnu",
+        "/lib64","/usr/lib64","/lib","/usr/lib"} {
+        candidate:=filepath.Join(dir,lib)
+        if info,e:=os.Stat(candidate);e==nil&&info.Mode().IsRegular(){found=candidate;break}
+      }
+      if found=="" {return fmt.Errorf("worker sandbox: unresolved runtime library %q for %s",lib,path)}
+      if err:=visit(found);err!=nil{return err}
+    }
+    return nil
+  }
+  return visit(executable)
 }
