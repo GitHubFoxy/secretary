@@ -17,7 +17,7 @@ func TestT09ClickableDownloadDedupDoesNotTrustRawURL(t *testing.T) {
     {"image-and-link", "![Preview]("+url+") and [Download]("+url+")", true},
     {"escaped-close-bracket", "[not-a-link\\]("+url+")", false},
     {"escaped-close-followed-by-valid-link", "[not-a-link\\]("+url+") [Download]("+url+")", true},
-    {"double-escaped-close-bracket", "[Download\\\\\\\\]("+url+")", true},
+    {"double-escaped-close-bracket", "[Download\\\\]("+url+")", true},
     {"escaped-open-bracket", "\\[Download]("+url+")", false},
     {"escaped-image-open-bracket", "!\\[Download]("+url+")", false},
     {"escaped-image-marker", "\\![Download]("+url+")", true},
