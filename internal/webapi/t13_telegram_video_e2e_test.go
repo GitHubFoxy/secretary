@@ -52,7 +52,7 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
  secretaryID,err:=store.EnsureSecretaryIdentity(ctx,api.OwnerID(),conversation.ID)
  if err!=nil{t.Fatal(err)}
  if err:=store.SetSecretaryPolicySnapshot(ctx,core.SecretaryPolicySnapshot{
-  Version:"t13",Harness:"fx",Model:"fixture",Reasoning:"high",
+  Version:"t13",Harness:"opencode",Model:"fixture",Reasoning:"high",
   ProfileVersion:"t13",ProfileName:"secretary",ProfileHash:"t13",
   ProfileContent:"Delegate Telegram video to a Worker via MCP.",
   ReplyContractVersion:core.SecretaryReplyContractAddressedV1,
@@ -86,7 +86,7 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
  secRuntime:=secretaryruntime.NewRuntime(node.NewLocal(harness),capability)
  secRuntime.AttachConversation(store,conversation.ID)
  secRuntime.AttachIdentity(secretaryID)
- profile:=node.ManagedProfile{Version:"t13",Name:"secretary",Content:"Delegate Telegram video to a Worker via MCP.",Runtime:"fx",Model:"fixture",Reasoning:"high",
+ profile:=node.ManagedProfile{Version:"t13",Name:"secretary",Content:"Delegate Telegram video to a Worker via MCP.",Runtime:"opencode",Model:"fixture",Reasoning:"high",
   ReplyContractVersion:core.SecretaryReplyContractAddressedV1}
  profile.Hash=node.HashProfile(profile.Content,nil,profile.Model,profile.Reasoning)
  secRuntime.AttachProfile(func()node.ManagedProfile{return profile})
