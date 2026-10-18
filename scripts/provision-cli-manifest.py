@@ -23,14 +23,14 @@ def command(*args):
 
 def main():
     if len(sys.argv) not in (3, 4) or sys.argv[1] not in PACKAGES:
-        raise SystemExit("usage: provision-cli-manifest.py codex|claude|opencode VERSION")
+        raise SystemExit("usage: provision-cli-manifest.py codex|claude|opencode VERSION [OFFICIAL_PLATFORM_PACKAGE]")
     if os.geteuid() != 0:
         raise SystemExit("run as root: manifest must not be worker-writable")
-    provider, version = sys.argv[1:]
+    provider, version = sys.argv[1:3]
     package = PACKAGES[provider]
     if len(sys.argv) == 4:
         override = sys.argv[3]
-        valid = (provider == "claude" and override.startswith("@anthropic-ai/claude-code-linux-")) or (provider == "opencode" and override.startswith("opencode-linux-"))
+        valid = (provider == "codex" and override in ("@openai/codex-linux-x64", "@openai/codex-linux-arm64")) or (provider == "claude" and override.startswith("@anthropic-ai/claude-code-linux-")) or (provider == "opencode" and override.startswith("opencode-linux-"))
         if not valid or "/" in override.strip("@").split("/", 1)[-1] and not override.startswith("@anthropic-ai/"):
             raise SystemExit("unsupported official platform package")
         package = override
@@ -78,9 +78,11 @@ def main():
         official_version = package_identity["version"]
         if official_version != version:
             raise SystemExit("archive package version mismatch")
-        if not (official_name == PACKAGES[provider] or
+        if not (official_name == package and (package == PACKAGES[provider] or len(sys.argv) == 4) and
+                (official_name == PACKAGES[provider] or
+                (provider == "codex" and official_name.startswith("@openai/codex-linux-")) or
                 (provider == "claude" and official_name.startswith("@anthropic-ai/claude-code-linux-")) or
-                (provider == "opencode" and official_name.startswith("opencode-linux-"))):
+                (provider == "opencode" and official_name.startswith("opencode-linux-")))):
             raise SystemExit("archive package identity mismatch")
         package_id = official_name.replace("/", "__")
         trusted = Path("/etc/secretary/cli-store", provider, package_id)
