@@ -10,25 +10,12 @@ import (
 	"testing"
 )
 
-func TestT09UserInstalledCLIAssetsAccessibleWithoutNodeSecrets(t *testing.T) {
-	base:=t.TempDir()
-	node:=filepath.Join(base,"node-private")
-	workspace:=filepath.Join(base,"workspace")
-	pkg:=filepath.Join(base,"user-install","node_modules","@openai","codex")
-	if err:=os.MkdirAll(node,0700);err!=nil {t.Fatal(err)}
-	if err:=os.MkdirAll(workspace,0700);err!=nil {t.Fatal(err)}
-	if err:=os.MkdirAll(filepath.Join(pkg,"bin"),0700);err!=nil {t.Fatal(err)}
-	if err:=os.MkdirAll(filepath.Join(pkg,"assets"),0700);err!=nil {t.Fatal(err)}
-	if err:=os.WriteFile(filepath.Join(node,"identity.json"),[]byte("NODE-CREDENTIAL"),0600);err!=nil {t.Fatal(err)}
-	if err:=os.WriteFile(filepath.Join(pkg,"assets","model.txt"),[]byte("NATIVE-ASSETS-OK\n"),0600);err!=nil {t.Fatal(err)}
-	script:=filepath.Join(pkg,"bin","launcher.sh")
-	if err:=os.WriteFile(script,[]byte("#!/bin/sh\ncat \"$(dirname \"$0\")/../assets/model.txt\"\ntest ! -r \"$1\"\n"),0700);err!=nil {t.Fatal(err)}
-	ctx:=WithWorkerSandbox(context.Background(),WorkerSandbox{ProtectedDir:node,Workspace:workspace})
-	cmd,err:=CommandContext(ctx,script,filepath.Join(node,"identity.json"))
-	if err!=nil {t.Fatal(err)}
-	out,err:=cmd.CombinedOutput()
-	if err!=nil {t.Fatalf("user-installed CLI failed to load packaged assets: %v %s",err,out)}
-	if !strings.Contains(string(out),"NATIVE-ASSETS-OK"){t.Fatalf("user-installed CLI asset missing: %q",out)}
+func TestT09UnverifiedInstalledCLIDenied(t *testing.T) {
+ root:=t.TempDir()
+ pkg:=filepath.Join(root,"node_modules","@openai","codex")
+ if err:=os.MkdirAll(filepath.Join(pkg,"bin"),0700);err!=nil{t.Fatal(err)}
+ args:=[]string{}
+ if err:=mountRuntimePackageFiles(&args,pkg);err==nil {t.Fatal("unverified package accepted without provenance")}
 }
 
 func TestT09AlternateSystemNodeRootIsMasked(t *testing.T) {
@@ -63,28 +50,12 @@ func TestT09LinuxNestedWorkspaceRemountedAfterProtectedNodeRoot(t *testing.T) {
 	if err!=nil{t.Fatalf("nested Workspace was not remounted safely: %v %s",err,out)}
 }
 
-func TestT09LocalBinCLIReadsSelectedLocalShareAssets(t *testing.T) {
-	base:=t.TempDir()
-	t.Setenv("HOME",base)
-	nodeDir:=filepath.Join(base,"node-private")
-	workspace:=filepath.Join(base,"workspace")
-	installBin:=filepath.Join(base,".local","bin")
-	assets:=filepath.Join(base,".local","share","codex")
-	for _,d:=range []string{nodeDir,workspace,installBin,assets}{
-		if err:=os.MkdirAll(d,0700);err!=nil {t.Fatal(err)}
-	}
-	if err:=os.WriteFile(filepath.Join(nodeDir,"identity.json"),[]byte("SECRET"),0600);err!=nil{t.Fatal(err)}
-	if err:=os.WriteFile(filepath.Join(assets,"model.dat"),[]byte("CLI-ASSETS-OK"),0600);err!=nil{t.Fatal(err)}
-	command:=filepath.Join(installBin,"codex")
-	script:="#!/bin/sh\ncat '"+filepath.Join(assets,"model.dat")+"'\n"
-	if err:=os.WriteFile(command,[]byte(script),0700);err!=nil {t.Fatal(err)}
-	ctx:=WithWorkerSandbox(context.Background(),WorkerSandbox{ProtectedDir:nodeDir,Workspace:workspace})
-	cmd,err:=CommandContext(ctx,command)
-	if err!=nil{t.Fatal(err)}
-	out,err:=cmd.CombinedOutput()
-	if err!=nil||!strings.Contains(string(out),"CLI-ASSETS-OK"){
-		t.Fatalf("user-installed ~/.local/share native CLI runtime inaccessible: %v %s",err,out)
-	}
+func TestT09UnverifiedLocalShareDenied(t *testing.T) {
+ root:=t.TempDir()
+ assets:=filepath.Join(root,".local","share","codex")
+ if err:=os.MkdirAll(assets,0700);err!=nil{t.Fatal(err)}
+ args:=[]string{}
+ if err:=mountRuntimePackageFiles(&args,assets);err==nil {t.Fatal("unsigned local CLI directory was accepted")}
 }
 
 func TestT09LinuxExplicitServerDataRootMaskedEvenInsideSharedSystemDirectory(t *testing.T) {
@@ -192,76 +163,37 @@ func TestT09MarkerSecretsBesideRuntimeFilesNotMounted(t *testing.T) {
 }
 
 
-func TestT09CLIAssetManifestExcludesIndependentServerJSONAndExtensionless(t *testing.T) {
- root:=t.TempDir()
- node:=filepath.Join(root,"node-private")
- workspace:=filepath.Join(root,"workspace")
- bin:=filepath.Join(root,".local","bin")
- assets:=filepath.Join(root,".local","share","codex")
- for _,dir:=range []string{node,workspace,bin,assets} {if err:=os.MkdirAll(dir,0700);err!=nil{t.Fatal(err)}}
- for name,content:=range map[string]string{
-  "model.dat":"ASSET-OK",
-  "index.js":"module.exports = true",
-  "server-secret.json":"SERVER-HMAC-JSON",
-   "secret.dat":"SERVER-HMAC-DAT",
-   "secret.txt":"SERVER-HMAC-TXT",
-  "transport-token":"SERVER-HMAC-NO-EXT",
- } { if err:=os.WriteFile(filepath.Join(assets,name),[]byte(content),0600);err!=nil{t.Fatal(err)} }
- executable:=filepath.Join(bin,"codex")
- if err:=os.WriteFile(executable,[]byte("#!/bin/sh\ncat "+filepath.Join(assets,"model.dat")+"\n"),0700);err!=nil{t.Fatal(err)}
- t.Setenv("HOME",root)
- _,args,err:=sandboxInvocation(WorkerSandbox{ProtectedDir:node,Workspace:workspace},executable,nil)
- if err!=nil{t.Fatal(err)}
- mounts:=map[string]bool{}
- for i:=0;i+2<len(args);i++ {if args[i]=="--ro-bind"{mounts[args[i+2]]=true}}
- for _,name:=range []string{"model.dat","index.js"} {
-  if !mounts[filepath.Join(assets,name)] {t.Fatalf("runtime asset %q not mounted",name)}
- }
- for _,name:=range []string{"server-secret.json","transport-token","secret.dat","secret.txt"} {
-  if mounts[filepath.Join(assets,name)] {t.Fatalf("Server secret %q exposed to Worker",name)}
- }
-}
-
-func TestT09NodeModulesPackageExcludesServerJSONAndExtensionless(t *testing.T) {
- root:=t.TempDir()
- packageDir:=filepath.Join(root,"node_modules","@openai","codex")
- if err:=os.MkdirAll(packageDir,0700);err!=nil{t.Fatal(err)}
- for name:=range map[string]bool{"index.js":true,"secret.json":true,"secret":true,"secret.dat":true,"secret.txt":true,"model.dat":true} {
-  if err:=os.WriteFile(filepath.Join(packageDir,name),[]byte(name),0600);err!=nil{t.Fatal(err)}
- }
- args:=[]string{}
- if err:=mountRuntimePackageFiles(&args,packageDir);err!=nil{t.Fatal(err)}
- seen:=map[string]bool{}
- for i:=0;i+2<len(args);i++ {if args[i]=="--ro-bind"{seen[args[i+2]]=true}}
- if !seen[filepath.Join(packageDir,"index.js")] {t.Fatal("missing package JS runtime")}
- if !seen[filepath.Join(packageDir,"model.dat")] {t.Fatal("declared model.dat runtime asset missing")}
- for _,name:=range []string{"secret.json","secret","secret.dat","secret.txt"} {
-  if seen[filepath.Join(packageDir,name)] {t.Fatalf("unexpected secret mount: %s",name)}
- }
-}
-
-
-func TestT09CLIManifestRejectsExecutableLookingServerSecrets(t *testing.T) {
+func TestT09CLIMissingProvenanceCannotExposeServerSecrets(t *testing.T) {
  root:=t.TempDir()
  pkg:=filepath.Join(root,"node_modules","@openai","codex")
- if err:=os.MkdirAll(filepath.Join(pkg,"assets"),0700);err!=nil{t.Fatal(err)}
- files:=[]string{"index.js","dist/index.js","assets/model.dat",
- "transport-secret.js","transport-secret.mjs","transport-secret.cjs",
- "transport-secret.wasm","transport-secret.node","transport-secret.map",
- "transport-secret.css","transport-secret.html","assets/transport-secret.js"}
- for _,name:=range files {
-   p:=filepath.Join(pkg,name)
-   if err:=os.MkdirAll(filepath.Dir(p),0700);err!=nil{t.Fatal(err)}
-   if err:=os.WriteFile(p,[]byte(name),0600);err!=nil{t.Fatal(err)}
+ if err:=os.MkdirAll(pkg,0700);err!=nil{t.Fatal(err)}
+ for _,name:=range []string{"transport-secret.js","secret.wasm","model.dat"} {
+   if err:=os.WriteFile(filepath.Join(pkg,name),[]byte("SECRET"),0600);err!=nil{t.Fatal(err)}
  }
  args:=[]string{}
- if err:=mountRuntimePackageFiles(&args,pkg);err!=nil{t.Fatal(err)}
- mounted:=map[string]bool{}
- for i:=0;i+2<len(args);i++ {if args[i]=="--ro-bind"{mounted[args[i+2]]=true}}
- for _,name:=range []string{"index.js","dist/index.js","assets/model.dat"} {
-   if !mounted[filepath.Join(pkg,name)]{t.Fatalf("missing declared runtime asset: %s",name)}
+ if err:=mountRuntimePackageFiles(&args,pkg);err==nil{t.Fatal("missing trusted package provenance accepted")}
+ if len(args)!=0 {t.Fatalf("untrusted package caused mounts: %v",args)}
+}
+
+func TestT09NodeModulesRequiresVerifiedProviderVersion(t *testing.T) {
+ root:=t.TempDir()
+ pkg:=filepath.Join(root,"node_modules","@openai","codex")
+ if err:=os.MkdirAll(pkg,0700);err!=nil{t.Fatal(err)}
+ if err:=os.WriteFile(filepath.Join(pkg,"package.json"),[]byte(`{"name":"@openai/codex","version":"invalid/../version"}`),0600);err!=nil{t.Fatal(err)}
+ args:=[]string{}
+ if err:=mountRuntimePackageFiles(&args,pkg);err==nil{t.Fatal("unsafe CLI version accepted")}
+ if len(args)!=0{t.Fatal("mounted invalid CLI package")}
+}
+
+func TestT09ExecutableLookingServerSecretsAreNotAutoMounted(t *testing.T) {
+ root:=t.TempDir()
+ pkg:=filepath.Join(root,"node_modules","@openai","codex")
+ if err:=os.MkdirAll(pkg,0700);err!=nil{t.Fatal(err)}
+ if err:=os.WriteFile(filepath.Join(pkg,"package.json"),[]byte(`{"name":"@openai/codex","version":"0.0.0-unprovisioned"}`),0600);err!=nil{t.Fatal(err)}
+ for _,name:=range []string{"transport-secret.js","transport-secret.wasm","transport-secret.map","index.js"}{
+  if err:=os.WriteFile(filepath.Join(pkg,name),[]byte("SECRET"),0600);err!=nil{t.Fatal(err)}
  }
- for _,name:=range files[3:] {
-   if mounted[filepath.Join(pkg,name)]{t.Fatalf("secret-looking executable asset exposed: %s",name)}
- }
+ args:=[]string{}
+ if err:=mountRuntimePackageFiles(&args,pkg);err==nil{t.Fatal("unprovisioned version accepted")}
+ if len(args)!=0{t.Fatalf("untrusted executable-looking assets mounted: %v",args)}
 }
