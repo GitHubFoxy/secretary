@@ -73,3 +73,19 @@ func (s *Server) telegramVideoLimits(w http.ResponseWriter,r *http.Request){
  opts:=s.videoOptions.Defaults()
  writeJSON(w,http.StatusOK,map[string]any{"max_duration_seconds":opts.MaxDurationSeconds})
 }
+
+func(s *Server)telegramVideoCapability(w http.ResponseWriter,r *http.Request){
+ conversation,ok:=s.authorizedTelegramVoice(w,r);if !ok{return}
+ workerRef:=strings.TrimSpace(r.URL.Query().Get("worker_ref"))
+ if workerRef==""{http.Error(w,"missing worker_ref",http.StatusBadRequest);return}
+ details,err:=s.store.WorkerDetailsForConversation(r.Context(),conversation.ID,workerRef)
+ if errors.Is(err,core.ErrNotFound){http.NotFound(w,r);return}
+ if err!=nil{http.Error(w,"Worker lookup failed",http.StatusInternalServerError);return}
+ worker:=details.Worker
+ if worker.NodeID==""||worker.HarnessInstanceID==""{writeJSON(w,http.StatusOK,map[string]any{"supported":false});return}
+ record,err:=s.store.NodeRecord(r.Context(),core.NodeReference(worker.NodeID))
+ if err!=nil{http.Error(w,"Worker Node unavailable",http.StatusServiceUnavailable);return}
+ instance,found:=record.Inventory.Instance(core.HarnessInstanceID(worker.HarnessInstanceID))
+ supported:=found&&instance.Capabilities.SupportsExecution(core.CapabilityImageInput)
+ writeJSON(w,http.StatusOK,map[string]any{"supported":supported})
+}
