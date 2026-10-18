@@ -8,6 +8,7 @@ import (
  "os/exec"
  "path/filepath"
  "testing"
+ "time"
  "net/http"
  "net/http/httptest"
  "encoding/json"
@@ -98,7 +99,9 @@ func TestT09RealCodexPersistedSessionResume(t *testing.T) {
  config:=fmt.Sprintf("model = \"t09-local\"\\nmodel_provider = \"t09mock\"\\napproval_policy = \"never\"\\nmodel_reasoning_effort = \"low\"\\n[model_providers.t09mock]\\nname = \"T09 CI Fake Responses Backend\"\\nbase_url = %q\\nwire_api = \"responses\"\\nrequires_openai_auth = false\\nrequest_max_retries = 0\\nstream_max_retries = 0\\n",server.URL+"/v1")
  if err:=os.WriteFile(filepath.Join(home,".codex","config.toml"),[]byte(config),0600);err!=nil{t.Fatal(err)}
  t.Setenv("HOME",home)
- ctx:=WithWorkerSandbox(context.Background(),WorkerSandbox{ProtectedDir:node,Workspace:ws})
+ runCtx,cancel:=context.WithTimeout(context.Background(),90*time.Second)
+ defer cancel()
+ ctx:=WithWorkerSandbox(runCtx,WorkerSandbox{ProtectedDir:node,Workspace:ws})
  run:=func(args ...string) string{
   t.Helper()
   cmd,err:=CommandContext(ctx,cli,args...)
