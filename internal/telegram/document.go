@@ -89,6 +89,36 @@ func(c *HTTPServerClient)StoreDocumentOriginal(ctx context.Context,updateID int6
  return result.Artifact.ID,nil
 }
 
+type documentFailureKind int
+const(
+ documentFailurePermanent documentFailureKind=iota+1
+ documentFailureRetryable
+ documentFailureUncertain
+)
+type documentDeliveryFailure struct{Kind documentFailureKind; Cause error}
+func(e *documentDeliveryFailure)Error()string{return e.Cause.Error()}
+func documentFailure(kind documentFailureKind,err error)error{
+ return &documentDeliveryFailure{Kind:kind,Cause:err}
+}
+// An uncertain send is an at-most-one-automatic-attempt boundary, NOT
+// exactly-once delivery. Telegram offers neither an idempotency key for
+// sendDocument nor a query for a lost response. A warning directs the owner
+// to inspect the chat and explicitly request resend if necessary.
+func(a *Adapter)finishDocumentDelivery(message OutgoingMessage,reason string)error{
+ notice:=OutgoingMessage{ChatID:message.ChatID,ThreadID:message.ThreadID,
+  Identity:"file-delivery-notice:"+message.Identity,Text:reason}
+ a.mu.Lock()
+ a.state.Outbox=removeOutboxMessage(a.state.Outbox,message)
+ a.markDeliveredLocked(message)
+ identity:=outgoingMessageIdentity(notice)
+ exists:=false
+ for _,pending:=range a.state.Outbox{if outgoingMessageIdentity(pending)==identity{exists=true;break}}
+ if _,ok:=a.state.Delivered[identity];ok{exists=true}
+ if !exists{a.state.Outbox=append(a.state.Outbox,notice)}
+ err:=a.saveLocked()
+ a.mu.Unlock()
+ return err
+}
 type DocumentDownloadStore interface {
  DownloadDocument(context.Context,string)(string,string,[]byte,error)
 }
@@ -97,12 +127,12 @@ type DocumentSendTransport interface{
 }
 func(a *Adapter)sendDocumentAttachment(ctx context.Context,message OutgoingMessage)error{
  source,ok:=a.server.(DocumentDownloadStore)
- if !ok{return errors.New("telegram: Server document retrieval unavailable")}
+ if !ok{return documentFailure(documentFailurePermanent,errors.New("Server document retrieval unavailable"))}
  sender,ok:=a.transport.(DocumentSendTransport)
- if !ok{return errors.New("telegram: Bot sendDocument unavailable")}
+ if !ok{return documentFailure(documentFailurePermanent,errors.New("Bot sendDocument unavailable"))}
  name,mediaType,data,err:=source.DownloadDocument(ctx,message.DocumentArtifactID)
  if err!=nil{return err}
- if len(data)==0||len(data)>core.MaxArtifactBytes{return errors.New("telegram: published document exceeds 8 MiB or is empty")}
+ if len(data)==0||len(data)>core.MaxArtifactBytes{return documentFailure(documentFailurePermanent,errors.New("published document exceeds 8 MiB or is empty"))}
  return sender.SendDocument(ctx,message.ChatID,message.ThreadID,name,mediaType,data,message.Text)
 }
 func(c *HTTPServerClient)DownloadDocument(ctx context.Context,id string)(string,string,[]byte,error){
@@ -111,9 +141,13 @@ func(c *HTTPServerClient)DownloadDocument(ctx context.Context,id string)(string,
  if err!=nil{return "","",nil,err}
  req.Header.Set("Authorization","Bearer "+c.Credential)
  res,err:=c.client().Do(req);if err!=nil{return "","",nil,err};defer res.Body.Close()
- if res.StatusCode!=200{return "","",nil,fmt.Errorf("telegram document retrieval HTTP %d",res.StatusCode)}
+ if res.StatusCode!=200{
+  kind:=documentFailurePermanent
+  if res.StatusCode==429||res.StatusCode>=500{kind=documentFailureRetryable}
+  return "","",nil,documentFailure(kind,fmt.Errorf("document retrieval HTTP %d",res.StatusCode))
+ }
  data,err:=io.ReadAll(io.LimitReader(res.Body,core.MaxArtifactBytes+1));if err!=nil{return "","",nil,err}
- if len(data)==0||len(data)>core.MaxArtifactBytes{return "","",nil,errors.New("document exceeds 8 MiB")}
+ if len(data)==0||len(data)>core.MaxArtifactBytes{return "","",nil,documentFailure(documentFailurePermanent,errors.New("document exceeds 8 MiB"))}
  _,params,err:=mime.ParseMediaType(res.Header.Get("Content-Disposition"))
  if err!=nil{return "","",nil,err}
  name:=params["filename"]
@@ -136,12 +170,16 @@ func(t *BotAPITransport)SendDocument(ctx context.Context,chatID,threadID int64,n
  req,err:=http.NewRequestWithContext(ctx,http.MethodPost,base+"/bot"+t.BotToken+"/sendDocument",&body)
  if err!=nil{return err}
  req.Header.Set("Content-Type",writer.FormDataContentType())
- res,err:=t.client().Do(req);if err!=nil{return err};defer res.Body.Close()
+ res,err:=t.client().Do(req);if err!=nil{return documentFailure(documentFailureUncertain,err)};defer res.Body.Close()
  reply,err:=io.ReadAll(io.LimitReader(res.Body,4096));if err!=nil{return err}
- if res.StatusCode<200||res.StatusCode>=300{return fmt.Errorf("Telegram sendDocument HTTP %d",res.StatusCode)}
+ if res.StatusCode<200||res.StatusCode>=300{
+  kind:=documentFailurePermanent
+  if res.StatusCode==429||res.StatusCode>=500{kind=documentFailureRetryable}
+  return documentFailure(kind,fmt.Errorf("Telegram sendDocument HTTP %d",res.StatusCode))
+ }
  var envelope struct{OK bool `json:"ok"`}
  if err=json.Unmarshal(reply,&envelope);err!=nil{return err}
- if !envelope.OK{return errors.New("Telegram rejected document upload")}
+ if !envelope.OK{return documentFailure(documentFailurePermanent,errors.New("Telegram rejected document upload"))}
  _=mediaType
  return nil
 }
