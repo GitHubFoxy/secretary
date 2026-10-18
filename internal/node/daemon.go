@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"sync"
 
 	"github.com/beruseruko/secretary/internal/core"
 )
@@ -130,7 +131,10 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 	readErrors := make(chan error, 1)
 	completions := make(chan commandCompletion, 4)
 	commandCtx, stopCommands := context.WithCancel(ctx)
-	defer stopCommands()
+	var commandWG sync.WaitGroup
+	// A disconnected socket must cancel and drain in-flight pre-native
+	// commands before the next socket replays their durable claims.
+	defer func(){stopCommands();commandWG.Wait()}()
 	pendingCommands := make([]Command, 0, 32)
 	runningWorkers := make(map[string]bool)
 	runningDetails := make(map[string]runningNodeCommand)
@@ -161,7 +165,9 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			runningCommands++
 			individualCtx,interrupt:=context.WithCancelCause(commandCtx)
 			runningDetails[key]=runningNodeCommand{kind:command.Kind,attemptID:command.Metadata().AttemptID,interrupt:interrupt}
+			commandWG.Add(1)
 			go func() {
+				defer commandWG.Done()
 				outcome, err := execution.HandleCommand(individualCtx, command)
 				// An accepted dispatch's native session can keep using its
 				// runtime.Start context after this command returns. Do not
@@ -216,9 +222,13 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 		sentThrough = sequence
 		return nil
 	}
-	if err := sendHeartbeat(); err != nil {
-		return err
-	}
+	if err := sendHeartbeat(); err != nil {return err}
+	// Recover pre-native Dispatch/Resume with their original IDs and envelope.
+	// ClaimCommand atomically serializes this replay against server redelivery.
+	replay,err:=d.Store.PendingPrestartCommands()
+	if err!=nil{return err}
+	pendingCommands=append(pendingCommands,replay...)
+	startPending()
 
 	heartbeats := time.NewTicker(d.heartbeatInterval())
 	inventories := time.NewTicker(d.inventoryInterval())
@@ -248,7 +258,8 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			// attempts remain unaffected.
 			if message.Command.Kind==CommandCancel && message.Command.Cancel!=nil {
 				key:=commandWorkerKey(*message.Command)
-				if running,ok:=runningDetails[key];ok && (running.kind==CommandDispatch || running.kind==CommandResume) &&
+				if running,ok:=runningDetails[key];ok &&
+					(running.kind==CommandDispatch || running.kind==CommandResume || running.kind==CommandSteering) &&
 					running.attemptID==message.Command.Cancel.Metadata.AttemptID {
 					running.interrupt(errWorkerDispatchCanceled)
 				}
