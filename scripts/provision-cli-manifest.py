@@ -78,13 +78,16 @@ def main():
         official_version = package_identity["version"]
         if official_version != version:
             raise SystemExit("archive package version mismatch")
-        if not (official_name == package and (package == PACKAGES[provider] or len(sys.argv) == 4) and
-                (official_name == PACKAGES[provider] or
-                (provider == "codex" and official_name.startswith("@openai/codex-linux-")) or
-                (provider == "claude" and official_name.startswith("@anthropic-ai/claude-code-linux-")) or
-                (provider == "opencode" and official_name.startswith("opencode-linux-")))):
+        # Codex platform aliases are published as @openai/codex with a
+        # platform-suffixed version. The npm alias identifies the platform.
+        if provider == "codex" and len(sys.argv) == 4:
+            if official_name != "@openai/codex" or not version.endswith(
+                "-" + package.rsplit("codex-", 1)[-1]
+            ):
+                raise SystemExit("archive platform identity mismatch")
+        elif official_name != package:
             raise SystemExit("archive package identity mismatch")
-        package_id = official_name.replace("/", "__")
+        package_id = package.replace("/", "__")
         trusted = Path("/etc/secretary/cli-store", provider, package_id)
         trusted.mkdir(parents=True, exist_ok=True)
         os.chmod(trusted, 0o755)
