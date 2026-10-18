@@ -233,3 +233,59 @@ func TestT13WorkerWithoutImageCapabilityWarnsBeforeDownload(t *testing.T){
   t.Fatalf("unsupported Worker was not rejected: downloads=%d uploads=%d worker=%+v warnings=%+v",tr.downloads,srv.uploads,srv.workers,tr.sent)
  }
 }
+
+type t13PendingDispatchServer struct {
+ t13FixtureServer
+ entered chan struct{}
+ release chan struct{}
+ once sync.Once
+}
+func(s *t13PendingDispatchServer)SendWorkerMessage(ctx context.Context,msg WorkerMessage)error{
+ s.once.Do(func(){close(s.entered)})
+ select{case <-ctx.Done():return ctx.Err();case <-s.release:}
+ return s.fakeServer.SendWorkerMessage(ctx,msg)
+}
+func TestT13DuplicateUpdateDuringPendingWorkerDispatchAndReconnect(t *testing.T){
+ group:=int64(-200)
+ tr:=&t11Transport{fakeTransport:&fakeTransport{},data:[]byte("original video")}
+ srv:=&t13PendingDispatchServer{
+  t13FixtureServer:t13FixtureServer{status:"ready"},
+  entered:make(chan struct{}),release:make(chan struct{}),
+ }
+ path:=filepath.Join(t.TempDir(),"pending-worker.json")
+ open:=func()*Adapter{
+  t.Helper()
+  a,err:=New(Config{StatePath:path,OwnerChatID:100,GroupChatID:&group},tr,srv)
+  if err!=nil{t.Fatal(err)}
+  return a
+ }
+ first:=open()
+ first.mu.Lock()
+ first.state.OwnerUser=100
+ first.state.GroupChat=group
+ first.state.Topics["worker-pending"]=TopicMapping{WorkerRef:"worker-pending",ChatID:group,ThreadID:97,PendingRequestID:"needs-video"}
+ err:=first.saveLocked()
+ first.mu.Unlock()
+ if err!=nil{t.Fatal(err)}
+ u:=t13Update(560);u.Message.ChatID=group;u.Message.ThreadID=97
+ oldCtx,interrupt:=context.WithCancel(context.Background())
+ if err:=first.HandleUpdate(oldCtx,u);err!=nil{t.Fatal(err)}
+ select{case <-srv.entered:case <-time.After(3*time.Second):t.Fatal("Worker dispatch never reached server")}
+ if err:=first.HandleUpdate(oldCtx,u);err!=nil{t.Fatal(err)}
+ first.mu.Lock()
+ pending:=len(first.state.PendingImages)
+ first.mu.Unlock()
+ if pending!=1{t.Fatalf("pending dispatch was lost or duplicated: %d",pending)}
+ interrupt()
+ first.imageWG.Wait()
+ recovered:=open()
+ close(srv.release)
+ recovered.startImageWorkers(context.Background())
+ recovered.imageWG.Wait()
+ if len(srv.workers)!=1 || srv.workers[0].WorkerRef!="worker-pending"||srv.workers[0].RequestID!="needs-video" {
+  t.Fatalf("recovered dispatch was not exactly once: %+v",srv.workers)
+ }
+ if err:=recovered.HandleUpdate(context.Background(),u);err!=nil{t.Fatal(err)}
+ recovered.imageWG.Wait()
+ if len(srv.workers)!=1{t.Fatalf("duplicate Telegram dispatch: %+v",srv.workers)}
+}
