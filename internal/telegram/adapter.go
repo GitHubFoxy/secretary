@@ -46,6 +46,7 @@ type Message struct {
 	Caption   string `json:"caption,omitempty"`
 	Voice     *Voice `json:"voice,omitempty"`
 	Image     *Image `json:"image,omitempty"`
+	Video     *Video `json:"video,omitempty"`
 }
 
 type OutgoingMessage struct {
@@ -908,7 +909,7 @@ func (a *Adapter) deliverUpdate(ctx context.Context, update Update, allowed bool
 	if update.Message == nil {
 		return nil
 	}
-	if update.Message.Image != nil {
+	if update.Message.Image != nil || update.Message.Video != nil {
 		return a.queueImageUpdate(update, allowed)
 	}
 	if update.Message.Voice != nil {

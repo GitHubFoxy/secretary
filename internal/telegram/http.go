@@ -137,6 +137,8 @@ type botMessageDTO struct {
 	Voice    *botVoiceDTO `json:"voice,omitempty"`
 	Audio    *botVoiceDTO `json:"audio,omitempty"`
 	Document *botVoiceDTO `json:"document,omitempty"`
+	Video *botVoiceDTO `json:"video,omitempty"`
+	VideoNote *botVoiceDTO `json:"video_note,omitempty"`
 	Caption  string `json:"caption,omitempty"`
 }
 
@@ -174,6 +176,13 @@ func (dto botUpdateDTO) update() Update {
 	} else if dto.Message.Document != nil && (strings.HasPrefix(strings.ToLower(dto.Message.Document.MimeType), "image/") || isStillImageName(dto.Message.Document.FileName)) {
 		d := dto.Message.Document
 		message.Image = &Image{FileID:d.FileID, FileUniqueID:d.FileUniqueID, FileSize:d.FileSize, FileName:d.FileName, MimeType:d.MimeType}
+	}
+	video := dto.Message.Video
+	if video == nil { video = dto.Message.VideoNote }
+	if video != nil {
+		name := video.FileName
+		if name == "" { name = fmt.Sprintf("telegram-video-%d.mp4", dto.ID) }
+		message.Video = &Video{FileID:video.FileID, FileUniqueID:video.FileUniqueID, FileName:name, MimeType:video.MimeType, FileSize:video.FileSize, Duration:video.Duration}
 	}
 	update.Message = message
 	return update

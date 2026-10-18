@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"sync"
+ "strings"
 	"testing"
 	"time"
 
@@ -151,4 +152,38 @@ func TestWorkerServiceRejectsProjectlessWorkspaceAtSpawnBoundary(t *testing.T) {
 	if runtime.count("dispatch") != 0 {
 		t.Fatal("untrusted projectless Workspace reached runtime")
 	}
+}
+
+func TestT13AutomaticTelegramVideoRequiresImageInputCapability(t *testing.T) {
+ ctx:=context.Background()
+ store,err:=core.Open(ctx,filepath.Join(t.TempDir(),"t13.db"));if err!=nil{t.Fatal(err)}
+ defer store.Close()
+ person,conversation,err:=store.CreatePersonWithConversation(ctx);if err!=nil{t.Fatal(err)}
+ cap,err:=store.RotateSecretaryCapability(ctx,person.ID);if err!=nil{t.Fatal(err)}
+ if _,err=store.EnrollNode(ctx,"local");err!=nil{t.Fatal(err)}
+ instance:=core.HarnessInstance{ID:"local/fx",Node:"local",Kind:core.HarnessFX,Version:"test",Status:core.HarnessReady,
+  Authentication:core.HarnessAuthentication{Authenticated:true},
+  Capabilities:core.HarnessCapabilities{Execution:[]core.ExecutionCapability{core.CapabilityShell}}}
+ if err=store.UpdateNodeHeartbeat(ctx,"local",core.HarnessInventorySnapshot{
+  Node:"local",ObservedAt:time.Now().UTC(),Instances:[]core.HarnessInstance{instance},
+ },core.NodeHeartbeat{Capacity:2});err!=nil{t.Fatal(err)}
+ native:=&projectlessNativeRuntime{}
+ svc:=WorkerService{Store:store,PersonID:person.ID,Capability:cap,
+  WorkerPolicy:core.HarnessPolicy{DefaultHarness:core.HarnessFX},
+  WorkerProfileSource:syntheticWorkerTemplateSource(),
+  Runtime:NodeRuntime{Local:node.NewLocal(native)}}
+ prompt:="Describe the sampled video\n\nTelegram video (update 42, chat 100, message 8, file_unique_id video): artifact://art_0123456789abcdef0123456789abcdef"
+ _,err=svc.SpawnWorker(ctx,SpawnWorkerRequest{Intent:prompt,IdempotencyKey:"telegram-video-no-capability"})
+ if !errors.Is(err,core.ErrInvalidDispatchPin){t.Fatalf("unsupported automatic Worker selection not rejected: %v",err)}
+ workers,err:=store.WorkersForConversation(ctx,conversation.ID)
+ if err!=nil||len(workers)!=0{t.Fatalf("unsupported video created Worker: workers=%+v err=%v",workers,err)}
+ entries,err:=store.EntriesTail(ctx,conversation.ID,0,20)
+ if err!=nil{t.Fatal(err)}
+ warned:=false
+ for _,entry:=range entries {
+  if entry.Kind==core.EntrySecretary && strings.Contains(entry.Body,"CapabilityImageInput") { warned=true }
+ }
+ if !warned{t.Fatal("unsupported DM video did not publish a durable Telegram-visible rejection")}
+ native.mu.Lock();defer native.mu.Unlock()
+ if len(native.starts)!=0{t.Fatal("unsupported native Worker received Telegram video")}
 }

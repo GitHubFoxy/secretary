@@ -169,30 +169,7 @@ func bridgeTelegramEventsOnce(ctx context.Context, store *core.Store, adapter *t
 			return 0, err
 		}
 	}
-	cursor := adapter.LastEventSeq()
-	for {
-		events, err := store.EventsAfterSeq(ctx, cursor, 500)
-		if err != nil {
-			return 0, err
-		}
-		if len(events) == 0 {
-			return 0, nil
-		}
-		for _, event := range events {
-			if err := adapter.HandleDurableEvent(ctx, telegramEvent(event)); err != nil {
-				return event.Seq, err
-			}
-			if event.Kind == core.SecretaryTurnFinishedEvent {
-				if err := adapter.Flush(ctx); err != nil {
-					return event.Seq, err
-				}
-			}
-			cursor = event.Seq
-		}
-		if len(events) < 500 {
-			return 0, nil
-		}
-	}
+	return telegram.RelayCoreEventsOnce(ctx,store,adapter,telegramEvent)
 }
 
 func recoverTelegramWorkerTyping(ctx context.Context, store *core.Store, adapter *telegram.Adapter) error {
@@ -253,6 +230,7 @@ func telegramWorkerAttemptTerminal(event telegram.Event) bool {
 }
 
 func telegramEvent(event core.Event) telegram.Event {
+	if projected, ok := telegram.ProjectCoreWorkerEvent(event); ok { return projected }
 	workerRef := event.WorkerRef
 	if workerRef == "" && event.AggregateType == "worker" {
 		workerRef = event.AggregateID

@@ -114,6 +114,7 @@ func TestT04RunDMAndFlushContinueWhileForumSyncBlockedAndRetry(t *testing.T) {
 	for len(destinations) < 2 {
 		select {
 		case msg := <-tr.sent:
+			if msg.Identity == "mirror-input:1" { continue } // Inbound DM mirror races independently with Secretary flush.
 			if msg.Text != "Secretary reply" { t.Fatalf("unexpected Flush payload %#v", msg) }
 			destinations[msg.ChatID] = true
 		case <-time.After(3 * time.Second):

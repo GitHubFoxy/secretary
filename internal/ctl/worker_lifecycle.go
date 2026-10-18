@@ -513,6 +513,19 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 	if s.WorkerPolicySource != nil {
 		resolutionRequest.WorkerPolicy = s.WorkerPolicySource()
 	}
+	// Telegram video is converted to image frames by T12. Automatic Worker
+	// selection must not pick a text-only harness for that original input.
+	if strings.Contains(request.Intent, "Telegram video (update ") && strings.Contains(request.Intent, "artifact://") {
+		policy := resolutionRequest.WorkerPolicy
+		found := false
+		for _, capability := range policy.RequiredExecutionCapabilities {
+			if capability == core.CapabilityImageInput { found = true; break }
+		}
+		if !found {
+			policy.RequiredExecutionCapabilities = append(append([]core.ExecutionCapability(nil), policy.RequiredExecutionCapabilities...), core.CapabilityImageInput)
+		}
+		resolutionRequest.WorkerPolicy = policy
+	}
 	if s.WorkerProfileSource == nil {
 		return core.WorkerDetails{}, ErrWorkerProfileUnavailable
 	}
@@ -550,6 +563,29 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 		return string(encoded), nil
 	}, origins...)
 	if err != nil {
+		if strings.Contains(request.Intent, "Telegram video (update ") &&
+			strings.Contains(request.Intent, "artifact://") &&
+			errors.Is(err, core.ErrInvalidDispatchPin) &&
+			strings.Contains(err.Error(), "lacks required Worker capabilities") {
+			// A DM/General video has no bound Topic worker at Telegram ingress.
+			// Emit an explicit durable Secretary-facing rejection once automatic
+			// selection discovers that no eligible Worker accepts image frames.
+			message := "Не удалось обработать видео: выбранный Worker не поддерживает CapabilityImageInput. Выберите Worker с поддержкой изображений."
+			var noticeErr error
+			if origin != nil {
+				// An acknowledgement is a durable, independently projected
+				// Secretary response. It reaches DM/General without waiting
+				// for the failed tool turn's final text batch, and replay is
+				// idempotent for the originating Secretary input.
+				_, _, noticeErr = s.Store.RecordSecretaryAcknowledgement(ctx,
+					s.PersonID, s.Capability, origin.SecretaryTurnID, origin.InputID, message)
+			} else {
+				_, noticeErr = s.Store.AppendEntry(ctx, conversation.ID, core.EntrySecretary, message)
+			}
+			if noticeErr != nil {
+				return core.WorkerDetails{}, fmt.Errorf("video capability rejection notice: %w (selection: %v)", noticeErr, err)
+			}
+		}
 		return core.WorkerDetails{}, err
 	}
 	if !resolution.Queued {
