@@ -32,6 +32,7 @@ func ProjectCoreWorkerEvent(source core.Event)(Event,bool){
   out.Kind="worker.created";out.TaskPrompt=get("intent");out.NodeID=get("node_id")
   return out,true
  }
+ out.WorkerAttemptTerminal=true
  if source.Kind=="attempt.outcome_recorded"&&get("summary")==""{return out,true}
  if source.Kind=="attempt.outcome_recorded"&&get("classification")=="retryable"{return out,true}
  out.Kind="worker.completed"
