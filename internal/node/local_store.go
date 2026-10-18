@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -48,6 +49,13 @@ type imageResponseCheckpoint struct {
 	Stage string `json:"stage"`
 }
 
+// localPrestartRecord is persisted in protected Node state before any local
+// Worker dispatch/continuation can enter media preparation.
+type localPrestartRecord struct {
+	WorkerRef string `json:"worker_ref"`
+	Stage string `json:"stage"` // preparing, canceled, handoff
+}
+
 type localState struct {
 	Version                  int                              `json:"version"`
 	NextSequence             uint64                           `json:"next_sequence"`
@@ -57,6 +65,7 @@ type localState struct {
 	PendingRequests          map[string]pendingRequestMapping `json:"pending_requests"`
 	WorkerResponses          map[string]CommandOutcome        `json:"worker_responses"`
 	ImageResponses           map[string]imageResponseCheckpoint `json:"image_responses,omitempty"`
+	LocalPrestarts           map[string]localPrestartRecord  `json:"local_prestarts,omitempty"`
 	Outbox                   []PendingEvent                   `json:"outbox"`
 }
 
@@ -71,7 +80,7 @@ func OpenLocalStore(path string) (*LocalStore, error) {
 	if path == "" {
 		return nil, errors.New("node: local store path is required")
 	}
-	store := &LocalStore{path: path, state: localState{Version: 1, NextSequence: 1, Commands: map[string]CommandRecord{}, Mappings: map[string]sessionMapping{}, PendingRequests: map[string]pendingRequestMapping{}, WorkerResponses: map[string]CommandOutcome{}, ImageResponses: map[string]imageResponseCheckpoint{}, Outbox: []PendingEvent{}}}
+	store := &LocalStore{path: path, state: localState{Version: 1, NextSequence: 1, Commands: map[string]CommandRecord{}, Mappings: map[string]sessionMapping{}, PendingRequests: map[string]pendingRequestMapping{}, WorkerResponses: map[string]CommandOutcome{}, ImageResponses: map[string]imageResponseCheckpoint{}, LocalPrestarts:map[string]localPrestartRecord{}, Outbox: []PendingEvent{}}}
 	encoded, err := os.ReadFile(path)
 	if err == nil {
 		if len(encoded) > 0 {
@@ -93,6 +102,7 @@ func OpenLocalStore(path string) (*LocalStore, error) {
 			if store.state.ImageResponses == nil {
 				store.state.ImageResponses = map[string]imageResponseCheckpoint{}
 			}
+			if store.state.LocalPrestarts==nil {store.state.LocalPrestarts=map[string]localPrestartRecord{}}
 			if store.state.NextSequence == 0 {
 				store.state.NextSequence = 1
 			}
@@ -132,6 +142,98 @@ func (s *LocalStore) persistLocked() error {
 	return os.Rename(tmp, s.path)
 }
 
+// Preserve conservative unknown-execution recovery for commands unrelated to
+// Artifact preparation. T12 video/image references can be proven unstarted
+// while blocked on media, but ordinary Worker actions cannot.
+func hasPrestartArtifactReference(command Command) bool {
+	switch command.Kind {
+	case CommandDispatch:
+		if command.Dispatch==nil{return false}
+		env:=command.Dispatch.Envelope
+		return len(ArtifactIDs(env.OriginalUserIntent))>0 || len(ArtifactIDs(env.ContinuationPrompt))>0
+	case CommandResume:
+		if command.Resume==nil{return false}
+		env:=command.Resume.Envelope
+		return len(ArtifactIDs(env.OriginalUserIntent))>0 || len(ArtifactIDs(env.ContinuationPrompt))>0
+	}
+	return false
+}
+
+// Local pre-native state lives beside the durable response checkpoints,
+// not under a Worker-controllable workspace. The handoff marker is persisted
+// BEFORE native Start/Resume; on restart an uncertain handoff is never replayed.
+var ErrLocalPrestartCanceled=errors.New("worker: canceled_before_handoff")
+func (s *LocalStore) BeginLocalPrestart(attemptID,workerRef string) error {
+	if attemptID=="" || workerRef=="" {return errors.New("node: incomplete local prestart identity")}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if prev,ok:=s.state.LocalPrestarts[attemptID];ok {
+		if prev.WorkerRef!=workerRef{return errors.New("node: local prestart Worker identity conflict")}
+		if prev.Stage=="canceled"{return ErrLocalPrestartCanceled}
+		if prev.Stage=="handoff" || prev.Stage=="resuming"{return errors.New("node: local native handoff may already have occurred")}
+		// A previous 'preparing' claim can safely be restarted: it never
+		// crossed the durably marked native handoff boundary.
+		return nil
+	}
+	s.state.LocalPrestarts[attemptID]=localPrestartRecord{WorkerRef:workerRef,Stage:"preparing"}
+	if err:=s.persistLocked();err!=nil{delete(s.state.LocalPrestarts,attemptID);return err}
+	return nil
+}
+// MarkLocalResumeInFlight closes the crash/restart replay window while the
+// native provider is still blocking. Unlike a confirmed handoff, this state
+// remains cancelable by its exact AttemptID.
+func (s *LocalStore) MarkLocalResumeInFlight(attemptID, workerRef string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev,ok:=s.state.LocalPrestarts[attemptID]
+	if !ok || prev.WorkerRef!=workerRef{return errors.New("node: local Resume prestart state missing")}
+	if prev.Stage=="canceled"{return ErrLocalPrestartCanceled}
+	if prev.Stage!="preparing"{return errors.New("node: native Resume already attempted")}
+	next:=prev
+	next.Stage="resuming"
+	s.state.LocalPrestarts[attemptID]=next
+	if err:=s.persistLocked();err!=nil{s.state.LocalPrestarts[attemptID]=prev;return err}
+	return nil
+}
+
+func (s *LocalStore) CancelLocalPrestart(attemptID,workerRef string) (bool,error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev,ok:=s.state.LocalPrestarts[attemptID]
+	if !ok || prev.WorkerRef!=workerRef{return false,nil}
+	if prev.Stage=="canceled"{return true,nil}
+	if prev.Stage!="preparing" && prev.Stage!="resuming"{return false,nil}
+	next:=prev;next.Stage="canceled"
+	s.state.LocalPrestarts[attemptID]=next
+	if err:=s.persistLocked();err!=nil{s.state.LocalPrestarts[attemptID]=prev;return false,err}
+	return true,nil
+}
+func (s *LocalStore) MarkLocalHandoff(attemptID,workerRef string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev,ok:=s.state.LocalPrestarts[attemptID]
+	if !ok || prev.WorkerRef!=workerRef{return errors.New("node: local prestart state missing")}
+	if prev.Stage=="canceled"{return ErrLocalPrestartCanceled}
+	if prev.Stage!="preparing" && prev.Stage!="resuming"{return errors.New("node: local prestart handoff already attempted")}
+	next:=prev;next.Stage="handoff"
+	s.state.LocalPrestarts[attemptID]=next
+	if err:=s.persistLocked();err!=nil{s.state.LocalPrestarts[attemptID]=prev;return err}
+	return nil
+}
+func (s *LocalStore) ReleaseLocalPrestart(attemptID,workerRef string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prev,ok:=s.state.LocalPrestarts[attemptID]
+	if !ok || prev.WorkerRef!=workerRef || prev.Stage!="preparing"{return nil}
+	delete(s.state.LocalPrestarts,attemptID)
+	if err:=s.persistLocked();err!=nil{s.state.LocalPrestarts[attemptID]=prev;return err}
+	return nil
+}
+func (s *LocalStore) LocalPrestartState(attemptID string) string {
+	s.mu.Lock();defer s.mu.Unlock()
+	return s.state.LocalPrestarts[attemptID].Stage
+}
+
 func (s *LocalStore) ClaimCommand(command Command) (CommandRecord, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -140,6 +242,28 @@ func (s *LocalStore) ClaimCommand(command Command) (CommandRecord, bool, error) 
 	}
 	metadata := command.Metadata()
 	if existing, ok := s.state.Commands[metadata.CommandID]; ok {
+		if existing.Kind!=command.Kind{return CommandRecord{},true,errors.New("node: command replay kind mismatch")}
+		if existing.State==CommandProcessing && existing.SafePrestart && existing.Replayable &&
+			(command.Kind==CommandDispatch || command.Kind==CommandResume) {
+			encoded,e:=commandJSON(command)
+			if e!=nil{return CommandRecord{},true,e}
+			if !bytes.Equal(encoded,existing.CommandJSON){
+				// A JSON round-trip may normalize derived/default-valued wire
+				// fields. Accept the canonicalized durable command, but never
+				// accept a changed envelope under the same CommandID.
+				durable,e:=commandFromJSON(existing.CommandJSON)
+				if e!=nil{return CommandRecord{},true,e}
+				canonical,e:=commandJSON(durable)
+				if e!=nil{return CommandRecord{},true,e}
+				if !bytes.Equal(encoded,canonical){return CommandRecord{},true,errors.New("node: mismatched replay envelope")}
+			}
+			previous:=existing
+			existing.Replayable=false
+			existing.UpdatedAt=time.Now().UTC()
+			s.state.Commands[metadata.CommandID]=existing
+			if e:=s.persistLocked();e!=nil{s.state.Commands[metadata.CommandID]=previous;return CommandRecord{},true,e}
+			return existing,false,nil
+		}
 		if existing.State == CommandFailed && command.Kind == CommandRespondWorker {
 			now := time.Now().UTC()
 			existing.State = CommandProcessing
@@ -159,13 +283,96 @@ func (s *LocalStore) ClaimCommand(command Command) (CommandRecord, bool, error) 
 		return CommandRecord{}, false, err
 	}
 	now := time.Now().UTC()
-	record := CommandRecord{CommandID: metadata.CommandID, Kind: command.Kind, State: CommandProcessing, Outcome: CommandOutcome{CommandID: metadata.CommandID, Kind: command.Kind, State: CommandProcessing}, CommandJSON: encoded, ClaimedAt: now, UpdatedAt: now}
+	record := CommandRecord{CommandID: metadata.CommandID, Kind: command.Kind, State: CommandProcessing, SafePrestart:hasPrestartArtifactReference(command), Outcome: CommandOutcome{CommandID: metadata.CommandID, Kind: command.Kind, State: CommandProcessing}, CommandJSON: encoded, ClaimedAt: now, UpdatedAt: now}
 	s.state.Commands[record.CommandID] = record
 	if err := s.persistLocked(); err != nil {
 		delete(s.state.Commands, record.CommandID)
 		return CommandRecord{}, false, err
 	}
 	return record, false, nil
+}
+
+// MarkNativeHandoff durably closes the pre-native replay window before
+// any external native Start/Resume can produce an irreversible side effect.
+func (s *LocalStore) MarkNativeHandoff(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e:=ctx.Err();e!=nil{return e}
+	rec,ok:=s.state.Commands[id]
+	if !ok || rec.State!=CommandProcessing{return errors.New("node: missing active command claim")}
+	// Ordinary non-Artifact commands retain their existing unknown-execution
+	// recovery behavior. They have no safe prestart marker to close.
+	if !rec.SafePrestart{return nil}
+	if rec.Replayable{return errors.New("node: pre-native command was not claimed for this execution")}
+	prev:=rec
+	rec.SafePrestart=false
+	rec.UpdatedAt=time.Now().UTC()
+	s.state.Commands[id]=rec
+	if e:=s.persistLocked();e!=nil{s.state.Commands[id]=prev;return e}
+	return nil
+}
+
+// RecordNativeResumeCancel persists the precise Attempt being canceled while
+// its native Resume is blocked. Never treat a cancellation of another Attempt
+// on the same Worker as authorization.
+func (s *LocalStore) RecordNativeResumeCancel(commandID string, metadata core.CommandMetadata) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record,ok:=s.state.Commands[commandID]
+	if !ok || record.Kind!=CommandResume || record.State!=CommandProcessing || record.SafePrestart{
+		return errors.New("node: native Resume claim not in handoff state")
+	}
+	command,err:=commandFromJSON(record.CommandJSON)
+	if err!=nil{return err}
+	original:=command.Metadata()
+	if original.AttemptID!=metadata.AttemptID || original.WorkerRef!=metadata.WorkerRef ||
+		original.TurnID!=metadata.TurnID || original.HarnessInstanceID!=metadata.HarnessInstanceID{
+		return errors.New("node: native Resume cancellation identity mismatch")
+	}
+	if record.NativeResumeCancelRequested{return nil}
+	record.NativeResumeCancelRequested=true
+	record.UpdatedAt=time.Now().UTC()
+	s.state.Commands[commandID]=record
+	return s.persistLocked()
+}
+
+// YieldPrestart keeps the original claim/idempotency and makes it retryable.
+func (s *LocalStore) YieldPrestart(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec,ok:=s.state.Commands[id]
+	if !ok || rec.State!=CommandProcessing || !rec.SafePrestart{return nil}
+	rec.Replayable=true
+	rec.UpdatedAt=time.Now().UTC()
+	s.state.Commands[id]=rec
+	return s.persistLocked()
+}
+func (s *LocalStore) PendingPrestartCommands() ([]Command,error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ids []string
+	for id,rec:=range s.state.Commands{
+		if rec.State==CommandProcessing && rec.SafePrestart && rec.Replayable && (rec.Kind==CommandDispatch||rec.Kind==CommandResume){ids=append(ids,id)}
+	}
+	sort.Strings(ids)
+	commands:=make([]Command,0,len(ids))
+	for _,id:=range ids{
+		cmd,e:=commandFromJSON(s.state.Commands[id].CommandJSON)
+		if e!=nil{return nil,e}
+		commands=append(commands,cmd)
+	}
+	return commands,nil
+}
+func (s *LocalStore) PrestartCanceled(attemptID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _,rec:=range s.state.Commands{
+		if rec.State!=CommandFailed || rec.Outcome.ErrorCode!="canceled_before_handoff"{continue}
+		if rec.Kind!=CommandDispatch && rec.Kind!=CommandResume{continue}
+		cmd,e:=commandFromJSON(rec.CommandJSON)
+		if e==nil && cmd.Metadata().AttemptID==attemptID{return true}
+	}
+	return false
 }
 
 func (s *LocalStore) SaveCommandReadiness(commandID string, outcome CommandOutcome) (CommandRecord, error) {
@@ -591,6 +798,29 @@ func (s *LocalStore) QueueOutcome(outcome core.AttemptOutcomeEnvelope) (PendingE
 	return s.queueEvent(outcomeEvent(outcome))
 }
 
+// QueueLifecycleCommandOutcome is the single durable delivery path for
+// Dispatch/Resume receipts, regardless of WebSocket state. A repeated native
+// command with the same CommandID cannot enqueue a second receipt after its
+// first event is ACKed; before ACK, the pending event ID deduplicates it.
+func (s *LocalStore) QueueLifecycleCommandOutcome(outcome CommandOutcome) (PendingEvent,error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if outcome.Kind!=CommandDispatch && outcome.Kind!=CommandResume {
+		return PendingEvent{},errors.New("node: not a lifecycle command receipt")
+	}
+	if outcome.CommandID=="" || outcome.State==CommandProcessing {
+		return PendingEvent{},errors.New("node: incomplete lifecycle receipt")
+	}
+	record,ok:=s.state.Commands[outcome.CommandID]
+	if !ok || record.Kind!=outcome.Kind {
+		return PendingEvent{},errors.New("node: lifecycle receipt has no matching durable claim")
+	}
+	if record.Acknowledged {
+		return PendingEvent{},nil
+	}
+	return s.queueCommandOutcomeLocked(outcome)
+}
+
 func (s *LocalStore) QueueCommandOutcome(outcome CommandOutcome) (PendingEvent, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -754,7 +984,10 @@ func (s *LocalStore) RecoverRunning(ctx context.Context, inspector ProcessInspec
 				return err
 			}
 		}
-		if alive {
+		if alive {continue}
+		if record.State==CommandProcessing && record.SafePrestart &&
+			(command.Kind==CommandDispatch || command.Kind==CommandResume){
+			if e:=s.YieldPrestart(record.CommandID);e!=nil{return e}
 			continue
 		}
 		if command.Kind == CommandDispatch || command.Kind == CommandResume {

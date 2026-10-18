@@ -19,8 +19,8 @@ import (
 	"time"
 
 	"github.com/beruseruko/secretary/internal/app"
-	"github.com/beruseruko/secretary/internal/config"
 	"github.com/beruseruko/secretary/internal/artifactmcp"
+	"github.com/beruseruko/secretary/internal/config"
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
 	"github.com/beruseruko/secretary/internal/node"
@@ -193,6 +193,9 @@ func main() {
 		log.Fatalf("initialize web API: %v", err)
 	}
 	web.AttachWorkerObserverPreference(func() bool { return profiles.Snapshot().Config.WorkerObserver.ShowToolActivity })
+	if err := web.AttachVideoOptions(webapi.VideoOptions{FPS: profiles.Snapshot().Config.Video.FPS, MaxDurationSeconds: profiles.Snapshot().Config.Video.MaxDurationSeconds, MaxFrames: profiles.Snapshot().Config.Video.MaxFrames, TimeoutSeconds: profiles.Snapshot().Config.Video.TimeoutSeconds}); err != nil {
+		log.Fatalf("configure video processing: %v", err)
+	}
 	web.SetDebug(*debug)
 	web.AttachUserDocument(filepath.Join(*dataDir, "user.md"))
 	web.AttachDiagnosticLogDir(filepath.Join(*dataDir, "logs", "acp"))
@@ -278,20 +281,33 @@ func main() {
 	// Native needs_input image delivery uses the same durable injection
 	// protocol as a standalone ExecutionNode, scoped to protected Node data.
 	localImageStore, err := node.OpenLocalStore(filepath.Join(workerDataDir, "local-image-responses.json"))
-	if err != nil { log.Fatalf("open local Worker image response checkpoints: %v", err) }
+	if err != nil {
+		log.Fatalf("open local Worker image response checkpoints: %v", err)
+	}
 	workerLocal.SetImageResponseStore(localImageStore)
 	localPublisherBinary, binaryErr := os.Executable()
-	if binaryErr != nil { log.Fatalf("resolve local Worker Artifact MCP: %v", binaryErr) }
+	if binaryErr != nil {
+		log.Fatalf("resolve local Worker Artifact MCP: %v", binaryErr)
+	}
 	if err := workerLocal.SetLocalArtifactPublisher(func(saveCtx context.Context, workerRef, attemptID, key, name, media string, data []byte) (core.Artifact, error) {
 		artifact, _, saveErr := store.SavePublishedArtifact(saveCtx, "local", workerRef, attemptID, key, name, media, data)
 		return artifact, saveErr
 	}, localPublisherBinary); err != nil {
 		log.Fatalf("initialize local Worker publication broker: %v", err)
 	}
+	workerLocal.SetPrestartStore(localImageStore)
 	workerLocal.SetArtifactFetcher(func(ctx context.Context, id string) (node.ArtifactPayload, error) {
 		artifact, body, err := store.ArtifactForPerson(ctx, web.OwnerID(), id)
-		if err != nil { return node.ArtifactPayload{}, err }
-		return node.ArtifactPayload{ID: artifact.ID, Name: artifact.Name, SHA256: artifact.SHA256, Data: body}, nil
+		if err != nil {
+			return node.ArtifactPayload{}, err
+		}
+		return node.ArtifactPayload{
+			ID: artifact.ID, Name: artifact.Name, SHA256: artifact.SHA256, Data: body,
+			VideoStatus: artifact.ProcessingStatus, VideoError: artifact.ProcessingError, VideoFrames: artifact.VideoFrames,
+			CheckVideoStatus: func(c context.Context) (core.Artifact, error) {
+				return store.ArtifactMetadataForPerson(c, web.OwnerID(), id)
+			},
+		}, nil
 	})
 	secretaryLocal := node.NewLocal(secretaryHarnessRuntime)
 	if err := recoverProductionPhase4Attempts(ctx, store, workerLocal, remoteNodes); err != nil {

@@ -2,7 +2,7 @@ package node
 
 import (
 	"context"
- 	"encoding/json"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -33,22 +33,55 @@ type PendingRequestRebinder interface {
 }
 
 type ExecutionNode struct {
-	node              core.NodeReference
-	runtime           Runtime
-	store             *LocalStore
-	mu                sync.Mutex
-	sessions          map[string]Session
-	activitySequences map[string]uint64
-	inventory         core.HarnessInventorySnapshot
-	workspaces        map[string]string
-	mcpServers        []MCPServer
-	artifactFetcher    ArtifactFetcher
-	publishBroker *workerPublishBroker
+	node                     core.NodeReference
+	runtime                  Runtime
+	store                    *LocalStore
+	mu                       sync.Mutex
+	sessions                 map[string]Session
+	activitySequences        map[string]uint64
+	inventory                core.HarnessInventorySnapshot
+	workspaces               map[string]string
+	mcpServers               []MCPServer
+	artifactFetcher          ArtifactFetcher
+	publishBroker            *workerPublishBroker
 	artifactPublisherCommand string
+	// Native Resume may block after durable handoff. Its identity and
+	// cancellation survive WebSocket disconnects, unlike commandCtx.
+	nativeResumes map[string]*nativeResumeAttempt
+	// nativeLifetime is the Node process lifetime, not an individual
+	// WebSocket connection or an individual Dispatch command.
+	nativeLifetime context.Context
+}
+
+type nativeResumeAttempt struct {
+	commandID string
+	workerRef string
+	cancel    context.CancelFunc
+	canceled  bool
 }
 
 func NewExecutionNode(node core.NodeReference, runtime Runtime, store *LocalStore) *ExecutionNode {
-	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, activitySequences: map[string]uint64{}, workspaces: map[string]string{}}
+	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, nativeResumes: map[string]*nativeResumeAttempt{}, activitySequences: map[string]uint64{}, workspaces: map[string]string{}}
+}
+
+// SetNativeLifetime binds accepted native sessions to the Node daemon
+// lifetime. Before durable handoff Artifact preparation remains cancellable
+// by the connection/command context; after handoff a socket reconnect must
+// not cancel nativeexec.CommandContext (Claude/Codex/OpenCode).
+func (n *ExecutionNode) SetNativeLifetime(ctx context.Context) {
+	n.mu.Lock()
+	n.nativeLifetime = ctx
+	n.mu.Unlock()
+}
+func (n *ExecutionNode) nativeStartContext(commandCtx context.Context) context.Context {
+	n.mu.Lock()
+	lifetime := n.nativeLifetime
+	n.mu.Unlock()
+	if lifetime != nil {
+		return lifetime
+	}
+	// Preserve existing direct-ExecutionNode callers that own their context.
+	return commandCtx
 }
 
 func (n *ExecutionNode) SetMCPServers(servers []MCPServer) error {
@@ -114,6 +147,19 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 	}
 	if duplicate {
 		if record.State == CommandProcessing {
+			// A re-delivered Resume cannot determine native success. Preserve
+			// the original claim until its provider goroutine commits the
+			// actual outcome; even the handoff-to-completion transition must
+			// not manufacture a terminal receipt.
+			if command.Kind == CommandResume && record.Outcome.State == CommandProcessing && !record.Replayable && !record.SafePrestart {
+				return CommandOutcome{CommandID: command.Metadata().CommandID, Kind: command.Kind, TurnID: command.Metadata().TurnID, AttemptID: command.Metadata().AttemptID, State: CommandProcessing}, nil
+			}
+			if (command.Kind == CommandResume || command.Kind == CommandDispatch) && n.nativeResumeRunning(command.Metadata().AttemptID, command.Metadata().WorkerRef, command.Metadata().CommandID) {
+				// Same durable command is still running at the provider.
+				// This is NOT terminal acceptance: the original execution
+				// owns the sole final receipt after Resume returns.
+				return CommandOutcome{CommandID: command.Metadata().CommandID, Kind: command.Kind, TurnID: command.Metadata().TurnID, AttemptID: command.Metadata().AttemptID, State: CommandProcessing}, nil
+			}
 			if record.Outcome.State == CommandAccepted {
 				if n.liveContinuationReadiness(command, record) {
 					return record.Outcome, nil
@@ -151,6 +197,12 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 	default:
 		outcome = failedOutcome(command, "unknown_command", "unknown command")
 	}
+	if outcome.State == CommandProcessing && (command.Kind == CommandDispatch || command.Kind == CommandResume) {
+		if e := n.store.YieldPrestart(command.Metadata().CommandID); e != nil {
+			return CommandOutcome{}, e
+		}
+		return CommandOutcome{}, ctx.Err()
+	}
 	if pendingContinuation && outcome.State == CommandAccepted {
 		return outcome, nil
 	}
@@ -159,6 +211,18 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 		return CommandOutcome{}, err
 	}
 	return stored.Outcome, nil
+}
+
+// beforeNativeHandoff distinguishes a terminal owner Cancel from a transport
+// interruption. The latter is yielded as replayable, not artifact_unavailable.
+func (n *ExecutionNode) beforeNativeHandoff(ctx context.Context, command Command) (CommandOutcome, bool) {
+	if errors.Is(context.Cause(ctx), errWorkerDispatchCanceled) {
+		return failedOutcome(command, "canceled_before_handoff", "Worker canceled before native session start"), true
+	}
+	if ctx.Err() != nil {
+		return CommandOutcome{CommandID: command.Metadata().CommandID, Kind: command.Kind, State: CommandProcessing}, true
+	}
+	return CommandOutcome{}, false
 }
 
 func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) CommandOutcome {
@@ -206,7 +270,9 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		if brokered {
 			var rootErr error
 			tempRoot, rootErr = nativeexec.ManagedWorkerWorkspaceRoot(filepath.Dir(n.store.path))
-			if rootErr != nil { return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "workspace_failed", rootErr.Error()) }
+			if rootErr != nil {
+				return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "workspace_failed", rootErr.Error())
+			}
 		}
 		workspace, err = os.MkdirTemp(tempRoot, "secretary-worker-")
 		if err != nil {
@@ -231,6 +297,9 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	}
 	prepared, images, artifactErr := n.prepareArtifactInput(ctx, workspace, task)
 	if artifactErr != nil {
+		if outcome, ok := n.beforeNativeHandoff(ctx, Command{Kind: CommandDispatch, Dispatch: command}); ok {
+			return outcome
+		}
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "artifact_unavailable", artifactErr.Error())
 	}
 	if len(images) > 0 && !supportsImageHarness(command.Envelope.HarnessInstance) {
@@ -245,14 +314,30 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "artifact_publish_unavailable", publishErr.Error())
 	}
 	activatedPublisher := false
-	defer func() { if !activatedPublisher { n.unregisterArtifactPublisher(command.Envelope.AttemptID) } }()
+	defer func() {
+		if !activatedPublisher {
+			n.unregisterArtifactPublisher(command.Envelope.AttemptID)
+		}
+	}()
 	request := StartRequest{MCPServers: servers, WorkerRef: command.Envelope.WorkerRef, Task: task, Images: images, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
-	ctx = n.securedWorkerContext(ctx, workspace)
+	if outcome, ok := n.beforeNativeHandoff(ctx, Command{Kind: CommandDispatch, Dispatch: command}); ok {
+		return outcome
+	}
+	if e := n.store.MarkNativeHandoff(ctx, command.Metadata.CommandID); e != nil {
+		if outcome, ok := n.beforeNativeHandoff(ctx, Command{Kind: CommandDispatch, Dispatch: command}); ok {
+			return outcome
+		}
+		return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "native_handoff_record_failed", e.Error())
+	}
+	notifyNativeHandoff(ctx)
+	// Irreversible boundary has been persisted. Native session and initial
+	// prompt now live across WebSocket reconnections.
+	nativeCtx := n.securedWorkerContext(n.nativeStartContext(ctx), workspace)
 	var session Session
 	if continuing {
 		mapping, mappingErr := n.continuationMapping(command.Envelope, command.Envelope.PreviousAttemptID)
@@ -261,12 +346,12 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 		}
 		request.DeferInitialPrompt = true
-		session, err = resumeSameIdentity(ctx, resumer, request, mapping.RuntimeSessionID)
+		session, err = resumeSameIdentity(nativeCtx, resumer, request, mapping.RuntimeSessionID)
 	} else {
 		if n.store.hasWorkerMapping(command.Envelope.WorkerRef) {
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 		}
-		session, err = n.runtime.Start(ctx, request)
+		session, err = n.runtime.Start(nativeCtx, request)
 	}
 	if err != nil {
 		if code, message, ok := managedProfileFailure(err); ok {
@@ -405,9 +490,35 @@ func (w WorkerEnvelope) ProjectSnapshotPathMapping() (core.ProjectPathMapping, b
 	return core.ProjectPathMapping{}, false
 }
 
+func (n *ExecutionNode) nativeResumeRunning(attemptID, workerRef, commandID string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	pending := n.nativeResumes[attemptID]
+	return pending != nil && pending.workerRef == workerRef && pending.commandID == commandID
+}
+
 func (n *ExecutionNode) cancel(ctx context.Context, command *CancelCommand) CommandOutcome {
+	// A durable native Resume can be in progress without a Session mapping.
+	// Match the exact Attempt and Worker, never a historical native ID.
+	n.mu.Lock()
+	pending := n.nativeResumes[command.Metadata.AttemptID]
+	if pending != nil && pending.workerRef == command.Metadata.WorkerRef {
+		if err := n.store.RecordNativeResumeCancel(pending.commandID, command.Metadata); err != nil {
+			n.mu.Unlock()
+			return failedOutcome(Command{Kind: CommandCancel, Cancel: command}, "cancel_checkpoint_failed", err.Error())
+		}
+		pending.canceled = true
+		pending.cancel()
+		n.mu.Unlock()
+		return acceptedOutcome(Command{Kind: CommandCancel, Cancel: command})
+	}
+	n.mu.Unlock()
 	session, err := n.sessionForCommand(ctx, command.Metadata)
 	if err != nil {
+		prestart := n.store.PrestartCanceled(command.Metadata.AttemptID)
+		if prestart {
+			return acceptedOutcome(Command{Kind: CommandCancel, Cancel: command})
+		}
 		return failedOutcome(Command{Kind: CommandCancel, Cancel: command}, "runtime_session_unavailable", err.Error())
 	}
 	if err := session.Cancel(ctx); err != nil {
@@ -433,7 +544,15 @@ func (n *ExecutionNode) steer(ctx context.Context, command *SteeringCommand) Com
 	}
 	text, images, err := n.prepareArtifactInput(ctx, mapping.Workspace, command.Text)
 	if err != nil {
+		// Interrupting media preparation before native steering is definitive:
+		// no text or image was injected, so acceptance is NOT unknown.
+		if errors.Is(context.Cause(ctx), errWorkerDispatchCanceled) {
+			return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "steering_not_delivered", "Owner canceled pending media steering before native injection")
+		}
 		return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "artifact_unavailable", err.Error())
+	}
+	if errors.Is(context.Cause(ctx), errWorkerDispatchCanceled) {
+		return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "steering_not_delivered", "Owner canceled pending media steering before native injection")
 	}
 	var injected bool
 	if len(images) > 0 {
@@ -482,7 +601,9 @@ func (n *ExecutionNode) steer(ctx context.Context, command *SteeringCommand) Com
 		var queueErr error
 		if len(images) > 0 {
 			multimodal, ok := session.(ImageQueueSession)
-			if !ok { return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "image_input_unsupported", "selected Worker session cannot queue image content") }
+			if !ok {
+				return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "image_input_unsupported", "selected Worker session cannot queue image content")
+			}
 			queueErr = multimodal.QueueImages(ctx, text, images)
 		} else {
 			queueErr = queue.Queue(ctx, text)
@@ -535,6 +656,9 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	}
 	prepared, images, artifactErr := n.prepareArtifactInput(ctx, workspace, task)
 	if artifactErr != nil {
+		if outcome, ok := n.beforeNativeHandoff(ctx, Command{Kind: CommandResume, Resume: command}); ok {
+			return outcome
+		}
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "artifact_unavailable", artifactErr.Error())
 	}
 	if len(images) > 0 && !supportsImageHarness(command.Envelope.HarnessInstance) {
@@ -549,34 +673,90 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "artifact_publish_unavailable", publishErr.Error())
 	}
 	activatedPublisher := false
-	defer func() { if !activatedPublisher { n.unregisterArtifactPublisher(command.Envelope.AttemptID) } }()
+	defer func() {
+		if !activatedPublisher {
+			n.unregisterArtifactPublisher(command.Envelope.AttemptID)
+		}
+	}()
 	request := StartRequest{MCPServers: servers, WorkerRef: command.Envelope.WorkerRef, Task: task, Images: images, Workspace: workspace, Profile: command.Envelope.Profile, HarnessInstance: command.Envelope.HarnessInstance, Model: command.Envelope.Model, Reasoning: command.Envelope.Reasoning, ApprovalPolicy: command.Envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(command.Metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(command.Metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(command.Metadata.AttemptID), DeferInitialPrompt: continuing}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
-	ctx = n.securedWorkerContext(ctx, workspace)
-	session, err := resumeSameIdentity(ctx, resumer, request, mapping.RuntimeSessionID)
-	if err != nil {
+	if outcome, ok := n.beforeNativeHandoff(ctx, Command{Kind: CommandResume, Resume: command}); ok {
+		return outcome
+	}
+	if e := n.store.MarkNativeHandoff(ctx, command.Metadata.CommandID); e != nil {
+		if outcome, ok := n.beforeNativeHandoff(ctx, Command{Kind: CommandResume, Resume: command}); ok {
+			return outcome
+		}
+		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "native_handoff_record_failed", e.Error())
+	}
+	// Mark the Attempt as in-flight before releasing socket ownership.
+	// Cancel on the reconnected WebSocket can now interrupt exactly this
+	// native Resume, without waiting for Session registration.
+	nativeCtx, nativeCancel := context.WithCancel(n.securedWorkerContext(n.nativeStartContext(ctx), workspace))
+	pending := &nativeResumeAttempt{commandID: command.Metadata.CommandID, workerRef: command.Metadata.WorkerRef, cancel: nativeCancel}
+	n.mu.Lock()
+	if n.nativeResumes[command.Metadata.AttemptID] != nil {
+		n.mu.Unlock()
+		nativeCancel()
+		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "execution_state_unknown", "native Resume already in flight")
+	}
+	n.nativeResumes[command.Metadata.AttemptID] = pending
+	n.mu.Unlock()
+	notifyNativeHandoff(ctx)
+	session, err := resumeSameIdentity(nativeCtx, resumer, request, mapping.RuntimeSessionID)
+	n.mu.Lock()
+	wasCanceled := pending.canceled || nativeCtx.Err() != nil
+	if err != nil || wasCanceled {
+		delete(n.nativeResumes, command.Metadata.AttemptID)
+	}
+	n.mu.Unlock()
+	if err != nil || wasCanceled {
+		nativeCancel()
+		if session != nil {
+			_ = session.Close()
+		}
+		if wasCanceled {
+			return failedOutcome(Command{Kind: CommandResume, Resume: command}, "native_resume_canceled", "Native Resume canceled before Session registration")
+		}
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
+	}
+	// Cancellation and final durable mapping/readiness + Session registration
+	// share one lock: a Cancel accepted before registration cannot leave a
+	// late mapping or native session, even when it races with persistence.
+	n.mu.Lock()
+	if pending.canceled || nativeCtx.Err() != nil {
+		delete(n.nativeResumes, command.Metadata.AttemptID)
+		n.mu.Unlock()
+		nativeCancel()
+		_ = session.Close()
+		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "native_resume_canceled", "Native Resume canceled before Session registration")
 	}
 	if continuing {
 		mapping.TurnID, mapping.AttemptID = command.Envelope.TurnID, command.Envelope.AttemptID
 		if err := n.store.SaveSessionMapping(mapping); err != nil {
+			delete(n.nativeResumes, command.Metadata.AttemptID)
+			n.mu.Unlock()
+			nativeCancel()
 			_ = session.Close()
 			return failedOutcome(Command{Kind: CommandResume, Resume: command}, "mapping_persist_failed", "continuation mapping could not be persisted")
 		}
-	}
-	n.rebindPendingRequests(command.Metadata.AttemptID, session)
-	if continuing {
 		ready, err := n.store.SaveCommandReadiness(command.Metadata.CommandID, acceptedOutcome(Command{Kind: CommandResume, Resume: command}))
 		if err != nil || ready.State != CommandProcessing || ready.Outcome.State != CommandAccepted {
+			delete(n.nativeResumes, command.Metadata.AttemptID)
+			n.mu.Unlock()
+			nativeCancel()
 			_ = session.Close()
 			return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 		}
 	}
-	n.registerSession(command.Metadata.AttemptID, session)
+	n.sessions[command.Metadata.AttemptID] = session
+	delete(n.nativeResumes, command.Metadata.AttemptID)
+	n.mu.Unlock()
+	n.rebindPendingRequests(command.Metadata.AttemptID, session)
 	activatedPublisher = true
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
@@ -726,17 +906,22 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 		return nil, ErrRuntimeSessionUnavailable
 	}
 	servers, publishErr := n.workerArtifactMCPServers(envelope.WorkerRef, envelope.AttemptID, mapping.Workspace)
-	if publishErr != nil { return nil, ErrRuntimeSessionUnavailable }
+	if publishErr != nil {
+		return nil, ErrRuntimeSessionUnavailable
+	}
 	activatedPublisher := false
-	defer func() { if !activatedPublisher { n.unregisterArtifactPublisher(envelope.AttemptID) } }()
+	defer func() {
+		if !activatedPublisher {
+			n.unregisterArtifactPublisher(envelope.AttemptID)
+		}
+	}()
 	request := StartRequest{MCPServers: servers, WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: mapping.Workspace, Profile: envelope.Profile, HarnessInstance: envelope.HarnessInstance, Model: envelope.Model, Reasoning: envelope.Reasoning, ApprovalPolicy: envelope.ApprovalPolicy, PendingRequests: n.store.PendingRequests(metadata.AttemptID), PendingRequestKinds: pendingRequestKinds(n.store.PendingRequests(metadata.AttemptID)), PendingRequestIDs: n.store.PendingRequestIDs(metadata.AttemptID)}
 	profile, err := request.effectiveProfile()
 	if err != nil {
 		return nil, ErrRuntimeSessionUnavailable
 	}
 	request.Profile = profile
-	ctx = n.securedWorkerContext(ctx, mapping.Workspace)
-	session, err := resumeSameIdentity(ctx, resumer, request, mapping.RuntimeSessionID)
+	session, err := resumeSameIdentity(n.securedWorkerContext(n.nativeStartContext(ctx), mapping.Workspace), resumer, request, mapping.RuntimeSessionID)
 	if err != nil {
 		return nil, ErrRuntimeSessionUnavailable
 	}
@@ -1201,7 +1386,6 @@ func semanticOutputPresent(result string) bool {
 	return true
 }
 
- 
 // Native subprocesses (and their shell/MCP descendants) are isolated from
 // the persisted Node credential and state. No daemon fallbacks are permitted.
 func (n *ExecutionNode) securedWorkerContext(ctx context.Context, workspace string) context.Context {
@@ -1222,8 +1406,8 @@ func (n *ExecutionNode) securedWorkerContext(ctx context.Context, workspace stri
 		serverRoot = filepath.Dir(filepath.Dir(nodeDir))
 	}
 	return nativeexec.WithWorkerSandbox(ctx, nativeexec.WorkerSandbox{
-		ProtectedDir: nodeDir,
+		ProtectedDir:  nodeDir,
 		ServerDataDir: serverRoot,
-		Workspace: workspace,
+		Workspace:     workspace,
 	})
 }
