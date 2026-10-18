@@ -297,8 +297,8 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
    source:=filepath.Join("/opt/secretary/cli-store",provider,metadata.Version,rel)
    info,err:=os.Lstat(source);if err!=nil{return fmt.Errorf("worker sandbox: verified CLI asset unavailable: %w",err)}
    owner,ok:=info.Sys().(*syscall.Stat_t)
-   if !ok || owner.Uid!=0 || !info.Mode().IsRegular() || info.Mode().Perm()&022!=0 || info.Size()>128<<20 {
-     return errors.New("worker sandbox: untrusted or oversized provisioned CLI asset")
+   if !ok || owner.Uid!=0 || !info.Mode().IsRegular() || info.Mode().Perm()&022!=0 || info.Size()>512<<20 {
+     return fmt.Errorf("worker sandbox: untrusted or oversized provisioned CLI asset %s uid=%d mode=%s size=%d",rel,owner.Uid,info.Mode(),info.Size())
    }
    fd,err:=os.Open(source);if err!=nil{return err}
    digest:=sha256.New()
