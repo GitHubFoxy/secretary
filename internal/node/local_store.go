@@ -149,7 +149,16 @@ func (s *LocalStore) ClaimCommand(command Command) (CommandRecord, bool, error) 
 			(command.Kind==CommandDispatch || command.Kind==CommandResume) {
 			encoded,e:=commandJSON(command)
 			if e!=nil{return CommandRecord{},true,e}
-			if !bytes.Equal(encoded,existing.CommandJSON){return CommandRecord{},true,errors.New("node: mismatched replay envelope")}
+			if !bytes.Equal(encoded,existing.CommandJSON){
+				// A JSON round-trip may normalize derived/default-valued wire
+				// fields. Accept the canonicalized durable command, but never
+				// accept a changed envelope under the same CommandID.
+				durable,e:=commandFromJSON(existing.CommandJSON)
+				if e!=nil{return CommandRecord{},true,e}
+				canonical,e:=commandJSON(durable)
+				if e!=nil{return CommandRecord{},true,e}
+				if !bytes.Equal(encoded,canonical){return CommandRecord{},true,errors.New("node: mismatched replay envelope")}
+			}
 			previous:=existing
 			existing.Replayable=false
 			existing.UpdatedAt=time.Now().UTC()

@@ -267,7 +267,6 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		session, err = n.runtime.Start(ctx, request)
 	}
 	if err != nil {
-		if outcome,ok:=n.beforeNativeHandoff(ctx,Command{Kind:CommandDispatch,Dispatch:command});ok {return outcome}
 		if code, message, ok := managedProfileFailure(err); ok {
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, code, message)
 		}
