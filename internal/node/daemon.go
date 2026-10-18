@@ -37,6 +37,17 @@ type serverMessage struct {
 // The user can cancel a dispatched Worker before its queued video becomes ready.
 var errWorkerDispatchCanceled = errors.New("worker: dispatch canceled before native start")
 
+// nativeHandoffSignal is attached to the command preparation Context. A
+// durable native boundary releases the socket WaitGroup without stopping
+// the daemon-lifetime provider operation.
+type nativeHandoffSignal struct {ready chan struct{};once sync.Once}
+type nativeHandoffKey struct{}
+func notifyNativeHandoff(ctx context.Context) {
+	if signal,ok:=ctx.Value(nativeHandoffKey{}).(*nativeHandoffSignal);ok {
+		signal.once.Do(func(){close(signal.ready)})
+	}
+}
+
 type runningNodeCommand struct {
 	kind CommandKind
 	attemptID string
@@ -169,17 +180,27 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			individualCtx,interrupt:=context.WithCancelCause(commandCtx)
 			runningDetails[key]=runningNodeCommand{kind:command.Kind,attemptID:command.Metadata().AttemptID,interrupt:interrupt}
 			commandWG.Add(1)
+			signal:=&nativeHandoffSignal{ready:make(chan struct{})}
+			finished:=make(chan struct{})
+			// Only pre-native preparation belongs to the WebSocket. After
+			// durable handoff, reconnect must not wait for a provider Resume
+			// that may block indefinitely.
+			go func(){
+				select {case <-signal.ready:case <-finished:}
+				commandWG.Done()
+			}()
 			go func() {
-				defer commandWG.Done()
-				outcome, err := execution.HandleCommand(individualCtx, command)
-				// An accepted dispatch's native session can keep using its
-				// runtime.Start context after this command returns. Do not
-				// cancel that context on ACK (it would kill Codex/Claude
-				// follow-ups). The connection parent owns its lifetime.
+				defer close(finished)
+				outcome, err := execution.HandleCommand(context.WithValue(individualCtx,nativeHandoffKey{},signal), command)
 				if err!=nil || outcome.State!=CommandAccepted {interrupt(nil)}
 				select {
 				case completions <- commandCompletion{command: command, outcome: outcome, err: err}:
 				case <-commandCtx.Done():
+					// Native completion on a dead socket still needs its
+					// durable command receipt delivered after reconnect.
+					if err==nil && outcome.State!=CommandProcessing {
+						_,_ = d.Store.QueueCommandOutcome(outcome)
+					}
 				}
 			}()
 		}

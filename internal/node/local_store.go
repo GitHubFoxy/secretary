@@ -312,6 +312,30 @@ func (s *LocalStore) MarkNativeHandoff(ctx context.Context, id string) error {
 	return nil
 }
 
+// RecordNativeResumeCancel persists the precise Attempt being canceled while
+// its native Resume is blocked. Never treat a cancellation of another Attempt
+// on the same Worker as authorization.
+func (s *LocalStore) RecordNativeResumeCancel(commandID string, metadata core.CommandMetadata) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	record,ok:=s.state.Commands[commandID]
+	if !ok || record.Kind!=CommandResume || record.State!=CommandProcessing || record.SafePrestart{
+		return errors.New("node: native Resume claim not in handoff state")
+	}
+	command,err:=commandFromJSON(record.CommandJSON)
+	if err!=nil{return err}
+	original:=command.Metadata()
+	if original.AttemptID!=metadata.AttemptID || original.WorkerRef!=metadata.WorkerRef ||
+		original.TurnID!=metadata.TurnID || original.HarnessInstanceID!=metadata.HarnessInstanceID{
+		return errors.New("node: native Resume cancellation identity mismatch")
+	}
+	if record.NativeResumeCancelRequested{return nil}
+	record.NativeResumeCancelRequested=true
+	record.UpdatedAt=time.Now().UTC()
+	s.state.Commands[commandID]=record
+	return s.persistLocked()
+}
+
 // YieldPrestart keeps the original claim/idempotency and makes it retryable.
 func (s *LocalStore) YieldPrestart(id string) error {
 	s.mu.Lock()

@@ -42,13 +42,23 @@ type ExecutionNode struct {
 	workspaces        map[string]string
 	mcpServers        []MCPServer
 	artifactFetcher    ArtifactFetcher
+	// Native Resume may block after durable handoff. Its identity and
+	// cancellation survive WebSocket disconnects, unlike commandCtx.
+	nativeResumes map[string]*nativeResumeAttempt
 	// nativeLifetime is the Node process lifetime, not an individual
 	// WebSocket connection or an individual Dispatch command.
 	nativeLifetime context.Context
 }
 
+type nativeResumeAttempt struct {
+	commandID string
+	workerRef string
+	cancel context.CancelFunc
+	canceled bool
+}
+
 func NewExecutionNode(node core.NodeReference, runtime Runtime, store *LocalStore) *ExecutionNode {
-	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, activitySequences: map[string]uint64{}, workspaces: map[string]string{}}
+	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, nativeResumes:map[string]*nativeResumeAttempt{}, activitySequences: map[string]uint64{}, workspaces: map[string]string{}}
 }
 
 // SetNativeLifetime binds accepted native sessions to the Node daemon
@@ -132,6 +142,11 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 	}
 	if duplicate {
 		if record.State == CommandProcessing {
+			if (command.Kind==CommandResume || command.Kind==CommandDispatch) && n.nativeResumeRunning(command.Metadata().AttemptID,command.Metadata().WorkerRef,command.Metadata().CommandID) {
+				// Same durable command, already handed to the native
+				// provider. A reconnect must never run Resume twice.
+				return acceptedOutcome(command),nil
+			}
 			if record.Outcome.State == CommandAccepted {
 				if n.liveContinuationReadiness(command, record) {
 					return record.Outcome, nil
@@ -272,6 +287,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		if outcome,ok:=n.beforeNativeHandoff(ctx,Command{Kind:CommandDispatch,Dispatch:command});ok{return outcome}
 		return failedOutcome(Command{Kind:CommandDispatch,Dispatch:command},"native_handoff_record_failed",e.Error())
 	}
+	notifyNativeHandoff(ctx)
 	// Irreversible boundary has been persisted. Native session and initial
 	// prompt now live across WebSocket reconnections.
 	nativeCtx:=n.nativeStartContext(ctx)
@@ -426,7 +442,29 @@ func (w WorkerEnvelope) ProjectSnapshotPathMapping() (core.ProjectPathMapping, b
 	return core.ProjectPathMapping{}, false
 }
 
+func (n *ExecutionNode) nativeResumeRunning(attemptID,workerRef,commandID string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	pending:=n.nativeResumes[attemptID]
+	return pending!=nil && pending.workerRef==workerRef && pending.commandID==commandID
+}
+
 func (n *ExecutionNode) cancel(ctx context.Context, command *CancelCommand) CommandOutcome {
+	// A durable native Resume can be in progress without a Session mapping.
+	// Match the exact Attempt and Worker, never a historical native ID.
+	n.mu.Lock()
+	pending:=n.nativeResumes[command.Metadata.AttemptID]
+	if pending!=nil && pending.workerRef==command.Metadata.WorkerRef {
+		if err:=n.store.RecordNativeResumeCancel(pending.commandID,command.Metadata);err!=nil{
+			n.mu.Unlock()
+			return failedOutcome(Command{Kind:CommandCancel,Cancel:command},"cancel_checkpoint_failed",err.Error())
+		}
+		pending.canceled=true
+		pending.cancel()
+		n.mu.Unlock()
+		return acceptedOutcome(Command{Kind:CommandCancel,Cancel:command})
+	}
+	n.mu.Unlock()
 	session, err := n.sessionForCommand(ctx, command.Metadata)
 	if err != nil {
 		prestart:=n.store.PrestartCanceled(command.Metadata.AttemptID)
@@ -589,8 +627,31 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		if outcome,ok:=n.beforeNativeHandoff(ctx,Command{Kind:CommandResume,Resume:command});ok{return outcome}
 		return failedOutcome(Command{Kind:CommandResume,Resume:command},"native_handoff_record_failed",e.Error())
 	}
-	session, err := resumeSameIdentity(n.nativeStartContext(ctx), resumer, request, mapping.RuntimeSessionID)
-	if err != nil {
+	// Mark the Attempt as in-flight before releasing socket ownership.
+	// Cancel on the reconnected WebSocket can now interrupt exactly this
+	// native Resume, without waiting for Session registration.
+	nativeCtx,nativeCancel:=context.WithCancel(n.nativeStartContext(ctx))
+	pending:=&nativeResumeAttempt{commandID:command.Metadata.CommandID,workerRef:command.Metadata.WorkerRef,cancel:nativeCancel}
+	n.mu.Lock()
+	if n.nativeResumes[command.Metadata.AttemptID]!=nil {
+		n.mu.Unlock()
+		nativeCancel()
+		return failedOutcome(Command{Kind:CommandResume,Resume:command},"execution_state_unknown","native Resume already in flight")
+	}
+	n.nativeResumes[command.Metadata.AttemptID]=pending
+	n.mu.Unlock()
+	notifyNativeHandoff(ctx)
+	session, err := resumeSameIdentity(nativeCtx, resumer, request, mapping.RuntimeSessionID)
+	n.mu.Lock()
+	wasCanceled:=pending.canceled || nativeCtx.Err()!=nil
+	if err!=nil || wasCanceled{
+		delete(n.nativeResumes,command.Metadata.AttemptID)
+	}
+	n.mu.Unlock()
+	if err != nil || wasCanceled {
+		nativeCancel()
+		if session!=nil{_ = session.Close()}
+		if wasCanceled{return failedOutcome(Command{Kind:CommandResume,Resume:command},"native_resume_canceled","Native Resume canceled before Session registration")}
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 	}
 	if continuing {
@@ -608,7 +669,19 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 			return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 		}
 	}
-	n.registerSession(command.Metadata.AttemptID, session)
+	// Protect the final registration against a Cancel racing with the provider
+	// return. Cancel and Session registration share n.mu.
+	n.mu.Lock()
+	if pending.canceled || nativeCtx.Err()!=nil {
+		delete(n.nativeResumes,command.Metadata.AttemptID)
+		n.mu.Unlock()
+		nativeCancel()
+		_ = session.Close()
+		return failedOutcome(Command{Kind:CommandResume,Resume:command},"native_resume_canceled","Native Resume canceled before Session registration")
+	}
+	n.sessions[command.Metadata.AttemptID]=session
+	delete(n.nativeResumes,command.Metadata.AttemptID)
+	n.mu.Unlock()
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
 		go func() { _ = promptWithImages(context.Background(), session, promptText, images) }()

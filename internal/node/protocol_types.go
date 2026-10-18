@@ -503,6 +503,7 @@ type CommandRecord struct {
 	TerminalOutcomeQueued bool            `json:"terminal_outcome_queued,omitempty"`
 	SafePrestart bool `json:"safe_prestart,omitempty"`
 	Replayable bool `json:"replayable,omitempty"`
+	NativeResumeCancelRequested bool `json:"native_resume_cancel_requested,omitempty"`
 	ClaimedAt             time.Time       `json:"claimed_at"`
 	UpdatedAt             time.Time       `json:"updated_at"`
 }
