@@ -43,3 +43,38 @@ Download-link deduplication requires a real Markdown link to the exact URL, not 
 Run `pwsh -File scripts/install-windows-node.ps1` as the **normal existing Node owner** from the Secretary checkout. It builds or finds `secretary-node.exe`, retains `identity.json` and `node-state.json`, and prompts for UAC once to provision the separate non-admin Worker SID and restrictive ACLs. UAC is part of the supported interactive installer, not a manual prerequisite. Declining elevation stops the operation before unsafe Dispatch. Re-running the installer is idempotent: the saved `worker-account.json`, provider credentials, native session checkpoints and Node pairing survive; the account password is not rotated. Optionally pass `-NodeDataDir`, `-NodeBinary`, `-WorkerHome`, `-Workspace` or `-WorkerUsername`. The installer ends with a native cross-SID preflight. Restart any running Node after a successful upgrade. Additional named project workspaces need Worker SID read/write ACLs; the installer grants its selected workspace.
 
 Local `secretaryd` Workers use the same short-lived, per-Attempt loopback publication broker. Only the privileged Server callback persists bytes through `SavePublishedArtifact` with Node ID `local`, enforcing the same active Worker/Attempt binding, per-Attempt limits and download-link semantics. Neither the harness nor its MCP child receives raw Server credentials or an arbitrary-byte upload interface.
+
+
+## Linux native CLI runtime provenance (T09)
+
+The Linux Worker sandbox never grants an entire CLI package directory or grants
+files by extension. A privileged install/setup operation must first provision
+each **specific provider package and version** using
+`scripts/provision-cli-manifest.py`. This requires a working npm registry
+connection and administrator privileges, for example:
+
+```sh
+sudo python3 scripts/provision-cli-manifest.py codex 0.163.0
+sudo python3 scripts/provision-cli-manifest.py codex 0.163.0-linux-x64
+```
+
+Provisioning downloads the official npm archive, checks its SHA-512 against the
+registry's published `dist.integrity`, extracts only regular files into the
+root-owned `/opt/secretary/cli-store/<provider>/<package>/<version>/` tree,
+and records each file's SHA-256 in a root-owned manifest under
+`/etc/secretary/cli-manifests/`. Provider and exact package identity/version
+must match. For platform-specific distributions, provision their corresponding
+official archive independently. The Node mounts only these verified, protected
+file bytes at the expected CLI paths. A separate Server-owned
+`transport-secret.js`, `.wasm`, SQLite database, HMAC or unlisted file in the
+same installed package subtree is never copied or mounted. Missing provenance,
+unexpected package revisions, invalid files and missing protected runtimes
+fail closed. Never generate an allowlist from the current contents of a
+user-writable `node_modules` tree.
+
+CI installs a pinned official Codex npm release, provisions its Linux
+platform package, checks a fresh sandbox entrypoint and the `exec resume`
+command's startup path, and tests that injected same-extension marker secrets
+cannot be read from that namespace. This is a **package/startup compatibility
+smoke test**, not an authenticated live inference and session-resumption
+acceptance test; live provider credentials/network/session tests remain separate.
