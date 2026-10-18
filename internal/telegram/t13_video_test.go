@@ -130,3 +130,24 @@ func TestT13TopicVideoAuthorizedAndBoundToOriginalWorker(t *testing.T) {
  a.imageWG.Wait()
  if len(srv.workers)!=1{t.Fatal("duplicate topic dispatch")}
 }
+
+func TestT13DurationLimitRejectedBeforeDownload(t *testing.T) {
+ tr:=&t11Transport{fakeTransport:&fakeTransport{},data:[]byte("video")}
+ srv:=&t13FixtureServer{status:"ready"}
+ a,err:=New(Config{StatePath:filepath.Join(t.TempDir(),"duration.json"),OwnerChatID:100},tr,srv)
+ if err!=nil{t.Fatal(err)}
+ u:=t13Update(407);u.Message.Video.Duration=61
+ if err:=a.HandleUpdate(context.Background(),u);err!=nil{t.Fatal(err)}
+ a.imageWG.Wait()
+ if tr.downloads!=0||srv.uploads!=0||len(tr.sent)!=1||!strings.Contains(tr.sent[0].Text,"длительность"){t.Fatalf("duration rejection failed: downloads=%d uploads=%d warnings=%+v",tr.downloads,srv.uploads,tr.sent)}
+}
+
+func TestT13ProcessorUnavailableRejectsBeforeDownload(t *testing.T) {
+ tr:=&t11Transport{fakeTransport:&fakeTransport{},data:[]byte("video")}
+ srv:=&fakeServer{}
+ a,err:=New(Config{StatePath:filepath.Join(t.TempDir(),"unavailable.json"),OwnerChatID:100},tr,srv)
+ if err!=nil{t.Fatal(err)}
+ if err:=a.HandleUpdate(context.Background(),t13Update(408));err!=nil{t.Fatal(err)}
+ a.imageWG.Wait()
+ if tr.downloads!=0||len(srv.messages)!=0||len(tr.sent)!=1||!strings.Contains(tr.sent[0].Text,"pipeline"){t.Fatalf("unavailable pipeline dispatched: %+v",srv.messages)}
+}
