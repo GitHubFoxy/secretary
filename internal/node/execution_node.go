@@ -435,7 +435,15 @@ func (n *ExecutionNode) steer(ctx context.Context, command *SteeringCommand) Com
 	}
 	text, images, err := n.prepareArtifactInput(ctx, mapping.Workspace, command.Text)
 	if err != nil {
+		// Interrupting media preparation before native steering is definitive:
+		// no text or image was injected, so acceptance is NOT unknown.
+		if errors.Is(context.Cause(ctx),errWorkerDispatchCanceled) {
+			return failedOutcome(Command{Kind:CommandSteering,Steering:command},"steering_not_delivered","Owner canceled pending media steering before native injection")
+		}
 		return failedOutcome(Command{Kind: CommandSteering, Steering: command}, "artifact_unavailable", err.Error())
+	}
+	if errors.Is(context.Cause(ctx),errWorkerDispatchCanceled) {
+		return failedOutcome(Command{Kind:CommandSteering,Steering:command},"steering_not_delivered","Owner canceled pending media steering before native injection")
 	}
 	var injected bool
 	if len(images) > 0 {

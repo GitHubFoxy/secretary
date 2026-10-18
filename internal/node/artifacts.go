@@ -85,7 +85,25 @@ func mustDecodeArtifactSignature(value string) []byte {
 	return decoded
 }
 
-func (i NodeIdentity) FetchArtifact(ctx context.Context, id string) (ArtifactPayload, error) {
+// FetchArtifact tolerates transient Node-to-Server transport failures during
+// original/derivative transfer. Authentication, 4xx, size, checksum and
+// schema failures remain terminal. Every retry signs a fresh GET request.
+func (i NodeIdentity) FetchArtifact(ctx context.Context,id string) (ArtifactPayload,error) {
+	var last error
+	for attempt:=0;attempt<5;attempt++ {
+		if err:=ctx.Err();err!=nil{return ArtifactPayload{},err}
+		if attempt>0 {
+			delay:=time.Duration(150*(1<<(attempt-1)))*time.Millisecond
+			select {case <-ctx.Done():return ArtifactPayload{},ctx.Err();case <-time.After(delay):}
+		}
+		payload,err:=i.fetchArtifactOnce(ctx,id)
+		if err==nil{return payload,nil}
+		if !errors.Is(err,ErrTransientArtifactStatus){return ArtifactPayload{},err}
+		last=err
+	}
+	return ArtifactPayload{},fmt.Errorf("node artifact: temporary transfer unavailable after retries: %w",last)
+}
+func (i NodeIdentity) fetchArtifactOnce(ctx context.Context, id string) (ArtifactPayload, error) {
 	if !ValidArtifactID(id) {
 		return ArtifactPayload{}, errors.New("node artifact: invalid identifier")
 	}
@@ -115,18 +133,23 @@ func (i NodeIdentity) FetchArtifact(ctx context.Context, id string) (ArtifactPay
 	client := &http.Client{Timeout: 20 * time.Second}
 	response, err := client.Do(req)
 	if err != nil {
-		return ArtifactPayload{}, fmt.Errorf("node artifact: fetch: %w", err)
+		if ctx.Err()!=nil{return ArtifactPayload{},ctx.Err()}
+		return ArtifactPayload{},fmt.Errorf("%w: transfer network failure: %v",ErrTransientArtifactStatus,err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return ArtifactPayload{}, fmt.Errorf("node artifact: HTTP %d", response.StatusCode)
+		if response.StatusCode==http.StatusRequestTimeout || response.StatusCode==http.StatusTooManyRequests || response.StatusCode>=500 {
+			return ArtifactPayload{},fmt.Errorf("%w: GET HTTP %d",ErrTransientArtifactStatus,response.StatusCode)
+		}
+		return ArtifactPayload{},fmt.Errorf("node artifact: HTTP %d",response.StatusCode)
 	}
 	if response.ContentLength > core.MaxArtifactBytes {
 		return ArtifactPayload{}, errors.New("node artifact: response exceeds size limit")
 	}
 	data, err := io.ReadAll(io.LimitReader(response.Body, core.MaxArtifactBytes+1))
-	if err != nil {
-		return ArtifactPayload{}, err
+	if err!=nil {
+		if ctx.Err()!=nil{return ArtifactPayload{},ctx.Err()}
+		return ArtifactPayload{},fmt.Errorf("%w: GET response interrupted: %v",ErrTransientArtifactStatus,err)
 	}
 	if len(data) == 0 || len(data) > core.MaxArtifactBytes {
 		return ArtifactPayload{}, errors.New("node artifact: invalid byte count")
