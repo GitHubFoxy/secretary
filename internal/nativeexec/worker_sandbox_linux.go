@@ -152,6 +152,10 @@ func sandboxInvocation(policy WorkerSandbox, command string, args []string) (str
 				if strings.HasPrefix(components[i+1], "@") && i+2 < len(components) { end++ }
 				pkg := string(filepath.Separator)+filepath.Join(components[:end]...)
 				if err := mountRuntimePackageFiles(&wrapped, pkg); err != nil { return "", nil, err }
+				// Official CLIs use npm optional platform distributions beside
+				// their main entrypoint. Only listed official package names with
+				// independently verified manifests may be mounted.
+				if err := mountPlatformCLIPackages(&wrapped, pkg); err != nil { return "",nil,err }
 				break
 			}
 		}
@@ -248,7 +252,10 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
  if err!=nil{return fmt.Errorf("worker sandbox: package identity missing: %w",err)}
  var metadata struct {Name string `json:"name"`; Version string `json:"version"`}
  if err=json.Unmarshal(packageJSON,&metadata);err!=nil{return err}
- if metadata.Name!=packageName || metadata.Version=="" || strings.ContainsAny(metadata.Version,"/\\\\.") && strings.Contains(metadata.Version,"..") {
+ validIdentity:=metadata.Name==packageName
+ if strings.HasPrefix(packageName,"@openai/codex-linux-") && metadata.Name=="@openai/codex" {validIdentity=true}
+ if strings.HasPrefix(packageName,"@anthropic-ai/claude-code-linux-") && metadata.Name=="@anthropic-ai/claude-code" {validIdentity=true}
+ if !validIdentity || metadata.Version=="" || strings.ContainsAny(metadata.Version,"/\\\\.") && strings.Contains(metadata.Version,"..") {
    return errors.New("worker sandbox: invalid CLI package identity")
  }
  // Root ownership is mandatory even when the Node and Server use the same UID.
@@ -264,7 +271,7 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
  bytes,err:=os.ReadFile(manifestPath);if err!=nil{return err}
  var manifest cliRuntimeManifest
  if err=json.Unmarshal(bytes,&manifest);err!=nil{return err}
- if manifest.Provider!=packageName || manifest.Version!=metadata.Version || len(manifest.Files)==0 || len(manifest.Files)>8192 {
+ if manifest.Provider!=metadata.Name || manifest.Version!=metadata.Version || len(manifest.Files)==0 || len(manifest.Files)>8192 {
    return errors.New("worker sandbox: CLI provenance identity or file count mismatch")
  }
  // Only signed-off paths in the published package are allowed. A malicious
@@ -285,7 +292,7 @@ func mountRuntimePackageFiles(wrapped *[]string, packageRoot string) error {
    if copyErr!=nil{return copyErr};if closeErr!=nil{return closeErr}
    wanted,err:=hex.DecodeString(expected)
    if err!=nil || !equalDigests(digest.Sum(nil),wanted){return fmt.Errorf("worker sandbox: CLI package content mismatches trusted manifest: %s",rel)}
-   if err:=mountRuntimeFile(wrapped,file);err!=nil{return err}
+   if err:=mountRuntimeExecutable(wrapped,file);err!=nil{return err}
  }
  return nil
 }
@@ -295,6 +302,31 @@ func equalDigests(a,b []byte) bool {
  var value byte
  for i:=range a { value |= a[i]^b[i] }
  return value==0
+}
+
+// A verified main package can reference official native platform packages.
+// Never follow arbitrary dependency names from node_modules.
+func mountPlatformCLIPackages(wrapped *[]string, mainPackage string) error {
+ packageName:=filepath.Base(mainPackage)
+ scope:=filepath.Base(filepath.Dir(mainPackage))
+ if !strings.HasPrefix(scope,"@"){return nil}
+ var accepted []string
+ switch scope+"/"+packageName {
+ case "@openai/codex":
+   accepted=[]string{"codex-linux-x64","codex-linux-arm64"}
+ case "@anthropic-ai/claude-code":
+   accepted=[]string{"claude-code-linux-x64","claude-code-linux-arm64","claude-code-linux-x64-musl","claude-code-linux-arm64-musl"}
+ default: return nil
+ }
+ for _,name:=range accepted {
+  path:=filepath.Join(filepath.Dir(mainPackage),name)
+  info,err:=os.Lstat(path)
+  if os.IsNotExist(err){continue}
+  if err!=nil{return err}
+  if !info.IsDir() || info.Mode()&os.ModeSymlink!=0 {return errors.New("worker sandbox: unsafe platform package")}
+  if err:=mountRuntimePackageFiles(wrapped,path);err!=nil{return err}
+ }
+ return nil
 }
 
 // Recursively expose the ELF interpreter and DT_NEEDED shared libraries as
