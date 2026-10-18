@@ -3,6 +3,8 @@ package webapi
 import(
  "bytes"
  "context"
+ "net/http/cookiejar"
+ "github.com/beruseruko/secretary/internal/telegram"
  "encoding/json"
  "io"
  "net/http"
@@ -68,4 +70,44 @@ func TestT15DocumentSourceAuthorizationIntegrityReplayAndDownload(t *testing.T){
  if res.StatusCode!=http.StatusOK||res.Header.Get("Content-Type")!="application/pdf"{t.Fatalf("document GET: %d %q",res.StatusCode,res.Header.Get("Content-Type"))}
  restored,err:=io.ReadAll(res.Body)
  if err!=nil||!bytes.Equal(restored,data){t.Fatalf("document bytes changed: %v",err)}
+}
+
+func TestT15OwnerArtifactFallbackIsDownloadableButNotPublic(t *testing.T){
+ ctx:=context.Background()
+ store,err:=core.Open(ctx,filepath.Join(t.TempDir(),"fallback.db"))
+ if err!=nil{t.Fatal(err)}
+ defer store.Close()
+ api,err:=New(ctx,store,"bootstrap")
+ if err!=nil{t.Fatal(err)}
+ api.AttachInternalCredential("t15-adapter-credential")
+ web:=httptest.NewServer(api.Handler())
+ defer web.Close()
+ owner,conversation,err:=store.EnsureOwner(ctx)
+ if err!=nil{t.Fatal(err)}
+ body:=[]byte("Worker original saved on central Server")
+ artifact,_,err:=store.SaveArtifact(ctx,owner.ID,conversation.ID,"fallback-t15","published.zip","application/zip",body)
+ if err!=nil{t.Fatal(err)}
+ client:=&telegram.HTTPServerClient{BaseURL:web.URL,Credential:"t15-adapter-credential",OwnerWebBaseURL:web.URL}
+ link,err:=client.OwnerArtifactDownloadURL(ctx,artifact.ID)
+ if err!=nil{t.Fatal(err)}
+ if link!=web.URL+"/v1/artifacts/"+artifact.ID+"?download=1"{
+  t.Fatalf("fallback URL must refer to owner-authorized Web route: %s",link)
+ }
+ unauthorized,err:=http.Get(link)
+ if err!=nil{t.Fatal(err)}
+ unauthorized.Body.Close()
+ if unauthorized.StatusCode!=http.StatusUnauthorized{
+  t.Fatalf("guest retrieved private output: HTTP %d",unauthorized.StatusCode)
+ }
+ jar,err:=cookiejar.New(nil)
+ if err!=nil{t.Fatal(err)}
+ browser:=&http.Client{Jar:jar}
+ login(t,browser,web.URL)
+ response,err:=browser.Get(link)
+ if err!=nil{t.Fatal(err)}
+ got,readErr:=io.ReadAll(response.Body)
+ response.Body.Close()
+ if readErr!=nil||response.StatusCode!=http.StatusOK||!bytes.Equal(got,body){
+  t.Fatalf("owner fallback failed: HTTP %d, err=%v",response.StatusCode,readErr)
+ }
 }
