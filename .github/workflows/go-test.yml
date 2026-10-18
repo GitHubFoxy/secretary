@@ -36,5 +36,13 @@ jobs:
           fi
           ffmpeg -version
           ffprobe -version
+      - name: Install pinned official Codex distribution and provision verified runtime manifest
+        run: |
+          npm install --prefix "$RUNNER_TEMP/t09-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.163.0
+          sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0
+      - name: Real Codex package sandbox Start and Resume smoke
+        env:
+          T09_REAL_CODEX: ${{ runner.temp }}/t09-codex/node_modules/@openai/codex/bin/codex.js
+        run: go test ./internal/nativeexec -run TestT09PinnedOfficialCodexStartResume -count=1 -v
       - name: Run Go tests
         run: go test ./...
