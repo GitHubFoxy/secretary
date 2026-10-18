@@ -72,10 +72,10 @@ jobs:
           $scriptText = Get-Content -LiteralPath ./scripts/install-windows-node.ps1 -Raw
           if ($scriptText -match 'pwsh\\.exe|ConvertFrom-Json\\s+-AsHashtable') { throw 'Installer requires PowerShell 7' }
           $node = Join-Path $env:RUNNER_TEMP 't09-ps51-clean-node'
-          $home = Join-Path $env:RUNNER_TEMP 't09-ps51-clean-home'
+          $workerHomePath = Join-Path $env:RUNNER_TEMP 't09-ps51-clean-home'
           $workspace = Join-Path $env:RUNNER_TEMP 't09-ps51-clean-workspace'
           New-Item -ItemType Directory -Force -Path $node,$workspace | Out-Null
-          & ./scripts/install-windows-node.ps1 -NodeDataDir $node -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_ps51_ci' -NodeBinary (Join-Path $PWD 'secretary-node.exe')
+          & ./scripts/install-windows-node.ps1 -NodeDataDir $node -WorkerHome $workerHomePath -Workspace $workspace -WorkerUsername 'secretary_ps51_ci' -NodeBinary (Join-Path $PWD 'secretary-node.exe')
           if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 clean install failed' }
           if (-not (Test-Path (Join-Path $node 'worker-account.json'))) { throw 'Worker SID was not provisioned' }
       - name: Verify native Workers use a separate Windows security principal
