@@ -84,9 +84,15 @@ func TestT09RealCodexPersistedSessionResume(t *testing.T) {
      if f!=nil{f.Flush()}
    }
    base:=map[string]any{"id":responseID,"object":"response","created_at":1730000000,"model":"t09-local","status":"completed","output":[]any{map[string]any{"id":"msg_t09","type":"message","role":"assistant","status":"completed","content":[]any{map[string]any{"type":"output_text","text":text,"annotations":[]any{}}}}},"usage":map[string]any{"input_tokens":10,"output_tokens":5,"total_tokens":15}}
+   message:=map[string]any{"id":"msg_t09","type":"message","role":"assistant","status":"completed","content":[]any{map[string]any{"type":"output_text","text":text,"annotations":[]any{}}}}
    send("response.created",map[string]any{"type":"response.created","response":base})
-   send("response.output_item.added",map[string]any{"type":"response.output_item.added","output_index":0,"item":map[string]any{"id":"msg_t09","type":"message","role":"assistant","content":[]any{}}})
+   send("response.in_progress",map[string]any{"type":"response.in_progress","response":base})
+   send("response.output_item.added",map[string]any{"type":"response.output_item.added","output_index":0,"item":map[string]any{"id":"msg_t09","type":"message","role":"assistant","status":"in_progress","content":[]any{}}})
+   send("response.content_part.added",map[string]any{"type":"response.content_part.added","output_index":0,"content_index":0,"part":map[string]any{"type":"output_text","text":"","annotations":[]any{}}})
    send("response.output_text.delta",map[string]any{"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":text})
+   send("response.output_text.done",map[string]any{"type":"response.output_text.done","output_index":0,"content_index":0,"text":text})
+   send("response.content_part.done",map[string]any{"type":"response.content_part.done","output_index":0,"content_index":0,"part":map[string]any{"type":"output_text","text":text,"annotations":[]any{}}})
+   send("response.output_item.done",map[string]any{"type":"response.output_item.done","output_index":0,"item":message})
    send("response.completed",map[string]any{"type":"response.completed","response":base})
  }))
  defer server.Close()
