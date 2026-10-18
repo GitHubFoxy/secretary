@@ -29,6 +29,28 @@ foreach($dir in @($WorkerHome,$Workspace)) {
  & icacls $dir /grant "$($account):(OI)(CI)M" | Out-Null
  if($LASTEXITCODE -ne 0){throw "Failed to grant Worker workspace access to $dir"}
 }
+# Ordinary npm/user-profile CLI installs must remain executable by the
+# alternate SID. Grant *read/execute only* on recognized native provider
+# packages and the npm shim directory; never share the owner's full profile.
+$nodeProfileNpm=Join-Path $env:APPDATA 'npm'
+if (Test-Path -LiteralPath $nodeProfileNpm -PathType Container) {
+  & icacls $nodeProfileNpm /grant "$($account):(RX)" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'Could not grant Worker traversal of npm shim directory' }
+  foreach($shim in @('codex.cmd','claude.cmd','opencode.cmd')) {
+    $shimPath=Join-Path $nodeProfileNpm $shim
+    if (Test-Path -LiteralPath $shimPath -PathType Leaf) {
+      & icacls $shimPath /grant "$($account):R" | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "Could not allow native CLI shim: $shimPath" }
+    }
+  }
+  foreach($package in @('@openai\\codex','@anthropic-ai\\claude-code','opencode-ai','@opencode-ai\\cli')) {
+    $packagePath=Join-Path (Join-Path $nodeProfileNpm 'node_modules') $package
+    if (Test-Path -LiteralPath $packagePath -PathType Container) {
+      & icacls $packagePath /grant "$($account):(OI)(CI)RX" /T | Out-Null
+      if ($LASTEXITCODE -ne 0) { throw "Could not allow native CLI package: $packagePath" }
+    }
+  }
+}
 $config=@{username=$WorkerUsername;password=$password;domain='.';home=$WorkerHome}|ConvertTo-Json -Compress
 $configPath=Join-Path $NodeDataDir 'worker-account.json'
 [IO.File]::WriteAllText($configPath,$config,[Text.UTF8Encoding]::new($false))

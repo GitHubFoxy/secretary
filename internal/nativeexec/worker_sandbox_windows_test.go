@@ -205,3 +205,21 @@ func TestT09WindowsProjectlessWorkspaceStaysInProvisionedWorkerHome(t *testing.T
 	if err:=os.WriteFile(filepath.Join(workspace,"resume.txt"),[]byte("persisted"),0600);err!=nil{t.Fatal(err)}
 	if b,err:=os.ReadFile(filepath.Join(workspace,"resume.txt"));err!=nil||string(b)!="persisted"{t.Fatalf("projectless resume state lost: %q %v",b,err)}
 }
+
+func TestT09WindowsNativeCmdShimWithSpacesUnderSeparateSID(t *testing.T) {
+	workspace:=os.Getenv("SECRETARY_WORKER_TEST_WORKSPACE")
+	protected:=os.Getenv("SECRETARY_WORKER_TEST_PROTECTED_DIR")
+	if workspace==""||protected==""{t.Skip("provisioned native Worker SID required")}
+	bin:=filepath.Join(workspace,"installed CLI with spaces")
+	if err:=os.MkdirAll(bin,0700);err!=nil{t.Fatal(err)}
+	shim:=filepath.Join(bin,"provider.cmd")
+	if err:=os.WriteFile(shim,[]byte("@echo off\r\necho ARG_ONE:%~1 ARG_TWO:%~2\r\n"),0600);err!=nil{t.Fatal(err)}
+	ctx:=WithWorkerSandbox(context.Background(),WorkerSandbox{ProtectedDir:protected,Workspace:workspace})
+	cmd,err:=CommandContext(ctx,shim,"first argument","second argument")
+	if err!=nil{t.Fatal(err)}
+	out,err:=cmd.CombinedOutput()
+	if err!=nil{t.Fatalf("Windows native npm .cmd launch failed: %v %s",err,out)}
+	if !strings.Contains(string(out),"ARG_ONE:first argument ARG_TWO:second argument"){
+		t.Fatalf("native .cmd shim arguments were re-escaped: %q",out)
+	}
+}
