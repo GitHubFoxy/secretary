@@ -27,6 +27,10 @@ type ArtifactPublisher struct {
 	WorkerRef string
 	AttemptID string
 	Workspace string
+	// A registration-time pinned root prevents swapping the Workspace
+	// ancestor *after* an Attempt is authorized, including real directory
+	// renames (not merely symlink/junction changes).
+	WorkspaceRoot *os.Root
 	Capability string
 	// Auth is private Node-only material, never copied into a Worker MCP env.
 	Auth *Authenticator
@@ -135,7 +139,13 @@ func (p ArtifactPublisher) Publish(ctx context.Context, relativePath, name strin
 	// Each component is opened via a pinned directory descriptor with
 	// O_NOFOLLOW. No separated Lstat/Open checks: renaming a component into
 	// a symlink between operations cannot redirect an already-open directory.
-	file, err := openPublishedFileNoFollow(p.Workspace, relativePath)
+	var file *os.File
+	var err error
+	if p.WorkspaceRoot != nil {
+		file, err = openPublishedFromPinnedRoot(p.WorkspaceRoot, relativePath)
+	} else {
+		file, err = openPublishedFileNoFollow(p.Workspace, relativePath)
+	}
 	if err != nil {
 		return core.Artifact{}, errors.New("artifact publish: unsafe or unreadable workspace file")
 	}
@@ -222,4 +232,22 @@ func PublishedMediaType(name string) string {
 		return "application/octet-stream"
 	}
 	return media
+}
+
+func openPublishedFromPinnedRoot(root *os.Root, relativePath string) (*os.File,error) {
+	if root==nil || !ValidPublishedSourcePath(filepath.ToSlash(relativePath)) {
+		return nil, errors.New("artifact publish: unsafe pinned Workspace path")
+	}
+	// Check each component within the pinned directory. os.Root.Open itself
+	// is traversal-safe under concurrent renames, including symlinks that
+	// change between Lstat and Open; refusing visible symlinks additionally
+	// preserves T09's no-symlink publication policy.
+	var prefix string
+	for _,part:=range strings.Split(filepath.ToSlash(relativePath),"/") {
+		if prefix=="" {prefix=part}else{prefix=filepath.Join(prefix,part)}
+		info,err:=root.Lstat(prefix)
+		if err!=nil {return nil,err}
+		if info.Mode()&os.ModeSymlink!=0{return nil,errors.New("artifact publish: symlink in Workspace path")}
+	}
+	return root.Open(relativePath)
 }

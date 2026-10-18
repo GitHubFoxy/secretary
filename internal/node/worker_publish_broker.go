@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"net/url"
 	"sync"
 	"time"
@@ -36,6 +37,7 @@ type workerPublishBinding struct {
 	workerRef string
 	attemptID string
 	workspace string
+	root *os.Root
 }
 
 func newWorkerPublishBroker(identity NodeIdentity) (*workerPublishBroker, error) {
@@ -69,7 +71,9 @@ func (b *workerPublishBroker) Register(workerRef, attemptID, workspace string) (
 	var random [32]byte
 	if _, err := rand.Read(random[:]); err != nil { return "", err }
 	identifier := hex.EncodeToString(random[:])
-	b.registrations[identifier] = workerPublishBinding{workerRef: workerRef, attemptID: attemptID, workspace: workspace}
+	root, openErr := os.OpenRoot(workspace)
+	if openErr != nil {return "", fmt.Errorf("node artifact: pin Worker workspace: %w",openErr)}
+	b.registrations[identifier] = workerPublishBinding{workerRef: workerRef, attemptID: attemptID, workspace: workspace, root: root}
 	b.byAttempt[attemptID] = identifier
 	return "http://" + b.listener.Addr().String() + "/publish/" + identifier, nil
 }
@@ -79,6 +83,7 @@ func (b *workerPublishBroker) Unregister(attemptID string) {
 	defer b.mu.Unlock()
 	if identifier, ok := b.byAttempt[attemptID]; ok {
 		delete(b.byAttempt, attemptID)
+		if existing := b.registrations[identifier]; existing.root != nil {_ = existing.root.Close()}
 		delete(b.registrations, identifier)
 	}
 }
@@ -87,6 +92,9 @@ func (b *workerPublishBroker) Close() error {
 	b.mu.Lock()
 	if b.closed { b.mu.Unlock(); return nil }
 	b.closed = true
+	for _, binding := range b.registrations {
+		if binding.root != nil {_ = binding.root.Close()}
+	}
 	b.registrations = map[string]workerPublishBinding{}
 	b.byAttempt = map[string]string{}
 	b.mu.Unlock()
@@ -146,6 +154,7 @@ func (b *workerPublishBroker) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		Node: b.identity.Node, WorkerRef: binding.workerRef,
 		AttemptID: binding.attemptID, Workspace: binding.workspace,
 		ServerURL: b.identity.ConnectURL,
+		WorkspaceRoot: binding.root,
 		Capability: auth.SignPublishCapability(b.identity.Node, binding.workerRef, binding.attemptID),
 		Auth: &auth,
 	}
