@@ -6,6 +6,7 @@ import(
  "encoding/json"
  "fmt"
  "errors"
+ "github.com/beruseruko/secretary/internal/core"
  "path/filepath"
  "strings"
  "testing"
@@ -242,6 +243,37 @@ func TestT15PermanentFileErrorDoesNotPoisonOutbox(t *testing.T){
   seenUnrelated=seenUnrelated||msg.Text=="Unrelated message"
  }
  if !seenNotice||!seenUnrelated{t.Fatalf("poison message blocked other traffic: %+v",tr.sent)}
+}
+type t15FallbackServer struct{
+ t15DeliveryServer
+ ownerURL string
+}
+func(s *t15FallbackServer)OwnerArtifactDownloadURL(_ context.Context,id string)(string,error){
+ if id==""{return "",errors.New("missing Artifact")}
+ return s.ownerURL+"/v1/artifacts/"+id+"?download=1",nil
+}
+func TestT15OversizeOutputKeepsOwnerAuthorizedDownloadFallback(t *testing.T){
+ tr:=&t15DeliveryTransport{fakeTransport:&fakeTransport{}}
+ srv:=&t15FallbackServer{t15DeliveryServer:t15DeliveryServer{bytes:make([]byte,core.MaxArtifactBytes+1)},ownerURL:"https://owner.example"}
+ a,err:=New(Config{StatePath:filepath.Join(t.TempDir(),"state.json"),OwnerChatID:100},tr,srv)
+ if err!=nil{t.Fatal(err)}
+ if err:=a.sendMessage(context.Background(),OutgoingMessage{ChatID:100,Identity:"file-result:res_large:art_large",DocumentArtifactID:"art_large",Text:"result"});err!=nil{t.Fatal(err)}
+ if len(tr.sentDocs)!=0{t.Fatal("oversized output was sent to Telegram")}
+ if len(tr.sent)!=1||!strings.Contains(tr.sent[0].Text,"https://owner.example/v1/artifacts/art_large?download=1")||!strings.Contains(tr.sent[0].Text,"требуется вход владельца"){
+  t.Fatalf("owner fallback absent for oversized Worker output: %+v",tr.sent)
+ }
+ if err:=a.sendMessage(context.Background(),OutgoingMessage{ChatID:100,Identity:"subsequent",Text:"later"});err!=nil{t.Fatal(err)}
+ if len(tr.sent)!=2{t.Fatal("permanent oversized item blocked outbox")}
+}
+func TestT15PermanentTelegram400IncludesOwnerAuthorizedFileLink(t *testing.T){
+ tr:=&t15RejectDocumentTransport{fakeTransport:&fakeTransport{}}
+ srv:=&t15FallbackServer{t15DeliveryServer:t15DeliveryServer{bytes:[]byte("published original")},ownerURL:"https://owner.example"}
+ a,err:=New(Config{StatePath:filepath.Join(t.TempDir(),"state.json"),OwnerChatID:100},tr,srv)
+ if err!=nil{t.Fatal(err)}
+ if err:=a.sendMessage(context.Background(),OutgoingMessage{ChatID:100,Identity:"file-result:res_400:art_file",DocumentArtifactID:"art_file",Text:"result"});err!=nil{t.Fatal(err)}
+ if tr.attempts!=1||len(tr.sent)!=1||!strings.Contains(tr.sent[0].Text,"https://owner.example/v1/artifacts/art_file?download=1"){
+  t.Fatalf("HTTP 400 lost owner file retrieval: attempts=%d messages=%+v",tr.attempts,tr.sent)
+ }
 }
 func TestT15CrashBeforeFileSendDoesNotResendUnknownAttempt(t *testing.T){
  path:=filepath.Join(t.TempDir(),"state.json")
