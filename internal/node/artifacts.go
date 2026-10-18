@@ -89,19 +89,25 @@ func mustDecodeArtifactSignature(value string) []byte {
 // original/derivative transfer. Authentication, 4xx, size, checksum and
 // schema failures remain terminal. Every retry signs a fresh GET request.
 func (i NodeIdentity) FetchArtifact(ctx context.Context,id string) (ArtifactPayload,error) {
-	var last error
-	for attempt:=0;attempt<5;attempt++ {
+	// Transient 408/429/5xx/network exhaustion is not a permanent Artifact
+	// failure: a pre-native Dispatch must remain pending until its Context is
+	// canceled or the server returns a permanent response. Retries are spaced
+	// with a bounded backoff; the number of attempts is intentionally unbounded.
+	delay:=150*time.Millisecond
+	for {
 		if err:=ctx.Err();err!=nil{return ArtifactPayload{},err}
-		if attempt>0 {
-			delay:=time.Duration(150*(1<<(attempt-1)))*time.Millisecond
-			select {case <-ctx.Done():return ArtifactPayload{},ctx.Err();case <-time.After(delay):}
-		}
 		payload,err:=i.fetchArtifactOnce(ctx,id)
 		if err==nil{return payload,nil}
 		if !errors.Is(err,ErrTransientArtifactStatus){return ArtifactPayload{},err}
-		last=err
+		select {
+		case <-ctx.Done():return ArtifactPayload{},ctx.Err()
+		case <-time.After(delay):
+		}
+		if delay<3*time.Second {
+			delay*=2
+			if delay>3*time.Second {delay=3*time.Second}
+		}
 	}
-	return ArtifactPayload{},fmt.Errorf("node artifact: temporary transfer unavailable after retries: %w",last)
 }
 func (i NodeIdentity) fetchArtifactOnce(ctx context.Context, id string) (ArtifactPayload, error) {
 	if !ValidArtifactID(id) {
