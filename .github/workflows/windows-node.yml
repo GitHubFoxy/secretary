@@ -41,11 +41,11 @@ jobs:
           New-Item -ItemType Directory -Path $data,$workspace -Force | Out-Null
           [IO.File]::WriteAllText($existing,'EXISTING-NODE-PAIRING-MUST-SURVIVE')
           $before=(Get-FileHash $existing -Algorithm SHA256).Hash
-          & ./scripts/install-windows-node.ps1 -NodeDataDir $data -Workspace $workspace -WorkerHome $workerProfile -WorkerUsername 'secretary_installer_ci' -NodeBinary (Join-Path $PWD 'secretary-node.exe')
+          & ./scripts/install-windows-node.ps1 -NodeDataDir $data -Workspace $workspace -WorkerHome $workerProfile -WorkerUsername 'secretary_inst_ci' -NodeBinary (Join-Path $PWD 'secretary-node.exe')
           if ($LASTEXITCODE -ne 0) { throw 'Windows first install failed' }
           $configPath=Join-Path $data 'worker-account.json'
           $first=(Get-Content $configPath -Raw | ConvertFrom-Json)
-          & ./scripts/install-windows-node.ps1 -NodeDataDir $data -Workspace $workspace -WorkerHome $workerProfile -WorkerUsername 'secretary_installer_ci' -NodeBinary (Join-Path $PWD 'secretary-node.exe')
+          & ./scripts/install-windows-node.ps1 -NodeDataDir $data -Workspace $workspace -WorkerHome $workerProfile -WorkerUsername 'secretary_inst_ci' -NodeBinary (Join-Path $PWD 'secretary-node.exe')
           if ($LASTEXITCODE -ne 0) { throw 'Windows idempotent upgrade failed' }
           $second=(Get-Content $configPath -Raw | ConvertFrom-Json)
           if ($first.password -ne $second.password -or $before -ne (Get-FileHash $existing -Algorithm SHA256).Hash) {
