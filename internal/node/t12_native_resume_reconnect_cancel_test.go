@@ -89,14 +89,22 @@ func TestT12RemoteNativeResumeDisconnectReconnectCancelBeforeProviderReturns(t *
 	})
 	if oldCtx.Err()!=nil{t.Fatalf("WebSocket disconnect canceled native Resume: %v",oldCtx.Err())}
 	if runtime.resumeCount.Load()!=1{t.Fatalf("reconnect relaunched native Resume: %d",runtime.resumeCount.Load())}
-	// The Server may replay a command with the same durable CommandID; it
-	// must get a stable receipt without a second provider invocation.
+	// Replaying the original CommandID while provider Resume is blocked
+	// must NOT send an early terminal ACCEPTED or reserve its outbox ID.
 	if e:=f.manager.SendCommand(ctx,f.identity.Node,command);e!=nil{t.Fatal(e)}
-	again:=waitCommandOutcome(t,ctx,outcomes)
-	if again.CommandID!=meta.CommandID||again.State!=CommandAccepted{
-		t.Fatalf("replayed native Resume not idempotent: %+v",again)
-	}
 	if runtime.resumeCount.Load()!=1{t.Fatal("duplicate native Resume invoked after reconnect")}
+	select {
+	case early:=<-outcomes:
+		t.Fatalf("in-flight replay generated premature terminal receipt: %+v",early)
+	case <-time.After(200*time.Millisecond):
+	}
+	pending,e:=f.local.PendingEvents()
+	if e!=nil{t.Fatal(e)}
+	for _,event:=range pending {
+		if event.EventID=="command-outcome-"+meta.CommandID{
+			t.Fatal("in-flight Resume reserved terminal outbox event before provider returned")
+		}
+	}
 
 	cancelMeta:=meta
 	cancelMeta.CommandID="t12-remote-resume-cancel-after-reconnect"
@@ -121,6 +129,31 @@ func TestT12RemoteNativeResumeDisconnectReconnectCancelBeforeProviderReturns(t *
 		return e==nil && rec.State==CommandFailed
 	})
 	if _,ok:=f.local.SessionMapping(meta.AttemptID);ok{t.Fatal("canceled Resume registered a new session mapping")}
+	final:=waitCommandOutcome(t,ctx,outcomes)
+	if final.CommandID!=meta.CommandID||final.State!=CommandFailed {
+		t.Fatalf("expected final FAILED after provider returned: %+v",final)
+	}
+	waitFor(t,ctx,"final FAILED receipt ACK",func()bool{
+		rec,err:=f.local.Command(meta.CommandID)
+		return err==nil && rec.Acknowledged && rec.Outcome.State==CommandFailed
+	})
+	waitFor(t,ctx,"terminal outbox ACK",func()bool{
+		events,err:=f.local.PendingEvents()
+		if err!=nil{return false}
+		for _,event:=range events {if event.EventID=="command-outcome-"+meta.CommandID{return false}}
+		return true
+	})
+	// A further reconnect cannot deliver a second terminal receipt.
+	f.manager.closeConnection(f.identity.Node)
+	waitFor(t,ctx,"reconnected socket after final ACK",func()bool{
+		f.manager.mu.Lock();socket:=f.manager.connections[f.identity.Node];f.manager.mu.Unlock()
+		return socket!=nil
+	})
+	select {
+	case extra:=<-outcomes:
+		if extra.CommandID==meta.CommandID{t.Fatalf("duplicate final Resume receipt: %+v",extra)}
+	case <-time.After(200*time.Millisecond):
+	}
 	if runtime.resumeCount.Load()!=1{t.Fatalf("native Resume count=%d",runtime.resumeCount.Load())}
 	runtime.mu.Lock()
 	late:=runtime.lateSession
