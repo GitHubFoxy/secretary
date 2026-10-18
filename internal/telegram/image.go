@@ -57,10 +57,18 @@ func imageArtifactName(u Update) (string, error) {
 // Persist a terminal image warning independently of Bot API availability.
 // Never retry the original getFile operation because Telegram sendMessage
 // temporarily failed. The regular outbox is responsible for delivery/retry.
+// Terminal failures must checkpoint the warning AND remove the image in one
+// durable state write. A crash between these operations must not re-run
+// getFile, re-upload an Artifact or replay a terminal native rejection.
+// Telegram delivery itself is best effort against the independent outbox.
 func (a *Adapter) imageNotice(ctx context.Context, u Update, text string) error {
-	message := OutgoingMessage{ChatID:u.Message.ChatID,ThreadID:u.Message.ThreadID,ReplyToMessageID:u.Message.MessageID,Identity:fmt.Sprintf("inbound:image-warning:%d",u.ID),Text:text}
-	if message.ChatID == 0 {
+	if u.Message == nil || u.Message.ChatID == 0 {
 		return ErrUnauthorized
+	}
+	message := OutgoingMessage{
+		ChatID: u.Message.ChatID, ThreadID: u.Message.ThreadID,
+		ReplyToMessageID: u.Message.MessageID,
+		Identity: fmt.Sprintf("inbound:image-warning:%d", u.ID), Text: text,
 	}
 	a.mu.Lock()
 	identity := outgoingMessageIdentity(message)
@@ -77,20 +85,37 @@ func (a *Adapter) imageNotice(ctx context.Context, u Update, text string) error 
 			break
 		}
 	}
-	var err error
-	if !alreadyDelivered && !alreadyQueued {
+	// Copy for rollback if the atomic durable checkpoint fails.
+	previousImages := append([]Update(nil), a.state.PendingImages...)
+	previousOutbox := append([]OutgoingMessage(nil), a.state.Outbox...)
+	imageRemoved := false
+	for i, pending := range a.state.PendingImages {
+		if pending.ID == u.ID {
+			a.state.PendingImages = append(a.state.PendingImages[:i], a.state.PendingImages[i+1:]...)
+			imageRemoved = true
+			break
+		}
+	}
+	warningQueued := !alreadyDelivered && !alreadyQueued
+	if warningQueued {
 		a.state.Outbox = append(a.state.Outbox, message)
+	}
+	var err error
+	if imageRemoved || warningQueued {
 		err = a.saveLocked()
+		if err != nil {
+			a.state.PendingImages = previousImages
+			a.state.Outbox = previousOutbox
+		}
 	}
 	a.mu.Unlock()
 	if err != nil {
-		return err // durable warning was NOT recorded; retry is required
+		return err
 	}
 	if alreadyDelivered {
 		return nil
 	}
-	// Sending is best effort after the durable checkpoint. The outbox
-	// remains queued if Telegram is temporarily unavailable.
+	// The durable checkpoint is committed regardless of Bot API success.
 	if a.isWorkerTopicMessage(message) {
 		_ = a.drainTopicOutbox(ctx)
 	} else {

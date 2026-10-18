@@ -24,7 +24,9 @@ func botAPIError(method string, code int, description string) error {
 	if method == "sendMessage" && code == 400 && (strings.Contains(lower, "can't parse entities") || strings.Contains(lower, "cannot parse entities")) {
 		return ErrFormatting
 	}
-	if method == "getFile" && (code == 400 || code == 404 || code == 413) {
+	// A permanent Bot API 4xx rejects this file_id (including 403).
+	// 408 and 429 are temporary, as are 5xx and transport failures.
+	if method == "getFile" && code >= 400 && code < 500 && code != 408 && code != 429 {
 		return fmt.Errorf("%w (%d): %s", ErrTelegramFileRejected, code, description)
 	}
 	return fmt.Errorf("telegram: Bot API %s failed (%d): %s", method, code, description)
