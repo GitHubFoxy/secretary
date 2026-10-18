@@ -89,7 +89,7 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
  server:=httptest.NewServer(api.Handler());defer server.Close()
  identity,err:=node.EnrollNode(ctx,server.Client(),server.URL,"t13-pair","t13-remote")
  if err!=nil{t.Fatal(err)}
- runtime:=&t12Runtime{seen:make(chan node.StartRequest,3)}
+ runtime:=&t13VideoNativeRuntime{t12Runtime:t12Runtime{seen:make(chan node.StartRequest,3)}}
  inventory:=core.HarnessInventorySnapshot{Node:identity.Node,ObservedAt:time.Now().UTC(),Instances:[]core.HarnessInstance{{
   ID:core.HarnessInstanceID(string(identity.Node)+"/fx"),Node:identity.Node,Kind:core.HarnessFX,
   Version:"test",Status:core.HarnessReady,Authentication:core.HarnessAuthentication{Authenticated:true},
@@ -106,21 +106,39 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
  for {status,e:=manager.Status(ctx,identity.Node);if e==nil&&status.Online&&!status.LastHeartbeatAt.IsZero(){break}
   select{case <-ctx.Done():t.Fatal("Node not ready");case <-time.After(10*time.Millisecond):}}
  original:=[]byte("good video")
+ type projection struct{chat,thread,text string}
+ delivered:=make(chan projection,40)
  bot:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
   switch r.URL.Path {
   case "/botTOKEN/getFile":_,_=fmt.Fprintf(w,`{"ok":true,"result":{"file_path":"clip.mp4","file_size":%d}}`,len(original))
   case "/file/botTOKEN/clip.mp4":_,_=w.Write(original)
-  case "/botTOKEN/sendMessage","/botTOKEN/sendChatAction":_,_=io.WriteString(w,`{"ok":true,"result":true}`)
-  case "/botTOKEN/getUpdates":_,_=io.WriteString(w,`{"ok":true,"result":[]}`)
+  case "/botTOKEN/createForumTopic":_,_=io.WriteString(w,`{"ok":true,"result":{"message_thread_id":77,"name":"video-worker"}}`)
+  case "/botTOKEN/sendMessage":
+   if e:=r.ParseForm();e!=nil{t.Errorf("Telegram form: %v",e)}
+   delivered<-projection{chat:r.Form.Get("chat_id"),thread:r.Form.Get("message_thread_id"),text:r.Form.Get("text")}
+   _,_=io.WriteString(w,`{"ok":true,"result":true}`)
+  case "/botTOKEN/sendChatAction":_,_=io.WriteString(w,`{"ok":true,"result":true}`)
+  case "/botTOKEN/getUpdates":
+   _=r.ParseForm()
+   switch r.Form.Get("offset"){
+   case "500":
+    _,_=fmt.Fprintf(w,`{"ok":true,"result":[{"update_id":500,"message":{"message_id":51,"from":{"id":100},"chat":{"id":100,"type":"private"},"caption":"Describe the sampled video","video":{"file_id":"video-file","file_unique_id":"unique-video","file_name":"clip.mp4","mime_type":"video/mp4","file_size":%d,"duration":2}}}]}`,len(original))
+   case "501":
+    _,_=fmt.Fprintf(w,`{"ok":true,"result":[{"update_id":501,"message":{"message_id":52,"from":{"id":100},"chat":{"id":-200,"type":"supergroup","is_forum":true},"message_thread_id":77,"caption":"Describe the sampled video","video":{"file_id":"topic-video","file_unique_id":"unique-topic-video","file_name":"clip.mp4","mime_type":"video/mp4","file_size":%d,"duration":2}}}]}`,len(original))
+   default:_,_=io.WriteString(w,`{"ok":true,"result":[]}`)
+   }
   default:t.Errorf("unexpected Bot endpoint %s",r.URL.Path);http.NotFound(w,r)
   }
  }));defer bot.Close()
  transport:=&telegram.BotAPITransport{BaseURL:bot.URL,BotToken:"TOKEN"}
  state:=filepath.Join(t.TempDir(),"telegram.json")
- adapter,err:=telegram.New(telegram.Config{StatePath:state,OwnerChatID:100},transport,&telegram.HTTPServerClient{BaseURL:server.URL,Credential:"t13-secret"})
+ group:=int64(-200)
+ adapter,err:=telegram.New(telegram.Config{StatePath:state,OwnerChatID:100,GroupChatID:&group},transport,&telegram.HTTPServerClient{BaseURL:server.URL,Credential:"t13-secret"})
  if err!=nil{t.Fatal(err)}
- update:=telegram.Update{ID:500,Message:&telegram.Message{ChatID:100,FromID:100,MessageID:51,Caption:"Describe the sampled video",
-  Video:&telegram.Video{FileID:"video-file",FileUniqueID:"unique-video",FileName:"clip.mp4",MimeType:"video/mp4",FileSize:int64(len(original)),Duration:2}}}
+ updates,err:=transport.GetUpdates(ctx,500,time.Second)
+ if err!=nil||len(updates)!=1{t.Fatalf("Telegram Bot API DM video decode: %+v %v",updates,err)}
+ update:=updates[0]
+ if update.Message==nil||update.Message.Video==nil||update.Message.Video.FileUniqueID!="unique-video"{t.Fatalf("Telegram original video DTO: %+v",update)}
  if err:=adapter.HandleUpdate(ctx,update);err!=nil{t.Fatal(err)}
  if err:=adapter.PollOnce(ctx);err!=nil{t.Fatal(err)}
  var entry core.ConversationEntry
@@ -149,7 +167,7 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
   select{case <-ctx.Done():t.Fatal("Worker result not in Personal Conversation");case <-time.After(20*time.Millisecond):}
  }
  if err:=adapter.HandleUpdate(ctx,update);err!=nil{t.Fatal(err)}
- restored,err:=telegram.New(telegram.Config{StatePath:state,OwnerChatID:100},transport,&telegram.HTTPServerClient{BaseURL:server.URL,Credential:"t13-secret"})
+ restored,err:=telegram.New(telegram.Config{StatePath:state,OwnerChatID:100,GroupChatID:&group},transport,&telegram.HTTPServerClient{BaseURL:server.URL,Credential:"t13-secret"})
  if err!=nil{t.Fatal(err)}
  if err:=restored.HandleUpdate(ctx,update);err!=nil{t.Fatal(err)}
  select{case <-runtime.seen:t.Fatal("replay started another Worker");case <-time.After(100*time.Millisecond):}
