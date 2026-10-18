@@ -259,6 +259,7 @@ func TestT15OversizeOutputKeepsOwnerAuthorizedDownloadFallback(t *testing.T){
  if err!=nil{t.Fatal(err)}
  if err:=a.sendMessage(context.Background(),OutgoingMessage{ChatID:100,Identity:"file-result:res_large:art_large",DocumentArtifactID:"art_large",Text:"result"});err!=nil{t.Fatal(err)}
  if len(tr.sentDocs)!=0{t.Fatal("oversized output was sent to Telegram")}
+ if err:=a.drainOutbox(context.Background());err!=nil{t.Fatal(err)}
  if len(tr.sent)!=1||!strings.Contains(tr.sent[0].Text,"https://owner.example/v1/artifacts/art_large?download=1")||!strings.Contains(tr.sent[0].Text,"требуется вход владельца"){
   t.Fatalf("owner fallback absent for oversized Worker output: %+v",tr.sent)
  }
@@ -271,6 +272,7 @@ func TestT15PermanentTelegram400IncludesOwnerAuthorizedFileLink(t *testing.T){
  a,err:=New(Config{StatePath:filepath.Join(t.TempDir(),"state.json"),OwnerChatID:100},tr,srv)
  if err!=nil{t.Fatal(err)}
  if err:=a.sendMessage(context.Background(),OutgoingMessage{ChatID:100,Identity:"file-result:res_400:art_file",DocumentArtifactID:"art_file",Text:"result"});err!=nil{t.Fatal(err)}
+ if err:=a.drainOutbox(context.Background());err!=nil{t.Fatal(err)}
  if tr.attempts!=1||len(tr.sent)!=1||!strings.Contains(tr.sent[0].Text,"https://owner.example/v1/artifacts/art_file?download=1"){
   t.Fatalf("HTTP 400 lost owner file retrieval: attempts=%d messages=%+v",tr.attempts,tr.sent)
  }
