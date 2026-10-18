@@ -15,6 +15,8 @@ import (
 
  "github.com/beruseruko/secretary/internal/core"
  "github.com/beruseruko/secretary/internal/ctl"
+ "github.com/beruseruko/secretary/internal/mcp"
+ secretaryruntime "github.com/beruseruko/secretary/internal/secretary"
  "github.com/beruseruko/secretary/internal/node"
  "github.com/beruseruko/secretary/internal/telegram"
 )
@@ -45,6 +47,45 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
   },Runtime:ctl.NodeRuntime{Manager:manager}}
  api.AttachSecretaryWorkerTools(svc)
  api.AttachWorkerResponder(svc)
+ conversation,err:=store.ConversationForPerson(ctx,api.OwnerID())
+ if err!=nil{t.Fatal(err)}
+ secretaryID,err:=store.EnsureSecretaryIdentity(ctx,api.OwnerID(),conversation.ID)
+ if err!=nil{t.Fatal(err)}
+ if err:=store.SetSecretaryPolicySnapshot(ctx,core.SecretaryPolicySnapshot{
+  Version:"t13",Harness:"fx",Model:"fixture",Reasoning:"high",
+  ProfileVersion:"t13",ProfileName:"secretary",ProfileHash:"t13",
+  ProfileContent:"Delegate Telegram video to a Worker via MCP.",
+  ReplyContractVersion:core.SecretaryReplyContractAddressedV1,
+ });err!=nil{t.Fatal(err)}
+ harness:=&t13SecretaryHarness{}
+ tool:=mcp.Secretary{Workers:svc,ReplyContractVersion:core.SecretaryReplyContractAddressedV1}
+ harness.onPrompt=func(prompt string)error{
+  body,turnID,inputID,e:=t13SecretaryPromptIdentity(prompt)
+  if e!=nil{return e}
+  if !strings.Contains(body,"Telegram video (update 500")||!strings.Contains(body,"Describe the sampled video"){
+   return fmt.Errorf("automatic Secretary routing lost Telegram ingress context")
+  }
+  args,e:=json.Marshal(map[string]any{
+   "intent":"Describe the sampled video",
+   "idempotency_key":inputID,
+   "secretary_turn_id":turnID,"input_id":inputID,
+   "preferences":map[string]any{"node_id":"t13-remote","harness_kind":"fx"},
+  })
+  if e!=nil{return e}
+  _,e=tool.Call(ctx,"spawn_worker",args)
+  return e
+ }
+ secRuntime:=secretaryruntime.NewRuntime(node.NewLocal(harness),capability)
+ secRuntime.AttachConversation(store,conversation.ID)
+ secRuntime.AttachIdentity(secretaryID)
+ profile:=node.ManagedProfile{Version:"t13",Name:"secretary",Content:"Delegate Telegram video to a Worker via MCP.",Runtime:"fx",
+  ReplyContractVersion:core.SecretaryReplyContractAddressedV1}
+ profile.Hash=node.HashProfile(profile.Content,nil,profile.Model,profile.Reasoning)
+ secRuntime.AttachProfile(func()node.ManagedProfile{return profile})
+ secRuntime.AttachMCP("fixture",t.TempDir())
+ if err:=secRuntime.Start(ctx);err!=nil{t.Fatal(err)}
+ defer secRuntime.Stop(context.Background())
+ api.AttachSecretary(secRuntime)
  server:=httptest.NewServer(api.Handler());defer server.Close()
  identity,err:=node.EnrollNode(ctx,server.Client(),server.URL,"t13-pair","t13-remote")
  if err!=nil{t.Fatal(err)}
@@ -82,8 +123,6 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
   Video:&telegram.Video{FileID:"video-file",FileUniqueID:"unique-video",FileName:"clip.mp4",MimeType:"video/mp4",FileSize:int64(len(original)),Duration:2}}}
  if err:=adapter.HandleUpdate(ctx,update);err!=nil{t.Fatal(err)}
  if err:=adapter.PollOnce(ctx);err!=nil{t.Fatal(err)}
- conversation,err:=store.ConversationForPerson(ctx,api.OwnerID())
- if err!=nil{t.Fatal(err)}
  var entry core.ConversationEntry
  for entry.ID=="" {
   entries,e:=store.EntriesTail(ctx,conversation.ID,0,30)
@@ -98,24 +137,6 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
  originalArtifact,body,err:=store.ArtifactForPerson(ctx,api.OwnerID(),artifactIDs[0])
  if err!=nil||!bytes.Equal(body,original)||originalArtifact.ProcessingStatus!="ready"||len(originalArtifact.VideoFrames)!=2{t.Fatalf("T12 pipeline failed: %+v %v",originalArtifact,err)}
  if originalArtifact.VideoFrames[1].TimestampMS!=1000{t.Fatalf("timestamps: %+v",originalArtifact.VideoFrames)}
- sec,err:=store.EnsureSecretaryIdentity(ctx,api.OwnerID(),conversation.ID)
- if err!=nil{t.Fatal(err)}
- if err=store.SetSecretaryPolicySnapshot(ctx,core.SecretaryPolicySnapshot{Version:"t13",Harness:"fx",Model:"fixture",Reasoning:"high",ProfileVersion:"t13",ProfileName:"secretary",ProfileHash:"t13",ProfileContent:"fixture"});err!=nil{t.Fatal(err)}
- turn,duplicate,err:=store.EnqueueSecretaryTurnForEntry(ctx,sec.ID,entry.Body,entry,nil)
- if err!=nil||duplicate{t.Fatalf("Secretary turn: %v duplicate=%v",err,duplicate)}
- if _,err=store.StartSecretaryTurn(ctx,turn.ID);err!=nil{t.Fatal(err)}
- action,_:=json.Marshal(map[string]any{"name":"spawn_worker","arguments":map[string]any{
-  "intent":"Describe the sampled video","idempotency_key":"t13-action",
-  "preferences":map[string]any{"node_id":identity.Node,"harness_kind":"fx"},
- }})
- req,err:=http.NewRequestWithContext(ctx,http.MethodPost,server.URL+"/v1/internal/secretary/tools/call",bytes.NewReader(action))
- if err!=nil{t.Fatal(err)}
- req.Header.Set("Authorization","Bearer "+capability);req.Header.Set("Content-Type","application/json")
- res,err:=server.Client().Do(req)
- if err!=nil{t.Fatal(err)}
- var response secretaryToolCallResponse
- err=json.NewDecoder(res.Body).Decode(&response);res.Body.Close()
- if err!=nil||res.StatusCode!=200||response.Error!=""{t.Fatalf("spawn %d %v %+v",res.StatusCode,err,response)}
  select{case native:=<-runtime.seen:
   if len(native.Images)!=2||!strings.Contains(native.Task,"Describe the sampled video") {t.Fatalf("native Worker did not see frames: %+v",native)}
  case <-ctx.Done():t.Fatal("Worker never received frames")}
