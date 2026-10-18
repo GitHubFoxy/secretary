@@ -501,6 +501,8 @@ type CommandRecord struct {
 	CommandJSON           json.RawMessage `json:"command_json,omitempty"`
 	Acknowledged          bool            `json:"acknowledged,omitempty"`
 	TerminalOutcomeQueued bool            `json:"terminal_outcome_queued,omitempty"`
+	SafePrestart bool `json:"safe_prestart,omitempty"`
+	Replayable bool `json:"replayable,omitempty"`
 	ClaimedAt             time.Time       `json:"claimed_at"`
 	UpdatedAt             time.Time       `json:"updated_at"`
 }

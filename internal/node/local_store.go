@@ -126,6 +126,19 @@ func (s *LocalStore) ClaimCommand(command Command) (CommandRecord, bool, error) 
 	}
 	metadata := command.Metadata()
 	if existing, ok := s.state.Commands[metadata.CommandID]; ok {
+		if existing.Kind!=command.Kind{return CommandRecord{},true,errors.New("node: command replay kind mismatch")}
+		if existing.State==CommandProcessing && existing.SafePrestart && existing.Replayable &&
+			(command.Kind==CommandDispatch || command.Kind==CommandResume) {
+			encoded,e:=commandJSON(command)
+			if e!=nil{return CommandRecord{},true,e}
+			if !bytes.Equal(encoded,existing.CommandJSON){return CommandRecord{},true,errors.New("node: mismatched replay envelope")}
+			previous:=existing
+			existing.Replayable=false
+			existing.UpdatedAt=time.Now().UTC()
+			s.state.Commands[metadata.CommandID]=existing
+			if e:=s.persistLocked();e!=nil{s.state.Commands[metadata.CommandID]=previous;return CommandRecord{},true,e}
+			return existing,false,nil
+		}
 		if existing.State == CommandFailed && command.Kind == CommandRespondWorker {
 			now := time.Now().UTC()
 			existing.State = CommandProcessing
@@ -145,13 +158,68 @@ func (s *LocalStore) ClaimCommand(command Command) (CommandRecord, bool, error) 
 		return CommandRecord{}, false, err
 	}
 	now := time.Now().UTC()
-	record := CommandRecord{CommandID: metadata.CommandID, Kind: command.Kind, State: CommandProcessing, Outcome: CommandOutcome{CommandID: metadata.CommandID, Kind: command.Kind, State: CommandProcessing}, CommandJSON: encoded, ClaimedAt: now, UpdatedAt: now}
+	record := CommandRecord{CommandID: metadata.CommandID, Kind: command.Kind, State: CommandProcessing, SafePrestart:command.Kind==CommandDispatch||command.Kind==CommandResume, Outcome: CommandOutcome{CommandID: metadata.CommandID, Kind: command.Kind, State: CommandProcessing}, CommandJSON: encoded, ClaimedAt: now, UpdatedAt: now}
 	s.state.Commands[record.CommandID] = record
 	if err := s.persistLocked(); err != nil {
 		delete(s.state.Commands, record.CommandID)
 		return CommandRecord{}, false, err
 	}
 	return record, false, nil
+}
+
+// MarkNativeHandoff durably closes the pre-native replay window before
+// any external native Start/Resume can produce an irreversible side effect.
+func (s *LocalStore) MarkNativeHandoff(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e:=ctx.Err();e!=nil{return e}
+	rec,ok:=s.state.Commands[id]
+	if !ok || rec.State!=CommandProcessing || !rec.SafePrestart || rec.Replayable{return errors.New("node: missing active pre-native claim")}
+	prev:=rec
+	rec.SafePrestart=false
+	rec.UpdatedAt=time.Now().UTC()
+	s.state.Commands[id]=rec
+	if e:=s.persistLocked();e!=nil{s.state.Commands[id]=prev;return e}
+	return ctx.Err()
+}
+
+// YieldPrestart keeps the original claim/idempotency and makes it retryable.
+func (s *LocalStore) YieldPrestart(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec,ok:=s.state.Commands[id]
+	if !ok || rec.State!=CommandProcessing || !rec.SafePrestart{return nil}
+	rec.Replayable=true
+	rec.UpdatedAt=time.Now().UTC()
+	s.state.Commands[id]=rec
+	return s.persistLocked()
+}
+func (s *LocalStore) PendingPrestartCommands() ([]Command,error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var ids []string
+	for id,rec:=range s.state.Commands{
+		if rec.State==CommandProcessing && rec.SafePrestart && rec.Replayable && (rec.Kind==CommandDispatch||rec.Kind==CommandResume){ids=append(ids,id)}
+	}
+	sort.Strings(ids)
+	commands:=make([]Command,0,len(ids))
+	for _,id:=range ids{
+		cmd,e:=commandFromJSON(s.state.Commands[id].CommandJSON)
+		if e!=nil{return nil,e}
+		commands=append(commands,cmd)
+	}
+	return commands,nil
+}
+func (s *LocalStore) PrestartCanceled(attemptID string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _,rec:=range s.state.Commands{
+		if rec.State!=CommandFailed || rec.Outcome.ErrorCode!="canceled_before_handoff"{continue}
+		if rec.Kind!=CommandDispatch && rec.Kind!=CommandResume{continue}
+		cmd,e:=commandFromJSON(rec.CommandJSON)
+		if e==nil && cmd.Metadata().AttemptID==attemptID{return true}
+	}
+	return false
 }
 
 func (s *LocalStore) SaveCommandReadiness(commandID string, outcome CommandOutcome) (CommandRecord, error) {
@@ -701,7 +769,10 @@ func (s *LocalStore) RecoverRunning(ctx context.Context, inspector ProcessInspec
 				return err
 			}
 		}
-		if alive {
+		if alive {continue}
+		if record.State==CommandProcessing && record.SafePrestart &&
+			(command.Kind==CommandDispatch || command.Kind==CommandResume){
+			if e:=s.YieldPrestart(record.CommandID);e!=nil{return e}
 			continue
 		}
 		if command.Kind == CommandDispatch || command.Kind == CommandResume {
