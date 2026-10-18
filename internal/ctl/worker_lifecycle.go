@@ -563,6 +563,19 @@ func (s WorkerService) SpawnWorker(ctx context.Context, request SpawnWorkerReque
 		return string(encoded), nil
 	}, origins...)
 	if err != nil {
+		if strings.Contains(request.Intent, "Telegram video (update ") &&
+			strings.Contains(request.Intent, "artifact://") &&
+			errors.Is(err, core.ErrInvalidDispatchPin) &&
+			strings.Contains(err.Error(), "lacks required Worker capabilities") {
+			// A DM/General video has no bound Topic worker at Telegram ingress.
+			// Emit an explicit durable Secretary-facing rejection once automatic
+			// selection discovers that no eligible Worker accepts image frames.
+			_, noticeErr := s.Store.AppendEntry(ctx, conversation.ID, core.EntrySecretary,
+				"Не удалось обработать видео: выбранный Worker не поддерживает CapabilityImageInput. Выберите Worker с поддержкой изображений.")
+			if noticeErr != nil {
+				return core.WorkerDetails{}, fmt.Errorf("video capability rejection notice: %w (selection: %v)", noticeErr, err)
+			}
+		}
 		return core.WorkerDetails{}, err
 	}
 	if !resolution.Queued {
