@@ -89,7 +89,7 @@ func (p ffmpegVideoProcessor) Process(ctx context.Context, original []byte, opti
 	// actual VFR presentation timestamps instead of fabricating i/FPS times.
 	filter:="settb=1/1000,setpts=PTS-STARTPTS,select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,"+interval+")',scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease"
 	command:=exec.CommandContext(ctx,"ffmpeg","-nostdin","-hide_banner","-loglevel","error","-threads","1","-i",input,
-		"-an","-vf",filter,"-frames:v",strconv.Itoa(count+1),"-fps_mode","passthrough","-enc_time_base","1/1000","-frame_pts","1","-c:v","libwebp","-quality","70",pattern)
+		"-map","0:v:0","-an","-vf",filter,"-frames:v",strconv.Itoa(count+1),"-fps_mode","passthrough","-enc_time_base","1/1000","-frame_pts","1","-c:v","libwebp","-quality","70",pattern)
 	output,err:=command.CombinedOutput()
 	if err!=nil{return nil,fmt.Errorf("video: transcoding failed: %w (%s)",err,strings.TrimSpace(string(output)))}
 	files,err:=filepath.Glob(filepath.Join(dir,"frame_*.webp"))

@@ -159,6 +159,7 @@ func prepareArtifactInputWithPoll(ctx context.Context, workspace, prompt string,
 func awaitVideoProcessing(ctx context.Context, id string, artifact *ArtifactPayload, pollInterval time.Duration) error {
 	if artifact.CheckVideoStatus==nil {return errors.New("video: authenticated metadata polling unavailable")}
 	if pollInterval<0 {return errors.New("video: invalid polling interval")}
+	var transientBackoff time.Duration
 	for artifact.VideoStatus=="queued" || artifact.VideoStatus=="processing" {
 		if err:=ctx.Err();err!=nil {
 			return fmt.Errorf("video: waiting for artifact://%s interrupted: %w",id,err)
@@ -166,7 +167,7 @@ func awaitVideoProcessing(ctx context.Context, id string, artifact *ArtifactPayl
 		select {
 		case <-ctx.Done():
 			return fmt.Errorf("video: waiting for artifact://%s interrupted: %w",id,ctx.Err())
-		case <-time.After(pollInterval):
+		case <-time.After(pollInterval+transientBackoff):
 		}
 		// If a zero-interval test timer and cancellation become ready together,
 		// cancellation must win before starting another metadata request.
@@ -174,7 +175,21 @@ func awaitVideoProcessing(ctx context.Context, id string, artifact *ArtifactPayl
 			return fmt.Errorf("video: waiting for artifact://%s interrupted: %w",id,err)
 		}
 		meta,err:=artifact.CheckVideoStatus(ctx)
-		if err!=nil {return fmt.Errorf("video: metadata status unavailable: %w",err)}
+		if err!=nil {
+			if ctx.Err()!=nil {return fmt.Errorf("video: polling interrupted: %w",ctx.Err())}
+			if errors.Is(err,ErrTransientArtifactStatus) {
+				// Repeated 503/reconnect failures are not conversion failures.
+				// The backoff caps at 3 seconds, cancellation remains immediate.
+				if transientBackoff==0 {transientBackoff=250*time.Millisecond
+				} else if transientBackoff<3*time.Second {
+					transientBackoff*=2
+					if transientBackoff>3*time.Second {transientBackoff=3*time.Second}
+				}
+				continue
+			}
+			return fmt.Errorf("video: metadata status unavailable: %w",err)
+		}
+		transientBackoff=0
 		if meta.ID!=id {return errors.New("video: status metadata identifier mismatch")}
 		switch meta.ProcessingStatus {
 		case "queued","processing","ready","failed":

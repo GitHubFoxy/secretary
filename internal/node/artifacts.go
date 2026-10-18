@@ -36,6 +36,10 @@ type ArtifactPayload struct {
 
 type ArtifactFetcher func(context.Context, string) (ArtifactPayload, error)
 
+// ErrTransientArtifactStatus distinguishes server restarts, overload and
+// transport interruptions from a durable video processing_status=failed.
+var ErrTransientArtifactStatus = errors.New("node artifact: transient metadata status failure")
+
 func ArtifactIDs(text string) []string {
 	seen := make(map[string]bool)
 	ids := make([]string, 0, 17)
@@ -166,11 +170,22 @@ func (i NodeIdentity) FetchArtifactStatus(ctx context.Context, id string) (core.
 	req.Header.Set("X-Artifact-Timestamp",strconv.FormatInt(now,10))
 	req.Header.Set("X-Artifact-Signature",auth.SignArtifactRequest(i.Node,id,now))
 	response,err:=(&http.Client{Timeout:10*time.Second}).Do(req)
-	if err!=nil{return core.Artifact{},err}
+	if err!=nil{
+		if ctx.Err()!=nil{return core.Artifact{},ctx.Err()}
+		return core.Artifact{},fmt.Errorf("%w: request interrupted: %v",ErrTransientArtifactStatus,err)
+	}
 	defer response.Body.Close()
-	if response.StatusCode!=http.StatusOK{return core.Artifact{},fmt.Errorf("video status: HTTP %d",response.StatusCode)}
+	if response.StatusCode!=http.StatusOK{
+		if response.StatusCode==http.StatusRequestTimeout || response.StatusCode==http.StatusTooManyRequests || response.StatusCode>=500 {
+			return core.Artifact{},fmt.Errorf("%w: HTTP %d",ErrTransientArtifactStatus,response.StatusCode)
+		}
+		return core.Artifact{},fmt.Errorf("video status: HTTP %d",response.StatusCode)
+	}
 	var metadata core.Artifact
-	if err=json.NewDecoder(io.LimitReader(response.Body,16<<10)).Decode(&metadata);err!=nil{return core.Artifact{},err}
+	if err=json.NewDecoder(io.LimitReader(response.Body,16<<10)).Decode(&metadata);err!=nil{
+		if ctx.Err()!=nil{return core.Artifact{},ctx.Err()}
+		return core.Artifact{},fmt.Errorf("%w: interrupted metadata response: %v",ErrTransientArtifactStatus,err)
+	}
 	if metadata.ID!=id {return core.Artifact{},errors.New("video status: mismatched Artifact identifier")}
 	return metadata,nil
 }
