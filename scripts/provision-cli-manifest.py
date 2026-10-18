@@ -83,7 +83,7 @@ def main():
                 (provider == "opencode" and official_name.startswith("opencode-linux-"))):
             raise SystemExit("archive package identity mismatch")
         package_id = official_name.replace("/", "__")
-        trusted = Path("/opt/secretary/cli-store", provider, package_id)
+        trusted = Path("/etc/secretary/cli-store", provider, package_id)
         trusted.mkdir(parents=True, exist_ok=True)
         os.chmod(trusted, 0o755)
         location = trusted / version
