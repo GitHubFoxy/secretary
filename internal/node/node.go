@@ -180,9 +180,18 @@ type LocalNode struct {
 	runtime     Runtime
 	mu          sync.Mutex
 	workers     map[string]Session
+	// activeAttempts binds the currently registered native Session to its
+	// owning Attempt; old durable checkpoints are not proof of ownership.
+	activeAttempts map[string]string
+	// Direct native Resume inherits an Attempt-scoped cancellable Context.
+	// Keep its cancel function until the Session is removed or Node closes.
+	resumeCancels map[string]context.CancelFunc
 	checkpoints map[string]localCheckpoint
 	artifactFetcher ArtifactFetcher
 	imageResponseStore *LocalStore
+	prestartStore *LocalStore
+	prestarts map[string]*localPending
+	workerGates map[string]chan struct{}
 }
 
 type localCheckpoint struct {
@@ -191,7 +200,15 @@ type localCheckpoint struct {
 }
 
 func NewLocal(runtime Runtime) *LocalNode {
-	return &LocalNode{runtime: runtime, workers: make(map[string]Session), checkpoints: make(map[string]localCheckpoint)}
+	return &LocalNode{runtime: runtime, workers: make(map[string]Session), activeAttempts: make(map[string]string), resumeCancels: make(map[string]context.CancelFunc), checkpoints: make(map[string]localCheckpoint),prestarts:make(map[string]*localPending),workerGates:make(map[string]chan struct{})}
+}
+
+// SetPrestartStore binds local pre-native cancellation to protected Node-owned
+// durable state. Production binds the same Node state store used for image ACKs.
+func (n *LocalNode) SetPrestartStore(store *LocalStore) {
+	n.mu.Lock()
+	n.prestartStore=store
+	n.mu.Unlock()
 }
 
 // SetImageResponseStore binds a durable Node-owned checkpoint file. It must
@@ -258,86 +275,100 @@ func (n *LocalNode) PrepareWorkerSteering(ctx context.Context, workerRef, text s
 }
 
 func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session, error) {
-	profile, err := request.effectiveProfile()
-	if err != nil {
-		return nil, err
-	}
-	request.Profile = profile
-	if request.Workspace == "" {
-		workspace, err := os.MkdirTemp("", "secretary-worker-")
-		if err != nil {
-			return nil, err
-		}
-		request.Workspace = workspace
-	}
-	if err := n.prepareInput(ctx, &request); err != nil { return nil, err }
-	if request.Profile.Name != "" && !nativeProfileDelivery(n.runtime, request.Profile) {
-		if _, err := request.Profile.MaterializeInstructions(request.Workspace); err != nil {
-			return nil, err
-		}
+	profile,err:=request.effectiveProfile()
+	if err!=nil{return nil,err}
+	request.Profile=profile
+	// Same-Worker commands are serialized, but media download/polling and
+	// runtime Start never hold LocalNode's global mutex.
+	unlock,err:=n.lockWorker(ctx,request.WorkerRef)
+	if err!=nil{return nil,err}
+	defer unlock()
+	if request.Workspace==""{
+		workspace,e:=os.MkdirTemp("","secretary-worker-")
+		if e!=nil{return nil,e}
+		request.Workspace=workspace
 	}
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	if _, exists := n.workers[request.WorkerRef]; exists {
-		return nil, errors.New("node: worker already exists")
+	_,exists:=n.workers[request.WorkerRef]
+	hasCheckpoint:=false
+	if request.AttemptID!=""{
+		for _,c:=range n.checkpoints{if c.request.WorkerRef==request.WorkerRef{hasCheckpoint=true;break}}
 	}
-	if request.AttemptID != "" {
-		for _, checkpoint := range n.checkpoints {
-			if checkpoint.request.WorkerRef == request.WorkerRef {
-				return nil, ErrRuntimeSessionUnavailable
-			}
-		}
+	n.mu.Unlock()
+	if exists{return nil,errors.New("node: worker already exists")}
+	if hasCheckpoint{return nil,ErrRuntimeSessionUnavailable}
+	prepCtx,finish,err:=n.beginLocalPrestart(ctx,request.AttemptID,request.WorkerRef)
+	if err!=nil{return nil,err}
+	defer finish()
+	if err:=n.prepareInput(prepCtx,&request);err!=nil{return nil,err}
+	if request.Profile.Name!="" && !nativeProfileDelivery(n.runtime,request.Profile){
+		if _,err:=request.Profile.MaterializeInstructions(request.Workspace);err!=nil{return nil,err}
 	}
-	session, err := n.runtime.Start(ctx, request)
-	if err != nil {
-		return nil, err
-	}
-	n.workers[request.WorkerRef] = session
-	if request.AttemptID != "" {
-		n.checkpoints[request.AttemptID] = localCheckpoint{request: request, nativeID: session.ID()}
-	}
-	return session, nil
+	if err:=n.commitLocalHandoff(prepCtx,request.AttemptID,request.WorkerRef);err!=nil{return nil,err}
+	session,err:=n.runtime.Start(ctx,request)
+	if err!=nil{return nil,err}
+	n.mu.Lock()
+	n.workers[request.WorkerRef]=session
+	n.activeAttempts[request.WorkerRef]=request.AttemptID
+	if request.AttemptID!=""{n.checkpoints[request.AttemptID]=localCheckpoint{request:request,nativeID:session.ID()}}
+	n.mu.Unlock()
+	return session,nil
 }
 
-func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previousAttemptID string) (Session, error) {
-	profile, err := request.effectiveProfile()
-	if err != nil {
-		return nil, err
-	}
-	request.Profile = profile
-	if request.AttemptID == "" || request.AttemptID == previousAttemptID {
-		return nil, ErrRuntimeSessionUnavailable
-	}
+func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previousAttemptID string) (Session,error) {
+	profile,err:=request.effectiveProfile()
+	if err!=nil{return nil,err}
+	request.Profile=profile
+	if request.AttemptID=="" || request.AttemptID==previousAttemptID{return nil,ErrRuntimeSessionUnavailable}
+	unlock,err:=n.lockWorker(ctx,request.WorkerRef)
+	if err!=nil{return nil,err}
+	defer unlock()
 	n.mu.Lock()
-	defer n.mu.Unlock()
-	checkpoint, ok := n.checkpoints[previousAttemptID]
-	prior := checkpoint.request
-	if request.Workspace == "" && ok {
-		request.Workspace = prior.Workspace
+	checkpoint,ok:=n.checkpoints[previousAttemptID]
+	fetch:=n.artifactFetcher
+	n.mu.Unlock()
+	prior:=checkpoint.request
+	if request.Workspace=="" && ok{request.Workspace=prior.Workspace}
+	if !ok || checkpoint.nativeID=="" || prior.WorkerRef!=request.WorkerRef || prior.Workspace!=request.Workspace ||
+		!reflect.DeepEqual(prior.Profile,request.Profile) || !reflect.DeepEqual(prior.HarnessInstance,request.HarnessInstance) ||
+		prior.Model!=request.Model || prior.Reasoning!=request.Reasoning || prior.ApprovalPolicy!=request.ApprovalPolicy {
+		return nil,ErrRuntimeSessionUnavailable
 	}
-	if !ok || checkpoint.nativeID == "" || prior.WorkerRef != request.WorkerRef || prior.Workspace != request.Workspace || !reflect.DeepEqual(prior.Profile, request.Profile) || !reflect.DeepEqual(prior.HarnessInstance, request.HarnessInstance) || prior.Model != request.Model || prior.Reasoning != request.Reasoning || prior.ApprovalPolicy != request.ApprovalPolicy {
-		return nil, ErrRuntimeSessionUnavailable
-	}
-	if err := prepareLocalInput(ctx, &request, n.artifactFetcher); err != nil { return nil, err }
-	resumer, ok := n.runtime.(Resumer)
-	if !ok {
-		return nil, ErrRuntimeSessionUnavailable
-	}
-	if previous, exists := n.workers[request.WorkerRef]; exists {
-		if err := previous.Close(); err != nil {
-			return nil, err
+	resumer,ok:=n.runtime.(Resumer)
+	if !ok{return nil,ErrRuntimeSessionUnavailable}
+	prepCtx,finish,err:=n.beginLocalPrestart(ctx,request.AttemptID,request.WorkerRef)
+	if err!=nil{return nil,err}
+	defer finish()
+	// Do not hold n.mu while waiting in awaitVideoProcessing: other Workers'
+	// Dispatch, Session, Steer and Cancel remain independent.
+	if err:=prepareLocalInput(prepCtx,&request,fetch);err!=nil{return nil,err}
+	if err:=n.commitLocalHandoff(prepCtx,request.AttemptID,request.WorkerRef);err!=nil{return nil,err}
+	n.mu.Lock()
+	previous,hadPrevious:=n.workers[request.WorkerRef]
+	n.mu.Unlock()
+	if hadPrevious {
+		if err:=previous.Close();err!=nil{return nil,err}
+		n.mu.Lock()
+		if current,ok:=n.workers[request.WorkerRef];ok && current==previous{
+			delete(n.workers,request.WorkerRef)
+			delete(n.activeAttempts,request.WorkerRef)
+			if cancel := n.resumeCancels[request.WorkerRef]; cancel!=nil{
+				cancel()
+				delete(n.resumeCancels,request.WorkerRef)
+			}
 		}
-		delete(n.workers, request.WorkerRef)
+		n.mu.Unlock()
 	}
-	request.DeferInitialPrompt = true
-	session, err := resumeSameIdentity(ctx, resumer, request, checkpoint.nativeID)
-	if err != nil {
-		return nil, ErrRuntimeSessionUnavailable
-	}
-	n.workers[request.WorkerRef] = session
-	n.checkpoints[request.AttemptID] = localCheckpoint{request: request, nativeID: session.ID()}
-	go func() { _ = promptWithImages(context.Background(), session, request.Task, request.Images) }()
-	return session, nil
+	request.DeferInitialPrompt=true
+	session,err:=resumeSameIdentity(ctx,resumer,request,checkpoint.nativeID)
+	if err!=nil{return nil,ErrRuntimeSessionUnavailable}
+	n.mu.Lock()
+	n.workers[request.WorkerRef]=session
+	n.activeAttempts[request.WorkerRef]=request.AttemptID
+	n.checkpoints[request.AttemptID]=localCheckpoint{request:request,nativeID:session.ID()}
+	n.mu.Unlock()
+	go func(){_=promptWithImages(context.Background(),session,request.Task,request.Images)}()
+	return session,nil
 }
 
 func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
@@ -358,16 +389,55 @@ func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSes
 			return nil, err
 		}
 	}
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if _, exists := n.workers[request.WorkerRef]; exists {
-		return nil, errors.New("node: worker already exists")
-	}
-	session, err := resumer.Resume(ctx, request, runtimeSessionID)
+	// Serialize only operations for this Worker. A native Resume can block on
+	// provider I/O indefinitely, so never hold the global Node mutex across it.
+	unlock, err := n.lockWorker(ctx, request.WorkerRef)
 	if err != nil {
 		return nil, err
 	}
+	defer unlock()
+	n.mu.Lock()
+	_, exists := n.workers[request.WorkerRef]
+	n.mu.Unlock()
+	if exists {
+		return nil, errors.New("node: worker already exists")
+	}
+	// Direct Resume has no Session until the native provider returns, and
+	// may block indefinitely. Register an Attempt-scoped cancelable prestart
+	// before native I/O, so Cancel bypasses the occupied per-Worker gate.
+	prepCtx, finish, err := n.beginLocalPrestart(ctx, request.AttemptID, request.WorkerRef)
+	if err != nil {
+		return nil, err
+	}
+	defer finish()
+	// Once native Resume is invoked, a crash could leave an unknown native
+	// side effect. Persist this boundary before calling the provider, but keep
+	// the Attempt cancelable until native Session registration.
+	if err := n.markLocalResuming(prepCtx, request.AttemptID, request.WorkerRef); err != nil {
+		return nil, err
+	}
+	session, err := resumer.Resume(prepCtx, request, runtimeSessionID)
+	if err != nil {
+		return nil, err
+	}
+	// The provider may ignore ctx.Done() and return a Session AFTER Cancel
+	// was accepted. Never register it; explicitly close the late result.
+	if err := n.commitLocalHandoff(prepCtx, request.AttemptID, request.WorkerRef); err != nil {
+		_ = session.Close()
+		return nil, err
+	}
+	n.mu.Lock()
 	n.workers[request.WorkerRef] = session
+	n.activeAttempts[request.WorkerRef] = request.AttemptID
+	key := request.AttemptID
+	if key == "" {key="worker:"+request.WorkerRef}
+	// The native provider may retain prepCtx after Resume returns.
+	// Do not auto-cancel an accepted Session from finish().
+	if pending:=n.prestarts[key];pending!=nil&&pending.workerRef==request.WorkerRef&&pending.stage=="handoff"{
+		pending.keepContext=true
+		n.resumeCancels[request.WorkerRef]=pending.cancel
+	}
+	n.mu.Unlock()
 	return session, nil
 }
 
@@ -403,8 +473,12 @@ func (n *LocalNode) Session(workerRef string) (Session, bool) {
 func (n *LocalNode) Close() error {
 	n.mu.Lock()
 	workers := n.workers
+	resumeCancels := n.resumeCancels
 	n.workers = make(map[string]Session)
+	n.activeAttempts = make(map[string]string)
+	n.resumeCancels = make(map[string]context.CancelFunc)
 	n.mu.Unlock()
+	for _, cancel := range resumeCancels {cancel()}
 	var first error
 	for _, session := range workers {
 		if err := session.Close(); err != nil && first == nil {
@@ -417,12 +491,17 @@ func (n *LocalNode) Close() error {
 func (n *LocalNode) Remove(workerRef string) error {
 	n.mu.Lock()
 	session, ok := n.workers[workerRef]
+	var cancel context.CancelFunc
 	if ok {
 		delete(n.workers, workerRef)
+		delete(n.activeAttempts, workerRef)
+		cancel=n.resumeCancels[workerRef]
+		delete(n.resumeCancels,workerRef)
 	}
 	n.mu.Unlock()
 	if !ok {
 		return nil
 	}
+	if cancel!=nil {cancel()}
 	return session.Close()
 }

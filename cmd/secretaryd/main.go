@@ -185,6 +185,7 @@ func main() {
 		log.Fatalf("initialize web API: %v", err)
 	}
 	web.AttachWorkerObserverPreference(func() bool { return profiles.Snapshot().Config.WorkerObserver.ShowToolActivity })
+	if err:=web.AttachVideoOptions(webapi.VideoOptions{FPS:profiles.Snapshot().Config.Video.FPS,MaxDurationSeconds:profiles.Snapshot().Config.Video.MaxDurationSeconds,MaxFrames:profiles.Snapshot().Config.Video.MaxFrames,TimeoutSeconds:profiles.Snapshot().Config.Video.TimeoutSeconds});err!=nil {log.Fatalf("configure video processing: %v",err)}
 	web.SetDebug(*debug)
 	web.AttachUserDocument(filepath.Join(*dataDir, "user.md"))
 	web.AttachDiagnosticLogDir(filepath.Join(*dataDir, "logs", "acp"))
@@ -272,10 +273,15 @@ func main() {
 	localImageStore, err := node.OpenLocalStore(filepath.Join(workerDataDir, "local-image-responses.json"))
 	if err != nil { log.Fatalf("open local Worker image response checkpoints: %v", err) }
 	workerLocal.SetImageResponseStore(localImageStore)
+	workerLocal.SetPrestartStore(localImageStore)
 	workerLocal.SetArtifactFetcher(func(ctx context.Context, id string) (node.ArtifactPayload, error) {
 		artifact, body, err := store.ArtifactForPerson(ctx, web.OwnerID(), id)
 		if err != nil { return node.ArtifactPayload{}, err }
-		return node.ArtifactPayload{ID: artifact.ID, Name: artifact.Name, SHA256: artifact.SHA256, Data: body}, nil
+		return node.ArtifactPayload{
+			ID:artifact.ID,Name:artifact.Name,SHA256:artifact.SHA256,Data:body,
+			VideoStatus:artifact.ProcessingStatus,VideoError:artifact.ProcessingError,VideoFrames:artifact.VideoFrames,
+			CheckVideoStatus:func(c context.Context)(core.Artifact,error){return store.ArtifactMetadataForPerson(c,web.OwnerID(),id)},
+		},nil
 	})
 	secretaryLocal := node.NewLocal(secretaryHarnessRuntime)
 	if err := recoverProductionPhase4Attempts(ctx, store, workerLocal, remoteNodes); err != nil {

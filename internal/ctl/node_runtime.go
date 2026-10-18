@@ -48,6 +48,16 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 		return node.CommandOutcome{}, ErrWorkerRuntimeUnavailable
 	}
 	metadata := command.Metadata()
+	// Local Dispatch may still be waiting for video frames: there is no
+	// Session yet. Cancel by AttemptID before any Session lookup, so the
+	// pre-native checkpoint prevents a late Start.
+	if command.Kind==node.CommandCancel {
+		if command.Cancel==nil{return node.CommandOutcome{},errors.New("worker: local cancel command is missing")}
+		handled,err:=r.Local.CancelLocalAttempt(ctx,metadata.WorkerRef,metadata.AttemptID)
+		if err!=nil{return node.CommandOutcome{},err}
+		if !handled{return node.CommandOutcome{},ErrWorkerRuntimeUnavailable}
+		return node.CommandOutcome{CommandID:metadata.CommandID,Kind:command.Kind,State:node.CommandAccepted,TurnID:metadata.TurnID,AttemptID:metadata.AttemptID},nil
+	}
 	session, ok := r.Local.Session(metadata.WorkerRef)
 	if command.Kind == node.CommandDispatch {
 		if command.Dispatch == nil {
@@ -161,10 +171,7 @@ func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (no
 			}
 			return outcome, commandErr
 		}
-	case node.CommandCancel:
-		if err := session.Cancel(ctx); err != nil {
-			return node.CommandOutcome{}, err
-		}
+
 	default:
 		return node.CommandOutcome{}, ErrWorkerRuntimeUnavailable
 	}

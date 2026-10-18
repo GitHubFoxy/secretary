@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"time"
+	"sync"
 
 	"github.com/beruseruko/secretary/internal/core"
 )
@@ -33,10 +34,34 @@ type serverMessage struct {
 	Ack     uint64
 }
 
+// The user can cancel a dispatched Worker before its queued video becomes ready.
+var errWorkerDispatchCanceled = errors.New("worker: dispatch canceled before native start")
+
+// nativeHandoffSignal is attached to the command preparation Context. A
+// durable native boundary releases the socket WaitGroup without stopping
+// the daemon-lifetime provider operation.
+type nativeHandoffSignal struct {ready chan struct{};once sync.Once}
+type nativeHandoffKey struct{}
+func notifyNativeHandoff(ctx context.Context) {
+	if signal,ok:=ctx.Value(nativeHandoffKey{}).(*nativeHandoffSignal);ok {
+		signal.once.Do(func(){close(signal.ready)})
+	}
+}
+
+type runningNodeCommand struct {
+	kind CommandKind
+	attemptID string
+	interrupt context.CancelCauseFunc
+}
+
 type commandCompletion struct {
 	command Command
 	outcome CommandOutcome
 	err     error
+	// An explicitly replayed CommandID whose original receipt was already
+	// ACKed gets its cached response directly; it must not create another
+	// outbox event. New native completions always use the durable outbox.
+	replyAfterAck bool
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
@@ -44,6 +69,9 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 	execution := NewExecutionNode(d.Identity.Node, d.Runtime, d.Store)
+	// Unlike serveConnection's commandCtx, this context survives WebSocket
+	// reconnects and ends only when the daemon is actually stopped.
+	execution.SetNativeLifetime(ctx)
 	execution.SetArtifactFetcher(d.Identity.FetchArtifact)
 	if err := execution.SetMCPServers(d.MCPServers); err != nil {
 		return err
@@ -121,9 +149,13 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 	readErrors := make(chan error, 1)
 	completions := make(chan commandCompletion, 4)
 	commandCtx, stopCommands := context.WithCancel(ctx)
-	defer stopCommands()
+	var commandWG sync.WaitGroup
+	// A disconnected socket must cancel and drain in-flight pre-native
+	// commands before the next socket replays their durable claims.
+	defer func(){stopCommands();commandWG.Wait()}()
 	pendingCommands := make([]Command, 0, 32)
 	runningWorkers := make(map[string]bool)
+	runningDetails := make(map[string]runningNodeCommand)
 	runningCommands := 0
 	commandWorkerKey := func(command Command) string {
 		worker := command.Metadata().WorkerRef
@@ -146,13 +178,49 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			}
 			command := pendingCommands[index]
 			pendingCommands = append(pendingCommands[:index], pendingCommands[index+1:]...)
-			runningWorkers[commandWorkerKey(command)] = true
+			key:=commandWorkerKey(command)
+			runningWorkers[key] = true
 			runningCommands++
+			individualCtx,interrupt:=context.WithCancelCause(commandCtx)
+			runningDetails[key]=runningNodeCommand{kind:command.Kind,attemptID:command.Metadata().AttemptID,interrupt:interrupt}
+			commandWG.Add(1)
+			signal:=&nativeHandoffSignal{ready:make(chan struct{})}
+			finished:=make(chan struct{})
+			// Only pre-native preparation belongs to the WebSocket. After
+			// durable handoff, reconnect must not wait for a provider Resume
+			// that may block indefinitely.
+			go func(){
+				select {case <-signal.ready:case <-finished:}
+				commandWG.Done()
+			}()
 			go func() {
-				outcome, err := execution.HandleCommand(commandCtx, command)
+				defer close(finished)
+				outcome, err := execution.HandleCommand(context.WithValue(individualCtx,nativeHandoffKey{},signal), command)
+				if err!=nil || outcome.State!=CommandAccepted {interrupt(nil)}
+				// Native Dispatch/Resume can complete after this socket
+				// disconnects. Persist the receipt BEFORE selecting a
+				// connection-owned channel: when both cases are ready,
+				// selecting completions would silently discard the result.
+				// All lifecycle receipts are sent only via the durable outbox,
+				// including the normal connected path.
+				replyAfterAck:=false
+				if err==nil && (command.Kind==CommandDispatch || command.Kind==CommandResume) && outcome.State!=CommandProcessing {
+					receipt,queueErr:=d.Store.QueueLifecycleCommandOutcome(outcome)
+					if queueErr!=nil {
+						err=fmt.Errorf("node: persist native command outcome: %w",queueErr)
+					} else if receipt.Sequence==0 {
+						// The original terminal receipt (ACCEPTED or FAILED)
+						// was already acknowledged. Answer this explicit
+						// replay from the cached outcome without creating
+						// another durable event.
+						replyAfterAck=true
+					}
+				}
 				select {
-				case completions <- commandCompletion{command: command, outcome: outcome, err: err}:
+				case completions <- commandCompletion{command: command, outcome: outcome, err: err, replyAfterAck:replyAfterAck}:
 				case <-commandCtx.Done():
+					// The native outcome is already durable and the new
+					// socket's outbox poll will deliver it.
 				}
 			}()
 		}
@@ -198,9 +266,13 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 		sentThrough = sequence
 		return nil
 	}
-	if err := sendHeartbeat(); err != nil {
-		return err
-	}
+	if err := sendHeartbeat(); err != nil {return err}
+	// Recover pre-native Dispatch/Resume with their original IDs and envelope.
+	// ClaimCommand atomically serializes this replay against server redelivery.
+	replay,err:=d.Store.PendingPrestartCommands()
+	if err!=nil{return err}
+	pendingCommands=append(pendingCommands,replay...)
+	startPending()
 
 	heartbeats := time.NewTicker(d.heartbeatInterval())
 	inventories := time.NewTicker(d.inventoryInterval())
@@ -224,20 +296,41 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			if message.Command == nil {
 				continue
 			}
+			// A Cancel for the same Attempt preempts a dispatched command
+			// waiting for video conversion. It must not remain blocked by the
+			// per-Worker FIFO lane it is meant to interrupt. Other Workers and
+			// attempts remain unaffected.
+			if message.Command.Kind==CommandCancel && message.Command.Cancel!=nil {
+				key:=commandWorkerKey(*message.Command)
+				if running,ok:=runningDetails[key];ok &&
+					(running.kind==CommandDispatch || running.kind==CommandResume || running.kind==CommandSteering) &&
+					running.attemptID==message.Command.Cancel.Metadata.AttemptID {
+					running.interrupt(errWorkerDispatchCanceled)
+				}
+			}
 			if len(pendingCommands) >= 32 {
 				return errors.New("node: command queue full")
 			}
 			pendingCommands = append(pendingCommands, *message.Command)
 			startPending()
 		case completed := <-completions:
-			delete(runningWorkers, commandWorkerKey(completed.command))
+			key:=commandWorkerKey(completed.command)
+			delete(runningWorkers,key)
+			delete(runningDetails,key)
 			runningCommands--
 			startPending()
 			if completed.err != nil {
 				return completed.err
 			}
 			outcome := completed.outcome
-			if outcome.State == CommandFailed && (outcome.Kind == CommandDispatch || outcome.Kind == CommandResume || outcome.Kind == CommandSteering) {
+			if outcome.Kind==CommandDispatch || outcome.Kind==CommandResume {
+				// A new native receipt was persisted before this channel
+				// send. Preserve the established response for an explicit
+				// replay of an ALREADY-ACKed CommandID without requeuing it.
+				if completed.replyAfterAck {
+					if err := connection.SendCommandOutcome(ctx,outcome);err!=nil{return err}
+				}
+			} else if outcome.State == CommandFailed && outcome.Kind == CommandSteering {
 				if _, err := d.Store.QueueCommandOutcome(outcome); err != nil {
 					return err
 				}
