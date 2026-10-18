@@ -86,7 +86,7 @@ func TestT15WorkerPublishedResultFileOutboxReplay(t *testing.T){
  srv:=&t15DeliveryServer{bytes:[]byte("worker output")}
  a,err:=New(Config{StatePath:filepath.Join(t.TempDir(),"telegram.json"),OwnerChatID:100},tr,srv)
  if err!=nil{t.Fatal(err)}
- payload,_:=json.Marshal(map[string]any{"id":"res_t15_fixture","artifact_refs":[]string{"artifact://art_t15_fixture"}})
+ payload,_:=json.Marshal(map[string]any{"id":"res_t15_fixture","artifact_refs":"artifact://art_t15fixture"})
  event:=Event{EventID:"event-1",Sequence:10,Kind:"worker.completed",WorkerRef:"worker-file",Title:"File Worker",
   Text:"Generated report",TerminalIdentity:"turn:t15",Payload:payload}
  if err:=a.HandleDurableEvent(context.Background(),event);err!=nil{t.Fatal(err)}
@@ -117,7 +117,7 @@ func TestT15WorkerDocumentResultAllTelegramProjectionsReconnect(t *testing.T){
  a.mu.Unlock()
  if err!=nil{t.Fatal(err)}
  payload,_:=json.Marshal(map[string]any{
-  "id":"res_t15_export","artifact_refs":[]string{"art_exported","art_exported"},
+  "id":"res_t15_export","artifact_refs":"artifact://art_exported artifact://art_exported",
  })
  event:=Event{EventID:"result-event",Sequence:120,Kind:"worker.completed",WorkerRef:"worker-export",
   Title:"Worker export",Text:"Report finished",TerminalIdentity:"turn:t15-export",Payload:payload}
