@@ -23,10 +23,13 @@ func TestT09SeatbeltProtectsAlternateNodeDataRoots(t *testing.T) {
 			rootPath,err:=filepath.EvalSymlinks(root)
 			if err!=nil{t.Fatal(err)}
 			exposed:=false
-			for _,allow:=range []string{"/usr","/System","/Library","/Applications","/private/etc","/private/var/db","/opt/homebrew"}{
+			// Only actual read grants can expose this protected directory;
+			// previously hardcoded roots may now be default-denied outright.
+			for _,allow:=range []string{"/usr/bin","/usr/lib","/bin","/sbin","/System","/private/var/db/dyld","/private/etc/ssl","/dev"} {
 				allowPath,err:=filepath.EvalSymlinks(allow)
 				if err!=nil{continue}
-				if rootPath==allowPath||strings.HasPrefix(rootPath,allowPath+string(filepath.Separator)){exposed=true}
+				if (rootPath==allowPath||strings.HasPrefix(rootPath,allowPath+string(filepath.Separator))) &&
+					strings.Contains(profile,"(allow file-read* (subpath \\""+allow+"\\"))") {exposed=true}
 			}
 			if exposed && !strings.Contains(profile,"(deny file-read* (subpath "){
 				t.Fatalf("alternate Node root %s exposed by system allowlist",root)
