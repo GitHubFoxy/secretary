@@ -161,7 +161,7 @@ func TestT13AutomaticTelegramVideoRequiresImageInputCapability(t *testing.T) {
  person,conversation,err:=store.CreatePersonWithConversation(ctx);if err!=nil{t.Fatal(err)}
  cap,err:=store.RotateSecretaryCapability(ctx,person.ID);if err!=nil{t.Fatal(err)}
  if _,err=store.EnrollNode(ctx,"local");err!=nil{t.Fatal(err)}
- instance:=core.HarnessInstance{ID:"local/fx",Node:"local",Kind:core.HarnessFX,Status:core.HarnessReady,
+ instance:=core.HarnessInstance{ID:"local/fx",Node:"local",Kind:core.HarnessFX,Version:"test",Status:core.HarnessReady,
   Authentication:core.HarnessAuthentication{Authenticated:true},
   Capabilities:core.HarnessCapabilities{Execution:[]core.ExecutionCapability{core.CapabilityShell}}}
  if err=store.UpdateNodeHeartbeat(ctx,"local",core.HarnessInventorySnapshot{
