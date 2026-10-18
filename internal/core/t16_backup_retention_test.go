@@ -122,6 +122,9 @@ func TestT16RestoreInterruptionRecoversWithoutPartialPublication(t *testing.T) {
   if err=RestoreServerBackup(ctx,archive,database,extras);err==nil{t.Fatalf("fault at %s did not stop restore",failAt)}
   restoreInstallHook=nil
   if _,err=os.Lstat(destination);!os.IsNotExist(err){t.Fatalf("partially published Server after %s: %v",failAt,err)}
+  stale:=filepath.Join(base,"."+filepath.Base(destination)+".secretary-restore-staging")
+  if err=os.Mkdir(stale,0700);err!=nil{t.Fatal(err)}
+  if err=os.WriteFile(filepath.Join(stale,"incomplete"),[]byte("crash residue"),0600);err!=nil{t.Fatal(err)}
   if err=RestoreServerBackup(ctx,archive,database,extras);err!=nil{t.Fatalf("recovery after %s: %v",failAt,err)}
   restored,err:=Open(ctx,database);if err!=nil{t.Fatal(err)}
   _,body,err:=restored.ArtifactForPerson(ctx,owner.ID,original.ID)
