@@ -66,3 +66,10 @@ func (s *Server) telegramVideoStatus(w http.ResponseWriter,r *http.Request){
  if !strings.HasPrefix(artifact.MediaType,"video/"){http.Error(w,"Not a video",http.StatusBadRequest);return}
  writeJSON(w,http.StatusOK,artifact)
 }
+
+func (s *Server) telegramVideoLimits(w http.ResponseWriter,r *http.Request){
+ _,ok:=s.authorizedTelegramVoice(w,r)
+ if !ok{return}
+ opts:=s.videoOptions.Defaults()
+ writeJSON(w,http.StatusOK,map[string]any{"max_duration_seconds":opts.MaxDurationSeconds})
+}
