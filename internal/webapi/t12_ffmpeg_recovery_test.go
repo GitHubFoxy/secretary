@@ -40,9 +40,11 @@ func TestT12RealFFmpegNonzeroPTSAndVFRSourcePTS(t *testing.T) {
 	defer cancel()
 	frames,err:=(ffmpegVideoProcessor{}).Process(ctx,clip,VideoOptions{FPS:1,MaxDurationSeconds:12,MaxFrames:12,TimeoutSeconds:20})
 	if err!=nil{t.Fatalf("VFR sample should work: %v",err)}
-	if len(frames)!=2 {t.Fatalf("expected 2 actual source samples from VFR clip, got %d",len(frames))}
+	if len(frames)<2 || len(frames)>3 {t.Fatalf("expected 2–3 actual VFR source samples, got %d",len(frames))}
 	for i,frame:=range frames {
-		expected:=[]int64{0,1250}
+		// FFmpeg builds may retain the final 2.25 s sample; both outcomes
+		// preserve source PTS, and neither fabricates nominal 1-second ticks.
+		expected:=[]int64{0,1250,2250}
 		if frame.TimestampMS!=expected[i] || frame.TimestampKind!="source-pts-relative" {
 			t.Fatalf("frame %d: got actual PTS %d (%s), want %d source-pts-relative",i,frame.TimestampMS,frame.TimestampKind,expected[i])
 		}
@@ -81,7 +83,7 @@ func TestT12ServerRestartsUnfinishedVideoJobAndPreservesOriginal(t *testing.T) {
 		meta,e:=reopened.ArtifactMetadataForPerson(ctx,person.ID,source.ID)
 		if e!=nil && !errors.Is(e,core.ErrNotFound){t.Fatal(e)}
 		if e==nil && meta.ProcessingStatus=="ready"{
-			if len(meta.VideoFrames)!=2 || meta.VideoFrames[1].TimestampMS!=1250 || meta.VideoFrames[1].TimestampKind!="source-pts-relative" {
+			if len(meta.VideoFrames)<2 || len(meta.VideoFrames)>3 || meta.VideoFrames[0].TimestampMS!=0 || meta.VideoFrames[1].TimestampMS!=1250 || meta.VideoFrames[1].TimestampKind!="source-pts-relative" {
 				t.Fatalf("recovered frames: %+v",meta.VideoFrames)
 			}
 			saved,original,e:=reopened.ArtifactForPerson(ctx,person.ID,source.ID)
