@@ -69,7 +69,9 @@ func TestT11NativeWorkerRejection503ThenRestartDoesNotReDownloadImage(t *testing
 	a.mu.Unlock()
 	if remaining!=0 || notice!=1 || tr.downloads!=1 {t.Fatalf("rejected Worker image retried because of notice 503: queue=%d notice=%d downloads=%d",remaining,notice,tr.downloads)}
 	restored:=newAdapter()
-	if err:=restored.Flush(context.Background());err!=nil {t.Fatal(err)}
+	// Worker Topic warnings are flushed by the independent topic recovery
+	// loop, not by the Secretary DM Flush path.
+	if err:=restored.drainTopicOutbox(context.Background());err!=nil {t.Fatal(err)}
 	if err:=restored.HandleUpdate(context.Background(),second);err!=nil {t.Fatal(err)}
 	restored.imageWG.Wait()
 	if err:=restored.HandleUpdate(context.Background(),first);err!=nil {t.Fatal(err)}
