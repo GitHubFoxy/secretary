@@ -4,6 +4,7 @@ import(
  "bytes"
  "context"
  "encoding/json"
+ "fmt"
  "path/filepath"
  "strings"
  "testing"
@@ -91,4 +92,40 @@ func TestT15WorkerPublishedResultFileOutboxReplay(t *testing.T){
  if len(tr.sentDocs)!=1||tr.sentDocs[0].ChatID!=100||tr.names[0]!="result.txt"||!bytes.Equal(tr.originals[0],srv.bytes){
   t.Fatalf("Worker file delivery missing/duplicate: %+v",tr.sentDocs)
  }
+}
+
+func TestT15WorkerDocumentResultAllTelegramProjectionsReconnect(t *testing.T){
+ ctx:=context.Background()
+ group:=int64(-200)
+ tr:=&t15DeliveryTransport{fakeTransport:&fakeTransport{}}
+ srv:=&t15DeliveryServer{bytes:[]byte("published document")}
+ path:=filepath.Join(t.TempDir(),"telegram.json")
+ open:=func()*Adapter{
+  t.Helper()
+  a,e:=New(Config{StatePath:path,OwnerChatID:100,GroupChatID:&group},tr,srv)
+  if e!=nil{t.Fatal(e)}
+  return a
+ }
+ a:=open()
+ a.mu.Lock()
+ a.state.OwnerChat=100
+ a.state.GroupChat=group
+ a.state.Topics["worker-export"]=TopicMapping{WorkerRef:"worker-export",ChatID:group,ThreadID:77,Title:"Worker export"}
+ err:=a.saveLocked()
+ a.mu.Unlock()
+ if err!=nil{t.Fatal(err)}
+ payload,_:=json.Marshal(map[string]any{
+  "id":"res_t15_export","artifact_refs":[]string{"art_exported","art_exported"},
+ })
+ event:=Event{EventID:"result-event",Sequence:120,Kind:"worker.completed",WorkerRef:"worker-export",
+  Title:"Worker export",Text:"Report finished",TerminalIdentity:"turn:t15-export",Payload:payload}
+ if err:=a.HandleDurableEvent(ctx,event);err!=nil{t.Fatal(err)}
+ if err:=a.SyncWorkerTopics(ctx);err!=nil{t.Fatal(err)}
+ if err:=open().HandleDurableEvent(ctx,event);err!=nil{t.Fatal(err)}
+ if len(tr.sentDocs)!=3{t.Fatalf("expected DM, General and Worker Topic once, got %+v",tr.sentDocs)}
+ counts:=map[string]int{}
+ for _,m:=range tr.sentDocs {
+  counts[fmt.Sprintf("%d:%d",m.ChatID,m.ThreadID)]++
+ }
+ if counts["100:0"]!=1||counts["-200:0"]!=1||counts["-200:77"]!=1{t.Fatalf("missing or duplicate Worker Artifact projection: %+v",counts)}
 }
