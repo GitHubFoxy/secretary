@@ -2045,7 +2045,7 @@ func (a *Adapter) drainOutboxKind(ctx context.Context, topicsOnly bool) error {
 			// network I/O: after a restart an unacknowledged attempt is
 			// uncertain and MUST NOT silently send the same file again.
 			if message.DocumentAttemptStarted {
-				if err:=a.finishDocumentDelivery(message, "Telegram: исход отправки файла неизвестен после прерывания. Проверьте чат перед ручной повторной отправкой.");err!=nil{return err}
+				if err:=a.finishDocumentDelivery(ctx,message, "Telegram: исход отправки файла неизвестен после прерывания. Проверьте чат перед ручной повторной отправкой.");err!=nil{return err}
 				continue
 			}
 			a.mu.Lock()
@@ -2084,7 +2084,7 @@ func (a *Adapter) drainOutboxKind(ctx context.Context, topicsOnly bool) error {
 				} else {
 					notice="Telegram: исход отправки файла неизвестен; проверьте чат перед повтором."
 				}
-				if err:=a.finishDocumentDelivery(message,notice);err!=nil{return err}
+				if err:=a.finishDocumentDelivery(ctx,message,notice);err!=nil{return err}
 				continue
 			}
 			a.mu.Lock()
