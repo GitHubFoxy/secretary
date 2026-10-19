@@ -91,7 +91,9 @@ func TestInstallManagedCodexAssetsFreshRetryPartialAndCorrupt(t *testing.T) {
   var buf bytes.Buffer
   z := gzip.NewWriter(&buf)
   archive := tar.NewWriter(z)
-  payload := []byte("#!/bin/sh\necho " + name + " 1.2.3\n")
+  version := codexPinnedVersion
+  if name=="codex-acp" { version=codexACPPinnedVersion }
+  payload := []byte("#!/bin/sh\necho " + name + " " + version + "\n")
   if err := archive.WriteHeader(&tar.Header{Name:name+"-native",Typeflag:tar.TypeReg,Mode:0700,Size:int64(len(payload))}); err != nil { t.Fatal(err) }
   if _,err := archive.Write(payload); err != nil { t.Fatal(err) }
   if err := archive.Close(); err != nil { t.Fatal(err) }
