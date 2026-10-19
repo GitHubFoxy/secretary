@@ -53,8 +53,6 @@ public final class NodeLifecycle {
 
     private func matchingNode(_ pid: pid_t) -> Bool {
         guard pid > 1 else { return false }
-        // proc_pidpath requires a 4096-byte buffer. PROC_PIDPATHINFO_MAXSIZE is
-        // unavailable to Swift in the macOS 15.5 SDK (Xcode 16.4).
         var buffer = [CChar](repeating: 0, count: 4096)
         let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
         guard length > 0, Int(length) < buffer.count else { return false }
@@ -105,7 +103,13 @@ public final class NodeLifecycle {
         let log = NodeIntegrations.logURL
         try FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let fd = open(log.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0o600)
-        guard fd >= 0 else { throw POSIXError(.EACCES) }
+        guard fd >= 0 else {
+            let code = errno
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [
+                NSFilePathErrorKey: log.path,
+                NSLocalizedDescriptionKey: "Cannot open Secretary Node log at \(log.path): \(String(cString: strerror(code)))"
+            ])
+        }
         let stream = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         child.standardOutput = stream
         child.standardError = stream
