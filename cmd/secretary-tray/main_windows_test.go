@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"errors"
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -198,4 +199,50 @@ func TestW02CompactLayoutAndTheme(t *testing.T) {
 	rows:=buildMenu(true,false,liveStatus{Harnesses:[]harnessRow{{Name:"codex"}}})
 	if menuHeight(rows)!=8+24*5+9+4 {t.Fatalf("unexpected height %d",menuHeight(rows))}
 	if !themeIsDark(0,nil) || themeIsDark(1,nil) {t.Fatal("theme mismatch")}
+}
+
+func TestW02StatusSnapshotPropagation(t *testing.T) {
+	path:=filepath.Join(t.TempDir(),"status.json")
+	now:=time.Now().UTC()
+	a:=&trayApp{statusFile:path,node:&managedNode{}}
+	write:=func(connected bool, harnesses []harnessRow) {
+		t.Helper()
+		data,err:=json.Marshal(liveStatus{Connected:connected,ObservedAt:now,Harnesses:harnesses})
+		if err!=nil {t.Fatal(err)}
+		if err:=os.WriteFile(path,data,0o600);err!=nil {t.Fatal(err)}
+	}
+	check:=func(wantServer,wantHarness string) {
+		t.Helper()
+		a.refreshStatus(now)
+		a.lock.Lock()
+		rows:=buildMenu(a.node!=nil,false,a.live)
+		a.lock.Unlock()
+		if rows[1].label!=wantServer {t.Fatalf("server=%s, want %s",rows[1].label,wantServer)}
+		if wantHarness!="" && rows[3].label!=wantHarness {t.Fatalf("harness=%s, want %s",rows[3].label,wantHarness)}
+	}
+	check("Server: Reconnecting","Harnesses: Unavailable")
+	write(true,[]harnessRow{{Name:"codex",Ready:true}})
+	check("Server: Connected","codex: Ready")
+	write(true,[]harnessRow{{Name:"codex",Ready:false}})
+	check("Server: Connected","codex: Unavailable")
+	write(false,nil)
+	check("Server: Reconnecting","Harnesses: Unavailable")
+	write(true,[]harnessRow{{Name:"claude_code",Ready:true}})
+	check("Server: Connected","claude_code: Ready")
+	if err:=os.Remove(path);err!=nil{t.Fatal(err)}
+	check("Server: Reconnecting","Harnesses: Unavailable")
+	write(true,[]harnessRow{{Name:"codex",Ready:true}})
+	a.refreshStatus(now.Add(21*time.Second))
+	a.lock.Lock()
+	if a.live.Connected {t.Fatal("stale snapshot remained connected")}
+	a.node=nil
+	a.lock.Unlock()
+	check("Server: Offline","Harnesses: Unavailable")
+}
+
+func TestW02PopupHeightFollowsInventory(t *testing.T) {
+	before:=buildMenu(true,false,liveStatus{Harnesses:[]harnessRow{{Name:"codex"}}})
+	after:=buildMenu(true,false,liveStatus{Harnesses:[]harnessRow{{Name:"codex"},{Name:"claude_code"},{Name:"fx"}}})
+	if menuHeight(after)-menuHeight(before)!=48 {t.Fatalf("popup height not adjusted: %d -> %d",menuHeight(before),menuHeight(after))}
+	if actionAt(after,menuHeight(after)-8)!="exit" {t.Fatal("exit action not repositioned")}
 }
