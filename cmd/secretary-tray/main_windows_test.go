@@ -222,7 +222,7 @@ func TestW02StatusSnapshotPropagation(t *testing.T) {
 	}
 	check:=func(wantServer,wantHarness string) {
 		t.Helper()
-		a.refreshStatus(now)
+		a.refreshStatus(time.Now())
 		a.lock.Lock()
 		rows:=buildMenu(a.node!=nil,false,a.live)
 		a.lock.Unlock()
@@ -241,7 +241,7 @@ func TestW02StatusSnapshotPropagation(t *testing.T) {
 	if err:=os.Remove(path);err!=nil{t.Fatal(err)}
 	check("Server: Reconnecting","Harnesses: Unavailable")
 	write(true,[]harnessRow{{Name:"codex",Ready:true}})
-	a.refreshStatus(now.Add(21*time.Second))
+	a.refreshStatus(time.Now().Add(21*time.Second))
 	a.lock.Lock()
 	if a.live.Connected {t.Fatal("stale snapshot remained connected")}
 	a.node=nil
