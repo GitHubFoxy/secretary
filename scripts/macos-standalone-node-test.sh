@@ -26,6 +26,7 @@ export SECRETARY_NODE_NAME="fixture-node"
 export SECRETARY_NODE_HARNESS=claude
 export SECRETARY_RELEASE_BASE="file://$dist"
 export SECRETARY_VERSION=0.0.0-ci
+export SECRETARY_NODE_PINNED_SHA256="$(shasum -a 256 "$dist/secretary-v0.0.0-ci-darwin-$arch.tar.gz" | awk '{print $1}')"
 state="$HOME/.local/share/secretary-node"
 printf 'fixture-identity' > "$state/data/identity.json"
 printf 'native checkpoint' > "$state/data/node-state.json"
@@ -34,6 +35,7 @@ cat > "$state/config.json" <<EOF
 {"server_url":"$SECRETARY_NODE_SERVER","node":"$SECRETARY_NODE_NAME","data_dir":"$state/data","capacity":1,"include_opencode":false,"standalone":true}
 EOF
 chmod 600 "$state/config.json" "$state/data/"*
+if SECRETARY_NODE_TRUSTED_TEAM_ID=AAAAAAAAAA bash "$root/scripts/install-macos-standalone-node.sh" >/dev/null 2>&1; then echo "Accepted untrusted signing identity" >&2; exit 1; fi
 bash "$root/scripts/install-macos-standalone-node.sh"
 [[ -x "$state/current/bin/secretary-node" ]]
 [[ -d "$HOME/Applications/Secretary Node.app" ]]
@@ -62,11 +64,16 @@ bash "$root/scripts/install-macos-standalone-node.sh"
 [[ "$(readlink "$state/current")" == "$old" ]]
 cmp "$home/session.before" "$state/data/node-state.json"
 export SECRETARY_VERSION=0.0.1-ci
+export SECRETARY_NODE_PINNED_SHA256="$(shasum -a 256 "$dist/secretary-v0.0.1-ci-darwin-$arch.tar.gz" | awk '{print $1}')"
 bash "$root/scripts/install-macos-standalone-node.sh"
 [[ "$(readlink "$state/current")" == *0.0.1-ci* ]]
 cmp "$home/config.before" "$state/config.json"
 cmp "$home/identity.before" "$state/data/identity.json"
 cmp "$home/session.before" "$state/data/node-state.json"
 cmp "$home/credentials.before" "$state/data/credentials.txt"
+mkdir -p "$HOME/Library/LaunchAgents"
+touch "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
+if bash "$root/scripts/install-macos-standalone-node.sh" >/dev/null 2>&1; then echo "Accepted conflicting legacy LaunchAgent" >&2; exit 1; fi
+rm "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
 [[ ! -f "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist" ]]
 echo "Node-only macOS fixture completed; no live owner session asserted"
