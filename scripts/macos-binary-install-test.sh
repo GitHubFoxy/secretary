@@ -53,7 +53,7 @@ cmp "$home/credentials.before" "$state/environment"
 cmp "$home/config.before" "$state/config.toml"
 cmp "$home/node.before" "$state/node/config.json"
 cmp "$home/profile.before" "$state/profiles/secretary.md"
-[[ "$(cat "$state/secretary.db")" == existing-db ]]
+cmp "$home/db.before" "$state/secretary.db"
 [[ "$(cat "$state/node/data/identity.json")" == existing-identity ]]
 [[ "$(cat "$state/node/data/session-fixture")" == existing-session ]]
 bash "$root/scripts/package-macos-binary-release.sh" 0.0.1-ci "$revision" "$(uname -m | sed 's/x86_64/amd64/')" "$input" "$dist"
