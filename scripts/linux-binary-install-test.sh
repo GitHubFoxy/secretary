@@ -16,12 +16,25 @@ case "$*" in
   "--user enable --now secretary.service") exit 0 ;;
   "--user enable --now secretary-node.service") [[ -z "${FAIL_NODE_SERVICE:-}" ]] ;;
   "--user disable --now secretary-node.service secretary.service") exit 0 ;;
+  "--user show secretary.service -p ActiveState --value"|"--user show secretary-node.service -p ActiveState --value")
+    if [[ -n "${FAIL_CRASH_AFTER_START:-}" && "$*" == *"secretary-node.service"* ]]; then echo failed; else echo active; fi ;;
+  "--user show secretary.service -p MainPID --value"|"--user show secretary-node.service -p MainPID --value") echo 1 ;;
   *) exit 1 ;;
 esac
 SH
-cat > "$home/mock/claude" <<'SH'
+mkdir -p "$home/provider bin"
+cat > "$home/provider bin/claude" <<'SH'
 #!/bin/sh
 case "$*" in "--version") echo "fixture" ;; "auth status") exit 0 ;; *) exit 1 ;; esac
+SH
+cat > "$home/mock/curl" <<'SH'
+#!/bin/bash
+if [[ "$*" == *"127.0.0.1:8081/v1/web/session"* ]]; then
+  if [[ -n "${FAIL_HEALTH:-}" ]]; then exit 7; fi
+  printf '401'
+  exit 0
+fi
+exec /usr/bin/curl "$@"
 SH
 for tool in go npm node; do
   cat > "$home/mock/$tool" <<'SH'
@@ -30,10 +43,10 @@ echo "Installer invoked a forbidden build tool" >&2
 exit 97
 SH
 done
-chmod +x "$home/mock/"*
+chmod +x "$home/mock/"* "$home/provider bin/claude"
 mkdir -p "$home/run"
 touch "$home/run/bus"
-export HOME="$home" PATH="$home/mock:$PATH" XDG_RUNTIME_DIR="$home/run"
+export HOME="$home" PATH="$home/mock:$home/provider bin:$PATH" XDG_RUNTIME_DIR="$home/run"
 export SECRETARY_VERSION=0.0.0-ci SECRETARY_RELEASE_BASE="file://$dist"
 bash "$root/scripts/install-linux-binary.sh" && { echo "Non-systemd host was accepted" >&2; exit 1; }
 rm "$home/run/bus"
@@ -110,3 +123,22 @@ fi
 [[ ! -e "$new_home/.config/systemd/user/secretary-node.service" ]]
 HOME="$new_home" bash "$root/scripts/install-linux-binary.sh"
 [[ -L "$new_home/.local/share/secretary/current" ]]
+
+for failure in FAIL_CRASH_AFTER_START FAIL_HEALTH; do
+  broken_home="$home/health-$failure"
+  mkdir -p "$broken_home"
+  if HOME="$broken_home" env "$failure=1" bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then
+    echo "Unhealthy systemd activation was accepted: $failure" >&2
+    exit 1
+  fi
+  [[ ! -L "$broken_home/.local/share/secretary/current" ]]
+  [[ ! -e "$broken_home/.config/systemd/user/secretary.service" ]]
+done
+special_home="$home/user with spaces%sign"
+mkdir -p "$special_home"
+HOME="$special_home" bash "$root/scripts/install-linux-binary.sh"
+special_unit="$special_home/.config/systemd/user/secretary.service"
+grep -Fq 'user\x20with\x20spaces%%sign' "$special_unit"
+grep -Fq 'ExecStart="' "$special_unit"
+grep -Fq 'Environment="PATH=' "$special_unit"
+grep -Fq "$home/provider bin" "$special_unit"
