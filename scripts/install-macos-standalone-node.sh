@@ -42,6 +42,10 @@ revision="$(field revision)"
 [[ "$revision" =~ ^[[:xdigit:]]{40}$ && "$(field archive)" == "$name.tar.gz" ]] || fail "Invalid manifest revision/archive"
 sha="$(field sha256)"
 [[ "$sha" =~ ^[[:xdigit:]]{64}$ ]] || fail "Invalid SHA-256"
+[[ -n "${SECRETARY_NODE_PINNED_SHA256:-}" || -n "${SECRETARY_NODE_TRUSTED_TEAM_ID:-}" ]] || fail "Pin an independently verified archive digest or trusted Developer ID Team ID"
+if [[ -n "${SECRETARY_NODE_PINNED_SHA256:-}" ]]; then
+  [[ "$SECRETARY_NODE_PINNED_SHA256" =~ ^[[:xdigit:]]{64}$ && "$sha" == "$SECRETARY_NODE_PINNED_SHA256" ]] || fail "Release SHA-256 differs from independently pinned digest"
+fi
 curl -fsSL --retry 2 -o "$stage/archive.tar.gz" "$url/$name.tar.gz" || fail "Missing published archive"
 [[ "$(shasum -a 256 "$stage/archive.tar.gz" | awk '{print $1}')" == "$sha" ]] || fail "Archive digest mismatch"
 [[ "$(wc -c < "$stage/archive.tar.gz" | tr -d '[:space:]')" == "$(field bytes)" ]] || fail "Archive length mismatch"
@@ -57,7 +61,16 @@ payload="$stage/extract/$name"
 [[ -x "$payload/bin/secretary-node" && ! -L "$payload/bin/secretary-node" ]] || fail "Missing Node binary"
 [[ -x "$payload/Secretary Node.app/Contents/MacOS/SecretaryNode" ]] || fail "Missing menu bar companion"
 [[ "$(cat "$payload/VERSION")" == "$version" && "$(cat "$payload/REVISION")" == "$revision" ]] || fail "Payload provenance mismatch"
-codesign --verify "$payload/Secretary Node.app" || fail "Invalid companion signature"
+verify_app() {
+  local bundle="$1" signature
+  codesign --verify --deep --strict "$bundle" || fail "Invalid companion signature"
+  if [[ -n "${SECRETARY_NODE_TRUSTED_TEAM_ID:-}" ]]; then
+    [[ "$SECRETARY_NODE_TRUSTED_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || fail "Invalid trusted Team ID"
+    signature="$(codesign -dv --verbose=4 "$bundle" 2>&1)" || fail "Cannot inspect signer"
+    [[ "$signature" == *"TeamIdentifier=$SECRETARY_NODE_TRUSTED_TEAM_ID"* && "$signature" == *"Authority=Developer ID Application:"* ]] || fail "Companion not signed by trusted Developer ID"
+  fi
+}
+verify_app "$payload/Secretary Node.app"
 target="$releases/$name-$revision"
 if [[ -e "$target" ]]; then
   [[ -d "$target" && ! -L "$target" ]] || fail "Invalid cached release"
@@ -69,7 +82,7 @@ else
   cp "$payload/bin/secretary-node" "$stage/node-release/bin/secretary-node"
   cp -R "$payload/Secretary Node.app" "$stage/node-release/Secretary Node.app"
   cp "$stage/manifest.json" "$stage/node-release/RELEASE-MANIFEST.json"
-  codesign --verify "$stage/node-release/Secretary Node.app" || fail "Staged companion signature invalid"
+  verify_app "$stage/node-release/Secretary Node.app" || fail "Staged companion signature invalid"
   mv "$stage/node-release" "$target"
 fi
 config="$root/config.json"
@@ -79,18 +92,31 @@ if [[ -e "$config" ]]; then
   [[ ! -L "$data" ]] || fail "Unsafe Node state"
   [[ "$(plutil -extract server_url raw -o - "$config" 2>/dev/null || true)" == "$server" ]] || fail "Existing enrollment Server differs; revoke/re-enroll explicitly"
 else
-  [[ ! -e "$data" && ! -L "$data" ]] || fail "State exists without config; refusing identity reset"
-  mkdir -m 700 -p "$data"
+  [[ ! -L "$data" ]] || fail "Unsafe Node state"
+  if [[ -d "$data" ]]; then
+    [[ -z "$(find "$data" -mindepth 1 -print -quit)" ]] || fail "Orphaned nonempty Node state needs owner recovery"
+  else
+    [[ ! -e "$data" ]] || fail "Unsafe Node state"
+    mkdir -m 700 -p "$data"
+  fi
   printf '{"server_url":"%s","node":"%s","data_dir":"%s","capacity":1,"include_opencode":false,"standalone":true}\n' "$server" "$SECRETARY_NODE_NAME" "$data" > "$stage/config.json"
   install -m 600 "$stage/config.json" "$config"
 fi
 if [[ -n "${SECRETARY_NODE_PAIRING_TOKEN:-}" && ! -f "$data/identity.json" ]]; then
   SECRETARY_NODE_PAIRING_TOKEN="$SECRETARY_NODE_PAIRING_TOKEN" "$target/bin/secretary-node" --config "$config" --enroll-only || fail "Remote enrollment failed"
 fi
-[[ -f "$data/identity.json" ]] || fail "Owner-approved enrollment required: supply SECRETARY_NODE_PAIRING_TOKEN"
+[[ -f "$data/identity.json" && ! -L "$data/identity.json" ]] || fail "Owner-approved enrollment required: supply SECRETARY_NODE_PAIRING_TOKEN"
+[[ "$(stat -f %Lp "$data/identity.json")" == 600 ]] || fail "Node identity permissions must be 600"
 if [[ "$SECRETARY_NODE_HARNESS" == codex ]]; then
   "$target/bin/secretary-node" --codex-pair-action install --codex-pair-scope node || fail "Managed Codex CLI/ACP provisioning failed"
 fi
+if [[ "$SECRETARY_NODE_HARNESS" == codex ]]; then
+  "$target/bin/secretary-node" --check-codex-readiness || fail "Selected Codex harness unavailable"
+else
+  claude --version >/dev/null || fail "Selected Claude harness unavailable"
+fi
+"$target/bin/secretary-node" --config "$config" --check-worker-sandbox || fail "Staged Node sandbox/readiness failed"
+"$target/Secretary Node.app/Contents/MacOS/SecretaryNode" --login-item-smoke status >/dev/null || fail "Staged companion cannot launch"
 [[ ! -e "$current" || -L "$current" ]] || fail "Current Node release is unmanaged"
 old=""
 if [[ -L "$current" ]]; then old="$(readlink "$current")"; [[ "$old" == "$releases/"* ]] || fail "Current Node release outside managed root"; fi
@@ -101,7 +127,7 @@ if [[ -d "$app" ]]; then
   [[ "$old_id" == "$new_id" ]] || fail "Unrelated app occupies target"
 elif [[ -e "$app" || -L "$app" ]]; then fail "Unsafe app target"; fi
 cp -R "$target/Secretary Node.app" "$stage/Secretary Node.app"
-codesign --verify "$stage/Secretary Node.app" || fail "Invalid staged app"
+verify_app "$stage/Secretary Node.app" || fail "Invalid staged app"
 had_app=false
 [[ ! -d "$app" ]] || had_app=true
 activated=false
@@ -119,5 +145,9 @@ if [[ -d "$app" ]]; then mv "$app" "$stage/old-app"; fi
 mv "$stage/Secretary Node.app" "$app" || fail "Cannot install menu bar app"
 ln -s "$target" "$stage/current.new"
 mv -fh "$stage/current.new" "$current" || fail "Cannot switch Node release"
+[[ "$(readlink "$current")" == "$target" ]] || fail "Release pointer verification failed"
+verify_app "$app"
+"$current/bin/secretary-node" --config "$config" --check-worker-sandbox || fail "Activated Node failed readiness"
+"$app/Contents/MacOS/SecretaryNode" --login-item-smoke status >/dev/null || fail "Activated companion failed readiness"
 activated=true
 printf 'Installed standalone Secretary Node %s (%s). Launch Secretary Node from Spotlight.\n' "$version" "$revision"
