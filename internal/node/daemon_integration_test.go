@@ -204,6 +204,17 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 		t.Fatalf("unacknowledged outbox was not retained: %#v", pending)
 	}
 
+	waitFor(t, ctx, "W02 transport disconnect", func() bool {
+		statusMu.Lock()
+		defer statusMu.Unlock()
+		for i := 1; i < len(statusHistory); i++ {
+			if !statusHistory[i].connected && statusHistory[i-1].connected && !statusHistory[i].tray.Connected && len(statusHistory[i].tray.Harnesses)==0 {
+				return true
+			}
+		}
+		return false
+	})
+
 	replayed := make(chan NodeEvent, 1)
 	manager.SetEventSink(func(_ context.Context, event NodeEvent) error {
 		replayed <- event
@@ -220,16 +231,6 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	waitFor(t, ctx, "outbox acknowledgement", func() bool {
 		pending, err := localStore.PendingEvents()
 		return err == nil && len(pending) == 0
-	})
-	waitFor(t, ctx, "W02 transport disconnect", func() bool {
-		statusMu.Lock()
-		defer statusMu.Unlock()
-		for i := 1; i < len(statusHistory); i++ {
-			if !statusHistory[i].connected && statusHistory[i-1].connected && !statusHistory[i].tray.Connected && len(statusHistory[i].tray.Harnesses)==0 {
-				return true
-			}
-		}
-		return false
 	})
 	waitFor(t, ctx, "authenticated reconnect", func() bool {
 		status, err := manager.Status(context.Background(), "macbook")
