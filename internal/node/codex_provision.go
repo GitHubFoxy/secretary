@@ -123,6 +123,9 @@ func codexNativePairReady(ctx context.Context, pair CodexPairInventory) error {
   if strings.Contains(response, "not logged in") || strings.Contains(response, "not authenticated") || strings.Contains(response, "login required") {
    return fmt.Errorf("Codex native authentication required: run %s login", pair.Codex.Path)
   }
+  if strings.Contains(response, "quota") || strings.Contains(response, "usage limit") || strings.Contains(response, "rate limit") {
+   return fmt.Errorf("Codex native quota/provider restriction: %w", err)
+  }
   return fmt.Errorf("Codex native login status executable/protocol failure: %w", err)
  }
  models, _, err := (ExecCommandRunner{}).ObserveCodexACPWithCommand(probeCtx, pair.Codex.Path, pair.ACP.Path)
