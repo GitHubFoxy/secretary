@@ -12,6 +12,7 @@ current="$root/current"
 unit="$HOME/.config/systemd/user/secretary-standalone-node.service"
 service=false
 harness=codex
+harness_explicit=false
 server=""
 name=""
 action=install
@@ -20,7 +21,7 @@ while (($#)); do
     install|repair|upgrade|start|stop|status|logs|doctor|enable-service|disable-service) action="$1" ;;
     --server|--name|--harness|--version)
       option="$1"; shift; (($#)) || fail "$option requires a value"
-      case "$option" in --server) server="$1" ;; --name) name="$1" ;; --harness) harness="$1" ;; --version) export SECRETARY_VERSION="$1" ;; esac ;;
+      case "$option" in --server) server="$1" ;; --name) name="$1" ;; --harness) harness="$1"; harness_explicit=true ;; --version) export SECRETARY_VERSION="$1" ;; esac ;;
     --enable-service) service=true ;;
     *) fail "Unsupported option: $1" ;;
   esac
@@ -31,8 +32,30 @@ done
 config="$state/config.json"
 credential="$state/enrollment.env"
 [[ ! -L "$credential" ]] || fail "Unsafe credential symlink"
-[[ ! -f "$state/harness" ]] || harness="$(cat "$state/harness")"
+if [[ -f "$state/harness" ]]; then
+  saved="$(cat "$state/harness")"
+  [[ "$harness_explicit" != true || "$harness" == "$saved" ]] || fail "Installed harness conflicts with explicit selection"
+  harness="$saved"
+fi
 binary="$current/bin/secretary-node"
+unit_digest="$state/service-unit.sha256"
+verify_unit() {
+  [[ -f "$unit" && ! -L "$unit" && -f "$unit_digest" ]] || fail "Unmanaged systemd unit"
+  [[ "$(sha256sum "$unit" | cut -d' ' -f1)" == "$(cat "$unit_digest")" ]] || fail "Systemd unit modified outside installer"
+}
+healthy_service() {
+  local expected="$1" active pid actual
+  for attempt in 1 2 3 4 5; do
+    active="$(systemctl --user show secretary-standalone-node.service -p ActiveState --value 2>/dev/null || true)"
+    pid="$(systemctl --user show secretary-standalone-node.service -p MainPID --value 2>/dev/null || true)"
+    if [[ "$active" == active && "$pid" =~ ^[1-9][0-9]*$ && -e "/proc/$pid/exe" ]]; then
+      actual="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+      [[ "$actual" == "$expected/bin/secretary-node" ]] && return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
 service_available() { command -v systemctl >/dev/null 2>&1 && [[ -n "${XDG_RUNTIME_DIR:-}" && -S "$XDG_RUNTIME_DIR/bus" ]] && systemctl --user show-environment >/dev/null 2>&1; }
 identity() {
   if [[ -f "$state/data/identity.json" ]]; then printf 'paired\n'; else printf 'awaiting explicit owner enrollment\n'; fi
@@ -49,14 +72,14 @@ version_status() {
 }
 case "$action" in
   status) version_status; [[ ! -f "$config" ]] || identity; exit 0 ;;
-  logs) service_available && [[ -f "$unit" ]] || fail "systemd user service unavailable"; exec journalctl --user -u secretary-standalone-node.service -f --no-pager ;;
+  logs) service_available && [[ -f "$unit" ]] || fail "systemd user service unavailable"; verify_unit; exec journalctl --user -u secretary-standalone-node.service -f --no-pager ;;
   start)
     [[ -x "$binary" && -f "$config" ]] || fail "Node not installed"
-    if [[ -f "$unit" ]]; then service_available || fail "systemd user manager unavailable"; exec systemctl --user start secretary-standalone-node.service; fi
+    if [[ -f "$unit" ]]; then service_available || fail "systemd user manager unavailable"; verify_unit; exec systemctl --user start secretary-standalone-node.service; fi
     [[ ! -f "$credential" ]] || { set -a; source "$credential"; set +a; }
     exec "$binary" --config "$config" ;;
-  stop) service_available && [[ -f "$unit" ]] || fail "No managed service to stop"; exec systemctl --user stop secretary-standalone-node.service ;;
-  disable-service) service_available || fail "systemd user manager unavailable"; [[ ! -f "$unit" ]] || { systemctl --user disable --now secretary-standalone-node.service; rm "$unit"; systemctl --user daemon-reload; }; exit 0 ;;
+  stop) service_available && [[ -f "$unit" ]] || fail "No managed service to stop"; verify_unit; exec systemctl --user stop secretary-standalone-node.service ;;
+  disable-service) service_available || fail "systemd user manager unavailable"; [[ ! -f "$unit" ]] || { verify_unit; systemctl --user disable --now secretary-standalone-node.service; rm "$unit" "$unit_digest"; systemctl --user daemon-reload; }; exit 0 ;;
   doctor)
     [[ -x "$binary" && -f "$config" ]] || fail "Node not installed"
     if [[ "$harness" == codex ]]; then
@@ -89,6 +112,8 @@ if [[ "$action" != service-only ]]; then
   package="secretary-v$version-linux-$arch"
   url="${SECRETARY_RELEASE_BASE:-https://github.com/GitHubFoxy/secretary/releases/download/v$version}"
   curl -fsSL --retry 2 -o "$temp/manifest.json" "$url/$package.json" || fail "Missing manifest"
+  [[ "${SECRETARY_MANIFEST_SHA256:-}" =~ ^[a-fA-F0-9]{64}$ ]] || fail "Set independently trusted SECRETARY_MANIFEST_SHA256"
+  [[ "$(sha256sum "$temp/manifest.json" | cut -d' ' -f1)" == "${SECRETARY_MANIFEST_SHA256,,}" ]] || fail "Manifest trust anchor mismatch"
   curl -fsSL --retry 2 -o "$temp/$package.tar.gz" "$url/$package.tar.gz" || fail "Missing archive"
   python3 - "$temp/manifest.json" "$temp/$package.tar.gz" "$package" "$version" "$arch" "$temp" <<'PY'
 import hashlib, json, pathlib, re, sys, tarfile
@@ -162,9 +187,10 @@ PYCONFIG
   ln -s "$target" "$root/.current.$$"
   mv -Tf "$root/.current.$$" "$current"
   if service_available && [[ -f "$unit" ]]; then
-    if ! systemctl --user restart secretary-standalone-node.service; then
+    verify_unit
+    if ! systemctl --user restart secretary-standalone-node.service || ! healthy_service "$target"; then
       rm -f "$current"; [[ -z "$previous" ]] || ln -s "$previous" "$current"
-      systemctl --user restart secretary-standalone-node.service || true
+      if [[ -n "$previous" ]]; then systemctl --user restart secretary-standalone-node.service && healthy_service "$previous" || fail "Rollback health verification failed"; fi
       fail "Service restart failed, reverted version"
     fi
   fi
@@ -175,7 +201,7 @@ if [[ "$service" == true ]]; then
   mkdir -p "$(dirname "$unit")"
   [[ ! -L "$unit" ]] || fail "Unsafe systemd unit symlink"
   if [[ -e "$unit" ]]; then
-    grep -Fqx 'Description=Secretary standalone Execution Node' "$unit" || fail "Existing unit is unmanaged"
+    verify_unit
   else
     python3 - "$unit" "$binary" "$config" "$HOME/.local/bin:$PATH" "$credential" <<'PY'
 import pathlib, sys
@@ -187,6 +213,8 @@ text = "[Unit]\nDescription=Secretary standalone Execution Node\nAfter=network-o
 pathlib.Path(unit).write_text(text)
 PY
     chmod 600 "$unit"
+    sha256sum "$unit" | cut -d\  -f1 > "$unit_digest"
+    chmod 600 "$unit_digest"
   fi
   systemctl --user daemon-reload
   systemctl --user enable --now secretary-standalone-node.service
