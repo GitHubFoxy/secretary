@@ -5,6 +5,9 @@ package main
 import (
 	"os"
 	"os/exec"
+	"errors"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -14,6 +17,13 @@ import (
 func TestMain(m *testing.M) {
 	switch os.Getenv("SECRETARY_TRAY_TEST_HELPER") {
 	case "managed":
+		if marker := os.Getenv("SECRETARY_TRAY_TEST_MARKER"); marker != "" {
+			file, err := os.OpenFile(marker, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+			if err != nil { os.Exit(35) }
+			_, err = file.WriteString("node started\\n")
+			_ = file.Close()
+			if err != nil { os.Exit(36) }
+		}
 		name := wide(os.Getenv("SECRETARY_NODE_SHUTDOWN_EVENT"))
 		event, _, _ := k.NewProc("OpenEventW").Call(0x00100000, 0, uintptr(unsafe.Pointer(name)))
 		if event == 0 { os.Exit(31) }
@@ -26,6 +36,65 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
+}
+
+func TestActualTraySecondLaunchDoesNotSpawnNode(t *testing.T) {
+	binary := filepath.Join(t.TempDir(), "secretary-tray.exe")
+	build := exec.Command("go", "build", "-o", binary, ".")
+	if output, err := build.CombinedOutput(); err != nil { t.Fatalf("build tray fixture: %v: %s", err, output) }
+	marker := filepath.Join(t.TempDir(), "managed-starts.txt")
+	startTray := func() *exec.Cmd {
+		cmd := exec.Command(binary)
+		cmd.Env = append(os.Environ(),
+			"SECRETARY_TRAY_NODE_EXE="+os.Args[0],
+			"SECRETARY_TRAY_TEST_HELPER=managed",
+			"SECRETARY_TRAY_TEST_MARKER="+marker,
+		)
+		if err := cmd.Start(); err != nil { t.Fatal(err) }
+		return cmd
+	}
+	first := startTray()
+	defer func() { _ = first.Process.Kill(); _ = first.Wait() }()
+	deadline := time.Now().Add(15*time.Second)
+	for {
+		data, _ := os.ReadFile(marker)
+		if strings.Count(string(data), "node started") == 1 { break }
+		if time.Now().After(deadline) { t.Fatalf("first tray did not start managed Node; marker=%q", data) }
+		time.Sleep(50*time.Millisecond)
+	}
+	second := startTray()
+	done := make(chan error, 1)
+	go func() { done <- second.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil { t.Fatalf("second tray exited unsuccessfully: %v", err) }
+	case <-time.After(5*time.Second):
+		_ = second.Process.Kill()
+		t.Fatal("second tray instance remained alive")
+	}
+	time.Sleep(300*time.Millisecond)
+	data, err := os.ReadFile(marker)
+	if err != nil { t.Fatal(err) }
+	if strings.Count(string(data), "node started") != 1 {
+		t.Fatalf("second tray started an additional Node: %q", data)
+	}
+	process, err := syscall.OpenProcess(0x00100000, false, uint32(first.Process.Pid))
+	if err != nil { t.Fatalf("first tray is no longer alive: %v", err) }
+	defer syscall.CloseHandle(process)
+	value, _, _ := k.NewProc("WaitForSingleObject").Call(uintptr(process), 0)
+	if value != 0x102 { t.Fatalf("first tray unexpectedly exited: %d", value) }
+}
+
+func TestPopupClampedToWorkArea(t *testing.T) {
+	work := rect{left:-1920, top:40, right:0, bottom:1040}
+	for _, tc := range []struct{ point pt; x, y int32 }{
+		{pt{-1930,0},-1920,40},
+		{pt{-1,1039},-220,936},
+		{pt{-1000,500},-1000,500},
+	} {
+		x,y := clampPopup(tc.point,work,220,104)
+		if x != tc.x || y != tc.y { t.Fatalf("clampPopup(%+v) = %d,%d; want %d,%d",tc.point,x,y,tc.x,tc.y) }
+	}
 }
 
 func TestNativeSingleInstanceMutex(t *testing.T) {
@@ -91,6 +160,15 @@ func TestStopWithoutOwnedNode(t *testing.T) {
 	if a.node != nil { t.Fatal("stopping without an owned Node changed state") }
 }
 
-func TestThemeRegistryReturnsBoolean(t *testing.T) {
-	_ = darkMode()
+func TestThemeSelection(t *testing.T) {
+	for _, tc := range []struct { value uint64; err error; want bool }{
+		{0,nil,true},
+		{1,nil,false},
+		{2,nil,false},
+		{0,errors.New("missing preference"),false},
+	} {
+		if got := themeIsDark(tc.value,tc.err); got != tc.want {
+			t.Fatalf("themeIsDark(%d,%v) = %v; want %v",tc.value,tc.err,got,tc.want)
+		}
+	}
 }
