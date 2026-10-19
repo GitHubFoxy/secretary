@@ -44,7 +44,21 @@ jobs:
           [IO.File]::WriteAllText((Join-Path $root 'release.json'),$manifest)
           $archive=Join-Path $env:RUNNER_TEMP 'standalone-node.zip'
           [IO.Compression.ZipFile]::CreateFromDirectory($root,$archive)
-          $digest=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          $wrongArch = Join-Path $env:RUNNER_TEMP 'wrong-architecture.zip'
+          $badDir = Join-Path $env:RUNNER_TEMP 'bad-manifest-fixture'
+          Copy-Item -LiteralPath $root -Destination $badDir -Recurse
+          $badManifest = Get-Content (Join-Path $badDir 'release.json') -Raw | ConvertFrom-Json
+          $badManifest.arch = 'arm64'
+          [IO.File]::WriteAllText((Join-Path $badDir 'release.json'),($badManifest | ConvertTo-Json -Compress))
+          [IO.Compression.ZipFile]::CreateFromDirectory($badDir,$wrongArch)
+          $wrongDigest=(Get-FileHash $wrongArch -Algorithm SHA256).Hash
+          $componentArchive = Join-Path $env:RUNNER_TEMP 'wrong-component.zip'
+          $badManifest.arch = 'amd64'
+          $badManifest.node_sha256 = ('f'*64)
+          [IO.File]::WriteAllText((Join-Path $badDir 'release.json'),($badManifest | ConvertTo-Json -Compress))
+          [IO.Compression.ZipFile]::CreateFromDirectory($badDir,$componentArchive)
+          $componentDigest=(Get-FileHash $componentArchive -Algorithm SHA256).Hash
+                    $digest=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
           $uri=([Uri]$archive).AbsoluteUri
           $data=Join-Path $env:RUNNER_TEMP 'standalone-install-data'
           $home=Join-Path $env:RUNNER_TEMP 'standalone-worker-home'
@@ -59,8 +73,22 @@ jobs:
             if ($_.Exception.Message -notlike '*independently pinned digest*') { throw }
           }
           if ((Get-Content -LiteralPath $identity -Raw) -ne 'PRESERVED-IDENTITY') { throw 'Negative fixture mutated identity' }
-          & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+          foreach($bad in @(@($wrongArch,$wrongDigest,'architecture'),@($componentArchive,$componentDigest,'executable hash'))) {
+            try {
+              & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$bad[0]).AbsoluteUri -ReleaseSHA256 $bad[1] -NodeDataDir $data -WorkerHome $home -Workspace $workspace -Harness claude
+              throw 'Negative release fixture unexpectedly accepted'
+            } catch {
+              if ($_.Exception.Message -notlike ('*'+$bad[2]+'*')) { throw }
+            }
+          }
+                    & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
           if (-not $?) { throw 'Verified archive install failed' }
           if ((Get-Content -LiteralPath $identity -Raw) -ne 'PRESERVED-IDENTITY') { throw 'Verified install mutated identity' }
+          $identityBefore=(Get-FileHash $identity -Algorithm SHA256).Hash
+          $workerAccount=Join-Path $data 'worker-account.json'
+          $accountBefore=(Get-FileHash $workerAccount -Algorithm SHA256).Hash
+          & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+          if (-not $?) { throw 'Repeated verified install failed' }
+          if ($identityBefore -ne (Get-FileHash $identity -Algorithm SHA256).Hash -or $accountBefore -ne (Get-FileHash $workerAccount -Algorithm SHA256).Hash) { throw 'Repeat install changed identity or Worker account' }
           $shortcut=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
           if (-not (Test-Path $shortcut)) { throw 'Start/Search shortcut missing' }
