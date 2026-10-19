@@ -16,10 +16,23 @@ PY
 cat > "$home/mock/systemctl" <<'SH'
 #!/usr/bin/env bash
 case "$*" in
-  "--user show-environment"|"--user daemon-reload"|"--user enable --now secretary-standalone-node.service"|"--user disable --now secretary-standalone-node.service"|"--user restart secretary-standalone-node.service"|"--user start secretary-standalone-node.service"|"--user stop secretary-standalone-node.service") exit 0 ;;
-  "--user show secretary-standalone-node.service -p MainPID --value") echo 0 ;;
+  "--user restart secretary-standalone-node.service") printf 'restart %s\n' "$(readlink "$HOME/.local/share/secretary/standalone-node/current")" >> "$HOME/restarts.log"; exit 0 ;;
+  "--user show-environment"|"--user daemon-reload"|"--user enable --now secretary-standalone-node.service"|"--user disable --now secretary-standalone-node.service"|"--user start secretary-standalone-node.service"|"--user stop secretary-standalone-node.service") exit 0 ;;
+  "--user show secretary-standalone-node.service -p MainPID --value")
+    if [[ "${TEST_ROLLBACK_HEALTH:-}" == true ]]; then echo "$TEST_SERVICE_PID"; else echo 0; fi ;;
+  "--user show secretary-standalone-node.service -p ActiveState --value")
+    if [[ "${TEST_ROLLBACK_HEALTH:-}" == true ]]; then echo active; else echo failed; fi ;;
   *) exit 1 ;;
 esac
+SH
+cat > "$home/mock/readlink" <<'SH'
+#!/usr/bin/env bash
+if [[ "${TEST_ROLLBACK_HEALTH:-}" == true && "$1" == -f && "$2" == /proc/*/exe ]]; then
+  current="$(/usr/bin/readlink "$HOME/.local/share/secretary/standalone-node/current")"
+  if [[ "$current" == *0.0.0-ci* ]]; then printf '%s/bin/secretary-node\n' "$current"; else printf '/usr/bin/false\n'; fi
+else
+  exec /usr/bin/readlink "$@"
+fi
 SH
 cat > "$home/mock/claude" <<'SH'
 #!/bin/sh
@@ -95,8 +108,16 @@ PY
 if bash "$installer" --harness claude_code > /dev/null 2>&1; then echo "Forged release pair accepted" >&2; exit 1; fi
 cp "$home/archive.before" "$archive"
 cp "$home/manifest.original" "$dist/secretary-v0.0.1-ci-linux-$arch.json"
+printf 'unmanaged alteration\n' >> "$unit"
+if bash "$installer" --harness claude_code > /dev/null 2>&1; then echo "Tampered unit accepted before activation" >&2; exit 1; fi
+[[ "$(readlink "$state/current")" == *0.0.0-ci* ]]
+sed -i '$d' "$unit"
+export TEST_ROLLBACK_HEALTH=true TEST_SERVICE_PID="$BASHPID"
 if bash "$installer" --harness claude_code > /dev/null 2>&1; then echo "Unhealthy upgraded Node accepted" >&2; exit 1; fi
 [[ "$(readlink "$state/current")" == *0.0.0-ci* ]]
+[[ "$(grep -c '^restart ' "$home/restarts.log")" -ge 2 ]]
+[[ "$(tail -n 1 "$home/restarts.log")" == *0.0.0-ci* ]]
+unset TEST_ROLLBACK_HEALTH
 bash "$installer" disable-service
 bash "$installer" --harness claude_code
 [[ "$(readlink "$state/current")" == *0.0.1-ci* ]]
