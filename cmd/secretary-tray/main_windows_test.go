@@ -256,3 +256,31 @@ func TestW02PopupHeightFollowsInventory(t *testing.T) {
 	if menuHeight(after)-menuHeight(before)!=48 {t.Fatalf("popup height not adjusted: %d -> %d",menuHeight(before),menuHeight(after))}
 	if actionAt(after,menuHeight(after)-8)!="exit" {t.Fatal("exit action not repositioned")}
 }
+
+func TestW03UpgradeCloseShutsDownTray(t *testing.T) {
+ binary:=filepath.Join(t.TempDir(),"secretary-tray.exe")
+ build:=exec.Command("go","build","-o",binary,".")
+ if output,err:=build.CombinedOutput();err!=nil{t.Fatalf("build tray fixture: %v: %s",err,output)}
+ marker:=filepath.Join(t.TempDir(),"node-starts.txt")
+ cmd:=exec.Command(binary)
+ cmd.Env=append(os.Environ(),"SECRETARY_TRAY_NODE_EXE="+os.Args[0],"SECRETARY_TRAY_TEST_HELPER=managed","SECRETARY_TRAY_TEST_MARKER="+marker)
+ if err:=cmd.Start();err!=nil{t.Fatal(err)}
+ defer func(){_ = cmd.Process.Kill();_ = cmd.Wait()}()
+ windowProc:=u.NewProc("FindWindowW")
+ deadline:=time.Now().Add(15*time.Second)
+ var window uintptr
+ for time.Now().Before(deadline) {
+  window,_,_=windowProc.Call(uintptr(unsafe.Pointer(wide("SecretaryNodeTrayWindow"))),uintptr(unsafe.Pointer(wide("Secretary Node"))))
+  data,_:=os.ReadFile(marker)
+  if window!=0 && strings.Contains(string(data),"node started"){break}
+  time.Sleep(50*time.Millisecond)
+ }
+ if window==0{t.Fatal("tray window did not become available")}
+ if result,_,err:=postMessage.Call(window,wmClose,0,0);result==0{t.Fatalf("post close: %v",err)}
+ process,err:=syscall.OpenProcess(0x00100000,false,uint32(cmd.Process.Pid))
+ if err!=nil{t.Fatal(err)}
+ defer syscall.CloseHandle(process)
+ wait:=k.NewProc("WaitForSingleObject")
+ result,_,_:=wait.Call(uintptr(process),25000)
+ if result!=0{t.Fatalf("tray remained alive after cooperative upgrade close: %d",result)}
+}
