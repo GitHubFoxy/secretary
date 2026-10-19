@@ -17,14 +17,16 @@ public enum NodeLifecycleError: Error, Equatable {
 public final class NodeLifecycle {
     public let executable: URL
     private let configuration: URL?
+    private let arguments: [String]
     private let directory: URL
     private let lock: Int32
     private var process: Process?
     private var lastError: String?
 
-    public init(executable: URL, configuration: URL? = nil, directory: URL) throws {
+    public init(executable: URL, configuration: URL? = nil, arguments: [String] = [], directory: URL) throws {
         self.executable = executable.resolvingSymlinksInPath().standardizedFileURL
         self.configuration = configuration
+        self.arguments = arguments
         self.directory = directory
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let descriptor = open(directory.appendingPathComponent("menu-bar.lock").path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
@@ -79,7 +81,7 @@ public final class NodeLifecycle {
         guard FileManager.default.isExecutableFile(atPath: executable.path) else { throw NodeLifecycleError.invalidExecutable }
         let child = Process()
         child.executableURL = executable
-        if let configuration { child.arguments = ["--config", configuration.path] }
+        child.arguments = (configuration.map { ["--config", $0.path] } ?? []) + arguments
         child.standardInput = FileHandle.nullDevice
         child.standardOutput = FileHandle.nullDevice
         child.standardError = FileHandle.nullDevice
