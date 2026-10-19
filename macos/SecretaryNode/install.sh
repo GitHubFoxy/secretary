@@ -24,7 +24,6 @@ cp "$root/Info.plist" "$bundle/Contents/Info.plist"
 codesign --force --sign - "$bundle"
 codesign --verify "$bundle"
 if [[ -d "$app" ]]; then
-  # Running copies retain their executable until quit; updating does not change login preferences.
   backup="$stage/previous.app"
   mv "$app" "$backup"
   if ! mv "$bundle" "$app"; then mv "$backup" "$app"; exit 1; fi
