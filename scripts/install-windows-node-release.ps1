@@ -4,7 +4,10 @@ param(
  [string]$NodeDataDir = (Join-Path (Join-Path $env:USERPROFILE '.secretary') 'node'),
  [string]$WorkerHome = (Join-Path $env:ProgramData 'SecretaryWorker'),
  [string]$Workspace = '',
- [string]$WorkerUsername = 'secretary_worker'
+ [string]$WorkerUsername = 'secretary_worker',
+ [ValidateSet('codex','claude')][string]$Harness = 'codex',
+ [string]$CodexCLI = '',
+ [string]$CodexACP = ''
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -71,8 +74,24 @@ try {
    throw "Release executable hash mismatch: $($entry[0])"
   }
  }
+ if (($CodexCLI -eq '') -ne ($CodexACP -eq '')) { throw 'Select both external Codex/ACP executables or neither' }
+ if ($Harness -eq 'codex') {
+  $pairArgs = @('--codex-pair-action=install','--codex-pair-scope=node')
+  if ($CodexCLI -ne '') {
+   $pairArgs += ('--codex-pair-cli=' + $CodexCLI)
+   $pairArgs += ('--codex-pair-acp=' + $CodexACP)
+  }
+  & (Join-Path $stage 'secretary-node.exe') @pairArgs
+  if ($LASTEXITCODE -ne 0) { throw 'Codex/ACP provisioning failed; existing Node identity and credentials were not changed' }
+ }
  & (Join-Path $PSScriptRoot 'install-windows-node.ps1') -NodeDataDir $NodeDataDir -WorkerHome $WorkerHome -Workspace $Workspace -WorkerUsername $WorkerUsername -NodeBinary (Join-Path $stage 'secretary-node.exe') -TrayBinary (Join-Path $stage 'secretary-tray.exe')
  if (-not $?) { throw 'Windows Node installation failed; verify Worker account/ACL diagnostics' }
+ if ($Harness -eq 'codex') {
+  & (Join-Path $stage 'secretary-node.exe') --codex-pair-action=readiness --codex-pair-scope=node
+  if ($LASTEXITCODE -ne 0) {
+   Write-Warning 'Codex/ACP installed but not yet native-ready. Authorize with the exact Codex executable reported by --codex-pair-action=show, then run --codex-pair-action=readiness. No alternate harness was selected.'
+  }
+ }
 } finally {
  Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
 }
