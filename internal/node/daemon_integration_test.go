@@ -240,35 +240,42 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 		t.Fatalf("reconnect restarted existing Attempt; starts=%d", starts)
 	}
 
-	checkTray := func(label string, since int, matches func(traystatus.Snapshot) bool) {
+	checkTray := func(label string, since int, matches func(w02StatusEvent) bool) {
 		t.Helper()
 		waitFor(t, ctx, label, func() bool {
-			if !statusSeenAfter(since, func(s w02StatusEvent) bool { return s.connected }) { return false }
-			return matches(traystatus.Read(statusPath,true,time.Now()))
+			return statusSeenAfter(since, matches)
 		})
+	}
+	ready := func(s w02StatusEvent) bool {
+		return s.connected && len(s.inventory.Instances)==1 && s.inventory.Instances[0].Available() &&
+			s.tray.Connected && len(s.tray.Harnesses)==1 && s.tray.Harnesses[0].Name=="fx" && s.tray.Harnesses[0].Ready
+	}
+	empty := func(s w02StatusEvent) bool {
+		return s.connected && len(s.inventory.Instances)==0 && s.tray.Connected && len(s.tray.Harnesses)==0
 	}
 	changed:=daemonInventoryFixture("macbook")
 	changed.Instances[0].Status=core.HarnessUnavailable
 	unavailableSince:=statusIndex()
 	statusSource.set(changed,nil)
-	checkTray("W02 unavailable through daemon snapshot and tray",unavailableSince,func(s traystatus.Snapshot)bool{
-		return s.Connected && len(s.Harnesses)==1 && s.Harnesses[0].Name=="fx" && !s.Harnesses[0].Ready
+	checkTray("W02 unavailable through daemon snapshot and tray",unavailableSince,func(s w02StatusEvent)bool{
+		return s.connected && len(s.inventory.Instances)==1 && !s.inventory.Instances[0].Available() &&
+			s.tray.Connected && len(s.tray.Harnesses)==1 && s.tray.Harnesses[0].Name=="fx" && !s.tray.Harnesses[0].Ready
 	})
+	restoreSince:=statusIndex()
+	statusSource.set(inventory,nil)
+	checkTray("W02 ready before invalid inventory",restoreSince,ready)
 	invalidSince:=statusIndex()
 	statusSource.set(core.HarnessInventorySnapshot{Node:"wrong",ObservedAt:time.Now().UTC()},nil)
-	checkTray("W02 invalid inventory through daemon snapshot and tray",invalidSince,func(s traystatus.Snapshot)bool{
-		return s.Connected && len(s.Harnesses)==0
-	})
+	checkTray("W02 invalid inventory through daemon snapshot and tray",invalidSince,empty)
+	restoreSince=statusIndex()
+	statusSource.set(inventory,nil)
+	checkTray("W02 ready before failed discovery",restoreSince,ready)
 	failedSince:=statusIndex()
 	statusSource.set(core.HarnessInventorySnapshot{},errors.New("probe failed"))
-	checkTray("W02 failed discovery through daemon snapshot and tray",failedSince,func(s traystatus.Snapshot)bool{
-		return s.Connected && len(s.Harnesses)==0
-	})
+	checkTray("W02 failed discovery through daemon snapshot and tray",failedSince,empty)
 	recoveredSince:=statusIndex()
 	statusSource.set(inventory,nil)
-	checkTray("W02 recovery through daemon snapshot and tray",recoveredSince,func(s traystatus.Snapshot)bool{
-		return s.Connected && len(s.Harnesses)==1 && s.Harnesses[0].Ready
-	})
+	checkTray("W02 recovery through daemon snapshot and tray",recoveredSince,ready)
 
 	revoked := revokeHTTP(t, ctx, httpServer, "macbook")
 	if !revoked.Revoked || revoked.Online || !revoked.Draining {
