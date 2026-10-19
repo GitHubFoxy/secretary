@@ -3,7 +3,7 @@ set -euo pipefail
 TASK_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TASK_TMP="$(mktemp -d)"
 trap 'rm -rf "$TASK_TMP"' EXIT
-export HOME="$TASK_TMP/home" PATH="$TASK_TMP/bin:$PATH" TEST_SETUP_MARKER="$TASK_TMP/calls"
+export TASK_TMP HOME="$TASK_TMP/home" PATH="$TASK_TMP/bin:$PATH" TEST_SETUP_MARKER="$TASK_TMP/calls"
 mkdir -p "$HOME/.codex" "$TASK_TMP/bin"
 printf 'global config canary\n' > "$HOME/.codex/config.toml"
 cat > "$TASK_TMP/bin/mise" <<'FIXTURE'
