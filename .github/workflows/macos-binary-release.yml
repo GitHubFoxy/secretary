@@ -43,6 +43,7 @@ jobs:
           for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
             go build -trimpath -o "$RUNNER_TEMP/secretary-package/bin/$binary" "./cmd/$binary"
           done
+          swift test --package-path macos/SecretaryNode
           swift build --package-path macos/SecretaryNode -c release
           mkdir -p "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/MacOS"
           cp macos/SecretaryNode/.build/release/SecretaryNode "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/MacOS/SecretaryNode"
