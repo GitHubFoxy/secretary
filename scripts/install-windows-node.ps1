@@ -25,16 +25,11 @@ $stage=Join-Path $env:TEMP ('secretary-install-'+[guid]::NewGuid().ToString('N')
 New-Item -ItemType Directory -Path $stage -Force | Out-Null
 $stageNode=Join-Path $stage 'secretary-node.exe'
 $stageTray=Join-Path $stage 'secretary-tray.exe'
-if ([string]::IsNullOrWhiteSpace($NodeBinary)) {
- Push-Location $repositoryRoot
- try { & go build -o $stageNode ./cmd/secretary-node; if ($LASTEXITCODE -ne 0) { throw 'Windows Node build failed' } }
- finally { Pop-Location }
-} else { Copy-Item -LiteralPath (Resolve-Path -LiteralPath $NodeBinary).Path -Destination $stageNode }
-if ([string]::IsNullOrWhiteSpace($TrayBinary)) {
- Push-Location $repositoryRoot
- try { & go build -ldflags '-H=windowsgui' -o $stageTray ./cmd/secretary-tray; if ($LASTEXITCODE -ne 0) { throw 'Windows tray build failed' } }
- finally { Pop-Location }
-} else { Copy-Item -LiteralPath (Resolve-Path -LiteralPath $TrayBinary).Path -Destination $stageTray }
+if ([string]::IsNullOrWhiteSpace($NodeBinary) -or [string]::IsNullOrWhiteSpace($TrayBinary)) {
+ throw 'The Windows installer requires a verified prebuilt Node/tray pair. Use install-windows-node-release.ps1 with a pinned release SHA-256.'
+}
+Copy-Item -LiteralPath (Resolve-Path -LiteralPath $NodeBinary).Path -Destination $stageNode
+Copy-Item -LiteralPath (Resolve-Path -LiteralPath $TrayBinary).Path -Destination $stageTray
 $hash=([IO.Path]::GetFileNameWithoutExtension((Get-FileHash -LiteralPath $stageNode -Algorithm SHA256).Hash))+'-'+(Get-FileHash -LiteralPath $stageTray -Algorithm SHA256).Hash
 $installBin=Join-Path (Join-Path $env:LOCALAPPDATA 'Secretary\versions') $hash
 $installedNode=Join-Path $installBin 'secretary-node.exe'
