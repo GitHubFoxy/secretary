@@ -84,7 +84,19 @@ jobs:
                     & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
           if (-not $?) { throw 'Verified archive install failed' }
           if ((Get-Content -LiteralPath $identity -Raw) -ne 'PRESERVED-IDENTITY') { throw 'Verified install mutated identity' }
-          $identityBefore=(Get-FileHash $identity -Algorithm SHA256).Hash
+          $shortcutPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
+          $shell=New-Object -ComObject WScript.Shell
+          $originalTarget=$shell.CreateShortcut($shortcutPath).TargetPath
+          $originalLinkHash=(Get-FileHash $shortcutPath -Algorithm SHA256).Hash
+          try {
+            & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$componentArchive).AbsoluteUri -ReleaseSHA256 $componentDigest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+            throw 'Corrupt upgrade unexpectedly succeeded'
+          } catch {
+            if ($_.Exception.Message -notlike '*executable hash*') { throw }
+          }
+          if ((Get-FileHash $shortcutPath -Algorithm SHA256).Hash -ne $originalLinkHash -or $shell.CreateShortcut($shortcutPath).TargetPath -ne $originalTarget) { throw 'Failed upgrade changed Start/Search activation' }
+          if ((Get-Content -LiteralPath $identity -Raw) -ne 'PRESERVED-IDENTITY') { throw 'Failed upgrade changed identity' }
+                    $identityBefore=(Get-FileHash $identity -Algorithm SHA256).Hash
           $workerAccount=Join-Path $data 'worker-account.json'
           $accountBefore=(Get-FileHash $workerAccount -Algorithm SHA256).Hash
           & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
