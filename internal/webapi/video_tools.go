@@ -19,6 +19,7 @@ type videoToolEntry struct {
 }
 type videoToolManifest struct {
  Origin string
+ RequiredEncoder string `json:"required_encoder"`
  FFmpeg videoToolEntry
  FFprobe videoToolEntry
 }
@@ -38,17 +39,28 @@ func verifyManagedVideoTools(ctx context.Context,dir string) (string,string,erro
  if err!=nil{return "","",fmt.Errorf("video tool manifest: %w",err)}
  var manifest videoToolManifest
  if err=json.Unmarshal(raw,&manifest);err!=nil{return "","",err}
- if manifest.Origin==""||manifest.FFmpeg.Version==""||manifest.FFmpeg.Version!=manifest.FFprobe.Version{return "","",errors.New("video tool manifest versions or origin invalid")}
+ if manifest.Origin==""||manifest.RequiredEncoder!="libwebp"||manifest.FFmpeg.Version==""||manifest.FFmpeg.Version!=manifest.FFprobe.Version{return "","",errors.New("video tool manifest versions or origin invalid")}
  for _,entry:=range []struct{path,expected string}{{ffmpeg,manifest.FFmpeg.SHA256},{ffprobe,manifest.FFprobe.SHA256}}{
   data,err:=os.ReadFile(entry.path)
   if err!=nil{return "","",err}
   sum:=sha256.Sum256(data)
   if len(entry.expected)!=64||hex.EncodeToString(sum[:])!=entry.expected{return "","",fmt.Errorf("video tool integrity mismatch: %s",filepath.Base(entry.path))}
  }
+ if err:=requireWebPEncoder(ctx,ffmpeg);err!=nil{return "","",err}
  first,err:=toolVersion(ctx,ffmpeg,"ffmpeg");if err!=nil{return "","",err}
  second,err:=toolVersion(ctx,ffprobe,"ffprobe");if err!=nil{return "","",err}
  if first!=manifest.FFmpeg.Version||second!=manifest.FFprobe.Version{return "","",fmt.Errorf("video tool executable version mismatch: %s / %s",first,second)}
  return ffmpeg,ffprobe,nil
+}
+
+func requireWebPEncoder(ctx context.Context,ffmpeg string) error {
+ output,err:=exec.CommandContext(ctx,ffmpeg,"-hide_banner","-encoders").Output()
+ if err!=nil{return fmt.Errorf("video: inspect WebP encoders: %w",err)}
+ for _,line:=range strings.Split(string(output),"\n"){
+  fields:=strings.Fields(line)
+  if len(fields)>1 && fields[1]=="libwebp" && strings.HasPrefix(fields[0],"V"){return nil}
+ }
+ return errors.New("video: FFmpeg missing required libwebp encoder")
 }
 
 func resolveVideoTools(ctx context.Context) (string,string,error) {
@@ -63,5 +75,6 @@ func resolveVideoTools(ctx context.Context) (string,string,error) {
  first,err:=toolVersion(ctx,ffmpeg,"ffmpeg");if err!=nil{return "","",err}
  second,err:=toolVersion(ctx,ffprobe,"ffprobe");if err!=nil{return "","",err}
  if first!=second{return "","",fmt.Errorf("incompatible FFmpeg/FFprobe versions: %s / %s",first,second)}
+ if err:=requireWebPEncoder(ctx,ffmpeg);err!=nil{return "","",err}
  return ffmpeg,ffprobe,nil
 }
