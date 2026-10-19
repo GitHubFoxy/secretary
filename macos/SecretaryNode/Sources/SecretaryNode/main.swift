@@ -4,25 +4,17 @@ import NodeLifecycle
 final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var controller: NodeLifecycle?
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-    private let menu = NSMenu()
-    private let status = NSMenuItem(title: "Node: Starting", action: nil, keyEquivalent: "")
-    private let quit = NSMenuItem(title: "Quit Secretary Node", action: #selector(quitNode), keyEquivalent: "q")
+    private let presentation = NodeMenuPresentation()
     private var timer: Timer?
-    private var launchError: String?
-    private var stopError: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         statusItem.button?.image = NSImage(systemSymbolName: "circle.hexagongrid.fill", accessibilityDescription: "Secretary Node")
         statusItem.button?.image?.isTemplate = true
-        menu.autoenablesItems = false
-        status.isEnabled = false
-        menu.addItem(status)
-        menu.addItem(.separator())
-        quit.target = self
-        menu.addItem(quit)
-        menu.delegate = self
-        statusItem.menu = menu
+        presentation.quit.target = self
+        presentation.quit.action = #selector(quitNode)
+        presentation.menu.delegate = self
+        statusItem.menu = presentation.menu
         do {
             let home = FileManager.default.homeDirectoryForCurrentUser
             let preferred = ProcessInfo.processInfo.environment["SECRETARY_NODE_EXECUTABLE"]
@@ -32,13 +24,13 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             do {
                 try controller?.start()
             } catch NodeLifecycleError.alreadyRunning {
-                launchError = nil
+                presentation.recovered()
             }
         } catch NodeLifecycleError.alreadyOpen {
             NSApp.terminate(nil)
             return
         } catch {
-            launchError = error.localizedDescription
+            presentation.startupFailed(error)
         }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
@@ -47,54 +39,28 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) { refresh() }
 
     private func refresh() {
-        if let stopError {
-            status.title = "Node: Stop failed"
-            statusItem.button?.toolTip = stopError
-            return
-        }
-        if let launchError {
-            status.title = "Node: Start failed"
-            statusItem.button?.toolTip = launchError
-            return
-        }
-        guard let controller else {
-            status.title = "Node: Unavailable"
-            statusItem.button?.toolTip = "Secretary Node controller unavailable"
-            return
-        }
-        switch controller.state {
-        case .running:
-            status.title = "Node: Running"
-            statusItem.button?.toolTip = "Secretary Node running"
-        case .alreadyRunning:
-            status.title = "Node: Running (recovered)"
-            statusItem.button?.toolTip = "Previously managed Secretary Node detected"
-        case .stopped:
-            status.title = "Node: Stopped"
-            statusItem.button?.toolTip = "Secretary Node stopped"
-        case .failed(let message):
-            status.title = "Node: \(message)"
-            statusItem.button?.toolTip = message
-        }
+        presentation.render(state: controller?.state)
+        statusItem.button?.toolTip = presentation.status.toolTip
     }
 
     @objc private func quitNode() {
-        stopError = nil
-        quit.isEnabled = false
+        presentation.beginQuit()
         timer?.invalidate()
-        controller?.stop { [weak self] error in
+        guard let controller else {
+            NSApp.terminate(nil)
+            return
+        }
+        controller.stop { [weak self] error in
             DispatchQueue.main.async {
                 if let error {
-                    self?.stopError = error.localizedDescription
+                    self?.presentation.stopFailed(error)
                     self?.refresh()
-                    self?.quit.isEnabled = true
                     self?.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
-                    return
+                } else {
+                    NSApp.terminate(nil)
                 }
-                NSApp.terminate(nil)
             }
         }
-        if controller == nil { NSApp.terminate(nil) }
     }
 }
 
