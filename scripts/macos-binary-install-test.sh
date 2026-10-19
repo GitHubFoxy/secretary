@@ -58,6 +58,15 @@ cmp "$home/profile.before" "$state/profiles/secretary.md"
 [[ "$(cat "$state/node/data/session-fixture")" == existing-session ]]
 bash "$root/scripts/package-macos-binary-release.sh" 0.0.1-ci "$revision" "$(uname -m | sed 's/x86_64/amd64/')" "$input" "$dist"
 export SECRETARY_VERSION=0.0.1-ci
+upgrade_archive="$dist/secretary-v0.0.1-ci-darwin-$(uname -m | sed 's/x86_64/amd64/').tar.gz"
+cp "$upgrade_archive" "$home/upgrade-backup"
+printf 'corruption' >> "$upgrade_archive"
+if bash "$root/scripts/install-macos-binary.sh" >/dev/null 2>&1; then
+  echo "Tampered release unexpectedly accepted" >&2
+  exit 1
+fi
+[[ "$(readlink "$state/current")" == *0.0.0-ci* ]]
+cp "$home/upgrade-backup" "$upgrade_archive"
 mkdir -p "$home/break"
 cat > "$home/break/mv" <<'EOF'
 #!/bin/bash
