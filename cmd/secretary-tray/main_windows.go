@@ -73,6 +73,7 @@ var (
 	drawText = u.NewProc("DrawTextW")
 	loadIcon = u.NewProc("LoadIconW")
 	shellNotify = s.NewProc("Shell_NotifyIconW")
+	getModuleHandle = k.NewProc("GetModuleHandleW")
 	createMutex = k.NewProc("CreateMutexW")
 	closeHandle = k.NewProc("CloseHandle")
 	createEvent = k.NewProc("CreateEventW")
@@ -185,15 +186,17 @@ func main() {
 
 	app = &trayApp{}
 	className := wide("SecretaryNodeTrayWindow")
-	wc := wndClass{size: uint32(unsafe.Sizeof(wndClass{})), proc: syscall.NewCallback(windowProc), name: className}
+	module, err := checked(getModuleHandle, 0)
+	if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
+	wc := wndClass{size: uint32(unsafe.Sizeof(wndClass{})), proc: syscall.NewCallback(windowProc), instance: module, name: className}
 	if _, err := checked(registerClass, uintptr(unsafe.Pointer(&wc))); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	hwnd, err := checked(createWindow, 0, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(wide("Secretary Node"))), 0, 0, 0, 0, 0, 0, 0, 0, 0)
+	hwnd, err := checked(createWindow, 0, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(wide("Secretary Node"))), 0, 0, 0, 0, 0, 0, 0, module, 0)
 	if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
 	app.hwnd = hwnd
-	popup, err := checked(createWindow, wsExToolWindow|wsExTopmost, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(wide("Secretary Node"))), wsPopup, 0, 0, 220, 104, hwnd, 0, 0, 0)
+	popup, err := checked(createWindow, wsExToolWindow|wsExTopmost, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(wide("Secretary Node"))), wsPopup, 0, 0, 220, 104, hwnd, 0, module, 0)
 	if err != nil { destroyWindow.Call(hwnd); fmt.Fprintln(os.Stderr, err); os.Exit(1) }
 	app.popup = popup
 
