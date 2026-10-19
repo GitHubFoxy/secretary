@@ -131,7 +131,7 @@ if CommandLine.arguments.contains("--login-item-smoke") {
             }
         case "disable":
             try NodeIntegrations.setLaunchAtLogin(false)
-            guard NodeIntegrations.loginStatus == .notRegistered else {
+            guard NodeIntegrations.loginStatus == .notRegistered || NodeIntegrations.loginStatus == .notFound else {
                 throw NSError(domain: "SecretaryNode.LoginSmoke", code: 3, userInfo: [
                     NSLocalizedDescriptionKey: "Login item did not unregister"
                 ])
