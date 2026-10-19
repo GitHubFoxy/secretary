@@ -78,10 +78,12 @@ jobs:
           $workspace=Join-Path $env:RUNNER_TEMP 'standalone-worker-workspace'
           New-Item -ItemType Directory -Path $data,$workspace -Force | Out-Null
           $identity=Join-Path $data 'identity.json'
-          [IO.File]::WriteAllText($identity,'PRESERVED-IDENTITY')
+          $credential=([Convert]::ToBase64String([byte[]](1..32))).TrimEnd('=').Replace('+','-').Replace('/','_')
+          $fixtureIdentity=@{node='install07-ci';credential=$credential;connect_url='ws://127.0.0.1:1/v1/nodes/connect'} | ConvertTo-Json -Compress
+          [IO.File]::WriteAllText($identity,$fixtureIdentity)
           $preserved=@{
             'config.json'='PRESERVED-DEPLOYMENT-CONFIG'
-            'node-state.json'='PRESERVED-NATIVE-SESSION-CHECKPOINT'
+            'node-state.json'='{"version":1,"next_sequence":1,"commands":{},"mappings":{},"pending_requests":{},"worker_responses":{},"outbox":[]}'
             'transport-credential.json'='PRESERVED-TRANSPORT-CREDENTIAL'
             'native-sessions\worker-01.json'='PRESERVED-NATIVE-WORKER-SESSION'
           }
@@ -106,7 +108,7 @@ jobs:
           } catch {
             if ($_.Exception.Message -notlike '*independently pinned digest*') { throw }
           }
-          if ((Get-Content -LiteralPath $identity -Raw) -ne 'PRESERVED-IDENTITY') { throw 'Negative fixture mutated identity' }
+          if ((Get-Content -LiteralPath $identity -Raw) -cne $fixtureIdentity) { throw 'Negative fixture mutated identity' }
           foreach($bad in @(@($wrongArch,$wrongDigest,'architecture'),@($componentArchive,$componentDigest,'executable hash'))) {
             try {
               & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$bad[0]).AbsoluteUri -ReleaseSHA256 $bad[1] -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -Harness claude
