@@ -99,8 +99,13 @@ public final class NodeLifecycle {
         child.arguments = (configuration.map { ["--config", $0.path] } ?? []) + arguments
         child.environment = ProcessInfo.processInfo.environment.merging(environment) { _, override in override }
         child.standardInput = FileHandle.nullDevice
-        child.standardOutput = FileHandle.nullDevice
-        child.standardError = FileHandle.nullDevice
+        let log = NodeIntegrations.logURL
+        try FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let fd = open(log.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { throw POSIXError(.EACCES) }
+        let stream = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        child.standardOutput = stream
+        child.standardError = stream
         if let statusPath = environment["SECRETARY_NODE_STATUS_FILE"] { try? FileManager.default.removeItem(atPath: statusPath) }
         try child.run()
         process = child
