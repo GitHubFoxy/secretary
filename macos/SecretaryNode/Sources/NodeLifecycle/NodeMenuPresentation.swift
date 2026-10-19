@@ -1,10 +1,13 @@
 import AppKit
+import ServiceManagement
 
 public final class NodeMenuPresentation {
     public let menu = NSMenu()
     public let status = NSMenuItem(title: "Node: Starting", action: nil, keyEquivalent: "")
     public let server = NSMenuItem(title: "Server: Offline", action: nil, keyEquivalent: "")
     private var harnessRows: [NSMenuItem] = []
+    public let launchAtLogin = NSMenuItem(title: "Launch at Login", action: nil, keyEquivalent: "")
+    public let openLogs = NSMenuItem(title: "Open Logs", action: nil, keyEquivalent: "")
     public let quit = NSMenuItem(title: "Quit Secretary Node", action: nil, keyEquivalent: "q")
     public private(set) var launchError: String?
     public private(set) var stopError: String?
@@ -16,7 +19,16 @@ public final class NodeMenuPresentation {
         server.isEnabled = false
         menu.addItem(server)
         menu.addItem(.separator())
+        menu.addItem(launchAtLogin)
+        menu.addItem(openLogs)
+        menu.addItem(.separator())
         menu.addItem(quit)
+    }
+
+    public func updateLogin(_ status: SMAppService.Status) {
+        launchAtLogin.state = status == .enabled ? .on : .off
+        launchAtLogin.toolTip = NodeIntegrations.loginDescription(status)
+        launchAtLogin.title = status == .requiresApproval ? "Launch at Login (Approval Needed)" : "Launch at Login"
     }
 
     public func renderLive(_ snapshot: NodeLiveSnapshot?) {

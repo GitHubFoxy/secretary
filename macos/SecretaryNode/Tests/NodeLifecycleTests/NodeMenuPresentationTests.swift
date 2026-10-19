@@ -42,16 +42,18 @@ final class NodeMenuPresentationTests: XCTestCase {
 
     func testNativeMenuUsesSystemAppearanceAcrossThemeChanges() {
         let menu = NodeMenuPresentation()
-        let original = NSApp.appearance
-        defer { NSApp.appearance = original }
-        NSApp.appearance = NSAppearance(named: .aqua)
+        XCTAssertNotNil(NSAppearance(named: .aqua))
+        XCTAssertNotNil(NSAppearance(named: .darkAqua))
         XCTAssertNil(menu.menu.appearance)
         menu.render(state: .running)
-        NSApp.appearance = NSAppearance(named: .darkAqua)
         XCTAssertNil(menu.menu.appearance)
         XCTAssertEqual(menu.status.title, "Node: Running")
-        XCTAssertEqual(menu.menu.items.count, 3)
-        XCTAssertTrue(menu.menu.items[1].isSeparatorItem)
+        XCTAssertEqual(menu.menu.items.count, 7)
+        XCTAssertTrue(menu.menu.items[2].isSeparatorItem)
+        XCTAssertTrue(menu.menu.items[5].isSeparatorItem)
+        XCTAssertIdentical(menu.menu.items[3], menu.launchAtLogin)
+        XCTAssertIdentical(menu.menu.items[4], menu.openLogs)
+        XCTAssertIdentical(menu.menu.items[6], menu.quit)
     }
 
     func testNewPresentationStartsReadyAfterPreviousQuit() {

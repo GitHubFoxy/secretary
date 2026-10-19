@@ -1,0 +1,85 @@
+name: macOS Node App
+on:
+  pull_request:
+    paths:
+      - 'macos/SecretaryNode/**'
+      - '.github/workflows/macos-node-app.yml'
+      - 'secretary'
+  push:
+    branches: [main]
+    paths:
+      - 'macos/SecretaryNode/**'
+      - '.github/workflows/macos-node-app.yml'
+      - 'secretary'
+jobs:
+  macos-smoke:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift tests
+        run: swift test --package-path macos/SecretaryNode
+      - name: Managed Node start stop and singleton smoke
+        run: swift test --package-path macos/SecretaryNode --filter NodeLifecycleTests
+      - name: Installer smoke (fresh install, upgrade, signed app and Spotlight bundle)
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          cp /usr/bin/true "$HOME/.local/bin/secretary-node"
+          bash macos/SecretaryNode/install.sh
+          test -x "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$HOME/Applications/Secretary Node.app/Contents/Info.plist" | grep -Fx dev.secretary.node.menubar
+          codesign --verify "$HOME/Applications/Secretary Node.app"
+          login_app="$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode"
+          original_login_status="$("$login_app" --login-item-smoke status)"
+          case "$original_login_status" in
+            enabled|notRegistered|notFound) ;;
+            *) echo "Cannot safely restore original login status: $original_login_status" >&2; exit 1 ;;
+          esac
+          restore_login() {
+            result=$?
+            trap - EXIT
+            if [[ -x "$login_app" ]]; then
+              if [[ "$original_login_status" == enabled ]]; then
+                if ! "$login_app" --login-item-smoke enable || ! "$login_app" --login-item-smoke verify-enabled; then
+                  echo "::error::Failed to restore original enabled login item" >&2
+                  result=1
+                fi
+              else
+                if ! "$login_app" --login-item-smoke disable || ! "$login_app" --login-item-smoke verify-disabled; then
+                  echo "::error::Failed to remove test login item (original status: $original_login_status)" >&2
+                  result=1
+                elif [[ "$original_login_status" == notRegistered ]] && [[ "$("$login_app" --login-item-smoke status)" != notRegistered ]]; then
+                  echo "::error::Failed to restore original notRegistered login status" >&2
+                  result=1
+                else
+                  restored_status="$("$login_app" --login-item-smoke status)" || {
+                    echo "::error::Failed to inspect login item after cleanup" >&2
+                    result=1
+                  }
+                  if [[ "$restored_status" != notFound && "$restored_status" != notRegistered ]]; then
+                    echo "::error::Unexpected login status after cleanup: $restored_status" >&2
+                    result=1
+                  fi
+                fi
+              fi
+            else
+              echo "::error::Unable to restore login item: installed app executable missing" >&2
+              result=1
+            fi
+            exit "$result"
+          }
+          trap restore_login EXIT
+          "$login_app" --login-item-smoke enable
+          "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" --login-item-smoke verify-enabled
+          first_hash="$(shasum -a 256 "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" | cut -d' ' -f1)"
+          bash macos/SecretaryNode/install.sh
+          test -x "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode"
+          codesign --verify "$HOME/Applications/Secretary Node.app"
+          second_hash="$(shasum -a 256 "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" | cut -d' ' -f1)"
+          test "$first_hash" = "$second_hash"
+          "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" --login-item-smoke verify-enabled
+          "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" --login-item-smoke disable
+          "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" --login-item-smoke verify-disabled
+          touch "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
+          if bash macos/SecretaryNode/install.sh; then echo 'Conflicting service accepted' >&2; exit 1; fi
+          rm "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
