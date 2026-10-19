@@ -3,10 +3,10 @@ set -euo pipefail
 umask 077
 fail() { printf 'Secretary Node install: %s\n' "$*" >&2; exit 1; }
 [[ "$(uname -s)" == Darwin ]] || fail "macOS is required"
-for tool in curl tar shasum plutil codesign awk mktemp; do command -v "$tool" >/dev/null || fail "Missing $tool"; done
+for tool in curl tar shasum plutil codesign awk mktemp install diff cmp; do command -v "$tool" >/dev/null || fail "Missing $tool"; done
 case "$(uname -m)" in arm64) arch=arm64 ;; x86_64) arch=amd64 ;; *) fail "Unsupported architecture" ;; esac
 server="${SECRETARY_NODE_SERVER:-}"
-[[ "$server" == https://* && "$server" != *'@'* ]] || fail "SECRETARY_NODE_SERVER must be a private reachable HTTPS endpoint without userinfo"
+[[ "$server" =~ ^https://[A-Za-z0-9._:-]+(/[-A-Za-z0-9._~/]*)?$ ]] || fail "SECRETARY_NODE_SERVER must be a private reachable HTTPS endpoint without userinfo"
 [[ -n "${SECRETARY_NODE_NAME:-}" && "${SECRETARY_NODE_NAME}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || fail "Set SECRETARY_NODE_NAME to a valid stable Node name"
 case "${SECRETARY_NODE_HARNESS:-}" in
   claude) command -v claude >/dev/null || fail "Install and authenticate native Claude Code first" ;;
@@ -76,7 +76,7 @@ data="$root/data"
 if [[ -e "$config" ]]; then
   [[ -f "$config" && ! -L "$config" ]] || fail "Unsafe existing Node config"
   [[ ! -L "$data" ]] || fail "Unsafe Node state"
-  "$target/bin/secretary-node" --config "$config" --check-worker-sandbox || fail "Existing Node config/preflight invalid"
+  [[ "$(plutil -extract server_url raw -o - "$config" 2>/dev/null || true)" == "$server" ]] || fail "Existing enrollment Server differs; revoke/re-enroll explicitly"
 else
   [[ ! -e "$data" && ! -L "$data" ]] || fail "State exists without config; refusing identity reset"
   mkdir -m 700 -p "$data"
