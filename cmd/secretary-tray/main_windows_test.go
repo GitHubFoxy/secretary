@@ -287,6 +287,10 @@ func TestW03UpgradeCloseShutsDownTray(t *testing.T) {
   current=candidate
  }
  if popup==0{t.Fatal("owned tray popup was not created")}
+ var trayPid uint32
+ getWindowProcessID:=u.NewProc("GetWindowThreadProcessId")
+ if result,_,err:=getWindowProcessID.Call(popup,uintptr(unsafe.Pointer(&trayPid)));result==0{t.Fatalf("resolve popup process: %v",err)}
+ if trayPid!=uint32(cmd.Process.Pid){t.Fatalf("popup belongs to PID %d, expected %d",trayPid,cmd.Process.Pid)}
  if result,_,err:=postMessage.Call(popup,wmClose,0,0);result==0{t.Fatalf("post close: %v",err)}
  process,err:=syscall.OpenProcess(0x00100000,false,uint32(cmd.Process.Pid))
  if err!=nil{t.Fatal(err)}
