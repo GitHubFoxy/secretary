@@ -140,8 +140,8 @@ func TestManagedNodeLifecycleAndUnrelatedProcess(t *testing.T) {
 	stillRunning := a.node != nil
 	a.lock.Unlock()
 	if stillRunning { t.Fatal("managed Node still marked running") }
-	process, err := syscall.OpenProcess(0x00100000, false, uint32(unrelated.Process.Pid))
-	if err != nil { t.Fatalf("unrelated process no longer available: %v", err) }
+	process, openErr := syscall.OpenProcess(0x00100000, false, uint32(unrelated.Process.Pid))
+	if openErr != nil { t.Fatalf("unrelated process no longer available: %v", openErr) }
 	defer syscall.CloseHandle(process)
 	value, _, _ := k.NewProc("WaitForSingleObject").Call(uintptr(process), 0)
 	if value != 0x102 { t.Fatalf("unrelated process was terminated: wait=%d", value) }
