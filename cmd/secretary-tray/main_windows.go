@@ -311,7 +311,7 @@ func windowProc(hwnd uintptr, message uint32, wp, lp uintptr) uintptr {
 		invalidateRect.Call(app.popup, 0, 1)
 		return 0
 	case wmClose:
-		if hwnd == app.hwnd { go func() { app.stop(); postMessage.Call(app.hwnd, wmDestroy, 0, 0) }(); return 0 }
+		if hwnd == app.hwnd || hwnd == app.popup { go func() { app.stop(); postMessage.Call(app.hwnd, wmDestroy, 0, 0) }(); return 0 }
 	case wmDestroy:
 		if hwnd == app.hwnd {
 			app.lock.Lock()
