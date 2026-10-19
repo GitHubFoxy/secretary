@@ -51,6 +51,19 @@ payload="$stage/unpacked/$name"
 for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
   [[ -x "$payload/bin/$binary" && ! -L "$payload/bin/$binary" ]] || fail "Missing packaged $binary"
 done
+for tool in ffmpeg ffprobe; do
+  [[ -x "$payload/bin/video-tools/$tool" && ! -L "$payload/bin/video-tools/$tool" ]] || fail "Missing Server video tool: $tool"
+done
+[[ -f "$payload/VIDEO-TOOLS.json" && ! -L "$payload/VIDEO-TOOLS.json" ]] || fail "Missing video tool manifest"
+video_version="$(plutil -extract ffmpeg.version raw -o - "$payload/VIDEO-TOOLS.json")" || fail "Unreadable video version"
+[[ -n "$video_version" && "$video_version" == "$(plutil -extract ffprobe.version raw -o - "$payload/VIDEO-TOOLS.json")" ]] || fail "Incompatible video pair"
+for tool in ffmpeg ffprobe; do
+  expected="$(plutil -extract "$tool.sha256" raw -o - "$payload/VIDEO-TOOLS.json")" || fail "Missing video hash"
+  actual="$(shasum -a 256 "$payload/bin/video-tools/$tool" | awk '{print $1}')"
+  [[ "$actual" == "$expected" ]] || fail "Video tool checksum mismatch: $tool"
+  observed="$("$payload/bin/video-tools/$tool" -version | head -n 1 | awk '{print $3}')" || fail "Broken video tool: $tool"
+  [[ "$observed" == "$video_version" ]] || fail "Video tool version mismatch: $tool"
+done
 [[ -f "$payload/secretary" && -f "$payload/scripts/secretary-interactive.zsh" ]] || fail "Incomplete Secretary CLI"
 [[ -f "$payload/VERSION" && "$(cat "$payload/VERSION")" == "$version" ]] || fail "Packaged version mismatch"
 [[ -f "$payload/REVISION" && "$(cat "$payload/REVISION")" == "$revision" ]] || fail "Packaged revision mismatch"
