@@ -6,41 +6,47 @@ trap 'rm -rf "$TASK_TMP"' EXIT
 export TASK_TMP HOME="$TASK_TMP/home" PATH="$TASK_TMP/bin:$PATH" TEST_SETUP_MARKER="$TASK_TMP/calls"
 mkdir -p "$HOME/.codex" "$TASK_TMP/bin"
 printf 'global config canary\n' > "$HOME/.codex/config.toml"
+
+go build -o "$TASK_TMP/bin/secretary-node" "$TASK_ROOT/cmd/secretary-node"
 cat > "$TASK_TMP/bin/mise" <<'FIXTURE'
 #!/bin/bash
 set -eu
 [[ "$1 $2 $3 $4 $5" == 'exec -- go build -o' ]]
-cat > "$6" <<'BINARY'
+if [[ "$6" != */secretary-node ]]; then
+  cat > "$6" <<'BINARY'
 #!/bin/bash
-set -eu
-case "$*" in
-  --check-codex-readiness)
-    echo native-check >> "$TEST_SETUP_MARKER" ;;
-  *--codex-pair-action=install*)
-    echo native-pair-install >> "$TEST_SETUP_MARKER" ;;
-  *--codex-pair-action=env*)
-    printf 'CODEX_PATH=%s/bin/codex\nSECRETARY_ACP_COMMAND=%s/bin/codex-acp\n' "$TASK_TMP" "$TASK_TMP" ;;
-  *--codex-pair-action=readiness*)
-    echo native-pair-readiness >> "$TEST_SETUP_MARKER" ;;
-  *--edit-deployment-config*)
-    echo node-edit >> "$TEST_SETUP_MARKER" ;;
-  *) echo "unexpected native CLI invocation: $*" >&2; exit 2 ;;
-esac
+exit 0
 BINARY
-chmod +x "$6"
+  chmod +x "$6"
+fi
 FIXTURE
+
 cat > "$TASK_TMP/bin/codex" <<'FIXTURE'
 #!/bin/bash
-set -eu
 case "$*" in
-  "login status") exit 0 ;;
   "--version") echo "codex-cli 0.163.0" ;;
+  "login status") echo "Logged in" ;;
   *) exit 2 ;;
 esac
 FIXTURE
 cat > "$TASK_TMP/bin/codex-acp" <<'FIXTURE'
-#!/bin/bash
-exit 0
+#!/usr/bin/env python3
+import json, os, sys
+if '--version' in sys.argv:
+    print('codex-acp 0.16.0')
+    sys.exit(0)
+for line in sys.stdin:
+    request = json.loads(line)
+    method = request.get('method')
+    with open(os.environ['TEST_SETUP_MARKER'], 'a') as marker:
+        marker.write('real-acp-' + str(method) + '\n')
+    if method == 'initialize':
+        result = {'protocolVersion': 1, 'agentInfo': {'version': '0.16.0'}, 'agentCapabilities': {'loadSession': True}, '_meta': {'steering': {'supported': True}}}
+    elif method == 'session/new':
+        result = {'sessionId': 'fixture-session', 'models': {'availableModels': [{'modelId': 'gpt-fixture'}]}}
+    else:
+        result = {}
+    print(json.dumps({'jsonrpc': '2.0', 'id': request.get('id'), 'result': result}), flush=True)
 FIXTURE
 for task_binary in opencode fx; do
   cat > "$TASK_TMP/bin/$task_binary" <<'FIXTURE'
@@ -51,16 +57,25 @@ FIXTURE
   chmod +x "$TASK_TMP/bin/$task_binary"
 done
 chmod +x "$TASK_TMP/bin/mise" "$TASK_TMP/bin/codex" "$TASK_TMP/bin/codex-acp"
-"$TASK_ROOT/secretary" setup
+"$TASK_TMP/bin/secretary-node" --codex-pair-action=install --codex-pair-scope=server --codex-pair-cli="$TASK_TMP/bin/codex" --codex-pair-acp="$TASK_TMP/bin/codex-acp"
+"$TASK_TMP/bin/secretary-node" --codex-pair-action=install --codex-pair-scope=node --codex-pair-cli="$TASK_TMP/bin/codex" --codex-pair-acp="$TASK_TMP/bin/codex-acp"
+"$TASK_ROOT/secretary" setup --non-interactive --harness codex
 "$TASK_ROOT/secretary" doctor
 "$TASK_ROOT/secretary" node setup --standalone --server http://127.0.0.1:9999 --name codex-canary
 "$TASK_ROOT/secretary" node doctor
+"$TASK_TMP/bin/secretary-node" --codex-pair-action=show --codex-pair-scope=server > "$TASK_TMP/server.json"
+"$TASK_TMP/bin/secretary-node" --codex-pair-action=show --codex-pair-scope=node > "$TASK_TMP/node.json"
+python3 - "$TASK_TMP/server.json" "$TASK_TMP/node.json" "$TASK_TMP/bin" <<'PY'
+import json,sys
+for scope,path in zip(('server','node'),sys.argv[1:3]):
+    record=json.load(open(path))
+    assert record['scope']==scope and record['compatibility']['validated']
+    assert record['codex']['path']==sys.argv[3]+'/codex'
+    assert record['acp']['path']==sys.argv[3]+'/codex-acp'
+PY
+grep -q 'real-acp-initialize' "$TEST_SETUP_MARKER"
+grep -q 'real-acp-session/new' "$TEST_SETUP_MARKER"
 [[ "$(cat "$HOME/.codex/config.toml")" == 'global config canary' ]]
 [[ "$(cat "$TEST_SETUP_MARKER")" != *legacy-call* ]]
-grep -q 'native-pair-install' "$TEST_SETUP_MARKER"
-grep -q 'native-pair-readiness' "$TEST_SETUP_MARKER"
-[[ ! -e "$HOME/.local/share/secretary/opencode-native-selection.json" ]]
-[[ ! -e "$HOME/.local/share/secretary/node/data/opencode-native-selection.json" ]]
 grep -Eq '^harness = "codex"$' "$HOME/.local/share/secretary/config.toml"
 grep -Eq '"include_opencode": false' "$HOME/.local/share/secretary/node/config.json"
-echo 'PASS: clean Codex setup/Doctor/standalone Node need no FX/OpenCode and preserve global config.'
