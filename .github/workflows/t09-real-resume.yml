@@ -39,5 +39,4 @@ jobs:
       - name: Start, persist, and resume the SAME Codex session in native sandbox
         env:
           T09_REAL_CODEX: ${{ runner.temp }}/t09-codex/node_modules/@openai/codex/bin/codex.js
-        run: go test ./internal/nativeexec -run '^TestT09RealCodexPersistedSessionResume
- -count=1 -v -timeout 120s
+        run: go test ./internal/nativeexec -run '^TestT09RealCodexPersistedSessionResume$' -count=1 -v -timeout 120s
