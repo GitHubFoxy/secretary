@@ -7,7 +7,8 @@ param(
  [string]$Workspace = '',
  [string]$WorkerUsername = 'secretary_worker',
  [string]$NodeBinary = '',
- [string]$TrayBinary = ''
+ [string]$TrayBinary = '',
+ [string]$CodexOwnerHome = ''
 )
 $ErrorActionPreference='Stop'
 $repositoryRoot=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
@@ -48,7 +49,7 @@ if (-not (Test-Path -LiteralPath $installBin -PathType Container)) {
 Remove-Item -LiteralPath $stage -Recurse -Force
 $arguments=@{
  NodeDataDir=$NodeDataDir; Workspace=$Workspace
- WorkerHome=$WorkerHome; WorkerUsername=$WorkerUsername
+ WorkerHome=$WorkerHome; WorkerUsername=$WorkerUsername; CodexOwnerHome=$CodexOwnerHome
 }
 $identityBefore=$null
 $identityPath=Join-Path $NodeDataDir 'identity.json'
