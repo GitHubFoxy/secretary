@@ -57,6 +57,18 @@ cmp "$home/profile.before" "$state/profiles/secretary.md"
 cmp "$home/db.before" "$state/secretary.db"
 [[ "$(cat "$state/node/data/identity.json")" == existing-identity ]]
 [[ "$(cat "$state/node/data/session-fixture")" == existing-session ]]
+cached_server="$state/releases/secretary-v0.0.0-ci-darwin-$(uname -m | sed 's/x86_64/amd64/')/bin/secretary-mcp"
+cp "$cached_server" "$home/mcp.before"
+printf 'tampered-cached-binary' >> "$cached_server"
+if bash "$root/scripts/install-macos-binary.sh" >/dev/null 2>&1; then
+  echo "Tampered cached release unexpectedly accepted" >&2
+  exit 1
+fi
+[[ "$(readlink "$state/current")" == *0.0.0-ci* ]]
+cp "$home/mcp.before" "$cached_server"
+bash "$root/scripts/install-macos-binary.sh"
+cmp "$home/mcp.before" "$cached_server"
+cmp "$home/db.before" "$state/secretary.db"
 bash "$root/scripts/package-macos-binary-release.sh" 0.0.1-ci "$revision" "$(uname -m | sed 's/x86_64/amd64/')" "$input" "$dist"
 export SECRETARY_VERSION=0.0.1-ci
 upgrade_archive="$dist/secretary-v0.0.1-ci-darwin-$(uname -m | sed 's/x86_64/amd64/').tar.gz"
@@ -119,6 +131,20 @@ cmp "$home/credentials.before" "$state/environment"
 cmp "$home/profile.before" "$state/profiles/secretary.md"
 cmp "$home/node.before" "$state/node/config.json"
 test -f "$state/releases/secretary-v0.0.1-ci-darwin-$(uname -m | sed 's/x86_64/amd64/')/RELEASE-MANIFEST.json"
+clean_home="$home/clean-activation-failure"
+mkdir -p "$clean_home"
+if HOME="$clean_home" PATH="$home/break:$PATH" bash "$root/scripts/install-macos-binary.sh" >/dev/null 2>&1; then
+  echo "Clean install with failed activation unexpectedly succeeded" >&2
+  exit 1
+fi
+[[ ! -e "$clean_home/Applications/Secretary Node.app" ]]
+[[ ! -L "$clean_home/.local/share/secretary/current" ]]
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  [[ ! -L "$clean_home/.local/bin/$executable" ]]
+done
+HOME="$clean_home" bash "$root/scripts/install-macos-binary.sh"
+[[ -d "$clean_home/Applications/Secretary Node.app" ]]
+[[ "$(readlink "$clean_home/.local/share/secretary/current")" == *0.0.1-ci* ]]
 source_home="$home/source-profile"
 mkdir -p "$source_home/.local/bin"
 printf '#!/bin/sh\nexit 0\n' > "$source_home/source-cli"
