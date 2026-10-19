@@ -19,7 +19,7 @@ PAIRS = {
     ("Darwin", "arm64"): ("aarch64-apple-darwin", "61c4d9a92521bdb42b0c1d9f87c673f6da628a06de5945cbdd9a0010632f6d10", "377f1137945b54d8e689cb600767f6dcfe6e548e01c1f29018862c009c692c8d"),
     ("Darwin", "x86_64"): ("x86_64-apple-darwin", "562a1aea0e5686283a467687d268ae33705f02fd4d40f1bc4110a415c5c1c7b1", "212fafcf971c75cd4f5060be2d5951bc322f71c49028dbd2531931494c33c784"),
     ("Linux", "aarch64"): ("aarch64-unknown-linux-musl", "a7261e65f4a96d8f4ca65a069c6cf2dc2c33defc341e48078acefda9461fffe4", None),
-    ("Linux", "x86_64"): ("x86_64-unknown-linux-musl", None, None),
+    ("Linux", "x86_64"): ("x86_64-unknown-linux-musl", "beb339e8ecd9ba057a6bb2dc81ad8ca474812edfbf0fc5056ca818797648dde4", None),
 }
 LINUX_ACP = {
     "aarch64": ("aarch64-unknown-linux-gnu", "cb72820f53c91a63982a804bd6ab251bde51bc9371d8e638946f02d7d78580b5"),
@@ -49,7 +49,7 @@ def download(url, destination, digest):
 
 def extract_binary(archive, dest, name):
     with tarfile.open(archive, "r:gz") as package:
-        members = [m for m in package.getmembers() if m.isfile() and Path(m.name).name in (name, name + "-" + platform.machine())]
+        members = [m for m in package.getmembers() if m.isfile() and (Path(m.name).name == name or Path(m.name).name.startswith(name + "-"))]
         if len(members) != 1:
             fail("release archive must contain exactly one " + name + " binary")
         with package.extractfile(members[0]) as src, open(dest, "wb") as out:
