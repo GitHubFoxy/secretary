@@ -6,13 +6,15 @@ import (
 	"os"
 	"os/exec"
 	"errors"
-	"encoding/json"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 	"unsafe"
+
+	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/node"
 )
 
 func TestMain(m *testing.M) {
@@ -207,9 +209,16 @@ func TestW02StatusSnapshotPropagation(t *testing.T) {
 	a:=&trayApp{statusFile:path,node:&managedNode{}}
 	write:=func(connected bool, harnesses []harnessRow) {
 		t.Helper()
-		data,err:=json.Marshal(liveStatus{Connected:connected,ObservedAt:now,Harnesses:harnesses})
-		if err!=nil {t.Fatal(err)}
-		if err:=os.WriteFile(path,data,0o600);err!=nil {t.Fatal(err)}
+		inventory:=core.HarnessInventorySnapshot{Node:"test",ObservedAt:now}
+		for _,h:=range harnesses {
+			status:=core.HarnessUnavailable
+			if h.Ready {status=core.HarnessReady}
+			inventory.Instances=append(inventory.Instances,core.HarnessInstance{
+				ID:core.HarnessInstanceID("test/"+h.Name),Node:"test",Kind:core.HarnessKind(h.Name),
+				Status:status,Authentication:core.HarnessAuthentication{Authenticated:h.Ready},
+			})
+		}
+		if err:=node.WriteTrayStatusSnapshot(path,connected,inventory);err!=nil {t.Fatal(err)}
 	}
 	check:=func(wantServer,wantHarness string) {
 		t.Helper()
