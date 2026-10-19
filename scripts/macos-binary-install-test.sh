@@ -43,11 +43,12 @@ session_http="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/v1
 state="$HOME/.local/share/secretary"
 printf 'existing-session\n' > "$state/node/data/session-fixture"
 printf 'existing-identity\n' > "$state/node/data/identity.json"
-printf 'existing-db\n' > "$state/secretary.db"
+cp "$state/secretary.db" "$home/db.before"
 cp "$state/environment" "$home/credentials.before"
 cp "$state/config.toml" "$home/config.before"
 cp "$state/node/config.json" "$home/node.before"
 cp "$state/profiles/secretary.md" "$home/profile.before"
+cp -R "$HOME/Applications/Secretary Node.app" "$home/app.before"
 bash "$root/scripts/install-macos-binary.sh"
 cmp "$home/credentials.before" "$state/environment"
 cmp "$home/config.before" "$state/config.toml"
@@ -68,6 +69,25 @@ fi
 [[ "$(readlink "$state/current")" == *0.0.0-ci* ]]
 cp "$home/upgrade-backup" "$upgrade_archive"
 mkdir -p "$home/break"
+cat > "$home/break/cp" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+  case "$arg" in */.release.*/secretary-*/RELEASE-MANIFEST.json)
+    exit 92 ;;
+  esac
+done
+exec /bin/cp "$@"
+EOF
+chmod +x "$home/break/cp"
+if PATH="$home/break:$PATH" bash "$root/scripts/install-macos-binary.sh" >/dev/null 2>&1; then
+  echo "Interrupted release staging unexpectedly succeeded" >&2
+  exit 1
+fi
+[[ "$(readlink "$state/current")" == *0.0.0-ci* ]]
+[[ ! -e "$state/releases/secretary-v0.0.1-ci-darwin-$(uname -m | sed 's/x86_64/amd64/')" ]]
+diff -qr "$home/app.before" "$HOME/Applications/Secretary Node.app"
+cmp "$home/db.before" "$state/secretary.db"
+rm "$home/break/cp"
 cat > "$home/break/mv" <<'EOF'
 #!/bin/bash
 for arg in "$@"; do
@@ -83,16 +103,21 @@ if PATH="$home/break:$PATH" bash "$root/scripts/install-macos-binary.sh" >/dev/n
   exit 1
 fi
 [[ "$(readlink "$state/current")" == *0.0.0-ci* ]]
-[[ -d "$HOME/Applications/Secretary Node.app" ]]
+diff -qr "$home/app.before" "$HOME/Applications/Secretary Node.app"
+"$HOME/.local/bin/secretary" doctor
+status="$("$HOME/.local/bin/secretary" status)"
+[[ "$status" == *"installed: version=0.0.0-ci"* ]]
+cmp "$home/db.before" "$state/secretary.db"
 cmp "$home/credentials.before" "$state/environment"
 bash "$root/scripts/install-macos-binary.sh"
 [[ "$(readlink "$state/current")" == *0.0.1-ci* ]]
-[[ "$(cat "$state/secretary.db")" == existing-db ]]
+cmp "$home/db.before" "$state/secretary.db"
 [[ "$(cat "$state/node/data/identity.json")" == existing-identity ]]
 [[ "$(cat "$state/node/data/session-fixture")" == existing-session ]]
 cmp "$home/config.before" "$state/config.toml"
 cmp "$home/credentials.before" "$state/environment"
 cmp "$home/profile.before" "$state/profiles/secretary.md"
+cmp "$home/node.before" "$state/node/config.json"
 test -f "$state/releases/secretary-v0.0.1-ci-darwin-$(uname -m | sed 's/x86_64/amd64/')/RELEASE-MANIFEST.json"
 source_home="$home/source-profile"
 mkdir -p "$source_home/.local/bin"
