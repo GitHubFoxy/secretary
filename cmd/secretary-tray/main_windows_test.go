@@ -262,7 +262,7 @@ func TestW03UpgradeCloseShutsDownTray(t *testing.T) {
  build:=exec.Command("go","build","-o",binary,".")
  if output,err:=build.CombinedOutput();err!=nil{t.Fatalf("build tray fixture: %v: %s",err,output)}
  marker:=filepath.Join(t.TempDir(),"node-starts.txt")
- cmd:=exec.Command(binary)
+ cmd:=exec.Command(binary,"--data-dir",t.TempDir())
  cmd.Env=append(os.Environ(),"SECRETARY_TRAY_NODE_EXE="+os.Args[0],"SECRETARY_TRAY_TEST_HELPER=managed","SECRETARY_TRAY_TEST_MARKER="+marker)
  if err:=cmd.Start();err!=nil{t.Fatal(err)}
  defer func(){_ = cmd.Process.Kill();_ = cmd.Wait()}()
@@ -276,7 +276,18 @@ func TestW03UpgradeCloseShutsDownTray(t *testing.T) {
   time.Sleep(50*time.Millisecond)
  }
  if window==0{t.Fatal("tray window did not become available")}
- if result,_,err:=postMessage.Call(window,wmClose,0,0);result==0{t.Fatalf("post close: %v",err)}
+ findWindowEx:=u.NewProc("FindWindowExW")
+ var popup uintptr
+ current:=uintptr(0)
+ for {
+  candidate,_,_:=findWindowEx.Call(0,current,uintptr(unsafe.Pointer(wide("SecretaryNodeTrayWindow"))),uintptr(unsafe.Pointer(wide("Secretary Node"))))
+  if candidate==0{break}
+  owner,_,_:=u.NewProc("GetWindow").Call(candidate,4)
+  if owner!=0{popup=candidate;break}
+  current=candidate
+ }
+ if popup==0{t.Fatal("owned tray popup was not created")}
+ if result,_,err:=postMessage.Call(popup,wmClose,0,0);result==0{t.Fatalf("post close: %v",err)}
  process,err:=syscall.OpenProcess(0x00100000,false,uint32(cmd.Process.Pid))
  if err!=nil{t.Fatal(err)}
  defer syscall.CloseHandle(process)
