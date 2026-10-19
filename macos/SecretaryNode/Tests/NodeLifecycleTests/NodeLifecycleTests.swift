@@ -28,13 +28,13 @@ final class NodeLifecycleTests: XCTestCase {
         XCTAssertEqual(lifecycle.state, .running)
         XCTAssertNoThrow(try lifecycle.start())
         let stopped = expectation(description: "Node stopped")
-        lifecycle.stop { stopped.fulfill() }
+        lifecycle.stop { error in XCTAssertNil(error); stopped.fulfill() }
         wait(for: [stopped], timeout: 5)
         XCTAssertEqual(lifecycle.state, .stopped)
         try lifecycle.start()
         XCTAssertEqual(lifecycle.state, .running)
         let again = expectation(description: "Node stopped again")
-        lifecycle.stop { again.fulfill() }
+        lifecycle.stop { error in XCTAssertNil(error); again.fulfill() }
         wait(for: [again], timeout: 5)
     }
 
@@ -50,5 +50,46 @@ final class NodeLifecycleTests: XCTestCase {
         let lifecycle = try NodeLifecycle(executable: URL(fileURLWithPath: "/usr/bin/true"), directory: directory)
         XCTAssertEqual(lifecycle.state, .stopped)
         XCTAssertTrue(unrelated.isRunning)
+    }
+
+    func testMissingExecutableIsRejected() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let lifecycle = try NodeLifecycle(executable: directory.appendingPathComponent("missing"), directory: directory)
+        XCTAssertThrowsError(try lifecycle.start()) {
+            XCTAssertEqual($0 as? NodeLifecycleError, .invalidExecutable)
+        }
+        XCTAssertEqual(lifecycle.state, .stopped)
+    }
+
+    func testIncorrectProcessBirthIdentityNeverAdoptsOrKillsForeignNode() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let foreign = Process()
+        foreign.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        foreign.arguments = ["30"]
+        try foreign.run()
+        defer {
+            if foreign.isRunning { foreign.terminate() }
+            foreign.waitUntilExit()
+        }
+        try Data(String(foreign.processIdentifier).utf8).write(to: directory.appendingPathComponent("managed-node.pid"))
+        try "invalid".write(to: directory.appendingPathComponent("managed-node.identity"), atomically: true, encoding: .utf8)
+        let lifecycle = try NodeLifecycle(executable: URL(fileURLWithPath: "/bin/sleep"), directory: directory)
+        XCTAssertEqual(lifecycle.state, .stopped)
+        let done = expectation(description: "No child to stop")
+        lifecycle.stop { error in
+            XCTAssertNil(error)
+            done.fulfill()
+        }
+        wait(for: [done], timeout: 2)
+        XCTAssertTrue(foreign.isRunning)
+    }
+
+    func testRejectsInsecureStateDirectory() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+        XCTAssertThrowsError(try NodeLifecycle(executable: URL(fileURLWithPath: "/bin/sleep"), directory: directory))
     }
 }
