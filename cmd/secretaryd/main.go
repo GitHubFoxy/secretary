@@ -46,7 +46,7 @@ func main() {
 	checkOpenCodeAuth := flag.Bool("check-opencode-auth", false, "check stored OpenCode credentials in the selected Secretary store and exit")
 	opencodeCommand := flag.String("opencode-command", "opencode", "OpenCode executable used for the selected-store auth check")
 	flag.Parse()
-	if runtime.GOOS != "windows" && os.Getenv("SECRETARY_CODEX_PAIR_CANDIDATE") != "1" {
+	if runtime.GOOS != "windows" {
 		if _, err := node.ReadCodexPairInventory("server"); err == nil {
 			if err := node.ApplyCodexPairInventory("server"); err != nil { log.Fatalf("Codex pair: %v", err) }
 		} else {
