@@ -61,5 +61,12 @@ if SECRETARY_NODE_NAME='bad"name' bash "$root/scripts/install-macos-standalone-n
 bash "$root/scripts/install-macos-standalone-node.sh"
 [[ "$(readlink "$state/current")" == "$old" ]]
 cmp "$home/session.before" "$state/data/node-state.json"
+export SECRETARY_VERSION=0.0.1-ci
+bash "$root/scripts/install-macos-standalone-node.sh"
+[[ "$(readlink "$state/current")" == *0.0.1-ci* ]]
+cmp "$home/config.before" "$state/config.json"
+cmp "$home/identity.before" "$state/data/identity.json"
+cmp "$home/session.before" "$state/data/node-state.json"
+cmp "$home/credentials.before" "$state/data/credentials.txt"
 [[ ! -f "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist" ]]
 echo "Node-only macOS fixture completed; no live owner session asserted"
