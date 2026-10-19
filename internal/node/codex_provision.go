@@ -297,6 +297,9 @@ func ManageCodexPair(ctx context.Context, action, scope, cliPath, acpPath string
 }
 
 func manageCodexPairWithProbe(ctx context.Context, action, scope, cliPath, acpPath string, probe func(context.Context, CodexPairInventory) error) (string, error) {
+ unlock, err := lockCodexPairScope(scope)
+ if err != nil { return "", err }
+ defer unlock()
  location, err := CodexPairInventoryPath(scope)
  if err != nil { return "", err }
  if err := recoverPendingCodexUpgrade(scope); err != nil { return "", err }
