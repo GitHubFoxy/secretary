@@ -169,7 +169,8 @@ func provisionManagedPair(ctx context.Context) (string, string, error) {
 func installManagedCodexAssets(ctx context.Context, assets []codexAsset, root, target string) (string, string, error) {
  final := filepath.Join(root, target)
  cli, acp := filepath.Join(final, "codex"), filepath.Join(final, "codex-acp")
- if _, err := os.Lstat(final); err == nil {
+ if info, err := os.Lstat(final); err == nil {
+  if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 { return "", "", errors.New("unsafe managed release directory") }
   if _, err := codexBinaryRecord(cli, "managed"); err != nil { return "", "", fmt.Errorf("partial or changed managed Codex CLI: %w", err) }
   if _, err := codexBinaryRecord(acp, "managed"); err != nil { return "", "", fmt.Errorf("partial or changed managed Codex ACP: %w", err) }
   return cli, acp, nil
@@ -188,6 +189,10 @@ func installManagedCodexAssets(ctx context.Context, assets []codexAsset, root, t
 }
 
 func ManageCodexPair(ctx context.Context, action, scope, cliPath, acpPath string) (string, error) {
+ return manageCodexPairWithProbe(ctx, action, scope, cliPath, acpPath, codexNativePairReady)
+}
+
+func manageCodexPairWithProbe(ctx context.Context, action, scope, cliPath, acpPath string, probe func(context.Context, CodexPairInventory) error) (string, error) {
  location, err := CodexPairInventoryPath(scope)
  if err != nil { return "", err }
  existing, existingErr := readCodexPairUnchecked(scope)
@@ -197,7 +202,7 @@ func ManageCodexPair(ctx context.Context, action, scope, cliPath, acpPath string
   if action == "env" { return "CODEX_PATH="+existing.Codex.Path+"\nSECRETARY_ACP_COMMAND="+existing.ACP.Path, nil }
   if action == "show" { bytes, _ := json.MarshalIndent(existing, "", "  "); return string(bytes), nil }
   if action == "readiness" {
-   if err := codexNativePairReady(ctx, existing); err != nil { return "", err }
+   if err := probe(ctx, existing); err != nil { return "", err }
    if err := verifyCodexBinary(existing.Codex); err != nil { return "", err }
    if err := verifyCodexBinary(existing.ACP); err != nil { return "", err }
    existing.Compatibility.Validated = true
@@ -205,7 +210,7 @@ func ManageCodexPair(ctx context.Context, action, scope, cliPath, acpPath string
   }
   if action == "doctor" {
    if !existing.Compatibility.Validated { return "", errors.New("native Codex pair not protocol-validated") }
-   if err := codexNativePairReady(ctx, existing); err != nil { return "", err }
+   if err := probe(ctx, existing); err != nil { return "", err }
   }
   return fmt.Sprintf("Codex %s and ACP %s: %s", existing.Codex.Version, existing.ACP.Version, action), nil
  case "install", "upgrade":
@@ -232,7 +237,7 @@ func ManageCodexPair(ctx context.Context, action, scope, cliPath, acpPath string
   if err != nil { return "", err }
   pair := CodexPairInventory{Schema:1,Scope:scope,Harness:"codex",Codex:cli,ACP:acp}
   if action=="upgrade" {
-   if err := codexNativePairReady(ctx,pair); err != nil { return "", err }
+   if err := probe(ctx,pair); err != nil { return "", err }
    if err := verifyCodexBinary(pair.Codex); err != nil { return "", err }
    if err := verifyCodexBinary(pair.ACP); err != nil { return "", err }
    pair.Compatibility.Validated=true
@@ -254,7 +259,7 @@ func ManageCodexPair(ctx context.Context, action, scope, cliPath, acpPath string
   if pair.Schema!=1 || pair.Scope!=scope || pair.Harness!="codex" { return "",errors.New("previous native pair mismatch") }
   if err := verifyCodexBinary(pair.Codex); err!=nil { return "",err }
   if err := verifyCodexBinary(pair.ACP); err!=nil { return "",err }
-  if err := codexNativePairReady(ctx,pair); err!=nil { return "",err }
+  if err := probe(ctx,pair); err!=nil { return "",err }
   pair.Compatibility.Validated=true
   if err := saveCodexPair(location,pair); err!=nil { return "",err }
   if err := os.Remove(previous); err!=nil { return "",err }
