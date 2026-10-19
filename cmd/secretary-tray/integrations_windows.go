@@ -7,6 +7,7 @@ import (
  "fmt"
  "os"
  "os/exec"
+ "io/fs"
  "path/filepath"
  "strings"
  "syscall"
@@ -71,14 +72,23 @@ func (a *trayApp) toggleLogin() {
  postMessage.Call(a.hwnd,statusChanged,0,0)
  if err!=nil {showTrayError("Launch at Login",err.Error()+"\nCheck Windows startup app permissions.") }
 }
-func (a *trayApp) openLogs() {
- path:=a.logPath
- if _,err:=os.Stat(path);err!=nil {
-  showTrayError("Open Logs",fmt.Sprintf("Node log is not available at %s\nStart Secretary Node and retry. %v",path,err))
+type logOpener func(string) error
+type logReporter func(string,string)
+func openNodeLogs(path string, stat func(string)(fs.FileInfo,error), open logOpener, report logReporter) {
+ if _,err:=stat(path);err!=nil {
+  report("Open Logs",fmt.Sprintf("Node log is not available at %s\nStart Secretary Node and retry. %v",path,err))
   return
  }
- command:=exec.Command("explorer.exe","/select,",path)
- if err:=command.Start();err!=nil {showTrayError("Open Logs",fmt.Sprintf("Cannot open %s: %v\nOpen this path in File Explorer.",path,err))}
+ if err:=open(path);err!=nil {
+  report("Open Logs",fmt.Sprintf("Cannot open %s: %v\nOpen this path in File Explorer.",path,err))
+ }
+}
+func exploreNodeLog(path string) error {
+ cmd:=exec.Command("explorer.exe","/select,",path)
+ return cmd.Start()
+}
+func (a *trayApp) openLogs() {
+ openNodeLogs(a.logPath,os.Stat,exploreNodeLog,showTrayError)
 }
 func showTrayError(title,message string) {
  proc:=u.NewProc("MessageBoxW")
