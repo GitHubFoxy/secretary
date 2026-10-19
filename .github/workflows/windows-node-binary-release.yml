@@ -39,6 +39,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Node compilation failed' }
           go build -trimpath -ldflags '-H=windowsgui' -o (Join-Path $stage 'secretary-tray.exe') ./cmd/secretary-tray
           if ($LASTEXITCODE -ne 0) { throw 'Tray compilation failed' }
+          Copy-Item -LiteralPath scripts/install-windows-node.ps1,scripts/setup-windows-worker.ps1 -Destination $stage
           $version = $env:GITHUB_REF_NAME
           if ($env:GITHUB_REF_TYPE -ne 'tag') { $version = '0.0.0-ci' }
           $manifest = @{
