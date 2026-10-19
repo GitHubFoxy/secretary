@@ -1,0 +1,90 @@
+name: Windows standalone Node binary release
+
+on:
+  pull_request:
+    paths:
+      - cmd/secretary-node/**
+      - cmd/secretary-tray/**
+      - scripts/install-windows-node-release.ps1
+      - .github/workflows/windows-node-binary-release.yml
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Build native Node/tray release pair
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:GOOS = 'windows'
+          $env:GOARCH = '${{ matrix.arch }}'
+          $stage = Join-Path $env:RUNNER_TEMP 'node-release'
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          go build -trimpath -o (Join-Path $stage 'secretary-node.exe') ./cmd/secretary-node
+          if ($LASTEXITCODE -ne 0) { throw 'Node compilation failed' }
+          go build -trimpath -ldflags '-H=windowsgui' -o (Join-Path $stage 'secretary-tray.exe') ./cmd/secretary-tray
+          if ($LASTEXITCODE -ne 0) { throw 'Tray compilation failed' }
+          $version = $env:GITHUB_REF_NAME
+          if ($env:GITHUB_REF_TYPE -ne 'tag') { $version = '0.0.0-ci' }
+          $manifest = @{
+            schema = 1
+            platform = 'windows'
+            arch = '${{ matrix.arch }}'
+            version = $version
+            commit = $env:GITHUB_SHA
+            node_sha256 = (Get-FileHash (Join-Path $stage 'secretary-node.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+            tray_sha256 = (Get-FileHash (Join-Path $stage 'secretary-tray.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
+          } | ConvertTo-Json -Compress
+          [IO.File]::WriteAllText((Join-Path $stage 'release.json'), $manifest, (New-Object Text.UTF8Encoding($false)))
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $name = "secretary-node-windows-${{ matrix.arch }}-$version.zip"
+          $archive = Join-Path $env:RUNNER_TEMP $name
+          [IO.Compression.ZipFile]::CreateFromDirectory($stage, $archive)
+          $sha = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText(($archive+'.sha256'), "$sha  $name`n")
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-standalone-node-${{ matrix.arch }}
+          path: ${{ runner.temp }}/secretary-node-windows-*.zip*
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: windows-standalone-node-*
+          path: dist
+          merge-multiple: true
+      - name: Attach verified artifacts to existing versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..30}; do
+            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'Versioned release was not published; refusing to upload orphaned Windows artifacts' >&2
+          exit 1
