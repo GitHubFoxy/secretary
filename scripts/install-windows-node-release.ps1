@@ -84,7 +84,7 @@ try {
   & (Join-Path $stage 'secretary-node.exe') @pairArgs
   if ($LASTEXITCODE -ne 0) { throw 'Codex/ACP provisioning failed; existing Node identity and credentials were not changed' }
  }
- & (Join-Path $PSScriptRoot 'install-windows-node.ps1') -NodeDataDir $NodeDataDir -WorkerHome $WorkerHome -Workspace $Workspace -WorkerUsername $WorkerUsername -NodeBinary (Join-Path $stage 'secretary-node.exe') -TrayBinary (Join-Path $stage 'secretary-tray.exe')
+ & (Join-Path $PSScriptRoot 'install-windows-node.ps1') -NodeDataDir $NodeDataDir -WorkerHome $WorkerHome -Workspace $Workspace -WorkerUsername $WorkerUsername -NodeBinary (Join-Path $stage 'secretary-node.exe') -TrayBinary (Join-Path $stage 'secretary-tray.exe') -CodexOwnerHome $(if ($Harness -eq 'codex' -and $CodexCLI -eq '') { $env:USERPROFILE } else { '' })
  if (-not $?) { throw 'Windows Node installation failed; verify Worker account/ACL diagnostics' }
  if ($Harness -eq 'codex') {
   & (Join-Path $stage 'secretary-node.exe') --codex-pair-action=readiness --codex-pair-scope=node
