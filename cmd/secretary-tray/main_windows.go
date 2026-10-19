@@ -340,7 +340,7 @@ func (a *trayApp) start() {
 	if err = cmd.Start(); err != nil {
 		closeHandle.Call(job); closeHandle.Call(event); a.lastError = err.Error(); return
 	}
-	process, err := syscall.OpenProcess(0x0200|0x0100, false, uint32(cmd.Process.Pid))
+	process, err := syscall.OpenProcess(0x0200|0x0001, false, uint32(cmd.Process.Pid))
 	if err == nil {
 		_, err = checked(assignJob, job, uintptr(process))
 		syscall.CloseHandle(process)
