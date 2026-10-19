@@ -56,7 +56,7 @@ jobs:
             if ($_.Exception.Message -notlike '*independently pinned digest*') { throw }
           }
           if ((Get-Content -LiteralPath $identity -Raw) -ne 'PRESERVED-IDENTITY') { throw 'Negative fixture mutated identity' }
-          & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci'
+          & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
           if (-not $?) { throw 'Verified archive install failed' }
           if ((Get-Content -LiteralPath $identity -Raw) -ne 'PRESERVED-IDENTITY') { throw 'Verified install mutated identity' }
           $shortcut=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
