@@ -42,7 +42,7 @@ revision="$(field revision)"
 [[ "$revision" =~ ^[[:xdigit:]]{40}$ && "$(field archive)" == "$name.tar.gz" ]] || fail "Invalid manifest revision/archive"
 sha="$(field sha256)"
 [[ "$sha" =~ ^[[:xdigit:]]{64}$ ]] || fail "Invalid SHA-256"
-[[ -n "${SECRETARY_NODE_PINNED_SHA256:-}" || -n "${SECRETARY_NODE_TRUSTED_TEAM_ID:-}" ]] || fail "Pin an independently verified archive digest or trusted Developer ID Team ID"
+[[ -n "${SECRETARY_NODE_PINNED_SHA256:-}" ]] || fail "Pin the independently verified release archive SHA-256"
 if [[ -n "${SECRETARY_NODE_PINNED_SHA256:-}" ]]; then
   [[ "$SECRETARY_NODE_PINNED_SHA256" =~ ^[[:xdigit:]]{64}$ && "$sha" == "$SECRETARY_NODE_PINNED_SHA256" ]] || fail "Release SHA-256 differs from independently pinned digest"
 fi
