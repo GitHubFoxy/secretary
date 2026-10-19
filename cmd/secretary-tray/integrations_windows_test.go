@@ -6,7 +6,6 @@ import (
  "os"
  "crypto/sha256"
  "encoding/hex"
- "syscall"
  "unsafe"
  "path/filepath"
  "strings"
