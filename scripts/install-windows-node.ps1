@@ -87,6 +87,7 @@ if (Test-Path -LiteralPath $oldShortcut) {
 }
 $restarting=$false
 if ($oldTarget -and -not [string]::Equals($oldTarget,$trayInstalled,[StringComparison]::OrdinalIgnoreCase)) {
+ if (-not ('SecretaryTrayWindow' -as [type])) {
  Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -97,13 +98,24 @@ public static class SecretaryTrayWindow {
  [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint command);
 }
 '@
+ }
  $window=[SecretaryTrayWindow]::FindWindow('SecretaryNodeTrayWindow','Secretary Node')
  if ($window -ne [IntPtr]::Zero) {
   $owner=[SecretaryTrayWindow]::GetWindow($window,4)
   if ($owner -ne [IntPtr]::Zero) { $window=$owner }
-  $restarting=$true
   [uint32]$trayPid=0
   [void][SecretaryTrayWindow]::GetWindowThreadProcessId($window,[ref]$trayPid)
+  if ($trayPid -eq 0) { throw 'Unable to verify running tray PID; startup registration was not changed' }
+  $processInfo=Get-CimInstance Win32_Process -Filter "ProcessId=$trayPid" -ErrorAction Stop
+  if (-not $processInfo -or [string]::IsNullOrWhiteSpace($processInfo.ExecutablePath)) {
+   throw 'Unable to verify running tray executable; startup registration was not changed'
+  }
+  $actualPath=[IO.Path]::GetFullPath($processInfo.ExecutablePath)
+  $expectedPath=[IO.Path]::GetFullPath($oldTarget)
+  if (-not [string]::Equals($actualPath,$expectedPath,[StringComparison]::OrdinalIgnoreCase)) {
+   throw "Found tray window belongs to '$actualPath', not installed '$expectedPath'; refusing to stop unrelated process"
+  }
+  $restarting=$true
   if (-not [SecretaryTrayWindow]::PostMessage($window,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)) { throw 'Cannot stop old tray; restart it manually and retry' }
   $closed=$false
   for ($attempt=0;$attempt -lt 300;$attempt++) {
