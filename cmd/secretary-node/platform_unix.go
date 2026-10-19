@@ -11,3 +11,5 @@ import (
 func setPrivateNodeUmask() { _ = syscall.Umask(0o077) }
 
 func nodeShutdownSignals() []os.Signal { return []os.Signal{os.Interrupt, syscall.SIGTERM} }
+
+func watchNodeShutdownEvent(stop func()) {}
