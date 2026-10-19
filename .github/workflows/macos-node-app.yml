@@ -1,0 +1,34 @@
+name: macOS Node App
+on:
+  pull_request:
+    paths:
+      - 'macos/SecretaryNode/**'
+      - '.github/workflows/macos-node-app.yml'
+      - 'secretary'
+  push:
+    branches: [main]
+    paths:
+      - 'macos/SecretaryNode/**'
+      - '.github/workflows/macos-node-app.yml'
+      - 'secretary'
+jobs:
+  macos-smoke:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Swift tests
+        run: swift test --package-path macos/SecretaryNode
+      - name: Installer smoke (fresh install, upgrade, signed app and Spotlight bundle)
+        shell: bash
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          cp /usr/bin/true "$HOME/.local/bin/secretary-node"
+          bash macos/SecretaryNode/install.sh
+          test -x "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$HOME/Applications/Secretary Node.app/Contents/Info.plist" | grep -Fx dev.secretary.node.menubar
+          codesign --verify "$HOME/Applications/Secretary Node.app"
+          bash macos/SecretaryNode/install.sh
+          test -x "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode"
+          touch "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
+          if bash macos/SecretaryNode/install.sh; then echo 'Conflicting service accepted' >&2; exit 1; fi
+          rm "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
