@@ -107,6 +107,7 @@ func TestWatchSessionRetriesTerminalOutboxPersistenceFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
+	if err := os.WriteFile(storePath, []byte("{}"), 0o600); err != nil { t.Fatal(err) }
 	backup := storePath + ".fault-backup"
 	if err := os.Rename(storePath, backup); err != nil { t.Fatal(err) }
 	if err := os.Mkdir(storePath, 0o700); err != nil { t.Fatal(err) }
@@ -497,6 +498,8 @@ func TestLocalStoreTerminalCommandAndTypedOutcomeCommitAtomically(t *testing.T) 
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Remove(path); err != nil { t.Fatal(err) }
+	if err := os.Rename(backup, path); err != nil { t.Fatal(err) }
 	reopened, err := OpenLocalStore(path)
 	if err != nil {
 		t.Fatal(err)
@@ -512,8 +515,6 @@ func TestLocalStoreTerminalCommandAndTypedOutcomeCommitAtomically(t *testing.T) 
 	if events, err := reopened.PendingEvents(); err != nil || len(events) != 0 {
 		t.Fatalf("failed atomic write left a terminal outbox event: events=%#v err=%v", events, err)
 	}
-	if err := os.Remove(path); err != nil { t.Fatal(err) }
-	if err := os.Rename(backup, path); err != nil { t.Fatal(err) }
 	if err := reopened.RecoverRunning(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
