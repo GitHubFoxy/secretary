@@ -44,11 +44,25 @@ mkdir -p "$CODBIN" "$CLAUDEBIN"
 make_mise "$CODBIN"
 make_mise "$CLAUDEBIN"
 cat > "$CODBIN/codex-acp" <<'STUB'
-#!/usr/bin/env bash
-exit 0
+#!/usr/bin/env python3
+import json, sys
+if sys.argv[1:] == ['--version']:
+    print('codex-acp 0.16.0')
+    sys.exit(0)
+for line in sys.stdin:
+    request=json.loads(line)
+    method=request.get('method')
+    if method=='initialize':
+        result={'protocolVersion':1,'agentInfo':{'version':'0.16.0'},'agentCapabilities':{'loadSession':True},'_meta':{'steering':{'supported':True}}}
+    elif method=='session/new':
+        result={'sessionId':'t06-session','models':{'availableModels':[{'modelId':'gpt-fixture'}]}}
+    else:
+        result={}
+    print(json.dumps({'jsonrpc':'2.0','id':request.get('id'),'result':result}),flush=True)
 STUB
 cat > "$CODBIN/codex" <<'STUB'
 #!/usr/bin/env bash
+if [[ "$*" == '--version' ]]; then echo 'codex-cli 0.163.0'; exit 0; fi
 if [[ "$*" == 'login status' ]]; then
   [[ "${T06_CODEX_AUTH_FAIL:-0}" != 1 ]]
   exit $?
@@ -71,7 +85,13 @@ STUB
 chmod +x "$CODBIN/systemctl"
 cp "$CODBIN/systemctl" "$CLAUDEBIN/systemctl"
 
+adopt_codex_t06_pair() {
+  "$T06_NODE_BINARY" --codex-pair-action=install --codex-pair-scope=server --codex-pair-cli="$CODBIN/codex" --codex-pair-acp="$CODBIN/codex-acp" >/dev/null
+  "$T06_NODE_BINARY" --codex-pair-action=install --codex-pair-scope=node --codex-pair-cli="$CODBIN/codex" --codex-pair-acp="$CODBIN/codex-acp" >/dev/null
+}
+
 export HOME="$TMP/codex-home" PATH="$CODBIN:/usr/bin:/bin" TEST_SYSTEMD_LOG="$TMP/systemd.log"
+adopt_codex_t06_pair
 mkdir -p "$HOME/.codex"
 printf 'personal codex config\n' > "$HOME/.codex/config.toml"
 "$ROOT/secretary" setup --non-interactive
@@ -156,6 +176,7 @@ printf "export SECRETARY_BOOTSTRAP_TOKEN='existing-bootstrap'\nexport SECRETARY_
 printf '{"node":"legacy-paired"}\n' > "$UPGRADE_STATE/node/data/identity.json"
 export SECRETARY_NODE_PAIRING_TOKEN="ambient-not-persisted"
 export SECRETARY_NODE_ADMIN_TOKEN="ambient-not-persisted"
+adopt_codex_t06_pair
 before_upgrade_config="$(cat "$UPGRADE_STATE/config.toml")"
 "$ROOT/secretary" setup --non-interactive >/dev/null
 [[ "$(cat "$UPGRADE_STATE/config.toml")" == "$before_upgrade_config" ]] || fail "upgrade rewrote original config"
@@ -185,117 +206,20 @@ cp "$TMP/retry-env" "$UPGRADE_STATE/environment"
 grep -q '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" || fail "retry did not repair missing pairing token"
 unset SECRETARY_NODE_PAIRING_TOKEN SECRETARY_NODE_ADMIN_TOKEN
 
-# Codex-only clean install: the native CLI is already authorized, npm is
-# available, but codex-acp must be installed during prepare_harness().
-# Auto-selection must not require the missing adapter before this install.
-MISSING_ACP_BIN="$TMP/codex-needs-acp-bin"
-mkdir -p "$MISSING_ACP_BIN"
-make_mise "$MISSING_ACP_BIN"
-cp "$CODBIN/codex" "$MISSING_ACP_BIN/codex"
-cat > "$MISSING_ACP_BIN/npm" <<'STUB'
-#!/usr/bin/env bash
-set -euo pipefail
-[[ "$*" == 'install -g @agentclientprotocol/codex-acp@1.12.0' ]] || exit 2
-printf '%s\n' "$*" >> "$T06_NPM_INSTALL_LOG"
-[[ "${T06_NPM_INSTALL_FAIL:-0}" != 1 ]] || exit 17
-cat > "$(dirname "$0")/codex-acp" <<'ADAPTER'
-#!/usr/bin/env bash
-exit 0
-ADAPTER
-chmod +x "$(dirname "$0")/codex-acp"
-STUB
-chmod +x "$MISSING_ACP_BIN/npm"
-export HOME="$TMP/codex-missing-acp-home" PATH="$MISSING_ACP_BIN:/usr/bin:/bin"
-export T06_REQUIRE_CODEX_ACP=1 T06_NPM_INSTALL_LOG="$TMP/npm-install.log"
-[[ ! -e "$MISSING_ACP_BIN/codex-acp" ]] || fail "missing ACP test precondition violated"
+# Native Codex setup adopts an explicit complete pair and never invokes npm.
+export HOME="$TMP/codex-native-adopt-home" PATH="$CODBIN:/usr/bin:/bin"
+adopt_codex_t06_pair
+"$ROOT/secretary" setup --non-interactive --harness codex >/dev/null
+"$ROOT/secretary" doctor >/dev/null
+"$ROOT/secretary" node doctor >/dev/null
+"$T06_NODE_BINARY" --codex-pair-action=show --codex-pair-scope=server | grep -q '"validated": true' || fail "Server native ACP pair not validated"
+"$T06_NODE_BINARY" --codex-pair-action=show --codex-pair-scope=node | grep -q '"validated": true' || fail "Node native ACP pair not validated"
+before_native="$(cat "$HOME/.local/share/secretary/environment")"
 "$ROOT/secretary" setup --non-interactive >/dev/null
-MISSING_ACP_STATE="$HOME/.local/share/secretary"
-grep -q '^harness = "codex"$' "$MISSING_ACP_STATE/config.toml" || fail "authorized Codex without ACP was not selected"
-grep -q '^default_harness = "codex"$' "$MISSING_ACP_STATE/config.toml" || fail "missing-ACP setup did not configure Codex worker"
-[[ -x "$MISSING_ACP_BIN/codex-acp" ]] || fail "npm was not used to install missing codex-acp"
-[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq 1 ]] || fail "expected exactly one adapter installation"
-"$ROOT/secretary" doctor >/dev/null || fail "installed adapter was not ready after setup"
-"$ROOT/secretary" setup --non-interactive >/dev/null
-[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq 1 ]] || fail "repeat setup reinstalled codex-acp"
-unset T06_REQUIRE_CODEX_ACP
+[[ "$(cat "$HOME/.local/share/secretary/environment")" == "$before_native" ]] || fail "repeat native setup rotated credentials"
+[[ ! -e "$CODBIN/npm" ]] || fail "native fixture unexpectedly required npm"
 
-# If Codex authentication is valid but npm cannot install its missing ACP
-# adapter, automatically select an already-authorized Claude Code. Do not
-# persist Codex defaults before adapter provisioning has succeeded.
-FAILING_NPM_BIN="$TMP/failing-npm-bin"
-mkdir -p "$FAILING_NPM_BIN"
-make_mise "$FAILING_NPM_BIN"
-cp "$CODBIN/codex" "$FAILING_NPM_BIN/codex"
-cp "$MISSING_ACP_BIN/npm" "$FAILING_NPM_BIN/npm"
-export HOME="$TMP/npm-fails-claude-fallback-home" PATH="$FAILING_NPM_BIN:$CLAUDEBIN:/usr/bin:/bin"
-export T06_REQUIRE_CODEX_ACP=1 T06_NPM_INSTALL_FAIL=1
-before_fail_attempts="$(wc -l < "$T06_NPM_INSTALL_LOG")"
-"$ROOT/secretary" setup --non-interactive >"$TMP/npm-fails-fallback.log" 2>&1 ||
-  fail "authorized Claude fallback did not recover from failed npm ACP installation"
-FALLBACK_STATE="$HOME/.local/share/secretary"
-[[ ! -e "$FAILING_NPM_BIN/codex-acp" ]] || fail "failing npm unexpectedly installed ACP"
-[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq "$((before_fail_attempts + 1))" ]] || fail "Codex ACP installation failure was not exercised"
-grep -q '^harness = "claude_code"$' "$FALLBACK_STATE/config.toml" || fail "npm error left Codex configured instead of Claude"
-grep -q '^default_harness = "claude_code"$' "$FALLBACK_STATE/config.toml" || fail "npm error left Codex worker default"
-grep -q "using authorized Claude Code instead" "$TMP/npm-fails-fallback.log" || fail "missing explicit fallback diagnostic"
-fallback_config_before="$(cat "$FALLBACK_STATE/config.toml")"
-fallback_env_before="$(cat "$FALLBACK_STATE/environment")"
-fallback_attempts_before="$(wc -l < "$T06_NPM_INSTALL_LOG")"
-"$ROOT/secretary" setup --non-interactive >/dev/null ||
-  fail "repeat setup failed after falling back to Claude"
-[[ "$(cat "$FALLBACK_STATE/config.toml")" == "$fallback_config_before" ]] || fail "repeat setup reverted persisted Claude fallback"
-[[ "$(cat "$FALLBACK_STATE/environment")" == "$fallback_env_before" ]] || fail "repeat setup rotated credentials after Claude fallback"
-[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq "$fallback_attempts_before" ]] || fail "repeat setup incorrectly retried failed Codex npm install"
-
-# An explicit Codex choice is not automatic selection: even with authorized
-# Claude available, failed npm must fail rather than silently switching harness.
-export HOME="$TMP/npm-fails-explicit-codex-home" PATH="$FAILING_NPM_BIN:$CLAUDEBIN:/usr/bin:/bin"
-explicit_attempts_before="$(wc -l < "$T06_NPM_INSTALL_LOG")"
-if "$ROOT/secretary" setup --non-interactive --harness codex >"$TMP/npm-fails-explicit-codex.log" 2>&1; then
-  fail "explicit --harness codex silently succeeded after failed npm install"
-fi
-EXPLICIT_STATE="$HOME/.local/share/secretary"
-[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq "$((explicit_attempts_before + 1))" ]] || fail "explicit Codex choice did not attempt ACP installation"
-[[ ! -e "$FAILING_NPM_BIN/codex-acp" ]] || fail "failed explicit Codex install unexpectedly produced ACP"
-[[ ! -e "$EXPLICIT_STATE/config.toml" ]] || fail "explicit Codex failure persisted a harness config"
-[[ ! -e "$EXPLICIT_STATE/environment" ]] || fail "explicit Codex failure persisted bootstrap credentials"
-if grep -q 'using authorized Claude Code instead' "$TMP/npm-fails-explicit-codex.log"; then
-  fail "explicit Codex choice unexpectedly fell back to Claude"
-fi
-
-# With no authorized fallback, failed npm must not write a Codex config.
-# A subsequent retry with npm working must still take the fresh Codex path.
-export HOME="$TMP/npm-fails-no-fallback-home" PATH="$FAILING_NPM_BIN:/usr/bin:/bin"
-if "$ROOT/secretary" setup --non-interactive >"$TMP/npm-fails-only.log" 2>&1; then
-  fail "Codex-only setup succeeded despite failed ACP installation"
-fi
-NO_FALLBACK_STATE="$HOME/.local/share/secretary"
-[[ ! -e "$NO_FALLBACK_STATE/config.toml" ]] || fail "failed npm provision persisted an unusable Codex config"
-[[ ! -e "$NO_FALLBACK_STATE/environment" ]] || fail "failed npm provision persisted bootstrap environment before harness readiness"
-unset T06_NPM_INSTALL_FAIL
-"$ROOT/secretary" setup --non-interactive >/dev/null || fail "retry after npm recovery failed"
-grep -q '^harness = "codex"$' "$NO_FALLBACK_STATE/config.toml" || fail "retry did not select authorized Codex"
-[[ -x "$FAILING_NPM_BIN/codex-acp" ]] || fail "retry did not install Codex ACP"
-unset T06_REQUIRE_CODEX_ACP
-
-# An unauthorized Codex with an installable but absent adapter must NOT
-# win auto-selection over a ready Claude Code or trigger npm installation.
-UNAUTHORIZED_BIN="$TMP/codex-unauthorized-no-acp-bin"
-mkdir -p "$UNAUTHORIZED_BIN"
-make_mise "$UNAUTHORIZED_BIN"
-cp "$CODBIN/codex" "$UNAUTHORIZED_BIN/codex"
-cp "$MISSING_ACP_BIN/npm" "$UNAUTHORIZED_BIN/npm"
-export HOME="$TMP/unauthorized-codex-no-acp-home" PATH="$UNAUTHORIZED_BIN:$CLAUDEBIN:/usr/bin:/bin"
-export T06_CODEX_AUTH_FAIL=1 T06_REQUIRE_CODEX_ACP=1
-before_installs="$(wc -l < "$T06_NPM_INSTALL_LOG")"
-"$ROOT/secretary" setup --non-interactive >/dev/null
-UNAUTHORIZED_STATE="$HOME/.local/share/secretary"
-grep -q '^harness = "claude_code"$' "$UNAUTHORIZED_STATE/config.toml" || fail "unready Codex without ACP preempted authorized Claude"
-[[ "$(wc -l < "$T06_NPM_INSTALL_LOG")" -eq "$before_installs" ]] || fail "unauthorized Codex caused unwanted npm installation"
-unset T06_CODEX_AUTH_FAIL T06_REQUIRE_CODEX_ACP
-
-# Fresh unattended setup should reject an installed but unready Codex and
-# choose a genuinely authenticated Claude Code instead.
+# Native unauthed Codex is not preferred over an authorized Claude harness.
 export HOME="$TMP/auto-choice-home" PATH="$CODBIN:$CLAUDEBIN:/usr/bin:/bin"
 export T06_CODEX_AUTH_FAIL=1
 "$ROOT/secretary" setup --non-interactive >/dev/null
@@ -303,17 +227,6 @@ AUTO_STATE="$HOME/.local/share/secretary"
 grep -q '^harness = "claude_code"$' "$AUTO_STATE/config.toml" || fail "unauthorized Codex wrongly won auto-selection"
 grep -q '^default_harness = "claude_code"$' "$AUTO_STATE/config.toml" || fail "auto-selection did not set Claude Worker defaults"
 unset T06_CODEX_AUTH_FAIL
-
-# codex-acp is only the adapter, not proof that the Codex CLI is installed.
-ACPONLYBIN="$TMP/acp-only-bin"
-mkdir -p "$ACPONLYBIN"
-make_mise "$ACPONLYBIN"
-cp "$CODBIN/codex-acp" "$ACPONLYBIN/codex-acp"
-export HOME="$TMP/acp-only-home" PATH="$ACPONLYBIN:/usr/bin:/bin"
-if "$ROOT/secretary" setup --non-interactive >"$TMP/acp-only.log" 2>&1; then
-  fail "codex-acp alone was incorrectly treated as a ready Codex harness"
-fi
-[[ ! -e "$HOME/.local/share/secretary/config.toml" ]] || fail "ACP-only failure created a misleading active config"
 
 export HOME="$TMP/claude-home" PATH="$CLAUDEBIN:/usr/bin:/bin"
 "$ROOT/secretary" setup --non-interactive
