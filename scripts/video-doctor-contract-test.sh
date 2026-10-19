@@ -5,7 +5,8 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 # Source the real CLI functions, excluding the top-level command dispatcher.
 sed '/^case "${1:-}" in/,$d' "$root/secretary" > "$work/functions.zsh"
-mkdir -p "$work/release/bin/video-tools" "$work/state" "$work/bin"
+mkdir -p "$work/release/bin/video-tools" "$work/state" "$work/bin" "$work/scripts"
+cp "$root/scripts/secretary-interactive.zsh" "$work/scripts/secretary-interactive.zsh"
 printf '1.0\n' > "$work/release/VERSION"
 printf 'abcdef\n' > "$work/release/REVISION"
 : > "$work/state/config.toml"
