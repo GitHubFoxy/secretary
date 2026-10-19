@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"time"
 	"errors"
 	"flag"
 	"fmt"
@@ -225,16 +223,7 @@ func main() {
 	if statusPath := os.Getenv("SECRETARY_NODE_TRAY_STATUS_FILE"); statusPath != "" {
 		defer os.Remove(statusPath)
 		daemon.StatusChanged = func(connected bool, inventory core.HarnessInventorySnapshot) {
-			payload := struct {
-				Connected bool `json:"connected"`
-				ObservedAt time.Time `json:"observed_at"`
-				Harnesses []struct { Name string `json:"name"`; Ready bool `json:"ready"` } `json:"harnesses"`
-			}{Connected: connected, ObservedAt: time.Now().UTC()}
-			for _, instance := range inventory.Instances {
-				payload.Harnesses = append(payload.Harnesses, struct { Name string `json:"name"`; Ready bool `json:"ready"` }{Name: string(instance.Kind), Ready: instance.Available()})
-			}
-			encoded, err := json.Marshal(payload)
-			if err == nil { _ = os.WriteFile(statusPath, encoded, 0o600) }
+			_ = node.WriteTrayStatusSnapshot(statusPath, connected, inventory)
 		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), nodeShutdownSignals()...)
