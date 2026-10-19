@@ -130,6 +130,52 @@ jobs:
           }
           if ((Get-FileHash $shortcutPath -Algorithm SHA256).Hash -ne $originalLinkHash -or $shell.CreateShortcut($shortcutPath).TargetPath -ne $originalTarget) { throw 'Failed upgrade changed Start/Search activation' }
           Assert-PreservedState
+                    $runningTray=Start-Process -FilePath $originalTarget -ArgumentList ('--data-dir "'+$data+'"') -PassThru
+          Start-Sleep -Milliseconds 800
+          $runningTray.Refresh()
+          if ($runningTray.HasExited) { throw 'Existing tray was not running before staged upgrade' }
+          $upgradeDir=Join-Path $env:RUNNER_TEMP 'standalone-activation-upgrade'
+          Copy-Item -LiteralPath $root -Destination $upgradeDir -Recurse
+          go build -ldflags '-H=windowsgui -buildid=install07-upgrade-v2' -o (Join-Path $upgradeDir 'secretary-tray.exe') ./cmd/secretary-tray
+          if ($LASTEXITCODE -ne 0) { throw 'Upgrade tray fixture compilation failed' }
+          $upManifest=Get-Content -LiteralPath (Join-Path $upgradeDir 'release.json') -Raw | ConvertFrom-Json
+          $upManifest.version='ci-2'
+          $upManifest.tray_sha256=(Get-FileHash (Join-Path $upgradeDir 'secretary-tray.exe') -Algorithm SHA256).Hash
+          [IO.File]::WriteAllText((Join-Path $upgradeDir 'release.json'),($upManifest | ConvertTo-Json -Compress))
+          $upgradeArchive=Join-Path $env:RUNNER_TEMP 'standalone-upgrade.zip'
+          [IO.Compression.ZipFile]::CreateFromDirectory($upgradeDir,$upgradeArchive)
+          $upgradeUri=([Uri]$upgradeArchive).AbsoluteUri
+          $upgradeDigest=(Get-FileHash $upgradeArchive -Algorithm SHA256).Hash
+          $faultDir=Join-Path $env:RUNNER_TEMP 'standalone-fault-after-shutdown'
+          Copy-Item -LiteralPath $upgradeDir -Destination $faultDir -Recurse
+          $faultInstaller=Join-Path $faultDir 'install-windows-node.ps1'
+          $installerText=Get-Content -LiteralPath $faultInstaller -Raw
+          $faultPoint="$"+'shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcutStage)'
+          if (-not $installerText.Contains($faultPoint)) { throw 'Activation injection point not found' }
+          $installerText=$installerText.Replace($faultPoint,"throw 'CI_ACTIVATION_AFTER_TRAY_SHUTDOWN'`r`n"+$faultPoint)
+          [IO.File]::WriteAllText($faultInstaller,$installerText)
+          $faultArchive=Join-Path $env:RUNNER_TEMP 'standalone-failed-activation.zip'
+          [IO.Compression.ZipFile]::CreateFromDirectory($faultDir,$faultArchive)
+          $faultDigest=(Get-FileHash $faultArchive -Algorithm SHA256).Hash
+          try {
+            & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$faultArchive).AbsoluteUri -ReleaseSHA256 $faultDigest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+            throw 'Post-shutdown activation failure unexpectedly succeeded'
+          } catch {
+            if ($_.Exception.Message -notlike '*CI_ACTIVATION_AFTER_TRAY_SHUTDOWN*') { throw }
+          }
+          $runningTray.Refresh()
+          if (-not $runningTray.HasExited) { throw 'Post-shutdown fixture never stopped original tray' }
+          if ($shell.CreateShortcut($shortcutPath).TargetPath -ne $originalTarget -or (Get-FileHash $shortcutPath -Algorithm SHA256).Hash -ne $originalLinkHash) { throw 'Post-staging rollback did not restore previous active shortcut' }
+          $restored=@(Get-CimInstance Win32_Process -Filter "Name='secretary-tray.exe'" | Where-Object { $_.ExecutablePath -eq $originalTarget })
+          if ($restored.Count -ne 1) { throw 'Post-staging rollback failed to restore exactly one previous tray process' }
+          Assert-PreservedState
+          if ($accountBefore -ne (Get-FileHash $workerAccount -Algorithm SHA256).Hash) { throw 'Post-staging rollback modified Worker credentials' }
+          & ./scripts/install-windows-node-release.ps1 -ReleaseUri $upgradeUri -ReleaseSHA256 $upgradeDigest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+          if (-not $?) { throw 'Valid staged upgrade failed' }
+          $currentTarget=$shell.CreateShortcut($shortcutPath).TargetPath
+          if ($currentTarget -eq $originalTarget -or (Get-FileHash $currentTarget -Algorithm SHA256).Hash -eq (Get-FileHash $originalTarget -Algorithm SHA256).Hash) { throw 'Valid upgrade did not activate new version' }
+          Assert-PreservedState
+          if ($accountBefore -ne (Get-FileHash $workerAccount -Algorithm SHA256).Hash) { throw 'Successful upgrade modified Worker credentials' }
                     $identityBefore=(Get-FileHash $identity -Algorithm SHA256).Hash
           $workerAccount=Join-Path $data 'worker-account.json'
           $accountBefore=(Get-FileHash $workerAccount -Algorithm SHA256).Hash
