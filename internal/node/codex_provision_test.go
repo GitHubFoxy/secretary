@@ -83,3 +83,37 @@ func TestManagedCodexPairPinsSupportedPlatforms(t *testing.T) {
   if asset.URL=="" || len(asset.SHA256)!=64 || asset.Name=="" {t.Fatalf("incomplete pin: %+v",asset)}
  }
 }
+
+
+func TestInstallManagedCodexAssetsFreshRetryPartialAndCorrupt(t *testing.T) {
+ createArchive := func(name string) []byte {
+  var buf bytes.Buffer
+  z := gzip.NewWriter(&buf)
+  archive := tar.NewWriter(z)
+  payload := []byte("#!/bin/sh\\necho " + name + " 1.2.3\\n")
+  if err := archive.WriteHeader(&tar.Header{Name:name+"-native",Typeflag:tar.TypeReg,Mode:0700,Size:int64(len(payload))}); err != nil { t.Fatal(err) }
+  if _,err := archive.Write(payload); err != nil { t.Fatal(err) }
+  if err := archive.Close(); err != nil { t.Fatal(err) }
+  if err := z.Close(); err != nil { t.Fatal(err) }
+  return buf.Bytes()
+ }
+ cliArchive := createArchive("codex")
+ acpArchive := createArchive("codex-acp")
+ server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  if r.URL.Path=="/codex" { _,_=w.Write(cliArchive) } else { _,_=w.Write(acpArchive) }
+ }))
+ defer server.Close()
+ digest := func(data []byte) string { sum:=sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
+ assets := []codexAsset{{URL:server.URL+"/codex",SHA256:digest(cliArchive),Name:"codex"},{URL:server.URL+"/acp",SHA256:digest(acpArchive),Name:"codex-acp"}}
+ root := t.TempDir()
+ cli,acp,err := installManagedCodexAssets(context.Background(),assets,root,"fixture")
+ if err != nil { t.Fatal(err) }
+ if _,err := os.Stat(cli);err != nil { t.Fatal(err) }
+ if _,err := os.Stat(acp);err != nil { t.Fatal(err) }
+ if _,_,err := installManagedCodexAssets(context.Background(),assets,root,"fixture");err != nil { t.Fatal(err) }
+ if err:=os.Remove(acp);err != nil { t.Fatal(err) }
+ if _,_,err:=installManagedCodexAssets(context.Background(),assets,root,"fixture");err==nil { t.Fatal("partial managed installation accepted") }
+ broken:=[]codexAsset{{URL:server.URL+"/codex",SHA256:strings.Repeat("0",64),Name:"codex"},assets[1]}
+ if _,_,err:=installManagedCodexAssets(context.Background(),broken,root,"corrupt");err==nil { t.Fatal("bad archive accepted") }
+ if _,err:=os.Stat(filepath.Join(root,"corrupt"));!os.IsNotExist(err) { t.Fatalf("damaged release activated: %v",err) }
+}
