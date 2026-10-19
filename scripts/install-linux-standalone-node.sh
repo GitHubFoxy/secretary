@@ -29,6 +29,9 @@ done
 [[ "$harness" == codex || "$harness" == claude_code ]] || fail "Choose codex or claude_code"
 [[ ! -L "$root" && ! -L "$releases" && ! -L "$state" && ! -L "$state/data" && ! -L "$state/config.json" ]] || fail "Unsafe symlink in managed state"
 config="$state/config.json"
+credential="$state/enrollment.env"
+[[ ! -L "$credential" ]] || fail "Unsafe credential symlink"
+[[ ! -f "$state/harness" ]] || harness="$(cat "$state/harness")"
 binary="$current/bin/secretary-node"
 service_available() { command -v systemctl >/dev/null 2>&1 && [[ -n "${XDG_RUNTIME_DIR:-}" && -S "$XDG_RUNTIME_DIR/bus" ]] && systemctl --user show-environment >/dev/null 2>&1; }
 identity() {
@@ -47,7 +50,12 @@ version_status() {
 case "$action" in
   status) version_status; [[ ! -f "$config" ]] || identity; exit 0 ;;
   logs) service_available && [[ -f "$unit" ]] || fail "systemd user service unavailable"; exec journalctl --user -u secretary-standalone-node.service -f --no-pager ;;
-  start|stop) service_available && [[ -f "$unit" ]] || fail "Enable the user service first"; exec systemctl --user "$action" secretary-standalone-node.service ;;
+  start)
+    [[ -x "$binary" && -f "$config" ]] || fail "Node not installed"
+    if [[ -f "$unit" ]]; then service_available || fail "systemd user manager unavailable"; exec systemctl --user start secretary-standalone-node.service; fi
+    [[ ! -f "$credential" ]] || { set -a; source "$credential"; set +a; }
+    exec "$binary" --config "$config" ;;
+  stop) service_available && [[ -f "$unit" ]] || fail "No managed service to stop"; exec systemctl --user stop secretary-standalone-node.service ;;
   disable-service) service_available || fail "systemd user manager unavailable"; [[ ! -f "$unit" ]] || { systemctl --user disable --now secretary-standalone-node.service; rm "$unit"; systemctl --user daemon-reload; }; exit 0 ;;
   doctor)
     [[ -x "$binary" && -f "$config" ]] || fail "Node not installed"
@@ -117,6 +125,13 @@ PY
     mv "$staged" "$target"
   fi
   if [[ ! -f "$config" ]]; then
+    printf '%s\n' "$harness" > "$state/harness"
+    chmod 600 "$state/harness"
+    if [[ -n "${SECRETARY_NODE_PAIRING_TOKEN:-}" ]]; then
+      [[ "$SECRETARY_NODE_PAIRING_TOKEN" =~ ^[A-Za-z0-9_-]+$ ]] || fail "Invalid enrollment token characters"
+      printf 'SECRETARY_NODE_PAIRING_TOKEN=%s\n' "$SECRETARY_NODE_PAIRING_TOKEN" > "$credential"
+      chmod 600 "$credential"
+    fi
     python3 - "$config" "$server" "$name" "$state/data" <<'PYCONFIG'
 import json, pathlib, sys
 path, server, name, data = sys.argv[1:]
@@ -156,13 +171,13 @@ if [[ "$service" == true ]]; then
   if [[ -e "$unit" ]]; then
     grep -Fqx 'Description=Secretary standalone Execution Node' "$unit" || fail "Existing unit is unmanaged"
   else
-    python3 - "$unit" "$binary" "$config" "$HOME/.local/bin:$PATH" <<'PY'
+    python3 - "$unit" "$binary" "$config" "$HOME/.local/bin:$PATH" "$credential" <<'PY'
 import pathlib, sys
-unit, binary, config, path = sys.argv[1:]
+unit, binary, config, path, credential = sys.argv[1:]
 def quoted(value):
     return '"' + value.replace("%", "%%").replace("\\", "\\\\").replace('"', '\\"') + '"'
 path = path.replace("\n", "").replace("\r", "")
-text = "[Unit]\nDescription=Secretary standalone Execution Node\nAfter=network-online.target\n\n[Service]\nType=simple\nEnvironment=" + quoted("PATH=" + path) + "\nExecStart=" + quoted(binary) + " --config " + quoted(config) + "\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n"
+text = "[Unit]\nDescription=Secretary standalone Execution Node\nAfter=network-online.target\n\n[Service]\nType=simple\nEnvironmentFile=-" + quoted(credential) + "\nEnvironment=" + quoted("PATH=" + path) + "\nExecStart=" + quoted(binary) + " --config " + quoted(config) + "\nRestart=on-failure\nRestartSec=3\n\n[Install]\nWantedBy=default.target\n"
 pathlib.Path(unit).write_text(text)
 PY
     chmod 600 "$unit"
