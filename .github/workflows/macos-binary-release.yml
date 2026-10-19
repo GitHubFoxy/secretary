@@ -82,6 +82,7 @@ jobs:
         shell: bash
         run: |
           bash scripts/macos-standalone-node-test.sh "$SECRETARY_TEST_DIST" "$GITHUB_SHA"
+          go test ./cmd/secretary-node -run TestStandaloneEnrollmentHTTPSAndNoOverwrite -count=1
       - uses: actions/upload-artifact@v4
         with:
           name: secretary-macos-binary-release
