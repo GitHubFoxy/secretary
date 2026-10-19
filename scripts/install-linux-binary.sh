@@ -4,7 +4,7 @@ umask 077
 fail() { printf 'Secretary Linux install: %s
 ' "$*" >&2; exit 1; }
 [[ "$(uname -s)" == Linux ]] || fail "Only Linux is supported"
-for utility in curl tar sha256sum python3 zsh openssl systemctl mktemp readlink cmp diff; do
+for utility in curl tar sha256sum python3 zsh openssl systemctl mktemp readlink cmp diff grep; do
   command -v "$utility" >/dev/null 2>&1 || fail "Missing required utility: $utility"
 done
 case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) fail "Unsupported Linux architecture" ;; esac
@@ -97,7 +97,7 @@ for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migr
 done
 for unit in secretary.service secretary-node.service; do
   if [[ -e "$units/$unit" ]]; then
-    grep -Fqx "WorkingDirectory=$current" "$units/$unit" || fail "Unmanaged systemd unit: $unit"
+    grep -Fq "Description=Secretary" "$units/$unit" || fail "Unmanaged systemd unit: $unit"
   fi
 done
 mkdir -p "$stage/setup-bin"
@@ -137,14 +137,33 @@ trap 'rm -f "$pointer"; rollback; rm -rf "$stage"' EXIT
 ln -s "$target" "$pointer"
 mv -Tf "$pointer" "$current"
 if [[ -z "$previous" ]]; then
+  service_path="$bin:$PATH"
+  unit_fields="$(SECRETARY_UNIT_CURRENT="$current" SECRETARY_UNIT_PATH="$service_path" python3 - <<'PY'
+import os
+current = os.environ["SECRETARY_UNIT_CURRENT"]
+path = os.environ["SECRETARY_UNIT_PATH"]
+if any(c in current + path for c in "\r\n"):
+    raise SystemExit("Unsafe systemd unit environment")
+def spec(value):
+    return value.replace("%", "%%")
+def quote(value):
+    return '"' + spec(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+print("WorkingDirectory=" + spec(current).replace(" ", r"\x20"))
+print("Environment=" + quote("PATH=" + path))
+print("ExecStart=" + quote(current + "/secretary"))
+PY
+)" || fail "Cannot escape systemd unit values"
+  working_field="$(printf '%s\n' "$unit_fields" | grep '^WorkingDirectory=')"
+  path_field="$(printf '%s\n' "$unit_fields" | grep '^Environment=')"
+  executable_field="$(printf '%s\n' "$unit_fields" | grep '^ExecStart=')"
   for unit in secretary.service secretary-node.service; do
     [[ ! -e "$units/$unit" ]] || continue
     if [[ "$unit" == secretary.service ]]; then
-      exec_command="$current/secretary serve"
+      exec_command="$executable_field serve"
       description="Secretary Server"
       after="network-online.target"
     else
-      exec_command="$current/secretary node serve"
+      exec_command="$executable_field node serve"
       description="Secretary co-located Execution Node"
       after="network-online.target secretary.service"
     fi
@@ -155,8 +174,9 @@ After=$after
 
 [Service]
 Type=simple
-WorkingDirectory=$current
-ExecStart=$exec_command
+${working_field}
+${path_field}
+ExecStart=${exec_command}
 Restart=on-failure
 RestartSec=3
 
@@ -169,6 +189,14 @@ EOF
   systemctl --user daemon-reload || fail "Cannot register systemd units"
   systemctl --user enable --now secretary.service || fail "Cannot activate Server service"
   systemctl --user enable --now secretary-node.service || fail "Cannot activate Node service"
+  for service in secretary.service secretary-node.service; do
+    state="$(systemctl --user show "$service" -p ActiveState --value)" || fail "Cannot inspect $service ActiveState"
+    pid="$(systemctl --user show "$service" -p MainPID --value)" || fail "Cannot inspect $service MainPID"
+    [[ "$state" == active && "$pid" =~ ^[1-9][0-9]*$ ]] || fail "$service is not active with a MainPID"
+    kill -0 "$pid" 2>/dev/null || fail "$service MainPID is not alive"
+  done
+  health="$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/v1/web/session)" || fail "Server health endpoint unreachable after activation"
+  [[ "$health" =~ ^[1-5][0-9][0-9]$ ]] || fail "Server health endpoint did not respond"
 fi
 activated=true
 printf 'Secretary %s (%s) installed for linux/%s. Inspect: systemctl --user status secretary.service secretary-node.service; secretary status
