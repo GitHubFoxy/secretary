@@ -75,7 +75,12 @@ if ($identityBefore -and ((Get-FileHash -LiteralPath $identityPath -Algorithm SH
 & $installedNode --data-dir $NodeDataDir --check-worker-sandbox
 if ($LASTEXITCODE -ne 0) { throw 'Windows Worker sandbox/Dispatch preflight failed' }
 $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-$loginCommand=(Get-ItemProperty -Path $runKey -Name 'Secretary Node' -ErrorAction SilentlyContinue).'Secretary Node'
+$loginCommand=$null
+$runRegistration=Get-ItemProperty -Path $runKey -ErrorAction SilentlyContinue
+if ($null -ne $runRegistration) {
+ $registeredValue=$runRegistration.PSObject.Properties['Secretary Node']
+ if ($null -ne $registeredValue) { $loginCommand=[string]$registeredValue.Value }
+}
 $oldShortcut=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
 $oldTarget=$null
 if (Test-Path -LiteralPath $oldShortcut) {
