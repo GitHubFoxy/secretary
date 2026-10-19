@@ -52,12 +52,11 @@ func (w *LiveStatusWriter) Publish(server string, inventory *core.HarnessInvento
 func (w *LiveStatusWriter) publish(server string, inventory *core.HarnessInventorySnapshot) {
     snapshot := liveSnapshot{Server: server, UpdatedAt: time.Now().UTC(), Harnesses: []liveHarness{}}
     if inventory != nil {
-        data, err := json.Marshal(inventory)
-        if err == nil {
-            var decoded struct { Instances []liveHarness `json:"instances"` }
-            if json.Unmarshal(data, &decoded) == nil {
-                snapshot.Harnesses = decoded.Instances
-            }
+        for _, instance := range inventory.Instances {
+            snapshot.Harnesses = append(snapshot.Harnesses, liveHarness{
+                Kind: string(instance.Kind),
+                Status: string(instance.Status),
+            })
         }
     }
     encoded, err := json.Marshal(snapshot)
