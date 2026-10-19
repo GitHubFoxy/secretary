@@ -1,0 +1,100 @@
+name: macOS binary Secretary release
+
+on:
+  pull_request:
+    paths:
+      - secretary
+      - macos/SecretaryNode/**
+      - scripts/install-macos-binary.sh
+      - scripts/package-macos-binary-release.sh
+      - scripts/macos-release-contract-test.sh
+      - .github/workflows/macos-binary-release.yml
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  package-and-install:
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Package contract checks
+        shell: bash
+        run: |
+          bash -n scripts/package-macos-binary-release.sh
+          bash -n scripts/install-macos-binary.sh
+          bash -n scripts/macos-release-contract-test.sh
+          bash scripts/macos-release-contract-test.sh
+          zsh -n secretary
+      - name: Build native release on CI host
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/secretary-package/bin" "$RUNNER_TEMP/secretary-package/scripts" "$RUNNER_TEMP/secretary-package/internal/config"
+          for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+            go build -trimpath -o "$RUNNER_TEMP/secretary-package/bin/$binary" "./cmd/$binary"
+          done
+          swift build --package-path macos/SecretaryNode -c release
+          mkdir -p "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/MacOS"
+          cp macos/SecretaryNode/.build/release/SecretaryNode "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/MacOS/SecretaryNode"
+          cp macos/SecretaryNode/Info.plist "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/Info.plist"
+          codesign --force --sign - "$RUNNER_TEMP/secretary-package/Secretary Node.app"
+          codesign --verify "$RUNNER_TEMP/secretary-package/Secretary Node.app"
+          cp secretary "$RUNNER_TEMP/secretary-package/secretary"
+          cp scripts/secretary-interactive.zsh "$RUNNER_TEMP/secretary-package/scripts/secretary-interactive.zsh"
+          cp -R internal/config/defaults "$RUNNER_TEMP/secretary-package/internal/config/defaults"
+          echo "SECRETARY_PACKAGE_INPUT=$RUNNER_TEMP/secretary-package" >> "$GITHUB_ENV"
+      - name: Create versioned archive and manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then version=0.0.0-ci; fi
+          arch="$(uname -m)"
+          [[ "$arch" == arm64 ]] || arch=amd64
+          bash scripts/package-macos-binary-release.sh "$version" "$GITHUB_SHA" "$arch" "$SECRETARY_PACKAGE_INPUT" "$RUNNER_TEMP/secretary-dist"
+          echo "SECRETARY_TEST_VERSION=$version" >> "$GITHUB_ENV"
+          echo "SECRETARY_TEST_DIST=$RUNNER_TEMP/secretary-dist" >> "$GITHUB_ENV"
+      - name: Install and upgrade into fresh user home
+        shell: bash
+        run: |
+          set -euo pipefail
+          test_home="$(mktemp -d "$RUNNER_TEMP/secretary-home.XXXXXXXX")"
+          mkdir -p "$test_home/fakebin"
+          cat > "$test_home/fakebin/claude" <<'EOF'
+          #!/bin/sh
+          if [ "$1" = "--version" ]; then echo "CI fixture"; exit 0; fi
+          if [ "$1" = auth ] && [ "$2" = status ]; then exit 0; fi
+          exit 1
+          EOF
+          chmod +x "$test_home/fakebin/claude"
+          export HOME="$test_home"
+          export PATH="$test_home/fakebin:$PATH"
+          export SECRETARY_VERSION="$SECRETARY_TEST_VERSION"
+          export SECRETARY_RELEASE_BASE="file://$SECRETARY_TEST_DIST"
+          bash scripts/install-macos-binary.sh
+          "$HOME/.local/bin/secretary" doctor
+          test -f "$HOME/.local/share/secretary/config.toml"
+          test -f "$HOME/.local/share/secretary/environment"
+          test -f "$HOME/.local/share/secretary/node/config.json"
+          echo 'sentinel-database' > "$HOME/.local/share/secretary/secretary.db"
+          echo 'sentinel-session' > "$HOME/.local/share/secretary/node/data/native-session-sentinel"
+          cp "$HOME/.local/share/secretary/environment" "$RUNNER_TEMP/secretary-credentials-before"
+          bash scripts/install-macos-binary.sh
+          cmp "$HOME/.local/share/secretary/environment" "$RUNNER_TEMP/secretary-credentials-before"
+          test "$(cat "$HOME/.local/share/secretary/secretary.db")" = 'sentinel-database'
+          test "$(cat "$HOME/.local/share/secretary/node/data/native-session-sentinel")" = 'sentinel-session'
+          test -d "$HOME/Applications/Secretary Node.app"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: secretary-macos-binary-release
+          path: ${{ runner.temp }}/secretary-dist/*
+          if-no-files-found: error
