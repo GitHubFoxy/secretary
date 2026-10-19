@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
-fail() { printf 'Secretary Linux install: %s\n' "$*" >&2; exit 1; }
+fail() { printf 'Secretary Linux install: %s
+' "$*" >&2; exit 1; }
 [[ "$(uname -s)" == Linux ]] || fail "Only Linux is supported"
 for utility in curl tar sha256sum python3 zsh openssl systemctl mktemp readlink cmp diff; do
   command -v "$utility" >/dev/null 2>&1 || fail "Missing required utility: $utility"
@@ -114,7 +115,10 @@ rollback() {
       [[ -z "$previous" ]] || ln -s "$previous" "$current"
     fi
     for path in "${created[@]}"; do rm -f "$path"; done
-    if [[ -z "$previous" ]]; then\n      systemctl --user disable --now secretary-node.service secretary.service >/dev/null 2>&1 || true\n    fi\n    for path in "${unit_created[@]}"; do rm -f "$path"; done
+    if [[ -z "$previous" ]]; then
+      systemctl --user disable --now secretary-node.service secretary.service >/dev/null 2>&1 || true
+    fi
+    for path in "${unit_created[@]}"; do rm -f "$path"; done
     systemctl --user daemon-reload >/dev/null 2>&1 || true
   fi
 }
@@ -167,4 +171,5 @@ EOF
   systemctl --user enable --now secretary-node.service || fail "Cannot activate Node service"
 fi
 activated=true
-printf 'Secretary %s (%s) installed for linux/%s. Inspect: systemctl --user status secretary.service secretary-node.service; secretary status\n' "$version" "$revision" "$arch"
+printf 'Secretary %s (%s) installed for linux/%s. Inspect: systemctl --user status secretary.service secretary-node.service; secretary status
+' "$version" "$revision" "$arch"
