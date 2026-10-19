@@ -35,3 +35,11 @@ Manual acceptance on a clean supported macOS account:
 5. Deliberately test a damaged artifact, an incompatible platform, an unavailable artifact and a failed download: previous installation must remain usable. Verify behavior under normal Gatekeeper settings.
 
 The public v1 multi-platform/harness acceptance remains governed by #89.
+
+## Server FFmpeg / FFprobe
+
+The combined Server release includes a matching FFmpeg/FFprobe pair at `bin/video-tools/`. `VIDEO-TOOLS.json` records the build-host distribution origin, exact tool version and independent SHA-256 digests. Both files are checked before release activation and again in the Server conversion path. The tools are never installed into a global directory and remote Execution nodes do not resolve them.
+
+The release packaging currently sources binaries from the macOS build runner's Homebrew distribution. These builds may depend on OS or distribution libraries: a checksum is not proof of portable runtime dependencies. Production redistribution must review FFmpeg LGPL/GPL, enabled codecs and all transitive library licenses. On unsupported architecture or where runtime libraries are missing, setup fails before activation or Artifact processing reports a dependency failure; the original remains in the Server Artifact Store.
+
+Check `secretary status` / `secretary doctor` for basic binary readiness. Live Web upload, timestamped WebP derivatives, and remote Worker consumption require separate manual acceptance under #89. Source installs may supply an explicit pair with `SECRETARY_FFMPEG` and `SECRETARY_FFPROBE`; only the Server resolves these paths.
