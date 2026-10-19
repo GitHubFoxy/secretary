@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"regexp"
 	"strings"
 
@@ -56,7 +55,7 @@ func main() {
 		fmt.Println(summary)
 		return
 	}
-	if runtime.GOOS != "windows" && enforceCodexInventory(*checkCodex) {
+	if enforceCodexInventory(*checkCodex) {
 		if _, err := node.ReadCodexPairInventory("node"); err == nil {
 			if err := node.ApplyCodexPairInventory("node"); err != nil { log.Fatalf("Codex pair: %v", err) }
 		} else {

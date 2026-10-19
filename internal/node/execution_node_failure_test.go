@@ -107,21 +107,27 @@ func TestWatchSessionRetriesTerminalOutboxPersistenceFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	if err := os.Mkdir(storePath+".tmp", 0o700); err != nil {
-		t.Fatal(err)
-	}
+	if err := os.WriteFile(storePath, []byte("{}"), 0o600); err != nil { t.Fatal(err) }
+	backup := storePath + ".fault-backup"
+	if err := os.Rename(storePath, backup); err != nil { t.Fatal(err) }
+	if err := os.Mkdir(storePath, 0o700); err != nil { t.Fatal(err) }
 	session := &failedCloseSession{result: make(chan Result, 1), closeDone: make(chan struct{})}
 	session.result <- Result{Status: "failed", Summary: "provider failure"}
 	envelope := WorkerEnvelope{
 		WorkerRef: "worker", TurnID: "turn", AttemptID: "attempt-outbox-retry",
 		HarnessInstance: core.HarnessInstance{ID: "local/codex", Node: "local", Kind: core.HarnessCodex},
 	}
+	releaseDone := make(chan error, 1)
 	go func() {
 		<-session.closeDone
 		time.Sleep(250 * time.Millisecond)
-		if err := os.Remove(storePath + ".tmp"); err != nil {
-			t.Errorf("remove temporary outbox blocker: %v", err)
-		}
+		releaseDone <- func() error {
+		if err := os.Remove(storePath); err != nil { return err }
+		return os.Rename(backup, storePath)
+		}()
+	}()
+	defer func() {
+		if err := <-releaseDone; err != nil { t.Errorf("restore temporary outbox blocker: %v", err) }
 	}()
 	NewExecutionNode("local", nil, store).watchSession(session, envelope)
 
@@ -400,7 +406,12 @@ func TestWatchSessionRetriesTerminalCommandReceiptAndUnregisters(t *testing.T) {
 	if _, _, err := store.ClaimCommand(command); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(storePath+".tmp", 0o700); err != nil {
+	backup := storePath + ".fault-backup"
+	if err := os.Rename(storePath, backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(storePath, 0o700); err != nil {
+		_ = os.Rename(backup, storePath)
 		t.Fatal(err)
 	}
 	session := &failedCloseSession{result: make(chan Result, 1), closeDone: make(chan struct{})}
@@ -412,12 +423,17 @@ func TestWatchSessionRetriesTerminalCommandReceiptAndUnregisters(t *testing.T) {
 	envelope := command.Dispatch.Envelope
 	execution := NewExecutionNode("macbook", nil, store)
 	execution.registerSession(envelope.AttemptID, session)
+	releaseDone := make(chan error, 1)
 	go func() {
 		<-session.closeDone
 		time.Sleep(250 * time.Millisecond)
-		if err := os.Remove(storePath + ".tmp"); err != nil {
-			t.Errorf("remove temporary receipt blocker: %v", err)
-		}
+		releaseDone <- func() error {
+		if err := os.Remove(storePath); err != nil { return err }
+		return os.Rename(backup, storePath)
+		}()
+	}()
+	defer func() {
+		if err := <-releaseDone; err != nil { t.Errorf("restore temporary receipt blocker: %v", err) }
 	}()
 	execution.watchSession(session, envelope, command)
 
@@ -473,15 +489,17 @@ func TestLocalStoreTerminalCommandAndTypedOutcomeCommitAtomically(t *testing.T) 
 		FailureCode: "usage_limit_exceeded", FailureCategory: core.FailureCategoryUsageLimit,
 		Diagnostics: "provider retry context: try again at 4:37 PM", OccurredAt: time.Date(2026, 10, 12, 5, 0, 0, 0, time.UTC),
 	}
-	if err := os.Mkdir(path+".tmp", 0o700); err != nil {
-		t.Fatal(err)
-	}
+	backup := path + ".fault-backup"
+	if err := os.Rename(path, backup); err != nil { t.Fatal(err) }
+	if err := os.Mkdir(path, 0o700); err != nil { t.Fatal(err) }
 	if _, err := store.CompleteCommandWithOutcome(command.Metadata().CommandID, accepted, terminal); err == nil {
 		t.Fatal("expected injected local-store persistence failure")
 	}
 	if err := store.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Remove(path); err != nil { t.Fatal(err) }
+	if err := os.Rename(backup, path); err != nil { t.Fatal(err) }
 	reopened, err := OpenLocalStore(path)
 	if err != nil {
 		t.Fatal(err)
@@ -496,9 +514,6 @@ func TestLocalStoreTerminalCommandAndTypedOutcomeCommitAtomically(t *testing.T) 
 	}
 	if events, err := reopened.PendingEvents(); err != nil || len(events) != 0 {
 		t.Fatalf("failed atomic write left a terminal outbox event: events=%#v err=%v", events, err)
-	}
-	if err := os.Remove(path + ".tmp"); err != nil {
-		t.Fatal(err)
 	}
 	if err := reopened.RecoverRunning(ctx, nil); err != nil {
 		t.Fatal(err)

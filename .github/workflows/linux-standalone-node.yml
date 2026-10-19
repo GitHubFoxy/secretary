@@ -30,6 +30,11 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      - name: Provision combined-release fixture video dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/provision-server-video-tools.sh "$RUNNER_TEMP/server-video-tools"
       - name: Build fixture release and inspect shell syntax
         shell: bash
         run: |
@@ -41,6 +46,9 @@ jobs:
           for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
             go build -trimpath -o "$RUNNER_TEMP/package/bin/$binary" "./cmd/$binary"
           done
+          mkdir -p "$RUNNER_TEMP/package/bin/video-tools"
+          cp "$RUNNER_TEMP/server-video-tools/ffmpeg" "$RUNNER_TEMP/package/bin/video-tools/ffmpeg"
+          cp "$RUNNER_TEMP/server-video-tools/ffprobe" "$RUNNER_TEMP/package/bin/video-tools/ffprobe"
           cp secretary "$RUNNER_TEMP/package/secretary"
           cp scripts/secretary-interactive.zsh "$RUNNER_TEMP/package/scripts/"
           cp -R internal/config/defaults "$RUNNER_TEMP/package/internal/config/"

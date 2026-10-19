@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,12 +94,25 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 	if err != nil {
 		t.Fatal(err)
 	}
-	if os.Mkdir(path+".tmp", 0700) != nil {
-		t.Fatal("store failure fixture unavailable")
+	backup := path + ".fault-backup"
+	if err := os.Rename(path, backup); err != nil {
+		t.Fatal("store failure fixture backup unavailable:", err)
 	}
+	if err := os.Mkdir(path, 0700); err != nil {
+		_ = os.Rename(backup, path)
+		t.Fatal("store failure fixture unavailable:", err)
+	}
+	defer func() {
+		if _, err := os.Stat(backup); err == nil {
+			_ = os.Remove(path)
+			_ = os.Rename(backup, path)
+		}
+	}()
 	ack := node.CommandOutcome{CommandID: probe.Metadata().CommandID, Kind: probe.Kind, State: node.CommandAccepted, TurnID: probeEnvelope.TurnID, AttemptID: probeEnvelope.AttemptID}
 	if _, err := local.SaveCommandReadiness(probe.Metadata().CommandID, ack); err == nil {
 		t.Fatal("store failure accepted volatile ACK")
+	} else if !strings.Contains(err.Error(), filepath.Base(path)+".tmp-") {
+		t.Fatalf("store failure bypassed unique temporary checkpoint: %v", err)
 	}
 	after, err := local.Command(probe.Metadata().CommandID)
 	if err != nil || after.State != before.State || after.Outcome != before.Outcome || !after.UpdatedAt.Equal(before.UpdatedAt) {
@@ -108,8 +122,11 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 	if err != nil || replay != readiness {
 		t.Fatal("live ACK replay required another store write")
 	}
-	if os.Remove(path+".tmp") != nil {
-		t.Fatal("store fixture cleanup failed")
+	if err := os.Remove(path); err != nil {
+		t.Fatal("store fixture cleanup failed:", err)
+	}
+	if err := os.Rename(backup, path); err != nil {
+		t.Fatal("store fixture restore failed:", err)
 	}
 	mapping, ok := local.SessionMapping(envelope.AttemptID)
 	if !ok {
