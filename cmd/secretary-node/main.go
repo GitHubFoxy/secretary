@@ -56,7 +56,7 @@ func main() {
 		fmt.Println(summary)
 		return
 	}
-	if runtime.GOOS != "windows" && !*checkCodex {
+	if runtime.GOOS != "windows" && enforceCodexInventory(*checkCodex) {
 		if _, err := node.ReadCodexPairInventory("node"); err == nil {
 			if err := node.ApplyCodexPairInventory("node"); err != nil { log.Fatalf("Codex pair: %v", err) }
 		} else {
@@ -387,4 +387,8 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func enforceCodexInventory(explicitReadinessDiagnostic bool) bool {
+ return !explicitReadinessDiagnostic
 }
