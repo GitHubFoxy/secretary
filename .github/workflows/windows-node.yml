@@ -38,9 +38,15 @@ jobs:
           $workspace=Join-Path $env:RUNNER_TEMP 't09-installer-upgrade-workspace'
           $workerProfile=Join-Path $env:RUNNER_TEMP 't09-installer-upgrade-home'
           $existing=Join-Path $data 'identity.json'
+          $deployment=Join-Path $data 'config.json'
+          $state=Join-Path $data 'node-state.json'
           New-Item -ItemType Directory -Path $data,$workspace -Force | Out-Null
           [IO.File]::WriteAllText($existing,'EXISTING-NODE-PAIRING-MUST-SURVIVE')
+          [IO.File]::WriteAllText($deployment,'EXISTING-NODE-CONFIG-MUST-SURVIVE')
+          [IO.File]::WriteAllText($state,'EXISTING-NODE-STATE-MUST-SURVIVE')
           $before=(Get-FileHash $existing -Algorithm SHA256).Hash
+          $configBefore=(Get-FileHash $deployment -Algorithm SHA256).Hash
+          $stateBefore=(Get-FileHash $state -Algorithm SHA256).Hash
           go build -ldflags '-buildid=w03-node-v1' -o (Join-Path $env:RUNNER_TEMP 'w03-node-v1.exe') ./cmd/secretary-node
           if ($LASTEXITCODE -ne 0) { throw 'Node v1 fixture build failed' }
           go build -ldflags '-H=windowsgui -buildid=w03-tray-v1' -o (Join-Path $env:RUNNER_TEMP 'w03-tray-v1.exe') ./cmd/secretary-tray
@@ -75,6 +81,12 @@ jobs:
           Start-Sleep -Milliseconds 500
           $runningTray.Refresh()
           if (-not $runningTray.HasExited) { throw 'Old tray process survived upgrade' }
+          $upgradeProcesses=@(Get-CimInstance Win32_Process -Filter "Name='secretary-tray.exe'" | Where-Object { $_.ExecutablePath -eq $upgradeLink.TargetPath })
+          if ($upgradeProcesses.Count -ne 1) { throw 'Updated installed tray did not relaunch exactly once' }
+          if ($configBefore -ne (Get-FileHash $deployment -Algorithm SHA256).Hash -or
+              $stateBefore -ne (Get-FileHash $state -Algorithm SHA256).Hash) {
+            throw 'Windows upgrade changed Node deployment configuration or state'
+          }
           if ($first.password -ne $second.password -or $before -ne (Get-FileHash $existing -Algorithm SHA256).Hash) {
             throw 'Windows upgrade rotated account credentials or Node identity'
           }
