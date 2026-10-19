@@ -89,7 +89,6 @@ if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
  $priorShortcutBytes=[IO.File]::ReadAllBytes($shortcutPath)
 }
 try {
-try {
 if ($oldTarget -and -not [string]::Equals($oldTarget,$trayInstalled,[StringComparison]::OrdinalIgnoreCase)) {
  if (-not ('SecretaryTrayWindow' -as [type])) {
  Add-Type -TypeDefinition @'
