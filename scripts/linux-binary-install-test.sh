@@ -49,7 +49,7 @@ mkdir -p "$home/run"
 touch "$home/run/bus"
 export HOME="$home" PATH="$home/mock:$home/provider bin:$PATH" XDG_RUNTIME_DIR="$home/run"
 export SECRETARY_VERSION=0.0.0-ci SECRETARY_RELEASE_BASE="file://$dist"
-export TEST_SERVICE_PID="$"
+export TEST_SERVICE_PID="${BASHPID}"
 bash "$root/scripts/install-linux-binary.sh" && { echo "Non-systemd host was accepted" >&2; exit 1; }
 rm "$home/run/bus"
 python3 - "$home/run/bus" <<'PY'
