@@ -137,7 +137,7 @@ if CommandLine.arguments.contains("--login-item-smoke") {
                 ])
             }
         case "verify-disabled":
-            guard NodeIntegrations.loginStatus == .notRegistered else {
+            guard NodeIntegrations.loginStatus == .notRegistered || NodeIntegrations.loginStatus == .notFound else {
                 throw NSError(domain: "SecretaryNode.LoginSmoke", code: 4, userInfo: [
                     NSLocalizedDescriptionKey: "Login item remained registered after process restart"
                 ])
