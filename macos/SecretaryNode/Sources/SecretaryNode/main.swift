@@ -23,9 +23,10 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         do {
             let home = FileManager.default.homeDirectoryForCurrentUser
             let preferred = ProcessInfo.processInfo.environment["SECRETARY_NODE_EXECUTABLE"]
-            let executable = preferred.map { URL(fileURLWithPath: $0) } ?? home.appendingPathComponent(".local/bin/secretary-node")
+            let standalone = home.appendingPathComponent(".local/share/secretary-node/current/bin/secretary-node")
+            let executable = preferred.map { URL(fileURLWithPath: $0) } ?? (FileManager.default.isExecutableFile(atPath: standalone.path) ? standalone : home.appendingPathComponent(".local/bin/secretary-node"))
             let config = ProcessInfo.processInfo.environment["SECRETARY_NODE_CONFIG"].map { URL(fileURLWithPath: $0) }
-                ?? home.appendingPathComponent(".local/share/secretary/node/config.json")
+                ?? (executable == standalone ? home.appendingPathComponent(".local/share/secretary-node/config.json") : home.appendingPathComponent(".local/share/secretary/node/config.json"))
             controller = try NodeLifecycle(executable: executable, configuration: config, environment: ["SECRETARY_NODE_STATUS_FILE": liveFile.path], directory: home.appendingPathComponent("Library/Application Support/SecretaryNode"))
             do {
                 try controller?.start()

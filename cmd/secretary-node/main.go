@@ -29,6 +29,7 @@ func main() {
 	dataDir := flag.String("data-dir", defaultNodeDataDir(), "directory for Node identity and durable local state")
 	serverURL := flag.String("server", envOr("SECRETARY_NODE_SERVER", "http://127.0.0.1:8081"), "Secretary server URL used for first pairing")
 	pairingToken := flag.String("pair-token", os.Getenv("SECRETARY_NODE_PAIRING_TOKEN"), "one-time/owner-approved Node pairing token")
+	enrollOnly := flag.Bool("enroll-only", false, "enroll this Node and persist its private identity without starting a daemon")
 	nodeName := flag.String("name", envOr("SECRETARY_NODE_NAME", defaultNodeName()), "stable Node reference requested during pairing")
 	capacity := flag.Int("capacity", 1, "maximum advertised concurrent Worker capacity")
 	checkWorkerSandbox := flag.Bool("check-worker-sandbox", false, "preflight native OS sandbox and Worker provider-state handoff")
@@ -183,6 +184,18 @@ func main() {
 	if *checkWorkerSandbox {
 		if err := nativeexec.PreflightWorkerSandbox(*dataDir); err != nil { log.Fatalf("native Worker preflight: %v", err) }
 		fmt.Println("native Worker security preflight passed")
+		return
+	}
+	if *enrollOnly {
+		if strings.TrimSpace(*pairingToken) == "" { log.Fatal("owner-approved pairing token is required") }
+		if !strings.HasPrefix(*serverURL, "https://") { log.Fatal("remote enrollment requires HTTPS") }
+		if err := os.MkdirAll(*dataDir, 0o700); err != nil { log.Fatal(err) }
+		identityPath := filepath.Join(*dataDir, "identity.json")
+		if _, err := os.Lstat(identityPath); err == nil { log.Fatal("Node is already enrolled; refusing to overwrite identity") } else if !errors.Is(err, os.ErrNotExist) { log.Fatal(err) }
+		identity, err := node.EnrollNode(context.Background(), nil, *serverURL, *pairingToken, core.NodeReference(normalizeNodeName(*nodeName)))
+		if err != nil { log.Fatalf("pair Node: %v", err) }
+		if err := node.SaveNodeIdentity(identityPath, identity); err != nil { log.Fatalf("save Node identity: %v", err) }
+		fmt.Printf("Enrolled Node %s\n", identity.Node)
 		return
 	}
 	releaseNode, err := claimNodeInstance(*dataDir)

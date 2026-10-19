@@ -12,6 +12,12 @@ printf 'abcdef\n' > "$work/release/REVISION"
 : > "$work/state/config.toml"
 : > "$work/state/environment"
 for name in secretaryd secretary-mcp; do printf '#!/bin/sh\nexit 0\n' > "$work/bin/$name"; chmod +x "$work/bin/$name"; done
+cat > "$work/bin/secretary-node" <<'EOF'
+#!/bin/sh
+[ "$#" -eq 2 ] && [ "$1" = "--codex-pair-action=readiness" ] && [ "$2" = "--codex-pair-scope=server" ] || exit 1
+exit 0
+EOF
+chmod +x "$work/bin/secretary-node"
 for name in ffmpeg ffprobe; do
   printf '#!/bin/sh\nif [ "$1" = "-hide_banner" ]; then echo " V..... libwebp WebP encoder"; else echo "%s version 6.1"; fi\n' "$name" > "$work/release/bin/video-tools/$name"
   chmod +x "$work/release/bin/video-tools/$name"
@@ -35,6 +41,7 @@ check() {
     STATE="$2/state"
     ENV_FILE="$STATE/environment"
     BIN="$2/bin"
+    NODE_BIN="$BIN/secretary-node"
     configured_harness() { print codex; }
     native_harness_ready() { return 0; }
     doctor

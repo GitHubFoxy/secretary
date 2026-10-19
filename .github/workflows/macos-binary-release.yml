@@ -6,6 +6,10 @@ on:
       - secretary
       - macos/SecretaryNode/**
       - scripts/install-macos-binary.sh
+      - scripts/install-macos-standalone-node.sh
+      - scripts/macos-standalone-node-test.sh
+      - scripts/macos-standalone-clean-install-test.sh
+      - cmd/secretary-node/**
       - internal/webapi/video.go
       - internal/webapi/video_tools.go
       - internal/webapi/video_tools_test.go
@@ -38,6 +42,9 @@ jobs:
         run: |
           bash -n scripts/package-macos-binary-release.sh
           bash -n scripts/install-macos-binary.sh
+          bash -n scripts/install-macos-standalone-node.sh
+          bash -n scripts/macos-standalone-node-test.sh
+          bash -n scripts/macos-standalone-clean-install-test.sh
           bash -n scripts/macos-release-contract-test.sh
           bash scripts/macos-release-contract-test.sh
           zsh -n secretary
@@ -98,6 +105,12 @@ jobs:
         run: |
           bash -n scripts/macos-binary-install-test.sh
           bash scripts/macos-binary-install-test.sh "$SECRETARY_PACKAGE_INPUT" "$SECRETARY_TEST_DIST" "$GITHUB_SHA"
+      - name: Standalone macOS Execution Node fixture (not owner live acceptance)
+        shell: bash
+        run: |
+          bash scripts/macos-standalone-node-test.sh "$SECRETARY_TEST_DIST" "$GITHUB_SHA"
+          bash scripts/macos-standalone-clean-install-test.sh "$SECRETARY_TEST_DIST"
+          go test ./cmd/secretary-node -run TestStandaloneEnrollmentHTTPSAndNoOverwrite -count=1
       - uses: actions/upload-artifact@v4
         with:
           name: secretary-macos-binary-release
