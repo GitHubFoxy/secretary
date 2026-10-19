@@ -68,6 +68,7 @@ if [[ -e "$target" ]]; then
   [[ -d "$target" && ! -L "$target" && -f "$target/REVISION" && "$(cat "$target/REVISION")" == "$revision" ]] || fail "Existing release directory conflicts with requested version"
   [[ -x "$target/bin/secretaryd" && -x "$target/bin/secretary-node" ]] || fail "Existing release is incomplete"
   cmp -s "$stage/manifest.json" "$target/RELEASE-MANIFEST.json" || fail "Existing cached release provenance differs from selected manifest"
+  diff -qr -x RELEASE-MANIFEST.json "$payload" "$target" >/dev/null || fail "Cached release contents differ from verified archive; remove the damaged release directory before retrying"
 else
   release_stage="$(mktemp -d "$releases/.release.XXXXXXXX")" || fail "Cannot create release staging directory"
   trap 'rm -rf "$release_stage" "$stage"' EXIT
@@ -112,6 +113,8 @@ codesign --verify "$app_stage" || fail "Staged Node.app did not verify"
 SECRETARY_BINARY_PREINSTALLED_ONLY=1 SECRETARY_BINARY_STAGE_BIN="$stage/setup-bin" "$target/secretary" setup --non-interactive || fail "Private setup failed; active release has not changed"
 
 backup="$stage/previous-app"
+had_app=false
+[[ ! -d "$app" ]] || had_app=true
 activated=false
 created_links=()
 pointer_stage="$HOME/.local/share/secretary/.current.$$.new"
@@ -125,6 +128,8 @@ activation_rollback() {
     if [[ -d "$backup" ]]; then
       rm -rf "$app"
       mv "$backup" "$app"
+    elif [[ "$had_app" == false ]]; then
+      rm -rf "$app"
     fi
     rm -f "$pointer_stage"
   fi
