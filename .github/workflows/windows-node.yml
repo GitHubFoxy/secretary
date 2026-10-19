@@ -41,7 +41,15 @@ jobs:
           New-Item -ItemType Directory -Path $data,$workspace -Force | Out-Null
           [IO.File]::WriteAllText($existing,'EXISTING-NODE-PAIRING-MUST-SURVIVE')
           $before=(Get-FileHash $existing -Algorithm SHA256).Hash
-          & ./scripts/install-windows-node.ps1 -NodeDataDir $data -Workspace $workspace -WorkerHome $workerProfile -WorkerUsername 'secretary_inst_ci' -NodeBinary (Join-Path $PWD 'secretary-node.exe')
+          go build -ldflags '-buildid=w03-node-v1' -o (Join-Path $env:RUNNER_TEMP 'w03-node-v1.exe') ./cmd/secretary-node
+          if ($LASTEXITCODE -ne 0) { throw 'Node v1 fixture build failed' }
+          go build -ldflags '-H=windowsgui -buildid=w03-tray-v1' -o (Join-Path $env:RUNNER_TEMP 'w03-tray-v1.exe') ./cmd/secretary-tray
+          if ($LASTEXITCODE -ne 0) { throw 'Tray v1 fixture build failed' }
+          go build -ldflags '-buildid=w03-node-v2' -o (Join-Path $env:RUNNER_TEMP 'w03-node-v2.exe') ./cmd/secretary-node
+          if ($LASTEXITCODE -ne 0) { throw 'Node v2 fixture build failed' }
+          go build -ldflags '-H=windowsgui -buildid=w03-tray-v2' -o (Join-Path $env:RUNNER_TEMP 'w03-tray-v2.exe') ./cmd/secretary-tray
+          if ($LASTEXITCODE -ne 0) { throw 'Tray v2 fixture build failed' }
+          & ./scripts/install-windows-node.ps1 -NodeDataDir $data -Workspace $workspace -WorkerHome $workerProfile -WorkerUsername 'secretary_inst_ci' -NodeBinary (Join-Path $env:RUNNER_TEMP 'w03-node-v1.exe') -TrayBinary (Join-Path $env:RUNNER_TEMP 'w03-tray-v1.exe')
           if ($LASTEXITCODE -ne 0) { throw 'Windows first install failed' }
           $linkPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
           if (-not (Test-Path -LiteralPath $linkPath)) { throw 'Windows Start/Search shortcut missing' }
@@ -52,14 +60,21 @@ jobs:
           $installedHash=(Get-FileHash -LiteralPath $installedTray -Algorithm SHA256).Hash
           $configPath=Join-Path $data 'worker-account.json'
           $first=(Get-Content $configPath -Raw | ConvertFrom-Json)
-          & ./scripts/install-windows-node.ps1 -NodeDataDir $data -Workspace $workspace -WorkerHome $workerProfile -WorkerUsername 'secretary_inst_ci' -NodeBinary (Join-Path $PWD 'secretary-node.exe')
+          $runningTray=Start-Process -FilePath $installedTray -ArgumentList ('--data-dir "'+$data+'"') -PassThru
+          Start-Sleep -Milliseconds 700
+          if ($runningTray.HasExited) { throw 'Installed tray failed to launch before upgrade' }
+          & ./scripts/install-windows-node.ps1 -NodeDataDir $data -Workspace $workspace -WorkerHome $workerProfile -WorkerUsername 'secretary_inst_ci' -NodeBinary (Join-Path $env:RUNNER_TEMP 'w03-node-v2.exe') -TrayBinary (Join-Path $env:RUNNER_TEMP 'w03-tray-v2.exe')
+
           if ($LASTEXITCODE -ne 0) { throw 'Windows idempotent upgrade failed' }
           $second=(Get-Content $configPath -Raw | ConvertFrom-Json)
           $upgradeLink=$shell.CreateShortcut($linkPath)
-          if ($upgradeLink.TargetPath -ne $installedTray -or
-              $installedHash -ne (Get-FileHash -LiteralPath $installedTray -Algorithm SHA256).Hash) {
-            throw 'Windows tray upgrade registration is unstable'
+          if ($upgradeLink.TargetPath -eq $installedTray -or
+              $installedHash -eq (Get-FileHash -LiteralPath $upgradeLink.TargetPath -Algorithm SHA256).Hash) {
+            throw 'Windows tray upgrade did not switch executable versions'
           }
+          Start-Sleep -Milliseconds 500
+          $runningTray.Refresh()
+          if (-not $runningTray.HasExited) { throw 'Old tray process survived upgrade' }
           if ($first.password -ne $second.password -or $before -ne (Get-FileHash $existing -Algorithm SHA256).Hash) {
             throw 'Windows upgrade rotated account credentials or Node identity'
           }
