@@ -76,11 +76,21 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	}
 	statusSeen := func(match func(w02StatusEvent) bool) bool { return statusSeenAfter(0, match) }
 	statusPath := filepath.Join(t.TempDir(), "tray-status.json")
+	legacyStatusPath := filepath.Join(t.TempDir(), "live-status.json")
+	statusWriter := NewLiveStatusWriter(legacyStatusPath)
+	readLive := func() (liveSnapshot, bool) {
+		data, err := os.ReadFile(legacyStatusPath)
+		if err != nil { return liveSnapshot{}, false }
+		var snapshot liveSnapshot
+		if json.Unmarshal(data, &snapshot) != nil { return liveSnapshot{}, false }
+		return snapshot, true
+	}
 	daemon := &Daemon{
 		Identity:           identity,
 		Store:              localStore,
 		Runtime:            runtime,
 		Inventory:          statusSource,
+		Status:             statusWriter,
 		StatusChanged: func(connected bool, snapshot core.HarnessInventorySnapshot) {
 			statusMu.Lock()
 			if err := traystatus.Write(statusPath,connected,snapshot); err != nil {t.Errorf("tray status write: %v",err)}
@@ -113,6 +123,10 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 		if !statusSeen(func(s w02StatusEvent) bool {return s.connected && len(s.inventory.Instances)==1 && s.inventory.Instances[0].Available()}) {return false}
 		tray:=traystatus.Read(statusPath,true,time.Now())
 		return tray.Connected && len(tray.Harnesses)==1 && tray.Harnesses[0].Ready
+	})
+	waitFor(t, ctx, "live connected harness snapshot", func() bool {
+		snapshot, ok := readLive()
+		return ok && snapshot.Server == "connected" && len(snapshot.Harnesses) == 1 && snapshot.Harnesses[0].Kind == "fx" && snapshot.Harnesses[0].Status == "ready"
 	})
 	waitFor(t, ctx, "Node heartbeat", func() bool {
 		status, err := manager.Status(context.Background(), "macbook")
@@ -167,6 +181,10 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	if second.CommandID != first.CommandID || second.State != first.State {
 		t.Fatalf("duplicate command outcome=%#v first=%#v", second, first)
 	}
+	waitFor(t, ctx, "live status restored after reconnect", func() bool {
+		snapshot, ok := readLive()
+		return ok && snapshot.Server == "connected" && len(snapshot.Harnesses) == 1 && snapshot.Harnesses[0].Status == "ready"
+	})
 	if starts := runtime.starts.Load(); starts != 1 {
 		t.Fatalf("duplicate command started %d runtimes", starts)
 	}
@@ -270,9 +288,17 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	restoreSince=statusIndex()
 	statusSource.set(inventory,nil)
 	checkTray("W02 ready before failed discovery",restoreSince,ready)
+	waitFor(t, ctx, "live status cleared after invalid inventory", func() bool {
+		snapshot, ok := readLive()
+		return ok && snapshot.Server == "connected" && len(snapshot.Harnesses) == 0
+	})
 	failedSince:=statusIndex()
 	statusSource.set(core.HarnessInventorySnapshot{},errors.New("probe failed"))
 	checkTray("W02 failed discovery through daemon snapshot and tray",failedSince,empty)
+	waitFor(t, ctx, "live status cleared after failed discovery", func() bool {
+		snapshot, ok := readLive()
+		return ok && snapshot.Server == "connected" && len(snapshot.Harnesses) == 0
+	})
 	recoveredSince:=statusIndex()
 	statusSource.set(inventory,nil)
 	checkTray("W02 recovery through daemon snapshot and tray",recoveredSince,ready)
@@ -284,6 +310,10 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	waitFor(t, ctx, "revoked Node stays offline", func() bool {
 		status, err := manager.Status(context.Background(), "macbook")
 		return err == nil && status.Revoked && !status.Online
+	})
+	waitFor(t, ctx, "live disconnected after revocation", func() bool {
+		snapshot, ok := readLive()
+		return ok && snapshot.Server != "connected" && len(snapshot.Harnesses) == 0
 	})
 	if err := manager.SendCommand(ctx, "macbook", command); !errors.Is(err, core.ErrNodeRevoked) {
 		t.Fatalf("command to revoked Node err=%v", err)

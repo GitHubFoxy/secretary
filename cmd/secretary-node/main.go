@@ -221,7 +221,10 @@ func main() {
 		Capacity:   *capacity,
 	}
 
-	if statusPath := os.Getenv("SECRETARY_NODE_TRAY_STATUS_FILE"); statusPath != "" {
+if statusFile := os.Getenv("SECRETARY_NODE_STATUS_FILE"); statusFile != "" {
+		daemon.Status = node.NewLiveStatusWriter(statusFile)
+	}
+		if statusPath := os.Getenv("SECRETARY_NODE_TRAY_STATUS_FILE"); statusPath != "" {
 		defer os.Remove(statusPath)
 		daemon.StatusChanged = func(connected bool, inventory core.HarnessInventorySnapshot) {
 			_ = traystatus.Write(statusPath, connected, inventory)

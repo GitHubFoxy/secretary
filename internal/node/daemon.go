@@ -19,6 +19,7 @@ type Daemon struct {
 	Store     *LocalStore
 	Runtime   Runtime
 	Inventory InventorySource
+	Status *LiveStatusWriter
 	StatusChanged func(bool, core.HarnessInventorySnapshot)
 
 	Capacity           int
@@ -67,6 +68,7 @@ type commandCompletion struct {
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
+	if d.Status != nil { defer d.Status.Publish("offline", nil) }
 	if err := d.validate(); err != nil {
 		return err
 	}
@@ -93,6 +95,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("node: restore local execution state: %w", err)
 	}
 
+	if d.Status != nil { d.Status.Publish("reconnecting", nil) }
 	if d.StatusChanged != nil { d.StatusChanged(false, core.HarnessInventorySnapshot{}) }
 	backoff := d.reconnectMin()
 	for {
@@ -104,6 +107,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return nil
 		}
 		_ = err
+		if d.Status != nil { d.Status.Publish("reconnecting", nil) }
 		if d.StatusChanged != nil { d.StatusChanged(false, core.HarnessInventorySnapshot{}) }
 		timer := time.NewTimer(backoff)
 		select {
@@ -135,6 +139,7 @@ func (d *Daemon) runConnection(ctx context.Context, execution *ExecutionNode) er
 	if err := execution.SetInventory(inventory); err != nil {
 		return fmt.Errorf("node: set harness inventory: %w", err)
 	}
+	if d.Status != nil { d.Status.Publish("reconnecting", &inventory) }
 	auth, err := d.Identity.Authenticator()
 	if err != nil {
 		return err
@@ -241,6 +246,8 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 		for {
 			message, err := receiveServerMessage(ctx, connection)
 			if err != nil {
+				if d.Status != nil { d.Status.Disconnected() }
+				if d.StatusChanged != nil { d.StatusChanged(false, core.HarnessInventorySnapshot{}) }
 				select {
 				case readErrors <- err:
 				default:
@@ -279,7 +286,9 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 		return nil
 	}
 	if err := sendHeartbeat(); err != nil {return err}
+	if d.Status != nil { d.Status.Connected(&inventory) }
 	if d.StatusChanged != nil { d.StatusChanged(true, inventory) }
+	inventoryVerified := true
 	// Recover pre-native Dispatch/Resume with their original IDs and envelope.
 	// ClaimCommand atomically serializes this replay against server redelivery.
 	replay,err:=d.Store.PendingPrestartCommands()
@@ -287,7 +296,6 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 	pendingCommands=append(pendingCommands,replay...)
 	startPending()
 
-	inventoryHealthy := true
 	heartbeats := time.NewTicker(d.heartbeatInterval())
 	inventories := time.NewTicker(d.inventoryInterval())
 	outbox := time.NewTicker(d.outboxPollInterval())
@@ -363,21 +371,16 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			if err := sendHeartbeat(); err != nil {
 				return err
 			}
-			if d.StatusChanged != nil { if inventoryHealthy { d.StatusChanged(true, inventory) } else { d.StatusChanged(true, core.HarnessInventorySnapshot{}) } }
+			if d.Status != nil { if inventoryVerified { d.Status.Connected(&inventory) } else { d.Status.Connected(nil) } }
+			if d.StatusChanged != nil { if inventoryVerified { d.StatusChanged(true, inventory) } else { d.StatusChanged(true, core.HarnessInventorySnapshot{}) } }
 		case <-inventories.C:
 			refreshed, err := d.Inventory.Discover(ctx)
+			if err == nil { err = refreshed.Validate() }
+			if err == nil && refreshed.Node != d.Identity.Node { err = errors.New("node: refreshed inventory belongs to another Node") }
+			if err == nil { err = execution.SetInventory(refreshed) }
 			if err != nil {
-				inventoryHealthy = false
-				if d.StatusChanged != nil { d.StatusChanged(true, core.HarnessInventorySnapshot{}) }
-				continue
-			}
-			if err := refreshed.Validate(); err != nil || refreshed.Node != d.Identity.Node {
-				inventoryHealthy = false
-				if d.StatusChanged != nil { d.StatusChanged(true, core.HarnessInventorySnapshot{}) }
-				continue
-			}
-			if err := execution.SetInventory(refreshed); err != nil {
-				inventoryHealthy = false
+				inventoryVerified = false
+				if d.Status != nil { d.Status.Connected(nil) }
 				if d.StatusChanged != nil { d.StatusChanged(true, core.HarnessInventorySnapshot{}) }
 				continue
 			}
@@ -393,7 +396,8 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			}
 			sentThrough = sequence
 			inventory = refreshed
-			inventoryHealthy = true
+			inventoryVerified = true
+			if d.Status != nil { d.Status.Connected(&inventory) }
 			if d.StatusChanged != nil { d.StatusChanged(true, inventory) }
 		}
 	}
@@ -556,23 +560,4 @@ func (d *Daemon) reconnectMax() time.Duration {
 		return d.ReconnectMax
 	}
 	return 30 * time.Second
-}
-
-type TrayHarnessStatus struct {
-	Name string `json:"name"`
-	Ready bool `json:"ready"`
-}
-
-func WriteTrayStatusSnapshot(path string, connected bool, inventory core.HarnessInventorySnapshot) error {
-	payload := struct {
-		Connected bool `json:"connected"`
-		ObservedAt time.Time `json:"observed_at"`
-		Harnesses []TrayHarnessStatus `json:"harnesses"`
-	}{Connected: connected, ObservedAt: time.Now().UTC()}
-	for _, instance := range inventory.Instances {
-		payload.Harnesses = append(payload.Harnesses, TrayHarnessStatus{Name: string(instance.Kind), Ready: instance.Available()})
-	}
-	encoded, err := json.Marshal(payload)
-	if err != nil { return err }
-	return os.WriteFile(path, encoded, 0o600)
 }

@@ -18,15 +18,17 @@ public final class NodeLifecycle {
     public let executable: URL
     private let configuration: URL?
     private let arguments: [String]
+    private let environment: [String: String]
     private let directory: URL
     private let lock: Int32
     private var process: Process?
     private let identity: URL
 
-    public init(executable: URL, configuration: URL? = nil, arguments: [String] = [], directory: URL) throws {
+    public init(executable: URL, configuration: URL? = nil, arguments: [String] = [], environment: [String: String] = [:], directory: URL) throws {
         self.executable = executable.resolvingSymlinksInPath().standardizedFileURL
         self.configuration = configuration
         self.arguments = arguments
+        self.environment = environment
         self.directory = directory
         self.identity = directory.appendingPathComponent("managed-node.identity")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
@@ -51,8 +53,9 @@ public final class NodeLifecycle {
 
     private func matchingNode(_ pid: pid_t) -> Bool {
         guard pid > 1 else { return false }
-        var buffer = [CChar](repeating: 0, count: Int(PROC_PIDPATHINFO_MAXSIZE))
-        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return false }
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0, Int(length) < buffer.count else { return false }
         let path = String(cString: buffer)
         return URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL == executable
     }
@@ -95,9 +98,22 @@ public final class NodeLifecycle {
         let child = Process()
         child.executableURL = executable
         child.arguments = (configuration.map { ["--config", $0.path] } ?? []) + arguments
+        child.environment = ProcessInfo.processInfo.environment.merging(environment) { _, override in override }
         child.standardInput = FileHandle.nullDevice
-        child.standardOutput = FileHandle.nullDevice
-        child.standardError = FileHandle.nullDevice
+        let log = NodeIntegrations.logURL
+        try FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let fd = open(log.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else {
+            let code = errno
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [
+                NSFilePathErrorKey: log.path,
+                NSLocalizedDescriptionKey: "Cannot open Secretary Node log at \(log.path): \(String(cString: strerror(code)))"
+            ])
+        }
+        let stream = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        child.standardOutput = stream
+        child.standardError = stream
+        if let statusPath = environment["SECRETARY_NODE_STATUS_FILE"] { try? FileManager.default.removeItem(atPath: statusPath) }
         try child.run()
         process = child
         do {

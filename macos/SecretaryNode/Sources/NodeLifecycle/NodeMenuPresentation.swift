@@ -1,8 +1,13 @@
 import AppKit
+import ServiceManagement
 
 public final class NodeMenuPresentation {
     public let menu = NSMenu()
     public let status = NSMenuItem(title: "Node: Starting", action: nil, keyEquivalent: "")
+    public let server = NSMenuItem(title: "Server: Offline", action: nil, keyEquivalent: "")
+    private var harnessRows: [NSMenuItem] = []
+    public let launchAtLogin = NSMenuItem(title: "Launch at Login", action: nil, keyEquivalent: "")
+    public let openLogs = NSMenuItem(title: "Open Logs", action: nil, keyEquivalent: "")
     public let quit = NSMenuItem(title: "Quit Secretary Node", action: nil, keyEquivalent: "q")
     public private(set) var launchError: String?
     public private(set) var stopError: String?
@@ -11,8 +16,36 @@ public final class NodeMenuPresentation {
         menu.autoenablesItems = false
         status.isEnabled = false
         menu.addItem(status)
+        server.isEnabled = false
+        menu.addItem(server)
+        menu.addItem(.separator())
+        menu.addItem(launchAtLogin)
+        menu.addItem(openLogs)
         menu.addItem(.separator())
         menu.addItem(quit)
+    }
+
+    public func updateLogin(_ status: SMAppService.Status) {
+        launchAtLogin.state = status == .enabled ? .on : .off
+        launchAtLogin.toolTip = NodeIntegrations.loginDescription(status)
+        launchAtLogin.title = status == .requiresApproval ? "Launch at Login (Approval Needed)" : "Launch at Login"
+    }
+
+    public func renderLive(_ snapshot: NodeLiveSnapshot?) {
+        let state = snapshot?.server ?? "offline"
+        switch state {
+        case "connected": server.title = "Server: Connected"
+        case "reconnecting": server.title = "Server: Reconnecting"
+        default: server.title = "Server: Offline"
+        }
+        for row in harnessRows { menu.removeItem(row) }
+        harnessRows.removeAll()
+        for harness in snapshot?.harnesses.sorted(by: { $0.kind < $1.kind }) ?? [] {
+            let row = NSMenuItem(title: "\(harness.kind): \(state == "connected" && harness.status == "ready" ? "Ready" : "Unavailable")", action: nil, keyEquivalent: "")
+            row.isEnabled = false
+            menu.insertItem(row, at: menu.index(of: quit))
+            harnessRows.append(row)
+        }
     }
 
     public func startupFailed(_ error: Error) {

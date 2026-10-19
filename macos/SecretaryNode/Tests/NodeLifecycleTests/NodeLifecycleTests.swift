@@ -10,6 +10,38 @@ final class NodeLifecycleTests: XCTestCase {
         return url
     }
 
+    func testManagedNodeRecoveredAfterCompanionRestartWithoutDuplicateProcess() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var original: NodeLifecycle? = try NodeLifecycle(executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"], directory: directory)
+        try original?.start()
+        let pidFile = directory.appendingPathComponent("managed-node.pid")
+        let originalPID = try String(contentsOf: pidFile, encoding: .utf8)
+        XCTAssertEqual(original?.state, .running)
+        original = nil
+        let relaunched = try NodeLifecycle(executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"], directory: directory)
+        XCTAssertEqual(relaunched.state, .alreadyRunning)
+        XCTAssertThrowsError(try relaunched.start()) {
+            XCTAssertEqual($0 as? NodeLifecycleError, .alreadyRunning)
+        }
+        XCTAssertEqual(try String(contentsOf: pidFile, encoding: .utf8), originalPID)
+        let stopped = expectation(description: "recovered Node stopped")
+        relaunched.stop { error in
+            XCTAssertNil(error)
+            stopped.fulfill()
+        }
+        wait(for: [stopped], timeout: 20)
+        XCTAssertEqual(relaunched.state, .stopped)
+        try relaunched.start()
+        XCTAssertEqual(relaunched.state, .running)
+        let restarted = expectation(description: "restarted Node stopped")
+        relaunched.stop { error in
+            XCTAssertNil(error)
+            restarted.fulfill()
+        }
+        wait(for: [restarted], timeout: 20)
+    }
+
     func testExclusiveAppInstanceLock() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
