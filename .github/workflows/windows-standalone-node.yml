@@ -23,6 +23,9 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Node fixture compilation failed' }
           go build -ldflags '-H=windowsgui' -o "$env:RUNNER_TEMP/secretary-tray.exe" ./cmd/secretary-tray
           if ($LASTEXITCODE -ne 0) { throw 'Tray fixture compilation failed' }
+      - name: Verify Windows Codex pinned artifact and ZIP safety fixtures
+        shell: pwsh
+        run: go test ./internal/node -run '^TestInstall07' -count=1 -timeout=5m -v
       - name: Verify release archive contract and installation
         shell: powershell
         run: |
