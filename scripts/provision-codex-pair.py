@@ -104,6 +104,7 @@ def readiness(codex, acp, binary):
     env["CODEX_PATH"] = str(codex)
     env["SECRETARY_CODEX_COMMAND"] = str(codex)
     env["SECRETARY_ACP_COMMAND"] = str(acp)
+    env["SECRETARY_CODEX_PAIR_CANDIDATE"] = "1"
     result = subprocess.run([str(executable), "--check-codex-readiness"], env=env, capture_output=True, text=True, timeout=45)
     if result.returncode != 0:
         fail("native Codex/ACP initialize and session/new readiness failed; existing inventory unchanged")
