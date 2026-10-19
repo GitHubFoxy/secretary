@@ -22,7 +22,7 @@ final class NodeLifecycleTests: XCTestCase {
     func testRunStopAndRelaunch() throws {
         let directory = try temporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
-        let lifecycle = try NodeLifecycle(executable: URL(fileURLWithPath: "/bin/sleep"), directory: directory)
+        let lifecycle = try NodeLifecycle(executable: URL(fileURLWithPath: "/bin/sleep"), arguments: ["30"], directory: directory)
         XCTAssertEqual(lifecycle.state, .stopped)
         try lifecycle.start()
         XCTAssertEqual(lifecycle.state, .running)
