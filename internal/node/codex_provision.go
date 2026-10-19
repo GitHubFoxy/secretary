@@ -109,12 +109,14 @@ func codexBinaryRecord(path, provenance string) (CodexBinaryRecord, error) {
 }
 
 func codexNativePairReady(ctx context.Context, pair CodexPairInventory) error {
- _, err := exec.CommandContext(ctx, pair.Codex.Path, "login", "status").CombinedOutput()
+ probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+ defer cancel()
+ _, err := exec.CommandContext(probeCtx, pair.Codex.Path, "login", "status").CombinedOutput()
  if err != nil { return fmt.Errorf("native Codex authorization required; run %s login", pair.Codex.Path) }
  before := os.Getenv("SECRETARY_ACP_COMMAND")
  defer os.Setenv("SECRETARY_ACP_COMMAND", before)
  if err := os.Setenv("SECRETARY_ACP_COMMAND", pair.ACP.Path); err != nil { return err }
- models, _, err := (ExecCommandRunner{}).ObserveCodexACP(ctx, pair.Codex.Path)
+ models, _, err := (ExecCommandRunner{}).ObserveCodexACP(probeCtx, pair.Codex.Path)
  if err != nil { return fmt.Errorf("native Codex/ACP protocol not ready: %w", err) }
  if len(models) == 0 { return errors.New("native Codex ACP returned no supported models") }
  return nil
@@ -161,7 +163,11 @@ func provisionManagedPair(ctx context.Context) (string, string, error) {
  home, err := os.UserHomeDir()
  if err != nil { return "", "", err }
  root := filepath.Join(home, ".local", "share", "secretary", "native", "releases", codexPinnedVersion+"-"+codexACPPinnedVersion)
- final := filepath.Join(root, runtime.GOOS+"-"+runtime.GOARCH)
+ return installManagedCodexAssets(ctx, assets, root, runtime.GOOS+"-"+runtime.GOARCH)
+}
+
+func installManagedCodexAssets(ctx context.Context, assets []codexAsset, root, target string) (string, string, error) {
+ final := filepath.Join(root, target)
  cli, acp := filepath.Join(final, "codex"), filepath.Join(final, "codex-acp")
  if _, err := os.Lstat(final); err == nil {
   if _, err := codexBinaryRecord(cli, "managed"); err != nil { return "", "", fmt.Errorf("partial or changed managed Codex CLI: %w", err) }
