@@ -14,7 +14,7 @@ on:
       - 'v*'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   package-and-install:
@@ -46,6 +46,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/MacOS"
           cp macos/SecretaryNode/.build/release/SecretaryNode "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/MacOS/SecretaryNode"
           cp macos/SecretaryNode/Info.plist "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/Info.plist"
+          plutil -replace CFBundleShortVersionString -string "${GITHUB_REF_NAME#v}" "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/Info.plist"
           codesign --force --sign - "$RUNNER_TEMP/secretary-package/Secretary Node.app"
           codesign --verify "$RUNNER_TEMP/secretary-package/Secretary Node.app"
           cp secretary "$RUNNER_TEMP/secretary-package/secretary"
@@ -85,12 +86,16 @@ jobs:
           test -f "$HOME/.local/share/secretary/config.toml"
           test -f "$HOME/.local/share/secretary/environment"
           test -f "$HOME/.local/share/secretary/node/config.json"
-          echo 'sentinel-database' > "$HOME/.local/share/secretary/secretary.db"
+          if test -f "$HOME/.local/share/secretary/secretary.db"; then
+            cp "$HOME/.local/share/secretary/secretary.db" "$RUNNER_TEMP/secretary-db-before"
+          fi
           echo 'sentinel-session' > "$HOME/.local/share/secretary/node/data/native-session-sentinel"
           cp "$HOME/.local/share/secretary/environment" "$RUNNER_TEMP/secretary-credentials-before"
           bash scripts/install-macos-binary.sh
           cmp "$HOME/.local/share/secretary/environment" "$RUNNER_TEMP/secretary-credentials-before"
-          test "$(cat "$HOME/.local/share/secretary/secretary.db")" = 'sentinel-database'
+          if test -f "$RUNNER_TEMP/secretary-db-before"; then
+            cmp "$HOME/.local/share/secretary/secretary.db" "$RUNNER_TEMP/secretary-db-before"
+          fi
           test "$(cat "$HOME/.local/share/secretary/node/data/native-session-sentinel")" = 'sentinel-session'
           test -d "$HOME/Applications/Secretary Node.app"
       - uses: actions/upload-artifact@v4
@@ -98,3 +103,18 @@ jobs:
           name: secretary-macos-binary-release
           path: ${{ runner.temp }}/secretary-dist/*
           if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package-and-install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: secretary-macos-binary-release
+          path: dist
+      - name: Attach versioned artifacts to GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --verify-tag --title "$GITHUB_REF_NAME"
