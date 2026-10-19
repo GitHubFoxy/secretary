@@ -22,7 +22,7 @@ func TestVideoToolPairValidation(t *testing.T) {
  first,second:=filepath.Join(dir,"ffmpeg"),filepath.Join(dir,"ffprobe")
  write:=func(path,tool,version string) {
   t.Helper()
-  data:=[]byte("#!/bin/sh\necho '"+tool+" version "+version+"'\n")
+  data:=[]byte("#!/bin/sh\nif [ \"$1\" = \"-hide_banner\" ]; then echo ' V..... libwebp WebP encoder'; else echo '"+tool+" version "+version+"'; fi\n")
   if err:=os.WriteFile(path,data,0700);err!=nil{t.Fatal(err)}
  }
  write(first,"ffmpeg","6.1");write(second,"ffprobe","6.1")
@@ -43,10 +43,10 @@ func TestVideoManagedManifestIntegrity(t *testing.T) {
  root:=t.TempDir()
  folder:=filepath.Join(root,"bin","video-tools")
  if err:=os.MkdirAll(folder,0700);err!=nil{t.Fatal(err)}
- m:=videoToolManifest{Origin:"test-distribution"}
+ m:=videoToolManifest{Origin:"test-distribution",RequiredEncoder:"libwebp"}
  for _,tool:=range []string{"ffmpeg","ffprobe"}{
   path:=filepath.Join(folder,tool)
-  data:=[]byte("#!/bin/sh\necho '"+tool+" version 6.1'\n")
+  data:=[]byte("#!/bin/sh\nif [ \"$1\" = \"-hide_banner\" ]; then echo ' V..... libwebp WebP encoder'; else echo '"+tool+" version 6.1'; fi\n")
   if err:=os.WriteFile(path,data,0700);err!=nil{t.Fatal(err)}
   sum:=sha256.Sum256(data)
   entry:=videoToolEntry{Version:"6.1",SHA256:hex.EncodeToString(sum[:])}
@@ -61,11 +61,23 @@ func TestVideoManagedManifestIntegrity(t *testing.T) {
  if _,_,err:=verifyManagedVideoTools(context.Background(),root);err!=nil{t.Fatalf("valid managed pair: %v",err)}
  if err:=os.WriteFile(filepath.Join(folder,"ffmpeg"),[]byte("tampered"),0700);err!=nil{t.Fatal(err)}
  if _,_,err:=verifyManagedVideoTools(context.Background(),root);err==nil||!strings.Contains(err.Error(),"integrity"){t.Fatalf("tamper accepted: %v",err)}
- data:=[]byte("#!/bin/sh\necho 'ffmpeg version 6.1'\n")
+ data:=[]byte("#!/bin/sh\nif [ \"$1\" = \"-hide_banner\" ]; then echo ' V..... libwebp WebP encoder'; else echo 'ffmpeg version 6.1'; fi\n")
  os.WriteFile(filepath.Join(folder,"ffmpeg"),data,0700)
  m.FFprobe.Version="7.0";store()
  if _,_,err:=verifyManagedVideoTools(context.Background(),root);err==nil||!strings.Contains(err.Error(),"manifest"){t.Fatalf("wrong manifest accepted: %v",err)}
  m.FFprobe.Version="6.1";store()
+ m.RequiredEncoder="";store()
+ if _,_,err:=verifyManagedVideoTools(context.Background(),root);err==nil{t.Fatal("missing required WebP capability accepted")}
+ m.RequiredEncoder="libwebp";store()
  os.Remove(filepath.Join(folder,"ffprobe"))
  if _,_,err:=verifyManagedVideoTools(context.Background(),root);err==nil{t.Fatal("missing managed tool accepted")}
+}
+
+func TestVideoRejectsFFmpegWithoutLibWebP(t *testing.T) {
+ dir:=t.TempDir()
+ binary:=filepath.Join(dir,"ffmpeg")
+ if err:=os.WriteFile(binary,[]byte("#!/bin/sh\necho ' V..... png PNG encoder'\n"),0700);err!=nil{t.Fatal(err)}
+ if err:=requireWebPEncoder(context.Background(),binary);err==nil||!strings.Contains(err.Error(),"libwebp"){t.Fatalf("missing WebP encoder was accepted: %v",err)}
+ if err:=os.WriteFile(binary,[]byte("#!/bin/sh\necho ' V..... libwebp WebP encoder'\n"),0700);err!=nil{t.Fatal(err)}
+ if err:=requireWebPEncoder(context.Background(),binary);err!=nil{t.Fatalf("WebP encoder rejected: %v",err)}
 }
