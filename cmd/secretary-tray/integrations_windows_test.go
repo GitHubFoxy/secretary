@@ -4,6 +4,10 @@ package main
 
 import (
  "os"
+ "crypto/sha256"
+ "encoding/hex"
+ "syscall"
+ "unsafe"
  "path/filepath"
  "strings"
  "testing"
@@ -64,4 +68,32 @@ func TestW03OpenLogsActionableErrors(t *testing.T) {
  errorText=""
  openNodeLogs(path,os.Stat,func(string)error{return os.ErrPermission},report)
  if !strings.Contains(errorText,"File Explorer")||!strings.Contains(errorText,path){t.Fatal(errorText)}
+}
+
+func TestW03HeadlessNodeOwnershipPreventsTrayDuplicate(t *testing.T) {
+ root:=t.TempDir()
+ absolute,err:=filepath.Abs(root)
+ if err!=nil{t.Fatal(err)}
+ digest:=sha256.Sum256([]byte(strings.ToLower(filepath.Clean(absolute))))
+ name:=wide("Local\\SecretaryNodeData-"+hex.EncodeToString(digest[:16]))
+ handle,_,err:=createMutex.Call(0,1,uintptr(unsafe.Pointer(name)))
+ if handle==0{t.Fatalf("claim simulated headless Node: %v",err)}
+ defer closeHandle.Call(handle)
+ active,err:=existingNodeForData(root)
+ if err!=nil||!active{t.Fatalf("headless Node not detected: %v %v",active,err)}
+ a:=&trayApp{dataDir:root}
+ a.start()
+ if a.node!=nil||!strings.Contains(a.lastError,"headless Node"){t.Fatalf("duplicate Node attempt: %v %s",a.node,a.lastError)}
+}
+func TestW03OwnershipReleasedAfterHeadlessExit(t *testing.T) {
+ root:=t.TempDir()
+ absolute,err:=filepath.Abs(root)
+ if err!=nil{t.Fatal(err)}
+ digest:=sha256.Sum256([]byte(strings.ToLower(filepath.Clean(absolute))))
+ name:=wide("Local\\SecretaryNodeData-"+hex.EncodeToString(digest[:16]))
+ handle,_,err:=createMutex.Call(0,1,uintptr(unsafe.Pointer(name)))
+ if handle==0{t.Fatalf("create mutex: %v",err)}
+ closeHandle.Call(handle)
+ active,err:=existingNodeForData(root)
+ if err!=nil||active{t.Fatalf("stale Node ownership: %v %v",active,err)}
 }
