@@ -49,7 +49,10 @@ func main() {
 		if _, err := node.ReadCodexPairInventory("server"); err == nil {
 			if err := node.ApplyCodexPairInventory("server"); err != nil { log.Fatalf("Codex pair: %v", err) }
 		} else if !os.IsNotExist(err) {
-			log.Fatalf("Codex pair: %v", err)
+			log.Printf("Codex native pair unavailable: %v", err)
+			_ = os.Setenv("CODEX_PATH", "/__secretary_codex_inventory_unavailable__")
+			_ = os.Setenv("SECRETARY_CODEX_COMMAND", "/__secretary_codex_inventory_unavailable__")
+			_ = os.Setenv("SECRETARY_ACP_COMMAND", "/__secretary_codex_acp_inventory_unavailable__")
 		}
 	}
 	if *backupTo != "" || *restoreFrom != "" {
