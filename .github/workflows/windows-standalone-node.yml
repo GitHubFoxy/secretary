@@ -4,6 +4,13 @@ on:
     paths:
       - 'scripts/install-windows-node-release.ps1'
       - 'scripts/install-windows-node.ps1'
+      - 'scripts/setup-windows-worker.ps1'
+      - 'internal/node/codex_provision.go'
+      - 'internal/node/codex_inventory.go'
+      - 'internal/node/codex_lock_windows.go'
+      - 'internal/node/codex_windows_test.go'
+      - 'cmd/secretary-node/main.go'
+      - 'scripts/fixtures/install07-native-fixture/**'
       - '.github/workflows/windows-standalone-node.yml'
   workflow_dispatch:
 permissions:
@@ -72,6 +79,27 @@ jobs:
           New-Item -ItemType Directory -Path $data,$workspace -Force | Out-Null
           $identity=Join-Path $data 'identity.json'
           [IO.File]::WriteAllText($identity,'PRESERVED-IDENTITY')
+          $preserved=@{
+            'config.json'='PRESERVED-DEPLOYMENT-CONFIG'
+            'node-state.json'='PRESERVED-NATIVE-SESSION-CHECKPOINT'
+            'transport-credential.json'='PRESERVED-TRANSPORT-CREDENTIAL'
+            'native-sessions\worker-01.json'='PRESERVED-NATIVE-WORKER-SESSION'
+          }
+          foreach($name in $preserved.Keys) {
+            $file=Join-Path $data $name
+            New-Item -ItemType Directory -Path (Split-Path $file -Parent) -Force | Out-Null
+            [IO.File]::WriteAllText($file,$preserved[$name])
+          }
+          $identityContents=Get-Content -LiteralPath $identity -Raw
+          $savedState=@{}
+          $savedState['identity.json']=$identityContents
+          foreach($name in $preserved.Keys) { $savedState[$name]=Get-Content -LiteralPath (Join-Path $data $name) -Raw }
+          function Assert-PreservedState {
+            foreach($name in $savedState.Keys) {
+              $actual=Get-Content -LiteralPath (Join-Path $data $name) -Raw
+              if ($actual -cne $savedState[$name]) { throw "Preserved Windows state modified: $name" }
+            }
+          }
           try {
             & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 ('0'*64) -NodeDataDir $data -WorkerHome $home -Workspace $workspace
             throw 'Tampered outer digest was accepted'
@@ -89,7 +117,7 @@ jobs:
           }
                     & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
           if (-not $?) { throw 'Verified archive install failed' }
-          if ((Get-Content -LiteralPath $identity -Raw) -ne 'PRESERVED-IDENTITY') { throw 'Verified install mutated identity' }
+          Assert-PreservedState
           $shortcutPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
           $shell=New-Object -ComObject WScript.Shell
           $originalTarget=$shell.CreateShortcut($shortcutPath).TargetPath
@@ -101,12 +129,13 @@ jobs:
             if ($_.Exception.Message -notlike '*executable hash*') { throw }
           }
           if ((Get-FileHash $shortcutPath -Algorithm SHA256).Hash -ne $originalLinkHash -or $shell.CreateShortcut($shortcutPath).TargetPath -ne $originalTarget) { throw 'Failed upgrade changed Start/Search activation' }
-          if ((Get-Content -LiteralPath $identity -Raw) -ne 'PRESERVED-IDENTITY') { throw 'Failed upgrade changed identity' }
+          Assert-PreservedState
                     $identityBefore=(Get-FileHash $identity -Algorithm SHA256).Hash
           $workerAccount=Join-Path $data 'worker-account.json'
           $accountBefore=(Get-FileHash $workerAccount -Algorithm SHA256).Hash
           & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
           if (-not $?) { throw 'Repeated verified install failed' }
           if ($identityBefore -ne (Get-FileHash $identity -Algorithm SHA256).Hash -or $accountBefore -ne (Get-FileHash $workerAccount -Algorithm SHA256).Hash) { throw 'Repeat install changed identity or Worker account' }
+          Assert-PreservedState
           $shortcut=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
           if (-not (Test-Path $shortcut)) { throw 'Start/Search shortcut missing' }
