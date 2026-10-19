@@ -8,6 +8,7 @@ on:
       - scripts/install-macos-binary.sh
       - scripts/package-macos-binary-release.sh
       - scripts/macos-release-contract-test.sh
+      - scripts/macos-binary-install-test.sh
       - .github/workflows/macos-binary-release.yml
   push:
     tags:
@@ -66,40 +67,11 @@ jobs:
           bash scripts/package-macos-binary-release.sh "$version" "$GITHUB_SHA" "$arch" "$SECRETARY_PACKAGE_INPUT" "$RUNNER_TEMP/secretary-dist"
           echo "SECRETARY_TEST_VERSION=$version" >> "$GITHUB_ENV"
           echo "SECRETARY_TEST_DIST=$RUNNER_TEMP/secretary-dist" >> "$GITHUB_ENV"
-      - name: Install and upgrade into fresh user home
+      - name: Verify clean install, idempotence, failed activation and upgrade
         shell: bash
         run: |
-          set -euo pipefail
-          test_home="$(mktemp -d "$RUNNER_TEMP/secretary-home.XXXXXXXX")"
-          mkdir -p "$test_home/fakebin"
-          cat > "$test_home/fakebin/claude" <<'EOF'
-          #!/bin/sh
-          if [ "$1" = "--version" ]; then echo "CI fixture"; exit 0; fi
-          if [ "$1" = auth ] && [ "$2" = status ]; then exit 0; fi
-          exit 1
-          EOF
-          chmod +x "$test_home/fakebin/claude"
-          export HOME="$test_home"
-          export PATH="$test_home/fakebin:$PATH"
-          export SECRETARY_VERSION="$SECRETARY_TEST_VERSION"
-          export SECRETARY_RELEASE_BASE="file://$SECRETARY_TEST_DIST"
-          bash scripts/install-macos-binary.sh
-          "$HOME/.local/bin/secretary" doctor
-          test -f "$HOME/.local/share/secretary/config.toml"
-          test -f "$HOME/.local/share/secretary/environment"
-          test -f "$HOME/.local/share/secretary/node/config.json"
-          if test -f "$HOME/.local/share/secretary/secretary.db"; then
-            cp "$HOME/.local/share/secretary/secretary.db" "$RUNNER_TEMP/secretary-db-before"
-          fi
-          echo 'sentinel-session' > "$HOME/.local/share/secretary/node/data/native-session-sentinel"
-          cp "$HOME/.local/share/secretary/environment" "$RUNNER_TEMP/secretary-credentials-before"
-          bash scripts/install-macos-binary.sh
-          cmp "$HOME/.local/share/secretary/environment" "$RUNNER_TEMP/secretary-credentials-before"
-          if test -f "$RUNNER_TEMP/secretary-db-before"; then
-            cmp "$HOME/.local/share/secretary/secretary.db" "$RUNNER_TEMP/secretary-db-before"
-          fi
-          test "$(cat "$HOME/.local/share/secretary/node/data/native-session-sentinel")" = 'sentinel-session'
-          test -d "$HOME/Applications/Secretary Node.app"
+          bash -n scripts/macos-binary-install-test.sh
+          bash scripts/macos-binary-install-test.sh "$SECRETARY_PACKAGE_INPUT" "$SECRETARY_TEST_DIST" "$GITHUB_SHA"
       - uses: actions/upload-artifact@v4
         with:
           name: secretary-macos-binary-release
