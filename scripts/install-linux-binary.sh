@@ -189,14 +189,20 @@ EOF
   systemctl --user daemon-reload || fail "Cannot register systemd units"
   systemctl --user enable --now secretary.service || fail "Cannot activate Server service"
   systemctl --user enable --now secretary-node.service || fail "Cannot activate Node service"
-  for service in secretary.service secretary-node.service; do
-    state="$(systemctl --user show "$service" -p ActiveState --value)" || fail "Cannot inspect $service ActiveState"
-    pid="$(systemctl --user show "$service" -p MainPID --value)" || fail "Cannot inspect $service MainPID"
-    [[ "$state" == active && "$pid" =~ ^[1-9][0-9]*$ ]] || fail "$service is not active with a MainPID"
-    kill -0 "$pid" 2>/dev/null || fail "$service MainPID is not alive"
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    ready=true
+    for service in secretary.service secretary-node.service; do
+      state="$(systemctl --user show "$service" -p ActiveState --value)" || fail "Cannot inspect $service ActiveState"
+      pid="$(systemctl --user show "$service" -p MainPID --value)" || fail "Cannot inspect $service MainPID"
+      if [[ "$state" != active || ! "$pid" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$pid" 2>/dev/null; then
+        ready=false
+      fi
+    done
+    health="$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/v1/web/session 2>/dev/null)" || health=000
+    if [[ "$ready" == true && "$health" =~ ^[1-5][0-9][0-9]$ ]]; then break; fi
+    [[ "$attempt" != 10 ]] || fail "Server/Node failed service health verification after activation"
+    sleep 1
   done
-  health="$(curl -sS --max-time 5 -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/v1/web/session)" || fail "Server health endpoint unreachable after activation"
-  [[ "$health" =~ ^[1-5][0-9][0-9]$ ]] || fail "Server health endpoint did not respond"
 fi
 activated=true
 printf 'Secretary %s (%s) installed for linux/%s. Inspect: systemctl --user status secretary.service secretary-node.service; secretary status
