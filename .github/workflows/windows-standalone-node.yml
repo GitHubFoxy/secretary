@@ -185,9 +185,9 @@ jobs:
             $caseScript=Join-Path $caseDir 'install-windows-node.ps1'
             $caseText=Get-Content -LiteralPath $caseScript -Raw
             if ($scenario -eq 'shutdown-wait') {
-              $inject='if (-not $oldProcess.HasExited) { throw'
-              $replacement="throw 'CI_SHUTDOWN_WAIT_FAILURE'; "+$inject
-              $expected='CI_SHUTDOWN_WAIT_FAILURE'
+              $inject='[SecretaryTrayWindow]::PostMessage($window,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)'
+              $replacement='[SecretaryTrayWindow]::PostMessage($window,0x0000,[IntPtr]::Zero,[IntPtr]::Zero)'
+              $expected='Old tray did not exit after cooperative shutdown'
             } elseif ($scenario -eq 'new-tray-exit') {
               $inject='$newTray.Refresh()'
               $replacement='Stop-Process -Id $newTray.Id -Force -ErrorAction SilentlyContinue; '+$inject
@@ -214,6 +214,7 @@ jobs:
               $expected='CI_NEW_TRAY_OWNED_NODE_ROLLBACK'
             }
             if (-not $caseText.Contains($inject)) { throw "Missing $scenario fault injection seam" }
+            if ($scenario -eq 'shutdown-wait' -and -not (Get-Process -Id $runningTray.Id -ErrorAction SilentlyContinue)) { throw 'Shutdown wait fixture requires live original tray' }
             $caseText=$caseText.Replace($inject,$replacement)
             [IO.File]::WriteAllText($caseScript,$caseText)
             $caseArchive=Join-Path $env:RUNNER_TEMP ('install07-'+$scenario+'.zip')
