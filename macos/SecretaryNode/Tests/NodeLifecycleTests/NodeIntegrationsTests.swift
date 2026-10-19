@@ -1,5 +1,6 @@
 import Foundation
 import XCTest
+import ServiceManagement
 @testable import NodeLifecycle
 
 final class NodeIntegrationsTests: XCTestCase {
@@ -16,11 +17,19 @@ final class NodeIntegrationsTests: XCTestCase {
         XCTAssertEqual(menu.menu.items[4].title, "Open Logs")
     }
 
-    func testLoginItemOSStatusCanBeQueried() {
-        // Reading the OS registration status is safe in XCTest; toggling a real login item
-        // needs manual acceptance in an installed, signed .app context.
-        let enabled = NodeIntegrations.launchAtLogin
-        XCTAssertEqual(enabled, NodeIntegrations.launchAtLogin)
+    func testLoginItemStatusGuidance() {
+        XCTAssertNil(NodeIntegrations.loginDescription(.enabled))
+        XCTAssertNil(NodeIntegrations.loginDescription(.notRegistered))
+        XCTAssertTrue(NodeIntegrations.loginDescription(.requiresApproval)?.contains("System Settings") == true)
+        XCTAssertTrue(NodeIntegrations.loginDescription(.notFound)?.contains("Applications") == true)
+        let menu = NodeMenuPresentation()
+        menu.updateLogin(.requiresApproval)
+        XCTAssertEqual(menu.launchAtLogin.state, .off)
+        XCTAssertEqual(menu.launchAtLogin.title, "Launch at Login (Approval Needed)")
+        XCTAssertNotNil(menu.launchAtLogin.toolTip)
+        menu.updateLogin(.enabled)
+        XCTAssertEqual(menu.launchAtLogin.state, .on)
+        XCTAssertEqual(menu.launchAtLogin.title, "Launch at Login")
     }
 
     func testManagedNodeCreatesReadableLogFile() throws {
