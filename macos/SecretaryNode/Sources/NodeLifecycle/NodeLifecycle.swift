@@ -22,13 +22,19 @@ public final class NodeLifecycle {
     private let lock: Int32
     private var process: Process?
     private var lastError: String?
+    private let identity: URL
+    private var adoptedPID: pid_t?
 
     public init(executable: URL, configuration: URL? = nil, arguments: [String] = [], directory: URL) throws {
         self.executable = executable.resolvingSymlinksInPath().standardizedFileURL
         self.configuration = configuration
         self.arguments = arguments
         self.directory = directory
+        self.identity = directory.appendingPathComponent("managed-node.identity")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        let attributes = try FileManager.default.attributesOfItem(atPath: directory.path)
+        guard (attributes[.posixPermissions] as? NSNumber)?.uint16Value == 0o700,
+              (attributes[.type] as? FileAttributeType) == .typeDirectory else { throw POSIXError(.EACCES) }
         let descriptor = open(directory.appendingPathComponent("menu-bar.lock").path, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard descriptor >= 0 else { throw POSIXError(.EACCES) }
         guard flock(descriptor, LOCK_EX | LOCK_NB) == 0 else {
@@ -53,11 +59,21 @@ public final class NodeLifecycle {
         return URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL == executable
     }
 
+    private func birthTime(_ pid: pid_t) -> String? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return "\(info.pbi_start_tvsec):\(info.pbi_start_tvusec)"
+    }
+
     private func previousNode() -> pid_t? {
         guard let data = try? Data(contentsOf: pidFile),
               let value = String(data: data, encoding: .utf8),
               let pid = pid_t(value.trimmingCharacters(in: .whitespacesAndNewlines)),
-              matchingNode(pid) else { return nil }
+              matchingNode(pid),
+              let birth = birthTime(pid),
+              let stamp = try? String(contentsOf: identity, encoding: .utf8),
+              stamp == "\(pid):\(birth)" else { return nil }
         return pid
     }
 
@@ -89,26 +105,53 @@ public final class NodeLifecycle {
         process = child
         lastError = nil
         do {
+            guard let birth = birthTime(child.processIdentifier) else { throw POSIXError(.ESRCH) }
             try Data(String(child.processIdentifier).utf8).write(to: pidFile, options: .atomic)
+            try "\(child.processIdentifier):\(birth)".write(to: identity, atomically: true, encoding: .utf8)
         } catch {
-            child.terminate()
+            child.interrupt()
             child.waitUntilExit()
             process = nil
+            try? FileManager.default.removeItem(at: pidFile)
+            try? FileManager.default.removeItem(at: identity)
             throw error
         }
     }
 
-    public func stop(completion: @escaping () -> Void) {
-        guard let child = process, child.isRunning else {
-            completion()
+    public func stop(completion: @escaping (Error?) -> Void) {
+        let ownedProcess = process
+        let ownedPID = ownedProcess?.isRunning == true ? ownedProcess?.processIdentifier : previousNode()
+        guard let pid = ownedPID else {
+            completion(nil)
             return
         }
-        child.interrupt()
+        if ownedProcess == nil && previousNode() != pid {
+            completion(NodeLifecycleError.alreadyRunning)
+            return
+        }
+        guard kill(pid, SIGINT) == 0 else {
+            completion(POSIXError(.EPERM))
+            return
+        }
         DispatchQueue.global(qos: .userInitiated).async {
-            child.waitUntilExit()
+            let deadline = Date().addingTimeInterval(15)
+            while Date() < deadline {
+                if let child = ownedProcess {
+                    if !child.isRunning { break }
+                } else if self.previousNode() != pid {
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.1)
+            }
+            let stillRunning = ownedProcess?.isRunning ?? (self.previousNode() == pid)
+            if stillRunning {
+                completion(POSIXError(.ETIMEDOUT))
+                return
+            }
             try? FileManager.default.removeItem(at: self.pidFile)
+            try? FileManager.default.removeItem(at: self.identity)
             self.process = nil
-            completion()
+            completion(nil)
         }
     }
 }
