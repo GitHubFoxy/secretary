@@ -50,7 +50,7 @@ jobs:
             node_sha256 = (Get-FileHash (Join-Path $stage 'secretary-node.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
             tray_sha256 = (Get-FileHash (Join-Path $stage 'secretary-tray.exe') -Algorithm SHA256).Hash.ToLowerInvariant()
           } | ConvertTo-Json -Compress
-          [IO.File]::WriteAllText((Join-Path $stage 'release.json'), $manifest, (New-Object Text.UTF8Encoding($false)))
+          [IO.File]::WriteAllText((Join-Path $stage 'release.json'), $manifest, ([Text.UTF8Encoding]::new($false)))
           Add-Type -AssemblyName System.IO.Compression.FileSystem
           $name = "secretary-node-windows-${{ matrix.arch }}-$version.zip"
           $archive = Join-Path $env:RUNNER_TEMP $name
