@@ -42,8 +42,6 @@ final class NodeMenuPresentationTests: XCTestCase {
 
     func testNativeMenuUsesSystemAppearanceAcrossThemeChanges() {
         let menu = NodeMenuPresentation()
-        // No NSApplication is initialized by the XCTest host; NSApp is nil.
-        // Leaving NSMenu.appearance unset permits AppKit to inherit either system theme.
         XCTAssertNotNil(NSAppearance(named: .aqua))
         XCTAssertNotNil(NSAppearance(named: .darkAqua))
         XCTAssertNil(menu.menu.appearance)
