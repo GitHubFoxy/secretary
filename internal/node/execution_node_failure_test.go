@@ -405,7 +405,12 @@ func TestWatchSessionRetriesTerminalCommandReceiptAndUnregisters(t *testing.T) {
 	if _, _, err := store.ClaimCommand(command); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Mkdir(storePath+".tmp", 0o700); err != nil {
+	backup := storePath + ".fault-backup"
+	if err := os.Rename(storePath, backup); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(storePath, 0o700); err != nil {
+		_ = os.Rename(backup, storePath)
 		t.Fatal(err)
 	}
 	session := &failedCloseSession{result: make(chan Result, 1), closeDone: make(chan struct{})}
