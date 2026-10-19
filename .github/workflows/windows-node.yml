@@ -108,3 +108,19 @@ jobs:
           $env:SECRETARY_WORKER_TEST_PROTECTED_DIR = $protected
           go test ./internal/nativeexec -run 'TestT09WindowsSeparateAccountStateAndResume|TestT09WindowsCancelKillsNativeWorkerTree|TestT09WindowsNativeProviderStateMigrationPreservesHistory|TestT09WindowsPersistedAccountConfigWithoutEnvironment|TestT09WindowsPreexistingEmptyProviderDirectoriesAreMigrated|TestT09WindowsProjectlessWorkspaceStaysInProvisionedWorkerHome' -count=1 -v
           if ($LASTEXITCODE -ne 0) { throw 'native Worker security and resume acceptance failed' }
+
+  windows-tray:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Windows tray live status and lifecycle tests
+        run: go test ./cmd/secretary-tray -run 'TestW02|TestThemeSelection|TestStopWithoutOwnedNode|TestManagedNodeLifecycleAndUnrelatedProcess' -count=1 -timeout=10m -v
+      - name: Windows tray and Node builds
+        run: |
+          go build ./cmd/secretary-node
+          go build ./cmd/secretary-tray

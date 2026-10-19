@@ -12,6 +12,9 @@ import (
 	"testing"
 	"time"
 	"unsafe"
+
+	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/traystatus"
 )
 
 func TestMain(m *testing.M) {
@@ -140,8 +143,8 @@ func TestManagedNodeLifecycleAndUnrelatedProcess(t *testing.T) {
 	stillRunning := a.node != nil
 	a.lock.Unlock()
 	if stillRunning { t.Fatal("managed Node still marked running") }
-	process, err := syscall.OpenProcess(0x00100000, false, uint32(unrelated.Process.Pid))
-	if err != nil { t.Fatalf("unrelated process no longer available: %v", err) }
+	process, openErr := syscall.OpenProcess(0x00100000, false, uint32(unrelated.Process.Pid))
+	if openErr != nil { t.Fatalf("unrelated process no longer available: %v", openErr) }
 	defer syscall.CloseHandle(process)
 	value, _, _ := k.NewProc("WaitForSingleObject").Call(uintptr(process), 0)
 	if value != 0x102 { t.Fatalf("unrelated process was terminated: wait=%d", value) }
@@ -171,4 +174,84 @@ func TestThemeSelection(t *testing.T) {
 			t.Fatalf("themeIsDark(%d,%v) = %v; want %v",tc.value,tc.err,got,tc.want)
 		}
 	}
+}
+
+func TestW02LiveStatusTransitionsAndActions(t *testing.T) {
+	cases:=[]struct{running bool; failed bool; live liveStatus; want string}{
+		{false,false,liveStatus{},"Server: Offline"},
+		{true,false,liveStatus{},"Server: Reconnecting"},
+		{true,false,liveStatus{Connected:true},"Server: Connected"},
+	}
+	for _,tc:=range cases {
+		rows:=buildMenu(tc.running,tc.failed,tc.live)
+		if rows[1].label!=tc.want || !rows[2].separator {t.Fatalf("invalid server row/separator: %+v",rows)}
+		if actionAt(rows,8+24+24+9+24)!="toggle" {t.Fatalf("missing node control: %+v",rows)}
+		if actionAt(rows,menuHeight(rows)-8)!="exit" {t.Fatalf("missing exit action: %+v",rows)}
+	}
+}
+func TestW02HarnessTransitionsAndFailureClosed(t *testing.T) {
+	live:=liveStatus{Connected:true,Harnesses:[]harnessRow{{Name:"codex",Ready:true},{Name:"claude_code",Ready:false}}}
+	rows:=buildMenu(true,false,live)
+	if rows[3].label!="codex: Ready" || rows[4].label!="claude_code: Unavailable" {t.Fatalf("incorrect inventory: %+v",rows)}
+	live.Harnesses[0].Ready=false
+	if got:=buildMenu(true,false,live)[3].label;got!="codex: Unavailable"{t.Fatal(got)}
+	if got:=buildMenu(false,false,live)[3].label;got!="codex: Unavailable"{t.Fatal(got)}
+}
+func TestW02CompactLayoutAndTheme(t *testing.T) {
+	rows:=buildMenu(true,false,liveStatus{Harnesses:[]harnessRow{{Name:"codex"}}})
+	if menuHeight(rows)!=8+24*5+9+4 {t.Fatalf("unexpected height %d",menuHeight(rows))}
+	if !themeIsDark(0,nil) || themeIsDark(1,nil) {t.Fatal("theme mismatch")}
+}
+
+func TestW02StatusSnapshotPropagation(t *testing.T) {
+	path:=filepath.Join(t.TempDir(),"status.json")
+	now:=time.Now().UTC()
+	a:=&trayApp{statusFile:path,node:&managedNode{}}
+	write:=func(connected bool, harnesses []harnessRow) {
+		t.Helper()
+		inventory:=core.HarnessInventorySnapshot{Node:"test",ObservedAt:now}
+		for _,h:=range harnesses {
+			status:=core.HarnessUnavailable
+			if h.Ready {status=core.HarnessReady}
+			inventory.Instances=append(inventory.Instances,core.HarnessInstance{
+				ID:core.HarnessInstanceID("test/"+h.Name),Node:"test",Kind:core.HarnessKind(h.Name),Version:"1.0",
+				Status:status,Authentication:core.HarnessAuthentication{Authenticated:h.Ready,Method:"local"},
+			})
+		}
+		if err:=traystatus.Write(path,connected,inventory);err!=nil {t.Fatal(err)}
+	}
+	check:=func(wantServer,wantHarness string) {
+		t.Helper()
+		a.refreshStatus(time.Now())
+		a.lock.Lock()
+		rows:=buildMenu(a.node!=nil,false,a.live)
+		a.lock.Unlock()
+		if rows[1].label!=wantServer {t.Fatalf("server=%s, want %s",rows[1].label,wantServer)}
+		if wantHarness!="" && rows[3].label!=wantHarness {t.Fatalf("harness=%s, want %s",rows[3].label,wantHarness)}
+	}
+	check("Server: Reconnecting","Harnesses: Unavailable")
+	write(true,[]harnessRow{{Name:"codex",Ready:true}})
+	check("Server: Connected","codex: Ready")
+	write(true,[]harnessRow{{Name:"codex",Ready:false}})
+	check("Server: Connected","codex: Unavailable")
+	write(false,nil)
+	check("Server: Reconnecting","Harnesses: Unavailable")
+	write(true,[]harnessRow{{Name:"claude_code",Ready:true}})
+	check("Server: Connected","claude_code: Ready")
+	if err:=os.Remove(path);err!=nil{t.Fatal(err)}
+	check("Server: Reconnecting","Harnesses: Unavailable")
+	write(true,[]harnessRow{{Name:"codex",Ready:true}})
+	a.refreshStatus(time.Now().Add(21*time.Second))
+	a.lock.Lock()
+	if a.live.Connected {t.Fatal("stale snapshot remained connected")}
+	a.node=nil
+	a.lock.Unlock()
+	check("Server: Offline","Harnesses: Unavailable")
+}
+
+func TestW02PopupHeightFollowsInventory(t *testing.T) {
+	before:=buildMenu(true,false,liveStatus{Harnesses:[]harnessRow{{Name:"codex"}}})
+	after:=buildMenu(true,false,liveStatus{Harnesses:[]harnessRow{{Name:"codex"},{Name:"claude_code"},{Name:"fx"}}})
+	if menuHeight(after)-menuHeight(before)!=48 {t.Fatalf("popup height not adjusted: %d -> %d",menuHeight(before),menuHeight(after))}
+	if actionAt(after,menuHeight(after)-8)!="exit" {t.Fatal("exit action not repositioned")}
 }
