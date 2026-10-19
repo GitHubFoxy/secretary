@@ -6,7 +6,8 @@ param(
  [string]$WorkerHome = (Join-Path $env:ProgramData 'SecretaryWorker'),
  [string]$Workspace = '',
  [string]$WorkerUsername = 'secretary_worker',
- [string]$NodeBinary = ''
+ [string]$NodeBinary = '',
+ [string]$TrayBinary = ''
 )
 $ErrorActionPreference='Stop'
 $repositoryRoot=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
@@ -20,18 +21,36 @@ $NodeDataDir=(Resolve-Path -LiteralPath $NodeDataDir).Path
 $WorkerHome=[IO.Path]::GetFullPath($WorkerHome)
 if ([string]::IsNullOrWhiteSpace($Workspace)) { $Workspace=(Join-Path $WorkerHome 'workspaces') }
 $Workspace=[IO.Path]::GetFullPath($Workspace)
+$stage=Join-Path $env:TEMP ('secretary-install-'+[guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $stage -Force | Out-Null
+$stageNode=Join-Path $stage 'secretary-node.exe'
+$stageTray=Join-Path $stage 'secretary-tray.exe'
 if ([string]::IsNullOrWhiteSpace($NodeBinary)) {
- # A repeat install is an upgrade: compile this checkout even when an older
- # secretary-node.exe already exists on PATH or under LocalAppData.
- $go=Get-Command go -ErrorAction SilentlyContinue
- if (-not $go) { throw 'Windows Node source install/upgrade requires Go; otherwise supply an already-updated -NodeBinary.' }
- $NodeBinary=Join-Path $env:LOCALAPPDATA 'Secretary\bin\secretary-node.exe'
- New-Item -ItemType Directory -Path (Split-Path $NodeBinary -Parent) -Force | Out-Null
  Push-Location $repositoryRoot
- try { & go build -o $NodeBinary ./cmd/secretary-node; if ($LASTEXITCODE -ne 0) { throw 'Windows Node build failed' } }
+ try { & go build -o $stageNode ./cmd/secretary-node; if ($LASTEXITCODE -ne 0) { throw 'Windows Node build failed' } }
  finally { Pop-Location }
+} else { Copy-Item -LiteralPath (Resolve-Path -LiteralPath $NodeBinary).Path -Destination $stageNode }
+if ([string]::IsNullOrWhiteSpace($TrayBinary)) {
+ Push-Location $repositoryRoot
+ try { & go build -ldflags '-H=windowsgui' -o $stageTray ./cmd/secretary-tray; if ($LASTEXITCODE -ne 0) { throw 'Windows tray build failed' } }
+ finally { Pop-Location }
+} else { Copy-Item -LiteralPath (Resolve-Path -LiteralPath $TrayBinary).Path -Destination $stageTray }
+$hash=([IO.Path]::GetFileNameWithoutExtension((Get-FileHash -LiteralPath $stageNode -Algorithm SHA256).Hash))+'-'+(Get-FileHash -LiteralPath $stageTray -Algorithm SHA256).Hash
+$installBin=Join-Path (Join-Path $env:LOCALAPPDATA 'Secretary\versions') $hash
+$installedNode=Join-Path $installBin 'secretary-node.exe'
+$trayInstalled=Join-Path $installBin 'secretary-tray.exe'
+if (-not (Test-Path -LiteralPath $installBin -PathType Container)) {
+ $partial=$installBin+'.'+[guid]::NewGuid().ToString('N')+'.staging'
+ New-Item -ItemType Directory -Path $partial -Force | Out-Null
+ try {
+  Copy-Item -LiteralPath $stageNode -Destination (Join-Path $partial 'secretary-node.exe')
+  Copy-Item -LiteralPath $stageTray -Destination (Join-Path $partial 'secretary-tray.exe')
+  Move-Item -LiteralPath $partial -Destination $installBin
+ } finally {
+  if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Recurse -Force }
+ }
 }
-$NodeBinary=(Resolve-Path -LiteralPath $NodeBinary).Path
+Remove-Item -LiteralPath $stage -Recurse -Force
 $arguments=@{
  NodeDataDir=$NodeDataDir; Workspace=$Workspace
  WorkerHome=$WorkerHome; WorkerUsername=$WorkerUsername
@@ -57,6 +76,82 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
 if ($identityBefore -and ((Get-FileHash -LiteralPath $identityPath -Algorithm SHA256).Hash -ne $identityBefore)) {
  throw 'Node identity unexpectedly changed during upgrade'
 }
-& $NodeBinary --data-dir $NodeDataDir --check-worker-sandbox
+& $installedNode --data-dir $NodeDataDir --check-worker-sandbox
 if ($LASTEXITCODE -ne 0) { throw 'Windows Worker sandbox/Dispatch preflight failed' }
+$runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$loginCommand=(Get-ItemProperty -Path $runKey -Name 'Secretary Node' -ErrorAction SilentlyContinue).'Secretary Node'
+$oldShortcut=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
+$oldTarget=$null
+if (Test-Path -LiteralPath $oldShortcut) {
+ $oldTarget=(New-Object -ComObject WScript.Shell).CreateShortcut($oldShortcut).TargetPath
+}
+$restarting=$false
+if ($oldTarget -and -not [string]::Equals($oldTarget,$trayInstalled,[StringComparison]::OrdinalIgnoreCase)) {
+ if (-not ('SecretaryTrayWindow' -as [type])) {
+ Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class SecretaryTrayWindow {
+ [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+ [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wp, IntPtr lp);
+ [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+ [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint command);
+}
+'@
+ }
+ $window=[SecretaryTrayWindow]::FindWindow('SecretaryNodeTrayWindow','Secretary Node')
+ if ($window -ne [IntPtr]::Zero) {
+  $owner=[SecretaryTrayWindow]::GetWindow($window,4)
+  if ($owner -ne [IntPtr]::Zero) { $window=$owner }
+  [uint32]$trayPid=0
+  [void][SecretaryTrayWindow]::GetWindowThreadProcessId($window,[ref]$trayPid)
+  if ($trayPid -eq 0) { throw 'Unable to verify running tray PID; startup registration was not changed' }
+  $processInfo=Get-CimInstance Win32_Process -Filter "ProcessId=$trayPid" -ErrorAction Stop
+  if (-not $processInfo -or [string]::IsNullOrWhiteSpace($processInfo.ExecutablePath)) {
+   throw 'Unable to verify running tray executable; startup registration was not changed'
+  }
+  $actualPath=[IO.Path]::GetFullPath($processInfo.ExecutablePath)
+  $expectedPath=[IO.Path]::GetFullPath($oldTarget)
+  if (-not [string]::Equals($actualPath,$expectedPath,[StringComparison]::OrdinalIgnoreCase)) {
+   throw "Found tray window belongs to '$actualPath', not installed '$expectedPath'; refusing to stop unrelated process"
+  }
+  $restarting=$true
+  if (-not [SecretaryTrayWindow]::PostMessage($window,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)) { throw 'Cannot stop old tray; restart it manually and retry' }
+  $closed=$false
+  for ($attempt=0;$attempt -lt 300;$attempt++) {
+   if ([SecretaryTrayWindow]::FindWindow('SecretaryNodeTrayWindow','Secretary Node') -eq [IntPtr]::Zero) { $closed=$true;break }
+   Start-Sleep -Milliseconds 100
+  }
+  if (-not $closed) { throw 'Old tray did not exit after cooperative shutdown; upgrade files were staged without changing startup registration' }
+  if ($trayPid -ne 0) {
+   $oldProcess=Get-Process -Id $trayPid -ErrorAction SilentlyContinue
+   if ($oldProcess) {
+    $oldProcess.WaitForExit(10000) | Out-Null
+    $oldProcess.Refresh()
+    if (-not $oldProcess.HasExited) { throw 'Old tray process still holds the single-instance lock' }
+   }
+  }
+ }
+}
+$shortcutPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
+$shortcutStage=Join-Path (Split-Path -Path $shortcutPath -Parent) ('Secretary Node.'+[guid]::NewGuid().ToString('N')+'.lnk')
+$shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcutStage)
+$shortcut.TargetPath=$trayInstalled
+$shortcut.Arguments='--data-dir "'+$NodeDataDir+'"'
+$shortcut.WorkingDirectory=$installBin
+$shortcut.Save()
+if (Test-Path -LiteralPath $shortcutPath) {
+ $shortcutBackup=Join-Path (Split-Path -Path $shortcutPath -Parent) ('Secretary Node.'+[guid]::NewGuid().ToString('N')+'.bak')
+ [IO.File]::Replace($shortcutStage,$shortcutPath,$shortcutBackup)
+ Remove-Item -LiteralPath $shortcutBackup -Force
+} else {
+ [IO.File]::Move($shortcutStage,$shortcutPath)
+}
+if ($loginCommand) {
+ $quoted='"'+$trayInstalled+'" --data-dir "'+$NodeDataDir+'"'
+ Set-ItemProperty -Path $runKey -Name 'Secretary Node' -Value $quoted
+}
+if ($restarting) {
+ Start-Process -FilePath $trayInstalled -ArgumentList ('--data-dir "'+$NodeDataDir+'"')
+}
 Write-Host "Secretary Windows Node installed/upgraded. Node state preserved in $NodeDataDir."

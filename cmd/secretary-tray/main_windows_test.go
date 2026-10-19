@@ -114,7 +114,8 @@ func TestNativeSingleInstanceMutex(t *testing.T) {
 func TestManagedNodeLifecycleAndUnrelatedProcess(t *testing.T) {
 	t.Setenv("SECRETARY_TRAY_NODE_EXE", os.Args[0])
 	t.Setenv("SECRETARY_TRAY_TEST_HELPER", "managed")
-	a := &trayApp{}
+	dataDir := t.TempDir()
+	a := &trayApp{dataDir: dataDir, logPath: filepath.Join(dataDir, "logs", "node.log")}
 	a.start()
 	a.lock.Lock()
 	n := a.node
@@ -199,7 +200,7 @@ func TestW02HarnessTransitionsAndFailureClosed(t *testing.T) {
 }
 func TestW02CompactLayoutAndTheme(t *testing.T) {
 	rows:=buildMenu(true,false,liveStatus{Harnesses:[]harnessRow{{Name:"codex"}}})
-	if menuHeight(rows)!=8+24*5+9+4 {t.Fatalf("unexpected height %d",menuHeight(rows))}
+	if menuHeight(rows)!=8+24*7+9+4 {t.Fatalf("unexpected height %d",menuHeight(rows))}
 	if !themeIsDark(0,nil) || themeIsDark(1,nil) {t.Fatal("theme mismatch")}
 }
 
@@ -254,4 +255,47 @@ func TestW02PopupHeightFollowsInventory(t *testing.T) {
 	after:=buildMenu(true,false,liveStatus{Harnesses:[]harnessRow{{Name:"codex"},{Name:"claude_code"},{Name:"fx"}}})
 	if menuHeight(after)-menuHeight(before)!=48 {t.Fatalf("popup height not adjusted: %d -> %d",menuHeight(before),menuHeight(after))}
 	if actionAt(after,menuHeight(after)-8)!="exit" {t.Fatal("exit action not repositioned")}
+}
+
+func TestW03UpgradeCloseShutsDownTray(t *testing.T) {
+ binary:=filepath.Join(t.TempDir(),"secretary-tray.exe")
+ build:=exec.Command("go","build","-o",binary,".")
+ if output,err:=build.CombinedOutput();err!=nil{t.Fatalf("build tray fixture: %v: %s",err,output)}
+ marker:=filepath.Join(t.TempDir(),"node-starts.txt")
+ cmd:=exec.Command(binary,"--data-dir",t.TempDir())
+ cmd.Env=append(os.Environ(),"SECRETARY_TRAY_NODE_EXE="+os.Args[0],"SECRETARY_TRAY_TEST_HELPER=managed","SECRETARY_TRAY_TEST_MARKER="+marker)
+ if err:=cmd.Start();err!=nil{t.Fatal(err)}
+ defer func(){_ = cmd.Process.Kill();_ = cmd.Wait()}()
+ windowProc:=u.NewProc("FindWindowW")
+ deadline:=time.Now().Add(15*time.Second)
+ var window uintptr
+ for time.Now().Before(deadline) {
+  window,_,_=windowProc.Call(uintptr(unsafe.Pointer(wide("SecretaryNodeTrayWindow"))),uintptr(unsafe.Pointer(wide("Secretary Node"))))
+  data,_:=os.ReadFile(marker)
+  if window!=0 && strings.Contains(string(data),"node started"){break}
+  time.Sleep(50*time.Millisecond)
+ }
+ if window==0{t.Fatal("tray window did not become available")}
+ findWindowEx:=u.NewProc("FindWindowExW")
+ var popup uintptr
+ current:=uintptr(0)
+ for {
+  candidate,_,_:=findWindowEx.Call(0,current,uintptr(unsafe.Pointer(wide("SecretaryNodeTrayWindow"))),uintptr(unsafe.Pointer(wide("Secretary Node"))))
+  if candidate==0{break}
+  owner,_,_:=u.NewProc("GetWindow").Call(candidate,4)
+  if owner!=0{popup=candidate;break}
+  current=candidate
+ }
+ if popup==0{t.Fatal("owned tray popup was not created")}
+ var trayPid uint32
+ getWindowProcessID:=u.NewProc("GetWindowThreadProcessId")
+ if result,_,err:=getWindowProcessID.Call(popup,uintptr(unsafe.Pointer(&trayPid)));result==0{t.Fatalf("resolve popup process: %v",err)}
+ if trayPid!=uint32(cmd.Process.Pid){t.Fatalf("popup belongs to PID %d, expected %d",trayPid,cmd.Process.Pid)}
+ if result,_,err:=postMessage.Call(popup,wmClose,0,0);result==0{t.Fatalf("post close: %v",err)}
+ process,err:=syscall.OpenProcess(0x00100000,false,uint32(cmd.Process.Pid))
+ if err!=nil{t.Fatal(err)}
+ defer syscall.CloseHandle(process)
+ wait:=k.NewProc("WaitForSingleObject")
+ result,_,_:=wait.Call(uintptr(process),25000)
+ if result!=0{t.Fatalf("tray remained alive after cooperative upgrade close: %d",result)}
 }
