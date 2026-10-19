@@ -220,11 +220,14 @@ func manageCodexPairWithProbe(ctx context.Context, action, scope, cliPath, acpPa
    if cliPath!="" {
     requested, err := filepath.Abs(cliPath)
     if err!=nil { return "",err }
-    if requested!=existing.Codex.Path { return "", errors.New("pair already selected; explicit upgrade required") }
+    requestedACP, err := filepath.Abs(acpPath)
+    if err!=nil { return "",err }
+    if requested!=existing.Codex.Path || requestedACP!=existing.ACP.Path { return "", errors.New("pair already selected; explicit upgrade required") }
    }
    return "Existing native Codex pair preserved", nil
   }
   if action=="upgrade" && existingErr!=nil && !os.IsNotExist(existingErr) { return "", existingErr }
+  if action=="upgrade" && existingErr==nil && existing.Codex.Provenance=="managed" && cliPath=="" { return "", errors.New("managed pair is already pinned to this release; choose a new compatible pair explicitly") }
   provenance:="external"
   if cliPath=="" {
    cliPath, acpPath, err = provisionManagedPair(ctx)
