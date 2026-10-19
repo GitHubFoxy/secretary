@@ -19,6 +19,8 @@ func TestCodexACPProviderFailureClassification(t *testing.T) {
   {"outage structured status", &acp.RPCError{Code:-32000,Message:"offline",Data:[]byte(`{"httpStatus":503}`)}, "provider outage"},
   {"auth structured type", &acp.RPCError{Code:-32000,Message:"denied",Data:[]byte(`{"type":"unauthorized"}`)}, "authentication"},
   {"quota structured code", &acp.RPCError{Code:-32000,Message:"denied",Data:[]byte(`{"code":"resource_exhausted"}`)}, "quota/provider"},
+  {"quota structured hyphenated type", &acp.RPCError{Code:-32000,Message:"denied",Data:[]byte(`{"type":"rate-limit"}`)}, "quota/provider"},
+  {"unrelated structured code", &acp.RPCError{Code:-32000,Message:"401 found in payload",Data:[]byte(`{"code":"invalid_protocol_frame"}`)}, "protocol/transport"},
   {"auth provider prefix", &acp.RPCError{Code:-32000,Message:"unauthorized: invalid api key"}, "authentication"},
   {"quota provider prefix", &acp.RPCError{Code:-32000,Message:"quota exceeded"}, "quota/provider"},
   {"outage provider prefix", &acp.RPCError{Code:-32000,Message:"upstream service unavailable (503)"}, "provider outage"},
