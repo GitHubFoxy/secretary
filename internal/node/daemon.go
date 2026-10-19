@@ -19,6 +19,8 @@ type Daemon struct {
 	Store     *LocalStore
 	Runtime   Runtime
 	Inventory InventorySource
+	// StatusChanged observes the transport and last valid harness inventory; nil by default.
+	StatusChanged func(bool, core.HarnessInventorySnapshot)
 
 	Capacity           int
 	Workspaces         []Workspace
@@ -92,6 +94,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("node: restore local execution state: %w", err)
 	}
 
+	if d.StatusChanged != nil { d.StatusChanged(false, core.HarnessInventorySnapshot{}) }
 	backoff := d.reconnectMin()
 	for {
 		if ctx.Err() != nil {
@@ -102,6 +105,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return nil
 		}
 		_ = err
+		if d.StatusChanged != nil { d.StatusChanged(false, core.HarnessInventorySnapshot{}) }
 		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
@@ -276,6 +280,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 		return nil
 	}
 	if err := sendHeartbeat(); err != nil {return err}
+	if d.StatusChanged != nil { d.StatusChanged(true, inventory) }
 	// Recover pre-native Dispatch/Resume with their original IDs and envelope.
 	// ClaimCommand atomically serializes this replay against server redelivery.
 	replay,err:=d.Store.PendingPrestartCommands()
@@ -358,9 +363,11 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			if err := sendHeartbeat(); err != nil {
 				return err
 			}
+			if d.StatusChanged != nil { d.StatusChanged(true, inventory) }
 		case <-inventories.C:
 			refreshed, err := d.Inventory.Discover(ctx)
 			if err != nil {
+				if d.StatusChanged != nil { d.StatusChanged(true, core.HarnessInventorySnapshot{}) }
 				continue
 			}
 			if err := refreshed.Validate(); err != nil || refreshed.Node != d.Identity.Node {
@@ -381,6 +388,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			}
 			sentThrough = sequence
 			inventory = refreshed
+			if d.StatusChanged != nil { d.StatusChanged(true, inventory) }
 		}
 	}
 }
