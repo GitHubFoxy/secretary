@@ -51,3 +51,24 @@ Run `scripts/install-windows-node.ps1` from an ordinary Windows account. The sup
 **Open Logs** selects `logs/node.log` under the tray's configured Node data directory in File Explorer. Missing or inaccessible paths report where to look and whether to start the Node or open the path manually. ACP-specific raw logs are stored under the data directory's `logs/acp` directory.
 
 Windows CI exercises distinct v1/v2 executable fixtures, upgrade while the tray is running, Start/Search registration, restart, preservation of Node files and Worker account credentials, login registry toggles, headless ownership and Open Logs failure boundaries. Live Windows acceptance still must confirm Start/Search discoverability, login across a real Windows sign-in, tray theme changes and correct notification/Explorer behavior on a user desktop.
+
+
+## Install 07 verified archive entrypoint
+
+For a standalone Node on Windows, use `scripts/install-windows-node-release.ps1` with
+`-ReleaseUri` and `-ReleaseSHA256`. The digest must be obtained independently of
+the downloaded archive (for example from a release verified by the owner);
+a hash downloaded from the same untrusted location does not establish authenticity.
+The archive must contain exactly `secretary-node.exe`, `secretary-tray.exe`
+and `release.json`, with schema 1, version, platform `windows`, architecture
+`amd64` or `arm64`, `node_sha256`, and `tray_sha256`.
+The installer validates the outer pinned SHA-256 before extracting and checks
+the component digests and host architecture before delegating to existing Worker
+account provisioning. It does not install a Secretary Server or FFmpeg.
+This archive format is not an Authenticode signature: publisher identity comes
+from the independently authenticated release channel and pinned digest.
+
+A local archive fixture can be addressed with an absolute `file:///` URI.
+The existing Node pairing and worker credentials are retained by the underlying
+Windows installer. Native model execution, logout/login persistence and real
+UI transitions still require desktop acceptance.
