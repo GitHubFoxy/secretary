@@ -110,7 +110,9 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	}()
 
 	waitFor(t, ctx, "W02 transport connected and harness ready", func() bool {
-		return statusSeen(func(s w02StatusEvent) bool {return s.connected && len(s.inventory.Instances)==1 && s.inventory.Instances[0].Available()})
+		if !statusSeen(func(s w02StatusEvent) bool {return s.connected && len(s.inventory.Instances)==1 && s.inventory.Instances[0].Available()}) {return false}
+		tray:=traystatus.Read(statusPath,true,time.Now())
+		return tray.Connected && len(tray.Harnesses)==1 && tray.Harnesses[0].Ready
 	})
 	waitFor(t, ctx, "Node heartbeat", func() bool {
 		status, err := manager.Status(context.Background(), "macbook")
@@ -221,11 +223,12 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	})
 	waitFor(t, ctx, "W02 transport disconnect", func() bool {
 		statusMu.Lock()
-		defer statusMu.Unlock()
+		seen:=false
 		for i := 1; i < len(statusHistory); i++ {
-			if !statusHistory[i].connected && statusHistory[i-1].connected {return true}
+			if !statusHistory[i].connected && statusHistory[i-1].connected { seen=true;break }
 		}
-		return false
+		statusMu.Unlock()
+		return seen && !traystatus.Read(statusPath,true,time.Now()).Connected
 	})
 	waitFor(t, ctx, "authenticated reconnect", func() bool {
 		status, err := manager.Status(context.Background(), "macbook")
