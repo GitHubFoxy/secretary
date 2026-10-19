@@ -48,7 +48,6 @@ func TestStandaloneEnrollmentHTTPSAndNoOverwrite(t *testing.T) {
   if err!=nil { t.Logf("enroll output: %s",out) }
   return err
  }
- // Exercise the real one-shot executable with a TLS endpoint.
  serverURL:=server.URL
  cmd:=exec.Command(bin,"--enroll-only","--server",serverURL,"--data-dir",dir,"--name","fixture-node")
  cmd.Env=append(os.Environ(),"SSL_CERT_FILE="+certFile,"SECRETARY_NODE_PAIRING_TOKEN=owner-approved")
