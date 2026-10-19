@@ -129,25 +129,59 @@ public static class SecretaryTrayWindow {
   }
  }
 }
+$priorShortcutBytes=$null
+$priorRunCommand=$loginCommand
 $shortcutPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
-$shortcutStage=Join-Path (Split-Path -Path $shortcutPath -Parent) ('Secretary Node.'+[guid]::NewGuid().ToString('N')+'.lnk')
-$shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcutStage)
-$shortcut.TargetPath=$trayInstalled
-$shortcut.Arguments='--data-dir "'+$NodeDataDir+'"'
-$shortcut.WorkingDirectory=$installBin
-$shortcut.Save()
-if (Test-Path -LiteralPath $shortcutPath) {
- $shortcutBackup=Join-Path (Split-Path -Path $shortcutPath -Parent) ('Secretary Node.'+[guid]::NewGuid().ToString('N')+'.bak')
- [IO.File]::Replace($shortcutStage,$shortcutPath,$shortcutBackup)
- Remove-Item -LiteralPath $shortcutBackup -Force
-} else {
- [IO.File]::Move($shortcutStage,$shortcutPath)
+if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
+ $priorShortcutBytes=[IO.File]::ReadAllBytes($shortcutPath)
 }
-if ($loginCommand) {
- $quoted='"'+$trayInstalled+'" --data-dir "'+$NodeDataDir+'"'
- Set-ItemProperty -Path $runKey -Name 'Secretary Node' -Value $quoted
-}
-if ($restarting) {
- Start-Process -FilePath $trayInstalled -ArgumentList ('--data-dir "'+$NodeDataDir+'"')
+try {
+ $shortcutStage=Join-Path (Split-Path -Path $shortcutPath -Parent) ('Secretary Node.'+[guid]::NewGuid().ToString('N')+'.lnk')
+ $shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcutStage)
+ $shortcut.TargetPath=$trayInstalled
+ $shortcut.Arguments='--data-dir "'+$NodeDataDir+'"'
+ $shortcut.WorkingDirectory=$installBin
+ $shortcut.Save()
+ if (Test-Path -LiteralPath $shortcutPath) {
+  $shortcutBackup=Join-Path (Split-Path -Path $shortcutPath -Parent) ('Secretary Node.'+[guid]::NewGuid().ToString('N')+'.bak')
+  [IO.File]::Replace($shortcutStage,$shortcutPath,$shortcutBackup)
+  Remove-Item -LiteralPath $shortcutBackup -Force
+ } else {
+  [IO.File]::Move($shortcutStage,$shortcutPath)
+ }
+ if ($loginCommand) {
+  $quoted='"'+$trayInstalled+'" --data-dir "'+$NodeDataDir+'"'
+  Set-ItemProperty -Path $runKey -Name 'Secretary Node' -Value $quoted
+ }
+ if ($restarting) {
+  Start-Process -FilePath $trayInstalled -ArgumentList ('--data-dir "'+$NodeDataDir+'"')
+ }
+} catch {
+ $failure=$_
+ if ($null -ne $priorShortcutBytes) {
+  $restore=Join-Path (Split-Path -Path $shortcutPath -Parent) ('Secretary Node.'+[guid]::NewGuid().ToString('N')+'.restore')
+  [IO.File]::WriteAllBytes($restore,$priorShortcutBytes)
+  try {
+   if (Test-Path -LiteralPath $shortcutPath) {
+    $backup=Join-Path (Split-Path -Path $shortcutPath -Parent) ('Secretary Node.'+[guid]::NewGuid().ToString('N')+'.restore-backup')
+    [IO.File]::Replace($restore,$shortcutPath,$backup)
+    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+   } else {
+    [IO.File]::Move($restore,$shortcutPath)
+   }
+  } finally { Remove-Item -LiteralPath $restore -Force -ErrorAction SilentlyContinue }
+ } elseif (Test-Path -LiteralPath $shortcutPath) {
+  Remove-Item -LiteralPath $shortcutPath -Force
+ }
+ if ($priorRunCommand) {
+  Set-ItemProperty -Path $runKey -Name 'Secretary Node' -Value $priorRunCommand
+ } else {
+  Remove-ItemProperty -Path $runKey -Name 'Secretary Node' -ErrorAction SilentlyContinue
+ }
+ if ($restarting -and $oldTarget -and (Test-Path -LiteralPath $oldTarget -PathType Leaf)) {
+  $oldRunning=@(Get-CimInstance Win32_Process -Filter "Name='secretary-tray.exe'" | Where-Object { $_.ExecutablePath -eq $oldTarget })
+  if ($oldRunning.Count -eq 0) { Start-Process -FilePath $oldTarget -ArgumentList ('--data-dir "'+$NodeDataDir+'"') }
+ }
+ throw $failure
 }
 Write-Host "Secretary Windows Node installed/upgraded. Node state preserved in $NodeDataDir."
