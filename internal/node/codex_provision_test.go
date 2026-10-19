@@ -117,6 +117,11 @@ func TestInstallManagedCodexAssetsFreshRetryPartialAndCorrupt(t *testing.T) {
  if _,_,err := installManagedCodexAssets(context.Background(),assets,root,"fixture");err != nil { t.Fatal(err) }
  if err:=os.WriteFile(cli, []byte("#!/bin/sh\necho codex "+codexPinnedVersion+"\nexit 0\n"),0700);err!=nil {t.Fatal(err)}
  if _,_,err:=installManagedCodexAssets(context.Background(),assets,root,"fixture");err==nil {t.Fatal("same-version executable tampering accepted") }
+ secondCLI,secondACP,err:=installManagedCodexAssets(context.Background(),assets,root,"acp-tamper")
+ if err!=nil {t.Fatal(err)}
+ _=secondCLI
+ if err:=os.WriteFile(secondACP,[]byte("#!/bin/sh\necho codex-acp "+codexACPPinnedVersion+"\nexit 0\n"),0700);err!=nil {t.Fatal(err)}
+ if _,_,err:=installManagedCodexAssets(context.Background(),assets,root,"acp-tamper");err==nil {t.Fatal("same-version ACP tampering accepted")}
  if err:=os.Remove(acp);err != nil { t.Fatal(err) }
  if _,_,err:=installManagedCodexAssets(context.Background(),assets,root,"fixture");err==nil { t.Fatal("partial managed installation accepted") }
  broken:=[]codexAsset{{URL:server.URL+"/codex",SHA256:strings.Repeat("0",64),Name:"codex"},assets[1]}
@@ -189,6 +194,13 @@ for line in sys.stdin:
  if !strings.Contains(string(wire),"initialize") || !strings.Contains(string(wire),"session/new") {t.Fatalf("missing required ACP protocol messages: %s",wire)}
  pair.ACP.Path=bad
  if err:=codexNativePairReady(context.Background(),pair);err==nil {t.Fatal("invalid ACP initialize contract accepted")}
+ t.Setenv("HOME",t.TempDir())
+ pair.ACP.Path=good
+ if _,err:=manageCodexPairWithProbe(context.Background(),"install","server",cli,good,codexNativePairReady);err!=nil {t.Fatal(err)}
+ if _,err:=manageCodexPairWithProbe(context.Background(),"readiness","server","","",codexNativePairReady);err!=nil {t.Fatal(err)}
+ if _,err:=manageCodexPairWithProbe(context.Background(),"upgrade","server",cli,bad,codexNativePairReady);err==nil {t.Fatal("invalid candidate activated")}
+ active,err:=readCodexPairUnchecked("server")
+ if err!=nil || active.ACP.Path!=good {t.Fatalf("failed ACP candidate changed active inventory: %+v %v",active,err)}
  if got:=os.Getenv("SECRETARY_ACP_COMMAND");got!=bad {t.Fatal("native ACP readiness mutated process environment")}
 }
 
