@@ -101,6 +101,7 @@ public final class NodeLifecycle {
         child.standardInput = FileHandle.nullDevice
         child.standardOutput = FileHandle.nullDevice
         child.standardError = FileHandle.nullDevice
+        if let statusPath = environment["SECRETARY_NODE_STATUS_FILE"] { try? FileManager.default.removeItem(atPath: statusPath) }
         try child.run()
         process = child
         do {
