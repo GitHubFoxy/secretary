@@ -74,7 +74,7 @@ jobs:
                     $digest=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
           $uri=([Uri]$archive).AbsoluteUri
           $data=Join-Path $env:RUNNER_TEMP 'standalone-install-data'
-          $home=Join-Path $env:RUNNER_TEMP 'standalone-worker-home'
+          $fixtureWorkerHome=Join-Path $env:RUNNER_TEMP 'standalone-worker-home'
           $workspace=Join-Path $env:RUNNER_TEMP 'standalone-worker-workspace'
           New-Item -ItemType Directory -Path $data,$workspace -Force | Out-Null
           $identity=Join-Path $data 'identity.json'
@@ -101,7 +101,7 @@ jobs:
             }
           }
           try {
-            & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 ('0'*64) -NodeDataDir $data -WorkerHome $home -Workspace $workspace
+            & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 ('0'*64) -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace
             throw 'Tampered outer digest was accepted'
           } catch {
             if ($_.Exception.Message -notlike '*independently pinned digest*') { throw }
@@ -109,13 +109,13 @@ jobs:
           if ((Get-Content -LiteralPath $identity -Raw) -ne 'PRESERVED-IDENTITY') { throw 'Negative fixture mutated identity' }
           foreach($bad in @(@($wrongArch,$wrongDigest,'architecture'),@($componentArchive,$componentDigest,'executable hash'))) {
             try {
-              & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$bad[0]).AbsoluteUri -ReleaseSHA256 $bad[1] -NodeDataDir $data -WorkerHome $home -Workspace $workspace -Harness claude
+              & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$bad[0]).AbsoluteUri -ReleaseSHA256 $bad[1] -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -Harness claude
               throw 'Negative release fixture unexpectedly accepted'
             } catch {
               if ($_.Exception.Message -notlike ('*'+$bad[2]+'*')) { throw }
             }
           }
-                    & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+                    & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
           if (-not $?) { throw 'Verified archive install failed' }
           Assert-PreservedState
           $shortcutPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
@@ -128,7 +128,7 @@ jobs:
           Set-ItemProperty -Path $runKey -Name 'Secretary Node' -Value $originalLogin
           if ((Get-ItemProperty -Path $runKey -Name 'Secretary Node').'Secretary Node' -cne $originalLogin) { throw 'Launch at Login baseline registration missing' }
           try {
-            & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$componentArchive).AbsoluteUri -ReleaseSHA256 $componentDigest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+            & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$componentArchive).AbsoluteUri -ReleaseSHA256 $componentDigest -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
             throw 'Corrupt upgrade unexpectedly succeeded'
           } catch {
             if ($_.Exception.Message -notlike '*executable hash*') { throw }
@@ -165,7 +165,7 @@ jobs:
           [IO.Compression.ZipFile]::CreateFromDirectory($faultDir,$faultArchive)
           $faultDigest=(Get-FileHash $faultArchive -Algorithm SHA256).Hash
           try {
-            & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$faultArchive).AbsoluteUri -ReleaseSHA256 $faultDigest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+            & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$faultArchive).AbsoluteUri -ReleaseSHA256 $faultDigest -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
             throw 'Post-shutdown activation failure unexpectedly succeeded'
           } catch {
             if ($_.Exception.Message -notlike '*CI_ACTIVATION_AFTER_TRAY_SHUTDOWN*') { throw }
@@ -220,7 +220,7 @@ jobs:
             [IO.Compression.ZipFile]::CreateFromDirectory($caseDir,$caseArchive)
             $caseHash=(Get-FileHash $caseArchive -Algorithm SHA256).Hash
             try {
-              & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$caseArchive).AbsoluteUri -ReleaseSHA256 $caseHash -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+              & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$caseArchive).AbsoluteUri -ReleaseSHA256 $caseHash -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
               throw "Fault scenario $scenario unexpectedly succeeded"
             } catch {
               if ($_.Exception.Message -notlike ('*'+$expected+'*')) { throw }
@@ -241,7 +241,7 @@ jobs:
             Assert-PreservedState
             if ((Get-FileHash $workerAccount -Algorithm SHA256).Hash -ne $accountBefore) { throw "$scenario changed Worker credentials" }
           }
-          & ./scripts/install-windows-node-release.ps1 -ReleaseUri $upgradeUri -ReleaseSHA256 $upgradeDigest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+          & ./scripts/install-windows-node-release.ps1 -ReleaseUri $upgradeUri -ReleaseSHA256 $upgradeDigest -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
           if (-not $?) { throw 'Valid staged upgrade failed' }
           $currentTarget=$shell.CreateShortcut($shortcutPath).TargetPath
           if ($currentTarget -eq $originalTarget -or (Get-FileHash $currentTarget -Algorithm SHA256).Hash -eq (Get-FileHash $originalTarget -Algorithm SHA256).Hash) { throw 'Valid upgrade did not activate new version' }
@@ -252,7 +252,7 @@ jobs:
                     $identityBefore=(Get-FileHash $identity -Algorithm SHA256).Hash
           $workerAccount=Join-Path $data 'worker-account.json'
           $accountBefore=(Get-FileHash $workerAccount -Algorithm SHA256).Hash
-          & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+          & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
           if (-not $?) { throw 'Repeated verified install failed' }
           if ($identityBefore -ne (Get-FileHash $identity -Algorithm SHA256).Hash -or $accountBefore -ne (Get-FileHash $workerAccount -Algorithm SHA256).Hash) { throw 'Repeat install changed identity or Worker account' }
           Assert-PreservedState
