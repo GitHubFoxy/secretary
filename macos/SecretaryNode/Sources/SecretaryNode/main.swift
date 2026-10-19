@@ -9,6 +9,7 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let quit = NSMenuItem(title: "Quit Secretary Node", action: #selector(quitNode), keyEquivalent: "q")
     private var timer: Timer?
     private var launchError: String?
+    private var stopError: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -28,7 +29,11 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let executable = preferred.map { URL(fileURLWithPath: $0) } ?? home.appendingPathComponent(".local/bin/secretary-node")
             let config = ProcessInfo.processInfo.environment["SECRETARY_NODE_CONFIG"].map { URL(fileURLWithPath: $0) }
             controller = try NodeLifecycle(executable: executable, configuration: config, directory: home.appendingPathComponent("Library/Application Support/SecretaryNode"))
-            try controller?.start()
+            do {
+                try controller?.start()
+            } catch NodeLifecycleError.alreadyRunning {
+                launchError = nil
+            }
         } catch NodeLifecycleError.alreadyOpen {
             NSApp.terminate(nil)
             return
@@ -42,10 +47,19 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) { refresh() }
 
     private func refresh() {
-        guard let controller else { return }
+        if let stopError {
+            status.title = "Node: Stop failed"
+            statusItem.button?.toolTip = stopError
+            return
+        }
         if let launchError {
             status.title = "Node: Start failed"
             statusItem.button?.toolTip = launchError
+            return
+        }
+        guard let controller else {
+            status.title = "Node: Unavailable"
+            statusItem.button?.toolTip = "Secretary Node controller unavailable"
             return
         }
         switch controller.state {
@@ -65,13 +79,14 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func quitNode() {
+        stopError = nil
         quit.isEnabled = false
         timer?.invalidate()
         controller?.stop { [weak self] error in
             DispatchQueue.main.async {
                 if let error {
-                    self?.status.title = "Node: Stop failed (\(error.localizedDescription))"
-                    self?.statusItem.button?.toolTip = error.localizedDescription
+                    self?.stopError = error.localizedDescription
+                    self?.refresh()
                     self?.quit.isEnabled = true
                     self?.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
                     return
