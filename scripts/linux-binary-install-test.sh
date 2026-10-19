@@ -18,7 +18,7 @@ case "$*" in
   "--user disable --now secretary-node.service secretary.service") exit 0 ;;
   "--user show secretary.service -p ActiveState --value"|"--user show secretary-node.service -p ActiveState --value")
     if [[ -n "${FAIL_CRASH_AFTER_START:-}" && "$*" == *"secretary-node.service"* ]]; then echo failed; else echo active; fi ;;
-  "--user show secretary.service -p MainPID --value"|"--user show secretary-node.service -p MainPID --value") echo 1 ;;
+  "--user show secretary.service -p MainPID --value"|"--user show secretary-node.service -p MainPID --value") echo "${TEST_SERVICE_PID:?}" ;;
   *) exit 1 ;;
 esac
 SH
@@ -49,6 +49,7 @@ mkdir -p "$home/run"
 touch "$home/run/bus"
 export HOME="$home" PATH="$home/mock:$home/provider bin:$PATH" XDG_RUNTIME_DIR="$home/run"
 export SECRETARY_VERSION=0.0.0-ci SECRETARY_RELEASE_BASE="file://$dist"
+export TEST_SERVICE_PID="$"
 bash "$root/scripts/install-linux-binary.sh" && { echo "Non-systemd host was accepted" >&2; exit 1; }
 rm "$home/run/bus"
 python3 - "$home/run/bus" <<'PY'
@@ -134,6 +135,7 @@ for failure in FAIL_CRASH_AFTER_START FAIL_HEALTH FAIL_HTTP_503; do
   fi
   [[ ! -L "$broken_home/.local/share/secretary/current" ]]
   [[ ! -e "$broken_home/.config/systemd/user/secretary.service" ]]
+  [[ ! -e "$broken_home/.config/systemd/user/secretary-node.service" ]]
 done
 source_home="$home/source-managed"
 mkdir -p "$source_home/.config/systemd/user"
