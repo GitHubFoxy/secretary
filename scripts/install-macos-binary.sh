@@ -69,8 +69,19 @@ if [[ -e "$target" ]]; then
   [[ -x "$target/bin/secretaryd" && -x "$target/bin/secretary-node" ]] || fail "Existing release is incomplete"
   cmp -s "$stage/manifest.json" "$target/RELEASE-MANIFEST.json" || fail "Existing cached release provenance differs from selected manifest"
 else
-  mv "$payload" "$target"
-  cp "$stage/manifest.json" "$target/RELEASE-MANIFEST.json"
+  release_stage="$(mktemp -d "$releases/.release.XXXXXXXX")" || fail "Cannot create release staging directory"
+  trap 'rm -rf "$release_stage" "$stage"' EXIT
+  cp -R "$payload" "$release_stage/$name" || fail "Cannot stage release contents"
+  cp "$stage/manifest.json" "$release_stage/$name/RELEASE-MANIFEST.json" || fail "Cannot stage release provenance"
+  cmp -s "$stage/manifest.json" "$release_stage/$name/RELEASE-MANIFEST.json" || fail "Staged release provenance mismatch"
+  for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+    [[ -x "$release_stage/$name/bin/$binary" ]] || fail "Staged release binary missing: $binary"
+  done
+  codesign --verify "$release_stage/$name/Secretary Node.app" || fail "Staged native app signature invalid"
+  mv "$release_stage/$name" "$target" || fail "Cannot publish verified release"
+  rmdir "$release_stage"
+  release_stage=""
+  trap 'rm -rf "$stage"' EXIT
 fi
 if [[ -e "$current_release" || -L "$current_release" ]]; then
   [[ -L "$current_release" ]] || fail "Existing current release path is not a symlink"
