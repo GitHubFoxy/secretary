@@ -30,6 +30,7 @@ done
 video_ffmpeg="$("$input/bin/video-tools/ffmpeg" -version | head -n 1 | awk '{print $3}')"
 video_ffprobe="$("$input/bin/video-tools/ffprobe" -version | head -n 1 | awk '{print $3}')"
 [[ -n "$video_ffmpeg" && "$video_ffmpeg" == "$video_ffprobe" ]] || fail "Incompatible FFmpeg/FFprobe versions"
+"$input/bin/video-tools/ffmpeg" -hide_banner -encoders | awk '$2=="libwebp" && substr($1,1,1)=="V" {found=1} END {exit !found}' || fail "Packaged FFmpeg lacks libwebp encoder"
 mkdir -p "$output"
 release="secretary-v$version-darwin-$arch"
 archive="$output/$release.tar.gz"
@@ -57,7 +58,7 @@ version = sys.argv[2]
 entries = {}
 for tool in ("ffmpeg", "ffprobe"):
     entries[tool] = {"version": version, "sha256": hashlib.sha256((root / "bin" / "video-tools" / tool).read_bytes()).hexdigest()}
-(root / "VIDEO-TOOLS.json").write_text(json.dumps({"origin": "Secretary CI release packaging; build-host OS distribution", **entries}, sort_keys=True) + "\n")
+(root / "VIDEO-TOOLS.json").write_text(json.dumps({"origin": "https://github.com/eugeneware/ffmpeg-static/releases/tag/b6.1.1", "required_encoder": "libwebp", **entries}, sort_keys=True) + "\n")
 PY
 tar -czf "$stage/$release.tar.gz" -C "$stage" "$release"
 digest="$(shasum -a 256 "$stage/$release.tar.gz" | awk '{print $1}')"
