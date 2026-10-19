@@ -197,20 +197,21 @@ jobs:
               $ownedProof=Join-Path $env:RUNNER_TEMP 'install07-owned-node-proof.json'
               Remove-Item -LiteralPath $ownedProof -Force -ErrorAction SilentlyContinue
               $proofLiteral=$ownedProof.Replace("'","''")
-              $proofCode=@(
-                '$ownedProof='+"'"+$proofLiteral+"'",
-                '$nodeBinary=Join-Path $installBin ''secretary-node.exe''',
-                '$observed=$null',
-                'for ($i=0;$i -lt 100;$i++) {',
-                ' $observed=@(Get-CimInstance Win32_Process -Filter "Name=''secretary-node.exe''" | Where-Object { $_.ParentProcessId -eq $newTray.Id -and $_.ExecutablePath -eq $nodeBinary -and $_.CommandLine.Contains($NodeDataDir) })',
-                ' if ($observed.Count -eq 1) { break }',
-                ' Start-Sleep -Milliseconds 100',
-                '}',
-                'if ($observed.Count -ne 1) { throw ''CI_OWNED_NODE_NOT_STARTED'' }',
-                '@{pid=$observed[0].ProcessId;path=$observed[0].ExecutablePath} | ConvertTo-Json -Compress | Set-Content -LiteralPath $ownedProof',
-                "throw 'CI_NEW_TRAY_OWNED_NODE_ROLLBACK'"
-              ) -join "`r`n"
-              $replacement=$inject+"`r`n"+$proofCode
+              $proofCode=@'
+$ownedProof='__PROOF_PATH__'
+$nodeBinary=Join-Path $installBin 'secretary-node.exe'
+$observed=$null
+for ($i=0;$i -lt 100;$i++) {
+ $observed=@(Get-CimInstance Win32_Process -Filter "Name='secretary-node.exe'" | Where-Object { $_.ParentProcessId -eq $newTray.Id -and $_.ExecutablePath -eq $nodeBinary -and $_.CommandLine.Contains($NodeDataDir) })
+ if ($observed.Count -eq 1) { break }
+ Start-Sleep -Milliseconds 100
+}
+if ($observed.Count -ne 1) { throw 'CI_OWNED_NODE_NOT_STARTED' }
+@{pid=$observed[0].ProcessId;path=$observed[0].ExecutablePath} | ConvertTo-Json -Compress | Set-Content -LiteralPath $ownedProof
+throw 'CI_NEW_TRAY_OWNED_NODE_ROLLBACK'
+'@
+              $proofCode=$proofCode.Replace('__PROOF_PATH__',$proofLiteral)
+              $replacement=$inject+"`r`n"+$proofCode+"`r`n"
               $expected='CI_NEW_TRAY_OWNED_NODE_ROLLBACK'
             }
             if (-not $caseText.Contains($inject)) { throw "Missing $scenario fault injection seam" }
