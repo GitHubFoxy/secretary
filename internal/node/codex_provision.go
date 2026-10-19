@@ -18,7 +18,6 @@ import (
  "strings"
  "time"
 
- "github.com/beruseruko/secretary/internal/core"
 )
 
 const codexPinnedVersion = "0.163.0"
@@ -109,8 +108,8 @@ func codexBinaryRecord(path, provenance string) (CodexBinaryRecord, error) {
 }
 
 func codexNativePairReady(ctx context.Context, pair CodexPairInventory) error {
- auth, err := exec.CommandContext(ctx, pair.Codex.Path, "login", "status").CombinedOutput()
- if err != nil { return fmt.Errorf("native Codex authorization required; run %s login (status: %s)", pair.Codex.Path, strings.TrimSpace(string(auth))) }
+ _, err := exec.CommandContext(ctx, pair.Codex.Path, "login", "status").CombinedOutput()
+ if err != nil { return fmt.Errorf("native Codex authorization required; run %s login", pair.Codex.Path) }
  before := os.Getenv("SECRETARY_ACP_COMMAND")
  defer os.Setenv("SECRETARY_ACP_COMMAND", before)
  if err := os.Setenv("SECRETARY_ACP_COMMAND", pair.ACP.Path); err != nil { return err }
@@ -202,6 +201,7 @@ func ManageCodexPair(ctx context.Context, action, scope, cliPath, acpPath string
   return fmt.Sprintf("Codex %s and ACP %s: %s", existing.Codex.Version, existing.ACP.Version, action), nil
  case "install", "upgrade":
   if (cliPath=="") != (acpPath=="") { return "", errors.New("both external Codex and ACP paths must be selected together") }
+  if action=="install" && existingErr!=nil { if _, err:=os.Lstat(location); err==nil { return "", existingErr } }
   if action=="install" && existingErr==nil {
    if cliPath!="" {
     requested, err := filepath.Abs(cliPath)
