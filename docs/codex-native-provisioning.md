@@ -28,7 +28,7 @@ secretary-node --codex-pair-action=upgrade --codex-pair-scope=node --codex-pair-
 secretary-node --codex-pair-action=rollback --codex-pair-scope=node
 ```
 
-Explicitly selecting an external pair does not mutate it, its global configuration or credentials. Selecting one binary without the other is rejected. A selected pair remains pinned on repeat setup even when PATH changes. A moved binary, replaced bytes, unsupported host, partial managed release, interrupted download or failed native protocol preflight stops activation with a visible diagnostic.
+Explicitly selecting an external pair does not mutate it, its global configuration or credentials. Selecting one binary without the other is rejected. A selected pair remains pinned on repeat setup even when PATH changes. A moved binary, replaced bytes, unsupported host, partial managed release, interrupted download or failed native protocol preflight stops activation with a visible diagnostic. Managed releases retain their SHA-256-pinned upstream archives and re-extract both executables for byte comparison on repeated setup, so unchanged version strings cannot conceal replacement. Explicit upgrades journal previous and candidate inventories before activation; recovery reconciles an interrupted switch and updates the rollback record only after the candidate is active. Native login, quota/provider, executable, and ACP protocol failures are classified separately.
 
 Upgrade checks the proposed pair with the actual owner authorization and ACP transport before atomically replacing the inventory. The previous record is kept under `codex-pair.previous.json` for explicit rollback. Old managed binary directories are retained. Running native Workers are not restarted or migrated as an upgrade side effect. If a provider/harness is unavailable, resolve authorization or binary compatibility before retrying.
 
@@ -41,7 +41,7 @@ bash scripts/macos-release-contract-test.sh
 ./scripts/phase4-release-gate.sh
 ```
 
-Native Go unit tests cover external adoption, repeat setup, moved paths, executable modifications, failed upgrade with preserved inventory, SHA-256 comparison and incomplete download. Binary installer release fixtures and Go integration tests must be checked by CI. Tests must not include actual native credentials.
+Native Go tests cover external adoption, repeat setup, same-version tampering of CLI and ACP, moved paths, interrupted upgrade journal reconciliation, rollback preservation, actual ACP initialize/session/new wire responses and rejection of invalid candidates, SHA-256 comparison and incomplete download. The Phase 5 setup fixture runs the actual Go provisioner and independently checks Server/Node inventories. Binary installer release fixtures and Go integration tests must be checked by CI. Tests must not include actual native credentials.
 
 ## Manual live acceptance (not executed)
 
