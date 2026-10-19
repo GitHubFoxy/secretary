@@ -130,7 +130,8 @@ func classifyCodexACPFailure(phase string, err error) error {
  case 502, 503, 504:
   return fmt.Errorf("codex: native provider outage during %s: %w", phase, err)
  }
- for _, token := range strings.FieldsFunc(category, func(r rune) bool { return r == ' ' || r == '_' || r == '-' }) {
+ for _, token := range strings.Fields(category) {
+  token = strings.ReplaceAll(strings.ReplaceAll(token, "_", ""), "-", "")
   switch token {
   case "unauthorized", "unauthenticated", "authentication", "invalidcredentials":
    return fmt.Errorf("codex: native provider authentication required during %s: %w", phase, err)
