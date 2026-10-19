@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -45,6 +46,14 @@ func main() {
 	checkOpenCodeAuth := flag.Bool("check-opencode-auth", false, "check stored OpenCode credentials in the selected Secretary store and exit")
 	opencodeCommand := flag.String("opencode-command", "opencode", "OpenCode executable used for the selected-store auth check")
 	flag.Parse()
+	if runtime.GOOS != "windows" {
+		if _, err := node.ReadCodexPairInventory("server"); err == nil {
+			if err := node.ApplyCodexPairInventory("server"); err != nil { log.Fatalf("Codex pair: %v", err) }
+		} else {
+			log.Printf("Codex native pair unavailable: %v", err)
+			node.DisableUnselectedCodexRuntime()
+		}
+	}
 	if *backupTo != "" || *restoreFrom != "" {
 		if (*backupTo != "") == (*restoreFrom != "") { log.Fatal("choose exactly one of --backup-to or --restore-from") }
 		if *configPath == "" { *configPath = filepath.Join(*dataDir, "config.toml") }

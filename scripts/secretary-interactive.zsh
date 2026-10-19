@@ -29,10 +29,10 @@ native_harness_detected() {
 
 choose_harness() {
   local default="$1" answer="" codex_ok=false claude_ok=false
-  native_harness_detected codex && codex_ok=true
+  case "$(uname -s)/$(uname -m)" in Darwin/arm64|Darwin/x86_64|Linux/aarch64|Linux/x86_64) codex_ok=true ;; esac
   native_harness_detected claude_code && claude_ok=true
   if [[ "$codex_ok" == false && "$claude_ok" == false ]]; then
-    print -u2 "Neither Codex nor Claude Code detected. Install and authorize at least one native harness."
+    print -u2 "Neither Codex nor Claude Code supported on this host."
     return 1
   fi
   [[ "$codex_ok" == true ]] || default="claude_code"

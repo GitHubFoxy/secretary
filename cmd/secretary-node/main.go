@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"regexp"
 	"strings"
 
@@ -44,7 +45,25 @@ func main() {
 	clearWorkspaces := flag.Bool("clear-workspaces", false, "explicitly remove existing workspace mappings when editing a deployment")
 	var requestedWorkspaces workspaceEdits
 	flag.Var(&requestedWorkspaces, "workspace", "project=absolute-path mapping to add or replace in deployment config")
+	codexPairAction := flag.String("codex-pair-action", "", "native Codex pair install/upgrade/doctor/readiness/env/show/rollback")
+	codexPairScope := flag.String("codex-pair-scope", "node", "native Codex pair scope")
+	codexPairCLI := flag.String("codex-pair-cli", "", "explicit external Codex executable")
+	codexPairACP := flag.String("codex-pair-acp", "", "explicit external ACP executable")
 	flag.Parse()
+	if *codexPairAction != "" {
+		summary, err := node.ManageCodexPair(context.Background(), *codexPairAction, *codexPairScope, *codexPairCLI, *codexPairACP)
+		if err != nil { log.Fatalf("native Codex pair: %v", err) }
+		fmt.Println(summary)
+		return
+	}
+	if runtime.GOOS != "windows" && enforceCodexInventory(*checkCodex) {
+		if _, err := node.ReadCodexPairInventory("node"); err == nil {
+			if err := node.ApplyCodexPairInventory("node"); err != nil { log.Fatalf("Codex pair: %v", err) }
+		} else {
+			log.Printf("Codex native pair unavailable: %v", err)
+			node.DisableUnselectedCodexRuntime()
+		}
+	}
 	if *artifactMCP {
 		if err := artifactmcp.Serve(context.Background()); err != nil {
 			log.Fatal(err)
@@ -368,4 +387,8 @@ func envOr(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func enforceCodexInventory(explicitReadinessDiagnostic bool) bool {
+ return !explicitReadinessDiagnostic
 }
