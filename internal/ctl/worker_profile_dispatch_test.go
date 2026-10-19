@@ -44,6 +44,11 @@ func TestWorkerTemplateACPProcess(t *testing.T) {
 			continue
 		}
 		if request.Method == "session/cancel" {
+			if len(request.ID) > 0 {
+				if err := encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{}}); err != nil {
+					t.Fatal("synthetic ACP cancellation response failed")
+				}
+			}
 			return
 		}
 		if len(request.ID) == 0 {
@@ -441,7 +446,7 @@ func workerTemplateRoundTrip(t *testing.T, skills []node.ManagedSkill, tools []s
 	resumeCommand := node.Command{Kind: node.CommandResume, Resume: &node.ResumeCommand{Metadata: metadata("profile-native-resume"), Envelope: resumeEnvelope}}
 	resumeCommand = roundTripWorkerTemplateCommand(t, resumeCommand)
 	if outcome, err := resumedExecution.HandleCommand(ctx, resumeCommand); err != nil || outcome.State != node.CommandAccepted {
-		t.Fatalf("Node did not resume the original Worker session: accepted=%t err_present=%t", outcome.State == node.CommandAccepted, err != nil)
+		t.Fatalf("Node did not resume the original Worker session: state=%q code=%q err=%v", outcome.State, outcome.ErrorCode, err)
 	}
 	evidence = readWorkerProfileEvidence(t, reportPath)
 	resumeEvidenceValid := len(evidence) >= 4 && evidence[2].SessionKind == "new" && validWorkerProfileEvidence(evidence[2])
