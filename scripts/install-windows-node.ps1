@@ -82,6 +82,7 @@ if (Test-Path -LiteralPath $oldShortcut) {
  $oldTarget=(New-Object -ComObject WScript.Shell).CreateShortcut($oldShortcut).TargetPath
 }
 $restarting=$false
+$newTray=$null
 $priorShortcutBytes=$null
 $priorRunCommand=$loginCommand
 $shortcutPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
@@ -176,6 +177,16 @@ public static class SecretaryTrayWindow {
  }
 } catch {
  $failure=$_
+ if ($null -ne $newTray) {
+  $newTray.Refresh()
+  if (-not $newTray.HasExited) {
+   $candidate=Get-CimInstance Win32_Process -Filter "ProcessId=$($newTray.Id)" -ErrorAction SilentlyContinue
+   if ($candidate -and [string]::Equals($candidate.ExecutablePath,$trayInstalled,[StringComparison]::OrdinalIgnoreCase)) {
+    Stop-Process -Id $newTray.Id -Force -ErrorAction Stop
+    $newTray.WaitForExit(10000) | Out-Null
+   }
+  }
+ }
  if ($null -ne $priorShortcutBytes) {
   $restore=Join-Path (Split-Path -Path $shortcutPath -Parent) ('Secretary Node.'+[guid]::NewGuid().ToString('N')+'.restore')
   [IO.File]::WriteAllBytes($restore,$priorShortcutBytes)
