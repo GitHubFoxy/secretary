@@ -20,8 +20,6 @@ jobs:
         run: swift test --package-path macos/SecretaryNode
       - name: Managed Node start stop and singleton smoke
         run: swift test --package-path macos/SecretaryNode --filter NodeLifecycleTests
-      - name: Login-item state and menu integration smoke
-        run: swift test --package-path macos/SecretaryNode --filter NodeIntegrationsTests
       - name: Installer smoke (fresh install, upgrade, signed app and Spotlight bundle)
         shell: bash
         run: |
@@ -31,12 +29,17 @@ jobs:
           test -x "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$HOME/Applications/Secretary Node.app/Contents/Info.plist" | grep -Fx dev.secretary.node.menubar
           codesign --verify "$HOME/Applications/Secretary Node.app"
+          "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" --login-item-smoke enable
+          "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" --login-item-smoke verify-enabled
           first_hash="$(shasum -a 256 "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" | cut -d' ' -f1)"
           bash macos/SecretaryNode/install.sh
           test -x "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode"
           codesign --verify "$HOME/Applications/Secretary Node.app"
           second_hash="$(shasum -a 256 "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" | cut -d' ' -f1)"
           test "$first_hash" = "$second_hash"
+          "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" --login-item-smoke verify-enabled
+          "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" --login-item-smoke disable
+          "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" --login-item-smoke verify-disabled
           touch "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
           if bash macos/SecretaryNode/install.sh; then echo 'Conflicting service accepted' >&2; exit 1; fi
           rm "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
