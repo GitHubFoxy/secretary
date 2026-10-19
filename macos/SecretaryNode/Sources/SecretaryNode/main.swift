@@ -8,6 +8,7 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let status = NSMenuItem(title: "Node: Starting", action: nil, keyEquivalent: "")
     private let quit = NSMenuItem(title: "Quit Secretary Node", action: #selector(quitNode), keyEquivalent: "q")
     private var timer: Timer?
+    private var launchError: String?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -32,7 +33,7 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             NSApp.terminate(nil)
             return
         } catch {
-            status.title = "Node: \(error.localizedDescription)"
+            launchError = error.localizedDescription
         }
         refresh()
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
@@ -42,13 +43,18 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func refresh() {
         guard let controller else { return }
+        if let launchError {
+            status.title = "Node: Start failed"
+            statusItem.button?.toolTip = launchError
+            return
+        }
         switch controller.state {
         case .running:
             status.title = "Node: Running"
             statusItem.button?.toolTip = "Secretary Node running"
         case .alreadyRunning:
-            status.title = "Node: Running (not managed here)"
-            statusItem.button?.toolTip = "An existing Node was detected"
+            status.title = "Node: Running (recovered)"
+            statusItem.button?.toolTip = "Previously managed Secretary Node detected"
         case .stopped:
             status.title = "Node: Stopped"
             statusItem.button?.toolTip = "Secretary Node stopped"
