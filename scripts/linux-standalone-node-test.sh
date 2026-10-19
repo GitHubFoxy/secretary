@@ -95,6 +95,8 @@ PY
 if bash "$installer" --harness claude_code > /dev/null 2>&1; then echo "Forged release pair accepted" >&2; exit 1; fi
 cp "$home/archive.before" "$archive"
 cp "$home/manifest.original" "$dist/secretary-v0.0.1-ci-linux-$arch.json"
+if bash "$installer" --harness claude_code > /dev/null 2>&1; then echo "Unhealthy upgraded Node accepted" >&2; exit 1; fi
+[[ "$(readlink "$state/current")" == *0.0.0-ci* ]]
 bash "$installer" disable-service
 bash "$installer" --harness claude_code
 [[ "$(readlink "$state/current")" == *0.0.1-ci* ]]
