@@ -287,9 +287,9 @@ func windowProc(hwnd uintptr, message uint32, wp, lp uintptr) uintptr {
 		if hwnd == app.popup {
 			y := int32(lp >> 16)
 			showWindow.Call(app.popup, swHide)
-			a.lock.Lock()
-			rows := buildMenu(a.node!=nil,a.lastError!="",a.live)
-			a.lock.Unlock()
+			app.lock.Lock()
+			rows := buildMenu(app.node!=nil,app.lastError!="",app.live)
+			app.lock.Unlock()
 			switch actionAt(rows,y) {
 			case "toggle": go app.toggle()
 			case "exit": go func() { app.stop(); postMessage.Call(app.hwnd, wmDestroy, 0, 0) }()
