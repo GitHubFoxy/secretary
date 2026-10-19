@@ -19,6 +19,7 @@ type Daemon struct {
 	Store     *LocalStore
 	Runtime   Runtime
 	Inventory InventorySource
+	Status *LiveStatusWriter
 
 	Capacity           int
 	Workspaces         []Workspace
@@ -66,6 +67,7 @@ type commandCompletion struct {
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
+	if d.Status != nil { defer d.Status.Publish("offline", nil) }
 	if err := d.validate(); err != nil {
 		return err
 	}
@@ -92,6 +94,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("node: restore local execution state: %w", err)
 	}
 
+	if d.Status != nil { d.Status.Publish("reconnecting", nil) }
 	backoff := d.reconnectMin()
 	for {
 		if ctx.Err() != nil {
@@ -102,6 +105,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return nil
 		}
 		_ = err
+		if d.Status != nil { d.Status.Publish("reconnecting", nil) }
 		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
@@ -132,6 +136,7 @@ func (d *Daemon) runConnection(ctx context.Context, execution *ExecutionNode) er
 	if err := execution.SetInventory(inventory); err != nil {
 		return fmt.Errorf("node: set harness inventory: %w", err)
 	}
+	if d.Status != nil { d.Status.Publish("reconnecting", &inventory) }
 	auth, err := d.Identity.Authenticator()
 	if err != nil {
 		return err
@@ -276,6 +281,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 		return nil
 	}
 	if err := sendHeartbeat(); err != nil {return err}
+	if d.Status != nil { d.Status.Publish("connected", &inventory) }
 	// Recover pre-native Dispatch/Resume with their original IDs and envelope.
 	// ClaimCommand atomically serializes this replay against server redelivery.
 	replay,err:=d.Store.PendingPrestartCommands()
@@ -358,6 +364,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			if err := sendHeartbeat(); err != nil {
 				return err
 			}
+			if d.Status != nil { d.Status.Publish("connected", &inventory) }
 		case <-inventories.C:
 			refreshed, err := d.Inventory.Discover(ctx)
 			if err != nil {
@@ -381,6 +388,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			}
 			sentThrough = sequence
 			inventory = refreshed
+			if d.Status != nil { d.Status.Publish("connected", &inventory) }
 		}
 	}
 }
