@@ -95,12 +95,12 @@ func unpackCodexArchive(compressed []byte, asset codexAsset, stage string) error
    if member.FileInfo().IsDir() || !strings.HasSuffix(strings.ToLower(name), ".exe") { continue }
    if !strings.HasPrefix(strings.ToLower(name), strings.TrimSuffix(asset.Name, ".exe")+"-") && name != asset.Name { continue }
    count++
-   if count != 1 || member.UncompressedSize64 > 256<<20 { return fmt.Errorf("invalid %s native release zip", asset.Name) }
+   if count != 1 || member.UncompressedSize64 > 512<<20 { return fmt.Errorf("invalid %s native release zip", asset.Name) }
    input, err := member.Open()
    if err != nil { return err }
    output, err := os.OpenFile(filepath.Join(stage, asset.Name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
    if err != nil { input.Close(); return err }
-   _, copyErr := io.Copy(output, io.LimitReader(input, 256<<20+1))
+   _, copyErr := io.Copy(output, io.LimitReader(input, (512<<20)+1))
    closeErr := output.Close()
    input.Close()
    if copyErr != nil { return copyErr }
