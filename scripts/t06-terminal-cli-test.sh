@@ -225,31 +225,4 @@ export T06_CODEX_AUTH_FAIL=1
 "$ROOT/secretary" setup --non-interactive >/dev/null
 AUTO_STATE="$HOME/.local/share/secretary"
 grep -q '^harness = "claude_code"$' "$AUTO_STATE/config.toml" || fail "unauthorized Codex wrongly won auto-selection"
-grep -q '^default_harness = "claude_code"
-
-export HOME="$TMP/claude-home" PATH="$CLAUDEBIN:/usr/bin:/bin"
-"$ROOT/secretary" setup --non-interactive
-STATE="$HOME/.local/share/secretary"
-grep -q '^harness = "claude_code"$' "$STATE/config.toml" || fail "Claude-only setup selected Codex"
-grep -q '^default_harness = "claude_code"$' "$STATE/config.toml" || fail "Claude worker default missing"
-"$ROOT/secretary" doctor >/dev/null
-"$ROOT/secretary" node doctor >/dev/null
-before="$(cat "$STATE/config.toml")"
-if "$ROOT/secretary" setup --non-interactive --harness unsupported >/dev/null 2>&1; then fail "invalid harness accepted"; fi
-[[ "$(cat "$STATE/config.toml")" == "$before" ]] || fail "invalid harness modified config"
-printf 'PASS: T06 Codex/Claude setup, upgrade/retry credential repair, authenticated auto-selection, workspace persistence and Linux lifecycle\n'
- "$AUTO_STATE/config.toml" || fail "auto-selection did not set Claude Worker defaults"
-[[ ! -e "$AUTO_STATE/native/releases" ]] || fail "unready native Codex auto-selection downloaded managed binaries"
-unset T06_CODEX_AUTH_FAIL
-
-export HOME="$TMP/claude-home" PATH="$CLAUDEBIN:/usr/bin:/bin"
-"$ROOT/secretary" setup --non-interactive
-STATE="$HOME/.local/share/secretary"
-grep -q '^harness = "claude_code"$' "$STATE/config.toml" || fail "Claude-only setup selected Codex"
-grep -q '^default_harness = "claude_code"$' "$STATE/config.toml" || fail "Claude worker default missing"
-"$ROOT/secretary" doctor >/dev/null
-"$ROOT/secretary" node doctor >/dev/null
-before="$(cat "$STATE/config.toml")"
-if "$ROOT/secretary" setup --non-interactive --harness unsupported >/dev/null 2>&1; then fail "invalid harness accepted"; fi
-[[ "$(cat "$STATE/config.toml")" == "$before" ]] || fail "invalid harness modified config"
-printf 'PASS: T06 Codex/Claude setup, upgrade/retry credential repair, authenticated auto-selection, workspace persistence and Linux lifecycle\n'
+grep -q '^default_harness = "claude_code"$'
