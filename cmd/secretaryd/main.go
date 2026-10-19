@@ -31,6 +31,29 @@ import (
 	webclient "github.com/beruseruko/secretary/web"
 )
 
+
+func serverBackupExtraFiles(dataDir, configPath string) (map[string]string, error) {
+	extras := make(map[string]string)
+	for _, name := range []string{"config.toml", "user.md", "memory.md", "user_preferences.md", "preferences.md"} {
+		path := filepath.Join(dataDir, name)
+		if name == "config.toml" {
+			path = configPath
+		}
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("inspect backup file %s: %w", name, err)
+		}
+		if !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("backup file %s must be a regular file", name)
+		}
+		extras[name] = path
+	}
+	return extras, nil
+}
+
 func main() {
 	_ = syscall.Umask(0o077)
 	artifactMCP := flag.Bool("artifact-mcp", false, "serve the scoped Worker Artifact MCP tool")
@@ -57,11 +80,9 @@ func main() {
 	if *backupTo != "" || *restoreFrom != "" {
 		if (*backupTo != "") == (*restoreFrom != "") { log.Fatal("choose exactly one of --backup-to or --restore-from") }
 		if *configPath == "" { *configPath = filepath.Join(*dataDir, "config.toml") }
-		extras := map[string]string{}
-		for _,name := range []string{"config.toml", "user.md", "memory.md", "preferences.md"} {
-			path := filepath.Join(*dataDir,name)
-			if name == "config.toml" { path = *configPath }
-			if info,e:=os.Lstat(path);e==nil && info.Mode().IsRegular() { extras[name]=path } else if e!=nil && !os.IsNotExist(e) { log.Fatal(e) }
+		extras, err := serverBackupExtraFiles(*dataDir, *configPath)
+		if err != nil {
+			log.Fatal(err)
 		}
 		if *backupTo != "" {
 			info,e:=os.Lstat(filepath.Join(*dataDir,"secretary.db"))
