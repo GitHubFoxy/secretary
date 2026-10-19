@@ -82,6 +82,14 @@ if (Test-Path -LiteralPath $oldShortcut) {
  $oldTarget=(New-Object -ComObject WScript.Shell).CreateShortcut($oldShortcut).TargetPath
 }
 $restarting=$false
+$priorShortcutBytes=$null
+$priorRunCommand=$loginCommand
+$shortcutPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
+if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
+ $priorShortcutBytes=[IO.File]::ReadAllBytes($shortcutPath)
+}
+try {
+try {
 if ($oldTarget -and -not [string]::Equals($oldTarget,$trayInstalled,[StringComparison]::OrdinalIgnoreCase)) {
  if (-not ('SecretaryTrayWindow' -as [type])) {
  Add-Type -TypeDefinition @'
@@ -129,13 +137,6 @@ public static class SecretaryTrayWindow {
   }
  }
 }
-$priorShortcutBytes=$null
-$priorRunCommand=$loginCommand
-$shortcutPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
-if (Test-Path -LiteralPath $shortcutPath -PathType Leaf) {
- $priorShortcutBytes=[IO.File]::ReadAllBytes($shortcutPath)
-}
-try {
  $shortcutStage=Join-Path (Split-Path -Path $shortcutPath -Parent) ('Secretary Node.'+[guid]::NewGuid().ToString('N')+'.lnk')
  $shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcutStage)
  $shortcut.TargetPath=$trayInstalled
@@ -154,7 +155,25 @@ try {
   Set-ItemProperty -Path $runKey -Name 'Secretary Node' -Value $quoted
  }
  if ($restarting) {
-  Start-Process -FilePath $trayInstalled -ArgumentList ('--data-dir "'+$NodeDataDir+'"')
+  $newTray=Start-Process -FilePath $trayInstalled -ArgumentList ('--data-dir "'+$NodeDataDir+'"') -PassThru
+  $ready=$false
+  for ($attempt=0;$attempt -lt 50;$attempt++) {
+   Start-Sleep -Milliseconds 100
+   $newTray.Refresh()
+   if ($newTray.HasExited) { throw 'New tray exited during upgrade activation' }
+   $instance=Get-CimInstance Win32_Process -Filter "ProcessId=$($newTray.Id)" -ErrorAction Stop
+   $window=[SecretaryTrayWindow]::FindWindow('SecretaryNodeTrayWindow','Secretary Node')
+   [uint32]$windowPid=0
+   if ($window -ne [IntPtr]::Zero) {
+    $owner=[SecretaryTrayWindow]::GetWindow($window,4)
+    if ($owner -ne [IntPtr]::Zero) { $window=$owner }
+    [void][SecretaryTrayWindow]::GetWindowThreadProcessId($window,[ref]$windowPid)
+   }
+   if ($instance -and $windowPid -eq $newTray.Id -and
+       [string]::Equals([IO.Path]::GetFullPath($instance.ExecutablePath),[IO.Path]::GetFullPath($trayInstalled),[StringComparison]::OrdinalIgnoreCase) -and
+       $instance.CommandLine.Contains($NodeDataDir)) { $ready=$true; break }
+  }
+  if (-not $ready) { throw 'New tray failed process/window/version/data-directory readiness verification' }
  }
 } catch {
  $failure=$_
