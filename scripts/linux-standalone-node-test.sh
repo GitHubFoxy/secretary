@@ -55,6 +55,8 @@ installer="$root/scripts/install-linux-standalone-node.sh"
 bash "$installer" --server https://secretary.example.test --name remote-ci --harness claude_code
 state="$HOME/.local/share/secretary/standalone-node"
 [[ -L "$state/current" ]]
+[[ "$(readlink "$state/current")" == "$state/releases/secretary-v0.0.0-ci-linux-$arch" ]]
+[[ -x "$state/current/bin/secretary-node" ]]
 [[ -f "$state/node/config.json" && -f "$state/node/enrollment.env" ]]
 [[ ! -f "$HOME/.local/share/secretary/secretary.db" && ! -f "$HOME/.local/share/secretary/environment" && ! -f "$HOME/.local/share/secretary/config.toml" ]]
 [[ ! -f "$HOME/.config/systemd/user/secretary.service" ]]
@@ -120,7 +122,8 @@ if bash "$installer" --harness claude_code > /dev/null 2>&1; then echo "Unhealth
 unset TEST_ROLLBACK_HEALTH
 bash "$installer" disable-service
 bash "$installer" --harness claude_code
-[[ "$(readlink "$state/current")" == *0.0.1-ci* ]]
+[[ "$(readlink "$state/current")" == "$state/releases/secretary-v0.0.1-ci-linux-$arch" ]]
+[[ -x "$state/current/bin/secretary-node" ]]
 cmp "$home/config.before" "$state/node/config.json"
 cmp "$home/enrollment.before" "$state/node/enrollment.env"
 [[ "$(cat "$state/node/data/session-canary")" == native-session ]]
