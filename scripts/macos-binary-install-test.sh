@@ -30,6 +30,13 @@ export HOME="$home" PATH="$home/fixtures:$PATH" SECRETARY_RELEASE_BASE="file://$
 export SECRETARY_VERSION=0.0.0-ci
 bash "$root/scripts/install-macos-binary.sh"
 "$HOME/.local/bin/secretary" doctor
+"$HOME/.local/bin/secretary" start --no-open
+status="$("$HOME/.local/bin/secretary" status)"
+[[ "$status" == *"installed: version=0.0.0-ci"* ]]
+[[ "$status" == *"running Server: pid="* ]]
+session_http="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/v1/web/session)"
+[[ "$session_http" != 000 ]]
+"$HOME/.local/bin/secretary" stop
 [[ -f "$HOME/.local/share/secretary/environment" ]]
 [[ -f "$HOME/.local/share/secretary/node/config.json" ]]
 [[ -d "$HOME/Applications/Secretary Node.app" ]]
