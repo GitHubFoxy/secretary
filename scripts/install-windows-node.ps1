@@ -21,34 +21,36 @@ $NodeDataDir=(Resolve-Path -LiteralPath $NodeDataDir).Path
 $WorkerHome=[IO.Path]::GetFullPath($WorkerHome)
 if ([string]::IsNullOrWhiteSpace($Workspace)) { $Workspace=(Join-Path $WorkerHome 'workspaces') }
 $Workspace=[IO.Path]::GetFullPath($Workspace)
+$stage=Join-Path $env:TEMP ('secretary-install-'+[guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $stage -Force | Out-Null
+$stageNode=Join-Path $stage 'secretary-node.exe'
+$stageTray=Join-Path $stage 'secretary-tray.exe'
 if ([string]::IsNullOrWhiteSpace($NodeBinary)) {
- # A repeat install is an upgrade: compile this checkout even when an older
- # secretary-node.exe already exists on PATH or under LocalAppData.
- $go=Get-Command go -ErrorAction SilentlyContinue
- if (-not $go) { throw 'Windows Node source install/upgrade requires Go; otherwise supply an already-updated -NodeBinary.' }
- $NodeBinary=Join-Path $env:LOCALAPPDATA 'Secretary\bin\secretary-node.exe'
- New-Item -ItemType Directory -Path (Split-Path $NodeBinary -Parent) -Force | Out-Null
  Push-Location $repositoryRoot
- try { & go build -o $NodeBinary ./cmd/secretary-node; if ($LASTEXITCODE -ne 0) { throw 'Windows Node build failed' } }
+ try { & go build -o $stageNode ./cmd/secretary-node; if ($LASTEXITCODE -ne 0) { throw 'Windows Node build failed' } }
  finally { Pop-Location }
-}
-$NodeBinary=(Resolve-Path -LiteralPath $NodeBinary).Path
-$installBin=Join-Path $env:LOCALAPPDATA 'Secretary\bin'
-New-Item -ItemType Directory -Path $installBin -Force | Out-Null
-$installedNode=Join-Path $installBin 'secretary-node.exe'
-if (-not [string]::Equals($NodeBinary,$installedNode,[StringComparison]::OrdinalIgnoreCase)) {
- Copy-Item -LiteralPath $NodeBinary -Destination $installedNode -Force
-}
+} else { Copy-Item -LiteralPath (Resolve-Path -LiteralPath $NodeBinary).Path -Destination $stageNode }
 if ([string]::IsNullOrWhiteSpace($TrayBinary)) {
- $TrayBinary=Join-Path $installBin 'secretary-tray.exe'
  Push-Location $repositoryRoot
- try { & go build -ldflags '-H=windowsgui' -o $TrayBinary ./cmd/secretary-tray; if ($LASTEXITCODE -ne 0) { throw 'Windows tray build failed' } }
+ try { & go build -ldflags '-H=windowsgui' -o $stageTray ./cmd/secretary-tray; if ($LASTEXITCODE -ne 0) { throw 'Windows tray build failed' } }
  finally { Pop-Location }
-} else {
- $TrayBinary=(Resolve-Path -LiteralPath $TrayBinary).Path
- Copy-Item -LiteralPath $TrayBinary -Destination (Join-Path $installBin 'secretary-tray.exe') -Force
-}
+} else { Copy-Item -LiteralPath (Resolve-Path -LiteralPath $TrayBinary).Path -Destination $stageTray }
+$hash=([IO.Path]::GetFileNameWithoutExtension((Get-FileHash -LiteralPath $stageNode -Algorithm SHA256).Hash))+'-'+(Get-FileHash -LiteralPath $stageTray -Algorithm SHA256).Hash
+$installBin=Join-Path (Join-Path $env:LOCALAPPDATA 'Secretary\versions') $hash
+$installedNode=Join-Path $installBin 'secretary-node.exe'
 $trayInstalled=Join-Path $installBin 'secretary-tray.exe'
+if (-not (Test-Path -LiteralPath $installBin -PathType Container)) {
+ $partial=$installBin+'.'+[guid]::NewGuid().ToString('N')+'.staging'
+ New-Item -ItemType Directory -Path $partial -Force | Out-Null
+ try {
+  Copy-Item -LiteralPath $stageNode -Destination (Join-Path $partial 'secretary-node.exe')
+  Copy-Item -LiteralPath $stageTray -Destination (Join-Path $partial 'secretary-tray.exe')
+  Move-Item -LiteralPath $partial -Destination $installBin
+ } finally {
+  if (Test-Path -LiteralPath $partial) { Remove-Item -LiteralPath $partial -Recurse -Force }
+ }
+}
+Remove-Item -LiteralPath $stage -Recurse -Force
 $arguments=@{
  NodeDataDir=$NodeDataDir; Workspace=$Workspace
  WorkerHome=$WorkerHome; WorkerUsername=$WorkerUsername
@@ -74,12 +76,48 @@ if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))
 if ($identityBefore -and ((Get-FileHash -LiteralPath $identityPath -Algorithm SHA256).Hash -ne $identityBefore)) {
  throw 'Node identity unexpectedly changed during upgrade'
 }
-& $NodeBinary --data-dir $NodeDataDir --check-worker-sandbox
+& $installedNode --data-dir $NodeDataDir --check-worker-sandbox
 if ($LASTEXITCODE -ne 0) { throw 'Windows Worker sandbox/Dispatch preflight failed' }
+$runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+$loginCommand=(Get-ItemProperty -Path $runKey -Name 'Secretary Node' -ErrorAction SilentlyContinue).'Secretary Node'
+$oldShortcut=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
+$oldTarget=$null
+if (Test-Path -LiteralPath $oldShortcut) {
+ $oldTarget=(New-Object -ComObject WScript.Shell).CreateShortcut($oldShortcut).TargetPath
+}
+$restarting=$false
+if ($oldTarget -and -not [string]::Equals($oldTarget,$trayInstalled,[StringComparison]::OrdinalIgnoreCase)) {
+ Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class SecretaryTrayWindow {
+ [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+ [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wp, IntPtr lp);
+}
+'@
+ $window=[SecretaryTrayWindow]::FindWindow('SecretaryNodeTrayWindow','Secretary Node')
+ if ($window -ne [IntPtr]::Zero) {
+  $restarting=$true
+  if (-not [SecretaryTrayWindow]::PostMessage($window,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)) { throw 'Cannot stop old tray; restart it manually and retry' }
+  $closed=$false
+  for ($attempt=0;$attempt -lt 100;$attempt++) {
+   if ([SecretaryTrayWindow]::FindWindow('SecretaryNodeTrayWindow','Secretary Node') -eq [IntPtr]::Zero) { $closed=$true;break }
+   Start-Sleep -Milliseconds 100
+  }
+  if (-not $closed) { throw 'Old tray did not exit; upgrade files were staged without changing startup registration' }
+ }
+}
 $shortcutPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
 $shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
 $shortcut.TargetPath=$trayInstalled
 $shortcut.Arguments='--data-dir "'+$NodeDataDir+'"'
 $shortcut.WorkingDirectory=$installBin
 $shortcut.Save()
+if ($loginCommand) {
+ $quoted='"'+$trayInstalled+'" --data-dir "'+$NodeDataDir+'"'
+ Set-ItemProperty -Path $runKey -Name 'Secretary Node' -Value $quoted
+}
+if ($restarting) {
+ Start-Process -FilePath $trayInstalled -ArgumentList ('--data-dir "'+$NodeDataDir+'"')
+}
 Write-Host "Secretary Windows Node installed/upgraded. Node state preserved in $NodeDataDir."
