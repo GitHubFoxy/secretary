@@ -70,6 +70,7 @@ if [[ -e "$target" ]]; then
 else
   mv "$payload" "$target"
 fi
+cp "$stage/manifest.json" "$target/RELEASE-MANIFEST.json"
 if [[ -e "$current_release" || -L "$current_release" ]]; then
   [[ -L "$current_release" ]] || fail "Existing current release path is not a symlink"
   previous_release="$(readlink "$current_release")"
@@ -100,9 +101,15 @@ SECRETARY_BINARY_STAGE_BIN="$stage/setup-bin" "$target/secretary" setup --non-in
 
 backup="$stage/previous-app"
 activated=false
+created_links=""
 pointer_stage="$HOME/.local/share/secretary/.current.$$.new"
 activation_rollback() {
   if [[ "$activated" != true ]]; then
+    if [[ -L "$current_release" && "$(readlink "$current_release")" == "$target" ]]; then
+      rm -f "$current_release"
+      if [[ -n "$previous_release" ]]; then ln -s "$previous_release" "$current_release"; fi
+    fi
+    for created in $created_links; do rm -f "$created"; done
     if [[ -d "$backup" ]]; then
       rm -rf "$app"
       mv "$backup" "$app"
@@ -119,9 +126,10 @@ for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migr
     dest="$current_release/bin/$executable"
     [[ "$executable" == secretary ]] && dest="$current_release/secretary"
     ln -s "$dest" "$path" || fail "Cannot activate $executable"
+    created_links="$created_links $path"
   fi
 done
 ln -s "$target" "$pointer_stage" || fail "Cannot stage release switch"
-mv -f "$pointer_stage" "$current_release" || fail "Cannot activate release pointer"
+mv -fh "$pointer_stage" "$current_release" || fail "Cannot activate release pointer"
 activated=true
 printf 'Installed Secretary %s (%s) for macOS %s. Start Server with secretary start --no-open; launch Secretary Node from Spotlight.\n' "$version" "$revision" "$arch"
