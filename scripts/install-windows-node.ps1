@@ -180,12 +180,34 @@ public static class SecretaryTrayWindow {
  if ($null -ne $newTray) {
   $newTray.Refresh()
   if (-not $newTray.HasExited) {
-   $candidate=Get-CimInstance Win32_Process -Filter "ProcessId=$($newTray.Id)" -ErrorAction SilentlyContinue
-   if ($candidate -and [string]::Equals($candidate.ExecutablePath,$trayInstalled,[StringComparison]::OrdinalIgnoreCase)) {
-    Stop-Process -Id $newTray.Id -Force -ErrorAction Stop
-    $newTray.WaitForExit(10000) | Out-Null
+   $candidate=Get-CimInstance Win32_Process -Filter "ProcessId=$($newTray.Id)" -ErrorAction Stop
+   if (-not $candidate -or -not [string]::Equals($candidate.ExecutablePath,$trayInstalled,[StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Cannot verify new tray ownership during rollback; previous tray was not restarted'
    }
+   $window=[SecretaryTrayWindow]::FindWindow('SecretaryNodeTrayWindow','Secretary Node')
+   if ($window -eq [IntPtr]::Zero) { throw 'New tray window unavailable for cooperative Quit; previous tray was not restarted' }
+   $owner=[SecretaryTrayWindow]::GetWindow($window,4)
+   if ($owner -ne [IntPtr]::Zero) { $window=$owner }
+   [uint32]$windowPid=0
+   [void][SecretaryTrayWindow]::GetWindowThreadProcessId($window,[ref]$windowPid)
+   if ($windowPid -ne $newTray.Id -or -not [SecretaryTrayWindow]::PostMessage($window,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)) {
+    throw 'Cannot cooperatively stop owned new tray; previous tray was not restarted'
+   }
+   $newTray.WaitForExit(20000) | Out-Null
+   $newTray.Refresh()
+   if (-not $newTray.HasExited) { throw 'New tray Quit did not finish; previous tray was not restarted' }
   }
+  $ownedNodePath=Join-Path $installBin 'secretary-node.exe'
+  $released=$false
+  for ($attempt=0;$attempt -lt 100;$attempt++) {
+   $ownedNodes=@(Get-CimInstance Win32_Process -Filter "Name='secretary-node.exe'" -ErrorAction Stop | Where-Object {
+    [string]::Equals($_.ExecutablePath,$ownedNodePath,[StringComparison]::OrdinalIgnoreCase) -and
+    $_.CommandLine -and $_.CommandLine.Contains($NodeDataDir)
+   })
+   if ($ownedNodes.Count -eq 0) { $released=$true; break }
+   Start-Sleep -Milliseconds 100
+  }
+  if (-not $released) { throw 'New tray-owned Node still running; previous tray was not restarted' }
  }
  if ($null -ne $priorShortcutBytes) {
   $restore=Join-Path (Split-Path -Path $shortcutPath -Parent) ('Secretary Node.'+[guid]::NewGuid().ToString('N')+'.restore')
