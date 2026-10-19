@@ -5,7 +5,13 @@ on:
     paths:
       - secretary
       - scripts/install-linux-binary.sh
+      - internal/webapi/video.go
+      - internal/webapi/video_tools.go
+      - internal/webapi/video_tools_test.go
+      - scripts/provision-server-video-tools.sh
       - scripts/package-linux-binary-release.sh
+      - scripts/video-tools-contract-test.sh
+      - scripts/video-doctor-contract-test.sh
       - scripts/linux-binary-install-test.sh
       - .github/workflows/linux-binary-release.yml
   push:
@@ -31,6 +37,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      - name: Provision video tools on release builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/provision-server-video-tools.sh "$RUNNER_TEMP/server-video-tools"
+          "$RUNNER_TEMP/server-video-tools/ffmpeg" -encoders | grep libwebp
+          echo "$RUNNER_TEMP/server-video-tools" >> "$GITHUB_PATH"
       - name: Package release binaries
         shell: bash
         run: |
@@ -42,6 +55,9 @@ jobs:
           for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
             go build -trimpath -o "$RUNNER_TEMP/package/bin/$binary" "./cmd/$binary"
           done
+          mkdir -p "$RUNNER_TEMP/package/bin/video-tools"
+          cp "$RUNNER_TEMP/server-video-tools/ffmpeg" "$RUNNER_TEMP/package/bin/video-tools/ffmpeg"
+          cp "$RUNNER_TEMP/server-video-tools/ffprobe" "$RUNNER_TEMP/package/bin/video-tools/ffprobe"
           cp secretary "$RUNNER_TEMP/package/secretary"
           cp scripts/secretary-interactive.zsh "$RUNNER_TEMP/package/scripts/"
           cp -R internal/config/defaults "$RUNNER_TEMP/package/internal/config/"
@@ -50,6 +66,15 @@ jobs:
           bash scripts/package-linux-binary-release.sh "$version" "$GITHUB_SHA" "${{ matrix.arch }}" "$RUNNER_TEMP/package" "$RUNNER_TEMP/dist"
           echo "SECRETARY_PACKAGE_INPUT=$RUNNER_TEMP/package" >> "$GITHUB_ENV"
           echo "SECRETARY_TEST_DIST=$RUNNER_TEMP/dist" >> "$GITHUB_ENV"
+      - name: Packaged video dependency contract
+        shell: bash
+        run: bash scripts/video-tools-contract-test.sh "$RUNNER_TEMP/package"
+      - name: Server video doctor regression
+        shell: bash
+        run: bash scripts/video-doctor-contract-test.sh
+      - name: Real video transcode acceptance
+        shell: bash
+        run: go test ./internal/webapi -run 'TestT12RealFFmpegNonzeroPTSAndVFRSourcePTS|TestT12FFmpegExtractsExactlyProbedVideoTrackNotDefault|TestVideoToolPairValidation|TestVideoManagedManifestIntegrity|TestVideoRejectsFFmpegWithoutLibWebP' -count=1
       - name: Clean-user simulated systemd and verified artifact install
         shell: bash
         run: |

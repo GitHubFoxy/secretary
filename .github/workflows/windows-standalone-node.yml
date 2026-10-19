@@ -1,0 +1,264 @@
+name: Windows standalone Node release verification
+on:
+  pull_request:
+    paths:
+      - 'scripts/install-windows-node-release.ps1'
+      - 'scripts/install-windows-node.ps1'
+      - 'scripts/setup-windows-worker.ps1'
+      - 'internal/node/codex_provision.go'
+      - 'internal/node/codex_inventory.go'
+      - 'internal/node/codex_lock_windows.go'
+      - 'internal/node/codex_windows_test.go'
+      - 'cmd/secretary-node/main.go'
+      - 'scripts/fixtures/install07-native-fixture/**'
+      - '.github/workflows/windows-standalone-node.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release-verification:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Compile release fixtures in CI
+        shell: pwsh
+        run: |
+          go build -o "$env:RUNNER_TEMP/secretary-node.exe" ./cmd/secretary-node
+          if ($LASTEXITCODE -ne 0) { throw 'Node fixture compilation failed' }
+          go build -ldflags '-H=windowsgui' -o "$env:RUNNER_TEMP/secretary-tray.exe" ./cmd/secretary-tray
+          if ($LASTEXITCODE -ne 0) { throw 'Tray fixture compilation failed' }
+      - name: Verify Windows Codex inventory, pinned ZIP, rollback and launcher restrictions
+        shell: pwsh
+        run: |
+          go build -o "$env:RUNNER_TEMP/install07-version-fixture.exe" ./scripts/fixtures/install07-native-fixture
+          if ($LASTEXITCODE -ne 0) { throw 'Native fixture compile failed' }
+          $env:SECRETARY_INSTALL07_TEST_EXE = Join-Path $env:RUNNER_TEMP 'install07-version-fixture.exe'
+          go test ./internal/node -run '^TestInstall07' -count=1 -timeout=5m -v
+          if ($LASTEXITCODE -ne 0) { throw 'Install07 inventory tests failed' }
+      - name: Verify release archive contract and installation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $root=Join-Path $env:RUNNER_TEMP 'standalone-node-release'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          foreach($name in @('secretary-node.exe','secretary-tray.exe')) {
+            Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP $name) -Destination (Join-Path $root $name)
+          }
+          Copy-Item -LiteralPath ./scripts/install-windows-node.ps1,./scripts/setup-windows-worker.ps1 -Destination $root
+          $manifest=@{
+            schema=1;version='ci-1';platform='windows';arch='amd64'
+            node_sha256=(Get-FileHash (Join-Path $root 'secretary-node.exe') -Algorithm SHA256).Hash
+            tray_sha256=(Get-FileHash (Join-Path $root 'secretary-tray.exe') -Algorithm SHA256).Hash
+          } | ConvertTo-Json -Compress
+          [IO.File]::WriteAllText((Join-Path $root 'release.json'),$manifest)
+          $archive=Join-Path $env:RUNNER_TEMP 'standalone-node.zip'
+          [IO.Compression.ZipFile]::CreateFromDirectory($root,$archive)
+          $wrongArch = Join-Path $env:RUNNER_TEMP 'wrong-architecture.zip'
+          $badDir = Join-Path $env:RUNNER_TEMP 'bad-manifest-fixture'
+          Copy-Item -LiteralPath $root -Destination $badDir -Recurse
+          $badManifest = Get-Content (Join-Path $badDir 'release.json') -Raw | ConvertFrom-Json
+          $badManifest.arch = 'arm64'
+          [IO.File]::WriteAllText((Join-Path $badDir 'release.json'),($badManifest | ConvertTo-Json -Compress))
+          [IO.Compression.ZipFile]::CreateFromDirectory($badDir,$wrongArch)
+          $wrongDigest=(Get-FileHash $wrongArch -Algorithm SHA256).Hash
+          $componentArchive = Join-Path $env:RUNNER_TEMP 'wrong-component.zip'
+          $badManifest.arch = 'amd64'
+          $badManifest.node_sha256 = ('f'*64)
+          [IO.File]::WriteAllText((Join-Path $badDir 'release.json'),($badManifest | ConvertTo-Json -Compress))
+          [IO.Compression.ZipFile]::CreateFromDirectory($badDir,$componentArchive)
+          $componentDigest=(Get-FileHash $componentArchive -Algorithm SHA256).Hash
+                    $digest=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          $uri=([Uri]$archive).AbsoluteUri
+          $data=Join-Path $env:RUNNER_TEMP 'standalone-install-data'
+          $fixtureWorkerHome=Join-Path $env:RUNNER_TEMP 'standalone-worker-home'
+          $workspace=Join-Path $env:RUNNER_TEMP 'standalone-worker-workspace'
+          New-Item -ItemType Directory -Path $data,$workspace -Force | Out-Null
+          $identity=Join-Path $data 'identity.json'
+          $credential=([Convert]::ToBase64String([byte[]](1..32))).TrimEnd('=').Replace('+','-').Replace('/','_')
+          $fixtureIdentity=@{node='install07-ci';credential=$credential;connect_url='ws://127.0.0.1:1/v1/nodes/connect'} | ConvertTo-Json -Compress
+          [IO.File]::WriteAllText($identity,$fixtureIdentity)
+          $preserved=@{
+            'config.json'='PRESERVED-DEPLOYMENT-CONFIG'
+            'node-state.json'='{"version":1,"next_sequence":1,"commands":{},"mappings":{},"pending_requests":{},"worker_responses":{},"outbox":[]}'
+            'transport-credential.json'='PRESERVED-TRANSPORT-CREDENTIAL'
+            'native-sessions\worker-01.json'='PRESERVED-NATIVE-WORKER-SESSION'
+          }
+          foreach($name in $preserved.Keys) {
+            $file=Join-Path $data $name
+            New-Item -ItemType Directory -Path (Split-Path $file -Parent) -Force | Out-Null
+            [IO.File]::WriteAllText($file,$preserved[$name])
+          }
+          $identityContents=Get-Content -LiteralPath $identity -Raw
+          $savedState=@{}
+          $savedState['identity.json']=$identityContents
+          foreach($name in $preserved.Keys) { $savedState[$name]=Get-Content -LiteralPath (Join-Path $data $name) -Raw }
+          function Assert-PreservedState {
+            foreach($name in $savedState.Keys) {
+              $actual=Get-Content -LiteralPath (Join-Path $data $name) -Raw
+              if ($actual -cne $savedState[$name]) { throw "Preserved Windows state modified: $name" }
+            }
+          }
+          try {
+            & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 ('0'*64) -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace
+            throw 'Tampered outer digest was accepted'
+          } catch {
+            if ($_.Exception.Message -notlike '*independently pinned digest*') { throw }
+          }
+          if ((Get-Content -LiteralPath $identity -Raw) -cne $fixtureIdentity) { throw 'Negative fixture mutated identity' }
+          foreach($bad in @(@($wrongArch,$wrongDigest,'architecture'),@($componentArchive,$componentDigest,'executable hash'))) {
+            try {
+              & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$bad[0]).AbsoluteUri -ReleaseSHA256 $bad[1] -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -Harness claude
+              throw 'Negative release fixture unexpectedly accepted'
+            } catch {
+              if ($_.Exception.Message -notlike ('*'+$bad[2]+'*')) { throw }
+            }
+          }
+                    & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+          if (-not $?) { throw 'Verified archive install failed' }
+          Assert-PreservedState
+          $shortcutPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
+          $shell=New-Object -ComObject WScript.Shell
+          $originalTarget=$shell.CreateShortcut($shortcutPath).TargetPath
+          $originalLinkHash=(Get-FileHash $shortcutPath -Algorithm SHA256).Hash
+          $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          New-Item -Path $runKey -Force | Out-Null
+          $originalLogin='"'+$originalTarget+'" --data-dir "'+$data+'"'
+          Set-ItemProperty -Path $runKey -Name 'Secretary Node' -Value $originalLogin
+          if ((Get-ItemProperty -Path $runKey -Name 'Secretary Node').'Secretary Node' -cne $originalLogin) { throw 'Launch at Login baseline registration missing' }
+          try {
+            & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$componentArchive).AbsoluteUri -ReleaseSHA256 $componentDigest -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+            throw 'Corrupt upgrade unexpectedly succeeded'
+          } catch {
+            if ($_.Exception.Message -notlike '*executable hash*') { throw }
+          }
+          if ((Get-FileHash $shortcutPath -Algorithm SHA256).Hash -ne $originalLinkHash -or $shell.CreateShortcut($shortcutPath).TargetPath -ne $originalTarget) { throw 'Failed upgrade changed Start/Search activation' }
+          Assert-PreservedState
+                    $workerAccount=Join-Path $data 'worker-account.json'
+          $accountBefore=(Get-FileHash $workerAccount -Algorithm SHA256).Hash
+          $runningTray=Start-Process -FilePath $originalTarget -ArgumentList ('--data-dir "'+$data+'"') -PassThru
+          Start-Sleep -Milliseconds 800
+          $runningTray.Refresh()
+          if ($runningTray.HasExited) { throw 'Existing tray was not running before staged upgrade' }
+          $upgradeDir=Join-Path $env:RUNNER_TEMP 'standalone-activation-upgrade'
+          Copy-Item -LiteralPath $root -Destination $upgradeDir -Recurse
+          go build -ldflags '-H=windowsgui -buildid=install07-upgrade-v2' -o (Join-Path $upgradeDir 'secretary-tray.exe') ./cmd/secretary-tray
+          if ($LASTEXITCODE -ne 0) { throw 'Upgrade tray fixture compilation failed' }
+          $upManifest=Get-Content -LiteralPath (Join-Path $upgradeDir 'release.json') -Raw | ConvertFrom-Json
+          $upManifest.version='ci-2'
+          $upManifest.tray_sha256=(Get-FileHash (Join-Path $upgradeDir 'secretary-tray.exe') -Algorithm SHA256).Hash
+          [IO.File]::WriteAllText((Join-Path $upgradeDir 'release.json'),($upManifest | ConvertTo-Json -Compress))
+          $upgradeArchive=Join-Path $env:RUNNER_TEMP 'standalone-upgrade.zip'
+          [IO.Compression.ZipFile]::CreateFromDirectory($upgradeDir,$upgradeArchive)
+          $upgradeUri=([Uri]$upgradeArchive).AbsoluteUri
+          $upgradeDigest=(Get-FileHash $upgradeArchive -Algorithm SHA256).Hash
+          $faultDir=Join-Path $env:RUNNER_TEMP 'standalone-fault-after-shutdown'
+          Copy-Item -LiteralPath $upgradeDir -Destination $faultDir -Recurse
+          $faultInstaller=Join-Path $faultDir 'install-windows-node.ps1'
+          $installerText=Get-Content -LiteralPath $faultInstaller -Raw
+          $faultPoint="$"+'shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcutStage)'
+          if (-not $installerText.Contains($faultPoint)) { throw 'Activation injection point not found' }
+          $installerText=$installerText.Replace($faultPoint,"throw 'CI_ACTIVATION_AFTER_TRAY_SHUTDOWN'`r`n"+$faultPoint)
+          [IO.File]::WriteAllText($faultInstaller,$installerText)
+          $faultArchive=Join-Path $env:RUNNER_TEMP 'standalone-failed-activation.zip'
+          [IO.Compression.ZipFile]::CreateFromDirectory($faultDir,$faultArchive)
+          $faultDigest=(Get-FileHash $faultArchive -Algorithm SHA256).Hash
+          try {
+            & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$faultArchive).AbsoluteUri -ReleaseSHA256 $faultDigest -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+            throw 'Post-shutdown activation failure unexpectedly succeeded'
+          } catch {
+            if ($_.Exception.Message -notlike '*CI_ACTIVATION_AFTER_TRAY_SHUTDOWN*') { throw }
+          }
+          $runningTray.Refresh()
+          if (-not $runningTray.HasExited) { throw 'Post-shutdown fixture never stopped original tray' }
+          if ($shell.CreateShortcut($shortcutPath).TargetPath -ne $originalTarget -or (Get-FileHash $shortcutPath -Algorithm SHA256).Hash -ne $originalLinkHash) { throw 'Post-staging rollback did not restore previous active shortcut' }
+          if ((Get-ItemProperty -Path $runKey -Name 'Secretary Node').'Secretary Node' -cne $originalLogin) { throw 'Post-staging rollback changed Launch at Login registration' }
+          if ((Get-FileHash $originalTarget -Algorithm SHA256).Hash -ne (Get-FileHash (Join-Path $root 'secretary-tray.exe') -Algorithm SHA256).Hash) { throw 'Post-staging rollback modified previous release bytes' }
+          $restored=@(Get-CimInstance Win32_Process -Filter "Name='secretary-tray.exe'" | Where-Object { $_.ExecutablePath -eq $originalTarget })
+          if ($restored.Count -ne 1) { throw 'Post-staging rollback failed to restore exactly one previous tray process' }
+          Assert-PreservedState
+          if ($accountBefore -ne (Get-FileHash $workerAccount -Algorithm SHA256).Hash) { throw 'Post-staging rollback modified Worker credentials' }
+          foreach($scenario in @('shutdown-wait','new-tray-exit','owned-node-rollback')) {
+            $caseDir=Join-Path $env:RUNNER_TEMP ('install07-'+$scenario)
+            Copy-Item -LiteralPath $upgradeDir -Destination $caseDir -Recurse
+            $caseScript=Join-Path $caseDir 'install-windows-node.ps1'
+            $caseText=Get-Content -LiteralPath $caseScript -Raw
+            if ($scenario -eq 'shutdown-wait') {
+              $inject='[SecretaryTrayWindow]::PostMessage($window,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)'
+              $replacement='[SecretaryTrayWindow]::PostMessage($window,0x0000,[IntPtr]::Zero,[IntPtr]::Zero)'
+              $expected='Old tray did not exit after cooperative shutdown'
+            } elseif ($scenario -eq 'new-tray-exit') {
+              $inject='$newTray.Refresh()'
+              $replacement='Stop-Process -Id $newTray.Id -Force -ErrorAction SilentlyContinue; '+$inject
+              $expected='New tray exited during upgrade activation'
+            } else {
+              $inject="if (-not `$ready) { throw 'New tray failed process/window/version/data-directory readiness verification' }"
+              $ownedProof=Join-Path $env:RUNNER_TEMP 'install07-owned-node-proof.json'
+              Remove-Item -LiteralPath $ownedProof -Force -ErrorAction SilentlyContinue
+              $proofLiteral=$ownedProof.Replace("'","''")
+              $proofCode=@'
+          $ownedProof='__PROOF_PATH__'
+          $nodeBinary=Join-Path $installBin 'secretary-node.exe'
+          $observed=$null
+          for ($i=0;$i -lt 100;$i++) {
+           $observed=@(Get-CimInstance Win32_Process -Filter "Name='secretary-node.exe'" | Where-Object { $_.ParentProcessId -eq $newTray.Id -and $_.ExecutablePath -eq $nodeBinary -and $_.CommandLine.Contains($NodeDataDir) })
+           if ($observed.Count -eq 1) { break }
+           Start-Sleep -Milliseconds 100
+          }
+          if ($observed.Count -ne 1) { throw 'CI_OWNED_NODE_NOT_STARTED' }
+          @{pid=$observed[0].ProcessId;path=$observed[0].ExecutablePath} | ConvertTo-Json -Compress | Set-Content -LiteralPath $ownedProof
+          throw 'CI_NEW_TRAY_OWNED_NODE_ROLLBACK'
+          '@
+              $proofCode=$proofCode.Replace('__PROOF_PATH__',$proofLiteral)
+              $replacement=$inject+"`r`n"+$proofCode+"`r`n"
+              $expected='CI_NEW_TRAY_OWNED_NODE_ROLLBACK'
+            }
+            if (-not $caseText.Contains($inject)) { throw "Missing $scenario fault injection seam" }
+            if ($scenario -eq 'shutdown-wait' -and @((Get-CimInstance Win32_Process -Filter "Name='secretary-tray.exe'") | Where-Object { $_.ExecutablePath -eq $originalTarget }).Count -ne 1) { throw 'Shutdown wait fixture requires live original tray' }
+            $caseText=$caseText.Replace($inject,$replacement)
+            [IO.File]::WriteAllText($caseScript,$caseText)
+            $caseArchive=Join-Path $env:RUNNER_TEMP ('install07-'+$scenario+'.zip')
+            [IO.Compression.ZipFile]::CreateFromDirectory($caseDir,$caseArchive)
+            $caseHash=(Get-FileHash $caseArchive -Algorithm SHA256).Hash
+            try {
+              & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$caseArchive).AbsoluteUri -ReleaseSHA256 $caseHash -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+              throw "Fault scenario $scenario unexpectedly succeeded"
+            } catch {
+              if ($_.Exception.Message -notlike ('*'+$expected+'*')) { throw }
+            }
+            if ($shell.CreateShortcut($shortcutPath).TargetPath -ne $originalTarget -or (Get-FileHash $shortcutPath -Algorithm SHA256).Hash -ne $originalLinkHash) { throw "$scenario did not restore active version" }
+            if ((Get-ItemProperty -Path $runKey -Name 'Secretary Node').'Secretary Node' -cne $originalLogin) { throw "$scenario did not restore Launch at Login" }
+            $previous=@(Get-CimInstance Win32_Process -Filter "Name='secretary-tray.exe'" | Where-Object { $_.ExecutablePath -eq $originalTarget })
+            if ($previous.Count -ne 1) { throw "$scenario did not preserve exactly one previous tray" }
+            if ($scenario -eq 'owned-node-rollback') {
+              if (-not (Test-Path -LiteralPath $ownedProof)) { throw 'No evidence that new tray started its owned Node' }
+              $proof=Get-Content -LiteralPath $ownedProof -Raw | ConvertFrom-Json
+              if ($proof.pid -le 0 -or -not $proof.path -or $proof.path -eq (Join-Path (Split-Path $originalTarget -Parent) 'secretary-node.exe')) { throw 'Owned Node evidence is invalid' }
+              if (Get-CimInstance Win32_Process -Filter "ProcessId=$($proof.pid)" -ErrorAction SilentlyContinue) { throw 'Recorded tray-owned Node PID survived rollback' }
+            }
+            $activeNodes=@(Get-CimInstance Win32_Process -Filter "Name='secretary-node.exe'" | Where-Object { $_.CommandLine -and $_.CommandLine.Contains($data) })
+            if (@($activeNodes | Where-Object { $_.ExecutablePath -ne (Join-Path (Split-Path $originalTarget -Parent) 'secretary-node.exe') }).Count -gt 0) { throw "$scenario left new tray-owned Node running" }
+            if ($activeNodes.Count -gt 1) { throw "$scenario left duplicate Nodes using the same data directory" }
+            Assert-PreservedState
+            if ((Get-FileHash $workerAccount -Algorithm SHA256).Hash -ne $accountBefore) { throw "$scenario changed Worker credentials" }
+          }
+          & ./scripts/install-windows-node-release.ps1 -ReleaseUri $upgradeUri -ReleaseSHA256 $upgradeDigest -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+          if (-not $?) { throw 'Valid staged upgrade failed' }
+          $currentTarget=$shell.CreateShortcut($shortcutPath).TargetPath
+          if ($currentTarget -eq $originalTarget -or (Get-FileHash $currentTarget -Algorithm SHA256).Hash -eq (Get-FileHash $originalTarget -Algorithm SHA256).Hash) { throw 'Valid upgrade did not activate new version' }
+          $expectedLogin='"'+$currentTarget+'" --data-dir "'+$data+'"'
+          if ((Get-ItemProperty -Path $runKey -Name 'Secretary Node').'Secretary Node' -cne $expectedLogin) { throw 'Successful upgrade did not update Launch at Login registration' }
+          Assert-PreservedState
+          if ($accountBefore -ne (Get-FileHash $workerAccount -Algorithm SHA256).Hash) { throw 'Successful upgrade modified Worker credentials' }
+                    $identityBefore=(Get-FileHash $identity -Algorithm SHA256).Hash
+          $workerAccount=Join-Path $data 'worker-account.json'
+          $accountBefore=(Get-FileHash $workerAccount -Algorithm SHA256).Hash
+          & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $fixtureWorkerHome -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+          if (-not $?) { throw 'Repeated verified install failed' }
+          if ($identityBefore -ne (Get-FileHash $identity -Algorithm SHA256).Hash -or $accountBefore -ne (Get-FileHash $workerAccount -Algorithm SHA256).Hash) { throw 'Repeat install changed identity or Worker account' }
+          Assert-PreservedState
+          $shortcut=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
+          if (-not (Test-Path $shortcut)) { throw 'Start/Search shortcut missing' }

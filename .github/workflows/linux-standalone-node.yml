@@ -1,0 +1,56 @@
+name: Linux standalone Execution Node
+
+on:
+  pull_request:
+    paths:
+      - scripts/install-linux-standalone-node.sh
+      - scripts/linux-standalone-node-test.sh
+      - docs/linux-standalone-node.md
+      - .github/workflows/linux-standalone-node.yml
+      - scripts/package-linux-binary-release.sh
+      - cmd/secretary-node/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  standalone-node:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Provision combined-release fixture video dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/provision-server-video-tools.sh "$RUNNER_TEMP/server-video-tools"
+      - name: Build fixture release and inspect shell syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y zsh
+          bash -n scripts/install-linux-standalone-node.sh scripts/linux-standalone-node-test.sh
+          mkdir -p "$RUNNER_TEMP/package/bin" "$RUNNER_TEMP/package/scripts" "$RUNNER_TEMP/package/internal/config"
+          for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+            go build -trimpath -o "$RUNNER_TEMP/package/bin/$binary" "./cmd/$binary"
+          done
+          mkdir -p "$RUNNER_TEMP/package/bin/video-tools"
+          cp "$RUNNER_TEMP/server-video-tools/ffmpeg" "$RUNNER_TEMP/package/bin/video-tools/ffmpeg"
+          cp "$RUNNER_TEMP/server-video-tools/ffprobe" "$RUNNER_TEMP/package/bin/video-tools/ffprobe"
+          cp secretary "$RUNNER_TEMP/package/secretary"
+          cp scripts/secretary-interactive.zsh "$RUNNER_TEMP/package/scripts/"
+          cp -R internal/config/defaults "$RUNNER_TEMP/package/internal/config/"
+          bash scripts/package-linux-binary-release.sh 0.0.0-ci "$GITHUB_SHA" "${{ matrix.arch }}" "$RUNNER_TEMP/package" "$RUNNER_TEMP/dist"
+          bash scripts/linux-standalone-node-test.sh "$RUNNER_TEMP/package" "$RUNNER_TEMP/dist" "$GITHUB_SHA"

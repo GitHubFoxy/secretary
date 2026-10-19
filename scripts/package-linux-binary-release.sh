@@ -14,6 +14,13 @@ for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-
   [[ -x "$input/bin/$binary" && ! -L "$input/bin/$binary" ]] || fail "Missing binary: $binary"
 done
 [[ -f "$input/secretary" && -f "$input/scripts/secretary-interactive.zsh" && -f "$input/internal/config/defaults/config.toml" ]] || fail "Missing release resources"
+for tool in ffmpeg ffprobe; do
+  [[ -x "$input/bin/video-tools/$tool" && ! -L "$input/bin/video-tools/$tool" ]] || fail "Missing Server video executable: $tool"
+done
+video_ffmpeg="$("$input/bin/video-tools/ffmpeg" -version | head -n 1 | awk '{print $3}')"
+video_ffprobe="$("$input/bin/video-tools/ffprobe" -version | head -n 1 | awk '{print $3}')"
+[[ -n "$video_ffmpeg" && "$video_ffmpeg" == "$video_ffprobe" ]] || fail "Incompatible FFmpeg/FFprobe versions"
+"$input/bin/video-tools/ffmpeg" -hide_banner -encoders | awk '$2=="libwebp" && substr($1,1,1)=="V" {found=1} END {exit !found}' || fail "Packaged FFmpeg lacks libwebp encoder"
 mkdir -p "$output"
 name="secretary-v$version-linux-$arch"
 [[ ! -e "$output/$name.tar.gz" && ! -e "$output/$name.json" ]] || fail "Release already exists"
@@ -23,11 +30,23 @@ mkdir -p "$stage/$name/bin" "$stage/$name/scripts" "$stage/$name/internal/config
 for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
   cp -p "$input/bin/$binary" "$stage/$name/bin/$binary"
 done
+mkdir -p "$stage/$name/bin/video-tools"
+cp -p "$input/bin/video-tools/ffmpeg" "$stage/$name/bin/video-tools/ffmpeg"
+cp -p "$input/bin/video-tools/ffprobe" "$stage/$name/bin/video-tools/ffprobe"
 cp -p "$input/secretary" "$stage/$name/secretary"
 cp -p "$input/scripts/secretary-interactive.zsh" "$stage/$name/scripts/"
 cp -R "$input/internal/config/defaults" "$stage/$name/internal/config/"
 printf '%s\n' "$version" > "$stage/$name/VERSION"
 printf '%s\n' "$revision" > "$stage/$name/REVISION"
+python3 - "$stage/$name" "$video_ffmpeg" <<'PY'
+import hashlib, json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+version = sys.argv[2]
+entries = {}
+for tool in ("ffmpeg", "ffprobe"):
+    entries[tool] = {"version": version, "sha256": hashlib.sha256((root / "bin" / "video-tools" / tool).read_bytes()).hexdigest()}
+(root / "VIDEO-TOOLS.json").write_text(json.dumps({"origin": "https://github.com/eugeneware/ffmpeg-static/releases/tag/b6.1.1", "required_encoder": "libwebp", **entries}, sort_keys=True) + "\n")
+PY
 tar -czf "$stage/$name.tar.gz" -C "$stage" "$name"
 digest="$(sha256sum "$stage/$name.tar.gz" | awk '{print $1}')"
 bytes="$(wc -c < "$stage/$name.tar.gz" | tr -d '[:space:]')"

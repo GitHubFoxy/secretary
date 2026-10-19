@@ -10,7 +10,13 @@ on:
       - scripts/macos-standalone-node-test.sh
       - scripts/macos-standalone-clean-install-test.sh
       - cmd/secretary-node/**
+      - internal/webapi/video.go
+      - internal/webapi/video_tools.go
+      - internal/webapi/video_tools_test.go
+      - scripts/provision-server-video-tools.sh
       - scripts/package-macos-binary-release.sh
+      - scripts/video-tools-contract-test.sh
+      - scripts/video-doctor-contract-test.sh
       - scripts/macos-release-contract-test.sh
       - scripts/macos-binary-install-test.sh
       - .github/workflows/macos-binary-release.yml
@@ -42,6 +48,13 @@ jobs:
           bash -n scripts/macos-release-contract-test.sh
           bash scripts/macos-release-contract-test.sh
           zsh -n secretary
+      - name: Provision video tools on release builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/provision-server-video-tools.sh "$RUNNER_TEMP/server-video-tools"
+          "$RUNNER_TEMP/server-video-tools/ffmpeg" -encoders | grep libwebp
+          echo "$RUNNER_TEMP/server-video-tools" >> "$GITHUB_PATH"
       - name: Build native release on CI host
         shell: bash
         run: |
@@ -60,10 +73,22 @@ jobs:
           plutil -replace CFBundleShortVersionString -string "$package_version" "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/Info.plist"
           codesign --force --sign - "$RUNNER_TEMP/secretary-package/Secretary Node.app"
           codesign --verify "$RUNNER_TEMP/secretary-package/Secretary Node.app"
+          mkdir -p "$RUNNER_TEMP/secretary-package/bin/video-tools"
+          cp "$RUNNER_TEMP/server-video-tools/ffmpeg" "$RUNNER_TEMP/secretary-package/bin/video-tools/ffmpeg"
+          cp "$RUNNER_TEMP/server-video-tools/ffprobe" "$RUNNER_TEMP/secretary-package/bin/video-tools/ffprobe"
           cp secretary "$RUNNER_TEMP/secretary-package/secretary"
           cp scripts/secretary-interactive.zsh "$RUNNER_TEMP/secretary-package/scripts/secretary-interactive.zsh"
           cp -R internal/config/defaults "$RUNNER_TEMP/secretary-package/internal/config/defaults"
           echo "SECRETARY_PACKAGE_INPUT=$RUNNER_TEMP/secretary-package" >> "$GITHUB_ENV"
+      - name: Packaged video dependency contract
+        shell: bash
+        run: bash scripts/video-tools-contract-test.sh "$RUNNER_TEMP/secretary-package"
+      - name: Server video doctor regression
+        shell: bash
+        run: bash scripts/video-doctor-contract-test.sh
+      - name: Real video transcode acceptance
+        shell: bash
+        run: go test ./internal/webapi -run 'TestT12RealFFmpegNonzeroPTSAndVFRSourcePTS|TestT12FFmpegExtractsExactlyProbedVideoTrackNotDefault|TestVideoToolPairValidation|TestVideoManagedManifestIntegrity|TestVideoRejectsFFmpegWithoutLibWebP' -count=1
       - name: Create versioned archive and manifest
         shell: bash
         run: |
