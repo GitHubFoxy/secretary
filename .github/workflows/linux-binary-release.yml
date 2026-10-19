@@ -11,6 +11,7 @@ on:
       - scripts/provision-server-video-tools.sh
       - scripts/package-linux-binary-release.sh
       - scripts/video-tools-contract-test.sh
+      - scripts/video-doctor-contract-test.sh
       - scripts/linux-binary-install-test.sh
       - .github/workflows/linux-binary-release.yml
   push:
@@ -68,6 +69,9 @@ jobs:
       - name: Packaged video dependency contract
         shell: bash
         run: bash scripts/video-tools-contract-test.sh "$RUNNER_TEMP/package"
+      - name: Server video doctor regression
+        shell: bash
+        run: bash scripts/video-doctor-contract-test.sh
       - name: Real video transcode acceptance
         shell: bash
         run: go test ./internal/webapi -run 'TestT12RealFFmpegNonzeroPTSAndVFRSourcePTS|TestT12FFmpegExtractsExactlyProbedVideoTrackNotDefault|TestVideoToolPairValidation|TestVideoManagedManifestIntegrity|TestVideoRejectsFFmpegWithoutLibWebP' -count=1
