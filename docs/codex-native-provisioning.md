@@ -36,13 +36,12 @@ Upgrade checks the proposed pair with the actual owner authorization and ACP tra
 
 ```sh
 go test ./internal/node ./cmd/secretary-node ./cmd/secretaryd ./internal/config -count=1
-python3 -m unittest discover -s scripts -p 'test-provision-codex-pair.py' -v
 bash -n scripts/install-linux-binary.sh scripts/install-macos-binary.sh scripts/package-linux-binary-release.sh scripts/package-macos-binary-release.sh
 bash scripts/macos-release-contract-test.sh
 ./scripts/phase4-release-gate.sh
 ```
 
-Native Go unit tests cover external adoption, repeat setup, moved paths, executable modifications, failed upgrade with preserved inventory, SHA-256 comparison and incomplete download. Python source fixtures remain optional developer checks, not an installed/runtime dependency. Binary installer release fixtures and Go integration tests must be checked by CI. Tests must not include actual native credentials.
+Native Go unit tests cover external adoption, repeat setup, moved paths, executable modifications, failed upgrade with preserved inventory, SHA-256 comparison and incomplete download. Binary installer release fixtures and Go integration tests must be checked by CI. Tests must not include actual native credentials.
 
 ## Manual live acceptance (not executed)
 
