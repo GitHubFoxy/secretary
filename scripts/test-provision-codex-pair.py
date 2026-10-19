@@ -53,7 +53,12 @@ class ProvisionCodexPairTest(unittest.TestCase):
         second.write_bytes(self.codex.read_bytes())
         second.chmod(0o700)
         self.assertNotEqual(self.invoke("install", "--codex", str(second), "--acp", str(self.acp)).returncode, 0)
-        self.assertEqual(self.invoke("install", "--upgrade", "--codex", str(second), "--acp", str(self.acp)).returncode, 0)
+        failed = self.invoke("install", "--upgrade", "--codex", str(second), "--acp", str(self.acp))
+        self.assertNotEqual(failed.returncode, 0)
+        readiness = self.root / "readiness-node"
+        readiness.write_text("#!/bin/sh\n[ \"$1\" = \"--check-codex-readiness\" ]\n")
+        readiness.chmod(0o700)
+        self.assertEqual(self.invoke("install", "--upgrade", "--readiness-bin", str(readiness), "--codex", str(second), "--acp", str(self.acp)).returncode, 0)
         self.assertEqual(json.loads(self.invoke("show").stdout)["codex"]["path"], str(second))
 
     def test_missing_half_of_external_pair_is_rejected(self):
