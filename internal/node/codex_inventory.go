@@ -64,7 +64,7 @@ func verifyCodexBinary(record CodexBinaryRecord) error {
  if err != nil { return fmt.Errorf("missing selected binary %s: %w", record.Path, err) }
  if resolved != record.ResolvedPath { return fmt.Errorf("selected executable moved: %s", record.Path) }
  info, err := os.Stat(resolved)
- if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode()&0111 == 0) || (runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(resolved), ".exe") && !strings.EqualFold(filepath.Ext(resolved), ".cmd")) { return fmt.Errorf("selected executable unavailable: %s", resolved) }
+ if err != nil || !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode()&0111 == 0) || (runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(resolved), ".exe")) { return fmt.Errorf("selected executable unavailable: %s", resolved) }
  bytes, err := os.ReadFile(resolved)
  if err != nil { return err }
  digest := sha256.Sum256(bytes)
