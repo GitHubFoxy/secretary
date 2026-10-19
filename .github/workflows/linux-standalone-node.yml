@@ -30,8 +30,6 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      # The shared main release packager requires real Server video binaries.
-      # Fixture-only inputs; standalone Node installation never deploys these tools.
       - name: Provision combined-release fixture video dependencies
         shell: bash
         run: |
