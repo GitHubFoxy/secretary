@@ -108,6 +108,14 @@ if CommandLine.arguments.contains("--login-item-smoke") {
     let action = CommandLine.arguments.last
     do {
         switch action {
+        case "status":
+            switch NodeIntegrations.loginStatus {
+            case .enabled: print("enabled")
+            case .notRegistered: print("notRegistered")
+            case .requiresApproval: print("requiresApproval")
+            case .notFound: print("notFound")
+            @unknown default: print("unknown")
+            }
         case "enable":
             try NodeIntegrations.setLaunchAtLogin(true)
             guard NodeIntegrations.loginStatus == .enabled else {
