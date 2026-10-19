@@ -24,7 +24,7 @@ jobs:
       - name: Compile actual Windows Node executable
         run: go build -o secretary-node.exe ./cmd/secretary-node
       - name: Test Windows Node configuration
-        run: go test ./cmd/secretary-node -run 'TestConfiguredNodeRuntime|TestSelectNodeNativeStore' -count=1
+        run: go test ./cmd/secretary-node -run 'TestConfiguredNodeRuntime|TestSelectNodeNativeStore|TestW03NodeDataDirectoryExclusiveOwnership' -count=1
       - name: Windows host protocol, failure, native process and reconnect acceptance
         run: >
           go test ./internal/node
