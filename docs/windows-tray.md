@@ -59,8 +59,8 @@ For a standalone Node on Windows, use `scripts/install-windows-node-release.ps1`
 `-ReleaseUri` and `-ReleaseSHA256`. The digest must be obtained independently of
 the downloaded archive (for example from a release verified by the owner);
 a hash downloaded from the same untrusted location does not establish authenticity.
-The archive must contain exactly `secretary-node.exe`, `secretary-tray.exe`
-and `release.json`, with schema 1, version, platform `windows`, architecture
+The archive must contain exactly `secretary-node.exe`, `secretary-tray.exe`,
+`release.json`, `install-windows-node.ps1` and `setup-windows-worker.ps1`, with schema 1, version, platform `windows`, architecture
 `amd64` or `arm64`, `node_sha256`, and `tray_sha256`.
 The installer validates the outer pinned SHA-256 before extracting and checks
 the component digests and host architecture before delegating to existing Worker
@@ -90,8 +90,8 @@ not protocol-validated. Claude Code selection does not install Codex. Provisioni
 does not perform Codex login; `codex login` remains the owner's action and
 provider quota/authentication is distinct from binary readiness.
 
-The prebuilt artifact is a ZIP containing the two native executables and one
-manifest. The SHA-256 supplied to the installer must be independently pinned;
+The prebuilt artifact is a ZIP containing two native executables, one manifest and the two
+Worker account/installer scripts needed without a source checkout. The SHA-256 supplied to the installer must be independently pinned;
 a SHA-256 checksum displayed alongside an untrusted download is insufficient
 to establish author or channel authenticity. Use Windows Authenticode / a
 verified trusted publication channel when organization policy requires a
