@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -58,14 +59,28 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	}
 	defer localStore.Close()
 	runtime := &daemonCountingRuntime{}
+	statusSource := &w02InventorySource{inventory:inventory}
+	var statusMu sync.Mutex
+	var statusHistory []w02StatusEvent
+	statusSeen := func(match func(w02StatusEvent) bool) bool {
+		statusMu.Lock()
+		defer statusMu.Unlock()
+		for _, event := range statusHistory { if match(event) { return true } }
+		return false
+	}
 	daemon := &Daemon{
 		Identity:           identity,
 		Store:              localStore,
 		Runtime:            runtime,
-		Inventory:          daemonStaticInventory{snapshot: inventory},
+		Inventory:          statusSource,
+		StatusChanged: func(connected bool, snapshot core.HarnessInventorySnapshot) {
+			statusMu.Lock()
+			statusHistory = append(statusHistory,w02StatusEvent{connected:connected,inventory:snapshot})
+			statusMu.Unlock()
+		},
 		Capacity:           2,
 		HeartbeatInterval:  20 * time.Millisecond,
-		InventoryInterval:  time.Hour,
+		InventoryInterval:  30 * time.Millisecond,
 		OutboxPollInterval: 10 * time.Millisecond,
 		ReconnectMin:       10 * time.Millisecond,
 		ReconnectMax:       40 * time.Millisecond,
@@ -85,6 +100,9 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 		}
 	}()
 
+	waitFor(t, ctx, "W02 transport connected and harness ready", func() bool {
+		return statusSeen(func(s w02StatusEvent) bool {return s.connected && len(s.inventory.Instances)==1 && s.inventory.Instances[0].Available()})
+	})
 	waitFor(t, ctx, "Node heartbeat", func() bool {
 		status, err := manager.Status(context.Background(), "macbook")
 		return err == nil && status.Online && !status.LastHeartbeatAt.IsZero() && status.Inventory.Node == "macbook" && len(status.Inventory.Instances) == 1
@@ -192,6 +210,14 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 		pending, err := localStore.PendingEvents()
 		return err == nil && len(pending) == 0
 	})
+	waitFor(t, ctx, "W02 transport disconnect", func() bool {
+		statusMu.Lock()
+		defer statusMu.Unlock()
+		for i := 1; i < len(statusHistory); i++ {
+			if !statusHistory[i].connected && statusHistory[i-1].connected {return true}
+		}
+		return false
+	})
 	waitFor(t, ctx, "authenticated reconnect", func() bool {
 		status, err := manager.Status(context.Background(), "macbook")
 		return err == nil && status.Online && status.Inventory.Node == "macbook"
@@ -199,6 +225,30 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	if starts := runtime.starts.Load(); starts != 1 {
 		t.Fatalf("reconnect restarted existing Attempt; starts=%d", starts)
 	}
+
+	statusSource.set(daemonInventoryFixture("macbook"),nil)
+	changed:=daemonInventoryFixture("macbook")
+	changed.Instances[0].Status=core.HarnessUnavailable
+	statusSource.set(changed,nil)
+	waitFor(t,ctx,"W02 harness unavailable",func() bool {
+		return statusSeen(func(s w02StatusEvent)bool{return s.connected && len(s.inventory.Instances)==1 && !s.inventory.Instances[0].Available()})
+	})
+	statusSource.set(core.HarnessInventorySnapshot{Node:"wrong",ObservedAt:time.Now().UTC()},nil)
+	waitFor(t,ctx,"W02 invalid inventory clears stale ready",func()bool{
+		return statusSeen(func(s w02StatusEvent)bool{return s.connected && len(s.inventory.Instances)==0})
+	})
+	statusSource.set(core.HarnessInventorySnapshot{},errors.New("probe failed"))
+	waitFor(t,ctx,"W02 failed inventory discovery",func()bool{
+		return statusSeen(func(s w02StatusEvent)bool{return s.connected && len(s.inventory.Instances)==0})
+	})
+	statusSource.set(inventory,nil)
+	waitFor(t,ctx,"W02 harness recovered",func()bool{
+		statusMu.Lock()
+		defer statusMu.Unlock()
+		if len(statusHistory)==0{return false}
+		last:=statusHistory[len(statusHistory)-1]
+		return last.connected && len(last.inventory.Instances)==1 && last.inventory.Instances[0].Available()
+	})
 
 	revoked := revokeHTTP(t, ctx, httpServer, "macbook")
 	if !revoked.Revoked || revoked.Online || !revoked.Draining {
@@ -366,4 +416,27 @@ func revokeHTTP(t *testing.T, ctx context.Context, server *httptest.Server, node
 		t.Fatal(err)
 	}
 	return status
+}
+
+type w02StatusEvent struct {
+	connected bool
+	inventory core.HarnessInventorySnapshot
+}
+
+type w02InventorySource struct {
+	mu sync.Mutex
+	inventory core.HarnessInventorySnapshot
+	err error
+}
+func (s *w02InventorySource) set(snapshot core.HarnessInventorySnapshot, err error) {
+	s.mu.Lock()
+	s.inventory,s.err=snapshot,err
+	s.mu.Unlock()
+}
+func (s *w02InventorySource) Discover(context.Context) (core.HarnessInventorySnapshot,error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result:=s.inventory
+	result.ObservedAt=time.Now().UTC()
+	return result,s.err
 }
