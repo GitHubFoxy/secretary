@@ -25,7 +25,9 @@ if [[ -z "$version" ]]; then
 fi
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || fail "Invalid release version"
 name="secretary-v$version-darwin-$arch"
-curl -fsSL --retry 2 -o "$stage/manifest.json" "$base/download/v$version/$name.json" || fail "Missing versioned macOS release manifest"
+release_url="$base/download/v$version"
+if [[ -n "${SECRETARY_RELEASE_BASE:-}" ]]; then release_url="$SECRETARY_RELEASE_BASE"; fi
+curl -fsSL --retry 2 -o "$stage/manifest.json" "$release_url/$name.json" || fail "Missing versioned macOS release manifest"
 field() { plutil -extract "$1" raw -o - "$stage/manifest.json"; }
 [[ "$(field schema)" == 1 && "$(field version)" == "$version" && "$(field os)" == darwin && "$(field arch)" == "$arch" ]] || fail "Incompatible or malformed release manifest"
 revision="$(field revision)"
@@ -33,7 +35,7 @@ revision="$(field revision)"
 [[ "$(field archive)" == "$name.tar.gz" ]] || fail "Unexpected archive name in manifest"
 expected="$(field sha256)"
 [[ "$expected" =~ ^[[:xdigit:]]{64}$ ]] || fail "Invalid release SHA-256"
-curl -fsSL --retry 2 -o "$stage/$name.tar.gz" "$base/download/v$version/$name.tar.gz" || fail "Release archive unavailable"
+curl -fsSL --retry 2 -o "$stage/$name.tar.gz" "$release_url/$name.tar.gz" || fail "Release archive unavailable"
 actual="$(shasum -a 256 "$stage/$name.tar.gz" | awk '{print $1}')"
 [[ "$actual" == "$expected" ]] || fail "Release SHA-256 mismatch; existing installation untouched"
 [[ "$(wc -c < "$stage/$name.tar.gz" | tr -d '[:space:]')" == "$(field bytes)" ]] || fail "Release archive size mismatch"
