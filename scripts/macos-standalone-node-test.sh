@@ -63,6 +63,9 @@ if SECRETARY_NODE_NAME='bad"name' bash "$root/scripts/install-macos-standalone-n
 bash "$root/scripts/install-macos-standalone-node.sh"
 [[ "$(readlink "$state/current")" == "$old" ]]
 cmp "$home/session.before" "$state/data/node-state.json"
+export SECRETARY_VERSION=0.0.1-ci
+export SECRETARY_NODE_PINNED_SHA256="$(shasum -a 256 "$dist/secretary-v0.0.1-ci-darwin-$arch.tar.gz" | awk '{print $1}')"
+cp -R "$HOME/Applications/Secretary Node.app" "$home/app.before"
 mkdir -p "$home/fault"
 cat > "$home/fault/mv" <<'EOF'
 #!/bin/bash
@@ -75,6 +78,7 @@ chmod +x "$home/fault/mv"
 if PATH="$home/fault:$PATH" bash "$root/scripts/install-macos-standalone-node.sh" >/dev/null 2>&1; then echo "Accepted failed pointer activation" >&2; exit 1; fi
 [[ "$(readlink "$state/current")" == "$old" ]]
 cmp "$home/identity.before" "$state/data/identity.json"
+diff -qr "$home/app.before" "$HOME/Applications/Secretary Node.app"
 cat > "$home/fault/codesign" <<'EOF'
 #!/bin/bash
 case "$*" in *"/Applications/Secretary Node.app"*) exit 94 ;; esac
@@ -85,9 +89,8 @@ rm "$home/fault/mv"
 if PATH="$home/fault:$PATH" bash "$root/scripts/install-macos-standalone-node.sh" >/dev/null 2>&1; then echo "Accepted failed post-activation companion check" >&2; exit 1; fi
 [[ "$(readlink "$state/current")" == "$old" ]]
 cmp "$home/identity.before" "$state/data/identity.json"
+diff -qr "$home/app.before" "$HOME/Applications/Secretary Node.app"
 rm "$home/fault/codesign"
-export SECRETARY_VERSION=0.0.1-ci
-export SECRETARY_NODE_PINNED_SHA256="$(shasum -a 256 "$dist/secretary-v0.0.1-ci-darwin-$arch.tar.gz" | awk '{print $1}')"
 bash "$root/scripts/install-macos-standalone-node.sh"
 [[ "$(readlink "$state/current")" == *0.0.1-ci* ]]
 cmp "$home/config.before" "$state/config.json"
