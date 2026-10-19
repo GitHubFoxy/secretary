@@ -494,32 +494,43 @@ func (a *trayApp) stop() {
 	}
 }
 
+func readLiveStatus(path string, running bool, now time.Time) liveStatus {
+	var next liveStatus
+	if !running || path == "" { return next }
+	data, err := os.ReadFile(path)
+	if err != nil || len(data) >= 64*1024 || json.Unmarshal(data, &next) != nil ||
+		next.ObservedAt.IsZero() || now.Before(next.ObservedAt) ||
+		now.Sub(next.ObservedAt) >= 20*time.Second {
+		return liveStatus{}
+	}
+	for _, h := range next.Harnesses {
+		if strings.TrimSpace(h.Name) == "" { return liveStatus{} }
+	}
+	return next
+}
+
+func (a *trayApp) refreshStatus(now time.Time) {
+	a.lock.Lock()
+	path, running := a.statusFile, a.node != nil
+	a.lock.Unlock()
+	next := readLiveStatus(path, running, now)
+	a.lock.Lock()
+	if a.statusFile == path && (a.live.Connected != next.Connected || !equalHarnesses(a.live.Harnesses, next.Harnesses)) {
+		a.live = next
+		if a.hwnd != 0 { postMessage.Call(a.hwnd, statusChanged, 0, 0) }
+	}
+	a.lock.Unlock()
+}
+
 func (a *trayApp) watchStatus() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for range ticker.C {
 		a.lock.Lock()
-		if a.exiting { a.lock.Unlock(); return }
-		path:=a.statusFile
-		running:=a.node!=nil
+		exiting := a.exiting
 		a.lock.Unlock()
-		var next liveStatus
-		if running && path!="" {
-			data,err:=os.ReadFile(path)
-			if err==nil && len(data)<64*1024 && json.Unmarshal(data,&next)==nil &&
-				!next.ObservedAt.IsZero() && time.Since(next.ObservedAt)>=0 &&
-				time.Since(next.ObservedAt)<20*time.Second {
-				valid:=true
-				for _,h:=range next.Harnesses {if strings.TrimSpace(h.Name)=="" {valid=false;break}}
-				if !valid {next=liveStatus{}}
-			} else {next=liveStatus{}}
-		}
-		a.lock.Lock()
-		if a.statusFile==path && (a.live.Connected!=next.Connected || !equalHarnesses(a.live.Harnesses,next.Harnesses)) {
-			a.live=next
-			if a.hwnd!=0 { postMessage.Call(a.hwnd,statusChanged,0,0) }
-		}
-		a.lock.Unlock()
+		if exiting { return }
+		a.refreshStatus(time.Now())
 	}
 }
 func equalHarnesses(a,b []harnessRow) bool {
