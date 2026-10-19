@@ -24,7 +24,7 @@ for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-
   cp -p "$input/bin/$binary" "$stage/$name/bin/$binary"
 done
 cp -p "$input/secretary" "$stage/$name/secretary"
-cp -p "$input/scripts/secretary-interactive.zsh" "$input/scripts/provision-codex-pair.py" "$stage/$name/scripts/"
+cp -p "$input/scripts/secretary-interactive.zsh" "$stage/$name/scripts/"
 cp -R "$input/internal/config/defaults" "$stage/$name/internal/config/"
 printf '%s\n' "$version" > "$stage/$name/VERSION"
 printf '%s\n' "$revision" > "$stage/$name/REVISION"
