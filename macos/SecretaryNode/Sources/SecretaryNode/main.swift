@@ -6,6 +6,7 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let presentation = NodeMenuPresentation()
     private var timer: Timer?
+    private let liveFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/SecretaryNode/live-status.json")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -20,7 +21,7 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let preferred = ProcessInfo.processInfo.environment["SECRETARY_NODE_EXECUTABLE"]
             let executable = preferred.map { URL(fileURLWithPath: $0) } ?? home.appendingPathComponent(".local/bin/secretary-node")
             let config = ProcessInfo.processInfo.environment["SECRETARY_NODE_CONFIG"].map { URL(fileURLWithPath: $0) }
-            controller = try NodeLifecycle(executable: executable, configuration: config, directory: home.appendingPathComponent("Library/Application Support/SecretaryNode"))
+            controller = try NodeLifecycle(executable: executable, configuration: config, environment: ["SECRETARY_NODE_STATUS_FILE": liveFile.path], directory: home.appendingPathComponent("Library/Application Support/SecretaryNode"))
             do {
                 try controller?.start()
             } catch NodeLifecycleError.alreadyRunning {
@@ -39,7 +40,10 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) { refresh() }
 
     private func refresh() {
-        presentation.render(state: controller?.state)
+        let state = controller?.state
+        presentation.render(state: state)
+        let running = state == .running || state == .alreadyRunning
+        presentation.renderLive(running ? NodeLiveSnapshot.load(from: liveFile) : nil)
         statusItem.button?.toolTip = presentation.status.toolTip
     }
 
