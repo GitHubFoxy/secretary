@@ -94,10 +94,13 @@ public static class SecretaryTrayWindow {
  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wp, IntPtr lp);
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+ [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint command);
 }
 '@
  $window=[SecretaryTrayWindow]::FindWindow('SecretaryNodeTrayWindow','Secretary Node')
  if ($window -ne [IntPtr]::Zero) {
+  $owner=[SecretaryTrayWindow]::GetWindow($window,4)
+  if ($owner -ne [IntPtr]::Zero) { $window=$owner }
   $restarting=$true
   [uint32]$trayPid=0
   [void][SecretaryTrayWindow]::GetWindowThreadProcessId($window,[ref]$trayPid)
