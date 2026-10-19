@@ -4,6 +4,8 @@ package main
 
 import (
 	"crypto/rand"
+	"encoding/json"
+	"strings"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -28,6 +30,7 @@ const (
 	wmApp = 0x8000
 	trayCallback = wmApp + 1
 	nodeChanged = wmApp + 2
+	statusChanged = wmApp + 3
 	nimAdd = 0
 	nimDelete = 2
 	nifMessage = 1
@@ -173,10 +176,46 @@ type managedNode struct {
 type trayApp struct {
 	hwnd uintptr
 	popup uintptr
+	statusFile string
 	lock sync.Mutex
 	node *managedNode
 	lastError string
+	live liveStatus
 	exiting bool
+}
+type harnessRow struct { Name string `json:"name"`; Ready bool `json:"ready"` }
+type liveStatus struct {
+	Connected bool `json:"connected"`
+	ObservedAt time.Time `json:"observed_at"`
+	Harnesses []harnessRow `json:"harnesses"`
+}
+type menuRow struct { label string; action string; separator bool }
+func buildMenu(running bool, failed bool, live liveStatus) []menuRow {
+	state := "Stopped"
+	if running { state = "Running" } else if failed { state = "Stopped (start failed)" }
+	server := "Offline"
+	if running { server = "Reconnecting" }
+	if running && live.Connected { server = "Connected" }
+	rows := []menuRow{{label:"Secretary Node — "+state}, {label:"Server: "+server}, {separator:true}}
+	for _, h := range live.Harnesses {
+		status := "Unavailable"
+		if h.Ready && running { status = "Ready" }
+		rows = append(rows,menuRow{label: h.Name+": "+status})
+	}
+	if len(live.Harnesses)==0 { rows=append(rows,menuRow{label:"Harnesses: Unavailable"}) }
+	act:="Start Secretary Node"
+	if running {act="Quit Secretary Node"}
+	return append(rows,menuRow{label:act,action:"toggle"},menuRow{label:"Exit tray",action:"exit"})
+}
+func menuHeight(rows []menuRow) int32 {
+	var n int32 = 8
+	for _, row := range rows {if row.separator {n+=9} else {n+=24}}
+	return n+4
+}
+func actionAt(rows []menuRow, y int32) string {
+	top:=int32(8)
+	for _,row:=range rows {h:=int32(24);if row.separator {h=9};if y>=top && y<top+h {return row.action};top+=h}
+	return ""
 }
 var app *trayApp
 
@@ -222,6 +261,7 @@ func main() {
 		os.Exit(1)
 	}
 	go app.start()
+	go app.watchStatus()
 	var m msg
 	for {
 		result, _, _ := getMessage.Call(uintptr(unsafe.Pointer(&m)), 0, 0, 0)
@@ -247,17 +287,18 @@ func windowProc(hwnd uintptr, message uint32, wp, lp uintptr) uintptr {
 		if hwnd == app.popup {
 			y := int32(lp >> 16)
 			showWindow.Call(app.popup, swHide)
-			switch {
-			case y >= 30 && y < 60:
-				go app.toggle()
-			case y >= 65 && y < 98:
-				go func() { app.stop(); postMessage.Call(app.hwnd, wmDestroy, 0, 0) }()
+			a.lock.Lock()
+			rows := buildMenu(a.node!=nil,a.lastError!="",a.live)
+			a.lock.Unlock()
+			switch actionAt(rows,y) {
+			case "toggle": go app.toggle()
+			case "exit": go func() { app.stop(); postMessage.Call(app.hwnd, wmDestroy, 0, 0) }()
 			}
 			return 0
 		}
 	case wmKillFocus:
 		if hwnd == app.popup { showWindow.Call(hwnd, swHide); return 0 }
-	case wmSettingChange, wmThemeChanged, nodeChanged:
+	case wmSettingChange, wmThemeChanged, nodeChanged, statusChanged:
 		invalidateRect.Call(app.popup, 0, 1)
 		return 0
 	case wmDestroy:
@@ -285,8 +326,11 @@ func (a *trayApp) showMenu() {
 	if bounds.right <= bounds.left || bounds.bottom <= bounds.top {
 		bounds = rect{left: p.x, top: p.y, right: p.x+220, bottom: p.y+104}
 	}
-	x, y := clampPopup(p, bounds, 220, 104)
-	setWindowPos.Call(a.popup, ^uintptr(0), uintptr(x), uintptr(y), 220, 104, swpNoActivate)
+	a.lock.Lock()
+	h := menuHeight(buildMenu(a.node!=nil,a.lastError!="",a.live))
+	a.lock.Unlock()
+	x, y := clampPopup(p, bounds, 220, h)
+	setWindowPos.Call(a.popup, ^uintptr(0), uintptr(x), uintptr(y), 220, uintptr(h), swpNoActivate)
 	invalidateRect.Call(a.popup, 0, 1)
 	showWindow.Call(a.popup, swShow)
 	setForeground.Call(a.popup)
@@ -321,19 +365,28 @@ func (a *trayApp) paintMenu() {
 	bg, fg, muted := rgb(255,255,255), rgb(25,25,25), rgb(100,100,100)
 	if dark { bg, fg, muted = rgb(32,32,32), rgb(242,242,242), rgb(175,175,175) }
 	brush, _, _ := createBrush.Call(bg)
-	r := rect{0,0,220,104}
+	a.lock.Lock()
+	rows := buildMenu(a.node!=nil,a.lastError!="",a.live)
+	a.lock.Unlock()
+	r := rect{0,0,220,menuHeight(rows)}
 	fillRect.Call(dc, uintptr(unsafe.Pointer(&r)), brush)
 	deleteObject.Call(brush)
 	setBkMode.Call(dc, transparent)
-	a.lock.Lock()
-	running, last := a.node != nil, a.lastError
-	a.lock.Unlock()
-	status := "Stopped"
-	action := "Start Secretary Node"
-	if running { status, action = "Running", "Quit Secretary Node" } else if last != "" { status = "Stopped (start failed)" }
-	a.draw(dc, "Secretary Node — "+status, rect{10,3,214,30}, muted)
-	a.draw(dc, action, rect{10,30,214,60}, fg)
-	a.draw(dc, "Exit tray", rect{10,65,214,98}, fg)
+	top:=int32(8)
+	for _, row := range rows {
+		if row.separator {
+			line:=rect{10,top+4,210,top+5}
+			b,_,_:=createBrush.Call(muted)
+			fillRect.Call(dc,uintptr(unsafe.Pointer(&line)),b)
+			deleteObject.Call(b)
+			top+=9
+			continue
+		}
+		color:=fg
+		if row.action=="" {color=muted}
+		a.draw(dc,row.label,rect{10,top,214,top+24},color)
+		top+=24
+	}
 }
 
 func (a *trayApp) draw(dc uintptr, value string, r rect, color uintptr) {
@@ -374,7 +427,9 @@ func (a *trayApp) start() {
 	if config := os.Getenv("SECRETARY_TRAY_NODE_CONFIG"); config != "" { args = append(args, "--config", config) }
 	cmd := exec.Command(file, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow | createNewProcessGroup, HideWindow: true}
-	cmd.Env = append(os.Environ(), "SECRETARY_NODE_SHUTDOWN_EVENT="+eventName)
+	statusToken := hex.EncodeToString(token)
+	statusFile := filepath.Join(os.TempDir(), "secretary-tray-status-"+statusToken+".json")
+	cmd.Env = append(os.Environ(), "SECRETARY_NODE_SHUTDOWN_EVENT="+eventName, "SECRETARY_NODE_TRAY_STATUS_FILE="+statusFile)
 	if err = cmd.Start(); err != nil {
 		closeHandle.Call(job); closeHandle.Call(event); a.lastError = err.Error(); return
 	}
@@ -391,14 +446,15 @@ func (a *trayApp) start() {
 		return
 	}
 	n := &managedNode{cmd: cmd, job: job, event: event, done: make(chan struct{})}
-	a.node, a.lastError = n, ""
+	a.node, a.lastError, a.statusFile, a.live = n, "", statusFile, liveStatus{}
 	go func() {
 		_ = cmd.Wait()
 		a.lock.Lock()
-		if a.node == n { a.node = nil }
+		if a.node == n { a.node = nil; a.statusFile = ""; a.live = liveStatus{} }
 		closeHandle.Call(n.job)
 		closeHandle.Call(n.event)
 		close(n.done)
+		_ = os.Remove(statusFile)
 		a.lock.Unlock()
 		postMessage.Call(a.hwnd, nodeChanged, 0, 0)
 	}()
@@ -417,4 +473,38 @@ func (a *trayApp) stop() {
 		_ = n.cmd.Process.Kill()
 		<-n.done
 	}
+}
+
+func (a *trayApp) watchStatus() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		a.lock.Lock()
+		if a.exiting { a.lock.Unlock(); return }
+		path:=a.statusFile
+		running:=a.node!=nil
+		a.lock.Unlock()
+		var next liveStatus
+		if running && path!="" {
+			data,err:=os.ReadFile(path)
+			if err==nil && len(data)<64*1024 && json.Unmarshal(data,&next)==nil &&
+				!next.ObservedAt.IsZero() && time.Since(next.ObservedAt)>=0 &&
+				time.Since(next.ObservedAt)<20*time.Second {
+				valid:=true
+				for _,h:=range next.Harnesses {if strings.TrimSpace(h.Name)=="" {valid=false;break}}
+				if !valid {next=liveStatus{}}
+			} else {next=liveStatus{}}
+		}
+		a.lock.Lock()
+		if a.statusFile==path && (a.live.Connected!=next.Connected || !equalHarnesses(a.live.Harnesses,next.Harnesses)) {
+			a.live=next
+			if a.hwnd!=0 { postMessage.Call(a.hwnd,statusChanged,0,0) }
+		}
+		a.lock.Unlock()
+	}
+}
+func equalHarnesses(a,b []harnessRow) bool {
+	if len(a)!=len(b){return false}
+	for i:=range a {if a[i]!=b[i]{return false}}
+	return true
 }
