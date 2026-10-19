@@ -70,15 +70,15 @@ jobs:
           Start-Sleep -Milliseconds 700
           if ($runningTray.HasExited) { throw 'Installed tray failed to launch before upgrade' }
           Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-public static class SecretaryTrayWindow {
- [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
- [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wp, IntPtr lp);
- [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
- [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint command);
-}
-'@
+          using System;
+          using System.Runtime.InteropServices;
+          public static class SecretaryTrayWindow {
+           [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+           [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wp, IntPtr lp);
+           [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+           [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint command);
+          }
+          '@
           & ./scripts/install-windows-node.ps1 -NodeDataDir $data -Workspace $workspace -WorkerHome $workerProfile -WorkerUsername 'secretary_inst_ci' -NodeBinary (Join-Path $env:RUNNER_TEMP 'w03-node-v2.exe') -TrayBinary (Join-Path $env:RUNNER_TEMP 'w03-tray-v2.exe')
 
           if ($LASTEXITCODE -ne 0) { throw 'Windows idempotent upgrade failed' }
