@@ -177,6 +177,8 @@ public static class SecretaryTrayWindow {
  }
 } catch {
  $failure=$_
+ $shutdownFailure=$null
+ try {
  if ($null -ne $newTray) {
   $newTray.Refresh()
   if (-not $newTray.HasExited) {
@@ -209,6 +211,9 @@ public static class SecretaryTrayWindow {
   }
   if (-not $released) { throw 'New tray-owned Node still running; previous tray was not restarted' }
  }
+ } catch {
+  $shutdownFailure=$_
+ }
  if ($null -ne $priorShortcutBytes) {
   $restore=Join-Path (Split-Path -Path $shortcutPath -Parent) ('Secretary Node.'+[guid]::NewGuid().ToString('N')+'.restore')
   [IO.File]::WriteAllBytes($restore,$priorShortcutBytes)
@@ -229,10 +234,11 @@ public static class SecretaryTrayWindow {
  } else {
   Remove-ItemProperty -Path $runKey -Name 'Secretary Node' -ErrorAction SilentlyContinue
  }
- if ($restarting -and $oldTarget -and (Test-Path -LiteralPath $oldTarget -PathType Leaf)) {
+ if ($null -eq $shutdownFailure -and $restarting -and $oldTarget -and (Test-Path -LiteralPath $oldTarget -PathType Leaf)) {
   $oldRunning=@(Get-CimInstance Win32_Process -Filter "Name='secretary-tray.exe'" | Where-Object { $_.ExecutablePath -eq $oldTarget })
   if ($oldRunning.Count -eq 0) { Start-Process -FilePath $oldTarget -ArgumentList ('--data-dir "'+$NodeDataDir+'"') }
  }
+ if ($null -ne $shutdownFailure) { throw "Upgrade failed: $($failure.Exception.Message). New tray cleanup failed: $($shutdownFailure.Exception.Message). Previous registration restored; old tray was not restarted." }
  throw $failure
 }
 Write-Host "Secretary Windows Node installed/upgraded. Node state preserved in $NodeDataDir."
