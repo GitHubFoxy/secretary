@@ -46,7 +46,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/MacOS"
           cp macos/SecretaryNode/.build/release/SecretaryNode "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/MacOS/SecretaryNode"
           cp macos/SecretaryNode/Info.plist "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/Info.plist"
-          plutil -replace CFBundleShortVersionString -string "${GITHUB_REF_NAME#v}" "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/Info.plist"
+          package_version="${GITHUB_REF_NAME#v}"
+          if [[ "$GITHUB_REF_TYPE" != tag ]]; then package_version=0.0.0; fi
+          plutil -replace CFBundleShortVersionString -string "$package_version" "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/Info.plist"
           codesign --force --sign - "$RUNNER_TEMP/secretary-package/Secretary Node.app"
           codesign --verify "$RUNNER_TEMP/secretary-package/Secretary Node.app"
           cp secretary "$RUNNER_TEMP/secretary-package/secretary"
