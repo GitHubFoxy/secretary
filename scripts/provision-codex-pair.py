@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import json
+import re
 import os
 import platform
 import shutil
@@ -97,11 +98,12 @@ def record(path, provenance):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["install", "doctor", "show"])
+    parser.add_argument("action", choices=["install", "doctor", "show", "env"])
     parser.add_argument("--scope", choices=["server", "node"], required=True)
     parser.add_argument("--root", type=Path, default=Path.home() / ".local" / "share" / "secretary" / "native")
     parser.add_argument("--codex", type=Path)
     parser.add_argument("--acp", type=Path)
+    parser.add_argument("--upgrade", action="store_true")
     args = parser.parse_args()
     root = args.root.resolve()
     inventory = root / args.scope / "codex-pair.json"
@@ -113,7 +115,10 @@ def main():
             fail("invalid inventory")
         for field in ("codex", "acp"):
             verify(data[field])
-        if args.action == "doctor":
+        if args.action == "env":
+            print("CODEX_PATH=" + data["codex"]["path"])
+            print("SECRETARY_ACP_COMMAND=" + data["acp"]["path"])
+        elif args.action == "doctor":
             authorized = status(Path(data["codex"]["path"]))
             print(json.dumps({"scope": args.scope, "binary_ready": True, "native_auth": "authorized" if authorized else "login_required", "codex": data["codex"]["version"], "acp": data["acp"]["version"]}))
             if not authorized:
@@ -121,8 +126,16 @@ def main():
         else:
             print(json.dumps(data, indent=2))
         return
-    if args.codex is None and args.acp is not None or args.codex is not None and args.acp is None:
+    if (args.codex is None) != (args.acp is None):
         fail("external adoption requires both --codex and --acp")
+    if inventory.exists() and not args.upgrade:
+        data = json.loads(inventory.read_text())
+        for field in ("codex", "acp"):
+            verify(data[field])
+        if args.codex and (str(args.codex.resolve()) != data["codex"]["resolved_path"] or str(args.acp.resolve()) != data["acp"]["resolved_path"]):
+            fail("selected pair differs; explicitly request --upgrade")
+        print(json.dumps(data, indent=2))
+        return
     if args.codex:
         codex, acp = args.codex.resolve(strict=True), args.acp.resolve(strict=True)
         provenance = "external"
@@ -144,8 +157,8 @@ def main():
             if managed.is_symlink():
                 fail("managed release directory symlink forbidden")
             managed.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            with tempfile.TemporaryDirectory(prefix=".native-pair-", dir=managed.parent) as temp:
-                temp = Path(temp)
+            temp = Path(tempfile.mkdtemp(prefix=".native-pair-", dir=managed.parent))
+            try:
                 urls = [
                     ("https://github.com/openai/codex/releases/download/rust-v" + CODEX_VERSION + "/codex-" + triple + ".tar.gz", codex_digest, "codex"),
                     ("https://github.com/zed-industries/codex-acp/releases/download/v" + ACP_VERSION + "/codex-acp-" + ACP_VERSION + "-" + acp_triple + ".tar.gz", acp_digest, "codex-acp"),
@@ -157,12 +170,19 @@ def main():
                 version(temp / "codex")
                 version(temp / "codex-acp")
                 os.rename(temp, managed)
+            finally:
+                if temp.exists():
+                    shutil.rmtree(temp)
     for path in (codex, acp):
         if not path.is_file() or not os.access(path, os.X_OK):
             fail("selected executable is unavailable: " + str(path))
     data = {"schema": 1, "scope": args.scope, "harness": "codex",
             "codex": record(codex, provenance), "acp": record(acp, provenance),
             "compatibility": {"policy": "explicit_pair_and_native_acp_readiness", "validated": False}}
+    if args.upgrade and inventory.is_file():
+        previous = json.loads(inventory.read_text())
+        for field in ("codex", "acp"):
+            verify(previous[field])
     write_inventory(inventory, data)
     print(json.dumps(data, indent=2))
     if not status(codex):
