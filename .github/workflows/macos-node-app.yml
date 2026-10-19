@@ -29,7 +29,35 @@ jobs:
           test -x "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode"
           /usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$HOME/Applications/Secretary Node.app/Contents/Info.plist" | grep -Fx dev.secretary.node.menubar
           codesign --verify "$HOME/Applications/Secretary Node.app"
-          "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" --login-item-smoke enable
+          login_app="$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode"
+          original_login_status="$("$login_app" --login-item-smoke status)"
+          case "$original_login_status" in
+            enabled|notRegistered) ;;
+            *) echo "Cannot safely restore original login status: $original_login_status" >&2; exit 1 ;;
+          esac
+          restore_login() {
+            result=$?
+            trap - EXIT
+            if [[ -x "$login_app" ]]; then
+              if [[ "$original_login_status" == enabled ]]; then
+                if ! "$login_app" --login-item-smoke enable || ! "$login_app" --login-item-smoke verify-enabled; then
+                  echo "::error::Failed to restore original enabled login item" >&2
+                  result=1
+                fi
+              else
+                if ! "$login_app" --login-item-smoke disable || ! "$login_app" --login-item-smoke verify-disabled; then
+                  echo "::error::Failed to remove test login item and restore original disabled state" >&2
+                  result=1
+                fi
+              fi
+            else
+              echo "::error::Unable to restore login item: installed app executable missing" >&2
+              result=1
+            fi
+            exit "$result"
+          }
+          trap restore_login EXIT
+          "$login_app" --login-item-smoke enable
           "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" --login-item-smoke verify-enabled
           first_hash="$(shasum -a 256 "$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode" | cut -d' ' -f1)"
           bash macos/SecretaryNode/install.sh
