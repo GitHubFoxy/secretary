@@ -44,7 +44,7 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         refresh()
-        presentation.updateLogin(NodeIntegrations.launchAtLogin)
+        presentation.updateLogin(NodeIntegrations.loginStatus)
     }
 
     private func showError(_ title: String, _ error: Error) {
@@ -58,10 +58,13 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleLogin() {
         do {
             try NodeIntegrations.setLaunchAtLogin(!NodeIntegrations.launchAtLogin)
+            if let message = NodeIntegrations.loginDescription(NodeIntegrations.loginStatus) {
+                showError("Launch at Login needs attention", NSError(domain: "SecretaryNode", code: 1, userInfo: [NSLocalizedDescriptionKey: message]))
+            }
         } catch {
             showError("Could not update Launch at Login", error)
         }
-        presentation.updateLogin(NodeIntegrations.launchAtLogin)
+        presentation.updateLogin(NodeIntegrations.loginStatus)
     }
 
     @objc private func openLogs() {
