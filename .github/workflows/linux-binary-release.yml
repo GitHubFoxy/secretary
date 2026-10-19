@@ -70,7 +70,7 @@ jobs:
         run: bash scripts/video-tools-contract-test.sh "$RUNNER_TEMP/package"
       - name: Real video transcode acceptance
         shell: bash
-        run: go test ./internal/webapi -run 'TestT12RealFFmpegNonzeroPTSAndVFRSourcePTS|TestT12FFmpegExtractsExactlyProbedVideoTrackNotDefault|TestVideoToolPairValidation|TestVideoManagedManifestIntegrity' -count=1
+        run: go test ./internal/webapi -run 'TestT12RealFFmpegNonzeroPTSAndVFRSourcePTS|TestT12FFmpegExtractsExactlyProbedVideoTrackNotDefault|TestVideoToolPairValidation|TestVideoManagedManifestIntegrity|TestVideoRejectsFFmpegWithoutLibWebP' -count=1
       - name: Clean-user simulated systemd and verified artifact install
         shell: bash
         run: |
