@@ -117,7 +117,12 @@ PY
     mv "$staged" "$target"
   fi
   if [[ ! -f "$config" ]]; then
-    "$target/bin/secretary-node" --edit-deployment-config --config "$config" --standalone --server "$server" --name "$name" || fail "Node configuration failed"
+    python3 - "$config" "$server" "$name" "$state/data" <<'PYCONFIG'
+import json, pathlib, sys
+path, server, name, data = sys.argv[1:]
+pathlib.Path(path).write_text(json.dumps({"server_url":server,"node":name,"data_dir":data,"capacity":1,"include_opencode":False,"standalone":True,"workspaces":[]})+"\n")
+PYCONFIG
+    "$target/bin/secretary-node" --edit-deployment-config --config "$config" --standalone || fail "Node configuration failed"
     chmod 600 "$config"
   elif [[ -n "$server" || -n "$name" ]]; then
     fail "Existing Node identity/config cannot be overwritten; preserve pairing and use explicit Node control"
