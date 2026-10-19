@@ -2,7 +2,7 @@
 
 This installs an Execution Node on Linux x86_64 or aarch64 without installing Secretary Server, its database, web service, Telegram adapter, FFmpeg or FFprobe. Install as a normal user. Requirements: Bash, curl, Python 3.12+, tar, sha256sum, and a private outbound HTTPS route to the already-running Secretary Server. No Go, Node.js, npm, or source compilation is required on the target machine.
 
-The installer consumes the same versioned `secretary-vVERSION-linux-ARCH.json` and `.tar.gz` artifacts as the Linux combined installer. It checks manifest metadata, byte count, SHA-256, archive safety, VERSION, and REVISION before changing the active Node pointer. The archive does contain the combined release payload, but only `secretary-node` and provenance metadata are copied to the standalone deployment. A release manifest checksum authenticates archive bytes relative to the manifest; obtain manifests only from the trusted official release or another explicitly trusted release host.
+The installer consumes the same versioned `secretary-vVERSION-linux-ARCH.json` and `.tar.gz` artifacts as the Linux combined installer. It requires an independently verified SHA-256 digest for the release manifest, then checks manifest metadata, byte count, archive SHA-256, archive safety, VERSION, and REVISION before changing the active Node pointer. The archive does contain the combined release payload, but only `secretary-node` and provenance metadata are copied to the standalone deployment. An archive checksum alone is insufficient to authenticate its manifest. Obtain the manifest SHA-256 through a separate trusted channel before installation and compare it with the published release metadata. A digest read from the same untrusted download location does not establish trust.
 
 ## Initial installation
 
@@ -10,6 +10,7 @@ The owner must first approve enrollment on the remote Secretary Server and suppl
 
 ```sh
 export SECRETARY_NODE_PAIRING_TOKEN='OWNER_APPROVED_TOKEN'
+export SECRETARY_MANIFEST_SHA256='INDEPENDENTLY_VERIFIED_64_HEX_MANIFEST_DIGEST'
 curl -fsSLo install-linux-standalone-node.sh https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install-linux-standalone-node.sh
 bash install-linux-standalone-node.sh --server https://secretary.example.internal --name linux-worker-1 --harness codex
 unset SECRETARY_NODE_PAIRING_TOKEN
@@ -30,14 +31,14 @@ bash install-linux-standalone-node.sh start
 bash install-linux-standalone-node.sh stop
 bash install-linux-standalone-node.sh logs
 bash install-linux-standalone-node.sh disable-service
-SECRETARY_VERSION=1.2.3 bash install-linux-standalone-node.sh upgrade
+SECRETARY_VERSION=1.2.3 SECRETARY_MANIFEST_SHA256=INDEPENDENTLY_VERIFIED_DIGEST bash install-linux-standalone-node.sh upgrade
 bash install-linux-standalone-node.sh repair
 ```
 
 `status` reports the installed version/revision and the real running executable path (when the user systemd service is installed). Service commands require an active user systemd manager. The optional `secretary-standalone-node.service` is managed separately from the combined Secretary Server and Node services; incompatible existing unit files are not intentionally overwritten. Without systemd, `start` runs the Node in the foreground; stop it with Ctrl-C. `logs` requires the service and reads the user journal. User systemd services normally start after login; on supported hosts, persistent execution outside login requires an explicit administrator-approved `loginctl enable-linger USER`. The installer does not enable linger or escalate privileges.
 
-Repeat installation and repairs preserve the private Node config, pairing identity, native session files and independent harness settings. An archive verification or dependency-provisioning failure does not activate the new version. The previous version remains in the version directory for recovery. A service restart failure attempts to restore the previous active symlink; a host crash during activation may require manual service recovery.
+Repeat installation and repairs preserve the private Node config, pairing identity, native session files and independent harness settings. An archive verification or dependency-provisioning failure does not activate the new version. The previous version remains in the version directory for recovery. A service restart that does not remain active with the expected executable attempts to restore the previous active symlink and verify the rollback. A host crash during activation or an unavailable remote endpoint may require manual recovery. Successful process activation does not prove remote Server connection.
 
 ## Acceptance and manual evidence
 
-The Linux CI workflow tests arm64 and amd64 release artifact verification, clean install without a Server, safe rerun, upgrade, corrupt archive refusal, identity/session preservation, and simulated user-systemd operations. This does not establish native provider behavior or a live remote service. The live acceptance ledger (#89) must separately capture a real Linux → private HTTPS remote Server enrollment and authenticated provider-backed Task, exactly one Result, idle Follow-up after Node restart with the same native session, and a deliberate missing-session failure with no blind retry. Record Node binary/revision, native harness versions, operating system, effective service unit and actual process executable. No such live evidence is claimed by this PR.
+The Linux CI workflow tests arm64 and amd64 release artifact verification, clean install without a Server, safe rerun, upgrade, corrupt archive refusal, identity/session preservation, and simulated user-systemd operations. This does not establish native provider behavior, a live remote service, or successful reconnect; the simulated user systemd manager does not launch a real Node process. The live acceptance ledger (#89) must separately capture a real Linux → private HTTPS remote Server enrollment and authenticated provider-backed Task, exactly one Result, idle Follow-up after Node restart with the same native session, and a deliberate missing-session failure with no blind retry. Record Node binary/revision, native harness versions, operating system, effective service unit and actual process executable. No such live evidence is claimed by this PR.
