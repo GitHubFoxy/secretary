@@ -119,11 +119,17 @@ public static class SecretaryTrayWindow {
  }
 }
 $shortcutPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
-$shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
+$shortcutStage=Join-Path (Split-Path -Path $shortcutPath -Parent) ('Secretary Node.'+[guid]::NewGuid().ToString('N')+'.lnk')
+$shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcutStage)
 $shortcut.TargetPath=$trayInstalled
 $shortcut.Arguments='--data-dir "'+$NodeDataDir+'"'
 $shortcut.WorkingDirectory=$installBin
 $shortcut.Save()
+if (Test-Path -LiteralPath $shortcutPath) {
+ [IO.File]::Replace($shortcutStage,$shortcutPath,$null)
+} else {
+ [IO.File]::Move($shortcutStage,$shortcutPath)
+}
 if ($loginCommand) {
  $quoted='"'+$trayInstalled+'" --data-dir "'+$NodeDataDir+'"'
  Set-ItemProperty -Path $runKey -Name 'Secretary Node' -Value $quoted
