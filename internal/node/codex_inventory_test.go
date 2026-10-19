@@ -23,6 +23,7 @@ func TestCodexPairInventoryRejectsMovedAndChangedExecutables(t *testing.T) {
   return CodexBinaryRecord{Path:path, ResolvedPath:path, Version:name+" 1.2.3", SHA256:hex.EncodeToString(hash[:]), Provenance:"external"}
  }
  pair := CodexPairInventory{Schema:1,Scope:"node",Harness:"codex",Codex:makeBinary("codex"),ACP:makeBinary("codex-acp")}
+ pair.Compatibility.Validated = true
  location, err := CodexPairInventoryPath("node")
  if err != nil { t.Fatal(err) }
  if err := os.MkdirAll(filepath.Dir(location), 0700); err != nil { t.Fatal(err) }
