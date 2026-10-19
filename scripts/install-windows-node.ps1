@@ -141,7 +141,9 @@ $shortcut.Arguments='--data-dir "'+$NodeDataDir+'"'
 $shortcut.WorkingDirectory=$installBin
 $shortcut.Save()
 if (Test-Path -LiteralPath $shortcutPath) {
- [IO.File]::Replace($shortcutStage,$shortcutPath,$null)
+ $shortcutBackup=Join-Path (Split-Path -Path $shortcutPath -Parent) ('Secretary Node.'+[guid]::NewGuid().ToString('N')+'.bak')
+ [IO.File]::Replace($shortcutStage,$shortcutPath,$shortcutBackup)
+ Remove-Item -LiteralPath $shortcutBackup -Force
 } else {
  [IO.File]::Move($shortcutStage,$shortcutPath)
 }
