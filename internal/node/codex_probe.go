@@ -19,6 +19,13 @@ func (r ExecCommandRunner) ObserveCodexACP(ctx context.Context, binary string) (
 	if command == "" {
 		command = "codex-acp"
 	}
+	return r.ObserveCodexACPWithCommand(ctx, binary, command)
+}
+
+func (r ExecCommandRunner) ObserveCodexACPWithCommand(ctx context.Context, binary, command string) ([]core.ObservedModelID, []core.ObservedReasoningLevel, error) {
+	if strings.TrimSpace(command) == "" {
+		return nil, nil, fmt.Errorf("codex: ACP command is required")
+	}
 	workspace, err := os.MkdirTemp("", "secretary-codex-readiness-")
 	if err != nil {
 		return nil, nil, fmt.Errorf("codex: readiness workspace unavailable")
