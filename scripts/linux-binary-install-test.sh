@@ -31,6 +31,7 @@ cat > "$home/mock/curl" <<'SH'
 #!/bin/bash
 if [[ "$*" == *"127.0.0.1:8081/v1/web/session"* ]]; then
   if [[ -n "${FAIL_HEALTH:-}" ]]; then exit 7; fi
+  if [[ -n "${FAIL_HTTP_503:-}" ]]; then printf '503'; exit 0; fi
   printf '401'
   exit 0
 fi
@@ -124,7 +125,7 @@ fi
 HOME="$new_home" bash "$root/scripts/install-linux-binary.sh"
 [[ -L "$new_home/.local/share/secretary/current" ]]
 
-for failure in FAIL_CRASH_AFTER_START FAIL_HEALTH; do
+for failure in FAIL_CRASH_AFTER_START FAIL_HEALTH FAIL_HTTP_503; do
   broken_home="$home/health-$failure"
   mkdir -p "$broken_home"
   if HOME="$broken_home" env "$failure=1" bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then
@@ -134,6 +135,36 @@ for failure in FAIL_CRASH_AFTER_START FAIL_HEALTH; do
   [[ ! -L "$broken_home/.local/share/secretary/current" ]]
   [[ ! -e "$broken_home/.config/systemd/user/secretary.service" ]]
 done
+source_home="$home/source-managed"
+mkdir -p "$source_home/.config/systemd/user"
+cat > "$source_home/.config/systemd/user/secretary.service" <<'SH'
+[Unit]
+Description=Secretary Server
+[Service]
+WorkingDirectory=/tmp/source-checkout
+ExecStart=/tmp/source-checkout/secretary serve
+SH
+if HOME="$source_home" bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then
+  echo "Source-managed systemd unit was accepted" >&2
+  exit 1
+fi
+[[ ! -L "$source_home/.local/share/secretary/current" ]]
+grep -Fqx 'ExecStart=/tmp/source-checkout/secretary serve' "$source_home/.config/systemd/user/secretary.service"
+source_node_home="$home/source-managed-node"
+mkdir -p "$source_node_home/.config/systemd/user"
+cat > "$source_node_home/.config/systemd/user/secretary-node.service" <<'SH'
+[Unit]
+Description=Secretary co-located Execution Node
+[Service]
+WorkingDirectory=/tmp/source-checkout
+ExecStart=/tmp/source-checkout/secretary node serve
+SH
+if HOME="$source_node_home" bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then
+  echo "Source-managed Node systemd unit was accepted" >&2
+  exit 1
+fi
+[[ ! -L "$source_node_home/.local/share/secretary/current" ]]
+grep -Fqx 'ExecStart=/tmp/source-checkout/secretary node serve' "$source_node_home/.config/systemd/user/secretary-node.service"
 special_home="$home/user with spaces%sign"
 mkdir -p "$special_home"
 HOME="$special_home" bash "$root/scripts/install-linux-binary.sh"
