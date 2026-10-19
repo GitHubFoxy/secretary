@@ -12,6 +12,7 @@ on:
       - scripts/provision-server-video-tools.sh
       - scripts/package-macos-binary-release.sh
       - scripts/video-tools-contract-test.sh
+      - scripts/video-doctor-contract-test.sh
       - scripts/macos-release-contract-test.sh
       - scripts/macos-binary-install-test.sh
       - .github/workflows/macos-binary-release.yml
@@ -75,6 +76,9 @@ jobs:
       - name: Packaged video dependency contract
         shell: bash
         run: bash scripts/video-tools-contract-test.sh "$RUNNER_TEMP/secretary-package"
+      - name: Server video doctor regression
+        shell: bash
+        run: bash scripts/video-doctor-contract-test.sh
       - name: Real video transcode acceptance
         shell: bash
         run: go test ./internal/webapi -run 'TestT12RealFFmpegNonzeroPTSAndVFRSourcePTS|TestT12FFmpegExtractsExactlyProbedVideoTrackNotDefault|TestVideoToolPairValidation|TestVideoManagedManifestIntegrity|TestVideoRejectsFFmpegWithoutLibWebP' -count=1
