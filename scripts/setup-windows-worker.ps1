@@ -3,7 +3,8 @@ param(
  [Parameter(Mandatory=$true)][string]$NodeDataDir,
  [Parameter(Mandatory=$true)][string]$Workspace,
  [string]$WorkerHome = "$env:ProgramData\SecretaryWorker",
- [string]$WorkerUsername = "secretary_worker"
+ [string]$WorkerUsername = "secretary_worker",
+ [string]$CodexOwnerHome = ""
 )
 $ErrorActionPreference = 'Stop'
 $principal=[Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
@@ -76,6 +77,20 @@ if (Test-Path -LiteralPath $nodeProfileNpm -PathType Container) {
       if ($LASTEXITCODE -ne 0) { throw "Could not allow native CLI package: $packagePath" }
     }
   }
+}
+if (-not [string]::IsNullOrWhiteSpace($CodexOwnerHome)) {
+ $ownerHome=[IO.Path]::GetFullPath($CodexOwnerHome).TrimEnd('\')
+ $root=Join-Path $ownerHome '.local\share\secretary\native\releases'
+ if (-not (Test-Path -LiteralPath $root -PathType Container)) { throw 'Managed Codex release root does not exist' }
+ $ancestor=$ownerHome
+ foreach ($segment in @('.local','share','secretary','native')) {
+  if (-not (Test-Path -LiteralPath $ancestor -PathType Container)) { throw 'Managed Codex path has missing parent' }
+  & icacls $ancestor /grant "$($account):X" | Out-Null
+  if ($LASTEXITCODE -ne 0) { throw 'Worker cannot traverse managed Codex parent' }
+  $ancestor=Join-Path $ancestor $segment
+ }
+ & icacls $root /grant "$($account):(OI)(CI)RX" /T | Out-Null
+ if ($LASTEXITCODE -ne 0) { throw 'Worker cannot execute managed Codex pair' }
 }
 if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
  $config=@{username=$WorkerUsername;password=$password;domain='.';home=$WorkerHome}|ConvertTo-Json -Compress
