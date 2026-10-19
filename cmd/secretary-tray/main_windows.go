@@ -39,6 +39,10 @@ const (
 	swHide = 0
 	swShow = 5
 	swpNoActivate = 0x0010
+	monitorDefaultToNearest = 2
+	monitorWorkArea = 1
+	processSetQuota = 0x0100
+	processTerminate = 0x0001
 	createNoWindow = 0x08000000
 	createNewProcessGroup = 0x00000200
 	jobExtendedLimits = 9
@@ -63,6 +67,8 @@ var (
 	postQuitMessage = u.NewProc("PostQuitMessage")
 	postMessage = u.NewProc("PostMessageW")
 	getCursorPos = u.NewProc("GetCursorPos")
+	monitorFromPoint = u.NewProc("MonitorFromPoint")
+	getMonitorInfo = u.NewProc("GetMonitorInfoW")
 	setWindowPos = u.NewProc("SetWindowPos")
 	showWindow = u.NewProc("ShowWindow")
 	setForeground = u.NewProc("SetForegroundWindow")
@@ -89,6 +95,13 @@ var (
 
 type pt struct{ x, y int32 }
 type rect struct{ left, top, right, bottom int32 }
+type monitorInfo struct {
+	size uint32
+	monitor rect
+	work rect
+	flags uint32
+}
+
 type msg struct {
 	hwnd uintptr
 	message uint32
@@ -263,11 +276,33 @@ func windowProc(hwnd uintptr, message uint32, wp, lp uintptr) uintptr {
 func (a *trayApp) showMenu() {
 	var p pt
 	getCursorPos.Call(uintptr(unsafe.Pointer(&p)))
-	setWindowPos.Call(a.popup, ^uintptr(0), uintptr(p.x), uintptr(p.y), 220, 104, swpNoActivate)
+	bounds := rect{}
+	monitor, _, _ := monitorFromPoint.Call(uintptr(uint64(uint32(p.x))|uint64(uint32(p.y))<<32), monitorDefaultToNearest)
+	info := monitorInfo{size: uint32(unsafe.Sizeof(monitorInfo{}))}
+	if monitor != 0 {
+		if result, _, _ := getMonitorInfo.Call(monitor, uintptr(unsafe.Pointer(&info))); result != 0 { bounds = info.work }
+	}
+	if bounds.right <= bounds.left || bounds.bottom <= bounds.top {
+		bounds = rect{left: p.x, top: p.y, right: p.x+220, bottom: p.y+104}
+	}
+	x, y := clampPopup(p, bounds, 220, 104)
+	setWindowPos.Call(a.popup, ^uintptr(0), uintptr(x), uintptr(y), 220, 104, swpNoActivate)
 	invalidateRect.Call(a.popup, 0, 1)
 	showWindow.Call(a.popup, swShow)
 	setForeground.Call(a.popup)
 }
+
+func clampPopup(p pt, work rect, width, height int32) (int32, int32) {
+	clamp := func(value, lo, hi int32) int32 {
+		if hi < lo { hi = lo }
+		if value < lo { return lo }
+		if value > hi { return hi }
+		return value
+	}
+	return clamp(p.x, work.left, work.right-width), clamp(p.y, work.top, work.bottom-height)
+}
+
+func themeIsDark(value uint64, err error) bool { return themeIsDark(value, err) }
 
 func darkMode() bool {
 	key, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`, registry.QUERY_VALUE)
@@ -343,7 +378,7 @@ func (a *trayApp) start() {
 	if err = cmd.Start(); err != nil {
 		closeHandle.Call(job); closeHandle.Call(event); a.lastError = err.Error(); return
 	}
-	process, err := syscall.OpenProcess(0x0200|0x0001, false, uint32(cmd.Process.Pid))
+	process, err := syscall.OpenProcess(processSetQuota|processTerminate, false, uint32(cmd.Process.Pid))
 	if err == nil {
 		_, err = checked(assignJob, job, uintptr(process))
 		syscall.CloseHandle(process)
