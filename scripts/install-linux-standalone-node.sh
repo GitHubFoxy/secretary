@@ -59,8 +59,14 @@ case "$action" in
   disable-service) service_available || fail "systemd user manager unavailable"; [[ ! -f "$unit" ]] || { systemctl --user disable --now secretary-standalone-node.service; rm "$unit"; systemctl --user daemon-reload; }; exit 0 ;;
   doctor)
     [[ -x "$binary" && -f "$config" ]] || fail "Node not installed"
-    "$binary" --codex-pair-action=show --codex-pair-scope=node || [[ "$harness" == claude_code ]] || fail "Codex pair unavailable"
-    "$binary" --codex-pair-action=readiness --codex-pair-scope=node || [[ "$harness" == claude_code ]] || fail "Codex readiness unavailable"
+    if [[ "$harness" == codex ]]; then
+      "$binary" --codex-pair-action=show --codex-pair-scope=node || fail "Codex inventory unavailable"
+      "$binary" --codex-pair-action=readiness --codex-pair-scope=node || fail "Codex readiness unavailable"
+    else
+      command -v claude >/dev/null 2>&1 || fail "missing: Claude Code"
+      claude --version || fail "Claude Code executable unavailable"
+      claude auth status >/dev/null 2>&1 || fail "Claude Code authorization unavailable"
+    fi
     version_status; identity; exit 0 ;;
   enable-service)
     service=true
