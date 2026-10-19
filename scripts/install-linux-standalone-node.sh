@@ -56,6 +56,9 @@ healthy_service() {
   done
   return 1
 }
+remote_readiness_gate() {
+  printf 'Remote readiness not verified: require live authenticated Node reconnect, Dispatch/Result and Follow-up acceptance before treating this release as remotely ready.\n' >&2
+}
 service_available() { command -v systemctl >/dev/null 2>&1 && [[ -n "${XDG_RUNTIME_DIR:-}" && -S "$XDG_RUNTIME_DIR/bus" ]] && systemctl --user show-environment >/dev/null 2>&1; }
 identity() {
   if [[ -f "$state/data/identity.json" ]]; then printf 'paired\n'; else printf 'awaiting explicit owner enrollment\n'; fi
@@ -184,15 +187,16 @@ PYCONFIG
     previous="$(readlink "$current")"
     case "$previous" in "$releases/"*) ;; *) fail "Unexpected current target" ;; esac
   fi
-  ln -s "$target" "$root/.current.$$"
+  if service_available && [[ -f "$unit" ]]; then verify_unit; fi
+  ln -s "$target" "$root/.current.$"
   mv -Tf "$root/.current.$$" "$current"
   if service_available && [[ -f "$unit" ]]; then
-    verify_unit
     if ! systemctl --user restart secretary-standalone-node.service || ! healthy_service "$target"; then
       rm -f "$current"; [[ -z "$previous" ]] || ln -s "$previous" "$current"
       if [[ -n "$previous" ]]; then systemctl --user restart secretary-standalone-node.service && healthy_service "$previous" || fail "Rollback health verification failed"; fi
       fail "Service restart failed, reverted version"
     fi
+    remote_readiness_gate
   fi
 fi
 if [[ "$service" == true ]]; then
