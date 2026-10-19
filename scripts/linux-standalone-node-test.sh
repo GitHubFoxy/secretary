@@ -36,6 +36,8 @@ done
 chmod +x "$home/mock/"*
 export HOME="$home" PATH="$home/mock:$home/provider:$PATH" XDG_RUNTIME_DIR="$home/run"
 export SECRETARY_RELEASE_BASE="file://$dist" SECRETARY_VERSION=0.0.0-ci SECRETARY_NODE_PAIRING_TOKEN=owner-approved-test-token
+pin() { SECRETARY_MANIFEST_SHA256="$(sha256sum "$dist/secretary-v${SECRETARY_VERSION}-linux-$arch.json" | cut -d' ' -f1)"; export SECRETARY_MANIFEST_SHA256; }
+pin
 installer="$root/scripts/install-linux-standalone-node.sh"
 bash "$installer" --server https://secretary.example.test --name remote-ci --harness claude_code
 state="$HOME/.local/share/secretary/standalone-node"
@@ -51,10 +53,17 @@ printf 'native-session\n' > "$state/node/data/session-canary"
 printf '{"node":"remote-ci"}\n' > "$state/node/data/identity.json"
 cp "$state/node/config.json" "$home/config.before"
 cp "$state/node/enrollment.env" "$home/enrollment.before"
+if bash "$installer" --harness codex > /dev/null 2>&1; then echo "Harness conflict accepted" >&2; exit 1; fi
 bash "$installer" --harness claude_code
 cmp "$home/config.before" "$state/node/config.json"
 cmp "$home/enrollment.before" "$state/node/enrollment.env"
 [[ "$(cat "$state/node/data/session-canary")" == native-session ]]
+unit="$HOME/.config/systemd/user/secretary-standalone-node.service"
+mkdir -p "$(dirname "$unit")"
+printf '[Unit]\nDescription=Secretary standalone Execution Node\n[Service]\nExecStart=/bin/true\n' > "$unit"
+if bash "$installer" enable-service >/dev/null 2>&1; then echo "Foreign unit accepted" >&2; exit 1; fi
+[[ -f "$unit" ]]
+rm "$unit"
 bash "$installer" enable-service
 unit="$HOME/.config/systemd/user/secretary-standalone-node.service"
 grep -Fq 'Description=Secretary standalone Execution Node' "$unit"
@@ -65,18 +74,33 @@ bash "$installer" status | grep -F 'installed: version=0.0.0-ci'
 bash "$installer" doctor --harness claude_code
 bash "$root/scripts/package-linux-binary-release.sh" 0.0.1-ci "$revision" "$arch" "$input" "$dist"
 export SECRETARY_VERSION=0.0.1-ci
+pin
 archive="$dist/secretary-v0.0.1-ci-linux-$arch.tar.gz"
 cp "$archive" "$home/archive.before"
 printf 'corruption\n' >> "$archive"
 if bash "$installer" --harness claude_code 2>/dev/null; then echo "Corrupt archive accepted" >&2; exit 1; fi
 [[ "$(readlink "$state/current")" == *0.0.0-ci* ]]
 cp "$home/archive.before" "$archive"
+cp "$dist/secretary-v0.0.1-ci-linux-$arch.json" "$home/manifest.original"
+python3 - "$dist/secretary-v0.0.1-ci-linux-$arch.json" "$archive" <<'PY'
+import hashlib, json, pathlib, sys
+manifest, archive = map(pathlib.Path, sys.argv[1:])
+with archive.open("ab") as out: out.write(b"forged")
+data = archive.read_bytes()
+m = json.loads(manifest.read_text())
+m["sha256"] = hashlib.sha256(data).hexdigest()
+m["bytes"] = len(data)
+manifest.write_text(json.dumps(m))
+PY
+if bash "$installer" --harness claude_code > /dev/null 2>&1; then echo "Forged release pair accepted" >&2; exit 1; fi
+cp "$home/archive.before" "$archive"
+cp "$home/manifest.original" "$dist/secretary-v0.0.1-ci-linux-$arch.json"
+bash "$installer" disable-service
 bash "$installer" --harness claude_code
 [[ "$(readlink "$state/current")" == *0.0.1-ci* ]]
 cmp "$home/config.before" "$state/node/config.json"
 cmp "$home/enrollment.before" "$state/node/enrollment.env"
 [[ "$(cat "$state/node/data/session-canary")" == native-session ]]
-bash "$installer" disable-service
 [[ ! -f "$unit" ]]
 bash "$installer" --server https://secretary.example.test --name remote-ci --harness claude_code 2>/dev/null && { echo "Paired identity rewrite accepted" >&2; exit 1; }
 [[ "$(cat "$state/node/data/session-canary")" == native-session ]]
