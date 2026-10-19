@@ -11,6 +11,7 @@ import (
  "crypto/sha256"
  "encoding/hex"
  "fmt"
+ "sync"
  "io"
  "net/http"
  "net/http/httptest"
@@ -244,4 +245,41 @@ func TestCodexPendingUpgradeRecoversWithoutLosingLastGood(t *testing.T) {
  if _,err:=manageCodexPairWithProbe(ctx,"rollback","node","","",probe);err!=nil {t.Fatal(err)}
  restored,err:=readCodexPairUnchecked("node")
  if err!=nil || restored.Codex.Path!=second {t.Fatalf("rollback recovery failed: %+v %v",restored,err)}
+}
+
+func TestConcurrentCodexScopeUpgradeRejectsWithoutOverwritingLastGood(t *testing.T) {
+ t.Setenv("HOME", t.TempDir())
+ dir:=t.TempDir()
+ first:=codexFixtureExecutable(t,dir,"first")
+ second:=codexFixtureExecutable(t,dir,"second")
+ third:=codexFixtureExecutable(t,dir,"third")
+ acp:=codexFixtureExecutable(t,dir,"codex-acp")
+ ctx:=context.Background()
+ allow:=func(_ context.Context,_ CodexPairInventory) error{return nil}
+ if _,err:=manageCodexPairWithProbe(ctx,"install","node",first,acp,allow);err!=nil {t.Fatal(err)}
+ if _,err:=manageCodexPairWithProbe(ctx,"readiness","node","","",allow);err!=nil {t.Fatal(err)}
+ entered:=make(chan struct{})
+ release:=make(chan struct{})
+ var once sync.Once
+ delayed:=func(_ context.Context,_ CodexPairInventory) error {
+  once.Do(func(){close(entered)})
+  <-release
+  return nil
+ }
+ finished:=make(chan error,1)
+ go func(){_,err:=manageCodexPairWithProbe(ctx,"upgrade","node",second,acp,delayed);finished<-err}()
+ <-entered
+ if _,err:=manageCodexPairWithProbe(ctx,"upgrade","node",third,acp,allow);err==nil {t.Fatal("simultaneous upgrade unexpectedly accepted")}
+ prior,err:=ReadCodexPairInventory("node")
+ if err!=nil || prior.Codex.Path!=first {t.Fatalf("active inventory changed while first upgrade probed: %+v %v",prior,err)}
+ close(release)
+ if err:=<-finished;err!=nil {t.Fatal(err)}
+ current,err:=ReadCodexPairInventory("node")
+ if err!=nil || current.Codex.Path!=second {t.Fatalf("first upgrade did not activate: %+v %v",current,err)}
+ loc,_:=CodexPairInventoryPath("node")
+ data,err:=os.ReadFile(filepath.Join(filepath.Dir(loc),"codex-pair.previous.json"))
+ if err!=nil {t.Fatal(err)}
+ var rollback CodexPairInventory
+ if err:=json.Unmarshal(data,&rollback);err!=nil {t.Fatal(err)}
+ if rollback.Codex.Path!=first {t.Fatalf("rollback target overwritten by rejected concurrent upgrade: %s",rollback.Codex.Path)}
 }
