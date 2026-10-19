@@ -98,7 +98,7 @@ fi
 app_stage="$stage/new-node.app"
 cp -R "$target/Secretary Node.app" "$app_stage"
 codesign --verify "$app_stage" || fail "Staged Node.app did not verify"
-SECRETARY_BINARY_STAGE_BIN="$stage/setup-bin" "$target/secretary" setup --non-interactive || fail "Private setup failed; active release has not changed"
+SECRETARY_BINARY_PREINSTALLED_ONLY=1 SECRETARY_BINARY_STAGE_BIN="$stage/setup-bin" "$target/secretary" setup --non-interactive || fail "Private setup failed; active release has not changed"
 
 backup="$stage/previous-app"
 activated=false
