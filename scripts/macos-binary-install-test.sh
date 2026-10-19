@@ -94,4 +94,14 @@ cmp "$home/config.before" "$state/config.toml"
 cmp "$home/credentials.before" "$state/environment"
 cmp "$home/profile.before" "$state/profiles/secretary.md"
 test -f "$state/releases/secretary-v0.0.1-ci-darwin-$(uname -m | sed 's/x86_64/amd64/')/RELEASE-MANIFEST.json"
+source_home="$home/source-profile"
+mkdir -p "$source_home/.local/bin"
+printf '#!/bin/sh\nexit 0\n' > "$source_home/source-cli"
+chmod +x "$source_home/source-cli"
+ln -s "$source_home/source-cli" "$source_home/.local/bin/secretary"
+if HOME="$source_home" bash "$root/scripts/install-macos-binary.sh" >/dev/null 2>&1; then
+  echo "Binary install converted an existing source-managed CLI" >&2
+  exit 1
+fi
+[[ "$(readlink "$source_home/.local/bin/secretary")" == "$source_home/source-cli" ]]
 echo "macOS binary install/rollback/upgrade fixture completed"
