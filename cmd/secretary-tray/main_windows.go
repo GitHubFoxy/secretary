@@ -23,6 +23,7 @@ import (
 
 const (
 	wmDestroy = 2
+	wmClose = 16
 	wmPaint = 15
 	wmSettingChange = 26
 	wmKillFocus = 8
@@ -309,6 +310,8 @@ func windowProc(hwnd uintptr, message uint32, wp, lp uintptr) uintptr {
 		app.resizeOpenMenu()
 		invalidateRect.Call(app.popup, 0, 1)
 		return 0
+	case wmClose:
+		if hwnd == app.hwnd { go func() { app.stop(); postMessage.Call(app.hwnd, wmDestroy, 0, 0) }(); return 0 }
 	case wmDestroy:
 		if hwnd == app.hwnd {
 			app.lock.Lock()
