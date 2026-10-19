@@ -21,9 +21,11 @@ try {
  } elseif ($uri.Scheme -eq 'https') {
   $request = [Net.HttpWebRequest]::Create($uri)
   $request.Timeout = 120000
-  $request.AllowAutoRedirect = $false
+  $request.AllowAutoRedirect = $true
+  $request.MaximumAutomaticRedirections = 5
   $response = $request.GetResponse()
   try {
+   if ($response.ResponseUri.Scheme -ne 'https') { throw 'Release redirect left HTTPS' }
    if ([int]$response.StatusCode -ne 200) { throw "Release download returned HTTP $([int]$response.StatusCode)" }
    $inputStream = $response.GetResponseStream()
    $outputStream = [IO.File]::Create($archive)
@@ -42,7 +44,7 @@ try {
  if (-not [string]::Equals($observed,$ReleaseSHA256,[StringComparison]::OrdinalIgnoreCase)) {
   throw 'Release SHA-256 does not match the independently pinned digest; no binaries were activated'
  }
- Add-Type -AssemblyName System.IO.Compression
+ Add-Type -AssemblyName System.IO.Compression.FileSystem
  $zip = [IO.Compression.ZipFile]::OpenRead($archive)
  try {
   $entries = @($zip.Entries)
@@ -84,7 +86,13 @@ try {
   & (Join-Path $stage 'secretary-node.exe') @pairArgs
   if ($LASTEXITCODE -ne 0) { throw 'Codex/ACP provisioning failed; existing Node identity and credentials were not changed' }
  }
- & (Join-Path $PSScriptRoot 'install-windows-node.ps1') -NodeDataDir $NodeDataDir -WorkerHome $WorkerHome -Workspace $Workspace -WorkerUsername $WorkerUsername -NodeBinary (Join-Path $stage 'secretary-node.exe') -TrayBinary (Join-Path $stage 'secretary-tray.exe') -CodexOwnerHome $(if ($Harness -eq 'codex' -and $CodexCLI -eq '') { $env:USERPROFILE } else { '' })
+ $ownerHome = ''
+ if ($Harness -eq 'codex') {
+  $pairRecord = (& (Join-Path $stage 'secretary-node.exe') --codex-pair-action=show --codex-pair-scope=node | Out-String | ConvertFrom-Json)
+  if ($LASTEXITCODE -ne 0) { throw 'Could not inspect selected native Codex/ACP inventory' }
+  if ($pairRecord.codex.provenance -eq 'managed') { $ownerHome = $env:USERPROFILE }
+ }
+ & (Join-Path $PSScriptRoot 'install-windows-node.ps1') -NodeDataDir $NodeDataDir -WorkerHome $WorkerHome -Workspace $Workspace -WorkerUsername $WorkerUsername -NodeBinary (Join-Path $stage 'secretary-node.exe') -TrayBinary (Join-Path $stage 'secretary-tray.exe') -CodexOwnerHome $ownerHome
  if (-not $?) { throw 'Windows Node installation failed; verify Worker account/ACL diagnostics' }
  if ($Harness -eq 'codex') {
   & (Join-Path $stage 'secretary-node.exe') --codex-pair-action=readiness --codex-pair-scope=node
