@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 
 public final class NodeMenuPresentation {
     public let menu = NSMenu()
@@ -24,8 +25,10 @@ public final class NodeMenuPresentation {
         menu.addItem(quit)
     }
 
-    public func updateLogin(_ enabled: Bool) {
-        launchAtLogin.state = enabled ? .on : .off
+    public func updateLogin(_ status: SMAppService.Status) {
+        launchAtLogin.state = status == .enabled ? .on : .off
+        launchAtLogin.toolTip = NodeIntegrations.loginDescription(status)
+        launchAtLogin.title = status == .requiresApproval ? "Launch at Login (Approval Needed)" : "Launch at Login"
     }
 
     public func renderLive(_ snapshot: NodeLiveSnapshot?) {
