@@ -6,6 +6,9 @@ on:
       - secretary
       - macos/SecretaryNode/**
       - scripts/install-macos-binary.sh
+      - internal/webapi/video.go
+      - internal/webapi/video_tools.go
+      - internal/webapi/video_tools_test.go
       - scripts/package-macos-binary-release.sh
       - scripts/macos-release-contract-test.sh
       - scripts/macos-binary-install-test.sh
@@ -35,6 +38,13 @@ jobs:
           bash -n scripts/macos-release-contract-test.sh
           bash scripts/macos-release-contract-test.sh
           zsh -n secretary
+      - name: Provision video tools on release builder
+        shell: bash
+        run: |
+          set -euo pipefail
+          brew install ffmpeg
+          ffmpeg -version
+          ffprobe -version
       - name: Build native release on CI host
         shell: bash
         run: |
@@ -53,10 +63,16 @@ jobs:
           plutil -replace CFBundleShortVersionString -string "$package_version" "$RUNNER_TEMP/secretary-package/Secretary Node.app/Contents/Info.plist"
           codesign --force --sign - "$RUNNER_TEMP/secretary-package/Secretary Node.app"
           codesign --verify "$RUNNER_TEMP/secretary-package/Secretary Node.app"
+          mkdir -p "$RUNNER_TEMP/secretary-package/bin/video-tools"
+          cp "$(command -v ffmpeg)" "$RUNNER_TEMP/secretary-package/bin/video-tools/ffmpeg"
+          cp "$(command -v ffprobe)" "$RUNNER_TEMP/secretary-package/bin/video-tools/ffprobe"
           cp secretary "$RUNNER_TEMP/secretary-package/secretary"
           cp scripts/secretary-interactive.zsh "$RUNNER_TEMP/secretary-package/scripts/secretary-interactive.zsh"
           cp -R internal/config/defaults "$RUNNER_TEMP/secretary-package/internal/config/defaults"
           echo "SECRETARY_PACKAGE_INPUT=$RUNNER_TEMP/secretary-package" >> "$GITHUB_ENV"
+      - name: Real video transcode acceptance
+        shell: bash
+        run: go test ./internal/webapi -run 'TestT12RealFFmpegNonzeroPTSAndVFRSourcePTS|TestT12FFmpegExtractsExactlyProbedVideoTrackNotDefault|TestVideoToolPairValidation|TestVideoManagedManifestIntegrity' -count=1
       - name: Create versioned archive and manifest
         shell: bash
         run: |
