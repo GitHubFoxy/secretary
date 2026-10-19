@@ -79,6 +79,15 @@ flowchart TD
 
 ### Установка и настройка
 
+На macOS предусмотрен отдельный путь установки из опубликованных бинарных релизов без локальной сборки Go/Swift/npm. Он не заменяет установку разработчика из исходников:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install-macos-binary.sh | bash
+```
+
+Подробности и ограничения подписи приложения: [macOS binary installation](docs/macos-binary-install.md).
+
+
 На macOS/Linux с Git, zsh, OpenSSL и Go 1.27.1+ (или mise) доступна установка одной командой:
 
 ```sh
