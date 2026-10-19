@@ -7,6 +7,7 @@ import (
  "bytes"
  "compress/gzip"
  "context"
+ "encoding/json"
  "crypto/sha256"
  "encoding/hex"
  "fmt"
@@ -114,6 +115,8 @@ func TestInstallManagedCodexAssetsFreshRetryPartialAndCorrupt(t *testing.T) {
  if _,err := os.Stat(cli);err != nil { t.Fatal(err) }
  if _,err := os.Stat(acp);err != nil { t.Fatal(err) }
  if _,_,err := installManagedCodexAssets(context.Background(),assets,root,"fixture");err != nil { t.Fatal(err) }
+ if err:=os.WriteFile(cli, []byte("#!/bin/sh\necho codex "+codexPinnedVersion+"\nexit 0\n"),0700);err!=nil {t.Fatal(err)}
+ if _,_,err:=installManagedCodexAssets(context.Background(),assets,root,"fixture");err==nil {t.Fatal("same-version executable tampering accepted") }
  if err:=os.Remove(acp);err != nil { t.Fatal(err) }
  if _,_,err:=installManagedCodexAssets(context.Background(),assets,root,"fixture");err==nil { t.Fatal("partial managed installation accepted") }
  broken:=[]codexAsset{{URL:server.URL+"/codex",SHA256:strings.Repeat("0",64),Name:"codex"},assets[1]}
@@ -144,4 +147,89 @@ func TestManageCodexPairValidatedUpgradeAndRollback(t *testing.T) {
  selected,err=ReadCodexPairInventory("node")
  if err!=nil || selected.Codex.Path!=first {t.Fatalf("rolled back inventory: %+v, %v",selected,err)}
  if calls!=3 {t.Fatalf("expected readiness, upgrade, rollback probes, got %d",calls)}
+}
+
+
+func TestCodexNativeACPProtocolReadinessAndFailedCandidate(t *testing.T) {
+ dir:=t.TempDir()
+ cli:=filepath.Join(dir,"codex")
+ if err:=os.WriteFile(cli,[]byte("#!/bin/sh\\nif [ \\"$1\\" = \\"--version\\" ]; then echo codex-cli 0.163.0; elif [ \\"$1\\" = \\"login\\" ]; then echo Logged in; else exit 4; fi\\n"),0700);err!=nil {t.Fatal(err)}
+ makeACP:=func(name string, valid bool) string {
+  t.Helper()
+  path:=filepath.Join(dir,name)
+  metadata:="True"
+  if !valid {metadata="False"}
+  script:=fmt.Sprintf(`#!/usr/bin/env python3
+import json,sys
+if '--version' in sys.argv:
+ print('codex-acp 0.16.0')
+ sys.exit(0)
+for line in sys.stdin:
+ req=json.loads(line)
+ with open(%q,'a') as log:
+  log.write(req.get('method','')+'\\n')
+ if req.get('method')=='initialize':
+  response={'protocolVersion':1,'agentInfo':{'version':'0.16.0'},'agentCapabilities':{'loadSession':%s},'_meta':{'steering':{'supported':True}}}
+ elif req.get('method')=='session/new':
+  response={'sessionId':'fixture','models':{'availableModels':[{'modelId':'gpt-fixture'}]}}
+ else:
+  response={}
+ print(json.dumps({'jsonrpc':'2.0','id':req.get('id'),'result':response}),flush=True)
+`,filepath.Join(dir,name+".log"),metadata)
+  if err:=os.WriteFile(path,[]byte(script),0700);err!=nil {t.Fatal(err)}
+  return path
+ }
+ good:=makeACP("good-acp",true)
+ bad:=makeACP("bad-acp",false)
+ t.Setenv("SECRETARY_ACP_COMMAND",bad)
+ pair:=CodexPairInventory{Codex:CodexBinaryRecord{Path:cli},ACP:CodexBinaryRecord{Path:good}}
+ if err:=codexNativePairReady(context.Background(),pair);err!=nil {t.Fatalf("selected valid ACP failed: %v",err)}
+ wire,err:=os.ReadFile(good+".log")
+ if err!=nil {t.Fatal(err)}
+ if !strings.Contains(string(wire),"initialize") || !strings.Contains(string(wire),"session/new") {t.Fatalf("missing required ACP protocol messages: %s",wire)}
+ pair.ACP.Path=bad
+ if err:=codexNativePairReady(context.Background(),pair);err==nil {t.Fatal("invalid ACP initialize contract accepted")}
+ if got:=os.Getenv("SECRETARY_ACP_COMMAND");got!=bad {t.Fatal("native ACP readiness mutated process environment")}
+}
+
+func TestCodexPendingUpgradeRecoversWithoutLosingLastGood(t *testing.T) {
+ t.Setenv("HOME",t.TempDir())
+ dir:=t.TempDir()
+ first:=codexFixtureExecutable(t,dir,"first")
+ second:=codexFixtureExecutable(t,dir,"second")
+ third:=codexFixtureExecutable(t,dir,"third")
+ acp:=codexFixtureExecutable(t,dir,"codex-acp")
+ probe:=func(_ context.Context,_ CodexPairInventory) error{return nil}
+ ctx:=context.Background()
+ if _,err:=manageCodexPairWithProbe(ctx,"install","node",first,acp,probe);err!=nil {t.Fatal(err)}
+ if _,err:=manageCodexPairWithProbe(ctx,"readiness","node","","",probe);err!=nil {t.Fatal(err)}
+ if _,err:=manageCodexPairWithProbe(ctx,"upgrade","node",second,acp,probe);err!=nil {t.Fatal(err)}
+ pair2,err:=readCodexPairUnchecked("node")
+ if err!=nil {t.Fatal(err)}
+ location,_:=CodexPairInventoryPath("node")
+ rollback:=filepath.Join(filepath.Dir(location),"codex-pair.previous.json")
+ original,err:=os.ReadFile(rollback)
+ if err!=nil {t.Fatal(err)}
+ thirdCLI,err:=codexBinaryRecord(third,"external")
+ if err!=nil {t.Fatal(err)}
+ candidate:=pair2
+ candidate.Codex=thirdCLI
+ journal,_:=json.Marshal(codexPendingUpgrade{Previous:pair2,Candidate:candidate})
+ pending:=filepath.Join(filepath.Dir(location),"codex-pair.pending.json")
+ if err:=os.WriteFile(pending,journal,0600);err!=nil {t.Fatal(err)}
+ if err:=recoverPendingCodexUpgrade("node");err!=nil {t.Fatal(err)}
+ stable,err:=os.ReadFile(rollback)
+ if err!=nil {t.Fatal(err)}
+ if !bytes.Equal(stable,original) {t.Fatal("rollback overwritten before activation")}
+ if err:=os.WriteFile(pending,journal,0600);err!=nil {t.Fatal(err)}
+ if err:=saveCodexPair(location,candidate);err!=nil {t.Fatal(err)}
+ if err:=recoverPendingCodexUpgrade("node");err!=nil {t.Fatal(err)}
+ latest,err:=os.ReadFile(rollback)
+ if err!=nil {t.Fatal(err)}
+ var saved CodexPairInventory
+ if err:=json.Unmarshal(latest,&saved);err!=nil {t.Fatal(err)}
+ if saved.Codex.Path!=second {t.Fatal("last-good upgraded pair not retained across interruption")}
+ if _,err:=manageCodexPairWithProbe(ctx,"rollback","node","","",probe);err!=nil {t.Fatal(err)}
+ restored,err:=readCodexPairUnchecked("node")
+ if err!=nil || restored.Codex.Path!=second {t.Fatalf("rollback recovery failed: %+v %v",restored,err)}
 }
