@@ -58,14 +58,25 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	}
 	defer localStore.Close()
 	runtime := &daemonCountingRuntime{}
+	inventorySource := &daemonToggleInventory{snapshot: inventory}
+	statusPath := filepath.Join(t.TempDir(), "live-status.json")
+	statusWriter := NewLiveStatusWriter(statusPath)
+	readLive := func() (liveSnapshot, bool) {
+		data, err := os.ReadFile(statusPath)
+		if err != nil { return liveSnapshot{}, false }
+		var snapshot liveSnapshot
+		if json.Unmarshal(data, &snapshot) != nil { return liveSnapshot{}, false }
+		return snapshot, true
+	}
 	daemon := &Daemon{
 		Identity:           identity,
 		Store:              localStore,
 		Runtime:            runtime,
-		Inventory:          daemonStaticInventory{snapshot: inventory},
+		Status:             statusWriter,
+		Inventory:          inventorySource,
 		Capacity:           2,
 		HeartbeatInterval:  20 * time.Millisecond,
-		InventoryInterval:  time.Hour,
+		InventoryInterval:  50 * time.Millisecond,
 		OutboxPollInterval: 10 * time.Millisecond,
 		ReconnectMin:       10 * time.Millisecond,
 		ReconnectMax:       40 * time.Millisecond,
@@ -88,6 +99,22 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	waitFor(t, ctx, "Node heartbeat", func() bool {
 		status, err := manager.Status(context.Background(), "macbook")
 		return err == nil && status.Online && !status.LastHeartbeatAt.IsZero() && status.Inventory.Node == "macbook" && len(status.Inventory.Instances) == 1
+	})
+
+	waitFor(t, ctx, "live connected harness snapshot", func() bool {
+		snapshot, ok := readLive()
+		return ok && snapshot.Server == "connected" && len(snapshot.Harnesses) == 1 && snapshot.Harnesses[0].Kind == "fx" && snapshot.Harnesses[0].Status == "ready"
+	})
+
+	inventorySource.fail.Store(true)
+	waitFor(t, ctx, "failed discovery clears harness readiness", func() bool {
+		snapshot, ok := readLive()
+		return ok && snapshot.Server == "connected" && len(snapshot.Harnesses) == 0
+	})
+	inventorySource.fail.Store(false)
+	waitFor(t, ctx, "recovered discovery restores harness readiness", func() bool {
+		snapshot, ok := readLive()
+		return ok && snapshot.Server == "connected" && len(snapshot.Harnesses) == 1 && snapshot.Harnesses[0].Status == "ready"
 	})
 
 	unauthorized, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL+"/v1/nodes", nil)
@@ -199,6 +226,10 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	if starts := runtime.starts.Load(); starts != 1 {
 		t.Fatalf("reconnect restarted existing Attempt; starts=%d", starts)
 	}
+	waitFor(t, ctx, "live status restored after reconnect", func() bool {
+		snapshot, ok := readLive()
+		return ok && snapshot.Server == "connected" && len(snapshot.Harnesses) == 1 && snapshot.Harnesses[0].Status == "ready"
+	})
 
 	revoked := revokeHTTP(t, ctx, httpServer, "macbook")
 	if !revoked.Revoked || revoked.Online || !revoked.Draining {
@@ -207,6 +238,10 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	waitFor(t, ctx, "revoked Node stays offline", func() bool {
 		status, err := manager.Status(context.Background(), "macbook")
 		return err == nil && status.Revoked && !status.Online
+	})
+	waitFor(t, ctx, "live disconnected after revocation", func() bool {
+		snapshot, ok := readLive()
+		return ok && snapshot.Server != "connected" && len(snapshot.Harnesses) == 0
 	})
 	if err := manager.SendCommand(ctx, "macbook", command); !errors.Is(err, core.ErrNodeRevoked) {
 		t.Fatalf("command to revoked Node err=%v", err)
@@ -233,6 +268,16 @@ func TestNodeIdentityPersistsWithRestrictedPermissions(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("identity permissions=%#o", info.Mode().Perm())
 	}
+}
+
+type daemonToggleInventory struct {
+	snapshot core.HarnessInventorySnapshot
+	fail atomic.Bool
+}
+
+func (s *daemonToggleInventory) Discover(ctx context.Context) (core.HarnessInventorySnapshot, error) {
+	if s.fail.Load() { return core.HarnessInventorySnapshot{}, errors.New("simulated discovery failure") }
+	return daemonStaticInventory{snapshot: s.snapshot}.Discover(ctx)
 }
 
 type daemonStaticInventory struct{ snapshot core.HarnessInventorySnapshot }

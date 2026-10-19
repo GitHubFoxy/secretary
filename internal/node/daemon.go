@@ -19,6 +19,7 @@ type Daemon struct {
 	Store     *LocalStore
 	Runtime   Runtime
 	Inventory InventorySource
+	Status *LiveStatusWriter
 
 	Capacity           int
 	Workspaces         []Workspace
@@ -66,6 +67,7 @@ type commandCompletion struct {
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
+	if d.Status != nil { defer d.Status.Publish("offline", nil) }
 	if err := d.validate(); err != nil {
 		return err
 	}
@@ -92,6 +94,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("node: restore local execution state: %w", err)
 	}
 
+	if d.Status != nil { d.Status.Publish("reconnecting", nil) }
 	backoff := d.reconnectMin()
 	for {
 		if ctx.Err() != nil {
@@ -102,6 +105,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return nil
 		}
 		_ = err
+		if d.Status != nil { d.Status.Publish("reconnecting", nil) }
 		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
@@ -132,6 +136,7 @@ func (d *Daemon) runConnection(ctx context.Context, execution *ExecutionNode) er
 	if err := execution.SetInventory(inventory); err != nil {
 		return fmt.Errorf("node: set harness inventory: %w", err)
 	}
+	if d.Status != nil { d.Status.Publish("reconnecting", &inventory) }
 	auth, err := d.Identity.Authenticator()
 	if err != nil {
 		return err
@@ -238,6 +243,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 		for {
 			message, err := receiveServerMessage(ctx, connection)
 			if err != nil {
+				if d.Status != nil { d.Status.Disconnected() }
 				select {
 				case readErrors <- err:
 				default:
@@ -276,6 +282,8 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 		return nil
 	}
 	if err := sendHeartbeat(); err != nil {return err}
+	if d.Status != nil { d.Status.Connected(&inventory) }
+	inventoryVerified := true
 	// Recover pre-native Dispatch/Resume with their original IDs and envelope.
 	// ClaimCommand atomically serializes this replay against server redelivery.
 	replay,err:=d.Store.PendingPrestartCommands()
@@ -358,15 +366,15 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			if err := sendHeartbeat(); err != nil {
 				return err
 			}
+			if d.Status != nil { if inventoryVerified { d.Status.Connected(&inventory) } else { d.Status.Connected(nil) } }
 		case <-inventories.C:
 			refreshed, err := d.Inventory.Discover(ctx)
+			if err == nil { err = refreshed.Validate() }
+			if err == nil && refreshed.Node != d.Identity.Node { err = errors.New("node: refreshed inventory belongs to another Node") }
+			if err == nil { err = execution.SetInventory(refreshed) }
 			if err != nil {
-				continue
-			}
-			if err := refreshed.Validate(); err != nil || refreshed.Node != d.Identity.Node {
-				continue
-			}
-			if err := execution.SetInventory(refreshed); err != nil {
+				inventoryVerified = false
+				if d.Status != nil { d.Status.Connected(nil) }
 				continue
 			}
 			if err := d.flushOutbox(ctx, connection, &sentThrough); err != nil {
@@ -381,6 +389,8 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			}
 			sentThrough = sequence
 			inventory = refreshed
+			inventoryVerified = true
+			if d.Status != nil { d.Status.Connected(&inventory) }
 		}
 	}
 }

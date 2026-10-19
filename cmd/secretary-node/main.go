@@ -220,6 +220,9 @@ func main() {
 		Capacity:   *capacity,
 	}
 
+	if statusFile := os.Getenv("SECRETARY_NODE_STATUS_FILE"); statusFile != "" {
+		daemon.Status = node.NewLiveStatusWriter(statusFile)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), nodeShutdownSignals()...)
 	defer stop()
 	watchNodeShutdownEvent(stop)
