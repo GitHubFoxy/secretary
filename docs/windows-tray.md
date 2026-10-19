@@ -37,3 +37,7 @@ Reconnecting without a false Ready indication. Harness rows reflect the Node's
 native inventory probes, not just installed executable names. The compact
 menu lists the Server immediately after the Node heading, then a separator,
 harness rows and existing controls. Windows app theme changes repaint the menu.
+
+### W02 manual Windows acceptance
+
+With the tray popup already open, connect/disconnect the Server and install, remove or change harness availability. Confirm the visible popup resizes without closing, preserves the separator and both controls, and never displays stale Ready. Change the Windows light/dark setting while it is open; exit the managed Node and confirm the menu refreshes to Offline. These native window and appearance transitions require a live Windows desktop and are not certified by unit tests.
