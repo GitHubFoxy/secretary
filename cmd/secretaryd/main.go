@@ -45,6 +45,11 @@ func main() {
 	checkOpenCodeAuth := flag.Bool("check-opencode-auth", false, "check stored OpenCode credentials in the selected Secretary store and exit")
 	opencodeCommand := flag.String("opencode-command", "opencode", "OpenCode executable used for the selected-store auth check")
 	flag.Parse()
+	if _, err := node.ReadCodexPairInventory("server"); err == nil {
+		if err := node.ApplyCodexPairInventory("server"); err != nil { log.Fatalf("Codex pair: %v", err) }
+	} else if !os.IsNotExist(err) {
+		log.Fatalf("Codex pair: %v", err)
+	}
 	if *backupTo != "" || *restoreFrom != "" {
 		if (*backupTo != "") == (*restoreFrom != "") { log.Fatal("choose exactly one of --backup-to or --restore-from") }
 		if *configPath == "" { *configPath = filepath.Join(*dataDir, "config.toml") }
