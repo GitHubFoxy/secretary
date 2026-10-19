@@ -18,7 +18,7 @@ bash install-linux-standalone-node.sh start
 
 Select `--harness claude_code` to use an already installed and authorized native Claude Code CLI rather than provisioning Codex. Codex selection invokes the existing pinned Node-scoped Codex CLI/ACP manager; the installed inventory and provider auth are separate. An unavailable or unauthorized native harness is not silently replaced. Use `doctor` to inspect readiness. The installer cannot obtain provider authorization or extend subscription/quota.
 
-The Node's config, native session data and pairing identity live under `~/.local/share/secretary/node`. Its versioned binaries and active symlink live under `~/.local/share/secretary/standalone-node`. The one-time enrollment token is stored with user-only permissions under `node/enrollment.env` for initial startup. Once Node has paired successfully and `node/data/identity.json` exists, securely remove `node/enrollment.env`; Node reconnects using its durable identity and transport credential. Do not delete Node data, native provider history or enrollment identity during upgrade.
+The Node's config, native session data and pairing identity live under `~/.local/share/secretary/standalone-node/node`. Its versioned binaries and active symlink live under `~/.local/share/secretary/standalone-node`. The one-time enrollment token is stored with user-only permissions under `node/enrollment.env` for initial startup. Once Node has paired successfully and `node/data/identity.json` exists, securely remove `node/enrollment.env`; Node reconnects using its durable identity and transport credential. Do not delete Node data, native provider history or enrollment identity during upgrade.
 
 ## Operations
 
