@@ -276,7 +276,14 @@ func activateCodexUpgrade(scope string, oldPair, candidate CodexPairInventory) e
  if err != nil { return err }
  if err := os.MkdirAll(filepath.Dir(pending), 0700); err != nil { return err }
  if info, err := os.Lstat(pending); err == nil && info != nil { return errors.New("unreconciled native pair upgrade transaction") } else if err != nil && !os.IsNotExist(err) { return err }
- if err := os.WriteFile(pending, journal, 0600); err != nil { return err }
+ stage, err := os.CreateTemp(filepath.Dir(pending), ".codex-pending-")
+ if err != nil { return err }
+ defer os.Remove(stage.Name())
+ if err := stage.Chmod(0600); err != nil { stage.Close(); return err }
+ if _, err := stage.Write(journal); err != nil { stage.Close(); return err }
+ if err := stage.Sync(); err != nil { stage.Close(); return err }
+ if err := stage.Close(); err != nil { return err }
+ if err := os.Rename(stage.Name(), pending); err != nil { return err }
  if err := saveCodexPair(location, candidate); err != nil { return err }
  if err := saveCodexPair(filepath.Join(filepath.Dir(location), "codex-pair.previous.json"), oldPair); err != nil { return err }
  return os.Remove(pending)
