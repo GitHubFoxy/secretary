@@ -20,6 +20,7 @@ type CodexBinaryRecord struct {
 }
 
 type CodexPairInventory struct {
+ Compatibility struct { Validated bool `json:"validated"` } `json:"compatibility"`
  Schema int `json:"schema"`
  Scope string `json:"scope"`
  Harness string `json:"harness"`
@@ -45,6 +46,7 @@ func ReadCodexPairInventory(scope string) (CodexPairInventory, error) {
  var pair CodexPairInventory
  if err := json.Unmarshal(data, &pair); err != nil { return pair, fmt.Errorf("invalid native pair inventory: %w", err) }
  if pair.Schema != 1 || pair.Scope != scope || pair.Harness != "codex" { return pair, fmt.Errorf("native pair inventory mismatch: %s", path) }
+ if !pair.Compatibility.Validated { return pair, fmt.Errorf("native Codex pair protocol has not been validated for %s", scope) }
  if err := verifyCodexBinary(pair.Codex); err != nil { return pair, fmt.Errorf("Codex CLI: %w", err) }
  if err := verifyCodexBinary(pair.ACP); err != nil { return pair, fmt.Errorf("Codex ACP: %w", err) }
  return pair, nil
