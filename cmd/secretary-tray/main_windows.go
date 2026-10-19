@@ -299,6 +299,7 @@ func windowProc(hwnd uintptr, message uint32, wp, lp uintptr) uintptr {
 	case wmKillFocus:
 		if hwnd == app.popup { showWindow.Call(hwnd, swHide); return 0 }
 	case wmSettingChange, wmThemeChanged, nodeChanged, statusChanged:
+		app.resizeOpenMenu()
 		invalidateRect.Call(app.popup, 0, 1)
 		return 0
 	case wmDestroy:
@@ -334,6 +335,24 @@ func (a *trayApp) showMenu() {
 	invalidateRect.Call(a.popup, 0, 1)
 	showWindow.Call(a.popup, swShow)
 	setForeground.Call(a.popup)
+}
+
+func (a *trayApp) resizeOpenMenu() {
+	if visible, _, _ := u.NewProc("IsWindowVisible").Call(a.popup); visible == 0 { return }
+	var bounds rect
+	if got, _, _ := u.NewProc("GetWindowRect").Call(a.popup, uintptr(unsafe.Pointer(&bounds))); got == 0 { return }
+	p := pt{x:bounds.left, y:bounds.top}
+	monitor, _, _ := monitorFromPoint.Call(uintptr(uint64(uint32(p.x))|uint64(uint32(p.y))<<32), monitorDefaultToNearest)
+	info := monitorInfo{size:uint32(unsafe.Sizeof(monitorInfo{}))}
+	if monitor != 0 {
+		if got, _, _ := getMonitorInfo.Call(monitor, uintptr(unsafe.Pointer(&info))); got != 0 { bounds = info.work }
+	}
+	a.lock.Lock()
+	h := menuHeight(buildMenu(a.node!=nil,a.lastError!="",a.live))
+	a.lock.Unlock()
+	if bounds.right <= bounds.left || bounds.bottom <= bounds.top { return }
+	x, y := clampPopup(p, bounds, 220, h)
+	setWindowPos.Call(a.popup, ^uintptr(0), uintptr(x), uintptr(y), 220, uintptr(h), swpNoActivate)
 }
 
 func clampPopup(p pt, work rect, width, height int32) (int32, int32) {
