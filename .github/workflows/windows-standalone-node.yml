@@ -130,7 +130,9 @@ jobs:
           }
           if ((Get-FileHash $shortcutPath -Algorithm SHA256).Hash -ne $originalLinkHash -or $shell.CreateShortcut($shortcutPath).TargetPath -ne $originalTarget) { throw 'Failed upgrade changed Start/Search activation' }
           Assert-PreservedState
-                    $runningTray=Start-Process -FilePath $originalTarget -ArgumentList ('--data-dir "'+$data+'"') -PassThru
+                    $workerAccount=Join-Path $data 'worker-account.json'
+          $accountBefore=(Get-FileHash $workerAccount -Algorithm SHA256).Hash
+          $runningTray=Start-Process -FilePath $originalTarget -ArgumentList ('--data-dir "'+$data+'"') -PassThru
           Start-Sleep -Milliseconds 800
           $runningTray.Refresh()
           if ($runningTray.HasExited) { throw 'Existing tray was not running before staged upgrade' }
