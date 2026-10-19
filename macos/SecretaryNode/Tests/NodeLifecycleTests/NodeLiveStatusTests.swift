@@ -60,7 +60,10 @@ final class NodeLiveStatusTests: XCTestCase {
     func testMenuUsesNativeCompactRowsAndSystemAppearance() {
         let menu = NodeMenuPresentation()
         XCTAssertEqual(menu.menu.item(at: 2)?.isSeparatorItem, true)
-        XCTAssertEqual(menu.menu.items.count, 4)
+        XCTAssertEqual(menu.menu.items.count, 7)
+        XCTAssertEqual(menu.menu.items.map(\.title).filter { !$0.isEmpty },
+                       ["Node: Starting", "Server: Offline", "Launch at Login", "Open Logs", "Quit Secretary Node"])
+        XCTAssertTrue(menu.menu.items[5].isSeparatorItem)
         XCTAssertNil(menu.menu.appearance)
         XCTAssertFalse(menu.menu.autoenablesItems)
     }
