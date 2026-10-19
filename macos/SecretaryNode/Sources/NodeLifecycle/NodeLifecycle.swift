@@ -53,8 +53,11 @@ public final class NodeLifecycle {
 
     private func matchingNode(_ pid: pid_t) -> Bool {
         guard pid > 1 else { return false }
-        var buffer = [CChar](repeating: 0, count: Int(PROC_PIDPATHINFO_MAXSIZE))
-        guard proc_pidpath(pid, &buffer, UInt32(buffer.count)) > 0 else { return false }
+        // proc_pidpath requires a 4096-byte buffer. PROC_PIDPATHINFO_MAXSIZE is
+        // unavailable to Swift in the macOS 15.5 SDK (Xcode 16.4).
+        var buffer = [CChar](repeating: 0, count: 4096)
+        let length = proc_pidpath(pid, &buffer, UInt32(buffer.count))
+        guard length > 0, Int(length) < buffer.count else { return false }
         let path = String(cString: buffer)
         return URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL == executable
     }
