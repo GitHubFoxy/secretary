@@ -8,7 +8,9 @@ on:
       - internal/webapi/video.go
       - internal/webapi/video_tools.go
       - internal/webapi/video_tools_test.go
+      - scripts/provision-server-video-tools.sh
       - scripts/package-linux-binary-release.sh
+      - scripts/video-tools-contract-test.sh
       - scripts/linux-binary-install-test.sh
       - .github/workflows/linux-binary-release.yml
   push:
@@ -38,10 +40,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-          ffmpeg -version
-          ffprobe -version
+          bash scripts/provision-server-video-tools.sh "$RUNNER_TEMP/server-video-tools"
+          "$RUNNER_TEMP/server-video-tools/ffmpeg" -encoders | grep libwebp
+          echo "$RUNNER_TEMP/server-video-tools" >> "$GITHUB_PATH"
       - name: Package release binaries
         shell: bash
         run: |
@@ -54,8 +55,8 @@ jobs:
             go build -trimpath -o "$RUNNER_TEMP/package/bin/$binary" "./cmd/$binary"
           done
           mkdir -p "$RUNNER_TEMP/package/bin/video-tools"
-          cp "$(command -v ffmpeg)" "$RUNNER_TEMP/package/bin/video-tools/ffmpeg"
-          cp "$(command -v ffprobe)" "$RUNNER_TEMP/package/bin/video-tools/ffprobe"
+          cp "$RUNNER_TEMP/server-video-tools/ffmpeg" "$RUNNER_TEMP/package/bin/video-tools/ffmpeg"
+          cp "$RUNNER_TEMP/server-video-tools/ffprobe" "$RUNNER_TEMP/package/bin/video-tools/ffprobe"
           cp secretary "$RUNNER_TEMP/package/secretary"
           cp scripts/secretary-interactive.zsh "$RUNNER_TEMP/package/scripts/"
           cp -R internal/config/defaults "$RUNNER_TEMP/package/internal/config/"
@@ -64,6 +65,9 @@ jobs:
           bash scripts/package-linux-binary-release.sh "$version" "$GITHUB_SHA" "${{ matrix.arch }}" "$RUNNER_TEMP/package" "$RUNNER_TEMP/dist"
           echo "SECRETARY_PACKAGE_INPUT=$RUNNER_TEMP/package" >> "$GITHUB_ENV"
           echo "SECRETARY_TEST_DIST=$RUNNER_TEMP/dist" >> "$GITHUB_ENV"
+      - name: Packaged video dependency contract
+        shell: bash
+        run: bash scripts/video-tools-contract-test.sh "$RUNNER_TEMP/package"
       - name: Real video transcode acceptance
         shell: bash
         run: go test ./internal/webapi -run 'TestT12RealFFmpegNonzeroPTSAndVFRSourcePTS|TestT12FFmpegExtractsExactlyProbedVideoTrackNotDefault|TestVideoToolPairValidation|TestVideoManagedManifestIntegrity' -count=1
