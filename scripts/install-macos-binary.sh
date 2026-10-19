@@ -67,10 +67,11 @@ target="$releases/$name"
 if [[ -e "$target" ]]; then
   [[ -d "$target" && ! -L "$target" && -f "$target/REVISION" && "$(cat "$target/REVISION")" == "$revision" ]] || fail "Existing release directory conflicts with requested version"
   [[ -x "$target/bin/secretaryd" && -x "$target/bin/secretary-node" ]] || fail "Existing release is incomplete"
+  cmp -s "$stage/manifest.json" "$target/RELEASE-MANIFEST.json" || fail "Existing cached release provenance differs from selected manifest"
 else
   mv "$payload" "$target"
+  cp "$stage/manifest.json" "$target/RELEASE-MANIFEST.json"
 fi
-cp "$stage/manifest.json" "$target/RELEASE-MANIFEST.json"
 if [[ -e "$current_release" || -L "$current_release" ]]; then
   [[ -L "$current_release" ]] || fail "Existing current release path is not a symlink"
   previous_release="$(readlink "$current_release")"
