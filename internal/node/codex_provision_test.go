@@ -9,6 +9,7 @@ import (
  "context"
  "crypto/sha256"
  "encoding/hex"
+ "fmt"
  "io"
  "net/http"
  "net/http/httptest"
@@ -116,4 +117,29 @@ func TestInstallManagedCodexAssetsFreshRetryPartialAndCorrupt(t *testing.T) {
  broken:=[]codexAsset{{URL:server.URL+"/codex",SHA256:strings.Repeat("0",64),Name:"codex"},assets[1]}
  if _,_,err:=installManagedCodexAssets(context.Background(),broken,root,"corrupt");err==nil { t.Fatal("bad archive accepted") }
  if _,err:=os.Stat(filepath.Join(root,"corrupt"));!os.IsNotExist(err) { t.Fatalf("damaged release activated: %v",err) }
+}
+
+
+func TestManageCodexPairValidatedUpgradeAndRollback(t *testing.T) {
+ t.Setenv("HOME",t.TempDir())
+ dir:=t.TempDir()
+ first:=codexFixtureExecutable(t,dir,"codex-first")
+ second:=codexFixtureExecutable(t,dir,"codex-second")
+ acp:=codexFixtureExecutable(t,dir,"codex-acp")
+ ctx:=context.Background()
+ calls:=0
+ fakeProbe:=func(_ context.Context,pair CodexPairInventory) error {
+  calls++
+  if pair.Codex.Path=="" || pair.ACP.Path=="" { return fmt.Errorf("missing chosen executable") }
+  return nil
+ }
+ if _,err:=manageCodexPairWithProbe(ctx,"install","node",first,acp,fakeProbe);err!=nil {t.Fatal(err)}
+ if _,err:=manageCodexPairWithProbe(ctx,"readiness","node","","",fakeProbe);err!=nil {t.Fatal(err)}
+ if _,err:=manageCodexPairWithProbe(ctx,"upgrade","node",second,acp,fakeProbe);err!=nil {t.Fatal(err)}
+ selected,err:=ReadCodexPairInventory("node")
+ if err!=nil || selected.Codex.Path!=second {t.Fatalf("upgraded inventory: %+v, %v",selected,err)}
+ if _,err:=manageCodexPairWithProbe(ctx,"rollback","node","","",fakeProbe);err!=nil {t.Fatal(err)}
+ selected,err=ReadCodexPairInventory("node")
+ if err!=nil || selected.Codex.Path!=first {t.Fatalf("rolled back inventory: %+v, %v",selected,err)}
+ if calls!=3 {t.Fatalf("expected readiness, upgrade, rollback probes, got %d",calls)}
 }
