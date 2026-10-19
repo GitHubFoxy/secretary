@@ -4,6 +4,7 @@ package main
 
 import (
 	"crypto/rand"
+	"flag"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -179,6 +180,9 @@ type trayApp struct {
 	lock sync.Mutex
 	node *managedNode
 	lastError string
+	dataDir string
+	logPath string
+	login bool
 	live liveStatus
 	exiting bool
 }
@@ -200,7 +204,7 @@ func buildMenu(running bool, failed bool, live liveStatus) []menuRow {
 	if len(live.Harnesses)==0 { rows=append(rows,menuRow{label:"Harnesses: Unavailable"}) }
 	act:="Start Secretary Node"
 	if running {act="Quit Secretary Node"}
-	return append(rows,menuRow{label:act,action:"toggle"},menuRow{label:"Exit tray",action:"exit"})
+	return append(rows,menuRow{label:act,action:"toggle"},menuRow{label:"Launch at Login",action:"login"},menuRow{label:"Open Logs",action:"logs"},menuRow{label:"Exit tray",action:"exit"})
 }
 func menuHeight(rows []menuRow) int32 {
 	var n int32 = 8
@@ -231,7 +235,11 @@ func main() {
 	defer closeHandle.Call(single)
 	if callErr == syscall.ERROR_ALREADY_EXISTS { return }
 
-	app = &trayApp{}
+	dataDir := flag.String("data-dir", defaultTrayDataDir(), "Node data directory")
+	flag.Parse()
+	app = &trayApp{dataDir:*dataDir}
+	app.logPath = filepath.Join(app.dataDir,"logs","node.log")
+	app.login, _ = loginEnabled()
 	className := wide("SecretaryNodeTrayWindow")
 	module, err := checked(getModuleHandle, 0)
 	if err != nil { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
@@ -283,10 +291,12 @@ func windowProc(hwnd uintptr, message uint32, wp, lp uintptr) uintptr {
 			y := int32(lp >> 16)
 			showWindow.Call(app.popup, swHide)
 			app.lock.Lock()
-			rows := buildMenu(app.node!=nil,app.lastError!="",app.live)
+			rows := app.menuRows()
 			app.lock.Unlock()
 			switch actionAt(rows,y) {
 			case "toggle": go app.toggle()
+			case "login": go app.toggleLogin()
+			case "logs": go app.openLogs()
 			case "exit": go func() { app.stop(); postMessage.Call(app.hwnd, wmDestroy, 0, 0) }()
 			}
 			return 0
@@ -323,7 +333,7 @@ func (a *trayApp) showMenu() {
 		bounds = rect{left: p.x, top: p.y, right: p.x+220, bottom: p.y+104}
 	}
 	a.lock.Lock()
-	h := menuHeight(buildMenu(a.node!=nil,a.lastError!="",a.live))
+	h := menuHeight(a.menuRows())
 	a.lock.Unlock()
 	x, y := clampPopup(p, bounds, 220, h)
 	setWindowPos.Call(a.popup, ^uintptr(0), uintptr(x), uintptr(y), 220, uintptr(h), swpNoActivate)
@@ -343,7 +353,7 @@ func (a *trayApp) resizeOpenMenu() {
 		if got, _, _ := getMonitorInfo.Call(monitor, uintptr(unsafe.Pointer(&info))); got != 0 { bounds = info.work }
 	}
 	a.lock.Lock()
-	h := menuHeight(buildMenu(a.node!=nil,a.lastError!="",a.live))
+	h := menuHeight(a.menuRows())
 	a.lock.Unlock()
 	if bounds.right <= bounds.left || bounds.bottom <= bounds.top { return }
 	x, y := clampPopup(p, bounds, 220, h)
@@ -380,7 +390,7 @@ func (a *trayApp) paintMenu() {
 	if dark { bg, fg, muted = rgb(32,32,32), rgb(242,242,242), rgb(175,175,175) }
 	brush, _, _ := createBrush.Call(bg)
 	a.lock.Lock()
-	rows := buildMenu(a.node!=nil,a.lastError!="",a.live)
+	rows := a.menuRows()
 	a.lock.Unlock()
 	r := rect{0,0,220,menuHeight(rows)}
 	fillRect.Call(dc, uintptr(unsafe.Pointer(&r)), brush)
@@ -437,9 +447,15 @@ func (a *trayApp) start() {
 	if _, err = checked(setJobInfo, job, jobExtendedLimits, uintptr(unsafe.Pointer(&limits)), unsafe.Sizeof(limits)); err != nil {
 		closeHandle.Call(job); closeHandle.Call(event); a.lastError = err.Error(); return
 	}
-	args := []string{}
+	args := []string{"--data-dir",a.dataDir}
 	if config := os.Getenv("SECRETARY_TRAY_NODE_CONFIG"); config != "" { args = append(args, "--config", config) }
+	if err := os.MkdirAll(filepath.Dir(a.logPath),0700);err != nil {a.lastError=err.Error();closeHandle.Call(job);closeHandle.Call(event);return}
+	logFile,err := os.OpenFile(a.logPath,os.O_CREATE|os.O_APPEND|os.O_WRONLY,0600)
+	if err != nil {a.lastError=err.Error();closeHandle.Call(job);closeHandle.Call(event);return}
+	defer logFile.Close()
 	cmd := exec.Command(file, args...)
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: createNoWindow | createNewProcessGroup, HideWindow: true}
 	statusToken := hex.EncodeToString(token)
 	statusFile := filepath.Join(os.TempDir(), "secretary-tray-status-"+statusToken+".json")

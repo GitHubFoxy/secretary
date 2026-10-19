@@ -6,7 +6,8 @@ param(
  [string]$WorkerHome = (Join-Path $env:ProgramData 'SecretaryWorker'),
  [string]$Workspace = '',
  [string]$WorkerUsername = 'secretary_worker',
- [string]$NodeBinary = ''
+ [string]$NodeBinary = '',
+ [string]$TrayBinary = ''
 )
 $ErrorActionPreference='Stop'
 $repositoryRoot=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
@@ -32,6 +33,22 @@ if ([string]::IsNullOrWhiteSpace($NodeBinary)) {
  finally { Pop-Location }
 }
 $NodeBinary=(Resolve-Path -LiteralPath $NodeBinary).Path
+$installBin=Join-Path $env:LOCALAPPDATA 'Secretary\bin'
+New-Item -ItemType Directory -Path $installBin -Force | Out-Null
+$installedNode=Join-Path $installBin 'secretary-node.exe'
+if (-not [string]::Equals($NodeBinary,$installedNode,[StringComparison]::OrdinalIgnoreCase)) {
+ Copy-Item -LiteralPath $NodeBinary -Destination $installedNode -Force
+}
+if ([string]::IsNullOrWhiteSpace($TrayBinary)) {
+ $TrayBinary=Join-Path $installBin 'secretary-tray.exe'
+ Push-Location $repositoryRoot
+ try { & go build -ldflags '-H=windowsgui' -o $TrayBinary ./cmd/secretary-tray; if ($LASTEXITCODE -ne 0) { throw 'Windows tray build failed' } }
+ finally { Pop-Location }
+} else {
+ $TrayBinary=(Resolve-Path -LiteralPath $TrayBinary).Path
+ Copy-Item -LiteralPath $TrayBinary -Destination (Join-Path $installBin 'secretary-tray.exe') -Force
+}
+$trayInstalled=Join-Path $installBin 'secretary-tray.exe'
 $arguments=@{
  NodeDataDir=$NodeDataDir; Workspace=$Workspace
  WorkerHome=$WorkerHome; WorkerUsername=$WorkerUsername
@@ -59,4 +76,10 @@ if ($identityBefore -and ((Get-FileHash -LiteralPath $identityPath -Algorithm SH
 }
 & $NodeBinary --data-dir $NodeDataDir --check-worker-sandbox
 if ($LASTEXITCODE -ne 0) { throw 'Windows Worker sandbox/Dispatch preflight failed' }
+$shortcutPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
+$shortcut=(New-Object -ComObject WScript.Shell).CreateShortcut($shortcutPath)
+$shortcut.TargetPath=$trayInstalled
+$shortcut.Arguments='--data-dir "'+$NodeDataDir+'"'
+$shortcut.WorkingDirectory=$installBin
+$shortcut.Save()
 Write-Host "Secretary Windows Node installed/upgraded. Node state preserved in $NodeDataDir."

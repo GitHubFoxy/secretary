@@ -43,11 +43,23 @@ jobs:
           $before=(Get-FileHash $existing -Algorithm SHA256).Hash
           & ./scripts/install-windows-node.ps1 -NodeDataDir $data -Workspace $workspace -WorkerHome $workerProfile -WorkerUsername 'secretary_inst_ci' -NodeBinary (Join-Path $PWD 'secretary-node.exe')
           if ($LASTEXITCODE -ne 0) { throw 'Windows first install failed' }
+          $linkPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
+          if (-not (Test-Path -LiteralPath $linkPath)) { throw 'Windows Start/Search shortcut missing' }
+          $shell=New-Object -ComObject WScript.Shell
+          $link=$shell.CreateShortcut($linkPath)
+          if (-not (Test-Path $link.TargetPath) -or $link.Arguments -notlike '*--data-dir*') { throw 'Windows tray shortcut has invalid target/Node data directory' }
+          $installedTray=$link.TargetPath
+          $installedHash=(Get-FileHash -LiteralPath $installedTray -Algorithm SHA256).Hash
           $configPath=Join-Path $data 'worker-account.json'
           $first=(Get-Content $configPath -Raw | ConvertFrom-Json)
           & ./scripts/install-windows-node.ps1 -NodeDataDir $data -Workspace $workspace -WorkerHome $workerProfile -WorkerUsername 'secretary_inst_ci' -NodeBinary (Join-Path $PWD 'secretary-node.exe')
           if ($LASTEXITCODE -ne 0) { throw 'Windows idempotent upgrade failed' }
           $second=(Get-Content $configPath -Raw | ConvertFrom-Json)
+          $upgradeLink=$shell.CreateShortcut($linkPath)
+          if ($upgradeLink.TargetPath -ne $installedTray -or
+              $installedHash -ne (Get-FileHash -LiteralPath $installedTray -Algorithm SHA256).Hash) {
+            throw 'Windows tray upgrade registration is unstable'
+          }
           if ($first.password -ne $second.password -or $before -ne (Get-FileHash $existing -Algorithm SHA256).Hash) {
             throw 'Windows upgrade rotated account credentials or Node identity'
           }
@@ -84,8 +96,16 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $worker = 'secretary_worker_ci'
           $password = 'T09-ci-Safe1!'
-          net user $worker $password /add | Out-Host
-          if ($LASTEXITCODE -ne 0) { throw 'could not provision Windows test Worker account' }
+          $nodeBinary=Join-Path $env:RUNNER_TEMP 'w03-worker-node.exe'
+          go build -o $nodeBinary ./cmd/secretary-node
+          if ($LASTEXITCODE -ne 0) { throw 'could not build Windows Node for installer' }
+          $installData=Join-Path $env:RUNNER_TEMP 'w03-worker-install-node'
+          $installWorkspace=Join-Path $env:RUNNER_TEMP 'w03-worker-install-workspace'
+          $installHome=Join-Path $env:RUNNER_TEMP 'w03-worker-install-home'
+          New-Item -ItemType Directory -Path $installData,$installWorkspace -Force | Out-Null
+          & ./scripts/install-windows-node.ps1 -NodeDataDir $installData -Workspace $installWorkspace -WorkerHome $installHome -WorkerUsername $worker -NodeBinary $nodeBinary
+          if ($LASTEXITCODE -ne 0) { throw 'supported Worker install failed' }
+          $password=(Get-Content -LiteralPath (Join-Path $installData 'worker-account.json') -Raw | ConvertFrom-Json).password
           $principal = "$($env:COMPUTERNAME)\$worker"
           $workerHome = Join-Path $env:RUNNER_TEMP 't09-worker-home'
           $workspace = Join-Path $env:RUNNER_TEMP 't09-worker-workspace'
@@ -119,7 +139,9 @@ jobs:
           go-version-file: go.mod
           cache: true
       - name: Windows tray live status and lifecycle tests
-        run: go test ./cmd/secretary-tray -run 'TestW02|TestThemeSelection|TestStopWithoutOwnedNode|TestManagedNodeLifecycleAndUnrelatedProcess' -count=1 -timeout=10m -v
+        run: go test ./cmd/secretary-tray -run 'TestW02|TestW03|TestThemeSelection|TestStopWithoutOwnedNode|TestManagedNodeLifecycleAndUnrelatedProcess|TestActualTraySecondLaunchDoesNotSpawnNode' -count=1 -timeout=10m -v
+      - name: Windows tray login, logs and integration tests
+        run: go test ./cmd/secretary-tray -run 'TestW03|TestActualTraySecondLaunchDoesNotSpawnNode|TestManagedNodeLifecycleAndUnrelatedProcess' -count=1 -timeout=10m -v
       - name: Windows tray and Node builds
         run: |
           go build ./cmd/secretary-node

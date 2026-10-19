@@ -199,7 +199,7 @@ func TestW02HarnessTransitionsAndFailureClosed(t *testing.T) {
 }
 func TestW02CompactLayoutAndTheme(t *testing.T) {
 	rows:=buildMenu(true,false,liveStatus{Harnesses:[]harnessRow{{Name:"codex"}}})
-	if menuHeight(rows)!=8+24*5+9+4 {t.Fatalf("unexpected height %d",menuHeight(rows))}
+	if menuHeight(rows)!=8+24*7+9+4 {t.Fatalf("unexpected height %d",menuHeight(rows))}
 	if !themeIsDark(0,nil) || themeIsDark(1,nil) {t.Fatal("theme mismatch")}
 }
 
