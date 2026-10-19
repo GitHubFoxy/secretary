@@ -214,7 +214,7 @@ jobs:
               $expected='CI_NEW_TRAY_OWNED_NODE_ROLLBACK'
             }
             if (-not $caseText.Contains($inject)) { throw "Missing $scenario fault injection seam" }
-            if ($scenario -eq 'shutdown-wait' -and -not (Get-Process -Id $runningTray.Id -ErrorAction SilentlyContinue)) { throw 'Shutdown wait fixture requires live original tray' }
+            if ($scenario -eq 'shutdown-wait' -and @((Get-CimInstance Win32_Process -Filter "Name='secretary-tray.exe'") | Where-Object { $_.ExecutablePath -eq $originalTarget }).Count -ne 1) { throw 'Shutdown wait fixture requires live original tray' }
             $caseText=$caseText.Replace($inject,$replacement)
             [IO.File]::WriteAllText($caseScript,$caseText)
             $caseArchive=Join-Path $env:RUNNER_TEMP ('install07-'+$scenario+'.zip')
