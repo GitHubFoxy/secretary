@@ -17,6 +17,7 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
 	"github.com/beruseruko/secretary/internal/nativeexec"
+	"github.com/beruseruko/secretary/internal/traystatus"
 )
 
 var invalidNodeName = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
@@ -223,7 +224,7 @@ func main() {
 	if statusPath := os.Getenv("SECRETARY_NODE_TRAY_STATUS_FILE"); statusPath != "" {
 		defer os.Remove(statusPath)
 		daemon.StatusChanged = func(connected bool, inventory core.HarnessInventorySnapshot) {
-			_ = node.WriteTrayStatusSnapshot(statusPath, connected, inventory)
+			_ = traystatus.Write(statusPath, connected, inventory)
 		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), nodeShutdownSignals()...)
