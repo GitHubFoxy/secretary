@@ -41,6 +41,7 @@ check() {
     STATE="$2/state"
     ENV_FILE="$STATE/environment"
     BIN="$2/bin"
+    NODE_BIN="$BIN/secretary-node"
     configured_harness() { print codex; }
     native_harness_ready() { return 0; }
     doctor
