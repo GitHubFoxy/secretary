@@ -167,7 +167,10 @@ func main() {
 		fmt.Println("native Worker security preflight passed")
 		return
 	}
-	workspaces, err := deployment.ProtocolWorkspaces()
+	releaseNode, err := claimNodeInstance(*dataDir)
+ if err!=nil {log.Fatalf("Node ownership: %v",err)}
+ defer releaseNode()
+ workspaces, err := deployment.ProtocolWorkspaces()
 	if err != nil {
 		log.Fatalf("load Node workspace mappings: %v", err)
 	}

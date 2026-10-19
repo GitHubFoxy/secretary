@@ -4,8 +4,10 @@ package main
 
 import (
 	"crypto/rand"
+ "crypto/sha256"
+ "encoding/hex"
+ "strings"
 	"flag"
-	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -429,6 +431,7 @@ func (a *trayApp) start() {
 	a.lock.Lock()
 	defer a.lock.Unlock()
 	if a.node != nil || a.exiting { return }
+	if active,err:=existingNodeForData(a.dataDir);err!=nil {a.lastError=err.Error();return} else if active {a.lastError="A headless Node already uses this data directory";return}
 	file := os.Getenv("SECRETARY_TRAY_NODE_EXE")
 	if file == "" {
 		exe, err := os.Executable()
@@ -537,4 +540,16 @@ func equalHarnesses(a,b []harnessRow) bool {
 	if len(a)!=len(b){return false}
 	for i:=range a {if a[i]!=b[i]{return false}}
 	return true
+}
+
+func existingNodeForData(dataDir string)(bool,error) {
+ absolute,err:=filepath.Abs(dataDir)
+ if err!=nil{return false,err}
+ digest:=sha256.Sum256([]byte(strings.ToLower(filepath.Clean(absolute))))
+ name:="Local\\SecretaryNodeData-"+hex.EncodeToString(digest[:16])
+ ptr:=wide(name)
+ handle,_,callErr:=k.NewProc("OpenMutexW").Call(0x00100000,0,uintptr(unsafe.Pointer(ptr)))
+ if handle!=0 {closeHandle.Call(handle);return true,nil}
+ if callErr==syscall.ERROR_FILE_NOT_FOUND {return false,nil}
+ return false,fmt.Errorf("check Node process ownership: %w",callErr)
 }
