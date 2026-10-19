@@ -557,3 +557,22 @@ func (d *Daemon) reconnectMax() time.Duration {
 	}
 	return 30 * time.Second
 }
+
+type TrayHarnessStatus struct {
+	Name string `json:"name"`
+	Ready bool `json:"ready"`
+}
+
+func WriteTrayStatusSnapshot(path string, connected bool, inventory core.HarnessInventorySnapshot) error {
+	payload := struct {
+		Connected bool `json:"connected"`
+		ObservedAt time.Time `json:"observed_at"`
+		Harnesses []TrayHarnessStatus `json:"harnesses"`
+	}{Connected: connected, ObservedAt: time.Now().UTC()}
+	for _, instance := range inventory.Instances {
+		payload.Harnesses = append(payload.Harnesses, TrayHarnessStatus{Name: string(instance.Kind), Ready: instance.Available()})
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil { return err }
+	return os.WriteFile(path, encoded, 0o600)
+}
