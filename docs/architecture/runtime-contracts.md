@@ -118,3 +118,8 @@ Web получает canonical entry сразу. Telegram отправляет a
 - A Secretary Worker action carries the image IDs from its server-owned canonical inbound Web entry, resolved through the durable Secretary turn and input identity. The model's chosen `spawn_worker.intent` or `message_worker.text` is not the source of truth for attachments; the Worker service binds those IDs to the stored action input before dispatch, so queued, continued and replayed attempts retain them. Missing or unauthorized references fail explicitly.
 - Local Worker Node dispatch and steering use the same verified image preparation and image-capability checks as remote execution. The local Artifact fetcher reads original owner-scoped bytes from the Server store, without a new transport stack.
 - The Web attachment control stores an unfinished upload's idempotency key against the filename, size and SHA-256 in session storage. Re-selecting the same file after a lost response reuses that key; a confirmed upload clears it. Other files and new intentional uploads receive new keys.
+
+
+## Server video runtime dependency
+
+An installed binary-release Server resolves FFmpeg and FFprobe from its own release directory, verifies the recorded pair version and SHA-256 in VIDEO-TOOLS.json, and fails the queued conversion if either executable is missing, incompatible or tampered with. A source Server can use a compatible system pair or explicit SECRETARY_FFMPEG and SECRETARY_FFPROBE paths together. The Node runtime never resolves the Server pair. The VideoJob remains a server-owned bounded asynchronous job; failed conversion retains the source Artifact and does not create false sample Artifacts. The existing 0.25–4 FPS, 1–16 frames, 1–60 seconds and 1–120-second timeout limits remain unchanged.

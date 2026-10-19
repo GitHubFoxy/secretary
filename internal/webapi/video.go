@@ -54,7 +54,9 @@ func (p ffmpegVideoProcessor) Process(ctx context.Context, original []byte, opti
 	defer os.RemoveAll(dir)
 	input:=filepath.Join(dir,"original.video")
 	if err=os.WriteFile(input,original,0600);err!=nil{return nil,err}
-	probe:=exec.CommandContext(ctx,"ffprobe","-v","error","-select_streams","v:0","-show_entries","stream=codec_type,width,height,duration:format=duration","-of","json",input)
+	ffmpegPath,ffprobePath,err:=resolveVideoTools(ctx)
+	if err!=nil{return nil,fmt.Errorf("video: FFmpeg/FFprobe dependency unavailable: %w",err)}
+	probe:=exec.CommandContext(ctx,ffprobePath,"-v","error","-select_streams","v:0","-show_entries","stream=codec_type,width,height,duration:format=duration","-of","json",input)
 	raw,err:=probe.Output()
 	if err!=nil{return nil,fmt.Errorf("video: ffprobe failed: %w",err)}
 	var info struct {
@@ -88,7 +90,7 @@ func (p ffmpegVideoProcessor) Process(ctx context.Context, original []byte, opti
 	// decoded source frames at the configured minimum interval, retaining their
 	// actual VFR presentation timestamps instead of fabricating i/FPS times.
 	filter:="settb=1/1000,setpts=PTS-STARTPTS,select='isnan(prev_selected_t)+gte(t-prev_selected_t\\,"+interval+")',scale=w='min(960,iw)':h='min(960,ih)':force_original_aspect_ratio=decrease"
-	command:=exec.CommandContext(ctx,"ffmpeg","-nostdin","-hide_banner","-loglevel","error","-threads","1","-i",input,
+	command:=exec.CommandContext(ctx,ffmpegPath,"-nostdin","-hide_banner","-loglevel","error","-threads","1","-i",input,
 		"-map","0:v:0","-an","-vf",filter,"-frames:v",strconv.Itoa(count+1),"-fps_mode","passthrough","-enc_time_base","1/1000","-frame_pts","1","-c:v","libwebp","-quality","70",pattern)
 	output,err:=command.CombinedOutput()
 	if err!=nil{return nil,fmt.Errorf("video: transcoding failed: %w (%s)",err,strings.TrimSpace(string(output)))}
