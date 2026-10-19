@@ -123,9 +123,14 @@ func (s *LocalStore) persistLocked() error {
 	if err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	file, err := os.OpenFile(tmp, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	file, err := os.CreateTemp(filepath.Dir(s.path), filepath.Base(s.path)+".tmp-*")
 	if err != nil {
+		return err
+	}
+	tmp := file.Name()
+	defer os.Remove(tmp)
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
 		return err
 	}
 	if _, err := file.Write(encoded); err != nil {
