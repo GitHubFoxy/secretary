@@ -45,6 +45,11 @@ func main() {
 	var requestedWorkspaces workspaceEdits
 	flag.Var(&requestedWorkspaces, "workspace", "project=absolute-path mapping to add or replace in deployment config")
 	flag.Parse()
+	if _, err := node.ReadCodexPairInventory("node"); err == nil {
+		if err := node.ApplyCodexPairInventory("node"); err != nil { log.Fatalf("Codex pair: %v", err) }
+	} else if !os.IsNotExist(err) {
+		log.Fatalf("Codex pair: %v", err)
+	}
 	if *artifactMCP {
 		if err := artifactmcp.Serve(context.Background()); err != nil {
 			log.Fatal(err)
