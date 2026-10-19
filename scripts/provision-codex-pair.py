@@ -96,14 +96,27 @@ def record(path, provenance):
         "provenance": provenance,
     }
 
+def readiness(codex, acp, binary):
+    if binary is None:
+        fail("provide the packaged secretary-node executable for native ACP protocol validation")
+    executable = binary.resolve(strict=True)
+    env = os.environ.copy()
+    env["CODEX_PATH"] = str(codex)
+    env["SECRETARY_CODEX_COMMAND"] = str(codex)
+    env["SECRETARY_ACP_COMMAND"] = str(acp)
+    result = subprocess.run([str(executable), "--check-codex-readiness"], env=env, capture_output=True, text=True, timeout=45)
+    if result.returncode != 0:
+        fail("native Codex/ACP initialize and session/new readiness failed; existing inventory unchanged")
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["install", "doctor", "show", "env"])
+    parser.add_argument("action", choices=["install", "doctor", "show", "env", "readiness"])
     parser.add_argument("--scope", choices=["server", "node"], required=True)
     parser.add_argument("--root", type=Path, default=Path.home() / ".local" / "share" / "secretary" / "native")
     parser.add_argument("--codex", type=Path)
     parser.add_argument("--acp", type=Path)
     parser.add_argument("--upgrade", action="store_true")
+    parser.add_argument("--readiness-bin", type=Path)
     args = parser.parse_args()
     root = args.root.resolve()
     inventory = root / args.scope / "codex-pair.json"
@@ -115,7 +128,12 @@ def main():
             fail("invalid inventory")
         for field in ("codex", "acp"):
             verify(data[field])
-        if args.action == "env":
+        if args.action == "readiness":
+            readiness(Path(data["codex"]["path"]), Path(data["acp"]["path"]), args.readiness_bin)
+            data["compatibility"]["validated"] = True
+            write_inventory(inventory, data)
+            print("Codex ACP native readiness validated for " + args.scope)
+        elif args.action == "env":
             print("CODEX_PATH=" + data["codex"]["path"])
             print("SECRETARY_ACP_COMMAND=" + data["acp"]["path"])
         elif args.action == "doctor":
@@ -183,6 +201,9 @@ def main():
         previous = json.loads(inventory.read_text())
         for field in ("codex", "acp"):
             verify(previous[field])
+    if args.upgrade:
+        readiness(codex, acp, args.readiness_bin)
+        data["compatibility"]["validated"] = True
     write_inventory(inventory, data)
     print(json.dumps(data, indent=2))
     if not status(codex):
