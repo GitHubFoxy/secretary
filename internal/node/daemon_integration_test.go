@@ -58,10 +58,20 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	}
 	defer localStore.Close()
 	runtime := &daemonCountingRuntime{}
+	statusPath := filepath.Join(t.TempDir(), "live-status.json")
+	statusWriter := NewLiveStatusWriter(statusPath)
+	readLive := func() (liveSnapshot, bool) {
+		data, err := os.ReadFile(statusPath)
+		if err != nil { return liveSnapshot{}, false }
+		var snapshot liveSnapshot
+		if json.Unmarshal(data, &snapshot) != nil { return liveSnapshot{}, false }
+		return snapshot, true
+	}
 	daemon := &Daemon{
 		Identity:           identity,
 		Store:              localStore,
 		Runtime:            runtime,
+		Status:             statusWriter,
 		Inventory:          daemonStaticInventory{snapshot: inventory},
 		Capacity:           2,
 		HeartbeatInterval:  20 * time.Millisecond,
@@ -88,6 +98,11 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	waitFor(t, ctx, "Node heartbeat", func() bool {
 		status, err := manager.Status(context.Background(), "macbook")
 		return err == nil && status.Online && !status.LastHeartbeatAt.IsZero() && status.Inventory.Node == "macbook" && len(status.Inventory.Instances) == 1
+	})
+
+	waitFor(t, ctx, "live connected harness snapshot", func() bool {
+		snapshot, ok := readLive()
+		return ok && snapshot.Server == "connected" && len(snapshot.Harnesses) == 1 && snapshot.Harnesses[0].Kind == "fx" && snapshot.Harnesses[0].Status == "ready"
 	})
 
 	unauthorized, err := http.NewRequestWithContext(ctx, http.MethodGet, httpServer.URL+"/v1/nodes", nil)
@@ -199,6 +214,10 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	if starts := runtime.starts.Load(); starts != 1 {
 		t.Fatalf("reconnect restarted existing Attempt; starts=%d", starts)
 	}
+	waitFor(t, ctx, "live status restored after reconnect", func() bool {
+		snapshot, ok := readLive()
+		return ok && snapshot.Server == "connected" && len(snapshot.Harnesses) == 1 && snapshot.Harnesses[0].Status == "ready"
+	})
 
 	revoked := revokeHTTP(t, ctx, httpServer, "macbook")
 	if !revoked.Revoked || revoked.Online || !revoked.Draining {
@@ -207,6 +226,10 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	waitFor(t, ctx, "revoked Node stays offline", func() bool {
 		status, err := manager.Status(context.Background(), "macbook")
 		return err == nil && status.Revoked && !status.Online
+	})
+	waitFor(t, ctx, "live disconnected after revocation", func() bool {
+		snapshot, ok := readLive()
+		return ok && snapshot.Server != "connected" && len(snapshot.Harnesses) == 0
 	})
 	if err := manager.SendCommand(ctx, "macbook", command); !errors.Is(err, core.ErrNodeRevoked) {
 		t.Fatalf("command to revoked Node err=%v", err)
