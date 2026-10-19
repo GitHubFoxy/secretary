@@ -93,4 +93,17 @@ final class NodeLifecycleTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
         XCTAssertThrowsError(try NodeLifecycle(executable: URL(fileURLWithPath: "/bin/sleep"), directory: directory))
     }
+
+    func testCompanionRelaunchReleasesSingleInstanceLock() throws {
+        let directory = try temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        var first: NodeLifecycle? = try NodeLifecycle(executable: URL(fileURLWithPath: "/bin/sleep"), directory: directory)
+        XCTAssertNotNil(first)
+        XCTAssertThrowsError(try NodeLifecycle(executable: URL(fileURLWithPath: "/bin/sleep"), directory: directory)) {
+            XCTAssertEqual($0 as? NodeLifecycleError, .alreadyOpen)
+        }
+        first = nil
+        let relaunched = try NodeLifecycle(executable: URL(fileURLWithPath: "/bin/sleep"), directory: directory)
+        XCTAssertEqual(relaunched.state, .stopped)
+    }
 }
