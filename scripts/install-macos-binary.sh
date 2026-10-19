@@ -88,7 +88,7 @@ if [[ -d "$app" ]]; then
   new_id="$(plutil -extract CFBundleIdentifier raw -o - "$target/Secretary Node.app/Contents/Info.plist")"
   [[ "$existing_id" == "$new_id" ]] || fail "Another application occupies $app"
 fi
-app_stage="$HOME/Applications/.secretary-node-$version-$arch.stage"
+app_stage="$HOME/Applications/.secretary-node-$version-$arch.staging.app"
 [[ ! -e "$app_stage" ]] || fail "Staging app already exists at $app_stage"
 cp -R "$target/Secretary Node.app" "$app_stage"
 codesign --verify "$app_stage" || fail "Staged Node.app did not verify"
