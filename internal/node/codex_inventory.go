@@ -83,3 +83,9 @@ func ApplyCodexPairInventory(scope string) error {
  if err := os.Setenv("SECRETARY_CODEX_COMMAND", pair.Codex.Path); err != nil { return err }
  return os.Setenv("SECRETARY_ACP_COMMAND", pair.ACP.Path)
 }
+
+func DisableUnselectedCodexRuntime() {
+ _ = os.Setenv("CODEX_PATH", "/__secretary_codex_inventory_unavailable__")
+ _ = os.Setenv("SECRETARY_CODEX_COMMAND", "/__secretary_codex_inventory_unavailable__")
+ _ = os.Setenv("SECRETARY_ACP_COMMAND", "/__secretary_codex_acp_inventory_unavailable__")
+}
