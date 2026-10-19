@@ -101,7 +101,7 @@ SECRETARY_BINARY_STAGE_BIN="$stage/setup-bin" "$target/secretary" setup --non-in
 
 backup="$stage/previous-app"
 activated=false
-created_links=""
+created_links=()
 pointer_stage="$HOME/.local/share/secretary/.current.$$.new"
 activation_rollback() {
   if [[ "$activated" != true ]]; then
@@ -109,7 +109,7 @@ activation_rollback() {
       rm -f "$current_release"
       if [[ -n "$previous_release" ]]; then ln -s "$previous_release" "$current_release"; fi
     fi
-    for created in $created_links; do rm -f "$created"; done
+    for created in "${created_links[@]}"; do rm -f "$created"; done
     if [[ -d "$backup" ]]; then
       rm -rf "$app"
       mv "$backup" "$app"
@@ -126,7 +126,7 @@ for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migr
     dest="$current_release/bin/$executable"
     [[ "$executable" == secretary ]] && dest="$current_release/secretary"
     ln -s "$dest" "$path" || fail "Cannot activate $executable"
-    created_links="$created_links $path"
+    created_links+=("$path")
   fi
 done
 ln -s "$target" "$pointer_stage" || fail "Cannot stage release switch"
