@@ -19,7 +19,6 @@ type Daemon struct {
 	Store     *LocalStore
 	Runtime   Runtime
 	Inventory InventorySource
-	// StatusChanged observes the transport and last valid harness inventory; nil by default.
 	StatusChanged func(bool, core.HarnessInventorySnapshot)
 
 	Capacity           int
@@ -371,9 +370,11 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 				continue
 			}
 			if err := refreshed.Validate(); err != nil || refreshed.Node != d.Identity.Node {
+				if d.StatusChanged != nil { d.StatusChanged(true, core.HarnessInventorySnapshot{}) }
 				continue
 			}
 			if err := execution.SetInventory(refreshed); err != nil {
+				if d.StatusChanged != nil { d.StatusChanged(true, core.HarnessInventorySnapshot{}) }
 				continue
 			}
 			if err := d.flushOutbox(ctx, connection, &sentThrough); err != nil {
