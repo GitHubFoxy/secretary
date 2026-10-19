@@ -141,7 +141,7 @@ func codexBinaryRecord(path, provenance string) (CodexBinaryRecord, error) {
  if err != nil { return CodexBinaryRecord{}, err }
  info, err := os.Stat(target)
  if err != nil { return CodexBinaryRecord{}, err }
- if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode()&0111==0) || (runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(target), ".exe") && !strings.EqualFold(filepath.Ext(target), ".cmd")) { return CodexBinaryRecord{}, fmt.Errorf("not executable: %s", target) }
+ if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode()&0111==0) || (runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(target), ".exe")) { return CodexBinaryRecord{}, fmt.Errorf("native Codex pair requires direct executable (Windows .exe only; .cmd and .ps1 launchers are not supported): %s", target) }
  contents, err := os.ReadFile(target)
  if err != nil { return CodexBinaryRecord{}, err }
  sum := sha256.Sum256(contents)
