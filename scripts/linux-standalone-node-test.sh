@@ -38,12 +38,12 @@ export HOME="$home" PATH="$home/mock:$home/provider:$PATH" XDG_RUNTIME_DIR="$hom
 export SECRETARY_RELEASE_BASE="file://$dist" SECRETARY_VERSION=0.0.0-ci SECRETARY_NODE_PAIRING_TOKEN=owner-approved-test-token
 installer="$root/scripts/install-linux-standalone-node.sh"
 bash "$installer" --server https://secretary.example.test --name remote-ci --harness claude_code
-state="$HOME/.local/share/secretary"
-[[ -L "$state/standalone-node/current" ]]
+state="$HOME/.local/share/secretary/standalone-node"
+[[ -L "$state/current" ]]
 [[ -f "$state/node/config.json" && -f "$state/node/enrollment.env" ]]
-[[ ! -f "$state/secretary.db" && ! -f "$state/environment" && ! -f "$state/config.toml" ]]
+[[ ! -f "$HOME/.local/share/secretary/secretary.db" && ! -f "$HOME/.local/share/secretary/environment" && ! -f "$HOME/.local/share/secretary/config.toml" ]]
 [[ ! -f "$HOME/.config/systemd/user/secretary.service" ]]
-[[ ! -e "$state/standalone-node/current/bin/secretaryd" ]]
+[[ ! -e "$state/current/bin/secretaryd" ]]
 grep -Fq '"standalone": true' "$state/node/config.json" || grep -Fq '"standalone":true' "$state/node/config.json"
 grep -Fq '"server_url": "https://secretary.example.test"' "$state/node/config.json" || grep -Fq '"server_url":"https://secretary.example.test"' "$state/node/config.json"
 mkdir -p "$state/node/data"
@@ -69,10 +69,10 @@ archive="$dist/secretary-v0.0.1-ci-linux-$arch.tar.gz"
 cp "$archive" "$home/archive.before"
 printf 'corruption\n' >> "$archive"
 if bash "$installer" --harness claude_code 2>/dev/null; then echo "Corrupt archive accepted" >&2; exit 1; fi
-[[ "$(readlink "$state/standalone-node/current")" == *0.0.0-ci* ]]
+[[ "$(readlink "$state/current")" == *0.0.0-ci* ]]
 cp "$home/archive.before" "$archive"
 bash "$installer" --harness claude_code
-[[ "$(readlink "$state/standalone-node/current")" == *0.0.1-ci* ]]
+[[ "$(readlink "$state/current")" == *0.0.1-ci* ]]
 cmp "$home/config.before" "$state/node/config.json"
 cmp "$home/enrollment.before" "$state/node/enrollment.env"
 [[ "$(cat "$state/node/data/session-canary")" == native-session ]]
