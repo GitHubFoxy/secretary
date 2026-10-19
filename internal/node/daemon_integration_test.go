@@ -285,13 +285,13 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	invalidSince:=statusIndex()
 	statusSource.set(core.HarnessInventorySnapshot{Node:"wrong",ObservedAt:time.Now().UTC()},nil)
 	checkTray("W02 invalid inventory through daemon snapshot and tray",invalidSince,empty)
-	restoreSince=statusIndex()
-	statusSource.set(inventory,nil)
-	checkTray("W02 ready before failed discovery",restoreSince,ready)
 	waitFor(t, ctx, "live status cleared after invalid inventory", func() bool {
 		snapshot, ok := readLive()
 		return ok && snapshot.Server == "connected" && len(snapshot.Harnesses) == 0
 	})
+	restoreSince=statusIndex()
+	statusSource.set(inventory,nil)
+	checkTray("W02 ready before failed discovery",restoreSince,ready)
 	failedSince:=statusIndex()
 	statusSource.set(core.HarnessInventorySnapshot{},errors.New("probe failed"))
 	checkTray("W02 failed discovery through daemon snapshot and tray",failedSince,empty)
