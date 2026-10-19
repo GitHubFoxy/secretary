@@ -1,42 +1,51 @@
-# Install 03 — native Codex CLI and ACP pair
+# Install 03 — native Codex CLI + ACP provisioning
 
-This PR provisions upstream Codex CLI 0.163.0 and codex-acp 0.16.0 from version-pinned native release archives, with SHA-256 comparison before extraction. Versions are release-selection pins, not evidence of live compatibility. Runtime capability is determined by the existing native ACP probe (initialize, session/new, loadSession, steering, model catalog), without a model call.
+## Selection and ownership
 
-## Scope and state
+`secretary setup --interactive` offers Codex on fresh supported macOS/Linux. `secretary setup --harness codex` selects it explicitly. Provisioning uses the packaged Go `secretary-node` binary; it requires no Node.js, npm, global npm packages, Python or Go compiler. Supported release platforms: macOS arm64/amd64 and Linux arm64/amd64 (Linux ACP artifact requires glibc). Codex CLI is pinned to `0.163.0` and `codex-acp` to `0.16.0`, each with hard-coded upstream release URL and SHA-256. Successful archive checksum alone is not compatibility proof.
 
-The Server and each Execution node must own independent pinned inventories. The current implementation uses `~/.local/share/secretary/native/{server,node}/codex-pair.json` for the local Server and local Node. Separately installed remote Nodes resolve their own host-local `node` inventory. The selected record contains absolute paths, real paths, observed versions, SHA-256, managed/external provenance, selected harness and protocol validation status. CLI/Node processes verify the record before activation, including symlink targets and digest. Missing, moved or altered executables fail closed. Native authentication/history/config are outside managed directories and not modified.
+Each host stores a Server inventory and an Execution node inventory independently at `~/.local/share/secretary/native/{server,node}/codex-pair.json`. Remote Nodes use their own host-local inventory, not Server paths. Each record contains harness kind, effective absolute executable paths, symlink-resolved paths, observed versions, SHA-256, managed/external provenance and ACP protocol validation state. Private native credential/config/history locations remain owned by Codex, not Secretary. Existing Worker bindings and session IDs are not rewritten.
 
-`secretary setup --harness codex` provisions a Server and Node pair, runs native ACP readiness under the owner's existing Codex authorization and records successful protocol validation. `secretary doctor`, `secretary node doctor`, `secretary serve` and `secretary node serve` use those selected paths. Native owner authorization uses `codex login` and `codex login status`. Native provider/quota issues are not repaired by Secretary. Claude-only setup does not call the Codex provisioner, and failed explicit Codex selection does not fall back to Claude.
+## Native authorization and readiness
 
-## Explicit native inventory operations
+Native `codex login status` distinguishes the owner authorization prerequisite. On a new unauthenticated host, noninteractive setup can stage the binaries and prints the selected `codex login` instruction; runtime remains unavailable until native authorization and ACP protocol validation. Authorized setup and `secretary doctor` perform native ACP `initialize` and `session/new`, checking protocol version, loadSession, steering and model availability, then atomically record the validated pair. `secretary node doctor` independently validates and records the Node pair. Restart running Server/Node processes after authorizing a previously unready pair. Missing native authorization or exhausted provider quota is not an installation error Secretary can repair. No custom login, provider routing or alternate-harness fallback is implemented.
+
+`secretary serve`, `secretary node serve`, ordinary process starts and packaged native Execution node startup validate the selected inventory rather than silently following PATH. A damaged inventory makes Codex unavailable, not Claude unavailable. Explicit Claude-only setup never provisions Codex.
+
+## Inspect, adopt, upgrade and rollback
+
+The following commands are run on the respective Server/Node host with its packaged `secretary-node`. Run them only when the owner intends that operation.
 
 ```sh
-python3 scripts/provision-codex-pair.py install --scope server
-python3 scripts/provision-codex-pair.py install --scope node
-python3 scripts/provision-codex-pair.py show --scope server
-python3 scripts/provision-codex-pair.py doctor --scope server
-python3 scripts/provision-codex-pair.py readiness --scope server --readiness-bin /absolute/path/to/secretary-node
-python3 scripts/provision-codex-pair.py install --scope node --codex /absolute/path/to/codex --acp /absolute/path/to/codex-acp
-python3 scripts/provision-codex-pair.py install --scope node --upgrade --codex /absolute/path/to/new-codex --acp /absolute/path/to/new-codex-acp --readiness-bin /absolute/path/to/secretary-node
-python3 scripts/provision-codex-pair.py rollback --scope node --readiness-bin /absolute/path/to/secretary-node
+secretary-node --codex-pair-action=install --codex-pair-scope=server
+secretary-node --codex-pair-action=install --codex-pair-scope=node
+secretary-node --codex-pair-action=env --codex-pair-scope=server
+secretary-node --codex-pair-action=show --codex-pair-scope=node
+secretary-node --codex-pair-action=doctor --codex-pair-scope=node
+secretary-node --codex-pair-action=readiness --codex-pair-scope=node
+secretary-node --codex-pair-action=install --codex-pair-scope=node --codex-pair-cli=/absolute/path/to/codex --codex-pair-acp=/absolute/path/to/codex-acp
+secretary-node --codex-pair-action=upgrade --codex-pair-scope=node --codex-pair-cli=/absolute/path/to/new-codex --codex-pair-acp=/absolute/path/to/new-codex-acp
+secretary-node --codex-pair-action=rollback --codex-pair-scope=node
 ```
 
-A half-selected external pair is rejected. A repeated installation keeps the selected pair. Upgrade validates the proposed native protocol before atomic inventory replacement; the previous inventory is retained for explicit rollback. Existing native Codex credentials and session state are not moved or rewritten. Updating the selected inventory does not relocate already-running Worker bindings.
+Explicitly selecting an external pair does not mutate it, its global configuration or credentials. Selecting one binary without the other is rejected. A selected pair remains pinned on repeat setup even when PATH changes. A moved binary, replaced bytes, unsupported host, partial managed release, interrupted download or failed native protocol preflight stops activation with a visible diagnostic.
 
-## Checks to run (not executed for this PR)
+Upgrade checks the proposed pair with the actual owner authorization and ACP transport before atomically replacing the inventory. The previous record is kept under `codex-pair.previous.json` for explicit rollback. Old managed binary directories are retained. Running native Workers are not restarted or migrated as an upgrade side effect. If a provider/harness is unavailable, resolve authorization or binary compatibility before retrying.
+
+## Deterministic verification commands (not executed)
 
 ```sh
+go test ./internal/node ./cmd/secretary-node ./cmd/secretaryd ./internal/config -count=1
 python3 -m unittest discover -s scripts -p 'test-provision-codex-pair.py' -v
-go test ./internal/node ./cmd/secretary-node ./cmd/secretaryd ./internal/config
 bash -n scripts/install-linux-binary.sh scripts/install-macos-binary.sh scripts/package-linux-binary-release.sh scripts/package-macos-binary-release.sh
 bash scripts/macos-release-contract-test.sh
 ./scripts/phase4-release-gate.sh
 ```
 
-## Real manual native acceptance (not performed)
+Native Go unit tests cover external adoption, repeat setup, moved paths, executable modifications, failed upgrade with preserved inventory, SHA-256 comparison and incomplete download. Python source fixtures remain optional developer checks, not an installed/runtime dependency. Binary installer release fixtures and Go integration tests must be checked by CI. Tests must not include actual native credentials.
 
-On a fresh supported macOS arm64, macOS x86_64, Linux aarch64 and Linux x86_64 account without Node/npm, install Secretary and select Codex. Record `codex --version`, `codex-acp --version`, exact real paths and SHA-256 for both independently for Server and each remote/local Execution node. Record the OS version and libc on Linux. Run the recorded binary's `login status`; if unauthenticated, have the owner run its native `login`. Then run `secretary doctor` and `secretary node doctor`. Use the real Web conversation to dispatch Task → native Worker → terminal Result; send Follow-up to the same Worker and capture a second Result. Also verify session resume, no duplicate Result, quota/auth separation, service restart, pairing, version mismatch, moved binary, interrupted artifact download, reinstallation, explicit upgrade and rollback, and Claude-only install. Keep live evidence separate from deterministic fixtures.
+## Manual live acceptance (not executed)
 
-## Known limitation requiring follow-up verification
+Perform a clean install on macOS arm64, macOS amd64, Linux arm64 and Linux amd64, without Node/npm/Python. Choose Codex, verify native binary provenance for both Server and Node, run the exact selected executable's `login status`, authorize with native `codex login`, and run `secretary doctor` and `secretary node doctor`. Capture each executable's absolute path, SHA-256 and `--version`; capture selected versions and protocol handshake separately. Under that authorized account, start real Server and Execution node, pair Node, create a Task via Web/Telegram, verify native Worker Result exactly once, then send Follow-up to the same Worker and capture the next Result. Verify restart/resume, unsupported steering, native quota/auth error separation, moved/changed binaries, conflicting global PATH, simulated interrupted download, repeated setup, manual upgrade, rollback and Claude-only setup.
 
-No authorized Codex Task/Result was executed as part of this implementation. macOS clean-host availability of Python 3, script installation through binary packages, managed upgrade recovery and the macOS native Node.app environment must be validated separately; do not claim a ready-to-use no-prerequisite installation without those checks.
+This documentation is not live evidence: authorized Task/Result, subscription/quota and clean-host acceptance remain manual gates of #89 and this ticket. Do not report a successful live run without the actual host, revision, binary versions and Result record.
