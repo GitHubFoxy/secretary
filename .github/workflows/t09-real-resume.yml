@@ -17,7 +17,6 @@ jobs:
     timeout-minutes: 15
     env:
       GOFLAGS: -p=1
-      T09_REAL_CODEX: ${{ runner.temp }}/t09-codex/node_modules/@openai/codex/bin/codex.js
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -38,4 +37,7 @@ jobs:
           sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0
           sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0-linux-x64 @openai/codex-linux-x64
       - name: Start, persist, and resume the SAME Codex session in native sandbox
-        run: go test ./internal/nativeexec -run '^TestT09RealCodexPersistedSessionResume$' -count=1 -v -timeout 120s
+        env:
+          T09_REAL_CODEX: ${{ runner.temp }}/t09-codex/node_modules/@openai/codex/bin/codex.js
+        run: go test ./internal/nativeexec -run '^TestT09RealCodexPersistedSessionResume
+ -count=1 -v -timeout 120s
