@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 	"time"
@@ -232,6 +233,8 @@ func checked(p *syscall.LazyProc, args ...uintptr) (uintptr, error) {
 }
 
 func main() {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	mutexName := wide("Local\\SecretaryNodeTraySingleton")
 	single, _, callErr := createMutex.Call(0, 1, uintptr(unsafe.Pointer(mutexName)))
 	if single == 0 { fmt.Fprintln(os.Stderr, "tray mutex:", callErr); os.Exit(1) }
