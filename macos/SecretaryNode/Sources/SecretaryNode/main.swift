@@ -61,8 +61,16 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func quitNode() {
         quit.isEnabled = false
         timer?.invalidate()
-        controller?.stop {
-            DispatchQueue.main.async { NSApp.terminate(nil) }
+        controller?.stop { [weak self] error in
+            DispatchQueue.main.async {
+                if let error {
+                    self?.status.title = "Node: Stop failed (\(error.localizedDescription))"
+                    self?.statusItem.button?.toolTip = error.localizedDescription
+                    self?.quit.isEnabled = true
+                    return
+                }
+                NSApp.terminate(nil)
+            }
         }
         if controller == nil { NSApp.terminate(nil) }
     }
