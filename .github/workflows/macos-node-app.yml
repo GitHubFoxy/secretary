@@ -32,7 +32,7 @@ jobs:
           login_app="$HOME/Applications/Secretary Node.app/Contents/MacOS/SecretaryNode"
           original_login_status="$("$login_app" --login-item-smoke status)"
           case "$original_login_status" in
-            enabled|notRegistered) ;;
+            enabled|notRegistered|notFound) ;;
             *) echo "Cannot safely restore original login status: $original_login_status" >&2; exit 1 ;;
           esac
           restore_login() {
@@ -46,8 +46,20 @@ jobs:
                 fi
               else
                 if ! "$login_app" --login-item-smoke disable || ! "$login_app" --login-item-smoke verify-disabled; then
-                  echo "::error::Failed to remove test login item and restore original disabled state" >&2
+                  echo "::error::Failed to remove test login item (original status: $original_login_status)" >&2
                   result=1
+                elif [[ "$original_login_status" == notRegistered ]] && [[ "$("$login_app" --login-item-smoke status)" != notRegistered ]]; then
+                  echo "::error::Failed to restore original notRegistered login status" >&2
+                  result=1
+                else
+                  restored_status="$("$login_app" --login-item-smoke status)" || {
+                    echo "::error::Failed to inspect login item after cleanup" >&2
+                    result=1
+                  }
+                  if [[ "$restored_status" != notFound && "$restored_status" != notRegistered ]]; then
+                    echo "::error::Unexpected login status after cleanup: $restored_status" >&2
+                    result=1
+                  fi
                 fi
               fi
             else
