@@ -153,7 +153,7 @@ func TestManageCodexPairValidatedUpgradeAndRollback(t *testing.T) {
 func TestCodexNativeACPProtocolReadinessAndFailedCandidate(t *testing.T) {
  dir:=t.TempDir()
  cli:=filepath.Join(dir,"codex")
- if err:=os.WriteFile(cli,[]byte("#!/bin/sh\\nif [ \\"$1\\" = \\"--version\\" ]; then echo codex-cli 0.163.0; elif [ \\"$1\\" = \\"login\\" ]; then echo Logged in; else exit 4; fi\\n"),0700);err!=nil {t.Fatal(err)}
+ if err:=os.WriteFile(cli,[]byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.163.0; elif [ \"$1\" = \"login\" ]; then echo Logged in; else exit 4; fi\n"),0700);err!=nil {t.Fatal(err)}
  makeACP:=func(name string, valid bool) string {
   t.Helper()
   path:=filepath.Join(dir,name)
@@ -167,7 +167,7 @@ if '--version' in sys.argv:
 for line in sys.stdin:
  req=json.loads(line)
  with open(%q,'a') as log:
-  log.write(req.get('method','')+'\\n')
+  log.write(req.get('method','')+'\n')
  if req.get('method')=='initialize':
   response={'protocolVersion':1,'agentInfo':{'version':'0.16.0'},'agentCapabilities':{'loadSession':%s},'_meta':{'steering':{'supported':True}}}
  elif req.get('method')=='session/new':
