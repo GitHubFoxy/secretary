@@ -11,7 +11,9 @@ final class NodeIntegrationsTests: XCTestCase {
         let menu = NodeMenuPresentation()
         XCTAssertEqual(menu.launchAtLogin.state, .off)
         XCTAssertEqual(menu.openLogs.title, "Open Logs")
-        XCTAssertEqual(menu.menu.items[2].isSeparatorItem, true)
+        XCTAssertTrue(menu.menu.items[2].isSeparatorItem)
+        XCTAssertEqual(menu.menu.items[3].title, "Launch at Login")
+        XCTAssertEqual(menu.menu.items[4].title, "Open Logs")
     }
 
     func testMenuKeepsCompactNativeAppearance() {
