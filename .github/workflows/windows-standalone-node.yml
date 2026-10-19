@@ -122,6 +122,11 @@ jobs:
           $shell=New-Object -ComObject WScript.Shell
           $originalTarget=$shell.CreateShortcut($shortcutPath).TargetPath
           $originalLinkHash=(Get-FileHash $shortcutPath -Algorithm SHA256).Hash
+          $runKey='HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+          New-Item -Path $runKey -Force | Out-Null
+          $originalLogin='"'+$originalTarget+'" --data-dir "'+$data+'"'
+          Set-ItemProperty -Path $runKey -Name 'Secretary Node' -Value $originalLogin
+          if ((Get-ItemProperty -Path $runKey -Name 'Secretary Node').'Secretary Node' -cne $originalLogin) { throw 'Launch at Login baseline registration missing' }
           try {
             & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$componentArchive).AbsoluteUri -ReleaseSHA256 $componentDigest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
             throw 'Corrupt upgrade unexpectedly succeeded'
@@ -168,6 +173,7 @@ jobs:
           $runningTray.Refresh()
           if (-not $runningTray.HasExited) { throw 'Post-shutdown fixture never stopped original tray' }
           if ($shell.CreateShortcut($shortcutPath).TargetPath -ne $originalTarget -or (Get-FileHash $shortcutPath -Algorithm SHA256).Hash -ne $originalLinkHash) { throw 'Post-staging rollback did not restore previous active shortcut' }
+          if ((Get-ItemProperty -Path $runKey -Name 'Secretary Node').'Secretary Node' -cne $originalLogin) { throw 'Post-staging rollback changed Launch at Login registration' }
           if ((Get-FileHash $originalTarget -Algorithm SHA256).Hash -ne (Get-FileHash (Join-Path $root 'secretary-tray.exe') -Algorithm SHA256).Hash) { throw 'Post-staging rollback modified previous release bytes' }
           $restored=@(Get-CimInstance Win32_Process -Filter "Name='secretary-tray.exe'" | Where-Object { $_.ExecutablePath -eq $originalTarget })
           if ($restored.Count -ne 1) { throw 'Post-staging rollback failed to restore exactly one previous tray process' }
@@ -177,6 +183,8 @@ jobs:
           if (-not $?) { throw 'Valid staged upgrade failed' }
           $currentTarget=$shell.CreateShortcut($shortcutPath).TargetPath
           if ($currentTarget -eq $originalTarget -or (Get-FileHash $currentTarget -Algorithm SHA256).Hash -eq (Get-FileHash $originalTarget -Algorithm SHA256).Hash) { throw 'Valid upgrade did not activate new version' }
+          $expectedLogin='"'+$currentTarget+'" --data-dir "'+$data+'"'
+          if ((Get-ItemProperty -Path $runKey -Name 'Secretary Node').'Secretary Node' -cne $expectedLogin) { throw 'Successful upgrade did not update Launch at Login registration' }
           Assert-PreservedState
           if ($accountBefore -ne (Get-FileHash $workerAccount -Algorithm SHA256).Hash) { throw 'Successful upgrade modified Worker credentials' }
                     $identityBefore=(Get-FileHash $identity -Algorithm SHA256).Hash
