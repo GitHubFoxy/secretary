@@ -94,6 +94,7 @@ fi
 [[ ! -e "$current" || -L "$current" ]] || fail "Current Node release is unmanaged"
 old=""
 if [[ -L "$current" ]]; then old="$(readlink "$current")"; [[ "$old" == "$releases/"* ]] || fail "Current Node release outside managed root"; fi
+[[ ! -L "$app" ]] || fail "App target may not be a symlink"
 if [[ -d "$app" ]]; then
   old_id="$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist" 2>/dev/null || true)"
   new_id="$(plutil -extract CFBundleIdentifier raw -o - "$target/Secretary Node.app/Contents/Info.plist")"
