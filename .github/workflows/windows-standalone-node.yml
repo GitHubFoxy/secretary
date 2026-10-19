@@ -36,6 +36,7 @@ jobs:
           foreach($name in @('secretary-node.exe','secretary-tray.exe')) {
             Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP $name) -Destination (Join-Path $root $name)
           }
+          Copy-Item -LiteralPath ./scripts/install-windows-node.ps1,./scripts/setup-windows-worker.ps1 -Destination $root
           $manifest=@{
             schema=1;version='ci-1';platform='windows';arch='amd64'
             node_sha256=(Get-FileHash (Join-Path $root 'secretary-node.exe') -Algorithm SHA256).Hash
