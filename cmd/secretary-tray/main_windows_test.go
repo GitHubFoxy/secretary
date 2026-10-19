@@ -14,7 +14,7 @@ import (
 	"unsafe"
 
 	"github.com/beruseruko/secretary/internal/core"
-	"github.com/beruseruko/secretary/internal/node"
+	"github.com/beruseruko/secretary/internal/traystatus"
 )
 
 func TestMain(m *testing.M) {
@@ -218,7 +218,7 @@ func TestW02StatusSnapshotPropagation(t *testing.T) {
 				Status:status,Authentication:core.HarnessAuthentication{Authenticated:h.Ready,Method:"local"},
 			})
 		}
-		if err:=node.WriteTrayStatusSnapshot(path,connected,inventory);err!=nil {t.Fatal(err)}
+		if err:=traystatus.Write(path,connected,inventory);err!=nil {t.Fatal(err)}
 	}
 	check:=func(wantServer,wantHarness string) {
 		t.Helper()
