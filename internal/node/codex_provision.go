@@ -230,6 +230,58 @@ func verifyManagedCodexArchives(assets []codexAsset, final string) error {
  return nil
 }
 
+type codexPendingUpgrade struct {
+ Previous CodexPairInventory `json:"previous"`
+ Candidate CodexPairInventory `json:"candidate"`
+}
+
+func recoverPendingCodexUpgrade(scope string) error {
+ location, err := CodexPairInventoryPath(scope)
+ if err != nil { return err }
+ pendingPath := filepath.Join(filepath.Dir(location), "codex-pair.pending.json")
+ info, err := os.Lstat(pendingPath)
+ if os.IsNotExist(err) { return nil }
+ if err != nil { return err }
+ if !info.Mode().IsRegular() { return errors.New("unsafe pending native pair transaction") }
+ data, err := os.ReadFile(pendingPath)
+ if err != nil { return err }
+ var pending codexPendingUpgrade
+ if err := json.Unmarshal(data, &pending); err != nil { return err }
+ if pending.Previous.Scope != scope || pending.Candidate.Scope != scope ||
+  pending.Previous.Schema != 1 || pending.Candidate.Schema != 1 ||
+  pending.Previous.Harness != "codex" || pending.Candidate.Harness != "codex" {
+  return errors.New("native pair pending transaction mismatch")
+ }
+ current, err := readCodexPairUnchecked(scope)
+ if err != nil { return fmt.Errorf("native pair interrupted activation needs explicit repair: %w", err) }
+ if current.Codex.SHA256 == pending.Previous.Codex.SHA256 && current.ACP.SHA256 == pending.Previous.ACP.SHA256 &&
+  current.Codex.Path == pending.Previous.Codex.Path && current.ACP.Path == pending.Previous.ACP.Path {
+  return os.Remove(pendingPath)
+ }
+ if current.Codex.SHA256 != pending.Candidate.Codex.SHA256 || current.ACP.SHA256 != pending.Candidate.ACP.SHA256 ||
+  current.Codex.Path != pending.Candidate.Codex.Path || current.ACP.Path != pending.Candidate.ACP.Path {
+  return errors.New("native pair pending transaction conflicts with active inventory")
+ }
+ if err := verifyCodexBinary(pending.Previous.Codex); err != nil { return fmt.Errorf("rollback CLI unavailable: %w", err) }
+ if err := verifyCodexBinary(pending.Previous.ACP); err != nil { return fmt.Errorf("rollback ACP unavailable: %w", err) }
+ if err := saveCodexPair(filepath.Join(filepath.Dir(location), "codex-pair.previous.json"), pending.Previous); err != nil { return err }
+ return os.Remove(pendingPath)
+}
+
+func activateCodexUpgrade(scope string, oldPair, candidate CodexPairInventory) error {
+ location, err := CodexPairInventoryPath(scope)
+ if err != nil { return err }
+ pending := filepath.Join(filepath.Dir(location), "codex-pair.pending.json")
+ journal, err := json.Marshal(codexPendingUpgrade{Previous: oldPair, Candidate: candidate})
+ if err != nil { return err }
+ if err := os.MkdirAll(filepath.Dir(pending), 0700); err != nil { return err }
+ if info, err := os.Lstat(pending); err == nil && info != nil { return errors.New("unreconciled native pair upgrade transaction") } else if err != nil && !os.IsNotExist(err) { return err }
+ if err := os.WriteFile(pending, journal, 0600); err != nil { return err }
+ if err := saveCodexPair(location, candidate); err != nil { return err }
+ if err := saveCodexPair(filepath.Join(filepath.Dir(location), "codex-pair.previous.json"), oldPair); err != nil { return err }
+ return os.Remove(pending)
+}
+
 func ManageCodexPair(ctx context.Context, action, scope, cliPath, acpPath string) (string, error) {
  return manageCodexPairWithProbe(ctx, action, scope, cliPath, acpPath, codexNativePairReady)
 }
@@ -237,6 +289,7 @@ func ManageCodexPair(ctx context.Context, action, scope, cliPath, acpPath string
 func manageCodexPairWithProbe(ctx context.Context, action, scope, cliPath, acpPath string, probe func(context.Context, CodexPairInventory) error) (string, error) {
  location, err := CodexPairInventoryPath(scope)
  if err != nil { return "", err }
+ if err := recoverPendingCodexUpgrade(scope); err != nil { return "", err }
  existing, existingErr := readCodexPairUnchecked(scope)
  switch action {
  case "env", "show", "doctor", "readiness":
@@ -286,11 +339,12 @@ func manageCodexPairWithProbe(ctx context.Context, action, scope, cliPath, acpPa
    if err := verifyCodexBinary(pair.Codex); err != nil { return "", err }
    if err := verifyCodexBinary(pair.ACP); err != nil { return "", err }
    pair.Compatibility.Validated=true
-   if existingErr==nil {
-    if err := saveCodexPair(filepath.Join(filepath.Dir(location),"codex-pair.previous.json"),existing); err != nil { return "", err }
-   }
   }
-  if err := saveCodexPair(location,pair); err != nil { return "", err }
+  if action == "upgrade" && existingErr == nil {
+   if err := activateCodexUpgrade(scope, existing, pair); err != nil { return "", err }
+  } else {
+   if err := saveCodexPair(location,pair); err != nil { return "", err }
+  }
   return fmt.Sprintf("Selected native Codex %s / ACP %s (%s)",cli.Version,acp.Version,provenance),nil
  case "rollback":
   previous := filepath.Join(filepath.Dir(location),"codex-pair.previous.json")
