@@ -56,6 +56,24 @@ payload="$stage/unpacked/$name"
 for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
   [[ -x "$payload/bin/$binary" && ! -L "$payload/bin/$binary" ]] || fail "Missing release binary: $binary"
 done
+for tool in ffmpeg ffprobe; do
+  [[ -x "$payload/bin/video-tools/$tool" && ! -L "$payload/bin/video-tools/$tool" ]] || fail "Missing Server video tool: $tool"
+done
+[[ -f "$payload/VIDEO-TOOLS.json" && ! -L "$payload/VIDEO-TOOLS.json" ]] || fail "Missing video tool manifest"
+python3 - "$payload" <<'PY'
+import hashlib, json, pathlib, subprocess, sys
+root = pathlib.Path(sys.argv[1])
+m = json.loads((root / "VIDEO-TOOLS.json").read_text())
+assert m.get("origin"), "Missing video tool provenance"
+versions = []
+for tool in ("ffmpeg", "ffprobe"):
+    path = root / "bin" / "video-tools" / tool
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == m[tool]["sha256"], tool + " checksum mismatch"
+    words = subprocess.check_output([str(path), "-version"], timeout=10).decode().splitlines()[0].split()
+    assert words[:2] == [tool, "version"] and words[2] == m[tool]["version"], tool + " version mismatch"
+    versions.append(words[2])
+assert versions[0] == versions[1], "Video pair incompatible"
+PY
 [[ -f "$payload/secretary" && -f "$payload/scripts/secretary-interactive.zsh" && -f "$payload/internal/config/defaults/config.toml" ]] || fail "Incomplete CLI package"
 [[ "$(cat "$payload/VERSION")" == "$version" && "$(cat "$payload/REVISION")" == "$revision" ]] || fail "Release provenance mismatch"
 root="$HOME/.local/share/secretary"
