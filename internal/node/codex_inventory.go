@@ -1,6 +1,7 @@
 package node
 
 import (
+ "context"
  "crypto/sha256"
  "encoding/hex"
  "encoding/json"
@@ -9,6 +10,7 @@ import (
  "os/exec"
  "path/filepath"
  "strings"
+ "time"
 )
 
 type CodexBinaryRecord struct {
@@ -66,7 +68,9 @@ func verifyCodexBinary(record CodexBinaryRecord) error {
  if err != nil { return err }
  digest := sha256.Sum256(bytes)
  if hex.EncodeToString(digest[:]) != record.SHA256 { return fmt.Errorf("selected executable bytes changed: %s", resolved) }
- output, err := exec.Command(resolved, "--version").CombinedOutput()
+ ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+ defer cancel()
+ output, err := exec.CommandContext(ctx, resolved, "--version").CombinedOutput()
  if err != nil { return fmt.Errorf("selected executable version probe failed: %w", err) }
  if strings.TrimSpace(string(output)) != record.Version { return fmt.Errorf("selected executable version changed: %s", resolved) }
  return nil
