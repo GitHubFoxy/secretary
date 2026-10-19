@@ -91,7 +91,7 @@ app_stage="$HOME/Applications/.secretary-node-$version-$arch.stage"
 cp -R "$target/Secretary Node.app" "$app_stage"
 codesign --verify "$app_stage" || fail "Staged Node.app did not verify"
 
-"$target/secretary" setup --non-interactive || fail "Setup failed; no executable or app activation was changed"
+SECRETARY_BINARY_STAGE_BIN="$stage/setup-bin" "$target/secretary" setup --non-interactive || fail "Setup failed; no executable or app activation was changed"
 backup="$stage/previous-app"
 if [[ -d "$app" ]]; then mv "$app" "$backup"; fi
 if ! mv "$app_stage" "$app"; then
