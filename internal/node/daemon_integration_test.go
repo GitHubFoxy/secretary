@@ -83,8 +83,8 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 		Inventory:          statusSource,
 		StatusChanged: func(connected bool, snapshot core.HarnessInventorySnapshot) {
 			statusMu.Lock()
-			statusHistory = append(statusHistory,w02StatusEvent{connected:connected,inventory:snapshot})
 			if err := traystatus.Write(statusPath,connected,snapshot); err != nil {t.Errorf("tray status write: %v",err)}
+			statusHistory = append(statusHistory,w02StatusEvent{connected:connected,inventory:snapshot,tray:traystatus.Read(statusPath,true,time.Now())})
 			statusMu.Unlock()
 		},
 		Capacity:           2,
@@ -223,12 +223,13 @@ func TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke(t *testing.
 	})
 	waitFor(t, ctx, "W02 transport disconnect", func() bool {
 		statusMu.Lock()
-		seen:=false
+		defer statusMu.Unlock()
 		for i := 1; i < len(statusHistory); i++ {
-			if !statusHistory[i].connected && statusHistory[i-1].connected { seen=true;break }
+			if !statusHistory[i].connected && statusHistory[i-1].connected && !statusHistory[i].tray.Connected && len(statusHistory[i].tray.Harnesses)==0 {
+				return true
+			}
 		}
-		statusMu.Unlock()
-		return seen && !traystatus.Read(statusPath,true,time.Now()).Connected
+		return false
 	})
 	waitFor(t, ctx, "authenticated reconnect", func() bool {
 		status, err := manager.Status(context.Background(), "macbook")
@@ -439,6 +440,7 @@ func revokeHTTP(t *testing.T, ctx context.Context, server *httptest.Server, node
 type w02StatusEvent struct {
 	connected bool
 	inventory core.HarnessInventorySnapshot
+	tray traystatus.Snapshot
 }
 
 type w02InventorySource struct {
