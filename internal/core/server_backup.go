@@ -195,7 +195,7 @@ func RestoreServerBackupAuto(ctx context.Context, archive, dataDir string) error
   if !strings.HasPrefix(f.Name,"extras/"){continue}
   name:=strings.TrimPrefix(f.Name,"extras/")
   switch name {
-  case "config.toml","user.md","memory.md","preferences.md":
+  case "config.toml","user.md","memory.md","user_preferences.md","preferences.md":
    extras[name]=filepath.Join(dataDir,name)
   default:
    zr.Close()
