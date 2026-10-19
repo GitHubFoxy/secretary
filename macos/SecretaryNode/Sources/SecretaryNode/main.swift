@@ -67,6 +67,7 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self?.status.title = "Node: Stop failed (\(error.localizedDescription))"
                     self?.statusItem.button?.toolTip = error.localizedDescription
                     self?.quit.isEnabled = true
+                    self?.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
                     return
                 }
                 NSApp.terminate(nil)
