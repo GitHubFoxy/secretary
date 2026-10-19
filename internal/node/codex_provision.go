@@ -319,6 +319,12 @@ func manageCodexPairWithProbe(ctx context.Context, action, scope, cliPath, acpPa
   if (cliPath=="") != (acpPath=="") { return "", errors.New("both external Codex and ACP paths must be selected together") }
   if action=="install" && existingErr!=nil { if _, err:=os.Lstat(location); err==nil { return "", existingErr } }
   if action=="install" && existingErr==nil {
+   if existing.Codex.Provenance=="managed" || existing.ACP.Provenance=="managed" {
+    if existing.Codex.Provenance!="managed" || existing.ACP.Provenance!="managed" { return "", errors.New("partial managed/external pair provenance") }
+    managedCLI, managedACP, err := provisionManagedPair(ctx)
+    if err != nil { return "", err }
+    if existing.Codex.Path!=managedCLI || existing.ACP.Path!=managedACP { return "", errors.New("selected managed pair paths differ from verified pinned release") }
+   }
    if cliPath!="" {
     requested, err := filepath.Abs(cliPath)
     if err!=nil { return "",err }
