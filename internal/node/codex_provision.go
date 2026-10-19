@@ -171,8 +171,11 @@ func installManagedCodexAssets(ctx context.Context, assets []codexAsset, root, t
  cli, acp := filepath.Join(final, "codex"), filepath.Join(final, "codex-acp")
  if info, err := os.Lstat(final); err == nil {
   if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 { return "", "", errors.New("unsafe managed release directory") }
-  if _, err := codexBinaryRecord(cli, "managed"); err != nil { return "", "", fmt.Errorf("partial or changed managed Codex CLI: %w", err) }
-  if _, err := codexBinaryRecord(acp, "managed"); err != nil { return "", "", fmt.Errorf("partial or changed managed Codex ACP: %w", err) }
+  cliRecord, err := codexBinaryRecord(cli, "managed")
+  if err != nil { return "", "", fmt.Errorf("partial or changed managed Codex CLI: %w", err) }
+  acpRecord, err := codexBinaryRecord(acp, "managed")
+  if err != nil { return "", "", fmt.Errorf("partial or changed managed Codex ACP: %w", err) }
+  if !strings.Contains(cliRecord.Version, codexPinnedVersion) || !strings.Contains(acpRecord.Version, codexACPPinnedVersion) { return "", "", errors.New("managed Codex pair version mismatch") }
   return cli, acp, nil
  } else if !os.IsNotExist(err) { return "", "", err }
  if err := os.MkdirAll(root, 0700); err != nil { return "", "", err }
@@ -182,8 +185,11 @@ func installManagedCodexAssets(ctx context.Context, assets []codexAsset, root, t
  for _, asset := range assets {
   if err := fetchCodexExecutable(ctx, asset, stage); err != nil { return "", "", err }
  }
- if _, err := codexBinaryRecord(filepath.Join(stage, "codex"), "managed"); err != nil { return "", "", err }
- if _, err := codexBinaryRecord(filepath.Join(stage, "codex-acp"), "managed"); err != nil { return "", "", err }
+ cliRecord, err := codexBinaryRecord(filepath.Join(stage, "codex"), "managed")
+ if err != nil { return "", "", err }
+ acpRecord, err := codexBinaryRecord(filepath.Join(stage, "codex-acp"), "managed")
+ if err != nil { return "", "", err }
+ if !strings.Contains(cliRecord.Version, codexPinnedVersion) || !strings.Contains(acpRecord.Version, codexACPPinnedVersion) { return "", "", errors.New("downloaded Codex pair versions differ from pinned release") }
  if err := os.Rename(stage, final); err != nil { return "", "", err }
  return cli, acp, nil
 }
