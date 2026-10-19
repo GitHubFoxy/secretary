@@ -214,8 +214,8 @@ func TestW02StatusSnapshotPropagation(t *testing.T) {
 			status:=core.HarnessUnavailable
 			if h.Ready {status=core.HarnessReady}
 			inventory.Instances=append(inventory.Instances,core.HarnessInstance{
-				ID:core.HarnessInstanceID("test/"+h.Name),Node:"test",Kind:core.HarnessKind(h.Name),
-				Status:status,Authentication:core.HarnessAuthentication{Authenticated:h.Ready},
+				ID:core.HarnessInstanceID("test/"+h.Name),Node:"test",Kind:core.HarnessKind(h.Name),Version:"1.0",
+				Status:status,Authentication:core.HarnessAuthentication{Authenticated:h.Ready,Method:"local"},
 			})
 		}
 		if err:=node.WriteTrayStatusSnapshot(path,connected,inventory);err!=nil {t.Fatal(err)}
