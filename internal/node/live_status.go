@@ -66,9 +66,9 @@ func (w *LiveStatusWriter) publish(server string, inventory *core.HarnessInvento
     tmp, err := os.CreateTemp(dir, ".node-live-*")
     if err != nil { return }
     defer os.Remove(tmp.Name())
-    defer tmp.Close()
-    if tmp.Chmod(0600) != nil { return }
-    if _, err := tmp.Write(encoded); err != nil { return }
-    if tmp.Sync() != nil { return }
+    if err := tmp.Chmod(0600); err != nil { _ = tmp.Close(); return }
+    if _, err := tmp.Write(encoded); err != nil { _ = tmp.Close(); return }
+    if err := tmp.Sync(); err != nil { _ = tmp.Close(); return }
+    if err := tmp.Close(); err != nil { return }
     _ = os.Rename(tmp.Name(), w.path)
 }
