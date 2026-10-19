@@ -114,7 +114,7 @@ rollback() {
       [[ -z "$previous" ]] || ln -s "$previous" "$current"
     fi
     for path in "${created[@]}"; do rm -f "$path"; done
-    for path in "${unit_created[@]}"; do rm -f "$path"; done
+    if [[ -z "$previous" ]]; then\n      systemctl --user disable --now secretary-node.service secretary.service >/dev/null 2>&1 || true\n    fi\n    for path in "${unit_created[@]}"; do rm -f "$path"; done
     systemctl --user daemon-reload >/dev/null 2>&1 || true
   fi
 }
