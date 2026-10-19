@@ -2,6 +2,7 @@ package node
 
 import (
  "archive/tar"
+ "bytes"
  "compress/gzip"
  "context"
  "crypto/sha256"
@@ -63,7 +64,7 @@ func fetchCodexExecutable(ctx context.Context, asset codexAsset, stage string) e
  if err != nil { return err }
  digest := sha256.Sum256(compressed)
  if hex.EncodeToString(digest[:]) != asset.SHA256 { return fmt.Errorf("%s release checksum mismatch", asset.Name) }
- archive, err := gzip.NewReader(strings.NewReader(string(compressed)))
+ archive, err := gzip.NewReader(bytes.NewReader(compressed))
  if err != nil { return err }
  defer archive.Close()
  tarReader := tar.NewReader(archive)
@@ -191,6 +192,8 @@ func ManageCodexPair(ctx context.Context, action, scope, cliPath, acpPath string
   if action == "show" { bytes, _ := json.MarshalIndent(existing, "", "  "); return string(bytes), nil }
   if action == "readiness" {
    if err := codexNativePairReady(ctx, existing); err != nil { return "", err }
+   if err := verifyCodexBinary(existing.Codex); err != nil { return "", err }
+   if err := verifyCodexBinary(existing.ACP); err != nil { return "", err }
    existing.Compatibility.Validated = true
    if err := saveCodexPair(location, existing); err != nil { return "", err }
   }
@@ -224,6 +227,8 @@ func ManageCodexPair(ctx context.Context, action, scope, cliPath, acpPath string
   pair := CodexPairInventory{Schema:1,Scope:scope,Harness:"codex",Codex:cli,ACP:acp}
   if action=="upgrade" {
    if err := codexNativePairReady(ctx,pair); err != nil { return "", err }
+   if err := verifyCodexBinary(pair.Codex); err != nil { return "", err }
+   if err := verifyCodexBinary(pair.ACP); err != nil { return "", err }
    pair.Compatibility.Validated=true
    if existingErr==nil {
     if err := saveCodexPair(filepath.Join(filepath.Dir(location),"codex-pair.previous.json"),existing); err != nil { return "", err }
