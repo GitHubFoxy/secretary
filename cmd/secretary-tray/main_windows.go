@@ -4,8 +4,6 @@ package main
 
 import (
 	"crypto/rand"
-	"encoding/json"
-	"strings"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -17,6 +15,7 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows/registry"
+	"github.com/beruseruko/secretary/internal/traystatus"
 )
 
 const (
@@ -183,12 +182,8 @@ type trayApp struct {
 	live liveStatus
 	exiting bool
 }
-type harnessRow struct { Name string `json:"name"`; Ready bool `json:"ready"` }
-type liveStatus struct {
-	Connected bool `json:"connected"`
-	ObservedAt time.Time `json:"observed_at"`
-	Harnesses []harnessRow `json:"harnesses"`
-}
+type harnessRow = traystatus.Harness
+type liveStatus = traystatus.Snapshot
 type menuRow struct { label string; action string; separator bool }
 func buildMenu(running bool, failed bool, live liveStatus) []menuRow {
 	state := "Stopped"
@@ -495,18 +490,7 @@ func (a *trayApp) stop() {
 }
 
 func readLiveStatus(path string, running bool, now time.Time) liveStatus {
-	var next liveStatus
-	if !running || path == "" { return next }
-	data, err := os.ReadFile(path)
-	if err != nil || len(data) >= 64*1024 || json.Unmarshal(data, &next) != nil ||
-		next.ObservedAt.IsZero() || now.Before(next.ObservedAt) ||
-		now.Sub(next.ObservedAt) >= 20*time.Second {
-		return liveStatus{}
-	}
-	for _, h := range next.Harnesses {
-		if strings.TrimSpace(h.Name) == "" { return liveStatus{} }
-	}
-	return next
+ return traystatus.Read(path,running,now)
 }
 
 func (a *trayApp) refreshStatus(now time.Time) {
