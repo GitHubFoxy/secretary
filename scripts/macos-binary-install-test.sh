@@ -33,7 +33,7 @@ bash "$root/scripts/install-macos-binary.sh"
 "$HOME/.local/bin/secretary" start --no-open
 status="$("$HOME/.local/bin/secretary" status)"
 [[ "$status" == *"installed: version=0.0.0-ci"* ]]
-[[ "$status" == *"running Server: pid="* ]]
+[[ "$status" == *"running Server: pid="*"version=0.0.0-ci revision=$revision"* ]]
 session_http="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/v1/web/session)"
 [[ "$session_http" != 000 ]]
 "$HOME/.local/bin/secretary" stop
