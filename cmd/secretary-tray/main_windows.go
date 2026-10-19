@@ -302,14 +302,14 @@ func clampPopup(p pt, work rect, width, height int32) (int32, int32) {
 	return clamp(p.x, work.left, work.right-width), clamp(p.y, work.top, work.bottom-height)
 }
 
-func themeIsDark(value uint64, err error) bool { return themeIsDark(value, err) }
+func themeIsDark(value uint64, err error) bool { return err == nil && value == 0 }
 
 func darkMode() bool {
 	key, err := registry.OpenKey(registry.CURRENT_USER, `Software\Microsoft\Windows\CurrentVersion\Themes\Personalize`, registry.QUERY_VALUE)
 	if err != nil { return false }
 	defer key.Close()
 	value, _, err := key.GetIntegerValue("AppsUseLightTheme")
-	return err == nil && value == 0
+	return themeIsDark(value, err)
 }
 
 func (a *trayApp) paintMenu() {
