@@ -104,7 +104,48 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 }
 
-let application = NSApplication.shared
-let delegate = SecretaryNodeApp()
-application.delegate = delegate
-application.run()
+if CommandLine.arguments.contains("--login-item-smoke") {
+    let action = CommandLine.arguments.last
+    do {
+        switch action {
+        case "enable":
+            try NodeIntegrations.setLaunchAtLogin(true)
+            guard NodeIntegrations.loginStatus == .enabled else {
+                throw NSError(domain: "SecretaryNode.LoginSmoke", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: NodeIntegrations.loginDescription(NodeIntegrations.loginStatus) ?? "Login item registration did not become enabled"
+                ])
+            }
+        case "verify-enabled":
+            guard NodeIntegrations.loginStatus == .enabled else {
+                throw NSError(domain: "SecretaryNode.LoginSmoke", code: 2, userInfo: [
+                    NSLocalizedDescriptionKey: "Login item was not preserved across process restart or app upgrade"
+                ])
+            }
+        case "disable":
+            try NodeIntegrations.setLaunchAtLogin(false)
+            guard NodeIntegrations.loginStatus == .notRegistered else {
+                throw NSError(domain: "SecretaryNode.LoginSmoke", code: 3, userInfo: [
+                    NSLocalizedDescriptionKey: "Login item did not unregister"
+                ])
+            }
+        case "verify-disabled":
+            guard NodeIntegrations.loginStatus == .notRegistered else {
+                throw NSError(domain: "SecretaryNode.LoginSmoke", code: 4, userInfo: [
+                    NSLocalizedDescriptionKey: "Login item remained registered after process restart"
+                ])
+            }
+        default:
+            throw NSError(domain: "SecretaryNode.LoginSmoke", code: 5, userInfo: [
+                NSLocalizedDescriptionKey: "Unsupported login smoke action"
+            ])
+        }
+    } catch {
+        fputs("Login item smoke failed: \(error.localizedDescription)\n", stderr)
+        exit(1)
+    }
+} else {
+    let application = NSApplication.shared
+    let delegate = SecretaryNodeApp()
+    application.delegate = delegate
+    application.run()
+}
