@@ -36,7 +36,7 @@ for name in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-no
   cp -p "$input/bin/$name" "$stage/$release/bin/$name"
 done
 cp -p "$input/secretary" "$stage/$release/secretary"
-cp -p "$input/scripts/secretary-interactive.zsh" "$stage/$release/scripts/secretary-interactive.zsh"
+cp -p "$input/scripts/secretary-interactive.zsh" "$input/scripts/provision-codex-pair.py" "$stage/$release/scripts/"
 cp -R "$input/internal/config/defaults" "$stage/$release/internal/config/defaults"
 cp -R "$input/Secretary Node.app" "$stage/$release/Secretary Node.app"
 printf '%s\n' "$version" > "$stage/$release/VERSION"
