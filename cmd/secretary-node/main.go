@@ -222,6 +222,7 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), nodeShutdownSignals()...)
 	defer stop()
+	watchNodeShutdownEvent(stop)
 	log.Printf("secretary-node %s connecting outbound to %s", identity.Node, identity.ConnectURL)
 	if err := daemon.Run(ctx); err != nil {
 		log.Fatalf("run Node: %v", err)
