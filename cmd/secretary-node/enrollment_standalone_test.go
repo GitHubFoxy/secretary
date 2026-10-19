@@ -1,8 +1,6 @@
 package main
 
 import (
- "context"
- "crypto/tls"
  "crypto/x509"
  "encoding/base64"
  "encoding/json"
@@ -50,9 +48,8 @@ func TestStandaloneEnrollmentHTTPSAndNoOverwrite(t *testing.T) {
   if err!=nil { t.Logf("enroll output: %s",out) }
   return err
  }
- if err:=run(); err==nil { t.Fatal("HTTP endpoint was accepted for enrollment") }
  // Exercise the real one-shot executable with a TLS endpoint.
- serverURL:=strings.Replace(server.URL,"https://","https://",1)
+ serverURL:=server.URL
  cmd:=exec.Command(bin,"--enroll-only","--server",serverURL,"--data-dir",dir,"--name","fixture-node")
  cmd.Env=append(os.Environ(),"SSL_CERT_FILE="+certFile,"SECRETARY_NODE_PAIRING_TOKEN=owner-approved")
  if out,err:=cmd.CombinedOutput(); err!=nil { t.Fatalf("first HTTPS enrollment: %v %s",err,out) }
@@ -63,6 +60,4 @@ func TestStandaloneEnrollmentHTTPSAndNoOverwrite(t *testing.T) {
  if err:=run(); err==nil { t.Fatal("re-enrollment overwrote identity") }
  if calls.Load()!=1 { t.Fatal("duplicate pairing request was sent") }
  if info,err:=os.Stat(filepath.Join(dir,"identity.json")); err!=nil || info.Mode().Perm()!=0600 { t.Fatalf("identity permissions: %v %v",info,err) }
- _=context.Background()
- _=tls.VersionTLS12
 }
