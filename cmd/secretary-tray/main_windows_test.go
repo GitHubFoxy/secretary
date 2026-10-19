@@ -114,7 +114,8 @@ func TestNativeSingleInstanceMutex(t *testing.T) {
 func TestManagedNodeLifecycleAndUnrelatedProcess(t *testing.T) {
 	t.Setenv("SECRETARY_TRAY_NODE_EXE", os.Args[0])
 	t.Setenv("SECRETARY_TRAY_TEST_HELPER", "managed")
-	a := &trayApp{}
+	dataDir := t.TempDir()
+	a := &trayApp{dataDir: dataDir, logPath: filepath.Join(dataDir, "logs", "node.log")}
 	a.start()
 	a.lock.Lock()
 	n := a.node
