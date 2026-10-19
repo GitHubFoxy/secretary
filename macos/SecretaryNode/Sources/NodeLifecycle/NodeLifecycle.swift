@@ -21,7 +21,6 @@ public final class NodeLifecycle {
     private let directory: URL
     private let lock: Int32
     private var process: Process?
-    private var lastError: String?
     private let identity: URL
 
     public init(executable: URL, configuration: URL? = nil, arguments: [String] = [], directory: URL) throws {
@@ -82,7 +81,6 @@ public final class NodeLifecycle {
             if terminationReasonFailed(process) { return .failed("Node exited with status \(process.terminationStatus)") }
         }
         if previousNode() != nil { return .alreadyRunning }
-        if let lastError { return .failed(lastError) }
         return .stopped
     }
 
@@ -102,7 +100,6 @@ public final class NodeLifecycle {
         child.standardError = FileHandle.nullDevice
         try child.run()
         process = child
-        lastError = nil
         do {
             guard let birth = birthTime(child.processIdentifier) else { throw POSIXError(.ESRCH) }
             try Data(String(child.processIdentifier).utf8).write(to: pidFile, options: .atomic)
@@ -144,13 +141,15 @@ public final class NodeLifecycle {
             }
             let stillRunning = ownedProcess?.isRunning ?? (self.previousNode() == pid)
             if stillRunning {
-                completion(POSIXError(.ETIMEDOUT))
+                DispatchQueue.main.async { completion(POSIXError(.ETIMEDOUT)) }
                 return
             }
             try? FileManager.default.removeItem(at: self.pidFile)
             try? FileManager.default.removeItem(at: self.identity)
-            self.process = nil
-            completion(nil)
+            DispatchQueue.main.async {
+                self.process = nil
+                completion(nil)
+            }
         }
     }
 }
