@@ -5,7 +5,7 @@ fail() { printf 'Secretary standalone Node: %s\n' "$*" >&2; exit 1; }
 [[ "$(uname -s)" == Linux && "$(id -u)" -ne 0 ]] || fail "Run on Linux as an unprivileged user"
 for command in curl python3 sha256sum tar mktemp readlink; do command -v "$command" >/dev/null || fail "Missing $command"; done
 case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) fail "Unsupported architecture" ;; esac
-state="$HOME/.local/share/secretary/node"
+state="$HOME/.local/share/secretary/standalone-node/node"
 root="$HOME/.local/share/secretary/standalone-node"
 releases="$root/releases"
 current="$root/current"
