@@ -188,7 +188,7 @@ PYCONFIG
     case "$previous" in "$releases/"*) ;; *) fail "Unexpected current target" ;; esac
   fi
   if service_available && [[ -f "$unit" ]]; then verify_unit; fi
-  ln -s "$target" "$root/.current.$"
+  ln -s "$target" "$root/.current.$$"
   mv -Tf "$root/.current.$$" "$current"
   if service_available && [[ -f "$unit" ]]; then
     if ! systemctl --user restart secretary-standalone-node.service || ! healthy_service "$target"; then
