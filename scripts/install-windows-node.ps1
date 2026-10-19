@@ -106,11 +106,11 @@ public static class SecretaryTrayWindow {
   [void][SecretaryTrayWindow]::GetWindowThreadProcessId($window,[ref]$trayPid)
   if (-not [SecretaryTrayWindow]::PostMessage($window,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)) { throw 'Cannot stop old tray; restart it manually and retry' }
   $closed=$false
-  for ($attempt=0;$attempt -lt 100;$attempt++) {
+  for ($attempt=0;$attempt -lt 300;$attempt++) {
    if ([SecretaryTrayWindow]::FindWindow('SecretaryNodeTrayWindow','Secretary Node') -eq [IntPtr]::Zero) { $closed=$true;break }
    Start-Sleep -Milliseconds 100
   }
-  if (-not $closed) { throw 'Old tray did not exit; upgrade files were staged without changing startup registration' }
+  if (-not $closed) { throw 'Old tray did not exit after cooperative shutdown; upgrade files were staged without changing startup registration' }
   if ($trayPid -ne 0) {
    $oldProcess=Get-Process -Id $trayPid -ErrorAction SilentlyContinue
    if ($oldProcess) {
