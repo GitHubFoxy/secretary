@@ -42,3 +42,26 @@ func TestW03LogsPathMatchesNodeData(t *testing.T){
  rows:=app.menuRows()
  if rows[len(rows)-2].action!="logs"{t.Fatalf("missing logs action: %+v",rows)}
 }
+
+func TestW03OpenLogsInvokesExplorerBoundary(t *testing.T) {
+ root:=t.TempDir()
+ path:=filepath.Join(root,"logs","node.log")
+ if err:=os.MkdirAll(filepath.Dir(path),0700);err!=nil{t.Fatal(err)}
+ if err:=os.WriteFile(path,[]byte("node started"),0600);err!=nil{t.Fatal(err)}
+ calls:=0
+ openNodeLogs(path,os.Stat,func(got string)error{calls++;if got!=path{t.Fatalf("path %q",got)};return nil},func(title,msg string){t.Fatalf("unexpected error: %s %s",title,msg)})
+ if calls!=1{t.Fatalf("explorer calls %d",calls)}
+}
+func TestW03OpenLogsActionableErrors(t *testing.T) {
+ path:=filepath.Join(t.TempDir(),"logs","node.log")
+ launched:=false
+ var errorText string
+ report:=func(_,message string){errorText=message}
+ openNodeLogs(path,os.Stat,func(string)error{launched=true;return nil},report)
+ if launched||!strings.Contains(errorText,"Start Secretary Node"){t.Fatalf("missing file: launched=%v message=%q",launched,errorText)}
+ if err:=os.MkdirAll(filepath.Dir(path),0700);err!=nil{t.Fatal(err)}
+ if err:=os.WriteFile(path,[]byte("node started"),0600);err!=nil{t.Fatal(err)}
+ errorText=""
+ openNodeLogs(path,os.Stat,func(string)error{return os.ErrPermission},report)
+ if !strings.Contains(errorText,"File Explorer")||!strings.Contains(errorText,path){t.Fatal(errorText)}
+}
