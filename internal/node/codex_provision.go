@@ -64,6 +64,11 @@ func fetchCodexExecutable(ctx context.Context, asset codexAsset, stage string) e
  if err != nil { return err }
  digest := sha256.Sum256(compressed)
  if hex.EncodeToString(digest[:]) != asset.SHA256 { return fmt.Errorf("%s release checksum mismatch", asset.Name) }
+ if err := unpackCodexArchive(compressed, asset, stage); err != nil { return err }
+ return os.WriteFile(filepath.Join(stage, asset.Name+".tar.gz"), compressed, 0600)
+}
+
+func unpackCodexArchive(compressed []byte, asset codexAsset, stage string) error {
  archive, err := gzip.NewReader(bytes.NewReader(compressed))
  if err != nil { return err }
  defer archive.Close()
@@ -111,13 +116,17 @@ func codexBinaryRecord(path, provenance string) (CodexBinaryRecord, error) {
 func codexNativePairReady(ctx context.Context, pair CodexPairInventory) error {
  probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
  defer cancel()
- _, err := exec.CommandContext(probeCtx, pair.Codex.Path, "login", "status").CombinedOutput()
- if err != nil { return fmt.Errorf("native Codex authorization required; run %s login", pair.Codex.Path) }
- before := os.Getenv("SECRETARY_ACP_COMMAND")
- defer os.Setenv("SECRETARY_ACP_COMMAND", before)
- if err := os.Setenv("SECRETARY_ACP_COMMAND", pair.ACP.Path); err != nil { return err }
- models, _, err := (ExecCommandRunner{}).ObserveCodexACP(probeCtx, pair.Codex.Path)
- if err != nil { return fmt.Errorf("native Codex/ACP protocol not ready: %w", err) }
+ output, err := exec.CommandContext(probeCtx, pair.Codex.Path, "login", "status").CombinedOutput()
+ if err != nil {
+  if probeCtx.Err() != nil { return fmt.Errorf("Codex native login status transport: %w", probeCtx.Err()) }
+  response := strings.ToLower(string(output))
+  if strings.Contains(response, "not logged in") || strings.Contains(response, "not authenticated") || strings.Contains(response, "login required") {
+   return fmt.Errorf("Codex native authentication required: run %s login", pair.Codex.Path)
+  }
+  return fmt.Errorf("Codex native login status executable/protocol failure: %w", err)
+ }
+ models, _, err := (ExecCommandRunner{}).ObserveCodexACPWithCommand(probeCtx, pair.Codex.Path, pair.ACP.Path)
+ if err != nil { return fmt.Errorf("Codex native ACP initialize/session-new failure: %w", err) }
  if len(models) == 0 { return errors.New("native Codex ACP returned no supported models") }
  return nil
 }
@@ -171,6 +180,7 @@ func installManagedCodexAssets(ctx context.Context, assets []codexAsset, root, t
  cli, acp := filepath.Join(final, "codex"), filepath.Join(final, "codex-acp")
  if info, err := os.Lstat(final); err == nil {
   if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 { return "", "", errors.New("unsafe managed release directory") }
+  if err := verifyManagedCodexArchives(assets, final); err != nil { return "", "", err }
   cliRecord, err := codexBinaryRecord(cli, "managed")
   if err != nil { return "", "", fmt.Errorf("partial or changed managed Codex CLI: %w", err) }
   acpRecord, err := codexBinaryRecord(acp, "managed")
@@ -192,6 +202,32 @@ func installManagedCodexAssets(ctx context.Context, assets []codexAsset, root, t
  if !strings.Contains(cliRecord.Version, codexPinnedVersion) || !strings.Contains(acpRecord.Version, codexACPPinnedVersion) { return "", "", errors.New("downloaded Codex pair versions differ from pinned release") }
  if err := os.Rename(stage, final); err != nil { return "", "", err }
  return cli, acp, nil
+}
+
+func verifyManagedCodexArchives(assets []codexAsset, final string) error {
+ for _, asset := range assets {
+  archivePath := filepath.Join(final, asset.Name+".tar.gz")
+  info, err := os.Lstat(archivePath)
+  if err != nil || !info.Mode().IsRegular() { return fmt.Errorf("managed %s trusted archive missing or unsafe", asset.Name) }
+  compressed, err := os.ReadFile(archivePath)
+  if err != nil { return err }
+  digest := sha256.Sum256(compressed)
+  if hex.EncodeToString(digest[:]) != asset.SHA256 { return fmt.Errorf("managed %s trusted archive digest mismatch", asset.Name) }
+  stage, err := os.MkdirTemp("", "codex-verified-")
+  if err != nil { return err }
+  unpackErr := unpackCodexArchive(compressed, asset, stage)
+  if unpackErr != nil { os.RemoveAll(stage); return unpackErr }
+  trusted, err := os.ReadFile(filepath.Join(stage, asset.Name))
+  os.RemoveAll(stage)
+  if err != nil { return err }
+  actualPath := filepath.Join(final, asset.Name)
+  info, err = os.Lstat(actualPath)
+  if err != nil || !info.Mode().IsRegular() { return fmt.Errorf("managed %s selected binary missing or unsafe", asset.Name) }
+  actual, err := os.ReadFile(actualPath)
+  if err != nil { return err }
+  if !bytes.Equal(actual, trusted) { return fmt.Errorf("managed %s executable bytes differ from pinned upstream archive", asset.Name) }
+ }
+ return nil
 }
 
 func ManageCodexPair(ctx context.Context, action, scope, cliPath, acpPath string) (string, error) {
