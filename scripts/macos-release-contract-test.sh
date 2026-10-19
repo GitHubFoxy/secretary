@@ -11,6 +11,11 @@ for name in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-no
   printf '#!/bin/sh\nexit 0\n' > "$input/bin/$name"
   chmod +x "$input/bin/$name"
 done
+mkdir -p "$input/bin/video-tools"
+for tool in ffmpeg ffprobe; do
+  printf '#!/bin/sh\necho "%s version 6.1"\n' "$tool" > "$input/bin/video-tools/$tool"
+  chmod +x "$input/bin/video-tools/$tool"
+done
 printf '#!/bin/sh\nexit 0\n' > "$input/secretary"
 printf 'exit 0\n' > "$input/scripts/secretary-interactive.zsh"
 printf '[secretary]\n' > "$input/internal/config/defaults/config.toml"
