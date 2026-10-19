@@ -1,0 +1,63 @@
+name: Windows standalone Node release verification
+on:
+  pull_request:
+    paths:
+      - 'scripts/install-windows-node-release.ps1'
+      - 'scripts/install-windows-node.ps1'
+      - '.github/workflows/windows-standalone-node.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release-verification:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Compile release fixtures in CI
+        shell: pwsh
+        run: |
+          go build -o "$env:RUNNER_TEMP/secretary-node.exe" ./cmd/secretary-node
+          if ($LASTEXITCODE -ne 0) { throw 'Node fixture compilation failed' }
+          go build -ldflags '-H=windowsgui' -o "$env:RUNNER_TEMP/secretary-tray.exe" ./cmd/secretary-tray
+          if ($LASTEXITCODE -ne 0) { throw 'Tray fixture compilation failed' }
+      - name: Verify release archive contract and installation
+        shell: powershell
+        run: |
+          $ErrorActionPreference='Stop'
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $root=Join-Path $env:RUNNER_TEMP 'standalone-node-release'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          foreach($name in @('secretary-node.exe','secretary-tray.exe')) {
+            Copy-Item -LiteralPath (Join-Path $env:RUNNER_TEMP $name) -Destination (Join-Path $root $name)
+          }
+          $manifest=@{
+            schema=1;version='ci-1';platform='windows';arch='amd64'
+            node_sha256=(Get-FileHash (Join-Path $root 'secretary-node.exe') -Algorithm SHA256).Hash
+            tray_sha256=(Get-FileHash (Join-Path $root 'secretary-tray.exe') -Algorithm SHA256).Hash
+          } | ConvertTo-Json -Compress
+          [IO.File]::WriteAllText((Join-Path $root 'release.json'),$manifest)
+          $archive=Join-Path $env:RUNNER_TEMP 'standalone-node.zip'
+          [IO.Compression.ZipFile]::CreateFromDirectory($root,$archive)
+          $digest=(Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash
+          $uri=([Uri]$archive).AbsoluteUri
+          $data=Join-Path $env:RUNNER_TEMP 'standalone-install-data'
+          $home=Join-Path $env:RUNNER_TEMP 'standalone-worker-home'
+          $workspace=Join-Path $env:RUNNER_TEMP 'standalone-worker-workspace'
+          New-Item -ItemType Directory -Path $data,$workspace -Force | Out-Null
+          $identity=Join-Path $data 'identity.json'
+          [IO.File]::WriteAllText($identity,'PRESERVED-IDENTITY')
+          try {
+            & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 ('0'*64) -NodeDataDir $data -WorkerHome $home -Workspace $workspace
+            throw 'Tampered outer digest was accepted'
+          } catch {
+            if ($_.Exception.Message -notlike '*independently pinned digest*') { throw }
+          }
+          if ((Get-Content -LiteralPath $identity -Raw) -ne 'PRESERVED-IDENTITY') { throw 'Negative fixture mutated identity' }
+          & ./scripts/install-windows-node-release.ps1 -ReleaseUri $uri -ReleaseSHA256 $digest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci'
+          if (-not $?) { throw 'Verified archive install failed' }
+          if ((Get-Content -LiteralPath $identity -Raw) -ne 'PRESERVED-IDENTITY') { throw 'Verified install mutated identity' }
+          $shortcut=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
+          if (-not (Test-Path $shortcut)) { throw 'Start/Search shortcut missing' }
