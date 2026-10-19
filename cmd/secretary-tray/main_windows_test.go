@@ -172,3 +172,31 @@ func TestThemeSelection(t *testing.T) {
 		}
 	}
 }
+
+// W02 status menu state is driven by transport observations, not process existence.
+func TestW02LiveStatusTransitionsAndActions(t *testing.T) {
+	cases:=[]struct{running bool; failed bool; live liveStatus; want string}{
+		{false,false,liveStatus{},"Server: Offline"},
+		{true,false,liveStatus{},"Server: Reconnecting"},
+		{true,false,liveStatus{Connected:true},"Server: Connected"},
+	}
+	for _,tc:=range cases {
+		rows:=buildMenu(tc.running,tc.failed,tc.live)
+		if rows[1].label!=tc.want || !rows[2].separator {t.Fatalf("invalid server row/separator: %+v",rows)}
+		if actionAt(rows,8+24+24+9+24)!="toggle" {t.Fatalf("missing node control: %+v",rows)}
+		if actionAt(rows,menuHeight(rows)-8)!="exit" {t.Fatalf("missing exit action: %+v",rows)}
+	}
+}
+func TestW02HarnessTransitionsAndFailureClosed(t *testing.T) {
+	live:=liveStatus{Connected:true,Harnesses:[]harnessRow{{Name:"codex",Ready:true},{Name:"claude_code",Ready:false}}}
+	rows:=buildMenu(true,false,live)
+	if rows[3].label!="codex: Ready" || rows[4].label!="claude_code: Unavailable" {t.Fatalf("incorrect inventory: %+v",rows)}
+	live.Harnesses[0].Ready=false
+	if got:=buildMenu(true,false,live)[3].label;got!="codex: Unavailable"{t.Fatal(got)}
+	if got:=buildMenu(false,false,live)[3].label;got!="codex: Unavailable"{t.Fatal(got)}
+}
+func TestW02CompactLayoutAndTheme(t *testing.T) {
+	rows:=buildMenu(true,false,liveStatus{Harnesses:[]harnessRow{{Name:"codex"}}})
+	if menuHeight(rows)!=8+24*5+9+4 {t.Fatalf("unexpected height %d",menuHeight(rows))}
+	if !themeIsDark(0,nil) || themeIsDark(1,nil) {t.Fatal("theme mismatch")}
+}
