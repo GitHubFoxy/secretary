@@ -111,7 +111,7 @@ def readiness(codex, acp, binary):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["install", "doctor", "show", "env", "readiness"])
+    parser.add_argument("action", choices=["install", "doctor", "show", "env", "readiness", "rollback"])
     parser.add_argument("--scope", choices=["server", "node"], required=True)
     parser.add_argument("--root", type=Path, default=Path.home() / ".local" / "share" / "secretary" / "native")
     parser.add_argument("--codex", type=Path)
@@ -121,6 +121,20 @@ def main():
     args = parser.parse_args()
     root = args.root.resolve()
     inventory = root / args.scope / "codex-pair.json"
+    if args.action == "rollback":
+        previous_path = inventory.with_name("codex-pair.previous.json")
+        if not previous_path.is_file() or previous_path.is_symlink():
+            fail("no previously activated Codex pair to restore")
+        previous = json.loads(previous_path.read_text())
+        if previous.get("schema") != 1 or previous.get("scope") != args.scope:
+            fail("rollback inventory scope mismatch")
+        for field in ("codex", "acp"):
+            verify(previous[field])
+        readiness(Path(previous["codex"]["path"]), Path(previous["acp"]["path"]), args.readiness_bin)
+        write_inventory(inventory, previous)
+        previous_path.unlink()
+        print("Restored previous verified Codex pair for " + args.scope)
+        return
     if args.action != "install":
         if not inventory.is_file() or inventory.is_symlink():
             fail("no selected Codex pair for " + args.scope)
@@ -198,6 +212,7 @@ def main():
     data = {"schema": 1, "scope": args.scope, "harness": "codex",
             "codex": record(codex, provenance), "acp": record(acp, provenance),
             "compatibility": {"policy": "explicit_pair_and_native_acp_readiness", "validated": False}}
+    previous = None
     if args.upgrade and inventory.is_file():
         previous = json.loads(inventory.read_text())
         for field in ("codex", "acp"):
@@ -205,6 +220,8 @@ def main():
     if args.upgrade:
         readiness(codex, acp, args.readiness_bin)
         data["compatibility"]["validated"] = True
+    if previous is not None:
+        write_inventory(inventory.with_name("codex-pair.previous.json"), previous)
     write_inventory(inventory, data)
     print(json.dumps(data, indent=2))
     if not status(codex):
