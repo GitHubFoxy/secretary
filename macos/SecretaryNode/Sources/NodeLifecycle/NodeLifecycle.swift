@@ -23,7 +23,6 @@ public final class NodeLifecycle {
     private var process: Process?
     private var lastError: String?
     private let identity: URL
-    private var adoptedPID: pid_t?
 
     public init(executable: URL, configuration: URL? = nil, arguments: [String] = [], directory: URL) throws {
         self.executable = executable.resolvingSymlinksInPath().standardizedFileURL
