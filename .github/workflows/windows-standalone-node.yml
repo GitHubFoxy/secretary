@@ -168,6 +168,7 @@ jobs:
           $runningTray.Refresh()
           if (-not $runningTray.HasExited) { throw 'Post-shutdown fixture never stopped original tray' }
           if ($shell.CreateShortcut($shortcutPath).TargetPath -ne $originalTarget -or (Get-FileHash $shortcutPath -Algorithm SHA256).Hash -ne $originalLinkHash) { throw 'Post-staging rollback did not restore previous active shortcut' }
+          if ((Get-FileHash $originalTarget -Algorithm SHA256).Hash -ne (Get-FileHash (Join-Path $root 'secretary-tray.exe') -Algorithm SHA256).Hash) { throw 'Post-staging rollback modified previous release bytes' }
           $restored=@(Get-CimInstance Win32_Process -Filter "Name='secretary-tray.exe'" | Where-Object { $_.ExecutablePath -eq $originalTarget })
           if ($restored.Count -ne 1) { throw 'Post-staging rollback failed to restore exactly one previous tray process' }
           Assert-PreservedState
