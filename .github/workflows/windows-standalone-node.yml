@@ -179,6 +179,39 @@ jobs:
           if ($restored.Count -ne 1) { throw 'Post-staging rollback failed to restore exactly one previous tray process' }
           Assert-PreservedState
           if ($accountBefore -ne (Get-FileHash $workerAccount -Algorithm SHA256).Hash) { throw 'Post-staging rollback modified Worker credentials' }
+          foreach($scenario in @('shutdown-wait','new-tray-exit')) {
+            $caseDir=Join-Path $env:RUNNER_TEMP ('install07-'+$scenario)
+            Copy-Item -LiteralPath $upgradeDir -Destination $caseDir -Recurse
+            $caseScript=Join-Path $caseDir 'install-windows-node.ps1'
+            $caseText=Get-Content -LiteralPath $caseScript -Raw
+            if ($scenario -eq 'shutdown-wait') {
+              $inject='if (-not $oldProcess.HasExited) { throw'
+              $replacement="throw 'CI_SHUTDOWN_WAIT_FAILURE'; "+$inject
+              $expected='CI_SHUTDOWN_WAIT_FAILURE'
+            } else {
+              $inject='$newTray.Refresh()'
+              $replacement='Stop-Process -Id $newTray.Id -Force -ErrorAction SilentlyContinue; '+$inject
+              $expected='New tray exited during upgrade activation'
+            }
+            if (-not $caseText.Contains($inject)) { throw "Missing $scenario fault injection seam" }
+            $caseText=$caseText.Replace($inject,$replacement)
+            [IO.File]::WriteAllText($caseScript,$caseText)
+            $caseArchive=Join-Path $env:RUNNER_TEMP ('install07-'+$scenario+'.zip')
+            [IO.Compression.ZipFile]::CreateFromDirectory($caseDir,$caseArchive)
+            $caseHash=(Get-FileHash $caseArchive -Algorithm SHA256).Hash
+            try {
+              & ./scripts/install-windows-node-release.ps1 -ReleaseUri ([Uri]$caseArchive).AbsoluteUri -ReleaseSHA256 $caseHash -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
+              throw "Fault scenario $scenario unexpectedly succeeded"
+            } catch {
+              if ($_.Exception.Message -notlike ('*'+$expected+'*')) { throw }
+            }
+            if ($shell.CreateShortcut($shortcutPath).TargetPath -ne $originalTarget -or (Get-FileHash $shortcutPath -Algorithm SHA256).Hash -ne $originalLinkHash) { throw "$scenario did not restore active version" }
+            if ((Get-ItemProperty -Path $runKey -Name 'Secretary Node').'Secretary Node' -cne $originalLogin) { throw "$scenario did not restore Launch at Login" }
+            $previous=@(Get-CimInstance Win32_Process -Filter "Name='secretary-tray.exe'" | Where-Object { $_.ExecutablePath -eq $originalTarget })
+            if ($previous.Count -ne 1) { throw "$scenario did not preserve exactly one previous tray" }
+            Assert-PreservedState
+            if ((Get-FileHash $workerAccount -Algorithm SHA256).Hash -ne $accountBefore) { throw "$scenario changed Worker credentials" }
+          }
           & ./scripts/install-windows-node-release.ps1 -ReleaseUri $upgradeUri -ReleaseSHA256 $upgradeDigest -NodeDataDir $data -WorkerHome $home -Workspace $workspace -WorkerUsername 'secretary_i07_ci' -Harness claude
           if (-not $?) { throw 'Valid staged upgrade failed' }
           $currentTarget=$shell.CreateShortcut($shortcutPath).TargetPath
