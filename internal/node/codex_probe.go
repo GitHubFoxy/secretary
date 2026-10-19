@@ -51,7 +51,7 @@ func (r ExecCommandRunner) ObserveCodexACPWithCommand(ctx context.Context, binar
 		} `json:"_meta"`
 	}
 	if err := client.Request(ctx, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": acpClientCapabilities(), "clientInfo": map[string]string{"name": "secretary-readiness", "version": "1"}}, &init); err != nil {
-		return nil, nil, fmt.Errorf("codex: ACP initialize failed")
+		return nil, nil, classifyCodexACPFailure("initialize", err)
 	}
 	if init.ProtocolVersion != 1 || init.AgentInfo.Version == "" || !init.AgentCapabilities.LoadSession || !init.Meta.Steering.Supported {
 		return nil, nil, fmt.Errorf("codex: ACP version/load/steering contract unavailable")
@@ -65,7 +65,10 @@ func (r ExecCommandRunner) ObserveCodexACPWithCommand(ctx context.Context, binar
 		} `json:"models"`
 		nativeConfigResponse
 	}
-	if err := client.Request(ctx, "session/new", map[string]any{"cwd": workspace, "mcpServers": []MCPServer{}}, &created); err != nil || created.SessionID == "" {
+	if err := client.Request(ctx, "session/new", map[string]any{"cwd": workspace, "mcpServers": []MCPServer{}}, &created); err != nil {
+		return nil, nil, classifyCodexACPFailure("session/new", err)
+	}
+	if created.SessionID == "" {
 		return nil, nil, fmt.Errorf("codex: native session configuration unavailable")
 	}
 	models := []core.ObservedModelID{}
@@ -92,4 +95,18 @@ func (r ExecCommandRunner) ObserveCodexACPWithCommand(ctx context.Context, binar
 		return nil, nil, fmt.Errorf("codex: native model catalog unavailable")
 	}
 	return models, levels, nil
+}
+
+func classifyCodexACPFailure(phase string, err error) error {
+ message := strings.ToLower(err.Error())
+ if strings.Contains(message, "usage limit") || strings.Contains(message, "rate limit") || strings.Contains(message, "quota") || strings.Contains(message, "resource exhausted") || strings.Contains(message, "insufficient credits") {
+  return fmt.Errorf("codex: native quota/provider restriction during %s: %w", phase, err)
+ }
+ if strings.Contains(message, "unauthorized") || strings.Contains(message, "unauthenticated") || strings.Contains(message, "not logged in") || strings.Contains(message, "invalid api key") || strings.Contains(message, "authentication required") || strings.Contains(message, "401") || strings.Contains(message, "403") {
+  return fmt.Errorf("codex: native provider authentication required during %s: %w", phase, err)
+ }
+ if strings.Contains(message, "service unavailable") || strings.Contains(message, "upstream unavailable") || strings.Contains(message, "provider unavailable") || strings.Contains(message, "503") || strings.Contains(message, "502") {
+  return fmt.Errorf("codex: native provider outage during %s: %w", phase, err)
+ }
+ return fmt.Errorf("codex: ACP %s protocol/transport failure: %w", phase, err)
 }
