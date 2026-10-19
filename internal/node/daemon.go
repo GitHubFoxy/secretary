@@ -287,6 +287,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 	pendingCommands=append(pendingCommands,replay...)
 	startPending()
 
+	inventoryHealthy := true
 	heartbeats := time.NewTicker(d.heartbeatInterval())
 	inventories := time.NewTicker(d.inventoryInterval())
 	outbox := time.NewTicker(d.outboxPollInterval())
@@ -362,18 +363,21 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			if err := sendHeartbeat(); err != nil {
 				return err
 			}
-			if d.StatusChanged != nil { d.StatusChanged(true, inventory) }
+			if d.StatusChanged != nil { if inventoryHealthy { d.StatusChanged(true, inventory) } else { d.StatusChanged(true, core.HarnessInventorySnapshot{}) } }
 		case <-inventories.C:
 			refreshed, err := d.Inventory.Discover(ctx)
 			if err != nil {
+				inventoryHealthy = false
 				if d.StatusChanged != nil { d.StatusChanged(true, core.HarnessInventorySnapshot{}) }
 				continue
 			}
 			if err := refreshed.Validate(); err != nil || refreshed.Node != d.Identity.Node {
+				inventoryHealthy = false
 				if d.StatusChanged != nil { d.StatusChanged(true, core.HarnessInventorySnapshot{}) }
 				continue
 			}
 			if err := execution.SetInventory(refreshed); err != nil {
+				inventoryHealthy = false
 				if d.StatusChanged != nil { d.StatusChanged(true, core.HarnessInventorySnapshot{}) }
 				continue
 			}
@@ -389,6 +393,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			}
 			sentThrough = sequence
 			inventory = refreshed
+			inventoryHealthy = true
 			if d.StatusChanged != nil { d.StatusChanged(true, inventory) }
 		}
 	}
