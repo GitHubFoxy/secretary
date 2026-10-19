@@ -173,7 +173,6 @@ func TestThemeSelection(t *testing.T) {
 	}
 }
 
-// W02 status menu state is driven by transport observations, not process existence.
 func TestW02LiveStatusTransitionsAndActions(t *testing.T) {
 	cases:=[]struct{running bool; failed bool; live liveStatus; want string}{
 		{false,false,liveStatus{},"Server: Offline"},
