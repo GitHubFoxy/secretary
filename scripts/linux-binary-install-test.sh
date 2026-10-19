@@ -13,7 +13,9 @@ cat > "$home/mock/systemctl" <<'SH'
 case "$*" in
   "--user show-environment") exit 0 ;;
   "--user daemon-reload") exit 0 ;;
-  "--user enable --now secretary.service"|"--user enable --now secretary-node.service") exit 0 ;;
+  "--user enable --now secretary.service") exit 0 ;;
+  "--user enable --now secretary-node.service") [[ -z "${FAIL_NODE_SERVICE:-}" ]] ;;
+  "--user disable --now secretary-node.service secretary.service") exit 0 ;;
   *) exit 1 ;;
 esac
 SH
@@ -96,3 +98,15 @@ cmp "$home/config.before" "$state/config.toml"
 cmp "$home/node.before" "$state/node/config.json"
 [[ "$(cat "$state/node/data/session-fixture")" == native-session ]]
 [[ "$(cat "$state/node/data/identity.json")" == node-identity ]]
+
+new_home="$home/failed-service"
+mkdir -p "$new_home"
+if HOME="$new_home" FAIL_NODE_SERVICE=1 bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then
+  echo "Failed service activation was accepted" >&2
+  exit 1
+fi
+[[ ! -L "$new_home/.local/share/secretary/current" ]]
+[[ ! -e "$new_home/.config/systemd/user/secretary.service" ]]
+[[ ! -e "$new_home/.config/systemd/user/secretary-node.service" ]]
+HOME="$new_home" bash "$root/scripts/install-linux-binary.sh"
+[[ -L "$new_home/.local/share/secretary/current" ]]
