@@ -2,6 +2,7 @@ package node
 
 import (
  "archive/tar"
+ "archive/zip"
  "bytes"
  "compress/gzip"
  "context"
@@ -37,6 +38,8 @@ func codexNativeAssets() ([]codexAsset, error) {
  case "darwin/amd64": triple, acpTriple = "x86_64-apple-darwin", "x86_64-apple-darwin"
  case "linux/arm64": triple, acpTriple = "aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"
  case "linux/amd64": triple, acpTriple = "x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"
+ case "windows/amd64": triple, acpTriple = "x86_64-pc-windows-msvc", "x86_64-pc-windows-msvc"
+ case "windows/arm64": triple, acpTriple = "aarch64-pc-windows-msvc", "aarch64-pc-windows-msvc"
  default: return nil, fmt.Errorf("unsupported native Codex host: %s/%s", runtime.GOOS, runtime.GOARCH)
  }
  codexDigest, acpDigest := "", ""
@@ -45,6 +48,14 @@ func codexNativeAssets() ([]codexAsset, error) {
  case "darwin/amd64": codexDigest, acpDigest = "562a1aea0e5686283a467687d268ae33705f02fd4d40f1bc4110a415c5c1c7b1", "212fafcf971c75cd4f5060be2d5951bc322f71c49028dbd2531931494c33c784"
  case "linux/arm64": codexDigest, acpDigest = "a7261e65f4a96d8f4ca65a069c6cf2dc2c33defc341e48078acefda9461fffe4", "cb72820f53c91a63982a804bd6ab251bde51bc9371d8e638946f02d7d78580b5"
  case "linux/amd64": codexDigest, acpDigest = "beb339e8ecd9ba057a6bb2dc81ad8ca474812edfbf0fc5056ca818797648dde4", "0a9ad6c31ec9b2b87dccb7e9da3faf5d387e74470d24dbced75a160ed7b22d06"
+ case "windows/amd64": codexDigest, acpDigest = "dabdb4d16aaf10fea40b74811c96efddcd9138f122163b69ed604fcb3eb704c3", "8f290b2956c9276c1748199641b87005e2236b04a22c23050473a2c7fad59cd7"
+ case "windows/arm64": codexDigest, acpDigest = "c12842937952bc1dd757c82ae3f31c83f21b794344cf361b506b0218d4881c74", "1640fac9ff4893a9aed895ad3e8d529a7b8cdad4f65ff85d3b5c69323857e7b4"
+ }
+ if runtime.GOOS == "windows" {
+  return []codexAsset{
+   {"https://github.com/openai/codex/releases/download/rust-v"+codexPinnedVersion+"/codex-"+triple+".exe.zip", codexDigest, "codex.exe"},
+   {"https://github.com/zed-industries/codex-acp/releases/download/v"+codexACPPinnedVersion+"/codex-acp-"+codexACPPinnedVersion+"-"+acpTriple+".zip", acpDigest, "codex-acp.exe"},
+  }, nil
  }
  return []codexAsset{
   {"https://github.com/openai/codex/releases/download/rust-v"+codexPinnedVersion+"/codex-"+triple+".tar.gz", codexDigest, "codex"},
@@ -65,10 +76,39 @@ func fetchCodexExecutable(ctx context.Context, asset codexAsset, stage string) e
  digest := sha256.Sum256(compressed)
  if hex.EncodeToString(digest[:]) != asset.SHA256 { return fmt.Errorf("%s release checksum mismatch", asset.Name) }
  if err := unpackCodexArchive(compressed, asset, stage); err != nil { return err }
- return os.WriteFile(filepath.Join(stage, asset.Name+".tar.gz"), compressed, 0600)
+ return os.WriteFile(filepath.Join(stage, asset.Name+codexArchiveExtension(asset)), compressed, 0600)
+}
+
+func codexArchiveExtension(asset codexAsset) string {
+ if strings.HasSuffix(asset.URL, ".zip") { return ".zip" }
+ return ".tar.gz"
 }
 
 func unpackCodexArchive(compressed []byte, asset codexAsset, stage string) error {
+ if strings.HasSuffix(asset.URL, ".zip") {
+  archive, err := zip.NewReader(bytes.NewReader(compressed), int64(len(compressed)))
+  if err != nil { return err }
+  count := 0
+  for _, member := range archive.File {
+   name := filepath.Base(strings.ReplaceAll(member.Name, "\\", "/"))
+   if member.FileInfo().Mode()&os.ModeSymlink != 0 { return errors.New("native release zip contains symlink") }
+   if member.FileInfo().IsDir() || !strings.HasSuffix(strings.ToLower(name), ".exe") { continue }
+   if !strings.HasPrefix(strings.ToLower(name), strings.TrimSuffix(asset.Name, ".exe")+"-") && name != asset.Name { continue }
+   count++
+   if count != 1 || member.UncompressedSize64 > 256<<20 { return fmt.Errorf("invalid %s native release zip", asset.Name) }
+   input, err := member.Open()
+   if err != nil { return err }
+   output, err := os.OpenFile(filepath.Join(stage, asset.Name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
+   if err != nil { input.Close(); return err }
+   _, copyErr := io.Copy(output, io.LimitReader(input, 256<<20+1))
+   closeErr := output.Close()
+   input.Close()
+   if copyErr != nil { return copyErr }
+   if closeErr != nil { return closeErr }
+  }
+  if count != 1 { return fmt.Errorf("native release zip missing %s", asset.Name) }
+  return nil
+ }
  archive, err := gzip.NewReader(bytes.NewReader(compressed))
  if err != nil { return err }
  defer archive.Close()
@@ -101,7 +141,7 @@ func codexBinaryRecord(path, provenance string) (CodexBinaryRecord, error) {
  if err != nil { return CodexBinaryRecord{}, err }
  info, err := os.Stat(target)
  if err != nil { return CodexBinaryRecord{}, err }
- if !info.Mode().IsRegular() || info.Mode()&0111==0 { return CodexBinaryRecord{}, fmt.Errorf("not executable: %s", target) }
+ if !info.Mode().IsRegular() || (runtime.GOOS != "windows" && info.Mode()&0111==0) || (runtime.GOOS == "windows" && !strings.EqualFold(filepath.Ext(target), ".exe") && !strings.EqualFold(filepath.Ext(target), ".cmd")) { return CodexBinaryRecord{}, fmt.Errorf("not executable: %s", target) }
  contents, err := os.ReadFile(target)
  if err != nil { return CodexBinaryRecord{}, err }
  sum := sha256.Sum256(contents)
@@ -180,7 +220,9 @@ func provisionManagedPair(ctx context.Context) (string, string, error) {
 
 func installManagedCodexAssets(ctx context.Context, assets []codexAsset, root, target string) (string, string, error) {
  final := filepath.Join(root, target)
- cli, acp := filepath.Join(final, "codex"), filepath.Join(final, "codex-acp")
+ names := []string{"codex", "codex-acp"}
+ if runtime.GOOS == "windows" { names = []string{"codex.exe", "codex-acp.exe"} }
+ cli, acp := filepath.Join(final, names[0]), filepath.Join(final, names[1])
  if info, err := os.Lstat(final); err == nil {
   if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 { return "", "", errors.New("unsafe managed release directory") }
   if err := verifyManagedCodexArchives(assets, final); err != nil { return "", "", err }
@@ -198,9 +240,9 @@ func installManagedCodexAssets(ctx context.Context, assets []codexAsset, root, t
  for _, asset := range assets {
   if err := fetchCodexExecutable(ctx, asset, stage); err != nil { return "", "", err }
  }
- cliRecord, err := codexBinaryRecord(filepath.Join(stage, "codex"), "managed")
+ cliRecord, err := codexBinaryRecord(filepath.Join(stage, names[0]), "managed")
  if err != nil { return "", "", err }
- acpRecord, err := codexBinaryRecord(filepath.Join(stage, "codex-acp"), "managed")
+ acpRecord, err := codexBinaryRecord(filepath.Join(stage, names[1]), "managed")
  if err != nil { return "", "", err }
  if !strings.Contains(cliRecord.Version, codexPinnedVersion) || !strings.Contains(acpRecord.Version, codexACPPinnedVersion) { return "", "", errors.New("downloaded Codex pair versions differ from pinned release") }
  if err := os.Rename(stage, final); err != nil { return "", "", err }
@@ -209,7 +251,7 @@ func installManagedCodexAssets(ctx context.Context, assets []codexAsset, root, t
 
 func verifyManagedCodexArchives(assets []codexAsset, final string) error {
  for _, asset := range assets {
-  archivePath := filepath.Join(final, asset.Name+".tar.gz")
+  archivePath := filepath.Join(final, asset.Name+codexArchiveExtension(asset))
   info, err := os.Lstat(archivePath)
   if err != nil || !info.Mode().IsRegular() { return fmt.Errorf("managed %s trusted archive missing or unsafe", asset.Name) }
   compressed, err := os.ReadFile(archivePath)
