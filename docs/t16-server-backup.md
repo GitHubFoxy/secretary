@@ -1,6 +1,6 @@
 # T16 central Server backup and recovery (Draft)
 
-The Server owns Artifact BLOBs inside `secretary.db`; ownership and canonical Worker Results are stored in the same database. The offline utility snapshots SQLite with `VACUUM INTO`, verifies `PRAGMA integrity_check` and every Artifact checksum, and writes a manifest with SHA-256 for each file in an archive. It includes existing `config.toml`, `user.md`, `memory.md`, and `preferences.md` when they reside in the Server data directory (or `--config` points at an external config). It does **not** include remote Node-native sessions or running processes.
+The Server owns Artifact BLOBs inside `secretary.db`; ownership and canonical Worker Results are stored in the same database. The offline utility snapshots SQLite with `VACUUM INTO`, verifies `PRAGMA integrity_check` and every Artifact checksum, and writes a manifest with SHA-256 for each file in an archive. It includes existing `config.toml`, `user.md`, `memory.md`, and the canonical `user_preferences.md` when they reside in the Server data directory (or `--config` points at an external config). For compatibility with existing installations and archives, a legacy `preferences.md` file is also included and restored when present. It does **not** include remote Node-native sessions or running processes.
 
 Stop Secretary **and all other writers to its data directory** before backing up or restoring. This includes automation modifying config or memory files; only the SQLite part has a transactional snapshot.
 
