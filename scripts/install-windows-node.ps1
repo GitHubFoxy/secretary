@@ -93,11 +93,14 @@ using System.Runtime.InteropServices;
 public static class SecretaryTrayWindow {
  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wp, IntPtr lp);
+ [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
 }
 '@
  $window=[SecretaryTrayWindow]::FindWindow('SecretaryNodeTrayWindow','Secretary Node')
  if ($window -ne [IntPtr]::Zero) {
   $restarting=$true
+  [uint32]$trayPid=0
+  [void][SecretaryTrayWindow]::GetWindowThreadProcessId($window,[ref]$trayPid)
   if (-not [SecretaryTrayWindow]::PostMessage($window,0x0010,[IntPtr]::Zero,[IntPtr]::Zero)) { throw 'Cannot stop old tray; restart it manually and retry' }
   $closed=$false
   for ($attempt=0;$attempt -lt 100;$attempt++) {
@@ -105,6 +108,14 @@ public static class SecretaryTrayWindow {
    Start-Sleep -Milliseconds 100
   }
   if (-not $closed) { throw 'Old tray did not exit; upgrade files were staged without changing startup registration' }
+  if ($trayPid -ne 0) {
+   $oldProcess=Get-Process -Id $trayPid -ErrorAction SilentlyContinue
+   if ($oldProcess) {
+    $oldProcess.WaitForExit(10000) | Out-Null
+    $oldProcess.Refresh()
+    if (-not $oldProcess.HasExited) { throw 'Old tray process still holds the single-instance lock' }
+   }
+  }
  }
 }
 $shortcutPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
