@@ -95,9 +95,40 @@ for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migr
     case "$(readlink "$path")" in "$current/"*) ;; *) fail "Source-managed executable exists: $path" ;; esac
   fi
 done
+service_path="$bin:$PATH"
+unit_fields="$(SECRETARY_UNIT_CURRENT="$current" SECRETARY_UNIT_PATH="$service_path" python3 - <<'PY'
+import os
+current = os.environ["SECRETARY_UNIT_CURRENT"]
+path = os.environ["SECRETARY_UNIT_PATH"]
+if any(c in current + path for c in "\r\n"):
+  raise SystemExit("Unsafe systemd unit environment")
+def spec(value):
+  return value.replace("%", "%%")
+def quote(value):
+  return '"' + spec(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+print("WorkingDirectory=" + spec(current).replace(" ", r"\x20"))
+print("Environment=" + quote("PATH=" + path))
+print("ExecStart=" + quote(current + "/secretary"))
+PY
+)" || fail "Cannot escape systemd unit values"
+working_field="$(printf '%s\n' "$unit_fields" | grep '^WorkingDirectory=')"
+path_field="$(printf '%s\n' "$unit_fields" | grep '^Environment=')"
+executable_field="$(printf '%s\n' "$unit_fields" | grep '^ExecStart=')"
 for unit in secretary.service secretary-node.service; do
-  if [[ -e "$units/$unit" ]]; then
-    grep -Fq "Description=Secretary" "$units/$unit" || fail "Unmanaged systemd unit: $unit"
+  path="$units/$unit"
+  [[ ! -L "$path" ]] || fail "Unmanaged systemd unit symlink: $unit"
+  if [[ -e "$path" ]]; then
+    if [[ "$unit" == secretary.service ]]; then
+      description="Secretary Server"
+      exec_command="$executable_field serve"
+    else
+      description="Secretary co-located Execution Node"
+      exec_command="$executable_field node serve"
+    fi
+    grep -Fqx "Description=$description" "$path" &&
+      grep -Fqx "$working_field" "$path" &&
+      grep -Fqx "ExecStart=$exec_command" "$path" ||
+      fail "Conflicting systemd unit: $unit; remove or migrate the source-managed service before binary installation"
   fi
 done
 mkdir -p "$stage/setup-bin"
@@ -137,25 +168,6 @@ trap 'rm -f "$pointer"; rollback; rm -rf "$stage"' EXIT
 ln -s "$target" "$pointer"
 mv -Tf "$pointer" "$current"
 if [[ -z "$previous" ]]; then
-  service_path="$bin:$PATH"
-  unit_fields="$(SECRETARY_UNIT_CURRENT="$current" SECRETARY_UNIT_PATH="$service_path" python3 - <<'PY'
-import os
-current = os.environ["SECRETARY_UNIT_CURRENT"]
-path = os.environ["SECRETARY_UNIT_PATH"]
-if any(c in current + path for c in "\r\n"):
-    raise SystemExit("Unsafe systemd unit environment")
-def spec(value):
-    return value.replace("%", "%%")
-def quote(value):
-    return '"' + spec(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
-print("WorkingDirectory=" + spec(current).replace(" ", r"\x20"))
-print("Environment=" + quote("PATH=" + path))
-print("ExecStart=" + quote(current + "/secretary"))
-PY
-)" || fail "Cannot escape systemd unit values"
-  working_field="$(printf '%s\n' "$unit_fields" | grep '^WorkingDirectory=')"
-  path_field="$(printf '%s\n' "$unit_fields" | grep '^Environment=')"
-  executable_field="$(printf '%s\n' "$unit_fields" | grep '^ExecStart=')"
   for unit in secretary.service secretary-node.service; do
     [[ ! -e "$units/$unit" ]] || continue
     if [[ "$unit" == secretary.service ]]; then
@@ -199,7 +211,7 @@ EOF
       fi
     done
     health="$(curl -sS --max-time 2 -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/v1/web/session 2>/dev/null)" || health=000
-    if [[ "$ready" == true && "$health" =~ ^[1-5][0-9][0-9]$ ]]; then break; fi
+    if [[ "$ready" == true && ( "$health" == 200 || "$health" == 401 ) ]]; then break; fi
     [[ "$attempt" != 10 ]] || fail "Server/Node failed service health verification after activation"
     sleep 1
   done
