@@ -23,9 +23,14 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Node fixture compilation failed' }
           go build -ldflags '-H=windowsgui' -o "$env:RUNNER_TEMP/secretary-tray.exe" ./cmd/secretary-tray
           if ($LASTEXITCODE -ne 0) { throw 'Tray fixture compilation failed' }
-      - name: Verify Windows Codex pinned artifact and ZIP safety fixtures
+      - name: Verify Windows Codex inventory, pinned ZIP, rollback and launcher restrictions
         shell: pwsh
-        run: go test ./internal/node -run '^TestInstall07' -count=1 -timeout=5m -v
+        run: |
+          go build -o "$env:RUNNER_TEMP/install07-version-fixture.exe" ./scripts/fixtures/install07-native-fixture
+          if ($LASTEXITCODE -ne 0) { throw 'Native fixture compile failed' }
+          $env:SECRETARY_INSTALL07_TEST_EXE = Join-Path $env:RUNNER_TEMP 'install07-version-fixture.exe'
+          go test ./internal/node -run '^TestInstall07' -count=1 -timeout=5m -v
+          if ($LASTEXITCODE -ne 0) { throw 'Install07 inventory tests failed' }
       - name: Verify release archive contract and installation
         shell: powershell
         run: |
