@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - secretary
+      - internal/node/codex_*.go
       - scripts/install-linux-binary.sh
       - internal/webapi/video.go
       - internal/webapi/video_tools.go
