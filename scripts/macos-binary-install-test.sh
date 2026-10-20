@@ -126,7 +126,8 @@ status="$("$HOME/.local/bin/secretary" status)"
 [[ "$status" == *"installed: version=${version}"* ]]
 cmp "$home/db.before" "$state/secretary.db"
 cmp "$home/credentials.before" "$state/environment"
-bash "$root/scripts/install-macos-binary.sh"
+bash "$root/scripts/install-macos-binary.sh" 2>"$home/macos-upgrade.stderr"
+grep -Fq "Existing Server/Node processes are NOT restarted automatically" "$home/macos-upgrade.stderr"
 [[ "$(readlink "$state/current")" == "$upgrade_target" ]]
 cmp "$home/db.before" "$state/secretary.db"
 [[ "$(cat "$state/node/data/identity.json")" == existing-identity ]]
