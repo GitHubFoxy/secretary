@@ -80,6 +80,48 @@ func TestFetchCodexExecutableChecksumAndInterruptedArchive(t *testing.T) {
 // The upstream Linux MUSL executable is not guaranteed to fit within 128 MiB.
 // An earlier extraction limit silently wrote only the first 128 MiB, leaving a
 // checksum-verified archive but an invalid native binary that could SIGSEGV.
+
+func TestFetchCodexExecutableRetriesInterruptedHTTPSBody(t *testing.T) {
+ var buffer bytes.Buffer
+ zipped := gzip.NewWriter(&buffer)
+ tarWriter := tar.NewWriter(zipped)
+ payload := []byte("#!/bin/sh\necho codex 0.163.0\n")
+ if err := tarWriter.WriteHeader(&tar.Header{Name:"codex-linux",Typeflag:tar.TypeReg,Mode:0700,Size:int64(len(payload))}); err != nil { t.Fatal(err) }
+ if _, err := tarWriter.Write(payload); err != nil { t.Fatal(err) }
+ if err := tarWriter.Close(); err != nil { t.Fatal(err) }
+ if err := zipped.Close(); err != nil { t.Fatal(err) }
+ archive := buffer.Bytes()
+ hash := sha256.Sum256(archive)
+ attempts := 0
+ server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+  attempts++
+  w.Header().Set("Content-Length",fmt.Sprint(len(archive)))
+  if attempts == 1 {
+   _, _ = w.Write(archive[:len(archive)/2])
+   return
+  }
+  _, _ = w.Write(archive)
+ }))
+ defer server.Close()
+ prior := http.DefaultTransport
+ http.DefaultTransport = server.Client().Transport
+ defer func() { http.DefaultTransport = prior }()
+ asset := codexAsset{URL:server.URL+"/codex.tar.gz",SHA256:hex.EncodeToString(hash[:]),Name:"codex"}
+ if err := fetchCodexExecutable(context.Background(),asset,t.TempDir());err != nil {t.Fatal(err)}
+ if attempts != 2 {t.Fatalf("expected HTTPS body truncation to retry once, got %d requests",attempts)}
+}
+
+func TestDownloadCodexReleaseDoesNotRetryHTTP404(t *testing.T) {
+ attempts := 0
+ server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+  attempts++
+  http.NotFound(w,r)
+ }))
+ defer server.Close()
+ if _,err:=downloadCodexRelease(context.Background(),server.URL);err==nil || !strings.Contains(err.Error(),"HTTP 404") { t.Fatalf("expected HTTP 404 without retry, got %v",err) }
+ if attempts!=1 {t.Fatalf("unexpected HTTP 404 retries: %d",attempts)}
+}
+
 func TestUnpackCodexArchivePreservesFullExecutableOver128MiB(t *testing.T) {
  const executableSize = int64(128<<20) + 4096
  var compressed bytes.Buffer
