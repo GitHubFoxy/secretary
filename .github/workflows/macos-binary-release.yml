@@ -63,7 +63,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash scripts/build-codex-acp-bundle.sh linux-${{ matrix.arch }} "$RUNNER_TEMP/native-acp"
+          bash scripts/build-codex-acp-bundle.sh darwin-arm64 "$RUNNER_TEMP/native-acp"
       - name: Provision video tools on release builder
         shell: bash
         run: |
