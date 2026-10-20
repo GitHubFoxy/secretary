@@ -100,7 +100,9 @@ jobs:
           [[ "$arch" == arm64 ]] || arch=amd64
           bash scripts/package-macos-binary-release.sh "$version" "$GITHUB_SHA" "$arch" "$SECRETARY_PACKAGE_INPUT" "$RUNNER_TEMP/secretary-dist"
           echo "SECRETARY_TEST_VERSION=$version" >> "$GITHUB_ENV"
-          echo "SECRETARY_TEST_DIST=$RUNNER_TEMP/secretary-dist" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/secretary-test-dist"
+          cp "$RUNNER_TEMP/secretary-dist/"* "$RUNNER_TEMP/secretary-test-dist/"
+          echo "SECRETARY_TEST_DIST=$RUNNER_TEMP/secretary-test-dist" >> "$GITHUB_ENV"
       - name: Verify clean install, idempotence, failed activation and upgrade
         shell: bash
         run: |
