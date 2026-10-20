@@ -193,6 +193,15 @@ done
 ln -s "$target" "$pointer_stage" || fail "Cannot stage release switch"
 mv -fh "$pointer_stage" "$current_release" || fail "Cannot activate release pointer"
 activated=true
+if [[ -n "$previous_release" && "$previous_release" != "$target" ]]; then
+  printf 'NOTICE: macOS release upgraded on disk. Existing Server/Node processes are NOT restarted automatically (running Workers may be active). At a safe boundary, restart the managed release Server and quit/relaunch the menu-managed Secretary Node app. Verify their live revisions; installed status alone is not proof that a running process upgraded.\n' >&2
+  if [[ -f "$root/server.pid" ]]; then
+    old_pid="$(cat "$root/server.pid")"
+    if [[ "$old_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$old_pid" 2>/dev/null; then
+      printf 'NOTICE: Server PID %s may still execute the previous release. Restart explicitly using the release CLI after existing work finishes.\n' "$old_pid" >&2
+    fi
+  fi
+fi
 printf 'Installed Secretary %s (%s) for macOS %s. Launch Secretary Node from Spotlight.\n' "$version" "$revision" "$arch"
 if [[ "$bin" != "$public_bin" ]]; then
   printf 'Existing executables in %s preserved. Source-managed CLI remains unchanged.\n' "$public_bin"
