@@ -61,7 +61,11 @@ the downloaded archive (for example from a release verified by the owner);
 a hash downloaded from the same untrusted location does not establish authenticity.
 The archive must contain exactly `secretary-node.exe`, `secretary-tray.exe`,
 `release.json`, `install-windows-node.ps1` and `setup-windows-worker.ps1`, with schema 1, version, platform `windows`, architecture
-`amd64` or `arm64`, `node_sha256`, and `tray_sha256`.
+`amd64`, `node_sha256`, and `tray_sha256`.
+The supported Windows architecture is x86_64 (amd64). Windows on ARM64 is out of
+scope per [ADR-0006](adr/0006-supported-binary-platform-matrix.md); the manifest
+parser still accepts an `arm64` value, but no ARM64 artifact is published or
+accepted.
 The installer validates the outer pinned SHA-256 before extracting and checks
 the component digests and host architecture before delegating to existing Worker
 account provisioning. It does not install a Secretary Server or FFmpeg.
@@ -77,7 +81,7 @@ UI transitions still require desktop acceptance.
 ## Install 07 native runtime and acceptance matrix
 
 A selected Codex runtime uses the shared Install 03 Node inventory, persisted under
-the installing Windows owner's home. Windows amd64/arm64 use pinned Codex CLI
+the installing Windows owner's home. Windows amd64 use pinned Codex CLI
 0.163.0 and codex-acp 0.16.0 native PE executables with SHA-256 values sourced
 from the corresponding upstream release assets. Neither Go, global npm nor
 Node.js is required by the installed release. Native direct process launch
@@ -106,13 +110,13 @@ CI: `windows-standalone-node.yml` verifies archive/manifest/hash rejection,
 Windows extraction fixtures, first/repeated installation and identity/Worker
 credential preservation. `windows-node.yml` retains W01/W02/W03 live-status,
 Node reconnect, privileged account, workspace ACL, headless and tray lifecycle
-fixtures. `windows-node-binary-release.yml` builds versioned amd64/arm64
+fixtures. `windows-node-binary-release.yml` builds versioned amd64
 Node/tray pairs on GitHub Actions. `go test ./internal/node -run '^TestInstall07'
 -count=1 -timeout=5m -v` exercises Windows native artifact contract.
 Independent reviewer and CI must verify these changes; no CI result is claimed.
 
 Manual real desktop/provider acceptance still required: fresh standard-user
-Windows x64/ARM64 with no Go/Node/npm, administrator UAC only when Worker
+Windows x64 with no Go/Node/npm, administrator UAC only when Worker
 provisioning is needed; Start/Search, dark/light theme, status and Open Logs;
 logout/login, Launch at Login, Quit with active work, headless co-existence;
 first enrollment with a remote macOS/Linux Server; authorized Codex native
