@@ -75,13 +75,13 @@ flowchart TD
 
 ### Установка одной командой (Linux/macOS)
 
-Пользовательская установка берёт готовый релизный бинарник. Go, mise, npm и клонирование репозитория не нужны. Скрипт выбирает платформу и последнюю опубликованную версию с полным набором файлов для неё, включая prerelease. Для фиксации версии можно задать `SECRETARY_VERSION=0.1.0-alpha.5`.
+Пользовательская установка берёт готовый релизный бинарник. Go, mise, npm и клонирование репозитория не нужны. Единый `scripts/install.sh` определяет платформу и выбирает новейший **полностью опубликованный релиз для неё, включая prerelease** — `SECRETARY_VERSION` указывать не требуется. Текущий проверенный релиз: [v0.1.0-alpha.6](https://github.com/GitHubFoxy/secretary/releases/tag/v0.1.0-alpha.6). Для явной фиксации можно **экспортировать** `SECRETARY_VERSION=0.1.0-alpha.6` перед запуском команды. Не используйте напрямую старые платформенные инсталляторы для автоматического выбора prerelease.
 
 ```sh
 curl -fsSL --retry-all-errors --retry 5 --retry-delay 2 https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install.sh | bash
 ```
 
-На Linux требуются systemd user session, zsh, Python 3 и OpenSSL; на macOS — штатные системные утилиты. Подробнее о подписи приложения и Gatekeeper: [macOS binary installation](docs/macos-binary-install.md).
+На Linux требуются systemd user session, zsh, Python 3 и OpenSSL; на macOS — штатные системные утилиты. Публикация alpha.6 содержит бинарные дистрибутивы Linux amd64/arm64 и macOS arm64 (для macOS Intel артефакт пока не опубликован, хотя диспетчер эту архитектуру распознаёт). Публичный E2E подтверждён на Linux amd64 (Omarchy) и macOS arm64. Подробнее: [Linux binary installation](docs/linux-binary-install.md), [macOS binary installation](docs/macos-binary-install.md).
 
 Установка разработчика **из исходников** по-прежнему доступна по отдельному адресу; она требует Git, Go 1.27.1+ или mise:
 
