@@ -87,6 +87,27 @@ jobs:
           mkdir -p "$RUNNER_TEMP/secretary-test-dist"
           cp "$RUNNER_TEMP/dist/"* "$RUNNER_TEMP/secretary-test-dist/"
           echo "SECRETARY_TEST_DIST=$RUNNER_TEMP/secretary-test-dist" >> "$GITHUB_ENV"
+      - name: Real bundled modern ACP initialize / new / load / steering gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/actual-release-acp"
+          mkdir -p "$dest"
+          tar -xzf "$RUNNER_TEMP/dist/secretary-v${SECRETARY_TEST_VERSION}-linux-${{ matrix.arch }}.tar.gz" -C "$dest"
+          package="$dest/secretary-v${SECRETARY_TEST_VERSION}-linux-${{ matrix.arch }}"
+          mkdir -p "$dest/adapter"
+          (cd "$package/bin/native-acp" && sha256sum -c codex-acp.tar.gz.sha256)
+          tar -xzf "$package/bin/native-acp/codex-acp.tar.gz" -C "$dest/adapter"
+          mv "$dest/adapter/codex-acp-2.2.2" "$dest/adapter/codex-acp"
+          chmod +x "$dest/adapter/codex-acp"
+          case "${{ matrix.arch }}" in
+            amd64) triple=x86_64-unknown-linux-musl; expected=beb339e8ecd9ba057a6bb2dc81ad8ca474812edfbf0fc5056ca818797648dde4 ;;
+            arm64) triple=aarch64-unknown-linux-musl; expected=a7261e65f4a96d8f4ca65a069c6cf2dc2c33defc341e48078acefda9461fffe4 ;;
+          esac
+          curl -fLsS --retry 3 -o "$dest/codex.tar.gz" "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-$triple.tar.gz"
+          echo "$expected  $dest/codex.tar.gz" | sha256sum -c -
+          tar -xzf "$dest/codex.tar.gz" -C "$dest/adapter"
+          python3 scripts/codex-acp-release-gate.py --acp "$dest/adapter/codex-acp" --codex "$dest/adapter/codex-$triple"
       - name: Packaged video dependency contract
         shell: bash
         run: bash scripts/video-tools-contract-test.sh "$RUNNER_TEMP/package"
