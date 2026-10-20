@@ -66,7 +66,9 @@ bash "$root/scripts/install.sh"
 [[ "$(cat "$TEST_RESULT")" == "0.1.0-alpha.5" ]]
 [[ "$(wc -l < "$TEST_URL_LOG" | tr -d '[:space:]')" == 2 ]]
 grep -Fq '/releases?per_page=30' "$TEST_URL_LOG"
-grep -Fq "feat/unified-binary-installer-20261020/scripts/install-$platform-binary.sh" "$TEST_URL_LOG"
+installer=install-linux-binary.sh
+[[ "$platform" != darwin ]] || installer=install-macos-binary.sh
+grep -Fq "feat/unified-binary-installer-20261020/scripts/$installer" "$TEST_URL_LOG"
 
 : > "$TEST_URL_LOG"
 SECRETARY_VERSION=0.1.0-alpha.5 bash "$root/scripts/install.sh"
