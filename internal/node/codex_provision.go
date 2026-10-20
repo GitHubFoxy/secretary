@@ -191,7 +191,10 @@ func codexBinaryRecordWithACPPolicy(path, provenance string, isACP bool) (CodexB
    return CodexBinaryRecord{}, fmt.Errorf("ACP help probe %s: %v", target, helpErr)
   }
   label := codexACPExternalVersionless
-  if provenance == "managed" { label = codexACPManagedVersionless }
+  if provenance == "managed" {
+   label = codexACPManagedVersionless
+   if runtime.GOOS == "windows" { label = "codex-acp " + codexACPWindowsLegacyVersion + codexACPManagedVersionSuffix }
+  }
   return CodexBinaryRecord{Path:absolute, ResolvedPath:target, Version:label, SHA256:hex.EncodeToString(sum[:]), Provenance:provenance}, nil
  }
  if strings.TrimSpace(string(version)) == "" { return CodexBinaryRecord{}, fmt.Errorf("empty version: %s", target) }
