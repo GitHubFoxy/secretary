@@ -20,6 +20,7 @@ import (
  "strings"
  "runtime"
  "testing"
+ "time"
 )
 
 func codexFixtureExecutable(t *testing.T, dir, name string) string {
@@ -80,6 +81,123 @@ func TestFetchCodexExecutableChecksumAndInterruptedArchive(t *testing.T) {
 // The upstream Linux MUSL executable is not guaranteed to fit within 128 MiB.
 // An earlier extraction limit silently wrote only the first 128 MiB, leaving a
 // checksum-verified archive but an invalid native binary that could SIGSEGV.
+
+func TestFetchCodexExecutableRetriesInterruptedHTTPSBody(t *testing.T) {
+ var buffer bytes.Buffer
+ zipped := gzip.NewWriter(&buffer)
+ tarWriter := tar.NewWriter(zipped)
+ payload := []byte("#!/bin/sh\necho codex 0.163.0\n")
+ if err := tarWriter.WriteHeader(&tar.Header{Name:"codex-linux",Typeflag:tar.TypeReg,Mode:0700,Size:int64(len(payload))}); err != nil { t.Fatal(err) }
+ if _, err := tarWriter.Write(payload); err != nil { t.Fatal(err) }
+ if err := tarWriter.Close(); err != nil { t.Fatal(err) }
+ if err := zipped.Close(); err != nil { t.Fatal(err) }
+ archive := buffer.Bytes()
+ hash := sha256.Sum256(archive)
+ attempts := 0
+ server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+  attempts++
+  w.Header().Set("Content-Length",fmt.Sprint(len(archive)))
+  if attempts == 1 {
+   _, _ = w.Write(archive[:len(archive)/2])
+   return
+  }
+  _, _ = w.Write(archive)
+ }))
+ defer server.Close()
+ prior := http.DefaultTransport
+ http.DefaultTransport = server.Client().Transport
+ defer func() { http.DefaultTransport = prior }()
+ asset := codexAsset{URL:server.URL+"/codex.tar.gz",SHA256:hex.EncodeToString(hash[:]),Name:"codex"}
+ if err := fetchCodexExecutable(context.Background(),asset,t.TempDir());err != nil {t.Fatal(err)}
+ if attempts != 2 {t.Fatalf("expected HTTPS body truncation to retry once, got %d requests",attempts)}
+}
+
+func TestDownloadCodexReleaseDoesNotRetryHTTP404(t *testing.T) {
+ attempts := 0
+ server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+  attempts++
+  http.NotFound(w,r)
+ }))
+ defer server.Close()
+ if err:=downloadCodexReleaseWithClient(context.Background(),server.Client(),server.URL,filepath.Join(t.TempDir(),"archive.tar.gz"),0);err==nil || !strings.Contains(err.Error(),"HTTP 404") { t.Fatalf("expected HTTP 404 without retry, got %v",err) }
+ if attempts!=1 {t.Fatalf("unexpected HTTP 404 retries: %d",attempts)}
+}
+
+func TestCodexReleaseResumesInterruptedRangeToDisk(t *testing.T) {
+ var compressed bytes.Buffer
+ writer := gzip.NewWriter(&compressed)
+ archive := tar.NewWriter(writer)
+ payload := []byte("#!/bin/sh\necho codex 0.163.0\n")
+ if err := archive.WriteHeader(&tar.Header{Name:"codex-linux",Typeflag:tar.TypeReg,Mode:0700,Size:int64(len(payload))}); err != nil {t.Fatal(err)}
+ if _,err:=archive.Write(payload);err!=nil {t.Fatal(err)}
+ if err:=archive.Close();err!=nil {t.Fatal(err)}
+ if err:=writer.Close();err!=nil {t.Fatal(err)}
+ data := compressed.Bytes()
+ digest := sha256.Sum256(data)
+ half := len(data)/2
+ requests := 0
+ server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
+  requests++
+  if requests == 1 {
+   if r.Header.Get("Range") != "" { t.Errorf("first request had Range: %q",r.Header.Get("Range")) }
+   hijack,ok := w.(http.Hijacker)
+   if !ok {t.Error("hijacking unsupported");return}
+   conn,_,err:=hijack.Hijack()
+   if err!=nil {t.Error(err);return}
+   _,_ = fmt.Fprintf(conn,"HTTP/1.1 200 OK\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",len(data))
+   _,_ = conn.Write(data[:half])
+   _ = conn.Close()
+   return
+  }
+  if r.Header.Get("Range") != fmt.Sprintf("bytes=%d-",half) {t.Errorf("resume requested wrong byte offset: %q",r.Header.Get("Range"))}
+  w.Header().Set("Content-Length",fmt.Sprint(len(data)-half))
+  w.Header().Set("Content-Range",fmt.Sprintf("bytes %d-%d/%d",half,len(data)-1,len(data)))
+  w.WriteHeader(http.StatusPartialContent)
+  _,_ = w.Write(data[half:])
+ }))
+ defer server.Close()
+ asset := codexAsset{URL:server.URL,SHA256:hex.EncodeToString(digest[:]),Name:"codex"}
+ stage := t.TempDir()
+ if err:=fetchCodexExecutable(context.Background(),asset,stage);err!=nil {t.Fatal(err)}
+ if requests!=2 {t.Fatalf("expected one Range resume, got %d requests",requests)}
+ received,err:=os.ReadFile(filepath.Join(stage,"codex.tar.gz"))
+ if err!=nil || !bytes.Equal(received,data) {t.Fatalf("archive not recovered: %v",err)}
+}
+
+func TestCodexReleaseSlowBodyAndRangeIgnored(t *testing.T) {
+ payload := []byte("complete-response-with-delayed-body")
+ serverRequests := 0
+ server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
+  serverRequests++
+  if r.Header.Get("Range")!="" && r.Header.Get("Range")!="bytes=8-" {t.Errorf("unexpected Range: %s",r.Header.Get("Range"))}
+  w.WriteHeader(http.StatusOK)
+  _,_ = w.Write(payload[:8])
+  w.(http.Flusher).Flush()
+  time.Sleep(80*time.Millisecond)
+  _,_ = w.Write(payload[8:])
+ }))
+ defer server.Close()
+ target := filepath.Join(t.TempDir(),"archive.tar.gz")
+ if err:=os.WriteFile(target,[]byte("badpart!"),0600);err!=nil {t.Fatal(err)}
+ if err:=downloadCodexReleaseWithClient(context.Background(),server.Client(),server.URL,target,0);err!=nil {t.Fatal(err)}
+ actual,err:=os.ReadFile(target)
+ if err!=nil || !bytes.Equal(actual,payload) {t.Fatalf("server ignored Range but archive was not restarted: %v",err)}
+ if serverRequests!=1 {t.Fatalf("unexpected retry count: %d",serverRequests)}
+ if codexDownloadTimeout<10*time.Minute {t.Fatal("slow Codex download timeout regressed below ten minutes")}
+}
+
+func TestCodexReleaseRejectsMismatchedContentRange(t *testing.T) {
+ server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request) {
+  w.Header().Set("Content-Range","bytes 0-2/20")
+  w.WriteHeader(http.StatusPartialContent)
+  _,_ = w.Write([]byte("bad"))
+ }))
+ defer server.Close()
+ target:=filepath.Join(t.TempDir(),"archive.tar.gz")
+ if err:=os.WriteFile(target,[]byte("partial"),0600);err!=nil {t.Fatal(err)}
+ if err:=downloadCodexReleaseWithClient(context.Background(),server.Client(),server.URL,target,0);err==nil || !strings.Contains(err.Error(),"Content-Range") {t.Fatalf("incorrect resume accepted: %v",err)}
+}
+
 func TestUnpackCodexArchivePreservesFullExecutableOver128MiB(t *testing.T) {
  const executableSize = int64(128<<20) + 4096
  var compressed bytes.Buffer
