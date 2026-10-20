@@ -150,14 +150,46 @@ done
 HOME="$clean_home" bash "$root/scripts/install-macos-binary.sh"
 [[ -d "$clean_home/Applications/Secretary Node.app" ]]
 [[ "$(readlink "$clean_home/.local/share/secretary/current")" == "$clean_home/.local/share/secretary/releases/secretary-v${upgrade_version}-darwin-$arch" ]]
+# Source-managed CLI symlinks and binaries must survive a side-by-side install.
 source_home="$home/source-profile"
 mkdir -p "$source_home/.local/bin"
-printf '#!/bin/sh\nexit 0\n' > "$source_home/source-cli"
+printf '#!/bin/sh\nprintf "source-managed\\n"\n' > "$source_home/source-cli"
 chmod +x "$source_home/source-cli"
 ln -s "$source_home/source-cli" "$source_home/.local/bin/secretary"
+printf '#!/bin/sh\nprintf "source-daemon\\n"\n' > "$source_home/.local/bin/secretaryd"
+chmod +x "$source_home/.local/bin/secretaryd"
+cp "$source_home/.local/bin/secretaryd" "$home/source-daemon.before"
+HOME="$source_home" bash "$root/scripts/install-macos-binary.sh"
+[[ "$(readlink "$source_home/.local/bin/secretary")" == "$source_home/source-cli" ]]
+cmp "$home/source-daemon.before" "$source_home/.local/bin/secretaryd"
+[[ "$("$source_home/.local/bin/secretary")" == source-managed ]]
+[[ "$("$source_home/.local/bin/secretaryd")" == source-daemon ]]
+source_state="$source_home/.local/share/secretary"
+source_private_bin="$source_state/bin"
+[[ -L "$source_state/current" && -d "$source_home/Applications/Secretary Node.app" ]]
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  [[ -L "$source_private_bin/$executable" ]]
+  expected="$source_state/current/bin/$executable"
+  [[ "$executable" != secretary ]] || expected="$source_state/current/secretary"
+  [[ "$(readlink "$source_private_bin/$executable")" == "$expected" ]]
+  if [[ "$executable" != secretary && "$executable" != secretaryd ]]; then
+    [[ ! -e "$source_home/.local/bin/$executable" && ! -L "$source_home/.local/bin/$executable" ]]
+  fi
+done
+status="$(HOME="$source_home" SECRETARY_BINARY_STAGE_BIN="$source_private_bin" "$source_state/current/secretary" status)"
+[[ "$status" == *"installed: version=${upgrade_version}"* ]] || { echo "Side-by-side binary CLI cannot report its release" >&2; exit 1; }
+HOME="$source_home" bash "$root/scripts/install-macos-binary.sh"
+cmp "$home/source-daemon.before" "$source_home/.local/bin/secretaryd"
+[[ "$(readlink "$source_home/.local/bin/secretary")" == "$source_home/source-cli" ]]
+
+# Private bin tampering must fail closed and must not overwrite the source.
+rm -f "$source_private_bin/secretaryd"
+printf '#!/bin/sh\nexit 0\n' > "$source_private_bin/secretaryd"
+chmod +x "$source_private_bin/secretaryd"
 if HOME="$source_home" bash "$root/scripts/install-macos-binary.sh" >/dev/null 2>&1; then
-  echo "Binary install converted an existing source-managed CLI" >&2
+  echo "Unmanaged private release binary unexpectedly accepted" >&2
   exit 1
 fi
+cmp "$home/source-daemon.before" "$source_home/.local/bin/secretaryd"
 [[ "$(readlink "$source_home/.local/bin/secretary")" == "$source_home/source-cli" ]]
 echo "macOS binary install/rollback/upgrade fixture completed"
