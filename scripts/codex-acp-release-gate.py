@@ -126,14 +126,16 @@ with tempfile.TemporaryDirectory(prefix="secretary-modern-acp-") as d:
             observed = str(new)
             assert "max" in observed and "ultra" in observed, "modern ACP lost max/ultra reasoning options"
         request("session/load",{"sessionId":session_id,"cwd":str(cwd),"mcpServers":[]},seconds=75)
-        request("_session/steering",{"sessionId":session_id,"prompt":[{"type":"text","text":"release-gate steering handler check"}]},
-                seconds=20,allow_idle_steering_error=True)
+        first = request("_session/steering",{"sessionId":session_id,"prompt":[{"type":"text","text":"release-gate start steering turn"}]}, seconds=30)
+        assert first.get("outcome") == "startedNewTurn", "steering failed to start a new turn"
+        second = request("_session/steering",{"sessionId":session_id,"prompt":[{"type":"text","text":"release-gate inject into active turn"}]}, seconds=30)
+        assert second.get("outcome") == "injected", "steering did not inject into active turn"
         assert not any("unknown variant" in x and "max" in x for x in errors), "reasoning effort max parsing failed"
         if args.mock_app_server:
             wire = (work / "mock-codex-wire.log").read_text()
-            for method in ("initialize", "model/list", "thread/start", "thread/resume"):
+            for method in ("initialize", "model/list", "thread/start", "thread/resume", "turn/start", "turn/steer"):
                 assert method in wire, "missing Codex app-server method " + method
-        print("PACKAGED MODERN ACP (mock app-server model cache): initialize / new / load / steering handler PASS",flush=True)
+        print("PACKAGED MODERN ACP (mock app-server model cache): initialize / new / load / start-turn steering / inject steering PASS",flush=True)
     finally:
         proc.terminate()
         try:
