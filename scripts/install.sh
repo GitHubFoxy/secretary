@@ -18,7 +18,7 @@ done
 if [[ "$platform" == linux ]]; then
   command -v python3 >/dev/null 2>&1 || fail "Python 3 is required by the Linux binary installer"
 else
-  command -v plutil >/dev/null 2>&1 || fail "plutil is required by the macOS binary installer"
+  command -v osascript >/dev/null 2>&1 || fail "osascript is required by the macOS release selector"
 fi
 
 ref="${SECRETARY_INSTALLER_REF:-main}"
@@ -47,18 +47,26 @@ for release in releases:
 PY
 )" || fail "Cannot parse published releases"
   else
-    for ((index=0; index<30; index++)); do
-      tag="$(plutil -extract "$index.tag_name" raw -o - "$stage/releases.json" 2>/dev/null)" || break
-      [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || continue
-      draft="$(plutil -extract "$index.draft" raw -o - "$stage/releases.json" 2>/dev/null)" || continue
-      [[ "$draft" == false ]] || continue
-      assets="$(plutil -extract "$index.assets" json -o - "$stage/releases.json" 2>/dev/null)" || continue
-      name="secretary-$tag-$platform-$arch"
-      if [[ "$assets" == *"$name.json"* && "$assets" == *"$name.tar.gz"* ]]; then
-        version="${tag#v}"
-        break
-      fi
-    done
+    version="$(osascript -l JavaScript - "$stage/releases.json" "$platform" "$arch" <<'JXA'
+ObjC.import('Foundation');
+function run(args) {
+  var bytes = $.NSData.dataWithContentsOfFile($(args[0]));
+  if (!bytes) throw new Error('Cannot read release metadata');
+  var contents = ObjC.unwrap($.NSString.alloc.initWithDataEncoding(bytes, $.NSUTF8StringEncoding));
+  var releases = JSON.parse(contents);
+  var platform = args[1], arch = args[2];
+  for (var i = 0; i < releases.length; i++) {
+    var release = releases[i];
+    var tag = release.tag_name;
+    if (release.draft || !release.published_at || typeof tag !== 'string' || !/^v[0-9]+\\.[0-9]+\\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$/.test(tag)) continue;
+    var name = 'secretary-' + tag + '-' + platform + '-' + arch;
+    var assets = (release.assets || []).map(function(asset) { return asset.name; });
+    if (assets.indexOf(name + '.json') !== -1 && assets.indexOf(name + '.tar.gz') !== -1) return tag.substring(1);
+  }
+  return '';
+}
+JXA
+)" || fail "Cannot parse published macOS releases"
   fi
   [[ -n "$version" ]] || fail "No published release with both $platform/$arch manifest and archive; set SECRETARY_VERSION"
 fi
