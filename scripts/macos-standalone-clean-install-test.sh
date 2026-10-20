@@ -5,6 +5,8 @@ dist="$1"
 root="$(cd "$(dirname "$0")/.." && pwd)"
 arch="$(uname -m)"
 [[ "$arch" == arm64 ]] || arch=amd64
+base_version="${SECRETARY_TEST_VERSION:-0.0.0-ci}"
+upgrade_version="${base_version}-upgrade"
 home="$(mktemp -d "${RUNNER_TEMP:-/tmp}/secretary-node-clean.XXXXXXXX")"
 trap 'rm -rf "$home"' EXIT
 mkdir -p "$home/fixtures" "$home/dist" "$home/unpack"
@@ -14,7 +16,7 @@ cat > "$home/fixtures/claude" <<'EOF'
 echo claude-fixture
 EOF
 chmod +x "$home/fixtures/claude"
-for version in 0.0.0-ci 0.0.1-ci; do
+for version in "$base_version" "$upgrade_version"; do
   name="secretary-v$version-darwin-$arch"
   tar -xzf "$dist/$name.tar.gz" -C "$home/unpack"
   cat > "$home/unpack/$name/bin/secretary-node" <<'EOF'
@@ -63,8 +65,8 @@ export SECRETARY_NODE_SERVER=https://fixture.invalid
 export SECRETARY_NODE_NAME=fixture-node SECRETARY_NODE_HARNESS=claude
 export SECRETARY_NODE_PAIRING_TOKEN=approved-test-token
 export SECRETARY_RELEASE_BASE="file://$home/dist"
-export SECRETARY_VERSION=0.0.0-ci
-export SECRETARY_NODE_PINNED_SHA256="$(shasum -a 256 "$home/dist/secretary-v0.0.0-ci-darwin-$arch.tar.gz" | awk '{print $1}')"
+export SECRETARY_VERSION="$base_version"
+export SECRETARY_NODE_PINNED_SHA256="$(shasum -a 256 "$home/dist/secretary-v${base_version}-darwin-$arch.tar.gz" | awk '{print $1}')"
 cat > "$home/fixtures/install" <<'EOF'
 #!/bin/bash
 if [[ "${FAULT_CONFIG_INSTALL:-}" == 1 ]]; then exit 76; fi
@@ -93,8 +95,8 @@ printf 'saved native session' > "$state/data/node-state.json"
 unset SECRETARY_NODE_PAIRING_TOKEN
 bash "$root/scripts/install-macos-standalone-node.sh"
 [[ "$(cat "$state/data/enroll.calls")" == paired ]]
-export SECRETARY_VERSION=0.0.1-ci
-export SECRETARY_NODE_PINNED_SHA256="$(shasum -a 256 "$home/dist/secretary-v0.0.1-ci-darwin-$arch.tar.gz" | awk '{print $1}')"
+export SECRETARY_VERSION="$upgrade_version"
+export SECRETARY_NODE_PINNED_SHA256="$(shasum -a 256 "$home/dist/secretary-v${upgrade_version}-darwin-$arch.tar.gz" | awk '{print $1}')"
 if FAULT_NODE_ACTIVATED=1 bash "$root/scripts/install-macos-standalone-node.sh" > "$home/activation.log" 2>&1; then
   echo "Accepted failed activated Node readiness" >&2; exit 1
 fi
@@ -104,5 +106,5 @@ diff -qr "$home/old-app" "$HOME/Applications/Secretary Node.app"
 [[ "$(cat "$state/data/node-state.json")" == 'saved native session' ]]
 [[ "$(cat "$state/data/enroll.calls")" == paired ]]
 bash "$root/scripts/install-macos-standalone-node.sh"
-[[ "$(readlink "$state/current")" == *0.0.1-ci* ]]
+[[ "$(readlink "$state/current")" == "$state/releases/secretary-v${upgrade_version}-darwin-$arch" ]]
 echo "Clean install, recovery, enrollment and activated readiness rollback fixture completed"
