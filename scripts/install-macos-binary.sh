@@ -106,14 +106,47 @@ if [[ -e "$current_release" || -L "$current_release" ]]; then
 else
   previous_release=""
 fi
-# Never overwrite user-managed source binaries or symlinks. A collision in
-# any public executable name selects one dedicated release-only bin directory.
+# Before alpha.8 macOS linked CLIs directly to the immutable versioned
+# release directory. Those old links are ours only when they point EXACTLY to a
+# complete, locally installed Secretary macOS release for this architecture.
+# Migrate such links to current; never rewrite an arbitrary user/source link.
+release_link_relative() {
+  if [[ "$1" == secretary ]]; then printf 'secretary'; else printf 'bin/%s' "$1"; fi
+}
+is_installer_owned_link() {
+  local path="$1" relative="$2" linked legacy_root legacy_name old_version old_revision receipt
+  [[ -L "$path" ]] || return 1
+  linked="$(readlink "$path")" || return 1
+  [[ "$linked" == "$current_release/$relative" ]] && return 0
+  # Require the exact old path shape: no /../, alternate traversal, or
+  # relative user-managed link can be upgraded automatically.
+  case "$linked" in "$releases/secretary-v"*"-$arch/$relative") ;; *) return 1 ;; esac
+  legacy_root="${linked%/$relative}"
+  legacy_name="${legacy_root##*/}"
+  [[ "$legacy_root" == "$releases/$legacy_name" ]] || return 1
+  [[ -d "$legacy_root" && ! -L "$legacy_root" && ! -L "$legacy_root/bin" ]] || return 1
+  [[ -f "$legacy_root/VERSION" && ! -L "$legacy_root/VERSION" &&
+     -f "$legacy_root/REVISION" && ! -L "$legacy_root/REVISION" &&
+     -f "$legacy_root/$relative" && ! -L "$legacy_root/$relative" ]] || return 1
+  receipt="$legacy_root/RELEASE-MANIFEST.json"
+  [[ -f "$receipt" && ! -L "$receipt" ]] || return 1
+  old_version="$(cat "$legacy_root/VERSION")" || return 1
+  old_revision="$(cat "$legacy_root/REVISION")" || return 1
+  [[ "$old_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || return 1
+  [[ "$old_revision" =~ ^[[:xdigit:]]{40}$ ]] || return 1
+  [[ "$legacy_name" == "secretary-v${old_version}-darwin-$arch" ]] || return 1
+  [[ "$(plutil -extract version raw -o - "$receipt" 2>/dev/null)" == "$old_version" &&
+     "$(plutil -extract revision raw -o - "$receipt" 2>/dev/null)" == "$old_revision" &&
+     "$(plutil -extract os raw -o - "$receipt" 2>/dev/null)" == darwin &&
+     "$(plutil -extract arch raw -o - "$receipt" 2>/dev/null)" == "$arch" &&
+     "$(plutil -extract archive raw -o - "$receipt" 2>/dev/null)" == "$legacy_name.tar.gz" ]]
+}
+# A foreign public executable still forces *all* release links to the private
+# bin. In that mode, leave every public file/symlink exactly as it was.
 for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
   path="$public_bin/$executable"
-  expected="$current_release/bin/$executable"
-  [[ "$executable" != secretary ]] || expected="$current_release/secretary"
   if [[ -e "$path" || -L "$path" ]]; then
-    if [[ ! -L "$path" || "$(readlink "$path")" != "$expected" ]]; then
+    if ! is_installer_owned_link "$path" "$(release_link_relative "$executable")"; then
       bin="$root/bin"
       break
     fi
@@ -125,10 +158,8 @@ if [[ "$bin" != "$public_bin" ]]; then
 fi
 for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
   path="$bin/$executable"
-  expected="$current_release/bin/$executable"
-  [[ "$executable" != secretary ]] || expected="$current_release/secretary"
   if [[ -e "$path" || -L "$path" ]]; then
-    [[ -L "$path" && "$(readlink "$path")" == "$expected" ]] || fail "Conflicting release executable: $path"
+    is_installer_owned_link "$path" "$(release_link_relative "$executable")" || fail "Conflicting release executable: $path"
   fi
 done
 # Keep an existing source-managed app bundle intact as well as its CLI.
@@ -161,7 +192,12 @@ had_app=false
 [[ ! -d "$app" ]] || had_app=true
 activated=false
 created_links=()
-pointer_stage="$HOME/.local/share/secretary/.current.$$.new"
+replaced_links=()
+replaced_targets=()
+pointer_stage="$HOME/.local/share/secretary/.current.$.new"
+# Stage every replacement in the destination directory so mv -h remains an
+# atomic symlink replacement on macOS. Roll back even on a partial migration.
+link_stage="$(mktemp -d "$bin/.secretary-links.XXXXXXXX")" || fail "Cannot stage release links"
 activation_rollback() {
   if [[ "$activated" != true ]]; then
     if [[ -L "$current_release" && "$(readlink "$current_release")" == "$target" ]]; then
@@ -169,6 +205,15 @@ activation_rollback() {
       if [[ -n "$previous_release" ]]; then ln -s "$previous_release" "$current_release"; fi
     fi
     for created in "${created_links[@]}"; do rm -f "$created"; done
+    for (( index=0; index<${#replaced_links[@]}; index++ )); do
+      restore="$link_stage/rollback.$index"
+      if ln -s "${replaced_targets[$index]}" "$restore"; then
+        mv -fh "$restore" "${replaced_links[$index]}" ||
+          printf 'WARNING: Cannot restore legacy release link %s\n' "${replaced_links[$index]}" >&2
+      else
+        printf 'WARNING: Cannot stage rollback for release link %s\n' "${replaced_links[$index]}" >&2
+      fi
+    done
     if [[ -d "$backup" ]]; then
       rm -rf "$app"
       mv "$backup" "$app"
@@ -178,16 +223,24 @@ activation_rollback() {
     rm -f "$pointer_stage"
   fi
 }
-trap 'activation_rollback; rm -rf "$stage"' EXIT
+trap 'activation_rollback; rm -rf "$link_stage" "$stage"' EXIT
 if [[ -d "$app" ]]; then mv "$app" "$backup"; fi
 mv "$app_stage" "$app" || fail "Cannot activate native Node.app"
 for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
   path="$bin/$executable"
-  if [[ ! -L "$path" ]]; then
-    dest="$current_release/bin/$executable"
-    [[ "$executable" == secretary ]] && dest="$current_release/secretary"
+  dest="$current_release/$(release_link_relative "$executable")"
+  if [[ ! -e "$path" && ! -L "$path" ]]; then
     ln -s "$dest" "$path" || fail "Cannot activate $executable"
     created_links+=("$path")
+  elif [[ "$(readlink "$path")" != "$dest" ]]; then
+    is_installer_owned_link "$path" "$(release_link_relative "$executable")" ||
+      fail "Release executable changed ownership during setup: $path"
+    old_link="$(readlink "$path")"
+    replacement="$link_stage/$executable"
+    ln -s "$dest" "$replacement" || fail "Cannot stage owned link migration: $executable"
+    replaced_links+=("$path")
+    replaced_targets+=("$old_link")
+    mv -fh "$replacement" "$path" || fail "Cannot migrate owned release link: $executable"
   fi
 done
 ln -s "$target" "$pointer_stage" || fail "Cannot stage release switch"
