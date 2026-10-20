@@ -37,6 +37,15 @@ bash "$root/scripts/install-macos-binary.sh"
 status="$("$HOME/.local/bin/secretary" status)"
 [[ "$status" == *"installed: version=${version}"* ]]
 [[ "$status" == *"running Server: pid="*"version=${version} revision=$revision"* ]]
+# Root-cause regression: running setup against an active packaged CLI must
+# not repin any public executable to an immutable version directory.
+env -u SECRETARY_BINARY_STAGE_BIN "$HOME/.local/bin/secretary" setup --non-interactive
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  relative="bin/$executable"
+  [[ "$executable" != secretary ]] || relative=secretary
+  [[ "$(readlink "$HOME/.local/bin/$executable")" == "$HOME/.local/share/secretary/current/$relative" ]] ||
+    { echo "Setup pinned a public link to a versioned release: $executable" >&2; exit 1; }
+done
 session_http="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/v1/web/session)"
 [[ "$session_http" != 000 ]]
 "$HOME/.local/bin/secretary" stop
@@ -212,6 +221,25 @@ done
 [[ ! -e "$state/bin/secretary" && ! -L "$state/bin/secretary" ]]
 status="$(env -u SECRETARY_BINARY_STAGE_BIN "$HOME/.local/bin/secretary" status)"
 [[ "$status" == *"installed: version=${upgrade_version}"* ]]
+# Running setup again after migration must not create new legacy links.
+env -u SECRETARY_BINARY_STAGE_BIN "$HOME/.local/bin/secretary" setup --non-interactive
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  relative="bin/$executable"
+  [[ "$executable" != secretary ]] || relative=secretary
+  [[ "$(readlink "$HOME/.local/bin/$executable")" == "$state/current/$relative" ]] ||
+    { echo "Post-upgrade setup broke current link: $executable" >&2; exit 1; }
+done
+# A stale, inactive release CLI must refuse to repin links to older bytes.
+if env -u SECRETARY_BINARY_STAGE_BIN "$initial_target/secretary" setup --non-interactive >"$home/inactive-release-setup.log" 2>&1; then
+  echo "Inactive binary release setup unexpectedly succeeded" >&2
+  exit 1
+fi
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  relative="bin/$executable"
+  [[ "$executable" != secretary ]] || relative=secretary
+  [[ "$(readlink "$HOME/.local/bin/$executable")" == "$state/current/$relative" ]] ||
+    { echo "Inactive release setup rewrote public link: $executable" >&2; exit 1; }
+done
 # Re-enable a pointer activation fault for the independent clean-HOME
 # rollback assertion. The previous partial-migration test removed its mv shim.
 cat > "$home/break/mv" <<'EOF'
