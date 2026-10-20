@@ -66,7 +66,10 @@ jobs:
           if [[ "$GITHUB_REF_TYPE" != tag ]]; then version=0.0.0-ci; fi
           bash scripts/package-linux-binary-release.sh "$version" "$GITHUB_SHA" "${{ matrix.arch }}" "$RUNNER_TEMP/package" "$RUNNER_TEMP/dist"
           echo "SECRETARY_PACKAGE_INPUT=$RUNNER_TEMP/package" >> "$GITHUB_ENV"
-          echo "SECRETARY_TEST_DIST=$RUNNER_TEMP/dist" >> "$GITHUB_ENV"
+          echo "SECRETARY_TEST_VERSION=$version" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/secretary-test-dist"
+          cp "$RUNNER_TEMP/dist/"* "$RUNNER_TEMP/secretary-test-dist/"
+          echo "SECRETARY_TEST_DIST=$RUNNER_TEMP/secretary-test-dist" >> "$GITHUB_ENV"
       - name: Packaged video dependency contract
         shell: bash
         run: bash scripts/video-tools-contract-test.sh "$RUNNER_TEMP/package"
