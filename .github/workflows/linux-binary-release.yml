@@ -9,6 +9,7 @@ on:
       - internal/acp/jsonl.go
       - internal/node/harness_probe.go
       - scripts/install-linux-binary.sh
+      - scripts/installer-tls-retry-test.sh
       - internal/webapi/video.go
       - internal/webapi/video_tools.go
       - internal/webapi/video_tools_test.go
@@ -122,6 +123,9 @@ jobs:
         shell: bash
         run: |
           bash scripts/linux-binary-install-test.sh "$SECRETARY_PACKAGE_INPUT" "$SECRETARY_TEST_DIST" "$GITHUB_SHA"
+      - name: TLS handshake interruption retry contract
+        shell: bash
+        run: bash scripts/installer-tls-retry-test.sh
       - name: Prerelease-tag installer regression
         if: github.ref_type != 'tag'
         shell: bash
