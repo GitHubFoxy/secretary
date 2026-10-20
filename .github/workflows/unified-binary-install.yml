@@ -1,0 +1,30 @@
+name: Unified one-command binary installer
+
+on:
+  pull_request:
+    paths:
+      - 'scripts/install.sh'
+      - 'scripts/install-from-source.sh'
+      - 'scripts/unified-binary-install-test.sh'
+      - '.github/workflows/unified-binary-install.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dispatch-and-prerelease:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate bash syntax
+        shell: bash
+        run: bash -n scripts/install.sh scripts/install-from-source.sh scripts/unified-binary-install-test.sh
+      - name: Verify platform selection and prerelease fixture without downloading binaries
+        shell: bash
+        run: bash scripts/unified-binary-install-test.sh

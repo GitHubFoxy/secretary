@@ -95,12 +95,13 @@ PY
 root="$HOME/.local/share/secretary"
 releases="$root/releases"
 current="$root/current"
-bin="$HOME/.local/bin"
+public_bin="$HOME/.local/bin"
+bin="$public_bin"
 units="$HOME/.config/systemd/user"
-for directory in "$root" "$releases" "$bin" "$units"; do
+for directory in "$root" "$releases" "$public_bin" "$units"; do
   [[ ! -L "$directory" ]] || fail "Unsafe symlink installation directory"
 done
-mkdir -p "$releases" "$bin" "$units"
+mkdir -p "$releases" "$public_bin" "$units"
 target="$releases/$name"
 if [[ -e "$target" ]]; then
   [[ -d "$target" && ! -L "$target" ]] || fail "Release directory conflict"
@@ -123,14 +124,30 @@ if [[ -e "$current" || -L "$current" ]]; then
   case "$previous" in "$releases/"*) ;; *) fail "Unmanaged release pointer" ;; esac
 fi
 for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
-  path="$bin/$executable"
+  path="$public_bin/$executable"
+  expected="$current/bin/$executable"
+  [[ "$executable" != secretary ]] || expected="$current/secretary"
   if [[ -e "$path" || -L "$path" ]]; then
-    [[ -L "$path" ]] || fail "Unmanaged executable: $path"
-    case "$(readlink "$path")" in "$current/"*) ;; *) fail "Source-managed executable exists: $path" ;; esac
+    if [[ ! -L "$path" || "$(readlink "$path")" != "$expected" ]]; then
+      bin="$root/bin"
+      break
+    fi
+  fi
+done
+if [[ "$bin" != "$public_bin" ]]; then
+  [[ ! -L "$bin" ]] || fail "Unsafe private executable directory"
+  mkdir -p "$bin"
+fi
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  path="$bin/$executable"
+  expected="$current/bin/$executable"
+  [[ "$executable" != secretary ]] || expected="$current/secretary"
+  if [[ -e "$path" || -L "$path" ]]; then
+    [[ -L "$path" && "$(readlink "$path")" == "$expected" ]] || fail "Unmanaged release executable: $path"
   fi
 done
 service_path="$bin:$PATH"
-unit_fields="$(SECRETARY_UNIT_CURRENT="$current" SECRETARY_UNIT_PATH="$service_path" python3 - <<'PY'
+unit_fields="$(SECRETARY_UNIT_CURRENT="$current" SECRETARY_UNIT_PATH="$service_path" SECRETARY_UNIT_BIN="$bin" SECRETARY_UNIT_PUBLIC_BIN="$public_bin" python3 - <<'PY'
 import os
 current = os.environ["SECRETARY_UNIT_CURRENT"]
 path = os.environ["SECRETARY_UNIT_PATH"]
@@ -142,13 +159,24 @@ def quote(value):
   return '"' + spec(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 print("WorkingDirectory=" + spec(current).replace(" ", r"\x20"))
 print("Environment=" + quote("PATH=" + path))
+if os.environ["SECRETARY_UNIT_BIN"] != os.environ["SECRETARY_UNIT_PUBLIC_BIN"]:
+  print("Environment=" + quote("SECRETARY_BINARY_STAGE_BIN=" + os.environ["SECRETARY_UNIT_BIN"]))
 print("ExecStart=" + quote(current + "/secretary"))
 PY
 )" || fail "Cannot escape systemd unit values"
 working_field="$(printf '%s\n' "$unit_fields" | grep '^WorkingDirectory=')"
-path_field="$(printf '%s\n' "$unit_fields" | grep '^Environment=')"
+path_field="$(printf '%s\n' "$unit_fields" | grep '^Environment="PATH=')"
+bin_field="$(printf '%s\n' "$unit_fields" | grep '^Environment="SECRETARY_BINARY_STAGE_BIN=' || true)"
+environment_fields="$path_field"
+if [[ -n "$bin_field" ]]; then
+  environment_fields="$(printf '%s\n%s' "$path_field" "$bin_field")"
+fi
 executable_field="$(printf '%s\n' "$unit_fields" | grep '^ExecStart=')"
 executable_field="${executable_field#ExecStart=}"
+# A unit belongs to the binary installer only when its expected identity matches.
+# A change in release-bin mode is an owned-unit upgrade, not a foreign-unit
+# conflict. Unknown private-bin paths and source-checkout units remain forbidden.
+unit_update=false
 for unit in secretary.service secretary-node.service; do
   path="$units/$unit"
   [[ ! -L "$path" ]] || fail "Unmanaged systemd unit symlink: $unit"
@@ -163,7 +191,19 @@ for unit in secretary.service secretary-node.service; do
     grep -Fqx "Description=$description" "$path" &&
       grep -Fqx "$working_field" "$path" &&
       grep -Fqx "ExecStart=$exec_command" "$path" ||
-      fail "Conflicting systemd unit: $unit; remove or migrate the source-managed service before binary installation"
+      fail "Conflicting systemd unit: $unit. Refusing to replace a source-managed or unrecognized unit. If these are your old source-installed units: systemctl --user disable --now secretary-node.service secretary.service; move the two unit files out of \$HOME/.config/systemd/user/ to a safe backup; systemctl --user daemon-reload; then retry the installer. Do not delete them automatically."
+    existing_bin_field="$(grep '^Environment="SECRETARY_BINARY_STAGE_BIN=' "$path" || true)"
+    expected_private_field="Environment=\"SECRETARY_BINARY_STAGE_BIN=$root/bin\""
+    if [[ -n "$existing_bin_field" && "$existing_bin_field" != "$expected_private_field" ]]; then
+      fail "Unmanaged systemd release-bin setting: $unit"
+    fi
+    if [[ -n "$bin_field" ]]; then
+      grep -Fqx "$bin_field" "$path" || unit_update=true
+    elif [[ -n "$existing_bin_field" ]]; then
+      unit_update=true
+    fi
+  elif [[ -n "$previous" ]]; then
+    fail "Previously installed release is missing an owned systemd unit: $unit"
   fi
 done
 mkdir -p "$stage/setup-bin"
@@ -181,6 +221,8 @@ if ! SECRETARY_BINARY_PREINSTALLED_ONLY=1 \
 fi
 created=()
 unit_created=()
+unit_replaced=()
+unit_reconfigured=false
 activated=false
 rollback() {
   if [[ "$activated" != true ]]; then
@@ -193,7 +235,20 @@ rollback() {
       systemctl --user disable --now secretary-node.service secretary.service >/dev/null 2>&1 || true
     fi
     for path in "${unit_created[@]}"; do rm -f "$path"; done
+    for unit in "${unit_replaced[@]}"; do
+      restore_tmp="$(mktemp "$units/.${unit}.rollback.XXXXXXXX")" || continue
+      if cp -p "$stage/units-backup/$unit" "$restore_tmp"; then
+        mv -f "$restore_tmp" "$units/$unit" || printf 'WARNING: Could not restore %s\n' "$unit" >&2
+      else
+        rm -f "$restore_tmp"
+        printf 'WARNING: Could not restore %s\n' "$unit" >&2
+      fi
+    done
     systemctl --user daemon-reload >/dev/null 2>&1 || true
+    if [[ "$unit_reconfigured" == true && -n "$previous" ]]; then
+      systemctl --user restart secretary.service >/dev/null 2>&1 || printf 'WARNING: Previous Server needs manual restart\n' >&2
+      systemctl --user restart secretary-node.service >/dev/null 2>&1 || printf 'WARNING: Previous Node needs manual restart\n' >&2
+    fi
   fi
 }
 trap 'rollback; rm -rf "$stage"' EXIT
@@ -210,9 +265,9 @@ pointer="$root/.current.$$.new"
 trap 'rm -f "$pointer"; rollback; rm -rf "$stage"' EXIT
 ln -s "$target" "$pointer"
 mv -Tf "$pointer" "$current"
-if [[ -z "$previous" ]]; then
+if [[ -z "$previous" || "$unit_update" == true ]]; then
+  mkdir -p "$stage/units-backup"
   for unit in secretary.service secretary-node.service; do
-    [[ ! -e "$units/$unit" ]] || continue
     if [[ "$unit" == secretary.service ]]; then
       exec_command="$executable_field serve"
       description="Secretary Server"
@@ -222,7 +277,16 @@ if [[ -z "$previous" ]]; then
       description="Secretary co-located Execution Node"
       after="network-online.target secretary.service"
     fi
-    cat > "$units/$unit" <<EOF
+    path="$units/$unit"
+    if [[ -f "$path" ]]; then
+      cp -p "$path" "$stage/units-backup/$unit" || fail "Cannot back up owned systemd unit: $unit"
+      unit_replaced+=("$unit")
+    else
+      unit_created+=("$path")
+    fi
+    unit_reconfigured=true
+    unit_tmp="$(mktemp "$units/.${unit}.new.XXXXXXXX")" || fail "Cannot stage systemd unit: $unit"
+    cat > "$unit_tmp" <<EOF
 [Unit]
 Description=$description
 After=$after
@@ -230,7 +294,7 @@ After=$after
 [Service]
 Type=simple
 ${working_field}
-${path_field}
+${environment_fields}
 ExecStart=${exec_command}
 Restart=on-failure
 RestartSec=3
@@ -238,12 +302,19 @@ RestartSec=3
 [Install]
 WantedBy=default.target
 EOF
-    chmod 600 "$units/$unit"
-    unit_created+=("$units/$unit")
+    chmod 600 "$unit_tmp"
+    mv -f "$unit_tmp" "$path" || fail "Cannot update owned systemd unit: $unit"
   done
-  systemctl --user daemon-reload || fail "Cannot register systemd units"
-  systemctl --user enable --now secretary.service || fail "Cannot activate Server service"
-  systemctl --user enable --now secretary-node.service || fail "Cannot activate Node service"
+  systemctl --user daemon-reload || fail "Cannot reload updated systemd units"
+  if [[ -z "$previous" ]]; then
+    systemctl --user enable --now secretary.service || fail "Cannot activate Server service"
+    systemctl --user enable --now secretary-node.service || fail "Cannot activate Node service"
+  else
+    # The running processes retain the old environment until explicitly
+    # restarted. Restart both after atomically replacing owned units.
+    systemctl --user restart secretary.service || fail "Cannot restart Server with updated release bin"
+    systemctl --user restart secretary-node.service || fail "Cannot restart Node with updated release bin"
+  fi
   for attempt in 1 2 3 4 5 6 7 8 9 10; do
     ready=true
     for service in secretary.service secretary-node.service; do
@@ -260,5 +331,9 @@ EOF
   done
 fi
 activated=true
-printf 'Secretary %s (%s) installed for linux/%s. Inspect: systemctl --user status secretary.service secretary-node.service; secretary status
-' "$version" "$revision" "$arch"
+printf 'Secretary %s (%s) installed for linux/%s. Inspect: systemctl --user status secretary.service secretary-node.service\n' "$version" "$revision" "$arch"
+if [[ "$bin" != "$public_bin" ]]; then
+  printf 'Existing executables in %s preserved. Release CLI: SECRETARY_BINARY_STAGE_BIN=%q %q status\n' "$public_bin" "$bin" "$current/secretary"
+else
+  printf 'Release CLI: secretary status\n'
+fi

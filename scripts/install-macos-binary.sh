@@ -70,12 +70,14 @@ done
 [[ -x "$payload/Secretary Node.app/Contents/MacOS/SecretaryNode" ]] || fail "Native Secretary Node.app missing"
 codesign --verify "$payload/Secretary Node.app" || fail "Secretary Node.app signature verification failed; do not bypass Gatekeeper"
 
-releases="$HOME/.local/share/secretary/releases"
-current_release="$HOME/.local/share/secretary/current"
-bin="$HOME/.local/bin"
+root="$HOME/.local/share/secretary"
+releases="$root/releases"
+current_release="$root/current"
+public_bin="$HOME/.local/bin"
+bin="$public_bin"
 app="$HOME/Applications/Secretary Node.app"
-mkdir -p "$releases" "$bin" "$HOME/Applications"
-[[ ! -L "$releases" && ! -L "$bin" ]] || fail "Installation directories may not be symlinks"
+mkdir -p "$releases" "$public_bin" "$HOME/Applications"
+[[ ! -L "$root" && ! -L "$releases" && ! -L "$public_bin" ]] || fail "Installation directories may not be symlinks"
 target="$releases/$name"
 if [[ -e "$target" ]]; then
   [[ -d "$target" && ! -L "$target" && -f "$target/REVISION" && "$(cat "$target/REVISION")" == "$revision" ]] || fail "Existing release directory conflicts with requested version"
@@ -104,15 +106,40 @@ if [[ -e "$current_release" || -L "$current_release" ]]; then
 else
   previous_release=""
 fi
+# Never overwrite user-managed source binaries or symlinks. A collision in
+# any public executable name selects one dedicated release-only bin directory.
 for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
-  path="$bin/$executable"
+  path="$public_bin/$executable"
+  expected="$current_release/bin/$executable"
+  [[ "$executable" != secretary ]] || expected="$current_release/secretary"
   if [[ -e "$path" || -L "$path" ]]; then
-    [[ -L "$path" ]] || fail "Existing $path is not managed; source installation is left unchanged"
-    [[ "$(readlink "$path")" == "$current_release/"* ]] || fail "Existing $path belongs to another installation; source installation is left unchanged"
+    if [[ ! -L "$path" || "$(readlink "$path")" != "$expected" ]]; then
+      bin="$root/bin"
+      break
+    fi
   fi
 done
+if [[ "$bin" != "$public_bin" ]]; then
+  [[ ! -L "$bin" ]] || fail "Unsafe private release binary directory"
+  mkdir -p "$bin"
+fi
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  path="$bin/$executable"
+  expected="$current_release/bin/$executable"
+  [[ "$executable" != secretary ]] || expected="$current_release/secretary"
+  if [[ -e "$path" || -L "$path" ]]; then
+    [[ -L "$path" && "$(readlink "$path")" == "$expected" ]] || fail "Conflicting release executable: $path"
+  fi
+done
+# Keep an existing source-managed app bundle intact as well as its CLI.
+if [[ "$bin" != "$public_bin" && ( -e "$app" || -L "$app" ) ]]; then
+  app="$HOME/Applications/Secretary Node (Release).app"
+fi
 legacy="$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
-[[ ! -e "$legacy" ]] || fail "CLI Node LaunchAgent conflicts with menu-managed Node; uninstall it first"
+legacy_node_agent=false
+if [[ -e "$legacy" || -L "$legacy" ]]; then
+  legacy_node_agent=true
+fi
 [[ ! -e "$app" || -d "$app" ]] || fail "Existing app location is not a directory"
 if [[ -d "$app" ]]; then
   existing_id="$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist" 2>/dev/null || true)"
@@ -123,6 +150,10 @@ fi
 app_stage="$stage/new-node.app"
 cp -R "$target/Secretary Node.app" "$app_stage"
 codesign --verify "$app_stage" || fail "Staged Node.app did not verify"
+mkdir -p "$stage/setup-bin"
+for executable in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  ln -s "$target/bin/$executable" "$stage/setup-bin/$executable"
+done
 SECRETARY_BINARY_PREINSTALLED_ONLY=1 SECRETARY_BINARY_STAGE_BIN="$stage/setup-bin" "$target/secretary" setup --non-interactive || fail "Private setup failed; active release has not changed"
 
 backup="$stage/previous-app"
@@ -162,4 +193,17 @@ done
 ln -s "$target" "$pointer_stage" || fail "Cannot stage release switch"
 mv -fh "$pointer_stage" "$current_release" || fail "Cannot activate release pointer"
 activated=true
-printf 'Installed Secretary %s (%s) for macOS %s. Start Server with secretary start --no-open; launch Secretary Node from Spotlight.\n' "$version" "$revision" "$arch"
+printf 'Installed Secretary %s (%s) for macOS %s. Launch Secretary Node from Spotlight.\n' "$version" "$revision" "$arch"
+if [[ "$bin" != "$public_bin" ]]; then
+  printf 'Existing executables in %s preserved. Source-managed CLI remains unchanged.\n' "$public_bin"
+  printf 'Release CLI: SECRETARY_BINARY_STAGE_BIN=%q %q status\n' "$bin" "$current_release/secretary"
+  printf 'Start release Server: SECRETARY_BINARY_STAGE_BIN=%q %q start --no-open\n' "$bin" "$current_release/secretary"
+else
+  printf 'Start Server: secretary start --no-open\n'
+fi
+if [[ "$app" != "$HOME/Applications/Secretary Node.app" ]]; then
+  printf 'Existing Secretary Node.app preserved. Release app: %s. Open explicitly: open %q\n' "$app" "$app"
+fi
+if [[ "$legacy_node_agent" == true ]]; then
+  printf 'WARNING: Preserved existing CLI Node LaunchAgent at %s. Stop the source-managed Node before launching the release menu-managed Node; the installer did not stop or change the old agent.\n' "$legacy" >&2
+fi

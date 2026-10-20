@@ -14,13 +14,24 @@ The installer fetches the latest published tagged version, verifies its manifest
 
 The installer does not install Codex, Claude Code, their credentials or ACP. An authorized, already working native harness must be available. If you choose Codex, the existing setup implementation may require the independently provided native ACP adapter. The installer does not provide FFmpeg. An existing source-managed `~/.local/bin/secretary` is deliberately not converted into binary release management.
 
+When any public `~/.local/bin/secretary*` executable belongs to an existing source installation, the release is installed **side-by-side** with its own links in `~/.local/share/secretary/bin`. Source-owned files and symlinks are not overwritten. The installer prints the release-only status and start commands; for example:
+
+```sh
+SECRETARY_BINARY_STAGE_BIN="$HOME/.local/share/secretary/bin" \
+  "$HOME/.local/share/secretary/current/secretary" status
+SECRETARY_BINARY_STAGE_BIN="$HOME/.local/share/secretary/bin" \
+  "$HOME/.local/share/secretary/current/secretary" start --no-open
+```
+
+The public `secretary` command can still point to the original source checkout; use the explicit release CLI when a collision is reported. This preserves the old **executables**, but does not isolate the existing Secretary state/configuration under `~/.local/share/secretary`; do not run source and release daemons concurrently against the same SQLite database or TCP ports. If a source-managed CLI collision also coincides with an existing `~/Applications/Secretary Node.app`, the installer keeps that app untouched and installs the signed release app under `~/Applications/Secretary Node (Release).app` instead; use the explicitly printed `open` command rather than Spotlight to avoid ambiguity between duplicate bundle identifiers. A pre-existing source-managed CLI Node LaunchAgent is preserved and reported as a warning, not removed or stopped. The owner must stop the old source-managed Node before opening the menu-managed release Node to prevent competing processes.
+
 After installation, use `secretary doctor`, `secretary start --no-open`, `secretary status`, `secretary logs`, and `secretary stop`. Launch **Secretary Node** separately from Spotlight; starting the Secretary Server does not automatically start the Node. Use the existing Web bootstrap-code pairing to open the local Web client. Node pairing remains owner-controlled and preserves an existing identity.
 
 The installer records `VERSION` and `REVISION` alongside the installed binaries. The macOS application bundle is ad-hoc signed by the CI packaging job; it is **not** a Developer ID/notarized distribution. macOS Gatekeeper may refuse an internet-downloaded application. Do not disable Gatekeeper or remove quarantine attributes automatically. A notarized, Developer ID-signed release is needed for frictionless distribution outside an explicitly user-approved local trust decision.
 
 Re-running an identical version leaves existing data under `~/.local/share/secretary` intact, including SQLite, profiles, environment credentials, Node configuration, pairing identity and native session data. Release directories are version-pinned; the active Server/Node/CLI binary symlinks resolve through one atomic `current` pointer. The previously installed Node.app and pointer are restored when a synchronous activation step fails. For upgrades of active processes, explicitly stop and restart the Server and menu-managed Node; an already running process does not automatically adopt the new binary. Use `secretary doctor` and compare the running processes before declaring a production upgrade complete. The installer does not itself stop running Workers.
 
-To continue installing and updating from source, use the separate `scripts/install.sh` route documented in [terminal installation](terminal-install.md). Binary releases do not invoke source builds or `secretary update`.
+To continue installing and updating from source, use the separate `scripts/install-from-source.sh` route documented in [terminal installation](terminal-install.md). Binary releases do not invoke source builds or `secretary update`.
 
 ## Release CI and manual smoke
 

@@ -15,6 +15,15 @@ cat > "$home/mock/systemctl" <<'SH'
 case "$*" in
   "--user show-environment") exit 0 ;;
   "--user daemon-reload") exit 0 ;;
+  "--user restart secretary.service")
+    [[ -z "${TEST_SYSTEMCTL_LOG:-}" ]] || echo restart-server >> "$TEST_SYSTEMCTL_LOG"
+    exit 0 ;;
+  "--user restart secretary-node.service")
+    [[ -z "${TEST_SYSTEMCTL_LOG:-}" ]] || echo restart-node >> "$TEST_SYSTEMCTL_LOG"
+    if [[ "${FAIL_RESTART_NODE_ONCE:-}" == 1 && ! -f "${TEST_RESTART_FAILURE_MARKER:?}" ]]; then
+      touch "$TEST_RESTART_FAILURE_MARKER"; exit 1
+    fi
+    exit 0 ;;
   "--user enable --now secretary.service") exit 0 ;;
   "--user enable --now secretary-node.service") [[ -z "${FAIL_NODE_SERVICE:-}" ]] ;;
   "--user disable --now secretary-node.service secretary.service") exit 0 ;;
@@ -129,6 +138,66 @@ cmp "$home/node.before" "$state/node/config.json"
 [[ "$(cat "$state/node/data/session-fixture")" == native-session ]]
 [[ "$(cat "$state/node/data/identity.json")" == node-identity ]]
 
+# Existing binary-owned public-bin units must be upgraded when a foreign
+# source-managed executable causes a switch to private release links.
+transition_home="$home/public-to-private-transition"
+mkdir -p "$transition_home"
+HOME="$transition_home" SECRETARY_VERSION="$version" bash "$root/scripts/install-linux-binary.sh"
+transition_state="$transition_home/.local/share/secretary"
+transition_units="$transition_home/.config/systemd/user"
+transition_public="$transition_home/.local/bin"
+transition_private="$transition_state/bin"
+[[ -z "$(grep '^Environment="SECRETARY_BINARY_STAGE_BIN=' "$transition_units/secretary.service" || true)" ]]
+rm "$transition_public/secretaryd"
+printf '#!/bin/sh\nexit 9\n' > "$transition_public/secretaryd"
+chmod +x "$transition_public/secretaryd"
+cp "$transition_public/secretaryd" "$home/source.before"
+transition_log="$home/restarts.log"
+HOME="$transition_home" TEST_SYSTEMCTL_LOG="$transition_log" SECRETARY_VERSION="$upgrade_version" bash "$root/scripts/install-linux-binary.sh"
+[[ "$(readlink "$transition_state/current")" == "$transition_state/releases/secretary-v${upgrade_version}-linux-$arch" ]]
+cmp "$home/source.before" "$transition_public/secretaryd"
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  [[ -L "$transition_private/$executable" ]]
+done
+for unit in secretary.service secretary-node.service; do
+  grep -Fqx "Environment=\"SECRETARY_BINARY_STAGE_BIN=$transition_private\"" "$transition_units/$unit"
+  grep -Fq "Environment=\"PATH=$transition_private:" "$transition_units/$unit"
+  [[ "$(grep -c '^ExecStart=' "$transition_units/$unit")" == 1 ]]
+done
+systemd-analyze --user verify "$transition_units/secretary.service" "$transition_units/secretary-node.service"
+[[ "$(grep -cx restart-server "$transition_log")" == 1 ]]
+[[ "$(grep -cx restart-node "$transition_log")" == 1 ]]
+HOME="$transition_home" TEST_SYSTEMCTL_LOG="$transition_log" SECRETARY_VERSION="$upgrade_version" bash "$root/scripts/install-linux-binary.sh"
+[[ "$(grep -cx restart-server "$transition_log")" == 1 ]]
+[[ "$(grep -cx restart-node "$transition_log")" == 1 ]]
+
+# Failed restart after a managed-unit rewrite must restore original unit bytes
+# and release pointer without changing the source-owned executable.
+rollback_home="$home/private-transition-restart-failure"
+mkdir -p "$rollback_home"
+HOME="$rollback_home" SECRETARY_VERSION="$version" bash "$root/scripts/install-linux-binary.sh"
+rollback_state="$rollback_home/.local/share/secretary"
+rollback_units="$rollback_home/.config/systemd/user"
+cp "$rollback_units/secretary.service" "$home/previous-server.unit"
+cp "$rollback_units/secretary-node.service" "$home/previous-node.unit"
+rm "$rollback_home/.local/bin/secretaryd"
+printf '#!/bin/sh\nexit 4\n' > "$rollback_home/.local/bin/secretaryd"
+chmod +x "$rollback_home/.local/bin/secretaryd"
+cp "$rollback_home/.local/bin/secretaryd" "$home/rollback-source.before"
+rollback_marker="$home/node-restart-failed-once"
+if HOME="$rollback_home" FAIL_RESTART_NODE_ONCE=1 TEST_RESTART_FAILURE_MARKER="$rollback_marker" TEST_SYSTEMCTL_LOG="$home/rollback-restarts.log" SECRETARY_VERSION="$upgrade_version" bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then
+  echo "Updated owned unit survived an unsuccessful Node restart" >&2
+  exit 1
+fi
+[[ -f "$rollback_marker" ]]
+[[ "$(readlink "$rollback_state/current")" == "$rollback_state/releases/secretary-v${version}-linux-$arch" ]]
+cmp "$home/previous-server.unit" "$rollback_units/secretary.service"
+cmp "$home/previous-node.unit" "$rollback_units/secretary-node.service"
+cmp "$home/rollback-source.before" "$rollback_home/.local/bin/secretaryd"
+[[ ! -e "$rollback_state/bin/secretaryd" && ! -L "$rollback_state/bin/secretaryd" ]]
+HOME="$rollback_home" SECRETARY_VERSION="$upgrade_version" bash "$root/scripts/install-linux-binary.sh"
+grep -Fqx "Environment=\"SECRETARY_BINARY_STAGE_BIN=$rollback_state/bin\"" "$rollback_units/secretary.service"
+
 new_home="$home/failed-service"
 mkdir -p "$new_home"
 if HOME="$new_home" FAIL_NODE_SERVICE=1 bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then
@@ -208,6 +277,43 @@ for scope in ("server", "node"):
     assert pair["acp"]["path"] == acp
     assert pair["codex"]["provenance"] == pair["acp"]["provenance"] == "external"
 PY
+# Preserve source-managed public executables while activating release-only links.
+collision_home="$home/previous-source-executables"
+mkdir -p "$collision_home/.local/bin"
+printf '#!/bin/sh\nprintf "legacy\\n"\n' > "$collision_home/.local/bin/secretaryd"
+chmod +x "$collision_home/.local/bin/secretaryd"
+cp "$collision_home/.local/bin/secretaryd" "$home/legacy-secretaryd"
+HOME="$collision_home" SECRETARY_VERSION="$version" bash "$root/scripts/install-linux-binary.sh"
+collision_state="$collision_home/.local/share/secretary"
+collision_bin="$collision_state/bin"
+cmp "$home/legacy-secretaryd" "$collision_home/.local/bin/secretaryd"
+[[ ! -e "$collision_home/.local/bin/secretary" && ! -L "$collision_home/.local/bin/secretary" ]]
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  [[ -L "$collision_bin/$executable" ]]
+  expected="$collision_state/current/bin/$executable"
+  [[ "$executable" != secretary ]] || expected="$collision_state/current/secretary"
+  [[ "$(readlink "$collision_bin/$executable")" == "$expected" ]]
+done
+grep -Fqx "Environment=\"SECRETARY_BINARY_STAGE_BIN=$collision_bin\"" "$collision_home/.config/systemd/user/secretary.service"
+grep -Fqx "Environment=\"SECRETARY_BINARY_STAGE_BIN=$collision_bin\"" "$collision_home/.config/systemd/user/secretary-node.service"
+grep -Fqx "ExecStart=\"$collision_state/current/secretary\" serve" "$collision_home/.config/systemd/user/secretary.service"
+grep -Fqx "ExecStart=\"$collision_state/current/secretary\" node serve" "$collision_home/.config/systemd/user/secretary-node.service"
+systemd-analyze --user verify "$collision_home/.config/systemd/user/secretary.service" "$collision_home/.config/systemd/user/secretary-node.service"
+HOME="$collision_home" SECRETARY_BINARY_STAGE_BIN="$collision_bin" "$collision_state/current/secretary" status | grep -F "installed: version=$version"
+HOME="$collision_home" SECRETARY_BINARY_STAGE_BIN="$collision_bin" "$collision_state/current/secretary" doctor | grep -F "Doctor found no problems"
+HOME="$collision_home" SECRETARY_VERSION="$version" bash "$root/scripts/install-linux-binary.sh"
+cmp "$home/legacy-secretaryd" "$collision_home/.local/bin/secretaryd"
+[[ ! -e "$collision_home/.local/bin/secretary" && ! -L "$collision_home/.local/bin/secretary" ]]
+
+source_link_home="$home/previous-source-symlink"
+mkdir -p "$source_link_home/.local/bin"
+ln -s /tmp/existing-source-checkout/secretary "$source_link_home/.local/bin/secretary"
+HOME="$source_link_home" SECRETARY_VERSION="$version" bash "$root/scripts/install-linux-binary.sh"
+[[ "$(readlink "$source_link_home/.local/bin/secretary")" == /tmp/existing-source-checkout/secretary ]]
+[[ -L "$source_link_home/.local/share/secretary/bin/secretary" ]]
+HOME="$source_link_home" SECRETARY_BINARY_STAGE_BIN="$source_link_home/.local/share/secretary/bin" \
+  "$source_link_home/.local/share/secretary/current/secretary" status | grep -F "installed: version=$version"
+
 source_home="$home/source-managed"
 mkdir -p "$source_home/.config/systemd/user"
 cat > "$source_home/.config/systemd/user/secretary.service" <<'SH'

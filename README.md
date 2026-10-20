@@ -73,26 +73,44 @@ flowchart TD
 
 ## Быстрый старт и запуск
 
-### Требования
-- Go 1.27.1+
-- Node.js 20+ (для веб-интерфейса)
+### Установка одной командой (Linux/macOS)
 
-### Установка и настройка
-
-На macOS предусмотрен отдельный путь установки из опубликованных бинарных релизов без локальной сборки Go/Swift/npm. Он не заменяет установку разработчика из исходников:
+Пользовательская установка берёт готовый релизный бинарник. Go, mise, npm и клонирование репозитория не нужны. Скрипт выбирает платформу и последнюю опубликованную версию с полным набором файлов для неё, включая prerelease. Для фиксации версии можно задать `SECRETARY_VERSION=0.1.0-alpha.5`.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install-macos-binary.sh | bash
+curl -fsSL --retry-all-errors --retry 5 --retry-delay 2 https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install.sh | bash
 ```
 
-Подробности и ограничения подписи приложения: [macOS binary installation](docs/macos-binary-install.md).
+На Linux требуются systemd user session, zsh, Python 3 и OpenSSL; на macOS — штатные системные утилиты. Подробнее о подписи приложения и Gatekeeper: [macOS binary installation](docs/macos-binary-install.md).
 
-
-На macOS/Linux с Git, zsh, OpenSSL и Go 1.27.1+ (или mise) доступна установка одной командой:
+Установка разработчика **из исходников** по-прежнему доступна по отдельному адресу; она требует Git, Go 1.27.1+ или mise:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install-from-source.sh | bash
 ```
+
+На Linux повторная установка автоматически обновляет **собственные** user units `secretary.service` и `secretary-node.service`, если появление чужого файла в `~/.local/bin` требует перехода на приватный релизный bin. Это обновление перезапускает оба сервиса — завершите или сохраните активную работу перед переходом.
+
+**Если ранее ставили Secretary из исходников с systemd:** бинарный установщик не заменяет чужие `secretary.service` и `secretary-node.service` и откажется с `Conflicting systemd unit`. Сначала завершите активную работу, убедитесь, что оба юнита принадлежат старой source-установке, и вручную сохраните их вне каталога активных units:
+
+```bash
+systemctl --user disable --now secretary-node.service secretary.service
+backup="$HOME/.local/state/secretary-source-units-backup"
+mkdir -p "$backup"
+for unit in secretary.service secretary-node.service; do
+  source_unit="$HOME/.config/systemd/user/$unit"
+  if [ -e "$source_unit" ] || [ -L "$source_unit" ]; then
+    if [ -e "$backup/$unit" ] || [ -L "$backup/$unit" ]; then
+      echo "Backup already exists: $backup/$unit; resolve manually" >&2
+      exit 1
+    fi
+    mv "$source_unit" "$backup/$unit"
+  fi
+done
+systemctl --user daemon-reload
+```
+
+Теперь повторите бинарную установку. Это **не автоматическая миграция** состояния: старые unit-файлы остаются в резервной копии, и одновременно запускать два Server с одной базой SQLite нельзя. Установщик автоматически обновляет **только собственные** systemd units.
 
 В существующем checkout: `./secretary setup --interactive`. Можно выбрать **Codex или Claude Code** — оба одновременно не требуются. `secretary config` открывает терминальную конфигурацию harness, локального Node и Telegram; браузер и отдельный аккаунт Secretary не нужны.
 
