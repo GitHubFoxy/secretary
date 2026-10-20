@@ -76,6 +76,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/secretary-package/bin" "$RUNNER_TEMP/secretary-package/scripts" "$RUNNER_TEMP/secretary-package/internal/config"
+          mkdir -p "$RUNNER_TEMP/secretary-package/bin/native-acp"
+          cp "$RUNNER_TEMP/native-acp/"* "$RUNNER_TEMP/secretary-package/bin/native-acp/"
           for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
             go build -trimpath -o "$RUNNER_TEMP/secretary-package/bin/$binary" "./cmd/$binary"
           done
