@@ -6,11 +6,15 @@ Install 02 uses the same schema-1 versioned release contract as macOS Install 01
 
 Use a Linux host with a systemd user manager and a valid login session (user D-Bus at `$XDG_RUNTIME_DIR/bus`); a standard unprivileged account; curl, tar, GNU coreutils (sha256sum, mv, cp, cmp), Python 3, zsh, OpenSSL and systemctl. The native Codex + authorized ACP adapter **or** Claude Code harness must already be installed and authorized; installer does not install or sign into harnesses. No Go, Node/npm, compilation, root-owned global installation, FFmpeg or remote Node provisioning is performed.
 
+For end users, run the single, prerelease-aware installer from `main`:
+
 ```sh
-curl -fsSL https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install-linux-binary.sh | bash
+curl -fsSL --retry-all-errors --retry 5 --retry-delay 2 https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install.sh | bash
 ```
 
-Select a published version with `SECRETARY_VERSION=1.2.3` (set in the shell environment before running the installer). For an alpha/beta/RC, use the exact prerelease version, e.g. `SECRETARY_VERSION=0.1.0-alpha.1`; `releases/latest` does not include prereleases. The tagged publisher marks version-suffixed tags as GitHub prereleases. The installer fetches a manifest and matching archive, verifies version/platform/revision/length/SHA-256, rejects unsafe tar members, checks all packaged executables, then stages the release under `~/.local/share/secretary/releases`. It uses a versioned `current` symlink and installs symlinks in `~/.local/bin`; put that directory on `PATH`. Source-managed binaries are not overwritten.
+`scripts/install.sh` selects the newest **complete** published release for the detected OS/architecture, including GitHub prereleases. No `SECRETARY_VERSION` is needed. Public live acceptance on Omarchy Linux amd64 confirmed auto-selection of [v0.1.0-alpha.6](https://github.com/GitHubFoxy/secretary/releases/tag/v0.1.0-alpha.6); Linux arm64 release artifacts are published but were not part of that Omarchy live run. To pin the release, export `SECRETARY_VERSION=0.1.0-alpha.6` before invoking the same command.
+
+The platform-specific `scripts/install-linux-binary.sh` remains available for explicit/advanced use. **Unlike the unified dispatcher**, it uses GitHub `releases/latest` when no version is set; that endpoint excludes prereleases. Supply `SECRETARY_VERSION` explicitly if invoking the legacy platform-specific script during an alpha/beta/RC-only release cycle. The installer fetches a manifest and matching archive, verifies version/platform/revision/length/SHA-256, rejects unsafe tar members, checks all packaged executables, then stages the release under `~/.local/share/secretary/releases`. It uses a versioned `current` symlink and installs symlinks in `~/.local/bin`; put that directory on `PATH`. Source-managed binaries are not overwritten.
 
 When an existing `~/.local/bin/secretary*` file or symlink is source-managed, the release uses `~/.local/share/secretary/bin` for **all** of its CLI links instead and preserves the original executables. Both systemd services are configured with `SECRETARY_BINARY_STAGE_BIN` pointing at this private directory. Inspect the release explicitly via:
 

@@ -4,13 +4,17 @@ macOS releases contain a matching Server, CLI, MCP, migration binary, co-located
 
 ## Install
 
-For a fresh macOS user with an already installed and authorized native Codex or Claude Code harness:
+For macOS users, run the single, prerelease-aware installer (with a working compatible native harness when required):
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install-macos-binary.sh | bash
+curl -fsSL --retry-all-errors --retry 5 --retry-delay 2 https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install.sh | bash
 ```
 
-The installer fetches the latest published tagged version, verifies its manifest, platform, size and SHA-256, verifies the Node.app code signature, and stages it in `~/.local/share/secretary/releases`. The exact downloaded manifest is retained as `RELEASE-MANIFEST.json` inside the corresponding release directory. Supply `SECRETARY_VERSION=1.2.3` to select a published version explicitly. **For alpha/beta/RC prereleases**, set the exact published version, for example `SECRETARY_VERSION=0.1.0-alpha.1` when running the installer; GitHub `releases/latest` does not resolve prereleases. The tagged publisher marks version-suffixed tags as GitHub prereleases rather than stable releases. Release binaries are linked from `~/.local/bin`; put that directory on your PATH. The native application is installed in `~/Applications/Secretary Node.app` and can be opened from Spotlight. Launch at Login is controlled from the menu bar application.
+The unified `scripts/install.sh` chooses the newest **complete** published release for the host, **including prereleases without any `SECRETARY_VERSION`**. The [v0.1.0-alpha.6](https://github.com/GitHubFoxy/secretary/releases/tag/v0.1.0-alpha.6) release contains a macOS arm64 binary and has passed public live installation checks in both a clean HOME and an existing source-managed HOME. A macOS Intel release archive is **not** published for alpha.6; recognizing Intel in the dispatcher does not make an Intel binary available. For an explicit version, export `SECRETARY_VERSION=0.1.0-alpha.6` before running the unified command.
+
+The platform-specific `scripts/install-macos-binary.sh` remains available for advanced/pinned installs, but **its no-version fallback uses GitHub `releases/latest`**, which excludes prereleases. If using that script directly with an alpha/beta/RC release, explicitly set `SECRETARY_VERSION`.
+
+The binary installer verifies the versioned manifest, platform, size, SHA-256 and Node.app signature, then stages files in `~/.local/share/secretary/releases`. It retains the downloaded manifest as `RELEASE-MANIFEST.json` inside the installed release directory. Published prerelease tags use GitHub's prerelease status rather than stable-release status. Release binaries are linked from `~/.local/bin`; put that directory on your PATH. The native application is installed in `~/Applications/Secretary Node.app` and can be opened from Spotlight. Launch at Login is controlled from the menu bar application.
 
 The installer does not install Codex, Claude Code, their credentials or ACP. An authorized, already working native harness must be available. If you choose Codex, the existing setup implementation may require the independently provided native ACP adapter. The installer does not provide FFmpeg. An existing source-managed `~/.local/bin/secretary` is deliberately not converted into binary release management.
 
