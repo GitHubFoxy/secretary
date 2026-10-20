@@ -37,6 +37,15 @@ bash "$root/scripts/install-macos-binary.sh"
 status="$("$HOME/.local/bin/secretary" status)"
 [[ "$status" == *"installed: version=${version}"* ]]
 [[ "$status" == *"running Server: pid="*"version=${version} revision=$revision"* ]]
+# Root-cause regression: running setup against an active packaged CLI must
+# not repin any public executable to an immutable version directory.
+env -u SECRETARY_BINARY_STAGE_BIN "$HOME/.local/bin/secretary" setup --non-interactive
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  relative="bin/$executable"
+  [[ "$executable" != secretary ]] || relative=secretary
+  [[ "$(readlink "$HOME/.local/bin/$executable")" == "$HOME/.local/share/secretary/current/$relative" ]] ||
+    { echo "Setup pinned a public link to a versioned release: $executable" >&2; exit 1; }
+done
 session_http="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8081/v1/web/session)"
 [[ "$session_http" != 000 ]]
 "$HOME/.local/bin/secretary" stop
@@ -105,6 +114,15 @@ fi
 diff -qr "$home/app.before" "$HOME/Applications/Secretary Node.app"
 cmp "$home/db.before" "$state/secretary.db"
 rm "$home/break/cp"
+# Reproduce the published pre-fix installer: all six public links
+# point directly to alpha.6's immutable release, not through current.
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  relative="bin/$executable"
+  [[ "$executable" != secretary ]] || relative=secretary
+  ln -sfn "$initial_target/$relative" "$HOME/.local/bin/$executable"
+  [[ "$(readlink "$HOME/.local/bin/$executable")" == "$initial_target/$relative" ]]
+done
+[[ ! -e "$state/bin/secretary" && ! -L "$state/bin/secretary" ]]
 cat > "$home/break/mv" <<'EOF'
 #!/bin/bash
 for arg in "$@"; do
@@ -115,7 +133,7 @@ done
 exec /bin/mv "$@"
 EOF
 chmod +x "$home/break/mv"
-if PATH="$home/break:$PATH" bash "$root/scripts/install-macos-binary.sh" >/dev/null 2>&1; then
+if PATH="$home/break:$PATH" bash "$root/scripts/install-macos-binary.sh" >"$home/pointer-failure.log" 2>&1; then
   echo "Release activation failure unexpectedly succeeded" >&2
   exit 1
 fi
@@ -126,6 +144,41 @@ status="$("$HOME/.local/bin/secretary" status)"
 [[ "$status" == *"installed: version=${version}"* ]]
 cmp "$home/db.before" "$state/secretary.db"
 cmp "$home/credentials.before" "$state/environment"
+# A failed current-pointer switch must undo any legacy-link conversion.
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  relative="bin/$executable"
+  [[ "$executable" != secretary ]] || relative=secretary
+  [[ "$(readlink "$HOME/.local/bin/$executable")" == "$initial_target/$relative" ]] ||
+    { echo "Legacy link not rolled back: $executable" >&2
+      echo "Actual target: $(readlink "$HOME/.local/bin/$executable")" >&2
+      echo "Expected target: $initial_target/$relative" >&2
+      echo "Pointer: $(readlink "$state/current")" >&2
+      echo "Failed installer output:" >&2
+      cat "$home/pointer-failure.log" >&2
+      exit 1; }
+done
+[[ ! -e "$state/bin/secretary" && ! -L "$state/bin/secretary" ]]
+# Inject a failure half-way through the legacy link migration, before current
+# switches. Links migrated earlier in the loop must be restored exactly.
+cat > "$home/break/mv" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+  case "$arg" in */.secretary-links.*/secretaryctl) exit 93 ;; esac
+done
+exec /bin/mv "$@"
+EOF
+if PATH="$home/break:$PATH" bash "$root/scripts/install-macos-binary.sh" >/dev/null 2>&1; then
+  echo "Partial legacy link migration failure unexpectedly succeeded" >&2
+  exit 1
+fi
+[[ "$(readlink "$state/current")" == "$initial_target" ]]
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  relative="bin/$executable"
+  [[ "$executable" != secretary ]] || relative=secretary
+  [[ "$(readlink "$HOME/.local/bin/$executable")" == "$initial_target/$relative" ]] ||
+    { echo "Partial legacy migration not rolled back: $executable" >&2; exit 1; }
+done
+rm "$home/break/mv"
 bash "$root/scripts/install-macos-binary.sh" 2>"$home/macos-upgrade.stderr"
 grep -Fq "Existing Server/Node processes are NOT restarted automatically" "$home/macos-upgrade.stderr"
 [[ "$(readlink "$state/current")" == "$upgrade_target" ]]
@@ -137,6 +190,66 @@ cmp "$home/credentials.before" "$state/environment"
 cmp "$home/profile.before" "$state/profiles/secretary.md"
 cmp "$home/node.before" "$state/node/config.json"
 test -f "$state/releases/secretary-v${upgrade_version}-darwin-$(uname -m | sed 's/x86_64/amd64/')/RELEASE-MANIFEST.json"
+# Stable public links must go through current, exposing the new version
+# without a special stage-bin variable or user-managed private links.
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  relative="bin/$executable"
+  [[ "$executable" != secretary ]] || relative=secretary
+  [[ "$(readlink "$HOME/.local/bin/$executable")" == "$state/current/$relative" ]] ||
+    { echo "Upgrade left a version-pinned public link: $executable" >&2; exit 1; }
+  [[ -f "$HOME/.local/bin/$executable" ]]
+done
+[[ ! -e "$state/bin/secretary" && ! -L "$state/bin/secretary" ]]
+status="$(env -u SECRETARY_BINARY_STAGE_BIN "$HOME/.local/bin/secretary" status)"
+[[ "$status" == *"installed: version=${upgrade_version}"* ]] ||
+  { echo "Public PATH secretary still reports the old installed version" >&2; exit 1; }
+# Reproduce a user already stuck at alpha.7 with public links pinned at alpha.6:
+# a same-release reinstall must repair the old owned links too.
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  relative="bin/$executable"
+  [[ "$executable" != secretary ]] || relative=secretary
+  ln -sfn "$initial_target/$relative" "$HOME/.local/bin/$executable"
+done
+bash "$root/scripts/install-macos-binary.sh" > "$home/macos-repeat.stdout"
+! grep -Fq "Source-managed CLI remains unchanged" "$home/macos-repeat.stdout"
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  relative="bin/$executable"
+  [[ "$executable" != secretary ]] || relative=secretary
+  [[ "$(readlink "$HOME/.local/bin/$executable")" == "$state/current/$relative" ]] ||
+    { echo "Same-release reinstall did not repair stale legacy link: $executable" >&2; exit 1; }
+done
+[[ ! -e "$state/bin/secretary" && ! -L "$state/bin/secretary" ]]
+status="$(env -u SECRETARY_BINARY_STAGE_BIN "$HOME/.local/bin/secretary" status)"
+[[ "$status" == *"installed: version=${upgrade_version}"* ]]
+# Running setup again after migration must not create new legacy links.
+env -u SECRETARY_BINARY_STAGE_BIN "$HOME/.local/bin/secretary" setup --non-interactive
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  relative="bin/$executable"
+  [[ "$executable" != secretary ]] || relative=secretary
+  [[ "$(readlink "$HOME/.local/bin/$executable")" == "$state/current/$relative" ]] ||
+    { echo "Post-upgrade setup broke current link: $executable" >&2; exit 1; }
+done
+# A stale, inactive release CLI must refuse to repin links to older bytes.
+if env -u SECRETARY_BINARY_STAGE_BIN "$initial_target/secretary" setup --non-interactive >"$home/inactive-release-setup.log" 2>&1; then
+  echo "Inactive binary release setup unexpectedly succeeded" >&2
+  exit 1
+fi
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  relative="bin/$executable"
+  [[ "$executable" != secretary ]] || relative=secretary
+  [[ "$(readlink "$HOME/.local/bin/$executable")" == "$state/current/$relative" ]] ||
+    { echo "Inactive release setup rewrote public link: $executable" >&2; exit 1; }
+done
+# Re-enable a pointer activation fault for the independent clean-HOME
+# rollback assertion. The previous partial-migration test removed its mv shim.
+cat > "$home/break/mv" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+  case "$arg" in */.current.*.new) exit 91 ;; esac
+done
+exec /bin/mv "$@"
+EOF
+chmod +x "$home/break/mv"
 clean_home="$home/clean-activation-failure"
 mkdir -p "$clean_home"
 if HOME="$clean_home" PATH="$home/break:$PATH" bash "$root/scripts/install-macos-binary.sh" >/dev/null 2>&1; then
