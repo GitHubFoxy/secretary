@@ -136,7 +136,8 @@ jobs:
           curl -fLsS --retry 3 -o "$dest/codex.tar.gz" "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-$triple.tar.gz"
           echo "$expected  $dest/codex.tar.gz" | shasum -a 256 -c -
           tar -xzf "$dest/codex.tar.gz" -C "$dest/adapter"
-          python3 scripts/codex-acp-release-gate.py --acp "$dest/adapter/codex-acp" --codex "$dest/adapter/codex-$triple"
+          chmod +x scripts/mock-codex-app-server.py
+          python3 scripts/codex-acp-release-gate.py --acp "$dest/adapter/codex-acp" --codex "$dest/adapter/codex-$triple" --mock-app-server "$GITHUB_WORKSPACE/scripts/mock-codex-app-server.py"
       - name: Verify clean install, idempotence, failed activation and upgrade
         shell: bash
         run: |
