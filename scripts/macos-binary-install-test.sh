@@ -152,7 +152,9 @@ HOME="$clean_home" bash "$root/scripts/install-macos-binary.sh"
 [[ "$(readlink "$clean_home/.local/share/secretary/current")" == "$clean_home/.local/share/secretary/releases/secretary-v${upgrade_version}-darwin-$arch" ]]
 # Source-managed CLI symlinks and binaries must survive a side-by-side install.
 source_home="$home/source-profile"
-mkdir -p "$source_home/.local/bin" "$source_home/Library/LaunchAgents"
+mkdir -p "$source_home/.local/bin" "$source_home/Library/LaunchAgents" "$source_home/Applications/Secretary Node.app"
+printf 'source-owned native app; must not be replaced\n' > "$source_home/Applications/Secretary Node.app/SOURCE-MARKER"
+cp "$source_home/Applications/Secretary Node.app/SOURCE-MARKER" "$home/source-app.before"
 printf 'source-owned Node LaunchAgent; must not be modified\n' > "$source_home/Library/LaunchAgents/dev.secretary.cli-node.plist"
 cp "$source_home/Library/LaunchAgents/dev.secretary.cli-node.plist" "$home/source-launchagent.before"
 printf '#!/bin/sh\nprintf "source-managed\\n"\n' > "$source_home/source-cli"
@@ -165,6 +167,8 @@ HOME="$source_home" bash "$root/scripts/install-macos-binary.sh"
 [[ "$(readlink "$source_home/.local/bin/secretary")" == "$source_home/source-cli" ]]
 cmp "$home/source-daemon.before" "$source_home/.local/bin/secretaryd"
 cmp "$home/source-launchagent.before" "$source_home/Library/LaunchAgents/dev.secretary.cli-node.plist"
+cmp "$home/source-app.before" "$source_home/Applications/Secretary Node.app/SOURCE-MARKER"
+[[ -d "$source_home/Applications/Secretary Node (Release).app" ]]
 [[ "$("$source_home/.local/bin/secretary")" == source-managed ]]
 [[ "$("$source_home/.local/bin/secretaryd")" == source-daemon ]]
 source_state="$source_home/.local/share/secretary"
@@ -184,6 +188,8 @@ status="$(HOME="$source_home" SECRETARY_BINARY_STAGE_BIN="$source_private_bin" "
 HOME="$source_home" bash "$root/scripts/install-macos-binary.sh"
 cmp "$home/source-daemon.before" "$source_home/.local/bin/secretaryd"
 cmp "$home/source-launchagent.before" "$source_home/Library/LaunchAgents/dev.secretary.cli-node.plist"
+cmp "$home/source-app.before" "$source_home/Applications/Secretary Node.app/SOURCE-MARKER"
+[[ -d "$source_home/Applications/Secretary Node (Release).app" ]]
 [[ "$(readlink "$source_home/.local/bin/secretary")" == "$source_home/source-cli" ]]
 
 # Private bin tampering must fail closed and must not overwrite the source.
