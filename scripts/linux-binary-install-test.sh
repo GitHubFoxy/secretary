@@ -141,6 +141,62 @@ for failure in FAIL_CRASH_AFTER_START FAIL_HEALTH FAIL_HTTP_503; do
   [[ ! -e "$broken_home/.config/systemd/user/secretary.service" ]]
   [[ ! -e "$broken_home/.config/systemd/user/secretary-node.service" ]]
 done
+# Linux release install must never silently replace the user's explicitly
+# selected harness. Invalid choices and half-selected Codex pairs fail closed.
+if HOME="$home/invalid-choice" SECRETARY_INSTALL_HARNESS=invalid SECRETARY_VERSION="$version" bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then
+  echo "Invalid installer harness selection was accepted" >&2
+  exit 1
+fi
+[[ ! -e "$home/invalid-choice/.local/share/secretary/current" ]]
+if HOME="$home/half-pair" SECRETARY_INSTALL_CODEX_CLI=/bin/true SECRETARY_VERSION="$version" bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then
+  echo "Half-selected native Codex pair was accepted" >&2
+  exit 1
+fi
+[[ ! -e "$home/half-pair/.local/share/secretary/current" ]]
+
+# The harness explicitly selected by the owner must install without launching
+# an implicitly downloaded Codex binary.
+claude_home="$home/explicit-claude"
+mkdir -p "$claude_home"
+HOME="$claude_home" SECRETARY_INSTALL_HARNESS=claude_code SECRETARY_VERSION="$version" bash "$root/scripts/install-linux-binary.sh"
+[[ -L "$claude_home/.local/share/secretary/current" ]]
+[[ ! -d "$claude_home/.local/share/secretary/native/releases" ]]
+
+# A full explicitly selected native Codex/ACP pair is pinned as external
+# instead of attempting the potentially incompatible managed upstream binary.
+cat > "$home/provider bin/fixture-codex" <<'SH'
+#!/bin/sh
+case "$*" in
+  "--version") echo "codex-cli 0.163.0" ;;
+  "login status") echo "Not logged in" >&2; exit 1 ;;
+  *) exit 1 ;;
+esac
+SH
+cat > "$home/provider bin/fixture-codex-acp" <<'SH'
+#!/bin/sh
+case "$*" in
+  "--version") echo "codex-acp 0.16.0" ;;
+  *) exit 1 ;;
+esac
+SH
+chmod +x "$home/provider bin/fixture-codex" "$home/provider bin/fixture-codex-acp"
+codex_home="$home/explicit-codex"
+mkdir -p "$codex_home"
+HOME="$codex_home" SECRETARY_VERSION="$version" \
+  SECRETARY_INSTALL_CODEX_CLI="$home/provider bin/fixture-codex" \
+  SECRETARY_INSTALL_CODEX_ACP="$home/provider bin/fixture-codex-acp" \
+  bash "$root/scripts/install-linux-binary.sh"
+[[ -L "$codex_home/.local/share/secretary/current" ]]
+[[ ! -d "$codex_home/.local/share/secretary/native/releases" ]]
+python3 - "$codex_home" "$home/provider bin/fixture-codex" "$home/provider bin/fixture-codex-acp" <<'PY'
+import json, pathlib, sys
+home, cli, acp = sys.argv[1:]
+for scope in ("server", "node"):
+    pair = json.loads((pathlib.Path(home) / ".local/share/secretary/native" / scope / "codex-pair.json").read_text())
+    assert pair["codex"]["path"] == cli
+    assert pair["acp"]["path"] == acp
+    assert pair["codex"]["provenance"] == pair["acp"]["provenance"] == "external"
+PY
 source_home="$home/source-managed"
 mkdir -p "$source_home/.config/systemd/user"
 cat > "$source_home/.config/systemd/user/secretary.service" <<'SH'

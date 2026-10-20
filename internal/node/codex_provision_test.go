@@ -76,6 +76,39 @@ func TestFetchCodexExecutableChecksumAndInterruptedArchive(t *testing.T) {
  if err:=fetchCodexExecutable(context.Background(),failed,t.TempDir());err==nil {t.Fatal("interrupted download accepted")}
 }
 
+// The upstream Linux MUSL executable is not guaranteed to fit within 128 MiB.
+// An earlier extraction limit silently wrote only the first 128 MiB, leaving a
+// checksum-verified archive but an invalid native binary that could SIGSEGV.
+func TestUnpackCodexArchivePreservesFullExecutableOver128MiB(t *testing.T) {
+ const executableSize = int64(128<<20) + 4096
+ var compressed bytes.Buffer
+ zipped := gzip.NewWriter(&compressed)
+ archive := tar.NewWriter(zipped)
+ if err := archive.WriteHeader(&tar.Header{
+  Name: "codex-x86_64-unknown-linux-musl", Typeflag: tar.TypeReg,
+  Mode: 0700, Size: executableSize,
+ }); err != nil { t.Fatal(err) }
+ chunk := make([]byte, 1<<20)
+ for written := int64(0); written < executableSize; {
+  count := int64(len(chunk))
+  if remaining := executableSize - written; remaining < count { count = remaining }
+  n, err := archive.Write(chunk[:int(count)])
+  if err != nil { t.Fatal(err) }
+  written += int64(n)
+ }
+ if err := archive.Close(); err != nil { t.Fatal(err) }
+ if err := zipped.Close(); err != nil { t.Fatal(err) }
+
+ stage := t.TempDir()
+ asset := codexAsset{Name: "codex", URL: "https://example.invalid/codex.tar.gz"}
+ if err := unpackCodexArchive(compressed.Bytes(), asset, stage); err != nil { t.Fatal(err) }
+ info, err := os.Stat(filepath.Join(stage, "codex"))
+ if err != nil { t.Fatal(err) }
+ if info.Size() != executableSize {
+  t.Fatalf("native executable truncated: got %d bytes, want %d", info.Size(), executableSize)
+ }
+}
+
 func TestManagedCodexPairPinsSupportedPlatforms(t *testing.T) {
  assets,err:=codexNativeAssets()
  if err!=nil {
