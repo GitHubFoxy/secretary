@@ -18,6 +18,7 @@ import (
  "os"
  "path/filepath"
  "strings"
+ "runtime"
  "testing"
 )
 
@@ -161,7 +162,9 @@ func TestManagedCodexPairPinsSupportedPlatforms(t *testing.T) {
  if err!=nil {
   t.Skipf("host not supported: %v",err)
  }
- if len(assets)!=2 {t.Fatalf("expected CLI and ACP pair, got %d",len(assets))}
+ expected := 1
+ if runtime.GOOS=="windows" { expected = 2 }
+ if len(assets)!=expected {t.Fatalf("expected %d upstream assets (the modern Unix ACP is bundled), got %d",expected,len(assets))}
  for _,asset:=range assets {
   if asset.URL=="" || len(asset.SHA256)!=64 || asset.Name=="" {t.Fatalf("incomplete pin: %+v",asset)}
  }
