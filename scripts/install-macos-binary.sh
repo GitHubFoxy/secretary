@@ -192,11 +192,10 @@ had_app=false
 [[ ! -d "$app" ]] || had_app=true
 activated=false
 created_links=()
-replaced_links=()
-replaced_targets=()
 pointer_stage="$HOME/.local/share/secretary/.current.$.new"
-# Stage every replacement in the destination directory so mv -h remains an
-# atomic symlink replacement on macOS. Roll back even on a partial migration.
+# Retain the previous symlink itself before each swap. Do not reconstruct
+# symlinks from arrays during an EXIT trap (macOS ships Bash 3.2): each
+# rollback entry is a durable original target until activation succeeds.
 link_stage="$(mktemp -d "$bin/.secretary-links.XXXXXXXX")" || fail "Cannot stage release links"
 activation_rollback() {
   if [[ "$activated" != true ]]; then
@@ -205,13 +204,14 @@ activation_rollback() {
       if [[ -n "$previous_release" ]]; then ln -s "$previous_release" "$current_release"; fi
     fi
     for created in "${created_links[@]}"; do rm -f "$created"; done
-    for (( index=0; index<${#replaced_links[@]}; index++ )); do
-      restore="$link_stage/rollback.$index"
-      if ln -s "${replaced_targets[$index]}" "$restore"; then
-        mv -fh "$restore" "${replaced_links[$index]}" ||
-          printf 'WARNING: Cannot restore legacy release link %s\n' "${replaced_links[$index]}" >&2
-      else
-        printf 'WARNING: Cannot stage rollback for release link %s\n' "${replaced_links[$index]}" >&2
+    for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+      # Every backup is made before the corresponding link is replaced.
+      # A previous migration can be restored even if a later mv fails.
+      old_link="$link_stage/old.$executable"
+      if [[ -L "$old_link" ]]; then
+        if ! mv -fh "$old_link" "$bin/$executable"; then
+          printf 'WARNING: Cannot restore legacy release link %s\n' "$bin/$executable" >&2
+        fi
       fi
     done
     if [[ -d "$backup" ]]; then
@@ -235,11 +235,13 @@ for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migr
   elif [[ "$(readlink "$path")" != "$dest" ]]; then
     is_installer_owned_link "$path" "$(release_link_relative "$executable")" ||
       fail "Release executable changed ownership during setup: $path"
-    old_link="$(readlink "$path")"
+    previous_link_target="$(readlink "$path")"
+    # Save a physical copy of the legacy symlink before touching the public
+    # path. Rollback moves this copy back; it never has to infer provenance.
+    ln -s "$previous_link_target" "$link_stage/old.$executable" ||
+      fail "Cannot back up owned release link: $executable"
     replacement="$link_stage/$executable"
     ln -s "$dest" "$replacement" || fail "Cannot stage owned link migration: $executable"
-    replaced_links+=("$path")
-    replaced_targets+=("$old_link")
     mv -fh "$replacement" "$path" || fail "Cannot migrate owned release link: $executable"
   fi
 done
