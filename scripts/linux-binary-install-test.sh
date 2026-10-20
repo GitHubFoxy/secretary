@@ -202,12 +202,11 @@ mkdir -p "$collision_home/.local/bin"
 printf '#!/bin/sh\nprintf "legacy\\n"\n' > "$collision_home/.local/bin/secretaryd"
 chmod +x "$collision_home/.local/bin/secretaryd"
 cp "$collision_home/.local/bin/secretaryd" "$home/legacy-secretaryd"
-ln -s /tmp/existing-source-checkout/secretary "$collision_home/.local/bin/secretary"
 HOME="$collision_home" SECRETARY_VERSION="$version" bash "$root/scripts/install-linux-binary.sh"
 collision_state="$collision_home/.local/share/secretary"
 collision_bin="$collision_state/bin"
 cmp "$home/legacy-secretaryd" "$collision_home/.local/bin/secretaryd"
-[[ "$(readlink "$collision_home/.local/bin/secretary")" == /tmp/existing-source-checkout/secretary ]]
+[[ ! -e "$collision_home/.local/bin/secretary" && ! -L "$collision_home/.local/bin/secretary" ]]
 for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
   [[ -L "$collision_bin/$executable" ]]
   expected="$collision_state/current/bin/$executable"
@@ -220,7 +219,16 @@ SECRETARY_BINARY_STAGE_BIN="$collision_bin" "$collision_state/current/secretary"
 SECRETARY_BINARY_STAGE_BIN="$collision_bin" "$collision_state/current/secretary" doctor | grep -F "Doctor found no problems"
 HOME="$collision_home" SECRETARY_VERSION="$version" bash "$root/scripts/install-linux-binary.sh"
 cmp "$home/legacy-secretaryd" "$collision_home/.local/bin/secretaryd"
-[[ "$(readlink "$collision_home/.local/bin/secretary")" == /tmp/existing-source-checkout/secretary ]]
+[[ ! -e "$collision_home/.local/bin/secretary" && ! -L "$collision_home/.local/bin/secretary" ]]
+
+source_link_home="$home/previous-source-symlink"
+mkdir -p "$source_link_home/.local/bin"
+ln -s /tmp/existing-source-checkout/secretary "$source_link_home/.local/bin/secretary"
+HOME="$source_link_home" SECRETARY_VERSION="$version" bash "$root/scripts/install-linux-binary.sh"
+[[ "$(readlink "$source_link_home/.local/bin/secretary")" == /tmp/existing-source-checkout/secretary ]]
+[[ -L "$source_link_home/.local/share/secretary/bin/secretary" ]]
+SECRETARY_BINARY_STAGE_BIN="$source_link_home/.local/share/secretary/bin" \
+  "$source_link_home/.local/share/secretary/current/secretary" status | grep -F "installed: version=$version"
 
 source_home="$home/source-managed"
 mkdir -p "$source_home/.config/systemd/user"
