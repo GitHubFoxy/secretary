@@ -223,6 +223,7 @@ created=()
 unit_created=()
 unit_replaced=()
 unit_reconfigured=false
+restart_attempted=false
 activated=false
 rollback() {
   if [[ "$activated" != true ]]; then
@@ -245,7 +246,7 @@ rollback() {
       fi
     done
     systemctl --user daemon-reload >/dev/null 2>&1 || true
-    if [[ "$unit_reconfigured" == true && -n "$previous" ]]; then
+    if [[ -n "$previous" && ( "$unit_reconfigured" == true || "$restart_attempted" == true ) ]]; then
       systemctl --user restart secretary.service >/dev/null 2>&1 || printf 'WARNING: Previous Server needs manual restart\n' >&2
       systemctl --user restart secretary-node.service >/dev/null 2>&1 || printf 'WARNING: Previous Node needs manual restart\n' >&2
     fi
@@ -306,15 +307,19 @@ EOF
     mv -f "$unit_tmp" "$path" || fail "Cannot update owned systemd unit: $unit"
   done
   systemctl --user daemon-reload || fail "Cannot reload updated systemd units"
-  if [[ -z "$previous" ]]; then
-    systemctl --user enable --now secretary.service || fail "Cannot activate Server service"
-    systemctl --user enable --now secretary-node.service || fail "Cannot activate Node service"
-  else
-    # The running processes retain the old environment until explicitly
-    # restarted. Restart both after atomically replacing owned units.
-    systemctl --user restart secretary.service || fail "Cannot restart Server with updated release bin"
-    systemctl --user restart secretary-node.service || fail "Cannot restart Node with updated release bin"
-  fi
+fi
+# enable --now does NOT restart already active systemd services. Whenever the
+# immutable release pointer changes, restart both installer-owned services and
+# re-check their liveness/health. An unchanged reinstall stays idempotent.
+if [[ -z "$previous" ]]; then
+  systemctl --user enable --now secretary.service || fail "Cannot activate Server service"
+  systemctl --user enable --now secretary-node.service || fail "Cannot activate Node service"
+elif [[ "$previous" != "$target" || "$unit_update" == true ]]; then
+  restart_attempted=true
+  systemctl --user restart secretary.service || fail "Cannot restart Server on release upgrade"
+  systemctl --user restart secretary-node.service || fail "Cannot restart Node on release upgrade"
+fi
+if [[ -z "$previous" || "$previous" != "$target" || "$unit_update" == true ]]; then
   for attempt in 1 2 3 4 5 6 7 8 9 10; do
     ready=true
     for service in secretary.service secretary-node.service; do

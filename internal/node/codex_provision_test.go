@@ -335,6 +335,88 @@ func TestInstallManagedCodexAssetsFreshRetryPartialAndCorrupt(t *testing.T) {
 }
 
 
+
+// An earlier Secretary release can have the same Codex/ACP version numbers
+// while carrying a different trusted Bun-compiled ACP archive. Installing B
+// must preserve A's files and activate a verified separate B path. It must
+// never interpret this ordinary cross-release change as executable tampering.
+func TestManagedCodexReleaseRefreshWithDifferentBundledACP(t *testing.T) {
+ t.Setenv("HOME",t.TempDir())
+ ctx:=context.Background()
+ makeArchive:=func(name,variant string) []byte {
+  t.Helper()
+  var buf bytes.Buffer
+  gz:=gzip.NewWriter(&buf)
+  tarball:=tar.NewWriter(gz)
+  payload:=[]byte("#!/bin/sh\necho codex "+codexPinnedVersion+"\n")
+  if name=="codex-acp" {
+   payload=[]byte("#!/bin/sh\n# compiled bundle: "+variant+"\ncase \"$1\" in\n --version) echo \"error: unexpected argument '--version' found\" >&2; exit 2 ;;\n --help) echo 'Usage: codex-acp -c key=value'; exit 0 ;;\n *) exit 1 ;;\nesac\n")
+  }
+  err:=tarball.WriteHeader(&tar.Header{Name:name+"-native",Typeflag:tar.TypeReg,Mode:0700,Size:int64(len(payload))})
+  if err!=nil { t.Fatal(err) }
+  if _,err=tarball.Write(payload);err!=nil {t.Fatal(err)}
+  if err=tarball.Close();err!=nil {t.Fatal(err)}
+  if err=gz.Close();err!=nil {t.Fatal(err)}
+  return buf.Bytes()
+ }
+ oldACP:=makeArchive("codex-acp","release-A")
+ newACP:=makeArchive("codex-acp","release-B")
+ cliArchive:=makeArchive("codex","shared")
+ archives:=map[string][]byte{"/codex":cliArchive,"/old-acp":oldACP,"/new-acp":newACP}
+ server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
+  data,ok:=archives[r.URL.Path]
+  if !ok {http.NotFound(w,r);return}
+  _,_=w.Write(data)
+ }))
+ defer server.Close()
+ asset:=func(url,name string,data []byte) codexAsset {
+  digest:=sha256.Sum256(data)
+  return codexAsset{URL:server.URL+url,Name:name,SHA256:hex.EncodeToString(digest[:])}
+ }
+ codex:=asset("/codex","codex",cliArchive)
+ oldAssets:=[]codexAsset{codex,asset("/old-acp","codex-acp",oldACP)}
+ newAssets:=[]codexAsset{codex,asset("/new-acp","codex-acp",newACP)}
+ root:=filepath.Join(os.Getenv("HOME"),".local","share","secretary","native","releases",codexPinnedVersion+"-"+codexACPPinnedVersion)
+ oldCLI,oldPath,err:=installManagedCodexAssets(ctx,oldAssets,root,runtime.GOOS+"-"+runtime.GOARCH)
+ if err!=nil {t.Fatal(err)}
+ candidateTarget:=managedCodexAssetTarget(runtime.GOOS+"-"+runtime.GOARCH,newAssets)
+ if candidateTarget==managedCodexAssetTarget(runtime.GOOS+"-"+runtime.GOARCH,oldAssets) {t.Fatal("different trusted archives aliased to one managed directory")}
+ newCLI,newPath,err:=installManagedCodexAssets(ctx,newAssets,root,candidateTarget)
+ if err!=nil {t.Fatal(err)}
+ if newPath==oldPath || newCLI==oldCLI {t.Fatal("managed rebuild reused old executable paths")}
+ if _,_,err:=installManagedCodexAssets(ctx,newAssets,root,candidateTarget);err!=nil {t.Fatalf("idempotent cached B: %v",err)}
+ oldRecord,err:=codexBinaryRecord(oldCLI,"managed")
+ if err!=nil {t.Fatal(err)}
+ oldACPRecord,err:=codexACPBinaryRecord(oldPath,"managed")
+ if err!=nil {t.Fatal(err)}
+ for _,scope:=range []string{"server","node"} {
+  prev:=CodexPairInventory{Schema:1,Scope:scope,Harness:"codex",Codex:oldRecord,ACP:oldACPRecord}
+  location,err:=CodexPairInventoryPath(scope)
+  if err!=nil {t.Fatal(err)}
+  if err:=saveCodexPair(location,prev);err!=nil {t.Fatal(err)}
+  if _,err:=refreshManagedCodexInventory(scope,prev,newCLI,newPath);err!=nil {t.Fatal(err)}
+  current,err:=readCodexPairUnchecked(scope)
+  if err!=nil {t.Fatal(err)}
+  if current.Codex.Path!=newCLI || current.ACP.Path!=newPath {t.Fatalf("%s did not switch to B",scope)}
+  if current.Compatibility.Validated {t.Fatal("unprobed ACP pair incorrectly marked protocol-valid")}
+  backup,err:=os.ReadFile(filepath.Join(filepath.Dir(location),"codex-pair.previous.json"))
+  if err!=nil {t.Fatal(err)}
+  var previous CodexPairInventory
+  if err=json.Unmarshal(backup,&previous);err!=nil {t.Fatal(err)}
+  if previous.ACP.Path!=oldPath || previous.Codex.Path!=oldCLI {t.Fatal("old managed pair not available for rollback")}
+ }
+ if _,err:=os.Stat(oldCLI);err!=nil {t.Fatalf("old CLI deleted: %v",err)}
+ if _,err:=os.Stat(oldPath);err!=nil {t.Fatalf("old ACP deleted: %v",err)}
+ if err:=verifyManagedCodexArchives(oldAssets,filepath.Join(root,runtime.GOOS+"-"+runtime.GOARCH));err!=nil {t.Fatalf("old release bytes changed: %v",err)}
+ if _,err:=refreshManagedCodexInventory("server",CodexPairInventory{Codex:CodexBinaryRecord{Provenance:"external"},ACP:oldACPRecord},newCLI,newPath);err==nil {
+  t.Fatal("implicit refresh accepted an external provenance")
+ }
+ broken:=[]codexAsset{codex,{URL:server.URL+"/new-acp",Name:"codex-acp",SHA256:strings.Repeat("0",64)}}
+ if _,_,err:=installManagedCodexAssets(ctx,broken,root,managedCodexAssetTarget(runtime.GOOS+"-"+runtime.GOARCH,broken));err==nil {t.Fatal("tampered archive accepted")}
+ active,err:=readCodexPairUnchecked("server")
+ if err!=nil || active.ACP.Path!=newPath {t.Fatalf("failed checksum changed active inventory: %v",err)}
+}
+
 func TestManageCodexPairValidatedUpgradeAndRollback(t *testing.T) {
  t.Setenv("HOME",t.TempDir())
  dir:=t.TempDir()
