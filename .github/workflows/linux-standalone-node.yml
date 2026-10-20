@@ -52,5 +52,6 @@ jobs:
           cp secretary "$RUNNER_TEMP/package/secretary"
           cp scripts/secretary-interactive.zsh "$RUNNER_TEMP/package/scripts/"
           cp -R internal/config/defaults "$RUNNER_TEMP/package/internal/config/"
+          bash scripts/create-native-acp-fixture.sh "$RUNNER_TEMP/package"
           bash scripts/package-linux-binary-release.sh 0.0.0-ci "$GITHUB_SHA" "${{ matrix.arch }}" "$RUNNER_TEMP/package" "$RUNNER_TEMP/dist"
           bash scripts/linux-standalone-node-test.sh "$RUNNER_TEMP/package" "$RUNNER_TEMP/dist" "$GITHUB_SHA"
