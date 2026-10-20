@@ -67,6 +67,17 @@ upgrade_target="$state/releases/secretary-v${upgrade_version}-linux-$arch"
 [[ -L "$state/current" && -f "$state/environment" && -f "$state/node/config.json" ]]
 [[ -f "$home/.config/systemd/user/secretary.service" && -f "$home/.config/systemd/user/secretary-node.service" ]]
 grep -Fqx "WorkingDirectory=$state/current" "$home/.config/systemd/user/secretary.service"
+unit_dir="$home/.config/systemd/user"
+server_unit="$unit_dir/secretary.service"
+node_unit="$unit_dir/secretary-node.service"
+for unit in "$server_unit" "$node_unit"; do
+  [[ "$(grep -c '^ExecStart=' "$unit")" -eq 1 ]] || { echo "Expected exactly one ExecStart directive in $unit" >&2; exit 1; }
+  ! grep -Fq 'ExecStart=ExecStart=' "$unit" || { echo "Duplicated ExecStart prefix in $unit" >&2; exit 1; }
+done
+grep -Fqx "ExecStart=\"$state/current/secretary\" serve" "$server_unit"
+grep -Fqx "ExecStart=\"$state/current/secretary\" node serve" "$node_unit"
+command -v systemd-analyze >/dev/null 2>&1 || { echo "systemd-analyze required for unit verification" >&2; exit 1; }
+systemd-analyze --user verify "$server_unit" "$node_unit"
 "$home/.local/bin/secretary" status | grep -F "installed: version=$version"
 cp "$state/environment" "$home/credentials.before"
 cp "$state/config.toml" "$home/config.before"

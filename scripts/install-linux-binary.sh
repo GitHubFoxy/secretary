@@ -148,6 +148,7 @@ PY
 working_field="$(printf '%s\n' "$unit_fields" | grep '^WorkingDirectory=')"
 path_field="$(printf '%s\n' "$unit_fields" | grep '^Environment=')"
 executable_field="$(printf '%s\n' "$unit_fields" | grep '^ExecStart=')"
+executable_field="${executable_field#ExecStart=}"
 for unit in secretary.service secretary-node.service; do
   path="$units/$unit"
   [[ ! -L "$path" ]] || fail "Unmanaged systemd unit symlink: $unit"
