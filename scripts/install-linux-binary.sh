@@ -9,6 +9,22 @@ for utility in curl tar sha256sum python3 zsh openssl systemctl mktemp readlink 
 done
 case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) fail "Unsupported Linux architecture" ;; esac
 [[ "$(id -u)" -ne 0 ]] || fail "Run as a standard user, not root"
+# Let a clean user explicitly select an already working harness instead of
+# automatically downloading the pinned native Codex pair on every host.
+selected_harness="${SECRETARY_INSTALL_HARNESS:-}"
+selected_codex_cli="${SECRETARY_INSTALL_CODEX_CLI:-}"
+selected_codex_acp="${SECRETARY_INSTALL_CODEX_ACP:-}"
+case "$selected_harness" in
+  ""|codex|claude_code) ;;
+  *) fail "Invalid SECRETARY_INSTALL_HARNESS (use codex or claude_code)" ;;
+esac
+if [[ -n "$selected_codex_cli" || -n "$selected_codex_acp" ]]; then
+  [[ -n "$selected_codex_cli" && -n "$selected_codex_acp" ]] || fail "Specify both SECRETARY_INSTALL_CODEX_CLI and SECRETARY_INSTALL_CODEX_ACP"
+  [[ "$selected_harness" != claude_code ]] || fail "Explicit Codex pair cannot be used with claude_code harness"
+  [[ "$selected_codex_cli" == /* && "$selected_codex_acp" == /* ]] || fail "Codex pair paths must be absolute"
+  [[ -f "$selected_codex_cli" && -x "$selected_codex_cli" && -f "$selected_codex_acp" && -x "$selected_codex_acp" ]] || fail "Selected Codex pair executables are missing"
+  selected_harness=codex
+fi
 [[ -n "${XDG_RUNTIME_DIR:-}" && -S "${XDG_RUNTIME_DIR}/bus" ]] || fail "No active systemd user manager; start a real user session"
 systemctl --user show-environment >/dev/null 2>&1 || fail "systemd --user unavailable; no services installed"
 stage="$(mktemp -d "${TMPDIR:-/tmp}/secretary-linux.XXXXXXXX")"
@@ -153,7 +169,15 @@ mkdir -p "$stage/setup-bin"
 for executable in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
   ln -s "$target/bin/$executable" "$stage/setup-bin/$executable"
 done
-SECRETARY_BINARY_PREINSTALLED_ONLY=1 SECRETARY_BINARY_STAGE_BIN="$stage/setup-bin" "$target/secretary" setup --non-interactive || fail "Setup failed before release activation"
+setup_args=(setup --non-interactive)
+[[ -z "$selected_harness" ]] || setup_args+=(--harness "$selected_harness")
+if ! SECRETARY_BINARY_PREINSTALLED_ONLY=1 \
+    SECRETARY_BINARY_STAGE_BIN="$stage/setup-bin" \
+    SECRETARY_CODEX_PAIR_CLI="$selected_codex_cli" \
+    SECRETARY_CODEX_PAIR_ACP="$selected_codex_acp" \
+    "$target/secretary" "${setup_args[@]}"; then
+  fail "Setup failed before release activation. If the managed native Codex binary crashed during --version, this is a host/binary compatibility failure, not a Secretary package checksum failure. Retry with a compatible preinstalled native pair (SECRETARY_INSTALL_CODEX_CLI and SECRETARY_INSTALL_CODEX_ACP), or explicitly select an authorized Claude Code harness (SECRETARY_INSTALL_HARNESS=claude_code)."
+fi
 created=()
 unit_created=()
 activated=false
