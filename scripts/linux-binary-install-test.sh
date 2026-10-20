@@ -154,7 +154,7 @@ chmod +x "$transition_public/secretaryd"
 cp "$transition_public/secretaryd" "$home/source.before"
 transition_log="$home/restarts.log"
 HOME="$transition_home" TEST_SYSTEMCTL_LOG="$transition_log" SECRETARY_VERSION="$upgrade_version" bash "$root/scripts/install-linux-binary.sh"
-[[ "$(readlink "$transition_state/current")" == "$upgrade_target" || "$(readlink "$transition_state/current")" == "$transition_state/releases/secretary-v${upgrade_version${-linux-$arch" ]]
+[[ "$(readlink "$transition_state/current")" == "$transition_state/releases/secretary-v${upgrade_version}-linux-$arch" ]]
 cmp "$home/source.before" "$transition_public/secretaryd"
 for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
   [[ -L "$transition_private/$executable" ]]
