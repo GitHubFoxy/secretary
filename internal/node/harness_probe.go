@@ -684,7 +684,7 @@ func DefaultClaudeCodeProbeSpec() HarnessProbeSpec {
 
 func DefaultCodexProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
-		Kind: core.HarnessCodex, Binary: "codex", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"login", "status"}, ModelsOptional: true,
+		Kind: core.HarnessCodex, Binary: "codex", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"login", "status"}, ModelsOptional: true, StepTimeout: 45 * time.Second,
 		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilityImageInput, core.CapabilitySteering},
 		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedACPActivity...),
 	}
