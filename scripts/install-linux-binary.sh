@@ -168,7 +168,10 @@ working_field="$(printf '%s\n' "$unit_fields" | grep '^WorkingDirectory=')"
 path_field="$(printf '%s\n' "$unit_fields" | grep '^Environment="PATH=')"
 bin_field="$(printf '%s\n' "$unit_fields" | grep '^Environment="SECRETARY_BINARY_STAGE_BIN=' || true)"
 environment_fields="$path_field"
-[[ -z "$bin_field" ]] || environment_fields+=
+if [[ -n "$bin_field" ]]; then
+  environment_fields="$(printf '%s\n%s' "$path_field" "$bin_field")"
+fi
+executable_field="$(printf '%s\n' "$unit_fields" | grep '^ExecStart=')"
 for unit in secretary.service secretary-node.service; do
   path="$units/$unit"
   [[ ! -L "$path" ]] || fail "Unmanaged systemd unit symlink: $unit"
