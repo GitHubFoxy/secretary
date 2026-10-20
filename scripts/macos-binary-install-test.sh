@@ -212,6 +212,16 @@ done
 [[ ! -e "$state/bin/secretary" && ! -L "$state/bin/secretary" ]]
 status="$(env -u SECRETARY_BINARY_STAGE_BIN "$HOME/.local/bin/secretary" status)"
 [[ "$status" == *"installed: version=${upgrade_version}"* ]]
+# Re-enable a pointer activation fault for the independent clean-HOME
+# rollback assertion. The previous partial-migration test removed its mv shim.
+cat > "$home/break/mv" <<'EOF'
+#!/bin/bash
+for arg in "$@"; do
+  case "$arg" in */.current.*.new) exit 91 ;; esac
+done
+exec /bin/mv "$@"
+EOF
+chmod +x "$home/break/mv"
 clean_home="$home/clean-activation-failure"
 mkdir -p "$clean_home"
 if HOME="$clean_home" PATH="$home/break:$PATH" bash "$root/scripts/install-macos-binary.sh" >/dev/null 2>&1; then
