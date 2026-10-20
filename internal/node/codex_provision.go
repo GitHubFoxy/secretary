@@ -604,6 +604,15 @@ func manageCodexPairWithProbe(ctx context.Context, action, scope, cliPath, acpPa
   if (cliPath=="") != (acpPath=="") { return "", errors.New("both external Codex and ACP paths must be selected together") }
   if action=="install" && existingErr!=nil { if _, err:=os.Lstat(location); err==nil { return "", existingErr } }
   if action=="install" && existingErr==nil {
+   // Honor the caller's explicit pair choice BEFORE any automatic managed
+   // asset refresh. An install must not silently ignore a different path.
+   if cliPath!="" {
+    requested, err := filepath.Abs(cliPath)
+    if err!=nil { return "",err }
+    requestedACP, err := filepath.Abs(acpPath)
+    if err!=nil { return "",err }
+    if requested!=existing.Codex.Path || requestedACP!=existing.ACP.Path { return "", errors.New("pair already selected; explicit upgrade required") }
+   }
    if existing.Codex.Provenance=="managed" || existing.ACP.Provenance=="managed" {
     if existing.Codex.Provenance!="managed" || existing.ACP.Provenance!="managed" { return "", errors.New("partial managed/external pair provenance") }
     managedCLI, managedACP, err := provisionManagedPair(ctx)
@@ -612,13 +621,6 @@ func manageCodexPairWithProbe(ctx context.Context, action, scope, cliPath, acpPa
      return refreshManagedCodexInventory(scope,existing,managedCLI,managedACP)
 
     }
-   }
-   if cliPath!="" {
-    requested, err := filepath.Abs(cliPath)
-    if err!=nil { return "",err }
-    requestedACP, err := filepath.Abs(acpPath)
-    if err!=nil { return "",err }
-    if requested!=existing.Codex.Path || requestedACP!=existing.ACP.Path { return "", errors.New("pair already selected; explicit upgrade required") }
    }
    return "Existing native Codex pair preserved", nil
   }
