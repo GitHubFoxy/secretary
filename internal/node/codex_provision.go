@@ -123,11 +123,17 @@ func unpackCodexArchive(compressed []byte, asset codexAsset, stage string) error
   if name != asset.Name && !strings.HasPrefix(name, asset.Name+"-") { continue }
   count++
   if count != 1 { return fmt.Errorf("duplicate %s in native archive", asset.Name) }
+  // Codex releases can contain an ELF executable larger than 128 MiB. Never
+  // silently truncate a verified upstream archive during extraction: the
+  // resulting incomplete ELF can crash on its first --version probe.
+  if header.Size <= 0 || header.Size > 512<<20 {
+   return fmt.Errorf("invalid %s native executable size: %d", asset.Name, header.Size)
+  }
   output, err := os.OpenFile(filepath.Join(stage, asset.Name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0700)
   if err != nil { return err }
-  _, copyErr := io.Copy(output, io.LimitReader(tarReader, 128<<20))
+  _, copyErr := io.CopyN(output, tarReader, header.Size)
   closeErr := output.Close()
-  if copyErr != nil { return copyErr }
+  if copyErr != nil { return fmt.Errorf("extract %s native executable: %w", asset.Name, copyErr) }
   if closeErr != nil { return closeErr }
  }
  if count != 1 { return fmt.Errorf("native archive missing %s", asset.Name) }
