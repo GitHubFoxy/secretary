@@ -191,7 +191,7 @@ backup="$stage/previous-app"
 had_app=false
 [[ ! -d "$app" ]] || had_app=true
 activated=false
-created_links=()
+created_link_names=""
 pointer_stage="$HOME/.local/share/secretary/.current.$.new"
 # Retain the previous symlink itself before each swap. Do not reconstruct
 # symlinks from arrays during an EXIT trap (macOS ships Bash 3.2): each
@@ -203,13 +203,18 @@ activation_rollback() {
       rm -f "$current_release"
       if [[ -n "$previous_release" ]]; then ln -s "$previous_release" "$current_release"; fi
     fi
-    for created in "${created_links[@]}"; do rm -f "$created"; done
+    # Do not expand an empty Bash array under `set -u`: macOS Bash 3.2
+    # aborts the EXIT trap before previous release links are restored.
+    for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+      case " $created_link_names " in
+        *" $executable "*) rm -f "$bin/$executable" ;;
+      esac
+    done
     for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
       # Every backup is made before the corresponding link is replaced.
       # A previous migration can be restored even if a later mv fails.
       old_link="$link_stage/old.$executable"
       if [[ -L "$old_link" ]]; then
-        printf 'ROLLBACK DIAGNOSTIC: restoring %s from saved symlink %s\n' "$executable" "$(readlink "$old_link")" >&2
         if ! mv -fh "$old_link" "$bin/$executable"; then
           printf 'WARNING: Cannot restore legacy release link %s\n' "$bin/$executable" >&2
         fi
@@ -232,7 +237,7 @@ for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migr
   dest="$current_release/$(release_link_relative "$executable")"
   if [[ ! -e "$path" && ! -L "$path" ]]; then
     ln -s "$dest" "$path" || fail "Cannot activate $executable"
-    created_links+=("$path")
+    created_link_names="$created_link_names $executable"
   elif [[ "$(readlink "$path")" != "$dest" ]]; then
     is_installer_owned_link "$path" "$(release_link_relative "$executable")" ||
       fail "Release executable changed ownership during setup: $path"
