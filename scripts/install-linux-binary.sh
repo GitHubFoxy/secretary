@@ -31,14 +31,14 @@ stage="$(mktemp -d "${TMPDIR:-/tmp}/secretary-linux.XXXXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 version="${SECRETARY_VERSION:-}"
 if [[ -z "$version" ]]; then
-  curl -fsSL --retry 2 -o "$stage/latest.json" https://api.github.com/repos/GitHubFoxy/secretary/releases/latest || fail "Cannot resolve latest release; set SECRETARY_VERSION"
+  curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o "$stage/latest.json" https://api.github.com/repos/GitHubFoxy/secretary/releases/latest || fail "Cannot resolve latest release; set SECRETARY_VERSION"
   version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["tag_name"])' "$stage/latest.json")"
   version="${version#v}"
 fi
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || fail "Invalid release version"
 name="secretary-v$version-linux-$arch"
 url="${SECRETARY_RELEASE_BASE:-https://github.com/GitHubFoxy/secretary/releases/download/v$version}"
-curl -fsSL --retry 2 -o "$stage/manifest.json" "$url/$name.json" || fail "Missing Linux manifest"
+curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o "$stage/manifest.json" "$url/$name.json" || fail "Missing Linux manifest"
 python3 - "$stage/manifest.json" "$version" "$arch" "$name" > "$stage/digest" <<'PY'
 import json, re, sys
 with open(sys.argv[1], encoding="utf-8") as f:
@@ -54,7 +54,7 @@ assert type(m.get("bytes")) is int and m["bytes"] > 0
 print(m["sha256"].lower(), m["bytes"], m["revision"])
 PY
 read -r digest bytes revision < "$stage/digest"
-curl -fsSL --retry 2 -o "$stage/$name.tar.gz" "$url/$name.tar.gz" || fail "Release archive download failed"
+curl -fsSL --retry 5 --retry-delay 2 --retry-all-errors -o "$stage/$name.tar.gz" "$url/$name.tar.gz" || fail "Release archive download failed"
 [[ "$(sha256sum "$stage/$name.tar.gz" | awk '{print $1}')" == "$digest" ]] || fail "Checksum mismatch; installed release unchanged"
 [[ "$(wc -c < "$stage/$name.tar.gz" | tr -d '[:space:]')" == "$bytes" ]] || fail "Archive length mismatch"
 mkdir -p "$stage/unpacked"
