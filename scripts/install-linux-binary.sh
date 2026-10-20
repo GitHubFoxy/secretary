@@ -95,12 +95,13 @@ PY
 root="$HOME/.local/share/secretary"
 releases="$root/releases"
 current="$root/current"
-bin="$HOME/.local/bin"
+public_bin="$HOME/.local/bin"
+bin="$public_bin"
 units="$HOME/.config/systemd/user"
-for directory in "$root" "$releases" "$bin" "$units"; do
+for directory in "$root" "$releases" "$public_bin" "$units"; do
   [[ ! -L "$directory" ]] || fail "Unsafe symlink installation directory"
 done
-mkdir -p "$releases" "$bin" "$units"
+mkdir -p "$releases" "$public_bin" "$units"
 target="$releases/$name"
 if [[ -e "$target" ]]; then
   [[ -d "$target" && ! -L "$target" ]] || fail "Release directory conflict"
@@ -123,14 +124,30 @@ if [[ -e "$current" || -L "$current" ]]; then
   case "$previous" in "$releases/"*) ;; *) fail "Unmanaged release pointer" ;; esac
 fi
 for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
-  path="$bin/$executable"
+  path="$public_bin/$executable"
+  expected="$current/bin/$executable"
+  [[ "$executable" != secretary ]] || expected="$current/secretary"
   if [[ -e "$path" || -L "$path" ]]; then
-    [[ -L "$path" ]] || fail "Unmanaged executable: $path"
-    case "$(readlink "$path")" in "$current/"*) ;; *) fail "Source-managed executable exists: $path" ;; esac
+    if [[ ! -L "$path" || "$(readlink "$path")" != "$expected" ]]; then
+      bin="$root/bin"
+      break
+    fi
+  fi
+done
+if [[ "$bin" != "$public_bin" ]]; then
+  [[ ! -L "$bin" ]] || fail "Unsafe private executable directory"
+  mkdir -p "$bin"
+fi
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  path="$bin/$executable"
+  expected="$current/bin/$executable"
+  [[ "$executable" != secretary ]] || expected="$current/secretary"
+  if [[ -e "$path" || -L "$path" ]]; then
+    [[ -L "$path" && "$(readlink "$path")" == "$expected" ]] || fail "Unmanaged release executable: $path"
   fi
 done
 service_path="$bin:$PATH"
-unit_fields="$(SECRETARY_UNIT_CURRENT="$current" SECRETARY_UNIT_PATH="$service_path" python3 - <<'PY'
+unit_fields="$(SECRETARY_UNIT_CURRENT="$current" SECRETARY_UNIT_PATH="$service_path" SECRETARY_UNIT_BIN="$bin" SECRETARY_UNIT_PUBLIC_BIN="$public_bin" python3 - <<'PY'
 import os
 current = os.environ["SECRETARY_UNIT_CURRENT"]
 path = os.environ["SECRETARY_UNIT_PATH"]
@@ -142,11 +159,18 @@ def quote(value):
   return '"' + spec(value).replace("\\", "\\\\").replace('"', '\\"') + '"'
 print("WorkingDirectory=" + spec(current).replace(" ", r"\x20"))
 print("Environment=" + quote("PATH=" + path))
+if os.environ["SECRETARY_UNIT_BIN"] != os.environ["SECRETARY_UNIT_PUBLIC_BIN"]:
+  print("Environment=" + quote("SECRETARY_BINARY_STAGE_BIN=" + os.environ["SECRETARY_UNIT_BIN"]))
 print("ExecStart=" + quote(current + "/secretary"))
 PY
 )" || fail "Cannot escape systemd unit values"
 working_field="$(printf '%s\n' "$unit_fields" | grep '^WorkingDirectory=')"
-path_field="$(printf '%s\n' "$unit_fields" | grep '^Environment=')"
+path_field="$(printf '%s\n' "$unit_fields" | grep '^Environment="PATH=')"
+bin_field="$(printf '%s\n' "$unit_fields" | grep '^Environment="SECRETARY_BINARY_STAGE_BIN=' || true)"
+environment_fields="$path_field"
+if [[ -n "$bin_field" ]]; then
+  environment_fields="$(printf '%s\n%s' "$path_field" "$bin_field")"
+fi
 executable_field="$(printf '%s\n' "$unit_fields" | grep '^ExecStart=')"
 executable_field="${executable_field#ExecStart=}"
 for unit in secretary.service secretary-node.service; do
@@ -164,6 +188,9 @@ for unit in secretary.service secretary-node.service; do
       grep -Fqx "$working_field" "$path" &&
       grep -Fqx "ExecStart=$exec_command" "$path" ||
       fail "Conflicting systemd unit: $unit; remove or migrate the source-managed service before binary installation"
+    if [[ -n "$bin_field" ]]; then
+      grep -Fqx "$bin_field" "$path" || fail "Conflicting systemd release bin: $unit"
+    fi
   fi
 done
 mkdir -p "$stage/setup-bin"
@@ -230,7 +257,7 @@ After=$after
 [Service]
 Type=simple
 ${working_field}
-${path_field}
+${environment_fields}
 ExecStart=${exec_command}
 Restart=on-failure
 RestartSec=3
@@ -260,5 +287,9 @@ EOF
   done
 fi
 activated=true
-printf 'Secretary %s (%s) installed for linux/%s. Inspect: systemctl --user status secretary.service secretary-node.service; secretary status
-' "$version" "$revision" "$arch"
+printf 'Secretary %s (%s) installed for linux/%s. Inspect: systemctl --user status secretary.service secretary-node.service\n' "$version" "$revision" "$arch"
+if [[ "$bin" != "$public_bin" ]]; then
+  printf 'Existing executables in %s preserved. Release CLI: SECRETARY_BINARY_STAGE_BIN=%q %q status\n' "$public_bin" "$bin" "$current/secretary"
+else
+  printf 'Release CLI: secretary status\n'
+fi
