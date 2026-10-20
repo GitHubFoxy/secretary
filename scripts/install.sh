@@ -58,7 +58,7 @@ function run(args) {
   for (var i = 0; i < releases.length; i++) {
     var release = releases[i];
     var tag = release.tag_name;
-    if (release.draft || !release.published_at || typeof tag !== 'string' || !/^v[0-9]+\\.[0-9]+\\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$/.test(tag)) continue;
+    if (release.draft || !release.published_at || typeof tag !== 'string' || !/^v[0-9]+\.[0-9]+\.[0-9]+(?:[.-][0-9A-Za-z.-]+)?$/.test(tag)) continue;
     var name = 'secretary-' + tag + '-' + platform + '-' + arch;
     var assets = (release.assets || []).map(function(asset) { return asset.name; });
     if (assets.indexOf(name + '.json') !== -1 && assets.indexOf(name + '.tar.gz') !== -1) return tag.substring(1);
