@@ -71,4 +71,4 @@ jobs:
       - name: Run Go tests
         # Explicit live T09 run above uses -count=1 and T09_REAL_CODEX.
         # Skip only those two top-level tests here to avoid running them twice.
-        run: go test ./... -skip '^TestT09(PinnedOfficialCodexStartResume|RealCodexPersistedSessionResume)
+        run: go test ./... -skip '^TestT09(PinnedOfficialCodexStartResume|RealCodexPersistedSessionResume)$'
