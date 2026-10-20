@@ -1,6 +1,6 @@
 # Versioned Linux binary installation (Install 02)
 
-Install 02 uses the same schema-1 versioned release contract as macOS Install 01: `secretary-vVERSION-linux-ARCH.json` contains `schema`, `version`, `revision`, `os`, `arch`, `archive`, `sha256`, and `bytes`. Its matching tarball contains `secretaryd`, `secretaryctl`, `secretary-mcp`, `secretary-migrate`, `secretary-node`, the zsh CLI and default config/profiles. Supported architectures are Linux x86_64 (amd64) and aarch64 (arm64). The published artifacts are built on GitHub CI, not on the installation host.
+Install 02 uses the same schema-1 versioned release contract as macOS Install 01: `secretary-vVERSION-linux-ARCH.json` contains `schema`, `version`, `revision`, `os`, `arch`, `archive`, `sha256`, and `bytes`. Its matching tarball contains `secretaryd`, `secretaryctl`, `secretary-mcp`, `secretary-migrate`, `secretary-node`, the zsh CLI and default config/profiles. Supported architectures are Linux x86_64 (amd64) and aarch64 (arm64). The published artifacts are built on GitHub CI, not on the installation host. The full distribution matrix across operating systems is fixed in [ADR-0006](adr/0006-supported-binary-platform-matrix.md).
 
 ## Requirements and install
 

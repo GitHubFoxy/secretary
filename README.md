@@ -81,7 +81,9 @@ flowchart TD
 curl -fsSL --retry-all-errors --retry 5 --retry-delay 2 https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install.sh | bash
 ```
 
-На Linux требуются systemd user session, zsh, Python 3 и OpenSSL; на macOS — штатные системные утилиты. Публикация alpha.6 содержит бинарные дистрибутивы Linux amd64/arm64 и macOS arm64 (для macOS Intel артефакт пока не опубликован, хотя диспетчер эту архитектуру распознаёт). Публичный E2E подтверждён на Linux amd64 (Omarchy) и macOS arm64. Подробнее: [Linux binary installation](docs/linux-binary-install.md), [macOS binary installation](docs/macos-binary-install.md).
+На Linux требуются systemd user session, zsh, Python 3 и OpenSSL; на macOS — штатные системные утилиты. Публикация alpha.6 содержит бинарные дистрибутивы Linux amd64/arm64 и macOS arm64. Публичный E2E подтверждён на Linux amd64 (Omarchy) и macOS arm64.
+
+Поддерживаемая матрица платформ зафиксирована в [ADR-0006](docs/adr/0006-supported-binary-platform-matrix.md): Linux amd64/arm64, macOS arm64 (Apple Silicon), Windows amd64. macOS на Intel (x86_64) и Windows на ARM64 не поддерживаются и не публикуются. Подробнее: [Linux binary installation](docs/linux-binary-install.md), [macOS binary installation](docs/macos-binary-install.md).
 
 Установка разработчика **из исходников** по-прежнему доступна по отдельному адресу; она требует Git, Go 1.27.1+ или mise:
 

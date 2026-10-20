@@ -2,6 +2,8 @@
 
 macOS releases contain a matching Server, CLI, MCP, migration binary, co-located Execution node and native Secretary Node.app. The package manifest is a JSON object with schema version 1, Secretary version, exact 40-character source revision, operating system, architecture, archive basename, SHA-256 digest and size in bytes. A release tag `vVERSION` contains the pair `secretary-vVERSION-darwin-ARCH.json` and `secretary-vVERSION-darwin-ARCH.tar.gz`. Build artifacts are produced on GitHub macOS runners rather than the installation machine.
 
+Supported architecture is **arm64 (Apple Silicon)** only. macOS on Intel (x86_64) is out of scope and no `darwin/amd64` artifact is published; the unified installer fails closed on that host. See [ADR-0006](adr/0006-supported-binary-platform-matrix.md) for the full distribution matrix.
+
 ## Install
 
 For macOS users, run the single, prerelease-aware installer (with a working compatible native harness when required):
