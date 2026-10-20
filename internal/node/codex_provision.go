@@ -28,7 +28,8 @@ const codexACPPinnedVersion = "0.16.0"
 // codex-acp 0.16.0 accepts --config and --help but not --version. For
 // managed installations its version is attested by the pinned release archive;
 // for external adapters, do not claim a version the executable cannot report.
-const codexACPManagedVersionless = "codex-acp " + codexACPPinnedVersion + " (pinned upstream archive; no --version)"
+const codexACPManagedVersionSuffix = " (pinned upstream archive; no --version)"
+const codexACPManagedVersionless = "codex-acp " + codexACPPinnedVersion + codexACPManagedVersionSuffix
 const codexACPExternalVersionless = "codex-acp (version unavailable; no --version)"
 
 type codexAsset struct {
