@@ -152,7 +152,9 @@ HOME="$clean_home" bash "$root/scripts/install-macos-binary.sh"
 [[ "$(readlink "$clean_home/.local/share/secretary/current")" == "$clean_home/.local/share/secretary/releases/secretary-v${upgrade_version}-darwin-$arch" ]]
 # Source-managed CLI symlinks and binaries must survive a side-by-side install.
 source_home="$home/source-profile"
-mkdir -p "$source_home/.local/bin"
+mkdir -p "$source_home/.local/bin" "$source_home/Library/LaunchAgents"
+printf 'source-owned Node LaunchAgent; must not be modified\n' > "$source_home/Library/LaunchAgents/dev.secretary.cli-node.plist"
+cp "$source_home/Library/LaunchAgents/dev.secretary.cli-node.plist" "$home/source-launchagent.before"
 printf '#!/bin/sh\nprintf "source-managed\\n"\n' > "$source_home/source-cli"
 chmod +x "$source_home/source-cli"
 ln -s "$source_home/source-cli" "$source_home/.local/bin/secretary"
@@ -162,6 +164,7 @@ cp "$source_home/.local/bin/secretaryd" "$home/source-daemon.before"
 HOME="$source_home" bash "$root/scripts/install-macos-binary.sh"
 [[ "$(readlink "$source_home/.local/bin/secretary")" == "$source_home/source-cli" ]]
 cmp "$home/source-daemon.before" "$source_home/.local/bin/secretaryd"
+cmp "$home/source-launchagent.before" "$source_home/Library/LaunchAgents/dev.secretary.cli-node.plist"
 [[ "$("$source_home/.local/bin/secretary")" == source-managed ]]
 [[ "$("$source_home/.local/bin/secretaryd")" == source-daemon ]]
 source_state="$source_home/.local/share/secretary"
@@ -180,6 +183,7 @@ status="$(HOME="$source_home" SECRETARY_BINARY_STAGE_BIN="$source_private_bin" "
 [[ "$status" == *"installed: version=${upgrade_version}"* ]] || { echo "Side-by-side binary CLI cannot report its release" >&2; exit 1; }
 HOME="$source_home" bash "$root/scripts/install-macos-binary.sh"
 cmp "$home/source-daemon.before" "$source_home/.local/bin/secretaryd"
+cmp "$home/source-launchagent.before" "$source_home/Library/LaunchAgents/dev.secretary.cli-node.plist"
 [[ "$(readlink "$source_home/.local/bin/secretary")" == "$source_home/source-cli" ]]
 
 # Private bin tampering must fail closed and must not overwrite the source.
