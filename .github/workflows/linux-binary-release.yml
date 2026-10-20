@@ -83,6 +83,15 @@ jobs:
         shell: bash
         run: |
           bash scripts/linux-binary-install-test.sh "$SECRETARY_PACKAGE_INPUT" "$SECRETARY_TEST_DIST" "$GITHUB_SHA"
+      - name: Prerelease-tag installer regression
+        if: github.ref_type != 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=0.1.0-alpha.1
+          test_dist="$RUNNER_TEMP/prerelease-test-dist"
+          bash scripts/package-linux-binary-release.sh "$version" "$GITHUB_SHA" "${{ matrix.arch }}" "$SECRETARY_PACKAGE_INPUT" "$test_dist"
+          SECRETARY_TEST_VERSION="$version" bash scripts/linux-binary-install-test.sh "$SECRETARY_PACKAGE_INPUT" "$test_dist" "$GITHUB_SHA"
       - uses: actions/upload-artifact@v4
         with:
           name: secretary-linux-${{ matrix.arch }}-binary-release
