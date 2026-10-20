@@ -132,7 +132,10 @@ for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migr
   fi
 done
 legacy="$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
-[[ ! -e "$legacy" ]] || fail "CLI Node LaunchAgent conflicts with menu-managed Node; uninstall it first"
+legacy_node_agent=false
+if [[ -e "$legacy" || -L "$legacy" ]]; then
+  legacy_node_agent=true
+fi
 [[ ! -e "$app" || -d "$app" ]] || fail "Existing app location is not a directory"
 if [[ -d "$app" ]]; then
   existing_id="$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist" 2>/dev/null || true)"
@@ -193,4 +196,7 @@ if [[ "$bin" != "$public_bin" ]]; then
   printf 'Start release Server: SECRETARY_BINARY_STAGE_BIN=%q %q start --no-open\n' "$bin" "$current_release/secretary"
 else
   printf 'Start Server: secretary start --no-open\n'
+fi
+if [[ "$legacy_node_agent" == true ]]; then
+  printf 'WARNING: Preserved existing CLI Node LaunchAgent at %s. Stop the source-managed Node before launching the release menu-managed Node; the installer did not stop or change the old agent.\n' "$legacy" >&2
 fi
