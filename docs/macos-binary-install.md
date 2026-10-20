@@ -23,7 +23,7 @@ SECRETARY_BINARY_STAGE_BIN="$HOME/.local/share/secretary/bin" \
   "$HOME/.local/share/secretary/current/secretary" start --no-open
 ```
 
-The public `secretary` command can still point to the original source checkout; use the explicit release CLI when a collision is reported. This preserves the old **executables**, but does not isolate the existing Secretary state/configuration under `~/.local/share/secretary`; do not run source and release daemons concurrently against the same SQLite database or TCP ports. Existing source-managed CLI Node LaunchAgents remain a deliberate conflict, not silently removed.
+The public `secretary` command can still point to the original source checkout; use the explicit release CLI when a collision is reported. This preserves the old **executables**, but does not isolate the existing Secretary state/configuration under `~/.local/share/secretary`; do not run source and release daemons concurrently against the same SQLite database or TCP ports. A pre-existing source-managed CLI Node LaunchAgent is preserved and reported as a warning, not removed or stopped. The owner must stop the old source-managed Node before opening the menu-managed release Node to prevent competing processes.
 
 After installation, use `secretary doctor`, `secretary start --no-open`, `secretary status`, `secretary logs`, and `secretary stop`. Launch **Secretary Node** separately from Spotlight; starting the Secretary Server does not automatically start the Node. Use the existing Web bootstrap-code pairing to open the local Web client. Node pairing remains owner-controlled and preserves an existing identity.
 
