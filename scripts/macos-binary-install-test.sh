@@ -124,7 +124,7 @@ done
 exec /bin/mv "$@"
 EOF
 chmod +x "$home/break/mv"
-if PATH="$home/break:$PATH" bash "$root/scripts/install-macos-binary.sh" >/dev/null 2>&1; then
+if PATH="$home/break:$PATH" bash "$root/scripts/install-macos-binary.sh" >"$home/pointer-failure.log" 2>&1; then
   echo "Release activation failure unexpectedly succeeded" >&2
   exit 1
 fi
@@ -140,7 +140,13 @@ for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migr
   relative="bin/$executable"
   [[ "$executable" != secretary ]] || relative=secretary
   [[ "$(readlink "$HOME/.local/bin/$executable")" == "$initial_target/$relative" ]] ||
-    { echo "Legacy link not rolled back: $executable" >&2; exit 1; }
+    { echo "Legacy link not rolled back: $executable" >&2
+      echo "Actual target: $(readlink "$HOME/.local/bin/$executable")" >&2
+      echo "Expected target: $initial_target/$relative" >&2
+      echo "Pointer: $(readlink "$state/current")" >&2
+      echo "Failed installer output:" >&2
+      cat "$home/pointer-failure.log" >&2
+      exit 1; }
 done
 [[ ! -e "$state/bin/secretary" && ! -L "$state/bin/secretary" ]]
 # Inject a failure half-way through the legacy link migration, before current
