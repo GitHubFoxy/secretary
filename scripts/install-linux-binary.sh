@@ -191,7 +191,7 @@ for unit in secretary.service secretary-node.service; do
     grep -Fqx "Description=$description" "$path" &&
       grep -Fqx "$working_field" "$path" &&
       grep -Fqx "ExecStart=$exec_command" "$path" ||
-      fail "Conflicting systemd unit: $unit; remove or migrate the source-managed service before binary installation"
+      fail "Conflicting systemd unit: $unit. Refusing to replace a source-managed or unrecognized unit. If these are your old source-installed units: systemctl --user disable --now secretary-node.service secretary.service; move the two unit files out of \$HOME/.config/systemd/user/ to a safe backup; systemctl --user daemon-reload; then retry the installer. Do not delete them automatically."
     existing_bin_field="$(grep '^Environment="SECRETARY_BINARY_STAGE_BIN=' "$path" || true)"
     expected_private_field="Environment=\"SECRETARY_BINARY_STAGE_BIN=$root/bin\""
     if [[ -n "$existing_bin_field" && "$existing_bin_field" != "$expected_private_field" ]]; then
