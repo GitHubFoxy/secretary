@@ -209,6 +209,7 @@ activation_rollback() {
       # A previous migration can be restored even if a later mv fails.
       old_link="$link_stage/old.$executable"
       if [[ -L "$old_link" ]]; then
+        printf 'ROLLBACK DIAGNOSTIC: restoring %s from saved symlink %s\n' "$executable" "$(readlink "$old_link")" >&2
         if ! mv -fh "$old_link" "$bin/$executable"; then
           printf 'WARNING: Cannot restore legacy release link %s\n' "$bin/$executable" >&2
         fi
