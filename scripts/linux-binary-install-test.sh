@@ -94,7 +94,9 @@ cp "$state/node/config.json" "$home/node.before"
 mkdir -p "$state/node/data"
 printf 'native-session\n' > "$state/node/data/session-fixture"
 printf 'node-identity\n' > "$state/node/data/identity.json"
-bash "$root/scripts/install-linux-binary.sh"
+restart_log="$home/version-upgrade-restarts.log"
+TEST_SYSTEMCTL_LOG="$restart_log" bash "$root/scripts/install-linux-binary.sh"
+[[ ! -e "$restart_log" ]] || { echo "Same-release reinstall restarted services" >&2; exit 1; }
 cmp "$home/credentials.before" "$state/environment"
 cmp "$home/config.before" "$state/config.toml"
 cmp "$home/node.before" "$state/node/config.json"
@@ -130,8 +132,12 @@ chmod +x "$home/break/cp"
 if PATH="$home/break:$PATH" bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then exit 1; fi
 [[ "$(readlink "$state/current")" == "$initial_target" ]]
 rm "$home/break/cp"
-bash "$root/scripts/install-linux-binary.sh"
+TEST_SYSTEMCTL_LOG="$restart_log" bash "$root/scripts/install-linux-binary.sh"
+[[ "$(grep -cx restart-server "$restart_log")" == 1 ]] || { echo "Version upgrade did not restart Server exactly once" >&2; exit 1; }
+[[ "$(grep -cx restart-node "$restart_log")" == 1 ]] || { echo "Version upgrade did not restart Node exactly once" >&2; exit 1; }
 [[ "$(readlink "$state/current")" == "$upgrade_target" ]]
+TEST_SYSTEMCTL_LOG="$restart_log" bash "$root/scripts/install-linux-binary.sh"
+[[ "$(grep -cx restart-server "$restart_log")" == 1 && "$(grep -cx restart-node "$restart_log")" == 1 ]] || { echo "Same-version repeat restarted services" >&2; exit 1; }
 cmp "$home/credentials.before" "$state/environment"
 cmp "$home/config.before" "$state/config.toml"
 cmp "$home/node.before" "$state/node/config.json"
@@ -197,6 +203,27 @@ cmp "$home/rollback-source.before" "$rollback_home/.local/bin/secretaryd"
 [[ ! -e "$rollback_state/bin/secretaryd" && ! -L "$rollback_state/bin/secretaryd" ]]
 HOME="$rollback_home" SECRETARY_VERSION="$upgrade_version" bash "$root/scripts/install-linux-binary.sh"
 grep -Fqx "Environment=\"SECRETARY_BINARY_STAGE_BIN=$rollback_state/bin\"" "$rollback_units/secretary.service"
+
+# Failed restart on a version-only upgrade (no public-bin collision or unit
+# rewrite) must also roll back the current pointer and restart previous units.
+version_rollback_home="$home/version-only-restart-failure"
+mkdir -p "$version_rollback_home"
+HOME="$version_rollback_home" SECRETARY_VERSION="$version" bash "$root/scripts/install-linux-binary.sh"
+version_state="$version_rollback_home/.local/share/secretary"
+version_units="$version_rollback_home/.config/systemd/user"
+cp "$version_units/secretary.service" "$home/version-server.before"
+cp "$version_units/secretary-node.service" "$home/version-node.before"
+version_marker="$home/version-only-failure-once"
+if HOME="$version_rollback_home" FAIL_RESTART_NODE_ONCE=1 TEST_RESTART_FAILURE_MARKER="$version_marker" SECRETARY_VERSION="$upgrade_version" bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then
+  echo "Version-only failed Node restart incorrectly succeeded" >&2
+  exit 1
+fi
+[[ -f "$version_marker" ]]
+[[ "$(readlink "$version_state/current")" == "$version_state/releases/secretary-v${version}-linux-$arch" ]]
+cmp "$home/version-server.before" "$version_units/secretary.service"
+cmp "$home/version-node.before" "$version_units/secretary-node.service"
+HOME="$version_rollback_home" SECRETARY_VERSION="$upgrade_version" bash "$root/scripts/install-linux-binary.sh"
+[[ "$(readlink "$version_state/current")" == "$version_state/releases/secretary-v${upgrade_version}-linux-$arch" ]]
 
 new_home="$home/failed-service"
 mkdir -p "$new_home"
