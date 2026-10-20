@@ -171,6 +171,33 @@ HOME="$transition_home" TEST_SYSTEMCTL_LOG="$transition_log" SECRETARY_VERSION="
 [[ "$(grep -cx restart-server "$transition_log")" == 1 ]]
 [[ "$(grep -cx restart-node "$transition_log")" == 1 ]]
 
+# Failed restart after a managed-unit rewrite must restore original unit bytes
+# and release pointer without changing the source-owned executable.
+rollback_home="$home/private-transition-restart-failure"
+mkdir -p "$rollback_home"
+HOME="$rollback_home" SECRETARY_VERSION="$version" bash "$root/scripts/install-linux-binary.sh"
+rollback_state="$rollback_home/.local/share/secretary"
+rollback_units="$rollback_home/.config/systemd/user"
+cp "$rollback_units/secretary.service" "$home/previous-server.unit"
+cp "$rollback_units/secretary-node.service" "$home/previous-node.unit"
+rm "$rollback_home/.local/bin/secretaryd"
+printf '#!/bin/sh\nexit 4\n' > "$rollback_home/.local/bin/secretaryd"
+chmod +x "$rollback_home/.local/bin/secretaryd"
+cp "$rollback_home/.local/bin/secretaryd" "$home/rollback-source.before"
+rollback_marker="$home/node-restart-failed-once"
+if HOME="$rollback_home" FAIL_RESTART_NODE_ONCE=1 TEST_RESTART_FAILURE_MARKER="$rollback_marker" TEST_SYSTEMCTL_LOG="$home/rollback-restarts.log" SECRETARY_VERSION="$upgrade_version" bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then
+  echo "Updated owned unit survived an unsuccessful Node restart" >&2
+  exit 1
+fi
+[[ -f "$rollback_marker" ]]
+[[ "$(readlink "$rollback_state/current")" == "$rollback_state/releases/secretary-v${version}-linux-$arch" ]]
+cmp "$home/previous-server.unit" "$rollback_units/secretary.service"
+cmp "$home/previous-node.unit" "$rollback_units/secretary-node.service"
+cmp "$home/rollback-source.before" "$rollback_home/.local/bin/secretaryd"
+[[ ! -e "$rollback_state/bin/secretaryd" && ! -L "$rollback_state/bin/secretaryd" ]]
+HOME="$rollback_home" SECRETARY_VERSION="$upgrade_version" bash "$root/scripts/install-linux-binary.sh"
+grep -Fqx "Environment=\"SECRETARY_BINARY_STAGE_BIN=$rollback_state/bin\"" "$rollback_units/secretary.service"
+
 new_home="$home/failed-service"
 mkdir -p "$new_home"
 if HOME="$new_home" FAIL_NODE_SERVICE=1 bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then
