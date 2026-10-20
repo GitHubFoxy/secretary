@@ -99,7 +99,7 @@ func main() {
 		spec.Binary = envOr("SECRETARY_CODEX_COMMAND", envOr("CODEX_PATH", "codex"))
 		result := node.ProbeHarness(context.Background(), "readiness", spec, node.ExecCommandRunner{})
 		if !result.Available() {
-			log.Printf("Codex readiness failed: %s", result.ErrorCode)
+			log.Printf("Codex readiness failed: %s: %v", result.ErrorCode, result.Err)
 			os.Exit(1)
 		}
 		fmt.Printf("Codex %s ready: ACP initialize/load/steering observed, native models=%d\n", result.Instance.Version, len(result.Instance.ModelIDs))
