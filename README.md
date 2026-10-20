@@ -89,6 +89,10 @@ curl -fsSL --retry-all-errors --retry 5 --retry-delay 2 https://raw.githubuserco
 curl -fsSL https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/install-from-source.sh | bash
 ```
 
+На Linux повторная установка автоматически обновляет **собственные** user units `secretary.service` и `secretary-node.service`, если появление чужого файла в `~/.local/bin` требует перехода на приватный релизный bin. Это обновление перезапускает оба сервиса — завершите или сохраните активную работу перед переходом.
+
+**Важное ограничение:** если эти systemd units были созданы установкой Secretary из исходников, бинарный установщик намеренно остановится с `Conflicting systemd unit`. Перед переходом пользователь должен самостоятельно остановить source-managed Server/Node, отключить их автозапуск, сохранить исходные unit-файлы в резервной копии *вне* `~/.config/systemd/user` и выполнить `systemctl --user daemon-reload`. Автоматической миграции или удаления чужих units нет; не запускайте две установки на одной базе SQLite.
+
 В существующем checkout: `./secretary setup --interactive`. Можно выбрать **Codex или Claude Code** — оба одновременно не требуются. `secretary config` открывает терминальную конфигурацию harness, локального Node и Telegram; браузер и отдельный аккаунт Secretary не нужны.
 
 ```sh
