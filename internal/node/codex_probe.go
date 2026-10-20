@@ -23,10 +23,8 @@ type codexACPStderr struct {
 func (b *codexACPStderr) Write(data []byte) (int,error) {
  b.mu.Lock()
  defer b.mu.Unlock()
- if remaining:=16384-len(b.contents);remaining>0 {
-  if len(data)<remaining { remaining=len(data) }
-  b.contents=append(b.contents,data[:remaining]...)
- }
+ b.contents=append(b.contents,data...)
+ if len(b.contents)>16384 { b.contents=append([]byte(nil),b.contents[len(b.contents)-16384:]...) }
  return len(data),nil
 }
 
@@ -38,8 +36,15 @@ func (b *codexACPStderr) diagnostic() string {
  for _, line := range strings.Split(string(b.contents),"\n") {
   trimmed:=strings.TrimSpace(line)
   if strings.Contains(trimmed,"unknown variant") && (strings.Contains(trimmed,"reasoning") || strings.Contains(trimmed,"expected one of") || strings.Contains(trimmed,"models cache")) {
-   if len(trimmed)>600 { trimmed=trimmed[:600] }
-   return trimmed
+   // Keep just the schema-validation evidence, not arbitrary log prefixes
+   // that could include sensitive environment paths or credentials.
+   offset:=strings.Index(trimmed,"unknown variant")
+   schema:=trimmed[offset:]
+   if len(schema)>320 { schema=schema[:320] }
+   if strings.Contains(trimmed,"failed to load models cache") {
+    return "failed to load models cache: "+schema
+   }
+   return schema
   }
  }
  return ""
