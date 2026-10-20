@@ -232,7 +232,12 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
 		instance.ModelIDs, instance.ReasoningLevels, err = observer.ObserveCodexACP(probeCtx, p.Spec.Binary)
 		cancel()
 		if err != nil || len(instance.ModelIDs) == 0 {
-			result.Err, result.ErrorCode = ErrProbeUnhealthy, "codex_acp_unavailable"
+			if err != nil {
+    result.Err = fmt.Errorf("%w: %v", ErrProbeUnhealthy, err)
+   } else {
+    result.Err = fmt.Errorf("%w: ACP reported no models", ErrProbeUnhealthy)
+   }
+   result.ErrorCode = "codex_acp_unavailable"
 			result.Instance = instance
 			return result
 		}
@@ -679,7 +684,7 @@ func DefaultClaudeCodeProbeSpec() HarnessProbeSpec {
 
 func DefaultCodexProbeSpec() HarnessProbeSpec {
 	return HarnessProbeSpec{
-		Kind: core.HarnessCodex, Binary: "codex", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"login", "status"}, ModelsOptional: true,
+		Kind: core.HarnessCodex, Binary: "codex", VersionArgs: []string{"--version"}, AuthenticationArgs: []string{"login", "status"}, ModelsOptional: true, StepTimeout: 45 * time.Second,
 		ExecutionCapabilities: []core.ExecutionCapability{core.CapabilityShell, core.CapabilityEdit, core.CapabilityCancel, core.CapabilityImageInput, core.CapabilitySteering},
 		ActivityCapabilities:  append([]core.ActivityCapability(nil), observedACPActivity...),
 	}

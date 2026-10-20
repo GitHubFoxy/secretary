@@ -14,6 +14,10 @@ for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-
   [[ -x "$input/bin/$binary" && ! -L "$input/bin/$binary" ]] || fail "Missing binary: $binary"
 done
 [[ -f "$input/secretary" && -f "$input/scripts/secretary-interactive.zsh" && -f "$input/internal/config/defaults/config.toml" ]] || fail "Missing release resources"
+for asset in codex-acp.tar.gz codex-acp.tar.gz.sha256; do
+  [[ -f "$input/bin/native-acp/$asset" && ! -L "$input/bin/native-acp/$asset" ]] || fail "Missing pinned modern Codex ACP bundle: $asset"
+done
+(cd "$input/bin/native-acp" && sha256sum -c codex-acp.tar.gz.sha256) || fail "Invalid native Codex ACP bundle"
 for tool in ffmpeg ffprobe; do
   [[ -x "$input/bin/video-tools/$tool" && ! -L "$input/bin/video-tools/$tool" ]] || fail "Missing Server video executable: $tool"
 done
@@ -30,6 +34,8 @@ mkdir -p "$stage/$name/bin" "$stage/$name/scripts" "$stage/$name/internal/config
 for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
   cp -p "$input/bin/$binary" "$stage/$name/bin/$binary"
 done
+mkdir -p "$stage/$name/bin/native-acp"
+cp -p "$input/bin/native-acp/codex-acp.tar.gz" "$input/bin/native-acp/codex-acp.tar.gz.sha256" "$stage/$name/bin/native-acp/"
 mkdir -p "$stage/$name/bin/video-tools"
 cp -p "$input/bin/video-tools/ffmpeg" "$stage/$name/bin/video-tools/ffmpeg"
 cp -p "$input/bin/video-tools/ffprobe" "$stage/$name/bin/video-tools/ffprobe"

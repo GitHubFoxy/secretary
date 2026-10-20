@@ -11,6 +11,9 @@ on:
       - scripts/macos-standalone-clean-install-test.sh
       - cmd/secretary-node/**
       - internal/node/codex_*.go
+      - scripts/build-codex-acp-bundle.sh
+      - internal/acp/jsonl.go
+      - internal/node/harness_probe.go
       - internal/webapi/video.go
       - internal/webapi/video_tools.go
       - internal/webapi/video_tools_test.go
@@ -50,6 +53,17 @@ jobs:
           bash -n scripts/macos-release-contract-test.sh
           bash scripts/macos-release-contract-test.sh
           zsh -n secretary
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.6'
+      - name: Compile pinned modern Codex ACP (builder only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/build-codex-acp-bundle.sh darwin-arm64 "$RUNNER_TEMP/native-acp"
       - name: Provision video tools on release builder
         shell: bash
         run: |
@@ -62,6 +76,8 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/secretary-package/bin" "$RUNNER_TEMP/secretary-package/scripts" "$RUNNER_TEMP/secretary-package/internal/config"
+          mkdir -p "$RUNNER_TEMP/secretary-package/bin/native-acp"
+          cp "$RUNNER_TEMP/native-acp/"* "$RUNNER_TEMP/secretary-package/bin/native-acp/"
           for binary in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
             go build -trimpath -o "$RUNNER_TEMP/secretary-package/bin/$binary" "./cmd/$binary"
           done
@@ -104,6 +120,26 @@ jobs:
           mkdir -p "$RUNNER_TEMP/secretary-test-dist"
           cp "$RUNNER_TEMP/secretary-dist/"* "$RUNNER_TEMP/secretary-test-dist/"
           echo "SECRETARY_TEST_DIST=$RUNNER_TEMP/secretary-test-dist" >> "$GITHUB_ENV"
+      - name: Real bundled modern ACP initialize / new / load / steering gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="$RUNNER_TEMP/actual-release-acp"
+          mkdir -p "$dest"
+          tar -xzf "$RUNNER_TEMP/secretary-dist/secretary-v${SECRETARY_TEST_VERSION}-darwin-arm64.tar.gz" -C "$dest"
+          package="$dest/secretary-v${SECRETARY_TEST_VERSION}-darwin-arm64"
+          mkdir -p "$dest/adapter"
+          (cd "$package/bin/native-acp" && shasum -a 256 -c codex-acp.tar.gz.sha256)
+          tar -xzf "$package/bin/native-acp/codex-acp.tar.gz" -C "$dest/adapter"
+          mv "$dest/adapter/codex-acp-2.2.2" "$dest/adapter/codex-acp"
+          chmod +x "$dest/adapter/codex-acp"
+          triple=aarch64-apple-darwin
+          expected=61c4d9a92521bdb42b0c1d9f87c673f6da628a06de5945cbdd9a0010632f6d10
+          curl -fLsS --retry 3 -o "$dest/codex.tar.gz" "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-$triple.tar.gz"
+          echo "$expected  $dest/codex.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$dest/codex.tar.gz" -C "$dest/adapter"
+          chmod +x scripts/mock-codex-app-server.py
+          python3 scripts/codex-acp-release-gate.py --acp "$dest/adapter/codex-acp" --codex "$dest/adapter/codex-$triple" --mock-app-server "$GITHUB_WORKSPACE/scripts/mock-codex-app-server.py"
       - name: Verify clean install, idempotence, failed activation and upgrade
         shell: bash
         run: |

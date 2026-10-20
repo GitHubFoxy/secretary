@@ -7,6 +7,7 @@ trap 'rm -rf "$work"' EXIT
 input="$work/input"
 output="$work/output"
 mkdir -p "$input/bin" "$input/scripts" "$input/internal/config/defaults" "$input/Secretary Node.app/Contents/MacOS"
+bash "$root/scripts/create-native-acp-fixture.sh" "$input"
 for name in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
   printf '#!/bin/sh\nexit 0\n' > "$input/bin/$name"
   chmod +x "$input/bin/$name"

@@ -18,6 +18,7 @@ import (
  "os"
  "path/filepath"
  "strings"
+ "runtime"
  "testing"
 )
 
@@ -161,7 +162,9 @@ func TestManagedCodexPairPinsSupportedPlatforms(t *testing.T) {
  if err!=nil {
   t.Skipf("host not supported: %v",err)
  }
- if len(assets)!=2 {t.Fatalf("expected CLI and ACP pair, got %d",len(assets))}
+ expected := 1
+ if runtime.GOOS=="windows" { expected = 2 }
+ if len(assets)!=expected {t.Fatalf("expected %d upstream assets (the modern Unix ACP is bundled), got %d",expected,len(assets))}
  for _,asset:=range assets {
   if asset.URL=="" || len(asset.SHA256)!=64 || asset.Name=="" {t.Fatalf("incomplete pin: %+v",asset)}
  }
@@ -260,7 +263,9 @@ for line in sys.stdin:
  if req.get('method')=='initialize':
   response={'protocolVersion':1,'agentInfo':{'version':'0.16.0'},'agentCapabilities':{'loadSession':%s},'_meta':{'steering':{'supported':True}}}
  elif req.get('method')=='session/new':
-  response={'sessionId':'fixture','models':{'availableModels':[{'modelId':'gpt-fixture'}]}}
+  response={'sessionId':'fixture','models':{'availableModels':[{'modelId':'gpt-fixture[max]'},{'modelId':'gpt-fixture[ultra]'}]}}
+ elif req.get('method')=='session/load':
+  response={'models':{'availableModels':[{'modelId':'gpt-fixture[max]'}]}}
  else:
   response={}
  print(json.dumps({'jsonrpc':'2.0','id':req.get('id'),'result':response}),flush=True)
@@ -275,7 +280,11 @@ for line in sys.stdin:
  if err:=codexNativePairReady(context.Background(),pair);err!=nil {t.Fatalf("selected valid ACP failed: %v",err)}
  wire,err:=os.ReadFile(good+".log")
  if err!=nil {t.Fatal(err)}
- if !strings.Contains(string(wire),"initialize") || !strings.Contains(string(wire),"session/new") {t.Fatalf("missing required ACP protocol messages: %s",wire)}
+ if !strings.Contains(string(wire),"initialize") || !strings.Contains(string(wire),"session/new") || !strings.Contains(string(wire),"session/load") {t.Fatalf("missing required ACP protocol messages: %s",wire)}
+  models, efforts, err := (ExecCommandRunner{}).ObserveCodexACPWithCommand(context.Background(), cli, good)
+  if err != nil {t.Fatal(err)}
+  if len(models)!=1 || string(models[0])!="gpt-fixture" {t.Fatalf("unexpected model catalog: %v",models)}
+  if len(efforts)!=2 || string(efforts[0])!="max" || string(efforts[1])!="ultra" {t.Fatalf("reasoning max/ultra dropped: %v",efforts)}
  pair.ACP.Path=bad
  if err:=codexNativePairReady(context.Background(),pair);err==nil {t.Fatal("invalid ACP initialize contract accepted")}
  t.Setenv("HOME",t.TempDir())

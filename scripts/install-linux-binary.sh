@@ -176,7 +176,7 @@ if ! SECRETARY_BINARY_PREINSTALLED_ONLY=1 \
     SECRETARY_CODEX_PAIR_CLI="$selected_codex_cli" \
     SECRETARY_CODEX_PAIR_ACP="$selected_codex_acp" \
     "$target/secretary" "${setup_args[@]}"; then
-  fail "Setup failed before release activation. If the managed native Codex binary crashed during --version, this is a host/binary compatibility failure, not a Secretary package checksum failure. Retry with a compatible preinstalled native pair (SECRETARY_INSTALL_CODEX_CLI and SECRETARY_INSTALL_CODEX_ACP), or explicitly select an authorized Claude Code harness (SECRETARY_INSTALL_HARNESS=claude_code)."
+  fail "Setup failed before release activation. See the native Codex/ACP readiness error above. A model-cache schema failure, ACP timeout or protocol error is not proof of missing authorization. No release was activated."
 fi
 created=()
 unit_created=()

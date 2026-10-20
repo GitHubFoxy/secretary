@@ -131,6 +131,26 @@ func StartWithLogEnvDir(ctx context.Context, rawLog io.Writer, environment []str
 	return startWithProcessEnvironment(ctx, rawLog, environment, true, dir, command, arguments...)
 }
 
+// StartWithDiagnosticStderrEnvDir captures only child stderr (not ACP frames)
+// for explicitly scoped diagnostic probes. Production ACP clients remain unchanged.
+func StartWithDiagnosticStderrEnvDir(ctx context.Context, stderr io.Writer, environment []string, dir string, command string, arguments ...string) (*Client, error) {
+	processCtx, cancel := context.WithCancel(ctx)
+	process, err := nativeexec.CommandContext(processCtx, command, arguments...)
+	if err != nil { cancel(); return nil, err }
+	configureACPProcess(process)
+	process.Env = nativeexec.SecureWorkerEnvironment(processCtx, append(os.Environ(), environment...))
+	process.Dir = dir
+	process.Stderr = stderr
+	stdin, err := process.StdinPipe()
+	if err != nil { cancel(); return nil, err }
+	stdout, err := process.StdoutPipe()
+	if err != nil { cancel(); return nil, err }
+	if err := process.Start(); err != nil { cancel(); return nil, err }
+	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel}
+	go client.read(stdout)
+	return client, nil
+}
+
 func StartWithLogExactEnvDir(ctx context.Context, rawLog io.Writer, environment []string, dir string, command string, arguments ...string) (*Client, error) {
 	return startWithProcessEnvironment(ctx, rawLog, environment, false, dir, command, arguments...)
 }

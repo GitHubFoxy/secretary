@@ -24,6 +24,10 @@ done
 [[ -f "$input/internal/config/defaults/config.toml" ]] || fail "Missing default configuration"
 [[ -f "$input/Secretary Node.app/Contents/Info.plist" && -x "$input/Secretary Node.app/Contents/MacOS/SecretaryNode" ]] || fail "Missing native Secretary Node.app"
 [[ -d "$input/internal/config/defaults" ]] || fail "Missing default profiles"
+for asset in codex-acp.tar.gz codex-acp.tar.gz.sha256; do
+  [[ -f "$input/bin/native-acp/$asset" && ! -L "$input/bin/native-acp/$asset" ]] || fail "Missing pinned modern Codex ACP bundle: $asset"
+done
+(cd "$input/bin/native-acp" && shasum -a 256 -c codex-acp.tar.gz.sha256) || fail "Invalid native Codex ACP bundle"
 for tool in ffmpeg ffprobe; do
   [[ -x "$input/bin/video-tools/$tool" && ! -L "$input/bin/video-tools/$tool" ]] || fail "Missing Server video executable: $tool"
 done
@@ -42,6 +46,8 @@ mkdir -p "$stage/$release/bin" "$stage/$release/scripts" "$stage/$release/intern
 for name in secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
   cp -p "$input/bin/$name" "$stage/$release/bin/$name"
 done
+mkdir -p "$stage/$release/bin/native-acp"
+cp -p "$input/bin/native-acp/codex-acp.tar.gz" "$input/bin/native-acp/codex-acp.tar.gz.sha256" "$stage/$release/bin/native-acp/"
 mkdir -p "$stage/$release/bin/video-tools"
 cp -p "$input/bin/video-tools/ffmpeg" "$stage/$release/bin/video-tools/ffmpeg"
 cp -p "$input/bin/video-tools/ffprobe" "$stage/$release/bin/video-tools/ffprobe"
