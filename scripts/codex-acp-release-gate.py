@@ -21,6 +21,7 @@ p = argparse.ArgumentParser()
 p.add_argument("--acp", required=True)
 p.add_argument("--codex", required=True)
 p.add_argument("--expected-version", default="2.2.2")
+p.add_argument("--mock-app-server", help="explicit local Codex app-server fixture for offline CI protocol gate")
 args = p.parse_args()
 
 def safe_stderr(s):
@@ -45,9 +46,11 @@ with tempfile.TemporaryDirectory(prefix="secretary-modern-acp-") as d:
            "XDG_CONFIG_HOME": str(work / "config"),
            "XDG_CACHE_HOME": str(work / "cache"),
            "XDG_DATA_HOME": str(work / "data"),
-           "CODEX_PATH": os.path.abspath(args.codex),
+           "CODEX_PATH": os.path.abspath(args.mock_app_server or args.codex),
+           "CODEX_MOCK_LOG": str(work / "mock-codex-wire.log"),
            "CODEX_CONFIG": "{}",
-           "CODEX_API_KEY": "ci-inert-no-model-calls",
+           # No owner credentials or model inference in CI.
+
            "NO_BROWSER": "1"}
     proc = subprocess.Popen([args.acp], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, encoding="utf8", bufsize=1, env=env, cwd=cwd)
@@ -119,11 +122,18 @@ with tempfile.TemporaryDirectory(prefix="secretary-modern-acp-") as d:
         models = new.get("models",{}).get("availableModels",[])
         print("session/new models:", len(models), flush=True)
         assert models, "empty model catalog"
+        if args.mock_app_server:
+            observed = str(new)
+            assert "max" in observed and "ultra" in observed, "modern ACP lost max/ultra reasoning options"
         request("session/load",{"sessionId":session_id,"cwd":str(cwd),"mcpServers":[]},seconds=75)
         request("_session/steering",{"sessionId":session_id,"prompt":[{"type":"text","text":"release-gate steering handler check"}]},
                 seconds=20,allow_idle_steering_error=True)
         assert not any("unknown variant" in x and "max" in x for x in errors), "reasoning effort max parsing failed"
-        print("PACKAGED REAL ACP PROTOCOL: initialize / new / load / steering handler PASS",flush=True)
+        if args.mock_app_server:
+            wire = (work / "mock-codex-wire.log").read_text()
+            for method in ("initialize", "model/list", "thread/start", "thread/resume"):
+                assert method in wire, "missing Codex app-server method " + method
+        print("PACKAGED MODERN ACP (mock app-server model cache): initialize / new / load / steering handler PASS",flush=True)
     finally:
         proc.terminate()
         try:
