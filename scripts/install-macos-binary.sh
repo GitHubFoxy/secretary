@@ -131,6 +131,10 @@ for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migr
     [[ -L "$path" && "$(readlink "$path")" == "$expected" ]] || fail "Conflicting release executable: $path"
   fi
 done
+# Keep an existing source-managed app bundle intact as well as its CLI.
+if [[ "$bin" != "$public_bin" && ( -e "$app" || -L "$app" ) ]]; then
+  app="$HOME/Applications/Secretary Node (Release).app"
+fi
 legacy="$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
 legacy_node_agent=false
 if [[ -e "$legacy" || -L "$legacy" ]]; then
@@ -196,6 +200,9 @@ if [[ "$bin" != "$public_bin" ]]; then
   printf 'Start release Server: SECRETARY_BINARY_STAGE_BIN=%q %q start --no-open\n' "$bin" "$current_release/secretary"
 else
   printf 'Start Server: secretary start --no-open\n'
+fi
+if [[ "$app" != "$HOME/Applications/Secretary Node.app" ]]; then
+  printf 'Existing Secretary Node.app preserved. Release app: %s. Open explicitly: open %q\n' "$app" "$app"
 fi
 if [[ "$legacy_node_agent" == true ]]; then
   printf 'WARNING: Preserved existing CLI Node LaunchAgent at %s. Stop the source-managed Node before launching the release menu-managed Node; the installer did not stop or change the old agent.\n' "$legacy" >&2
