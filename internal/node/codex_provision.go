@@ -536,6 +536,41 @@ func activateCodexUpgrade(scope string, oldPair, candidate CodexPairInventory) e
  return os.Remove(pending)
 }
 
+// Only same-version, installer-owned managed pairs can be transparently
+// refreshed. The old content-addressed or legacy pair stays available for
+// running sessions; native inventory switches through the existing journal.
+func refreshManagedCodexInventory(scope string, existing CodexPairInventory, managedCLI, managedACP string) (string,error) {
+ if existing.Codex.Provenance!="managed" || existing.ACP.Provenance!="managed" {
+  return "", errors.New("automatic refresh may not replace external Codex pairs")
+ }
+ if !strings.Contains(existing.Codex.Version,codexPinnedVersion) ||
+  !strings.Contains(existing.ACP.Version,managedACPVersionForPlatform()) {
+  return "", errors.New("selected managed pair version differs; explicit upgrade required")
+ }
+ home, err := os.UserHomeDir()
+ if err!=nil { return "",err }
+ root := filepath.Join(home,".local","share","secretary","native","releases")
+ for _,path := range []string{existing.Codex.Path,existing.ACP.Path,managedCLI,managedACP} {
+  rel,err := filepath.Rel(root,path)
+  if err!=nil || rel=="." || rel==".." || filepath.IsAbs(rel) || strings.HasPrefix(rel,".."+string(os.PathSeparator)) {
+   return "",errors.New("automatic refresh requires installed native release paths")
+  }
+ }
+ cliRecord,err := codexBinaryRecord(managedCLI,"managed")
+ if err!=nil { return "",err }
+ acpRecord,err := codexACPBinaryRecord(managedACP,"managed")
+ if err!=nil { return "",err }
+ if !strings.Contains(cliRecord.Version,codexPinnedVersion) ||
+  !strings.Contains(acpRecord.Version,managedACPVersionForPlatform()) {
+  return "",errors.New("refreshed managed Codex pair version mismatch")
+ }
+ candidate := CodexPairInventory{Schema:1,Scope:scope,Harness:"codex",Codex:cliRecord,ACP:acpRecord}
+ // Verification alone is not an ACP protocol test. Readiness is run by setup
+ // after selection, and sets Compatibility.Validated only on success.
+ if err := activateCodexUpgrade(scope,existing,candidate); err!=nil { return "",err }
+ return "Refreshed verified managed Codex pair for current Secretary release",nil
+}
+
 func ManageCodexPair(ctx context.Context, action, scope, cliPath, acpPath string) (string, error) {
  return manageCodexPairWithProbe(ctx, action, scope, cliPath, acpPath, codexNativePairReady)
 }
@@ -574,24 +609,8 @@ func manageCodexPairWithProbe(ctx context.Context, action, scope, cliPath, acpPa
     managedCLI, managedACP, err := provisionManagedPair(ctx)
     if err != nil { return "", err }
     if existing.Codex.Path!=managedCLI || existing.ACP.Path!=managedACP {
-     // A different release may ship new trusted ACP bytes for the SAME pinned
-     // Codex/ACP versions. Both paths are installer-managed; external pairs
-     // must never be replaced by this implicit content refresh.
-     if !strings.Contains(existing.Codex.Version,codexPinnedVersion) ||
-      !strings.Contains(existing.ACP.Version,managedACPVersionForPlatform()) {
-      return "", errors.New("selected managed pair version differs; explicit upgrade required")
-     }
-     cliRecord, recordErr := codexBinaryRecord(managedCLI,"managed")
-     if recordErr != nil { return "", recordErr }
-     acpRecord, recordErr := codexACPBinaryRecord(managedACP,"managed")
-     if recordErr != nil { return "", recordErr }
-     candidate := CodexPairInventory{
-      Schema:1,Scope:scope,Harness:"codex",Codex:cliRecord,ACP:acpRecord,
-     }
-     // The archive and executable digests were verified above. Do not mark
-     // protocol readiness as validated until the new pair is actually probed.
-     if err := activateCodexUpgrade(scope,existing,candidate); err != nil { return "", err }
-     return "Refreshed verified managed Codex pair for current Secretary release",nil
+     return refreshManagedCodexInventory(scope,existing,managedCLI,managedACP)
+
     }
    }
    if cliPath!="" {
