@@ -23,7 +23,8 @@ import (
 )
 
 const codexPinnedVersion = "0.163.0"
-const codexACPPinnedVersion = "0.16.0"
+const codexACPPinnedVersion = "2.2.2"
+const codexACPWindowsLegacyVersion = "0.16.0"
 
 // codex-acp 0.16.0 accepts --config and --help but not --version. For
 // managed installations its version is attested by the pinned release archive;
@@ -61,25 +62,33 @@ func codexNativeAssets() ([]codexAsset, error) {
  if runtime.GOOS == "windows" {
   return []codexAsset{
    {"https://github.com/openai/codex/releases/download/rust-v"+codexPinnedVersion+"/codex-"+triple+".exe.zip", codexDigest, "codex.exe"},
-   {"https://github.com/zed-industries/codex-acp/releases/download/v"+codexACPPinnedVersion+"/codex-acp-"+codexACPPinnedVersion+"-"+acpTriple+".zip", acpDigest, "codex-acp.exe"},
+   {"https://github.com/zed-industries/codex-acp/releases/download/v"+codexACPWindowsLegacyVersion+"/codex-acp-"+codexACPWindowsLegacyVersion+"-"+acpTriple+".zip", acpDigest, "codex-acp.exe"},
   }, nil
  }
  return []codexAsset{
   {"https://github.com/openai/codex/releases/download/rust-v"+codexPinnedVersion+"/codex-"+triple+".tar.gz", codexDigest, "codex"},
-  {"https://github.com/zed-industries/codex-acp/releases/download/v"+codexACPPinnedVersion+"/codex-acp-"+codexACPPinnedVersion+"-"+acpTriple+".tar.gz", acpDigest, "codex-acp"},
  }, nil
 }
 
 func fetchCodexExecutable(ctx context.Context, asset codexAsset, stage string) error {
- req, err := http.NewRequestWithContext(ctx, http.MethodGet, asset.URL, nil)
+ var compressed []byte
+ var err error
+ if strings.HasPrefix(asset.URL, "file://") {
+  compressed, err = os.ReadFile(strings.TrimPrefix(asset.URL, "file://"))
+ } else {
+  var req *http.Request
+  req, err = http.NewRequestWithContext(ctx, http.MethodGet, asset.URL, nil)
+  if err != nil { return err }
+  client := &http.Client{Timeout: 2*time.Minute}
+  var resp *http.Response
+  resp, err = client.Do(req)
+  if err != nil { return err }
+  defer resp.Body.Close()
+  if resp.StatusCode != http.StatusOK { return fmt.Errorf("native release download HTTP %d", resp.StatusCode) }
+  compressed, err = io.ReadAll(io.LimitReader(resp.Body, 256<<20))
+ }
  if err != nil { return err }
- client := &http.Client{Timeout: 2*time.Minute}
- resp, err := client.Do(req)
- if err != nil { return err }
- defer resp.Body.Close()
- if resp.StatusCode != http.StatusOK { return fmt.Errorf("native release download HTTP %d", resp.StatusCode) }
- compressed, err := io.ReadAll(io.LimitReader(resp.Body, 256<<20))
- if err != nil { return err }
+ if len(compressed) > 256<<20 { return fmt.Errorf("native release archive too large") }
  digest := sha256.Sum256(compressed)
  if hex.EncodeToString(digest[:]) != asset.SHA256 { return fmt.Errorf("%s release checksum mismatch", asset.Name) }
  if err := unpackCodexArchive(compressed, asset, stage); err != nil { return err }
@@ -245,12 +254,47 @@ func saveCodexPair(path string, pair CodexPairInventory) error {
  return os.Rename(file.Name(), path)
 }
 
+// The Secretary release archive is checksum-verified before installation. It
+// contains a standalone Bun-compiled build of a pinned modern ACP adapter.
+func packagedCodexACPAsset() (codexAsset, error) {
+ exe, err := os.Executable()
+ if err != nil { return codexAsset{}, err }
+ exe, err = filepath.EvalSymlinks(exe)
+ if err != nil { return codexAsset{}, err }
+ archivePath := filepath.Join(filepath.Dir(exe), "native-acp", "codex-acp.tar.gz")
+ receiptPath := archivePath+".sha256"
+ for _, path := range []string{archivePath,receiptPath} {
+  info, statErr := os.Lstat(path)
+  if statErr != nil { return codexAsset{}, fmt.Errorf("missing packaged modern codex-acp %s: %w", codexACPPinnedVersion, statErr) }
+  if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 { return codexAsset{}, errors.New("unsafe packaged ACP artifact") }
+ }
+ receipt, err := os.ReadFile(receiptPath)
+ if err != nil { return codexAsset{}, err }
+ fields := strings.Fields(string(receipt))
+ if len(fields)!=2 || len(fields[0])!=64 || fields[1]!="codex-acp.tar.gz" { return codexAsset{}, errors.New("invalid packaged ACP checksum receipt") }
+ compressed, err := os.ReadFile(archivePath)
+ if err != nil { return codexAsset{}, err }
+ digest := sha256.Sum256(compressed)
+ if !strings.EqualFold(fields[0],hex.EncodeToString(digest[:])) { return codexAsset{}, errors.New("packaged modern ACP checksum mismatch") }
+ return codexAsset{URL:"file://"+archivePath,SHA256:strings.ToLower(fields[0]),Name:"codex-acp"},nil
+}
+
+func managedACPVersionForPlatform() string {
+ if runtime.GOOS=="windows" { return codexACPWindowsLegacyVersion }
+ return codexACPPinnedVersion
+}
+
 func provisionManagedPair(ctx context.Context) (string, string, error) {
  assets, err := codexNativeAssets()
  if err != nil { return "", "", err }
+ if runtime.GOOS != "windows" {
+  bundledACP, bundleErr := packagedCodexACPAsset()
+  if bundleErr != nil { return "", "", bundleErr }
+  assets = append(assets, bundledACP)
+ }
  home, err := os.UserHomeDir()
  if err != nil { return "", "", err }
- root := filepath.Join(home, ".local", "share", "secretary", "native", "releases", codexPinnedVersion+"-"+codexACPPinnedVersion)
+ root := filepath.Join(home, ".local", "share", "secretary", "native", "releases", codexPinnedVersion+"-"+managedACPVersionForPlatform())
  return installManagedCodexAssets(ctx, assets, root, runtime.GOOS+"-"+runtime.GOARCH)
 }
 
@@ -266,7 +310,7 @@ func installManagedCodexAssets(ctx context.Context, assets []codexAsset, root, t
   if err != nil { return "", "", fmt.Errorf("partial or changed managed Codex CLI: %w", err) }
   acpRecord, err := codexACPBinaryRecord(acp, "managed")
   if err != nil { return "", "", fmt.Errorf("partial or changed managed Codex ACP: %w", err) }
-  if !strings.Contains(cliRecord.Version, codexPinnedVersion) || !strings.Contains(acpRecord.Version, codexACPPinnedVersion) { return "", "", errors.New("managed Codex pair version mismatch") }
+  if !strings.Contains(cliRecord.Version, codexPinnedVersion) || !strings.Contains(acpRecord.Version, managedACPVersionForPlatform()) { return "", "", errors.New("managed Codex pair version mismatch") }
   return cli, acp, nil
  } else if !os.IsNotExist(err) { return "", "", err }
  if err := os.MkdirAll(root, 0700); err != nil { return "", "", err }
@@ -280,7 +324,7 @@ func installManagedCodexAssets(ctx context.Context, assets []codexAsset, root, t
  if err != nil { return "", "", err }
  acpRecord, err := codexACPBinaryRecord(filepath.Join(stage, names[1]), "managed")
  if err != nil { return "", "", err }
- if !strings.Contains(cliRecord.Version, codexPinnedVersion) || !strings.Contains(acpRecord.Version, codexACPPinnedVersion) { return "", "", errors.New("downloaded Codex pair versions differ from pinned release") }
+ if !strings.Contains(cliRecord.Version, codexPinnedVersion) || !strings.Contains(acpRecord.Version, managedACPVersionForPlatform()) { return "", "", errors.New("downloaded Codex pair versions differ from pinned release") }
  if err := os.Rename(stage, final); err != nil { return "", "", err }
  return cli, acp, nil
 }
