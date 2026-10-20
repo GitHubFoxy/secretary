@@ -15,7 +15,7 @@ esac
 cat > "$stage/releases.json" <<EOF
 [
   {"tag_name":"v99.0.0","draft":false,"published_at":"2026-10-20T20:00:00Z","assets":[]},
-  {"tag_name":"v0.1.0-alpha.5","draft":false,"prerelease":true,"published_at":"2026-10-20T10:00:00Z","assets":[
+  {"tag_name":"v0.1.0-alpha.5","draft":false,"body":null,"prerelease":true,"published_at":"2026-10-20T10:00:00Z","assets":[
     {"name":"secretary-v0.1.0-alpha.5-$platform-$arch.json"},
     {"name":"secretary-v0.1.0-alpha.5-$platform-$arch.tar.gz"}
   ]},
