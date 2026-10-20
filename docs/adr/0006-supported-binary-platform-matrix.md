@@ -32,9 +32,9 @@ ADR-0002 states that Execution nodes support macOS, Linux and Windows once verif
 
 2. **macOS on Intel (x86_64) is out of scope.** No `darwin/amd64` artifact is published, and none is planned. The unified installer must fail with a clear unsupported-platform message instead of attempting a download.
 
-3. **Windows on ARM64 is out of scope.** The Worker archive is not published and the Windows acceptance matrix covers x64 only.
+3. **Windows on ARM64 is out of scope.** The Windows acceptance matrix covers x64 only, so an ARM64 Worker is neither verified nor advertised. The existing release workflow still builds and publishes `secretary-node-windows-arm64-vVERSION.zip` alongside the x64 archive; that artifact is outside the supported matrix and carries no acceptance. Stopping the ARM64 build is a separate cleanup that no user request depends on.
 
-4. **The release contract stays closed to unsupported pairs.** A release publishes a manifest and archive for exactly the platforms in the table above. Publishing an artifact for an unsupported platform does not make that platform supported.
+4. **The release contract stays closed to unsupported pairs.** A release publishes a manifest and archive for exactly the platforms in the table above. Publishing an artifact for an unsupported platform does not make that platform supported, and an unsupported pair must not appear in the supported matrix.
 
 5. **CI mirrors the matrix.** Release and acceptance jobs run for the supported platforms only. The unified-installer dispatch job keeps a macOS Intel runner solely to exercise the host-detection branch of `scripts/install.sh`; that job validates routing logic against a mocked release list and proves nothing about a shipped Intel artifact.
 
@@ -55,5 +55,5 @@ ADR-0002 states that Execution nodes support macOS, Linux and Windows once verif
 ## Verification
 
 1. `scripts/unified-binary-install-test.sh` covers the dispatcher's platform mapping for Linux amd64, Linux arm64, macOS arm64 and macOS x86_64, including the rejected host message.
-2. `gh release view v0.1.0-alpha.6` lists exactly `darwin-arm64`, `linux-amd64`, `linux-arm64` Server pairs and `windows-amd64` Worker archives.
+2. `gh release view v0.1.0-alpha.8` lists `darwin-arm64`, `linux-amd64`, `linux-arm64` Server pairs and the `windows-amd64` Worker archive; any further platform pair is outside the matrix and must be justified by its own acceptance.
 3. The public one-command installation was accepted on Linux amd64 (systemd user services active, HTTP 401 from the Server) and on macOS arm64.
