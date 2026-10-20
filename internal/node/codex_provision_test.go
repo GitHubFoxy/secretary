@@ -109,6 +109,53 @@ func TestUnpackCodexArchivePreservesFullExecutableOver128MiB(t *testing.T) {
  }
 }
 
+func TestVersionlessCodexACPDoesNotBlockNativePairInstall(t *testing.T) {
+ t.Setenv("HOME", t.TempDir())
+ dir := t.TempDir()
+ cli := codexFixtureExecutable(t, dir, "codex")
+ acp := filepath.Join(dir, "codex-acp")
+ // The actual zed-industries/codex-acp v0.16.0 CLI does not provide
+ // --version: clap exits 2 for the unexpected option, while --help works.
+ err := os.WriteFile(acp, []byte("#!/bin/sh\ncase \"$1\" in\n  --version) echo \"error: unexpected argument '--version' found\" >&2; exit 2 ;;\n  --help) echo 'Usage: codex-acp -c key=value'; exit 0 ;;\n  *) exit 1 ;;\nesac\n"), 0700)
+ if err != nil { t.Fatal(err) }
+
+ if _, err := codexBinaryRecord(acp, "external"); err == nil {
+  t.Fatal("Codex CLI must not treat --version errors as acceptable")
+ }
+ external, err := codexACPBinaryRecord(acp, "external")
+ if err != nil { t.Fatal(err) }
+ if external.Version != codexACPExternalVersionless { t.Fatalf("invented external ACP version: %q", external.Version) }
+ if err := verifyCodexACPBinary(external); err != nil { t.Fatalf("external versionless ACP verification: %v", err) }
+ managed, err := codexACPBinaryRecord(acp, "managed")
+ if err != nil { t.Fatal(err) }
+ if managed.Version != codexACPManagedVersionless { t.Fatalf("wrong managed version label: %q", managed.Version) }
+ if err := verifyCodexACPBinary(managed); err != nil { t.Fatalf("managed versionless ACP verification: %v", err) }
+
+ if _, err := ManageCodexPair(context.Background(), "install", "node", cli, acp); err != nil { t.Fatalf("native pair install rejected versionless ACP: %v", err) }
+ if _, err := ManageCodexPair(context.Background(), "install", "node", "", ""); err != nil { t.Fatalf("repeat install failed: %v", err) }
+
+ if err := os.WriteFile(acp, []byte("#!/bin/sh\necho replaced\n"), 0700); err != nil { t.Fatal(err) }
+ if err := verifyCodexACPBinary(external); err == nil || !strings.Contains(err.Error(), "bytes changed") {
+  t.Fatalf("expected versionless ACP tampering rejection, got %v", err)
+ }
+}
+
+func TestCodexACPVersionlessFallbackFailsClosed(t *testing.T) {
+ dir := t.TempDir()
+ acp := filepath.Join(dir, "codex-acp")
+ cases := []struct { name, script string }{
+  {"unrelated-exit-two", "#!/bin/sh\nif [ \"$1\" = --version ]; then echo 'runtime initialization failed' >&2; exit 2; fi\necho help\n"},
+  {"broken-help", "#!/bin/sh\nif [ \"$1\" = --version ]; then echo \"error: unexpected argument '--version' found\" >&2; exit 2; fi\nexit 7\n"},
+  {"empty-help", "#!/bin/sh\nif [ \"$1\" = --version ]; then echo \"error: unexpected argument '--version' found\" >&2; exit 2; fi\nexit 0\n"},
+ }
+ for _, tc := range cases {
+  t.Run(tc.name, func(t *testing.T) {
+   if err := os.WriteFile(acp, []byte(tc.script), 0700); err != nil { t.Fatal(err) }
+   if _, err := codexACPBinaryRecord(acp, "external"); err == nil { t.Fatal("invalid ACP probe accepted") }
+  })
+ }
+}
+
 func TestManagedCodexPairPinsSupportedPlatforms(t *testing.T) {
  assets,err:=codexNativeAssets()
  if err!=nil {
@@ -129,6 +176,9 @@ func TestInstallManagedCodexAssetsFreshRetryPartialAndCorrupt(t *testing.T) {
   version := codexPinnedVersion
   if name=="codex-acp" { version=codexACPPinnedVersion }
   payload := []byte("#!/bin/sh\necho " + name + " " + version + "\n")
+  if name=="codex-acp" {
+   payload = []byte("#!/bin/sh\ncase \"$1\" in\n  --version) echo \"error: unexpected argument '--version' found\" >&2; exit 2 ;;\n  --help) echo 'Usage: codex-acp -c key=value'; exit 0 ;;\n  *) exit 1 ;;\nesac\n")
+  }
   if err := archive.WriteHeader(&tar.Header{Name:name+"-native",Typeflag:tar.TypeReg,Mode:0700,Size:int64(len(payload))}); err != nil { t.Fatal(err) }
   if _,err := archive.Write(payload); err != nil { t.Fatal(err) }
   if err := archive.Close(); err != nil { t.Fatal(err) }

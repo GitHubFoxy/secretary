@@ -10,6 +10,7 @@ on:
       - scripts/macos-standalone-node-test.sh
       - scripts/macos-standalone-clean-install-test.sh
       - cmd/secretary-node/**
+      - internal/node/codex_*.go
       - internal/webapi/video.go
       - internal/webapi/video_tools.go
       - internal/webapi/video_tools_test.go

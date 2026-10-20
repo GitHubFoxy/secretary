@@ -51,11 +51,28 @@ func ReadCodexPairInventory(scope string) (CodexPairInventory, error) {
  if pair.Schema != 1 || pair.Scope != scope || pair.Harness != "codex" { return pair, fmt.Errorf("native pair inventory mismatch: %s", path) }
  if !pair.Compatibility.Validated { return pair, fmt.Errorf("native Codex pair protocol has not been validated for %s", scope) }
  if err := verifyCodexBinary(pair.Codex); err != nil { return pair, fmt.Errorf("Codex CLI: %w", err) }
- if err := verifyCodexBinary(pair.ACP); err != nil { return pair, fmt.Errorf("Codex ACP: %w", err) }
+ if err := verifyCodexACPBinary(pair.ACP); err != nil { return pair, fmt.Errorf("Codex ACP: %w", err) }
  return pair, nil
 }
 
 func verifyCodexBinary(record CodexBinaryRecord) error {
+ return verifyCodexBinaryWithProbe(record, "--version")
+}
+
+func verifyCodexACPBinary(record CodexBinaryRecord) error {
+ // Preserve inventory records from older pinned releases after future bumps.
+ if strings.HasPrefix(record.Version, "codex-acp ") && strings.HasSuffix(record.Version, codexACPManagedVersionSuffix) {
+  if record.Provenance != "managed" { return fmt.Errorf("invalid pinned ACP provenance") }
+  return verifyCodexBinaryWithProbe(record, "--help")
+ }
+ if record.Version == codexACPExternalVersionless {
+  if record.Provenance != "external" { return fmt.Errorf("invalid external ACP provenance") }
+  return verifyCodexBinaryWithProbe(record, "--help")
+ }
+ return verifyCodexBinaryWithProbe(record, "--version")
+}
+
+func verifyCodexBinaryWithProbe(record CodexBinaryRecord, probe string) error {
  if !filepath.IsAbs(record.Path) || !filepath.IsAbs(record.ResolvedPath) || record.Version == "" ||
    (record.Provenance != "managed" && record.Provenance != "external") {
   return fmt.Errorf("invalid executable record")
@@ -71,9 +88,10 @@ func verifyCodexBinary(record CodexBinaryRecord) error {
  if hex.EncodeToString(digest[:]) != record.SHA256 { return fmt.Errorf("selected executable bytes changed: %s", resolved) }
  ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
  defer cancel()
- output, err := exec.CommandContext(ctx, resolved, "--version").CombinedOutput()
- if err != nil { return fmt.Errorf("selected executable version probe failed: %w", err) }
- if strings.TrimSpace(string(output)) != record.Version { return fmt.Errorf("selected executable version changed: %s", resolved) }
+ output, err := exec.CommandContext(ctx, resolved, probe).CombinedOutput()
+ if err != nil { return fmt.Errorf("selected executable %s probe failed: %w", probe, err) }
+ if strings.TrimSpace(string(output)) == "" { return fmt.Errorf("selected executable %s returned no output: %s", probe, resolved) }
+ if probe == "--version" && strings.TrimSpace(string(output)) != record.Version { return fmt.Errorf("selected executable version changed: %s", resolved) }
  return nil
 }
 
