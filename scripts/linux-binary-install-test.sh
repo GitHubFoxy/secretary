@@ -3,6 +3,8 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 [[ $# -eq 3 ]] || { echo "Usage: $0 PACKAGE_INPUT DIST REVISION" >&2; exit 1; }
 input="$1"; dist="$2"; revision="$3"
+version="${SECRETARY_TEST_VERSION:-0.0.0-ci}"
+upgrade_version="${version}-upgrade"
 arch=amd64
 case "$(uname -m)" in x86_64) ;; aarch64) arch=arm64 ;; *) exit 1 ;; esac
 home="$(mktemp -d)"
@@ -48,7 +50,7 @@ chmod +x "$home/mock/"* "$home/provider bin/claude"
 mkdir -p "$home/run"
 touch "$home/run/bus"
 export HOME="$home" PATH="$home/mock:$home/provider bin:$PATH" XDG_RUNTIME_DIR="$home/run"
-export SECRETARY_VERSION=0.0.0-ci SECRETARY_RELEASE_BASE="file://$dist"
+export SECRETARY_VERSION="$version" SECRETARY_RELEASE_BASE="file://$dist"
 export TEST_SERVICE_PID="${BASHPID}"
 bash "$root/scripts/install-linux-binary.sh" && { echo "Non-systemd host was accepted" >&2; exit 1; }
 rm "$home/run/bus"
@@ -60,10 +62,12 @@ s.close()
 PY
 bash "$root/scripts/install-linux-binary.sh"
 state="$home/.local/share/secretary"
+initial_target="$state/releases/secretary-v${version}-linux-$arch"
+upgrade_target="$state/releases/secretary-v${upgrade_version}-linux-$arch"
 [[ -L "$state/current" && -f "$state/environment" && -f "$state/node/config.json" ]]
 [[ -f "$home/.config/systemd/user/secretary.service" && -f "$home/.config/systemd/user/secretary-node.service" ]]
 grep -Fqx "WorkingDirectory=$state/current" "$home/.config/systemd/user/secretary.service"
-"$home/.local/bin/secretary" status | grep -F 'installed: version=0.0.0-ci'
+"$home/.local/bin/secretary" status | grep -F "installed: version=$version"
 cp "$state/environment" "$home/credentials.before"
 cp "$state/config.toml" "$home/config.before"
 cp "$state/node/config.json" "$home/node.before"
@@ -76,16 +80,16 @@ cmp "$home/config.before" "$state/config.toml"
 cmp "$home/node.before" "$state/node/config.json"
 [[ "$(cat "$state/node/data/session-fixture")" == native-session ]]
 [[ "$(cat "$state/node/data/identity.json")" == node-identity ]]
-bash "$root/scripts/package-linux-binary-release.sh" 0.0.1-ci "$revision" "$arch" "$input" "$dist"
-export SECRETARY_VERSION=0.0.1-ci
-archive="$dist/secretary-v0.0.1-ci-linux-$arch.tar.gz"
+bash "$root/scripts/package-linux-binary-release.sh" "$upgrade_version" "$revision" "$arch" "$input" "$dist"
+export SECRETARY_VERSION="$upgrade_version"
+archive="$dist/secretary-v${upgrade_version}-linux-$arch.tar.gz"
 cp "$archive" "$home/archive.backup"
 printf 'corrupt\n' >> "$archive"
 if bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then exit 1; fi
-[[ "$(readlink "$state/current")" == *0.0.0-ci* ]]
+[[ "$(readlink "$state/current")" == "$initial_target" ]]
 cp "$home/archive.backup" "$archive"
-cp "$dist/secretary-v0.0.1-ci-linux-$arch.json" "$home/manifest.backup"
-python3 - "$dist/secretary-v0.0.1-ci-linux-$arch.json" <<'PY'
+cp "$dist/secretary-v${upgrade_version}-linux-$arch.json" "$home/manifest.backup"
+python3 - "$dist/secretary-v${upgrade_version}-linux-$arch.json" <<'PY'
 import json, sys
 p = sys.argv[1]
 m = json.load(open(p))
@@ -93,7 +97,7 @@ m["arch"] = "wrong"
 open(p, "w").write(json.dumps(m))
 PY
 if bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then exit 1; fi
-cp "$home/manifest.backup" "$dist/secretary-v0.0.1-ci-linux-$arch.json"
+cp "$home/manifest.backup" "$dist/secretary-v${upgrade_version}-linux-$arch.json"
 mkdir -p "$home/break"
 cat > "$home/break/cp" <<'SH'
 #!/bin/bash
@@ -104,10 +108,10 @@ exec /bin/cp "$@"
 SH
 chmod +x "$home/break/cp"
 if PATH="$home/break:$PATH" bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then exit 1; fi
-[[ "$(readlink "$state/current")" == *0.0.0-ci* ]]
+[[ "$(readlink "$state/current")" == "$initial_target" ]]
 rm "$home/break/cp"
 bash "$root/scripts/install-linux-binary.sh"
-[[ "$(readlink "$state/current")" == *0.0.1-ci* ]]
+[[ "$(readlink "$state/current")" == "$upgrade_target" ]]
 cmp "$home/credentials.before" "$state/environment"
 cmp "$home/config.before" "$state/config.toml"
 cmp "$home/node.before" "$state/node/config.json"
