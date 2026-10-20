@@ -11,6 +11,9 @@ on:
       - scripts/macos-standalone-clean-install-test.sh
       - cmd/secretary-node/**
       - internal/node/codex_*.go
+      - scripts/build-codex-acp-bundle.sh
+      - internal/acp/jsonl.go
+      - internal/node/harness_probe.go
       - internal/webapi/video.go
       - internal/webapi/video_tools.go
       - internal/webapi/video_tools_test.go
@@ -50,6 +53,17 @@ jobs:
           bash -n scripts/macos-release-contract-test.sh
           bash scripts/macos-release-contract-test.sh
           zsh -n secretary
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.6'
+      - name: Compile pinned modern Codex ACP (builder only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/build-codex-acp-bundle.sh linux-${{ matrix.arch }} "$RUNNER_TEMP/native-acp"
       - name: Provision video tools on release builder
         shell: bash
         run: |
