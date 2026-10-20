@@ -8,6 +8,20 @@ import (
  "github.com/beruseruko/secretary/internal/acp"
 )
 
+func TestCodexACPModelCacheDiagnosticKeepsOriginalReasonAndTimeout(t *testing.T) {
+ var stderr codexACPStderr
+ // A long unrelated start-up log must not suppress the late model-cache error.
+ stderr.Write([]byte(strings.Repeat("unrelated startup log\n", 1400)))
+ stderr.Write([]byte("secret=/tmp/should-not-expose: failed to load models cache: unknown variant max, expected one of none, minimal, low, medium, high, xhigh\n"))
+ failure:=classifyCodexACPFailure("session/new",errors.New("context deadline exceeded"))
+ diag:=stderr.diagnostic()
+ if !strings.Contains(diag,"failed to load models cache: unknown variant max") || !strings.Contains(diag,"xhigh") {
+  t.Fatalf("lost schema failure: %q",diag)
+ }
+ if strings.Contains(diag,"secret=") {t.Fatalf("diagnostic leaked stderr prefix: %q",diag)}
+ if !strings.Contains(failure.Error(),"session/new") || !strings.Contains(failure.Error(),"context deadline exceeded") {t.Fatalf("lost timeout: %v",failure)}
+}
+
 func TestCodexACPProviderFailureClassification(t *testing.T) {
  fixtures:=[]struct{
   name string
