@@ -444,23 +444,23 @@ func verifyManagedCodexArchives(assets []codexAsset, final string) error {
   archivePath := filepath.Join(final, asset.Name+codexArchiveExtension(asset))
   info, err := os.Lstat(archivePath)
   if err != nil || !info.Mode().IsRegular() { return fmt.Errorf("managed %s trusted archive missing or unsafe", asset.Name) }
-  compressed, err := os.ReadFile(archivePath)
+  if info.Size() > codexArchiveLimit { return errors.New("managed native release archive too large") }
+  digest, err := codexFileSHA256(archivePath)
   if err != nil { return err }
-  digest := sha256.Sum256(compressed)
-  if hex.EncodeToString(digest[:]) != asset.SHA256 { return fmt.Errorf("managed %s trusted archive digest mismatch", asset.Name) }
+  if digest != asset.SHA256 { return fmt.Errorf("managed %s trusted archive digest mismatch", asset.Name) }
   stage, err := os.MkdirTemp("", "codex-verified-")
   if err != nil { return err }
-  unpackErr := unpackCodexArchive(compressed, asset, stage)
+  unpackErr := unpackCodexArchiveFile(archivePath, asset, stage)
   if unpackErr != nil { os.RemoveAll(stage); return unpackErr }
-  trusted, err := os.ReadFile(filepath.Join(stage, asset.Name))
+  trustedDigest, err := codexFileSHA256(filepath.Join(stage, asset.Name))
   os.RemoveAll(stage)
   if err != nil { return err }
   actualPath := filepath.Join(final, asset.Name)
   info, err = os.Lstat(actualPath)
   if err != nil || !info.Mode().IsRegular() { return fmt.Errorf("managed %s selected binary missing or unsafe", asset.Name) }
-  actual, err := os.ReadFile(actualPath)
+  actualDigest, err := codexFileSHA256(actualPath)
   if err != nil { return err }
-  if !bytes.Equal(actual, trusted) { return fmt.Errorf("managed %s executable bytes differ from pinned upstream archive", asset.Name) }
+  if actualDigest != trustedDigest { return fmt.Errorf("managed %s executable bytes differ from pinned upstream archive", asset.Name) }
  }
  return nil
 }
