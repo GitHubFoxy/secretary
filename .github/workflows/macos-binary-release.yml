@@ -100,7 +100,9 @@ jobs:
           [[ "$arch" == arm64 ]] || arch=amd64
           bash scripts/package-macos-binary-release.sh "$version" "$GITHUB_SHA" "$arch" "$SECRETARY_PACKAGE_INPUT" "$RUNNER_TEMP/secretary-dist"
           echo "SECRETARY_TEST_VERSION=$version" >> "$GITHUB_ENV"
-          echo "SECRETARY_TEST_DIST=$RUNNER_TEMP/secretary-dist" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/secretary-test-dist"
+          cp "$RUNNER_TEMP/secretary-dist/"* "$RUNNER_TEMP/secretary-test-dist/"
+          echo "SECRETARY_TEST_DIST=$RUNNER_TEMP/secretary-test-dist" >> "$GITHUB_ENV"
       - name: Verify clean install, idempotence, failed activation and upgrade
         shell: bash
         run: |
@@ -112,6 +114,20 @@ jobs:
           bash scripts/macos-standalone-node-test.sh "$SECRETARY_TEST_DIST" "$GITHUB_SHA"
           bash scripts/macos-standalone-clean-install-test.sh "$SECRETARY_TEST_DIST"
           go test ./cmd/secretary-node -run TestStandaloneEnrollmentHTTPSAndNoOverwrite -count=1
+      - name: Prerelease-tag installer regression
+        if: github.ref_type != 'tag'
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=0.1.0-alpha.1
+          arch="$(uname -m)"
+          [[ "$arch" == arm64 ]] || arch=amd64
+          test_dist="$RUNNER_TEMP/prerelease-test-dist"
+          bash scripts/package-macos-binary-release.sh "$version" "$GITHUB_SHA" "$arch" "$SECRETARY_PACKAGE_INPUT" "$test_dist"
+          export SECRETARY_TEST_VERSION="$version"
+          bash scripts/macos-binary-install-test.sh "$SECRETARY_PACKAGE_INPUT" "$test_dist" "$GITHUB_SHA"
+          bash scripts/macos-standalone-node-test.sh "$test_dist" "$GITHUB_SHA"
+          bash scripts/macos-standalone-clean-install-test.sh "$test_dist"
       - uses: actions/upload-artifact@v4
         with:
           name: secretary-macos-binary-release

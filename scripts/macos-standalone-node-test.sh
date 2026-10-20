@@ -7,6 +7,8 @@ dist="$1"
 revision="$2"
 arch="$(uname -m)"
 [[ "$arch" == arm64 ]] || arch=amd64
+base_version="${SECRETARY_TEST_VERSION:-0.0.0-ci}"
+upgrade_version="${base_version}-upgrade"
 home="$(mktemp -d "${RUNNER_TEMP:-/tmp}/standalone-node.XXXXXXXX")"
 trap 'rm -rf "$home"' EXIT
 mkdir -p "$home/fixtures" "$home/.local/share/secretary-node/data"
@@ -25,8 +27,8 @@ export SECRETARY_NODE_SERVER="https://node-test.example.invalid"
 export SECRETARY_NODE_NAME="fixture-node"
 export SECRETARY_NODE_HARNESS=claude
 export SECRETARY_RELEASE_BASE="file://$dist"
-export SECRETARY_VERSION=0.0.0-ci
-export SECRETARY_NODE_PINNED_SHA256="$(shasum -a 256 "$dist/secretary-v0.0.0-ci-darwin-$arch.tar.gz" | awk '{print $1}')"
+export SECRETARY_VERSION="$base_version"
+export SECRETARY_NODE_PINNED_SHA256="$(shasum -a 256 "$dist/secretary-v${base_version}-darwin-$arch.tar.gz" | awk '{print $1}')"
 state="$HOME/.local/share/secretary-node"
 printf 'fixture-identity' > "$state/data/identity.json"
 printf 'native checkpoint' > "$state/data/node-state.json"
@@ -53,18 +55,18 @@ cmp "$home/identity.before" "$state/data/identity.json"
 cmp "$home/session.before" "$state/data/node-state.json"
 cmp "$home/credentials.before" "$state/data/credentials.txt"
 old="$(readlink "$state/current")"
-cp "$dist/secretary-v0.0.0-ci-darwin-$arch.tar.gz" "$home/archive.before"
-printf 'tampered' >> "$dist/secretary-v0.0.0-ci-darwin-$arch.tar.gz"
+cp "$dist/secretary-v${base_version}-darwin-$arch.tar.gz" "$home/archive.before"
+printf 'tampered' >> "$dist/secretary-v${base_version}-darwin-$arch.tar.gz"
 if bash "$root/scripts/install-macos-standalone-node.sh" >/dev/null 2>&1; then echo "Accepted corrupt archive" >&2; exit 1; fi
 [[ "$(readlink "$state/current")" == "$old" ]]
-mv "$home/archive.before" "$dist/secretary-v0.0.0-ci-darwin-$arch.tar.gz"
+mv "$home/archive.before" "$dist/secretary-v${base_version}-darwin-$arch.tar.gz"
 if SECRETARY_NODE_SERVER=https://different.example.invalid bash "$root/scripts/install-macos-standalone-node.sh" >/dev/null 2>&1; then echo "Changed paired Server" >&2; exit 1; fi
 if SECRETARY_NODE_NAME='bad"name' bash "$root/scripts/install-macos-standalone-node.sh" >/dev/null 2>&1; then echo "Accepted unsafe identity" >&2; exit 1; fi
 bash "$root/scripts/install-macos-standalone-node.sh"
 [[ "$(readlink "$state/current")" == "$old" ]]
 cmp "$home/session.before" "$state/data/node-state.json"
-export SECRETARY_VERSION=0.0.1-ci
-export SECRETARY_NODE_PINNED_SHA256="$(shasum -a 256 "$dist/secretary-v0.0.1-ci-darwin-$arch.tar.gz" | awk '{print $1}')"
+export SECRETARY_VERSION="$upgrade_version"
+export SECRETARY_NODE_PINNED_SHA256="$(shasum -a 256 "$dist/secretary-v${upgrade_version}-darwin-$arch.tar.gz" | awk '{print $1}')"
 cp -R "$HOME/Applications/Secretary Node.app" "$home/app.before"
 mkdir -p "$home/fault"
 cat > "$home/fault/mv" <<'EOF'
@@ -92,7 +94,7 @@ cmp "$home/identity.before" "$state/data/identity.json"
 diff -qr "$home/app.before" "$HOME/Applications/Secretary Node.app"
 rm "$home/fault/codesign"
 bash "$root/scripts/install-macos-standalone-node.sh"
-[[ "$(readlink "$state/current")" == *0.0.1-ci* ]]
+[[ "$(readlink "$state/current")" == "$state/releases/secretary-v${upgrade_version}-darwin-$arch" ]]
 cmp "$home/config.before" "$state/config.json"
 cmp "$home/identity.before" "$state/data/identity.json"
 cmp "$home/session.before" "$state/data/node-state.json"
