@@ -88,6 +88,15 @@ grep -Fqx "ExecStart=\"$state/current/secretary\" node serve" "$node_unit"
 command -v systemd-analyze >/dev/null 2>&1 || { echo "systemd-analyze required for unit verification" >&2; exit 1; }
 systemd-analyze --user verify "$server_unit" "$node_unit"
 "$home/.local/bin/secretary" status | grep -F "installed: version=$version"
+# Packaged CLI setup must not repin the public Secretary links to an immutable
+# release directory. This must also work with the restricted CI installer PATH.
+"$home/.local/bin/secretary" setup --non-interactive
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  relative="bin/$executable"
+  [[ "$executable" != secretary ]] || relative=secretary
+  [[ "$(readlink "$home/.local/bin/$executable")" == "$state/current/$relative" ]] ||
+    { echo "Linux packaged setup repinned $executable" >&2; exit 1; }
+done
 cp "$state/environment" "$home/credentials.before"
 cp "$state/config.toml" "$home/config.before"
 cp "$state/node/config.json" "$home/node.before"
