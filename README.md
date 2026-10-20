@@ -91,7 +91,26 @@ curl -fsSL https://raw.githubusercontent.com/GitHubFoxy/secretary/main/scripts/i
 
 На Linux повторная установка автоматически обновляет **собственные** user units `secretary.service` и `secretary-node.service`, если появление чужого файла в `~/.local/bin` требует перехода на приватный релизный bin. Это обновление перезапускает оба сервиса — завершите или сохраните активную работу перед переходом.
 
-**Важное ограничение:** если эти systemd units были созданы установкой Secretary из исходников, бинарный установщик намеренно остановится с `Conflicting systemd unit`. Перед переходом пользователь должен самостоятельно остановить source-managed Server/Node, отключить их автозапуск, сохранить исходные unit-файлы в резервной копии *вне* `~/.config/systemd/user` и выполнить `systemctl --user daemon-reload`. Автоматической миграции или удаления чужих units нет; не запускайте две установки на одной базе SQLite.
+**Если ранее ставили Secretary из исходников с systemd:** бинарный установщик не заменяет чужие `secretary.service` и `secretary-node.service` и откажется с `Conflicting systemd unit`. Сначала завершите активную работу, убедитесь, что оба юнита принадлежат старой source-установке, и вручную сохраните их вне каталога активных units:
+
+```bash
+systemctl --user disable --now secretary-node.service secretary.service
+backup="$HOME/.local/state/secretary-source-units-backup"
+mkdir -p "$backup"
+for unit in secretary.service secretary-node.service; do
+  source_unit="$HOME/.config/systemd/user/$unit"
+  if [ -e "$source_unit" ] || [ -L "$source_unit" ]; then
+    if [ -e "$backup/$unit" ] || [ -L "$backup/$unit" ]; then
+      echo "Backup already exists: $backup/$unit; resolve manually" >&2
+      exit 1
+    fi
+    mv "$source_unit" "$backup/$unit"
+  fi
+done
+systemctl --user daemon-reload
+```
+
+Теперь повторите бинарную установку. Это **не автоматическая миграция** состояния: старые unit-файлы остаются в резервной копии, и одновременно запускать два Server с одной базой SQLite нельзя. Установщик автоматически обновляет **только собственные** systemd units.
 
 В существующем checkout: `./secretary setup --interactive`. Можно выбрать **Codex или Claude Code** — оба одновременно не требуются. `secretary config` открывает терминальную конфигурацию harness, локального Node и Telegram; браузер и отдельный аккаунт Secretary не нужны.
 
