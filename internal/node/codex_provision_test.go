@@ -263,7 +263,9 @@ for line in sys.stdin:
  if req.get('method')=='initialize':
   response={'protocolVersion':1,'agentInfo':{'version':'0.16.0'},'agentCapabilities':{'loadSession':%s},'_meta':{'steering':{'supported':True}}}
  elif req.get('method')=='session/new':
-  response={'sessionId':'fixture','models':{'availableModels':[{'modelId':'gpt-fixture'}]}}
+  response={'sessionId':'fixture','models':{'availableModels':[{'modelId':'gpt-fixture[max]'},{'modelId':'gpt-fixture[ultra]'}]}}
+ elif req.get('method')=='session/load':
+  response={'models':{'availableModels':[{'modelId':'gpt-fixture[max]'}]}}
  else:
   response={}
  print(json.dumps({'jsonrpc':'2.0','id':req.get('id'),'result':response}),flush=True)
@@ -278,7 +280,11 @@ for line in sys.stdin:
  if err:=codexNativePairReady(context.Background(),pair);err!=nil {t.Fatalf("selected valid ACP failed: %v",err)}
  wire,err:=os.ReadFile(good+".log")
  if err!=nil {t.Fatal(err)}
- if !strings.Contains(string(wire),"initialize") || !strings.Contains(string(wire),"session/new") {t.Fatalf("missing required ACP protocol messages: %s",wire)}
+ if !strings.Contains(string(wire),"initialize") || !strings.Contains(string(wire),"session/new") || !strings.Contains(string(wire),"session/load") {t.Fatalf("missing required ACP protocol messages: %s",wire)}
+  models, efforts, err := (ExecCommandRunner{}).ObserveCodexACPWithCommand(context.Background(), cli, good)
+  if err != nil {t.Fatal(err)}
+  if len(models)!=1 || string(models[0])!="gpt-fixture" {t.Fatalf("unexpected model catalog: %v",models)}
+  if len(efforts)!=2 || string(efforts[0])!="max" || string(efforts[1])!="ultra" {t.Fatalf("reasoning max/ultra dropped: %v",efforts)}
  pair.ACP.Path=bad
  if err:=codexNativePairReady(context.Background(),pair);err==nil {t.Fatal("invalid ACP initialize contract accepted")}
  t.Setenv("HOME",t.TempDir())
