@@ -138,6 +138,39 @@ cmp "$home/node.before" "$state/node/config.json"
 [[ "$(cat "$state/node/data/session-fixture")" == native-session ]]
 [[ "$(cat "$state/node/data/identity.json")" == node-identity ]]
 
+# Existing binary-owned public-bin units must be upgraded when a foreign
+# source-managed executable causes a switch to private release links.
+transition_home="$home/public-to-private-transition"
+mkdir -p "$transition_home"
+HOME="$transition_home" SECRETARY_VERSION="$version" bash "$root/scripts/install-linux-binary.sh"
+transition_state="$transition_home/.local/share/secretary"
+transition_units="$transition_home/.config/systemd/user"
+transition_public="$transition_home/.local/bin"
+transition_private="$transition_state/bin"
+[[ -z "$(grep '^Environment="SECRETARY_BINARY_STAGE_BIN=' "$transition_units/secretary.service" || true)" ]]
+rm "$transition_public/secretaryd"
+printf '#!/bin/sh\nexit 9\n' > "$transition_public/secretaryd"
+chmod +x "$transition_public/secretaryd"
+cp "$transition_public/secretaryd" "$home/source.before"
+transition_log="$home/restarts.log"
+HOME="$transition_home" TEST_SYSTEMCTL_LOG="$transition_log" SECRETARY_VERSION="$upgrade_version" bash "$root/scripts/install-linux-binary.sh"
+[[ "$(readlink "$transition_state/current")" == "$upgrade_target" || "$(readlink "$transition_state/current")" == "$transition_state/releases/secretary-v${upgrade_version${-linux-$arch" ]]
+cmp "$home/source.before" "$transition_public/secretaryd"
+for executable in secretary secretaryd secretaryctl secretary-mcp secretary-migrate secretary-node; do
+  [[ -L "$transition_private/$executable" ]]
+done
+for unit in secretary.service secretary-node.service; do
+  grep -Fqx "Environment=\"SECRETARY_BINARY_STAGE_BIN=$transition_private\"" "$transition_units/$unit"
+  grep -Fq "Environment=\"PATH=$transition_private:" "$transition_units/$unit"
+  [[ "$(grep -c '^ExecStart=' "$transition_units/$unit")" == 1 ]]
+done
+systemd-analyze --user verify "$transition_units/secretary.service" "$transition_units/secretary-node.service"
+[[ "$(grep -cx restart-server "$transition_log")" == 1 ]]
+[[ "$(grep -cx restart-node "$transition_log")" == 1 ]]
+HOME="$transition_home" TEST_SYSTEMCTL_LOG="$transition_log" SECRETARY_VERSION="$upgrade_version" bash "$root/scripts/install-linux-binary.sh"
+[[ "$(grep -cx restart-server "$transition_log")" == 1 ]]
+[[ "$(grep -cx restart-node "$transition_log")" == 1 ]]
+
 new_home="$home/failed-service"
 mkdir -p "$new_home"
 if HOME="$new_home" FAIL_NODE_SERVICE=1 bash "$root/scripts/install-linux-binary.sh" >/dev/null 2>&1; then
