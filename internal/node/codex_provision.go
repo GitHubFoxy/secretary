@@ -76,16 +76,7 @@ func fetchCodexExecutable(ctx context.Context, asset codexAsset, stage string) e
  if strings.HasPrefix(asset.URL, "file://") {
   compressed, err = os.ReadFile(strings.TrimPrefix(asset.URL, "file://"))
  } else {
-  var req *http.Request
-  req, err = http.NewRequestWithContext(ctx, http.MethodGet, asset.URL, nil)
-  if err != nil { return err }
-  client := &http.Client{Timeout: 2*time.Minute}
-  var resp *http.Response
-  resp, err = client.Do(req)
-  if err != nil { return err }
-  defer resp.Body.Close()
-  if resp.StatusCode != http.StatusOK { return fmt.Errorf("native release download HTTP %d", resp.StatusCode) }
-  compressed, err = io.ReadAll(io.LimitReader(resp.Body, 256<<20))
+  compressed, err = downloadCodexRelease(ctx, asset.URL)
  }
  if err != nil { return err }
  if len(compressed) > 256<<20 { return fmt.Errorf("native release archive too large") }
@@ -93,6 +84,45 @@ func fetchCodexExecutable(ctx context.Context, asset codexAsset, stage string) e
  if hex.EncodeToString(digest[:]) != asset.SHA256 { return fmt.Errorf("%s release checksum mismatch", asset.Name) }
  if err := unpackCodexArchive(compressed, asset, stage); err != nil { return err }
  return os.WriteFile(filepath.Join(stage, asset.Name+codexArchiveExtension(asset)), compressed, 0600)
+}
+
+func downloadCodexRelease(ctx context.Context, url string) ([]byte, error) {
+ client := &http.Client{Timeout: 2*time.Minute}
+ var lastErr error
+ for attempt := 0; attempt <= 5; attempt++ {
+  if err := ctx.Err(); err != nil { return nil, err }
+  if attempt > 0 {
+   select {
+   case <-ctx.Done(): return nil, ctx.Err()
+   case <-time.After(2*time.Second):
+   }
+  }
+  req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+  if err != nil { return nil, err }
+  resp, err := client.Do(req)
+  if err != nil {
+   lastErr = err
+   continue
+  }
+  if resp.StatusCode != http.StatusOK {
+   resp.Body.Close()
+   lastErr = fmt.Errorf("native release download HTTP %d", resp.StatusCode)
+   if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+    continue
+   }
+   return nil, lastErr
+  }
+  data, err := io.ReadAll(io.LimitReader(resp.Body, (256<<20)+1))
+  closeErr := resp.Body.Close()
+  if err == nil && closeErr != nil { err = closeErr }
+  if err != nil {
+   lastErr = err
+   continue
+  }
+  if len(data) > 256<<20 { return nil, fmt.Errorf("native release archive too large") }
+  return data, nil
+ }
+ return nil, fmt.Errorf("native release download failed after 6 attempts: %w", lastErr)
 }
 
 func codexArchiveExtension(asset codexAsset) string {
