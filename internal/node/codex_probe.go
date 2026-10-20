@@ -7,10 +7,43 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/beruseruko/secretary/internal/acp"
 	"github.com/beruseruko/secretary/internal/core"
 )
+
+// codexACPStderr is bounded and concurrent-safe: ACP processes write stderr
+// while the probe reads its diagnostics after a failed request.
+type codexACPStderr struct {
+ mu sync.Mutex
+ contents []byte
+}
+
+func (b *codexACPStderr) Write(data []byte) (int,error) {
+ b.mu.Lock()
+ defer b.mu.Unlock()
+ if remaining:=16384-len(b.contents);remaining>0 {
+  if len(data)<remaining { remaining=len(data) }
+  b.contents=append(b.contents,data[:remaining]...)
+ }
+ return len(data),nil
+}
+
+func (b *codexACPStderr) diagnostic() string {
+ b.mu.Lock()
+ defer b.mu.Unlock()
+ // Don't print arbitrary adapter logs: they can contain URLs or secrets.
+ // Surface the original schema-validation error verbatim (bounded).
+ for _, line := range strings.Split(string(b.contents),"\n") {
+  trimmed:=strings.TrimSpace(line)
+  if strings.Contains(trimmed,"unknown variant") && (strings.Contains(trimmed,"reasoning") || strings.Contains(trimmed,"expected one of") || strings.Contains(trimmed,"models cache")) {
+   if len(trimmed)>600 { trimmed=trimmed[:600] }
+   return trimmed
+  }
+ }
+ return ""
+}
 
 type CodexACPObserver interface {
 	ObserveCodexACP(context.Context, string) ([]core.ObservedModelID, []core.ObservedReasoningLevel, error)
@@ -33,10 +66,18 @@ func (r ExecCommandRunner) ObserveCodexACPWithCommand(ctx context.Context, binar
 		return nil, nil, fmt.Errorf("codex: readiness workspace unavailable")
 	}
 	defer os.RemoveAll(workspace)
-	client, err := acp.StartWithLogEnvDir(ctx, nil, []string{"CODEX_PATH=" + binary, "CODEX_CONFIG={}"}, workspace, command, strings.Fields(os.Getenv("SECRETARY_ACP_ARGS"))...)
-	if err != nil {
-		return nil, nil, fmt.Errorf("codex: ACP adapter unavailable")
-	}
+	var stderr codexACPStderr
+ client, err := acp.StartWithDiagnosticStderrEnvDir(ctx, &stderr, []string{"CODEX_PATH=" + binary, "CODEX_CONFIG={}"}, workspace, command, strings.Fields(os.Getenv("SECRETARY_ACP_ARGS"))...)
+ if err != nil {
+  return nil,nil,fmt.Errorf("codex: ACP adapter start failed: %w",err)
+ }
+ withDetail:=func(phase string, failure error) error {
+  classified:=classifyCodexACPFailure(phase,failure)
+  if detail:=stderr.diagnostic();detail!="" {
+   return fmt.Errorf("%w; adapter stderr: %s",classified,detail)
+  }
+  return classified
+ }
 	defer client.Close()
 	var init struct {
 		ProtocolVersion int `json:"protocolVersion"`
@@ -53,7 +94,7 @@ func (r ExecCommandRunner) ObserveCodexACPWithCommand(ctx context.Context, binar
 		} `json:"_meta"`
 	}
 	if err := client.Request(ctx, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": acpClientCapabilities(), "clientInfo": map[string]string{"name": "secretary-readiness", "version": "1"}}, &init); err != nil {
-		return nil, nil, classifyCodexACPFailure("initialize", err)
+		return nil, nil, withDetail("initialize", err)
 	}
 	if init.ProtocolVersion != 1 || init.AgentInfo.Version == "" || !init.AgentCapabilities.LoadSession || !init.Meta.Steering.Supported {
 		return nil, nil, fmt.Errorf("codex: ACP version/load/steering contract unavailable")
@@ -68,11 +109,15 @@ func (r ExecCommandRunner) ObserveCodexACPWithCommand(ctx context.Context, binar
 		nativeConfigResponse
 	}
 	if err := client.Request(ctx, "session/new", map[string]any{"cwd": workspace, "mcpServers": []MCPServer{}}, &created); err != nil {
-		return nil, nil, classifyCodexACPFailure("session/new", err)
+		return nil, nil, withDetail("session/new", err)
 	}
 	if created.SessionID == "" {
-		return nil, nil, fmt.Errorf("codex: native session configuration unavailable")
-	}
+  return nil,nil,fmt.Errorf("codex: native session configuration unavailable")
+ }
+ var loaded struct { Models any `json:"models"` }
+ if err:=client.Request(ctx,"session/load",map[string]any{"sessionId":created.SessionID,"cwd":workspace,"mcpServers":[]MCPServer{}},&loaded);err!=nil {
+  return nil,nil,withDetail("session/load",err)
+ }
 	models := []core.ObservedModelID{}
 	levels := []core.ObservedReasoningLevel{}
 	seenModels := map[string]bool{}
