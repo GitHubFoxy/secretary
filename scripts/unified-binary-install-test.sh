@@ -25,6 +25,14 @@ cat > "$stage/releases.json" <<EOF
   ]}
 ]
 EOF
+if [[ "$platform" == darwin ]]; then
+  jxa="$stage/release-selector.jxa"
+  sed -n "/^ObjC.import('Foundation');$/,/^JXA$/p" "$root/scripts/install.sh" | sed '$d' > "$jxa"
+  [[ -s "$jxa" ]] || { echo "Missing embedded macOS release selector" >&2; exit 1; }
+  selected="$(osascript -l JavaScript "$jxa" "$stage/releases.json" darwin "$arch")"
+  [[ "$selected" == "0.1.0-alpha.5" ]] || { echo "macOS JXA selector rejected real prerelease tag: $selected" >&2; exit 1; }
+fi
+
 mkdir -p "$stage/mock" "$stage/home"
 cat > "$stage/mock/curl" <<'CURL'
 #!/usr/bin/env bash
