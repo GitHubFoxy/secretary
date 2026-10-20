@@ -82,7 +82,11 @@ def respond(method, params):
         return {"data":[]}
     if method=="account/rateLimits/read":
         return {"rateLimits":None}
-    if method in ("thread/unsubscribe","thread/archive","thread/settings/update","turn/steer"):
+    if method=="turn/start":
+        return {"turn":{"id":"01990000-0000-7000-8000-000000000002","status":"inProgress"}}
+    if method=="turn/steer":
+        return {}
+    if method in ("thread/unsubscribe","thread/archive","thread/settings/update"):
         return {}
     raise KeyError(method)
 
