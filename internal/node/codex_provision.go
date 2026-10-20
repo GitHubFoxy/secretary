@@ -70,59 +70,116 @@ func codexNativeAssets() ([]codexAsset, error) {
  }, nil
 }
 
+const codexArchiveLimit int64 = 256 << 20
+const codexDownloadTimeout = 10 * time.Minute
+
 func fetchCodexExecutable(ctx context.Context, asset codexAsset, stage string) error {
- var compressed []byte
- var err error
+ archivePath := filepath.Join(stage, asset.Name+codexArchiveExtension(asset))
  if strings.HasPrefix(asset.URL, "file://") {
-  compressed, err = os.ReadFile(strings.TrimPrefix(asset.URL, "file://"))
+  source, err := os.Open(strings.TrimPrefix(asset.URL, "file://"))
+  if err != nil { return err }
+  defer source.Close()
+  target, err := os.OpenFile(archivePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+  if err != nil { return err }
+  n, copyErr := io.Copy(target, io.LimitReader(source, codexArchiveLimit+1))
+  closeErr := target.Close()
+  if copyErr != nil { return copyErr }
+  if closeErr != nil { return closeErr }
+  if n > codexArchiveLimit { return errors.New("native release archive too large") }
  } else {
-  compressed, err = downloadCodexRelease(ctx, asset.URL)
+  if err := downloadCodexRelease(ctx, asset.URL, archivePath); err != nil { return err }
  }
+ digest, err := codexFileSHA256(archivePath)
  if err != nil { return err }
- if len(compressed) > 256<<20 { return fmt.Errorf("native release archive too large") }
- digest := sha256.Sum256(compressed)
- if hex.EncodeToString(digest[:]) != asset.SHA256 { return fmt.Errorf("%s release checksum mismatch", asset.Name) }
- if err := unpackCodexArchive(compressed, asset, stage); err != nil { return err }
- return os.WriteFile(filepath.Join(stage, asset.Name+codexArchiveExtension(asset)), compressed, 0600)
+ if digest != asset.SHA256 { return fmt.Errorf("%s release checksum mismatch", asset.Name) }
+ return unpackCodexArchiveFile(archivePath, asset, stage)
 }
 
-func downloadCodexRelease(ctx context.Context, url string) ([]byte, error) {
- client := &http.Client{Timeout: 2*time.Minute}
+func codexFileSHA256(path string) (string, error) {
+ file, err := os.Open(path)
+ if err != nil { return "", err }
+ defer file.Close()
+ hash := sha256.New()
+ if _, err := io.Copy(hash, file); err != nil { return "", err }
+ return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func downloadCodexRelease(ctx context.Context, url, archivePath string) error {
+ return downloadCodexReleaseWithClient(ctx, &http.Client{Timeout: codexDownloadTimeout}, url, archivePath, 2*time.Second)
+}
+
+func downloadCodexReleaseWithClient(ctx context.Context, client *http.Client, url, archivePath string, delay time.Duration) error {
  var lastErr error
  for attempt := 0; attempt <= 5; attempt++ {
-  if err := ctx.Err(); err != nil { return nil, err }
+  if err := ctx.Err(); err != nil { return err }
   if attempt > 0 {
    select {
-   case <-ctx.Done(): return nil, ctx.Err()
-   case <-time.After(2*time.Second):
+   case <-ctx.Done(): return ctx.Err()
+   case <-time.After(delay):
    }
   }
+  offset := int64(0)
+  if info, err := os.Stat(archivePath); err == nil {
+   if !info.Mode().IsRegular() { return errors.New("unsafe native archive download target") }
+   offset = info.Size()
+  } else if !os.IsNotExist(err) { return err }
+  if offset > codexArchiveLimit { return errors.New("native release archive too large") }
   req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-  if err != nil { return nil, err }
+  if err != nil { return err }
+  if offset > 0 { req.Header.Set("Range", fmt.Sprintf("bytes=%d-", offset)) }
   resp, err := client.Do(req)
-  if err != nil {
-   lastErr = err
-   continue
-  }
-  if resp.StatusCode != http.StatusOK {
+  if err != nil { lastErr=err; continue }
+  if resp.StatusCode != http.StatusOK && !(offset > 0 && resp.StatusCode == http.StatusPartialContent) {
    resp.Body.Close()
    lastErr = fmt.Errorf("native release download HTTP %d", resp.StatusCode)
-   if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+   if resp.StatusCode == http.StatusRequestedRangeNotSatisfiable {
+    if err := os.Truncate(archivePath, 0); err != nil { return err }
     continue
    }
-   return nil, lastErr
+   if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 { continue }
+   return lastErr
   }
-  data, err := io.ReadAll(io.LimitReader(resp.Body, (256<<20)+1))
-  closeErr := resp.Body.Close()
-  if err == nil && closeErr != nil { err = closeErr }
-  if err != nil {
-   lastErr = err
+  if resp.StatusCode == http.StatusPartialContent {
+   var first, last, total int64
+   n, parseErr := fmt.Sscanf(resp.Header.Get("Content-Range"), "bytes %d-%d/%d", &first, &last, &total)
+   if parseErr != nil || n != 3 || first != offset || last < first || total <= last || total > codexArchiveLimit {
+    resp.Body.Close()
+    return errors.New("invalid native release Content-Range")
+   }
+  }
+  flags := os.O_WRONLY|os.O_CREATE|os.O_TRUNC
+  if resp.StatusCode == http.StatusPartialContent { flags=os.O_WRONLY|os.O_APPEND }
+  target, err := os.OpenFile(archivePath, flags, 0600)
+  if err != nil { resp.Body.Close(); return err }
+  start := int64(0)
+  if resp.StatusCode == http.StatusPartialContent { start=offset }
+  remaining := codexArchiveLimit-start
+  if resp.ContentLength > remaining {
+   resp.Body.Close()
+   target.Close()
+   return errors.New("native release archive too large")
+  }
+  written, copyErr := io.Copy(target, io.LimitReader(resp.Body, remaining+1))
+  closeErr := target.Close()
+  resp.Body.Close()
+  if written > remaining { return errors.New("native release archive too large") }
+  if copyErr == nil { copyErr=closeErr }
+  if copyErr != nil { lastErr=copyErr; continue }
+  if resp.ContentLength >= 0 && written != resp.ContentLength {
+   lastErr=io.ErrUnexpectedEOF
    continue
   }
-  if len(data) > 256<<20 { return nil, fmt.Errorf("native release archive too large") }
-  return data, nil
+  if resp.StatusCode == http.StatusPartialContent {
+   var first, last, total int64
+   _, _ = fmt.Sscanf(resp.Header.Get("Content-Range"), "bytes %d-%d/%d", &first, &last, &total)
+   if start+written != total {
+    lastErr=io.ErrUnexpectedEOF
+    continue
+   }
+  }
+  return nil
  }
- return nil, fmt.Errorf("native release download failed after 6 attempts: %w", lastErr)
+ return fmt.Errorf("native release download failed after 6 attempts: %w", lastErr)
 }
 
 func codexArchiveExtension(asset codexAsset) string {
@@ -132,7 +189,25 @@ func codexArchiveExtension(asset codexAsset) string {
 
 func unpackCodexArchive(compressed []byte, asset codexAsset, stage string) error {
  if strings.HasSuffix(asset.URL, ".zip") {
-  archive, err := zip.NewReader(bytes.NewReader(compressed), int64(len(compressed)))
+  return unpackCodexZip(bytes.NewReader(compressed), int64(len(compressed)), asset, stage)
+ }
+ return unpackCodexTar(bytes.NewReader(compressed), asset, stage)
+}
+
+func unpackCodexArchiveFile(archivePath string, asset codexAsset, stage string) error {
+ file, err := os.Open(archivePath)
+ if err != nil { return err }
+ defer file.Close()
+ if strings.HasSuffix(asset.URL, ".zip") {
+  info, err := file.Stat()
+  if err != nil { return err }
+  return unpackCodexZip(file, info.Size(), asset, stage)
+ }
+ return unpackCodexTar(file, asset, stage)
+}
+
+func unpackCodexZip(reader io.ReaderAt, size int64, asset codexAsset, stage string) error {
+  archive, err := zip.NewReader(reader, size)
   if err != nil { return err }
   count := 0
   for _, member := range archive.File {
@@ -154,8 +229,10 @@ func unpackCodexArchive(compressed []byte, asset codexAsset, stage string) error
   }
   if count != 1 { return fmt.Errorf("native release zip missing %s", asset.Name) }
   return nil
- }
- archive, err := gzip.NewReader(bytes.NewReader(compressed))
+}
+
+func unpackCodexTar(reader io.Reader, asset codexAsset, stage string) error {
+ archive, err := gzip.NewReader(reader)
  if err != nil { return err }
  defer archive.Close()
  tarReader := tar.NewReader(archive)
@@ -367,23 +444,23 @@ func verifyManagedCodexArchives(assets []codexAsset, final string) error {
   archivePath := filepath.Join(final, asset.Name+codexArchiveExtension(asset))
   info, err := os.Lstat(archivePath)
   if err != nil || !info.Mode().IsRegular() { return fmt.Errorf("managed %s trusted archive missing or unsafe", asset.Name) }
-  compressed, err := os.ReadFile(archivePath)
+  if info.Size() > codexArchiveLimit { return errors.New("managed native release archive too large") }
+  digest, err := codexFileSHA256(archivePath)
   if err != nil { return err }
-  digest := sha256.Sum256(compressed)
-  if hex.EncodeToString(digest[:]) != asset.SHA256 { return fmt.Errorf("managed %s trusted archive digest mismatch", asset.Name) }
+  if digest != asset.SHA256 { return fmt.Errorf("managed %s trusted archive digest mismatch", asset.Name) }
   stage, err := os.MkdirTemp("", "codex-verified-")
   if err != nil { return err }
-  unpackErr := unpackCodexArchive(compressed, asset, stage)
+  unpackErr := unpackCodexArchiveFile(archivePath, asset, stage)
   if unpackErr != nil { os.RemoveAll(stage); return unpackErr }
-  trusted, err := os.ReadFile(filepath.Join(stage, asset.Name))
+  trustedDigest, err := codexFileSHA256(filepath.Join(stage, asset.Name))
   os.RemoveAll(stage)
   if err != nil { return err }
   actualPath := filepath.Join(final, asset.Name)
   info, err = os.Lstat(actualPath)
   if err != nil || !info.Mode().IsRegular() { return fmt.Errorf("managed %s selected binary missing or unsafe", asset.Name) }
-  actual, err := os.ReadFile(actualPath)
+  actualDigest, err := codexFileSHA256(actualPath)
   if err != nil { return err }
-  if !bytes.Equal(actual, trusted) { return fmt.Errorf("managed %s executable bytes differ from pinned upstream archive", asset.Name) }
+  if actualDigest != trustedDigest { return fmt.Errorf("managed %s executable bytes differ from pinned upstream archive", asset.Name) }
  }
  return nil
 }
