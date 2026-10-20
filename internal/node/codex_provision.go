@@ -189,7 +189,25 @@ func codexArchiveExtension(asset codexAsset) string {
 
 func unpackCodexArchive(compressed []byte, asset codexAsset, stage string) error {
  if strings.HasSuffix(asset.URL, ".zip") {
-  archive, err := zip.NewReader(bytes.NewReader(compressed), int64(len(compressed)))
+  return unpackCodexZip(bytes.NewReader(compressed), int64(len(compressed)), asset, stage)
+ }
+ return unpackCodexTar(bytes.NewReader(compressed), asset, stage)
+}
+
+func unpackCodexArchiveFile(archivePath string, asset codexAsset, stage string) error {
+ file, err := os.Open(archivePath)
+ if err != nil { return err }
+ defer file.Close()
+ if strings.HasSuffix(asset.URL, ".zip") {
+  info, err := file.Stat()
+  if err != nil { return err }
+  return unpackCodexZip(file, info.Size(), asset, stage)
+ }
+ return unpackCodexTar(file, asset, stage)
+}
+
+func unpackCodexZip(reader io.ReaderAt, size int64, asset codexAsset, stage string) error {
+  archive, err := zip.NewReader(reader, size)
   if err != nil { return err }
   count := 0
   for _, member := range archive.File {
@@ -211,8 +229,10 @@ func unpackCodexArchive(compressed []byte, asset codexAsset, stage string) error
   }
   if count != 1 { return fmt.Errorf("native release zip missing %s", asset.Name) }
   return nil
- }
- archive, err := gzip.NewReader(bytes.NewReader(compressed))
+}
+
+func unpackCodexTar(reader io.Reader, asset codexAsset, stage string) error {
+ archive, err := gzip.NewReader(reader)
  if err != nil { return err }
  defer archive.Close()
  tarReader := tar.NewReader(archive)
