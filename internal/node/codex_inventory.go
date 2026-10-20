@@ -60,7 +60,8 @@ func verifyCodexBinary(record CodexBinaryRecord) error {
 }
 
 func verifyCodexACPBinary(record CodexBinaryRecord) error {
- if record.Version == codexACPManagedVersionless {
+ // Preserve inventory records from older pinned releases after future bumps.
+ if strings.HasPrefix(record.Version, "codex-acp ") && strings.HasSuffix(record.Version, codexACPManagedVersionSuffix) {
   if record.Provenance != "managed" { return fmt.Errorf("invalid pinned ACP provenance") }
   return verifyCodexBinaryWithProbe(record, "--help")
  }
