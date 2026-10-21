@@ -184,7 +184,7 @@ func main() {
 	if err := prepareSelectedCodexRuntime(context.Background(), profiles.Snapshot()); err != nil {
 		log.Fatalf("Codex startup readiness: %v", err)
 	}
-	if profiles.Snapshot().Config.EffectiveSecretaryPolicy().Harness == "opencode" || profiles.Snapshot().Config.EffectiveWorkerPolicy().DefaultHarness == "opencode" {
+	if profiles.Snapshot().Config.EffectiveSecretaryPolicy().Harness == "opencode" {
 		selection, err = selectRuntimeNativeStoreSelection(*dataDir)
 		if err != nil {
 			log.Fatalf("select OpenCode native stores: %v", err)
