@@ -10,8 +10,7 @@ import (
 
 func prepareSelectedCodexRuntime(ctx context.Context, snapshot config.Snapshot) error {
  secretaryHarness := snapshot.Config.EffectiveSecretaryPolicy().Harness
- workerHarness := snapshot.Config.EffectiveWorkerPolicy().DefaultHarness
- if secretaryHarness != "codex" && workerHarness != "codex" {
+ if secretaryHarness != "codex" {
   node.DisableUnselectedCodexRuntime()
   return nil
  }
