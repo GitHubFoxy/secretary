@@ -18,7 +18,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/beruseruko/secretary/internal/app"
 	"github.com/beruseruko/secretary/internal/artifactmcp"
 	"github.com/beruseruko/secretary/internal/config"
 	"github.com/beruseruko/secretary/internal/core"
@@ -321,55 +320,16 @@ func main() {
 	}
 	var persistentSecretary *secretaryruntime.Runtime
 	var secretaryMu sync.Mutex
-	workerDataDir := filepath.Join(*dataDir, "node", "data")
-	if err := os.MkdirAll(workerDataDir, 0o700); err != nil || os.Chmod(workerDataDir, 0o700) != nil {
-		log.Fatalf("prepare local Worker Node data directory")
-	}
 	secretaryHarnessRuntime, runtimeCommand := configuredRuntimeWithStore(profiles.Snapshot(), *dataDir, secretaryStore)
-	workerHarnessRuntime, workerRuntimeCommand := configuredRuntimeWithStore(profiles.Snapshot(), workerDataDir, workerStore)
 	log.Printf("configured Secretary harness %s (%s)", profiles.Snapshot().Config.EffectiveSecretaryPolicy().Harness, runtimeCommand)
-	log.Printf("configured local Worker Node harness %s (%s)", profiles.Snapshot().Config.EffectiveWorkerPolicy().DefaultHarness, workerRuntimeCommand)
 	mcpCommand, mcpErr := secretaryMCPCommand()
 	if mcpErr != nil {
 		log.Fatalf("find secretary-mcp: %v", mcpErr)
 	}
-	workerLocal := node.NewLocal(workerHarnessRuntime)
-	// Native needs_input image delivery uses the same durable injection
-	// protocol as a standalone ExecutionNode, scoped to protected Node data.
-	localImageStore, err := node.OpenLocalStore(filepath.Join(workerDataDir, "local-image-responses.json"))
-	if err != nil {
-		log.Fatalf("open local Worker image response checkpoints: %v", err)
-	}
-	workerLocal.SetImageResponseStore(localImageStore)
-	localPublisherBinary, binaryErr := os.Executable()
-	if binaryErr != nil {
-		log.Fatalf("resolve local Worker Artifact MCP: %v", binaryErr)
-	}
-	if err := workerLocal.SetLocalArtifactPublisher(func(saveCtx context.Context, workerRef, attemptID, key, name, media string, data []byte) (core.Artifact, error) {
-		artifact, _, saveErr := store.SavePublishedArtifact(saveCtx, "local", workerRef, attemptID, key, name, media, data)
-		return artifact, saveErr
-	}, localPublisherBinary); err != nil {
-		log.Fatalf("initialize local Worker publication broker: %v", err)
-	}
-	workerLocal.SetPrestartStore(localImageStore)
-	workerLocal.SetArtifactFetcher(func(ctx context.Context, id string) (node.ArtifactPayload, error) {
-		artifact, body, err := store.ArtifactForPerson(ctx, web.OwnerID(), id)
-		if err != nil {
-			return node.ArtifactPayload{}, err
-		}
-		return node.ArtifactPayload{
-			ID: artifact.ID, Name: artifact.Name, SHA256: artifact.SHA256, Data: body,
-			VideoStatus: artifact.ProcessingStatus, VideoError: artifact.ProcessingError, VideoFrames: artifact.VideoFrames,
-			CheckVideoStatus: func(c context.Context) (core.Artifact, error) {
-				return store.ArtifactMetadataForPerson(c, web.OwnerID(), id)
-			},
-		}, nil
-	})
 	secretaryLocal := node.NewLocal(secretaryHarnessRuntime)
-	if err := recoverProductionPhase4Attempts(ctx, store, workerLocal, remoteNodes); err != nil {
+	if err := recoverProductionPhase4Attempts(ctx, store, remoteNodes); err != nil {
 		log.Fatalf("recover Phase 4 Attempts: %v", err)
 	}
-	web.AttachNode(workerLocal)
 	conversation, conversationErr := store.ConversationForPerson(ctx, web.OwnerID())
 	if conversationErr != nil {
 		log.Fatalf("find owner conversation: %v", conversationErr)
@@ -378,13 +338,6 @@ func main() {
 	if identityErr != nil {
 		log.Fatalf("ensure Secretary identity: %v", identityErr)
 	}
-	dispatcher := &app.Dispatcher{Store: store, Node: workerLocal,
-		Profile:             func() core.BindingProfile { return bindingProfile(managedProfile(profiles.Snapshot(), "worker")) },
-		ManagedProfile:      func() node.ManagedProfile { return managedProfile(profiles.Snapshot(), "worker") },
-		ChildProfile:        func() core.BindingProfile { return bindingProfile(managedProfile(profiles.Snapshot(), "child_worker")) },
-		ManagedChildProfile: func() node.ManagedProfile { return managedProfile(profiles.Snapshot(), "child_worker") },
-	}
-	go (app.Runner{Store: store, Dispatcher: dispatcher, Conversation: conversation.ID}).Run(ctx)
 	capability := os.Getenv("SECRETARY_CAPABILITY")
 	if capability == "" {
 		var capabilityErr error
@@ -400,24 +353,8 @@ func main() {
 			log.Printf("generated Secretary runtime credential")
 		}
 	}
-	attachProductionWorkerServices(ctx, web, store, web.OwnerID(), capability, filepath.Join(*dataDir, "user.md"), workerLocal, remoteNodes, func(binding core.BindingProfile) node.ManagedProfile {
-		compiled, err := store.ConfigVersion(ctx, binding.Version)
-		if err == nil {
-			var snapshot config.Snapshot
-			if json.Unmarshal([]byte(compiled), &snapshot) == nil {
-				profile := managedProfile(snapshot, binding.Name)
-				if binding.Delivery != "" {
-					profile.Delivery = binding.Delivery
-				}
-				return profile
-			}
-		}
-		profile := managedProfile(profiles.Snapshot(), binding.Name)
-		if binding.Delivery != "" {
-			profile.Delivery = binding.Delivery
-		}
-		return profile
-	}, func() (node.ManagedProfile, error) { return managedProfile(profiles.Snapshot(), "worker"), nil },
+	attachProductionWorkerServices(ctx, web, store, web.OwnerID(), capability, filepath.Join(*dataDir, "user.md"), remoteNodes,
+		func() (node.ManagedProfile, error) { return managedProfile(profiles.Snapshot(), "worker"), nil },
 		func() core.HarnessPolicy { return configuredWorkerPolicy(profiles.Snapshot().Config) })
 	web.AttachSecretaryReplyContract(func() string { return profiles.Snapshot().Config.Secretary.ReplyContract })
 	if remoteNodes != nil {
@@ -480,7 +417,6 @@ func main() {
 		func() string { return "default" },
 		func(string) error { return restartSecretary(context.Background()) },
 	)
-	controlService := ctl.Service{Store: store, PersonID: web.OwnerID(), Capability: capability, Dispatcher: dispatcher, Node: workerLocal}
 	web.AttachControl(webapi.ControlOptions{
 		ConfigPath:              profiles.Path(),
 		ConfigContent:           func() (string, error) { content, err := os.ReadFile(profiles.Path()); return string(content), err },
@@ -492,10 +428,10 @@ func main() {
 		ApplyProfile:            func(name string, content []byte) error { return applyProfile(profiles, name, content) },
 		RuntimeRestart:          restartSecretary,
 		RetryTask: func(retryCtx context.Context, taskID string) (core.Task, error) {
-			return controlService.Retry(retryCtx, taskID)
+			return core.Task{}, core.ErrLegacyTaskReadOnly
 		},
 		CloseTask: func(closeCtx context.Context, taskID string) (core.CloseOutcome, error) {
-			return controlService.Close(closeCtx, taskID)
+			return core.CloseOutcome{}, core.ErrLegacyTaskReadOnly
 		},
 		RawLogDir: filepath.Join(*dataDir, "logs", "acp"),
 	})
@@ -522,11 +458,6 @@ func main() {
 	if persistentSecretary != nil {
 		if err := persistentSecretary.Stop(context.Background()); err != nil {
 			log.Printf("stop persistent Secretary: %v", err)
-		}
-	}
-	if workerLocal != nil {
-		if err := workerLocal.Close(); err != nil {
-			log.Printf("stop local Workers: %v", err)
 		}
 	}
 	if secretaryLocal != nil {
@@ -589,8 +520,8 @@ func validateListen(addr string) error {
 	return nil
 }
 
-func recoverProductionPhase4Attempts(ctx context.Context, store *core.Store, local *node.LocalNode, remote *node.ServerManager) error {
-	resolver := node.Phase4RecoveryResolver{Store: store, Local: local, LocalNodeRef: "local", Remote: remote}
+func recoverProductionPhase4Attempts(ctx context.Context, store *core.Store, remote *node.ServerManager) error {
+	resolver := node.Phase4RecoveryResolver{Store: store, Remote: remote}
 	return store.RecoverPhase4Attempts(ctx, resolver)
 }
 
@@ -612,10 +543,8 @@ func configuredWorkerPolicy(c config.Config) core.HarnessPolicy {
 	return core.HarnessPolicy{DefaultHarness: core.HarnessKind(policy.DefaultHarness), PreferredHarnesses: preferred, ModelID: model, Reasoning: reasoning}
 }
 
-func attachProductionWorkerServices(ctx context.Context, web *webapi.Server, store *core.Store, personID, capability, memoryUserPath string, local *node.LocalNode, remote *node.ServerManager, managedProfile func(core.BindingProfile) node.ManagedProfile, workerProfile func() (node.ManagedProfile, error), workerPolicy func() core.HarnessPolicy) {
-	controller := &app.WorkerController{Store: store, Node: local, ManagedProfile: managedProfile}
-	web.AttachWorkerController(controller)
-	workerService := ctl.WorkerService{Store: store, PersonID: personID, Capability: capability, MemoryUserPath: memoryUserPath, WorkerPolicySource: workerPolicy, WorkerProfileSource: workerProfile, Runtime: ctl.NodeRuntime{Manager: remote, Local: local}}
+func attachProductionWorkerServices(ctx context.Context, web *webapi.Server, store *core.Store, personID, capability, memoryUserPath string, remote *node.ServerManager, workerProfile func() (node.ManagedProfile, error), workerPolicy func() core.HarnessPolicy) {
+	workerService := ctl.WorkerService{Store: store, PersonID: personID, Capability: capability, MemoryUserPath: memoryUserPath, WorkerPolicySource: workerPolicy, WorkerProfileSource: workerProfile, Runtime: ctl.NodeRuntime{Manager: remote}}
 	web.AttachWorkerResponder(workerService)
 	web.AttachSecretaryWorkerTools(workerService)
 	go workerService.RunQueuedWorkerMessages(ctx)
