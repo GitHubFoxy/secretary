@@ -69,6 +69,10 @@ func TestRedactACPLogLineHidesUserInput(t *testing.T) {
 	if !strings.Contains(string(nonJSON), `"direction":"rx"`) || strings.Contains(string(nonJSON), "not json") {
 		t.Fatalf("non-JSON trace leaked payload or direction: %s", nonJSON)
 	}
+	stderrFrame := redactACPLogFrame("stderr", []byte(`{"stderr_tail":"error: Cannot find module '@openai/codex/bin/codex.js'"}`))
+	if !strings.Contains(string(stderrFrame), "Cannot find module '@openai/codex/bin/codex.js'") || !strings.Contains(string(stderrFrame), `"kind":"harness_stderr"`) {
+		t.Fatalf("harness stderr tail was not preserved: %s", stderrFrame)
+	}
 }
 
 func TestCanonicalElicitationRequestIDPreservesWireNumber(t *testing.T) {

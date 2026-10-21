@@ -746,6 +746,12 @@ func redactACPLogFrame(direction string, raw []byte) []byte {
 			}
 		}
 	}
+	if direction == "stderr" {
+		if tail, ok := message["stderr_tail"].(string); ok {
+			safe["kind"] = "harness_stderr"
+			safe["stderr_tail"] = tail
+		}
+	}
 	safe["redacted"] = redacted
 	encoded, err := json.Marshal(safe)
 	if err != nil {
