@@ -9,6 +9,7 @@ import (
 )
 
 var ErrUnauthorized = errors.New("secretaryctl: unauthorized")
+var ErrLegacyCLIMutationDisabled = fmt.Errorf("%w: secretaryctl create/retry/close require the canonical Worker API", core.ErrLegacyTaskReadOnly)
 
 type Service struct {
 	Store      *core.Store
@@ -41,21 +42,21 @@ func (s Service) Create(ctx context.Context, text string) (core.Task, error) {
 	if err := s.authorize(ctx); err != nil {
 		return core.Task{}, err
 	}
-	return core.Task{}, core.ErrLegacyTaskReadOnly
+	return core.Task{}, ErrLegacyCLIMutationDisabled
 }
 
 func (s Service) Retry(ctx context.Context, taskID string) (core.Task, error) {
 	if err := s.authorize(ctx); err != nil {
 		return core.Task{}, err
 	}
-	return core.Task{}, core.ErrLegacyTaskReadOnly
+	return core.Task{}, ErrLegacyCLIMutationDisabled
 }
 
 func (s Service) Close(ctx context.Context, taskID string) (core.CloseOutcome, error) {
 	if err := s.authorize(ctx); err != nil {
 		return core.CloseOutcome{}, err
 	}
-	return core.CloseOutcome{}, core.ErrLegacyTaskReadOnly
+	return core.CloseOutcome{}, ErrLegacyCLIMutationDisabled
 }
 
 func (s Service) List(ctx context.Context) ([]core.Task, error) {
