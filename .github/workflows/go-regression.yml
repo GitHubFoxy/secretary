@@ -18,20 +18,8 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Install native Worker sandbox prerequisite
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y bubblewrap
-          # Ubuntu 24+ AppArmor can otherwise block unprivileged userns.
-          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev -- /bin/sh -c 'exit 0'
-      - name: Verify official Codex runtime for persisted T09 Resume
-        run: |
-          npm install --prefix "$RUNNER_TEMP/t09-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.163.0
-          sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0
-          sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0-linux-x64 @openai/codex-linux-x64
+      - name: Install pinned Codex runtime without privileged provisioning
+        run: npm install --prefix "$RUNNER_TEMP/t09-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.163.0
       - name: Real Codex session persistence and same-session Resume
         env:
           T09_REAL_CODEX: ${{ runner.temp }}/t09-codex/node_modules/@openai/codex/bin/codex.js

@@ -28,6 +28,7 @@ func TestDirectWorkerHelperProcess(t *testing.T) {
   "uid":current.Uid,"cwd":cwd,"code":os.Getenv("CODEX_PATH"),
   "acp":os.Getenv("SECRETARY_ACP_COMMAND"),"custom":os.Getenv("SECRETARY_DIRECT_TEST_SECRET"),
  })
+ os.Exit(0)
 }
 
 func TestDirectWorkerInheritsIdentityEnvironmentAndHostFileAccess(t *testing.T) {
