@@ -87,3 +87,16 @@ func TestSelectedCodexMissingInventoryDoesNotBindHTTP(t *testing.T) {
   t.Fatalf("missing Codex inventory permitted HTTP readiness: err=%v listener=%v bind=%v", err, listener, called)
  }
 }
+
+func TestWorkerCodexSelectionDoesNotBlockIndependentClaudeSecretary(t *testing.T) {
+ home := t.TempDir()
+ t.Setenv("HOME", home)
+ t.Setenv("USERPROFILE", home)
+ snapshot := config.Snapshot{Config: config.Config{
+  Secretary: config.SecretaryPolicy{Harness: "claude_code"},
+  WorkerPolicy: config.WorkerPolicy{DefaultHarness: "codex"},
+ }}
+ if err := prepareSelectedCodexRuntime(context.Background(), snapshot); err != nil {
+  t.Fatalf("offline Worker Codex inventory prevented persistent Secretary startup: %v", err)
+ }
+}
