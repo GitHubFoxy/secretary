@@ -16,7 +16,6 @@ import (
 	"github.com/beruseruko/secretary/internal/artifactmcp"
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
-	"github.com/beruseruko/secretary/internal/nativeexec"
 	"github.com/beruseruko/secretary/internal/traystatus"
 )
 
@@ -26,13 +25,13 @@ func main() {
 	setPrivateNodeUmask()
 	artifactMCP := flag.Bool("artifact-mcp", false, "serve the scoped Worker Artifact MCP tool")
 	configPath := flag.String("config", "", "Node-local deployment and approved Worker MCP config JSON")
+	checkNodeDeployment := flag.Bool("check-node-deployment", false, "validate installed Node config, identity and state directory without running daemon")
 	dataDir := flag.String("data-dir", defaultNodeDataDir(), "directory for Node identity and durable local state")
 	serverURL := flag.String("server", envOr("SECRETARY_NODE_SERVER", "http://127.0.0.1:8081"), "Secretary server URL used for first pairing")
 	pairingToken := flag.String("pair-token", os.Getenv("SECRETARY_NODE_PAIRING_TOKEN"), "one-time/owner-approved Node pairing token")
 	enrollOnly := flag.Bool("enroll-only", false, "enroll this Node and persist its private identity without starting a daemon")
 	nodeName := flag.String("name", envOr("SECRETARY_NODE_NAME", defaultNodeName()), "stable Node reference requested during pairing")
 	capacity := flag.Int("capacity", 1, "maximum advertised concurrent Worker capacity")
-	checkWorkerSandbox := flag.Bool("check-worker-sandbox", false, "preflight native OS sandbox and Worker provider-state handoff")
 	checkCodex := flag.Bool("check-codex-readiness", false, "check actual Codex and ACP capabilities without a model call")
 	includeOpenCode := flag.Bool("include-opencode", false, "include the OpenCode ACP inventory probe")
 	includeAntigravity := flag.Bool("include-antigravity", false, "include the Antigravity ACP inventory probe")
@@ -50,6 +49,11 @@ func main() {
 	codexPairCLI := flag.String("codex-pair-cli", "", "explicit external Codex executable")
 	codexPairACP := flag.String("codex-pair-acp", "", "explicit external ACP executable")
 	flag.Parse()
+	if *checkNodeDeployment {
+		if err := checkInstalledNodeDeployment(*configPath); err != nil { log.Fatalf("Node deployment preflight: %v", err) }
+		fmt.Println("Node deployment config and identity valid")
+		return
+	}
 	if *codexPairAction != "" {
 		summary, err := node.ManageCodexPair(context.Background(), *codexPairAction, *codexPairScope, *codexPairCLI, *codexPairACP)
 		if err != nil { log.Fatalf("native Codex pair: %v", err) }
@@ -180,11 +184,6 @@ func main() {
 	}
 	if err := deployment.Validate(); err != nil {
 		log.Fatalf("invalid Node deployment: %v", err)
-	}
-	if *checkWorkerSandbox {
-		if err := nativeexec.PreflightWorkerSandbox(*dataDir); err != nil { log.Fatalf("native Worker preflight: %v", err) }
-		fmt.Println("native Worker security preflight passed")
-		return
 	}
 	if *enrollOnly {
 		if strings.TrimSpace(*pairingToken) == "" { log.Fatal("owner-approved pairing token is required") }

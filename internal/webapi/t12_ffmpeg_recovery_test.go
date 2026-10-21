@@ -131,3 +131,29 @@ func TestT12FFmpegExtractsExactlyProbedVideoTrackNotDefault(t *testing.T) {
 	_,err=(ffmpegVideoProcessor{}).Process(ctx,clip,VideoOptions{FPS:1,MaxFrames:1,MaxDurationSeconds:12,TimeoutSeconds:20})
 	if err==nil || !strings.Contains(err.Error(),"limits"){t.Fatalf("v:0 frame ceiling not enforced: %v",err)}
 }
+
+
+// Exercise the actual FFmpeg extractor at the new configured ceiling,
+// not only the mock video processor or the durable metadata store.
+func TestT12RealFFmpegTwoFPSOneHundredFortyFrames(t *testing.T) {
+ for _, name := range []string{"ffmpeg","ffprobe"} {
+  if _, err := exec.LookPath(name); err != nil { t.Fatalf("mandatory %s unavailable: %v",name,err) }
+ }
+ clipPath:=filepath.Join(t.TempDir(),"seventy-seconds.mp4")
+ generate:=exec.Command("ffmpeg","-hide_banner","-v","error","-f","lavfi",
+  "-i","testsrc2=size=32x24:rate=2:duration=70","-c:v","mpeg4","-q:v","3",clipPath)
+ if output,err:=generate.CombinedOutput();err!=nil{t.Fatalf("create 70 s source: %v: %s",err,output)}
+ data,err:=os.ReadFile(clipPath)
+ if err!=nil{t.Fatal(err)}
+ if len(data)>core.MaxArtifactBytes{t.Fatalf("fixture exceeds Telegram original limit: %d",len(data))}
+ ctx,cancel:=context.WithTimeout(context.Background(),60*time.Second)
+ defer cancel()
+ frames,err:=(ffmpegVideoProcessor{}).Process(ctx,data,(VideoOptions{}).Defaults())
+ if err!=nil{t.Fatalf("140-frame FFmpeg conversion failed: %v",err)}
+ if len(frames)!=core.MaxVideoFrames{t.Fatalf("FFmpeg returned %d frames, want %d",len(frames),core.MaxVideoFrames)}
+ for i,frame:=range frames{
+  if frame.TimestampMS!=int64(i*500) || frame.TimestampKind!="source-pts-relative" {
+   t.Fatalf("frame %d timestamp %d kind %q",i,frame.TimestampMS,frame.TimestampKind)
+  }
+ }
+}

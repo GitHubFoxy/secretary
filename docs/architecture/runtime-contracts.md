@@ -40,7 +40,8 @@ Web получает canonical entry сразу. Telegram отправляет a
 
 - Execution node запускает Workers по Dispatch от Secretary server и поддерживает outbound connection к серверу. Node не владеет Conversation или Result routing; в первом slice default node — local Secretary host.
 - Node enrollment происходит с явного owner-approved pairing через одноразовый code; после pairing Node получает собственную identity. Envelope HMAC подписывает payload после `json.Marshal(RawMessage)`, то есть в compact/HTML-escaped форме wire serializer. Форматирование durable JSON при reopen не меняет аутентификацию; пробелы внутри строк, порядок ключей, значения и identity остаются частью подписи. Verify сохраняет совместимость со старой raw-byte подписью только для валидного Envelope/JSON и действительного per-Node HMAC.
-- Первый Execution environment даёт Worker full access. Sandbox и isolated worktree могут стать другими вариантами; full access сам по себе не является sandbox или гарантией изоляции.
+- Secretary Workers execute directly with the operating-system permissions and environment of the Execution Node user. Secretary does not provide an additional Worker sandbox or privilege boundary.
+- Worker, native harness, shell и MCP-потомки работают с обычными правами пользователя Execution Node без дополнительного ограничения файловой системы или переменных окружения Secretary. Политики самого Codex/Claude Code не меняются.
 - Worker получает отдельный пустой Workspace при запуске Task. Через shell Worker может создать или выбрать другой local path.
 
 ## Локальный POC и AgentHub

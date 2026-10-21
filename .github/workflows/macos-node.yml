@@ -1,4 +1,4 @@
-name: macOS Native Worker sandbox acceptance
+name: macOS native Worker direct execution acceptance
 
 on:
   pull_request:
@@ -18,15 +18,12 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Confirm available Seatbelt sandbox
-        shell: bash
-        run: |
-          test -x /usr/bin/sandbox-exec
-          /usr/bin/sandbox-exec -p '(version 1)(allow default)' /usr/bin/true
-      - name: Test macOS Worker isolation, file publication and provider history
+      - name: Test macOS Worker execution, file publication and provider history
         shell: bash
         run: |
           go test ./internal/nativeexec ./internal/node ./internal/core -run 'TestT09' -count=1 -timeout=10m -v
+          go test ./internal/nativeexec -run '^TestDirectWorker' -count=1 -timeout=5m -v
+          go test ./internal/acp -run '^TestACPCancellationTerminatesNativeDescendants$' -count=1 -timeout=5m -v
       - name: Build production macOS Node and Server
         shell: bash
         run: |

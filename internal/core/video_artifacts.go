@@ -10,6 +10,9 @@ import (
 	"time"
 )
 
+// MaxVideoFrames is the maximum extracted and delivered frame count for one video.
+const MaxVideoFrames = 140
+
 type VideoFrame struct {
 	ArtifactID    string `json:"artifact_id"`
 	TimestampMS   int64  `json:"timestamp_ms"`
@@ -96,7 +99,7 @@ const MaxPendingVideoJobs = 32
 var ErrVideoQueueFull = errors.New("video: processing queue full")
 
 func validateVideoJob(j VideoJob) error {
-	if j.FPS < .25 || j.FPS > 4 || j.MaxFrames < 1 || j.MaxFrames > 16 || j.MaxDuration < 1 || j.MaxDuration > 60 || j.TimeoutSeconds < 1 || j.TimeoutSeconds > 120 {
+	if j.FPS < .25 || j.FPS > 4 || j.MaxFrames < 1 || j.MaxFrames > MaxVideoFrames || j.MaxDuration < 1 || j.MaxDuration > 120 || j.TimeoutSeconds < 1 || j.TimeoutSeconds > 120 {
 		return errors.New("video: invalid processing limits")
 	}
 	return nil
@@ -274,7 +277,7 @@ func (s *Store) FailVideo(ctx context.Context, personID, artifactID, reason stri
 }
 
 func (s *Store) CompleteVideo(ctx context.Context, personID, artifactID string, frames []VideoFrameData) error {
-	if len(frames) == 0 || len(frames) > 16 {
+	if len(frames) == 0 || len(frames) > MaxVideoFrames {
 		return errors.New("video: invalid frame count")
 	}
 	return withTxErr(s, ctx, func(tx *sql.Tx) error {

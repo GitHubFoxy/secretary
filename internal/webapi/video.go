@@ -26,17 +26,17 @@ type VideoOptions struct {
 }
 
 func (v VideoOptions) Defaults() VideoOptions {
-	if v.FPS == 0 { v.FPS = 1 }
-	if v.MaxDurationSeconds == 0 { v.MaxDurationSeconds = 12 }
-	if v.MaxFrames == 0 { v.MaxFrames = 12 }
-	if v.TimeoutSeconds == 0 { v.TimeoutSeconds = 45 }
+	if v.FPS == 0 { v.FPS = 2 }
+	if v.MaxDurationSeconds == 0 { v.MaxDurationSeconds = 70 }
+	if v.MaxFrames == 0 { v.MaxFrames = core.MaxVideoFrames }
+	if v.TimeoutSeconds == 0 { v.TimeoutSeconds = 120 }
 	return v
 }
 
 func (v VideoOptions) Validate() error {
-	if v.FPS < .25 || v.FPS > 4 || v.MaxDurationSeconds < 1 || v.MaxDurationSeconds > 60 ||
-		v.MaxFrames < 1 || v.MaxFrames > 16 || v.TimeoutSeconds < 1 || v.TimeoutSeconds > 120 {
-		return errors.New("video: fps must be 0.25–4, duration 1–60 s, frames 1–16, timeout 1–120 s")
+	if v.FPS < .25 || v.FPS > 4 || v.MaxDurationSeconds < 1 || v.MaxDurationSeconds > 120 ||
+		v.MaxFrames < 1 || v.MaxFrames > core.MaxVideoFrames || v.TimeoutSeconds < 1 || v.TimeoutSeconds > 120 {
+		return errors.New("video: fps must be 0.25–4, duration 1–120 s, frames 1–140, timeout 1–120 s")
 	}
 	return nil
 }

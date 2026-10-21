@@ -30,13 +30,14 @@ jobs:
           go test ./internal/node
           -run 'TestWindowsNativeACPProcessStartAndResume|TestWindowsNPMCommandShimStartsAndResumesACP|TestProtocolWorkspaceAcceptsRemoteWindowsPath|TestACPRuntimeResumesExistingSession|TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke|TestServerRestartNodeReconnectDeliversQueuedLateResultExactlyOnce|TestReplacementSocketInvalidatesWorkerUntilMatchingHeartbeat'
           -count=1 -timeout=10m -v
+      - name: Verify Windows ACP process-tree cancellation
+        run: go test ./internal/acp -run '^TestACPWindows' -count=1 -timeout=3m -v
       - name: Verify supported ordinary Windows Node installer and upgrade
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $data=Join-Path $env:RUNNER_TEMP 't09-installer-upgrade-node'
           $workspace=Join-Path $env:RUNNER_TEMP 't09-installer-upgrade-workspace'
-          $workerProfile=Join-Path $env:RUNNER_TEMP 't09-installer-upgrade-home'
           $existing=Join-Path $data 'identity.json'
           $deployment=Join-Path $data 'config.json'
           $state=Join-Path $data 'node-state.json'
@@ -55,8 +56,8 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Node v2 fixture build failed' }
           go build -ldflags '-H=windowsgui -buildid=w03-tray-v2' -o (Join-Path $env:RUNNER_TEMP 'w03-tray-v2.exe') ./cmd/secretary-tray
           if ($LASTEXITCODE -ne 0) { throw 'Tray v2 fixture build failed' }
-          & ./scripts/install-windows-node.ps1 -NodeDataDir $data -Workspace $workspace -WorkerHome $workerProfile -WorkerUsername 'secretary_inst_ci' -NodeBinary (Join-Path $env:RUNNER_TEMP 'w03-node-v1.exe') -TrayBinary (Join-Path $env:RUNNER_TEMP 'w03-tray-v1.exe')
-          if ($LASTEXITCODE -ne 0) { throw 'Windows first install failed' }
+          & ./scripts/install-windows-node.ps1 -NodeDataDir $data -NodeBinary (Join-Path $env:RUNNER_TEMP 'w03-node-v1.exe') -TrayBinary (Join-Path $env:RUNNER_TEMP 'w03-tray-v1.exe')
+          if (-not $?) { throw 'Windows first install failed' }
           $linkPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
           if (-not (Test-Path -LiteralPath $linkPath)) { throw 'Windows Start/Search shortcut missing' }
           $shell=New-Object -ComObject WScript.Shell
@@ -64,8 +65,6 @@ jobs:
           if (-not (Test-Path $link.TargetPath) -or $link.Arguments -notlike '*--data-dir*') { throw 'Windows tray shortcut has invalid target/Node data directory' }
           $installedTray=$link.TargetPath
           $installedHash=(Get-FileHash -LiteralPath $installedTray -Algorithm SHA256).Hash
-          $configPath=Join-Path $data 'worker-account.json'
-          $first=(Get-Content $configPath -Raw | ConvertFrom-Json)
           $runningTray=Start-Process -FilePath $installedTray -ArgumentList ('--data-dir "'+$data+'"') -PassThru
           Start-Sleep -Milliseconds 700
           if ($runningTray.HasExited) { throw 'Installed tray failed to launch before upgrade' }
@@ -79,10 +78,9 @@ jobs:
            [DllImport("user32.dll")] public static extern IntPtr GetWindow(IntPtr hwnd, uint command);
           }
           '@
-          & ./scripts/install-windows-node.ps1 -NodeDataDir $data -Workspace $workspace -WorkerHome $workerProfile -WorkerUsername 'secretary_inst_ci' -NodeBinary (Join-Path $env:RUNNER_TEMP 'w03-node-v2.exe') -TrayBinary (Join-Path $env:RUNNER_TEMP 'w03-tray-v2.exe')
+          & ./scripts/install-windows-node.ps1 -NodeDataDir $data -NodeBinary (Join-Path $env:RUNNER_TEMP 'w03-node-v2.exe') -TrayBinary (Join-Path $env:RUNNER_TEMP 'w03-tray-v2.exe')
 
-          if ($LASTEXITCODE -ne 0) { throw 'Windows idempotent upgrade failed' }
-          $second=(Get-Content $configPath -Raw | ConvertFrom-Json)
+          if (-not $?) { throw 'Windows idempotent upgrade failed' }
           $upgradeLink=$shell.CreateShortcut($linkPath)
           if ($upgradeLink.TargetPath -eq $installedTray -or
               $installedHash -eq (Get-FileHash -LiteralPath $upgradeLink.TargetPath -Algorithm SHA256).Hash) {
@@ -97,22 +95,10 @@ jobs:
               $stateBefore -ne (Get-FileHash $state -Algorithm SHA256).Hash) {
             throw 'Windows upgrade changed Node deployment configuration or state'
           }
-          if ($first.password -ne $second.password -or $before -ne (Get-FileHash $existing -Algorithm SHA256).Hash) {
-            throw 'Windows upgrade rotated account credentials or Node identity'
+          if ($before -ne (Get-FileHash $existing -Algorithm SHA256).Hash) {
+            throw 'Windows upgrade modified Node identity'
           }
-          # Native Start and Resume run using the actual SID provisioned by
-          # install-windows-node.ps1, not only the separately seeded test SID.
-          foreach ($provider in @('.codex','.claude','opencode-native')) {
-            New-Item -ItemType Directory -Path (Join-Path $workerProfile $provider) -Force | Out-Null
-          }
-          $env:SECRETARY_WORKER_USERNAME = $second.username
-          $env:SECRETARY_WORKER_PASSWORD = $second.password
-          $env:SECRETARY_WORKER_DOMAIN = $second.domain
-          $env:SECRETARY_WORKER_HOME = $workerProfile
-          $env:SECRETARY_WORKER_TEST_WORKSPACE = $workspace
-          $env:SECRETARY_WORKER_TEST_PROTECTED_DIR = $data
-          go test ./internal/nativeexec -run TestT09WindowsSeparateAccountStateAndResume -count=1 -timeout=3m -v
-          if ($LASTEXITCODE -ne 0) { throw 'installer-created Worker SID did not preserve native Start/Resume' }
+          if (Test-Path -LiteralPath (Join-Path $data 'worker-account.json')) { throw 'Installer created obsolete Worker account settings' }
       - name: Verify installer on stock Windows PowerShell 5.1 without pwsh
         shell: powershell
         run: |
@@ -121,50 +107,13 @@ jobs:
           $scriptText = Get-Content -LiteralPath ./scripts/install-windows-node.ps1 -Raw
           if ($scriptText -match 'pwsh\\.exe|ConvertFrom-Json\\s+-AsHashtable') { throw 'Installer requires PowerShell 7' }
           $node = Join-Path $env:RUNNER_TEMP 't09-ps51-clean-node'
-          $workerHomePath = Join-Path $env:RUNNER_TEMP 't09-ps51-clean-home'
-          $workspace = Join-Path $env:RUNNER_TEMP 't09-ps51-clean-workspace'
-          New-Item -ItemType Directory -Force -Path $node,$workspace | Out-Null
-          & ./scripts/install-windows-node.ps1 -NodeDataDir $node -WorkerHome $workerHomePath -Workspace $workspace -WorkerUsername 'secretary_ps51_ci' -NodeBinary (Join-Path $PWD 'secretary-node.exe') -TrayBinary (Join-Path $env:RUNNER_TEMP 'w03-tray-v1.exe')
-          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 clean install failed' }
-          if (-not (Test-Path (Join-Path $node 'worker-account.json'))) { throw 'Worker SID was not provisioned' }
-      - name: Verify native Workers use a separate Windows security principal
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $worker = 'secretary_worker_ci'
-          $password = 'T09-ci-Safe1!'
-          $nodeBinary=Join-Path $env:RUNNER_TEMP 'w03-worker-node.exe'
-          go build -o $nodeBinary ./cmd/secretary-node
-          if ($LASTEXITCODE -ne 0) { throw 'could not build Windows Node for installer' }
-          $installData=Join-Path $env:RUNNER_TEMP 'w03-worker-install-node'
-          $installWorkspace=Join-Path $env:RUNNER_TEMP 'w03-worker-install-workspace'
-          $installHome=Join-Path $env:RUNNER_TEMP 'w03-worker-install-home'
-          New-Item -ItemType Directory -Path $installData,$installWorkspace -Force | Out-Null
-          & ./scripts/install-windows-node.ps1 -NodeDataDir $installData -Workspace $installWorkspace -WorkerHome $installHome -WorkerUsername $worker -NodeBinary $nodeBinary -TrayBinary (Join-Path $env:RUNNER_TEMP 'w03-tray-v1.exe')
-          if ($LASTEXITCODE -ne 0) { throw 'supported Worker install failed' }
-          $password=(Get-Content -LiteralPath (Join-Path $installData 'worker-account.json') -Raw | ConvertFrom-Json).password
-          $principal = "$($env:COMPUTERNAME)\$worker"
-          $workerHome = Join-Path $env:RUNNER_TEMP 't09-worker-home'
-          $workspace = Join-Path $env:RUNNER_TEMP 't09-worker-workspace'
-          $protected = Join-Path $env:RUNNER_TEMP 't09-node-private'
-          foreach ($p in @($workerHome,$workspace,$protected)) { New-Item -ItemType Directory -Path $p -Force | Out-Null }
-          foreach ($p in @($workerHome,$workspace)) {
-            & icacls $p /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" "$($principal):(OI)(CI)M" 'SYSTEM:(OI)(CI)F' | Out-Host
-            if ($LASTEXITCODE -ne 0) { throw "could not grant Worker access to $p" }
-          }
-          & icacls $protected /inheritance:r /grant:r "$($env:USERNAME):(OI)(CI)F" 'SYSTEM:(OI)(CI)F' | Out-Host
-          if ($LASTEXITCODE -ne 0) { throw 'could not seal Node secret directory' }
-          foreach ($provider in @('.codex','.claude','opencode-native')) {
-            New-Item -ItemType Directory -Path (Join-Path $workerHome $provider) -Force | Out-Null
-          }
-          $env:SECRETARY_WORKER_USERNAME = $worker
-          $env:SECRETARY_WORKER_PASSWORD = $password
-          $env:SECRETARY_WORKER_DOMAIN = '.'
-          $env:SECRETARY_WORKER_HOME = $workerHome
-          $env:SECRETARY_WORKER_TEST_WORKSPACE = $workspace
-          $env:SECRETARY_WORKER_TEST_PROTECTED_DIR = $protected
-          go test ./internal/nativeexec -run 'TestT09WindowsSeparateAccountStateAndResume|TestT09WindowsCancelKillsNativeWorkerTree|TestT09WindowsNativeProviderStateMigrationPreservesHistory|TestT09WindowsPersistedAccountConfigWithoutEnvironment|TestT09WindowsPreexistingEmptyProviderDirectoriesAreMigrated|TestT09WindowsProjectlessWorkspaceStaysInProvisionedWorkerHome' -count=1 -v
-          if ($LASTEXITCODE -ne 0) { throw 'native Worker security and resume acceptance failed' }
+          New-Item -ItemType Directory -Force -Path $node | Out-Null
+          & ./scripts/install-windows-node.ps1 -NodeDataDir $node -NodeBinary (Join-Path $PWD 'secretary-node.exe') -TrayBinary (Join-Path $env:RUNNER_TEMP 'w03-tray-v1.exe')
+          if (-not $?) { throw 'PowerShell 5.1 clean install failed' }
+          if (Test-Path (Join-Path $node 'worker-account.json')) { throw 'Unexpected Worker account provisioning' }
+          if ($scriptText -match '-Verb RunAs|setup-windows-worker|check-worker-sandbox') { throw 'Installer requires sandbox elevation or preflight' }
+      - name: Verify direct Windows identity, environment, host-file access and cancellation
+        run: go test ./internal/nativeexec -run '^TestDirect' -count=1 -timeout=3m -v
 
   windows-tray:
     runs-on: windows-latest

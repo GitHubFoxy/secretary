@@ -24,7 +24,6 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
 	"github.com/beruseruko/secretary/internal/node"
-	"github.com/beruseruko/secretary/internal/nativeexec"
 	secretaryruntime "github.com/beruseruko/secretary/internal/secretary"
 	"github.com/beruseruko/secretary/internal/webapi"
 	webclient "github.com/beruseruko/secretary/web"
@@ -335,12 +334,6 @@ func main() {
 		log.Fatalf("find secretary-mcp: %v", mcpErr)
 	}
 	workerLocal := node.NewLocal(workerHarnessRuntime)
-	// Unlike in-process tests, production local Worker processes must not
-	// inherit the Server UID's unrestricted filesystem. Start/Resume fail
-	// closed if Seatbelt/bubblewrap (or an equivalent host boundary) fails.
-	if err := workerLocal.SetNativeWorkerSandbox(nativeexec.WorkerSandbox{
-		ProtectedDir: workerDataDir, ServerDataDir: *dataDir,
-	}); err != nil { log.Fatalf("configure local Worker OS sandbox: %v", err) }
 	// Native needs_input image delivery uses the same durable injection
 	// protocol as a standalone ExecutionNode, scoped to protected Node data.
 	localImageStore, err := node.OpenLocalStore(filepath.Join(workerDataDir, "local-image-responses.json"))

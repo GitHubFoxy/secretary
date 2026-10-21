@@ -235,7 +235,6 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 			cmd.Env = append(cmd.Env, fmt.Sprintf("SECRETARY_CLAUDE_MCP_%d_%s=%s", index, variable.Name, variable.Value))
 		}
 	}
-	cmd.Env = nativeexec.SecureWorkerEnvironment(ctx, cmd.Env)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("%w: open stdin: %v", ErrClaudeCodeUnavailable, err)
