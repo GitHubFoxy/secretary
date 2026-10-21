@@ -24,6 +24,12 @@ This includes the ability to read and modify Node/Server state whenever it is ac
 
 Artifact publication still uses pinned-handle, no-follow traversal of workspace-relative paths: Unix `openat(O_NOFOLLOW)` and Windows `NtCreateFile` with reparse-point refusal. The broker accepts named paths rather than arbitrary caller-supplied bytes and the Server validates active Attempt identity and Node provenance.
 
+### Legacy Windows Worker account cleanup (manual only)
+
+Existing installations may retain `worker-account.json`, a local `secretary_worker`-style Windows account, restricted NTFS ACLs and native provider state stored inside that account's home. These are **not** removed or migrated automatically. The old state may contain the only copy of previous Codex/Claude/OpenCode sessions; preserving the Node's JSON/SQLite files alone does not make those provider sessions immediately accessible to a different Windows user.
+
+Before cleanup, back up Node identity/config/SQLite and both current-user and legacy Worker provider directories. Inspect the saved account record, local account and permissions (`Get-Content <NodeDataDir>\\worker-account.json | ConvertFrom-Json`, `Get-LocalUser`, `icacls <path>`). If a Follow-up needs sessions in the legacy profile, copy the relevant provider state to the current Node user's provider home **only after** verifying ownership and permissions. Review and correct any old ACLs that prevent the current Node user from using existing workspaces or sessions. Removing the old account or its files is an explicit operator action, potentially requiring administrator privileges; do so only after verifying successful native session continuity and a recoverable backup. The new installer itself never requests UAC for Worker provisioning.
+
 ## Native state and host acceptance
 
 Codex, Claude Code and OpenCode continue to use their persistent provider stores directly. CI verifies direct process launch, Worker identity/environment, access outside workspace, cancellation and native checkpoint persistence. Linux T09 uses the real pinned Codex CLI with a local deterministic Responses-compatible backend to create and resume the same native thread; this is **not** authenticated provider or published-release acceptance.
