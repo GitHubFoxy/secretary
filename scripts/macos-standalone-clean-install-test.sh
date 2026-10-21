@@ -25,7 +25,7 @@ set -euo pipefail
 config=""
 action=""
 for arg in "$@"; do
-  case "$arg" in --enroll-only) action=enroll ;; --check-worker-sandbox) action=ready ;; esac
+  case "$arg" in --enroll-only) action=enroll ;; --help) action=ready ;; esac
 done
 args=("$@")
 for ((i=0;i<${#args[@]};i++)); do
@@ -98,13 +98,13 @@ bash "$root/scripts/install-macos-standalone-node.sh"
 export SECRETARY_VERSION="$upgrade_version"
 export SECRETARY_NODE_PINNED_SHA256="$(shasum -a 256 "$home/dist/secretary-v${upgrade_version}-darwin-$arch.tar.gz" | awk '{print $1}')"
 if FAULT_NODE_ACTIVATED=1 bash "$root/scripts/install-macos-standalone-node.sh" > "$home/activation.log" 2>&1; then
-  echo "Accepted failed activated Node readiness" >&2; exit 1
+  echo "Accepted failed activated Node launch" >&2; exit 1
 fi
-grep -q 'Activated Node failed readiness' "$home/activation.log"
+grep -q 'Activated Node failed launch' "$home/activation.log"
 [[ "$(readlink "$state/current")" == "$old" ]]
 diff -qr "$home/old-app" "$HOME/Applications/Secretary Node.app"
 [[ "$(cat "$state/data/node-state.json")" == 'saved native session' ]]
 [[ "$(cat "$state/data/enroll.calls")" == paired ]]
 bash "$root/scripts/install-macos-standalone-node.sh"
 [[ "$(readlink "$state/current")" == "$state/releases/secretary-v${upgrade_version}-darwin-$arch" ]]
-echo "Clean install, recovery, enrollment and activated readiness rollback fixture completed"
+echo "Clean install, recovery, enrollment and activated binary-launch rollback fixture completed"

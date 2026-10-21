@@ -55,7 +55,7 @@ jobs:
           go build -ldflags '-H=windowsgui -buildid=w03-tray-v2' -o (Join-Path $env:RUNNER_TEMP 'w03-tray-v2.exe') ./cmd/secretary-tray
           if ($LASTEXITCODE -ne 0) { throw 'Tray v2 fixture build failed' }
           & ./scripts/install-windows-node.ps1 -NodeDataDir $data -NodeBinary (Join-Path $env:RUNNER_TEMP 'w03-node-v1.exe') -TrayBinary (Join-Path $env:RUNNER_TEMP 'w03-tray-v1.exe')
-          if ($LASTEXITCODE -ne 0) { throw 'Windows first install failed' }
+          if (-not $?) { throw 'Windows first install failed' }
           $linkPath=Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Secretary Node.lnk'
           if (-not (Test-Path -LiteralPath $linkPath)) { throw 'Windows Start/Search shortcut missing' }
           $shell=New-Object -ComObject WScript.Shell
@@ -78,7 +78,7 @@ jobs:
           '@
           & ./scripts/install-windows-node.ps1 -NodeDataDir $data -NodeBinary (Join-Path $env:RUNNER_TEMP 'w03-node-v2.exe') -TrayBinary (Join-Path $env:RUNNER_TEMP 'w03-tray-v2.exe')
 
-          if ($LASTEXITCODE -ne 0) { throw 'Windows idempotent upgrade failed' }
+          if (-not $?) { throw 'Windows idempotent upgrade failed' }
           $upgradeLink=$shell.CreateShortcut($linkPath)
           if ($upgradeLink.TargetPath -eq $installedTray -or
               $installedHash -eq (Get-FileHash -LiteralPath $upgradeLink.TargetPath -Algorithm SHA256).Hash) {
@@ -105,10 +105,9 @@ jobs:
           $scriptText = Get-Content -LiteralPath ./scripts/install-windows-node.ps1 -Raw
           if ($scriptText -match 'pwsh\\.exe|ConvertFrom-Json\\s+-AsHashtable') { throw 'Installer requires PowerShell 7' }
           $node = Join-Path $env:RUNNER_TEMP 't09-ps51-clean-node'
-          $workerHomePath = Join-Path $env:RUNNER_TEMP 't09-ps51-clean-home'
           New-Item -ItemType Directory -Force -Path $node | Out-Null
           & ./scripts/install-windows-node.ps1 -NodeDataDir $node -NodeBinary (Join-Path $PWD 'secretary-node.exe') -TrayBinary (Join-Path $env:RUNNER_TEMP 'w03-tray-v1.exe')
-          if ($LASTEXITCODE -ne 0) { throw 'PowerShell 5.1 clean install failed' }
+          if (-not $?) { throw 'PowerShell 5.1 clean install failed' }
           if (Test-Path (Join-Path $node 'worker-account.json')) { throw 'Unexpected Worker account provisioning' }
           if ($scriptText -match '-Verb RunAs|setup-windows-worker|check-worker-sandbox') { throw 'Installer requires sandbox elevation or preflight' }
       - name: Verify direct Windows identity, environment, host-file access and cancellation

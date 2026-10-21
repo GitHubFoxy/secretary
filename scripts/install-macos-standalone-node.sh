@@ -115,6 +115,7 @@ if [[ "$SECRETARY_NODE_HARNESS" == codex ]]; then
 else
   claude --version >/dev/null || fail "Selected Claude harness unavailable"
 fi
+"$target/bin/secretary-node" --config "$config" --help >/dev/null 2>&1 || fail "Staged Node failed launch"
 "$target/Secretary Node.app/Contents/MacOS/SecretaryNode" --login-item-smoke status >/dev/null || fail "Staged companion cannot launch"
 [[ ! -e "$current" || -L "$current" ]] || fail "Current Node release is unmanaged"
 old=""
@@ -146,6 +147,7 @@ ln -s "$target" "$stage/current.new"
 mv -fh "$stage/current.new" "$current" || fail "Cannot switch Node release"
 [[ "$(readlink "$current")" == "$target" ]] || fail "Release pointer verification failed"
 verify_app "$app"
+"$current/bin/secretary-node" --config "$config" --help >/dev/null 2>&1 || fail "Activated Node failed launch"
 "$app/Contents/MacOS/SecretaryNode" --login-item-smoke status >/dev/null || fail "Activated companion failed readiness"
 activated=true
 printf 'Installed standalone Secretary Node %s (%s). Launch Secretary Node from Spotlight.\n' "$version" "$revision"
