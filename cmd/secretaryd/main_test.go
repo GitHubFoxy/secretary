@@ -279,7 +279,8 @@ func TestProductionAssemblyUsesDaemonForLocalWorkerAndFollowUp(t *testing.T) {
 	defer server.Close()
 	identity, err := node.EnrollNode(ctx, server.Client(), server.URL, "pair-token", "local")
 	if err != nil { t.Fatal(err) }
-	localStore, err := node.OpenLocalStore(filepath.Join(t.TempDir(), "node-state.json"))
+	nodeStateDir := t.TempDir()
+	localStore, err := node.OpenLocalStore(filepath.Join(nodeStateDir, "node-state.json"))
 	if err != nil { t.Fatal(err) }
 	defer localStore.Close()
 	started := make(chan node.StartRequest, 2)
@@ -327,6 +328,10 @@ func TestProductionAssemblyUsesDaemonForLocalWorkerAndFollowUp(t *testing.T) {
 		initialWorkspace = request.Workspace
 		if request.WorkerRef != details.Worker.WorkerRef || request.Workspace == "" || request.HarnessInstance.Node != "local" {
 			t.Fatalf("daemon started wrong Worker: %#v", request)
+		}
+		relative, err := filepath.Rel(filepath.Join(nodeStateDir, "workspaces"), request.Workspace)
+		if err != nil || !filepath.IsLocal(relative) {
+			t.Fatalf("projectless Worker workspace is not Node-owned and durable: %q err=%v", request.Workspace, err)
 		}
 	case <-ctx.Done():
 		t.Fatal("daemon did not start native Worker")
