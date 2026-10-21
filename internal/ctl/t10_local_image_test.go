@@ -59,7 +59,7 @@ func TestT10LocalDispatchAndSteeringUseOriginalImageBytes(t *testing.T) {
 		if ref != id { t.Fatalf("wrong Artifact: %s",ref) }
 		return node.ArtifactPayload{ID:id,Name:"original.png",SHA256:hex.EncodeToString(checksum[:]),Data:original},nil
 	})
-	nruntime := NodeRuntime{Local:local}
+	nruntime := legacyLocalTestRuntime{Local:local}
 	instance := core.HarnessInstance{
 		ID:"local/fx",Node:"local",Kind:core.HarnessFX,Version:"test",Status:core.HarnessReady,
 		Authentication:core.HarnessAuthentication{Authenticated:true},
