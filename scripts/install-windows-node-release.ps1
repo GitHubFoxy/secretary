@@ -2,9 +2,6 @@ param(
  [Parameter(Mandatory=$true)][string]$ReleaseUri,
  [Parameter(Mandatory=$true)][ValidatePattern('^[a-fA-F0-9]{64}$')][string]$ReleaseSHA256,
  [string]$NodeDataDir = (Join-Path (Join-Path $env:USERPROFILE '.secretary') 'node'),
- [string]$WorkerHome = (Join-Path $env:ProgramData 'SecretaryWorker'),
- [string]$Workspace = '',
- [string]$WorkerUsername = 'secretary_worker',
  [ValidateSet('codex','claude')][string]$Harness = 'codex',
  [string]$CodexCLI = '',
  [string]$CodexACP = ''
@@ -48,8 +45,8 @@ try {
  $zip = [IO.Compression.ZipFile]::OpenRead($archive)
  try {
   $entries = @($zip.Entries)
-  $expected = @('secretary-node.exe','secretary-tray.exe','release.json','install-windows-node.ps1','setup-windows-worker.ps1')
-  if ($entries.Count -ne 5) { throw 'Release archive has unexpected entries' }
+  $expected = @('secretary-node.exe','secretary-tray.exe','release.json','install-windows-node.ps1')
+  if ($entries.Count -ne 4) { throw 'Release archive has unexpected entries' }
   foreach ($entry in $entries) {
    if ($expected -cnotcontains $entry.FullName -or $entry.Length -gt 134217728) { throw 'Release archive contains unexpected or oversized entry' }
    $target = Join-Path $stage $entry.FullName
@@ -86,14 +83,8 @@ try {
   & (Join-Path $stage 'secretary-node.exe') @pairArgs
   if ($LASTEXITCODE -ne 0) { throw 'Codex/ACP provisioning failed; existing Node identity and credentials were not changed' }
  }
- $ownerHome = ''
- if ($Harness -eq 'codex') {
-  $pairRecord = (& (Join-Path $stage 'secretary-node.exe') --codex-pair-action=show --codex-pair-scope=node | Out-String | ConvertFrom-Json)
-  if ($LASTEXITCODE -ne 0) { throw 'Could not inspect selected native Codex/ACP inventory' }
-  if ($pairRecord.codex.provenance -eq 'managed') { $ownerHome = $env:USERPROFILE }
- }
- & (Join-Path $stage 'install-windows-node.ps1') -NodeDataDir $NodeDataDir -WorkerHome $WorkerHome -Workspace $Workspace -WorkerUsername $WorkerUsername -NodeBinary (Join-Path $stage 'secretary-node.exe') -TrayBinary (Join-Path $stage 'secretary-tray.exe') -CodexOwnerHome $ownerHome
- if (-not $?) { throw 'Windows Node installation failed; verify Worker account/ACL diagnostics' }
+ & (Join-Path $stage 'install-windows-node.ps1') -NodeDataDir $NodeDataDir -NodeBinary (Join-Path $stage 'secretary-node.exe') -TrayBinary (Join-Path $stage 'secretary-tray.exe')
+ if (-not $?) { throw 'Windows Node installation failed' }
  if ($Harness -eq 'codex') {
   & (Join-Path $stage 'secretary-node.exe') --codex-pair-action=readiness --codex-pair-scope=node
   if ($LASTEXITCODE -ne 0) {
