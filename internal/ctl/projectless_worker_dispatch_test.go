@@ -36,7 +36,7 @@ func (r *projectlessNativeRuntime) Resume(_ context.Context, request node.StartR
 	return canceledSteeringSession{}, nil
 }
 
-func TestProjectlessWorkerServiceDispatchToLocalNodeAndFollowup(t *testing.T) {
+func TestProjectlessWorkerServiceDispatchThroughExecutionNodeAndFollowup(t *testing.T) {
 	ctx := context.Background()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
 	if err != nil {
