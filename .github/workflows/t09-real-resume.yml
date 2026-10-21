@@ -5,6 +5,9 @@ on:
     paths:
       - 'internal/nativeexec/**'
       - 'internal/node/**'
+      - 'internal/ctl/**'
+      - 'internal/app/**'
+      - 'cmd/secretaryd/**'
       - 'cmd/secretary-node/**'
       - 'scripts/build-codex-acp-bundle.sh'
       - '.github/workflows/t09-real-resume.yml'
