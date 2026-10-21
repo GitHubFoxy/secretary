@@ -8,6 +8,7 @@ on:
       - scripts/install-windows-node-release.ps1
       - scripts/install-windows-node.ps1
       - internal/nativeexec/**
+      - internal/acp/**
       - internal/node/**
       - .github/workflows/windows-node-binary-release.yml
   push:
