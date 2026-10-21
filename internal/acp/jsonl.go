@@ -169,7 +169,7 @@ func StartWithDiagnosticStderrEnvDir(ctx context.Context, stderr io.Writer, envi
 	process, err := nativeexec.CommandContext(processCtx, command, arguments...)
 	if err != nil { cancel(); return nil, err }
 	configureACPProcess(process)
-	process.Env = nativeexec.SecureWorkerEnvironment(processCtx, append(os.Environ(), environment...))
+	process.Env = append(os.Environ(), environment...)
 	process.Dir = dir
 	process.Stderr = stderr
 	stdin, err := process.StdinPipe()
@@ -202,7 +202,6 @@ func startWithProcessEnvironment(ctx context.Context, rawLog io.Writer, environm
 	if dir != "" {
 		process.Dir = dir
 	}
-	process.Env = nativeexec.SecureWorkerEnvironment(processCtx, process.Env)
 	stdin, err := process.StdinPipe()
 	if err != nil {
 		cancel()
