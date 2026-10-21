@@ -67,11 +67,18 @@ func TestProjectlessWorkerServiceDispatchToLocalNodeAndFollowup(t *testing.T) {
 		t.Fatal(err)
 	}
 	native := &projectlessNativeRuntime{}
+	localStore, err := node.OpenLocalStore(filepath.Join(t.TempDir(), "node-state.json"))
+	if err != nil { t.Fatal(err) }
+	defer localStore.Close()
+	execution := node.NewExecutionNode("local", native, localStore)
+	if err := execution.SetInventory(core.HarnessInventorySnapshot{
+		Node: "local", ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{codex, claude},
+	}); err != nil { t.Fatal(err) }
 	service := WorkerService{
 		Store: store, PersonID: person.ID, Capability: capability,
 		WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessCodex, PreferredHarnesses: []core.HarnessKind{core.HarnessClaudeCode}},
 		WorkerProfileSource: syntheticWorkerTemplateSource(),
-		Runtime: legacyLocalTestRuntime{Local: node.NewLocal(native)},
+		Runtime: &projectlessExecutionRuntime{executor: execution},
 	}
 
 	automatic, err := service.SpawnWorker(ctx, SpawnWorkerRequest{Intent: "build a website", IdempotencyKey: "projectless-auto"})
