@@ -34,7 +34,7 @@ done
 if [[ "$action" == ready ]]; then
   if [[ "${FAULT_NODE_ACTIVATED:-}" == 1 && "$0" == */current/bin/secretary-node ]]; then exit 68; fi
   [[ -f "$config" ]] || exit 69
-  /usr/bin/python3 - "$config" <<\'PY\' || exit 74
+  /usr/bin/python3 - "$config" <<'PY' || exit 74
 import json, pathlib, sys
 c=json.load(open(sys.argv[1]))
 assert c["node"] == "fixture-node"
