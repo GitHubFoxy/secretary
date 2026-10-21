@@ -1,6 +1,7 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -388,5 +389,83 @@ func TestT12AcceptedNativeWorkerSurvivesWebSocketReconnectAndTerminalResult(t *t
 				t.Fatalf("terminal duplicated or Worker relaunched: terminal=%d starts=%d",terminalDeliveries.Load(),runtime.starts.Load())
 			}
 		})
+	}
+}
+
+type t179ImageProtocolRuntime struct {
+	started chan StartRequest
+	session *t179ImageProtocolSession
+}
+
+func (r *t179ImageProtocolRuntime) Start(_ context.Context, request StartRequest) (Session, error) {
+	r.started <- request
+	return r.session, nil
+}
+
+type t179ImageProtocolSession struct {
+	steered chan []ImageInput
+	activity chan Activity
+	results chan Result
+}
+
+func (*t179ImageProtocolSession) ID() string { return "t179-image-session" }
+func (*t179ImageProtocolSession) Prompt(context.Context, string) error { return nil }
+func (*t179ImageProtocolSession) Steer(context.Context, string) (bool, error) { return true, nil }
+func (s *t179ImageProtocolSession) SteerImages(_ context.Context, _ string, images []ImageInput) (bool, error) {
+	s.steered <- images
+	return true, nil
+}
+func (*t179ImageProtocolSession) Cancel(context.Context) error { return nil }
+func (s *t179ImageProtocolSession) Activity() <-chan Activity { return s.activity }
+func (s *t179ImageProtocolSession) Result() <-chan Result { return s.results }
+func (*t179ImageProtocolSession) Close() error { return nil }
+
+func TestT179CoLocatedDaemonDispatchAndSteeringPreserveOriginalImageBytes(t *testing.T) {
+	session := &t179ImageProtocolSession{
+		steered: make(chan []ImageInput, 1), activity: make(chan Activity), results: make(chan Result),
+	}
+	runtime := &t179ImageProtocolRuntime{started: make(chan StartRequest, 1), session: session}
+	fixture := t12SocketWithQueuedVideo(t, runtime)
+	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Second)
+	defer cancel()
+	outcomes := make(chan CommandOutcome, 4)
+	fixture.manager.SetCommandOutcomeSink(func(_ context.Context, _ core.NodeReference, outcome CommandOutcome) error {
+		outcomes <- outcome
+		return nil
+	})
+	frameID := "art_" + strings.Repeat("7", 32)
+	original, err := base64.RawStdEncoding.DecodeString("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA")
+	if err != nil { t.Fatal(err) }
+	dispatch := fixture.dispatchCommand("t179-image-dispatch")
+	dispatch.Dispatch.Envelope.OriginalUserIntent = "Inspect artifact://" + frameID
+	if err := fixture.manager.SendCommand(ctx, fixture.identity.Node, dispatch); err != nil { t.Fatal(err) }
+	if received := waitCommandOutcome(t, ctx, outcomes); received.Kind != CommandDispatch || received.State != CommandAccepted {
+		t.Fatalf("canonical image Dispatch rejected: %#v", received)
+	}
+	select {
+	case started := <-runtime.started:
+		if started.WorkerRef != dispatch.Metadata().WorkerRef || len(started.Images) != 1 ||
+			started.Images[0].ArtifactID != frameID || !bytes.Equal(started.Images[0].Data, original) {
+			t.Fatalf("daemon Dispatch lost original image: %#v", started)
+		}
+	case <-ctx.Done(): t.Fatal("Node protocol did not start visual Worker")
+	}
+	metadata := dispatch.Metadata()
+	metadata.CommandID = "t179-image-steer"
+	metadata.IssuedAt = time.Now().UTC()
+	steering := Command{Kind: CommandSteering, Steering: &SteeringCommand{
+		Metadata: metadata, Text: "Check color artifact://" + frameID,
+	}}
+	if err := fixture.manager.SendCommand(ctx, fixture.identity.Node, steering); err != nil { t.Fatal(err) }
+	if received := waitCommandOutcome(t, ctx, outcomes); received.CommandID != metadata.CommandID ||
+		received.Kind != CommandSteering || received.State != CommandAccepted {
+		t.Fatalf("canonical image Steering rejected: %#v", received)
+	}
+	select {
+	case images := <-session.steered:
+		if len(images) != 1 || images[0].ArtifactID != frameID || !bytes.Equal(images[0].Data, original) {
+			t.Fatalf("daemon Steering lost original bytes: %#v", images)
+		}
+	case <-ctx.Done(): t.Fatal("Node protocol did not steer image into native session")
 	}
 }
