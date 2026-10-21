@@ -106,11 +106,17 @@ func TestServiceLegacyMutationsRejectedBeforeStoreOnBothMigrationStates(t *testi
 			if got := store.LegacyTasksReadOnly(ctx); got != migrated { t.Fatalf("expected migration_complete=%v, got readOnly=%v", migrated, got) }
 			before, err := service.List(ctx)
 			if err != nil || len(before) != 2 { t.Fatalf("tasks before=%#v err=%v", before, err) }
+			sequenceBefore, err := store.MaxEventSeq(ctx)
+			if err != nil { t.Fatal(err) }
 			if _, err := service.Create(ctx, "unrouted new Task"); !errors.Is(err, core.ErrLegacyTaskReadOnly) { t.Fatalf("legacy create: %v", err) }
 			if _, err := service.Retry(ctx, retryTask.ID); !errors.Is(err, core.ErrLegacyTaskReadOnly) { t.Fatalf("legacy retry: %v", err) }
 			if _, err := service.Close(ctx, openTask.ID); !errors.Is(err, core.ErrLegacyTaskReadOnly) { t.Fatalf("legacy close: %v", err) }
 			after, err := service.List(ctx)
 			if err != nil || len(after) != len(before) { t.Fatalf("tasks after=%#v err=%v", after, err) }
+			sequenceAfter, err := store.MaxEventSeq(ctx)
+			if err != nil || sequenceAfter != sequenceBefore {
+				t.Fatalf("legacy command created an event: before=%d after=%d err=%v", sequenceBefore, sequenceAfter, err)
+			}
 			for _, original := range before {
 				current, err := store.Task(ctx, original.ID)
 				if err != nil || current.State != original.State || !current.UpdatedAt.Equal(original.UpdatedAt) {
@@ -118,8 +124,9 @@ func TestServiceLegacyMutationsRejectedBeforeStoreOnBothMigrationStates(t *testi
 				}
 			}
 			details, err := service.Show(ctx, openTask.ID)
-			if err != nil || details.Binding == nil || details.Binding.WorkerRef != "legacy-bound" {
-				t.Fatalf("Worker binding lost: %#v err=%v", details, err)
+			if err != nil || details.Binding == nil || details.Binding.WorkerRef != "legacy-bound" ||
+				len(details.Attempts) != 1 || details.Attempts[0].State != core.AttemptStarting {
+				t.Fatalf("legacy Worker binding or native Attempt changed: %#v err=%v", details, err)
 			}
 		})
 	}
