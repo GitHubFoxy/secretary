@@ -3,6 +3,7 @@ package ctl
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -138,5 +139,35 @@ func TestLocalNodeRuntimeRejectsUntrustedProjectlessWorkspace(t *testing.T) {
 	}
 	if _, ok := local.Session("worker"); ok {
 		t.Fatal("blocked projectless dispatch started a session")
+	}
+}
+
+func TestUnifiedNodeRuntimeHasNoEmbeddedLocalFallback(t *testing.T) {
+	ctx := context.Background()
+	absent := NodeRuntime{}
+	if ready, err := absent.CommandReady(ctx, "local"); ready || !errors.Is(err, ErrWorkerRuntimeUnavailable) {
+		t.Fatalf("missing manager reported local readiness: ready=%v err=%v", ready, err)
+	}
+	if err := absent.send(ctx, "local", node.Command{Kind: node.CommandDispatch}); !errors.Is(err, ErrWorkerRuntimeUnavailable) {
+		t.Fatalf("missing manager executed a Worker command: %v", err)
+	}
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "unified-node.db"))
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	manager, err := node.NewServerManager(ctx, store, "pair-token", "admin-token")
+	if err != nil { t.Fatal(err) }
+	runtime := NodeRuntime{Manager: manager}
+	if ready, err := runtime.CommandReady(ctx, "local"); ready || !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("unenrolled local Node passed readiness: ready=%v err=%v", ready, err)
+	}
+	if _, err := store.EnrollNode(ctx, "local"); err != nil { t.Fatal(err) }
+	if ready, err := runtime.CommandReady(ctx, "local"); ready || err != nil {
+		t.Fatalf("enrolled but offline Node passed readiness: ready=%v err=%v", ready, err)
+	}
+	command := node.Command{Kind: node.CommandDispatch, Dispatch: &node.DispatchCommand{
+		Metadata: core.CommandMetadata{CommandID: "offline-local", Node: "local", WorkerRef: "local-worker", TurnID: "turn", AttemptID: "attempt"},
+	}}
+	if err := runtime.send(ctx, "local", command); err == nil {
+		t.Fatal("offline Node dispatch succeeded without a daemon")
 	}
 }
