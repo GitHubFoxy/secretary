@@ -132,7 +132,7 @@ Web получает canonical entry сразу. Telegram отправляет a
 ### T10 Web-to-Worker reliability
 
 - A Secretary Worker action carries the image IDs from its server-owned canonical inbound Web entry, resolved through the durable Secretary turn and input identity. The model's chosen `spawn_worker.intent` or `message_worker.text` is not the source of truth for attachments; the Worker service binds those IDs to the stored action input before dispatch, so queued, continued and replayed attempts retain them. Missing or unauthorized references fail explicitly.
-- Local Worker Node dispatch and steering use the same verified image preparation and image-capability checks as remote execution. The local Artifact fetcher reads original owner-scoped bytes from the Server store, without a new transport stack.
+- Co-located и remote Execution Nodes одинаково используют authenticated Node Artifact fetch: Node получает original owner-scoped bytes от Server, сверяет integrity и image-capability checks для Dispatch, Steering и Responses. Прямого embedded Server Artifact fetcher для Workers больше нет.
 - The Web attachment control stores an unfinished upload's idempotency key against the filename, size and SHA-256 in session storage. Re-selecting the same file after a lost response reuses that key; a confirmed upload clears it. Other files and new intentional uploads receive new keys.
 
 
