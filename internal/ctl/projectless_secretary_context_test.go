@@ -57,7 +57,7 @@ func TestProjectlessWorkerKeepsSecretaryContextUsableAfterResultAndFollowup(t *t
 		Store: store, PersonID: person.ID, Capability: capability,
 		WorkerPolicy:        core.HarnessPolicy{DefaultHarness: core.HarnessCodex},
 		WorkerProfileSource: syntheticWorkerTemplateSource(),
-		Runtime:             NodeRuntime{Local: node.NewLocal(native)},
+		Runtime:             legacyLocalTestRuntime{Local: node.NewLocal(native)},
 	}
 	spawned, err := service.SpawnWorker(ctx, SpawnWorkerRequest{Intent: "inspect the parser", IdempotencyKey: "projectless-context"})
 	if err != nil {
