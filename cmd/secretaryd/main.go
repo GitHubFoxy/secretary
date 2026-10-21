@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -69,14 +68,6 @@ func main() {
 	checkOpenCodeAuth := flag.Bool("check-opencode-auth", false, "check stored OpenCode credentials in the selected Secretary store and exit")
 	opencodeCommand := flag.String("opencode-command", "opencode", "OpenCode executable used for the selected-store auth check")
 	flag.Parse()
-	if runtime.GOOS != "windows" {
-		if _, err := node.ReadCodexPairInventory("server"); err == nil {
-			if err := node.ApplyCodexPairInventory("server"); err != nil { log.Fatalf("Codex pair: %v", err) }
-		} else {
-			log.Printf("Codex native pair unavailable: %v", err)
-			node.DisableUnselectedCodexRuntime()
-		}
-	}
 	if *backupTo != "" || *restoreFrom != "" {
 		if (*backupTo != "") == (*restoreFrom != "") { log.Fatal("choose exactly one of --backup-to or --restore-from") }
 		if *configPath == "" { *configPath = filepath.Join(*dataDir, "config.toml") }
@@ -191,6 +182,9 @@ func main() {
 	profiles, err := config.Open(*configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
+	}
+	if err := prepareSelectedCodexRuntime(context.Background(), profiles.Snapshot()); err != nil {
+		log.Fatalf("Codex startup readiness: %v", err)
 	}
 	if profiles.Snapshot().Config.EffectiveSecretaryPolicy().Harness == "opencode" || profiles.Snapshot().Config.EffectiveWorkerPolicy().DefaultHarness == "opencode" {
 		selection, err = selectRuntimeNativeStoreSelection(*dataDir)
@@ -511,9 +505,11 @@ func main() {
 	controlStaticHandler := webclient.ControlHandler()
 	handler := rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler, remoteNodes, *debug)
 	server := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
-	listener, err := net.Listen("tcp", *listen)
+	listener, err := listenWhenSecretaryReady(startPersistentSecretary, func() (net.Listener, error) {
+		return net.Listen("tcp", *listen)
+	})
 	if err != nil {
-		log.Fatalf("listen web API: %v", err)
+		log.Fatalf("start persistent Secretary or listen web API: %v", err)
 	}
 	go func() {
 		log.Printf("Secretary web API listening on %s", *listen)
@@ -521,9 +517,6 @@ func main() {
 			log.Fatalf("serve web API: %v", err)
 		}
 	}()
-	if err := startPersistentSecretary(); err != nil {
-		log.Fatal(err)
-	}
 	<-ctx.Done()
 	if persistentSecretary != nil {
 		if err := persistentSecretary.Stop(context.Background()); err != nil {
