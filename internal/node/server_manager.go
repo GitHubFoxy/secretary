@@ -629,10 +629,11 @@ func (h *serverProtocolHandler) AdmitNodeConnection(ctx context.Context, connect
 	incumbent := h.manager.connections[h.expected]
 	h.manager.mu.Unlock()
 	if incumbent != nil {
-		probeCtx, cancel := context.WithTimeout(ctx, time.Second)
-		probeErr := incumbent.conn.Ping(probeCtx)
-		cancel()
-		if probeErr == nil {
+		record, err := h.manager.store.NodeRecord(ctx, h.expected)
+		if err != nil {
+			return err
+		}
+		if record.Online {
 			return ErrNodeIdentityInUse
 		}
 		_ = incumbent.Close()
