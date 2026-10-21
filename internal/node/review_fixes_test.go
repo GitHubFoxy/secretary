@@ -270,8 +270,20 @@ func TestTerminalOutcomeUsesProductionSinkAndReachesConversation(t *testing.T) {
 	defer localStore.Close()
 	daemon := &Daemon{Identity: identity, Store: localStore, Runtime: terminalDaemonRuntime{}, Inventory: daemonStaticInventory{snapshot: daemonInventoryFixture("terminal-node")}, HeartbeatInterval: 20 * time.Millisecond, InventoryInterval: time.Hour, OutboxPollInterval: 10 * time.Millisecond, ReconnectMin: 10 * time.Millisecond, ReconnectMax: 30 * time.Millisecond}
 	daemonCtx, stop := context.WithCancel(ctx)
-	defer stop()
-	go func() { _ = daemon.Run(daemonCtx) }()
+	daemonDone := make(chan error, 1)
+	go func() { daemonDone <- daemon.Run(daemonCtx) }()
+	defer func() {
+		// The Node creates and persists its projectless workspace in a
+		// background command. Wait for shutdown before t.TempDir cleanup,
+		// otherwise cleanup races an in-flight mkdir or state write.
+		stop()
+		select {
+		case err := <-daemonDone:
+			if err != nil { t.Errorf("Node daemon shutdown: %v", err) }
+		case <-time.After(2 * time.Second):
+			t.Error("Node daemon did not shut down before workspace cleanup")
+		}
+	}()
 	waitFor(t, ctx, "terminal Node online", func() bool {
 		status, statusErr := manager.Status(context.Background(), "terminal-node")
 		return statusErr == nil && status.Online
