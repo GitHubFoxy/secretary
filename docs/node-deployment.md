@@ -50,6 +50,14 @@ Node отмечает OpenCode ready только после version v2, stored 
 
 Runtime и inventory используют один binary: `SECRETARY_OPENCODE_COMMAND`, если он задан, иначе `opencode` из service PATH. Отсутствующий explicit binary не подменяется другим из PATH. На omarchy v2.0.22 находится в `~/.local/bin/opencode`; `/usr/bin/opencode` — другая, старая версия. Проверить binary и service PATH перед rollout, не считая интерактивный `opencode --version` доказательством версии Node.
 
+## Co-located Worker execution и переход со старого LocalNode
+
+Secretary Server не исполняет Workers внутри `secretaryd`. Для Worker на той же машине настройте отдельный `secretary-node` обычным `secretary node setup` и оставьте его сервис/daemon запущенным независимо от Server; Node выбирается по enrolled identity и inventory. Без Node или при offline/revoked Node новая команда не получает скрытый local fallback. Persistent Secretary session и каналы остаются доступны независимо от наличия Worker Node.
+
+До обновления сохраните резервные копии Server state и Node data directory, исторических Workspace, native harness data/credentials и session IDs. У старых Workers с `NodeID=local` могут отсутствовать Node-side `node-state.json` mappings: один лишь совпадающий Node name, каталог или native session ID не доказывает continuity. Автоматического переноса legacy local sessions нет; не запускайте новый native Start под видом Follow-up. При отсутствии подтверждённой Node-side mapping ожидается `runtime_session_unavailable`; история и binding остаются. Проверьте historical mapping, native provider identity и workspace вручную до operator-controlled recovery или заведите нового Worker. Не удаляйте legacy data и не меняйте Node identity как workaround.
+
+Обычная установка сохраняет отдельные lifetimes процессов Server и Node. Один `data_dir` нельзя использовать параллельно двумя daemon экземплярами; startup ownership lock предотвращает такой конфликт. При рестарте Server Node продолжает работать, а при сбое Node прежняя binding не переезжает на другую машину. Проверка release требует реальной установленной пары и native Result → same-session Follow-up, а не только CI fixture.
+
 ## MCP для Workers на Node
 
 В локальном `config.json` Node можно явно задать одобренные stdio MCP servers. Список по умолчанию пустой. Он относится к Workers этого Node и одинаково передаётся Codex и Claude при первоначальном запуске, idle Follow-up, resume после restart и восстановлении Session для команды.
