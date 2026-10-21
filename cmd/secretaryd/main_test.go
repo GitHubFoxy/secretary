@@ -322,8 +322,10 @@ func TestProductionAssemblyUsesDaemonForLocalWorkerAndFollowUp(t *testing.T) {
 		Intent: "inspect", Preferences: ctl.WorkerPreferences{NodeID: "local"}, IdempotencyKey: "production-spawn",
 	})
 	if err != nil { t.Fatal(err) }
+	var initialWorkspace string
 	select {
 	case request := <-started:
+		initialWorkspace = request.Workspace
 		if request.WorkerRef != details.Worker.WorkerRef || request.Workspace == "" || request.HarnessInstance.Node != "local" {
 			t.Fatalf("daemon started wrong Worker: %#v", request)
 		}
@@ -346,7 +348,7 @@ func TestProductionAssemblyUsesDaemonForLocalWorkerAndFollowUp(t *testing.T) {
 	if continued.Worker.ID != details.Worker.ID || continued.Worker.NodeID != "local" { t.Fatal("follow-up lost Worker binding") }
 	select {
 	case request := <-resumed:
-		if request.WorkerRef != details.Worker.WorkerRef || request.Workspace == "" { t.Fatalf("invalid native Resume: %#v", request) }
+		if request.WorkerRef != details.Worker.WorkerRef || request.Workspace != initialWorkspace || request.HarnessInstance.Node != "local" { t.Fatalf("Follow-up changed native Worker identity or Workspace: %#v", request) }
 	case <-ctx.Done():
 		t.Fatal("follow-up did not use daemon Resume")
 	}
