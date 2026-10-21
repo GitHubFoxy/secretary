@@ -10,6 +10,9 @@ on:
       - scripts/package-linux-binary-release.sh
       - cmd/secretary-node/**
       - internal/node/**
+      - internal/ctl/**
+      - internal/app/**
+      - internal/webapi/**
       - internal/nativeexec/**
       - internal/acp/**
       - cmd/secretaryd/**
