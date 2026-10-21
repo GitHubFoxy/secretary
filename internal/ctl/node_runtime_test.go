@@ -48,7 +48,7 @@ func TestLocalCommandPreservesSteeringCancellationCause(t *testing.T) {
 				Metadata: core.CommandMetadata{CommandID: "cancel-command", WorkerRef: "cancel-worker", TurnID: "turn", AttemptID: "attempt"},
 				Text:     "continue",
 			}}
-			_, err := (NodeRuntime{Local: local}).LocalCommand(context.Background(), command)
+			_, err := (legacyLocalTestRuntime{Local: local}).LocalCommand(context.Background(), command)
 			var commandErr *node.NodeCommandError
 			if !errors.As(err, &commandErr) || !errors.Is(err, cause) {
 				t.Fatalf("local command error lost cancellation: type=%T err=%v", err, err)
@@ -76,7 +76,7 @@ func TestLocalSteeringUnknownReplayDoesNotRepeatAndReceiptResolves(t *testing.T)
 	}
 	steerCalls := 0
 	local := node.NewLocal(canceledSteeringRuntime{err: context.Canceled, steers: &steerCalls})
-	service.Runtime = NodeRuntime{Local: local}
+	service.Runtime = legacyLocalTestRuntime{Local: local}
 	details, err := service.SpawnWorker(ctx, SpawnWorkerRequest{Intent: "test local steering", ProjectID: project.ID, IdempotencyKey: "local-spawn"})
 	if err != nil {
 		t.Fatal(err)
@@ -133,7 +133,7 @@ func TestLocalNodeRuntimeRejectsUntrustedProjectlessWorkspace(t *testing.T) {
 			Envelope: node.WorkerEnvelope{WorkerRef: "worker", TurnID: "turn", AttemptID: "attempt", OriginalUserIntent: "inspect", Workspace: remotePath, HarnessInstance: instance},
 		},
 	}
-	if _, err := (NodeRuntime{Local: local}).LocalCommand(context.Background(), command); err == nil {
+	if _, err := (legacyLocalTestRuntime{Local: local}).LocalCommand(context.Background(), command); err == nil {
 		t.Fatal("untrusted projectless workspace reached local Node runtime")
 	}
 	if _, ok := local.Session("worker"); ok {
