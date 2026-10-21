@@ -31,6 +31,7 @@ type Store struct {
 	observer   func(ConversationEntry)
 
 	workerLifecycleGates sync.Map
+	attemptOutcomeGates   sync.Map
 	secretaryOutputGates [256]sync.Mutex // bounded striped gates for Secretary event/acknowledgement ordering
 	idempotencyMu        sync.Mutex
 	userDocumentMu       sync.Mutex
