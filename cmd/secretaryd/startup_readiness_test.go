@@ -48,3 +48,21 @@ func TestSuccessfulRuntimeStartsBeforeHTTPListener(t *testing.T) {
   t.Fatalf("HTTP listener unavailable after Secretary start: %v", listener.Addr())
  }
 }
+
+func TestSelectedCodexMissingInventoryDoesNotBindHTTP(t *testing.T) {
+ t.Setenv("HOME", t.TempDir())
+ snapshot := config.Snapshot{Config: config.Config{
+  Secretary: config.SecretaryPolicy{Harness: "codex"},
+  WorkerPolicy: config.WorkerPolicy{DefaultHarness: "codex"},
+ }}
+ called := false
+ listener, err := listenWhenSecretaryReady(func() error {
+  return prepareSelectedCodexRuntime(context.Background(), snapshot)
+ }, func() (net.Listener, error) {
+  called = true
+  return net.Listen("tcp", "127.0.0.1:0")
+ })
+ if err == nil || !strings.Contains(err.Error(), "inventory missing") || called || listener != nil {
+  t.Fatalf("missing Codex inventory permitted HTTP readiness: err=%v listener=%v bind=%v", err, listener, called)
+ }
+}
