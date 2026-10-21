@@ -596,3 +596,32 @@ func TestCodexNativeAssetsIncludeTheCodeModeHost(t *testing.T) {
 	}
 	if !found { t.Fatal("the managed Codex pair ships without the code-mode host") }
 }
+
+func TestCodexNativePairReadyAcceptsSilentAuthorizedLoginStatus(t *testing.T) {
+ dir:=t.TempDir()
+ cli:=filepath.Join(dir,"codex")
+ if err:=os.WriteFile(cli,[]byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.163.0; exit 0; fi\nif [ \"$1\" = \"login\" ]; then exit 0; fi\nexit 2\n"),0700);err!=nil {t.Fatal(err)}
+ acp:=filepath.Join(dir,"codex-acp")
+ script:=`#!/usr/bin/env python3
+import json,sys
+if '--version' in sys.argv:
+ print('codex-acp 0.16.0')
+ sys.exit(0)
+for line in sys.stdin:
+ req=json.loads(line)
+ if req.get('method')=='initialize':
+  response={'protocolVersion':1,'agentInfo':{'version':'0.16.0'},'agentCapabilities':{'loadSession':True},'_meta':{'steering':{'supported':True}}}
+ elif req.get('method')=='session/new':
+  response={'sessionId':'fixture','models':{'availableModels':[{'modelId':'gpt-fixture'}]}}
+ else:
+  response={}
+ print(json.dumps({'jsonrpc':'2.0','id':req.get('id'),'result':response}),flush=True)
+`
+ if err:=os.WriteFile(acp,[]byte(script),0700);err!=nil {t.Fatal(err)}
+ pair:=CodexPairInventory{Codex:CodexBinaryRecord{Path:cli},ACP:CodexBinaryRecord{Path:acp}}
+ if err:=codexNativePairReady(context.Background(),pair);err!=nil {t.Fatalf("authorized Codex with a silent login status was refused: %v",err)}
+ negative:=filepath.Join(dir,"codex-negative")
+ if err:=os.WriteFile(negative,[]byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.163.0; exit 0; fi\nif [ \"$1\" = \"login\" ]; then echo 'Not logged in'; exit 0; fi\nexit 2\n"),0700);err!=nil {t.Fatal(err)}
+ pair.Codex.Path=negative
+ if err:=codexNativePairReady(context.Background(),pair);err==nil {t.Fatal("negative login status with a zero exit code was accepted")}
+}
