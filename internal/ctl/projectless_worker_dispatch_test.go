@@ -132,8 +132,11 @@ func TestProjectlessWorkerServiceDispatchThroughExecutionNodeAndFollowup(t *test
 	}
 	native.mu.Lock()
 	defer native.mu.Unlock()
-	if len(native.resumes) != 1 || native.resumes[0].Workspace != originalWorkspace || native.resumes[0].HarnessInstance.ID != codex.ID {
-		t.Fatalf("Follow-up did not reuse native session and workspace: %#v", native.resumes)
+	if len(native.starts) != 2 || len(native.resumes) != 1 ||
+		native.resumes[0].WorkerRef != automatic.Worker.WorkerRef ||
+		native.resumes[0].Workspace != originalWorkspace ||
+		native.resumes[0].HarnessInstance.ID != codex.ID {
+		t.Fatalf("Follow-up must Resume exactly once without an extra native Start: starts=%#v resumes=%#v", native.starts, native.resumes)
 	}
 }
 
