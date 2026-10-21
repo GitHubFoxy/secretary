@@ -68,7 +68,7 @@ func (r legacyLocalTestRuntime) LocalCommand(ctx context.Context, command node.C
 			if capability, ok := session.(node.ImageResponseCapability); ok && !capability.SupportsImageResponse() {
 				return node.CommandOutcome{}, node.ErrImageResponseUnsupported
 			}
-			_ = multimodal // capability is validated above; shared helper performs delivery.
+			_ = multimodal
 			err = node.DeliverImageResponse(ctx, r.Local.ImageResponseStore(), session, metadata, response.RequestID, text, images)
 		} else {
 			responder, ok := session.(node.Responder)
