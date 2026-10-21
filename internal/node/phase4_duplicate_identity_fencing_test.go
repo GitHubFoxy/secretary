@@ -68,7 +68,7 @@ func TestDuplicateDaemonIdentityCannotDisplaceLiveOwnerOrReceiveNativeCommands(t
 	ownerDone := make(chan error, 1)
 	go func() { ownerDone <- owner.Run(ownerCtx) }()
 	ownerStopped := false
-	t.Cleanup(func() {
+	defer func() {
 		stopOwner()
 		if !ownerStopped {
 			select {
@@ -76,7 +76,7 @@ func TestDuplicateDaemonIdentityCannotDisplaceLiveOwnerOrReceiveNativeCommands(t
 			case <-time.After(2*time.Second): t.Error("owner daemon did not stop")
 			}
 		}
-	})
+	}()
 	waitFor(t, ctx, "first daemon authenticated and command-ready", func() bool {
 		ready, err := manager.CommandReady(ctx, identity.Node)
 		if err != nil || !ready { return false }
