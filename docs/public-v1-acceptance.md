@@ -36,6 +36,27 @@ Retest exact SHA and date: a new candidate with #173 fixed (PR #175) and #174 fi
 Reviewer / approval: pending
 ```
 
+## Live acceptance record — attempt 2, candidate `v0.1.0-alpha.10`
+
+```text
+Date/time UTC: 2026-10-21
+Repository exact SHA: 5948dc777fca17b268e29991c100207fb29bb410 (tag v0.1.0-alpha.10)
+Executor / environment reference (private, not secrets): macOS arm64, isolated HOME, official installer with SECRETARY_VERSION=0.1.0-alpha.10, archive sha256 6ac8ebfddabf54fd316640bd9c28e1b4a6fdf3b120a752018a3ab3a7dddff1a0 (108325452 bytes)
+Secretary Server OS/version, install method, service manager: macOS arm64, scripts/install.sh from the tag, process launch (no service manager on this host)
+Node OS/version, local/remote: macOS arm64, local Execution Node from the same release, paired over the outbound WebSocket
+Harness name, CLI version, adapter/SDK version, authorized: yes/no: Codex, codex-cli 0.163.0, @agentclientprotocol/codex-acp 2.2.2, yes
+Web/PWA browser/version and device: not run
+Telegram: not run
+Scenario: fresh install with one harness; doctor; services; Web bootstrap; Node pairing (PASS). Secretary -> Worker without Project -> attempt (Worker created and dispatched, FAIL on the Node). Follow-up and restart rows NOT RUN.
+Steps actually performed: published release installed into an empty HOME; secretary setup / doctor / node doctor; Web owner bootstrap through POST /v1/web/session; user message through POST /v1/messages; Worker request through the same surface
+Evidence: tracker #170, issues #173 and #174
+Task ID / Worker ID / Attempt count / native session IDs: worker wrk_1214b9d4bf4c7f059c7f215262a2c39e, attempt att_72dd99111f83a26d80d3cee7ca8e0c23 on node Mac.IGD_Rostelecom, result res_730d7fbd7d8b8b5784296a8cb69abe0c (failed, acp process stopped)
+Result: FAIL (Worker attempt on the Node), PASS (install, doctor, bootstrap, message, Worker creation)
+Observed failure and impact: #173 is fixed: the managed pair now installs codex-code-mode-host, the Secretary sees the MCP tools and creates the Worker. The attempt then fails on the Node: the packaged Bun adapter resolves the npm package @openai/codex at runtime and cannot do so inside the Worker sandbox, so it exits before answering initialize and the attempt ends as acp process stopped (#174)
+Retest exact SHA and date: a new candidate with #174 fixed, then this matrix again
+Reviewer / approval: pending
+```
+
 ## Live acceptance record (copy per attempt)
 
 Do not commit credentials, tokens, usernames, real conversation text, provider traces or private file contents.
