@@ -172,7 +172,11 @@ func (s *Store) ReconstructSecretaryContext(ctx context.Context, identityID, use
 		if err := decodeStrictJSON([]byte(worker.ProjectSnapshot), &snapshot); err != nil {
 			return SecretaryContext{}, fmt.Errorf("core: decode historical Worker Project snapshot: %w", err)
 		}
-		if err := snapshot.Validate(); err != nil {
+		if strings.TrimSpace(worker.ProjectID) == "" {
+			if err := snapshot.validateProjectless(); err != nil {
+				return SecretaryContext{}, err
+			}
+		} else if err := snapshot.Validate(); err != nil {
 			return SecretaryContext{}, err
 		}
 		if snapshot.ID != worker.ProjectID || snapshot.Node != NodeReference(worker.NodeID) || snapshot.HarnessInstance.ID != id {
