@@ -71,7 +71,7 @@ func TestProjectlessWorkerServiceDispatchToLocalNodeAndFollowup(t *testing.T) {
 		Store: store, PersonID: person.ID, Capability: capability,
 		WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessCodex, PreferredHarnesses: []core.HarnessKind{core.HarnessClaudeCode}},
 		WorkerProfileSource: syntheticWorkerTemplateSource(),
-		Runtime: NodeRuntime{Local: node.NewLocal(native)},
+		Runtime: legacyLocalTestRuntime{Local: node.NewLocal(native)},
 	}
 
 	automatic, err := service.SpawnWorker(ctx, SpawnWorkerRequest{Intent: "build a website", IdempotencyKey: "projectless-auto"})
@@ -171,7 +171,7 @@ func TestT13AutomaticTelegramVideoRequiresImageInputCapability(t *testing.T) {
  svc:=WorkerService{Store:store,PersonID:person.ID,Capability:cap,
   WorkerPolicy:core.HarnessPolicy{DefaultHarness:core.HarnessFX},
   WorkerProfileSource:syntheticWorkerTemplateSource(),
-  Runtime:NodeRuntime{Local:node.NewLocal(native)}}
+  Runtime:legacyLocalTestRuntime{Local:node.NewLocal(native)}}
  prompt:="Describe the sampled video\n\nTelegram video (update 42, chat 100, message 8, file_unique_id video): artifact://art_0123456789abcdef0123456789abcdef"
  _,err=svc.SpawnWorker(ctx,SpawnWorkerRequest{Intent:prompt,IdempotencyKey:"telegram-video-no-capability"})
  if !errors.Is(err,core.ErrInvalidDispatchPin){t.Fatalf("unsupported automatic Worker selection not rejected: %v",err)}
