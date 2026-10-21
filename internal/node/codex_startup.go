@@ -37,17 +37,16 @@ func checkCodexStartupWithProbe(ctx context.Context, scope string, probe func(co
 
 func CodexInventoryDiagnostic(scope string, err error) error {
  if err == nil { return nil }
- if errors.Is(err, os.ErrNotExist) {
-  return fmt.Errorf("Codex inventory missing for %s: install or configure a native pair with secretary-node --codex-pair-action install --codex-pair-scope %s, then run secretary doctor and restart", scope, scope)
- }
  reason := strings.ToLower(err.Error())
  switch {
- case strings.Contains(reason, "protocol has not been validated"):
-  return fmt.Errorf("Codex ACP protocol validation missing for %s: run secretary-node --codex-pair-action readiness --codex-pair-scope %s, then secretary doctor and restart", scope, scope)
  case strings.HasPrefix(reason, "codex acp:"):
   return fmt.Errorf("Codex ACP unavailable or altered for %s: verify the selected ACP executable, run secretary doctor and restart", scope)
  case strings.HasPrefix(reason, "codex cli:"):
   return fmt.Errorf("Codex CLI unavailable or altered for %s: verify the selected Codex executable, run secretary doctor and restart", scope)
+ case errors.Is(err, os.ErrNotExist):
+  return fmt.Errorf("Codex inventory missing for %s: install or configure a native pair with secretary-node --codex-pair-action install --codex-pair-scope %s, then run secretary doctor and restart", scope, scope)
+ case strings.Contains(reason, "protocol has not been validated"):
+  return fmt.Errorf("Codex ACP protocol validation missing for %s: run secretary-node --codex-pair-action readiness --codex-pair-scope %s, then secretary doctor and restart", scope, scope)
  default:
   return fmt.Errorf("Codex inventory invalid for %s: verify the selected native pair with secretary doctor before restart", scope)
  }
