@@ -35,6 +35,17 @@ func TestDuplicateDaemonIdentityCannotDisplaceLiveOwnerOrReceiveNativeCommands(t
 	defer server.Close()
 	identity, err := EnrollNode(ctx, server.Client(), server.URL, "pair-token", "cloned-node")
 	if err != nil { t.Fatal(err) }
+	workspacePaths := map[string]string{
+		"owner": filepath.Join(t.TempDir(), "owner-workspace"),
+		"copy": filepath.Join(t.TempDir(), "copy-workspace"),
+	}
+	for name, path := range workspacePaths {
+		if err := os.MkdirAll(path, 0o700); err != nil { t.Fatal(err) }
+		if _, err := serverStore.CreateProject(ctx, core.ProjectSpec{
+			ID: name + "-project", Name: name + " project",
+			Mappings: []core.ProjectPathMapping{{Node: identity.Node, Path: path}},
+		}); err != nil { t.Fatal(err) }
+	}
 
 	makeDaemon := func(name, version string) (*Daemon, *daemonCountingRuntime, *LocalStore) {
 		t.Helper()
@@ -54,6 +65,7 @@ func TestDuplicateDaemonIdentityCannotDisplaceLiveOwnerOrReceiveNativeCommands(t
 		daemon := &Daemon{
 			Identity: copiedIdentity, Store: state, Runtime: runtime,
 			Inventory: daemonStaticInventory{snapshot: inventory},
+			Workspaces: []Workspace{{ProjectID: name + "-project", Path: workspacePaths[name]}},
 			Capacity: 1, HeartbeatInterval: 30*time.Millisecond,
 			InventoryInterval: time.Second, OutboxPollInterval: 20*time.Millisecond,
 			ReconnectMin: 30*time.Millisecond, ReconnectMax: 60*time.Millisecond,
@@ -87,6 +99,12 @@ func TestDuplicateDaemonIdentityCannotDisplaceLiveOwnerOrReceiveNativeCommands(t
 	originalSocket := manager.connections[identity.Node]
 	manager.mu.Unlock()
 	if originalSocket == nil { t.Fatal("first daemon has no registered connection") }
+	initialRecord, err := serverStore.NodeRecord(ctx, identity.Node)
+	if err != nil || len(initialRecord.Workspaces) != 1 ||
+		initialRecord.Workspaces[0].ProjectID != "owner-project" ||
+		initialRecord.Workspaces[0].Path != workspacePaths["owner"] {
+		t.Fatalf("original Node workspace is not durable: %#v err=%v", initialRecord.Workspaces, err)
+	}
 
 	cloneCtx, stopClone := context.WithCancel(ctx)
 	cloneDone := make(chan error, 1)
@@ -99,16 +117,21 @@ func TestDuplicateDaemonIdentityCannotDisplaceLiveOwnerOrReceiveNativeCommands(t
 		}
 	}()
 
-	// The copied identity actively attempts to connect while the original owns
-	// its authenticated Node socket. It must not replace the original owner.
 	time.Sleep(200 * time.Millisecond)
 	manager.mu.Lock()
 	retainedSocket := manager.connections[identity.Node]
 	manager.mu.Unlock()
 	status, err := manager.Status(ctx, identity.Node)
 	if err != nil || retainedSocket != originalSocket || !status.Online ||
-		len(status.Inventory.Instances) != 1 || status.Inventory.Instances[0].Version != "owner-v1" {
+		len(status.Inventory.Instances) != 1 || status.Inventory.Instances[0].Version != "owner-v1" ||
+		len(status.Workspaces) != 1 || status.Workspaces[0].ProjectID != "owner-project" ||
+		status.Workspaces[0].Path != workspacePaths["owner"] {
 		t.Fatalf("copied Node identity displaced the live owner: status=%#v err=%v", status, err)
+	}
+	retainedRecord, err := serverStore.NodeRecord(ctx, identity.Node)
+	if err != nil || len(retainedRecord.Workspaces) != 1 ||
+		retainedRecord.Workspaces[0] != initialRecord.Workspaces[0] {
+		t.Fatalf("duplicate identity changed persisted Node workspace: %#v err=%v", retainedRecord.Workspaces, err)
 	}
 
 	dispatch := daemonDispatchFixture(identity.Node, "original-owned-dispatch")
@@ -134,7 +157,10 @@ func TestDuplicateDaemonIdentityCannotDisplaceLiveOwnerOrReceiveNativeCommands(t
 		ready, err := manager.CommandReady(ctx, identity.Node)
 		if err != nil || !ready { return false }
 		status, err := manager.Status(ctx, identity.Node)
-		return err == nil && len(status.Inventory.Instances) == 1 && status.Inventory.Instances[0].Version == "clone-v2"
+		return err == nil && len(status.Inventory.Instances) == 1 &&
+			status.Inventory.Instances[0].Version == "clone-v2" &&
+			len(status.Workspaces) == 1 && status.Workspaces[0].ProjectID == "copy-project" &&
+			status.Workspaces[0].Path == workspacePaths["copy"]
 	})
 
 	meta := dispatch.Metadata()
