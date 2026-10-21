@@ -14,7 +14,7 @@ import (
 )
 
 func TestRespondTimeoutResultThenLateAcceptedReceiptDoesNotRetryOrReviveTurn(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
 	if err != nil {
@@ -98,11 +98,17 @@ func TestRespondTimeoutResultThenLateAcceptedReceiptDoesNotRetryOrReviveTurn(t *
 		t.Fatal(err)
 	}
 	defer connection.Close()
+	if err := connection.SendHeartbeat(ctx, node.Heartbeat{
+		Node: identity.Node, Online: true, Capacity: 1, Inventory: inventory,
+	}, 1); err != nil {
+		t.Fatal(err)
+	}
 
 	waitForReceipt(t, ctx, func() bool {
 		status, err := manager.Status(ctx, "macbook")
-		return err == nil && status.Online &&
-			status.Inventory.Node == "macbook" && len(status.Inventory.Instances) == 1 &&
+		ready, readyErr := manager.CommandReady(ctx, "macbook")
+		return err == nil && readyErr == nil && ready && status.Online && !status.LastHeartbeatAt.IsZero() &&
+			status.Capacity == 1 && status.Inventory.Node == "macbook" && len(status.Inventory.Instances) == 1 &&
 			status.Inventory.Instances[0].ID == instance.ID
 	})
 
