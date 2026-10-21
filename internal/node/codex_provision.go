@@ -315,9 +315,6 @@ func codexNativePairReady(ctx context.Context, pair CodexPairInventory) error {
  if err == nil && hasNegativeAuthMarker(strings.ToLower(string(output))) {
   return fmt.Errorf("Codex native authentication required: run %s login", pair.Codex.Path)
  }
- if err == nil && strings.TrimSpace(string(output)) == "" {
-  return errors.New("Codex native login status returned no result")
- }
  if err != nil {
   if probeCtx.Err() != nil { return fmt.Errorf("Codex native login status transport: %w", probeCtx.Err()) }
   response := strings.ToLower(string(output))
