@@ -72,6 +72,7 @@ Web получает canonical entry сразу. Telegram отправляет a
 - Terminal answer Codex принимается только у сообщения с фазой `final_answer` при `stopReason: end_turn` и без последующего tool call по тому же message id. Commentary, tool output, произвольный последний chunk и сообщение без фазы финальным ответом не считаются.
 - Противоречивая metadata (фазы в разных namespace расходятся) и смена фазы внутри одного message id делают turn недействительным, а не подсказывают ответ.
 - Отсутствие фазы (модель или провайдер её не публикует) даёт явную ошибку terminal answer. Эвристика по последнему сообщению не применяется.
+- Assistant chunk без `messageId` не может быть финальным ответом и не попадает в authoritative Summary, но не отменяет идентифицированный финальный ответ того же turn. Такой chunk остаётся видимым в activity и диагностических событиях. Для остальных ACP harnesses прежний terminal contract, где chunk без идентификатора запрещает ответ, не меняется.
 - Тот же строгий guard применяется к Worker Result: подтверждённый terminal обязателен и там.
 
 ## Claude Code native Session

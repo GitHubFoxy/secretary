@@ -46,6 +46,10 @@ func (a *acpTurnAnswer) text(id, text string) {
 		a.missingIdentity = true
 		return
 	}
+	a.appendMessage(id, text)
+}
+
+func (a *acpTurnAnswer) appendMessage(id, text string) {
 	message := a.messages[id]
 	if message == nil {
 		message = &strings.Builder{}
@@ -74,13 +78,17 @@ func (a *acpTurnAnswer) final(stopReason string) (string, bool) {
 }
 
 func (a *acpTurnAnswer) codexText(id, phase, text string) {
-	a.text(id, text)
+	a.assistantChunks++
+	if id == "" {
+		return
+	}
+	a.appendMessage(id, text)
 	if a.codexPhases == nil {
 		a.codexPhases = map[string]string{}
 	}
 	if phase != "" {
 		if previous := a.codexPhases[id]; previous != "" && previous != phase {
-			a.missingIdentity = true
+			a.conflictingPhase = true
 		}
 		a.codexPhases[id] = phase
 	}
@@ -91,7 +99,7 @@ func (a *acpTurnAnswer) codexConflictingPhase() {
 }
 
 func (a *acpTurnAnswer) codexFinal(stopReason string) (string, bool) {
-	if stopReason != "end_turn" || a.missingIdentity || a.conflictingPhase {
+	if stopReason != "end_turn" || a.conflictingPhase {
 		return "", false
 	}
 	var final string
