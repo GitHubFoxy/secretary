@@ -428,10 +428,10 @@ func main() {
 		ApplyProfile:            func(name string, content []byte) error { return applyProfile(profiles, name, content) },
 		RuntimeRestart:          restartSecretary,
 		RetryTask: func(retryCtx context.Context, taskID string) (core.Task, error) {
-			return core.Task{}, core.ErrLegacyTaskReadOnly
+			return core.Task{}, errors.New("legacy Task operations are read-only; use Worker API")
 		},
 		CloseTask: func(closeCtx context.Context, taskID string) (core.CloseOutcome, error) {
-			return core.CloseOutcome{}, core.ErrLegacyTaskReadOnly
+			return core.CloseOutcome{}, errors.New("legacy Task operations are read-only; use Worker API")
 		},
 		RawLogDir: filepath.Join(*dataDir, "logs", "acp"),
 	})
