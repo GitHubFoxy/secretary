@@ -7,6 +7,10 @@ on:
       - internal/node/codex_*.go
       - scripts/build-codex-acp-bundle.sh
       - internal/acp/jsonl.go
+      - internal/nativeexec/**
+      - internal/node/**
+      - internal/acp/**
+      - cmd/secretaryd/**
       - internal/node/harness_probe.go
       - scripts/install-linux-binary.sh
       - scripts/installer-tls-retry-test.sh
