@@ -321,3 +321,20 @@ func TestGenericTurnAnswerKeepsRejectingUnattributedChunk(t *testing.T) {
 		t.Fatal("the generic terminal contract changed")
 	}
 }
+
+func TestCodexTurnAnswerIgnoresUnattributedFinalAnswerPhase(t *testing.T) {
+	a := newACPTurnAnswer()
+	a.codexText("", "final_answer", "черновик без идентификатора")
+	a.codexText("answer", "final_answer", "готово")
+	got, ok := a.codexFinal("end_turn")
+	if !ok || got != "готово" {
+		t.Fatalf("unattributed final answer shadowed the identified answer: %q ok=%t", got, ok)
+	}
+	b := newACPTurnAnswer()
+	b.codexText("answer", "final_answer", "готово")
+	b.codexText("", "final_answer", "черновик без идентификатора")
+	got, ok = b.codexFinal("end_turn")
+	if !ok || got != "готово" {
+		t.Fatalf("unattributed final answer shadowed the identified answer: %q ok=%t", got, ok)
+	}
+}
