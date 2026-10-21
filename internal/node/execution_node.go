@@ -15,7 +15,6 @@ import (
 
 	"github.com/beruseruko/secretary/internal/acp"
 	"github.com/beruseruko/secretary/internal/core"
-	"github.com/beruseruko/secretary/internal/nativeexec"
 )
 
 var ErrRuntimeSessionUnavailable = errors.New("runtime_session_unavailable")
@@ -260,20 +259,8 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		workspace = canonicalWorkspace
 	} else if workspace == "" && command.Envelope.PreviousAttemptID == "" {
 		var err error
-		// Production Windows native Workers use their separate SID's own
-		// writable workspace root, not the trusted Node user's temp tree.
-		// This preserves projectless Dispatch/Resume after provisioning.
+		// Projectless Workers use a temporary workspace owned by the Node user.
 		tempRoot := ""
-		n.mu.Lock()
-		brokered := n.publishBroker != nil
-		n.mu.Unlock()
-		if brokered {
-			var rootErr error
-			tempRoot, rootErr = nativeexec.ManagedWorkerWorkspaceRoot(filepath.Dir(n.store.path))
-			if rootErr != nil {
-				return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "workspace_failed", rootErr.Error())
-			}
-		}
 		workspace, err = os.MkdirTemp(tempRoot, "secretary-worker-")
 		if err != nil {
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "workspace_failed", err.Error())
@@ -337,7 +324,7 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	notifyNativeHandoff(ctx)
 	// Irreversible boundary has been persisted. Native session and initial
 	// prompt now live across WebSocket reconnections.
-	nativeCtx := n.securedWorkerContext(n.nativeStartContext(ctx), workspace)
+	nativeCtx := n.nativeStartContext(ctx)
 	var session Session
 	if continuing {
 		mapping, mappingErr := n.continuationMapping(command.Envelope, command.Envelope.PreviousAttemptID)
@@ -696,7 +683,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	// Mark the Attempt as in-flight before releasing socket ownership.
 	// Cancel on the reconnected WebSocket can now interrupt exactly this
 	// native Resume, without waiting for Session registration.
-	nativeCtx, nativeCancel := context.WithCancel(n.securedWorkerContext(n.nativeStartContext(ctx), workspace))
+	nativeCtx, nativeCancel := context.WithCancel(n.nativeStartContext(ctx))
 	pending := &nativeResumeAttempt{commandID: command.Metadata.CommandID, workerRef: command.Metadata.WorkerRef, cancel: nativeCancel}
 	n.mu.Lock()
 	if n.nativeResumes[command.Metadata.AttemptID] != nil {
@@ -921,7 +908,7 @@ func (n *ExecutionNode) sessionForCommand(ctx context.Context, metadata core.Com
 		return nil, ErrRuntimeSessionUnavailable
 	}
 	request.Profile = profile
-	session, err := resumeSameIdentity(n.securedWorkerContext(n.nativeStartContext(ctx), mapping.Workspace), resumer, request, mapping.RuntimeSessionID)
+	session, err := resumeSameIdentity(n.nativeStartContext(ctx), resumer, request, mapping.RuntimeSessionID)
 	if err != nil {
 		return nil, ErrRuntimeSessionUnavailable
 	}
@@ -1386,28 +1373,3 @@ func semanticOutputPresent(result string) bool {
 	return true
 }
 
-// Native subprocesses (and their shell/MCP descendants) are isolated from
-// the persisted Node credential and state. No daemon fallbacks are permitted.
-func (n *ExecutionNode) securedWorkerContext(ctx context.Context, workspace string) context.Context {
-	n.mu.Lock()
-	hasCredentialBroker := n.publishBroker != nil
-	n.mu.Unlock()
-	if !hasCredentialBroker {
-		// In-process test-only Nodes have neither an enrolled Node credential
-		// nor a Server Artifact publisher. Real Daemons always initialize one.
-		return ctx
-	}
-	nodeDir := filepath.Dir(n.store.path)
-	// A Server-owned Node is conventionally stored at
-	// <server-data-dir>/node/data/node-state.json. Protect the Server's
-	// entire state root too, including secretary.db, WAL/SHM and settings.
-	serverRoot := ""
-	if filepath.Base(nodeDir) == "data" && filepath.Base(filepath.Dir(nodeDir)) == "node" {
-		serverRoot = filepath.Dir(filepath.Dir(nodeDir))
-	}
-	return nativeexec.WithWorkerSandbox(ctx, nativeexec.WorkerSandbox{
-		ProtectedDir:  nodeDir,
-		ServerDataDir: serverRoot,
-		Workspace:     workspace,
-	})
-}

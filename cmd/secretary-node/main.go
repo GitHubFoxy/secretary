@@ -16,7 +16,6 @@ import (
 	"github.com/beruseruko/secretary/internal/artifactmcp"
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
-	"github.com/beruseruko/secretary/internal/nativeexec"
 	"github.com/beruseruko/secretary/internal/traystatus"
 )
 
@@ -32,7 +31,6 @@ func main() {
 	enrollOnly := flag.Bool("enroll-only", false, "enroll this Node and persist its private identity without starting a daemon")
 	nodeName := flag.String("name", envOr("SECRETARY_NODE_NAME", defaultNodeName()), "stable Node reference requested during pairing")
 	capacity := flag.Int("capacity", 1, "maximum advertised concurrent Worker capacity")
-	checkWorkerSandbox := flag.Bool("check-worker-sandbox", false, "preflight native OS sandbox and Worker provider-state handoff")
 	checkCodex := flag.Bool("check-codex-readiness", false, "check actual Codex and ACP capabilities without a model call")
 	includeOpenCode := flag.Bool("include-opencode", false, "include the OpenCode ACP inventory probe")
 	includeAntigravity := flag.Bool("include-antigravity", false, "include the Antigravity ACP inventory probe")
@@ -180,11 +178,6 @@ func main() {
 	}
 	if err := deployment.Validate(); err != nil {
 		log.Fatalf("invalid Node deployment: %v", err)
-	}
-	if *checkWorkerSandbox {
-		if err := nativeexec.PreflightWorkerSandbox(*dataDir); err != nil { log.Fatalf("native Worker preflight: %v", err) }
-		fmt.Println("native Worker security preflight passed")
-		return
 	}
 	if *enrollOnly {
 		if strings.TrimSpace(*pairingToken) == "" { log.Fatal("owner-approved pairing token is required") }
