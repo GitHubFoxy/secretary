@@ -30,6 +30,10 @@ on:
       - 'v*'
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: write
 
@@ -60,16 +64,42 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: '1.3.6'
+      - name: Cache ACP builder npm downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: acp-npm-v2.2.2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-codex-acp-bundle.sh') }}
+      - name: Cache verified native ACP bundle
+        id: acp-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/native-acp
+          key: codex-acp-v2.2.2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/build-codex-acp-bundle.sh') }}
       - name: Compile pinned modern Codex ACP (builder only)
+        if: steps.acp-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           set -euo pipefail
           bash scripts/build-codex-acp-bundle.sh darwin-arm64 "$RUNNER_TEMP/native-acp"
+      - name: Cache verified video tools
+        id: video-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/server-video-tools
+          key: ffmpeg-static-b6.1.1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/provision-server-video-tools.sh') }}
       - name: Provision video tools on release builder
         shell: bash
         run: |
           set -euo pipefail
-          bash scripts/provision-server-video-tools.sh "$RUNNER_TEMP/server-video-tools"
+          if [[ "${{ steps.video-cache.outputs.cache-hit }}" == true ]]; then
+            (cd "$RUNNER_TEMP/server-video-tools" && shasum -a 256 -c .cache-sha256)
+          else
+            bash scripts/provision-server-video-tools.sh "$RUNNER_TEMP/server-video-tools"
+            (cd "$RUNNER_TEMP/server-video-tools" && shasum -a 256 ffmpeg ffprobe > .cache-sha256)
+          fi
+          ffmpeg_version="$("$RUNNER_TEMP/server-video-tools/ffmpeg" -version | head -n 1 | awk '{print $3}')"
+          ffprobe_version="$("$RUNNER_TEMP/server-video-tools/ffprobe" -version | head -n 1 | awk '{print $3}')"
+          [[ -n "$ffmpeg_version" && "$ffmpeg_version" == "$ffprobe_version" ]]
           "$RUNNER_TEMP/server-video-tools/ffmpeg" -encoders | grep libwebp
           echo "$RUNNER_TEMP/server-video-tools" >> "$GITHUB_PATH"
       - name: Build native release on CI host
@@ -121,6 +151,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/secretary-test-dist"
           cp "$RUNNER_TEMP/secretary-dist/"* "$RUNNER_TEMP/secretary-test-dist/"
           echo "SECRETARY_TEST_DIST=$RUNNER_TEMP/secretary-test-dist" >> "$GITHUB_ENV"
+      - name: Cache verified official Codex native archive
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/codex-native/codex.tar.gz
+          key: codex-native-rust-v0.163.0-${{ runner.os }}-${{ runner.arch }}
       - name: Real bundled modern ACP initialize / new / load / steering gate
         shell: bash
         run: |
@@ -136,9 +171,12 @@ jobs:
           chmod +x "$dest/adapter/codex-acp"
           triple=aarch64-apple-darwin
           expected=61c4d9a92521bdb42b0c1d9f87c673f6da628a06de5945cbdd9a0010632f6d10
-          curl -fLsS --retry 3 -o "$dest/codex.tar.gz" "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-$triple.tar.gz"
-          echo "$expected  $dest/codex.tar.gz" | shasum -a 256 -c -
-          tar -xzf "$dest/codex.tar.gz" -C "$dest/adapter"
+          mkdir -p "$RUNNER_TEMP/codex-native"
+          if [[ ! -f "$RUNNER_TEMP/codex-native/codex.tar.gz" ]]; then
+            curl -fLsS --retry 3 -o "$RUNNER_TEMP/codex-native/codex.tar.gz" "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-$triple.tar.gz"
+          fi
+          echo "$expected  $RUNNER_TEMP/codex-native/codex.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$RUNNER_TEMP/codex-native/codex.tar.gz" -C "$dest/adapter"
           chmod +x scripts/mock-codex-app-server.py
           python3 scripts/codex-acp-release-gate.py --acp "$dest/adapter/codex-acp" --codex "$dest/adapter/codex-$triple" --mock-app-server "$GITHUB_WORKSPACE/scripts/mock-codex-app-server.py"
       - name: Verify clean install, idempotence, failed activation and upgrade

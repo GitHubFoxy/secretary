@@ -2,8 +2,23 @@ name: Go tests
 
 on:
   pull_request:
+    paths:
+      - '**/*.go'
+      - go.mod
+      - go.sum
+      - cmd/**
+      - internal/**
+      - scripts/**
+      - web/**
+      - macos/SecretaryNode/**
+      - secretary
+      - .github/workflows/**
   push:
     branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -11,6 +26,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       GOFLAGS: -p=1
     steps:
@@ -19,22 +35,24 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Install native Worker sandbox prerequisite
+      - name: Install native Worker sandbox and mandatory video prerequisites
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y bubblewrap
-          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev -- /bin/sh -c 'exit 0'
-      - name: Ensure mandatory FFmpeg and ffprobe for video acceptance
-        run: |
           if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
-            sudo apt-get update
             sudo apt-get install -y ffmpeg
           fi
           ffmpeg -version
           ffprobe -version
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev -- /bin/sh -c 'exit 0'
+      - name: Cache npm downloads for pinned Codex
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: official-codex-npm-v0.163.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/provision-cli-manifest.py') }}
       - name: Install official pinned Codex and provision verified main and platform assets
         run: |
           npm install --prefix "$RUNNER_TEMP/t09-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.163.0
@@ -51,4 +69,6 @@ jobs:
           T09_REAL_CODEX: ${{ runner.temp }}/t09-codex/node_modules/@openai/codex/bin/codex.js
         run: go test ./internal/nativeexec -run 'TestT09(PinnedOfficialCodexStartResume|RealCodexPersistedSessionResume)$' -count=1 -v
       - name: Run Go tests
-        run: go test ./...
+        # Explicit live T09 run above uses -count=1 and T09_REAL_CODEX.
+        # Skip only those two top-level tests here to avoid running them twice.
+        run: go test ./... -skip '^TestT09(PinnedOfficialCodexStartResume|RealCodexPersistedSessionResume)$'
