@@ -10,6 +10,10 @@ on:
       - internal/nativeexec/**
       - internal/acp/**
       - internal/node/**
+      - internal/ctl/**
+      - internal/app/**
+      - internal/webapi/**
+      - cmd/secretaryd/**
       - .github/workflows/windows-node-binary-release.yml
   push:
     tags: ['v*']
