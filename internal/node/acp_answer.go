@@ -2,13 +2,21 @@ package node
 
 import "strings"
 
+const (
+	codexLegacyPhaseNamespace = "codex"
+	codexPhaseNamespace       = "jetbrains"
+	codexPhaseExtension       = "air"
+	codexPhaseFinalAnswer     = "final_answer"
+)
+
 type acpTurnAnswer struct {
-	messages        map[string]*strings.Builder
-	order           []string
-	progress        map[string]bool
-	missingIdentity bool
-	assistantChunks uint64
-	codexPhases     map[string]string
+	messages         map[string]*strings.Builder
+	order            []string
+	progress         map[string]bool
+	missingIdentity  bool
+	conflictingPhase bool
+	assistantChunks  uint64
+	codexPhases      map[string]string
 }
 
 func newACPTurnAnswer() *acpTurnAnswer {
@@ -77,13 +85,18 @@ func (a *acpTurnAnswer) codexText(id, phase, text string) {
 		a.codexPhases[id] = phase
 	}
 }
+
+func (a *acpTurnAnswer) codexConflictingPhase() {
+	a.conflictingPhase = true
+}
+
 func (a *acpTurnAnswer) codexFinal(stopReason string) (string, bool) {
-	if stopReason != "end_turn" || a.missingIdentity {
+	if stopReason != "end_turn" || a.missingIdentity || a.conflictingPhase {
 		return "", false
 	}
 	var final string
 	for _, id := range a.order {
-		if a.codexPhases[id] == "final_answer" {
+		if a.codexPhases[id] == codexPhaseFinalAnswer {
 			if final != "" || a.progress[id] {
 				return "", false
 			}
@@ -91,6 +104,37 @@ func (a *acpTurnAnswer) codexFinal(stopReason string) (string, bool) {
 		}
 	}
 	return final, final != ""
+}
+
+func codexMessagePhase(metadata map[string]any) (string, bool) {
+	legacy, legacyPresent := codexPhaseValue(metadata[codexLegacyPhaseNamespace])
+	extension, extensionPresent := codexPhaseValue(codexPhaseExtensionValue(metadata))
+	if legacyPresent && extensionPresent && legacy != extension {
+		return "", false
+	}
+	if extensionPresent {
+		return extension, true
+	}
+	return legacy, true
+}
+
+func codexPhaseExtensionValue(metadata map[string]any) any {
+	namespace, _ := metadata[codexPhaseNamespace].(map[string]any)
+	extension, _ := namespace[codexPhaseExtension].(map[string]any)
+	return extension
+}
+
+func codexPhaseValue(value any) (string, bool) {
+	record, _ := value.(map[string]any)
+	phase, ok := record["phase"].(string)
+	if !ok {
+		return "", false
+	}
+	phase = strings.TrimSpace(phase)
+	if phase == "" {
+		return "", false
+	}
+	return phase, true
 }
 
 func (a *acpTurnAnswer) collectedText() string {
