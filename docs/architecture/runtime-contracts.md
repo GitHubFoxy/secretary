@@ -64,6 +64,15 @@ Web получает canonical entry сразу. Telegram отправляет a
 - ACP tool identity берётся из явного native `name` либо из MCP provenance `_meta.is_mcp_tool_call` и semantic `rawInput.server/tool`. MCP arguments берутся из вложенного `rawInput.arguments`; sparse update связывается по прежнему `toolCallId`. Display title не определяет tool identity и не попадает в normalized telemetry. Completed native tool_call даёт один tool_result без выдуманного start; duplicate и ambiguous idless updates не создают новые tool events.
 - Worker activity состоит из ephemeral text, tool и status events. Эти события получает только открывший Worker observer; terminal Result не является Worker activity. После terminal Outcome Node прекращает публикацию activity этой Attempt. Server проверяет payload и immutable Node/HarnessInstance/Worker/Turn/Attempt binding в одной транзакции с terminal state; поздний replay корректной завершённой Attempt получает ACK без нового event, Approval или изменения Result. Неизвестная Attempt и неверная identity отклоняются.
 
+## Codex native Session и terminal answer
+
+- Codex ACP adapter публикует фазу assistant-сообщения (`commentary` или `final_answer`) в метаданных extension namespace `jetbrains.air` (`_meta.jetbrains.air.phase`) и только для клиентов, которые объявили этот namespace в `initialize` через `clientCapabilities._meta.jetbrains.air`. Внешние адаптеры предыдущих версий публиковали фазу в legacy namespace `_meta.codex.phase`.
+- Runtime объявляет extension namespace только в Codex harness. Другие ACP harnesses сохраняют прежний initialize handshake и не получают Codex-специфичных метаданных.
+- Terminal answer Codex принимается только у сообщения с фазой `final_answer` при `stopReason: end_turn` и без последующего tool call по тому же message id. Commentary, tool output, произвольный последний chunk и сообщение без фазы финальным ответом не считаются.
+- Противоречивая metadata (фазы в разных namespace расходятся) и смена фазы внутри одного message id делают turn недействительным, а не подсказывают ответ.
+- Отсутствие фазы (модель или провайдер её не публикует) даёт явную ошибку terminal answer. Эвристика по последнему сообщению не применяется.
+- Тот же строгий guard применяется к Worker Result: подтверждённый terminal обязателен и там.
+
 ## Claude Code native Session
 
 - Claude Code использует persistent JSONL stream input/output. Deferred Start не вызывает модель; Prompt принимает только idle Session. Secretary сохраняет process, Worker закрывает его после terminal Attempt и возобновляет прежний native transcript через `--resume`.

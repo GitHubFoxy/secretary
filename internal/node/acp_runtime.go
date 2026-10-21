@@ -604,7 +604,7 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 	if err := client.Request(ctx, "initialize", map[string]any{
 		"protocolVersion":    1,
 		"clientInfo":         map[string]string{"name": "secretary", "version": "0.1.0"},
-		"clientCapabilities": acpClientCapabilities(),
+		"clientCapabilities": r.clientCapabilities(),
 	}, &initialized); err != nil {
 		client.Close()
 		return nil, acpNegotiated{}, err
@@ -638,6 +638,23 @@ func acpClientCapabilities() map[string]any {
 	return map[string]any{
 		"elicitation": map[string]any{"form": map[string]any{}},
 	}
+}
+
+func acpCodexPhaseCapabilities() map[string]any {
+	capabilities := acpClientCapabilities()
+	capabilities["_meta"] = map[string]any{
+		codexPhaseNamespace: map[string]any{
+			codexPhaseExtension: map[string]any{"version": 1, "capabilities": []string{}},
+		},
+	}
+	return capabilities
+}
+
+func (r ACPRuntime) clientCapabilities() map[string]any {
+	if r.CodexMessagePhases {
+		return acpCodexPhaseCapabilities()
+	}
+	return acpClientCapabilities()
 }
 
 type redactingACPLog struct {
@@ -1978,8 +1995,11 @@ func (s *acpSession) watch() {
 			metadata, _ := payload["_meta"].(map[string]any)
 			if metadata["opencode/child-session"] == nil && s.turnAnswer != nil {
 				if s.codexMessagePhases {
-					codex, _ := metadata["codex"].(map[string]any)
-					s.turnAnswer.codexText(valueString(payload["messageId"]), valueString(codex["phase"]), text)
+					phase, consistent := codexMessagePhase(metadata)
+					if !consistent {
+						s.turnAnswer.codexConflictingPhase()
+					}
+					s.turnAnswer.codexText(valueString(payload["messageId"]), phase, text)
 				} else {
 					s.turnAnswer.text(valueString(payload["messageId"]), text)
 				}
