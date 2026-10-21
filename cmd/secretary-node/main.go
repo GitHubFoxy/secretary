@@ -25,6 +25,7 @@ func main() {
 	setPrivateNodeUmask()
 	artifactMCP := flag.Bool("artifact-mcp", false, "serve the scoped Worker Artifact MCP tool")
 	configPath := flag.String("config", "", "Node-local deployment and approved Worker MCP config JSON")
+	checkNodeDeployment := flag.Bool("check-node-deployment", false, "validate installed Node config, identity and state directory without running daemon")
 	dataDir := flag.String("data-dir", defaultNodeDataDir(), "directory for Node identity and durable local state")
 	serverURL := flag.String("server", envOr("SECRETARY_NODE_SERVER", "http://127.0.0.1:8081"), "Secretary server URL used for first pairing")
 	pairingToken := flag.String("pair-token", os.Getenv("SECRETARY_NODE_PAIRING_TOKEN"), "one-time/owner-approved Node pairing token")
@@ -48,6 +49,11 @@ func main() {
 	codexPairCLI := flag.String("codex-pair-cli", "", "explicit external Codex executable")
 	codexPairACP := flag.String("codex-pair-acp", "", "explicit external ACP executable")
 	flag.Parse()
+	if *checkNodeDeployment {
+		if err := checkInstalledNodeDeployment(*configPath); err != nil { log.Fatalf("Node deployment preflight: %v", err) }
+		fmt.Println("Node deployment config and identity valid")
+		return
+	}
 	if *codexPairAction != "" {
 		summary, err := node.ManageCodexPair(context.Background(), *codexPairAction, *codexPairScope, *codexPairCLI, *codexPairACP)
 		if err != nil { log.Fatalf("native Codex pair: %v", err) }

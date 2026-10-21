@@ -30,7 +30,7 @@ export SECRETARY_RELEASE_BASE="file://$dist"
 export SECRETARY_VERSION="$base_version"
 export SECRETARY_NODE_PINNED_SHA256="$(shasum -a 256 "$dist/secretary-v${base_version}-darwin-$arch.tar.gz" | awk '{print $1}')"
 state="$HOME/.local/share/secretary-node"
-printf 'fixture-identity' > "$state/data/identity.json"
+printf '%s\n' '{"node":"fixture-node","credential":"YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWE","connect_url":"wss://fixture.invalid/v1/nodes/connect"}' > "$state/data/identity.json"
 printf 'native checkpoint' > "$state/data/node-state.json"
 printf 'native credentials' > "$state/data/credentials.txt"
 cat > "$state/config.json" <<EOF
