@@ -491,6 +491,7 @@ for line in sys.stdin:
  pair.ACP.Path=good
  if _,err:=manageCodexPairWithProbe(context.Background(),"install","server",cli,good,codexNativePairReady);err!=nil {t.Fatal(err)}
  if _,err:=manageCodexPairWithProbe(context.Background(),"readiness","server","","",codexNativePairReady);err!=nil {t.Fatal(err)}
+ if err:=CheckCodexStartup(context.Background(),"server");err!=nil {t.Fatalf("validated native CLI and ACP refused startup: %v",err)}
  if _,err:=manageCodexPairWithProbe(context.Background(),"upgrade","server",cli,bad,codexNativePairReady);err==nil {t.Fatal("invalid candidate activated")}
  active,err:=readCodexPairUnchecked("server")
  if err!=nil || active.ACP.Path!=good {t.Fatalf("failed ACP candidate changed active inventory: %+v %v",active,err)}
