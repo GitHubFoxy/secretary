@@ -506,7 +506,7 @@ func (m *ServerManager) registerConnection(nodeRef core.NodeReference, connectio
 	m.connections[nodeRef] = connection
 	m.mu.Unlock()
 	if previous != nil && previous != connection {
-		_ = previous.Close()
+		previous.conn.CloseNow()
 	}
 }
 
@@ -636,7 +636,7 @@ func (h *serverProtocolHandler) AdmitNodeConnection(ctx context.Context, connect
 		if record.Online {
 			return ErrNodeIdentityInUse
 		}
-		_ = incumbent.Close()
+		incumbent.conn.CloseNow()
 	}
 
 	if err := h.manager.store.ReconcileNodeWorkspaces(ctx, h.expected, h.workspaces); err != nil {
