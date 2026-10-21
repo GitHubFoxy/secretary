@@ -595,6 +595,7 @@ type serverProtocolHandler struct {
 	manager    *ServerManager
 	expected   core.NodeReference
 	inventory  core.HarnessInventorySnapshot
+	workspaces []core.NodeWorkspaceMapping
 	connection *ProtocolConnection
 }
 
@@ -613,23 +614,39 @@ func (h *serverProtocolHandler) HandleNodeHandshake(ctx context.Context, handsha
 	for _, workspace := range handshake.Workspaces {
 		workspaces = append(workspaces, core.NodeWorkspaceMapping{ProjectID: workspace.ProjectID, Path: workspace.Path})
 	}
-	if err := h.manager.store.ReconcileNodeWorkspaces(ctx, h.expected, workspaces); err != nil {
-		return HandshakeAccepted{}, err
-	}
+	h.workspaces = workspaces
 	h.inventory = handshake.Inventory
 	return HandshakeAccepted{Node: h.expected, ProtocolVersion: ProtocolVersion, ReplayFromSequence: handshake.LastAcknowledgedSequence}, nil
 }
 
-func (h *serverProtocolHandler) HandleNodeConnection(connection *ProtocolConnection) {
+var ErrNodeIdentityInUse = errors.New("node server: Node identity is owned by another active daemon")
+
+func (h *serverProtocolHandler) AdmitNodeConnection(ctx context.Context, connection *ProtocolConnection) error {
 	h.manager.connectionLifecycleMu.Lock()
-	if err := h.manager.store.MarkNodeConnected(context.Background(), h.expected, h.inventory); err != nil {
-		h.manager.connectionLifecycleMu.Unlock()
-		_ = connection.Close()
-		return
+	defer h.manager.connectionLifecycleMu.Unlock()
+
+	h.manager.mu.Lock()
+	incumbent := h.manager.connections[h.expected]
+	h.manager.mu.Unlock()
+	if incumbent != nil {
+		probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+		probeErr := incumbent.conn.Ping(probeCtx)
+		cancel()
+		if probeErr == nil {
+			return ErrNodeIdentityInUse
+		}
+		_ = incumbent.Close()
+	}
+
+	if err := h.manager.store.ReconcileNodeWorkspaces(ctx, h.expected, h.workspaces); err != nil {
+		return err
+	}
+	if err := h.manager.store.MarkNodeConnected(ctx, h.expected, h.inventory); err != nil {
+		return err
 	}
 	h.connection = connection
 	h.manager.registerConnection(h.expected, connection)
-	h.manager.connectionLifecycleMu.Unlock()
+	return nil
 }
 
 var errStaleNodeConnection = errors.New("node server: stale Node connection")
