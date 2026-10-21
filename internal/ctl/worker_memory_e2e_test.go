@@ -84,7 +84,7 @@ func TestT07RememberRestartWorkerACPReceivesMemory(t *testing.T) {
 		Store: store, PersonID: person.ID, Capability: capability, MemoryUserPath: userPath,
 		WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessOpenCode, ModelID: "fixture/model", Reasoning: "xhigh"},
 		WorkerProfileSource: func() (node.ManagedProfile, error) { return sourceProfile, nil },
-		Runtime: NodeRuntime{Local: local},
+		Runtime: legacyLocalTestRuntime{Local: local},
 	}
 	expected, err := service.withOwnerMemory(ctx, sourceProfile)
 	if err != nil { t.Fatal(err) }
