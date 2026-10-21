@@ -14,7 +14,7 @@ import (
 )
 
 func TestRespondTimeoutResultThenLateAcceptedReceiptDoesNotRetryOrReviveTurn(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
 	if err != nil {
@@ -122,9 +122,24 @@ func TestRespondTimeoutResultThenLateAcceptedReceiptDoesNotRetryOrReviveTurn(t *
 		})
 		respondDone <- respondErr
 	}()
-	command, err := connection.ReceiveCommand(ctx)
-	if err != nil {
-		t.Fatal(err)
+	type receivedCommand struct {
+		command node.Command
+		err error
+	}
+	received := make(chan receivedCommand, 1)
+	go func() {
+		command, err := connection.ReceiveCommand(ctx)
+		received <- receivedCommand{command: command, err: err}
+	}()
+	var command node.Command
+	select {
+	case reply := <-received:
+		if reply.err != nil { t.Fatalf("Node did not receive Respond command: %v", reply.err) }
+		command = reply.command
+	case respondErr := <-respondDone:
+		t.Fatalf("Respond returned before Node received any command: %T %v", respondErr, respondErr)
+	case <-ctx.Done():
+		t.Fatalf("Respond command was not delivered to the connected Node: %v", ctx.Err())
 	}
 	if command.Kind != node.CommandRespondWorker || command.Metadata().TurnID != turn.ID || command.Metadata().AttemptID != attempt.ID {
 		t.Fatalf("received wrong response command: %#v", command)
