@@ -60,7 +60,7 @@ func main() {
 		if _, err := node.ReadCodexPairInventory("node"); err == nil {
 			if err := node.ApplyCodexPairInventory("node"); err != nil { log.Fatalf("Codex pair: %v", err) }
 		} else {
-			log.Printf("Codex native pair unavailable: %v", err)
+			log.Printf("Codex native pair unavailable: %v", node.CodexInventoryDiagnostic("node", err))
 			node.DisableUnselectedCodexRuntime()
 		}
 	}
