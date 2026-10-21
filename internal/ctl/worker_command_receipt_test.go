@@ -70,22 +70,6 @@ func TestRespondTimeoutResultThenLateAcceptedReceiptDoesNotRetryOrReviveTurn(t *
 	if _, err := store.StartSecretaryTurn(ctx, origin.ID); err != nil {
 		t.Fatal(err)
 	}
-	worker, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
-		WorkerRef: "late-ack-worker", Intent: "wait for owner input", ProjectID: "project", NodeID: "macbook", HarnessInstanceID: "macbook/fx",
-	}, core.TurnSpec{Input: "wait for owner input"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SetPhase4AttemptNeedsInput(ctx, attempt.ID); err != nil {
-		t.Fatal(err)
-	}
-	service := WorkerService{
-		Store: store, PersonID: person.ID, Capability: capability,
-		Runtime: NodeRuntime{Manager: manager},
-	}
 
 	auth, err := identity.Authenticator()
 	if err != nil {
@@ -111,6 +95,24 @@ func TestRespondTimeoutResultThenLateAcceptedReceiptDoesNotRetryOrReviveTurn(t *
 			status.Capacity == 1 && status.Inventory.Node == "macbook" && len(status.Inventory.Instances) == 1 &&
 			status.Inventory.Instances[0].ID == instance.ID
 	})
+
+	worker, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+		WorkerRef: "late-ack-worker", Intent: "wait for owner input", ProjectID: "project", NodeID: "macbook", HarnessInstanceID: "macbook/fx",
+	}, core.TurnSpec{Input: "wait for owner input"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.SetPhase4AttemptNeedsInput(ctx, attempt.ID); err != nil {
+		t.Fatal(err)
+	}
+	service := WorkerService{
+		Store: store, PersonID: person.ID, Capability: capability,
+		Runtime: NodeRuntime{Manager: manager},
+	}
+
 
 	respondCtx, stopRespond := context.WithTimeout(ctx, 350*time.Millisecond)
 	defer stopRespond()
