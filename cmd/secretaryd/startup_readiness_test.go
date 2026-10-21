@@ -11,7 +11,9 @@ import (
 )
 
 func TestClaudeOnlyStartupDoesNotRequireCodexInventory(t *testing.T) {
- t.Setenv("HOME", t.TempDir())
+ home := t.TempDir()
+ t.Setenv("HOME", home)
+ t.Setenv("USERPROFILE", home)
  snapshot := config.Snapshot{Config: config.Config{
   Secretary: config.SecretaryPolicy{Harness: "claude_code"},
   WorkerPolicy: config.WorkerPolicy{DefaultHarness: "claude_code"},
@@ -50,7 +52,9 @@ func TestSuccessfulRuntimeStartsBeforeHTTPListener(t *testing.T) {
 }
 
 func TestSelectedCodexMissingInventoryDoesNotBindHTTP(t *testing.T) {
- t.Setenv("HOME", t.TempDir())
+ home := t.TempDir()
+ t.Setenv("HOME", home)
+ t.Setenv("USERPROFILE", home)
  snapshot := config.Snapshot{Config: config.Config{
   Secretary: config.SecretaryPolicy{Harness: "codex"},
   WorkerPolicy: config.WorkerPolicy{DefaultHarness: "codex"},
