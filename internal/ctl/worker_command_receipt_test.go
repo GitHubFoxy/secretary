@@ -41,17 +41,6 @@ func TestRespondTimeoutResultThenLateAcceptedReceiptDoesNotRetryOrReviveTurn(t *
 		Authentication: core.HarnessAuthentication{Authenticated: true},
 	}
 	inventory := core.HarnessInventorySnapshot{Node: "macbook", Instances: []core.HarnessInstance{instance}, ObservedAt: time.Now().UTC()}
-	auth, err := identity.Authenticator()
-	if err != nil {
-		t.Fatal(err)
-	}
-	connection, err := node.DialProtocol(ctx, identity.ConnectURL, identity.Node, auth, node.Handshake{
-		Node: identity.Node, ProtocolVersion: node.ProtocolVersion, Inventory: inventory, Nonce: "respond-late-receipt",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer connection.Close()
 
 	person, conversation, err := store.CreatePersonWithConversation(ctx)
 	if err != nil {
@@ -97,6 +86,25 @@ func TestRespondTimeoutResultThenLateAcceptedReceiptDoesNotRetryOrReviveTurn(t *
 		Store: store, PersonID: person.ID, Capability: capability,
 		Runtime: NodeRuntime{Manager: manager},
 	}
+
+	auth, err := identity.Authenticator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := node.DialProtocol(ctx, identity.ConnectURL, identity.Node, auth, node.Handshake{
+		Node: identity.Node, ProtocolVersion: node.ProtocolVersion, Inventory: inventory, Nonce: "respond-late-receipt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+
+	waitForReceipt(t, ctx, func() bool {
+		status, err := manager.Status(ctx, "macbook")
+		return err == nil && status.Online &&
+			status.Inventory.Node == "macbook" && len(status.Inventory.Instances) == 1 &&
+			status.Inventory.Instances[0].ID == instance.ID
+	})
 
 	respondCtx, stopRespond := context.WithTimeout(ctx, 350*time.Millisecond)
 	defer stopRespond()
