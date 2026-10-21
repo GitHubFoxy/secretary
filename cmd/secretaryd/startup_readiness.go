@@ -19,7 +19,12 @@ func prepareSelectedCodexRuntime(ctx context.Context, snapshot config.Snapshot) 
  return node.ApplyCodexPairInventory("server")
 }
 
-func listenWhenSecretaryReady(start func() error, listen func() (net.Listener, error)) (net.Listener, error) {
+func listenWhenSecretaryReady(start func() error, stop func() error, listen func() (net.Listener, error)) (net.Listener, error) {
  if err := start(); err != nil { return nil, err }
- return listen()
+ listener, err := listen()
+ if err != nil {
+  if stop != nil { _ = stop() }
+  return nil, err
+ }
+ return listener, nil
 }

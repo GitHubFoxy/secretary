@@ -24,7 +24,9 @@ func startupCodexPairFixture(t *testing.T, scope string, authenticated bool) Cod
   bytes := []byte("#!/bin/sh\n" + script)
   if err := os.WriteFile(path, bytes, 0700); err != nil { t.Fatal(err) }
   digest := sha256.Sum256(bytes)
-  return CodexBinaryRecord{Path: path, ResolvedPath: path, Version: name+" 1.2.3", SHA256: hex.EncodeToString(digest[:]), Provenance: "external"}
+  resolved, err := filepath.EvalSymlinks(path)
+  if err != nil { t.Fatal(err) }
+  return CodexBinaryRecord{Path: path, ResolvedPath: resolved, Version: name+" 1.2.3", SHA256: hex.EncodeToString(digest[:]), Provenance: "external"}
  }
  cli := "if [ \"$1\" = \"--version\" ]; then echo 'codex 1.2.3'; exit 0; fi\n"
  if authenticated {

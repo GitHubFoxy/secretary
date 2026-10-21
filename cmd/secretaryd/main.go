@@ -474,6 +474,14 @@ func main() {
 		web.AttachSecretary(persistentSecretary)
 		return nil
 	}
+	stopPersistentSecretary := func() error {
+		secretaryMu.Lock()
+		defer secretaryMu.Unlock()
+		if persistentSecretary == nil {
+			return nil
+		}
+		return persistentSecretary.Stop(context.Background())
+	}
 	web.AttachSecretaryModelCatalog(
 		func() map[string]string { return secretaryModels(profiles.Snapshot()) },
 		func() string { return "default" },
@@ -505,7 +513,7 @@ func main() {
 	controlStaticHandler := webclient.ControlHandler()
 	handler := rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler, remoteNodes, *debug)
 	server := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
-	listener, err := listenWhenSecretaryReady(startPersistentSecretary, func() (net.Listener, error) {
+	listener, err := listenWhenSecretaryReady(startPersistentSecretary, stopPersistentSecretary, func() (net.Listener, error) {
 		return net.Listen("tcp", *listen)
 	})
 	if err != nil {
