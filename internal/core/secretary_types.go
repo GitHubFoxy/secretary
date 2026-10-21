@@ -302,27 +302,32 @@ func (c SecretaryContext) Validate() error {
 
 	workers := make(map[string]Worker, len(c.OpenWorkers))
 	for i, worker := range c.OpenWorkers {
-		if strings.TrimSpace(worker.ID) == "" || strings.TrimSpace(worker.WorkerRef) == "" || strings.TrimSpace(worker.Intent) == "" || strings.TrimSpace(worker.ProjectID) == "" || strings.TrimSpace(worker.NodeID) == "" || strings.TrimSpace(worker.HarnessInstanceID) == "" || strings.TrimSpace(worker.PolicySnapshot) == "" || worker.CreatedAt.IsZero() || worker.UpdatedAt.IsZero() {
+		if strings.TrimSpace(worker.ID) == "" || strings.TrimSpace(worker.WorkerRef) == "" || strings.TrimSpace(worker.Intent) == "" || strings.TrimSpace(worker.NodeID) == "" || strings.TrimSpace(worker.HarnessInstanceID) == "" || strings.TrimSpace(worker.PolicySnapshot) == "" || worker.CreatedAt.IsZero() || worker.UpdatedAt.IsZero() {
 			return fmt.Errorf("core: canonical Secretary context snapshot has invalid Worker %d", i)
 		}
 		if !validWorkerStatus(worker.Status) || worker.Archived || worker.Status == WorkerClosed {
 			return fmt.Errorf("core: canonical Secretary context snapshot has invalid Worker status %q", worker.Status)
 		}
+		projectID := strings.TrimSpace(worker.ProjectID)
 		if strings.TrimSpace(worker.ProjectSnapshot) != "" {
 			var projectSnapshot ProjectSnapshot
 			if err := decodeStrictJSON([]byte(worker.ProjectSnapshot), &projectSnapshot); err != nil {
 				return fmt.Errorf("core: canonical Secretary context snapshot Worker %q has invalid Project snapshot: %w", worker.WorkerRef, err)
 			}
-			if err := projectSnapshot.Validate(); err != nil {
+			if projectID == "" {
+				if err := projectSnapshot.validateProjectless(); err != nil {
+					return fmt.Errorf("core: canonical Secretary context snapshot Worker %q has invalid projectless snapshot: %w", worker.WorkerRef, err)
+				}
+			} else if err := projectSnapshot.Validate(); err != nil {
 				return fmt.Errorf("core: canonical Secretary context snapshot Worker %q has invalid Project snapshot: %w", worker.WorkerRef, err)
 			}
-			if projectSnapshot.ID != worker.ProjectID || projectSnapshot.Node != NodeReference(worker.NodeID) || projectSnapshot.HarnessInstance.ID != HarnessInstanceID(worker.HarnessInstanceID) {
+			if projectSnapshot.ID != projectID || projectSnapshot.Node != NodeReference(worker.NodeID) || projectSnapshot.HarnessInstance.ID != HarnessInstanceID(worker.HarnessInstanceID) {
 				return fmt.Errorf("core: canonical Secretary context snapshot Worker %q has mismatched Project snapshot binding", worker.WorkerRef)
 			}
 		}
-		if len(projects) > 0 {
-			if _, exists := projects[worker.ProjectID]; !exists {
-				return fmt.Errorf("core: canonical Secretary context snapshot Worker %q references unknown Project %q", worker.WorkerRef, worker.ProjectID)
+		if projectID != "" && len(projects) > 0 {
+			if _, exists := projects[projectID]; !exists {
+				return fmt.Errorf("core: canonical Secretary context snapshot Worker %q references unknown Project %q", worker.WorkerRef, projectID)
 			}
 		}
 		if len(nodes) > 0 {
@@ -354,7 +359,7 @@ func (c SecretaryContext) Validate() error {
 	}
 	approvalIDs := make(map[string]struct{}, len(c.ActiveApprovals))
 	for i, approval := range c.ActiveApprovals {
-		if strings.TrimSpace(approval.ID) == "" || strings.TrimSpace(approval.RequestID) == "" || strings.TrimSpace(approval.WorkerID) == "" || strings.TrimSpace(approval.TurnID) == "" || strings.TrimSpace(approval.AttemptID) == "" || strings.TrimSpace(approval.NodeID) == "" || strings.TrimSpace(approval.ProjectID) == "" || strings.TrimSpace(approval.ActionSummary) == "" || approval.RequestedAt.IsZero() || !validApprovalKind(approval.Kind) || approval.State != ApprovalPending {
+		if strings.TrimSpace(approval.ID) == "" || strings.TrimSpace(approval.RequestID) == "" || strings.TrimSpace(approval.WorkerID) == "" || strings.TrimSpace(approval.TurnID) == "" || strings.TrimSpace(approval.AttemptID) == "" || strings.TrimSpace(approval.NodeID) == "" || strings.TrimSpace(approval.ActionSummary) == "" || approval.RequestedAt.IsZero() || !validApprovalKind(approval.Kind) || approval.State != ApprovalPending {
 			return fmt.Errorf("core: canonical Secretary context snapshot has invalid Approval %d", i)
 		}
 		if _, exists := approvalIDs[approval.ID]; exists {
@@ -368,8 +373,10 @@ func (c SecretaryContext) Validate() error {
 		if _, exists := nodes[NodeReference(approval.NodeID)]; !exists {
 			return fmt.Errorf("core: canonical Secretary context snapshot Approval %q references unknown Node", approval.RequestID)
 		}
-		if _, exists := projects[approval.ProjectID]; !exists {
-			return fmt.Errorf("core: canonical Secretary context snapshot Approval %q references unknown Project", approval.RequestID)
+		if strings.TrimSpace(approval.ProjectID) != "" {
+			if _, exists := projects[approval.ProjectID]; !exists {
+				return fmt.Errorf("core: canonical Secretary context snapshot Approval %q references unknown Project", approval.RequestID)
+			}
 		}
 	}
 	return nil

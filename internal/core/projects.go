@@ -327,6 +327,22 @@ func (p ProjectSnapshot) Validate() error {
 	return err
 }
 
+// validateProjectless checks the dispatch snapshot of a Worker that is not
+// bound to a Project. Such a snapshot carries the Node, HarnessInstance and
+// execution policy only, so it must not claim a Project identity.
+func (p ProjectSnapshot) validateProjectless() error {
+	if strings.TrimSpace(p.ID) != "" {
+		return fmt.Errorf("%w: projectless Worker snapshot must not claim a Project", ErrProjectValidation)
+	}
+	if strings.TrimSpace(string(p.Node)) == "" {
+		return fmt.Errorf("%w: incomplete projectless Worker snapshot", ErrProjectValidation)
+	}
+	if strings.TrimSpace(string(p.HarnessInstance.ID)) == "" || p.HarnessInstance.Node != p.Node {
+		return fmt.Errorf("%w: projectless Worker snapshot has an invalid HarnessInstance binding", ErrProjectValidation)
+	}
+	return nil
+}
+
 func (p Project) MappingForNode(node NodeReference) (ProjectPathMapping, bool) {
 	for _, mapping := range p.Mappings {
 		if mapping.node() == node {
