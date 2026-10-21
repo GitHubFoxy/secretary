@@ -2,6 +2,9 @@ package node
 
 import (
 	"context"
+	"bytes"
+	"encoding/base64"
+	"time"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,6 +63,55 @@ func TestProjectlessWorkspaceOverrideRejectedByNodeBeforeRuntimeStart(t *testing
 	t.Cleanup(func() { _ = os.RemoveAll(mapping.Workspace) })
 	info, err := os.Stat(mapping.Workspace)
 	if err != nil || !info.IsDir() {
-		t.Fatalf("Node did not allocate a real isolated workspace: %q err=%v", mapping.Workspace, err)
+		t.Fatalf("Node did not allocate a persistent Node-owned workspace: %q err=%v", mapping.Workspace, err)
 	}
+}
+
+ 
+// Simulates an OS purge of the temporary directory between separate Node
+// processes. The initial session mapping and its workspace must survive.
+func TestProjectlessNativeResumeAfterRestartAndTempPurge(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil { t.Fatal(err) }
+	statePath := filepath.Join(stateDir, "node.json")
+	volatile := filepath.Join(root, "os-temp")
+	if err := os.MkdirAll(volatile, 0o700); err != nil { t.Fatal(err) }
+	t.Setenv("TMPDIR", volatile)
+	t.Setenv("TMP", volatile)
+	t.Setenv("TEMP", volatile)
+
+	firstStore, err := OpenLocalStore(statePath)
+	if err != nil { t.Fatal(err) }
+	runtime := &t12AttemptBoundRuntime{}
+	firstNode := NewExecutionNode("macbook", runtime, firstStore)
+	cmd := dispatchFixture("durable-workspace-first")
+	out, err := firstNode.HandleCommand(context.Background(), cmd)
+	if err != nil || out.State != CommandAccepted { t.Fatalf("initial dispatch: %+v %v", out, err) }
+	mapping, ok := firstStore.SessionMapping(cmd.Metadata().AttemptID)
+	if !ok { t.Fatal("initial native mapping missing") }
+	stableRoot := filepath.Join(stateDir, "workspaces")
+	rel, err := filepath.Rel(stableRoot, mapping.Workspace)
+	if err != nil || !filepath.IsLocal(rel) { t.Fatalf("workspace %q is outside durable state %q: %v", mapping.Workspace, stableRoot, err) }
+	if err := os.WriteFile(filepath.Join(mapping.Workspace, "prior.txt"), []byte("saved"), 0o600); err != nil { t.Fatal(err) }
+	if err := firstStore.Close(); err != nil { t.Fatal(err) }
+	if err := os.RemoveAll(volatile); err != nil { t.Fatal(err) }
+
+	restoredStore, err := OpenLocalStore(statePath)
+	if err != nil { t.Fatal(err) }
+	defer restoredStore.Close()
+	restarted := NewExecutionNode("macbook", runtime, restoredStore)
+	// Activating the same real artifact broker code must be able to pin the
+	// original directory before native Resume begins.
+	identity := NodeIdentity{Node:"macbook", Credential:base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{42}, 32)), ConnectURL:"ws://127.0.0.1/v1/nodes/connect"}
+	if err := restarted.SetArtifactPublisher(identity, os.Args[0]); err != nil { t.Fatal(err) }
+	defer restarted.CloseArtifactPublisher()
+	meta := cmd.Metadata()
+	meta.CommandID = "durable-workspace-resume"
+	meta.IssuedAt = time.Now().UTC()
+	resume := Command{Kind:CommandResume, Resume:&ResumeCommand{Metadata:meta, Envelope:cmd.Dispatch.Envelope}}
+	out, err = restarted.HandleCommand(context.Background(), resume)
+	if err != nil || out.State != CommandAccepted { t.Fatalf("restart native Resume failed: %+v %v", out, err) }
+	if runtime.resumes.Load() != 1 { t.Fatalf("native Resume calls = %d, want 1", runtime.resumes.Load()) }
+	if _, err := os.Stat(filepath.Join(mapping.Workspace,"prior.txt")); err != nil { t.Fatalf("original workspace lost after OS temp purge: %v", err) }
 }

@@ -259,9 +259,9 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		workspace = canonicalWorkspace
 	} else if workspace == "" && command.Envelope.PreviousAttemptID == "" {
 		var err error
-		// Projectless Workers use a temporary workspace owned by the Node user.
-		tempRoot := ""
-		workspace, err = os.MkdirTemp(tempRoot, "secretary-worker-")
+		// Session mappings survive daemon restarts and OS temp-directory cleanup.
+		// Allocate projectless workspaces alongside the durable Node state.
+		workspace, err = n.newProjectlessWorkspace()
 		if err != nil {
 			return failedOutcome(Command{Kind: CommandDispatch, Dispatch: command}, "workspace_failed", err.Error())
 		}
@@ -370,6 +370,22 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
 	}
 	return acceptedOutcome(Command{Kind: CommandDispatch, Dispatch: command})
+}
+
+// Workspaces are intentionally durable: only a separate explicit retention
+// mechanism may remove them after all native session references have expired.
+func (n *ExecutionNode) newProjectlessWorkspace() (string, error) {
+	if n.store == nil || strings.TrimSpace(n.store.path) == "" {
+		return "", errors.New("node: durable state path is required for projectless Worker")
+	}
+	root, err := filepath.Abs(filepath.Join(filepath.Dir(n.store.path), "workspaces"))
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(root, "secretary-worker-")
 }
 
 func (n *ExecutionNode) validateReconciledWorkspace(envelope WorkerEnvelope) error {
