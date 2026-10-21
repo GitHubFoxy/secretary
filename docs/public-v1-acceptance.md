@@ -15,6 +15,27 @@ This is a **release gate**, not a completion claim. Base: `bd4120b477aa469ae84f9
 | Explicit capabilities, failures, exact tested versions | This ledger and linked docs | **OPEN:** attach signed-off per-run results below; record true unsupported functions and blockers, not inferred success |
 | Fixtures separate from live | Existing repository CI and T06/T09 workflows | **OPEN until the full mandatory live matrix is evidenced**; GitHub CI only checks applicable automated fixtures |
 
+## Live acceptance record — attempt 1, candidate `v0.1.0-alpha.9`
+
+```text
+Date/time UTC: 2026-10-21
+Repository exact SHA: d2779aaaebfbec75af19d36a91c7637c762bcb2a (tag v0.1.0-alpha.9)
+Executor / environment reference (private, not secrets): macOS arm64, isolated HOME, official installer with SECRETARY_VERSION=0.1.0-alpha.9
+Secretary Server OS/version, install method, service manager: macOS arm64, scripts/install.sh from the tag, process launch (no service manager on this host)
+Node OS/version, local/remote: macOS arm64, local Execution Node from the same release, paired over the outbound WebSocket
+Harness name, CLI version, adapter/SDK version, authorized: yes/no: Codex, codex-cli 0.163.0, @agentclientprotocol/codex-acp 2.2.2, yes
+Web/PWA browser/version and device: not run
+Telegram: not run
+Scenario: fresh install with one harness; doctor; services; Web bootstrap; Node pairing (PASS). Secretary -> question Result -> same Worker Follow-up -> Result (FAIL). All other rows NOT RUN or BLOCKED.
+Steps actually performed: published release installed into an empty HOME; secretary setup / doctor / node doctor; Web owner bootstrap through POST /v1/web/session; one user message through POST /v1/messages; Worker request through the same surface
+Evidence: tracker #170 (acceptance matrix, candidate and digests), issues #173 and #174 (blockers with reproduction)
+Task ID / Worker ID / Attempt count / native session IDs: no Worker on the published candidate; with the upstream code-mode host added manually: wrk_d5f0471ce74840a9cc5acb576b258be8, att_3d83c38e178e888b32c616b4eda0dc28, attempt failed with dispatch_failed
+Result: FAIL (Worker path), PASS (install, doctor, bootstrap, message)
+Observed failure and impact: the published release omits codex-code-mode-host, so the Secretary has no MCP tools and cannot create a Worker (#173); the Worker harness then fails to start inside the macOS Worker sandbox because the packaged ACP adapter resolves the Codex CLI through the npm package @openai/codex, which the release does not ship (#174)
+Retest exact SHA and date: a new candidate with #173 fixed (PR #175) and #174 fixed, then this matrix again
+Reviewer / approval: pending
+```
+
 ## Live acceptance record (copy per attempt)
 
 Do not commit credentials, tokens, usernames, real conversation text, provider traces or private file contents.
