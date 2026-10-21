@@ -131,6 +131,10 @@ func (s *Server) workerRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, publicResult)
 		return
 	}
+	if r.Method != http.MethodGet && s.node == nil && s.workers == nil {
+		http.Error(w, "legacy Worker execution is read-only", http.StatusConflict)
+		return
+	}
 	session, found := s.workerSession(workerRef)
 	if len(parts) == 1 && r.Method == http.MethodGet {
 		if found {
