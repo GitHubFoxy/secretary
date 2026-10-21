@@ -97,3 +97,38 @@ func TestCodexStartupValidatedWorkingPair(t *testing.T) {
  })
  if err != nil || !called { t.Fatalf("validated inventory rejected: %v (called=%v)", err, called) }
 }
+
+func TestCodexStartupUnvalidatedProtocolIsNotLoginFailure(t *testing.T) {
+ pair := startupCodexPairFixture(t, "server", true)
+ pair.Compatibility.Validated = false
+ location, err := CodexPairInventoryPath("server")
+ if err != nil { t.Fatal(err) }
+ contents, err := json.Marshal(pair)
+ if err != nil { t.Fatal(err) }
+ if err := os.WriteFile(location, contents, 0600); err != nil { t.Fatal(err) }
+ err = CheckCodexStartup(context.Background(), "server")
+ if err == nil || !strings.Contains(err.Error(), "protocol validation") || strings.Contains(err.Error(), " login") {
+  t.Fatalf("unvalidated ACP incorrectly classified: %v", err)
+ }
+}
+
+func TestCodexNativeStatusRejectsNegativeOutputWithZeroExit(t *testing.T) {
+ pair := startupCodexPairFixture(t, "server", true)
+ script := "#!/bin/sh\nif [ \"$1\" = \"login\" ]; then echo 'Not logged in'; exit 0; fi\necho 'codex 1.2.3'\n"
+ if err := os.WriteFile(pair.Codex.Path, []byte(script), 0700); err != nil { t.Fatal(err) }
+ err := codexNativePairReady(context.Background(), pair)
+ if err == nil || !strings.Contains(err.Error(), "authentication required") {
+  t.Fatalf("negative login output counted as authorized: %v", err)
+ }
+}
+
+func TestCodexRuntimeHidesInventorySentinelOnDispatch(t *testing.T) {
+ runtime := CodexRuntime{ACPRuntime: ACPRuntime{Command: "/__secretary_codex_acp_inventory_unavailable__"}}
+ _, err := runtime.Start(context.Background(), StartRequest{Profile: ManagedProfile{Runtime: "codex"}})
+ if err == nil || !strings.Contains(err.Error(), "inventory") || !strings.Contains(err.Error(), "secretary doctor") {
+  t.Fatalf("Codex runtime lacked useful diagnostics: %v", err)
+ }
+ if strings.Contains(err.Error(), "__secretary_codex") || strings.Contains(err.Error(), "fork/exec") {
+  t.Fatalf("private executable placeholder leaked: %v", err)
+ }
+}
