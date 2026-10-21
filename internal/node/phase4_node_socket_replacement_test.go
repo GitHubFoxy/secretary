@@ -126,7 +126,7 @@ func TestReplacementSocketInvalidatesWorkerUntilMatchingHeartbeat(t *testing.T) 
     if err := staleHandler.HandleNodeInventory(ctx, inventory); !errors.Is(err, errStaleNodeConnection) {
         t.Fatalf("old socket updated inventory after replacement: %v", err)
     }
-    details, err := store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+    details, err = store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
     if err != nil { t.Fatal(err) }
     record, err := store.NodeRecord(ctx, identity.Node)
     if err != nil { t.Fatal(err) }
