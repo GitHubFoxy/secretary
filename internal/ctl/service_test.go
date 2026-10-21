@@ -2,7 +2,6 @@ package ctl
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -96,12 +95,7 @@ func TestServiceLegacyMutationsRejectedBeforeStoreOnBothMigrationStates(t *testi
 			if err != nil { t.Fatal(err) }
 			if _, _, _, err := store.AcceptDispatch(ctx, openTask.ID, "legacy-bound", "local", "native-session", t.TempDir()); err != nil { t.Fatal(err) }
 			if migrated {
-				db, err := sql.Open("sqlite", path)
-				if err != nil { t.Fatal(err) }
-				_, err = db.ExecContext(ctx, "INSERT INTO settings(key, value) VALUES('phase4.migration_complete', '1') ON CONFLICT(key) DO UPDATE SET value = excluded.value")
-				closeErr := db.Close()
-				if err != nil { t.Fatal(err) }
-				if closeErr != nil { t.Fatal(closeErr) }
+				if err := store.SetSetting(ctx, "phase4.migration_complete", "1"); err != nil { t.Fatal(err) }
 			}
 			if got := store.LegacyTasksReadOnly(ctx); got != migrated { t.Fatalf("expected migration_complete=%v, got readOnly=%v", migrated, got) }
 			before, err := service.List(ctx)
