@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -1245,6 +1246,10 @@ func validateAttemptOutcomeInput(input AttemptOutcomeInput) error {
 }
 
 func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, input AttemptOutcomeInput) (AttemptOutcome, *Phase4Result, bool, error) {
+	gate, _ := s.attemptOutcomeGates.LoadOrStore(attemptID, &sync.Mutex{})
+	mutex := gate.(*sync.Mutex)
+	mutex.Lock()
+	defer mutex.Unlock()
 	input = sanitizeAttemptOutcomeInput(input)
 	if err := validateAttemptOutcomeInput(input); err != nil {
 		return AttemptOutcome{}, nil, false, err
