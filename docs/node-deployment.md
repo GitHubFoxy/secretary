@@ -2,6 +2,12 @@
 
 `secretary-node` работает только как outbound-клиент. На MacBook и home server не нужно открывать входящий порт или настраивать port forwarding. Server должен быть доступен по приватному адресу, например HTTPS-адресу Tailscale.
 
+## Worker execution contract
+
+Secretary Workers execute directly with the operating-system permissions and environment of the Execution Node user. Secretary does not provide an additional Worker sandbox or privilege boundary.
+
+Worker и его дочерние процессы запускаются как текущий пользователь Node без дополнительной изоляции, со штатными `CODEX_PATH`, `SECRETARY_ACP_COMMAND`, переменными окружения и доступами к файлам. Server API authorization и Node pairing сохраняются, но не обеспечивают OS isolation.
+
 ## Установка
 
 На Secretary server задайте отдельные Node credentials до запуска `secretaryd`:
