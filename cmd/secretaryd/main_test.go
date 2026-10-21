@@ -19,6 +19,7 @@ import (
 
 	"github.com/beruseruko/secretary/internal/config"
 	"github.com/beruseruko/secretary/internal/core"
+	"github.com/beruseruko/secretary/internal/ctl"
 	"github.com/beruseruko/secretary/internal/node"
 	"github.com/beruseruko/secretary/internal/webapi"
 )
@@ -234,7 +235,7 @@ func TestProductionStartupRecoversUnknownPhase4Attempt(t *testing.T) {
 	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := recoverProductionPhase4Attempts(ctx, store, nil, nil); err != nil {
+	if err := recoverProductionPhase4Attempts(ctx, store, nil); err != nil {
 		t.Fatal(err)
 	}
 	recoveredAttempt, err := store.Phase4Attempt(ctx, attempt.ID)
@@ -253,144 +254,152 @@ func TestProductionStartupRecoversUnknownPhase4Attempt(t *testing.T) {
 	}
 }
 
-func TestProductionAssemblyRespondsWithoutManualResponderAttachment(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
+func TestProductionAssemblyUsesDaemonForLocalWorkerAndFollowUp(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "production.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	if err != nil { t.Fatal(err) }
 	defer store.Close()
-	person, conversation, err := store.CreatePersonWithConversation(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
+	person, _, err := store.CreatePersonWithConversation(ctx)
+	if err != nil { t.Fatal(err) }
 	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	workspace := t.TempDir()
-	instance := core.HarnessInstance{ID: "local/fx", Node: "local", Kind: core.HarnessFX, Version: "fixture", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}}
-	snapshot, err := json.Marshal(core.ProjectSnapshot{ID: "project", Node: "local", HarnessInstance: instance})
-	if err != nil {
-		t.Fatal(err)
-	}
+	if err != nil { t.Fatal(err) }
+	manager, err := node.NewServerManager(ctx, store, "pair-token", "admin-token")
+	if err != nil { t.Fatal(err) }
+	manager.SetEventSink(node.NewStoreEventSink(store))
+	manager.SetCommandOutcomeSink(node.NewStoreCommandOutcomeSink(store))
+	api, err := webapi.New(ctx, store, "bootstrap")
+	if err != nil { t.Fatal(err) }
+	api.AttachNodeService(manager)
 	profile := node.ManagedProfile{Version: "fixture", Name: "worker", Content: "Synthetic instructions", SourceHash: "fixture", Runtime: "fx", Delivery: "workspace_instructions"}
 	profile.Hash = profile.SnapshotHash()
-	profileJSON, err := json.Marshal(profile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	worker, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{WorkerRef: "production-worker", Title: "Production worker", ProjectID: "project", NodeID: "local", HarnessInstanceID: "local/fx", Intent: "inspect", PolicySnapshot: "{}", ProjectSnapshot: string(snapshot), ProfileSnapshot: string(profileJSON), Workspace: workspace}, core.TurnSpec{Input: "inspect"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
-		t.Fatal(err)
-	}
-	prompts := make(chan string, 3)
-	local := node.NewLocal(&productionRuntime{prompts: prompts})
-	if _, err := local.Dispatch(ctx, node.StartRequest{WorkerRef: worker.WorkerRef, AttemptID: attempt.ID, Task: "inspect", HarnessInstance: instance, Profile: profile, Workspace: workspace}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.RecordNodeActivityReplay(ctx, core.Activity{Metadata: core.ActivityMetadata{EventID: "production-approval", Node: "local", HarnessInstanceID: "local/fx", WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, Sequence: 1, ObservedAt: time.Now().UTC()}, Kind: core.ActivityPermissionRequest, Request: &core.ActivityRequest{RequestID: "production-request", Summary: "write file"}}); err != nil {
-		t.Fatal(err)
-	}
-	api, err := webapi.New(ctx, store, "bootstrap")
-	if err != nil {
-		t.Fatal(err)
-	}
-	attachProductionWorkerServices(ctx, api, store, person.ID, capability, "", local, nil, nil, nil, nil)
-	server := httptest.NewServer(api.Handler())
+	attachProductionWorkerServices(ctx, api, store, person.ID, capability, "", manager,
+		func() (node.ManagedProfile, error) { return profile, nil },
+		func() core.HarnessPolicy { return core.HarnessPolicy{DefaultHarness: core.HarnessFX} })
+	server := httptest.NewServer(rootHandler(api.Handler(), api.ControlHandler(), http.NotFoundHandler(), http.NotFoundHandler(), manager, false))
 	defer server.Close()
-	client := &http.Client{Jar: mustProductionCookieJar(t)}
-	loginProduction(t, client, server.URL)
-	request, _ := http.NewRequest(http.MethodPost, server.URL+"/v1/approvals/production-request/approve", bytes.NewBufferString("{}"))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Idempotency-Key", "production-approval")
-	response, err := client.Do(request)
-	if err != nil {
-		t.Fatal(err)
+	identity, err := node.EnrollNode(ctx, server.Client(), server.URL, "pair-token", "local")
+	if err != nil { t.Fatal(err) }
+	localStore, err := node.OpenLocalStore(filepath.Join(t.TempDir(), "node-state.json"))
+	if err != nil { t.Fatal(err) }
+	defer localStore.Close()
+	started := make(chan node.StartRequest, 2)
+	resumed := make(chan node.StartRequest, 2)
+	prompts := make(chan string, 2)
+	native := &productionRuntime{started: started, resumed: resumed, prompts: prompts}
+	instance := core.HarnessInstance{
+		ID: "local/fx", Node: "local", Kind: core.HarnessFX, Version: "fixture", Status: core.HarnessReady,
+		Authentication: core.HarnessAuthentication{Authenticated: true},
+		Capabilities: core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityCancel}},
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("approval status=%d", response.StatusCode)
-	}
-	approval, err := store.Approval(ctx, "production-request")
-	if err != nil || approval.State != core.ApprovalApproved {
-		t.Fatalf("approval=%#v err=%v", approval, err)
-	}
-	request, _ = http.NewRequest(http.MethodPost, server.URL+"/v1/workers/production-worker/message", bytes.NewBufferString(`{"text":"/q continue"}`))
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Idempotency-Key", "production-queue")
-	response, err = client.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response.Body.Close()
-	if response.StatusCode != http.StatusAccepted {
-		t.Fatalf("queue status=%d", response.StatusCode)
-	}
-	if _, _, _, err := store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "done"}); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(3 * time.Second)
+	daemon := &node.Daemon{Identity: identity, Store: localStore, Runtime: native,
+		Inventory: productionInventory{instance: instance}, Capacity: 1,
+		HeartbeatInterval: 20*time.Millisecond, InventoryInterval: time.Hour,
+		OutboxPollInterval: 10*time.Millisecond, ReconnectMin: 10*time.Millisecond, ReconnectMax: 40*time.Millisecond}
+	daemonCtx, stopDaemon := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- daemon.Run(daemonCtx) }()
+	defer func() {
+		stopDaemon()
+		select {
+		case err := <-done:
+			if err != nil { t.Errorf("daemon exit: %v", err) }
+		case <-time.After(time.Second):
+			t.Error("daemon did not stop")
+		}
+	}()
 	for {
-		response, err := client.Get(server.URL + "/v1/workers/production-worker")
-		if err != nil {
-			t.Fatal(err)
+		ready, err := manager.CommandReady(ctx, "local")
+		if err == nil && ready { break }
+		select {
+		case <-ctx.Done(): t.Fatal("local daemon did not become ready")
+		case <-time.After(20*time.Millisecond):
 		}
-		var details struct {
-			QueuedMessages []core.QueuedWorkerMessage `json:"queued_messages"`
+	}
+	service := ctl.WorkerService{Store: store, PersonID: person.ID, Capability: capability, Runtime: ctl.NodeRuntime{Manager: manager},
+		WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX}, WorkerProfileSource: func() (node.ManagedProfile, error) { return profile, nil }}
+	details, err := service.SpawnWorker(ctx, ctl.SpawnWorkerRequest{
+		Intent: "inspect", Preferences: ctl.WorkerPreferences{NodeID: "local"}, IdempotencyKey: "production-spawn",
+	})
+	if err != nil { t.Fatal(err) }
+	select {
+	case request := <-started:
+		if request.WorkerRef != details.Worker.WorkerRef || request.Workspace == "" || request.HarnessInstance.Node != "local" {
+			t.Fatalf("daemon started wrong Worker: %#v", request)
 		}
-		err = json.NewDecoder(response.Body).Decode(&details)
-		response.Body.Close()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(details.QueuedMessages) == 1 && details.QueuedMessages[0].State == "delivered" {
+	case <-ctx.Done():
+		t.Fatal("daemon did not start native Worker")
+	}
+	for {
+		result, err := store.Phase4Result(ctx, details.Turns[0].ID)
+		if err == nil {
+			if result.Status != core.ResultSucceeded { t.Fatalf("terminal result: %#v", result) }
 			break
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("production queue pump did not promote terminal Follow-up: %#v", details)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	for {
 		select {
-		case prompt := <-prompts:
-			if prompt == "continue" {
-				return
-			}
-		case <-time.After(time.Second):
-			t.Fatal("delivered queue did not prompt the resumed native session")
+		case <-ctx.Done(): t.Fatal("terminal Result did not return through Node protocol")
+		case <-time.After(20*time.Millisecond):
 		}
+	}
+	continued, err := service.MessageWorker(ctx, ctl.MessageWorkerRequest{WorkerRef: details.Worker.WorkerRef, Text: "continue", IdempotencyKey: "production-followup"})
+	if err != nil { t.Fatal(err) }
+	if continued.Worker.ID != details.Worker.ID || continued.Worker.NodeID != "local" { t.Fatal("follow-up lost Worker binding") }
+	select {
+	case request := <-resumed:
+		if request.WorkerRef != details.Worker.WorkerRef || request.Workspace == "" { t.Fatalf("invalid native Resume: %#v", request) }
+	case <-ctx.Done():
+		t.Fatal("follow-up did not use daemon Resume")
+	}
+	select {
+	case prompt := <-prompts:
+		if prompt != "continue" { t.Fatalf("native resumed prompt %q", prompt) }
+	case <-ctx.Done():
+		t.Fatal("native resumed session received no prompt")
 	}
 }
 
-type productionRuntime struct{ prompts chan string }
+type productionInventory struct { instance core.HarnessInstance }
 
-func (r *productionRuntime) Start(context.Context, node.StartRequest) (node.Session, error) {
-	return &productionSession{prompts: r.prompts}, nil
+func (p productionInventory) Discover(context.Context) (core.HarnessInventorySnapshot, error) {
+	return core.HarnessInventorySnapshot{Node: p.instance.Node, ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{p.instance}}, nil
 }
 
-func (r *productionRuntime) Resume(ctx context.Context, request node.StartRequest, _ string) (node.Session, error) {
-	return r.Start(ctx, request)
+type productionRuntime struct {
+	started chan node.StartRequest
+	resumed chan node.StartRequest
+	prompts chan string
 }
 
-type productionSession struct{ prompts chan string }
+func (r *productionRuntime) Start(_ context.Context, request node.StartRequest) (node.Session, error) {
+	r.started <- request
+	session := &productionSession{prompts: r.prompts, results: make(chan node.Result, 1)}
+	session.results <- node.Result{Status: "succeeded", Summary: "done"}
+	close(session.results)
+	return session, nil
+}
+
+func (r *productionRuntime) Resume(_ context.Context, request node.StartRequest, nativeID string) (node.Session, error) {
+	if nativeID != "production-native" { return nil, errors.New("native session identity changed") }
+	r.resumed <- request
+	return &productionSession{prompts: r.prompts, results: make(chan node.Result, 1)}, nil
+}
+
+type productionSession struct {
+	prompts chan string
+	results chan node.Result
+}
 
 func (*productionSession) ID() string { return "production-native" }
 func (s *productionSession) Prompt(_ context.Context, text string) error {
-	if s.prompts != nil {
-		s.prompts <- text
-	}
+	s.prompts <- text
+	s.results <- node.Result{Status: "succeeded", Summary: "continued"}
+	close(s.results)
 	return nil
 }
 func (*productionSession) Steer(context.Context, string) (bool, error)   { return true, nil }
 func (*productionSession) Cancel(context.Context) error                  { return nil }
 func (*productionSession) Activity() <-chan node.Activity                { return nil }
-func (*productionSession) Result() <-chan node.Result                    { return nil }
+func (s *productionSession) Result() <-chan node.Result                  { return s.results }
 func (*productionSession) Close() error                                  { return nil }
 func (*productionSession) Respond(context.Context, string, string) error { return nil }
 
