@@ -19,21 +19,28 @@ type projectlessNativeRuntime struct {
 	resumes []node.StartRequest
 }
 
+type projectlessNativeSession struct {
+	node.Session
+	nativeID string
+}
+
+func (s projectlessNativeSession) ID() string { return s.nativeID }
+
 func (r *projectlessNativeRuntime) Start(_ context.Context, request node.StartRequest) (node.Session, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.starts = append(r.starts, request)
-	return canceledSteeringSession{}, nil
+	return projectlessNativeSession{Session: canceledSteeringSession{}, nativeID: "native-" + request.WorkerRef}, nil
 }
 
 func (r *projectlessNativeRuntime) Resume(_ context.Context, request node.StartRequest, sessionID string) (node.Session, error) {
-	if sessionID != "local-session" {
+	if sessionID != "native-"+request.WorkerRef {
 		return nil, errors.New("native session identity changed")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.resumes = append(r.resumes, request)
-	return canceledSteeringSession{}, nil
+	return projectlessNativeSession{Session: canceledSteeringSession{}, nativeID: sessionID}, nil
 }
 
 func TestProjectlessWorkerServiceDispatchThroughExecutionNodeAndFollowup(t *testing.T) {
