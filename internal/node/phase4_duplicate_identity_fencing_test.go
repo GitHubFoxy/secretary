@@ -136,6 +136,8 @@ func TestDuplicateDaemonIdentityCannotDisplaceLiveOwnerOrReceiveNativeCommands(t
 	}
 
 	dispatch := daemonDispatchFixture(identity.Node, "original-owned-dispatch")
+	dispatch.Dispatch.Envelope.HarnessInstance = status.Inventory.Instances[0]
+	dispatch.Dispatch.Envelope.Profile = workerTemplateFixture(dispatch.Dispatch.Envelope.HarnessInstance, "", "")
 	if err := manager.SendCommand(ctx, identity.Node, dispatch); err != nil { t.Fatal(err) }
 	received := waitCommandOutcome(t, ctx, outcomes)
 	if received.CommandID != dispatch.Metadata().CommandID || received.State != CommandAccepted {
@@ -242,13 +244,23 @@ func TestExpiredNodeLeaseFencesStillRegisteredSocketWithoutRepeatingNativeAction
 	}()
 	waitFor(t, ctx, "original Node with lease and command socket", func() bool {
 		ready, err := manager.CommandReady(ctx, identity.Node)
-		return err == nil && ready
+		if err != nil || !ready { return false }
+		status, err := manager.Status(ctx, identity.Node)
+		return err == nil && len(status.Inventory.Instances) == 1 &&
+			status.Inventory.Instances[0].Version == "original-version"
 	})
 	manager.mu.Lock()
 	staleSocket := manager.connections[identity.Node]
 	manager.mu.Unlock()
 	if staleSocket == nil { t.Fatal("original Node socket missing") }
 	dispatch := daemonDispatchFixture(identity.Node, "lease-original-dispatch")
+	observed, err := manager.Status(ctx, identity.Node)
+	if err != nil || len(observed.Inventory.Instances) != 1 ||
+		observed.Inventory.Instances[0].Version != "original-version" {
+		t.Fatalf("original harness inventory unavailable for Dispatch: %#v err=%v", observed.Inventory, err)
+	}
+	dispatch.Dispatch.Envelope.HarnessInstance = observed.Inventory.Instances[0]
+	dispatch.Dispatch.Envelope.Profile = workerTemplateFixture(dispatch.Dispatch.Envelope.HarnessInstance, "", "")
 	if err := manager.SendCommand(ctx, identity.Node, dispatch); err != nil { t.Fatal(err) }
 	accepted := waitCommandOutcome(t, ctx, outcomes)
 	if accepted.CommandID != dispatch.Metadata().CommandID || accepted.State != CommandAccepted ||
