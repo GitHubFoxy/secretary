@@ -3,7 +3,7 @@
 param(
  [string]$NodeDataDir = (Join-Path (Join-Path $env:USERPROFILE '.secretary') 'node'),
  [string]$NodeBinary = '',
- [string]$TrayBinary = '',
+ [string]$TrayBinary = ''
 )
 $ErrorActionPreference='Stop'
 $repositoryRoot=(Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..')).Path
