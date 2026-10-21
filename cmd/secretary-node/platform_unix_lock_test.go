@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/beruseruko/secretary/internal/node"
 )
 
 func TestNodeInstanceLockHelperProcess(t *testing.T) {
@@ -87,5 +89,43 @@ func TestUnixNodeDataDirectoryOwnedByOneProcessAndReleasedOnExit(t *testing.T) {
 	output, err = successor.CombinedOutput()
 	if err != nil || !strings.Contains(string(output), "CLAIMED") {
 		t.Fatalf("ownership lock was not released after first process exit: output=%q err=%v", output, err)
+	}
+}
+
+func TestUnixNodeCanonicalStatePathUnaffectedBySymlinkRetarget(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	alias := filepath.Join(root, "current")
+	for _, dir := range []string{first, second} {
+		if err := os.MkdirAll(dir, 0o700); err != nil { t.Fatal(err) }
+	}
+	if err := os.Symlink(first, alias); err != nil { t.Fatal(err) }
+	canonical, release, err := claimNodeDataDirectory(alias)
+	if err != nil { t.Fatal(err) }
+	defer release()
+	if canonical != first { t.Fatalf("claimed %q instead of original directory %q", canonical, first) }
+	if err := os.Remove(alias); err != nil { t.Fatal(err) }
+	if err := os.Symlink(second, alias); err != nil { t.Fatal(err) }
+	store, err := node.OpenLocalStore(filepath.Join(canonical, "node-state.json"))
+	if err != nil { t.Fatal(err) }
+	if _, err := store.ReserveEventSequence(); err != nil { t.Fatal(err) }
+	if err := store.Close(); err != nil { t.Fatal(err) }
+	if _, err := os.Stat(filepath.Join(first, "node-state.json")); err != nil {
+		t.Fatalf("Node state not written into originally locked directory: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(second, "node-state.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("retargeted symlink received Node state: %v", err)
+	}
+	reused, err := claimNodeInstance(first)
+	if err == nil {
+		reused()
+		t.Fatal("concurrent daemon was allowed to open original Node state directory")
+	}
+	otherRoot, otherRelease, err := claimNodeDataDirectory(alias)
+	if err != nil { t.Fatal(err) }
+	defer otherRelease()
+	if otherRoot != second {
+		t.Fatalf("retargeted alias must identify a separate locked directory: %q", otherRoot)
 	}
 }
