@@ -18,9 +18,6 @@ func (r legacyLocalTestRuntime) LocalCommand(ctx context.Context, command node.C
 		return node.CommandOutcome{}, ErrWorkerRuntimeUnavailable
 	}
 	metadata := command.Metadata()
-	// Local Dispatch may still be waiting for video frames: there is no
-	// Session yet. Cancel by AttemptID before any Session lookup, so the
-	// pre-native checkpoint prevents a late Start.
 	if command.Kind==node.CommandCancel {
 		if command.Cancel==nil{return node.CommandOutcome{},errors.New("worker: local cancel command is missing")}
 		handled,err:=r.Local.CancelLocalAttempt(ctx,metadata.WorkerRef,metadata.AttemptID)
