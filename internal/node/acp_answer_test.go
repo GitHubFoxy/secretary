@@ -321,3 +321,19 @@ func TestGenericTurnAnswerKeepsRejectingUnattributedChunk(t *testing.T) {
 		t.Fatal("the generic terminal contract changed")
 	}
 }
+
+func TestCodexTurnAnswerRejectsUnattributedFinalAnswerPhase(t *testing.T) {
+	for _, order := range []string{"before", "after"} {
+		a := newACPTurnAnswer()
+		if order == "before" {
+			a.codexText("", "final_answer", "черновик без идентификатора")
+			a.codexText("answer", "final_answer", "готово")
+		} else {
+			a.codexText("answer", "final_answer", "готово")
+			a.codexText("", "final_answer", "черновик без идентификатора")
+		}
+		if got, ok := a.codexFinal("end_turn"); ok {
+			t.Fatalf("order %s accepted an unattributable answer: %q", order, got)
+		}
+	}
+}

@@ -10,13 +10,14 @@ const (
 )
 
 type acpTurnAnswer struct {
-	messages         map[string]*strings.Builder
-	order            []string
-	progress         map[string]bool
-	missingIdentity  bool
-	conflictingPhase bool
-	assistantChunks  uint64
-	codexPhases      map[string]string
+	messages                map[string]*strings.Builder
+	order                   []string
+	progress                map[string]bool
+	missingIdentity         bool
+	conflictingPhase        bool
+	unattributedFinalAnswer bool
+	assistantChunks         uint64
+	codexPhases             map[string]string
 }
 
 func newACPTurnAnswer() *acpTurnAnswer {
@@ -80,6 +81,9 @@ func (a *acpTurnAnswer) final(stopReason string) (string, bool) {
 func (a *acpTurnAnswer) codexText(id, phase, text string) {
 	a.assistantChunks++
 	if id == "" {
+		if phase == codexPhaseFinalAnswer {
+			a.unattributedFinalAnswer = true
+		}
 		return
 	}
 	a.appendMessage(id, text)
@@ -99,7 +103,7 @@ func (a *acpTurnAnswer) codexConflictingPhase() {
 }
 
 func (a *acpTurnAnswer) codexFinal(stopReason string) (string, bool) {
-	if stopReason != "end_turn" || a.conflictingPhase {
+	if stopReason != "end_turn" || a.conflictingPhase || a.unattributedFinalAnswer {
 		return "", false
 	}
 	var final string

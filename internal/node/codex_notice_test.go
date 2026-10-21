@@ -82,6 +82,12 @@ func TestCodexNoticeFixtureProcess(t *testing.T) {
 				emit(codexNoticeFrame("Warning: another notice without identity.\n\n"))
 			case "idless-final":
 				emit(codexIdlessFinalFrame("готов"))
+			case "idless-final-then-identified-final":
+				emit(codexIdlessFinalFrame("черновик без идентификатора"))
+				emit(codexFinalFrame("msg_0bdb5fcb53d05ef8016ad862f1da788191a7df11f6ca525aff", "готов"))
+			case "identified-final-then-idless-final":
+				emit(codexFinalFrame("msg_0bdb5fcb53d05ef8016ad862f1da788191a7df11f6ca525aff", "готов"))
+				emit(codexIdlessFinalFrame("черновик без идентификатора"))
 			case "notice-tool-final":
 				emit(codexNoticeFrame(codexNoticeText))
 				emit(codexNoticeToolCall())
@@ -193,5 +199,31 @@ func TestCodexAdapterNoticeKeepsTwoTurnsUsable(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatalf("turn %d produced no terminal result", turn)
 		}
+	}
+}
+
+func TestCodexUnattributedFinalAnswerFailsTheTurn(t *testing.T) {
+	for _, scenario := range []string{"idless-final-then-identified-final", "identified-final-then-idless-final"} {
+		t.Run(scenario, func(t *testing.T) {
+			result := codexNoticeResult(t, scenario)
+			if result.Status != "failed" {
+				t.Fatalf("scenario %s accepted an unattributed final answer: %+v", scenario, result)
+			}
+			if !strings.Contains(result.Summary, "Terminal answer unavailable") {
+				t.Fatalf("scenario %s summary=%q", scenario, result.Summary)
+			}
+			if strings.Contains(result.Summary, "черновик") || strings.Contains(result.Summary, "готов") {
+				t.Fatalf("scenario %s published an unattributable answer: %q", scenario, result.Summary)
+			}
+		})
+	}
+}
+
+func TestCodexTwoIdentifiedFinalAnswersStayRejected(t *testing.T) {
+	a := newACPTurnAnswer()
+	a.codexText("answer-one", "final_answer", "первый")
+	a.codexText("answer-two", "final_answer", "второй")
+	if _, ok := a.codexFinal("end_turn"); ok {
+		t.Fatal("two identified final answers were accepted")
 	}
 }
