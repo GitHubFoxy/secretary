@@ -31,6 +31,9 @@ type CommandOutcomeHandler interface {
 	HandleNodeCommandOutcome(context.Context, CommandOutcome) error
 }
 type ConnectionHandler interface{ HandleNodeConnection(*ProtocolConnection) }
+type ConnectionAdmissionHandler interface {
+	AdmitNodeConnection(context.Context, *ProtocolConnection) error
+}
 
 type ProtocolServer struct {
 	Auth          Authenticator
@@ -56,8 +59,10 @@ func (s *ProtocolServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	s.connections[connection.node] = connection
 	s.mu.Unlock()
-	if callback, ok := s.Handler.(ConnectionHandler); ok {
-		callback.HandleNodeConnection(connection)
+	if _, admitted := s.Handler.(ConnectionAdmissionHandler); !admitted {
+		if callback, ok := s.Handler.(ConnectionHandler); ok {
+			callback.HandleNodeConnection(connection)
+		}
 	}
 	defer func() {
 		s.mu.Lock()
@@ -138,6 +143,15 @@ func (c *ProtocolConnection) acceptHandshake(ctx context.Context, handler Protoc
 	}
 	response, err := NewEnvelope(MessageHandshakeAccepted, c.node, 0, handshake.LastAcknowledgedSequence, payload, c.auth)
 	if err != nil {
+		return err
+	}
+	if callback, ok := handler.(ConnectionAdmissionHandler); ok {
+		c.writes.Lock()
+		err = callback.AdmitNodeConnection(ctx, c)
+		if err == nil {
+			err = c.writeLocked(ctx, response)
+		}
+		c.writes.Unlock()
 		return err
 	}
 	return c.write(ctx, response)
