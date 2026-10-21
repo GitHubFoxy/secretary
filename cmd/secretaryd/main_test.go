@@ -260,7 +260,7 @@ func TestProductionAssemblyUsesDaemonForLocalWorkerAndFollowUp(t *testing.T) {
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "production.db"))
 	if err != nil { t.Fatal(err) }
 	defer store.Close()
-	person, _, err := store.CreatePersonWithConversation(ctx)
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
 	if err != nil { t.Fatal(err) }
 	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
 	if err != nil { t.Fatal(err) }
@@ -358,6 +358,24 @@ func TestProductionAssemblyUsesDaemonForLocalWorkerAndFollowUp(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("native resumed session received no prompt")
 	}
+	for {
+		result, err := store.Phase4Result(ctx, continued.ActionTurnID)
+		if err == nil {
+			if result.Status != core.ResultSucceeded { t.Fatalf("Follow-up Result: %#v", result) }
+			break
+		}
+		select {
+		case <-ctx.Done(): t.Fatal("native resumed turn never produced terminal Result")
+		case <-time.After(20*time.Millisecond):
+		}
+	}
+	entries, err := store.EntriesTail(ctx, conversation.ID, 0, 100)
+	if err != nil { t.Fatal(err) }
+	count := 0
+	for _, entry := range entries {
+		if entry.Kind == core.EntryWorkerResult { count++ }
+	}
+	if count != 2 { t.Fatalf("want exactly one terminal Result per Worker turn, got %d", count) }
 }
 
 type productionInventory struct { instance core.HarnessInstance }
