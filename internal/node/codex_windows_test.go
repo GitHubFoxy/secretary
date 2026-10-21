@@ -17,13 +17,13 @@ import (
 func TestInstall07PinnedWindowsAssets(t *testing.T) {
  assets, err := codexNativeAssets()
  if err != nil { t.Fatal(err) }
- if len(assets) != 2 { t.Fatalf("assets = %d", len(assets)) }
+ if len(assets) != 3 { t.Fatalf("assets = %d", len(assets)) }
  for _, asset := range assets {
   if !strings.HasSuffix(asset.URL, ".zip") || len(asset.SHA256) != 64 || !strings.HasSuffix(asset.Name, ".exe") {
    t.Fatalf("unverified Windows release asset: %+v", asset)
   }
  }
- if assets[0].Name != "codex.exe" || assets[1].Name != "codex-acp.exe" { t.Fatal(assets) }
+ if assets[0].Name != "codex.exe" || assets[1].Name != "codex-acp.exe" || assets[2].Name != "codex-code-mode-host.exe" { t.Fatal(assets) }
 }
 
 func TestInstall07WindowsArchiveSafeExtraction(t *testing.T) {

@@ -36,6 +36,7 @@ func startupCodexPairFixture(t *testing.T, scope string, authenticated bool) Cod
  }
  cli += "exit 2\n"
  pair := CodexPairInventory{Schema: 1, Scope: scope, Harness: "codex", Codex: binary("codex", cli), ACP: binary("codex-acp", "echo 'codex-acp 1.2.3'\n")}
+ binary("codex-code-mode-host", "exit 0\n")
  pair.Compatibility.Validated = true
  location, err := CodexPairInventoryPath(scope)
  if err != nil { t.Fatal(err) }

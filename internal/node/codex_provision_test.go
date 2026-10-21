@@ -280,8 +280,8 @@ func TestManagedCodexPairPinsSupportedPlatforms(t *testing.T) {
  if err!=nil {
   t.Skipf("host not supported: %v",err)
  }
- expected := 1
- if runtime.GOOS=="windows" { expected = 2 }
+ expected := 2
+ if runtime.GOOS=="windows" { expected = 3 }
  if len(assets)!=expected {t.Fatalf("expected %d upstream assets (the modern Unix ACP is bundled), got %d",expected,len(assets))}
  for _,asset:=range assets {
   if asset.URL=="" || len(asset.SHA256)!=64 || asset.Name=="" {t.Fatalf("incomplete pin: %+v",asset)}
@@ -308,12 +308,17 @@ func TestInstallManagedCodexAssetsFreshRetryPartialAndCorrupt(t *testing.T) {
  }
  cliArchive := createArchive("codex")
  acpArchive := createArchive("codex-acp")
+ hostArchive := createArchive("codex-code-mode-host")
  server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
-  if r.URL.Path=="/codex" { _,_=w.Write(cliArchive) } else { _,_=w.Write(acpArchive) }
+  switch r.URL.Path {
+  case "/codex": _,_=w.Write(cliArchive)
+  case "/codex-code-mode-host": _,_=w.Write(hostArchive)
+  default: _,_=w.Write(acpArchive)
+  }
  }))
  defer server.Close()
  digest := func(data []byte) string { sum:=sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
- assets := []codexAsset{{URL:server.URL+"/codex",SHA256:digest(cliArchive),Name:"codex"},{URL:server.URL+"/acp",SHA256:digest(acpArchive),Name:"codex-acp"}}
+ assets := []codexAsset{{URL:server.URL+"/codex",SHA256:digest(cliArchive),Name:"codex"},{URL:server.URL+"/acp",SHA256:digest(acpArchive),Name:"codex-acp"},{URL:server.URL+"/codex-code-mode-host",SHA256:digest(hostArchive),Name:"codex-code-mode-host"}}
  root := t.TempDir()
  cli,acp,err := installManagedCodexAssets(context.Background(),assets,root,"fixture")
  if err != nil { t.Fatal(err) }
@@ -362,7 +367,8 @@ func TestManagedCodexReleaseRefreshWithDifferentBundledACP(t *testing.T) {
  oldACP:=makeArchive("codex-acp","release-A")
  newACP:=makeArchive("codex-acp","release-B")
  cliArchive:=makeArchive("codex","shared")
- archives:=map[string][]byte{"/codex":cliArchive,"/old-acp":oldACP,"/new-acp":newACP}
+ hostArchive:=makeArchive("codex-code-mode-host","shared")
+ archives:=map[string][]byte{"/codex":cliArchive,"/old-acp":oldACP,"/new-acp":newACP,"/codex-code-mode-host":hostArchive}
  server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
   data,ok:=archives[r.URL.Path]
   if !ok {http.NotFound(w,r);return}
@@ -374,8 +380,9 @@ func TestManagedCodexReleaseRefreshWithDifferentBundledACP(t *testing.T) {
   return codexAsset{URL:server.URL+url,Name:name,SHA256:hex.EncodeToString(digest[:])}
  }
  codex:=asset("/codex","codex",cliArchive)
- oldAssets:=[]codexAsset{codex,asset("/old-acp","codex-acp",oldACP)}
- newAssets:=[]codexAsset{codex,asset("/new-acp","codex-acp",newACP)}
+ host:=asset("/codex-code-mode-host","codex-code-mode-host",hostArchive)
+ oldAssets:=[]codexAsset{codex,asset("/old-acp","codex-acp",oldACP),host}
+ newAssets:=[]codexAsset{codex,asset("/new-acp","codex-acp",newACP),host}
  root:=filepath.Join(os.Getenv("HOME"),".local","share","secretary","native","releases",codexPinnedVersion+"-"+codexACPPinnedVersion)
  oldCLI,oldPath,err:=installManagedCodexAssets(ctx,oldAssets,root,runtime.GOOS+"-"+runtime.GOARCH)
  if err!=nil {t.Fatal(err)}
@@ -575,6 +582,19 @@ func TestConcurrentCodexScopeUpgradeRejectsWithoutOverwritingLastGood(t *testing
  var rollback CodexPairInventory
  if err:=json.Unmarshal(data,&rollback);err!=nil {t.Fatal(err)}
  if rollback.Codex.Path!=first {t.Fatalf("rollback target overwritten by rejected concurrent upgrade: %s",rollback.Codex.Path)}
+}
+
+func TestCodexNativeAssetsIncludeTheCodeModeHost(t *testing.T) {
+	assets, err := codexNativeAssets()
+	if err != nil { t.Fatal(err) }
+	found := false
+	for _, asset := range assets {
+		if !strings.HasPrefix(asset.Name, "codex-code-mode-host") { continue }
+		found = true
+		if asset.SHA256 == "" || len(asset.SHA256) != 64 { t.Fatalf("code-mode host without a pinned digest: %+v", asset) }
+		if !strings.Contains(asset.URL, "codex-code-mode-host-") { t.Fatalf("code-mode host URL does not pin the upstream asset: %s", asset.URL) }
+	}
+	if !found { t.Fatal("the managed Codex pair ships without the code-mode host") }
 }
 
 func TestCodexNativePairReadyAcceptsSilentAuthorizedLoginStatus(t *testing.T) {
