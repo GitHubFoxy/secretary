@@ -22,6 +22,9 @@ func (r CodexRuntime) configured(request StartRequest) (ACPRuntime, error) {
 		return ACPRuntime{}, fmt.Errorf("codex: addressed replies are unavailable; use the canonical assistant final contract")
 	}
 	base := r.ACPRuntime
+	if base.Command == "/__secretary_codex_acp_inventory_unavailable__" {
+		return ACPRuntime{}, fmt.Errorf("Codex runtime unavailable: selected native inventory is not ready; configure the Codex pair, run secretary doctor and restart")
+	}
 	base.CodexMessagePhases = true
 	base.DrainPromptEvents = true
 	if model := strings.TrimSpace(profile.Model); model != "" && !isModelAlias(model) {
