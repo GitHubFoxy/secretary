@@ -322,19 +322,18 @@ func TestGenericTurnAnswerKeepsRejectingUnattributedChunk(t *testing.T) {
 	}
 }
 
-func TestCodexTurnAnswerIgnoresUnattributedFinalAnswerPhase(t *testing.T) {
-	a := newACPTurnAnswer()
-	a.codexText("", "final_answer", "черновик без идентификатора")
-	a.codexText("answer", "final_answer", "готово")
-	got, ok := a.codexFinal("end_turn")
-	if !ok || got != "готово" {
-		t.Fatalf("unattributed final answer shadowed the identified answer: %q ok=%t", got, ok)
-	}
-	b := newACPTurnAnswer()
-	b.codexText("answer", "final_answer", "готово")
-	b.codexText("", "final_answer", "черновик без идентификатора")
-	got, ok = b.codexFinal("end_turn")
-	if !ok || got != "готово" {
-		t.Fatalf("unattributed final answer shadowed the identified answer: %q ok=%t", got, ok)
+func TestCodexTurnAnswerRejectsUnattributedFinalAnswerPhase(t *testing.T) {
+	for _, order := range []string{"before", "after"} {
+		a := newACPTurnAnswer()
+		if order == "before" {
+			a.codexText("", "final_answer", "черновик без идентификатора")
+			a.codexText("answer", "final_answer", "готово")
+		} else {
+			a.codexText("answer", "final_answer", "готово")
+			a.codexText("", "final_answer", "черновик без идентификатора")
+		}
+		if got, ok := a.codexFinal("end_turn"); ok {
+			t.Fatalf("order %s accepted an unattributable answer: %q", order, got)
+		}
 	}
 }

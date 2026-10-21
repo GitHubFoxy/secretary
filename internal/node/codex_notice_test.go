@@ -202,18 +202,18 @@ func TestCodexAdapterNoticeKeepsTwoTurnsUsable(t *testing.T) {
 	}
 }
 
-func TestCodexUnattributedFinalAnswerDoesNotShadowIdentifiedFinalAnswer(t *testing.T) {
+func TestCodexUnattributedFinalAnswerFailsTheTurn(t *testing.T) {
 	for _, scenario := range []string{"idless-final-then-identified-final", "identified-final-then-idless-final"} {
 		t.Run(scenario, func(t *testing.T) {
 			result := codexNoticeResult(t, scenario)
-			if result.Status != "succeeded" {
-				t.Fatalf("scenario %s result=%+v", scenario, result)
+			if result.Status != "failed" {
+				t.Fatalf("scenario %s accepted an unattributed final answer: %+v", scenario, result)
 			}
-			if result.Summary != "готов" {
+			if !strings.Contains(result.Summary, "Terminal answer unavailable") {
 				t.Fatalf("scenario %s summary=%q", scenario, result.Summary)
 			}
-			if strings.Contains(result.Summary, "черновик") {
-				t.Fatalf("scenario %s leaked the unattributed final answer into the Summary: %q", scenario, result.Summary)
+			if strings.Contains(result.Summary, "черновик") || strings.Contains(result.Summary, "готов") {
+				t.Fatalf("scenario %s published an unattributable answer: %q", scenario, result.Summary)
 			}
 		})
 	}
