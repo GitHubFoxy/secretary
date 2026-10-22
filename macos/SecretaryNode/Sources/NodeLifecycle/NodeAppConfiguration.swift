@@ -69,9 +69,24 @@ public struct NodeAppConfiguration {
         guard fstat(descriptor, &metadata) == 0,
               (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
               (metadata.st_mode & 0o777) == 0o600,
-              metadata.st_uid == geteuid() else { return nil }
-        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
-        guard let data = try? handle.readToEnd(), data.count <= 65536 else { return nil }
+              metadata.st_uid == geteuid(),
+              metadata.st_size >= 0,
+              metadata.st_size <= 65536 else { return nil }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 8192)
+        while data.count <= 65536 {
+            let remaining = min(buffer.count, 65537 - data.count)
+            let count = buffer.withUnsafeMutableBytes { pointer in
+                read(descriptor, pointer.baseAddress, remaining)
+            }
+            guard count >= 0 else {
+                if errno == EINTR { continue }
+                return nil
+            }
+            if count == 0 { break }
+            data.append(contentsOf: buffer.prefix(count))
+        }
+        guard data.count <= 65536 else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
