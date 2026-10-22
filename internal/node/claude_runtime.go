@@ -262,6 +262,10 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("%w: start %q: %v", ErrClaudeCodeUnavailable, command, err)
 	}
+	root, rootErr := captureClaudeRoot(cmd)
+	if rootErr == nil {
+		session.claudeRoot = root
+	}
 	go session.run()
 	if len(resume) > 0 && resume[0] {
 		err = session.writeMessage(ctx, map[string]any{"type": "control_request", "request_id": "resume-initialize", "request": map[string]any{"subtype": "initialize"}})
@@ -299,6 +303,9 @@ type claudeSession struct {
 	writeGate chan struct{}
 	stopOnce  sync.Once
 	stopErr   error
+	claudeRoot claudeChild
+	canceling bool
+	pendingTerminal *Result
 	done      chan struct{}
 	closed    bool
 	cancel    bool
@@ -326,7 +333,7 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 		return err
 	}
 	s.stateMu.Lock()
-	if s.closed || s.active {
+	if s.closed || s.active || s.canceling {
 		s.stateMu.Unlock()
 		return errors.New("claude: session closed or Attempt still active")
 	}
@@ -368,22 +375,41 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 		s.stateMu.Unlock()
 		return nil
 	}
+	attempt := s.inputID
 	s.cancel = true
+	s.canceling = true
+	root := s.claudeRoot
 	s.stateMu.Unlock()
-	if err := cleanupClaudeAttemptProcesses(s.cmd); err != nil {
-		s.stateMu.Lock()
+	var err error
+	if root.pid == 0 {
+		err = errors.New("Claude root process identity was not captured")
+	} else {
+		err = cleanupClaudeAttemptProcesses(ctx, s.cmd, root)
+	}
+	if err == nil {
+		var id string
+		id, err = newClaudeSessionID()
+		if err == nil {
+			s.stateMu.Lock()
+			canInterrupt := s.active && s.inputID == attempt && !s.closed && s.pendingTerminal == nil
+			s.stateMu.Unlock()
+			if canInterrupt {
+				err = s.writeMessage(ctx, map[string]any{"type": "control_request", "request_id": id, "request": map[string]any{"subtype": "interrupt", "cancel_queued": true}})
+			}
+		}
+	}
+	s.stateMu.Lock()
+	if err != nil && s.active && s.inputID == attempt {
 		s.cancel = false
+	}
+	s.canceling = false
+	pending := s.pendingTerminal
+	s.pendingTerminal = nil
+	if pending != nil && s.active && s.inputID == attempt {
+		s.active = false
 		s.stateMu.Unlock()
-		return err
-	}
-	id, err := newClaudeSessionID()
-	if err != nil {
-		return err
-	}
-	err = s.writeMessage(ctx, map[string]any{"type": "control_request", "request_id": id, "request": map[string]any{"subtype": "interrupt", "cancel_queued": true}})
-	if err != nil {
-		s.stateMu.Lock()
-		s.cancel = false
+		s.result <- *pending
+	} else {
 		s.stateMu.Unlock()
 	}
 	return err
@@ -587,6 +613,12 @@ func (s *claudeSession) emitActivity(activity Activity) {
 func (s *claudeSession) emitResult(result Result) {
 	s.stateMu.Lock()
 	if !s.active {
+		s.stateMu.Unlock()
+		return
+	}
+	if s.canceling {
+		copy := result
+		s.pendingTerminal = &copy
 		s.stateMu.Unlock()
 		return
 	}
