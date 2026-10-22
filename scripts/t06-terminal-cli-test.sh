@@ -116,8 +116,721 @@ grep -q '^default_harness = "codex"$' "$STATE/config.toml" || fail "failed auth 
 "$ROOT/secretary" doctor >/dev/null || fail "Codex doctor stopped working after denied Claude auth"
 unset CLAUDE_AUTH_FAIL
 "$ROOT/secretary" setup --non-interactive --harness claude_code >/dev/null
-grep -q '^harness = "claude_code"$' "$STATE/config.toml" || fail "authorized Claude switch failed"
+grep -q '^harness = "claude_code"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$STATE/environment")" == "$before" ]] || fail "repeat setup rotated credentials"
+if "$ROOT/secretary" config >"$TMP/config-log" 2>&1; then fail "config unexpectedly accepted without TTY"; fi
+grep -q 'terminal' "$TMP/config-log" || fail "missing config TTY diagnostic"
+if command -v script >/dev/null 2>&1 && [[ "$(uname -s)" == Linux ]]; then
+  if ! printf '2\n\nwizard-node\n2\n5\n' | script -qec "$ROOT/secretary config" /dev/null >"$TMP/pty-log" 2>&1; then
+    cat "$TMP/pty-log" >&2
+    fail "interactive terminal wizard failed"
+  fi
+  grep -q '"node": "wizard-node"' "$STATE/node/config.json" || fail "interactive Node name not applied"
+  grep -q '"capacity": 2' "$STATE/node/config.json" || fail "interactive Node capacity not applied"
+fi
+"$ROOT/secretary" node setup --standalone --name test-node >/dev/null
+grep -q '"standalone": true' "$STATE/node/config.json" || fail "standalone config lost"
+"$ROOT/secretary" node setup --workspace frontend=/src/frontend --workspace backend=/src/backend >/dev/null
+"$ROOT/secretary" node setup --capacity 2 >/dev/null
+grep -q '"capacity": 2' "$STATE/node/config.json" || fail "node capacity was not updated"
+grep -q '"project_id": "frontend"' "$STATE/node/config.json" || fail "frontend mapping dropped by capacity edit"
+grep -q '"project_id": "backend"' "$STATE/node/config.json" || fail "backend mapping dropped by capacity edit"
+"$ROOT/secretary" node setup --workspace frontend=/new/frontend --workspace docs=/src/docs >/dev/null
+grep -q '"path": "/new/frontend"' "$STATE/node/config.json" || fail "explicit workspace update failed"
+grep -q '"project_id": "backend"' "$STATE/node/config.json" || fail "unmodified workspace disappeared"
+grep -q '"project_id": "docs"' "$STATE/node/config.json" || fail "second explicit workspace missing"
+before_node="$(cat "$STATE/node/config.json")"
+if "$ROOT/secretary" node setup --capacity -1 >/dev/null 2>&1; then fail "invalid capacity was accepted"; fi
+[[ "$(cat "$STATE/node/config.json")" == "$before_node" ]] || fail "invalid capacity altered Node config"
+"$ROOT/secretary" node setup --clear-workspaces >/dev/null
+if grep -q '"project_id"' "$STATE/node/config.json"; then fail "explicit workspace clear was ignored"; fi
+
+"$ROOT/secretary" install-service
+[[ -f "$HOME/.config/systemd/user/secretary.service" ]] || fail "Linux service unit missing"
+grep -q 'enable --now secretary.service' "$TEST_SYSTEMD_LOG" || fail "systemd service not enabled"
+"$ROOT/secretary" status | grep -q 'systemd' || fail "service status missing"
+"$ROOT/secretary" restart
+grep -q 'restart secretary.service' "$TEST_SYSTEMD_LOG" || fail "systemd restart not invoked"
+mkdir -p "$STATE/node/data"
+printf '{"node":"test-node"}\n' > "$STATE/node/data/identity.json"
+"$ROOT/secretary" node install-service
+[[ -f "$HOME/.config/systemd/user/secretary-node.service" ]] || fail "Linux Node unit missing"
+"$ROOT/secretary" node status | grep -q 'systemd' || fail "Node service status missing"
+"$ROOT/secretary" node restart
+grep -q 'stop secretary-node.service' "$TEST_SYSTEMD_LOG" || fail "Node restart did not stop unit"
+grep -q 'start secretary-node.service' "$TEST_SYSTEMD_LOG" || fail "Node restart did not start unit"
+"$ROOT/secretary" node uninstall-service
+"$ROOT/secretary" uninstall-service
+[[ ! -e "$HOME/.config/systemd/user/secretary.service" ]] || fail "service unit retained after uninstall"
+
+# Existing config.toml or a previously paired identity must not suppress
+# recovery of missing Node secrets on upgrade or an interrupted prior setup.
+export HOME="$TMP/upgrade-home" PATH="$CODBIN:/usr/bin:/bin"
+UPGRADE_STATE="$HOME/.local/share/secretary"
+mkdir -p "$UPGRADE_STATE/node/data"
+cp "$ROOT/internal/config/defaults/config.toml" "$UPGRADE_STATE/config.toml"
+printf "export SECRETARY_BOOTSTRAP_TOKEN='existing-bootstrap'\nexport SECRETARY_CUSTOM_VALUE='keep-me'\n" > "$UPGRADE_STATE/environment"
+printf '{"node":"legacy-paired"}\n' > "$UPGRADE_STATE/node/data/identity.json"
+export SECRETARY_NODE_PAIRING_TOKEN="ambient-not-persisted"
+export SECRETARY_NODE_ADMIN_TOKEN="ambient-not-persisted"
+adopt_codex_t06_pair
+before_upgrade_config="$(cat "$UPGRADE_STATE/config.toml")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$UPGRADE_STATE/config.toml")" == "$before_upgrade_config" ]] || fail "upgrade rewrote original config"
+grep -q '^export SECRETARY_BOOTSTRAP_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade lost bootstrap secret"
+grep -q "existing-bootstrap" "$UPGRADE_STATE/environment" || fail "upgrade rotated bootstrap"
+grep -q "keep-me" "$UPGRADE_STATE/environment" || fail "upgrade modified unrelated environment"
+grep -q '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade did not create pairing token"
+grep -q '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade did not create admin token"
+if grep -q 'ambient-not-persisted' "$UPGRADE_STATE/environment"; then fail "inherited environment was treated as persisted credentials"; fi
+before_upgrade_env="$(cat "$UPGRADE_STATE/environment")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$UPGRADE_STATE/environment")" == "$before_upgrade_env" ]] || fail "repeat upgrade rotated existing secrets"
+
+# A partial setup or manually incomplete environment is repaired one field
+# at a time, without rewriting valid credentials.
+grep -v '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" > "$TMP/retry-env"
+cp "$TMP/retry-env" "$UPGRADE_STATE/environment"
+pair_before="$(grep '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(grep '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment")" == "$pair_before" ]] || fail "retry rotated existing pairing token"
+grep -q '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" || fail "retry did not repair missing admin token"
+admin_before="$(grep '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment")"
+grep -v '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" > "$TMP/retry-env"
+cp "$TMP/retry-env" "$UPGRADE_STATE/environment"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(grep '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment")" == "$admin_before" ]] || fail "retry rotated existing admin token"
+grep -q '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" || fail "retry did not repair missing pairing token"
+unset SECRETARY_NODE_PAIRING_TOKEN SECRETARY_NODE_ADMIN_TOKEN
+
+# Native Codex setup adopts an explicit complete pair and never invokes npm.
+export HOME="$TMP/codex-native-adopt-home" PATH="$CODBIN:/usr/bin:/bin"
+adopt_codex_t06_pair
 "$ROOT/secretary" setup --non-interactive --harness codex >/dev/null
+"$ROOT/secretary" doctor >/dev/null
+"$ROOT/secretary" node doctor >/dev/null
+"$T06_NODE_BINARY" --codex-pair-action=show --codex-pair-scope=server | grep -q '"validated": true' || fail "Server native ACP pair not validated"
+"$T06_NODE_BINARY" --codex-pair-action=show --codex-pair-scope=node | grep -q '"validated": true' || fail "Node native ACP pair not validated"
+before_native="$(cat "$HOME/.local/share/secretary/environment")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$HOME/.local/share/secretary/environment")" == "$before_native" ]] || fail "repeat native setup rotated credentials"
+[[ ! -e "$CODBIN/npm" ]] || fail "native fixture unexpectedly required npm"
+
+# Native unauthed Codex is not preferred over an authorized Claude harness.
+export HOME="$TMP/auto-choice-home" PATH="$CODBIN:$CLAUDEBIN:/usr/bin:/bin"
+export T06_CODEX_AUTH_FAIL=1
+"$ROOT/secretary" setup --non-interactive >/dev/null
+AUTO_STATE="$HOME/.local/share/secretary"
+grep -q '^harness = "claude_code"$' "$AUTO_STATE/config.toml" || fail "unauthorized Codex wrongly won auto-selection"
+grep -q '^default_harness = "claude_code"$' "$AUTO_STATE/config.toml" || fail "auto-selection did not set Claude Worker defaults"
+[[ ! -e "$AUTO_STATE/native/releases" ]] || fail "unready native Codex auto-selection downloaded managed binaries"
+unset T06_CODEX_AUTH_FAIL
+
+export HOME="$TMP/claude-home" PATH="$CLAUDEBIN:/usr/bin:/bin"
+"$ROOT/secretary" setup --non-interactive
+STATE="$HOME/.local/share/secretary"
+grep -q '^harness = "claude_code"$' "$STATE/config.toml" || fail "Claude-only setup selected Codex"
+grep -q '^default_harness = "claude_code"$' "$STATE/config.toml" || fail "Claude worker default missing"
+"$ROOT/secretary" doctor >/dev/null
+"$ROOT/secretary" node doctor >/dev/null
+before="$(cat "$STATE/config.toml")"
+if "$ROOT/secretary" setup --non-interactive --harness unsupported >/dev/null 2>&1; then fail "invalid harness accepted"; fi
+[[ "$(cat "$STATE/config.toml")" == "$before" ]] || fail "invalid harness modified config"
+
+export HOME="$TMP/telegram-mac04-home" PATH="$CODBIN:/usr/bin:/bin"
+adopt_codex_t06_pair
+"$ROOT/secretary" setup --non-interactive --harness codex >/dev/null
+STATE="$HOME/.local/share/secretary"
+ENV_FILE="$STATE/environment"
+cp "$ENV_FILE" "$TMP/mac04-before"
+env -u SECRETARY_TELEGRAM_ENABLED -u SECRETARY_TELEGRAM_WEB_BASE_URL "$ROOT/secretary" doctor >/dev/null || fail "doctor rejected Telegram variables absent from environment"
+printf "export SECRETARY_TELEGRAM_ENABLED='true'\nexport SECRETARY_TELEGRAM_BOT_TOKEN='123:fixture-secret'\nexport SECRETARY_TELEGRAM_SERVER_CREDENTIAL='fixture-credential'\n" >> "$ENV_FILE"
+if "$ROOT/secretary" doctor >"$TMP/mac04-doctor" 2>&1; then fail "doctor accepted enabled Telegram without origin"; fi
+grep -q 'SECRETARY_TELEGRAM_WEB_BASE_URL' "$TMP/mac04-doctor" || fail "doctor omitted Telegram origin diagnostic"
+! grep -q 'fixture-secret\|fixture-credential' "$TMP/mac04-doctor" || fail "doctor exposed a credential"
+printf "export SECRETARY_TELEGRAM_WEB_BASE_URL='http://example.com'\n" >> "$ENV_FILE"
+if "$ROOT/secretary" doctor >"$TMP/mac04-doctor" 2>&1; then fail "doctor accepted HTTP Telegram origin"; fi
+sed -i "/SECRETARY_TELEGRAM_WEB_BASE_URL/d" "$ENV_FILE"
+printf "export SECRETARY_TELEGRAM_WEB_BASE_URL='https://localhost'\n" >> "$ENV_FILE"
+if "$ROOT/secretary" doctor >"$TMP/mac04-doctor" 2>&1; then fail "doctor accepted local Telegram origin"; fi
+sed -i "/SECRETARY_TELEGRAM_WEB_BASE_URL/d" "$ENV_FILE"
+printf "export SECRETARY_TELEGRAM_WEB_BASE_URL='https://example.com'\n" >> "$ENV_FILE"
+"$ROOT/secretary" doctor >/dev/null || fail "doctor rejected valid HTTPS Telegram origin"
+printf "export SECRETARY_TELEGRAM_ENABLED='false'\n" >> "$ENV_FILE"
+sed -i "/SECRETARY_TELEGRAM_WEB_BASE_URL/d" "$ENV_FILE"
+"$ROOT/secretary" doctor >/dev/null || fail "disabled Telegram required origin"
+
+export MAC04_ROOT="$ROOT" MAC04_STATE="$STATE" MAC04_ENV_FILE="$ENV_FILE"
+zsh <<'MAC04'
+source "$MAC04_ROOT/scripts/secretary-interactive.zsh"
+STATE="$MAC04_STATE"
+ENV_FILE="$MAC04_ENV_FILE"
+terminal_available() { return 0; }
+typeset -a answers
+integer position=0
+terminal_read() {
+  (( position++ ))
+  REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
+  return 0
+}
+terminal_secret() {
+  (( position++ ))
+  REPLY="${answers[position]}"
+  return 0
+}
+fail() { print -u2 "FAIL: $1"; exit 1; }
+set_answers() { answers=("$@"); position=0; }
+cp "$ENV_FILE" "$MAC04_STATE/mac04-before"
+set_answers yes 123:fixture-secret '' ''
+configure_telegram >/dev/null 2>&1 && fail "empty origin accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "empty origin changed environment"
+set_answers yes 123:fixture-secret '' 'https://localhost'
+configure_telegram >/dev/null 2>&1 && fail "local origin accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "invalid origin changed environment"
+for candidate in https://user@example.com https://example.com/path 'https://example.com?x=1' 'https://example.com??' 'https://example.com?x?' https://192.168.1.1; do
+  set_answers yes 123:fixture-secret '' "$candidate"
+  configure_telegram >/dev/null 2>&1 && fail "invalid Telegram origin accepted: $candidate"
+  cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "invalid origin modified environment"
+done
+set_answers yes
+terminal_secret() { return 1; }
+configure_telegram >/dev/null 2>&1 && fail "interrupted token input accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "cancel changed environment"
+terminal_secret() { (( position++ )); REPLY="${answers[position]}"; return 0; }
+terminal_read() {
+  (( position++ ))
+  if (( position == 4 )); then return 1; fi
+  REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
+  return 0
+}
+set_answers yes 123:fixture-secret '' https://example.com
+configure_telegram >/dev/null 2>&1 && fail "interrupted origin input accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "origin cancel changed environment"
+terminal_read() {
+  (( position++ ))
+  REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
+  return 0
+}
+terminal_secret() { (( position++ )); REPLY="${answers[position]}"; }
+set_answers yes 123:fixture-secret '' 'https://[2606:4700:4700::1111]'
+configure_telegram >/dev/null || fail "public IPv6 Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[2606:4700:4700::1111]' ]] || fail "public IPv6 origin not persisted"
+cp "$ENV_FILE" "$MAC04_STATE/mac04-ipv6"
+for candidate in 'https://[fd00::1]' 'https://[::1]' 'https://[0:0:0:0:0:0:00:1]' 'https://[fe80::1]' 'https://[2001::2::3]' 'https://[::ffff:192.168.1.1]'; do
+  set_answers yes '' '' "$candidate"
+  configure_telegram >/dev/null 2>&1 && fail "forbidden IPv6 Telegram origin accepted: $candidate"
+  cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-ipv6" || fail "invalid IPv6 origin changed environment"
+done
+set_answers yes '' '' 'https://[::ffff:8.8.8.8]'
+configure_telegram >/dev/null || fail "public IPv4-mapped IPv6 Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:8.8.8.8]' ]] || fail "public IPv4-mapped IPv6 origin not persisted"
+set_answers yes '' '' 'https://[::ffff:0.1.2.3]'
+configure_telegram >/dev/null || fail "Server-accepted 0/8 mapped IPv6 origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:0.1.2.3]' ]] || fail "0/8 mapped IPv6 origin not persisted"
+set_answers yes '' '' 'https://[::ffff:0.0.0.0]'
+configure_telegram >/dev/null 2>&1 && fail "mapped unspecified IPv4 origin accepted"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:0.1.2.3]' ]] || fail "invalid mapped IPv4 changed saved origin"
+set_answers yes '' '' 'https://example.com?'
+configure_telegram >/dev/null || fail "empty query marker Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://example.com?' ]] || fail "empty query marker origin not persisted"
+set_answers yes 123:fixture-secret '' https://example.com
+configure_telegram >/dev/null || fail "valid origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_ENABLED" == true && "$SECRETARY_TELEGRAM_WEB_BASE_URL" == https://example.com ]] || fail "valid origin was not persisted"
+cp "$ENV_FILE" "$MAC04_STATE/mac04-valid"
+set_answers yes '' '' ''
+configure_telegram >/dev/null || fail "repeat configuration rejected"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-valid" || fail "repeat configuration modified stored credentials or origin"
+MAC04
+"$ROOT/secretary" doctor >/dev/null || fail "doctor rejected interactive Telegram configuration"
+
+printf 'PASS: T06 Codex/Claude setup, upgrade/retry credential repair, authenticated auto-selection, workspace persistence and Linux lifecycle\n'
+ "$STATE/config.toml" || fail "authorized Claude switch failed"
+! grep -q '^reply_contract = "addressed-reply-v1"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$STATE/environment")" == "$before" ]] || fail "repeat setup rotated credentials"
+if "$ROOT/secretary" config >"$TMP/config-log" 2>&1; then fail "config unexpectedly accepted without TTY"; fi
+grep -q 'terminal' "$TMP/config-log" || fail "missing config TTY diagnostic"
+if command -v script >/dev/null 2>&1 && [[ "$(uname -s)" == Linux ]]; then
+  if ! printf '2\n\nwizard-node\n2\n5\n' | script -qec "$ROOT/secretary config" /dev/null >"$TMP/pty-log" 2>&1; then
+    cat "$TMP/pty-log" >&2
+    fail "interactive terminal wizard failed"
+  fi
+  grep -q '"node": "wizard-node"' "$STATE/node/config.json" || fail "interactive Node name not applied"
+  grep -q '"capacity": 2' "$STATE/node/config.json" || fail "interactive Node capacity not applied"
+fi
+"$ROOT/secretary" node setup --standalone --name test-node >/dev/null
+grep -q '"standalone": true' "$STATE/node/config.json" || fail "standalone config lost"
+"$ROOT/secretary" node setup --workspace frontend=/src/frontend --workspace backend=/src/backend >/dev/null
+"$ROOT/secretary" node setup --capacity 2 >/dev/null
+grep -q '"capacity": 2' "$STATE/node/config.json" || fail "node capacity was not updated"
+grep -q '"project_id": "frontend"' "$STATE/node/config.json" || fail "frontend mapping dropped by capacity edit"
+grep -q '"project_id": "backend"' "$STATE/node/config.json" || fail "backend mapping dropped by capacity edit"
+"$ROOT/secretary" node setup --workspace frontend=/new/frontend --workspace docs=/src/docs >/dev/null
+grep -q '"path": "/new/frontend"' "$STATE/node/config.json" || fail "explicit workspace update failed"
+grep -q '"project_id": "backend"' "$STATE/node/config.json" || fail "unmodified workspace disappeared"
+grep -q '"project_id": "docs"' "$STATE/node/config.json" || fail "second explicit workspace missing"
+before_node="$(cat "$STATE/node/config.json")"
+if "$ROOT/secretary" node setup --capacity -1 >/dev/null 2>&1; then fail "invalid capacity was accepted"; fi
+[[ "$(cat "$STATE/node/config.json")" == "$before_node" ]] || fail "invalid capacity altered Node config"
+"$ROOT/secretary" node setup --clear-workspaces >/dev/null
+if grep -q '"project_id"' "$STATE/node/config.json"; then fail "explicit workspace clear was ignored"; fi
+
+"$ROOT/secretary" install-service
+[[ -f "$HOME/.config/systemd/user/secretary.service" ]] || fail "Linux service unit missing"
+grep -q 'enable --now secretary.service' "$TEST_SYSTEMD_LOG" || fail "systemd service not enabled"
+"$ROOT/secretary" status | grep -q 'systemd' || fail "service status missing"
+"$ROOT/secretary" restart
+grep -q 'restart secretary.service' "$TEST_SYSTEMD_LOG" || fail "systemd restart not invoked"
+mkdir -p "$STATE/node/data"
+printf '{"node":"test-node"}\n' > "$STATE/node/data/identity.json"
+"$ROOT/secretary" node install-service
+[[ -f "$HOME/.config/systemd/user/secretary-node.service" ]] || fail "Linux Node unit missing"
+"$ROOT/secretary" node status | grep -q 'systemd' || fail "Node service status missing"
+"$ROOT/secretary" node restart
+grep -q 'stop secretary-node.service' "$TEST_SYSTEMD_LOG" || fail "Node restart did not stop unit"
+grep -q 'start secretary-node.service' "$TEST_SYSTEMD_LOG" || fail "Node restart did not start unit"
+"$ROOT/secretary" node uninstall-service
+"$ROOT/secretary" uninstall-service
+[[ ! -e "$HOME/.config/systemd/user/secretary.service" ]] || fail "service unit retained after uninstall"
+
+# Existing config.toml or a previously paired identity must not suppress
+# recovery of missing Node secrets on upgrade or an interrupted prior setup.
+export HOME="$TMP/upgrade-home" PATH="$CODBIN:/usr/bin:/bin"
+UPGRADE_STATE="$HOME/.local/share/secretary"
+mkdir -p "$UPGRADE_STATE/node/data"
+cp "$ROOT/internal/config/defaults/config.toml" "$UPGRADE_STATE/config.toml"
+printf "export SECRETARY_BOOTSTRAP_TOKEN='existing-bootstrap'\nexport SECRETARY_CUSTOM_VALUE='keep-me'\n" > "$UPGRADE_STATE/environment"
+printf '{"node":"legacy-paired"}\n' > "$UPGRADE_STATE/node/data/identity.json"
+export SECRETARY_NODE_PAIRING_TOKEN="ambient-not-persisted"
+export SECRETARY_NODE_ADMIN_TOKEN="ambient-not-persisted"
+adopt_codex_t06_pair
+before_upgrade_config="$(cat "$UPGRADE_STATE/config.toml")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$UPGRADE_STATE/config.toml")" == "$before_upgrade_config" ]] || fail "upgrade rewrote original config"
+grep -q '^export SECRETARY_BOOTSTRAP_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade lost bootstrap secret"
+grep -q "existing-bootstrap" "$UPGRADE_STATE/environment" || fail "upgrade rotated bootstrap"
+grep -q "keep-me" "$UPGRADE_STATE/environment" || fail "upgrade modified unrelated environment"
+grep -q '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade did not create pairing token"
+grep -q '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade did not create admin token"
+if grep -q 'ambient-not-persisted' "$UPGRADE_STATE/environment"; then fail "inherited environment was treated as persisted credentials"; fi
+before_upgrade_env="$(cat "$UPGRADE_STATE/environment")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$UPGRADE_STATE/environment")" == "$before_upgrade_env" ]] || fail "repeat upgrade rotated existing secrets"
+
+# A partial setup or manually incomplete environment is repaired one field
+# at a time, without rewriting valid credentials.
+grep -v '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" > "$TMP/retry-env"
+cp "$TMP/retry-env" "$UPGRADE_STATE/environment"
+pair_before="$(grep '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(grep '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment")" == "$pair_before" ]] || fail "retry rotated existing pairing token"
+grep -q '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" || fail "retry did not repair missing admin token"
+admin_before="$(grep '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment")"
+grep -v '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" > "$TMP/retry-env"
+cp "$TMP/retry-env" "$UPGRADE_STATE/environment"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(grep '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment")" == "$admin_before" ]] || fail "retry rotated existing admin token"
+grep -q '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" || fail "retry did not repair missing pairing token"
+unset SECRETARY_NODE_PAIRING_TOKEN SECRETARY_NODE_ADMIN_TOKEN
+
+# Native Codex setup adopts an explicit complete pair and never invokes npm.
+export HOME="$TMP/codex-native-adopt-home" PATH="$CODBIN:/usr/bin:/bin"
+adopt_codex_t06_pair
+"$ROOT/secretary" setup --non-interactive --harness codex >/dev/null
+"$ROOT/secretary" doctor >/dev/null
+"$ROOT/secretary" node doctor >/dev/null
+"$T06_NODE_BINARY" --codex-pair-action=show --codex-pair-scope=server | grep -q '"validated": true' || fail "Server native ACP pair not validated"
+"$T06_NODE_BINARY" --codex-pair-action=show --codex-pair-scope=node | grep -q '"validated": true' || fail "Node native ACP pair not validated"
+before_native="$(cat "$HOME/.local/share/secretary/environment")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$HOME/.local/share/secretary/environment")" == "$before_native" ]] || fail "repeat native setup rotated credentials"
+[[ ! -e "$CODBIN/npm" ]] || fail "native fixture unexpectedly required npm"
+
+# Native unauthed Codex is not preferred over an authorized Claude harness.
+export HOME="$TMP/auto-choice-home" PATH="$CODBIN:$CLAUDEBIN:/usr/bin:/bin"
+export T06_CODEX_AUTH_FAIL=1
+"$ROOT/secretary" setup --non-interactive >/dev/null
+AUTO_STATE="$HOME/.local/share/secretary"
+grep -q '^harness = "claude_code"$' "$AUTO_STATE/config.toml" || fail "unauthorized Codex wrongly won auto-selection"
+grep -q '^default_harness = "claude_code"$' "$AUTO_STATE/config.toml" || fail "auto-selection did not set Claude Worker defaults"
+[[ ! -e "$AUTO_STATE/native/releases" ]] || fail "unready native Codex auto-selection downloaded managed binaries"
+unset T06_CODEX_AUTH_FAIL
+
+export HOME="$TMP/claude-home" PATH="$CLAUDEBIN:/usr/bin:/bin"
+"$ROOT/secretary" setup --non-interactive
+STATE="$HOME/.local/share/secretary"
+grep -q '^harness = "claude_code"$' "$STATE/config.toml" || fail "Claude-only setup selected Codex"
+grep -q '^default_harness = "claude_code"$' "$STATE/config.toml" || fail "Claude worker default missing"
+"$ROOT/secretary" doctor >/dev/null
+"$ROOT/secretary" node doctor >/dev/null
+before="$(cat "$STATE/config.toml")"
+if "$ROOT/secretary" setup --non-interactive --harness unsupported >/dev/null 2>&1; then fail "invalid harness accepted"; fi
+[[ "$(cat "$STATE/config.toml")" == "$before" ]] || fail "invalid harness modified config"
+
+export HOME="$TMP/telegram-mac04-home" PATH="$CODBIN:/usr/bin:/bin"
+adopt_codex_t06_pair
+"$ROOT/secretary" setup --non-interactive --harness codex >/dev/null
+STATE="$HOME/.local/share/secretary"
+ENV_FILE="$STATE/environment"
+cp "$ENV_FILE" "$TMP/mac04-before"
+env -u SECRETARY_TELEGRAM_ENABLED -u SECRETARY_TELEGRAM_WEB_BASE_URL "$ROOT/secretary" doctor >/dev/null || fail "doctor rejected Telegram variables absent from environment"
+printf "export SECRETARY_TELEGRAM_ENABLED='true'\nexport SECRETARY_TELEGRAM_BOT_TOKEN='123:fixture-secret'\nexport SECRETARY_TELEGRAM_SERVER_CREDENTIAL='fixture-credential'\n" >> "$ENV_FILE"
+if "$ROOT/secretary" doctor >"$TMP/mac04-doctor" 2>&1; then fail "doctor accepted enabled Telegram without origin"; fi
+grep -q 'SECRETARY_TELEGRAM_WEB_BASE_URL' "$TMP/mac04-doctor" || fail "doctor omitted Telegram origin diagnostic"
+! grep -q 'fixture-secret\|fixture-credential' "$TMP/mac04-doctor" || fail "doctor exposed a credential"
+printf "export SECRETARY_TELEGRAM_WEB_BASE_URL='http://example.com'\n" >> "$ENV_FILE"
+if "$ROOT/secretary" doctor >"$TMP/mac04-doctor" 2>&1; then fail "doctor accepted HTTP Telegram origin"; fi
+sed -i "/SECRETARY_TELEGRAM_WEB_BASE_URL/d" "$ENV_FILE"
+printf "export SECRETARY_TELEGRAM_WEB_BASE_URL='https://localhost'\n" >> "$ENV_FILE"
+if "$ROOT/secretary" doctor >"$TMP/mac04-doctor" 2>&1; then fail "doctor accepted local Telegram origin"; fi
+sed -i "/SECRETARY_TELEGRAM_WEB_BASE_URL/d" "$ENV_FILE"
+printf "export SECRETARY_TELEGRAM_WEB_BASE_URL='https://example.com'\n" >> "$ENV_FILE"
+"$ROOT/secretary" doctor >/dev/null || fail "doctor rejected valid HTTPS Telegram origin"
+printf "export SECRETARY_TELEGRAM_ENABLED='false'\n" >> "$ENV_FILE"
+sed -i "/SECRETARY_TELEGRAM_WEB_BASE_URL/d" "$ENV_FILE"
+"$ROOT/secretary" doctor >/dev/null || fail "disabled Telegram required origin"
+
+export MAC04_ROOT="$ROOT" MAC04_STATE="$STATE" MAC04_ENV_FILE="$ENV_FILE"
+zsh <<'MAC04'
+source "$MAC04_ROOT/scripts/secretary-interactive.zsh"
+STATE="$MAC04_STATE"
+ENV_FILE="$MAC04_ENV_FILE"
+terminal_available() { return 0; }
+typeset -a answers
+integer position=0
+terminal_read() {
+  (( position++ ))
+  REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
+  return 0
+}
+terminal_secret() {
+  (( position++ ))
+  REPLY="${answers[position]}"
+  return 0
+}
+fail() { print -u2 "FAIL: $1"; exit 1; }
+set_answers() { answers=("$@"); position=0; }
+cp "$ENV_FILE" "$MAC04_STATE/mac04-before"
+set_answers yes 123:fixture-secret '' ''
+configure_telegram >/dev/null 2>&1 && fail "empty origin accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "empty origin changed environment"
+set_answers yes 123:fixture-secret '' 'https://localhost'
+configure_telegram >/dev/null 2>&1 && fail "local origin accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "invalid origin changed environment"
+for candidate in https://user@example.com https://example.com/path 'https://example.com?x=1' 'https://example.com??' 'https://example.com?x?' https://192.168.1.1; do
+  set_answers yes 123:fixture-secret '' "$candidate"
+  configure_telegram >/dev/null 2>&1 && fail "invalid Telegram origin accepted: $candidate"
+  cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "invalid origin modified environment"
+done
+set_answers yes
+terminal_secret() { return 1; }
+configure_telegram >/dev/null 2>&1 && fail "interrupted token input accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "cancel changed environment"
+terminal_secret() { (( position++ )); REPLY="${answers[position]}"; return 0; }
+terminal_read() {
+  (( position++ ))
+  if (( position == 4 )); then return 1; fi
+  REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
+  return 0
+}
+set_answers yes 123:fixture-secret '' https://example.com
+configure_telegram >/dev/null 2>&1 && fail "interrupted origin input accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "origin cancel changed environment"
+terminal_read() {
+  (( position++ ))
+  REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
+  return 0
+}
+terminal_secret() { (( position++ )); REPLY="${answers[position]}"; }
+set_answers yes 123:fixture-secret '' 'https://[2606:4700:4700::1111]'
+configure_telegram >/dev/null || fail "public IPv6 Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[2606:4700:4700::1111]' ]] || fail "public IPv6 origin not persisted"
+cp "$ENV_FILE" "$MAC04_STATE/mac04-ipv6"
+for candidate in 'https://[fd00::1]' 'https://[::1]' 'https://[0:0:0:0:0:0:00:1]' 'https://[fe80::1]' 'https://[2001::2::3]' 'https://[::ffff:192.168.1.1]'; do
+  set_answers yes '' '' "$candidate"
+  configure_telegram >/dev/null 2>&1 && fail "forbidden IPv6 Telegram origin accepted: $candidate"
+  cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-ipv6" || fail "invalid IPv6 origin changed environment"
+done
+set_answers yes '' '' 'https://[::ffff:8.8.8.8]'
+configure_telegram >/dev/null || fail "public IPv4-mapped IPv6 Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:8.8.8.8]' ]] || fail "public IPv4-mapped IPv6 origin not persisted"
+set_answers yes '' '' 'https://[::ffff:0.1.2.3]'
+configure_telegram >/dev/null || fail "Server-accepted 0/8 mapped IPv6 origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:0.1.2.3]' ]] || fail "0/8 mapped IPv6 origin not persisted"
+set_answers yes '' '' 'https://[::ffff:0.0.0.0]'
+configure_telegram >/dev/null 2>&1 && fail "mapped unspecified IPv4 origin accepted"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:0.1.2.3]' ]] || fail "invalid mapped IPv4 changed saved origin"
+set_answers yes '' '' 'https://example.com?'
+configure_telegram >/dev/null || fail "empty query marker Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://example.com?' ]] || fail "empty query marker origin not persisted"
+set_answers yes 123:fixture-secret '' https://example.com
+configure_telegram >/dev/null || fail "valid origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_ENABLED" == true && "$SECRETARY_TELEGRAM_WEB_BASE_URL" == https://example.com ]] || fail "valid origin was not persisted"
+cp "$ENV_FILE" "$MAC04_STATE/mac04-valid"
+set_answers yes '' '' ''
+configure_telegram >/dev/null || fail "repeat configuration rejected"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-valid" || fail "repeat configuration modified stored credentials or origin"
+MAC04
+"$ROOT/secretary" doctor >/dev/null || fail "doctor rejected interactive Telegram configuration"
+
+printf 'PASS: T06 Codex/Claude setup, upgrade/retry credential repair, authenticated auto-selection, workspace persistence and Linux lifecycle\n'
+ "$STATE/config.toml" || fail "Claude inherited Codex addressed contract"
+"$ROOT/secretary" setup --non-interactive --harness codex >/dev/null
+grep -q '^reply_contract = "addressed-reply-v1"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$STATE/environment")" == "$before" ]] || fail "repeat setup rotated credentials"
+if "$ROOT/secretary" config >"$TMP/config-log" 2>&1; then fail "config unexpectedly accepted without TTY"; fi
+grep -q 'terminal' "$TMP/config-log" || fail "missing config TTY diagnostic"
+if command -v script >/dev/null 2>&1 && [[ "$(uname -s)" == Linux ]]; then
+  if ! printf '2\n\nwizard-node\n2\n5\n' | script -qec "$ROOT/secretary config" /dev/null >"$TMP/pty-log" 2>&1; then
+    cat "$TMP/pty-log" >&2
+    fail "interactive terminal wizard failed"
+  fi
+  grep -q '"node": "wizard-node"' "$STATE/node/config.json" || fail "interactive Node name not applied"
+  grep -q '"capacity": 2' "$STATE/node/config.json" || fail "interactive Node capacity not applied"
+fi
+"$ROOT/secretary" node setup --standalone --name test-node >/dev/null
+grep -q '"standalone": true' "$STATE/node/config.json" || fail "standalone config lost"
+"$ROOT/secretary" node setup --workspace frontend=/src/frontend --workspace backend=/src/backend >/dev/null
+"$ROOT/secretary" node setup --capacity 2 >/dev/null
+grep -q '"capacity": 2' "$STATE/node/config.json" || fail "node capacity was not updated"
+grep -q '"project_id": "frontend"' "$STATE/node/config.json" || fail "frontend mapping dropped by capacity edit"
+grep -q '"project_id": "backend"' "$STATE/node/config.json" || fail "backend mapping dropped by capacity edit"
+"$ROOT/secretary" node setup --workspace frontend=/new/frontend --workspace docs=/src/docs >/dev/null
+grep -q '"path": "/new/frontend"' "$STATE/node/config.json" || fail "explicit workspace update failed"
+grep -q '"project_id": "backend"' "$STATE/node/config.json" || fail "unmodified workspace disappeared"
+grep -q '"project_id": "docs"' "$STATE/node/config.json" || fail "second explicit workspace missing"
+before_node="$(cat "$STATE/node/config.json")"
+if "$ROOT/secretary" node setup --capacity -1 >/dev/null 2>&1; then fail "invalid capacity was accepted"; fi
+[[ "$(cat "$STATE/node/config.json")" == "$before_node" ]] || fail "invalid capacity altered Node config"
+"$ROOT/secretary" node setup --clear-workspaces >/dev/null
+if grep -q '"project_id"' "$STATE/node/config.json"; then fail "explicit workspace clear was ignored"; fi
+
+"$ROOT/secretary" install-service
+[[ -f "$HOME/.config/systemd/user/secretary.service" ]] || fail "Linux service unit missing"
+grep -q 'enable --now secretary.service' "$TEST_SYSTEMD_LOG" || fail "systemd service not enabled"
+"$ROOT/secretary" status | grep -q 'systemd' || fail "service status missing"
+"$ROOT/secretary" restart
+grep -q 'restart secretary.service' "$TEST_SYSTEMD_LOG" || fail "systemd restart not invoked"
+mkdir -p "$STATE/node/data"
+printf '{"node":"test-node"}\n' > "$STATE/node/data/identity.json"
+"$ROOT/secretary" node install-service
+[[ -f "$HOME/.config/systemd/user/secretary-node.service" ]] || fail "Linux Node unit missing"
+"$ROOT/secretary" node status | grep -q 'systemd' || fail "Node service status missing"
+"$ROOT/secretary" node restart
+grep -q 'stop secretary-node.service' "$TEST_SYSTEMD_LOG" || fail "Node restart did not stop unit"
+grep -q 'start secretary-node.service' "$TEST_SYSTEMD_LOG" || fail "Node restart did not start unit"
+"$ROOT/secretary" node uninstall-service
+"$ROOT/secretary" uninstall-service
+[[ ! -e "$HOME/.config/systemd/user/secretary.service" ]] || fail "service unit retained after uninstall"
+
+# Existing config.toml or a previously paired identity must not suppress
+# recovery of missing Node secrets on upgrade or an interrupted prior setup.
+export HOME="$TMP/upgrade-home" PATH="$CODBIN:/usr/bin:/bin"
+UPGRADE_STATE="$HOME/.local/share/secretary"
+mkdir -p "$UPGRADE_STATE/node/data"
+cp "$ROOT/internal/config/defaults/config.toml" "$UPGRADE_STATE/config.toml"
+printf "export SECRETARY_BOOTSTRAP_TOKEN='existing-bootstrap'\nexport SECRETARY_CUSTOM_VALUE='keep-me'\n" > "$UPGRADE_STATE/environment"
+printf '{"node":"legacy-paired"}\n' > "$UPGRADE_STATE/node/data/identity.json"
+export SECRETARY_NODE_PAIRING_TOKEN="ambient-not-persisted"
+export SECRETARY_NODE_ADMIN_TOKEN="ambient-not-persisted"
+adopt_codex_t06_pair
+before_upgrade_config="$(cat "$UPGRADE_STATE/config.toml")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$UPGRADE_STATE/config.toml")" == "$before_upgrade_config" ]] || fail "upgrade rewrote original config"
+grep -q '^export SECRETARY_BOOTSTRAP_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade lost bootstrap secret"
+grep -q "existing-bootstrap" "$UPGRADE_STATE/environment" || fail "upgrade rotated bootstrap"
+grep -q "keep-me" "$UPGRADE_STATE/environment" || fail "upgrade modified unrelated environment"
+grep -q '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade did not create pairing token"
+grep -q '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" || fail "upgrade did not create admin token"
+if grep -q 'ambient-not-persisted' "$UPGRADE_STATE/environment"; then fail "inherited environment was treated as persisted credentials"; fi
+before_upgrade_env="$(cat "$UPGRADE_STATE/environment")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$UPGRADE_STATE/environment")" == "$before_upgrade_env" ]] || fail "repeat upgrade rotated existing secrets"
+
+# A partial setup or manually incomplete environment is repaired one field
+# at a time, without rewriting valid credentials.
+grep -v '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" > "$TMP/retry-env"
+cp "$TMP/retry-env" "$UPGRADE_STATE/environment"
+pair_before="$(grep '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(grep '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment")" == "$pair_before" ]] || fail "retry rotated existing pairing token"
+grep -q '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment" || fail "retry did not repair missing admin token"
+admin_before="$(grep '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment")"
+grep -v '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" > "$TMP/retry-env"
+cp "$TMP/retry-env" "$UPGRADE_STATE/environment"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(grep '^export SECRETARY_NODE_ADMIN_TOKEN=' "$UPGRADE_STATE/environment")" == "$admin_before" ]] || fail "retry rotated existing admin token"
+grep -q '^export SECRETARY_NODE_PAIRING_TOKEN=' "$UPGRADE_STATE/environment" || fail "retry did not repair missing pairing token"
+unset SECRETARY_NODE_PAIRING_TOKEN SECRETARY_NODE_ADMIN_TOKEN
+
+# Native Codex setup adopts an explicit complete pair and never invokes npm.
+export HOME="$TMP/codex-native-adopt-home" PATH="$CODBIN:/usr/bin:/bin"
+adopt_codex_t06_pair
+"$ROOT/secretary" setup --non-interactive --harness codex >/dev/null
+"$ROOT/secretary" doctor >/dev/null
+"$ROOT/secretary" node doctor >/dev/null
+"$T06_NODE_BINARY" --codex-pair-action=show --codex-pair-scope=server | grep -q '"validated": true' || fail "Server native ACP pair not validated"
+"$T06_NODE_BINARY" --codex-pair-action=show --codex-pair-scope=node | grep -q '"validated": true' || fail "Node native ACP pair not validated"
+before_native="$(cat "$HOME/.local/share/secretary/environment")"
+"$ROOT/secretary" setup --non-interactive >/dev/null
+[[ "$(cat "$HOME/.local/share/secretary/environment")" == "$before_native" ]] || fail "repeat native setup rotated credentials"
+[[ ! -e "$CODBIN/npm" ]] || fail "native fixture unexpectedly required npm"
+
+# Native unauthed Codex is not preferred over an authorized Claude harness.
+export HOME="$TMP/auto-choice-home" PATH="$CODBIN:$CLAUDEBIN:/usr/bin:/bin"
+export T06_CODEX_AUTH_FAIL=1
+"$ROOT/secretary" setup --non-interactive >/dev/null
+AUTO_STATE="$HOME/.local/share/secretary"
+grep -q '^harness = "claude_code"$' "$AUTO_STATE/config.toml" || fail "unauthorized Codex wrongly won auto-selection"
+grep -q '^default_harness = "claude_code"$' "$AUTO_STATE/config.toml" || fail "auto-selection did not set Claude Worker defaults"
+[[ ! -e "$AUTO_STATE/native/releases" ]] || fail "unready native Codex auto-selection downloaded managed binaries"
+unset T06_CODEX_AUTH_FAIL
+
+export HOME="$TMP/claude-home" PATH="$CLAUDEBIN:/usr/bin:/bin"
+"$ROOT/secretary" setup --non-interactive
+STATE="$HOME/.local/share/secretary"
+grep -q '^harness = "claude_code"$' "$STATE/config.toml" || fail "Claude-only setup selected Codex"
+grep -q '^default_harness = "claude_code"$' "$STATE/config.toml" || fail "Claude worker default missing"
+"$ROOT/secretary" doctor >/dev/null
+"$ROOT/secretary" node doctor >/dev/null
+before="$(cat "$STATE/config.toml")"
+if "$ROOT/secretary" setup --non-interactive --harness unsupported >/dev/null 2>&1; then fail "invalid harness accepted"; fi
+[[ "$(cat "$STATE/config.toml")" == "$before" ]] || fail "invalid harness modified config"
+
+export HOME="$TMP/telegram-mac04-home" PATH="$CODBIN:/usr/bin:/bin"
+adopt_codex_t06_pair
+"$ROOT/secretary" setup --non-interactive --harness codex >/dev/null
+STATE="$HOME/.local/share/secretary"
+ENV_FILE="$STATE/environment"
+cp "$ENV_FILE" "$TMP/mac04-before"
+env -u SECRETARY_TELEGRAM_ENABLED -u SECRETARY_TELEGRAM_WEB_BASE_URL "$ROOT/secretary" doctor >/dev/null || fail "doctor rejected Telegram variables absent from environment"
+printf "export SECRETARY_TELEGRAM_ENABLED='true'\nexport SECRETARY_TELEGRAM_BOT_TOKEN='123:fixture-secret'\nexport SECRETARY_TELEGRAM_SERVER_CREDENTIAL='fixture-credential'\n" >> "$ENV_FILE"
+if "$ROOT/secretary" doctor >"$TMP/mac04-doctor" 2>&1; then fail "doctor accepted enabled Telegram without origin"; fi
+grep -q 'SECRETARY_TELEGRAM_WEB_BASE_URL' "$TMP/mac04-doctor" || fail "doctor omitted Telegram origin diagnostic"
+! grep -q 'fixture-secret\|fixture-credential' "$TMP/mac04-doctor" || fail "doctor exposed a credential"
+printf "export SECRETARY_TELEGRAM_WEB_BASE_URL='http://example.com'\n" >> "$ENV_FILE"
+if "$ROOT/secretary" doctor >"$TMP/mac04-doctor" 2>&1; then fail "doctor accepted HTTP Telegram origin"; fi
+sed -i "/SECRETARY_TELEGRAM_WEB_BASE_URL/d" "$ENV_FILE"
+printf "export SECRETARY_TELEGRAM_WEB_BASE_URL='https://localhost'\n" >> "$ENV_FILE"
+if "$ROOT/secretary" doctor >"$TMP/mac04-doctor" 2>&1; then fail "doctor accepted local Telegram origin"; fi
+sed -i "/SECRETARY_TELEGRAM_WEB_BASE_URL/d" "$ENV_FILE"
+printf "export SECRETARY_TELEGRAM_WEB_BASE_URL='https://example.com'\n" >> "$ENV_FILE"
+"$ROOT/secretary" doctor >/dev/null || fail "doctor rejected valid HTTPS Telegram origin"
+printf "export SECRETARY_TELEGRAM_ENABLED='false'\n" >> "$ENV_FILE"
+sed -i "/SECRETARY_TELEGRAM_WEB_BASE_URL/d" "$ENV_FILE"
+"$ROOT/secretary" doctor >/dev/null || fail "disabled Telegram required origin"
+
+export MAC04_ROOT="$ROOT" MAC04_STATE="$STATE" MAC04_ENV_FILE="$ENV_FILE"
+zsh <<'MAC04'
+source "$MAC04_ROOT/scripts/secretary-interactive.zsh"
+STATE="$MAC04_STATE"
+ENV_FILE="$MAC04_ENV_FILE"
+terminal_available() { return 0; }
+typeset -a answers
+integer position=0
+terminal_read() {
+  (( position++ ))
+  REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
+  return 0
+}
+terminal_secret() {
+  (( position++ ))
+  REPLY="${answers[position]}"
+  return 0
+}
+fail() { print -u2 "FAIL: $1"; exit 1; }
+set_answers() { answers=("$@"); position=0; }
+cp "$ENV_FILE" "$MAC04_STATE/mac04-before"
+set_answers yes 123:fixture-secret '' ''
+configure_telegram >/dev/null 2>&1 && fail "empty origin accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "empty origin changed environment"
+set_answers yes 123:fixture-secret '' 'https://localhost'
+configure_telegram >/dev/null 2>&1 && fail "local origin accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "invalid origin changed environment"
+for candidate in https://user@example.com https://example.com/path 'https://example.com?x=1' 'https://example.com??' 'https://example.com?x?' https://192.168.1.1; do
+  set_answers yes 123:fixture-secret '' "$candidate"
+  configure_telegram >/dev/null 2>&1 && fail "invalid Telegram origin accepted: $candidate"
+  cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "invalid origin modified environment"
+done
+set_answers yes
+terminal_secret() { return 1; }
+configure_telegram >/dev/null 2>&1 && fail "interrupted token input accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "cancel changed environment"
+terminal_secret() { (( position++ )); REPLY="${answers[position]}"; return 0; }
+terminal_read() {
+  (( position++ ))
+  if (( position == 4 )); then return 1; fi
+  REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
+  return 0
+}
+set_answers yes 123:fixture-secret '' https://example.com
+configure_telegram >/dev/null 2>&1 && fail "interrupted origin input accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "origin cancel changed environment"
+terminal_read() {
+  (( position++ ))
+  REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
+  return 0
+}
+terminal_secret() { (( position++ )); REPLY="${answers[position]}"; }
+set_answers yes 123:fixture-secret '' 'https://[2606:4700:4700::1111]'
+configure_telegram >/dev/null || fail "public IPv6 Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[2606:4700:4700::1111]' ]] || fail "public IPv6 origin not persisted"
+cp "$ENV_FILE" "$MAC04_STATE/mac04-ipv6"
+for candidate in 'https://[fd00::1]' 'https://[::1]' 'https://[0:0:0:0:0:0:00:1]' 'https://[fe80::1]' 'https://[2001::2::3]' 'https://[::ffff:192.168.1.1]'; do
+  set_answers yes '' '' "$candidate"
+  configure_telegram >/dev/null 2>&1 && fail "forbidden IPv6 Telegram origin accepted: $candidate"
+  cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-ipv6" || fail "invalid IPv6 origin changed environment"
+done
+set_answers yes '' '' 'https://[::ffff:8.8.8.8]'
+configure_telegram >/dev/null || fail "public IPv4-mapped IPv6 Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:8.8.8.8]' ]] || fail "public IPv4-mapped IPv6 origin not persisted"
+set_answers yes '' '' 'https://[::ffff:0.1.2.3]'
+configure_telegram >/dev/null || fail "Server-accepted 0/8 mapped IPv6 origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:0.1.2.3]' ]] || fail "0/8 mapped IPv6 origin not persisted"
+set_answers yes '' '' 'https://[::ffff:0.0.0.0]'
+configure_telegram >/dev/null 2>&1 && fail "mapped unspecified IPv4 origin accepted"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:0.1.2.3]' ]] || fail "invalid mapped IPv4 changed saved origin"
+set_answers yes '' '' 'https://example.com?'
+configure_telegram >/dev/null || fail "empty query marker Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://example.com?' ]] || fail "empty query marker origin not persisted"
+set_answers yes 123:fixture-secret '' https://example.com
+configure_telegram >/dev/null || fail "valid origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_ENABLED" == true && "$SECRETARY_TELEGRAM_WEB_BASE_URL" == https://example.com ]] || fail "valid origin was not persisted"
+cp "$ENV_FILE" "$MAC04_STATE/mac04-valid"
+set_answers yes '' '' ''
+configure_telegram >/dev/null || fail "repeat configuration rejected"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-valid" || fail "repeat configuration modified stored credentials or origin"
+MAC04
+"$ROOT/secretary" doctor >/dev/null || fail "doctor rejected interactive Telegram configuration"
+
+printf 'PASS: T06 Codex/Claude setup, upgrade/retry credential repair, authenticated auto-selection, workspace persistence and Linux lifecycle\n'
+ "$STATE/config.toml" || fail "return to Codex did not restore required addressed contract"
 before="$(cat "$STATE/environment")"
 "$ROOT/secretary" setup --non-interactive >/dev/null
 [[ "$(cat "$STATE/environment")" == "$before" ]] || fail "repeat setup rotated credentials"
