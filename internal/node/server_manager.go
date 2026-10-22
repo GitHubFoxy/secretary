@@ -103,6 +103,7 @@ type ServerManager struct {
 	// socket's already-in-flight heartbeat from committing after a new
 	// socket has reset its liveness state.
 	connectionLifecycleMu sync.Mutex
+	beforeConnectionRegistration func()
 	connections map[core.NodeReference]*ProtocolConnection
 	outcomes    map[core.NodeReference]CommandOutcome
 	waiters     map[string]*commandWaiter
@@ -349,6 +350,8 @@ func (m *ServerManager) SendCommandAndWait(ctx context.Context, nodeRef core.Nod
 }
 
 func (m *ServerManager) CommandReady(ctx context.Context, nodeRef core.NodeReference) (bool, error) {
+	m.connectionLifecycleMu.Lock()
+	defer m.connectionLifecycleMu.Unlock()
 	record, err := m.store.NodeRecord(ctx, nodeRef)
 	if err != nil {
 		return false, err
@@ -363,6 +366,8 @@ func (m *ServerManager) CommandReady(ctx context.Context, nodeRef core.NodeRefer
 }
 
 func (m *ServerManager) SendCommand(ctx context.Context, nodeRef core.NodeReference, command Command) error {
+	m.connectionLifecycleMu.Lock()
+	defer m.connectionLifecycleMu.Unlock()
 	record, err := m.store.NodeRecord(ctx, nodeRef)
 	if err != nil {
 		return err
@@ -644,6 +649,9 @@ func (h *serverProtocolHandler) AdmitNodeConnection(ctx context.Context, connect
 	}
 	if err := h.manager.store.MarkNodeConnected(ctx, h.expected, h.inventory); err != nil {
 		return err
+	}
+	if h.manager.beforeConnectionRegistration != nil {
+		h.manager.beforeConnectionRegistration()
 	}
 	h.connection = connection
 	h.manager.registerConnection(h.expected, connection)
