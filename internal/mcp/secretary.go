@@ -46,6 +46,8 @@ func (s Secretary) Tools() []Tool {
 					"secretary_turn_id": map[string]string{"type": "string"},
 					"input_id":          map[string]string{"type": "string"},
 					"text":              map[string]string{"type": "string"},
+					"action_kind":       map[string]any{"type": "string", "enum": []string{"spawn_worker"}},
+					"worker_turn_id":    map[string]string{"type": "string"},
 				},
 				"required": []string{"secretary_turn_id", "input_id", "text"},
 			},
@@ -64,6 +66,8 @@ func (s Secretary) Call(ctx context.Context, name string, raw json.RawMessage) (
 		RequestID       string `json:"request_id"`
 		SecretaryTurnID string `json:"secretary_turn_id"`
 		InputID         string `json:"input_id"`
+		ActionKind      string `json:"action_kind"`
+		WorkerTurnID    string `json:"worker_turn_id"`
 		ctl.SpawnWorkerRequest
 	}
 	if err := json.Unmarshal(raw, &args); err != nil {
@@ -140,6 +144,14 @@ func (s Secretary) Call(ctx context.Context, name string, raw json.RawMessage) (
 	case "reply_to_user":
 		if s.ReplyContractVersion != core.SecretaryReplyContractAddressedV1 {
 			return nil, fmt.Errorf("unknown Secretary tool %q", name)
+		}
+		if args.ActionKind != "" || args.WorkerTurnID != "" {
+			if args.ActionKind != "spawn_worker" || args.WorkerTurnID == "" {
+				return nil, fmt.Errorf("worker creation confirmation requires a valid spawn_worker action and worker_turn_id")
+			}
+			if err := s.Workers.Store.ValidateSecretaryWorkerCreationOrigin(ctx, core.SecretaryOriginIdentity{PersonID: s.Workers.PersonID, Capability: s.Workers.Capability, SecretaryTurnID: args.SecretaryTurnID, InputID: args.InputID}, args.WorkerTurnID); err != nil {
+				return nil, fmt.Errorf("worker creation has no accepted Secretary action: %w", err)
+			}
 		}
 		entry, duplicate, err := s.Workers.ReplyToUser(ctx, ctl.SecretaryReplyRequest{SecretaryTurnID: args.SecretaryTurnID, InputID: args.InputID, Text: args.Text})
 		if err != nil {
