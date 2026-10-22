@@ -72,6 +72,20 @@ final class NodeAppConfigurationTests: XCTestCase {
         XCTAssertNil(resolved.environment["SECRETARY_NODE_PAIRING_TOKEN"])
     }
 
+    func testOversizedPrivateEnvironmentIsRejectedBeforeCredentialParsing() throws {
+        let (home, _, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let environment = home.appendingPathComponent(".local/share/secretary/environment")
+        let validPairingLine = "export SECRETARY_NODE_PAIRING_TOKEN='" + String(repeating: "a", count: 64) + "'\n"
+        let oversized = validPairingLine + String(repeating: "x", count: 65537)
+        try oversized.write(to: environment, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: environment.path)
+        XCTAssertGreaterThan(try Data(contentsOf: environment).count, 65536)
+        XCTAssertThrowsError(try NodeAppConfiguration.resolve(home: home, inherited: [:])) {
+            XCTAssertEqual($0 as? NodeAppConfigurationError, .missingPairing)
+        }
+    }
+
     func testSymlinkCredentialFileIsRejected() throws {
         let (home, _, _) = try fixture()
         defer { try? FileManager.default.removeItem(at: home) }
