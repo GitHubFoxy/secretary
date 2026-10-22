@@ -546,7 +546,7 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 		{
 			name: "structured failed without Bash",
 			events: []string{`{"type":"result","subtype":"success","result":"Failed","structured_output":{"task_outcome":"failed","reason":"Could not complete task","recovered_tool_use_ids":[]}}`},
-			wantStatus: "failed", wantCode: "tool_execution_failed",
+			wantStatus: "failed", wantCode: "task_outcome_failed",
 		},
 		{
 			name: "structured succeeded without Bash",
@@ -561,7 +561,7 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 		{
 			name: "invalid structured task outcome without Bash",
 			events: []string{`{"type":"result","subtype":"success","result":"Unverified","structured_output":{"task_outcome":"unknown","reason":"Unknown","recovered_tool_use_ids":[]}}`},
-			wantStatus: "succeeded",
+			wantStatus: "failed", wantCode: "task_outcome_failed",
 		},
 		{
 			name: "normal task",
