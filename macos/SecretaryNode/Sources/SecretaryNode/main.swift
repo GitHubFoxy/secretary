@@ -22,10 +22,12 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         presentation.openLogs.action = #selector(openLogs)
         presentation.menu.delegate = self
         statusItem.menu = presentation.menu
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        if let healthURL = NodeAppConfiguration.healthURL(home: home) {
+            healthMonitor = ServerHealthMonitor(url: healthURL)
+        }
         do {
-            let home = FileManager.default.homeDirectoryForCurrentUser
             let settings = try NodeAppConfiguration.resolve(home: home)
-            healthMonitor = ServerHealthMonitor(url: settings.serverHealthURL)
             controller = try NodeLifecycle(executable: settings.executable, configuration: settings.configuration, environment: settings.environment.merging(["SECRETARY_NODE_STATUS_FILE": liveFile.path]) { _, new in new }, directory: home.appendingPathComponent("Library/Application Support/SecretaryNode"))
             do {
                 try controller?.start()
