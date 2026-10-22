@@ -113,10 +113,26 @@ ensure_local_node_credentials() {
 }
 
 telegram_origin_valid() {
-  local origin="$1" host part
-  [[ "$origin" == https://* && "$origin" != *[[:space:]]* && "$origin" != *[\?#@]* ]] || return 1
-  local authority="${origin#https://}"
+  local origin="$1" authority host ip first port
+  [[ "$origin" == https://* && "$origin" != *[[:space:]]* && "$origin" != *'#'* && "$origin" != *@* ]] || return 1
+  [[ "$origin" != *\?* || "$origin" == *\? ]] || return 1
+  authority="${origin#https://}"
+  authority="${authority%\?}"
   [[ -n "$authority" && "$authority" != */* ]] || return 1
+  if [[ "$authority" == \[* ]]; then
+    [[ "$authority" == *\]* ]] || return 1
+    host="${authority%%\]*}"
+    host="${host#\[}"
+    port="${authority#*\]}"
+    [[ -z "$port" || "$port" == :<-> ]] || return 1
+    [[ "$host" == *:* && "$host" != *[^0-9a-fA-F:]* && "$host" != *:::* ]] || return 1
+    ip="${host:l}"
+    [[ "$ip" != "::" && "$ip" != "::1" && "$ip" != "0:0:0:0:0:0:0:1" && "$ip" != "0:0:0:0:0:0:0:0" ]] || return 1
+    first="${ip%%:*}"
+    while [[ "$first" == 0* && "${#first}" -gt 1 ]]; do first="${first#0}"; done
+    [[ "$first" != fc* && "$first" != fd* && "$first" != fe8* && "$first" != fe9* && "$first" != fea* && "$first" != feb* ]] || return 1
+    return 0
+  fi
   host="$authority"
   if [[ "$host" == *:* ]]; then
     host="${authority%:*}"
@@ -127,7 +143,7 @@ telegram_origin_valid() {
   if [[ "$host" == <->.<->.<->.<-> ]]; then
     local -a octets
     octets=("${(@s:.:)host}")
-    for part in "${octets[@]}"; do (( part >= 0 && part <= 255 )) || return 1; done
+    for ip in "${octets[@]}"; do (( ip >= 0 && ip <= 255 )) || return 1; done
     (( octets[1] == 10 || octets[1] == 127 || octets[1] == 0 || octets[1] == 169 && octets[2] == 254 || octets[1] == 172 && octets[2] >= 16 && octets[2] <= 31 || octets[1] == 192 && octets[2] == 168 )) && return 1
   fi
   return 0
