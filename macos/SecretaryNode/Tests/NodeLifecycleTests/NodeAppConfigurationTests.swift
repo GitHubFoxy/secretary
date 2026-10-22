@@ -72,13 +72,82 @@ final class NodeAppConfigurationTests: XCTestCase {
         XCTAssertNil(resolved.environment["SECRETARY_NODE_PAIRING_TOKEN"])
     }
 
+    func testSymlinkCredentialFileIsRejected() throws {
+        let (home, _, _) = try fixture()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let environment = home.appendingPathComponent(".local/share/secretary/environment")
+        let target = home.appendingPathComponent("real-environment")
+        try FileManager.default.moveItem(at: environment, to: target)
+        try FileManager.default.createSymbolicLink(at: environment, withDestinationURL: target)
+        XCTAssertThrowsError(try NodeAppConfiguration.resolve(home: home, inherited: [:])) {
+            XCTAssertEqual($0 as? NodeAppConfigurationError, .missingPairing)
+        }
+    }
+
+    func testMissingHealthConfigIsTerminalUnavailable() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: home) }
+        XCTAssertNil(NodeAppConfiguration.healthURL(home: home, inherited: [:]))
+        let menu = NodeMenuPresentation()
+        menu.renderServer(.unavailable)
+        XCTAssertEqual(menu.server.title, "Server: Unavailable")
+        XCTAssertTrue(menu.server.toolTip?.contains("secretary setup") == true)
+        menu.render(state: .failed("Node configuration missing"))
+        XCTAssertEqual(menu.server.title, "Server: Unavailable")
+    }
+
+    func testManagedChildReceivesOnlySanitizedEnvironmentAndNeverReimportsSecrets() throws {
+        let (home, _, data) = try fixture()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let appDirectory = home.appendingPathComponent("Library/Application Support/SecretaryNode")
+        let output = home.appendingPathComponent("child-result")
+        let inherited = [
+            "SECRETARY_NODE_ADMIN_TOKEN": "admin-secret",
+            "SECRETARY_BOOTSTRAP_TOKEN": "bootstrap-secret",
+            "SECRETARY_TELEGRAM_BOT_TOKEN": "telegram-secret",
+            "SECRETARY_CAPABILITY": "capability-secret",
+            "SECRETARY_NODE_PAIRING_TOKEN": ""
+        ]
+        let script = """
+        if [ -n "${SECRETARY_NODE_ADMIN_TOKEN:-}" ] || [ -n "${SECRETARY_BOOTSTRAP_TOKEN:-}" ] || [ -n "${SECRETARY_TELEGRAM_BOT_TOKEN:-}" ] || [ -n "${SECRETARY_CAPABILITY:-}" ]; then exit 8; fi
+        if [ -n "${SECRETARY_EXPECT_PAIRING:-}" ]; then
+          test "$SECRETARY_NODE_PAIRING_TOKEN" = "$SECRETARY_EXPECT_PAIRING" || exit 9
+        else
+          test -z "${SECRETARY_NODE_PAIRING_TOKEN:-}" || exit 10
+        fi
+        printf 'clean' > "$SECRETARY_TEST_OUTPUT"
+        """
+        func execute(_ environment: [String: String]) throws {
+            let child = try NodeLifecycle(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", script], environment: environment, directory: appDirectory)
+            try child.start()
+            let deadline = Date().addingTimeInterval(5)
+            while child.state == .running && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            XCTAssertEqual(child.state, .stopped)
+            XCTAssertEqual(try String(contentsOf: output, encoding: .utf8), "clean")
+            try FileManager.default.removeItem(at: output)
+        }
+        let first = try NodeAppConfiguration.resolve(home: home, inherited: inherited)
+        var firstEnvironment = first.environment
+        firstEnvironment["SECRETARY_EXPECT_PAIRING"] = String(repeating: "a", count: 64)
+        firstEnvironment["SECRETARY_TEST_OUTPUT"] = output.path
+        try execute(firstEnvironment)
+        try "{}".write(to: data.appendingPathComponent("identity.json"), atomically: true, encoding: .utf8)
+        let second = try NodeAppConfiguration.resolve(home: home, inherited: inherited.merging(["SECRETARY_NODE_PAIRING_TOKEN": "unexpected-inherited-secret"]) { _, new in new })
+        XCTAssertNil(second.environment["SECRETARY_NODE_PAIRING_TOKEN"])
+        var secondEnvironment = second.environment
+        secondEnvironment["SECRETARY_TEST_OUTPUT"] = output.path
+        try execute(secondEnvironment)
+    }
+
     func testInsecureCredentialFileIsRejected() throws {
         let (home, _, _) = try fixture()
         defer { try? FileManager.default.removeItem(at: home) }
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: home.appendingPathComponent(".local/share/secretary/environment").path)
         XCTAssertThrowsError(try NodeAppConfiguration.resolve(home: home, inherited: [:]))
     }
-    func testLifecycleFirstEnrollmentThenRelaunchPreservesIdentity() throws {
+    func testShellFixturePassesPairingThenOmitsItAfterIdentityFileAppears() throws {
         let (home, _, data) = try fixture()
         defer { try? FileManager.default.removeItem(at: home) }
         let identity = data.appendingPathComponent("identity.json")
