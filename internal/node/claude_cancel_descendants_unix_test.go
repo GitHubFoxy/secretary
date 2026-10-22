@@ -33,6 +33,11 @@ read end
 	if err := os.WriteFile(launcher, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
+	other := exec.Command("sleep", "180")
+	if err := other.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = other.Process.Kill(); _ = other.Wait() }()
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancel()
 	session, err := (ClaudeCodeRuntime{Command: launcher, Environment: []string{"MAC02_SHELL_PID=" + shellPIDFile, "MAC02_SLEEP_PID=" + sleepPIDFile}}).Start(ctx, StartRequest{Workspace: dir, Task: "run sleep"})
@@ -41,11 +46,12 @@ read end
 	}
 	defer session.Close()
 	var shellPID, sleepPID int
+	owned := map[int]claudeChild{}
 	t.Cleanup(func() {
 		for _, pid := range []int{sleepPID, shellPID} {
 			if pid > 1 {
 				if processes, err := claudeProcessSnapshot(); err == nil {
-					if process, ok := processes[pid]; ok && !strings.HasPrefix(process.state, "Z") {
+					if process, ok := processes[pid]; ok && process.start == owned[pid].start && process.group == owned[pid].group && !strings.HasPrefix(process.state, "Z") {
 						_ = syscall.Kill(pid, syscall.SIGKILL)
 					}
 				}
@@ -75,6 +81,7 @@ read end
 	if err != nil {
 		t.Fatal(err)
 	}
+	owned[shellPID], owned[sleepPID] = processes[shellPID], processes[sleepPID]
 	if processes[sleepPID].parent != shellPID || processes[shellPID].parent != session.(*claudeSession).cmd.Process.Pid {
 		t.Fatalf("unexpected initial process ancestry: shell=%+v sleep=%+v", processes[shellPID], processes[sleepPID])
 	}
@@ -112,6 +119,9 @@ read end
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	if err := other.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("unrelated owner process was terminated: %v", err)
+	}
 	if err := session.Prompt(ctx, "continue"); err != nil {
 		t.Fatal(err)
 	}
@@ -133,9 +143,3 @@ read end
 	}
 }
 
-func TestMAC02ClaudeDescendantCleanupIsScopedToNativeProcess(t *testing.T) {
-	cmd := &exec.Cmd{}
-	if err := cleanupClaudeAttemptProcesses(cmd); err != nil {
-		t.Fatal(err)
-	}
-}
