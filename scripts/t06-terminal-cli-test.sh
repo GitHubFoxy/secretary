@@ -239,4 +239,119 @@ grep -q '^default_harness = "claude_code"$' "$STATE/config.toml" || fail "Claude
 before="$(cat "$STATE/config.toml")"
 if "$ROOT/secretary" setup --non-interactive --harness unsupported >/dev/null 2>&1; then fail "invalid harness accepted"; fi
 [[ "$(cat "$STATE/config.toml")" == "$before" ]] || fail "invalid harness modified config"
+
+export HOME="$TMP/telegram-mac04-home" PATH="$CODBIN:/usr/bin:/bin"
+adopt_codex_t06_pair
+"$ROOT/secretary" setup --non-interactive --harness codex >/dev/null
+STATE="$HOME/.local/share/secretary"
+ENV_FILE="$STATE/environment"
+cp "$ENV_FILE" "$TMP/mac04-before"
+env -u SECRETARY_TELEGRAM_ENABLED -u SECRETARY_TELEGRAM_WEB_BASE_URL "$ROOT/secretary" doctor >/dev/null || fail "doctor rejected Telegram variables absent from environment"
+printf "export SECRETARY_TELEGRAM_ENABLED='true'\nexport SECRETARY_TELEGRAM_BOT_TOKEN='123:fixture-secret'\nexport SECRETARY_TELEGRAM_SERVER_CREDENTIAL='fixture-credential'\n" >> "$ENV_FILE"
+if "$ROOT/secretary" doctor >"$TMP/mac04-doctor" 2>&1; then fail "doctor accepted enabled Telegram without origin"; fi
+grep -q 'SECRETARY_TELEGRAM_WEB_BASE_URL' "$TMP/mac04-doctor" || fail "doctor omitted Telegram origin diagnostic"
+! grep -q 'fixture-secret\|fixture-credential' "$TMP/mac04-doctor" || fail "doctor exposed a credential"
+printf "export SECRETARY_TELEGRAM_WEB_BASE_URL='http://example.com'\n" >> "$ENV_FILE"
+if "$ROOT/secretary" doctor >"$TMP/mac04-doctor" 2>&1; then fail "doctor accepted HTTP Telegram origin"; fi
+sed -i "/SECRETARY_TELEGRAM_WEB_BASE_URL/d" "$ENV_FILE"
+printf "export SECRETARY_TELEGRAM_WEB_BASE_URL='https://localhost'\n" >> "$ENV_FILE"
+if "$ROOT/secretary" doctor >"$TMP/mac04-doctor" 2>&1; then fail "doctor accepted local Telegram origin"; fi
+sed -i "/SECRETARY_TELEGRAM_WEB_BASE_URL/d" "$ENV_FILE"
+printf "export SECRETARY_TELEGRAM_WEB_BASE_URL='https://example.com'\n" >> "$ENV_FILE"
+"$ROOT/secretary" doctor >/dev/null || fail "doctor rejected valid HTTPS Telegram origin"
+printf "export SECRETARY_TELEGRAM_ENABLED='false'\n" >> "$ENV_FILE"
+sed -i "/SECRETARY_TELEGRAM_WEB_BASE_URL/d" "$ENV_FILE"
+"$ROOT/secretary" doctor >/dev/null || fail "disabled Telegram required origin"
+
+export MAC04_ROOT="$ROOT" MAC04_STATE="$STATE" MAC04_ENV_FILE="$ENV_FILE"
+zsh <<'MAC04'
+source "$MAC04_ROOT/scripts/secretary-interactive.zsh"
+STATE="$MAC04_STATE"
+ENV_FILE="$MAC04_ENV_FILE"
+terminal_available() { return 0; }
+typeset -a answers
+integer position=0
+terminal_read() {
+  (( position++ ))
+  REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
+  return 0
+}
+terminal_secret() {
+  (( position++ ))
+  REPLY="${answers[position]}"
+  return 0
+}
+fail() { print -u2 "FAIL: $1"; exit 1; }
+set_answers() { answers=("$@"); position=0; }
+cp "$ENV_FILE" "$MAC04_STATE/mac04-before"
+set_answers yes 123:fixture-secret '' ''
+configure_telegram >/dev/null 2>&1 && fail "empty origin accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "empty origin changed environment"
+set_answers yes 123:fixture-secret '' 'https://localhost'
+configure_telegram >/dev/null 2>&1 && fail "local origin accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "invalid origin changed environment"
+for candidate in https://user@example.com https://example.com/path 'https://example.com?x=1' 'https://example.com??' 'https://example.com?x?' https://192.168.1.1; do
+  set_answers yes 123:fixture-secret '' "$candidate"
+  configure_telegram >/dev/null 2>&1 && fail "invalid Telegram origin accepted: $candidate"
+  cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "invalid origin modified environment"
+done
+set_answers yes
+terminal_secret() { return 1; }
+configure_telegram >/dev/null 2>&1 && fail "interrupted token input accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "cancel changed environment"
+terminal_secret() { (( position++ )); REPLY="${answers[position]}"; return 0; }
+terminal_read() {
+  (( position++ ))
+  if (( position == 4 )); then return 1; fi
+  REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
+  return 0
+}
+set_answers yes 123:fixture-secret '' https://example.com
+configure_telegram >/dev/null 2>&1 && fail "interrupted origin input accepted"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "origin cancel changed environment"
+terminal_read() {
+  (( position++ ))
+  REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
+  return 0
+}
+terminal_secret() { (( position++ )); REPLY="${answers[position]}"; }
+set_answers yes 123:fixture-secret '' 'https://[2606:4700:4700::1111]'
+configure_telegram >/dev/null || fail "public IPv6 Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[2606:4700:4700::1111]' ]] || fail "public IPv6 origin not persisted"
+cp "$ENV_FILE" "$MAC04_STATE/mac04-ipv6"
+for candidate in 'https://[fd00::1]' 'https://[::1]' 'https://[0:0:0:0:0:0:00:1]' 'https://[fe80::1]' 'https://[2001::2::3]' 'https://[::ffff:192.168.1.1]'; do
+  set_answers yes '' '' "$candidate"
+  configure_telegram >/dev/null 2>&1 && fail "forbidden IPv6 Telegram origin accepted: $candidate"
+  cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-ipv6" || fail "invalid IPv6 origin changed environment"
+done
+set_answers yes '' '' 'https://[::ffff:8.8.8.8]'
+configure_telegram >/dev/null || fail "public IPv4-mapped IPv6 Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:8.8.8.8]' ]] || fail "public IPv4-mapped IPv6 origin not persisted"
+set_answers yes '' '' 'https://[::ffff:0.1.2.3]'
+configure_telegram >/dev/null || fail "Server-accepted 0/8 mapped IPv6 origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:0.1.2.3]' ]] || fail "0/8 mapped IPv6 origin not persisted"
+set_answers yes '' '' 'https://[::ffff:0.0.0.0]'
+configure_telegram >/dev/null 2>&1 && fail "mapped unspecified IPv4 origin accepted"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:0.1.2.3]' ]] || fail "invalid mapped IPv4 changed saved origin"
+set_answers yes '' '' 'https://example.com?'
+configure_telegram >/dev/null || fail "empty query marker Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://example.com?' ]] || fail "empty query marker origin not persisted"
+set_answers yes 123:fixture-secret '' https://example.com
+configure_telegram >/dev/null || fail "valid origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_ENABLED" == true && "$SECRETARY_TELEGRAM_WEB_BASE_URL" == https://example.com ]] || fail "valid origin was not persisted"
+cp "$ENV_FILE" "$MAC04_STATE/mac04-valid"
+set_answers yes '' '' ''
+configure_telegram >/dev/null || fail "repeat configuration rejected"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-valid" || fail "repeat configuration modified stored credentials or origin"
+MAC04
+"$ROOT/secretary" doctor >/dev/null || fail "doctor rejected interactive Telegram configuration"
+
 printf 'PASS: T06 Codex/Claude setup, upgrade/retry credential repair, authenticated auto-selection, workspace persistence and Linux lifecycle\n'

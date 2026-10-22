@@ -2,6 +2,18 @@
 
 Здесь описано текущее поведение протоколов, runtime и lifecycle Secretary. Это не ADR и не долговременная архитектурная мотивация: устойчивые решения с известными альтернативами и причинами фиксируются отдельно в ADR.
 
+## MAC-02: Claude Attempt cancellation on Unix
+
+On starting the native Claude CLI, the Execution Node records its initial PID, parent, process group and process start time. Cancel compares the observed root identity with that launch-time record before considering any descendants. The cleanup traverses only the recorded CLI's live descendants, rechecks each candidate before signaling it once with SIGKILL, and waits for the original captured child identities to exit or become zombies. Inspection calls and polling share one two-second timeout starting with the first snapshot. Failed cleanup is returned as a Cancel error; native interrupt is not treated as a terminal Result.
+
+If root identity capture fails immediately after CLI launch, startup stops and reaps that process instead of returning a Session that cannot be safely canceled. If cleanup fails after a native canceled terminal arrived, the pending Result is downgraded to failed with the cleanup error rather than asserting that cancellation succeeded.
+
+Repeated Cancel requests for the same active Attempt do not send additional native interrupts. In-flight cleanup and native terminal reporting are synchronized so that a follow-up cannot consume a delayed interrupt and the terminal Result channel cannot close before pending cancellation handling. The native CLI remains available for same-session Follow-up.
+
+This best-effort Unix process-tree cleanup is not a containment primitive. The ps-based start timestamp has second-level resolution and checking identity before sending a PID-directed signal still has a TOCTOU window. No repeated signals are sent; detached processes already reparented before the first snapshot and children newly spawned during cleanup may escape discovery. Strict protection from arbitrary PID reuse would require OS-level stable process references or per-Attempt process isolation. The Windows pre-interrupt cleanup remains a no-op; its existing native process stop behavior is unchanged.
+
+**MANUAL:** On a published candidate, run a real Claude Worker with foreground /bin/sleep 180, capture shell and sleep PIDs before Cancel, independently check the original PIDs after Cancel, verify sibling/Server/Node survival, replay the same HTTP idempotency key, verify one canonical canceled Result with unchanged Worker/Turn/Attempt binding, and perform same-session Follow-up. Linux/Windows live acceptance and PID-reuse races are not certified by the unit tests.
+
 ## Authority, owner и identity
 
 - Secretary server — единственный source of truth для Personal Conversation, Task, Worker binding, Result и lifecycle. Он не зависит от Channel adapter или Execution node.

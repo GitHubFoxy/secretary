@@ -204,6 +204,21 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
   if found{break}
   select{case <-ctx.Done():t.Fatal("Worker result not in Personal Conversation");case <-time.After(20*time.Millisecond):}
  }
+ for {
+  turns,e:=store.SecretaryTurns(ctx,secretaryID.ID)
+  if e!=nil{t.Fatal(e)}
+  if len(turns)!=1{t.Fatalf("expected one canonical Secretary turn: %+v",turns)}
+  turn:=turns[0]
+  if turn.State.Terminal(){
+   if turn.State!=core.SecretaryTurnSucceeded||turn.PromptState!="accepted"{
+    t.Fatalf("early terminal Result corrupted Secretary prompt lifecycle: state=%s prompt_state=%s error=%q",turn.State,turn.PromptState,turn.Error)
+   }
+   break
+  }
+  select{case e:=<-secRuntime.Errors():t.Fatalf("Secretary prompt lifecycle: %v",e)
+  case <-ctx.Done():t.Fatal("Secretary prompt was not accepted and completed")
+  case <-time.After(10*time.Millisecond):}
+ }
  if err:=adapter.HandleUpdate(ctx,update);err!=nil{t.Fatal(err)}
  restored,err:=telegram.New(telegram.Config{StatePath:state,OwnerChatID:100,GroupChatID:&group},transport,&telegram.HTTPServerClient{BaseURL:server.URL,Credential:"t13-secret"})
  if err!=nil{t.Fatal(err)}
