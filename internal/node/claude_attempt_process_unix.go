@@ -3,6 +3,7 @@
 package node
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -12,6 +13,8 @@ import (
 	"time"
 )
 
+const claudeCleanupLimit = 2 * time.Second
+
 type claudeChild struct {
 	pid int
 	parent int
@@ -20,8 +23,8 @@ type claudeChild struct {
 	state string
 }
 
-func claudeProcessSnapshot() (map[int]claudeChild, error) {
-	output, err := exec.Command("ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=").Output()
+func claudeProcessSnapshotContext(ctx context.Context) (map[int]claudeChild, error) {
+	output, err := exec.CommandContext(ctx, "ps", "-axo", "pid=,ppid=,pgid=,stat=,lstart=").Output()
 	if err != nil {
 		return nil, err
 	}
@@ -40,6 +43,30 @@ func claudeProcessSnapshot() (map[int]claudeChild, error) {
 		processes[pid] = claudeChild{pid: pid, parent: parent, group: group, state: fields[3], start: strings.Join(fields[4:], " ")}
 	}
 	return processes, nil
+}
+
+func claudeProcessSnapshot() (map[int]claudeChild, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), claudeCleanupLimit)
+	defer cancel()
+	return claudeProcessSnapshotContext(ctx)
+}
+
+func captureClaudeRoot(cmd *exec.Cmd) (claudeChild, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), claudeCleanupLimit)
+	defer cancel()
+	processes, err := claudeProcessSnapshotContext(ctx)
+	if err != nil {
+		return claudeChild{}, err
+	}
+	root, ok := processes[cmd.Process.Pid]
+	if !ok || strings.HasPrefix(root.state, "Z") || root.group != cmd.Process.Pid {
+		return claudeChild{}, errors.New("Claude process identity unavailable")
+	}
+	return root, nil
+}
+
+func sameClaudeProcess(a, b claudeChild) bool {
+	return a.pid == b.pid && a.start == b.start && a.group == b.group && a.parent == b.parent
 }
 
 func claudeDescendants(root int, processes map[int]claudeChild) []claudeChild {
@@ -64,52 +91,59 @@ func claudeDescendants(root int, processes map[int]claudeChild) []claudeChild {
 	return ordered
 }
 
-func cleanupClaudeAttemptProcesses(cmd *exec.Cmd) error {
+func cleanupClaudeAttemptProcesses(ctx context.Context, cmd *exec.Cmd, expected claudeChild) error {
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	root := cmd.Process.Pid
-	initial, err := claudeProcessSnapshot()
+	ctx, cancel := context.WithTimeout(ctx, claudeCleanupLimit)
+	defer cancel()
+	initial, err := claudeProcessSnapshotContext(ctx)
 	if err != nil {
 		return fmt.Errorf("inspect Claude descendants: %w", err)
 	}
-	owner, exists := initial[root]
-	if !exists || strings.HasPrefix(owner.state, "Z") {
-		return nil
+	root, ok := initial[expected.pid]
+	if !ok || !sameClaudeProcess(root, expected) || strings.HasPrefix(root.state, "Z") {
+		return errors.New("Claude process identity changed before cancellation")
 	}
-	children := claudeDescendants(root, initial)
+	children := claudeDescendants(expected.pid, initial)
 	for _, child := range children {
-		current, err := claudeProcessSnapshot()
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("Claude cleanup timed out: %w", err)
+		}
+		current, err := claudeProcessSnapshotContext(ctx)
 		if err != nil {
 			return fmt.Errorf("recheck Claude descendants: %w", err)
 		}
-		if process, ok := current[child.pid]; ok && process.start == child.start && process.parent == child.parent && process.group == child.group && !strings.HasPrefix(process.state, "Z") {
+		if currentRoot, ok := current[expected.pid]; !ok || !sameClaudeProcess(currentRoot, expected) {
+			return errors.New("Claude process identity changed during cancellation")
+		}
+		if process, ok := current[child.pid]; ok && sameClaudeProcess(process, child) && !strings.HasPrefix(process.state, "Z") {
 			if err := syscall.Kill(child.pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
 				return fmt.Errorf("stop Claude descendant %d: %w", child.pid, err)
 			}
 		}
 	}
-	deadline := time.Now().Add(2 * time.Second)
 	for {
-		current, err := claudeProcessSnapshot()
+		current, err := claudeProcessSnapshotContext(ctx)
 		if err != nil {
 			return fmt.Errorf("verify Claude descendants: %w", err)
 		}
 		remaining := false
 		for _, child := range children {
-			if process, ok := current[child.pid]; ok && process.start == child.start && !strings.HasPrefix(process.state, "Z") {
+			if process, ok := current[child.pid]; ok && sameClaudeProcess(process, child) && !strings.HasPrefix(process.state, "Z") {
 				remaining = true
-				if process.parent == child.parent && process.group == child.group {
-					_ = syscall.Kill(child.pid, syscall.SIGKILL)
-				}
 			}
 		}
 		if !remaining {
 			return nil
 		}
-		if time.Now().After(deadline) {
-			return errors.New("Claude descendants did not exit within 2 seconds")
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("Claude descendants did not exit within two seconds: %w", err)
 		}
-		time.Sleep(25 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("Claude descendants did not exit within two seconds: %w", ctx.Err())
+		case <-time.After(25 * time.Millisecond):
+		}
 	}
 }
