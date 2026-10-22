@@ -263,9 +263,12 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 		return nil, fmt.Errorf("%w: start %q: %v", ErrClaudeCodeUnavailable, command, err)
 	}
 	root, rootErr := captureClaudeRoot(cmd)
-	if rootErr == nil {
-		session.claudeRoot = root
+	if rootErr != nil {
+		_ = session.stopProcess()
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("%w: capture native process identity: %v", ErrClaudeCodeUnavailable, rootErr)
 	}
+	session.claudeRoot = root
 	go session.run()
 	if len(resume) > 0 && resume[0] {
 		err = session.writeMessage(ctx, map[string]any{"type": "control_request", "request_id": "resume-initialize", "request": map[string]any{"subtype": "initialize"}})
@@ -304,6 +307,7 @@ type claudeSession struct {
 	stopOnce  sync.Once
 	stopErr   error
 	claudeRoot claudeChild
+	cleanupAttempt func(context.Context, *exec.Cmd, claudeChild) error
 	canceling bool
 	cancelWait chan struct{}
 	pendingTerminal *Result
@@ -386,7 +390,11 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	if root.pid == 0 {
 		err = errors.New("Claude root process identity was not captured")
 	} else {
-		err = cleanupClaudeAttemptProcesses(ctx, s.cmd, root)
+		cleanup := s.cleanupAttempt
+		if cleanup == nil {
+			cleanup = cleanupClaudeAttemptProcesses
+		}
+		err = cleanup(ctx, s.cmd, root)
 	}
 	if err == nil {
 		var id string
@@ -408,6 +416,10 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	pending := s.pendingTerminal
 	s.pendingTerminal = nil
 	if pending != nil && s.active && s.inputID == attempt {
+		if err != nil && pending.Status == "canceled" {
+			pending.Status = "failed"
+			pending.Summary = "Claude Code cancellation cleanup failed: " + err.Error()
+		}
 		s.active = false
 		s.result <- *pending
 	}
