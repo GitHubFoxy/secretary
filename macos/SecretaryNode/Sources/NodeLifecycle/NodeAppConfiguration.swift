@@ -73,7 +73,7 @@ public struct NodeAppConfiguration {
     }
 }
 
-public enum NodeAppConfigurationError: Error, LocalizedError {
+public enum NodeAppConfigurationError: Error, LocalizedError, Equatable {
     case invalidConfig
     case missingPairing
 
