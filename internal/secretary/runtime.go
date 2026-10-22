@@ -44,6 +44,8 @@ type Runtime struct {
 	activePromptID       uint64
 	promptStartedID      uint64
 	promptReturn         chan struct{}
+	promptBarrierEntered chan<- struct{} // optional observation for controlled lifecycle regression tests
+	resultConsumerExited chan<- struct{} // optional observation for controlled lifecycle regression tests
 	cancelRequestedID    uint64
 	cancelInFlightID     uint64
 	cancelDone           chan struct{}
@@ -459,6 +461,7 @@ func (r *Runtime) reportCancelFailure(store *core.Store, turnID string, err erro
 }
 
 func (r *Runtime) consumeResults(session node.Session) {
+	defer r.signalResultConsumerExit()
 	initial := true
 	for result := range session.Result() {
 		initial = r.consumeRuntimeResult(session, result, initial)
@@ -466,6 +469,7 @@ func (r *Runtime) consumeResults(session node.Session) {
 }
 
 func (r *Runtime) consumeAddressedSession(session node.Session) {
+	defer r.signalResultConsumerExit()
 	activity, results := session.Activity(), session.Result()
 	initial := true
 	for activity != nil || results != nil {
@@ -499,6 +503,15 @@ func (r *Runtime) consumeAddressedSession(session node.Session) {
 	}
 }
 
+func (r *Runtime) signalResultConsumerExit() {
+ r.mu.Lock()
+ observed := r.resultConsumerExited
+ r.mu.Unlock()
+ if observed != nil {
+  select { case observed <- struct{}{}: default: }
+ }
+}
+
 func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result, initial bool) bool {
 	for {
 		r.mu.Lock()
@@ -509,7 +522,11 @@ func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result,
 		promptID := r.activePromptID
 		if promptID != 0 && r.promptReturn != nil {
 			settled := r.promptReturn
+			observed := r.promptBarrierEntered
 			r.mu.Unlock()
+			if observed != nil {
+				select { case observed <- struct{}{}: default: }
+			}
 			<-settled
 			continue
 		}
