@@ -153,6 +153,7 @@ func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionI
 	args := append([]string(nil), r.Arguments...)
 	args = append(args, "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config")
 	args = append(args, "--permission-mode", "dontAsk")
+	args = append(args, "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}}},"required":["task_outcome","reason","recovered_tool_use_ids"],"additionalProperties":false}`)
 	toolNames := map[string]string{"read": "Read", "bash": "Bash", "shell": "Bash", "edit": "Edit", "write": "Write", "patch": "Edit", "glob": "Glob", "find": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch", "task": "Agent", "subagent": "Agent", "skill": "Skill"}
 	tools := []string{}
 	for _, tool := range request.Profile.AllowTools {
@@ -260,6 +261,7 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 		id:        sessionID,
 		stdin:     stdin,
 		seen:      make(map[string]bool),
+		bashCalls: make(map[string]bool),
 		ready:     make(chan error, 1),
 		writeGate: make(chan struct{}, 1),
 		done:      make(chan struct{}),
@@ -334,6 +336,11 @@ type claudeSession struct {
 	active    bool
 	inputID   string
 	seen      map[string]bool
+	bashCalls map[string]bool
+	failedBash string
+	failedBashIDs map[string]string
+	sawAssistantText bool
+	sawToolUse bool
 }
 
 func (s *claudeSession) ID() string                { return s.id }
@@ -362,6 +369,11 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 	s.active = true
 	s.cancel = false
 	s.inputID = id
+	s.bashCalls = make(map[string]bool)
+	s.failedBash = ""
+	s.failedBashIDs = make(map[string]string)
+	s.sawAssistantText = false
+	s.sawToolUse = false
 	s.stateMu.Unlock()
 	var content any = text
 	if len(images) > 0 {
@@ -574,6 +586,8 @@ func (s *claudeSession) handleLine(line []byte) {
 		return
 	}
 	switch valueString(record["type"]) {
+	case "user":
+		s.handleToolResults(record)
 	case "assistant":
 		id := valueString(record["uuid"])
 		if id != "" {
@@ -583,6 +597,7 @@ func (s *claudeSession) handleLine(line []byte) {
 			s.seen[id] = true
 		}
 		if message, ok := record["message"].(map[string]any); ok {
+			s.registerBashCalls(message["content"])
 			s.handleContent(message["content"])
 		}
 	case "result":
@@ -611,7 +626,33 @@ func (s *claudeSession) handleLine(line []byte) {
 				status = "failed"
 			}
 		}
-		s.emitResult(Result{Status: status, Summary: summary})
+		result := Result{Status: status, Summary: summary}
+		if status == "succeeded" {
+			structured, valid := claudeTaskOutcome(record)
+			if s.failedBash != "" && (valid && structured.status == "failed" || !s.claudeStructuredRecovery(structured, valid)) {
+				result.Status = "failed"
+				result.FailureCode = "tool_execution_failed"
+				result.Technical = s.failedBash
+				if valid && structured.status == "failed" {
+					result.Technical += "; Claude Code reported structured task failure: " + structured.reason
+				} else if _, supplied := record["structured_output"]; supplied && !valid {
+					result.Technical += "; Claude Code returned invalid structured task outcome"
+				}
+			} else if valid && structured.status == "failed" {
+				result.Status = "failed"
+				result.FailureCode = "task_outcome_failed"
+				result.Technical = "Claude Code reported structured task failure: " + structured.reason
+			} else if _, supplied := record["structured_output"]; supplied && !valid {
+				result.Status = "failed"
+				result.FailureCode = "task_outcome_failed"
+				result.Technical = "Claude Code returned invalid structured task outcome"
+			} else if !valid && !(s.sawAssistantText && !s.sawToolUse) {
+				result.Status = "failed"
+				result.FailureCode = "task_outcome_failed"
+				result.Technical = "Claude Code returned no structured task outcome or qualifying text-only answer"
+			}
+		}
+		s.emitResult(result)
 	case "error":
 		summary := valueString(record["error"])
 		if summary == "" {
@@ -620,14 +661,112 @@ func (s *claudeSession) handleLine(line []byte) {
 		s.emitResult(Result{Status: "failed", Summary: summary})
 	}
 }
+type claudeTaskVerdict struct {
+	status string
+	reason string
+	recovered []string
+}
+
+func claudeTaskOutcome(record map[string]any) (claudeTaskVerdict, bool) {
+	output, ok := record["structured_output"].(map[string]any)
+	if !ok {
+		return claudeTaskVerdict{}, false
+	}
+	status, statusOK := output["task_outcome"].(string)
+	reason, reasonOK := output["reason"].(string)
+	ids, idsOK := output["recovered_tool_use_ids"].([]any)
+	if !statusOK || (status != "succeeded" && status != "failed") || !reasonOK || strings.TrimSpace(reason) == "" || !idsOK {
+		return claudeTaskVerdict{}, false
+	}
+	verdict := claudeTaskVerdict{status: status, reason: reason}
+	seen := make(map[string]bool)
+	for _, raw := range ids {
+		id, ok := raw.(string)
+		if !ok || id == "" || seen[id] {
+			return claudeTaskVerdict{}, false
+		}
+		seen[id] = true
+		verdict.recovered = append(verdict.recovered, id)
+	}
+	return verdict, true
+}
+
+func (s *claudeSession) claudeStructuredRecovery(verdict claudeTaskVerdict, valid bool) bool {
+	if !valid || verdict.status != "succeeded" || len(s.failedBashIDs) == 0 || len(verdict.recovered) != len(s.failedBashIDs) {
+		return false
+	}
+	for _, id := range verdict.recovered {
+		if _, ok := s.failedBashIDs[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *claudeSession) registerBashCalls(content any) {
+	items, _ := content.([]any)
+	for _, item := range items {
+		block, _ := item.(map[string]any)
+		if valueString(block["type"]) == "tool_use" && valueString(block["name"]) == "Bash" {
+			if id := valueString(block["id"]); id != "" {
+				s.bashCalls[id] = true
+			}
+		}
+	}
+}
+
+func (s *claudeSession) handleToolResults(record map[string]any) {
+	message, _ := record["message"].(map[string]any)
+	items, _ := message["content"].([]any)
+	for _, item := range items {
+		block, _ := item.(map[string]any)
+		if valueString(block["type"]) != "tool_result" {
+			continue
+		}
+		id := valueString(block["tool_use_id"])
+		if !s.bashCalls[id] {
+			continue
+		}
+		delete(s.bashCalls, id)
+		failed, _ := block["is_error"].(bool)
+		exitCode := ""
+		details, _ := record["toolUseResult"].(map[string]any)
+		if details == nil {
+			details, _ = block["toolUseResult"].(map[string]any)
+		}
+		if code, ok := details["exitCode"].(float64); ok {
+			exitCode = fmt.Sprintf("%.0f", code)
+			failed = failed || code != 0
+		}
+		if code, ok := details["exit_code"].(float64); ok {
+			exitCode = fmt.Sprintf("%.0f", code)
+			failed = failed || code != 0
+		}
+		if failed {
+			if s.failedBashIDs == nil {
+				s.failedBashIDs = make(map[string]string)
+			}
+			s.failedBash = "Claude Bash tool failed"
+			if exitCode != "" {
+				s.failedBash += " with exit code " + exitCode
+			}
+			s.failedBashIDs[id] = s.failedBash
+		}
+	}
+}
+
 func (s *claudeSession) handleContent(content any) {
 	items, _ := content.([]any)
 	for _, item := range items {
 		block, _ := item.(map[string]any)
 		switch valueString(block["type"]) {
 		case "text":
+			if strings.TrimSpace(valueString(block["text"])) != "" {
+				s.sawAssistantText = true
+			}
 			s.emitText(valueString(block["text"]))
 		case "tool_use":
+			s.sawToolUse = true
 			s.emitActivity(Activity{Kind: ActivityTool, Text: valueString(block["name"])})
 		}
 	}

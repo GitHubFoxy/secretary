@@ -27,7 +27,7 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"
 read interrupted
 printf '%s\n' '{"type":"result","subtype":"success","result":""}'
 read followup
-printf '%s\n' '{"type":"result","subtype":"success","result":"resumed"}'
+printf '%s\n' '{"type":"result","subtype":"success","result":"resumed","structured_output":{"task_outcome":"succeeded","reason":"Follow-up completed","recovered_tool_use_ids":[]}}'
 read end
 `
 	if err := os.WriteFile(launcher, []byte(script), 0700); err != nil {
