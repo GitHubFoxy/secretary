@@ -53,19 +53,23 @@ choose_harness() {
 }
 
 set_config_harness() {
-  local harness="$1" file="$STATE/config.toml" temp
+  local harness="$1" fresh="${2:-false}" file="$STATE/config.toml" temp
   [[ "$harness" == codex || "$harness" == claude_code ]] || { print -u2 "Unsupported harness: $harness"; return 2; }
   [[ -f "$file" && ! -L "$file" ]] || { print -u2 "Missing or unsafe configuration: $file"; return 1; }
   temp="$(mktemp "$STATE/config.toml.XXXXXX")" || return 1
-  if ! awk -v selected="$harness" '
+  if ! awk -v selected="$harness" -v fresh="$fresh" '
     /^\[[^]]+\]/ { section=$0 }
     section=="[secretary]" && /^[[:space:]]*harness[[:space:]]*=/ { print "harness = \"" selected "\""; secretary=1; next }
+    section=="[secretary]" && /^[[:space:]]*reply_contract[[:space:]]*=/ && selected=="claude_code" {
+      if (fresh=="true" && $0 ~ /^[[:space:]]*reply_contract[[:space:]]*=[[:space:]]*"addressed-reply-v1"[[:space:]]*$/) next
+      invalid=1
+    }
     section=="[worker_policy]" && /^[[:space:]]*default_harness[[:space:]]*=/ { print "default_harness = \"" selected "\""; worker=1; next }
     { print }
-    END { if (!secretary || !worker) exit 3 }
+    END { if (!secretary || !worker || invalid) exit 3 }
   ' "$file" > "$temp"; then
     rm -f "$temp"
-    print -u2 "Config needs [secretary].harness and [worker_policy].default_harness; refusing to replace legacy sections"
+    print -u2 "Cannot select incompatible harness or rewrite an explicit reply contract; check [secretary] harness/reply_contract and [worker_policy].default_harness"
     return 1
   fi
   chmod 600 "$temp"
