@@ -405,17 +405,15 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 		s.cancel = false
 	}
 	s.canceling = false
-	close(s.cancelWait)
-	s.cancelWait = nil
 	pending := s.pendingTerminal
 	s.pendingTerminal = nil
 	if pending != nil && s.active && s.inputID == attempt {
 		s.active = false
-		s.stateMu.Unlock()
 		s.result <- *pending
-	} else {
-		s.stateMu.Unlock()
 	}
+	close(s.cancelWait)
+	s.cancelWait = nil
+	s.stateMu.Unlock()
 	return err
 }
 func (s *claudeSession) stopProcess() error {
