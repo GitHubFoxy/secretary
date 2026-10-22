@@ -215,8 +215,19 @@ func TestMCPSpawnSuppressesExactResultBeforeDeliveryReceiptCommit(t *testing.T) 
 	if err != nil {
 		t.Fatalf("addressed spawn failed: %v", err)
 	}
-	if _, ok := result.(core.WorkerDetails); !ok || !runtime.resultRecorded {
+	details, ok := result.(core.WorkerDetails)
+	if !ok || !runtime.resultRecorded || details.ActionTurnID == "" {
 		t.Fatalf("MCP call did not traverse the receipt-gap path: result=%T runtime=%#v", result, runtime)
+	}
+	for _, workerTurnID := range []string{"native-spawn-agent", ""} {
+		confirmation, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Worker created", "action_kind": "spawn_worker", "worker_turn_id": workerTurnID})
+		if _, err := handler.Call(ctx, "reply_to_user", confirmation); err == nil {
+			t.Fatalf("unaccepted creation confirmation allowed for %q", workerTurnID)
+		}
+	}
+	confirmation, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Worker created", "action_kind": "spawn_worker", "worker_turn_id": details.ActionTurnID})
+	if _, err := handler.Call(ctx, "reply_to_user", confirmation); err != nil {
+		t.Fatalf("accepted creation confirmation rejected: %v", err)
 	}
 	if _, _, err := store.FinishSecretaryTurnWithOutput(ctx, turn.ID, turn.InputID, core.SecretaryTurnSucceeded, "", "duplicate terminal echo", nil); err != nil {
 		t.Fatal(err)
