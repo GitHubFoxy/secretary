@@ -15,7 +15,6 @@ import (
 
 const claudeCleanupLimit = 2 * time.Second
 
-var errClaudeRootAlreadyExited = errors.New("Claude process exited before root identity capture")
 
 type claudeChild struct {
 	pid int
