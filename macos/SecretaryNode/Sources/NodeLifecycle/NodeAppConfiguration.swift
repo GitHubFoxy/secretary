@@ -48,6 +48,21 @@ public struct NodeAppConfiguration {
         return NodeAppConfiguration(executable: selected, configuration: config, environment: environment, serverHealthURL: health)
     }
 
+    public static func healthURL(home: URL, inherited: [String: String] = ProcessInfo.processInfo.environment, files: FileManager = .default) -> URL? {
+        let standalone = home.appendingPathComponent(".local/share/secretary-node/current/bin/secretary-node")
+        let selected = inherited["SECRETARY_NODE_EXECUTABLE"].map { URL(fileURLWithPath: $0) }
+            ?? (files.isExecutableFile(atPath: standalone.path) ? standalone : home.appendingPathComponent(".local/bin/secretary-node"))
+        let config = inherited["SECRETARY_NODE_CONFIG"].map { URL(fileURLWithPath: $0) }
+            ?? home.appendingPathComponent(selected.standardizedFileURL == standalone.standardizedFileURL ? ".local/share/secretary-node/config.json" : ".local/share/secretary/node/config.json")
+        guard let data = try? Data(contentsOf: config),
+              let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let address = payload["server_url"] as? String,
+              let url = URL(string: address),
+              ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
+              url.host != nil else { return nil }
+        return URL(string: "/v1/health", relativeTo: url)?.absoluteURL
+    }
+
     private static func pairingToken(in text: String) -> String? {
         let prefix = "export SECRETARY_NODE_PAIRING_TOKEN='"
         let candidates = text.components(separatedBy: .newlines).filter { $0.hasPrefix(prefix) && $0.hasSuffix("'") }
