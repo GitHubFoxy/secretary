@@ -2,6 +2,12 @@
 
 Здесь описано текущее поведение протоколов, runtime и lifecycle Secretary. Это не ADR и не долговременная архитектурная мотивация: устойчивые решения с известными альтернативами и причинами фиксируются отдельно в ADR.
 
+## MAC-02: Claude Attempt cancellation on Unix
+
+For a live Claude Code Attempt, the Execution Node snapshots the native CLI's descendant PID/PPID tree before delivering the native interrupt. It terminates descendants leaf-first using SIGKILL, rechecking each PID's observed parent, process group and start timestamp before signaling. It waits up to two seconds for observed descendants to disappear or enter zombie state. Failed inspection or a remaining descendant causes Cancel to return an error instead of reporting that cleanup succeeded. The Claude CLI itself remains alive to accept a subsequent Follow-up in the same native session. Receipt of the interrupt is not a terminal Result; the runtime still waits for native terminal handling.
+
+This cleanup is not an OS containment boundary. Processes already detached and reparented before the snapshot, children spawned concurrently after the snapshot, and PID reuse within timestamp resolution are not reliably covered. Reparented descendants still alive after the native CLI has exited cannot be reconstructed from its former process tree. On Windows, this pre-interrupt snapshot is not implemented; native process termination retains its existing taskkill /T fallback behavior. A live published-candidate validation on macOS must verify original shell and sleep PIDs independently of the Node tree, cancellation Result uniqueness, replay idempotency, and same-session Follow-up. Linux and Windows live acceptance remain unverified.
+
 ## Authority, owner и identity
 
 - Secretary server — единственный source of truth для Personal Conversation, Task, Worker binding, Result и lifecycle. Он не зависит от Channel adapter или Execution node.
