@@ -66,7 +66,11 @@ func (r ClaudeCodeRuntime) Start(ctx context.Context, request StartRequest) (Ses
 	if err != nil {
 		return nil, err
 	}
-	return r.startProcess(ctx, request, id, args)
+	session, err := r.startProcess(ctx, request, id, args)
+	if err != nil {
+		return nil, err
+	}
+	return session, nil
 }
 
 func (r ClaudeCodeRuntime) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
@@ -91,7 +95,11 @@ func (r ClaudeCodeRuntime) Resume(ctx context.Context, request StartRequest, run
 	if err != nil {
 		return nil, err
 	}
-	return r.startProcess(ctx, request, runtimeSessionID, args, true)
+	session, err := r.startProcess(ctx, request, runtimeSessionID, args, true)
+	if err != nil {
+		return nil, err
+	}
+	return session, nil
 }
 
 func validateClaudeRequest(request StartRequest) error {
