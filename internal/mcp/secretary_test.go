@@ -193,6 +193,8 @@ func TestMCPSpawnSuppressesExactResultBeforeDeliveryReceiptCommit(t *testing.T) 
 	if err != nil || len(before) != 0 { t.Fatalf("false creation confirmation persisted: entries=%#v err=%v", before, err) }
 	workersBefore, err := store.WorkersForConversation(ctx, conversation.ID)
 	if err != nil || len(workersBefore) != 0 { t.Fatalf("false creation created canonical Workers: %#v %v", workersBefore, err) }
+	pending, err := store.SecretaryTurn(ctx, turn.ID)
+	if err != nil || pending.State != core.SecretaryTurnActive { t.Fatalf("false reply changed Secretary turn: %#v %v", pending, err) }
 	project, err := store.CreateProject(ctx, core.ProjectSpec{ID: "repo", Name: "Repo", Mappings: []core.ProjectPathMapping{{Node: "node", Path: t.TempDir()}}})
 	if err != nil {
 		t.Fatal(err)
