@@ -284,22 +284,22 @@ terminal_secret() {
 }
 fail() { print -u2 "FAIL: $1"; exit 1; }
 set_answers() { answers=("$@"); position=0; }
-before="$(<"$ENV_FILE")"
+cp "$ENV_FILE" "$MAC04_STATE/mac04-before"
 set_answers yes 123:fixture-secret '' ''
 configure_telegram >/dev/null 2>&1 && fail "empty origin accepted"
-[[ "$(<"$ENV_FILE")" == "$before" ]] || fail "empty origin changed environment"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "empty origin changed environment"
 set_answers yes 123:fixture-secret '' 'https://localhost'
 configure_telegram >/dev/null 2>&1 && fail "local origin accepted"
-[[ "$(<"$ENV_FILE")" == "$before" ]] || fail "invalid origin changed environment"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "invalid origin changed environment"
 for candidate in https://user@example.com https://example.com/path 'https://example.com?x=1' https://192.168.1.1; do
   set_answers yes 123:fixture-secret '' "$candidate"
   configure_telegram >/dev/null 2>&1 && fail "invalid Telegram origin accepted: $candidate"
-  [[ "$(<"$ENV_FILE")" == "$before" ]] || fail "invalid origin modified environment"
+  cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "invalid origin modified environment"
 done
 set_answers yes
 terminal_secret() { return 1; }
 configure_telegram >/dev/null 2>&1 && fail "interrupted token input accepted"
-[[ "$(<"$ENV_FILE")" == "$before" ]] || fail "cancel changed environment"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "cancel changed environment"
 terminal_secret() { (( position++ )); REPLY="${answers[position]}"; return 0; }
 terminal_read() {
   (( position++ ))
@@ -310,7 +310,7 @@ terminal_read() {
 }
 set_answers yes 123:fixture-secret '' https://example.com
 configure_telegram >/dev/null 2>&1 && fail "interrupted origin input accepted"
-[[ "$(<"$ENV_FILE")" == "$before" ]] || fail "origin cancel changed environment"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "origin cancel changed environment"
 terminal_read() {
   (( position++ ))
   REPLY="${answers[position]}"
@@ -322,10 +322,10 @@ set_answers yes 123:fixture-secret '' https://example.com
 configure_telegram >/dev/null || fail "valid origin rejected"
 source "$ENV_FILE"
 [[ "$SECRETARY_TELEGRAM_ENABLED" == true && "$SECRETARY_TELEGRAM_WEB_BASE_URL" == https://example.com ]] || fail "valid origin was not persisted"
-first="$(<"$ENV_FILE")"
+cp "$ENV_FILE" "$MAC04_STATE/mac04-valid"
 set_answers yes '' '' ''
 configure_telegram >/dev/null || fail "repeat configuration rejected"
-[[ "$(<"$ENV_FILE")" == "$first" ]] || fail "repeat configuration modified stored credentials or origin"
+cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-valid" || fail "repeat configuration modified stored credentials or origin"
 MAC04
 "$ROOT/secretary" doctor >/dev/null || fail "doctor rejected interactive Telegram configuration"
 
