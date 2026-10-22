@@ -134,7 +134,7 @@ telegram_origin_valid() {
 }
 
 telegram_origin_doctor() {
-  case "${SECRETARY_TELEGRAM_ENABLED:l}" in
+  case "${${SECRETARY_TELEGRAM_ENABLED:-}:l}" in
     true|yes|on|1)
       telegram_origin_valid "${SECRETARY_TELEGRAM_WEB_BASE_URL:-}" || {
         print -u2 "Telegram configuration invalid: SECRETARY_TELEGRAM_WEB_BASE_URL must be a public HTTPS origin without credentials, path, query or fragment"
