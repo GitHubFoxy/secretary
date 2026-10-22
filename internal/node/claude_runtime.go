@@ -370,6 +370,12 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	}
 	s.cancel = true
 	s.stateMu.Unlock()
+	if err := cleanupClaudeAttemptProcesses(s.cmd); err != nil {
+		s.stateMu.Lock()
+		s.cancel = false
+		s.stateMu.Unlock()
+		return err
+	}
 	id, err := newClaudeSessionID()
 	if err != nil {
 		return err
@@ -535,6 +541,9 @@ func (s *claudeSession) handleLine(line []byte) {
 		s.stateMu.Unlock()
 		if summary == "" {
 			summary = "Claude Code returned no answer"
+			if status == "canceled" {
+				summary = "Claude Code attempt canceled"
+			}
 			if status == "succeeded" {
 				status = "failed"
 			}
