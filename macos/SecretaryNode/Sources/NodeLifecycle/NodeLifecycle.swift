@@ -24,7 +24,7 @@ public final class NodeLifecycle {
     private var process: Process?
     private let identity: URL
 
-    public init(executable: URL, configuration: URL? = nil, arguments: [String] = [], environment: [String: String] = [:], directory: URL) throws {
+    public init(executable: URL, configuration: URL? = nil, arguments: [String] = [], environment: [String: String] = ProcessInfo.processInfo.environment, directory: URL) throws {
         self.executable = executable.resolvingSymlinksInPath().standardizedFileURL
         self.configuration = configuration
         self.arguments = arguments
@@ -98,7 +98,7 @@ public final class NodeLifecycle {
         let child = Process()
         child.executableURL = executable
         child.arguments = (configuration.map { ["--config", $0.path] } ?? []) + arguments
-        child.environment = ProcessInfo.processInfo.environment.merging(environment) { _, override in override }
+        child.environment = environment
         child.standardInput = FileHandle.nullDevice
         let log = NodeIntegrations.logURL
         try FileManager.default.createDirectory(at: log.deletingLastPathComponent(), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
