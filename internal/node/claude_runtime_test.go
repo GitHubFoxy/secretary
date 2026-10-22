@@ -210,7 +210,7 @@ func TestFakeClaudeCodeProcess(t *testing.T) {
 		_ = json.NewDecoder(os.Stdin).Decode(&input)
 		_ = encoder.Encode(map[string]any{"type": "system", "session_id": input["session_id"]})
 		_ = encoder.Encode(map[string]any{"type": "stream_event", "event": map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": "native activity"}}})
-		_ = encoder.Encode(map[string]any{"type": "result", "subtype": "success", "result": "native Claude result"})
+		_ = encoder.Encode(map[string]any{"type": "result", "subtype": "success", "result": "native Claude result", "structured_output": map[string]any{"task_outcome": "succeeded", "reason": "Native CLI fixture completed", "recovered_tool_use_ids": []string{}}})
 		return
 	}
 }
@@ -263,7 +263,7 @@ func TestFakeClaudeInteractiveProcess(t *testing.T) {
 		}
 		if path := os.Getenv("CLAUDE_IMAGE_RECORD"); path != "" { _ = os.WriteFile(path, scanner.Bytes(), 0o600) }
 		message, _ := input["message"].(map[string]any)
-		_ = enc.Encode(map[string]any{"type": "result", "subtype": "success", "result": message["content"], "user_message_uuid": input["uuid"]})
+		_ = enc.Encode(map[string]any{"type": "result", "subtype": "success", "result": message["content"], "user_message_uuid": input["uuid"], "structured_output": map[string]any{"task_outcome": "succeeded", "reason": "Interactive fixture completed requested prompt", "recovered_tool_use_ids": []string{}}})
 	}
 	os.Exit(0)
 }
