@@ -53,14 +53,26 @@ func claudeProcessSnapshot() (map[int]claudeChild, error) {
 }
 
 func captureClaudeRoot(cmd *exec.Cmd) (claudeChild, error) {
+	return captureClaudeRootWithSnapshot(cmd, claudeProcessSnapshotContext)
+}
+
+func captureClaudeRootWithSnapshot(cmd *exec.Cmd, snapshot func(context.Context) (map[int]claudeChild, error)) (claudeChild, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), claudeCleanupLimit)
 	defer cancel()
-	processes, err := claudeProcessSnapshotContext(ctx)
+	processes, err := snapshot(ctx)
 	if err != nil {
 		return claudeChild{}, err
 	}
 	root, ok := processes[cmd.Process.Pid]
-	if !ok || strings.HasPrefix(root.state, "Z") {
+	if !ok {
+		if err := syscall.Kill(cmd.Process.Pid, 0); errors.Is(err, syscall.ESRCH) {
+			return claudeChild{}, errClaudeRootAlreadyExited
+		} else if err != nil {
+			return claudeChild{}, fmt.Errorf("verify missing Claude process identity: %w", err)
+		}
+		return claudeChild{}, errors.New("Claude process is alive but absent from process inspection")
+	}
+	if strings.HasPrefix(root.state, "Z") {
 		return claudeChild{}, errClaudeRootAlreadyExited
 	}
 	if root.group != cmd.Process.Pid {
