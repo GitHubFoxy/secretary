@@ -16,8 +16,9 @@ secretary = "default"
 harness = "codex"
 model = "default"
 reasoning = "default"
-# Явное включение addressed reply v1 меняет MCP contract; после настройки перезапустите Secretary.
-# reply_contract = "addressed-reply-v1"
+# New official Codex installations enable server-owned addressed lifecycle replies.
+# Existing config.toml files are never rewritten by config.Open.
+reply_contract = "addressed-reply-v1"
 
 [worker_policy]
 default_harness = "codex"
