@@ -71,12 +71,12 @@ set_config_harness() {
   local harness="$1" fresh="${2:-false}" file="$STATE/config.toml" temp generated=false
   [[ "$harness" == codex || "$harness" == claude_code ]] || { print -u2 "Unsupported harness: $harness"; return 2; }
   [[ -f "$file" && ! -L "$file" ]] || { print -u2 "Missing or unsafe configuration: $file"; return 1; }
-  if [[ "$harness" == claude_code ]] && { [[ "$fresh" == true ]] || generated_reply_contract_matches; }; then generated=true; fi
+  if [[ "$fresh" == true ]] || generated_reply_contract_matches; then generated=true; fi
   temp="$(mktemp "$STATE/config.toml.XXXXXX")" || return 1
   if ! awk -v selected="$harness" -v generated="$generated" '
-    /^\[[^]]+\]/ { section=$0 }
+    /^\[[^]]+\]/ { if (section=="[secretary]" && selected=="codex" && generated=="true" && !contract) print "reply_contract = \"addressed-reply-v1\""; section=$0 }
     section=="[secretary]" && /^[[:space:]]*harness[[:space:]]*=/ { print "harness = \"" selected "\""; secretary=1; next }
-    section=="[secretary]" && /^[[:space:]]*reply_contract[[:space:]]*=/ && selected=="claude_code" {
+    section=="[secretary]" && /^[[:space:]]*reply_contract[[:space:]]*=/ { contract=1; if (selected!="claude_code") { print; next }
       if (generated=="true" && $0 ~ /^[[:space:]]*reply_contract[[:space:]]*=[[:space:]]*"addressed-reply-v1"[[:space:]]*$/) next
       invalid=1
     }
@@ -90,7 +90,7 @@ set_config_harness() {
   fi
   chmod 600 "$temp"
   mv -f "$temp" "$file"
-  if [[ "$harness" == codex ]]; then
+  if [[ "$generated" == true ]]; then
     record_generated_reply_contract || return 1
   else
     rm -f "$STATE/.generated-reply-contract.cksum" || return 1
