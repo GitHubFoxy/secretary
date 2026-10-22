@@ -260,6 +260,7 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 		id:        sessionID,
 		stdin:     stdin,
 		seen:      make(map[string]bool),
+		bashCalls: make(map[string]bool),
 		ready:     make(chan error, 1),
 		writeGate: make(chan struct{}, 1),
 		done:      make(chan struct{}),
@@ -334,6 +335,8 @@ type claudeSession struct {
 	active    bool
 	inputID   string
 	seen      map[string]bool
+	bashCalls map[string]bool
+	failedBash string
 }
 
 func (s *claudeSession) ID() string                { return s.id }
@@ -362,6 +365,8 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 	s.active = true
 	s.cancel = false
 	s.inputID = id
+	s.bashCalls = make(map[string]bool)
+	s.failedBash = ""
 	s.stateMu.Unlock()
 	var content any = text
 	if len(images) > 0 {
@@ -574,6 +579,8 @@ func (s *claudeSession) handleLine(line []byte) {
 		return
 	}
 	switch valueString(record["type"]) {
+	case "user":
+		s.handleToolResults(record)
 	case "assistant":
 		id := valueString(record["uuid"])
 		if id != "" {
@@ -583,6 +590,7 @@ func (s *claudeSession) handleLine(line []byte) {
 			s.seen[id] = true
 		}
 		if message, ok := record["message"].(map[string]any); ok {
+			s.registerBashCalls(message["content"])
 			s.handleContent(message["content"])
 		}
 	case "result":
@@ -611,7 +619,13 @@ func (s *claudeSession) handleLine(line []byte) {
 				status = "failed"
 			}
 		}
-		s.emitResult(Result{Status: status, Summary: summary})
+		result := Result{Status: status, Summary: summary}
+		if status == "succeeded" && s.failedBash != "" {
+			result.Status = "failed"
+			result.FailureCode = "tool_execution_failed"
+			result.Technical = s.failedBash
+		}
+		s.emitResult(result)
 	case "error":
 		summary := valueString(record["error"])
 		if summary == "" {
@@ -620,6 +634,56 @@ func (s *claudeSession) handleLine(line []byte) {
 		s.emitResult(Result{Status: "failed", Summary: summary})
 	}
 }
+func (s *claudeSession) registerBashCalls(content any) {
+	items, _ := content.([]any)
+	for _, item := range items {
+		block, _ := item.(map[string]any)
+		if valueString(block["type"]) == "tool_use" && valueString(block["name"]) == "Bash" {
+			if id := valueString(block["id"]); id != "" {
+				s.bashCalls[id] = true
+			}
+		}
+	}
+}
+
+func (s *claudeSession) handleToolResults(record map[string]any) {
+	message, _ := record["message"].(map[string]any)
+	items, _ := message["content"].([]any)
+	for _, item := range items {
+		block, _ := item.(map[string]any)
+		if valueString(block["type"]) != "tool_result" {
+			continue
+		}
+		id := valueString(block["tool_use_id"])
+		if !s.bashCalls[id] {
+			continue
+		}
+		delete(s.bashCalls, id)
+		failed, _ := block["is_error"].(bool)
+		exitCode := ""
+		details, _ := record["toolUseResult"].(map[string]any)
+		if details == nil {
+			details, _ = block["toolUseResult"].(map[string]any)
+		}
+		if code, ok := details["exitCode"].(float64); ok {
+			exitCode = fmt.Sprintf("%.0f", code)
+			failed = failed || code != 0
+		}
+		if code, ok := details["exit_code"].(float64); ok {
+			exitCode = fmt.Sprintf("%.0f", code)
+			failed = failed || code != 0
+		}
+		if failed {
+			s.failedBash = "Claude Bash tool failed"
+			if exitCode != "" {
+				s.failedBash += " with exit code " + exitCode
+			}
+		} else if exitCode == "0" || (exitCode == "" && !failed) {
+			s.failedBash = ""
+		}
+	}
+}
+
 func (s *claudeSession) handleContent(content any) {
 	items, _ := content.([]any)
 	for _, item := range items {
