@@ -328,3 +328,26 @@ func TestCodexNativeCancelThenPromptSameSession(t *testing.T) {
 	}
 	t.Logf("native cancellation verified: session=%s old=%s new=%s", initialSessionID, firstResult.Status, secondResult.Status)
 }
+
+func TestCodexSecretaryAddressedMCPServerReachesNativeACP(t *testing.T) {
+ ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+ defer cancel()
+ runtime := CodexRuntime{ACPRuntime: ACPRuntime{
+  Command: os.Args[0],
+  Arguments: []string{"-test.run=^TestFakeACPMCPArraysProcess$"},
+  Environment: []string{"ACP_MCP_ARRAY_FIXTURE=1"},
+ }}
+ request := StartRequest{
+  WorkerRef: "secretary", Workspace: t.TempDir(), DeferInitialPrompt: true,
+  Profile: ManagedProfile{
+   Name: "secretary", Runtime: "codex", Model: "default",
+   Content: "Use the server-owned Worker tools.",
+   ReplyContractVersion: "addressed-reply-v1",
+  },
+  MCPServers: []MCPServer{{Name: "configured", Command: "secretary-mcp", Args: []string{"--read"}, Env: []MCPEnv{{Name: "SCOPE", Value: "worker"}}}},
+ }
+ session, err := runtime.Start(ctx, request)
+ if err != nil { t.Fatalf("Codex Secretary ACP rejected addressed MCP binding: %v", err) }
+ defer session.Close()
+ if session.ID() != "mcp-wire-session" { t.Fatalf("native session ID = %q", session.ID()) }
+}
