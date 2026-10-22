@@ -546,7 +546,7 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 		{
 			name: "structured failed without Bash",
 			events: []string{`{"type":"result","subtype":"success","result":"Failed","structured_output":{"task_outcome":"failed","reason":"Could not complete task","recovered_tool_use_ids":[]}}`},
-			wantStatus: "failed", wantCode: "task_outcome_failed",
+			wantStatus: "failed", wantCode: "task_outcome_failed", wantTechnical: "Could not complete task",
 		},
 		{
 			name: "structured succeeded without Bash",
@@ -591,7 +591,7 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash-seven","is_error":true}]},"toolUseResult":{"exitCode":7}}`,
 				`{"type":"result","subtype":"success","result":"Task failed","structured_output":{"task_outcome":"failed","reason":"Original task could not complete","recovered_tool_use_ids":[]}}`,
 			},
-			wantStatus: "failed", wantCode: "tool_execution_failed", wantTechnical: "exit code 7",
+			wantStatus: "failed", wantCode: "tool_execution_failed", wantTechnical: "Original task could not complete",
 		},
 		{
 			name: "native failure",
