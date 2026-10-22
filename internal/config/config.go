@@ -261,9 +261,6 @@ func compile(base string, raw []byte, c Config, allowEmbeddedTitlePrompt bool) (
 		replyContractVersion := ""
 		if name == "secretary" {
 			replyContractVersion = c.Secretary.ReplyContract
-			if replyContractVersion == "" && runtime == "codex" {
-				replyContractVersion = SecretaryReplyContractAddressedV1
-			}
 		}
 		profile := Profile{Name: name, Path: resolved, Content: string(content), Skills: skills, AllowTools: append([]string(nil), c.Tools.Allow...), Runtime: runtime, Model: model, Reasoning: reasoning, ReplyContractVersion: replyContractVersion}
 		profile.Hash = digest(profile.Content, profile.Runtime, profile.Model, profile.Reasoning, strings.Join(profile.AllowTools, "\n"), skillDigest(skills))
