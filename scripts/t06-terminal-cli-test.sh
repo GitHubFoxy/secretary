@@ -273,6 +273,7 @@ integer position=0
 terminal_read() {
   (( position++ ))
   REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
   return 0
 }
 terminal_secret() {
