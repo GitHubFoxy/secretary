@@ -15,6 +15,8 @@ import (
 
 const claudeCleanupLimit = 2 * time.Second
 
+var errClaudeRootAlreadyExited = errors.New("Claude process exited before root identity capture")
+
 type claudeChild struct {
 	pid int
 	parent int
@@ -59,7 +61,10 @@ func captureClaudeRoot(cmd *exec.Cmd) (claudeChild, error) {
 		return claudeChild{}, err
 	}
 	root, ok := processes[cmd.Process.Pid]
-	if !ok || strings.HasPrefix(root.state, "Z") || root.group != cmd.Process.Pid {
+	if !ok || strings.HasPrefix(root.state, "Z") {
+		return claudeChild{}, errClaudeRootAlreadyExited
+	}
+	if root.group != cmd.Process.Pid {
 		return claudeChild{}, errors.New("Claude process identity unavailable")
 	}
 	return root, nil
