@@ -33,11 +33,6 @@ public final class NodeMenuPresentation {
 
     public func renderLive(_ snapshot: NodeLiveSnapshot?) {
         let state = snapshot?.server ?? "offline"
-        switch state {
-        case "connected": server.title = "Server: Connected"
-        case "reconnecting": server.title = "Server: Reconnecting"
-        default: server.title = "Server: Offline"
-        }
         for row in harnessRows { menu.removeItem(row) }
         harnessRows.removeAll()
         for harness in snapshot?.harnesses.sorted(by: { $0.kind < $1.kind }) ?? [] {
@@ -45,6 +40,14 @@ public final class NodeMenuPresentation {
             row.isEnabled = false
             menu.insertItem(row, at: menu.index(of: quit))
             harnessRows.append(row)
+        }
+    }
+
+    public func renderServer(_ reachability: ServerReachability) {
+        switch reachability {
+        case .checking: server.title = "Server: Checking"
+        case .online: server.title = "Server: Online"
+        case .offline: server.title = "Server: Offline"
         }
     }
 
