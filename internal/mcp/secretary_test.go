@@ -186,6 +186,13 @@ func TestMCPSpawnSuppressesExactResultBeforeDeliveryReceiptCommit(t *testing.T) 
 	if _, err := store.StartSecretaryTurn(ctx, turn.ID); err != nil {
 		t.Fatal(err)
 	}
+	premature, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Создано."})
+	prematureHandler := Secretary{Workers: ctl.WorkerService{Store: store, PersonID: person.ID, Capability: capability}, ReplyContractVersion: core.SecretaryReplyContractAddressedV1}
+	if _, err := prematureHandler.Call(ctx, "reply_to_user", premature); err == nil { t.Fatal("unbound text-only creation reply was accepted") }
+	before, err := store.EntriesAfter(ctx, conversation.ID, 0)
+	if err != nil || len(before) != 0 { t.Fatalf("false creation confirmation persisted: entries=%#v err=%v", before, err) }
+	workersBefore, err := store.WorkersForConversation(ctx, conversation.ID)
+	if err != nil || len(workersBefore) != 0 { t.Fatalf("false creation created canonical Workers: %#v %v", workersBefore, err) }
 	project, err := store.CreateProject(ctx, core.ProjectSpec{ID: "repo", Name: "Repo", Mappings: []core.ProjectPathMapping{{Node: "node", Path: t.TempDir()}}})
 	if err != nil {
 		t.Fatal(err)
