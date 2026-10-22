@@ -112,8 +112,70 @@ ensure_local_node_credentials() {
   [[ "$created" == true ]] && print "Provisioned missing local Node credentials without rotating existing secrets."
 }
 
+telegram_ipv6_public() {
+  command -v perl >/dev/null 2>&1 || return 1
+  perl -MSocket=AF_INET6,inet_pton -e '
+    my $ip = inet_pton(AF_INET6, $ARGV[0]) or exit 1;
+    my @b = unpack("C16", $ip);
+    my $mapped = !(grep { $_ != 0 } @b[0..9]) && $b[10] == 255 && $b[11] == 255;
+    if ($mapped) {
+      my ($a,$c,$d,$e) = @b[12..15];
+      exit(($a == 10 || $a == 127 || $a == 0 && $c == 0 && $d == 0 && $e == 0 || $a == 169 && $c == 254 || $a == 172 && $c >= 16 && $c <= 31 || $a == 192 && $c == 168) ? 1 : 0);
+    }
+    exit 1 if !(grep { $_ != 0 } @b);
+    exit 1 if !(grep { $_ != 0 } @b[0..14]) && $b[15] == 1;
+    exit 1 if ($b[0] & 254) == 252;
+    exit 1 if $b[0] == 254 && ($b[1] & 192) == 128;
+    exit 0;
+  ' "$1"
+}
+
+telegram_origin_valid() {
+  local origin="$1" authority host ip port
+  [[ "$origin" == https://* && "$origin" != *[[:space:]]* && "$origin" != *'#'* && "$origin" != *@* ]] || return 1
+  if [[ "$origin" == *\?* ]]; then
+    [[ "$origin" == *\? && "${origin%\?}" != *\?* ]] || return 1
+  fi
+  authority="${origin#https://}"
+  authority="${authority%\?}"
+  [[ -n "$authority" && "$authority" != */* ]] || return 1
+  if [[ "$authority" == \[* ]]; then
+    [[ "$authority" == *\]* ]] || return 1
+    host="${authority%%\]*}"
+    host="${host#\[}"
+    port="${authority#*\]}"
+    [[ -z "$port" || "$port" == :<-> ]] || return 1
+    telegram_ipv6_public "$host" || return 1
+    return 0
+  fi
+  host="$authority"
+  if [[ "$host" == *:* ]]; then
+    host="${authority%:*}"
+    [[ "${authority##*:}" == <-> ]] || return 1
+  fi
+  [[ -n "$host" && "$host" != .* && "$host" != *..* && "$host" != *\[* && "$host" != *\]* ]] || return 1
+  [[ "$host:l" != localhost && "$host:l" != *.localhost && "$host:l" != *.local ]] || return 1
+  if [[ "$host" == <->.<->.<->.<-> ]]; then
+    local -a octets
+    octets=("${(@s:.:)host}")
+    for ip in "${octets[@]}"; do (( ip >= 0 && ip <= 255 )) || return 1; done
+    (( octets[1] == 10 || octets[1] == 127 || octets[1] == 0 || octets[1] == 169 && octets[2] == 254 || octets[1] == 172 && octets[2] >= 16 && octets[2] <= 31 || octets[1] == 192 && octets[2] == 168 )) && return 1
+  fi
+  return 0
+}
+
+telegram_origin_doctor() {
+  case "${${SECRETARY_TELEGRAM_ENABLED:-}:l}" in
+    true|yes|on|1)
+      telegram_origin_valid "${SECRETARY_TELEGRAM_WEB_BASE_URL:-}" || {
+        print -u2 "Telegram configuration invalid: SECRETARY_TELEGRAM_WEB_BASE_URL must be a public HTTPS origin without credentials, path, query or fragment"
+        return 1
+      } ;;
+  esac
+}
+
 configure_telegram() {
-  local token="${SECRETARY_TELEGRAM_BOT_TOKEN:-}" chat="${SECRETARY_TELEGRAM_OWNER_CHAT_ID:-}" credential="${SECRETARY_TELEGRAM_SERVER_CREDENTIAL:-}"
+  local token="${SECRETARY_TELEGRAM_BOT_TOKEN:-}" chat="${SECRETARY_TELEGRAM_OWNER_CHAT_ID:-}" credential="${SECRETARY_TELEGRAM_SERVER_CREDENTIAL:-}" origin="${SECRETARY_TELEGRAM_WEB_BASE_URL:-}"
   terminal_available || { print -u2 "Telegram configuration requires a terminal"; return 1; }
   terminal_read "Enable Telegram DM (yes/no)" "${SECRETARY_TELEGRAM_ENABLED:-no}" || return 1
   case "${REPLY:l}" in
@@ -132,10 +194,17 @@ configure_telegram() {
   chat="$REPLY"
   [[ -z "$chat" || "$chat" =~ '^-?[0-9]+$' ]] || { print -u2 "Owner chat ID must be an integer"; return 2; }
   [[ "$chat" != 0 ]] || return 2
+  terminal_read "Public Web origin for Telegram links (https://host)" "$origin" || return 1
+  origin="${REPLY%/}"
+  if ! telegram_origin_valid "$origin"; then
+    print -u2 "Telegram requires a public HTTPS origin without credentials, path, query or fragment; no changes made"
+    return 2
+  fi
   [[ -n "$credential" ]] || credential="$(openssl rand -hex 32)" || return 1
   set_environment_value SECRETARY_TELEGRAM_BOT_TOKEN "$token" || return 1
   set_environment_value SECRETARY_TELEGRAM_SERVER_CREDENTIAL "$credential" || return 1
   [[ -z "$chat" ]] || set_environment_value SECRETARY_TELEGRAM_OWNER_CHAT_ID "$chat" || return 1
+  set_environment_value SECRETARY_TELEGRAM_WEB_BASE_URL "$origin" || return 1
   set_environment_value SECRETARY_TELEGRAM_ENABLED true || return 1
   print "Telegram configured. Restart Secretary to apply."
 }
