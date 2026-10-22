@@ -7,10 +7,10 @@ import (
 	"os/exec"
 )
 
-type claudeChild struct{}
+type claudeChild struct{ pid int }
 
-func captureClaudeRoot(*exec.Cmd) (claudeChild, error) {
-	return claudeChild{}, nil
+func captureClaudeRoot(cmd *exec.Cmd) (claudeChild, error) {
+	return claudeChild{pid: cmd.Process.Pid}, nil
 }
 
 func cleanupClaudeAttemptProcesses(context.Context, *exec.Cmd, claudeChild) error {
