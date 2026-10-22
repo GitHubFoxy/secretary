@@ -153,7 +153,7 @@ func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionI
 	args := append([]string(nil), r.Arguments...)
 	args = append(args, "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config")
 	args = append(args, "--permission-mode", "dontAsk")
-	args = append(args, "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"}},"required":["task_outcome","reason"],"additionalProperties":false}`)
+	args = append(args, "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}}},"required":["task_outcome","reason","recovered_tool_use_ids"],"additionalProperties":false}`)
 	toolNames := map[string]string{"read": "Read", "bash": "Bash", "shell": "Bash", "edit": "Edit", "write": "Write", "patch": "Edit", "glob": "Glob", "find": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch", "task": "Agent", "subagent": "Agent", "skill": "Skill"}
 	tools := []string{}
 	for _, tool := range request.Profile.AllowTools {
@@ -338,6 +338,7 @@ type claudeSession struct {
 	seen      map[string]bool
 	bashCalls map[string]bool
 	failedBash string
+	failedBashIDs map[string]string
 }
 
 func (s *claudeSession) ID() string                { return s.id }
@@ -368,6 +369,7 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 	s.inputID = id
 	s.bashCalls = make(map[string]bool)
 	s.failedBash = ""
+	s.failedBashIDs = make(map[string]string)
 	s.stateMu.Unlock()
 	var content any = text
 	if len(images) > 0 {
@@ -621,10 +623,17 @@ func (s *claudeSession) handleLine(line []byte) {
 			}
 		}
 		result := Result{Status: status, Summary: summary}
-		if status == "succeeded" && s.failedBash != "" && !claudeStructuredRecovery(record) {
-			result.Status = "failed"
-			result.FailureCode = "tool_execution_failed"
-			result.Technical = s.failedBash
+		if status == "succeeded" {
+			structured, valid := claudeTaskOutcome(record)
+			if valid && structured.status == "failed" {
+				result.Status = "failed"
+				result.FailureCode = "tool_execution_failed"
+				result.Technical = "Claude Code reported structured task failure: " + structured.reason
+			} else if s.failedBash != "" && !s.claudeStructuredRecovery(structured, valid) {
+				result.Status = "failed"
+				result.FailureCode = "tool_execution_failed"
+				result.Technical = s.failedBash
+			}
 		}
 		s.emitResult(result)
 	case "error":
@@ -635,9 +644,46 @@ func (s *claudeSession) handleLine(line []byte) {
 		s.emitResult(Result{Status: "failed", Summary: summary})
 	}
 }
-func claudeStructuredRecovery(record map[string]any) bool {
+type claudeTaskVerdict struct {
+	status string
+	reason string
+	recovered []string
+}
+
+func claudeTaskOutcome(record map[string]any) (claudeTaskVerdict, bool) {
 	output, ok := record["structured_output"].(map[string]any)
-	return ok && valueString(output["task_outcome"]) == "succeeded" && strings.TrimSpace(valueString(output["reason"])) != ""
+	if !ok {
+		return claudeTaskVerdict{}, false
+	}
+	status, statusOK := output["task_outcome"].(string)
+	reason, reasonOK := output["reason"].(string)
+	ids, idsOK := output["recovered_tool_use_ids"].([]any)
+	if !statusOK || (status != "succeeded" && status != "failed") || !reasonOK || strings.TrimSpace(reason) == "" || !idsOK {
+		return claudeTaskVerdict{}, false
+	}
+	verdict := claudeTaskVerdict{status: status, reason: reason}
+	seen := make(map[string]bool)
+	for _, raw := range ids {
+		id, ok := raw.(string)
+		if !ok || id == "" || seen[id] {
+			return claudeTaskVerdict{}, false
+		}
+		seen[id] = true
+		verdict.recovered = append(verdict.recovered, id)
+	}
+	return verdict, true
+}
+
+func (s *claudeSession) claudeStructuredRecovery(verdict claudeTaskVerdict, valid bool) bool {
+	if !valid || verdict.status != "succeeded" || len(s.failedBashIDs) == 0 || len(verdict.recovered) != len(s.failedBashIDs) {
+		return false
+	}
+	for _, id := range verdict.recovered {
+		if _, ok := s.failedBashIDs[id]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *claudeSession) registerBashCalls(content any) {
@@ -680,10 +726,14 @@ func (s *claudeSession) handleToolResults(record map[string]any) {
 			failed = failed || code != 0
 		}
 		if failed {
+			if s.failedBashIDs == nil {
+				s.failedBashIDs = make(map[string]string)
+			}
 			s.failedBash = "Claude Bash tool failed"
 			if exitCode != "" {
 				s.failedBash += " with exit code " + exitCode
 			}
+			s.failedBashIDs[id] = s.failedBash
 		}
 	}
 }
