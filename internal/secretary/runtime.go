@@ -44,8 +44,8 @@ type Runtime struct {
 	activePromptID       uint64
 	promptStartedID      uint64
 	promptReturn         chan struct{}
-	promptBarrierEntered chan<- struct{} // optional observation for controlled lifecycle regression tests
-	resultConsumerExited chan<- struct{} // optional observation for controlled lifecycle regression tests
+	promptBarrierEntered chan<- struct{}
+	resultConsumerExited chan<- struct{}
 	cancelRequestedID    uint64
 	cancelInFlightID     uint64
 	cancelDone           chan struct{}
