@@ -48,6 +48,7 @@ final class NodeAppConfigurationTests: XCTestCase {
     func testIncompleteSetupFailsWithoutExposingSecrets() throws {
         let (home, _, _) = try fixture(credential: nil)
         defer { try? FileManager.default.removeItem(at: home) }
+        XCTAssertEqual(NodeAppConfiguration.healthURL(home: home, inherited: [:])?.absoluteString, "http://127.0.0.1:8081/v1/health")
         XCTAssertThrowsError(try NodeAppConfiguration.resolve(home: home, inherited: [:])) {
             XCTAssertEqual($0 as? NodeAppConfigurationError, .missingPairing)
             XCTAssertTrue($0.localizedDescription.contains("secretary setup"))
