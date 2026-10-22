@@ -133,3 +133,37 @@ func TestMAC02RootCaptureFailureStopsAndReapsCLI(t *testing.T) {
 		t.Fatalf("capture failure did not kill and reap CLI: state=%v", cmd.ProcessState)
 	}
 }
+
+func TestMAC02MissingLiveRootInSnapshotRejectsAndReapsCLI(t *testing.T) {
+	dir := t.TempDir()
+	launcher := filepath.Join(dir, "claude")
+	if err := os.WriteFile(launcher, []byte("#!/bin/sh\nexec sleep 180\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	var captured *exec.Cmd
+	runtime := ClaudeCodeRuntime{
+		Command: launcher,
+		captureRoot: func(cmd *exec.Cmd) (claudeChild, error) {
+			captured = cmd
+			if err := syscall.Kill(cmd.Process.Pid, 0); err != nil {
+				t.Fatalf("fixture CLI already exited: %v", err)
+			}
+			return captureClaudeRootWithSnapshot(cmd, func(context.Context) (map[int]claudeChild, error) {
+				return map[int]claudeChild{}, nil
+			})
+		},
+	}
+	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	session, err := runtime.Start(ctx, StartRequest{Workspace: dir, DeferInitialPrompt: true})
+	if session != nil || !errors.Is(err, ErrClaudeCodeUnavailable) || !strings.Contains(err.Error(), "alive but absent") {
+		t.Fatalf("missing live root must reject launch, session=%v err=%v", session, err)
+	}
+	if captured == nil || captured.Process == nil || captured.ProcessState == nil {
+		t.Fatalf("rejected CLI must be waited/reaped: %+v", captured)
+	}
+	status, ok := captured.ProcessState.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
+		t.Fatalf("missing live root must be stopped and reaped: %v", captured.ProcessState)
+	}
+}
