@@ -482,3 +482,90 @@ func TestClaudeDeferredStartupFailureIsVisible(t *testing.T) {
 		t.Fatal(ctx.Err())
 	}
 }
+
+func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
+	cases := []struct {
+		name string
+		events []string
+		wantStatus string
+		wantCode string
+		wantTechnical string
+	}{
+		{
+			name: "failed command without recovery",
+			events: []string{
+				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash","input":{"command":"/bin/sh -c 'exit 7'"}}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","content":"failed"}]},"toolUseResult":{"exitCode":7}}`,
+				`{"type":"result","subtype":"success","result":"Задача не выполнена"}`,
+			},
+			wantStatus: "failed",
+			wantCode: "tool_execution_failed",
+			wantTechnical: "exit code 7",
+		},
+		{
+			name: "recovered intermediate error",
+			events: []string{
+				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
+				`{"type":"assistant","uuid":"call2","message":{"content":[{"type":"tool_use","id":"bash2","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash2","is_error":false}]},"toolUseResult":{"exitCode":0}}`,
+				`{"type":"result","subtype":"success","result":"Recovered"}`,
+			},
+			wantStatus: "succeeded",
+		},
+		{
+			name: "normal task",
+			events: []string{`{"type":"result","subtype":"success","result":"Done"}`},
+			wantStatus: "succeeded",
+		},
+		{
+			name: "native failure",
+			events: []string{`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Native failed"}`},
+			wantStatus: "failed",
+		},
+		{
+			name: "cancellation wins",
+			events: []string{
+				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
+				`{"type":"result","subtype":"success","result":"Interrupted"}`,
+			},
+			wantStatus: "canceled",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			session := &claudeSession{
+				id: "native-id",
+				active: true,
+				inputID: "input-id",
+				seen: make(map[string]bool),
+				bashCalls: make(map[string]bool),
+				result: make(chan Result, 2),
+				activity: make(chan Activity, 16),
+			}
+			if tc.name == "cancellation wins" {
+				session.cancel = true
+			}
+			for _, event := range tc.events {
+				session.handleLine([]byte(event))
+			}
+			select {
+			case result := <-session.Result():
+				if result.Status != tc.wantStatus || result.FailureCode != tc.wantCode {
+					t.Fatalf("terminal=%#v, want status=%q failure_code=%q", result, tc.wantStatus, tc.wantCode)
+				}
+				if tc.wantTechnical != "" && !strings.Contains(result.Technical, tc.wantTechnical) {
+					t.Fatalf("technical=%q, want %q", result.Technical, tc.wantTechnical)
+				}
+			default:
+				t.Fatal("terminal result missing")
+			}
+			select {
+			case duplicate := <-session.Result():
+				t.Fatalf("duplicate terminal result: %#v", duplicate)
+			default:
+			}
+		})
+	}
+}
