@@ -318,6 +318,20 @@ terminal_read() {
   return 0
 }
 terminal_secret() { (( position++ )); REPLY="${answers[position]}"; }
+set_answers yes 123:fixture-secret '' 'https://[2606:4700:4700::1111]'
+configure_telegram >/dev/null || fail "public IPv6 Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[2606:4700:4700::1111]' ]] || fail "public IPv6 origin not persisted"
+cp "$ENV_FILE" "$MAC04_STATE/mac04-ipv6"
+for candidate in 'https://[fd00::1]' 'https://[::1]' 'https://[fe80::1]'; do
+  set_answers yes '' '' "$candidate"
+  configure_telegram >/dev/null 2>&1 && fail "forbidden IPv6 Telegram origin accepted: $candidate"
+  cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-ipv6" || fail "invalid IPv6 origin changed environment"
+done
+set_answers yes '' '' 'https://example.com?'
+configure_telegram >/dev/null || fail "empty query marker Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://example.com?' ]] || fail "empty query marker origin not persisted"
 set_answers yes 123:fixture-secret '' https://example.com
 configure_telegram >/dev/null || fail "valid origin rejected"
 source "$ENV_FILE"
