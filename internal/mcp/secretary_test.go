@@ -463,6 +463,6 @@ func TestCodexSecretaryMCPProjectlessSpawnIsCanonicalAndIdempotent(t *testing.T)
  }
  workers, err := store.WorkersForConversation(ctx, conversation.ID)
  if err != nil || len(workers) != 1 { t.Fatalf("expected one canonical Worker: %#v, %v", workers, err) }
- confirmation, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Worker accepted", "action_kind": "spawn_worker", "worker_turn_id": first.ActionTurnID})
+ confirmation, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Worker accepted", "reply_kind":"spawn_worker", "action_kind": "spawn_worker", "worker_turn_id": first.ActionTurnID})
  if _, err := handler.Call(ctx, "reply_to_user", confirmation); err != nil { t.Fatalf("accepted projectless action cannot be confirmed: %v", err) }
 }
