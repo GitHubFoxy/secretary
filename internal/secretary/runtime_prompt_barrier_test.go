@@ -48,6 +48,12 @@ func TestPromptResultBarrierControlledInterleavings(t *testing.T) {
  for _,mode:=range []string{"success","prompt_error","cancel","stop"} {
   t.Run(mode,func(t *testing.T){
    ctx,store,identity,runtime,session:=newPromptBarrierFixture(t)
+   barrierEntered:=make(chan struct{},1)
+   consumerExited:=make(chan struct{},1)
+   runtime.mu.Lock()
+   runtime.promptBarrierEntered=barrierEntered
+   runtime.resultConsumerExited=consumerExited
+   runtime.mu.Unlock()
    emitted:=make(chan struct{})
    release:=make(chan struct{})
    defer func(){select{case <-release:default:close(release)}}()
@@ -65,6 +71,7 @@ func TestPromptResultBarrierControlledInterleavings(t *testing.T) {
    if err:=runtime.HandleMessage(ctx,"controlled terminal interleaving");err!=nil{t.Fatal(err)}
    select{case <-emitted:case <-ctx.Done():t.Fatal("Prompt did not publish terminal Result")}
    turn:=waitBarrierTurn(t,ctx,store,identity)
+   select{case <-barrierEntered:case <-ctx.Done():t.Fatal("terminal Result consumer did not enter promptReturn wait")}
    runtime.mu.Lock()
    barrier:=runtime.promptReturn
    runtime.mu.Unlock()
@@ -79,11 +86,23 @@ func TestPromptResultBarrierControlledInterleavings(t *testing.T) {
     if err:=runtime.Stop(ctx);err!=nil{t.Fatal(err)}
     select{case <-barrier:case <-ctx.Done():t.Fatal("Stop did not release result consumer")}
     close(release)
+    close(session.results)
+    close(session.activities)
+    select{case <-consumerExited:case <-ctx.Done():t.Fatal("stopped session Result consumer did not exit")}
     if err:=runtime.Start(ctx);err!=nil{t.Fatal(err)}
     final:=waitForPromptBarrierTerminal(t,ctx,store,turn.ID)
     if final.State!=core.SecretaryTurnInterrupted{
      t.Fatalf("restarted turn not interrupted: %+v",final)
     }
+    events,err:=store.SecretaryEvents(ctx,turn.ID,0,30)
+    if err!=nil{t.Fatal(err)}
+    finished:=0
+    for _,event:=range events{if event.Kind==core.SecretaryTurnFinishedEvent{finished++}}
+    if finished!=1{t.Fatalf("Stop/restart produced %d terminal events, want exactly one",finished)}
+    persisted,err:=store.SecretaryTurn(ctx,turn.ID)
+    if err!=nil||persisted.State!=core.SecretaryTurnInterrupted||persisted.PromptState!=final.PromptState{t.Fatalf("old consumer modified recovered durable lifecycle: %+v %v",persisted,err)}
+    select{case reported:=<-runtime.Errors():t.Fatalf("unexpected old-session lifecycle error after restart: %v",reported)
+    default:}
     return
    }
    if mode=="cancel"{
