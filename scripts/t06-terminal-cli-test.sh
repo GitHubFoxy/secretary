@@ -291,7 +291,7 @@ cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "empty origin changed env
 set_answers yes 123:fixture-secret '' 'https://localhost'
 configure_telegram >/dev/null 2>&1 && fail "local origin accepted"
 cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "invalid origin changed environment"
-for candidate in https://user@example.com https://example.com/path 'https://example.com?x=1' https://192.168.1.1; do
+for candidate in https://user@example.com https://example.com/path 'https://example.com?x=1' 'https://example.com??' 'https://example.com?x?' https://192.168.1.1; do
   set_answers yes 123:fixture-secret '' "$candidate"
   configure_telegram >/dev/null 2>&1 && fail "invalid Telegram origin accepted: $candidate"
   cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-before" || fail "invalid origin modified environment"
@@ -323,11 +323,15 @@ configure_telegram >/dev/null || fail "public IPv6 Telegram origin rejected"
 source "$ENV_FILE"
 [[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[2606:4700:4700::1111]' ]] || fail "public IPv6 origin not persisted"
 cp "$ENV_FILE" "$MAC04_STATE/mac04-ipv6"
-for candidate in 'https://[fd00::1]' 'https://[::1]' 'https://[fe80::1]'; do
+for candidate in 'https://[fd00::1]' 'https://[::1]' 'https://[0:0:0:0:0:0:00:1]' 'https://[fe80::1]' 'https://[2001::2::3]' 'https://[::ffff:192.168.1.1]'; do
   set_answers yes '' '' "$candidate"
   configure_telegram >/dev/null 2>&1 && fail "forbidden IPv6 Telegram origin accepted: $candidate"
   cmp -s "$ENV_FILE" "$MAC04_STATE/mac04-ipv6" || fail "invalid IPv6 origin changed environment"
 done
+set_answers yes '' '' 'https://[::ffff:8.8.8.8]'
+configure_telegram >/dev/null || fail "public IPv4-mapped IPv6 Telegram origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:8.8.8.8]' ]] || fail "public IPv4-mapped IPv6 origin not persisted"
 set_answers yes '' '' 'https://example.com?'
 configure_telegram >/dev/null || fail "empty query marker Telegram origin rejected"
 source "$ENV_FILE"
