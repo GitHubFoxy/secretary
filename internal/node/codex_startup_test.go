@@ -152,3 +152,21 @@ func TestCodexManagedMCPHostMissingIsVisibleBeforePrompt(t *testing.T) {
   t.Fatalf("missing Codex MCP executable was not reported before prompting: %v", err)
  }
 }
+
+func TestCodexManagedMCPHostRejectsInvalidExecutableAndPermissions(t *testing.T) {
+ for _, tc := range []struct{name string; body []byte; mode os.FileMode}{
+  {name:"corrupt", body:[]byte("not a native executable"), mode:0700},
+  {name:"truncated", body:[]byte{0x7f, 'E'}, mode:0700},
+  {name:"permission", body:[]byte{0x7f, 'E', 'L', 'F'}, mode:0600},
+ } {
+  t.Run(tc.name,func(t *testing.T){
+   pair:=startupCodexPairFixture(t,"server",true)
+   pair.Codex.Provenance="managed"
+   host:=filepath.Join(filepath.Dir(pair.Codex.ResolvedPath),"codex-code-mode-host")
+   if err:=os.WriteFile(host,tc.body,tc.mode);err!=nil{t.Fatal(err)}
+   if err:=os.Chmod(host,tc.mode);err!=nil{t.Fatal(err)}
+   err:=checkCodexStartupWithProbe(context.Background(),"server",func(_ context.Context,_ CodexPairInventory)error{return verifyManagedCodeModeHost(filepath.Dir(pair.Codex.ResolvedPath))})
+   if err==nil || !strings.Contains(err.Error(),"code-mode host") || !strings.Contains(err.Error(),"MCP"){t.Fatalf("invalid MCP host accepted: %v",err)}
+  })
+ }
+}
