@@ -332,6 +332,13 @@ set_answers yes '' '' 'https://[::ffff:8.8.8.8]'
 configure_telegram >/dev/null || fail "public IPv4-mapped IPv6 Telegram origin rejected"
 source "$ENV_FILE"
 [[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:8.8.8.8]' ]] || fail "public IPv4-mapped IPv6 origin not persisted"
+set_answers yes '' '' 'https://[::ffff:0.1.2.3]'
+configure_telegram >/dev/null || fail "Server-accepted 0/8 mapped IPv6 origin rejected"
+source "$ENV_FILE"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:0.1.2.3]' ]] || fail "0/8 mapped IPv6 origin not persisted"
+set_answers yes '' '' 'https://[::ffff:0.0.0.0]'
+configure_telegram >/dev/null 2>&1 && fail "mapped unspecified IPv4 origin accepted"
+[[ "$SECRETARY_TELEGRAM_WEB_BASE_URL" == 'https://[::ffff:0.1.2.3]' ]] || fail "invalid mapped IPv4 changed saved origin"
 set_answers yes '' '' 'https://example.com?'
 configure_telegram >/dev/null || fail "empty query marker Telegram origin rejected"
 source "$ENV_FILE"
