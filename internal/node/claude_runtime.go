@@ -23,6 +23,8 @@ import (
 
 var ErrClaudeCodeUnavailable = errors.New("claude_code runtime unavailable")
 
+var errClaudeRootAlreadyExited = errors.New("Claude process exited before root identity capture")
+
 var ErrClaudeCodeConfiguration = errors.New("claude_code runtime configuration error")
 
 var ErrClaudeCodeSteeringUnsupported = errors.New("claude: same-Attempt steering has not been verified for this native runtime")
@@ -276,12 +278,14 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 		capture = captureClaudeRoot
 	}
 	root, rootErr := capture(cmd)
-	if rootErr != nil {
+	if rootErr != nil && !errors.Is(rootErr, errClaudeRootAlreadyExited) {
 		_ = session.stopProcess()
 		_ = cmd.Wait()
 		return nil, fmt.Errorf("%w: capture native process identity: %v", ErrClaudeCodeUnavailable, rootErr)
 	}
-	session.claudeRoot = root
+	if rootErr == nil {
+		session.claudeRoot = root
+	}
 	go session.run()
 	if len(resume) > 0 && resume[0] {
 		err = session.writeMessage(ctx, map[string]any{"type": "control_request", "request_id": "resume-initialize", "request": map[string]any{"subtype": "initialize"}})
