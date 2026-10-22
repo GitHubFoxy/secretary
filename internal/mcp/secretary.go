@@ -47,9 +47,10 @@ func (s Secretary) Tools() []Tool {
 					"input_id":          map[string]string{"type": "string"},
 					"text":              map[string]string{"type": "string"},
 					"action_kind":       map[string]any{"type": "string", "enum": []string{"spawn_worker"}},
+                    "reply_kind": map[string]any{"type":"string","enum":[]string{"answer","error","spawn_worker"}},
 					"worker_turn_id":    map[string]string{"type": "string"},
 				},
-				"required": []string{"secretary_turn_id", "input_id", "text"},
+				"required": []string{"secretary_turn_id", "input_id", "text", "reply_kind"},
 			},
 		})
 	}
@@ -67,6 +68,7 @@ func (s Secretary) Call(ctx context.Context, name string, raw json.RawMessage) (
 		SecretaryTurnID string `json:"secretary_turn_id"`
 		InputID         string `json:"input_id"`
 		ActionKind      string `json:"action_kind"`
+        ReplyKind string `json:"reply_kind"`
 		WorkerTurnID    string `json:"worker_turn_id"`
 		ctl.SpawnWorkerRequest
 	}
@@ -145,14 +147,15 @@ func (s Secretary) Call(ctx context.Context, name string, raw json.RawMessage) (
 		if s.ReplyContractVersion != core.SecretaryReplyContractAddressedV1 {
 			return nil, fmt.Errorf("unknown Secretary tool %q", name)
 		}
-		if args.ActionKind != "" || args.WorkerTurnID != "" {
-			if args.ActionKind != "spawn_worker" || args.WorkerTurnID == "" {
-				return nil, fmt.Errorf("worker creation confirmation requires a valid spawn_worker action and worker_turn_id")
-			}
-			if err := s.Workers.Store.ValidateSecretaryAcceptedSpawnOrigin(ctx, core.SecretaryOriginIdentity{PersonID: s.Workers.PersonID, Capability: s.Workers.Capability, SecretaryTurnID: args.SecretaryTurnID, InputID: args.InputID}, args.WorkerTurnID); err != nil {
-				return nil, fmt.Errorf("worker creation has no accepted Secretary action: %w", err)
-			}
-		}
+		switch args.ReplyKind {
+        case "spawn_worker":
+            if args.ActionKind != "spawn_worker" || args.WorkerTurnID == "" { return nil, fmt.Errorf("spawn confirmation requires a typed accepted action") }
+            if err := s.Workers.Store.ValidateSecretaryAcceptedSpawnOrigin(ctx, core.SecretaryOriginIdentity{PersonID:s.Workers.PersonID,Capability:s.Workers.Capability,SecretaryTurnID:args.SecretaryTurnID,InputID:args.InputID}, args.WorkerTurnID); err != nil { return nil, fmt.Errorf("worker creation has no accepted Secretary action: %w",err) }
+        case "answer","error":
+            if args.ActionKind != "" || args.WorkerTurnID != "" { return nil, fmt.Errorf("non-lifecycle reply cannot contain an action confirmation") }
+        default:
+            return nil, fmt.Errorf("reply_kind is required")
+        }
 		entry, duplicate, err := s.Workers.ReplyToUser(ctx, ctl.SecretaryReplyRequest{SecretaryTurnID: args.SecretaryTurnID, InputID: args.InputID, Text: args.Text})
 		if err != nil {
 			return nil, err
