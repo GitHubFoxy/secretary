@@ -295,9 +295,27 @@ for candidate in https://user@example.com https://example.com/path 'https://exam
   configure_telegram >/dev/null 2>&1 && fail "invalid Telegram origin accepted: $candidate"
   [[ "$(<"$ENV_FILE")" == "$before" ]] || fail "invalid origin modified environment"
 done
+set_answers yes
 terminal_secret() { return 1; }
 configure_telegram >/dev/null 2>&1 && fail "interrupted token input accepted"
 [[ "$(<"$ENV_FILE")" == "$before" ]] || fail "cancel changed environment"
+terminal_secret() { (( position++ )); REPLY="${answers[position]}"; return 0; }
+terminal_read() {
+  (( position++ ))
+  if (( position == 4 )); then return 1; fi
+  REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
+  return 0
+}
+set_answers yes 123:fixture-secret '' https://example.com
+configure_telegram >/dev/null 2>&1 && fail "interrupted origin input accepted"
+[[ "$(<"$ENV_FILE")" == "$before" ]] || fail "origin cancel changed environment"
+terminal_read() {
+  (( position++ ))
+  REPLY="${answers[position]}"
+  [[ -n "$REPLY" ]] || REPLY="${2:-}"
+  return 0
+}
 terminal_secret() { (( position++ )); REPLY="${answers[position]}"; }
 set_answers yes 123:fixture-secret '' https://example.com
 configure_telegram >/dev/null || fail "valid origin rejected"
