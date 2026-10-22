@@ -32,7 +32,9 @@ public struct NodeAppConfiguration {
             environment.removeValue(forKey: key)
         }
         let identity = URL(fileURLWithPath: dataDirectory).appendingPathComponent("identity.json")
-        if !files.fileExists(atPath: identity.path), environment["SECRETARY_NODE_PAIRING_TOKEN", default: ""].isEmpty && !isStandalone {
+        if files.fileExists(atPath: identity.path) {
+            environment.removeValue(forKey: "SECRETARY_NODE_PAIRING_TOKEN")
+        } else if environment["SECRETARY_NODE_PAIRING_TOKEN", default: ""].isEmpty && !isStandalone {
             let credentials = home.appendingPathComponent(".local/share/secretary/environment")
             guard let attributes = try? files.attributesOfItem(atPath: credentials.path),
                   attributes[.type] as? FileAttributeType == .typeRegular,
@@ -93,8 +95,9 @@ public final class ServerHealthMonitor {
         var request = URLRequest(url: url)
         request.timeoutInterval = 3
         session.dataTask(with: request) { [weak self] data, response, error in
+            let payload = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             let healthy = error == nil && (response as? HTTPURLResponse)?.statusCode == 200
-                && data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }?["status"] as? String == "ok"
+                && (payload?["status"] as? String) == "ok"
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.pending = false
