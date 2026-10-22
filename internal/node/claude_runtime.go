@@ -364,7 +364,7 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 		return err
 	}
 	s.stateMu.Lock()
-	if s.closed || !s.active {
+	if s.closed || !s.active || s.cancel {
 		s.stateMu.Unlock()
 		return nil
 	}
