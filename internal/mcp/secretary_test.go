@@ -103,7 +103,7 @@ func TestSecretaryAddressedReplyRequiresCurrentServerOriginAndIsIdempotent(t *te
 	if !toolNames["reply_to_user"] {
 		t.Fatal("opt-in MCP surface omitted reply_to_user")
 	}
-	args, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "The answer is 42."})
+	args, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "The answer is 42.", "reply_kind":"answer"})
 	first, err := handler.Call(ctx, "reply_to_user", args)
 	if err != nil {
 		t.Fatalf("valid addressed reply rejected: %v", err)
@@ -118,8 +118,8 @@ func TestSecretaryAddressedReplyRequiresCurrentServerOriginAndIsIdempotent(t *te
 		t.Fatal("exact replay was not identified as duplicate")
 	}
 	for _, invalid := range []map[string]string{
-		{"secretary_turn_id": "stale-turn", "input_id": turn.InputID, "text": "stale"},
-		{"secretary_turn_id": turn.ID, "input_id": "stale-input", "text": "stale"},
+		{"secretary_turn_id": "stale-turn", "input_id": turn.InputID, "text": "stale", "reply_kind":"answer"},
+		{"secretary_turn_id": turn.ID, "input_id": "stale-input", "text": "stale", "reply_kind":"answer"},
 	} {
 		encoded, _ := json.Marshal(invalid)
 		if _, err := handler.Call(ctx, "reply_to_user", encoded); err == nil {
@@ -186,7 +186,7 @@ func TestMCPSpawnSuppressesExactResultBeforeDeliveryReceiptCommit(t *testing.T) 
 	if _, err := store.StartSecretaryTurn(ctx, turn.ID); err != nil {
 		t.Fatal(err)
 	}
-	premature, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Создано."})
+	premature, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Создано.", "reply_kind":"spawn_worker"})
 	prematureHandler := Secretary{Workers: ctl.WorkerService{Store: store, PersonID: person.ID, Capability: capability}, ReplyContractVersion: core.SecretaryReplyContractAddressedV1}
 	if _, err := prematureHandler.Call(ctx, "reply_to_user", premature); err == nil { t.Fatal("unbound text-only creation reply was accepted") }
 	before, err := store.EntriesAfter(ctx, conversation.ID, 0)
@@ -229,12 +229,12 @@ func TestMCPSpawnSuppressesExactResultBeforeDeliveryReceiptCommit(t *testing.T) 
 		t.Fatalf("MCP call did not traverse the receipt-gap path: result=%T runtime=%#v", result, runtime)
 	}
 	for _, workerTurnID := range []string{"native-spawn-agent", ""} {
-		confirmation, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Worker created", "action_kind": "spawn_worker", "worker_turn_id": workerTurnID})
+		confirmation, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Worker created", "reply_kind":"spawn_worker", "action_kind": "spawn_worker", "worker_turn_id": workerTurnID})
 		if _, err := handler.Call(ctx, "reply_to_user", confirmation); err == nil {
 			t.Fatalf("unaccepted creation confirmation allowed for %q", workerTurnID)
 		}
 	}
-	confirmation, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Worker created", "action_kind": "spawn_worker", "worker_turn_id": details.ActionTurnID})
+	confirmation, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Worker created", "reply_kind":"spawn_worker", "action_kind": "spawn_worker", "worker_turn_id": details.ActionTurnID})
 	if _, err := handler.Call(ctx, "reply_to_user", confirmation); err != nil {
 		t.Fatalf("accepted creation confirmation rejected: %v", err)
 	}
