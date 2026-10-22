@@ -100,7 +100,17 @@ func TestPromptResultBarrierControlledInterleavings(t *testing.T) {
    if final.State!=want{t.Fatalf("terminal state %s, want %s: %+v",final.State,want,final)}
    if mode!="prompt_error"&&final.PromptState!="accepted"{t.Fatalf("Prompt was not accepted before terminal completion: %+v",final)}
    if mode=="prompt_error"&&final.PromptState=="accepted"{t.Fatalf("failed Prompt was accepted: %+v",final)}
-   select{case err:=<-runtime.Errors():t.Fatalf("unexpected runtime transition error: %v",err)
+   if mode=="prompt_error"{
+    if final.Error!=promptFailure.Error(){t.Fatalf("failed Prompt terminal error=%q, want %q",final.Error,promptFailure.Error())}
+    select{
+    case reported:=<-runtime.Errors():
+     if reported==nil||reported.Error()!=promptFailure.Error()||errors.Is(reported,core.ErrInvalidTransition){
+      t.Fatalf("unexpected runtime error instead of injected Prompt rejection: %v",reported)
+     }
+    case <-ctx.Done():t.Fatal("expected injected Prompt rejection was not reported")
+    }
+   }
+   select{case reported:=<-runtime.Errors():t.Fatalf("unexpected additional runtime transition error: %v",reported)
    default:}
    events,err:=store.SecretaryEvents(ctx,turn.ID,0,30)
    if err!=nil{t.Fatal(err)}
