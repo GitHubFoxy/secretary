@@ -151,7 +151,7 @@ func (s Secretary) Call(ctx context.Context, name string, raw json.RawMessage) (
         case "spawn_worker":
             if args.ActionKind != "spawn_worker" || args.WorkerTurnID == "" { return nil, fmt.Errorf("spawn confirmation requires a typed accepted action") }
             if err := s.Workers.Store.ValidateSecretaryAcceptedSpawnOrigin(ctx, core.SecretaryOriginIdentity{PersonID:s.Workers.PersonID,Capability:s.Workers.Capability,SecretaryTurnID:args.SecretaryTurnID,InputID:args.InputID}, args.WorkerTurnID); err != nil { return nil, fmt.Errorf("worker creation has no accepted Secretary action: %w",err) }
-            args.Text = "Worker создан. Сервер подтвердил action_turn_id: " + args.WorkerTurnID
+            args.Text = "Worker создан. Действие подтверждено сервером."
         case "answer","error":
             if args.ActionKind != "" || args.WorkerTurnID != "" { return nil, fmt.Errorf("non-lifecycle reply cannot contain an action confirmation") }
         default:
