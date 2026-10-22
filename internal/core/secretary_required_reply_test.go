@@ -2,6 +2,8 @@ package core
 
 import (
 	"context"
+ "database/sql"
+ "strings"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -145,4 +147,59 @@ func TestRequiredAddressedReplyCompletionCommitsExactEvidenceAndSurvivesReopen(t
 			}
 		})
 	}
+}
+
+func TestCodexMissingReplyDiagnosticReflectsAcceptedSpawnAndSurvivesRestart(t *testing.T) {
+ for _, accepted:=range []bool{false,true} {
+  label:="without-action"
+  if accepted {label="with-accepted-action"}
+  t.Run(label,func(t *testing.T){
+   ctx:=context.Background()
+   path:=filepath.Join(t.TempDir(),"state.db")
+   store,err:=Open(ctx,path)
+   if err!=nil{t.Fatal(err)}
+   person,conversation,err:=store.CreatePersonWithConversation(ctx)
+   if err!=nil{t.Fatal(err)}
+   identity,err:=store.EnsureSecretaryIdentity(ctx,person.ID,conversation.ID)
+   if err!=nil{t.Fatal(err)}
+   capability,err:=store.RotateSecretaryCapability(ctx,person.ID)
+   if err!=nil{t.Fatal(err)}
+   if _,err:=store.ReplaceSecretaryRuntime(ctx,identity.ID,"codex","default","high");err!=nil{t.Fatal(err)}
+   if _,err:=store.SaveUserDocument(ctx,filepath.Join(t.TempDir(),"user.md"),"synthetic");err!=nil{t.Fatal(err)}
+   if err:=store.SetSecretaryPolicySnapshot(ctx,SecretaryPolicySnapshot{Version:"v1",Harness:"codex",Model:"default",Reasoning:"high",ProfileVersion:"v1",ProfileName:"secretary",ProfileHash:"h",ProfileContent:"synthetic",ReplyContractVersion:SecretaryReplyContractAddressedV1});err!=nil{t.Fatal(err)}
+   turn,err:=store.EnqueueSecretaryTurn(ctx,identity.ID,"Поручи это отдельному исполнителю")
+   if err!=nil{t.Fatal(err)}
+   if _,err=store.StartSecretaryTurn(ctx,turn.ID);err!=nil{t.Fatal(err)}
+   if accepted {
+    _,workerTurn,_,err:=store.CreateWorker(ctx,conversation.ID,WorkerSpec{WorkerRef:"accepted",Intent:"synthetic",ProjectID:"p",NodeID:"n",HarnessInstanceID:"n/fx",PolicySnapshot:"synthetic"},TurnSpec{Input:"synthetic"})
+    if err!=nil{t.Fatal(err)}
+    _,err=withTx(store,ctx,func(tx *sql.Tx)(bool,error){
+     origin:=SecretaryOriginIdentity{PersonID:person.ID,Capability:capability,SecretaryTurnID:turn.ID,InputID:turn.InputID}
+     return true,bindSecretaryWorkerCreationOriginTx(ctx,tx,origin,conversation.ID,workerTurn.ID,store.now(),true)
+    })
+    if err!=nil{t.Fatal(err)}
+   }
+   evidence:=SecretaryCompletionEvidence{Branch:"assistant_final",TerminalClass:"end_turn",TerminalValid:true,RPCSucceeded:true,DrainCompleted:true,ResponsePresent:true}
+   completed,err:=store.FinishSecretaryTurnWithRequiredReply(ctx,turn.ID,turn.InputID,SecretaryTurnSucceeded,evidence)
+   if err!=nil||completed.State!=SecretaryTurnFailed||completed.Error!="addressed_reply_missing"{t.Fatalf("missing MCP reply state=%#v err=%v",completed,err)}
+   entries,err:=store.EntriesAfter(ctx,conversation.ID,0)
+   if err!=nil{t.Fatal(err)}
+   count:=0
+   for _,entry:=range entries {
+    if entry.Kind!=EntrySecretary{continue}
+    count++
+    if accepted && !strings.Contains(entry.Body,"Worker создан и принят сервером"){t.Fatalf("accepted Worker described as missing: %q",entry.Body)}
+    if !accepted && !strings.Contains(entry.Body,"Создание Worker не подтверждено"){t.Fatalf("missing Worker falsely accepted: %q",entry.Body)}
+   }
+   if count!=1{t.Fatalf("expected single owner diagnostic, got %#v",entries)}
+   if err:=store.Close();err!=nil{t.Fatal(err)}
+   store,err=Open(ctx,path)
+   if err!=nil{t.Fatal(err)}
+   defer store.Close()
+   if _,err=store.FinishSecretaryTurnWithRequiredReply(ctx,turn.ID,turn.InputID,SecretaryTurnSucceeded,evidence);!errors.Is(err,ErrInvalidTransition){t.Fatalf("restart duplicated completion: %v",err)}
+   recovered,err:=store.EntriesAfter(ctx,conversation.ID,0)
+   if err!=nil||len(recovered)!=len(entries){t.Fatalf("restart changed Conversation ordering/entries before=%#v after=%#v err=%v",entries,recovered,err)}
+   for i:=range entries {if entries[i].ID!=recovered[i].ID || entries[i].Seq!=recovered[i].Seq{t.Fatalf("entry ordering changed at %d: %#v != %#v",i,entries[i],recovered[i])}}
+  })
+ }
 }
