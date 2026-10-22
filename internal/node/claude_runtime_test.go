@@ -92,7 +92,7 @@ func TestClaudeCodeRuntimeAllowsOnlyDocumentedHarmlessStaticArgument(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id"}
+	want := []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}}},"required":["task_outcome","reason","recovered_tool_use_ids"],"additionalProperties":false}`, "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Claude CLI args=%#v, want %#v", got, want)
 	}
@@ -100,7 +100,7 @@ func TestClaudeCodeRuntimeAllowsOnlyDocumentedHarmlessStaticArgument(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session"}
+	want = []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}}},"required":["task_outcome","reason","recovered_tool_use_ids"],"additionalProperties":false}`, "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Claude resume args=%#v, want %#v", got, want)
 	}
@@ -210,7 +210,7 @@ func TestFakeClaudeCodeProcess(t *testing.T) {
 		_ = json.NewDecoder(os.Stdin).Decode(&input)
 		_ = encoder.Encode(map[string]any{"type": "system", "session_id": input["session_id"]})
 		_ = encoder.Encode(map[string]any{"type": "stream_event", "event": map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": "native activity"}}})
-		_ = encoder.Encode(map[string]any{"type": "result", "subtype": "success", "result": "native Claude result"})
+		_ = encoder.Encode(map[string]any{"type": "result", "subtype": "success", "result": "native Claude result", "structured_output": map[string]any{"task_outcome": "succeeded", "reason": "Native CLI fixture completed", "recovered_tool_use_ids": []string{}}})
 		return
 	}
 }
@@ -263,7 +263,7 @@ func TestFakeClaudeInteractiveProcess(t *testing.T) {
 		}
 		if path := os.Getenv("CLAUDE_IMAGE_RECORD"); path != "" { _ = os.WriteFile(path, scanner.Bytes(), 0o600) }
 		message, _ := input["message"].(map[string]any)
-		_ = enc.Encode(map[string]any{"type": "result", "subtype": "success", "result": message["content"], "user_message_uuid": input["uuid"]})
+		_ = enc.Encode(map[string]any{"type": "result", "subtype": "success", "result": message["content"], "user_message_uuid": input["uuid"], "structured_output": map[string]any{"task_outcome": "succeeded", "reason": "Interactive fixture completed requested prompt", "recovered_tool_use_ids": []string{}}})
 	}
 	os.Exit(0)
 }
@@ -480,5 +480,167 @@ func TestClaudeDeferredStartupFailureIsVisible(t *testing.T) {
 		}
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
+	}
+}
+
+func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
+	cases := []struct {
+		name string
+		events []string
+		wantStatus string
+		wantCode string
+		wantTechnical string
+	}{
+		{
+			name: "failed command without recovery",
+			events: []string{
+				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash","input":{"command":"/bin/sh -c 'exit 7'"}}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","content":"failed"}]},"toolUseResult":{"exitCode":7}}`,
+				`{"type":"result","subtype":"success","result":"Задача не выполнена"}`,
+			},
+			wantStatus: "failed",
+			wantCode: "tool_execution_failed",
+			wantTechnical: "exit code 7",
+		},
+		{
+			name: "recovered intermediate error",
+			events: []string{
+				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
+				`{"type":"assistant","uuid":"call2","message":{"content":[{"type":"tool_use","id":"bash2","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash2","is_error":false}]},"toolUseResult":{"exitCode":0}}`,
+				`{"type":"result","subtype":"success","result":"Recovered","structured_output":{"task_outcome":"succeeded","reason":"Recovered by alternate verification","recovered_tool_use_ids":["bash1"]}}`,
+			},
+			wantStatus: "succeeded",
+		},
+		{
+			name: "unrelated successful Bash does not erase failure",
+			events: []string{
+				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
+				`{"type":"assistant","uuid":"call2","message":{"content":[{"type":"tool_use","id":"bash2","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash2","is_error":false}]},"toolUseResult":{"exitCode":0}}`,
+				`{"type":"result","subtype":"success","result":"Not actually recovered"}`,
+			},
+			wantStatus: "failed",
+			wantCode: "tool_execution_failed",
+		},
+		{
+			name: "unrelated attestation cannot recover Bash",
+			events: []string{
+				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
+				`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"succeeded","reason":"Another command completed","recovered_tool_use_ids":["other-call"]}}`,
+			},
+			wantStatus: "failed", wantCode: "tool_execution_failed",
+		},
+		{
+			name: "invalid attestation cannot recover Bash",
+			events: []string{
+				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
+				`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"unknown","reason":"not valid","recovered_tool_use_ids":["bash1"]}}`,
+			},
+			wantStatus: "failed", wantCode: "tool_execution_failed", wantTechnical: "invalid structured task outcome",
+		},
+		{
+			name: "structured failed without Bash",
+			events: []string{`{"type":"result","subtype":"success","result":"Failed","structured_output":{"task_outcome":"failed","reason":"Could not complete task","recovered_tool_use_ids":[]}}`},
+			wantStatus: "failed", wantCode: "task_outcome_failed", wantTechnical: "Could not complete task",
+		},
+		{
+			name: "structured succeeded without Bash",
+			events: []string{`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"succeeded","reason":"Completed","recovered_tool_use_ids":[]}}`},
+			wantStatus: "succeeded",
+		},
+		{
+			name: "native failure overrides structured success",
+			events: []string{`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Provider failed","structured_output":{"task_outcome":"succeeded","reason":"Claimed success","recovered_tool_use_ids":[]}}`},
+			wantStatus: "failed",
+		},
+		{
+			name: "invalid structured task outcome without Bash",
+			events: []string{`{"type":"result","subtype":"success","result":"Unverified","structured_output":{"task_outcome":"unknown","reason":"Unknown","recovered_tool_use_ids":[]}}`},
+			wantStatus: "failed", wantCode: "task_outcome_failed",
+		},
+		{
+			name: "missing structured outcome without evidence",
+			events: []string{`{"type":"result","subtype":"success","result":"Unverified"}`},
+			wantStatus: "failed", wantCode: "task_outcome_failed", wantTechnical: "no structured task outcome",
+		},
+		{
+			name: "normal text-only answer fallback",
+			events: []string{
+				`{"type":"assistant","uuid":"text-answer","message":{"content":[{"type":"text","text":"A direct answer"}]}}`,
+				`{"type":"result","subtype":"success","result":"Done"}`,
+			},
+			wantStatus: "succeeded",
+		},
+		{
+			name: "tool use forbids text-only fallback",
+			events: []string{
+				`{"type":"assistant","uuid":"tool-answer","message":{"content":[{"type":"text","text":"Attempted task"},{"type":"tool_use","id":"other-tool","name":"Read"}]}}`,
+				`{"type":"result","subtype":"success","result":"Done"}`,
+			},
+			wantStatus: "failed", wantCode: "task_outcome_failed", wantTechnical: "no structured task outcome",
+		},
+		{
+			name: "Bash exit seven and valid structured failure",
+			events: []string{
+				`{"type":"assistant","uuid":"bash-call","message":{"content":[{"type":"tool_use","id":"bash-seven","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash-seven","is_error":true}]},"toolUseResult":{"exitCode":7}}`,
+				`{"type":"result","subtype":"success","result":"Task failed","structured_output":{"task_outcome":"failed","reason":"Original task could not complete","recovered_tool_use_ids":[]}}`,
+			},
+			wantStatus: "failed", wantCode: "tool_execution_failed", wantTechnical: "Original task could not complete",
+		},
+		{
+			name: "native failure",
+			events: []string{`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Native failed"}`},
+			wantStatus: "failed",
+		},
+		{
+			name: "cancellation wins",
+			events: []string{
+				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
+				`{"type":"result","subtype":"success","result":"Interrupted"}`,
+			},
+			wantStatus: "canceled",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			session := &claudeSession{
+				id: "native-id",
+				active: true,
+				inputID: "input-id",
+				seen: make(map[string]bool),
+				bashCalls: make(map[string]bool),
+				result: make(chan Result, 2),
+				activity: make(chan Activity, 16),
+			}
+			if tc.name == "cancellation wins" {
+				session.cancel = true
+			}
+			for _, event := range tc.events {
+				session.handleLine([]byte(event))
+			}
+			select {
+			case result := <-session.Result():
+				if result.Status != tc.wantStatus || result.FailureCode != tc.wantCode {
+					t.Fatalf("terminal=%#v, want status=%q failure_code=%q", result, tc.wantStatus, tc.wantCode)
+				}
+				if tc.wantTechnical != "" && !strings.Contains(result.Technical, tc.wantTechnical) {
+					t.Fatalf("technical=%q, want %q", result.Technical, tc.wantTechnical)
+				}
+			default:
+				t.Fatal("terminal result missing")
+			}
+			select {
+			case duplicate := <-session.Result():
+				t.Fatalf("duplicate terminal result: %#v", duplicate)
+			default:
+			}
+		})
 	}
 }
