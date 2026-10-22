@@ -297,6 +297,7 @@ func TestInstallManagedCodexAssetsFreshRetryPartialAndCorrupt(t *testing.T) {
   version := codexPinnedVersion
   if name=="codex-acp" { version=codexACPPinnedVersion }
   payload := []byte("#!/bin/sh\necho " + name + " " + version + "\n")
+  if name=="codex-code-mode-host" { payload = []byte{0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00} }
   if name=="codex-acp" {
    payload = []byte("#!/bin/sh\ncase \"$1\" in\n  --version) echo \"error: unexpected argument '--version' found\" >&2; exit 2 ;;\n  --help) echo 'Usage: codex-acp -c key=value'; exit 0 ;;\n  *) exit 1 ;;\nesac\n")
   }
@@ -354,6 +355,7 @@ func TestManagedCodexReleaseRefreshWithDifferentBundledACP(t *testing.T) {
   gz:=gzip.NewWriter(&buf)
   tarball:=tar.NewWriter(gz)
   payload:=[]byte("#!/bin/sh\necho codex "+codexPinnedVersion+"\n")
+  if name=="codex-code-mode-host" { payload=[]byte{0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00} }
   if name=="codex-acp" {
    payload=[]byte("#!/bin/sh\n# compiled bundle: "+variant+"\ncase \"$1\" in\n --version) echo \"error: unexpected argument '--version' found\" >&2; exit 2 ;;\n --help) echo 'Usage: codex-acp -c key=value'; exit 0 ;;\n *) exit 1 ;;\nesac\n")
   }
