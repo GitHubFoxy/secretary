@@ -57,8 +57,6 @@ func TestAddressedReplyInstructionsAreOptInAndDoNotRewriteExternalProfile(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Model an existing external-profile installation: its config predates the
-	// official addressed-reply default and must not be silently opted in.
 	generatedConfig, err := os.ReadFile(configPath)
 	if err != nil { t.Fatal(err) }
 	legacyConfig := strings.Replace(string(generatedConfig), "reply_contract = \"addressed-reply-v1\"", "# legacy: reply_contract unset", 1)
