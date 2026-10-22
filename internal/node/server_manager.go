@@ -91,6 +91,11 @@ type commandWaiter struct {
 	kind     CommandKind
 }
 
+type nodeLifecycleGate struct {
+	available chan struct{}
+	refs int
+}
+
 type ServerManager struct {
 	store      *core.Store
 	adminToken string
@@ -98,7 +103,8 @@ type ServerManager struct {
 	now        func() time.Time
 
 	mu sync.Mutex
-	nodeLifecycleGates sync.Map
+	nodeLifecycleMu sync.Mutex
+	nodeLifecycleGates map[core.NodeReference]*nodeLifecycleGate
 	beforeConnectionRegistration func()
 	beforeCommandWrite func(core.NodeReference)
 	connections map[core.NodeReference]*ProtocolConnection
@@ -247,7 +253,7 @@ func (m *ServerManager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "draining must be true or false", http.StatusBadRequest)
 			return
 		}
-		record, err := m.store.SetNodeDraining(r.Context(), nodeRef, *request.Draining)
+		record, err := m.setNodeDraining(r.Context(), nodeRef, *request.Draining)
 		if err != nil {
 			writeNodeStoreError(w, err)
 			return
@@ -262,18 +268,11 @@ func (m *ServerManager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		var record core.NodeRecord
-		var err error
-		if request.Force {
-			record, err = m.store.RevokeNode(r.Context(), nodeRef)
-		} else {
-			record, err = m.store.RevokeNodeIfIdle(r.Context(), nodeRef)
-		}
+		record, err := m.revokeNode(r.Context(), nodeRef, request.Force)
 		if err != nil {
 			writeNodeStoreError(w, err)
 			return
 		}
-		m.closeConnection(nodeRef)
 		writeNodeJSON(w, http.StatusOK, m.statusFor(record))
 	default:
 		http.NotFound(w, r)
@@ -346,21 +345,98 @@ func (m *ServerManager) SendCommandAndWait(ctx context.Context, nodeRef core.Nod
 	}
 }
 
+func (m *ServerManager) releaseNodeLifecycleReference(nodeRef core.NodeReference, gate *nodeLifecycleGate) {
+	m.nodeLifecycleMu.Lock()
+	gate.refs--
+	if gate.refs == 0 {
+		delete(m.nodeLifecycleGates, nodeRef)
+	}
+	m.nodeLifecycleMu.Unlock()
+}
+
 func (m *ServerManager) lockNodeLifecycle(ctx context.Context, nodeRef core.NodeReference) (func(), error) {
-	initialized := make(chan struct{}, 1)
-	initialized <- struct{}{}
-	existing, _ := m.nodeLifecycleGates.LoadOrStore(nodeRef, initialized)
-	gate := existing.(chan struct{})
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.nodeLifecycleMu.Lock()
+	if m.nodeLifecycleGates == nil {
+		m.nodeLifecycleGates = make(map[core.NodeReference]*nodeLifecycleGate)
+	}
+	gate := m.nodeLifecycleGates[nodeRef]
+	if gate == nil {
+		gate = &nodeLifecycleGate{available: make(chan struct{}, 1)}
+		gate.available <- struct{}{}
+		m.nodeLifecycleGates[nodeRef] = gate
+	}
+	gate.refs++
+	m.nodeLifecycleMu.Unlock()
 	select {
 	case <-ctx.Done():
+		m.releaseNodeLifecycleReference(nodeRef, gate)
 		return nil, ctx.Err()
-	case <-gate:
+	case <-gate.available:
 		if err := ctx.Err(); err != nil {
-			gate <- struct{}{}
+			gate.available <- struct{}{}
+			m.releaseNodeLifecycleReference(nodeRef, gate)
 			return nil, err
 		}
-		return func() { gate <- struct{}{} }, nil
+		return func() {
+			gate.available <- struct{}{}
+			m.releaseNodeLifecycleReference(nodeRef, gate)
+		}, nil
 	}
+}
+
+func (m *ServerManager) setNodeDraining(ctx context.Context, nodeRef core.NodeReference, draining bool) (core.NodeRecord, error) {
+	unlock, err := m.lockNodeLifecycle(ctx, nodeRef)
+	if err != nil {
+		return core.NodeRecord{}, err
+	}
+	defer unlock()
+	return m.store.SetNodeDraining(ctx, nodeRef, draining)
+}
+
+func (m *ServerManager) abortNodeCommands(nodeRef core.NodeReference) {
+	m.mu.Lock()
+	connection := m.connections[nodeRef]
+	m.mu.Unlock()
+	if connection != nil {
+		connection.abortPendingCommands()
+	}
+}
+
+func (m *ServerManager) revokeNode(ctx context.Context, nodeRef core.NodeReference, force bool) (core.NodeRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return core.NodeRecord{}, err
+	}
+	if force {
+		m.abortNodeCommands(nodeRef)
+	}
+	unlock, err := m.lockNodeLifecycle(ctx, nodeRef)
+	if err != nil {
+		return core.NodeRecord{}, err
+	}
+	defer unlock()
+	if force {
+		m.abortNodeCommands(nodeRef)
+	}
+	var record core.NodeRecord
+	if force {
+		record, err = m.store.RevokeNode(ctx, nodeRef)
+	} else {
+		record, err = m.store.RevokeNodeIfIdle(ctx, nodeRef)
+	}
+	if err != nil {
+		return core.NodeRecord{}, err
+	}
+	m.mu.Lock()
+	connection := m.connections[nodeRef]
+	delete(m.connections, nodeRef)
+	m.mu.Unlock()
+	if connection != nil {
+		connection.abortPendingCommands()
+	}
+	return record, nil
 }
 
 func (m *ServerManager) CommandReady(ctx context.Context, nodeRef core.NodeReference) (bool, error) {
