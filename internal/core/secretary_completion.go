@@ -196,7 +196,7 @@ WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conve
                       AND c.kind = 'dispatch' AND c.state = 'delivered' AND a.turn_id = t.id
                 )`, turn.ID, turn.InputID, turn.ConversationID, turn.ID, turn.InputID, turn.ConversationID).Scan(&accepted)
                 if err != nil { return secretaryTurnCompletion{}, err }
-                message := "Не удалось подтвердить выполнение запроса: Secretary MCP не предоставил подтверждённый ответ. Создание Worker не подтверждено. Проверьте Secretary MCP и повторите запрос."
+                message := "Secretary не получил подтверждённый адресованный ответ. Выполнение запроса не подтверждено; проверьте доступность Secretary MCP и состояние задачи перед повторной попыткой."
                 if accepted != 0 { message = "Worker создан и принят сервером, но Secretary не завершил адресованный ответ. Проверьте состояние Worker перед повторным запросом, чтобы избежать дубликатов." }
                 entry, err = appendEntryWithIdentity(ctx, tx, now, turn.ConversationID, EntrySecretary, message, "", turn.ID, "")
                 if err != nil { return secretaryTurnCompletion{}, err }
