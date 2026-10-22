@@ -305,6 +305,7 @@ type claudeSession struct {
 	stopErr   error
 	claudeRoot claudeChild
 	canceling bool
+	cancelWait chan struct{}
 	pendingTerminal *Result
 	done      chan struct{}
 	closed    bool
@@ -378,6 +379,7 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	attempt := s.inputID
 	s.cancel = true
 	s.canceling = true
+	s.cancelWait = make(chan struct{})
 	root := s.claudeRoot
 	s.stateMu.Unlock()
 	var err error
@@ -403,6 +405,8 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 		s.cancel = false
 	}
 	s.canceling = false
+	close(s.cancelWait)
+	s.cancelWait = nil
 	pending := s.pendingTerminal
 	s.pendingTerminal = nil
 	if pending != nil && s.active && s.inputID == attempt {
@@ -497,6 +501,12 @@ func (s *claudeSession) run() {
 			summary = "Claude Code exited without a result"
 		}
 		s.emitResult(Result{Status: status, Summary: summary})
+	}
+	s.stateMu.Lock()
+	cancelWait := s.cancelWait
+	s.stateMu.Unlock()
+	if cancelWait != nil {
+		<-cancelWait
 	}
 }
 func (s *claudeSession) handleLine(line []byte) {
