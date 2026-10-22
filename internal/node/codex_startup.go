@@ -20,6 +20,8 @@ func checkCodexStartupWithProbe(ctx context.Context, scope string, probe func(co
  if err := probe(ctx, pair); err != nil {
   reason := strings.ToLower(err.Error())
   switch {
+  case strings.Contains(reason, "code-mode host"):
+   return errors.New("Codex MCP code-mode host unavailable in selected managed pair; reinstall the managed native pair, run secretary doctor and restart")
   case strings.Contains(reason, "authentication required"):
    return fmt.Errorf("Codex authorization required: run %s login using the selected executable, then secretary doctor and restart", pair.Codex.Path)
   case strings.Contains(reason, "quota/provider"):
