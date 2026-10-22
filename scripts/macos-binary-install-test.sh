@@ -33,7 +33,15 @@ export HOME="$home" PATH="$home/fixtures:$PATH" SECRETARY_RELEASE_BASE="file://$
 export SECRETARY_VERSION="$version"
 bash "$root/scripts/install-macos-binary.sh"
 "$HOME/.local/bin/secretary" doctor
-"$HOME/.local/bin/secretary" start --no-open
+if ! "$HOME/.local/bin/secretary" start --no-open; then
+  daemon_log="$HOME/.local/share/secretary/secretaryd.log"
+  if [[ -f "$daemon_log" ]]; then
+    grep -Eai 'error|failed|fatal|panic|listen|bind|readiness|startup' "$daemon_log" | tail -n 30 | sed -E 's/([^[:space:]]*(token|password|secret|key|authorization)[^[:space:]]*)/[REDACTED]/Ig' >&2 || true
+  else
+    echo "Secretary daemon log is unavailable" >&2
+  fi
+  exit 1
+fi
 status="$("$HOME/.local/bin/secretary" status)"
 [[ "$status" == *"installed: version=${version}"* ]]
 [[ "$status" == *"running Server: pid="*"version=${version} revision=$revision"* ]]
