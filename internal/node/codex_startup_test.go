@@ -165,7 +165,7 @@ func TestCodexManagedMCPHostRejectsInvalidExecutableAndPermissions(t *testing.T)
    host:=filepath.Join(filepath.Dir(pair.Codex.ResolvedPath),"codex-code-mode-host")
    if err:=os.WriteFile(host,tc.body,tc.mode);err!=nil{t.Fatal(err)}
    if err:=os.Chmod(host,tc.mode);err!=nil{t.Fatal(err)}
-   err:=checkCodexStartupWithProbe(context.Background(),"server",func(_ context.Context,_ CodexPairInventory)error{return verifyManagedCodeModeHost(filepath.Dir(pair.Codex.ResolvedPath))})
+   err:=CheckCodexStartup(context.Background(),"server")
    if err==nil || !strings.Contains(err.Error(),"code-mode host") || !strings.Contains(err.Error(),"MCP"){t.Fatalf("invalid MCP host accepted: %v",err)}
   })
  }
