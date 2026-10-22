@@ -39,25 +39,25 @@ func TestClaudeFailedToolCanonicalResultReplayAndBinding(t *testing.T) {
 		OccurredAt: time.Now().UTC(),
 	}
 	sink := NewStoreEventSink(store)
-	event := NodeEvent{Kind: "attempt.outcome", Outcome: &outcome}
+	event := outcomeEvent(outcome)
 	wrong := outcome
 	wrong.AttemptID = "wrong-attempt"
-	if err := sink(ctx, NodeEvent{Kind: "attempt.outcome", Outcome: &wrong}); err == nil {
+	if err := sink(ctx, outcomeEvent(wrong)); err == nil {
 		t.Fatalf("wrong Attempt accepted: %v", err)
 	}
 	wrong = outcome
 	wrong.WorkerRef = "different-worker"
-	if err := sink(ctx, NodeEvent{Kind: "attempt.outcome", Outcome: &wrong}); err == nil {
+	if err := sink(ctx, outcomeEvent(wrong)); err == nil {
 		t.Fatalf("wrong Worker accepted: %v", err)
 	}
 	wrong = outcome
 	wrong.TurnID = "different-turn"
-	if err := sink(ctx, NodeEvent{Kind: "attempt.outcome", Outcome: &wrong}); err == nil {
+	if err := sink(ctx, outcomeEvent(wrong)); err == nil {
 		t.Fatalf("wrong Turn accepted: %v", err)
 	}
 	wrong = outcome
 	wrong.HarnessInstanceID = "node-b/claude"
-	if err := sink(ctx, NodeEvent{Kind: "attempt.outcome", Outcome: &wrong}); err == nil {
+	if err := sink(ctx, outcomeEvent(wrong)); err == nil {
 		t.Fatalf("wrong harness accepted: %v", err)
 	}
 	for i := 0; i < 2; i++ {
