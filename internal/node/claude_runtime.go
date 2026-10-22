@@ -339,6 +339,8 @@ type claudeSession struct {
 	bashCalls map[string]bool
 	failedBash string
 	failedBashIDs map[string]string
+	sawAssistantText bool
+	sawToolUse bool
 }
 
 func (s *claudeSession) ID() string                { return s.id }
@@ -370,6 +372,8 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 	s.bashCalls = make(map[string]bool)
 	s.failedBash = ""
 	s.failedBashIDs = make(map[string]string)
+	s.sawAssistantText = false
+	s.sawToolUse = false
 	s.stateMu.Unlock()
 	var content any = text
 	if len(images) > 0 {
@@ -625,21 +629,27 @@ func (s *claudeSession) handleLine(line []byte) {
 		result := Result{Status: status, Summary: summary}
 		if status == "succeeded" {
 			structured, valid := claudeTaskOutcome(record)
-			if valid && structured.status == "failed" {
-				result.Status = "failed"
-				result.FailureCode = "task_outcome_failed"
-				result.Technical = "Claude Code reported structured task failure: " + structured.reason
-			} else if s.failedBash != "" && !s.claudeStructuredRecovery(structured, valid) {
+			if s.failedBash != "" && (valid && structured.status == "failed" || !s.claudeStructuredRecovery(structured, valid)) {
 				result.Status = "failed"
 				result.FailureCode = "tool_execution_failed"
 				result.Technical = s.failedBash
-				if _, supplied := record["structured_output"]; supplied && !valid {
+				if valid && structured.status == "failed" {
+					result.Technical += "; Claude Code reported structured task failure: " + structured.reason
+				} else if _, supplied := record["structured_output"]; supplied && !valid {
 					result.Technical += "; Claude Code returned invalid structured task outcome"
 				}
+			} else if valid && structured.status == "failed" {
+				result.Status = "failed"
+				result.FailureCode = "task_outcome_failed"
+				result.Technical = "Claude Code reported structured task failure: " + structured.reason
 			} else if _, supplied := record["structured_output"]; supplied && !valid {
 				result.Status = "failed"
 				result.FailureCode = "task_outcome_failed"
 				result.Technical = "Claude Code returned invalid structured task outcome"
+			} else if !valid && !(s.sawAssistantText && !s.sawToolUse) {
+				result.Status = "failed"
+				result.FailureCode = "task_outcome_failed"
+				result.Technical = "Claude Code returned no structured task outcome or qualifying text-only answer"
 			}
 		}
 		s.emitResult(result)
@@ -751,8 +761,12 @@ func (s *claudeSession) handleContent(content any) {
 		block, _ := item.(map[string]any)
 		switch valueString(block["type"]) {
 		case "text":
+			if strings.TrimSpace(valueString(block["text"])) != "" {
+				s.sawAssistantText = true
+			}
 			s.emitText(valueString(block["text"]))
 		case "tool_use":
+			s.sawToolUse = true
 			s.emitActivity(Activity{Kind: ActivityTool, Text: valueString(block["name"])})
 		}
 	}
