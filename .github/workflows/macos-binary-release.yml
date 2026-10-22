@@ -16,6 +16,9 @@ on:
       - internal/acp/jsonl.go
       - internal/nativeexec/**
       - internal/node/**
+      - internal/ctl/**
+      - internal/app/**
+      - internal/webapi/**
       - internal/acp/**
       - cmd/secretaryd/**
       - internal/node/harness_probe.go

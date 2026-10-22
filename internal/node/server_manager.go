@@ -91,6 +91,11 @@ type commandWaiter struct {
 	kind     CommandKind
 }
 
+type nodeLifecycleGate struct {
+	available chan struct{}
+	refs int
+}
+
 type ServerManager struct {
 	store      *core.Store
 	adminToken string
@@ -98,11 +103,10 @@ type ServerManager struct {
 	now        func() time.Time
 
 	mu sync.Mutex
-	// Serialize socket replacement, heartbeat/inventory persistence and
-	// disconnect. Holding this lock through the Store write prevents an old
-	// socket's already-in-flight heartbeat from committing after a new
-	// socket has reset its liveness state.
-	connectionLifecycleMu sync.Mutex
+	nodeLifecycleMu sync.Mutex
+	nodeLifecycleGates map[core.NodeReference]*nodeLifecycleGate
+	beforeConnectionRegistration func()
+	beforeCommandWrite func(core.NodeReference)
 	connections map[core.NodeReference]*ProtocolConnection
 	outcomes    map[core.NodeReference]CommandOutcome
 	waiters     map[string]*commandWaiter
@@ -249,7 +253,7 @@ func (m *ServerManager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "draining must be true or false", http.StatusBadRequest)
 			return
 		}
-		record, err := m.store.SetNodeDraining(r.Context(), nodeRef, *request.Draining)
+		record, err := m.setNodeDraining(r.Context(), nodeRef, *request.Draining)
 		if err != nil {
 			writeNodeStoreError(w, err)
 			return
@@ -264,18 +268,11 @@ func (m *ServerManager) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		var record core.NodeRecord
-		var err error
-		if request.Force {
-			record, err = m.store.RevokeNode(r.Context(), nodeRef)
-		} else {
-			record, err = m.store.RevokeNodeIfIdle(r.Context(), nodeRef)
-		}
+		record, err := m.revokeNode(r.Context(), nodeRef, request.Force)
 		if err != nil {
 			writeNodeStoreError(w, err)
 			return
 		}
-		m.closeConnection(nodeRef)
 		writeNodeJSON(w, http.StatusOK, m.statusFor(record))
 	default:
 		http.NotFound(w, r)
@@ -348,7 +345,106 @@ func (m *ServerManager) SendCommandAndWait(ctx context.Context, nodeRef core.Nod
 	}
 }
 
+func (m *ServerManager) releaseNodeLifecycleReference(nodeRef core.NodeReference, gate *nodeLifecycleGate) {
+	m.nodeLifecycleMu.Lock()
+	gate.refs--
+	if gate.refs == 0 {
+		delete(m.nodeLifecycleGates, nodeRef)
+	}
+	m.nodeLifecycleMu.Unlock()
+}
+
+func (m *ServerManager) lockNodeLifecycle(ctx context.Context, nodeRef core.NodeReference) (func(), error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	m.nodeLifecycleMu.Lock()
+	if m.nodeLifecycleGates == nil {
+		m.nodeLifecycleGates = make(map[core.NodeReference]*nodeLifecycleGate)
+	}
+	gate := m.nodeLifecycleGates[nodeRef]
+	if gate == nil {
+		gate = &nodeLifecycleGate{available: make(chan struct{}, 1)}
+		gate.available <- struct{}{}
+		m.nodeLifecycleGates[nodeRef] = gate
+	}
+	gate.refs++
+	m.nodeLifecycleMu.Unlock()
+	select {
+	case <-ctx.Done():
+		m.releaseNodeLifecycleReference(nodeRef, gate)
+		return nil, ctx.Err()
+	case <-gate.available:
+		if err := ctx.Err(); err != nil {
+			gate.available <- struct{}{}
+			m.releaseNodeLifecycleReference(nodeRef, gate)
+			return nil, err
+		}
+		return func() {
+			gate.available <- struct{}{}
+			m.releaseNodeLifecycleReference(nodeRef, gate)
+		}, nil
+	}
+}
+
+func (m *ServerManager) setNodeDraining(ctx context.Context, nodeRef core.NodeReference, draining bool) (core.NodeRecord, error) {
+	unlock, err := m.lockNodeLifecycle(ctx, nodeRef)
+	if err != nil {
+		return core.NodeRecord{}, err
+	}
+	defer unlock()
+	return m.store.SetNodeDraining(ctx, nodeRef, draining)
+}
+
+func (m *ServerManager) abortNodeCommands(nodeRef core.NodeReference) {
+	m.mu.Lock()
+	connection := m.connections[nodeRef]
+	m.mu.Unlock()
+	if connection != nil {
+		connection.abortPendingCommands()
+	}
+}
+
+func (m *ServerManager) revokeNode(ctx context.Context, nodeRef core.NodeReference, force bool) (core.NodeRecord, error) {
+	if err := ctx.Err(); err != nil {
+		return core.NodeRecord{}, err
+	}
+	if force {
+		m.abortNodeCommands(nodeRef)
+	}
+	unlock, err := m.lockNodeLifecycle(ctx, nodeRef)
+	if err != nil {
+		return core.NodeRecord{}, err
+	}
+	defer unlock()
+	if force {
+		m.abortNodeCommands(nodeRef)
+	}
+	var record core.NodeRecord
+	if force {
+		record, err = m.store.RevokeNode(ctx, nodeRef)
+	} else {
+		record, err = m.store.RevokeNodeIfIdle(ctx, nodeRef)
+	}
+	if err != nil {
+		return core.NodeRecord{}, err
+	}
+	m.mu.Lock()
+	connection := m.connections[nodeRef]
+	delete(m.connections, nodeRef)
+	m.mu.Unlock()
+	if connection != nil {
+		connection.abortPendingCommands()
+	}
+	return record, nil
+}
+
 func (m *ServerManager) CommandReady(ctx context.Context, nodeRef core.NodeReference) (bool, error) {
+	unlock, err := m.lockNodeLifecycle(ctx, nodeRef)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
 	record, err := m.store.NodeRecord(ctx, nodeRef)
 	if err != nil {
 		return false, err
@@ -363,6 +459,11 @@ func (m *ServerManager) CommandReady(ctx context.Context, nodeRef core.NodeRefer
 }
 
 func (m *ServerManager) SendCommand(ctx context.Context, nodeRef core.NodeReference, command Command) error {
+	unlock, err := m.lockNodeLifecycle(ctx, nodeRef)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	record, err := m.store.NodeRecord(ctx, nodeRef)
 	if err != nil {
 		return err
@@ -378,6 +479,9 @@ func (m *ServerManager) SendCommand(ctx context.Context, nodeRef core.NodeRefere
 	m.mu.Unlock()
 	if !record.Online || connection == nil {
 		return errors.New("node server: Node is offline")
+	}
+	if m.beforeCommandWrite != nil {
+		m.beforeCommandWrite(nodeRef)
 	}
 	if err := connection.SendCommand(ctx, command); err != nil {
 		return fmt.Errorf("%w: %w", ErrCommandOutcomeUnknown, err)
@@ -506,13 +610,13 @@ func (m *ServerManager) registerConnection(nodeRef core.NodeReference, connectio
 	m.connections[nodeRef] = connection
 	m.mu.Unlock()
 	if previous != nil && previous != connection {
-		_ = previous.Close()
+		previous.conn.CloseNow()
 	}
 }
 
 func (m *ServerManager) unregisterConnection(nodeRef core.NodeReference, connection *ProtocolConnection) {
-	m.connectionLifecycleMu.Lock()
-	defer m.connectionLifecycleMu.Unlock()
+	unlock, _ := m.lockNodeLifecycle(context.Background(), nodeRef)
+	defer unlock()
 	m.mu.Lock()
 	current := m.connections[nodeRef]
 	if current == connection {
@@ -527,12 +631,12 @@ func (m *ServerManager) unregisterConnection(nodeRef core.NodeReference, connect
 }
 
 func (m *ServerManager) closeConnection(nodeRef core.NodeReference) {
-	m.connectionLifecycleMu.Lock()
+	unlock, _ := m.lockNodeLifecycle(context.Background(), nodeRef)
 	m.mu.Lock()
 	connection := m.connections[nodeRef]
 	delete(m.connections, nodeRef)
 	m.mu.Unlock()
-	m.connectionLifecycleMu.Unlock()
+	unlock()
 	if connection != nil {
 		_ = connection.Close()
 	}
@@ -595,6 +699,7 @@ type serverProtocolHandler struct {
 	manager    *ServerManager
 	expected   core.NodeReference
 	inventory  core.HarnessInventorySnapshot
+	workspaces []core.NodeWorkspaceMapping
 	connection *ProtocolConnection
 }
 
@@ -613,30 +718,50 @@ func (h *serverProtocolHandler) HandleNodeHandshake(ctx context.Context, handsha
 	for _, workspace := range handshake.Workspaces {
 		workspaces = append(workspaces, core.NodeWorkspaceMapping{ProjectID: workspace.ProjectID, Path: workspace.Path})
 	}
-	if err := h.manager.store.ReconcileNodeWorkspaces(ctx, h.expected, workspaces); err != nil {
-		return HandshakeAccepted{}, err
-	}
+	h.workspaces = workspaces
 	h.inventory = handshake.Inventory
 	return HandshakeAccepted{Node: h.expected, ProtocolVersion: ProtocolVersion, ReplayFromSequence: handshake.LastAcknowledgedSequence}, nil
 }
 
-func (h *serverProtocolHandler) HandleNodeConnection(connection *ProtocolConnection) {
-	h.manager.connectionLifecycleMu.Lock()
-	if err := h.manager.store.MarkNodeConnected(context.Background(), h.expected, h.inventory); err != nil {
-		h.manager.connectionLifecycleMu.Unlock()
-		_ = connection.Close()
-		return
+var ErrNodeIdentityInUse = errors.New("node server: Node identity is owned by another active daemon")
+
+func (h *serverProtocolHandler) AdmitNodeConnection(ctx context.Context, connection *ProtocolConnection) error {
+	unlock, err := h.manager.lockNodeLifecycle(ctx, h.expected)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	h.manager.mu.Lock()
+	incumbent := h.manager.connections[h.expected]
+	h.manager.mu.Unlock()
+	if incumbent != nil {
+		record, err := h.manager.store.NodeRecord(ctx, h.expected)
+		if err != nil {
+			return err
+		}
+		if record.Online {
+			return ErrNodeIdentityInUse
+		}
+		incumbent.conn.CloseNow()
+	}
+
+	if err := h.manager.store.ReconcileNodeWorkspaces(ctx, h.expected, h.workspaces); err != nil {
+		return err
+	}
+	if err := h.manager.store.MarkNodeConnected(ctx, h.expected, h.inventory); err != nil {
+		return err
+	}
+	if h.manager.beforeConnectionRegistration != nil {
+		h.manager.beforeConnectionRegistration()
 	}
 	h.connection = connection
 	h.manager.registerConnection(h.expected, connection)
-	h.manager.connectionLifecycleMu.Unlock()
+	return nil
 }
 
 var errStaleNodeConnection = errors.New("node server: stale Node connection")
 
-// checkCurrentConnection is called with connectionLifecycleMu held. The
-// physical authenticated socket, not just its Node reference, owns liveness
-// updates. Terminal Results intentionally remain independent of this check.
 func (h *serverProtocolHandler) checkCurrentConnection() error {
 	h.manager.mu.Lock()
 	current := h.manager.connections[h.expected]
@@ -651,8 +776,11 @@ func (h *serverProtocolHandler) HandleNodeHeartbeat(ctx context.Context, heartbe
 	if heartbeat.Node != h.expected {
 		return errors.New("node server: heartbeat identity mismatch")
 	}
-	h.manager.connectionLifecycleMu.Lock()
-	defer h.manager.connectionLifecycleMu.Unlock()
+	unlock, err := h.manager.lockNodeLifecycle(ctx, h.expected)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := h.checkCurrentConnection(); err != nil {
 		return err
 	}
@@ -665,8 +793,11 @@ func (h *serverProtocolHandler) HandleNodeInventory(ctx context.Context, invento
 	if inventory.Node != h.expected {
 		return errors.New("node server: inventory identity mismatch")
 	}
-	h.manager.connectionLifecycleMu.Lock()
-	defer h.manager.connectionLifecycleMu.Unlock()
+	unlock, err := h.manager.lockNodeLifecycle(ctx, h.expected)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := h.checkCurrentConnection(); err != nil {
 		return err
 	}

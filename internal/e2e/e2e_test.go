@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -58,11 +59,15 @@ func TestThinVerticalSlice(t *testing.T) {
 	}
 	dispatcher := &app.Dispatcher{Store: store, Node: local}
 	api.AttachWorkerController(&app.WorkerController{Store: store, Node: local})
-	service := ctl.Service{Store: store, PersonID: api.OwnerID(), Capability: capability, Dispatcher: dispatcher}
-	task, err := service.Create(ctx, "Inspect the local repository")
-	if err != nil {
-		t.Fatal(err)
+	service := ctl.Service{Store: store, PersonID: api.OwnerID(), Capability: capability}
+	if _, err := service.Create(ctx, "Unsupported legacy CLI dispatch"); !errors.Is(err, core.ErrLegacyTaskReadOnly) {
+		t.Fatalf("legacy CLI accepted a Task without canonical Worker execution: %v", err)
 	}
+	task, err := store.CreateTask(ctx, func() string { conversation, err := store.ConversationForPerson(ctx, api.OwnerID()); if err != nil { t.Fatal(err) }; return conversation.ID }(), "Inspect the local repository")
+	if err != nil { t.Fatal(err) }
+	if _, _, err := dispatcher.Dispatch(ctx, task, task.ID); err != nil { t.Fatal(err) }
+	task, err = store.Task(ctx, task.ID)
+	if err != nil { t.Fatal(err) }
 	if task.State != core.TaskOpen {
 		t.Fatalf("task after dispatch=%#v", task)
 	}

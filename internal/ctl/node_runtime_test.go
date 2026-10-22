@@ -3,6 +3,7 @@ package ctl
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -48,7 +49,7 @@ func TestLocalCommandPreservesSteeringCancellationCause(t *testing.T) {
 				Metadata: core.CommandMetadata{CommandID: "cancel-command", WorkerRef: "cancel-worker", TurnID: "turn", AttemptID: "attempt"},
 				Text:     "continue",
 			}}
-			_, err := (NodeRuntime{Local: local}).LocalCommand(context.Background(), command)
+			_, err := (legacyLocalTestRuntime{Local: local}).LocalCommand(context.Background(), command)
 			var commandErr *node.NodeCommandError
 			if !errors.As(err, &commandErr) || !errors.Is(err, cause) {
 				t.Fatalf("local command error lost cancellation: type=%T err=%v", err, err)
@@ -76,7 +77,7 @@ func TestLocalSteeringUnknownReplayDoesNotRepeatAndReceiptResolves(t *testing.T)
 	}
 	steerCalls := 0
 	local := node.NewLocal(canceledSteeringRuntime{err: context.Canceled, steers: &steerCalls})
-	service.Runtime = NodeRuntime{Local: local}
+	service.Runtime = legacyLocalTestRuntime{Local: local}
 	details, err := service.SpawnWorker(ctx, SpawnWorkerRequest{Intent: "test local steering", ProjectID: project.ID, IdempotencyKey: "local-spawn"})
 	if err != nil {
 		t.Fatal(err)
@@ -133,10 +134,40 @@ func TestLocalNodeRuntimeRejectsUntrustedProjectlessWorkspace(t *testing.T) {
 			Envelope: node.WorkerEnvelope{WorkerRef: "worker", TurnID: "turn", AttemptID: "attempt", OriginalUserIntent: "inspect", Workspace: remotePath, HarnessInstance: instance},
 		},
 	}
-	if _, err := (NodeRuntime{Local: local}).LocalCommand(context.Background(), command); err == nil {
+	if _, err := (legacyLocalTestRuntime{Local: local}).LocalCommand(context.Background(), command); err == nil {
 		t.Fatal("untrusted projectless workspace reached local Node runtime")
 	}
 	if _, ok := local.Session("worker"); ok {
 		t.Fatal("blocked projectless dispatch started a session")
+	}
+}
+
+func TestUnifiedNodeRuntimeHasNoEmbeddedLocalFallback(t *testing.T) {
+	ctx := context.Background()
+	absent := NodeRuntime{}
+	if ready, err := absent.CommandReady(ctx, "local"); ready || !errors.Is(err, ErrWorkerRuntimeUnavailable) {
+		t.Fatalf("missing manager reported local readiness: ready=%v err=%v", ready, err)
+	}
+	if err := absent.send(ctx, "local", node.Command{Kind: node.CommandDispatch}); !errors.Is(err, ErrWorkerRuntimeUnavailable) {
+		t.Fatalf("missing manager executed a Worker command: %v", err)
+	}
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "unified-node.db"))
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	manager, err := node.NewServerManager(ctx, store, "pair-token", "admin-token")
+	if err != nil { t.Fatal(err) }
+	runtime := NodeRuntime{Manager: manager}
+	if ready, err := runtime.CommandReady(ctx, "local"); ready || !errors.Is(err, core.ErrNotFound) {
+		t.Fatalf("unenrolled local Node passed readiness: ready=%v err=%v", ready, err)
+	}
+	if _, err := store.EnrollNode(ctx, "local"); err != nil { t.Fatal(err) }
+	if ready, err := runtime.CommandReady(ctx, "local"); ready || err != nil {
+		t.Fatalf("enrolled but offline Node passed readiness: ready=%v err=%v", ready, err)
+	}
+	command := node.Command{Kind: node.CommandDispatch, Dispatch: &node.DispatchCommand{
+		Metadata: core.CommandMetadata{CommandID: "offline-local", Node: "local", WorkerRef: "local-worker", TurnID: "turn", AttemptID: "attempt"},
+	}}
+	if err := runtime.send(ctx, "local", command); err == nil {
+		t.Fatal("offline Node dispatch succeeded without a daemon")
 	}
 }

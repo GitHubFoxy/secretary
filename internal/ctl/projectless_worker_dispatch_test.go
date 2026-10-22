@@ -19,24 +19,31 @@ type projectlessNativeRuntime struct {
 	resumes []node.StartRequest
 }
 
+type projectlessNativeSession struct {
+	node.Session
+	nativeID string
+}
+
+func (s projectlessNativeSession) ID() string { return s.nativeID }
+
 func (r *projectlessNativeRuntime) Start(_ context.Context, request node.StartRequest) (node.Session, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.starts = append(r.starts, request)
-	return canceledSteeringSession{}, nil
+	return projectlessNativeSession{Session: canceledSteeringSession{}, nativeID: "native-" + request.WorkerRef}, nil
 }
 
 func (r *projectlessNativeRuntime) Resume(_ context.Context, request node.StartRequest, sessionID string) (node.Session, error) {
-	if sessionID != "local-session" {
+	if sessionID != "native-"+request.WorkerRef {
 		return nil, errors.New("native session identity changed")
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.resumes = append(r.resumes, request)
-	return canceledSteeringSession{}, nil
+	return projectlessNativeSession{Session: canceledSteeringSession{}, nativeID: sessionID}, nil
 }
 
-func TestProjectlessWorkerServiceDispatchToLocalNodeAndFollowup(t *testing.T) {
+func TestProjectlessWorkerServiceDispatchThroughExecutionNodeAndFollowup(t *testing.T) {
 	ctx := context.Background()
 	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
 	if err != nil {
@@ -67,11 +74,18 @@ func TestProjectlessWorkerServiceDispatchToLocalNodeAndFollowup(t *testing.T) {
 		t.Fatal(err)
 	}
 	native := &projectlessNativeRuntime{}
+	localStore, err := node.OpenLocalStore(filepath.Join(t.TempDir(), "node-state.json"))
+	if err != nil { t.Fatal(err) }
+	defer localStore.Close()
+	execution := node.NewExecutionNode("local", native, localStore)
+	if err := execution.SetInventory(core.HarnessInventorySnapshot{
+		Node: "local", ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{codex, claude},
+	}); err != nil { t.Fatal(err) }
 	service := WorkerService{
 		Store: store, PersonID: person.ID, Capability: capability,
 		WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessCodex, PreferredHarnesses: []core.HarnessKind{core.HarnessClaudeCode}},
 		WorkerProfileSource: syntheticWorkerTemplateSource(),
-		Runtime: NodeRuntime{Local: node.NewLocal(native)},
+		Runtime: &projectlessExecutionRuntime{executor: execution},
 	}
 
 	automatic, err := service.SpawnWorker(ctx, SpawnWorkerRequest{Intent: "build a website", IdempotencyKey: "projectless-auto"})
@@ -118,8 +132,11 @@ func TestProjectlessWorkerServiceDispatchToLocalNodeAndFollowup(t *testing.T) {
 	}
 	native.mu.Lock()
 	defer native.mu.Unlock()
-	if len(native.resumes) != 1 || native.resumes[0].Workspace != originalWorkspace || native.resumes[0].HarnessInstance.ID != codex.ID {
-		t.Fatalf("Follow-up did not reuse native session and workspace: %#v", native.resumes)
+	if len(native.starts) != 2 || len(native.resumes) != 1 ||
+		native.resumes[0].WorkerRef != automatic.Worker.WorkerRef ||
+		native.resumes[0].Workspace != originalWorkspace ||
+		native.resumes[0].HarnessInstance.ID != codex.ID {
+		t.Fatalf("Follow-up must Resume exactly once without an extra native Start: starts=%#v resumes=%#v", native.starts, native.resumes)
 	}
 }
 
@@ -171,7 +188,7 @@ func TestT13AutomaticTelegramVideoRequiresImageInputCapability(t *testing.T) {
  svc:=WorkerService{Store:store,PersonID:person.ID,Capability:cap,
   WorkerPolicy:core.HarnessPolicy{DefaultHarness:core.HarnessFX},
   WorkerProfileSource:syntheticWorkerTemplateSource(),
-  Runtime:NodeRuntime{Local:node.NewLocal(native)}}
+  Runtime:legacyLocalTestRuntime{Local:node.NewLocal(native)}}
  prompt:="Describe the sampled video\n\nTelegram video (update 42, chat 100, message 8, file_unique_id video): artifact://art_0123456789abcdef0123456789abcdef"
  _,err=svc.SpawnWorker(ctx,SpawnWorkerRequest{Intent:prompt,IdempotencyKey:"telegram-video-no-capability"})
  if !errors.Is(err,core.ErrInvalidDispatchPin){t.Fatalf("unsupported automatic Worker selection not rejected: %v",err)}

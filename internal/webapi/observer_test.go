@@ -752,3 +752,44 @@ func TestWorkerSteerError_UnknownMetadataSanitized(t *testing.T) {
 		t.Fatalf("public error leaked Node metadata: %#v", body)
 	}
 }
+
+func TestProductionLegacyWorkerHistoryIsReadOnlyWithoutEmbeddedNode(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "legacy-observer.db"))
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil { t.Fatal(err) }
+	task, err := store.CreateTask(ctx, conversation.ID, "legacy task")
+	if err != nil { t.Fatal(err) }
+	if _, _, _, err := store.AcceptDispatch(ctx, task.ID, "legacy-worker", "local", "historical-native-id", t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	api, err := New(ctx, store, "bootstrap")
+	if err != nil { t.Fatal(err) }
+	server := httptest.NewServer(api.Handler())
+	defer server.Close()
+	client := &http.Client{Jar: mustWebCookieJar(t)}
+	login(t, client, server.URL)
+	response, err := client.Get(server.URL + "/v1/workers/legacy-worker/thread")
+	if err != nil { t.Fatal(err) }
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK { t.Fatalf("legacy history hidden: %d", response.StatusCode) }
+	for _, action := range []string{"steer", "queue", "stop"} {
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/workers/legacy-worker/"+action, strings.NewReader(`{"text":"continue"}`))
+		if err != nil { t.Fatal(err) }
+		request.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(request)
+		if err != nil { t.Fatal(err) }
+		response.Body.Close()
+		if response.StatusCode != http.StatusConflict {
+			t.Fatalf("legacy %s unexpectedly reached an embedded Session: %d", action, response.StatusCode)
+		}
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/v1/workers/does-not-exist/stop", strings.NewReader("{}"))
+	if err != nil { t.Fatal(err) }
+	response, err = client.Do(request)
+	if err != nil { t.Fatal(err) }
+	response.Body.Close()
+	if response.StatusCode != http.StatusNotFound { t.Fatalf("unknown Worker status=%d", response.StatusCode) }
+}

@@ -9,8 +9,6 @@ import (
 
 type Phase4RecoveryResolver struct {
 	Store        *core.Store
-	Local        *LocalNode
-	LocalNodeRef core.NodeReference
 	Remote       *ServerManager
 }
 
@@ -24,12 +22,6 @@ func (r Phase4RecoveryResolver) ResolvePhase4Attempt(ctx context.Context, attemp
 			return core.Phase4RecoveryUnknown, nil
 		}
 		return core.Phase4RecoveryUnknown, err
-	}
-	if r.Local != nil && core.NodeReference(attempt.NodeID) == r.LocalNodeRef {
-		if _, ok := r.Local.Session(worker.WorkerRef); ok {
-			return core.Phase4RecoveryAlive, nil
-		}
-		return core.Phase4RecoveryUnknown, nil
 	}
 	if r.Remote == nil {
 		return core.Phase4RecoveryUnknown, nil

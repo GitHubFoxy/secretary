@@ -921,7 +921,7 @@ func TestWorkerServiceSteeringCancellationRemainsUncertain(t *testing.T) {
 			if _, err := local.Dispatch(ctx, node.StartRequest{WorkerRef: details.Worker.WorkerRef}); err != nil {
 				t.Fatal(err)
 			}
-			runtime := NodeRuntime{Local: local}
+			runtime := legacyLocalTestRuntime{Local: local}
 			steering := node.Command{Kind: node.CommandSteering, Steering: &node.SteeringCommand{
 				Metadata: core.CommandMetadata{
 					CommandID: command.ID, Node: "local", HarnessInstanceID: "local/fx",

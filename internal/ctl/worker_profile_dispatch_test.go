@@ -330,7 +330,7 @@ func workerTemplateRoundTrip(t *testing.T, skills []node.ManagedSkill, tools []s
 			profileSourceCalls++
 			return sourceProfile, nil
 		},
-		Runtime: NodeRuntime{Local: local},
+		Runtime: legacyLocalTestRuntime{Local: local},
 	}
 	details, err := service.SpawnWorker(ctx, SpawnWorkerRequest{
 		Intent: "inspect the synthetic fixture", ProjectID: project.ID, IdempotencyKey: "profile-dispatch-test",

@@ -197,9 +197,13 @@ func main() {
 		fmt.Printf("Enrolled Node %s\n", identity.Node)
 		return
 	}
-	releaseNode, err := claimNodeInstance(*dataDir)
- if err!=nil {log.Fatalf("Node ownership: %v",err)}
- defer releaseNode()
+	canonicalDataDir, releaseNode, err := claimNodeDataDirectory(*dataDir)
+	if err != nil {
+		log.Fatalf("Node ownership: %v", err)
+	}
+	defer releaseNode()
+	*dataDir = canonicalDataDir
+	deployment.DataDir = canonicalDataDir
  workspaces, err := deployment.ProtocolWorkspaces()
 	if err != nil {
 		log.Fatalf("load Node workspace mappings: %v", err)
@@ -270,6 +274,25 @@ if statusFile := os.Getenv("SECRETARY_NODE_STATUS_FILE"); statusFile != "" {
 	if err := daemon.Run(ctx); err != nil {
 		log.Fatalf("run Node: %v", err)
 	}
+}
+
+func claimNodeDataDirectory(dataDir string) (string, func(), error) {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return "", nil, err
+	}
+	canonical, err := filepath.EvalSymlinks(dataDir)
+	if err != nil {
+		return "", nil, err
+	}
+	canonical, err = filepath.Abs(canonical)
+	if err != nil {
+		return "", nil, err
+	}
+	release, err := claimNodeInstance(canonical)
+	if err != nil {
+		return "", nil, err
+	}
+	return canonical, release, nil
 }
 
 func selectNodeNativeStore(dataDir string, standalone bool) (node.OpenCodeNativeStore, error) {

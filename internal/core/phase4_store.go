@@ -1245,6 +1245,9 @@ func validateAttemptOutcomeInput(input AttemptOutcomeInput) error {
 }
 
 func (s *Store) RecordAttemptOutcome(ctx context.Context, attemptID string, input AttemptOutcomeInput) (AttemptOutcome, *Phase4Result, bool, error) {
+	gate := s.attemptOutcomeGate(attemptID)
+	gate.Lock()
+	defer gate.Unlock()
 	input = sanitizeAttemptOutcomeInput(input)
 	if err := validateAttemptOutcomeInput(input); err != nil {
 		return AttemptOutcome{}, nil, false, err
