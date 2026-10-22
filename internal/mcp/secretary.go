@@ -149,7 +149,7 @@ func (s Secretary) Call(ctx context.Context, name string, raw json.RawMessage) (
 			if args.ActionKind != "spawn_worker" || args.WorkerTurnID == "" {
 				return nil, fmt.Errorf("worker creation confirmation requires a valid spawn_worker action and worker_turn_id")
 			}
-			if err := s.Workers.Store.ValidateSecretaryWorkerCreationOrigin(ctx, core.SecretaryOriginIdentity{PersonID: s.Workers.PersonID, Capability: s.Workers.Capability, SecretaryTurnID: args.SecretaryTurnID, InputID: args.InputID}, args.WorkerTurnID); err != nil {
+			if err := s.Workers.Store.ValidateSecretaryAcceptedSpawnOrigin(ctx, core.SecretaryOriginIdentity{PersonID: s.Workers.PersonID, Capability: s.Workers.Capability, SecretaryTurnID: args.SecretaryTurnID, InputID: args.InputID}, args.WorkerTurnID); err != nil {
 				return nil, fmt.Errorf("worker creation has no accepted Secretary action: %w", err)
 			}
 		}
