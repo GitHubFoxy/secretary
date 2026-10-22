@@ -198,7 +198,6 @@ WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conve
                 if err != nil { return secretaryTurnCompletion{}, err }
                 message := "Не удалось подтвердить выполнение запроса: Secretary MCP не предоставил подтверждённый ответ. Создание Worker не подтверждено. Проверьте Secretary MCP и повторите запрос."
                 if accepted != 0 { message = "Worker создан и принят сервером, но Secretary не завершил адресованный ответ. Проверьте состояние Worker перед повторным запросом, чтобы избежать дубликатов." }
-                var err error
                 entry, err = appendEntryWithIdentity(ctx, tx, now, turn.ConversationID, EntrySecretary, message, "", turn.ID, "")
                 if err != nil { return secretaryTurnCompletion{}, err }
             }
