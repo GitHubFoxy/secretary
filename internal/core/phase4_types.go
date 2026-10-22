@@ -89,6 +89,7 @@ func (c FailureCategory) Valid() bool {
 
 var workerFailureProviderCodes = map[string]string{
 	"usage_limit_exceeded":    "usage_limit_exceeded",
+	"tool_execution_failed":    "tool_execution_failed",
 	"usagelimitexceeded":      "usage_limit_exceeded",
 	"auth_required":           "auth_required",
 	"invalid_api_key":         "invalid_api_key",
