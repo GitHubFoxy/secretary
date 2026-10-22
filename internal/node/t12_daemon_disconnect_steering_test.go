@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -297,6 +298,76 @@ func (s *t12SurvivingSession) Activity()<-chan Activity{return s.activity}
 func (s *t12SurvivingSession) Result()<-chan Result{return s.results}
 func (s *t12SurvivingSession) Close()error{return nil}
 
+// A replayed, already-ACKed Dispatch can reply directly while its original
+// durable receipt is still in flight after reconnect. Account for that exact
+// receipt without mistaking it for the separate Cancel acknowledgement.
+func t12AwaitCancelReceipt(ctx context.Context, receipts <-chan CommandOutcome, dispatch, cancel CommandOutcome) (int, error) {
+	lateDispatches := 0
+	for {
+		select {
+		case got, ok := <-receipts:
+			if !ok {
+				return lateDispatches, fmt.Errorf("receipt stream closed before Cancel %q", cancel.CommandID)
+			}
+			switch got.CommandID {
+			case dispatch.CommandID:
+				if got != dispatch {
+					return lateDispatches, fmt.Errorf("unexpected replayed Dispatch receipt: %+v", got)
+				}
+				lateDispatches++
+				// Exactly one explicit duplicate Dispatch was sent. More
+				// than one additional receipt signals a protocol regression.
+				if lateDispatches > 1 {
+					return lateDispatches, fmt.Errorf("excess replayed Dispatch receipts before Cancel %q: %d", cancel.CommandID, lateDispatches)
+				}
+			case cancel.CommandID:
+				if got != cancel {
+					return lateDispatches, fmt.Errorf("Cancel receipt did not match its command: %+v", got)
+				}
+				return lateDispatches, nil
+			default:
+				return lateDispatches, fmt.Errorf("unrelated command receipt while awaiting Cancel %q: %+v", cancel.CommandID, got)
+			}
+		case <-ctx.Done():
+			return lateDispatches, fmt.Errorf("waiting for Cancel receipt %q: %w", cancel.CommandID, ctx.Err())
+		}
+	}
+}
+
+func TestT12CancelReceiptAttributionAfterReconnect(t *testing.T) {
+	dispatch := CommandOutcome{CommandID: "dispatch", Kind: CommandDispatch, State: CommandAccepted, TurnID: "turn-1", AttemptID: "attempt-1"}
+	cancel := CommandOutcome{CommandID: "cancel", Kind: CommandCancel, State: CommandAccepted, TurnID: "turn-1", AttemptID: "attempt-1"}
+	tests := []struct {
+		name string
+		outcomes []CommandOutcome
+		lateDispatches int
+		wantError bool
+	}{
+		{name: "cancel_first", outcomes: []CommandOutcome{cancel}},
+		{name: "late_dispatch_before_cancel", outcomes: []CommandOutcome{dispatch, cancel}, lateDispatches: 1},
+		{name: "foreign_command", outcomes: []CommandOutcome{{CommandID: "unrelated", Kind: CommandDispatch, State: CommandAccepted}, cancel}, wantError: true},
+		{name: "wrong_kind_same_dispatch_id", outcomes: []CommandOutcome{{CommandID: dispatch.CommandID, Kind: CommandCancel, State: CommandAccepted}, cancel}, wantError: true},
+		{name: "failed_dispatch_replay", outcomes: []CommandOutcome{{CommandID: dispatch.CommandID, Kind: CommandDispatch, State: CommandFailed}, cancel}, wantError: true},
+		{name: "cancel_failed", outcomes: []CommandOutcome{{CommandID: cancel.CommandID, Kind: CommandCancel, State: CommandFailed}}, wantError: true},
+		{name: "too_many_dispatch_receipts", outcomes: []CommandOutcome{dispatch, dispatch, cancel}, wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			receipts := make(chan CommandOutcome, len(test.outcomes))
+			for _, outcome := range test.outcomes {
+				receipts <- outcome
+			}
+			got, err := t12AwaitCancelReceipt(context.Background(), receipts, dispatch, cancel)
+			if (err != nil) != test.wantError {
+				t.Fatalf("attribution result: late=%d err=%v, want error=%v", got, err, test.wantError)
+			}
+			if !test.wantError && got != test.lateDispatches {
+				t.Fatalf("late Dispatch receipts=%d, want %d", got, test.lateDispatches)
+			}
+		})
+	}
+}
+
 func TestT12AcceptedNativeWorkerSurvivesWebSocketReconnectAndTerminalResult(t *testing.T) {
 	for _,scenario:=range []string{"native_result","cancel_after_reconnect"} {
 		t.Run(scenario,func(t *testing.T){
@@ -323,7 +394,7 @@ func TestT12AcceptedNativeWorkerSurvivesWebSocketReconnectAndTerminalResult(t *t
 			dispatch.Dispatch.Envelope.OriginalUserIntent="Inspect artifact://"+f.originalID
 			if err:=f.manager.SendCommand(ctx,f.identity.Node,dispatch);err!=nil{t.Fatal(err)}
 			accepted:=waitCommandOutcome(t,ctx,receipts)
-			if accepted.CommandID!=dispatch.Metadata().CommandID || accepted.State!=CommandAccepted {
+			if accepted != acceptedOutcome(dispatch) {
 				t.Fatalf("native Start was not accepted: %+v",accepted)
 			}
 			nativeCtx,nativeSession:=runtime.snapshot()
@@ -349,7 +420,7 @@ func TestT12AcceptedNativeWorkerSurvivesWebSocketReconnectAndTerminalResult(t *t
 			// The same durable CommandID must not restart a native process.
 			if err:=f.manager.SendCommand(ctx,f.identity.Node,dispatch);err!=nil{t.Fatal(err)}
 			duplicate:=waitCommandOutcome(t,ctx,receipts)
-			if duplicate.CommandID!=accepted.CommandID || duplicate.State!=CommandAccepted {
+			if duplicate != accepted {
 				t.Fatalf("duplicate native dispatch changed outcome: %+v",duplicate)
 			}
 			if runtime.starts.Load()!=1{t.Fatalf("duplicate native Start: %d",runtime.starts.Load())}
@@ -362,9 +433,16 @@ func TestT12AcceptedNativeWorkerSurvivesWebSocketReconnectAndTerminalResult(t *t
 				meta.IssuedAt=time.Now().UTC()
 				cancelCommand:=Command{Kind:CommandCancel,Cancel:&CancelCommand{Metadata:meta,Reason:"owner cancellation after reconnect"}}
 				if err:=f.manager.SendCommand(ctx,f.identity.Node,cancelCommand);err!=nil{t.Fatal(err)}
-				cancelReceipt:=waitCommandOutcome(t,ctx,receipts)
-				if cancelReceipt.CommandID!=meta.CommandID || cancelReceipt.State!=CommandAccepted {
-					t.Fatalf("native Cancel after reconnect not accepted: %+v",cancelReceipt)
+				lateDispatches, err := t12AwaitCancelReceipt(ctx, receipts, accepted, acceptedOutcome(cancelCommand))
+				if err != nil {
+					t.Fatalf("native Cancel after reconnect not accepted: %v", err)
+				}
+				if lateDispatches != 0 {
+					t.Logf("validated %d late Dispatch receipt before the matching Cancel receipt", lateDispatches)
+				}
+				cancelRecord, err := f.local.Command(meta.CommandID)
+				if err != nil || cancelRecord.State != CommandAccepted || cancelRecord.Outcome != acceptedOutcome(cancelCommand) {
+					t.Fatalf("native Cancel receipt is not durable: record=%+v err=%v", cancelRecord, err)
 				}
 				if runtime.cancels.Load()!=1{t.Fatalf("Cancel delivered %d times",runtime.cancels.Load())}
 			}
@@ -385,8 +463,12 @@ func TestT12AcceptedNativeWorkerSurvivesWebSocketReconnectAndTerminalResult(t *t
 				remaining,err:=f.local.PendingEvents()
 				return err==nil && len(remaining)==0
 			})
-			if terminalDeliveries.Load()!=1 || runtime.starts.Load()!=1 {
-				t.Fatalf("terminal duplicated or Worker relaunched: terminal=%d starts=%d",terminalDeliveries.Load(),runtime.starts.Load())
+			expectedCancels := int32(0)
+			if scenario == "cancel_after_reconnect" {
+				expectedCancels = 1
+			}
+			if terminalDeliveries.Load()!=1 || runtime.starts.Load()!=1 || runtime.cancels.Load()!=expectedCancels {
+				t.Fatalf("terminal duplicated or Worker relaunched: terminal=%d starts=%d cancels=%d",terminalDeliveries.Load(),runtime.starts.Load(),runtime.cancels.Load())
 			}
 		})
 	}
