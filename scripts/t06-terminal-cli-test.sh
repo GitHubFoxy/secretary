@@ -289,6 +289,11 @@ configure_telegram >/dev/null 2>&1 && fail "empty origin accepted"
 set_answers yes 123:fixture-secret '' 'https://localhost'
 configure_telegram >/dev/null 2>&1 && fail "local origin accepted"
 [[ "$(<"$ENV_FILE")" == "$before" ]] || fail "invalid origin changed environment"
+for candidate in https://user@example.com https://example.com/path 'https://example.com?x=1' https://192.168.1.1; do
+  set_answers yes 123:fixture-secret '' "$candidate"
+  configure_telegram >/dev/null 2>&1 && fail "invalid Telegram origin accepted: $candidate"
+  [[ "$(<"$ENV_FILE")" == "$before" ]] || fail "invalid origin modified environment"
+done
 terminal_secret() { return 1; }
 configure_telegram >/dev/null 2>&1 && fail "interrupted token input accepted"
 [[ "$(<"$ENV_FILE")" == "$before" ]] || fail "cancel changed environment"
