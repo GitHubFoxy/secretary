@@ -112,6 +112,37 @@ ensure_local_node_credentials() {
   [[ "$created" == true ]] && print "Provisioned missing local Node credentials without rotating existing secrets."
 }
 
+telegram_origin_valid() {
+  local origin="$1" host ip part
+  [[ "$origin" == https://* && "$origin" != *[[:space:]]* && "$origin" != *[\?#@]* ]] || return 1
+  local authority="${origin#https://}"
+  [[ -n "$authority" && "$authority" != */* ]] || return 1
+  host="$authority"
+  if [[ "$host" == *:* ]]; then
+    host="${authority%:*}"
+    [[ "${authority##*:}" == <-> ]] || return 1
+  fi
+  [[ -n "$host" && "$host" != .* && "$host" != *..* ]] || return 1
+  [[ "$host:l" != localhost && "$host:l" != *.localhost && "$host:l" != *.local ]] || return 1
+  if [[ "$host" == <->.<->.<->.<-> ]]; then
+    local -a octets
+    octets=("${(@s:.:)host}")
+    for part in "${octets[@]}"; do (( part >= 0 && part <= 255 )) || return 1; done
+    (( octets[1] == 10 || octets[1] == 127 || octets[1] == 0 || octets[1] == 169 && octets[2] == 254 || octets[1] == 172 && octets[2] >= 16 && octets[2] <= 31 || octets[1] == 192 && octets[2] == 168 )) && return 1
+  fi
+  return 0
+}
+
+telegram_origin_doctor() {
+  case "${SECRETARY_TELEGRAM_ENABLED:l}" in
+    true|yes|on|1)
+      telegram_origin_valid "${SECRETARY_TELEGRAM_WEB_BASE_URL:-}" || {
+        print -u2 "Telegram configuration invalid: SECRETARY_TELEGRAM_WEB_BASE_URL must be a public HTTPS origin without credentials, path, query or fragment"
+        return 1
+      } ;;
+  esac
+}
+
 configure_telegram() {
   local token="${SECRETARY_TELEGRAM_BOT_TOKEN:-}" chat="${SECRETARY_TELEGRAM_OWNER_CHAT_ID:-}" credential="${SECRETARY_TELEGRAM_SERVER_CREDENTIAL:-}" origin="${SECRETARY_TELEGRAM_WEB_BASE_URL:-}"
   terminal_available || { print -u2 "Telegram configuration requires a terminal"; return 1; }
@@ -134,8 +165,8 @@ configure_telegram() {
   [[ "$chat" != 0 ]] || return 2
   terminal_read "Public Web origin for Telegram links (https://host)" "$origin" || return 1
   origin="${REPLY%/}"
-  if [[ -z "$origin" || ! "$origin" =~ '^https://[^/[:space:]]+(:[0-9]+)?$' ]]; then
-    print -u2 "Telegram requires a public HTTPS Web origin (for example https://secretary.example.com); no changes made"
+  if ! telegram_origin_valid "$origin"; then
+    print -u2 "Telegram requires a public HTTPS origin without credentials, path, query or fragment; no changes made"
     return 2
   fi
   [[ -n "$credential" ]] || credential="$(openssl rand -hex 32)" || return 1
