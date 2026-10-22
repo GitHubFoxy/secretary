@@ -23,7 +23,14 @@ jobs:
         run: |
           go test ./internal/nativeexec ./internal/node ./internal/core -run 'TestT09' -count=1 -timeout=10m -v
           go test ./internal/nativeexec -run '^TestDirectWorker' -count=1 -timeout=5m -v
-          go test ./internal/acp -run '^TestACPCancellationTerminatesNativeDescendants$' -count=1 -timeout=5m -v
+          go test ./internal/acp -run '^TestACPCancellationTerminatesNativeDescendants
+      - name: Build production macOS Node and Server
+        shell: bash
+        run: |
+          go build ./cmd/secretary-node
+          go build ./cmd/secretaryd
+ -count=1 -timeout=5m -v
+          go test ./internal/node -run '^TestMAC02' -count=1 -timeout=3m -v
       - name: Build production macOS Node and Server
         shell: bash
         run: |
