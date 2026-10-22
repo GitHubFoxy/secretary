@@ -500,6 +500,8 @@ func TestAddressedCreationProofIndependentOfOwnerWording(t *testing.T) {
    if err!=nil||len(workers)!=0{t.Fatalf("false action created Workers=%#v err=%v",workers,err)}
    current,err:=store.SecretaryTurn(ctx,turn.ID)
    if err!=nil||current.State!=core.SecretaryTurnActive{t.Fatalf("unbound creation terminated turn=%#v err=%v",current,err)}
+   attempted,_:=json.Marshal(map[string]string{"intent":"create an independent task","secretary_turn_id":turn.ID,"input_id":turn.InputID})
+   if _,err:=handler.Call(ctx,"spawn_worker",attempted);err==nil{t.Fatal("dispatch without Execution Node unexpectedly succeeded")}
    failure,_:=json.Marshal(map[string]string{"secretary_turn_id":turn.ID,"input_id":turn.InputID,"text":"Не удалось подключить Execution Node; задача не создана.","reply_kind":"error"})
    if _,err:=handler.Call(ctx,"reply_to_user",failure);err!=nil{t.Fatalf("error reporting blocked: %v",err)}
    entries,err=store.EntriesAfter(ctx,conversation.ID,0)
