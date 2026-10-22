@@ -91,7 +91,7 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 }
             }
         } else {
-            presentation.renderServer(.checking)
+            presentation.renderServer(.unavailable)
         }
         statusItem.button?.toolTip = presentation.status.toolTip
     }
