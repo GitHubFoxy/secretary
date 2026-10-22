@@ -466,3 +466,44 @@ func TestCodexSecretaryMCPProjectlessSpawnIsCanonicalAndIdempotent(t *testing.T)
  confirmation, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Worker accepted", "reply_kind":"spawn_worker", "action_kind": "spawn_worker", "worker_turn_id": first.ActionTurnID})
  if _, err := handler.Call(ctx, "reply_to_user", confirmation); err != nil { t.Fatalf("accepted projectless action cannot be confirmed: %v", err) }
 }
+
+func TestAddressedCreationProofIndependentOfOwnerWording(t *testing.T) {
+ for _, wording := range []string{"Добавь нового агента для проекта", "Поручи это отдельному исполнителю", "Create a Worker", "Please handle this"} {
+  t.Run(wording,func(t *testing.T){
+   ctx:=context.Background()
+   store,err:=core.Open(ctx,filepath.Join(t.TempDir(),"secretary.db"))
+   if err!=nil{t.Fatal(err)}
+   defer store.Close()
+   person,conversation,err:=store.CreatePersonWithConversation(ctx)
+   if err!=nil{t.Fatal(err)}
+   identity,err:=store.EnsureSecretaryIdentity(ctx,person.ID,conversation.ID)
+   if err!=nil{t.Fatal(err)}
+   capability,err:=store.RotateSecretaryCapability(ctx,person.ID)
+   if err!=nil{t.Fatal(err)}
+   if err:=store.SetSecretaryPolicySnapshot(ctx,core.SecretaryPolicySnapshot{Version:"test",Harness:"fx",Model:"m",Reasoning:"high",ProfileVersion:"test",ProfileName:"secretary",ProfileHash:"hash",ProfileContent:"policy"});err!=nil{t.Fatal(err)}
+   turn,err:=store.EnqueueSecretaryTurn(ctx,identity.ID,wording)
+   if err!=nil{t.Fatal(err)}
+   if _,err=store.StartSecretaryTurn(ctx,turn.ID);err!=nil{t.Fatal(err)}
+   handler:=Secretary{Workers:ctl.WorkerService{Store:store,PersonID:person.ID,Capability:capability},ReplyContractVersion:core.SecretaryReplyContractAddressedV1}
+   for _,claim:=range []map[string]string{
+    {"text":"Создано.","reply_kind":"spawn_worker"},
+    {"text":"Created.","reply_kind":"spawn_worker","action_kind":"spawn_worker","worker_turn_id":"native-spawn-agent"},
+    {"text":"Создано."},
+   }{
+    claim["secretary_turn_id"],claim["input_id"]=turn.ID,turn.InputID
+    encoded,_:=json.Marshal(claim)
+    if _,err:=handler.Call(ctx,"reply_to_user",encoded);err==nil{t.Fatalf("unbound creation confirmation accepted: %#v",claim)}
+   }
+   entries,err:=store.EntriesAfter(ctx,conversation.ID,0)
+   if err!=nil||len(entries)!=0{t.Fatalf("false reply persisted entries=%#v err=%v",entries,err)}
+   workers,err:=store.WorkersForConversation(ctx,conversation.ID)
+   if err!=nil||len(workers)!=0{t.Fatalf("false action created Workers=%#v err=%v",workers,err)}
+   current,err:=store.SecretaryTurn(ctx,turn.ID)
+   if err!=nil||current.State!=core.SecretaryTurnActive{t.Fatalf("unbound creation terminated turn=%#v err=%v",current,err)}
+   failure,_:=json.Marshal(map[string]string{"secretary_turn_id":turn.ID,"input_id":turn.InputID,"text":"Не удалось подключить Execution Node; задача не создана.","reply_kind":"error"})
+   if _,err:=handler.Call(ctx,"reply_to_user",failure);err!=nil{t.Fatalf("error reporting blocked: %v",err)}
+   entries,err=store.EntriesAfter(ctx,conversation.ID,0)
+   if err!=nil||len(entries)!=1||entries[0].Body!="Не удалось подключить Execution Node; задача не создана."{t.Fatalf("failed dispatch error not delivered: entries=%#v err=%v",entries,err)}
+  })
+ }
+}
