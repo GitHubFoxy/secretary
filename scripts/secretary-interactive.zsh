@@ -112,10 +112,30 @@ ensure_local_node_credentials() {
   [[ "$created" == true ]] && print "Provisioned missing local Node credentials without rotating existing secrets."
 }
 
+telegram_ipv6_public() {
+  command -v perl >/dev/null 2>&1 || return 1
+  perl -MSocket=AF_INET6,inet_pton -e '
+    my $ip = inet_pton(AF_INET6, $ARGV[0]) or exit 1;
+    my @b = unpack("C16", $ip);
+    my $mapped = !(grep { $_ != 0 } @b[0..9]) && $b[10] == 255 && $b[11] == 255;
+    if ($mapped) {
+      my ($a,$c,$d,$e) = @b[12..15];
+      exit(($a == 10 || $a == 127 || $a == 0 || $a == 169 && $c == 254 || $a == 172 && $c >= 16 && $c <= 31 || $a == 192 && $c == 168) ? 1 : 0);
+    }
+    exit 1 if !(grep { $_ != 0 } @b);
+    exit 1 if !(grep { $_ != 0 } @b[0..14]) && $b[15] == 1;
+    exit 1 if ($b[0] & 254) == 252;
+    exit 1 if $b[0] == 254 && ($b[1] & 192) == 128;
+    exit 0;
+  ' "$1"
+}
+
 telegram_origin_valid() {
-  local origin="$1" authority host ip first port
+  local origin="$1" authority host ip port
   [[ "$origin" == https://* && "$origin" != *[[:space:]]* && "$origin" != *'#'* && "$origin" != *@* ]] || return 1
-  [[ "$origin" != *\?* || "$origin" == *\? ]] || return 1
+  if [[ "$origin" == *\?* ]]; then
+    [[ "$origin" == *\? && "${origin%\?}" != *\?* ]] || return 1
+  fi
   authority="${origin#https://}"
   authority="${authority%\?}"
   [[ -n "$authority" && "$authority" != */* ]] || return 1
@@ -125,12 +145,7 @@ telegram_origin_valid() {
     host="${host#\[}"
     port="${authority#*\]}"
     [[ -z "$port" || "$port" == :<-> ]] || return 1
-    [[ "$host" == *:* && "$host" != *[^0-9a-fA-F:]* && "$host" != *:::* ]] || return 1
-    ip="${host:l}"
-    [[ "$ip" != "::" && "$ip" != "::1" && "$ip" != "0:0:0:0:0:0:0:1" && "$ip" != "0:0:0:0:0:0:0:0" ]] || return 1
-    first="${ip%%:*}"
-    while [[ "$first" == 0* && "${#first}" -gt 1 ]]; do first="${first#0}"; done
-    [[ "$first" != fc* && "$first" != fd* && "$first" != fe8* && "$first" != fe9* && "$first" != fea* && "$first" != feb* ]] || return 1
+    telegram_ipv6_public "$host" || return 1
     return 0
   fi
   host="$authority"
