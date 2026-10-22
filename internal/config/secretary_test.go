@@ -35,8 +35,8 @@ func TestCodexDefaultAddressedReplyAndExplicitVersionedOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacy := manager.Snapshot()
-	if legacy.Config.Secretary.ReplyContract != "" || legacy.Profiles["secretary"].ReplyContractVersion != SecretaryReplyContractAddressedV1 {
-		t.Fatalf("Codex must use addressed replies even without an explicit setting: %#v", legacy.Profiles["secretary"])
+	if legacy.Config.Secretary.ReplyContract != "" || legacy.Profiles["secretary"].ReplyContractVersion != "" || legacy.Profiles["secretary"].Runtime != "codex" || strings.Contains(legacy.Profiles["secretary"].Content, "## Addressed reply v1") {
+		t.Fatalf("editable external Secretary profile must retain legacy reply contract before explicit opt-in: %#v", legacy.Profiles["secretary"])
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -53,7 +53,7 @@ func TestCodexDefaultAddressedReplyAndExplicitVersionedOverride(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if optedIn.Config.Secretary.ReplyContract != "addressed-reply-v1" || optedIn.Version == legacy.Version || optedIn.Profiles["secretary"].Hash == legacy.Profiles["secretary"].Hash {
+	if optedIn.Config.Secretary.ReplyContract != "addressed-reply-v1" || optedIn.Profiles["secretary"].ReplyContractVersion != SecretaryReplyContractAddressedV1 || optedIn.Version == legacy.Version || optedIn.Profiles["secretary"].Hash == legacy.Profiles["secretary"].Hash {
 		t.Fatalf("explicit setting did not version the managed Secretary profile: %#v", optedIn)
 	}
 	invalid := strings.Replace(updated, "addressed-reply-v1", "addressed-reply-v2", 1)
