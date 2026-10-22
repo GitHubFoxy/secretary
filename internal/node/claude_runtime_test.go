@@ -92,7 +92,7 @@ func TestClaudeCodeRuntimeAllowsOnlyDocumentedHarmlessStaticArgument(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id"}
+	want := []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"}},"required":["task_outcome","reason"],"additionalProperties":false}`, "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Claude CLI args=%#v, want %#v", got, want)
 	}
@@ -100,7 +100,7 @@ func TestClaudeCodeRuntimeAllowsOnlyDocumentedHarmlessStaticArgument(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session"}
+	want = []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"}},"required":["task_outcome","reason"],"additionalProperties":false}`, "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Claude resume args=%#v, want %#v", got, want)
 	}
@@ -509,9 +509,21 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
 				`{"type":"assistant","uuid":"call2","message":{"content":[{"type":"tool_use","id":"bash2","name":"Bash"}]}}`,
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash2","is_error":false}]},"toolUseResult":{"exitCode":0}}`,
-				`{"type":"result","subtype":"success","result":"Recovered"}`,
+				`{"type":"result","subtype":"success","result":"Recovered","structured_output":{"task_outcome":"succeeded","reason":"Recovered by alternate verification"}}`,
 			},
 			wantStatus: "succeeded",
+		},
+		{
+			name: "unrelated successful Bash does not erase failure",
+			events: []string{
+				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
+				`{"type":"assistant","uuid":"call2","message":{"content":[{"type":"tool_use","id":"bash2","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash2","is_error":false}]},"toolUseResult":{"exitCode":0}}`,
+				`{"type":"result","subtype":"success","result":"Not actually recovered"}`,
+			},
+			wantStatus: "failed",
+			wantCode: "tool_execution_failed",
 		},
 		{
 			name: "normal task",
