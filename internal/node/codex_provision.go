@@ -342,6 +342,9 @@ func codexBinaryRecordWithACPPolicy(path, provenance string, isACP bool) (CodexB
 }
 
 func codexNativePairReady(ctx context.Context, pair CodexPairInventory) error {
+ if pair.Codex.Provenance == "managed" {
+  if err := verifyManagedCodeModeHost(filepath.Dir(pair.Codex.ResolvedPath)); err != nil { return fmt.Errorf("Codex MCP code-mode host readiness: %w", err) }
+ }
  probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
  defer cancel()
  output, err := exec.CommandContext(probeCtx, pair.Codex.Path, "login", "status").CombinedOutput()
