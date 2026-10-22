@@ -52,16 +52,32 @@ choose_harness() {
   SELECTED_HARNESS="$answer"
 }
 
+generated_reply_contract_matches() {
+  local file="$STATE/config.toml" marker="$STATE/.generated-reply-contract.cksum" current
+  [[ -f "$marker" && ! -L "$marker" && -f "$file" && ! -L "$file" ]] || return 1
+  current="$(cksum < "$file")" || return 1
+  [[ "$(<"$marker")" == "$current" ]]
+}
+
+record_generated_reply_contract() {
+  local marker="$STATE/.generated-reply-contract.cksum" temporary
+  temporary="$(mktemp "$STATE/.generated-reply-contract.XXXXXX")" || return 1
+  cksum < "$STATE/config.toml" > "$temporary" || { rm -f "$temporary"; return 1; }
+  chmod 600 "$temporary" || { rm -f "$temporary"; return 1; }
+  mv -f "$temporary" "$marker"
+}
+
 set_config_harness() {
-  local harness="$1" fresh="${2:-false}" file="$STATE/config.toml" temp
+  local harness="$1" fresh="${2:-false}" file="$STATE/config.toml" temp generated=false
   [[ "$harness" == codex || "$harness" == claude_code ]] || { print -u2 "Unsupported harness: $harness"; return 2; }
   [[ -f "$file" && ! -L "$file" ]] || { print -u2 "Missing or unsafe configuration: $file"; return 1; }
+  if [[ "$harness" == claude_code ]] && { [[ "$fresh" == true ]] || generated_reply_contract_matches; }; then generated=true; fi
   temp="$(mktemp "$STATE/config.toml.XXXXXX")" || return 1
-  if ! awk -v selected="$harness" -v fresh="$fresh" '
+  if ! awk -v selected="$harness" -v generated="$generated" '
     /^\[[^]]+\]/ { section=$0 }
     section=="[secretary]" && /^[[:space:]]*harness[[:space:]]*=/ { print "harness = \"" selected "\""; secretary=1; next }
     section=="[secretary]" && /^[[:space:]]*reply_contract[[:space:]]*=/ && selected=="claude_code" {
-      if (fresh=="true" && $0 ~ /^[[:space:]]*reply_contract[[:space:]]*=[[:space:]]*"addressed-reply-v1"[[:space:]]*$/) next
+      if (generated=="true" && $0 ~ /^[[:space:]]*reply_contract[[:space:]]*=[[:space:]]*"addressed-reply-v1"[[:space:]]*$/) next
       invalid=1
     }
     section=="[worker_policy]" && /^[[:space:]]*default_harness[[:space:]]*=/ { print "default_harness = \"" selected "\""; worker=1; next }
@@ -74,6 +90,11 @@ set_config_harness() {
   fi
   chmod 600 "$temp"
   mv -f "$temp" "$file"
+  if [[ "$harness" == codex ]]; then
+    record_generated_reply_contract || return 1
+  else
+    rm -f "$STATE/.generated-reply-contract.cksum" || return 1
+  fi
   print "Selected $harness for new Secretary and Worker sessions. Existing Workers are unchanged."
 }
 
