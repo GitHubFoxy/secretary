@@ -86,6 +86,7 @@ read end
 		t.Fatalf("unexpected initial process ancestry: shell=%+v sleep=%+v", processes[shellPID], processes[sleepPID])
 	}
 	nativeID := session.ID()
+	cancelStarted := time.Now()
 	if err := session.Cancel(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -119,6 +120,9 @@ read end
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+	if elapsed := time.Since(cancelStarted); elapsed > claudeCleanupLimit {
+		t.Fatalf("original PID cleanup exceeded two seconds: %v", elapsed)
+	}
 	if err := other.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Fatalf("unrelated owner process was terminated: %v", err)
 	}
@@ -148,3 +152,25 @@ read end
 	}
 }
 
+
+func TestMAC02RejectsChangedClaudeRootIdentity(t *testing.T) {
+	cmd := exec.Command("sleep", "180")
+	configureClaudeProcess(cmd)
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	root, err := captureClaudeRoot(cmd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root.start = "different start time"
+	ctx, cancel := context.WithTimeout(context.Background(), claudeCleanupLimit)
+	defer cancel()
+	if err := cleanupClaudeAttemptProcesses(ctx, cmd, root); err == nil {
+		t.Fatal("changed root identity accepted")
+	}
+	if err := cmd.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("root process was killed after identity mismatch: %v", err)
+	}
+}
