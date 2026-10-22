@@ -411,3 +411,49 @@ func TestSpawnWorkerSchemaAllowsAutomaticDispatchWithoutProject(t *testing.T) {
 		}
 	}
 }
+
+func TestCodexSecretaryMCPProjectlessSpawnIsCanonicalAndIdempotent(t *testing.T) {
+ ctx := context.Background()
+ store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+ if err != nil { t.Fatal(err) }
+ defer store.Close()
+ person, conversation, err := store.CreatePersonWithConversation(ctx)
+ if err != nil { t.Fatal(err) }
+ identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+ if err != nil { t.Fatal(err) }
+ capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+ if err != nil { t.Fatal(err) }
+ if err := store.SetSecretaryPolicySnapshot(ctx, core.SecretaryPolicySnapshot{Version: "mac01", Harness: "codex", Model: "default", Reasoning: "high", ProfileVersion: "mac01", ProfileName: "secretary", ProfileHash: "mac01", ProfileContent: "Use MCP lifecycle.", ReplyContractVersion: core.SecretaryReplyContractAddressedV1}); err != nil { t.Fatal(err) }
+ turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "Create one projectless Worker")
+ if err != nil { t.Fatal(err) }
+ if _, err := store.StartSecretaryTurn(ctx, turn.ID); err != nil { t.Fatal(err) }
+ if _, err := store.EnrollNode(ctx, "remote-node"); err != nil { t.Fatal(err) }
+ instance := core.HarnessInstance{ID: "remote-node/fx", Node: "remote-node", Kind: core.HarnessFX, Version: "1", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}, Capabilities: core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityShell}}}
+ if err := store.UpdateNodeHeartbeat(ctx, "remote-node", core.HarnessInventorySnapshot{Node: "remote-node", ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{instance}}, core.NodeHeartbeat{Capacity: 2}); err != nil { t.Fatal(err) }
+ runtime := &mcpReceiptGapRuntime{store: store}
+ handler := Secretary{ReplyContractVersion: core.SecretaryReplyContractAddressedV1, Workers: ctl.WorkerService{
+  Store: store, PersonID: person.ID, Capability: capability, Runtime: runtime,
+  WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX},
+  WorkerProfileSource: func() (node.ManagedProfile, error) {
+   return node.ManagedProfile{Version: "mac01", Name: "worker", Content: "Test Worker.", AllowTools: []string{"read"}, Hash: "mac01-worker", Runtime: "fx"}, nil
+  },
+ }}
+ args, err := json.Marshal(map[string]string{"intent": "Ask one question", "idempotency_key": "mac01-projectless-action", "secretary_turn_id": turn.ID, "input_id": turn.InputID})
+ if err != nil { t.Fatal(err) }
+ firstRaw, err := handler.Call(ctx, "spawn_worker", args)
+ if err != nil { t.Fatalf("projectless MCP spawn failed: %v", err) }
+ first, ok := firstRaw.(core.WorkerDetails)
+ if !ok || first.Worker.ProjectID != "" || first.Worker.NodeID != "remote-node" || first.ActionTurnID == "" || len(first.Attempts) != 1 || !runtime.resultRecorded {
+  t.Fatalf("projectless dispatch did not create canonical Worker and Attempt: %#v", firstRaw)
+ }
+ secondRaw, err := handler.Call(ctx, "spawn_worker", args)
+ if err != nil { t.Fatalf("idempotent MCP replay failed: %v", err) }
+ second, ok := secondRaw.(core.WorkerDetails)
+ if !ok || second.Worker.ID != first.Worker.ID || second.ActionTurnID != first.ActionTurnID || len(second.Attempts) == 0 || second.Attempts[0].ID != first.Attempts[0].ID {
+  t.Fatalf("MCP replay created another Worker or Attempt: first=%#v second=%#v", first, secondRaw)
+ }
+ workers, err := store.WorkersForConversation(ctx, conversation.ID)
+ if err != nil || len(workers) != 1 { t.Fatalf("expected one canonical Worker: %#v, %v", workers, err) }
+ confirmation, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Worker accepted", "action_kind": "spawn_worker", "worker_turn_id": first.ActionTurnID})
+ if _, err := handler.Call(ctx, "reply_to_user", confirmation); err != nil { t.Fatalf("accepted projectless action cannot be confirmed: %v", err) }
+}
