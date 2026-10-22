@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -124,7 +125,11 @@ func TestMAC02RootCaptureFailureStopsAndReapsCLI(t *testing.T) {
 	mu.Lock()
 	cmd := captured
 	mu.Unlock()
-	if cmd == nil || cmd.Process == nil || cmd.ProcessState == nil || !cmd.ProcessState.Exited() {
+	if cmd == nil || cmd.Process == nil || cmd.ProcessState == nil {
 		t.Fatalf("started CLI not reaped after root identity failure: %+v", cmd)
+	}
+	status, ok := cmd.ProcessState.Sys().(syscall.WaitStatus)
+	if !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
+		t.Fatalf("capture failure did not kill and reap CLI: state=%v", cmd.ProcessState)
 	}
 }
