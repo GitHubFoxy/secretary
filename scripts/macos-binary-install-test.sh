@@ -33,6 +33,8 @@ export HOME="$home" PATH="$home/fixtures:$PATH" SECRETARY_RELEASE_BASE="file://$
 export SECRETARY_VERSION="$version"
 bash "$root/scripts/install-macos-binary.sh"
 "$HOME/.local/bin/secretary" doctor
+grep -Eq '^[[:space:]]*harness[[:space:]]*=[[:space:]]*"claude_code"' "$HOME/.local/share/secretary/config.toml"
+! grep -Eq '^[[:space:]]*reply_contract[[:space:]]*=[[:space:]]*"addressed-reply-v1"' "$HOME/.local/share/secretary/config.toml"
 if ! "$HOME/.local/bin/secretary" start --no-open; then
   daemon_log="$HOME/.local/share/secretary/secretaryd.log"
   if [[ -f "$daemon_log" ]]; then
