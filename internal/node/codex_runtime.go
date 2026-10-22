@@ -24,6 +24,7 @@ func (r CodexRuntime) configured(request StartRequest) (ACPRuntime, error) {
 	}
 	base.CodexMessagePhases = true
 	base.DrainPromptEvents = true
+	base.TerminalMessageGrouping = true
 	if model := strings.TrimSpace(profile.Model); model != "" && !isModelAlias(model) {
 		base.ModelSelection = model
 	}
