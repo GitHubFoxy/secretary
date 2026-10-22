@@ -113,7 +113,7 @@ ensure_local_node_credentials() {
 }
 
 telegram_origin_valid() {
-  local origin="$1" host ip part
+  local origin="$1" host part
   [[ "$origin" == https://* && "$origin" != *[[:space:]]* && "$origin" != *[\?#@]* ]] || return 1
   local authority="${origin#https://}"
   [[ -n "$authority" && "$authority" != */* ]] || return 1
@@ -122,7 +122,7 @@ telegram_origin_valid() {
     host="${authority%:*}"
     [[ "${authority##*:}" == <-> ]] || return 1
   fi
-  [[ -n "$host" && "$host" != .* && "$host" != *..* ]] || return 1
+  [[ -n "$host" && "$host" != .* && "$host" != *..* && "$host" != *\[* && "$host" != *\]* ]] || return 1
   [[ "$host:l" != localhost && "$host:l" != *.localhost && "$host:l" != *.local ]] || return 1
   if [[ "$host" == <->.<->.<->.<-> ]]; then
     local -a octets
