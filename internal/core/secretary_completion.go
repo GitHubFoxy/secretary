@@ -181,6 +181,16 @@ WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conve
 			}
 		}
 
+		if evidence != nil && state == SecretaryTurnFailed && evidence.ReplyCount == 0 {
+            var harness string
+            if err := tx.QueryRowContext(ctx, `SELECT runtime_harness FROM secretary_identities WHERE id = ?`, turn.IdentityID).Scan(&harness); err != nil { return secretaryTurnCompletion{}, err }
+            if harness == "codex" {
+                message := "Не удалось подтвердить выполнение запроса: Secretary MCP не предоставил подтверждённый ответ. Создание Worker не подтверждено. Проверьте доступность Secretary MCP и повторите запрос."
+                var err error
+                entry, err = appendEntryWithIdentity(ctx, tx, now, turn.ConversationID, EntrySecretary, message, "", turn.ID, "")
+                if err != nil { return secretaryTurnCompletion{}, err }
+            }
+        }
 		payload := map[string]any{"turn_id": turn.ID, "status": string(state)}
 		if acknowledgement != "" {
 			payload["acknowledged"] = true
