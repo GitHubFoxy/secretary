@@ -2,8 +2,17 @@
 
 package node
 
-import "os/exec"
+import (
+	"context"
+	"os/exec"
+)
 
-func cleanupClaudeAttemptProcesses(*exec.Cmd) error {
+type claudeChild struct{}
+
+func captureClaudeRoot(*exec.Cmd) (claudeChild, error) {
+	return claudeChild{}, nil
+}
+
+func cleanupClaudeAttemptProcesses(context.Context, *exec.Cmd, claudeChild) error {
 	return nil
 }
