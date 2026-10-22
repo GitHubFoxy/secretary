@@ -74,7 +74,7 @@ func TestClaudeFailedToolCanonicalResultReplayAndBinding(t *testing.T) {
 	}
 	if len(details.Outcomes) != 1 || details.Outcomes[0].Diagnostics != "Claude Bash tool failed with exit code 7" { t.Fatalf("canonical diagnostics: %#v", details.Outcomes) }
 	result := details.Results[0]
-	if result.Status != core.OutcomeFailed || result.FailureCode != "tool_execution_failed" {
+	if result.Status != core.ResultFailed || result.FailureCode != "tool_execution_failed" {
 		t.Fatalf("canonical result: %#v", result)
 	}
 	entries, err := store.EntriesAfter(ctx, conversation.ID, 0)
