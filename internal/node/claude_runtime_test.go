@@ -92,7 +92,7 @@ func TestClaudeCodeRuntimeAllowsOnlyDocumentedHarmlessStaticArgument(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"}},"required":["task_outcome","reason"],"additionalProperties":false}`, "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id"}
+	want := []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}}},"required":["task_outcome","reason","recovered_tool_use_ids"],"additionalProperties":false}`, "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Claude CLI args=%#v, want %#v", got, want)
 	}
@@ -100,7 +100,7 @@ func TestClaudeCodeRuntimeAllowsOnlyDocumentedHarmlessStaticArgument(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"}},"required":["task_outcome","reason"],"additionalProperties":false}`, "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session"}
+	want = []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}}},"required":["task_outcome","reason","recovered_tool_use_ids"],"additionalProperties":false}`, "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Claude resume args=%#v, want %#v", got, want)
 	}
@@ -509,7 +509,7 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
 				`{"type":"assistant","uuid":"call2","message":{"content":[{"type":"tool_use","id":"bash2","name":"Bash"}]}}`,
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash2","is_error":false}]},"toolUseResult":{"exitCode":0}}`,
-				`{"type":"result","subtype":"success","result":"Recovered","structured_output":{"task_outcome":"succeeded","reason":"Recovered by alternate verification"}}`,
+				`{"type":"result","subtype":"success","result":"Recovered","structured_output":{"task_outcome":"succeeded","reason":"Recovered by alternate verification","recovered_tool_use_ids":["bash1"]}}`,
 			},
 			wantStatus: "succeeded",
 		},
@@ -524,6 +524,44 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 			},
 			wantStatus: "failed",
 			wantCode: "tool_execution_failed",
+		},
+		{
+			name: "unrelated attestation cannot recover Bash",
+			events: []string{
+				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
+				`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"succeeded","reason":"Another command completed","recovered_tool_use_ids":["other-call"]}}`,
+			},
+			wantStatus: "failed", wantCode: "tool_execution_failed",
+		},
+		{
+			name: "invalid attestation cannot recover Bash",
+			events: []string{
+				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
+				`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"unknown","reason":"not valid","recovered_tool_use_ids":["bash1"]}}`,
+			},
+			wantStatus: "failed", wantCode: "tool_execution_failed",
+		},
+		{
+			name: "structured failed without Bash",
+			events: []string{`{"type":"result","subtype":"success","result":"Failed","structured_output":{"task_outcome":"failed","reason":"Could not complete task","recovered_tool_use_ids":[]}}`},
+			wantStatus: "failed", wantCode: "tool_execution_failed",
+		},
+		{
+			name: "structured succeeded without Bash",
+			events: []string{`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"succeeded","reason":"Completed","recovered_tool_use_ids":[]}}`},
+			wantStatus: "succeeded",
+		},
+		{
+			name: "native failure overrides structured success",
+			events: []string{`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Provider failed","structured_output":{"task_outcome":"succeeded","reason":"Claimed success","recovered_tool_use_ids":[]}}`},
+			wantStatus: "failed",
+		},
+		{
+			name: "invalid structured task outcome without Bash",
+			events: []string{`{"type":"result","subtype":"success","result":"Unverified","structured_output":{"task_outcome":"unknown","reason":"Unknown","recovered_tool_use_ids":[]}}`},
+			wantStatus: "succeeded",
 		},
 		{
 			name: "normal task",
