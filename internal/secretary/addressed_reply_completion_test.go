@@ -167,7 +167,7 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 	}
 	if replyMode == "exact" {
 		args, err := json.Marshal(map[string]string{
-			"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "The answer is 42.",
+			"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "The answer is 42.", "reply_kind": "answer",
 		})
 		if err != nil {
 			t.Fatal("could not prepare the exact MCP origin")
