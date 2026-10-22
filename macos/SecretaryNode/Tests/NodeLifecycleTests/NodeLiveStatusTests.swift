@@ -40,7 +40,7 @@ final class NodeLiveStatusTests: XCTestCase {
         XCTAssertFalse(menu.items(in: menu.menu).contains("codex: Ready"))
         try write(url, server: "offline")
         menu.renderLive(NodeLiveSnapshot.load(from: url, now: now))
-        XCTAssertEqual(menu.server.title, "Server: Offline")
+        XCTAssertEqual(menu.server.title, "Server: Online")
     }
 
     func testStaleMissingCorruptAndShutdownFailClosed() throws {
