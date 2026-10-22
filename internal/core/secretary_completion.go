@@ -185,13 +185,25 @@ WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conve
             var harness string
             if err := tx.QueryRowContext(ctx, `SELECT runtime_harness FROM secretary_identities WHERE id = ?`, turn.IdentityID).Scan(&harness); err != nil { return secretaryTurnCompletion{}, err }
             if harness == "codex" {
-                message := "Не удалось подтвердить выполнение запроса: Secretary MCP не предоставил подтверждённый ответ. Создание Worker не подтверждено. Проверьте доступность Secretary MCP и повторите запрос."
+                var accepted int
+                err := tx.QueryRowContext(ctx, `SELECT EXISTS(
+                    SELECT 1 FROM secretary_worker_creation_origins o JOIN turns t ON t.id = o.worker_turn_id JOIN workers w ON w.id = t.worker_id
+                    WHERE o.secretary_turn_id = ? AND o.input_id = ? AND w.conversation_id = ?
+                    UNION
+                    SELECT 1 FROM secretary_worker_command_origins o JOIN phase4_worker_commands c ON c.id = o.command_id
+                    JOIN phase4_attempts a ON a.id = c.attempt_id JOIN turns t ON t.id = o.worker_turn_id JOIN workers w ON w.id = t.worker_id
+                    WHERE o.secretary_turn_id = ? AND o.input_id = ? AND w.conversation_id = ?
+                      AND c.kind = 'dispatch' AND c.state = 'delivered' AND a.turn_id = t.id
+                )`, turn.ID, turn.InputID, turn.ConversationID, turn.ID, turn.InputID, turn.ConversationID).Scan(&accepted)
+                if err != nil { return secretaryTurnCompletion{}, err }
+                message := "Не удалось подтвердить выполнение запроса: Secretary MCP не предоставил подтверждённый ответ. Создание Worker не подтверждено. Проверьте Secretary MCP и повторите запрос."
+                if accepted != 0 { message = "Worker создан и принят сервером, но Secretary не завершил адресованный ответ. Проверьте состояние Worker перед повторным запросом, чтобы избежать дубликатов." }
                 var err error
                 entry, err = appendEntryWithIdentity(ctx, tx, now, turn.ConversationID, EntrySecretary, message, "", turn.ID, "")
                 if err != nil { return secretaryTurnCompletion{}, err }
             }
         }
-		payload := map[string]any{"turn_id": turn.ID, "status": string(state)}
+        payload := map[string]any{"turn_id": turn.ID, "status": string(state)}
 		if acknowledgement != "" {
 			payload["acknowledged"] = true
 		}
