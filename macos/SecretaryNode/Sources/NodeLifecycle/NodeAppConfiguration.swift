@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct NodeAppConfiguration {
@@ -36,10 +37,7 @@ public struct NodeAppConfiguration {
             environment.removeValue(forKey: "SECRETARY_NODE_PAIRING_TOKEN")
         } else if environment["SECRETARY_NODE_PAIRING_TOKEN", default: ""].isEmpty && !isStandalone {
             let credentials = home.appendingPathComponent(".local/share/secretary/environment")
-            guard let attributes = try? files.attributesOfItem(atPath: credentials.path),
-                  attributes[.type] as? FileAttributeType == .typeRegular,
-                  (attributes[.posixPermissions] as? NSNumber)?.uint16Value == 0o600,
-                  let contents = try? String(contentsOf: credentials, encoding: .utf8),
+            guard let contents = privateCredentials(at: credentials),
                   let token = pairingToken(in: contents) else {
                 throw NodeAppConfigurationError.missingPairing
             }
@@ -61,6 +59,20 @@ public struct NodeAppConfiguration {
               ["http", "https"].contains(url.scheme?.lowercased() ?? ""),
               url.host != nil else { return nil }
         return URL(string: "/v1/health", relativeTo: url)?.absoluteURL
+    }
+
+    private static func privateCredentials(at url: URL) -> String? {
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        defer { close(descriptor) }
+        var metadata = stat()
+        guard fstat(descriptor, &metadata) == 0,
+              (metadata.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              (metadata.st_mode & 0o777) == 0o600,
+              metadata.st_uid == geteuid() else { return nil }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
+        guard let data = try? handle.readToEnd(), data.count <= 65536 else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     private static func pairingToken(in text: String) -> String? {
