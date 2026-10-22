@@ -117,7 +117,9 @@ grep -q '^default_harness = "codex"$' "$STATE/config.toml" || fail "failed auth 
 unset CLAUDE_AUTH_FAIL
 "$ROOT/secretary" setup --non-interactive --harness claude_code >/dev/null
 grep -q '^harness = "claude_code"$' "$STATE/config.toml" || fail "authorized Claude switch failed"
+! grep -q '^reply_contract = "addressed-reply-v1"$' "$STATE/config.toml" || fail "Claude inherited Codex addressed contract"
 "$ROOT/secretary" setup --non-interactive --harness codex >/dev/null
+grep -q '^reply_contract = "addressed-reply-v1"$' "$STATE/config.toml" || fail "return to Codex did not restore required addressed contract"
 before="$(cat "$STATE/environment")"
 "$ROOT/secretary" setup --non-interactive >/dev/null
 [[ "$(cat "$STATE/environment")" == "$before" ]] || fail "repeat setup rotated credentials"

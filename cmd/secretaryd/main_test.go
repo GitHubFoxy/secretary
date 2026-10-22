@@ -23,6 +23,33 @@ import (
 	"github.com/beruseruko/secretary/internal/webapi"
 )
 
+func TestFreshCodexConfigActivatesManagedLifecycleReplyWithoutProfileRewrite(t *testing.T) {
+	ctx := context.Background()
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	manager, err := config.Open(configPath)
+	if err != nil { t.Fatal(err) }
+	snapshot := manager.Snapshot()
+	if snapshot.Config.Secretary.Harness != "codex" || snapshot.Config.Secretary.ReplyContract != core.SecretaryReplyContractAddressedV1 || snapshot.Profiles["secretary"].ReplyContractVersion != core.SecretaryReplyContractAddressedV1 {
+		t.Fatalf("fresh Codex setup did not activate canonical addressed replies: %#v", snapshot.Profiles["secretary"])
+	}
+	path := snapshot.Profiles["secretary"].Path
+	before, err := os.ReadFile(path)
+	if err != nil { t.Fatal(err) }
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "state.db"))
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	profile := secretaryProfile(snapshot, store)
+	if profile.ReplyContractVersion != core.SecretaryReplyContractAddressedV1 || !strings.Contains(profile.Content, "## Addressed reply v1") || !strings.Contains(profile.Content, "reply_kind=spawn_worker") || !strings.Contains(profile.Content, "worker_turn_id") {
+		t.Fatalf("fresh Codex runtime lacks typed durable lifecycle instructions: %#v", profile)
+	}
+	files := profileFiles(snapshot)
+	if len(files) == 0 || strings.Contains(files[0].Content, "## Addressed reply v1") {
+		t.Fatalf("external editable profile was replaced with runtime instructions: %#v", files)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil || string(after) != string(before) { t.Fatalf("fresh profile overwritten by runtime contract: %v", err) }
+}
+
 func TestAddressedReplyInstructionsAreOptInAndDoNotRewriteExternalProfile(t *testing.T) {
 	ctx := context.Background()
 	configPath := filepath.Join(t.TempDir(), "config.toml")
@@ -30,6 +57,12 @@ func TestAddressedReplyInstructionsAreOptInAndDoNotRewriteExternalProfile(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
+	generatedConfig, err := os.ReadFile(configPath)
+	if err != nil { t.Fatal(err) }
+	legacyConfig := strings.Replace(string(generatedConfig), "reply_contract = \"addressed-reply-v1\"", "# legacy: reply_contract unset", 1)
+	if legacyConfig == string(generatedConfig) { t.Fatal("new official Codex config lacks addressed contract") }
+	if err := os.WriteFile(configPath, []byte(legacyConfig), 0o600); err != nil { t.Fatal(err) }
+	if _, err := manager.Reload(); err != nil { t.Fatal(err) }
 	legacy := manager.Snapshot()
 	externalPath := legacy.Profiles["secretary"].Path
 	externalBefore, err := os.ReadFile(externalPath)

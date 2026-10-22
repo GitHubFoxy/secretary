@@ -53,7 +53,7 @@ func TestAddressedReplyContractAddsOnlyVersionedMCPToolsAndOriginFields(t *testi
 		}
 		if tool.Name == "reply_to_user" {
 			required := tool.InputSchema["required"].([]string)
-			if !reflect.DeepEqual(required, []string{"secretary_turn_id", "input_id", "text"}) {
+			if !reflect.DeepEqual(required, []string{"secretary_turn_id", "input_id", "text", "reply_kind"}) {
 				t.Fatalf("reply_to_user schema=%#v", tool.InputSchema)
 			}
 		}
@@ -103,7 +103,7 @@ func TestSecretaryAddressedReplyRequiresCurrentServerOriginAndIsIdempotent(t *te
 	if !toolNames["reply_to_user"] {
 		t.Fatal("opt-in MCP surface omitted reply_to_user")
 	}
-	args, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "The answer is 42."})
+	args, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "The answer is 42.", "reply_kind":"answer"})
 	first, err := handler.Call(ctx, "reply_to_user", args)
 	if err != nil {
 		t.Fatalf("valid addressed reply rejected: %v", err)
@@ -118,8 +118,8 @@ func TestSecretaryAddressedReplyRequiresCurrentServerOriginAndIsIdempotent(t *te
 		t.Fatal("exact replay was not identified as duplicate")
 	}
 	for _, invalid := range []map[string]string{
-		{"secretary_turn_id": "stale-turn", "input_id": turn.InputID, "text": "stale"},
-		{"secretary_turn_id": turn.ID, "input_id": "stale-input", "text": "stale"},
+		{"secretary_turn_id": "stale-turn", "input_id": turn.InputID, "text": "stale", "reply_kind":"answer"},
+		{"secretary_turn_id": turn.ID, "input_id": "stale-input", "text": "stale", "reply_kind":"answer"},
 	} {
 		encoded, _ := json.Marshal(invalid)
 		if _, err := handler.Call(ctx, "reply_to_user", encoded); err == nil {
@@ -186,6 +186,15 @@ func TestMCPSpawnSuppressesExactResultBeforeDeliveryReceiptCommit(t *testing.T) 
 	if _, err := store.StartSecretaryTurn(ctx, turn.ID); err != nil {
 		t.Fatal(err)
 	}
+	premature, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Создано.", "reply_kind":"spawn_worker"})
+	prematureHandler := Secretary{Workers: ctl.WorkerService{Store: store, PersonID: person.ID, Capability: capability}, ReplyContractVersion: core.SecretaryReplyContractAddressedV1}
+	if _, err := prematureHandler.Call(ctx, "reply_to_user", premature); err == nil { t.Fatal("unbound text-only creation reply was accepted") }
+	before, err := store.EntriesAfter(ctx, conversation.ID, 0)
+	if err != nil || len(before) != 0 { t.Fatalf("false creation confirmation persisted: entries=%#v err=%v", before, err) }
+	workersBefore, err := store.WorkersForConversation(ctx, conversation.ID)
+	if err != nil || len(workersBefore) != 0 { t.Fatalf("false creation created canonical Workers: %#v %v", workersBefore, err) }
+	pending, err := store.SecretaryTurn(ctx, turn.ID)
+	if err != nil || pending.State != core.SecretaryTurnActive { t.Fatalf("false reply changed Secretary turn: %#v %v", pending, err) }
 	project, err := store.CreateProject(ctx, core.ProjectSpec{ID: "repo", Name: "Repo", Mappings: []core.ProjectPathMapping{{Node: "node", Path: t.TempDir()}}})
 	if err != nil {
 		t.Fatal(err)
@@ -215,8 +224,19 @@ func TestMCPSpawnSuppressesExactResultBeforeDeliveryReceiptCommit(t *testing.T) 
 	if err != nil {
 		t.Fatalf("addressed spawn failed: %v", err)
 	}
-	if _, ok := result.(core.WorkerDetails); !ok || !runtime.resultRecorded {
+	details, ok := result.(core.WorkerDetails)
+	if !ok || !runtime.resultRecorded || details.ActionTurnID == "" {
 		t.Fatalf("MCP call did not traverse the receipt-gap path: result=%T runtime=%#v", result, runtime)
+	}
+	for _, workerTurnID := range []string{"native-spawn-agent", ""} {
+		confirmation, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Worker created", "reply_kind":"spawn_worker", "action_kind": "spawn_worker", "worker_turn_id": workerTurnID})
+		if _, err := handler.Call(ctx, "reply_to_user", confirmation); err == nil {
+			t.Fatalf("unaccepted creation confirmation allowed for %q", workerTurnID)
+		}
+	}
+	confirmation, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Worker created", "reply_kind":"spawn_worker", "action_kind": "spawn_worker", "worker_turn_id": details.ActionTurnID})
+	if _, err := handler.Call(ctx, "reply_to_user", confirmation); err != nil {
+		t.Fatalf("accepted creation confirmation rejected: %v", err)
 	}
 	if _, _, err := store.FinishSecretaryTurnWithOutput(ctx, turn.ID, turn.InputID, core.SecretaryTurnSucceeded, "", "duplicate terminal echo", nil); err != nil {
 		t.Fatal(err)
@@ -399,4 +419,93 @@ func TestSpawnWorkerSchemaAllowsAutomaticDispatchWithoutProject(t *testing.T) {
 			t.Fatalf("Project is still required in preferences: %#v", preferences)
 		}
 	}
+}
+
+func TestCodexSecretaryMCPProjectlessSpawnIsCanonicalAndIdempotent(t *testing.T) {
+ ctx := context.Background()
+ store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+ if err != nil { t.Fatal(err) }
+ defer store.Close()
+ person, conversation, err := store.CreatePersonWithConversation(ctx)
+ if err != nil { t.Fatal(err) }
+ identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+ if err != nil { t.Fatal(err) }
+ capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+ if err != nil { t.Fatal(err) }
+ if err := store.SetSecretaryPolicySnapshot(ctx, core.SecretaryPolicySnapshot{Version: "mac01", Harness: "codex", Model: "default", Reasoning: "high", ProfileVersion: "mac01", ProfileName: "secretary", ProfileHash: "mac01", ProfileContent: "Use MCP lifecycle.", ReplyContractVersion: core.SecretaryReplyContractAddressedV1}); err != nil { t.Fatal(err) }
+ turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "Create one projectless Worker")
+ if err != nil { t.Fatal(err) }
+ if _, err := store.StartSecretaryTurn(ctx, turn.ID); err != nil { t.Fatal(err) }
+ if _, err := store.EnrollNode(ctx, "remote-node"); err != nil { t.Fatal(err) }
+ instance := core.HarnessInstance{ID: "remote-node/fx", Node: "remote-node", Kind: core.HarnessFX, Version: "1", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}, Capabilities: core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityShell}}}
+ if err := store.UpdateNodeHeartbeat(ctx, "remote-node", core.HarnessInventorySnapshot{Node: "remote-node", ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{instance}}, core.NodeHeartbeat{Capacity: 2}); err != nil { t.Fatal(err) }
+ runtime := &mcpReceiptGapRuntime{store: store}
+ handler := Secretary{ReplyContractVersion: core.SecretaryReplyContractAddressedV1, Workers: ctl.WorkerService{
+  Store: store, PersonID: person.ID, Capability: capability, Runtime: runtime,
+  WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX},
+  WorkerProfileSource: func() (node.ManagedProfile, error) {
+   return node.ManagedProfile{Version: "mac01", Name: "worker", Content: "Test Worker.", AllowTools: []string{"read"}, Hash: "mac01-worker", Runtime: "fx"}, nil
+  },
+ }}
+ args, err := json.Marshal(map[string]string{"intent": "Ask one question", "idempotency_key": "mac01-projectless-action", "secretary_turn_id": turn.ID, "input_id": turn.InputID})
+ if err != nil { t.Fatal(err) }
+ firstRaw, err := handler.Call(ctx, "spawn_worker", args)
+ if err != nil { t.Fatalf("projectless MCP spawn failed: %v", err) }
+ first, ok := firstRaw.(core.WorkerDetails)
+ if !ok || first.Worker.ProjectID != "" || first.Worker.NodeID != "remote-node" || first.ActionTurnID == "" || len(first.Attempts) != 1 || !runtime.resultRecorded {
+  t.Fatalf("projectless dispatch did not create canonical Worker and Attempt: %#v", firstRaw)
+ }
+ secondRaw, err := handler.Call(ctx, "spawn_worker", args)
+ if err != nil { t.Fatalf("idempotent MCP replay failed: %v", err) }
+ second, ok := secondRaw.(core.WorkerDetails)
+ if !ok || second.Worker.ID != first.Worker.ID || second.ActionTurnID != first.ActionTurnID || len(second.Attempts) == 0 || second.Attempts[0].ID != first.Attempts[0].ID {
+  t.Fatalf("MCP replay created another Worker or Attempt: first=%#v second=%#v", first, secondRaw)
+ }
+ workers, err := store.WorkersForConversation(ctx, conversation.ID)
+ if err != nil || len(workers) != 1 { t.Fatalf("expected one canonical Worker: %#v, %v", workers, err) }
+ confirmation, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Worker accepted", "reply_kind":"spawn_worker", "action_kind": "spawn_worker", "worker_turn_id": first.ActionTurnID})
+ if _, err := handler.Call(ctx, "reply_to_user", confirmation); err != nil { t.Fatalf("accepted projectless action cannot be confirmed: %v", err) }
+}
+
+func TestAddressedCreationProofIndependentOfOwnerWording(t *testing.T) {
+ for _, wording := range []string{"Добавь нового агента для проекта", "Поручи это отдельному исполнителю", "Create a Worker", "Please handle this"} {
+  t.Run(wording,func(t *testing.T){
+   ctx:=context.Background()
+   store,err:=core.Open(ctx,filepath.Join(t.TempDir(),"secretary.db"))
+   if err!=nil{t.Fatal(err)}
+   defer store.Close()
+   person,conversation,err:=store.CreatePersonWithConversation(ctx)
+   if err!=nil{t.Fatal(err)}
+   identity,err:=store.EnsureSecretaryIdentity(ctx,person.ID,conversation.ID)
+   if err!=nil{t.Fatal(err)}
+   capability,err:=store.RotateSecretaryCapability(ctx,person.ID)
+   if err!=nil{t.Fatal(err)}
+   if err:=store.SetSecretaryPolicySnapshot(ctx,core.SecretaryPolicySnapshot{Version:"test",Harness:"fx",Model:"m",Reasoning:"high",ProfileVersion:"test",ProfileName:"secretary",ProfileHash:"hash",ProfileContent:"policy"});err!=nil{t.Fatal(err)}
+   turn,err:=store.EnqueueSecretaryTurn(ctx,identity.ID,wording)
+   if err!=nil{t.Fatal(err)}
+   if _,err=store.StartSecretaryTurn(ctx,turn.ID);err!=nil{t.Fatal(err)}
+   handler:=Secretary{Workers:ctl.WorkerService{Store:store,PersonID:person.ID,Capability:capability},ReplyContractVersion:core.SecretaryReplyContractAddressedV1}
+   for _,claim:=range []map[string]string{
+    {"text":"Создано.","reply_kind":"spawn_worker"},
+    {"text":"Created.","reply_kind":"spawn_worker","action_kind":"spawn_worker","worker_turn_id":"native-spawn-agent"},
+    {"text":"Создано."},
+   }{
+    claim["secretary_turn_id"],claim["input_id"]=turn.ID,turn.InputID
+    encoded,_:=json.Marshal(claim)
+    if _,err:=handler.Call(ctx,"reply_to_user",encoded);err==nil{t.Fatalf("unbound creation confirmation accepted: %#v",claim)}
+   }
+   entries,err:=store.EntriesAfter(ctx,conversation.ID,0)
+   if err!=nil||len(entries)!=0{t.Fatalf("false reply persisted entries=%#v err=%v",entries,err)}
+   workers,err:=store.WorkersForConversation(ctx,conversation.ID)
+   if err!=nil||len(workers)!=0{t.Fatalf("false action created Workers=%#v err=%v",workers,err)}
+   current,err:=store.SecretaryTurn(ctx,turn.ID)
+   if err!=nil||current.State!=core.SecretaryTurnActive{t.Fatalf("unbound creation terminated turn=%#v err=%v",current,err)}
+   attempted,_:=json.Marshal(map[string]string{"intent":"create an independent task","secretary_turn_id":turn.ID,"input_id":turn.InputID})
+   if _,err:=handler.Call(ctx,"spawn_worker",attempted);err==nil{t.Fatal("dispatch without Execution Node unexpectedly succeeded")}
+   failure,_:=json.Marshal(map[string]string{"secretary_turn_id":turn.ID,"input_id":turn.InputID,"text":"Не удалось подключить Execution Node; задача не создана.","reply_kind":"error"})
+   if _,err:=handler.Call(ctx,"reply_to_user",failure);err!=nil{t.Fatalf("error reporting blocked: %v",err)}
+   entries,err=store.EntriesAfter(ctx,conversation.ID,0)
+   if err!=nil||len(entries)!=1||entries[0].Body!="Не удалось подключить Execution Node; задача не создана."{t.Fatalf("failed dispatch error not delivered: entries=%#v err=%v",entries,err)}
+  })
+ }
 }

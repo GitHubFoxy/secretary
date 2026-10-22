@@ -72,7 +72,7 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
    return fmt.Errorf("automatic Secretary routing lost Telegram video artifact or caption")
   }
   reply,e:=json.Marshal(map[string]any{
-   "text":"Video request received.",
+   "text":"Video request received.","reply_kind":"answer",
    "secretary_turn_id":turnID,"input_id":inputID,
   })
   if e!=nil{return e}

@@ -342,6 +342,9 @@ func codexBinaryRecordWithACPPolicy(path, provenance string, isACP bool) (CodexB
 }
 
 func codexNativePairReady(ctx context.Context, pair CodexPairInventory) error {
+ if pair.Codex.Provenance == "managed" {
+  if err := verifyManagedCodeModeHost(filepath.Dir(pair.Codex.ResolvedPath)); err != nil { return fmt.Errorf("Codex MCP code-mode host readiness: %w", err) }
+ }
  probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
  defer cancel()
  output, err := exec.CommandContext(probeCtx, pair.Codex.Path, "login", "status").CombinedOutput()
@@ -499,6 +502,13 @@ func verifyManagedCodeModeHost(stage string) error {
  if err != nil { return fmt.Errorf("Codex code-mode host missing from the managed pair: %w", err) }
  if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 { return errors.New("unsafe Codex code-mode host") }
  if runtime.GOOS != "windows" && info.Mode()&0111 == 0 { return errors.New("Codex code-mode host is not executable") }
+ file, err := os.Open(host)
+ if err != nil { return fmt.Errorf("Codex code-mode host cannot be opened: %w", err) }
+ defer file.Close()
+ header := make([]byte, 4)
+ if _, err := io.ReadFull(file, header); err != nil { return fmt.Errorf("Codex code-mode host is truncated: %w", err) }
+ valid := string(header) == "\x7fELF" || string(header) == "MZ\x90\x00" || string(header) == "\xcf\xfa\xed\xfe" || string(header) == "\xfe\xed\xfa\xcf" || string(header) == "\xca\xfe\xba\xbe"
+ if !valid { return errors.New("Codex code-mode host binary format is invalid") }
  return nil
 }
 

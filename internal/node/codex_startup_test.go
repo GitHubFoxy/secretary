@@ -135,3 +135,43 @@ func TestCodexRuntimeHidesInventorySentinelOnDispatch(t *testing.T) {
   t.Fatalf("private executable placeholder leaked: %v", err)
  }
 }
+
+func TestCodexManagedMCPHostMissingIsVisibleBeforePrompt(t *testing.T) {
+ pair := startupCodexPairFixture(t, "server", true)
+ pair.Codex.Provenance = "managed"
+ if err := os.Remove(filepath.Join(filepath.Dir(pair.Codex.ResolvedPath), "codex-code-mode-host")); err != nil {
+  t.Fatal(err)
+ }
+ location, err := CodexPairInventoryPath("server")
+ if err != nil { t.Fatal(err) }
+ encoded, err := json.Marshal(pair)
+ if err != nil { t.Fatal(err) }
+ if err := os.WriteFile(location, encoded, 0600); err != nil { t.Fatal(err) }
+ err = CheckCodexStartup(context.Background(), "server")
+ if err == nil || !strings.Contains(err.Error(), "code-mode host") || !strings.Contains(err.Error(), "MCP") || strings.Contains(err.Error(), "login") {
+  t.Fatalf("missing Codex MCP executable was not reported before prompting: %v", err)
+ }
+}
+
+func TestCodexManagedMCPHostRejectsInvalidExecutableAndPermissions(t *testing.T) {
+ for _, tc := range []struct{name string; body []byte; mode os.FileMode}{
+  {name:"corrupt", body:[]byte("not a native executable"), mode:0700},
+  {name:"truncated", body:[]byte{0x7f, 'E'}, mode:0700},
+  {name:"permission", body:[]byte{0x7f, 'E', 'L', 'F'}, mode:0600},
+ } {
+  t.Run(tc.name,func(t *testing.T){
+   pair:=startupCodexPairFixture(t,"server",true)
+   pair.Codex.Provenance="managed"
+   location,err:=CodexPairInventoryPath("server")
+   if err!=nil{t.Fatal(err)}
+   encoded,err:=json.Marshal(pair)
+   if err!=nil{t.Fatal(err)}
+   if err:=os.WriteFile(location,encoded,0600);err!=nil{t.Fatal(err)}
+   host:=filepath.Join(filepath.Dir(pair.Codex.ResolvedPath),"codex-code-mode-host")
+   if err:=os.WriteFile(host,tc.body,tc.mode);err!=nil{t.Fatal(err)}
+   if err:=os.Chmod(host,tc.mode);err!=nil{t.Fatal(err)}
+   err=CheckCodexStartup(context.Background(),"server")
+   if err==nil || !strings.Contains(err.Error(),"code-mode host") || !strings.Contains(err.Error(),"MCP"){t.Fatalf("invalid MCP host accepted: %v",err)}
+  })
+ }
+}

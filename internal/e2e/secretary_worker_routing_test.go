@@ -296,7 +296,7 @@ func (f *t01RoutingFixture) handleSecretaryPrompt(prompt string) error {
 	if input == "Create a website" || input == "Plan a vacation" {
 		// An optional acknowledgement precedes delegation; it is not a
 		// second reply after the Worker's terminal Result.
-		_, err = call("reply_to_user", map[string]any{"text": "Request received."})
+		_, err = call("reply_to_user", map[string]any{"text": "Request received.", "reply_kind": "answer"})
 		if err != nil {
 			f.errs <- err
 			return err
@@ -333,10 +333,10 @@ func (f *t01RoutingFixture) handleSecretaryPrompt(prompt string) error {
 				refs = append(refs, worker.WorkerRef)
 			}
 			_, err = call("reply_to_user", map[string]any{
-				"text": "Which Worker should I continue: " + strings.Join(refs, ", ") + "?",
+				"text": "Which Worker should I continue: " + strings.Join(refs, ", ") + "?", "reply_kind": "answer",
 			})
 		} else {
-			_, err = call("reply_to_user", map[string]any{"text": "Request received."})
+			_, err = call("reply_to_user", map[string]any{"text": "Request received.", "reply_kind": "answer"})
 			if err != nil {
 				f.errs <- err
 				return err

@@ -90,7 +90,7 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 		if _, err := store.StartSecretaryTurn(ctx, foreign.ID); err != nil {
 			t.Fatal(err)
 		}
-		args, _ := json.Marshal(map[string]string{"secretary_turn_id": foreign.ID, "input_id": foreign.InputID, "text": "Reply belongs to a different turn."})
+		args, _ := json.Marshal(map[string]string{"secretary_turn_id": foreign.ID, "input_id": foreign.InputID, "text": "Reply belongs to a different turn.", "reply_kind": "answer"})
 		if _, err := handler.Call(ctx, "reply_to_user", args); err != nil {
 			t.Fatalf("prior addressed reply rejected: %v", err)
 		}
@@ -160,14 +160,14 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 		if _, err := store.RotateSecretaryCapability(ctx, person.ID); err != nil {
 			t.Fatal(err)
 		}
-		args, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "must not persist"})
+		args, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "must not persist", "reply_kind": "answer"})
 		if _, err := handler.Call(ctx, "reply_to_user", args); err == nil {
 			t.Fatal("revoked MCP capability persisted a reply")
 		}
 	}
 	if replyMode == "exact" {
 		args, err := json.Marshal(map[string]string{
-			"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "The answer is 42.",
+			"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "The answer is 42.", "reply_kind": "answer",
 		})
 		if err != nil {
 			t.Fatal("could not prepare the exact MCP origin")
