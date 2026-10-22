@@ -564,9 +564,34 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 			wantStatus: "failed", wantCode: "task_outcome_failed",
 		},
 		{
-			name: "normal task",
-			events: []string{`{"type":"result","subtype":"success","result":"Done"}`},
+			name: "missing structured outcome without evidence",
+			events: []string{`{"type":"result","subtype":"success","result":"Unverified"}`},
+			wantStatus: "failed", wantCode: "task_outcome_failed", wantTechnical: "no structured task outcome",
+		},
+		{
+			name: "normal text-only answer fallback",
+			events: []string{
+				`{"type":"assistant","uuid":"text-answer","message":{"content":[{"type":"text","text":"A direct answer"}]}}`,
+				`{"type":"result","subtype":"success","result":"Done"}`,
+			},
 			wantStatus: "succeeded",
+		},
+		{
+			name: "tool use forbids text-only fallback",
+			events: []string{
+				`{"type":"assistant","uuid":"tool-answer","message":{"content":[{"type":"text","text":"Attempted task"},{"type":"tool_use","id":"other-tool","name":"Read"}]}}`,
+				`{"type":"result","subtype":"success","result":"Done"}`,
+			},
+			wantStatus: "failed", wantCode: "task_outcome_failed", wantTechnical: "no structured task outcome",
+		},
+		{
+			name: "Bash exit seven and valid structured failure",
+			events: []string{
+				`{"type":"assistant","uuid":"bash-call","message":{"content":[{"type":"tool_use","id":"bash-seven","name":"Bash"}]}}`,
+				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash-seven","is_error":true}]},"toolUseResult":{"exitCode":7}}`,
+				`{"type":"result","subtype":"success","result":"Task failed","structured_output":{"task_outcome":"failed","reason":"Original task could not complete","recovered_tool_use_ids":[]}}`,
+			},
+			wantStatus: "failed", wantCode: "tool_execution_failed", wantTechnical: "exit code 7",
 		},
 		{
 			name: "native failure",
