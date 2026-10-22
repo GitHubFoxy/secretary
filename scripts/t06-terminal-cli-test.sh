@@ -246,6 +246,7 @@ adopt_codex_t06_pair
 STATE="$HOME/.local/share/secretary"
 ENV_FILE="$STATE/environment"
 cp "$ENV_FILE" "$TMP/mac04-before"
+env -u SECRETARY_TELEGRAM_ENABLED -u SECRETARY_TELEGRAM_WEB_BASE_URL "$ROOT/secretary" doctor >/dev/null || fail "doctor rejected Telegram variables absent from environment"
 printf "export SECRETARY_TELEGRAM_ENABLED='true'\nexport SECRETARY_TELEGRAM_BOT_TOKEN='123:fixture-secret'\nexport SECRETARY_TELEGRAM_SERVER_CREDENTIAL='fixture-credential'\n" >> "$ENV_FILE"
 if "$ROOT/secretary" doctor >"$TMP/mac04-doctor" 2>&1; then fail "doctor accepted enabled Telegram without origin"; fi
 grep -q 'SECRETARY_TELEGRAM_WEB_BASE_URL' "$TMP/mac04-doctor" || fail "doctor omitted Telegram origin diagnostic"
