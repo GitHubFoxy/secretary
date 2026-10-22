@@ -53,7 +53,7 @@ func TestAddressedReplyContractAddsOnlyVersionedMCPToolsAndOriginFields(t *testi
 		}
 		if tool.Name == "reply_to_user" {
 			required := tool.InputSchema["required"].([]string)
-			if !reflect.DeepEqual(required, []string{"secretary_turn_id", "input_id", "text"}) {
+			if !reflect.DeepEqual(required, []string{"secretary_turn_id", "input_id", "text", "reply_kind"}) {
 				t.Fatalf("reply_to_user schema=%#v", tool.InputSchema)
 			}
 		}
