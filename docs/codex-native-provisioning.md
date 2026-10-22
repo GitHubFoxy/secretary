@@ -57,3 +57,23 @@ This documentation is not live evidence: authorized Task/Result, subscription/qu
 On macOS/Linux, each Server or Node inventory operation takes a nonblocking exclusive advisory file lock for its scope before reading or changing the selected pair, pending journal, and last-good rollback. Another concurrent installer or upgrader for the same scope fails without writing the inventory; separate scopes can proceed independently. The lock file persists after exit; the OS releases the lock on process termination. Interrupted journals are reconciled under this lock before further operations.
 
 The real ACP initialize/session-new/session-load probe differentiates provider authentication, quota/rate limits, upstream unavailability, and protocol/transport errors. A failed session/new carries its stage, timeout and bounded schema error from the adapter stderr (for example `failed to load models cache: unknown variant max`), without leaking arbitrary logs or credentials. An inherited `SECRETARY_CODEX_PAIR_CANDIDATE` does not bypass inventory enforcement in a normal Server or Node process. Only the explicit `secretary-node --check-codex-readiness` diagnostic may probe a proposed pair before inventory activation.
+
+
+## MAC-01: Codex Secretary Worker lifecycle acceptance
+
+Source: [alpha.11 Mac acceptance, MAC-01](https://github.com/GitHubFoxy/secretary/blob/c7ed3c6f9c0bd4183cb4496aefa12081f9b0214e/.scratch/phase-5/reports/alpha11-live-acceptance-20261022.md). The published alpha.11 completed two Worker-creation requests with a successful native final answer but no canonical Worker, Attempt, or Result. Its native `spawn_agent` calls are not Secretary `spawn_worker` calls. Neither that observation nor empty `secretary_runtime_launches` establishes why MCP tools were not used.
+
+For a Codex Secretary, the managed profile now defaults to `addressed-reply-v1`. Ordinary assistant final prose cannot independently complete a successful Secretary turn: the server must accept an origin-addressed `reply_to_user` call. The Secretary MCP `spawn_worker` call owns Worker creation, Node selection, dispatch, and idempotency; the user-facing creation confirmation carries `action_kind=spawn_worker` and the returned `action_turn_id` as `worker_turn_id`. The server checks the durable Worker creation origin against the active Secretary turn before accepting that confirmation. Native `spawn_agent` produces no such origin. Direct conversational answers still use `reply_to_user`, and Claude's existing reply mode is unchanged.
+
+The installed managed Codex pair already stages the pinned `codex-code-mode-host` upstream asset, introduced separately from the original alpha.9 finding in [#173](https://github.com/GitHubFoxy/secretary/issues/173). This change additionally fails Codex managed readiness when the host executable is missing or unsafe, rather than treating ACP initialize/model availability as proof of working MCP execution. It does not prove the cause of the alpha.11 report or satisfy #173's independent published-candidate acceptance. The Codex 0.163.0 and ACP 2.2.2 pins remain unchanged.
+
+Deterministic regression tests, intended for GitHub Actions on the PR (not executed in Chat mode):
+
+```sh
+go test ./internal/config ./internal/node ./internal/mcp ./internal/secretary ./internal/ctl -count=1
+go test ./... 
+```
+
+Automated assertions cover the default Codex reply contract, addressed MCP transport into ACP, accepted and rejected typed Worker creation acknowledgements, projectless remote-node dispatch with one canonical Worker/Attempt under idempotent replay, and missing managed MCP host readiness. Existing projectless Claude and Secretary conversational tests remain in the Go suite. ACP fixtures do not demonstrate a real Codex model selecting the MCP tool.
+
+MANUAL, not passed: publish and clean-install a new candidate on macOS arm64; confirm the actual managed CLI/ACP/code-mode-host pair and doctor diagnostics; use authorized Codex Secretary to create exactly one projectless Worker on an independently enrolled Execution Node; observe its question Result, send an answer to the same Worker, and verify exactly one subsequent Result, stable Worker binding and native session/workspace, then restart Server/Node and verify continuity without duplicate dispatch. Record server/Node identities and persisted Worker/Attempt/Result counts. Also repeat simple Secretary conversation and projectless Claude regression, and perform separate Linux acceptance for #173. Do not label fixtures or build-only CI as live PASS.
