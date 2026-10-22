@@ -48,6 +48,9 @@ public final class NodeMenuPresentation {
         case .checking: server.title = "Server: Checking"
         case .online: server.title = "Server: Online"
         case .offline: server.title = "Server: Offline"
+        case .unavailable:
+            server.title = "Server: Unavailable"
+            server.toolTip = "Server URL is missing or invalid. Run secretary setup and reopen Secretary Node."
         }
     }
 
