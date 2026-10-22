@@ -23,6 +23,8 @@ import (
 
 var ErrClaudeCodeUnavailable = errors.New("claude_code runtime unavailable")
 
+var errClaudeRootAlreadyExited = errors.New("Claude process exited before root identity capture")
+
 var ErrClaudeCodeConfiguration = errors.New("claude_code runtime configuration error")
 
 var ErrClaudeCodeSteeringUnsupported = errors.New("claude: same-Attempt steering has not been verified for this native runtime")
@@ -38,6 +40,7 @@ type ClaudeCodeRuntime struct {
 	RawLogDir      string
 	RawLogMaxBytes int64
 	RawLogFiles    int
+	captureRoot func(*exec.Cmd) (claudeChild, error)
 }
 
 type ClaudeRuntime = ClaudeCodeRuntime
@@ -65,7 +68,11 @@ func (r ClaudeCodeRuntime) Start(ctx context.Context, request StartRequest) (Ses
 	if err != nil {
 		return nil, err
 	}
-	return r.startProcess(ctx, request, id, args)
+	session, err := r.startProcess(ctx, request, id, args)
+	if err != nil {
+		return nil, err
+	}
+	return session, nil
 }
 
 func (r ClaudeCodeRuntime) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
@@ -90,7 +97,11 @@ func (r ClaudeCodeRuntime) Resume(ctx context.Context, request StartRequest, run
 	if err != nil {
 		return nil, err
 	}
-	return r.startProcess(ctx, request, runtimeSessionID, args, true)
+	session, err := r.startProcess(ctx, request, runtimeSessionID, args, true)
+	if err != nil {
+		return nil, err
+	}
+	return session, nil
 }
 
 func validateClaudeRequest(request StartRequest) error {
@@ -262,6 +273,19 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("%w: start %q: %v", ErrClaudeCodeUnavailable, command, err)
 	}
+	capture := r.captureRoot
+	if capture == nil {
+		capture = captureClaudeRoot
+	}
+	root, rootErr := capture(cmd)
+	if rootErr != nil && !errors.Is(rootErr, errClaudeRootAlreadyExited) {
+		_ = session.stopProcess()
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("%w: capture native process identity: %v", ErrClaudeCodeUnavailable, rootErr)
+	}
+	if rootErr == nil {
+		session.claudeRoot = root
+	}
 	go session.run()
 	if len(resume) > 0 && resume[0] {
 		err = session.writeMessage(ctx, map[string]any{"type": "control_request", "request_id": "resume-initialize", "request": map[string]any{"subtype": "initialize"}})
@@ -299,6 +323,11 @@ type claudeSession struct {
 	writeGate chan struct{}
 	stopOnce  sync.Once
 	stopErr   error
+	claudeRoot claudeChild
+	cleanupAttempt func(context.Context, *exec.Cmd, claudeChild) error
+	canceling bool
+	cancelWait chan struct{}
+	pendingTerminal *Result
 	done      chan struct{}
 	closed    bool
 	cancel    bool
@@ -326,7 +355,7 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 		return err
 	}
 	s.stateMu.Lock()
-	if s.closed || s.active {
+	if s.closed || s.active || s.canceling {
 		s.stateMu.Unlock()
 		return errors.New("claude: session closed or Attempt still active")
 	}
@@ -364,22 +393,56 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 		return err
 	}
 	s.stateMu.Lock()
-	if s.closed || !s.active {
+	if s.closed || !s.active || s.cancel {
 		s.stateMu.Unlock()
 		return nil
 	}
+	attempt := s.inputID
 	s.cancel = true
+	s.canceling = true
+	s.cancelWait = make(chan struct{})
+	root := s.claudeRoot
 	s.stateMu.Unlock()
-	id, err := newClaudeSessionID()
-	if err != nil {
-		return err
+	var err error
+	if root.pid == 0 {
+		err = errors.New("Claude root process identity was not captured")
+	} else {
+		cleanup := s.cleanupAttempt
+		if cleanup == nil {
+			cleanup = cleanupClaudeAttemptProcesses
+		}
+		err = cleanup(ctx, s.cmd, root)
 	}
-	err = s.writeMessage(ctx, map[string]any{"type": "control_request", "request_id": id, "request": map[string]any{"subtype": "interrupt", "cancel_queued": true}})
-	if err != nil {
-		s.stateMu.Lock()
+	if err == nil {
+		var id string
+		id, err = newClaudeSessionID()
+		if err == nil {
+			s.stateMu.Lock()
+			canInterrupt := s.active && s.inputID == attempt && !s.closed && s.pendingTerminal == nil
+			s.stateMu.Unlock()
+			if canInterrupt {
+				err = s.writeMessage(ctx, map[string]any{"type": "control_request", "request_id": id, "request": map[string]any{"subtype": "interrupt", "cancel_queued": true}})
+			}
+		}
+	}
+	s.stateMu.Lock()
+	if err != nil && s.active && s.inputID == attempt {
 		s.cancel = false
-		s.stateMu.Unlock()
 	}
+	s.canceling = false
+	pending := s.pendingTerminal
+	s.pendingTerminal = nil
+	if pending != nil && s.active && s.inputID == attempt {
+		if err != nil && pending.Status == "canceled" {
+			pending.Status = "failed"
+			pending.Summary = "Claude Code cancellation cleanup failed: " + err.Error()
+		}
+		s.active = false
+		s.result <- *pending
+	}
+	close(s.cancelWait)
+	s.cancelWait = nil
+	s.stateMu.Unlock()
 	return err
 }
 func (s *claudeSession) stopProcess() error {
@@ -466,6 +529,12 @@ func (s *claudeSession) run() {
 		}
 		s.emitResult(Result{Status: status, Summary: summary})
 	}
+	s.stateMu.Lock()
+	cancelWait := s.cancelWait
+	s.stateMu.Unlock()
+	if cancelWait != nil {
+		<-cancelWait
+	}
 }
 func (s *claudeSession) handleLine(line []byte) {
 	var record map[string]any
@@ -535,6 +604,9 @@ func (s *claudeSession) handleLine(line []byte) {
 		s.stateMu.Unlock()
 		if summary == "" {
 			summary = "Claude Code returned no answer"
+			if status == "canceled" {
+				summary = "Claude Code attempt canceled"
+			}
 			if status == "succeeded" {
 				status = "failed"
 			}
@@ -578,6 +650,12 @@ func (s *claudeSession) emitActivity(activity Activity) {
 func (s *claudeSession) emitResult(result Result) {
 	s.stateMu.Lock()
 	if !s.active {
+		s.stateMu.Unlock()
+		return
+	}
+	if s.canceling {
+		copy := result
+		s.pendingTerminal = &copy
 		s.stateMu.Unlock()
 		return
 	}
