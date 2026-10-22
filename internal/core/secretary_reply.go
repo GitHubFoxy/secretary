@@ -371,16 +371,6 @@ func (s *Store) RecordAddressedSecretaryTextDelta(ctx context.Context, turnID, i
 	return result.event, result.recorded, nil
 }
 
-func SecretaryInputRequestsWorkerCreation(input string) bool {
- lower := strings.ToLower(input)
- worker := strings.Contains(lower, "worker") || strings.Contains(lower, "воркер")
- if !worker { return false }
- for _, verb := range []string{"созда", "созд", "запусти", "запуск", "spawn", "create", "start", "new worker", "нового воркера"} {
-  if strings.Contains(lower, verb) { return true }
- }
- return false
-}
-
 func (s *Store) RecordSecretaryReply(ctx context.Context, personID, capability, secretaryTurnID, inputID, text string) (ConversationEntry, bool, error) {
 	return s.recordSecretaryReply(ctx, personID, capability, secretaryTurnID, inputID, text, false)
 }
@@ -417,16 +407,6 @@ func (s *Store) recordSecretaryReply(ctx context.Context, personID, capability, 
 				duplicate bool
 			}{}, err
 		}
-		if !acknowledgement {
-            var input string
-            if err := tx.QueryRowContext(ctx, `SELECT input FROM secretary_turns WHERE id = ?`, secretaryTurnID).Scan(&input); err != nil { return struct { entry ConversationEntry; duplicate bool }{}, err }
-            if SecretaryInputRequestsWorkerCreation(input) {
-                var accepted int
-                err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM secretary_worker_origins o JOIN turns t ON t.id = o.worker_turn_id JOIN workers w ON w.id = t.worker_id WHERE o.secretary_turn_id = ? AND o.input_id = ? AND w.conversation_id = ? AND EXISTS (SELECT 1 FROM secretary_worker_creation_origins c WHERE c.worker_turn_id = t.id AND c.secretary_turn_id = ? AND c.input_id = ? UNION SELECT 1 FROM secretary_worker_command_origins co JOIN phase4_worker_commands cmd ON cmd.id = co.command_id JOIN phase4_attempts a ON a.id = cmd.attempt_id WHERE co.worker_turn_id = t.id AND co.secretary_turn_id = ? AND co.input_id = ? AND cmd.kind = 'dispatch' AND cmd.state = 'delivered' AND a.turn_id = t.id)`, secretaryTurnID, inputID, origin.ConversationID, secretaryTurnID, inputID, secretaryTurnID, inputID).Scan(&accepted)
-                if err != nil { return struct { entry ConversationEntry; duplicate bool }{}, err }
-                if accepted == 0 { return struct { entry ConversationEntry; duplicate bool }{}, ErrInvalidSecretaryOrigin }
-            }
-        }
         var priorBody, priorEntryID string
 		err = tx.QueryRowContext(ctx, `SELECT body, entry_id FROM `+table+` WHERE secretary_turn_id = ? AND input_id = ?`, secretaryTurnID, inputID).Scan(&priorBody, &priorEntryID)
 		if err == nil {
