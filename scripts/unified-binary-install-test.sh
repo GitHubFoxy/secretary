@@ -78,6 +78,20 @@ installer=install-linux-binary.sh
 [[ "$platform" != darwin ]] || installer=install-macos-binary.sh
 grep -Fq "feat/unified-binary-installer-20261020/scripts/$installer" "$TEST_URL_LOG"
 
+cat > "$stage/mock/perl" <<'PERL'
+#!/usr/bin/env bash
+exit 1
+PERL
+chmod +x "$stage/mock/perl"
+: > "$TEST_URL_LOG"
+if SECRETARY_VERSION=0.1.0-alpha.5 bash "$root/scripts/install.sh" >"$stage/missing-socket" 2>&1; then
+  echo "Installer accepted missing Socket::inet_pton dependency" >&2
+  exit 1
+fi
+grep -q 'Socket::inet_pton' "$stage/missing-socket"
+[[ ! -s "$TEST_URL_LOG" ]]
+rm "$stage/mock/perl"
+
 : > "$TEST_URL_LOG"
 SECRETARY_VERSION=0.1.0-alpha.5 bash "$root/scripts/install.sh"
 [[ "$(cat "$TEST_RESULT")" == "0.1.0-alpha.5" ]]
