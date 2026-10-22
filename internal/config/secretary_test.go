@@ -77,7 +77,7 @@ func TestCodexDefaultAddressedReplyAndExplicitVersionedOverride(t *testing.T) {
 	if _, err := manager.Reload(); err == nil {
 		t.Fatal("unknown addressed-reply version was accepted")
 	}
-	if manager.Snapshot().Version != optedIn.Version {
+	if active := manager.Snapshot(); active.Version != reenabled.Version || active.Profiles["secretary"].Hash != reenabled.Profiles["secretary"].Hash || active.Profiles["secretary"].ReplyContractVersion != reenabled.Profiles["secretary"].ReplyContractVersion || active.Config.Secretary.ReplyContract != reenabled.Config.Secretary.ReplyContract {
 		t.Fatal("invalid reply contract replaced the active config")
 	}
 }
