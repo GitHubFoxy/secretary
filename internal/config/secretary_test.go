@@ -28,15 +28,15 @@ func TestCleanInstallDefaultsSecretaryAndWorkersToCodex(t *testing.T) {
 	}
 }
 
-func TestAddressedReplyContractRequiresExplicitVersionedOptIn(t *testing.T) {
+func TestCodexDefaultAddressedReplyAndExplicitVersionedOverride(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	manager, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	legacy := manager.Snapshot()
-	if legacy.Config.Secretary.ReplyContract != "" {
-		t.Fatalf("clean install unexpectedly enabled addressed replies: %#v", legacy.Config.Secretary)
+	if legacy.Config.Secretary.ReplyContract != "" || legacy.Profiles["secretary"].ReplyContractVersion != SecretaryReplyContractAddressedV1 {
+		t.Fatalf("Codex must use addressed replies even without an explicit setting: %#v", legacy.Profiles["secretary"])
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
