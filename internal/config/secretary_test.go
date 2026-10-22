@@ -56,7 +56,20 @@ func TestCodexDefaultAddressedReplyAndExplicitVersionedOverride(t *testing.T) {
 	if optedIn.Config.Secretary.ReplyContract != "addressed-reply-v1" || optedIn.Profiles["secretary"].ReplyContractVersion != SecretaryReplyContractAddressedV1 || optedIn.Version == legacy.Version || optedIn.Profiles["secretary"].Hash == legacy.Profiles["secretary"].Hash {
 		t.Fatalf("explicit setting did not version the managed Secretary profile: %#v", optedIn)
 	}
-	// Changing reasoning versions the managed runtime profile even with the lifecycle contract unchanged.
+	contractDisabled := strings.Replace(string(content), `reply_contract = "addressed-reply-v1"`, `# reply_contract intentionally absent`, 1)
+	if contractDisabled == string(content) { t.Fatal("could not disable versioned reply contract") }
+	if err := os.WriteFile(path, []byte(contractDisabled), 0o600); err != nil { t.Fatal(err) }
+	withoutContract, err := manager.Reload()
+	if err != nil { t.Fatal(err) }
+	if withoutContract.Config.Secretary.ReplyContract != "" || withoutContract.Profiles["secretary"].ReplyContractVersion != "" || withoutContract.Profiles["secretary"].Hash == legacy.Profiles["secretary"].Hash || withoutContract.Version == legacy.Version {
+		t.Fatalf("reply-contract removal did not independently version profile: %#v", withoutContract)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil { t.Fatal(err) }
+	reenabled, err := manager.Reload()
+	if err != nil { t.Fatal(err) }
+	if reenabled.Config.Secretary.ReplyContract != SecretaryReplyContractAddressedV1 || reenabled.Profiles["secretary"].ReplyContractVersion != SecretaryReplyContractAddressedV1 || reenabled.Profiles["secretary"].Hash != legacy.Profiles["secretary"].Hash || reenabled.Version != legacy.Version {
+		t.Fatalf("reply-contract restoration did not restore exact profile identity: %#v", reenabled)
+	}
 	invalid := strings.Replace(updated, "addressed-reply-v1", "addressed-reply-v2", 1)
 	if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
 		t.Fatal(err)
