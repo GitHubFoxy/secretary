@@ -77,6 +77,44 @@ final class NodeAppConfigurationTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: home.appendingPathComponent(".local/share/secretary/environment").path)
         XCTAssertThrowsError(try NodeAppConfiguration.resolve(home: home, inherited: [:]))
     }
+    func testLifecycleFirstEnrollmentThenRelaunchPreservesIdentity() throws {
+        let (home, _, data) = try fixture()
+        defer { try? FileManager.default.removeItem(at: home) }
+        let identity = data.appendingPathComponent("identity.json")
+        let appDirectory = home.appendingPathComponent("Library/Application Support/SecretaryNode")
+        let script = """
+        if [ ! -f "$SECRETARY_TEST_IDENTITY" ]; then
+          test -n "$SECRETARY_NODE_PAIRING_TOKEN" || exit 7
+          printf 'original-node-identity' > "$SECRETARY_TEST_IDENTITY"
+        else
+          test -z "${SECRETARY_NODE_PAIRING_TOKEN:-}" || exit 8
+          test "$(cat "$SECRETARY_TEST_IDENTITY")" = original-node-identity || exit 9
+        fi
+        sleep 1
+        """
+        func awaitExit(_ lifecycle: NodeLifecycle) {
+            let deadline = Date().addingTimeInterval(5)
+            while lifecycle.state == .running && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.05)
+            }
+            XCTAssertEqual(lifecycle.state, .stopped)
+        }
+        var first: NodeLifecycle? = try {
+            let settings = try NodeAppConfiguration.resolve(home: home, inherited: [:])
+            return try NodeLifecycle(executable: URL(fileURLWithPath: "/bin/sh"), configuration: nil, arguments: ["-c", script], environment: settings.environment.merging(["SECRETARY_TEST_IDENTITY": identity.path]) { _, new in new }, directory: appDirectory)
+        }()
+        try first?.start()
+        awaitExit(first!)
+        XCTAssertEqual(try String(contentsOf: identity, encoding: .utf8), "original-node-identity")
+        first = nil
+        let settings = try NodeAppConfiguration.resolve(home: home, inherited: [:])
+        XCTAssertNil(settings.environment["SECRETARY_NODE_PAIRING_TOKEN"])
+        let second = try NodeLifecycle(executable: URL(fileURLWithPath: "/bin/sh"), arguments: ["-c", script], environment: settings.environment.merging(["SECRETARY_TEST_IDENTITY": identity.path]) { _, new in new }, directory: appDirectory)
+        try second.start()
+        awaitExit(second)
+        XCTAssertEqual(try String(contentsOf: identity, encoding: .utf8), "original-node-identity")
+    }
+
 }
 
 private final class HealthURLProtocol: URLProtocol {
