@@ -162,6 +162,11 @@ func TestCodexManagedMCPHostRejectsInvalidExecutableAndPermissions(t *testing.T)
   t.Run(tc.name,func(t *testing.T){
    pair:=startupCodexPairFixture(t,"server",true)
    pair.Codex.Provenance="managed"
+   location,err:=CodexPairInventoryPath("server")
+   if err!=nil{t.Fatal(err)}
+   encoded,err:=json.Marshal(pair)
+   if err!=nil{t.Fatal(err)}
+   if err:=os.WriteFile(location,encoded,0600);err!=nil{t.Fatal(err)}
    host:=filepath.Join(filepath.Dir(pair.Codex.ResolvedPath),"codex-code-mode-host")
    if err:=os.WriteFile(host,tc.body,tc.mode);err!=nil{t.Fatal(err)}
    if err:=os.Chmod(host,tc.mode);err!=nil{t.Fatal(err)}
