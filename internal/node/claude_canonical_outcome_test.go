@@ -47,6 +47,16 @@ func TestClaudeFailedToolCanonicalResultReplayAndBinding(t *testing.T) {
 		t.Fatalf("wrong Attempt accepted: %v", err)
 	}
 	wrong = outcome
+	wrong.WorkerRef = "different-worker"
+	if err := sink(ctx, NodeEvent{Kind: "attempt.outcome", Outcome: &wrong}); !errors.Is(err, core.ErrInvalidTransition) {
+		t.Fatalf("wrong Worker accepted: %v", err)
+	}
+	wrong = outcome
+	wrong.TurnID = "different-turn"
+	if err := sink(ctx, NodeEvent{Kind: "attempt.outcome", Outcome: &wrong}); !errors.Is(err, core.ErrInvalidTransition) {
+		t.Fatalf("wrong Turn accepted: %v", err)
+	}
+	wrong = outcome
 	wrong.HarnessInstanceID = "node-b/claude"
 	if err := sink(ctx, NodeEvent{Kind: "attempt.outcome", Outcome: &wrong}); !errors.Is(err, core.ErrInvalidTransition) {
 		t.Fatalf("wrong harness accepted: %v", err)
@@ -63,6 +73,7 @@ func TestClaudeFailedToolCanonicalResultReplayAndBinding(t *testing.T) {
 	if len(details.Results) != 1 || details.CurrentAttempt().State != core.AttemptFailed {
 		t.Fatalf("canonical terminal state: %#v", details)
 	}
+	if len(details.Outcomes) != 1 || details.Outcomes[0].Diagnostics != "Claude Bash tool failed with exit code 7" { t.Fatalf("canonical diagnostics: %#v", details.Outcomes) }
 	result := details.Results[0]
 	if result.Status != core.OutcomeFailed || result.FailureCode != "tool_execution_failed" {
 		t.Fatalf("canonical result: %#v", result)
