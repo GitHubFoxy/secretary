@@ -77,5 +77,10 @@ grep -q 'real-acp-initialize' "$TEST_SETUP_MARKER"
 grep -q 'real-acp-session/new' "$TEST_SETUP_MARKER"
 [[ "$(cat "$HOME/.codex/config.toml")" == 'global config canary' ]]
 [[ "$(cat "$TEST_SETUP_MARKER")" != *legacy-call* ]]
-grep -Eq '^harness = "codex"$' "$HOME/.local/share/secretary/config.toml"
+grep -Eq '^harness = "codex"
+grep -Eq '"include_opencode": false' "$HOME/.local/share/secretary/node/config.json"
+ "$HOME/.local/share/secretary/config.toml"
+grep -Eq '^reply_contract = "addressed-reply-v1"
+grep -Eq '"include_opencode": false' "$HOME/.local/share/secretary/node/config.json"
+ "$HOME/.local/share/secretary/config.toml"
 grep -Eq '"include_opencode": false' "$HOME/.local/share/secretary/node/config.json"
