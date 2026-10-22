@@ -541,7 +541,7 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
 				`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"unknown","reason":"not valid","recovered_tool_use_ids":["bash1"]}}`,
 			},
-			wantStatus: "failed", wantCode: "tool_execution_failed",
+			wantStatus: "failed", wantCode: "tool_execution_failed", wantTechnical: "invalid structured task outcome",
 		},
 		{
 			name: "structured failed without Bash",
