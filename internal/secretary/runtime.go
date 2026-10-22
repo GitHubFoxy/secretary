@@ -43,6 +43,7 @@ type Runtime struct {
 	nextPromptID         uint64
 	activePromptID       uint64
 	promptStartedID      uint64
+	promptReturn         chan struct{}
 	cancelRequestedID    uint64
 	cancelInFlightID     uint64
 	cancelDone           chan struct{}
@@ -381,6 +382,7 @@ func (r *Runtime) beginPromptLocked() uint64 {
 	r.nextPromptID++
 	r.activePromptID = r.nextPromptID
 	r.promptStartedID = 0
+	r.promptReturn = make(chan struct{})
 	r.cancelRequestedID = 0
 	r.cancelInFlightID = 0
 	r.cancelDone = nil
@@ -505,6 +507,12 @@ func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result,
 			return initial
 		}
 		promptID := r.activePromptID
+		if promptID != 0 && r.promptReturn != nil {
+			settled := r.promptReturn
+			r.mu.Unlock()
+			<-settled
+			continue
+		}
 		if promptID != 0 && r.cancelInFlightID == promptID && r.cancelDone != nil {
 			done := r.cancelDone
 			r.mu.Unlock()
@@ -740,6 +748,10 @@ func (r *Runtime) clearPromptLocked(promptID uint64) {
 	if promptID == 0 || r.activePromptID != promptID {
 		return
 	}
+	if r.promptReturn != nil {
+		close(r.promptReturn)
+		r.promptReturn = nil
+	}
 	r.activePromptID = 0
 	r.promptStartedID = 0
 	r.cancelRequestedID = 0
@@ -915,6 +927,7 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 			r.beginPromptLocked()
 		}
 		promptID := r.activePromptID
+		defer r.settlePromptReturn(promptID)
 		store, turnID, activeInputID, replyContractVersion := r.store, r.activeTurnID, r.activeInputID, r.replyContractVersion
 		r.mu.Unlock()
 		prompt := text
@@ -1020,6 +1033,15 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 			}
 		}
 	}()
+}
+
+func (r *Runtime) settlePromptReturn(promptID uint64) {
+	r.mu.Lock()
+	if r.activePromptID == promptID && r.promptReturn != nil {
+		close(r.promptReturn)
+		r.promptReturn = nil
+	}
+	r.mu.Unlock()
 }
 
 func (r *Runtime) awaitPromptCancel(promptID uint64) {
