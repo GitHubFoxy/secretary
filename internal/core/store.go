@@ -31,7 +31,7 @@ type Store struct {
 	observer   func(ConversationEntry)
 
 	workerLifecycleGates sync.Map
-	attemptOutcomeGates   sync.Map
+	attemptOutcomeGates   [256]sync.Mutex
 	secretaryOutputGates [256]sync.Mutex // bounded striped gates for Secretary event/acknowledgement ordering
 	idempotencyMu        sync.Mutex
 	userDocumentMu       sync.Mutex
@@ -71,7 +71,11 @@ func (s *Store) EffectiveAutoResumeOnLimit() bool {
 }
 
 func Open(ctx context.Context, dsn string) (*Store, error) {
-	db, err := sql.Open("sqlite", dsn)
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	db, err := sql.Open("sqlite", dsn+separator+"_txlock=immediate&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
@@ -1469,6 +1473,15 @@ func (s *timestampScanner) Scan(value any) error {
 // native text and an acknowledgement for the same Secretary turn. A bounded
 // lock stripe avoids unbounded memory growth from completed turn IDs. Hash
 // collisions only serialize independent turns, never change their ordering.
+func (s *Store) attemptOutcomeGate(attemptID string) *sync.Mutex {
+	var hash uint64 = 14695981039346656037
+	for i := 0; i < len(attemptID); i++ {
+		hash ^= uint64(attemptID[i])
+		hash *= 1099511628211
+	}
+	return &s.attemptOutcomeGates[hash%uint64(len(s.attemptOutcomeGates))]
+}
+
 func (s *Store) secretaryOutputGate(turnID string) *sync.Mutex {
  var hash uint64 = 14695981039346656037
  for i := 0; i < len(turnID); i++ {
