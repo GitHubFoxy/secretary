@@ -79,6 +79,8 @@ grep -q 'real-acp-session/new' "$TEST_SETUP_MARKER"
 [[ "$(cat "$TEST_SETUP_MARKER")" != *legacy-call* ]]
 grep -Eq '^harness = "codex"$' "$HOME/.local/share/secretary/config.toml"
 grep -Eq '^reply_contract = "addressed-reply-v1"$' "$HOME/.local/share/secretary/config.toml"
+sed 's/reasoning = "default"/reasoning = "high"/' "$HOME/.local/share/secretary/config.toml" > "$TASK_TMP/user-edited-config"
+cp "$TASK_TMP/user-edited-config" "$HOME/.local/share/secretary/config.toml"
 cp "$HOME/.local/share/secretary/config.toml" "$TASK_TMP/explicit-contract.before"
 if zsh -c 'STATE="$1"; source "$2"; set_config_harness claude_code false' _ "$HOME/.local/share/secretary" "$TASK_ROOT/scripts/secretary-interactive.zsh"; then
   echo "Existing explicit Codex contract was silently replaced by Claude" >&2
