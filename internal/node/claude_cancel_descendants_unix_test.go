@@ -122,6 +122,11 @@ read end
 	if err := other.Process.Signal(syscall.Signal(0)); err != nil {
 		t.Fatalf("unrelated owner process was terminated: %v", err)
 	}
+	select {
+	case premature := <-session.Result():
+		t.Fatalf("duplicate Cancel consumed follow-up slot: %+v", premature)
+	default:
+	}
 	if err := session.Prompt(ctx, "continue"); err != nil {
 		t.Fatal(err)
 	}
