@@ -35,14 +35,14 @@ func TestCodexDefaultAddressedReplyAndExplicitVersionedOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacy := manager.Snapshot()
-	if legacy.Config.Secretary.ReplyContract != "" || legacy.Profiles["secretary"].ReplyContractVersion != "" || legacy.Profiles["secretary"].Runtime != "codex" || strings.Contains(legacy.Profiles["secretary"].Content, "## Addressed reply v1") {
-		t.Fatalf("editable external Secretary profile must retain legacy reply contract before explicit opt-in: %#v", legacy.Profiles["secretary"])
+	if legacy.Config.Secretary.ReplyContract != SecretaryReplyContractAddressedV1 || legacy.Profiles["secretary"].ReplyContractVersion != SecretaryReplyContractAddressedV1 || legacy.Profiles["secretary"].Runtime != "codex" || strings.Contains(legacy.Profiles["secretary"].Content, "## Addressed reply v1") {
+		t.Fatalf("new official Codex setup must enable addressed lifecycle without rewriting its editable profile: %#v", legacy.Profiles["secretary"])
 	}
 	content, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	updated := strings.Replace(string(content), `reasoning = "default"`, "reasoning = \"xhigh\"\nreply_contract = \"addressed-reply-v1\"", 1)
+	updated := strings.Replace(string(content), `reasoning = "default"`, `reasoning = "xhigh"`, 1)
 	if updated == string(content) {
 		t.Fatal("test could not add the explicit addressed-reply setting")
 	}
@@ -56,6 +56,7 @@ func TestCodexDefaultAddressedReplyAndExplicitVersionedOverride(t *testing.T) {
 	if optedIn.Config.Secretary.ReplyContract != "addressed-reply-v1" || optedIn.Profiles["secretary"].ReplyContractVersion != SecretaryReplyContractAddressedV1 || optedIn.Version == legacy.Version || optedIn.Profiles["secretary"].Hash == legacy.Profiles["secretary"].Hash {
 		t.Fatalf("explicit setting did not version the managed Secretary profile: %#v", optedIn)
 	}
+	// Changing reasoning versions the managed runtime profile even with the lifecycle contract unchanged.
 	invalid := strings.Replace(updated, "addressed-reply-v1", "addressed-reply-v2", 1)
 	if err := os.WriteFile(path, []byte(invalid), 0o600); err != nil {
 		t.Fatal(err)
