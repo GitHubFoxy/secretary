@@ -153,6 +153,7 @@ func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionI
 	args := append([]string(nil), r.Arguments...)
 	args = append(args, "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config")
 	args = append(args, "--permission-mode", "dontAsk")
+	args = append(args, "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"}},"required":["task_outcome","reason"],"additionalProperties":false}`)
 	toolNames := map[string]string{"read": "Read", "bash": "Bash", "shell": "Bash", "edit": "Edit", "write": "Write", "patch": "Edit", "glob": "Glob", "find": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch", "task": "Agent", "subagent": "Agent", "skill": "Skill"}
 	tools := []string{}
 	for _, tool := range request.Profile.AllowTools {
@@ -620,7 +621,7 @@ func (s *claudeSession) handleLine(line []byte) {
 			}
 		}
 		result := Result{Status: status, Summary: summary}
-		if status == "succeeded" && s.failedBash != "" {
+		if status == "succeeded" && s.failedBash != "" && !claudeStructuredRecovery(record) {
 			result.Status = "failed"
 			result.FailureCode = "tool_execution_failed"
 			result.Technical = s.failedBash
@@ -634,6 +635,11 @@ func (s *claudeSession) handleLine(line []byte) {
 		s.emitResult(Result{Status: "failed", Summary: summary})
 	}
 }
+func claudeStructuredRecovery(record map[string]any) bool {
+	output, ok := record["structured_output"].(map[string]any)
+	return ok && valueString(output["task_outcome"]) == "succeeded" && strings.TrimSpace(valueString(output["reason"])) != ""
+}
+
 func (s *claudeSession) registerBashCalls(content any) {
 	items, _ := content.([]any)
 	for _, item := range items {
@@ -678,8 +684,6 @@ func (s *claudeSession) handleToolResults(record map[string]any) {
 			if exitCode != "" {
 				s.failedBash += " with exit code " + exitCode
 			}
-		} else if exitCode == "0" || (exitCode == "" && !failed) {
-			s.failedBash = ""
 		}
 	}
 }
