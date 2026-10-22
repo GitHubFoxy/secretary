@@ -103,6 +103,7 @@ public enum ServerReachability: Equatable {
     case checking
     case online
     case offline
+    case unavailable
 }
 
 public final class ServerHealthMonitor {
