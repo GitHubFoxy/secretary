@@ -627,8 +627,12 @@ func (s *claudeSession) handleLine(line []byte) {
 			structured, valid := claudeTaskOutcome(record)
 			if valid && structured.status == "failed" {
 				result.Status = "failed"
-				result.FailureCode = "tool_execution_failed"
+				result.FailureCode = "task_outcome_failed"
 				result.Technical = "Claude Code reported structured task failure: " + structured.reason
+			} else if _, supplied := record["structured_output"]; supplied && !valid {
+				result.Status = "failed"
+				result.FailureCode = "task_outcome_failed"
+				result.Technical = "Claude Code returned invalid structured task outcome"
 			} else if s.failedBash != "" && !s.claudeStructuredRecovery(structured, valid) {
 				result.Status = "failed"
 				result.FailureCode = "tool_execution_failed"
