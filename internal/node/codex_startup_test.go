@@ -135,3 +135,20 @@ func TestCodexRuntimeHidesInventorySentinelOnDispatch(t *testing.T) {
   t.Fatalf("private executable placeholder leaked: %v", err)
  }
 }
+
+func TestCodexManagedMCPHostMissingIsVisibleBeforePrompt(t *testing.T) {
+ pair := startupCodexPairFixture(t, "server", true)
+ pair.Codex.Provenance = "managed"
+ if err := os.Remove(filepath.Join(filepath.Dir(pair.Codex.ResolvedPath), "codex-code-mode-host")); err != nil {
+  t.Fatal(err)
+ }
+ location, err := CodexPairInventoryPath("server")
+ if err != nil { t.Fatal(err) }
+ encoded, err := json.Marshal(pair)
+ if err != nil { t.Fatal(err) }
+ if err := os.WriteFile(location, encoded, 0600); err != nil { t.Fatal(err) }
+ err = CheckCodexStartup(context.Background(), "server")
+ if err == nil || !strings.Contains(err.Error(), "code-mode host") || !strings.Contains(err.Error(), "MCP") || strings.Contains(err.Error(), "login") {
+  t.Fatalf("missing Codex MCP executable was not reported before prompting: %v", err)
+ }
+}
