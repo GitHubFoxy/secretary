@@ -134,67 +134,7 @@ configure_telegram() {
   [[ "$chat" != 0 ]] || return 2
   terminal_read "Public Web origin for Telegram links (https://host)" "$origin" || return 1
   origin="${REPLY%/}"
-  if [[ -z "$origin" || ! "$origin" =~ '^https://[^/[:space:]]+(:[0-9]+)?
-  set_environment_value SECRETARY_TELEGRAM_BOT_TOKEN "$token" || return 1
-  set_environment_value SECRETARY_TELEGRAM_SERVER_CREDENTIAL "$credential" || return 1
-  [[ -z "$chat" ]] || set_environment_value SECRETARY_TELEGRAM_OWNER_CHAT_ID "$chat" || return 1
-  set_environment_value SECRETARY_TELEGRAM_WEB_BASE_URL "$origin" || return 1
-  set_environment_value SECRETARY_TELEGRAM_ENABLED true || return 1
-  print "Telegram configured. Restart Secretary to apply."
-}
-
-interactive_config() {
-  terminal_available || { print -u2 "secretary config requires a terminal"; return 1; }
-  [[ -f "$STATE/config.toml" ]] || { print -u2 "Run secretary setup first"; return 1; }
-  load_environment
-  local selection current
-  while true; do
-    print ""
-    print "Secretary configuration"
-    print "  1) Native harness: $(configured_harness)"
-    print "  2) Local Execution Node: $(node_config_value node 2>/dev/null || print not-configured)"
-    print "  3) Telegram: ${SECRETARY_TELEGRAM_ENABLED:-false}"
-    print "  4) Paths and operations"
-    print "  5) Done"
-    terminal_read "Select" 5 || return 1
-    selection="$REPLY"
-    case "$selection" in
-      1)
-        current="$(configured_harness)"
-        choose_harness "$current" || return 1
-        prepare_harness "$SELECTED_HARNESS" true || return 1
-        set_config_harness "$SELECTED_HARNESS" || return 1 ;;
-      2)
-        print "Existing workspace mappings are retained unless explicitly changed with --workspace or --clear-workspaces."
-        local old_server="$(node_config_value server_url)" old_name="$(node_config_value node)" old_capacity="$(node_config_value capacity)"
-        local server name capacity
-        terminal_read "Node server URL" "$old_server" || return 1
-        server="$REPLY"
-        terminal_read "Node name" "$old_name" || return 1
-        name="$REPLY"
-        terminal_read "Maximum parallel Workers" "$old_capacity" || return 1
-        capacity="$REPLY"
-        if [[ -f "$NODE_DATA/identity.json" && ( "$server" != "$old_server" || "$name" != "$old_name" ) ]]; then
-          print -u2 "Paired Node identity cannot be silently changed; use explicit drain/revoke and re-enrollment."
-          continue
-        fi
-        node_setup --server "$server" --name "$name" --capacity "$capacity" || return 1 ;;
-      3)
-        configure_telegram || return 1
-        load_environment ;;
-      4)
-        print "Config: $STATE/config.toml"
-        print "Private environment: $ENV_FILE"
-        print "Node config: $NODE_CONFIG"
-        print "Commands: secretary doctor | start | stop | restart | status | logs | update"
-        print "Service: secretary install-service | uninstall-service" ;;
-      5|q|Q) break ;;
-      *) print "Invalid selection" ;;
-    esac
-  done
-  print "Configuration saved. Restart running processes to apply changes."
-}
- ]]; then
+  if [[ -z "$origin" || ! "$origin" =~ '^https://[^/[:space:]]+(:[0-9]+)?$' ]]; then
     print -u2 "Telegram requires a public HTTPS Web origin (for example https://secretary.example.com); no changes made"
     return 2
   fi
@@ -202,6 +142,7 @@ interactive_config() {
   set_environment_value SECRETARY_TELEGRAM_BOT_TOKEN "$token" || return 1
   set_environment_value SECRETARY_TELEGRAM_SERVER_CREDENTIAL "$credential" || return 1
   [[ -z "$chat" ]] || set_environment_value SECRETARY_TELEGRAM_OWNER_CHAT_ID "$chat" || return 1
+  set_environment_value SECRETARY_TELEGRAM_WEB_BASE_URL "$origin" || return 1
   set_environment_value SECRETARY_TELEGRAM_ENABLED true || return 1
   print "Telegram configured. Restart Secretary to apply."
 }
