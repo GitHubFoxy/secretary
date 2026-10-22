@@ -39,7 +39,7 @@ func (s Secretary) Tools() []Tool {
 		addOriginFields(spawnSchema)
 		addOriginFields(messageSchema)
 		tools = append(tools, Tool{
-			Name: "reply_to_user", Description: "Send one user-facing reply for the active originating input. Use for independent answers, clarifications, and errors; Worker Results arrive separately.",
+			Name: "reply_to_user", Description: "Send one user-facing reply for the active originating input. Use for independent answers, clarifications, and errors; Worker Results arrive separately. A claim that a new Worker was created must set action_kind=spawn_worker and worker_turn_id to the action_turn_id returned by the successful Secretary spawn_worker MCP call; the server verifies the canonical action.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
