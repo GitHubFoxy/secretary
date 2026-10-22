@@ -150,10 +150,12 @@ func TestRequiredAddressedReplyCompletionCommitsExactEvidenceAndSurvivesReopen(t
 }
 
 func TestCodexMissingReplyDiagnosticReflectsAcceptedSpawnAndSurvivesRestart(t *testing.T) {
- for _, accepted:=range []bool{false,true} {
-  label:="without-action"
-  if accepted {label="with-accepted-action"}
-  t.Run(label,func(t *testing.T){
+ for _, tc:=range []struct{name,input string;accepted bool}{
+  {name:"ordinary-answer-no-action",input:"Сколько будет два плюс два?"},
+  {name:"worker-request-no-action",input:"Поручи это отдельному исполнителю"},
+  {name:"worker-request-accepted-action",input:"Поручи это отдельному исполнителю",accepted:true},
+ } {
+  t.Run(tc.name,func(t *testing.T){
    ctx:=context.Background()
    path:=filepath.Join(t.TempDir(),"state.db")
    store,err:=Open(ctx,path)
@@ -167,10 +169,10 @@ func TestCodexMissingReplyDiagnosticReflectsAcceptedSpawnAndSurvivesRestart(t *t
    if _,err:=store.ReplaceSecretaryRuntime(ctx,identity.ID,"codex","default","high");err!=nil{t.Fatal(err)}
    if _,err:=store.SaveUserDocument(ctx,filepath.Join(t.TempDir(),"user.md"),"synthetic");err!=nil{t.Fatal(err)}
    if err:=store.SetSecretaryPolicySnapshot(ctx,SecretaryPolicySnapshot{Version:"v1",Harness:"codex",Model:"default",Reasoning:"high",ProfileVersion:"v1",ProfileName:"secretary",ProfileHash:"h",ProfileContent:"synthetic",ReplyContractVersion:SecretaryReplyContractAddressedV1});err!=nil{t.Fatal(err)}
-   turn,err:=store.EnqueueSecretaryTurn(ctx,identity.ID,"Поручи это отдельному исполнителю")
+   turn,err:=store.EnqueueSecretaryTurn(ctx,identity.ID,tc.input)
    if err!=nil{t.Fatal(err)}
    if _,err=store.StartSecretaryTurn(ctx,turn.ID);err!=nil{t.Fatal(err)}
-   if accepted {
+   if tc.accepted {
     _,workerTurn,_,err:=store.CreateWorker(ctx,conversation.ID,WorkerSpec{WorkerRef:"accepted",Intent:"synthetic",ProjectID:"p",NodeID:"n",HarnessInstanceID:"n/fx",PolicySnapshot:"synthetic"},TurnSpec{Input:"synthetic"})
     if err!=nil{t.Fatal(err)}
     _,err=withTx(store,ctx,func(tx *sql.Tx)(bool,error){
@@ -188,8 +190,8 @@ func TestCodexMissingReplyDiagnosticReflectsAcceptedSpawnAndSurvivesRestart(t *t
    for _,entry:=range entries {
     if entry.Kind!=EntrySecretary{continue}
     count++
-    if accepted && !strings.Contains(entry.Body,"Worker создан и принят сервером"){t.Fatalf("accepted Worker described as missing: %q",entry.Body)}
-    if !accepted && !strings.Contains(entry.Body,"Создание Worker не подтверждено"){t.Fatalf("missing Worker falsely accepted: %q",entry.Body)}
+    if tc.accepted && !strings.Contains(entry.Body,"Worker создан и принят сервером"){t.Fatalf("accepted Worker described as missing: %q",entry.Body)}
+    if !tc.accepted && (!strings.Contains(entry.Body,"не получил подтверждённый адресованный ответ") || strings.Contains(entry.Body,"Worker")){t.Fatalf("unbound reply did not receive operation-neutral failure: %q",entry.Body)}
    }
    if count!=1{t.Fatalf("expected single owner diagnostic, got %#v",entries)}
    if err:=store.Close();err!=nil{t.Fatal(err)}
