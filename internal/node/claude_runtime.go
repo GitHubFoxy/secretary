@@ -38,6 +38,7 @@ type ClaudeCodeRuntime struct {
 	RawLogDir      string
 	RawLogMaxBytes int64
 	RawLogFiles    int
+	captureRoot func(*exec.Cmd) (claudeChild, error)
 }
 
 type ClaudeRuntime = ClaudeCodeRuntime
@@ -262,7 +263,11 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("%w: start %q: %v", ErrClaudeCodeUnavailable, command, err)
 	}
-	root, rootErr := captureClaudeRoot(cmd)
+	capture := r.captureRoot
+	if capture == nil {
+		capture = captureClaudeRoot
+	}
+	root, rootErr := capture(cmd)
 	if rootErr != nil {
 		_ = session.stopProcess()
 		_ = cmd.Wait()
