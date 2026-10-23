@@ -402,7 +402,7 @@ exec "$CLAUDE_TEST_BINARY" -test.run=TestFakeClaudeInteractiveProcess
 	if strings.Contains(string(body), "http://127.0.0.1:8080") {
 		t.Fatal("MCP environment value leaked into process arguments")
 	}
-	if flag("--append-system-prompt") != "PROFILE_MARKER_624" || flag("--tools") != "Read" || flag("--permission-mode") != "dontAsk" {
+	if flag("--append-system-prompt") != instructionClaudeUserResponse+"\nPROFILE_MARKER_624" || flag("--tools") != "Read" || flag("--permission-mode") != "dontAsk" {
 		t.Fatalf("profile/policy not delivered: %v", args)
 	}
 	var mcp struct {
