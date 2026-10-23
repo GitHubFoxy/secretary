@@ -52,6 +52,38 @@ node_output="$("$ROOT/secretary" node status)"
 kill "$PID"
 wait "$PID" 2>/dev/null || true
 PID=""
+rm -f "$TEST_HOME/.local/share/secretary/node/node.pid"
+mkdir -p "$TEST_HOME/.local/share/secretary-node/current/bin"
+STANDALONE="$TEST_HOME/.local/share/secretary-node/current/bin/secretary-node"
+cp "$BIN" "$STANDALONE"
+STANDALONE_CONFIG="$TEST_HOME/.local/share/secretary-node/config.json"
+printf '{"node":"standalone-node","server_url":"http://127.0.0.1:8081","data_dir":"%s"}\n' "$TEST_HOME/.local/share/secretary/node/data" > "$STANDALONE_CONFIG"
+"$STANDALONE" --config "$STANDALONE_CONFIG" &
+PID="$!"
+sleep 1
+node_output="$("$ROOT/secretary" node status)"
+[[ "$node_output" == *"Node running pid=$PID identity=standalone-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
+status_output="$("$ROOT/secretary" status)"
+[[ "$status_output" == *"running Execution node: pid=$PID "* ]] || exit 1
+
+OVERRIDE="$TEST_HOME/override.json"
+printf '{"node":"override-node","server_url":"http://127.0.0.1:8081","data_dir":"%s"}\n' "$TEST_HOME/.local/share/secretary/node/data" > "$OVERRIDE"
+kill "$PID"
+wait "$PID" 2>/dev/null || true
+SECRETARY_NODE_EXECUTABLE="$STANDALONE" SECRETARY_NODE_CONFIG="$OVERRIDE" "$STANDALONE" --config "$OVERRIDE" &
+PID="$!"
+sleep 1
+node_output="$(SECRETARY_NODE_EXECUTABLE="$STANDALONE" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" node status)"
+[[ "$node_output" == *"Node running pid=$PID identity=override-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
+mkdir -p "$HOME/Library/LaunchAgents"
+touch "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
+node_output="$(SECRETARY_NODE_EXECUTABLE="$STANDALONE" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" node status)"
+[[ "$node_output" == *"Node running pid=$PID identity=override-node"* ]] || exit 1
+rm "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
+
+kill "$PID"
+wait "$PID" 2>/dev/null || true
+PID=""
 node_output="$("$ROOT/secretary" node status)"
 [[ "$node_output" == *"Node stopped identity=other-node"* ]] || exit 1
 status_output="$("$ROOT/secretary" status)"
