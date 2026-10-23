@@ -16,14 +16,37 @@ BIN="$TEST_HOME/bin/secretary-node"
 printf '#include <unistd.h>\nint main(void) { sleep(60); return 0; }\n' > "$TEST_HOME/node.c"
 cc -o "$BIN" "$TEST_HOME/node.c"
 printf '{"node":"linux-configured"}\n' > "$CONFIG"
+diagnose_node() {
+ local actual_exe="" actual_argv="" actual_start="" owner="" mode=""
+ if kill -0 "$PID" 2>/dev/null; then print -u2 -- "pid_alive=yes"; else print -u2 -- "pid_alive=no"; fi
+ actual_exe="$(readlink -f "/proc/$PID/exe" 2>/dev/null || true)"
+ [[ -n "$actual_exe" && "$actual_exe" == "${BIN:A}" ]] && print -u2 -- "exe_match=yes" || print -u2 -- "exe_match=no"
+ actual_argv="$(ps -ww -p "$PID" -o args= 2>/dev/null || true)"
+ [[ "$actual_argv" == "$BIN --config $CONFIG" ]] && print -u2 -- "config_argv_match=yes" || print -u2 -- "config_argv_match=no"
+ [[ -f "$TEST_HOME/.local/share/secretary/node/node.pid" && "$(<"$TEST_HOME/.local/share/secretary/node/node.pid")" == "$PID" ]] && print -u2 -- "pidfile_match=yes" || print -u2 -- "pidfile_match=no"
+ actual_start="$(ps -p "$PID" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+ [[ -n "$actual_start" && "$actual_start" == "$START" ]] && print -u2 -- "start_match=yes" || print -u2 -- "start_match=no"
+ owner="$(stat -c %u "$CONFIG.process" 2>/dev/null || true)"
+ mode="$(stat -c %a "$CONFIG.process" 2>/dev/null || true)"
+ [[ "$owner" == "$EUID" ]] && print -u2 -- "owner_match=yes" || print -u2 -- "owner_match=no"
+ [[ "$mode" == 600 ]] && print -u2 -- "mode_0600=yes" || print -u2 -- "mode_0600=no"
+}
 "$BIN" --config "$CONFIG" &
 PID="$!"
-sleep 1
-START="$(ps -p "$PID" -o lstart= | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+printf '%s\n' "$PID" > "$TEST_HOME/.local/share/secretary/node/node.pid"
+START=""
+for (( attempt=1; attempt<=40; attempt++ )); do
+ if kill -0 "$PID" 2>/dev/null && [[ "$(readlink -f "/proc/$PID/exe" 2>/dev/null || true)" == "${BIN:A}" ]] && [[ "$(ps -ww -p "$PID" -o args= 2>/dev/null || true)" == "$BIN --config $CONFIG" ]]; then
+  START="$(ps -p "$PID" -o lstart= 2>/dev/null | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  [[ -n "$START" ]] && break
+ fi
+ sleep 0.1
+done
+[[ -n "$START" ]] || { print -u2 -- "fixture_process_not_ready"; diagnose_node; exit 1; }
 printf '%s\n%s\n%s\n' "$PID" "$START" "linux-runtime" > "$CONFIG.process"
 chmod 600 "$CONFIG.process"
 output="$("$ROOT/secretary" node status)"
-[[ "$output" == *"Node running pid=$PID identity=linux-runtime configured_identity=linux-configured"* ]] || { print -u2 -- "$output"; exit 1; }
+[[ "$output" == *"Node running pid=$PID identity=linux-runtime configured_identity=linux-configured"* ]] || { print -u2 -- "$output"; diagnose_node; exit 1; }
 chmod 644 "$CONFIG.process"
 output="$("$ROOT/secretary" node status)"
 [[ "$output" == *"Node running pid=$PID identity=unknown configured_identity=linux-configured"* ]] || { print -u2 -- "$output"; exit 1; }
