@@ -25,7 +25,6 @@ jobs:
           T09_REAL_CODEX: ${{ runner.temp }}/t09-codex/node_modules/@openai/codex/bin/codex.js
         run: go test ./internal/nativeexec -run '^TestT09RealCodexPersistedSessionResume$' -count=1 -v -timeout 120s
       - name: Repeated continuation readiness regression
-        run: go test ./internal/ctl -run '^TestNodeContinuationReadinessReplayIsIdempotent
- -count=20 -timeout 180s
+        run: go test ./internal/ctl -run TestNodeContinuationReadinessReplayIsIdempotent -count=20 -timeout=180s
       - name: Test Secretary routing and lifecycle
         run: go test ./internal/e2e ./internal/core ./internal/secretary ./internal/mcp ./internal/config ./internal/ctl
