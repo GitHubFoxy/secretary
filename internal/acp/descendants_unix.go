@@ -77,17 +77,25 @@ func startACPDescendantTracker(pid int) (*acpDescendantTracker, error) {
 	return t, nil
 }
 
+func captureACPLaunchIdentity(pid int, snapshot func() (map[int]acpProcessIdentity, error)) (acpProcessIdentity, error) {
+	processes, err := snapshot()
+	if err != nil { return acpProcessIdentity{}, err }
+	root, ok := processes[pid]
+	if !ok || root.group != root.pid || strings.HasPrefix(root.state, "Z") || root.start == "" {
+		return acpProcessIdentity{}, errors.New("ACP launch root identity unavailable")
+	}
+	return root, nil
+}
+
 func (t *acpDescendantTracker) captureRoot() error {
 	deadline := time.Now().Add(200 * time.Millisecond)
 	for {
-		processes, err := acpProcessSnapshot()
-		if err != nil { return err }
-		root, ok := processes[t.root.pid]
-		if ok && root.group == root.pid && !strings.HasPrefix(root.state, "Z") {
+		root, err := captureACPLaunchIdentity(t.root.pid, acpProcessSnapshot)
+		if err == nil {
 			t.root = root
 			return t.sample()
 		}
-		if time.Now().After(deadline) { return errors.New("ACP launch root identity unavailable") }
+		if time.Now().After(deadline) { return fmt.Errorf("verify ACP launch process: %w", err) }
 		time.Sleep(10*time.Millisecond)
 	}
 }
@@ -105,7 +113,8 @@ func (t *acpDescendantTracker) sample() error {
 	root, ok := processes[t.root.pid]
 	if t.root.start == "" { return errors.New("ACP root identity unverified") }
 	if !ok { return nil }
-	if root.group != t.root.pid || strings.HasPrefix(root.state, "Z") { return errors.New("ACP root identity invalid") }
+	if root.group != t.root.pid { return errors.New("ACP root identity invalid") }
+	if strings.HasPrefix(root.state, "Z") { return nil }
 		if !sameACPProcess(root, t.root) { return errors.New("ACP root identity changed") }
 	owned := map[int]bool{t.root.pid: true}
 	for pid, recorded := range t.seen {
