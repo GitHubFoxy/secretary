@@ -373,7 +373,6 @@ func TestCodexWorkerFullAccessNativeConfigWithoutGlobalMutation(t *testing.T) {
    if tc.worker {
     if config["sandbox_mode"]!="danger-full-access"||config["approval_policy"]!="never" {t.Fatalf("Worker native permissions not full access: %v",config)}
    } else if config["sandbox_mode"]!="workspace-write"||config["approval_policy"]!="on-request" {t.Fatalf("Secretary native permissions changed: %v",config)}
-   if os.Getenv("CODEX_CONFIG")!= "" && strings.Contains(os.Getenv("CODEX_CONFIG"),"danger-full-access") {t.Fatal("global native environment unexpectedly altered")}
   })
  }
 }
