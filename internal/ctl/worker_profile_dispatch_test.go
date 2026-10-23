@@ -479,13 +479,9 @@ func workerTemplateRoundTrip(t *testing.T, skills []node.ManagedSkill, tools []s
 	poll := time.NewTicker(5 * time.Millisecond)
 	defer poll.Stop()
 	for {
-		events, err := nodeState.PendingEvents()
+		record, err := nodeState.Command("profile-native-resume")
 		if err != nil { t.Fatal(err) }
-		settled := false
-		for _, event := range events {
-			if event.EventID == "attempt-outcome-"+resumeEnvelope.AttemptID { settled = true; break }
-		}
-		if settled { break }
+		if record.TerminalOutcomeQueued { break }
 		select {
 		case <-deadline.C:
 			t.Fatal("synthetic resumed execution did not persist terminal outcome before teardown")
