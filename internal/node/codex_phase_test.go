@@ -98,6 +98,13 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 			case "final-then-tool":
 				emit(codexPhaseFixtureChunk("msg_05858067cc2bde2b016ad84e8f2f9c81919b34d0bc6956df1b", "готово", "final_answer"))
 				emit(codexPhaseFixtureToolCall())
+			case "system-error", "system-error-untrusted", "system-error-other":
+				if scenario != "system-error-untrusted" {
+					emit(map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":map[string]any{"sessionUpdate":"session_info_update","_meta":map[string]any{"codex":map[string]any{"threadStatus":map[string]any{"type":"systemError"}}}}}})
+				}
+				message := "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account."
+				if scenario == "system-error-other" { message = "arbitrary unverified provider text" }
+				emit(codexPhaseFixtureChunk("system-error-text",message,""))
 			case "no-phase":
 				emit(codexPhaseFixtureChunk("msg_069d645203d92047016ad84d901d5881919caa1e3c49b9ae71", "готово", ""))
 			case "contradictory":
@@ -276,6 +283,9 @@ func TestCodexPhaseCanceledAndIncompleteTurns(t *testing.T) {
 func TestCodexNativeCommandEventToTerminal(t *testing.T) {
  cases:=[]struct{scenario string;status string;code string}{
   {"native-exit-7","failed","tool_execution_failed"},
+  {"system-error","failed","native_model_error"},
+  {"system-error-untrusted","failed",""},
+  {"system-error-other","failed","native_model_error"},
   {"native-exit-0","succeeded",""},
   {"native-json-data","succeeded",""},
   {"native-recovered","succeeded",""},
@@ -299,6 +309,9 @@ func TestCodexNativeCommandEventToTerminal(t *testing.T) {
    select{
    case result:=<-session.Result():
     if result.Status!=tc.status||result.FailureCode!=tc.code{t.Fatalf("result=%+v",result)}
+    if tc.scenario=="system-error" && !strings.Contains(result.Summary,"gpt-5.5") {t.Fatalf("native model cause missing: %+v",result)}
+    if tc.scenario=="system-error-other" && strings.Contains(result.Summary,"arbitrary unverified") {t.Fatalf("untrusted text elevated to native diagnostic: %+v",result)}
+    if tc.scenario=="system-error-untrusted" && result.FailureCode=="native_model_error" {t.Fatalf("text without native systemError elevated: %+v",result)}
     if result.CompletionEvidence==nil || result.CompletionEvidence.Contract!=TerminalCompletionOpenCodeV2 || !result.CompletionEvidence.RPCSucceeded || !result.CompletionEvidence.DrainCompleted || (tc.scenario!="native-cancel" && (result.CompletionEvidence.StopReason!=TerminalStopReasonEndTurn || result.CompletionEvidence.AssistantChunks==0)) || (tc.scenario=="native-cancel" && result.CompletionEvidence.StopReason!=TerminalStopReasonCanceled){t.Fatalf("missing native completion evidence: %+v",result)}
     if (tc.scenario=="native-recovered" || tc.scenario=="native-invalid-recovery" || tc.scenario=="native-no-failure-footer" || tc.scenario=="native-incomplete-footer" || tc.scenario=="native-truncated-close" || tc.scenario=="native-split-truncated-footer") && result.Summary!="готово"{t.Fatalf("recovery leaked metadata: %q",result.Summary)}
    case <-ctx.Done():t.Fatal("no result")
