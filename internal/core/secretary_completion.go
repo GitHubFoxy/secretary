@@ -216,6 +216,7 @@ WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conve
                 if err != nil { return secretaryTurnCompletion{}, err }
                 message := "Secretary не получил подтверждённый адресованный ответ. Выполнение запроса не подтверждено; проверьте доступность Secretary MCP и состояние задачи перед повторной попыткой."
                 if accepted != 0 { message = "Worker создан и принят сервером, но Secretary не завершил адресованный ответ. Проверьте состояние Worker перед повторным запросом, чтобы избежать дубликатов." }
+                if accepted == 0 && terminalError != "native_terminal_invalid" && evidence.NativeFailure != "" && turn.Error == evidence.NativeFailure { message = turn.Error }
                 entry, err = appendEntryWithIdentity(ctx, tx, now, turn.ConversationID, EntrySecretary, message, "", turn.ID, "")
                 if err != nil { return secretaryTurnCompletion{}, err }
             }
