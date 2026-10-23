@@ -140,6 +140,19 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 					return
 				}
 				traceIdleFixture("steering-ack",req.Method,id,true)
+			if releaseURL := os.Getenv("TEST_IDLE_STEER_RELEASE_URL"); releaseURL != "" {
+				response, err := http.Get(releaseURL)
+				if err != nil {
+					traceIdleFixture("steering-release-error:"+err.Error(),req.Method,id,true)
+					idleFixtureExit()
+				}
+				response.Body.Close()
+				if response.StatusCode != http.StatusNoContent {
+					traceIdleFixture("steering-release-status",req.Method,id,true)
+					idleFixtureExit()
+				}
+				traceIdleFixture("steering-released",req.Method,id,true)
+			}
 				encoder.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": id, "update": map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": "private-final", "_meta": map[string]any{"codex": map[string]string{"phase": "final_answer"}}, "content": map[string]string{"type": "text", "text": "held complete"}}}})
 				encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": heldPromptID, "result": map[string]any{"stopReason": "end_turn"}})
 				heldPromptID = nil

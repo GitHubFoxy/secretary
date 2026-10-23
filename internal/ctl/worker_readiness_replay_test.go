@@ -2,6 +2,8 @@ package ctl
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +36,20 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 		t.Fatal(err)
 	}
 	defer local.Close()
+ 	releaseHeld := make(chan struct{})
+	releasedHeld := false
+	release := func() {
+		if !releasedHeld {
+			close(releaseHeld)
+			releasedHeld = true
+		}
+	}
+	releaseServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-releaseHeld
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer releaseServer.Close()
+	t.Setenv("TEST_IDLE_STEER_RELEASE_URL", releaseServer.URL)
 	exitReport := filepath.Join(t.TempDir(), "synthetic-acp-events")
 	t.Setenv("TEST_IDLE_EXIT_REPORT", exitReport)
 	runtime := node.ACPRuntime{Command: os.Args[0], Arguments: []string{"-test.run=^TestIdleFollowUpACPProcess$"}, DrainPromptEvents: true, TerminalMessageGrouping: true}
@@ -78,6 +94,7 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 	heldAccepted := false
 	var heldMapping *node.LocalSessionMapping
 	t.Cleanup(func() {
+		release()
 		if !heldAccepted {
 			return
 		}
@@ -238,6 +255,16 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 			exitLocation, readErr := os.ReadFile(exitReport)
 			t.Fatalf("held fixture finish failed: outcome=%+v err=%v synthetic_exit=%q exit_report_err=%v", o, e, string(exitLocation), readErr)
 		}
+		pendingBeforeRelease, err := local.PendingEvents()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, event := range pendingBeforeRelease {
+			if event.EventID == "attempt-outcome-"+envelope.AttemptID {
+				t.Fatal("held turn completed before steering returned and release was acknowledged")
+			}
+		}
+		release()
 		await(envelope.AttemptID)
 		replay, err = execution.HandleCommand(ctx, command)
 		if err != nil || replay != readiness {
