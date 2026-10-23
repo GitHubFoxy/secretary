@@ -35,7 +35,7 @@ func TestCodexDefaultAddressedReplyAndExplicitVersionedOverride(t *testing.T) {
 		t.Fatal(err)
 	}
 	legacy := manager.Snapshot()
-	if legacy.Config.Secretary.ReplyContract != SecretaryReplyContractAddressedV1 || legacy.Profiles["secretary"].ReplyContractVersion != SecretaryReplyContractAddressedV1 || legacy.Profiles["secretary"].Runtime != "codex" || !strings.Contains(legacy.Profiles["secretary"].Content, "## Addressed reply v1") {
+	if legacy.Config.Secretary.ReplyContract != SecretaryReplyContractAddressedV1 || legacy.Profiles["secretary"].ReplyContractVersion != SecretaryReplyContractAddressedV1 || legacy.Profiles["secretary"].Runtime != "codex" || strings.Contains(legacy.Profiles["secretary"].Content, "## Addressed reply v1") {
 		t.Fatalf("new official Codex setup must enable addressed lifecycle without rewriting its editable profile: %#v", legacy.Profiles["secretary"])
 	}
 	content, err := os.ReadFile(path)
@@ -88,17 +88,20 @@ func TestAddressedReplyProfileGeneratedWithoutMutatingCustomSource(t *testing.T)
 	if err != nil { t.Fatal(err) }
 	original := manager.Snapshot()
 	profile := original.Profiles["secretary"]
-	if profile.ReplyContractVersion != SecretaryReplyContractAddressedV1 || !strings.Contains(profile.Content, "reply_to_user") || !strings.Contains(profile.Content, "server-issued secretary_turn_id and input_id") || !strings.Contains(profile.Content, "Worker action") {
-		t.Fatal("production Secretary profile does not communicate the required addressed MCP final")
-	}
 	fileContent, err := os.ReadFile(profile.Path)
 	if err != nil { t.Fatal(err) }
-	if strings.Contains(string(fileContent), "## Addressed reply v1") { t.Fatal("editable profile was rewritten") }
+	if profile.ReplyContractVersion != SecretaryReplyContractAddressedV1 || profile.Content != string(fileContent) || strings.Contains(profile.Content, "## Addressed reply v1") {
+		t.Fatal("versioned editable Secretary snapshot is not the exact external source")
+	}
 	custom := string(fileContent) + "\nCustom owner profile rule.\n"
 	if err := os.WriteFile(profile.Path, []byte(custom), 0o600); err != nil { t.Fatal(err) }
 	next, err := manager.Reload()
 	if err != nil { t.Fatal(err) }
-	if !strings.Contains(next.Profiles["secretary"].Content, "Custom owner profile rule.") || !strings.Contains(next.Profiles["secretary"].Content, "reply_to_user") || next.Profiles["secretary"].Hash == profile.Hash { t.Fatal("custom profile was discarded or its generated contract was not versioned") }
+	got, err := os.ReadFile(profile.Path)
+	if err != nil { t.Fatal(err) }
+	if string(got) != custom || next.Profiles["secretary"].Content != custom || strings.Contains(next.Profiles["secretary"].Content, "## Addressed reply v1") || next.Profiles["secretary"].Hash == profile.Hash {
+		t.Fatal("reload discarded custom content, rewrote the source, or failed to revise identity")
+	}
 	if next.Profiles["worker"].ReplyContractVersion != "" || strings.Contains(next.Profiles["worker"].Content, "## Addressed reply v1") { t.Fatal("Worker profile was modified") }
 }
 
