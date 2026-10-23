@@ -830,6 +830,8 @@ type acpSession struct {
 	codexPendingExits map[string]int
 	codexSystemError bool
 	codexSystemErrorText string
+	codexRecoveryNoticeCtx context.Context
+	codexRecoveryNotified map[string]bool
 	replaying               atomic.Bool
 	drainPromptEvents       bool
 
@@ -1848,6 +1850,8 @@ func acpPromptBlocks(text string, images []ImageInput) []map[string]string {
 
 func (s *acpSession) promptTurnImages(ctx context.Context, task string, images []ImageInput) error {
 	defer s.finishTurn()
+	noticeCtx, noticeCancel := context.WithCancel(ctx)
+	defer noticeCancel()
 	s.textMu.Lock()
 	s.turnAnswer, s.legacyTurnText = nil, nil
 	s.codexCommandFailures = make(map[string]int)
@@ -1855,6 +1859,8 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 	s.codexPendingExits = make(map[string]int)
 	s.codexSystemError = false
 	s.codexSystemErrorText = ""
+	s.codexRecoveryNoticeCtx = noticeCtx
+	s.codexRecoveryNotified = make(map[string]bool)
 	if s.terminalMessageGrouping || s.codexMessagePhases {
 		s.turnAnswer = newACPTurnAnswer()
 	} else {
@@ -1896,6 +1902,7 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 		collected = legacyText
 	}
 	s.turnAnswer, s.legacyTurnText = nil, nil
+	s.codexRecoveryNoticeCtx = nil
 	systemError := s.codexSystemError
 	systemErrorText := s.codexSystemErrorText
 	failures := make(map[string]int)
@@ -1983,6 +1990,11 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 	if s.codexMessagePhases && result.Summary != "" && status != "canceled" { s.emitActivity(Activity{Kind: ActivityText, Text: result.Summary}) }
 	s.result <- result
 	return nil
+}
+
+func (s *acpSession) offerCodexRecoveryID(ctx context.Context, id string, code int) {
+	if ctx.Err() != nil || !s.busyNow() { return }
+	_, _ = s.Steer(ctx, fmt.Sprintf("Secretary verified native exec_command failure in this turn: ACP toolCallId=%s exit_code=%d. This identity is for explicit recovered_tool_use_ids only if you genuinely recover this exact failed command; an unrelated successful command is not recovery.", id, code))
 }
 
 func (s *acpSession) finishTurn() {
@@ -2126,7 +2138,11 @@ func (s *acpSession) watch() {
 					if code, ok := codexACPCommandExit(payload, Activity{Tool:"exec_command",CallID:id}); ok {
 						s.textMu.Lock()
 						if s.codexPendingExits != nil { s.codexPendingExits[id] = code }
+						noticeCtx := s.codexRecoveryNoticeCtx
+						announce := code != 0 && s.codexNativeStarts[id] && s.codexRecoveryNotified != nil && !s.codexRecoveryNotified[id]
+						if announce { s.codexRecoveryNotified[id] = true }
 						s.textMu.Unlock()
+						if announce && noticeCtx != nil { go s.offerCodexRecoveryID(noticeCtx,id,code) }
 					}
 				}
 			}
