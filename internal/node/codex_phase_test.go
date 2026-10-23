@@ -291,7 +291,7 @@ func TestCodexNativeCommandEventToTerminal(t *testing.T) {
    for {
     select {
     case activity, ok := <-session.Activity():
-     if !ok { break }
+     if !ok { goto activityDrained }
      if activity.Kind==ActivityText && strings.Contains(activity.Text,"<secretary-recovery>"){t.Fatalf("stream leaked recovery metadata: %q",activity.Text)}
     default:
      goto activityDrained
