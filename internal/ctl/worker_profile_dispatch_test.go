@@ -474,6 +474,24 @@ func workerTemplateRoundTrip(t *testing.T, skills []node.ManagedSkill, tools []s
 	if _, err := resumedExecution.HandleCommand(ctx, stopResumed); err != nil {
 		t.Fatal("synthetic resumed process cleanup failed")
 	}
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	poll := time.NewTicker(5 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		events, err := nodeState.PendingEvents()
+		if err != nil { t.Fatal(err) }
+		settled := false
+		for _, event := range events {
+			if event.EventID == "attempt-outcome-"+resumeEnvelope.AttemptID { settled = true; break }
+		}
+		if settled { break }
+		select {
+		case <-deadline.C:
+			t.Fatal("synthetic resumed execution did not persist terminal outcome before teardown")
+		case <-poll.C:
+		}
+	}
 }
 
 func validWorkerProfileEvidence(evidence workerProfileProcessReport) bool {
