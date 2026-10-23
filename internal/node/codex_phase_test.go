@@ -63,6 +63,7 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 	capture := os.Getenv("TEST_CODEX_PHASE_CAPTURE")
 	scanner := bufio.NewScanner(os.Stdin)
 	prompts := 0
+	var recoveryPromptID any
 	emit := func(v any) { data, _ := json.Marshal(v); _, _ = os.Stdout.Write(append(data, '\n')) }
 	for scanner.Scan() {
 		var req struct {
@@ -82,12 +83,24 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 			result = map[string]any{"sessionId": "fixture-codex-phase"}
 		case "_session/steering":
 			if scenario == "native-recovery-steered" {
-				var request struct { Prompt []struct { Text string `json:"text"` } `json:"prompt"` }
-				_ = json.Unmarshal(req.Params, &struct {SessionID string `json:"sessionId"`; Prompt *[]struct { Text string `json:"text"` } `json:"prompt"` }{})
-				_ = request
+				var params struct { Prompt []struct { Text string `json:"text"` } `json:"prompt"` }
+				if json.Unmarshal(req.Params,&params)!=nil || len(params.Prompt)!=1 || !strings.Contains(params.Prompt[0].Text,"ACP toolCallId=exec-7 exit_code=7") || recoveryPromptID==nil {t.Fatal("unverified native recovery ID was not offered to active turn")}
+				emit(map[string]any{"jsonrpc":"2.0","id":req.ID,"result":map[string]any{"outcome":"injected"}})
+				emit(codexPhaseFixtureChunk("msg_command_final","готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-recovery>","final_answer"))
+				emit(map[string]any{"jsonrpc":"2.0","id":recoveryPromptID,"result":map[string]any{"stopReason":"end_turn"}})
+				recoveryPromptID=nil
+				continue
 			}
 			result = map[string]any{"outcome":"injected"}
 		case "session/prompt":
+			if scenario == "native-recovery-steered" {
+				recoveryPromptID=req.ID
+				for _, update := range []map[string]any{
+					{"sessionUpdate":"tool_call","toolCallId":"exec-7","name":"exec_command","kind":"execute","status":"in_progress","_meta":map[string]any{"terminal_info":map[string]any{"terminal_id":"exec-7"}}},
+					{"sessionUpdate":"tool_call_update","toolCallId":"exec-7","name":"exec_command","status":"failed","_meta":map[string]any{"terminal_exit":map[string]any{"terminal_id":"exec-7","exit_code":7}}},
+				} { emit(map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":update}}) }
+				continue
+			}
 			switch scenario {
 			case "final-parts":
 				emit(codexPhaseFixtureChunk("msg_069d645203d92047016ad84d901d5881919caa1e3c49b9ae71", "готов", "final_answer"))
@@ -291,6 +304,7 @@ func TestCodexNativeCommandEventToTerminal(t *testing.T) {
  cases:=[]struct{scenario string;status string;code string}{
   {"native-exit-7","failed","tool_execution_failed"},
   {"system-error","failed","native_model_error"},
+  {"native-recovery-steered","succeeded",""},
   {"system-error-untrusted","failed",""},
   {"system-error-other","failed","native_model_error"},
   {"native-exit-0","succeeded",""},
