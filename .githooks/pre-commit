@@ -1,0 +1,52 @@
+#!/usr/bin/env python3
+import os
+import re
+import subprocess
+import sys
+
+
+def git(*args, **kwargs):
+    return subprocess.check_output(["git", "--literal-pathspecs", *args], **kwargs)
+
+
+def main():
+    os.chdir(os.fsdecode(git("rev-parse", "--show-toplevel").rstrip(b"\n")))
+    paths = git("diff", "--cached", "--name-only", "--diff-filter=ACMRT", "-z").split(b"\0")
+    failures = []
+    for raw_path in filter(None, paths):
+        path = os.fsdecode(raw_path)
+        if not path.endswith((".go", ".sh", ".svelte")):
+            continue
+        attribute = git("check-attr", "--cached", "-z", "linguist-generated", "--", path).split(b"\0")[2]
+        if attribute in (b"set", b"true"):
+            continue
+        entry = git("ls-files", "--stage", "-z", "--", path).split(b" ", 1)[0]
+        if entry not in (b"100644", b"100755"):
+            continue
+        content = git("cat-file", "blob", ":" + path)
+        if re.search(rb"(?im)^.{0,80}(?:Code generated[^\r\n]*DO NOT EDIT\.?|@generated)\b", content[:4096]):
+            continue
+        if len(content) > 20_000:
+            failures.append(f"  {path!r}: {len(content):,} байт / 4 = {len(content) / 4:,.2f} токенов")
+    if not failures:
+        return 0
+    print("Коммит отклонён: staged-файлы превышают 5 000 токенов (20 000 байт).", file=sys.stderr)
+    print("\n".join(failures), file=sys.stderr)
+    print(
+        "\nКак разделить файлы:\n"
+        "1. Выделите отдельные обязанности: перенесите связанные функции и типы в небольшие модули; "
+        "тесты разделите по проверяемым компонентам.\n"
+        "2. В Svelte вынесите самостоятельные части интерфейса в компоненты; "
+        "в shell-скриптах вынесите самостоятельные операции в отдельные скрипты. "
+        "Обновите импорты и вызовы кода, выполните относящиеся к изменениям проверки.\n"
+        "3. Оставьте каждый файл не больше 20 000 байт. Выполните git add -- <изменённые и новые файлы> "
+        "и повторите git commit. Хук проверяет полные версии файлов в index.\n"
+        "Если файл создаёт генератор, отметьте его точный путь атрибутом linguist-generated=true "
+        "в .gitattributes и добавьте .gitattributes в index. Не исключайте написанные вручную файлы.",
+        file=sys.stderr,
+    )
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
