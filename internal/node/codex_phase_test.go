@@ -102,6 +102,7 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 				for _, update := range []map[string]any{
 					{"sessionUpdate":"tool_call","toolCallId":"exec-7","name":"exec_command","kind":"execute","status":"in_progress","_meta":map[string]any{"terminal_info":map[string]any{"terminal_id":"exec-7"}}},
 					{"sessionUpdate":"tool_call_update","toolCallId":"exec-7","name":"exec_command","status":"failed","_meta":map[string]any{"terminal_exit":map[string]any{"terminal_id":"exec-7","exit_code":7}}},
+					{"sessionUpdate":"tool_call_update","toolCallId":"exec-7","name":"exec_command","status":"failed","_meta":map[string]any{"terminal_exit":map[string]any{"terminal_id":"exec-7","exit_code":7}}},
 				} { emit(map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":update}}) }
 				continue
 			}
