@@ -307,7 +307,7 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"
 read interrupt
 printf '%s\n' '{"type":"result","subtype":"success","result":"interrupted"}'
 read input
-printf '%s\n' '{"type":"assistant","uuid":"final-text","message":{"content":[{"type":"text","text":"done"}]}}' '{"type":"assistant","uuid":"final-text","message":{"content":[{"type":"text","text":"done"}]}}' '{"type":"result","subtype":"success","result":"done"}'
+printf '%s\n' '{"type":"assistant","uuid":"final-text","message":{"content":[{"type":"text","text":"done"}]}}' '{"type":"assistant","uuid":"final-text","message":{"content":[{"type":"text","text":"done"}]}}' '{"type":"result","subtype":"success","result":"done","structured_output":{"task_outcome":"succeeded","reason":"Follow-up completed","recovered_tool_use_ids":[],"user_response":"done"}}'
 read input
 `
 	if err := os.WriteFile(launcher, []byte(script), 0700); err != nil {
