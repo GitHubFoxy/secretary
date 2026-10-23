@@ -654,10 +654,10 @@ func (s *claudeSession) handleLine(line []byte) {
 				result.Status = "failed"
 				result.FailureCode = "task_outcome_failed"
 				result.Technical = "Claude Code returned invalid structured task outcome"
-			} else if !valid && !(s.sawAssistantText && !s.sawToolUse) {
+			} else if !valid {
 				result.Status = "failed"
 				result.FailureCode = "task_outcome_failed"
-				result.Technical = "Claude Code returned no structured task outcome or qualifying text-only answer"
+				result.Technical = "Claude Code returned no structured task outcome"
 			}
 		}
 		s.emitResult(result)
@@ -702,22 +702,19 @@ func claudeTaskOutcome(record map[string]any) (claudeTaskVerdict, bool) {
 }
 
 func claudeServiceJSON(text string) bool {
-	for offset, char := range text {
-		if char != '{' {
-			continue
-		}
-		var value map[string]any
-		if json.NewDecoder(strings.NewReader(text[offset:])).Decode(&value) != nil {
-			continue
-		}
-		_, reason := value["reason"]
-		_, recovered := value["recovered_tool_use_ids"]
-		_, outcome := value["task_outcome"]
-		if reason && recovered || outcome && (reason || recovered) {
-			return true
-		}
+	candidate := strings.TrimSpace(text)
+	candidate = strings.TrimSpace(strings.TrimPrefix(candidate, "Internal verdict:"))
+	if strings.HasPrefix(candidate, "```json\n") && strings.HasSuffix(candidate, "\n```") {
+		candidate = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(candidate, "```json\n"), "\n```"))
 	}
-	return false
+	var value map[string]any
+	if json.Unmarshal([]byte(candidate), &value) != nil {
+		return false
+	}
+	_, reason := value["reason"]
+	_, recovered := value["recovered_tool_use_ids"]
+	_, outcome := value["task_outcome"]
+	return reason && recovered || outcome && (reason || recovered)
 }
 
 func (s *claudeSession) claudeStructuredRecovery(verdict claudeTaskVerdict, valid bool) bool {
