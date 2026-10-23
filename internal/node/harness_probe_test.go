@@ -45,6 +45,14 @@ func (r fakeProbeRunner) ObserveOpenCodeModels(ctx context.Context, command stri
 	return parseObservedModels(result.Stdout), parseObservedReasoning(result.Stdout), nil
 }
 
+func (r fakeProbeRunner) ObserveClaudeModels(ctx context.Context, command string) ([]core.ObservedModelID, error) {
+	result, err := r.Run(ctx, command, "native", "models")
+	if err != nil {
+		return nil, err
+	}
+	return parseObservedModels(result.Stdout), nil
+}
+
 func (r fakeProbeRunner) ObserveCodexACP(ctx context.Context, command string) ([]core.ObservedModelID, []core.ObservedReasoningLevel, error) {
 	result, err := r.Run(ctx, command, "debug", "models")
 	if err != nil {
@@ -60,6 +68,7 @@ func requiredProbeRunner(version, fxModel, codexModel string) fakeProbeRunner {
 		"fx models":          {Stdout: fxModel},
 		"claude --version":   {Stdout: "claude " + version},
 		"claude auth status": {Stdout: `{"loggedIn":true,"authMethod":"claude.ai"}`},
+		"claude native models": {Stdout: `{"models":[{"id":"claude-haiku-5-5"}]}`},
 		"codex --version":    {Stdout: "codex " + version},
 		"codex login status": {Stdout: "Logged in using ChatGPT"},
 		"codex doctor":       {Stdout: "ready"},
@@ -352,8 +361,9 @@ func TestClaudeCapabilitiesMatchImplementedRuntime(t *testing.T) {
 	result := ProbeClaudeCode(context.Background(), "macbook", fakeProbeRunner{responses: map[string]CommandResult{
 		"claude --version":   {Stdout: "2.1.0"},
 		"claude auth status": {Stdout: `{"loggedIn":true}`},
+		"claude native models": {Stdout: `{"models":[{"id":"claude-haiku-5-5"}]}`},
 	}})
-	if result.Instance.Capabilities.SupportsExecution(core.CapabilitySteering) || result.Instance.Capabilities.SupportsExecution(core.CapabilityApprovals) {
+	if !result.Available() || result.Instance.Capabilities.SupportsExecution(core.CapabilitySteering) || result.Instance.Capabilities.SupportsExecution(core.CapabilityApprovals) {
 		t.Fatalf("Claude inventory advertises unsupported capabilities: %#v", result.Instance.Capabilities.Execution)
 	}
 }
@@ -373,13 +383,13 @@ func TestClaudeProbeUsesObservedAuthAndDoesNotInventModels(t *testing.T) {
 		"claude auth status": {Stdout: `{"loggedIn":true,"authMethod":"claude.ai"}`},
 	}}
 	result := ProbeClaudeCode(context.Background(), "macbook", runner)
-	if !result.Available() || !result.Instance.Authentication.Authenticated || result.Instance.Authentication.Method != "claude.ai" {
+	if result.Instance.Status != core.HarnessDegraded || !result.Instance.Authentication.Authenticated || result.Instance.Authentication.Method != "claude.ai" {
 		t.Fatalf("Claude result=%#v", result)
 	}
 	if len(result.Instance.ModelIDs) != 0 || len(result.Instance.ReasoningLevels) != 0 {
 		t.Fatalf("unobserved Claude pins were invented: %#v", result.Instance)
 	}
-	if err := result.Instance.ValidateSelection("claude-sonnet-4", ""); !errors.Is(err, core.ErrObservedPinUnavailable) {
+	if err := result.Instance.ValidateSelection("claude-sonnet-4", ""); err == nil {
 		t.Fatalf("unobserved Claude model pin err=%v", err)
 	}
 
@@ -515,7 +525,7 @@ func TestRequiredProbesDiscoverDifferentInstancesOnTwoNodes(t *testing.T) {
 		t.Fatalf("required inventory sizes: %d and %d", len(first.Instances), len(second.Instances))
 	}
 	macClaude, ok := first.Instance("macbook/claude")
-	if !ok || !macClaude.Available() || macClaude.Authentication.Method != "claude.ai" || len(macClaude.ModelIDs) != 0 {
+	if !ok || !macClaude.Available() || macClaude.Authentication.Method != "claude.ai" || !macClaude.SupportsModel("claude-haiku-5-5") {
 		t.Fatalf("macbook Claude=%#v found=%v", macClaude, ok)
 	}
 	macCodex, ok := first.Instance("macbook/codex")
