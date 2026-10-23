@@ -43,7 +43,7 @@ func acpProcessSnapshot() (map[int]acpProcessIdentity, error) {
 }
 
 func sameACPProcess(a, b acpProcessIdentity) bool {
-	return a.pid == b.pid && a.parent == b.parent && a.group == b.group && a.start == b.start
+	return a.pid == b.pid && a.group == b.group && a.start == b.start
 }
 
 func prepareACPDescendantCleanup(pid int) (func() error, error) {
