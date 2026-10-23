@@ -10,6 +10,17 @@ cleanup() {
   rm -rf "$TEST_HOME"
 }
 trap cleanup EXIT
+diagnose_node_process() {
+  local executable="$1" config="$2" output="$3" args=""
+  print -u2 -- "MAC12-02 discovery failure: expected_pid=$PID"
+  if kill -0 "$PID" 2>/dev/null; then print -u2 -- "process_alive=yes"; else print -u2 -- "process_alive=no"; fi
+  if ps -p "$PID" -o comm= 2>/dev/null | grep -Fqx -- "$executable"; then print -u2 -- "ps_executable_exact=yes"; else print -u2 -- "ps_executable_exact=no"; fi
+  if /usr/sbin/lsof -a -p "$PID" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | grep -Fqx -- "$executable"; then print -u2 -- "lsof_executable_exact=yes"; else print -u2 -- "lsof_executable_exact=no"; fi
+  args="$(ps -ww -p "$PID" -o args= 2>/dev/null || true)"
+  if [[ "$args" == "$executable --config $config" ]]; then print -u2 -- "ps_args_exact=yes"; else print -u2 -- "ps_args_exact=no"; fi
+  if ps -axo pid=,command= 2>/dev/null | grep -Fq -- "$executable --config $config"; then print -u2 -- "ps_candidate_listed=yes"; else print -u2 -- "ps_candidate_listed=no"; fi
+  print -u2 -- "node_status_running=$([[ "$output" == *"Node running pid=$PID "* ]] && print yes || print no)"
+}
 
 export HOME="$TEST_HOME"
 export SECRETARY_BINARY_STAGE_BIN="$TEST_HOME/bin"
@@ -34,7 +45,7 @@ sleep 1
 kill -0 "$PID"
 
 node_output="$("$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=unknown configured_identity=test-app-node outbound-only"* ]] || { print -u2 -- "$node_output"; exit 1; }
+[[ "$node_output" == *"Node running pid=$PID identity=unknown configured_identity=test-app-node outbound-only"* ]] || { diagnose_node_process "$BIN" "$CONFIG" "$node_output"; print -u2 -- "$node_output"; exit 1; }
 status_output="$("$ROOT/secretary" status)"
 [[ "$status_output" == *"running Execution node: pid=$PID "* ]] || { print -u2 -- "$status_output"; exit 1; }
 
