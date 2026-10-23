@@ -210,7 +210,7 @@ func TestFakeClaudeCodeProcess(t *testing.T) {
 		_ = json.NewDecoder(os.Stdin).Decode(&input)
 		_ = encoder.Encode(map[string]any{"type": "system", "session_id": input["session_id"]})
 		_ = encoder.Encode(map[string]any{"type": "stream_event", "event": map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": "native activity"}}})
-		_ = encoder.Encode(map[string]any{"type": "result", "subtype": "success", "result": "native Claude result", "structured_output": map[string]any{"task_outcome": "succeeded", "reason": "Native CLI fixture completed", "recovered_tool_use_ids": []string{}}})
+		_ = encoder.Encode(map[string]any{"type": "result", "subtype": "success", "result": "native Claude result", "structured_output": map[string]any{"task_outcome": "succeeded", "reason": "Native CLI fixture completed", "recovered_tool_use_ids": []string{}, "user_response": "native Claude result"}})
 		return
 	}
 }
@@ -263,7 +263,7 @@ func TestFakeClaudeInteractiveProcess(t *testing.T) {
 		}
 		if path := os.Getenv("CLAUDE_IMAGE_RECORD"); path != "" { _ = os.WriteFile(path, scanner.Bytes(), 0o600) }
 		message, _ := input["message"].(map[string]any)
-		_ = enc.Encode(map[string]any{"type": "result", "subtype": "success", "result": message["content"], "user_message_uuid": input["uuid"], "structured_output": map[string]any{"task_outcome": "succeeded", "reason": "Interactive fixture completed requested prompt", "recovered_tool_use_ids": []string{}}})
+		_ = enc.Encode(map[string]any{"type": "result", "subtype": "success", "result": message["content"], "user_message_uuid": input["uuid"], "structured_output": map[string]any{"task_outcome": "succeeded", "reason": "Interactive fixture completed requested prompt", "recovered_tool_use_ids": []string{}, "user_response": message["content"]}})
 	}
 	os.Exit(0)
 }
@@ -509,7 +509,7 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
 				`{"type":"assistant","uuid":"call2","message":{"content":[{"type":"tool_use","id":"bash2","name":"Bash"}]}}`,
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash2","is_error":false}]},"toolUseResult":{"exitCode":0}}`,
-				`{"type":"result","subtype":"success","result":"Recovered","structured_output":{"task_outcome":"succeeded","reason":"Recovered by alternate verification","recovered_tool_use_ids":["bash1"]}}`,
+				`{"type":"result","subtype":"success","result":"Recovered","structured_output":{"task_outcome":"succeeded","reason":"Recovered by alternate verification","recovered_tool_use_ids":["bash1"],"user_response":"Recovered"}}`,
 			},
 			wantStatus: "succeeded",
 		},
@@ -530,7 +530,7 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 			events: []string{
 				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash"}]}}`,
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
-				`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"succeeded","reason":"Another command completed","recovered_tool_use_ids":["other-call"]}}`,
+				`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"succeeded","reason":"Another command completed","recovered_tool_use_ids":["other-call"],"user_response":"Done"}}`,
 			},
 			wantStatus: "failed", wantCode: "tool_execution_failed",
 		},
@@ -539,23 +539,23 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 			events: []string{
 				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash"}]}}`,
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
-				`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"unknown","reason":"not valid","recovered_tool_use_ids":["bash1"]}}`,
+				`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"unknown","reason":"not valid","recovered_tool_use_ids":["bash1"],"user_response":"Recovered"}}`,
 			},
 			wantStatus: "failed", wantCode: "tool_execution_failed", wantTechnical: "invalid structured task outcome",
 		},
 		{
 			name: "structured failed without Bash",
-			events: []string{`{"type":"result","subtype":"success","result":"Failed","structured_output":{"task_outcome":"failed","reason":"Could not complete task","recovered_tool_use_ids":[]}}`},
+			events: []string{`{"type":"result","subtype":"success","result":"Failed","structured_output":{"task_outcome":"failed","reason":"Could not complete task","recovered_tool_use_ids":[],"user_response":"Failed"}}`},
 			wantStatus: "failed", wantCode: "task_outcome_failed", wantTechnical: "Could not complete task",
 		},
 		{
 			name: "structured succeeded without Bash",
-			events: []string{`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"succeeded","reason":"Completed","recovered_tool_use_ids":[]}}`},
+			events: []string{`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"succeeded","reason":"Completed","recovered_tool_use_ids":[],"user_response":"Done"}}`},
 			wantStatus: "succeeded",
 		},
 		{
 			name: "native failure overrides structured success",
-			events: []string{`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Provider failed","structured_output":{"task_outcome":"succeeded","reason":"Claimed success","recovered_tool_use_ids":[]}}`},
+			events: []string{`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Provider failed","structured_output":{"task_outcome":"succeeded","reason":"Claimed success","recovered_tool_use_ids":[],"user_response":"Provider failed"}}`},
 			wantStatus: "failed",
 		},
 		{
@@ -589,7 +589,7 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 			events: []string{
 				`{"type":"assistant","uuid":"bash-call","message":{"content":[{"type":"tool_use","id":"bash-seven","name":"Bash"}]}}`,
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash-seven","is_error":true}]},"toolUseResult":{"exitCode":7}}`,
-				`{"type":"result","subtype":"success","result":"Task failed","structured_output":{"task_outcome":"failed","reason":"Original task could not complete","recovered_tool_use_ids":[]}}`,
+				`{"type":"result","subtype":"success","result":"Task failed","structured_output":{"task_outcome":"failed","reason":"Original task could not complete","recovered_tool_use_ids":[],"user_response":"Task failed"}}`,
 			},
 			wantStatus: "failed", wantCode: "tool_execution_failed", wantTechnical: "Original task could not complete",
 		},
@@ -668,6 +668,27 @@ func TestClaudeUserResponseSeparatedFromNativeVerdict(t *testing.T) {
 			wantSummary: "ЛИСТ-6783",
 		},
 		{
+			name: "missing user response with plain result fails closed",
+			terminal: `{"type":"result","subtype":"success","result":"I checked the task and responded earlier.","structured_output":{"task_outcome":"succeeded","reason":"Completed","recovered_tool_use_ids":[]}}`,
+			wantStatus: "failed",
+			wantSummary: "Claude Code returned invalid structured task outcome",
+			wantCode: "task_outcome_failed",
+		},
+		{
+			name: "empty user response with plain result fails closed",
+			terminal: `{"type":"result","subtype":"success","result":"I answered.","structured_output":{"task_outcome":"succeeded","reason":"Completed","recovered_tool_use_ids":[],"user_response":"  "}}`,
+			wantStatus: "failed",
+			wantSummary: "Claude Code returned invalid structured task outcome",
+			wantCode: "task_outcome_failed",
+		},
+		{
+			name: "wrapped internal verdict is not activity",
+			assistant: `{"type":"assistant","uuid":"wrapped","message":{"content":[{"type":"text","text":"Internal verdict:\\n\\`\\`\\`json\\n{\\\"task_outcome\\\":\\\"succeeded\\\",\\\"reason\\\":\\\"Internal\\\",\\\"recovered_tool_use_ids\\\":[]}\\n\\`\\`\\`"}]}}`,
+			terminal: `{"type":"result","subtype":"success","result":"Internal verdict","structured_output":{"task_outcome":"succeeded","reason":"Internal","recovered_tool_use_ids":[],"user_response":"Готово"}}`,
+			wantStatus: "succeeded",
+			wantSummary: "Готово",
+		},
+		{
 			name:     "failed native provider precedence",
 			terminal: `{"type":"result","subtype":"error_during_execution","result":"Provider error","structured_output":{"task_outcome":"succeeded","reason":"Reported success","recovered_tool_use_ids":[],"user_response":"Done"}}`,
 			wantStatus: "failed",
@@ -677,8 +698,8 @@ func TestClaudeUserResponseSeparatedFromNativeVerdict(t *testing.T) {
 			name:     "service JSON without user response fails closed",
 			terminal: `{"type":"result","subtype":"success","result":"{\"task_outcome\":\"succeeded\",\"reason\":\"Internal\",\"recovered_tool_use_ids\":[]}","structured_output":{"task_outcome":"succeeded","reason":"Internal","recovered_tool_use_ids":[]}}`,
 			wantStatus: "failed",
-			wantSummary: "Claude Code returned no answer",
-			wantCode:    "",
+			wantSummary: "Claude Code returned invalid structured task outcome",
+			wantCode: "task_outcome_failed",
 		},
 	}
 	for _, tc := range cases {
