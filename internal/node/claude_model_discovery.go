@@ -42,6 +42,7 @@ func (r ExecCommandRunner) ObserveClaudeModels(ctx context.Context, binary strin
 		return nil, errors.New("Claude native model discovery unavailable")
 	}
 	defer func() {
+		_ = stdin.Close()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	}()
@@ -50,7 +51,6 @@ func (r ExecCommandRunner) ObserveClaudeModels(ctx context.Context, binary strin
 		_ = stdin.Close()
 		return nil, errors.New("Claude native model discovery unavailable")
 	}
-	_ = stdin.Close()
 	type observation struct {
 		models []core.ObservedModelID
 		err error
