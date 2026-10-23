@@ -825,6 +825,7 @@ type acpSession struct {
 	legacyTurnText          *strings.Builder
 	terminalMessageGrouping bool
 	codexMessagePhases      bool
+	codexCommandFailures     map[string]int
 	replaying               atomic.Bool
 	drainPromptEvents       bool
 
@@ -1845,6 +1846,7 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 	defer s.finishTurn()
 	s.textMu.Lock()
 	s.turnAnswer, s.legacyTurnText = nil, nil
+	s.codexCommandFailures = make(map[string]int)
 	if s.terminalMessageGrouping || s.codexMessagePhases {
 		s.turnAnswer = newACPTurnAnswer()
 	} else {
@@ -1886,6 +1888,8 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 		collected = legacyText
 	}
 	s.turnAnswer, s.legacyTurnText = nil, nil
+	failures := make(map[string]int, len(s.codexCommandFailures))
+	for id, code := range s.codexCommandFailures { failures[id] = code }
 	s.textMu.Unlock()
 	if err != nil {
 		var rpcErr *acp.RPCError
@@ -1946,7 +1950,18 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 			}
 		}
 	}
-	s.result <- Result{Status: status, Summary: response.Summary, CompletionEvidence: completionEvidence}
+	result := Result{Status: status, Summary: response.Summary, CompletionEvidence: completionEvidence}
+	if s.codexMessagePhases && status == "succeeded" && len(failures) != 0 {
+		if recovered, userText, ok := codexExplicitRecovery(response.Summary, failures); ok {
+			result.Summary = userText
+			_ = recovered
+		} else {
+			result.Status = "failed"
+			result.FailureCode = "tool_execution_failed"
+			result.Technical = codexCommandFailureDetails(failures)
+		}
+	}
+	s.result <- result
 	return nil
 }
 
@@ -2053,6 +2068,13 @@ func (s *acpSession) watch() {
 			}
 			s.textMu.Unlock()
 			for _, activity := range toolTracker.observe(kind, payload) {
+				if s.codexMessagePhases && activity.Kind == ActivityToolResult {
+					if code, ok := codexACPCommandExit(payload, activity); ok && code != 0 {
+						s.textMu.Lock()
+						if s.codexCommandFailures != nil { s.codexCommandFailures[activity.CallID] = code }
+						s.textMu.Unlock()
+					}
+				}
 				emit(activity)
 			}
 		default:
