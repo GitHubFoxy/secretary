@@ -1967,7 +1967,7 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 			}
 		}
 	}
-	if s.codexMessagePhases && systemError {
+	if s.codexMessagePhases && systemError && status != "canceled" {
 		status = "failed"
 		response.Summary = "Codex native runtime reported a system error."
 		if systemErrorText != "" {
@@ -1977,7 +1977,7 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 	originalSummary := response.Summary
 	if s.codexMessagePhases && status != "canceled" { response.Summary, _ = codexRecoveryText(response.Summary) }
 	result := Result{Status: status, Summary: response.Summary, CompletionEvidence: completionEvidence}
-	if s.codexMessagePhases && systemError {
+	if s.codexMessagePhases && systemError && status != "canceled" {
 		result.FailureCode = "native_model_error"
 	}
 	if s.codexMessagePhases && status == "succeeded" && len(failures) != 0 {
