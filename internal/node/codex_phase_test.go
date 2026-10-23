@@ -86,6 +86,10 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 				var params struct { Prompt []struct { Text string `json:"text"` } `json:"prompt"` }
 				if json.Unmarshal(req.Params,&params)!=nil || len(params.Prompt)!=1 || !strings.Contains(params.Prompt[0].Text,"ACP toolCallId=exec-7 exit_code=7") || recoveryPromptID==nil {t.Fatal("unverified native recovery ID was not offered to active turn")}
 				emit(map[string]any{"jsonrpc":"2.0","id":req.ID,"result":map[string]any{"outcome":"injected"}})
+				for _, update := range []map[string]any{
+					{"sessionUpdate":"tool_call","toolCallId":"exec-repair","name":"exec_command","kind":"execute","status":"in_progress","_meta":map[string]any{"terminal_info":map[string]any{"terminal_id":"exec-repair"}}},
+					{"sessionUpdate":"tool_call_update","toolCallId":"exec-repair","name":"exec_command","status":"completed","_meta":map[string]any{"terminal_exit":map[string]any{"terminal_id":"exec-repair","exit_code":0}}},
+				} { emit(map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":update}}) }
 				emit(codexPhaseFixtureChunk("msg_command_final","готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-recovery>","final_answer"))
 				emit(map[string]any{"jsonrpc":"2.0","id":recoveryPromptID,"result":map[string]any{"stopReason":"end_turn"}})
 				recoveryPromptID=nil
