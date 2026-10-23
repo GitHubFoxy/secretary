@@ -22,7 +22,13 @@ func (r ExecCommandRunner) ObserveClaudeModels(ctx context.Context, binary strin
 	if err != nil {
 		return nil, errors.New("Claude native model discovery unavailable")
 	}
-	cmd.Env = os.Environ()
+	cmd.Env = make([]string, 0, len(os.Environ())+1)
+	for _, variable := range os.Environ() {
+		if !strings.HasPrefix(variable, "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=") {
+			cmd.Env = append(cmd.Env, variable)
+		}
+	}
+	cmd.Env = append(cmd.Env, "CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1")
 	cmd.Stderr = io.Discard
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
