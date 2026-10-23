@@ -1993,7 +1993,7 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 }
 
 func (s *acpSession) offerCodexRecoveryID(ctx context.Context, id string, code int) {
-	if ctx.Err() != nil || !s.busyNow() { return }
+	if ctx.Err() != nil || !s.busyNow() || len(id) > 128 || !regexp.MustCompile("^exec-[A-Za-z0-9-]+$").MatchString(id) { return }
 	_, _ = s.Steer(ctx, fmt.Sprintf("Secretary verified native exec_command failure in this turn: ACP toolCallId=%s exit_code=%d. This identity is for explicit recovered_tool_use_ids only if you genuinely recover this exact failed command; an unrelated successful command is not recovery.", id, code))
 }
 
