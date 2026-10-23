@@ -24,6 +24,8 @@ diagnose_node_process() {
   if /usr/sbin/lsof -a -p "$PID" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | grep -Fqx -- "$executable"; then print -u2 -- "lsof_executable_exact=yes"; else print -u2 -- "lsof_executable_exact=no"; fi
   args="$(ps -ww -p "$PID" -o args= 2>/dev/null || true)"
   if [[ "$args" == "$executable --config $config" ]]; then print -u2 -- "ps_args_exact=yes"; else print -u2 -- "ps_args_exact=no"; fi
+  if [[ "$args" == "${executable:A} --config ${config:A}" ]]; then print -u2 -- "ps_canonical_args_exact=yes"; else print -u2 -- "ps_canonical_args_exact=no"; fi
+  if [[ "$config" == "${config:A}" ]]; then print -u2 -- "config_path_is_canonical=yes"; else print -u2 -- "config_path_is_canonical=no"; fi
   if ps -axo pid=,command= 2>/dev/null | grep -Fq -- "$executable --config $config"; then print -u2 -- "ps_candidate_listed=yes"; else print -u2 -- "ps_candidate_listed=no"; fi
   print -u2 -- "expected_canonical=${executable:A}"
   print -u2 -- "fixture_txt_executable_begin"
