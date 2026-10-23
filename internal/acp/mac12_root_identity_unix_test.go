@@ -37,6 +37,9 @@ func TestMAC1204UnverifiedRootCannotReportSuccessfulCleanup(t *testing.T) {
 	tracker := &acpDescendantTracker{
 		root: acpProcessIdentity{pid: 54321},
 		seen: map[int]acpProcessIdentity{54322: {pid:54322, group:54322, start:"Fri Oct 23 10:10:10 2026", state:"S"}},
+		snapshot: func() (map[int]acpProcessIdentity, error) {
+			return map[int]acpProcessIdentity{54322: {pid:54322, group:54322, start:"Fri Oct 23 10:10:10 2026", state:"S"}}, nil
+		},
 	}
 	cleanup, err := prepareACPDescendantCleanup(tracker)
 	if err == nil || !strings.Contains(err.Error(), "unverified") { t.Fatalf("unverified root accepted: %v", err) }
