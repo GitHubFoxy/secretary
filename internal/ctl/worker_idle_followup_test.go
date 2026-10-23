@@ -25,7 +25,7 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 	}
 	if os.Getenv("TEST_IDLE_CODEX") == "1" {
 		var overrides map[string]any
-		if json.Unmarshal([]byte(os.Getenv("CODEX_CONFIG")), &overrides) != nil || overrides["developer_instructions"] != "Synthetic instructions" {
+		if json.Unmarshal([]byte(os.Getenv("CODEX_CONFIG")), &overrides) != nil || overrides["developer_instructions"] != "Synthetic instructions\n\n"+node.CodexRecoveryInstruction {
 			os.Exit(2)
 		}
 	}

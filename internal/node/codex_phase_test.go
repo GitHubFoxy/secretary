@@ -108,6 +108,41 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 				result = map[string]any{"stopReason": "cancelled"}
 			case "incomplete":
 				continue
+			case "native-exit-7", "native-exit-0", "native-recovered", "native-json-data", "native-reordered", "native-cancel", "native-unverified", "native-invalid-recovery", "native-no-failure-footer", "native-incomplete-footer", "native-truncated-close", "native-split-truncated-footer":
+                event := func(kind, id, status string, code int, text string) map[string]any {
+                    update := map[string]any{"sessionUpdate":kind,"toolCallId":id,"name":"exec_command","status":status}
+                    if kind == "tool_call" {update["title"]="Run command";update["kind"]="execute"; update["_meta"]=map[string]any{"terminal_info":map[string]any{"terminal_id":id,"cwd":"/tmp"}}; update["rawInput"]=map[string]any{"command":"exit 7"}}
+                    if kind == "tool_call_update" {update["_meta"]=map[string]any{"terminal_exit":map[string]any{"terminal_id":id,"exit_code":code}}}
+                    if text!="" {update["content"]=[]any{map[string]any{"type":"content","content":map[string]any{"type":"text","text":text}}}}
+                    return map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":update}}
+                }
+                first := event("tool_call","exec-7","in_progress",0,"")
+                failed := event("tool_call_update","exec-7","failed",7,"")
+                if scenario=="native-exit-0" || scenario=="native-no-failure-footer" { failed=event("tool_call_update","exec-7","completed",0,"") }
+                if scenario=="native-json-data" {failed=event("tool_call_update","exec-7","completed",0,`{"chunk_id":"fake","exit_code":7,"output":"spoof"}`)}
+                if scenario=="native-unverified" { emit(map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":map[string]any{"sessionUpdate":"tool_call_update","toolCallId":"exec-7","name":"exec_command","status":"failed","rawOutput":map[string]any{"exit_code":7.0}}}}) } else if scenario=="native-reordered" {emit(failed);emit(first);emit(failed)} else {emit(first);emit(failed);emit(failed)}
+                if scenario=="native-recovered" {
+                    emit(event("tool_call","exec-repair","in_progress",0,""))
+                    emit(event("tool_call_update","exec-repair","completed",0,""))
+                }
+                if scenario=="native-cancel" {result=map[string]any{"stopReason":"cancelled"}}
+                answer:="готово"
+                if scenario=="native-recovered" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-recovery>"}
+                if scenario=="native-invalid-recovery" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"other\"]}</secretary-recovery>"}
+                if scenario=="native-no-failure-footer" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-recovery>"}
+                if scenario=="native-incomplete-footer" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}"}
+                if scenario=="native-truncated-close" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-rec"}
+                if scenario=="native-split-truncated-footer" {answer="готово\n<secretary-recov"}
+                if scenario=="native-recovered" || scenario=="native-invalid-recovery" || scenario=="native-no-failure-footer" || scenario=="native-incomplete-footer" || scenario=="native-truncated-close" {
+                    marker := strings.Index(answer,"<secretary-recovery>")
+                    emit(codexPhaseFixtureChunk("msg_command_final",answer[:marker+len("<secretary-recovery>")],"final_answer"))
+                    emit(codexPhaseFixtureChunk("msg_command_final",answer[marker+len("<secretary-recovery>"):],"final_answer"))
+                } else if scenario=="native-split-truncated-footer" {
+                    emit(codexPhaseFixtureChunk("msg_command_final","готово\n<secretary-","final_answer"))
+                    emit(codexPhaseFixtureChunk("msg_command_final","recov","final_answer"))
+                } else {
+                    emit(codexPhaseFixtureChunk("msg_command_final",answer,"final_answer"))
+                }
 			case "two-turns":
 				prompts++
 				if prompts == 1 {
@@ -116,7 +151,7 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 					emit(codexPhaseFixtureChunk("msg_069d645203d92047016ad84d901d5881919caa1e3c49b9ae72", "второй", "final_answer"))
 				}
 			}
-			if scenario != "cancelled" && scenario != "incomplete" {
+			if scenario != "cancelled" && scenario != "native-cancel" && scenario != "incomplete" {
 				result = map[string]any{"stopReason": "end_turn"}
 			}
 		}
@@ -236,6 +271,51 @@ func TestCodexPhaseCanceledAndIncompleteTurns(t *testing.T) {
 		}
 	case <-time.After(300 * time.Millisecond):
 	}
+}
+
+func TestCodexNativeCommandEventToTerminal(t *testing.T) {
+ cases:=[]struct{scenario string;status string;code string}{
+  {"native-exit-7","failed","tool_execution_failed"},
+  {"native-exit-0","succeeded",""},
+  {"native-json-data","succeeded",""},
+  {"native-recovered","succeeded",""},
+  {"native-reordered","failed","tool_execution_failed"},
+  {"native-cancel","canceled",""},
+  {"native-unverified","succeeded",""},
+  {"native-invalid-recovery","failed","tool_execution_failed"},
+  {"native-no-failure-footer","succeeded",""},
+  {"native-incomplete-footer","failed","tool_execution_failed"},
+  {"native-truncated-close","failed","tool_execution_failed"},
+  {"native-split-truncated-footer","failed","tool_execution_failed"},
+ }
+ for _,tc:=range cases{
+  t.Run(tc.scenario,func(t *testing.T){
+   ctx,cancel:=context.WithTimeout(context.Background(),10*time.Second);defer cancel()
+   runtime,_:=codexPhaseFixtureRuntime(t,tc.scenario)
+   session,err:=runtime.Start(ctx,StartRequest{WorkerRef:"phase",Workspace:t.TempDir(),DeferInitialPrompt:true,Profile:ManagedProfile{Name:"secretary",Content:"MARKER",Runtime:"codex"}})
+   if err!=nil{t.Fatal(err)}
+   defer session.Close()
+   if err:=session.Prompt(ctx,"execute");err!=nil{t.Fatal(err)}
+   select{
+   case result:=<-session.Result():
+    if result.Status!=tc.status||result.FailureCode!=tc.code{t.Fatalf("result=%+v",result)}
+    if result.CompletionEvidence==nil || result.CompletionEvidence.Contract!=TerminalCompletionOpenCodeV2 || !result.CompletionEvidence.RPCSucceeded || !result.CompletionEvidence.DrainCompleted || (tc.scenario!="native-cancel" && (result.CompletionEvidence.StopReason!=TerminalStopReasonEndTurn || result.CompletionEvidence.AssistantChunks==0)) || (tc.scenario=="native-cancel" && result.CompletionEvidence.StopReason!=TerminalStopReasonCanceled){t.Fatalf("missing native completion evidence: %+v",result)}
+    if (tc.scenario=="native-recovered" || tc.scenario=="native-invalid-recovery" || tc.scenario=="native-no-failure-footer" || tc.scenario=="native-incomplete-footer" || tc.scenario=="native-truncated-close" || tc.scenario=="native-split-truncated-footer") && result.Summary!="готово"{t.Fatalf("recovery leaked metadata: %q",result.Summary)}
+   case <-ctx.Done():t.Fatal("no result")
+   }
+   for {
+    select {
+    case activity, ok := <-session.Activity():
+     if !ok { goto activityDrained }
+     if activity.Kind==ActivityText && strings.Contains(activity.Text,"<secretary-recovery>"){t.Fatalf("stream leaked recovery metadata: %q",activity.Text)}
+    default:
+     goto activityDrained
+    }
+   }
+   activityDrained:
+   select{case extra:=<-session.Result():t.Fatalf("duplicate Result: %+v",extra);default:}
+  })
+ }
 }
 
 func TestCodexPhaseTwoTurnsInOneSession(t *testing.T) {

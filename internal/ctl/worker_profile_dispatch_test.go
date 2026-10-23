@@ -432,6 +432,7 @@ func workerTemplateRoundTrip(t *testing.T, skills []node.ManagedSkill, tools []s
 		// case the checkpoint still exists and a closed session needs no cancel.
 		t.Fatalf("synthetic Node restart boundary failed: outcome=%#v err=%v", outcome, err)
 	}
+	awaitWorkerTemplateCommandTerminal(t, nodeState, "profile-native-start")
 	if err := nodeState.Close(); err != nil {
 		t.Fatal("Node store close failed")
 	}
@@ -474,6 +475,27 @@ func workerTemplateRoundTrip(t *testing.T, skills []node.ManagedSkill, tools []s
 	if _, err := resumedExecution.HandleCommand(ctx, stopResumed); err != nil {
 		t.Fatal("synthetic resumed process cleanup failed")
 	}
+	resumedRecord, err := nodeState.Command("profile-native-resume")
+	if err != nil { t.Fatal(err) }
+	if resumedRecord.Outcome.State != node.CommandAccepted { t.Fatalf("deferred resume was not accepted: %+v", resumedRecord.Outcome) }
+}
+
+
+func awaitWorkerTemplateCommandTerminal(t *testing.T, store *node.LocalStore, id string) {
+ t.Helper()
+ deadline := time.NewTimer(5 * time.Second)
+ defer deadline.Stop()
+ poll := time.NewTicker(5 * time.Millisecond)
+ defer poll.Stop()
+ for {
+  record, err := store.Command(id)
+  if err != nil { t.Fatal(err) }
+  if record.TerminalOutcomeQueued { return }
+  select {
+  case <-deadline.C: t.Fatalf("synthetic command %s did not persist terminal receipt before teardown",id)
+  case <-poll.C:
+  }
+ }
 }
 
 func validWorkerProfileEvidence(evidence workerProfileProcessReport) bool {
