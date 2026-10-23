@@ -30,6 +30,11 @@ func TestMAC1204CodexCancelKillsDetachedToolHost(t *testing.T) {
 		scanner := bufio.NewScanner(os.Stdin)
 		for scanner.Scan() {
 			if strings.Contains(scanner.Text(), "session/cancel") {
+				late := exec.Command("/bin/sleep", "45")
+				late.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+				if err := late.Start(); err != nil { os.Exit(3) }
+				_ = os.WriteFile(os.Getenv("MAC1204_LATE_PID_FILE"), []byte(strconv.Itoa(late.Process.Pid)), 0600)
+				time.Sleep(180 * time.Millisecond)
 				os.Exit(0)
 			}
 		}
@@ -39,9 +44,11 @@ func TestMAC1204CodexCancelKillsDetachedToolHost(t *testing.T) {
 	defer stop()
 	pidFile := filepath.Join(t.TempDir(), "sleep.pid")
 	rootPIDFile := filepath.Join(filepath.Dir(pidFile), "root.pid")
+	latePIDFile := filepath.Join(filepath.Dir(pidFile), "late.pid")
 	t.Setenv("MAC1204_HELPER", "1")
 	t.Setenv("MAC1204_PID_FILE", pidFile)
 	t.Setenv("MAC1204_ROOT_PID_FILE", rootPIDFile)
+	t.Setenv("MAC1204_LATE_PID_FILE", latePIDFile)
 	client, err := acp.Start(ctx, os.Args[0], "-test.run=^TestMAC1204CodexCancelKillsDetachedToolHost$")
 	if err != nil {
 		t.Fatal(err)
@@ -104,6 +111,17 @@ func TestMAC1204CodexCancelKillsDetachedToolHost(t *testing.T) {
 		if err != nil || strings.HasPrefix(state, "Z") { break }
 		if time.Since(started) > 2*time.Second { t.Fatal("native Codex process survived cancellation") }
 		time.Sleep(20*time.Millisecond)
+	}
+	if lateBytes, err := os.ReadFile(latePIDFile); err != nil {
+		t.Fatalf("late Codex tool host was not spawned during cancellation: %v", err)
+	} else {
+		latePID, err := strconv.Atoi(strings.TrimSpace(string(lateBytes)))
+		if err != nil { t.Fatal(err) }
+		defer func() { _ = syscall.Kill(latePID, syscall.SIGKILL) }()
+		state, err := processState(latePID)
+		if err == nil && !strings.HasPrefix(state, "Z") {
+			t.Fatalf("late Codex tool host survived cancellation: pid=%d state=%s", latePID, state)
+		}
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("Codex detached tool cleanup took %v", elapsed)
