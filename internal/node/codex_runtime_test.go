@@ -356,3 +356,24 @@ func TestCodexSecretaryAddressedMCPServerReachesNativeACP(t *testing.T) {
  defer session.Close()
  if session.ID() != "mcp-wire-session" { t.Fatalf("native session ID = %q", session.ID()) }
 }
+
+
+func TestCodexWorkerFullAccessNativeConfigWithoutGlobalMutation(t *testing.T) {
+ for _,tc:=range []struct{name string;profile ManagedProfile;worker bool}{
+  {"worker",ManagedProfile{Name:"worker",Content:"work",Runtime:"codex"},true},
+  {"secretary",ManagedProfile{Name:"secretary",Content:"answer",Runtime:"codex"},false},
+ } {
+  t.Run(tc.name,func(t *testing.T){
+   runtime:=CodexRuntime{ACPRuntime:ACPRuntime{Command:"fixture",Environment:[]string{`CODEX_CONFIG={"model":"existing-model","sandbox_mode":"workspace-write","approval_policy":"on-request"}`}}}
+   configured,err:=runtime.configured(StartRequest{WorkerRef:"fixture",Workspace:t.TempDir(),Profile:tc.profile})
+   if err!=nil {t.Fatal(err)}
+   var config map[string]any
+   for _,entry:=range configured.Environment {if strings.HasPrefix(entry,"CODEX_CONFIG=") {if err:=json.Unmarshal([]byte(strings.TrimPrefix(entry,"CODEX_CONFIG=")),&config);err!=nil {t.Fatal(err)}}}
+   if config["model"]!="existing-model" {t.Fatalf("model changed: %v",config)}
+   if tc.worker {
+    if config["sandbox_mode"]!="danger-full-access"||config["approval_policy"]!="never" {t.Fatalf("Worker native permissions not full access: %v",config)}
+   } else if config["sandbox_mode"]!="workspace-write"||config["approval_policy"]!="on-request" {t.Fatalf("Secretary native permissions changed: %v",config)}
+   if os.Getenv("CODEX_CONFIG")!= "" && strings.Contains(os.Getenv("CODEX_CONFIG"),"danger-full-access") {t.Fatal("global native environment unexpectedly altered")}
+  })
+ }
+}

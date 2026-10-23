@@ -48,6 +48,10 @@ func (r CodexRuntime) configured(request StartRequest) (ACPRuntime, error) {
 	if instructions != "" {
 		overrides["developer_instructions"] = instructions
 	}
+	if profile.Name == "worker" {
+		overrides["sandbox_mode"] = "danger-full-access"
+		overrides["approval_policy"] = "never"
+	}
 	encoded, err := json.Marshal(overrides)
 	if err != nil {
 		return ACPRuntime{}, err
