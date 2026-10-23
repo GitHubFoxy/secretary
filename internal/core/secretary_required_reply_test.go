@@ -205,3 +205,39 @@ func TestCodexMissingReplyDiagnosticReflectsAcceptedSpawnAndSurvivesRestart(t *t
   })
  }
 }
+
+func TestAcknowledgedFailedLegacyTurnPersistsOneOwnerExplanation(t *testing.T) {
+ ctx := context.Background()
+ store, err := Open(ctx,filepath.Join(t.TempDir(),"failed-secretary.db"))
+ if err != nil { t.Fatal(err) }
+ defer store.Close()
+ person,conversation,err := store.CreatePersonWithConversation(ctx)
+ if err != nil { t.Fatal(err) }
+ identity,err := store.EnsureSecretaryIdentity(ctx,person.ID,conversation.ID)
+ if err != nil { t.Fatal(err) }
+ capability,err := store.RotateSecretaryCapability(ctx,person.ID)
+ if err != nil { t.Fatal(err) }
+ turn,err := store.EnqueueSecretaryTurn(ctx,identity.ID,"spawn worker")
+ if err != nil { t.Fatal(err) }
+ turn,err = store.StartSecretaryTurn(ctx,turn.ID)
+ if err != nil { t.Fatal(err) }
+ if _,_,err=store.RecordSecretaryAcknowledgement(ctx,person.ID,capability,turn.ID,turn.InputID,"Сейчас запущу Worker");err!=nil {t.Fatal(err)}
+ explanation:="Ошибка: выбранный harness не поддерживает reasoning."
+ done,_,err:=store.FinishSecretaryTurnWithResponse(ctx,turn.ID,SecretaryTurnFailed,explanation,"")
+ if err!=nil || done.State!=SecretaryTurnFailed || done.Error!=explanation { t.Fatalf("completion=%+v err=%v",done,err) }
+ entries,err:=store.EntriesAfter(ctx,conversation.ID,0)
+ if err!=nil {t.Fatal(err)}
+ ack,terminal:=0,0
+ for _,e:=range entries {
+  if e.TurnID!=turn.ID {continue}
+  if e.Body=="Сейчас запущу Worker" {ack++}
+  if e.Body==explanation {terminal++}
+ }
+ if ack!=1||terminal!=1 {t.Fatalf("ack=%d terminal=%d",ack,terminal)}
+ if _,_,err:=store.FinishSecretaryTurnWithResponse(ctx,turn.ID,SecretaryTurnFailed,explanation,"");err==nil {t.Fatal("terminal completion duplicated")}
+ entries,err=store.EntriesAfter(ctx,conversation.ID,0)
+ if err!=nil {t.Fatal(err)}
+ terminal=0
+ for _,e:=range entries {if e.TurnID==turn.ID && e.Body==explanation {terminal++}}
+ if terminal!=1 {t.Fatalf("terminal replay duplicated: %d",terminal)}
+}
