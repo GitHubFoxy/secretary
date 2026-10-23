@@ -343,7 +343,7 @@ func TestAddressedReplyACPFixtureProcess(t *testing.T) {
 				if err := json.Unmarshal([]byte(os.Getenv("CODEX_CONFIG")), &config); err != nil { t.Fatal(err) }
 				instructions, _ := config["developer_instructions"].(string)
 				if !strings.Contains(instructions, "reply_kind=spawn_worker") || !strings.Contains(instructions, "action_turn_id") { t.Fatal("generated profile not delivered to Codex process") }
-				cmd := exec.Command(os.Args[0], "-test.run=^TestMAC12MCPFixtureProcess$")
+				cmd := exec.Command(mcpServer.Command, append(mcpServer.Args, "-test.run=^TestMAC12MCPFixtureProcess$")...)
 				cmd.Env = append([]string{}, os.Environ()...)
 				cmd.Env = append(cmd.Env, "TEST_MAC12_MCP=1")
 				for _, variable := range mcpServer.Env { cmd.Env = append(cmd.Env, variable.Name+"="+variable.Value) }
