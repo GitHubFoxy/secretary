@@ -10,6 +10,12 @@ cleanup() {
   rm -rf "$TEST_HOME"
 }
 trap cleanup EXIT
+write_fixture_identity() {
+  local config="$1" name="$2" start
+  start="$(ps -p "$PID" -o lstart= | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+  printf '%s\n%s\n%s\n' "$PID" "$start" "$name" > "$config.process"
+  chmod 600 "$config.process"
+}
 diagnose_node_process() {
   local executable="$1" config="$2" output="$3" args=""
   print -u2 -- "MAC12-02 discovery failure: expected_pid=$PID"
@@ -19,6 +25,10 @@ diagnose_node_process() {
   args="$(ps -ww -p "$PID" -o args= 2>/dev/null || true)"
   if [[ "$args" == "$executable --config $config" ]]; then print -u2 -- "ps_args_exact=yes"; else print -u2 -- "ps_args_exact=no"; fi
   if ps -axo pid=,command= 2>/dev/null | grep -Fq -- "$executable --config $config"; then print -u2 -- "ps_candidate_listed=yes"; else print -u2 -- "ps_candidate_listed=no"; fi
+  print -u2 -- "expected_canonical=${executable:A}"
+  print -u2 -- "fixture_txt_executable_begin"
+  /usr/sbin/lsof -a -p "$PID" -d txt -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 6 >&2 || true
+  print -u2 -- "fixture_txt_executable_end"
   print -u2 -- "node_status_running=$([[ "$output" == *"Node running pid=$PID "* ]] && print yes || print no)"
 }
 
@@ -43,9 +53,10 @@ printf '{"node":"test-app-node","server_url":"http://127.0.0.1:8081","data_dir":
 PID="$!"
 sleep 1
 kill -0 "$PID"
+write_fixture_identity "$CONFIG" test-app-node
 
 node_output="$("$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=unknown configured_identity=test-app-node outbound-only"* ]] || { diagnose_node_process "$BIN" "$CONFIG" "$node_output"; print -u2 -- "$node_output"; exit 1; }
+[[ "$node_output" == *"Node running pid=$PID identity=test-app-node configured_identity=test-app-node outbound-only"* ]] || { diagnose_node_process "$BIN" "$CONFIG" "$node_output"; print -u2 -- "$node_output"; exit 1; }
 status_output="$("$ROOT/secretary" status)"
 [[ "$status_output" == *"running Execution node: pid=$PID "* ]] || { print -u2 -- "$status_output"; exit 1; }
 
@@ -58,7 +69,7 @@ node_output="$("$ROOT/secretary" node status)"
 
 printf '{"node":"other-node","server_url":"http://127.0.0.1:8081","data_dir":"%s"}\n' "$TEST_HOME/.local/share/secretary/node/data" > "$CONFIG"
 node_output="$("$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=unknown configured_identity=other-node"* ]] || exit 1
+[[ "$node_output" == *"Node running pid=$PID identity=test-app-node configured_identity=other-node"* ]] || exit 1
 
 kill "$PID"
 wait "$PID" 2>/dev/null || true
@@ -72,8 +83,9 @@ printf '{"node":"standalone-node","server_url":"http://127.0.0.1:8081","data_dir
 "$STANDALONE" --config "$STANDALONE_CONFIG" &
 PID="$!"
 sleep 1
+write_fixture_identity "$STANDALONE_CONFIG" standalone-node
 node_output="$("$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=unknown configured_identity=standalone-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
+[[ "$node_output" == *"Node running pid=$PID identity=standalone-node configured_identity=standalone-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
 status_output="$("$ROOT/secretary" status)"
 [[ "$status_output" == *"running Execution node: pid=$PID "* ]] || exit 1
 
@@ -84,12 +96,13 @@ wait "$PID" 2>/dev/null || true
 SECRETARY_NODE_EXECUTABLE="$STANDALONE" SECRETARY_NODE_CONFIG="$OVERRIDE" "$STANDALONE" --config "$OVERRIDE" &
 PID="$!"
 sleep 1
+write_fixture_identity "$OVERRIDE" override-node
 node_output="$(SECRETARY_NODE_EXECUTABLE="$STANDALONE" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=unknown configured_identity=override-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
+[[ "$node_output" == *"Node running pid=$PID identity=override-node configured_identity=override-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
 mkdir -p "$HOME/Library/LaunchAgents"
 touch "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
 node_output="$(SECRETARY_NODE_EXECUTABLE="$STANDALONE" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=unknown configured_identity=override-node"* ]] || exit 1
+[[ "$node_output" == *"Node running pid=$PID identity=override-node configured_identity=override-node"* ]] || exit 1
 rm "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
 
 kill "$PID"
@@ -100,8 +113,9 @@ cp "$BIN" "$CUSTOM"
 SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$OVERRIDE" "$CUSTOM" --config "$OVERRIDE" &
 PID="$!"
 sleep 1
+write_fixture_identity "$OVERRIDE" override-node
 node_output="$(SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=unknown configured_identity=override-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
+[[ "$node_output" == *"Node running pid=$PID identity=override-node configured_identity=override-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
 status_output="$(SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" status)"
 [[ "$status_output" == *"running Execution node: pid=$PID "* ]] || exit 1
 
