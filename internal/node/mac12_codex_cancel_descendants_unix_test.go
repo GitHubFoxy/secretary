@@ -19,6 +19,14 @@ import (
 )
 
 func TestMAC1204CodexCancelKillsDetachedToolHost(t *testing.T) {
+	testMAC1204Cancel(t, false)
+}
+
+func TestMAC1204CodexCancelCleansDescendantsAfterNativeWriteFailure(t *testing.T) {
+	testMAC1204Cancel(t, true)
+}
+
+func testMAC1204Cancel(t *testing.T, failedWrite bool) {
 	if os.Getenv("MAC1204_HELPER") == "1" {
 		_ = os.WriteFile(os.Getenv("MAC1204_ROOT_PID_FILE"), []byte(strconv.Itoa(os.Getpid())), 0600)
 		child := exec.Command("/bin/sleep", "45")
@@ -27,6 +35,11 @@ func TestMAC1204CodexCancelKillsDetachedToolHost(t *testing.T) {
 			os.Exit(2)
 		}
 		_ = os.WriteFile(os.Getenv("MAC1204_PID_FILE"), []byte(strconv.Itoa(child.Process.Pid)), 0600)
+		if os.Getenv("MAC1204_CLOSE_INPUT") == "1" {
+			_ = os.Stdin.Close()
+			time.Sleep(600 * time.Millisecond)
+			os.Exit(0)
+		}
 		scanner := bufio.NewScanner(os.Stdin)
 		for scanner.Scan() {
 			if strings.Contains(scanner.Text(), "session/cancel") {
@@ -46,6 +59,7 @@ func TestMAC1204CodexCancelKillsDetachedToolHost(t *testing.T) {
 	rootPIDFile := filepath.Join(filepath.Dir(pidFile), "root.pid")
 	latePIDFile := filepath.Join(filepath.Dir(pidFile), "late.pid")
 	t.Setenv("MAC1204_HELPER", "1")
+	if failedWrite { t.Setenv("MAC1204_CLOSE_INPUT", "1") }
 	t.Setenv("MAC1204_PID_FILE", pidFile)
 	t.Setenv("MAC1204_ROOT_PID_FILE", rootPIDFile)
 	t.Setenv("MAC1204_LATE_PID_FILE", latePIDFile)
@@ -93,7 +107,10 @@ func TestMAC1204CodexCancelKillsDetachedToolHost(t *testing.T) {
 	session := newACPSession("native-session", client, true)
 	session.codexMessagePhases = true
 	started := time.Now()
-	if err := session.Cancel(ctx); err != nil {
+	err = session.Cancel(ctx)
+	if failedWrite {
+		if err == nil { t.Fatal("native write failure was not propagated") }
+	} else if err != nil {
 		t.Fatal(err)
 	}
 	for {
@@ -112,6 +129,7 @@ func TestMAC1204CodexCancelKillsDetachedToolHost(t *testing.T) {
 		if time.Since(started) > 2*time.Second { t.Fatal("native Codex process survived cancellation") }
 		time.Sleep(20*time.Millisecond)
 	}
+	if !failedWrite {
 	if lateBytes, err := os.ReadFile(latePIDFile); err != nil {
 		t.Fatalf("late Codex tool host was not spawned during cancellation: %v", err)
 	} else {
@@ -122,6 +140,7 @@ func TestMAC1204CodexCancelKillsDetachedToolHost(t *testing.T) {
 		if err == nil && !strings.HasPrefix(state, "Z") {
 			t.Fatalf("late Codex tool host survived cancellation: pid=%d state=%s", latePID, state)
 		}
+	}
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("Codex detached tool cleanup took %v", elapsed)
