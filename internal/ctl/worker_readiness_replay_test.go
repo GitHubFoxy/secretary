@@ -34,6 +34,8 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 		t.Fatal(err)
 	}
 	defer local.Close()
+	exitReport := filepath.Join(t.TempDir(), "synthetic-acp-exit")
+	t.Setenv("TEST_IDLE_EXIT_REPORT", exitReport)
 	runtime := node.ACPRuntime{Command: os.Args[0], Arguments: []string{"-test.run=^TestIdleFollowUpACPProcess$"}, DrainPromptEvents: true, TerminalMessageGrouping: true}
 	execution := node.NewExecutionNode("synthetic-node", runtime, local)
 	instance := core.HarnessInstance{ID: "synthetic-node/opencode", Node: "synthetic-node", Kind: core.HarnessOpenCode, Version: "2.0.22", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}, ModelIDs: []core.ObservedModelID{"fixture/model"}}
@@ -233,7 +235,8 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 	} else {
 		finish := node.Command{Kind: node.CommandSteering, Steering: &node.SteeringCommand{Metadata: meta("finish", envelope), Text: "finish-held"}}
 		if o, e := execution.HandleCommand(ctx, finish); e != nil || o.State != node.CommandAccepted {
-			t.Fatalf("held fixture finish failed: outcome=%+v err=%v", o, e)
+			exitLocation, readErr := os.ReadFile(exitReport)
+			t.Fatalf("held fixture finish failed: outcome=%+v err=%v synthetic_exit=%q exit_report_err=%v", o, e, string(exitLocation), readErr)
 		}
 		await(envelope.AttemptID)
 		replay, err = execution.HandleCommand(ctx, command)

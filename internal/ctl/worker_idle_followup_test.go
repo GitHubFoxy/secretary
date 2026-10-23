@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -19,6 +20,14 @@ import (
 	"github.com/beruseruko/secretary/internal/node"
 )
 
+func idleFixtureExit() {
+ if path := os.Getenv("TEST_IDLE_EXIT_REPORT"); path != "" {
+  _, file, line, _ := runtime.Caller(1)
+  _ = os.WriteFile(path, []byte(fmt.Sprintf("%s:%d", filepath.Base(file), line)), 0600)
+ }
+ os.Exit(2)
+}
+
 func TestIdleFollowUpACPProcess(t *testing.T) {
 	if !testProcessHasArgument("-test.run=^TestIdleFollowUpACPProcess$") {
 		return
@@ -26,7 +35,7 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 	if os.Getenv("TEST_IDLE_CODEX") == "1" {
 		var overrides map[string]any
 		if json.Unmarshal([]byte(os.Getenv("CODEX_CONFIG")), &overrides) != nil || overrides["developer_instructions"] != "Synthetic instructions\n\n"+node.CodexRecoveryInstruction {
-			os.Exit(2)
+			idleFixtureExit()
 		}
 	}
 	encoder := json.NewEncoder(os.Stdout)
@@ -40,7 +49,7 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 			Params json.RawMessage `json:"params"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &req) != nil {
-			os.Exit(2)
+			idleFixtureExit()
 		}
 		if req.Method == "session/cancel" {
 			return
@@ -59,15 +68,15 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 				SessionID string            `json:"sessionId"`
 			}
 			if json.Unmarshal(req.Params, &p) != nil {
-				os.Exit(2)
+				idleFixtureExit()
 			}
 			if os.Getenv("TEST_IDLE_CODEX") == "1" && p.Meta["secretaryProfileDelivery"] != "native" {
-				os.Exit(2)
+				idleFixtureExit()
 			}
 			workspace = p.Cwd
 			if os.Getenv("TEST_IDLE_CODEX") == "1" {
 				if _, err := os.Stat(filepath.Join(workspace, "AGENTS.md")); err == nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 			}
 			operation := "L"
@@ -76,29 +85,29 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 			}
 			file, err := os.OpenFile(filepath.Join(workspace, "private-session-operations"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 			if err != nil {
-				os.Exit(2)
+				idleFixtureExit()
 			}
 			if _, err = file.WriteString(operation); err != nil {
-				os.Exit(2)
+				idleFixtureExit()
 			}
 			file.Close()
 			if req.Method == "session/new" {
 				f, err := os.CreateTemp(workspace, "private-native-*")
 				if err != nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 				id = filepath.Base(f.Name())
 				f.Close()
 			} else {
 				id = p.SessionID
 				if _, err := os.Stat(filepath.Join(workspace, id)); err != nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 			}
 			if os.Getenv("TEST_IDLE_CODEX") == "1" {
 				writer, err := os.OpenFile(filepath.Join(workspace, id+"-writer"), os.O_CREATE|os.O_RDWR, 0600)
 				if err != nil || syscall.Flock(int(writer.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 				defer writer.Close()
 			}
@@ -110,7 +119,7 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 				} `json:"prompt"`
 			}
 			if json.Unmarshal(req.Params, &p) != nil {
-				os.Exit(2)
+				idleFixtureExit()
 			}
 			if len(p.Prompt) > 0 && p.Prompt[0].Text == "finish-held" && len(heldPromptID) > 0 {
 				encoder.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": id, "update": map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": "private-final", "_meta": map[string]any{"codex": map[string]string{"phase": "final_answer"}}, "content": map[string]string{"type": "text", "text": "held complete"}}}})
@@ -125,26 +134,26 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 				} `json:"prompt"`
 			}
 			if json.Unmarshal(req.Params, &p) != nil || len(p.Prompt) == 0 {
-				os.Exit(2)
+				idleFixtureExit()
 			}
 			if p.Prompt[0].Text == "hold" {
 				heldPromptID = append(json.RawMessage(nil), req.ID...)
 				file, err := os.OpenFile(filepath.Join(workspace, "private-held-prompts"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 				if err != nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 				if _, err = file.WriteString("H"); err != nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 				file.Close()
 				if os.WriteFile(filepath.Join(workspace, "private-hold-ready"), []byte("ready"), 0600) != nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 				continue
 			}
 			if p.Prompt[0].Text == "recall" {
 				if os.WriteFile(filepath.Join(workspace, "private-recall-sent"), []byte("sent"), 0600) != nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 			}
 			summary := "remembered=false"
