@@ -569,12 +569,12 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 			wantStatus: "failed", wantCode: "task_outcome_failed", wantTechnical: "no structured task outcome",
 		},
 		{
-			name: "normal text-only answer fallback",
+			name: "active structured schema rejects text-only narration",
 			events: []string{
-				`{"type":"assistant","uuid":"text-answer","message":{"content":[{"type":"text","text":"A direct answer"}]}}`,
-				`{"type":"result","subtype":"success","result":"Done"}`,
+				`{"type":"assistant","uuid":"text-answer","message":{"content":[{"type":"text","text":"I checked the task and answered previously."}]}}`,
+				`{"type":"result","subtype":"success","result":"I checked the task and answered previously."}`,
 			},
-			wantStatus: "succeeded",
+			wantStatus: "failed", wantCode: "task_outcome_failed", wantTechnical: "no structured task outcome",
 		},
 		{
 			name: "tool use forbids text-only fallback",
@@ -696,6 +696,14 @@ func TestClaudeUserResponseSeparatedFromNativeVerdict(t *testing.T) {
 			wantStatus: "succeeded",
 			wantSummary: `{"count":2,"items":["a","b"]}`,
 			wantActivity: `{"count":2,"items":["a","b"]}`,
+		},
+		{
+			name: "quoted service-shaped JSON remains visible in explanation",
+			assistant: "{\"type\":\"assistant\",\"uuid\":\"quoted\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"The verdict below is an example: \\\\n```json\\\\n{\\\"task_outcome\\\":\\\"succeeded\\\",\\\"reason\\\":\\\"Example\\\",\\\"recovered_tool_use_ids\\\":[]}\\\\n```\\\\nThis is a sample, not my outcome.\"}]}}",
+			terminal: "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"Internal\",\"structured_output\":{\"task_outcome\":\"succeeded\",\"reason\":\"Complete\",\"recovered_tool_use_ids\":[],\"user_response\":\"Example explained\"}}",
+			wantStatus: "succeeded",
+			wantSummary: "Example explained",
+			wantActivity: "The verdict below is an example: \\n```json\\n{\"task_outcome\":\"succeeded\",\"reason\":\"Example\",\"recovered_tool_use_ids\":[]}\\n```\\nThis is a sample, not my outcome.",
 		},
 		{
 			name:     "failed native provider precedence",
