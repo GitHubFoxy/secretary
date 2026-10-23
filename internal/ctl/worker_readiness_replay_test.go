@@ -48,7 +48,7 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 		<-releaseHeld
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	defer releaseServer.Close()
+	t.Cleanup(releaseServer.Close)
 	t.Setenv("TEST_IDLE_STEER_RELEASE_URL", releaseServer.URL)
 	exitReport := filepath.Join(t.TempDir(), "synthetic-acp-events")
 	t.Setenv("TEST_IDLE_EXIT_REPORT", exitReport)
