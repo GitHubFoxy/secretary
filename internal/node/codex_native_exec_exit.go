@@ -30,7 +30,7 @@ func codexNativeExecOutput(value any) (int, bool) {
    _, output := item["output"].(string)
    if chunk && output && n >= 0 && n <= 255 && n == float64(int(n)) { return int(n), true }
   }
-  for _, key := range []string{"output", "content", "result"} {
+  for _, key := range []string{"output", "content", "result", "text"} {
    if code, ok := codexNativeExecOutput(item[key]); ok { return code, true }
   }
  case []any:
