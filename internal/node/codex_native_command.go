@@ -52,9 +52,15 @@ func codexCommandFailureDetails(failures map[string]int) string {
 }
 
 func codexRecoveryText(summary string) (string, bool) {
- const start = "\n<secretary-recovery>"
- const end = "</secretary-recovery>"
- index := strings.LastIndex(summary, start)
- if index < 0 || !strings.HasSuffix(strings.TrimSpace(summary), end) { return summary, false }
- return strings.TrimSpace(summary[:index]), true
+ const start = "<secretary-recovery>"
+ const minimum = "<secretary-"
+ index := strings.LastIndex(summary, "\n")
+ for index >= 0 {
+  candidate := strings.TrimSpace(summary[index+1:])
+  if strings.HasPrefix(candidate, start) || (len(candidate) >= len(minimum) && strings.HasPrefix(start, candidate)) {
+   return strings.TrimSpace(summary[:index]), true
+  }
+  index = strings.LastIndex(summary[:index], "\n")
+ }
+ return summary, false
 }
