@@ -130,7 +130,13 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
                 if scenario=="native-recovered" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-recovery>"}
                 if scenario=="native-invalid-recovery" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"other\"]}</secretary-recovery>"}
                 if scenario=="native-no-failure-footer" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-recovery>"}
-                emit(codexPhaseFixtureChunk("msg_command_final",answer,"final_answer"))
+                if scenario=="native-recovered" || scenario=="native-invalid-recovery" || scenario=="native-no-failure-footer" {
+                    marker := strings.Index(answer,"<secretary-recovery>")
+                    emit(codexPhaseFixtureChunk("msg_command_final",answer[:marker+len("<secretary-recovery>")],"final_answer"))
+                    emit(codexPhaseFixtureChunk("msg_command_final",answer[marker+len("<secretary-recovery>"):],"final_answer"))
+                } else {
+                    emit(codexPhaseFixtureChunk("msg_command_final",answer,"final_answer"))
+                }
 			case "two-turns":
 				prompts++
 				if prompts == 1 {
