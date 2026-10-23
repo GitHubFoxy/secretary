@@ -828,6 +828,8 @@ type acpSession struct {
 	codexCommandFailures     map[string]int
 	codexNativeStarts map[string]bool
 	codexPendingExits map[string]int
+	codexSystemError bool
+	codexSystemErrorText string
 	replaying               atomic.Bool
 	drainPromptEvents       bool
 
@@ -1851,6 +1853,8 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 	s.codexCommandFailures = make(map[string]int)
 	s.codexNativeStarts = make(map[string]bool)
 	s.codexPendingExits = make(map[string]int)
+	s.codexSystemError = false
+	s.codexSystemErrorText = ""
 	if s.terminalMessageGrouping || s.codexMessagePhases {
 		s.turnAnswer = newACPTurnAnswer()
 	} else {
@@ -1892,6 +1896,8 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 		collected = legacyText
 	}
 	s.turnAnswer, s.legacyTurnText = nil, nil
+	systemError := s.codexSystemError
+	systemErrorText := s.codexSystemErrorText
 	failures := make(map[string]int)
 	for id, code := range s.codexPendingExits { if s.codexNativeStarts[id] && code != 0 { failures[id] = code } }
 	s.textMu.Unlock()
@@ -1954,9 +1960,19 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 			}
 		}
 	}
+	if s.codexMessagePhases && systemError {
+		status = "failed"
+		response.Summary = "Codex native runtime reported a system error."
+		if systemErrorText != "" {
+			response.Summary = systemErrorText
+		}
+	}
 	originalSummary := response.Summary
 	if s.codexMessagePhases && status != "canceled" { response.Summary, _ = codexRecoveryText(response.Summary) }
 	result := Result{Status: status, Summary: response.Summary, CompletionEvidence: completionEvidence}
+	if s.codexMessagePhases && systemError {
+		result.FailureCode = "native_model_error"
+	}
 	if s.codexMessagePhases && status == "succeeded" && len(failures) != 0 {
 		if _, _, ok := codexExplicitRecovery(originalSummary, failures); !ok {
 			result.Status = "failed"
@@ -2022,8 +2038,28 @@ func (s *acpSession) watch() {
 		switch kind {
 		case "user_message_chunk":
 			continue
+		case "session_info_update":
+			if s.codexMessagePhases {
+				meta, _ := payload["_meta"].(map[string]any)
+				codex, _ := meta["codex"].(map[string]any)
+				thread, _ := codex["threadStatus"].(map[string]any)
+				if valueString(thread["type"]) == "systemError" {
+					s.textMu.Lock()
+					if s.turnAnswer != nil { s.codexSystemError = true }
+					s.textMu.Unlock()
+				}
+			}
 		case "agent_message_chunk":
 			text := valueString(content["text"])
+			if s.codexMessagePhases {
+				s.textMu.Lock()
+				meta, _ := payload["_meta"].(map[string]any)
+				phase, consistent := codexMessagePhase(meta)
+				if s.turnAnswer != nil && s.codexSystemError && s.codexSystemErrorText == "" && consistent && phase == "" && len(text) < 512 && strings.Contains(text, "model is not supported when using Codex with a ChatGPT account") {
+					s.codexSystemErrorText = SanitizeFailureMessage(strings.TrimSpace(text))
+				}
+				s.textMu.Unlock()
+			}
 			s.textMu.Lock()
 			metadata, _ := payload["_meta"].(map[string]any)
 			if metadata["opencode/child-session"] == nil && s.turnAnswer != nil {
