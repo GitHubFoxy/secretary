@@ -46,15 +46,16 @@ func TestCodexRecoveryFooterProjection(t *testing.T) {
  }
 }
 
+
 func TestCodexRecoveryRequiresExactFailingCallSet(t *testing.T) {
  failures := map[string]int{"exec-first":7,"exec-second":13}
  for _, tc := range []struct{name,answer string;accepted bool}{
-  {"both", "repaired\\n<secretary-recovery>{\\"recovered_tool_use_ids\\":[\\"exec-first\\",\\"exec-second\\"]}</secretary-recovery>", true},
-  {"partial", "repaired\\n<secretary-recovery>{\\"recovered_tool_use_ids\\":[\\"exec-first\\"]}</secretary-recovery>", false},
-  {"other-turn", "repaired\\n<secretary-recovery>{\\"recovered_tool_use_ids\\":[\\"exec-first\\",\\"exec-prior-turn\\"]}</secretary-recovery>", false},
-  {"model-visible-call", "repaired\\n<secretary-recovery>{\\"recovered_tool_use_ids\\":[\\"call-other\\",\\"exec-second\\"]}</secretary-recovery>", false},
-  {"duplicate", "repaired\\n<secretary-recovery>{\\"recovered_tool_use_ids\\":[\\"exec-first\\",\\"exec-first\\"]}</secretary-recovery>", false},
-  {"quoted", "repaired\\n> <secretary-recovery>{\\"recovered_tool_use_ids\\":[\\"exec-first\\",\\"exec-second\\"]}</secretary-recovery>", false},
+  {"both", "repaired\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-first\",\"exec-second\"]}</secretary-recovery>", true},
+  {"partial", "repaired\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-first\"]}</secretary-recovery>", false},
+  {"other-turn", "repaired\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-first\",\"exec-prior-turn\"]}</secretary-recovery>", false},
+  {"model-visible-call", "repaired\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"call-other\",\"exec-second\"]}</secretary-recovery>", false},
+  {"duplicate", "repaired\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-first\",\"exec-first\"]}</secretary-recovery>", false},
+  {"quoted", "repaired\n> <secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-first\",\"exec-second\"]}</secretary-recovery>", false},
   {"unrelated-success", "repaired after unrelated exit 0", false},
  } {
   t.Run(tc.name,func(t *testing.T){ _,_,ok:=codexExplicitRecovery(tc.answer,failures);if ok!=tc.accepted { t.Fatalf("recovery accepted=%t, expected=%t",ok,tc.accepted) } })
