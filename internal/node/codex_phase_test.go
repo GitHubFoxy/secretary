@@ -137,7 +137,7 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 					emit(codexPhaseFixtureChunk("msg_069d645203d92047016ad84d901d5881919caa1e3c49b9ae72", "второй", "final_answer"))
 				}
 			}
-			if scenario != "cancelled" && scenario != "incomplete" {
+			if scenario != "cancelled" && scenario != "native-cancel" && scenario != "incomplete" {
 				result = map[string]any{"stopReason": "end_turn"}
 			}
 		}
