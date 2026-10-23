@@ -111,9 +111,9 @@ func (t *acpDescendantTracker) sample() error {
 }
 
 func (t *acpDescendantTracker) cleanup() error {
-	defer t.stop()
 	var failures []error
 	deadline := time.Now().Add(2 * time.Second)
+	quietUntil := time.Now().Add(350 * time.Millisecond)
 	for {
 		if err := t.sample(); err != nil { failures = append(failures, err) }
 		t.mu.Lock()
@@ -131,7 +131,7 @@ func (t *acpDescendantTracker) cleanup() error {
 				failures = append(failures, fmt.Errorf("stop ACP descendant %d: %w", child.pid, err))
 			}
 		}
-		if !active { return errors.Join(failures...) }
+		if !active && time.Now().After(quietUntil) { return errors.Join(failures...) }
 		if time.Now().After(deadline) {
 			return errors.Join(append(failures, errors.New("ACP descendants remain alive after two seconds"))...)
 		}
