@@ -4,6 +4,8 @@ package node
 
 import (
 	"context"
+	"errors"
+	"golang.org/x/sys/windows"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,5 +69,24 @@ func TestClaudeWindowsCmdTimeoutKillsChild(t *testing.T) {
 	}
 	if strings.Contains(result.Err.Error(), "ANTHROPIC_AUTH_TOKEN") {
 		t.Fatal("native failure diagnostics exposed credential field")
+	}
+}
+
+func TestClaudeWindowsCmdCannotSpawnBeforeJobAssignment(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "immediate-child-marker")
+	path := claudeWindowsCmdFixture(t, "echo spawned > \""+marker+"\"")
+	original := claudeProbeAssignJob
+	claudeProbeAssignJob = func(windows.Handle, windows.Handle) error {
+		return errors.New("synthetic job assignment denial")
+	}
+	defer func() { claudeProbeAssignJob = original }()
+	spec := DefaultClaudeCodeProbeSpec()
+	spec.Binary = path
+	result := (HarnessProbe{Node: "win-node", Runner: ExecCommandRunner{}, Spec: spec}).Probe(context.Background())
+	if result.Instance.Status != core.HarnessDegraded || result.ErrorCode != "native_models_probe_failed" || len(result.Instance.ModelIDs) != 0 {
+		t.Fatalf("failed assignment must fail closed: status=%s code=%s models=%v", result.Instance.Status, result.ErrorCode, result.Instance.ModelIDs)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("uncontained native CLI ran before job assignment: %v", err)
 	}
 }
