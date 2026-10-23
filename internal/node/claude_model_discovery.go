@@ -38,6 +38,9 @@ func (r ExecCommandRunner) ObserveClaudeModels(ctx context.Context, binary strin
 	if err != nil {
 		return nil, errors.New("Claude native model discovery unavailable")
 	}
+	if err := prepareClaudeProbeProcess(cmd); err != nil {
+		return nil, errors.New("Claude native model discovery unavailable")
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, errors.New("Claude native model discovery unavailable")
 	}
@@ -106,7 +109,10 @@ func parseClaudeInitializeModels(line []byte) ([]core.ObservedModelID, bool, err
 	seen := map[core.ObservedModelID]bool{}
 	var models []core.ObservedModelID
 	for _, row := range message.Response.Response.Models {
-		for _, value := range []string{row.Value, row.ResolvedModel} {
+		for _, value := range []string{row.ResolvedModel, row.Value} {
+			if row.ResolvedModel != "" && value == row.Value {
+				continue
+			}
 			value = strings.TrimSpace(value)
 			if value == "" || isModelAlias(value) {
 				continue
