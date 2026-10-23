@@ -20,10 +20,19 @@ import (
 	"github.com/beruseruko/secretary/internal/node"
 )
 
+func traceIdleFixture(event, method, id string, held bool) {
+ path := os.Getenv("TEST_IDLE_EXIT_REPORT")
+ if path == "" { return }
+ file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+ if err != nil { return }
+ defer file.Close()
+ _, _ = fmt.Fprintf(file, "pid=%d event=%s method=%s native=%s held=%t\\n",os.Getpid(),event,method,id,held)
+}
+
 func idleFixtureExit() {
  if path := os.Getenv("TEST_IDLE_EXIT_REPORT"); path != "" {
   _, file, line, _ := runtime.Caller(1)
-  _ = os.WriteFile(path, []byte(fmt.Sprintf("%s:%d", filepath.Base(file), line)), 0600)
+  traceIdleFixture(fmt.Sprintf("explicit-exit:%s:%d",filepath.Base(file),line),"","",false)
  }
  os.Exit(2)
 }
@@ -51,7 +60,9 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 		if json.Unmarshal(scanner.Bytes(), &req) != nil {
 			idleFixtureExit()
 		}
+		traceIdleFixture("received", req.Method, id, len(heldPromptID)>0)
 		if req.Method == "session/cancel" {
+			traceIdleFixture("cancel", req.Method, id, len(heldPromptID)>0)
 			return
 		}
 		if len(req.ID) == 0 {
@@ -111,6 +122,7 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 				}
 				defer writer.Close()
 			}
+			traceIdleFixture("session-bound",req.Method,id,len(heldPromptID)>0)
 			result = map[string]any{"sessionId": id}
 		case "_session/steering":
 			var p struct {
@@ -122,6 +134,7 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 				idleFixtureExit()
 			}
 			if len(p.Prompt) > 0 && p.Prompt[0].Text == "finish-held" && len(heldPromptID) > 0 {
+				traceIdleFixture("finish-held",req.Method,id,true)
 				encoder.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": id, "update": map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": "private-final", "_meta": map[string]any{"codex": map[string]string{"phase": "final_answer"}}, "content": map[string]string{"type": "text", "text": "held complete"}}}})
 				encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": heldPromptID, "result": map[string]any{"stopReason": "end_turn"}})
 				heldPromptID = nil
@@ -138,6 +151,7 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 			}
 			if p.Prompt[0].Text == "hold" {
 				heldPromptID = append(json.RawMessage(nil), req.ID...)
+				traceIdleFixture("held-prompt",req.Method,id,true)
 				file, err := os.OpenFile(filepath.Join(workspace, "private-held-prompts"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 				if err != nil {
 					idleFixtureExit()
@@ -175,6 +189,7 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 			return
 		}
 	}
+	if err := scanner.Err(); err != nil { traceIdleFixture("scanner-error:"+err.Error(),"",id,len(heldPromptID)>0) } else { traceIdleFixture("scanner-eof","",id,len(heldPromptID)>0) }
 }
 
 type idleInventory struct{ snapshot core.HarnessInventorySnapshot }

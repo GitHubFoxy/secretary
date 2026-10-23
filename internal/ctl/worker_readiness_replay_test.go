@@ -34,7 +34,7 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 		t.Fatal(err)
 	}
 	defer local.Close()
-	exitReport := filepath.Join(t.TempDir(), "synthetic-acp-exit")
+	exitReport := filepath.Join(t.TempDir(), "synthetic-acp-events")
 	t.Setenv("TEST_IDLE_EXIT_REPORT", exitReport)
 	runtime := node.ACPRuntime{Command: os.Args[0], Arguments: []string{"-test.run=^TestIdleFollowUpACPProcess$"}, DrainPromptEvents: true, TerminalMessageGrouping: true}
 	execution := node.NewExecutionNode("synthetic-node", runtime, local)
