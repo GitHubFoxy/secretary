@@ -653,6 +653,7 @@ func TestClaudeUserResponseSeparatedFromNativeVerdict(t *testing.T) {
 		wantStatus  string
 		wantSummary string
 		wantCode    string
+		wantActivity string
 	}{
 		{
 			name:      "worker question",
@@ -689,6 +690,14 @@ func TestClaudeUserResponseSeparatedFromNativeVerdict(t *testing.T) {
 			wantSummary: "Готово",
 		},
 		{
+			name: "legitimate JSON response remains visible",
+			assistant: `{"type":"assistant","uuid":"legitimate","message":{"content":[{"type":"text","text":"{\\"count\\":2,\\"items\\":[\\"a\\",\\"b\\"]}"}]}}`,
+			terminal: `{"type":"result","subtype":"success","result":"JSON delivered","structured_output":{"task_outcome":"succeeded","reason":"Done","recovered_tool_use_ids":[],"user_response":"{\\"count\\":2,\\"items\\":[\\"a\\",\\"b\\"]}"}}`,
+			wantStatus: "succeeded",
+			wantSummary: `{"count":2,"items":["a","b"]}`,
+			wantActivity: `{"count":2,"items":["a","b"]}`,
+		},
+		{
 			name:     "failed native provider precedence",
 			terminal: `{"type":"result","subtype":"error_during_execution","result":"Provider error","structured_output":{"task_outcome":"succeeded","reason":"Reported success","recovered_tool_use_ids":[],"user_response":"Done"}}`,
 			wantStatus: "failed",
@@ -719,10 +728,13 @@ func TestClaudeUserResponseSeparatedFromNativeVerdict(t *testing.T) {
 			}
 			select {
 			case activity := <-s.Activity():
-				if claudeServiceJSON(activity.Text) {
-					t.Fatalf("leaked service activity: %#v", activity)
+				if activity.Text != tc.wantActivity {
+					t.Fatalf("unexpected activity: %#v, want %q", activity, tc.wantActivity)
 				}
 			default:
+				if tc.wantActivity != "" {
+					t.Fatalf("missing expected activity %q", tc.wantActivity)
+				}
 			}
 			select {
 			case duplicate := <-s.Result():
