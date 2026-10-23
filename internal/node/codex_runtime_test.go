@@ -33,6 +33,11 @@ func TestCodexSessionReturnsOnlyFinalAndRejectsEmptyTerminal(t *testing.T) {
 				} else if result.Status != "failed" {
 					t.Fatalf("nonfinal accepted: %+v", result)
 				}
+				if scenario == "empty" {
+					if result.CompletionEvidence == nil || !result.CompletionEvidence.AllowsAddressedReplyOnly() {
+						t.Fatalf("Codex MCP-only end_turn did not retain verified native completion evidence: %+v", result)
+					}
+				}
 			case <-ctx.Done():
 				t.Fatal("no terminal result")
 			}
