@@ -129,7 +129,6 @@ kill "$PID"
 wait "$PID" 2>/dev/null || true
 PID=""
 CUSTOM="$TEST_HOME/custom-execution-binary"
-cp "$BIN" "$CUSTOM"
 mkdir -p "$TEST_HOME/custom-release/bin"
 cp "$BIN" "$TEST_HOME/custom-release/bin/custom-execution-binary"
 printf 'vcustom\n' > "$TEST_HOME/custom-release/VERSION"
