@@ -626,6 +626,11 @@ func (s *claudeSession) handleLine(line []byte) {
 			status = "canceled"
 		}
 		s.stateMu.Unlock()
+		if status == "succeeded" && !valid {
+			if _, supplied := record["structured_output"]; !supplied {
+				summary = "Claude Code returned no structured task outcome"
+			}
+		}
 		if summary == "" {
 			summary = "Claude Code returned no answer"
 			if status == "canceled" {
