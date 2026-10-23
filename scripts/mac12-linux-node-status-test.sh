@@ -4,7 +4,9 @@ set -euo pipefail
 ROOT="${0:A:h:h}"
 TEST_HOME="$(mktemp -d)"
 PID=""
+SERVER_PID=""
 cleanup() {
+ [[ -z "$SERVER_PID" ]] || { kill "$SERVER_PID" 2>/dev/null || true; wait "$SERVER_PID" 2>/dev/null || true; }
  [[ -z "$PID" ]] || { kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; }
  rm -rf "$TEST_HOME"
 }
@@ -71,6 +73,7 @@ server_status="$("$ROOT/secretary" status 2>&1 || true)"
 [[ "$server_status" == *"running Server: pid=$SERVER_PID version=v-fixture revision=0123456789abcdef0123456789abcdef01234567"* ]] || { print -u2 -- "$server_status"; exit 1; }
 kill "$SERVER_PID"
 wait "$SERVER_PID" 2>/dev/null || true
+SERVER_PID=""
 printf '999999\\n' > "$TEST_HOME/.local/share/secretary/server.pid"
 server_status="$("$ROOT/secretary" status 2>&1 || true)"
 [[ "$server_status" == *"running Server: stopped"* ]] || { print -u2 -- "$server_status"; exit 1; }
