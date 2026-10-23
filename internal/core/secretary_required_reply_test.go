@@ -25,6 +25,8 @@ func TestRequiredAddressedReplyCompletionCommitsExactEvidenceAndSurvivesReopen(t
 		{"unknown terminal with reply", true, SecretaryTurnSucceeded, SecretaryCompletionEvidence{Branch: "addressed_reply_only", TerminalClass: "other", TerminalValid: true, RPCSucceeded: true, DrainCompleted: true}, SecretaryTurnFailed, "native_terminal_invalid"},
 		{"empty assistant response with reply", true, SecretaryTurnSucceeded, SecretaryCompletionEvidence{Branch: "assistant_final", TerminalClass: "end_turn", TerminalValid: true, RPCSucceeded: true, DrainCompleted: true}, SecretaryTurnFailed, "native_terminal_invalid"},
 		{"RPC error with reply", true, SecretaryTurnFailed, SecretaryCompletionEvidence{Branch: "invalid"}, SecretaryTurnFailed, "native_terminal_invalid"},
+		{"native model error", false, SecretaryTurnFailed, SecretaryCompletionEvidence{Branch: "invalid", NativeFailure: "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account."}, SecretaryTurnFailed, "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account."},
+		{"untrusted native detail", false, SecretaryTurnFailed, SecretaryCompletionEvidence{Branch: "invalid", NativeFailure: "private value not a trusted model error"}, SecretaryTurnFailed, "native_terminal_invalid"},
 		{"undrained with reply", true, SecretaryTurnSucceeded, SecretaryCompletionEvidence{Branch: "assistant_final", TerminalValid: true, RPCSucceeded: true}, SecretaryTurnFailed, "native_terminal_invalid"},
 		{"progress with reply", true, SecretaryTurnSucceeded, SecretaryCompletionEvidence{Branch: "progress", TerminalValid: true, RPCSucceeded: true, DrainCompleted: true}, SecretaryTurnFailed, "native_terminal_invalid"},
 	} {
