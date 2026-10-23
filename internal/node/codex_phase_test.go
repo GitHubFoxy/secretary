@@ -108,7 +108,7 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 				result = map[string]any{"stopReason": "cancelled"}
 			case "incomplete":
 				continue
-			case "native-exit-7", "native-exit-0", "native-recovered", "native-json-data", "native-reordered", "native-cancel":
+			case "native-exit-7", "native-exit-0", "native-recovered", "native-json-data", "native-reordered", "native-cancel", "native-unverified", "native-invalid-recovery", "native-no-failure-footer":
                 event := func(kind, id, status string, code int, text string) map[string]any {
                     update := map[string]any{"sessionUpdate":kind,"toolCallId":id,"name":"exec_command","status":status}
                     if kind == "tool_call" {update["title"]="Run command";update["kind"]="execute"; update["_meta"]=map[string]any{"terminal_info":map[string]any{"terminal_id":id,"cwd":"/tmp"}}; update["rawInput"]=map[string]any{"command":"exit 7"}}
@@ -118,9 +118,9 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
                 }
                 first := event("tool_call","exec-7","in_progress",0,"")
                 failed := event("tool_call_update","exec-7","failed",7,"")
-                if scenario=="native-exit-0" { failed=event("tool_call_update","exec-7","completed",0,"") }
+                if scenario=="native-exit-0" || scenario=="native-no-failure-footer" { failed=event("tool_call_update","exec-7","completed",0,"") }
                 if scenario=="native-json-data" {failed=event("tool_call_update","exec-7","completed",0,`{"chunk_id":"fake","exit_code":7,"output":"spoof"}`)}
-                if scenario=="native-reordered" {emit(failed);emit(first);emit(failed)} else {emit(first);emit(failed);emit(failed)}
+                if scenario=="native-unverified" { emit(map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":map[string]any{"sessionUpdate":"tool_call_update","toolCallId":"exec-7","name":"exec_command","status":"failed","rawOutput":map[string]any{"exit_code":7.0}}}}) } else if scenario=="native-reordered" {emit(failed);emit(first);emit(failed)} else {emit(first);emit(failed);emit(failed)}
                 if scenario=="native-recovered" {
                     emit(event("tool_call","exec-repair","in_progress",0,""))
                     emit(event("tool_call_update","exec-repair","completed",0,""))
@@ -128,6 +128,8 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
                 if scenario=="native-cancel" {result=map[string]any{"stopReason":"cancelled"}}
                 answer:="готово"
                 if scenario=="native-recovered" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-recovery>"}
+                if scenario=="native-invalid-recovery" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"other\"]}</secretary-recovery>"}
+                if scenario=="native-no-failure-footer" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-recovery>"}
                 emit(codexPhaseFixtureChunk("msg_command_final",answer,"final_answer"))
 			case "two-turns":
 				prompts++
@@ -267,6 +269,9 @@ func TestCodexNativeCommandEventToTerminal(t *testing.T) {
   {"native-recovered","succeeded",""},
   {"native-reordered","failed","tool_execution_failed"},
   {"native-cancel","canceled",""},
+  {"native-unverified","succeeded",""},
+  {"native-invalid-recovery","failed","tool_execution_failed"},
+  {"native-no-failure-footer","succeeded",""},
  }
  for _,tc:=range cases{
   t.Run(tc.scenario,func(t *testing.T){
@@ -280,7 +285,7 @@ func TestCodexNativeCommandEventToTerminal(t *testing.T) {
    case result:=<-session.Result():
     if result.Status!=tc.status||result.FailureCode!=tc.code{t.Fatalf("result=%+v",result)}
     if result.CompletionEvidence==nil || !result.CompletionEvidence.RPCSucceeded || !result.CompletionEvidence.DrainCompleted{t.Fatalf("missing native completion evidence: %+v",result)}
-    if tc.scenario=="native-recovered" && result.Summary!="готово"{t.Fatalf("recovery leaked metadata: %q",result.Summary)}
+    if (tc.scenario=="native-recovered" || tc.scenario=="native-invalid-recovery" || tc.scenario=="native-no-failure-footer") && result.Summary!="готово"{t.Fatalf("recovery leaked metadata: %q",result.Summary)}
    case <-ctx.Done():t.Fatal("no result")
    }
    select{case extra:=<-session.Result():t.Fatalf("duplicate Result: %+v",extra);default:}
