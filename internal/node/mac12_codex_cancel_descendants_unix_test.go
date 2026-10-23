@@ -20,6 +20,7 @@ import (
 
 func TestMAC1204CodexCancelKillsDetachedToolHost(t *testing.T) {
 	if os.Getenv("MAC1204_HELPER") == "1" {
+		_ = os.WriteFile(os.Getenv("MAC1204_ROOT_PID_FILE"), []byte(strconv.Itoa(os.Getpid())), 0600)
 		child := exec.Command("/bin/sleep", "45")
 		child.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 		if err := child.Start(); err != nil {
@@ -37,8 +38,10 @@ func TestMAC1204CodexCancelKillsDetachedToolHost(t *testing.T) {
 	ctx, stop := context.WithTimeout(context.Background(), 8*time.Second)
 	defer stop()
 	pidFile := filepath.Join(t.TempDir(), "sleep.pid")
+	rootPIDFile := filepath.Join(filepath.Dir(pidFile), "root.pid")
 	t.Setenv("MAC1204_HELPER", "1")
 	t.Setenv("MAC1204_PID_FILE", pidFile)
+	t.Setenv("MAC1204_ROOT_PID_FILE", rootPIDFile)
 	client, err := acp.Start(ctx, os.Args[0], "-test.run=^TestMAC1204CodexCancelKillsDetachedToolHost$")
 	if err != nil {
 		t.Fatal(err)
@@ -73,6 +76,10 @@ func TestMAC1204CodexCancelKillsDetachedToolHost(t *testing.T) {
 		}
 		return strings.TrimSpace(string(output)), nil
 	}
+	rootBytes, err := os.ReadFile(rootPIDFile)
+	if err != nil { t.Fatal(err) }
+	rootPID, err := strconv.Atoi(strings.TrimSpace(string(rootBytes)))
+	if err != nil { t.Fatal(err) }
 	if _, err := processState(pid); err != nil {
 		t.Fatalf("detached tool exited before cancellation: %v", err)
 	}
@@ -91,6 +98,12 @@ func TestMAC1204CodexCancelKillsDetachedToolHost(t *testing.T) {
 			t.Fatalf("Codex detached sleep survived Cancel for %v", time.Since(started))
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	for {
+		state, err := processState(rootPID)
+		if err != nil || strings.HasPrefix(state, "Z") { break }
+		if time.Since(started) > 2*time.Second { t.Fatal("native Codex process survived cancellation") }
+		time.Sleep(20*time.Millisecond)
 	}
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("Codex detached tool cleanup took %v", elapsed)
