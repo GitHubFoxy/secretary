@@ -23,7 +23,8 @@ func claudeModelProbeFixture(t *testing.T, response string) string {
 	script := "#!/bin/sh\n" +
 		"if [ \"$1\" = \"--version\" ]; then printf '%s\\n' '2.1.306'; exit 0; fi\n" +
 		"if [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then printf '%s\\n' '{\"loggedIn\":true,\"authMethod\":\"credential\"}'; exit 0; fi\n" +
-		"case \" $* \" in *' --input-format stream-json '*' --output-format stream-json '*) ;; *) exit 15 ;; esac\n" +
+		"case \" $* \" in *' --input-format stream-json '*) ;; *) exit 15 ;; esac\n" +
+		"case \" $* \" in *' --output-format stream-json '*) ;; *) exit 15 ;; esac\n" +
 		"if [ \"$CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY\" != \"1\" ]; then exit 16; fi\n" +
 		"IFS= read -r request || exit 17\n" +
 		"case \"$request\" in *secretary-model-inventory*) ;; *) exit 18 ;; esac\n" +
