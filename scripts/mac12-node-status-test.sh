@@ -41,7 +41,7 @@ status_output="$("$ROOT/secretary" status)"
 printf '%s\n' "$PID" > "$TEST_HOME/.local/share/secretary/node/node.pid"
 node_output="$("$ROOT/secretary" node status)"
 [[ "$node_output" == *"Node running pid=$PID "* ]] || exit 1
-printf '%s\n' "$" > "$TEST_HOME/.local/share/secretary/node/node.pid"
+printf '%s\n' "$$" > "$TEST_HOME/.local/share/secretary/node/node.pid"
 node_output="$("$ROOT/secretary" node status)"
 [[ "$node_output" == *"Node running pid=$PID "* ]] || exit 1
 
