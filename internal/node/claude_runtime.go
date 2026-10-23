@@ -604,8 +604,10 @@ func (s *claudeSession) handleLine(line []byte) {
 	case "result":
 		summary := valueString(record["result"])
 		structured, valid := claudeTaskOutcome(record)
-		if valid && structured.userResponse != "" {
+		if valid {
 			summary = structured.userResponse
+		} else if _, supplied := record["structured_output"]; supplied {
+			summary = "Claude Code returned invalid structured task outcome"
 		} else if claudeServiceJSON(summary) {
 			summary = ""
 		}
@@ -682,10 +684,10 @@ func claudeTaskOutcome(record map[string]any) (claudeTaskVerdict, bool) {
 	status, statusOK := output["task_outcome"].(string)
 	reason, reasonOK := output["reason"].(string)
 	ids, idsOK := output["recovered_tool_use_ids"].([]any)
-	if !statusOK || (status != "succeeded" && status != "failed") || !reasonOK || strings.TrimSpace(reason) == "" || !idsOK {
+	userResponse, responseOK := output["user_response"].(string)
+	if !statusOK || (status != "succeeded" && status != "failed") || !reasonOK || strings.TrimSpace(reason) == "" || !idsOK || !responseOK || strings.TrimSpace(userResponse) == "" {
 		return claudeTaskVerdict{}, false
 	}
-	userResponse, _ := output["user_response"].(string)
 	verdict := claudeTaskVerdict{status: status, reason: reason, userResponse: strings.TrimSpace(userResponse)}
 	seen := make(map[string]bool)
 	for _, raw := range ids {
@@ -700,14 +702,22 @@ func claudeTaskOutcome(record map[string]any) (claudeTaskVerdict, bool) {
 }
 
 func claudeServiceJSON(text string) bool {
-	var value map[string]any
-	if json.Unmarshal([]byte(strings.TrimSpace(text)), &value) != nil {
-		return false
+	for offset, char := range text {
+		if char != '{' {
+			continue
+		}
+		var value map[string]any
+		if json.NewDecoder(strings.NewReader(text[offset:])).Decode(&value) != nil {
+			continue
+		}
+		_, reason := value["reason"]
+		_, recovered := value["recovered_tool_use_ids"]
+		_, outcome := value["task_outcome"]
+		if reason && recovered || outcome && (reason || recovered) {
+			return true
+		}
 	}
-	_, reason := value["reason"]
-	_, recovered := value["recovered_tool_use_ids"]
-	_, outcome := value["task_outcome"]
-	return reason && recovered || outcome
+	return false
 }
 
 func (s *claudeSession) claudeStructuredRecovery(verdict claudeTaskVerdict, valid bool) bool {
