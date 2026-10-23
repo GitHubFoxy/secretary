@@ -136,7 +136,7 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 		payload, err := io.ReadAll(r.Body)
 		if err != nil { http.Error(w, err.Error(), 400); return }
 		var output bytes.Buffer
-		if err := (mcp.Server{Handler: handler}).Serve(ctx, bytes.NewReader(append(payload, '\\n')), &output); err != nil { http.Error(w, err.Error(), 500); return }
+		if err := (mcp.Server{Handler: handler}).Serve(ctx, bytes.NewReader(append(payload, '\n')), &output); err != nil { http.Error(w, err.Error(), 500); return }
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(output.Bytes())
 		return
@@ -343,8 +343,8 @@ func TestAddressedReplyACPFixtureProcess(t *testing.T) {
 				var params struct { Prompt []struct { Text string `json:"text"` } `json:"prompt"` }
 				if err := json.Unmarshal(request.Params, &params); err != nil || len(params.Prompt) == 0 { t.Fatal("ACP prompt did not supply origin") }
 				prompt := params.Prompt[0].Text
-				turnID := regexp.MustCompile(`secretary_turn_id=([^\\s]+)`).FindStringSubmatch(prompt)
-				inputID := regexp.MustCompile(`input_id=([^\\s]+)`).FindStringSubmatch(prompt)
+				turnID := regexp.MustCompile(`secretary_turn_id=([^\s]+)`).FindStringSubmatch(prompt)
+				inputID := regexp.MustCompile(`input_id=([^\s]+)`).FindStringSubmatch(prompt)
 				if len(turnID) < 2 || len(inputID) < 2 { t.Fatal("ACP prompt lacked canonical origin") }
 				var config map[string]any
 				if err := json.Unmarshal([]byte(os.Getenv("CODEX_CONFIG")), &config); err != nil { t.Fatal(err) }
