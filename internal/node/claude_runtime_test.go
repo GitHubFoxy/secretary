@@ -676,6 +676,15 @@ func TestClaudeUserResponseSeparatedFromNativeVerdict(t *testing.T) {
 			wantCode: "task_outcome_failed",
 		},
 		{
+			name: "missing structured output redacts narration",
+			assistant: `{"type":"assistant","uuid":"narration","message":{"content":[{"type":"text","text":"I checked the task and answered earlier."}]}}`,
+			terminal: `{"type":"result","subtype":"success","result":"I checked the task and answered earlier."}`,
+			wantStatus: "failed",
+			wantSummary: "Claude Code returned no structured task outcome",
+			wantCode: "task_outcome_failed",
+			wantActivity: "I checked the task and answered earlier.",
+		},
+		{
 			name: "empty user response with plain result fails closed",
 			terminal: `{"type":"result","subtype":"success","result":"I answered.","structured_output":{"task_outcome":"succeeded","reason":"Completed","recovered_tool_use_ids":[],"user_response":"  "}}`,
 			wantStatus: "failed",
