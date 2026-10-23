@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -240,6 +241,8 @@ func main() {
 		log.Fatalf("load Node identity: %v", err)
 	}
 
+	publishNodeProcessIdentity(*configPath, string(identity.Node))
+
 	store, err := node.OpenLocalStore(filepath.Join(*dataDir, "node-state.json"))
 	if err != nil {
 		log.Fatalf("open Node local state: %v", err)
@@ -425,4 +428,29 @@ func envOr(name, fallback string) string {
 
 func enforceCodexInventory(explicitReadinessDiagnostic bool) bool {
  return !explicitReadinessDiagnostic
+}
+
+func publishNodeProcessIdentity(configPath, identity string) {
+	if configPath == "" || identity == "" || strings.ContainsAny(identity, "\r\n") {
+		return
+	}
+	start, err := exec.Command("ps", "-p", strconv.Itoa(os.Getpid()), "-o", "lstart=").Output()
+	if err != nil || strings.TrimSpace(string(start)) == "" {
+		return
+	}
+	path := configPath + ".process"
+	file, err := os.CreateTemp(filepath.Dir(path), ".node-process-*")
+	if err != nil {
+		return
+	}
+	defer os.Remove(file.Name())
+	if err = file.Chmod(0600); err != nil {
+		_ = file.Close()
+		return
+	}
+	_, err = fmt.Fprintf(file, "%d\n%s\n%s\n", os.Getpid(), strings.TrimSpace(string(start)), identity)
+	if err != nil || file.Sync() != nil || file.Close() != nil {
+		return
+	}
+	_ = os.Rename(file.Name(), path)
 }
