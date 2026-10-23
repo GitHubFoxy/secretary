@@ -26,7 +26,7 @@ func traceIdleFixture(event, method, id string, held bool) {
  file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
  if err != nil { return }
  defer file.Close()
- _, _ = fmt.Fprintf(file, "pid=%d event=%s method=%s native=%s held=%t\\n",os.Getpid(),event,method,id,held)
+ _, _ = fmt.Fprintf(file, "pid=%d event=%s method=%s native=%s held=%t\n",os.Getpid(),event,method,id,held)
 }
 
 func idleFixtureExit() {
