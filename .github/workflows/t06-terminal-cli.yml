@@ -6,6 +6,7 @@ on:
       - secretary
       - scripts/secretary-interactive.zsh
       - scripts/t06-terminal-cli-test.sh
+      - scripts/mac12-linux-node-status-test.sh
       - scripts/install.sh
       - .github/workflows/t06-terminal-cli.yml
   pull_request:
@@ -34,4 +35,6 @@ jobs:
           bash -n scripts/install.sh
           bash -n scripts/t06-terminal-cli-test.sh
       - name: CLI integration tests
-        run: bash scripts/t06-terminal-cli-test.sh
+        run: |
+          bash scripts/t06-terminal-cli-test.sh
+          zsh scripts/mac12-linux-node-status-test.sh
