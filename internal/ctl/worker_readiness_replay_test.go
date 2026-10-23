@@ -34,6 +34,8 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 		t.Fatal(err)
 	}
 	defer local.Close()
+	exitReport := filepath.Join(t.TempDir(), "synthetic-acp-events")
+	t.Setenv("TEST_IDLE_EXIT_REPORT", exitReport)
 	runtime := node.ACPRuntime{Command: os.Args[0], Arguments: []string{"-test.run=^TestIdleFollowUpACPProcess$"}, DrainPromptEvents: true, TerminalMessageGrouping: true}
 	execution := node.NewExecutionNode("synthetic-node", runtime, local)
 	instance := core.HarnessInstance{ID: "synthetic-node/opencode", Node: "synthetic-node", Kind: core.HarnessOpenCode, Version: "2.0.22", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}, ModelIDs: []core.ObservedModelID{"fixture/model"}}
@@ -71,10 +73,48 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 	} else {
 		command.Resume = &node.ResumeCommand{Metadata: meta("held", envelope), Envelope: envelope}
 	}
+	heldExecution := execution
+	heldStore := local
+	heldAccepted := false
+	var heldMapping *node.LocalSessionMapping
+	t.Cleanup(func() {
+		if !heldAccepted {
+			return
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cleanupCancel()
+		persisted := func() bool {
+			events, err := heldStore.PendingEvents()
+			if err != nil {
+				t.Errorf("held cleanup outbox read failed: %v", err)
+				return false
+			}
+			for _, event := range events {
+				if event.EventID == "attempt-outcome-"+envelope.AttemptID {
+					return true
+				}
+			}
+			return false
+		}
+		if persisted() {
+			return
+		}
+		if heldMapping != nil {
+			if err := heldStore.SaveSessionMapping(*heldMapping); err != nil {
+				t.Errorf("held cleanup mapping restore failed: %v", err)
+			}
+		}
+		cleanup := node.Command{Kind: node.CommandCancel, Cancel: &node.CancelCommand{Metadata: meta("held-cleanup", envelope)}}
+		if outcome, err := heldExecution.HandleCommand(cleanupCtx, cleanup); err != nil || outcome.State != node.CommandAccepted {
+			t.Errorf("held cleanup cancellation failed: outcome=%+v err=%v", outcome, err)
+		}
+		waitIdleFixture(t, cleanupCtx, persisted)
+	})
 	readiness, err := execution.HandleCommand(ctx, command)
 	if err != nil || readiness.State != node.CommandAccepted {
 		t.Fatal("Follow-up readiness rejected")
 	}
+	heldAccepted = true
 	waitIdleFixture(t, ctx, func() bool { _, err := os.Stat(filepath.Join(workspace, "private-hold-ready")); return err == nil })
 	record, err := local.Command("held")
 	if err != nil || record.State != node.CommandProcessing || record.Outcome != readiness {
@@ -132,6 +172,7 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 	if !ok {
 		t.Fatal("live mapping missing")
 	}
+	heldMapping = &mapping
 	corrupt := mapping
 	corrupt.WorkerRef = "foreign-worker"
 	if local.SaveSessionMapping(corrupt) != nil {
@@ -144,10 +185,19 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 	if local.SaveSessionMapping(mapping) != nil {
 		t.Fatal("mapping fixture restore failed")
 	}
-	reopened, err := node.OpenLocalStore(path)
+	snapshot, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	replayPath := filepath.Join(t.TempDir(), "replay-node.json")
+	if err := os.WriteFile(replayPath, snapshot, 0600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := node.OpenLocalStore(replayPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
 	uncertain := node.NewExecutionNode(instance.Node, runtime, reopened)
 	replay, err = uncertain.HandleCommand(ctx, command)
 	if err != nil || replay.State == node.CommandAccepted {
@@ -185,7 +235,8 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 	} else {
 		finish := node.Command{Kind: node.CommandSteering, Steering: &node.SteeringCommand{Metadata: meta("finish", envelope), Text: "finish-held"}}
 		if o, e := execution.HandleCommand(ctx, finish); e != nil || o.State != node.CommandAccepted {
-			t.Fatal("held fixture finish failed")
+			exitLocation, readErr := os.ReadFile(exitReport)
+			t.Fatalf("held fixture finish failed: outcome=%+v err=%v synthetic_exit=%q exit_report_err=%v", o, e, string(exitLocation), readErr)
 		}
 		await(envelope.AttemptID)
 		replay, err = execution.HandleCommand(ctx, command)
