@@ -148,6 +148,29 @@ status_output="$(SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$OVE
 kill "$PID"
 wait "$PID" 2>/dev/null || true
 PID=""
+SYMLINK_CONFIG="$TEST_HOME/config-link.json"
+ln -s "$OVERRIDE" "$SYMLINK_CONFIG"
+SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$SYMLINK_CONFIG" "$CUSTOM" --config "$SYMLINK_CONFIG" &
+PID="$!"
+sleep 1
+write_fixture_identity "$SYMLINK_CONFIG" symlink-runtime
+[[ -f "$SYMLINK_CONFIG.process" ]] || exit 1
+node_output="$(SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$SYMLINK_CONFIG" "$ROOT/secretary" node status)"
+[[ "$node_output" == *"Node running pid=$PID identity=symlink-runtime configured_identity=override-node"* && "$node_output" == *"revision=custom-revision"* ]] || { diagnose_node_process "$CUSTOM" "$SYMLINK_CONFIG" "$node_output"; print -u2 -- "$node_output"; exit 1; }
+status_output="$(SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$SYMLINK_CONFIG" "$ROOT/secretary" status)"
+[[ "$status_output" == *"running Execution node: pid=$PID "* && "$status_output" == *"revision=custom-revision"* ]] || exit 1
+kill "$PID"
+wait "$PID" 2>/dev/null || true
+PID=""
+SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$SYMLINK_CONFIG" "$CUSTOM" --config "${SYMLINK_CONFIG:A}" &
+PID="$!"
+sleep 1
+write_fixture_identity "${SYMLINK_CONFIG:A}" canonical-runtime
+node_output="$(SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$SYMLINK_CONFIG" "$ROOT/secretary" node status)"
+[[ "$node_output" == *"Node running pid=$PID identity=canonical-runtime configured_identity=override-node"* && "$node_output" == *"revision=custom-revision"* ]] || { diagnose_node_process "$CUSTOM" "${SYMLINK_CONFIG:A}" "$node_output"; print -u2 -- "$node_output"; exit 1; }
+kill "$PID"
+wait "$PID" 2>/dev/null || true
+PID=""
 node_output="$("$ROOT/secretary" node status)"
 [[ "$node_output" == *"Node stopped identity=unknown configured_identity=other-node"* ]] || exit 1
 status_output="$("$ROOT/secretary" status)"
