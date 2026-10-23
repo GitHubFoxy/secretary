@@ -83,7 +83,7 @@ func TestMAC1204CodexCancelResultAndSameSessionFollowup(t *testing.T) {
 	if err := session.Cancel(ctx); err != nil { t.Fatal(err) }
 	select {
 	case result := <-session.Result():
-		if result.Status != "canceled" || result.CompletionEvidence != nil { t.Fatalf("cancel result=%+v", result) }
+		if result.Status != "canceled" || result.CompletionEvidence == nil { t.Fatalf("cancel result=%+v", result) }
 	case <-ctx.Done(): t.Fatal(ctx.Err())
 	}
 	select {
@@ -99,7 +99,7 @@ func TestMAC1204CodexCancelResultAndSameSessionFollowup(t *testing.T) {
 	if err := session.Prompt(ctx, "followup"); err != nil { t.Fatal(err) }
 	select {
 	case result := <-session.Result():
-		if result.Status != "succeeded" || result.CompletionEvidence != nil || !strings.Contains(result.Summary, "followup-complete") {
+		if result.Status != "succeeded" || result.CompletionEvidence == nil || !strings.Contains(result.Summary, "followup-complete") {
 			t.Fatalf("followup result=%+v", result)
 		}
 	case <-ctx.Done(): t.Fatal(ctx.Err())
