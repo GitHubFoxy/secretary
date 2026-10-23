@@ -80,6 +80,13 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 			result = map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"version": "2.2.2"}}
 		case "session/new":
 			result = map[string]any{"sessionId": "fixture-codex-phase"}
+		case "_session/steering":
+			if scenario == "native-recovery-steered" {
+				var request struct { Prompt []struct { Text string `json:"text"` } `json:"prompt"` }
+				_ = json.Unmarshal(req.Params, &struct {SessionID string `json:"sessionId"`; Prompt *[]struct { Text string `json:"text"` } `json:"prompt"` }{})
+				_ = request
+			}
+			result = map[string]any{"outcome":"injected"}
 		case "session/prompt":
 			switch scenario {
 			case "final-parts":
