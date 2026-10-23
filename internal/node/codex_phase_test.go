@@ -290,7 +290,7 @@ func TestCodexNativeCommandEventToTerminal(t *testing.T) {
    select{
    case result:=<-session.Result():
     if result.Status!=tc.status||result.FailureCode!=tc.code{t.Fatalf("result=%+v",result)}
-    if result.CompletionEvidence==nil || !result.CompletionEvidence.RPCSucceeded || !result.CompletionEvidence.DrainCompleted{t.Fatalf("missing native completion evidence: %+v",result)}
+    if result.CompletionEvidence==nil || result.CompletionEvidence.Contract!=TerminalCompletionOpenCodeV2 || !result.CompletionEvidence.RPCSucceeded || !result.CompletionEvidence.DrainCompleted || (tc.scenario!="native-cancel" && (result.CompletionEvidence.StopReason!=TerminalStopReasonEndTurn || result.CompletionEvidence.AssistantChunks==0)) || (tc.scenario=="native-cancel" && result.CompletionEvidence.StopReason!=TerminalStopReasonCanceled){t.Fatalf("missing native completion evidence: %+v",result)}
     if (tc.scenario=="native-recovered" || tc.scenario=="native-invalid-recovery" || tc.scenario=="native-no-failure-footer") && result.Summary!="готово"{t.Fatalf("recovery leaked metadata: %q",result.Summary)}
    case <-ctx.Done():t.Fatal("no result")
    }
