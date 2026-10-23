@@ -905,7 +905,18 @@ func (s *acpSession) SteerImages(ctx context.Context, text string, images []Imag
 	return response.Outcome == "injected", nil
 }
 func (s *acpSession) Cancel(ctx context.Context) error {
-	return s.client.NotifyContext(ctx, "session/cancel", map[string]string{"sessionId": s.id})
+	if !s.codexMessagePhases {
+		return s.client.NotifyContext(ctx, "session/cancel", map[string]string{"sessionId": s.id})
+	}
+	cleanup, inspectErr := s.client.PrepareDescendantCleanup()
+	notifyErr := s.client.NotifyContext(ctx, "session/cancel", map[string]string{"sessionId": s.id})
+	var cleanupErr error
+	if cleanup != nil {
+		cleanupErr = cleanup()
+	}
+	if inspectErr != nil { inspectErr = fmt.Errorf("inspect Codex tool descendants: %w", inspectErr) }
+	if cleanupErr != nil { cleanupErr = fmt.Errorf("stop Codex tool descendants: %w", cleanupErr) }
+	return errors.Join(notifyErr, inspectErr, cleanupErr)
 }
 
 func (s *acpSession) RebindRequests(requestIDs []string) {
