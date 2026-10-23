@@ -94,6 +94,7 @@ type Client struct {
 	closeErr error
 	cancel   context.CancelFunc
 	processPID int
+	tracker *acpDescendantTracker
 
 	stderr     stderrTail
 	stderrDone chan struct{}
@@ -222,7 +223,7 @@ func startWithProcessEnvironment(ctx context.Context, rawLog io.Writer, environm
 		cancel()
 		return nil, err
 	}
-	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, processPID: process.Process.Pid, log: rawLog}
+	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, processPID: process.Process.Pid, tracker: startACPDescendantTracker(process.Process.Pid), log: rawLog}
 	client.stderrDone = make(chan struct{})
 	go client.drainStderr(stderr)
 	go client.read(stdout)
@@ -233,7 +234,7 @@ func (c *Client) PrepareDescendantCleanup() (func() error, error) {
 	if c.processPID <= 1 {
 		return nil, nil
 	}
-	return prepareACPDescendantCleanup(c.processPID)
+	return prepareACPDescendantCleanup(c.tracker)
 }
 
 func (c *Client) Events() <-chan Message { return c.events }
@@ -496,6 +497,7 @@ func (c *Client) drainStderr(stderr io.Reader) {
 }
 
 func (c *Client) finish() {
+	if c.tracker != nil { defer c.tracker.stop() }
 	if c.stderrDone != nil {
 		select {
 		case <-c.stderrDone:
