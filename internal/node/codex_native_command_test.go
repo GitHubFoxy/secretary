@@ -27,3 +27,21 @@ func TestCodexExplicitRecoveryIDs(t *testing.T) {
   if ok!=tc.ok || ok && user!="done"{t.Fatalf("claim %q: %v %q",tc.summary,ok,user)}
  }
 }
+
+func TestCodexRecoveryFooterProjection(t *testing.T) {
+ cases:=[]struct{name,input,want string;stripped bool}{
+  {"complete","готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-recovery>","готово",true},
+  {"missing-close","готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}","готово",true},
+  {"truncated-close","готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-rec","готово",true},
+  {"partial-opening","готово\n<secretary-recov","готово",true},
+  {"ordinary-json","готово\n{\"recovered_tool_use_ids\":[\"exec-7\"]}","готово\n{\"recovered_tool_use_ids\":[\"exec-7\"]}",false},
+  {"quoted-json","готово\n`\"`{\"exit_code\":7}`\"`","готово\n`\"`{\"exit_code\":7}`\"`",false},
+  {"ordinary-tag","готово\n<secretary-example>text","готово\n<secretary-example>text",false},
+ }
+ for _,tc:=range cases{
+  t.Run(tc.name,func(t *testing.T){got,ok:=codexRecoveryText(tc.input);if got!=tc.want||ok!=tc.stripped{t.Fatalf("projection=%q %v; want %q %v",got,ok,tc.want,tc.stripped)}})
+ }
+ for _,input:=range []string{"готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}","готово\n<secretary-recov"} {
+  if _,_,ok:=codexExplicitRecovery(input,map[string]int{"exec-7":7});ok{t.Fatalf("truncated footer allowed recovery: %q",input)}
+ }
+}

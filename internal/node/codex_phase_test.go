@@ -108,7 +108,7 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 				result = map[string]any{"stopReason": "cancelled"}
 			case "incomplete":
 				continue
-			case "native-exit-7", "native-exit-0", "native-recovered", "native-json-data", "native-reordered", "native-cancel", "native-unverified", "native-invalid-recovery", "native-no-failure-footer":
+			case "native-exit-7", "native-exit-0", "native-recovered", "native-json-data", "native-reordered", "native-cancel", "native-unverified", "native-invalid-recovery", "native-no-failure-footer", "native-incomplete-footer", "native-truncated-close", "native-split-truncated-footer":
                 event := func(kind, id, status string, code int, text string) map[string]any {
                     update := map[string]any{"sessionUpdate":kind,"toolCallId":id,"name":"exec_command","status":status}
                     if kind == "tool_call" {update["title"]="Run command";update["kind"]="execute"; update["_meta"]=map[string]any{"terminal_info":map[string]any{"terminal_id":id,"cwd":"/tmp"}}; update["rawInput"]=map[string]any{"command":"exit 7"}}
@@ -130,10 +130,16 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
                 if scenario=="native-recovered" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-recovery>"}
                 if scenario=="native-invalid-recovery" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"other\"]}</secretary-recovery>"}
                 if scenario=="native-no-failure-footer" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-recovery>"}
-                if scenario=="native-recovered" || scenario=="native-invalid-recovery" || scenario=="native-no-failure-footer" {
+                if scenario=="native-incomplete-footer" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}"}
+                if scenario=="native-truncated-close" {answer="готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-rec"}
+                if scenario=="native-split-truncated-footer" {answer="готово\n<secretary-recov"}
+                if scenario=="native-recovered" || scenario=="native-invalid-recovery" || scenario=="native-no-failure-footer" || scenario=="native-incomplete-footer" || scenario=="native-truncated-close" {
                     marker := strings.Index(answer,"<secretary-recovery>")
                     emit(codexPhaseFixtureChunk("msg_command_final",answer[:marker+len("<secretary-recovery>")],"final_answer"))
                     emit(codexPhaseFixtureChunk("msg_command_final",answer[marker+len("<secretary-recovery>"):],"final_answer"))
+                } else if scenario=="native-split-truncated-footer" {
+                    emit(codexPhaseFixtureChunk("msg_command_final","готово\n<secretary-","final_answer"))
+                    emit(codexPhaseFixtureChunk("msg_command_final","recov","final_answer"))
                 } else {
                     emit(codexPhaseFixtureChunk("msg_command_final",answer,"final_answer"))
                 }
@@ -278,6 +284,9 @@ func TestCodexNativeCommandEventToTerminal(t *testing.T) {
   {"native-unverified","succeeded",""},
   {"native-invalid-recovery","failed","tool_execution_failed"},
   {"native-no-failure-footer","succeeded",""},
+  {"native-incomplete-footer","failed","tool_execution_failed"},
+  {"native-truncated-close","failed","tool_execution_failed"},
+  {"native-split-truncated-footer","failed","tool_execution_failed"},
  }
  for _,tc:=range cases{
   t.Run(tc.scenario,func(t *testing.T){
@@ -291,7 +300,7 @@ func TestCodexNativeCommandEventToTerminal(t *testing.T) {
    case result:=<-session.Result():
     if result.Status!=tc.status||result.FailureCode!=tc.code{t.Fatalf("result=%+v",result)}
     if result.CompletionEvidence==nil || result.CompletionEvidence.Contract!=TerminalCompletionOpenCodeV2 || !result.CompletionEvidence.RPCSucceeded || !result.CompletionEvidence.DrainCompleted || (tc.scenario!="native-cancel" && (result.CompletionEvidence.StopReason!=TerminalStopReasonEndTurn || result.CompletionEvidence.AssistantChunks==0)) || (tc.scenario=="native-cancel" && result.CompletionEvidence.StopReason!=TerminalStopReasonCanceled){t.Fatalf("missing native completion evidence: %+v",result)}
-    if (tc.scenario=="native-recovered" || tc.scenario=="native-invalid-recovery" || tc.scenario=="native-no-failure-footer") && result.Summary!="готово"{t.Fatalf("recovery leaked metadata: %q",result.Summary)}
+    if (tc.scenario=="native-recovered" || tc.scenario=="native-invalid-recovery" || tc.scenario=="native-no-failure-footer" || tc.scenario=="native-incomplete-footer" || tc.scenario=="native-truncated-close" || tc.scenario=="native-split-truncated-footer") && result.Summary!="готово"{t.Fatalf("recovery leaked metadata: %q",result.Summary)}
    case <-ctx.Done():t.Fatal("no result")
    }
    for {
