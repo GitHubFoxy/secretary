@@ -1,8 +1,9 @@
 <script>
   import { onMount } from 'svelte';
+  import { transitionLoad } from '../../src/load-state.js';
 
   let tab = 'overview';
-  let loading = true;
+  let loadPhase = 'loading';
   let error = '';
   let overview = { nodes: [], workers: [], clients: [], projects: [], approvals: [], events: [], deliveries: [], commands: [] };
   let config = null;
@@ -27,11 +28,15 @@
   }
 
   async function refresh() {
+    if (loadPhase === 'error') loadPhase = transitionLoad(loadPhase, 'start');
     try {
       overview = await request('/v1/control/overview');
       error = '';
-    } catch (reason) { error = reason.message; }
-    loading = false;
+      if (loadPhase === 'loading') loadPhase = transitionLoad(loadPhase, 'resolved');
+    } catch (reason) {
+      error = reason.message;
+      if (loadPhase === 'loading') loadPhase = transitionLoad(loadPhase, 'rejected');
+    }
   }
 
   async function loadConfig() {
@@ -136,7 +141,7 @@
       <button class="ml-auto shrink-0 rounded-xl px-4 py-2 text-xs text-slate-400 hover:bg-white/10" disabled={actionInFlight !== ''} on:click={downloadExport}>Export diagnostics</button><button class="shrink-0 rounded-xl px-4 py-2 text-xs text-slate-400 hover:bg-white/10" on:click={refresh}>Refresh</button>
     </nav>
     {#if error}<div class="mt-4 rounded-2xl border border-rose-400/20 bg-rose-400/10 p-4 text-sm text-rose-200">{error}</div>{/if}
-    {#if loading}<div class="mt-12 text-center text-sm uppercase tracking-[0.16em] text-slate-600">Reading durable state...</div>{:else if tab === 'overview'}
+    {#if loadPhase === 'loading'}<div class="mt-12 text-center text-sm uppercase tracking-[0.16em] text-slate-600">Reading durable state...</div>{:else if tab === 'overview'}
       <section class="mt-6 space-y-5">
         <div class="grid gap-3 md:grid-cols-3"><div class="rounded-2xl border border-white/10 bg-white/[0.03] p-4"><p class="text-xs text-slate-500">Nodes</p><p class="mt-2 text-2xl">{overview.nodes?.length || 0}</p></div><div class="rounded-2xl border border-white/10 bg-white/[0.03] p-4"><p class="text-xs text-slate-500">Workers</p><p class="mt-2 text-2xl">{overview.workers?.length || 0}</p></div><div class="rounded-2xl border border-white/10 bg-white/[0.03] p-4"><p class="text-xs text-slate-500">Pending deliveries</p><p class="mt-2 text-2xl">{overview.deliveries?.filter((item) => item.state === 'pending').length || 0}</p></div></div>
         <div class="grid gap-5 lg:grid-cols-2"><section><h2 class="text-sm font-medium text-slate-300">Nodes and harness inventory</h2><div class="mt-3 space-y-3">{#each overview.nodes || [] as node}<article class="rounded-2xl border border-white/10 bg-white/[0.035] p-4"><div class="flex justify-between gap-3"><h3 class="font-mono text-sm text-cyan-200">{node.node}</h3><span class="text-xs text-slate-400">{node.health}</span></div><p class="mt-2 text-xs text-slate-500">heartbeat {node.last_heartbeat_at || 'not observed'} · capacity {node.capacity}</p>{#each node.inventory?.instances || [] as instance}<div class="mt-3 rounded-xl bg-black/20 p-3 text-xs"><div class="flex justify-between"><span>{instance.harness} {instance.version}</span><span>{instance.status}</span></div><p class="mt-1 text-slate-500">{instance.id} · models {instance.model_ids?.join(', ') || 'none'}</p><p class="mt-1 text-slate-500">reasoning {instance.reasoning_levels?.join(', ') || 'none'} · auth {instance.authentication?.authenticated ? instance.authentication.method || 'authenticated' : 'not authenticated'}</p><p class="mt-1 text-slate-500">execution {instance.capabilities?.execution?.join(', ') || 'none'} · activity {instance.capabilities?.activity?.join(', ') || 'none'}</p></div>{/each}<button class="mt-3 rounded-xl border border-rose-400/20 px-3 py-2 text-xs text-rose-300 hover:bg-rose-400/10 disabled:opacity-50" disabled={node.revoked || actionInFlight !== ''} on:click={() => revoke('nodes', node.node)}>Revoke Node</button></article>{/each}</div></section>
