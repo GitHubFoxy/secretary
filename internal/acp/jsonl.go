@@ -230,6 +230,9 @@ func startWithProcessEnvironment(ctx context.Context, rawLog io.Writer, environm
 }
 
 func (c *Client) PrepareDescendantCleanup() (func() error, error) {
+	if c.processPID <= 1 {
+		return nil, nil
+	}
 	return prepareACPDescendantCleanup(c.processPID)
 }
 
