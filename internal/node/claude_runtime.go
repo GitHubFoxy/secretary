@@ -21,6 +21,8 @@ import (
 	"github.com/beruseruko/secretary/internal/nativeexec"
 )
 
+const instructionClaudeUserResponse = "For every response, set user_response to the exact user-facing answer or question, without process narration or JSON. task_outcome, reason, and recovered_tool_use_ids are internal verdict metadata; never repeat them in user_response. For a simple direct question, reply with only what the user requested."
+
 var ErrClaudeCodeUnavailable = errors.New("claude_code runtime unavailable")
 
 var errClaudeRootAlreadyExited = errors.New("Claude process exited before root identity capture")
@@ -153,7 +155,7 @@ func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionI
 	args := append([]string(nil), r.Arguments...)
 	args = append(args, "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config")
 	args = append(args, "--permission-mode", "dontAsk")
-	args = append(args, "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}}},"required":["task_outcome","reason","recovered_tool_use_ids"],"additionalProperties":false}`)
+	args = append(args, "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}},"user_response":{"type":"string","minLength":1}},"required":["task_outcome","reason","recovered_tool_use_ids","user_response"],"additionalProperties":false}`)
 	toolNames := map[string]string{"read": "Read", "bash": "Bash", "shell": "Bash", "edit": "Edit", "write": "Write", "patch": "Edit", "glob": "Glob", "find": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch", "task": "Agent", "subagent": "Agent", "skill": "Skill"}
 	tools := []string{}
 	for _, tool := range request.Profile.AllowTools {
@@ -176,9 +178,8 @@ func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionI
 	if len(allowed) > 0 {
 		args = append(args, "--allowedTools", strings.Join(allowed, ","))
 	}
-	if prompt := request.Profile.EffectivePrompt(); prompt != "" {
-		args = append(args, "--append-system-prompt", prompt)
-	}
+	prompt := instructionClaudeUserResponse + "\n" + request.Profile.EffectivePrompt()
+	args = append(args, "--append-system-prompt", strings.TrimSpace(prompt))
 	servers := map[string]any{}
 	for index, server := range request.MCPServers {
 		if server.Name == "" || server.Command == "" {
@@ -602,6 +603,14 @@ func (s *claudeSession) handleLine(line []byte) {
 		}
 	case "result":
 		summary := valueString(record["result"])
+		structured, valid := claudeTaskOutcome(record)
+		if valid {
+			summary = structured.userResponse
+		} else if _, supplied := record["structured_output"]; supplied {
+			summary = "Claude Code returned invalid structured task outcome"
+		} else if claudeServiceJSON(summary) {
+			summary = ""
+		}
 		status := "succeeded"
 		if subtype := valueString(record["subtype"]); subtype != "success" {
 			status = "failed"
@@ -617,6 +626,11 @@ func (s *claudeSession) handleLine(line []byte) {
 			status = "canceled"
 		}
 		s.stateMu.Unlock()
+		if status == "succeeded" && !valid {
+			if _, supplied := record["structured_output"]; !supplied {
+				summary = "Claude Code returned no structured task outcome"
+			}
+		}
 		if summary == "" {
 			summary = "Claude Code returned no answer"
 			if status == "canceled" {
@@ -628,7 +642,6 @@ func (s *claudeSession) handleLine(line []byte) {
 		}
 		result := Result{Status: status, Summary: summary}
 		if status == "succeeded" {
-			structured, valid := claudeTaskOutcome(record)
 			if s.failedBash != "" && (valid && structured.status == "failed" || !s.claudeStructuredRecovery(structured, valid)) {
 				result.Status = "failed"
 				result.FailureCode = "tool_execution_failed"
@@ -646,10 +659,10 @@ func (s *claudeSession) handleLine(line []byte) {
 				result.Status = "failed"
 				result.FailureCode = "task_outcome_failed"
 				result.Technical = "Claude Code returned invalid structured task outcome"
-			} else if !valid && !(s.sawAssistantText && !s.sawToolUse) {
+			} else if !valid {
 				result.Status = "failed"
 				result.FailureCode = "task_outcome_failed"
-				result.Technical = "Claude Code returned no structured task outcome or qualifying text-only answer"
+				result.Technical = "Claude Code returned no structured task outcome"
 			}
 		}
 		s.emitResult(result)
@@ -665,6 +678,7 @@ type claudeTaskVerdict struct {
 	status string
 	reason string
 	recovered []string
+	userResponse string
 }
 
 func claudeTaskOutcome(record map[string]any) (claudeTaskVerdict, bool) {
@@ -675,10 +689,11 @@ func claudeTaskOutcome(record map[string]any) (claudeTaskVerdict, bool) {
 	status, statusOK := output["task_outcome"].(string)
 	reason, reasonOK := output["reason"].(string)
 	ids, idsOK := output["recovered_tool_use_ids"].([]any)
-	if !statusOK || (status != "succeeded" && status != "failed") || !reasonOK || strings.TrimSpace(reason) == "" || !idsOK {
+	userResponse, responseOK := output["user_response"].(string)
+	if !statusOK || (status != "succeeded" && status != "failed") || !reasonOK || strings.TrimSpace(reason) == "" || !idsOK || !responseOK || strings.TrimSpace(userResponse) == "" {
 		return claudeTaskVerdict{}, false
 	}
-	verdict := claudeTaskVerdict{status: status, reason: reason}
+	verdict := claudeTaskVerdict{status: status, reason: reason, userResponse: strings.TrimSpace(userResponse)}
 	seen := make(map[string]bool)
 	for _, raw := range ids {
 		id, ok := raw.(string)
@@ -689,6 +704,22 @@ func claudeTaskOutcome(record map[string]any) (claudeTaskVerdict, bool) {
 		verdict.recovered = append(verdict.recovered, id)
 	}
 	return verdict, true
+}
+
+func claudeServiceJSON(text string) bool {
+	candidate := strings.TrimSpace(text)
+	candidate = strings.TrimSpace(strings.TrimPrefix(candidate, "Internal verdict:"))
+	if strings.HasPrefix(candidate, "```json\n") && strings.HasSuffix(candidate, "\n```") {
+		candidate = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(candidate, "```json\n"), "\n```"))
+	}
+	var value map[string]any
+	if json.Unmarshal([]byte(candidate), &value) != nil {
+		return false
+	}
+	_, reason := value["reason"]
+	_, recovered := value["recovered_tool_use_ids"]
+	_, outcome := value["task_outcome"]
+	return reason && recovered || outcome && (reason || recovered)
 }
 
 func (s *claudeSession) claudeStructuredRecovery(verdict claudeTaskVerdict, valid bool) bool {
@@ -762,9 +793,13 @@ func (s *claudeSession) handleContent(content any) {
 		switch valueString(block["type"]) {
 		case "text":
 			if strings.TrimSpace(valueString(block["text"])) != "" {
-				s.sawAssistantText = true
+				if !claudeServiceJSON(valueString(block["text"])) {
+					s.sawAssistantText = true
+				}
 			}
-			s.emitText(valueString(block["text"]))
+			if !claudeServiceJSON(valueString(block["text"])) {
+				s.emitText(valueString(block["text"]))
+			}
 		case "tool_use":
 			s.sawToolUse = true
 			s.emitActivity(Activity{Kind: ActivityTool, Text: valueString(block["name"])})
