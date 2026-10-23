@@ -179,7 +179,9 @@ func StartWithDiagnosticStderrEnvDir(ctx context.Context, stderr io.Writer, envi
 	stdout, err := process.StdoutPipe()
 	if err != nil { cancel(); return nil, err }
 	if err := process.Start(); err != nil { cancel(); return nil, err }
-	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, processPID: process.Process.Pid}
+	tracker, trackErr := startACPDescendantTracker(process.Process.Pid)
+	if trackErr != nil { cancel(); _ = process.Wait(); return nil, trackErr }
+	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, processPID: process.Process.Pid, tracker: tracker}
 	go client.read(stdout)
 	return client, nil
 }
