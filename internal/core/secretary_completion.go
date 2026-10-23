@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"regexp"
 	"strings"
 )
 
@@ -108,7 +109,7 @@ func (s *Store) finishSecretaryTurnWithOutput(ctx context.Context, turnID, input
 			}
 			if state != SecretaryTurnSucceeded {
 				terminalError = evidence.Code
-				if evidence.Code == "native_terminal_invalid" && evidence.NativeFailure != "" && len(evidence.NativeFailure) <= 512 && strings.Contains(evidence.NativeFailure, "model is not supported when using Codex with a ChatGPT account") {
+				if evidence.Code == "native_terminal_invalid" && evidence.NativeFailure != "" && len(evidence.NativeFailure) <= 512 && regexp.MustCompile("^The '[a-zA-Z0-9._-]+' model is not supported when using Codex with a ChatGPT account\\.$").MatchString(evidence.NativeFailure) {
 					terminalError = evidence.NativeFailure
 				}
 			}
