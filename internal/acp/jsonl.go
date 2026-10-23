@@ -93,6 +93,7 @@ type Client struct {
 	closeMu  sync.Mutex
 	closeErr error
 	cancel   context.CancelFunc
+	processPID int
 
 	stderr     stderrTail
 	stderrDone chan struct{}
@@ -177,7 +178,7 @@ func StartWithDiagnosticStderrEnvDir(ctx context.Context, stderr io.Writer, envi
 	stdout, err := process.StdoutPipe()
 	if err != nil { cancel(); return nil, err }
 	if err := process.Start(); err != nil { cancel(); return nil, err }
-	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel}
+	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, processPID: process.Process.Pid}
 	go client.read(stdout)
 	return client, nil
 }
@@ -221,11 +222,15 @@ func startWithProcessEnvironment(ctx context.Context, rawLog io.Writer, environm
 		cancel()
 		return nil, err
 	}
-	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, log: rawLog}
+	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, processPID: process.Process.Pid, log: rawLog}
 	client.stderrDone = make(chan struct{})
 	go client.drainStderr(stderr)
 	go client.read(stdout)
 	return client, nil
+}
+
+func (c *Client) PrepareDescendantCleanup() (func() error, error) {
+	return prepareACPDescendantCleanup(c.processPID)
 }
 
 func (c *Client) Events() <-chan Message { return c.events }
