@@ -21,6 +21,8 @@ import (
 	"github.com/beruseruko/secretary/internal/nativeexec"
 )
 
+const instructionClaudeUserResponse = "For every response, set user_response to the exact user-facing answer or question, without process narration or JSON. task_outcome, reason, and recovered_tool_use_ids are internal verdict metadata; never repeat them in user_response. For a simple direct question, reply with only what the user requested."
+
 var ErrClaudeCodeUnavailable = errors.New("claude_code runtime unavailable")
 
 var errClaudeRootAlreadyExited = errors.New("Claude process exited before root identity capture")
@@ -154,7 +156,6 @@ func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionI
 	args = append(args, "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config")
 	args = append(args, "--permission-mode", "dontAsk")
 	args = append(args, "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}},"user_response":{"type":"string","minLength":1}},"required":["task_outcome","reason","recovered_tool_use_ids","user_response"],"additionalProperties":false}`)
-	args = append(args, "--append-system-prompt", "For every response, set user_response to the exact user-facing answer or question, without process narration or JSON. task_outcome, reason, and recovered_tool_use_ids are internal verdict metadata; never repeat them in user_response. For a simple direct question, reply with only what the user requested.")
 	toolNames := map[string]string{"read": "Read", "bash": "Bash", "shell": "Bash", "edit": "Edit", "write": "Write", "patch": "Edit", "glob": "Glob", "find": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch", "task": "Agent", "subagent": "Agent", "skill": "Skill"}
 	tools := []string{}
 	for _, tool := range request.Profile.AllowTools {
@@ -177,9 +178,8 @@ func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionI
 	if len(allowed) > 0 {
 		args = append(args, "--allowedTools", strings.Join(allowed, ","))
 	}
-	if prompt := request.Profile.EffectivePrompt(); prompt != "" {
-		args = append(args, "--append-system-prompt", prompt)
-	}
+	prompt := instructionClaudeUserResponse + "\n" + request.Profile.EffectivePrompt()
+	args = append(args, "--append-system-prompt", strings.TrimSpace(prompt))
 	servers := map[string]any{}
 	for index, server := range request.MCPServers {
 		if server.Name == "" || server.Command == "" {
