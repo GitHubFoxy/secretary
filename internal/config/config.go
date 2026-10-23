@@ -262,7 +262,11 @@ func compile(base string, raw []byte, c Config, allowEmbeddedTitlePrompt bool) (
 		if name == "secretary" {
 			replyContractVersion = c.Secretary.ReplyContract
 		}
-		profile := Profile{Name: name, Path: resolved, Content: string(content), Skills: skills, AllowTools: append([]string(nil), c.Tools.Allow...), Runtime: runtime, Model: model, Reasoning: reasoning, ReplyContractVersion: replyContractVersion}
+		profileContent := string(content)
+		if name == "secretary" && replyContractVersion == SecretaryReplyContractAddressedV1 {
+			profileContent = strings.TrimSpace(profileContent) + "\n\n## Addressed reply v1\n\nFor every active owner input, use the secretary MCP reply_to_user tool exactly once with the server-issued secretary_turn_id and input_id and an accurate final answer. Include reply_kind=answer. Do not rely on ACP terminal text, assistant final messages, acknowledgements, or a successful tool call as the addressed reply. For a Worker action, call the appropriate lifecycle MCP tool and confirm only its actual server-accepted outcome; never claim a Worker was created without confirmation. If the lifecycle action fails, report the failure through reply_to_user instead. The addressed reply is required even for simple questions or memory requests. Never use fabricated origin identifiers or repeat a lifecycle action to repair a missing reply.\n"
+		}
+		profile := Profile{Name: name, Path: resolved, Content: profileContent, Skills: skills, AllowTools: append([]string(nil), c.Tools.Allow...), Runtime: runtime, Model: model, Reasoning: reasoning, ReplyContractVersion: replyContractVersion}
 		profile.Hash = digest(profile.Content, profile.Runtime, profile.Model, profile.Reasoning, strings.Join(profile.AllowTools, "\n"), skillDigest(skills))
 		if replyContractVersion != "" {
 			profile.Hash = digest(profile.Hash, replyContractVersion)
