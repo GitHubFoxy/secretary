@@ -16,7 +16,7 @@ import (
 func (r ExecCommandRunner) ObserveClaudeModels(ctx context.Context, binary string) ([]core.ObservedModelID, error) {
 	cmd, err := nativeexec.CommandContext(ctx, binary,
 		"--print", "--input-format", "stream-json", "--output-format", "stream-json",
-		"--verbose", "--tools", "", "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`,
+		"--verbose", "--tools", "", "--strict-mcp-config",
 		"--no-session-persistence",
 	)
 	if err != nil {
@@ -41,7 +41,14 @@ func (r ExecCommandRunner) ObserveClaudeModels(ctx context.Context, binary strin
 	if err := cmd.Start(); err != nil {
 		return nil, errors.New("Claude native model discovery unavailable")
 	}
+	cleanup, err := attachClaudeProbeProcess(cmd)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, errors.New("Claude native model discovery unavailable")
+	}
 	defer func() {
+		cleanup()
 		_ = stdin.Close()
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
