@@ -135,9 +135,15 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 			}
 			if len(p.Prompt) > 0 && p.Prompt[0].Text == "finish-held" && len(heldPromptID) > 0 {
 				traceIdleFixture("finish-held",req.Method,id,true)
+				if err := encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"outcome": "injected"}}); err != nil {
+					traceIdleFixture("steering-response-error:"+err.Error(),req.Method,id,true)
+					return
+				}
+				traceIdleFixture("steering-ack",req.Method,id,true)
 				encoder.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": id, "update": map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": "private-final", "_meta": map[string]any{"codex": map[string]string{"phase": "final_answer"}}, "content": map[string]string{"type": "text", "text": "held complete"}}}})
 				encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": heldPromptID, "result": map[string]any{"stopReason": "end_turn"}})
 				heldPromptID = nil
+				continue
 			}
 			result = map[string]any{"outcome": "injected"}
 		case "session/prompt":
