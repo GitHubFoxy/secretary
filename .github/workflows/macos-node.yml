@@ -30,3 +30,6 @@ jobs:
         run: |
           go build ./cmd/secretary-node
           go build ./cmd/secretaryd
+      - name: Verify app-managed and CLI-managed Node status
+        shell: bash
+        run: zsh scripts/mac12-node-status-test.sh
