@@ -153,7 +153,8 @@ func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionI
 	args := append([]string(nil), r.Arguments...)
 	args = append(args, "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config")
 	args = append(args, "--permission-mode", "dontAsk")
-	args = append(args, "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}}},"required":["task_outcome","reason","recovered_tool_use_ids"],"additionalProperties":false}`)
+	args = append(args, "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}},"user_response":{"type":"string","minLength":1}},"required":["task_outcome","reason","recovered_tool_use_ids","user_response"],"additionalProperties":false}`)
+	args = append(args, "--append-system-prompt", "For every response, set user_response to the exact user-facing answer or question, without process narration or JSON. task_outcome, reason, and recovered_tool_use_ids are internal verdict metadata; never repeat them in user_response. For a simple direct question, reply with only what the user requested.")
 	toolNames := map[string]string{"read": "Read", "bash": "Bash", "shell": "Bash", "edit": "Edit", "write": "Write", "patch": "Edit", "glob": "Glob", "find": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch", "task": "Agent", "subagent": "Agent", "skill": "Skill"}
 	tools := []string{}
 	for _, tool := range request.Profile.AllowTools {
@@ -602,6 +603,12 @@ func (s *claudeSession) handleLine(line []byte) {
 		}
 	case "result":
 		summary := valueString(record["result"])
+		structured, valid := claudeTaskOutcome(record)
+		if valid && structured.userResponse != "" {
+			summary = structured.userResponse
+		} else if claudeServiceJSON(summary) {
+			summary = ""
+		}
 		status := "succeeded"
 		if subtype := valueString(record["subtype"]); subtype != "success" {
 			status = "failed"
@@ -628,7 +635,6 @@ func (s *claudeSession) handleLine(line []byte) {
 		}
 		result := Result{Status: status, Summary: summary}
 		if status == "succeeded" {
-			structured, valid := claudeTaskOutcome(record)
 			if s.failedBash != "" && (valid && structured.status == "failed" || !s.claudeStructuredRecovery(structured, valid)) {
 				result.Status = "failed"
 				result.FailureCode = "tool_execution_failed"
@@ -665,6 +671,7 @@ type claudeTaskVerdict struct {
 	status string
 	reason string
 	recovered []string
+	userResponse string
 }
 
 func claudeTaskOutcome(record map[string]any) (claudeTaskVerdict, bool) {
@@ -678,7 +685,8 @@ func claudeTaskOutcome(record map[string]any) (claudeTaskVerdict, bool) {
 	if !statusOK || (status != "succeeded" && status != "failed") || !reasonOK || strings.TrimSpace(reason) == "" || !idsOK {
 		return claudeTaskVerdict{}, false
 	}
-	verdict := claudeTaskVerdict{status: status, reason: reason}
+	userResponse, _ := output["user_response"].(string)
+	verdict := claudeTaskVerdict{status: status, reason: reason, userResponse: strings.TrimSpace(userResponse)}
 	seen := make(map[string]bool)
 	for _, raw := range ids {
 		id, ok := raw.(string)
@@ -689,6 +697,17 @@ func claudeTaskOutcome(record map[string]any) (claudeTaskVerdict, bool) {
 		verdict.recovered = append(verdict.recovered, id)
 	}
 	return verdict, true
+}
+
+func claudeServiceJSON(text string) bool {
+	var value map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(text)), &value) != nil {
+		return false
+	}
+	_, reason := value["reason"]
+	_, recovered := value["recovered_tool_use_ids"]
+	_, outcome := value["task_outcome"]
+	return reason && recovered || outcome
 }
 
 func (s *claudeSession) claudeStructuredRecovery(verdict claudeTaskVerdict, valid bool) bool {
@@ -762,9 +781,13 @@ func (s *claudeSession) handleContent(content any) {
 		switch valueString(block["type"]) {
 		case "text":
 			if strings.TrimSpace(valueString(block["text"])) != "" {
-				s.sawAssistantText = true
+				if !claudeServiceJSON(valueString(block["text"])) {
+					s.sawAssistantText = true
+				}
 			}
-			s.emitText(valueString(block["text"]))
+			if !claudeServiceJSON(valueString(block["text"])) {
+				s.emitText(valueString(block["text"]))
+			}
 		case "tool_use":
 			s.sawToolUse = true
 			s.emitActivity(Activity{Kind: ActivityTool, Text: valueString(block["name"])})
