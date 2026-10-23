@@ -50,3 +50,11 @@ func codexCommandFailureDetails(failures map[string]int) string {
  for _, id := range ids { parts = append(parts, fmt.Sprintf("%s: exit code %d", id, failures[id])) }
  return "Codex native command failed: " + strings.Join(parts, "; ")
 }
+
+func codexRecoveryText(summary string) (string, bool) {
+ const start = "\n<secretary-recovery>"
+ const end = "</secretary-recovery>"
+ index := strings.LastIndex(summary, start)
+ if index < 0 || !strings.HasSuffix(strings.TrimSpace(summary), end) { return summary, false }
+ return strings.TrimSpace(summary[:index]), true
+}

@@ -111,7 +111,7 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 			case "native-exit-7", "native-exit-0", "native-recovered", "native-json-data", "native-reordered", "native-cancel":
                 event := func(kind, id, status string, code int, text string) map[string]any {
                     update := map[string]any{"sessionUpdate":kind,"toolCallId":id,"name":"exec_command","status":status}
-                    if kind == "tool_call" {update["title"]="Run command";update["kind"]="execute"; update["rawInput"]=map[string]any{"command":"exit 7"}}
+                    if kind == "tool_call" {update["title"]="Run command";update["kind"]="execute"; update["_meta"]=map[string]any{"terminal_info":map[string]any{"terminal_id":id,"cwd":"/tmp"}}; update["rawInput"]=map[string]any{"command":"exit 7"}}
                     if kind == "tool_call_update" {update["_meta"]=map[string]any{"terminal_exit":map[string]any{"terminal_id":id,"exit_code":code}}}
                     if text!="" {update["content"]=[]any{map[string]any{"type":"content","content":map[string]any{"type":"text","text":text}}}}
                     return map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":update}}
@@ -279,7 +279,7 @@ func TestCodexNativeCommandEventToTerminal(t *testing.T) {
    select{
    case result:=<-session.Result():
     if result.Status!=tc.status||result.FailureCode!=tc.code{t.Fatalf("result=%+v",result)}
-    if result.CompletionEvidence==nil || !result.CompletionEvidence.AllowsAddressedReplyOnly(){t.Fatalf("missing native completion evidence: %+v",result)}
+    if result.CompletionEvidence==nil || !result.CompletionEvidence.RPCSucceeded || !result.CompletionEvidence.DrainCompleted{t.Fatalf("missing native completion evidence: %+v",result)}
     if tc.scenario=="native-recovered" && result.Summary!="готово"{t.Fatalf("recovery leaked metadata: %q",result.Summary)}
    case <-ctx.Done():t.Fatal("no result")
    }

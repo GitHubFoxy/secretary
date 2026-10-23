@@ -826,6 +826,8 @@ type acpSession struct {
 	terminalMessageGrouping bool
 	codexMessagePhases      bool
 	codexCommandFailures     map[string]int
+	codexNativeStarts map[string]bool
+	codexPendingExits map[string]int
 	replaying               atomic.Bool
 	drainPromptEvents       bool
 
@@ -1847,6 +1849,8 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 	s.textMu.Lock()
 	s.turnAnswer, s.legacyTurnText = nil, nil
 	s.codexCommandFailures = make(map[string]int)
+	s.codexNativeStarts = make(map[string]bool)
+	s.codexPendingExits = make(map[string]int)
 	if s.terminalMessageGrouping || s.codexMessagePhases {
 		s.turnAnswer = newACPTurnAnswer()
 	} else {
@@ -1888,8 +1892,8 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 		collected = legacyText
 	}
 	s.turnAnswer, s.legacyTurnText = nil, nil
-	failures := make(map[string]int, len(s.codexCommandFailures))
-	for id, code := range s.codexCommandFailures { failures[id] = code }
+	failures := make(map[string]int)
+	for id, code := range s.codexPendingExits { if s.codexNativeStarts[id] && code != 0 { failures[id] = code } }
 	s.textMu.Unlock()
 	if err != nil {
 		var rpcErr *acp.RPCError
@@ -1950,17 +1954,17 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 			}
 		}
 	}
+	originalSummary := response.Summary
+	if s.codexMessagePhases && status != "canceled" { response.Summary, _ = codexRecoveryText(response.Summary) }
 	result := Result{Status: status, Summary: response.Summary, CompletionEvidence: completionEvidence}
 	if s.codexMessagePhases && status == "succeeded" && len(failures) != 0 {
-		if recovered, userText, ok := codexExplicitRecovery(response.Summary, failures); ok {
-			result.Summary = userText
-			_ = recovered
-		} else {
+		if _, _, ok := codexExplicitRecovery(originalSummary, failures); !ok {
 			result.Status = "failed"
 			result.FailureCode = "tool_execution_failed"
 			result.Technical = codexCommandFailureDetails(failures)
 		}
 	}
+	if s.codexMessagePhases && result.Summary != "" && status != "canceled" { s.emitActivity(Activity{Kind: ActivityText, Text: result.Summary}) }
 	s.result <- result
 	return nil
 }
@@ -2040,7 +2044,7 @@ func (s *acpSession) watch() {
 			if text == "" {
 				continue
 			}
-			emit(Activity{Kind: ActivityText, Text: text})
+			if !s.codexMessagePhases { emit(Activity{Kind: ActivityText, Text: text}) }
 		case "agent_thought_chunk", "thinking", "thinking_summary":
 			summary := valueString(payload["summary"])
 			if summary == "" {
@@ -2067,16 +2071,24 @@ func (s *acpSession) watch() {
 				s.turnAnswer.tool()
 			}
 			s.textMu.Unlock()
-			for _, activity := range toolTracker.observe(kind, payload) {
-				if s.codexMessagePhases && activity.Kind == ActivityToolResult {
-					if code, ok := codexACPCommandExit(payload, activity); ok && code != 0 {
+			if s.codexMessagePhases {
+				id := valueString(payload["toolCallId"])
+				meta, _ := payload["_meta"].(map[string]any)
+				info, _ := meta["terminal_info"].(map[string]any)
+				if kind == "tool_call" && id != "" && info != nil && valueString(info["terminal_id"]) == id && valueString(payload["kind"]) == "execute" {
+					s.textMu.Lock()
+					if s.codexNativeStarts != nil { s.codexNativeStarts[id] = true }
+					s.textMu.Unlock()
+				}
+				if kind == "tool_call_update" && id != "" && isACPToolTerminal(normalizeACPToolStatus(valueString(payload["status"]))) {
+					if code, ok := codexACPCommandExit(payload, Activity{Tool:"exec_command",CallID:id}); ok {
 						s.textMu.Lock()
-						if s.codexCommandFailures != nil { s.codexCommandFailures[activity.CallID] = code }
+						if s.codexPendingExits != nil { s.codexPendingExits[id] = code }
 						s.textMu.Unlock()
 					}
 				}
-				emit(activity)
 			}
+			for _, activity := range toolTracker.observe(kind, payload) { emit(activity) }
 		default:
 		}
 	}
