@@ -95,6 +95,7 @@ type Client struct {
 	cancel   context.CancelFunc
 	processPID int
 	tracker *acpDescendantTracker
+	trackerErr error
 
 	stderr     stderrTail
 	stderrDone chan struct{}
@@ -180,9 +181,17 @@ func StartWithDiagnosticStderrEnvDir(ctx context.Context, stderr io.Writer, envi
 	if err != nil { cancel(); return nil, err }
 	if err := process.Start(); err != nil { cancel(); return nil, err }
 	tracker, trackErr := startACPDescendantTracker(process.Process.Pid)
-	if trackErr != nil { cancel(); _ = process.Wait(); return nil, trackErr }
-	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, processPID: process.Process.Pid, tracker: tracker}
+	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, processPID: process.Process.Pid, tracker: tracker, trackerErr: trackErr}
 	go client.read(stdout)
+	if trackErr != nil {
+		select {
+		case <-client.done:
+			return client, nil
+		case <-time.After(acpStderrGrace):
+			_ = client.Close()
+			return nil, trackErr
+		}
+	}
 	return client, nil
 }
 
@@ -226,17 +235,28 @@ func startWithProcessEnvironment(ctx context.Context, rawLog io.Writer, environm
 		return nil, err
 	}
 	tracker, trackErr := startACPDescendantTracker(process.Process.Pid)
-	if trackErr != nil { cancel(); _ = process.Wait(); return nil, trackErr }
-	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, processPID: process.Process.Pid, tracker: tracker, log: rawLog}
+	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, processPID: process.Process.Pid, tracker: tracker, trackerErr: trackErr, log: rawLog}
 	client.stderrDone = make(chan struct{})
 	go client.drainStderr(stderr)
 	go client.read(stdout)
+	if trackErr != nil {
+		select {
+		case <-client.done:
+			return client, nil
+		case <-time.After(acpStderrGrace):
+			_ = client.Close()
+			return nil, trackErr
+		}
+	}
 	return client, nil
 }
 
 func (c *Client) PrepareDescendantCleanup() (func() error, error) {
 	if c.processPID <= 1 {
 		return nil, nil
+	}
+	if c.trackerErr != nil {
+		return nil, c.trackerErr
 	}
 	return prepareACPDescendantCleanup(c.tracker)
 }
@@ -281,7 +301,12 @@ func (c *Client) requestWithEventBarrier(ctx context.Context, method string, par
 	c.pending.Store(id, pendingRequest{response: response, drainEvents: drainEvents})
 	defer c.pending.Delete(id)
 	if err := c.send(Message{JSONRPC: "2.0", ID: json.RawMessage(fmt.Appendf(nil, "%d", id)), Method: method, Params: encoded}); err != nil {
-		return nil, err
+		select {
+		case <-c.done:
+			return nil, c.stoppedErr(true)
+		default:
+			return nil, err
+		}
 	}
 	select {
 	case message := <-response:
