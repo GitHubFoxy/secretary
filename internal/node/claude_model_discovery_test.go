@@ -26,7 +26,8 @@ func claudeModelProbeFixture(t *testing.T, response string) string {
 		"case \" $* \" in *' --input-format stream-json '*' --output-format stream-json '*) ;; *) exit 15 ;; esac\n" +
 		"if [ \"$CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY\" != \"1\" ]; then exit 16; fi\n" +
 		"IFS= read -r request || exit 17\n" +
-		"case \"$request\" in *secretary-model-inventory*initialize*) ;; *) exit 18 ;; esac\n" +
+		"case \"$request\" in *secretary-model-inventory*) ;; *) exit 18 ;; esac\n" +
+		"case \"$request\" in *initialize*) ;; *) exit 19 ;; esac\n" +
 		"printf '%s\\n' " + shellQuoteClaudeProbe(response) + "\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
