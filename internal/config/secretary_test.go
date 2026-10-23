@@ -82,6 +82,29 @@ func TestCodexDefaultAddressedReplyAndExplicitVersionedOverride(t *testing.T) {
 	}
 }
 
+func TestAddressedReplyProfileGeneratedWithoutMutatingCustomSource(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.toml")
+	manager, err := Open(path)
+	if err != nil { t.Fatal(err) }
+	original := manager.Snapshot()
+	profile := original.Profiles["secretary"]
+	fileContent, err := os.ReadFile(profile.Path)
+	if err != nil { t.Fatal(err) }
+	if profile.ReplyContractVersion != SecretaryReplyContractAddressedV1 || profile.Content != string(fileContent) || strings.Contains(profile.Content, "## Addressed reply v1") {
+		t.Fatal("versioned editable Secretary snapshot is not the exact external source")
+	}
+	custom := string(fileContent) + "\nCustom owner profile rule.\n"
+	if err := os.WriteFile(profile.Path, []byte(custom), 0o600); err != nil { t.Fatal(err) }
+	next, err := manager.Reload()
+	if err != nil { t.Fatal(err) }
+	got, err := os.ReadFile(profile.Path)
+	if err != nil { t.Fatal(err) }
+	if string(got) != custom || next.Profiles["secretary"].Content != custom || strings.Contains(next.Profiles["secretary"].Content, "## Addressed reply v1") || next.Profiles["secretary"].Hash == profile.Hash {
+		t.Fatal("reload discarded custom content, rewrote the source, or failed to revise identity")
+	}
+	if next.Profiles["worker"].ReplyContractVersion != "" || strings.Contains(next.Profiles["worker"].Content, "## Addressed reply v1") { t.Fatal("Worker profile was modified") }
+}
+
 func TestSecretaryAndWorkerHarnessPoliciesAreIndependent(t *testing.T) {
 	dir := t.TempDir()
 	for _, name := range []string{"secretary.md", "worker.md", "child.md"} {

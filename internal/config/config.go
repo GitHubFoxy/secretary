@@ -277,6 +277,13 @@ func compile(base string, raw []byte, c Config, allowEmbeddedTitlePrompt bool) (
 	return Snapshot{Version: digest(versionParts...), Config: c, Profiles: profiles, TitlePrompt: titlePrompt, ASRPrompt: asrPrompt}, nil
 }
 
+func SecretaryRuntimeContent(source string) string {
+	return strings.TrimSpace(source) + `
+
+## Addressed reply v1
+Use the current server-issued secretary_turn_id and input_id from the runtime context. Send every independent user-facing answer, clarification, mixed answer plus Worker action, or error through reply_to_user exactly once. Include the same origin IDs in every spawn_worker and message_worker call. Ordinary assistant text is activity, not a durable reply: an addressed turn cannot succeed without one exact reply_to_user for its active input, even when there is assistant final text or an already delivered Worker Result. Worker Results themselves must never be paraphrased as a second reply. Use reply_kind=answer for independent factual answers or clarifications; reply_kind=error for unavailable MCP, failed dispatch, or other failures. Only use reply_kind=spawn_worker with action_kind=spawn_worker and worker_turn_id from the successful canonical spawn_worker action_turn_id. Never claim a Worker exists through an answer or error; the server validates the typed creation origin. Missing reply_kind cannot complete an addressed reply.`
+}
+
 func loadTitlePrompt(base, path string, allowEmbedded bool) (Prompt, error) {
 	resolved := path
 	if !filepath.IsAbs(resolved) {

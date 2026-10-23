@@ -129,6 +129,9 @@ func (s *Server) callSecretaryTool(r *http.Request, name string, raw json.RawMes
 		WorkerRef       string `json:"worker_ref"`
 		Text            string `json:"text"`
 		RequestID       string `json:"request_id"`
+		ReplyKind       string `json:"reply_kind"`
+		ActionKind      string `json:"action_kind"`
+		WorkerTurnID    string `json:"worker_turn_id"`
 		SecretaryTurnID string `json:"secretary_turn_id"`
 		InputID         string `json:"input_id"`
 		ctl.SpawnWorkerRequest
@@ -172,6 +175,12 @@ func (s *Server) callSecretaryTool(r *http.Request, name string, raw json.RawMes
 				return nil, err
 			}
 		}
+		if addressedReplyEnabled {
+			return struct {
+				core.WorkerDetails
+				ActionTurnID string `json:"action_turn_id"`
+			}{details, details.ActionTurnID}, nil
+		}
 		return details, nil
 	case "message_worker":
 		if addressedReplyEnabled {
@@ -207,6 +216,16 @@ func (s *Server) callSecretaryTool(r *http.Request, name string, raw json.RawMes
 	case "reply_to_user":
 		if !addressedReplyEnabled {
 			return nil, &unknownSecretaryToolError{name: name}
+		}
+		switch args.ReplyKind {
+		case "spawn_worker":
+			if args.ActionKind != "spawn_worker" || args.WorkerTurnID == "" { return nil, fmt.Errorf("spawn confirmation requires a typed accepted action") }
+			if err := s.store.ValidateSecretaryAcceptedSpawnOrigin(r.Context(), core.SecretaryOriginIdentity{PersonID: personID, Capability: capability, SecretaryTurnID: args.SecretaryTurnID, InputID: args.InputID}, args.WorkerTurnID); err != nil { return nil, fmt.Errorf("worker creation has no accepted Secretary action: %w", err) }
+			args.Text = "Worker создан. Действие подтверждено сервером."
+		case "answer", "error":
+			if args.ActionKind != "" || args.WorkerTurnID != "" { return nil, fmt.Errorf("non-lifecycle reply cannot contain an action confirmation") }
+		default:
+			return nil, fmt.Errorf("reply_kind is required")
 		}
 		entry, duplicate, err := s.store.RecordSecretaryReply(r.Context(), personID, capability, args.SecretaryTurnID, args.InputID, args.Text)
 		if err != nil {

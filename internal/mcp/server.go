@@ -129,6 +129,14 @@ func (s Server) handle(ctx context.Context, req request) (any, map[string]any) {
 		if err != nil {
 			return map[string]any{"content": []map[string]any{{"type": "text", "text": err.Error()}}, "isError": true}, nil
 		}
+		if call.Name == "spawn_worker" {
+			if details, ok := value.(core.WorkerDetails); ok {
+				value = struct {
+					core.WorkerDetails
+					ActionTurnID string `json:"action_turn_id"`
+				}{details, details.ActionTurnID}
+			}
+		}
 		text, err := toolText(value)
 		if err != nil {
 			return nil, map[string]any{"code": -32000, "message": fmt.Sprintf("encode tool result: %v", err)}
