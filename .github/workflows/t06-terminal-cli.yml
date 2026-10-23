@@ -14,6 +14,7 @@ on:
       - secretary
       - scripts/secretary-interactive.zsh
       - scripts/t06-terminal-cli-test.sh
+      - scripts/mac12-linux-node-status-test.sh
       - scripts/install.sh
       - .github/workflows/t06-terminal-cli.yml
 
@@ -32,6 +33,7 @@ jobs:
         run: |
           zsh -n secretary
           zsh -n scripts/secretary-interactive.zsh
+          zsh -n scripts/mac12-linux-node-status-test.sh
           bash -n scripts/install.sh
           bash -n scripts/t06-terminal-cli-test.sh
       - name: CLI integration tests
