@@ -48,6 +48,9 @@ func (r CodexRuntime) configured(request StartRequest) (ACPRuntime, error) {
 	if instructions != "" {
 		overrides["developer_instructions"] = instructions
 	}
+	if profile.Name == "worker" {
+		base.ModeSelection = "agent-full-access"
+	}
 	encoded, err := json.Marshal(overrides)
 	if err != nil {
 		return ACPRuntime{}, err

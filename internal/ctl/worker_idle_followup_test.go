@@ -124,6 +124,12 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 			}
 			traceIdleFixture("session-bound",req.Method,id,len(heldPromptID)>0)
 			result = map[string]any{"sessionId": id}
+		case "session/set_config_option":
+			var p struct { ConfigID string `json:"configId"`; Value string `json:"value"` }
+			if json.Unmarshal(req.Params, &p) != nil || p.ConfigID != "mode" || p.Value != "agent-full-access" || os.Getenv("TEST_IDLE_CODEX") != "1" {
+				idleFixtureExit()
+			}
+			result = map[string]any{"configOptions": []map[string]string{{"id": p.ConfigID, "currentValue": p.Value}}}
 		case "_session/steering":
 			var p struct {
 				Prompt []struct {

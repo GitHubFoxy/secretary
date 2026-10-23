@@ -255,6 +255,9 @@ func (r ACPRuntime) configureSession(ctx context.Context, client *acp.Client, se
 		if err != nil {
 			return fmt.Errorf("acp: native managed mode selection failed: %w", err)
 		}
+		if r.CodexMessagePhases && !nativeConfigValueConfirmed(response, "mode", r.ModeSelection) {
+			return fmt.Errorf("codex: requested native execution mode was not selected")
+		}
 		if r.ModeDescription != "" && !nativeModeConfirmed(response, r.ModeSelection, r.ModeDescription) {
 			return fmt.Errorf("acp: native managed profile not confirmed")
 		}
