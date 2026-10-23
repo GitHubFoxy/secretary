@@ -2044,7 +2044,13 @@ func (s *acpSession) watch() {
 			if text == "" {
 				continue
 			}
-			if !s.codexMessagePhases { emit(Activity{Kind: ActivityText, Text: text}) }
+			if !s.codexMessagePhases {
+				emit(Activity{Kind: ActivityText, Text: text})
+			} else if metadata, ok := payload["_meta"].(map[string]any); ok {
+				if phase, consistent := codexMessagePhase(metadata); consistent && phase == "commentary" {
+					emit(Activity{Kind: ActivityText, Text: text})
+				}
+			}
 		case "agent_thought_chunk", "thinking", "thinking_summary":
 			summary := valueString(payload["summary"])
 			if summary == "" {
