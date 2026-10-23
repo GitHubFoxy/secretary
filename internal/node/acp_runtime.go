@@ -910,18 +910,13 @@ func (s *acpSession) Cancel(ctx context.Context) error {
 	}
 	cleanup, inspectErr := s.client.PrepareDescendantCleanup()
 	notifyErr := s.client.NotifyContext(ctx, "session/cancel", map[string]string{"sessionId": s.id})
-	if notifyErr != nil {
-		return notifyErr
-	}
-	if inspectErr != nil {
-		return fmt.Errorf("inspect Codex tool descendants: %w", inspectErr)
-	}
+	var cleanupErr error
 	if cleanup != nil {
-		if err := cleanup(); err != nil {
-			return fmt.Errorf("stop Codex tool descendants: %w", err)
-		}
+		cleanupErr = cleanup()
 	}
-	return nil
+	if inspectErr != nil { inspectErr = fmt.Errorf("inspect Codex tool descendants: %w", inspectErr) }
+	if cleanupErr != nil { cleanupErr = fmt.Errorf("stop Codex tool descendants: %w", cleanupErr) }
+	return errors.Join(notifyErr, inspectErr, cleanupErr)
 }
 
 func (s *acpSession) RebindRequests(requestIDs []string) {
