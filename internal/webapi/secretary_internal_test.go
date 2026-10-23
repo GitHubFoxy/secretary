@@ -186,7 +186,7 @@ func TestInternalMCPAddressedReplyRequiresOptInAndExactOrigin(t *testing.T) {
 		}
 		return result
 	}
-	args := map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Independent answer."}
+	args := map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "Independent answer.", "reply_kind": "answer"}
 	first := call(args)
 	if first.Error != "" || first.Value == nil {
 		t.Fatalf("valid MCP reply failed: %#v", first)
@@ -197,11 +197,11 @@ func TestInternalMCPAddressedReplyRequiresOptInAndExactOrigin(t *testing.T) {
 	if second.Error != "" || !firstOK || !secondOK || firstValue["entry_id"] != secondValue["entry_id"] || firstValue["duplicate"] != false || secondValue["duplicate"] != true {
 		t.Fatalf("reply replay was not idempotently acknowledged: first=%#v second=%#v err=%s", first.Value, second.Value, second.Error)
 	}
-	conflict := call(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "different body"})
+	conflict := call(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "different body", "reply_kind": "answer"})
 	if conflict.Error == "" {
 		t.Fatal("same origin accepted a conflicting reply body")
 	}
-	stale := call(map[string]string{"secretary_turn_id": turn.ID, "input_id": "stale-input", "text": "stale"})
+	stale := call(map[string]string{"secretary_turn_id": turn.ID, "input_id": "stale-input", "text": "stale", "reply_kind": "answer"})
 	if stale.Error == "" {
 		t.Fatal("stale input id was accepted by the internal MCP route")
 	}
