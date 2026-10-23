@@ -93,7 +93,7 @@ func TestClaudeNativeDiscoveryTimeout(t *testing.T) {
 		t.Skip("Unix native executable fixture")
 	}
 	path := filepath.Join(t.TempDir(), "claude-slow-fixture")
-	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 2.1.306; exit 0; fi\nif [ \"$1\" = \"auth\" ]; then echo '{\"loggedIn\":true}'; exit 0; fi\nsleep 5\n"
+	script := "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo 2.1.306; exit 0; fi\nif [ \"$1\" = \"auth\" ]; then echo '{\"loggedIn\":true}'; exit 0; fi\nexec sleep 5\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
