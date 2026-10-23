@@ -55,11 +55,12 @@ type acpDescendantTracker struct {
 	done chan struct{}
 	finished chan struct{}
 	once sync.Once
+	inspectionErr error
 }
 
-func startACPDescendantTracker(pid int) *acpDescendantTracker {
+func startACPDescendantTracker(pid int) (*acpDescendantTracker, error) {
 	t := &acpDescendantTracker{root: acpProcessIdentity{pid: pid}, seen: make(map[int]acpProcessIdentity), done: make(chan struct{}), finished: make(chan struct{})}
-	t.sample()
+	if err := t.captureRoot(); err != nil { return nil, err }
 	go func() {
 		defer close(t.finished)
 		tick := time.NewTicker(10 * time.Millisecond)
@@ -67,13 +68,28 @@ func startACPDescendantTracker(pid int) *acpDescendantTracker {
 		for {
 			select {
 			case <-tick.C:
-				t.sample()
+				if err := t.sample(); err != nil { t.mu.Lock(); t.inspectionErr = errors.Join(t.inspectionErr, err); t.mu.Unlock() }
 			case <-t.done:
 				return
 			}
 		}
 	}()
-	return t
+	return t, nil
+}
+
+func (t *acpDescendantTracker) captureRoot() error {
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for {
+		processes, err := acpProcessSnapshot()
+		if err != nil { return err }
+		root, ok := processes[t.root.pid]
+		if ok && root.group == root.pid && !strings.HasPrefix(root.state, "Z") {
+			t.root = root
+			return t.sample()
+		}
+		if time.Now().After(deadline) { return errors.New("ACP launch root identity unavailable") }
+		time.Sleep(10*time.Millisecond)
+	}
 }
 
 func (t *acpDescendantTracker) stop() {
@@ -87,9 +103,10 @@ func (t *acpDescendantTracker) sample() error {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	root, ok := processes[t.root.pid]
-	if !ok || root.group != t.root.pid || strings.HasPrefix(root.state, "Z") { return nil }
-	if t.root.start == "" { t.root = root }
-	if !sameACPProcess(root, t.root) { return errors.New("ACP root identity changed") }
+	if t.root.start == "" { return errors.New("ACP root identity unverified") }
+	if !ok { return nil }
+	if root.group != t.root.pid || strings.HasPrefix(root.state, "Z") { return errors.New("ACP root identity invalid") }
+		if !sameACPProcess(root, t.root) { return errors.New("ACP root identity changed") }
 	owned := map[int]bool{t.root.pid: true}
 	for pid, recorded := range t.seen {
 		if now, ok := processes[pid]; ok && sameACPProcess(now, recorded) {
@@ -111,6 +128,10 @@ func (t *acpDescendantTracker) sample() error {
 }
 
 func (t *acpDescendantTracker) cleanup() error {
+	t.mu.Lock()
+	priorErr := t.inspectionErr
+	t.mu.Unlock()
+	if priorErr != nil { return priorErr }
 	var failures []error
 	deadline := time.Now().Add(2 * time.Second)
 	quietUntil := time.Now().Add(350 * time.Millisecond)
@@ -131,6 +152,10 @@ func (t *acpDescendantTracker) cleanup() error {
 				failures = append(failures, fmt.Errorf("stop ACP descendant %d: %w", child.pid, err))
 			}
 		}
+		t.mu.Lock()
+		observedErr := t.inspectionErr
+		t.mu.Unlock()
+		if observedErr != nil { failures = append(failures, observedErr); return errors.Join(failures...) }
 		if !active && time.Now().After(quietUntil) { return errors.Join(failures...) }
 		if time.Now().After(deadline) {
 			return errors.Join(append(failures, errors.New("ACP descendants remain alive after two seconds"))...)
@@ -141,6 +166,10 @@ func (t *acpDescendantTracker) cleanup() error {
 
 func prepareACPDescendantCleanup(tracker *acpDescendantTracker) (func() error, error) {
 	if tracker == nil { return nil, nil }
-	if err := tracker.sample(); err != nil { return nil, err }
+	tracker.mu.Lock()
+	priorErr := tracker.inspectionErr
+	tracker.mu.Unlock()
+	if priorErr != nil { return tracker.cleanup, priorErr }
+	if err := tracker.sample(); err != nil { return tracker.cleanup, err }
 	return tracker.cleanup, nil
 }
