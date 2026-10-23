@@ -2067,7 +2067,7 @@ func (s *acpSession) watch() {
 				s.textMu.Lock()
 				meta, _ := payload["_meta"].(map[string]any)
 				phase, consistent := codexMessagePhase(meta)
-				if s.turnAnswer != nil && s.codexSystemError && s.codexSystemErrorText == "" && consistent && phase == "" && len(text) < 512 && strings.Contains(text, "model is not supported when using Codex with a ChatGPT account") {
+				if s.turnAnswer != nil && s.codexSystemError && s.codexSystemErrorText == "" && consistent && phase == "" && len(text) < 256 && regexp.MustCompile("^The '[a-zA-Z0-9._-]+' model is not supported when using Codex with a ChatGPT account\\.$").MatchString(strings.TrimSpace(text)) {
 					s.codexSystemErrorText = SanitizeFailureMessage(strings.TrimSpace(text))
 				}
 				s.textMu.Unlock()
