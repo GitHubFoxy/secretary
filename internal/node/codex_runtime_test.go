@@ -376,8 +376,9 @@ func TestCodexWorkerFullAccessNativeConfigWithoutGlobalMutation(t *testing.T) {
    for _,entry:=range configured.Environment {if strings.HasPrefix(entry,"CODEX_CONFIG=") {if err:=json.Unmarshal([]byte(strings.TrimPrefix(entry,"CODEX_CONFIG=")),&config);err!=nil {t.Fatal(err)}}}
    if config["model"]!="existing-model" {t.Fatalf("model changed: %v",config)}
    if tc.worker {
-    if config["sandbox_mode"]!="danger-full-access"||config["approval_policy"]!="never" {t.Fatalf("Worker native permissions not full access: %v",config)}
-   } else if config["sandbox_mode"]!="workspace-write"||config["approval_policy"]!="on-request" {t.Fatalf("Secretary native permissions changed: %v",config)}
+    if configured.ModeSelection!="agent-full-access" || resumed.ModeSelection!="agent-full-access" {t.Fatalf("Worker ACP mode not selected: %q / %q",configured.ModeSelection,resumed.ModeSelection)}
+    if config["sandbox_mode"]!="workspace-write" || config["approval_policy"]!="on-request" {t.Fatalf("inherited config unexpectedly modified: %v",config)}
+   } else if configured.ModeSelection!="" || config["sandbox_mode"]!="workspace-write"||config["approval_policy"]!="on-request" {t.Fatalf("Secretary native permissions changed: %v",config)}
   })
  }
 }
