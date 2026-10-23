@@ -2,13 +2,12 @@ package secretary
 
 import (
 	"bufio"
-	"bytes"
 	"fmt"
-	"io"
 	"regexp"
 	"context"
 	"encoding/json"
 	"net/http"
+	"os/exec"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -72,7 +71,8 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	dataDir := t.TempDir()
+	store, err := core.Open(ctx, filepath.Join(dataDir, "secretary.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,6 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 		t.Fatal(err)
 	}
 	setRuntimeTestPolicy(t, store)
-	dataDir := t.TempDir()
 	if _, err := store.SaveUserDocument(ctx, filepath.Join(dataDir, "user.md"), "synthetic owner"); err != nil {
 		t.Fatal(err)
 	}
@@ -103,11 +102,7 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 		if _, err := store.EnrollNode(ctx, "local"); err != nil { t.Fatal(err) }
 		instance := core.HarnessInstance{ID: "local/codex", Node: "local", Kind: core.HarnessCodex, Version: "fixture", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}, Capabilities: core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityShell}}}
 		if err := store.UpdateNodeHeartbeat(ctx, "local", core.HarnessInventorySnapshot{Node: "local", ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{instance}}, core.NodeHeartbeat{Capacity: 2}); err != nil { t.Fatal(err) }
-		handler.Workers.Runtime = &mac12DispatchRuntime{}
-		handler.Workers.WorkerPolicy = core.HarnessPolicy{DefaultHarness: core.HarnessCodex}
-		handler.Workers.WorkerProfileSource = func() (node.ManagedProfile, error) {
-			return node.ManagedProfile{Version: "fixture", Name: "worker", Content: "Synthetic worker.", Runtime: "codex", Hash: "fixture"}, nil
-		}
+		
 	}
 	priorTurns := 0
 	if replyMode == "foreign" {
@@ -131,16 +126,6 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 	ready := make(chan struct{}, 1)
 	release := make(chan struct{})
 	gate := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if production && r.URL.Path == "/mcp" {
-		defer r.Body.Close()
-		payload, err := io.ReadAll(r.Body)
-		if err != nil { http.Error(w, err.Error(), 400); return }
-		var output bytes.Buffer
-		if err := (mcp.Server{Handler: handler}).Serve(ctx, bytes.NewReader(append(payload, '\n')), &output); err != nil { http.Error(w, err.Error(), 500); return }
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write(output.Bytes())
-		return
-	}
 		if r.URL.Path != "/hold" {
 			http.NotFound(w, r)
 			return
@@ -321,6 +306,7 @@ func TestAddressedReplyACPFixtureProcess(t *testing.T) {
 		}
 	}
 	scanner := bufio.NewScanner(os.Stdin)
+	var mcpServer node.MCPServer
 	for scanner.Scan() {
 		var request struct {
 			ID     json.RawMessage `json:"id"`
@@ -337,6 +323,13 @@ func TestAddressedReplyACPFixtureProcess(t *testing.T) {
 		case "initialize":
 			write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"protocolVersion": 1}})
 		case "session/new":
+			if strings.HasPrefix(scenario, "acp-mcp-") {
+				var session struct { Servers []node.MCPServer `json:"mcpServers"` }
+				if err := json.Unmarshal(request.Params, &session); err != nil || len(session.Servers) != 1 || session.Servers[0].Name != "secretary" || session.Servers[0].Command == "" {
+					t.Fatal("ACP session did not receive the production Secretary MCP server")
+				}
+				mcpServer = session.Servers[0]
+			}
 			write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"sessionId": "addressed-session"}})
 		case "session/prompt":
 			if strings.HasPrefix(scenario, "acp-mcp-") {
@@ -350,15 +343,44 @@ func TestAddressedReplyACPFixtureProcess(t *testing.T) {
 				if err := json.Unmarshal([]byte(os.Getenv("CODEX_CONFIG")), &config); err != nil { t.Fatal(err) }
 				instructions, _ := config["developer_instructions"].(string)
 				if !strings.Contains(instructions, "reply_kind=spawn_worker") || !strings.Contains(instructions, "action_turn_id") { t.Fatal("generated profile not delivered to Codex process") }
-				mcpCall := func(name string, args map[string]any) map[string]any {
-					payload, _ := json.Marshal(map[string]any{"jsonrpc":"2.0","id":1,"method":"tools/call","params":map[string]any{"name":name,"arguments":args}})
-					response, err := http.Post(strings.TrimRight(gateURL, "/")+"/mcp", "application/json", bytes.NewReader(payload))
+				cmd := exec.Command(os.Args[0], "-test.run=^TestMAC12MCPFixtureProcess$")
+				cmd.Env = append([]string{}, os.Environ()...)
+				cmd.Env = append(cmd.Env, "TEST_MAC12_MCP=1")
+				for _, variable := range mcpServer.Env { cmd.Env = append(cmd.Env, variable.Name+"="+variable.Value) }
+				mcpIn, err := cmd.StdinPipe()
+				if err != nil { t.Fatal(err) }
+				mcpOut, err := cmd.StdoutPipe()
+				if err != nil { t.Fatal(err) }
+				if err := cmd.Start(); err != nil { t.Fatal(err) }
+				reader := bufio.NewReader(mcpOut)
+				call := func(method string, params any) map[string]any {
+					payload, _ := json.Marshal(map[string]any{"jsonrpc":"2.0","id":1,"method":method,"params":params})
+					if _, err := mcpIn.Write(append(payload, '\n')); err != nil { t.Fatal(err) }
+					line, err := reader.ReadBytes('\n')
 					if err != nil { t.Fatal(err) }
-					defer response.Body.Close()
-					var decoded struct { Error any `json:"error"`; Result struct { IsError bool `json:"isError"`; Content []struct { Text string `json:"text"` } `json:"content"` } `json:"result"` }
-					if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil || decoded.Error != nil || decoded.Result.IsError || len(decoded.Result.Content) == 0 { t.Fatalf("MCP tool %s failed: %+v %v", name, decoded, err) }
+					var decoded struct { Error any `json:"error"`; Result map[string]any `json:"result"` }
+					if err := json.Unmarshal(line, &decoded); err != nil || decoded.Error != nil { t.Fatalf("MCP %s failed: %s %v", method, line, err) }
+					return decoded.Result
+				}
+				call("initialize", map[string]any{"protocolVersion":"2025-06-18"})
+				listed := call("tools/list", map[string]any{})
+				tools, _ := listed["tools"].([]any)
+				foundReply, foundSpawn := false, false
+				for _, raw := range tools {
+					tool, _ := raw.(map[string]any)
+					foundReply = foundReply || tool["name"] == "reply_to_user"
+					foundSpawn = foundSpawn || tool["name"] == "spawn_worker"
+				}
+				if !foundReply || !foundSpawn { t.Fatal("configured MCP server has no addressed reply or spawn tool") }
+				mcpCall := func(name string, args map[string]any) map[string]any {
+					response := call("tools/call", map[string]any{"name":name,"arguments":args})
+					if response["isError"] == true { t.Fatalf("MCP tool %s failed: %+v", name, response) }
+					parts, _ := response["content"].([]any)
+					if len(parts) == 0 { t.Fatal("MCP tool has no result content") }
+					part, _ := parts[0].(map[string]any)
+					content, _ := part["text"].(string)
 					var result map[string]any
-					if err := json.Unmarshal([]byte(decoded.Result.Content[0].Text), &result); err != nil { t.Fatal(err) }
+					if err := json.Unmarshal([]byte(content), &result); err != nil { t.Fatal(err) }
 					return result
 				}
 				origin := map[string]any{"secretary_turn_id":turnID[1],"input_id":inputID[1]}
@@ -376,6 +398,8 @@ func TestAddressedReplyACPFixtureProcess(t *testing.T) {
 					second := mcpCall("reply_to_user", origin)
 					if first["duplicate"] != false || second["duplicate"] != true { t.Fatal("addressed reply was not idempotent") }
 				}
+				if err := mcpIn.Close(); err != nil { t.Fatal(err) }
+				if err := cmd.Wait(); err != nil { t.Fatalf("MCP process failed: %v", err) }
 			}
 			update := func(kind, id, text string) {
 				write(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{
@@ -431,3 +455,21 @@ func (*mac12DispatchRuntime) Resume(context.Context, string, core.Worker, core.T
 func (*mac12DispatchRuntime) Steer(context.Context, string, core.Worker, core.Phase4Attempt, string) error { return fmt.Errorf("unexpected steering") }
 func (*mac12DispatchRuntime) Respond(context.Context, string, core.Worker, core.Phase4Attempt, string, string) error { return fmt.Errorf("unexpected response") }
 func (*mac12DispatchRuntime) Cancel(context.Context, string, core.Worker, core.Phase4Attempt) error { return fmt.Errorf("unexpected cancellation") }
+
+func TestMAC12MCPFixtureProcess(t *testing.T) {
+	if os.Getenv("TEST_MAC12_MCP") != "1" { return }
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(os.Getenv("SECRETARY_MCP_DATA_DIR"), "secretary.db"))
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	person, _, err := store.EnsureOwner(ctx)
+	if err != nil { t.Fatal(err) }
+	capability := os.Getenv("SECRETARY_MCP_CAPABILITY")
+	if capability == "" || os.Getenv("SECRETARY_MCP_REPLY_CONTRACT") != core.SecretaryReplyContractAddressedV1 { t.Fatal("ACP did not pass native MCP capability or contract") }
+	handler := mcp.Secretary{Workers: ctl.WorkerService{
+		Store: store, PersonID: person.ID, Capability: capability, Runtime: &mac12DispatchRuntime{},
+		WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessCodex},
+		WorkerProfileSource: func() (node.ManagedProfile, error) { return node.ManagedProfile{Version:"fixture", Name:"worker", Content:"Synthetic worker.", Runtime:"codex", Hash:"fixture"}, nil },
+	}, ReplyContractVersion: core.SecretaryReplyContractAddressedV1}
+	if err := (mcp.Server{Handler: handler}).Serve(ctx, os.Stdin, os.Stdout); err != nil { t.Fatal(err) }
+}
