@@ -92,7 +92,7 @@ func TestClaudeCodeRuntimeAllowsOnlyDocumentedHarmlessStaticArgument(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}}},"required":["task_outcome","reason","recovered_tool_use_ids"],"additionalProperties":false}`, "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id"}
+	want := []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}},"user_response":{"type":"string","minLength":1}},"required":["task_outcome","reason","recovered_tool_use_ids","user_response"],"additionalProperties":false}`, "--append-system-prompt", instructionClaudeUserResponse, "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Claude CLI args=%#v, want %#v", got, want)
 	}
@@ -100,7 +100,7 @@ func TestClaudeCodeRuntimeAllowsOnlyDocumentedHarmlessStaticArgument(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}}},"required":["task_outcome","reason","recovered_tool_use_ids"],"additionalProperties":false}`, "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session"}
+	want = []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}},"user_response":{"type":"string","minLength":1}},"required":["task_outcome","reason","recovered_tool_use_ids","user_response"],"additionalProperties":false}`, "--append-system-prompt", instructionClaudeUserResponse, "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Claude resume args=%#v, want %#v", got, want)
 	}
@@ -210,7 +210,7 @@ func TestFakeClaudeCodeProcess(t *testing.T) {
 		_ = json.NewDecoder(os.Stdin).Decode(&input)
 		_ = encoder.Encode(map[string]any{"type": "system", "session_id": input["session_id"]})
 		_ = encoder.Encode(map[string]any{"type": "stream_event", "event": map[string]any{"type": "content_block_delta", "delta": map[string]any{"type": "text_delta", "text": "native activity"}}})
-		_ = encoder.Encode(map[string]any{"type": "result", "subtype": "success", "result": "native Claude result", "structured_output": map[string]any{"task_outcome": "succeeded", "reason": "Native CLI fixture completed", "recovered_tool_use_ids": []string{}}})
+		_ = encoder.Encode(map[string]any{"type": "result", "subtype": "success", "result": "native Claude result", "structured_output": map[string]any{"task_outcome": "succeeded", "reason": "Native CLI fixture completed", "recovered_tool_use_ids": []string{}, "user_response": "native Claude result"}})
 		return
 	}
 }
@@ -263,7 +263,7 @@ func TestFakeClaudeInteractiveProcess(t *testing.T) {
 		}
 		if path := os.Getenv("CLAUDE_IMAGE_RECORD"); path != "" { _ = os.WriteFile(path, scanner.Bytes(), 0o600) }
 		message, _ := input["message"].(map[string]any)
-		_ = enc.Encode(map[string]any{"type": "result", "subtype": "success", "result": message["content"], "user_message_uuid": input["uuid"], "structured_output": map[string]any{"task_outcome": "succeeded", "reason": "Interactive fixture completed requested prompt", "recovered_tool_use_ids": []string{}}})
+		_ = enc.Encode(map[string]any{"type": "result", "subtype": "success", "result": message["content"], "user_message_uuid": input["uuid"], "structured_output": map[string]any{"task_outcome": "succeeded", "reason": "Interactive fixture completed requested prompt", "recovered_tool_use_ids": []string{}, "user_response": message["content"]}})
 	}
 	os.Exit(0)
 }
@@ -307,7 +307,7 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"
 read interrupt
 printf '%s\n' '{"type":"result","subtype":"success","result":"interrupted"}'
 read input
-printf '%s\n' '{"type":"assistant","uuid":"final-text","message":{"content":[{"type":"text","text":"done"}]}}' '{"type":"assistant","uuid":"final-text","message":{"content":[{"type":"text","text":"done"}]}}' '{"type":"result","subtype":"success","result":"done"}'
+printf '%s\n' '{"type":"assistant","uuid":"final-text","message":{"content":[{"type":"text","text":"done"}]}}' '{"type":"assistant","uuid":"final-text","message":{"content":[{"type":"text","text":"done"}]}}' '{"type":"result","subtype":"success","result":"done","structured_output":{"task_outcome":"succeeded","reason":"Follow-up completed","recovered_tool_use_ids":[],"user_response":"done"}}'
 read input
 `
 	if err := os.WriteFile(launcher, []byte(script), 0700); err != nil {
@@ -402,7 +402,7 @@ exec "$CLAUDE_TEST_BINARY" -test.run=TestFakeClaudeInteractiveProcess
 	if strings.Contains(string(body), "http://127.0.0.1:8080") {
 		t.Fatal("MCP environment value leaked into process arguments")
 	}
-	if flag("--append-system-prompt") != "PROFILE_MARKER_624" || flag("--tools") != "Read" || flag("--permission-mode") != "dontAsk" {
+	if flag("--append-system-prompt") != instructionClaudeUserResponse+"\nPROFILE_MARKER_624" || flag("--tools") != "Read" || flag("--permission-mode") != "dontAsk" {
 		t.Fatalf("profile/policy not delivered: %v", args)
 	}
 	var mcp struct {
@@ -509,7 +509,7 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
 				`{"type":"assistant","uuid":"call2","message":{"content":[{"type":"tool_use","id":"bash2","name":"Bash"}]}}`,
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash2","is_error":false}]},"toolUseResult":{"exitCode":0}}`,
-				`{"type":"result","subtype":"success","result":"Recovered","structured_output":{"task_outcome":"succeeded","reason":"Recovered by alternate verification","recovered_tool_use_ids":["bash1"]}}`,
+				`{"type":"result","subtype":"success","result":"Recovered","structured_output":{"task_outcome":"succeeded","reason":"Recovered by alternate verification","recovered_tool_use_ids":["bash1"],"user_response":"Recovered"}}`,
 			},
 			wantStatus: "succeeded",
 		},
@@ -530,7 +530,7 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 			events: []string{
 				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash"}]}}`,
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
-				`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"succeeded","reason":"Another command completed","recovered_tool_use_ids":["other-call"]}}`,
+				`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"succeeded","reason":"Another command completed","recovered_tool_use_ids":["other-call"],"user_response":"Done"}}`,
 			},
 			wantStatus: "failed", wantCode: "tool_execution_failed",
 		},
@@ -539,23 +539,23 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 			events: []string{
 				`{"type":"assistant","uuid":"call1","message":{"content":[{"type":"tool_use","id":"bash1","name":"Bash"}]}}`,
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash1","is_error":true}]}}`,
-				`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"unknown","reason":"not valid","recovered_tool_use_ids":["bash1"]}}`,
+				`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"unknown","reason":"not valid","recovered_tool_use_ids":["bash1"],"user_response":"Recovered"}}`,
 			},
 			wantStatus: "failed", wantCode: "tool_execution_failed", wantTechnical: "invalid structured task outcome",
 		},
 		{
 			name: "structured failed without Bash",
-			events: []string{`{"type":"result","subtype":"success","result":"Failed","structured_output":{"task_outcome":"failed","reason":"Could not complete task","recovered_tool_use_ids":[]}}`},
+			events: []string{`{"type":"result","subtype":"success","result":"Failed","structured_output":{"task_outcome":"failed","reason":"Could not complete task","recovered_tool_use_ids":[],"user_response":"Failed"}}`},
 			wantStatus: "failed", wantCode: "task_outcome_failed", wantTechnical: "Could not complete task",
 		},
 		{
 			name: "structured succeeded without Bash",
-			events: []string{`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"succeeded","reason":"Completed","recovered_tool_use_ids":[]}}`},
+			events: []string{`{"type":"result","subtype":"success","result":"Done","structured_output":{"task_outcome":"succeeded","reason":"Completed","recovered_tool_use_ids":[],"user_response":"Done"}}`},
 			wantStatus: "succeeded",
 		},
 		{
 			name: "native failure overrides structured success",
-			events: []string{`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Provider failed","structured_output":{"task_outcome":"succeeded","reason":"Claimed success","recovered_tool_use_ids":[]}}`},
+			events: []string{`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Provider failed","structured_output":{"task_outcome":"succeeded","reason":"Claimed success","recovered_tool_use_ids":[],"user_response":"Provider failed"}}`},
 			wantStatus: "failed",
 		},
 		{
@@ -569,12 +569,12 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 			wantStatus: "failed", wantCode: "task_outcome_failed", wantTechnical: "no structured task outcome",
 		},
 		{
-			name: "normal text-only answer fallback",
+			name: "active structured schema rejects text-only narration",
 			events: []string{
-				`{"type":"assistant","uuid":"text-answer","message":{"content":[{"type":"text","text":"A direct answer"}]}}`,
-				`{"type":"result","subtype":"success","result":"Done"}`,
+				`{"type":"assistant","uuid":"text-answer","message":{"content":[{"type":"text","text":"I checked the task and answered previously."}]}}`,
+				`{"type":"result","subtype":"success","result":"I checked the task and answered previously."}`,
 			},
-			wantStatus: "succeeded",
+			wantStatus: "failed", wantCode: "task_outcome_failed", wantTechnical: "no structured task outcome",
 		},
 		{
 			name: "tool use forbids text-only fallback",
@@ -589,7 +589,7 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 			events: []string{
 				`{"type":"assistant","uuid":"bash-call","message":{"content":[{"type":"tool_use","id":"bash-seven","name":"Bash"}]}}`,
 				`{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"bash-seven","is_error":true}]},"toolUseResult":{"exitCode":7}}`,
-				`{"type":"result","subtype":"success","result":"Task failed","structured_output":{"task_outcome":"failed","reason":"Original task could not complete","recovered_tool_use_ids":[]}}`,
+				`{"type":"result","subtype":"success","result":"Task failed","structured_output":{"task_outcome":"failed","reason":"Original task could not complete","recovered_tool_use_ids":[],"user_response":"Task failed"}}`,
 			},
 			wantStatus: "failed", wantCode: "tool_execution_failed", wantTechnical: "Original task could not complete",
 		},
@@ -639,6 +639,123 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 			select {
 			case duplicate := <-session.Result():
 				t.Fatalf("duplicate terminal result: %#v", duplicate)
+			default:
+			}
+		})
+	}
+}
+
+func TestClaudeUserResponseSeparatedFromNativeVerdict(t *testing.T) {
+	cases := []struct {
+		name        string
+		assistant   string
+		terminal    string
+		wantStatus  string
+		wantSummary string
+		wantCode    string
+		wantActivity string
+	}{
+		{
+			name:      "worker question",
+			assistant: `{"type":"assistant","uuid":"response","message":{"content":[{"type":"text","text":"{\"reason\":\"Internal\",\"recovered_tool_use_ids\":[]}"}]}}`,
+			terminal: `{"type":"result","subtype":"success","result":"{\"reason\":\"Internal\",\"recovered_tool_use_ids\":[]}","structured_output":{"task_outcome":"succeeded","reason":"Internal","recovered_tool_use_ids":[],"user_response":"Какой стиль выбрать?"}}`,
+			wantStatus: "succeeded",
+			wantSummary: "Какой стиль выбрать?",
+		},
+		{
+			name:     "secretary direct recall",
+			terminal: `{"type":"result","subtype":"success","result":"{\"task_outcome\":\"succeeded\",\"reason\":\"Answered\",\"recovered_tool_use_ids\":[]}","structured_output":{"task_outcome":"succeeded","reason":"Answered","recovered_tool_use_ids":[],"user_response":"ЛИСТ-6783"}}`,
+			wantStatus: "succeeded",
+			wantSummary: "ЛИСТ-6783",
+		},
+		{
+			name: "missing user response with plain result fails closed",
+			terminal: `{"type":"result","subtype":"success","result":"I checked the task and responded earlier.","structured_output":{"task_outcome":"succeeded","reason":"Completed","recovered_tool_use_ids":[]}}`,
+			wantStatus: "failed",
+			wantSummary: "Claude Code returned invalid structured task outcome",
+			wantCode: "task_outcome_failed",
+		},
+		{
+			name: "missing structured output redacts narration",
+			assistant: `{"type":"assistant","uuid":"narration","message":{"content":[{"type":"text","text":"I checked the task and answered earlier."}]}}`,
+			terminal: `{"type":"result","subtype":"success","result":"I checked the task and answered earlier."}`,
+			wantStatus: "failed",
+			wantSummary: "Claude Code returned no structured task outcome",
+			wantCode: "task_outcome_failed",
+			wantActivity: "I checked the task and answered earlier.",
+		},
+		{
+			name: "empty user response with plain result fails closed",
+			terminal: `{"type":"result","subtype":"success","result":"I answered.","structured_output":{"task_outcome":"succeeded","reason":"Completed","recovered_tool_use_ids":[],"user_response":"  "}}`,
+			wantStatus: "failed",
+			wantSummary: "Claude Code returned invalid structured task outcome",
+			wantCode: "task_outcome_failed",
+		},
+		{
+			name: "wrapped internal verdict is not activity",
+			assistant: "{\"type\":\"assistant\",\"uuid\":\"wrapped\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Internal verdict:\\n```json\\n{\\\"task_outcome\\\":\\\"succeeded\\\",\\\"reason\\\":\\\"Internal\\\",\\\"recovered_tool_use_ids\\\":[]}\\n```\"}]}}",
+			terminal: `{"type":"result","subtype":"success","result":"Internal verdict","structured_output":{"task_outcome":"succeeded","reason":"Internal","recovered_tool_use_ids":[],"user_response":"Готово"}}`,
+			wantStatus: "succeeded",
+			wantSummary: "Готово",
+		},
+		{
+			name: "legitimate JSON response remains visible",
+			assistant: "{\"type\":\"assistant\",\"uuid\":\"legitimate\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"count\\\":2,\\\"items\\\":[\\\"a\\\",\\\"b\\\"]}\"}]}}",
+			terminal: "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"JSON delivered\",\"structured_output\":{\"task_outcome\":\"succeeded\",\"reason\":\"Done\",\"recovered_tool_use_ids\":[],\"user_response\":\"{\\\"count\\\":2,\\\"items\\\":[\\\"a\\\",\\\"b\\\"]}\"}}",
+			wantStatus: "succeeded",
+			wantSummary: `{"count":2,"items":["a","b"]}`,
+			wantActivity: `{"count":2,"items":["a","b"]}`,
+		},
+		{
+			name: "quoted service-shaped JSON remains visible in explanation",
+			assistant: "{\"type\":\"assistant\",\"uuid\":\"quoted\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"The verdict below is an example: \\\\n```json\\\\n{\\\"task_outcome\\\":\\\"succeeded\\\",\\\"reason\\\":\\\"Example\\\",\\\"recovered_tool_use_ids\\\":[]}\\\\n```\\\\nThis is a sample, not my outcome.\"}]}}",
+			terminal: "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"Internal\",\"structured_output\":{\"task_outcome\":\"succeeded\",\"reason\":\"Complete\",\"recovered_tool_use_ids\":[],\"user_response\":\"Example explained\"}}",
+			wantStatus: "succeeded",
+			wantSummary: "Example explained",
+			wantActivity: "The verdict below is an example: \\n```json\\n{\"task_outcome\":\"succeeded\",\"reason\":\"Example\",\"recovered_tool_use_ids\":[]}\\n```\\nThis is a sample, not my outcome.",
+		},
+		{
+			name:     "failed native provider precedence",
+			terminal: `{"type":"result","subtype":"error_during_execution","result":"Provider error","structured_output":{"task_outcome":"succeeded","reason":"Reported success","recovered_tool_use_ids":[],"user_response":"Done"}}`,
+			wantStatus: "failed",
+			wantSummary: "Done",
+		},
+		{
+			name:     "service JSON without user response fails closed",
+			terminal: `{"type":"result","subtype":"success","result":"{\"task_outcome\":\"succeeded\",\"reason\":\"Internal\",\"recovered_tool_use_ids\":[]}","structured_output":{"task_outcome":"succeeded","reason":"Internal","recovered_tool_use_ids":[]}}`,
+			wantStatus: "failed",
+			wantSummary: "Claude Code returned invalid structured task outcome",
+			wantCode: "task_outcome_failed",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &claudeSession{id: "native-id", active: true, inputID: "input-id", seen: map[string]bool{}, bashCalls: map[string]bool{}, result: make(chan Result, 2), activity: make(chan Activity, 16)}
+			if tc.assistant != "" {
+				s.handleLine([]byte(tc.assistant))
+			}
+			s.handleLine([]byte(tc.terminal))
+			select {
+			case result := <-s.Result():
+				if result.Status != tc.wantStatus || result.Summary != tc.wantSummary || result.FailureCode != tc.wantCode {
+					t.Fatalf("result=%#v", result)
+				}
+			default:
+				t.Fatal("missing result")
+			}
+			select {
+			case activity := <-s.Activity():
+				if activity.Text != tc.wantActivity {
+					t.Fatalf("unexpected activity: %#v, want %q", activity, tc.wantActivity)
+				}
+			default:
+				if tc.wantActivity != "" {
+					t.Fatalf("missing expected activity %q", tc.wantActivity)
+				}
+			}
+			select {
+			case duplicate := <-s.Result():
+				t.Fatalf("duplicate result: %#v", duplicate)
 			default:
 			}
 		})
