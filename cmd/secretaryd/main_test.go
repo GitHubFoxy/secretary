@@ -43,7 +43,7 @@ func TestFreshCodexConfigActivatesManagedLifecycleReplyWithoutProfileRewrite(t *
 		t.Fatalf("fresh Codex runtime lacks typed durable lifecycle instructions: %#v", profile)
 	}
 	files := profileFiles(snapshot)
-	if len(files) == 0 || strings.Contains(files[0].Content, "## Addressed reply v1") {
+	if len(files) == 0 || files[0].Name != "secretary" || files[0].Content != string(before) || files[0].Hash != snapshot.Profiles["secretary"].Hash || files[0].Revision != files[0].Hash || !files[0].Editable || strings.Contains(files[0].Content, "## Addressed reply v1") {
 		t.Fatalf("external editable profile was replaced with runtime instructions: %#v", files)
 	}
 	after, err := os.ReadFile(path)
@@ -97,11 +97,25 @@ func TestAddressedReplyInstructionsAreOptInAndDoNotRewriteExternalProfile(t *tes
 		t.Fatalf("opt-in managed Profile omitted instructions/version: %#v", profile)
 	}
 	files := profileFiles(optedIn)
-	if len(files) == 0 || strings.Contains(files[0].Content, "Addressed reply v1") {
+	if len(files) == 0 || files[0].Name != "secretary" || files[0].Content != string(externalBefore) || files[0].Hash != optedIn.Profiles["secretary"].Hash || files[0].Revision != files[0].Hash || !files[0].Editable || strings.Contains(files[0].Content, "Addressed reply v1") {
 		t.Fatalf("API profile view rewrote external instructions: %#v", files)
 	}
+	custom := append(append([]byte(nil), externalBefore...), []byte("\n# Owner-maintained instruction\n")...)
+	if err := applyProfile(manager, "secretary", custom); err != nil { t.Fatal(err) }
+	updated := manager.Snapshot()
+	view := profileFiles(updated)
+	if len(view) == 0 || view[0].Content != string(custom) || view[0].Hash != updated.Profiles["secretary"].Hash || view[0].Revision != view[0].Hash || view[0].Hash == files[0].Hash || !view[0].Editable || strings.Contains(view[0].Content, "## Addressed reply v1") {
+		t.Fatalf("editable API failed to round-trip owner source and revision: %#v", view)
+	}
+	customRuntime := secretaryProfile(updated, store)
+	if !strings.Contains(customRuntime.Content, "Owner-maintained instruction") || !strings.Contains(customRuntime.Content, "## Addressed reply v1") {
+		t.Fatal("runtime did not preserve owner custom instructions alongside versioned reply policy")
+	}
+	if stored, err := os.ReadFile(externalPath); err != nil || string(stored) != string(custom) {
+		t.Fatalf("profile apply did not preserve exact external bytes: %v", err)
+	}
 	externalAfter, err := os.ReadFile(externalPath)
-	if err != nil || string(externalAfter) != string(externalBefore) {
+	if err != nil || string(externalAfter) != string(custom) {
 		t.Fatalf("external Profile changed during opt-in: err=%v", err)
 	}
 }
