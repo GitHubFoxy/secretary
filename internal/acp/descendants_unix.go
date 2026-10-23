@@ -56,10 +56,12 @@ type acpDescendantTracker struct {
 	finished chan struct{}
 	once sync.Once
 	inspectionErr error
+	snapshot func() (map[int]acpProcessIdentity, error)
+	signal func(int) error
 }
 
 func startACPDescendantTracker(pid int) (*acpDescendantTracker, error) {
-	t := &acpDescendantTracker{root: acpProcessIdentity{pid: pid}, seen: make(map[int]acpProcessIdentity), done: make(chan struct{}), finished: make(chan struct{})}
+	t := &acpDescendantTracker{root: acpProcessIdentity{pid: pid}, seen: make(map[int]acpProcessIdentity), done: make(chan struct{}), finished: make(chan struct{}), snapshot: acpProcessSnapshot, signal: func(pid int) error { return syscall.Kill(pid, syscall.SIGKILL) }}
 	if err := t.captureRoot(); err != nil { return nil, err }
 	go func() {
 		defer close(t.finished)
@@ -106,7 +108,7 @@ func (t *acpDescendantTracker) stop() {
 }
 
 func (t *acpDescendantTracker) sample() error {
-	processes, err := acpProcessSnapshot()
+	processes, err := t.snapshot()
 	if err != nil { return err }
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -140,8 +142,8 @@ func (t *acpDescendantTracker) cleanup() error {
 	t.mu.Lock()
 	priorErr := t.inspectionErr
 	t.mu.Unlock()
-	if priorErr != nil { return priorErr }
 	var failures []error
+	if priorErr != nil { failures = append(failures, priorErr) }
 	deadline := time.Now().Add(2 * time.Second)
 	quietUntil := time.Now().Add(350 * time.Millisecond)
 	for {
@@ -150,21 +152,21 @@ func (t *acpDescendantTracker) cleanup() error {
 		children := make([]acpProcessIdentity, 0, len(t.seen))
 		for _, child := range t.seen { children = append(children, child) }
 		t.mu.Unlock()
-		processes, err := acpProcessSnapshot()
+		processes, err := t.snapshot()
 		if err != nil { return errors.Join(append(failures, err)...)}
 		active := false
 		for _, child := range children {
 			current, ok := processes[child.pid]
 			if !ok || !sameACPProcess(current, child) || strings.HasPrefix(current.state, "Z") { continue }
 			active = true
-			if err := syscall.Kill(child.pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, os.ErrProcessDone) {
+			if err := t.signal(child.pid); err != nil && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, os.ErrProcessDone) {
 				failures = append(failures, fmt.Errorf("stop ACP descendant %d: %w", child.pid, err))
 			}
 		}
 		t.mu.Lock()
 		observedErr := t.inspectionErr
 		t.mu.Unlock()
-		if observedErr != nil { failures = append(failures, observedErr); return errors.Join(failures...) }
+		if observedErr != nil { failures = append(failures, observedErr) }
 		if !active && time.Now().After(quietUntil) { return errors.Join(failures...) }
 		if time.Now().After(deadline) {
 			return errors.Join(append(failures, errors.New("ACP descendants remain alive after two seconds"))...)
