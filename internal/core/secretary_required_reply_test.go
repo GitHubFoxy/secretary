@@ -92,8 +92,8 @@ func TestRequiredAddressedReplyCompletionCommitsExactEvidenceAndSurvivesReopen(t
 				t.Fatal(err)
 			}
 			persisted, err := store.SecretaryTurn(ctx, turn.ID)
-			if err != nil || persisted.State != tc.wantState {
-				t.Fatal("terminal state was not durable")
+			if err != nil || persisted.State != tc.wantState || persisted.Error != func() string { if tc.wantState == SecretaryTurnFailed { return tc.wantCode }; return "" }() {
+				t.Fatal("terminal state or owner diagnostic was not durable")
 			}
 			events, err := store.SecretaryEvents(ctx, turn.ID, 0, 100)
 			if err != nil {
@@ -219,7 +219,8 @@ func TestCodexMissingReplyDiagnosticReflectsAcceptedSpawnAndSurvivesRestart(t *t
 
 func TestAcknowledgedFailedLegacyTurnPersistsOneOwnerExplanation(t *testing.T) {
  ctx := context.Background()
- store, err := Open(ctx,filepath.Join(t.TempDir(),"failed-secretary.db"))
+ dbPath:=filepath.Join(t.TempDir(),"failed-secretary.db")
+ store, err := Open(ctx,dbPath)
  if err != nil { t.Fatal(err) }
  defer store.Close()
  person,conversation,err := store.CreatePersonWithConversation(ctx)
@@ -253,4 +254,15 @@ func TestAcknowledgedFailedLegacyTurnPersistsOneOwnerExplanation(t *testing.T) {
  terminal=0
  for _,e:=range entries {if e.TurnID==turn.ID && e.Body==explanation {terminal++}}
  if terminal!=1 {t.Fatalf("terminal replay duplicated: %d",terminal)}
+ if err:=store.Close();err!=nil {t.Fatal(err)}
+ store,err=Open(ctx,dbPath)
+ if err!=nil {t.Fatal(err)}
+ persisted,err:=store.SecretaryTurn(ctx,turn.ID)
+ if err!=nil || persisted.State!=SecretaryTurnFailed || persisted.Error!=explanation {t.Fatalf("failed terminal not durable: %+v %v",persisted,err)}
+ recovered,err:=store.EntriesAfter(ctx,conversation.ID,0)
+ if err!=nil {t.Fatal(err)}
+ ack,terminal=0,0
+ for _,e:=range recovered {if e.TurnID==turn.ID {if e.Body=="Сейчас запущу Worker" {ack++};if e.Body==explanation {terminal++}}}
+ if ack!=1||terminal!=1 {t.Fatalf("reopened ack=%d terminal=%d",ack,terminal)}
+ if _,_,err:=store.FinishSecretaryTurnWithResponse(ctx,turn.ID,SecretaryTurnFailed,explanation,"");!errors.Is(err,ErrInvalidTransition) {t.Fatalf("reopened completed turn replay: %v",err)}
 }
