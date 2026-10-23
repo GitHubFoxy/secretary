@@ -144,10 +144,19 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 	if local.SaveSessionMapping(mapping) != nil {
 		t.Fatal("mapping fixture restore failed")
 	}
-	reopened, err := node.OpenLocalStore(path)
+	snapshot, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	replayPath := filepath.Join(t.TempDir(), "replay-node.json")
+	if err := os.WriteFile(replayPath, snapshot, 0600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := node.OpenLocalStore(replayPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
 	uncertain := node.NewExecutionNode(instance.Node, runtime, reopened)
 	replay, err = uncertain.HandleCommand(ctx, command)
 	if err != nil || replay.State == node.CommandAccepted {
@@ -185,7 +194,7 @@ func runReadinessReplayFixture(t *testing.T, kind node.CommandKind, restart bool
 	} else {
 		finish := node.Command{Kind: node.CommandSteering, Steering: &node.SteeringCommand{Metadata: meta("finish", envelope), Text: "finish-held"}}
 		if o, e := execution.HandleCommand(ctx, finish); e != nil || o.State != node.CommandAccepted {
-			t.Fatal("held fixture finish failed")
+			t.Fatalf("held fixture finish failed: outcome=%+v err=%v", o, e)
 		}
 		await(envelope.AttemptID)
 		replay, err = execution.HandleCommand(ctx, command)
