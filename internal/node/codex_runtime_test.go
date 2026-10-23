@@ -75,7 +75,22 @@ func TestCodexFixtureProcess(t *testing.T) {
 		case "session/new":
 			result = map[string]any{"sessionId": "fixture-codex"}
 		case "session/set_config_option":
-			result = map[string]any{"configOptions": []map[string]string{{"id": req.Params.ConfigID, "currentValue": req.Params.Value}}}
+            if strings.HasPrefix(scenario,"mode-") && req.Params.ConfigID=="mode" {
+                switch scenario {
+                case "mode-unsupported":
+                    emit(map[string]any{"jsonrpc":"2.0","id":req.ID,"error":map[string]any{"code":-32602,"message":"mode not found: "+req.Params.Value}})
+                    continue
+                case "mode-rpc-error":
+                    emit(map[string]any{"jsonrpc":"2.0","id":req.ID,"error":map[string]any{"code":-32603,"message":"synthetic mode failure"}})
+                    continue
+                case "mode-unconfirmed":
+                    result = map[string]any{"configOptions":[]map[string]string{{"id":"mode","currentValue":"agent"}}}
+                default:
+                    result = map[string]any{"configOptions":[]map[string]string{{"id":req.Params.ConfigID,"currentValue":req.Params.Value}}}
+                }
+            } else {
+                result = map[string]any{"configOptions":[]map[string]string{{"id":req.Params.ConfigID,"currentValue":req.Params.Value}}}
+            }
 		case "_session/steering":
 			outcome := "injected"
 			if scenario == "steer-new-turn" {
@@ -381,4 +396,34 @@ func TestCodexWorkerFullAccessNativeConfigWithoutGlobalMutation(t *testing.T) {
    } else if configured.ModeSelection!="" || config["sandbox_mode"]!="workspace-write"||config["approval_policy"]!="on-request" {t.Fatalf("Secretary native permissions changed: %v",config)}
   })
  }
+}
+
+func TestCodexWorkerACPModeNegotiationStartAndResume(t *testing.T) {
+    for _, scenario := range []string{"mode-accepted","mode-unconfirmed","mode-unsupported","mode-rpc-error"} {
+        for _, resume := range []bool{false,true} {
+            name := scenario+"-start"
+            if resume { name=scenario+"-resume" }
+            t.Run(name,func(t *testing.T) {
+                ctx,cancel:=context.WithTimeout(context.Background(),5*time.Second)
+                defer cancel()
+                runtime:=CodexRuntime{ACPRuntime:ACPRuntime{Command:os.Args[0],Arguments:[]string{"-test.run=^TestCodexFixtureProcess$"},Environment:[]string{"TEST_CODEX_FIXTURE="+scenario}}}
+                req:=StartRequest{WorkerRef:"fixture",Workspace:t.TempDir(),DeferInitialPrompt:true,Profile:ManagedProfile{Name:"worker",Content:"UNIQUE_PROFILE_MARKER",Runtime:"codex"}}
+                var session Session
+                var err error
+                if resume {
+                    session,err=runtime.Resume(ctx,req,"fixture-codex")
+                } else {
+                    session,err=runtime.Start(ctx,req)
+                }
+                if scenario=="mode-accepted" {
+                    if err!=nil {t.Fatalf("confirmed mode rejected: %v",err)}
+                    if session==nil {t.Fatal("accepted mode returned nil session")}
+                    defer session.Close()
+                } else {
+                    if err==nil {if session!=nil {session.Close()};t.Fatalf("mode negotiation unexpectedly succeeded: %s",scenario)}
+                    if session!=nil {t.Fatalf("failed mode negotiation returned live session: %v",session)}
+                }
+            })
+        }
+    }
 }
