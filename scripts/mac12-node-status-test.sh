@@ -118,7 +118,7 @@ PID="$!"
 sleep 1
 write_fixture_identity "$OVERRIDE" override-node
 node_output="$(SECRETARY_NODE_EXECUTABLE="$STANDALONE" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=override-node configured_identity=override-node"* && "$node_output" == *"revision=custom-revision"* ]] || { diagnose_node_process "$CUSTOM" "$OVERRIDE" "$node_output"; print -u2 -- "$node_output"; exit 1; }
+[[ "$node_output" == *"Node running pid=$PID identity=override-node configured_identity=override-node"* && "$node_output" == *"source/unversioned"* ]] || { diagnose_node_process "$STANDALONE" "$OVERRIDE" "$node_output"; print -u2 -- "$node_output"; exit 1; }
 mkdir -p "$HOME/Library/LaunchAgents"
 touch "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
 node_output="$(SECRETARY_NODE_EXECUTABLE="$STANDALONE" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" node status)"
@@ -139,9 +139,9 @@ PID="$!"
 sleep 1
 write_fixture_identity "$OVERRIDE" override-node
 node_output="$(SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=override-node configured_identity=override-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
+[[ "$node_output" == *"Node running pid=$PID identity=override-node configured_identity=override-node"* && "$node_output" == *"revision=custom-revision"* ]] || { diagnose_node_process "$CUSTOM" "$OVERRIDE" "$node_output"; print -u2 -- "$node_output"; exit 1; }
 status_output="$(SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" status)"
-[[ "$status_output" == *"running Execution node: pid=$PID "* ]] || exit 1
+[[ "$status_output" == *"running Execution node: pid=$PID "* && "$status_output" == *"revision=custom-revision"* ]] || exit 1
 
 kill "$PID"
 wait "$PID" 2>/dev/null || true
