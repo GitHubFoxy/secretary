@@ -195,6 +195,7 @@
       await loadState();
     },
     onFailure: () => {
+      if (loadPhase !== 'loading') loadPhase = transitionLoad(loadPhase, 'start');
       loadPhase = transitionLoad(loadPhase, 'rejected');
       authenticated = false;
     },
