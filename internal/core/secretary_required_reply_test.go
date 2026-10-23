@@ -152,10 +152,11 @@ func TestRequiredAddressedReplyCompletionCommitsExactEvidenceAndSurvivesReopen(t
 }
 
 func TestCodexMissingReplyDiagnosticReflectsAcceptedSpawnAndSurvivesRestart(t *testing.T) {
- for _, tc:=range []struct{name,input string;accepted bool}{
+ for _, tc:=range []struct{name,input string;accepted bool;nativeError bool}{
   {name:"ordinary-answer-no-action",input:"Сколько будет два плюс два?"},
   {name:"worker-request-no-action",input:"Поручи это отдельному исполнителю"},
   {name:"worker-request-accepted-action",input:"Поручи это отдельному исполнителю",accepted:true},
+  {name:"native-model-error",input:"Ответь с default моделью",nativeError:true},
  } {
   t.Run(tc.name,func(t *testing.T){
    ctx:=context.Background()
@@ -184,23 +185,31 @@ func TestCodexMissingReplyDiagnosticReflectsAcceptedSpawnAndSurvivesRestart(t *t
     if err!=nil{t.Fatal(err)}
    }
    evidence:=SecretaryCompletionEvidence{Branch:"assistant_final",TerminalClass:"end_turn",TerminalValid:true,RPCSucceeded:true,DrainCompleted:true,ResponsePresent:true}
-   completed,err:=store.FinishSecretaryTurnWithRequiredReply(ctx,turn.ID,turn.InputID,SecretaryTurnSucceeded,evidence)
-   if err!=nil||completed.State!=SecretaryTurnFailed||completed.Error!="addressed_reply_missing"{t.Fatalf("missing MCP reply state=%#v err=%v",completed,err)}
+   target:=SecretaryTurnSucceeded
+   wantError:="addressed_reply_missing"
+   if tc.nativeError {
+    target=SecretaryTurnFailed
+    wantError="The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account."
+    evidence=SecretaryCompletionEvidence{Branch:"invalid",NativeFailure:wantError}
+   }
+   completed,err:=store.FinishSecretaryTurnWithRequiredReply(ctx,turn.ID,turn.InputID,target,evidence)
+   if err!=nil||completed.State!=SecretaryTurnFailed||completed.Error!=wantError{t.Fatalf("missing MCP reply state=%#v err=%v",completed,err)}
    entries,err:=store.EntriesAfter(ctx,conversation.ID,0)
    if err!=nil{t.Fatal(err)}
    count:=0
    for _,entry:=range entries {
     if entry.Kind!=EntrySecretary{continue}
     count++
+    if tc.nativeError && entry.Body!=wantError {t.Fatalf("trusted model cause was lost: %q",entry.Body)}
     if tc.accepted && !strings.Contains(entry.Body,"Worker создан и принят сервером"){t.Fatalf("accepted Worker described as missing: %q",entry.Body)}
-    if !tc.accepted && (!strings.Contains(entry.Body,"не получил подтверждённый адресованный ответ") || strings.Contains(entry.Body,"Worker")){t.Fatalf("unbound reply did not receive operation-neutral failure: %q",entry.Body)}
+    if !tc.nativeError && !tc.accepted && (!strings.Contains(entry.Body,"не получил подтверждённый адресованный ответ") || strings.Contains(entry.Body,"Worker")){t.Fatalf("unbound reply did not receive operation-neutral failure: %q",entry.Body)}
    }
    if count!=1{t.Fatalf("expected single owner diagnostic, got %#v",entries)}
    if err:=store.Close();err!=nil{t.Fatal(err)}
    store,err=Open(ctx,path)
    if err!=nil{t.Fatal(err)}
    defer store.Close()
-   if _,err=store.FinishSecretaryTurnWithRequiredReply(ctx,turn.ID,turn.InputID,SecretaryTurnSucceeded,evidence);!errors.Is(err,ErrInvalidTransition){t.Fatalf("restart duplicated completion: %v",err)}
+   if _,err=store.FinishSecretaryTurnWithRequiredReply(ctx,turn.ID,turn.InputID,target,evidence);!errors.Is(err,ErrInvalidTransition){t.Fatalf("restart duplicated completion: %v",err)}
    recovered,err:=store.EntriesAfter(ctx,conversation.ID,0)
    if err!=nil||len(recovered)!=len(entries){t.Fatalf("restart changed Conversation ordering/entries before=%#v after=%#v err=%v",entries,recovered,err)}
    for i:=range entries {if entries[i].ID!=recovered[i].ID || entries[i].Seq!=recovered[i].Seq{t.Fatalf("entry ordering changed at %d: %#v != %#v",i,entries[i],recovered[i])}}
