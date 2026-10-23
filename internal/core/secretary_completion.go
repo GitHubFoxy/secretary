@@ -37,6 +37,7 @@ type SecretaryCompletionEvidence struct {
 	EntryPresent    bool   `json:"entry_present"`
 	Committed       bool   `json:"committed"`
 	Code            string `json:"code"`
+	NativeFailure   string `json:"-"`
 }
 
 func (s *Store) FinishSecretaryTurnWithRequiredReply(ctx context.Context, turnID, inputID string, state SecretaryTurnState, evidence SecretaryCompletionEvidence) (SecretaryTurn, error) {
@@ -107,6 +108,9 @@ func (s *Store) finishSecretaryTurnWithOutput(ctx context.Context, turnID, input
 			}
 			if state != SecretaryTurnSucceeded {
 				terminalError = evidence.Code
+				if evidence.Code == "native_terminal_invalid" && evidence.NativeFailure != "" && len(evidence.NativeFailure) <= 512 && strings.Contains(evidence.NativeFailure, "model is not supported when using Codex with a ChatGPT account") {
+					terminalError = evidence.NativeFailure
+				}
 			}
 			evidence.Committed = true
 		}

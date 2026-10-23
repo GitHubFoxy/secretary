@@ -581,6 +581,9 @@ func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result,
 			if sessionUncertain {
 				state = core.SecretaryTurnFailed
 			}
+			if result.Status == "failed" && result.FailureCode == "native_model_error" {
+				evidence.NativeFailure = result.Summary
+			}
 			if native := result.CompletionEvidence; native != nil {
 				evidence.RPCSucceeded, evidence.DrainCompleted = native.RPCSucceeded, native.DrainCompleted
 				evidence.AssistantChunks = native.AssistantChunks
