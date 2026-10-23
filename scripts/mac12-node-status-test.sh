@@ -75,6 +75,26 @@ kill "$PID"
 wait "$PID" 2>/dev/null || true
 PID=""
 rm -f "$TEST_HOME/.local/share/secretary/node/node.pid"
+RELEASE="$TEST_HOME/.local/share/secretary/releases/test-release"
+mkdir -p "$RELEASE/bin"
+cp "$BIN" "$RELEASE/bin/secretary-node"
+printf 'vfixture\n' > "$RELEASE/VERSION"
+printf 'fixture-revision\n' > "$RELEASE/REVISION"
+ln -s "$RELEASE" "$TEST_HOME/.local/share/secretary/current"
+rm "$BIN"
+ln -s "$TEST_HOME/.local/share/secretary/current/bin/secretary-node" "$BIN"
+[[ -L "$BIN" && -L "$TEST_HOME/.local/share/secretary/current" && "${BIN:A}" == "${RELEASE:A}/bin/secretary-node" ]] || exit 1
+"$BIN" --config "$CONFIG" &
+PID="$!"
+sleep 1
+write_fixture_identity "$CONFIG" test-app-node
+node_output="$("$ROOT/secretary" node status)"
+[[ "$node_output" == *"Node running pid=$PID identity=test-app-node configured_identity=other-node"* && "$node_output" == *"revision=fixture-revision"* ]] || { diagnose_node_process "$BIN" "$CONFIG" "$node_output"; exit 1; }
+status_output="$("$ROOT/secretary" status)"
+[[ "$status_output" == *"running Execution node: pid=$PID "* && "$status_output" == *"revision=fixture-revision"* ]] || exit 1
+kill "$PID"
+wait "$PID" 2>/dev/null || true
+PID=""
 mkdir -p "$TEST_HOME/.local/share/secretary-node/current/bin"
 STANDALONE="$TEST_HOME/.local/share/secretary-node/current/bin/secretary-node"
 cp "$BIN" "$STANDALONE"
@@ -98,7 +118,7 @@ PID="$!"
 sleep 1
 write_fixture_identity "$OVERRIDE" override-node
 node_output="$(SECRETARY_NODE_EXECUTABLE="$STANDALONE" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=override-node configured_identity=override-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
+[[ "$node_output" == *"Node running pid=$PID identity=override-node configured_identity=override-node"* && "$node_output" == *"revision=custom-revision"* ]] || { diagnose_node_process "$CUSTOM" "$OVERRIDE" "$node_output"; print -u2 -- "$node_output"; exit 1; }
 mkdir -p "$HOME/Library/LaunchAgents"
 touch "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
 node_output="$(SECRETARY_NODE_EXECUTABLE="$STANDALONE" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" node status)"
@@ -110,6 +130,11 @@ wait "$PID" 2>/dev/null || true
 PID=""
 CUSTOM="$TEST_HOME/custom-execution-binary"
 cp "$BIN" "$CUSTOM"
+mkdir -p "$TEST_HOME/custom-release/bin"
+cp "$BIN" "$TEST_HOME/custom-release/bin/custom-execution-binary"
+printf 'vcustom\n' > "$TEST_HOME/custom-release/VERSION"
+printf 'custom-revision\n' > "$TEST_HOME/custom-release/REVISION"
+CUSTOM="$TEST_HOME/custom-release/bin/custom-execution-binary"
 SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$OVERRIDE" "$CUSTOM" --config "$OVERRIDE" &
 PID="$!"
 sleep 1
