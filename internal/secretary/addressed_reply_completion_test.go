@@ -152,11 +152,11 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 		manager, err := config.Open(filepath.Join(t.TempDir(), "config.toml"))
 		if err != nil { t.Fatal(err) }
 		generated := manager.Snapshot().Profiles["secretary"]
-		if generated.Runtime != "codex" || generated.ReplyContractVersion != core.SecretaryReplyContractAddressedV1 || !strings.Contains(generated.Content, "reply_to_user") {
+		if generated.Runtime != "codex" || generated.ReplyContractVersion != core.SecretaryReplyContractAddressedV1 || strings.Contains(generated.Content, "## Addressed reply v1") {
 			t.Fatal("official profile lacks Codex addressed reply contract")
 		}
 		runtimeProfile = node.ManagedProfile{
-			Name: generated.Name, Version: manager.Snapshot().Version, Content: generated.Content, Hash: generated.Hash,
+			Name: generated.Name, Version: manager.Snapshot().Version, Content: config.SecretaryRuntimeContent(generated.Content), Hash: generated.Hash,
 			Runtime: generated.Runtime, Model: generated.Model, Reasoning: generated.Reasoning,
 			ReplyContractVersion: generated.ReplyContractVersion,
 		}
