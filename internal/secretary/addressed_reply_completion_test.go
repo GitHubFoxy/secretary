@@ -61,7 +61,7 @@ func TestProductionCodexProfileAddressedReplyACPCompletion(t *testing.T) {
 			want := core.SecretaryTurnSucceeded
 			body := "The answer is 42."
 			if scenario == "acp-mcp-spawn" { body = "Worker создан. Действие подтверждено сервером." }
-			if scenario == "acp-mcp-no-reply" { want = core.SecretaryTurnFailed; body = "" }
+			if scenario == "acp-mcp-no-reply" { want = core.SecretaryTurnFailed; body = "Secretary не получил подтверждённый адресованный ответ. Выполнение запроса не подтверждено; проверьте доступность Secretary MCP и состояние задачи перед повторной попыткой." }
 			runAddressedReplyCompletionScenario(t, scenario, "", core.SecretaryReplyContractAddressedV1, want, body, "", true)
 		})
 	}
