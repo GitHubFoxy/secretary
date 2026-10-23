@@ -109,11 +109,11 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 			case "incomplete":
 				continue
 			case "native-exit-7", "native-quoted-exit-7", "native-exit-0":
-                script := "const r = await tools.exec_command({\\\"cmd\\\":\\\"/bin/sh -c exit 7\\\"}); text(JSON.stringify(r));"
+                script := `const r = await tools.exec_command({"cmd":"/bin/sh -c exit 7"}); text(JSON.stringify(r));`
                 emit(map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":map[string]any{"sessionUpdate":"tool_call","toolCallId":"call-e836e7","name":"exec","kind":"execute","status":"in_progress","rawInput":script}}})
-                value := "{\\\"chunk_id\\\":\\\"0795ee\\\",\\\"wall_time_seconds\\\":0.01,\\\"exit_code\\\":7,\\\"original_token_count\\\":6,\\\"output\\\":\\\"SECRETARY-CODEX-FAIL-7\\\"}"
+                value := `{"chunk_id":"0795ee","wall_time_seconds":0.01,"exit_code":7,"original_token_count":6,"output":"SECRETARY-CODEX-FAIL-7"}`
                 if scenario == "native-quoted-exit-7" { value = "quoted data: " + value }
-                if scenario == "native-exit-0" { value = "{\\\"chunk_id\\\":\\\"0795ee\\\",\\\"wall_time_seconds\\\":0.01,\\\"exit_code\\\":0,\\\"original_token_count\\\":0,\\\"output\\\":\\\"\\\"}" }
+                if scenario == "native-exit-0" { value = `{"chunk_id":"0795ee","wall_time_seconds":0.01,"exit_code":0,"original_token_count":0,"output":""}` }
                 emit(map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":map[string]any{"sessionUpdate":"tool_call_update","toolCallId":"call-e836e7","status":"completed","rawOutput":[]any{map[string]any{"type":"input_text","text":"Script completed\\nWall time 0.1 seconds\\nOutput:\\n"},map[string]any{"type":"input_text","text":value}}}}})
                 emit(codexPhaseFixtureChunk("msg_05858067cc2bde2b016ad84e8f2f9c81919b34d0bc6956df1b", "Задача не выполнена: exit code 7", "final_answer"))
 			case "two-turns":
