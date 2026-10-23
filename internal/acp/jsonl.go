@@ -223,7 +223,9 @@ func startWithProcessEnvironment(ctx context.Context, rawLog io.Writer, environm
 		cancel()
 		return nil, err
 	}
-	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, processPID: process.Process.Pid, tracker: startACPDescendantTracker(process.Process.Pid), log: rawLog}
+	tracker, trackErr := startACPDescendantTracker(process.Process.Pid)
+	if trackErr != nil { cancel(); _ = process.Wait(); return nil, trackErr }
+	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, processPID: process.Process.Pid, tracker: tracker, log: rawLog}
 	client.stderrDone = make(chan struct{})
 	go client.drainStderr(stderr)
 	go client.read(stdout)
