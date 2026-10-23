@@ -34,7 +34,7 @@ sleep 1
 kill -0 "$PID"
 
 node_output="$("$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=test-app-node outbound-only"* ]] || { print -u2 -- "$node_output"; exit 1; }
+[[ "$node_output" == *"Node running pid=$PID identity=unknown configured_identity=test-app-node outbound-only"* ]] || { print -u2 -- "$node_output"; exit 1; }
 status_output="$("$ROOT/secretary" status)"
 [[ "$status_output" == *"running Execution node: pid=$PID "* ]] || { print -u2 -- "$status_output"; exit 1; }
 
@@ -47,7 +47,7 @@ node_output="$("$ROOT/secretary" node status)"
 
 printf '{"node":"other-node","server_url":"http://127.0.0.1:8081","data_dir":"%s"}\n' "$TEST_HOME/.local/share/secretary/node/data" > "$CONFIG"
 node_output="$("$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=other-node"* ]] || exit 1
+[[ "$node_output" == *"Node running pid=$PID identity=unknown configured_identity=other-node"* ]] || exit 1
 
 kill "$PID"
 wait "$PID" 2>/dev/null || true
@@ -62,7 +62,7 @@ printf '{"node":"standalone-node","server_url":"http://127.0.0.1:8081","data_dir
 PID="$!"
 sleep 1
 node_output="$("$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=standalone-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
+[[ "$node_output" == *"Node running pid=$PID identity=unknown configured_identity=standalone-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
 status_output="$("$ROOT/secretary" status)"
 [[ "$status_output" == *"running Execution node: pid=$PID "* ]] || exit 1
 
@@ -74,18 +74,31 @@ SECRETARY_NODE_EXECUTABLE="$STANDALONE" SECRETARY_NODE_CONFIG="$OVERRIDE" "$STAN
 PID="$!"
 sleep 1
 node_output="$(SECRETARY_NODE_EXECUTABLE="$STANDALONE" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=override-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
+[[ "$node_output" == *"Node running pid=$PID identity=unknown configured_identity=override-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
 mkdir -p "$HOME/Library/LaunchAgents"
 touch "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
 node_output="$(SECRETARY_NODE_EXECUTABLE="$STANDALONE" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node running pid=$PID identity=override-node"* ]] || exit 1
+[[ "$node_output" == *"Node running pid=$PID identity=unknown configured_identity=override-node"* ]] || exit 1
 rm "$HOME/Library/LaunchAgents/dev.secretary.cli-node.plist"
 
 kill "$PID"
 wait "$PID" 2>/dev/null || true
 PID=""
+CUSTOM="$TEST_HOME/custom-execution-binary"
+cp "$BIN" "$CUSTOM"
+SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$OVERRIDE" "$CUSTOM" --config "$OVERRIDE" &
+PID="$!"
+sleep 1
+node_output="$(SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" node status)"
+[[ "$node_output" == *"Node running pid=$PID identity=unknown configured_identity=override-node"* ]] || { print -u2 -- "$node_output"; exit 1; }
+status_output="$(SECRETARY_NODE_EXECUTABLE="$CUSTOM" SECRETARY_NODE_CONFIG="$OVERRIDE" "$ROOT/secretary" status)"
+[[ "$status_output" == *"running Execution node: pid=$PID "* ]] || exit 1
+
+kill "$PID"
+wait "$PID" 2>/dev/null || true
+PID=""
 node_output="$("$ROOT/secretary" node status)"
-[[ "$node_output" == *"Node stopped identity=other-node"* ]] || exit 1
+[[ "$node_output" == *"Node stopped identity=unknown configured_identity=other-node"* ]] || exit 1
 status_output="$("$ROOT/secretary" status)"
 [[ "$status_output" == *"running Execution node: stopped"* ]] || exit 1
 print "MAC12-02 Node status regression passed"
