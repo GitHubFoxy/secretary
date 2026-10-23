@@ -288,6 +288,16 @@ func TestCodexNativeCommandEventToTerminal(t *testing.T) {
     if (tc.scenario=="native-recovered" || tc.scenario=="native-invalid-recovery" || tc.scenario=="native-no-failure-footer") && result.Summary!="готово"{t.Fatalf("recovery leaked metadata: %q",result.Summary)}
    case <-ctx.Done():t.Fatal("no result")
    }
+   for {
+    select {
+    case activity, ok := <-session.Activity():
+     if !ok { break }
+     if activity.Kind==ActivityText && strings.Contains(activity.Text,"<secretary-recovery>"){t.Fatalf("stream leaked recovery metadata: %q",activity.Text)}
+    default:
+     goto activityDrained
+    }
+   }
+   activityDrained:
    select{case extra:=<-session.Result():t.Fatalf("duplicate Result: %+v",extra);default:}
   })
  }
