@@ -35,6 +35,10 @@ type CommandRunner interface {
 	Run(context.Context, string, ...string) (CommandResult, error)
 }
 
+type ClaudeModelObserver interface {
+	ObserveClaudeModels(context.Context, string) ([]core.ObservedModelID, error)
+}
+
 type ACPProbeRunner interface {
 	ProbeACP(context.Context, string, ...string) error
 }
@@ -238,6 +242,27 @@ func (p HarnessProbe) Probe(ctx context.Context) ProbeResult {
     result.Err = fmt.Errorf("%w: ACP reported no models", ErrProbeUnhealthy)
    }
    result.ErrorCode = "codex_acp_unavailable"
+			result.Instance = instance
+			return result
+		}
+	} else if p.Spec.Kind == core.HarnessClaudeCode {
+		observer, ok := p.Runner.(ClaudeModelObserver)
+		if !ok {
+			result.Err, result.ErrorCode = ErrProbeMetadata, "native_models_probe_unavailable"
+			instance.Status = core.HarnessDegraded
+			result.Instance = instance
+			return result
+		}
+		timeout := p.Spec.StepTimeout
+		if timeout <= 0 {
+			timeout = defaultProbeStepTimeout
+		}
+		metadataCtx, cancel := context.WithTimeout(ctx, timeout)
+		instance.ModelIDs, err = observer.ObserveClaudeModels(metadataCtx, p.Spec.Binary)
+		cancel()
+		if err != nil || len(instance.ModelIDs) == 0 {
+			result.Err, result.ErrorCode = ErrProbeMetadata, "native_models_probe_failed"
+			instance.Status = core.HarnessDegraded
 			result.Instance = instance
 			return result
 		}
