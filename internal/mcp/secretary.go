@@ -113,10 +113,7 @@ func (s Secretary) Call(ctx context.Context, name string, raw json.RawMessage) (
 				return nil, err
 			}
 		}
-		return struct {
-			core.WorkerDetails
-			ActionTurnID string `json:"action_turn_id"`
-		}{details, details.ActionTurnID}, nil
+		return details, nil
 	case "message_worker":
 		if s.ReplyContractVersion == core.SecretaryReplyContractAddressedV1 {
 			if err := s.Workers.ValidateSecretaryOrigin(ctx, args.SecretaryTurnID, args.InputID); err != nil {
