@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/beruseruko/secretary/internal/config"
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
 	"github.com/beruseruko/secretary/internal/mcp"
@@ -51,7 +52,11 @@ func TestAddressedReplyOnlyEndTurnCompletesWithoutAssistantEcho(t *testing.T) {
 	}
 }
 
-func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, contractVersion string, wantState core.SecretaryTurnState, wantCurrentResponse, wantPriorResponse string) {
+func TestProductionCodexProfileAddressedReplyACPCompletion(t *testing.T) {
+	runAddressedReplyCompletionScenario(t, "mcp-only", "exact", core.SecretaryReplyContractAddressedV1, core.SecretaryTurnSucceeded, "The answer is 42.", "", true)
+}
+
+func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, contractVersion string, wantState core.SecretaryTurnState, wantCurrentResponse, wantPriorResponse string, productionCodex ...bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -125,6 +130,19 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 		Content: "synthetic addressed-reply profile", Runtime: "opencode", Model: "fixture-model", Reasoning: "xhigh",
 		ReplyContractVersion: contractVersion,
 	}
+	if len(productionCodex) > 0 && productionCodex[0] {
+		manager, err := config.Open(filepath.Join(t.TempDir(), "config.toml"))
+		if err != nil { t.Fatal(err) }
+		generated := manager.Snapshot().Profiles["secretary"]
+		if generated.Runtime != "codex" || generated.ReplyContractVersion != core.SecretaryReplyContractAddressedV1 || !strings.Contains(generated.Content, "reply_to_user") {
+			t.Fatal("official profile lacks Codex addressed reply contract")
+		}
+		runtimeProfile = node.ManagedProfile{
+			Name: generated.Name, Version: manager.Snapshot().Version, Content: generated.Content, Hash: generated.Hash,
+			Runtime: generated.Runtime, Model: generated.Model, Reasoning: generated.Reasoning,
+			ReplyContractVersion: generated.ReplyContractVersion,
+		}
+	}
 	acpRuntime := node.ACPRuntime{
 		Command: os.Args[0], Arguments: []string{"-test.run=^TestAddressedReplyACPFixtureProcess$"},
 		Environment: []string{
@@ -133,7 +151,11 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 		},
 		TerminalMessageGrouping: true, DrainPromptEvents: true,
 	}
-	runtime := NewRuntime(node.NewLocal(acpRuntime), capability)
+	local := node.NewLocal(acpRuntime)
+	if len(productionCodex) > 0 && productionCodex[0] {
+		local = node.NewLocal(node.CodexRuntime{ACPRuntime: acpRuntime, CodexCommand: os.Args[0]})
+	}
+	runtime := NewRuntime(local, capability)
 	runtime.AttachConversation(store, conversation.ID)
 	runtime.AttachIdentity(identity)
 	runtime.AttachProfile(func() node.ManagedProfile { return runtimeProfile })
