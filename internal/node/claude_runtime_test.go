@@ -683,7 +683,7 @@ func TestClaudeUserResponseSeparatedFromNativeVerdict(t *testing.T) {
 		},
 		{
 			name: "wrapped internal verdict is not activity",
-			assistant: `{"type":"assistant","uuid":"wrapped","message":{"content":[{"type":"text","text":"Internal verdict:\\n\\`\\`\\`json\\n{\\\"task_outcome\\\":\\\"succeeded\\\",\\\"reason\\\":\\\"Internal\\\",\\\"recovered_tool_use_ids\\\":[]}\\n\\`\\`\\`"}]}}`,
+			assistant: "{\"type\":\"assistant\",\"uuid\":\"wrapped\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"Internal verdict:\\n```json\\n{\\\"task_outcome\\\":\\\"succeeded\\\",\\\"reason\\\":\\\"Internal\\\",\\\"recovered_tool_use_ids\\\":[]}\\n```\"}]}}",
 			terminal: `{"type":"result","subtype":"success","result":"Internal verdict","structured_output":{"task_outcome":"succeeded","reason":"Internal","recovered_tool_use_ids":[],"user_response":"Готово"}}`,
 			wantStatus: "succeeded",
 			wantSummary: "Готово",
