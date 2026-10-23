@@ -102,12 +102,12 @@ func TestAddressedReplyInstructionsAreOptInAndDoNotRewriteExternalProfile(t *tes
 	}
 	custom := append(append([]byte(nil), externalBefore...), []byte("\n# Owner-maintained instruction\n")...)
 	if err := applyProfile(manager, "secretary", custom); err != nil { t.Fatal(err) }
-	updated := manager.Snapshot()
-	view := profileFiles(updated)
-	if len(view) == 0 || view[0].Content != string(custom) || view[0].Hash != updated.Profiles["secretary"].Hash || view[0].Revision != view[0].Hash || view[0].Hash == files[0].Hash || !view[0].Editable || strings.Contains(view[0].Content, "## Addressed reply v1") {
+	reloaded := manager.Snapshot()
+	view := profileFiles(reloaded)
+	if len(view) == 0 || view[0].Content != string(custom) || view[0].Hash != reloaded.Profiles["secretary"].Hash || view[0].Revision != view[0].Hash || view[0].Hash == files[0].Hash || !view[0].Editable || strings.Contains(view[0].Content, "## Addressed reply v1") {
 		t.Fatalf("editable API failed to round-trip owner source and revision: %#v", view)
 	}
-	customRuntime := secretaryProfile(updated, store)
+	customRuntime := secretaryProfile(reloaded, store)
 	if !strings.Contains(customRuntime.Content, "Owner-maintained instruction") || !strings.Contains(customRuntime.Content, "## Addressed reply v1") {
 		t.Fatal("runtime did not preserve owner custom instructions alongside versioned reply policy")
 	}
