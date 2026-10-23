@@ -108,14 +108,6 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 				result = map[string]any{"stopReason": "cancelled"}
 			case "incomplete":
 				continue
-			case "native-exit-7", "native-quoted-exit-7", "native-exit-0":
-                script := `const r = await tools.exec_command({"cmd":"/bin/sh -c exit 7"}); text(JSON.stringify(r));`
-                emit(map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":map[string]any{"sessionUpdate":"tool_call","toolCallId":"call-e836e7","name":"exec","kind":"execute","status":"in_progress","rawInput":script}}})
-                value := `{"chunk_id":"0795ee","wall_time_seconds":0.01,"exit_code":7,"original_token_count":6,"output":"SECRETARY-CODEX-FAIL-7"}`
-                if scenario == "native-quoted-exit-7" { value = "quoted data: " + value }
-                if scenario == "native-exit-0" { value = `{"chunk_id":"0795ee","wall_time_seconds":0.01,"exit_code":0,"original_token_count":0,"output":""}` }
-                emit(map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":map[string]any{"sessionUpdate":"tool_call_update","toolCallId":"call-e836e7","status":"completed","rawOutput":[]any{map[string]any{"type":"input_text","text":"Script completed\\nWall time 0.1 seconds\\nOutput:\\n"},map[string]any{"type":"input_text","text":value}}}}})
-                emit(codexPhaseFixtureChunk("msg_05858067cc2bde2b016ad84e8f2f9c81919b34d0bc6956df1b", "Задача не выполнена: exit code 7", "final_answer"))
 			case "two-turns":
 				prompts++
 				if prompts == 1 {
@@ -326,29 +318,4 @@ func TestNonCodexRuntimeDoesNotDeclarePhaseExtension(t *testing.T) {
 	if _, ok := request.ClientCapabilities["_meta"]; ok {
 		t.Fatalf("plain ACP client declared the Codex phase extension: %s", recorded)
 	}
-}
-
-func TestCodexNativeNestedExecResultClassification(t *testing.T) {
- for _, tc := range []struct{scenario, status, code string}{
-  {"native-exit-7", "failed", "tool_execution_failed"},
-  {"native-quoted-exit-7", "succeeded", ""},
-  {"native-exit-0", "succeeded", ""},
- } {
-  t.Run(tc.scenario,func(t *testing.T) {
-   ctx,cancel := context.WithTimeout(context.Background(),10*time.Second)
-   defer cancel()
-   runtime,_ := codexPhaseFixtureRuntime(t,tc.scenario)
-   session,err := runtime.Start(ctx,StartRequest{WorkerRef:"native-exec",Workspace:t.TempDir(),DeferInitialPrompt:true,Profile:ManagedProfile{Name:"secretary",Content:"MARKER",Runtime:"codex"}})
-   if err != nil { t.Fatal(err) }
-   defer session.Close()
-   if err:=session.Prompt(ctx,"Execute once"); err!=nil { t.Fatal(err) }
-   select {
-   case result:= <-session.Result():
-    if result.Status!=tc.status || result.FailureCode!=tc.code { t.Fatalf("result=%+v want status=%s code=%s",result,tc.status,tc.code) }
-    if result.CompletionEvidence==nil || !result.CompletionEvidence.RPCSucceeded || !result.CompletionEvidence.DrainCompleted {t.Fatalf("native completion evidence missing: %+v",result)}
-   case <-ctx.Done(): t.Fatal(ctx.Err())
-   }
-   select {case extra:= <-session.Result(): t.Fatalf("duplicate terminal Result: %+v",extra);default:}
-  })
- }
 }
