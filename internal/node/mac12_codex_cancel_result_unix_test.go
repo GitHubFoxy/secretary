@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -37,12 +37,13 @@ func TestMAC1204CodexCancelResultAndSameSessionFollowup(t *testing.T) {
 			case "session/prompt":
 				if pending == nil {
 					pending = append(json.RawMessage(nil), message.ID...)
+					_ = os.WriteFile(os.Getenv("MAC1204_PROMPT_MARKER"), []byte("running"), 0600)
 				} else {
 					update := map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{
 						"sessionId": "original-native-session",
 						"update": map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": "followup-final",
 							"content": map[string]string{"type": "text", "text": "followup-complete"},
-							"_meta": map[string]any{"jetbrains.air": map[string]any{"phase": "final_answer"}}},
+							"_meta": map[string]any{"jetbrains": map[string]any{"air": map[string]any{"phase": "final_answer"}}}},
 					}}
 					frame, _ := json.Marshal(update)
 					fmt.Fprintln(os.Stdout, string(frame))
@@ -58,6 +59,8 @@ func TestMAC1204CodexCancelResultAndSameSessionFollowup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	t.Setenv("MAC1204_RESULT_HELPER", "1")
+	marker := filepath.Join(t.TempDir(), "prompt-started")
+	t.Setenv("MAC1204_PROMPT_MARKER", marker)
 	runtime := ACPRuntime{
 		Command: os.Args[0],
 		Arguments: []string{"-test.run=^TestMAC1204CodexCancelResultAndSameSessionFollowup$"},
@@ -71,12 +74,11 @@ func TestMAC1204CodexCancelResultAndSameSessionFollowup(t *testing.T) {
 	originalID := session.ID()
 	finished := make(chan error, 1)
 	go func() { finished <- session.Prompt(ctx, "start") }()
-	deadline := time.After(2 * time.Second)
-	for !session.(*acpSession).busyNow() {
-		select {
-		case <-deadline: t.Fatal("native prompt did not start")
-		case <-time.After(5 * time.Millisecond):
-		}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil { break }
+		if time.Now().After(deadline) { t.Fatal("native prompt did not reach ACP") }
+		time.Sleep(5 * time.Millisecond)
 	}
 	if err := session.Cancel(ctx); err != nil { t.Fatal(err) }
 	select {
@@ -107,5 +109,4 @@ func TestMAC1204CodexCancelResultAndSameSessionFollowup(t *testing.T) {
 	case duplicate := <-session.Result(): t.Fatalf("late duplicate result=%+v", duplicate)
 	case <-time.After(80 * time.Millisecond):
 	}
-	_ = exec.ErrNotFound
 }
