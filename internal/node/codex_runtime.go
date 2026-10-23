@@ -32,6 +32,7 @@ func (r CodexRuntime) configured(request StartRequest) (ACPRuntime, error) {
 		base.ReasoningSelection = effort
 	}
 	instructions := profile.EffectivePrompt()
+	instructions = strings.TrimSpace(instructions + "\n\n" + codexRecoveryInstruction)
 	environment, err := profileEnvironment(base.Environment, profile)
 	if err != nil {
 		return ACPRuntime{}, err
