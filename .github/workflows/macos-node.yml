@@ -30,3 +30,9 @@ jobs:
         run: |
           go build ./cmd/secretary-node
           go build ./cmd/secretaryd
+      - name: Verify production Node process identity snapshot
+        shell: bash
+        run: go test ./cmd/secretary-node -run '^TestMAC12PublishNodeProcessIdentity$' -count=1 -v
+      - name: Verify app-managed and CLI-managed Node status
+        shell: bash
+        run: zsh scripts/mac12-node-status-test.sh
