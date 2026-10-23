@@ -92,7 +92,7 @@ func TestClaudeCodeRuntimeAllowsOnlyDocumentedHarmlessStaticArgument(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}}},"required":["task_outcome","reason","recovered_tool_use_ids"],"additionalProperties":false}`, "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id"}
+	want := []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}},"user_response":{"type":"string","minLength":1}},"required":["task_outcome","reason","recovered_tool_use_ids","user_response"],"additionalProperties":false}`, "--append-system-prompt", "For every response, set user_response to the exact user-facing answer or question, without process narration or JSON. task_outcome, reason, and recovered_tool_use_ids are internal verdict metadata; never repeat them in user_response. For a simple direct question, reply with only what the user requested.", "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--session-id", "session-id"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Claude CLI args=%#v, want %#v", got, want)
 	}
@@ -100,7 +100,7 @@ func TestClaudeCodeRuntimeAllowsOnlyDocumentedHarmlessStaticArgument(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}}},"required":["task_outcome","reason","recovered_tool_use_ids"],"additionalProperties":false}`, "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session"}
+	want = []string{"--disable-slash-commands", "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config", "--permission-mode", "dontAsk", "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}},"user_response":{"type":"string","minLength":1}},"required":["task_outcome","reason","recovered_tool_use_ids","user_response"],"additionalProperties":false}`, "--append-system-prompt", "For every response, set user_response to the exact user-facing answer or question, without process narration or JSON. task_outcome, reason, and recovered_tool_use_ids are internal verdict metadata; never repeat them in user_response. For a simple direct question, reply with only what the user requested.", "--mcp-config", `{"mcpServers":{}}`, "--model", "claude-sonnet", "--effort", "extended", "--resume", "saved-session"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Claude resume args=%#v, want %#v", got, want)
 	}
@@ -641,6 +641,53 @@ func TestClaudeStructuredBashTaskOutcome(t *testing.T) {
 				t.Fatalf("duplicate terminal result: %#v", duplicate)
 			default:
 			}
+		})
+	}
+}
+
+func TestClaudeUserResponseSeparatedFromNativeVerdict(t *testing.T) {
+	cases := []struct {
+		name string
+		assistant string
+		terminal string
+		wantStatus string
+		wantSummary string
+		wantCode string
+	}{
+		{
+			name: "worker question",
+			assistant: `{"type":"assistant","uuid":"response","message":{"content":[{"type":"text","text":"{\"reason\":\"Internal\",\"recovered_tool_use_ids\":[]}"}]}}`,
+			terminal: `{"type":"result","subtype":"success","result":"{\"reason\":\"Internal\",\"recovered_tool_use_ids\":[]}","structured_output":{"task_outcome":"succeeded","reason":"Internal","recovered_tool_use_ids":[],"user_response":"Какой стиль выбрать?"}}`,
+			wantStatus: "succeeded", wantSummary: "Какой стиль выбрать?",
+		},
+		{
+			name: "secretary direct recall",
+			terminal: `{"type":"result","subtype":"success","result":"{\"task_outcome\":\"succeeded\",\"reason\":\"Answered\",\"recovered_tool_use_ids\":[]}","structured_output":{"task_outcome":"succeeded","reason":"Answered","recovered_tool_use_ids":[],"user_response":"ЛИСТ-6783"}}`,
+			wantStatus: "succeeded", wantSummary: "ЛИСТ-6783",
+		},
+		{
+			name: "failed native provider precedence",
+			terminal: `{"type":"result","subtype":"error_during_execution","result":"Provider error","structured_output":{"task_outcome":"succeeded","reason":"Reported success","recovered_tool_use_ids":[],"user_response":"Done"}}`,
+			wantStatus: "failed", wantSummary: "Done",
+		},
+		{
+			name: "service JSON without user response fails closed",
+			terminal: `{"type":"result","subtype":"success","result":"{\"task_outcome\":\"succeeded\",\"reason\":\"Internal\",\"recovered_tool_use_ids\":[]}","structured_output":{"task_outcome":"succeeded","reason":"Internal","recovered_tool_use_ids":[]}}`,
+			wantStatus: "failed", wantSummary: "Claude Code returned no answer", wantCode: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &claudeSession{id:"native-id",active:true,inputID:"input-id",seen:map[string]bool{},bashCalls:map[string]bool{},result:make(chan Result,2),activity:make(chan Activity,16)}
+			if tc.assistant != "" { s.handleLine([]byte(tc.assistant)) }
+			s.handleLine([]byte(tc.terminal))
+			select {
+			case result := <-s.Result():
+				if result.Status != tc.wantStatus || result.Summary != tc.wantSummary || result.FailureCode != tc.wantCode { t.Fatalf("result=%#v",result) }
+			default: t.Fatal("missing result")
+			}
+			select { case activity := <-s.Activity(): if claudeServiceJSON(activity.Text) { t.Fatalf("leaked service activity: %#v",activity) }; default: }
+			select { case duplicate := <-s.Result(): t.Fatalf("duplicate result: %#v", duplicate); default: }
 		})
 	}
 }
