@@ -1911,6 +1911,7 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 			Contract: TerminalCompletionOpenCodeV2, StopReason: stopReason,
 			RPCSucceeded: true, DrainCompleted: true,
 		}
+		if s.codexMessagePhases { completionEvidence = nil }
 		if answer != nil && completionEvidence != nil {
 			completionEvidence.AssistantChunks = answer.assistantChunks
 		}
