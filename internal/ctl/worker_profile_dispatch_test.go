@@ -475,7 +475,9 @@ func workerTemplateRoundTrip(t *testing.T, skills []node.ManagedSkill, tools []s
 	if _, err := resumedExecution.HandleCommand(ctx, stopResumed); err != nil {
 		t.Fatal("synthetic resumed process cleanup failed")
 	}
-	awaitWorkerTemplateCommandTerminal(t, nodeState, "profile-native-resume")
+	resumedRecord, err := nodeState.Command("profile-native-resume")
+	if err != nil { t.Fatal(err) }
+	if resumedRecord.Outcome.State != node.CommandAccepted { t.Fatalf("deferred resume was not accepted: %+v", resumedRecord.Outcome) }
 }
 
 

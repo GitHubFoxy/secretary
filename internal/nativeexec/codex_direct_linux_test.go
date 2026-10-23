@@ -72,7 +72,7 @@ func TestT09RealCodexPersistedSessionResume(t *testing.T) {
  for _,dir:=range []string{home,ws,filepath.Join(home,".codex")} {
    if err:=os.MkdirAll(dir,0700);err!=nil{t.Fatal(err)}
  }
- config:=fmt.Sprintf("model = \"t09-local\"\nmodel_provider = \"t09mock\"\napproval_policy = \"never\"\nmodel_reasoning_effort = \"low\"\n[model_providers.t09mock]\nname = \"T09 CI Fake Responses Backend\"\nbase_url = %q\nwire_api = \"responses\"\nrequires_openai_auth = false\nrequest_max_retries = 0\nstream_max_retries = 0\n",server.URL+"/v1")
+ config:=fmt.Sprintf("model = \"t09-local\"\nmodel_provider = \"t09mock\"\napproval_policy = \"never\"\nmodel_reasoning_effort = \"low\"\n[features]\nplugins = false\nremote_plugin = false\n[model_providers.t09mock]\nname = \"T09 CI Fake Responses Backend\"\nbase_url = %q\nwire_api = \"responses\"\nrequires_openai_auth = false\nrequest_max_retries = 0\nstream_max_retries = 0\n",server.URL+"/v1")
  if err:=os.WriteFile(filepath.Join(home,".codex","config.toml"),[]byte(config),0600);err!=nil{t.Fatal(err)}
  t.Setenv("HOME",home)
  runCtx,cancel:=context.WithTimeout(context.Background(),90*time.Second)
@@ -109,4 +109,9 @@ func TestT09RealCodexPersistedSessionResume(t *testing.T) {
  if strings.Contains(inputs[1],"Second turn: confirm ALPHA"){t.Fatal("resume prompt accidentally leaked marker")}
  if !strings.Contains(inputs[0],"ALPHA"){t.Fatalf("first request did not contain marker: %s",inputs[0])}
  if !strings.Contains(inputs[1],"ALPHA"){t.Fatalf("restored backend input omitted marker found only in first prompt: %s",inputs[1])}
+  pluginTmp:=filepath.Join(home,".codex",".tmp")
+  if entries,err:=os.ReadDir(pluginTmp);err==nil{
+    for _,entry:=range entries{if strings.HasPrefix(entry.Name(),"plugins-clone"){t.Fatalf("plugin marketplace clone was started in isolated HOME: %s",entry.Name())}}
+  } else if !os.IsNotExist(err){t.Fatal(err)}
+
 }
