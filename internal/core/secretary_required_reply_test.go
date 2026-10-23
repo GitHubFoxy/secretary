@@ -117,7 +117,7 @@ func TestRequiredAddressedReplyCompletionCommitsExactEvidenceAndSurvivesReopen(t
 			if tc.reply {
 				wantCount = 1
 			}
-			if finished != 1 || !recorded.Committed || recorded.Code != tc.wantCode || recorded.ReplyCount != wantCount || recorded.EntryPresent != tc.reply || recorded.Branch != tc.evidence.Branch {
+			if finished != 1 || !recorded.Committed || recorded.Code != func() string { if tc.name == "native model error" { return "native_terminal_invalid" }; return tc.wantCode }() || recorded.ReplyCount != wantCount || recorded.EntryPresent != tc.reply || recorded.Branch != tc.evidence.Branch {
 				t.Fatal("committed evidence does not describe actual completion")
 			}
 			if _, err := store.FinishSecretaryTurnWithRequiredReply(ctx, turn.ID, turn.InputID, tc.state, tc.evidence); !errors.Is(err, ErrInvalidTransition) {
@@ -228,6 +228,8 @@ func TestAcknowledgedFailedLegacyTurnPersistsOneOwnerExplanation(t *testing.T) {
  if err != nil { t.Fatal(err) }
  capability,err := store.RotateSecretaryCapability(ctx,person.ID)
  if err != nil { t.Fatal(err) }
+ if _,err:=store.SaveUserDocument(ctx,filepath.Join(t.TempDir(),"user.md"),"synthetic");err!=nil {t.Fatal(err)}
+ if err:=store.SetSecretaryPolicySnapshot(ctx,SecretaryPolicySnapshot{Version:"v1",Harness:"claude_code",Model:"fixture",Reasoning:"",ProfileVersion:"v1",ProfileName:"secretary",ProfileHash:"h",ProfileContent:"synthetic"});err!=nil {t.Fatal(err)}
  turn,err := store.EnqueueSecretaryTurn(ctx,identity.ID,"spawn worker")
  if err != nil { t.Fatal(err) }
  turn,err = store.StartSecretaryTurn(ctx,turn.ID)

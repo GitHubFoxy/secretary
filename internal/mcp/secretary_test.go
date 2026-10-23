@@ -385,7 +385,7 @@ func TestSecretaryAcknowledgementPrecedesWorkAndDoesNotHideFinalErrors(t *testin
 			terminalError = "native failure"
 		}
 		finished, entry, err := store.FinishSecretaryTurnWithResponse(ctx, next.ID, tc.status, terminalError, tc.response)
-		if err != nil || finished.State != tc.status || entry.ID != "" {
+		if err != nil || finished.State != tc.status || (tc.status == core.SecretaryTurnSucceeded && entry.ID != "") || (tc.status == core.SecretaryTurnFailed && (entry.ID == "" || entry.Body != terminalError)) {
 			t.Fatalf("ack hid failure or duplicated echo: %#v %#v %v", finished, entry, err)
 		}
 	}

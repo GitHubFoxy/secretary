@@ -26,6 +26,8 @@ jobs:
         run: go test ./internal/nativeexec -run '^TestT09RealCodexPersistedSessionResume$' -count=1 -v -timeout 120s
       - name: Repeated continuation readiness regression
         run: go test ./internal/ctl -run TestNodeContinuationReadinessReplayIsIdempotent -count=20 -timeout=180s
+      - name: Install Linux status fixture prerequisite
+        run: sudo apt-get update && sudo apt-get install -y zsh
       - name: Linux running Server revision regression
         run: zsh scripts/mac12-linux-node-status-test.sh
       - name: Test Secretary routing and lifecycle
