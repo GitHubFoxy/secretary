@@ -691,8 +691,8 @@ func TestClaudeUserResponseSeparatedFromNativeVerdict(t *testing.T) {
 		},
 		{
 			name: "legitimate JSON response remains visible",
-			assistant: `{"type":"assistant","uuid":"legitimate","message":{"content":[{"type":"text","text":"{\\"count\\":2,\\"items\\":[\\"a\\",\\"b\\"]}"}]}}`,
-			terminal: `{"type":"result","subtype":"success","result":"JSON delivered","structured_output":{"task_outcome":"succeeded","reason":"Done","recovered_tool_use_ids":[],"user_response":"{\\"count\\":2,\\"items\\":[\\"a\\",\\"b\\"]}"}}`,
+			assistant: "{\"type\":\"assistant\",\"uuid\":\"legitimate\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"count\\\":2,\\\"items\\\":[\\\"a\\\",\\\"b\\\"]}\"}]}}",
+			terminal: "{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"JSON delivered\",\"structured_output\":{\"task_outcome\":\"succeeded\",\"reason\":\"Done\",\"recovered_tool_use_ids\":[],\"user_response\":\"{\\\"count\\\":2,\\\"items\\\":[\\\"a\\\",\\\"b\\\"]}\"}}",
 			wantStatus: "succeeded",
 			wantSummary: `{"count":2,"items":["a","b"]}`,
 			wantActivity: `{"count":2,"items":["a","b"]}`,
