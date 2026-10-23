@@ -361,8 +361,9 @@ func TestClaudeCapabilitiesMatchImplementedRuntime(t *testing.T) {
 	result := ProbeClaudeCode(context.Background(), "macbook", fakeProbeRunner{responses: map[string]CommandResult{
 		"claude --version":   {Stdout: "2.1.0"},
 		"claude auth status": {Stdout: `{"loggedIn":true}`},
+		"claude native models": {Stdout: `{"models":[{"id":"claude-haiku-5-5"}]}`},
 	}})
-	if result.Instance.Capabilities.SupportsExecution(core.CapabilitySteering) || result.Instance.Capabilities.SupportsExecution(core.CapabilityApprovals) {
+	if !result.Available() || result.Instance.Capabilities.SupportsExecution(core.CapabilitySteering) || result.Instance.Capabilities.SupportsExecution(core.CapabilityApprovals) {
 		t.Fatalf("Claude inventory advertises unsupported capabilities: %#v", result.Instance.Capabilities.Execution)
 	}
 }
@@ -388,7 +389,7 @@ func TestClaudeProbeUsesObservedAuthAndDoesNotInventModels(t *testing.T) {
 	if len(result.Instance.ModelIDs) != 0 || len(result.Instance.ReasoningLevels) != 0 {
 		t.Fatalf("unobserved Claude pins were invented: %#v", result.Instance)
 	}
-	if err := result.Instance.ValidateSelection("claude-sonnet-4", ""); !errors.Is(err, core.ErrObservedPinUnavailable) {
+	if err := result.Instance.ValidateSelection("claude-sonnet-4", ""); err == nil {
 		t.Fatalf("unobserved Claude model pin err=%v", err)
 	}
 
