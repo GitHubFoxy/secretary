@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"sync"
+	"time"
 )
 
 type acpProcessIdentity struct {
@@ -46,52 +48,99 @@ func sameACPProcess(a, b acpProcessIdentity) bool {
 	return a.pid == b.pid && a.group == b.group && a.start == b.start
 }
 
-func prepareACPDescendantCleanup(pid int) (func() error, error) {
-	if pid <= 1 {
-		return nil, errors.New("ACP native process identity unavailable")
-	}
+type acpDescendantTracker struct {
+	root acpProcessIdentity
+	mu sync.Mutex
+	seen map[int]acpProcessIdentity
+	done chan struct{}
+	finished chan struct{}
+	once sync.Once
+}
+
+func startACPDescendantTracker(pid int) *acpDescendantTracker {
+	t := &acpDescendantTracker{root: acpProcessIdentity{pid: pid}, seen: make(map[int]acpProcessIdentity), done: make(chan struct{}), finished: make(chan struct{})}
+	t.sample()
+	go func() {
+		defer close(t.finished)
+		tick := time.NewTicker(10 * time.Millisecond)
+		defer tick.Stop()
+		for {
+			select {
+			case <-tick.C:
+				t.sample()
+			case <-t.done:
+				return
+			}
+		}
+	}()
+	return t
+}
+
+func (t *acpDescendantTracker) stop() {
+	t.once.Do(func() { close(t.done) })
+	<-t.finished
+}
+
+func (t *acpDescendantTracker) sample() error {
 	processes, err := acpProcessSnapshot()
-	if err != nil {
-		return nil, err
+	if err != nil { return err }
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	root, ok := processes[t.root.pid]
+	if !ok || root.group != t.root.pid || strings.HasPrefix(root.state, "Z") { return nil }
+	if t.root.start == "" { t.root = root }
+	if !sameACPProcess(root, t.root) { return errors.New("ACP root identity changed") }
+	owned := map[int]bool{t.root.pid: true}
+	for pid, recorded := range t.seen {
+		if now, ok := processes[pid]; ok && sameACPProcess(now, recorded) {
+			owned[pid] = true
+		}
 	}
-	root, ok := processes[pid]
-	if !ok || root.group != pid || strings.HasPrefix(root.state, "Z") {
-		return nil, errors.New("ACP native process identity unavailable")
-	}
-	owned := map[int]bool{pid: true}
-	children := make([]acpProcessIdentity, 0)
 	for {
 		added := false
-		for _, process := range processes {
-			if !owned[process.pid] && owned[process.parent] {
-				owned[process.pid] = true
-				children = append(children, process)
+		for _, p := range processes {
+			if !owned[p.pid] && owned[p.parent] && !strings.HasPrefix(p.state, "Z") {
+				owned[p.pid] = true
+				t.seen[p.pid] = p
 				added = true
 			}
 		}
-		if !added {
-			break
-		}
+		if !added { break }
 	}
-	return func() error {
-		current, err := acpProcessSnapshot()
-		if err != nil {
-			return err
-		}
-		if now, ok := current[pid]; ok && !sameACPProcess(now, root) && !strings.HasPrefix(now.state, "Z") {
-			return errors.New("ACP native process identity changed during cancellation")
-		}
-		var failures []error
-		for i := len(children) - 1; i >= 0; i-- {
-			child := children[i]
-			now, ok := current[child.pid]
-			if !ok || !sameACPProcess(now, child) || strings.HasPrefix(now.state, "Z") {
-				continue
-			}
+	return nil
+}
+
+func (t *acpDescendantTracker) cleanup() error {
+	defer t.stop()
+	var failures []error
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		if err := t.sample(); err != nil { failures = append(failures, err) }
+		t.mu.Lock()
+		children := make([]acpProcessIdentity, 0, len(t.seen))
+		for _, child := range t.seen { children = append(children, child) }
+		t.mu.Unlock()
+		processes, err := acpProcessSnapshot()
+		if err != nil { return errors.Join(append(failures, err)...)}
+		active := false
+		for _, child := range children {
+			current, ok := processes[child.pid]
+			if !ok || !sameACPProcess(current, child) || strings.HasPrefix(current.state, "Z") { continue }
+			active = true
 			if err := syscall.Kill(child.pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) && !errors.Is(err, os.ErrProcessDone) {
 				failures = append(failures, fmt.Errorf("stop ACP descendant %d: %w", child.pid, err))
 			}
 		}
-		return errors.Join(failures...)
-	}, nil
+		if !active { return errors.Join(failures...) }
+		if time.Now().After(deadline) {
+			return errors.Join(append(failures, errors.New("ACP descendants remain alive after two seconds"))...)
+		}
+		time.Sleep(15 * time.Millisecond)
+	}
+}
+
+func prepareACPDescendantCleanup(tracker *acpDescendantTracker) (func() error, error) {
+	if tracker == nil { return nil, nil }
+	if err := tracker.sample(); err != nil { return nil, err }
+	return tracker.cleanup, nil
 }
