@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"regexp"
 	"strings"
 )
 
@@ -37,6 +38,7 @@ type SecretaryCompletionEvidence struct {
 	EntryPresent    bool   `json:"entry_present"`
 	Committed       bool   `json:"committed"`
 	Code            string `json:"code"`
+	NativeFailure   string `json:"-"`
 }
 
 func (s *Store) FinishSecretaryTurnWithRequiredReply(ctx context.Context, turnID, inputID string, state SecretaryTurnState, evidence SecretaryCompletionEvidence) (SecretaryTurn, error) {
@@ -107,6 +109,9 @@ func (s *Store) finishSecretaryTurnWithOutput(ctx context.Context, turnID, input
 			}
 			if state != SecretaryTurnSucceeded {
 				terminalError = evidence.Code
+				if evidence.Code == "native_terminal_invalid" && evidence.NativeFailure != "" && len(evidence.NativeFailure) <= 512 && regexp.MustCompile("^The '[a-zA-Z0-9._-]+' model is not supported when using Codex with a ChatGPT account\\.$").MatchString(evidence.NativeFailure) {
+					terminalError = evidence.NativeFailure
+				}
 			}
 			evidence.Committed = true
 		}
@@ -158,6 +163,19 @@ WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conve
 		if acknowledgement != "" && evidence == nil && !requireAddressedReply {
 			publishUnaddressedOutput = publishUnaddressedOutput && response != acknowledgement
 		}
+		if evidence == nil && !requireAddressedReply && state == SecretaryTurnFailed && acknowledgement != "" && turn.Error != "" {
+			var existing int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_entries WHERE conversation_id = ? AND turn_id = ? AND kind = ? AND body = ?`, turn.ConversationID, turn.ID, EntrySecretary, turn.Error).Scan(&existing); err != nil {
+				return secretaryTurnCompletion{}, err
+			}
+			if existing == 0 && turn.Error != acknowledgement {
+				var err error
+				entry, err = appendEntryWithIdentity(ctx, tx, now, turn.ConversationID, EntrySecretary, turn.Error, "", turn.ID, "")
+				if err != nil {
+					return secretaryTurnCompletion{}, err
+				}
+			}
+		}
 		if publishUnaddressedOutput {
 			for _, delta := range textDeltas {
 				if delta == "" {
@@ -198,6 +216,7 @@ WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conve
                 if err != nil { return secretaryTurnCompletion{}, err }
                 message := "Secretary не получил подтверждённый адресованный ответ. Выполнение запроса не подтверждено; проверьте доступность Secretary MCP и состояние задачи перед повторной попыткой."
                 if accepted != 0 { message = "Worker создан и принят сервером, но Secretary не завершил адресованный ответ. Проверьте состояние Worker перед повторным запросом, чтобы избежать дубликатов." }
+                if accepted == 0 && terminalError != "native_terminal_invalid" && evidence.NativeFailure != "" && turn.Error == evidence.NativeFailure { message = turn.Error }
                 entry, err = appendEntryWithIdentity(ctx, tx, now, turn.ConversationID, EntrySecretary, message, "", turn.ID, "")
                 if err != nil { return secretaryTurnCompletion{}, err }
             }

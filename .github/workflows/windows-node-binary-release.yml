@@ -88,9 +88,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in {1..30}; do
+          (cd dist && sha256sum -c secretary-node-windows-*.zip.sha256)
+          for attempt in {1..90}; do
             if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+              release_tag="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName')"
+              [[ "$release_tag" == "$GITHUB_REF_NAME" ]] || { echo 'Release tag identity mismatch' >&2; exit 1; }
+              tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.sha')"
+              tag_type="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.type')"
+              if [[ "$tag_type" == "tag" ]]; then
+                tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.object.sha')"
+              elif [[ "$tag_type" != "commit" ]]; then
+                echo 'Unsupported release tag reference' >&2
+                exit 1
+              fi
+              [[ "$tag_sha" == "$GITHUB_SHA" ]] || { echo 'Release tag commit mismatch' >&2; exit 1; }
+              gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY"
               exit 0
             fi
             sleep 10

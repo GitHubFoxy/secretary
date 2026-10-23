@@ -63,6 +63,7 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 	capture := os.Getenv("TEST_CODEX_PHASE_CAPTURE")
 	scanner := bufio.NewScanner(os.Stdin)
 	prompts := 0
+	var recoveryPromptID any
 	emit := func(v any) { data, _ := json.Marshal(v); _, _ = os.Stdout.Write(append(data, '\n')) }
 	for scanner.Scan() {
 		var req struct {
@@ -80,7 +81,31 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 			result = map[string]any{"protocolVersion": 1, "agentInfo": map[string]any{"version": "2.2.2"}}
 		case "session/new":
 			result = map[string]any{"sessionId": "fixture-codex-phase"}
+		case "_session/steering":
+			if scenario == "native-recovery-steered" {
+				var params struct { Prompt []struct { Text string `json:"text"` } `json:"prompt"` }
+				if json.Unmarshal(req.Params,&params)!=nil || len(params.Prompt)!=1 || !strings.Contains(params.Prompt[0].Text,"ACP toolCallId=exec-7 exit_code=7") || recoveryPromptID==nil {t.Fatal("unverified native recovery ID was not offered to active turn")}
+				emit(map[string]any{"jsonrpc":"2.0","id":req.ID,"result":map[string]any{"outcome":"injected"}})
+				for _, update := range []map[string]any{
+					{"sessionUpdate":"tool_call","toolCallId":"exec-repair","name":"exec_command","kind":"execute","status":"in_progress","_meta":map[string]any{"terminal_info":map[string]any{"terminal_id":"exec-repair"}}},
+					{"sessionUpdate":"tool_call_update","toolCallId":"exec-repair","name":"exec_command","status":"completed","_meta":map[string]any{"terminal_exit":map[string]any{"terminal_id":"exec-repair","exit_code":0}}},
+				} { emit(map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":update}}) }
+				emit(codexPhaseFixtureChunk("msg_command_final","готово\n<secretary-recovery>{\"recovered_tool_use_ids\":[\"exec-7\"]}</secretary-recovery>","final_answer"))
+				emit(map[string]any{"jsonrpc":"2.0","id":recoveryPromptID,"result":map[string]any{"stopReason":"end_turn"}})
+				recoveryPromptID=nil
+				continue
+			}
+			result = map[string]any{"outcome":"injected"}
 		case "session/prompt":
+			if scenario == "native-recovery-steered" {
+				recoveryPromptID=req.ID
+				for _, update := range []map[string]any{
+					{"sessionUpdate":"tool_call","toolCallId":"exec-7","name":"exec_command","kind":"execute","status":"in_progress","_meta":map[string]any{"terminal_info":map[string]any{"terminal_id":"exec-7"}}},
+					{"sessionUpdate":"tool_call_update","toolCallId":"exec-7","name":"exec_command","status":"failed","_meta":map[string]any{"terminal_exit":map[string]any{"terminal_id":"exec-7","exit_code":7}}},
+					{"sessionUpdate":"tool_call_update","toolCallId":"exec-7","name":"exec_command","status":"failed","_meta":map[string]any{"terminal_exit":map[string]any{"terminal_id":"exec-7","exit_code":7}}},
+				} { emit(map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":update}}) }
+				continue
+			}
 			switch scenario {
 			case "final-parts":
 				emit(codexPhaseFixtureChunk("msg_069d645203d92047016ad84d901d5881919caa1e3c49b9ae71", "готов", "final_answer"))
@@ -98,6 +123,13 @@ func TestCodexPhaseFixtureProcess(t *testing.T) {
 			case "final-then-tool":
 				emit(codexPhaseFixtureChunk("msg_05858067cc2bde2b016ad84e8f2f9c81919b34d0bc6956df1b", "готово", "final_answer"))
 				emit(codexPhaseFixtureToolCall())
+			case "system-error", "system-error-untrusted", "system-error-other":
+				if scenario != "system-error-untrusted" {
+					emit(map[string]any{"jsonrpc":"2.0","method":"session/update","params":map[string]any{"sessionId":"fixture-codex-phase","update":map[string]any{"sessionUpdate":"session_info_update","_meta":map[string]any{"codex":map[string]any{"threadStatus":map[string]any{"type":"systemError"}}}}}})
+				}
+				message := "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account."
+				if scenario == "system-error-other" { message = "arbitrary unverified provider text" }
+				emit(codexPhaseFixtureChunk("system-error-text",message,""))
 			case "no-phase":
 				emit(codexPhaseFixtureChunk("msg_069d645203d92047016ad84d901d5881919caa1e3c49b9ae71", "готово", ""))
 			case "contradictory":
@@ -276,6 +308,10 @@ func TestCodexPhaseCanceledAndIncompleteTurns(t *testing.T) {
 func TestCodexNativeCommandEventToTerminal(t *testing.T) {
  cases:=[]struct{scenario string;status string;code string}{
   {"native-exit-7","failed","tool_execution_failed"},
+  {"system-error","failed","native_model_error"},
+  {"native-recovery-steered","succeeded",""},
+  {"system-error-untrusted","failed",""},
+  {"system-error-other","failed","native_system_error"},
   {"native-exit-0","succeeded",""},
   {"native-json-data","succeeded",""},
   {"native-recovered","succeeded",""},
@@ -299,6 +335,9 @@ func TestCodexNativeCommandEventToTerminal(t *testing.T) {
    select{
    case result:=<-session.Result():
     if result.Status!=tc.status||result.FailureCode!=tc.code{t.Fatalf("result=%+v",result)}
+    if tc.scenario=="system-error" && !strings.Contains(result.Summary,"gpt-5.5") {t.Fatalf("native model cause missing: %+v",result)}
+    if tc.scenario=="system-error-other" && strings.Contains(result.Summary,"arbitrary unverified") {t.Fatalf("untrusted text elevated to native diagnostic: %+v",result)}
+    if tc.scenario=="system-error-untrusted" && result.FailureCode=="native_model_error" {t.Fatalf("text without native systemError elevated: %+v",result)}
     if result.CompletionEvidence==nil || result.CompletionEvidence.Contract!=TerminalCompletionOpenCodeV2 || !result.CompletionEvidence.RPCSucceeded || !result.CompletionEvidence.DrainCompleted || (tc.scenario!="native-cancel" && (result.CompletionEvidence.StopReason!=TerminalStopReasonEndTurn || result.CompletionEvidence.AssistantChunks==0)) || (tc.scenario=="native-cancel" && result.CompletionEvidence.StopReason!=TerminalStopReasonCanceled){t.Fatalf("missing native completion evidence: %+v",result)}
     if (tc.scenario=="native-recovered" || tc.scenario=="native-invalid-recovery" || tc.scenario=="native-no-failure-footer" || tc.scenario=="native-incomplete-footer" || tc.scenario=="native-truncated-close" || tc.scenario=="native-split-truncated-footer") && result.Summary!="готово"{t.Fatalf("recovery leaked metadata: %q",result.Summary)}
    case <-ctx.Done():t.Fatal("no result")
