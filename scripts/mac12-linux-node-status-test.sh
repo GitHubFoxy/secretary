@@ -58,3 +58,19 @@ printf '%s\n%s\n%s\n' "999999" "$START" "wrong-runtime" > "$CONFIG.process"
 output="$("$ROOT/secretary" node status)"
 [[ "$output" == *"Node running pid=$PID identity=unknown configured_identity=linux-configured"* ]] || { print -u2 -- "$output"; exit 1; }
 print "MAC12 Linux Node status passed"
+
+SERVER_RELEASE="$TEST_HOME/known-release"
+mkdir -p "$SERVER_RELEASE/bin"
+printf 'v-fixture\\n' > "$SERVER_RELEASE/VERSION"
+printf '0123456789abcdef0123456789abcdef01234567\\n' > "$SERVER_RELEASE/REVISION"
+cc -o "$SERVER_RELEASE/bin/secretaryd" "$TEST_HOME/node.c"
+"$SERVER_RELEASE/bin/secretaryd" &
+SERVER_PID="$!"
+printf '%s\\n' "$SERVER_PID" > "$TEST_HOME/.local/share/secretary/server.pid"
+server_status="$("$ROOT/secretary" status 2>&1 || true)"
+[[ "$server_status" == *"running Server: pid=$SERVER_PID version=v-fixture revision=0123456789abcdef0123456789abcdef01234567"* ]] || { print -u2 -- "$server_status"; exit 1; }
+kill "$SERVER_PID"
+wait "$SERVER_PID" 2>/dev/null || true
+printf '999999\\n' > "$TEST_HOME/.local/share/secretary/server.pid"
+server_status="$("$ROOT/secretary" status 2>&1 || true)"
+[[ "$server_status" == *"running Server: stopped"* ]] || { print -u2 -- "$server_status"; exit 1; }
