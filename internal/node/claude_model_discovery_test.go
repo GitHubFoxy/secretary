@@ -51,8 +51,8 @@ func TestClaudeNativeDiscoveryReachesWorkerPinContract(t *testing.T) {
 	if !result.Available() || !result.Instance.SupportsModel("claude-haiku-5-5") {
 		t.Fatalf("native Claude inventory failed: status=%s error=%s models=%v", result.Instance.Status, result.ErrorCode, result.Instance.ModelIDs)
 	}
-	if len(result.Instance.ModelIDs) != 2 {
-		t.Fatalf("concrete observed models: %v", result.Instance.ModelIDs)
+	if len(result.Instance.ModelIDs) != 2 || result.Instance.SupportsModel("haiku") || result.Instance.SupportsModel("sonnet") {
+		t.Fatalf("only concrete resolved model IDs may enter observed pin inventory: %v", result.Instance.ModelIDs)
 	}
 	inventory := core.HarnessInventorySnapshot{Node: "macbook", Instances: []core.HarnessInstance{result.Instance}, ObservedAt: time.Now().UTC()}
 	envelope := WorkerEnvelope{WorkerRef: "worker", TurnID: "turn", AttemptID: "attempt", OriginalUserIntent: "inspect", HarnessInstance: result.Instance, Model: "claude-haiku-5-5", Profile: workerTemplateFixture(result.Instance, "claude-haiku-5-5", "")}
