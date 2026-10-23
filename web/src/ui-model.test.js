@@ -188,3 +188,8 @@ test('projectless Worker displays explicit absence of project', () => {
   const card = workerCard({ worker_ref: 'fixture-projectless', project_id: '' });
   assert.equal(card.project, 'No project');
 });
+
+test('unknown project identity remains distinguishable from projectless', () => {
+  const card = workerCard({ worker_ref: 'fixture-unknown-project', project_id: 'missing-project' }, []);
+  assert.equal(card.project, 'Unknown Project');
+});

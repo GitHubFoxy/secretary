@@ -179,7 +179,7 @@ export function workerCard(worker, projects = [], nodes = []) {
   const turnStatus = worker?.turn_status || worker?.current_turn_status || (result && status === 'idle' ? 'succeeded' : status);
   return {
     worker,
-    project: project?.name || worker?.project_id || 'No project',
+    project: project?.name || (worker?.project_id ? 'Unknown Project' : 'No project'),
     node: worker?.node_id || 'Unbound Node',
     harness: worker?.harness_instance_id || instance?.id || 'Unknown HarnessInstance',
     nodeOnline: node?.online !== false,
