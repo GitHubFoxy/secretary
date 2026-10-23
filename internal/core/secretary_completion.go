@@ -158,6 +158,19 @@ WHERE r.secretary_turn_id = ? AND r.input_id = ? AND r.body = e.body AND e.conve
 		if acknowledgement != "" && evidence == nil && !requireAddressedReply {
 			publishUnaddressedOutput = publishUnaddressedOutput && response != acknowledgement
 		}
+		if evidence == nil && !requireAddressedReply && state == SecretaryTurnFailed && acknowledgement != "" && turn.Error != "" {
+			var existing int
+			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM conversation_entries WHERE conversation_id = ? AND turn_id = ? AND kind = ? AND body = ?`, turn.ConversationID, turn.ID, EntrySecretary, turn.Error).Scan(&existing); err != nil {
+				return secretaryTurnCompletion{}, err
+			}
+			if existing == 0 && turn.Error != acknowledgement {
+				var err error
+				entry, err = appendEntryWithIdentity(ctx, tx, now, turn.ConversationID, EntrySecretary, turn.Error, "", turn.ID, "")
+				if err != nil {
+					return secretaryTurnCompletion{}, err
+				}
+			}
+		}
 		if publishUnaddressedOutput {
 			for _, delta := range textDeltas {
 				if delta == "" {
