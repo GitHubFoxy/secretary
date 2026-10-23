@@ -823,6 +823,7 @@ type acpSession struct {
 	textMu                  sync.Mutex
 	turnAnswer              *acpTurnAnswer
 	legacyTurnText          *strings.Builder
+	codexNativeExecFailure  int
 	terminalMessageGrouping bool
 	codexMessagePhases      bool
 	replaying               atomic.Bool
@@ -1845,6 +1846,7 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 	defer s.finishTurn()
 	s.textMu.Lock()
 	s.turnAnswer, s.legacyTurnText = nil, nil
+	s.codexNativeExecFailure = 0
 	if s.terminalMessageGrouping || s.codexMessagePhases {
 		s.turnAnswer = newACPTurnAnswer()
 	} else {
@@ -1874,6 +1876,7 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 	}
 	s.textMu.Lock()
 	answer := s.turnAnswer
+	codexNativeExecFailure := s.codexNativeExecFailure
 	collected := ""
 	if answer != nil {
 		collected = answer.collectedText()
@@ -1945,6 +1948,10 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 				response.Summary = "completed"
 			}
 		}
+	}
+	if s.codexMessagePhases && status == "succeeded" && codexNativeExecFailure != 0 {
+		s.result <- Result{Status: "failed", Summary: response.Summary, FailureCode: "tool_execution_failed", Technical: fmt.Sprintf("Codex native exec_command exited with code %d", codexNativeExecFailure), CompletionEvidence: completionEvidence}
+		return nil
 	}
 	s.result <- Result{Status: status, Summary: response.Summary, CompletionEvidence: completionEvidence}
 	return nil
@@ -2053,6 +2060,15 @@ func (s *acpSession) watch() {
 			}
 			s.textMu.Unlock()
 			for _, activity := range toolTracker.observe(kind, payload) {
+				if s.codexMessagePhases && activity.Kind == ActivityToolResult && activity.CallID != "" && activity.Tool == "exec" {
+					if code, ok := codexNativeExecExit(activity.Arguments, payload); ok && code != 0 {
+						s.textMu.Lock()
+						if s.turnAnswer != nil && s.codexNativeExecFailure == 0 {
+							s.codexNativeExecFailure = code
+						}
+						s.textMu.Unlock()
+					}
+				}
 				emit(activity)
 			}
 		default:
