@@ -832,6 +832,7 @@ type acpSession struct {
 	codexSystemErrorText string
 	codexRecoveryNoticeCtx context.Context
 	codexRecoveryNotified map[string]bool
+	codexRecoveryInjected map[string]bool
 	replaying               atomic.Bool
 	drainPromptEvents       bool
 
@@ -1861,6 +1862,7 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 	s.codexSystemErrorText = ""
 	s.codexRecoveryNoticeCtx = noticeCtx
 	s.codexRecoveryNotified = make(map[string]bool)
+	s.codexRecoveryInjected = make(map[string]bool)
 	if s.terminalMessageGrouping || s.codexMessagePhases {
 		s.turnAnswer = newACPTurnAnswer()
 	} else {
@@ -1978,7 +1980,7 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 	if s.codexMessagePhases && status != "canceled" { response.Summary, _ = codexRecoveryText(response.Summary) }
 	result := Result{Status: status, Summary: response.Summary, CompletionEvidence: completionEvidence}
 	if s.codexMessagePhases && systemError && status != "canceled" {
-		result.FailureCode = "native_model_error"
+		if systemErrorText != "" { result.FailureCode = "native_model_error" } else { result.FailureCode = "native_system_error" }
 	}
 	if s.codexMessagePhases && status == "succeeded" && len(failures) != 0 {
 		if _, _, ok := codexExplicitRecovery(originalSummary, failures); !ok {
@@ -1994,7 +1996,13 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 
 func (s *acpSession) offerCodexRecoveryID(ctx context.Context, id string, code int) {
 	if ctx.Err() != nil || !s.busyNow() || len(id) > 128 || !regexp.MustCompile("^exec-[A-Za-z0-9-]+$").MatchString(id) { return }
-	_, _ = s.Steer(ctx, fmt.Sprintf("Secretary verified native exec_command failure in this turn: ACP toolCallId=%s exit_code=%d. This identity is for explicit recovered_tool_use_ids only if you genuinely recover this exact failed command; an unrelated successful command is not recovery.", id, code))
+	injected, err := s.Steer(ctx, fmt.Sprintf("Secretary verified native exec_command failure in this turn: ACP toolCallId=%s exit_code=%d. This identity is for explicit recovered_tool_use_ids only if you genuinely recover this exact failed command; an unrelated successful command is not recovery.", id, code))
+	if err != nil || !injected { return }
+	s.textMu.Lock()
+	if s.codexRecoveryNoticeCtx == ctx && s.codexRecoveryNotified[id] && ctx.Err() == nil {
+		s.codexRecoveryInjected[id] = true
+	}
+	s.textMu.Unlock()
 }
 
 func (s *acpSession) finishTurn() {

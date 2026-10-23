@@ -311,7 +311,7 @@ func TestCodexNativeCommandEventToTerminal(t *testing.T) {
   {"system-error","failed","native_model_error"},
   {"native-recovery-steered","succeeded",""},
   {"system-error-untrusted","failed",""},
-  {"system-error-other","failed","native_model_error"},
+  {"system-error-other","failed","native_system_error"},
   {"native-exit-0","succeeded",""},
   {"native-json-data","succeeded",""},
   {"native-recovered","succeeded",""},
