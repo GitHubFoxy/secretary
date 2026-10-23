@@ -37,6 +37,7 @@ func testMAC1204Cancel(t *testing.T, failedWrite bool) {
 		_ = os.WriteFile(os.Getenv("MAC1204_PID_FILE"), []byte(strconv.Itoa(child.Process.Pid)), 0600)
 		if os.Getenv("MAC1204_CLOSE_INPUT") == "1" {
 			_ = os.Stdin.Close()
+			_ = os.WriteFile(os.Getenv("MAC1204_INPUT_CLOSED_MARKER"), []byte("closed"), 0600)
 			time.Sleep(600 * time.Millisecond)
 			os.Exit(0)
 		}
@@ -58,11 +59,13 @@ func testMAC1204Cancel(t *testing.T, failedWrite bool) {
 	pidFile := filepath.Join(t.TempDir(), "sleep.pid")
 	rootPIDFile := filepath.Join(filepath.Dir(pidFile), "root.pid")
 	latePIDFile := filepath.Join(filepath.Dir(pidFile), "late.pid")
+	closedMarker := filepath.Join(filepath.Dir(pidFile), "stdin-closed")
 	t.Setenv("MAC1204_HELPER", "1")
 	if failedWrite { t.Setenv("MAC1204_CLOSE_INPUT", "1") }
 	t.Setenv("MAC1204_PID_FILE", pidFile)
 	t.Setenv("MAC1204_ROOT_PID_FILE", rootPIDFile)
 	t.Setenv("MAC1204_LATE_PID_FILE", latePIDFile)
+	t.Setenv("MAC1204_INPUT_CLOSED_MARKER", closedMarker)
 	client, err := acp.Start(ctx, os.Args[0], "-test.run=^TestMAC1204CodexCancelKillsDetachedToolHost$")
 	if err != nil {
 		t.Fatal(err)
@@ -103,6 +106,13 @@ func testMAC1204Cancel(t *testing.T, failedWrite bool) {
 	if err != nil { t.Fatal(err) }
 	if _, err := processState(pid); err != nil {
 		t.Fatalf("detached tool exited before cancellation: %v", err)
+	}
+	if failedWrite {
+		for {
+			if _, err := os.Stat(closedMarker); err == nil { break }
+			if ctx.Err() != nil { t.Fatal("native input did not close") }
+			time.Sleep(5 * time.Millisecond)
+		}
 	}
 	session := newACPSession("native-session", client, true)
 	session.codexMessagePhases = true
