@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -365,8 +366,12 @@ func TestCodexWorkerFullAccessNativeConfigWithoutGlobalMutation(t *testing.T) {
  } {
   t.Run(tc.name,func(t *testing.T){
    runtime:=CodexRuntime{ACPRuntime:ACPRuntime{Command:"fixture",Environment:[]string{`CODEX_CONFIG={"model":"existing-model","sandbox_mode":"workspace-write","approval_policy":"on-request"}`}}}
-   configured,err:=runtime.configured(StartRequest{WorkerRef:"fixture",Workspace:t.TempDir(),Profile:tc.profile})
+   request:=StartRequest{WorkerRef:"fixture",Workspace:t.TempDir(),Profile:tc.profile}
+   configured,err:=runtime.configured(request)
    if err!=nil {t.Fatal(err)}
+   resumed,err:=runtime.configured(request)
+   if err!=nil {t.Fatal(err)}
+   if !reflect.DeepEqual(configured.Environment,resumed.Environment) {t.Fatalf("Start/Resume native environment differs: %v != %v",configured.Environment,resumed.Environment)}
    var config map[string]any
    for _,entry:=range configured.Environment {if strings.HasPrefix(entry,"CODEX_CONFIG=") {if err:=json.Unmarshal([]byte(strings.TrimPrefix(entry,"CODEX_CONFIG=")),&config);err!=nil {t.Fatal(err)}}}
    if config["model"]!="existing-model" {t.Fatalf("model changed: %v",config)}
