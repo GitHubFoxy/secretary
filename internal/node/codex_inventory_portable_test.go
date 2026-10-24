@@ -16,6 +16,7 @@ import (
 func TestManagedCodexInventoryHostPortable(t *testing.T) {
  home := t.TempDir()
  t.Setenv("HOME", home)
+ if runtime.GOOS == "windows" { t.Setenv("USERPROFILE", home) }
  dir := filepath.Join(home,"managed")
  if err := os.MkdirAll(dir,0700); err != nil { t.Fatal(err) }
  ext := ""
