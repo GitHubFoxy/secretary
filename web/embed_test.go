@@ -136,3 +136,20 @@ func TestInstallablePWAUsesSameWebAndNeverCachesPrivateContent(t *testing.T) {
 		t.Fatalf("control assets status=%d", status)
 	}
 }
+
+func TestEmbeddedWebWorkerProjectLabelsDistinguishProjectlessFromMissing(t *testing.T) {
+	recorder := httptest.NewRecorder()
+	Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "http://secretary/app.js", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("embedded Web bundle status=%d", recorder.Code)
+	}
+	bundle := recorder.Body.String()
+	const expected = `project:(s==null?void 0:s.name)||((e==null?void 0:e.project_id)?"Unknown Project":"No project")`
+	if !strings.Contains(bundle, expected) {
+		t.Fatal("embedded Web workerCard mapping does not distinguish empty project_id from an unknown referenced project")
+	}
+	const stale = `project:(s==null?void 0:s.name)||(e==null?void 0:e.project_id)||"Unknown Project"`
+	if strings.Contains(bundle, stale) {
+		t.Fatal("stale projectless-label mapping remains in delivered Web bundle")
+	}
+}
