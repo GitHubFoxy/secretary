@@ -41,6 +41,8 @@ func CodexInventoryDiagnostic(scope string, err error) error {
  if err == nil { return nil }
  reason := strings.ToLower(err.Error())
  switch {
+ case strings.Contains(reason, "code-mode host"):
+  return fmt.Errorf("Codex MCP code-mode host unavailable or altered for %s: reinstall the managed native pair, run secretary doctor and restart", scope)
  case strings.HasPrefix(reason, "codex acp:"):
   return fmt.Errorf("Codex ACP unavailable or altered for %s: verify the selected ACP executable, run secretary doctor and restart", scope)
  case strings.HasPrefix(reason, "codex cli:"):

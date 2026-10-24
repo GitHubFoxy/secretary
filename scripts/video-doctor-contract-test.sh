@@ -14,8 +14,12 @@ printf 'abcdef\n' > "$work/release/REVISION"
 for name in secretaryd secretary-mcp; do printf '#!/bin/sh\nexit 0\n' > "$work/bin/$name"; chmod +x "$work/bin/$name"; done
 cat > "$work/bin/secretary-node" <<'EOF'
 #!/bin/sh
-[ "$#" -eq 2 ] && [ "$1" = "--codex-pair-action=readiness" ] && [ "$2" = "--codex-pair-scope=server" ] || exit 1
-exit 0
+[ "$#" -eq 2 ] && [ "$2" = "--codex-pair-scope=server" ] || exit 1
+case "$1" in
+  --codex-pair-action=readiness) exit 0 ;;
+  --codex-pair-action=doctor) echo "Codex fixture, ACP fixture, code-mode host fixture: ready"; exit 0 ;;
+  *) exit 1 ;;
+esac
 EOF
 chmod +x "$work/bin/secretary-node"
 for name in ffmpeg ffprobe; do
