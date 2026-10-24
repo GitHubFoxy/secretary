@@ -664,6 +664,11 @@ func manageCodexPairWithProbe(ctx context.Context, action, scope, cliPath, acpPa
    if !existing.Compatibility.Validated { return "", errors.New("native Codex pair not protocol-validated") }
    if err := probe(ctx, existing); err != nil { return "", err }
   }
+  if action == "doctor" && existing.Codex.Provenance == "managed" {
+   host := "codex-code-mode-host"
+   if runtime.GOOS == "windows" { host += ".exe" }
+   return fmt.Sprintf("Codex %s, ACP %s, code-mode host %s: ready", existing.Codex.Version, existing.ACP.Version, filepath.Join(filepath.Dir(existing.Codex.ResolvedPath), host)), nil
+  }
   return fmt.Sprintf("Codex %s and ACP %s: %s", existing.Codex.Version, existing.ACP.Version, action), nil
  case "install", "upgrade":
   if (cliPath=="") != (acpPath=="") { return "", errors.New("both external Codex and ACP paths must be selected together") }
