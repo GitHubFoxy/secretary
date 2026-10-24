@@ -39,6 +39,10 @@ func CodexPairInventoryPath(scope string) (string, error) {
 }
 
 func ReadCodexPairInventory(scope string) (CodexPairInventory, error) {
+ return readCodexPairInventoryWithVerifiers(scope, verifyCodexBinary, verifyCodexACPBinary)
+}
+
+func readCodexPairInventoryWithVerifiers(scope string, verifyCLI, verifyACP func(CodexBinaryRecord) error) (CodexPairInventory, error) {
  path, err := CodexPairInventoryPath(scope)
  if err != nil { return CodexPairInventory{}, err }
  info, err := os.Lstat(path)
@@ -50,8 +54,8 @@ func ReadCodexPairInventory(scope string) (CodexPairInventory, error) {
  if err := json.Unmarshal(data, &pair); err != nil { return pair, fmt.Errorf("invalid native pair inventory: %w", err) }
  if pair.Schema != 1 || pair.Scope != scope || pair.Harness != "codex" { return pair, fmt.Errorf("native pair inventory mismatch: %s", path) }
  if !pair.Compatibility.Validated { return pair, fmt.Errorf("native Codex pair protocol has not been validated for %s", scope) }
- if err := verifyCodexBinary(pair.Codex); err != nil { return pair, fmt.Errorf("Codex CLI: %w", err) }
- if err := verifyCodexACPBinary(pair.ACP); err != nil { return pair, fmt.Errorf("Codex ACP: %w", err) }
+ if err := verifyCLI(pair.Codex); err != nil { return pair, fmt.Errorf("Codex CLI: %w", err) }
+ if err := verifyACP(pair.ACP); err != nil { return pair, fmt.Errorf("Codex ACP: %w", err) }
  if pair.Codex.Provenance == "managed" {
   dir := filepath.Dir(pair.Codex.ResolvedPath)
   if err := verifyManagedCodeModeHost(dir); err != nil { return pair, fmt.Errorf("Codex code-mode host: %w", err) }
