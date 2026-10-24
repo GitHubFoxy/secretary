@@ -48,7 +48,7 @@ func (w *protocolBoundaryWorkers) SpawnWorker(ctx context.Context, request ctl.S
 type protocolAcceptedDispatch struct{}
 
 func (protocolAcceptedDispatch) Dispatch(context.Context, string, core.Worker, core.Turn, core.Phase4Attempt, core.DispatchResolution) error {
-	return nil // synthetic Node accepted the dispatch; WorkerService persists the receipt
+	return nil
 }
 func (protocolAcceptedDispatch) Resume(context.Context, string, core.Worker, core.Turn, core.Phase4Attempt, string) error {
 	return fmt.Errorf("unexpected fixture resume")
