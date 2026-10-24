@@ -36,7 +36,7 @@ func main() {
  }
  scanner:=bufio.NewScanner(os.Stdin)
  for scanner.Scan() {
-  var req struct { ID json.RawMessage `json:"id"`; Method string `json:"method"` }
+  var req struct { ID json.RawMessage; Method string }
   if json.Unmarshal(scanner.Bytes(),&req)!=nil || len(req.ID)==0 { continue }
   var result any
   switch req.Method {
