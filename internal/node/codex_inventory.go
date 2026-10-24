@@ -14,6 +14,8 @@ import (
  "time"
 )
 
+var codexInventoryTrustedAssets = codexNativeAssets
+
 type CodexBinaryRecord struct {
  Path string `json:"path"`
  ResolvedPath string `json:"resolved_path"`
@@ -59,7 +61,7 @@ func readCodexPairInventoryWithVerifiers(scope string, verifyCLI, verifyACP func
  if pair.Codex.Provenance == "managed" {
   dir := filepath.Dir(pair.Codex.ResolvedPath)
   if err := verifyManagedCodeModeHost(dir); err != nil { return pair, fmt.Errorf("Codex code-mode host: %w", err) }
-  assets, err := codexNativeAssets()
+  assets, err := codexInventoryTrustedAssets()
   if err != nil { return pair, fmt.Errorf("Codex code-mode host pinned assets: %w", err) }
   name := "codex-code-mode-host"
   if runtime.GOOS == "windows" { name += ".exe" }
