@@ -40,19 +40,23 @@ type codexAsset struct {
 }
 
 func codexNativeAssets() ([]codexAsset, error) {
+ return codexNativeAssetsForPlatform(runtime.GOOS, runtime.GOARCH)
+}
+
+func codexNativeAssetsForPlatform(goos, goarch string) ([]codexAsset, error) {
  triple, acpTriple := "", ""
- switch runtime.GOOS + "/" + runtime.GOARCH {
+ switch goos + "/" + goarch {
  case "darwin/arm64": triple, acpTriple = "aarch64-apple-darwin", "aarch64-apple-darwin"
  case "darwin/amd64": triple, acpTriple = "x86_64-apple-darwin", "x86_64-apple-darwin"
  case "linux/arm64": triple, acpTriple = "aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"
  case "linux/amd64": triple, acpTriple = "x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"
  case "windows/amd64": triple, acpTriple = "x86_64-pc-windows-msvc", "x86_64-pc-windows-msvc"
  case "windows/arm64": triple, acpTriple = "aarch64-pc-windows-msvc", "aarch64-pc-windows-msvc"
- default: return nil, fmt.Errorf("unsupported native Codex host: %s/%s", runtime.GOOS, runtime.GOARCH)
+ default: return nil, fmt.Errorf("unsupported native Codex host: %s/%s", goos, goarch)
  }
  codexDigest, acpDigest := "", ""
  codexCodeModeHostDigest := ""
- switch runtime.GOOS + "/" + runtime.GOARCH {
+ switch goos + "/" + goarch {
  case "darwin/arm64":
   codexDigest, acpDigest = "61c4d9a92521bdb42b0c1d9f87c673f6da628a06de5945cbdd9a0010632f6d10", "377f1137945b54d8e689cb600767f6dcfe6e548e01c1f29018862c009c692c8d"
   codexCodeModeHostDigest = "2e28f49a4767a97586843c92692b96481be74d837199b49038f731cec88e9941"
@@ -72,24 +76,24 @@ func codexNativeAssets() ([]codexAsset, error) {
   codexDigest, acpDigest = "c12842937952bc1dd757c82ae3f31c83f21b794344cf361b506b0218d4881c74", "1640fac9ff4893a9aed895ad3e8d529a7b8cdad4f65ff85d3b5c69323857e7b4"
   codexCodeModeHostDigest = "8fb79c742742de463154a44582ff6809155b8e331fdf1ef40445abfee1038986"
  }
- if runtime.GOOS == "windows" {
+ if goos == "windows" {
   return []codexAsset{
    {"https://github.com/openai/codex/releases/download/rust-v"+codexPinnedVersion+"/codex-"+triple+".exe.zip", codexDigest, "codex.exe"},
    {"https://github.com/zed-industries/codex-acp/releases/download/v"+codexACPWindowsLegacyVersion+"/codex-acp-"+codexACPWindowsLegacyVersion+"-"+acpTriple+".zip", acpDigest, "codex-acp.exe"},
-   codexCodeModeHostAsset(triple, codexCodeModeHostDigest),
+   codexCodeModeHostAsset(goos, triple, codexCodeModeHostDigest),
   }, nil
  }
  return []codexAsset{
   {"https://github.com/openai/codex/releases/download/rust-v"+codexPinnedVersion+"/codex-"+triple+".tar.gz", codexDigest, "codex"},
-  codexCodeModeHostAsset(triple, codexCodeModeHostDigest),
+  codexCodeModeHostAsset(goos, triple, codexCodeModeHostDigest),
  }, nil
 }
 
 // The Codex CLI executes MCP tools through a separate code-mode host binary
 // that must sit next to the CLI. Without it the CLI reports "Code Mode is
 // unavailable" and the model never sees the Secretary tools.
-func codexCodeModeHostAsset(triple, digest string) codexAsset {
- if runtime.GOOS == "windows" {
+func codexCodeModeHostAsset(goos, triple, digest string) codexAsset {
+ if goos == "windows" {
   return codexAsset{
    "https://github.com/openai/codex/releases/download/rust-v" + codexPinnedVersion + "/codex-code-mode-host-" + triple + ".exe.zip",
    digest,
