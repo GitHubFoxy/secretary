@@ -96,24 +96,32 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.toolTip = presentation.status.toolTip
     }
 
-    @objc private func quitNode() {
-        presentation.beginQuit()
-        timer?.invalidate()
-        guard let controller else {
-            NSApp.terminate(nil)
-            return
-        }
-        controller.stop { [weak self] error in
-            DispatchQueue.main.async {
-                if let error {
-                    self?.presentation.stopFailed(error)
-                    self?.refresh()
-                    self?.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
-                } else {
-                    NSApp.terminate(nil)
-                }
+    private lazy var termination = AppKitNodeTermination(
+        stop: { [weak self] completion in
+            guard let controller = self?.controller else {
+                completion(nil)
+                return
             }
+            controller.stop(completion: completion)
+        },
+        begin: { [weak self] in
+            self?.presentation.beginQuit()
+            self?.timer?.invalidate()
+        },
+        failed: { [weak self] error in
+            guard let self else { return }
+            self.presentation.stopFailed(error)
+            self.refresh()
+            self.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
         }
+    )
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        termination.applicationShouldTerminate(sender)
+    }
+
+    @objc private func quitNode() {
+        termination.menuQuit()
     }
 }
 
