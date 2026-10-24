@@ -52,6 +52,9 @@ func ReadCodexPairInventory(scope string) (CodexPairInventory, error) {
  if !pair.Compatibility.Validated { return pair, fmt.Errorf("native Codex pair protocol has not been validated for %s", scope) }
  if err := verifyCodexBinary(pair.Codex); err != nil { return pair, fmt.Errorf("Codex CLI: %w", err) }
  if err := verifyCodexACPBinary(pair.ACP); err != nil { return pair, fmt.Errorf("Codex ACP: %w", err) }
+ if pair.Codex.Provenance == "managed" {
+  if err := verifyManagedCodeModeHost(filepath.Dir(pair.Codex.ResolvedPath)); err != nil { return pair, fmt.Errorf("Codex code-mode host: %w", err) }
+ }
  return pair, nil
 }
 
