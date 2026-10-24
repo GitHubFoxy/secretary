@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -369,6 +370,15 @@ func main() {
 			return applyErr
 		}))
 	}
+	var secretaryReady atomic.Bool
+	verifySecretaryStartup := func(readyCtx context.Context, identity core.SecretaryIdentity) error {
+		if profiles.Snapshot().Config.Secretary.ReplyContract != core.SecretaryReplyContractAddressedV1 {
+			return nil
+		}
+		waitCtx, cancel := context.WithTimeout(readyCtx, 10*time.Second)
+		defer cancel()
+		return waitForSecretaryMCPReadiness(waitCtx, store, identity)
+	}
 	restartSecretary := func(restartCtx context.Context) error {
 		secretaryMu.Lock()
 		defer secretaryMu.Unlock()
@@ -392,16 +402,17 @@ func main() {
 			return errors.New("SECRETARY_CAPABILITY is not authorized")
 		}
 		persistentSecretary = secretaryruntime.NewRuntime(secretaryLocal, capability)
+		persistentSecretary.AttachReadiness(secretaryReady.Store, verifySecretaryStartup)
 		persistentSecretary.AttachIdentity(secretaryIdentity)
 		persistentSecretary.AttachMCPServer(mcpCommand, *dataDir, secretaryMCPServerURL(*listen))
 		persistentSecretary.AttachProfile(func() node.ManagedProfile {
 			return secretaryProfile(profiles.Snapshot(), store)
 		})
 		persistentSecretary.AttachConversation(store, conversation.ID)
+		web.AttachSecretary(persistentSecretary)
 		if err := persistentSecretary.Start(ctx); err != nil {
 			return fmt.Errorf("start persistent Secretary: %w", err)
 		}
-		web.AttachSecretary(persistentSecretary)
 		return nil
 	}
 	stopPersistentSecretary := func() error {
@@ -441,19 +452,20 @@ func main() {
 	staticHandler := webclient.Handler()
 	controlStaticHandler := webclient.ControlHandler()
 	handler := rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler, remoteNodes, *debug)
-	server := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
-	listener, err := listenWhenSecretaryReady(startPersistentSecretary, stopPersistentSecretary, func() (net.Listener, error) {
+	server := &http.Server{Addr: *listen, Handler: secretaryStartupHandler(&secretaryReady, handler), ReadHeaderTimeout: 5 * time.Second}
+	_, err = listenWhenSecretaryReady(startPersistentSecretary, stopPersistentSecretary, func() (net.Listener, error) {
 		return net.Listen("tcp", *listen)
+	}, func(listener net.Listener) {
+		go func() {
+			if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("serve web API: %v", err)
+			}
+		}()
 	})
 	if err != nil {
 		log.Fatalf("start persistent Secretary or listen web API: %v", err)
 	}
-	go func() {
-		log.Printf("Secretary web API listening on %s", *listen)
-		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("serve web API: %v", err)
-		}
-	}()
+	log.Printf("Secretary web API listening on %s", *listen)
 	<-ctx.Done()
 	if persistentSecretary != nil {
 		if err := persistentSecretary.Stop(context.Background()); err != nil {

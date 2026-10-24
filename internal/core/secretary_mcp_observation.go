@@ -184,6 +184,36 @@ func (s *Store) RecordSecretaryMCPObservation(ctx context.Context, personID, tok
 	})
 }
 
+func (s *Store) SecretaryRuntimeMCPDiscovery(ctx context.Context, identityID string, generation int64) (SecretaryMCPDiscovery, error) {
+	evidence := SecretaryMCPDiscovery{Code: "missing"}
+	err := s.db.QueryRowContext(ctx, `SELECT l.started,l.initialized,l.tools_listed,l.tool_count,l.has_spawn_worker,l.has_reply_to_user,l.failed,
+(l.revoked<>0 OR c.revoked_at IS NOT NULL),i.runtime_generation=l.generation
+FROM secretary_runtime_launches l
+JOIN secretary_identities i ON i.id=l.identity_id
+JOIN secretary_capabilities c ON c.person_id=i.person_id AND c.token_hash=l.parent_capability_hash
+WHERE l.identity_id=? AND l.generation=?`, identityID, generation).Scan(
+		&evidence.Started, &evidence.Initialized, &evidence.ToolsListed, &evidence.ToolCount,
+		&evidence.HasSpawnWorker, &evidence.HasReplyToUser, &evidence.Failed, &evidence.Revoked, &evidence.GenerationMatches,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return evidence, ErrNotFound
+	}
+	if err != nil {
+		return evidence, err
+	}
+	switch {
+	case evidence.Revoked || !evidence.GenerationMatches:
+		evidence.Code = "revoked"
+	case evidence.Failed:
+		evidence.Code = "failed"
+	case evidence.Started && evidence.Initialized && evidence.ToolsListed:
+		evidence.Code = "discovered"
+	case evidence.Started:
+		evidence.Code = "pending"
+	}
+	return evidence, nil
+}
+
 func (s *Store) SecretaryMCPDiscovery(ctx context.Context, turnID string) (SecretaryMCPDiscovery, error) {
 	return secretaryMCPDiscoveryQuery(ctx, s.db, turnID)
 }
