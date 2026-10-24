@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "run_id": "EXAMPLE-REPLACE-BEFORE-USE",
+  "test_kind": "live",
+  "candidate": {
+    "tag": "v0.1.0-alpha.17",
+    "commit_sha": null,
+    "published_asset": null,
+    "published_asset_sha256": null,
+    "running_revision": null
+  },
+  "tested_at_utc": null,
+  "environment": {
+    "server": {
+      "os": null,
+      "os_version": null,
+      "arch": null
+    },
+    "node": {
+      "os": null,
+      "os_version": null,
+      "arch": null
+    },
+    "harness": {
+      "name": null,
+      "cli_version": null,
+      "adapter_version": null,
+      "model": null
+    },
+    "code_mode_host_version": null
+  },
+  "cases": [
+    {
+      "case_id": "NODE-WORKER-01",
+      "dimensions": {
+        "node_os": "linux",
+        "harness": "codex"
+      },
+      "status": "NOT_RUN",
+      "observation": null,
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    }
+  ]
+}
