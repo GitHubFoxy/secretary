@@ -627,3 +627,35 @@ for line in sys.stdin:
  pair.Codex.Path=negative
  if err:=codexNativePairReady(context.Background(),pair);err==nil {t.Fatal("negative login status with a zero exit code was accepted")}
 }
+
+
+func TestManagedCodexCodeModeHostPinsAllPlatforms(t *testing.T) {
+ cases := []struct {
+  goos, goarch, triple, digest string
+ }{
+  {"darwin", "arm64", "aarch64-apple-darwin", "2e28f49a4767a97586843c92692b96481be74d837199b49038f731cec88e9941"},
+  {"darwin", "amd64", "x86_64-apple-darwin", "5211c6ed5062c84ba5796e555903c22a6e38fcccf6fe11ee11d7e1b5687ce1fd"},
+  {"linux", "arm64", "aarch64-unknown-linux-musl", "284356aefb197f00b76b912efdfdbae8ccf3ea1f89b976dde064b7ccb43214ef"},
+  {"linux", "amd64", "x86_64-unknown-linux-musl", "314263128ba6592e7e807c265deeaf928a692b72dcbfeb5e0b20c9423b703529"},
+  {"windows", "amd64", "x86_64-pc-windows-msvc", "bc82fa6d8f449c818292eac35bd7400c4f7dae08908fc9bc67bfbad8c4a3de68"},
+  {"windows", "arm64", "aarch64-pc-windows-msvc", "8fb79c742742de463154a44582ff6809155b8e331fdf1ef40445abfee1038986"},
+ }
+ for _, tc := range cases {
+  t.Run(tc.goos+"-"+tc.goarch, func(t *testing.T) {
+   assets, err := codexNativeAssetsForPlatform(tc.goos, tc.goarch)
+   if err != nil { t.Fatal(err) }
+   expectedName, extension := "codex-code-mode-host", ".tar.gz"
+   if tc.goos == "windows" { expectedName, extension = "codex-code-mode-host.exe", ".exe.zip" }
+   var matched int
+   for _, asset := range assets {
+    if asset.Name != expectedName { continue }
+    matched++
+    if asset.SHA256 != tc.digest { t.Fatalf("wrong checksum: %s", asset.SHA256) }
+    expectedURL := "https://github.com/openai/codex/releases/download/rust-v"+codexPinnedVersion+"/codex-code-mode-host-"+tc.triple+extension
+    if asset.URL != expectedURL { t.Fatalf("wrong asset: %s", asset.URL) }
+   }
+   if matched != 1 { t.Fatalf("expected one code-mode host asset, got %d", matched) }
+  })
+ }
+ if _, err := codexNativeAssetsForPlatform("plan9", "amd64"); err == nil { t.Fatal("unsupported platform accepted") }
+}
