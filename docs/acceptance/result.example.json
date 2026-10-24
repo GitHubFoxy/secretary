@@ -57,7 +57,7 @@
       "case_id": "NODE-WORKER-01",
       "dimensions": {
         "node_os": "linux",
-        "harness": "codex"
+        "worker_harness": "codex"
       },
       "status": "NOT_RUN",
       "observation": null,
