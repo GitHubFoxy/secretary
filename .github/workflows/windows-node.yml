@@ -28,7 +28,7 @@ jobs:
       - name: Windows host protocol, failure, native process and reconnect acceptance
         run: >
           go test ./internal/node
-          -run 'TestWindowsNativeACPProcessStartAndResume|TestWindowsNPMCommandShimStartsAndResumesACP|TestProtocolWorkspaceAcceptsRemoteWindowsPath|TestACPRuntimeResumesExistingSession|TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke|TestServerRestartNodeReconnectDeliversQueuedLateResultExactlyOnce|TestReplacementSocketInvalidatesWorkerUntilMatchingHeartbeat'
+          -run 'TestManagedCodexInventoryAndDoctorRealExecutables|TestWindowsNativeACPProcessStartAndResume|TestWindowsNPMCommandShimStartsAndResumesACP|TestProtocolWorkspaceAcceptsRemoteWindowsPath|TestACPRuntimeResumesExistingSession|TestDaemonPairHeartbeatDrainReconnectReplayDeduplicateAndRevoke|TestServerRestartNodeReconnectDeliversQueuedLateResultExactlyOnce|TestReplacementSocketInvalidatesWorkerUntilMatchingHeartbeat'
           -count=1 -timeout=10m -v
       - name: Verify Windows ACP process-tree cancellation
         run: go test ./internal/acp -run '^TestACPWindows' -count=1 -timeout=3m -v
