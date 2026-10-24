@@ -3,6 +3,7 @@
 package node
 
 import (
+ "context"
  "crypto/sha256"
  "encoding/hex"
  "encoding/json"
@@ -77,6 +78,8 @@ func TestManagedCodexInventoryRequiresCodeModeHost(t *testing.T) {
  host := filepath.Join(dir, "codex-code-mode-host")
  if err := os.WriteFile(host, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1, 0}, 0700); err != nil { t.Fatal(err) }
  if _, err := ReadCodexPairInventory("server"); err != nil { t.Fatalf("complete managed pair refused: %v", err) }
+ summary, err := manageCodexPairWithProbe(context.Background(), "doctor", "server", "", "", func(context.Context, CodexPairInventory) error { return nil })
+ if err != nil || !strings.Contains(summary, "code-mode host "+host+": ready") { t.Fatalf("doctor did not report managed code-mode host: %q %v", summary, err) }
  if err := os.WriteFile(host, []byte("bad host"), 0700); err != nil { t.Fatal(err) }
  if _, err := ReadCodexPairInventory("server"); err == nil || !strings.Contains(err.Error(), "binary format") {
   t.Fatalf("invalid managed code-mode host accepted: %v", err)
