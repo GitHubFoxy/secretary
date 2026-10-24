@@ -16,82 +16,53 @@ import (
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
 	"github.com/beruseruko/secretary/internal/mcp"
+	"github.com/beruseruko/secretary/internal/node"
 	"github.com/beruseruko/secretary/internal/webapi"
 )
 
+// Spawn through the production Worker service; the fixture only supplies a
+// synthetic accepting Node and its resulting durable Attempt outcome.
 type protocolBoundaryWorkers struct {
-	store          *core.Store
-	conversationID string
-	personID       string
-	capability     string
-}
-
-func (w *protocolBoundaryWorkers) ListNodes(context.Context) ([]core.NodeRecord, error) {
-	return nil, nil
-}
-func (w *protocolBoundaryWorkers) ListProjects(context.Context) ([]core.Project, error) {
-	return nil, nil
-}
-func (w *protocolBoundaryWorkers) ListWorkers(context.Context) ([]core.Worker, error) {
-	return nil, nil
-}
-func (w *protocolBoundaryWorkers) GetWorker(context.Context, string) (core.WorkerDetails, error) {
-	return core.WorkerDetails{}, core.ErrNotFound
-}
-func (w *protocolBoundaryWorkers) MessageWorker(context.Context, ctl.MessageWorkerRequest) (core.WorkerDetails, error) {
-	return core.WorkerDetails{}, core.ErrNotFound
-}
-func (w *protocolBoundaryWorkers) CancelWorker(context.Context, string) (core.WorkerDetails, error) {
-	return core.WorkerDetails{}, core.ErrNotFound
-}
-func (w *protocolBoundaryWorkers) CloseWorker(context.Context, string) (core.WorkerDetails, error) {
-	return core.WorkerDetails{}, core.ErrNotFound
+	ctl.WorkerService
 }
 
 func (w *protocolBoundaryWorkers) SpawnWorker(ctx context.Context, request ctl.SpawnWorkerRequest) (core.WorkerDetails, error) {
-	worker, turn, attempt, err := w.store.CreateWorker(ctx, w.conversationID, core.WorkerSpec{
-		WorkerRef: "protocol-worker", Intent: request.Intent, NodeID: "synthetic-node",
-		HarnessInstanceID: "synthetic-node/codex", PolicySnapshot: "synthetic",
-	}, core.TurnSpec{Input: request.Intent})
+	details, err := w.WorkerService.SpawnWorker(ctx, request)
 	if err != nil {
 		return core.WorkerDetails{}, err
 	}
-	// The production Worker service binds Secretary origin when claiming a
-	// dispatch command; an arbitrary Worker/Result link is not an accepted spawn.
-	origin := core.SecretaryOriginIdentity{
-		PersonID: w.personID, Capability: w.capability,
-		SecretaryTurnID: request.SecretaryTurnID, InputID: request.InputID,
+	if len(details.Attempts) != 1 {
+		return core.WorkerDetails{}, fmt.Errorf("fixture expected one server-owned Worker Attempt, got %d", len(details.Attempts))
 	}
-	if _, err := w.store.EnsureLifecycleCommandIntent(ctx, "dispatch", worker.ID, attempt.ID); err != nil {
+	if _, err := w.Store.SetPhase4AttemptActive(ctx, details.Attempts[0].ID); err != nil {
 		return core.WorkerDetails{}, err
 	}
-	command, duplicate, err := w.store.ClaimWorkerCommand(ctx, "dispatch", "attempt", worker.ID, attempt.ID, origin)
-	if err != nil {
-		return core.WorkerDetails{}, err
-	}
-	if duplicate {
-		return core.WorkerDetails{}, fmt.Errorf("fixture dispatch was not a fresh server-owned command")
-	}
-	// Simulate the Node's accepted dispatch receipt through the same durable
-	// transition used by the production Worker service.
-	delivered, err := w.store.MarkWorkerCommandDelivered(ctx, command.ID)
-	if err != nil {
-		return core.WorkerDetails{}, err
-	}
-	if delivered.State != core.WorkerCommandDelivered {
-		return core.WorkerDetails{}, fmt.Errorf("fixture dispatch was not accepted: %s", delivered.State)
-	}
-	if _, err := w.store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
-		return core.WorkerDetails{}, err
-	}
-	if _, result, _, err := w.store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
+	if _, result, _, err := w.Store.RecordAttemptOutcome(ctx, details.Attempts[0].ID, core.AttemptOutcomeInput{
 		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "Worker Result from accepted action",
 	}); err != nil {
 		return core.WorkerDetails{}, err
 	} else if result == nil {
 		return core.WorkerDetails{}, fmt.Errorf("accepted Worker action has no durable Result")
 	}
-	return core.WorkerDetails{Worker: worker, ActionTurnID: turn.ID}, nil
+	return details, nil
+}
+
+type protocolAcceptedDispatch struct{}
+
+func (protocolAcceptedDispatch) Dispatch(context.Context, string, core.Worker, core.Turn, core.Phase4Attempt, core.DispatchResolution) error {
+	return nil // synthetic Node accepted the dispatch; WorkerService persists the receipt
+}
+func (protocolAcceptedDispatch) Resume(context.Context, string, core.Worker, core.Turn, core.Phase4Attempt, string) error {
+	return fmt.Errorf("unexpected fixture resume")
+}
+func (protocolAcceptedDispatch) Steer(context.Context, string, core.Worker, core.Phase4Attempt, string) error {
+	return fmt.Errorf("unexpected fixture steer")
+}
+func (protocolAcceptedDispatch) Respond(context.Context, string, core.Worker, core.Phase4Attempt, string, string) error {
+	return fmt.Errorf("unexpected fixture response")
+}
+func (protocolAcceptedDispatch) Cancel(context.Context, string, core.Worker, core.Phase4Attempt) error {
+	return fmt.Errorf("unexpected fixture cancel")
 }
 
 type protocolMCPResponse struct {
@@ -153,9 +124,30 @@ func TestAddressedReplyMCPProtocolAcrossSecretaryStartup(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			api.AttachSecretaryWorkerTools(&protocolBoundaryWorkers{
-				store: store, conversationID: conversation.ID, personID: personID, capability: capability,
-			})
+			if _, err := store.EnrollNode(ctx, "fixture-node"); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.UpdateNodeHeartbeat(ctx, "fixture-node", core.HarnessInventorySnapshot{
+				Node: "fixture-node", ObservedAt: time.Now().UTC(),
+				Instances: []core.HarnessInstance{{
+					ID: "fixture-node/fx", Node: "fixture-node", Kind: core.HarnessFX, Version: "1",
+					Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true},
+					Capabilities: core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityShell}},
+				}},
+			}, core.NodeHeartbeat{Capacity: 2}); err != nil {
+				t.Fatal(err)
+			}
+			api.AttachSecretaryWorkerTools(&protocolBoundaryWorkers{WorkerService: ctl.WorkerService{
+				Store: store, PersonID: personID, Capability: capability,
+				WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessFX},
+				WorkerProfileSource: func() (node.ManagedProfile, error) {
+					return node.ManagedProfile{
+						Version: "fixture-v1", Name: "worker", Content: "Synthetic Worker profile.",
+						Hash: "fixture-profile", Runtime: string(core.HarnessFX),
+					}, nil
+				},
+				Runtime: protocolAcceptedDispatch{},
+			}})
 			api.AttachSecretaryReplyContract(func() string { return core.SecretaryReplyContractAddressedV1 })
 			var ready atomic.Bool
 			server := &http.Server{Handler: secretaryStartupHandler(&ready, rootHandler(api.Handler(), api.ControlHandler(), http.NotFoundHandler(), http.NotFoundHandler(), nil, false))}
