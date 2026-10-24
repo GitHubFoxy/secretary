@@ -59,8 +59,10 @@ func (w *protocolBoundaryWorkers) SpawnWorker(ctx context.Context, request ctl.S
 	}
 	if _, result, _, err := w.store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
 		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "Worker Result from accepted action",
-	}); err != nil || result == nil {
-		return core.WorkerDetails{}, fmt.Errorf("record Worker result: %w", err)
+	}); err != nil {
+		return core.WorkerDetails{}, err
+	} else if result == nil {
+		return core.WorkerDetails{}, fmt.Errorf("accepted Worker action has no durable Result")
 	}
 	return core.WorkerDetails{Worker: worker, ActionTurnID: turn.ID}, nil
 }
@@ -224,6 +226,11 @@ func TestAddressedReplyMCPProtocolAcrossSecretaryStartup(t *testing.T) {
 				t.Fatalf("public HTTP accepted request before readiness: %d", prepared.StatusCode)
 			}
 			ready.Store(true)
+			if err := (mcp.RemoteMCPObserver{
+				BaseURL: "http://" + address, Capability: "invalid-observer",
+			}).Observe(ctx, core.SecretaryMCPObservation{Phase: core.SecretaryMCPObservationToolsList, Success: true, ToolCount: 11, HasSpawnWorker: true, HasReplyToUser: true}); err == nil {
+				t.Fatal("production MCP observation accepted a foreign launch capability")
+			}
 			after, err := http.Get("http://" + address + "/v1/health")
 			if err != nil {
 				t.Fatal(err)
@@ -262,6 +269,14 @@ func TestAddressedReplyMCPProtocolAcrossSecretaryStartup(t *testing.T) {
 				related, err := store.SecretaryOriginHasResult(ctx, turn.ID, turn.InputID)
 				if err != nil || !related {
 					t.Fatalf("durable Worker Result missing exact origin: related=%v err=%v", related, err)
+				}
+				if unrelated, err := store.SecretaryOriginHasResult(ctx, turn.ID, "unrelated-input"); err != nil || unrelated {
+					t.Fatalf("Worker Result was linked to a different input identity: linked=%v err=%v", unrelated, err)
+				}
+				if err := store.ValidateSecretaryAcceptedSpawnOrigin(ctx, core.SecretaryOriginIdentity{
+					PersonID: personID, Capability: capability, SecretaryTurnID: turn.ID, InputID: turn.InputID,
+				}, workerTurnID); err != nil {
+					t.Fatalf("Worker action lacks an accepted server-owned origin: %v", err)
 				}
 			}
 			if scenario != "missing_reply" {
