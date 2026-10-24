@@ -88,7 +88,7 @@ func main() {
  if runtime.GOOS=="windows" {
   archiveURL="file:///fixture.zip"
   writer:=zip.NewWriter(&archive)
-  member,err:=writer.Create(hostName+"-fixture")
+  member,err:=writer.Create("codex-code-mode-host-fixture.exe")
   if err!=nil { t.Fatal(err) }
   if _,err:=member.Write(hostBytes);err!=nil { t.Fatal(err) }
   if err:=writer.Close();err!=nil { t.Fatal(err) }
