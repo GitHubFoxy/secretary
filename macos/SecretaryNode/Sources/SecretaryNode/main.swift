@@ -96,24 +96,49 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.toolTip = presentation.status.toolTip
     }
 
-    @objc private func quitNode() {
-        presentation.beginQuit()
-        timer?.invalidate()
-        guard let controller else {
-            NSApp.terminate(nil)
+    private lazy var termination = NodeTerminationCoordinator { [weak self] completion in
+        guard let controller = self?.controller else {
+            completion(nil)
             return
         }
-        controller.stop { [weak self] error in
+        controller.stop(completion: completion)
+    }
+    private var awaitingAppKitTermination = false
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if termination.state == .stopped { return .terminateNow }
+        awaitingAppKitTermination = true
+        beginShutdown()
+        return .terminateLater
+    }
+
+    private func beginShutdown() {
+        guard termination.state == .idle else { return }
+        presentation.beginQuit()
+        timer?.invalidate()
+        termination.request { [weak self] error in
             DispatchQueue.main.async {
+                guard let self else { return }
                 if let error {
-                    self?.presentation.stopFailed(error)
-                    self?.refresh()
-                    self?.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
+                    if self.awaitingAppKitTermination {
+                        self.awaitingAppKitTermination = false
+                        NSApp.reply(toApplicationShouldTerminate: false)
+                    }
+                    self.presentation.stopFailed(error)
+                    self.refresh()
+                    self.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
+                } else if self.awaitingAppKitTermination {
+                    self.awaitingAppKitTermination = false
+                    NSApp.reply(toApplicationShouldTerminate: true)
                 } else {
                     NSApp.terminate(nil)
                 }
             }
         }
+    }
+
+    @objc private func quitNode() {
+        beginShutdown()
     }
 }
 
