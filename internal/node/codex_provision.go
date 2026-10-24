@@ -662,6 +662,9 @@ func manageCodexPairWithProbe(ctx context.Context, action, scope, cliPath, acpPa
   }
   if action == "doctor" {
    if !existing.Compatibility.Validated { return "", errors.New("native Codex pair not protocol-validated") }
+   if existing.Codex.Provenance == "managed" {
+    if _, err := ReadCodexPairInventory(scope); err != nil { return "", fmt.Errorf("Codex doctor inventory integrity: %w", err) }
+   }
    if err := probe(ctx, existing); err != nil { return "", err }
   }
   if action == "doctor" && existing.Codex.Provenance == "managed" {
