@@ -223,7 +223,21 @@ func TestAddressedReplyMCPProtocolAcrossSecretaryStartup(t *testing.T) {
 				if !foundReply || !foundSpawn {
 					return fmt.Errorf("MCP catalogue omitted addressed reply or spawn")
 				}
-				return waitForSecretaryMCPReadiness(ctx, store, identity)
+				prepared, err := http.Get("http://" + address + "/v1/health")
+				if err != nil {
+					return err
+				}
+				_ = prepared.Body.Close()
+				if prepared.StatusCode != http.StatusServiceUnavailable {
+					return fmt.Errorf("public HTTP accepted request before MCP readiness: %d", prepared.StatusCode)
+				}
+				if err := waitForSecretaryMCPReadiness(ctx, store, identity); err != nil {
+					return err
+				}
+				// Publish readiness as part of startup, not in the test after
+				// startup has already completed.
+				ready.Store(true)
+				return nil
 			}, nil, func() (net.Listener, error) {
 				return net.Listen("tcp", "127.0.0.1:0")
 			}, func(l net.Listener) {
@@ -238,15 +252,9 @@ func TestAddressedReplyMCPProtocolAcrossSecretaryStartup(t *testing.T) {
 			if err != nil || !discovery.HasReplyToUser || !discovery.HasSpawnWorker || !discovery.ToolsListed {
 				t.Fatalf("native launch MCP readiness unconfirmed: %+v err=%v", discovery, err)
 			}
-			prepared, err := http.Get("http://" + address + "/v1/health")
-			if err != nil {
-				t.Fatal(err)
+			if !ready.Load() {
+				t.Fatal("startup returned before publishing MCP-verified readiness")
 			}
-			_ = prepared.Body.Close()
-			if prepared.StatusCode != http.StatusServiceUnavailable {
-				t.Fatalf("public HTTP accepted request before readiness: %d", prepared.StatusCode)
-			}
-			ready.Store(true)
 			if err := (mcp.RemoteMCPObserver{
 				BaseURL: "http://" + address, Capability: "invalid-observer",
 			}).Observe(ctx, core.SecretaryMCPObservation{Phase: core.SecretaryMCPObservationToolsList, Success: true, ToolCount: 11, HasSpawnWorker: true, HasReplyToUser: true}); err == nil {
