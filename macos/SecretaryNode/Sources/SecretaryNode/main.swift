@@ -96,49 +96,32 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusItem.button?.toolTip = presentation.status.toolTip
     }
 
-    private lazy var termination = NodeTerminationCoordinator { [weak self] completion in
-        guard let controller = self?.controller else {
-            completion(nil)
-            return
+    private lazy var termination = AppKitNodeTermination(
+        stop: { [weak self] completion in
+            guard let controller = self?.controller else {
+                completion(nil)
+                return
+            }
+            controller.stop(completion: completion)
+        },
+        begin: { [weak self] in
+            self?.presentation.beginQuit()
+            self?.timer?.invalidate()
+        },
+        failed: { [weak self] error in
+            guard let self else { return }
+            self.presentation.stopFailed(error)
+            self.refresh()
+            self.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
         }
-        controller.stop(completion: completion)
-    }
-    private var awaitingAppKitTermination = false
+    )
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        if termination.state == .stopped { return .terminateNow }
-        awaitingAppKitTermination = true
-        beginShutdown()
-        return .terminateLater
-    }
-
-    private func beginShutdown() {
-        guard termination.state == .idle else { return }
-        presentation.beginQuit()
-        timer?.invalidate()
-        termination.request { [weak self] error in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                if let error {
-                    if self.awaitingAppKitTermination {
-                        self.awaitingAppKitTermination = false
-                        NSApp.reply(toApplicationShouldTerminate: false)
-                    }
-                    self.presentation.stopFailed(error)
-                    self.refresh()
-                    self.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
-                } else if self.awaitingAppKitTermination {
-                    self.awaitingAppKitTermination = false
-                    NSApp.reply(toApplicationShouldTerminate: true)
-                } else {
-                    NSApp.terminate(nil)
-                }
-            }
-        }
+        termination.applicationShouldTerminate(sender)
     }
 
     @objc private func quitNode() {
-        beginShutdown()
+        termination.menuQuit()
     }
 }
 
