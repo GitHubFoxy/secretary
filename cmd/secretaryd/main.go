@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -441,19 +442,22 @@ func main() {
 	staticHandler := webclient.Handler()
 	controlStaticHandler := webclient.ControlHandler()
 	handler := rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler, remoteNodes, *debug)
-	server := &http.Server{Addr: *listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
-	listener, err := listenWhenSecretaryReady(startPersistentSecretary, stopPersistentSecretary, func() (net.Listener, error) {
+	var secretaryReady atomic.Bool
+	server := &http.Server{Addr: *listen, Handler: secretaryStartupHandler(&secretaryReady, handler), ReadHeaderTimeout: 5 * time.Second}
+	_, err = listenWhenSecretaryReady(startPersistentSecretary, stopPersistentSecretary, func() (net.Listener, error) {
 		return net.Listen("tcp", *listen)
+	}, func(listener net.Listener) {
+		go func() {
+			if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("serve web API: %v", err)
+			}
+		}()
 	})
 	if err != nil {
 		log.Fatalf("start persistent Secretary or listen web API: %v", err)
 	}
-	go func() {
-		log.Printf("Secretary web API listening on %s", *listen)
-		if err := server.Serve(listener); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("serve web API: %v", err)
-		}
-	}()
+	secretaryReady.Store(true)
+	log.Printf("Secretary web API listening on %s", *listen)
 	<-ctx.Done()
 	if persistentSecretary != nil {
 		if err := persistentSecretary.Stop(context.Background()); err != nil {
