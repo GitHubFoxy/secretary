@@ -1,66 +1,119 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
 	"github.com/beruseruko/secretary/internal/mcp"
+	"github.com/beruseruko/secretary/internal/webapi"
 )
 
+type protocolBoundaryWorkers struct {
+	store          *core.Store
+	conversationID string
+}
+
+func (w *protocolBoundaryWorkers) ListNodes(context.Context) ([]core.NodeRecord, error) {
+	return nil, nil
+}
+func (w *protocolBoundaryWorkers) ListProjects(context.Context) ([]core.Project, error) {
+	return nil, nil
+}
+func (w *protocolBoundaryWorkers) ListWorkers(context.Context) ([]core.Worker, error) {
+	return nil, nil
+}
+func (w *protocolBoundaryWorkers) GetWorker(context.Context, string) (core.WorkerDetails, error) {
+	return core.WorkerDetails{}, core.ErrNotFound
+}
+func (w *protocolBoundaryWorkers) MessageWorker(context.Context, ctl.MessageWorkerRequest) (core.WorkerDetails, error) {
+	return core.WorkerDetails{}, core.ErrNotFound
+}
+func (w *protocolBoundaryWorkers) CancelWorker(context.Context, string) (core.WorkerDetails, error) {
+	return core.WorkerDetails{}, core.ErrNotFound
+}
+func (w *protocolBoundaryWorkers) CloseWorker(context.Context, string) (core.WorkerDetails, error) {
+	return core.WorkerDetails{}, core.ErrNotFound
+}
+
+func (w *protocolBoundaryWorkers) SpawnWorker(ctx context.Context, request ctl.SpawnWorkerRequest) (core.WorkerDetails, error) {
+	worker, turn, attempt, err := w.store.CreateWorker(ctx, w.conversationID, core.WorkerSpec{
+		WorkerRef: "protocol-worker", Intent: request.Intent, NodeID: "synthetic-node",
+		HarnessInstanceID: "synthetic-node/codex", PolicySnapshot: "synthetic",
+	}, core.TurnSpec{Input: request.Intent})
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if _, err := w.store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if _, result, _, err := w.store.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
+		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "Worker Result from accepted action",
+	}); err != nil || result == nil {
+		return core.WorkerDetails{}, fmt.Errorf("record Worker result: %w", err)
+	}
+	return core.WorkerDetails{Worker: worker, ActionTurnID: turn.ID}, nil
+}
+
+type protocolMCPResponse struct {
+	ID     int            `json:"id"`
+	Error  map[string]any `json:"error"`
+	Result map[string]any `json:"result"`
+}
+
 func TestAddressedReplyMCPProtocolAcrossSecretaryStartup(t *testing.T) {
-	for _, scenario := range []struct {
-		name          string
-		callReply     bool
-		rejectStartup bool
-	}{
-		{name: "confirmed addressed reply", callReply: true},
-		{name: "no reply fails closed"},
-		{name: "MCP observation rejected", callReply: true, rejectStartup: true},
-	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			ctx := context.Background()
+	for _, scenario := range []string{"answer", "spawn_worker", "missing_reply"} {
+		t.Run(scenario, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
 			store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer store.Close()
-			person, conversation, err := store.CreatePersonWithConversation(ctx)
+			api, err := webapi.New(ctx, store, "bootstrap")
 			if err != nil {
 				t.Fatal(err)
 			}
-			identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+			personID := api.OwnerID()
+			conversation, err := store.ConversationForPerson(ctx, personID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+			identity, err := store.EnsureSecretaryIdentity(ctx, personID, conversation.ID)
 			if err != nil {
+				t.Fatal(err)
+			}
+			capability, err := store.RotateSecretaryCapability(ctx, personID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "owner"); err != nil {
 				t.Fatal(err)
 			}
 			if err := store.SetSecretaryPolicySnapshot(ctx, core.SecretaryPolicySnapshot{
 				Version: "test", Harness: "codex", Model: "default", Reasoning: "default",
-				ProfileVersion: "test", ProfileName: "secretary", ProfileHash: "test", ProfileContent: "reply through MCP",
+				ProfileVersion: "test", ProfileName: "secretary", ProfileHash: "hash", ProfileContent: "reply through MCP",
 			}); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := store.SaveUserDocument(ctx, filepath.Join(t.TempDir(), "user.md"), "owner"); err != nil {
 				t.Fatal(err)
 			}
 			launch, err := store.BeginSecretaryRuntime(ctx, identity.ID, capability, "codex", "default", "default")
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer store.EndSecretaryRuntime(ctx, launch)
-			turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "What is the answer?")
+			defer store.EndSecretaryRuntime(context.Background(), launch)
+			identity.RuntimeGeneration = launch.Generation
+			turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "Answer or create a Worker")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -71,197 +124,213 @@ func TestAddressedReplyMCPProtocolAcrossSecretaryStartup(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			handler := mcp.Secretary{Workers: ctl.WorkerService{Store: store, PersonID: person.ID, Capability: capability},
-				ReplyContractVersion: core.SecretaryReplyContractAddressedV1}
-			mux := http.NewServeMux()
-			mux.HandleFunc("POST /v1/internal/secretary/mcp/observe", func(w http.ResponseWriter, r *http.Request) {
-				var observation core.SecretaryMCPObservation
-				if err := json.NewDecoder(r.Body).Decode(&observation); err != nil {
-					http.Error(w, "invalid observation", http.StatusBadRequest)
-					return
-				}
-				token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-				if err := store.RecordSecretaryMCPObservation(r.Context(), person.ID, token, observation); err != nil {
-					http.Error(w, "observation rejected", http.StatusUnauthorized)
-					return
-				}
-				w.WriteHeader(http.StatusNoContent)
-			})
-			mux.HandleFunc("POST /v1/internal/secretary/tools/call", func(w http.ResponseWriter, r *http.Request) {
-				if r.Header.Get("Authorization") != "Bearer "+capability {
-					http.Error(w, "invalid Secretary capability", http.StatusUnauthorized)
-					return
-				}
-				var request struct {
-					Name      string          `json:"name"`
-					Arguments json.RawMessage `json:"arguments"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-					http.Error(w, "invalid tool arguments", http.StatusBadRequest)
-					return
-				}
-				value, callErr := handler.Call(r.Context(), request.Name, request.Arguments)
-				response := map[string]any{"value": value}
-				if callErr != nil {
-					response = map[string]any{"error": callErr.Error()}
-				}
-				_ = json.NewEncoder(w).Encode(response)
-			})
+			api.AttachSecretaryWorkerTools(&protocolBoundaryWorkers{store: store, conversationID: conversation.ID})
+			api.AttachSecretaryReplyContract(func() string { return core.SecretaryReplyContractAddressedV1 })
 			var ready atomic.Bool
-			httpServer := &http.Server{Handler: secretaryStartupHandler(&ready, mux)}
-			defer httpServer.Close()
+			server := &http.Server{Handler: secretaryStartupHandler(&ready, rootHandler(api.Handler(), api.ControlHandler(), http.NotFoundHandler(), http.NotFoundHandler(), nil, false))}
+			defer server.Close()
 			var address string
-			var protocolOutput bytes.Buffer
-			start := func() error {
-				frames := []map[string]any{
-					{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{"protocolVersion": "2025-06-18"}},
-					{"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": map[string]any{}},
+			inputReader, inputWriter := io.Pipe()
+			outputReader, outputWriter := io.Pipe()
+			defer inputReader.Close()
+			defer outputReader.Close()
+			defer outputWriter.Close()
+			defer inputWriter.Close()
+			done := make(chan error, 1)
+			encoder := json.NewEncoder(inputWriter)
+			decoder := json.NewDecoder(outputReader)
+			call := func(id int, method string, params any) protocolMCPResponse {
+				t.Helper()
+				if err := encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": id, "method": method, "params": params}); err != nil {
+					t.Fatal(err)
 				}
-				if scenario.callReply {
-					frames = append(frames, map[string]any{
-						"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-						"params": map[string]any{"name": "reply_to_user", "arguments": map[string]string{
-							"secretary_turn_id": turn.ID, "input_id": turn.InputID, "reply_kind": "answer", "text": "The answer is 42.",
-						}},
-					})
+				var response protocolMCPResponse
+				if err := decoder.Decode(&response); err != nil {
+					t.Fatal(err)
 				}
-				var input bytes.Buffer
-				for _, frame := range frames {
-					encoded, err := json.Marshal(frame)
-					if err != nil {
-						return err
-					}
-					input.Write(encoded)
-					input.WriteByte('\n')
+				if response.ID != id || response.Error != nil {
+					t.Fatalf("MCP %s protocol error: %+v", method, response)
 				}
-				observerToken := launch.ObserverCapability
-				if scenario.rejectStartup {
-					observerToken = "invalid-observer"
-				}
-				server := mcp.Server{
-					Handler: mcp.RemoteSecretary{
-						BaseURL: "http://" + address, Capability: capability,
-						ReplyContractVersion: core.SecretaryReplyContractAddressedV1,
-					},
-					Observe: (mcp.RemoteMCPObserver{
-						BaseURL: "http://" + address, Capability: observerToken,
-					}).Observe,
-				}
-				return server.Serve(ctx, &input, &protocolOutput)
+				return response
 			}
-			listener, err := listenWhenSecretaryReady(start, nil, func() (net.Listener, error) {
+			toolCall := func(id int, name string, args any) (map[string]any, bool) {
+				t.Helper()
+				response := call(id, "tools/call", map[string]any{"name": name, "arguments": args})
+				if response.Result["isError"] == true {
+					return nil, true
+				}
+				content, ok := response.Result["content"].([]any)
+				if !ok || len(content) != 1 {
+					t.Fatalf("MCP tool %s omitted content: %+v", name, response)
+				}
+				part, ok := content[0].(map[string]any)
+				if !ok {
+					t.Fatalf("MCP tool %s returned malformed content", name)
+				}
+				var value map[string]any
+				if err := json.Unmarshal([]byte(fmt.Sprint(part["text"])), &value); err != nil {
+					t.Fatal(err)
+				}
+				return value, false
+			}
+			listener, err := listenWhenSecretaryReady(func() error {
+				go func() {
+					done <- (mcp.Server{
+						Handler: mcp.RemoteSecretary{
+							BaseURL: "http://" + address, Capability: capability,
+							ReplyContractVersion: core.SecretaryReplyContractAddressedV1,
+						},
+						Observe: (mcp.RemoteMCPObserver{
+							BaseURL: "http://" + address, Capability: launch.ObserverCapability,
+						}).Observe,
+					}).Serve(ctx, inputReader, outputWriter)
+				}()
+				call(1, "initialize", map[string]any{"protocolVersion": "2025-06-18"})
+				listed := call(2, "tools/list", map[string]any{})
+				tools, ok := listed.Result["tools"].([]any)
+				if !ok {
+					return fmt.Errorf("MCP tools/list did not return a catalogue")
+				}
+				foundReply, foundSpawn := false, false
+				for _, item := range tools {
+					tool, _ := item.(map[string]any)
+					foundReply = foundReply || tool["name"] == "reply_to_user"
+					foundSpawn = foundSpawn || tool["name"] == "spawn_worker"
+				}
+				if !foundReply || !foundSpawn {
+					return fmt.Errorf("MCP catalogue omitted addressed reply or spawn")
+				}
+				return waitForSecretaryMCPReadiness(ctx, store, identity)
+			}, nil, func() (net.Listener, error) {
 				return net.Listen("tcp", "127.0.0.1:0")
 			}, func(l net.Listener) {
 				address = l.Addr().String()
-				go func() { _ = httpServer.Serve(l) }()
+				go func() { _ = server.Serve(l) }()
 			})
-			if scenario.rejectStartup {
-				if listener != nil || err == nil {
-					t.Fatalf("rejected MCP observer permitted startup: listener=%v err=%v", listener, err)
-				}
-			} else {
-				if err != nil {
-					t.Fatalf("MCP server could not complete startup protocol: %v", err)
-				}
-				defer listener.Close()
-				ready.Store(true)
-				var replies []struct {
-					ID     int            `json:"id"`
-					Error  map[string]any `json:"error"`
-					Result map[string]any `json:"result"`
-				}
-				for _, line := range bytes.Split(bytes.TrimSpace(protocolOutput.Bytes()), []byte{'\n'}) {
-					var reply struct {
-						ID     int            `json:"id"`
-						Error  map[string]any `json:"error"`
-						Result map[string]any `json:"result"`
-					}
-					if err := json.Unmarshal(line, &reply); err != nil {
-						t.Fatalf("invalid MCP response: %v", err)
-					}
-					replies = append(replies, reply)
-					if reply.Error != nil || reply.Result["isError"] == true {
-						t.Fatalf("MCP protocol error: %s", line)
-					}
-				}
-				wantFrames := 2
-				if scenario.callReply {
-					wantFrames = 3
-				}
-				if len(replies) != wantFrames {
-					t.Fatalf("MCP responses=%d want=%d", len(replies), wantFrames)
-				}
-				tools, ok := replies[1].Result["tools"].([]any)
-				if !ok {
-					t.Fatal("MCP tools/list omitted tools")
-				}
-				found := false
-				for _, value := range tools {
-					tool, _ := value.(map[string]any)
-					found = found || tool["name"] == "reply_to_user"
-				}
-				if !found {
-					t.Fatal("MCP tools/list omitted addressed reply contract")
-				}
-				if scenario.callReply {
-					parts, ok := replies[2].Result["content"].([]any)
-					if !ok || len(parts) != 1 {
-						t.Fatal("MCP reply tool returned no content")
-					}
-					part, _ := parts[0].(map[string]any)
-					var receipt struct {
-						EntryID   string `json:"entry_id"`
-						Duplicate bool   `json:"duplicate"`
-					}
-					if err := json.Unmarshal([]byte(fmt.Sprint(part["text"])), &receipt); err != nil || receipt.EntryID == "" || receipt.Duplicate {
-						t.Fatalf("MCP reply receipt invalid: %+v err=%v", receipt, err)
-					}
-				}
-			}
-			discovery, err := store.SecretaryMCPDiscovery(ctx, turn.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if scenario.rejectStartup {
-				if discovery.Started || discovery.Initialized || discovery.ToolsListed {
-					t.Fatalf("rejected startup claimed MCP discovery: %+v", discovery)
-				}
-			} else if !discovery.Started || !discovery.Initialized || !discovery.ToolsListed || !discovery.HasReplyToUser {
-				t.Fatalf("MCP discovery did not observe protocol handshake: %+v", discovery)
+			defer listener.Close()
+			discovery, err := store.SecretaryRuntimeMCPDiscovery(ctx, identity.ID, launch.Generation)
+			if err != nil || !discovery.HasReplyToUser || !discovery.HasSpawnWorker || !discovery.ToolsListed {
+				t.Fatalf("native launch MCP readiness unconfirmed: %+v err=%v", discovery, err)
 			}
+			prepared, err := http.Get("http://" + address + "/v1/health")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = prepared.Body.Close()
+			if prepared.StatusCode != http.StatusServiceUnavailable {
+				t.Fatalf("public HTTP accepted request before readiness: %d", prepared.StatusCode)
+			}
+			ready.Store(true)
+			after, err := http.Get("http://" + address + "/v1/health")
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = after.Body.Close()
+			if after.StatusCode == http.StatusServiceUnavailable {
+				t.Fatal("public HTTP remained startup-gated after confirmed MCP readiness")
+			}
+
+			reply := map[string]any{
+				"secretary_turn_id": turn.ID, "input_id": turn.InputID,
+				"text": "The answer is 42.", "reply_kind": "answer",
+			}
+			if scenario == "spawn_worker" {
+				invalid := map[string]any{
+					"secretary_turn_id": turn.ID, "input_id": turn.InputID,
+					"text": "Worker created", "reply_kind": "spawn_worker",
+					"action_kind": "spawn_worker", "worker_turn_id": "unaccepted-turn",
+				}
+				if _, rejected := toolCall(3, "reply_to_user", invalid); !rejected {
+					t.Fatal("unaccepted Worker origin was confirmed")
+				}
+				details, rejected := toolCall(4, "spawn_worker", map[string]any{
+					"secretary_turn_id": turn.ID, "input_id": turn.InputID,
+					"intent": "Create a list", "idempotency_key": "one-worker",
+				})
+				if rejected || fmt.Sprint(details["action_turn_id"]) == "" {
+					t.Fatalf("Worker action was not accepted: %+v", details)
+				}
+				workerTurnID, _ := details["action_turn_id"].(string)
+				if workerTurnID == "" {
+					t.Fatal("spawn_worker did not return a canonical action_turn_id")
+				}
+				reply["reply_kind"], reply["action_kind"], reply["worker_turn_id"] = "spawn_worker", "spawn_worker", workerTurnID
+				reply["text"] = "Worker created"
+				related, err := store.SecretaryOriginHasResult(ctx, turn.ID, turn.InputID)
+				if err != nil || !related {
+					t.Fatalf("durable Worker Result missing exact origin: related=%v err=%v", related, err)
+				}
+			}
+			if scenario != "missing_reply" {
+				receipt, rejected := toolCall(5, "reply_to_user", reply)
+				if rejected || receipt["duplicate"] != false || receipt["entry_id"] == "" {
+					t.Fatalf("addressed reply was not accepted: %+v rejected=%v", receipt, rejected)
+				}
+				replayed, rejected := toolCall(6, "reply_to_user", reply)
+				if rejected || replayed["duplicate"] != true || replayed["entry_id"] != receipt["entry_id"] {
+					t.Fatalf("MCP reply replay was not idempotent: %+v rejected=%v", replayed, rejected)
+				}
+			}
+
 			evidence := core.SecretaryCompletionEvidence{
 				Branch: "addressed_reply_only", TerminalClass: "end_turn",
 				TerminalValid: true, RPCSucceeded: true, DrainCompleted: true,
 			}
-			finished, err := store.FinishSecretaryTurnWithRequiredReply(ctx, turn.ID, turn.InputID, core.SecretaryTurnSucceeded, evidence)
+			completed, err := store.FinishSecretaryTurnWithRequiredReply(ctx, turn.ID, turn.InputID, core.SecretaryTurnSucceeded, evidence)
 			if err != nil {
 				t.Fatal(err)
 			}
-			expectedState := core.SecretaryTurnFailed
-			if scenario.callReply && !scenario.rejectStartup {
-				expectedState = core.SecretaryTurnSucceeded
+			expected := core.SecretaryTurnSucceeded
+			if scenario == "missing_reply" {
+				expected = core.SecretaryTurnFailed
 			}
-			if finished.State != expectedState {
-				t.Fatalf("turn completion=%s want=%s", finished.State, expectedState)
+			if completed.State != expected {
+				t.Fatalf("Secretary completion=%s want=%s", completed.State, expected)
 			}
 			entries, err := store.EntriesAfter(ctx, conversation.ID, 0)
 			if err != nil {
 				t.Fatal(err)
 			}
-			foundReply, foundFailure := false, false
+			replyCount, resultCount, failureCount := 0, 0, 0
 			for _, entry := range entries {
-				if entry.Kind != core.EntrySecretary {
-					continue
+				if entry.Kind == core.EntrySecretary {
+					if entry.Body == "The answer is 42." || entry.Body == "Worker создан. Действие подтверждено сервером." {
+						replyCount++
+					}
+					if strings.Contains(entry.Body, "Secretary не получил подтверждённый адресованный ответ") {
+						failureCount++
+					}
 				}
-				foundReply = foundReply || entry.Body == "The answer is 42."
-				foundFailure = foundFailure || strings.Contains(entry.Body, "Secretary не получил подтверждённый адресованный ответ")
+				if entry.Kind == core.EntryWorkerResult && entry.Body == "Worker Result from accepted action" {
+					resultCount++
+				}
 			}
-			if foundReply != (expectedState == core.SecretaryTurnSucceeded) || foundFailure != (expectedState == core.SecretaryTurnFailed) {
-				t.Fatalf("incorrect durable addressed reply/failure: reply=%v failure=%v", foundReply, foundFailure)
+			if scenario == "missing_reply" {
+				if replyCount != 0 || failureCount != 1 {
+					t.Fatalf("missing reply claimed success: replies=%d failures=%d", replyCount, failureCount)
+				}
+			} else if replyCount != 1 || failureCount != 0 {
+				t.Fatalf("addressed reply duplicated or failed: replies=%d failures=%d", replyCount, failureCount)
 			}
-			hasReply, err := store.SecretaryHasAddressedReply(ctx, turn.ID, turn.InputID)
-			if err != nil || hasReply != (expectedState == core.SecretaryTurnSucceeded) {
-				t.Fatalf("addressed reply proof=%v err=%v", hasReply, err)
+			if scenario == "spawn_worker" && resultCount != 1 {
+				t.Fatalf("accepted Worker Result count=%d", resultCount)
+			}
+			if scenario != "spawn_worker" && resultCount != 0 {
+				t.Fatal("unrequested Worker Result entered Conversation")
+			}
+			if err := inputWriter.Close(); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("live MCP process exited with error: %v", err)
+				}
+			case <-ctx.Done():
+				t.Fatal("MCP process did not remain available after public readiness")
 			}
 		})
 	}
@@ -308,4 +377,3 @@ func (w *startupStatusWriter) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 func (w *startupStatusWriter) WriteHeader(status int) { w.status = status }
-
