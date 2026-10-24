@@ -184,8 +184,6 @@ func TestRecoverGatesPublicReadinessUntilNextGenerationVerified(t *testing.T) {
 		t.Fatalf("initial runtime readiness=%v generation=%d", publicReady.Load(), firstGeneration)
 	}
 
-	// A persisted recovery-unknown event forces the active /recover Stop/Start
-	// path rather than the no-session fallback.
 	turn, err := store.EnqueueSecretaryTurn(ctx, identity.ID, "already handled input")
 	if err != nil {
 		t.Fatal(err)
@@ -230,8 +228,6 @@ func TestRecoverGatesPublicReadinessUntilNextGenerationVerified(t *testing.T) {
 		t.Fatalf("/recover readiness=%v generation=%d want=%d", publicReady.Load(), got, firstGeneration+1)
 	}
 
-	// A subsequent recovery with a missing MCP handshake must close its
-	// replacement session and must never re-open the public API.
 	if err := runtime.Stop(ctx); err != nil {
 		t.Fatal(err)
 	}

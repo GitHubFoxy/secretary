@@ -20,8 +20,6 @@ import (
 	"github.com/beruseruko/secretary/internal/webapi"
 )
 
-// Spawn through the production Worker service; the fixture only supplies a
-// synthetic accepting Node and its resulting durable Attempt outcome.
 type protocolBoundaryWorkers struct {
 	ctl.WorkerService
 }
@@ -234,8 +232,6 @@ func TestAddressedReplyMCPProtocolAcrossSecretaryStartup(t *testing.T) {
 				if err := waitForSecretaryMCPReadiness(ctx, store, identity); err != nil {
 					return err
 				}
-				// Publish readiness as part of startup, not in the test after
-				// startup has already completed.
 				ready.Store(true)
 				return nil
 			}, nil, func() (net.Listener, error) {

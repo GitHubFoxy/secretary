@@ -128,8 +128,6 @@ func (r *Runtime) Start(ctx context.Context) (startErr error) {
 	defer func() {
 		r.lifecycleMu.Unlock()
 		if attempted && startErr != nil {
-			// A failed readiness verification must not leave a live but
-			// unverified ACP session behind, including during /recover.
 			startErr = errors.Join(startErr, r.Stop(context.Background()))
 		}
 	}()
