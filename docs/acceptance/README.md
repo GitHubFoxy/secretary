@@ -24,7 +24,13 @@ process. The actual test run must use the published artifacts unchanged.
   memory, managed Skills registry and Cron. Do not silently infer that these
   features are already removed or disabled in existing code.
 
-**Release policy:** the public tag is exactly `v0.0.1`. Previously published\nalpha releases and their tags are to be deleted only after alpha.17 has been\nlive-tested and their tag-to-SHA/evidence mapping preserved. Fix the installer\nto select stable releases explicitly; deleting alphas is not a substitute.\nRelease cleanup and installer changes are outside this preparation PR.\n\n`cases.yaml` is the stable **v0.0.1 acceptance-case catalog**. This scoped
+**Release policy:** the public tag is exactly `v0.0.1`. Previously published
+alpha releases and their tags are to be deleted only after alpha.17 has been
+live-tested and their tag-to-SHA/evidence mapping preserved. Fix the installer
+to select stable releases explicitly; deleting alphas is not a substitute.
+Release cleanup and installer changes are outside this preparation PR.
+
+`cases.yaml` is the stable **v0.0.1 acceptance-case catalog**. This scoped
 release gate does not rewrite the broader [product specification](../../spec/spec.md)
 or supersede existing [Public v1 evidence](../public-v1-acceptance.md).
 A follow-up Source-of-Truth PR can reconcile those documents after alpha.17.
