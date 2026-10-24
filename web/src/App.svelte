@@ -6,10 +6,11 @@
   import WorkerActivity from './WorkerActivity.svelte';
   import { terminalDiagnostic, formatWorkerStatus, inputRequest, mergeSequenced, secretaryEventText, secretaryEventPayload, visibleConversationEntries, workerActionBody, workerCard } from './ui-model.js';
   import { createSessionRecovery } from './session-recovery.js';
+  import { transitionLoad } from './load-state.js';
 
   const ONBOARDING_KEY = 'secretary-onboarding-v1';
   let authenticated = false;
-  let loading = true;
+  let loadPhase = 'loading';
   let loginToken = '';
   let loginError = '';
   let entries = [];
@@ -144,7 +145,7 @@
     modelOptions = state.secretary?.models || {};
     selectedModel = state.secretary?.selected || '';
     onboardingOpen = !localStorage.getItem(ONBOARDING_KEY);
-    loading = false;
+    loadPhase = transitionLoad(loadPhase, 'resolved');
     connectConversation();
     if (state.secretary_turn_id) await connectSecretaryStream(state.secretary_turn_id);
     refreshTimer = setInterval(refreshState, 5000);
@@ -184,7 +185,7 @@
 
   const sessionRecovery = createSessionRecovery({
     restore: async (token) => {
-      loading = true;
+      if (loadPhase !== 'loading') loadPhase = transitionLoad(loadPhase, 'start');
       if (token) {
         await bootstrapSession(token);
         history.replaceState(null, '', `${location.pathname}${location.search}`);
@@ -194,7 +195,8 @@
       await loadState();
     },
     onFailure: () => {
-      loading = false;
+      if (loadPhase !== 'loading') loadPhase = transitionLoad(loadPhase, 'start');
+      loadPhase = transitionLoad(loadPhase, 'rejected');
       authenticated = false;
     },
   });
@@ -504,7 +506,7 @@
   });
 </script>
 
-{#if loading}
+{#if loadPhase === 'loading'}
   <main class="flex min-h-screen items-center justify-center bg-[#090d18] px-5 text-slate-300"><div class="text-sm tracking-[0.2em] uppercase">Loading Secretary</div></main>
 {:else if !authenticated}
   <main class="flex min-h-screen items-center justify-center bg-[#090d18] px-5 py-10 text-slate-100">
