@@ -22,6 +22,8 @@ import (
 type protocolBoundaryWorkers struct {
 	store          *core.Store
 	conversationID string
+	personID       string
+	capability     string
 }
 
 func (w *protocolBoundaryWorkers) ListNodes(context.Context) ([]core.NodeRecord, error) {
@@ -53,6 +55,31 @@ func (w *protocolBoundaryWorkers) SpawnWorker(ctx context.Context, request ctl.S
 	}, core.TurnSpec{Input: request.Intent})
 	if err != nil {
 		return core.WorkerDetails{}, err
+	}
+	// The production Worker service binds Secretary origin when claiming a
+	// dispatch command; an arbitrary Worker/Result link is not an accepted spawn.
+	origin := core.SecretaryOriginIdentity{
+		PersonID: w.personID, Capability: w.capability,
+		SecretaryTurnID: request.SecretaryTurnID, InputID: request.InputID,
+	}
+	if _, err := w.store.EnsureLifecycleCommandIntent(ctx, "dispatch", worker.ID, attempt.ID); err != nil {
+		return core.WorkerDetails{}, err
+	}
+	command, duplicate, err := w.store.ClaimWorkerCommand(ctx, "dispatch", "attempt", worker.ID, attempt.ID, origin)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if duplicate {
+		return core.WorkerDetails{}, fmt.Errorf("fixture dispatch was not a fresh server-owned command")
+	}
+	// Simulate the Node's accepted dispatch receipt through the same durable
+	// transition used by the production Worker service.
+	delivered, err := w.store.MarkWorkerCommandDelivered(ctx, command.ID)
+	if err != nil {
+		return core.WorkerDetails{}, err
+	}
+	if delivered.State != core.WorkerCommandDelivered {
+		return core.WorkerDetails{}, fmt.Errorf("fixture dispatch was not accepted: %s", delivered.State)
 	}
 	if _, err := w.store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil {
 		return core.WorkerDetails{}, err
@@ -126,7 +153,9 @@ func TestAddressedReplyMCPProtocolAcrossSecretaryStartup(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			api.AttachSecretaryWorkerTools(&protocolBoundaryWorkers{store: store, conversationID: conversation.ID})
+			api.AttachSecretaryWorkerTools(&protocolBoundaryWorkers{
+				store: store, conversationID: conversation.ID, personID: personID, capability: capability,
+			})
 			api.AttachSecretaryReplyContract(func() string { return core.SecretaryReplyContractAddressedV1 })
 			var ready atomic.Bool
 			server := &http.Server{Handler: secretaryStartupHandler(&ready, rootHandler(api.Handler(), api.ControlHandler(), http.NotFoundHandler(), http.NotFoundHandler(), nil, false))}
