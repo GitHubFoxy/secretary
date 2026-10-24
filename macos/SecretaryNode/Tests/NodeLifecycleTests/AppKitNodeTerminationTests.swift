@@ -15,7 +15,7 @@ final class AppKitNodeTerminationTests: XCTestCase {
                     completions.append(completion)
                 },
                 begin: { [self] in events.append("begin") },
-                failed: { [self] error in events.append("error:\\(error.localizedDescription)") },
+                failed: { [self] error in events.append("error:" + error.localizedDescription) },
                 reply: { [self] allowed in events.append(allowed ? "reply:true" : "reply:false") },
                 terminate: { [self] in events.append("terminate") },
                 dispatch: { $0() }
