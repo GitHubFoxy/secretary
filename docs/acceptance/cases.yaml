@@ -1,14 +1,16 @@
 schema_version: 1
 target_release: v0.0.1
 
-# Each matrix expands into required case instances. Actual OS, harness and channel
-# are recorded with the exact candidate SHA in the result JSON.
-scope:
+axes:
   server_os: [linux, macos]
   node_os: [linux, macos, windows]
-  harnesses: [codex, claude_code]
-  telegram_channels: [telegram_dm, telegram_general, telegram_worker_topic]
-  telegram_media: [photo, video, audio, voice_message]
+  secretary_harness: [codex, claude_code]
+  harness: [codex, claude_code]
+  channel: [telegram_dm, telegram_general, telegram_worker_topic, web]
+  media: [photo, video, audio, voice_message, document]
+  client: [desktop_browser, mobile_browser]
+
+scope:
   excluded:
     - windows_server
     - telegram_non_forum_groups
@@ -20,11 +22,33 @@ scope:
     - cron_automation
 
 cases:
+  - id: SECRETARY-TURN-01
+    group: secretary
+    title: Real Secretary turn, delegation and protocol-safe output
+    tier: smoke
+    matrix:
+      server_os: [linux, macos]
+      secretary_harness: [codex, claude_code]
+    smoke_matrix:
+      server_os: [linux, macos]
+      secretary_harness: [codex, claude_code]
+    steps:
+      - On the named real Server OS, authenticate the selected Secretary harness and send two ordinary conversation turns.
+      - Send a task that requires delegation and inspect the actual Secretary tool use and Worker creation.
+      - Inspect user-visible responses, model output and native events after both normal and delegated turns.
+    pass:
+      - The Secretary answers directly when appropriate and starts exactly one real Worker when delegation is required.
+      - The user sees clear natural-language replies and truthful delegation state, never raw internal protocol or JSON envelopes.
+      - Secretary native errors are surfaced correctly and no imaginary Worker or Result is claimed.
+
   - id: INSTALL-SERVER-01
     group: install
     title: Fresh server install from published binary
+    tier: smoke
     matrix:
       server_os: [linux, macos]
+    smoke_matrix:
+      server_os: [linux]
     steps:
       - Install the published candidate as a normal user without source checkout or manual package repair.
       - Finish terminal setup with one authenticated native harness; start the service and run doctor.
@@ -36,6 +60,7 @@ cases:
   - id: INSTALL-NODE-01
     group: install
     title: Fresh execution node enrollment
+    tier: full
     matrix:
       node_os: [linux, macos, windows]
     steps:
@@ -48,11 +73,12 @@ cases:
   - id: INSTALL-UPGRADE-01
     group: install
     title: Upgrade without losing existing state
+    tier: full
     matrix:
       server_os: [linux, macos]
     steps:
       - Record the previous installation's version, conversation, Worker and Artifact IDs.
-      - Upgrade from the previous available candidate using the documented installation path.
+      - Upgrade between documented pre-public candidates, recording the starting version and SHA; this tests technical upgrade safety, not a public guarantee that users must upgrade from historical alphas.
       - Restart the service and inspect retained identities and data.
     pass:
       - Upgrade completes without manual file repair or data loss.
@@ -61,6 +87,7 @@ cases:
   - id: INSTALL-DOCTOR-01
     group: install
     title: Missing or unsupported harness diagnostics
+    tier: full
     matrix:
       server_os: [linux, macos]
     steps:
@@ -73,7 +100,11 @@ cases:
   - id: NODE-WORKER-01
     group: node
     title: Real Worker lifecycle and same-session follow-up
+    tier: smoke
     matrix:
+      node_os: [linux, macos, windows]
+      harness: [codex, claude_code]
+    smoke_matrix:
       node_os: [linux, macos, windows]
       harness: [codex, claude_code]
     steps:
@@ -87,8 +118,12 @@ cases:
   - id: NODE-CANCEL-01
     group: node
     title: Cancel terminates native work and descendants
+    tier: smoke
     matrix:
       node_os: [linux, macos, windows]
+      harness: [codex, claude_code]
+    smoke_matrix:
+      node_os: [linux]
       harness: [codex, claude_code]
     steps:
       - Start a real long-running child command and cancel the Worker attempt.
@@ -100,6 +135,7 @@ cases:
   - id: NODE-FAILURE-01
     group: node
     title: Native command failure and explicit recovery truth
+    tier: full
     matrix:
       node_os: [linux, macos, windows]
       harness: [codex, claude_code]
@@ -114,6 +150,7 @@ cases:
   - id: NODE-RESUME-01
     group: node
     title: Restart and native session resume
+    tier: full
     matrix:
       node_os: [linux, macos, windows]
       harness: [codex, claude_code]
@@ -127,6 +164,7 @@ cases:
   - id: NODE-RECONNECT-01
     group: node
     title: Offline node and reconnect safety
+    tier: full
     matrix:
       node_os: [linux, macos, windows]
     steps:
@@ -139,6 +177,7 @@ cases:
   - id: NODE-STEER-01
     group: node
     title: Busy Worker steering versus explicit queued follow-up
+    tier: full
     matrix:
       harness: [codex, claude_code]
     steps:
@@ -151,7 +190,10 @@ cases:
   - id: TG-DM-01
     group: telegram
     title: Owner-only Telegram DM without a group
+    tier: smoke
     matrix:
+      channel: [telegram_dm]
+    smoke_matrix:
       channel: [telegram_dm]
     steps:
       - Configure Telegram with no group and pair the real owner identity.
@@ -162,8 +204,11 @@ cases:
 
   - id: TG-GENERAL-01
     group: telegram
-    title: Optional forum General mirror
+    title: Forum General mirror (forum optional for users; mandatory for release acceptance)
+    tier: smoke
     matrix:
+      channel: [telegram_general]
+    smoke_matrix:
       channel: [telegram_general]
     steps:
       - Pair a real forum supergroup and exchange messages in DM and General.
@@ -174,8 +219,11 @@ cases:
 
   - id: TG-TOPIC-01
     group: telegram
-    title: Worker Topic routes only to its Worker
+    title: Forum Worker Topic routing (mandatory release acceptance)
+    tier: smoke
     matrix:
+      channel: [telegram_worker_topic]
+    smoke_matrix:
       channel: [telegram_worker_topic]
     steps:
       - Create a Worker and its forum Topic; send a direct message and a queued follow-up there.
@@ -187,19 +235,26 @@ cases:
   - id: TG-MEDIA-IN-01
     group: telegram
     title: Receive photo, video, audio and voice messages
+    tier: smoke
     matrix:
       channel: [telegram_dm, telegram_general, telegram_worker_topic]
       media: [photo, video, audio, voice_message]
+    smoke_matrix:
+      channel: [telegram_dm]
+      media: [photo, video, voice_message]
     steps:
       - Send a real supported media message through the selected Telegram channel.
       - Inspect accepted bytes, Artifact identity, derivatives and Worker availability.
     pass:
       - Original reaches the central store intact and is addressable by the intended Worker.
-      - Required processing or transcript state is correct or its failure is disclosed.
+      - For audio and voice_message, a nonempty real transcript is linked to the original and reaches Secretary or the intended Worker.
+      - For video, the original and configured sampled timestamped frames are traceable; missing required processing is FAIL, not a substitute PASS.
+      - An ASR/transcoding failure is a FAIL here even when correctly surfaced; error visibility is separately exercised in TG-MEDIA-ERROR-01.
 
   - id: TG-FILE-OUT-01
     group: telegram
     title: Return Worker-produced files to Telegram
+    tier: full
     matrix:
       channel: [telegram_dm, telegram_general, telegram_worker_topic]
     steps:
@@ -212,6 +267,7 @@ cases:
   - id: TG-OWNER-01
     group: telegram
     title: Forum membership never grants execution authority
+    tier: full
     matrix:
       channel: [telegram_general, telegram_worker_topic]
     steps:
@@ -222,6 +278,7 @@ cases:
   - id: TG-MEDIA-ERROR-01
     group: telegram
     title: Oversized and failed media are visibly rejected
+    tier: full
     matrix:
       media: [photo, video, audio, voice_message]
     steps:
@@ -232,8 +289,11 @@ cases:
   - id: WEB-CHAT-01
     group: web
     title: Conversation in desktop and mobile browsers
+    tier: smoke
     matrix:
       client: [desktop_browser, mobile_browser]
+    smoke_matrix:
+      client: [desktop_browser]
     steps:
       - Authenticate using existing bootstrap/session flow and exchange Secretary messages.
       - Refresh or reconnect and inspect chat order and identity.
@@ -243,6 +303,7 @@ cases:
   - id: WEB-WORKER-01
     group: web
     title: Worker creation, observer and follow-up
+    tier: full
     matrix:
       client: [desktop_browser, mobile_browser]
     steps:
@@ -255,6 +316,7 @@ cases:
   - id: WEB-FILES-01
     group: web
     title: Files move in both directions
+    tier: full
     matrix:
       media: [photo, video, audio, document]
     steps:
@@ -267,6 +329,7 @@ cases:
   - id: WEB-AUTH-01
     group: web
     title: Web owner session and authorization
+    tier: full
     matrix:
       client: [desktop_browser, mobile_browser]
     steps:
@@ -278,18 +341,20 @@ cases:
   - id: MEDIA-TG-WORKER-01
     group: media
     title: End-to-end Telegram voice to Worker and file reply
+    tier: full
     matrix:
       harness: [codex, claude_code]
     steps:
       - On any recorded supported Node OS, send an actual Telegram voice message to Secretary.
-      - Verify transcription or an honest unsupported state, native Worker receipt and a file reply.
+      - Verify that real speech was transcribed to text and delivered as usable context to the native Worker, then request a file reply.
     pass:
-      - Original voice, derived text and actual Worker context are traceable by Artifact IDs.
+      - Original voice, a correct nonempty linked transcript, and actual Worker context are traceable by Artifact IDs; honest ASR failure is FAIL here, not PASS.
       - Returned file bytes match the published Artifact and the result is delivered once.
 
   - id: MEDIA-WEB-WORKER-01
     group: media
     title: End-to-end Web attachment through both harnesses
+    tier: full
     matrix:
       harness: [codex, claude_code]
     steps:
@@ -302,6 +367,7 @@ cases:
   - id: MEDIA-VIDEO-01
     group: media
     title: Video originals, sampled frames and timestamps
+    tier: full
     matrix:
       channel: [telegram_dm, web]
     steps:
@@ -314,8 +380,11 @@ cases:
   - id: RECOVERY-SERVER-01
     group: recovery
     title: Server restart preserves canonical conversation and Workers
+    tier: smoke
     matrix:
       server_os: [linux, macos]
+    smoke_matrix:
+      server_os: [linux]
     steps:
       - Record conversation, Worker, Attempt and Result IDs.
       - Restart the production-like server and inspect the same entries afterward.
@@ -325,6 +394,7 @@ cases:
   - id: RECOVERY-ARTIFACT-01
     group: recovery
     title: Persisted originals and published results survive restarts
+    tier: full
     matrix:
       server_os: [linux, macos]
     steps:
@@ -337,6 +407,7 @@ cases:
   - id: RECOVERY-REPLAY-01
     group: recovery
     title: Reconnect and idempotent event replay
+    tier: full
     matrix:
       server_os: [linux, macos]
     steps:
