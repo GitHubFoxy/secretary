@@ -68,7 +68,9 @@ func main() {
  makeRecord:=func(path string) CodexBinaryRecord {
   hash,err:=codexFileSHA256(path)
   if err!=nil { t.Fatal(err) }
-  return CodexBinaryRecord{Path:path,ResolvedPath:path,Version:"codex-fixture 1.0",SHA256:hash,Provenance:"managed"}
+  resolved,err:=filepath.EvalSymlinks(path)
+  if err!=nil { t.Fatal(err) }
+  return CodexBinaryRecord{Path:path,ResolvedPath:resolved,Version:"codex-fixture 1.0",SHA256:hash,Provenance:"managed"}
  }
  pair:=CodexPairInventory{Schema:1,Scope:"server",Harness:"codex",Codex:makeRecord(cli),ACP:makeRecord(acp)}
  pair.Compatibility.Validated=true
