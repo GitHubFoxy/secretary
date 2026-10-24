@@ -53,7 +53,19 @@ func ReadCodexPairInventory(scope string) (CodexPairInventory, error) {
  if err := verifyCodexBinary(pair.Codex); err != nil { return pair, fmt.Errorf("Codex CLI: %w", err) }
  if err := verifyCodexACPBinary(pair.ACP); err != nil { return pair, fmt.Errorf("Codex ACP: %w", err) }
  if pair.Codex.Provenance == "managed" {
-  if err := verifyManagedCodeModeHost(filepath.Dir(pair.Codex.ResolvedPath)); err != nil { return pair, fmt.Errorf("Codex code-mode host: %w", err) }
+  dir := filepath.Dir(pair.Codex.ResolvedPath)
+  if err := verifyManagedCodeModeHost(dir); err != nil { return pair, fmt.Errorf("Codex code-mode host: %w", err) }
+  assets, err := codexNativeAssets()
+  if err != nil { return pair, fmt.Errorf("Codex code-mode host pinned assets: %w", err) }
+  name := "codex-code-mode-host"
+  if runtime.GOOS == "windows" { name += ".exe" }
+  for _, asset := range assets {
+   if asset.Name == name {
+    if err := verifyManagedCodexArchives([]codexAsset{asset}, dir); err != nil { return pair, fmt.Errorf("Codex code-mode host integrity: %w", err) }
+    return pair, nil
+   }
+  }
+  return pair, fmt.Errorf("Codex code-mode host pinned asset missing for %s/%s", runtime.GOOS, runtime.GOARCH)
  }
  return pair, nil
 }
