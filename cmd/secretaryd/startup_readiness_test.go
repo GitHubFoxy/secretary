@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -12,7 +13,6 @@ import (
 
 	"github.com/beruseruko/secretary/internal/config"
 	"github.com/beruseruko/secretary/internal/core"
-	"path/filepath"
 )
 
 func TestClaudeOnlyStartupDoesNotRequireCodexInventory(t *testing.T) {
