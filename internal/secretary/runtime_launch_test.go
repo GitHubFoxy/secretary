@@ -229,4 +229,25 @@ func TestRecoverGatesPublicReadinessUntilNextGenerationVerified(t *testing.T) {
 	if got := runtime.Identity().RuntimeGeneration; got != firstGeneration+1 || !publicReady.Load() {
 		t.Fatalf("/recover readiness=%v generation=%d want=%d", publicReady.Load(), got, firstGeneration+1)
 	}
+
+	// A subsequent recovery with a missing MCP handshake must close its
+	// replacement session and must never re-open the public API.
+	if err := runtime.Stop(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runtime.AttachReadiness(publicReady.Store, func(context.Context, core.SecretaryIdentity) error {
+		return errors.New("MCP initialize/tools/list not confirmed")
+	})
+	if err := runtime.HandleMessage(ctx, "/recover"); err == nil {
+		t.Fatal("recovery succeeded without MCP discovery")
+	}
+	if publicReady.Load() {
+		t.Fatal("failed recovery re-opened the public API")
+	}
+	runtime.mu.Lock()
+	unverifiedSession := runtime.session
+	runtime.mu.Unlock()
+	if unverifiedSession != nil {
+		t.Fatal("failed recovery left a live unverified ACP session")
+	}
 }
