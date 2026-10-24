@@ -383,6 +383,9 @@ func readCodexPairUnchecked(scope string) (CodexPairInventory, error) {
  var pair CodexPairInventory
  if err := json.Unmarshal(data, &pair); err != nil { return pair, err }
  if pair.Schema != 1 || pair.Scope != scope || pair.Harness != "codex" { return pair, errors.New("invalid native pair record") }
+ if pair.Codex.Provenance == "managed" {
+  if err := verifyManagedCodeModeHost(filepath.Dir(pair.Codex.ResolvedPath)); err != nil { return pair, fmt.Errorf("Codex code-mode host: %w", err) }
+ }
  if err := verifyCodexBinary(pair.Codex); err != nil { return pair, err }
  if err := verifyCodexACPBinary(pair.ACP); err != nil { return pair, err }
  return pair, nil
