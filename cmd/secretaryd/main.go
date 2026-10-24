@@ -370,16 +370,33 @@ func main() {
 			return applyErr
 		}))
 	}
+	var secretaryReady atomic.Bool
+	verifySecretaryStartup := func(readyCtx context.Context, runtime *secretaryruntime.Runtime) error {
+		if profiles.Snapshot().Config.Secretary.ReplyContract != core.SecretaryReplyContractAddressedV1 {
+			return nil
+		}
+		waitCtx, cancel := context.WithTimeout(readyCtx, 10*time.Second)
+		defer cancel()
+		return waitForSecretaryMCPReadiness(waitCtx, store, runtime.Identity())
+	}
 	restartSecretary := func(restartCtx context.Context) error {
 		secretaryMu.Lock()
 		defer secretaryMu.Unlock()
 		if persistentSecretary == nil {
 			return errors.New("persistent Secretary is not configured")
 		}
+		secretaryReady.Store(false)
 		if err := persistentSecretary.Stop(restartCtx); err != nil {
 			return err
 		}
-		return persistentSecretary.Start(restartCtx)
+		if err := persistentSecretary.Start(restartCtx); err != nil {
+			return err
+		}
+		if err := verifySecretaryStartup(restartCtx, persistentSecretary); err != nil {
+			return errors.Join(err, persistentSecretary.Stop(context.Background()))
+		}
+		secretaryReady.Store(true)
+		return nil
 	}
 	startPersistentSecretary := func() error {
 		if capability == "" {
@@ -401,6 +418,9 @@ func main() {
 		persistentSecretary.AttachConversation(store, conversation.ID)
 		if err := persistentSecretary.Start(ctx); err != nil {
 			return fmt.Errorf("start persistent Secretary: %w", err)
+		}
+		if err := verifySecretaryStartup(ctx, persistentSecretary); err != nil {
+			return fmt.Errorf("confirm Secretary MCP readiness: %w", err)
 		}
 		web.AttachSecretary(persistentSecretary)
 		return nil
@@ -442,7 +462,6 @@ func main() {
 	staticHandler := webclient.Handler()
 	controlStaticHandler := webclient.ControlHandler()
 	handler := rootHandler(apiHandler, controlAPI, staticHandler, controlStaticHandler, remoteNodes, *debug)
-	var secretaryReady atomic.Bool
 	server := &http.Server{Addr: *listen, Handler: secretaryStartupHandler(&secretaryReady, handler), ReadHeaderTimeout: 5 * time.Second}
 	_, err = listenWhenSecretaryReady(startPersistentSecretary, stopPersistentSecretary, func() (net.Listener, error) {
 		return net.Listen("tcp", *listen)
