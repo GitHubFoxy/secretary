@@ -371,13 +371,13 @@ func main() {
 		}))
 	}
 	var secretaryReady atomic.Bool
-	verifySecretaryStartup := func(readyCtx context.Context, runtime *secretaryruntime.Runtime) error {
+	verifySecretaryStartup := func(readyCtx context.Context, identity core.SecretaryIdentity) error {
 		if profiles.Snapshot().Config.Secretary.ReplyContract != core.SecretaryReplyContractAddressedV1 {
 			return nil
 		}
 		waitCtx, cancel := context.WithTimeout(readyCtx, 10*time.Second)
 		defer cancel()
-		return waitForSecretaryMCPReadiness(waitCtx, store, runtime.Identity())
+		return waitForSecretaryMCPReadiness(waitCtx, store, identity)
 	}
 	restartSecretary := func(restartCtx context.Context) error {
 		secretaryMu.Lock()
@@ -385,18 +385,10 @@ func main() {
 		if persistentSecretary == nil {
 			return errors.New("persistent Secretary is not configured")
 		}
-		secretaryReady.Store(false)
 		if err := persistentSecretary.Stop(restartCtx); err != nil {
 			return err
 		}
-		if err := persistentSecretary.Start(restartCtx); err != nil {
-			return err
-		}
-		if err := verifySecretaryStartup(restartCtx, persistentSecretary); err != nil {
-			return errors.Join(err, persistentSecretary.Stop(context.Background()))
-		}
-		secretaryReady.Store(true)
-		return nil
+		return persistentSecretary.Start(restartCtx)
 	}
 	startPersistentSecretary := func() error {
 		if capability == "" {
@@ -410,19 +402,17 @@ func main() {
 			return errors.New("SECRETARY_CAPABILITY is not authorized")
 		}
 		persistentSecretary = secretaryruntime.NewRuntime(secretaryLocal, capability)
+		persistentSecretary.AttachReadiness(secretaryReady.Store, verifySecretaryStartup)
 		persistentSecretary.AttachIdentity(secretaryIdentity)
 		persistentSecretary.AttachMCPServer(mcpCommand, *dataDir, secretaryMCPServerURL(*listen))
 		persistentSecretary.AttachProfile(func() node.ManagedProfile {
 			return secretaryProfile(profiles.Snapshot(), store)
 		})
 		persistentSecretary.AttachConversation(store, conversation.ID)
+		web.AttachSecretary(persistentSecretary)
 		if err := persistentSecretary.Start(ctx); err != nil {
 			return fmt.Errorf("start persistent Secretary: %w", err)
 		}
-		if err := verifySecretaryStartup(ctx, persistentSecretary); err != nil {
-			return fmt.Errorf("confirm Secretary MCP readiness: %w", err)
-		}
-		web.AttachSecretary(persistentSecretary)
 		return nil
 	}
 	stopPersistentSecretary := func() error {
@@ -475,7 +465,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("start persistent Secretary or listen web API: %v", err)
 	}
-	secretaryReady.Store(true)
 	log.Printf("Secretary web API listening on %s", *listen)
 	<-ctx.Done()
 	if persistentSecretary != nil {
