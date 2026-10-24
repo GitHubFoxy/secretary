@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -310,4 +309,3 @@ func (w *startupStatusWriter) Write(data []byte) (int, error) {
 }
 func (w *startupStatusWriter) WriteHeader(status int) { w.status = status }
 
-var _ = errors.New
