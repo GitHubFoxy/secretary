@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/beruseruko/secretary/internal/config"
+	"github.com/beruseruko/secretary/internal/core"
+	"path/filepath"
 )
 
 func TestClaudeOnlyStartupDoesNotRequireCodexInventory(t *testing.T) {
@@ -152,5 +154,87 @@ func TestWorkerCodexSelectionDoesNotBlockIndependentClaudeSecretary(t *testing.T
 	}}
 	if err := prepareSelectedCodexRuntime(context.Background(), snapshot); err != nil {
 		t.Fatalf("offline Worker Codex inventory prevented persistent Secretary startup: %v", err)
+	}
+}
+
+func TestSecretaryMCPReadinessRequiresCurrentGenerationAndTools(t *testing.T) {
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	person, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := store.EnsureSecretaryIdentity(ctx, person.ID, conversation.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := store.RotateSecretaryCapability(ctx, person.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.BeginSecretaryRuntime(ctx, identity.ID, capability, "codex", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation := func(token string, event core.SecretaryMCPObservation) {
+		t.Helper()
+		if err := store.RecordSecretaryMCPObservation(ctx, person.ID, token, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	observation(first.ObserverCapability, core.SecretaryMCPObservation{Phase: core.SecretaryMCPObservationStartup, Success: true})
+	observation(first.ObserverCapability, core.SecretaryMCPObservation{Phase: core.SecretaryMCPObservationInitialize, Success: true})
+	observation(first.ObserverCapability, core.SecretaryMCPObservation{Phase: core.SecretaryMCPObservationToolsList, Success: true, ToolCount: 11, HasSpawnWorker: true, HasReplyToUser: true})
+	identity.RuntimeGeneration = first.Generation
+	if err := waitForSecretaryMCPReadiness(ctx, store, identity); err != nil {
+		t.Fatalf("current MCP generation was rejected: %v", err)
+	}
+	second, err := store.BeginSecretaryRuntime(ctx, identity.ID, capability, "codex", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := waitForSecretaryMCPReadiness(ctx, store, identity); err == nil {
+		t.Fatal("revoked prior MCP generation was accepted")
+	}
+	identity.RuntimeGeneration = second.Generation
+	expired, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	if err := waitForSecretaryMCPReadiness(expired, store, identity); err == nil {
+		t.Fatal("current ACP session/new without MCP observation was accepted")
+	}
+	observation(second.ObserverCapability, core.SecretaryMCPObservation{Phase: core.SecretaryMCPObservationStartup, Success: true})
+	observation(second.ObserverCapability, core.SecretaryMCPObservation{Phase: core.SecretaryMCPObservationInitialize, Success: true})
+	expiredAgain, cancelAgain := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancelAgain()
+	if err := waitForSecretaryMCPReadiness(expiredAgain, store, identity); err == nil {
+		t.Fatal("MCP initialize without tools/list was accepted")
+	}
+	observation(second.ObserverCapability, core.SecretaryMCPObservation{Phase: core.SecretaryMCPObservationToolsList, Success: true, ToolCount: 10, HasSpawnWorker: true})
+	if err := waitForSecretaryMCPReadiness(ctx, store, identity); err == nil {
+		t.Fatal("MCP catalogue missing reply_to_user was accepted")
+	}
+	third, err := store.BeginSecretaryRuntime(ctx, identity.ID, capability, "codex", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity.RuntimeGeneration = third.Generation
+	observation(third.ObserverCapability, core.SecretaryMCPObservation{Phase: core.SecretaryMCPObservationStartup, Success: true})
+	observation(third.ObserverCapability, core.SecretaryMCPObservation{Phase: core.SecretaryMCPObservationInitialize, Success: true})
+	observation(third.ObserverCapability, core.SecretaryMCPObservation{Phase: core.SecretaryMCPObservationToolsList, Success: true, ToolCount: 11, HasSpawnWorker: false, HasReplyToUser: true})
+	if err := waitForSecretaryMCPReadiness(ctx, store, identity); err == nil {
+		t.Fatal("MCP catalogue missing spawn_worker was accepted")
+	}
+	fourth, err := store.BeginSecretaryRuntime(ctx, identity.ID, capability, "codex", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity.RuntimeGeneration = fourth.Generation
+	observation(fourth.ObserverCapability, core.SecretaryMCPObservation{Phase: core.SecretaryMCPObservationStartup, Success: false})
+	if err := waitForSecretaryMCPReadiness(ctx, store, identity); err == nil {
+		t.Fatal("failed MCP startup was accepted")
 	}
 }
