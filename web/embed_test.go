@@ -144,8 +144,6 @@ func TestEmbeddedWebWorkerProjectLabelsDistinguishProjectlessFromMissing(t *test
 		t.Fatalf("embedded Web bundle status=%d", recorder.Code)
 	}
 	bundle := recorder.Body.String()
-	// Assert the shipped minified workerCard mapping, not only the source module:
-	// an empty project_id must say No project; a nonempty missing ID must say Unknown Project.
 	const expected = `project:(s==null?void 0:s.name)||((e==null?void 0:e.project_id)?"Unknown Project":"No project")`
 	if !strings.Contains(bundle, expected) {
 		t.Fatal("embedded Web workerCard mapping does not distinguish empty project_id from an unknown referenced project")
