@@ -48,7 +48,7 @@ A follow-up Source-of-Truth PR can reconcile those documents after alpha.17.
 `axes` in `cases.yaml` is the single list of permitted dimension names and
 values; every `matrix` value and every recorded `dimensions` value must
 match it. `secretary_harness` identifies the harness running the Secretary
-turn, while `harness` identifies the Worker harness. They are intentionally
+turn, while `worker_harness` identifies the Worker harness. They are intentionally
 distinct: the two native harnesses can differ. Record exact versions/models
 of **both roles** in the JSON `environment`; for a role not exercised in
 that run, use `null` rather than assuming it matches the other.
@@ -58,7 +58,7 @@ Each `matrix` is the required **full** release-acceptance Cartesian set.
 `tier: smoke` includes an explicit `smoke_matrix`, a non-empty subset of
 the full matrix with the same keys and only listed values. The smoke matrix
 is a **priority subset, not a waiver of full acceptance**. It currently
-expands to **21 priority instances** across 10 cases; testing all of them
+expands to **22 priority instances** across 11 cases; testing all of them
 on alpha.17 is a goal, **not a prerequisite to recording a useful partial
 baseline**. Missing instances remain NOT_RUN, and every full case remains
 required before public release.
@@ -90,6 +90,9 @@ acceptance ledger is not silently migrated or replaced by these cases.
    private media, local authentication directories or unredacted transcripts.
 5. Create Issues for observed product failures; record their URLs against the
    relevant case instance. **Do not fix failures during the baseline run**.
+   If a Secretary-turn failure prevents further tests, mark the Secretary case
+   FAIL and downstream cases NOT_RUN (unless attempted and failed independently).
+   Do not use BLOCKED for a dependency broken by the product itself.
 6. Cases not attempted are **NOT RUN** (or simply absent from a partial run).
    Missing historical evidence is **UNKNOWN** only in later historical summaries;
    never manufacture a historical PASS. The baseline is not a release approval.
