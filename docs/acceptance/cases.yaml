@@ -5,7 +5,7 @@ axes:
   server_os: [linux, macos]
   node_os: [linux, macos, windows]
   secretary_harness: [codex, claude_code]
-  harness: [codex, claude_code]
+  worker_harness: [codex, claude_code]
   channel: [telegram_dm, telegram_general, telegram_worker_topic, web]
   media: [photo, video, audio, voice_message, document]
   client: [desktop_browser, mobile_browser]
@@ -103,10 +103,10 @@ cases:
     tier: smoke
     matrix:
       node_os: [linux, macos, windows]
-      harness: [codex, claude_code]
+      worker_harness: [codex, claude_code]
     smoke_matrix:
       node_os: [linux, macos, windows]
-      harness: [codex, claude_code]
+      worker_harness: [codex, claude_code]
     steps:
       - On the named real OS and harness, ask Secretary to delegate a task requiring a real native command.
       - Make the Worker ask a question as a terminal Result, then answer it as a Follow-up.
@@ -121,10 +121,10 @@ cases:
     tier: smoke
     matrix:
       node_os: [linux, macos, windows]
-      harness: [codex, claude_code]
+      worker_harness: [codex, claude_code]
     smoke_matrix:
       node_os: [linux]
-      harness: [codex, claude_code]
+      worker_harness: [codex, claude_code]
     steps:
       - Start a real long-running child command and cancel the Worker attempt.
       - Inspect the actual native child-process tree and resulting terminal event.
@@ -138,7 +138,7 @@ cases:
     tier: full
     matrix:
       node_os: [linux, macos, windows]
-      harness: [codex, claude_code]
+      worker_harness: [codex, claude_code]
     steps:
       - Run a command that exits nonzero and verify the failure Result and error reason.
       - In a separate attempt explicitly request recovery and verify real command events and final status.
@@ -153,7 +153,7 @@ cases:
     tier: full
     matrix:
       node_os: [linux, macos, windows]
-      harness: [codex, claude_code]
+      worker_harness: [codex, claude_code]
     steps:
       - Record native session ID and a context marker from a real Worker.
       - Restart the execution node and server, then send a Follow-up to that Worker.
@@ -179,7 +179,7 @@ cases:
     title: Busy Worker steering versus explicit queued follow-up
     tier: full
     matrix:
-      harness: [codex, claude_code]
+      worker_harness: [codex, claude_code]
     steps:
       - Send direct input to a busy Worker and separately send an explicit /q message.
       - Inspect actual steering support, queued FIFO delivery and Worker history.
@@ -254,9 +254,11 @@ cases:
   - id: TG-FILE-OUT-01
     group: telegram
     title: Return Worker-produced files to Telegram
-    tier: full
+    tier: smoke
     matrix:
       channel: [telegram_dm, telegram_general, telegram_worker_topic]
+    smoke_matrix:
+      channel: [telegram_dm]
     steps:
       - Make a Worker publish a new file and deliver it to the selected Telegram view.
       - Download it and compare size and SHA256 with the published Artifact.
@@ -343,7 +345,7 @@ cases:
     title: End-to-end Telegram voice to Worker and file reply
     tier: full
     matrix:
-      harness: [codex, claude_code]
+      worker_harness: [codex, claude_code]
     steps:
       - On any recorded supported Node OS, send an actual Telegram voice message to Secretary.
       - Verify that real speech was transcribed to text and delivered as usable context to the native Worker, then request a file reply.
@@ -356,7 +358,7 @@ cases:
     title: End-to-end Web attachment through both harnesses
     tier: full
     matrix:
-      harness: [codex, claude_code]
+      worker_harness: [codex, claude_code]
     steps:
       - Upload a normal file from Web and have a native Worker read or manipulate it.
       - Publish a resulting Artifact and fetch it again through Web.
