@@ -146,6 +146,11 @@ jobs:
           curl -fLsS --retry 3 -o "$dest/codex.tar.gz" "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-$triple.tar.gz"
           echo "$expected  $dest/codex.tar.gz" | shasum -a 256 -c -
           tar -xzf "$dest/codex.tar.gz" -C "$dest/adapter"
+          host_digest=2e28f49a4767a97586843c92692b96481be74d837199b49038f731cec88e9941
+          curl -fLsS --retry 3 -o "$dest/codex-code-mode-host.tar.gz" "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-code-mode-host-$triple.tar.gz"
+          echo "$host_digest  $dest/codex-code-mode-host.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$dest/codex-code-mode-host.tar.gz" -C "$dest/adapter"
+          test -s "$dest/adapter/codex-code-mode-host-$triple"
           chmod +x scripts/mock-codex-app-server.py
           python3 scripts/codex-acp-release-gate.py --acp "$dest/adapter/codex-acp" --codex "$dest/adapter/codex-$triple" --mock-app-server "$GITHUB_WORKSPACE/scripts/mock-codex-app-server.py"
       - name: Verify clean install, idempotence, failed activation and upgrade
