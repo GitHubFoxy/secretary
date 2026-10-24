@@ -56,8 +56,6 @@ func readCodexPairInventoryWithVerifiers(scope string, verifyCLI, verifyACP func
  if err := json.Unmarshal(data, &pair); err != nil { return pair, fmt.Errorf("invalid native pair inventory: %w", err) }
  if pair.Schema != 1 || pair.Scope != scope || pair.Harness != "codex" { return pair, fmt.Errorf("native pair inventory mismatch: %s", path) }
  if !pair.Compatibility.Validated { return pair, fmt.Errorf("native Codex pair protocol has not been validated for %s", scope) }
- if err := verifyCLI(pair.Codex); err != nil { return pair, fmt.Errorf("Codex CLI: %w", err) }
- if err := verifyACP(pair.ACP); err != nil { return pair, fmt.Errorf("Codex ACP: %w", err) }
  if pair.Codex.Provenance == "managed" {
   dir := filepath.Dir(pair.Codex.ResolvedPath)
   if err := verifyManagedCodeModeHost(dir); err != nil { return pair, fmt.Errorf("Codex code-mode host: %w", err) }
@@ -65,14 +63,18 @@ func readCodexPairInventoryWithVerifiers(scope string, verifyCLI, verifyACP func
   if err != nil { return pair, fmt.Errorf("Codex code-mode host pinned assets: %w", err) }
   name := "codex-code-mode-host"
   if runtime.GOOS == "windows" { name += ".exe" }
+  foundHost := false
   for _, asset := range assets {
    if asset.Name == name {
+    foundHost = true
     if err := verifyManagedCodexArchives([]codexAsset{asset}, dir); err != nil { return pair, fmt.Errorf("Codex code-mode host integrity: %w", err) }
-    return pair, nil
+    break
    }
   }
-  return pair, fmt.Errorf("Codex code-mode host pinned asset missing for %s/%s", runtime.GOOS, runtime.GOARCH)
+  if !foundHost { return pair, fmt.Errorf("Codex code-mode host pinned asset missing for %s/%s", runtime.GOOS, runtime.GOARCH) }
  }
+ if err := verifyCLI(pair.Codex); err != nil { return pair, fmt.Errorf("Codex CLI: %w", err) }
+ if err := verifyACP(pair.ACP); err != nil { return pair, fmt.Errorf("Codex ACP: %w", err) }
  return pair, nil
 }
 
