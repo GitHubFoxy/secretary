@@ -4,6 +4,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -266,7 +267,7 @@ func TestIssue209NodeRestartRecoversAcceptedClaudeCancelOnce(t *testing.T) {
 		}
 		count++
 		var event NodeEvent
-		if err := pending.Decode(&event); err != nil {
+		if err := json.Unmarshal(pending.Payload, &event); err != nil {
 			t.Fatal(err)
 		}
 		if event.Outcome == nil || event.Outcome.Status != core.OutcomeCanceled ||
