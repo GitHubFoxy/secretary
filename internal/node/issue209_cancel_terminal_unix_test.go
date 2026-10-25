@@ -591,6 +591,198 @@ while read line; do :; done
 	}
 }
 
+func TestIssue209DaemonSameSocketCancelWhileClaudeResumeBlocked(t *testing.T) {
+	ctx, stop := context.WithTimeout(context.Background(), 15*time.Second)
+	defer stop()
+	serverStore, err := core.Open(ctx, filepath.Join(t.TempDir(), "server.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverStore.Close()
+	_, conversation, err := serverStore.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager, err := NewServerManager(ctx, serverStore, "pair-token", "admin-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.SetCommandOutcomeSink(NewStoreCommandOutcomeSink(serverStore))
+	manager.SetEventSink(NewStoreEventSink(serverStore))
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/nodes/connect", manager.ServeProtocolHTTP)
+	mux.Handle("/v1/nodes", manager)
+	mux.Handle("/v1/nodes/", manager)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	identity, err := EnrollNode(ctx, server.Client(), server.URL, "pair-token", "macbook")
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := daemonInventoryFixture(identity.Node).Instances[0]
+	instance.Kind = core.HarnessClaudeCode
+	instance.ID = core.HarnessInstanceID(string(identity.Node) + "/claude")
+	inventory := core.HarnessInventorySnapshot{Node: identity.Node, ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{instance}}
+	runtime := &t12RemoteStalledResumeRuntime{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	defer func() {
+		select {
+		case <-runtime.release:
+		default:
+			close(runtime.release)
+		}
+		if runtime.session != nil {
+			_ = runtime.session.Close()
+		}
+	}()
+	local, err := OpenLocalStore(filepath.Join(t.TempDir(), "node.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer local.Close()
+	daemon := &Daemon{
+		Identity: identity, Store: local, Runtime: runtime, Inventory: daemonStaticInventory{snapshot: inventory},
+		Capacity: 2, HeartbeatInterval: 20 * time.Millisecond, OutboxPollInterval: 10 * time.Millisecond,
+		ReconnectMin: 10 * time.Millisecond, ReconnectMax: 40 * time.Millisecond,
+	}
+	daemonCtx, stopDaemon := context.WithCancel(ctx)
+	daemonDone := make(chan error, 1)
+	go func() { daemonDone <- daemon.Run(daemonCtx) }()
+	defer func() {
+		stopDaemon()
+		select {
+		case err := <-daemonDone:
+			if err != nil {
+				t.Errorf("daemon exited: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Error("daemon did not stop")
+		}
+	}()
+	waitFor(t, ctx, "authenticated same-socket Claude Node", func() bool {
+		manager.mu.Lock()
+		connected := manager.connections[identity.Node] != nil
+		manager.mu.Unlock()
+		return connected
+	})
+	worker, firstTurn, firstAttempt, err := serverStore.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+		WorkerRef: "issue209-socket-worker", Intent: "initial work", NodeID: string(identity.Node), HarnessInstanceID: string(instance.ID),
+	}, core.TurnSpec{Input: "initial work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstClaim, _, err := serverStore.ClaimWorkerCommand(ctx, "dispatch", "attempt", worker.ID, firstAttempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := core.CommandMetadata{
+		CommandID: firstClaim.ID, Node: identity.Node, HarnessInstanceID: instance.ID,
+		WorkerRef: worker.WorkerRef, TurnID: firstTurn.ID, AttemptID: firstAttempt.ID, IssuedAt: time.Now().UTC(),
+	}
+	envelope := WorkerEnvelope{
+		WorkerRef: worker.WorkerRef, TurnID: firstTurn.ID, AttemptID: firstAttempt.ID,
+		OriginalUserIntent: "initial work", HarnessInstance: instance, Profile: workerTemplateFixture(instance, "", ""),
+	}
+	first := Command{Kind: CommandDispatch, Dispatch: &DispatchCommand{Metadata: metadata, Envelope: envelope}}
+	if err := manager.SendCommandAndWait(ctx, identity.Node, first); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := serverStore.RecordAttemptOutcome(ctx, firstAttempt.ID, core.AttemptOutcomeInput{
+		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "prior completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	turn, attempt, err := serverStore.CreateTurn(ctx, worker.ID, core.TurnSpec{Input: "continue", CommandKind: "resume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeClaim, _, err := serverStore.ClaimWorkerCommand(ctx, "resume", "attempt", worker.ID, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeMetadata := metadata
+	resumeMetadata.CommandID = resumeClaim.ID
+	resumeMetadata.TurnID = turn.ID
+	resumeMetadata.AttemptID = attempt.ID
+	resumeMetadata.IssuedAt = time.Now().UTC()
+	resumeEnvelope := envelope
+	resumeEnvelope.PreviousAttemptID = firstAttempt.ID
+	resumeEnvelope.TurnID = turn.ID
+	resumeEnvelope.AttemptID = attempt.ID
+	resumeEnvelope.OriginalUserIntent = "continue"
+	resume := Command{Kind: CommandResume, Resume: &ResumeCommand{Metadata: resumeMetadata, Envelope: resumeEnvelope}}
+	if err := manager.SendCommand(ctx, identity.Node, resume); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-runtime.entered:
+	case <-ctx.Done():
+		t.Fatal("Claude native Resume never entered")
+	}
+	manager.mu.Lock()
+	socketBefore := manager.connections[identity.Node]
+	manager.mu.Unlock()
+	if socketBefore == nil {
+		t.Fatal("initial native Resume WebSocket absent")
+	}
+	before, err := local.Command(resumeMetadata.CommandID)
+	if err != nil || before.State != CommandProcessing || before.SafePrestart {
+		t.Fatalf("native Resume was not blocked beyond handoff: %+v err=%v", before, err)
+	}
+	cancelClaim, _, err := serverStore.ClaimWorkerCommand(ctx, "cancel", "attempt", worker.ID, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelMetadata := resumeMetadata
+	cancelMetadata.CommandID = cancelClaim.ID
+	cancelMetadata.IssuedAt = time.Now().UTC()
+	cancel := Command{Kind: CommandCancel, Cancel: &CancelCommand{Metadata: cancelMetadata, Reason: "owner"}}
+	cancelCtx, cancelStop := context.WithTimeout(ctx, 2*time.Second)
+	defer cancelStop()
+	if err := manager.SendCommandAndWait(cancelCtx, identity.Node, cancel); err != nil {
+		t.Fatalf("Cancel blocked behind native Resume on one socket: %v", err)
+	}
+	manager.mu.Lock()
+	socketAfter := manager.connections[identity.Node]
+	manager.mu.Unlock()
+	if socketAfter == nil || socketAfter != socketBefore {
+		t.Fatal("Cancel required a WebSocket reconnect")
+	}
+	after, err := local.Command(resumeMetadata.CommandID)
+	if err != nil || !after.NativeResumeCancelRequested || after.State != CommandProcessing {
+		t.Fatalf("Cancel missed in-flight native Resume: %+v err=%v", after, err)
+	}
+	if runtime.Context() == nil || runtime.Context().Err() == nil {
+		t.Fatal("Cancel did not cancel daemon-owned native Resume")
+	}
+	details, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+	if err != nil || details.CurrentAttempt() == nil || details.CurrentAttempt().State.Terminal() {
+		t.Fatalf("Cancel receipt fabricated terminal before native returned: %+v err=%v", details, err)
+	}
+	close(runtime.release)
+	waitFor(t, ctx, "same-socket canceled Server Result", func() bool {
+		details, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+		return err == nil && details.CurrentAttempt() != nil && details.CurrentAttempt().State == core.AttemptCanceled &&
+			len(details.Results) == 2 && details.Results[1].Status == core.ResultCanceled
+	})
+	record, err := local.Command(resumeMetadata.CommandID)
+	if err != nil || record.State != CommandAccepted || !record.TerminalOutcomeQueued {
+		t.Fatalf("same-socket terminal not durable: %+v err=%v", record, err)
+	}
+	entries, err := serverStore.EntriesAfter(ctx, conversation.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, entry := range entries {
+		if entry.Kind == core.EntryWorkerResult && entry.TurnID == turn.ID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("same-socket canceled Result entries=%d, want one", count)
+	}
+}
+
 func TestIssue209ClaudeNativeResumeCancelProducesCanonicalCanceledResult(t *testing.T) {
 	ctx, stop := context.WithTimeout(context.Background(), 12*time.Second)
 	defer stop()
