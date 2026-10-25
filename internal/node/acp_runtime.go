@@ -1,10 +1,10 @@
 package node
 
 import (
-	"encoding/base64"
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -795,16 +795,16 @@ func newACPSession(id string, client *acp.Client, busy bool) *acpSession {
 }
 
 type acpPendingPrompt struct {
-	text string
+	text   string
 	images []ImageInput
 }
 
 type acpSession struct {
 	imageSupported bool
-	id       string
-	client   *acp.Client
-	activity chan Activity
-	result   chan Result
+	id             string
+	client         *acp.Client
+	activity       chan Activity
+	result         chan Result
 
 	activityMu     sync.Mutex
 	activityDone   chan struct{}
@@ -828,14 +828,14 @@ type acpSession struct {
 	legacyTurnText          *strings.Builder
 	terminalMessageGrouping bool
 	codexMessagePhases      bool
-	codexCommandFailures     map[string]int
-	codexNativeStarts map[string]bool
-	codexPendingExits map[string]int
-	codexSystemError bool
-	codexSystemErrorText string
-	codexRecoveryNoticeCtx context.Context
-	codexRecoveryNotified map[string]bool
-	codexRecoveryInjected map[string]bool
+	codexCommandFailures    map[string]int
+	codexNativeStarts       map[string]bool
+	codexPendingExits       map[string]int
+	codexSystemError        bool
+	codexSystemErrorText    string
+	codexRecoveryNoticeCtx  context.Context
+	codexRecoveryNotified   map[string]bool
+	codexRecoveryInjected   map[string]bool
 	replaying               atomic.Bool
 	drainPromptEvents       bool
 
@@ -882,7 +882,9 @@ func (s *acpSession) Steer(ctx context.Context, text string) (bool, error) {
 }
 
 func (s *acpSession) SteerImages(ctx context.Context, text string, images []ImageInput) (bool, error) {
-	if len(images) > 0 && !s.imageSupported { return false, errors.New("image: selected ACP agent does not advertise promptCapabilities.image") }
+	if len(images) > 0 && !s.imageSupported {
+		return false, errors.New("image: selected ACP agent does not advertise promptCapabilities.image")
+	}
 	if s.codexMessagePhases && !s.busyNow() {
 		return false, fmt.Errorf("codex: steering requires an active native turn")
 	}
@@ -925,8 +927,12 @@ func (s *acpSession) Cancel(ctx context.Context) error {
 	if cleanup != nil {
 		cleanupErr = cleanup()
 	}
-	if inspectErr != nil { inspectErr = fmt.Errorf("inspect Codex tool descendants: %w", inspectErr) }
-	if cleanupErr != nil { cleanupErr = fmt.Errorf("stop Codex tool descendants: %w", cleanupErr) }
+	if inspectErr != nil {
+		inspectErr = fmt.Errorf("inspect Codex tool descendants: %w", inspectErr)
+	}
+	if cleanupErr != nil {
+		cleanupErr = fmt.Errorf("stop Codex tool descendants: %w", cleanupErr)
+	}
 	return errors.Join(notifyErr, inspectErr, cleanupErr)
 }
 
@@ -1811,8 +1817,12 @@ func (s *acpSession) Prompt(ctx context.Context, task string) error {
 }
 
 func (s *acpSession) PromptImages(ctx context.Context, task string, images []ImageInput) error {
-	if len(images) > 0 && !s.imageSupported { return errors.New("image: selected ACP agent does not advertise promptCapabilities.image") }
-	if !s.beginTurn() { return errors.New("acp: session is already busy") }
+	if len(images) > 0 && !s.imageSupported {
+		return errors.New("image: selected ACP agent does not advertise promptCapabilities.image")
+	}
+	if !s.beginTurn() {
+		return errors.New("acp: session is already busy")
+	}
 	return s.promptTurnImages(ctx, task, images)
 }
 
@@ -1821,8 +1831,12 @@ func (s *acpSession) Queue(ctx context.Context, task string) error {
 }
 
 func (s *acpSession) QueueImages(ctx context.Context, task string, images []ImageInput) error {
-	if task == "" { return errors.New("acp: queued prompt is empty") }
-	if len(images) > 0 && !s.imageSupported { return errors.New("image: selected ACP agent does not advertise promptCapabilities.image") }
+	if task == "" {
+		return errors.New("acp: queued prompt is empty")
+	}
+	if len(images) > 0 && !s.imageSupported {
+		return errors.New("image: selected ACP agent does not advertise promptCapabilities.image")
+	}
 	next := acpPendingPrompt{text: task, images: images}
 	s.turnMu.Lock()
 	if s.busy {
@@ -1917,7 +1931,11 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 	systemError := s.codexSystemError
 	systemErrorText := s.codexSystemErrorText
 	failures := make(map[string]int)
-	for id, code := range s.codexPendingExits { if s.codexNativeStarts[id] && code != 0 { failures[id] = code } }
+	for id, code := range s.codexPendingExits {
+		if s.codexNativeStarts[id] && code != 0 {
+			failures[id] = code
+		}
+	}
 	s.textMu.Unlock()
 	if err != nil {
 		var rpcErr *acp.RPCError
@@ -1986,10 +2004,16 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 		}
 	}
 	originalSummary := response.Summary
-	if s.codexMessagePhases && status != "canceled" { response.Summary, _ = codexRecoveryText(response.Summary) }
+	if s.codexMessagePhases && status != "canceled" {
+		response.Summary, _ = codexRecoveryText(response.Summary)
+	}
 	result := Result{Status: status, Summary: response.Summary, CompletionEvidence: completionEvidence}
 	if s.codexMessagePhases && systemError && status != "canceled" {
-		if systemErrorText != "" { result.FailureCode = "native_model_error" } else { result.FailureCode = "native_system_error" }
+		if systemErrorText != "" {
+			result.FailureCode = "native_model_error"
+		} else {
+			result.FailureCode = "native_system_error"
+		}
 	}
 	if s.codexMessagePhases && status == "succeeded" && len(failures) != 0 {
 		if _, _, ok := codexExplicitRecovery(originalSummary, failures); !ok {
@@ -1998,15 +2022,21 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 			result.Technical = codexCommandFailureDetails(failures)
 		}
 	}
-	if s.codexMessagePhases && result.Summary != "" && status != "canceled" { s.emitActivity(Activity{Kind: ActivityText, Text: result.Summary}) }
+	if s.codexMessagePhases && result.Summary != "" && status != "canceled" {
+		s.emitActivity(Activity{Kind: ActivityText, Text: result.Summary})
+	}
 	s.result <- result
 	return nil
 }
 
 func (s *acpSession) offerCodexRecoveryID(ctx context.Context, id string, code int) {
-	if ctx.Err() != nil || !s.busyNow() || len(id) > 128 || !regexp.MustCompile("^exec-[A-Za-z0-9-]+$").MatchString(id) { return }
+	if ctx.Err() != nil || !s.busyNow() || len(id) > 128 || !regexp.MustCompile("^exec-[A-Za-z0-9-]+$").MatchString(id) {
+		return
+	}
 	injected, err := s.Steer(ctx, fmt.Sprintf("Secretary verified native exec_command failure in this turn: ACP toolCallId=%s exit_code=%d. This identity is for explicit recovered_tool_use_ids only if you genuinely recover this exact failed command; an unrelated successful command is not recovery.", id, code))
-	if err != nil || !injected { return }
+	if err != nil || !injected {
+		return
+	}
 	s.textMu.Lock()
 	if s.codexRecoveryNoticeCtx == ctx && s.codexRecoveryNotified[id] && ctx.Err() == nil {
 		s.codexRecoveryInjected[id] = true
@@ -2074,7 +2104,9 @@ func (s *acpSession) watch() {
 				thread, _ := codex["threadStatus"].(map[string]any)
 				if valueString(thread["type"]) == "systemError" {
 					s.textMu.Lock()
-					if s.turnAnswer != nil { s.codexSystemError = true }
+					if s.turnAnswer != nil {
+						s.codexSystemError = true
+					}
 					s.textMu.Unlock()
 				}
 			}
@@ -2148,22 +2180,32 @@ func (s *acpSession) watch() {
 				info, _ := meta["terminal_info"].(map[string]any)
 				if kind == "tool_call" && id != "" && info != nil && valueString(info["terminal_id"]) == id && valueString(payload["kind"]) == "execute" {
 					s.textMu.Lock()
-					if s.codexNativeStarts != nil { s.codexNativeStarts[id] = true }
+					if s.codexNativeStarts != nil {
+						s.codexNativeStarts[id] = true
+					}
 					s.textMu.Unlock()
 				}
 				if kind == "tool_call_update" && id != "" && isACPToolTerminal(normalizeACPToolStatus(valueString(payload["status"]))) {
-					if code, ok := codexACPCommandExit(payload, Activity{Tool:"exec_command",CallID:id}); ok {
+					if code, ok := codexACPCommandExit(payload, Activity{Tool: "exec_command", CallID: id}); ok {
 						s.textMu.Lock()
-						if s.codexPendingExits != nil { s.codexPendingExits[id] = code }
+						if s.codexPendingExits != nil {
+							s.codexPendingExits[id] = code
+						}
 						noticeCtx := s.codexRecoveryNoticeCtx
 						announce := code != 0 && s.codexNativeStarts[id] && s.codexRecoveryNotified != nil && !s.codexRecoveryNotified[id]
-						if announce { s.codexRecoveryNotified[id] = true }
+						if announce {
+							s.codexRecoveryNotified[id] = true
+						}
 						s.textMu.Unlock()
-						if announce && noticeCtx != nil { go s.offerCodexRecoveryID(noticeCtx,id,code) }
+						if announce && noticeCtx != nil {
+							go s.offerCodexRecoveryID(noticeCtx, id, code)
+						}
 					}
 				}
 			}
-			for _, activity := range toolTracker.observe(kind, payload) { emit(activity) }
+			for _, activity := range toolTracker.observe(kind, payload) {
+				emit(activity)
+			}
 		default:
 		}
 	}
