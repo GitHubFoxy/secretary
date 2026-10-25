@@ -31,6 +31,8 @@ type Daemon struct {
 	ReconnectMin       time.Duration
 	ReconnectMax       time.Duration
 	nativeResumeRegistrationBarrier func()
+	priorityCancelBeforeHandle func(Command)
+	priorityCancelDuplicateObserved func(string)
 }
 
 type serverMessage struct {
@@ -350,6 +352,9 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 				if ok && running.claudeResume && running.attemptID == command.Metadata().AttemptID {
 					commandWG.Add(1)
 					if flight, duplicate := priorityCancels[command.Metadata().CommandID]; duplicate {
+						if d.priorityCancelDuplicateObserved != nil {
+							d.priorityCancelDuplicateObserved(command.Metadata().CommandID)
+						}
 						go func() {
 							defer commandWG.Done()
 							select {
@@ -384,6 +389,9 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 								return
 							case <-time.After(10 * time.Millisecond):
 							}
+						}
+						if d.priorityCancelBeforeHandle != nil {
+							d.priorityCancelBeforeHandle(command)
 						}
 						flight.outcome, flight.err = execution.HandleCommand(commandCtx, command)
 						select {
