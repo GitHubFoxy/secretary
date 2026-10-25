@@ -96,7 +96,7 @@ func issue209ClaudeCancelDaemonLifecycle(t *testing.T, nativeError bool) {
 	shellPIDFile := filepath.Join(dir, "shell.pid")
 	rootPIDFile := filepath.Join(dir, "claude.pid")
 	script := `#!/bin/sh
-echo $ > "$ISSUE209_ROOT_PID"
+echo ROOT_PID_TOKEN > "$ISSUE209_ROOT_PID"
 read prompt
 /bin/sh -c 'sleep 180 & wait' &
 echo $! > "$ISSUE209_SHELL_PID"
@@ -104,6 +104,7 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"
 read interrupt
 while read line; do :; done
 `
+	script = strings.Replace(script, "ROOT_PID_TOKEN", strings.Repeat("$", 2), 1)
 	if nativeError {
 		script = strings.Replace(script, "read interrupt\n", "read interrupt\nprintf '%s\\n' '{\"type\":\"error\",\"error\":\"native cancellation response\"}'\n", 1)
 	}
