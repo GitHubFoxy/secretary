@@ -19,11 +19,7 @@ printf '%s\n' '[1/9] release-gate contract test'
 run ./scripts/phase4-release-gate-test.sh
 
 printf '%s\n' '[2/9] gofmt'
-unformatted="$(find internal cmd web -type f -name '*.go' -print0 | xargs -0 "${GOFMT[@]}" -l)"
-[[ -z "$unformatted" ]] || {
-  printf 'Unformatted Go files:\n%s\n' "$unformatted" >&2
-  exit 1
-}
+run bash ./scripts/phase4-gofmt-check.sh
 
 printf '%s\n' '[3/9] deterministic Go tests'
 run "${GO[@]}" test -p 1 ./...
@@ -68,15 +64,28 @@ embedded_assets=(
   web/index.html web/app.js web/app.css
   web/control-room/index.html web/control-room/app.js web/control-room/app.css
 )
+asset_equality_required=1
+if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
+  base_ref="refs/remotes/origin/${GITHUB_BASE_REF:?GITHUB_BASE_REF is required}"
+  git rev-parse --verify -q "${base_ref}^{commit}" >/dev/null || { printf 'Cannot resolve asset PR base: %s\n' "$base_ref" >&2; exit 1; }
+  merge_base="$(git merge-base "$base_ref" HEAD)" || exit 1
+  changed_assets="$(git diff --name-only "$merge_base" HEAD -- web package.json package-lock.json vite.config.js)" || exit 1
+  if [[ -z "$changed_assets" ]]; then
+    asset_equality_required=0
+    printf 'PR asset equality: skipped for unchanged web/build inputs; production builds remain mandatory\n'
+  fi
+fi
 for index in 0 1 2 3 4 5; do
   built="${built_assets[$index]}"
   embedded="${embedded_assets[$index]}"
   test -s "$built" || { printf 'missing or empty production asset: %s\n' "$built" >&2; exit 1; }
   test -s "$embedded" || { printf 'missing or empty embedded asset: %s\n' "$embedded" >&2; exit 1; }
-  cmp -s "$built" "$embedded" || {
+  if (( asset_equality_required )); then
+    cmp -s "$built" "$embedded" || {
     printf 'embedded asset differs from production build: %s\n' "$embedded" >&2
     exit 1
-  }
+    }
+  fi
 done
 grep -Eq '^//go:embed .*index\.html .*app\.js .*app\.css' web/embed.go
 grep -q 'control-room/index\.html' web/embed.go

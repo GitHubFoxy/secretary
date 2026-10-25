@@ -1,11 +1,11 @@
 package node
 
 import (
-	"encoding/base64"
 	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -42,7 +42,7 @@ type ClaudeCodeRuntime struct {
 	RawLogDir      string
 	RawLogMaxBytes int64
 	RawLogFiles    int
-	captureRoot func(*exec.Cmd) (claudeChild, error)
+	captureRoot    func(*exec.Cmd) (claudeChild, error)
 }
 
 type ClaudeRuntime = ClaudeCodeRuntime
@@ -230,6 +230,20 @@ func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionI
 	return args, nil
 }
 
+type claudeNativeCleanupConfirmedError struct {
+	cause error
+}
+
+func (e *claudeNativeCleanupConfirmedError) Error() string { return e.cause.Error() }
+func (e *claudeNativeCleanupConfirmedError) Unwrap() error { return e.cause }
+
+func claudeResumeInitializationFailure(session Session, initErr error) error {
+	if closeErr := session.Close(); closeErr != nil {
+		return fmt.Errorf("%w: resume initialization failed: %v; native cleanup unverified: %v", ErrClaudeCodeUnavailable, initErr, closeErr)
+	}
+	return &claudeNativeCleanupConfirmedError{cause: fmt.Errorf("%w: resume initialization failed: %v", ErrClaudeCodeUnavailable, initErr)}
+}
+
 func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartRequest, sessionID string, args []string, resume ...bool) (*claudeSession, error) {
 	command := r.command()
 	if _, err := exec.LookPath(command); err != nil {
@@ -300,12 +314,19 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 			}
 		}
 		if err != nil {
-			_ = session.Close()
-			return nil, fmt.Errorf("%w: resume initialization failed: %v", ErrClaudeCodeUnavailable, err)
+			return nil, claudeResumeInitializationFailure(session, err)
 		}
+	}
+	if len(resume) > 0 && resume[0] && request.DeferInitialPrompt {
+		session.stateMu.Lock()
+		session.initialPromptPending = true
+		session.stateMu.Unlock()
 	}
 	if !request.DeferInitialPrompt && request.Task != "" {
 		if err := promptWithImages(ctx, session, request.Task, request.Images); err != nil {
+			if len(resume) > 0 && resume[0] {
+				return nil, claudeResumeInitializationFailure(session, err)
+			}
 			_ = session.Close()
 			return nil, err
 		}
@@ -314,34 +335,43 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 }
 
 type claudeSession struct {
-	id        string
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    io.ReadCloser
-	stderr    *bytes.Buffer
-	activity  chan Activity
-	result    chan Result
-	ready     chan error
-	stateMu   sync.Mutex
-	writeGate chan struct{}
-	stopOnce  sync.Once
-	stopErr   error
-	claudeRoot claudeChild
-	cleanupAttempt func(context.Context, *exec.Cmd, claudeChild) error
-	canceling bool
-	cancelWait chan struct{}
-	pendingTerminal *Result
-	done      chan struct{}
-	closed    bool
-	cancel    bool
-	active    bool
-	inputID   string
-	seen      map[string]bool
-	bashCalls map[string]bool
-	failedBash string
-	failedBashIDs map[string]string
-	sawAssistantText bool
-	sawToolUse bool
+	id                           string
+	cmd                          *exec.Cmd
+	stdin                        io.WriteCloser
+	stdout                       io.ReadCloser
+	stderr                       *bytes.Buffer
+	activity                     chan Activity
+	result                       chan Result
+	ready                        chan error
+	stateMu                      sync.Mutex
+	writeGate                    chan struct{}
+	stopOnce                     sync.Once
+	stopErr                      error
+	claudeRoot                   claudeChild
+	cleanupAttempt               func(context.Context, *exec.Cmd, claudeChild) error
+	canceling                    bool
+	cancelWait                   chan struct{}
+	pendingTerminal              *Result
+	nativeErrorDuringCancel      string
+	failedCancel                 bool
+	initialPromptPending         bool
+	initialPromptWriting         bool
+	initialPromptPreempted       bool
+	initialPromptCancel          context.CancelFunc
+	beforeInitialCancelClaim     func()
+	beforeInitialPromptAdmission func()
+	beforeInitialPromptWrite     func()
+	done                         chan struct{}
+	closed                       bool
+	cancel                       bool
+	active                       bool
+	inputID                      string
+	seen                         map[string]bool
+	bashCalls                    map[string]bool
+	failedBash                   string
+	failedBashIDs                map[string]string
+	sawAssistantText             bool
+	sawToolUse                   bool
 }
 
 func (s *claudeSession) ID() string                { return s.id }
@@ -363,12 +393,43 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 		return err
 	}
 	s.stateMu.Lock()
-	if s.closed || s.active || s.canceling {
+	firstPrompt := s.initialPromptPending
+	s.stateMu.Unlock()
+	if firstPrompt && s.beforeInitialPromptAdmission != nil {
+		s.beforeInitialPromptAdmission()
+	}
+	if firstPrompt {
+		promptCtx, promptCancel := context.WithCancel(ctx)
+		defer promptCancel()
+		s.stateMu.Lock()
+		if s.initialPromptPending && !s.initialPromptPreempted && !s.closed {
+			s.initialPromptCancel = promptCancel
+		}
+		s.stateMu.Unlock()
+		defer func() {
+			s.stateMu.Lock()
+			s.initialPromptCancel = nil
+			s.stateMu.Unlock()
+		}()
+		ctx = promptCtx
+		select {
+		case s.writeGate <- struct{}{}:
+			defer func() { <-s.writeGate }()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	s.stateMu.Lock()
+	if s.closed || s.active || s.canceling || s.initialPromptPreempted || (firstPrompt && !s.initialPromptPending) {
 		s.stateMu.Unlock()
 		return errors.New("claude: session closed or Attempt still active")
 	}
+	s.initialPromptPending = false
+	s.initialPromptWriting = firstPrompt
 	s.active = true
 	s.cancel = false
+	s.nativeErrorDuringCancel = ""
+	s.failedCancel = false
 	s.inputID = id
 	s.bashCalls = make(map[string]bool)
 	s.failedBash = ""
@@ -386,11 +447,35 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 		}
 		content = blocks
 	}
-	err = s.writeMessage(ctx, map[string]any{"type": "user", "uuid": id, "session_id": s.id, "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil})
-	if err != nil {
+	message := map[string]any{"type": "user", "uuid": id, "session_id": s.id, "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil}
+	if firstPrompt {
+		if s.beforeInitialPromptWrite != nil {
+			s.beforeInitialPromptWrite()
+		}
 		s.stateMu.Lock()
-		s.active = false
+		preempted := s.cancel || s.closed || ctx.Err() != nil
 		s.stateMu.Unlock()
+		if preempted {
+			err = errors.New("claude: initial prompt canceled before stdin write")
+		} else {
+			err = s.writeMessageWithGate(ctx, message)
+		}
+	} else {
+		err = s.writeMessage(ctx, message)
+	}
+	s.stateMu.Lock()
+	s.initialPromptWriting = false
+	if err != nil {
+		if firstPrompt && s.active && !s.cancel {
+			s.active = false
+			s.result <- Result{Status: "failed", FailureCode: "native_prompt_write_failed", Summary: "Claude Code initial prompt write failed: " + err.Error()}
+		} else if !firstPrompt {
+			s.active = false
+		}
+	}
+	s.stateMu.Unlock()
+	if err != nil && firstPrompt {
+		_ = s.stopProcess()
 	}
 	return err
 }
@@ -405,28 +490,45 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if s.beforeInitialCancelClaim != nil {
+		s.beforeInitialCancelClaim()
+	}
 	s.stateMu.Lock()
-	if s.closed || !s.active || s.cancel {
+	if s.closed || (!s.active && !s.initialPromptPending) || s.cancel {
 		s.stateMu.Unlock()
 		return nil
+	}
+	if s.initialPromptPending {
+		s.initialPromptPending = false
+		s.initialPromptPreempted = true
+		s.active = true
+		s.inputID = s.id + "-initial-prompt-preempted"
 	}
 	attempt := s.inputID
 	s.cancel = true
 	s.canceling = true
 	s.cancelWait = make(chan struct{})
 	root := s.claudeRoot
+	writingInitialPrompt := s.initialPromptWriting
+	cancelInitialPrompt := s.initialPromptCancel
 	s.stateMu.Unlock()
+	if cancelInitialPrompt != nil {
+		cancelInitialPrompt()
+	}
 	var err error
-	if root.pid == 0 {
+	if writingInitialPrompt {
+		err = s.stopProcess()
+	}
+	if err == nil && root.pid == 0 {
 		err = errors.New("Claude root process identity was not captured")
-	} else {
+	} else if err == nil && !writingInitialPrompt {
 		cleanup := s.cleanupAttempt
 		if cleanup == nil {
 			cleanup = cleanupClaudeAttemptProcesses
 		}
 		err = cleanup(ctx, s.cmd, root)
 	}
-	if err == nil {
+	if err == nil && !writingInitialPrompt {
 		var id string
 		id, err = newClaudeSessionID()
 		if err == nil {
@@ -441,6 +543,7 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	s.stateMu.Lock()
 	if err != nil && s.active && s.inputID == attempt {
 		s.cancel = false
+		s.failedCancel = true
 	}
 	s.canceling = false
 	pending := s.pendingTerminal
@@ -453,18 +556,61 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 		s.active = false
 		s.result <- *pending
 	}
+	stalled := err == nil && pending == nil && s.active && s.cancel && s.inputID == attempt
+	stillActive := s.active && s.inputID == attempt
+	nativeError := s.nativeErrorDuringCancel
+	s.nativeErrorDuringCancel = ""
 	close(s.cancelWait)
 	s.cancelWait = nil
 	s.stateMu.Unlock()
+	if err != nil {
+		if stillActive {
+			summary := "Claude Code cancellation cleanup or interrupt failed"
+			if nativeError != "" {
+				summary = nativeError
+			}
+			s.emitResult(Result{Status: "failed", Summary: summary, FailureCode: "cancel_failed", Technical: err.Error()})
+		}
+		_ = s.stopProcess()
+	} else if stalled && nativeError != "" {
+		_ = s.stopProcess()
+	} else if stalled {
+		go s.stopStalledCanceledAttempt(attempt)
+	}
 	return err
 }
+
+func (s *claudeSession) stopStalledCanceledAttempt(attempt string) {
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-s.done:
+		return
+	}
+	s.stateMu.Lock()
+	stalled := s.active && s.cancel && s.inputID == attempt && !s.canceling && !s.closed
+	s.stateMu.Unlock()
+	if stalled {
+		_ = s.stopProcess()
+	}
+}
+
 func (s *claudeSession) stopProcess() error {
 	s.stopOnce.Do(func() {
 		s.stateMu.Lock()
 		s.closed = true
 		s.stateMu.Unlock()
-		_ = s.stdin.Close()
-		_ = s.stdout.Close()
+		if s.stdin != nil {
+			_ = s.stdin.Close()
+		}
+		if s.stdout != nil {
+			_ = s.stdout.Close()
+		}
+		if s.cmd == nil || s.cmd.Process == nil {
+			s.stopErr = errors.New("claude: native process identity unavailable for termination")
+			return
+		}
 		s.stopErr = killClaudeProcess(s.cmd)
 	})
 	return s.stopErr
@@ -489,6 +635,13 @@ func (s *claudeSession) writeMessage(ctx context.Context, message any) error {
 	case s.writeGate <- struct{}{}:
 	}
 	defer func() { <-s.writeGate }()
+	return s.writeMessageWithGate(ctx, message)
+}
+
+func (s *claudeSession) writeMessageWithGate(ctx context.Context, message any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	written := make(chan error, 1)
 	go func() { written <- json.NewEncoder(s.stdin).Encode(message) }()
 	select {
@@ -496,7 +649,6 @@ func (s *claudeSession) writeMessage(ctx context.Context, message any) error {
 		return err
 	case <-ctx.Done():
 		_ = s.stopProcess()
-		<-written
 		return ctx.Err()
 	}
 }
@@ -537,7 +689,9 @@ func (s *claudeSession) run() {
 		if summary == "" && waitErr != nil {
 			summary = waitErr.Error()
 		}
-		if summary == "" {
+		if canceled {
+			summary = "Claude Code attempt canceled"
+		} else if summary == "" {
 			summary = "Claude Code exited without a result"
 		}
 		s.emitResult(Result{Status: status, Summary: summary})
@@ -671,13 +825,34 @@ func (s *claudeSession) handleLine(line []byte) {
 		if summary == "" {
 			summary = valueString(record["message"])
 		}
+		if summary == "" {
+			summary = "Claude Code native error"
+		}
+		s.stateMu.Lock()
+		canceled := s.cancel
+		canceling := s.canceling
+		failedCancel := s.failedCancel
+		if canceled && canceling {
+			s.nativeErrorDuringCancel = summary
+		}
+		s.stateMu.Unlock()
+		if canceled {
+			if !canceling {
+				_ = s.stopProcess()
+			}
+			return
+		}
 		s.emitResult(Result{Status: "failed", Summary: summary})
+		if failedCancel {
+			_ = s.stopProcess()
+		}
 	}
 }
+
 type claudeTaskVerdict struct {
-	status string
-	reason string
-	recovered []string
+	status       string
+	reason       string
+	recovered    []string
 	userResponse string
 }
 

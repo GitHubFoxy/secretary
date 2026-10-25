@@ -17,7 +17,7 @@ import (
 
 func TestMAC02ConcurrentCancelTerminalAndCleanupFailure(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name       string
 		cleanupErr error
 		wantStatus string
 	}{
@@ -28,11 +28,11 @@ func TestMAC02ConcurrentCancelTerminalAndCleanupFailure(t *testing.T) {
 			entered := make(chan struct{})
 			release := make(chan struct{})
 			s := &claudeSession{
-				id: "same-native-session",
-				active: true,
-				inputID: "attempt-one",
+				id:         "same-native-session",
+				active:     true,
+				inputID:    "attempt-one",
 				claudeRoot: claudeChild{pid: 123},
-				result: make(chan Result, 4),
+				result:     make(chan Result, 4),
 				cleanupAttempt: func(context.Context, *exec.Cmd, claudeChild) error {
 					close(entered)
 					<-release
@@ -94,6 +94,54 @@ func TestMAC02ConcurrentCancelTerminalAndCleanupFailure(t *testing.T) {
 			}
 			if s.active || s.canceling || s.pendingTerminal != nil {
 				t.Fatal("Attempt retained pending terminal after Cancel completion")
+			}
+		})
+	}
+}
+
+func TestMAC02FailedCancelWithMissingProcessStatePersistsTerminal(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cmd  *exec.Cmd
+	}{
+		{name: "nil command"},
+		{name: "uninitialized command", cmd: &exec.Cmd{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cleanupErr := errors.New("native cleanup failed")
+			session := &claudeSession{
+				id:         "incomplete-native-session",
+				cmd:        tc.cmd,
+				active:     true,
+				inputID:    "attempt-with-missing-process",
+				claudeRoot: claudeChild{pid: 123},
+				result:     make(chan Result, 2),
+				cleanupAttempt: func(context.Context, *exec.Cmd, claudeChild) error {
+					return cleanupErr
+				},
+			}
+			err := session.Cancel(context.Background())
+			if !errors.Is(err, cleanupErr) {
+				t.Fatalf("Cancel error=%v, want cleanup failure", err)
+			}
+			select {
+			case result := <-session.Result():
+				if result.Status != "failed" || result.FailureCode != "cancel_failed" {
+					t.Fatalf("uninitialized native cleanup terminal=%+v", result)
+				}
+			default:
+				t.Fatal("failed native cleanup had no terminal Result")
+			}
+			if !session.closed || session.active || !strings.Contains(session.stopErr.Error(), "process identity unavailable") {
+				t.Fatalf("uninitialized process not stopped safely: closed=%t active=%t stopErr=%v", session.closed, session.active, session.stopErr)
+			}
+			if err := session.stopProcess(); !errors.Is(err, session.stopErr) {
+				t.Fatalf("repeated process cleanup returned %v, want %v", err, session.stopErr)
+			}
+			select {
+			case extra := <-session.Result():
+				t.Fatalf("duplicate terminal Result: %+v", extra)
+			default:
 			}
 		})
 	}

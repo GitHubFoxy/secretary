@@ -12,7 +12,9 @@ cat > "$TASK_TMP/bin/mise" <<'FIXTURE'
 #!/bin/bash
 set -eu
 [[ "$1 $2 $3 $4 $5" == 'exec -- go build -o' ]]
-if [[ "$6" != */secretary-node ]]; then
+if [[ "$6" == */secretary-node ]]; then
+  cp "$TASK_TMP/bin/secretary-node" "$6"
+else
   cat > "$6" <<'BINARY'
 #!/bin/bash
 exit 0
@@ -60,6 +62,8 @@ chmod +x "$TASK_TMP/bin/mise" "$TASK_TMP/bin/codex" "$TASK_TMP/bin/codex-acp"
 "$TASK_TMP/bin/secretary-node" --codex-pair-action=install --codex-pair-scope=server --codex-pair-cli="$TASK_TMP/bin/codex" --codex-pair-acp="$TASK_TMP/bin/codex-acp"
 "$TASK_TMP/bin/secretary-node" --codex-pair-action=install --codex-pair-scope=node --codex-pair-cli="$TASK_TMP/bin/codex" --codex-pair-acp="$TASK_TMP/bin/codex-acp"
 "$TASK_ROOT/secretary" setup --non-interactive --harness codex
+[[ -x "$HOME/.local/bin/secretary-node" ]]
+cmp "$TASK_TMP/bin/secretary-node" "$HOME/.local/bin/secretary-node"
 "$TASK_ROOT/secretary" doctor
 "$TASK_ROOT/secretary" node setup --standalone --server http://127.0.0.1:9999 --name codex-canary
 "$TASK_ROOT/secretary" node doctor

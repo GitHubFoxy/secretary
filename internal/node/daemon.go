@@ -8,28 +8,31 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"time"
 	"sync"
+	"time"
 
 	"github.com/beruseruko/secretary/internal/core"
 )
 
 type Daemon struct {
-	Identity  NodeIdentity
-	Store     *LocalStore
-	Runtime   Runtime
-	Inventory InventorySource
-	Status *LiveStatusWriter
+	Identity      NodeIdentity
+	Store         *LocalStore
+	Runtime       Runtime
+	Inventory     InventorySource
+	Status        *LiveStatusWriter
 	StatusChanged func(bool, core.HarnessInventorySnapshot)
 
-	Capacity           int
-	Workspaces         []Workspace
-	MCPServers         []MCPServer
-	HeartbeatInterval  time.Duration
-	InventoryInterval  time.Duration
-	OutboxPollInterval time.Duration
-	ReconnectMin       time.Duration
-	ReconnectMax       time.Duration
+	Capacity                        int
+	Workspaces                      []Workspace
+	MCPServers                      []MCPServer
+	HeartbeatInterval               time.Duration
+	InventoryInterval               time.Duration
+	OutboxPollInterval              time.Duration
+	ReconnectMin                    time.Duration
+	ReconnectMax                    time.Duration
+	nativeResumeRegistrationBarrier func()
+	priorityCancelBeforeHandle      func(Command)
+	priorityCancelDuplicateObserved func(string)
 }
 
 type serverMessage struct {
@@ -43,18 +46,30 @@ var errWorkerDispatchCanceled = errors.New("worker: dispatch canceled before nat
 // nativeHandoffSignal is attached to the command preparation Context. A
 // durable native boundary releases the socket WaitGroup without stopping
 // the daemon-lifetime provider operation.
-type nativeHandoffSignal struct {ready chan struct{};once sync.Once}
+type nativeHandoffSignal struct {
+	ready chan struct{}
+	once  sync.Once
+}
 type nativeHandoffKey struct{}
+
 func notifyNativeHandoff(ctx context.Context) {
-	if signal,ok:=ctx.Value(nativeHandoffKey{}).(*nativeHandoffSignal);ok {
-		signal.once.Do(func(){close(signal.ready)})
+	if signal, ok := ctx.Value(nativeHandoffKey{}).(*nativeHandoffSignal); ok {
+		signal.once.Do(func() { close(signal.ready) })
 	}
 }
 
 type runningNodeCommand struct {
-	kind CommandKind
-	attemptID string
-	interrupt context.CancelCauseFunc
+	kind         CommandKind
+	commandID    string
+	attemptID    string
+	claudeResume bool
+	interrupt    context.CancelCauseFunc
+}
+
+type priorityCancelFlight struct {
+	done    chan struct{}
+	outcome CommandOutcome
+	err     error
 }
 
 type commandCompletion struct {
@@ -64,15 +79,19 @@ type commandCompletion struct {
 	// An explicitly replayed CommandID whose original receipt was already
 	// ACKed gets its cached response directly; it must not create another
 	// outbox event. New native completions always use the durable outbox.
-	replyAfterAck bool
+	replyAfterAck  bool
+	priorityCancel bool
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
-	if d.Status != nil { defer d.Status.Publish("offline", nil) }
+	if d.Status != nil {
+		defer d.Status.Publish("offline", nil)
+	}
 	if err := d.validate(); err != nil {
 		return err
 	}
 	execution := NewExecutionNode(d.Identity.Node, d.Runtime, d.Store)
+	execution.nativeResumeRegistrationBarrier = d.nativeResumeRegistrationBarrier
 	// Unlike serveConnection's commandCtx, this context survives WebSocket
 	// reconnects and ends only when the daemon is actually stopped.
 	execution.SetNativeLifetime(ctx)
@@ -95,8 +114,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return fmt.Errorf("node: restore local execution state: %w", err)
 	}
 
-	if d.Status != nil { d.Status.Publish("reconnecting", nil) }
-	if d.StatusChanged != nil { d.StatusChanged(false, core.HarnessInventorySnapshot{}) }
+	if d.Status != nil {
+		d.Status.Publish("reconnecting", nil)
+	}
+	if d.StatusChanged != nil {
+		d.StatusChanged(false, core.HarnessInventorySnapshot{})
+	}
 	backoff := d.reconnectMin()
 	for {
 		if ctx.Err() != nil {
@@ -107,8 +130,12 @@ func (d *Daemon) Run(ctx context.Context) error {
 			return nil
 		}
 		_ = err
-		if d.Status != nil { d.Status.Publish("reconnecting", nil) }
-		if d.StatusChanged != nil { d.StatusChanged(false, core.HarnessInventorySnapshot{}) }
+		if d.Status != nil {
+			d.Status.Publish("reconnecting", nil)
+		}
+		if d.StatusChanged != nil {
+			d.StatusChanged(false, core.HarnessInventorySnapshot{})
+		}
 		timer := time.NewTimer(backoff)
 		select {
 		case <-ctx.Done():
@@ -139,7 +166,9 @@ func (d *Daemon) runConnection(ctx context.Context, execution *ExecutionNode) er
 	if err := execution.SetInventory(inventory); err != nil {
 		return fmt.Errorf("node: set harness inventory: %w", err)
 	}
-	if d.Status != nil { d.Status.Publish("reconnecting", &inventory) }
+	if d.Status != nil {
+		d.Status.Publish("reconnecting", &inventory)
+	}
 	auth, err := d.Identity.Authenticator()
 	if err != nil {
 		return err
@@ -169,10 +198,12 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 	var commandWG sync.WaitGroup
 	// A disconnected socket must cancel and drain in-flight pre-native
 	// commands before the next socket replays their durable claims.
-	defer func(){stopCommands();commandWG.Wait()}()
+	defer func() { stopCommands(); commandWG.Wait() }()
 	pendingCommands := make([]Command, 0, 32)
 	runningWorkers := make(map[string]bool)
 	runningDetails := make(map[string]runningNodeCommand)
+	priorityCancelSlots := make(chan struct{}, 4)
+	priorityCancels := make(map[string]*priorityCancelFlight)
 	runningCommands := 0
 	commandWorkerKey := func(command Command) string {
 		worker := command.Metadata().WorkerRef
@@ -195,46 +226,51 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			}
 			command := pendingCommands[index]
 			pendingCommands = append(pendingCommands[:index], pendingCommands[index+1:]...)
-			key:=commandWorkerKey(command)
+			key := commandWorkerKey(command)
 			runningWorkers[key] = true
 			runningCommands++
-			individualCtx,interrupt:=context.WithCancelCause(commandCtx)
-			runningDetails[key]=runningNodeCommand{kind:command.Kind,attemptID:command.Metadata().AttemptID,interrupt:interrupt}
+			individualCtx, interrupt := context.WithCancelCause(commandCtx)
+			runningDetails[key] = runningNodeCommand{kind: command.Kind, commandID: command.Metadata().CommandID, attemptID: command.Metadata().AttemptID, claudeResume: command.Kind == CommandResume && command.Resume != nil && command.Resume.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode, interrupt: interrupt}
 			commandWG.Add(1)
-			signal:=&nativeHandoffSignal{ready:make(chan struct{})}
-			finished:=make(chan struct{})
+			signal := &nativeHandoffSignal{ready: make(chan struct{})}
+			finished := make(chan struct{})
 			// Only pre-native preparation belongs to the WebSocket. After
 			// durable handoff, reconnect must not wait for a provider Resume
 			// that may block indefinitely.
-			go func(){
-				select {case <-signal.ready:case <-finished:}
+			go func() {
+				select {
+				case <-signal.ready:
+				case <-finished:
+				}
 				commandWG.Done()
 			}()
 			go func() {
 				defer close(finished)
-				outcome, err := execution.HandleCommand(context.WithValue(individualCtx,nativeHandoffKey{},signal), command)
-				if err!=nil || outcome.State!=CommandAccepted {interrupt(nil)}
+				outcome, err := execution.HandleCommand(context.WithValue(individualCtx, nativeHandoffKey{}, signal), command)
+				if err != nil || outcome.State != CommandAccepted {
+					interrupt(nil)
+				}
 				// Native Dispatch/Resume can complete after this socket
 				// disconnects. Persist the receipt BEFORE selecting a
 				// connection-owned channel: when both cases are ready,
 				// selecting completions would silently discard the result.
 				// All lifecycle receipts are sent only via the durable outbox,
 				// including the normal connected path.
-				replyAfterAck:=false
-				if err==nil && (command.Kind==CommandDispatch || command.Kind==CommandResume) && outcome.State!=CommandProcessing {
-					receipt,queueErr:=d.Store.QueueLifecycleCommandOutcome(outcome)
-					if queueErr!=nil {
-						err=fmt.Errorf("node: persist native command outcome: %w",queueErr)
-					} else if receipt.Sequence==0 {
+				replyAfterAck := false
+				if err == nil && (command.Kind == CommandDispatch || command.Kind == CommandResume) && outcome.State != CommandProcessing {
+					receipt, queueErr := d.Store.QueueLifecycleCommandOutcome(outcome)
+					if queueErr != nil {
+						err = fmt.Errorf("node: persist native command outcome: %w", queueErr)
+					} else if receipt.Sequence == 0 {
 						// The original terminal receipt (ACCEPTED or FAILED)
 						// was already acknowledged. Answer this explicit
 						// replay from the cached outcome without creating
 						// another durable event.
-						replyAfterAck=true
+						replyAfterAck = true
 					}
 				}
 				select {
-				case completions <- commandCompletion{command: command, outcome: outcome, err: err, replyAfterAck:replyAfterAck}:
+				case completions <- commandCompletion{command: command, outcome: outcome, err: err, replyAfterAck: replyAfterAck}:
 				case <-commandCtx.Done():
 					// The native outcome is already durable and the new
 					// socket's outbox poll will deliver it.
@@ -246,8 +282,12 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 		for {
 			message, err := receiveServerMessage(ctx, connection)
 			if err != nil {
-				if d.Status != nil { d.Status.Disconnected() }
-				if d.StatusChanged != nil { d.StatusChanged(false, core.HarnessInventorySnapshot{}) }
+				if d.Status != nil {
+					d.Status.Disconnected()
+				}
+				if d.StatusChanged != nil {
+					d.StatusChanged(false, core.HarnessInventorySnapshot{})
+				}
 				select {
 				case readErrors <- err:
 				default:
@@ -285,15 +325,23 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 		sentThrough = sequence
 		return nil
 	}
-	if err := sendHeartbeat(); err != nil {return err}
-	if d.Status != nil { d.Status.Connected(&inventory) }
-	if d.StatusChanged != nil { d.StatusChanged(true, inventory) }
+	if err := sendHeartbeat(); err != nil {
+		return err
+	}
+	if d.Status != nil {
+		d.Status.Connected(&inventory)
+	}
+	if d.StatusChanged != nil {
+		d.StatusChanged(true, inventory)
+	}
 	inventoryVerified := true
 	// Recover pre-native Dispatch/Resume with their original IDs and envelope.
 	// ClaimCommand atomically serializes this replay against server redelivery.
-	replay,err:=d.Store.PendingPrestartCommands()
-	if err!=nil{return err}
-	pendingCommands=append(pendingCommands,replay...)
+	replay, err := d.Store.PendingPrestartCommands()
+	if err != nil {
+		return err
+	}
+	pendingCommands = append(pendingCommands, replay...)
 	startPending()
 
 	heartbeats := time.NewTicker(d.heartbeatInterval())
@@ -322,12 +370,69 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			// waiting for video conversion. It must not remain blocked by the
 			// per-Worker FIFO lane it is meant to interrupt. Other Workers and
 			// attempts remain unaffected.
-			if message.Command.Kind==CommandCancel && message.Command.Cancel!=nil {
-				key:=commandWorkerKey(*message.Command)
-				if running,ok:=runningDetails[key];ok &&
-					(running.kind==CommandDispatch || running.kind==CommandResume || running.kind==CommandSteering) &&
-					running.attemptID==message.Command.Cancel.Metadata.AttemptID {
+			if message.Command.Kind == CommandCancel && message.Command.Cancel != nil {
+				key := commandWorkerKey(*message.Command)
+				if running, ok := runningDetails[key]; ok &&
+					(running.kind == CommandDispatch || running.kind == CommandResume || running.kind == CommandSteering) &&
+					running.attemptID == message.Command.Cancel.Metadata.AttemptID && !running.claudeResume {
 					running.interrupt(errWorkerDispatchCanceled)
+				}
+			}
+			if message.Command.Kind == CommandCancel && message.Command.Cancel != nil {
+				command := *message.Command
+				key := commandWorkerKey(command)
+				running, ok := runningDetails[key]
+				if ok && running.claudeResume && running.attemptID == command.Metadata().AttemptID {
+					commandWG.Add(1)
+					if flight, duplicate := priorityCancels[command.Metadata().CommandID]; duplicate {
+						if d.priorityCancelDuplicateObserved != nil {
+							d.priorityCancelDuplicateObserved(command.Metadata().CommandID)
+						}
+						go func() {
+							defer commandWG.Done()
+							select {
+							case <-flight.done:
+							case <-commandCtx.Done():
+								return
+							}
+							select {
+							case completions <- commandCompletion{command: command, outcome: flight.outcome, err: flight.err, priorityCancel: true}:
+							case <-commandCtx.Done():
+							}
+						}()
+						continue
+					}
+					flight := &priorityCancelFlight{done: make(chan struct{})}
+					priorityCancels[command.Metadata().CommandID] = flight
+					go func() {
+						defer commandWG.Done()
+						defer close(flight.done)
+						select {
+						case priorityCancelSlots <- struct{}{}:
+						case <-commandCtx.Done():
+							return
+						}
+						defer func() { <-priorityCancelSlots }()
+						for {
+							if _, err := d.Store.Command(running.commandID); err == nil {
+								break
+							}
+							select {
+							case <-commandCtx.Done():
+								return
+							case <-time.After(10 * time.Millisecond):
+							}
+						}
+						if d.priorityCancelBeforeHandle != nil {
+							d.priorityCancelBeforeHandle(command)
+						}
+						flight.outcome, flight.err = execution.HandleCommand(commandCtx, command)
+						select {
+						case completions <- commandCompletion{command: command, outcome: flight.outcome, err: flight.err, priorityCancel: true}:
+						case <-commandCtx.Done():
+						}
+					}()
+					continue
 				}
 			}
 			if len(pendingCommands) >= 32 {
@@ -336,21 +441,25 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			pendingCommands = append(pendingCommands, *message.Command)
 			startPending()
 		case completed := <-completions:
-			key:=commandWorkerKey(completed.command)
-			delete(runningWorkers,key)
-			delete(runningDetails,key)
-			runningCommands--
+			key := commandWorkerKey(completed.command)
+			if !completed.priorityCancel {
+				delete(runningWorkers, key)
+				delete(runningDetails, key)
+				runningCommands--
+			}
 			startPending()
 			if completed.err != nil {
 				return completed.err
 			}
 			outcome := completed.outcome
-			if outcome.Kind==CommandDispatch || outcome.Kind==CommandResume {
+			if outcome.Kind == CommandDispatch || outcome.Kind == CommandResume {
 				// A new native receipt was persisted before this channel
 				// send. Preserve the established response for an explicit
 				// replay of an ALREADY-ACKed CommandID without requeuing it.
 				if completed.replyAfterAck {
-					if err := connection.SendCommandOutcome(ctx,outcome);err!=nil{return err}
+					if err := connection.SendCommandOutcome(ctx, outcome); err != nil {
+						return err
+					}
 				}
 			} else if outcome.State == CommandFailed && outcome.Kind == CommandSteering {
 				if _, err := d.Store.QueueCommandOutcome(outcome); err != nil {
@@ -371,17 +480,39 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			if err := sendHeartbeat(); err != nil {
 				return err
 			}
-			if d.Status != nil { if inventoryVerified { d.Status.Connected(&inventory) } else { d.Status.Connected(nil) } }
-			if d.StatusChanged != nil { if inventoryVerified { d.StatusChanged(true, inventory) } else { d.StatusChanged(true, core.HarnessInventorySnapshot{}) } }
+			if d.Status != nil {
+				if inventoryVerified {
+					d.Status.Connected(&inventory)
+				} else {
+					d.Status.Connected(nil)
+				}
+			}
+			if d.StatusChanged != nil {
+				if inventoryVerified {
+					d.StatusChanged(true, inventory)
+				} else {
+					d.StatusChanged(true, core.HarnessInventorySnapshot{})
+				}
+			}
 		case <-inventories.C:
 			refreshed, err := d.Inventory.Discover(ctx)
-			if err == nil { err = refreshed.Validate() }
-			if err == nil && refreshed.Node != d.Identity.Node { err = errors.New("node: refreshed inventory belongs to another Node") }
-			if err == nil { err = execution.SetInventory(refreshed) }
+			if err == nil {
+				err = refreshed.Validate()
+			}
+			if err == nil && refreshed.Node != d.Identity.Node {
+				err = errors.New("node: refreshed inventory belongs to another Node")
+			}
+			if err == nil {
+				err = execution.SetInventory(refreshed)
+			}
 			if err != nil {
 				inventoryVerified = false
-				if d.Status != nil { d.Status.Connected(nil) }
-				if d.StatusChanged != nil { d.StatusChanged(true, core.HarnessInventorySnapshot{}) }
+				if d.Status != nil {
+					d.Status.Connected(nil)
+				}
+				if d.StatusChanged != nil {
+					d.StatusChanged(true, core.HarnessInventorySnapshot{})
+				}
 				continue
 			}
 			if err := d.flushOutbox(ctx, connection, &sentThrough); err != nil {
@@ -397,8 +528,12 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			sentThrough = sequence
 			inventory = refreshed
 			inventoryVerified = true
-			if d.Status != nil { d.Status.Connected(&inventory) }
-			if d.StatusChanged != nil { d.StatusChanged(true, inventory) }
+			if d.Status != nil {
+				d.Status.Connected(&inventory)
+			}
+			if d.StatusChanged != nil {
+				d.StatusChanged(true, inventory)
+			}
 		}
 	}
 }
