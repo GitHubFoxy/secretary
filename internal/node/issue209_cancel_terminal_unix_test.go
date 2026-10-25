@@ -1420,3 +1420,116 @@ func TestIssue209ClaudeInitializationCloseFailureIsNotProof(t *testing.T) {
 		t.Fatalf("failed native Close incorrectly attested cleanup: %v", err)
 	}
 }
+
+func TestIssue209ClaudeResumeCancelDuringPreNativePreparation(t *testing.T) {
+	for _, stage := range []string{"artifact", "workspace"} {
+		t.Run(stage, func(t *testing.T) {
+			ctx, stop := context.WithTimeout(context.Background(), 12*time.Second)
+			defer stop()
+			store, err := OpenLocalStore(filepath.Join(t.TempDir(), "node.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer store.Close()
+			runtime := &t12HoldRuntime{}
+			execution := NewExecutionNode("macbook", runtime, store)
+			initial := daemonDispatchFixture("macbook", "issue209-preparation-initial")
+			instance := initial.Dispatch.Envelope.HarnessInstance
+			instance.ID = "macbook/claude"
+			instance.Kind = core.HarnessClaudeCode
+			initial.Dispatch.Envelope.HarnessInstance = instance
+			initial.Dispatch.Envelope.Profile = workerTemplateFixture(instance, "", "")
+			initial.Dispatch.Metadata.HarnessInstanceID = instance.ID
+			initial.Dispatch.Envelope.OriginalUserIntent = "initial request"
+			first, err := execution.HandleCommand(ctx, initial)
+			if err != nil || first.State != CommandAccepted {
+				t.Fatalf("initial native Dispatch=%+v err=%v", first, err)
+			}
+			metadata := initial.Metadata()
+			metadata.CommandID = "issue209-preparation-resume-" + stage
+			metadata.AttemptID = "attempt-issue209-preparation-" + stage
+			metadata.TurnID = "turn-issue209-preparation-" + stage
+			metadata.IssuedAt = time.Now().UTC()
+			envelope := initial.Dispatch.Envelope
+			envelope.PreviousAttemptID = initial.Metadata().AttemptID
+			envelope.AttemptID = metadata.AttemptID
+			envelope.TurnID = metadata.TurnID
+			envelope.OriginalUserIntent = "continue"
+			if stage == "artifact" {
+				envelope.OriginalUserIntent = "Read artifact://art_" + strings.Repeat("a", 32)
+			} else {
+				envelope.PreviousAttemptID = "attempt-without-workspace-mapping"
+			}
+			resume := Command{Kind: CommandResume, Resume: &ResumeCommand{Metadata: metadata, Envelope: envelope}}
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			execution.nativeResumePreparationBarrier = func() {
+				close(entered)
+				<-release
+			}
+			type finishedResume struct {
+				outcome CommandOutcome
+				err error
+			}
+			finished := make(chan finishedResume, 1)
+			go func() {
+				outcome, err := execution.HandleCommand(ctx, resume)
+				finished <- finishedResume{outcome: outcome, err: err}
+			}()
+			select {
+			case <-entered:
+			case <-ctx.Done():
+				t.Fatal("Claude Resume never reached pre-native preparation")
+			}
+			cancelMeta := metadata
+			cancelMeta.CommandID = "issue209-preparation-cancel-" + stage
+			cancelMeta.IssuedAt = time.Now().UTC()
+			cancel := Command{Kind: CommandCancel, Cancel: &CancelCommand{Metadata: cancelMeta, Reason: "owner"}}
+			accepted, err := execution.HandleCommand(ctx, cancel)
+			if err != nil || accepted.State != CommandAccepted {
+				t.Fatalf("Cancel in %s preparation=%+v err=%v", stage, accepted, err)
+			}
+			record, err := store.Command(metadata.CommandID)
+			if err != nil || !record.NativeResumeCancelRequested || record.State != CommandProcessing {
+				t.Fatalf("pre-native checkpoint missing: %+v err=%v", record, err)
+			}
+			close(release)
+			select {
+			case result := <-finished:
+				if result.err != nil || result.outcome.State != CommandAccepted {
+					t.Fatalf("accepted Cancel became pre-native failed Resume: %+v err=%v", result.outcome, result.err)
+				}
+			case <-ctx.Done():
+				t.Fatal("pre-native preparation did not finish")
+			}
+			record, err = store.Command(metadata.CommandID)
+			if err != nil || record.State != CommandAccepted || !record.TerminalOutcomeQueued {
+				t.Fatalf("pre-native cancellation did not persist terminal: %+v err=%v", record, err)
+			}
+			if runtime.resumes.Load() != 0 {
+				t.Fatal("pre-native Cancel launched native Resume")
+			}
+			events, err := store.PendingEvents()
+			if err != nil {
+				t.Fatal(err)
+			}
+			count := 0
+			for _, item := range events {
+				if item.EventID != "attempt-outcome-"+metadata.AttemptID {
+					continue
+				}
+				count++
+				var event NodeEvent
+				if err := json.Unmarshal(item.Payload, &event); err != nil {
+					t.Fatal(err)
+				}
+				if event.Outcome == nil || event.Outcome.Status != core.OutcomeCanceled {
+					t.Fatalf("pre-native Cancel published non-canceled terminal: %+v", event)
+				}
+			}
+			if count != 1 {
+				t.Fatalf("pre-native terminal count=%d, want one", count)
+			}
+		})
+	}
+}
