@@ -2,8 +2,23 @@ name: Go tests
 
 on:
   pull_request:
+    paths:
+      - '**/*.go'
+      - go.mod
+      - go.sum
+      - cmd/**
+      - internal/**
+      - scripts/**
+      - web/**
+      - macos/SecretaryNode/**
+      - secretary
+      - .github/workflows/**
   push:
     branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -11,8 +26,9 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
-      GOFLAGS: -p=1
+      GOFLAGS: -p=2
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -21,12 +37,18 @@ jobs:
           cache: true
       - name: Ensure mandatory FFmpeg and ffprobe for video acceptance
         run: |
+          set -euo pipefail
           if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
-            sudo apt-get update
+            sudo apt-get update -qq
             sudo apt-get install -y ffmpeg
           fi
           ffmpeg -version
           ffprobe -version
+      - name: Cache npm downloads for pinned Codex
+        uses: actions/cache@v4
+        with:
+          path: ~/.npm
+          key: official-codex-npm-v0.163.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum') }}
       - name: Install pinned Codex runtime in user-owned CI directory
         run: npm install --prefix "$RUNNER_TEMP/t09-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.163.0
       - name: Native Codex direct Start and persisted same-session Resume
@@ -38,4 +60,4 @@ jobs:
       - name: Verify projectless native Resume survives restart and OS temp cleanup
         run: go test ./internal/node -run '^TestProjectlessNativeResumeAfterRestartAndTempPurge$' -count=1 -timeout=3m -v
       - name: Run Go tests
-        run: go test ./...
+        run: go test ./... -skip '^TestT09(PinnedOfficialCodexStartResume|RealCodexPersistedSessionResume)$'
