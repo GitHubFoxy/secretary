@@ -17,7 +17,7 @@ import (
 
 func TestMAC02ConcurrentCancelTerminalAndCleanupFailure(t *testing.T) {
 	for _, tc := range []struct {
-		name string
+		name       string
 		cleanupErr error
 		wantStatus string
 	}{
@@ -28,11 +28,11 @@ func TestMAC02ConcurrentCancelTerminalAndCleanupFailure(t *testing.T) {
 			entered := make(chan struct{})
 			release := make(chan struct{})
 			s := &claudeSession{
-				id: "same-native-session",
-				active: true,
-				inputID: "attempt-one",
+				id:         "same-native-session",
+				active:     true,
+				inputID:    "attempt-one",
 				claudeRoot: claudeChild{pid: 123},
-				result: make(chan Result, 4),
+				result:     make(chan Result, 4),
 				cleanupAttempt: func(context.Context, *exec.Cmd, claudeChild) error {
 					close(entered)
 					<-release
@@ -102,7 +102,7 @@ func TestMAC02ConcurrentCancelTerminalAndCleanupFailure(t *testing.T) {
 func TestMAC02FailedCancelWithMissingProcessStatePersistsTerminal(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		cmd *exec.Cmd
+		cmd  *exec.Cmd
 	}{
 		{name: "nil command"},
 		{name: "uninitialized command", cmd: &exec.Cmd{}},
@@ -110,12 +110,12 @@ func TestMAC02FailedCancelWithMissingProcessStatePersistsTerminal(t *testing.T) 
 		t.Run(tc.name, func(t *testing.T) {
 			cleanupErr := errors.New("native cleanup failed")
 			session := &claudeSession{
-				id: "incomplete-native-session",
-				cmd: tc.cmd,
-				active: true,
-				inputID: "attempt-with-missing-process",
+				id:         "incomplete-native-session",
+				cmd:        tc.cmd,
+				active:     true,
+				inputID:    "attempt-with-missing-process",
 				claudeRoot: claudeChild{pid: 123},
-				result: make(chan Result, 2),
+				result:     make(chan Result, 2),
 				cleanupAttempt: func(context.Context, *exec.Cmd, claudeChild) error {
 					return cleanupErr
 				},

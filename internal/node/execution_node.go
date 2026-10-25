@@ -46,13 +46,13 @@ type ExecutionNode struct {
 	artifactPublisherCommand string
 	// Native Resume may block after durable handoff. Its identity and
 	// cancellation survive WebSocket disconnects, unlike commandCtx.
-	nativeResumes map[string]*nativeResumeAttempt
-	nativeResumeRegistrationBarrier func()
+	nativeResumes                       map[string]*nativeResumeAttempt
+	nativeResumeRegistrationBarrier     func()
 	nativeResumeErrorBeforeFinalization func()
-	nativeResumePreparationBarrier func(context.Context)
-	claudeResumeBeforeInitialPrompt func()
-	nativeResumeStarted map[string]bool
-	preNativeClaudeResumes map[string]context.CancelCauseFunc
+	nativeResumePreparationBarrier      func(context.Context)
+	claudeResumeBeforeInitialPrompt     func()
+	nativeResumeStarted                 map[string]bool
+	preNativeClaudeResumes              map[string]context.CancelCauseFunc
 	// nativeLifetime is the Node process lifetime, not an individual
 	// WebSocket connection or an individual Dispatch command.
 	nativeLifetime context.Context
@@ -942,17 +942,17 @@ func (n *ExecutionNode) completeCanceledClaudeResume(command *ResumeCommand, ses
 		outcome = CommandOutcome{CommandID: metadata.CommandID, Kind: CommandResume, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID, State: CommandInterrupted, ErrorCode: code, ErrorMessage: summary}
 	}
 	terminal := core.AttemptOutcomeEnvelope{
-		EventID: "attempt-outcome-" + metadata.AttemptID,
-		Node: metadata.Node,
+		EventID:           "attempt-outcome-" + metadata.AttemptID,
+		Node:              metadata.Node,
 		HarnessInstanceID: metadata.HarnessInstanceID,
-		WorkerRef: metadata.WorkerRef,
-		TurnID: metadata.TurnID,
-		AttemptID: metadata.AttemptID,
-		Status: status,
-		Classification: core.OutcomeFinal,
-		Summary: summary,
-		ErrorCode: code,
-		OccurredAt: time.Now().UTC(),
+		WorkerRef:         metadata.WorkerRef,
+		TurnID:            metadata.TurnID,
+		AttemptID:         metadata.AttemptID,
+		Status:            status,
+		Classification:    core.OutcomeFinal,
+		Summary:           summary,
+		ErrorCode:         code,
+		OccurredAt:        time.Now().UTC(),
 	}
 	delay := 25 * time.Millisecond
 	for {
@@ -1584,4 +1584,3 @@ func semanticOutputPresent(result string) bool {
 	}
 	return true
 }
-

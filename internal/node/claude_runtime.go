@@ -1,11 +1,11 @@
 package node
 
 import (
-	"encoding/base64"
 	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -42,7 +42,7 @@ type ClaudeCodeRuntime struct {
 	RawLogDir      string
 	RawLogMaxBytes int64
 	RawLogFiles    int
-	captureRoot func(*exec.Cmd) (claudeChild, error)
+	captureRoot    func(*exec.Cmd) (claudeChild, error)
 }
 
 type ClaudeRuntime = ClaudeCodeRuntime
@@ -335,41 +335,41 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 }
 
 type claudeSession struct {
-	id        string
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	stdout    io.ReadCloser
-	stderr    *bytes.Buffer
-	activity  chan Activity
-	result    chan Result
-	ready     chan error
-	stateMu   sync.Mutex
-	writeGate chan struct{}
-	stopOnce  sync.Once
-	stopErr   error
-	claudeRoot claudeChild
-	cleanupAttempt func(context.Context, *exec.Cmd, claudeChild) error
-	canceling bool
-	cancelWait chan struct{}
-	pendingTerminal *Result
-	nativeErrorDuringCancel string
-	failedCancel bool
-	initialPromptPending bool
-	initialPromptWriting bool
-	initialPromptPreempted bool
+	id                           string
+	cmd                          *exec.Cmd
+	stdin                        io.WriteCloser
+	stdout                       io.ReadCloser
+	stderr                       *bytes.Buffer
+	activity                     chan Activity
+	result                       chan Result
+	ready                        chan error
+	stateMu                      sync.Mutex
+	writeGate                    chan struct{}
+	stopOnce                     sync.Once
+	stopErr                      error
+	claudeRoot                   claudeChild
+	cleanupAttempt               func(context.Context, *exec.Cmd, claudeChild) error
+	canceling                    bool
+	cancelWait                   chan struct{}
+	pendingTerminal              *Result
+	nativeErrorDuringCancel      string
+	failedCancel                 bool
+	initialPromptPending         bool
+	initialPromptWriting         bool
+	initialPromptPreempted       bool
 	beforeInitialPromptAdmission func()
-	beforeInitialPromptWrite func()
-	done      chan struct{}
-	closed    bool
-	cancel    bool
-	active    bool
-	inputID   string
-	seen      map[string]bool
-	bashCalls map[string]bool
-	failedBash string
-	failedBashIDs map[string]string
-	sawAssistantText bool
-	sawToolUse bool
+	beforeInitialPromptWrite     func()
+	done                         chan struct{}
+	closed                       bool
+	cancel                       bool
+	active                       bool
+	inputID                      string
+	seen                         map[string]bool
+	bashCalls                    map[string]bool
+	failedBash                   string
+	failedBashIDs                map[string]string
+	sawAssistantText             bool
+	sawToolUse                   bool
 }
 
 func (s *claudeSession) ID() string                { return s.id }
@@ -829,10 +829,11 @@ func (s *claudeSession) handleLine(line []byte) {
 		}
 	}
 }
+
 type claudeTaskVerdict struct {
-	status string
-	reason string
-	recovered []string
+	status       string
+	reason       string
+	recovered    []string
 	userResponse string
 }
 

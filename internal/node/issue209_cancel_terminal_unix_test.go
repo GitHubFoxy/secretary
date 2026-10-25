@@ -12,9 +12,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -58,13 +58,13 @@ func issue209ClaudeCancelDaemonLifecycle(t *testing.T, nativeError bool) {
 		t.Fatal(err)
 	}
 	instance := core.HarnessInstance{
-		ID: core.HarnessInstanceID(string(identity.Node) + "/claude"),
-		Node: identity.Node,
-		Kind: core.HarnessClaudeCode,
-		Version: "1.2.3",
+		ID:             core.HarnessInstanceID(string(identity.Node) + "/claude"),
+		Node:           identity.Node,
+		Kind:           core.HarnessClaudeCode,
+		Version:        "1.2.3",
 		Authentication: core.HarnessAuthentication{Authenticated: true, Method: "local"},
-		Status: core.HarnessReady,
-		Capabilities: core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityCancel}, Activity: []core.ActivityCapability{core.ActivityStatus}},
+		Status:         core.HarnessReady,
+		Capabilities:   core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityCancel}, Activity: []core.ActivityCapability{core.ActivityStatus}},
 	}
 	inventory := core.HarnessInventorySnapshot{Node: identity.Node, ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{instance}}
 	worker, turn, attempt, err := serverStore.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
@@ -120,9 +120,9 @@ while read line; do :; done
 	defer nodeStore.Close()
 	daemon := &Daemon{
 		Identity: identity, Store: nodeStore,
-		Runtime: ClaudeCodeRuntime{Command: launcher, Environment: []string{"ISSUE209_SHELL_PID=" + shellPIDFile, "ISSUE209_ROOT_PID=" + rootPIDFile, "ISSUE209_NATIVE_ERROR_RELEASE=" + nativeErrorRelease}},
+		Runtime:   ClaudeCodeRuntime{Command: launcher, Environment: []string{"ISSUE209_SHELL_PID=" + shellPIDFile, "ISSUE209_ROOT_PID=" + rootPIDFile, "ISSUE209_NATIVE_ERROR_RELEASE=" + nativeErrorRelease}},
 		Inventory: daemonStaticInventory{snapshot: inventory},
-		Capacity: 2, HeartbeatInterval: 20 * time.Millisecond, OutboxPollInterval: 10 * time.Millisecond,
+		Capacity:  2, HeartbeatInterval: 20 * time.Millisecond, OutboxPollInterval: 10 * time.Millisecond,
 		ReconnectMin: 10 * time.Millisecond, ReconnectMax: 40 * time.Millisecond,
 	}
 	nodeCtx, stopNode := context.WithCancel(ctx)
@@ -1113,7 +1113,7 @@ func TestIssue209ClaudeNativeResumeCancelProducesCanonicalCanceledResult(t *test
 	resume := Command{Kind: CommandResume, Resume: &ResumeCommand{Metadata: resumeMetadata, Envelope: envelope}}
 	type finishedResume struct {
 		outcome CommandOutcome
-		err error
+		err     error
 	}
 	finished := make(chan finishedResume, 1)
 	go func() {
@@ -1401,7 +1401,7 @@ func issue209NativeResumeUnverifiedCleanup(t *testing.T, afterNativeError bool) 
 	resume := Command{Kind: CommandResume, Resume: &ResumeCommand{Metadata: resumeMeta, Envelope: resumeEnvelope}}
 	type completed struct {
 		outcome CommandOutcome
-		err error
+		err     error
 	}
 	finished := make(chan completed, 1)
 	go func() {
@@ -1559,7 +1559,7 @@ func TestIssue209ClaudeResumeCancelDuringPreNativePreparation(t *testing.T) {
 			}
 			type finishedResume struct {
 				outcome CommandOutcome
-				err error
+				err     error
 			}
 			finished := make(chan finishedResume, 1)
 			go func() {
