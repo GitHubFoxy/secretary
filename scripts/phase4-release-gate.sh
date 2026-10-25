@@ -69,7 +69,7 @@ if [[ "${GITHUB_EVENT_NAME:-}" == "pull_request" ]]; then
   base_ref="refs/remotes/origin/${GITHUB_BASE_REF:?GITHUB_BASE_REF is required}"
   git rev-parse --verify -q "${base_ref}^{commit}" >/dev/null || { printf 'Cannot resolve asset PR base: %s\n' "$base_ref" >&2; exit 1; }
   merge_base="$(git merge-base "$base_ref" HEAD)" || exit 1
-  changed_assets="$(git diff --name-only "$merge_base" HEAD -- web package.json package-lock.json scripts/phase4-release-gate.sh scripts/phase4-release-gate-test.sh scripts/phase4-asset-scope-check.sh scripts/phase4-asset-scope-check-test.sh)" || exit 1
+  changed_assets="$(git diff --name-only "$merge_base" HEAD -- web package.json package-lock.json vite.config.js)" || exit 1
   if [[ -z "$changed_assets" ]]; then
     asset_equality_required=0
     printf 'PR asset equality: skipped for unchanged web/build inputs; production builds remain mandatory\n'
