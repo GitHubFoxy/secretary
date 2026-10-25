@@ -21,10 +21,11 @@ type issue209BlockedClaudeStdin struct {
 	started          chan struct{}
 	closed           chan struct{}
 	closeOnce        sync.Once
-	successfulWrites atomic.Int32
+	writeAttempts   atomic.Int32
 }
 
 func (w *issue209BlockedClaudeStdin) Write([]byte) (int, error) {
+	w.writeAttempts.Add(1)
 	select {
 	case w.started <- struct{}{}:
 	default:
@@ -206,8 +207,13 @@ func TestIssue209CancelBlockedFirstClaudeStdinWriteStopsCLIAndPublishesTerminal(
 	if cmd.ProcessState == nil {
 		t.Fatal("Claude CLI was not reaped")
 	}
-	if writer.successfulWrites.Load() != 0 {
-		t.Fatal("native Prompt was injected after accepted Cancel")
+	if got := writer.writeAttempts.Load(); got != 1 {
+		t.Fatalf("expected only the blocked initial native stdin write, got %d write attempts", got)
 	}
-
+	if err := session.Prompt(ctx, "late Prompt after accepted Cancel"); err == nil {
+		t.Fatal("Claude Session accepted a new Prompt after Cancel")
+	}
+	if got := writer.writeAttempts.Load(); got != 1 {
+		t.Fatalf("native stdin write attempted after accepted Cancel: %d total writes, want only the initial blocked write", got)
+	}
 }
