@@ -14,6 +14,7 @@ import (
 	"strings"
 	"syscall"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -633,14 +634,43 @@ while read line; do :; done
 }
 
 func TestIssue209DaemonSameSocketCancelWhileClaudeResumeBlocked(t *testing.T) {
-	issue209SameSocketClaudeResumeCancel(t, false)
+	issue209SameSocketClaudeResumeCancel(t, false, false)
 }
 
 func TestIssue209DaemonCancelDuringHandoffRegistrationWindow(t *testing.T) {
-	issue209SameSocketClaudeResumeCancel(t, true)
+	issue209SameSocketClaudeResumeCancel(t, true, false)
 }
 
-func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration bool) {
+func TestIssue209DaemonCancelRegisteredClaudeResumeSession(t *testing.T) {
+	issue209SameSocketClaudeResumeCancel(t, false, true)
+}
+
+type issue209ReadyResumeSession struct {
+	*t12HoldSession
+	cancels atomic.Int32
+}
+
+func (s *issue209ReadyResumeSession) Cancel(context.Context) error {
+	s.cancels.Add(1)
+	s.result <- Result{Status: "canceled", Summary: "Claude native attempt canceled after cleanup"}
+	return nil
+}
+
+type issue209ReadyResumeRuntime struct {
+	*t12RemoteStalledResumeRuntime
+	active *issue209ReadyResumeSession
+}
+
+func (r *issue209ReadyResumeRuntime) Resume(ctx context.Context, request StartRequest, nativeID string) (Session, error) {
+	session, err := r.t12RemoteStalledResumeRuntime.Resume(ctx, request, nativeID)
+	if err != nil {
+		return nil, err
+	}
+	r.active = &issue209ReadyResumeSession{t12HoldSession: session.(*t12HoldSession)}
+	return r.active, nil
+}
+
+func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration, readySession bool) {
 	ctx, stop := context.WithTimeout(context.Background(), 15*time.Second)
 	defer stop()
 	serverStore, err := core.Open(ctx, filepath.Join(t.TempDir(), "server.db"))
@@ -673,6 +703,12 @@ func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration bool) 
 	instance.ID = core.HarnessInstanceID(string(identity.Node) + "/claude")
 	inventory := core.HarnessInventorySnapshot{Node: identity.Node, ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{instance}}
 	runtime := &t12RemoteStalledResumeRuntime{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	var provider Runtime = runtime
+	var activeRuntime *issue209ReadyResumeRuntime
+	if readySession {
+		activeRuntime = &issue209ReadyResumeRuntime{t12RemoteStalledResumeRuntime: runtime}
+		provider = activeRuntime
+	}
 	defer func() {
 		select {
 		case <-runtime.release:
@@ -689,7 +725,7 @@ func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration bool) 
 	}
 	defer local.Close()
 	daemon := &Daemon{
-		Identity: identity, Store: local, Runtime: runtime, Inventory: daemonStaticInventory{snapshot: inventory},
+		Identity: identity, Store: local, Runtime: provider, Inventory: daemonStaticInventory{snapshot: inventory},
 		Capacity: 2, HeartbeatInterval: 20 * time.Millisecond, OutboxPollInterval: 10 * time.Millisecond,
 		ReconnectMin: 10 * time.Millisecond, ReconnectMax: 40 * time.Millisecond,
 	}
@@ -779,7 +815,19 @@ func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration bool) 
 	if err := manager.SendCommand(ctx, identity.Node, resume); err != nil {
 		t.Fatal(err)
 	}
-	if pauseRegistration {
+	if readySession {
+		select {
+		case <-runtime.entered:
+		case <-ctx.Done():
+			t.Fatal("Claude native Resume never entered")
+		}
+		close(runtime.release)
+		waitFor(t, ctx, "registered Claude Resume readiness", func() bool {
+			record, err := local.Command(resumeMetadata.CommandID)
+			_, mapped := local.SessionMapping(resumeMetadata.AttemptID)
+			return err == nil && record.Outcome.State == CommandAccepted && mapped
+		})
+	} else if pauseRegistration {
 		select {
 		case <-handoffEntered:
 		case <-ctx.Done():
@@ -844,24 +892,39 @@ func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration bool) 
 		t.Fatal("Cancel required a WebSocket reconnect")
 	}
 	after, err := local.Command(resumeMetadata.CommandID)
-	if err != nil || !after.NativeResumeCancelRequested || after.State != CommandProcessing {
-		t.Fatalf("Cancel missed in-flight native Resume: %+v err=%v", after, err)
-	}
-	if runtime.Context() == nil || runtime.Context().Err() == nil {
-		t.Fatal("Cancel did not cancel daemon-owned native Resume")
+	if readySession {
+		if err != nil || after.NativeResumeCancelRequested {
+			t.Fatalf("registered Claude Session fell back to native Resume checkpoint: %+v err=%v", after, err)
+		}
+		if activeRuntime.active == nil || activeRuntime.active.cancels.Load() != 1 {
+			t.Fatal("active Claude Session did not receive exactly one native Cancel")
+		}
+	} else {
+		if err != nil || !after.NativeResumeCancelRequested || after.State != CommandProcessing {
+			t.Fatalf("Cancel missed in-flight native Resume: %+v err=%v", after, err)
+		}
+		if runtime.Context() == nil || runtime.Context().Err() == nil {
+			t.Fatal("Cancel did not cancel daemon-owned native Resume")
+		}
 	}
 	details, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 	if err != nil || details.CurrentAttempt() == nil || details.CurrentAttempt().State.Terminal() {
 		t.Fatalf("Cancel receipt fabricated terminal before native returned: %+v err=%v", details, err)
 	}
-	close(runtime.release)
+	if !readySession {
+		close(runtime.release)
+	}
 	waitFor(t, ctx, "same-socket canceled Server Result", func() bool {
 		details, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 		return err == nil && details.CurrentAttempt() != nil && details.CurrentAttempt().State == core.AttemptCanceled &&
 			len(details.Results) == 2 && details.Results[1].Status == core.ResultCanceled
 	})
 	record, err := local.Command(resumeMetadata.CommandID)
-	if err != nil || record.State != CommandAccepted || !record.TerminalOutcomeQueued {
+	if readySession {
+		if err != nil || record.Outcome.State != CommandAccepted {
+			t.Fatalf("active Resume readiness not durable: %+v err=%v", record, err)
+		}
+	} else if err != nil || record.State != CommandAccepted || !record.TerminalOutcomeQueued {
 		t.Fatalf("same-socket terminal not durable: %+v err=%v", record, err)
 	}
 	entries, err := serverStore.EntriesAfter(ctx, conversation.ID, 0)
