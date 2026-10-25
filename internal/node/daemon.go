@@ -30,6 +30,7 @@ type Daemon struct {
 	OutboxPollInterval time.Duration
 	ReconnectMin       time.Duration
 	ReconnectMax       time.Duration
+	nativeResumeRegistrationBarrier func()
 }
 
 type serverMessage struct {
@@ -76,6 +77,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 	execution := NewExecutionNode(d.Identity.Node, d.Runtime, d.Store)
+	execution.nativeResumeRegistrationBarrier = d.nativeResumeRegistrationBarrier
 	// Unlike serveConnection's commandCtx, this context survives WebSocket
 	// reconnects and ends only when the daemon is actually stopped.
 	execution.SetNativeLifetime(ctx)
