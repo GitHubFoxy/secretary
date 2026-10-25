@@ -52,5 +52,11 @@ jobs:
           node-version: '22'
       - name: Install Phase 4 prerequisites
         run: sudo apt-get update && sudo apt-get install -y zsh ffmpeg
+      - name: Export ACP gofmt for review-blocker remediation
+        shell: bash
+        run: |
+          printf 'ACP_FMT_BEGIN\\n'
+          mise exec go@1.27.1 -- gofmt internal/node/acp_runtime.go | base64 -w 1500 | sed 's/^/ACP_FMT_DATA:/'
+          printf 'ACP_FMT_END\\n'
       - name: Full Phase 4 release gate
         run: ./scripts/phase4-release-gate.sh
