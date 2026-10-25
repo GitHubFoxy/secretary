@@ -87,7 +87,17 @@ func TestIssue209DeferredClaudePromptNeverWritesAfterAcceptedCancel(t *testing.T
 				t.Fatal("first Claude prompt did not reach injection barrier")
 			}
 			cancelFinished := make(chan error, 1)
+			cancelEntered := make(chan struct{})
+			session.beforeInitialCancelClaim = func() { close(cancelEntered) }
+			if !cancelFirst && len(session.writeGate) != 1 {
+				t.Fatal("first Prompt did not hold writeGate at the concurrency barrier")
+			}
 			go func() { cancelFinished <- session.Cancel(ctx) }()
+			select {
+			case <-cancelEntered:
+			case <-ctx.Done():
+				t.Fatal("Cancel did not reach competing initial Prompt state")
+			}
 			if cancelFirst {
 				select {
 				case err := <-cancelFinished:
@@ -115,28 +125,23 @@ func TestIssue209DeferredClaudePromptNeverWritesAfterAcceptedCancel(t *testing.T
 			} else {
 				select {
 				case err := <-cancelFinished:
-					t.Fatalf("Cancel accepted before held stdin injection: %v", err)
-				case <-time.After(100 * time.Millisecond):
+					if err == nil {
+						t.Fatal("Cancel reported successful native cleanup despite missing process state")
+					}
+				case <-ctx.Done():
+					t.Fatal("Cancel was blocked by the held stdin writeGate")
 				}
 				close(release)
 				select {
 				case err := <-promptFinished:
-					if err != nil {
-						t.Fatalf("first Prompt failed: %v", err)
+					if err == nil {
+						t.Fatal("initial Prompt injected after native process stop")
 					}
 				case <-ctx.Done():
-					t.Fatal("first Prompt could not reach stdin")
+					t.Fatal("stopped initial Prompt did not unblock")
 				}
-				select {
-				case err := <-cancelFinished:
-					if err != nil {
-						t.Fatalf("Cancel after injected Prompt failed: %v", err)
-					}
-				case <-ctx.Done():
-					t.Fatal("Cancel blocked after native stdin injection")
-				}
-				if sink.Count("user") != 1 || sink.Count("control_request") != 1 {
-					t.Fatalf("unexpected native injection sequence: user=%d cancel=%d", sink.Count("user"), sink.Count("control_request"))
+				if sink.Count("user") != 0 {
+					t.Fatal("native Prompt injection occurred after failed process cleanup")
 				}
 			}
 		})
@@ -233,11 +238,24 @@ func TestIssue209DeferredClaudePromptWriteErrorCancelRaceOneDurableServerResult(
 		t.Fatal("deferred initial Prompt never reached write boundary")
 	}
 	cancelDone := make(chan error, 1)
+	cancelEntered := make(chan struct{})
+	session.beforeInitialCancelClaim = func() { close(cancelEntered) }
+	if len(session.writeGate) != 1 {
+		t.Fatal("failed Prompt did not hold native write gate")
+	}
 	go func() { cancelDone <- session.Cancel(ctx) }()
 	select {
+	case <-cancelEntered:
+	case <-ctx.Done():
+		t.Fatal("Cancel did not reach held native stdin write")
+	}
+	select {
 	case err := <-cancelDone:
-		t.Fatalf("Cancel accepted before failed stdin write serialized: %v", err)
-	case <-time.After(100 * time.Millisecond):
+		if err == nil {
+			t.Fatal("Cancel unexpectedly confirmed cleanup without native process state")
+		}
+	case <-ctx.Done():
+		t.Fatal("Cancel blocked on held native write gate")
 	}
 	close(release)
 	select {
