@@ -15,13 +15,21 @@ on:
       - 'scripts/phase4-gofmt-check.sh'
       - 'scripts/phase4-gofmt-check-test.sh'
       - '.github/workflows/issue209-claude-cancel.yml'
+  push:
+    branches:
+      - main
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
   issue209-tests:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -38,6 +46,7 @@ jobs:
         run: go test -race ./internal/node ./internal/core ./internal/ctl
 
   phase4-release-gate:
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
