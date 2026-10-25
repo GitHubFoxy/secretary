@@ -735,7 +735,11 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		n.mu.Unlock()
 		return n.completeCanceledClaudeResume(command, nil, nil, true)
 	}
-	nativeCtx, nativeCancel := context.WithCancel(n.nativeStartContext(ctx))
+	lifetime := n.nativeLifetime
+	if lifetime == nil {
+		lifetime = ctx
+	}
+	nativeCtx, nativeCancel := context.WithCancel(lifetime)
 	pending := &nativeResumeAttempt{commandID: command.Metadata.CommandID, workerRef: command.Metadata.WorkerRef, cancel: nativeCancel}
 	if n.nativeResumes[command.Metadata.AttemptID] != nil {
 		n.mu.Unlock()
