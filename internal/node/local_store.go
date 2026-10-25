@@ -1042,17 +1042,6 @@ func (s *LocalStore) RecoverRunning(ctx context.Context, inspector ProcessInspec
 	return nil
 }
 
-func isClaudeLifecycleCommand(command Command) bool {
-	switch command.Kind {
-	case CommandDispatch:
-		return command.Dispatch != nil && command.Dispatch.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode
-	case CommandResume:
-		return command.Resume != nil && command.Resume.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode
-	default:
-		return false
-	}
-}
-
 func (s *LocalStore) pendingTerminalOutcome(commandID string, metadata core.CommandMetadata) (core.AttemptOutcomeEnvelope, bool, error) {
 	eventID := "attempt-outcome-" + metadata.AttemptID
 	events, err := s.PendingEvents()
