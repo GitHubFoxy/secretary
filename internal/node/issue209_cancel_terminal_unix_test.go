@@ -592,6 +592,14 @@ while read line; do :; done
 }
 
 func TestIssue209DaemonSameSocketCancelWhileClaudeResumeBlocked(t *testing.T) {
+	issue209SameSocketClaudeResumeCancel(t, false)
+}
+
+func TestIssue209DaemonCancelDuringHandoffRegistrationWindow(t *testing.T) {
+	issue209SameSocketClaudeResumeCancel(t, true)
+}
+
+func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration bool) {
 	ctx, stop := context.WithTimeout(context.Background(), 15*time.Second)
 	defer stop()
 	serverStore, err := core.Open(ctx, filepath.Join(t.TempDir(), "server.db"))
@@ -644,6 +652,14 @@ func TestIssue209DaemonSameSocketCancelWhileClaudeResumeBlocked(t *testing.T) {
 		Capacity: 2, HeartbeatInterval: 20 * time.Millisecond, OutboxPollInterval: 10 * time.Millisecond,
 		ReconnectMin: 10 * time.Millisecond, ReconnectMax: 40 * time.Millisecond,
 	}
+	handoffEntered := make(chan struct{})
+	handoffReleased := make(chan struct{})
+	if pauseRegistration {
+		daemon.nativeResumeRegistrationBarrier = func() {
+			close(handoffEntered)
+			<-handoffReleased
+		}
+	}
 	daemonCtx, stopDaemon := context.WithCancel(ctx)
 	daemonDone := make(chan error, 1)
 	go func() { daemonDone <- daemon.Run(daemonCtx) }()
@@ -658,6 +674,15 @@ func TestIssue209DaemonSameSocketCancelWhileClaudeResumeBlocked(t *testing.T) {
 			t.Error("daemon did not stop")
 		}
 	}()
+	if pauseRegistration {
+		defer func() {
+			select {
+			case <-handoffReleased:
+			default:
+				close(handoffReleased)
+			}
+		}()
+	}
 	waitFor(t, ctx, "authenticated same-socket Claude Node", func() bool {
 		manager.mu.Lock()
 		connected := manager.connections[identity.Node] != nil
@@ -713,10 +738,18 @@ func TestIssue209DaemonSameSocketCancelWhileClaudeResumeBlocked(t *testing.T) {
 	if err := manager.SendCommand(ctx, identity.Node, resume); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-runtime.entered:
-	case <-ctx.Done():
-		t.Fatal("Claude native Resume never entered")
+	if pauseRegistration {
+		select {
+		case <-handoffEntered:
+		case <-ctx.Done():
+			t.Fatal("Claude Resume did not reach handoff-registration window")
+		}
+	} else {
+		select {
+		case <-runtime.entered:
+		case <-ctx.Done():
+			t.Fatal("Claude native Resume never entered")
+		}
 	}
 	manager.mu.Lock()
 	socketBefore := manager.connections[identity.Node]
@@ -738,7 +771,29 @@ func TestIssue209DaemonSameSocketCancelWhileClaudeResumeBlocked(t *testing.T) {
 	cancel := Command{Kind: CommandCancel, Cancel: &CancelCommand{Metadata: cancelMetadata, Reason: "owner"}}
 	cancelCtx, cancelStop := context.WithTimeout(ctx, 2*time.Second)
 	defer cancelStop()
-	if err := manager.SendCommandAndWait(cancelCtx, identity.Node, cancel); err != nil {
+	if pauseRegistration {
+		cancelOutcome := make(chan error, 1)
+		go func() { cancelOutcome <- manager.SendCommandAndWait(cancelCtx, identity.Node, cancel) }()
+		select {
+		case <-cancelOutcome:
+			t.Fatal("Cancel replied before handoff-registration barrier released")
+		case <-time.After(100 * time.Millisecond):
+		}
+		close(handoffReleased)
+		select {
+		case <-runtime.entered:
+		case <-ctx.Done():
+			t.Fatal("Claude native Resume failed to enter after releasing handoff barrier")
+		}
+		select {
+		case err := <-cancelOutcome:
+			if err != nil {
+				t.Fatalf("Cancel blocked in native Resume registration window: %v", err)
+			}
+		case <-cancelCtx.Done():
+			t.Fatal("Cancel blocked in native Resume registration window")
+		}
+	} else if err := manager.SendCommandAndWait(cancelCtx, identity.Node, cancel); err != nil {
 		t.Fatalf("Cancel blocked behind native Resume on one socket: %v", err)
 	}
 	manager.mu.Lock()
