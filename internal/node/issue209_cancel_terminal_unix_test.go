@@ -21,6 +21,14 @@ import (
 )
 
 func TestIssue209ClaudeCancelWithoutNativeTerminalPersistsAfterServerReopen(t *testing.T) {
+	issue209ClaudeCancelDaemonLifecycle(t, false)
+}
+
+func TestIssue209ClaudeNativeErrorAfterAcceptedCancelCreatesCanceledServerResult(t *testing.T) {
+	issue209ClaudeCancelDaemonLifecycle(t, true)
+}
+
+func issue209ClaudeCancelDaemonLifecycle(t *testing.T, nativeError bool) {
 	ctx, stop := context.WithTimeout(context.Background(), 15*time.Second)
 	defer stop()
 	dir := t.TempDir()
@@ -86,7 +94,9 @@ func TestIssue209ClaudeCancelWithoutNativeTerminalPersistsAfterServerReopen(t *t
 	})
 	launcher := filepath.Join(dir, "claude")
 	shellPIDFile := filepath.Join(dir, "shell.pid")
+	rootPIDFile := filepath.Join(dir, "claude.pid")
 	script := `#!/bin/sh
+echo $ > "$ISSUE209_ROOT_PID"
 read prompt
 /bin/sh -c 'sleep 180 & wait' &
 echo $! > "$ISSUE209_SHELL_PID"
@@ -94,6 +104,9 @@ printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"
 read interrupt
 while read line; do :; done
 `
+	if nativeError {
+		script = strings.Replace(script, "read interrupt\n", "read interrupt\nprintf '%s\\n' '{\"type\":\"error\",\"error\":\"native cancellation response\"}'\n", 1)
+	}
 	if err := os.WriteFile(launcher, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +117,7 @@ while read line; do :; done
 	defer nodeStore.Close()
 	daemon := &Daemon{
 		Identity: identity, Store: nodeStore,
-		Runtime: ClaudeCodeRuntime{Command: launcher, Environment: []string{"ISSUE209_SHELL_PID=" + shellPIDFile}},
+		Runtime: ClaudeCodeRuntime{Command: launcher, Environment: []string{"ISSUE209_SHELL_PID=" + shellPIDFile, "ISSUE209_ROOT_PID=" + rootPIDFile}},
 		Inventory: daemonStaticInventory{snapshot: inventory},
 		Capacity: 2, HeartbeatInterval: 20 * time.Millisecond, OutboxPollInterval: 10 * time.Millisecond,
 		ReconnectMin: 10 * time.Millisecond, ReconnectMax: 40 * time.Millisecond,
@@ -181,6 +194,24 @@ while read line; do :; done
 		details, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 		return err == nil && details.CurrentAttempt().State == core.AttemptCanceled && len(details.Results) == 1 && details.Results[0].Status == core.ResultCanceled
 	})
+	if nativeError {
+		data, err := os.ReadFile(rootPIDFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rootPID, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		waitFor(t, ctx, "Claude CLI exit after native error", func() bool {
+			processes, inspectErr := claudeProcessSnapshot()
+			if inspectErr != nil {
+				return false
+			}
+			process, exists := processes[rootPID]
+			return !exists || strings.HasPrefix(process.state, "Z")
+		})
+	}
 	if err := manager.SendCommandAndWait(ctx, identity.Node, cancelCommand); err != nil {
 		t.Fatal(err)
 	}
