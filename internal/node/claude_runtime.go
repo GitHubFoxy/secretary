@@ -347,7 +347,8 @@ type claudeSession struct {
 	canceling bool
 	cancelWait chan struct{}
 	pendingTerminal *Result
-	nativeErrorDuringCancel bool
+	nativeErrorDuringCancel string
+	failedCancel bool
 	done      chan struct{}
 	closed    bool
 	cancel    bool
@@ -386,7 +387,8 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 	}
 	s.active = true
 	s.cancel = false
-	s.nativeErrorDuringCancel = false
+	s.nativeErrorDuringCancel = ""
+	s.failedCancel = false
 	s.inputID = id
 	s.bashCalls = make(map[string]bool)
 	s.failedBash = ""
@@ -459,6 +461,7 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	s.stateMu.Lock()
 	if err != nil && s.active && s.inputID == attempt {
 		s.cancel = false
+		s.failedCancel = true
 	}
 	s.canceling = false
 	pending := s.pendingTerminal
@@ -473,11 +476,14 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	}
 	stalled := err == nil && pending == nil && s.active && s.cancel && s.inputID == attempt
 	nativeError := s.nativeErrorDuringCancel
-	s.nativeErrorDuringCancel = false
+	s.nativeErrorDuringCancel = ""
 	close(s.cancelWait)
 	s.cancelWait = nil
 	s.stateMu.Unlock()
-	if stalled && nativeError {
+	if nativeError != "" && err != nil {
+		_ = s.stopProcess()
+		s.emitResult(Result{Status: "failed", Summary: nativeError, FailureCode: "cancel_failed", Technical: err.Error()})
+	} else if stalled && nativeError != "" {
 		_ = s.stopProcess()
 	} else if stalled {
 		go s.stopStalledCanceledAttempt(attempt)
@@ -712,11 +718,19 @@ func (s *claudeSession) handleLine(line []byte) {
 		}
 		s.emitResult(result)
 	case "error":
+		summary := valueString(record["error"])
+		if summary == "" {
+			summary = valueString(record["message"])
+		}
+		if summary == "" {
+			summary = "Claude Code native error"
+		}
 		s.stateMu.Lock()
 		canceled := s.cancel
 		canceling := s.canceling
+		failedCancel := s.failedCancel
 		if canceled && canceling {
-			s.nativeErrorDuringCancel = true
+			s.nativeErrorDuringCancel = summary
 		}
 		s.stateMu.Unlock()
 		if canceled {
@@ -725,9 +739,8 @@ func (s *claudeSession) handleLine(line []byte) {
 			}
 			return
 		}
-		summary := valueString(record["error"])
-		if summary == "" {
-			summary = valueString(record["message"])
+		if failedCancel {
+			_ = s.stopProcess()
 		}
 		s.emitResult(Result{Status: "failed", Summary: summary})
 	}
