@@ -1,0 +1,49 @@
+name: Issue 209 Claude Cancel regressions
+
+on:
+  pull_request:
+    paths:
+      - 'internal/node/claude_runtime.go'
+      - 'internal/node/daemon.go'
+      - 'internal/node/execution_node.go'
+      - 'internal/node/local_store.go'
+      - 'internal/node/issue209_*'
+      - 'docs/architecture/runtime-contracts.md'
+      - '.github/workflows/issue209-claude-cancel.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  issue209-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GOFLAGS: -p=1
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Issue 209 lifecycle and daemon protocol regressions
+        run: go test ./internal/node -run '^TestIssue209' -count=1
+      - name: Race detector for Node Server and CLI lifecycle
+        run: go test -race ./internal/node ./internal/core ./internal/ctl
+
+  phase4-release-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v5
+      - uses: jdx/mise-action@v3
+        with:
+          install: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Phase 4 prerequisites
+        run: sudo apt-get update && sudo apt-get install -y zsh ffmpeg
+      - name: Full Phase 4 release gate
+        run: ./scripts/phase4-release-gate.sh
