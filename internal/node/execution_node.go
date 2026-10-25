@@ -771,9 +771,15 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 			} else {
 				outcome = failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 			}
-			if _, persistErr := n.store.CompleteCommand(command.Metadata.CommandID, outcome); persistErr != nil {
-				n.mu.Unlock()
-				return outcome
+			delay := 25 * time.Millisecond
+			for {
+				if _, persistErr := n.store.CompleteCommand(command.Metadata.CommandID, outcome); persistErr == nil {
+					break
+				}
+				time.Sleep(delay)
+				if delay < time.Second {
+					delay *= 2
+				}
 			}
 		}
 		delete(n.nativeResumes, command.Metadata.AttemptID)
