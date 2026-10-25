@@ -211,6 +211,7 @@ case "$1:$2" in
 esac
 EOF
 chmod +x "$FAKE_BIN/codex-acp" "$FAKE_BIN/fx" "$FAKE_BIN/opencode"
+"$ROOT/scripts/create-native-acp-fixture.sh" "$TEST_HOME/.local"
 
 "$ROOT/scripts/phase5-setup-test.sh"
 
