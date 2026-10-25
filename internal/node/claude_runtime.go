@@ -531,8 +531,16 @@ func (s *claudeSession) stopProcess() error {
 		s.stateMu.Lock()
 		s.closed = true
 		s.stateMu.Unlock()
-		_ = s.stdin.Close()
-		_ = s.stdout.Close()
+		if s.stdin != nil {
+			_ = s.stdin.Close()
+		}
+		if s.stdout != nil {
+			_ = s.stdout.Close()
+		}
+		if s.cmd == nil || s.cmd.Process == nil {
+			s.stopErr = errors.New("claude: native process identity unavailable for termination")
+			return
+		}
 		s.stopErr = killClaudeProcess(s.cmd)
 	})
 	return s.stopErr
