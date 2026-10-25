@@ -517,7 +517,7 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	}
 	var err error
 	if writingInitialPrompt {
-		err = s.Close()
+		err = s.stopProcess()
 	}
 	if err == nil && root.pid == 0 {
 		err = errors.New("Claude root process identity was not captured")
