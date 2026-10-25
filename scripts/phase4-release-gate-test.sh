@@ -21,6 +21,11 @@ bash -n "$ROOT/scripts/phase4-gofmt-check-test.sh" || fail "Phase 4 gofmt scope 
 grep -Fq 'bash ./scripts/phase4-gofmt-check.sh' "$GATE" || fail "gate does not run the scoped gofmt checker"
 bash "$ROOT/scripts/phase4-gofmt-check-test.sh" || fail "gofmt scope regression failed"
 
+grep -Fq 'asset_equality_required=1' "$GATE" || fail "missing strict default asset equality"
+grep -Fq 'if (( asset_equality_required )); then' "$GATE" || fail "missing conditional asset equality"
+grep -Fq 'git diff --name-only "$merge_base" HEAD -- web package.json package-lock.json vite.config.js' "$GATE" || fail "missing web/build PR scope"
+grep -Fq 'test -s "$built"' "$GATE" || fail "production asset existence check missing"
+
 for command in \
   'test -p 1 ./...' \
   'test -race -p 1 ./...' \
