@@ -49,6 +49,8 @@ type ExecutionNode struct {
 	nativeResumes map[string]*nativeResumeAttempt
 	nativeResumeRegistrationBarrier func()
 	nativeResumeErrorBeforeFinalization func()
+	nativeResumePreparationBarrier func()
+	nativeResumeStarted map[string]bool
 	// nativeLifetime is the Node process lifetime, not an individual
 	// WebSocket connection or an individual Dispatch command.
 	nativeLifetime context.Context
@@ -62,7 +64,7 @@ type nativeResumeAttempt struct {
 }
 
 func NewExecutionNode(node core.NodeReference, runtime Runtime, store *LocalStore) *ExecutionNode {
-	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, nativeResumes: map[string]*nativeResumeAttempt{}, activitySequences: map[string]uint64{}, workspaces: map[string]string{}}
+	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, nativeResumes: map[string]*nativeResumeAttempt{}, nativeResumeStarted: map[string]bool{}, activitySequences: map[string]uint64{}, workspaces: map[string]string{}}
 }
 
 // SetNativeLifetime binds accepted native sessions to the Node daemon
@@ -183,6 +185,13 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 		}
 		return bindCommandOutcomeIdentity(record.Outcome, command), nil
 	}
+	if command.Kind == CommandResume && command.Resume.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
+		defer func() {
+			n.mu.Lock()
+			delete(n.nativeResumeStarted, command.Metadata().AttemptID)
+			n.mu.Unlock()
+		}()
+	}
 	var outcome CommandOutcome
 	switch command.Kind {
 	case CommandDispatch:
@@ -206,7 +215,7 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 			return CommandOutcome{}, recordErr
 		}
 		if record.State == CommandProcessing && record.NativeResumeCancelRequested &&
-			n.nativeResumes[command.Metadata().AttemptID] == nil && n.sessions[command.Metadata().AttemptID] == nil {
+			!n.nativeResumeStarted[command.Metadata().AttemptID] && n.sessions[command.Metadata().AttemptID] == nil {
 			outcome = n.completeCanceledClaudeResume(command.Resume, nil, nil, true)
 			n.mu.Unlock()
 			return outcome, nil
@@ -681,6 +690,9 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	if !ok {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
 	}
+	if command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode && n.nativeResumePreparationBarrier != nil {
+		n.nativeResumePreparationBarrier()
+	}
 	workspace := mapping.Workspace
 	if command.Envelope.ProjectID != "" {
 		if err := n.validateReconciledWorkspace(command.Envelope); err != nil {
@@ -746,6 +758,9 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 			return outcome
 		}
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "native_handoff_record_failed", e.Error())
+	}
+	if command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
+		n.nativeResumeStarted[command.Metadata.AttemptID] = true
 	}
 	if n.nativeResumeRegistrationBarrier != nil {
 		n.nativeResumeRegistrationBarrier()
