@@ -60,6 +60,12 @@ type runningNodeCommand struct {
 	interrupt context.CancelCauseFunc
 }
 
+type priorityCancelFlight struct {
+	done chan struct{}
+	outcome CommandOutcome
+	err error
+}
+
 type commandCompletion struct {
 	command Command
 	outcome CommandOutcome
@@ -179,6 +185,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 	runningWorkers := make(map[string]bool)
 	runningDetails := make(map[string]runningNodeCommand)
 	priorityCancelSlots := make(chan struct{}, 4)
+	priorityCancels := make(map[string]*priorityCancelFlight)
 	runningCommands := 0
 	commandWorkerKey := func(command Command) string {
 		worker := command.Metadata().WorkerRef
@@ -342,8 +349,26 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 				running, ok := runningDetails[key]
 				if ok && running.claudeResume && running.attemptID == command.Metadata().AttemptID {
 					commandWG.Add(1)
+					if flight, duplicate := priorityCancels[command.Metadata().CommandID]; duplicate {
+						go func() {
+							defer commandWG.Done()
+							select {
+							case <-flight.done:
+							case <-commandCtx.Done():
+								return
+							}
+							select {
+							case completions <- commandCompletion{command:command, outcome:flight.outcome, err:flight.err, priorityCancel:true}:
+							case <-commandCtx.Done():
+							}
+						}()
+						continue
+					}
+					flight := &priorityCancelFlight{done:make(chan struct{})}
+					priorityCancels[command.Metadata().CommandID] = flight
 					go func() {
 						defer commandWG.Done()
+						defer close(flight.done)
 						select {
 						case priorityCancelSlots <- struct{}{}:
 						case <-commandCtx.Done():
@@ -360,9 +385,9 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 							case <-time.After(10 * time.Millisecond):
 							}
 						}
-						outcome, err := execution.HandleCommand(commandCtx, command)
+						flight.outcome, flight.err = execution.HandleCommand(commandCtx, command)
 						select {
-						case completions <- commandCompletion{command:command, outcome:outcome, err:err, priorityCancel:true}:
+						case completions <- commandCompletion{command:command, outcome:flight.outcome, err:flight.err, priorityCancel:true}:
 						case <-commandCtx.Done():
 						}
 					}()
