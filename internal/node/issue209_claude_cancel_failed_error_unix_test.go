@@ -14,6 +14,14 @@ import (
 )
 
 func TestIssue209ClaudeNativeErrorDuringFailedCancelEmitsFailedAndStopsCLI(t *testing.T) {
+	issue209NativeErrorAfterFailedCancel(t, false)
+}
+
+func TestIssue209ClaudeNativeErrorDuringFailedInterruptEmitsFailedAndStopsCLI(t *testing.T) {
+	issue209NativeErrorAfterFailedCancel(t, true)
+}
+
+func issue209NativeErrorAfterFailedCancel(t *testing.T, interruptFailure bool) {
 	ctx, stop := context.WithTimeout(context.Background(), 12*time.Second)
 	defer stop()
 	dir := t.TempDir()
@@ -24,7 +32,7 @@ read prompt
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"running"}]}}'
 while [ ! -f "$ISSUE209_ERROR_TRIGGER" ]; do sleep 0.02; done
 printf '%s\n' '{"type":"error","error":"native error during failed Cancel"}'
-read keepalive
+while :; do sleep 1; done
 `
 	if err := os.WriteFile(launcher, []byte(script), 0700); err != nil {
 		t.Fatal(err)
@@ -53,7 +61,15 @@ read keepalive
 	session.cleanupAttempt = func(context.Context, *exec.Cmd, claudeChild) error {
 		close(cleanupEntered)
 		<-releaseCleanup
+		if interruptFailure {
+			return nil
+		}
 		return errors.New("native cleanup unavailable")
+	}
+	if interruptFailure {
+		if err := session.stdin.Close(); err != nil {
+			t.Fatal(err)
+		}
 	}
 	cancelDone := make(chan error, 1)
 	go func() { cancelDone <- session.Cancel(ctx) }()
@@ -73,7 +89,7 @@ read keepalive
 	close(releaseCleanup)
 	select {
 	case err := <-cancelDone:
-		if err == nil || !strings.Contains(err.Error(), "native cleanup unavailable") {
+		if err == nil || (!interruptFailure && !strings.Contains(err.Error(), "native cleanup unavailable")) {
 			t.Fatalf("Cancel unexpectedly succeeded: %v", err)
 		}
 	case <-ctx.Done():
