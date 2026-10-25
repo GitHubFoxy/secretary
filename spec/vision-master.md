@@ -4,7 +4,7 @@
 >
 > **Provenance:** CONFIRMED = current Oct-25 interview; BASELINE = Oct-17 accepted canonical goals, currently under re-review; PROPOSAL = recommended but not accepted; RESEARCH = externally documented technical possibility, not yet validated in Secretary.
 >
-> **Status rule:** Every question in the forthcoming catalogue begins as **PROPOSAL / OPEN** unless its answer is explicitly recorded in the settled decisions below. A recommendation is not consent. Unknown technical details must not be presented as implemented.
+> **Status rule:** Every question is **PROPOSAL / OPEN** unless directly grounded in a recorded current owner confirmation (**CONFIRMED**) or the older canonical specification (**BASELINE**). Baseline is being reconsidered; a recommendation is never consent. Technical implementation and live release acceptance are separate.
 
 ## North star
 
@@ -95,16 +95,16 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 ## Full decision question catalogue
 
 <!-- CATALOGUE_BEGIN -->
-> **1000 decision questions** = 40 domains × 25 (5 context-specific + 20 lifecycle/security/operations). Each proposed answer is **OPEN**, even when consistent with earlier baseline; accepted outcomes are listed above. IDs are stable for review.
+> **1000 decision questions** = 40 domains × 25 (5 context-specific + 20 lifecycle/security/operations). Each question explicitly indicates **CONFIRMED**, **BASELINE**, or **PROPOSAL / OPEN**; the older baseline is subject to this re-review. IDs are stable for review.
 
 ### 01 · Vision and product identity
 
 **Контекст:** Universal open-source personal AI assistant across devices and physical services. **Граница:** coding-first does not mean coding-only. **Этап:** Later. **Основной риск:** inflated promises.
 
-- **Q0001 · PROPOSAL / OPEN** — Что включает определение «всегда рядом»? **Рекомендация:** Непрерывный персональный контекст и каналы, без фиктивных гарантий офлайн-действий
+- **Q0001 · CONFIRMED** — Что включает определение «всегда рядом»? **Рекомендация:** Непрерывный персональный контекст и каналы, без фиктивных гарантий офлайн-действий
 - **Q0002 · PROPOSAL / OPEN** — Чем Secretary отличается от очередного чат-бота? **Рекомендация:** Выполняет действия через выбранные инструменты, сохраняет Task lifecycle и присутствует на устройствах
-- **Q0003 · PROPOSAL / OPEN** — Станет ли coding-only продукт тупиком? **Рекомендация:** Не встраивать coding-специфику в ядро identity/conversation
-- **Q0004 · PROPOSAL / OPEN** — Нужна ли единая личность при смене модели? **Рекомендация:** Да, user-owned state не привязан к модели
+- **Q0003 · CONFIRMED** — Станет ли coding-only продукт тупиком? **Рекомендация:** Не встраивать coding-специфику в ядро identity/conversation
+- **Q0004 · CONFIRMED** — Нужна ли единая личность при смене модели? **Рекомендация:** Да, user-owned state не привязан к модели
 - **Q0005 · PROPOSAL / OPEN** — Что первично в roadmap: идеальная Алиса или работающий продукт? **Рекомендация:** Подтверждённый coding v1, затем умный дом, голос и авто
 - **Q0006 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Vision and product identity»? **Рекомендация:** Определить успех как: Universal open-source personal AI assistant across devices and physical services; не включать недоказанные обещания.
 - **Q0007 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Vision and product identity»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
@@ -132,7 +132,7 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 **Контекст:** Stable independent personal identities across channels. **Граница:** no channel address or voice sample alone grants power. **Этап:** Later. **Основной риск:** shared-account leakage.
 
 - **Q0026 · PROPOSAL / OPEN** — У одного человека может быть несколько Secretaries? **Рекомендация:** Базово один постоянный персональный Secretary; параллельные профили рассмотреть отдельно
-- **Q0027 · PROPOSAL / OPEN** — Nick и Ora могут видеть взаимные Telegram DM? **Рекомендация:** Нет, строго раздельные личные истории
+- **Q0027 · CONFIRMED** — Nick и Ora могут видеть взаимные Telegram DM? **Рекомендация:** Нет, строго раздельные личные истории
 - **Q0028 · PROPOSAL / OPEN** — Что делать с ребёнком и гостем? **Рекомендация:** Раздельные identities с ограниченным доступом; конкретный голосовой UX позже
 - **Q0029 · PROPOSAL / OPEN** — Как связать смену имени с памятью? **Рекомендация:** Стабильный person_id и отдельно display name
 - **Q0030 · PROPOSAL / OPEN** — Достаточна ли speaker recognition для платежей? **Рекомендация:** Нет, высокорисковые действия требуют независимой авторизации
@@ -161,10 +161,10 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** One private canonical conversation per Person across their authorized channels. **Граница:** Circle shared chat is separate. **Этап:** Baseline. **Основной риск:** message echo and privacy.
 
-- **Q0051 · PROPOSAL / OPEN** — Что является канонической Conversation entry? **Рекомендация:** Server-issued identity с происхождением, автором, временем и связанным turn
-- **Q0052 · PROPOSAL / OPEN** — Должна ли Telegram General отражать DM владельца? **Рекомендация:** В однопользовательском v1 да, без повторного запуска модели; для разных людей нельзя
-- **Q0053 · PROPOSAL / OPEN** — Могут ли два канала отправить одинаковое сообщение одновременно? **Рекомендация:** Один canonical input при одинаковом ключе, не объединять разные сообщения по тексту
-- **Q0054 · PROPOSAL / OPEN** — Куда отправлять Worker Result? **Рекомендация:** В Origin Conversation конкретного Person
+- **Q0051 · BASELINE** — Что является канонической Conversation entry? **Рекомендация:** Server-issued identity с происхождением, автором, временем и связанным turn
+- **Q0052 · BASELINE** — Должна ли Telegram General отражать DM владельца? **Рекомендация:** В однопользовательском v1 да, без повторного запуска модели; для разных людей нельзя
+- **Q0053 · BASELINE** — Могут ли два канала отправить одинаковое сообщение одновременно? **Рекомендация:** Один canonical input при одинаковом ключе, не объединять разные сообщения по тексту
+- **Q0054 · BASELINE** — Куда отправлять Worker Result? **Рекомендация:** В Origin Conversation конкретного Person
 - **Q0055 · PROPOSAL / OPEN** — Что происходит при удалении канала? **Рекомендация:** Данные Conversation сохраняются согласно политике, канал теряет доступ
 - **Q0056 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Personal conversations and channel identity»? **Рекомендация:** Определить успех как: One private canonical conversation per Person across their authorized channels; не включать недоказанные обещания.
 - **Q0057 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Personal conversations and channel identity»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
@@ -191,10 +191,10 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Durable scoped multi-person collaboration with proposals and agreement. **Граница:** no superior assistant or implicit consent. **Этап:** Later. **Основной риск:** invented consensus.
 
-- **Q0076 · PROPOSAL / OPEN** — Circle — навсегда общий разум семьи? **Рекомендация:** Нет, scoped collaboration session; можно возобновлять, а recurring membership вынести отдельно
+- **Q0076 · CONFIRMED** — Circle — навсегда общий разум семьи? **Рекомендация:** Нет, scoped collaboration session; можно возобновлять, а recurring membership вынести отдельно
 - **Q0077 · PROPOSAL / OPEN** — Кого считать участником Decision? **Рекомендация:** Явно выбранных людей, а не всех членов потенциальной группы
-- **Q0078 · PROPOSAL / OPEN** — Может ли Circle предложить заём? **Рекомендация:** Да, как гипотезу, а не согласие или выполненный перевод
-- **Q0079 · PROPOSAL / OPEN** — Где хранятся предложения и ответы? **Рекомендация:** В canonical shared history Circle, не как Telegram source of truth
+- **Q0078 · CONFIRMED** — Может ли Circle предложить заём? **Рекомендация:** Да, как гипотезу, а не согласие или выполненный перевод
+- **Q0079 · CONFIRMED** — Где хранятся предложения и ответы? **Рекомендация:** В canonical shared history Circle, не как Telegram source of truth
 - **Q0080 · PROPOSAL / OPEN** — Что делать если стороны не согласны? **Рекомендация:** Статус разногласия и альтернативы; не выдумывать консенсус
 - **Q0081 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Circle session and decisions»? **Рекомендация:** Определить успех как: Durable scoped multi-person collaboration with proposals and agreement; не включать недоказанные обещания.
 - **Q0082 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Circle session and decisions»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
@@ -251,11 +251,11 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Persistent personal assistant routing direct replies and delegated work. **Граница:** no supervisor hierarchy. **Этап:** Baseline. **Основной риск:** wrong task dispatch.
 
-- **Q0126 · PROPOSAL / OPEN** — Кто решает: прямой ответ или Worker? **Рекомендация:** Secretary с прозрачной политикой и ручным override
-- **Q0127 · PROPOSAL / OPEN** — Нужен ли отдельный manager поверх Secretary? **Рекомендация:** Нет, не вводить избыточную иерархию
+- **Q0126 · BASELINE** — Кто решает: прямой ответ или Worker? **Рекомендация:** Secretary с прозрачной политикой и ручным override
+- **Q0127 · BASELINE** — Нужен ли отдельный manager поверх Secretary? **Рекомендация:** Нет, не вводить избыточную иерархию
 - **Q0128 · PROPOSAL / OPEN** — Кто владеет правдой об active Attempt? **Рекомендация:** Secretary Server и durable receipts, не вывод LLM
-- **Q0129 · PROPOSAL / OPEN** — Как давать Secretary минимальные lifecycle tools? **Рекомендация:** Typed MCP/capability calls с origin и idempotency
-- **Q0130 · PROPOSAL / OPEN** — Когда Secretary должен задать уточнение? **Рекомендация:** Когда отсутствуют необходимые параметры или возможна неверная адресация
+- **Q0129 · BASELINE** — Как давать Secretary минимальные lifecycle tools? **Рекомендация:** Typed MCP/capability calls с origin и idempotency
+- **Q0130 · BASELINE** — Когда Secretary должен задать уточнение? **Рекомендация:** Когда отсутствуют необходимые параметры или возможна неверная адресация
 - **Q0131 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Secretary orchestration»? **Рекомендация:** Определить успех как: Persistent personal assistant routing direct replies and delegated work; не включать недоказанные обещания.
 - **Q0132 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Secretary orchestration»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
 - **Q0133 · PROPOSAL / OPEN** — Как инициируется работа «Secretary orchestration»? **Рекомендация:** Явный запрос пользователя по умолчанию; автоматическое начало — только по отдельно согласованной политике.
@@ -281,11 +281,11 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Durable task and persistent Worker lifecycle. **Граница:** never repeat unknown side effects blindly. **Этап:** Baseline. **Основной риск:** duplicate execution.
 
-- **Q0151 · PROPOSAL / OPEN** — Что такое persistent Worker в отличие от subagent? **Рекомендация:** Привязанная к Task сущность с собственной историей и native session
-- **Q0152 · PROPOSAL / OPEN** — Может ли Worker задавать вопрос, завершив Attempt? **Рекомендация:** Да, Task остаётся открытым до явного закрытия
-- **Q0153 · PROPOSAL / OPEN** — Чем Steering отличается от /q? **Рекомендация:** Steering прямо сейчас, /q — FIFO на idle
-- **Q0154 · PROPOSAL / OPEN** — Что означает terminal canceled? **Рекомендация:** Доказано прекращение native execution и сохранён durable terminal outcome
-- **Q0155 · PROPOSAL / OPEN** — Можно ли запускать Follow-up на ином Node молча? **Рекомендация:** Нет, session binding должен быть доказан или пользователь решает о миграции
+- **Q0151 · BASELINE** — Что такое persistent Worker в отличие от subagent? **Рекомендация:** Привязанная к Task сущность с собственной историей и native session
+- **Q0152 · BASELINE** — Может ли Worker задавать вопрос, завершив Attempt? **Рекомендация:** Да, Task остаётся открытым до явного закрытия
+- **Q0153 · BASELINE** — Чем Steering отличается от /q? **Рекомендация:** Steering прямо сейчас, /q — FIFO на idle
+- **Q0154 · BASELINE** — Что означает terminal canceled? **Рекомендация:** Доказано прекращение native execution и сохранён durable terminal outcome
+- **Q0155 · BASELINE** — Можно ли запускать Follow-up на ином Node молча? **Рекомендация:** Нет, session binding должен быть доказан или пользователь решает о миграции
 - **Q0156 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Tasks Workers Attempts and Results»? **Рекомендация:** Определить успех как: Durable task and persistent Worker lifecycle; не включать недоказанные обещания.
 - **Q0157 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Tasks Workers Attempts and Results»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
 - **Q0158 · PROPOSAL / OPEN** — Как инициируется работа «Tasks Workers Attempts and Results»? **Рекомендация:** Явный запрос пользователя по умолчанию; автоматическое начало — только по отдельно согласованной политике.
@@ -311,11 +311,11 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Supported tested Codex runtime and user auth. **Граница:** unsupported explicit model must fail clearly. **Этап:** Baseline. **Основной риск:** native/session mismatch.
 
-- **Q0176 · PROPOSAL / OPEN** — Как выбирать Codex default model под ChatGPT auth? **Рекомендация:** По проверенной поддержке native аккаунта; explicit choice не переписывать
-- **Q0177 · PROPOSAL / OPEN** — Станет ли Codex runtime обязательным для всех установок? **Рекомендация:** Нет, допускается установка только Claude Code
-- **Q0178 · PROPOSAL / OPEN** — Что делать с ACP readiness до первого Prompt? **Рекомендация:** Реальная initialize/session readiness, а не только процесс/файл
-- **Q0179 · PROPOSAL / OPEN** — Как показывать native tool calls? **Рекомендация:** В Worker observer с trace/origin
-- **Q0180 · PROPOSAL / OPEN** — Как подтверждать release? **Рекомендация:** Live Start/Resume/Cancel/Result на опубликованном бинарнике
+- **Q0176 · BASELINE** — Как выбирать Codex default model под ChatGPT auth? **Рекомендация:** По проверенной поддержке native аккаунта; explicit choice не переписывать
+- **Q0177 · BASELINE** — Станет ли Codex runtime обязательным для всех установок? **Рекомендация:** Нет, допускается установка только Claude Code
+- **Q0178 · BASELINE** — Что делать с ACP readiness до первого Prompt? **Рекомендация:** Реальная initialize/session readiness, а не только процесс/файл
+- **Q0179 · BASELINE** — Как показывать native tool calls? **Рекомендация:** В Worker observer с trace/origin
+- **Q0180 · BASELINE** — Как подтверждать release? **Рекомендация:** Live Start/Resume/Cancel/Result на опубликованном бинарнике
 - **Q0181 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Codex native harness»? **Рекомендация:** Определить успех как: Supported tested Codex runtime and user auth; не включать недоказанные обещания.
 - **Q0182 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Codex native harness»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
 - **Q0183 · PROPOSAL / OPEN** — Как инициируется работа «Codex native harness»? **Рекомендация:** Явный запрос пользователя по умолчанию; автоматическое начало — только по отдельно согласованной политике.
@@ -341,11 +341,11 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Supported tested Claude Code ACP/native runtime. **Граница:** cancel receipt is not proven terminal. **Этап:** Baseline. **Основной риск:** leaked native processes.
 
-- **Q0201 · PROPOSAL / OPEN** — Можно ли выбрать Claude Code для Secretary и Codex для Worker? **Рекомендация:** Да, независимый конфиг
-- **Q0202 · PROPOSAL / OPEN** — Как разделить native subscription и API token? **Рекомендация:** Разные проверенные auth modes и ограничения
-- **Q0203 · PROPOSAL / OPEN** — Что делать при зависшем native Prompt и Cancel? **Рекомендация:** Отмена не должна ждать занятой записи без возможности остановить native CLI
-- **Q0204 · PROPOSAL / OPEN** — Может ли canceled ошибочно стать failed на Resume? **Рекомендация:** Не путать native canceled/interrupted с failure
-- **Q0205 · PROPOSAL / OPEN** — Как избежать дочерних процессов после отмены? **Рекомендация:** OS-aware process cleanup с честным отчётом о невозможности доказательства
+- **Q0201 · BASELINE** — Можно ли выбрать Claude Code для Secretary и Codex для Worker? **Рекомендация:** Да, независимый конфиг
+- **Q0202 · BASELINE** — Как разделить native subscription и API token? **Рекомендация:** Разные проверенные auth modes и ограничения
+- **Q0203 · BASELINE** — Что делать при зависшем native Prompt и Cancel? **Рекомендация:** Отмена не должна ждать занятой записи без возможности остановить native CLI
+- **Q0204 · BASELINE** — Может ли canceled ошибочно стать failed на Resume? **Рекомендация:** Не путать native canceled/interrupted с failure
+- **Q0205 · BASELINE** — Как избежать дочерних процессов после отмены? **Рекомендация:** OS-aware process cleanup с честным отчётом о невозможности доказательства
 - **Q0206 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Claude Code native harness»? **Рекомендация:** Определить успех как: Supported tested Claude Code ACP/native runtime; не включать недоказанные обещания.
 - **Q0207 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Claude Code native harness»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
 - **Q0208 · PROPOSAL / OPEN** — Как инициируется работа «Claude Code native harness»? **Рекомендация:** Явный запрос пользователя по умолчанию; автоматическое начало — только по отдельно согласованной политике.
@@ -402,9 +402,9 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 **Контекст:** BYO inference choice via verified adapter. **Граница:** no bypass of provider authorization. **Этап:** Confirmed. **Основной риск:** secrets and incompatible terms.
 
 - **Q0251 · PROPOSAL / OPEN** — Можно ли импортировать подписку как API key? **Рекомендация:** Нет, это разные типы авторизации
-- **Q0252 · PROPOSAL / OPEN** — Нужен ли выбор provider на уровне Task? **Рекомендация:** Да, с прозрачной конфигурацией и возможностью override
+- **Q0252 · CONFIRMED** — Нужен ли выбор provider на уровне Task? **Рекомендация:** Да, с прозрачной конфигурацией и возможностью override
 - **Q0253 · PROPOSAL / OPEN** — Где хранить provider secret? **Рекомендация:** Secret store/Node environment, не обычная история сообщений
-- **Q0254 · PROPOSAL / OPEN** — Можно ли утверждать, что любая подписка разрешает automation? **Рекомендация:** Нет, проверять актуальные условия поставщика
+- **Q0254 · CONFIRMED** — Можно ли утверждать, что любая подписка разрешает automation? **Рекомендация:** Нет, проверять актуальные условия поставщика
 - **Q0255 · PROPOSAL / OPEN** — Как отменить доступ подключённой модели? **Рекомендация:** Revoke/rotate credential с видимым статусом зависимых Workers
 - **Q0256 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Subscriptions APIs keys and local models»? **Рекомендация:** Определить успех как: BYO inference choice via verified adapter; не включать недоказанные обещания.
 - **Q0257 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Subscriptions APIs keys and local models»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
@@ -461,10 +461,10 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Paired outbound Nodes on user's machines. **Граница:** full access is real OS authority. **Этап:** Baseline. **Основной риск:** privileged code execution.
 
-- **Q0301 · PROPOSAL / OPEN** — Что именно Node исполняет? **Рекомендация:** Worker harness processes и доверенные tools под своими OS capabilities
-- **Q0302 · PROPOSAL / OPEN** — Нужно ли owner-approved pairing? **Рекомендация:** Да, каждый Node получает собственную identity
-- **Q0303 · PROPOSAL / OPEN** — Работают ли Windows/macOS/Linux одинаково? **Рекомендация:** Семантика одинакова, acceptance платформ отдельно
-- **Q0304 · PROPOSAL / OPEN** — Можно ли открыть Node через internet port? **Рекомендация:** Предпочитать outbound secure tunnel/connection
+- **Q0301 · BASELINE** — Что именно Node исполняет? **Рекомендация:** Worker harness processes и доверенные tools под своими OS capabilities
+- **Q0302 · BASELINE** — Нужно ли owner-approved pairing? **Рекомендация:** Да, каждый Node получает собственную identity
+- **Q0303 · BASELINE** — Работают ли Windows/macOS/Linux одинаково? **Рекомендация:** Семантика одинакова, acceptance платформ отдельно
+- **Q0304 · BASELINE** — Можно ли открыть Node через internet port? **Рекомендация:** Предпочитать outbound secure tunnel/connection
 - **Q0305 · PROPOSAL / OPEN** — Важна ли видимость доступа Node? **Рекомендация:** Да, indicator/tray/status и выключение доступа
 - **Q0306 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Execution Nodes and local hardware»? **Рекомендация:** Определить успех как: Paired outbound Nodes on user's machines; не включать недоказанные обещания.
 - **Q0307 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Execution Nodes and local hardware»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
@@ -551,11 +551,11 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Equivalent personal experience across supported hosting. **Граница:** verified migration not assumed. **Этап:** Confirmed. **Основной риск:** consistency and network downtime.
 
-- **Q0376 · PROPOSAL / OPEN** — Можно ли использовать только Mac? **Рекомендация:** Да, Server и Node могут быть рядом, но как отдельные службы
-- **Q0377 · PROPOSAL / OPEN** — Можно ли разнести Server и Node по миру? **Рекомендация:** Да, аутентифицированное исходящее соединение
-- **Q0378 · PROPOSAL / OPEN** — Что делать при NAT/offline Node? **Рекомендация:** Сохранять очередь/ошибку, не повторять неизвестный native action
-- **Q0379 · PROPOSAL / OPEN** — Потребуется ли отдельный домен? **Рекомендация:** Для локального Developer Edition нет
-- **Q0380 · PROPOSAL / OPEN** — Как запускать HA bridge рядом с VPS Secretary? **Рекомендация:** Через outbound home companion, без раскрытия локальной сети
+- **Q0376 · BASELINE** — Можно ли использовать только Mac? **Рекомендация:** Да, Server и Node могут быть рядом, но как отдельные службы
+- **Q0377 · BASELINE** — Можно ли разнести Server и Node по миру? **Рекомендация:** Да, аутентифицированное исходящее соединение
+- **Q0378 · CONFIRMED** — Что делать при NAT/offline Node? **Рекомендация:** Сохранять очередь/ошибку, не повторять неизвестный native action
+- **Q0379 · CONFIRMED** — Потребуется ли отдельный домен? **Рекомендация:** Для локального Developer Edition нет
+- **Q0380 · CONFIRMED** — Как запускать HA bridge рядом с VPS Secretary? **Рекомендация:** Через outbound home companion, без раскрытия локальной сети
 - **Q0381 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Self-host VPS hybrid topology»? **Рекомендация:** Определить успех как: Equivalent personal experience across supported hosting; не включать недоказанные обещания.
 - **Q0382 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Self-host VPS hybrid topology»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
 - **Q0383 · PROPOSAL / OPEN** — Как инициируется работа «Self-host VPS hybrid topology»? **Рекомендация:** Явный запрос пользователя по умолчанию; автоматическое начало — только по отдельно согласованной политике.
@@ -581,8 +581,8 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Portable durable personal state and artifacts. **Граница:** remote native sessions need separate export. **Этап:** Baseline. **Основной риск:** unrecoverable data.
 
-- **Q0401 · PROPOSAL / OPEN** — Что считать portable backup? **Рекомендация:** Central DB/event state, config, memory и Artifact bytes с контрольными суммами
-- **Q0402 · PROPOSAL / OPEN** — Можно ли потерять native session при переезде? **Рекомендация:** Возможна потеря; сообщить заранее и экспортировать если поддержано
+- **Q0401 · BASELINE** — Что считать portable backup? **Рекомендация:** Central DB/event state, config, memory и Artifact bytes с контрольными суммами
+- **Q0402 · BASELINE** — Можно ли потерять native session при переезде? **Рекомендация:** Возможна потеря; сообщить заранее и экспортировать если поддержано
 - **Q0403 · PROPOSAL / OPEN** — Как выполнять schema migration без потери истории? **Рекомендация:** Версионированный, тестируемый, обратимый когда возможно процесс
 - **Q0404 · PROPOSAL / OPEN** — Как восстановить из частичного snapshot? **Рекомендация:** Не подтверждать success пока данные/bytes не сверены
 - **Q0405 · PROPOSAL / OPEN** — Можно ли ручное редактирование Markdown считать основной БД Cloudflare? **Рекомендация:** Нет, Markdown удобный экспорт/редактирование, durability отдельно
@@ -611,7 +611,7 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Explicit identities approvals scopes and verifiable outcomes. **Граница:** no LLM text as source of authority. **Этап:** Baseline. **Основной риск:** dangerous side effects.
 
-- **Q0426 · PROPOSAL / OPEN** — Можно ли включить Worker без подтверждения доступов Node? **Рекомендация:** Только в рамках ранее осознанно выданных host permissions
+- **Q0426 · BASELINE** — Можно ли включить Worker без подтверждения доступов Node? **Рекомендация:** Только в рамках ранее осознанно выданных host permissions
 - **Q0427 · PROPOSAL / OPEN** — Кто может разблокировать замок дома? **Рекомендация:** Person с соответствующей scoped capability и подтверждением
 - **Q0428 · PROPOSAL / OPEN** — Как защищать Tool от prompt injection сайта? **Рекомендация:** Внешний текст не становится системной командой или правом
 - **Q0429 · PROPOSAL / OPEN** — Что журналировать в денежных транзакциях? **Рекомендация:** Action ID, actor, consent, receipt, результат; секреты исключить
@@ -641,9 +641,9 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Editable durable memory with provenance. **Граница:** automatic inferred writes outside existing v1. **Этап:** Baseline. **Основной риск:** hallucinated preference.
 
-- **Q0451 · PROPOSAL / OPEN** — Станет ли shared Circle Memory копией всей личной? **Рекомендация:** Нет, scoped summaries и согласованные общие решения
-- **Q0452 · PROPOSAL / OPEN** — Как редактировать явную память? **Рекомендация:** Пользовательские Markdown files/управляемый UI и audit изменений
-- **Q0453 · PROPOSAL / OPEN** — Нужна ли automatic memory extraction уже в v1? **Рекомендация:** Нет, только явные записи; эксперимент после safeguards
+- **Q0451 · CONFIRMED** — Станет ли shared Circle Memory копией всей личной? **Рекомендация:** Нет, scoped summaries и согласованные общие решения
+- **Q0452 · BASELINE** — Как редактировать явную память? **Рекомендация:** Пользовательские Markdown files/управляемый UI и audit изменений
+- **Q0453 · BASELINE** — Нужна ли automatic memory extraction уже в v1? **Рекомендация:** Нет, только явные записи; эксперимент после safeguards
 - **Q0454 · PROPOSAL / OPEN** — Что делать если preference устарело? **Рекомендация:** Сохранять provenance/даты, спрашивать при важных решениях
 - **Q0455 · PROPOSAL / OPEN** — Можно ли переносить память между cloud и local? **Рекомендация:** Да, экспорт в переносимом виде с явной областью доступа
 - **Q0456 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Personal memory preferences and retrieval»? **Рекомендация:** Определить успех как: Editable durable memory with provenance; не включать недоказанные обещания.
@@ -671,9 +671,9 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Common tool surface with native harness skills. **Граница:** reject unavailable capability explicitly. **Этап:** Baseline. **Основной риск:** tool overreach.
 
-- **Q0476 · PROPOSAL / OPEN** — Кто владеет tools? **Рекомендация:** Система с проверенными scopes, Secretary вызывает, Worker исполняет в native harness
-- **Q0477 · PROPOSAL / OPEN** — MCP — единственный поддерживаемый протокол? **Рекомендация:** Общий фасад MCP, внутренний adapter может использовать официальный SDK
-- **Q0478 · PROPOSAL / OPEN** — Где будут жить Skills? **Рекомендация:** Native harness Skills в v1; unified registry позже
+- **Q0476 · BASELINE** — Кто владеет tools? **Рекомендация:** Система с проверенными scopes, Secretary вызывает, Worker исполняет в native harness
+- **Q0477 · BASELINE** — MCP — единственный поддерживаемый протокол? **Рекомендация:** Общий фасад MCP, внутренний adapter может использовать официальный SDK
+- **Q0478 · BASELINE** — Где будут жить Skills? **Рекомендация:** Native harness Skills в v1; unified registry позже
 - **Q0479 · PROPOSAL / OPEN** — Как выбрать tools для конкретной Node? **Рекомендация:** Capability discovery и списки разрешений per instance
 - **Q0480 · PROPOSAL / OPEN** — Может ли плагин запускать сторонний бинарник? **Рекомендация:** Только в предоставленном execution environment, не в облачном control plane
 - **Q0481 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «MCP tools skills and extensibility»? **Рекомендация:** Определить успех как: Common tool surface with native harness skills; не включать недоказанные обещания.
@@ -701,11 +701,11 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Canonical binary inputs outputs and references. **Граница:** no silent truncation or fabricated processing. **Этап:** Baseline. **Основной риск:** data corruption.
 
-- **Q0501 · PROPOSAL / OPEN** — Нужно ли сохранять оригинальный видеофайл? **Рекомендация:** Да, вместе с sampled frames и метаданными обработки
-- **Q0502 · PROPOSAL / OPEN** — 1 FPS жёстко обязателен? **Рекомендация:** Нет, конфигурируемый default
-- **Q0503 · PROPOSAL / OPEN** — Где связывать аудио и расшифровку? **Рекомендация:** Как разные связанные Artifacts со стабильными IDs
-- **Q0504 · PROPOSAL / OPEN** — Может ли Worker вернуть готовый PDF/архив? **Рекомендация:** Да, explicit publish Artifact, не scan общего диска
-- **Q0505 · PROPOSAL / OPEN** — Что делать с oversized upload? **Рекомендация:** Явный отказ без обрезания файла
+- **Q0501 · BASELINE** — Нужно ли сохранять оригинальный видеофайл? **Рекомендация:** Да, вместе с sampled frames и метаданными обработки
+- **Q0502 · BASELINE** — 1 FPS жёстко обязателен? **Рекомендация:** Нет, конфигурируемый default
+- **Q0503 · BASELINE** — Где связывать аудио и расшифровку? **Рекомендация:** Как разные связанные Artifacts со стабильными IDs
+- **Q0504 · BASELINE** — Может ли Worker вернуть готовый PDF/архив? **Рекомендация:** Да, explicit publish Artifact, не scan общего диска
+- **Q0505 · BASELINE** — Что делать с oversized upload? **Рекомендация:** Явный отказ без обрезания файла
 - **Q0506 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Artifacts files audio video and documents»? **Рекомендация:** Определить успех как: Canonical binary inputs outputs and references; не включать недоказанные обещания.
 - **Q0507 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Artifacts files audio video and documents»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
 - **Q0508 · PROPOSAL / OPEN** — Как инициируется работа «Artifacts files audio video and documents»? **Рекомендация:** Явный запрос пользователя по умолчанию; автоматическое начало — только по отдельно согласованной политике.
@@ -731,11 +731,11 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Private DM with optional General and Worker Topics. **Граница:** mirrors cannot trigger duplicate turns. **Этап:** Baseline. **Основной риск:** public chat leakage.
 
-- **Q0526 · PROPOSAL / OPEN** — Можно ли работать только через DM bot? **Рекомендация:** Да, группа не обязательна
-- **Q0527 · PROPOSAL / OPEN** — Как показывать Worker's Topic? **Рекомендация:** Связать topic с одной canonical Worker identity
-- **Q0528 · PROPOSAL / OPEN** — Как избежать DM↔General echo? **Рекомендация:** Stable server-owned message IDs и cursor replay protection
-- **Q0529 · PROPOSAL / OPEN** — Участник чужой Telegram группы получает owner rights? **Рекомендация:** Нет, membership не равно pairing
-- **Q0530 · PROPOSAL / OPEN** — Будет ли Circle shared group видеть мои личные prompts? **Рекомендация:** Нет, только intentional shared Circle entries
+- **Q0526 · BASELINE** — Можно ли работать только через DM bot? **Рекомендация:** Да, группа не обязательна
+- **Q0527 · BASELINE** — Как показывать Worker's Topic? **Рекомендация:** Связать topic с одной canonical Worker identity
+- **Q0528 · BASELINE** — Как избежать DM↔General echo? **Рекомендация:** Stable server-owned message IDs и cursor replay protection
+- **Q0529 · BASELINE** — Участник чужой Telegram группы получает owner rights? **Рекомендация:** Нет, membership не равно pairing
+- **Q0530 · CONFIRMED** — Будет ли Circle shared group видеть мои личные prompts? **Рекомендация:** Нет, только intentional shared Circle entries
 - **Q0531 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Telegram direct messages groups and topics»? **Рекомендация:** Определить успех как: Private DM with optional General and Worker Topics; не включать недоказанные обещания.
 - **Q0532 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Telegram direct messages groups and topics»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
 - **Q0533 · PROPOSAL / OPEN** — Как инициируется работа «Telegram direct messages groups and topics»? **Рекомендация:** Явный запрос пользователя по умолчанию; автоматическое начало — только по отдельно согласованной политике.
@@ -761,11 +761,11 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Common conversation and Worker observer across browser devices. **Граница:** no parallel backend required. **Этап:** Baseline. **Основной риск:** divergent state.
 
-- **Q0551 · PROPOSAL / OPEN** — Может ли PWA показывать один и тот же чат на Mac и телефоне? **Рекомендация:** Да, canonical projection и авторизованная session
-- **Q0552 · PROPOSAL / OPEN** — Нужно ли автономное offline execution из PWA? **Рекомендация:** Не в v1; честные offline/read-only состояния
-- **Q0553 · PROPOSAL / OPEN** — Как видеть занятых Workers? **Рекомендация:** Observer по worker identity с live events
-- **Q0554 · PROPOSAL / OPEN** — Как давать настройки пользователя? **Рекомендация:** Минимальные owner controls и явный config route
-- **Q0555 · PROPOSAL / OPEN** — Нужен ли второй frontend backend? **Рекомендация:** Нет, использовать тот же Server API
+- **Q0551 · BASELINE** — Может ли PWA показывать один и тот же чат на Mac и телефоне? **Рекомендация:** Да, canonical projection и авторизованная session
+- **Q0552 · BASELINE** — Нужно ли автономное offline execution из PWA? **Рекомендация:** Не в v1; честные offline/read-only состояния
+- **Q0553 · BASELINE** — Как видеть занятых Workers? **Рекомендация:** Observer по worker identity с live events
+- **Q0554 · BASELINE** — Как давать настройки пользователя? **Рекомендация:** Минимальные owner controls и явный config route
+- **Q0555 · BASELINE** — Нужен ли второй frontend backend? **Рекомендация:** Нет, использовать тот же Server API
 - **Q0556 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Web PWA and UI»? **Рекомендация:** Определить успех как: Common conversation and Worker observer across browser devices; не включать недоказанные обещания.
 - **Q0557 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Web PWA and UI»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
 - **Q0558 · PROPOSAL / OPEN** — Как инициируется работа «Web PWA and UI»? **Рекомендация:** Явный запрос пользователя по умолчанию; автоматическое начало — только по отдельно согласованной политике.
@@ -1121,10 +1121,10 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Authorized multi-person transactional workflows. **Граница:** proposals are not transfers or bookings. **Этап:** Later. **Основной риск:** partial payment failure.
 
-- **Q0851 · PROPOSAL / OPEN** — Что означает «Z бронирует за всех»? **Рекомендация:** Circle распределяет ответственных, Secretary Z исполняет подтверждённое бронирование
-- **Q0852 · PROPOSAL / OPEN** — Может ли Circle предлагать займ? **Рекомендация:** Да, как вариант; Z должен явно принять условия
-- **Q0853 · PROPOSAL / OPEN** — Кто запрашивает долю Ника и Оры? **Рекомендация:** Их персональные Secretaries по scoped request от Circle
-- **Q0854 · PROPOSAL / OPEN** — Можно ли выполнить платёж сразу после согласия в чате? **Рекомендация:** Только если подключённый payment tool поддерживает точную авторизацию
+- **Q0851 · CONFIRMED** — Что означает «Z бронирует за всех»? **Рекомендация:** Circle распределяет ответственных, Secretary Z исполняет подтверждённое бронирование
+- **Q0852 · CONFIRMED** — Может ли Circle предлагать займ? **Рекомендация:** Да, как вариант; Z должен явно принять условия
+- **Q0853 · CONFIRMED** — Кто запрашивает долю Ника и Оры? **Рекомендация:** Их персональные Secretaries по scoped request от Circle
+- **Q0854 · CONFIRMED** — Можно ли выполнить платёж сразу после согласия в чате? **Рекомендация:** Только если подключённый payment tool поддерживает точную авторизацию
 - **Q0855 · PROPOSAL / OPEN** — Что если платёж успешен, а бронь упала? **Рекомендация:** Durable pending/reconciliation, компенсационные варианты по новому согласию
 - **Q0856 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Payments transfers purchases and booking»? **Рекомендация:** Определить успех как: Authorized multi-person transactional workflows; не включать недоказанные обещания.
 - **Q0857 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Payments transfers purchases and booking»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
@@ -1241,10 +1241,10 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 **Контекст:** Same product core with easy managed onboarding. **Граница:** billing provider supply and isolation later. **Этап:** Future. **Основной риск:** unclear tenant isolation.
 
-- **Q0951 · PROPOSAL / OPEN** — Нужен ли отдельный продукт для Consumer Edition? **Рекомендация:** Нет, единое ядро с другим managed provisioning
-- **Q0952 · PROPOSAL / OPEN** — Кто оплачивает inference у consumer? **Рекомендация:** Легальный коммерческий provider/compute путь, модель не зафиксирована
+- **Q0951 · BASELINE** — Нужен ли отдельный продукт для Consumer Edition? **Рекомендация:** Нет, единое ядро с другим managed provisioning
+- **Q0952 · BASELINE** — Кто оплачивает inference у consumer? **Рекомендация:** Легальный коммерческий provider/compute путь, модель не зафиксирована
 - **Q0953 · PROPOSAL / OPEN** — Можно ли использовать потребительские подписки одних клиентов для других? **Рекомендация:** Нет; не считать их переносимым коммерческим supply
-- **Q0954 · PROPOSAL / OPEN** — Как изолировать разных customers? **Рекомендация:** Hard tenant isolation данных, credentials и compute с penetration/live tests
+- **Q0954 · BASELINE** — Как изолировать разных customers? **Рекомендация:** Hard tenant isolation данных, credentials и compute с penetration/live tests
 - **Q0955 · PROPOSAL / OPEN** — Должен ли signup требовать знания ACP? **Рекомендация:** Нет, consumer onboarding hides models/harness management
 - **Q0956 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Consumer Edition pricing and managed ops»? **Рекомендация:** Определить успех как: Same product core with easy managed onboarding; не включать недоказанные обещания.
 - **Q0957 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Consumer Edition pricing and managed ops»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
