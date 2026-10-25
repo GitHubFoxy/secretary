@@ -16,6 +16,9 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -23,7 +26,6 @@ jobs:
       - name: Export gofmt of PR Go files for connector-only application
         shell: bash
         run: |
-          git fetch origin main --depth=1
           git diff --name-only origin/main...HEAD | grep -E '\.go$' | while IFS= read -r file; do
             test -f "$file" || continue
             printf 'FMTBEGIN:%s\n' "$file"
