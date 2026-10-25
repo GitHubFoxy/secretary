@@ -171,31 +171,31 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 - **Q0058 · CONFIRMED** — Как инициируется работа «Personal conversations and channel identity»? **Рекомендация:** Явный запрос пользователя по умолчанию; автоматическое начало — только по отдельно согласованной политике.
 - **Q0059 · CONFIRMED** — Какие входные данные нужны перед стартом «Personal conversations and channel identity»? **Рекомендация:** Запрашивать только достаточный контекст и подтверждать критически недостающие параметры.
 - **Q0060 · CONFIRMED** — Какие действия заведомо вне границы «Personal conversations and channel identity»? **Рекомендация:** Уважать boundary: Circle shared chat is separate; не расширять ее эвристикой модели.
-- **Q0061 · PROPOSAL / OPEN** — Как обнаруживаются доступные функции «Personal conversations and channel identity»? **Рекомендация:** Предпочитать verified capability discovery и явно показывать unsupported operations.
-- **Q0062 · PROPOSAL / OPEN** — Как пользователь управляет настройками «Personal conversations and channel identity»? **Рекомендация:** Читаемый конфиг плюс удобный UI/CLI, версионирование и безопасные defaults.
-- **Q0063 · PROPOSAL / OPEN** — Что «Personal conversations and channel identity» может прочитать из персональных данных? **Рекомендация:** Только необходимые поля по purpose-limited scope; чужая raw private history закрыта.
-- **Q0064 · PROPOSAL / OPEN** — Где хранится каноническое состояние «Personal conversations and channel identity»? **Рекомендация:** В authority domain store с IDs/provenance, не в ответах модели или UI-кэше.
-- **Q0065 · PROPOSAL / OPEN** — Сколько должно жить состояние «Personal conversations and channel identity»? **Рекомендация:** Жизненный цикл tied to task/user retention, explicit archive/delete, безопасный restore.
-- **Q0066 · PROPOSAL / OPEN** — Где именно выполняется «Personal conversations and channel identity»? **Рекомендация:** На supported environment с явно доступными tools; Server control plane не притворяется Node.
-- **Q0067 · PROPOSAL / OPEN** — Как «Personal conversations and channel identity» ведёт себя offline? **Рекомендация:** Честное недоступно/degraded состояние, локальная независимая автоматика — где реализована.
-- **Q0068 · PROPOSAL / OPEN** — Как отменять или отзывать «Personal conversations and channel identity»? **Рекомендация:** Разделить pending cancel, фактическое прекращение, irreversible external effects и revoke grants.
-- **Q0069 · PROPOSAL / OPEN** — Как обрабатывать одновременные запросы к «Personal conversations and channel identity»? **Рекомендация:** Стабильные IDs, определённая очередь/конкуренция и предотвращение конфликтующих actions.
-- **Q0070 · PROPOSAL / OPEN** — Что делать после timeout или неизвестного результата «Personal conversations and channel identity»? **Рекомендация:** Unknown != failed != succeeded; не повторять опасную операцию без reconcile/idempotency.
-- **Q0071 · PROPOSAL / OPEN** — Как пользователю доказать результат «Personal conversations and channel identity»? **Рекомендация:** Показать проверенный receipt/state, кто инициировал и что подтвердил provider.
-- **Q0072 · PROPOSAL / OPEN** — Кто платит за «Personal conversations and channel identity» и как ограничить расход? **Рекомендация:** Привязать usage к owner/delegation, caps, quotas, понятная статистика и отказ сверх лимита.
-- **Q0073 · PROPOSAL / OPEN** — Как изолировать безопасность «Personal conversations and channel identity»? **Рекомендация:** Scoped credentials, least necessary capabilities для интеграций, логирование без секретов; риск: message echo and privacy.
-- **Q0074 · PROPOSAL / OPEN** — Какие проверки должны блокировать release «Personal conversations and channel identity»? **Рекомендация:** Автоматизированные failure/idempotency/privacy тесты и live E2E по доступному физическому/native seam.
-- **Q0075 · PROPOSAL / OPEN** — В какой релиз «Personal conversations and channel identity» попадёт? **Рекомендация:** Предлагаемый этап: Baseline; status не повышать, пока owner и acceptance evidence не готовы.
+- **Q0061 · CONFIRMED** — Как обнаруживаются доступные функции «Personal conversations and channel identity»? **Рекомендация:** Предпочитать verified capability discovery и явно показывать unsupported operations.
+- **Q0062 · CONFIRMED** — Как пользователь управляет настройками «Personal conversations and channel identity»? **Рекомендация:** Читаемый конфиг плюс удобный UI/CLI, версионирование и безопасные defaults.
+- **Q0063 · CONFIRMED** — Что «Personal conversations and channel identity» может прочитать из персональных данных? **Рекомендация:** Только необходимые поля по purpose-limited scope; чужая raw private history закрыта.
+- **Q0064 · CONFIRMED** — Где хранится каноническое состояние «Personal conversations and channel identity»? **Рекомендация:** В authority domain store с IDs/provenance, не в ответах модели или UI-кэше.
+- **Q0065 · CONFIRMED** — Сколько должно жить состояние «Personal conversations and channel identity»? **Рекомендация:** Жизненный цикл tied to task/user retention, explicit archive/delete, безопасный restore.
+- **Q0066 · CONFIRMED** — Где именно выполняется «Personal conversations and channel identity»? **Рекомендация:** На supported environment с явно доступными tools; Server control plane не притворяется Node.
+- **Q0067 · CONFIRMED** — Как «Personal conversations and channel identity» ведёт себя offline? **Рекомендация:** Честное недоступно/degraded состояние, локальная независимая автоматика — где реализована.
+- **Q0068 · CONFIRMED** — Как отменять или отзывать «Personal conversations and channel identity»? **Рекомендация:** Разделить pending cancel, фактическое прекращение, irreversible external effects и revoke grants.
+- **Q0069 · CONFIRMED** — Как обрабатывать одновременные запросы к «Personal conversations and channel identity»? **Рекомендация:** Стабильные IDs, определённая очередь/конкуренция и предотвращение конфликтующих actions.
+- **Q0070 · CONFIRMED** — Что делать после timeout или неизвестного результата «Personal conversations and channel identity»? **Рекомендация:** Unknown != failed != succeeded; не повторять опасную операцию без reconcile/idempotency.
+- **Q0071 · CONFIRMED** — Как пользователю доказать результат «Personal conversations and channel identity»? **Рекомендация:** Показать проверенный receipt/state, кто инициировал и что подтвердил provider.
+- **Q0072 · CONFIRMED** — Кто платит за «Personal conversations and channel identity» и как ограничить расход? **Рекомендация:** Привязать usage к owner/delegation, caps, quotas, понятная статистика и отказ сверх лимита.
+- **Q0073 · CONFIRMED** — Как изолировать безопасность «Personal conversations and channel identity»? **Рекомендация:** Scoped credentials, least necessary capabilities для интеграций, логирование без секретов; риск: message echo and privacy.
+- **Q0074 · CONFIRMED** — Какие проверки должны блокировать release «Personal conversations and channel identity»? **Рекомендация:** Автоматизированные failure/idempotency/privacy тесты и live E2E по доступному физическому/native seam.
+- **Q0075 · CONFIRMED** — В какой релиз «Personal conversations and channel identity» попадёт? **Рекомендация:** Предлагаемый этап: Baseline; status не повышать, пока owner и acceptance evidence не готовы.
 
 ### 04 · Circle session and decisions
 
 **Контекст:** Durable scoped multi-person collaboration with proposals and agreement. **Граница:** no superior assistant or implicit consent. **Этап:** Later. **Основной риск:** invented consensus.
 
 - **Q0076 · CONFIRMED** — Circle — навсегда общий разум семьи? **Рекомендация:** Нет, scoped collaboration session; можно возобновлять, а recurring membership вынести отдельно
-- **Q0077 · PROPOSAL / OPEN** — Кого считать участником Decision? **Рекомендация:** Явно выбранных людей, а не всех членов потенциальной группы
+- **Q0077 · CONFIRMED** — Кого считать участником Decision? **Рекомендация:** Явно выбранных людей, а не всех членов потенциальной группы
 - **Q0078 · CONFIRMED** — Может ли Circle предложить заём? **Рекомендация:** Да, как гипотезу, а не согласие или выполненный перевод
 - **Q0079 · CONFIRMED** — Где хранятся предложения и ответы? **Рекомендация:** В canonical shared history Circle, не как Telegram source of truth
-- **Q0080 · PROPOSAL / OPEN** — Что делать если стороны не согласны? **Рекомендация:** Статус разногласия и альтернативы; не выдумывать консенсус
+- **Q0080 · CONFIRMED** — Что делать если стороны не согласны? **Рекомендация:** Статус разногласия и альтернативы; не выдумывать консенсус
 - **Q0081 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Circle session and decisions»? **Рекомендация:** Определить успех как: Durable scoped multi-person collaboration with proposals and agreement; не включать недоказанные обещания.
 - **Q0082 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Circle session and decisions»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
 - **Q0083 · PROPOSAL / OPEN** — Как инициируется работа «Circle session and decisions»? **Рекомендация:** Явный запрос пользователя по умолчанию; автоматическое начало — только по отдельно согласованной политике.
