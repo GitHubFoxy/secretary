@@ -347,6 +347,7 @@ type claudeSession struct {
 	canceling bool
 	cancelWait chan struct{}
 	pendingTerminal *Result
+	nativeErrorDuringCancel bool
 	done      chan struct{}
 	closed    bool
 	cancel    bool
@@ -385,6 +386,7 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 	}
 	s.active = true
 	s.cancel = false
+	s.nativeErrorDuringCancel = false
 	s.inputID = id
 	s.bashCalls = make(map[string]bool)
 	s.failedBash = ""
@@ -470,10 +472,14 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 		s.result <- *pending
 	}
 	stalled := err == nil && pending == nil && s.active && s.cancel && s.inputID == attempt
+	nativeError := s.nativeErrorDuringCancel
+	s.nativeErrorDuringCancel = false
 	close(s.cancelWait)
 	s.cancelWait = nil
 	s.stateMu.Unlock()
-	if stalled {
+	if stalled && nativeError {
+		_ = s.stopProcess()
+	} else if stalled {
 		go s.stopStalledCanceledAttempt(attempt)
 	}
 	return err
@@ -706,6 +712,19 @@ func (s *claudeSession) handleLine(line []byte) {
 		}
 		s.emitResult(result)
 	case "error":
+		s.stateMu.Lock()
+		canceled := s.cancel
+		canceling := s.canceling
+		if canceled && canceling {
+			s.nativeErrorDuringCancel = true
+		}
+		s.stateMu.Unlock()
+		if canceled {
+			if !canceling {
+				_ = s.stopProcess()
+			}
+			return
+		}
 		summary := valueString(record["error"])
 		if summary == "" {
 			summary = valueString(record["message"])
