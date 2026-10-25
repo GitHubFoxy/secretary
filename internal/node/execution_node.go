@@ -799,10 +799,16 @@ func (n *ExecutionNode) completeCanceledClaudeResume(command *ResumeCommand, ses
 		OccurredAt: time.Now().UTC(),
 	}
 	outcome := acceptedOutcome(cmd)
-	if _, err := n.store.CompleteCommandWithOutcome(metadata.CommandID, outcome, terminal); err != nil {
-		return failedOutcome(cmd, "native_resume_terminal_persist_failed", err.Error())
+	delay := 25 * time.Millisecond
+	for {
+		if _, err := n.store.CompleteCommandWithOutcome(metadata.CommandID, outcome, terminal); err == nil {
+			return outcome
+		}
+		time.Sleep(delay)
+		if delay < time.Second {
+			delay *= 2
+		}
 	}
-	return outcome
 }
 
 func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerCommand) CommandOutcome {
