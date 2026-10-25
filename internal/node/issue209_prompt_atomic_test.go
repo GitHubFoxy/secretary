@@ -304,3 +304,49 @@ func TestIssue209DeferredClaudePromptWriteErrorCancelRaceOneDurableServerResult(
 	}
 	_ = firstTurn
 }
+
+func TestIssue209AcceptedCancelWinsOverLateDeferredPromptError(t *testing.T) {
+	ctx, stop := context.WithTimeout(context.Background(), 5*time.Second)
+	defer stop()
+	sink := &issue209PromptSink{failUser: true}
+	session := issue209DeferredPromptSession(sink)
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	session.beforeInitialPromptAdmission = func() { close(entered); <-release }
+	prompt := make(chan error, 1)
+	go func() { prompt <- session.Prompt(ctx, "late initial input") }()
+	select {
+	case <-entered:
+	case <-ctx.Done():
+		t.Fatal("deferred Prompt did not reach admission barrier")
+	}
+	if err := session.Cancel(ctx); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	select {
+	case err := <-prompt:
+		if err == nil {
+			t.Fatal("deferred Prompt accepted after durable cancellation")
+		}
+	case <-ctx.Done():
+		t.Fatal("deferred Prompt never returned after Cancel")
+	}
+	if sink.Count("user") != 0 {
+		t.Fatal("deferred Prompt wrote stdin after accepted Cancel")
+	}
+	session.emitResult(Result{Status: "canceled", Summary: "Claude Code attempt canceled"})
+	select {
+	case result := <-session.Result():
+		if result.Status != "canceled" {
+			t.Fatalf("accepted Cancel converted into failure: %+v", result)
+		}
+	default:
+		t.Fatal("accepted Cancel lost terminal")
+	}
+	select {
+	case extra := <-session.Result():
+		t.Fatalf("late deferred Prompt created duplicate terminal: %+v", extra)
+	default:
+	}
+}
