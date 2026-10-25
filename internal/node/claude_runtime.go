@@ -481,8 +481,8 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	s.cancelWait = nil
 	s.stateMu.Unlock()
 	if nativeError != "" && err != nil {
-		_ = s.stopProcess()
 		s.emitResult(Result{Status: "failed", Summary: nativeError, FailureCode: "cancel_failed", Technical: err.Error()})
+		_ = s.stopProcess()
 	} else if stalled && nativeError != "" {
 		_ = s.stopProcess()
 	} else if stalled {
@@ -739,10 +739,10 @@ func (s *claudeSession) handleLine(line []byte) {
 			}
 			return
 		}
+		s.emitResult(Result{Status: "failed", Summary: summary})
 		if failedCancel {
 			_ = s.stopProcess()
 		}
-		s.emitResult(Result{Status: "failed", Summary: summary})
 	}
 }
 type claudeTaskVerdict struct {
