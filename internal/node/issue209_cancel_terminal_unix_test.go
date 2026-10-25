@@ -1175,8 +1175,12 @@ func TestIssue209ClaudeNativeResumeUnverifiedCleanupIsInterrupted(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	resumeClaim, _, err := serverStore.ClaimWorkerCommand(ctx, "resume", "attempt", worker.ID, nextAttempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	resumeMeta := firstMeta
-	resumeMeta.CommandID = "issue209-uncertain-resume"
+	resumeMeta.CommandID = resumeClaim.ID
 	resumeMeta.TurnID = continued.ID
 	resumeMeta.AttemptID = nextAttempt.ID
 	resumeMeta.IssuedAt = time.Now().UTC()
@@ -1209,11 +1213,13 @@ func TestIssue209ClaudeNativeResumeUnverifiedCleanupIsInterrupted(t *testing.T) 
 		t.Fatalf("Cancel=%+v err=%v", cancelOutcome, err)
 	}
 	close(runtime.release)
+	var terminalReceipt CommandOutcome
 	select {
 	case result := <-finished:
 		if result.err != nil || result.outcome.State != CommandInterrupted {
 			t.Fatalf("unverified native cleanup must stay interrupted: %+v err=%v", result.outcome, result.err)
 		}
+		terminalReceipt = result.outcome
 	case <-ctx.Done():
 		t.Fatal("native cleanup did not finish")
 	}
@@ -1244,6 +1250,9 @@ func TestIssue209ClaudeNativeResumeUnverifiedCleanupIsInterrupted(t *testing.T) 
 	}
 	if count != 1 {
 		t.Fatalf("unverified cleanup outcomes=%d, want one", count)
+	}
+	if err := NewStoreCommandOutcomeSink(serverStore)(ctx, "macbook", terminalReceipt); err != nil {
+		t.Fatalf("interrupted native Resume receipt reconciled as failure: %v", err)
 	}
 	details, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 	if err != nil || len(details.Results) != 2 || string(details.Results[1].Status) != "interrupted" {
