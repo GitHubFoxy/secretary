@@ -508,8 +508,10 @@ while read line; do :; done
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if err := reopened.RecoverRunning(ctx, nil); err != nil {
-		t.Fatal(err)
+	for i := 0; i < 2; i++ {
+		if err := reopened.RecoverRunning(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
 	}
 	record, err := reopened.Command(dispatch.Metadata().CommandID)
 	if err != nil || record.State != CommandInterrupted || !record.TerminalOutcomeQueued {
@@ -519,10 +521,15 @@ while read line; do :; done
 	if err != nil {
 		t.Fatal(err)
 	}
+	count := 0
 	for _, pending := range events {
+		if pending.EventID == "attempt-outcome-"+dispatch.Metadata().AttemptID {
+			t.Fatal("accepted Cancel produced a fabricated terminal event")
+		}
 		if pending.EventID != "interrupted-"+dispatch.Metadata().CommandID {
 			continue
 		}
+		count++
 		var event NodeEvent
 		if err := json.Unmarshal(pending.Payload, &event); err != nil {
 			t.Fatal(err)
@@ -530,9 +537,10 @@ while read line; do :; done
 		if event.Outcome == nil || event.Outcome.Status != core.OutcomeInterrupted {
 			t.Fatalf("live native process inferred as canceled: %+v", event)
 		}
-		return
 	}
-	t.Fatal("live process crash-window lost interrupted event")
+	if count != 1 {
+		t.Fatalf("crash-window recovery emitted %d interrupted outcomes, want one", count)
+	}
 }
 
 func TestIssue209ClaudeNativeResumeCancelProducesCanonicalCanceledResult(t *testing.T) {
