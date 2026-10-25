@@ -356,6 +356,7 @@ type claudeSession struct {
 	failedCancel bool
 	initialPromptPending bool
 	initialPromptWriting bool
+	initialPromptPreempted bool
 	beforeInitialPromptAdmission func()
 	beforeInitialPromptWrite func()
 	done      chan struct{}
@@ -404,7 +405,7 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 		}
 	}
 	s.stateMu.Lock()
-	if s.closed || s.active || s.canceling || (firstPrompt && !s.initialPromptPending) {
+	if s.closed || s.active || s.canceling || s.initialPromptPreempted || (firstPrompt && !s.initialPromptPending) {
 		s.stateMu.Unlock()
 		return errors.New("claude: session closed or Attempt still active")
 	}
@@ -487,6 +488,7 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	}
 	if s.initialPromptPending {
 		s.initialPromptPending = false
+		s.initialPromptPreempted = true
 		s.active = true
 		s.inputID = s.id + "-initial-prompt-preempted"
 	}
