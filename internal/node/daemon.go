@@ -178,7 +178,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 	pendingCommands := make([]Command, 0, 32)
 	runningWorkers := make(map[string]bool)
 	runningDetails := make(map[string]runningNodeCommand)
-	priorityCancels := make(map[string]bool)
+	priorityCancelSlots := make(chan struct{}, 4)
 	runningCommands := 0
 	commandWorkerKey := func(command Command) string {
 		worker := command.Metadata().WorkerRef
@@ -340,12 +340,16 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 				command := *message.Command
 				key := commandWorkerKey(command)
 				running, ok := runningDetails[key]
-				if ok && running.claudeResume && running.attemptID == command.Metadata().AttemptID &&
-					!priorityCancels[key] {
-					priorityCancels[key] = true
+				if ok && running.claudeResume && running.attemptID == command.Metadata().AttemptID {
 					commandWG.Add(1)
 					go func() {
 						defer commandWG.Done()
+						select {
+						case priorityCancelSlots <- struct{}{}:
+						case <-commandCtx.Done():
+							return
+						}
+						defer func() { <-priorityCancelSlots }()
 						for {
 							if _, err := d.Store.Command(running.commandID); err == nil {
 								break
@@ -372,9 +376,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			startPending()
 		case completed := <-completions:
 			key:=commandWorkerKey(completed.command)
-			if completed.priorityCancel {
-				delete(priorityCancels,key)
-			} else {
+			if !completed.priorityCancel {
 				delete(runningWorkers,key)
 				delete(runningDetails,key)
 				runningCommands--
