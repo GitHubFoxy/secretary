@@ -719,6 +719,9 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	n.mu.Unlock()
 	if err != nil || wasCanceled {
 		nativeCancel()
+		if wasCanceled && command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
+			return n.completeCanceledClaudeResume(command, session)
+		}
 		if session != nil {
 			_ = session.Close()
 		}
@@ -735,6 +738,9 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		delete(n.nativeResumes, command.Metadata.AttemptID)
 		n.mu.Unlock()
 		nativeCancel()
+		if command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
+			return n.completeCanceledClaudeResume(command, session)
+		}
 		_ = session.Close()
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "native_resume_canceled", "Native Resume canceled before Session registration")
 	}
@@ -768,6 +774,34 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		n.watchSession(session, command.Envelope, Command{Kind: CommandResume, Resume: command})
 	}
 	return acceptedOutcome(Command{Kind: CommandResume, Resume: command})
+}
+
+func (n *ExecutionNode) completeCanceledClaudeResume(command *ResumeCommand, session Session) CommandOutcome {
+	cmd := Command{Kind: CommandResume, Resume: command}
+	if session != nil {
+		if err := session.Close(); err != nil {
+			return failedOutcome(cmd, "native_resume_close_failed", err.Error())
+		}
+	}
+	metadata := command.Metadata
+	terminal := core.AttemptOutcomeEnvelope{
+		EventID: "attempt-outcome-" + metadata.AttemptID,
+		Node: metadata.Node,
+		HarnessInstanceID: metadata.HarnessInstanceID,
+		WorkerRef: metadata.WorkerRef,
+		TurnID: metadata.TurnID,
+		AttemptID: metadata.AttemptID,
+		Status: core.OutcomeCanceled,
+		Classification: core.OutcomeFinal,
+		Summary: "Claude Code attempt canceled",
+		ErrorCode: "canceled",
+		OccurredAt: time.Now().UTC(),
+	}
+	outcome := acceptedOutcome(cmd)
+	if _, err := n.store.CompleteCommandWithOutcome(metadata.CommandID, outcome, terminal); err != nil {
+		return failedOutcome(cmd, "native_resume_terminal_persist_failed", err.Error())
+	}
+	return outcome
 }
 
 func (n *ExecutionNode) respond(ctx context.Context, command *RespondWorkerCommand) CommandOutcome {
