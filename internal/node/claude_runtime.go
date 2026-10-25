@@ -230,6 +230,13 @@ func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionI
 	return args, nil
 }
 
+type claudeNativeCleanupConfirmedError struct {
+	cause error
+}
+
+func (e *claudeNativeCleanupConfirmedError) Error() string { return e.cause.Error() }
+func (e *claudeNativeCleanupConfirmedError) Unwrap() error { return e.cause }
+
 func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartRequest, sessionID string, args []string, resume ...bool) (*claudeSession, error) {
 	command := r.command()
 	if _, err := exec.LookPath(command); err != nil {
@@ -300,8 +307,10 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 			}
 		}
 		if err != nil {
-			_ = session.Close()
-			return nil, fmt.Errorf("%w: resume initialization failed: %v", ErrClaudeCodeUnavailable, err)
+			if closeErr := session.Close(); closeErr != nil {
+				return nil, fmt.Errorf("%w: resume initialization failed: %v; native cleanup unverified: %v", ErrClaudeCodeUnavailable, err, closeErr)
+			}
+			return nil, &claudeNativeCleanupConfirmedError{cause: fmt.Errorf("%w: resume initialization failed: %v", ErrClaudeCodeUnavailable, err)}
 		}
 	}
 	if !request.DeferInitialPrompt && request.Task != "" {
