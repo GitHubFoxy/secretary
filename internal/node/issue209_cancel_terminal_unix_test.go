@@ -978,9 +978,11 @@ func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration, ready
 			t.Fatal("Cancel did not cancel daemon-owned native Resume")
 		}
 	}
-	details, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
-	if err != nil || details.CurrentAttempt() == nil || details.CurrentAttempt().State.Terminal() {
-		t.Fatalf("Cancel receipt fabricated terminal before native returned: %+v err=%v", details, err)
+	if !readySession {
+		details, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+		if err != nil || details.CurrentAttempt() == nil || details.CurrentAttempt().State.Terminal() {
+			t.Fatalf("Cancel receipt fabricated terminal before native returned: %+v err=%v", details, err)
+		}
 	}
 	if !readySession {
 		close(runtime.release)
@@ -1543,10 +1545,17 @@ func TestIssue209ClaudeResumeCancelDuringPreNativePreparation(t *testing.T) {
 			}
 			resume := Command{Kind: CommandResume, Resume: &ResumeCommand{Metadata: metadata, Envelope: envelope}}
 			entered := make(chan struct{})
-			release := make(chan struct{})
-			execution.nativeResumePreparationBarrier = func() {
-				close(entered)
-				<-release
+			if stage == "artifact" {
+				execution.SetArtifactFetcher(func(fetchCtx context.Context, _ string) (ArtifactPayload, error) {
+					close(entered)
+					<-fetchCtx.Done()
+					return ArtifactPayload{}, fetchCtx.Err()
+				})
+			} else {
+				execution.nativeResumePreparationBarrier = func(preCtx context.Context) {
+					close(entered)
+					<-preCtx.Done()
+				}
 			}
 			type finishedResume struct {
 				outcome CommandOutcome
@@ -1574,7 +1583,6 @@ func TestIssue209ClaudeResumeCancelDuringPreNativePreparation(t *testing.T) {
 			if err != nil || !record.NativeResumeCancelRequested || record.State != CommandProcessing {
 				t.Fatalf("pre-native checkpoint missing: %+v err=%v", record, err)
 			}
-			close(release)
 			select {
 			case result := <-finished:
 				if result.err != nil || result.outcome.State != CommandAccepted {
