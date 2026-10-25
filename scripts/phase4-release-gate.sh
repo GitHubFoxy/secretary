@@ -19,11 +19,7 @@ printf '%s\n' '[1/9] release-gate contract test'
 run ./scripts/phase4-release-gate-test.sh
 
 printf '%s\n' '[2/9] gofmt'
-unformatted="$(find internal cmd web -type f -name '*.go' -print0 | xargs -0 "${GOFMT[@]}" -l)"
-[[ -z "$unformatted" ]] || {
-  printf 'Unformatted Go files:\n%s\n' "$unformatted" >&2
-  exit 1
-}
+run bash ./scripts/phase4-gofmt-check.sh
 
 printf '%s\n' '[3/9] deterministic Go tests'
 run "${GO[@]}" test -p 1 ./...
