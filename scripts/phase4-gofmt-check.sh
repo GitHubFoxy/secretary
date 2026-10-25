@@ -25,7 +25,13 @@ if [[ -n "$base_ref" ]]; then
     printf 'Cannot find a merge base for gofmt comparison: %s\n' "$base_ref" >&2
     exit 1
   }
-  mapfile -d '' -t changed < <(git diff --name-only --diff-filter=ACMR -z "$merge_base" HEAD)
+  changed_file="$(mktemp)"
+  trap 'rm -f "$changed_file"' EXIT
+  git diff --name-only --diff-filter=ACMR -z "$merge_base" HEAD > "$changed_file" || {
+    printf 'Cannot inspect PR Go changes against: %s\n' "$base_ref" >&2
+    exit 1
+  }
+  mapfile -d '' -t changed < "$changed_file"
   for file in "${changed[@]}"; do
     if [[ "$file" == *.go && -f "$file" ]]; then
       files+=("$file")
