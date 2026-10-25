@@ -335,10 +335,15 @@ func (s *LocalStore) RecordNativeResumeCancel(commandID string, metadata core.Co
 		return errors.New("node: native Resume cancellation identity mismatch")
 	}
 	if record.NativeResumeCancelRequested{return nil}
+	previous:=record
 	record.NativeResumeCancelRequested=true
 	record.UpdatedAt=time.Now().UTC()
 	s.state.Commands[commandID]=record
-	return s.persistLocked()
+	if err:=s.persistLocked();err!=nil{
+		s.state.Commands[commandID]=previous
+		return err
+	}
+	return nil
 }
 
 // YieldPrestart keeps the original claim/idempotency and makes it retryable.
