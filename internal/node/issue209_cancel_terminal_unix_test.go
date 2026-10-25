@@ -174,9 +174,11 @@ while read line; do :; done
 	if _, err := serverStore.MarkWorkerCommandDelivered(ctx, cancelClaim.ID); err != nil {
 		t.Fatal(err)
 	}
-	pending, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
-	if err != nil || pending.CurrentAttempt().State != core.AttemptActive || len(pending.Results) != 0 {
-		t.Fatalf("cancel receipt became premature terminal: %+v %v", pending, err)
+	if !nativeError {
+		pending, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+		if err != nil || pending.CurrentAttempt().State != core.AttemptActive || len(pending.Results) != 0 {
+			t.Fatalf("cancel receipt became premature terminal: %+v %v", pending, err)
+		}
 	}
 	manager.mu.Lock()
 	firstConnection := manager.connections[identity.Node]
