@@ -23,9 +23,15 @@ func TestCodexChatGPTDefaultModelConfiguration(t *testing.T) {
 		wantError     string
 	}{
 		{name: "ChatGPT default", auth: "chatgpt", model: "default", want: "gpt-5.4"},
+		{name: "ChatGPT fast alias", auth: "chatgpt", model: "fast", want: "gpt-5.4"},
+		{name: "ChatGPT smart alias", auth: "chatgpt", model: "smart", want: "gpt-5.4"},
+		{name: "ChatGPT cheap alias", auth: "chatgpt", model: "cheap", want: "gpt-5.4"},
 		{name: "Secretary without observed auth", model: "default", want: "gpt-5.4"},
 		{name: "ChatGPT empty model", auth: "chatgpt", want: "gpt-5.4"},
 		{name: "API key native default", auth: "api_key", model: "default"},
+		{name: "API key fast alias", auth: "api_key", model: "fast"},
+		{name: "API key smart alias", auth: "api_key", model: "smart"},
+		{name: "API key cheap alias", auth: "api_key", model: "cheap"},
 		{name: "API key alias native default", auth: "apiKey", model: "default"},
 		{name: "explicit ACP selection", auth: "chatgpt", model: "default", baseModel: "custom-acp-model", wantSelection: "custom-acp-model"},
 		{name: "agent identity native default", auth: "agent_identity", model: "default"},
