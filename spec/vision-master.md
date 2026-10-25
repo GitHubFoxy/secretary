@@ -102,10 +102,10 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 **Контекст:** Universal open-source personal AI assistant across devices and physical services. **Граница:** coding-first does not mean coding-only. **Этап:** Later. **Основной риск:** inflated promises.
 
 - **Q0001 · CONFIRMED** — Что включает определение «всегда рядом»? **Рекомендация:** Непрерывный персональный контекст и каналы, без фиктивных гарантий офлайн-действий
-- **Q0002 · PROPOSAL / OPEN** — Чем Secretary отличается от очередного чат-бота? **Рекомендация:** Выполняет действия через выбранные инструменты, сохраняет Task lifecycle и присутствует на устройствах
+- **Q0002 · CONFIRMED** — Чем Secretary отличается от очередного чат-бота? **Рекомендация:** Выполняет действия через выбранные инструменты, сохраняет Task lifecycle и присутствует на устройствах
 - **Q0003 · CONFIRMED** — Станет ли coding-only продукт тупиком? **Рекомендация:** Не встраивать coding-специфику в ядро identity/conversation
 - **Q0004 · CONFIRMED** — Нужна ли единая личность при смене модели? **Рекомендация:** Да, user-owned state не привязан к модели
-- **Q0005 · PROPOSAL / OPEN** — Что первично в roadmap: идеальная Алиса или работающий продукт? **Рекомендация:** Подтверждённый coding v1, затем умный дом, голос и авто
+- **Q0005 · CONFIRMED** — Что первично в roadmap: идеальная Алиса или работающий продукт? **Рекомендация:** Подтверждённый coding v1, затем умный дом, голос и авто
 - **Q0006 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Vision and product identity»? **Рекомендация:** Определить успех как: Universal open-source personal AI assistant across devices and physical services; не включать недоказанные обещания.
 - **Q0007 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Vision and product identity»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
 - **Q0008 · PROPOSAL / OPEN** — Как инициируется работа «Vision and product identity»? **Рекомендация:** Явный запрос пользователя по умолчанию; автоматическое начало — только по отдельно согласованной политике.
