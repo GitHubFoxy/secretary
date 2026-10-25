@@ -40,6 +40,10 @@ _Avoid_: channel account, adapter user
 Одна непрерывная переписка пользователя, общая для подключённых Channel adapters; связанная с ней история, Task и Worker bindings не зависят от канала.
 _Avoid_: channel thread, client session, per-app chat
 
+**Circle**:
+Ограниченная по задаче сессия совместной работы нескольких независимых персональных Secretary. Имеет собственный контекст взаимодействия, может завершаться после решения и при необходимости возобновляться; не является управляющим Secretary и не владеет личной памятью участников.
+_Avoid_: manager, supervisor, shared personal Secretary
+
 **Channel adapter**:
 Client integration, которая принимает сообщения из канала и показывает ответы Secretary и Results.
 _Avoid_: UI, frontend, extension
