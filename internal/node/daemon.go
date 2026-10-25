@@ -330,7 +330,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 				key:=commandWorkerKey(*message.Command)
 				if running,ok:=runningDetails[key];ok &&
 					(running.kind==CommandDispatch || running.kind==CommandResume || running.kind==CommandSteering) &&
-					running.attemptID==message.Command.Cancel.Metadata.AttemptID {
+					running.attemptID==message.Command.Cancel.Metadata.AttemptID && !running.claudeResume {
 					running.interrupt(errWorkerDispatchCanceled)
 				}
 			}
