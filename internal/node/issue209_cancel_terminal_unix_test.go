@@ -296,7 +296,7 @@ func TestIssue209NodeRestartDoesNotInferCancelFromReceipt(t *testing.T) {
 	}
 }
 
-func TestIssue209NodeRestartRecoversCanceledNativeClaudeResume(t *testing.T) {
+func TestIssue209NodeRestartDoesNotInferCanceledInFlightResume(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "node.json")
 	store, err := OpenLocalStore(path)
@@ -433,7 +433,7 @@ func TestIssue209NodeCrashWithLiveClaudeAfterAcceptedCancelIsInterrupted(t *test
 	content := `#!/bin/sh
 echo $$ > "$ISSUE209_CLAUDE_ROOT"
 read prompt
-printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
 read interrupt
 while read line; do :; done
 `
