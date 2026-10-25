@@ -14,14 +14,18 @@ import (
 )
 
 func TestIssue209ClaudeNativeErrorDuringFailedCancelEmitsFailedAndStopsCLI(t *testing.T) {
-	issue209NativeErrorAfterFailedCancel(t, false)
+	issue209NativeErrorAfterFailedCancel(t, false, false)
 }
 
 func TestIssue209ClaudeNativeErrorDuringFailedInterruptEmitsFailedAndStopsCLI(t *testing.T) {
-	issue209NativeErrorAfterFailedCancel(t, true)
+	issue209NativeErrorAfterFailedCancel(t, true, false)
 }
 
-func issue209NativeErrorAfterFailedCancel(t *testing.T, interruptFailure bool) {
+func TestIssue209ClaudeSilentFailedCancelEmitsFailedAndStopsCLI(t *testing.T) {
+	issue209NativeErrorAfterFailedCancel(t, false, true)
+}
+
+func issue209NativeErrorAfterFailedCancel(t *testing.T, interruptFailure, silent bool) {
 	ctx, stop := context.WithTimeout(context.Background(), 12*time.Second)
 	defer stop()
 	dir := t.TempDir()
@@ -34,6 +38,9 @@ while [ ! -f "$ISSUE209_ERROR_TRIGGER" ]; do sleep 0.02; done
 printf '%s\n' '{"type":"error","error":"native error during failed Cancel"}'
 while :; do sleep 1; done
 `
+	if silent {
+		script = strings.Replace(script, "printf '%s\\n' '{\"type\":\"error\",\"error\":\"native error during failed Cancel\"}'", ":", 1)
+	}
 	if err := os.WriteFile(launcher, []byte(script), 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -81,11 +88,13 @@ while :; do sleep 1; done
 	if err := os.WriteFile(trigger, []byte("emit"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, ctx, "native error deferred during Cancel", func() bool {
-		session.stateMu.Lock()
-		defer session.stateMu.Unlock()
-		return session.canceling && strings.Contains(session.nativeErrorDuringCancel, "native error during failed Cancel")
-	})
+	if !silent {
+		waitFor(t, ctx, "native error deferred during Cancel", func() bool {
+			session.stateMu.Lock()
+			defer session.stateMu.Unlock()
+			return session.canceling && strings.Contains(session.nativeErrorDuringCancel, "native error during failed Cancel")
+		})
+	}
 	close(releaseCleanup)
 	select {
 	case err := <-cancelDone:
@@ -97,8 +106,8 @@ while :; do sleep 1; done
 	}
 	select {
 	case result := <-session.Result():
-		if result.Status != "failed" || result.FailureCode != "cancel_failed" || result.Summary != "native error during failed Cancel" {
-			t.Fatalf("native error terminal lost after failed Cancel: %+v", result)
+		if result.Status != "failed" || result.FailureCode != "cancel_failed" || (silent && !strings.Contains(result.Summary, "cleanup")) || (!silent && result.Summary != "native error during failed Cancel") {
+			t.Fatalf("failed Cancel terminal missing or incorrect: %+v", result)
 		}
 	case <-ctx.Done():
 		t.Fatal("lost native error left Attempt without terminal Result")
