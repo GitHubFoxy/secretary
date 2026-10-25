@@ -185,6 +185,40 @@ func bindSecretaryWorkerCreationOriginTx(ctx context.Context, tx *sql.Tx, origin
 	return linkSecretaryWorkerTurnTx(ctx, tx, origin.SecretaryTurnID, origin.InputID, workerTurnID, now)
 }
 
+func (s *Store) ValidateSecretaryAcceptedSpawnOrigin(ctx context.Context, origin SecretaryOriginIdentity, workerTurnID string) error {
+ origin = normalizeSecretaryOriginIdentity(origin)
+ workerTurnID = strings.TrimSpace(workerTurnID)
+ if !validSecretaryOriginIdentity(origin) || workerTurnID == "" {
+  return ErrInvalidSecretaryOrigin
+ }
+ return withTxErr(s, ctx, func(tx *sql.Tx) error {
+  secretaryOrigin, err := authorizedSecretaryOriginTx(ctx, tx, origin.PersonID, origin.Capability, origin.SecretaryTurnID, origin.InputID)
+  if err != nil { return err }
+  if secretaryOrigin.State != SecretaryTurnActive { return ErrInvalidSecretaryOrigin }
+  var accepted int
+  err = tx.QueryRowContext(ctx, `SELECT EXISTS (
+SELECT 1 FROM turns t
+JOIN workers w ON w.id = t.worker_id
+WHERE t.id = ? AND w.conversation_id = ? AND (
+ EXISTS (
+  SELECT 1 FROM secretary_worker_creation_origins o
+  WHERE o.worker_turn_id = t.id AND o.secretary_turn_id = ? AND o.input_id = ?
+ )
+ OR EXISTS (
+  SELECT 1 FROM secretary_worker_command_origins o
+  JOIN phase4_worker_commands c ON c.id = o.command_id
+  JOIN phase4_attempts a ON a.id = c.attempt_id
+  WHERE o.worker_turn_id = t.id AND o.secretary_turn_id = ? AND o.input_id = ?
+   AND c.kind = 'dispatch' AND c.state = 'delivered' AND a.turn_id = t.id
+ )
+)
+)`, workerTurnID, secretaryOrigin.ConversationID, origin.SecretaryTurnID, origin.InputID, origin.SecretaryTurnID, origin.InputID).Scan(&accepted)
+  if err != nil { return err }
+  if accepted != 1 { return ErrInvalidSecretaryOrigin }
+  return nil
+ })
+}
+
 func (s *Store) ValidateSecretaryWorkerCreationOrigin(ctx context.Context, origin SecretaryOriginIdentity, workerTurnID string) error {
 	found, err := s.ValidateSecretaryWorkerCreationOriginIfPresent(ctx, origin, workerTurnID)
 	if err != nil {
@@ -373,7 +407,7 @@ func (s *Store) recordSecretaryReply(ctx context.Context, personID, capability, 
 				duplicate bool
 			}{}, err
 		}
-		var priorBody, priorEntryID string
+        var priorBody, priorEntryID string
 		err = tx.QueryRowContext(ctx, `SELECT body, entry_id FROM `+table+` WHERE secretary_turn_id = ? AND input_id = ?`, secretaryTurnID, inputID).Scan(&priorBody, &priorEntryID)
 		if err == nil {
 			if priorBody != text {

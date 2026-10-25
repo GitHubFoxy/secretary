@@ -72,7 +72,7 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
    return fmt.Errorf("automatic Secretary routing lost Telegram video artifact or caption")
   }
   reply,e:=json.Marshal(map[string]any{
-   "text":"Video request received.",
+   "text":"Video request received.","reply_kind":"answer",
    "secretary_turn_id":turnID,"input_id":inputID,
   })
   if e!=nil{return e}
@@ -113,12 +113,20 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
  if err!=nil{t.Fatal(err)}
  defer local.Close()
  daemon:=&node.Daemon{Identity:identity,Store:local,Runtime:runtime,Inventory:t10InventorySource{snapshot:inventory},
-  Capacity:2,HeartbeatInterval:20*time.Millisecond,InventoryInterval:time.Hour,
+  Capacity:2,HeartbeatInterval:100*time.Millisecond,InventoryInterval:time.Hour,
   OutboxPollInterval:10*time.Millisecond,ReconnectMin:10*time.Millisecond,ReconnectMax:40*time.Millisecond}
  done:=make(chan error,1);go func(){done<-daemon.Run(ctx)}()
  defer func(){cancel();select{case <-done:case <-time.After(time.Second):t.Error("Node stuck")}}()
- for {status,e:=manager.Status(ctx,identity.Node);if e==nil&&status.Online&&!status.LastHeartbeatAt.IsZero(){break}
-  select{case <-ctx.Done():t.Fatal("Node not ready");case <-time.After(10*time.Millisecond):}}
+ for {
+  status,e:=manager.Status(ctx,identity.Node)
+  ready,readyErr:=manager.CommandReady(ctx,identity.Node)
+  if e==nil&&readyErr==nil&&ready&&status.Online&&status.Capacity==2&&
+   !status.LastHeartbeatAt.IsZero()&&status.Inventory.Node==identity.Node&&
+   len(status.Inventory.Instances)==1&&status.Inventory.Instances[0].ID==inventory.Instances[0].ID {break}
+  select{case err:=<-done:t.Fatalf("Node daemon stopped before readiness: %v",err)
+  case <-ctx.Done():t.Fatal("Node did not establish authenticated command-ready connection")
+  case <-time.After(10*time.Millisecond):}
+ }
  original:=[]byte("good video")
  type projection struct{chat,thread,text string}
  delivered:=make(chan projection,40)
@@ -195,6 +203,21 @@ func TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay(t *testing.T) {
   for _,v:=range entries{if strings.Contains(v.Body,"Observed sampled frames at 0.000"){found=true;break}}
   if found{break}
   select{case <-ctx.Done():t.Fatal("Worker result not in Personal Conversation");case <-time.After(20*time.Millisecond):}
+ }
+ for {
+  turns,e:=store.SecretaryTurns(ctx,secretaryID.ID)
+  if e!=nil{t.Fatal(e)}
+  if len(turns)!=1{t.Fatalf("expected one canonical Secretary turn: %+v",turns)}
+  turn:=turns[0]
+  if turn.State.Terminal(){
+   if turn.State!=core.SecretaryTurnSucceeded||turn.PromptState!="accepted"{
+    t.Fatalf("early terminal Result corrupted Secretary prompt lifecycle: state=%s prompt_state=%s error=%q",turn.State,turn.PromptState,turn.Error)
+   }
+   break
+  }
+  select{case e:=<-secRuntime.Errors():t.Fatalf("Secretary prompt lifecycle: %v",e)
+  case <-ctx.Done():t.Fatal("Secretary prompt was not accepted and completed")
+  case <-time.After(10*time.Millisecond):}
  }
  if err:=adapter.HandleUpdate(ctx,update);err!=nil{t.Fatal(err)}
  restored,err:=telegram.New(telegram.Config{StatePath:state,OwnerChatID:100,GroupChatID:&group},transport,&telegram.HTTPServerClient{BaseURL:server.URL,Credential:"t13-secret"})

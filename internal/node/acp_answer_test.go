@@ -282,3 +282,58 @@ func TestACPAnswerFixtureProcess(t *testing.T) {
 	}
 	os.Exit(0)
 }
+
+func TestCodexTurnAnswerKeepsIdentifiedFinalAnswerAfterUnattributedChunk(t *testing.T) {
+	a := newACPTurnAnswer()
+	a.codexText("", "", "Warning: Code Mode is unavailable because failed to spawn code-mode host.")
+	a.codexText("", "commentary", "another notice without identity")
+	a.codexText("answer", "final_answer", "готово")
+	got, ok := a.codexFinal("end_turn")
+	if !ok || got != "готово" {
+		t.Fatalf("unattributed chunk discarded the identified final answer: %q ok=%t", got, ok)
+	}
+}
+
+func TestCodexTurnAnswerRejectsUnattributedFinalAnswer(t *testing.T) {
+	for _, phase := range []string{"", "final_answer"} {
+		a := newACPTurnAnswer()
+		a.codexText("", phase, "готово")
+		if _, ok := a.codexFinal("end_turn"); ok {
+			t.Fatalf("unattributed answer with phase %q was accepted", phase)
+		}
+	}
+}
+
+func TestCodexTurnAnswerRejectsContradictoryPhaseOfOneMessage(t *testing.T) {
+	a := newACPTurnAnswer()
+	a.codexText("answer", "commentary", "промежуточный")
+	a.codexText("answer", "final_answer", "готово")
+	if _, ok := a.codexFinal("end_turn"); ok {
+		t.Fatal("a message that changed its phase was accepted")
+	}
+}
+
+func TestGenericTurnAnswerKeepsRejectingUnattributedChunk(t *testing.T) {
+	a := newACPTurnAnswer()
+	a.text("", "notice without identity")
+	a.text("answer", "answer text")
+	if _, ok := a.final("end_turn"); ok {
+		t.Fatal("the generic terminal contract changed")
+	}
+}
+
+func TestCodexTurnAnswerRejectsUnattributedFinalAnswerPhase(t *testing.T) {
+	for _, order := range []string{"before", "after"} {
+		a := newACPTurnAnswer()
+		if order == "before" {
+			a.codexText("", "final_answer", "черновик без идентификатора")
+			a.codexText("answer", "final_answer", "готово")
+		} else {
+			a.codexText("answer", "final_answer", "готово")
+			a.codexText("", "final_answer", "черновик без идентификатора")
+		}
+		if got, ok := a.codexFinal("end_turn"); ok {
+			t.Fatalf("order %s accepted an unattributable answer: %q", order, got)
+		}
+	}
+}

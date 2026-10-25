@@ -9,6 +9,13 @@ on:
       - .github/workflows/linux-standalone-node.yml
       - scripts/package-linux-binary-release.sh
       - cmd/secretary-node/**
+      - internal/node/**
+      - internal/ctl/**
+      - internal/app/**
+      - internal/webapi/**
+      - internal/nativeexec/**
+      - internal/acp/**
+      - cmd/secretaryd/**
   workflow_dispatch:
 
 permissions:

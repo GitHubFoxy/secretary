@@ -1,0 +1,544 @@
+{
+  "artifact-verification": {
+    "schema": 1,
+    "version": "0.1.0-alpha.13",
+    "revision": "90578a399e773a41f65ec4a715486949b7ea9798",
+    "os": "linux",
+    "arch": "amd64",
+    "archive": "secretary-v0.1.0-alpha.13-linux-amd64.tar.gz",
+    "sha256": "9f51c0e8e38bf8a21dadf7cf5e860cfdcdffe293793ef15f60a66b28de164529",
+    "bytes": 147141946
+  },
+  "final-package-integrity": {
+    "all_payload_files_match_published_archive": true,
+    "archive_sha256": "9f51c0e8e38bf8a21dadf7cf5e860cfdcdffe293793ef15f60a66b28de164529"
+  },
+  "final-result-ledger": [
+    {
+      "id": "res_8586f460c396da993df1f9a33c2b7919",
+      "worker_id": "wrk_6326da3b003a89fb9ff963904b859d5c",
+      "attempt_id": "att_a8bc226e4962dc1e426dd36af776af26",
+      "status": "succeeded",
+      "summary": "Название: «ЕЛЬ-6812 · Идеи». Вопрос о стиле задан.",
+      "failure_code": "",
+      "publication_count": 1
+    },
+    {
+      "id": "res_7656bb6fcb16acf179e268e3ebbae374",
+      "worker_id": "wrk_6326da3b003a89fb9ff963904b859d5c",
+      "attempt_id": "att_443783f4dedd64b3ace6838f8d53bec9",
+      "status": "succeeded",
+      "summary": "Новое название: «ЕЛЬ-6812 · Шишки и фишки».\n\nДобавить эмодзи?",
+      "failure_code": "",
+      "publication_count": 1
+    },
+    {
+      "id": "res_eb185aa2dbe182b3747a1aa478336ec5",
+      "worker_id": "wrk_6326da3b003a89fb9ff963904b859d5c",
+      "attempt_id": "att_b03c31375ba3c21e57b466aebe97c20f",
+      "status": "failed",
+      "summary": "Команда выполнена один раз и завершилась с ошибкой: код 7, stderr: `LINUX-CODEX-FAIL-7`. Повтор и восстановление не выполнялись.\n\nРезультат: failed (`tool_execution_failed`).",
+      "failure_code": "tool_execution_failed",
+      "publication_count": 1
+    },
+    {
+      "id": "res_7382789c2fe125b24a93b74d7f98b13b",
+      "worker_id": "wrk_6326da3b003a89fb9ff963904b859d5c",
+      "attempt_id": "att_6ac92ae0b70b9667226fb6193ac7ab51",
+      "status": "failed",
+      "summary": "Первая команда завершилась с кодом 7. Вторая — с кодом 0, вывод: `LINUX-RECOVERY-OK`. Файлы не изменялись.\n\nНе могу формально отметить восстановление и succeeded: инструмент не предоставил native toolCallId первой команды, обязательный для подтверждения восстановления.",
+      "failure_code": "tool_execution_failed",
+      "publication_count": 1
+    },
+    {
+      "id": "res_c0726a443adfc4a207b664b8a9ac968c",
+      "worker_id": "wrk_6326da3b003a89fb9ff963904b859d5c",
+      "attempt_id": "att_ae03e5615b94752723c03a1ec4c9d101",
+      "status": "succeeded",
+      "summary": "> {\"status\":\"failed\",\"task_outcome\":\"failed\",\"exit_code\":7,\"reason\":\"это пример, а не реальная ошибка\"}\n\nИтоговый статус: succeeded.",
+      "failure_code": "",
+      "publication_count": 1
+    },
+    {
+      "id": "res_0756ee4ead9e71ea8fd9fa6fa9633921",
+      "worker_id": "wrk_6326da3b003a89fb9ff963904b859d5c",
+      "attempt_id": "att_efa10a9394910a39d5f34769f993a4fc",
+      "status": "canceled",
+      "summary": "Terminal answer unavailable: ACP turn was canceled.",
+      "failure_code": "canceled",
+      "publication_count": 1
+    },
+    {
+      "id": "res_a31a94e638386cfb23742fde34ae6d1d",
+      "worker_id": "wrk_6326da3b003a89fb9ff963904b859d5c",
+      "attempt_id": "att_973c1d14ab3fd218b4b14d674e6addeb",
+      "status": "succeeded",
+      "summary": "UID: `1000`\nТестовая ENV: `LINUX-ENV-7319`\nСтрока из файла: `LINUX-EXTERNAL-4821`\n\nМаркер: `ЕЛЬ-6812`\nПоследнее название: «ЕЛЬ-6812 · Шишки и фишки».",
+      "failure_code": "",
+      "publication_count": 1
+    },
+    {
+      "id": "res_edefc53f41c095a569260a204f56ff46",
+      "worker_id": "wrk_341b1b38863fe319c67d0a323b7f8b1b",
+      "attempt_id": "att_4c39a71dd793ff48a76ca6d5c9545ae9",
+      "status": "succeeded",
+      "summary": "Из документа:\n- **Маркер:** ЛИНУКС-ФАЙЛ-8426\n- **Сумма:** 730 рублей\n\nПродолжить проверку?",
+      "failure_code": "",
+      "publication_count": 1
+    },
+    {
+      "id": "res_eb80570a8eff6899d580bc59aa62186b",
+      "worker_id": "wrk_341b1b38863fe319c67d0a323b7f8b1b",
+      "attempt_id": "att_80eb5d34b775f8400649c14ed3b9823d",
+      "status": "succeeded",
+      "summary": "**Результаты проверки:**\n\n- **UID:** 1000\n- **ENV:** LINUX-ENV-7319\n- **Строка из файла:** LINUX-EXTERNAL-4821\n- **Маркер из документа:** ЛИНУКС-ФАЙЛ-8426\n- **Сумма из документа:** 730 рублей\n\nЧто проверить дальше?",
+      "failure_code": "",
+      "publication_count": 1
+    },
+    {
+      "id": "res_f6b8607f422600d793ca3cdd4d3f9f38",
+      "worker_id": "wrk_341b1b38863fe319c67d0a323b7f8b1b",
+      "attempt_id": "att_f9ce288aced89df81dbb52be3fa945c0",
+      "status": "failed",
+      "summary": "Выполнено. Exit code 7. Ошибка: LINUX-CLAUDE-FAIL-7",
+      "failure_code": "tool_execution_failed",
+      "publication_count": 1
+    },
+    {
+      "id": "res_d9d9105342b9b2ee0b5b8a61d6a8c14f",
+      "worker_id": "wrk_341b1b38863fe319c67d0a323b7f8b1b",
+      "attempt_id": "att_819c5ccb17aa04776d21f4ad846e03e0",
+      "status": "canceled",
+      "summary": "Claude Code attempt canceled",
+      "failure_code": "canceled",
+      "publication_count": 1
+    },
+    {
+      "id": "res_f2a6ab0fe5db691a3d559b6412082ee2",
+      "worker_id": "wrk_6326da3b003a89fb9ff963904b859d5c",
+      "attempt_id": "att_05b7df5636051e6986af01d3ff268e7e",
+      "status": "succeeded",
+      "summary": "Маркер: ЕЛЬ-6812.\nПоследнее название списка: «ЕЛЬ-6812 · Шишки и фишки».",
+      "failure_code": "",
+      "publication_count": 1
+    },
+    {
+      "id": "res_fab06977bab331ed589b0fedc3db4afe",
+      "worker_id": "wrk_341b1b38863fe319c67d0a323b7f8b1b",
+      "attempt_id": "att_a3fc12fc9c462cf7ea30193ec8ac8169",
+      "status": "succeeded",
+      "summary": "Маркер: ЛИНУКС-ФАЙЛ-8426\nСумма: 730 рублей\nENV: LINUX-ENV-7319",
+      "failure_code": "",
+      "publication_count": 1
+    },
+    {
+      "id": "res_c640995713134d57affae203889f9d86",
+      "worker_id": "wrk_341b1b38863fe319c67d0a323b7f8b1b",
+      "attempt_id": "att_8e3c5dfde8102aa0a91ab8b264879d93",
+      "status": "succeeded",
+      "summary": "WEB-WORKER-6842\n\nМаркер: ЛИНУКС-ФАЙЛ-8426\nСумма: 730 рублей",
+      "failure_code": "",
+      "publication_count": 1
+    }
+  ],
+  "codex-native-test-proof": [
+    {
+      "session_id": "01a169b4-4645-76b1-b316-39d6172c2f69",
+      "turn_id": "01a169b4-469a-7960-ab6d-6e840095d128",
+      "final_answer": "Название: «ЕЛЬ-6812 · Идеи». Вопрос о стиле задан.",
+      "error": null
+    },
+    {
+      "session_id": "01a169b4-4645-76b1-b316-39d6172c2f69",
+      "turn_id": "01a169b5-2e6f-7fe2-972d-4a253f75350e",
+      "final_answer": "Новое название: «ЕЛЬ-6812 · Шишки и фишки».\n\nДобавить эмодзи?",
+      "error": null
+    },
+    {
+      "session_id": "01a169b4-4645-76b1-b316-39d6172c2f69",
+      "turn_id": "01a169b5-8d8d-7cf3-9c80-52bf45f96c7d",
+      "command_id": "exec-62da2b17-b9ab-497e-afda-7595465e42e7",
+      "command": [
+        "/usr/bin/bash",
+        "-lc",
+        "/bin/sh -c \"printf LINUX-CODEX-FAIL-7 >&2; exit 7\""
+      ],
+      "exit_code": 7,
+      "output": "LINUX-CODEX-FAIL-7"
+    },
+    {
+      "session_id": "01a169b4-4645-76b1-b316-39d6172c2f69",
+      "turn_id": "01a169b5-8d8d-7cf3-9c80-52bf45f96c7d",
+      "final_answer": "Команда выполнена один раз и завершилась с ошибкой: код 7, stderr: `LINUX-CODEX-FAIL-7`. Повтор и восстановление не выполнялись.\n\nРезультат: failed (`tool_execution_failed`).",
+      "error": null
+    },
+    {
+      "session_id": "01a169b4-4645-76b1-b316-39d6172c2f69",
+      "turn_id": "01a169b6-e3fd-7980-ab7e-a8ddb9999b6a",
+      "command_id": "exec-29f92456-06ee-4753-bd45-da49f46d9f85",
+      "command": [
+        "/usr/bin/bash",
+        "-lc",
+        "/bin/sh -c \"printf LINUX-RECOVERY-FAIL-7 >&2; exit 7\""
+      ],
+      "exit_code": 7,
+      "output": "LINUX-RECOVERY-FAIL-7"
+    },
+    {
+      "session_id": "01a169b4-4645-76b1-b316-39d6172c2f69",
+      "turn_id": "01a169b6-e3fd-7980-ab7e-a8ddb9999b6a",
+      "command_id": "exec-3b0c5cdf-ff35-4d3a-b94f-edbabadf9c17",
+      "command": [
+        "/usr/bin/bash",
+        "-lc",
+        "/bin/sh -c \"printf LINUX-RECOVERY-OK\""
+      ],
+      "exit_code": 0,
+      "output": "LINUX-RECOVERY-OK"
+    },
+    {
+      "session_id": "01a169b4-4645-76b1-b316-39d6172c2f69",
+      "turn_id": "01a169b6-e3fd-7980-ab7e-a8ddb9999b6a",
+      "final_answer": "Первая команда завершилась с кодом 7. Вторая — с кодом 0, вывод: `LINUX-RECOVERY-OK`. Файлы не изменялись.\n\nНе могу формально отметить восстановление и succeeded: инструмент не предоставил native toolCallId первой команды, обязательный для подтверждения восстановления.",
+      "error": null
+    },
+    {
+      "session_id": "01a169b4-4645-76b1-b316-39d6172c2f69",
+      "turn_id": "01a169b7-65bd-74a0-a3a6-0600bacce1ea",
+      "final_answer": "> {\"status\":\"failed\",\"task_outcome\":\"failed\",\"exit_code\":7,\"reason\":\"это пример, а не реальная ошибка\"}\n\nИтоговый статус: succeeded.",
+      "error": null
+    },
+    {
+      "session_id": "01a169b4-4645-76b1-b316-39d6172c2f69",
+      "turn_id": "01a169bb-1789-7060-bf6b-0f6cbd0bb59b",
+      "final_answer": "UID: `1000`\nТестовая ENV: `LINUX-ENV-7319`\nСтрока из файла: `LINUX-EXTERNAL-4821`\n\nМаркер: `ЕЛЬ-6812`\nПоследнее название: «ЕЛЬ-6812 · Шишки и фишки».",
+      "error": null
+    },
+    {
+      "session_id": "01a169b4-4645-76b1-b316-39d6172c2f69",
+      "turn_id": "01a169bf-f70b-7ff2-94b7-ab919fa3caaa",
+      "final_answer": "Маркер: ЕЛЬ-6812.\nПоследнее название списка: «ЕЛЬ-6812 · Шишки и фишки».",
+      "error": null
+    }
+  ],
+  "claude-native-test-proof": {
+    "models": [
+      "<synthetic>",
+      "claude-haiku-4-5-20251001"
+    ],
+    "commands": [
+      {
+        "session_id": "5521c9fa-1c6b-4bdd-998c-58202dea45bb",
+        "tool_use_id": "tooluse_16u8UAETQnAPn9rKrlntVC",
+        "command": "/bin/sh -c \"printf LINUX-CLAUDE-FAIL-7 >&2; exit 7\""
+      },
+      {
+        "session_id": "5521c9fa-1c6b-4bdd-998c-58202dea45bb",
+        "tool_use_id": "tooluse_rtNgxTn8wT6oEsmzdIOZkE",
+        "command": "/bin/sleep 45"
+      }
+    ]
+  },
+  "restart-native-continuity": {
+    "wrk_6246f8764d0cfc0d8a07857f42027043": {
+      "before": [
+        [
+          "01a169b4-4645-76b1-b316-39d6172c2f69",
+          "/home/coder/.local/state/secretary-alpha13-linux-acceptance/home/.local/share/secretary/node/data/workspaces/secretary-worker-3678308076"
+        ]
+      ],
+      "after": [
+        [
+          "01a169b4-4645-76b1-b316-39d6172c2f69",
+          "/home/coder/.local/state/secretary-alpha13-linux-acceptance/home/.local/share/secretary/node/data/workspaces/secretary-worker-3678308076"
+        ]
+      ],
+      "same_session_workspace": true
+    },
+    "wrk_dc2cd344a4d8fcd8bf3353e829f4c894": {
+      "before": [
+        [
+          "5521c9fa-1c6b-4bdd-998c-58202dea45bb",
+          "/home/coder/.local/state/secretary-alpha13-linux-acceptance/home/.local/share/secretary/node/data/workspaces/secretary-worker-228083316"
+        ]
+      ],
+      "after": [
+        [
+          "5521c9fa-1c6b-4bdd-998c-58202dea45bb",
+          "/home/coder/.local/state/secretary-alpha13-linux-acceptance/home/.local/share/secretary/node/data/workspaces/secretary-worker-228083316"
+        ]
+      ],
+      "same_session_workspace": true
+    }
+  },
+  "final-environment-verification": {
+    "at": "2026-10-23T17:20:20.583645+00:00",
+    "production": [
+      {
+        "unit": "secretary.service",
+        "pid": 3409627,
+        "same_pid_as_preflight": true,
+        "exe": "/home/coder/.local/share/secretary/releases/secretary-v0.1.0-alpha.8-linux-amd64/bin/secretaryd",
+        "active": true
+      },
+      {
+        "unit": "secretary-node.service",
+        "pid": 3409630,
+        "same_pid_as_preflight": true,
+        "exe": "/home/coder/.local/share/secretary/releases/secretary-v0.1.0-alpha.8-linux-amd64/bin/secretary-node",
+        "active": true
+      }
+    ],
+    "production_health": {
+      "http": 200,
+      "body": {
+        "status": "ok"
+      }
+    },
+    "process_counts": {
+      "secretaryd": 1,
+      "secretary-node": 1,
+      "secretary-mcp": 1
+    },
+    "test_services_stopped": true,
+    "results": 14,
+    "active_attempts": 0,
+    "all_results_published_once": true,
+    "provider_auth_preserved": true
+  },
+  "provider-preservation": {
+    "files": {
+      "/home/coder/.codex/auth.json": {
+        "exists_before": true,
+        "exists_after": true,
+        "unchanged": true
+      },
+      "/home/coder/.codex/config.toml": {
+        "exists_before": true,
+        "exists_after": true,
+        "unchanged": true
+      },
+      "/home/coder/.claude/settings.json": {
+        "exists_before": true,
+        "exists_after": true,
+        "unchanged": true
+      },
+      "/home/coder/.claude/.credentials.json": {
+        "exists_before": false,
+        "exists_after": false,
+        "unchanged": true
+      },
+      "/home/coder/.claude.json": {
+        "exists_before": true,
+        "exists_after": true,
+        "unchanged": true
+      }
+    },
+    "native_auth_after": {
+      "codex": {
+        "exit": 0,
+        "authenticated": true
+      },
+      "claude": {
+        "exit": 0,
+        "authenticated": true
+      }
+    }
+  },
+  "offline-rejection": {
+    "node_online": false,
+    "response": {
+      "http": 400,
+      "body": "core: selected Node is unavailable: Node alpha13-linux-acceptance is offline, draining or unavailable\n"
+    },
+    "before": {
+      "attempt_count": 13,
+      "result_count": 13,
+      "at": 1792775575.4015012
+    },
+    "after": {
+      "attempt_count": 13,
+      "result_count": 13
+    },
+    "no_new_attempt": true,
+    "no_new_result": true
+  },
+  "offline-reconnect-verification": {
+    "node_online": true,
+    "counts": {
+      "attempt_count": 13,
+      "result_count": 13
+    },
+    "rejected_request_not_reexecuted": true,
+    "harness_note": "Temporary systemd-run unit was collected after stop; recreated same owned test unit. Persistent production units untouched."
+  },
+  "negative-uploads": {
+    "linux-empty.txt": {
+      "http": 400,
+      "body": "Empty files are not supported\n"
+    },
+    "linux-invalid.exe": {
+      "http": 415,
+      "body": "Unsupported file type or invalid filename. Allowed: documents, text, images, MP4/WebM/MOV video, ZIP (max 8 MiB).\n"
+    },
+    "linux-invalid.png": {
+      "http": 422,
+      "body": "image: invalid image data or filename/format mismatch\n"
+    }
+  },
+  "document-download": {
+    "http": 200,
+    "bytes": 57,
+    "sha256": "8601112b4d3c1adfef16f798bbd7a50944f9c29d1f603426d4f0403bdfbdb0a3",
+    "matches_upload": true
+  },
+  "claude-provider-model-ids": {
+    "model_ids": [
+      "claude-haiku-4-5-20251001",
+      "claude-opus-4-6",
+      "claude-opus-4-7",
+      "claude-opus-4-8",
+      "claude-opus-5",
+      "claude-opus-5-5",
+      "claude-sonnet-4-6",
+      "claude-sonnet-5",
+      "claude-sonnet-5-5"
+    ],
+    "haiku55_present": false
+  },
+  "claude-live-model-pin": [
+    {
+      "pid": 719874,
+      "ppid": 719806,
+      "model": "claude-haiku-4-5-20251001",
+      "resume": null
+    },
+    {
+      "pid": 724989,
+      "ppid": 659341,
+      "model": "claude-haiku-4-5-20251001",
+      "resume": "5521c9fa-1c6b-4bdd-998c-58202dea45bb"
+    }
+  ],
+  "terminal-config-menu": {
+    "status": "PASS",
+    "transport": "real SSH PTY",
+    "observed": [
+      "Native harness codex",
+      "Local Execution Node alpha13-linux-acceptance",
+      "Paths and operations displayed test paths",
+      "Done exited normally"
+    ],
+    "mutation": "none"
+  },
+  "terminal-interactive-setup": {
+    "status": "PASS",
+    "transport": "real SSH PTY",
+    "observed": "Available Codex=true Claude Code=true; selected claude_code; existing auth used",
+    "note": "See coordinator tool transcript for actual exit status"
+  },
+  "worker-message-idempotency": {
+    "http": 202,
+    "before": 3,
+    "after": 3,
+    "no_new_attempt": true
+  },
+  "repeat-setup-preservation": {
+    "exit": 0,
+    "files_unchanged": {
+      "config.toml": true,
+      "environment": true,
+      "node/config.json": true,
+      "node/data/identity.json": true,
+      "node/data/node-state.json": true
+    }
+  },
+  "unauthorized-api": {
+    "/v1/conversation": 401,
+    "/v1/workers": 401,
+    "/v1/nodes": 401,
+    "POST /v1/messages": 401
+  },
+  "web": {
+    "connected": true,
+    "bootstrapVisible": false,
+    "onboardingVisible": false,
+    "webMessageOccurrences": 2,
+    "workerFollowupVisible": true,
+    "documentMarkerVisible": true,
+    "serviceMetadataRawJsonVisible": false,
+    "projectlessLabelUnknownProject": true,
+    "observerOpen": true,
+    "transport": "real Helium browser through SSH tunnel to omarchy 127.0.0.1:18081",
+    "bootstrap": "Submitted test owner token in login form; token omitted",
+    "onboarding_steps_observed": [
+      "1/4 Welcome",
+      "2/4 Your private workbench",
+      "3/4 Choose a default model",
+      "4/4 You are ready"
+    ],
+    "model": "claude-haiku-4-5-20251001",
+    "refresh": "Owner session retained and connected after location.reload()",
+    "web_worker_followup": "Clicked Observer Follow-up; canonical Result verified separately"
+  },
+  "codex-cancel": {
+    "status": "PASS",
+    "observed_before": [
+      {
+        "pid": 721717,
+        "ppid": 721715,
+        "state": "S",
+        "comm": "sleep"
+      },
+      {
+        "pid": 721715,
+        "ppid": 721714,
+        "state": "Ss",
+        "comm": "codex"
+      }
+    ],
+    "seconds": 0.42,
+    "surviving_pids": [],
+    "cancel_http": 202,
+    "duplicate_http": 202
+  },
+  "claude-cancel": {
+    "status": "PASS",
+    "observed_before": [
+      {
+        "pid": 726455,
+        "ppid": 726453,
+        "state": "S",
+        "comm": "sleep"
+      },
+      {
+        "pid": 726453,
+        "ppid": 726278,
+        "state": "Ss",
+        "comm": "bash"
+      }
+    ],
+    "seconds": 0.07,
+    "surviving_pids": [],
+    "cancel_http": 202,
+    "duplicate_http": 202
+  },
+  "negative-auth-and-cli": {
+    "codex_login_status_exit": 1,
+    "claude_auth_status_exit": 1,
+    "codex_noauth_setup_exit": 0,
+    "codex_noauth_doctor_exit": 1,
+    "claude_noauth_setup_exit": 1,
+    "claude_missing_cli_setup_exit": 1,
+    "claude_missing_cli_config_unchanged": true,
+    "scope": "Empty isolated HOME, real auth excluded; no interactive login performed."
+  },
+  "source_notes": {
+    "scope": "Selected test-only native events and canonical Results; not complete private transcripts.",
+    "default_codex_model_error": "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account.",
+    "server_cli_observation": "running Server: pid=653593 unknown (process executable path unavailable)",
+    "server_proc_exe": "Published alpha13 secretaryd executable independently verified through /proc/PID/exe.",
+    "unsupported_claude_reasoning": "Explicit reasoning=default rejected; no Worker created. Conversation seq27 remained Сейчас запущу Worker before next user request. Full UI error propagation not established.",
+    "redaction": "Owner bootstrap tokens, cookies, keys, private environment/config content, unrelated native sessions and full unit files excluded."
+  }
+}

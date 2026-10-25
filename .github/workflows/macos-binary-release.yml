@@ -14,6 +14,13 @@ on:
       - internal/node/codex_*.go
       - scripts/build-codex-acp-bundle.sh
       - internal/acp/jsonl.go
+      - internal/nativeexec/**
+      - internal/node/**
+      - internal/ctl/**
+      - internal/app/**
+      - internal/webapi/**
+      - internal/acp/**
+      - cmd/secretaryd/**
       - internal/node/harness_probe.go
       - internal/webapi/video.go
       - internal/webapi/video_tools.go
@@ -177,6 +184,13 @@ jobs:
           fi
           echo "$expected  $RUNNER_TEMP/codex-native/codex.tar.gz" | shasum -a 256 -c -
           tar -xzf "$RUNNER_TEMP/codex-native/codex.tar.gz" -C "$dest/adapter"
+          host_digest=2e28f49a4767a97586843c92692b96481be74d837199b49038f731cec88e9941
+          if [[ ! -f "$dest/codex-code-mode-host.tar.gz" ]]; then
+            curl -fLsS --retry 3 -o "$dest/codex-code-mode-host.tar.gz" "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-code-mode-host-$triple.tar.gz"
+          fi
+          echo "$host_digest  $dest/codex-code-mode-host.tar.gz" | shasum -a 256 -c -
+          tar -xzf "$dest/codex-code-mode-host.tar.gz" -C "$dest/adapter"
+          test -s "$dest/adapter/codex-code-mode-host-$triple"
           chmod +x scripts/mock-codex-app-server.py
           python3 scripts/codex-acp-release-gate.py --acp "$dest/adapter/codex-acp" --codex "$dest/adapter/codex-$triple" --mock-app-server "$GITHUB_WORKSPACE/scripts/mock-codex-app-server.py"
       - name: Verify clean install, idempotence, failed activation and upgrade

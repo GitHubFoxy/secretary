@@ -7,6 +7,13 @@ on:
       - internal/node/codex_*.go
       - scripts/build-codex-acp-bundle.sh
       - internal/acp/jsonl.go
+      - internal/nativeexec/**
+      - internal/node/**
+      - internal/ctl/**
+      - internal/app/**
+      - internal/webapi/**
+      - internal/acp/**
+      - cmd/secretaryd/**
       - internal/node/harness_probe.go
       - scripts/install-linux-binary.sh
       - scripts/installer-tls-retry-test.sh
@@ -153,6 +160,16 @@ jobs:
           fi
           echo "$expected  $RUNNER_TEMP/codex-native/codex.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/codex-native/codex.tar.gz" -C "$dest/adapter"
+          case "${{ matrix.arch }}" in
+            amd64) host_digest=314263128ba6592e7e807c265deeaf928a692b72dcbfeb5e0b20c9423b703529 ;;
+            arm64) host_digest=284356aefb197f00b76b912efdfdbae8ccf3ea1f89b976dde064b7ccb43214ef ;;
+          esac
+          if [[ ! -f "$dest/codex-code-mode-host.tar.gz" ]]; then
+            curl -fLsS --retry 3 -o "$dest/codex-code-mode-host.tar.gz" "https://github.com/openai/codex/releases/download/rust-v0.163.0/codex-code-mode-host-$triple.tar.gz"
+          fi
+          echo "$host_digest  $dest/codex-code-mode-host.tar.gz" | sha256sum -c -
+          tar -xzf "$dest/codex-code-mode-host.tar.gz" -C "$dest/adapter"
+          test -s "$dest/adapter/codex-code-mode-host-$triple"
           chmod +x scripts/mock-codex-app-server.py
           python3 scripts/codex-acp-release-gate.py --acp "$dest/adapter/codex-acp" --codex "$dest/adapter/codex-$triple" --mock-app-server "$GITHUB_WORKSPACE/scripts/mock-codex-app-server.py"
       - name: Packaged video dependency contract

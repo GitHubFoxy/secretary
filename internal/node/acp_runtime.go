@@ -255,6 +255,9 @@ func (r ACPRuntime) configureSession(ctx context.Context, client *acp.Client, se
 		if err != nil {
 			return fmt.Errorf("acp: native managed mode selection failed: %w", err)
 		}
+		if r.CodexMessagePhases && !nativeConfigValueConfirmed(response, "mode", r.ModeSelection) {
+			return fmt.Errorf("codex: requested native execution mode was not selected")
+		}
 		if r.ModeDescription != "" && !nativeModeConfirmed(response, r.ModeSelection, r.ModeDescription) {
 			return fmt.Errorf("acp: native managed profile not confirmed")
 		}
@@ -604,7 +607,7 @@ func (r ACPRuntime) connect(ctx context.Context, workerRef string, profile Manag
 	if err := client.Request(ctx, "initialize", map[string]any{
 		"protocolVersion":    1,
 		"clientInfo":         map[string]string{"name": "secretary", "version": "0.1.0"},
-		"clientCapabilities": acpClientCapabilities(),
+		"clientCapabilities": r.clientCapabilities(),
 	}, &initialized); err != nil {
 		client.Close()
 		return nil, acpNegotiated{}, err
@@ -638,6 +641,23 @@ func acpClientCapabilities() map[string]any {
 	return map[string]any{
 		"elicitation": map[string]any{"form": map[string]any{}},
 	}
+}
+
+func acpCodexPhaseCapabilities() map[string]any {
+	capabilities := acpClientCapabilities()
+	capabilities["_meta"] = map[string]any{
+		codexPhaseNamespace: map[string]any{
+			codexPhaseExtension: map[string]any{"version": 1, "capabilities": []string{}},
+		},
+	}
+	return capabilities
+}
+
+func (r ACPRuntime) clientCapabilities() map[string]any {
+	if r.CodexMessagePhases {
+		return acpCodexPhaseCapabilities()
+	}
+	return acpClientCapabilities()
 }
 
 type redactingACPLog struct {
@@ -729,6 +749,12 @@ func redactACPLogFrame(direction string, raw []byte) []byte {
 			}
 		}
 	}
+	if direction == "stderr" {
+		if tail, ok := message["stderr_tail"].(string); ok {
+			safe["kind"] = "harness_stderr"
+			safe["stderr_tail"] = tail
+		}
+	}
 	safe["redacted"] = redacted
 	encoded, err := json.Marshal(safe)
 	if err != nil {
@@ -802,6 +828,14 @@ type acpSession struct {
 	legacyTurnText          *strings.Builder
 	terminalMessageGrouping bool
 	codexMessagePhases      bool
+	codexCommandFailures     map[string]int
+	codexNativeStarts map[string]bool
+	codexPendingExits map[string]int
+	codexSystemError bool
+	codexSystemErrorText string
+	codexRecoveryNoticeCtx context.Context
+	codexRecoveryNotified map[string]bool
+	codexRecoveryInjected map[string]bool
 	replaying               atomic.Bool
 	drainPromptEvents       bool
 
@@ -882,7 +916,18 @@ func (s *acpSession) SteerImages(ctx context.Context, text string, images []Imag
 	return response.Outcome == "injected", nil
 }
 func (s *acpSession) Cancel(ctx context.Context) error {
-	return s.client.NotifyContext(ctx, "session/cancel", map[string]string{"sessionId": s.id})
+	if !s.codexMessagePhases {
+		return s.client.NotifyContext(ctx, "session/cancel", map[string]string{"sessionId": s.id})
+	}
+	cleanup, inspectErr := s.client.PrepareDescendantCleanup()
+	notifyErr := s.client.NotifyContext(ctx, "session/cancel", map[string]string{"sessionId": s.id})
+	var cleanupErr error
+	if cleanup != nil {
+		cleanupErr = cleanup()
+	}
+	if inspectErr != nil { inspectErr = fmt.Errorf("inspect Codex tool descendants: %w", inspectErr) }
+	if cleanupErr != nil { cleanupErr = fmt.Errorf("stop Codex tool descendants: %w", cleanupErr) }
+	return errors.Join(notifyErr, inspectErr, cleanupErr)
 }
 
 func (s *acpSession) RebindRequests(requestIDs []string) {
@@ -1809,8 +1854,18 @@ func acpPromptBlocks(text string, images []ImageInput) []map[string]string {
 
 func (s *acpSession) promptTurnImages(ctx context.Context, task string, images []ImageInput) error {
 	defer s.finishTurn()
+	noticeCtx, noticeCancel := context.WithCancel(ctx)
+	defer noticeCancel()
 	s.textMu.Lock()
 	s.turnAnswer, s.legacyTurnText = nil, nil
+	s.codexCommandFailures = make(map[string]int)
+	s.codexNativeStarts = make(map[string]bool)
+	s.codexPendingExits = make(map[string]int)
+	s.codexSystemError = false
+	s.codexSystemErrorText = ""
+	s.codexRecoveryNoticeCtx = noticeCtx
+	s.codexRecoveryNotified = make(map[string]bool)
+	s.codexRecoveryInjected = make(map[string]bool)
 	if s.terminalMessageGrouping || s.codexMessagePhases {
 		s.turnAnswer = newACPTurnAnswer()
 	} else {
@@ -1852,6 +1907,11 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 		collected = legacyText
 	}
 	s.turnAnswer, s.legacyTurnText = nil, nil
+	s.codexRecoveryNoticeCtx = nil
+	systemError := s.codexSystemError
+	systemErrorText := s.codexSystemErrorText
+	failures := make(map[string]int)
+	for id, code := range s.codexPendingExits { if s.codexNativeStarts[id] && code != 0 { failures[id] = code } }
 	s.textMu.Unlock()
 	if err != nil {
 		var rpcErr *acp.RPCError
@@ -1876,9 +1936,6 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 		completionEvidence = &TerminalCompletionEvidence{
 			Contract: TerminalCompletionOpenCodeV2, StopReason: stopReason,
 			RPCSucceeded: true, DrainCompleted: true,
-		}
-		if s.codexMessagePhases {
-			completionEvidence = nil
 		}
 		if answer != nil && completionEvidence != nil {
 			completionEvidence.AssistantChunks = answer.assistantChunks
@@ -1915,8 +1972,40 @@ func (s *acpSession) promptTurnImages(ctx context.Context, task string, images [
 			}
 		}
 	}
-	s.result <- Result{Status: status, Summary: response.Summary, CompletionEvidence: completionEvidence}
+	if s.codexMessagePhases && systemError && status != "canceled" {
+		status = "failed"
+		response.Summary = "Codex native runtime reported a system error."
+		if systemErrorText != "" {
+			response.Summary = systemErrorText
+		}
+	}
+	originalSummary := response.Summary
+	if s.codexMessagePhases && status != "canceled" { response.Summary, _ = codexRecoveryText(response.Summary) }
+	result := Result{Status: status, Summary: response.Summary, CompletionEvidence: completionEvidence}
+	if s.codexMessagePhases && systemError && status != "canceled" {
+		if systemErrorText != "" { result.FailureCode = "native_model_error" } else { result.FailureCode = "native_system_error" }
+	}
+	if s.codexMessagePhases && status == "succeeded" && len(failures) != 0 {
+		if _, _, ok := codexExplicitRecovery(originalSummary, failures); !ok {
+			result.Status = "failed"
+			result.FailureCode = "tool_execution_failed"
+			result.Technical = codexCommandFailureDetails(failures)
+		}
+	}
+	if s.codexMessagePhases && result.Summary != "" && status != "canceled" { s.emitActivity(Activity{Kind: ActivityText, Text: result.Summary}) }
+	s.result <- result
 	return nil
+}
+
+func (s *acpSession) offerCodexRecoveryID(ctx context.Context, id string, code int) {
+	if ctx.Err() != nil || !s.busyNow() || len(id) > 128 || !regexp.MustCompile("^exec-[A-Za-z0-9-]+$").MatchString(id) { return }
+	injected, err := s.Steer(ctx, fmt.Sprintf("Secretary verified native exec_command failure in this turn: ACP toolCallId=%s exit_code=%d. This identity is for explicit recovered_tool_use_ids only if you genuinely recover this exact failed command; an unrelated successful command is not recovery.", id, code))
+	if err != nil || !injected { return }
+	s.textMu.Lock()
+	if s.codexRecoveryNoticeCtx == ctx && s.codexRecoveryNotified[id] && ctx.Err() == nil {
+		s.codexRecoveryInjected[id] = true
+	}
+	s.textMu.Unlock()
 }
 
 func (s *acpSession) finishTurn() {
@@ -1972,14 +2061,37 @@ func (s *acpSession) watch() {
 		switch kind {
 		case "user_message_chunk":
 			continue
+		case "session_info_update":
+			if s.codexMessagePhases {
+				meta, _ := payload["_meta"].(map[string]any)
+				codex, _ := meta["codex"].(map[string]any)
+				thread, _ := codex["threadStatus"].(map[string]any)
+				if valueString(thread["type"]) == "systemError" {
+					s.textMu.Lock()
+					if s.turnAnswer != nil { s.codexSystemError = true }
+					s.textMu.Unlock()
+				}
+			}
 		case "agent_message_chunk":
 			text := valueString(content["text"])
+			if s.codexMessagePhases {
+				s.textMu.Lock()
+				meta, _ := payload["_meta"].(map[string]any)
+				phase, consistent := codexMessagePhase(meta)
+				if s.turnAnswer != nil && s.codexSystemError && s.codexSystemErrorText == "" && consistent && phase == "" && len(text) < 256 && regexp.MustCompile("^The '[a-zA-Z0-9._-]+' model is not supported when using Codex with a ChatGPT account\\.$").MatchString(strings.TrimSpace(text)) {
+					s.codexSystemErrorText = SanitizeFailureMessage(strings.TrimSpace(text))
+				}
+				s.textMu.Unlock()
+			}
 			s.textMu.Lock()
 			metadata, _ := payload["_meta"].(map[string]any)
 			if metadata["opencode/child-session"] == nil && s.turnAnswer != nil {
 				if s.codexMessagePhases {
-					codex, _ := metadata["codex"].(map[string]any)
-					s.turnAnswer.codexText(valueString(payload["messageId"]), valueString(codex["phase"]), text)
+					phase, consistent := codexMessagePhase(metadata)
+					if !consistent {
+						s.turnAnswer.codexConflictingPhase()
+					}
+					s.turnAnswer.codexText(valueString(payload["messageId"]), phase, text)
 				} else {
 					s.turnAnswer.text(valueString(payload["messageId"]), text)
 				}
@@ -1991,7 +2103,13 @@ func (s *acpSession) watch() {
 			if text == "" {
 				continue
 			}
-			emit(Activity{Kind: ActivityText, Text: text})
+			if !s.codexMessagePhases {
+				emit(Activity{Kind: ActivityText, Text: text})
+			} else if metadata, ok := payload["_meta"].(map[string]any); ok {
+				if phase, consistent := codexMessagePhase(metadata); consistent && phase == "commentary" {
+					emit(Activity{Kind: ActivityText, Text: text})
+				}
+			}
 		case "agent_thought_chunk", "thinking", "thinking_summary":
 			summary := valueString(payload["summary"])
 			if summary == "" {
@@ -2018,9 +2136,28 @@ func (s *acpSession) watch() {
 				s.turnAnswer.tool()
 			}
 			s.textMu.Unlock()
-			for _, activity := range toolTracker.observe(kind, payload) {
-				emit(activity)
+			if s.codexMessagePhases {
+				id := valueString(payload["toolCallId"])
+				meta, _ := payload["_meta"].(map[string]any)
+				info, _ := meta["terminal_info"].(map[string]any)
+				if kind == "tool_call" && id != "" && info != nil && valueString(info["terminal_id"]) == id && valueString(payload["kind"]) == "execute" {
+					s.textMu.Lock()
+					if s.codexNativeStarts != nil { s.codexNativeStarts[id] = true }
+					s.textMu.Unlock()
+				}
+				if kind == "tool_call_update" && id != "" && isACPToolTerminal(normalizeACPToolStatus(valueString(payload["status"]))) {
+					if code, ok := codexACPCommandExit(payload, Activity{Tool:"exec_command",CallID:id}); ok {
+						s.textMu.Lock()
+						if s.codexPendingExits != nil { s.codexPendingExits[id] = code }
+						noticeCtx := s.codexRecoveryNoticeCtx
+						announce := code != 0 && s.codexNativeStarts[id] && s.codexRecoveryNotified != nil && !s.codexRecoveryNotified[id]
+						if announce { s.codexRecoveryNotified[id] = true }
+						s.textMu.Unlock()
+						if announce && noticeCtx != nil { go s.offerCodexRecoveryID(noticeCtx,id,code) }
+					}
+				}
 			}
+			for _, activity := range toolTracker.observe(kind, payload) { emit(activity) }
 		default:
 		}
 	}

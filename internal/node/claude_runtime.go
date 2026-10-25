@@ -21,7 +21,11 @@ import (
 	"github.com/beruseruko/secretary/internal/nativeexec"
 )
 
+const instructionClaudeUserResponse = "For every response, set user_response to the exact user-facing answer or question, without process narration or JSON. task_outcome, reason, and recovered_tool_use_ids are internal verdict metadata; never repeat them in user_response. For a simple direct question, reply with only what the user requested."
+
 var ErrClaudeCodeUnavailable = errors.New("claude_code runtime unavailable")
+
+var errClaudeRootAlreadyExited = errors.New("Claude process exited before root identity capture")
 
 var ErrClaudeCodeConfiguration = errors.New("claude_code runtime configuration error")
 
@@ -38,6 +42,7 @@ type ClaudeCodeRuntime struct {
 	RawLogDir      string
 	RawLogMaxBytes int64
 	RawLogFiles    int
+	captureRoot func(*exec.Cmd) (claudeChild, error)
 }
 
 type ClaudeRuntime = ClaudeCodeRuntime
@@ -65,7 +70,11 @@ func (r ClaudeCodeRuntime) Start(ctx context.Context, request StartRequest) (Ses
 	if err != nil {
 		return nil, err
 	}
-	return r.startProcess(ctx, request, id, args)
+	session, err := r.startProcess(ctx, request, id, args)
+	if err != nil {
+		return nil, err
+	}
+	return session, nil
 }
 
 func (r ClaudeCodeRuntime) Resume(ctx context.Context, request StartRequest, runtimeSessionID string) (Session, error) {
@@ -90,7 +99,11 @@ func (r ClaudeCodeRuntime) Resume(ctx context.Context, request StartRequest, run
 	if err != nil {
 		return nil, err
 	}
-	return r.startProcess(ctx, request, runtimeSessionID, args, true)
+	session, err := r.startProcess(ctx, request, runtimeSessionID, args, true)
+	if err != nil {
+		return nil, err
+	}
+	return session, nil
 }
 
 func validateClaudeRequest(request StartRequest) error {
@@ -142,6 +155,7 @@ func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionI
 	args := append([]string(nil), r.Arguments...)
 	args = append(args, "--print", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--replay-user-messages", "--strict-mcp-config")
 	args = append(args, "--permission-mode", "dontAsk")
+	args = append(args, "--json-schema", `{"type":"object","properties":{"task_outcome":{"type":"string","enum":["succeeded","failed"]},"reason":{"type":"string"},"recovered_tool_use_ids":{"type":"array","items":{"type":"string"}},"user_response":{"type":"string","minLength":1}},"required":["task_outcome","reason","recovered_tool_use_ids","user_response"],"additionalProperties":false}`)
 	toolNames := map[string]string{"read": "Read", "bash": "Bash", "shell": "Bash", "edit": "Edit", "write": "Write", "patch": "Edit", "glob": "Glob", "find": "Glob", "grep": "Grep", "webfetch": "WebFetch", "websearch": "WebSearch", "task": "Agent", "subagent": "Agent", "skill": "Skill"}
 	tools := []string{}
 	for _, tool := range request.Profile.AllowTools {
@@ -164,9 +178,8 @@ func (r ClaudeCodeRuntime) authoritativeArguments(request StartRequest, sessionI
 	if len(allowed) > 0 {
 		args = append(args, "--allowedTools", strings.Join(allowed, ","))
 	}
-	if prompt := request.Profile.EffectivePrompt(); prompt != "" {
-		args = append(args, "--append-system-prompt", prompt)
-	}
+	prompt := instructionClaudeUserResponse + "\n" + request.Profile.EffectivePrompt()
+	args = append(args, "--append-system-prompt", strings.TrimSpace(prompt))
 	servers := map[string]any{}
 	for index, server := range request.MCPServers {
 		if server.Name == "" || server.Command == "" {
@@ -235,7 +248,6 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 			cmd.Env = append(cmd.Env, fmt.Sprintf("SECRETARY_CLAUDE_MCP_%d_%s=%s", index, variable.Name, variable.Value))
 		}
 	}
-	cmd.Env = nativeexec.SecureWorkerEnvironment(ctx, cmd.Env)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, fmt.Errorf("%w: open stdin: %v", ErrClaudeCodeUnavailable, err)
@@ -250,6 +262,7 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 		id:        sessionID,
 		stdin:     stdin,
 		seen:      make(map[string]bool),
+		bashCalls: make(map[string]bool),
 		ready:     make(chan error, 1),
 		writeGate: make(chan struct{}, 1),
 		done:      make(chan struct{}),
@@ -262,6 +275,19 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 	cmd.Cancel = session.stopProcess
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("%w: start %q: %v", ErrClaudeCodeUnavailable, command, err)
+	}
+	capture := r.captureRoot
+	if capture == nil {
+		capture = captureClaudeRoot
+	}
+	root, rootErr := capture(cmd)
+	if rootErr != nil && !errors.Is(rootErr, errClaudeRootAlreadyExited) {
+		_ = session.stopProcess()
+		_ = cmd.Wait()
+		return nil, fmt.Errorf("%w: capture native process identity: %v", ErrClaudeCodeUnavailable, rootErr)
+	}
+	if rootErr == nil {
+		session.claudeRoot = root
 	}
 	go session.run()
 	if len(resume) > 0 && resume[0] {
@@ -300,12 +326,22 @@ type claudeSession struct {
 	writeGate chan struct{}
 	stopOnce  sync.Once
 	stopErr   error
+	claudeRoot claudeChild
+	cleanupAttempt func(context.Context, *exec.Cmd, claudeChild) error
+	canceling bool
+	cancelWait chan struct{}
+	pendingTerminal *Result
 	done      chan struct{}
 	closed    bool
 	cancel    bool
 	active    bool
 	inputID   string
 	seen      map[string]bool
+	bashCalls map[string]bool
+	failedBash string
+	failedBashIDs map[string]string
+	sawAssistantText bool
+	sawToolUse bool
 }
 
 func (s *claudeSession) ID() string                { return s.id }
@@ -327,13 +363,18 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 		return err
 	}
 	s.stateMu.Lock()
-	if s.closed || s.active {
+	if s.closed || s.active || s.canceling {
 		s.stateMu.Unlock()
 		return errors.New("claude: session closed or Attempt still active")
 	}
 	s.active = true
 	s.cancel = false
 	s.inputID = id
+	s.bashCalls = make(map[string]bool)
+	s.failedBash = ""
+	s.failedBashIDs = make(map[string]string)
+	s.sawAssistantText = false
+	s.sawToolUse = false
 	s.stateMu.Unlock()
 	var content any = text
 	if len(images) > 0 {
@@ -365,22 +406,56 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 		return err
 	}
 	s.stateMu.Lock()
-	if s.closed || !s.active {
+	if s.closed || !s.active || s.cancel {
 		s.stateMu.Unlock()
 		return nil
 	}
+	attempt := s.inputID
 	s.cancel = true
+	s.canceling = true
+	s.cancelWait = make(chan struct{})
+	root := s.claudeRoot
 	s.stateMu.Unlock()
-	id, err := newClaudeSessionID()
-	if err != nil {
-		return err
+	var err error
+	if root.pid == 0 {
+		err = errors.New("Claude root process identity was not captured")
+	} else {
+		cleanup := s.cleanupAttempt
+		if cleanup == nil {
+			cleanup = cleanupClaudeAttemptProcesses
+		}
+		err = cleanup(ctx, s.cmd, root)
 	}
-	err = s.writeMessage(ctx, map[string]any{"type": "control_request", "request_id": id, "request": map[string]any{"subtype": "interrupt", "cancel_queued": true}})
-	if err != nil {
-		s.stateMu.Lock()
+	if err == nil {
+		var id string
+		id, err = newClaudeSessionID()
+		if err == nil {
+			s.stateMu.Lock()
+			canInterrupt := s.active && s.inputID == attempt && !s.closed && s.pendingTerminal == nil
+			s.stateMu.Unlock()
+			if canInterrupt {
+				err = s.writeMessage(ctx, map[string]any{"type": "control_request", "request_id": id, "request": map[string]any{"subtype": "interrupt", "cancel_queued": true}})
+			}
+		}
+	}
+	s.stateMu.Lock()
+	if err != nil && s.active && s.inputID == attempt {
 		s.cancel = false
-		s.stateMu.Unlock()
 	}
+	s.canceling = false
+	pending := s.pendingTerminal
+	s.pendingTerminal = nil
+	if pending != nil && s.active && s.inputID == attempt {
+		if err != nil && pending.Status == "canceled" {
+			pending.Status = "failed"
+			pending.Summary = "Claude Code cancellation cleanup failed: " + err.Error()
+		}
+		s.active = false
+		s.result <- *pending
+	}
+	close(s.cancelWait)
+	s.cancelWait = nil
+	s.stateMu.Unlock()
 	return err
 }
 func (s *claudeSession) stopProcess() error {
@@ -467,6 +542,12 @@ func (s *claudeSession) run() {
 		}
 		s.emitResult(Result{Status: status, Summary: summary})
 	}
+	s.stateMu.Lock()
+	cancelWait := s.cancelWait
+	s.stateMu.Unlock()
+	if cancelWait != nil {
+		<-cancelWait
+	}
 }
 func (s *claudeSession) handleLine(line []byte) {
 	var record map[string]any
@@ -506,6 +587,8 @@ func (s *claudeSession) handleLine(line []byte) {
 		return
 	}
 	switch valueString(record["type"]) {
+	case "user":
+		s.handleToolResults(record)
 	case "assistant":
 		id := valueString(record["uuid"])
 		if id != "" {
@@ -515,10 +598,19 @@ func (s *claudeSession) handleLine(line []byte) {
 			s.seen[id] = true
 		}
 		if message, ok := record["message"].(map[string]any); ok {
+			s.registerBashCalls(message["content"])
 			s.handleContent(message["content"])
 		}
 	case "result":
 		summary := valueString(record["result"])
+		structured, valid := claudeTaskOutcome(record)
+		if valid {
+			summary = structured.userResponse
+		} else if _, supplied := record["structured_output"]; supplied {
+			summary = "Claude Code returned invalid structured task outcome"
+		} else if claudeServiceJSON(summary) {
+			summary = ""
+		}
 		status := "succeeded"
 		if subtype := valueString(record["subtype"]); subtype != "success" {
 			status = "failed"
@@ -534,13 +626,46 @@ func (s *claudeSession) handleLine(line []byte) {
 			status = "canceled"
 		}
 		s.stateMu.Unlock()
+		if status == "succeeded" && !valid {
+			if _, supplied := record["structured_output"]; !supplied {
+				summary = "Claude Code returned no structured task outcome"
+			}
+		}
 		if summary == "" {
 			summary = "Claude Code returned no answer"
+			if status == "canceled" {
+				summary = "Claude Code attempt canceled"
+			}
 			if status == "succeeded" {
 				status = "failed"
 			}
 		}
-		s.emitResult(Result{Status: status, Summary: summary})
+		result := Result{Status: status, Summary: summary}
+		if status == "succeeded" {
+			if s.failedBash != "" && (valid && structured.status == "failed" || !s.claudeStructuredRecovery(structured, valid)) {
+				result.Status = "failed"
+				result.FailureCode = "tool_execution_failed"
+				result.Technical = s.failedBash
+				if valid && structured.status == "failed" {
+					result.Technical += "; Claude Code reported structured task failure: " + structured.reason
+				} else if _, supplied := record["structured_output"]; supplied && !valid {
+					result.Technical += "; Claude Code returned invalid structured task outcome"
+				}
+			} else if valid && structured.status == "failed" {
+				result.Status = "failed"
+				result.FailureCode = "task_outcome_failed"
+				result.Technical = "Claude Code reported structured task failure: " + structured.reason
+			} else if _, supplied := record["structured_output"]; supplied && !valid {
+				result.Status = "failed"
+				result.FailureCode = "task_outcome_failed"
+				result.Technical = "Claude Code returned invalid structured task outcome"
+			} else if !valid {
+				result.Status = "failed"
+				result.FailureCode = "task_outcome_failed"
+				result.Technical = "Claude Code returned no structured task outcome"
+			}
+		}
+		s.emitResult(result)
 	case "error":
 		summary := valueString(record["error"])
 		if summary == "" {
@@ -549,14 +674,134 @@ func (s *claudeSession) handleLine(line []byte) {
 		s.emitResult(Result{Status: "failed", Summary: summary})
 	}
 }
+type claudeTaskVerdict struct {
+	status string
+	reason string
+	recovered []string
+	userResponse string
+}
+
+func claudeTaskOutcome(record map[string]any) (claudeTaskVerdict, bool) {
+	output, ok := record["structured_output"].(map[string]any)
+	if !ok {
+		return claudeTaskVerdict{}, false
+	}
+	status, statusOK := output["task_outcome"].(string)
+	reason, reasonOK := output["reason"].(string)
+	ids, idsOK := output["recovered_tool_use_ids"].([]any)
+	userResponse, responseOK := output["user_response"].(string)
+	if !statusOK || (status != "succeeded" && status != "failed") || !reasonOK || strings.TrimSpace(reason) == "" || !idsOK || !responseOK || strings.TrimSpace(userResponse) == "" {
+		return claudeTaskVerdict{}, false
+	}
+	verdict := claudeTaskVerdict{status: status, reason: reason, userResponse: strings.TrimSpace(userResponse)}
+	seen := make(map[string]bool)
+	for _, raw := range ids {
+		id, ok := raw.(string)
+		if !ok || id == "" || seen[id] {
+			return claudeTaskVerdict{}, false
+		}
+		seen[id] = true
+		verdict.recovered = append(verdict.recovered, id)
+	}
+	return verdict, true
+}
+
+func claudeServiceJSON(text string) bool {
+	candidate := strings.TrimSpace(text)
+	candidate = strings.TrimSpace(strings.TrimPrefix(candidate, "Internal verdict:"))
+	if strings.HasPrefix(candidate, "```json\n") && strings.HasSuffix(candidate, "\n```") {
+		candidate = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(candidate, "```json\n"), "\n```"))
+	}
+	var value map[string]any
+	if json.Unmarshal([]byte(candidate), &value) != nil {
+		return false
+	}
+	_, reason := value["reason"]
+	_, recovered := value["recovered_tool_use_ids"]
+	_, outcome := value["task_outcome"]
+	return reason && recovered || outcome && (reason || recovered)
+}
+
+func (s *claudeSession) claudeStructuredRecovery(verdict claudeTaskVerdict, valid bool) bool {
+	if !valid || verdict.status != "succeeded" || len(s.failedBashIDs) == 0 || len(verdict.recovered) != len(s.failedBashIDs) {
+		return false
+	}
+	for _, id := range verdict.recovered {
+		if _, ok := s.failedBashIDs[id]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *claudeSession) registerBashCalls(content any) {
+	items, _ := content.([]any)
+	for _, item := range items {
+		block, _ := item.(map[string]any)
+		if valueString(block["type"]) == "tool_use" && valueString(block["name"]) == "Bash" {
+			if id := valueString(block["id"]); id != "" {
+				s.bashCalls[id] = true
+			}
+		}
+	}
+}
+
+func (s *claudeSession) handleToolResults(record map[string]any) {
+	message, _ := record["message"].(map[string]any)
+	items, _ := message["content"].([]any)
+	for _, item := range items {
+		block, _ := item.(map[string]any)
+		if valueString(block["type"]) != "tool_result" {
+			continue
+		}
+		id := valueString(block["tool_use_id"])
+		if !s.bashCalls[id] {
+			continue
+		}
+		delete(s.bashCalls, id)
+		failed, _ := block["is_error"].(bool)
+		exitCode := ""
+		details, _ := record["toolUseResult"].(map[string]any)
+		if details == nil {
+			details, _ = block["toolUseResult"].(map[string]any)
+		}
+		if code, ok := details["exitCode"].(float64); ok {
+			exitCode = fmt.Sprintf("%.0f", code)
+			failed = failed || code != 0
+		}
+		if code, ok := details["exit_code"].(float64); ok {
+			exitCode = fmt.Sprintf("%.0f", code)
+			failed = failed || code != 0
+		}
+		if failed {
+			if s.failedBashIDs == nil {
+				s.failedBashIDs = make(map[string]string)
+			}
+			s.failedBash = "Claude Bash tool failed"
+			if exitCode != "" {
+				s.failedBash += " with exit code " + exitCode
+			}
+			s.failedBashIDs[id] = s.failedBash
+		}
+	}
+}
+
 func (s *claudeSession) handleContent(content any) {
 	items, _ := content.([]any)
 	for _, item := range items {
 		block, _ := item.(map[string]any)
 		switch valueString(block["type"]) {
 		case "text":
-			s.emitText(valueString(block["text"]))
+			if strings.TrimSpace(valueString(block["text"])) != "" {
+				if !claudeServiceJSON(valueString(block["text"])) {
+					s.sawAssistantText = true
+				}
+			}
+			if !claudeServiceJSON(valueString(block["text"])) {
+				s.emitText(valueString(block["text"]))
+			}
 		case "tool_use":
+			s.sawToolUse = true
 			s.emitActivity(Activity{Kind: ActivityTool, Text: valueString(block["name"])})
 		}
 	}
@@ -579,6 +824,12 @@ func (s *claudeSession) emitActivity(activity Activity) {
 func (s *claudeSession) emitResult(result Result) {
 	s.stateMu.Lock()
 	if !s.active {
+		s.stateMu.Unlock()
+		return
+	}
+	if s.canceling {
+		copy := result
+		s.pendingTerminal = &copy
 		s.stateMu.Unlock()
 		return
 	}

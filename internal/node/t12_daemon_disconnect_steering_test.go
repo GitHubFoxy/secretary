@@ -1,11 +1,13 @@
 package node
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -296,6 +298,76 @@ func (s *t12SurvivingSession) Activity()<-chan Activity{return s.activity}
 func (s *t12SurvivingSession) Result()<-chan Result{return s.results}
 func (s *t12SurvivingSession) Close()error{return nil}
 
+// A replayed, already-ACKed Dispatch can reply directly while its original
+// durable receipt is still in flight after reconnect. Account for that exact
+// receipt without mistaking it for the separate Cancel acknowledgement.
+func t12AwaitCancelReceipt(ctx context.Context, receipts <-chan CommandOutcome, dispatch, cancel CommandOutcome) (int, error) {
+	lateDispatches := 0
+	for {
+		select {
+		case got, ok := <-receipts:
+			if !ok {
+				return lateDispatches, fmt.Errorf("receipt stream closed before Cancel %q", cancel.CommandID)
+			}
+			switch got.CommandID {
+			case dispatch.CommandID:
+				if got != dispatch {
+					return lateDispatches, fmt.Errorf("unexpected replayed Dispatch receipt: %+v", got)
+				}
+				lateDispatches++
+				// Exactly one explicit duplicate Dispatch was sent. More
+				// than one additional receipt signals a protocol regression.
+				if lateDispatches > 1 {
+					return lateDispatches, fmt.Errorf("excess replayed Dispatch receipts before Cancel %q: %d", cancel.CommandID, lateDispatches)
+				}
+			case cancel.CommandID:
+				if got != cancel {
+					return lateDispatches, fmt.Errorf("Cancel receipt did not match its command: %+v", got)
+				}
+				return lateDispatches, nil
+			default:
+				return lateDispatches, fmt.Errorf("unrelated command receipt while awaiting Cancel %q: %+v", cancel.CommandID, got)
+			}
+		case <-ctx.Done():
+			return lateDispatches, fmt.Errorf("waiting for Cancel receipt %q: %w", cancel.CommandID, ctx.Err())
+		}
+	}
+}
+
+func TestT12CancelReceiptAttributionAfterReconnect(t *testing.T) {
+	dispatch := CommandOutcome{CommandID: "dispatch", Kind: CommandDispatch, State: CommandAccepted, TurnID: "turn-1", AttemptID: "attempt-1"}
+	cancel := CommandOutcome{CommandID: "cancel", Kind: CommandCancel, State: CommandAccepted, TurnID: "turn-1", AttemptID: "attempt-1"}
+	tests := []struct {
+		name string
+		outcomes []CommandOutcome
+		lateDispatches int
+		wantError bool
+	}{
+		{name: "cancel_first", outcomes: []CommandOutcome{cancel}},
+		{name: "late_dispatch_before_cancel", outcomes: []CommandOutcome{dispatch, cancel}, lateDispatches: 1},
+		{name: "foreign_command", outcomes: []CommandOutcome{{CommandID: "unrelated", Kind: CommandDispatch, State: CommandAccepted}, cancel}, wantError: true},
+		{name: "wrong_kind_same_dispatch_id", outcomes: []CommandOutcome{{CommandID: dispatch.CommandID, Kind: CommandCancel, State: CommandAccepted}, cancel}, wantError: true},
+		{name: "failed_dispatch_replay", outcomes: []CommandOutcome{{CommandID: dispatch.CommandID, Kind: CommandDispatch, State: CommandFailed}, cancel}, wantError: true},
+		{name: "cancel_failed", outcomes: []CommandOutcome{{CommandID: cancel.CommandID, Kind: CommandCancel, State: CommandFailed}}, wantError: true},
+		{name: "too_many_dispatch_receipts", outcomes: []CommandOutcome{dispatch, dispatch, cancel}, wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			receipts := make(chan CommandOutcome, len(test.outcomes))
+			for _, outcome := range test.outcomes {
+				receipts <- outcome
+			}
+			got, err := t12AwaitCancelReceipt(context.Background(), receipts, dispatch, cancel)
+			if (err != nil) != test.wantError {
+				t.Fatalf("attribution result: late=%d err=%v, want error=%v", got, err, test.wantError)
+			}
+			if !test.wantError && got != test.lateDispatches {
+				t.Fatalf("late Dispatch receipts=%d, want %d", got, test.lateDispatches)
+			}
+		})
+	}
+}
+
 func TestT12AcceptedNativeWorkerSurvivesWebSocketReconnectAndTerminalResult(t *testing.T) {
 	for _,scenario:=range []string{"native_result","cancel_after_reconnect"} {
 		t.Run(scenario,func(t *testing.T){
@@ -322,7 +394,7 @@ func TestT12AcceptedNativeWorkerSurvivesWebSocketReconnectAndTerminalResult(t *t
 			dispatch.Dispatch.Envelope.OriginalUserIntent="Inspect artifact://"+f.originalID
 			if err:=f.manager.SendCommand(ctx,f.identity.Node,dispatch);err!=nil{t.Fatal(err)}
 			accepted:=waitCommandOutcome(t,ctx,receipts)
-			if accepted.CommandID!=dispatch.Metadata().CommandID || accepted.State!=CommandAccepted {
+			if accepted != acceptedOutcome(dispatch) {
 				t.Fatalf("native Start was not accepted: %+v",accepted)
 			}
 			nativeCtx,nativeSession:=runtime.snapshot()
@@ -348,7 +420,7 @@ func TestT12AcceptedNativeWorkerSurvivesWebSocketReconnectAndTerminalResult(t *t
 			// The same durable CommandID must not restart a native process.
 			if err:=f.manager.SendCommand(ctx,f.identity.Node,dispatch);err!=nil{t.Fatal(err)}
 			duplicate:=waitCommandOutcome(t,ctx,receipts)
-			if duplicate.CommandID!=accepted.CommandID || duplicate.State!=CommandAccepted {
+			if duplicate != accepted {
 				t.Fatalf("duplicate native dispatch changed outcome: %+v",duplicate)
 			}
 			if runtime.starts.Load()!=1{t.Fatalf("duplicate native Start: %d",runtime.starts.Load())}
@@ -361,9 +433,16 @@ func TestT12AcceptedNativeWorkerSurvivesWebSocketReconnectAndTerminalResult(t *t
 				meta.IssuedAt=time.Now().UTC()
 				cancelCommand:=Command{Kind:CommandCancel,Cancel:&CancelCommand{Metadata:meta,Reason:"owner cancellation after reconnect"}}
 				if err:=f.manager.SendCommand(ctx,f.identity.Node,cancelCommand);err!=nil{t.Fatal(err)}
-				cancelReceipt:=waitCommandOutcome(t,ctx,receipts)
-				if cancelReceipt.CommandID!=meta.CommandID || cancelReceipt.State!=CommandAccepted {
-					t.Fatalf("native Cancel after reconnect not accepted: %+v",cancelReceipt)
+				lateDispatches, err := t12AwaitCancelReceipt(ctx, receipts, accepted, acceptedOutcome(cancelCommand))
+				if err != nil {
+					t.Fatalf("native Cancel after reconnect not accepted: %v", err)
+				}
+				if lateDispatches != 0 {
+					t.Logf("validated %d late Dispatch receipt before the matching Cancel receipt", lateDispatches)
+				}
+				cancelRecord, err := f.local.Command(meta.CommandID)
+				if err != nil || cancelRecord.State != CommandAccepted || cancelRecord.Outcome != acceptedOutcome(cancelCommand) {
+					t.Fatalf("native Cancel receipt is not durable: record=%+v err=%v", cancelRecord, err)
 				}
 				if runtime.cancels.Load()!=1{t.Fatalf("Cancel delivered %d times",runtime.cancels.Load())}
 			}
@@ -384,9 +463,91 @@ func TestT12AcceptedNativeWorkerSurvivesWebSocketReconnectAndTerminalResult(t *t
 				remaining,err:=f.local.PendingEvents()
 				return err==nil && len(remaining)==0
 			})
-			if terminalDeliveries.Load()!=1 || runtime.starts.Load()!=1 {
-				t.Fatalf("terminal duplicated or Worker relaunched: terminal=%d starts=%d",terminalDeliveries.Load(),runtime.starts.Load())
+			expectedCancels := int32(0)
+			if scenario == "cancel_after_reconnect" {
+				expectedCancels = 1
+			}
+			if terminalDeliveries.Load()!=1 || runtime.starts.Load()!=1 || runtime.cancels.Load()!=expectedCancels {
+				t.Fatalf("terminal duplicated or Worker relaunched: terminal=%d starts=%d cancels=%d",terminalDeliveries.Load(),runtime.starts.Load(),runtime.cancels.Load())
 			}
 		})
+	}
+}
+
+type t179ImageProtocolRuntime struct {
+	started chan StartRequest
+	session *t179ImageProtocolSession
+}
+
+func (r *t179ImageProtocolRuntime) Start(_ context.Context, request StartRequest) (Session, error) {
+	r.started <- request
+	return r.session, nil
+}
+
+type t179ImageProtocolSession struct {
+	steered chan []ImageInput
+	activity chan Activity
+	results chan Result
+}
+
+func (*t179ImageProtocolSession) ID() string { return "t179-image-session" }
+func (*t179ImageProtocolSession) Prompt(context.Context, string) error { return nil }
+func (*t179ImageProtocolSession) Steer(context.Context, string) (bool, error) { return true, nil }
+func (s *t179ImageProtocolSession) SteerImages(_ context.Context, _ string, images []ImageInput) (bool, error) {
+	s.steered <- images
+	return true, nil
+}
+func (*t179ImageProtocolSession) Cancel(context.Context) error { return nil }
+func (s *t179ImageProtocolSession) Activity() <-chan Activity { return s.activity }
+func (s *t179ImageProtocolSession) Result() <-chan Result { return s.results }
+func (*t179ImageProtocolSession) Close() error { return nil }
+
+func TestT179CoLocatedDaemonDispatchAndSteeringPreserveOriginalImageBytes(t *testing.T) {
+	session := &t179ImageProtocolSession{
+		steered: make(chan []ImageInput, 1), activity: make(chan Activity), results: make(chan Result),
+	}
+	runtime := &t179ImageProtocolRuntime{started: make(chan StartRequest, 1), session: session}
+	fixture := t12SocketWithQueuedVideo(t, runtime)
+	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Second)
+	defer cancel()
+	outcomes := make(chan CommandOutcome, 4)
+	fixture.manager.SetCommandOutcomeSink(func(_ context.Context, _ core.NodeReference, outcome CommandOutcome) error {
+		outcomes <- outcome
+		return nil
+	})
+	frameID := "art_" + strings.Repeat("7", 32)
+	original, err := base64.RawStdEncoding.DecodeString("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA")
+	if err != nil { t.Fatal(err) }
+	dispatch := fixture.dispatchCommand("t179-image-dispatch")
+	dispatch.Dispatch.Envelope.OriginalUserIntent = "Inspect artifact://" + frameID
+	if err := fixture.manager.SendCommand(ctx, fixture.identity.Node, dispatch); err != nil { t.Fatal(err) }
+	if received := waitCommandOutcome(t, ctx, outcomes); received.Kind != CommandDispatch || received.State != CommandAccepted {
+		t.Fatalf("canonical image Dispatch rejected: %#v", received)
+	}
+	select {
+	case started := <-runtime.started:
+		if started.WorkerRef != dispatch.Metadata().WorkerRef || len(started.Images) != 1 ||
+			started.Images[0].ArtifactID != frameID || !bytes.Equal(started.Images[0].Data, original) {
+			t.Fatalf("daemon Dispatch lost original image: %#v", started)
+		}
+	case <-ctx.Done(): t.Fatal("Node protocol did not start visual Worker")
+	}
+	metadata := dispatch.Metadata()
+	metadata.CommandID = "t179-image-steer"
+	metadata.IssuedAt = time.Now().UTC()
+	steering := Command{Kind: CommandSteering, Steering: &SteeringCommand{
+		Metadata: metadata, Text: "Check color artifact://" + frameID,
+	}}
+	if err := fixture.manager.SendCommand(ctx, fixture.identity.Node, steering); err != nil { t.Fatal(err) }
+	if received := waitCommandOutcome(t, ctx, outcomes); received.CommandID != metadata.CommandID ||
+		received.Kind != CommandSteering || received.State != CommandAccepted {
+		t.Fatalf("canonical image Steering rejected: %#v", received)
+	}
+	select {
+	case images := <-session.steered:
+		if len(images) != 1 || images[0].ArtifactID != frameID || !bytes.Equal(images[0].Data, original) {
+			t.Fatalf("daemon Steering lost original bytes: %#v", images)
+		}
+	case <-ctx.Done(): t.Fatal("Node protocol did not steer image into native session")
 	}
 }

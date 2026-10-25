@@ -53,8 +53,8 @@ type VideoConfig struct {
 
 func (v VideoConfig) Validate() error {
 	if v.FPS!=0 && (v.FPS<.25 || v.FPS>4) {return fmt.Errorf("%w: video.fps must be 0.25–4",ErrInvalid)}
-	if v.MaxDurationSeconds!=0 && (v.MaxDurationSeconds<1||v.MaxDurationSeconds>60) {return fmt.Errorf("%w: video.max_duration_seconds must be 1–60",ErrInvalid)}
-	if v.MaxFrames!=0 && (v.MaxFrames<1||v.MaxFrames>16) {return fmt.Errorf("%w: video.max_frames must be 1–16",ErrInvalid)}
+	if v.MaxDurationSeconds!=0 && (v.MaxDurationSeconds<1||v.MaxDurationSeconds>120) {return fmt.Errorf("%w: video.max_duration_seconds must be 1–120",ErrInvalid)}
+	if v.MaxFrames!=0 && (v.MaxFrames<1||v.MaxFrames>core.MaxVideoFrames) {return fmt.Errorf("%w: video.max_frames must be 1–140",ErrInvalid)}
 	if v.TimeoutSeconds!=0 && (v.TimeoutSeconds<1||v.TimeoutSeconds>120) {return fmt.Errorf("%w: video.timeout_seconds must be 1–120",ErrInvalid)}
 	return nil
 }
@@ -275,6 +275,13 @@ func compile(base string, raw []byte, c Config, allowEmbeddedTitlePrompt bool) (
 		versionParts = append(versionParts, string(asrJSON), asrPrompt.Hash)
 	}
 	return Snapshot{Version: digest(versionParts...), Config: c, Profiles: profiles, TitlePrompt: titlePrompt, ASRPrompt: asrPrompt}, nil
+}
+
+func SecretaryRuntimeContent(source string) string {
+	return strings.TrimSpace(source) + `
+
+## Addressed reply v1
+Use the current server-issued secretary_turn_id and input_id from the runtime context. Send every independent user-facing answer, clarification, mixed answer plus Worker action, or error through reply_to_user exactly once. Include the same origin IDs in every spawn_worker and message_worker call. Ordinary assistant text is activity, not a durable reply: an addressed turn cannot succeed without one exact reply_to_user for its active input, even when there is assistant final text or an already delivered Worker Result. Worker Results themselves must never be paraphrased as a second reply. Use reply_kind=answer for independent factual answers or clarifications; reply_kind=error for unavailable MCP, failed dispatch, or other failures. Only use reply_kind=spawn_worker with action_kind=spawn_worker and worker_turn_id from the successful canonical spawn_worker action_turn_id. Never claim a Worker exists through an answer or error; the server validates the typed creation origin. Missing reply_kind cannot complete an addressed reply.`
 }
 
 func loadTitlePrompt(base, path string, allowEmbedded bool) (Prompt, error) {

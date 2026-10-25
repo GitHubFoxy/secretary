@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"strings"
 	"time"
 
@@ -14,13 +13,9 @@ import (
 
 type NodeRuntime struct {
 	Manager *node.ServerManager
-	Local   *node.LocalNode
 }
 
 func (r NodeRuntime) CommandReady(ctx context.Context, nodeID core.NodeReference) (bool, error) {
-	if r.Local != nil && nodeID == "local" {
-		return true, nil
-	}
 	if r.Manager == nil {
 		return false, ErrWorkerRuntimeUnavailable
 	}
@@ -28,10 +23,6 @@ func (r NodeRuntime) CommandReady(ctx context.Context, nodeID core.NodeReference
 }
 
 func (r NodeRuntime) send(ctx context.Context, nodeID core.NodeReference, command node.Command) error {
-	if r.Local != nil && nodeID == "local" {
-		_, err := r.LocalCommand(ctx, command)
-		return err
-	}
 	if r.Manager == nil {
 		return ErrWorkerRuntimeUnavailable
 	}
@@ -41,141 +32,6 @@ func (r NodeRuntime) send(ctx context.Context, nodeID core.NodeReference, comman
 		return r.Manager.SendCommandAndWait(waitCtx, nodeID, command)
 	}
 	return r.Manager.SendCommand(ctx, nodeID, command)
-}
-
-func (r NodeRuntime) LocalCommand(ctx context.Context, command node.Command) (node.CommandOutcome, error) {
-	if r.Local == nil {
-		return node.CommandOutcome{}, ErrWorkerRuntimeUnavailable
-	}
-	metadata := command.Metadata()
-	// Local Dispatch may still be waiting for video frames: there is no
-	// Session yet. Cancel by AttemptID before any Session lookup, so the
-	// pre-native checkpoint prevents a late Start.
-	if command.Kind==node.CommandCancel {
-		if command.Cancel==nil{return node.CommandOutcome{},errors.New("worker: local cancel command is missing")}
-		handled,err:=r.Local.CancelLocalAttempt(ctx,metadata.WorkerRef,metadata.AttemptID)
-		if err!=nil{return node.CommandOutcome{},err}
-		if !handled{return node.CommandOutcome{},ErrWorkerRuntimeUnavailable}
-		return node.CommandOutcome{CommandID:metadata.CommandID,Kind:command.Kind,State:node.CommandAccepted,TurnID:metadata.TurnID,AttemptID:metadata.AttemptID},nil
-	}
-	session, ok := r.Local.Session(metadata.WorkerRef)
-	if command.Kind == node.CommandDispatch {
-		if command.Dispatch == nil {
-			return node.CommandOutcome{}, errors.New("worker: local dispatch command is missing")
-		}
-		var err error
-		envelope := command.Dispatch.Envelope
-		if envelope.ProjectID == "" && envelope.Workspace != "" {
-			return node.CommandOutcome{}, errors.New("worker: projectless Workspace must be Node-managed")
-		}
-		request := node.StartRequest{AttemptID: envelope.AttemptID, WorkerRef: envelope.WorkerRef, Task: envelope.OriginalUserIntent, Workspace: envelope.Workspace, Profile: envelope.Profile, HarnessInstance: envelope.HarnessInstance, Model: envelope.Model, Reasoning: envelope.Reasoning, ApprovalPolicy: envelope.ApprovalPolicy}
-		if envelope.PreviousAttemptID != "" {
-			session, err = r.Local.Continue(ctx, request, envelope.PreviousAttemptID)
-		} else {
-			session, err = r.Local.Dispatch(ctx, request)
-		}
-		if err != nil {
-			return node.CommandOutcome{}, err
-		}
-		return node.CommandOutcome{CommandID: metadata.CommandID, Kind: command.Kind, State: node.CommandAccepted, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID}, nil
-	}
-	if !ok {
-		return node.CommandOutcome{}, ErrWorkerRuntimeUnavailable
-	}
-	switch command.Kind {
-	case node.CommandRespondWorker:
-		if command.RespondWorker == nil {
-			return node.CommandOutcome{}, ErrWorkerRuntimeUnavailable
-		}
-		response := command.RespondWorker
-		text, images, prepErr := r.Local.PrepareWorkerSteering(ctx, metadata.WorkerRef, response.Response)
-		if prepErr != nil {
-			return node.CommandOutcome{}, prepErr
-		}
-		var err error
-		if len(images) > 0 {
-			multimodal, ok := session.(node.ImageResponseSession)
-			if !ok {
-				return node.CommandOutcome{}, node.ErrImageResponseUnsupported
-			}
-			if capability, ok := session.(node.ImageResponseCapability); ok && !capability.SupportsImageResponse() {
-				return node.CommandOutcome{}, node.ErrImageResponseUnsupported
-			}
-			_ = multimodal // capability is validated above; shared helper performs delivery.
-			err = node.DeliverImageResponse(ctx, r.Local.ImageResponseStore(), session, metadata, response.RequestID, text, images)
-		} else {
-			responder, ok := session.(node.Responder)
-			if !ok {
-				return node.CommandOutcome{}, ErrWorkerRuntimeUnavailable
-			}
-			err = responder.Respond(ctx, response.RequestID, text)
-		}
-		if err != nil {
-			if errors.Is(err, node.ErrImageResponseUnsupported) {
-				return node.CommandOutcome{}, err
-			}
-			return node.CommandOutcome{}, fmt.Errorf("%w: %w", node.ErrCommandOutcomeUnknown, err)
-		}
-	case node.CommandSteering:
-		if command.Steering == nil {
-			return node.CommandOutcome{}, errors.New("worker: local steering command is missing")
-		}
-		text, images, prepErr := r.Local.PrepareWorkerSteering(ctx, metadata.WorkerRef, command.Steering.Text)
-		if prepErr != nil { return node.CommandOutcome{}, prepErr }
-		var err error
-		failureCode := "steering_failed"
-		if len(images) > 0 {
-			multimodal, supports := session.(node.ImageSteeringSession)
-			if !supports {
-				failureCode = "image_input_unsupported"
-				err = errors.New("image: local Worker does not support image steering")
-			} else {
-				var injected bool
-				injected, err = multimodal.SteerImages(ctx, text, images)
-				if err == nil && !injected {
-					if queued, ok := session.(node.ImageQueueSession); ok {
-						failureCode = "queue_failed"
-						err = queued.QueueImages(ctx, text, images)
-					} else {
-						failureCode = "image_input_unsupported"
-						err = errors.New("image: native Worker did not inject steering and cannot queue image content")
-					}
-				}
-			}
-		} else {
-			_, err = session.Steer(ctx, text)
-		}
-		if err != nil {
-			outcome := node.CommandOutcome{
-				CommandID:         metadata.CommandID,
-				Kind:              command.Kind,
-				State:             node.CommandFailed,
-				TurnID:            metadata.TurnID,
-				AttemptID:         metadata.AttemptID,
-				ErrorCode:         failureCode,
-				ErrorMessage:      err.Error(),
-				AcceptanceUnknown: errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded),
-			}
-			var steerErr *node.SteeringError
-			if errors.As(err, &steerErr) {
-				outcome.FailureCategory = steerErr.Failure.Category
-				outcome.ProviderCode = steerErr.Failure.ProviderCode
-				outcome.Technical = steerErr.Failure.Technical
-				if steerErr.Failure.Message != "" {
-					outcome.ErrorMessage = steerErr.Failure.Message
-				}
-			}
-			commandErr := &node.NodeCommandError{Outcome: outcome, Err: err}
-			if outcome.AcceptanceUnknown {
-				return outcome, errors.Join(node.ErrCommandOutcomeUnknown, commandErr)
-			}
-			return outcome, commandErr
-		}
-
-	default:
-		return node.CommandOutcome{}, ErrWorkerRuntimeUnavailable
-	}
-	return node.CommandOutcome{CommandID: metadata.CommandID, Kind: command.Kind, State: node.CommandAccepted, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID}, nil
 }
 
 func (r NodeRuntime) Dispatch(ctx context.Context, commandID string, worker core.Worker, turn core.Turn, attempt core.Phase4Attempt, resolution core.DispatchResolution) error {
@@ -206,25 +62,13 @@ func (r NodeRuntime) Steer(ctx context.Context, commandID string, worker core.Wo
 }
 
 func (r NodeRuntime) Respond(ctx context.Context, commandID string, worker core.Worker, attempt core.Phase4Attempt, requestID, response string) error {
-	command := node.Command{Kind: node.CommandRespondWorker, RespondWorker: &node.RespondWorkerCommand{Metadata: r.metadata(commandID, worker, core.Turn{ID: attempt.TurnID}, attempt, core.HarnessInstanceID(worker.HarnessInstanceID)), RequestID: requestID, Response: response}}
-	if r.Local != nil && core.NodeReference(attempt.NodeID) == "local" {
-		outcome, err := r.LocalCommand(ctx, command)
-		if err != nil {
-			return err
-		}
-		if outcome.State != node.CommandAccepted {
-			return errors.New("worker: local response was not accepted")
-		}
-		return nil
-	}
 	if r.Manager == nil {
 		return ErrWorkerRuntimeUnavailable
 	}
+	command := node.Command{Kind: node.CommandRespondWorker, RespondWorker: &node.RespondWorkerCommand{Metadata: r.metadata(commandID, worker, core.Turn{ID: attempt.TurnID}, attempt, core.HarnessInstanceID(worker.HarnessInstanceID)), RequestID: requestID, Response: response}}
 	return r.Manager.SendCommandAndWait(ctx, core.NodeReference(attempt.NodeID), command)
 }
 
-// The response command carries canonical Artifact IDs. The receiving Node
-// fetches and verifies original bytes, then invokes ImageResponseSession.
 func (r NodeRuntime) RespondImages(ctx context.Context, commandID string, worker core.Worker, attempt core.Phase4Attempt, requestID, response string) error {
 	return r.Respond(ctx, commandID, worker, attempt, requestID, response)
 }

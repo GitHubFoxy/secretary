@@ -98,7 +98,7 @@ func (r ExecCommandRunner) ObserveCodexACPWithCommand(ctx context.Context, binar
 			} `json:"steering"`
 		} `json:"_meta"`
 	}
-	if err := client.Request(ctx, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": acpClientCapabilities(), "clientInfo": map[string]string{"name": "secretary-readiness", "version": "1"}}, &init); err != nil {
+	if err := client.Request(ctx, "initialize", map[string]any{"protocolVersion": 1, "clientCapabilities": acpCodexPhaseCapabilities(), "clientInfo": map[string]string{"name": "secretary-readiness", "version": "1"}}, &init); err != nil {
 		return nil, nil, withDetail("initialize", err)
 	}
 	if init.ProtocolVersion != 1 || init.AgentInfo.Version == "" || !init.AgentCapabilities.LoadSession || !init.Meta.Steering.Supported {

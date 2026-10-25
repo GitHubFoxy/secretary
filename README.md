@@ -41,6 +41,12 @@ flowchart TD
     Node2 --> Runtime2
 ```
 
+### Права выполнения Worker
+
+Secretary Workers execute directly with the operating-system permissions and environment of the Execution Node user. Secretary does not provide an additional Worker sandbox or privilege boundary.
+
+Worker наследует права, окружение и доступы процесса `secretary-node`. Дополнительная изоляция файловой системы и отдельные пользовательские аккаунты Worker не создаются. Штатные политики Codex/Claude Code не меняются. Авторизация Server API, Node pairing и проверка целостности артефактов сохраняются.
+
 ### Компоненты системы
 
 - **`secretaryd`** — центральный сервер и координатор: управление очередью задач, сессиями переписки, ролевым доступом и оркестрацией воркеров.

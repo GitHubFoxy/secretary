@@ -8,11 +8,8 @@ import (
 	"os"
 	"reflect"
 	"sync"
-	"path/filepath"
-	"strings"
 
 	"github.com/beruseruko/secretary/internal/core"
-	"github.com/beruseruko/secretary/internal/nativeexec"
 )
 
 type ActivityKind string
@@ -194,9 +191,6 @@ type LocalNode struct {
 	imageResponseStore       *LocalStore
 	publishBroker            *workerPublishBroker
 	artifactPublisherCommand string
-	// Required for every production native Worker (Start, Continue, Resume).
-	// Only Secretary startup configures it; nil preserves in-process test runtimes.
-	workerSandbox *nativeexec.WorkerSandbox
 	prestartStore            *LocalStore
 	prestarts                map[string]*localPending
 	workerGates              map[string]chan struct{}
@@ -337,53 +331,6 @@ func wrapLocalPublishedSession(session Session, revoke func()) Session {
 	return out
 }
 
-// SetNativeWorkerSandbox makes the OS boundary mandatory for all subsequent
-// local Worker runtime launches. Trusted Secretary config supplies both
-// protected Node and Server roots; neither is passed to Worker processes.
-func (n *LocalNode) SetNativeWorkerSandbox(policy nativeexec.WorkerSandbox) error {
-	if policy.ProtectedDir == "" || policy.ServerDataDir == "" {
-		return errors.New("node: native Worker sandbox requires Node and Server protected roots")
-	}
-	if !filepath.IsAbs(policy.ProtectedDir) || !filepath.IsAbs(policy.ServerDataDir) {
-		return errors.New("node: native Worker sandbox roots must be absolute")
-	}
-	if _, err := os.Stat(policy.ProtectedDir); err != nil { return err }
-	if _, err := os.Stat(policy.ServerDataDir); err != nil { return err }
-	n.mu.Lock()
-	defer n.mu.Unlock()
-	if n.workerSandbox != nil { return errors.New("node: native Worker sandbox already configured") }
-	copy := policy
-	n.workerSandbox = &copy
-	return nil
-}
-
-// Runtime contexts are constructed after Workspace resolution. A missing
-// boundary in production must never silently degrade to same-UID native code.
-func (n *LocalNode) nativeWorkerContext(ctx context.Context, workspace string) (context.Context, error) {
-	n.mu.Lock()
-	config := n.workerSandbox
-	n.mu.Unlock()
-	if config == nil { return ctx, nil }
-	if workspace == "" || !filepath.IsAbs(workspace) {
-		return nil, errors.New("node: sandboxed Worker requires absolute Workspace")
-	}
-	ws, err := filepath.EvalSymlinks(workspace)
-	if err != nil { return nil, err }
-	server, err := filepath.EvalSymlinks(config.ServerDataDir)
-	if err != nil { return nil, err }
-	protected, err := filepath.EvalSymlinks(config.ProtectedDir)
-	if err != nil { return nil, err }
-	within := func(path, parent string) bool {
-		return path == parent || strings.HasPrefix(path, parent+string(filepath.Separator))
-	}
-	if within(ws, server) || within(server, ws) || within(ws, protected) || within(protected, ws) {
-		return nil, errors.New("node: Worker Workspace overlaps Server or Node protected state")
-	}
-	policy := *config
-	policy.Workspace = ws
-	return nativeexec.WithWorkerSandbox(ctx, policy), nil
-}
-
 func (n *LocalNode) SetArtifactFetcher(fetcher ArtifactFetcher) {
 	n.mu.Lock()
 	n.artifactFetcher = fetcher
@@ -497,9 +444,7 @@ func (n *LocalNode) Dispatch(ctx context.Context, request StartRequest) (Session
 	if err != nil {
 		return nil, err
 	}
-	workerCtx, err := n.nativeWorkerContext(ctx, request.Workspace)
-	if err != nil { revoke(); return nil, err }
-	session, err := n.runtime.Start(workerCtx, request)
+	session, err := n.runtime.Start(ctx, request)
 	if err != nil {
 		revoke()
 		return nil, err
@@ -589,9 +534,7 @@ func (n *LocalNode) Continue(ctx context.Context, request StartRequest, previous
 	if err != nil {
 		return nil, err
 	}
-	workerCtx, err := n.nativeWorkerContext(ctx, request.Workspace)
-	if err != nil { revoke(); return nil, err }
-	session, err := resumeSameIdentity(workerCtx, resumer, request, checkpoint.nativeID)
+	session, err := resumeSameIdentity(ctx, resumer, request, checkpoint.nativeID)
 	if err != nil {
 		revoke()
 		return nil, ErrRuntimeSessionUnavailable
@@ -656,9 +599,7 @@ func (n *LocalNode) Resume(ctx context.Context, request StartRequest, runtimeSes
 	if err != nil {
 		return nil, err
 	}
-	workerCtx, err := n.nativeWorkerContext(prepCtx, request.Workspace)
-	if err != nil { revoke(); return nil, err }
-	session, err := resumer.Resume(workerCtx, request, runtimeSessionID)
+	session, err := resumer.Resume(prepCtx, request, runtimeSessionID)
 	if err != nil {
 		revoke()
 		return nil, err

@@ -262,7 +262,9 @@ func TestNodeBecomesOnlineOnlyAfterAcceptedProtocolConnection(t *testing.T) {
 	}
 
 	connection := &ProtocolConnection{node: "macbook"}
-	handler.HandleNodeConnection(connection)
+	if err := handler.AdmitNodeConnection(ctx, connection); err != nil {
+		t.Fatal(err)
+	}
 	record, err = store.NodeRecord(ctx, "macbook")
 	if err != nil {
 		t.Fatal(err)

@@ -87,8 +87,31 @@ func TestReplacementSocketInvalidatesWorkerUntilMatchingHeartbeat(t *testing.T) 
     }()
     <-staleReady
 
-    // Deliberately open a second authenticated socket BEFORE the old one has
-    // disconnected. Its registration must make the existing Worker offline.
+    duplicate, duplicateErr := DialProtocol(ctx, identity.ConnectURL, identity.Node, auth, Handshake{
+        Node: identity.Node, ProtocolVersion: ProtocolVersion, Inventory: inventory, Nonce: "duplicate-identity",
+    })
+    if duplicateErr == nil {
+        _ = duplicate.Close()
+        t.Fatal("second live Node took over the original authenticated socket")
+    }
+    manager.mu.Lock()
+    retained := manager.connections[identity.Node]
+    manager.mu.Unlock()
+    if retained != oldServerSocket {
+        t.Fatal("duplicate identity displaced current Node before genuine disconnect")
+    }
+    details, err := store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+    if err != nil || details.Worker.Status != core.WorkerWorking {
+        t.Fatalf("duplicate identity corrupted active Worker: details=%#v err=%v", details, err)
+    }
+
+    if err := original.Close(); err != nil { t.Fatal(err) }
+    waitFor(t, ctx, "original socket fully disconnected", func() bool {
+        manager.mu.Lock()
+        active := manager.connections[identity.Node]
+        manager.mu.Unlock()
+        return active == nil
+    })
     replacement := connect("replacement-socket")
     defer replacement.Close()
     close(releaseStale)
@@ -103,7 +126,7 @@ func TestReplacementSocketInvalidatesWorkerUntilMatchingHeartbeat(t *testing.T) 
     if err := staleHandler.HandleNodeInventory(ctx, inventory); !errors.Is(err, errStaleNodeConnection) {
         t.Fatalf("old socket updated inventory after replacement: %v", err)
     }
-    details, err := store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+    details, err = store.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
     if err != nil { t.Fatal(err) }
     record, err := store.NodeRecord(ctx, identity.Node)
     if err != nil { t.Fatal(err) }

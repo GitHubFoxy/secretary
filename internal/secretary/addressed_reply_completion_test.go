@@ -2,9 +2,12 @@ package secretary
 
 import (
 	"bufio"
+	"fmt"
+	"regexp"
 	"context"
 	"encoding/json"
 	"net/http"
+	"os/exec"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -12,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/beruseruko/secretary/internal/config"
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/ctl"
 	"github.com/beruseruko/secretary/internal/mcp"
@@ -51,11 +55,24 @@ func TestAddressedReplyOnlyEndTurnCompletesWithoutAssistantEcho(t *testing.T) {
 	}
 }
 
-func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, contractVersion string, wantState core.SecretaryTurnState, wantCurrentResponse, wantPriorResponse string) {
+func TestProductionCodexProfileAddressedReplyACPCompletion(t *testing.T) {
+	for _, scenario := range []string{"acp-mcp-answer", "acp-mcp-spawn", "acp-mcp-no-reply"} {
+		t.Run(scenario, func(t *testing.T) {
+			want := core.SecretaryTurnSucceeded
+			body := "The answer is 42."
+			if scenario == "acp-mcp-spawn" { body = "Worker создан. Действие подтверждено сервером." }
+			if scenario == "acp-mcp-no-reply" { want = core.SecretaryTurnFailed; body = "Secretary не получил подтверждённый адресованный ответ. Выполнение запроса не подтверждено; проверьте доступность Secretary MCP и состояние задачи перед повторной попыткой." }
+			runAddressedReplyCompletionScenario(t, scenario, "", core.SecretaryReplyContractAddressedV1, want, body, "", true)
+		})
+	}
+}
+
+func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, contractVersion string, wantState core.SecretaryTurnState, wantCurrentResponse, wantPriorResponse string, productionCodex ...bool) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	store, err := core.Open(ctx, filepath.Join(t.TempDir(), "secretary.db"))
+	dataDir := t.TempDir()
+	store, err := core.Open(ctx, filepath.Join(dataDir, "secretary.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,13 +90,19 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 		t.Fatal(err)
 	}
 	setRuntimeTestPolicy(t, store)
-	dataDir := t.TempDir()
 	if _, err := store.SaveUserDocument(ctx, filepath.Join(dataDir, "user.md"), "synthetic owner"); err != nil {
 		t.Fatal(err)
 	}
 	handler := mcp.Secretary{
 		Workers:              ctl.WorkerService{Store: store, PersonID: person.ID, Capability: capability},
 		ReplyContractVersion: core.SecretaryReplyContractAddressedV1,
+	}
+	production := len(productionCodex) > 0 && productionCodex[0]
+	if production {
+		if _, err := store.EnrollNode(ctx, "local"); err != nil { t.Fatal(err) }
+		instance := core.HarnessInstance{ID: "local/codex", Node: "local", Kind: core.HarnessCodex, Version: "fixture", Status: core.HarnessReady, Authentication: core.HarnessAuthentication{Authenticated: true}, Capabilities: core.HarnessCapabilities{Execution: []core.ExecutionCapability{core.CapabilityShell}}}
+		if err := store.UpdateNodeHeartbeat(ctx, "local", core.HarnessInventorySnapshot{Node: "local", ObservedAt: time.Now().UTC(), Instances: []core.HarnessInstance{instance}}, core.NodeHeartbeat{Capacity: 2}); err != nil { t.Fatal(err) }
+		
 	}
 	priorTurns := 0
 	if replyMode == "foreign" {
@@ -90,7 +113,7 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 		if _, err := store.StartSecretaryTurn(ctx, foreign.ID); err != nil {
 			t.Fatal(err)
 		}
-		args, _ := json.Marshal(map[string]string{"secretary_turn_id": foreign.ID, "input_id": foreign.InputID, "text": "Reply belongs to a different turn."})
+		args, _ := json.Marshal(map[string]string{"secretary_turn_id": foreign.ID, "input_id": foreign.InputID, "text": "Reply belongs to a different turn.", "reply_kind": "answer"})
 		if _, err := handler.Call(ctx, "reply_to_user", args); err != nil {
 			t.Fatalf("prior addressed reply rejected: %v", err)
 		}
@@ -125,19 +148,37 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 		Content: "synthetic addressed-reply profile", Runtime: "opencode", Model: "fixture-model", Reasoning: "xhigh",
 		ReplyContractVersion: contractVersion,
 	}
+	if len(productionCodex) > 0 && productionCodex[0] {
+		manager, err := config.Open(filepath.Join(t.TempDir(), "config.toml"))
+		if err != nil { t.Fatal(err) }
+		generated := manager.Snapshot().Profiles["secretary"]
+		if generated.Runtime != "codex" || generated.ReplyContractVersion != core.SecretaryReplyContractAddressedV1 || strings.Contains(generated.Content, "## Addressed reply v1") {
+			t.Fatal("official profile lacks Codex addressed reply contract")
+		}
+		runtimeProfile = node.ManagedProfile{
+			Name: generated.Name, Version: manager.Snapshot().Version, Content: config.SecretaryRuntimeContent(generated.Content), Hash: generated.Hash,
+			Runtime: generated.Runtime, Model: generated.Model, Reasoning: generated.Reasoning,
+			ReplyContractVersion: generated.ReplyContractVersion,
+		}
+	}
 	acpRuntime := node.ACPRuntime{
 		Command: os.Args[0], Arguments: []string{"-test.run=^TestAddressedReplyACPFixtureProcess$"},
 		Environment: []string{
 			"TEST_ADDRESS_REPLY_ACP=1", "TEST_ADDRESS_REPLY_GATE=" + gate.URL,
 			"TEST_ADDRESS_REPLY_SCENARIO=" + scenario,
+			"TEST_ADDRESS_REPLY_PRODUCTION=" + fmt.Sprint(production),
 		},
 		TerminalMessageGrouping: true, DrainPromptEvents: true,
 	}
-	runtime := NewRuntime(node.NewLocal(acpRuntime), capability)
+	local := node.NewLocal(acpRuntime)
+	if len(productionCodex) > 0 && productionCodex[0] {
+		local = node.NewLocal(node.CodexRuntime{ACPRuntime: acpRuntime, CodexCommand: os.Args[0]})
+	}
+	runtime := NewRuntime(local, capability)
 	runtime.AttachConversation(store, conversation.ID)
 	runtime.AttachIdentity(identity)
 	runtime.AttachProfile(func() node.ManagedProfile { return runtimeProfile })
-	runtime.AttachMCP("unused-fixture-command", dataDir)
+	runtime.AttachMCP(os.Args[0], dataDir)
 	if err := runtime.Start(ctx); err != nil {
 		t.Fatal("Secretary runtime did not start on the executable ACP fixture")
 	}
@@ -160,14 +201,14 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 		if _, err := store.RotateSecretaryCapability(ctx, person.ID); err != nil {
 			t.Fatal(err)
 		}
-		args, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "must not persist"})
+		args, _ := json.Marshal(map[string]string{"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "must not persist", "reply_kind": "answer"})
 		if _, err := handler.Call(ctx, "reply_to_user", args); err == nil {
 			t.Fatal("revoked MCP capability persisted a reply")
 		}
 	}
 	if replyMode == "exact" {
 		args, err := json.Marshal(map[string]string{
-			"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "The answer is 42.",
+			"secretary_turn_id": turn.ID, "input_id": turn.InputID, "text": "The answer is 42.", "reply_kind": "answer",
 		})
 		if err != nil {
 			t.Fatal("could not prepare the exact MCP origin")
@@ -218,6 +259,14 @@ func runAddressedReplyCompletionScenario(t *testing.T, scenario, replyMode, cont
 			t.Fatalf("expected Conversation entry was missing: exact_body=%t", false)
 		}
 	}
+	if production {
+		workers, err := store.WorkersForConversation(ctx, conversation.ID)
+		if err != nil { t.Fatal(err) }
+		wantWorkers := 0
+		if scenario == "acp-mcp-spawn" { wantWorkers = 1 }
+		if len(workers) != wantWorkers { t.Fatalf("projectless spawn count=%d, want=%d", len(workers), wantWorkers) }
+		if wantWorkers == 1 && workers[0].ProjectID != "" { t.Fatal("spawn unexpectedly acquired a Project") }
+	}
 	turns, err = store.SecretaryTurns(ctx, identity.ID)
 	if err != nil || len(turns) != priorTurns+1 {
 		t.Fatalf("completion created an automatic Secretary turn: count=%d err=%v", len(turns), err)
@@ -257,10 +306,12 @@ func TestAddressedReplyACPFixtureProcess(t *testing.T) {
 		}
 	}
 	scanner := bufio.NewScanner(os.Stdin)
+	var mcpServer node.MCPServer
 	for scanner.Scan() {
 		var request struct {
 			ID     json.RawMessage `json:"id"`
 			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
 		}
 		if err := json.Unmarshal(scanner.Bytes(), &request); err != nil {
 			t.Fatal("ACP fixture received malformed request")
@@ -272,8 +323,84 @@ func TestAddressedReplyACPFixtureProcess(t *testing.T) {
 		case "initialize":
 			write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"protocolVersion": 1}})
 		case "session/new":
+			if strings.HasPrefix(scenario, "acp-mcp-") {
+				var session struct { Servers []node.MCPServer `json:"mcpServers"` }
+				if err := json.Unmarshal(request.Params, &session); err != nil || len(session.Servers) != 1 || session.Servers[0].Name != "secretary" || session.Servers[0].Command == "" {
+					t.Fatal("ACP session did not receive the production Secretary MCP server")
+				}
+				mcpServer = session.Servers[0]
+			}
 			write(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": map[string]any{"sessionId": "addressed-session"}})
 		case "session/prompt":
+			if strings.HasPrefix(scenario, "acp-mcp-") {
+				var params struct { Prompt []struct { Text string `json:"text"` } `json:"prompt"` }
+				if err := json.Unmarshal(request.Params, &params); err != nil || len(params.Prompt) == 0 { t.Fatal("ACP prompt did not supply origin") }
+				prompt := params.Prompt[0].Text
+				turnID := regexp.MustCompile(`secretary_turn_id=([^\s]+)`).FindStringSubmatch(prompt)
+				inputID := regexp.MustCompile(`input_id=([^\s]+)`).FindStringSubmatch(prompt)
+				if len(turnID) < 2 || len(inputID) < 2 { t.Fatal("ACP prompt lacked canonical origin") }
+				var config map[string]any
+				if err := json.Unmarshal([]byte(os.Getenv("CODEX_CONFIG")), &config); err != nil { t.Fatal(err) }
+				instructions, _ := config["developer_instructions"].(string)
+				if !strings.Contains(instructions, "reply_kind=spawn_worker") || !strings.Contains(instructions, "action_turn_id") { t.Fatal("generated profile not delivered to Codex process") }
+				cmd := exec.Command(mcpServer.Command, append(mcpServer.Args, "-test.run=^TestMAC12MCPFixtureProcess$")...)
+				cmd.Env = append([]string{}, os.Environ()...)
+				cmd.Env = append(cmd.Env, "TEST_MAC12_MCP=1")
+				for _, variable := range mcpServer.Env { cmd.Env = append(cmd.Env, variable.Name+"="+variable.Value) }
+				mcpIn, err := cmd.StdinPipe()
+				if err != nil { t.Fatal(err) }
+				mcpOut, err := cmd.StdoutPipe()
+				if err != nil { t.Fatal(err) }
+				if err := cmd.Start(); err != nil { t.Fatal(err) }
+				reader := bufio.NewReader(mcpOut)
+				call := func(method string, params any) map[string]any {
+					payload, _ := json.Marshal(map[string]any{"jsonrpc":"2.0","id":1,"method":method,"params":params})
+					if _, err := mcpIn.Write(append(payload, '\n')); err != nil { t.Fatal(err) }
+					line, err := reader.ReadBytes('\n')
+					if err != nil { t.Fatal(err) }
+					var decoded struct { Error any `json:"error"`; Result map[string]any `json:"result"` }
+					if err := json.Unmarshal(line, &decoded); err != nil || decoded.Error != nil { t.Fatalf("MCP %s failed: %s %v", method, line, err) }
+					return decoded.Result
+				}
+				call("initialize", map[string]any{"protocolVersion":"2025-06-18"})
+				listed := call("tools/list", map[string]any{})
+				tools, _ := listed["tools"].([]any)
+				foundReply, foundSpawn := false, false
+				for _, raw := range tools {
+					tool, _ := raw.(map[string]any)
+					foundReply = foundReply || tool["name"] == "reply_to_user"
+					foundSpawn = foundSpawn || tool["name"] == "spawn_worker"
+				}
+				if !foundReply || !foundSpawn { t.Fatal("configured MCP server has no addressed reply or spawn tool") }
+				mcpCall := func(name string, args map[string]any) map[string]any {
+					response := call("tools/call", map[string]any{"name":name,"arguments":args})
+					if response["isError"] == true { t.Fatalf("MCP tool %s failed: %+v", name, response) }
+					parts, _ := response["content"].([]any)
+					if len(parts) == 0 { t.Fatal("MCP tool has no result content") }
+					part, _ := parts[0].(map[string]any)
+					content, _ := part["text"].(string)
+					var result map[string]any
+					if err := json.Unmarshal([]byte(content), &result); err != nil { t.Fatal(err) }
+					return result
+				}
+				origin := map[string]any{"secretary_turn_id":turnID[1],"input_id":inputID[1]}
+				if scenario == "acp-mcp-spawn" {
+					spawn := map[string]any{"secretary_turn_id":turnID[1],"input_id":inputID[1],"intent":"Make a list EЛЬ-5731","idempotency_key":"mac12-single-spawn"}
+					details := mcpCall("spawn_worker", spawn)
+					turn, _ := details["action_turn_id"].(string)
+					if turn == "" { t.Fatal("accepted spawn lacked action_turn_id") }
+					origin["reply_kind"], origin["action_kind"], origin["worker_turn_id"], origin["text"] = "spawn_worker", "spawn_worker", turn, "Worker created"
+				} else {
+					origin["reply_kind"], origin["text"] = "answer", "The answer is 42."
+				}
+				if scenario != "acp-mcp-no-reply" {
+					first := mcpCall("reply_to_user", origin)
+					second := mcpCall("reply_to_user", origin)
+					if first["duplicate"] != false || second["duplicate"] != true { t.Fatal("addressed reply was not idempotent") }
+				}
+				if err := mcpIn.Close(); err != nil { t.Fatal(err) }
+				if err := cmd.Wait(); err != nil { t.Fatalf("MCP process failed: %v", err) }
+			}
 			update := func(kind, id, text string) {
 				write(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{
 					"sessionId": "addressed-session", "update": map[string]any{"sessionUpdate": kind, "messageId": id, "content": map[string]string{"type": "text", "text": text}},
@@ -319,4 +446,30 @@ func TestAddressedReplyACPFixtureProcess(t *testing.T) {
 	if err := scanner.Err(); err != nil {
 		t.Fatal("ACP fixture input failed")
 	}
+}
+
+type mac12DispatchRuntime struct{}
+
+func (*mac12DispatchRuntime) Dispatch(context.Context, string, core.Worker, core.Turn, core.Phase4Attempt, core.DispatchResolution) error { return nil }
+func (*mac12DispatchRuntime) Resume(context.Context, string, core.Worker, core.Turn, core.Phase4Attempt, string) error { return fmt.Errorf("unexpected resume") }
+func (*mac12DispatchRuntime) Steer(context.Context, string, core.Worker, core.Phase4Attempt, string) error { return fmt.Errorf("unexpected steering") }
+func (*mac12DispatchRuntime) Respond(context.Context, string, core.Worker, core.Phase4Attempt, string, string) error { return fmt.Errorf("unexpected response") }
+func (*mac12DispatchRuntime) Cancel(context.Context, string, core.Worker, core.Phase4Attempt) error { return fmt.Errorf("unexpected cancellation") }
+
+func TestMAC12MCPFixtureProcess(t *testing.T) {
+	if os.Getenv("TEST_MAC12_MCP") != "1" { return }
+	ctx := context.Background()
+	store, err := core.Open(ctx, filepath.Join(os.Getenv("SECRETARY_MCP_DATA_DIR"), "secretary.db"))
+	if err != nil { t.Fatal(err) }
+	defer store.Close()
+	person, _, err := store.EnsureOwner(ctx)
+	if err != nil { t.Fatal(err) }
+	capability := os.Getenv("SECRETARY_MCP_CAPABILITY")
+	if capability == "" || os.Getenv("SECRETARY_MCP_REPLY_CONTRACT") != core.SecretaryReplyContractAddressedV1 { t.Fatal("ACP did not pass native MCP capability or contract") }
+	handler := mcp.Secretary{Workers: ctl.WorkerService{
+		Store: store, PersonID: person.ID, Capability: capability, Runtime: &mac12DispatchRuntime{},
+		WorkerPolicy: core.HarnessPolicy{DefaultHarness: core.HarnessCodex},
+		WorkerProfileSource: func() (node.ManagedProfile, error) { return node.ManagedProfile{Version:"fixture", Name:"worker", Content:"Synthetic worker.", Runtime:"codex", Hash:"fixture"}, nil },
+	}, ReplyContractVersion: core.SecretaryReplyContractAddressedV1}
+	if err := (mcp.Server{Handler: handler}).Serve(ctx, os.Stdin, os.Stdout); err != nil { t.Fatal(err) }
 }

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -19,14 +20,31 @@ import (
 	"github.com/beruseruko/secretary/internal/node"
 )
 
+func traceIdleFixture(event, method, id string, held bool) {
+ path := os.Getenv("TEST_IDLE_EXIT_REPORT")
+ if path == "" { return }
+ file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+ if err != nil { return }
+ defer file.Close()
+ _, _ = fmt.Fprintf(file, "pid=%d event=%s method=%s native=%s held=%t\n",os.Getpid(),event,method,id,held)
+}
+
+func idleFixtureExit() {
+ if path := os.Getenv("TEST_IDLE_EXIT_REPORT"); path != "" {
+  _, file, line, _ := runtime.Caller(1)
+  traceIdleFixture(fmt.Sprintf("explicit-exit:%s:%d",filepath.Base(file),line),"","",false)
+ }
+ os.Exit(2)
+}
+
 func TestIdleFollowUpACPProcess(t *testing.T) {
 	if !testProcessHasArgument("-test.run=^TestIdleFollowUpACPProcess$") {
 		return
 	}
 	if os.Getenv("TEST_IDLE_CODEX") == "1" {
 		var overrides map[string]any
-		if json.Unmarshal([]byte(os.Getenv("CODEX_CONFIG")), &overrides) != nil || overrides["developer_instructions"] != "Synthetic instructions" {
-			os.Exit(2)
+		if json.Unmarshal([]byte(os.Getenv("CODEX_CONFIG")), &overrides) != nil || overrides["developer_instructions"] != "Synthetic instructions\n\n"+node.CodexRecoveryInstruction {
+			idleFixtureExit()
 		}
 	}
 	encoder := json.NewEncoder(os.Stdout)
@@ -40,9 +58,11 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 			Params json.RawMessage `json:"params"`
 		}
 		if json.Unmarshal(scanner.Bytes(), &req) != nil {
-			os.Exit(2)
+			idleFixtureExit()
 		}
+		traceIdleFixture("received", req.Method, id, len(heldPromptID)>0)
 		if req.Method == "session/cancel" {
+			traceIdleFixture("cancel", req.Method, id, len(heldPromptID)>0)
 			return
 		}
 		if len(req.ID) == 0 {
@@ -59,15 +79,15 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 				SessionID string            `json:"sessionId"`
 			}
 			if json.Unmarshal(req.Params, &p) != nil {
-				os.Exit(2)
+				idleFixtureExit()
 			}
 			if os.Getenv("TEST_IDLE_CODEX") == "1" && p.Meta["secretaryProfileDelivery"] != "native" {
-				os.Exit(2)
+				idleFixtureExit()
 			}
 			workspace = p.Cwd
 			if os.Getenv("TEST_IDLE_CODEX") == "1" {
 				if _, err := os.Stat(filepath.Join(workspace, "AGENTS.md")); err == nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 			}
 			operation := "L"
@@ -76,33 +96,40 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 			}
 			file, err := os.OpenFile(filepath.Join(workspace, "private-session-operations"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 			if err != nil {
-				os.Exit(2)
+				idleFixtureExit()
 			}
 			if _, err = file.WriteString(operation); err != nil {
-				os.Exit(2)
+				idleFixtureExit()
 			}
 			file.Close()
 			if req.Method == "session/new" {
 				f, err := os.CreateTemp(workspace, "private-native-*")
 				if err != nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 				id = filepath.Base(f.Name())
 				f.Close()
 			} else {
 				id = p.SessionID
 				if _, err := os.Stat(filepath.Join(workspace, id)); err != nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 			}
 			if os.Getenv("TEST_IDLE_CODEX") == "1" {
 				writer, err := os.OpenFile(filepath.Join(workspace, id+"-writer"), os.O_CREATE|os.O_RDWR, 0600)
 				if err != nil || syscall.Flock(int(writer.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 				defer writer.Close()
 			}
+			traceIdleFixture("session-bound",req.Method,id,len(heldPromptID)>0)
 			result = map[string]any{"sessionId": id}
+		case "session/set_config_option":
+			var p struct { ConfigID string `json:"configId"`; Value string `json:"value"` }
+			if json.Unmarshal(req.Params, &p) != nil || p.ConfigID != "mode" || p.Value != "agent-full-access" || os.Getenv("TEST_IDLE_CODEX") != "1" {
+				idleFixtureExit()
+			}
+			result = map[string]any{"configOptions": []map[string]string{{"id": p.ConfigID, "currentValue": p.Value}}}
 		case "_session/steering":
 			var p struct {
 				Prompt []struct {
@@ -110,12 +137,32 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 				} `json:"prompt"`
 			}
 			if json.Unmarshal(req.Params, &p) != nil {
-				os.Exit(2)
+				idleFixtureExit()
 			}
 			if len(p.Prompt) > 0 && p.Prompt[0].Text == "finish-held" && len(heldPromptID) > 0 {
+				traceIdleFixture("finish-held",req.Method,id,true)
+				if err := encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": req.ID, "result": map[string]any{"outcome": "injected"}}); err != nil {
+					traceIdleFixture("steering-response-error:"+err.Error(),req.Method,id,true)
+					return
+				}
+				traceIdleFixture("steering-ack",req.Method,id,true)
+			if releaseURL := os.Getenv("TEST_IDLE_STEER_RELEASE_URL"); releaseURL != "" {
+				response, err := http.Get(releaseURL)
+				if err != nil {
+					traceIdleFixture("steering-release-error:"+err.Error(),req.Method,id,true)
+					idleFixtureExit()
+				}
+				response.Body.Close()
+				if response.StatusCode != http.StatusNoContent {
+					traceIdleFixture("steering-release-status",req.Method,id,true)
+					idleFixtureExit()
+				}
+				traceIdleFixture("steering-released",req.Method,id,true)
+			}
 				encoder.Encode(map[string]any{"jsonrpc": "2.0", "method": "session/update", "params": map[string]any{"sessionId": id, "update": map[string]any{"sessionUpdate": "agent_message_chunk", "messageId": "private-final", "_meta": map[string]any{"codex": map[string]string{"phase": "final_answer"}}, "content": map[string]string{"type": "text", "text": "held complete"}}}})
 				encoder.Encode(map[string]any{"jsonrpc": "2.0", "id": heldPromptID, "result": map[string]any{"stopReason": "end_turn"}})
 				heldPromptID = nil
+				continue
 			}
 			result = map[string]any{"outcome": "injected"}
 		case "session/prompt":
@@ -125,26 +172,27 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 				} `json:"prompt"`
 			}
 			if json.Unmarshal(req.Params, &p) != nil || len(p.Prompt) == 0 {
-				os.Exit(2)
+				idleFixtureExit()
 			}
 			if p.Prompt[0].Text == "hold" {
 				heldPromptID = append(json.RawMessage(nil), req.ID...)
+				traceIdleFixture("held-prompt",req.Method,id,true)
 				file, err := os.OpenFile(filepath.Join(workspace, "private-held-prompts"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 				if err != nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 				if _, err = file.WriteString("H"); err != nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 				file.Close()
 				if os.WriteFile(filepath.Join(workspace, "private-hold-ready"), []byte("ready"), 0600) != nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 				continue
 			}
 			if p.Prompt[0].Text == "recall" {
 				if os.WriteFile(filepath.Join(workspace, "private-recall-sent"), []byte("sent"), 0600) != nil {
-					os.Exit(2)
+					idleFixtureExit()
 				}
 			}
 			summary := "remembered=false"
@@ -166,6 +214,7 @@ func TestIdleFollowUpACPProcess(t *testing.T) {
 			return
 		}
 	}
+	if err := scanner.Err(); err != nil { traceIdleFixture("scanner-error:"+err.Error(),"",id,len(heldPromptID)>0) } else { traceIdleFixture("scanner-eof","",id,len(heldPromptID)>0) }
 }
 
 type idleInventory struct{ snapshot core.HarnessInventorySnapshot }

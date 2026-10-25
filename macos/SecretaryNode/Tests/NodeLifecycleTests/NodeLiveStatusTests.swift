@@ -24,12 +24,14 @@ final class NodeLiveStatusTests: XCTestCase {
         let menu = NodeMenuPresentation()
         try write(url, server: "reconnecting")
         menu.renderLive(NodeLiveSnapshot.load(from: url, now: now))
-        XCTAssertEqual(menu.server.title, "Server: Reconnecting")
+        XCTAssertEqual(menu.server.title, "Server: Offline")
         try write(url, server: "connected", harnesses: "[{\"kind\":\"codex\",\"status\":\"ready\"},{\"kind\":\"claude-code\",\"status\":\"unavailable\"}]")
         let connected = NodeLiveSnapshot.load(from: url, now: now)
         XCTAssertEqual(connected?.harnesses.count, 2)
         menu.renderLive(connected)
-        XCTAssertEqual(menu.server.title, "Server: Connected")
+        XCTAssertEqual(menu.server.title, "Server: Offline")
+        menu.renderServer(.online)
+        XCTAssertEqual(menu.server.title, "Server: Online")
         XCTAssertTrue(menu.items(in: menu.menu).contains("codex: Ready"))
         XCTAssertTrue(menu.items(in: menu.menu).contains("claude-code: Unavailable"))
         XCTAssertEqual(menu.menu.item(at: 2)?.isSeparatorItem, true)
@@ -38,7 +40,7 @@ final class NodeLiveStatusTests: XCTestCase {
         XCTAssertFalse(menu.items(in: menu.menu).contains("codex: Ready"))
         try write(url, server: "offline")
         menu.renderLive(NodeLiveSnapshot.load(from: url, now: now))
-        XCTAssertEqual(menu.server.title, "Server: Offline")
+        XCTAssertEqual(menu.server.title, "Server: Online")
     }
 
     func testStaleMissingCorruptAndShutdownFailClosed() throws {

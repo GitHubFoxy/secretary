@@ -52,24 +52,49 @@ choose_harness() {
   SELECTED_HARNESS="$answer"
 }
 
+generated_reply_contract_matches() {
+  local file="$STATE/config.toml" marker="$STATE/.generated-reply-contract.cksum" current
+  [[ -f "$marker" && ! -L "$marker" && -f "$file" && ! -L "$file" ]] || return 1
+  current="$(cksum < "$file")" || return 1
+  [[ "$(<"$marker")" == "$current" ]]
+}
+
+record_generated_reply_contract() {
+  local marker="$STATE/.generated-reply-contract.cksum" temporary
+  temporary="$(mktemp "$STATE/.generated-reply-contract.XXXXXX")" || return 1
+  cksum < "$STATE/config.toml" > "$temporary" || { rm -f "$temporary"; return 1; }
+  chmod 600 "$temporary" || { rm -f "$temporary"; return 1; }
+  mv -f "$temporary" "$marker"
+}
+
 set_config_harness() {
-  local harness="$1" file="$STATE/config.toml" temp
+  local harness="$1" fresh="${2:-false}" file="$STATE/config.toml" temp generated=false
   [[ "$harness" == codex || "$harness" == claude_code ]] || { print -u2 "Unsupported harness: $harness"; return 2; }
   [[ -f "$file" && ! -L "$file" ]] || { print -u2 "Missing or unsafe configuration: $file"; return 1; }
+  if [[ "$fresh" == true ]] || generated_reply_contract_matches; then generated=true; fi
   temp="$(mktemp "$STATE/config.toml.XXXXXX")" || return 1
-  if ! awk -v selected="$harness" '
-    /^\[[^]]+\]/ { section=$0 }
+  if ! awk -v selected="$harness" -v generated="$generated" '
+    /^\[[^]]+\]/ { if (section=="[secretary]" && selected=="codex" && generated=="true" && !contract) print "reply_contract = \"addressed-reply-v1\""; section=$0 }
     section=="[secretary]" && /^[[:space:]]*harness[[:space:]]*=/ { print "harness = \"" selected "\""; secretary=1; next }
+    section=="[secretary]" && /^[[:space:]]*reply_contract[[:space:]]*=/ { contract=1; if (selected!="claude_code") { print; next }
+      if (generated=="true" && $0 ~ /^[[:space:]]*reply_contract[[:space:]]*=[[:space:]]*"addressed-reply-v1"[[:space:]]*$/) next
+      invalid=1
+    }
     section=="[worker_policy]" && /^[[:space:]]*default_harness[[:space:]]*=/ { print "default_harness = \"" selected "\""; worker=1; next }
     { print }
-    END { if (!secretary || !worker) exit 3 }
+    END { if (!secretary || !worker || invalid) exit 3 }
   ' "$file" > "$temp"; then
     rm -f "$temp"
-    print -u2 "Config needs [secretary].harness and [worker_policy].default_harness; refusing to replace legacy sections"
+    print -u2 "Cannot select incompatible harness or rewrite an explicit reply contract; check [secretary] harness/reply_contract and [worker_policy].default_harness"
     return 1
   fi
   chmod 600 "$temp"
   mv -f "$temp" "$file"
+  if [[ "$generated" == true ]]; then
+    record_generated_reply_contract || return 1
+  else
+    rm -f "$STATE/.generated-reply-contract.cksum" || return 1
+  fi
   print "Selected $harness for new Secretary and Worker sessions. Existing Workers are unchanged."
 }
 
@@ -112,8 +137,70 @@ ensure_local_node_credentials() {
   [[ "$created" == true ]] && print "Provisioned missing local Node credentials without rotating existing secrets."
 }
 
+telegram_ipv6_public() {
+  command -v perl >/dev/null 2>&1 || return 1
+  perl -MSocket=AF_INET6,inet_pton -e '
+    my $ip = inet_pton(AF_INET6, $ARGV[0]) or exit 1;
+    my @b = unpack("C16", $ip);
+    my $mapped = !(grep { $_ != 0 } @b[0..9]) && $b[10] == 255 && $b[11] == 255;
+    if ($mapped) {
+      my ($a,$c,$d,$e) = @b[12..15];
+      exit(($a == 10 || $a == 127 || $a == 0 && $c == 0 && $d == 0 && $e == 0 || $a == 169 && $c == 254 || $a == 172 && $c >= 16 && $c <= 31 || $a == 192 && $c == 168) ? 1 : 0);
+    }
+    exit 1 if !(grep { $_ != 0 } @b);
+    exit 1 if !(grep { $_ != 0 } @b[0..14]) && $b[15] == 1;
+    exit 1 if ($b[0] & 254) == 252;
+    exit 1 if $b[0] == 254 && ($b[1] & 192) == 128;
+    exit 0;
+  ' "$1"
+}
+
+telegram_origin_valid() {
+  local origin="$1" authority host ip port
+  [[ "$origin" == https://* && "$origin" != *[[:space:]]* && "$origin" != *'#'* && "$origin" != *@* ]] || return 1
+  if [[ "$origin" == *\?* ]]; then
+    [[ "$origin" == *\? && "${origin%\?}" != *\?* ]] || return 1
+  fi
+  authority="${origin#https://}"
+  authority="${authority%\?}"
+  [[ -n "$authority" && "$authority" != */* ]] || return 1
+  if [[ "$authority" == \[* ]]; then
+    [[ "$authority" == *\]* ]] || return 1
+    host="${authority%%\]*}"
+    host="${host#\[}"
+    port="${authority#*\]}"
+    [[ -z "$port" || "$port" == :<-> ]] || return 1
+    telegram_ipv6_public "$host" || return 1
+    return 0
+  fi
+  host="$authority"
+  if [[ "$host" == *:* ]]; then
+    host="${authority%:*}"
+    [[ "${authority##*:}" == <-> ]] || return 1
+  fi
+  [[ -n "$host" && "$host" != .* && "$host" != *..* && "$host" != *\[* && "$host" != *\]* ]] || return 1
+  [[ "$host:l" != localhost && "$host:l" != *.localhost && "$host:l" != *.local ]] || return 1
+  if [[ "$host" == <->.<->.<->.<-> ]]; then
+    local -a octets
+    octets=("${(@s:.:)host}")
+    for ip in "${octets[@]}"; do (( ip >= 0 && ip <= 255 )) || return 1; done
+    (( octets[1] == 10 || octets[1] == 127 || octets[1] == 0 || octets[1] == 169 && octets[2] == 254 || octets[1] == 172 && octets[2] >= 16 && octets[2] <= 31 || octets[1] == 192 && octets[2] == 168 )) && return 1
+  fi
+  return 0
+}
+
+telegram_origin_doctor() {
+  case "${${SECRETARY_TELEGRAM_ENABLED:-}:l}" in
+    true|yes|on|1)
+      telegram_origin_valid "${SECRETARY_TELEGRAM_WEB_BASE_URL:-}" || {
+        print -u2 "Telegram configuration invalid: SECRETARY_TELEGRAM_WEB_BASE_URL must be a public HTTPS origin without credentials, path, query or fragment"
+        return 1
+      } ;;
+  esac
+}
+
 configure_telegram() {
-  local token="${SECRETARY_TELEGRAM_BOT_TOKEN:-}" chat="${SECRETARY_TELEGRAM_OWNER_CHAT_ID:-}" credential="${SECRETARY_TELEGRAM_SERVER_CREDENTIAL:-}"
+  local token="${SECRETARY_TELEGRAM_BOT_TOKEN:-}" chat="${SECRETARY_TELEGRAM_OWNER_CHAT_ID:-}" credential="${SECRETARY_TELEGRAM_SERVER_CREDENTIAL:-}" origin="${SECRETARY_TELEGRAM_WEB_BASE_URL:-}"
   terminal_available || { print -u2 "Telegram configuration requires a terminal"; return 1; }
   terminal_read "Enable Telegram DM (yes/no)" "${SECRETARY_TELEGRAM_ENABLED:-no}" || return 1
   case "${REPLY:l}" in
@@ -132,10 +219,17 @@ configure_telegram() {
   chat="$REPLY"
   [[ -z "$chat" || "$chat" =~ '^-?[0-9]+$' ]] || { print -u2 "Owner chat ID must be an integer"; return 2; }
   [[ "$chat" != 0 ]] || return 2
+  terminal_read "Public Web origin for Telegram links (https://host)" "$origin" || return 1
+  origin="${REPLY%/}"
+  if ! telegram_origin_valid "$origin"; then
+    print -u2 "Telegram requires a public HTTPS origin without credentials, path, query or fragment; no changes made"
+    return 2
+  fi
   [[ -n "$credential" ]] || credential="$(openssl rand -hex 32)" || return 1
   set_environment_value SECRETARY_TELEGRAM_BOT_TOKEN "$token" || return 1
   set_environment_value SECRETARY_TELEGRAM_SERVER_CREDENTIAL "$credential" || return 1
   [[ -z "$chat" ]] || set_environment_value SECRETARY_TELEGRAM_OWNER_CHAT_ID "$chat" || return 1
+  set_environment_value SECRETARY_TELEGRAM_WEB_BASE_URL "$origin" || return 1
   set_environment_value SECRETARY_TELEGRAM_ENABLED true || return 1
   print "Telegram configured. Restart Secretary to apply."
 }

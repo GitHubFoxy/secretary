@@ -29,6 +29,8 @@ type Runtime struct {
 	conversationID string
 	identity       core.SecretaryIdentity
 	turnLoader     func(context.Context, string) (core.SecretaryTurn, error)
+	setReady       func(bool)
+	verifyReady    func(context.Context, core.SecretaryIdentity) error
 
 	lifecycleMu          sync.Mutex
 	recoveryMu           sync.Mutex
@@ -43,6 +45,9 @@ type Runtime struct {
 	nextPromptID         uint64
 	activePromptID       uint64
 	promptStartedID      uint64
+	promptReturn         chan struct{}
+	promptBarrierEntered chan<- struct{}
+	resultConsumerExited chan<- struct{}
 	cancelRequestedID    uint64
 	cancelInFlightID     uint64
 	cancelDone           chan struct{}
@@ -96,6 +101,13 @@ func (r *Runtime) Identity() core.SecretaryIdentity {
 	return r.identity
 }
 
+func (r *Runtime) AttachReadiness(set func(bool), verify func(context.Context, core.SecretaryIdentity) error) {
+	r.mu.Lock()
+	r.setReady, r.verifyReady = set, verify
+	r.mu.Unlock()
+}
+
+
 func (r *Runtime) QueueMessage(ctx context.Context, text string) (core.SecretaryTurn, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -110,9 +122,15 @@ func (r *Runtime) QueueMessage(ctx context.Context, text string) (core.Secretary
 	return store.EnqueueSecretaryTurn(ctx, identity.ID, text)
 }
 
-func (r *Runtime) Start(ctx context.Context) error {
+func (r *Runtime) Start(ctx context.Context) (startErr error) {
 	r.lifecycleMu.Lock()
-	defer r.lifecycleMu.Unlock()
+	var attempted bool
+	defer func() {
+		r.lifecycleMu.Unlock()
+		if attempted && startErr != nil {
+			startErr = errors.Join(startErr, r.Stop(context.Background()))
+		}
+	}()
 	if r.node == nil {
 		return errors.New("secretary: local node is required")
 	}
@@ -131,7 +149,12 @@ func (r *Runtime) Start(ctx context.Context) error {
 	}
 	r.mu.Lock()
 	mcpCommand, mcpServerURL, dataDir, profileFn, store, identity := r.mcpCommand, r.mcpServerURL, r.dataDir, r.profile, r.store, r.identity
+	setReady, verifyReady := r.setReady, r.verifyReady
 	r.mu.Unlock()
+	attempted = true
+	if setReady != nil {
+		setReady(false)
+	}
 	if store != nil && dataDir != "" {
 		if _, err := store.LoadUserDocument(ctx, filepath.Join(dataDir, "user.md")); err != nil {
 			return err
@@ -215,6 +238,14 @@ func (r *Runtime) Start(ctx context.Context) error {
 	} else {
 		go r.consumeResults(session)
 		go r.consumeActivity(session)
+	}
+	if verifyReady != nil {
+		if err := verifyReady(ctx, r.Identity()); err != nil {
+			return fmt.Errorf("secretary: current runtime readiness not confirmed: %w", err)
+		}
+	}
+	if setReady != nil {
+		setReady(true)
 	}
 	if recoveryRequired && store != nil && identity.ID != "" {
 		if _, err := store.AppendEntry(ctx, identity.ConversationID, core.EntrySecretary, "После перезапуска я не могу подтвердить, что прежняя ACP-сессия остановилась. Сохранённые сообщения остаются в очереди. Убедитесь, что прежний процесс завершён, затем отправьте /recover, чтобы продолжить."); err != nil {
@@ -381,6 +412,7 @@ func (r *Runtime) beginPromptLocked() uint64 {
 	r.nextPromptID++
 	r.activePromptID = r.nextPromptID
 	r.promptStartedID = 0
+	r.promptReturn = make(chan struct{})
 	r.cancelRequestedID = 0
 	r.cancelInFlightID = 0
 	r.cancelDone = nil
@@ -457,6 +489,7 @@ func (r *Runtime) reportCancelFailure(store *core.Store, turnID string, err erro
 }
 
 func (r *Runtime) consumeResults(session node.Session) {
+	defer r.signalResultConsumerExit()
 	initial := true
 	for result := range session.Result() {
 		initial = r.consumeRuntimeResult(session, result, initial)
@@ -464,6 +497,7 @@ func (r *Runtime) consumeResults(session node.Session) {
 }
 
 func (r *Runtime) consumeAddressedSession(session node.Session) {
+	defer r.signalResultConsumerExit()
 	activity, results := session.Activity(), session.Result()
 	initial := true
 	for activity != nil || results != nil {
@@ -497,6 +531,15 @@ func (r *Runtime) consumeAddressedSession(session node.Session) {
 	}
 }
 
+func (r *Runtime) signalResultConsumerExit() {
+ r.mu.Lock()
+ observed := r.resultConsumerExited
+ r.mu.Unlock()
+ if observed != nil {
+  select { case observed <- struct{}{}: default: }
+ }
+}
+
 func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result, initial bool) bool {
 	for {
 		r.mu.Lock()
@@ -505,6 +548,16 @@ func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result,
 			return initial
 		}
 		promptID := r.activePromptID
+		if promptID != 0 && r.promptReturn != nil {
+			settled := r.promptReturn
+			observed := r.promptBarrierEntered
+			r.mu.Unlock()
+			if observed != nil {
+				select { case observed <- struct{}{}: default: }
+			}
+			<-settled
+			continue
+		}
 		if promptID != 0 && r.cancelInFlightID == promptID && r.cancelDone != nil {
 			done := r.cancelDone
 			r.mu.Unlock()
@@ -555,6 +608,9 @@ func (r *Runtime) consumeRuntimeResult(session node.Session, result node.Result,
 			}
 			if sessionUncertain {
 				state = core.SecretaryTurnFailed
+			}
+			if result.Status == "failed" && result.FailureCode == "native_model_error" {
+				evidence.NativeFailure = result.Summary
 			}
 			if native := result.CompletionEvidence; native != nil {
 				evidence.RPCSucceeded, evidence.DrainCompleted = native.RPCSucceeded, native.DrainCompleted
@@ -740,6 +796,10 @@ func (r *Runtime) clearPromptLocked(promptID uint64) {
 	if promptID == 0 || r.activePromptID != promptID {
 		return
 	}
+	if r.promptReturn != nil {
+		close(r.promptReturn)
+		r.promptReturn = nil
+	}
 	r.activePromptID = 0
 	r.promptStartedID = 0
 	r.cancelRequestedID = 0
@@ -915,6 +975,7 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 			r.beginPromptLocked()
 		}
 		promptID := r.activePromptID
+		defer r.settlePromptReturn(promptID)
 		store, turnID, activeInputID, replyContractVersion := r.store, r.activeTurnID, r.activeInputID, r.replyContractVersion
 		r.mu.Unlock()
 		prompt := text
@@ -1022,6 +1083,15 @@ func (r *Runtime) runPrompt(ctx context.Context, session node.Session, text stri
 	}()
 }
 
+func (r *Runtime) settlePromptReturn(promptID uint64) {
+	r.mu.Lock()
+	if r.activePromptID == promptID && r.promptReturn != nil {
+		close(r.promptReturn)
+		r.promptReturn = nil
+	}
+	r.mu.Unlock()
+}
+
 func (r *Runtime) awaitPromptCancel(promptID uint64) {
 	r.mu.Lock()
 	if promptID == 0 || r.cancelInFlightID != promptID || r.cancelDone == nil {
@@ -1036,6 +1106,12 @@ func (r *Runtime) awaitPromptCancel(promptID uint64) {
 func (r *Runtime) Stop(ctx context.Context) error {
 	r.lifecycleMu.Lock()
 	defer r.lifecycleMu.Unlock()
+	r.mu.Lock()
+	setReady := r.setReady
+	r.mu.Unlock()
+	if setReady != nil {
+		setReady(false)
+	}
 	r.mu.Lock()
 	if r.session != nil {
 		r.stopSession = r.session

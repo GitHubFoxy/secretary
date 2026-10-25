@@ -280,8 +280,8 @@ func TestManagedCodexPairPinsSupportedPlatforms(t *testing.T) {
  if err!=nil {
   t.Skipf("host not supported: %v",err)
  }
- expected := 1
- if runtime.GOOS=="windows" { expected = 2 }
+ expected := 2
+ if runtime.GOOS=="windows" { expected = 3 }
  if len(assets)!=expected {t.Fatalf("expected %d upstream assets (the modern Unix ACP is bundled), got %d",expected,len(assets))}
  for _,asset:=range assets {
   if asset.URL=="" || len(asset.SHA256)!=64 || asset.Name=="" {t.Fatalf("incomplete pin: %+v",asset)}
@@ -297,6 +297,7 @@ func TestInstallManagedCodexAssetsFreshRetryPartialAndCorrupt(t *testing.T) {
   version := codexPinnedVersion
   if name=="codex-acp" { version=codexACPPinnedVersion }
   payload := []byte("#!/bin/sh\necho " + name + " " + version + "\n")
+  if name=="codex-code-mode-host" { payload = []byte{0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00} }
   if name=="codex-acp" {
    payload = []byte("#!/bin/sh\ncase \"$1\" in\n  --version) echo \"error: unexpected argument '--version' found\" >&2; exit 2 ;;\n  --help) echo 'Usage: codex-acp -c key=value'; exit 0 ;;\n  *) exit 1 ;;\nesac\n")
   }
@@ -308,12 +309,17 @@ func TestInstallManagedCodexAssetsFreshRetryPartialAndCorrupt(t *testing.T) {
  }
  cliArchive := createArchive("codex")
  acpArchive := createArchive("codex-acp")
+ hostArchive := createArchive("codex-code-mode-host")
  server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
-  if r.URL.Path=="/codex" { _,_=w.Write(cliArchive) } else { _,_=w.Write(acpArchive) }
+  switch r.URL.Path {
+  case "/codex": _,_=w.Write(cliArchive)
+  case "/codex-code-mode-host": _,_=w.Write(hostArchive)
+  default: _,_=w.Write(acpArchive)
+  }
  }))
  defer server.Close()
  digest := func(data []byte) string { sum:=sha256.Sum256(data); return hex.EncodeToString(sum[:]) }
- assets := []codexAsset{{URL:server.URL+"/codex",SHA256:digest(cliArchive),Name:"codex"},{URL:server.URL+"/acp",SHA256:digest(acpArchive),Name:"codex-acp"}}
+ assets := []codexAsset{{URL:server.URL+"/codex",SHA256:digest(cliArchive),Name:"codex"},{URL:server.URL+"/acp",SHA256:digest(acpArchive),Name:"codex-acp"},{URL:server.URL+"/codex-code-mode-host",SHA256:digest(hostArchive),Name:"codex-code-mode-host"}}
  root := t.TempDir()
  cli,acp,err := installManagedCodexAssets(context.Background(),assets,root,"fixture")
  if err != nil { t.Fatal(err) }
@@ -349,6 +355,7 @@ func TestManagedCodexReleaseRefreshWithDifferentBundledACP(t *testing.T) {
   gz:=gzip.NewWriter(&buf)
   tarball:=tar.NewWriter(gz)
   payload:=[]byte("#!/bin/sh\necho codex "+codexPinnedVersion+"\n")
+  if name=="codex-code-mode-host" { payload=[]byte{0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00} }
   if name=="codex-acp" {
    payload=[]byte("#!/bin/sh\n# compiled bundle: "+variant+"\ncase \"$1\" in\n --version) echo \"error: unexpected argument '--version' found\" >&2; exit 2 ;;\n --help) echo 'Usage: codex-acp -c key=value'; exit 0 ;;\n *) exit 1 ;;\nesac\n")
   }
@@ -362,7 +369,8 @@ func TestManagedCodexReleaseRefreshWithDifferentBundledACP(t *testing.T) {
  oldACP:=makeArchive("codex-acp","release-A")
  newACP:=makeArchive("codex-acp","release-B")
  cliArchive:=makeArchive("codex","shared")
- archives:=map[string][]byte{"/codex":cliArchive,"/old-acp":oldACP,"/new-acp":newACP}
+ hostArchive:=makeArchive("codex-code-mode-host","shared")
+ archives:=map[string][]byte{"/codex":cliArchive,"/old-acp":oldACP,"/new-acp":newACP,"/codex-code-mode-host":hostArchive}
  server:=httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter,r *http.Request){
   data,ok:=archives[r.URL.Path]
   if !ok {http.NotFound(w,r);return}
@@ -374,8 +382,9 @@ func TestManagedCodexReleaseRefreshWithDifferentBundledACP(t *testing.T) {
   return codexAsset{URL:server.URL+url,Name:name,SHA256:hex.EncodeToString(digest[:])}
  }
  codex:=asset("/codex","codex",cliArchive)
- oldAssets:=[]codexAsset{codex,asset("/old-acp","codex-acp",oldACP)}
- newAssets:=[]codexAsset{codex,asset("/new-acp","codex-acp",newACP)}
+ host:=asset("/codex-code-mode-host","codex-code-mode-host",hostArchive)
+ oldAssets:=[]codexAsset{codex,asset("/old-acp","codex-acp",oldACP),host}
+ newAssets:=[]codexAsset{codex,asset("/new-acp","codex-acp",newACP),host}
  root:=filepath.Join(os.Getenv("HOME"),".local","share","secretary","native","releases",codexPinnedVersion+"-"+codexACPPinnedVersion)
  oldCLI,oldPath,err:=installManagedCodexAssets(ctx,oldAssets,root,runtime.GOOS+"-"+runtime.GOARCH)
  if err!=nil {t.Fatal(err)}
@@ -491,6 +500,7 @@ for line in sys.stdin:
  pair.ACP.Path=good
  if _,err:=manageCodexPairWithProbe(context.Background(),"install","server",cli,good,codexNativePairReady);err!=nil {t.Fatal(err)}
  if _,err:=manageCodexPairWithProbe(context.Background(),"readiness","server","","",codexNativePairReady);err!=nil {t.Fatal(err)}
+ if err:=CheckCodexStartup(context.Background(),"server");err!=nil {t.Fatalf("validated native CLI and ACP refused startup: %v",err)}
  if _,err:=manageCodexPairWithProbe(context.Background(),"upgrade","server",cli,bad,codexNativePairReady);err==nil {t.Fatal("invalid candidate activated")}
  active,err:=readCodexPairUnchecked("server")
  if err!=nil || active.ACP.Path!=good {t.Fatalf("failed ACP candidate changed active inventory: %+v %v",active,err)}
@@ -574,4 +584,78 @@ func TestConcurrentCodexScopeUpgradeRejectsWithoutOverwritingLastGood(t *testing
  var rollback CodexPairInventory
  if err:=json.Unmarshal(data,&rollback);err!=nil {t.Fatal(err)}
  if rollback.Codex.Path!=first {t.Fatalf("rollback target overwritten by rejected concurrent upgrade: %s",rollback.Codex.Path)}
+}
+
+func TestCodexNativeAssetsIncludeTheCodeModeHost(t *testing.T) {
+	assets, err := codexNativeAssets()
+	if err != nil { t.Fatal(err) }
+	found := false
+	for _, asset := range assets {
+		if !strings.HasPrefix(asset.Name, "codex-code-mode-host") { continue }
+		found = true
+		if asset.SHA256 == "" || len(asset.SHA256) != 64 { t.Fatalf("code-mode host without a pinned digest: %+v", asset) }
+		if !strings.Contains(asset.URL, "codex-code-mode-host-") { t.Fatalf("code-mode host URL does not pin the upstream asset: %s", asset.URL) }
+	}
+	if !found { t.Fatal("the managed Codex pair ships without the code-mode host") }
+}
+
+func TestCodexNativePairReadyAcceptsSilentAuthorizedLoginStatus(t *testing.T) {
+ dir:=t.TempDir()
+ cli:=filepath.Join(dir,"codex")
+ if err:=os.WriteFile(cli,[]byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.163.0; exit 0; fi\nif [ \"$1\" = \"login\" ]; then exit 0; fi\nexit 2\n"),0700);err!=nil {t.Fatal(err)}
+ acp:=filepath.Join(dir,"codex-acp")
+ script:=`#!/usr/bin/env python3
+import json,sys
+if '--version' in sys.argv:
+ print('codex-acp 0.16.0')
+ sys.exit(0)
+for line in sys.stdin:
+ req=json.loads(line)
+ if req.get('method')=='initialize':
+  response={'protocolVersion':1,'agentInfo':{'version':'0.16.0'},'agentCapabilities':{'loadSession':True},'_meta':{'steering':{'supported':True}}}
+ elif req.get('method')=='session/new':
+  response={'sessionId':'fixture','models':{'availableModels':[{'modelId':'gpt-fixture'}]}}
+ else:
+  response={}
+ print(json.dumps({'jsonrpc':'2.0','id':req.get('id'),'result':response}),flush=True)
+`
+ if err:=os.WriteFile(acp,[]byte(script),0700);err!=nil {t.Fatal(err)}
+ pair:=CodexPairInventory{Codex:CodexBinaryRecord{Path:cli},ACP:CodexBinaryRecord{Path:acp}}
+ if err:=codexNativePairReady(context.Background(),pair);err!=nil {t.Fatalf("authorized Codex with a silent login status was refused: %v",err)}
+ negative:=filepath.Join(dir,"codex-negative")
+ if err:=os.WriteFile(negative,[]byte("#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo codex-cli 0.163.0; exit 0; fi\nif [ \"$1\" = \"login\" ]; then echo 'Not logged in'; exit 0; fi\nexit 2\n"),0700);err!=nil {t.Fatal(err)}
+ pair.Codex.Path=negative
+ if err:=codexNativePairReady(context.Background(),pair);err==nil {t.Fatal("negative login status with a zero exit code was accepted")}
+}
+
+
+func TestManagedCodexCodeModeHostPinsAllPlatforms(t *testing.T) {
+ cases := []struct {
+  goos, goarch, triple, digest string
+ }{
+  {"darwin", "arm64", "aarch64-apple-darwin", "2e28f49a4767a97586843c92692b96481be74d837199b49038f731cec88e9941"},
+  {"darwin", "amd64", "x86_64-apple-darwin", "5211c6ed5062c84ba5796e555903c22a6e38fcccf6fe11ee11d7e1b5687ce1fd"},
+  {"linux", "arm64", "aarch64-unknown-linux-musl", "284356aefb197f00b76b912efdfdbae8ccf3ea1f89b976dde064b7ccb43214ef"},
+  {"linux", "amd64", "x86_64-unknown-linux-musl", "314263128ba6592e7e807c265deeaf928a692b72dcbfeb5e0b20c9423b703529"},
+  {"windows", "amd64", "x86_64-pc-windows-msvc", "bc82fa6d8f449c818292eac35bd7400c4f7dae08908fc9bc67bfbad8c4a3de68"},
+  {"windows", "arm64", "aarch64-pc-windows-msvc", "8fb79c742742de463154a44582ff6809155b8e331fdf1ef40445abfee1038986"},
+ }
+ for _, tc := range cases {
+  t.Run(tc.goos+"-"+tc.goarch, func(t *testing.T) {
+   assets, err := codexNativeAssetsForPlatform(tc.goos, tc.goarch)
+   if err != nil { t.Fatal(err) }
+   expectedName, extension := "codex-code-mode-host", ".tar.gz"
+   if tc.goos == "windows" { expectedName, extension = "codex-code-mode-host.exe", ".exe.zip" }
+   var matched int
+   for _, asset := range assets {
+    if asset.Name != expectedName { continue }
+    matched++
+    if asset.SHA256 != tc.digest { t.Fatalf("wrong checksum: %s", asset.SHA256) }
+    expectedURL := "https://github.com/openai/codex/releases/download/rust-v"+codexPinnedVersion+"/codex-code-mode-host-"+tc.triple+extension
+    if asset.URL != expectedURL { t.Fatalf("wrong asset: %s", asset.URL) }
+   }
+   if matched != 1 { t.Fatalf("expected one code-mode host asset, got %d", matched) }
+  })
+ }
+ if _, err := codexNativeAssetsForPlatform("plan9", "amd64"); err == nil { t.Fatal("unsupported platform accepted") }
 }

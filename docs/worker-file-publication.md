@@ -14,65 +14,26 @@ The Server persists each file under the owner-scoped T08 Artifact ID, attached t
 
 The T09 test exercises remote fake-harness → Node broker → Server → Web, bypass attempts, bytes, idempotency, owner-only download and restart. Live-native and cross-platform acceptance are separate verification gates.
 
-## Native Worker platform security
+## Native Worker execution (all platforms)
 
-All native Worker subprocesses and their shell/MCP descendants must be isolated from both Node credentials and co-located Secretary Server SQLite (which holds both encrypted node credentials and their decrypting transport secret). An environment-only token boundary is insufficient.
+**Secretary Workers execute directly with the operating-system permissions and environment of the Execution Node user. Secretary does not provide an additional Worker sandbox or privilege boundary.**
 
-**Linux:** The Node requires root-owned bubblewrap and functioning user/PID/mount namespaces. An empty tmpfs root is created and only read-only system binaries/libraries/config, a verified Worker executable, the selected workspace and explicitly chosen native provider state are mounted. The Server database and its WAL/SHM files, Node state, arbitrary home files, and host process table remain inaccessible even under the same outer UID. The sandbox fails closed when unavailable. Codex and Claude each retain their own native state and OpenCode retains its selected DataHome. An E2E co-located Server/Node fixture creates a real transport key and registered credential and confirms the Worker cannot read these files.
+Workers, harnesses, shells and MCP descendants have ordinary access to host files, processes and environment permitted to that same user. They inherit `CODEX_PATH`, `SECRETARY_ACP_COMMAND` and normal variables. Native Codex and Claude Code retain their own built-in permission behavior; Secretary adds no Seatbelt profiles, Bubblewrap namespaces, mount allowlists, privileged CLI manifests, separate Windows Worker SID or sandbox-specific environment allowlist.
 
-**macOS:** Seatbelt sandbox-exec applies a default-deny filesystem profile to the Worker process and descendants while permitting the assigned workspace and provider stores, and excluding Server/Node secrets. Seatbelt must be supported by the installed macOS runtime; it fails closed if unavailable.
+This includes the ability to read and modify Node/Server state whenever it is accessible to the Execution Node user. Artifact publication capabilities, Node pairing, Server API authorization, session ownership and integrity checks remain separate protocol controls—not an OS privilege boundary.
 
-**Windows:** Native Workers use a separate, non-admin Windows OS account via LogonUserW and CreateProcessAsUser. Configure SECRETARY_WORKER_USERNAME, SECRETARY_WORKER_PASSWORD, SECRETARY_WORKER_DOMAIN and SECRETARY_WORKER_HOME in the trusted Node service. The Worker account must have its own persistent home/auth state and workspace access, and NTFS ACLs must deny reading Node identity/state and Server private data. The Node refuses insecure same-SID execution and validates secret file access using the Worker SID. Windows native state is stored under that account's home. The Windows acceptance workflow provisions a temporary account to test this boundary.
+Artifact publication still uses pinned-handle, no-follow traversal of workspace-relative paths: Unix `openat(O_NOFOLLOW)` and Windows `NtCreateFile` with reparse-point refusal. The broker accepts named paths rather than arbitrary caller-supplied bytes and the Server validates active Attempt identity and Node provenance.
 
-Source publishing uses pinned-handle no-follow traversal on each path component: Unix openat(O_NOFOLLOW), and Windows NtCreateFile with reparse-point refusal. The worker broker accepts paths, never caller-controlled bytes. Server publication verifies Node provenance and exact bytes.
+### Legacy Windows Worker account cleanup (manual only)
 
-Download-link deduplication requires a real Markdown link to the exact URL, not a bare URL, artifact:// mention, escaped bracket, Markdown image or code snippet.
+Existing installations may retain `worker-account.json`, a local `secretary_worker`-style Windows account, restricted NTFS ACLs and native provider state stored inside that account's home. These are **not** removed or migrated automatically. The old state may contain the only copy of previous Codex/Claude/OpenCode sessions; preserving the Node's JSON/SQLite files alone does not make those provider sessions immediately accessible to a different Windows user.
 
-**Acceptance limits:** scripted native-process state tests exercise Start / process exit / separate-process Resume, but live Codex/Claude/OpenCode model interactions and real-world installations on each supported OS remain unverified until independent acceptance.
+Before cleanup, back up Node identity/config/SQLite and both current-user and legacy Worker provider directories. Inspect the saved account record, local account and permissions (`Get-Content <NodeDataDir>\\worker-account.json | ConvertFrom-Json`, `Get-LocalUser`, `icacls <path>`). If a Follow-up needs sessions in the legacy profile, copy the relevant provider state to the current Node user's provider home **only after** verifying ownership and permissions. Review and correct any old ACLs that prevent the current Node user from using existing workspaces or sessions. Removing the old account or its files is an explicit operator action, potentially requiring administrator privileges; do so only after verifying successful native session continuity and a recoverable backup. The new installer itself never requests UAC for Worker provisioning.
 
-## Re-review follow-up: host preparation and resume
+## Native state and host acceptance
 
-- **macOS:** Native providers use the real canonical HOME and must persist checkpoints across separate shell processes. Codex, Claude and OpenCode are verified without treating `Operation not permitted` as an acceptable skip. Broad host-wide /tmp grants were removed; the Worker uses a private workspace TMPDIR. System-directory overrides are denied at the Node state subtree.
-- **Linux:** The Node's arbitrary protected state dir is masked *after* all system/CLI binds, including data dirs underneath /usr and /etc. Global Node CLI installations resolve their package's node_modules dependency tree rather than bind a single executable; regression starts a user-installed fake native CLI and reads a sibling runtime asset. Protected files remain hidden.
-- **Windows:** Existing provider credentials and session state in the Node user's .codex/.claude/.claude.json and selected OpenCode native DataHome are migrated into the isolated Worker account profile, preserving previously generated checkpoints. A destination directory that already exists but is empty is populated without overwriting newer files. No unsandboxed native-worker fallback is permitted. The native child runs under a separate SID and is assigned to a Windows Job Object with KILL_ON_JOB_CLOSE, so CommandContext cancellation also terminates the child PID/tree.
-- **Windows one-time provisioning:** An administrator runs `scripts/setup-windows-worker.ps1 -NodeDataDir <Node directory> -Workspace <Worker workspace>` once. The script creates a non-admin Worker account, ACL-isolates Node credentials, and saves its account configuration as `worker-account.json` in the private Node data directory. Subsequent native Dispatch/Resume loads the protected config automatically without SECRETARY_WORKER_* environment overrides. Verify using `secretary-node --data-dir <Node directory> --check-worker-sandbox`. Hosts unable to provision an isolated SID must reject unsafe native Worker execution; existing Node state is never wiped.
-- **Download links:** Every owned Artifact ID receives its own canonical owner-download link, irrespective of Markdown text, indented code, multi-backtick spans, escaped brackets or image references. Existing T08 publication and T10 image/T14 voice routes remain integrated.
+Codex, Claude Code and OpenCode continue to use their persistent provider stores directly. CI verifies direct process launch, Worker identity/environment, access outside workspace, cancellation and native checkpoint persistence. Linux T09 uses the real pinned Codex CLI with a local deterministic Responses-compatible backend to create and resume the same native thread; this is **not** authenticated provider or published-release acceptance.
 
-## Windows Node supported install and upgrade (T09)
+**Windows:** Run `scripts/install-windows-node.ps1` as the Node owner with a verified Node/tray executable pair, or `scripts/install-windows-node-release.ps1` with a separately trusted archive SHA-256. No UAC or account provisioning is needed for Worker execution. Old `worker-account.json`, previously created Windows Worker accounts and ACLs are intentionally **not** removed automatically. Back up data, review these leftovers and clean up manually if desired. Previously restrictive ACLs may need manual adjustments to allow the Node user access to native state. Node identity, configuration and native checkpoints remain preserved on upgrade.
 
-Run `pwsh -File scripts/install-windows-node.ps1` as the **normal existing Node owner** from the Secretary checkout. It builds or finds `secretary-node.exe`, retains `identity.json` and `node-state.json`, and prompts for UAC once to provision the separate non-admin Worker SID and restrictive ACLs. UAC is part of the supported interactive installer, not a manual prerequisite. Declining elevation stops the operation before unsafe Dispatch. Re-running the installer is idempotent: the saved `worker-account.json`, provider credentials, native session checkpoints and Node pairing survive; the account password is not rotated. Optionally pass `-NodeDataDir`, `-NodeBinary`, `-WorkerHome`, `-Workspace` or `-WorkerUsername`. The installer ends with a native cross-SID preflight. Restart any running Node after a successful upgrade. Additional named project workspaces need Worker SID read/write ACLs; the installer grants its selected workspace.
-
-Local `secretaryd` Workers use the same short-lived, per-Attempt loopback publication broker. Only the privileged Server callback persists bytes through `SavePublishedArtifact` with Node ID `local`, enforcing the same active Worker/Attempt binding, per-Attempt limits and download-link semantics. Neither the harness nor its MCP child receives raw Server credentials or an arbitrary-byte upload interface.
-
-
-## Linux native CLI runtime provenance (T09)
-
-The Linux Worker sandbox never grants an entire CLI package directory or grants
-files by extension. A privileged install/setup operation must first provision
-each **specific provider package and version** using
-`scripts/provision-cli-manifest.py`. This requires a working npm registry
-connection and administrator privileges, for example:
-
-```sh
-sudo python3 scripts/provision-cli-manifest.py codex 0.163.0
-sudo python3 scripts/provision-cli-manifest.py codex 0.163.0-linux-x64
-```
-
-Provisioning downloads the official npm archive, checks its SHA-512 against the
-registry's published `dist.integrity`, extracts only regular files into the
-root-owned `/etc/secretary/cli-store/<provider>/<package>/<version>/` tree,
-and records each file's SHA-256 in a root-owned manifest under
-`/etc/secretary/cli-manifests/`. Provider and exact package identity/version
-must match. For platform-specific distributions, provision their corresponding
-official archive independently. The Node mounts only these verified, protected
-file bytes at the expected CLI paths. A separate Server-owned
-`transport-secret.js`, `.wasm`, SQLite database, HMAC or unlisted file in the
-same installed package subtree is never copied or mounted. Missing provenance,
-unexpected package revisions, invalid files and missing protected runtimes
-fail closed. Never generate an allowlist from the current contents of a
-user-writable `node_modules` tree.
-
-CI installs a pinned official Codex npm release, provisions its Linux
-platform package, checks a fresh sandbox entrypoint and the `exec resume`
-command's startup path, and tests that injected same-extension marker secrets
-cannot be read from that namespace. CI additionally runs the real pinned Codex CLI twice through nativeexec's Linux sandbox, first creating a persisted thread and then invoking Resume on that exact thread ID with a second task. A local Responses-compatible HTTP backend supplies deterministic model replies; the test asserts the second turn completes and contains prior-turn context. This is **same-session native CLI continuity acceptance with a mocked model**, not an authenticated external provider/API acceptance test.
+**Linux/macOS:** No root provisioning or sandbox prerequisite. Native Codex/ACP runtime verification, release digest validation and session persistence remain required; global npm is not a supported runtime prerequisite for managed Codex. Do not close #174 until a published candidate completes Worker ACP `initialize`, real Attempt→Result and native Follow-up; #170 remains a separate Public v1 gate.

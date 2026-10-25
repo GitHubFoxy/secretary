@@ -28,7 +28,7 @@ func (s *t10LocalQueuedVisionSession) QueueImages(_ context.Context, _ string, i
 	return nil
 }
 
-func t10LocalSteeringSetup(t *testing.T, session node.Session, supportsImages bool, fetch node.ArtifactFetcher) (NodeRuntime, core.CommandMetadata, string) {
+func t10LocalSteeringSetup(t *testing.T, session node.Session, supportsImages bool, fetch node.ArtifactFetcher) (legacyLocalTestRuntime, core.CommandMetadata, string) {
 	t.Helper()
 	started := make(chan node.StartRequest, 1)
 	local := node.NewLocal(&t10LocalVisionRuntime{started: started, session: session})
@@ -55,7 +55,7 @@ func t10LocalSteeringSetup(t *testing.T, session node.Session, supportsImages bo
 		WorkerRef: meta.WorkerRef, TurnID: meta.TurnID, AttemptID: meta.AttemptID,
 		OriginalUserIntent: "Start native Worker", HarnessInstance: harness, LegacyWorkerTemplate: true,
 	}
-	rt := NodeRuntime{Local: local}
+	rt := legacyLocalTestRuntime{Local: local}
 	command := node.Command{Kind: node.CommandDispatch, Dispatch: &node.DispatchCommand{
 		Metadata: meta, Envelope: envelope,
 	}}
@@ -68,11 +68,11 @@ func t10LocalSteeringSetup(t *testing.T, session node.Session, supportsImages bo
 		return rt, meta, request.Workspace
 	default:
 		t.Fatal("local Worker did not start")
-		return NodeRuntime{}, core.CommandMetadata{}, ""
+		return legacyLocalTestRuntime{}, core.CommandMetadata{}, ""
 	}
 }
 
-func t10SteerLocal(rt NodeRuntime, meta core.CommandMetadata, text string) (node.CommandOutcome, error) {
+func t10SteerLocal(rt legacyLocalTestRuntime, meta core.CommandMetadata, text string) (node.CommandOutcome, error) {
 	meta.CommandID = "local-steering"
 	return rt.LocalCommand(context.Background(), node.Command{Kind: node.CommandSteering,
 		Steering: &node.SteeringCommand{Metadata: meta, Text: text},

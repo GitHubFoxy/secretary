@@ -2,6 +2,8 @@
 
 Issue: [#79](https://github.com/GitHubFoxy/secretary/issues/79). This page distinguishes Windows **host** execution from authenticated **native provider** acceptance; fixture success alone cannot close the release gate.
 
+**Current execution contract:** Secretary Workers execute directly with the operating-system permissions and environment of the Execution Node user. Secretary does not provide an additional Worker sandbox or privilege boundary. Windows installer does not require UAC for Worker-account provisioning. Old `worker-account.json`, accounts and ACLs remain unchanged until manually reviewed and cleaned up by their owner.
+
 ## Automated Windows host gate
 
 - Workflow: [Windows Execution Node acceptance](../.github/workflows/windows-node.yml), `windows-latest` (actual Windows VM).

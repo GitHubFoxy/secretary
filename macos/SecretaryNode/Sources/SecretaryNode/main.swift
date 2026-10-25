@@ -6,6 +6,8 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let presentation = NodeMenuPresentation()
     private var timer: Timer?
+    private var healthMonitor: ServerHealthMonitor?
+    private var lastHealthCheck = Date.distantPast
     private let liveFile = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support/SecretaryNode/live-status.json")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -20,14 +22,13 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         presentation.openLogs.action = #selector(openLogs)
         presentation.menu.delegate = self
         statusItem.menu = presentation.menu
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        if let healthURL = NodeAppConfiguration.healthURL(home: home) {
+            healthMonitor = ServerHealthMonitor(url: healthURL)
+        }
         do {
-            let home = FileManager.default.homeDirectoryForCurrentUser
-            let preferred = ProcessInfo.processInfo.environment["SECRETARY_NODE_EXECUTABLE"]
-            let standalone = home.appendingPathComponent(".local/share/secretary-node/current/bin/secretary-node")
-            let executable = preferred.map { URL(fileURLWithPath: $0) } ?? (FileManager.default.isExecutableFile(atPath: standalone.path) ? standalone : home.appendingPathComponent(".local/bin/secretary-node"))
-            let config = ProcessInfo.processInfo.environment["SECRETARY_NODE_CONFIG"].map { URL(fileURLWithPath: $0) }
-                ?? (executable == standalone ? home.appendingPathComponent(".local/share/secretary-node/config.json") : home.appendingPathComponent(".local/share/secretary/node/config.json"))
-            controller = try NodeLifecycle(executable: executable, configuration: config, environment: ["SECRETARY_NODE_STATUS_FILE": liveFile.path], directory: home.appendingPathComponent("Library/Application Support/SecretaryNode"))
+            let settings = try NodeAppConfiguration.resolve(home: home)
+            controller = try NodeLifecycle(executable: settings.executable, configuration: settings.configuration, environment: settings.environment.merging(["SECRETARY_NODE_STATUS_FILE": liveFile.path]) { _, new in new }, directory: home.appendingPathComponent("Library/Application Support/SecretaryNode"))
             do {
                 try controller?.start()
             } catch NodeLifecycleError.alreadyRunning {
@@ -81,27 +82,46 @@ final class SecretaryNodeApp: NSObject, NSApplicationDelegate, NSMenuDelegate {
         presentation.render(state: state)
         let running = state == .running || state == .alreadyRunning
         presentation.renderLive(running ? NodeLiveSnapshot.load(from: liveFile) : nil)
+        if let healthMonitor {
+            presentation.renderServer(healthMonitor.state)
+            if Date().timeIntervalSince(lastHealthCheck) >= 5 {
+                lastHealthCheck = Date()
+                healthMonitor.check { [weak self] state in
+                    self?.presentation.renderServer(state)
+                }
+            }
+        } else {
+            presentation.renderServer(.unavailable)
+        }
         statusItem.button?.toolTip = presentation.status.toolTip
     }
 
-    @objc private func quitNode() {
-        presentation.beginQuit()
-        timer?.invalidate()
-        guard let controller else {
-            NSApp.terminate(nil)
-            return
-        }
-        controller.stop { [weak self] error in
-            DispatchQueue.main.async {
-                if let error {
-                    self?.presentation.stopFailed(error)
-                    self?.refresh()
-                    self?.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
-                } else {
-                    NSApp.terminate(nil)
-                }
+    private lazy var termination = AppKitNodeTermination(
+        stop: { [weak self] completion in
+            guard let controller = self?.controller else {
+                completion(nil)
+                return
             }
+            controller.stop(completion: completion)
+        },
+        begin: { [weak self] in
+            self?.presentation.beginQuit()
+            self?.timer?.invalidate()
+        },
+        failed: { [weak self] error in
+            guard let self else { return }
+            self.presentation.stopFailed(error)
+            self.refresh()
+            self.timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.refresh() }
         }
+    )
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        termination.applicationShouldTerminate(sender)
+    }
+
+    @objc private func quitNode() {
+        termination.menuQuit()
     }
 }
 

@@ -46,7 +46,7 @@ func TestReviewClaudeCloseWithInheritedOutputPipe(t *testing.T) {
 		t.Run(map[bool]string{false: "Close", true: "ContextCancellation"}[cancelContext], func(t *testing.T) {
 			p := filepath.Join(t.TempDir(), "claude")
 			pid := filepath.Join(t.TempDir(), "child.pid")
-			body := "#!/bin/sh\nsleep 30 &\necho $! > " + pid + "\nread prompt\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\"}'\nwait\n"
+			body := "#!/bin/sh\nsleep 30 &\necho $! > " + pid + "\nread prompt\nprintf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"done\",\"structured_output\":{\"task_outcome\":\"succeeded\",\"reason\":\"Backpressure fixture completed\",\"recovered_tool_use_ids\":[],\"user_response\":\"done\"}}'\nwait\n"
 			if err := os.WriteFile(p, []byte(body), 0700); err != nil {
 				t.Fatal(err)
 			}

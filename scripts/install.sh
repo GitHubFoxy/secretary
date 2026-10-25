@@ -15,6 +15,7 @@ esac
 for tool in curl mktemp; do
   command -v "$tool" >/dev/null 2>&1 || fail "Required tool missing: $tool"
 done
+command -v perl >/dev/null 2>&1 && perl -MSocket=AF_INET6,inet_pton -e 'exit(!defined inet_pton(AF_INET6, "::1"))' >/dev/null 2>&1 || fail "Perl with Socket::inet_pton is required for Telegram HTTPS IPv6 origin validation"
 if [[ "$platform" == linux ]]; then
   command -v python3 >/dev/null 2>&1 || fail "Python 3 is required by the Linux binary installer"
 else

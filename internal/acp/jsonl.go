@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/beruseruko/secretary/internal/nativeexec"
 )
@@ -91,6 +93,38 @@ type Client struct {
 	closeMu  sync.Mutex
 	closeErr error
 	cancel   context.CancelFunc
+	processPID int
+	tracker *acpDescendantTracker
+	trackerErr error
+
+	stderr     stderrTail
+	stderrDone chan struct{}
+}
+
+const (
+	acpStderrTailLimit  = 8 * 1024
+	acpStderrMessageCap = 512
+	acpStderrGrace      = 200 * time.Millisecond
+)
+
+type stderrTail struct {
+	buffer []byte
+	lock   sync.Mutex
+}
+
+func (t *stderrTail) record(chunk []byte) {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	t.buffer = append(t.buffer, chunk...)
+	if overflow := len(t.buffer) - acpStderrTailLimit; overflow > 0 {
+		t.buffer = append([]byte(nil), t.buffer[overflow:]...)
+	}
+}
+
+func (t *stderrTail) snapshot() string {
+	t.lock.Lock()
+	defer t.lock.Unlock()
+	return string(t.buffer)
 }
 
 func NewClient(stdin io.WriteCloser) *Client {
@@ -138,7 +172,7 @@ func StartWithDiagnosticStderrEnvDir(ctx context.Context, stderr io.Writer, envi
 	process, err := nativeexec.CommandContext(processCtx, command, arguments...)
 	if err != nil { cancel(); return nil, err }
 	configureACPProcess(process)
-	process.Env = nativeexec.SecureWorkerEnvironment(processCtx, append(os.Environ(), environment...))
+	process.Env = append(os.Environ(), environment...)
 	process.Dir = dir
 	process.Stderr = stderr
 	stdin, err := process.StdinPipe()
@@ -146,8 +180,18 @@ func StartWithDiagnosticStderrEnvDir(ctx context.Context, stderr io.Writer, envi
 	stdout, err := process.StdoutPipe()
 	if err != nil { cancel(); return nil, err }
 	if err := process.Start(); err != nil { cancel(); return nil, err }
-	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel}
+	tracker, trackErr := startACPDescendantTracker(process.Process.Pid)
+	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, processPID: process.Process.Pid, tracker: tracker, trackerErr: trackErr}
 	go client.read(stdout)
+	if trackErr != nil {
+		select {
+		case <-client.done:
+			return client, nil
+		case <-time.After(acpStderrGrace):
+			_ = client.Close()
+			return nil, trackErr
+		}
+	}
 	return client, nil
 }
 
@@ -171,7 +215,6 @@ func startWithProcessEnvironment(ctx context.Context, rawLog io.Writer, environm
 	if dir != "" {
 		process.Dir = dir
 	}
-	process.Env = nativeexec.SecureWorkerEnvironment(processCtx, process.Env)
 	stdin, err := process.StdinPipe()
 	if err != nil {
 		cancel()
@@ -182,13 +225,40 @@ func startWithProcessEnvironment(ctx context.Context, rawLog io.Writer, environm
 		cancel()
 		return nil, err
 	}
+	stderr, err := process.StderrPipe()
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	if err := process.Start(); err != nil {
 		cancel()
 		return nil, err
 	}
-	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, log: rawLog}
+	tracker, trackErr := startACPDescendantTracker(process.Process.Pid)
+	client := &Client{stdin: stdin, wait: process.Wait, events: make(chan Message, 64), done: make(chan struct{}), stop: make(chan struct{}), started: true, cancel: cancel, processPID: process.Process.Pid, tracker: tracker, trackerErr: trackErr, log: rawLog}
+	client.stderrDone = make(chan struct{})
+	go client.drainStderr(stderr)
 	go client.read(stdout)
+	if trackErr != nil {
+		select {
+		case <-client.done:
+			return client, nil
+		case <-time.After(acpStderrGrace):
+			_ = client.Close()
+			return nil, trackErr
+		}
+	}
 	return client, nil
+}
+
+func (c *Client) PrepareDescendantCleanup() (func() error, error) {
+	if c.processPID <= 1 {
+		return nil, nil
+	}
+	if c.trackerErr != nil {
+		return nil, c.trackerErr
+	}
+	return prepareACPDescendantCleanup(c.tracker)
 }
 
 func (c *Client) Events() <-chan Message { return c.events }
@@ -231,7 +301,12 @@ func (c *Client) requestWithEventBarrier(ctx context.Context, method string, par
 	c.pending.Store(id, pendingRequest{response: response, drainEvents: drainEvents})
 	defer c.pending.Delete(id)
 	if err := c.send(Message{JSONRPC: "2.0", ID: json.RawMessage(fmt.Appendf(nil, "%d", id)), Method: method, Params: encoded}); err != nil {
-		return nil, err
+		select {
+		case <-c.done:
+			return nil, c.stoppedErr(true)
+		default:
+			return nil, err
+		}
 	}
 	select {
 	case message := <-response:
@@ -244,7 +319,7 @@ func (c *Client) requestWithEventBarrier(ctx context.Context, method string, par
 				case <-waitCtx.Done():
 					return waitCtx.Err()
 				case <-c.stop:
-					return errors.New("acp process stopped")
+					return c.stoppedErr(false)
 				}
 			}
 		}
@@ -258,7 +333,7 @@ func (c *Client) requestWithEventBarrier(ctx context.Context, method string, par
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-c.done:
-		return nil, errors.New("acp process stopped")
+		return nil, c.stoppedErr(true)
 	}
 }
 
@@ -322,10 +397,10 @@ func (c *Client) send(message Message) error {
 func (c *Client) read(stdout io.Reader) {
 	defer close(c.done)
 	defer close(c.events)
-	defer c.wait()
 	if closer, ok := c.log.(io.Closer); ok {
 		defer closer.Close()
 	}
+	defer c.finish()
 	reader := bufio.NewReader(stdout)
 	for {
 		raw, _ := reader.ReadBytes('\n')
@@ -432,4 +507,72 @@ func (c *Client) reply(id json.RawMessage, result any) error {
 
 func (c *Client) replyError(id json.RawMessage, code int, message string) error {
 	return c.send(Message{JSONRPC: "2.0", ID: append(json.RawMessage(nil), id...), Error: &RPCError{Code: code, Message: message}})
+}
+
+func (c *Client) drainStderr(stderr io.Reader) {
+	chunk := make([]byte, 4096)
+	for {
+		read, err := stderr.Read(chunk)
+		if read > 0 {
+			c.stderr.record(chunk[:read])
+		}
+		if err != nil {
+			break
+		}
+	}
+	if c.stderrDone != nil {
+		close(c.stderrDone)
+	}
+}
+
+func (c *Client) finish() {
+	if c.tracker != nil { defer c.tracker.stop() }
+	if c.stderrDone != nil {
+		select {
+		case <-c.stderrDone:
+		case <-time.After(acpStderrGrace):
+		}
+	}
+	if tail := compactACPStderr(c.stderr.snapshot()); tail != "" {
+		encoded, _ := json.Marshal(tail)
+		c.writeRaw("stderr", encoded)
+	}
+	if c.wait != nil {
+		_ = c.wait()
+	}
+}
+
+func (c *Client) stoppedErr(awaitStderr bool) error {
+	if awaitStderr && c.stderrDone != nil {
+		select {
+		case <-c.stderrDone:
+		case <-time.After(acpStderrGrace):
+		}
+	}
+	return describeACPStopped(c.stderr.snapshot())
+}
+
+func describeACPStopped(raw string) error {
+	if compacted := compactACPStderr(raw); compacted != "" {
+		return fmt.Errorf("acp process stopped: %s", compacted)
+	}
+	return errors.New("acp process stopped")
+}
+
+func compactACPStderr(raw string) string {
+	parts := make([]string, 0, 8)
+	for _, line := range strings.Split(strings.TrimSpace(raw), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			parts = append(parts, line)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	joined := strings.Join(parts, "; ")
+	runes := []rune(joined)
+	if len(runes) > acpStderrMessageCap {
+		return "…" + string(runes[len(runes)-acpStderrMessageCap:])
+	}
+	return joined
 }

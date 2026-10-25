@@ -2,13 +2,22 @@ package node
 
 import "strings"
 
+const (
+	codexLegacyPhaseNamespace = "codex"
+	codexPhaseNamespace       = "jetbrains"
+	codexPhaseExtension       = "air"
+	codexPhaseFinalAnswer     = "final_answer"
+)
+
 type acpTurnAnswer struct {
-	messages        map[string]*strings.Builder
-	order           []string
-	progress        map[string]bool
-	missingIdentity bool
-	assistantChunks uint64
-	codexPhases     map[string]string
+	messages                map[string]*strings.Builder
+	order                   []string
+	progress                map[string]bool
+	missingIdentity         bool
+	conflictingPhase        bool
+	unattributedFinalAnswer bool
+	assistantChunks         uint64
+	codexPhases             map[string]string
 }
 
 func newACPTurnAnswer() *acpTurnAnswer {
@@ -38,6 +47,10 @@ func (a *acpTurnAnswer) text(id, text string) {
 		a.missingIdentity = true
 		return
 	}
+	a.appendMessage(id, text)
+}
+
+func (a *acpTurnAnswer) appendMessage(id, text string) {
 	message := a.messages[id]
 	if message == nil {
 		message = &strings.Builder{}
@@ -66,24 +79,36 @@ func (a *acpTurnAnswer) final(stopReason string) (string, bool) {
 }
 
 func (a *acpTurnAnswer) codexText(id, phase, text string) {
-	a.text(id, text)
+	a.assistantChunks++
+	if id == "" {
+		if phase == codexPhaseFinalAnswer {
+			a.unattributedFinalAnswer = true
+		}
+		return
+	}
+	a.appendMessage(id, text)
 	if a.codexPhases == nil {
 		a.codexPhases = map[string]string{}
 	}
 	if phase != "" {
 		if previous := a.codexPhases[id]; previous != "" && previous != phase {
-			a.missingIdentity = true
+			a.conflictingPhase = true
 		}
 		a.codexPhases[id] = phase
 	}
 }
+
+func (a *acpTurnAnswer) codexConflictingPhase() {
+	a.conflictingPhase = true
+}
+
 func (a *acpTurnAnswer) codexFinal(stopReason string) (string, bool) {
-	if stopReason != "end_turn" || a.missingIdentity {
+	if stopReason != "end_turn" || a.conflictingPhase || a.unattributedFinalAnswer {
 		return "", false
 	}
 	var final string
 	for _, id := range a.order {
-		if a.codexPhases[id] == "final_answer" {
+		if a.codexPhases[id] == codexPhaseFinalAnswer {
 			if final != "" || a.progress[id] {
 				return "", false
 			}
@@ -91,6 +116,37 @@ func (a *acpTurnAnswer) codexFinal(stopReason string) (string, bool) {
 		}
 	}
 	return final, final != ""
+}
+
+func codexMessagePhase(metadata map[string]any) (string, bool) {
+	legacy, legacyPresent := codexPhaseValue(metadata[codexLegacyPhaseNamespace])
+	extension, extensionPresent := codexPhaseValue(codexPhaseExtensionValue(metadata))
+	if legacyPresent && extensionPresent && legacy != extension {
+		return "", false
+	}
+	if extensionPresent {
+		return extension, true
+	}
+	return legacy, true
+}
+
+func codexPhaseExtensionValue(metadata map[string]any) any {
+	namespace, _ := metadata[codexPhaseNamespace].(map[string]any)
+	extension, _ := namespace[codexPhaseExtension].(map[string]any)
+	return extension
+}
+
+func codexPhaseValue(value any) (string, bool) {
+	record, _ := value.(map[string]any)
+	phase, ok := record["phase"].(string)
+	if !ok {
+		return "", false
+	}
+	phase = strings.TrimSpace(phase)
+	if phase == "" {
+		return "", false
+	}
+	return phase, true
 }
 
 func (a *acpTurnAnswer) collectedText() string {

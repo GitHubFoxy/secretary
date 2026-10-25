@@ -1,0 +1,40 @@
+name: T12 reconnect and Cancel regression
+
+on:
+  pull_request:
+    paths:
+      - 'internal/node/t12_daemon_disconnect_steering_test.go'
+      - '.github/workflows/t12-reconnect-regression.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'internal/node/t12_daemon_disconnect_steering_test.go'
+      - '.github/workflows/t12-reconnect-regression.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  t12-reconnect-cancel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GOFLAGS: -p=1
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Deterministic receipt-attribution regression (50x)
+        run: go test ./internal/node -run '^TestT12CancelReceiptAttributionAfterReconnect$' -count=50 -timeout=2m -v
+      - name: Reconnect and Cancel integration (50x)
+        run: |
+          go test ./internal/node \
+            -run '^TestT12AcceptedNativeWorkerSurvivesWebSocketReconnectAndTerminalResult/cancel_after_reconnect$' \
+            -count=50 -timeout=10m -v
+      - name: Reconnect and Cancel under race detector (10x)
+        run: |
+          go test -race ./internal/node \
+            -run '^TestT12AcceptedNativeWorkerSurvivesWebSocketReconnectAndTerminalResult/cancel_after_reconnect$' \
+            -count=10 -timeout=10m -v

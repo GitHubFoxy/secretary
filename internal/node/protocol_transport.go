@@ -31,6 +31,9 @@ type CommandOutcomeHandler interface {
 	HandleNodeCommandOutcome(context.Context, CommandOutcome) error
 }
 type ConnectionHandler interface{ HandleNodeConnection(*ProtocolConnection) }
+type ConnectionAdmissionHandler interface {
+	AdmitNodeConnection(context.Context, *ProtocolConnection) error
+}
 
 type ProtocolServer struct {
 	Auth          Authenticator
@@ -45,7 +48,7 @@ func (s *ProtocolServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		return
 	}
-	connection := &ProtocolConnection{conn: conn, auth: s.Auth, server: true, writes: &sync.Mutex{}, node: "", nextSequence: 0}
+	connection := &ProtocolConnection{conn: conn, auth: s.Auth, server: true, writes: newProtocolWriteGate(), commandAbort: make(chan struct{}), node: "", nextSequence: 0}
 	if err := connection.acceptHandshake(r.Context(), s.Handler); err != nil {
 		_ = conn.Close(websocket.StatusPolicyViolation, err.Error())
 		return
@@ -56,8 +59,10 @@ func (s *ProtocolServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	s.connections[connection.node] = connection
 	s.mu.Unlock()
-	if callback, ok := s.Handler.(ConnectionHandler); ok {
-		callback.HandleNodeConnection(connection)
+	if _, admitted := s.Handler.(ConnectionAdmissionHandler); !admitted {
+		if callback, ok := s.Handler.(ConnectionHandler); ok {
+			callback.HandleNodeConnection(connection)
+		}
 	}
 	defer func() {
 		s.mu.Lock()
@@ -80,10 +85,53 @@ type ProtocolConnection struct {
 	auth         Authenticator
 	server       bool
 	node         core.NodeReference
-	writes       *sync.Mutex
+	writes       *protocolWriteGate
+	commandAbort chan struct{}
+	abortOnce sync.Once
 	nextSequence uint64
 	inbound      SequenceTracker
 	outbound     SequenceTracker
+}
+
+var errProtocolCommandWriteAborted = errors.New("node protocol: command write aborted")
+
+type protocolWriteGate struct {
+	available chan struct{}
+}
+
+func newProtocolWriteGate() *protocolWriteGate {
+	gate := &protocolWriteGate{available: make(chan struct{}, 1)}
+	gate.available <- struct{}{}
+	return gate
+}
+
+func (g *protocolWriteGate) Lock() { <-g.available }
+
+func (g *protocolWriteGate) Unlock() { g.available <- struct{}{} }
+
+func (g *protocolWriteGate) LockCommand(ctx context.Context, aborted <-chan struct{}) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-aborted:
+		return errProtocolCommandWriteAborted
+	case <-g.available:
+		select {
+		case <-aborted:
+			g.Unlock()
+			return errProtocolCommandWriteAborted
+		case <-ctx.Done():
+			g.Unlock()
+			return ctx.Err()
+		default:
+			return nil
+		}
+	}
+}
+
+func (c *ProtocolConnection) abortPendingCommands() {
+	c.abortOnce.Do(func() { close(c.commandAbort) })
+	c.conn.CloseNow()
 }
 
 func (c *ProtocolConnection) Node() core.NodeReference { return c.node }
@@ -138,6 +186,15 @@ func (c *ProtocolConnection) acceptHandshake(ctx context.Context, handler Protoc
 	}
 	response, err := NewEnvelope(MessageHandshakeAccepted, c.node, 0, handshake.LastAcknowledgedSequence, payload, c.auth)
 	if err != nil {
+		return err
+	}
+	if callback, ok := handler.(ConnectionAdmissionHandler); ok {
+		c.writes.Lock()
+		err = callback.AdmitNodeConnection(ctx, c)
+		if err == nil {
+			err = c.writeLocked(ctx, response)
+		}
+		c.writes.Unlock()
 		return err
 	}
 	return c.write(ctx, response)
@@ -295,7 +352,9 @@ func (c *ProtocolConnection) SendCommand(ctx context.Context, command Command) e
 	if err != nil {
 		return err
 	}
-	c.writes.Lock()
+	if err := c.writes.LockCommand(ctx, c.commandAbort); err != nil {
+		return err
+	}
 	defer c.writes.Unlock()
 	c.nextSequence++
 	envelope, err := NewEnvelope(kind, c.node, c.nextSequence, 0, encoded, c.auth)
@@ -348,7 +407,7 @@ func DialProtocol(ctx context.Context, url string, node core.NodeReference, auth
 	if err != nil {
 		return nil, err
 	}
-	client := &ProtocolConnection{conn: conn, auth: auth, server: false, node: node, writes: &sync.Mutex{}, nextSequence: 1}
+	client := &ProtocolConnection{conn: conn, auth: auth, server: false, node: node, writes: newProtocolWriteGate(), commandAbort: make(chan struct{}), nextSequence: 1}
 	payload, err := json.Marshal(handshake)
 	if err != nil {
 		_ = conn.Close(websocket.StatusInternalError, "")

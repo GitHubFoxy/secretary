@@ -22,7 +22,9 @@ func TestCodexPairInventoryRejectsMovedAndChangedExecutables(t *testing.T) {
   data := []byte("#!/bin/sh\necho " + name + " 1.2.3\n")
   if err := os.WriteFile(path, data, 0700); err != nil { t.Fatal(err) }
   hash := sha256.Sum256(data)
-  return CodexBinaryRecord{Path:path, ResolvedPath:path, Version:name+" 1.2.3", SHA256:hex.EncodeToString(hash[:]), Provenance:"external"}
+  resolved, err := filepath.EvalSymlinks(path)
+  if err != nil { t.Fatal(err) }
+  return CodexBinaryRecord{Path:path, ResolvedPath:resolved, Version:name+" 1.2.3", SHA256:hex.EncodeToString(hash[:]), Provenance:"external"}
  }
  pair := CodexPairInventory{Schema:1,Scope:"node",Harness:"codex",Codex:makeBinary("codex"),ACP:makeBinary("codex-acp")}
  pair.Compatibility.Validated = true
@@ -47,4 +49,36 @@ func TestCodexPairScopeIsolation(t *testing.T) {
  t.Setenv("HOME", t.TempDir())
  if _, err := ReadCodexPairInventory("server"); !os.IsNotExist(err) { t.Fatalf("expected absent Server inventory: %v", err) }
  if _, err := CodexPairInventoryPath("../escape"); err == nil { t.Fatal("invalid scope accepted") }
+}
+
+func TestManagedCodexInventoryRequiresCodeModeHost(t *testing.T) {
+ home := t.TempDir()
+ t.Setenv("HOME", home)
+ dir := filepath.Join(home, "managed")
+ if err := os.MkdirAll(dir, 0700); err != nil { t.Fatal(err) }
+ makeBinary := func(name string) CodexBinaryRecord {
+  path := filepath.Join(dir, name)
+  data := []byte("#!/bin/sh\necho " + name + " 1.2.3\n")
+  if err := os.WriteFile(path, data, 0700); err != nil { t.Fatal(err) }
+  hash := sha256.Sum256(data)
+  return CodexBinaryRecord{Path:path, ResolvedPath:path, Version:name+" 1.2.3", SHA256:hex.EncodeToString(hash[:]), Provenance:"managed"}
+ }
+ pair := CodexPairInventory{Schema:1, Scope:"server", Harness:"codex", Codex:makeBinary("codex"), ACP:makeBinary("codex-acp")}
+ pair.Compatibility.Validated = true
+ location, err := CodexPairInventoryPath("server")
+ if err != nil { t.Fatal(err) }
+ if err := os.MkdirAll(filepath.Dir(location), 0700); err != nil { t.Fatal(err) }
+ data, err := json.Marshal(pair)
+ if err != nil { t.Fatal(err) }
+ if err := os.WriteFile(location, data, 0600); err != nil { t.Fatal(err) }
+ if _, err := ReadCodexPairInventory("server"); err == nil || !strings.Contains(err.Error(), "code-mode host") {
+  t.Fatalf("missing managed code-mode host accepted: %v", err)
+ }
+ host := filepath.Join(dir, "codex-code-mode-host")
+ if err := os.WriteFile(host, []byte{0x7f, 'E', 'L', 'F', 2, 1, 1, 0}, 0700); err != nil { t.Fatal(err) }
+ if _, err := ReadCodexPairInventory("server"); err == nil || !strings.Contains(err.Error(), "trusted archive") { t.Fatalf("unattested managed host accepted: %v", err) }
+ if err := os.WriteFile(host, []byte("bad host"), 0700); err != nil { t.Fatal(err) }
+ if _, err := ReadCodexPairInventory("server"); err == nil || !strings.Contains(err.Error(), "binary format") {
+  t.Fatalf("invalid managed code-mode host accepted: %v", err)
+ }
 }

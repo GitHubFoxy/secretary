@@ -65,6 +65,7 @@ func prepareArtifactInputWithPoll(ctx context.Context, workspace, prompt string,
 		return "", nil, errors.New("node artifact: unsafe staging directory")
 	}
 	images := make([]ImageInput, 0)
+	ordinaryImages := 0
 	var additional strings.Builder
 	additional.WriteString("\n\nOriginal files fetched from Secretary Server (these paths are local copies; artifact IDs remain canonical):")
 	for _, id := range ids {
@@ -91,7 +92,7 @@ func prepareArtifactInputWithPoll(ctx context.Context, workspace, prompt string,
 		}
 
 		if artifact.VideoStatus=="ready" {
-			if len(images)+len(artifact.VideoFrames)>16 {return "",nil,errors.New("video: at most 16 frames can be delivered in a Worker turn")}
+			if len(images)+len(artifact.VideoFrames)>core.MaxVideoFrames {return "",nil,fmt.Errorf("video: at most %d frames can be delivered in a Worker turn", core.MaxVideoFrames)}
 			var previous int64=-1
 			seenFrames:=make(map[string]bool)
 			for _,frame:=range artifact.VideoFrames {
@@ -124,7 +125,7 @@ func prepareArtifactInputWithPoll(ctx context.Context, workspace, prompt string,
 		}
 		ext := strings.ToLower(filepath.Ext(artifact.Name))
 		if ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".webp" {
-			if len(images) >= MaxPromptImages {
+			if ordinaryImages >= MaxPromptImages || len(images) >= core.MaxVideoFrames {
 				return "", nil, fmt.Errorf("image: too many images in one Worker turn (max %d)", MaxPromptImages)
 			}
 			image, imageErr := ValidateStillImage(artifact.Name, artifact.Data)
@@ -133,6 +134,7 @@ func prepareArtifactInputWithPoll(ctx context.Context, workspace, prompt string,
 			}
 			image.ArtifactID = id
 			images = append(images, image)
+			ordinaryImages++
 		}
 		name := unsafeArtifactFilename.ReplaceAllString(artifact.Name, "_")
 		name = strings.Trim(name, "._")

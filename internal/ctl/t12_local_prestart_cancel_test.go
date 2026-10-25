@@ -67,7 +67,7 @@ func TestT12LocalCommandCancelBeforeArtifactReadyIsDurableAndNoNativeStart(t *te
  envelope:=node.WorkerEnvelope{WorkerRef:meta.WorkerRef,TurnID:meta.TurnID,AttemptID:meta.AttemptID,
   OriginalUserIntent:"Analyze artifact://"+id,HarnessInstance:harness,LegacyWorkerTemplate:true}
  dispatch:=node.Command{Kind:node.CommandDispatch,Dispatch:&node.DispatchCommand{Metadata:meta,Envelope:envelope}}
- rt:=NodeRuntime{Local:local}
+ rt:=legacyLocalTestRuntime{Local:local}
  dispatched:=make(chan error,1)
  go func(){_,e:=rt.LocalCommand(ctx,dispatch);dispatched<-e}()
  select{case <-entered:case <-ctx.Done():t.Fatal("local Worker never waited for conversion")}

@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -16,7 +17,6 @@ import (
 	"github.com/beruseruko/secretary/internal/artifactmcp"
 	"github.com/beruseruko/secretary/internal/core"
 	"github.com/beruseruko/secretary/internal/node"
-	"github.com/beruseruko/secretary/internal/nativeexec"
 	"github.com/beruseruko/secretary/internal/traystatus"
 )
 
@@ -26,13 +26,13 @@ func main() {
 	setPrivateNodeUmask()
 	artifactMCP := flag.Bool("artifact-mcp", false, "serve the scoped Worker Artifact MCP tool")
 	configPath := flag.String("config", "", "Node-local deployment and approved Worker MCP config JSON")
+	checkNodeDeployment := flag.Bool("check-node-deployment", false, "validate installed Node config, identity and state directory without running daemon")
 	dataDir := flag.String("data-dir", defaultNodeDataDir(), "directory for Node identity and durable local state")
 	serverURL := flag.String("server", envOr("SECRETARY_NODE_SERVER", "http://127.0.0.1:8081"), "Secretary server URL used for first pairing")
 	pairingToken := flag.String("pair-token", os.Getenv("SECRETARY_NODE_PAIRING_TOKEN"), "one-time/owner-approved Node pairing token")
 	enrollOnly := flag.Bool("enroll-only", false, "enroll this Node and persist its private identity without starting a daemon")
 	nodeName := flag.String("name", envOr("SECRETARY_NODE_NAME", defaultNodeName()), "stable Node reference requested during pairing")
 	capacity := flag.Int("capacity", 1, "maximum advertised concurrent Worker capacity")
-	checkWorkerSandbox := flag.Bool("check-worker-sandbox", false, "preflight native OS sandbox and Worker provider-state handoff")
 	checkCodex := flag.Bool("check-codex-readiness", false, "check actual Codex and ACP capabilities without a model call")
 	includeOpenCode := flag.Bool("include-opencode", false, "include the OpenCode ACP inventory probe")
 	includeAntigravity := flag.Bool("include-antigravity", false, "include the Antigravity ACP inventory probe")
@@ -50,6 +50,11 @@ func main() {
 	codexPairCLI := flag.String("codex-pair-cli", "", "explicit external Codex executable")
 	codexPairACP := flag.String("codex-pair-acp", "", "explicit external ACP executable")
 	flag.Parse()
+	if *checkNodeDeployment {
+		if err := checkInstalledNodeDeployment(*configPath); err != nil { log.Fatalf("Node deployment preflight: %v", err) }
+		fmt.Println("Node deployment config and identity valid")
+		return
+	}
 	if *codexPairAction != "" {
 		summary, err := node.ManageCodexPair(context.Background(), *codexPairAction, *codexPairScope, *codexPairCLI, *codexPairACP)
 		if err != nil { log.Fatalf("native Codex pair: %v", err) }
@@ -60,7 +65,7 @@ func main() {
 		if _, err := node.ReadCodexPairInventory("node"); err == nil {
 			if err := node.ApplyCodexPairInventory("node"); err != nil { log.Fatalf("Codex pair: %v", err) }
 		} else {
-			log.Printf("Codex native pair unavailable: %v", err)
+			log.Printf("Codex native pair unavailable: %v", node.CodexInventoryDiagnostic("node", err))
 			node.DisableUnselectedCodexRuntime()
 		}
 	}
@@ -181,11 +186,6 @@ func main() {
 	if err := deployment.Validate(); err != nil {
 		log.Fatalf("invalid Node deployment: %v", err)
 	}
-	if *checkWorkerSandbox {
-		if err := nativeexec.PreflightWorkerSandbox(*dataDir); err != nil { log.Fatalf("native Worker preflight: %v", err) }
-		fmt.Println("native Worker security preflight passed")
-		return
-	}
 	if *enrollOnly {
 		if strings.TrimSpace(*pairingToken) == "" { log.Fatal("owner-approved pairing token is required") }
 		if !strings.HasPrefix(*serverURL, "https://") { log.Fatal("remote enrollment requires HTTPS") }
@@ -198,9 +198,13 @@ func main() {
 		fmt.Printf("Enrolled Node %s\n", identity.Node)
 		return
 	}
-	releaseNode, err := claimNodeInstance(*dataDir)
- if err!=nil {log.Fatalf("Node ownership: %v",err)}
- defer releaseNode()
+	canonicalDataDir, releaseNode, err := claimNodeDataDirectory(*dataDir)
+	if err != nil {
+		log.Fatalf("Node ownership: %v", err)
+	}
+	defer releaseNode()
+	*dataDir = canonicalDataDir
+	deployment.DataDir = canonicalDataDir
  workspaces, err := deployment.ProtocolWorkspaces()
 	if err != nil {
 		log.Fatalf("load Node workspace mappings: %v", err)
@@ -237,6 +241,8 @@ func main() {
 		log.Fatalf("load Node identity: %v", err)
 	}
 
+	publishNodeProcessIdentity(*configPath, string(identity.Node))
+
 	store, err := node.OpenLocalStore(filepath.Join(*dataDir, "node-state.json"))
 	if err != nil {
 		log.Fatalf("open Node local state: %v", err)
@@ -271,6 +277,25 @@ if statusFile := os.Getenv("SECRETARY_NODE_STATUS_FILE"); statusFile != "" {
 	if err := daemon.Run(ctx); err != nil {
 		log.Fatalf("run Node: %v", err)
 	}
+}
+
+func claimNodeDataDirectory(dataDir string) (string, func(), error) {
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		return "", nil, err
+	}
+	canonical, err := filepath.EvalSymlinks(dataDir)
+	if err != nil {
+		return "", nil, err
+	}
+	canonical, err = filepath.Abs(canonical)
+	if err != nil {
+		return "", nil, err
+	}
+	release, err := claimNodeInstance(canonical)
+	if err != nil {
+		return "", nil, err
+	}
+	return canonical, release, nil
 }
 
 func selectNodeNativeStore(dataDir string, standalone bool) (node.OpenCodeNativeStore, error) {
@@ -403,4 +428,29 @@ func envOr(name, fallback string) string {
 
 func enforceCodexInventory(explicitReadinessDiagnostic bool) bool {
  return !explicitReadinessDiagnostic
+}
+
+func publishNodeProcessIdentity(configPath, identity string) {
+	if configPath == "" || identity == "" || strings.ContainsAny(identity, "\r\n") {
+		return
+	}
+	start, err := exec.Command("ps", "-p", strconv.Itoa(os.Getpid()), "-o", "lstart=").Output()
+	if err != nil || strings.TrimSpace(string(start)) == "" {
+		return
+	}
+	path := configPath + ".process"
+	file, err := os.CreateTemp(filepath.Dir(path), ".node-process-*")
+	if err != nil {
+		return
+	}
+	defer os.Remove(file.Name())
+	if err = file.Chmod(0600); err != nil {
+		_ = file.Close()
+		return
+	}
+	_, err = fmt.Fprintf(file, "%d\n%s\n%s\n", os.Getpid(), strings.TrimSpace(string(start)), identity)
+	if err != nil || file.Sync() != nil || file.Close() != nil {
+		return
+	}
+	_ = os.Rename(file.Name(), path)
 }

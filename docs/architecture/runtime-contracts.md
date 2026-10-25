@@ -2,6 +2,18 @@
 
 Здесь описано текущее поведение протоколов, runtime и lifecycle Secretary. Это не ADR и не долговременная архитектурная мотивация: устойчивые решения с известными альтернативами и причинами фиксируются отдельно в ADR.
 
+## MAC-02: Claude Attempt cancellation on Unix
+
+On starting the native Claude CLI, the Execution Node records its initial PID, parent, process group and process start time. Cancel compares the observed root identity with that launch-time record before considering any descendants. The cleanup traverses only the recorded CLI's live descendants, rechecks each candidate before signaling it once with SIGKILL, and waits for the original captured child identities to exit or become zombies. Inspection calls and polling share one two-second timeout starting with the first snapshot. Failed cleanup is returned as a Cancel error; native interrupt is not treated as a terminal Result.
+
+If root identity capture fails immediately after CLI launch, startup stops and reaps that process instead of returning a Session that cannot be safely canceled. If cleanup fails after a native canceled terminal arrived, the pending Result is downgraded to failed with the cleanup error rather than asserting that cancellation succeeded.
+
+Repeated Cancel requests for the same active Attempt do not send additional native interrupts. In-flight cleanup and native terminal reporting are synchronized so that a follow-up cannot consume a delayed interrupt and the terminal Result channel cannot close before pending cancellation handling. The native CLI remains available for same-session Follow-up.
+
+This best-effort Unix process-tree cleanup is not a containment primitive. The ps-based start timestamp has second-level resolution and checking identity before sending a PID-directed signal still has a TOCTOU window. No repeated signals are sent; detached processes already reparented before the first snapshot and children newly spawned during cleanup may escape discovery. Strict protection from arbitrary PID reuse would require OS-level stable process references or per-Attempt process isolation. The Windows pre-interrupt cleanup remains a no-op; its existing native process stop behavior is unchanged.
+
+**MANUAL:** On a published candidate, run a real Claude Worker with foreground /bin/sleep 180, capture shell and sleep PIDs before Cancel, independently check the original PIDs after Cancel, verify sibling/Server/Node survival, replay the same HTTP idempotency key, verify one canonical canceled Result with unchanged Worker/Turn/Attempt binding, and perform same-session Follow-up. Linux/Windows live acceptance and PID-reuse races are not certified by the unit tests.
+
 ## Authority, owner и identity
 
 - Secretary server — единственный source of truth для Personal Conversation, Task, Worker binding, Result и lifecycle. Он не зависит от Channel adapter или Execution node.
@@ -38,9 +50,15 @@ Web получает canonical entry сразу. Telegram отправляет a
 
 ## Execution node и окружение
 
-- Execution node запускает Workers по Dispatch от Secretary server и поддерживает outbound connection к серверу. Node не владеет Conversation или Result routing; в первом slice default node — local Secretary host.
+- Secretary server владеет orchestration, durable Task → Worker → Turn → Attempt → Result, выбором Node/harness, routing и recovery. Worker на любой машине, включая host Secretary, выполняется только в отдельном процессе `secretary-node` через ServerManager → Node protocol → Daemon → ExecutionNode. Co-located Node использует обычное owner-approved enrollment и уникальную Node identity; расположение Node не создаёт другого execution path.
+- Persistent Secretary AI session остаётся server-local native runtime и запускается даже при отключённых или отсутствующих Worker Nodes. Этот runtime не исполняет Workers. Server shutdown не закрывает native Worker sessions независимого Node daemon.
+- Историческая `secretaryctl` Task CLI поддерживает `list/show` только для чтения; `create/retry/close` не выполняются при любом значении `phase4.migration_complete`. Эти действия требуют canonical Worker API и Node orchestration; старый Task/Dispatcher pipeline не запускается и не меняет persisted Task state.
+- Сервер отправляет Dispatch, Resume, Steering, pending response/image, Cancel и queued Follow-up по исходному Node binding; никакого embedded fallback, переназначения привязанного Worker или автоматического повторного native action при неясном receipt нет. Offline/unpaired/revoked Node или unavailable harness дают явное состояние или отказ; reconnect воспроизводит durable receipts, а не native action.
+- Данные исторического embedded `local` Worker хранятся без очистки: Worker binding, native session ID, Workspace, Attempt/Result, history, Node store и credentials нельзя молча переименовать или сбросить. Продолжение разрешено лишь когда выбранный реальный Node с тем же binding имеет проверенную native session mapping и корректный workspace/provider identity. Если mapping не доказана, Resume выдаёт `runtime_session_unavailable`, не создавая новую Session; оператор должен архивировать/проверить старое состояние и явно принять решение о восстановлении или новом Worker.
+- Один Node data directory / identity может принадлежать только одному работающему `secretary-node`; независимые daemon процессы имеют собственный lifecycle и сохраняют состояние через restart.
 - Node enrollment происходит с явного owner-approved pairing через одноразовый code; после pairing Node получает собственную identity. Envelope HMAC подписывает payload после `json.Marshal(RawMessage)`, то есть в compact/HTML-escaped форме wire serializer. Форматирование durable JSON при reopen не меняет аутентификацию; пробелы внутри строк, порядок ключей, значения и identity остаются частью подписи. Verify сохраняет совместимость со старой raw-byte подписью только для валидного Envelope/JSON и действительного per-Node HMAC.
-- Первый Execution environment даёт Worker full access. Sandbox и isolated worktree могут стать другими вариантами; full access сам по себе не является sandbox или гарантией изоляции.
+- Secretary Workers execute directly with the operating-system permissions and environment of the Execution Node user. Secretary does not provide an additional Worker sandbox or privilege boundary.
+- Worker, native harness, shell и MCP-потомки работают с обычными правами пользователя Execution Node без дополнительного ограничения файловой системы или переменных окружения Secretary. Политики самого Codex/Claude Code не меняются.
 - Worker получает отдельный пустой Workspace при запуске Task. Через shell Worker может создать или выбрать другой local path.
 
 ## Локальный POC и AgentHub
@@ -63,6 +81,17 @@ Web получает canonical entry сразу. Telegram отправляет a
 - Worker observer — opt-in client view по Worker reference; он сначала получает состояние Worker, затем live Worker activity. Из observer можно направить Steering message, Queued message или Cancel.
 - ACP tool identity берётся из явного native `name` либо из MCP provenance `_meta.is_mcp_tool_call` и semantic `rawInput.server/tool`. MCP arguments берутся из вложенного `rawInput.arguments`; sparse update связывается по прежнему `toolCallId`. Display title не определяет tool identity и не попадает в normalized telemetry. Completed native tool_call даёт один tool_result без выдуманного start; duplicate и ambiguous idless updates не создают новые tool events.
 - Worker activity состоит из ephemeral text, tool и status events. Эти события получает только открывший Worker observer; terminal Result не является Worker activity. После terminal Outcome Node прекращает публикацию activity этой Attempt. Server проверяет payload и immutable Node/HarnessInstance/Worker/Turn/Attempt binding в одной транзакции с terminal state; поздний replay корректной завершённой Attempt получает ACK без нового event, Approval или изменения Result. Неизвестная Attempt и неверная identity отклоняются.
+- Worker без Project — допустимое состояние. Dispatch resolver для projectless request собирает snapshot из Node, HarnessInstance и execution policy, без Project identity, и фиктивный Project не создаётся. Канонический Secretary context принимает такой Worker: пустой `project_id` не инвалидирует snapshot, а Approval такого Worker наследует пустой Project binding от своего Worker. Project-bound Worker сохраняет строгие проверки: Project должен существовать, а сохранённый Project snapshot должен совпадать с Worker, Node и HarnessInstance. Проверки Worker, Result, Turn, Attempt и Approval не ослабляются.
+
+## Codex native Session и terminal answer
+
+- Codex ACP adapter публикует фазу assistant-сообщения (`commentary` или `final_answer`) в метаданных extension namespace `jetbrains.air` (`_meta.jetbrains.air.phase`) и только для клиентов, которые объявили этот namespace в `initialize` через `clientCapabilities._meta.jetbrains.air`. Внешние адаптеры предыдущих версий публиковали фазу в legacy namespace `_meta.codex.phase`.
+- Runtime объявляет extension namespace только в Codex harness. Другие ACP harnesses сохраняют прежний initialize handshake и не получают Codex-специфичных метаданных.
+- Terminal answer Codex принимается только у сообщения с фазой `final_answer` при `stopReason: end_turn` и без последующего tool call по тому же message id. Commentary, tool output, произвольный последний chunk и сообщение без фазы финальным ответом не считаются.
+- Противоречивая metadata (фазы в разных namespace расходятся) и смена фазы внутри одного message id делают turn недействительным, а не подсказывают ответ.
+- Отсутствие фазы (модель или провайдер её не публикует) даёт явную ошибку terminal answer. Эвристика по последнему сообщению не применяется.
+- Assistant chunk без `messageId` не может быть финальным ответом и не попадает в authoritative Summary. Chunk без `messageId` без фазы не отменяет идентифицированный финальный ответ того же turn: это notice адаптера, а не ответ. Chunk без `messageId`, помеченный фазой `final_answer`, делает turn недействительным: два претендента на финальный ответ, один из которых неатрибутируем, не дают доказанного ответа. Два идентифицированных `final_answer` отвергаются по той же причине. Такой chunk остаётся видимым в activity и диагностических событиях. Для остальных ACP harnesses прежний terminal contract, где chunk без идентификатора запрещает ответ, не меняется.
+- Тот же строгий guard применяется к Worker Result: подтверждённый terminal обязателен и там.
 
 ## Claude Code native Session
 
@@ -116,7 +145,7 @@ Web получает canonical entry сразу. Telegram отправляет a
 ### T10 Web-to-Worker reliability
 
 - A Secretary Worker action carries the image IDs from its server-owned canonical inbound Web entry, resolved through the durable Secretary turn and input identity. The model's chosen `spawn_worker.intent` or `message_worker.text` is not the source of truth for attachments; the Worker service binds those IDs to the stored action input before dispatch, so queued, continued and replayed attempts retain them. Missing or unauthorized references fail explicitly.
-- Local Worker Node dispatch and steering use the same verified image preparation and image-capability checks as remote execution. The local Artifact fetcher reads original owner-scoped bytes from the Server store, without a new transport stack.
+- Co-located и remote Execution Nodes одинаково используют authenticated Node Artifact fetch: Node получает original owner-scoped bytes от Server, сверяет integrity и image-capability checks для Dispatch, Steering и Responses. Прямого embedded Server Artifact fetcher для Workers больше нет.
 - The Web attachment control stores an unfinished upload's idempotency key against the filename, size and SHA-256 in session storage. Re-selecting the same file after a lost response reuses that key; a confirmed upload clears it. Other files and new intentional uploads receive new keys.
 
 

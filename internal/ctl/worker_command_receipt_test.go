@@ -41,17 +41,6 @@ func TestRespondTimeoutResultThenLateAcceptedReceiptDoesNotRetryOrReviveTurn(t *
 		Authentication: core.HarnessAuthentication{Authenticated: true},
 	}
 	inventory := core.HarnessInventorySnapshot{Node: "macbook", Instances: []core.HarnessInstance{instance}, ObservedAt: time.Now().UTC()}
-	auth, err := identity.Authenticator()
-	if err != nil {
-		t.Fatal(err)
-	}
-	connection, err := node.DialProtocol(ctx, identity.ConnectURL, identity.Node, auth, node.Handshake{
-		Node: identity.Node, ProtocolVersion: node.ProtocolVersion, Inventory: inventory, Nonce: "respond-late-receipt",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer connection.Close()
 
 	person, conversation, err := store.CreatePersonWithConversation(ctx)
 	if err != nil {
@@ -81,6 +70,32 @@ func TestRespondTimeoutResultThenLateAcceptedReceiptDoesNotRetryOrReviveTurn(t *
 	if _, err := store.StartSecretaryTurn(ctx, origin.ID); err != nil {
 		t.Fatal(err)
 	}
+
+	auth, err := identity.Authenticator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := node.DialProtocol(ctx, identity.ConnectURL, identity.Node, auth, node.Handshake{
+		Node: identity.Node, ProtocolVersion: node.ProtocolVersion, Inventory: inventory, Nonce: "respond-late-receipt",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if err := connection.SendHeartbeat(ctx, node.Heartbeat{
+		Node: identity.Node, Online: true, Capacity: 1, Inventory: inventory,
+	}, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	waitForReceipt(t, ctx, func() bool {
+		status, err := manager.Status(ctx, "macbook")
+		ready, readyErr := manager.CommandReady(ctx, "macbook")
+		return err == nil && readyErr == nil && ready && status.Online && !status.LastHeartbeatAt.IsZero() &&
+			status.Capacity == 1 && status.Inventory.Node == "macbook" && len(status.Inventory.Instances) == 1 &&
+			status.Inventory.Instances[0].ID == instance.ID
+	})
+
 	worker, turn, attempt, err := store.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
 		WorkerRef: "late-ack-worker", Intent: "wait for owner input", ProjectID: "project", NodeID: "macbook", HarnessInstanceID: "macbook/fx",
 	}, core.TurnSpec{Input: "wait for owner input"})
@@ -98,6 +113,7 @@ func TestRespondTimeoutResultThenLateAcceptedReceiptDoesNotRetryOrReviveTurn(t *
 		Runtime: NodeRuntime{Manager: manager},
 	}
 
+
 	respondCtx, stopRespond := context.WithTimeout(ctx, 350*time.Millisecond)
 	defer stopRespond()
 	respondDone := make(chan error, 1)
@@ -108,9 +124,24 @@ func TestRespondTimeoutResultThenLateAcceptedReceiptDoesNotRetryOrReviveTurn(t *
 		})
 		respondDone <- respondErr
 	}()
-	command, err := connection.ReceiveCommand(ctx)
-	if err != nil {
-		t.Fatal(err)
+	type receivedCommand struct {
+		command node.Command
+		err error
+	}
+	received := make(chan receivedCommand, 1)
+	go func() {
+		command, err := connection.ReceiveCommand(ctx)
+		received <- receivedCommand{command: command, err: err}
+	}()
+	var command node.Command
+	select {
+	case reply := <-received:
+		if reply.err != nil { t.Fatalf("Node did not receive Respond command: %v", reply.err) }
+		command = reply.command
+	case respondErr := <-respondDone:
+		t.Fatalf("Respond returned before Node received any command: %T %v", respondErr, respondErr)
+	case <-ctx.Done():
+		t.Fatalf("Respond command was not delivered to the connected Node: %v", ctx.Err())
 	}
 	if command.Kind != node.CommandRespondWorker || command.Metadata().TurnID != turn.ID || command.Metadata().AttemptID != attempt.ID {
 		t.Fatalf("received wrong response command: %#v", command)

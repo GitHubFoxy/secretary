@@ -6,6 +6,14 @@ on:
       - cmd/secretary-node/**
       - cmd/secretary-tray/**
       - scripts/install-windows-node-release.ps1
+      - scripts/install-windows-node.ps1
+      - internal/nativeexec/**
+      - internal/acp/**
+      - internal/node/**
+      - internal/ctl/**
+      - internal/app/**
+      - internal/webapi/**
+      - cmd/secretaryd/**
       - .github/workflows/windows-node-binary-release.yml
   push:
     tags: ['v*']
@@ -39,7 +47,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Node compilation failed' }
           go build -trimpath -ldflags '-H=windowsgui' -o (Join-Path $stage 'secretary-tray.exe') ./cmd/secretary-tray
           if ($LASTEXITCODE -ne 0) { throw 'Tray compilation failed' }
-          Copy-Item -LiteralPath scripts/install-windows-node.ps1,scripts/setup-windows-worker.ps1 -Destination $stage
+          Copy-Item -LiteralPath scripts/install-windows-node.ps1 -Destination $stage
           $version = $env:GITHUB_REF_NAME
           if ($env:GITHUB_REF_TYPE -ne 'tag') { $version = '0.0.0-ci' }
           $manifest = @{
@@ -80,9 +88,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for attempt in {1..30}; do
+          (cd dist && sha256sum -c secretary-node-windows-*.zip.sha256)
+          for attempt in {1..90}; do
             if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+              release_tag="$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json tagName --jq '.tagName')"
+              [[ "$release_tag" == "$GITHUB_REF_NAME" ]] || { echo 'Release tag identity mismatch' >&2; exit 1; }
+              tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.sha')"
+              tag_type="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.type')"
+              if [[ "$tag_type" == "tag" ]]; then
+                tag_sha="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.object.sha')"
+              elif [[ "$tag_type" != "commit" ]]; then
+                echo 'Unsupported release tag reference' >&2
+                exit 1
+              fi
+              [[ "$tag_sha" == "$GITHUB_SHA" ]] || { echo 'Release tag commit mismatch' >&2; exit 1; }
+              gh release upload "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY"
               exit 0
             fi
             sleep 10

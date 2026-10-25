@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -33,6 +34,11 @@ func TestCodexSessionReturnsOnlyFinalAndRejectsEmptyTerminal(t *testing.T) {
 				} else if result.Status != "failed" {
 					t.Fatalf("nonfinal accepted: %+v", result)
 				}
+				if scenario == "empty" {
+					if result.CompletionEvidence == nil || !result.CompletionEvidence.AllowsAddressedReplyOnly() {
+						t.Fatalf("Codex MCP-only end_turn did not retain verified native completion evidence: %+v", result)
+					}
+				}
 			case <-ctx.Done():
 				t.Fatal("no terminal result")
 			}
@@ -47,6 +53,9 @@ func TestCodexFixtureProcess(t *testing.T) {
 	}
 	var overrides map[string]any
 	if json.Unmarshal([]byte(os.Getenv("CODEX_CONFIG")), &overrides) != nil || !strings.Contains(overrides["developer_instructions"].(string), "UNIQUE_PROFILE_MARKER") {
+		os.Exit(2)
+	}
+	if scenario == "model-default" && overrides["model"] != "gpt-5.4" {
 		os.Exit(2)
 	}
 	var pendingPrompt any
@@ -69,7 +78,26 @@ func TestCodexFixtureProcess(t *testing.T) {
 		case "session/new":
 			result = map[string]any{"sessionId": "fixture-codex"}
 		case "session/set_config_option":
-			result = map[string]any{"configOptions": []map[string]string{{"id": req.Params.ConfigID, "currentValue": req.Params.Value}}}
+			if scenario == "model-unsupported" && req.Params.ConfigID == "model" {
+				emit(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": -32602, "message": "model not found: " + req.Params.Value}})
+				continue
+			}
+            if strings.HasPrefix(scenario,"mode-") && req.Params.ConfigID=="mode" {
+                switch scenario {
+                case "mode-unsupported":
+                    emit(map[string]any{"jsonrpc":"2.0","id":req.ID,"error":map[string]any{"code":-32602,"message":"mode not found: "+req.Params.Value}})
+                    continue
+                case "mode-rpc-error":
+                    emit(map[string]any{"jsonrpc":"2.0","id":req.ID,"error":map[string]any{"code":-32603,"message":"synthetic mode failure"}})
+                    continue
+                case "mode-unconfirmed":
+                    result = map[string]any{"configOptions":[]map[string]string{{"id":"mode","currentValue":"agent"}}}
+                default:
+                    result = map[string]any{"configOptions":[]map[string]string{{"id":req.Params.ConfigID,"currentValue":req.Params.Value}}}
+                }
+            } else {
+                result = map[string]any{"configOptions":[]map[string]string{{"id":req.Params.ConfigID,"currentValue":req.Params.Value}}}
+            }
 		case "_session/steering":
 			outcome := "injected"
 			if scenario == "steer-new-turn" {
@@ -327,4 +355,82 @@ func TestCodexNativeCancelThenPromptSameSession(t *testing.T) {
 		t.Fatalf("second status=%s marker=%t stable session=%t", secondResult.Status, strings.Contains(secondResult.Summary, "CANCEL_REPLACEMENT_MARKER_24"), session.ID() == initialSessionID)
 	}
 	t.Logf("native cancellation verified: session=%s old=%s new=%s", initialSessionID, firstResult.Status, secondResult.Status)
+}
+
+func TestCodexSecretaryAddressedMCPServerReachesNativeACP(t *testing.T) {
+ ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+ defer cancel()
+ runtime := CodexRuntime{ACPRuntime: ACPRuntime{
+  Command: os.Args[0],
+  Arguments: []string{"-test.run=^TestFakeACPMCPArraysProcess$"},
+  Environment: []string{"ACP_MCP_ARRAY_FIXTURE=1"},
+ }}
+ request := StartRequest{
+  WorkerRef: "secretary", Workspace: t.TempDir(), DeferInitialPrompt: true,
+  Profile: ManagedProfile{
+   Name: "secretary", Runtime: "codex", Model: "default",
+   Content: "Use the server-owned Worker tools.",
+   ReplyContractVersion: "addressed-reply-v1",
+  },
+  MCPServers: []MCPServer{{Name: "configured", Command: "secretary-mcp", Args: []string{"--read"}, Env: []MCPEnv{{Name: "SCOPE", Value: "worker"}}}},
+ }
+ session, err := runtime.Start(ctx, request)
+ if err != nil { t.Fatalf("Codex Secretary ACP rejected addressed MCP binding: %v", err) }
+ defer session.Close()
+ if session.ID() != "mcp-wire-session" { t.Fatalf("native session ID = %q", session.ID()) }
+}
+
+
+func TestCodexWorkerFullAccessNativeConfigWithoutGlobalMutation(t *testing.T) {
+ for _,tc:=range []struct{name string;profile ManagedProfile;worker bool}{
+  {"worker",ManagedProfile{Name:"worker",Content:"work",Runtime:"codex"},true},
+  {"secretary",ManagedProfile{Name:"secretary",Content:"answer",Runtime:"codex"},false},
+ } {
+  t.Run(tc.name,func(t *testing.T){
+   runtime:=CodexRuntime{ACPRuntime:ACPRuntime{Command:"fixture",Environment:[]string{`CODEX_CONFIG={"model":"existing-model","sandbox_mode":"workspace-write","approval_policy":"on-request"}`}}}
+   request:=StartRequest{WorkerRef:"fixture",Workspace:t.TempDir(),Profile:tc.profile}
+   configured,err:=runtime.configured(request)
+   if err!=nil {t.Fatal(err)}
+   resumed,err:=runtime.configured(request)
+   if err!=nil {t.Fatal(err)}
+   if !reflect.DeepEqual(configured.Environment,resumed.Environment) {t.Fatalf("Start/Resume native environment differs: %v != %v",configured.Environment,resumed.Environment)}
+   var config map[string]any
+   for _,entry:=range configured.Environment {if strings.HasPrefix(entry,"CODEX_CONFIG=") {if err:=json.Unmarshal([]byte(strings.TrimPrefix(entry,"CODEX_CONFIG=")),&config);err!=nil {t.Fatal(err)}}}
+   if config["model"]!="existing-model" {t.Fatalf("model changed: %v",config)}
+   if tc.worker {
+    if configured.ModeSelection!="agent-full-access" || resumed.ModeSelection!="agent-full-access" {t.Fatalf("Worker ACP mode not selected: %q / %q",configured.ModeSelection,resumed.ModeSelection)}
+    if config["sandbox_mode"]!="workspace-write" || config["approval_policy"]!="on-request" {t.Fatalf("inherited config unexpectedly modified: %v",config)}
+   } else if configured.ModeSelection!="" || config["sandbox_mode"]!="workspace-write"||config["approval_policy"]!="on-request" {t.Fatalf("Secretary native permissions changed: %v",config)}
+  })
+ }
+}
+
+func TestCodexWorkerACPModeNegotiationStartAndResume(t *testing.T) {
+    for _, scenario := range []string{"mode-accepted","mode-unconfirmed","mode-unsupported","mode-rpc-error"} {
+        for _, resume := range []bool{false,true} {
+            name := scenario+"-start"
+            if resume { name=scenario+"-resume" }
+            t.Run(name,func(t *testing.T) {
+                ctx,cancel:=context.WithTimeout(context.Background(),5*time.Second)
+                defer cancel()
+                runtime:=CodexRuntime{ACPRuntime:ACPRuntime{Command:os.Args[0],Arguments:[]string{"-test.run=^TestCodexFixtureProcess$"},Environment:[]string{"TEST_CODEX_FIXTURE="+scenario}}}
+                req:=StartRequest{WorkerRef:"fixture",Workspace:t.TempDir(),DeferInitialPrompt:true,Profile:ManagedProfile{Name:"worker",Content:"UNIQUE_PROFILE_MARKER",Runtime:"codex"}}
+                var session Session
+                var err error
+                if resume {
+                    session,err=runtime.Resume(ctx,req,"fixture-codex")
+                } else {
+                    session,err=runtime.Start(ctx,req)
+                }
+                if scenario=="mode-accepted" {
+                    if err!=nil {t.Fatalf("confirmed mode rejected: %v",err)}
+                    if session==nil {t.Fatal("accepted mode returned nil session")}
+                    defer session.Close()
+                } else {
+                    if err==nil {if session!=nil {session.Close()};t.Fatalf("mode negotiation unexpectedly succeeded: %s",scenario)}
+                    if session!=nil {t.Fatalf("failed mode negotiation returned live session: %v",session)}
+                }
+            })
+        }
+    }
 }

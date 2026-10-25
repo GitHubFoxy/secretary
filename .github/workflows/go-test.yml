@@ -28,7 +28,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      # Bound package concurrency to avoid serial compilation without overloading runners.
       GOFLAGS: -p=2
     steps:
       - uses: actions/checkout@v4
@@ -36,45 +35,29 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
-      - name: Install native Worker sandbox and mandatory video prerequisites
+      - name: Ensure mandatory FFmpeg and ffprobe for video acceptance
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y bubblewrap
+          set -euo pipefail
           if ! command -v ffmpeg >/dev/null || ! command -v ffprobe >/dev/null; then
+            sudo apt-get update -qq
             sudo apt-get install -y ffmpeg
           fi
           ffmpeg -version
           ffprobe -version
-          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
-          bwrap --unshare-user --unshare-pid --ro-bind / / --proc /proc --dev /dev -- /bin/sh -c 'exit 0'
       - name: Cache npm downloads for pinned Codex
         uses: actions/cache@v4
         with:
           path: ~/.npm
-          key: official-codex-npm-v0.163.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/provision-cli-manifest.py') }}
-      - name: Install official pinned Codex and provision verified main and platform assets
-        run: |
-          npm install --prefix "$RUNNER_TEMP/t09-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.163.0
-          sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0
-          sudo env PATH="$PATH" python3 scripts/provision-cli-manifest.py codex 0.163.0-linux-x64 @openai/codex-linux-x64
-      - name: Verify trusted main and platform manifests
-        run: |
-          namei -l /etc/secretary/cli-store/codex/@openai__codex/0.163.0/bin/codex.js
-          namei -l /etc/secretary/cli-manifests/codex/@openai__codex/0.163.0.json
-          namei -l /etc/secretary/cli-store/codex/@openai__codex-linux-x64/0.163.0-linux-x64/vendor
-          namei -l /etc/secretary/cli-manifests/codex/@openai__codex-linux-x64/0.163.0-linux-x64.json
-      - name: Native Codex sandbox Start and persisted same-session Resume
+          key: official-codex-npm-v0.163.0-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.mod', 'go.sum') }}
+      - name: Install pinned Codex runtime in user-owned CI directory
+        run: npm install --prefix "$RUNNER_TEMP/t09-codex" --ignore-scripts --no-audit --no-fund @openai/codex@0.163.0
+      - name: Native Codex direct Start and persisted same-session Resume
         env:
           T09_REAL_CODEX: ${{ runner.temp }}/t09-codex/node_modules/@openai/codex/bin/codex.js
-        run: go test ./internal/nativeexec -run 'TestT09(PinnedOfficialCodexStartResume|RealCodexPersistedSessionResume)
+        run: go test ./internal/nativeexec -run 'TestT09(PinnedOfficialCodexStartResume|RealCodexPersistedSessionResume)$' -count=1 -v
+      - name: Reproduce Telegram video to native Worker routing (repeated)
+        run: go test ./internal/webapi -run '^TestT13TelegramVideoToT12FramesNativeWorkerResultAndReplay$' -count=8 -timeout=6m -v
+      - name: Verify projectless native Resume survives restart and OS temp cleanup
+        run: go test ./internal/node -run '^TestProjectlessNativeResumeAfterRestartAndTempPurge$' -count=1 -timeout=3m -v
       - name: Run Go tests
-        # Explicit live T09 run above uses -count=1 and T09_REAL_CODEX.
-        # Skip only those two top-level tests here to avoid running them twice.
-        run: go test ./... -skip '^TestT09(PinnedOfficialCodexStartResume|RealCodexPersistedSessionResume)$'
- -count=1 -v -timeout=3m
-      - name: Run Go tests
-        # Explicit live T09 run above uses -count=1 and T09_REAL_CODEX.
-        # Skip only those two top-level tests here to avoid running them twice.
-        run: go test ./... -skip '^TestT09(PinnedOfficialCodexStartResume|RealCodexPersistedSessionResume)$'
+        run: go test ./...

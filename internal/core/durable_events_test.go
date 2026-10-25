@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -235,6 +236,107 @@ func TestConcurrentFinalizationReturnsOriginalOutcome(t *testing.T) {
 	}
 	if outcomes != 1 || finalResults != 1 || entries != 1 {
 		t.Fatalf("duplicates outcomes=%d results=%d entries=%d", outcomes, finalResults, entries)
+	}
+}
+
+func TestConcurrentFinalizationAcrossTwoStoresRetainsSingleDurableOutcome(t *testing.T) {
+	ctx := context.Background()
+	databasePath := filepath.Join(t.TempDir(), "shared-finalization.db")
+	first, err := Open(ctx, databasePath)
+	if err != nil { t.Fatal(err) }
+	defer first.Close()
+	_, conversation, err := first.CreatePersonWithConversation(ctx)
+	if err != nil { t.Fatal(err) }
+	_, _, attempt, err := first.CreateWorker(ctx, conversation.ID, phase4WorkerSpec(), TurnSpec{Input: "finish once"})
+	if err != nil { t.Fatal(err) }
+	if _, err := first.SetPhase4AttemptActive(ctx, attempt.ID); err != nil { t.Fatal(err) }
+	second, err := Open(ctx, databasePath)
+	if err != nil { t.Fatal(err) }
+	defer second.Close()
+
+	const n = 16
+	results := make(chan FinishAttemptResult, n)
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		store := first
+		if i%2 != 0 { store = second }
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			result, err := store.FinishAttempt(ctx, attempt.ID, FinishAttemptInput{
+				AttemptOutcomeInput: AttemptOutcomeInput{
+					Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "one durable result",
+				},
+			})
+			results <- result
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		if err != nil { t.Fatalf("concurrent finalization through separate SQLite Stores: %v", err) }
+	}
+
+	var outcomes, finalResults, entries int
+	if err := first.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM phase4_attempt_outcomes").Scan(&outcomes); err != nil { t.Fatal(err) }
+	if err := second.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM phase4_results").Scan(&finalResults); err != nil { t.Fatal(err) }
+	if err := second.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM conversation_entries").Scan(&entries); err != nil { t.Fatal(err) }
+	if outcomes != 1 || finalResults != 1 || entries != 1 {
+		t.Fatalf("cross-Store duplicates outcomes=%d results=%d entries=%d", outcomes, finalResults, entries)
+	}
+
+	var original, duplicates int
+	var outcomeID, resultID string
+	for result := range results {
+		if result.Outcome.ID == "" || result.Result == nil {
+			t.Fatalf("cross-Store finalization returned empty result: %#v", result)
+		}
+		if outcomeID == "" {
+			outcomeID, resultID = result.Outcome.ID, result.Result.ID
+		} else if result.Outcome.ID != outcomeID || result.Result.ID != resultID {
+			t.Fatalf("separate Stores produced different durable results: %#v", result)
+		}
+		if result.Duplicate { duplicates++ } else { original++ }
+	}
+	if original != 1 || duplicates != n-1 {
+		t.Fatalf("cross-Store original=%d duplicates=%d, expected original=1 duplicates=%d", original, duplicates, n-1)
+	}
+}
+
+func TestAttemptFinalizationGateHasFixedCapacityThroughManyAttempts(t *testing.T) {
+	ctx := context.Background()
+	store := newTestStore(t)
+	_, conversation, err := store.CreatePersonWithConversation(ctx)
+	if err != nil { t.Fatal(err) }
+	const total = 128
+	const stripes = 256
+	if len(store.attemptOutcomeGates) != stripes {
+		t.Fatalf("finalization gate capacity=%d, want %d", len(store.attemptOutcomeGates), stripes)
+	}
+	for i := 0; i < total; i++ {
+		spec := phase4WorkerSpec()
+		spec.WorkerRef = fmt.Sprintf("completed-worker-%03d", i)
+		_, _, attempt, err := store.CreateWorker(ctx, conversation.ID, spec, TurnSpec{Input: "finish"})
+		if err != nil { t.Fatal(err) }
+		if _, err := store.SetPhase4AttemptActive(ctx, attempt.ID); err != nil { t.Fatal(err) }
+		result, err := store.FinishAttempt(ctx, attempt.ID, FinishAttemptInput{
+			AttemptOutcomeInput: AttemptOutcomeInput{Status: OutcomeSucceeded, Classification: OutcomeFinal, Summary: "done"},
+		})
+		if err != nil || result.Duplicate || result.Result == nil {
+			t.Fatalf("completion %d was not durable and unique: result=%#v err=%v", i, result, err)
+		}
+	}
+	if len(store.attemptOutcomeGates) != stripes {
+		t.Fatalf("finalization gates grew with completed attempts: %d", len(store.attemptOutcomeGates))
+	}
+	var outcomes, results int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM phase4_attempt_outcomes").Scan(&outcomes); err != nil { t.Fatal(err) }
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM phase4_results").Scan(&results); err != nil { t.Fatal(err) }
+	if outcomes != total || results != total {
+		t.Fatalf("lost/duplicated outcomes in long stream: outcomes=%d results=%d", outcomes, results)
 	}
 }
 

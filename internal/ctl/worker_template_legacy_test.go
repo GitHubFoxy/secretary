@@ -160,7 +160,7 @@ func TestExistingFXWorkerTemplateBindingSurvivesDispatchFollowUpAndResume(t *tes
 	legacyRuntime := &legacyWorkerTemplateNodeRuntime{}
 	localNode := node.NewLocal(legacyRuntime)
 	t.Cleanup(func() { _ = localNode.Close() })
-	if err := (NodeRuntime{Local: localNode}).Dispatch(ctx, "legacy-node-runtime-dispatch", legacyWorker, originalTurn, originalAttempt, core.DispatchResolution{ProjectDispatch: originalBinding}); err != nil {
+	if err := (legacyLocalTestRuntime{Local: localNode}).Dispatch(ctx, "legacy-node-runtime-dispatch", legacyWorker, originalTurn, originalAttempt, core.DispatchResolution{ProjectDispatch: originalBinding}); err != nil {
 		t.Fatalf("NodeRuntime rejected existing durable FX binding: %v", err)
 	}
 	if len(legacyRuntime.starts) != 1 || !reflect.DeepEqual(legacyRuntime.starts[0].Profile, node.ManagedProfile{

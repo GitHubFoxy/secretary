@@ -40,34 +40,71 @@ type codexAsset struct {
 }
 
 func codexNativeAssets() ([]codexAsset, error) {
+ return codexNativeAssetsForPlatform(runtime.GOOS, runtime.GOARCH)
+}
+
+func codexNativeAssetsForPlatform(goos, goarch string) ([]codexAsset, error) {
  triple, acpTriple := "", ""
- switch runtime.GOOS + "/" + runtime.GOARCH {
+ switch goos + "/" + goarch {
  case "darwin/arm64": triple, acpTriple = "aarch64-apple-darwin", "aarch64-apple-darwin"
  case "darwin/amd64": triple, acpTriple = "x86_64-apple-darwin", "x86_64-apple-darwin"
  case "linux/arm64": triple, acpTriple = "aarch64-unknown-linux-musl", "aarch64-unknown-linux-gnu"
  case "linux/amd64": triple, acpTriple = "x86_64-unknown-linux-musl", "x86_64-unknown-linux-gnu"
  case "windows/amd64": triple, acpTriple = "x86_64-pc-windows-msvc", "x86_64-pc-windows-msvc"
  case "windows/arm64": triple, acpTriple = "aarch64-pc-windows-msvc", "aarch64-pc-windows-msvc"
- default: return nil, fmt.Errorf("unsupported native Codex host: %s/%s", runtime.GOOS, runtime.GOARCH)
+ default: return nil, fmt.Errorf("unsupported native Codex host: %s/%s", goos, goarch)
  }
  codexDigest, acpDigest := "", ""
- switch runtime.GOOS + "/" + runtime.GOARCH {
- case "darwin/arm64": codexDigest, acpDigest = "61c4d9a92521bdb42b0c1d9f87c673f6da628a06de5945cbdd9a0010632f6d10", "377f1137945b54d8e689cb600767f6dcfe6e548e01c1f29018862c009c692c8d"
- case "darwin/amd64": codexDigest, acpDigest = "562a1aea0e5686283a467687d268ae33705f02fd4d40f1bc4110a415c5c1c7b1", "212fafcf971c75cd4f5060be2d5951bc322f71c49028dbd2531931494c33c784"
- case "linux/arm64": codexDigest, acpDigest = "a7261e65f4a96d8f4ca65a069c6cf2dc2c33defc341e48078acefda9461fffe4", "cb72820f53c91a63982a804bd6ab251bde51bc9371d8e638946f02d7d78580b5"
- case "linux/amd64": codexDigest, acpDigest = "beb339e8ecd9ba057a6bb2dc81ad8ca474812edfbf0fc5056ca818797648dde4", "0a9ad6c31ec9b2b87dccb7e9da3faf5d387e74470d24dbced75a160ed7b22d06"
- case "windows/amd64": codexDigest, acpDigest = "dabdb4d16aaf10fea40b74811c96efddcd9138f122163b69ed604fcb3eb704c3", "8f290b2956c9276c1748199641b87005e2236b04a22c23050473a2c7fad59cd7"
- case "windows/arm64": codexDigest, acpDigest = "c12842937952bc1dd757c82ae3f31c83f21b794344cf361b506b0218d4881c74", "1640fac9ff4893a9aed895ad3e8d529a7b8cdad4f65ff85d3b5c69323857e7b4"
+ codexCodeModeHostDigest := ""
+ switch goos + "/" + goarch {
+ case "darwin/arm64":
+  codexDigest, acpDigest = "61c4d9a92521bdb42b0c1d9f87c673f6da628a06de5945cbdd9a0010632f6d10", "377f1137945b54d8e689cb600767f6dcfe6e548e01c1f29018862c009c692c8d"
+  codexCodeModeHostDigest = "2e28f49a4767a97586843c92692b96481be74d837199b49038f731cec88e9941"
+ case "darwin/amd64":
+  codexDigest, acpDigest = "562a1aea0e5686283a467687d268ae33705f02fd4d40f1bc4110a415c5c1c7b1", "212fafcf971c75cd4f5060be2d5951bc322f71c49028dbd2531931494c33c784"
+  codexCodeModeHostDigest = "5211c6ed5062c84ba5796e555903c22a6e38fcccf6fe11ee11d7e1b5687ce1fd"
+ case "linux/arm64":
+  codexDigest, acpDigest = "a7261e65f4a96d8f4ca65a069c6cf2dc2c33defc341e48078acefda9461fffe4", "cb72820f53c91a63982a804bd6ab251bde51bc9371d8e638946f02d7d78580b5"
+  codexCodeModeHostDigest = "284356aefb197f00b76b912efdfdbae8ccf3ea1f89b976dde064b7ccb43214ef"
+ case "linux/amd64":
+  codexDigest, acpDigest = "beb339e8ecd9ba057a6bb2dc81ad8ca474812edfbf0fc5056ca818797648dde4", "0a9ad6c31ec9b2b87dccb7e9da3faf5d387e74470d24dbced75a160ed7b22d06"
+  codexCodeModeHostDigest = "314263128ba6592e7e807c265deeaf928a692b72dcbfeb5e0b20c9423b703529"
+ case "windows/amd64":
+  codexDigest, acpDigest = "dabdb4d16aaf10fea40b74811c96efddcd9138f122163b69ed604fcb3eb704c3", "8f290b2956c9276c1748199641b87005e2236b04a22c23050473a2c7fad59cd7"
+  codexCodeModeHostDigest = "bc82fa6d8f449c818292eac35bd7400c4f7dae08908fc9bc67bfbad8c4a3de68"
+ case "windows/arm64":
+  codexDigest, acpDigest = "c12842937952bc1dd757c82ae3f31c83f21b794344cf361b506b0218d4881c74", "1640fac9ff4893a9aed895ad3e8d529a7b8cdad4f65ff85d3b5c69323857e7b4"
+  codexCodeModeHostDigest = "8fb79c742742de463154a44582ff6809155b8e331fdf1ef40445abfee1038986"
  }
- if runtime.GOOS == "windows" {
+ if goos == "windows" {
   return []codexAsset{
    {"https://github.com/openai/codex/releases/download/rust-v"+codexPinnedVersion+"/codex-"+triple+".exe.zip", codexDigest, "codex.exe"},
    {"https://github.com/zed-industries/codex-acp/releases/download/v"+codexACPWindowsLegacyVersion+"/codex-acp-"+codexACPWindowsLegacyVersion+"-"+acpTriple+".zip", acpDigest, "codex-acp.exe"},
+   codexCodeModeHostAsset(goos, triple, codexCodeModeHostDigest),
   }, nil
  }
  return []codexAsset{
   {"https://github.com/openai/codex/releases/download/rust-v"+codexPinnedVersion+"/codex-"+triple+".tar.gz", codexDigest, "codex"},
+  codexCodeModeHostAsset(goos, triple, codexCodeModeHostDigest),
  }, nil
+}
+
+// The Codex CLI executes MCP tools through a separate code-mode host binary
+// that must sit next to the CLI. Without it the CLI reports "Code Mode is
+// unavailable" and the model never sees the Secretary tools.
+func codexCodeModeHostAsset(goos, triple, digest string) codexAsset {
+ if goos == "windows" {
+  return codexAsset{
+   "https://github.com/openai/codex/releases/download/rust-v" + codexPinnedVersion + "/codex-code-mode-host-" + triple + ".exe.zip",
+   digest,
+   "codex-code-mode-host.exe",
+  }
+ }
+ return codexAsset{
+  "https://github.com/openai/codex/releases/download/rust-v" + codexPinnedVersion + "/codex-code-mode-host-" + triple + ".tar.gz",
+  digest,
+  "codex-code-mode-host",
+ }
 }
 
 const codexArchiveLimit int64 = 256 << 20
@@ -309,9 +346,15 @@ func codexBinaryRecordWithACPPolicy(path, provenance string, isACP bool) (CodexB
 }
 
 func codexNativePairReady(ctx context.Context, pair CodexPairInventory) error {
+ if pair.Codex.Provenance == "managed" {
+  if err := verifyManagedCodeModeHost(filepath.Dir(pair.Codex.ResolvedPath)); err != nil { return fmt.Errorf("Codex MCP code-mode host readiness: %w", err) }
+ }
  probeCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
  defer cancel()
  output, err := exec.CommandContext(probeCtx, pair.Codex.Path, "login", "status").CombinedOutput()
+ if err == nil && hasNegativeAuthMarker(strings.ToLower(string(output))) {
+  return fmt.Errorf("Codex native authentication required: run %s login", pair.Codex.Path)
+ }
  if err != nil {
   if probeCtx.Err() != nil { return fmt.Errorf("Codex native login status transport: %w", probeCtx.Err()) }
   response := strings.ToLower(string(output))
@@ -340,6 +383,9 @@ func readCodexPairUnchecked(scope string) (CodexPairInventory, error) {
  var pair CodexPairInventory
  if err := json.Unmarshal(data, &pair); err != nil { return pair, err }
  if pair.Schema != 1 || pair.Scope != scope || pair.Harness != "codex" { return pair, errors.New("invalid native pair record") }
+ if pair.Codex.Provenance == "managed" {
+  if err := verifyManagedCodeModeHost(filepath.Dir(pair.Codex.ResolvedPath)); err != nil { return pair, fmt.Errorf("Codex code-mode host: %w", err) }
+ }
  if err := verifyCodexBinary(pair.Codex); err != nil { return pair, err }
  if err := verifyCodexACPBinary(pair.ACP); err != nil { return pair, err }
  return pair, nil
@@ -447,8 +493,30 @@ func installManagedCodexAssets(ctx context.Context, assets []codexAsset, root, t
  acpRecord, err := codexACPBinaryRecord(filepath.Join(stage, names[1]), "managed")
  if err != nil { return "", "", err }
  if !strings.Contains(cliRecord.Version, codexPinnedVersion) || !strings.Contains(acpRecord.Version, managedACPVersionForPlatform()) { return "", "", errors.New("downloaded Codex pair versions differ from pinned release") }
+ if err := verifyManagedCodeModeHost(stage); err != nil { return "", "", err }
  if err := os.Rename(stage, final); err != nil { return "", "", err }
  return cli, acp, nil
+}
+
+// The Codex CLI spawns the code-mode host from its own directory to execute
+// MCP tools. A managed pair without that host starts but never exposes the
+// Secretary tools, so the absence must be a visible installation failure.
+func verifyManagedCodeModeHost(stage string) error {
+ name := "codex-code-mode-host"
+ if runtime.GOOS == "windows" { name = "codex-code-mode-host.exe" }
+ host := filepath.Join(stage, name)
+ info, err := os.Lstat(host)
+ if err != nil { return fmt.Errorf("Codex code-mode host missing from the managed pair: %w", err) }
+ if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 { return errors.New("unsafe Codex code-mode host") }
+ if runtime.GOOS != "windows" && info.Mode()&0111 == 0 { return errors.New("Codex code-mode host is not executable") }
+ file, err := os.Open(host)
+ if err != nil { return fmt.Errorf("Codex code-mode host cannot be opened: %w", err) }
+ defer file.Close()
+ header := make([]byte, 4)
+ if _, err := io.ReadFull(file, header); err != nil { return fmt.Errorf("Codex code-mode host is truncated: %w", err) }
+ valid := string(header) == "\x7fELF" || string(header) == "MZ\x90\x00" || string(header) == "\xcf\xfa\xed\xfe" || string(header) == "\xfe\xed\xfa\xcf" || string(header) == "\xca\xfe\xba\xbe"
+ if !valid { return errors.New("Codex code-mode host binary format is invalid") }
+ return nil
 }
 
 func verifyManagedCodexArchives(assets []codexAsset, final string) error {
@@ -597,7 +665,15 @@ func manageCodexPairWithProbe(ctx context.Context, action, scope, cliPath, acpPa
   }
   if action == "doctor" {
    if !existing.Compatibility.Validated { return "", errors.New("native Codex pair not protocol-validated") }
+   if existing.Codex.Provenance == "managed" {
+    if _, err := ReadCodexPairInventory(scope); err != nil { return "", fmt.Errorf("Codex doctor inventory integrity: %w", err) }
+   }
    if err := probe(ctx, existing); err != nil { return "", err }
+  }
+  if action == "doctor" && existing.Codex.Provenance == "managed" {
+   host := "codex-code-mode-host"
+   if runtime.GOOS == "windows" { host += ".exe" }
+   return fmt.Sprintf("Codex %s, ACP %s, code-mode host %s: ready", existing.Codex.Version, existing.ACP.Version, filepath.Join(filepath.Dir(existing.Codex.ResolvedPath), host)), nil
   }
   return fmt.Sprintf("Codex %s and ACP %s: %s", existing.Codex.Version, existing.ACP.Version, action), nil
  case "install", "upgrade":
