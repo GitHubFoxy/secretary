@@ -13,17 +13,21 @@ import (
 
 func TestCodexChatGPTDefaultModelConfiguration(t *testing.T) {
 	cases := []struct {
-		name      string
-		auth      string
-		model     string
-		native    string
-		want      string
-		wantError string
+		name          string
+		auth          string
+		model         string
+		native        string
+		baseModel     string
+		want          string
+		wantSelection string
+		wantError     string
 	}{
 		{name: "ChatGPT default", auth: "chatgpt", model: "default", want: "gpt-5.4"},
 		{name: "Secretary without observed auth", model: "default", want: "gpt-5.4"},
 		{name: "ChatGPT empty model", auth: "chatgpt", want: "gpt-5.4"},
 		{name: "API key native default", auth: "api_key", model: "default"},
+		{name: "API key alias native default", auth: "apiKey", model: "default"},
+		{name: "explicit ACP selection", auth: "chatgpt", model: "default", baseModel: "custom-acp-model", wantSelection: "custom-acp-model"},
 		{name: "agent identity native default", auth: "agent_identity", model: "default"},
 		{name: "explicit ChatGPT model", auth: "chatgpt", model: "gpt-5.5", want: "gpt-5.5"},
 		{name: "explicit API model", auth: "api_key", model: "gpt-5.5", want: "gpt-5.5"},
@@ -37,7 +41,7 @@ func TestCodexChatGPTDefaultModelConfiguration(t *testing.T) {
 			if tc.native != "" {
 				env = []string{"CODEX_CONFIG=" + tc.native}
 			}
-			runtime := CodexRuntime{ACPRuntime: ACPRuntime{Command: "fixture", Environment: env}}
+			runtime := CodexRuntime{ACPRuntime: ACPRuntime{Command: "fixture", Environment: env, ModelSelection: tc.baseModel}}
 			req := StartRequest{
 				Profile:         ManagedProfile{Name: "secretary", Runtime: "codex", Content: "fixture", Model: tc.model},
 				HarnessInstance: core.HarnessInstance{Authentication: core.HarnessAuthentication{Method: tc.auth}},
@@ -64,6 +68,9 @@ func TestCodexChatGPTDefaultModelConfiguration(t *testing.T) {
 			}
 			if model != nil && model != tc.want || model == nil && tc.want != "" {
 				t.Fatalf("native model = %v, want %q", model, tc.want)
+			}
+			if tc.wantSelection != "" && configured.ModelSelection != tc.wantSelection {
+				t.Fatalf("explicit ACP model selection = %q, want %q", configured.ModelSelection, tc.wantSelection)
 			}
 			if tc.model == "gpt-5.5" && configured.ModelSelection != tc.model {
 				t.Fatalf("explicit ACP model selection = %q, want %q", configured.ModelSelection, tc.model)
