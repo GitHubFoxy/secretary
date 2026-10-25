@@ -160,6 +160,19 @@ while read line; do :; done
 	if err != nil || pending.CurrentAttempt().State != core.AttemptActive || len(pending.Results) != 0 {
 		t.Fatalf("cancel receipt became premature terminal: %+v %v", pending, err)
 	}
+	manager.mu.Lock()
+	firstConnection := manager.connections[identity.Node]
+	manager.mu.Unlock()
+	if firstConnection == nil {
+		t.Fatal("Node connection disappeared before replay")
+	}
+	manager.closeConnection(identity.Node)
+	waitFor(t, ctx, "Node reconnect after accepted cancellation", func() bool {
+		manager.mu.Lock()
+		current := manager.connections[identity.Node]
+		manager.mu.Unlock()
+		return current != nil && current != firstConnection
+	})
 	waitFor(t, ctx, "durable canceled Result", func() bool {
 		details, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 		return err == nil && details.CurrentAttempt().State == core.AttemptCanceled && len(details.Results) == 1 && details.Results[0].Status == core.ResultCanceled
