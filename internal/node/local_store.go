@@ -70,10 +70,11 @@ type localState struct {
 }
 
 type LocalStore struct {
-	mu    sync.Mutex
-	path  string
-	state localState
-	file  *os.File
+	mu               sync.Mutex
+	path             string
+	state            localState
+	file             *os.File
+	persistErrorHook func(error)
 }
 
 func OpenLocalStore(path string) (*LocalStore, error) {
@@ -127,6 +128,9 @@ func (s *LocalStore) persistLocked() error {
 	}
 	file, err := os.CreateTemp(filepath.Dir(s.path), filepath.Base(s.path)+".tmp-*")
 	if err != nil {
+		if s.persistErrorHook != nil {
+			s.persistErrorHook(err)
+		}
 		return err
 	}
 	tmp := file.Name()

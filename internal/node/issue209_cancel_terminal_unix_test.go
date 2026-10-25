@@ -904,12 +904,21 @@ func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration, ready
 	cancelCtx, cancelStop := context.WithTimeout(ctx, 2*time.Second)
 	defer cancelStop()
 	if pauseRegistration {
+		cancelWriteEntered := make(chan struct{})
+		manager.beforeCommandWrite = func(core.NodeReference) {
+			close(cancelWriteEntered)
+		}
 		cancelOutcome := make(chan error, 1)
 		go func() { cancelOutcome <- manager.SendCommandAndWait(cancelCtx, identity.Node, cancel) }()
 		select {
+		case <-cancelWriteEntered:
+		case <-cancelCtx.Done():
+			t.Fatal("Cancel was not sent before the handoff-registration barrier was released")
+		}
+		select {
 		case <-cancelOutcome:
 			t.Fatal("Cancel replied before handoff-registration barrier released")
-		case <-time.After(100 * time.Millisecond):
+		default:
 		}
 		close(handoffReleased)
 		select {
@@ -1147,10 +1156,18 @@ func TestIssue209ClaudeNativeResumeCancelProducesCanonicalCanceledResult(t *test
 	local.mu.Lock()
 	healthyPath := local.path
 	local.path = filepath.Join(t.TempDir(), "missing-directory", "node.json")
+	persistenceFailed := make(chan struct{}, 1)
+	local.persistErrorHook = func(error) {
+		select {
+		case persistenceFailed <- struct{}{}:
+		default:
+		}
+	}
 	local.mu.Unlock()
 	defer func() {
 		local.mu.Lock()
 		local.path = healthyPath
+		local.persistErrorHook = nil
 		local.mu.Unlock()
 	}()
 	close(runtime.release)
@@ -1169,9 +1186,14 @@ func TestIssue209ClaudeNativeResumeCancelProducesCanonicalCanceledResult(t *test
 		}
 	})
 	select {
+	case <-persistenceFailed:
+	case <-ctx.Done():
+		t.Fatal("terminal persistence did not reach the deterministic failure barrier")
+	}
+	select {
 	case result := <-finished:
 		t.Fatalf("terminal persistence error completed Resume prematurely: %+v", result)
-	case <-time.After(175 * time.Millisecond):
+	default:
 	}
 	uncommitted, err := local.Command(resumeMetadata.CommandID)
 	if err != nil || uncommitted.State != CommandProcessing || uncommitted.TerminalOutcomeQueued {

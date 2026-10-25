@@ -7,6 +7,8 @@ on:
       - 'internal/node/daemon.go'
       - 'internal/node/execution_node.go'
       - 'internal/node/local_store.go'
+      - 'internal/node/acp_runtime.go'
+      - 'internal/node/t11_rebound_handoff_test.go'
       - 'internal/node/issue209_*'
       - 'docs/architecture/runtime-contracts.md'
       - 'docs/phase4-release-gate.md'
