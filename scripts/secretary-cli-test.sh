@@ -211,7 +211,17 @@ case "$1:$2" in
 esac
 EOF
 chmod +x "$FAKE_BIN/codex-acp" "$FAKE_BIN/fx" "$FAKE_BIN/opencode"
-bash "$ROOT/scripts/create-native-acp-fixture.sh" "$TEST_HOME/.local"
+bash "$ROOT/scripts/create-native-acp-fixture.sh" "$TEST_HOME/.local" "$FAKE_ACP_REAL"
+MODERN_ACP_PROBE="$TEST_HOME/modern-acp-probe"
+mkdir -p "$MODERN_ACP_PROBE"
+tar -xzf "$BIN/native-acp/codex-acp.tar.gz" -C "$MODERN_ACP_PROBE"
+assert_executable "$MODERN_ACP_PROBE/codex-acp-2.2.2"
+assert_contains "$("$MODERN_ACP_PROBE/codex-acp-2.2.2" --version)" "codex-acp 2.2.2" "packaged modern ACP version"
+MODERN_ACP_RESPONSES="$(printf '%s\\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}' '{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}' '{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"fake-session","prompt":[]}}' | "$MODERN_ACP_PROBE/codex-acp-2.2.2")"
+assert_contains "$MODERN_ACP_RESPONSES" '"protocolVersion":1' "packaged modern ACP initialize"
+assert_contains "$MODERN_ACP_RESPONSES" '"steering":{"supported":true}' "packaged modern ACP steering"
+assert_contains "$MODERN_ACP_RESPONSES" '"sessionId":"fake-session"' "packaged modern ACP session/new"
+assert_contains "$MODERN_ACP_RESPONSES" '"agent_message_chunk"' "packaged modern ACP activity"
 
 "$ROOT/scripts/phase5-setup-test.sh"
 
