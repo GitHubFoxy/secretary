@@ -1299,6 +1299,256 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 
 <!-- CATALOGUE_END -->
 
+## Product architecture: logical target (PROPOSED, NOT IMPLEMENTATION)
+
+```text
+Person (Nick) -> Personal Secretary + private Conversation + Memory
+                              |
+                              +-> Task -> Worker -> Harness on Execution Node
+                              |                        (local / VPS / microVM)
+                              |
+                              +-> Tools/Integrations -> Home Bridge -> Home Assistant
+                              |                      -> Vehicle Connector -> OEM/API
+                              |                      -> Calendar/Browser/Other
+                              |
+                              +-> Circle <-> other Personal Secretaries / Personas
+                                            shared scoped Decisions and agreed actions
+
+Secretary control plane: self-hosted / VPS / supported cloud / Cloudflare Workers+DO
+Artifacts: portable object/file store; secrets: deployment-appropriate vault
+Channels: Web/PWA, Telegram, later voice satellite / desktop / mobile
+```
+
+This is a logical separation, not a mandate for a process per box. In the current code the central Go service + SQLite and Node runtime remain the source of truth until a separately tested serverless port exists. Do not assume the Cloudflare runtime can directly start shell/harness processes. DO/storage implementation and cross-install federation remain open.
+
+## Candidate milestones / MVP-to-future boundary (RECOMMENDED / OPEN)
+
+| Stage | User-visible outcome | Not included by implication |
+| --- | --- | --- |
+| **M0 Current alpha stabilization** | Reliable Secretary → Worker → Result/Follow-up, mature native Codex/Claude session lifecycle, cancellation, package/install | Claims of release-ready cross-platform production without live evidence |
+| **M1 Developer MVP / public-v1 gate** | Self-hosted personal Secretary with Telegram/Web/PWA, Workers on local+remote Nodes, media/files, explicit memory, tested backup and recovery | Consumer multi-tenancy, Circles, home voice, car actuation or managed microVM |
+| **M2 Hosted control plane experiment** | Same personal identity in a supported hosted/serverless deployment, outbound Nodes, portable central data | Fully hosted long-running native CLI inside Cloudflare Workers |
+| **M3 Home Assistant slice** | Telegram/Web command to one allowlisted light, through home-local Bridge, visible verified state and offline handling | Full replacement for Home Assistant or first-party driver for every device |
+| **M4 Realtime voice slice** | Voice input→Secretary→safe action→TTS, wake-word and room-aware speaker context where devices support it | Unconditional speaker biometric authorization or guaranteed instant response |
+| **M5 Circles prototype** | Two independent Secretaries propose/accept a movie/meal choice in private DM and shared Circle log | Federated financial transactions by default |
+| **M6 Cross-install Circles + delegated actions** | Multi-person travel planning, scoped facts, authenticated A2A, consent, payment/booking multi-stage receipts | Unverified spending, automatic assumed agreement or uncontrolled model loops |
+| **M7 Vehicle integrations** | Owner-authorized supported Tesla / participating OEM status and safe documented functions; car voice navigation/media when supported | Steering/braking/autonomous driving or every command on every car |
+| **M8 Consumer experience** | One-core managed installation, personal isolation and legitimate inference/compute provisioning | Monetization or account model treated as already decided |
+
+These are sequencing suggestions. Dates, release numbers, acceptance gates and which milestones ship together require explicit owner approval.
+
+## Deep architectural sketch — Smart home (PROPOSED)
+
+1. **Bridge:** Home Assistant handles Zigbee, Thread/Matter, Wi-Fi devices and automations via its integration ecosystem; Secretary never needs to reimplement radio drivers.
+2. **Connectivity:** a locally running Home Bridge enrolls with a chosen Secretary and initiates outbound authenticated connection. Owner gives a narrow allowlist of rooms, devices, services and actions; avoid exposing Home Assistant admin API to the public internet.
+3. **Discovery:** discover HA entities, areas and supported services; translate them into typed operations (`turn_on`, `set_brightness`, `set_temperature`) with explicit device IDs rather than free-form model-authored API bodies.
+4. **Execution:** intent → typed plan → policy/authorization → bridge invocation with action identity → Home Assistant service action → read-back/receipt → truthful conversation reply.
+5. **Offline:** Home Assistant still runs deterministic local automations without Internet; hosted Secretary reports disconnected, does not claim a light switched.
+6. **Voice:** optional satellite/mic/push-to-talk → wake word/ASR → Secretary → action/answer → TTS. Room/presence inferred from paired device with fallbacks, not from guessed biometrics.
+7. **Security:** household guests/children, windows, doors, climate, alarms and irreversible operations have individually configurable controls. Do not make Owner full-access CLI implicitly an unrestricted smart-home credential.
+8. **Acceptance:** test fake Home Assistant API errors, stale state, reconnect, duplicate command, revoked credential, and one live lamp/sensor end-to-end before declaring usable.
+
+Open alternatives: Home Assistant add-on vs independently installed Bridge, direct managed HA cloud API vs local bridge, whether common Execution Node handles HA capabilities, routing multiple homes/ownership.
+
+## Deep architectural sketch — Vehicle integrations (PROPOSED)
+
+Vehicle access must be **capability-based per connected car**, not a promise that every manufacturer exposes identical commands.
+
+1. **Read-only phase:** vehicle charging/range/status/location where OEM supports and user grants them; no assumption that standard OBD-II telemetry includes remote actuators.
+2. **Tesla phase:** use official Fleet API/OAuth with correct permissions, virtual-key pairing where required, key protection, per-model supported operation discovery and verification. Documented commands include climate, navigation, media and some parked-car window operations, subject to vehicle/API restrictions.
+3. **Cross-brand phase:** adapter through an aggregator (e.g. Smartcar) when supported, or direct manufacturer-authorized APIs. Show missing capabilities honestly; do not claim universal OEM coverage.
+4. **In-car phase:** use permitted mobile companion / OS projection or OEM app surface for voice, music and navigation when available. This is distinct from remotely controlling physical vehicle components.
+5. **Safety boundary:** Secretary may suggest routes, send destination or request supported non-driving comfort controls. It must not turn a user phrase like "отвези меня" into steering/braking/acceleration commands; no unsafe aftermarket actuator claims.
+6. **Authority:** car owner/enrolled user grants per-vehicle commands; unlock, location and other sensitive operations require relevant confirmation policy. Never use mere voice similarity for strong vehicle authority.
+7. **Reliability:** vehicle might be moving, asleep, offline, rate-limited or in a different state; check prerequisites, keep pending/unknown receipt separate from success, and suppress blind retry.
+8. **Compatibility matrix:** provider, country, model, model year, firmware, permission, command set, last verified date and test evidence.
+9. **Deliverable:** small Tesla proof-of-concept and one cross-brand adapter evaluation, then production release commitments if proven. No guarantee that every car can open its windows or accept steering.
+
+Research: Tesla Fleet API https://developer.tesla.com/docs/fleet-api/endpoints/vehicle-commands ; virtual key https://developer.tesla.com/docs/fleet-api/virtual-keys/developer-guide ; cross-brand https://smartcar.com/product/commands .
+
+## Deep architectural sketch — Circles and multi-person actions (PART CONFIRMED, PART OPEN)
+
+- **Confirmed:** independent Person/Personal Secretary private histories, shared Circle sessions; task-relevant scoped memory summaries; intentional shared chat; invitations; Circle can propose and negotiate autonomously, but cannot turn a suggestion into another person's commitment.
+- **Open:** Circle session vs recurring group membership identity; shared host; inter-server transport; voting/delegation policy; budget limits; retention of shared facts; account deletion; who pays for facilitation; release boundary.
+- **Example 1:** Nick wants a movie; Nick's and Ora's Secretaries share genre constraints (not their entire personal chats), negotiate candidates, request agreement if required, store one shared Decision.
+- **Example 2:** X/Y/Z plan 1–2 day trip. Secretaries can share limited budget/date/activity constraints, negotiate options and make proposals, even proposing a loan. Proposal stays hypothetical until its recipient consents.
+- **Example 3:** Participants authorize Z to book and authorize each person's specific payment through their own Secretary, if a compatible payment provider is connected. Circle tracks stages and receipts; booking failure triggers reconciliation rather than inventing a successful trip.
+- **Do not** conflate A2A messages with durable consent; a Secretary's model prediction that its user will agree is not a human signature. Personal DMs and shared Circle logs have different viewers and access policies.
+
+## Circles — remaining questions already enumerated in the draft PR (UNREVIEWED)
+
+## Q4 — Remaining design questions for batch review
+
+The following **13 known outstanding decisions (Q4h–Q4t)** were collected at the owner's request rather than drip-fed one at a time. They are **recommendations, not accepted decisions**. Dependency order is indicated by grouping; if an upstream answer changes, its downstream recommendations must be revisited. The Circle model below supersedes the earlier household-wide Secretary hypothesis. Speaker identification, children and voice authorization were explicitly set aside for now.
+
+### Identity, membership, topology
+
+**Q4h — Circle session vs recurring group.** Does reusing a family Circle mean reopening one shared history or starting a new Circle with the same participants/settings? **Recommend:** A Circle is one scoped collaboration around a goal, with durable history; recurring membership is an optional reusable group/template that starts new Circles. Reopen the same Circle only to continue its original goal. Do not merge unrelated movie, holiday and household histories.
+
+**Q4i — Decision participants.** If a Circle has Nick, Ora and Terry, can Nick and Ora make a decision without including Terry? **Recommend:** Yes; Circle membership and per-Decision participants are distinct. Only involved participants receive its scoped details and consent requests.
+
+**Q4j — Independent deployments and federation.** Should Nick's cloud Secretary collaborate with Ora's self-hosted Secretary without moving either person's state to one provider? **Recommend:** Yes as an architectural goal through authenticated, consented cross-deployment Circle/A2A federation; start with supported deployments and defer broad interoperability until tested.
+
+**Q4k — Coordination ownership and compute costs.** Who hosts the Circle's canonical state and pays for shared facilitation if participants use different infrastructure/subscriptions? **Recommend:** A designated Circle host owns durable shared state, initially defaulting to its creator's installation. Each personal Secretary pays for its own inference; explicit Circle budget/owner covers optional shared model work. Participants do not silently subsidize others.
+
+### Intelligence and agreement
+
+**Q4l — Circle coordinator vs another full AI.** Should Circle have an autonomous top-level model that directs participants, or a durable process whose participating Secretaries do the reasoning? **Recommend:** Durable coordinator with structured proposals, evidence, decisions and an optional LLM facilitator for synthesis; personal Secretaries retain private reasoning and tools. A2A transmits typed collaboration messages, not an unbounded free-form debate.
+
+**Q4m — Rule for accepting a decision.** Is a recommendation accepted only unanimously, by majority, or by an explicitly chosen decision policy? **Recommend:** An explicit policy per Decision: unanimity for shared commitments and cost-bearing actions by default; voting/delegated choices only when participants agreed to that policy. Recommendations can exist without any approval.
+
+**Q4n — Proactive initiation and invitations.** May Secretary initiate a Circle without its owner's immediate request, e.g. noticing conflicting holiday schedules? **Recommend:** It may suggest creating a Circle automatically, but invitation dispatch and autonomous creation require an explicit prior user mandate or per-case confirmation. Existing trusted recurring-group rules from Q4g still apply.
+
+**Q4o — Absent people, stalemates and changing minds.** What if Z is offline, a deadline passes or one participant changes their answer? **Recommend:** Async Circle with explicit pending/declined/timed-out states; deadlines are configurable; no invented consensus. Recompute unexecuted plans if consent changes, but do not pretend external actions can always be undone.
+
+### Data, authority and lifecycle
+
+**Q4p — Shared context retention and provenance.** Do summaries offered by Secretaries become permanent shared memory, even if they originated in private context? **Recommend:** Store only the minimum disclosed information necessary to explain a Circle Decision, record the source and sharing scope, and expire or archive detailed contextual snapshots by policy. Do not automatically write every shared statement into any participant's personal long-term memory.
+
+**Q4q — Leaving, removal and history.** If Ora leaves a Circle, what happens to her previously shared messages and completed decisions? **Recommend:** Revoke future access/sharing immediately; retain existing decision/audit records according to an explicit retention policy and allow deletion/redaction where feasible. Never promise that already viewed disclosures can be retracted.
+
+**Q4r — Multi-party external actions and partial failures.** When Nick and Ora approve payment and Z's Secretary books, who owns each step, and what if one payment succeeds while the booking fails? **Recommend:** Every person/Secretary executes only their individually authorized tools; Circle tracks an auditable multi-stage plan, exact approvals and external receipts. Failed/uncertain steps stop further execution and are reconciled before retrying; no silent duplicate transfers or bookings. Circle may propose compensation/refunds, not assume they succeeded.
+
+**Q4s — A2A negotiation limits.** How do we avoid an endless Secretary-to-Secretary argument or unbounded subscription/API spending? **Recommend:** Per-Circle limits on turns, duration, external actions and inference spend; show usage/limits and require an explicit extension if exceeded.
+
+### Release boundary
+
+**Q4t — Which release gets Circles?** Must multi-person Circle federation, payments and bookings ship with the first public v1, or remain a later capability while Secretary first stabilizes personal use? **Recommend:** Preserve the existing single-person release as the first milestone; treat Circles as a clearly documented future product capability, with prototype slices permitted sooner. No change to public-v1 acceptance criteria until explicitly chosen.
+
+## Historical grilling register — October 17 baseline (59 answered questions)
+
+> This is retained as an explicitly historical baseline. Later Q1–Q4g decisions above take precedence for future **proposals**, but do not modify current Public v1 behavior until the revised canonical spec is approved.
+
+### Secretary — Grilling decisions (17 October 2026)
+
+> Compact **question → owner's decision** record of the design interview. These are summarized decisions, **not verbatim quotes**. Where an answer was revised in a later round, the **latest answer wins**. See [canonical spec](spec.md) for normative product requirements.
+
+## Round 1 — Product foundation
+
+| Q | Question | Final decision |
+| --- | --- | --- |
+| Q1 | Who is Secretary for? | First release for developers already using paid native harnesses; later a mass-market assistant including customers in Russia and other markets. |
+| Q2 | Which harnesses are mandatory for Public v1? | **Codex and Claude Code both supported and tested.** Each user can have just one. |
+| Q3 | What is the source of product requirements? | **spec/spec.md** canonical, based on authored old_spec.md. Preserve original/references and distinguish implemented, planned and rejected work. |
+| Q4 | What durability can Secretary promise? | Preserve intent/history/state; **no guaranteed exactly-once side effects** or automatic blind retries of uncertain execution. |
+| Q5 | Should Secretary manage child Workers/subagents? | **No Secretary-managed Child Workers.** Whatever internal subagents native harnesses use is not Secretary's concern. |
+| Q6 | Must Secretary answer after a Worker Result? | No. Deliver Worker Result directly by default, without a second Secretary LLM turn; optional per-Worker summary later. |
+| Q7 | Should Secretary build sandbox, read-only and smart approvals? | **No. Full-access by default; remove read-only from v1 scope; no new approval system.** Harness owns native tool behavior. |
+| Q8 | How should the product be distributed? | Open-source self-hosted Developer Edition first; paid service offering later. |
+
+## Round 2 — Business model and release
+
+| Q | Question | Final decision |
+| --- | --- | --- |
+| Q9 | What does a nontechnical customer buy? | A **working paid Secretary assistant**. Seller provides inference and potentially compute/microVMs; do **not** design inference sourcing here. |
+| Q10 | One product or different products for developers/consumers? | **One core product.** Developer Edition reuses the person's native subscriptions; Consumer Edition provides inference/compute. |
+| Q11 | What gates first Public v1? | Essential Codex/Claude, reliable Worker lifecycle, chat/channels/Nodes and usable setup; defer advanced memory, skills learning, scheduler and Consumer Edition. |
+
+## Round 3 — Secretary behavior and installation
+
+| Q | Question | Final decision |
+| --- | --- | --- |
+| Q12 | Default permission modes? | **Full-access only for now.** Remove read-only mode from v1; avoid Secretary-level approvals. |
+| Q13 | Direct answers or delegate? | **Heavily delegate** substantive questions, research and even evolving project conversations. Secretary answers only super-simple questions. |
+| Q14 | Can Secretary use any harness? | Yes. Secretary's harness is independently configurable from Workers. |
+| Q15 | Who chooses a Worker harness/Node? | Secretary normally chooses automatically; user may override explicitly. |
+| Q16 | Browser wizard or terminal setup? | **Beautiful terminal-only interactive installer**, started from a pasted installation link/command. |
+| Q17 | How much memory in v1? | **memory.md + user_preferences.md** suffice. Existing SQLite conversation/lifecycle remains. |
+| Q18 | How should Consumer Edition feel? | Customer pays Secretary and starts chatting; no technical model or VM setup. |
+
+## Round 4 — Continuity, Projects and research
+
+| Q | Question | Final decision |
+| --- | --- | --- |
+| Q19 | Does Worker receive previous conversation context? | Yes. Secretary passes relevant discussion/decisions, not just the latest utterance. |
+| Q20 | Reuse Worker for related work? | Yes. Continue same persistent Worker where applicable; new Worker for unrelated work. |
+| Q21 | Are Projects necessary? | **Not mandatory.** Ordinary users mostly chat or manipulate files. Existing developer Project plumbing can stay optional, not become a first-class required workflow. |
+| Q22 | Must users install both Codex and Claude Code? | No; Public v1 **supports both**, individual owner may use only one. |
+| Q23 | Must every answer use the internet? | No. Delegate substantive questions; Worker decides whether browsing/current sources are needed. |
+
+## Round 5 — Worker question/answer loop
+
+| Q | Question | Final decision |
+| --- | --- | --- |
+| Q24 | How does Worker ask a question? | As an ordinary terminal **Result for an Attempt**, without closing the Task/Worker; resume on Follow-up. |
+| Q25 | Where does a user's answer go? | Secretary automatically routes it to the Worker that asked, when context is clear. |
+| Q26 | May user switch topics while Worker awaits an answer? | Yes. Unfinished Worker remains available. |
+| Q27 | Where are Worker questions shown? | Directly in the shared Personal Conversation with Worker attribution, without Secretary echo. |
+| Q28 | Does successful completion destroy Worker? | No. Worker persists for later follow-up until user/Secretary explicitly closes or archives it. |
+
+## Round 6 — UI, Skills, memory and platforms
+
+| Q | Question | Final decision |
+| --- | --- | --- |
+| Q29 | Which channels for Public v1? | **Web + installable PWA + Telegram DM and optional forum group** with General and per-Worker Topics. |
+| Q30 | Can user talk to Worker directly? | Yes: through Secretary or direct Web observer/Telegram Worker Topic. |
+| Q31 | Active steering versus queue? | Plain message attempts steering immediately; explicit **/q** means FIFO queued follow-up; no silent fallback. |
+| Q32 | Installation interface? | All initial configuration in **terminal**; browser not required. |
+| Q33 | Central Skills Registry now? | No. Use **native harness Skills**; registry/auto-learning later. |
+| Q34 | Who writes long-term memory? | Secretary reads memory files; **writes facts/preferences only by explicit user request** in v1. |
+| Q35 | Is file support text-only? | **No**: images, audio, videos, documents in both directions; agents can return files. |
+| Q36 | Supported operating systems? | Secretary Server **macOS/Linux**; Execution Nodes **macOS/Linux/Windows**. |
+
+## Round 7 — Synchronization and multimedia
+
+| Q | Question | Final decision |
+| --- | --- | --- |
+| Q37 | Mirror Telegram DM and group General? | Yes, **both directions**, one canonical conversation; no duplicate execution from mirroring. |
+| Q38 | Who may issue commands via group? | **One owner only** in Developer Edition, linked Telegram identity; being a group member confers no access. |
+| Q39 | What is PWA? | Installable version of Web using same Server; full offline/push later. |
+| Q40 | Where are Artifacts stored? | **One Artifact Store on the same host as Secretary Server**. Nodes access by server-owned references. |
+| Q41 | How to process videos? | Keep original, sample timestamped frames (e.g. 1 FPS); **rate and processing limits are configurable**. Optionally transcribe audio. |
+| Q42 | How to handle voice/audio? | Keep original plus transcript as linked Artifacts; reuse existing ASR where practical. |
+| Q43 | Can agents send created files? | Yes, Secretary and Worker can return files to Web/PWA and Telegram. |
+| Q44 | What if file exceeds limits? | **Reject with warning** for now; never silently truncate. |
+
+## Round 8 — Data and setup
+
+| Q | Question | Final decision |
+| --- | --- | --- |
+| Q45 | Artifact retention? | Keep until explicit deletion; archiving Worker does not delete files. |
+| Q46 | How is generated file published? | Worker explicitly publishes Artifact; no arbitrary auto-scan of Node filesystem. |
+| Q47 | Who preprocesses audio/video? | Secretary Server handles intake/storage/common conversions; Worker can still access original. |
+| Q48 | What if Node goes offline? | Show offline, preserve Task, **do not automatically migrate existing Worker**. New tasks may use another Node. |
+| Q49 | How to change config later? | Interactive **secretary config** terminal UI; files remain editable. |
+| Q50 | How is Secretary operated? | Simple start/stop/restart/status/logs/update commands; OS-native background services. |
+| Q51 | Need a new owner account/password? | **No. Reuse existing Web bootstrap code/token and owner session cookie**, already implemented. |
+| Q52 | Is Telegram group mandatory? | No. DM alone is fully functional; connect group/topics later if wanted. |
+| Q53 | What qualifies as Public v1? | Independent installation, supported Codex/Claude, Worker lifecycle, Web/PWA, Telegram, media/files, remote Nodes, persistence/recovery and tested OS matrix. |
+
+## Round 9 — Final storage, reliability and documentation
+
+| Q | Question | Final decision |
+| --- | --- | --- |
+| Q54 | Does closing/deleting Worker delete its Artifacts? | Closing/archive **does not**; explicit deletion is separate, cleans unreferenced derived data. |
+| Q55 | Backups? | Provide backup/restore of SQLite, files, memory and config; **remote native sessions not guaranteed** by Server backup. |
+| Q56 | What if conversion or ASR fails? | Preserve original, show clear error, do not claim missing content was analyzed. |
+| Q57 | Can media processing block chat? | No; process asynchronously and gate only messages that depend on that Artifact. |
+| Q58 | Must Developer Edition host public remote Web? | No; localhost/LAN/owner-managed secure access. |
+| Q59 | How should canonical spec be structured? | Product Contract, Architecture Contract, Release Scope and code-gap ledger; distinguish actual implementation from goals. |
+
+## Final confirmation
+
+The owner approved all final Q54–Q59 answers with "yes lgtm", requested that this grilling Q&A be saved as a file, supplied the to-spec workflow, and permitted creation of ADR files. No further design interview is required before drafting the approved specification.
+
+### Reading order
+
+1. [Canonical spec](spec.md) — normative desired product.
+2. This file — concise **Q → decision** record.
+3. [ADRs](../docs/adr/) — long-lived rationale/tradeoffs.
+4. [Runtime contracts](../docs/architecture/runtime-contracts.md) — currently implemented protocol behavior.
+
+
+## Reviewer checklist for this master document
+
+- The owner should review **confirmed/current**, **historical v1 baseline**, and **proposed future questions** separately; one does not imply approval of another.
+- Answer IDs `Q0001`–`Q1000` and the original Q4h–Q4t are stable review references.
+- Every follow-up proposal must say what dependency it requires; ask one question at a time when grilling resumes.
+- A feature can be a dream, a proposed requirement, a baseline goal, an implemented behavior, or live-accepted. These are **different** statuses.
+- No external integration is declared universally supported solely because an API exists.
+- No actual purchases, vehicle commands, smart-home changes, billing, or releases are authorized by this spec.
+
+
 ## Review protocol
 
 - Every question gets a numbered identifier, a proposed answer, a phase and a non-approval status. The owner can respond with changed IDs; only explicit approval changes statuses.
