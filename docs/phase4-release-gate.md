@@ -9,9 +9,11 @@
 
 ## Проверка gofmt в CI и standalone
 
-Шаг 2 проверяет форматирование без изменения файлов. В GitHub Actions на событии `pull_request` проверяются **все существующие Go-файлы, добавленные или изменённые в PR** относительно merge-base с `origin/$GITHUB_BASE_REF`; checkout для release gate содержит полную историю. Неизменённые файлы `main` не включаются в PR-результат, даже если они уже не соответствуют gofmt. Недоступный base ref или merge-base приводит к ошибке, а не к пропуску проверки.
+Шаг 2 проверяет форматирование без изменения файлов. При явном PR-scoped запуске (`GITHUB_EVENT_NAME=pull_request`) проверяются **все существующие Go-файлы, добавленные или изменённые в PR** относительно merge-base с `origin/$GITHUB_BASE_REF`; checkout для release gate должен содержать полную историю. Неизменённые файлы `main` не включаются в PR-результат, даже если они уже не соответствуют gofmt. Недоступный base ref или merge-base приводит к ошибке, а не к пропуску проверки.
 
 Обычный standalone запуск `./scripts/phase4-release-gate.sh` (вне события `pull_request`) по-прежнему строго проверяет **все** `*.go` под `internal`, `cmd` и `web`, включая исторический долг форматирования. Для локальной проверки именно PR-diff можно указать `PHASE4_GOFMT_BASE_REF=origin/main ./scripts/phase4-release-gate.sh` после получения нужного base ref. `bash ./scripts/phase4-gofmt-check-test.sh` проверяет три случая: неверно отформатированный файл из diff отклоняется, исправленный diff принимается несмотря на неизменённый baseline-долг, standalone находит этот долг. Остальные шаги полного gate не пропускаются ни в одном режиме.
+
+Workflow `.github/workflows/issue209-claude-cancel.yml` запускает только `issue209-tests` на `pull_request` (с исходными path filters). Полный `phase4-release-gate` запускается по `push` в `main` и через `workflow_dispatch`, но не на PR. Для повторного запуска полного gate на конкретном PR используется standalone-команда, включая описанный выше явный `PHASE4_GOFMT_BASE_REF`, либо отдельный согласованный прогон, без изменения проверок gate.
 
 ## Актуальный статус локального batch
 
