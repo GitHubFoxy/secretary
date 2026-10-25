@@ -346,6 +346,16 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 					commandWG.Add(1)
 					go func() {
 						defer commandWG.Done()
+						for {
+							if _, err := d.Store.Command(running.commandID); err == nil {
+								break
+							}
+							select {
+							case <-commandCtx.Done():
+								return
+							case <-time.After(10 * time.Millisecond):
+							}
+						}
 						outcome, err := execution.HandleCommand(commandCtx, command)
 						select {
 						case completions <- commandCompletion{command:command, outcome:outcome, err:err, priorityCancel:true}:
