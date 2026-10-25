@@ -48,6 +48,7 @@ type ExecutionNode struct {
 	// cancellation survive WebSocket disconnects, unlike commandCtx.
 	nativeResumes map[string]*nativeResumeAttempt
 	nativeResumeRegistrationBarrier func()
+	nativeResumeErrorBeforeFinalization func()
 	// nativeLifetime is the Node process lifetime, not an individual
 	// WebSocket connection or an individual Dispatch command.
 	nativeLifetime context.Context
@@ -750,6 +751,35 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	n.mu.Unlock()
 	notifyNativeHandoff(ctx)
 	session, err := resumeSameIdentity(nativeCtx, resumer, request, mapping.RuntimeSessionID)
+	if err != nil && command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
+		if n.nativeResumeErrorBeforeFinalization != nil {
+			n.nativeResumeErrorBeforeFinalization()
+		}
+		n.mu.Lock()
+		ownerCanceled := pending.canceled
+		wasCanceled := ownerCanceled || nativeCtx.Err() != nil
+		nativeCancel()
+		var outcome CommandOutcome
+		if ownerCanceled {
+			outcome = n.completeCanceledClaudeResume(command, session, err, false)
+		} else {
+			if session != nil {
+				_ = session.Close()
+			}
+			if wasCanceled {
+				outcome = failedOutcome(Command{Kind: CommandResume, Resume: command}, "native_resume_canceled", "Native Resume canceled before Session registration")
+			} else {
+				outcome = failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
+			}
+			if _, persistErr := n.store.CompleteCommand(command.Metadata.CommandID, outcome); persistErr != nil {
+				n.mu.Unlock()
+				return outcome
+			}
+		}
+		delete(n.nativeResumes, command.Metadata.AttemptID)
+		n.mu.Unlock()
+		return outcome
+	}
 	n.mu.Lock()
 	ownerCanceled := pending.canceled
 	wasCanceled := ownerCanceled || nativeCtx.Err() != nil
