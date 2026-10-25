@@ -49,7 +49,7 @@ type ExecutionNode struct {
 	nativeResumes map[string]*nativeResumeAttempt
 	nativeResumeRegistrationBarrier func()
 	nativeResumeErrorBeforeFinalization func()
-	nativeResumePreparationBarrier func()
+	nativeResumePreparationBarrier func(context.Context)
 	nativeResumeStarted map[string]bool
 	preNativeClaudeResumes map[string]context.CancelCauseFunc
 	// nativeLifetime is the Node process lifetime, not an individual
@@ -697,7 +697,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		checkpoint = command.Envelope.PreviousAttemptID
 	}
 	if command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode && n.nativeResumePreparationBarrier != nil {
-		n.nativeResumePreparationBarrier()
+		n.nativeResumePreparationBarrier(ctx)
 	}
 	mapping, mappingErr := n.continuationMapping(command.Envelope, checkpoint)
 	if mappingErr != nil {
