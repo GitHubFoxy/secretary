@@ -13,7 +13,13 @@ type message struct {
 	Result any             `json:"result,omitempty"`
 }
 
+var packagedACPVersion string
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--version" && packagedACPVersion != "" {
+		_, _ = os.Stdout.WriteString("@agentclientprotocol/codex-acp " + packagedACPVersion + "\n")
+		return
+	}
 	out := json.NewEncoder(os.Stdout)
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
