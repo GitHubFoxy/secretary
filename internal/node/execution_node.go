@@ -47,6 +47,7 @@ type ExecutionNode struct {
 	// Native Resume may block after durable handoff. Its identity and
 	// cancellation survive WebSocket disconnects, unlike commandCtx.
 	nativeResumes map[string]*nativeResumeAttempt
+	nativeResumeRegistrationBarrier func()
 	// nativeLifetime is the Node process lifetime, not an individual
 	// WebSocket connection or an individual Dispatch command.
 	nativeLifetime context.Context
@@ -515,6 +516,24 @@ func (n *ExecutionNode) cancel(ctx context.Context, command *CancelCommand) Comm
 		n.mu.Unlock()
 		return acceptedOutcome(Command{Kind: CommandCancel, Cancel: command})
 	}
+	if command.Metadata.HarnessInstanceID != "" {
+		record, recordErr := n.store.CommandForAttempt(command.Metadata.AttemptID)
+		if recordErr == nil && record.State == CommandProcessing && record.Kind == CommandResume {
+			original, decodeErr := commandFromJSON(record.CommandJSON)
+			if decodeErr == nil && original.Resume != nil && original.Resume.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
+				old := original.Metadata()
+				if old.WorkerRef == command.Metadata.WorkerRef && old.AttemptID == command.Metadata.AttemptID &&
+					old.TurnID == command.Metadata.TurnID && old.HarnessInstanceID == command.Metadata.HarnessInstanceID && old.Node == command.Metadata.Node {
+					if err := n.store.RecordNativeResumeCancel(old.CommandID, command.Metadata); err != nil {
+						n.mu.Unlock()
+						return failedOutcome(Command{Kind: CommandCancel, Cancel: command}, "cancel_checkpoint_failed", err.Error())
+					}
+					n.mu.Unlock()
+					return acceptedOutcome(Command{Kind: CommandCancel, Cancel: command})
+				}
+			}
+		}
+	}
 	n.mu.Unlock()
 	session, err := n.sessionForCommand(ctx, command.Metadata)
 	if err != nil {
@@ -687,21 +706,37 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "binding_conflict", err.Error())
 	}
 	request.Profile = profile
+	if n.claudeResumeCanceledBeforeNative(command) {
+		return n.completeCanceledClaudeResume(command, nil, nil, true)
+	}
 	if outcome, ok := n.beforeNativeHandoff(ctx, Command{Kind: CommandResume, Resume: command}); ok {
 		return outcome
 	}
+	n.mu.Lock()
 	if e := n.store.MarkNativeHandoff(ctx, command.Metadata.CommandID); e != nil {
+		n.mu.Unlock()
+		if n.claudeResumeCanceledBeforeNative(command) {
+			return n.completeCanceledClaudeResume(command, nil, nil, true)
+		}
 		if outcome, ok := n.beforeNativeHandoff(ctx, Command{Kind: CommandResume, Resume: command}); ok {
 			return outcome
 		}
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "native_handoff_record_failed", e.Error())
 	}
-	// Mark the Attempt as in-flight before releasing socket ownership.
-	// Cancel on the reconnected WebSocket can now interrupt exactly this
-	// native Resume, without waiting for Session registration.
+	if n.nativeResumeRegistrationBarrier != nil {
+		n.nativeResumeRegistrationBarrier()
+	}
+	record, recordErr := n.store.Command(command.Metadata.CommandID)
+	if recordErr != nil {
+		n.mu.Unlock()
+		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "native_handoff_record_failed", recordErr.Error())
+	}
+	if record.NativeResumeCancelRequested {
+		n.mu.Unlock()
+		return n.completeCanceledClaudeResume(command, nil, nil, true)
+	}
 	nativeCtx, nativeCancel := context.WithCancel(n.nativeStartContext(ctx))
 	pending := &nativeResumeAttempt{commandID: command.Metadata.CommandID, workerRef: command.Metadata.WorkerRef, cancel: nativeCancel}
-	n.mu.Lock()
 	if n.nativeResumes[command.Metadata.AttemptID] != nil {
 		n.mu.Unlock()
 		nativeCancel()
@@ -721,7 +756,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	if err != nil || wasCanceled {
 		nativeCancel()
 		if ownerCanceled && command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
-			return n.completeCanceledClaudeResume(command, session)
+			return n.completeCanceledClaudeResume(command, session, err, false)
 		}
 		if session != nil {
 			_ = session.Close()
@@ -740,7 +775,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		n.mu.Unlock()
 		nativeCancel()
 		if pending.canceled && command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
-			return n.completeCanceledClaudeResume(command, session)
+			return n.completeCanceledClaudeResume(command, session, nil, false)
 		}
 		_ = session.Close()
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "native_resume_canceled", "Native Resume canceled before Session registration")
@@ -777,14 +812,34 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	return acceptedOutcome(Command{Kind: CommandResume, Resume: command})
 }
 
-func (n *ExecutionNode) completeCanceledClaudeResume(command *ResumeCommand, session Session) CommandOutcome {
+func (n *ExecutionNode) claudeResumeCanceledBeforeNative(command *ResumeCommand) bool {
+	if command.Envelope.HarnessInstance.Kind != core.HarnessClaudeCode {
+		return false
+	}
+	record, err := n.store.Command(command.Metadata.CommandID)
+	return err == nil && record.NativeResumeCancelRequested && record.State == CommandProcessing
+}
+
+func (n *ExecutionNode) completeCanceledClaudeResume(command *ResumeCommand, session Session, nativeErr error, beforeStart bool) CommandOutcome {
 	cmd := Command{Kind: CommandResume, Resume: command}
+	confirmed := beforeStart
 	if session != nil {
-		if err := session.Close(); err != nil {
-			return failedOutcome(cmd, "native_resume_close_failed", err.Error())
-		}
+		confirmed = session.Close() == nil
+	} else if !beforeStart {
+		var proof *claudeNativeCleanupConfirmedError
+		confirmed = errors.As(nativeErr, &proof)
 	}
 	metadata := command.Metadata
+	status := core.OutcomeCanceled
+	summary := "Claude Code attempt canceled"
+	code := "canceled"
+	outcome := acceptedOutcome(cmd)
+	if !confirmed {
+		status = core.OutcomeInterrupted
+		summary = "Native Claude Resume cleanup could not be verified"
+		code = "execution_state_unknown"
+		outcome = CommandOutcome{CommandID: metadata.CommandID, Kind: CommandResume, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID, State: CommandInterrupted, ErrorCode: code, ErrorMessage: summary}
+	}
 	terminal := core.AttemptOutcomeEnvelope{
 		EventID: "attempt-outcome-" + metadata.AttemptID,
 		Node: metadata.Node,
@@ -792,13 +847,12 @@ func (n *ExecutionNode) completeCanceledClaudeResume(command *ResumeCommand, ses
 		WorkerRef: metadata.WorkerRef,
 		TurnID: metadata.TurnID,
 		AttemptID: metadata.AttemptID,
-		Status: core.OutcomeCanceled,
+		Status: status,
 		Classification: core.OutcomeFinal,
-		Summary: "Claude Code attempt canceled",
-		ErrorCode: "canceled",
+		Summary: summary,
+		ErrorCode: code,
 		OccurredAt: time.Now().UTC(),
 	}
-	outcome := acceptedOutcome(cmd)
 	delay := 25 * time.Millisecond
 	for {
 		if _, err := n.store.CompleteCommandWithOutcome(metadata.CommandID, outcome, terminal); err == nil {
