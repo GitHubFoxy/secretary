@@ -196,10 +196,13 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 		n.mu.Unlock()
 		defer func() {
 			n.mu.Lock()
+			nativeStarted := n.nativeResumeStarted[command.Metadata().AttemptID]
 			delete(n.nativeResumeStarted, command.Metadata().AttemptID)
 			delete(n.preNativeClaudeResumes, command.Metadata().AttemptID)
 			n.mu.Unlock()
-			preCancel(nil)
+			if !nativeStarted {
+				preCancel(nil)
+			}
 		}()
 		ctx = preCtx
 	}
