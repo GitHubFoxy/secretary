@@ -339,7 +339,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 				key := commandWorkerKey(command)
 				running, ok := runningDetails[key]
 				if ok && running.claudeResume && running.attemptID == command.Metadata().AttemptID &&
-					!priorityCancels[key] && execution.nativeResumeRunning(running.attemptID, key, running.commandID) {
+					!priorityCancels[key] {
 					priorityCancels[key] = true
 					commandWG.Add(1)
 					go func() {
