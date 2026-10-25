@@ -1212,14 +1212,15 @@ func (s *acpSession) handleServerRequest(message acp.Message) (any, error) {
 	}
 	s.requestMu.Lock()
 	nativeID := string(message.ID)
-	valueResponse, alreadyResponded := s.reboundResponses[requestID]
-	if alreadyResponded {
+	valueResponse := s.reboundResponses[requestID]
+	if valueResponse != nil {
 		delete(s.reboundResponses, requestID)
 		pending = valueResponse
 	} else {
 		pending = &pendingACPResponse{response: make(chan string, 1), delivered: make(chan error, 1)}
-		s.pending[requestID] = pending
 	}
+	alreadyResponded := pending.responseSent
+	s.pending[requestID] = pending
 	pending.retry = retry
 	s.nativeRequests[nativeID] = requestID
 	s.nativeDeliveries[nativeID] = pending
@@ -1259,8 +1260,7 @@ func (s *acpSession) elicitationRequestID(requestID json.RawMessage, kind Activi
 		if request.Kind != "" && request.Kind != kind {
 			return "", fmt.Errorf("acp: elicitation request %q kind mismatch", candidate)
 		}
-		s.rebound = append(s.rebound[:index], s.rebound[index+1:]...)
-		return candidate, nil
+		return s.claimReboundRequest(index), nil
 	}
 	for _, request := range s.rebound {
 		if request.Kind == "" || request.Kind == kind {
@@ -1310,8 +1310,7 @@ func (s *acpSession) reboundRequestID(params map[string]any, kind ActivityKind) 
 			if request.Kind != "" && request.Kind != kind {
 				return "", fmt.Errorf("acp: durable request %q kind mismatch", durableID)
 			}
-			s.rebound = append(s.rebound[:index], s.rebound[index+1:]...)
-			return durableID, nil
+			return s.claimReboundRequest(index), nil
 		}
 		return "", fmt.Errorf("acp: durable request %q was not pending", durableID)
 	}
@@ -1328,9 +1327,16 @@ func (s *acpSession) reboundRequestID(params map[string]any, kind ActivityKind) 
 	if match < 0 {
 		return "", nil
 	}
-	requestID := s.rebound[match].RequestID
-	s.rebound = append(s.rebound[:match], s.rebound[match+1:]...)
-	return requestID, nil
+	return s.claimReboundRequest(match), nil
+}
+
+func (s *acpSession) claimReboundRequest(index int) string {
+	requestID := s.rebound[index].RequestID
+	s.rebound = append(s.rebound[:index], s.rebound[index+1:]...)
+	if s.reboundResponses[requestID] == nil {
+		s.reboundResponses[requestID] = &pendingACPResponse{response: make(chan string, 1), delivered: make(chan error, 1)}
+	}
+	return requestID
 }
 
 type acpElicitationRequest struct {
