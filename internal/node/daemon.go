@@ -53,7 +53,9 @@ func notifyNativeHandoff(ctx context.Context) {
 
 type runningNodeCommand struct {
 	kind CommandKind
+	commandID string
 	attemptID string
+	claudeResume bool
 	interrupt context.CancelCauseFunc
 }
 
@@ -65,6 +67,7 @@ type commandCompletion struct {
 	// ACKed gets its cached response directly; it must not create another
 	// outbox event. New native completions always use the durable outbox.
 	replyAfterAck bool
+	priorityCancel bool
 }
 
 func (d *Daemon) Run(ctx context.Context) error {
@@ -173,6 +176,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 	pendingCommands := make([]Command, 0, 32)
 	runningWorkers := make(map[string]bool)
 	runningDetails := make(map[string]runningNodeCommand)
+	priorityCancels := make(map[string]bool)
 	runningCommands := 0
 	commandWorkerKey := func(command Command) string {
 		worker := command.Metadata().WorkerRef
@@ -199,7 +203,7 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			runningWorkers[key] = true
 			runningCommands++
 			individualCtx,interrupt:=context.WithCancelCause(commandCtx)
-			runningDetails[key]=runningNodeCommand{kind:command.Kind,attemptID:command.Metadata().AttemptID,interrupt:interrupt}
+			runningDetails[key]=runningNodeCommand{kind:command.Kind,commandID:command.Metadata().CommandID,attemptID:command.Metadata().AttemptID,claudeResume:command.Kind==CommandResume && command.Resume!=nil && command.Resume.Envelope.HarnessInstance.Kind==core.HarnessClaudeCode,interrupt:interrupt}
 			commandWG.Add(1)
 			signal:=&nativeHandoffSignal{ready:make(chan struct{})}
 			finished:=make(chan struct{})
@@ -330,6 +334,25 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 					running.interrupt(errWorkerDispatchCanceled)
 				}
 			}
+			if message.Command.Kind == CommandCancel && message.Command.Cancel != nil {
+				command := *message.Command
+				key := commandWorkerKey(command)
+				running, ok := runningDetails[key]
+				if ok && running.claudeResume && running.attemptID == command.Metadata().AttemptID &&
+					!priorityCancels[key] && execution.nativeResumeRunning(running.attemptID, key, running.commandID) {
+					priorityCancels[key] = true
+					commandWG.Add(1)
+					go func() {
+						defer commandWG.Done()
+						outcome, err := execution.HandleCommand(commandCtx, command)
+						select {
+						case completions <- commandCompletion{command:command, outcome:outcome, err:err, priorityCancel:true}:
+						case <-commandCtx.Done():
+						}
+					}()
+					continue
+				}
+			}
 			if len(pendingCommands) >= 32 {
 				return errors.New("node: command queue full")
 			}
@@ -337,9 +360,13 @@ func (d *Daemon) serveConnection(ctx context.Context, execution *ExecutionNode, 
 			startPending()
 		case completed := <-completions:
 			key:=commandWorkerKey(completed.command)
-			delete(runningWorkers,key)
-			delete(runningDetails,key)
-			runningCommands--
+			if completed.priorityCancel {
+				delete(priorityCancels,key)
+			} else {
+				delete(runningWorkers,key)
+				delete(runningDetails,key)
+				runningCommands--
+			}
 			startPending()
 			if completed.err != nil {
 				return completed.err
