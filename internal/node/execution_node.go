@@ -679,6 +679,9 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	if continuing {
 		checkpoint = command.Envelope.PreviousAttemptID
 	}
+	if command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode && n.nativeResumePreparationBarrier != nil {
+		n.nativeResumePreparationBarrier()
+	}
 	mapping, mappingErr := n.continuationMapping(command.Envelope, checkpoint)
 	if mappingErr != nil {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
@@ -689,9 +692,6 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	resumer, ok := n.runtime.(Resumer)
 	if !ok {
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "runtime_session_unavailable", ErrRuntimeSessionUnavailable.Error())
-	}
-	if command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode && n.nativeResumePreparationBarrier != nil {
-		n.nativeResumePreparationBarrier()
 	}
 	workspace := mapping.Workspace
 	if command.Envelope.ProjectID != "" {
