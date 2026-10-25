@@ -429,10 +429,12 @@ func TestIssue209NodeCrashWithLiveClaudeAfterAcceptedCancelIsInterrupted(t *test
 	defer stop()
 	dir := t.TempDir()
 	rootFile := filepath.Join(dir, "claude.pid")
+	sleepFile := filepath.Join(dir, "sleep.pid")
 	script := filepath.Join(dir, "claude")
 	content := `#!/bin/sh
 echo $$ > "$ISSUE209_CLAUDE_ROOT"
 read prompt
+/bin/sh -c 'sleep 180 & echo $! > "$ISSUE209_SLEEP_PID"; wait' &
 printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
 read interrupt
 while read line; do :; done
@@ -447,7 +449,7 @@ while read line; do :; done
 	}
 	defer store.Close()
 	execution := NewExecutionNode("macbook", ClaudeCodeRuntime{
-		Command: script, Environment: []string{"ISSUE209_CLAUDE_ROOT=" + rootFile},
+		Command: script, Environment: []string{"ISSUE209_CLAUDE_ROOT=" + rootFile, "ISSUE209_SLEEP_PID=" + sleepFile},
 	}, store)
 	instance := daemonInventoryFixture("macbook").Instances[0]
 	instance.Kind = core.HarnessClaudeCode
@@ -474,6 +476,15 @@ while read line; do :; done
 		pid, readErr = strconv.Atoi(strings.TrimSpace(string(data)))
 		return readErr == nil && pid > 1
 	})
+	var sleepPID int
+	waitFor(t, ctx, "real descendant sleep PID", func() bool {
+		data, readErr := os.ReadFile(sleepFile)
+		if readErr != nil {
+			return false
+		}
+		sleepPID, readErr = strconv.Atoi(strings.TrimSpace(string(data)))
+		return readErr == nil && sleepPID > 1
+	})
 	meta := dispatch.Metadata()
 	meta.CommandID = "issue209-live-crash-cancel"
 	meta.IssuedAt = time.Now().UTC()
@@ -484,6 +495,13 @@ while read line; do :; done
 	}
 	if err := syscall.Kill(pid, 0); err != nil {
 		t.Fatalf("native CLI exited before crash-window recovery: %v", err)
+	}
+	processes, err := claudeProcessSnapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child, ok := processes[sleepPID]; ok && !strings.HasPrefix(child.state, "Z") {
+		t.Fatalf("native descendant survived accepted cancel: %+v", child)
 	}
 	reopened, err := OpenLocalStore(path)
 	if err != nil {
