@@ -355,6 +355,9 @@ type claudeSession struct {
 	nativeErrorDuringCancel string
 	failedCancel bool
 	initialPromptPending bool
+	initialPromptWriting bool
+	beforeInitialPromptAdmission func()
+	beforeInitialPromptWrite func()
 	done      chan struct{}
 	closed    bool
 	cancel    bool
@@ -387,11 +390,26 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 		return err
 	}
 	s.stateMu.Lock()
-	if s.closed || s.active || s.canceling {
+	firstPrompt := s.initialPromptPending
+	s.stateMu.Unlock()
+	if firstPrompt && s.beforeInitialPromptAdmission != nil {
+		s.beforeInitialPromptAdmission()
+	}
+	if firstPrompt {
+		select {
+		case s.writeGate <- struct{}{}:
+			defer func() { <-s.writeGate }()
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	s.stateMu.Lock()
+	if s.closed || s.active || s.canceling || (firstPrompt && !s.initialPromptPending) {
 		s.stateMu.Unlock()
 		return errors.New("claude: session closed or Attempt still active")
 	}
 	s.initialPromptPending = false
+	s.initialPromptWriting = firstPrompt
 	s.active = true
 	s.cancel = false
 	s.nativeErrorDuringCancel = ""
@@ -413,11 +431,28 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 		}
 		content = blocks
 	}
-	err = s.writeMessage(ctx, map[string]any{"type": "user", "uuid": id, "session_id": s.id, "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil})
+	message := map[string]any{"type": "user", "uuid": id, "session_id": s.id, "message": map[string]any{"role": "user", "content": content}, "parent_tool_use_id": nil}
+	if firstPrompt {
+		if s.beforeInitialPromptWrite != nil {
+			s.beforeInitialPromptWrite()
+		}
+		err = s.writeMessageWithGate(ctx, message)
+	} else {
+		err = s.writeMessage(ctx, message)
+	}
+	s.stateMu.Lock()
+	s.initialPromptWriting = false
 	if err != nil {
-		s.stateMu.Lock()
-		s.active = false
-		s.stateMu.Unlock()
+		if firstPrompt && s.active && !s.cancel {
+			s.active = false
+			s.result <- Result{Status: "failed", FailureCode: "native_prompt_write_failed", Summary: "Claude Code initial prompt write failed: " + err.Error()}
+		} else if !firstPrompt {
+			s.active = false
+		}
+	}
+	s.stateMu.Unlock()
+	if err != nil && firstPrompt {
+		_ = s.stopProcess()
 	}
 	return err
 }
@@ -433,8 +468,21 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 		return err
 	}
 	s.stateMu.Lock()
+	serializeInitialPrompt := s.initialPromptPending || s.initialPromptWriting
+	s.stateMu.Unlock()
+	if serializeInitialPrompt {
+		select {
+		case s.writeGate <- struct{}{}:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	s.stateMu.Lock()
 	if s.closed || (!s.active && !s.initialPromptPending) || s.cancel {
 		s.stateMu.Unlock()
+		if serializeInitialPrompt {
+			<-s.writeGate
+		}
 		return nil
 	}
 	if s.initialPromptPending {
@@ -448,6 +496,9 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	s.cancelWait = make(chan struct{})
 	root := s.claudeRoot
 	s.stateMu.Unlock()
+	if serializeInitialPrompt {
+		<-s.writeGate
+	}
 	var err error
 	if root.pid == 0 {
 		err = errors.New("Claude root process identity was not captured")
@@ -565,6 +616,10 @@ func (s *claudeSession) writeMessage(ctx context.Context, message any) error {
 	case s.writeGate <- struct{}{}:
 	}
 	defer func() { <-s.writeGate }()
+	return s.writeMessageWithGate(ctx, message)
+}
+
+func (s *claudeSession) writeMessageWithGate(ctx context.Context, message any) error {
 	written := make(chan error, 1)
 	go func() { written <- json.NewEncoder(s.stdin).Encode(message) }()
 	select {
