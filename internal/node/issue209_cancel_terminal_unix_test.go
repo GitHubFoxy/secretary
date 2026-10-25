@@ -634,15 +634,15 @@ while read line; do :; done
 }
 
 func TestIssue209DaemonSameSocketCancelWhileClaudeResumeBlocked(t *testing.T) {
-	issue209SameSocketClaudeResumeCancel(t, false, false)
+	issue209SameSocketClaudeResumeCancel(t, false, false, false)
 }
 
 func TestIssue209DaemonCancelDuringHandoffRegistrationWindow(t *testing.T) {
-	issue209SameSocketClaudeResumeCancel(t, true, false)
+	issue209SameSocketClaudeResumeCancel(t, true, false, false)
 }
 
 func TestIssue209DaemonCancelRegisteredClaudeResumeSession(t *testing.T) {
-	issue209SameSocketClaudeResumeCancel(t, false, true)
+	issue209SameSocketClaudeResumeCancel(t, false, true, false)
 }
 
 type issue209ReadyResumeSession struct {
@@ -670,7 +670,11 @@ func (r *issue209ReadyResumeRuntime) Resume(ctx context.Context, request StartRe
 	return r.active, nil
 }
 
-func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration, readySession bool) {
+func TestIssue209DaemonDuplicatePriorityCancelCoalescesReceipt(t *testing.T) {
+	issue209SameSocketClaudeResumeCancel(t, false, false, true)
+}
+
+func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration, readySession, duplicatePriorityCancel bool) {
 	ctx, stop := context.WithTimeout(context.Background(), 15*time.Second)
 	defer stop()
 	serverStore, err := core.Open(ctx, filepath.Join(t.TempDir(), "server.db"))
@@ -686,7 +690,24 @@ func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration, ready
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager.SetCommandOutcomeSink(NewStoreCommandOutcomeSink(serverStore))
+	receiptSink := NewStoreCommandOutcomeSink(serverStore)
+	duplicateReceipts := make(chan CommandOutcome, 4)
+	if duplicatePriorityCancel {
+		manager.SetCommandOutcomeSink(func(ctx context.Context, node core.NodeReference, outcome CommandOutcome) error {
+			if err := receiptSink(ctx, node, outcome); err != nil {
+				return err
+			}
+			if outcome.Kind == CommandCancel {
+				select {
+				case duplicateReceipts <- outcome:
+				default:
+				}
+			}
+			return nil
+		})
+	} else {
+		manager.SetCommandOutcomeSink(receiptSink)
+	}
 	manager.SetEventSink(NewStoreEventSink(serverStore))
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/nodes/connect", manager.ServeProtocolHTTP)
@@ -731,6 +752,28 @@ func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration, ready
 	}
 	handoffEntered := make(chan struct{})
 	handoffReleased := make(chan struct{})
+	firstPriorityEntered := make(chan struct{})
+	secondPriorityObserved := make(chan struct{}, 1)
+	releasePriority := make(chan struct{})
+	if duplicatePriorityCancel {
+		daemon.priorityCancelBeforeHandle = func(Command) {
+			close(firstPriorityEntered)
+			<-releasePriority
+		}
+		daemon.priorityCancelDuplicateObserved = func(string) {
+			select {
+			case secondPriorityObserved <- struct{}{}:
+			default:
+			}
+		}
+		defer func() {
+			select {
+			case <-releasePriority:
+			default:
+				close(releasePriority)
+			}
+		}()
+	}
 	if pauseRegistration {
 		daemon.nativeResumeRegistrationBarrier = func() {
 			close(handoffEntered)
@@ -881,6 +924,34 @@ func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration, ready
 			}
 		case <-cancelCtx.Done():
 			t.Fatal("Cancel blocked in native Resume registration window")
+		}
+	} else if duplicatePriorityCancel {
+		if err := manager.SendCommand(cancelCtx, identity.Node, cancel); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-firstPriorityEntered:
+		case <-cancelCtx.Done():
+			t.Fatal("first priority Cancel did not begin")
+		}
+		if err := manager.SendCommand(cancelCtx, identity.Node, cancel); err != nil {
+			t.Fatal(err)
+		}
+		select {
+		case <-secondPriorityObserved:
+		case <-cancelCtx.Done():
+			t.Fatal("duplicate priority Cancel was not coalesced")
+		}
+		close(releasePriority)
+		for i := 0; i < 2; i++ {
+			select {
+			case receipt := <-duplicateReceipts:
+				if receipt.CommandID != cancelMetadata.CommandID || receipt.State != CommandAccepted {
+					t.Fatalf("duplicate priority Cancel receipt %d: %+v", i, receipt)
+				}
+			case <-cancelCtx.Done():
+				t.Fatalf("priority Cancel duplicate %d had no saved accepted receipt", i)
+			}
 		}
 	} else if err := manager.SendCommandAndWait(cancelCtx, identity.Node, cancel); err != nil {
 		t.Fatalf("Cancel blocked behind native Resume on one socket: %v", err)
