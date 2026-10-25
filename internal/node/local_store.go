@@ -324,7 +324,7 @@ func (s *LocalStore) RecordNativeResumeCancel(commandID string, metadata core.Co
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	record,ok:=s.state.Commands[commandID]
-	if !ok || record.Kind!=CommandResume || record.State!=CommandProcessing || record.SafePrestart{
+	if !ok || record.Kind!=CommandResume || record.State!=CommandProcessing{
 		return errors.New("node: native Resume claim not in handoff state")
 	}
 	command,err:=commandFromJSON(record.CommandJSON)
