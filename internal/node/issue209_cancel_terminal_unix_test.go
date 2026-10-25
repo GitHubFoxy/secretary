@@ -95,6 +95,7 @@ func issue209ClaudeCancelDaemonLifecycle(t *testing.T, nativeError bool) {
 	launcher := filepath.Join(dir, "claude")
 	shellPIDFile := filepath.Join(dir, "shell.pid")
 	rootPIDFile := filepath.Join(dir, "claude.pid")
+	nativeErrorRelease := filepath.Join(dir, "native-error.release")
 	script := `#!/bin/sh
 echo ROOT_PID_TOKEN > "$ISSUE209_ROOT_PID"
 read prompt
@@ -106,7 +107,7 @@ while read line; do :; done
 `
 	script = strings.Replace(script, "ROOT_PID_TOKEN", strings.Repeat("$", 2), 1)
 	if nativeError {
-		script = strings.Replace(script, "read interrupt\n", "read interrupt\nprintf '%s\\n' '{\"type\":\"error\",\"error\":\"native cancellation response\"}'\n", 1)
+		script = strings.Replace(script, "read interrupt\n", "read interrupt\nwhile [ ! -f \"$ISSUE209_NATIVE_ERROR_RELEASE\" ]; do sleep 0.02; done\nprintf '%s\\n' '{\"type\":\"error\",\"error\":\"native cancellation response\"}'\n", 1)
 	}
 	if err := os.WriteFile(launcher, []byte(script), 0700); err != nil {
 		t.Fatal(err)
@@ -118,7 +119,7 @@ while read line; do :; done
 	defer nodeStore.Close()
 	daemon := &Daemon{
 		Identity: identity, Store: nodeStore,
-		Runtime: ClaudeCodeRuntime{Command: launcher, Environment: []string{"ISSUE209_SHELL_PID=" + shellPIDFile, "ISSUE209_ROOT_PID=" + rootPIDFile}},
+		Runtime: ClaudeCodeRuntime{Command: launcher, Environment: []string{"ISSUE209_SHELL_PID=" + shellPIDFile, "ISSUE209_ROOT_PID=" + rootPIDFile, "ISSUE209_NATIVE_ERROR_RELEASE=" + nativeErrorRelease}},
 		Inventory: daemonStaticInventory{snapshot: inventory},
 		Capacity: 2, HeartbeatInterval: 20 * time.Millisecond, OutboxPollInterval: 10 * time.Millisecond,
 		ReconnectMin: 10 * time.Millisecond, ReconnectMax: 40 * time.Millisecond,
@@ -178,6 +179,11 @@ while read line; do :; done
 		pending, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
 		if err != nil || pending.CurrentAttempt().State != core.AttemptActive || len(pending.Results) != 0 {
 			t.Fatalf("cancel receipt became premature terminal: %+v %v", pending, err)
+		}
+	}
+	if nativeError {
+		if err := os.WriteFile(nativeErrorRelease, []byte("release"), 0600); err != nil {
+			t.Fatal(err)
 		}
 	}
 	manager.mu.Lock()
