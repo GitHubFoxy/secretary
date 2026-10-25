@@ -51,7 +51,8 @@ func (r CodexRuntime) configured(request StartRequest) (ACPRuntime, error) {
 	if profile.Name == "worker" {
 		base.ModeSelection = "agent-full-access"
 	}
-	if model := strings.TrimSpace(profile.Model); model == "" || strings.EqualFold(model, "default") {
+	authMethod := strings.ToLower(strings.TrimSpace(request.HarnessInstance.Authentication.Method))
+	if model := strings.TrimSpace(profile.Model); (model == "" || strings.EqualFold(model, "default")) && authMethod != "api_key" && authMethod != "agent_identity" {
 		if configured, exists := overrides["model"]; exists {
 			selected, ok := configured.(string)
 			if !ok || strings.TrimSpace(selected) == "" {
