@@ -86,7 +86,7 @@ func TestIssue209ClaudeCancelWithoutNativeTerminalPersistsAfterServerReopen(t *t
 read prompt
 /bin/sh -c 'sleep 180 & wait' &
 echo $! > "$ISSUE209_SHELL_PID"
-printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
+printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
 read interrupt
 while read line; do :; done
 `
