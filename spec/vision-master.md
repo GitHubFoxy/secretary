@@ -121,11 +121,11 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 - **Q0018 · CONFIRMED** — Как отменять или отзывать «Vision and product identity»? **Рекомендация:** Разделить pending cancel, фактическое прекращение, irreversible external effects и revoke grants.
 - **Q0019 · CONFIRMED** — Как обрабатывать одновременные запросы к «Vision and product identity»? **Рекомендация:** Стабильные IDs, определённая очередь/конкуренция и предотвращение конфликтующих actions.
 - **Q0020 · CONFIRMED** — Что делать после timeout или неизвестного результата «Vision and product identity»? **Рекомендация:** Unknown != failed != succeeded; не повторять опасную операцию без reconcile/idempotency.
-- **Q0021 · PROPOSAL / OPEN** — Как пользователю доказать результат «Vision and product identity»? **Рекомендация:** Показать проверенный receipt/state, кто инициировал и что подтвердил provider.
-- **Q0022 · PROPOSAL / OPEN** — Кто платит за «Vision and product identity» и как ограничить расход? **Рекомендация:** Привязать usage к owner/delegation, caps, quotas, понятная статистика и отказ сверх лимита.
-- **Q0023 · PROPOSAL / OPEN** — Как изолировать безопасность «Vision and product identity»? **Рекомендация:** Scoped credentials, least necessary capabilities для интеграций, логирование без секретов; риск: inflated promises.
-- **Q0024 · PROPOSAL / OPEN** — Какие проверки должны блокировать release «Vision and product identity»? **Рекомендация:** Автоматизированные failure/idempotency/privacy тесты и live E2E по доступному физическому/native seam.
-- **Q0025 · PROPOSAL / OPEN** — В какой релиз «Vision and product identity» попадёт? **Рекомендация:** Предлагаемый этап: Later; status не повышать, пока owner и acceptance evidence не готовы.
+- **Q0021 · CONFIRMED** — Как пользователю доказать результат «Vision and product identity»? **Рекомендация:** Показать проверенный receipt/state, кто инициировал и что подтвердил provider.
+- **Q0022 · CONFIRMED** — Кто платит за «Vision and product identity» и как ограничить расход? **Рекомендация:** Привязать usage к owner/delegation, caps, quotas, понятная статистика и отказ сверх лимита.
+- **Q0023 · CONFIRMED** — Как изолировать безопасность «Vision and product identity»? **Рекомендация:** Scoped credentials, least necessary capabilities для интеграций, логирование без секретов; риск: inflated promises.
+- **Q0024 · CONFIRMED** — Какие проверки должны блокировать release «Vision and product identity»? **Рекомендация:** Автоматизированные failure/idempotency/privacy тесты и live E2E по доступному физическому/native seam.
+- **Q0025 · CONFIRMED** — В какой релиз «Vision and product identity» попадёт? **Рекомендация:** Предлагаемый этап: Later; status не повышать, пока owner и acceptance evidence не готовы.
 
 ### 02 · Person identity and personal accounts
 
