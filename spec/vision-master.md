@@ -155,7 +155,7 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 - **Q0047 · PROPOSAL / OPEN** — Кто платит за «Person identity and personal accounts» и как ограничить расход? **Рекомендация:** Привязать usage к owner/delegation, caps, quotas, понятная статистика и отказ сверх лимита.
 - **Q0048 · PROPOSAL / OPEN** — Как изолировать безопасность «Person identity and personal accounts»? **Рекомендация:** Scoped credentials, least necessary capabilities для интеграций, логирование без секретов; риск: shared-account leakage.
 - **Q0049 · PROPOSAL / OPEN** — Какие проверки должны блокировать release «Person identity and personal accounts»? **Рекомендация:** Автоматизированные failure/idempotency/privacy тесты и live E2E по доступному физическому/native seam.
-- **Q0050 · PROPOSAL / OPEN** — В какой релиз «Person identity and personal accounts» попадёт? **Рекомендация:** Предлагаемый этап: Later; status не повышать, пока owner и acceptance evidence не готовы.
+- **Q0050 · CONFIRMED** — Нужен ли многопользовательский Secretary? **Утверждено:** Нет. Каждый Person имеет ровно один персональный Secretary с собственной памятью, историей и identity. Совместные задачи между несколькими людьми решаются через Circle, который связывает независимых Secretaries. «Multiuser Secretary» не является отдельным режимом или этапом roadmap. Разные Secretaries могут размещаться на общей инфраструктуре, но логически остаются независимыми.
 
 ### 03 · Personal conversations and channel identity
 
