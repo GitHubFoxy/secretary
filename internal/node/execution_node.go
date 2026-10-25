@@ -712,14 +712,15 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 	notifyNativeHandoff(ctx)
 	session, err := resumeSameIdentity(nativeCtx, resumer, request, mapping.RuntimeSessionID)
 	n.mu.Lock()
-	wasCanceled := pending.canceled || nativeCtx.Err() != nil
+	ownerCanceled := pending.canceled
+	wasCanceled := ownerCanceled || nativeCtx.Err() != nil
 	if err != nil || wasCanceled {
 		delete(n.nativeResumes, command.Metadata.AttemptID)
 	}
 	n.mu.Unlock()
 	if err != nil || wasCanceled {
 		nativeCancel()
-		if wasCanceled && command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
+		if ownerCanceled && command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
 			return n.completeCanceledClaudeResume(command, session)
 		}
 		if session != nil {
@@ -738,7 +739,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		delete(n.nativeResumes, command.Metadata.AttemptID)
 		n.mu.Unlock()
 		nativeCancel()
-		if command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
+		if pending.canceled && command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
 			return n.completeCanceledClaudeResume(command, session)
 		}
 		_ = session.Close()
