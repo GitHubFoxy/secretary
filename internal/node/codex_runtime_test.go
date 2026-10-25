@@ -55,6 +55,9 @@ func TestCodexFixtureProcess(t *testing.T) {
 	if json.Unmarshal([]byte(os.Getenv("CODEX_CONFIG")), &overrides) != nil || !strings.Contains(overrides["developer_instructions"].(string), "UNIQUE_PROFILE_MARKER") {
 		os.Exit(2)
 	}
+	if scenario == "model-default" && overrides["model"] != "gpt-5.4" {
+		os.Exit(2)
+	}
 	var pendingPrompt any
 	scanner := bufio.NewScanner(os.Stdin)
 	emit := func(v any) { data, _ := json.Marshal(v); _, _ = os.Stdout.Write(append(data, '\n')) }
@@ -75,6 +78,10 @@ func TestCodexFixtureProcess(t *testing.T) {
 		case "session/new":
 			result = map[string]any{"sessionId": "fixture-codex"}
 		case "session/set_config_option":
+			if scenario == "model-unsupported" && req.Params.ConfigID == "model" {
+				emit(map[string]any{"jsonrpc": "2.0", "id": req.ID, "error": map[string]any{"code": -32602, "message": "model not found: " + req.Params.Value}})
+				continue
+			}
             if strings.HasPrefix(scenario,"mode-") && req.Params.ConfigID=="mode" {
                 switch scenario {
                 case "mode-unsupported":

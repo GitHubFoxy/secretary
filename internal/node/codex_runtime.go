@@ -51,6 +51,17 @@ func (r CodexRuntime) configured(request StartRequest) (ACPRuntime, error) {
 	if profile.Name == "worker" {
 		base.ModeSelection = "agent-full-access"
 	}
+	authMethod := strings.ToLower(strings.TrimSpace(request.HarnessInstance.Authentication.Method))
+	if model := strings.TrimSpace(profile.Model); (model == "" || isModelAlias(model)) && base.ModelSelection == "" && authMethod != "api_key" && authMethod != "apikey" && authMethod != "agent_identity" {
+		if configured, exists := overrides["model"]; exists {
+			selected, ok := configured.(string)
+			if !ok || strings.TrimSpace(selected) == "" {
+				return ACPRuntime{}, fmt.Errorf("codex: configured model must be a non-empty string")
+			}
+		} else {
+			overrides["model"] = "gpt-5.4"
+		}
+	}
 	encoded, err := json.Marshal(overrides)
 	if err != nil {
 		return ACPRuntime{}, err
