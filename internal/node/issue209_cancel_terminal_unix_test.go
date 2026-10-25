@@ -5,6 +5,7 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1089,5 +1090,175 @@ func TestIssue209ClaudeNativeResumeCancelProducesCanonicalCanceledResult(t *test
 	}
 	if count != 1 {
 		t.Fatalf("native Resume produced %d canonical Results", count)
+	}
+}
+
+type issue209RejectedCleanupSession struct {
+	Session
+}
+
+func (s *issue209RejectedCleanupSession) Close() error {
+	return context.DeadlineExceeded
+}
+
+type issue209UnverifiedNativeResumeRuntime struct {
+	t12HoldRuntime
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (r *issue209UnverifiedNativeResumeRuntime) Resume(_ context.Context, _ StartRequest, _ string) (Session, error) {
+	select {
+	case r.entered <- struct{}{}:
+	default:
+	}
+	<-r.release
+	session := &issue209RejectedCleanupSession{
+		Session: &t12HoldSession{runtime: &r.t12HoldRuntime, activity: make(chan Activity), result: make(chan Result)},
+	}
+	return nil, claudeResumeInitializationFailure(session, context.Canceled)
+}
+
+func TestIssue209ClaudeNativeResumeUnverifiedCleanupIsInterrupted(t *testing.T) {
+	ctx, cancelContext := context.WithTimeout(context.Background(), 12*time.Second)
+	defer cancelContext()
+	serverStore, err := core.Open(ctx, filepath.Join(t.TempDir(), "server.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverStore.Close()
+	_, conversation, err := serverStore.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := daemonInventoryFixture("macbook").Instances[0]
+	instance.ID = "macbook/claude"
+	instance.Kind = core.HarnessClaudeCode
+	worker, turn, attempt, err := serverStore.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+		WorkerRef: "issue209-uncertain-cleanup", Intent: "initial work", NodeID: "macbook", HarnessInstanceID: string(instance.ID),
+	}, core.TurnSpec{Input: "initial work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	local, err := OpenLocalStore(filepath.Join(t.TempDir(), "node.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer local.Close()
+	runtime := &issue209UnverifiedNativeResumeRuntime{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	defer func() {
+		select {
+		case <-runtime.release:
+		default:
+			close(runtime.release)
+		}
+	}()
+	execution := NewExecutionNode("macbook", runtime, local)
+	firstMeta := core.CommandMetadata{
+		CommandID: "issue209-uncertain-first", Node: "macbook", HarnessInstanceID: instance.ID,
+		WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, IssuedAt: time.Now().UTC(),
+	}
+	envelope := WorkerEnvelope{
+		WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID,
+		OriginalUserIntent: "initial work", HarnessInstance: instance, Profile: workerTemplateFixture(instance, "", ""),
+	}
+	first := Command{Kind: CommandDispatch, Dispatch: &DispatchCommand{Metadata: firstMeta, Envelope: envelope}}
+	if accepted, err := execution.HandleCommand(ctx, first); err != nil || accepted.State != CommandAccepted {
+		t.Fatalf("first Dispatch=%+v err=%v", accepted, err)
+	}
+	if _, _, _, err := serverStore.RecordAttemptOutcome(ctx, attempt.ID, core.AttemptOutcomeInput{
+		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	continued, nextAttempt, err := serverStore.CreateTurn(ctx, worker.ID, core.TurnSpec{Input: "continue", CommandKind: "resume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeMeta := firstMeta
+	resumeMeta.CommandID = "issue209-uncertain-resume"
+	resumeMeta.TurnID = continued.ID
+	resumeMeta.AttemptID = nextAttempt.ID
+	resumeMeta.IssuedAt = time.Now().UTC()
+	resumeEnvelope := envelope
+	resumeEnvelope.PreviousAttemptID = attempt.ID
+	resumeEnvelope.TurnID = continued.ID
+	resumeEnvelope.AttemptID = nextAttempt.ID
+	resumeEnvelope.OriginalUserIntent = "continue"
+	resume := Command{Kind: CommandResume, Resume: &ResumeCommand{Metadata: resumeMeta, Envelope: resumeEnvelope}}
+	type completed struct {
+		outcome CommandOutcome
+		err error
+	}
+	finished := make(chan completed, 1)
+	go func() {
+		outcome, err := execution.HandleCommand(ctx, resume)
+		finished <- completed{outcome: outcome, err: err}
+	}()
+	select {
+	case <-runtime.entered:
+	case <-ctx.Done():
+		t.Fatal("native Resume never entered")
+	}
+	cancelMeta := resumeMeta
+	cancelMeta.CommandID = "issue209-uncertain-cancel"
+	cancelMeta.IssuedAt = time.Now().UTC()
+	cancelCommand := Command{Kind: CommandCancel, Cancel: &CancelCommand{Metadata: cancelMeta, Reason: "owner"}}
+	cancelOutcome, err := execution.HandleCommand(ctx, cancelCommand)
+	if err != nil || cancelOutcome.State != CommandAccepted {
+		t.Fatalf("Cancel=%+v err=%v", cancelOutcome, err)
+	}
+	close(runtime.release)
+	select {
+	case result := <-finished:
+		if result.err != nil || result.outcome.State != CommandInterrupted {
+			t.Fatalf("unverified native cleanup must stay interrupted: %+v err=%v", result.outcome, result.err)
+		}
+	case <-ctx.Done():
+		t.Fatal("native cleanup did not finish")
+	}
+	record, err := local.Command(resumeMeta.CommandID)
+	if err != nil || record.State != CommandInterrupted || !record.TerminalOutcomeQueued {
+		t.Fatalf("unverified cleanup not durably interrupted: %+v err=%v", record, err)
+	}
+	events, err := local.PendingEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, pending := range events {
+		if pending.EventID != "attempt-outcome-"+nextAttempt.ID {
+			continue
+		}
+		count++
+		var event NodeEvent
+		if err := json.Unmarshal(pending.Payload, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Outcome == nil || event.Outcome.Status != core.OutcomeInterrupted {
+			t.Fatalf("unverified cleanup published canceled: %+v", event)
+		}
+		if err := NewStoreEventSink(serverStore)(ctx, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if count != 1 {
+		t.Fatalf("unverified cleanup outcomes=%d, want one", count)
+	}
+	details, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+	if err != nil || len(details.Results) != 2 || string(details.Results[1].Status) != "interrupted" {
+		t.Fatalf("unverified native cleanup produced wrong Server Result: %+v err=%v", details, err)
+	}
+}
+
+func TestIssue209ClaudeInitializationCloseFailureIsNotProof(t *testing.T) {
+	original := context.Canceled
+	session := &issue209RejectedCleanupSession{Session: &t12HoldSession{
+		runtime: &t12HoldRuntime{}, activity: make(chan Activity), result: make(chan Result),
+	}}
+	err := claudeResumeInitializationFailure(session, original)
+	var confirmed *claudeNativeCleanupConfirmedError
+	if errors.As(err, &confirmed) || !errors.Is(err, ErrClaudeCodeUnavailable) {
+		t.Fatalf("failed native Close incorrectly attested cleanup: %v", err)
 	}
 }
