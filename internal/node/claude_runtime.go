@@ -357,6 +357,8 @@ type claudeSession struct {
 	initialPromptPending         bool
 	initialPromptWriting         bool
 	initialPromptPreempted       bool
+	initialPromptCancel          context.CancelFunc
+	beforeInitialCancelClaim     func()
 	beforeInitialPromptAdmission func()
 	beforeInitialPromptWrite     func()
 	done                         chan struct{}
@@ -397,6 +399,19 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 		s.beforeInitialPromptAdmission()
 	}
 	if firstPrompt {
+		promptCtx, promptCancel := context.WithCancel(ctx)
+		defer promptCancel()
+		s.stateMu.Lock()
+		if s.initialPromptPending && !s.initialPromptPreempted && !s.closed {
+			s.initialPromptCancel = promptCancel
+		}
+		s.stateMu.Unlock()
+		defer func() {
+			s.stateMu.Lock()
+			s.initialPromptCancel = nil
+			s.stateMu.Unlock()
+		}()
+		ctx = promptCtx
 		select {
 		case s.writeGate <- struct{}{}:
 			defer func() { <-s.writeGate }()
@@ -437,7 +452,14 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 		if s.beforeInitialPromptWrite != nil {
 			s.beforeInitialPromptWrite()
 		}
-		err = s.writeMessageWithGate(ctx, message)
+		s.stateMu.Lock()
+		preempted := s.cancel || s.closed || ctx.Err() != nil
+		s.stateMu.Unlock()
+		if preempted {
+			err = errors.New("claude: initial prompt canceled before stdin write")
+		} else {
+			err = s.writeMessageWithGate(ctx, message)
+		}
 	} else {
 		err = s.writeMessage(ctx, message)
 	}
@@ -468,22 +490,12 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	s.stateMu.Lock()
-	serializeInitialPrompt := s.initialPromptPending || s.initialPromptWriting
-	s.stateMu.Unlock()
-	if serializeInitialPrompt {
-		select {
-		case s.writeGate <- struct{}{}:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	if s.beforeInitialCancelClaim != nil {
+		s.beforeInitialCancelClaim()
 	}
 	s.stateMu.Lock()
 	if s.closed || (!s.active && !s.initialPromptPending) || s.cancel {
 		s.stateMu.Unlock()
-		if serializeInitialPrompt {
-			<-s.writeGate
-		}
 		return nil
 	}
 	if s.initialPromptPending {
@@ -497,21 +509,26 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 	s.canceling = true
 	s.cancelWait = make(chan struct{})
 	root := s.claudeRoot
+	writingInitialPrompt := s.initialPromptWriting
+	cancelInitialPrompt := s.initialPromptCancel
 	s.stateMu.Unlock()
-	if serializeInitialPrompt {
-		<-s.writeGate
+	if cancelInitialPrompt != nil {
+		cancelInitialPrompt()
 	}
 	var err error
-	if root.pid == 0 {
+	if writingInitialPrompt {
+		err = s.Close()
+	}
+	if err == nil && root.pid == 0 {
 		err = errors.New("Claude root process identity was not captured")
-	} else {
+	} else if err == nil && !writingInitialPrompt {
 		cleanup := s.cleanupAttempt
 		if cleanup == nil {
 			cleanup = cleanupClaudeAttemptProcesses
 		}
 		err = cleanup(ctx, s.cmd, root)
 	}
-	if err == nil {
+	if err == nil && !writingInitialPrompt {
 		var id string
 		id, err = newClaudeSessionID()
 		if err == nil {
@@ -622,6 +639,9 @@ func (s *claudeSession) writeMessage(ctx context.Context, message any) error {
 }
 
 func (s *claudeSession) writeMessageWithGate(ctx context.Context, message any) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	written := make(chan error, 1)
 	go func() { written <- json.NewEncoder(s.stdin).Encode(message) }()
 	select {
@@ -629,7 +649,6 @@ func (s *claudeSession) writeMessageWithGate(ctx context.Context, message any) e
 		return err
 	case <-ctx.Done():
 		_ = s.stopProcess()
-		<-written
 		return ctx.Err()
 	}
 }
