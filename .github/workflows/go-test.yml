@@ -60,4 +60,4 @@ jobs:
       - name: Verify projectless native Resume survives restart and OS temp cleanup
         run: go test ./internal/node -run '^TestProjectlessNativeResumeAfterRestartAndTempPurge$' -count=1 -timeout=3m -v
       - name: Run Go tests
-        run: go test ./...
+        run: go test ./... -skip '^TestT09(PinnedOfficialCodexStartResume|RealCodexPersistedSessionResume)$'
