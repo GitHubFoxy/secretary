@@ -173,6 +173,8 @@ export OPENAI_API_KEY=fixture-private-provider-key AWS_ACCESS_KEY_ID=fixture-pri
 
 FAKE_ACP_REAL="$FAKE_BIN/codex-acp-real"
 mise exec -- go build -o "$FAKE_ACP_REAL" ./cmd/fake-codex-acp >/dev/null
+FAKE_MODERN_ACP_REAL="$FAKE_BIN/codex-acp-modern-real"
+mise exec -- go build -ldflags '-X main.packagedACPVersion=2.2.2' -o "$FAKE_MODERN_ACP_REAL" ./cmd/fake-codex-acp >/dev/null
 cat > "$FAKE_BIN/codex-acp" <<EOF
 #!/bin/sh
 exec "$FAKE_ACP_REAL" "\$@"
@@ -211,16 +213,15 @@ case "$1:$2" in
 esac
 EOF
 chmod +x "$FAKE_BIN/codex-acp" "$FAKE_BIN/fx" "$FAKE_BIN/opencode"
-bash "$ROOT/scripts/create-native-acp-fixture.sh" "$TEST_HOME/.local" "$FAKE_ACP_REAL"
+bash "$ROOT/scripts/create-native-acp-fixture.sh" "$TEST_HOME/.local" "$FAKE_MODERN_ACP_REAL"
 MODERN_ACP_PROBE="$TEST_HOME/modern-acp-probe"
 mkdir -p "$MODERN_ACP_PROBE"
 tar -xzf "$BIN/native-acp/codex-acp.tar.gz" -C "$MODERN_ACP_PROBE"
 assert_executable "$MODERN_ACP_PROBE/codex-acp-2.2.2"
-assert_executable "$MODERN_ACP_PROBE/codex-acp-protocol-double"
 assert_contains "$("$MODERN_ACP_PROBE/codex-acp-2.2.2" --version)" "codex-acp 2.2.2" "packaged modern ACP version"
 MODERN_ACP_RESPONSES="$(
-  mv "$FAKE_ACP_REAL" "$FAKE_ACP_REAL.unavailable"
-  trap 'mv "$FAKE_ACP_REAL.unavailable" "$FAKE_ACP_REAL"' EXIT
+  mv "$FAKE_MODERN_ACP_REAL" "$FAKE_MODERN_ACP_REAL.unavailable"
+  trap 'mv "$FAKE_MODERN_ACP_REAL.unavailable" "$FAKE_MODERN_ACP_REAL"' EXIT
   printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1}}' '{"jsonrpc":"2.0","id":2,"method":"session/new","params":{}}' '{"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":"fake-session","prompt":[]}}' | "$MODERN_ACP_PROBE/codex-acp-2.2.2"
 )"
 assert_contains "$MODERN_ACP_RESPONSES" '"protocolVersion":1' "packaged modern ACP initialize"
