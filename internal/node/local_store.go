@@ -1008,6 +1008,13 @@ func (s *LocalStore) RecoverRunning(ctx context.Context, inspector ProcessInspec
 					continue
 				}
 			}
+			if record.State == CommandAccepted && isClaudeLifecycleCommand(command) && s.acceptedCancelForAttempt(metadata) {
+				terminal := core.AttemptOutcomeEnvelope{EventID: "attempt-outcome-" + metadata.AttemptID, Node: metadata.Node, HarnessInstanceID: metadata.HarnessInstanceID, WorkerRef: metadata.WorkerRef, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID, Status: core.OutcomeCanceled, Classification: core.OutcomeFinal, Summary: "Claude Code attempt canceled", ErrorCode: "canceled", OccurredAt: time.Now().UTC()}
+				if _, err := s.CompleteCommandWithOutcome(record.CommandID, acceptedOutcome(command), terminal); err != nil {
+					return err
+				}
+				continue
+			}
 			terminal := core.AttemptOutcomeEnvelope{EventID: "interrupted-" + record.CommandID, Node: metadata.Node, HarnessInstanceID: metadata.HarnessInstanceID, WorkerRef: metadata.WorkerRef, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID, Status: core.OutcomeInterrupted, Classification: core.OutcomeFinal, Summary: "Attempt interrupted because execution state could not be proven", ErrorCode: "execution_state_unknown", OccurredAt: time.Now().UTC()}
 			outcome := CommandOutcome{CommandID: record.CommandID, Kind: record.Kind, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID, State: CommandInterrupted, ErrorCode: "execution_state_unknown", ErrorMessage: "Node could not prove that the side effect is still running"}
 			if _, err := s.CompleteCommandWithOutcome(record.CommandID, outcome, terminal); err != nil {
@@ -1040,6 +1047,36 @@ func (s *LocalStore) RecoverRunning(ctx context.Context, inspector ProcessInspec
 	}
 	s.mu.Unlock()
 	return nil
+}
+
+func isClaudeLifecycleCommand(command Command) bool {
+	switch command.Kind {
+	case CommandDispatch:
+		return command.Dispatch != nil && command.Dispatch.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode
+	case CommandResume:
+		return command.Resume != nil && command.Resume.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode
+	default:
+		return false
+	}
+}
+
+func (s *LocalStore) acceptedCancelForAttempt(metadata core.CommandMetadata) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, record := range s.state.Commands {
+		if record.Kind != CommandCancel || record.State != CommandAccepted || record.Outcome.State != CommandAccepted {
+			continue
+		}
+		command, err := commandFromJSON(record.CommandJSON)
+		if err != nil || command.Kind != CommandCancel || command.Cancel == nil {
+			continue
+		}
+		canceled := command.Cancel.Metadata
+		if canceled.Node == metadata.Node && canceled.HarnessInstanceID == metadata.HarnessInstanceID && canceled.WorkerRef == metadata.WorkerRef && canceled.TurnID == metadata.TurnID && canceled.AttemptID == metadata.AttemptID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *LocalStore) pendingTerminalOutcome(commandID string, metadata core.CommandMetadata) (core.AttemptOutcomeEnvelope, bool, error) {
