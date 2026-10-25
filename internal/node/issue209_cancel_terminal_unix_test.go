@@ -9,6 +9,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"sync"
 	"testing"
 	"time"
@@ -419,4 +422,307 @@ func TestIssue209NodeRestartDoesNotInferOtherProviderCancellation(t *testing.T) 
 		return
 	}
 	t.Fatal("other provider lost interrupted recovery event")
+}
+
+func TestIssue209NodeCrashWithLiveClaudeAfterAcceptedCancelIsInterrupted(t *testing.T) {
+	ctx, stop := context.WithTimeout(context.Background(), 15*time.Second)
+	defer stop()
+	dir := t.TempDir()
+	rootFile := filepath.Join(dir, "claude.pid")
+	script := filepath.Join(dir, "claude")
+	content := `#!/bin/sh
+echo $$ > "$ISSUE209_CLAUDE_ROOT"
+read prompt
+printf '%s\\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
+read interrupt
+while read line; do :; done
+`
+	if err := os.WriteFile(script, []byte(content), 0700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "node.json")
+	store, err := OpenLocalStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	execution := NewExecutionNode("macbook", ClaudeCodeRuntime{
+		Command: script, Environment: []string{"ISSUE209_CLAUDE_ROOT=" + rootFile},
+	}, store)
+	instance := daemonInventoryFixture("macbook").Instances[0]
+	instance.Kind = core.HarnessClaudeCode
+	instance.ID = "macbook/claude"
+	dispatch := daemonDispatchFixture("macbook", "issue209-live-crash-dispatch")
+	dispatch.Dispatch.Metadata.HarnessInstanceID = instance.ID
+	dispatch.Dispatch.Envelope.HarnessInstance = instance
+	dispatch.Dispatch.Envelope.Profile = workerTemplateFixture(instance, "", "")
+	first, err := execution.HandleCommand(ctx, dispatch)
+	if err != nil || first.State != CommandAccepted {
+		t.Fatalf("Claude dispatch=%+v err=%v", first, err)
+	}
+	session, ok := execution.session(dispatch.Metadata().AttemptID)
+	if !ok {
+		t.Fatal("native Claude session not registered")
+	}
+	defer session.Close()
+	var pid int
+	waitFor(t, ctx, "native Claude root PID", func() bool {
+		data, readErr := os.ReadFile(rootFile)
+		if readErr != nil {
+			return false
+		}
+		pid, readErr = strconv.Atoi(strings.TrimSpace(string(data)))
+		return readErr == nil && pid > 1
+	})
+	meta := dispatch.Metadata()
+	meta.CommandID = "issue209-live-crash-cancel"
+	meta.IssuedAt = time.Now().UTC()
+	cancel := Command{Kind: CommandCancel, Cancel: &CancelCommand{Metadata: meta, Reason: "owner"}}
+	outcome, err := execution.HandleCommand(ctx, cancel)
+	if err != nil || outcome.State != CommandAccepted {
+		t.Fatalf("native cancel=%+v err=%v", outcome, err)
+	}
+	if err := syscall.Kill(pid, 0); err != nil {
+		t.Fatalf("native CLI exited before crash-window recovery: %v", err)
+	}
+	reopened, err := OpenLocalStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if err := reopened.RecoverRunning(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	record, err := reopened.Command(dispatch.Metadata().CommandID)
+	if err != nil || record.State != CommandInterrupted || !record.TerminalOutcomeQueued {
+		t.Fatalf("crash-window recovery incorrectly finalized cancel: %+v err=%v", record, err)
+	}
+	events, err := reopened.PendingEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pending := range events {
+		if pending.EventID != "interrupted-"+dispatch.Metadata().CommandID {
+			continue
+		}
+		var event NodeEvent
+		if err := json.Unmarshal(pending.Payload, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Outcome == nil || event.Outcome.Status != core.OutcomeInterrupted {
+			t.Fatalf("live native process inferred as canceled: %+v", event)
+		}
+		return
+	}
+	t.Fatal("live process crash-window lost interrupted event")
+}
+
+func TestIssue209ClaudeNativeResumeCancelProducesCanonicalCanceledResult(t *testing.T) {
+	ctx, stop := context.WithTimeout(context.Background(), 12*time.Second)
+	defer stop()
+	serverPath := filepath.Join(t.TempDir(), "server.db")
+	serverStore, err := core.Open(ctx, serverPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverStore.Close()
+	_, conversation, err := serverStore.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, initialTurn, initialAttempt, err := serverStore.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+		WorkerRef: "issue209-resume-worker", Intent: "do work", NodeID: "macbook", HarnessInstanceID: "macbook/claude",
+	}, core.TurnSpec{Input: "initial work"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := daemonInventoryFixture("macbook").Instances[0]
+	instance.Kind = core.HarnessClaudeCode
+	instance.ID = "macbook/claude"
+	runtime := &t12RemoteStalledResumeRuntime{entered: make(chan struct{}, 1), release: make(chan struct{})}
+	defer func() {
+		select {
+		case <-runtime.release:
+		default:
+			close(runtime.release)
+		}
+		if runtime.session != nil {
+			_ = runtime.session.Close()
+		}
+	}()
+	local, err := OpenLocalStore(filepath.Join(t.TempDir(), "node.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer local.Close()
+	execution := NewExecutionNode("macbook", runtime, local)
+	dispatchClaim, _, err := serverStore.ClaimWorkerCommand(ctx, "dispatch", "attempt", worker.ID, initialAttempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata := core.CommandMetadata{
+		CommandID: dispatchClaim.ID, Node: "macbook", HarnessInstanceID: instance.ID,
+		WorkerRef: worker.WorkerRef, TurnID: initialTurn.ID, AttemptID: initialAttempt.ID, IssuedAt: time.Now().UTC(),
+	}
+	initial := Command{Kind: CommandDispatch, Dispatch: &DispatchCommand{
+		Metadata: metadata,
+		Envelope: WorkerEnvelope{
+			WorkerRef: worker.WorkerRef, TurnID: initialTurn.ID, AttemptID: initialAttempt.ID,
+			OriginalUserIntent: "initial work", HarnessInstance: instance, Profile: workerTemplateFixture(instance, "", ""),
+		},
+	}}
+	first, err := execution.HandleCommand(ctx, initial)
+	if err != nil || first.State != CommandAccepted {
+		t.Fatalf("initial Dispatch=%+v err=%v", first, err)
+	}
+	receiptSink := NewStoreCommandOutcomeSink(serverStore)
+	if err := receiptSink(ctx, "macbook", first); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, err := serverStore.RecordAttemptOutcome(ctx, initialAttempt.ID, core.AttemptOutcomeInput{
+		Status: core.OutcomeSucceeded, Classification: core.OutcomeFinal, Summary: "prior completed",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	turn, attempt, err := serverStore.CreateTurn(ctx, worker.ID, core.TurnSpec{Input: "continue", CommandKind: "resume"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeClaim, _, err := serverStore.ClaimWorkerCommand(ctx, "resume", "attempt", worker.ID, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumeMetadata := metadata
+	resumeMetadata.CommandID = resumeClaim.ID
+	resumeMetadata.TurnID = turn.ID
+	resumeMetadata.AttemptID = attempt.ID
+	resumeMetadata.IssuedAt = time.Now().UTC()
+	envelope := initial.Dispatch.Envelope
+	envelope.PreviousAttemptID = initialAttempt.ID
+	envelope.TurnID = turn.ID
+	envelope.AttemptID = attempt.ID
+	envelope.OriginalUserIntent = "continue"
+	resume := Command{Kind: CommandResume, Resume: &ResumeCommand{Metadata: resumeMetadata, Envelope: envelope}}
+	type finishedResume struct {
+		outcome CommandOutcome
+		err error
+	}
+	finished := make(chan finishedResume, 1)
+	go func() {
+		outcome, err := execution.HandleCommand(ctx, resume)
+		finished <- finishedResume{outcome, err}
+	}()
+	select {
+	case <-runtime.entered:
+	case <-ctx.Done():
+		t.Fatal("native Claude Resume did not enter")
+	}
+	cancelClaim, _, err := serverStore.ClaimWorkerCommand(ctx, "cancel", "attempt", worker.ID, attempt.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelMetadata := resumeMetadata
+	cancelMetadata.CommandID = cancelClaim.ID
+	cancelMetadata.IssuedAt = time.Now().UTC()
+	cancel := Command{Kind: CommandCancel, Cancel: &CancelCommand{Metadata: cancelMetadata, Reason: "owner"}}
+	accepted, err := execution.HandleCommand(ctx, cancel)
+	if err != nil || accepted.State != CommandAccepted {
+		t.Fatalf("native cancel=%+v err=%v", accepted, err)
+	}
+	if _, err := serverStore.MarkWorkerCommandDelivered(ctx, cancelClaim.ID); err != nil {
+		t.Fatal(err)
+	}
+	current, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+	if err != nil || current.CurrentAttempt().ID != attempt.ID || current.CurrentAttempt().State.Terminal() {
+		t.Fatalf("Cancel receipt fabricated a Result: %+v err=%v", current, err)
+	}
+	close(runtime.release)
+	var terminalCommand CommandOutcome
+	select {
+	case result := <-finished:
+		if result.err != nil || result.outcome.State != CommandAccepted {
+			t.Fatalf("canceled native Resume receipt=%+v err=%v", result.outcome, result.err)
+		}
+		terminalCommand = result.outcome
+	case <-ctx.Done():
+		t.Fatal("canceled native Resume did not finish")
+	}
+	runtime.mu.Lock()
+	late := runtime.lateSession
+	runtime.mu.Unlock()
+	if late == nil {
+		t.Fatal("native Resume did not return a late Session")
+	}
+	select {
+	case <-late.activity:
+	default:
+		t.Fatal("late native session was not closed")
+	}
+	record, err := local.Command(resumeMetadata.CommandID)
+	if err != nil || record.State != CommandAccepted || !record.TerminalOutcomeQueued {
+		t.Fatalf("terminal native Resume not persisted: %+v err=%v", record, err)
+	}
+	if _, err := local.QueueLifecycleCommandOutcome(terminalCommand); err != nil {
+		t.Fatal(err)
+	}
+	sink := NewStoreEventSink(serverStore)
+	events, err := local.PendingEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, pending := range events {
+		if pending.Type == MessageCommandOutcome {
+			var receipt CommandOutcome
+			if err := json.Unmarshal(pending.Payload, &receipt); err != nil {
+				t.Fatal(err)
+			}
+			if err := receiptSink(ctx, "macbook", receipt); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		var event NodeEvent
+		if err := json.Unmarshal(pending.Payload, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Outcome == nil {
+			continue
+		}
+		if event.Outcome.AttemptID != attempt.ID || event.Outcome.Status != core.OutcomeCanceled {
+			t.Fatalf("incorrect native terminal: %+v", event.Outcome)
+		}
+		count++
+		for i := 0; i < 2; i++ {
+			if err := sink(ctx, event); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("terminal canceled outcomes=%d, want one", count)
+	}
+	reopened, err := core.Open(ctx, serverPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	details, err := reopened.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+	if err != nil || details.CurrentAttempt().State != core.AttemptCanceled || len(details.Results) != 2 ||
+		details.Results[len(details.Results)-1].Status != core.ResultCanceled {
+		t.Fatalf("native Resume did not create durable canceled Result: %+v err=%v", details, err)
+	}
+	entries, err := reopened.EntriesAfter(ctx, conversation.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count = 0
+	for _, entry := range entries {
+		if entry.Kind == core.EntryWorkerResult && entry.TurnID == turn.ID {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("native Resume produced %d canonical Results", count)
+	}
 }
