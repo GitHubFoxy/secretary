@@ -292,3 +292,76 @@ func TestIssue209NodeRestartRecoversAcceptedClaudeCancelOnce(t *testing.T) {
 		t.Fatalf("recovered terminal events=%d, want one", count)
 	}
 }
+
+func TestIssue209NodeRestartRecoversCanceledNativeClaudeResume(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "node.json")
+	store, err := OpenLocalStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := daemonInventoryFixture("macbook").Instances[0]
+	instance.Kind = core.HarnessClaudeCode
+	instance.ID = "macbook/claude"
+	source := daemonDispatchFixture("macbook", "issue209-resume")
+	source.Dispatch.Metadata.HarnessInstanceID = instance.ID
+	source.Dispatch.Envelope.HarnessInstance = instance
+	source.Dispatch.Envelope.Profile = workerTemplateFixture(instance, "", "")
+	source.Dispatch.Envelope.PreviousAttemptID = "previous-attempt"
+	resume := Command{Kind: CommandResume, Resume: &ResumeCommand{Metadata: source.Dispatch.Metadata, Envelope: source.Dispatch.Envelope}}
+	if _, _, err := store.ClaimCommand(resume); err != nil {
+		t.Fatal(err)
+	}
+	cancelMeta := resume.Metadata()
+	cancelMeta.CommandID = "issue209-cancel-resume"
+	cancelMeta.IssuedAt = time.Now().UTC()
+	if err := store.RecordNativeResumeCancel(resume.Metadata().CommandID, cancelMeta); err != nil {
+		t.Fatal(err)
+	}
+	cancel := Command{Kind: CommandCancel, Cancel: &CancelCommand{Metadata: cancelMeta, Reason: "owner"}}
+	if _, _, err := store.ClaimCommand(cancel); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteCommand(cancelMeta.CommandID, acceptedOutcome(cancel)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenLocalStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	for i := 0; i < 2; i++ {
+		if err := reopened.RecoverRunning(ctx, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record, err := reopened.Command(resume.Metadata().CommandID)
+	if err != nil || record.State != CommandAccepted || !record.TerminalOutcomeQueued {
+		t.Fatalf("native Resume cancellation not recovered: %+v %v", record, err)
+	}
+	events, err := reopened.PendingEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, pending := range events {
+		if pending.EventID != "attempt-outcome-"+resume.Metadata().AttemptID {
+			continue
+		}
+		count++
+		var event NodeEvent
+		if err := json.Unmarshal(pending.Payload, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Outcome == nil || event.Outcome.Status != core.OutcomeCanceled ||
+			event.Outcome.AttemptID != resume.Metadata().AttemptID {
+			t.Fatalf("recovered native Resume terminal: %+v", event)
+		}
+	}
+	if count != 1 {
+		t.Fatalf("native Resume terminal events=%d, want one", count)
+	}
+}
