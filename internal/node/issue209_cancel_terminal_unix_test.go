@@ -442,6 +442,21 @@ while read line; do :; done
 	if err := os.WriteFile(script, []byte(content), 0700); err != nil {
 		t.Fatal(err)
 	}
+	serverStore, err := core.Open(ctx, filepath.Join(dir, "server.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer serverStore.Close()
+	_, conversation, err := serverStore.CreatePersonWithConversation(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker, turn, attempt, err := serverStore.CreateWorker(ctx, conversation.ID, core.WorkerSpec{
+		WorkerRef: "issue209-crash-worker", Intent: "run sleep", NodeID: "macbook", HarnessInstanceID: "macbook/claude",
+	}, core.TurnSpec{Input: "run sleep"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "node.json")
 	store, err := OpenLocalStore(path)
 	if err != nil {
@@ -456,6 +471,12 @@ while read line; do :; done
 	instance.ID = "macbook/claude"
 	dispatch := daemonDispatchFixture("macbook", "issue209-live-crash-dispatch")
 	dispatch.Dispatch.Metadata.HarnessInstanceID = instance.ID
+	dispatch.Dispatch.Metadata.WorkerRef = worker.WorkerRef
+	dispatch.Dispatch.Metadata.TurnID = turn.ID
+	dispatch.Dispatch.Metadata.AttemptID = attempt.ID
+	dispatch.Dispatch.Envelope.WorkerRef = worker.WorkerRef
+	dispatch.Dispatch.Envelope.TurnID = turn.ID
+	dispatch.Dispatch.Envelope.AttemptID = attempt.ID
 	dispatch.Dispatch.Envelope.HarnessInstance = instance
 	dispatch.Dispatch.Envelope.Profile = workerTemplateFixture(instance, "", "")
 	first, err := execution.HandleCommand(ctx, dispatch)
@@ -522,6 +543,7 @@ while read line; do :; done
 		t.Fatal(err)
 	}
 	count := 0
+	sink := NewStoreEventSink(serverStore)
 	for _, pending := range events {
 		if pending.EventID == "attempt-outcome-"+dispatch.Metadata().AttemptID {
 			t.Fatal("accepted Cancel produced a fabricated terminal event")
@@ -537,9 +559,35 @@ while read line; do :; done
 		if event.Outcome == nil || event.Outcome.Status != core.OutcomeInterrupted {
 			t.Fatalf("live native process inferred as canceled: %+v", event)
 		}
+		for i := 0; i < 2; i++ {
+			if err := sink(ctx, event); err != nil {
+				t.Fatalf("replay %d interrupted terminal to Server: %v", i, err)
+			}
+		}
 	}
 	if count != 1 {
 		t.Fatalf("crash-window recovery emitted %d interrupted outcomes, want one", count)
+	}
+	details, err := serverStore.WorkerDetailsForConversation(ctx, conversation.ID, worker.WorkerRef)
+	if err != nil || details.CurrentAttempt() == nil || string(details.CurrentAttempt().State) != "interrupted" ||
+		len(details.Results) != 1 || string(details.Results[0].Status) != "interrupted" {
+		t.Fatalf("crash-window Server published wrong Result: %+v err=%v", details, err)
+	}
+	entries, err := serverStore.EntriesAfter(ctx, conversation.ID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resultCount := 0
+	for _, entry := range entries {
+		if entry.Kind == core.EntryWorkerResult {
+			resultCount++
+			if entry.ResultID != details.Results[0].ID {
+				t.Fatalf("crash-window Result identity changed: %+v", entry)
+			}
+		}
+	}
+	if resultCount != 1 {
+		t.Fatalf("crash-window canonical Server Result count=%d, want one", resultCount)
 	}
 }
 
