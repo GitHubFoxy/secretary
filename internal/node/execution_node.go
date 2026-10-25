@@ -198,6 +198,29 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 	default:
 		outcome = failedOutcome(command, "unknown_command", "unknown command")
 	}
+	if command.Kind == CommandResume && command.Resume.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
+		n.mu.Lock()
+		record, recordErr := n.store.Command(command.Metadata().CommandID)
+		if recordErr != nil {
+			n.mu.Unlock()
+			return CommandOutcome{}, recordErr
+		}
+		if record.State == CommandProcessing && record.NativeResumeCancelRequested &&
+			n.nativeResumes[command.Metadata().AttemptID] == nil && n.sessions[command.Metadata().AttemptID] == nil {
+			outcome = n.completeCanceledClaudeResume(command.Resume, nil, nil, true)
+			n.mu.Unlock()
+			return outcome, nil
+		}
+		if record.State == CommandProcessing && outcome.State != CommandProcessing && outcome.State != CommandAccepted {
+			stored, err := n.store.CompleteCommand(command.Metadata().CommandID, outcome)
+			n.mu.Unlock()
+			if err != nil {
+				return CommandOutcome{}, err
+			}
+			return stored.Outcome, nil
+		}
+		n.mu.Unlock()
+	}
 	if outcome.State == CommandProcessing && (command.Kind == CommandDispatch || command.Kind == CommandResume) {
 		if e := n.store.YieldPrestart(command.Metadata().CommandID); e != nil {
 			return CommandOutcome{}, e
@@ -517,7 +540,7 @@ func (n *ExecutionNode) cancel(ctx context.Context, command *CancelCommand) Comm
 		n.mu.Unlock()
 		return acceptedOutcome(Command{Kind: CommandCancel, Cancel: command})
 	}
-	if command.Metadata.HarnessInstanceID != "" {
+	if n.sessions[command.Metadata.AttemptID] == nil && command.Metadata.HarnessInstanceID != "" {
 		record, recordErr := n.store.CommandForAttempt(command.Metadata.AttemptID)
 		if recordErr == nil && record.State == CommandProcessing && record.Kind == CommandResume {
 			original, decodeErr := commandFromJSON(record.CommandJSON)
