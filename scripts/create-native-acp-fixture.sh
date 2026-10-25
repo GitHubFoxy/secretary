@@ -10,11 +10,11 @@ trap 'rm -rf "$temp"' EXIT
 cat > "$temp/codex-acp-2.2.2" <<'ACP'
 #!/usr/bin/env bash
 if [[ "${1:-}" == "--version" ]]; then
-  printf '@agentclientprotocol/codex-acp 2.2.2\\n'
+  printf '@agentclientprotocol/codex-acp 2.2.2\n'
   exit 0
 fi
 ACP
-printf 'exec %q "$@"\\n' "$2" >> "$temp/codex-acp-2.2.2"
+printf 'exec %q "$@"\n' "$2" >> "$temp/codex-acp-2.2.2"
 chmod 700 "$temp/codex-acp-2.2.2"
 tar -czf "$out/codex-acp.tar.gz" -C "$temp" codex-acp-2.2.2
 if command -v sha256sum >/dev/null 2>&1; then
