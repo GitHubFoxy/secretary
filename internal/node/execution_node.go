@@ -50,6 +50,7 @@ type ExecutionNode struct {
 	nativeResumeRegistrationBarrier func()
 	nativeResumeErrorBeforeFinalization func()
 	nativeResumePreparationBarrier func(context.Context)
+	claudeResumeBeforeInitialPrompt func()
 	nativeResumeStarted map[string]bool
 	preNativeClaudeResumes map[string]context.CancelCauseFunc
 	// nativeLifetime is the Node process lifetime, not an individual
@@ -413,7 +414,12 @@ func (n *ExecutionNode) dispatch(ctx context.Context, command *DispatchCommand) 
 	activatedPublisher = true
 	if continuing {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
-		go func() { _ = promptWithImages(context.Background(), session, promptText, images) }()
+		go func() {
+			if command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode && n.claudeResumeBeforeInitialPrompt != nil {
+				n.claudeResumeBeforeInitialPrompt()
+			}
+			_ = promptWithImages(context.Background(), session, promptText, images)
+		}()
 	} else {
 		n.watchSession(session, command.Envelope, Command{Kind: CommandDispatch, Dispatch: command})
 	}
