@@ -1152,6 +1152,14 @@ func (r *issue209UnverifiedNativeResumeRuntime) Resume(_ context.Context, _ Star
 }
 
 func TestIssue209ClaudeNativeResumeUnverifiedCleanupIsInterrupted(t *testing.T) {
+	issue209NativeResumeUnverifiedCleanup(t, false)
+}
+
+func TestIssue209ClaudeNativeResumeErrorCancelInterleaving(t *testing.T) {
+	issue209NativeResumeUnverifiedCleanup(t, true)
+}
+
+func issue209NativeResumeUnverifiedCleanup(t *testing.T, afterNativeError bool) {
 	ctx, cancelContext := context.WithTimeout(context.Background(), 12*time.Second)
 	defer cancelContext()
 	serverStore, err := core.Open(ctx, filepath.Join(t.TempDir(), "server.db"))
@@ -1186,6 +1194,21 @@ func TestIssue209ClaudeNativeResumeUnverifiedCleanupIsInterrupted(t *testing.T) 
 		}
 	}()
 	execution := NewExecutionNode("macbook", runtime, local)
+	errorReached := make(chan struct{})
+	finishError := make(chan struct{})
+	if afterNativeError {
+		execution.nativeResumeErrorBeforeFinalization = func() {
+			close(errorReached)
+			<-finishError
+		}
+		defer func() {
+			select {
+			case <-finishError:
+			default:
+				close(finishError)
+			}
+		}()
+	}
 	firstMeta := core.CommandMetadata{
 		CommandID: "issue209-uncertain-first", Node: "macbook", HarnessInstanceID: instance.ID,
 		WorkerRef: worker.WorkerRef, TurnID: turn.ID, AttemptID: attempt.ID, IssuedAt: time.Now().UTC(),
@@ -1236,6 +1259,21 @@ func TestIssue209ClaudeNativeResumeUnverifiedCleanupIsInterrupted(t *testing.T) 
 	case <-ctx.Done():
 		t.Fatal("native Resume never entered")
 	}
+	if afterNativeError {
+		close(runtime.release)
+		select {
+		case <-errorReached:
+		case <-ctx.Done():
+			t.Fatal("native Resume error did not reach terminal decision window")
+		}
+		if !execution.nativeResumeRunning(resumeMeta.AttemptID, worker.WorkerRef, resumeMeta.CommandID) {
+			t.Fatal("native Resume error released cancellation identity prematurely")
+		}
+		record, err := local.Command(resumeMeta.CommandID)
+		if err != nil || record.State != CommandProcessing || record.TerminalOutcomeQueued {
+			t.Fatalf("native Resume error finalized before Cancel: %+v err=%v", record, err)
+		}
+	}
 	cancelMeta := resumeMeta
 	cancelMeta.CommandID = "issue209-uncertain-cancel"
 	cancelMeta.IssuedAt = time.Now().UTC()
@@ -1244,7 +1282,15 @@ func TestIssue209ClaudeNativeResumeUnverifiedCleanupIsInterrupted(t *testing.T) 
 	if err != nil || cancelOutcome.State != CommandAccepted {
 		t.Fatalf("Cancel=%+v err=%v", cancelOutcome, err)
 	}
-	close(runtime.release)
+	if afterNativeError {
+		record, err := local.Command(resumeMeta.CommandID)
+		if err != nil || !record.NativeResumeCancelRequested || record.State != CommandProcessing {
+			t.Fatalf("Cancel checkpoint did not win native error window: %+v err=%v", record, err)
+		}
+		close(finishError)
+	} else {
+		close(runtime.release)
+	}
 	var terminalReceipt CommandOutcome
 	select {
 	case result := <-finished:
