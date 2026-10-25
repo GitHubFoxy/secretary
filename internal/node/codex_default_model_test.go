@@ -13,11 +13,11 @@ import (
 
 func TestCodexChatGPTDefaultModelConfiguration(t *testing.T) {
 	cases := []struct {
-		name string
-		auth string
-		model string
-		native string
-		want string
+		name      string
+		auth      string
+		model     string
+		native    string
+		want      string
 		wantError string
 	}{
 		{name: "ChatGPT default", auth: "chatgpt", model: "default", want: "gpt-5.4"},
@@ -39,7 +39,7 @@ func TestCodexChatGPTDefaultModelConfiguration(t *testing.T) {
 			}
 			runtime := CodexRuntime{ACPRuntime: ACPRuntime{Command: "fixture", Environment: env}}
 			req := StartRequest{
-				Profile: ManagedProfile{Name: "secretary", Runtime: "codex", Content: "fixture", Model: tc.model},
+				Profile:         ManagedProfile{Name: "secretary", Runtime: "codex", Content: "fixture", Model: tc.model},
 				HarnessInstance: core.HarnessInstance{Authentication: core.HarnessAuthentication{Method: tc.auth}},
 			}
 			configured, err := runtime.configured(req)
@@ -76,15 +76,15 @@ func TestCodexChatGPTDefaultModelStartAndResume(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	runtime := CodexRuntime{ACPRuntime: ACPRuntime{
-		Command: os.Args[0],
-		Arguments: []string{"-test.run=^TestCodexFixtureProcess$"},
+		Command:     os.Args[0],
+		Arguments:   []string{"-test.run=^TestCodexFixtureProcess$"},
 		Environment: []string{"TEST_CODEX_FIXTURE=model-default"},
 	}}
 	request := StartRequest{
-		WorkerRef: "fixture",
-		Workspace: t.TempDir(),
+		WorkerRef:          "fixture",
+		Workspace:          t.TempDir(),
 		DeferInitialPrompt: true,
-		Profile: ManagedProfile{Name: "secretary", Runtime: "codex", Content: "UNIQUE_PROFILE_MARKER", Model: "default"},
+		Profile:            ManagedProfile{Name: "secretary", Runtime: "codex", Content: "UNIQUE_PROFILE_MARKER", Model: "default"},
 	}
 	session, err := runtime.Start(ctx, request)
 	if err != nil {
@@ -108,15 +108,15 @@ func TestCodexUnsupportedExplicitModelFailsClosed(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	runtime := CodexRuntime{ACPRuntime: ACPRuntime{
-		Command: os.Args[0],
-		Arguments: []string{"-test.run=^TestCodexFixtureProcess$"},
+		Command:     os.Args[0],
+		Arguments:   []string{"-test.run=^TestCodexFixtureProcess$"},
 		Environment: []string{"TEST_CODEX_FIXTURE=model-unsupported"},
 	}}
 	request := StartRequest{
-		WorkerRef: "fixture",
-		Workspace: t.TempDir(),
+		WorkerRef:          "fixture",
+		Workspace:          t.TempDir(),
 		DeferInitialPrompt: true,
-		Profile: ManagedProfile{Name: "secretary", Runtime: "codex", Content: "UNIQUE_PROFILE_MARKER", Model: "gpt-5.5"},
+		Profile:            ManagedProfile{Name: "secretary", Runtime: "codex", Content: "UNIQUE_PROFILE_MARKER", Model: "gpt-5.5"},
 	}
 	session, err := runtime.Start(ctx, request)
 	if session != nil || err == nil || !strings.Contains(err.Error(), "native model/variant selection failed") || !strings.Contains(err.Error(), "model not found: gpt-5.5") {
