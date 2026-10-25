@@ -453,11 +453,32 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 		s.active = false
 		s.result <- *pending
 	}
+	stalled := err == nil && pending == nil && s.active && s.cancel && s.inputID == attempt
 	close(s.cancelWait)
 	s.cancelWait = nil
 	s.stateMu.Unlock()
+	if stalled {
+		go s.stopStalledCanceledAttempt(attempt)
+	}
 	return err
 }
+
+func (s *claudeSession) stopStalledCanceledAttempt(attempt string) {
+	timer := time.NewTimer(3 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-s.done:
+		return
+	}
+	s.stateMu.Lock()
+	stalled := s.active && s.cancel && s.inputID == attempt && !s.canceling && !s.closed
+	s.stateMu.Unlock()
+	if stalled {
+		_ = s.stopProcess()
+	}
+}
+
 func (s *claudeSession) stopProcess() error {
 	s.stopOnce.Do(func() {
 		s.stateMu.Lock()
@@ -537,7 +558,9 @@ func (s *claudeSession) run() {
 		if summary == "" && waitErr != nil {
 			summary = waitErr.Error()
 		}
-		if summary == "" {
+		if canceled {
+			summary = "Claude Code attempt canceled"
+		} else if summary == "" {
 			summary = "Claude Code exited without a result"
 		}
 		s.emitResult(Result{Status: status, Summary: summary})
