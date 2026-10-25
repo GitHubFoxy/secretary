@@ -319,6 +319,9 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 	}
 	if !request.DeferInitialPrompt && request.Task != "" {
 		if err := promptWithImages(ctx, session, request.Task, request.Images); err != nil {
+			if len(resume) > 0 && resume[0] {
+				return nil, claudeResumeInitializationFailure(session, err)
+			}
 			_ = session.Close()
 			return nil, err
 		}
