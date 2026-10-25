@@ -551,7 +551,7 @@ func (n *ExecutionNode) cancel(ctx context.Context, command *CancelCommand) Comm
 	}
 	if n.sessions[command.Metadata.AttemptID] == nil && command.Metadata.HarnessInstanceID != "" {
 		record, recordErr := n.store.CommandForAttempt(command.Metadata.AttemptID)
-		if recordErr == nil && record.State == CommandProcessing && record.Kind == CommandResume {
+		if recordErr == nil && record.State == CommandProcessing && record.Kind == CommandResume && record.Outcome.State != CommandAccepted {
 			original, decodeErr := commandFromJSON(record.CommandJSON)
 			if decodeErr == nil && original.Resume != nil && original.Resume.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
 				old := original.Metadata()
