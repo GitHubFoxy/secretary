@@ -1008,7 +1008,7 @@ func (s *LocalStore) RecoverRunning(ctx context.Context, inspector ProcessInspec
 					continue
 				}
 			}
-			if record.State == CommandAccepted && isClaudeLifecycleCommand(command) && s.acceptedCancelForAttempt(metadata) {
+			if (record.State == CommandAccepted || (record.State == CommandProcessing && record.NativeResumeCancelRequested)) && isClaudeLifecycleCommand(command) && s.acceptedCancelForAttempt(metadata) {
 				terminal := core.AttemptOutcomeEnvelope{EventID: "attempt-outcome-" + metadata.AttemptID, Node: metadata.Node, HarnessInstanceID: metadata.HarnessInstanceID, WorkerRef: metadata.WorkerRef, TurnID: metadata.TurnID, AttemptID: metadata.AttemptID, Status: core.OutcomeCanceled, Classification: core.OutcomeFinal, Summary: "Claude Code attempt canceled", ErrorCode: "canceled", OccurredAt: time.Now().UTC()}
 				if _, err := s.CompleteCommandWithOutcome(record.CommandID, acceptedOutcome(command), terminal); err != nil {
 					return err
