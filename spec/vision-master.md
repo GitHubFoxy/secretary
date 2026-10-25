@@ -146,31 +146,31 @@ Each chapter below defines a separate decision domain. A chapter's candidate ans
 - **Q0038 · CONFIRMED** — Что «Person identity and personal accounts» может прочитать из персональных данных? **Рекомендация:** Только необходимые поля по purpose-limited scope; чужая raw private history закрыта.
 - **Q0039 · CONFIRMED** — Где хранится каноническое состояние «Person identity and personal accounts»? **Рекомендация:** В authority domain store с IDs/provenance, не в ответах модели или UI-кэше.
 - **Q0040 · CONFIRMED** — Сколько должно жить состояние «Person identity and personal accounts»? **Рекомендация:** Жизненный цикл tied to task/user retention, explicit archive/delete, безопасный restore.
-- **Q0041 · PROPOSAL / OPEN** — Где именно выполняется «Person identity and personal accounts»? **Рекомендация:** На supported environment с явно доступными tools; Server control plane не притворяется Node.
-- **Q0042 · PROPOSAL / OPEN** — Как «Person identity and personal accounts» ведёт себя offline? **Рекомендация:** Честное недоступно/degraded состояние, локальная независимая автоматика — где реализована.
-- **Q0043 · PROPOSAL / OPEN** — Как отменять или отзывать «Person identity and personal accounts»? **Рекомендация:** Разделить pending cancel, фактическое прекращение, irreversible external effects и revoke grants.
-- **Q0044 · PROPOSAL / OPEN** — Как обрабатывать одновременные запросы к «Person identity and personal accounts»? **Рекомендация:** Стабильные IDs, определённая очередь/конкуренция и предотвращение конфликтующих actions.
-- **Q0045 · PROPOSAL / OPEN** — Что делать после timeout или неизвестного результата «Person identity and personal accounts»? **Рекомендация:** Unknown != failed != succeeded; не повторять опасную операцию без reconcile/idempotency.
-- **Q0046 · PROPOSAL / OPEN** — Как пользователю доказать результат «Person identity and personal accounts»? **Рекомендация:** Показать проверенный receipt/state, кто инициировал и что подтвердил provider.
-- **Q0047 · PROPOSAL / OPEN** — Кто платит за «Person identity and personal accounts» и как ограничить расход? **Рекомендация:** Привязать usage к owner/delegation, caps, quotas, понятная статистика и отказ сверх лимита.
-- **Q0048 · PROPOSAL / OPEN** — Как изолировать безопасность «Person identity and personal accounts»? **Рекомендация:** Scoped credentials, least necessary capabilities для интеграций, логирование без секретов; риск: shared-account leakage.
-- **Q0049 · PROPOSAL / OPEN** — Какие проверки должны блокировать release «Person identity and personal accounts»? **Рекомендация:** Автоматизированные failure/idempotency/privacy тесты и live E2E по доступному физическому/native seam.
+- **Q0041 · CONFIRMED** — Где именно выполняется «Person identity and personal accounts»? **Рекомендация:** На supported environment с явно доступными tools; Server control plane не притворяется Node.
+- **Q0042 · CONFIRMED** — Как «Person identity and personal accounts» ведёт себя offline? **Рекомендация:** Честное недоступно/degraded состояние, локальная независимая автоматика — где реализована.
+- **Q0043 · CONFIRMED** — Как отменять или отзывать «Person identity and personal accounts»? **Рекомендация:** Разделить pending cancel, фактическое прекращение, irreversible external effects и revoke grants.
+- **Q0044 · CONFIRMED** — Как обрабатывать одновременные запросы к «Person identity and personal accounts»? **Рекомендация:** Стабильные IDs, определённая очередь/конкуренция и предотвращение конфликтующих actions.
+- **Q0045 · CONFIRMED** — Что делать после timeout или неизвестного результата «Person identity and personal accounts»? **Рекомендация:** Unknown != failed != succeeded; не повторять опасную операцию без reconcile/idempotency.
+- **Q0046 · CONFIRMED** — Как пользователю доказать результат «Person identity and personal accounts»? **Рекомендация:** Показать проверенный receipt/state, кто инициировал и что подтвердил provider.
+- **Q0047 · CONFIRMED** — Кто платит за «Person identity and personal accounts» и как ограничить расход? **Рекомендация:** Привязать usage к owner/delegation, caps, quotas, понятная статистика и отказ сверх лимита.
+- **Q0048 · CONFIRMED** — Как изолировать безопасность «Person identity and personal accounts»? **Рекомендация:** Scoped credentials, least necessary capabilities для интеграций, логирование без секретов; риск: shared-account leakage.
+- **Q0049 · CONFIRMED** — Какие проверки должны блокировать release «Person identity and personal accounts»? **Рекомендация:** Автоматизированные failure/idempotency/privacy тесты и live E2E по доступному физическому/native seam.
 - **Q0050 · CONFIRMED** — Нужен ли многопользовательский Secretary? **Утверждено:** Нет. Каждый Person имеет ровно один персональный Secretary с собственной памятью, историей и identity. Совместные задачи между несколькими людьми решаются через Circle, который связывает независимых Secretaries. «Multiuser Secretary» не является отдельным режимом или этапом roadmap. Разные Secretaries могут размещаться на общей инфраструктуре, но логически остаются независимыми.
 
 ### 03 · Personal conversations and channel identity
 
 **Контекст:** One private canonical conversation per Person across their authorized channels. **Граница:** Circle shared chat is separate. **Этап:** Baseline. **Основной риск:** message echo and privacy.
 
-- **Q0051 · BASELINE** — Что является канонической Conversation entry? **Рекомендация:** Server-issued identity с происхождением, автором, временем и связанным turn
-- **Q0052 · BASELINE** — Должна ли Telegram General отражать DM владельца? **Рекомендация:** В однопользовательском v1 да, без повторного запуска модели; для разных людей нельзя
-- **Q0053 · BASELINE** — Могут ли два канала отправить одинаковое сообщение одновременно? **Рекомендация:** Один canonical input при одинаковом ключе, не объединять разные сообщения по тексту
-- **Q0054 · BASELINE** — Куда отправлять Worker Result? **Рекомендация:** В Origin Conversation конкретного Person
-- **Q0055 · PROPOSAL / OPEN** — Что происходит при удалении канала? **Рекомендация:** Данные Conversation сохраняются согласно политике, канал теряет доступ
-- **Q0056 · PROPOSAL / OPEN** — Каков конкретный пользовательский результат для «Personal conversations and channel identity»? **Рекомендация:** Определить успех как: One private canonical conversation per Person across their authorized channels; не включать недоказанные обещания.
-- **Q0057 · PROPOSAL / OPEN** — Кому принадлежит право активировать «Personal conversations and channel identity»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
-- **Q0058 · PROPOSAL / OPEN** — Как инициируется работа «Personal conversations and channel identity»? **Рекомендация:** Явный запрос пользователя по умолчанию; автоматическое начало — только по отдельно согласованной политике.
-- **Q0059 · PROPOSAL / OPEN** — Какие входные данные нужны перед стартом «Personal conversations and channel identity»? **Рекомендация:** Запрашивать только достаточный контекст и подтверждать критически недостающие параметры.
-- **Q0060 · PROPOSAL / OPEN** — Какие действия заведомо вне границы «Personal conversations and channel identity»? **Рекомендация:** Уважать boundary: Circle shared chat is separate; не расширять ее эвристикой модели.
+- **Q0051 · CONFIRMED** — Что является канонической Conversation entry? **Рекомендация:** Server-issued identity с происхождением, автором, временем и связанным turn
+- **Q0052 · CONFIRMED** — Должна ли Telegram General отражать DM владельца? **Рекомендация:** В однопользовательском v1 да, без повторного запуска модели; для разных людей нельзя
+- **Q0053 · CONFIRMED** — Могут ли два канала отправить одинаковое сообщение одновременно? **Рекомендация:** Один canonical input при одинаковом ключе, не объединять разные сообщения по тексту
+- **Q0054 · CONFIRMED** — Куда отправлять Worker Result? **Рекомендация:** В Origin Conversation конкретного Person
+- **Q0055 · CONFIRMED** — Что происходит при удалении канала? **Рекомендация:** Данные Conversation сохраняются согласно политике, канал теряет доступ
+- **Q0056 · CONFIRMED** — Каков конкретный пользовательский результат для «Personal conversations and channel identity»? **Рекомендация:** Определить успех как: One private canonical conversation per Person across their authorized channels; не включать недоказанные обещания.
+- **Q0057 · CONFIRMED** — Кому принадлежит право активировать «Personal conversations and channel identity»? **Рекомендация:** Только идентифицированному Person или участнику с явно делегированным scope; иной доступ запрещён.
+- **Q0058 · CONFIRMED** — Как инициируется работа «Personal conversations and channel identity»? **Рекомендация:** Явный запрос пользователя по умолчанию; автоматическое начало — только по отдельно согласованной политике.
+- **Q0059 · CONFIRMED** — Какие входные данные нужны перед стартом «Personal conversations and channel identity»? **Рекомендация:** Запрашивать только достаточный контекст и подтверждать критически недостающие параметры.
+- **Q0060 · CONFIRMED** — Какие действия заведомо вне границы «Personal conversations and channel identity»? **Рекомендация:** Уважать boundary: Circle shared chat is separate; не расширять ее эвристикой модели.
 - **Q0061 · PROPOSAL / OPEN** — Как обнаруживаются доступные функции «Personal conversations and channel identity»? **Рекомендация:** Предпочитать verified capability discovery и явно показывать unsupported operations.
 - **Q0062 · PROPOSAL / OPEN** — Как пользователь управляет настройками «Personal conversations and channel identity»? **Рекомендация:** Читаемый конфиг плюс удобный UI/CLI, версионирование и безопасные defaults.
 - **Q0063 · PROPOSAL / OPEN** — Что «Personal conversations and channel identity» может прочитать из персональных данных? **Рекомендация:** Только необходимые поля по purpose-limited scope; чужая raw private history закрыта.
