@@ -18,9 +18,9 @@ import (
 )
 
 type issue209BlockedClaudeStdin struct {
-	started chan struct{}
-	closed chan struct{}
-	closeOnce sync.Once
+	started          chan struct{}
+	closed           chan struct{}
+	closeOnce        sync.Once
 	successfulWrites atomic.Int32
 }
 
@@ -49,16 +49,16 @@ func TestIssue209CancelBlockedFirstClaudeStdinWriteStopsCLIAndPublishesTerminal(
 	}
 	writer := &issue209BlockedClaudeStdin{started: make(chan struct{}, 1), closed: make(chan struct{})}
 	session := &claudeSession{
-		id: "4b22ac0e-109c-4aac-8a17-3e78cba13809",
-		cmd: cmd,
-		stdin: writer,
-		stdout: stdout,
-		stderr: &bytes.Buffer{},
-		activity: make(chan Activity, 4),
-		result: make(chan Result, 4),
-		ready: make(chan error, 1),
-		writeGate: make(chan struct{}, 1),
-		done: make(chan struct{}),
+		id:                   "4b22ac0e-109c-4aac-8a17-3e78cba13809",
+		cmd:                  cmd,
+		stdin:                writer,
+		stdout:               stdout,
+		stderr:               &bytes.Buffer{},
+		activity:             make(chan Activity, 4),
+		result:               make(chan Result, 4),
+		ready:                make(chan error, 1),
+		writeGate:            make(chan struct{}, 1),
+		done:                 make(chan struct{}),
 		initialPromptPending: true,
 	}
 	server, err := core.Open(ctx, filepath.Join(t.TempDir(), "server.db"))

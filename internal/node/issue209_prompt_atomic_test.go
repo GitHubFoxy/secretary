@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"path/filepath"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -16,8 +16,8 @@ import (
 )
 
 type issue209PromptSink struct {
-	mu sync.Mutex
-	records []map[string]any
+	mu       sync.Mutex
+	records  []map[string]any
 	failUser bool
 }
 
@@ -51,13 +51,13 @@ func (s *issue209PromptSink) Count(kind string) int {
 
 func issue209DeferredPromptSession(sink io.WriteCloser) *claudeSession {
 	return &claudeSession{
-		id: "4b22ac0e-109c-4aac-8a17-3e78cba13809",
-		stdin: sink,
-		writeGate: make(chan struct{}, 1),
-		result: make(chan Result, 3),
-		claudeRoot: claudeChild{pid: 123},
+		id:                   "4b22ac0e-109c-4aac-8a17-3e78cba13809",
+		stdin:                sink,
+		writeGate:            make(chan struct{}, 1),
+		result:               make(chan Result, 3),
+		claudeRoot:           claudeChild{pid: 123},
 		initialPromptPending: true,
-		cleanupAttempt: func(context.Context, *exec.Cmd, claudeChild) error { return nil },
+		cleanupAttempt:       func(context.Context, *exec.Cmd, claudeChild) error { return nil },
 	}
 }
 
