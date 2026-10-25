@@ -710,7 +710,51 @@ func TestIssue209ClaudeNativeResumeCancelProducesCanonicalCanceledResult(t *test
 	if err != nil || current.CurrentAttempt().ID != attempt.ID || current.CurrentAttempt().State.Terminal() {
 		t.Fatalf("Cancel receipt fabricated a Result: %+v err=%v", current, err)
 	}
+	local.mu.Lock()
+	healthyPath := local.path
+	local.path = filepath.Join(t.TempDir(), "missing-directory", "node.json")
+	local.mu.Unlock()
+	defer func() {
+		local.mu.Lock()
+		local.path = healthyPath
+		local.mu.Unlock()
+	}()
 	close(runtime.release)
+	waitFor(t, ctx, "closed late native Session before terminal persistence", func() bool {
+		runtime.mu.Lock()
+		late := runtime.lateSession
+		runtime.mu.Unlock()
+		if late == nil {
+			return false
+		}
+		select {
+		case <-late.activity:
+			return true
+		default:
+			return false
+		}
+	})
+	select {
+	case result := <-finished:
+		t.Fatalf("terminal persistence error completed Resume prematurely: %+v", result)
+	case <-time.After(175 * time.Millisecond):
+	}
+	uncommitted, err := local.Command(resumeMetadata.CommandID)
+	if err != nil || uncommitted.State != CommandProcessing || uncommitted.TerminalOutcomeQueued {
+		t.Fatalf("terminal outcome committed during persistence failure: %+v err=%v", uncommitted, err)
+	}
+	beforeRepair, err := local.PendingEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range beforeRepair {
+		if event.EventID == "attempt-outcome-"+attempt.ID || event.EventID == "command-outcome-"+resumeMetadata.CommandID {
+			t.Fatalf("failed terminal persistence published a receipt: %+v", event)
+		}
+	}
+	local.mu.Lock()
+	local.path = healthyPath
+	local.mu.Unlock()
 	var terminalCommand CommandOutcome
 	select {
 	case result := <-finished:
