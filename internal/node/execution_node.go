@@ -731,7 +731,7 @@ func (n *ExecutionNode) resume(ctx context.Context, command *ResumeCommand) Comm
 		n.mu.Unlock()
 		return failedOutcome(Command{Kind: CommandResume, Resume: command}, "native_handoff_record_failed", recordErr.Error())
 	}
-	if record.NativeResumeCancelRequested {
+	if record.NativeResumeCancelRequested && command.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
 		n.mu.Unlock()
 		return n.completeCanceledClaudeResume(command, nil, nil, true)
 	}
