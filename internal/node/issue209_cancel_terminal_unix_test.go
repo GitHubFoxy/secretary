@@ -919,6 +919,16 @@ func issue209SameSocketClaudeResumeCancel(t *testing.T, pauseRegistration, ready
 		return err == nil && details.CurrentAttempt() != nil && details.CurrentAttempt().State == core.AttemptCanceled &&
 			len(details.Results) == 2 && details.Results[1].Status == core.ResultCanceled
 	})
+	if readySession {
+		select {
+		case _, open := <-activeRuntime.active.activity:
+			if open {
+				t.Fatal("registered Claude Session remained open after terminal cancellation")
+			}
+		default:
+			t.Fatal("registered Claude Session native cleanup did not close activity stream")
+		}
+	}
 	record, err := local.Command(resumeMetadata.CommandID)
 	if readySession {
 		if err != nil || record.Outcome.State != CommandAccepted {
