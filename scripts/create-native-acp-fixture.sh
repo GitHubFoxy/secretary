@@ -14,9 +14,12 @@ if [[ "${1:-}" == "--version" ]]; then
   exit 0
 fi
 ACP
-printf 'exec %q "$@"\n' "$2" >> "$temp/codex-acp-2.2.2"
-chmod 700 "$temp/codex-acp-2.2.2"
-tar -czf "$out/codex-acp.tar.gz" -C "$temp" codex-acp-2.2.2
+cat >> "$temp/codex-acp-2.2.2" <<'ACP'
+exec "$(dirname "$0")/codex-acp-protocol-double" "$@"
+ACP
+cp "$2" "$temp/codex-acp-protocol-double"
+chmod 700 "$temp/codex-acp-2.2.2" "$temp/codex-acp-protocol-double"
+tar -czf "$out/codex-acp.tar.gz" -C "$temp" codex-acp-2.2.2 codex-acp-protocol-double
 if command -v sha256sum >/dev/null 2>&1; then
  (cd "$out" && sha256sum codex-acp.tar.gz > codex-acp.tar.gz.sha256)
 else
