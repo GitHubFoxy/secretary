@@ -226,7 +226,7 @@ while read line; do :; done
 	}
 }
 
-func TestIssue209NodeRestartRecoversAcceptedClaudeCancelOnce(t *testing.T) {
+func TestIssue209NodeRestartDoesNotInferCancelFromReceipt(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "node.json")
 	store, err := OpenLocalStore(path)
@@ -275,7 +275,7 @@ func TestIssue209NodeRestartRecoversAcceptedClaudeCancelOnce(t *testing.T) {
 	}
 	count := 0
 	for _, pending := range events {
-		if pending.EventID != "attempt-outcome-"+dispatch.Metadata().AttemptID {
+		if pending.EventID != "interrupted-"+dispatch.Metadata().CommandID {
 			continue
 		}
 		count++
@@ -283,7 +283,7 @@ func TestIssue209NodeRestartRecoversAcceptedClaudeCancelOnce(t *testing.T) {
 		if err := json.Unmarshal(pending.Payload, &event); err != nil {
 			t.Fatal(err)
 		}
-		if event.Outcome == nil || event.Outcome.Status != core.OutcomeCanceled ||
+		if event.Outcome == nil || event.Outcome.Status != core.OutcomeInterrupted ||
 			event.Outcome.WorkerRef != dispatch.Metadata().WorkerRef || event.Outcome.AttemptID != dispatch.Metadata().AttemptID {
 			t.Fatalf("recovered terminal identity: %+v", event)
 		}
@@ -339,7 +339,7 @@ func TestIssue209NodeRestartRecoversCanceledNativeClaudeResume(t *testing.T) {
 		}
 	}
 	record, err := reopened.Command(resume.Metadata().CommandID)
-	if err != nil || record.State != CommandAccepted || !record.TerminalOutcomeQueued {
+	if err != nil || record.State != CommandInterrupted || !record.TerminalOutcomeQueued {
 		t.Fatalf("native Resume cancellation not recovered: %+v %v", record, err)
 	}
 	events, err := reopened.PendingEvents()
@@ -348,7 +348,7 @@ func TestIssue209NodeRestartRecoversCanceledNativeClaudeResume(t *testing.T) {
 	}
 	count := 0
 	for _, pending := range events {
-		if pending.EventID != "attempt-outcome-"+resume.Metadata().AttemptID {
+		if pending.EventID != "interrupted-"+resume.Metadata().CommandID {
 			continue
 		}
 		count++
@@ -356,7 +356,7 @@ func TestIssue209NodeRestartRecoversCanceledNativeClaudeResume(t *testing.T) {
 		if err := json.Unmarshal(pending.Payload, &event); err != nil {
 			t.Fatal(err)
 		}
-		if event.Outcome == nil || event.Outcome.Status != core.OutcomeCanceled ||
+		if event.Outcome == nil || event.Outcome.Status != core.OutcomeInterrupted ||
 			event.Outcome.AttemptID != resume.Metadata().AttemptID {
 			t.Fatalf("recovered native Resume terminal: %+v", event)
 		}
