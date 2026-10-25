@@ -51,6 +51,7 @@ type ExecutionNode struct {
 	nativeResumeErrorBeforeFinalization func()
 	nativeResumePreparationBarrier func()
 	nativeResumeStarted map[string]bool
+	preNativeClaudeResumes map[string]context.CancelCauseFunc
 	// nativeLifetime is the Node process lifetime, not an individual
 	// WebSocket connection or an individual Dispatch command.
 	nativeLifetime context.Context
@@ -64,7 +65,7 @@ type nativeResumeAttempt struct {
 }
 
 func NewExecutionNode(node core.NodeReference, runtime Runtime, store *LocalStore) *ExecutionNode {
-	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, nativeResumes: map[string]*nativeResumeAttempt{}, nativeResumeStarted: map[string]bool{}, activitySequences: map[string]uint64{}, workspaces: map[string]string{}}
+	return &ExecutionNode{node: node, runtime: runtime, store: store, sessions: map[string]Session{}, nativeResumes: map[string]*nativeResumeAttempt{}, nativeResumeStarted: map[string]bool{}, preNativeClaudeResumes: map[string]context.CancelCauseFunc{}, activitySequences: map[string]uint64{}, workspaces: map[string]string{}}
 }
 
 // SetNativeLifetime binds accepted native sessions to the Node daemon
@@ -186,11 +187,21 @@ func (n *ExecutionNode) HandleCommand(ctx context.Context, command Command) (Com
 		return bindCommandOutcomeIdentity(record.Outcome, command), nil
 	}
 	if command.Kind == CommandResume && command.Resume.Envelope.HarnessInstance.Kind == core.HarnessClaudeCode {
+		preCtx, preCancel := context.WithCancelCause(ctx)
+		n.mu.Lock()
+		n.preNativeClaudeResumes[command.Metadata().AttemptID] = preCancel
+		if record, err := n.store.Command(command.Metadata().CommandID); err == nil && record.NativeResumeCancelRequested {
+			preCancel(errWorkerDispatchCanceled)
+		}
+		n.mu.Unlock()
 		defer func() {
 			n.mu.Lock()
 			delete(n.nativeResumeStarted, command.Metadata().AttemptID)
+			delete(n.preNativeClaudeResumes, command.Metadata().AttemptID)
 			n.mu.Unlock()
+			preCancel(nil)
 		}()
+		ctx = preCtx
 	}
 	var outcome CommandOutcome
 	switch command.Kind {
@@ -560,6 +571,9 @@ func (n *ExecutionNode) cancel(ctx context.Context, command *CancelCommand) Comm
 					if err := n.store.RecordNativeResumeCancel(old.CommandID, command.Metadata); err != nil {
 						n.mu.Unlock()
 						return failedOutcome(Command{Kind: CommandCancel, Cancel: command}, "cancel_checkpoint_failed", err.Error())
+					}
+					if interrupt := n.preNativeClaudeResumes[command.Metadata.AttemptID]; interrupt != nil {
+						interrupt(errWorkerDispatchCanceled)
 					}
 					n.mu.Unlock()
 					return acceptedOutcome(Command{Kind: CommandCancel, Cancel: command})
