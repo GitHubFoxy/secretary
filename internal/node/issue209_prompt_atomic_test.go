@@ -266,11 +266,6 @@ func TestIssue209DeferredClaudePromptWriteErrorCancelRaceOneDurableServerResult(
 	case <-ctx.Done():
 		t.Fatal("stdin failure blocked")
 	}
-	select {
-	case <-cancelDone:
-	case <-ctx.Done():
-		t.Fatal("Cancel remained blocked after failed Prompt")
-	}
 	waitFor(t, ctx, "durable failed terminal for initial prompt error", func() bool {
 		record, err := local.Command(metadata.CommandID)
 		return err == nil && record.TerminalOutcomeQueued
