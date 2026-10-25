@@ -16,12 +16,13 @@ cp "$ROOT/scripts/phase4-gofmt-check.sh" "$TMP/scripts/phase4-gofmt-check.sh"
   git add internal/node/legacy.go
   git -c commit.gpgsign=false commit -qm baseline
   base="$(git rev-parse HEAD)"
+  git update-ref refs/remotes/origin/main "$base"
 
   printf 'package node\nfunc Changed( ){}\n' > internal/node/changed.go
   git add internal/node/changed.go
   git -c commit.gpgsign=false commit -qm changed
 
-  if GITHUB_EVENT_NAME=pull_request GITHUB_BASE_REF=main PHASE4_GOFMT_BASE_REF="$base" bash scripts/phase4-gofmt-check.sh > "$TMP/check.log" 2>&1; then
+  if GITHUB_EVENT_NAME=pull_request GITHUB_BASE_REF=main PHASE4_GOFMT_BASE_REF= bash scripts/phase4-gofmt-check.sh > "$TMP/check.log" 2>&1; then
     printf 'gofmt PR scope accepted an unformatted changed file\n' >&2
     exit 1
   fi
@@ -34,7 +35,7 @@ cp "$ROOT/scripts/phase4-gofmt-check.sh" "$TMP/scripts/phase4-gofmt-check.sh"
   printf 'package node\n\nfunc Changed() {}\n' > internal/node/changed.go
   git add internal/node/changed.go
   git -c commit.gpgsign=false commit -qm formatted
-  GITHUB_EVENT_NAME=pull_request GITHUB_BASE_REF=main PHASE4_GOFMT_BASE_REF="$base" bash scripts/phase4-gofmt-check.sh > "$TMP/check.log" 2>&1
+  GITHUB_EVENT_NAME=pull_request GITHUB_BASE_REF=main PHASE4_GOFMT_BASE_REF= bash scripts/phase4-gofmt-check.sh > "$TMP/check.log" 2>&1
 
   if GITHUB_EVENT_NAME=workflow_dispatch PHASE4_GOFMT_BASE_REF= bash scripts/phase4-gofmt-check.sh > "$TMP/check.log" 2>&1; then
     printf 'standalone gofmt scope skipped existing unformatted Go source\n' >&2
