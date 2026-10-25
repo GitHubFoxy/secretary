@@ -28,7 +28,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
-      GOFLAGS: -p=1
+      # Bound package concurrency to avoid serial compilation without overloading runners.
+      GOFLAGS: -p=2
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v6
@@ -67,7 +68,12 @@ jobs:
       - name: Native Codex sandbox Start and persisted same-session Resume
         env:
           T09_REAL_CODEX: ${{ runner.temp }}/t09-codex/node_modules/@openai/codex/bin/codex.js
-        run: go test ./internal/nativeexec -run 'TestT09(PinnedOfficialCodexStartResume|RealCodexPersistedSessionResume)$' -count=1 -v
+        run: go test ./internal/nativeexec -run 'TestT09(PinnedOfficialCodexStartResume|RealCodexPersistedSessionResume)
+      - name: Run Go tests
+        # Explicit live T09 run above uses -count=1 and T09_REAL_CODEX.
+        # Skip only those two top-level tests here to avoid running them twice.
+        run: go test ./... -skip '^TestT09(PinnedOfficialCodexStartResume|RealCodexPersistedSessionResume)$'
+ -count=1 -v -timeout=3m
       - name: Run Go tests
         # Explicit live T09 run above uses -count=1 and T09_REAL_CODEX.
         # Skip only those two top-level tests here to avoid running them twice.
