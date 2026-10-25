@@ -52,7 +52,7 @@ func (r CodexRuntime) configured(request StartRequest) (ACPRuntime, error) {
 		base.ModeSelection = "agent-full-access"
 	}
 	authMethod := strings.ToLower(strings.TrimSpace(request.HarnessInstance.Authentication.Method))
-	if model := strings.TrimSpace(profile.Model); (model == "" || strings.EqualFold(model, "default")) && base.ModelSelection == "" && authMethod != "api_key" && authMethod != "apikey" && authMethod != "agent_identity" {
+	if model := strings.TrimSpace(profile.Model); (model == "" || isModelAlias(model)) && base.ModelSelection == "" && authMethod != "api_key" && authMethod != "apikey" && authMethod != "agent_identity" {
 		if configured, exists := overrides["model"]; exists {
 			selected, ok := configured.(string)
 			if !ok || strings.TrimSpace(selected) == "" {
