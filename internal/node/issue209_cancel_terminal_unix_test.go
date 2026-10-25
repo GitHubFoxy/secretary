@@ -365,3 +365,58 @@ func TestIssue209NodeRestartRecoversCanceledNativeClaudeResume(t *testing.T) {
 		t.Fatalf("native Resume terminal events=%d, want one", count)
 	}
 }
+
+func TestIssue209NodeRestartDoesNotInferOtherProviderCancellation(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "node.json")
+	store, err := OpenLocalStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dispatch := daemonDispatchFixture("macbook", "issue209-fx-dispatch")
+	if _, _, err := store.ClaimCommand(dispatch); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteCommand(dispatch.Metadata().CommandID, acceptedOutcome(dispatch)); err != nil {
+		t.Fatal(err)
+	}
+	meta := dispatch.Metadata()
+	meta.CommandID = "issue209-fx-cancel"
+	meta.IssuedAt = time.Now().UTC()
+	cancel := Command{Kind: CommandCancel, Cancel: &CancelCommand{Metadata: meta, Reason: "owner"}}
+	if _, _, err := store.ClaimCommand(cancel); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteCommand(meta.CommandID, acceptedOutcome(cancel)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := OpenLocalStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if err := reopened.RecoverRunning(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	events, err := reopened.PendingEvents()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pending := range events {
+		if pending.EventID != "interrupted-"+dispatch.Metadata().CommandID {
+			continue
+		}
+		var event NodeEvent
+		if err := json.Unmarshal(pending.Payload, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Outcome == nil || event.Outcome.Status != core.OutcomeInterrupted {
+			t.Fatalf("other provider recovery changed: %+v", event)
+		}
+		return
+	}
+	t.Fatal("other provider lost interrupted recovery event")
+}
