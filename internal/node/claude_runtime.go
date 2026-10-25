@@ -317,6 +317,11 @@ func (r ClaudeCodeRuntime) startProcess(ctx context.Context, request StartReques
 			return nil, claudeResumeInitializationFailure(session, err)
 		}
 	}
+	if len(resume) > 0 && resume[0] && request.DeferInitialPrompt {
+		session.stateMu.Lock()
+		session.initialPromptPending = true
+		session.stateMu.Unlock()
+	}
 	if !request.DeferInitialPrompt && request.Task != "" {
 		if err := promptWithImages(ctx, session, request.Task, request.Images); err != nil {
 			if len(resume) > 0 && resume[0] {
@@ -349,6 +354,7 @@ type claudeSession struct {
 	pendingTerminal *Result
 	nativeErrorDuringCancel string
 	failedCancel bool
+	initialPromptPending bool
 	done      chan struct{}
 	closed    bool
 	cancel    bool
@@ -385,6 +391,7 @@ func (s *claudeSession) PromptImages(ctx context.Context, text string, images []
 		s.stateMu.Unlock()
 		return errors.New("claude: session closed or Attempt still active")
 	}
+	s.initialPromptPending = false
 	s.active = true
 	s.cancel = false
 	s.nativeErrorDuringCancel = ""
@@ -426,9 +433,14 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 		return err
 	}
 	s.stateMu.Lock()
-	if s.closed || !s.active || s.cancel {
+	if s.closed || (!s.active && !s.initialPromptPending) || s.cancel {
 		s.stateMu.Unlock()
 		return nil
+	}
+	if s.initialPromptPending {
+		s.initialPromptPending = false
+		s.active = true
+		s.inputID = s.id + "-initial-prompt-preempted"
 	}
 	attempt := s.inputID
 	s.cancel = true
@@ -475,13 +487,20 @@ func (s *claudeSession) Cancel(ctx context.Context) error {
 		s.result <- *pending
 	}
 	stalled := err == nil && pending == nil && s.active && s.cancel && s.inputID == attempt
+	stillActive := s.active && s.inputID == attempt
 	nativeError := s.nativeErrorDuringCancel
 	s.nativeErrorDuringCancel = ""
 	close(s.cancelWait)
 	s.cancelWait = nil
 	s.stateMu.Unlock()
-	if nativeError != "" && err != nil {
-		s.emitResult(Result{Status: "failed", Summary: nativeError, FailureCode: "cancel_failed", Technical: err.Error()})
+	if err != nil {
+		if stillActive {
+			summary := "Claude Code cancellation cleanup or interrupt failed"
+			if nativeError != "" {
+				summary = nativeError
+			}
+			s.emitResult(Result{Status: "failed", Summary: summary, FailureCode: "cancel_failed", Technical: err.Error()})
+		}
 		_ = s.stopProcess()
 	} else if stalled && nativeError != "" {
 		_ = s.stopProcess()
