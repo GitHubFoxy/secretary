@@ -1,4 +1,4 @@
-import { models, claudeModels } from './models';
+import { models, modelDetails, claudeModels } from './models';
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
@@ -8,7 +8,7 @@ const folder = `${homedir()}/.secretary`;
 mkdirSync(folder, { recursive: true });
 if (!existsSync(`${folder}/AGENTS.md`)) writeFileSync(`${folder}/AGENTS.md`, `# Secretary Agent
 
-Ты правая рука владельца. Отвечай сам на быстрые вопросы. Долгую работу поручай через delegate, указывая harness, model, folder и task. Следи за дочерними сессиями. На неважный [report ...] ответь ровно NO_REPLY. Если отчёт содержит важные для владельца сведения, сообщи о них.\n`);
+Ты правая рука владельца. Отвечай сам на быстрые вопросы. Долгую работу поручай через delegate, указывая name, harness, model, reasoning, folder и task. Следи за дочерними сессиями. На неважный [report ...] ответь ровно NO_REPLY. Если отчёт содержит важные для владельца сведения, сообщи о них.\n`);
 if (!existsSync(`${folder}/CLAUDE.md`)) writeFileSync(`${folder}/CLAUDE.md`, '@AGENTS.md\n');
 
 const sessions = new Map<number, Session>();
@@ -28,22 +28,22 @@ Session.cleanInterrupted();
 const interrupted = rows.filter(row => row.status === 'running');
 db.query("UPDATE sessions SET status = 'interrupted' WHERE status = 'running'").run();
 
-function create(harness: string, model: string, dir: string, parentId: number | null = null) {
+function create(harness: string, model: string, dir: string, parentId: number | null = null, name: string | null = null, reasoning: string | null = null) {
   if (!['claude', 'codex'].includes(harness) || !model || !dir) throw new Error('Invalid session settings');
-  return attach(Session.create(model, resolve(dir.replace(/^~(?=\/|$)/, homedir())), harness, parentId));
+  return attach(Session.create(model, resolve(dir.replace(/^~(?=\/|$)/, homedir())), harness, parentId, name, reasoning));
 }
 function session(id: number) { const value = sessions.get(Number(id)); if (!value) throw new Error('Session not found'); return value; }
 function listSessions() { return [...sessions.values()].map(s => { const last = db.query('SELECT json FROM events WHERE session_id = ? ORDER BY rowid DESC LIMIT 1').get(s.id) as {json:string} | null; return {...s.info, last_event: last ? JSON.parse(last.json) : null}; }); }
 const tools = [
-  ['delegate', 'Delegate a task to a background session', { harness: {type:'string', enum:['claude','codex']}, model:{type:'string'}, folder:{type:'string'}, task:{type:'string'} }, ['harness','model','folder','task']],
+  ['delegate', 'Delegate a task to a background session', { harness: {type:'string', enum:['claude','codex']}, model:{type:'string'}, name:{type:'string', minLength:1}, reasoning:{type:'string', enum:['low','medium','high','xhigh','max','ultra'], description:'Claude: low, medium, high, xhigh, max; Codex: levels supported by the selected model'}, folder:{type:'string'}, task:{type:'string'} }, ['harness','model','name','reasoning','folder','task']],
   ['send', 'Send a message to a session', { id:{type:'number'}, message:{type:'string'} }, ['id','message']],
   ['list', 'List sessions', {}, []],
   ['read', 'Read session events', { id:{type:'number'} }, ['id']],
   ['stop', 'Stop a session', { id:{type:'number'} }, ['id']],
 ].map(([name, description, properties, required]) => ({name, description, inputSchema:{type:'object', properties, required}}));
-function call(name: string, args: any) {
+async function call(name: string, args: any) {
   switch (name) {
-    case 'delegate': { const child = create(args.harness, args.model, args.folder, 1); child.send(args.task); return {id:child.id, status:'running'}; }
+    case 'delegate': { if (typeof args.name !== 'string' || !args.name.trim() || !['low','medium','high','xhigh','max','ultra'].includes(args.reasoning) || (args.harness === 'claude' && args.reasoning === 'ultra') || typeof args.task !== 'string' || !args.task.trim()) throw new Error('Invalid delegate settings'); if (args.harness === 'codex') { const model = (await modelDetails()).find(m => m.id === args.model); if (!model?.supportedReasoningEfforts.some(e => e.reasoningEffort === args.reasoning)) throw new Error('Unsupported model or reasoning level'); } const child = create(args.harness, args.model, args.folder, 1, args.name.trim(), args.reasoning); child.send(args.task); return {id:child.id, status:'running'}; }
     case 'send': session(args.id).send(args.message); return {ok:true};
     case 'list': return listSessions();
     case 'read': return session(args.id).events().slice(-100);
@@ -58,7 +58,7 @@ Bun.serve({ hostname:'127.0.0.1', port:3001, async fetch(req) {
   const ok = (result: unknown) => Response.json({jsonrpc:'2.0',id:msg.id,result});
   if (msg.method === 'initialize') return ok({protocolVersion:msg.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'secretary',version:'0.1'}});
   if (msg.method === 'tools/list') return ok({tools});
-  if (msg.method === 'tools/call') { try { return ok({content:[{type:'text',text:JSON.stringify(call(msg.params.name,msg.params.arguments || {}))}]}); } catch (error) { return ok({isError:true,content:[{type:'text',text:String(error)}]}); } }
+  if (msg.method === 'tools/call') { try { return ok({content:[{type:'text',text:JSON.stringify(await call(msg.params.name,msg.params.arguments || {}))}]}); } catch (error) { return ok({isError:true,content:[{type:'text',text:String(error)}]}); } }
   return Response.json({jsonrpc:'2.0',id:msg.id,error:{code:-32601,message:'Method not found'}});
 }});
 

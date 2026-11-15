@@ -20,7 +20,7 @@
           <div class="max-w-[85%] min-w-0 rounded-2xl bg-neutral-900 px-4 py-3 text-sm">
             <div class="mb-2 flex flex-wrap gap-x-2 text-neutral-400">
               {#if sessions.some(s => s.id === m.id)}
-                <button class="cursor-pointer text-neutral-200 underline" onclick={() => onselect(m.id)}>Сессия #{m.id}</button>
+                <button class="cursor-pointer text-neutral-200 underline" onclick={() => onselect(m.id)}>{sessions.find(s => s.id === m.id)?.name || `Сессия #${m.id}`}</button>
               {:else}
                 <span>Сессия #{m.id}</span>
               {/if}

@@ -105,7 +105,7 @@
 {:else}
   <div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
     <TopBar
-      title={`Сессия #${selected}`}
+      title={current?.name || `Сессия #${selected}`}
       status={current?.status}
       {connected}
       onmenu={() => (drawerOpen = true)}

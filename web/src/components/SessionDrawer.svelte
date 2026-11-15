@@ -24,7 +24,7 @@
           class="min-w-0 flex-1 cursor-pointer rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-neutral-900"
           onclick={() => onselect(s.id)}
         >
-          <span class="block truncate text-sm {selected === s.id ? 'text-neutral-100' : 'text-neutral-300'}">#{s.id} {s.id === 1 ? 'Secretary Agent' : s.harness}</span>
+          <span class="block truncate text-sm {selected === s.id ? 'text-neutral-100' : 'text-neutral-300'}">{s.name || `#${s.id} ${s.harness}`}</span>
           <span class="mt-0.5 block truncate text-xs text-neutral-500">{s.status} · {s.model}</span>
           <span class="block truncate text-xs text-neutral-600">{s.folder}</span>
           {#if lastEvent(s)}<span class="block truncate text-xs text-neutral-600">{lastEvent(s)}</span>{/if}

@@ -1,7 +1,7 @@
 import type { ThreadStartParams } from './protocol/v2/ThreadStartParams';
 import type { TurnStartParams } from './protocol/v2/TurnStartParams';
 
-type Options = { folder: string; model: string; threadId: string | null; onThread: (id: string) => void; onEvent: (event: any) => void; onProcess?: (process: any) => void; secretary?: boolean };
+type Options = { folder: string; model: string; reasoning: string | null; threadId: string | null; onThread: (id: string) => void; onEvent: (event: any) => void; onProcess?: (process: any) => void; secretary?: boolean };
 
 export async function codexTurn(options: Options, text: string) {
   const args = ['codex', 'app-server'];
@@ -49,7 +49,7 @@ export async function codexTurn(options: Options, text: string) {
       ? await request('thread/resume', { threadId: options.threadId, excludeTurns: true })
       : await request('thread/start', start);
     options.onThread(thread.thread.id);
-    const turn: TurnStartParams = { threadId: thread.thread.id, model: options.model, input: [{ type: 'text', text, text_elements: [] }] };
+    const turn: TurnStartParams = { threadId: thread.thread.id, model: options.model, effort: options.reasoning, input: [{ type: 'text', text, text_elements: [] }] };
     await request('turn/start', turn);
     return await completed;
   } finally {

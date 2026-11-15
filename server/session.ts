@@ -8,9 +8,11 @@ db.run(`CREATE TABLE IF NOT EXISTS sessions (
   folder TEXT NOT NULL, harness_session_id TEXT, status TEXT NOT NULL
 )`);
 try { db.run('ALTER TABLE sessions ADD COLUMN process_identity TEXT'); } catch {}
+try { db.run('ALTER TABLE sessions ADD COLUMN name TEXT'); } catch {}
+try { db.run('ALTER TABLE sessions ADD COLUMN reasoning TEXT'); } catch {}
 db.run(`CREATE TABLE IF NOT EXISTS events (session_id INTEGER NOT NULL, json TEXT NOT NULL, time TEXT NOT NULL)`);
 
-export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string };
+export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string; name: string | null; reasoning: string | null };
 
 function killTree(pid: number) {
   const children = new Map<number, number[]>();
@@ -41,8 +43,8 @@ export class Session {
 
   constructor(private row: SessionRow) {}
 
-  static create(model: string, folder: string, harness = 'claude', parentId: number | null = null) {
-    const result = db.query("INSERT INTO sessions (harness, model, folder, status, parent_id) VALUES (?, ?, ?, 'idle', ?)").run(harness, model, folder, parentId);
+  static create(model: string, folder: string, harness = 'claude', parentId: number | null = null, name: string | null = null, reasoning: string | null = null) {
+    const result = db.query("INSERT INTO sessions (harness, model, folder, status, parent_id, name, reasoning) VALUES (?, ?, ?, 'idle', ?, ?, ?)").run(harness, model, folder, parentId, name, reasoning);
     return Session.get(Number(result.lastInsertRowid))!;
   }
 
@@ -89,7 +91,7 @@ export class Session {
     this.listeners = [];
     this.onComplete = undefined;
   }
-  switchHarness(harness: string, model: string) { this.row.harness = harness; this.row.model = model; this.row.harness_session_id = null; db.query('UPDATE sessions SET harness = ?, model = ?, harness_session_id = NULL WHERE id = ?').run(harness, model, this.id); }
+  switchHarness(harness: string, model: string) { this.row.harness = harness; this.row.model = model; this.row.reasoning = null; this.row.harness_session_id = null; db.query('UPDATE sessions SET harness = ?, model = ?, harness_session_id = NULL, reasoning = NULL WHERE id = ?').run(harness, model, this.id); }
 
   setModel(model: string) { this.row.model = model; db.query('UPDATE sessions SET model = ? WHERE id = ?').run(model, this.row.id); }
 
@@ -117,7 +119,7 @@ export class Session {
     this.emit({ type: 'user', message: { role: 'user', content: text } });
     try {
     if (this.row.harness === 'codex') {
-      const completed = await codexTurn({ folder: this.row.folder, model: this.row.model, threadId: this.row.harness_session_id,
+      const completed = await codexTurn({ folder: this.row.folder, model: this.row.model, reasoning: this.row.reasoning, threadId: this.row.harness_session_id,
         onThread: id => { if (this.deleted) return; this.row.harness_session_id = id; db.query('UPDATE sessions SET harness_session_id = ? WHERE id = ?').run(id, this.row.id); },
         secretary: this.row.id === 1, onProcess: process => this.recordProcess(process),
         onEvent: event => { if (event.method === 'item/completed' && event.params.item.type === 'agentMessage') this.lastAnswer = event.params.item.text; this.emit(event); } }, text);
@@ -126,6 +128,7 @@ export class Session {
     }
     const args = ['claude', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
       '--dangerously-skip-permissions', '--model', this.row.model];
+    if (this.row.reasoning) args.push('--effort', this.row.reasoning);
     if (this.row.harness_session_id) args.push('--resume', this.row.harness_session_id);
     if (this.row.id === 1) args.push('--mcp-config', JSON.stringify({mcpServers:{secretary:{type:'http',url:'http://127.0.0.1:3001/mcp'}}}));
     const process = Bun.spawn(globalThis.process.platform === 'linux' ? ['setsid', ...args] : args, { cwd: this.row.folder, stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' });

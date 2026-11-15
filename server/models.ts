@@ -1,7 +1,7 @@
 // У Claude Code нет API списка моделей, поэтому используем алиасы, которые понимает CLI.
 export const claudeModels = ['opus', 'sonnet', 'haiku'];
 
-export async function models(): Promise<string[]> {
+export async function modelDetails(): Promise<{id:string, supportedReasoningEfforts:{reasoningEffort:string}[]}[]> {
   const p = Bun.spawn(['codex', 'app-server'], { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore' });
   const send = (message: object) => { p.stdin.write(JSON.stringify(message) + '\n'); p.stdin.flush(); };
   send({id:1,method:'initialize',params:{clientInfo:{name:'secretary',version:'0.1'},capabilities:null}});
@@ -16,9 +16,11 @@ export async function models(): Promise<string[]> {
         const line = buffer.slice(0,end); buffer = buffer.slice(end+1);
         if (!line.trim()) continue;
         const msg = JSON.parse(line);
-        if (msg.id === 2) { if (msg.error) throw new Error(msg.error.message); return msg.result.data.map((m: any) => m.id); }
+        if (msg.id === 2) { if (msg.error) throw new Error(msg.error.message); return msg.result.data; }
       }
     }
     throw new Error('Codex exited');
   } finally { p.kill(); }
 }
+
+export async function models(): Promise<string[]> { return (await modelDetails()).map(m => m.id); }

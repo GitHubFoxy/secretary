@@ -12,7 +12,10 @@ test('session deletion persists, preserves children, and ignores late callbacks'
       const secretary = Session.create('opus', '.');
       expect(() => secretary.delete()).toThrow('Cannot delete secretary');
       const parent = Session.create('opus', '.');
-      const child = Session.create('opus', '.', 'claude', parent.id);
+      const child = Session.create('opus', '.', 'claude', parent.id, 'Проверка', 'high');
+      expect(Session.get(child.id).info).toMatchObject({name:'Проверка', reasoning:'high'});
+      child.switchHarness('codex', 'test');
+      expect(Session.get(child.id).info).toMatchObject({name:'Проверка', reasoning:null});
       parent.emit({type:'user', message:{content:'history'}});
       child.emit({type:'user', message:{content:'keep'}});
       parent.delete();
