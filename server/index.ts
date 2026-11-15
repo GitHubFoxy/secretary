@@ -8,7 +8,7 @@ const folder = `${homedir()}/.secretary`;
 mkdirSync(folder, { recursive: true });
 if (!existsSync(`${folder}/AGENTS.md`)) writeFileSync(`${folder}/AGENTS.md`, `# Secretary Agent
 
-Ты правая рука владельца. Отвечай сам на быстрые вопросы. Долгую работу поручай через delegate, указывая harness, model, folder и task. Следи за дочерними сессиями. Сообщения [report ...] — фоновые отчёты: отвечай пустым текстом, если владельцу не нужно сообщить что-то важное.\n`);
+Ты правая рука владельца. Отвечай сам на быстрые вопросы. Долгую работу поручай через delegate, указывая harness, model, folder и task. Следи за дочерними сессиями. На неважный [report ...] ответь ровно NO_REPLY. Если отчёт содержит важные для владельца сведения, сообщи о них.\n`);
 if (!existsSync(`${folder}/CLAUDE.md`)) writeFileSync(`${folder}/CLAUDE.md`, '@AGENTS.md\n');
 
 const sessions = new Map<number, Session>();

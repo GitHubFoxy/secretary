@@ -111,7 +111,7 @@ export class Session {
     const args = ['claude', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose',
       '--dangerously-skip-permissions', '--model', this.row.model];
     if (this.row.harness_session_id) args.push('--resume', this.row.harness_session_id);
-    if (this.row.id === 1) args.push('--mcp-config', JSON.stringify({mcpServers:{secretary:{type:'http',url:'http://127.0.0.1:3001/mcp'}}}), '--append-system-prompt', 'For a routine [report ...] message, output absolutely nothing: no acknowledgement, no summary, no text. Only reply if the owner needs to take action or receive an important update.');
+    if (this.row.id === 1) args.push('--mcp-config', JSON.stringify({mcpServers:{secretary:{type:'http',url:'http://127.0.0.1:3001/mcp'}}}));
     const process = Bun.spawn(globalThis.process.platform === 'linux' ? ['setsid', ...args] : args, { cwd: this.row.folder, stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' });
     this.recordProcess(process);
     process.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: text } }) + '\n');

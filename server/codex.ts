@@ -44,7 +44,7 @@ export async function codexTurn(options: Options, text: string) {
   try {
     await request('initialize', { clientInfo: { name: 'secretary', version: '0.1.0' }, capabilities: null });
     send({ jsonrpc: '2.0', method: 'initialized' });
-    const start: ThreadStartParams = { cwd: options.folder, approvalPolicy: 'never', sandbox: 'danger-full-access', developerInstructions: options.secretary ? `${await Bun.file(`${options.folder}/AGENTS.md`).text()}\nFor a routine [report ...] message, output absolutely nothing: no acknowledgement, no summary, no text. Only reply if the owner needs to take action or receive an important update.` : undefined };
+    const start: ThreadStartParams = { cwd: options.folder, approvalPolicy: 'never', sandbox: 'danger-full-access', developerInstructions: options.secretary ? await Bun.file(`${options.folder}/AGENTS.md`).text() : undefined };
     const thread = options.threadId
       ? await request('thread/resume', { threadId: options.threadId, excludeTurns: true })
       : await request('thread/start', start);
