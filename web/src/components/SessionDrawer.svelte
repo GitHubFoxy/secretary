@@ -1,7 +1,7 @@
 <script>
   import { fade, fly } from 'svelte/transition';
   import Icon from './Icon.svelte';
-  let { open = false, sessions = [], selected, onselect, onclose, onprofile } = $props();
+  let { open = false, sessions = [], selected, connected = false, onremove, onselect, onclose, onprofile } = $props();
 
   const lastEvent = s => s.last_event?.type === 'status' ? s.last_event.status : s.last_event?.method || s.last_event?.type || '';
 </script>
@@ -12,15 +12,16 @@
   <button class="fixed inset-0 z-10 cursor-default bg-black/60" aria-label="Закрыть список" onclick={onclose} transition:fade={{ duration: 200 }}></button>
   <aside class="fixed inset-y-0 left-0 z-20 flex w-80 max-w-[85vw] flex-col border-r border-neutral-900 bg-neutral-950" transition:fly={{ x: -320, duration: 220 }}>
     <div class="flex items-center justify-between border-b border-neutral-900 px-4 py-3">
-      <h2 class="text-sm font-semibold text-neutral-100">Secretary</h2>
+      <button class="cursor-pointer text-sm font-semibold text-neutral-100" aria-label="Открыть Secretary Agent" onclick={() => onselect(1)}>Secretary</button>
       <button class="icon-btn" aria-label="Закрыть" onclick={onclose}>
         <Icon name="close" />
       </button>
     </div>
     <nav class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-2">
-      {#each sessions as s (s.id)}
+      {#each sessions.filter(s => s.id !== 1) as s (s.id)}
+        <div class="flex items-center rounded-lg {s.parent_id ? 'ml-5' : ''} {selected === s.id ? 'bg-neutral-900' : ''}">
         <button
-          class="cursor-pointer rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-neutral-900 {s.parent_id ? 'ml-5' : ''} {selected === s.id ? 'bg-neutral-900' : ''}"
+          class="min-w-0 flex-1 cursor-pointer rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-neutral-900"
           onclick={() => onselect(s.id)}
         >
           <span class="block truncate text-sm {selected === s.id ? 'text-neutral-100' : 'text-neutral-300'}">#{s.id} {s.id === 1 ? 'Secretary Agent' : s.harness}</span>
@@ -28,6 +29,12 @@
           <span class="block truncate text-xs text-neutral-600">{s.folder}</span>
           {#if lastEvent(s)}<span class="block truncate text-xs text-neutral-600">{lastEvent(s)}</span>{/if}
         </button>
+        {#if s.id !== 1}
+          <button class="icon-btn mr-1 shrink-0 text-neutral-500 hover:text-red-400" aria-label={`Удалить сессию #${s.id}`} title="Удалить сессию" disabled={!connected} onclick={() => onremove(s)}>
+            <Icon name="trash" />
+          </button>
+        {/if}
+        </div>
       {/each}
     </nav>
     <div class="border-t border-neutral-900 p-2">

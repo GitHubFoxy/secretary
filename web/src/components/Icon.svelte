@@ -13,6 +13,8 @@
     <path d="M12 19V5M5.5 11.5L12 5l6.5 6.5" />
   {:else if name === 'stop'}
     <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
+  {:else if name === 'trash'}
+    <path d="M3 6h18M9 6V3h6v3M5 6l1 15h12l1-15M10 10v7M14 10v7" />
   {:else if name === 'back'}
     <path d="M19 12H5M11 6l-6 6 6 6" />
   {:else if name === 'refresh'}

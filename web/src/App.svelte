@@ -20,7 +20,7 @@
   socket.onclose = () => { connected = false; };
   socket.onmessage = e => {
     const msg = JSON.parse(e.data);
-    if (msg.type === 'sessions') { sessions = msg.sessions; const s = sessions.find(s => s.id === selected); if (s && !settingsLoaded) { harness = s.harness; model = s.model; settingsLoaded = true; } }
+    if (msg.type === 'sessions') { sessions = msg.sessions; if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select(sessions[0].id); } const s = sessions.find(s => s.id === selected); if (s && !settingsLoaded) { harness = s.harness; model = s.model; settingsLoaded = true; } }
     if (msg.type === 'history' && msg.id === selected) events = msg.events;
     if (msg.type === 'event') { if (msg.sessionId === selected) events = [...events, msg.event]; refresh(); }
     if (msg.type === 'created') { select(msg.id); settingsOpen = false; }
@@ -34,6 +34,12 @@
     send({type:'settings', id:selected, harness, model}); refresh(); settingsOpen = false;
   }
   function stop() { send({type:'stop', id:selected}); }
+  function removeSession(session) {
+    if (!connected || session.id === 1) return;
+    if (!confirm(`Удалить сессию #${session.id} и её историю? Работающий агент будет остановлен. Дочерние сессии сохранятся.`)) return;
+    error = '';
+    send({type:'delete', id:session.id});
+  }
   function openSettings() { settingsOpen = true; }
   function createThread() { const folder = sessions.find(s => s.id === selected)?.folder; if (!folder) return; send({type:'create', harness, model, folder}); }
   async function loadAgents() {
@@ -118,6 +124,6 @@
 
     <Composer bind:value={message} disabled={!connected} onsubmit={submit} />
 
-    <SessionDrawer open={drawerOpen} {sessions} {selected} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} />
+    <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onremove={removeSession} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} />
   </div>
 {/if}

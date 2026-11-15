@@ -34,6 +34,7 @@ export class Session {
   private running = false;
   private process: any;
   private stopped = false;
+  private deleted = false;
   private lastAnswer = '';
   onComplete?: (answer: string) => void;
   private listeners: ((event: unknown) => void)[] = [];
@@ -75,6 +76,19 @@ export class Session {
   get info() { return db.query('SELECT * FROM sessions WHERE id = ?').get(this.id) as SessionRow; }
   events() { return (db.query('SELECT json FROM events WHERE session_id = ? ORDER BY rowid').all(this.id) as { json: string }[]).map(row => JSON.parse(row.json)); }
   stop() { this.stopped = true; this.queue = []; if (this.process) { try { if (process.platform === 'linux') killTree(this.process.pid); else this.process.kill(); } catch { this.process.kill(); } } if (!this.running) this.finish(false); }
+  delete() {
+    if (this.deleted) return;
+    if (this.id === 1) throw new Error('Cannot delete secretary');
+    this.stop();
+    db.transaction(() => {
+      db.query('UPDATE sessions SET parent_id = NULL WHERE parent_id = ?').run(this.id);
+      db.query('DELETE FROM events WHERE session_id = ?').run(this.id);
+      db.query('DELETE FROM sessions WHERE id = ?').run(this.id);
+    })();
+    this.deleted = true;
+    this.listeners = [];
+    this.onComplete = undefined;
+  }
   switchHarness(harness: string, model: string) { this.row.harness = harness; this.row.model = model; this.row.harness_session_id = null; db.query('UPDATE sessions SET harness = ?, model = ?, harness_session_id = NULL WHERE id = ?').run(harness, model, this.id); }
 
   setModel(model: string) { this.row.model = model; db.query('UPDATE sessions SET model = ? WHERE id = ?').run(model, this.row.id); }
@@ -82,11 +96,13 @@ export class Session {
   onEvent(callback: (event: unknown) => void) { this.listeners.push(callback); }
 
   private emit(event: unknown) {
+    if (this.deleted) return;
     db.query('INSERT INTO events VALUES (?, ?, ?)').run(this.row.id, JSON.stringify(event), new Date().toISOString());
     for (const listener of this.listeners) listener(event);
   }
 
   send(text: string) {
+    if (this.deleted) throw new Error('Session was deleted');
     this.stopped = false;
     this.queue.push(text);
     if (!this.running) void this.next();
@@ -102,7 +118,7 @@ export class Session {
     try {
     if (this.row.harness === 'codex') {
       const completed = await codexTurn({ folder: this.row.folder, model: this.row.model, threadId: this.row.harness_session_id,
-        onThread: id => { this.row.harness_session_id = id; db.query('UPDATE sessions SET harness_session_id = ? WHERE id = ?').run(id, this.row.id); },
+        onThread: id => { if (this.deleted) return; this.row.harness_session_id = id; db.query('UPDATE sessions SET harness_session_id = ? WHERE id = ?').run(id, this.row.id); },
         secretary: this.row.id === 1, onProcess: process => this.recordProcess(process),
         onEvent: event => { if (event.method === 'item/completed' && event.params.item.type === 'agentMessage') this.lastAnswer = event.params.item.text; this.emit(event); } }, text);
       this.finish(completed);
@@ -122,6 +138,7 @@ export class Session {
       buffer += new TextDecoder().decode(chunk, { stream: true });
       let end: number;
       while ((end = buffer.indexOf('\n')) >= 0) {
+        if (this.deleted) break;
         const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
         if (!line.trim()) continue;
         const event = JSON.parse(line);
@@ -140,6 +157,7 @@ export class Session {
 
   private finish(completed: boolean) {
     this.process = undefined;
+    if (this.deleted) { this.running = false; return; }
     db.query('UPDATE sessions SET process_identity = NULL WHERE id = ?').run(this.id);
     const status = this.stopped ? 'stopped' : completed ? 'idle' : 'interrupted';
     db.query('UPDATE sessions SET status = ? WHERE id = ?').run(status, this.row.id);
