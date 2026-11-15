@@ -1,5 +1,5 @@
 <script>
-  import { visibleMessage } from './messages.js';
+  import { visibleMessage, userMessage } from './messages.js';
   import TopBar from './components/TopBar.svelte';
   import SessionDrawer from './components/SessionDrawer.svelte';
   import SettingsPanel from './components/SettingsPanel.svelte';
@@ -67,7 +67,7 @@
   }
   function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); }
   function text(event) {
-    if (event.type === 'user' && typeof event.message?.content === 'string') return {role:'Вы', text:event.message.content};
+    if (event.type === 'user' && typeof event.message?.content === 'string') return userMessage(event.message.content);
     if (event.type === 'result') return {role:'Агент', text:event.result};
     if (event.method === 'item/completed' && event.params.item.type === 'agentMessage') return {role:'Агент', text:event.params.item.text};
     if (event.type === 'error') return {role:'Ошибка', text:event.message};
@@ -120,7 +120,7 @@
       <p role="alert" class="border-b border-neutral-900 px-4 py-2 text-center text-sm text-red-400">{error}</p>
     {/if}
 
-    <MessageList {messages} />
+    <MessageList {messages} {sessions} onselect={select} />
 
     <Composer bind:value={message} disabled={!connected} onsubmit={submit} />
 

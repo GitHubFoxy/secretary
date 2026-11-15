@@ -1,5 +1,5 @@
 <script>
-  let { messages = [] } = $props();
+  let { messages = [], sessions = [], onselect } = $props();
   let scroller = $state();
 
   // Прокручиваем вниз при каждом новом сообщении.
@@ -15,7 +15,24 @@
       <p class="py-16 text-center text-sm text-neutral-600">Сообщений пока нет</p>
     {/if}
     {#each messages as m, i (i)}
-      {#if m.role === 'Вы'}
+      {#if m.role === 'Отчёт'}
+        <div class="flex justify-start">
+          <div class="max-w-[85%] min-w-0 rounded-2xl bg-neutral-900 px-4 py-3 text-sm">
+            <div class="mb-2 flex flex-wrap gap-x-2 text-neutral-400">
+              {#if sessions.some(s => s.id === m.id)}
+                <button class="cursor-pointer text-neutral-200 underline" onclick={() => onselect(m.id)}>Сессия #{m.id}</button>
+              {:else}
+                <span>Сессия #{m.id}</span>
+              {/if}
+              <span>{m.harness}</span><span class="break-all">{m.folder}</span>
+            </div>
+            <details class="report">
+              <summary class="cursor-pointer whitespace-pre-wrap break-words text-[15px] leading-relaxed text-neutral-300">{m.text}</summary>
+              <span class="text-xs text-neutral-500">Свернуть</span>
+            </details>
+          </div>
+        </div>
+      {:else if m.role === 'Вы'}
         <div class="flex justify-end">
           <p class="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-neutral-800 px-4 py-2.5 text-[15px] leading-relaxed text-neutral-100">{m.text}</p>
         </div>
@@ -31,3 +48,8 @@
     {/each}
   </div>
 </div>
+
+<style>
+  .report:not([open]) summary { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+  .report[open] summary { display: block; }
+</style>
