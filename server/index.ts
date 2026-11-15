@@ -89,6 +89,7 @@ const server = Bun.serve({
         if (cmd.type === 'read') socket.send(JSON.stringify({type:'history', id:cmd.id, events:session(cmd.id).events()}));
         if (cmd.type === 'send') session(cmd.id).send(cmd.text);
         if (cmd.type === 'stop') session(cmd.id).stop();
+        if (cmd.type === 'create') { const s = create(cmd.harness, cmd.model, cmd.folder); socket.send(JSON.stringify({type:'created', id:s.id})); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
         if (cmd.type === 'settings') { const s = session(cmd.id); if (s.info.status === 'running') throw new Error('Session is running'); if (s.info.harness !== cmd.harness) s.switchHarness(cmd.harness,cmd.model); else s.setModel(cmd.model); }
       } catch (error) { socket.send(JSON.stringify({type:'error',message:String(error)})); }
     },

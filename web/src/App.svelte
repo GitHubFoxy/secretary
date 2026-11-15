@@ -1,10 +1,19 @@
 <script>
+  import { visibleMessage } from './messages.js';
+  import TopBar from './components/TopBar.svelte';
+  import SessionDrawer from './components/SessionDrawer.svelte';
+  import SettingsPanel from './components/SettingsPanel.svelte';
+  import MessageList from './components/MessageList.svelte';
+  import Composer from './components/Composer.svelte';
+  import Modal from './components/Modal.svelte';
+
   let settingsLoaded = false;
   let sessions = [], events = [], selected = 1, message = '', error = '', models = [], harness = 'claude', model = 'opus', connected = false;
+  let drawerOpen = false, settingsOpen = false, folder = '';
   const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
   const send = value => socket.send(JSON.stringify(value));
   const refresh = () => send({type:'list'});
-  function select(id) { selected = id; events = []; send({type:'read', id}); const s = sessions.find(s => s.id === id); if (s) { harness = s.harness; model = s.model; settingsLoaded = true; } }
+  function select(id) { selected = id; events = []; drawerOpen = false; send({type:'read', id}); const s = sessions.find(s => s.id === id); if (s) { harness = s.harness; model = s.model; settingsLoaded = true; } }
   socket.onopen = () => { connected = true; select(selected); };
   socket.onclose = () => { connected = false; };
   socket.onmessage = e => {
@@ -12,15 +21,20 @@
     if (msg.type === 'sessions') { sessions = msg.sessions; const s = sessions.find(s => s.id === selected); if (s && !settingsLoaded) { harness = s.harness; model = s.model; settingsLoaded = true; } }
     if (msg.type === 'history' && msg.id === selected) events = msg.events;
     if (msg.type === 'event') { if (msg.sessionId === selected) events = [...events, msg.event]; refresh(); }
+    if (msg.type === 'created') { select(msg.id); settingsOpen = false; }
     if (msg.type === 'error') error = msg.message;
   };
   fetch('/models').then(r => r.json()).then(data => models = data).catch(() => {});
-  function submit(e) { e.preventDefault(); if (!message.trim()) return; send({type:'send',id:selected,text:message}); message = ''; }
+  function submit() { if (!message.trim()) return; send({type:'send',id:selected,text:message}); message = ''; }
   function saveSettings() {
     const s = sessions.find(s => s.id === selected);
+    if (!s) return;
     if (s.harness !== harness && !confirm('Текущий контекст будет потерян. Продолжить?')) { harness = s.harness; model = s.model; return; }
-    send({type:'settings', id:selected, harness, model}); refresh();
+    send({type:'settings', id:selected, harness, model}); refresh(); settingsOpen = false;
   }
+  function stop() { send({type:'stop', id:selected}); }
+  function openSettings() { folder = sessions.find(s => s.id === selected)?.folder ?? folder; settingsOpen = true; }
+  function createThread() { if (!folder.trim()) return; send({type:'create', harness, model, folder:folder.trim()}); }
   function text(event) {
     if (event.type === 'user' && typeof event.message?.content === 'string') return {role:'Вы', text:event.message.content};
     if (event.type === 'result') return {role:'Агент', text:event.result};
@@ -28,35 +42,32 @@
     if (event.type === 'error') return {role:'Ошибка', text:event.message};
     return null;
   }
+  $: messages = events.map(text).filter(visibleMessage);
+  $: current = sessions.find(s => s.id === selected);
 </script>
 
 <svelte:head><title>Secretary</title></svelte:head>
-<div class="layout">
-  <aside>
-    <h1>Secretary</h1><p class="muted">{connected ? 'Подключено' : 'Нет соединения — обновите страницу'}</p>
-    {#each sessions as s}
-      <button class:active={selected === s.id} class:child={s.parent_id} class="session" onclick={() => select(s.id)}>
-        <strong>#{s.id} {s.id === 1 ? 'Secretary Agent' : s.harness}</strong><br><small>{s.status} · {s.model}<br>{s.folder}<br>{s.last_event?.type === 'status' ? s.last_event.status : s.last_event?.method || s.last_event?.type || ''}</small>
-      </button>
-    {/each}
-  </aside>
-  <main>
-    <header><h2>Сессия #{selected}</h2><button onclick={() => send({type:'stop', id:selected})}>Остановить</button></header>
-    <div class="settings">
-      <label>Агент <select bind:value={harness}><option value="claude">Claude</option><option value="codex">Codex</option></select></label>
-      <label>Модель <input bind:value={model} list="models"><datalist id="models">{#each harness === 'codex' ? models : ['opus','sonnet','haiku'] as m}<option value={m}></option>{/each}</datalist></label>
-      <button onclick={saveSettings}>Сохранить</button>
-    </div>
-    {#if error}<p role="alert">{error}</p>{/if}
-    <div class="messages" aria-live="polite">
-      {#each events as event}
-        {@const entry = text(event)}
-        {#if entry && entry.text}<article><strong>{entry.role}</strong><p>{entry.text}</p></article>{/if}
-      {/each}
-    </div>
-    <form onsubmit={submit}><label class="sr" for="message">Сообщение</label><textarea id="message" bind:value={message} placeholder="Напишите сообщение"></textarea><button disabled={!connected}>Отправить</button></form>
-  </main>
+
+<div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
+  <TopBar
+    title={`Сессия #${selected}`}
+    status={current?.status}
+    {connected}
+    onmenu={() => (drawerOpen = true)}
+    onsettings={openSettings}
+  />
+
+  <Modal open={settingsOpen} title="Настройки сессии" onclose={() => (settingsOpen = false)}>
+    <SettingsPanel bind:harness bind:model bind:folder {models} onsave={saveSettings} onstop={stop} oncreate={createThread} />
+  </Modal>
+
+  {#if error}
+    <p role="alert" class="border-b border-neutral-900 px-4 py-2 text-center text-sm text-red-400">{error}</p>
+  {/if}
+
+  <MessageList {messages} />
+
+  <Composer bind:value={message} disabled={!connected} onsubmit={submit} />
+
+  <SessionDrawer open={drawerOpen} {sessions} {selected} onselect={select} onclose={() => (drawerOpen = false)} />
 </div>
-<style>
-  :global(body){margin:0;font:16px system-ui;color:#292524;background:#f5f5f4} :global(*){box-sizing:border-box} button,input,textarea,select{font:inherit} button{cursor:pointer;border:1px solid #d6d3d1;background:white;border-radius:8px;padding:.6rem} button:hover,.active{background:#e7e5e4} .layout{display:flex;min-height:100vh} aside{width:270px;padding:1rem;background:#e7e5e4} h1{font-size:1.3rem} .muted,small{color:#57534e} .session{display:block;text-align:left;width:100%;margin:.5rem 0;overflow-wrap:anywhere} .child{margin-left:1rem;width:calc(100% - 1rem)} main{flex:1;min-width:0;padding:1rem;display:flex;flex-direction:column} header,.settings,form{display:flex;gap:.7rem;align-items:center} header{justify-content:space-between}.settings{flex-wrap:wrap}.settings label{display:flex;gap:.3rem}.messages{flex:1;min-height:50vh} article{background:white;border-radius:10px;padding:1rem;margin:1rem 0;overflow-wrap:anywhere} article p{white-space:pre-wrap} textarea{flex:1;min-height:4rem;padding:.6rem} .sr{position:absolute;left:-9999px}@media(max-width:650px){.layout{display:block}aside{width:auto} .messages{min-height:35vh}}
-</style>
