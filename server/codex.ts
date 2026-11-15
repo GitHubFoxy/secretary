@@ -1,10 +1,13 @@
 import type { ThreadStartParams } from './protocol/v2/ThreadStartParams';
 import type { TurnStartParams } from './protocol/v2/TurnStartParams';
 
-type Options = { folder: string; model: string; threadId: string | null; onThread: (id: string) => void; onEvent: (event: any) => void };
+type Options = { folder: string; model: string; threadId: string | null; onThread: (id: string) => void; onEvent: (event: any) => void; onProcess?: (process: any) => void; secretary?: boolean };
 
 export async function codexTurn(options: Options, text: string) {
-  const process = Bun.spawn(['codex', 'app-server'], { cwd: options.folder, stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' });
+  const args = ['codex', 'app-server'];
+  if (options.secretary) args.push('-c', 'mcp_servers.secretary.url="http://127.0.0.1:3001/mcp"');
+  const process = Bun.spawn(globalThis.process.platform === 'linux' ? ['setsid', ...args] : args, { cwd: options.folder, stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' });
+  options.onProcess?.(process);
   let id = 0;
   const pending = new Map<number, { resolve: (value: any) => void; reject: (error: Error) => void }>();
   let done!: (value: boolean) => void;
@@ -41,7 +44,7 @@ export async function codexTurn(options: Options, text: string) {
   try {
     await request('initialize', { clientInfo: { name: 'secretary', version: '0.1.0' }, capabilities: null });
     send({ jsonrpc: '2.0', method: 'initialized' });
-    const start: ThreadStartParams = { cwd: options.folder, approvalPolicy: 'never', sandbox: 'danger-full-access' };
+    const start: ThreadStartParams = { cwd: options.folder, approvalPolicy: 'never', sandbox: 'danger-full-access', developerInstructions: options.secretary ? await Bun.file(`${options.folder}/AGENTS.md`).text() : undefined };
     const thread = options.threadId
       ? await request('thread/resume', { threadId: options.threadId, excludeTurns: true })
       : await request('thread/start', start);
