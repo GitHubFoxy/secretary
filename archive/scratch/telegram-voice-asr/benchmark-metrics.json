@@ -1,0 +1,372 @@
+[
+  {
+    "model": "gigaam-v3-rnnt",
+    "file": "audio_4b23ea900fbc",
+    "audio_seconds": 10.1735,
+    "model_load_seconds": 1.037,
+    "inference_seconds": 3.671,
+    "runner_seconds": 4.79,
+    "maxrss_kib": 387016,
+    "cpu_user_seconds": 7.024388,
+    "cpu_system_seconds": 0.18032399999999998,
+    "chunks": 1,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 54.0,
+      "iwlwifi_1": 55.0,
+      "TCPU": 72.0,
+      "SEN2": 48.05,
+      "x86_pkg_temp": 66.0,
+      "TCPU_PCI": 66.0
+    },
+    "runtime": {
+      "onnx_asr": "0.11.0",
+      "onnxruntime": "1.26.0"
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15 threads2",
+    "directory": "gigaam-v3-rnnt"
+  },
+  {
+    "model": "gigaam-v3-rnnt",
+    "file": "audio_c99591eaff0f",
+    "audio_seconds": 22.3335,
+    "model_load_seconds": 1.195,
+    "inference_seconds": 4.783,
+    "runner_seconds": 6.078,
+    "maxrss_kib": 434652,
+    "cpu_user_seconds": 8.852117,
+    "cpu_system_seconds": 0.19924699999999998,
+    "chunks": 1,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 55.0,
+      "iwlwifi_1": 57.0,
+      "TCPU": 63.0,
+      "SEN2": 48.05,
+      "x86_pkg_temp": 63.0,
+      "TCPU_PCI": 63.0
+    },
+    "runtime": {
+      "onnx_asr": "0.11.0",
+      "onnxruntime": "1.26.0"
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15 threads2",
+    "directory": "gigaam-v3-rnnt"
+  },
+  {
+    "file": "audio_04157e7b36d9",
+    "exit_code": 0,
+    "asr_process_seconds": 4.834,
+    "decode_seconds": 0.064,
+    "maxrss_kib": 845372,
+    "cpu_user_seconds": 6.681217,
+    "cpu_system_seconds": 0.38966599999999996,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 55.0,
+      "iwlwifi_1": 55.0,
+      "TCPU": 67.0,
+      "SEN2": 48.05,
+      "x86_pkg_temp": 65.0,
+      "TCPU_PCI": 65.0
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15",
+    "directory": "parakeet"
+  },
+  {
+    "file": "audio_08e384895597",
+    "exit_code": 0,
+    "asr_process_seconds": 6.599,
+    "decode_seconds": 0.114,
+    "maxrss_kib": 901236,
+    "cpu_user_seconds": 9.280032,
+    "cpu_system_seconds": 0.44288299999999997,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 77.0,
+      "iwlwifi_1": 55.0,
+      "TCPU": 70.0,
+      "SEN2": 48.05,
+      "x86_pkg_temp": 70.0,
+      "TCPU_PCI": 70.0
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15",
+    "directory": "parakeet"
+  },
+  {
+    "file": "audio_305b670ba2d1",
+    "exit_code": 0,
+    "asr_process_seconds": 10.144,
+    "decode_seconds": 0.164,
+    "maxrss_kib": 1008776,
+    "cpu_user_seconds": 14.581806,
+    "cpu_system_seconds": 0.467084,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 81.0,
+      "iwlwifi_1": 55.0,
+      "TCPU": 75.0,
+      "SEN2": 48.05,
+      "x86_pkg_temp": 73.0,
+      "TCPU_PCI": 73.0
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15",
+    "directory": "parakeet"
+  },
+  {
+    "file": "audio_4b23ea900fbc",
+    "exit_code": 0,
+    "asr_process_seconds": 3.319,
+    "decode_seconds": 0.0,
+    "maxrss_kib": 794304,
+    "cpu_user_seconds": 4.389964,
+    "cpu_system_seconds": 0.37343899999999997,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 55.0,
+      "iwlwifi_1": 55.0,
+      "TCPU": 64.0,
+      "SEN2": 48.05,
+      "x86_pkg_temp": 61.0,
+      "TCPU_PCI": 61.0
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15",
+    "directory": "parakeet"
+  },
+  {
+    "file": "audio_c99591eaff0f",
+    "exit_code": 0,
+    "asr_process_seconds": 6.054,
+    "decode_seconds": 0.116,
+    "maxrss_kib": 882484,
+    "cpu_user_seconds": 8.435989,
+    "cpu_system_seconds": 0.45594599999999996,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 83.0,
+      "iwlwifi_1": 55.0,
+      "TCPU": 76.0,
+      "SEN2": 49.05,
+      "x86_pkg_temp": 76.0,
+      "TCPU_PCI": 71.0
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15",
+    "directory": "parakeet"
+  },
+  {
+    "model": "parakeet-onnx",
+    "file": "audio_04157e7b36d9",
+    "audio_seconds": 17.2535,
+    "model_load_seconds": 2.814,
+    "inference_seconds": 4.689,
+    "runner_seconds": 7.601,
+    "maxrss_kib": 1086984,
+    "cpu_user_seconds": 9.233213,
+    "cpu_system_seconds": 0.591927,
+    "chunks": 1,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 58.0,
+      "iwlwifi_1": 57.0,
+      "TCPU": 71.0,
+      "SEN2": 50.05,
+      "x86_pkg_temp": 71.0,
+      "TCPU_PCI": 71.0
+    },
+    "runtime": {
+      "onnx_asr": "0.11.0",
+      "onnxruntime": "1.26.0"
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15 threads2",
+    "directory": "parakeet-onnx"
+  },
+  {
+    "model": "parakeet-onnx",
+    "file": "audio_4b23ea900fbc",
+    "audio_seconds": 10.1735,
+    "model_load_seconds": 3.29,
+    "inference_seconds": 3.937,
+    "runner_seconds": 7.319,
+    "maxrss_kib": 1064348,
+    "cpu_user_seconds": 8.113155,
+    "cpu_system_seconds": 0.675454,
+    "chunks": 1,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 58.0,
+      "iwlwifi_1": 58.0,
+      "TCPU": 72.0,
+      "SEN2": 49.05,
+      "x86_pkg_temp": 72.0,
+      "TCPU_PCI": 72.0
+    },
+    "runtime": {
+      "onnx_asr": "0.11.0",
+      "onnxruntime": "1.26.0"
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15 threads2",
+    "directory": "parakeet-onnx"
+  },
+  {
+    "model": "parakeet-onnx",
+    "file": "audio_c99591eaff0f",
+    "audio_seconds": 22.3335,
+    "model_load_seconds": 2.759,
+    "inference_seconds": 5.272,
+    "runner_seconds": 8.117,
+    "maxrss_kib": 1131136,
+    "cpu_user_seconds": 10.055076,
+    "cpu_system_seconds": 0.614263,
+    "chunks": 1,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 82.0,
+      "iwlwifi_1": 58.0,
+      "TCPU": 79.0,
+      "SEN2": 50.05,
+      "x86_pkg_temp": 79.0,
+      "TCPU_PCI": 79.0
+    },
+    "runtime": {
+      "onnx_asr": "0.11.0",
+      "onnxruntime": "1.26.0"
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15 threads2",
+    "directory": "parakeet-onnx"
+  },
+  {
+    "model": "whisper-base",
+    "file": "audio_04157e7b36d9",
+    "audio_seconds": 17.2535,
+    "model_load_seconds": 0.87,
+    "inference_seconds": 3.59,
+    "runner_seconds": 4.552,
+    "maxrss_kib": 405376,
+    "cpu_user_seconds": 6.702707,
+    "cpu_system_seconds": 0.147866,
+    "chunks": 1,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 70.0,
+      "iwlwifi_1": 55.0,
+      "TCPU": 73.0,
+      "SEN2": 48.05,
+      "x86_pkg_temp": 69.0,
+      "TCPU_PCI": 69.0
+    },
+    "runtime": {
+      "onnx_asr": "0.11.0",
+      "onnxruntime": "1.26.0"
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15 threads2",
+    "directory": "whisper-base"
+  },
+  {
+    "model": "whisper-base",
+    "file": "audio_08e384895597",
+    "audio_seconds": 24.9335,
+    "model_load_seconds": 0.859,
+    "inference_seconds": 3.663,
+    "runner_seconds": 4.611,
+    "maxrss_kib": 405072,
+    "cpu_user_seconds": 6.78844,
+    "cpu_system_seconds": 0.13239099999999998,
+    "chunks": 1,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 63.0,
+      "iwlwifi_1": 55.0,
+      "TCPU": 72.0,
+      "SEN2": 48.05,
+      "x86_pkg_temp": 70.0,
+      "TCPU_PCI": 70.0
+    },
+    "runtime": {
+      "onnx_asr": "0.11.0",
+      "onnxruntime": "1.26.0"
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15 threads2",
+    "directory": "whisper-base"
+  },
+  {
+    "model": "whisper-base",
+    "file": "audio_305b670ba2d1",
+    "audio_seconds": 39.8135,
+    "model_load_seconds": 0.794,
+    "inference_seconds": 5.17,
+    "runner_seconds": 6.056,
+    "maxrss_kib": 404400,
+    "cpu_user_seconds": 8.915868,
+    "cpu_system_seconds": 0.149561,
+    "chunks": 2,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 70.0,
+      "iwlwifi_1": 55.0,
+      "TCPU": 77.0,
+      "SEN2": 48.05,
+      "x86_pkg_temp": 72.0,
+      "TCPU_PCI": 72.0
+    },
+    "runtime": {
+      "onnx_asr": "0.11.0",
+      "onnxruntime": "1.26.0"
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15 threads2",
+    "directory": "whisper-base"
+  },
+  {
+    "model": "whisper-base",
+    "file": "audio_4b23ea900fbc",
+    "audio_seconds": 10.1735,
+    "model_load_seconds": 0.816,
+    "inference_seconds": 3.562,
+    "runner_seconds": 4.457,
+    "maxrss_kib": 401576,
+    "cpu_user_seconds": 6.541379,
+    "cpu_system_seconds": 0.144974,
+    "chunks": 1,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 55.0,
+      "iwlwifi_1": 55.0,
+      "TCPU": 61.0,
+      "SEN2": 48.05,
+      "x86_pkg_temp": 57.0,
+      "TCPU_PCI": 57.0
+    },
+    "runtime": {
+      "onnx_asr": "0.11.0",
+      "onnxruntime": "1.26.0"
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15 threads2",
+    "directory": "whisper-base"
+  },
+  {
+    "model": "whisper-base",
+    "file": "audio_c99591eaff0f",
+    "audio_seconds": 22.3335,
+    "model_load_seconds": 0.802,
+    "inference_seconds": 3.923,
+    "runner_seconds": 4.803,
+    "maxrss_kib": 404808,
+    "cpu_user_seconds": 7.086892,
+    "cpu_system_seconds": 0.15596,
+    "chunks": 1,
+    "temperature_before_c": {
+      "INT3400 Thermal": 20.0,
+      "acpitz": 55.0,
+      "iwlwifi_1": 55.0,
+      "TCPU": 73.0,
+      "SEN2": 48.05,
+      "x86_pkg_temp": 68.0,
+      "TCPU_PCI": 68.0
+    },
+    "runtime": {
+      "onnx_asr": "0.11.0",
+      "onnxruntime": "1.26.0"
+    },
+    "limits": "MemoryMax2G SwapMax0 CPUQuota150% affinity0,2 nice15 threads2",
+    "directory": "whisper-base"
+  }
+]

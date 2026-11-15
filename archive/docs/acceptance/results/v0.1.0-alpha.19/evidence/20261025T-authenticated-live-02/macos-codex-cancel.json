@@ -1,0 +1,10 @@
+{
+  "http": 202,
+  "worker_id": "wrk_145307f7039dbfd93d84be08279b3870",
+  "attempt_id": "att_2b3e9ce5b08454908dd86e12dd849f56",
+  "result_id": "res_c7fb55e63efb6a236ccdb3c381dd55aa",
+  "attempt": "canceled",
+  "result": "canceled",
+  "command": "sleep 180",
+  "process_present_after_cancel": false
+}

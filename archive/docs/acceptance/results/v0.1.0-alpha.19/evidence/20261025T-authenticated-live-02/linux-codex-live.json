@@ -1,0 +1,13 @@
+{
+  "turns": [
+    {
+      "http": 202,
+      "reply": "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account."
+    },
+    {
+      "http": 202,
+      "reply": "The 'gpt-5.5' model is not supported when using Codex with a ChatGPT account."
+    }
+  ],
+  "worker_created": false
+}

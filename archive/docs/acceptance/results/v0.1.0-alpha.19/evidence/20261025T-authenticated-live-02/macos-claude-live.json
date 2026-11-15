@@ -1,0 +1,10 @@
+{
+  "secretary_reply": "42",
+  "http": 202,
+  "worker_id": "wrk_26daa70b9ef7a7b78745ec4bf28f3cd0",
+  "attempt_id": "att_cfe323bf03491ade5613d897be71a539",
+  "result_id": "res_51fc1b422206d389d13e56ed52a124d5",
+  "result": "failed",
+  "provider_error": "HTTP 403: preauthorization required ¥0.090642; remaining balance ¥0.080266",
+  "provider_error_exact": "Failed to authenticate. API Error: 403 预扣费额度失败, 用户剩余额度: ¥0.080266, 需要预扣费额度: ¥0.090642"
+}

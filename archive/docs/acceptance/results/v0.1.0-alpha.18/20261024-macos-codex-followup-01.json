@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "run_id": "20261024-macos-codex-followup-01",
+  "test_kind": "live",
+  "candidate": {
+    "tag": "v0.1.0-alpha.18",
+    "commit_sha": "424314516c8dd896872b15f92666e7b15da6a00e",
+    "published_asset": "secretary-v0.1.0-alpha.18-darwin-arm64.tar.gz",
+    "published_asset_sha256": "7d7be28ed9471622b67b1f6ceb47fa111c29687e39306c0c77fb8ffac2528073",
+    "running_revision": "424314516c8dd896872b15f92666e7b15da6a00e"
+  },
+  "tested_at_utc": "2026-10-24T20:29:58Z",
+  "environment": {
+    "server": {
+      "os": "macOS",
+      "os_version": "15.8.1 (24H32)",
+      "arch": "arm64"
+    },
+    "node": {
+      "os": "macOS",
+      "os_version": "15.8.1 (24H32)",
+      "arch": "arm64"
+    },
+    "code_mode_host_version": "version not reported by doctor; readiness ready",
+    "secretary_harness": {
+      "name": "codex",
+      "cli_version": "managed codex-cli 0.163.0; host codex-cli 0.164.0 supplied existing CODEX_HOME auth",
+      "adapter_version": "@agentclientprotocol/codex-acp 2.2.2",
+      "model": "native default; selected model ID not exposed"
+    },
+    "worker_harness": {
+      "name": "codex",
+      "cli_version": "managed codex-cli 0.163.0; host codex-cli 0.164.0 supplied existing CODEX_HOME auth",
+      "adapter_version": "@agentclientprotocol/codex-acp 2.2.2",
+      "model": "native default; selected model ID not exposed"
+    }
+  },
+  "cases": [
+    {
+      "case_id": "INSTALL-SERVER-01",
+      "dimensions": {
+        "server_os": "macos"
+      },
+      "status": "PASS",
+      "observation": "Published darwin-arm64 archive staged in an isolated HOME. setup --harness codex and doctor succeeded; doctor reported no problems and Codex/ACP/code-mode-host ready. The candidate secretaryd process ran from the extracted published archive on 127.0.0.1:18081; health returned status ok and binary revision matched the release target. Existing alpha.17 Server on port 8081 was not touched.",
+      "evidence": [
+        "https://github.com/GitHubFoxy/secretary/releases/tag/v0.1.0-alpha.18",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac.ekscyb/manifest.json; SHA256=42b8e1790771b917ea6df8afa10acffb2b9614aac47dad1a44057906557d0ea5; revision=424314516c8dd896872b15f92666e7b15da6a00e",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac.ekscyb/release.tar.gz",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac-codex.NjzcjR/evidence/setup-retry-redacted.txt",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac-codex.NjzcjR/evidence/doctor-redacted.txt",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac-codex.NjzcjR/evidence/health.json",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac-codex.NjzcjR/evidence/runtime-checks.txt"
+      ],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "INSTALL-NODE-01",
+      "dimensions": {
+        "node_os": "macos"
+      },
+      "status": "PASS",
+      "observation": "Published co-located Node was configured and paired to the isolated candidate Server using the temporary environment credential. Inventory returned one online Node alpha18-mac-alpha18 at capacity 1; Node doctor reported paired identity and Codex/ACP ready. The running Node executable and revision matched the published darwin-arm64 archive.",
+      "evidence": [
+        "https://github.com/GitHubFoxy/secretary/releases/tag/v0.1.0-alpha.18",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac.ekscyb/manifest.json; SHA256=42b8e1790771b917ea6df8afa10acffb2b9614aac47dad1a44057906557d0ea5; revision=424314516c8dd896872b15f92666e7b15da6a00e",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac.ekscyb/release.tar.gz",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac-codex.NjzcjR/evidence/node-setup-redacted.txt",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac-codex.NjzcjR/evidence/node-doctor-post-redacted.txt",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac-codex.NjzcjR/evidence/node-inventory.json",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac-codex.NjzcjR/evidence/node-start.txt",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac-codex.NjzcjR/evidence/runtime-checks.txt"
+      ],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "SECRETARY-TURN-01",
+      "dimensions": {
+        "server_os": "macos",
+        "secretary_harness": "codex"
+      },
+      "status": "FAIL",
+      "observation": "A real owner-authenticated message was accepted (HTTP 202), but the Secretary entry was the failure response: 'Secretary не получил подтверждённый адресованный ответ. Выполнение запроса не подтверждено; проверьте доступность Secretary MCP и состояние задачи перед повторной попыткой.' No direct answer or Worker was created. This is a live failure of the positive Secretary turn; no retry or workaround was attempted.",
+      "evidence": [
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac-codex.NjzcjR/evidence/secretary-turn-1.json"
+      ],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "NODE-WORKER-01",
+      "dimensions": {
+        "node_os": "macos",
+        "worker_harness": "codex"
+      },
+      "status": "NOT_RUN",
+      "observation": "Not attempted: the real Secretary turn failed and created no Worker. Per the acceptance workflow, no downstream dispatch was fabricated or retried.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    }
+  ]
+}

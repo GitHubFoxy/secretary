@@ -1,0 +1,12 @@
+{
+  "server_restart": "same isolated candidate data dir",
+  "health": "ok",
+  "entries": 8,
+  "worker_id": "wrk_2f24b9b3aff0264d4fcf0285c775de29",
+  "attempt_id": "att_f160746a14cccab90e4def234c794c64",
+  "result_id": "res_4314013af61508602ea2318561b24b4d",
+  "result": "succeeded",
+  "pending_cancel_worker": "wrk_a78b80befa0210bc853a26d05dc7f378",
+  "pending_cancel_state": "working",
+  "duplicate_result": false
+}

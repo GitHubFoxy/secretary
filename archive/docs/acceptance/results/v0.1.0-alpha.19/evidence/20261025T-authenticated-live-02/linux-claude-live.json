@@ -1,0 +1,23 @@
+{
+  "turns": [
+    {
+      "http": 202,
+      "turn_id": "stn_71f8841b88ee88710d57eb22a3b60ca5",
+      "input_id": "sin_d48f0c4d4d9328170c294eea5fffbf8c",
+      "state": "succeeded",
+      "reply": "42"
+    },
+    {
+      "http": 202,
+      "turn_id": "stn_5e3c18ea3ed23c0f4822b519027a81c8",
+      "input_id": "sin_30b67d8c2020ffeeedf5e791982fef02",
+      "state": "succeeded",
+      "reply": "Worker создан. Действие подтверждено сервером.",
+      "worker_id": "wrk_2f24b9b3aff0264d4fcf0285c775de29",
+      "attempt_id": "att_f160746a14cccab90e4def234c794c64",
+      "result_id": "res_4314013af61508602ea2318561b24b4d",
+      "result": "succeeded",
+      "command": "pwd"
+    }
+  ]
+}

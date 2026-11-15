@@ -1,0 +1,27 @@
+{
+  "turns": [
+    {
+      "http": 202,
+      "seq": 1,
+      "turn_id": "stn_9ed2edb41a55a5fef82ba06f66669f12",
+      "input_id": "sin_245ff951723c862bf9b61a97d4ecc48f",
+      "state": "succeeded",
+      "addressed_replies": 1,
+      "reply": "42"
+    },
+    {
+      "http": 202,
+      "seq": 5,
+      "turn_id": "stn_7575b5cbde0891d94bd7545fa8d5aa1d",
+      "input_id": "sin_2641021c5c9f78b1705333bbc3c59271",
+      "state": "succeeded",
+      "addressed_replies": 1,
+      "reply": "Worker создан. Действие подтверждено сервером.",
+      "worker_id": "wrk_8514e1c7a7f5cd62b11ff0ea1bb4290a",
+      "attempt_id": "att_aa6eb12a2d11d74c5af96719b79a9c77",
+      "result_id": "res_0664fc650a10bd1db252e554ce6207fb",
+      "result": "succeeded",
+      "command": "pwd"
+    }
+  ]
+}

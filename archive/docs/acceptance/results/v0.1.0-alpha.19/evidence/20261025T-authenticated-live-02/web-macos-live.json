@@ -1,0 +1,17 @@
+{
+  "browser": "Helium Incognito",
+  "chat_message": "Ответь коротко: 9 × 9.",
+  "reply": "81",
+  "entries_after_reload": 12,
+  "projectless_worker": "wrk_0d2bcae68b42f231859f4e9c9ea3bdd8",
+  "attempt_ids": [
+    "att_f0aa1759de390dca7e2cd70da99f0c09",
+    "att_b14463dc2296ded3facc4047919059af"
+  ],
+  "result_ids": [
+    "res_be127f6831db45ab7be7a0f0732885f3",
+    "res_6c56b31073e29170dbc8b78d0bec27b6"
+  ],
+  "followup": "succeeded",
+  "command": "pwd"
+}

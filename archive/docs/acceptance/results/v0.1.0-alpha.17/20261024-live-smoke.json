@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "run_id": "20261024-live-smoke-mac-linux",
+  "test_kind": "live",
+  "candidate": {
+    "tag": "v0.1.0-alpha.17",
+    "commit_sha": "ec479a70606e6d51788bf9eb2cdc38e0e3138a11",
+    "published_asset": "secretary-v0.1.0-alpha.17-darwin-arm64.tar.gz; secretary-v0.1.0-alpha.17-linux-amd64.tar.gz",
+    "published_asset_sha256": "darwin-arm64=af461ada5cdece9b0ef588cd4d7b172b38b1f757b8c8a19d7427a4680f599dde; linux-amd64=691269d3eafc8e42d536776d7e909de2ab3db7e43dfffcde2b98b26418141a26",
+    "running_revision": "ec479a70606e6d51788bf9eb2cdc38e0e3138a11"
+  },
+  "tested_at_utc": "2026-10-24T16:10:00Z",
+  "environment": {
+    "server": {
+      "os": "macOS 15.8.1 arm64; Arch Linux x86_64 on omarchy",
+      "os_version": "macOS 15.8.1; Arch Linux",
+      "arch": "arm64; amd64"
+    },
+    "node": {
+      "os": "macOS 15.8.1; Arch Linux",
+      "os_version": "macOS 15.8.1; Arch Linux",
+      "arch": "arm64; amd64"
+    },
+    "code_mode_host_version": "not separately recorded",
+    "secretary_harness": {
+      "name": "Codex",
+      "cli_version": "managed Codex 0.163.0; omarchy native CLI 0.162.1",
+      "adapter_version": "ACP 2.2.2",
+      "model": "gpt-6.1-sol"
+    },
+    "worker_harness": {
+      "name": "Codex and Claude Code",
+      "cli_version": "Codex managed 0.163.0; Claude Code 2.1.270",
+      "adapter_version": "ACP 2.2.2 for Codex; Claude native adapter",
+      "model": "gpt-6.1-sol; Claude provider default"
+    }
+  },
+  "cases": [
+    {
+      "case_id": "SECRETARY-TURN-01",
+      "dimensions": {
+        "server_os": "macos",
+        "secretary_harness": "codex"
+      },
+      "status": "PASS",
+      "observation": "Published alpha.17 Mac Server answered a direct marker and recalled it on the next real browser turn. The same browser session then created one real Codex Worker.",
+      "evidence": ["Helium live browser markers ALPHA17-MAC-SECRETARY-READY and ALPHA17-MAC-CODEX-WORKER-READY", "running launchd executable and health verified"],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": "wrk_0c0012b701f3a694fa3e55818b563983",
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "SECRETARY-TURN-01",
+      "dimensions": {
+        "server_os": "linux",
+        "secretary_harness": "codex"
+      },
+      "status": "PASS",
+      "observation": "Published alpha.17 Linux Server answered a direct marker and created one real Codex Worker through the browser over Tailscale HTTPS.",
+      "evidence": ["Helium live browser markers ALPHA17-LINUX-SECRETARY-READY and ALPHA17-LINUX-CODEX-WORKER-READY", "omarchy systemd effective executable and health verified"],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": "wrk_6a79fbf8e7ad8c62dcfd933382038395",
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "NODE-WORKER-01",
+      "dimensions": {
+        "node_os": "macos",
+        "worker_harness": "codex"
+      },
+      "status": "PASS",
+      "observation": "One Mac projectless Codex Worker returned a terminal Result with a question; browser Observer Follow-up used the same Worker and returned ALPHA17-MAC-CODEX-FOLLOWUP-READY.",
+      "evidence": ["Worker wrk_0c0012b701f3a694fa3e55818b563983", "Observer showed two succeeded terminal outcomes and same Mac Node"],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": "wrk_0c0012b701f3a694fa3e55818b563983",
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "NODE-WORKER-01",
+      "dimensions": {
+        "node_os": "linux",
+        "worker_harness": "codex"
+      },
+      "status": "PASS",
+      "observation": "One Linux projectless Codex Worker returned a terminal Result with a question; Observer Follow-up returned ALPHA17-LINUX-CODEX-FOLLOWUP-READY in the same Worker.",
+      "evidence": ["Worker wrk_6a79fbf8e7ad8c62dcfd933382038395", "Observer showed two succeeded terminal outcomes and HarnessInstance omarchy/codex"],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": "wrk_6a79fbf8e7ad8c62dcfd933382038395",
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "NODE-WORKER-01",
+      "dimensions": {
+        "node_os": "linux",
+        "worker_harness": "claude_code"
+      },
+      "status": "FAIL",
+      "observation": "Claude Worker creation and first Result passed. A Follow-up answering the displayed question failed with task_outcome_failed because Claude returned no structured task outcome. A second Follow-up with a real printf task succeeded in the same Worker and produced ALPHA17-LINUX-CLAUDE-REAL-FOLLOWUP, so the failure is reproducible for the text-only Follow-up shape but not for a real command task.",
+      "evidence": ["Worker wrk_acd82a0bb9b58208880600af55032bf1", "Observer showed failed task_outcome_failed followed by succeeded real-command Follow-up", "HarnessInstance omarchy/claude"],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": "wrk_acd82a0bb9b58208880600af55032bf1",
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "NODE-CANCEL-01",
+      "dimensions": {
+        "node_os": "linux",
+        "worker_harness": "codex"
+      },
+      "status": "PASS",
+      "observation": "A real foreground sleep 45 command was observed on omarchy, canceled from Worker Observer, produced one canceled terminal outcome, and left no matching sleep process after cancellation.",
+      "evidence": ["Worker wrk_cb417e052aa74bb41fbad6cb56e21b54", "Observer terminal outcome canceled/final canceled", "omarchy process check found no sleep 45 process after cancellation"],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": "wrk_cb417e052aa74bb41fbad6cb56e21b54",
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "NODE-CANCEL-01",
+      "dimensions": {
+        "node_os": "linux",
+        "worker_harness": "claude_code"
+      },
+      "status": "PASS",
+      "observation": "A real foreground sleep 45 command was observed on omarchy, canceled from Worker Observer, produced one canceled terminal outcome with Claude Code attempt canceled, and left no matching sleep process after cancellation.",
+      "evidence": ["Worker wrk_79d2e08edc2d79154ccb706d3508057c", "Observer terminal outcome canceled/final canceled", "omarchy process check found no sleep 45 process after cancellation"],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": "wrk_79d2e08edc2d79154ccb706d3508057c",
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "RECOVERY-SERVER-01",
+      "dimensions": {
+        "server_os": "linux"
+      },
+      "status": "PASS",
+      "observation": "omarchy Server and Node were restarted with systemd. Both services became active, health returned status ok, effective executables pointed to alpha.17, and exactly one secretaryd and one secretary-node remained. Browser session reconnected and retained the direct, Codex Worker and Claude Worker markers.",
+      "evidence": ["systemctl --user show/cat and /proc executable checks", "health status ok", "browser reconnect retained ALPHA17-LINUX-SECRETARY-READY, ALPHA17-LINUX-CODEX-WORKER-READY and ALPHA17-LINUX-CLAUDE-WORKER-READY"],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "WEB-CHAT-01",
+      "dimensions": {
+        "client": "desktop_browser"
+      },
+      "status": "PASS",
+      "observation": "A real visible Helium profile authenticated to both local Mac and Tailscale Linux Web surfaces. Reload preserved owner session, connected state and previously recorded markers on both pages.",
+      "evidence": ["Helium CDP session with isolated temporary profile", "Mac and Linux reload checks returned connected=true and retained markers"],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    }
+  ]
+}

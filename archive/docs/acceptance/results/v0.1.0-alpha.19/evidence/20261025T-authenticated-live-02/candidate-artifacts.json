@@ -1,0 +1,22 @@
+{
+  "tag": "v0.1.0-alpha.19",
+  "commit_sha": "cd39f97053648d04c3d51849ce09c4426494f482",
+  "assets": [
+    {
+      "name": "secretary-v0.1.0-alpha.19-darwin-arm64.tar.gz",
+      "manifest_sha256": "c97a0ef2113cb511deb6831c52c520da98870193511eebe75e11275c8d5ad854",
+      "computed_sha256": "c97a0ef2113cb511deb6831c52c520da98870193511eebe75e11275c8d5ad854",
+      "revision": "cd39f97053648d04c3d51849ce09c4426494f482",
+      "embedded_revision": "cd39f97053648d04c3d51849ce09c4426494f482",
+      "modified": "false"
+    },
+    {
+      "name": "secretary-v0.1.0-alpha.19-linux-amd64.tar.gz",
+      "manifest_sha256": "8ca4eae7b152c89cc00e2cdfcd2417b2dc62ff0aec3f0c1f065e82611b556b30",
+      "computed_sha256": "8ca4eae7b152c89cc00e2cdfcd2417b2dc62ff0aec3f0c1f065e82611b556b30",
+      "revision": "cd39f97053648d04c3d51849ce09c4426494f482",
+      "embedded_revision": "cd39f97053648d04c3d51849ce09c4426494f482",
+      "modified": "false"
+    }
+  ]
+}

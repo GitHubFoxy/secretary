@@ -1,0 +1,477 @@
+{
+  "schema_version": 1,
+  "run_id": "20261024-live-acceptance-01",
+  "test_kind": "live",
+  "candidate": {
+    "tag": "v0.1.0-alpha.18",
+    "commit_sha": "424314516c8dd896872b15f92666e7b15da6a00e",
+    "published_asset": "secretary-v0.1.0-alpha.18-darwin-arm64.tar.gz; secretary-v0.1.0-alpha.18-linux-amd64.tar.gz",
+    "published_asset_sha256": "darwin-arm64=7d7be28ed9471622b67b1f6ceb47fa111c29687e39306c0c77fb8ffac2528073; linux-amd64=cc33698a64c9e92e9a6a56be4385bf0086928c7da70dec80287da3a92805d529",
+    "running_revision": null
+  },
+  "tested_at_utc": "2026-10-24T20:17:40Z",
+  "environment": {
+    "server": {
+      "os": "macOS 15.8.1 (24H32); Arch Linux rolling, kernel 7.2.3-arch1-3",
+      "os_version": "macOS 15.8.1; Arch Linux rolling",
+      "arch": "arm64; amd64"
+    },
+    "node": {
+      "os": "macOS 15.8.1 (24H32); Arch Linux rolling, kernel 7.2.3-arch1-3",
+      "os_version": "macOS 15.8.1; Arch Linux rolling",
+      "arch": "arm64; amd64"
+    },
+    "code_mode_host_version": null,
+    "secretary_harness": {
+      "name": null,
+      "cli_version": null,
+      "adapter_version": null,
+      "model": null
+    },
+    "worker_harness": {
+      "name": null,
+      "cli_version": null,
+      "adapter_version": null,
+      "model": null
+    }
+  },
+  "cases": [
+    {
+      "case_id": "SECRETARY-TURN-01",
+      "dimensions": {
+        "server_os": "linux",
+        "secretary_harness": "codex"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: изолированный Server не прошёл setup из-за отсутствия тестовой авторизации выбранного harness.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "SECRETARY-TURN-01",
+      "dimensions": {
+        "server_os": "linux",
+        "secretary_harness": "claude_code"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: изолированный Server не прошёл setup из-за отсутствия тестовой авторизации выбранного harness.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "SECRETARY-TURN-01",
+      "dimensions": {
+        "server_os": "macos",
+        "secretary_harness": "codex"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: изолированный Server не прошёл setup из-за отсутствия тестовой авторизации выбранного harness.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "SECRETARY-TURN-01",
+      "dimensions": {
+        "server_os": "macos",
+        "secretary_harness": "claude_code"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: изолированный Server не прошёл setup из-за отсутствия тестовой авторизации выбранного harness.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "INSTALL-SERVER-01",
+      "dimensions": {
+        "server_os": "linux"
+      },
+      "status": "BLOCKED",
+      "observation": "Selected test HOME setup reports Claude Code unavailable; exit 1. Doctor output was empty with exit 1; Node doctor reports missing Node installation. No Server or Node process was started.",
+      "evidence": [
+        "https://github.com/GitHubFoxy/secretary/releases/tag/v0.1.0-alpha.18",
+        "/home/coder/.cache/secretary-alpha18.JYtlZR/manifest.json",
+        "/home/coder/.cache/secretary-alpha18.JYtlZR/release.tar.gz",
+        "/home/coder/.cache/secretary-alpha18.JYtlZR/setup.txt",
+        "/home/coder/.cache/secretary-alpha18.JYtlZR/doctor.txt",
+        "/home/coder/.cache/secretary-alpha18.JYtlZR/node-doctor.txt"
+      ],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "NODE-WORKER-01",
+      "dimensions": {
+        "node_os": "linux",
+        "worker_harness": "codex"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: нужен установленный и авторизованный Node harness, сервер-кандидат и тестовые pairing credentials. Для Windows нет доступного хоста.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "NODE-WORKER-01",
+      "dimensions": {
+        "node_os": "linux",
+        "worker_harness": "claude_code"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: нужен установленный и авторизованный Node harness, сервер-кандидат и тестовые pairing credentials. Для Windows нет доступного хоста.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "NODE-WORKER-01",
+      "dimensions": {
+        "node_os": "macos",
+        "worker_harness": "codex"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: нужен установленный и авторизованный Node harness, сервер-кандидат и тестовые pairing credentials. Для Windows нет доступного хоста.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "NODE-WORKER-01",
+      "dimensions": {
+        "node_os": "macos",
+        "worker_harness": "claude_code"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: нужен установленный и авторизованный Node harness, сервер-кандидат и тестовые pairing credentials. Для Windows нет доступного хоста.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "NODE-WORKER-01",
+      "dimensions": {
+        "node_os": "windows",
+        "worker_harness": "codex"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: нужен установленный и авторизованный Node harness, сервер-кандидат и тестовые pairing credentials. Для Windows нет доступного хоста.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "NODE-WORKER-01",
+      "dimensions": {
+        "node_os": "windows",
+        "worker_harness": "claude_code"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: нужен установленный и авторизованный Node harness, сервер-кандидат и тестовые pairing credentials. Для Windows нет доступного хоста.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "NODE-CANCEL-01",
+      "dimensions": {
+        "node_os": "linux",
+        "worker_harness": "codex"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: нет авторизованного harness и зарегистрированного candidate Node для реальной Attempt.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "NODE-CANCEL-01",
+      "dimensions": {
+        "node_os": "linux",
+        "worker_harness": "claude_code"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: нет авторизованного harness и зарегистрированного candidate Node для реальной Attempt.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "TG-DM-01",
+      "dimensions": {
+        "channel": "telegram_dm"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: изолированный Server не запущен; тестовые Telegram owner/bot/forum credentials не предоставлены.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "TG-GENERAL-01",
+      "dimensions": {
+        "channel": "telegram_general"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: изолированный Server не запущен; тестовые Telegram owner/bot/forum credentials не предоставлены.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "TG-TOPIC-01",
+      "dimensions": {
+        "channel": "telegram_worker_topic"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: изолированный Server не запущен; тестовые Telegram owner/bot/forum credentials не предоставлены.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "TG-MEDIA-IN-01",
+      "dimensions": {
+        "channel": "telegram_dm",
+        "media": "photo"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: нет доступного candidate Server и тестового Telegram DM/media fixture.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "TG-MEDIA-IN-01",
+      "dimensions": {
+        "channel": "telegram_dm",
+        "media": "video"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: нет доступного candidate Server и тестового Telegram DM/media fixture.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "TG-MEDIA-IN-01",
+      "dimensions": {
+        "channel": "telegram_dm",
+        "media": "voice_message"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: нет доступного candidate Server и тестового Telegram DM/media fixture.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "TG-FILE-OUT-01",
+      "dimensions": {
+        "channel": "telegram_dm"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: нет доступного candidate Server, авторизованного Worker и тестового Telegram DM.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "WEB-CHAT-01",
+      "dimensions": {
+        "client": "desktop_browser"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: candidate Server не был запущен из-за отсутствующей тестовой авторизации harness.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "RECOVERY-SERVER-01",
+      "dimensions": {
+        "server_os": "linux"
+      },
+      "status": "NOT_RUN",
+      "observation": "Не запускался: изолированный Server не был активирован; рабочие сервисы omarchy намеренно не перезапускались.",
+      "evidence": [],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "INSTALL-SERVER-01",
+      "dimensions": {
+        "server_os": "macos"
+      },
+      "status": "BLOCKED",
+      "observation": "Selected test HOME setup reports missing Claude Code auth; exit 1; prior settings preserved. Doctor and Node doctor were run; no Server or Node process was started.",
+      "evidence": [
+        "https://github.com/GitHubFoxy/secretary/releases/tag/v0.1.0-alpha.18",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac.ekscyb/manifest.json",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac.ekscyb/release.tar.gz",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac.ekscyb/setup-with-cli.txt",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac.ekscyb/doctor-with-cli.txt",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac.ekscyb/node-doctor-with-cli.txt"
+      ],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "INSTALL-NODE-01",
+      "dimensions": {
+        "node_os": "macos"
+      },
+      "status": "BLOCKED",
+      "observation": "Node doctor в изолированном HOME сообщил missing Node installation. Enrollment не выполнялся: нет отдельного опубликованного candidate Server и owner-approved одноразового pairing token; личные auth stores не использовались.",
+      "evidence": [
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac.ekscyb/node-doctor-with-cli.txt",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac.ekscyb/manifest.json",
+        "/var/folders/r8/v8cmn1xd3lg85k461jsnmc240000gn/T//alpha18-mac.ekscyb/release.tar.gz"
+      ],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    },
+    {
+      "case_id": "INSTALL-NODE-01",
+      "dimensions": {
+        "node_os": "linux"
+      },
+      "status": "BLOCKED",
+      "observation": "Node doctor в изолированном HOME сообщил missing Node installation. Enrollment не выполнялся: нет отдельного опубликованного candidate Server и owner-approved одноразового pairing token; личные auth stores не использовались.",
+      "evidence": [
+        "/home/coder/.cache/secretary-alpha18.JYtlZR/node-doctor.txt",
+        "/home/coder/.cache/secretary-alpha18.JYtlZR/manifest.json",
+        "/home/coder/.cache/secretary-alpha18.JYtlZR/release.tar.gz"
+      ],
+      "issue_urls": [],
+      "ids": {
+        "worker_id": null,
+        "attempt_ids": [],
+        "result_ids": [],
+        "native_session_id": null
+      }
+    }
+  ]
+}

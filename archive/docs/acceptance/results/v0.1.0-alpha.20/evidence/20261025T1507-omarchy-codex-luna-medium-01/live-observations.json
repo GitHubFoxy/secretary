@@ -1,0 +1,96 @@
+{
+  "candidate": {
+    "tag": "v0.1.0-alpha.20",
+    "commit_sha": "778470c3a1d3649bb9d9c2200ad2708a199deebc",
+    "published_asset": "secretary-v0.1.0-alpha.20-linux-amd64.tar.gz",
+    "published_asset_sha256": "6e775759592459b98560ceb45808ec78d1ad17ad9c2691f1fc198184597463f1",
+    "running_revision": "778470c3a1d3649bb9d9c2200ad2708a199deebc"
+  },
+  "runtime": {
+    "server": "omarchy / Arch Linux / Linux 7.2.3-arch1-3 / amd64",
+    "server_release_dir": "/home/coder/.local/share/secretary/releases/secretary-v0.1.0-alpha.20-linux-amd64",
+    "server_service": "active; MainPID 356932; executable secretaryd from alpha.20 release directory",
+    "node_service": "active; MainPID 341837; executable secretary-node from alpha.20 release directory",
+    "health": "{\"status\":\"ok\"}",
+    "configured_secretary": {
+      "harness": "codex",
+      "model": "gpt-6-luna",
+      "reasoning": "medium"
+    },
+    "configured_worker_policy": {
+      "default_harness": "codex",
+      "model": "gpt-6-luna",
+      "reasoning": "medium"
+    },
+    "native_harness": {
+      "instance": "omarchy/codex",
+      "version": "0.163.0",
+      "status": "ready",
+      "model_ids_include": ["gpt-6-luna"],
+      "authenticated": true
+    }
+  },
+  "observations": [
+    {
+      "name": "secretary_delegation_marker",
+      "worker_ref": "wrk_86ef7be3add2757a0e8bc24ce48946b7",
+      "worker_id": "wrk_f288027e1bf5fb2d067c08d467f8004e",
+      "turn_id": "trn_b6101638472f55ab62b8bb5d761238b4",
+      "attempt_id": "att_6a30bff85b76bf4f355cab2ff0a1d669",
+      "result_id": "res_148e57143d01bf42885e5671b425cc9a",
+      "result": "ALPHA20_SECRETARY_OK",
+      "status": "succeeded"
+    },
+    {
+      "name": "secretary_simple_prompt",
+      "worker_ref": "wrk_5aeee4b43443b35c6437f00886ba7e1b",
+      "worker_id": "wrk_7632a955557948fa1928f1b8849aecd4",
+      "turn_id": "trn_331d62f39b92028566b99feac107998e",
+      "result": "4",
+      "status": "succeeded",
+      "observation": "Secretary returned a Worker-created response instead of answering the simple prompt directly."
+    },
+    {
+      "name": "worker_follow_up_and_command",
+      "worker_ref": "wrk_86ef7be3add2757a0e8bc24ce48946b7",
+      "turn_ids": [
+        "trn_ab50798883608dfc0e214f291a71f7de",
+        "trn_1323c65283246a6ad4cb954ee583b607"
+      ],
+      "attempt_ids": [
+        "att_02b1b4cbc4dcd498ad5ff904931fb2b1",
+        "att_12a46d4b6ac52b20b1ad30460b38d6e3"
+      ],
+      "result_ids": [
+        "res_0fda158b673928bd2bbe4c5dd7d38d40",
+        "res_ff4bac9cba3579a8d4c1492903bd0666"
+      ],
+      "results": ["ALPHA20_WORKER_FOLLOWUP_OK", "ALPHA20_COMMAND_OK"],
+      "same_worker": true,
+      "same_native_instance": "omarchy/codex",
+      "status": "succeeded"
+    },
+    {
+      "name": "worker_cancel_after_tool_call",
+      "worker_ref": "wrk_86ef7be3add2757a0e8bc24ce48946b7",
+      "turn_id": "trn_b4ee6710cc72b54dab7a4c6113989115",
+      "attempt_id": "att_2a305c19bbbd52c2c1cf8c38e5abb098",
+      "outcome_id": "aou_d1d01a262d9337ed8c188e175213b128",
+      "tool_call_observed": true,
+      "outcome": "canceled",
+      "process_check_after_cancel": [],
+      "status": "canceled_without_retry"
+    },
+    {
+      "name": "worker_native_failure",
+      "worker_ref": "wrk_86ef7be3add2757a0e8bc24ce48946b7",
+      "turn_id": "trn_455781b27003bf343dcb9de63edf0030",
+      "attempt_id": "att_a2ec315969f640f38a8b2521b9f4c598",
+      "outcome_id": "aou_a2645fcdf940a5aee96d274760688c6e",
+      "result_id": "res_43a24cfe83dd9cb94fcd4dd818c1dc3d",
+      "native_command": "printf ALPHA20_FAILURE_MARKER >&2; exit 23",
+      "status": "failed",
+      "reported": "code 23; stderr marker preserved; no recovery requested"
+    }
+  ]
+}
