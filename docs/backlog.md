@@ -119,3 +119,5 @@ Android-приложение вокруг того же клиента.
 ## 13. add faster model
 
 ## 14. change reasoning
+
+## 15. monetize via anyai
