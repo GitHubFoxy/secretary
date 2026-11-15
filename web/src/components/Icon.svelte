@@ -13,5 +13,14 @@
     <path d="M12 19V5M5.5 11.5L12 5l6.5 6.5" />
   {:else if name === 'stop'}
     <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
+  {:else if name === 'back'}
+    <path d="M19 12H5M11 6l-6 6 6 6" />
+  {:else if name === 'refresh'}
+    <path d="M19 12a7 7 0 1 1-2.05-4.95M19 4v4h-4" />
+  {:else if name === 'claude'}
+    <path d="M12 4v16M5.1 8l13.8 8M5.1 16L18.9 8" />
+  {:else if name === 'codex'}
+    <path d="M12 3.5l7.2 4.2v8.6L12 20.5l-7.2-4.2V7.7z" />
+    <path d="M12 8.5l3.1 1.8v3.4L12 15.5l-3.1-1.8v-3.4z" />
   {/if}
 </svg>

@@ -1,3 +1,6 @@
+// У Claude Code нет API списка моделей, поэтому используем алиасы, которые понимает CLI.
+export const claudeModels = ['opus', 'sonnet', 'haiku'];
+
 export async function models(): Promise<string[]> {
   const p = Bun.spawn(['codex', 'app-server'], { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore' });
   const send = (message: object) => { p.stdin.write(JSON.stringify(message) + '\n'); p.stdin.flush(); };

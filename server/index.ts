@@ -1,4 +1,4 @@
-import { models } from './models';
+import { models, claudeModels } from './models';
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
@@ -62,17 +62,40 @@ Bun.serve({ hostname:'127.0.0.1', port:3001, async fetch(req) {
   return Response.json({jsonrpc:'2.0',id:msg.id,error:{code:-32601,message:'Method not found'}});
 }});
 
+// Запросы из браузера с чужим Origin отклоняем; запросы без Origin (например, curl) пропускаем.
+function sameOrigin(request: Request, url: URL) {
+  const origin = request.headers.get('origin');
+  if (!origin) return true;
+  try { return new URL(origin).host === url.host; } catch { return false; }
+}
+
+const agentsFile = `${folder}/AGENTS.md`;
+
 const server = Bun.serve({
   port: 3000, hostname: '127.0.0.1',
   fetch(request, server) {
     const url = new URL(request.url);
-    if (url.pathname === '/models') return models().then(result => Response.json(result)).catch(error => new Response(String(error), {status:500}));
-    if (url.pathname === '/ws') {
-      const origin = request.headers.get('origin');
-      if (origin) {
-        try { if (new URL(origin).host !== url.host) return new Response('Forbidden', {status:403}); }
-        catch { return new Response('Forbidden', {status:403}); }
+    if (url.pathname === '/models') {
+      const harness = url.searchParams.get('harness');
+      if (harness === 'claude') return Response.json(claudeModels);
+      if (harness !== 'codex') return new Response('Unknown harness', {status:400});
+      return models().then(result => Response.json(result)).catch(error => new Response(String(error), {status:500}));
+    }
+    if (url.pathname === '/settings/agents') {
+      if (request.method === 'GET') return Bun.file(agentsFile).text()
+        .then(text => new Response(text, {headers:{'content-type':'text/plain; charset=utf-8'}}))
+        .catch(error => new Response(String(error), {status:500}));
+      if (request.method === 'PUT') {
+        if (!sameOrigin(request, url)) return new Response('Forbidden', {status:403});
+        return request.text()
+          .then(text => Bun.write(agentsFile, text))
+          .then(() => new Response(null, {status:204}))
+          .catch(error => new Response(String(error), {status:500}));
       }
+      return new Response(null, {status:405});
+    }
+    if (url.pathname === '/ws') {
+      if (!sameOrigin(request, url)) return new Response('Forbidden', {status:403});
       if (server.upgrade(request)) return;
       return new Response('WebSocket upgrade failed', { status: 400 });
     }

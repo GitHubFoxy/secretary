@@ -6,10 +6,12 @@
   import MessageList from './components/MessageList.svelte';
   import Composer from './components/Composer.svelte';
   import Modal from './components/Modal.svelte';
+  import Icon from './components/Icon.svelte';
 
   let settingsLoaded = false;
-  let sessions = [], events = [], selected = 1, message = '', error = '', models = [], harness = 'claude', model = 'opus', connected = false;
-  let drawerOpen = false, settingsOpen = false, folder = '';
+  let sessions = [], events = [], selected = 1, message = '', error = '', harness = 'claude', model = 'opus', connected = false;
+  let drawerOpen = false, settingsOpen = false;
+  let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
   const send = value => socket.send(JSON.stringify(value));
   const refresh = () => send({type:'list'});
@@ -24,7 +26,6 @@
     if (msg.type === 'created') { select(msg.id); settingsOpen = false; }
     if (msg.type === 'error') error = msg.message;
   };
-  fetch('/models').then(r => r.json()).then(data => models = data).catch(() => {});
   function submit() { if (!message.trim()) return; send({type:'send',id:selected,text:message}); message = ''; }
   function saveSettings() {
     const s = sessions.find(s => s.id === selected);
@@ -33,8 +34,32 @@
     send({type:'settings', id:selected, harness, model}); refresh(); settingsOpen = false;
   }
   function stop() { send({type:'stop', id:selected}); }
-  function openSettings() { folder = sessions.find(s => s.id === selected)?.folder ?? folder; settingsOpen = true; }
-  function createThread() { if (!folder.trim()) return; send({type:'create', harness, model, folder:folder.trim()}); }
+  function openSettings() { settingsOpen = true; }
+  function createThread() { const folder = sessions.find(s => s.id === selected)?.folder; if (!folder) return; send({type:'create', harness, model, folder}); }
+  async function loadAgents() {
+    agentsLoaded = false;
+    agentsStatus = 'Загрузка…';
+    try {
+      const response = await fetch('/settings/agents');
+      if (!response.ok) throw new Error(await response.text());
+      agents = await response.text();
+      agentsLoaded = true;
+      agentsStatus = '';
+    } catch (err) {
+      agentsStatus = `Не удалось загрузить: ${err.message || err}`;
+    }
+  }
+  async function saveAgents() {
+    agentsStatus = 'Сохранение…';
+    try {
+      const response = await fetch('/settings/agents', {method:'PUT', body: agents});
+      if (!response.ok) throw new Error(await response.text());
+      agentsStatus = 'Сохранено';
+    } catch (err) {
+      agentsStatus = `Не удалось сохранить: ${err.message || err}`;
+    }
+  }
+  function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); }
   function text(event) {
     if (event.type === 'user' && typeof event.message?.content === 'string') return {role:'Вы', text:event.message.content};
     if (event.type === 'result') return {role:'Агент', text:event.result};
@@ -48,26 +73,51 @@
 
 <svelte:head><title>Secretary</title></svelte:head>
 
-<div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
-  <TopBar
-    title={`Сессия #${selected}`}
-    status={current?.status}
-    {connected}
-    onmenu={() => (drawerOpen = true)}
-    onsettings={openSettings}
-  />
+{#if profileOpen}
+  <div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
+    <header class="flex items-center gap-2 border-b border-neutral-900 px-2 py-2">
+      <button class="icon-btn" aria-label="Назад" onclick={() => (profileOpen = false)}>
+        <Icon name="back" />
+      </button>
+      <h1 class="min-w-0 flex-1 truncate px-1 text-sm font-medium text-neutral-100">Секретарь</h1>
+    </header>
 
-  <Modal open={settingsOpen} title="Настройки сессии" onclose={() => (settingsOpen = false)}>
-    <SettingsPanel bind:harness bind:model bind:folder {models} onsave={saveSettings} onstop={stop} oncreate={createThread} />
-  </Modal>
+    <div class="flex min-h-0 flex-1 flex-col gap-4 p-4">
+      <textarea
+        class="field min-h-0 flex-1 resize-none font-mono"
+        aria-label="Содержимое AGENTS.md"
+        spellcheck="false"
+        disabled={!agentsLoaded}
+        bind:value={agents}
+      ></textarea>
+      <div class="flex items-center justify-end gap-3">
+        <span role="status" class="text-xs text-neutral-500">{agentsStatus}</span>
+        <button class="btn" onclick={saveAgents} disabled={!agentsLoaded}>Сохранить</button>
+      </div>
+    </div>
+  </div>
+{:else}
+  <div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
+    <TopBar
+      title={`Сессия #${selected}`}
+      status={current?.status}
+      {connected}
+      onmenu={() => (drawerOpen = true)}
+      onsettings={openSettings}
+    />
 
-  {#if error}
-    <p role="alert" class="border-b border-neutral-900 px-4 py-2 text-center text-sm text-red-400">{error}</p>
-  {/if}
+    <Modal open={settingsOpen} title="Настройки сессии" onclose={() => (settingsOpen = false)}>
+      <SettingsPanel bind:harness bind:model onsave={saveSettings} onstop={stop} oncreate={createThread} />
+    </Modal>
 
-  <MessageList {messages} />
+    {#if error}
+      <p role="alert" class="border-b border-neutral-900 px-4 py-2 text-center text-sm text-red-400">{error}</p>
+    {/if}
 
-  <Composer bind:value={message} disabled={!connected} onsubmit={submit} />
+    <MessageList {messages} />
 
-  <SessionDrawer open={drawerOpen} {sessions} {selected} onselect={select} onclose={() => (drawerOpen = false)} />
-</div>
+    <Composer bind:value={message} disabled={!connected} onsubmit={submit} />
+
+    <SessionDrawer open={drawerOpen} {sessions} {selected} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} />
+  </div>
+{/if}

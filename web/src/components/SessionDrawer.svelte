@@ -1,7 +1,7 @@
 <script>
   import { fade, fly } from 'svelte/transition';
   import Icon from './Icon.svelte';
-  let { open = false, sessions = [], selected, onselect, onclose } = $props();
+  let { open = false, sessions = [], selected, onselect, onclose, onprofile } = $props();
 
   const lastEvent = s => s.last_event?.type === 'status' ? s.last_event.status : s.last_event?.method || s.last_event?.type || '';
 </script>
@@ -17,7 +17,7 @@
         <Icon name="close" />
       </button>
     </div>
-    <nav class="flex flex-col gap-1 overflow-y-auto p-2">
+    <nav class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-2">
       {#each sessions as s (s.id)}
         <button
           class="cursor-pointer rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-neutral-900 {s.parent_id ? 'ml-5' : ''} {selected === s.id ? 'bg-neutral-900' : ''}"
@@ -30,5 +30,11 @@
         </button>
       {/each}
     </nav>
+    <div class="border-t border-neutral-900 p-2">
+      <button class="flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors hover:bg-neutral-900" title="Настройки" onclick={onprofile}>
+        <span class="grid size-8 shrink-0 place-items-center rounded-full bg-neutral-800 text-sm font-medium text-neutral-100" aria-hidden="true">М</span>
+        <span class="truncate text-sm text-neutral-200">Mikhail</span>
+      </button>
+    </div>
   </aside>
 {/if}
