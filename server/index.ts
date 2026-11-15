@@ -68,6 +68,11 @@ const server = Bun.serve({
     const url = new URL(request.url);
     if (url.pathname === '/models') return models().then(result => Response.json(result)).catch(error => new Response(String(error), {status:500}));
     if (url.pathname === '/ws') {
+      const origin = request.headers.get('origin');
+      if (origin) {
+        try { if (new URL(origin).host !== url.host) return new Response('Forbidden', {status:403}); }
+        catch { return new Response('Forbidden', {status:403}); }
+      }
       if (server.upgrade(request)) return;
       return new Response('WebSocket upgrade failed', { status: 400 });
     }
