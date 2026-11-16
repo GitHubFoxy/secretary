@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { visibleMessage, userMessage, queuedMessage } from './messages.js';
+import { visibleMessage, userMessage, queuedMessage, keyedMessages } from './messages.js';
 
 test('сообщение из очереди помечается и сохраняет срочность и изображения', () => {
   expect(queuedMessage({id:1, text:'жду', images:[], urgent:true})).toEqual({role:'В очереди', text:'жду', images:[], urgent:true});
@@ -21,4 +21,16 @@ test('распознаёт отчёт и сохраняет полный мно�
 
 test('показывает сообщение только с изображением', () => {
   expect(visibleMessage({role:'Вы', text:'', images:[{type:'image/png', data:'abc'}]})).toBe(true);
+});
+
+test('ключи истории устойчивы при добавлении событий и различаются для чатов и очереди', () => {
+  const a = { text: 'первый' }, b = { text: 'второй' }, hidden = { text: '' };
+  const convert = event => ({ role: 'Вы', text: event.text });
+  const original = keyedMessages([hidden, a], [{id: 10, text:'жду'}, {id: 11, text:'жду'}], 1, convert);
+  const updated = keyedMessages([hidden, a, b], [{id: 11, text:'жду'}, {id: 10, text:'жду'}], 1, convert);
+  expect(original[0].key).toBe('1:event:1');
+  expect(updated[0].key).toBe(original[0].key);
+  expect(updated[2].key).toBe(original[2].key);
+  expect(updated[3].key).toBe(original[1].key);
+  expect(keyedMessages([hidden, a], [], 2, convert)[0].key).not.toBe(original[0].key);
 });

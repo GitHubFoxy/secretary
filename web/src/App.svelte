@@ -1,6 +1,6 @@
 <script>
   import { onMount } from 'svelte';
-  import { visibleMessage, userMessage, queuedMessage } from './messages.js';
+  import { visibleMessage, userMessage, queuedMessage, keyedMessages } from './messages.js';
   import TopBar from './components/TopBar.svelte';
   import SessionDrawer from './components/SessionDrawer.svelte';
   import SettingsPanel from './components/SettingsPanel.svelte';
@@ -81,7 +81,7 @@
     return null;
   }
   // Сначала история, затем очередь: сообщения из очереди ещё не приняты агентом и стоят после уже отправленных.
-  $: messages = [...events.map(text).filter(visibleMessage), ...queue.map(queuedMessage)];
+  $: messages = keyedMessages(events, queue, selected, text);
   $: current = sessions.find(s => s.id === selected);
 
   // Высота поля ввода и высота экранной клавиатуры (iOS не сжимает layout viewport, поэтому берём visualViewport).

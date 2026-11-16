@@ -1,5 +1,6 @@
 <script>
   import Markdown from './Markdown.svelte';
+  import Report from './Report.svelte';
   // bottomInset — высота поля ввода поверх списка (плюс клавиатура), под ней должны оставаться видимыми последние сообщения.
   let { messages = [], sessions = [], bottomInset = 0, onselect } = $props();
   let scroller = $state();
@@ -36,28 +37,10 @@
     {#if messages.length === 0}
       <p class="py-16 text-center text-sm text-neutral-600">Сообщений пока нет</p>
     {/if}
-    {#each messages as m, i (i)}
+    {#each messages as m (m.key)}
       {#if m.role === 'Отчёт'}
         <div class="flex justify-start">
-          <div class="max-w-[85%] min-w-0 rounded-2xl bg-neutral-900 px-4 py-3 text-sm">
-            <div class="mb-2 flex flex-wrap gap-x-2 text-neutral-400">
-              {#if sessions.some(s => s.id === m.id)}
-                <button class="cursor-pointer text-neutral-200 underline" onclick={() => onselect(m.id)}>{sessions.find(s => s.id === m.id)?.name || `Сессия #${m.id}`}</button>
-              {:else}
-                <span>Сессия #{m.id}</span>
-              {/if}
-              <span>{m.harness}</span><span class="break-all">{m.folder}</span>
-            </div>
-            <details class="report">
-              <summary class="cursor-pointer text-[15px] leading-relaxed text-neutral-300">
-                <span class="report-preview"><Markdown text={m.text} /></span>
-                <span class="report-hide text-xs text-neutral-500">Свернуть</span>
-              </summary>
-              <div class="mt-2 min-w-0 border-t border-neutral-800 pt-2">
-                <Markdown text={m.text} />
-              </div>
-            </details>
-          </div>
+          <Report message={m} session={sessions.find(s => s.id === m.id)} {onselect} />
         </div>
       {:else if m.role === 'Вы' || m.role === 'В очереди' || m.role === 'Не отправлено'}
         <div class="flex flex-col items-end gap-1">
@@ -79,8 +62,3 @@
     {/each}
   </div>
 </div>
-
-<style>
-  .report:not([open]) .report-preview { display: block; max-height: 6rem; overflow: hidden; pointer-events: none; }
-  .report[open] .report-preview, .report:not([open]) .report-hide { display: none; }
-</style>
