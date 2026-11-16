@@ -4,7 +4,6 @@
 
   let { message, session, onselect } = $props();
   let expanded = $state(false);
-  let truncated = $state(false);
   let preview = $state();
   let card = $state();
 
@@ -17,7 +16,6 @@
     const measure = () => {
       if (!active) return;
       const bounds = element.getBoundingClientRect();
-      if (!isExpanded) truncated = element.scrollHeight > element.clientHeight;
       element.querySelectorAll('a').forEach(link => {
         const visible = isExpanded || [...link.getClientRects()].some(rect =>
           rect.bottom > bounds.top && rect.top < bounds.bottom && rect.right > bounds.left && rect.left < bounds.right);
@@ -53,15 +51,13 @@
       <span>Сессия #{message.id}</span>
     {/if}
     <span>{message.harness}</span><span class="break-all">{message.folder}</span>
-    <button class="cursor-pointer text-neutral-400 underline" aria-expanded={expanded} onclick={() => expanded = !expanded}>{expanded ? 'Свернуть' : 'Развернуть'}</button>
+    <button class="sr-only focus:not-sr-only focus:cursor-pointer focus:text-neutral-200 focus:underline" aria-expanded={expanded} onclick={() => expanded = !expanded}>{expanded ? 'Свернуть отчёт' : 'Развернуть отчёт'}</button>
   </div>
   <div class="relative min-w-0">
     <div bind:this={preview} class:collapsed={!expanded}><Markdown text={message.text} /></div>
-    {#if !expanded && truncated}<span class="ellipsis" aria-hidden="true">…</span>{/if}
   </div>
 </div>
 
 <style>
   .collapsed { max-height: 6rem; overflow: hidden; }
-  .ellipsis { position: absolute; right: 0; bottom: 0; padding-left: 1rem; background: linear-gradient(to right, transparent, #171717 0.75rem); color: #d4d4d4; }
 </style>
