@@ -1,4 +1,4 @@
-import { models, modelDetails, claudeModels } from './models';
+import { models, modelDetails, claudeModelDetails } from './models';
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
@@ -77,13 +77,13 @@ const server = Bun.serve({
     const url = new URL(request.url);
     if (url.pathname === '/model-details') {
       const harness = url.searchParams.get('harness');
-      if (harness === 'claude') return Response.json(claudeModels.map(id => ({id, supportedReasoningEfforts: ['low','medium','high','xhigh','max'].map(reasoningEffort => ({reasoningEffort}))})));
+      if (harness === 'claude') return claudeModelDetails().then(result => Response.json(result)).catch(error => new Response(String(error), {status:500}));
       if (harness !== 'codex') return new Response('Unknown harness', {status:400});
       return modelDetails().then(result => Response.json(result)).catch(error => new Response(String(error), {status:500}));
     }
     if (url.pathname === '/models') {
       const harness = url.searchParams.get('harness');
-      if (harness === 'claude') return Response.json(claudeModels);
+      if (harness === 'claude') return claudeModelDetails().then(result => Response.json(result.map(m => m.id))).catch(error => new Response(String(error), {status:500}));
       if (harness !== 'codex') return new Response('Unknown harness', {status:400});
       return models().then(result => Response.json(result)).catch(error => new Response(String(error), {status:500}));
     }

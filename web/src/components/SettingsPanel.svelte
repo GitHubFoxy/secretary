@@ -60,7 +60,7 @@
         {/each}
       </div>
       <select class="field min-w-0 flex-1" aria-label="Модель" bind:value={model} disabled={!models.length}>
-        {#each models as m (m)}<option value={m}>{m}</option>{/each}
+        {#each details as m (m.id)}<option value={m.id}>{m.label || m.id}</option>{/each}
       </select>
       <button
         type="button"

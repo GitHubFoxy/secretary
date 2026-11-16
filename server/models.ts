@@ -1,5 +1,29 @@
-// У Claude Code нет API списка моделей, поэтому используем алиасы, которые понимает CLI.
-export const claudeModels = ['opus', 'sonnet', 'haiku'];
+export function parseClaudeModels(output: string) {
+  for (const line of output.split('\n')) {
+    if (!line.trim()) continue;
+    const msg = JSON.parse(line);
+    if (msg.type !== 'control_response' || msg.response?.request_id !== 'models') continue;
+    if (msg.response.subtype !== 'success') throw new Error('Claude Code не вернул список моделей');
+    const list = msg.response.response?.models;
+    if (!Array.isArray(list) || !list.length) throw new Error('Claude Code вернул пустой список моделей');
+    return list.map((model: any) => ({
+      id: model.value,
+      label: model.resolvedModel ? `${model.displayName} (${model.resolvedModel})` : model.displayName || model.value,
+      supportedReasoningEfforts: (model.supportedEffortLevels || []).map((reasoningEffort: string) => ({reasoningEffort})),
+    }));
+  }
+  throw new Error('Claude Code не ответил на запрос списка моделей');
+}
+
+export async function claudeModelDetails() {
+  const p = Bun.spawn(['claude', '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'],
+    {stdin:'pipe', stdout:'pipe', stderr:'ignore', signal: AbortSignal.timeout(10000)});
+  try {
+    p.stdin.write(JSON.stringify({type:'control_request', request_id:'models', request:{subtype:'initialize'}}) + '\n');
+    p.stdin.end();
+    return parseClaudeModels(await new Response(p.stdout).text());
+  } finally { p.kill(); }
+}
 
 export async function modelDetails(): Promise<{id:string, supportedReasoningEfforts:{reasoningEffort:string}[]}[]> {
   const p = Bun.spawn(['codex', 'app-server'], { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore' });
