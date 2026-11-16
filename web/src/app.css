@@ -27,4 +27,101 @@
   .field {
     @apply w-full rounded-lg border border-neutral-800 bg-neutral-900 px-3 py-2 text-sm text-neutral-100 transition-colors focus:border-neutral-600 focus:outline-none;
   }
+
+  /* Ответы агента и отчёты из Markdown. Длинные строки переносятся, а код и таблицы прокручиваются по горизонтали. */
+  .md {
+    @apply min-w-0 break-words text-[15px] leading-relaxed text-neutral-300;
+  }
+
+  .md > :first-child {
+    @apply mt-0;
+  }
+
+  .md > :last-child {
+    @apply mb-0;
+  }
+
+  .md p,
+  .md ul,
+  .md ol,
+  .md blockquote,
+  .md pre,
+  .md table,
+  .md hr {
+    @apply my-3;
+  }
+
+  .md h1,
+  .md h2,
+  .md h3,
+  .md h4,
+  .md h5,
+  .md h6 {
+    @apply mt-4 mb-2 text-[15px] font-semibold text-neutral-100;
+  }
+
+  .md h1 {
+    @apply text-lg;
+  }
+
+  .md h2 {
+    @apply text-base;
+  }
+
+  .md ul {
+    @apply list-disc pl-5;
+  }
+
+  .md ol {
+    @apply list-decimal pl-5;
+  }
+
+  .md li {
+    @apply my-1;
+  }
+
+  .md li > input {
+    @apply mr-1.5 align-middle accent-neutral-400;
+  }
+
+  .md a {
+    @apply text-sky-400 underline underline-offset-2 transition-colors hover:text-sky-300;
+  }
+
+  .md strong {
+    @apply font-semibold text-neutral-100;
+  }
+
+  .md blockquote {
+    @apply border-l-2 border-neutral-700 pl-3 text-neutral-400;
+  }
+
+  .md hr {
+    @apply border-neutral-800;
+  }
+
+  .md code {
+    @apply rounded bg-neutral-900 px-1 py-0.5 font-mono text-[0.9em] text-neutral-200;
+  }
+
+  .md pre {
+    @apply overflow-x-auto rounded-lg bg-neutral-900 p-3 text-[13px] leading-snug;
+  }
+
+  .md pre code {
+    @apply bg-transparent p-0 text-neutral-200;
+  }
+
+  .md table {
+    @apply block max-w-full overflow-x-auto border-collapse text-sm;
+  }
+
+  .md th,
+  .md td {
+    @apply border border-neutral-800 px-2 py-1 text-left align-top;
+  }
+
+  .md th {
+    @apply bg-neutral-900 font-medium text-neutral-200;
+  }
 }

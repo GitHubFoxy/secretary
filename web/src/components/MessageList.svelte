@@ -1,4 +1,5 @@
 <script>
+  import Markdown from './Markdown.svelte';
   // bottomInset — высота поля ввода поверх списка (плюс клавиатура), под ней должны оставаться видимыми последние сообщения.
   let { messages = [], sessions = [], bottomInset = 0, onselect } = $props();
   let scroller = $state();
@@ -48,8 +49,13 @@
               <span>{m.harness}</span><span class="break-all">{m.folder}</span>
             </div>
             <details class="report">
-              <summary class="cursor-pointer whitespace-pre-wrap break-words text-[15px] leading-relaxed text-neutral-300">{m.text}</summary>
-              <span class="text-xs text-neutral-500">Свернуть</span>
+              <summary class="cursor-pointer text-[15px] leading-relaxed text-neutral-300">
+                <span class="report-preview"><Markdown text={m.text} /></span>
+                <span class="report-hide text-xs text-neutral-500">Свернуть</span>
+              </summary>
+              <div class="mt-2 min-w-0 border-t border-neutral-800 pt-2">
+                <Markdown text={m.text} />
+              </div>
             </details>
           </div>
         </div>
@@ -65,7 +71,9 @@
         </div>
       {:else}
         <div class="flex justify-start">
-          <p class="max-w-[85%] whitespace-pre-wrap break-words px-1 text-[15px] leading-relaxed text-neutral-300">{m.text}</p>
+          <div class="max-w-[85%] min-w-0 px-1">
+            <Markdown text={m.text} />
+          </div>
         </div>
       {/if}
     {/each}
@@ -73,6 +81,6 @@
 </div>
 
 <style>
-  .report:not([open]) summary { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
-  .report[open] summary { display: block; }
+  .report:not([open]) .report-preview { display: block; max-height: 6rem; overflow: hidden; pointer-events: none; }
+  .report[open] .report-preview, .report:not([open]) .report-hide { display: none; }
 </style>

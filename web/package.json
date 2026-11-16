@@ -6,11 +6,14 @@
     "build": "vite build"
   },
   "dependencies": {
+    "dompurify": "^3.4.18",
+    "marked": "^18.2.0",
     "svelte": "^5.0.0"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tailwindcss/vite": "^4",
+    "jsdom": "^31.0.1",
     "tailwindcss": "^4",
     "vite": "^6.0.0"
   }
