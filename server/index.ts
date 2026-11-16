@@ -117,8 +117,8 @@ const server = Bun.serve({
       try {
         cmd = JSON.parse(String(message));
         if (cmd.type === 'list') socket.send(JSON.stringify({type:'sessions', sessions:listSessions()}));
-        if (cmd.type === 'read') socket.send(JSON.stringify({type:'history', id:cmd.id, events:session(cmd.id).events()}));
-        if (cmd.type === 'send') { session(cmd.id).send(cmd.text, cmd.images); if (cmd.requestId) socket.send(JSON.stringify({type:'sent', requestId:cmd.requestId})); }
+        if (cmd.type === 'read') { const s = session(cmd.id); socket.send(JSON.stringify({type:'history', id:cmd.id, events:s.events(), queue:s.queued()})); }
+        if (cmd.type === 'send') { session(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true); if (cmd.requestId) socket.send(JSON.stringify({type:'sent', requestId:cmd.requestId})); }
         if (cmd.type === 'stop') session(cmd.id).stop();
         if (cmd.type === 'rename') { session(cmd.id).setName(cmd.name); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
         if (cmd.type === 'delete') { const s = session(cmd.id); s.delete(); sessions.delete(s.id); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
@@ -142,5 +142,8 @@ const server = Bun.serve({
     },
   },
 });
+
+// Сообщения, подтверждённые до перезапуска и не начатые, уходят в ход. Делаем это после создания server: события публикуются через него.
+for (const session of sessions.values()) session.resumePending();
 
 console.log(`Secretary: ${server.url}`);

@@ -1,6 +1,7 @@
 <script>
   import { fade, fly } from 'svelte/transition';
   import Icon from './Icon.svelte';
+  import { showInSidebar } from '../sessions.js';
   let { open = false, sessions = [], selected, connected = false, onremove, onselect, onclose, onprofile } = $props();
 
   const lastEvent = s => s.last_event?.type === 'status' ? s.last_event.status : s.last_event?.method || s.last_event?.type || '';
@@ -18,7 +19,7 @@
       </button>
     </div>
     <nav class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-2">
-      {#each sessions.filter(s => s.id !== 1) as s (s.id)}
+      {#each sessions.filter(showInSidebar) as s (s.id)}
         <div class="flex items-center rounded-lg {s.parent_id ? 'ml-5' : ''} {selected === s.id ? 'bg-neutral-900' : ''}">
         <button
           class="min-w-0 flex-1 cursor-pointer rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-neutral-900"

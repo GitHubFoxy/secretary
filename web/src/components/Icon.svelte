@@ -11,6 +11,8 @@
     <path d="M6 6l12 12M18 6L6 18" />
   {:else if name === 'send'}
     <path d="M12 19V5M5.5 11.5L12 5l6.5 6.5" />
+  {:else if name === 'queue'}
+    <path d="M4 7h11M4 12h11M4 17h6M18 14v6M15 17h6" />
   {:else if name === 'stop'}
     <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
   {:else if name === 'trash'}

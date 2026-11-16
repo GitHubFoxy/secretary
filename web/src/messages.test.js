@@ -1,5 +1,11 @@
 import { expect, test } from 'bun:test';
-import { visibleMessage, userMessage } from './messages.js';
+import { visibleMessage, userMessage, queuedMessage } from './messages.js';
+
+test('сообщение из очереди помечается и сохраняет срочность и изображения', () => {
+  expect(queuedMessage({id:1, text:'жду', images:[], urgent:true})).toEqual({role:'В очереди', text:'жду', images:[], urgent:true});
+  expect(queuedMessage({id:2, text:'', images:[{type:'image/png', data:'abc'}], urgent:false})).toMatchObject({role:'В очереди', images:[{type:'image/png', data:'abc'}], urgent:false});
+  expect(visibleMessage(queuedMessage({id:3, text:'жду', images:[], urgent:false}))).toBe(true);
+});
 
 test('скрывает пустые ответы и ответы агента с NO_REPLY', () => {
   expect(visibleMessage({role:'Агент', text:''})).toBe(false);

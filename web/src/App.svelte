@@ -1,5 +1,6 @@
 <script>
-  import { visibleMessage, userMessage } from './messages.js';
+  import { onMount } from 'svelte';
+  import { visibleMessage, userMessage, queuedMessage } from './messages.js';
   import TopBar from './components/TopBar.svelte';
   import SessionDrawer from './components/SessionDrawer.svelte';
   import SettingsPanel from './components/SettingsPanel.svelte';
@@ -9,25 +10,27 @@
   import Icon from './components/Icon.svelte';
 
   let settingsLoaded = false;
-  let sessions = [], events = [], selected = 1, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
+  let sessions = [], events = [], queue = [], selected = 1, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], pendingSend = null;
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
   const send = value => socket.send(JSON.stringify(value));
   const refresh = () => send({type:'list'});
-  function select(id) { selected = id; events = []; drawerOpen = false; send({type:'read', id}); const s = sessions.find(s => s.id === id); if (s) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
+  function select(id) { selected = id; events = []; queue = []; drawerOpen = false; send({type:'read', id}); const s = sessions.find(s => s.id === id); if (s) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
   socket.onopen = () => { connected = true; select(selected); };
   socket.onclose = () => { connected = false; pendingSend = null; };
   socket.onmessage = e => {
     const msg = JSON.parse(e.data);
     if (msg.type === 'sessions') { sessions = msg.sessions; if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select(sessions[0].id); } const s = sessions.find(s => s.id === selected); if (s && !settingsLoaded) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
-    if (msg.type === 'history' && msg.id === selected) events = msg.events;
-    if (msg.type === 'event') { if (msg.sessionId === selected) events = [...events, msg.event]; refresh(); }
+    if (msg.type === 'history' && msg.id === selected) { events = msg.events; queue = msg.queue || []; }
+    // Очередь приходит отдельными событиями и в историю не попадает: заменяем список целиком.
+    if (msg.type === 'event' && msg.sessionId === selected && msg.event.type === 'queue') queue = msg.event.items;
+    else if (msg.type === 'event') { if (msg.sessionId === selected) events = [...events, msg.event]; refresh(); }
     if (msg.type === 'created') { select(msg.id); settingsOpen = false; }
     if (msg.type === 'sent' && pendingSend?.id === msg.requestId) { if (message === pendingSend.text && images === pendingSend.images) { message = ''; images = []; } pendingSend = null; }
     if (msg.type === 'error') { error = msg.message; if (pendingSend?.id === msg.requestId) pendingSend = null; }
   };
-  function submit() { if (!connected || pendingSend || (!message.trim() && !images.length)) return; const id = crypto.randomUUID(); pendingSend = {id, text:message, images}; send({type:'send',id:selected,text:message,images,requestId:id}); }
+  function submit(immediate = false) { if (!connected || pendingSend || (!message.trim() && !images.length)) return; const id = crypto.randomUUID(); pendingSend = {id, text:message, images}; send({type:'send',id:selected,text:message,images,immediate,requestId:id}); }
   function saveSettings() {
     const s = sessions.find(s => s.id === selected);
     if (!s) return;
@@ -74,10 +77,24 @@
     if (event.type === 'result') return {role:'Агент', text:event.result};
     if (event.method === 'item/completed' && event.params.item.type === 'agentMessage') return {role:'Агент', text:event.params.item.text};
     if (event.type === 'error') return {role:'Ошибка', text:event.message};
+    if (event.type === 'cancelled') return {role:'Не отправлено', text:event.text, images:event.images || []};
     return null;
   }
-  $: messages = events.map(text).filter(visibleMessage);
+  // Сначала история, затем очередь: сообщения из очереди ещё не приняты агентом и стоят после уже отправленных.
+  $: messages = [...events.map(text).filter(visibleMessage), ...queue.map(queuedMessage)];
   $: current = sessions.find(s => s.id === selected);
+
+  // Высота поля ввода и высота экранной клавиатуры (iOS не сжимает layout viewport, поэтому берём visualViewport).
+  let composerHeight = 0, keyboard = 0;
+  onMount(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const update = () => { keyboard = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)); };
+    vv.addEventListener('resize', update);
+    vv.addEventListener('scroll', update);
+    update();
+    return () => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); };
+  });
 </script>
 
 <svelte:head><title>Secretary</title></svelte:head>
@@ -135,9 +152,16 @@
       <p role="alert" class="border-b border-neutral-900 px-4 py-2 text-center text-sm text-red-400">{error}</p>
     {/if}
 
-    <MessageList {messages} {sessions} onselect={select} />
+    <div class="relative flex min-h-0 flex-1 flex-col">
+      <MessageList {messages} {sessions} bottomInset={composerHeight + keyboard} onselect={select} />
 
-    <Composer bind:value={message} bind:images disabled={!connected || !!pendingSend} onsubmit={submit} />
+      <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
+      <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
+        <div class="pointer-events-auto">
+          <Composer bind:value={message} bind:images disabled={!connected || !!pendingSend} running={current?.status === 'running'} onsubmit={submit} />
+        </div>
+      </div>
+    </div>
 
     <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onremove={removeSession} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} />
   </div>

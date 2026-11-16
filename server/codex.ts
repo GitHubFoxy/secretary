@@ -2,7 +2,8 @@ import type { Image } from './images';
 import type { ThreadStartParams } from './protocol/v2/ThreadStartParams';
 import type { TurnStartParams } from './protocol/v2/TurnStartParams';
 
-type Options = { folder: string; model: string; reasoning: string | null; threadId: string | null; onThread: (id: string) => void; onEvent: (event: any) => void; onProcess?: (process: any) => void; secretary?: boolean };
+// onAccepted вызывается, когда Codex ответил на turn/start: сообщение принято и ход создан.
+type Options = { folder: string; model: string; reasoning: string | null; threadId: string | null; onThread: (id: string) => void; onEvent: (event: any) => void; onProcess?: (process: any) => void; onInterruptable?: (interrupt: () => void) => void; onAccepted?: () => void; secretary?: boolean };
 
 export async function codexTurn(options: Options, text: string, images: Image[] = []) {
   const args = ['codex', 'app-server'];
@@ -51,7 +52,9 @@ export async function codexTurn(options: Options, text: string, images: Image[] 
       : await request('thread/start', start);
     options.onThread(thread.thread.id);
     const turn: TurnStartParams = { threadId: thread.thread.id, model: options.model, effort: options.reasoning, input: [{ type: 'text', text, text_elements: [] }, ...images.map(image => ({ type: 'image' as const, url: `data:${image.type};base64,${image.data}` }))] };
-    await request('turn/start', turn);
+    const started = await request('turn/start', turn);
+    options.onAccepted?.();
+    options.onInterruptable?.(() => { request('turn/interrupt', { threadId: thread.thread.id, turnId: started.turn.id }).catch(() => {}); });
     return await completed;
   } finally {
     process.kill();
