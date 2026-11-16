@@ -1,9 +1,10 @@
+import type { Image } from './images';
 import type { ThreadStartParams } from './protocol/v2/ThreadStartParams';
 import type { TurnStartParams } from './protocol/v2/TurnStartParams';
 
 type Options = { folder: string; model: string; reasoning: string | null; threadId: string | null; onThread: (id: string) => void; onEvent: (event: any) => void; onProcess?: (process: any) => void; secretary?: boolean };
 
-export async function codexTurn(options: Options, text: string) {
+export async function codexTurn(options: Options, text: string, images: Image[] = []) {
   const args = ['codex', 'app-server'];
   if (options.secretary) args.push('-c', 'mcp_servers.secretary.url="http://127.0.0.1:3001/mcp"');
   const process = Bun.spawn(globalThis.process.platform === 'linux' ? ['setsid', ...args] : args, { cwd: options.folder, stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' });
@@ -49,7 +50,7 @@ export async function codexTurn(options: Options, text: string) {
       ? await request('thread/resume', { threadId: options.threadId, excludeTurns: true })
       : await request('thread/start', start);
     options.onThread(thread.thread.id);
-    const turn: TurnStartParams = { threadId: thread.thread.id, model: options.model, effort: options.reasoning, input: [{ type: 'text', text, text_elements: [] }] };
+    const turn: TurnStartParams = { threadId: thread.thread.id, model: options.model, effort: options.reasoning, input: [{ type: 'text', text, text_elements: [] }, ...images.map(image => ({ type: 'image' as const, url: `data:${image.type};base64,${image.data}` }))] };
     await request('turn/start', turn);
     return await completed;
   } finally {

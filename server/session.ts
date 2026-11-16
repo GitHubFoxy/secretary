@@ -1,4 +1,5 @@
 import { codexTurn } from './codex';
+import { validateImages, type Image } from './images';
 import { Database } from 'bun:sqlite';
 import { readFileSync, readdirSync } from 'node:fs';
 
@@ -32,7 +33,7 @@ function killTree(pid: number) {
 }
 
 export class Session {
-  private queue: string[] = [];
+  private queue: { text: string; images: Image[] }[] = [];
   private running = false;
   private process: any;
   private stopped = false;
@@ -95,6 +96,14 @@ export class Session {
 
   setModel(model: string) { this.row.model = model; db.query('UPDATE sessions SET model = ? WHERE id = ?').run(model, this.row.id); }
 
+  setName(name: unknown) {
+    if (typeof name !== 'string' || !name.trim() || name.trim().length > 100) throw new Error('Название должно содержать от 1 до 100 символов');
+    this.row.name = name.trim();
+    db.query('UPDATE sessions SET name = ? WHERE id = ?').run(this.row.name, this.id);
+  }
+
+  setReasoning(reasoning: string | null) { this.row.reasoning = reasoning; db.query('UPDATE sessions SET reasoning = ? WHERE id = ?').run(reasoning, this.id); }
+
   onEvent(callback: (event: unknown) => void) { this.listeners.push(callback); }
 
   private emit(event: unknown) {
@@ -103,26 +112,30 @@ export class Session {
     for (const listener of this.listeners) listener(event);
   }
 
-  send(text: string) {
+  send(text: string, input?: unknown) {
+    if (typeof text !== 'string') throw new Error('Некорректный текст сообщения');
+    const images = validateImages(input);
+    if (!text.trim() && !images.length) throw new Error('Сообщение пустое');
     if (this.deleted) throw new Error('Session was deleted');
     this.stopped = false;
-    this.queue.push(text);
+    this.queue.push({ text, images });
     if (!this.running) void this.next();
   }
 
   private async next() {
-    const text = this.queue.shift();
-    if (text === undefined) return;
+    const item = this.queue.shift();
+    if (item === undefined) return;
+    const { text, images } = item;
     this.running = true;
     this.lastAnswer = '';
     db.query("UPDATE sessions SET status = 'running' WHERE id = ?").run(this.row.id);
-    this.emit({ type: 'user', message: { role: 'user', content: text } });
+    this.emit({ type: 'user', message: { role: 'user', content: text }, images });
     try {
     if (this.row.harness === 'codex') {
       const completed = await codexTurn({ folder: this.row.folder, model: this.row.model, reasoning: this.row.reasoning, threadId: this.row.harness_session_id,
         onThread: id => { if (this.deleted) return; this.row.harness_session_id = id; db.query('UPDATE sessions SET harness_session_id = ? WHERE id = ?').run(id, this.row.id); },
         secretary: this.row.id === 1, onProcess: process => this.recordProcess(process),
-        onEvent: event => { if (event.method === 'item/completed' && event.params.item.type === 'agentMessage') this.lastAnswer = event.params.item.text; this.emit(event); } }, text);
+        onEvent: event => { if (event.method === 'item/completed' && event.params.item.type === 'agentMessage') this.lastAnswer = event.params.item.text; this.emit(event); } }, text, images);
       this.finish(completed);
       return;
     }
@@ -133,7 +146,7 @@ export class Session {
     if (this.row.id === 1) args.push('--mcp-config', JSON.stringify({mcpServers:{secretary:{type:'http',url:'http://127.0.0.1:3001/mcp'}}}));
     const process = Bun.spawn(globalThis.process.platform === 'linux' ? ['setsid', ...args] : args, { cwd: this.row.folder, stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' });
     this.recordProcess(process);
-    process.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: text } }) + '\n');
+    process.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: images.length ? [{type:'text', text}, ...images.map(image => ({type:'image', source:{type:'base64', media_type:image.type, data:image.data}}))] : text } }) + '\n');
     process.stdin.flush();
     let buffer = '';
     let completed = false;

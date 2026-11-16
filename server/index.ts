@@ -25,6 +25,7 @@ const rows = db.query('SELECT * FROM sessions ORDER BY id').all() as SessionRow[
 if (!rows.length) attach(Session.create('opus', folder));
 else for (const row of rows) attach(Session.get(row.id)!);
 Session.cleanInterrupted();
+
 db.query("UPDATE sessions SET status = 'interrupted' WHERE status = 'running'").run();
 
 function create(harness: string, model: string, dir: string, parentId: number | null = null, name: string | null = null, reasoning: string | null = null) {
@@ -74,6 +75,12 @@ const server = Bun.serve({
   port: 3000, hostname: '127.0.0.1',
   fetch(request, server) {
     const url = new URL(request.url);
+    if (url.pathname === '/model-details') {
+      const harness = url.searchParams.get('harness');
+      if (harness === 'claude') return Response.json(claudeModels.map(id => ({id, supportedReasoningEfforts: ['low','medium','high','xhigh','max'].map(reasoningEffort => ({reasoningEffort}))})));
+      if (harness !== 'codex') return new Response('Unknown harness', {status:400});
+      return modelDetails().then(result => Response.json(result)).catch(error => new Response(String(error), {status:500}));
+    }
     if (url.pathname === '/models') {
       const harness = url.searchParams.get('harness');
       if (harness === 'claude') return Response.json(claudeModels);
@@ -103,19 +110,37 @@ const server = Bun.serve({
     return new Response(Bun.file(`../web/dist${path}`));
   },
   websocket: {
+    maxPayloadLength: 30 * 1024 * 1024,
     open(socket) { socket.subscribe('events'); socket.send(JSON.stringify({type:'sessions', sessions:listSessions()})); },
-    message(socket, message) {
+    async message(socket, message) {
+      let cmd: any;
       try {
-        const cmd = JSON.parse(String(message));
+        cmd = JSON.parse(String(message));
         if (cmd.type === 'list') socket.send(JSON.stringify({type:'sessions', sessions:listSessions()}));
         if (cmd.type === 'read') socket.send(JSON.stringify({type:'history', id:cmd.id, events:session(cmd.id).events()}));
-        if (cmd.type === 'send') session(cmd.id).send(cmd.text);
+        if (cmd.type === 'send') { session(cmd.id).send(cmd.text, cmd.images); if (cmd.requestId) socket.send(JSON.stringify({type:'sent', requestId:cmd.requestId})); }
         if (cmd.type === 'stop') session(cmd.id).stop();
+        if (cmd.type === 'rename') { session(cmd.id).setName(cmd.name); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
         if (cmd.type === 'delete') { const s = session(cmd.id); s.delete(); sessions.delete(s.id); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
         if (cmd.type === 'create') { const s = create(cmd.harness, cmd.model, cmd.folder); socket.send(JSON.stringify({type:'created', id:s.id})); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
-        if (cmd.type === 'settings') { const s = session(cmd.id); if (s.info.status === 'running') throw new Error('Session is running'); if (s.info.harness !== cmd.harness) s.switchHarness(cmd.harness,cmd.model); else s.setModel(cmd.model); }
-      } catch (error) { socket.send(JSON.stringify({type:'error',message:String(error)})); }
+        if (cmd.type === 'settings') {
+          const s = session(cmd.id); const before = s.info;
+          if (before.status === 'running') throw new Error('Session is running');
+          if (!['claude','codex'].includes(cmd.harness) || typeof cmd.model !== 'string' || !cmd.model) throw new Error('Invalid session settings');
+          const reasoning = cmd.reasoning === undefined ? (before.harness === cmd.harness && before.model === cmd.model ? before.reasoning : null) : cmd.reasoning;
+          if (reasoning !== null) {
+            if (typeof reasoning !== 'string') throw new Error('Invalid reasoning level');
+            const valid = cmd.harness === 'claude' ? ['low','medium','high','xhigh','max'].includes(reasoning) : (await modelDetails()).some(m => m.id === cmd.model && m.supportedReasoningEfforts.some(e => e.reasoningEffort === reasoning));
+            if (!valid) throw new Error('Unsupported model or reasoning level');
+          }
+          if (s.info.status === 'running' || s.info.harness !== before.harness || s.info.model !== before.model || s.info.reasoning !== before.reasoning) throw new Error('Session settings changed');
+          if (before.harness !== cmd.harness) s.switchHarness(cmd.harness,cmd.model); else s.setModel(cmd.model);
+          s.setReasoning(reasoning);
+          server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()}));
+        }
+      } catch (error) { socket.send(JSON.stringify({type:'error',message:String(error),requestId:cmd?.requestId})); }
     },
   },
 });
+
 console.log(`Secretary: ${server.url}`);

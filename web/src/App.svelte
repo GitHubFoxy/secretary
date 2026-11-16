@@ -9,29 +9,30 @@
   import Icon from './components/Icon.svelte';
 
   let settingsLoaded = false;
-  let sessions = [], events = [], selected = 1, message = '', error = '', harness = 'claude', model = 'opus', connected = false;
-  let drawerOpen = false, settingsOpen = false;
+  let sessions = [], events = [], selected = 1, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
+  let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], pendingSend = null;
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
   const send = value => socket.send(JSON.stringify(value));
   const refresh = () => send({type:'list'});
-  function select(id) { selected = id; events = []; drawerOpen = false; send({type:'read', id}); const s = sessions.find(s => s.id === id); if (s) { harness = s.harness; model = s.model; settingsLoaded = true; } }
+  function select(id) { selected = id; events = []; drawerOpen = false; send({type:'read', id}); const s = sessions.find(s => s.id === id); if (s) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
   socket.onopen = () => { connected = true; select(selected); };
-  socket.onclose = () => { connected = false; };
+  socket.onclose = () => { connected = false; pendingSend = null; };
   socket.onmessage = e => {
     const msg = JSON.parse(e.data);
-    if (msg.type === 'sessions') { sessions = msg.sessions; if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select(sessions[0].id); } const s = sessions.find(s => s.id === selected); if (s && !settingsLoaded) { harness = s.harness; model = s.model; settingsLoaded = true; } }
+    if (msg.type === 'sessions') { sessions = msg.sessions; if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select(sessions[0].id); } const s = sessions.find(s => s.id === selected); if (s && !settingsLoaded) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
     if (msg.type === 'history' && msg.id === selected) events = msg.events;
     if (msg.type === 'event') { if (msg.sessionId === selected) events = [...events, msg.event]; refresh(); }
     if (msg.type === 'created') { select(msg.id); settingsOpen = false; }
-    if (msg.type === 'error') error = msg.message;
+    if (msg.type === 'sent' && pendingSend?.id === msg.requestId) { if (message === pendingSend.text && images === pendingSend.images) { message = ''; images = []; } pendingSend = null; }
+    if (msg.type === 'error') { error = msg.message; if (pendingSend?.id === msg.requestId) pendingSend = null; }
   };
-  function submit() { if (!message.trim()) return; send({type:'send',id:selected,text:message}); message = ''; }
+  function submit() { if (!connected || pendingSend || (!message.trim() && !images.length)) return; const id = crypto.randomUUID(); pendingSend = {id, text:message, images}; send({type:'send',id:selected,text:message,images,requestId:id}); }
   function saveSettings() {
     const s = sessions.find(s => s.id === selected);
     if (!s) return;
-    if (s.harness !== harness && !confirm('Текущий контекст будет потерян. Продолжить?')) { harness = s.harness; model = s.model; return; }
-    send({type:'settings', id:selected, harness, model}); refresh(); settingsOpen = false;
+    if (s.harness !== harness && !confirm('Текущий контекст будет потерян. Продолжить?')) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; return; }
+    send({type:'settings', id:selected, harness, model, reasoning}); settingsOpen = false;
   }
   function stop() { send({type:'stop', id:selected}); }
   function removeSession(session) {
@@ -40,7 +41,9 @@
     error = '';
     send({type:'delete', id:session.id});
   }
-  function openSettings() { settingsOpen = true; }
+  function openSettings() { const s = sessions.find(s => s.id === selected); if (s) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; } settingsOpen = true; }
+  function openRename() { newName = current?.name || (selected === 1 ? 'Secretary' : `Сессия #${selected}`); settingsOpen = false; renameOpen = true; }
+  function rename() { if (!connected || !newName.trim()) return; error = ''; send({type:'rename', id:selected, name:newName}); renameOpen = false; }
   function createThread() { const folder = sessions.find(s => s.id === selected)?.folder; if (!folder) return; send({type:'create', harness, model, folder}); }
   async function loadAgents() {
     agentsLoaded = false;
@@ -67,7 +70,7 @@
   }
   function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); }
   function text(event) {
-    if (event.type === 'user' && typeof event.message?.content === 'string') return userMessage(event.message.content);
+    if (event.type === 'user' && typeof event.message?.content === 'string') return {...userMessage(event.message.content), images:event.images || []};
     if (event.type === 'result') return {role:'Агент', text:event.result};
     if (event.method === 'item/completed' && event.params.item.type === 'agentMessage') return {role:'Агент', text:event.params.item.text};
     if (event.type === 'error') return {role:'Ошибка', text:event.message};
@@ -105,15 +108,27 @@
 {:else}
   <div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
     <TopBar
-      title={current?.name || `Сессия #${selected}`}
+      title={current?.name || (selected === 1 ? 'Secretary' : `Сессия #${selected}`)}
       status={current?.status}
       {connected}
       onmenu={() => (drawerOpen = true)}
       onsettings={openSettings}
     />
 
+    <Modal open={renameOpen} title="Переименовать чат" onclose={() => (renameOpen = false)}>
+      <form class="flex flex-col gap-4" onsubmit={e => { e.preventDefault(); rename(); }}>
+        <label class="flex flex-col gap-2 text-sm">Название чата
+          <input class="field" bind:value={newName} maxlength="100" required />
+        </label>
+        <div class="flex justify-end gap-2">
+          <button type="button" class="btn-ghost" onclick={() => (renameOpen = false)}>Отмена</button>
+          <button class="btn" disabled={!connected || !newName.trim()}>Сохранить</button>
+        </div>
+      </form>
+    </Modal>
+
     <Modal open={settingsOpen} title="Настройки сессии" onclose={() => (settingsOpen = false)}>
-      <SettingsPanel bind:harness bind:model onsave={saveSettings} onstop={stop} oncreate={createThread} />
+      <SettingsPanel bind:harness bind:model bind:reasoning {connected} onsave={saveSettings} onstop={stop} oncreate={createThread} onrename={openRename} />
     </Modal>
 
     {#if error}
@@ -122,7 +137,7 @@
 
     <MessageList {messages} {sessions} onselect={select} />
 
-    <Composer bind:value={message} disabled={!connected} onsubmit={submit} />
+    <Composer bind:value={message} bind:images disabled={!connected || !!pendingSend} onsubmit={submit} />
 
     <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onremove={removeSession} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} />
   </div>
