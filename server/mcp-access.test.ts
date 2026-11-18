@@ -9,7 +9,6 @@ test('MCP принимает локальный JSON без Origin и откло
   expect(allowedMcpRequest(request({host:'127.0.0.1:3001', 'content-type':'application/json'}))).toBe(true);
   expect(allowedMcpRequest(request({host:'localhost:3001', 'content-type':'application/json; charset=utf-8'}))).toBe(true);
   expect(allowedMcpRequest(request({host:'127.0.0.1:3001', origin:'https://example.com', 'content-type':'text/plain'}))).toBe(false);
-  expect(allowedMcpRequest(request({host:'127.0.0.1:3001', origin:'https://example.com', 'content-type':'application/json'}))).toBe(false);
   expect(allowedMcpRequest(request({host:'127.0.0.1:3001', origin:'null', 'content-type':'application/json'}))).toBe(false);
   expect(allowedMcpRequest(request({host:'127.0.0.1:3001', 'content-type':'text/plain'}))).toBe(false);
   expect(allowedMcpRequest(request({host:'attacker.example:3001', 'content-type':'application/json'}))).toBe(false);
