@@ -262,7 +262,9 @@ export class Session {
     const images = items.flatMap(item => item.images);
     this.running = true;
     this.lastAnswer = '';
+    const alreadyRunning = this.info.status === 'running';
     db.query("UPDATE sessions SET status = 'running' WHERE id = ?").run(this.row.id);
+    if (!alreadyRunning) this.emit({ type: 'status', status: 'running' });
     // delivered: адаптер принял сообщения. Пока false, при сбое они остаются в очереди.
     let delivered = false;
     const deliver = () => { if (delivered) return; delivered = true; this.commit(items); };

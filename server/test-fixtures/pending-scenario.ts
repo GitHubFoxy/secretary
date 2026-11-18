@@ -27,6 +27,19 @@ Session.create('opus', dir);
 Session.interruptDeadlineMs = 5000;
 
 const scenarios: Record<string, () => Promise<void>> = {
+  async 'running-before-adapter-event'() {
+    const s = Session.create('gpt', dir, 'codex');
+    const seen: any[] = [];
+    s.onEvent(event => seen.push({event, status:s.info.status}));
+    s.send('задержанный запуск');
+    expect(seen.filter(item => item.event.type === 'status')).toEqual([{event:{type:'status', status:'running'}, status:'running'}]);
+    expect(seen.some(item => item.event.method)).toBe(false);
+    await until(() => existsSync(`${process.env.FAKE_LOG}.thread`), 'адаптер ожидает запуск треда');
+    expect(seen.some(item => item.event.type === 'status' && item.event.status === 'running')).toBe(true);
+    expect(seen.some(item => item.event.method)).toBe(false);
+    s.interrupt();
+    await until(() => s.info.status === 'idle', 'запуск прерван');
+  },
   async 'unconfirmed-exit-continues-queue'() {
     const s = Session.create('gpt', dir, 'codex');
     s.send('EXIT_UNACK опасное действие');
@@ -108,8 +121,8 @@ const scenarios: Record<string, () => Promise<void>> = {
     expect(Date.now() - sentAt).toBeLessThan(4000);
     expect(userTexts(s)).toEqual(['LONG задача', 'срочно', 'обычное']);
     expect(answered(s, 'срочно')).toBe(true);
-    // Прерванный ход не выводит статус: по одному idle на каждый завершённый ход (срочное и обычное), interrupted не появляется.
-    expect(statuses(s)).toEqual(['idle', 'idle']);
+    // Срочное прерывание не создаёт лишнего перехода в idle или running.
+    expect(statuses(s)).toEqual(['running', 'idle', 'running', 'idle']);
     expect(calls().find(call => call.received === 'срочно')).toMatchObject({ resume: 'claude-session' });
     expect(pendingCount(s.id)).toBe(0);
   },
@@ -144,7 +157,7 @@ const scenarios: Record<string, () => Promise<void>> = {
     expect(s.events().some(event => event.type === 'delivery_uncertain' && event.text === 'HANG старт')).toBe(true);
     expect(calls().filter(call => call.received === 'HANG старт')).toHaveLength(1);
     expect(s.events().some(event => event.type === 'error')).toBe(false);
-    expect(statuses(s)).toEqual(['idle']);
+    expect(statuses(s)).toEqual(['running', 'idle']);
     expect(pendingCount(s.id)).toBe(0);
   },
 
@@ -186,7 +199,7 @@ const scenarios: Record<string, () => Promise<void>> = {
     s.send('срочно', undefined, true);
     await until(() => answered(s, 'срочно') && s.info.status === 'idle', 'ответ Codex на срочное сообщение');
     expect(userTexts(s)).toEqual(['LONG codex', 'срочно']);
-    expect(statuses(s)).toEqual(['idle']);
+    expect(statuses(s)).toEqual(['running', 'idle']);
     expect(calls().filter(call => call.harness === 'codex').map(call => call.thread)).toEqual(['codex-thread', 'codex-thread']);
   },
 

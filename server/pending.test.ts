@@ -18,7 +18,7 @@ function runScenario(name: string) {
     }
     const result = Bun.spawnSync([process.execPath, 'run', join(fixtures, 'pending-scenario.ts'), name], {
       cwd: dir,
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: join(dir, 'calls.log'), ...(name === 'interrupt-codex-not-dispatched' ? {FAKE_DELAY_THREAD:'1'} : {}) },
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: join(dir, 'calls.log'), ...(['interrupt-codex-not-dispatched', 'running-before-adapter-event'].includes(name) ? {FAKE_DELAY_THREAD:'1'} : {}) },
       stdout: 'pipe',
       stderr: 'pipe',
       timeout: 60_000,
@@ -117,4 +117,8 @@ test('задержанное подтверждение после прерыв�
 
 test('до отправки turn/start сообщение действительно отменяется', () => {
   expect(runScenario('interrupt-codex-not-dispatched')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
+
+test('статус running публикуется до первого события зависшего адаптера', () => {
+  expect(runScenario('running-before-adapter-event')).toEqual({ exitCode: 0, stderr: '' });
 }, 30_000);
