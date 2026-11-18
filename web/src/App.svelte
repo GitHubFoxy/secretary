@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { createConnection } from './connection.js';
   import { visibleMessage, userMessage, queuedMessage, keyedMessages } from './messages.js';
   import TopBar from './components/TopBar.svelte';
   import SessionDrawer from './components/SessionDrawer.svelte';
@@ -9,27 +10,30 @@
   import Modal from './components/Modal.svelte';
   import Icon from './components/Icon.svelte';
 
-  let settingsLoaded = false;
+  let settingsLoaded = false, historyLoaded = false;
   let sessions = [], events = [], queue = [], selected = 1, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], pendingSend = null;
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
-  const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-  const send = value => socket.send(JSON.stringify(value));
+  const connection = createConnection({
+    url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`,
+    onOpen: () => { connected = true; select(selected); },
+    onClose: () => { connected = false; if (pendingSend) { pendingSend = null; error = 'Соединение прервалось до подтверждения отправки. Проверьте историю перед повторной отправкой.'; } },
+    onMessage: handleMessage,
+  });
+  const send = value => connection.send(value);
   const refresh = () => send({type:'list'});
-  function select(id) { selected = id; events = []; queue = []; drawerOpen = false; send({type:'read', id}); const s = sessions.find(s => s.id === id); if (s) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
-  socket.onopen = () => { connected = true; select(selected); };
-  socket.onclose = () => { connected = false; pendingSend = null; };
-  socket.onmessage = e => {
+  function select(id) { if (selected !== id) { events = []; queue = []; } selected = id; historyLoaded = false; drawerOpen = false; send({type:'read', id}); const s = sessions.find(s => s.id === id); if (s) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
+  function handleMessage(e) {
     const msg = JSON.parse(e.data);
     if (msg.type === 'sessions') { sessions = msg.sessions; if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select(sessions[0].id); } const s = sessions.find(s => s.id === selected); if (s && !settingsLoaded) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
-    if (msg.type === 'history' && msg.id === selected) { events = msg.events; queue = msg.queue || []; }
+    if (msg.type === 'history' && msg.id === selected) { events = msg.events; queue = msg.queue || []; historyLoaded = true; }
     // Очередь приходит отдельными событиями и в историю не попадает: заменяем список целиком.
     if (msg.type === 'event' && msg.sessionId === selected && msg.event.type === 'queue') queue = msg.event.items;
     else if (msg.type === 'event') { if (msg.sessionId === selected) events = [...events, msg.event]; refresh(); }
     if (msg.type === 'created') { select(msg.id); settingsOpen = false; }
     if (msg.type === 'sent' && pendingSend?.id === msg.requestId) { if (message === pendingSend.text && images === pendingSend.images) { message = ''; images = []; } pendingSend = null; }
     if (msg.type === 'error') { error = msg.message; if (pendingSend?.id === msg.requestId) pendingSend = null; }
-  };
+  }
   function submit(immediate = false) { if (!connected || pendingSend || (!message.trim() && !images.length)) return; const id = crypto.randomUUID(); pendingSend = {id, text:message, images}; send({type:'send',id:selected,text:message,images,immediate,requestId:id}); }
   function saveSettings() {
     const s = sessions.find(s => s.id === selected);
@@ -87,13 +91,14 @@
   // Высота поля ввода и высота экранной клавиатуры (iOS не сжимает layout viewport, поэтому берём visualViewport).
   let composerHeight = 0, keyboard = 0;
   onMount(() => {
+    connection.connect();
+    const reconnect = () => { if (document.visibilityState === 'visible') connection.connect(); };
+    window.addEventListener('online', reconnect);
+    document.addEventListener('visibilitychange', reconnect);
     const vv = window.visualViewport;
-    if (!vv) return;
     const update = () => { keyboard = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)); };
-    vv.addEventListener('resize', update);
-    vv.addEventListener('scroll', update);
-    update();
-    return () => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); };
+    if (vv) { vv.addEventListener('resize', update); vv.addEventListener('scroll', update); update(); }
+    return () => { connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
   });
 </script>
 
@@ -153,7 +158,7 @@
     {/if}
 
     <div class="relative flex min-h-0 flex-1 flex-col">
-      <MessageList {messages} {sessions} bottomInset={composerHeight + keyboard} onselect={select} />
+      <MessageList {messages} {sessions} {historyLoaded} {connected} bottomInset={composerHeight + keyboard} onselect={select} />
 
       <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">

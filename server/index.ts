@@ -4,6 +4,7 @@ import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { db, Session, type SessionRow } from './session';
+import { chatHistory } from './web-history';
 
 const folder = `${homedir()}/.secretary`;
 mkdirSync(folder, { recursive: true });
@@ -131,7 +132,7 @@ const server = Bun.serve({
       try {
         cmd = JSON.parse(String(message));
         if (cmd.type === 'list') socket.send(JSON.stringify({type:'sessions', sessions:listSessions()}));
-        if (cmd.type === 'read') { const s = session(cmd.id); socket.send(JSON.stringify({type:'history', id:cmd.id, events:s.events(), queue:s.queued()})); }
+        if (cmd.type === 'read') { const s = session(cmd.id); socket.send(JSON.stringify({type:'history', id:cmd.id, events:chatHistory(s.events()), queue:s.queued()})); }
         if (cmd.type === 'send') { session(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true); if (cmd.requestId) socket.send(JSON.stringify({type:'sent', requestId:cmd.requestId})); }
         if (cmd.type === 'stop') session(cmd.id).stop();
         if (cmd.type === 'rename') { session(cmd.id).setName(cmd.name); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }

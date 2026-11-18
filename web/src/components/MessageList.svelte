@@ -2,7 +2,7 @@
   import Markdown from './Markdown.svelte';
   import Report from './Report.svelte';
   // bottomInset — высота поля ввода поверх списка (плюс клавиатура), под ней должны оставаться видимыми последние сообщения.
-  let { messages = [], sessions = [], bottomInset = 0, onselect } = $props();
+  let { messages = [], sessions = [], historyLoaded = false, connected = false, bottomInset = 0, onselect } = $props();
   let scroller = $state();
   // Пока пользователь у самого низа, новые размеры списка не сдвигают его последние сообщения под поле ввода.
   let pinned = true;
@@ -35,7 +35,7 @@
 <div bind:this={scroller} onscroll={onscroll} class="min-h-0 flex-1 overflow-y-auto" aria-live="polite">
   <div class="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 pt-6" style="padding-bottom: {bottomInset + 24}px">
     {#if messages.length === 0}
-      <p class="py-16 text-center text-sm text-neutral-600">Сообщений пока нет</p>
+      <p class="py-16 text-center text-sm text-neutral-600">{!connected ? 'Нет соединения. Повторное подключение…' : !historyLoaded ? 'Загрузка сообщений…' : 'Сообщений пока нет'}</p>
     {/if}
     {#each messages as m (m.key)}
       {#if m.role === 'Отчёт'}
