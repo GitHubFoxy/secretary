@@ -12,4 +12,6 @@ SQLite хранится в `server/secretary.sqlite`. Настройки Secreta
 
 Android-прототип: `cd web && bun install && bun run build && bunx cap sync android`; проект находится в `web/android`. Для сборки нужен Android SDK. Приложение открывает `https://app.scrtrbot.ru`; в настройках Android его можно выбрать приложением-помощником.
 
+На этом компьютере SDK находится в `~/.local/share/android-sdk`, а JDK 21 в `~/.local/share/secretary-jdk`. Для debug-сборки из корня проекта: `JAVA_HOME="$HOME/.local/share/secretary-jdk" ANDROID_HOME="$HOME/.local/share/android-sdk" ./web/android/gradlew -p web/android :app:assembleDebug`. APK: `web/android/app/build/outputs/apk/debug/app-debug.apk`.
+
 При вызове системного помощника приложение может открыться поверх экрана блокировки. Это раскрывает историю чатов и позволяет отправлять команды любому, у кого есть доступ к телефону. Доступность удержания кнопки питания зависит от модели и настроек Android. Обычный запуск поверх блокировки не разрешён.
