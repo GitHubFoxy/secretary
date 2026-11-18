@@ -40,6 +40,13 @@ rl.on('line', line => {
     }
     if (text.includes('HANG') && !existsSync(hangMarker)) { writeFileSync(hangMarker, ''); return; }
     const turnId = `turn-${++turns}`;
+    if (text.includes('RACE_COMPLETE')) {
+      setTimeout(() => {
+        send({ jsonrpc:'2.0', id, result:{turn:{id:turnId}} });
+        send({ jsonrpc:'2.0', method:'turn/completed', params:{turn:{id:turnId, status:'completed'}} });
+      }, 300);
+      return;
+    }
     if (text.includes('DELAYED')) {
       busy = turnId;
       setTimeout(() => {

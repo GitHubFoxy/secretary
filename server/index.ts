@@ -136,7 +136,7 @@ const server = Bun.serve({
         if (cmd.type === 'read') { const s = session(cmd.id); socket.send(JSON.stringify({type:'history', id:cmd.id, events:s.recentChatEvents(), queue:s.queued()})); }
         if (cmd.type === 'send') { session(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true); if (cmd.requestId) socket.send(JSON.stringify({type:'sent', requestId:cmd.requestId})); }
         if (cmd.type === 'stop') session(cmd.id).stop();
-        if (cmd.type === 'interrupt') session(cmd.id).interrupt();
+        if (cmd.type === 'interrupt') { const accepted = session(cmd.id).interrupt(cmd.requestId); if (cmd.requestId) socket.send(JSON.stringify({type:'interrupt_ack', sessionId:cmd.id, requestId:cmd.requestId, accepted})); }
         if (cmd.type === 'rename') { session(cmd.id).setName(cmd.name); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
         if (cmd.type === 'delete') { const s = session(cmd.id); s.delete(); sessions.delete(s.id); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
         if (cmd.type === 'create') { const s = create(cmd.harness, cmd.model, cmd.folder); socket.send(JSON.stringify({type:'created', id:s.id})); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }

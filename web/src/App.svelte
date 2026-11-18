@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { createConnection } from './connection.js';
+  import { createInterruptFeedback } from './interrupt-feedback.js';
   import { createUpdateChecker } from './updates.js';
   import { keyboardInset } from './viewport.js';
   import { visibleMessage, userMessage, queuedMessage, keyedMessages } from './messages.js';
@@ -17,6 +18,8 @@
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], pendingSend = null;
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   let agentsOriginal = '', agentsSaving = false;
+  let interruptStates = {};
+  const interruptFeedback = createInterruptFeedback({onChange: (id, state) => { interruptStates = {...interruptStates, [id]:state}; }});
   const updates = createUpdateChecker({
     currentVersion: __SECRETARY_BUILD_ID__,
     fetchVersion: async () => {
@@ -24,13 +27,13 @@
       if (!response.ok) throw new Error('Version unavailable');
       return (await response.json()).version;
     },
-    isBusy: () => Boolean(message || images.length || pendingSend || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
+    isBusy: () => Boolean(message || images.length || pendingSend || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
     reload: () => location.reload(),
   });
   const connection = createConnection({
     url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`,
     onOpen: () => { connected = true; select(selected); updates.check(); },
-    onClose: () => { connected = false; if (pendingSend) { pendingSend = null; error = 'Соединение прервалось до подтверждения отправки. Проверьте историю перед повторной отправкой.'; } },
+    onClose: () => { connected = false; interruptFeedback.disconnect(); if (pendingSend) { pendingSend = null; error = 'Соединение прервалось до подтверждения отправки. Проверьте историю перед повторной отправкой.'; } },
     onMessage: handleMessage,
   });
   const send = value => connection.send(value);
@@ -45,9 +48,16 @@
     else if (msg.type === 'event') { if (msg.sessionId === selected) events = [...events, msg.event]; refresh(); }
     if (msg.type === 'created') { select(msg.id); settingsOpen = false; }
     if (msg.type === 'sent' && pendingSend?.id === msg.requestId) { if (message === pendingSend.text && images === pendingSend.images) { message = ''; images = []; } pendingSend = null; }
-    if (msg.type === 'error') { error = msg.message; if (pendingSend?.id === msg.requestId) pendingSend = null; }
+    if (msg.type === 'interrupt_ack') interruptFeedback.ack(msg.sessionId, msg.requestId, msg.accepted);
+    if (msg.type === 'event' && msg.event.type === 'interrupt_result') interruptFeedback.result(msg.sessionId, msg.event.requestId, msg.event.outcome);
+    if (msg.type === 'error') {
+      const interrupted = Object.entries(interruptStates).find(([, state]) => state?.requestId === msg.requestId);
+      if (interrupted) interruptFeedback.fail(Number(interrupted[0]), msg.requestId, msg.message);
+      else error = msg.message;
+      if (pendingSend?.id === msg.requestId) pendingSend = null;
+    }
   }
-  function submit(immediate = false) { if (!connected || pendingSend || (!message.trim() && !images.length)) return; const id = crypto.randomUUID(); pendingSend = {id, text:message, images}; send({type:'send',id:selected,text:message,images,immediate,requestId:id}); }
+  function submit(immediate = false) { if (!connected || pendingSend || (!message.trim() && !images.length)) return; const id = crypto.randomUUID(); pendingSend = {id, text:message, images}; if (!interruptStates[selected]?.pending) interruptFeedback.clear(selected); send({type:'send',id:selected,text:message,images,immediate,requestId:id}); }
   function saveSettings() {
     const s = sessions.find(s => s.id === selected);
     if (!s) return;
@@ -55,7 +65,13 @@
     send({type:'settings', id:selected, harness, model, reasoning}); settingsOpen = false;
   }
   function stop() { send({type:'stop', id:selected}); }
-  function interrupt() { send({type:'interrupt', id:selected}); }
+  function interrupt() {
+    if (!connected || interruptStates[selected]?.pending) return;
+    const id = selected, requestId = crypto.randomUUID();
+    interruptFeedback.start(id, requestId);
+    try { if (!send({type:'interrupt', id, requestId})) interruptFeedback.fail(id, requestId, 'нет соединения'); }
+    catch { interruptFeedback.fail(id, requestId, 'нет соединения'); }
+  }
   function removeSession(session) {
     if (!connected || session.id === 1) return;
     if (!confirm(`Удалить сессию #${session.id} и её историю? Работающий агент будет остановлен. Дочерние сессии сохранятся.`)) return;
@@ -123,7 +139,7 @@
     document.addEventListener('focusin', update);
     document.addEventListener('focusout', update);
     update();
-    return () => { clearInterval(updateTimer); updates.stop(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); window.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
+    return () => { clearInterval(updateTimer); updates.stop(); interruptFeedback.dispose(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); window.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
   });
 </script>
 
@@ -188,7 +204,8 @@
       <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
         <div class="pointer-events-auto">
-          <Composer bind:value={message} bind:images disabled={!connected || !!pendingSend} stopDisabled={!connected} running={current?.status === 'running'} onsubmit={submit} oninterrupt={interrupt} />
+          {#if interruptStates[selected]?.message}<p role="status" aria-live="polite" class="mx-auto max-w-3xl px-4 text-sm text-neutral-400">{interruptStates[selected].message}</p>{/if}
+          <Composer bind:value={message} bind:images disabled={!connected || !!pendingSend} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} onsubmit={submit} oninterrupt={interrupt} />
         </div>
       </div>
     </div>

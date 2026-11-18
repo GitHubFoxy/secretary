@@ -27,6 +27,30 @@ Session.create('opus', dir);
 Session.interruptDeadlineMs = 5000;
 
 const scenarios: Record<string, () => Promise<void>> = {
+  async 'interrupt-feedback-completed'() {
+    const s = Session.create('gpt', dir, 'codex');
+    const seen: any[] = [];
+    s.onEvent(event => seen.push(event));
+    s.send('RACE_COMPLETE проверка');
+    await until(() => existsSync(process.env.FAKE_LOG!) && calls().some(call => call.received === 'RACE_COMPLETE проверка'), 'Codex получил запрос');
+    expect(s.interrupt('request-complete')).toBe(true);
+    await until(() => seen.some(event => event.type === 'interrupt_result'), 'ход завершился');
+    expect(seen.filter(event => event.type === 'interrupt_result')).toEqual([{type:'interrupt_result', requestId:'request-complete', outcome:'completed'}]);
+  },
+  async 'interrupt-feedback'() {
+    const s = Session.create('gpt', dir, 'codex');
+    const seen: any[] = [];
+    s.onEvent(event => seen.push(event));
+    expect(s.interrupt('idle-request')).toBe(false);
+    s.send('DELAYED обратная связь');
+    await until(() => existsSync(process.env.FAKE_LOG!) && calls().some(call => call.received === 'DELAYED обратная связь'), 'Codex получил запрос');
+    expect(s.interrupt('request-1')).toBe(true);
+    expect(s.interrupt('request-2')).toBe(false);
+    expect(seen.some(event => event.type === 'interrupt_result')).toBe(false);
+    await until(() => seen.some(event => event.type === 'interrupt_result'), 'результат прерывания');
+    expect(seen.filter(event => event.type === 'interrupt_result')).toEqual([{type:'interrupt_result', requestId:'request-1', outcome:'ended'}]);
+    expect(s.info.status).toBe('idle');
+  },
   async 'running-before-adapter-event'() {
     const s = Session.create('gpt', dir, 'codex');
     const seen: any[] = [];

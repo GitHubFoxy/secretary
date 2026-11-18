@@ -53,6 +53,7 @@ export class Session {
   // Ход прерван ради срочного сообщения: после прерывания запускаем очередь без статуса idle и без отчёта родителю.
   private restarting = false;
   private userInterrupted = false;
+  private interruptRequestId?: string;
   private activeItems: Pending[] = [];
   private dispatched = false;
   // Функция прерывания текущего хода; появляется, когда адаптер уже начал ход.
@@ -112,10 +113,12 @@ export class Session {
   events() { return (db.query('SELECT json FROM events WHERE session_id = ? ORDER BY rowid').all(this.id) as { json: string }[]).map(row => JSON.parse(row.json)); }
   recentChatEvents(limit = 10) { return recentChatEvents(db, this.id, limit); }
   private killProcess() { if (!this.process) return; try { if (process.platform === 'linux') killTree(this.process.pid); else this.process.kill(); } catch { this.process.kill(); } }
-  interrupt() {
-    if (!this.running || this.userInterrupted) return;
+  interrupt(requestId?: string) {
+    if (!this.running || this.userInterrupted) return false;
     this.userInterrupted = true;
+    this.interruptRequestId = requestId;
     this.interruptTurn();
+    return true;
   }
   private finishInterruptedItems() {
     const unresolved = this.activeItems.filter(item => this.queue.includes(item));
@@ -323,7 +326,15 @@ export class Session {
     } catch (error) {
       // Ошибку прерывания (например, процесс убит по дедлайну) не показываем: ход запускается заново.
       if (!this.restarting) this.emit({ type: 'error', message: String(error) });
-      this.finish(false, delivered);
+      const child = this.process;
+      try { this.killProcess(); } catch {}
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const terminationConfirmed = !child || await Promise.race([
+        child.exited.then(() => true, () => false),
+        new Promise<boolean>(resolve => { timer = setTimeout(() => resolve(false), 1000); }),
+      ]);
+      if (timer) clearTimeout(timer);
+      this.finish(false, delivered, terminationConfirmed);
     }
   }
 
@@ -333,22 +344,26 @@ export class Session {
   }
 
   // delivered: сообщения хода дошли до адаптера (даже если ход завершился ошибкой).
-  private finish(completed: boolean, delivered = false) {
+  private finish(completed: boolean, delivered = false, terminationConfirmed = true) {
     const unresolved = this.userInterrupted || (this.dispatched && !delivered) ? this.finishInterruptedItems() : 0;
     // Прерванный ради срочного сообщения ход не считается завершённым: отчёт родителю не уходит, статус остаётся running.
     const restart = this.restarting && !completed && this.queue.length > 0;
     const userInterrupted = this.userInterrupted;
+    const interruptRequestId = this.interruptRequestId;
     this.userInterrupted = false;
+    this.interruptRequestId = undefined;
     this.activeItems = [];
     this.process = undefined;
     this.restarting = false;
     this.interruptCurrent = undefined;
     if (this.deleted) { this.running = false; return; }
     db.query('UPDATE sessions SET process_identity = NULL WHERE id = ?').run(this.id);
-    if (restart) { this.running = false; void this.next(); return; }
-    const status = this.stopped ? 'stopped' : completed || userInterrupted ? 'idle' : 'interrupted';
+    const reportInterrupt = () => { if (interruptRequestId) this.publish({type:'interrupt_result', requestId:interruptRequestId, outcome:!terminationConfirmed ? 'unknown' : completed ? 'completed' : 'ended'}); };
+    if (restart) { reportInterrupt(); this.running = false; void this.next(); return; }
+    const status = this.stopped ? 'stopped' : completed || (userInterrupted && terminationConfirmed) ? 'idle' : 'interrupted';
     db.query('UPDATE sessions SET status = ? WHERE id = ?').run(status, this.row.id);
     this.emit({ type: 'status', status });
+    reportInterrupt();
     if (completed && !userInterrupted && this.row.parent_id) this.onComplete?.(this.lastAnswer);
     this.running = false;
     // После неопределённой доставки продолжаем очередь, но не повторяем само сообщение.

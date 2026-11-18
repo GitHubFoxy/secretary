@@ -122,3 +122,11 @@ test('до отправки turn/start сообщение действитель
 test('статус running публикуется до первого события зависшего адаптера', () => {
   expect(runScenario('running-before-adapter-event')).toEqual({ exitCode: 0, stderr: '' });
 }, 30_000);
+
+test('запрос прерывания подтверждается сразу, результат приходит после завершения хода', () => {
+  expect(runScenario('interrupt-feedback')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
+
+test('естественное завершение хода не выдаётся за успешную отмену', () => {
+  expect(runScenario('interrupt-feedback-completed')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
