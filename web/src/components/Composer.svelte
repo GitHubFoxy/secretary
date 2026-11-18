@@ -85,7 +85,12 @@
         <Icon name="queue" class="size-5" />
       </button>
     {/if}
-    {#if !running || value.trim() || images.length}
+    {#if !running && !value.trim() && !images.length}
+    <button type="button" disabled aria-label="Голосовой ввод пока недоступен" title="Голосовой ввод пока недоступен" class="grid size-10 shrink-0 cursor-not-allowed place-items-center rounded-xl bg-neutral-800 text-neutral-500">
+      <Icon name="microphone" class="size-5" />
+    </button>
+    {/if}
+    {#if value.trim() || images.length}
     <button
       class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-xl bg-neutral-100 text-neutral-950 transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-30"
       disabled={disabled || (!value.trim() && !images.length)}
