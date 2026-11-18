@@ -14,7 +14,8 @@ test('скрытие и восстановление сохраняют данн
       expect(() => main.setHidden(true)).toThrow();
       const s = Session.create('opus', '.');
       const internal = Session.create('opus', '/home/user/.secretary/agents');
-      expect(() => internal.setHidden(true)).toThrow();
+      internal.setHidden(true);
+      expect(internal.info.hidden).toBe(1);
       db.query('UPDATE sessions SET process_identity = ? WHERE id = ?').run('unknown:identity', s.id);
       db.query('INSERT INTO pending_messages (session_id,urgent,text,images) VALUES (?,0,?,?)').run(s.id,'queued','[]');
       s.emit({type:'user',message:{content:'history'}});
@@ -38,6 +39,10 @@ test('скрытие и восстановление сохраняют данн
       const s = Session.get(2);
       s.setHidden(false);
       expect(s.info.hidden).toBe(0);
+      const internal = Session.get(3);
+      expect(internal.info.hidden).toBe(1);
+      internal.setHidden(false);
+      expect(internal.info.hidden).toBe(0);
       db.close();
     `], {cwd:dir, stdout:'pipe', stderr:'pipe'});
     expect({code:restore.exitCode, stderr:restore.stderr.toString()}).toEqual({code:0, stderr:''});

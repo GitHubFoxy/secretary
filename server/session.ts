@@ -104,7 +104,6 @@ export class Session {
   get id() { return this.row.id; }
   setHidden(hidden: boolean) {
     if (this.id === 1 || typeof hidden !== 'boolean') throw new Error('Недопустимое изменение видимости сессии');
-    if (hidden && this.info.folder.split('/').includes('.secretary')) throw new Error('Внутреннюю сессию нельзя скрыть');
     db.query('UPDATE sessions SET hidden = ? WHERE id = ?').run(hidden ? 1 : 0, this.id);
   }
   private recordProcess(child: any) {
