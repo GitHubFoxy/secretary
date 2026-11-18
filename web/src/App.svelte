@@ -1,7 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { createConnection } from './connection.js';
-  import { createInterruptFeedback } from './interrupt-feedback.js';
+  import { createInterruptFeedback, interruptSessionFor } from './interrupt-feedback.js';
   import { createUpdateChecker } from './updates.js';
   import { keyboardInset } from './viewport.js';
   import { visibleMessage, userMessage, queuedMessage, keyedMessages } from './messages.js';
@@ -51,8 +51,8 @@
     if (msg.type === 'interrupt_ack') interruptFeedback.ack(msg.sessionId, msg.requestId, msg.accepted);
     if (msg.type === 'event' && msg.event.type === 'interrupt_result') interruptFeedback.result(msg.sessionId, msg.event.requestId, msg.event.outcome);
     if (msg.type === 'error') {
-      const interrupted = Object.entries(interruptStates).find(([, state]) => state?.requestId === msg.requestId);
-      if (interrupted) interruptFeedback.fail(Number(interrupted[0]), msg.requestId, msg.message);
+      const interrupted = interruptSessionFor(interruptStates, msg.requestId);
+      if (interrupted !== null) interruptFeedback.fail(interrupted, msg.requestId, msg.message);
       else error = msg.message;
       if (pendingSend?.id === msg.requestId) pendingSend = null;
     }

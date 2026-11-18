@@ -1,3 +1,9 @@
+export function interruptSessionFor(states, requestId) {
+  if (typeof requestId !== 'string' || !requestId) return null;
+  const match = Object.entries(states).find(([, state]) => state?.requestId === requestId);
+  return match ? Number(match[0]) : null;
+}
+
 export function createInterruptFeedback({onChange, schedule = setTimeout, cancel = clearTimeout}) {
   const entries = new Map();
   function update(id, entry) { entries.set(id, entry); onChange(id, entry); }
