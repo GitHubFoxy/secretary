@@ -55,6 +55,7 @@
     send({type:'settings', id:selected, harness, model, reasoning}); settingsOpen = false;
   }
   function stop() { send({type:'stop', id:selected}); }
+  function interrupt() { send({type:'interrupt', id:selected}); }
   function removeSession(session) {
     if (!connected || session.id === 1) return;
     if (!confirm(`Удалить сессию #${session.id} и её историю? Работающий агент будет остановлен. Дочерние сессии сохранятся.`)) return;
@@ -186,7 +187,7 @@
       <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
         <div class="pointer-events-auto">
-          <Composer bind:value={message} bind:images disabled={!connected || !!pendingSend} running={current?.status === 'running'} onsubmit={submit} />
+          <Composer bind:value={message} bind:images disabled={!connected || !!pendingSend} stopDisabled={!connected} running={current?.status === 'running'} onsubmit={submit} oninterrupt={interrupt} />
         </div>
       </div>
     </div>

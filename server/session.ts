@@ -51,6 +51,8 @@ export class Session {
   private lastAnswer = '';
   // Ход прерван ради срочного сообщения: после прерывания запускаем очередь без статуса idle и без отчёта родителю.
   private restarting = false;
+  private userInterrupted = false;
+  private activeItems: Pending[] = [];
   // Функция прерывания текущего хода; появляется, когда адаптер уже начал ход.
   private interruptCurrent?: () => void;
   onComplete?: (answer: string) => void;
@@ -98,6 +100,25 @@ export class Session {
   events() { return (db.query('SELECT json FROM events WHERE session_id = ? ORDER BY rowid').all(this.id) as { json: string }[]).map(row => JSON.parse(row.json)); }
   recentChatEvents(limit = 10) { return recentChatEvents(db, this.id, limit); }
   private killProcess() { if (!this.process) return; try { if (process.platform === 'linux') killTree(this.process.pid); else this.process.kill(); } catch { this.process.kill(); } }
+  interrupt() {
+    if (!this.running || this.userInterrupted) return;
+    this.userInterrupted = true;
+    const cancelled = this.activeItems.filter(item => this.queue.includes(item));
+    if (cancelled.length) {
+      const time = new Date().toISOString();
+      db.transaction(() => {
+        for (const item of cancelled) {
+          db.query('DELETE FROM pending_messages WHERE id = ?').run(item.id);
+          this.write({ type: 'cancelled', text: item.text, images: item.images }, time);
+        }
+      })();
+      this.queue = this.queue.filter(item => !cancelled.includes(item));
+      this.urgent = this.queue.filter(item => item.urgent).length;
+      for (const item of cancelled) this.publish({ type: 'cancelled', text: item.text, images: item.images });
+      this.publishQueue();
+    }
+    this.interruptTurn();
+  }
   // Остановка отменяет сообщения, которые ещё не дошли до адаптера. Они остаются в истории как «Не отправлено», а не исчезают молча.
   stop() {
     this.stopped = true;
@@ -218,6 +239,7 @@ export class Session {
   private async next() {
     const items = this.peek();
     if (!items.length) return;
+    this.activeItems = items;
     // Несколько срочных сообщений склеиваются в один ход, но в истории остаются отдельными сообщениями.
     const text = items.map(item => item.text).filter(Boolean).join('\n\n');
     const images = items.flatMap(item => item.images);
@@ -289,16 +311,19 @@ export class Session {
   private finish(completed: boolean, delivered = false) {
     // Прерванный ради срочного сообщения ход не считается завершённым: отчёт родителю не уходит, статус остаётся running.
     const restart = this.restarting && !completed && this.queue.length > 0;
+    const userInterrupted = this.userInterrupted;
+    this.userInterrupted = false;
+    this.activeItems = [];
     this.process = undefined;
     this.restarting = false;
     this.interruptCurrent = undefined;
     if (this.deleted) { this.running = false; return; }
     db.query('UPDATE sessions SET process_identity = NULL WHERE id = ?').run(this.id);
     if (restart) { this.running = false; void this.next(); return; }
-    const status = this.stopped ? 'stopped' : completed ? 'idle' : 'interrupted';
+    const status = this.stopped ? 'stopped' : completed || userInterrupted ? 'idle' : 'interrupted';
     db.query('UPDATE sessions SET status = ? WHERE id = ?').run(status, this.row.id);
     this.emit({ type: 'status', status });
-    if (completed && this.row.parent_id) this.onComplete?.(this.lastAnswer);
+    if (completed && !userInterrupted && this.row.parent_id) this.onComplete?.(this.lastAnswer);
     this.running = false;
     // Очередь продолжается после успешного хода и после хода с ошибкой, если сообщение до адаптера дошло.
     // Недоставленное сообщение остаётся в очереди до следующей отправки или перезапуска, чтобы сбойный запуск не повторялся по кругу.

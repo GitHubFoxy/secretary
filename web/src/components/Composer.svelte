@@ -1,7 +1,7 @@
 <script>
   import Icon from './Icon.svelte';
   // onsubmit(immediate): true — прервать идущий ход и отправить сразу (правая кнопка и Enter), false — добавить в очередь (левая кнопка во время хода).
-  let { value = $bindable(''), images = $bindable([]), disabled = false, running = false, onsubmit } = $props();
+  let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, onsubmit, oninterrupt } = $props();
   let imageError = $state('');
   let area = $state();
 
@@ -62,6 +62,16 @@
     {#if running}
       <button
         type="button"
+        class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-xl bg-neutral-100 text-neutral-950 transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-30"
+        disabled={stopDisabled}
+        aria-label="Остановить текущий ход"
+        title="Остановить текущий ход"
+        onclick={oninterrupt}
+      ><Icon name="stop" class="size-5" /></button>
+    {/if}
+    {#if running && (value.trim() || images.length)}
+      <button
+        type="button"
         class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-xl border border-neutral-700 text-neutral-100 transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-30"
         disabled={disabled || (!value.trim() && !images.length)}
         aria-label="Добавить в очередь"
@@ -71,6 +81,7 @@
         <Icon name="queue" class="size-5" />
       </button>
     {/if}
+    {#if !running || value.trim() || images.length}
     <button
       class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-xl bg-neutral-100 text-neutral-950 transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-30"
       disabled={disabled || (!value.trim() && !images.length)}
@@ -79,5 +90,6 @@
     >
       <Icon name="send" class="size-5" />
     </button>
+    {/if}
   </div>
 </form>

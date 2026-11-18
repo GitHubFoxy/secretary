@@ -1,7 +1,7 @@
 // Сценарии для pending.test.ts. Запускаются отдельным процессом в каталоге с пустой базой (secretary.sqlite) и фейковыми claude/codex в PATH.
 // Сессия 1 всегда служебная и не используется: у секретаря другие правила запуска.
 import { expect } from 'bun:test';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Session, db } from '../session';
 
@@ -27,6 +27,19 @@ Session.create('opus', dir);
 Session.interruptDeadlineMs = 5000;
 
 const scenarios: Record<string, () => Promise<void>> = {
+  async 'interrupt-claude'() { await interruptScenario('claude'); },
+  async 'interrupt-codex'() { await interruptScenario('codex'); },
+  async 'interrupt-codex-before-start'() {
+    Session.interruptDeadlineMs = 500;
+    const s = Session.create('gpt', dir, 'codex');
+    s.send('HANG старт');
+    await until(() => existsSync(process.env.FAKE_LOG!) && calls().some(call => call.received === 'HANG старт'), 'Codex ожидает turn/start');
+    s.send('после отмены');
+    s.interrupt();
+    await until(() => answered(s, 'после отмены') && s.info.status === 'idle', 'следующее сообщение выполнено');
+    expect(calls().filter(call => call.received === 'HANG старт')).toHaveLength(1);
+    expect(s.events().some(event => event.type === 'cancelled' && event.text === 'HANG старт')).toBe(true);
+  },
   // Срочное сообщение прерывает долгий ход Claude, контекст сохраняется (--resume), обычное сообщение уходит после срочного.
   async 'claude-urgent'() {
     const s = Session.create('opus', dir, 'claude');
@@ -164,6 +177,26 @@ const scenarios: Record<string, () => Promise<void>> = {
     expect(seen.some(event => event.type === 'cancelled' && event.text === 'не отправлять')).toBe(true);
   },
 };
+
+async function interruptScenario(harness: string) {
+  const s = Session.create(harness === 'claude' ? 'opus' : 'gpt', dir, harness);
+  s.send('LONG задача');
+  await until(() => started(s), 'ход начался');
+  s.send('очередь');
+  s.interrupt();
+  await until(() => answered(s, 'очередь') && s.info.status === 'idle', 'очередь продолжилась');
+  s.send('после остановки');
+  await until(() => answered(s, 'после остановки') && s.info.status === 'idle', 'следующий ход завершился');
+  expect(userTexts(s)).toEqual(['LONG задача', 'очередь', 'после остановки']);
+  const call = calls().find(call => call.received === 'после остановки');
+  expect(harness === 'claude' ? call.resume : call.thread).toBe(harness === 'claude' ? 'claude-session' : 'codex-thread');
+  s.send('LONG снова');
+  await until(() => s.queued().length === 0 && s.info.status === 'running', 'второй долгий ход начался');
+  s.interrupt();
+  await until(() => s.info.status === 'idle', 'остановка без очереди');
+  s.send('продолжить');
+  await until(() => answered(s, 'продолжить') && s.info.status === 'idle', 'продолжение после остановки');
+}
 
 const run = scenarios[scenario];
 if (!run) throw new Error(`Неизвестный сценарий: ${scenario}`);

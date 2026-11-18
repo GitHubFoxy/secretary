@@ -78,3 +78,13 @@ test('ошибка хода не останавливает очередь', () 
 test('остановка очищает очередь, в том числе в базе', () => {
   expect(runScenario('stop-clears-pending')).toEqual({ exitCode: 0, stderr: '' });
 }, 30_000);
+
+for (const harness of ['claude', 'codex']) {
+  test(`прерывание хода ${harness} сохраняет очередь и позволяет продолжить сессию`, () => {
+    expect(runScenario(`interrupt-${harness}`)).toEqual({ exitCode: 0, stderr: '' });
+  }, 30_000);
+}
+
+test('прерывание до начала хода не отправляет отменённое сообщение повторно', () => {
+  expect(runScenario('interrupt-codex-before-start')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
