@@ -14,7 +14,7 @@ test('session deletion persists, preserves children, and ignores late callbacks'
       expect(secretary.info.name).toBe('Главный чат');
       expect(() => secretary.setName('   ')).toThrow();
       expect(() => secretary.setName('x'.repeat(101))).toThrow();
-      expect(() => secretary.delete()).toThrow('Cannot delete secretary');
+      await expect(secretary.delete()).rejects.toThrow('Cannot delete secretary');
       const parent = Session.create('opus', '.');
       const child = Session.create('opus', '.', 'claude', parent.id, 'Проверка', 'high');
       expect(Session.get(child.id).info).toMatchObject({name:'Проверка', reasoning:'high'});
@@ -30,7 +30,7 @@ test('session deletion persists, preserves children, and ignores late callbacks'
       expect(Session.get(child.id).info).toMatchObject({name:'Проверка', reasoning:null});
       parent.emit({type:'user', message:{content:'history'}});
       child.emit({type:'user', message:{content:'keep'}});
-      parent.delete();
+      await parent.delete();
       expect(Session.get(parent.id)).toBeNull();
       expect(parent.events()).toEqual([]);
       expect(child.info.parent_id).toBeNull();
@@ -42,12 +42,12 @@ test('session deletion persists, preserves children, and ignores late callbacks'
       active.queue = ['queued'];
       let reported = false;
       active.onComplete = () => { reported = true; };
-      active.delete();
+      await active.delete();
       await worker.exited;
       expect(worker.signalCode).toBe('SIGKILL');
       expect(active.queue).toEqual([]);
       const replacement = Session.create('opus', '.');
-      active.delete();
+      await active.delete();
       active.emit({type:'result', result:'late'});
       active.finish(true);
       expect(replacement.info.status).toBe('idle');

@@ -11,6 +11,7 @@ db.run(`CREATE TABLE IF NOT EXISTS sessions (
   folder TEXT NOT NULL, harness_session_id TEXT, status TEXT NOT NULL
 )`);
 try { db.run('ALTER TABLE sessions ADD COLUMN process_identity TEXT'); } catch {}
+try { db.run("ALTER TABLE sessions ADD COLUMN deletion_processes TEXT"); } catch {}
 try { db.run('ALTER TABLE sessions ADD COLUMN name TEXT'); } catch {}
 try { db.run('ALTER TABLE sessions ADD COLUMN reasoning TEXT'); } catch {}
 db.run(`CREATE TABLE IF NOT EXISTS events (session_id INTEGER NOT NULL, json TEXT NOT NULL, time TEXT NOT NULL)`);
@@ -19,9 +20,35 @@ db.run('CREATE INDEX IF NOT EXISTS events_session_id ON events(session_id)');
 db.run(`CREATE TABLE IF NOT EXISTS pending_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, urgent INTEGER NOT NULL, text TEXT NOT NULL, images TEXT NOT NULL)`);
 try { db.run('ALTER TABLE pending_messages ADD COLUMN in_flight INTEGER NOT NULL DEFAULT 0'); } catch {}
 
-export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string; name: string | null; reasoning: string | null; process_identity?: string | null };
+export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string; name: string | null; reasoning: string | null; process_identity?: string | null; deletion_processes?: string | null };
 
 type Pending = { id: number; text: string; images: Image[]; urgent: boolean };
+
+// shortcut: /proc cannot find already-reparented or concurrently forked children; use launch-time containment for a complete guarantee.
+function processTree(identity: string): string[] {
+  const state = processState(identity);
+  if (state === 'unknown') throw new Error('Не удалось проверить состояние процесса');
+  if (state === 'gone') return [];
+  const byParent = new Map<number, { pid: number; identity: string }[]>();
+  for (const name of readdirSync('/proc')) {
+    if (!/^\d+$/.test(name)) continue;
+    let stat: string;
+    try { stat = readFileSync(`/proc/${name}/stat`, 'utf8'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
+    const end = stat.lastIndexOf(')');
+    const fields = stat.slice(end + 2).split(' ');
+    if (end < 0 || !/^\d+$/.test(fields[1] || '') || !/^\d+$/.test(fields[19] || '')) throw new Error('Не удалось прочитать дерево процессов');
+    const parent = Number(fields[1]);
+    const children = byParent.get(parent) || [];
+    children.push({pid: Number(name), identity: `${name}:${fields[19]}`});
+    byParent.set(parent, children);
+  }
+  if (processState(identity) !== 'matching') throw new Error('Состояние процесса изменилось при чтении дерева');
+  const result = [identity];
+  const visit = (pid: number) => { for (const child of byParent.get(pid) || []) { result.push(child.identity); visit(child.pid); } };
+  visit(Number(identity.split(':')[0]));
+  return result;
+}
 
 function killTree(pid: number) {
   const children = new Map<number, number[]>();
@@ -43,6 +70,7 @@ function killTree(pid: number) {
 export class Session {
   // Сколько ждать ответа адаптера на срочное прерывание, прежде чем убить процесс хода (мс).
   static interruptDeadlineMs = 10_000;
+  static deleteDeadlineMs = 2_000;
   // Срочные сообщения (urgent) всегда стоят впереди обычных, в порядке прихода. urgent — их число.
   private queue: Pending[] = [];
   private urgent = 0;
@@ -50,6 +78,7 @@ export class Session {
   private process: any;
   private stopped = false;
   private deleted = false;
+  private deleting = false;
   private lastAnswer = '';
   // Ход прерван ради срочного сообщения: после прерывания запускаем очередь без статуса idle и без отчёта родителю.
   private restarting = false;
@@ -68,21 +97,23 @@ export class Session {
     this.queue = rows.map(item => ({ id: item.id, text: item.text, images: JSON.parse(item.images), urgent: item.urgent === 1 }));
     this.urgent = this.queue.filter(item => item.urgent).length;
     const identity = row.process_identity;
-    if (identity && processAlive(identity)) {
+    const deletingProcesses = row.deletion_processes ? JSON.parse(row.deletion_processes) as string[] : [];
+    if ((identity && processAlive(identity)) || deletingProcesses.some(item => processAlive(item))) {
       this.running = true;
       this.awaitingExit = true;
       const timer = setInterval(() => {
         if (this.deleted) { clearInterval(timer); return; }
-        if (processAlive(identity)) return;
+        if (deletingProcesses.length && this.info?.deletion_processes !== row.deletion_processes) { clearInterval(timer); return; }
+        if ((identity && processAlive(identity)) || deletingProcesses.some(item => processAlive(item)) || this.deleting) return;
         clearInterval(timer);
         this.awaitingExit = false;
         this.running = false;
-        db.query('UPDATE sessions SET process_identity = NULL WHERE id = ?').run(this.id);
+        db.query('UPDATE sessions SET process_identity = NULL, deletion_processes = NULL WHERE id = ?').run(this.id);
         if (this.stopped) this.finish(false);
         else if (this.queue.length) void this.next();
       }, 250);
       timer.unref();
-    } else if (identity) db.query('UPDATE sessions SET process_identity = NULL WHERE id = ?').run(this.id);
+    } else if (identity || deletingProcesses.length) db.query('UPDATE sessions SET process_identity = NULL, deletion_processes = NULL WHERE id = ?').run(this.id);
   }
 
   static create(model: string, folder: string, harness = 'claude', parentId: number | null = null, name: string | null = null, reasoning: string | null = null) {
@@ -127,7 +158,7 @@ export class Session {
   recentChatEvents(limit = 10) { return recentChatEvents(db, this.id, limit); }
   private killProcess() { if (!this.process) return; try { if (process.platform === 'linux') killTree(this.process.pid); else this.process.kill(); } catch { this.process.kill(); } }
   interrupt(requestId?: string) {
-    if (!this.running || this.userInterrupted || this.awaitingExit) return false;
+    if (!this.running || this.deleting || this.userInterrupted || this.awaitingExit) return false;
     this.userInterrupted = true;
     this.interruptRequestId = requestId;
     this.interruptTurn();
@@ -167,21 +198,43 @@ export class Session {
     this.killProcess();
     const identity = this.awaitingExit && !this.process ? this.info.process_identity : null;
     if (identity && processState(identity) === 'matching') killTree(Number(identity.split(':')[0]));
-    if (!this.running) this.finish(false);
+    if (!this.running && !this.process && !this.info.process_identity) this.finish(false);
   }
-  delete() {
+  async delete() {
     if (this.deleted) return;
     if (this.id === 1) throw new Error('Cannot delete secretary');
-    if (this.awaitingExit) throw new Error('Нельзя удалить сессию до завершения прежнего процесса');
-    this.stop();
-    db.transaction(() => {
-      db.query('UPDATE sessions SET parent_id = NULL WHERE parent_id = ?').run(this.id);
-      db.query('DELETE FROM events WHERE session_id = ?').run(this.id);
-      db.query('DELETE FROM sessions WHERE id = ?').run(this.id);
-    })();
-    this.deleted = true;
-    this.listeners = [];
-    this.onComplete = undefined;
+    if (this.deleting) throw new Error('Удаление сессии уже выполняется');
+    this.deleting = true;
+    try {
+      const row = this.info;
+      const identity = row.process_identity;
+      if (this.process && !identity) throw new Error('Не удалось подтвердить завершение процесса; сессия не удалена');
+      const known = row.deletion_processes ? JSON.parse(row.deletion_processes) as string[] : [];
+      if (identity && processState(identity) === 'unknown') throw new Error('Не удалось подтвердить завершение процесса; сессия не удалена');
+      const processes = [...new Set([...known, ...(identity ? processTree(identity) : [])])];
+      db.query('UPDATE sessions SET deletion_processes = ? WHERE id = ?').run(JSON.stringify(processes), this.id);
+      this.stopped = true;
+      for (const item of processes.slice().reverse()) {
+        if (processState(item) === 'matching') {
+          try { process.kill(Number(item.split(':')[0]), 'SIGKILL'); } catch {}
+        }
+      }
+      const deadline = performance.now() + Session.deleteDeadlineMs;
+      while (processes.some(item => processAlive(item)) || (!identity && this.running)) {
+        if (performance.now() >= deadline) throw new Error('Не удалось подтвердить завершение процесса; сессия не удалена');
+        await Bun.sleep(25);
+      }
+      db.transaction(() => {
+        db.query('UPDATE sessions SET parent_id = NULL WHERE parent_id = ?').run(this.id);
+        db.query('DELETE FROM pending_messages WHERE session_id = ?').run(this.id);
+        db.query('DELETE FROM events WHERE session_id = ?').run(this.id);
+        db.query('DELETE FROM sessions WHERE id = ?').run(this.id);
+      })();
+      this.deleted = true;
+      this.queue = [];
+      this.listeners = [];
+      this.onComplete = undefined;
+    } finally { this.deleting = false; }
   }
   switchHarness(harness: string, model: string) { this.row.harness = harness; this.row.model = model; this.row.reasoning = null; this.row.harness_session_id = null; db.query('UPDATE sessions SET harness = ?, model = ?, harness_session_id = NULL, reasoning = NULL WHERE id = ?').run(harness, model, this.id); }
 
@@ -209,6 +262,14 @@ export class Session {
   // Сообщения, которые ещё не дошли до адаптера, по порядку отправки (срочные впереди).
   queued() { return this.queue.map(({ id, text, images, urgent }) => ({ id, text, images, urgent })); }
 
+  private deletionBlocked() {
+    const processes = this.info.deletion_processes;
+    if (!processes) return false;
+    if ((JSON.parse(processes) as string[]).some(item => processAlive(item))) return true;
+    db.query('UPDATE sessions SET process_identity = NULL, deletion_processes = NULL WHERE id = ?').run(this.id);
+    return false;
+  }
+
   // Обычное сообщение ждёт конца хода. Срочное (immediate) прерывает идущий ход и запускается сразу, в той же сессии.
   // Сообщение пишется в базу до возврата: клиент получает подтверждение только для сохранённого сообщения.
   send(text: string, input?: unknown, immediate = false) {
@@ -216,6 +277,8 @@ export class Session {
     const images = validateImages(input);
     if (!text.trim() && !images.length) throw new Error('Сообщение пустое');
     if (this.deleted) throw new Error('Session was deleted');
+    if (this.deleting) throw new Error('Удаление сессии уже выполняется');
+    if (this.deletionBlocked()) throw new Error('Ожидается завершение процессов сессии');
     this.stopped = false;
     immediate = immediate && this.running;
     const saved = db.query('INSERT INTO pending_messages (session_id, urgent, text, images) VALUES (?, ?, ?, ?)').run(this.id, immediate ? 1 : 0, text, JSON.stringify(images));
@@ -356,14 +419,14 @@ export class Session {
 
   // После перезапуска программы подтверждённые, но ещё не начатые сообщения запускаются сразу.
   resumePending() {
-    if (!this.running && !this.deleted && this.queue.length) void this.next();
+    if (!this.running && !this.deleted && !this.deletionBlocked() && this.queue.length) void this.next();
   }
 
   // delivered: сообщения хода дошли до адаптера (даже если ход завершился ошибкой).
   private finish(completed: boolean, delivered = false, terminationConfirmed = true) {
     const unresolved = this.userInterrupted || (this.dispatched && !delivered) ? this.finishInterruptedItems() : 0;
     // Прерванный ради срочного сообщения ход не считается завершённым: отчёт родителю не уходит, статус остаётся running.
-    const restart = this.restarting && !completed && this.queue.length > 0;
+    const restart = !this.stopped && !this.deleting && this.restarting && !completed && this.queue.length > 0;
     const userInterrupted = this.userInterrupted;
     const interruptRequestId = this.interruptRequestId;
     this.userInterrupted = false;
@@ -384,14 +447,14 @@ export class Session {
         this.awaitingExit = false;
         this.process = undefined;
         this.running = false;
-        db.query('UPDATE sessions SET process_identity = NULL WHERE id = ?').run(this.id);
+        if (!this.deleting && !this.info.deletion_processes) db.query('UPDATE sessions SET process_identity = NULL WHERE id = ?').run(this.id);
         if (this.stopped) this.finish(false);
         else if (this.queue.length) void this.next();
       }).catch(() => {});
       return;
     }
     this.process = undefined;
-    db.query('UPDATE sessions SET process_identity = NULL WHERE id = ?').run(this.id);
+    if (!this.deleting && !this.info.deletion_processes) db.query('UPDATE sessions SET process_identity = NULL WHERE id = ?').run(this.id);
     if (restart) { reportInterrupt(); this.running = false; void this.next(); return; }
     const status = this.stopped ? 'stopped' : completed || (userInterrupted && terminationConfirmed) ? 'idle' : 'interrupted';
     db.query('UPDATE sessions SET status = ? WHERE id = ?').run(status, this.row.id);
@@ -401,6 +464,6 @@ export class Session {
     this.running = false;
     // После неопределённой доставки продолжаем очередь, но не повторяем само сообщение.
     // Сбой до отправки оставляет его в очереди, чтобы не повторять неудачный запуск по кругу.
-    if (!this.stopped && (completed || delivered || (this.dispatched && unresolved)) && this.queue.length) void this.next();
+    if (!this.stopped && !this.deleting && (completed || delivered || (this.dispatched && unresolved)) && this.queue.length) void this.next();
   }
 }

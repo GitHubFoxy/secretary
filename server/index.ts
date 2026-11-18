@@ -141,7 +141,7 @@ const server = Bun.serve({
         if (cmd.type === 'stop') session(cmd.id).stop();
         if (cmd.type === 'interrupt') { const accepted = session(cmd.id).interrupt(cmd.requestId); if (cmd.requestId) socket.send(JSON.stringify({type:'interrupt_ack', sessionId:cmd.id, requestId:cmd.requestId, accepted})); }
         if (cmd.type === 'rename') { session(cmd.id).setName(cmd.name); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
-        if (cmd.type === 'delete') { const s = session(cmd.id); s.delete(); sessions.delete(s.id); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
+        if (cmd.type === 'delete') { const s = session(cmd.id); await s.delete(); if (sessions.get(s.id) === s) sessions.delete(s.id); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
         if (cmd.type === 'create') { const s = create(cmd.harness, cmd.model, cmd.folder); socket.send(JSON.stringify({type:'created', id:s.id})); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
         if (cmd.type === 'settings') {
           const s = session(cmd.id); const before = s.info;
