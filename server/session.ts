@@ -12,6 +12,7 @@ db.run(`CREATE TABLE IF NOT EXISTS sessions (
 )`);
 try { db.run('ALTER TABLE sessions ADD COLUMN process_identity TEXT'); } catch {}
 try { db.run("ALTER TABLE sessions ADD COLUMN deletion_processes TEXT"); } catch {}
+try { db.run('ALTER TABLE sessions ADD COLUMN process_uncontained INTEGER NOT NULL DEFAULT 1'); } catch {}
 try { db.run('ALTER TABLE sessions ADD COLUMN name TEXT'); } catch {}
 try { db.run('ALTER TABLE sessions ADD COLUMN reasoning TEXT'); } catch {}
 db.run(`CREATE TABLE IF NOT EXISTS events (session_id INTEGER NOT NULL, json TEXT NOT NULL, time TEXT NOT NULL)`);
@@ -20,35 +21,9 @@ db.run('CREATE INDEX IF NOT EXISTS events_session_id ON events(session_id)');
 db.run(`CREATE TABLE IF NOT EXISTS pending_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, urgent INTEGER NOT NULL, text TEXT NOT NULL, images TEXT NOT NULL)`);
 try { db.run('ALTER TABLE pending_messages ADD COLUMN in_flight INTEGER NOT NULL DEFAULT 0'); } catch {}
 
-export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string; name: string | null; reasoning: string | null; process_identity?: string | null; deletion_processes?: string | null };
+export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string; name: string | null; reasoning: string | null; process_identity?: string | null; deletion_processes?: string | null; process_uncontained: number };
 
 type Pending = { id: number; text: string; images: Image[]; urgent: boolean };
-
-// shortcut: /proc cannot find already-reparented or concurrently forked children; use launch-time containment for a complete guarantee.
-function processTree(identity: string): string[] {
-  const state = processState(identity);
-  if (state === 'unknown') throw new Error('Не удалось проверить состояние процесса');
-  if (state === 'gone') return [];
-  const byParent = new Map<number, { pid: number; identity: string }[]>();
-  for (const name of readdirSync('/proc')) {
-    if (!/^\d+$/.test(name)) continue;
-    let stat: string;
-    try { stat = readFileSync(`/proc/${name}/stat`, 'utf8'); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue; throw error; }
-    const end = stat.lastIndexOf(')');
-    const fields = stat.slice(end + 2).split(' ');
-    if (end < 0 || !/^\d+$/.test(fields[1] || '') || !/^\d+$/.test(fields[19] || '')) throw new Error('Не удалось прочитать дерево процессов');
-    const parent = Number(fields[1]);
-    const children = byParent.get(parent) || [];
-    children.push({pid: Number(name), identity: `${name}:${fields[19]}`});
-    byParent.set(parent, children);
-  }
-  if (processState(identity) !== 'matching') throw new Error('Состояние процесса изменилось при чтении дерева');
-  const result = [identity];
-  const visit = (pid: number) => { for (const child of byParent.get(pid) || []) { result.push(child.identity); visit(child.pid); } };
-  visit(Number(identity.split(':')[0]));
-  return result;
-}
 
 function killTree(pid: number) {
   const children = new Map<number, number[]>();
@@ -70,7 +45,6 @@ function killTree(pid: number) {
 export class Session {
   // Сколько ждать ответа адаптера на срочное прерывание, прежде чем убить процесс хода (мс).
   static interruptDeadlineMs = 10_000;
-  static deleteDeadlineMs = 2_000;
   // Срочные сообщения (urgent) всегда стоят впереди обычных, в порядке прихода. urgent — их число.
   private queue: Pending[] = [];
   private urgent = 0;
@@ -117,7 +91,7 @@ export class Session {
   }
 
   static create(model: string, folder: string, harness = 'claude', parentId: number | null = null, name: string | null = null, reasoning: string | null = null) {
-    const result = db.query("INSERT INTO sessions (harness, model, folder, status, parent_id, name, reasoning) VALUES (?, ?, ?, 'idle', ?, ?, ?)").run(harness, model, folder, parentId, name, reasoning);
+    const result = db.query("INSERT INTO sessions (harness, model, folder, status, parent_id, name, reasoning, process_uncontained) VALUES (?, ?, ?, 'idle', ?, ?, ?, 0)").run(harness, model, folder, parentId, name, reasoning);
     return Session.get(Number(result.lastInsertRowid))!;
   }
 
@@ -129,6 +103,7 @@ export class Session {
   get id() { return this.row.id; }
   private recordProcess(child: any) {
     this.process = child;
+    db.query('UPDATE sessions SET process_uncontained = 1 WHERE id = ?').run(this.id);
     if (process.platform === 'linux') {
       const stat = readFileSync(`/proc/${child.pid}/stat`, 'utf8');
       const start = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
@@ -206,25 +181,11 @@ export class Session {
     if (this.deleting) throw new Error('Удаление сессии уже выполняется');
     this.deleting = true;
     try {
-      const row = this.info;
-      const identity = row.process_identity;
-      if (this.process && !identity) throw new Error('Не удалось подтвердить завершение процесса; сессия не удалена');
-      const known = row.deletion_processes ? JSON.parse(row.deletion_processes) as string[] : [];
-      if (identity && processState(identity) === 'unknown') throw new Error('Не удалось подтвердить завершение процесса; сессия не удалена');
-      const processes = [...new Set([...known, ...(identity ? processTree(identity) : [])])];
-      db.query('UPDATE sessions SET deletion_processes = ? WHERE id = ?').run(JSON.stringify(processes), this.id);
-      this.stopped = true;
-      for (const item of processes.slice().reverse()) {
-        if (processState(item) === 'matching') {
-          try { process.kill(Number(item.split(':')[0]), 'SIGKILL'); } catch {}
-        }
-      }
-      const deadline = performance.now() + Session.deleteDeadlineMs;
-      while (processes.some(item => processAlive(item)) || (!identity && this.running)) {
-        if (performance.now() >= deadline) throw new Error('Не удалось подтвердить завершение процесса; сессия не удалена');
-        await Bun.sleep(25);
-      }
       db.transaction(() => {
+        const row = this.info;
+        // shortcut: without launch-time containment, even an exited root can have surviving descendants.
+        if (!row || row.process_uncontained !== 0 || row.process_identity || row.deletion_processes || this.running || this.process)
+          throw new Error('Не удалось подтвердить завершение всех процессов; сессия не удалена');
         db.query('UPDATE sessions SET parent_id = NULL WHERE parent_id = ?').run(this.id);
         db.query('DELETE FROM pending_messages WHERE session_id = ?').run(this.id);
         db.query('DELETE FROM events WHERE session_id = ?').run(this.id);
@@ -345,7 +306,9 @@ export class Session {
     this.running = true;
     this.lastAnswer = '';
     const alreadyRunning = this.info.status === 'running';
-    db.query("UPDATE sessions SET status = 'running' WHERE id = ?").run(this.row.id);
+    // This must be durable before either adapter can spawn a process.
+    const marked = db.query("UPDATE sessions SET status = 'running', process_uncontained = 1 WHERE id = ?").run(this.row.id);
+    if (marked.changes !== 1) { this.running = false; return; }
     if (!alreadyRunning) this.emit({ type: 'status', status: 'running' });
     // delivered: адаптер принял сообщения. Пока false, при сбое они остаются в очереди.
     let delivered = false;

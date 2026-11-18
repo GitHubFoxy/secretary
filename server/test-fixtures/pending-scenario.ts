@@ -41,7 +41,6 @@ const scenarios: Record<string, () => Promise<void>> = {
     expect(existsSync(process.env.FAKE_LOG!)).toBe(false);
     expect(s.queued().map(item => item.text)).toEqual(['не запускать']);
     expect(s.info.process_identity).toBe('invalid');
-    Session.deleteDeadlineMs = 200;
     await expect(s.delete()).rejects.toThrow('Не удалось подтвердить');
     expect(s.info.process_identity).toBe('invalid');
     expect(Session.get(s.id)).not.toBeNull();
@@ -93,7 +92,6 @@ const scenarios: Record<string, () => Promise<void>> = {
     const s = Session.get(2)!;
     const pid = Number((s.info.process_identity as string).split(':')[0]);
     try {
-      Session.deleteDeadlineMs = 200;
       (process as any).kill = () => { throw new Error('simulated kill failure'); };
       try {
         await expect(s.delete()).rejects.toThrow('Не удалось подтвердить');
@@ -101,9 +99,8 @@ const scenarios: Record<string, () => Promise<void>> = {
         expect(Session.get(s.id)).not.toBeNull();
         expect(s.queued().map(item => item.text)).toContain('очередь после рестарта');
       } finally { (process as any).kill = originalKill; }
-      Session.deleteDeadlineMs = 2000;
-      await s.delete();
-      expect(Session.get(s.id)).toBeNull();
+      await expect(s.delete()).rejects.toThrow('Не удалось подтвердить');
+      expect(Session.get(s.id)).not.toBeNull();
     } finally { try { originalKill(pid, 'SIGKILL'); } catch {} }
   },
   async 'unconfirmed-process-exit'() {
