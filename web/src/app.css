@@ -4,11 +4,20 @@
   html {
     @apply bg-neutral-950;
     color-scheme: dark;
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
   }
 
   body {
     @apply bg-neutral-950 font-sans text-neutral-200 antialiased;
+    height: 100%;
+    margin: 0;
+    overflow: hidden;
+    overscroll-behavior: none;
   }
+
+  #app { height: 100%; overflow: hidden; }
 }
 
 @layer components {

@@ -1,8 +1,11 @@
+import { authorized, pair } from './auth';
 import { models, modelDetails, claudeModelDetails } from './models';
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { db, Session, type SessionRow } from './session';
+import { chatHistoryPage } from './web-history';
+
 
 const folder = `${homedir()}/.secretary`;
 mkdirSync(folder, { recursive: true });
@@ -21,10 +24,11 @@ function attach(session: Session) {
   };
   return session;
 }
+Session.cleanInterrupted();
+Session.recoverUnconfirmed();
 const rows = db.query('SELECT * FROM sessions ORDER BY id').all() as SessionRow[];
 if (!rows.length) attach(Session.create('opus', folder));
 else for (const row of rows) attach(Session.get(row.id)!);
-Session.cleanInterrupted();
 
 db.query("UPDATE sessions SET status = 'interrupted' WHERE status = 'running'").run();
 
@@ -75,6 +79,19 @@ const server = Bun.serve({
   port: 3000, hostname: '127.0.0.1',
   fetch(request, server) {
     const url = new URL(request.url);
+    if (url.pathname === '/pair' && request.method === 'POST') {
+      if (!sameOrigin(request, url)) return new Response('Forbidden', {status:403});
+      return request.formData().then(form => {
+        const token = pair(String(form.get('code') || ''));
+        if (!token) return new Response('Неверный или просроченный код.', {status:401});
+        return new Response(null, {status:303, headers:{'Location':'/', 'Set-Cookie':`secretary=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=31536000`, 'Cache-Control':'no-store'}});
+      }).catch(() => new Response('Invalid request', {status:400}));
+    }
+    if (!authorized(request)) {
+      if (url.pathname === '/' && request.method === 'GET') return new Response(Bun.file('login.html'), {headers:{'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'no-store'}});
+      return new Response('Unauthorized', {status:401, headers:{'Cache-Control':'no-store'}});
+    }
+    if (request.method !== 'GET' && !sameOrigin(request, url)) return new Response('Forbidden', {status:403});
     if (url.pathname === '/model-details') {
       const harness = url.searchParams.get('harness');
       if (harness === 'claude') return claudeModelDetails().then(result => Response.json(result)).catch(error => new Response(String(error), {status:500}));
@@ -107,7 +124,7 @@ const server = Bun.serve({
     }
     const path = url.pathname === '/' ? '/index.html' : url.pathname;
     if (path.includes('..')) return new Response('Not found', {status:404});
-    return new Response(Bun.file(`../web/dist${path}`));
+    return new Response(Bun.file(`../web/dist${path}`), {headers:{'Cache-Control': path === '/index.html' || path === '/build-version.json' || path === '/sw.js' ? 'no-store' : 'no-cache'}});
   },
   websocket: {
     maxPayloadLength: 30 * 1024 * 1024,
@@ -117,11 +134,12 @@ const server = Bun.serve({
       try {
         cmd = JSON.parse(String(message));
         if (cmd.type === 'list') socket.send(JSON.stringify({type:'sessions', sessions:listSessions()}));
-        if (cmd.type === 'read') { const s = session(cmd.id); socket.send(JSON.stringify({type:'history', id:cmd.id, events:s.events(), queue:s.queued()})); }
+        if (cmd.type === 'read') { const s = session(cmd.id); const history = chatHistoryPage(db, s.id, cmd.all === true); socket.send(JSON.stringify({type:'history', id:s.id, ...history, queue:s.queued(), requestId:cmd.requestId})); }
         if (cmd.type === 'send') { session(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true); if (cmd.requestId) socket.send(JSON.stringify({type:'sent', requestId:cmd.requestId})); }
         if (cmd.type === 'stop') session(cmd.id).stop();
+        if (cmd.type === 'interrupt') { const accepted = session(cmd.id).interrupt(cmd.requestId); if (cmd.requestId) socket.send(JSON.stringify({type:'interrupt_ack', sessionId:cmd.id, requestId:cmd.requestId, accepted})); }
         if (cmd.type === 'rename') { session(cmd.id).setName(cmd.name); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
-        if (cmd.type === 'delete') { const s = session(cmd.id); s.delete(); sessions.delete(s.id); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
+        if (cmd.type === 'delete') { const s = session(cmd.id); await s.delete(); if (sessions.get(s.id) === s) sessions.delete(s.id); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
         if (cmd.type === 'create') { const s = create(cmd.harness, cmd.model, cmd.folder); socket.send(JSON.stringify({type:'created', id:s.id})); server.publish('events', JSON.stringify({type:'sessions', sessions:listSessions()})); }
         if (cmd.type === 'settings') {
           const s = session(cmd.id); const before = s.info;

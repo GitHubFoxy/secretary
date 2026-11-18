@@ -1,5 +1,9 @@
 <script>
   import { onMount } from 'svelte';
+  import { createConnection } from './connection.js';
+  import { createInterruptFeedback, interruptSessionFor } from './interrupt-feedback.js';
+  import { createUpdateChecker } from './updates.js';
+  import { keyboardInset } from './viewport.js';
   import { visibleMessage, userMessage, queuedMessage, keyedMessages } from './messages.js';
   import TopBar from './components/TopBar.svelte';
   import SessionDrawer from './components/SessionDrawer.svelte';
@@ -9,28 +13,54 @@
   import Modal from './components/Modal.svelte';
   import Icon from './components/Icon.svelte';
 
-  let settingsLoaded = false;
+  let settingsLoaded = false, historyLoaded = false;
+  let historyHasMore = false, historyLoadingOlder = false, historyRequestId = null, historyRequestAll = false, historyVersion = 0, historyStartAtTop = false;
   let sessions = [], events = [], queue = [], selected = 1, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], pendingSend = null;
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
-  const socket = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
-  const send = value => socket.send(JSON.stringify(value));
+  let agentsOriginal = '', agentsSaving = false;
+  let interruptStates = {};
+  const interruptFeedback = createInterruptFeedback({onChange: (id, state) => { interruptStates = {...interruptStates, [id]:state}; }});
+  const updates = createUpdateChecker({
+    currentVersion: __SECRETARY_BUILD_ID__,
+    fetchVersion: async () => {
+      const response = await fetch('/build-version.json', {cache:'no-store'});
+      if (!response.ok) throw new Error('Version unavailable');
+      return (await response.json()).version;
+    },
+    isBusy: () => Boolean(message || images.length || pendingSend || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
+    reload: () => location.reload(),
+  });
+  const connection = createConnection({
+    url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`,
+    onOpen: () => { connected = true; select(selected); updates.check(); },
+    onClose: () => { connected = false; historyLoadingOlder = false; interruptFeedback.disconnect(); if (pendingSend) { pendingSend = null; error = 'Соединение прервалось до подтверждения отправки. Проверьте историю перед повторной отправкой.'; } },
+    onMessage: handleMessage,
+  });
+  const send = value => connection.send(value);
   const refresh = () => send({type:'list'});
-  function select(id) { selected = id; events = []; queue = []; drawerOpen = false; send({type:'read', id}); const s = sessions.find(s => s.id === id); if (s) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
-  socket.onopen = () => { connected = true; select(selected); };
-  socket.onclose = () => { connected = false; pendingSend = null; };
-  socket.onmessage = e => {
+  function requestHistory(id, all = false) { historyRequestId = crypto.randomUUID(); historyRequestAll = all; historyLoadingOlder = all; if (!send({type:'read', id, all, requestId:historyRequestId})) historyLoadingOlder = false; }
+  function select(id) { if (selected !== id) { events = []; queue = []; } selected = id; historyLoaded = false; historyHasMore = false; drawerOpen = false; requestHistory(id); const s = sessions.find(s => s.id === id); if (s) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
+  function handleMessage(e) {
     const msg = JSON.parse(e.data);
     if (msg.type === 'sessions') { sessions = msg.sessions; if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select(sessions[0].id); } const s = sessions.find(s => s.id === selected); if (s && !settingsLoaded) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
-    if (msg.type === 'history' && msg.id === selected) { events = msg.events; queue = msg.queue || []; }
+    if (msg.type === 'history' && msg.id === selected && msg.requestId === historyRequestId) { events = msg.events; queue = msg.queue || []; historyLoaded = true; historyHasMore = msg.hasMore; historyLoadingOlder = false; historyStartAtTop = historyRequestAll; historyVersion++; }
     // Очередь приходит отдельными событиями и в историю не попадает: заменяем список целиком.
     if (msg.type === 'event' && msg.sessionId === selected && msg.event.type === 'queue') queue = msg.event.items;
     else if (msg.type === 'event') { if (msg.sessionId === selected) events = [...events, msg.event]; refresh(); }
     if (msg.type === 'created') { select(msg.id); settingsOpen = false; }
     if (msg.type === 'sent' && pendingSend?.id === msg.requestId) { if (message === pendingSend.text && images === pendingSend.images) { message = ''; images = []; } pendingSend = null; }
-    if (msg.type === 'error') { error = msg.message; if (pendingSend?.id === msg.requestId) pendingSend = null; }
-  };
-  function submit(immediate = false) { if (!connected || pendingSend || (!message.trim() && !images.length)) return; const id = crypto.randomUUID(); pendingSend = {id, text:message, images}; send({type:'send',id:selected,text:message,images,immediate,requestId:id}); }
+    if (msg.type === 'interrupt_ack') interruptFeedback.ack(msg.sessionId, msg.requestId, msg.accepted);
+    if (msg.type === 'event' && msg.event.type === 'interrupt_result') interruptFeedback.result(msg.sessionId, msg.event.requestId, msg.event.outcome);
+    if (msg.type === 'error') {
+      if (msg.requestId === historyRequestId) historyLoadingOlder = false;
+      const interrupted = interruptSessionFor(interruptStates, msg.requestId);
+      if (interrupted !== null) interruptFeedback.fail(interrupted, msg.requestId, msg.message);
+      else error = msg.message;
+      if (pendingSend?.id === msg.requestId) pendingSend = null;
+    }
+  }
+  function submit(immediate = false) { if (!connected || pendingSend || (!message.trim() && !images.length)) return; const id = crypto.randomUUID(); pendingSend = {id, text:message, images}; if (!interruptStates[selected]?.pending) interruptFeedback.clear(selected); send({type:'send',id:selected,text:message,images,immediate,requestId:id}); }
   function saveSettings() {
     const s = sessions.find(s => s.id === selected);
     if (!s) return;
@@ -38,6 +68,13 @@
     send({type:'settings', id:selected, harness, model, reasoning}); settingsOpen = false;
   }
   function stop() { send({type:'stop', id:selected}); }
+  function interrupt() {
+    if (!connected || interruptStates[selected]?.pending) return;
+    const id = selected, requestId = crypto.randomUUID();
+    interruptFeedback.start(id, requestId);
+    try { if (!send({type:'interrupt', id, requestId})) interruptFeedback.fail(id, requestId, 'нет соединения'); }
+    catch { interruptFeedback.fail(id, requestId, 'нет соединения'); }
+  }
   function removeSession(session) {
     if (!connected || session.id === 1) return;
     if (!confirm(`Удалить сессию #${session.id} и её историю? Работающий агент будет остановлен. Дочерние сессии сохранятся.`)) return;
@@ -55,6 +92,7 @@
       const response = await fetch('/settings/agents');
       if (!response.ok) throw new Error(await response.text());
       agents = await response.text();
+      agentsOriginal = agents;
       agentsLoaded = true;
       agentsStatus = '';
     } catch (err) {
@@ -63,13 +101,16 @@
   }
   async function saveAgents() {
     agentsStatus = 'Сохранение…';
+    agentsSaving = true;
     try {
-      const response = await fetch('/settings/agents', {method:'PUT', body: agents});
+      const saved = agents;
+      const response = await fetch('/settings/agents', {method:'PUT', body: saved});
       if (!response.ok) throw new Error(await response.text());
+      agentsOriginal = saved;
       agentsStatus = 'Сохранено';
     } catch (err) {
       agentsStatus = `Не удалось сохранить: ${err.message || err}`;
-    }
+    } finally { agentsSaving = false; }
   }
   function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); }
   function text(event) {
@@ -78,6 +119,7 @@
     if (event.method === 'item/completed' && event.params.item.type === 'agentMessage') return {role:'Агент', text:event.params.item.text};
     if (event.type === 'error') return {role:'Ошибка', text:event.message};
     if (event.type === 'cancelled') return {role:'Не отправлено', text:event.text, images:event.images || []};
+    if (event.type === 'delivery_uncertain') return {role:'Доставка неизвестна', text:event.text, images:event.images || []};
     return null;
   }
   // Сначала история, затем очередь: сообщения из очереди ещё не приняты агентом и стоят после уже отправленных.
@@ -85,15 +127,22 @@
   $: current = sessions.find(s => s.id === selected);
 
   // Высота поля ввода и высота экранной клавиатуры (iOS не сжимает layout viewport, поэтому берём visualViewport).
-  let composerHeight = 0, keyboard = 0;
+  let composerHeight = 0, keyboard = 0, chatViewport;
+  $: if (chatViewport) keyboard = keyboardInset({ viewport: window.visualViewport, container: chatViewport, activeElement: document.activeElement });
   onMount(() => {
+    connection.connect();
+    const reconnect = () => { if (document.visibilityState === 'visible') { connection.connect(); updates.check(); } };
+    const updateTimer = setInterval(() => { if (document.visibilityState === 'visible') updates.check(); }, 5000);
+    window.addEventListener('online', reconnect);
+    document.addEventListener('visibilitychange', reconnect);
     const vv = window.visualViewport;
-    if (!vv) return;
-    const update = () => { keyboard = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)); };
-    vv.addEventListener('resize', update);
-    vv.addEventListener('scroll', update);
+    const update = () => { keyboard = keyboardInset({ viewport: vv, container: chatViewport, activeElement: document.activeElement }); };
+    if (vv) { vv.addEventListener('resize', update); vv.addEventListener('scroll', update); }
+    window.addEventListener('resize', update);
+    document.addEventListener('focusin', update);
+    document.addEventListener('focusout', update);
     update();
-    return () => { vv.removeEventListener('resize', update); vv.removeEventListener('scroll', update); };
+    return () => { clearInterval(updateTimer); updates.stop(); interruptFeedback.dispose(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); window.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
   });
 </script>
 
@@ -152,13 +201,16 @@
       <p role="alert" class="border-b border-neutral-900 px-4 py-2 text-center text-sm text-red-400">{error}</p>
     {/if}
 
-    <div class="relative flex min-h-0 flex-1 flex-col">
-      <MessageList {messages} {sessions} bottomInset={composerHeight + keyboard} onselect={select} />
+    <div bind:this={chatViewport} class="relative flex min-h-0 flex-1 flex-col">
+      {#key historyVersion}
+        <MessageList {messages} {sessions} {historyLoaded} {connected} {historyHasMore} {historyLoadingOlder} startAtTop={historyStartAtTop} onloadOlder={() => requestHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} />
+      {/key}
 
       <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
         <div class="pointer-events-auto">
-          <Composer bind:value={message} bind:images disabled={!connected || !!pendingSend} running={current?.status === 'running'} onsubmit={submit} />
+          {#if interruptStates[selected]?.message}<p role="status" aria-live="polite" class="mx-auto max-w-3xl px-4 text-sm text-neutral-400">{interruptStates[selected].message}</p>{/if}
+          <Composer bind:value={message} bind:images disabled={!connected || !!pendingSend} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} onsubmit={submit} oninterrupt={interrupt} />
         </div>
       </div>
     </div>

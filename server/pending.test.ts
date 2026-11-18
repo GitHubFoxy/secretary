@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,7 +18,7 @@ function runScenario(name: string) {
     }
     const result = Bun.spawnSync([process.execPath, 'run', join(fixtures, 'pending-scenario.ts'), name], {
       cwd: dir,
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: join(dir, 'calls.log') },
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: join(dir, 'calls.log'), ...(['interrupt-codex-not-dispatched', 'running-before-adapter-event'].includes(name) ? {FAKE_DELAY_THREAD:'1'} : {}) },
       stdout: 'pipe',
       stderr: 'pipe',
       timeout: 60_000,
@@ -67,6 +67,24 @@ test('подтверждённая очередь переживает пере�
   }
 }, 60_000);
 
+test('после падения при прерывании не повторяет неподтверждённый запрос', () => {
+  const shared = mkdtempSync(join(tmpdir(), 'secretary-interrupt-crash-'));
+  try {
+    const bin = join(shared, 'bin');
+    mkdirSync(bin);
+    const file = join(bin, 'codex');
+    writeFileSync(file, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(fixtures, 'fake-codex.ts'))} "$@"\n`);
+    chmodSync(file, 0o755);
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: join(shared, 'calls.log') };
+    const run = (name: string) => Bun.spawnSync([process.execPath, 'run', join(fixtures, 'pending-scenario.ts'), name], {cwd:shared, env, stdout:'pipe', stderr:'pipe', timeout:60_000});
+    const crashed = run('crash-interrupt-write');
+    expect(crashed.exitCode).not.toBe(0);
+    expect(existsSync(join(shared, 'interrupt-requested'))).toBe(true);
+    const restored = run('crash-interrupt-read');
+    expect({exitCode:restored.exitCode, stderr:restored.stderr.toString()}).toEqual({exitCode:0, stderr:''});
+  } finally { rmSync(shared, {recursive:true, force:true}); }
+}, 60_000);
+
 test('сообщение, которое не запустилось, остаётся в очереди и доставляется после исправления', () => {
   expect(runScenario('spawn-failure-keeps-pending')).toEqual({ exitCode: 0, stderr: '' });
 }, 30_000);
@@ -75,6 +93,69 @@ test('ошибка хода не останавливает очередь', () 
   expect(runScenario('turn-error-continues-queue')).toEqual({ exitCode: 0, stderr: '' });
 }, 30_000);
 
+test('после выхода адаптера без подтверждения очередь продолжает работу без повтора неопределённого сообщения', () => {
+  expect(runScenario('unconfirmed-exit-continues-queue')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
+
 test('остановка очищает очередь, в том числе в базе', () => {
   expect(runScenario('stop-clears-pending')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
+
+for (const harness of ['claude', 'codex']) {
+  test(`прерывание хода ${harness} сохраняет очередь и позволяет продолжить сессию`, () => {
+    expect(runScenario(`interrupt-${harness}`)).toEqual({ exitCode: 0, stderr: '' });
+  }, 30_000);
+}
+
+test('неподтверждённый запрос при прерывании помечается как неопределённый и не повторяется', () => {
+  expect(runScenario('interrupt-codex-before-start')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
+
+test('задержанное подтверждение после прерывания сохраняет принятое сообщение', () => {
+  expect(runScenario('interrupt-codex-delayed-ack')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
+
+test('до отправки turn/start сообщение действительно отменяется', () => {
+  expect(runScenario('interrupt-codex-not-dispatched')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
+
+test('статус running публикуется до первого события зависшего адаптера', () => {
+  expect(runScenario('running-before-adapter-event')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
+
+test('запрос прерывания подтверждается сразу, результат приходит после завершения хода', () => {
+  expect(runScenario('interrupt-feedback')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
+
+test('естественное завершение хода не выдаётся за успешную отмену', () => {
+  expect(runScenario('interrupt-feedback-completed')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
+
+test('при неподтверждённой остановке процесса очередь ждёт его завершения', () => {
+  expect(runScenario('unconfirmed-process-exit')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
+
+for (const [scenario, description] of [
+  ['live-process-restore', 'после перезапуска очередь ждёт непогашенный процесс'],
+  ['live-process-stop', 'сессия с живым процессом не удаляется и может быть остановлена'],
+]) test(description, () => {
+  const shared = mkdtempSync(join(tmpdir(), 'secretary-live-process-'));
+  try {
+    const bin = join(shared, 'bin');
+    mkdirSync(bin);
+    const file = join(bin, 'claude');
+    writeFileSync(file, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(fixtures, 'fake-claude.ts'))} "$@"\n`);
+    chmodSync(file, 0o755);
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: join(shared, 'calls.log') };
+    const run = (name: string) => Bun.spawnSync([process.execPath, 'run', join(fixtures, 'pending-scenario.ts'), name], {cwd:shared, env, stdout:'pipe', stderr:'pipe', timeout:60_000});
+    const crashed = run('live-process-crash');
+    expect(crashed.exitCode).not.toBe(0);
+    expect(existsSync(join(shared, 'live-process-ready'))).toBe(true);
+    const restored = run(scenario);
+    expect({exitCode:restored.exitCode, stderr:restored.stderr.toString()}).toEqual({exitCode:0, stderr:''});
+  } finally { rmSync(shared, {recursive:true, force:true}); }
+}, 60_000);
+
+test('неизвестный идентификатор процесса не убивается и блокирует запуск очереди', () => {
+  expect(runScenario('unknown-process-identity')).toEqual({ exitCode: 0, stderr: '' });
 }, 30_000);

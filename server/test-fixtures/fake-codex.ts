@@ -17,7 +17,14 @@ rl.on('line', line => {
   if (message.id === undefined) return;
   const { id, method, params } = message;
   if (method === 'initialize') return send({ jsonrpc: '2.0', id, result: {} });
-  if (method === 'thread/start' || method === 'thread/resume') return send({ jsonrpc: '2.0', id, result: { thread: { id: threadId } } });
+  if (method === 'thread/start' || method === 'thread/resume') {
+    if (process.env.FAKE_DELAY_THREAD) {
+      writeFileSync(`${process.env.FAKE_LOG}.thread`, '');
+      setTimeout(() => send({ jsonrpc: '2.0', id, result: { thread: { id: threadId } } }), 300);
+      return;
+    }
+    return send({ jsonrpc: '2.0', id, result: { thread: { id: threadId } } });
+  }
   if (method === 'turn/interrupt') {
     send({ jsonrpc: '2.0', id, result: {} });
     if (busy) send({ jsonrpc: '2.0', method: 'turn/completed', params: { turn: { id: busy, status: 'interrupted' } } });
@@ -27,8 +34,27 @@ rl.on('line', line => {
   if (method === 'turn/start') {
     const text: string = params.input[0].text;
     log({ harness: 'codex', received: text, thread: params.threadId });
+    if (text.includes('EXIT_UNACK')) {
+      const timer = setInterval(() => { if (existsSync(`${process.env.FAKE_LOG}.exit`)) { clearInterval(timer); process.exit(1); } }, 10);
+      return;
+    }
     if (text.includes('HANG') && !existsSync(hangMarker)) { writeFileSync(hangMarker, ''); return; }
     const turnId = `turn-${++turns}`;
+    if (text.includes('RACE_COMPLETE')) {
+      setTimeout(() => {
+        send({ jsonrpc:'2.0', id, result:{turn:{id:turnId}} });
+        send({ jsonrpc:'2.0', method:'turn/completed', params:{turn:{id:turnId, status:'completed'}} });
+      }, 300);
+      return;
+    }
+    if (text.includes('DELAYED')) {
+      busy = turnId;
+      setTimeout(() => {
+        send({ jsonrpc: '2.0', id, result: { turn: { id: turnId } } });
+        send({ jsonrpc: '2.0', method: 'turn/started', params: { turn: { id: turnId } } });
+      }, 300);
+      return;
+    }
     send({ jsonrpc: '2.0', id, result: { turn: { id: turnId } } });
     send({ jsonrpc: '2.0', method: 'turn/started', params: { turn: { id: turnId } } });
     if (text.includes('LONG')) { busy = turnId; return; }

@@ -1,7 +1,7 @@
 // Сценарии для pending.test.ts. Запускаются отдельным процессом в каталоге с пустой базой (secretary.sqlite) и фейковыми claude/codex в PATH.
 // Сессия 1 всегда служебная и не используется: у секретаря другие правила запуска.
 import { expect } from 'bun:test';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Session, db } from '../session';
 
@@ -27,6 +27,219 @@ Session.create('opus', dir);
 Session.interruptDeadlineMs = 5000;
 
 const scenarios: Record<string, () => Promise<void>> = {
+  async 'unknown-process-identity'() {
+    const created = Session.create('gpt', dir, 'codex');
+    db.query('UPDATE sessions SET process_identity = ? WHERE id = ?').run('invalid', created.id);
+    const originalKill = process.kill.bind(process);
+    const attempts: number[] = [];
+    (process as any).kill = (pid: number) => { attempts.push(pid); return true; };
+    try { Session.cleanInterrupted(); } finally { (process as any).kill = originalKill; }
+    const s = Session.get(created.id)!;
+    s.send('не запускать');
+    await Bun.sleep(300);
+    expect(attempts).toEqual([]);
+    expect(existsSync(process.env.FAKE_LOG!)).toBe(false);
+    expect(s.queued().map(item => item.text)).toEqual(['не запускать']);
+    expect(s.info.process_identity).toBe('invalid');
+    await expect(s.delete()).rejects.toThrow('Не удалось подтвердить');
+    expect(s.info.process_identity).toBe('invalid');
+    expect(Session.get(s.id)).not.toBeNull();
+  },
+  async 'live-process-crash'() {
+    const s = Session.create('opus', dir, 'claude');
+    const seen: any[] = [];
+    s.onEvent(event => seen.push(event));
+    s.send('MALFORMED перед рестартом');
+    await until(() => started(s), 'Claude начал ход');
+    s.send('очередь после рестарта');
+    (s as any).killProcess = () => {};
+    s.interrupt('stop-before-restart');
+    writeFileSync(`${process.env.FAKE_LOG}.malformed`, '');
+    await until(() => seen.some(event => event.type === 'interrupt_result' && event.outcome === 'unknown'), 'завершение процесса не подтверждено');
+    writeFileSync(join(dir, 'live-process-ready'), '');
+    process.kill(process.pid, 'SIGKILL');
+    await new Promise(() => {});
+  },
+  async 'live-process-restore'() {
+    const originalKill = process.kill.bind(process);
+    const attempts: number[] = [];
+    (process as any).kill = (pid: number) => { attempts.push(pid); throw new Error('simulated kill failure'); };
+    try { Session.cleanInterrupted(); } finally { (process as any).kill = originalKill; }
+    Session.recoverUnconfirmed();
+    const s = Session.get(2)!;
+    const identity = (s.info as any).process_identity as string;
+    const pid = Number(identity.split(':')[0]);
+    try {
+      expect(attempts).toContain(pid);
+      s.resumePending();
+      s.send('LONG после рестарта', undefined, true);
+      await Bun.sleep(400);
+      expect(calls().map(call => call.received)).toEqual(['MALFORMED перед рестартом']);
+      expect(s.queued().map(item => item.text)).toEqual(['LONG после рестарта', 'очередь после рестарта']);
+      originalKill(pid, 'SIGKILL');
+      await until(() => calls().some(call => call.received === 'LONG после рестарта') && s.info.status === 'running', 'срочный ход после рестарта');
+      await Bun.sleep(200);
+      expect(s.info.status).toBe('running');
+      expect(s.interrupt('stop-after-restart')).toBe(true);
+      await until(() => answered(s, 'очередь после рестарта') && s.info.status === 'idle', 'очередь после завершения старого процесса');
+    } finally { try { originalKill(pid, 'SIGKILL'); } catch {} }
+  },
+  async 'live-process-stop'() {
+    const originalKill = process.kill.bind(process);
+    (process as any).kill = () => { throw new Error('simulated kill failure'); };
+    try { Session.cleanInterrupted(); } finally { (process as any).kill = originalKill; }
+    Session.recoverUnconfirmed();
+    const s = Session.get(2)!;
+    const pid = Number((s.info.process_identity as string).split(':')[0]);
+    try {
+      (process as any).kill = () => { throw new Error('simulated kill failure'); };
+      try {
+        await expect(s.delete()).rejects.toThrow('Не удалось подтвердить');
+        expect(s.info.process_identity).not.toBeNull();
+        expect(Session.get(s.id)).not.toBeNull();
+        expect(s.queued().map(item => item.text)).toContain('очередь после рестарта');
+      } finally { (process as any).kill = originalKill; }
+      await expect(s.delete()).rejects.toThrow('Не удалось подтвердить');
+      expect(Session.get(s.id)).not.toBeNull();
+    } finally { try { originalKill(pid, 'SIGKILL'); } catch {} }
+  },
+  async 'unconfirmed-process-exit'() {
+    const s = Session.create('opus', dir, 'claude');
+    const seen: any[] = [];
+    s.onEvent(event => seen.push(event));
+    s.send('MALFORMED долгий ход');
+    await until(() => started(s), 'Claude начал ход');
+    s.send('сообщение в очереди');
+    const originalKill = (s as any).killProcess.bind(s);
+    (s as any).killProcess = () => {};
+    try {
+      expect(s.interrupt('stop-unknown')).toBe(true);
+      writeFileSync(`${process.env.FAKE_LOG}.malformed`, '');
+      await until(() => seen.some(event => event.type === 'interrupt_result'), 'неподтверждённое завершение');
+      expect(seen.find(event => event.type === 'interrupt_result').outcome).toBe('unknown');
+      expect(s.info.status).toBe('interrupted');
+      expect((s.info as any).process_identity).not.toBeNull();
+      s.send('LONG срочное', undefined, true);
+      await Bun.sleep(200);
+      expect(calls().map(call => call.received)).toEqual(['MALFORMED долгий ход']);
+      expect(s.queued().map(item => item.text)).toEqual(['LONG срочное', 'сообщение в очереди']);
+      (s as any).killProcess = originalKill;
+      originalKill();
+      await until(() => calls().some(call => call.received === 'LONG срочное') && s.info.status === 'running', 'срочное сообщение запущено');
+      await Bun.sleep(200);
+      expect(s.info.status).toBe('running');
+      expect(s.interrupt('stop-new')).toBe(true);
+      await until(() => answered(s, 'сообщение в очереди') && s.info.status === 'idle', 'очередь после завершения старого процесса');
+      expect(calls().filter(call => call.received === 'LONG срочное')).toHaveLength(1);
+      expect((s.info as any).process_identity).toBeNull();
+    } finally { originalKill(); }
+  },
+  async 'interrupt-feedback-completed'() {
+    const s = Session.create('gpt', dir, 'codex');
+    const seen: any[] = [];
+    s.onEvent(event => seen.push(event));
+    s.send('RACE_COMPLETE проверка');
+    await until(() => existsSync(process.env.FAKE_LOG!) && calls().some(call => call.received === 'RACE_COMPLETE проверка'), 'Codex получил запрос');
+    expect(s.interrupt('request-complete')).toBe(true);
+    await until(() => seen.some(event => event.type === 'interrupt_result'), 'ход завершился');
+    expect(seen.filter(event => event.type === 'interrupt_result')).toEqual([{type:'interrupt_result', requestId:'request-complete', outcome:'completed'}]);
+  },
+  async 'interrupt-feedback'() {
+    const s = Session.create('gpt', dir, 'codex');
+    const seen: any[] = [];
+    s.onEvent(event => seen.push(event));
+    expect(s.interrupt('idle-request')).toBe(false);
+    s.send('DELAYED обратная связь');
+    await until(() => existsSync(process.env.FAKE_LOG!) && calls().some(call => call.received === 'DELAYED обратная связь'), 'Codex получил запрос');
+    expect(s.interrupt('request-1')).toBe(true);
+    expect(s.interrupt('request-2')).toBe(false);
+    expect(seen.some(event => event.type === 'interrupt_result')).toBe(false);
+    await until(() => seen.some(event => event.type === 'interrupt_result'), 'результат прерывания');
+    expect(seen.filter(event => event.type === 'interrupt_result')).toEqual([{type:'interrupt_result', requestId:'request-1', outcome:'ended'}]);
+    expect(s.info.status).toBe('idle');
+  },
+  async 'running-before-adapter-event'() {
+    const s = Session.create('gpt', dir, 'codex');
+    const seen: any[] = [];
+    s.onEvent(event => seen.push({event, status:s.info.status}));
+    s.send('задержанный запуск');
+    expect(seen.filter(item => item.event.type === 'status')).toEqual([{event:{type:'status', status:'running'}, status:'running'}]);
+    expect(seen.some(item => item.event.method)).toBe(false);
+    await until(() => existsSync(`${process.env.FAKE_LOG}.thread`), 'адаптер ожидает запуск треда');
+    expect(seen.some(item => item.event.type === 'status' && item.event.status === 'running')).toBe(true);
+    expect(seen.some(item => item.event.method)).toBe(false);
+    s.interrupt();
+    await until(() => s.info.status === 'idle', 'запуск прерван');
+  },
+  async 'unconfirmed-exit-continues-queue'() {
+    const s = Session.create('gpt', dir, 'codex');
+    s.send('EXIT_UNACK опасное действие');
+    await until(() => existsSync(process.env.FAKE_LOG!) && calls().some(call => call.received === 'EXIT_UNACK опасное действие'), 'Codex получил запрос');
+    s.send('следующее сообщение');
+    writeFileSync(`${process.env.FAKE_LOG}.exit`, '');
+    await until(() => answered(s, 'следующее сообщение') && s.info.status === 'idle', 'очередь продолжилась', 2500);
+    expect(calls().filter(call => call.received === 'EXIT_UNACK опасное действие')).toHaveLength(1);
+    expect(calls().filter(call => call.received === 'следующее сообщение')).toHaveLength(1);
+    expect(s.events().filter(event => event.type === 'delivery_uncertain').map(event => event.text)).toEqual(['EXIT_UNACK опасное действие']);
+    expect(userTexts(s)).toEqual(['следующее сообщение']);
+    expect(pendingCount(s.id)).toBe(0);
+  },
+  async 'crash-interrupt-write'() {
+    const s = Session.create('gpt', dir, 'codex');
+    s.send('HANG опасное действие');
+    await until(() => existsSync(process.env.FAKE_LOG!) && calls().some(call => call.received === 'HANG опасное действие'), 'Codex получил запрос');
+    s.send('очередь после сбоя');
+    s.interrupt();
+    writeFileSync(join(dir, 'interrupt-requested'), '');
+    process.kill(process.pid, 'SIGKILL');
+    await new Promise(() => {});
+  },
+  async 'crash-interrupt-read'() {
+    Session.cleanInterrupted();
+    Session.recoverUnconfirmed();
+    Session.recoverUnconfirmed();
+    const s = Session.get(2)!;
+    expect(s.events().filter(event => event.type === 'delivery_uncertain').map(event => event.text)).toEqual(['HANG опасное действие']);
+    expect(s.queued().map(item => item.text)).toEqual(['очередь после сбоя']);
+    s.resumePending();
+    await until(() => answered(s, 'очередь после сбоя') && s.info.status === 'idle', 'очередь после сбоя обработана');
+    expect(calls().filter(call => call.received === 'HANG опасное действие')).toHaveLength(1);
+    expect(pendingCount(s.id)).toBe(0);
+  },
+  async 'interrupt-claude'() { await interruptScenario('claude'); },
+  async 'interrupt-codex'() { await interruptScenario('codex'); },
+  async 'interrupt-codex-before-start'() {
+    Session.interruptDeadlineMs = 500;
+    const s = Session.create('gpt', dir, 'codex');
+    s.send('HANG старт');
+    await until(() => existsSync(process.env.FAKE_LOG!) && calls().some(call => call.received === 'HANG старт'), 'Codex ожидает turn/start');
+    s.send('после отмены');
+    s.interrupt();
+    await until(() => answered(s, 'после отмены') && s.info.status === 'idle', 'следующее сообщение выполнено');
+    expect(calls().filter(call => call.received === 'HANG старт')).toHaveLength(1);
+    expect(s.events().some(event => event.type === 'delivery_uncertain' && event.text === 'HANG старт')).toBe(true);
+    expect(s.events().some(event => event.type === 'cancelled' && event.text === 'HANG старт')).toBe(false);
+  },
+  async 'interrupt-codex-delayed-ack'() {
+    const s = Session.create('gpt', dir, 'codex');
+    s.send('DELAYED начатый ход');
+    await until(() => existsSync(process.env.FAKE_LOG!) && calls().some(call => call.received === 'DELAYED начатый ход'), 'Codex получил запрос');
+    s.interrupt();
+    await until(() => s.info.status === 'idle', 'Codex прерван после подтверждения');
+    expect(userTexts(s)).toEqual(['DELAYED начатый ход']);
+    expect(s.events().some(event => event.type === 'cancelled' || event.type === 'delivery_uncertain')).toBe(false);
+    expect(pendingCount(s.id)).toBe(0);
+  },
+  async 'interrupt-codex-not-dispatched'() {
+    const s = Session.create('gpt', dir, 'codex');
+    s.send('отменён до отправки');
+    await until(() => existsSync(`${process.env.FAKE_LOG}.thread`), 'Codex создаёт тред');
+    s.interrupt();
+    await until(() => s.info.status === 'idle', 'ход отменён');
+    expect(existsSync(process.env.FAKE_LOG!)).toBe(false);
+    expect(s.events().some(event => event.type === 'cancelled' && event.text === 'отменён до отправки')).toBe(true);
+    expect(pendingCount(s.id)).toBe(0);
+  },
   // Срочное сообщение прерывает долгий ход Claude, контекст сохраняется (--resume), обычное сообщение уходит после срочного.
   async 'claude-urgent'() {
     const s = Session.create('opus', dir, 'claude');
@@ -39,8 +252,8 @@ const scenarios: Record<string, () => Promise<void>> = {
     expect(Date.now() - sentAt).toBeLessThan(4000);
     expect(userTexts(s)).toEqual(['LONG задача', 'срочно', 'обычное']);
     expect(answered(s, 'срочно')).toBe(true);
-    // Прерванный ход не выводит статус: по одному idle на каждый завершённый ход (срочное и обычное), interrupted не появляется.
-    expect(statuses(s)).toEqual(['idle', 'idle']);
+    // Срочное прерывание не создаёт лишнего перехода в idle или running.
+    expect(statuses(s)).toEqual(['running', 'idle', 'running', 'idle']);
     expect(calls().find(call => call.received === 'срочно')).toMatchObject({ resume: 'claude-session' });
     expect(pendingCount(s.id)).toBe(0);
   },
@@ -61,20 +274,21 @@ const scenarios: Record<string, () => Promise<void>> = {
     expect(s.events().some(event => event.type === 'error')).toBe(false);
   },
 
-  // Codex завис до turn/start: срочное сообщение не ждёт бесконечно, процесс убивается по дедлайну, ход запускается заново.
-  // Зависшее сообщение не принято адаптером, поэтому в историю не попадает до повторного запуска; срочное идёт первым.
+  // Codex получил turn/start, но не ответил: срочное сообщение выполняется, а исходное не повторяется.
   async 'codex-hang-before-turn-start'() {
     Session.interruptDeadlineMs = 500;
     const s = Session.create('gpt', dir, 'codex');
     s.send('HANG старт');
-    await until(() => s.info.status === 'running', 'Codex начал ход');
+    await until(() => existsSync(process.env.FAKE_LOG!) && calls().some(call => call.received === 'HANG старт'), 'Codex получил turn/start');
     const sentAt = Date.now();
     s.send('срочно', undefined, true);
-    await until(() => answered(s, 'срочно') && answered(s, 'HANG старт') && s.info.status === 'idle', 'ответы Codex на срочное и на повтор зависшего');
+    await until(() => answered(s, 'срочно') && s.info.status === 'idle', 'ответ Codex на срочное сообщение');
     expect(Date.now() - sentAt).toBeLessThan(4000);
-    expect(userTexts(s)).toEqual(['срочно', 'HANG старт']);
+    expect(userTexts(s)).toEqual(['срочно']);
+    expect(s.events().some(event => event.type === 'delivery_uncertain' && event.text === 'HANG старт')).toBe(true);
+    expect(calls().filter(call => call.received === 'HANG старт')).toHaveLength(1);
     expect(s.events().some(event => event.type === 'error')).toBe(false);
-    expect(statuses(s)).toEqual(['idle', 'idle']);
+    expect(statuses(s)).toEqual(['running', 'idle']);
     expect(pendingCount(s.id)).toBe(0);
   },
 
@@ -116,7 +330,7 @@ const scenarios: Record<string, () => Promise<void>> = {
     s.send('срочно', undefined, true);
     await until(() => answered(s, 'срочно') && s.info.status === 'idle', 'ответ Codex на срочное сообщение');
     expect(userTexts(s)).toEqual(['LONG codex', 'срочно']);
-    expect(statuses(s)).toEqual(['idle']);
+    expect(statuses(s)).toEqual(['running', 'idle']);
     expect(calls().filter(call => call.harness === 'codex').map(call => call.thread)).toEqual(['codex-thread', 'codex-thread']);
   },
 
@@ -164,6 +378,26 @@ const scenarios: Record<string, () => Promise<void>> = {
     expect(seen.some(event => event.type === 'cancelled' && event.text === 'не отправлять')).toBe(true);
   },
 };
+
+async function interruptScenario(harness: string) {
+  const s = Session.create(harness === 'claude' ? 'opus' : 'gpt', dir, harness);
+  s.send('LONG задача');
+  await until(() => started(s), 'ход начался');
+  s.send('очередь');
+  s.interrupt();
+  await until(() => answered(s, 'очередь') && s.info.status === 'idle', 'очередь продолжилась');
+  s.send('после остановки');
+  await until(() => answered(s, 'после остановки') && s.info.status === 'idle', 'следующий ход завершился');
+  expect(userTexts(s)).toEqual(['LONG задача', 'очередь', 'после остановки']);
+  const call = calls().find(call => call.received === 'после остановки');
+  expect(harness === 'claude' ? call.resume : call.thread).toBe(harness === 'claude' ? 'claude-session' : 'codex-thread');
+  s.send('LONG снова');
+  await until(() => s.queued().length === 0 && s.info.status === 'running', 'второй долгий ход начался');
+  s.interrupt();
+  await until(() => s.info.status === 'idle', 'остановка без очереди');
+  s.send('продолжить');
+  await until(() => answered(s, 'продолжить') && s.info.status === 'idle', 'продолжение после остановки');
+}
 
 const run = scenarios[scenario];
 if (!run) throw new Error(`Неизвестный сценарий: ${scenario}`);
