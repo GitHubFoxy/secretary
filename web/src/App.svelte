@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { createConnection } from './connection.js';
+  import { createUpdateChecker } from './updates.js';
   import { visibleMessage, userMessage, queuedMessage, keyedMessages } from './messages.js';
   import TopBar from './components/TopBar.svelte';
   import SessionDrawer from './components/SessionDrawer.svelte';
@@ -14,9 +15,20 @@
   let sessions = [], events = [], queue = [], selected = 1, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], pendingSend = null;
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
+  let agentsOriginal = '', agentsSaving = false;
+  const updates = createUpdateChecker({
+    currentVersion: __SECRETARY_BUILD_ID__,
+    fetchVersion: async () => {
+      const response = await fetch('/build-version.json', {cache:'no-store'});
+      if (!response.ok) throw new Error('Version unavailable');
+      return (await response.json()).version;
+    },
+    isBusy: () => Boolean(message || images.length || pendingSend || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
+    reload: () => location.reload(),
+  });
   const connection = createConnection({
     url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`,
-    onOpen: () => { connected = true; select(selected); },
+    onOpen: () => { connected = true; select(selected); updates.check(); },
     onClose: () => { connected = false; if (pendingSend) { pendingSend = null; error = 'Соединение прервалось до подтверждения отправки. Проверьте историю перед повторной отправкой.'; } },
     onMessage: handleMessage,
   });
@@ -59,6 +71,7 @@
       const response = await fetch('/settings/agents');
       if (!response.ok) throw new Error(await response.text());
       agents = await response.text();
+      agentsOriginal = agents;
       agentsLoaded = true;
       agentsStatus = '';
     } catch (err) {
@@ -67,13 +80,16 @@
   }
   async function saveAgents() {
     agentsStatus = 'Сохранение…';
+    agentsSaving = true;
     try {
-      const response = await fetch('/settings/agents', {method:'PUT', body: agents});
+      const saved = agents;
+      const response = await fetch('/settings/agents', {method:'PUT', body: saved});
       if (!response.ok) throw new Error(await response.text());
+      agentsOriginal = saved;
       agentsStatus = 'Сохранено';
     } catch (err) {
       agentsStatus = `Не удалось сохранить: ${err.message || err}`;
-    }
+    } finally { agentsSaving = false; }
   }
   function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); }
   function text(event) {
@@ -92,13 +108,14 @@
   let composerHeight = 0, keyboard = 0;
   onMount(() => {
     connection.connect();
-    const reconnect = () => { if (document.visibilityState === 'visible') connection.connect(); };
+    const reconnect = () => { if (document.visibilityState === 'visible') { connection.connect(); updates.check(); } };
+    const updateTimer = setInterval(() => { if (document.visibilityState === 'visible') updates.check(); }, 5000);
     window.addEventListener('online', reconnect);
     document.addEventListener('visibilitychange', reconnect);
     const vv = window.visualViewport;
     const update = () => { keyboard = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)); };
     if (vv) { vv.addEventListener('resize', update); vv.addEventListener('scroll', update); update(); }
-    return () => { connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
+    return () => { clearInterval(updateTimer); updates.stop(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
   });
 </script>
 

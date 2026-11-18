@@ -122,7 +122,7 @@ const server = Bun.serve({
     }
     const path = url.pathname === '/' ? '/index.html' : url.pathname;
     if (path.includes('..')) return new Response('Not found', {status:404});
-    return new Response(Bun.file(`../web/dist${path}`));
+    return new Response(Bun.file(`../web/dist${path}`), {headers:{'Cache-Control': path === '/index.html' || path === '/build-version.json' || path === '/sw.js' ? 'no-store' : 'no-cache'}});
   },
   websocket: {
     maxPayloadLength: 30 * 1024 * 1024,
