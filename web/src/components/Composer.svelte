@@ -62,7 +62,7 @@
     {#if running}
       <button
         type="button"
-        class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-xl bg-neutral-100 text-neutral-950 transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-30"
+        class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-xl bg-red-700 text-white transition-colors hover:bg-red-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400 disabled:cursor-not-allowed disabled:opacity-30"
         disabled={stopDisabled}
         aria-label="Остановить текущий ход"
         title="Остановить текущий ход"
