@@ -1,4 +1,17 @@
 <script>
+  /* Paperclip: Lucide Icons, ISC License.
+   * Copyright (c) 2026 Lucide Icons and Contributors
+   * Permission to use, copy, modify, and/or distribute this software for any
+   * purpose with or without fee is hereby granted, provided that the above
+   * copyright notice and this permission notice appear in all copies.
+   * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+   * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+   * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+   * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+   * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+   * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+   * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+   */
   let { name, class: className = 'size-5' } = $props();
 </script>
 
@@ -11,6 +24,8 @@
     <path d="M6 6l12 12M18 6L6 18" />
   {:else if name === 'send'}
     <path d="M12 19V5M5.5 11.5L12 5l6.5 6.5" />
+  {:else if name === 'paperclip'}
+    <path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551" />
   {:else if name === 'queue'}
     <path d="M4 7h11M4 12h11M4 17h6M18 14v6M15 17h6" />
   {:else if name === 'stop'}
