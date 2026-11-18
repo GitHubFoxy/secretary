@@ -15,13 +15,14 @@ try { db.run("ALTER TABLE sessions ADD COLUMN deletion_processes TEXT"); } catch
 try { db.run('ALTER TABLE sessions ADD COLUMN process_uncontained INTEGER NOT NULL DEFAULT 1'); } catch {}
 try { db.run('ALTER TABLE sessions ADD COLUMN name TEXT'); } catch {}
 try { db.run('ALTER TABLE sessions ADD COLUMN reasoning TEXT'); } catch {}
+try { db.run('ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0'); } catch {}
 db.run(`CREATE TABLE IF NOT EXISTS events (session_id INTEGER NOT NULL, json TEXT NOT NULL, time TEXT NOT NULL)`);
 db.run('CREATE INDEX IF NOT EXISTS events_session_id ON events(session_id)');
 // Подтверждённые сообщения, которые ещё не ушли в ход. Лежат в базе, чтобы пережить перезапуск программы.
 db.run(`CREATE TABLE IF NOT EXISTS pending_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, urgent INTEGER NOT NULL, text TEXT NOT NULL, images TEXT NOT NULL)`);
 try { db.run('ALTER TABLE pending_messages ADD COLUMN in_flight INTEGER NOT NULL DEFAULT 0'); } catch {}
 
-export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string; name: string | null; reasoning: string | null; process_identity?: string | null; deletion_processes?: string | null; process_uncontained: number };
+export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string; name: string | null; reasoning: string | null; process_identity?: string | null; deletion_processes?: string | null; process_uncontained: number; hidden: number };
 
 type Pending = { id: number; text: string; images: Image[]; urgent: boolean };
 
@@ -101,6 +102,11 @@ export class Session {
   }
 
   get id() { return this.row.id; }
+  setHidden(hidden: boolean) {
+    if (this.id === 1 || typeof hidden !== 'boolean') throw new Error('Недопустимое изменение видимости сессии');
+    if (hidden && this.info.folder.split('/').includes('.secretary')) throw new Error('Внутреннюю сессию нельзя скрыть');
+    db.query('UPDATE sessions SET hidden = ? WHERE id = ?').run(hidden ? 1 : 0, this.id);
+  }
   private recordProcess(child: any) {
     this.process = child;
     db.query('UPDATE sessions SET process_uncontained = 1 WHERE id = ?').run(this.id);

@@ -75,12 +75,13 @@
     try { if (!send({type:'interrupt', id, requestId})) interruptFeedback.fail(id, requestId, 'нет соединения'); }
     catch { interruptFeedback.fail(id, requestId, 'нет соединения'); }
   }
-  function removeSession(session) {
+  function hideSession(session) {
     if (!connected || session.id === 1) return;
-    if (!confirm(`Удалить сессию #${session.id} и её историю? Работающий агент будет остановлен. Дочерние сессии сохранятся.`)) return;
+    if (!confirm(`Скрыть сессию #${session.id}? Агент и его процессы могут продолжать работать. История и очередь сохранятся; сессию можно вернуть.`)) return;
     error = '';
-    send({type:'delete', id:session.id});
+    send({type:'visibility', id:session.id, hidden:true});
   }
+  function restoreSession(session) { if (connected) { error = ''; send({type:'visibility', id:session.id, hidden:false}); } }
   function openSettings() { const s = sessions.find(s => s.id === selected); if (s) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; } settingsOpen = true; }
   function openRename() { newName = current?.name || (selected === 1 ? 'Secretary' : `Сессия #${selected}`); settingsOpen = false; renameOpen = true; }
   function rename() { if (!connected || !newName.trim()) return; error = ''; send({type:'rename', id:selected, name:newName}); renameOpen = false; }
@@ -215,6 +216,6 @@
       </div>
     </div>
 
-    <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onremove={removeSession} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} />
+    <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onhide={hideSession} onrestore={restoreSession} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} />
   </div>
 {/if}
