@@ -1,0 +1,8 @@
+{
+  "appId": "ru.scrtrbot.app",
+  "appName": "Secretary",
+  "webDir": "dist",
+  "server": {
+    "url": "https://app.scrtrbot.ru"
+  }
+}

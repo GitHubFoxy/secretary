@@ -1,3 +1,4 @@
+import { authorized, pair } from './auth';
 import { models, modelDetails, claudeModelDetails } from './models';
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -75,6 +76,19 @@ const server = Bun.serve({
   port: 3000, hostname: '127.0.0.1',
   fetch(request, server) {
     const url = new URL(request.url);
+    if (url.pathname === '/pair' && request.method === 'POST') {
+      if (!sameOrigin(request, url)) return new Response('Forbidden', {status:403});
+      return request.formData().then(form => {
+        const token = pair(String(form.get('code') || ''));
+        if (!token) return new Response('Неверный или просроченный код.', {status:401});
+        return new Response(null, {status:303, headers:{'Location':'/', 'Set-Cookie':`secretary=${token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=31536000`, 'Cache-Control':'no-store'}});
+      }).catch(() => new Response('Invalid request', {status:400}));
+    }
+    if (!authorized(request)) {
+      if (url.pathname === '/' && request.method === 'GET') return new Response(Bun.file('login.html'), {headers:{'Content-Type':'text/html; charset=utf-8', 'Cache-Control':'no-store'}});
+      return new Response('Unauthorized', {status:401, headers:{'Cache-Control':'no-store'}});
+    }
+    if (request.method !== 'GET' && !sameOrigin(request, url)) return new Response('Forbidden', {status:403});
     if (url.pathname === '/model-details') {
       const harness = url.searchParams.get('harness');
       if (harness === 'claude') return claudeModelDetails().then(result => Response.json(result)).catch(error => new Response(String(error), {status:500}));
