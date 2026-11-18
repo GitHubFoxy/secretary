@@ -1,7 +1,7 @@
 // Сценарии для pending.test.ts. Запускаются отдельным процессом в каталоге с пустой базой (secretary.sqlite) и фейковыми claude/codex в PATH.
 // Сессия 1 всегда служебная и не используется: у секретаря другие правила запуска.
 import { expect } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Session, db } from '../session';
 
@@ -27,6 +27,28 @@ Session.create('opus', dir);
 Session.interruptDeadlineMs = 5000;
 
 const scenarios: Record<string, () => Promise<void>> = {
+  async 'crash-interrupt-write'() {
+    const s = Session.create('gpt', dir, 'codex');
+    s.send('HANG опасное действие');
+    await until(() => existsSync(process.env.FAKE_LOG!) && calls().some(call => call.received === 'HANG опасное действие'), 'Codex получил запрос');
+    s.send('очередь после сбоя');
+    s.interrupt();
+    writeFileSync(join(dir, 'interrupt-requested'), '');
+    process.kill(process.pid, 'SIGKILL');
+    await new Promise(() => {});
+  },
+  async 'crash-interrupt-read'() {
+    Session.cleanInterrupted();
+    Session.recoverUnconfirmed();
+    Session.recoverUnconfirmed();
+    const s = Session.get(2)!;
+    expect(s.events().filter(event => event.type === 'delivery_uncertain').map(event => event.text)).toEqual(['HANG опасное действие']);
+    expect(s.queued().map(item => item.text)).toEqual(['очередь после сбоя']);
+    s.resumePending();
+    await until(() => answered(s, 'очередь после сбоя') && s.info.status === 'idle', 'очередь после сбоя обработана');
+    expect(calls().filter(call => call.received === 'HANG опасное действие')).toHaveLength(1);
+    expect(pendingCount(s.id)).toBe(0);
+  },
   async 'interrupt-claude'() { await interruptScenario('claude'); },
   async 'interrupt-codex'() { await interruptScenario('codex'); },
   async 'interrupt-codex-before-start'() {
@@ -95,20 +117,21 @@ const scenarios: Record<string, () => Promise<void>> = {
     expect(s.events().some(event => event.type === 'error')).toBe(false);
   },
 
-  // Codex завис до turn/start: срочное сообщение не ждёт бесконечно, процесс убивается по дедлайну, ход запускается заново.
-  // Зависшее сообщение не принято адаптером, поэтому в историю не попадает до повторного запуска; срочное идёт первым.
+  // Codex получил turn/start, но не ответил: срочное сообщение выполняется, а исходное не повторяется.
   async 'codex-hang-before-turn-start'() {
     Session.interruptDeadlineMs = 500;
     const s = Session.create('gpt', dir, 'codex');
     s.send('HANG старт');
-    await until(() => s.info.status === 'running', 'Codex начал ход');
+    await until(() => existsSync(process.env.FAKE_LOG!) && calls().some(call => call.received === 'HANG старт'), 'Codex получил turn/start');
     const sentAt = Date.now();
     s.send('срочно', undefined, true);
-    await until(() => answered(s, 'срочно') && answered(s, 'HANG старт') && s.info.status === 'idle', 'ответы Codex на срочное и на повтор зависшего');
+    await until(() => answered(s, 'срочно') && s.info.status === 'idle', 'ответ Codex на срочное сообщение');
     expect(Date.now() - sentAt).toBeLessThan(4000);
-    expect(userTexts(s)).toEqual(['срочно', 'HANG старт']);
+    expect(userTexts(s)).toEqual(['срочно']);
+    expect(s.events().some(event => event.type === 'delivery_uncertain' && event.text === 'HANG старт')).toBe(true);
+    expect(calls().filter(call => call.received === 'HANG старт')).toHaveLength(1);
     expect(s.events().some(event => event.type === 'error')).toBe(false);
-    expect(statuses(s)).toEqual(['idle', 'idle']);
+    expect(statuses(s)).toEqual(['idle']);
     expect(pendingCount(s.id)).toBe(0);
   },
 

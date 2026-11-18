@@ -16,6 +16,7 @@ db.run(`CREATE TABLE IF NOT EXISTS events (session_id INTEGER NOT NULL, json TEX
 db.run('CREATE INDEX IF NOT EXISTS events_session_id ON events(session_id)');
 // Подтверждённые сообщения, которые ещё не ушли в ход. Лежат в базе, чтобы пережить перезапуск программы.
 db.run(`CREATE TABLE IF NOT EXISTS pending_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, urgent INTEGER NOT NULL, text TEXT NOT NULL, images TEXT NOT NULL)`);
+try { db.run('ALTER TABLE pending_messages ADD COLUMN in_flight INTEGER NOT NULL DEFAULT 0'); } catch {}
 
 export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string; name: string | null; reasoning: string | null };
 
@@ -97,6 +98,16 @@ export class Session {
       } catch {}
     }
   }
+  static recoverUnconfirmed() {
+    db.transaction(() => {
+      const rows = db.query('SELECT id, session_id, text, images FROM pending_messages WHERE in_flight = 1').all() as {id:number, session_id:number, text:string, images:string}[];
+      for (const row of rows) {
+        const event = {type:'delivery_uncertain', text:row.text, images:JSON.parse(row.images)};
+        db.query('INSERT INTO events VALUES (?, ?, ?)').run(row.session_id, JSON.stringify(event), new Date().toISOString());
+        db.query('DELETE FROM pending_messages WHERE id = ?').run(row.id);
+      }
+    })();
+  }
   get info() { return db.query('SELECT * FROM sessions WHERE id = ?').get(this.id) as SessionRow; }
   events() { return (db.query('SELECT json FROM events WHERE session_id = ? ORDER BY rowid').all(this.id) as { json: string }[]).map(row => JSON.parse(row.json)); }
   recentChatEvents(limit = 10) { return recentChatEvents(db, this.id, limit); }
@@ -132,9 +143,9 @@ export class Session {
     const time = new Date().toISOString();
     db.transaction(() => {
       db.query('DELETE FROM pending_messages WHERE session_id = ?').run(this.id);
-      for (const item of cancelled) this.write({ type: 'cancelled', text: item.text, images: item.images }, time);
+      for (const item of cancelled) this.write({ type: this.dispatched && this.activeItems.includes(item) ? 'delivery_uncertain' : 'cancelled', text: item.text, images: item.images }, time);
     })();
-    for (const item of cancelled) this.publish({ type: 'cancelled', text: item.text, images: item.images });
+    for (const item of cancelled) this.publish({ type: this.dispatched && this.activeItems.includes(item) ? 'delivery_uncertain' : 'cancelled', text: item.text, images: item.images });
     this.publishQueue();
     this.killProcess();
     if (!this.running) this.finish(false);
@@ -254,11 +265,16 @@ export class Session {
     // delivered: адаптер принял сообщения. Пока false, при сбое они остаются в очереди.
     let delivered = false;
     const deliver = () => { if (delivered) return; delivered = true; this.commit(items); };
+    // Записываем до передачи в stdin: после сбоя повтор опасен даже без подтверждения приёма.
+    const dispatch = () => {
+      db.transaction(() => { for (const item of items) db.query('UPDATE pending_messages SET in_flight = 1 WHERE id = ?').run(item.id); })();
+      this.dispatched = true;
+    };
     try {
     if (this.row.harness === 'codex') {
       const completed = await codexTurn({ folder: this.row.folder, model: this.row.model, reasoning: this.row.reasoning, threadId: this.row.harness_session_id,
         onThread: id => { if (this.deleted) return; this.row.harness_session_id = id; db.query('UPDATE sessions SET harness_session_id = ? WHERE id = ?').run(id, this.row.id); },
-        secretary: this.row.id === 1, onProcess: process => this.recordProcess(process), onInterruptable: interrupt => this.armInterrupt(interrupt), onAccepted: deliver, onDispatched: () => { this.dispatched = true; }, shouldCancel: () => this.userInterrupted,
+        secretary: this.row.id === 1, onProcess: process => this.recordProcess(process), onInterruptable: interrupt => this.armInterrupt(interrupt), onAccepted: deliver, onDispatching: dispatch, shouldCancel: () => this.userInterrupted,
         onEvent: event => { if (event.method === 'item/completed' && event.params.item.type === 'agentMessage') this.lastAnswer = event.params.item.text; this.emit(event); } }, text, images);
       this.finish(completed, delivered);
       return;
@@ -270,9 +286,9 @@ export class Session {
     if (this.row.id === 1) args.push('--mcp-config', JSON.stringify({mcpServers:{secretary:{type:'http',url:'http://127.0.0.1:3001/mcp'}}}));
     const process = Bun.spawn(globalThis.process.platform === 'linux' ? ['setsid', ...args] : args, { cwd: this.row.folder, stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' });
     this.recordProcess(process);
+    dispatch();
     process.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: images.length ? [{type:'text', text}, ...images.map(image => ({type:'image', source:{type:'base64', media_type:image.type, data:image.data}}))] : text } }) + '\n');
     process.stdin.flush();
-    this.dispatched = true;
     this.armInterrupt(() => {
       try { process.stdin.write(JSON.stringify({ type: 'control_request', request_id: crypto.randomUUID(), request: { subtype: 'interrupt' } }) + '\n'); process.stdin.flush(); } catch {}
     });
@@ -299,7 +315,7 @@ export class Session {
     }
     await process.exited;
     // Процесс завершился, не выдав ни одного события: сообщение не принято, его видно в очереди, а ошибку видно в истории.
-    if (!delivered && !completed && !this.restarting && !this.stopped) this.emit({ type: 'error', message: 'Агент завершился, не приняв сообщение' });
+    if (!delivered && !completed && !this.restarting && !this.stopped) this.emit({ type: 'error', message: 'Агент завершился без подтверждения сообщения' });
     this.finish(completed, delivered);
     } catch (error) {
       // Ошибку прерывания (например, процесс убит по дедлайну) не показываем: ход запускается заново.
@@ -315,7 +331,7 @@ export class Session {
 
   // delivered: сообщения хода дошли до адаптера (даже если ход завершился ошибкой).
   private finish(completed: boolean, delivered = false) {
-    if (this.userInterrupted) this.finishInterruptedItems();
+    if (this.userInterrupted || (this.dispatched && !delivered)) this.finishInterruptedItems();
     // Прерванный ради срочного сообщения ход не считается завершённым: отчёт родителю не уходит, статус остаётся running.
     const restart = this.restarting && !completed && this.queue.length > 0;
     const userInterrupted = this.userInterrupted;

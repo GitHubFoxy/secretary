@@ -23,10 +23,11 @@ function attach(session: Session) {
   };
   return session;
 }
+Session.cleanInterrupted();
+Session.recoverUnconfirmed();
 const rows = db.query('SELECT * FROM sessions ORDER BY id').all() as SessionRow[];
 if (!rows.length) attach(Session.create('opus', folder));
 else for (const row of rows) attach(Session.get(row.id)!);
-Session.cleanInterrupted();
 
 db.query("UPDATE sessions SET status = 'interrupted' WHERE status = 'running'").run();
 

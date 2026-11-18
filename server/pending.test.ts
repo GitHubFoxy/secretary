@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -65,6 +65,24 @@ test('подтверждённая очередь переживает пере�
   } finally {
     rmSync(shared, { recursive: true, force: true });
   }
+}, 60_000);
+
+test('после падения при прерывании не повторяет неподтверждённый запрос', () => {
+  const shared = mkdtempSync(join(tmpdir(), 'secretary-interrupt-crash-'));
+  try {
+    const bin = join(shared, 'bin');
+    mkdirSync(bin);
+    const file = join(bin, 'codex');
+    writeFileSync(file, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(fixtures, 'fake-codex.ts'))} "$@"\n`);
+    chmodSync(file, 0o755);
+    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: join(shared, 'calls.log') };
+    const run = (name: string) => Bun.spawnSync([process.execPath, 'run', join(fixtures, 'pending-scenario.ts'), name], {cwd:shared, env, stdout:'pipe', stderr:'pipe', timeout:60_000});
+    const crashed = run('crash-interrupt-write');
+    expect(crashed.exitCode).not.toBe(0);
+    expect(existsSync(join(shared, 'interrupt-requested'))).toBe(true);
+    const restored = run('crash-interrupt-read');
+    expect({exitCode:restored.exitCode, stderr:restored.stderr.toString()}).toEqual({exitCode:0, stderr:''});
+  } finally { rmSync(shared, {recursive:true, force:true}); }
 }, 60_000);
 
 test('сообщение, которое не запустилось, остаётся в очереди и доставляется после исправления', () => {
