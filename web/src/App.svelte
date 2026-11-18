@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { createConnection } from './connection.js';
   import { createUpdateChecker } from './updates.js';
+  import { keyboardInset } from './viewport.js';
   import { visibleMessage, userMessage, queuedMessage, keyedMessages } from './messages.js';
   import TopBar from './components/TopBar.svelte';
   import SessionDrawer from './components/SessionDrawer.svelte';
@@ -105,7 +106,8 @@
   $: current = sessions.find(s => s.id === selected);
 
   // Высота поля ввода и высота экранной клавиатуры (iOS не сжимает layout viewport, поэтому берём visualViewport).
-  let composerHeight = 0, keyboard = 0;
+  let composerHeight = 0, keyboard = 0, chatViewport;
+  $: if (chatViewport) keyboard = keyboardInset({ viewport: window.visualViewport, container: chatViewport, activeElement: document.activeElement });
   onMount(() => {
     connection.connect();
     const reconnect = () => { if (document.visibilityState === 'visible') { connection.connect(); updates.check(); } };
@@ -113,9 +115,13 @@
     window.addEventListener('online', reconnect);
     document.addEventListener('visibilitychange', reconnect);
     const vv = window.visualViewport;
-    const update = () => { keyboard = Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)); };
-    if (vv) { vv.addEventListener('resize', update); vv.addEventListener('scroll', update); update(); }
-    return () => { clearInterval(updateTimer); updates.stop(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
+    const update = () => { keyboard = keyboardInset({ viewport: vv, container: chatViewport, activeElement: document.activeElement }); };
+    if (vv) { vv.addEventListener('resize', update); vv.addEventListener('scroll', update); }
+    window.addEventListener('resize', update);
+    document.addEventListener('focusin', update);
+    document.addEventListener('focusout', update);
+    update();
+    return () => { clearInterval(updateTimer); updates.stop(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); window.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
   });
 </script>
 
@@ -174,7 +180,7 @@
       <p role="alert" class="border-b border-neutral-900 px-4 py-2 text-center text-sm text-red-400">{error}</p>
     {/if}
 
-    <div class="relative flex min-h-0 flex-1 flex-col">
+    <div bind:this={chatViewport} class="relative flex min-h-0 flex-1 flex-col">
       <MessageList {messages} {sessions} {historyLoaded} {connected} bottomInset={composerHeight + keyboard} onselect={select} />
 
       <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
