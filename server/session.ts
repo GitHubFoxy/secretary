@@ -2,6 +2,7 @@ import { codexTurn } from './codex';
 import { validateImages, type Image } from './images';
 import { Database } from 'bun:sqlite';
 import { readFileSync, readdirSync } from 'node:fs';
+import { recentChatEvents } from './web-history';
 
 export const db = new Database('secretary.sqlite', { create: true });
 db.run(`CREATE TABLE IF NOT EXISTS sessions (
@@ -12,6 +13,7 @@ try { db.run('ALTER TABLE sessions ADD COLUMN process_identity TEXT'); } catch {
 try { db.run('ALTER TABLE sessions ADD COLUMN name TEXT'); } catch {}
 try { db.run('ALTER TABLE sessions ADD COLUMN reasoning TEXT'); } catch {}
 db.run(`CREATE TABLE IF NOT EXISTS events (session_id INTEGER NOT NULL, json TEXT NOT NULL, time TEXT NOT NULL)`);
+db.run('CREATE INDEX IF NOT EXISTS events_session_id ON events(session_id)');
 // Подтверждённые сообщения, которые ещё не ушли в ход. Лежат в базе, чтобы пережить перезапуск программы.
 db.run(`CREATE TABLE IF NOT EXISTS pending_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, urgent INTEGER NOT NULL, text TEXT NOT NULL, images TEXT NOT NULL)`);
 
@@ -94,6 +96,7 @@ export class Session {
   }
   get info() { return db.query('SELECT * FROM sessions WHERE id = ?').get(this.id) as SessionRow; }
   events() { return (db.query('SELECT json FROM events WHERE session_id = ? ORDER BY rowid').all(this.id) as { json: string }[]).map(row => JSON.parse(row.json)); }
+  recentChatEvents(limit = 10) { return recentChatEvents(db, this.id, limit); }
   private killProcess() { if (!this.process) return; try { if (process.platform === 'linux') killTree(this.process.pid); else this.process.kill(); } catch { this.process.kill(); } }
   // Остановка отменяет сообщения, которые ещё не дошли до адаптера. Они остаются в истории как «Не отправлено», а не исчезают молча.
   stop() {
@@ -158,6 +161,7 @@ export class Session {
     if (!text.trim() && !images.length) throw new Error('Сообщение пустое');
     if (this.deleted) throw new Error('Session was deleted');
     this.stopped = false;
+    immediate = immediate && this.running;
     const saved = db.query('INSERT INTO pending_messages (session_id, urgent, text, images) VALUES (?, ?, ?, ?)').run(this.id, immediate ? 1 : 0, text, JSON.stringify(images));
     const item: Pending = { id: Number(saved.lastInsertRowid), text, images, urgent: immediate };
     if (immediate) { this.queue.splice(this.urgent, 0, item); this.urgent++; }

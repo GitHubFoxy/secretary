@@ -34,16 +34,16 @@
     if (files.length) { e.preventDefault(); add(files); }
   }
 
-  // Enter отправляет срочно, Shift+Enter переносит строку.
+  // Срочная отправка нужна только во время работы агента.
   function keydown(e) {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
-      onsubmit(true);
+      onsubmit(running);
     }
   }
 </script>
 
-<form class="px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2" onsubmit={e => { e.preventDefault(); onsubmit(true); }}>
+<form class="px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2" onsubmit={e => { e.preventDefault(); onsubmit(running); }}>
   {#if imageError}<p role="alert" class="mx-auto max-w-3xl text-sm text-red-400">{imageError}</p>{/if}
   <div class="mx-auto flex max-w-3xl flex-wrap gap-2">{#each images as image, i}<div class="relative"><img class="h-20 rounded" src={'data:' + image.type + ';base64,' + image.data} alt="Изображение для отправки" /><button type="button" class="absolute right-0 top-0 bg-neutral-900 px-1" aria-label="Удалить изображение" onclick={() => images = images.filter((_, index) => index !== i)}>×</button></div>{/each}</div>
   <div class="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-neutral-800 bg-neutral-900 p-2 shadow-lg shadow-black/40 transition-colors focus-within:border-neutral-600">
