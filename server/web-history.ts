@@ -30,3 +30,8 @@ export function recentChatEvents(db: any, sessionId: number, limit = 10) {
   }
   return messages.reverse();
 }
+
+export function chatHistoryPage(db: any, sessionId: number, all = false) {
+  const events = recentChatEvents(db, sessionId, all ? Number.MAX_SAFE_INTEGER : 11);
+  return {events: all ? events : events.slice(-10), hasMore: !all && events.length > 10};
+}

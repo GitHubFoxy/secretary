@@ -4,6 +4,7 @@ import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { db, Session, type SessionRow } from './session';
+import { chatHistoryPage } from './web-history';
 
 
 const folder = `${homedir()}/.secretary`;
@@ -133,7 +134,7 @@ const server = Bun.serve({
       try {
         cmd = JSON.parse(String(message));
         if (cmd.type === 'list') socket.send(JSON.stringify({type:'sessions', sessions:listSessions()}));
-        if (cmd.type === 'read') { const s = session(cmd.id); socket.send(JSON.stringify({type:'history', id:cmd.id, events:s.recentChatEvents(), queue:s.queued()})); }
+        if (cmd.type === 'read') { const s = session(cmd.id); const history = chatHistoryPage(db, s.id, cmd.all === true); socket.send(JSON.stringify({type:'history', id:s.id, ...history, queue:s.queued(), requestId:cmd.requestId})); }
         if (cmd.type === 'send') { session(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true); if (cmd.requestId) socket.send(JSON.stringify({type:'sent', requestId:cmd.requestId})); }
         if (cmd.type === 'stop') session(cmd.id).stop();
         if (cmd.type === 'interrupt') { const accepted = session(cmd.id).interrupt(cmd.requestId); if (cmd.requestId) socket.send(JSON.stringify({type:'interrupt_ack', sessionId:cmd.id, requestId:cmd.requestId, accepted})); }

@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { chatHistory } from './web-history';
+import { chatHistory, chatHistoryPage } from './web-history';
 import { recentChatEvents } from './web-history';
 import { Database } from 'bun:sqlite';
 
@@ -20,6 +20,14 @@ test('loads ten visible messages in order while skipping noise across batches', 
     add.run(2, JSON.stringify({type:'user',message:{content:'other session'}}), '');
   }
   expect(recentChatEvents(db, 1).map(e => e.message.content)).toEqual(Array.from({length:10}, (_,i) => `message ${i+5}`));
+  const initial = chatHistoryPage(db, 1);
+  expect(initial.hasMore).toBe(true);
+  expect(initial.events.map(e => e.message.content)).toEqual(Array.from({length:10}, (_,i) => `message ${i+5}`));
+  const full = chatHistoryPage(db, 1, true);
+  expect(full.hasMore).toBe(false);
+  expect(full.events.map(e => e.message.content)).toEqual(Array.from({length:15}, (_,i) => `message ${i}`));
+  expect(chatHistoryPage(db, 2).hasMore).toBe(true);
+  expect(chatHistoryPage(db, 3)).toEqual({events:[], hasMore:false});
   expect(db.query('SELECT count(*) AS n FROM events WHERE session_id = 1').get()).toEqual({n:480});
   db.close();
 });

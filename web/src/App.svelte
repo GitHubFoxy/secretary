@@ -14,6 +14,7 @@
   import Icon from './components/Icon.svelte';
 
   let settingsLoaded = false, historyLoaded = false;
+  let historyHasMore = false, historyLoadingOlder = false, historyRequestId = null, historyRequestAll = false, historyVersion = 0, historyStartAtTop = false;
   let sessions = [], events = [], queue = [], selected = 1, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], pendingSend = null;
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
@@ -33,16 +34,17 @@
   const connection = createConnection({
     url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`,
     onOpen: () => { connected = true; select(selected); updates.check(); },
-    onClose: () => { connected = false; interruptFeedback.disconnect(); if (pendingSend) { pendingSend = null; error = 'Соединение прервалось до подтверждения отправки. Проверьте историю перед повторной отправкой.'; } },
+    onClose: () => { connected = false; historyLoadingOlder = false; interruptFeedback.disconnect(); if (pendingSend) { pendingSend = null; error = 'Соединение прервалось до подтверждения отправки. Проверьте историю перед повторной отправкой.'; } },
     onMessage: handleMessage,
   });
   const send = value => connection.send(value);
   const refresh = () => send({type:'list'});
-  function select(id) { if (selected !== id) { events = []; queue = []; } selected = id; historyLoaded = false; drawerOpen = false; send({type:'read', id}); const s = sessions.find(s => s.id === id); if (s) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
+  function requestHistory(id, all = false) { historyRequestId = crypto.randomUUID(); historyRequestAll = all; historyLoadingOlder = all; if (!send({type:'read', id, all, requestId:historyRequestId})) historyLoadingOlder = false; }
+  function select(id) { if (selected !== id) { events = []; queue = []; } selected = id; historyLoaded = false; historyHasMore = false; drawerOpen = false; requestHistory(id); const s = sessions.find(s => s.id === id); if (s) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
   function handleMessage(e) {
     const msg = JSON.parse(e.data);
     if (msg.type === 'sessions') { sessions = msg.sessions; if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select(sessions[0].id); } const s = sessions.find(s => s.id === selected); if (s && !settingsLoaded) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
-    if (msg.type === 'history' && msg.id === selected) { events = msg.events; queue = msg.queue || []; historyLoaded = true; }
+    if (msg.type === 'history' && msg.id === selected && msg.requestId === historyRequestId) { events = msg.events; queue = msg.queue || []; historyLoaded = true; historyHasMore = msg.hasMore; historyLoadingOlder = false; historyStartAtTop = historyRequestAll; historyVersion++; }
     // Очередь приходит отдельными событиями и в историю не попадает: заменяем список целиком.
     if (msg.type === 'event' && msg.sessionId === selected && msg.event.type === 'queue') queue = msg.event.items;
     else if (msg.type === 'event') { if (msg.sessionId === selected) events = [...events, msg.event]; refresh(); }
@@ -51,6 +53,7 @@
     if (msg.type === 'interrupt_ack') interruptFeedback.ack(msg.sessionId, msg.requestId, msg.accepted);
     if (msg.type === 'event' && msg.event.type === 'interrupt_result') interruptFeedback.result(msg.sessionId, msg.event.requestId, msg.event.outcome);
     if (msg.type === 'error') {
+      if (msg.requestId === historyRequestId) historyLoadingOlder = false;
       const interrupted = interruptSessionFor(interruptStates, msg.requestId);
       if (interrupted !== null) interruptFeedback.fail(interrupted, msg.requestId, msg.message);
       else error = msg.message;
@@ -199,7 +202,9 @@
     {/if}
 
     <div bind:this={chatViewport} class="relative flex min-h-0 flex-1 flex-col">
-      <MessageList {messages} {sessions} {historyLoaded} {connected} bottomInset={composerHeight + keyboard} onselect={select} />
+      {#key historyVersion}
+        <MessageList {messages} {sessions} {historyLoaded} {connected} {historyHasMore} {historyLoadingOlder} startAtTop={historyStartAtTop} onloadOlder={() => requestHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} />
+      {/key}
 
       <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
