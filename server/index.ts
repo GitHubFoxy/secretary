@@ -5,7 +5,6 @@ import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import { db, Session, type SessionRow } from './session';
 import { chatHistoryPage } from './web-history';
-import { allowedMcpRequest } from './mcp-access';
 
 
 const folder = `${homedir()}/.secretary`;
@@ -58,7 +57,6 @@ async function call(name: string, args: any) {
 }
 Bun.serve({ hostname:'127.0.0.1', port:3001, async fetch(req) {
   if (new URL(req.url).pathname !== '/mcp' || req.method !== 'POST') return new Response(null,{status:405});
-  if (!allowedMcpRequest(req)) return new Response('Forbidden', {status:403});
   const msg = await req.json();
   if (msg.id === undefined) return new Response(null,{status:202});
   const ok = (result: unknown) => Response.json({jsonrpc:'2.0',id:msg.id,result});
