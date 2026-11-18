@@ -34,6 +34,10 @@ rl.on('line', line => {
   if (method === 'turn/start') {
     const text: string = params.input[0].text;
     log({ harness: 'codex', received: text, thread: params.threadId });
+    if (text.includes('EXIT_UNACK')) {
+      const timer = setInterval(() => { if (existsSync(`${process.env.FAKE_LOG}.exit`)) { clearInterval(timer); process.exit(1); } }, 10);
+      return;
+    }
     if (text.includes('HANG') && !existsSync(hangMarker)) { writeFileSync(hangMarker, ''); return; }
     const turnId = `turn-${++turns}`;
     if (text.includes('DELAYED')) {

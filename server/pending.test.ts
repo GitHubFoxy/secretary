@@ -93,6 +93,10 @@ test('ошибка хода не останавливает очередь', () 
   expect(runScenario('turn-error-continues-queue')).toEqual({ exitCode: 0, stderr: '' });
 }, 30_000);
 
+test('после выхода адаптера без подтверждения очередь продолжает работу без повтора неопределённого сообщения', () => {
+  expect(runScenario('unconfirmed-exit-continues-queue')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
+
 test('остановка очищает очередь, в том числе в базе', () => {
   expect(runScenario('stop-clears-pending')).toEqual({ exitCode: 0, stderr: '' });
 }, 30_000);

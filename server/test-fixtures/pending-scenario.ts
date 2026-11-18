@@ -27,6 +27,19 @@ Session.create('opus', dir);
 Session.interruptDeadlineMs = 5000;
 
 const scenarios: Record<string, () => Promise<void>> = {
+  async 'unconfirmed-exit-continues-queue'() {
+    const s = Session.create('gpt', dir, 'codex');
+    s.send('EXIT_UNACK опасное действие');
+    await until(() => existsSync(process.env.FAKE_LOG!) && calls().some(call => call.received === 'EXIT_UNACK опасное действие'), 'Codex получил запрос');
+    s.send('следующее сообщение');
+    writeFileSync(`${process.env.FAKE_LOG}.exit`, '');
+    await until(() => answered(s, 'следующее сообщение') && s.info.status === 'idle', 'очередь продолжилась', 2500);
+    expect(calls().filter(call => call.received === 'EXIT_UNACK опасное действие')).toHaveLength(1);
+    expect(calls().filter(call => call.received === 'следующее сообщение')).toHaveLength(1);
+    expect(s.events().filter(event => event.type === 'delivery_uncertain').map(event => event.text)).toEqual(['EXIT_UNACK опасное действие']);
+    expect(userTexts(s)).toEqual(['следующее сообщение']);
+    expect(pendingCount(s.id)).toBe(0);
+  },
   async 'crash-interrupt-write'() {
     const s = Session.create('gpt', dir, 'codex');
     s.send('HANG опасное действие');

@@ -133,6 +133,7 @@ export class Session {
       for (const item of unresolved) this.publish({ type, text: item.text, images: item.images });
       this.publishQueue();
     }
+    return unresolved.length;
   }
   // Остановка отменяет сообщения, которые ещё не дошли до адаптера. Они остаются в истории как «Не отправлено», а не исчезают молча.
   stop() {
@@ -314,7 +315,7 @@ export class Session {
       }
     }
     await process.exited;
-    // Процесс завершился, не выдав ни одного события: сообщение не принято, его видно в очереди, а ошибку видно в истории.
+    // Если агент завершился без подтверждения, показываем ошибку и неопределённый статус доставки.
     if (!delivered && !completed && !this.restarting && !this.stopped) this.emit({ type: 'error', message: 'Агент завершился без подтверждения сообщения' });
     this.finish(completed, delivered);
     } catch (error) {
@@ -331,7 +332,7 @@ export class Session {
 
   // delivered: сообщения хода дошли до адаптера (даже если ход завершился ошибкой).
   private finish(completed: boolean, delivered = false) {
-    if (this.userInterrupted || (this.dispatched && !delivered)) this.finishInterruptedItems();
+    const unresolved = this.userInterrupted || (this.dispatched && !delivered) ? this.finishInterruptedItems() : 0;
     // Прерванный ради срочного сообщения ход не считается завершённым: отчёт родителю не уходит, статус остаётся running.
     const restart = this.restarting && !completed && this.queue.length > 0;
     const userInterrupted = this.userInterrupted;
@@ -348,8 +349,8 @@ export class Session {
     this.emit({ type: 'status', status });
     if (completed && !userInterrupted && this.row.parent_id) this.onComplete?.(this.lastAnswer);
     this.running = false;
-    // Очередь продолжается после успешного хода и после хода с ошибкой, если сообщение до адаптера дошло.
-    // Недоставленное сообщение остаётся в очереди до следующей отправки или перезапуска, чтобы сбойный запуск не повторялся по кругу.
-    if ((completed || delivered) && this.queue.length) void this.next();
+    // После неопределённой доставки продолжаем очередь, но не повторяем само сообщение.
+    // Сбой до отправки оставляет его в очереди, чтобы не повторять неудачный запуск по кругу.
+    if (!this.stopped && (completed || delivered || (this.dispatched && unresolved)) && this.queue.length) void this.next();
   }
 }
