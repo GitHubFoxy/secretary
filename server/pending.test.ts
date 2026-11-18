@@ -155,3 +155,7 @@ for (const [scenario, description] of [
     expect({exitCode:restored.exitCode, stderr:restored.stderr.toString()}).toEqual({exitCode:0, stderr:''});
   } finally { rmSync(shared, {recursive:true, force:true}); }
 }, 60_000);
+
+test('неизвестный идентификатор процесса не убивается и блокирует запуск очереди', () => {
+  expect(runScenario('unknown-process-identity')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);

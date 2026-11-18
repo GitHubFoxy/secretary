@@ -27,6 +27,22 @@ Session.create('opus', dir);
 Session.interruptDeadlineMs = 5000;
 
 const scenarios: Record<string, () => Promise<void>> = {
+  async 'unknown-process-identity'() {
+    const created = Session.create('gpt', dir, 'codex');
+    db.query('UPDATE sessions SET process_identity = ? WHERE id = ?').run('invalid', created.id);
+    const originalKill = process.kill.bind(process);
+    const attempts: number[] = [];
+    (process as any).kill = (pid: number) => { attempts.push(pid); return true; };
+    try { Session.cleanInterrupted(); } finally { (process as any).kill = originalKill; }
+    const s = Session.get(created.id)!;
+    s.send('не запускать');
+    await Bun.sleep(300);
+    expect(attempts).toEqual([]);
+    expect(existsSync(process.env.FAKE_LOG!)).toBe(false);
+    expect(s.queued().map(item => item.text)).toEqual(['не запускать']);
+    expect(s.info.process_identity).toBe('invalid');
+    expect(() => s.delete()).toThrow();
+  },
   async 'live-process-crash'() {
     const s = Session.create('opus', dir, 'claude');
     const seen: any[] = [];

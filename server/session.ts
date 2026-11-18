@@ -1,8 +1,9 @@
 import { codexTurn } from './codex';
 import { validateImages, type Image } from './images';
 import { Database } from 'bun:sqlite';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { recentChatEvents } from './web-history';
+import { processAlive, processState } from './process-identity';
 
 export const db = new Database('secretary.sqlite', { create: true });
 db.run(`CREATE TABLE IF NOT EXISTS sessions (
@@ -21,16 +22,6 @@ try { db.run('ALTER TABLE pending_messages ADD COLUMN in_flight INTEGER NOT NULL
 export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string; name: string | null; reasoning: string | null; process_identity?: string | null };
 
 type Pending = { id: number; text: string; images: Image[]; urgent: boolean };
-
-function processAlive(identity: string) {
-  if (process.platform !== 'linux' || !/^\d+:\d+$/.test(identity)) return true;
-  const [pid, start] = identity.split(':');
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    return fields[0] !== 'Z' && fields[19] === start;
-  } catch (error) { return (error as NodeJS.ErrnoException).code !== 'ENOENT' || !existsSync('/proc/self/stat'); }
-}
 
 function killTree(pid: number) {
   const children = new Map<number, number[]>();
@@ -118,7 +109,7 @@ export class Session {
     const rows = db.query('SELECT process_identity FROM sessions WHERE process_identity IS NOT NULL').all() as {process_identity:string}[];
     for (const row of rows) {
       const [pid] = row.process_identity.split(':');
-      if (processAlive(row.process_identity)) killTree(Number(pid));
+      if (processState(row.process_identity) === 'matching') killTree(Number(pid));
     }
   }
   static recoverUnconfirmed() {
@@ -175,7 +166,7 @@ export class Session {
     this.publishQueue();
     this.killProcess();
     const identity = this.awaitingExit && !this.process ? this.info.process_identity : null;
-    if (identity && /^\d+:\d+$/.test(identity) && processAlive(identity)) killTree(Number(identity.split(':')[0]));
+    if (identity && processState(identity) === 'matching') killTree(Number(identity.split(':')[0]));
     if (!this.running) this.finish(false);
   }
   delete() {
