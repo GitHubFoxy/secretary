@@ -18,7 +18,7 @@ function runScenario(name: string) {
     }
     const result = Bun.spawnSync([process.execPath, 'run', join(fixtures, 'pending-scenario.ts'), name], {
       cwd: dir,
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: join(dir, 'calls.log') },
+      env: { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: join(dir, 'calls.log'), ...(name === 'interrupt-codex-not-dispatched' ? {FAKE_DELAY_THREAD:'1'} : {}) },
       stdout: 'pipe',
       stderr: 'pipe',
       timeout: 60_000,
@@ -85,6 +85,14 @@ for (const harness of ['claude', 'codex']) {
   }, 30_000);
 }
 
-test('прерывание до начала хода не отправляет отменённое сообщение повторно', () => {
+test('неподтверждённый запрос при прерывании помечается как неопределённый и не повторяется', () => {
   expect(runScenario('interrupt-codex-before-start')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
+
+test('задержанное подтверждение после прерывания сохраняет принятое сообщение', () => {
+  expect(runScenario('interrupt-codex-delayed-ack')).toEqual({ exitCode: 0, stderr: '' });
+}, 30_000);
+
+test('до отправки turn/start сообщение действительно отменяется', () => {
+  expect(runScenario('interrupt-codex-not-dispatched')).toEqual({ exitCode: 0, stderr: '' });
 }, 30_000);

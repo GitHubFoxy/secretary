@@ -100,6 +100,7 @@
     if (event.method === 'item/completed' && event.params.item.type === 'agentMessage') return {role:'Агент', text:event.params.item.text};
     if (event.type === 'error') return {role:'Ошибка', text:event.message};
     if (event.type === 'cancelled') return {role:'Не отправлено', text:event.text, images:event.images || []};
+    if (event.type === 'delivery_uncertain') return {role:'Доставка неизвестна', text:event.text, images:event.images || []};
     return null;
   }
   // Сначала история, затем очередь: сообщения из очереди ещё не приняты агентом и стоят после уже отправленных.

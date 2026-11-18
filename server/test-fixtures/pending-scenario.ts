@@ -38,7 +38,28 @@ const scenarios: Record<string, () => Promise<void>> = {
     s.interrupt();
     await until(() => answered(s, 'после отмены') && s.info.status === 'idle', 'следующее сообщение выполнено');
     expect(calls().filter(call => call.received === 'HANG старт')).toHaveLength(1);
-    expect(s.events().some(event => event.type === 'cancelled' && event.text === 'HANG старт')).toBe(true);
+    expect(s.events().some(event => event.type === 'delivery_uncertain' && event.text === 'HANG старт')).toBe(true);
+    expect(s.events().some(event => event.type === 'cancelled' && event.text === 'HANG старт')).toBe(false);
+  },
+  async 'interrupt-codex-delayed-ack'() {
+    const s = Session.create('gpt', dir, 'codex');
+    s.send('DELAYED начатый ход');
+    await until(() => existsSync(process.env.FAKE_LOG!) && calls().some(call => call.received === 'DELAYED начатый ход'), 'Codex получил запрос');
+    s.interrupt();
+    await until(() => s.info.status === 'idle', 'Codex прерван после подтверждения');
+    expect(userTexts(s)).toEqual(['DELAYED начатый ход']);
+    expect(s.events().some(event => event.type === 'cancelled' || event.type === 'delivery_uncertain')).toBe(false);
+    expect(pendingCount(s.id)).toBe(0);
+  },
+  async 'interrupt-codex-not-dispatched'() {
+    const s = Session.create('gpt', dir, 'codex');
+    s.send('отменён до отправки');
+    await until(() => existsSync(`${process.env.FAKE_LOG}.thread`), 'Codex создаёт тред');
+    s.interrupt();
+    await until(() => s.info.status === 'idle', 'ход отменён');
+    expect(existsSync(process.env.FAKE_LOG!)).toBe(false);
+    expect(s.events().some(event => event.type === 'cancelled' && event.text === 'отменён до отправки')).toBe(true);
+    expect(pendingCount(s.id)).toBe(0);
   },
   // Срочное сообщение прерывает долгий ход Claude, контекст сохраняется (--resume), обычное сообщение уходит после срочного.
   async 'claude-urgent'() {

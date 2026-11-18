@@ -4,8 +4,8 @@ import { recentChatEvents } from './web-history';
 import { Database } from 'bun:sqlite';
 
 test('keeps all chat event types and discards protocol noise', () => {
-  const events = [{type:'user',message:{content:'hi'}}, {type:'result',result:'ok'}, {type:'error',message:'error'}, {type:'cancelled',text:'no'}, {method:'item/completed',params:{item:{type:'agentMessage',text:'hello'}}}, {method:'item/completed',params:{item:{type:'commandExecution'}}}, {method:'item/agentMessage/delta'}, null];
-  expect(chatHistory(events).map(e => e.type || e.method)).toEqual(['user','result','error','cancelled','item/completed']);
+  const events = [{type:'user',message:{content:'hi'}}, {type:'result',result:'ok'}, {type:'error',message:'error'}, {type:'cancelled',text:'no'}, {type:'delivery_uncertain',text:'maybe'}, {method:'item/completed',params:{item:{type:'agentMessage',text:'hello'}}}, {method:'item/completed',params:{item:{type:'commandExecution'}}}, {method:'item/agentMessage/delta'}, null];
+  expect(chatHistory(events).map(e => e.type || e.method)).toEqual(['user','result','error','cancelled','delivery_uncertain','item/completed']);
   expect(chatHistory([{type:'result',result:'ok', noisy:'secret'}])).toEqual([{type:'result',result:'ok'}]);
 });
 

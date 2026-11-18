@@ -53,6 +53,7 @@ export class Session {
   private restarting = false;
   private userInterrupted = false;
   private activeItems: Pending[] = [];
+  private dispatched = false;
   // Функция прерывания текущего хода; появляется, когда адаптер уже начал ход.
   private interruptCurrent?: () => void;
   onComplete?: (answer: string) => void;
@@ -103,21 +104,24 @@ export class Session {
   interrupt() {
     if (!this.running || this.userInterrupted) return;
     this.userInterrupted = true;
-    const cancelled = this.activeItems.filter(item => this.queue.includes(item));
-    if (cancelled.length) {
+    this.interruptTurn();
+  }
+  private finishInterruptedItems() {
+    const unresolved = this.activeItems.filter(item => this.queue.includes(item));
+    if (unresolved.length) {
       const time = new Date().toISOString();
+      const type = this.dispatched ? 'delivery_uncertain' : 'cancelled';
       db.transaction(() => {
-        for (const item of cancelled) {
+        for (const item of unresolved) {
           db.query('DELETE FROM pending_messages WHERE id = ?').run(item.id);
-          this.write({ type: 'cancelled', text: item.text, images: item.images }, time);
+          this.write({ type, text: item.text, images: item.images }, time);
         }
       })();
-      this.queue = this.queue.filter(item => !cancelled.includes(item));
+      this.queue = this.queue.filter(item => !unresolved.includes(item));
       this.urgent = this.queue.filter(item => item.urgent).length;
-      for (const item of cancelled) this.publish({ type: 'cancelled', text: item.text, images: item.images });
+      for (const item of unresolved) this.publish({ type, text: item.text, images: item.images });
       this.publishQueue();
     }
-    this.interruptTurn();
   }
   // Остановка отменяет сообщения, которые ещё не дошли до адаптера. Они остаются в истории как «Не отправлено», а не исчезают молча.
   stop() {
@@ -240,6 +244,7 @@ export class Session {
     const items = this.peek();
     if (!items.length) return;
     this.activeItems = items;
+    this.dispatched = false;
     // Несколько срочных сообщений склеиваются в один ход, но в истории остаются отдельными сообщениями.
     const text = items.map(item => item.text).filter(Boolean).join('\n\n');
     const images = items.flatMap(item => item.images);
@@ -253,7 +258,7 @@ export class Session {
     if (this.row.harness === 'codex') {
       const completed = await codexTurn({ folder: this.row.folder, model: this.row.model, reasoning: this.row.reasoning, threadId: this.row.harness_session_id,
         onThread: id => { if (this.deleted) return; this.row.harness_session_id = id; db.query('UPDATE sessions SET harness_session_id = ? WHERE id = ?').run(id, this.row.id); },
-        secretary: this.row.id === 1, onProcess: process => this.recordProcess(process), onInterruptable: interrupt => this.armInterrupt(interrupt), onAccepted: deliver,
+        secretary: this.row.id === 1, onProcess: process => this.recordProcess(process), onInterruptable: interrupt => this.armInterrupt(interrupt), onAccepted: deliver, onDispatched: () => { this.dispatched = true; }, shouldCancel: () => this.userInterrupted,
         onEvent: event => { if (event.method === 'item/completed' && event.params.item.type === 'agentMessage') this.lastAnswer = event.params.item.text; this.emit(event); } }, text, images);
       this.finish(completed, delivered);
       return;
@@ -267,6 +272,7 @@ export class Session {
     this.recordProcess(process);
     process.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: images.length ? [{type:'text', text}, ...images.map(image => ({type:'image', source:{type:'base64', media_type:image.type, data:image.data}}))] : text } }) + '\n');
     process.stdin.flush();
+    this.dispatched = true;
     this.armInterrupt(() => {
       try { process.stdin.write(JSON.stringify({ type: 'control_request', request_id: crypto.randomUUID(), request: { subtype: 'interrupt' } }) + '\n'); process.stdin.flush(); } catch {}
     });
@@ -309,6 +315,7 @@ export class Session {
 
   // delivered: сообщения хода дошли до адаптера (даже если ход завершился ошибкой).
   private finish(completed: boolean, delivered = false) {
+    if (this.userInterrupted) this.finishInterruptedItems();
     // Прерванный ради срочного сообщения ход не считается завершённым: отчёт родителю не уходит, статус остаётся running.
     const restart = this.restarting && !completed && this.queue.length > 0;
     const userInterrupted = this.userInterrupted;

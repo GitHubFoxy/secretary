@@ -3,7 +3,7 @@ import type { ThreadStartParams } from './protocol/v2/ThreadStartParams';
 import type { TurnStartParams } from './protocol/v2/TurnStartParams';
 
 // onAccepted вызывается, когда Codex ответил на turn/start: сообщение принято и ход создан.
-type Options = { folder: string; model: string; reasoning: string | null; threadId: string | null; onThread: (id: string) => void; onEvent: (event: any) => void; onProcess?: (process: any) => void; onInterruptable?: (interrupt: () => void) => void; onAccepted?: () => void; secretary?: boolean };
+type Options = { folder: string; model: string; reasoning: string | null; threadId: string | null; onThread: (id: string) => void; onEvent: (event: any) => void; onProcess?: (process: any) => void; onInterruptable?: (interrupt: () => void) => void; onAccepted?: () => void; onDispatched?: () => void; shouldCancel?: () => boolean; secretary?: boolean };
 
 export async function codexTurn(options: Options, text: string, images: Image[] = []) {
   const args = ['codex', 'app-server'];
@@ -51,8 +51,11 @@ export async function codexTurn(options: Options, text: string, images: Image[] 
       ? await request('thread/resume', { threadId: options.threadId, excludeTurns: true })
       : await request('thread/start', start);
     options.onThread(thread.thread.id);
+    if (options.shouldCancel?.()) return false;
     const turn: TurnStartParams = { threadId: thread.thread.id, model: options.model, effort: options.reasoning, input: [{ type: 'text', text, text_elements: [] }, ...images.map(image => ({ type: 'image' as const, url: `data:${image.type};base64,${image.data}` }))] };
-    const started = await request('turn/start', turn);
+    const starting = request('turn/start', turn);
+    options.onDispatched?.();
+    const started = await starting;
     options.onAccepted?.();
     options.onInterruptable?.(() => { request('turn/interrupt', { threadId: thread.thread.id, turnId: started.turn.id }).catch(() => {}); });
     return await completed;

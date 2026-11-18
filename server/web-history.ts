@@ -5,6 +5,7 @@ export function chatHistory(events: any[]) {
     if (event?.type === 'result' && typeof event.result === 'string' && event.result && !event.result.startsWith('NO_REPLY')) return [{type:'result', result:event.result}];
     if (event?.type === 'error' && event.message) return [{type:'error', message:event.message}];
     if (event?.type === 'cancelled' && (event.text || event.images?.length)) return [{type:'cancelled', text:event.text, images:event.images}];
+    if (event?.type === 'delivery_uncertain' && (event.text || event.images?.length)) return [{type:'delivery_uncertain', text:event.text, images:event.images}];
     if (event?.method === 'item/completed' && event?.params?.item?.type === 'agentMessage' && typeof event.params.item.text === 'string' && event.params.item.text && !event.params.item.text.startsWith('NO_REPLY'))
       return [{method:'item/completed', params:{item:{type:'agentMessage', text:event.params.item.text}}}];
     return [];
