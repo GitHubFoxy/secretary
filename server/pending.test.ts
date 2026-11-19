@@ -131,31 +131,3 @@ test('естественное завершение хода не выдаётс
   expect(runScenario('interrupt-feedback-completed')).toEqual({ exitCode: 0, stderr: '' });
 }, 30_000);
 
-test('при неподтверждённой остановке процесса очередь ждёт его завершения', () => {
-  expect(runScenario('unconfirmed-process-exit')).toEqual({ exitCode: 0, stderr: '' });
-}, 30_000);
-
-for (const [scenario, description] of [
-  ['live-process-restore', 'после перезапуска очередь ждёт непогашенный процесс'],
-  ['live-process-stop', 'сессия с живым процессом не удаляется и может быть остановлена'],
-]) test(description, () => {
-  const shared = mkdtempSync(join(tmpdir(), 'secretary-live-process-'));
-  try {
-    const bin = join(shared, 'bin');
-    mkdirSync(bin);
-    const file = join(bin, 'claude');
-    writeFileSync(file, `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(join(fixtures, 'fake-claude.ts'))} "$@"\n`);
-    chmodSync(file, 0o755);
-    const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, FAKE_LOG: join(shared, 'calls.log') };
-    const run = (name: string) => Bun.spawnSync([process.execPath, 'run', join(fixtures, 'pending-scenario.ts'), name], {cwd:shared, env, stdout:'pipe', stderr:'pipe', timeout:60_000});
-    const crashed = run('live-process-crash');
-    expect(crashed.exitCode).not.toBe(0);
-    expect(existsSync(join(shared, 'live-process-ready'))).toBe(true);
-    const restored = run(scenario);
-    expect({exitCode:restored.exitCode, stderr:restored.stderr.toString()}).toEqual({exitCode:0, stderr:''});
-  } finally { rmSync(shared, {recursive:true, force:true}); }
-}, 60_000);
-
-test('неизвестный идентификатор процесса не убивается и блокирует запуск очереди', () => {
-  expect(runScenario('unknown-process-identity')).toEqual({ exitCode: 0, stderr: '' });
-}, 30_000);

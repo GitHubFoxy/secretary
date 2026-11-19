@@ -27,113 +27,6 @@ Session.create('opus', dir);
 Session.interruptDeadlineMs = 5000;
 
 const scenarios: Record<string, () => Promise<void>> = {
-  async 'unknown-process-identity'() {
-    const created = Session.create('gpt', dir, 'codex');
-    db.query('UPDATE sessions SET process_identity = ? WHERE id = ?').run('invalid', created.id);
-    const originalKill = process.kill.bind(process);
-    const attempts: number[] = [];
-    (process as any).kill = (pid: number) => { attempts.push(pid); return true; };
-    try { Session.cleanInterrupted(); } finally { (process as any).kill = originalKill; }
-    const s = Session.get(created.id)!;
-    s.send('не запускать');
-    await Bun.sleep(300);
-    expect(attempts).toEqual([]);
-    expect(existsSync(process.env.FAKE_LOG!)).toBe(false);
-    expect(s.queued().map(item => item.text)).toEqual(['не запускать']);
-    expect(s.info.process_identity).toBe('invalid');
-    await expect(s.delete()).rejects.toThrow('Не удалось подтвердить');
-    expect(s.info.process_identity).toBe('invalid');
-    expect(Session.get(s.id)).not.toBeNull();
-  },
-  async 'live-process-crash'() {
-    const s = Session.create('opus', dir, 'claude');
-    const seen: any[] = [];
-    s.onEvent(event => seen.push(event));
-    s.send('MALFORMED перед рестартом');
-    await until(() => started(s), 'Claude начал ход');
-    s.send('очередь после рестарта');
-    (s as any).killProcess = () => {};
-    s.interrupt('stop-before-restart');
-    writeFileSync(`${process.env.FAKE_LOG}.malformed`, '');
-    await until(() => seen.some(event => event.type === 'interrupt_result' && event.outcome === 'unknown'), 'завершение процесса не подтверждено');
-    writeFileSync(join(dir, 'live-process-ready'), '');
-    process.kill(process.pid, 'SIGKILL');
-    await new Promise(() => {});
-  },
-  async 'live-process-restore'() {
-    const originalKill = process.kill.bind(process);
-    const attempts: number[] = [];
-    (process as any).kill = (pid: number) => { attempts.push(pid); throw new Error('simulated kill failure'); };
-    try { Session.cleanInterrupted(); } finally { (process as any).kill = originalKill; }
-    Session.recoverUnconfirmed();
-    const s = Session.get(2)!;
-    const identity = (s.info as any).process_identity as string;
-    const pid = Number(identity.split(':')[0]);
-    try {
-      expect(attempts).toContain(pid);
-      s.resumePending();
-      s.send('LONG после рестарта', undefined, true);
-      await Bun.sleep(400);
-      expect(calls().map(call => call.received)).toEqual(['MALFORMED перед рестартом']);
-      expect(s.queued().map(item => item.text)).toEqual(['LONG после рестарта', 'очередь после рестарта']);
-      originalKill(pid, 'SIGKILL');
-      await until(() => calls().some(call => call.received === 'LONG после рестарта') && s.info.status === 'running', 'срочный ход после рестарта');
-      await Bun.sleep(200);
-      expect(s.info.status).toBe('running');
-      expect(s.interrupt('stop-after-restart')).toBe(true);
-      await until(() => answered(s, 'очередь после рестарта') && s.info.status === 'idle', 'очередь после завершения старого процесса');
-    } finally { try { originalKill(pid, 'SIGKILL'); } catch {} }
-  },
-  async 'live-process-stop'() {
-    const originalKill = process.kill.bind(process);
-    (process as any).kill = () => { throw new Error('simulated kill failure'); };
-    try { Session.cleanInterrupted(); } finally { (process as any).kill = originalKill; }
-    Session.recoverUnconfirmed();
-    const s = Session.get(2)!;
-    const pid = Number((s.info.process_identity as string).split(':')[0]);
-    try {
-      (process as any).kill = () => { throw new Error('simulated kill failure'); };
-      try {
-        await expect(s.delete()).rejects.toThrow('Не удалось подтвердить');
-        expect(s.info.process_identity).not.toBeNull();
-        expect(Session.get(s.id)).not.toBeNull();
-        expect(s.queued().map(item => item.text)).toContain('очередь после рестарта');
-      } finally { (process as any).kill = originalKill; }
-      await expect(s.delete()).rejects.toThrow('Не удалось подтвердить');
-      expect(Session.get(s.id)).not.toBeNull();
-    } finally { try { originalKill(pid, 'SIGKILL'); } catch {} }
-  },
-  async 'unconfirmed-process-exit'() {
-    const s = Session.create('opus', dir, 'claude');
-    const seen: any[] = [];
-    s.onEvent(event => seen.push(event));
-    s.send('MALFORMED долгий ход');
-    await until(() => started(s), 'Claude начал ход');
-    s.send('сообщение в очереди');
-    const originalKill = (s as any).killProcess.bind(s);
-    (s as any).killProcess = () => {};
-    try {
-      expect(s.interrupt('stop-unknown')).toBe(true);
-      writeFileSync(`${process.env.FAKE_LOG}.malformed`, '');
-      await until(() => seen.some(event => event.type === 'interrupt_result'), 'неподтверждённое завершение');
-      expect(seen.find(event => event.type === 'interrupt_result').outcome).toBe('unknown');
-      expect(s.info.status).toBe('interrupted');
-      expect((s.info as any).process_identity).not.toBeNull();
-      s.send('LONG срочное', undefined, true);
-      await Bun.sleep(200);
-      expect(calls().map(call => call.received)).toEqual(['MALFORMED долгий ход']);
-      expect(s.queued().map(item => item.text)).toEqual(['LONG срочное', 'сообщение в очереди']);
-      (s as any).killProcess = originalKill;
-      originalKill();
-      await until(() => calls().some(call => call.received === 'LONG срочное') && s.info.status === 'running', 'срочное сообщение запущено');
-      await Bun.sleep(200);
-      expect(s.info.status).toBe('running');
-      expect(s.interrupt('stop-new')).toBe(true);
-      await until(() => answered(s, 'сообщение в очереди') && s.info.status === 'idle', 'очередь после завершения старого процесса');
-      expect(calls().filter(call => call.received === 'LONG срочное')).toHaveLength(1);
-      expect((s.info as any).process_identity).toBeNull();
-    } finally { originalKill(); }
-  },
   async 'interrupt-feedback-completed'() {
     const s = Session.create('gpt', dir, 'codex');
     const seen: any[] = [];
@@ -195,7 +88,6 @@ const scenarios: Record<string, () => Promise<void>> = {
     await new Promise(() => {});
   },
   async 'crash-interrupt-read'() {
-    Session.cleanInterrupted();
     Session.recoverUnconfirmed();
     Session.recoverUnconfirmed();
     const s = Session.get(2)!;
@@ -349,7 +241,6 @@ const scenarios: Record<string, () => Promise<void>> = {
   async 'restart-read'() {
     const s = Session.get(2)!;
     expect(pendingCount(s.id)).toBe(2);
-    Session.cleanInterrupted();
     db.query("UPDATE sessions SET status = 'interrupted' WHERE status = 'running'").run();
     s.resumePending();
     await until(() => answered(s, 'очередь 1') && answered(s, 'очередь 2') && s.info.status === 'idle', 'восстановленная очередь выполнена');

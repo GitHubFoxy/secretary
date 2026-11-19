@@ -1,4 +1,8 @@
-export function parseClaudeModels(output: string) {
+import { readJsonLines } from './harness';
+
+type ModelDetails = { id: string; label?: string; supportedReasoningEfforts: { reasoningEffort: string }[] };
+
+export function parseClaudeModels(output: string): ModelDetails[] {
   for (const line of output.split('\n')) {
     if (!line.trim()) continue;
     const msg = JSON.parse(line);
@@ -9,42 +13,57 @@ export function parseClaudeModels(output: string) {
     return list.map((model: any) => ({
       id: model.value,
       label: model.resolvedModel ? `${model.displayName} (${model.resolvedModel})` : model.displayName || model.value,
-      supportedReasoningEfforts: (model.supportedEffortLevels || []).map((reasoningEffort: string) => ({reasoningEffort})),
+      supportedReasoningEfforts: (model.supportedEffortLevels || []).map((reasoningEffort: string) => ({ reasoningEffort })),
     }));
   }
   throw new Error('Claude Code не ответил на запрос списка моделей');
 }
 
-export async function claudeModelDetails() {
+async function claudeModels() {
   const p = Bun.spawn(['claude', '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose'],
-    {stdin:'pipe', stdout:'pipe', stderr:'ignore', signal: AbortSignal.timeout(10000)});
+    { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', signal: AbortSignal.timeout(10000) });
   try {
-    p.stdin.write(JSON.stringify({type:'control_request', request_id:'models', request:{subtype:'initialize'}}) + '\n');
+    p.stdin.write(JSON.stringify({ type: 'control_request', request_id: 'models', request: { subtype: 'initialize' } }) + '\n');
     p.stdin.end();
     return parseClaudeModels(await new Response(p.stdout).text());
   } finally { p.kill(); }
 }
 
-export async function modelDetails(): Promise<{id:string, supportedReasoningEfforts:{reasoningEffort:string}[]}[]> {
+async function codexModels(): Promise<ModelDetails[]> {
   const p = Bun.spawn(['codex', 'app-server'], { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore' });
   const send = (message: object) => { p.stdin.write(JSON.stringify(message) + '\n'); p.stdin.flush(); };
-  send({id:1,method:'initialize',params:{clientInfo:{name:'secretary',version:'0.1'},capabilities:null}});
-  send({method:'initialized'});
-  send({id:2,method:'model/list',params:{}});
-  let buffer = '';
+  send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'secretary', version: '0.1' }, capabilities: null } });
+  send({ method: 'initialized' });
+  send({ id: 2, method: 'model/list', params: {} });
+  let models: ModelDetails[] | undefined;
   try {
-    for await (const chunk of p.stdout) {
-      buffer += new TextDecoder().decode(chunk, {stream:true});
-      let end: number;
-      while ((end = buffer.indexOf('\n')) >= 0) {
-        const line = buffer.slice(0,end); buffer = buffer.slice(end+1);
-        if (!line.trim()) continue;
-        const msg = JSON.parse(line);
-        if (msg.id === 2) { if (msg.error) throw new Error(msg.error.message); return msg.result.data; }
-      }
-    }
-    throw new Error('Codex exited');
+    await readJsonLines(p.stdout, msg => {
+      if (msg.id !== 2) return;
+      if (msg.error) throw new Error(msg.error.message);
+      models = msg.result.data;
+      return false;
+    });
   } finally { p.kill(); }
+  if (!models) throw new Error('Codex exited');
+  return models;
 }
 
-export async function models(): Promise<string[]> { return (await modelDetails()).map(m => m.id); }
+const loaders: Record<string, () => Promise<ModelDetails[]>> = { claude: claudeModels, codex: codexModels };
+const cache = new Map<string, Promise<ModelDetails[]>>();
+
+// Asking a harness for its models takes seconds, so validation reuses the last list. The settings screen asks for a fresh one.
+export function modelDetails(harness: string, fresh = false) {
+  const load = loaders[harness];
+  if (!load) throw new Error('Unknown harness');
+  if (fresh || !cache.has(harness)) {
+    const models = load();
+    cache.set(harness, models);
+    models.catch(() => cache.delete(harness));
+  }
+  return cache.get(harness)!;
+}
+
+export async function checkReasoning(harness: string, model: string, reasoning: string) {
+  const details = (await modelDetails(harness)).find(m => m.id === model);
+  if (!details?.supportedReasoningEfforts.some(e => e.reasoningEffort === reasoning)) throw new Error('Unsupported model or reasoning level');
+}

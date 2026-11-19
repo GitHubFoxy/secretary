@@ -6,7 +6,7 @@ import { join } from 'node:path';
 test('pairing code is one-use and attempt limit survives a restart', () => {
   const home = mkdtempSync(join(tmpdir(), 'secretary-auth-test-'));
   const run = (script: string) => {
-    const result = Bun.spawnSync(['bun', '-e', script], { cwd: import.meta.dir, env: {...process.env, HOME: home} });
+    const result = Bun.spawnSync([process.execPath, '-e', script], { cwd: import.meta.dir, env: {...process.env, HOME: home} });
     expect(result.exitCode).toBe(0);
     return result.stdout.toString().trim();
   };
