@@ -1,6 +1,8 @@
 <img src="assets/icon.svg" width="64" height="64" alt="">
 
-# Secretary v2
+# Secretary
+
+**Один чат, один помощник.** Даёшь Secretary Agent задачу — с телефона по кнопке Power или из браузера, — и он её делает: сам или поручив Specialists, которые работают параллельно на твоём Host.
 
 Установка и запуск: `bun install --cwd web`, затем `bun run start`. Сервер слушает `127.0.0.1:3000`. Для удалённого доступа нужен HTTPS: на omarchy сервер опубликован через Cloudflare Tunnel (`secretary-tunnel.service`) по адресу `app.scrtrbot.ru`. Устройство архитектуры описано в `docs/architecture.md`. Claude Code и Codex должны быть установлены и авторизованы.
 
