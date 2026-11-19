@@ -1,26 +1,10 @@
 import { codexTurn } from './codex';
 import { validateImages, type Image } from './images';
-import { Database } from 'bun:sqlite';
+import { db } from './database';
+export { db } from './database';
 import { readFileSync, readdirSync } from 'node:fs';
 import { recentChatEvents } from './web-history';
 import { processAlive, processState } from './process-identity';
-
-export const db = new Database('secretary.sqlite', { create: true });
-db.run(`CREATE TABLE IF NOT EXISTS sessions (
-  id INTEGER PRIMARY KEY, parent_id INTEGER, harness TEXT NOT NULL, model TEXT NOT NULL,
-  folder TEXT NOT NULL, harness_session_id TEXT, status TEXT NOT NULL
-)`);
-try { db.run('ALTER TABLE sessions ADD COLUMN process_identity TEXT'); } catch {}
-try { db.run("ALTER TABLE sessions ADD COLUMN deletion_processes TEXT"); } catch {}
-try { db.run('ALTER TABLE sessions ADD COLUMN process_uncontained INTEGER NOT NULL DEFAULT 1'); } catch {}
-try { db.run('ALTER TABLE sessions ADD COLUMN name TEXT'); } catch {}
-try { db.run('ALTER TABLE sessions ADD COLUMN reasoning TEXT'); } catch {}
-try { db.run('ALTER TABLE sessions ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0'); } catch {}
-db.run(`CREATE TABLE IF NOT EXISTS events (session_id INTEGER NOT NULL, json TEXT NOT NULL, time TEXT NOT NULL)`);
-db.run('CREATE INDEX IF NOT EXISTS events_session_id ON events(session_id)');
-// Подтверждённые сообщения, которые ещё не ушли в ход. Лежат в базе, чтобы пережить перезапуск программы.
-db.run(`CREATE TABLE IF NOT EXISTS pending_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, urgent INTEGER NOT NULL, text TEXT NOT NULL, images TEXT NOT NULL)`);
-try { db.run('ALTER TABLE pending_messages ADD COLUMN in_flight INTEGER NOT NULL DEFAULT 0'); } catch {}
 
 export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string; name: string | null; reasoning: string | null; process_identity?: string | null; deletion_processes?: string | null; process_uncontained: number; hidden: number };
 
