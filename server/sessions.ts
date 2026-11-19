@@ -1,0 +1,94 @@
+import type { Database } from 'bun:sqlite';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
+import { reportText } from './chat';
+import type { Turn } from './harness';
+import { isInternal, SECRETARY_ID, Session, type SessionRow } from './session';
+
+export type SessionSettings = { harness: string; model: string; reasoning: string | null };
+export type NewSession = SessionSettings & { folder: string; parentId?: number | null; name?: string | null };
+
+type Options = {
+  turns: Record<string, Turn>;
+  // Rejects a model or reasoning level the harness does not offer.
+  checkModel: (harness: string, model: string, reasoning: string) => Promise<void>;
+  // Every Session event, raw. Adapters decide what to show.
+  onEvent: (session: Session, event: any) => void;
+  onChange: () => void;
+};
+
+// All Sessions of the Host and the rules for them. The browser and the Secretary Agent (through MCP) are two adapters over this.
+export class Sessions {
+  private all = new Map<number, Session>();
+
+  constructor(private db: Database, private options: Options) {}
+
+  get harnesses() { return Object.keys(this.options.turns); }
+
+  // Loads every Session. Turns that were running when Secretary died are marked interrupted;
+  // their messages already in flight become delivery_uncertain inside each queue.
+  load(secretaryFolder: string) {
+    const rows = this.db.query('SELECT * FROM sessions ORDER BY id').all() as SessionRow[];
+    if (!rows.length) this.insert({ harness: 'claude', model: 'opus', reasoning: null, folder: secretaryFolder });
+    else for (const row of rows) this.attach(row);
+    this.db.query("UPDATE sessions SET status = 'interrupted' WHERE status = 'running'").run();
+  }
+
+  // Messages confirmed before a restart go now. Call once adapters listen.
+  resumePending() { for (const session of this.all.values()) session.resumePending(); }
+
+  get(id: unknown) {
+    const session = this.all.get(Number(id));
+    if (!session) throw new Error('Сессия не найдена');
+    return session;
+  }
+
+  list() { return [...this.all.values()].map(s => { const info = s.info; return { ...info, internal: isInternal(info), secretary: info.id === SECRETARY_ID }; }); }
+
+  async create(settings: NewSession) {
+    if (typeof settings.folder !== 'string' || !settings.folder) throw new Error('Не указана папка');
+    await this.check(settings);
+    const session = this.insert({ ...settings, folder: resolve(settings.folder.replace(/^~(?=\/|$)/, homedir())) });
+    this.options.onChange();
+    return session;
+  }
+
+  async configure(id: unknown, settings: SessionSettings) {
+    const session = this.get(id);
+    await this.check(settings);
+    session.configure(settings.harness, settings.model, settings.reasoning);
+    this.options.onChange();
+  }
+
+  delete(id: unknown) {
+    const session = this.get(id);
+    session.delete();
+    this.all.delete(session.id);
+    this.options.onChange();
+  }
+
+  private async check({ harness, model, reasoning }: SessionSettings) {
+    if (!this.harnesses.includes(harness) || typeof model !== 'string' || !model) throw new Error('Некорректные настройки сессии');
+    if (reasoning !== null) await this.options.checkModel(harness, model, reasoning);
+  }
+
+  private insert(s: NewSession) {
+    const result = this.db.query("INSERT INTO sessions (harness, model, folder, status, parent_id, name, reasoning) VALUES (?, ?, ?, 'idle', ?, ?, ?)").run(s.harness, s.model, s.folder, s.parentId ?? null, s.name ?? null, s.reasoning);
+    return this.attach(this.db.query('SELECT * FROM sessions WHERE id = ?').get(Number(result.lastInsertRowid)) as SessionRow);
+  }
+
+  private attach(row: SessionRow) {
+    const session = new Session(this.db, row, this.options.turns);
+    this.all.set(session.id, session);
+    session.onEvent(event => {
+      this.options.onEvent(session, event);
+      if (event.type === 'status') this.options.onChange();
+    });
+    // A child's answer goes to its parent as a report. The parent is read now: it may have been deleted meanwhile.
+    session.onComplete = answer => {
+      const info = session.info;
+      if (info.parent_id) this.all.get(info.parent_id)?.send(reportText(info, answer));
+    };
+    return session;
+  }
+}
