@@ -4,23 +4,32 @@
   import { showInSidebar } from '../sessions.js';
   let { open = false, sessions = [], selected, connected = false, onhide, onrestore, onselect, onclose, onprofile } = $props();
 
+  let hiddenOpen = $state(false);
+  const visibleSessions = $derived(sessions.filter(s => showInSidebar(s) && !s.hidden));
+  const hiddenSessions = $derived(sessions.filter(s => showInSidebar(s) && s.hidden));
+
   const lastEvent = s => s.last_event?.type === 'status' ? s.last_event.status : s.last_event?.method || s.last_event?.type || '';
 </script>
 
 <svelte:window onkeydown={e => { if (open && e.key === 'Escape') onclose(); }} />
 
 {#snippet sessionRow(s)}
+  {@const title = s.name || `Сессия #${s.id}`}
   <div class="flex items-center rounded-lg {s.parent_id ? 'ml-5' : ''} {selected === s.id ? 'bg-neutral-900' : ''}">
     <button class="min-w-0 flex-1 cursor-pointer rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-neutral-900" onclick={() => onselect(s.id)}>
-      <span class="block truncate text-sm {selected === s.id ? 'text-neutral-100' : 'text-neutral-300'}">{s.name || `Сессия #${s.id}`}</span>
+      <span class="block truncate text-sm {selected === s.id ? 'text-neutral-100' : 'text-neutral-300'}">{title}</span>
       <span class="mt-0.5 block truncate text-xs text-neutral-500">{s.status} · {s.model} · {s.reasoning ?? 'по умолчанию'}</span>
       <span class="block truncate text-xs text-neutral-600">{s.folder}</span>
       {#if lastEvent(s)}<span class="block truncate text-xs text-neutral-600">{lastEvent(s)}</span>{/if}
     </button>
     {#if s.hidden}
-      <button class="mr-2 rounded px-2 py-2 text-xs text-neutral-300 hover:bg-neutral-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-neutral-300" aria-label={`Вернуть сессию ${s.name || `#${s.id}`} в список`} disabled={!connected} onclick={() => onrestore(s)}>Вернуть</button>
+      <button class="icon-btn mr-1 shrink-0 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Вернуть сессию ${title} в список`} title="Вернуть в список" disabled={!connected} onclick={() => onrestore(s)}>
+        <Icon name="eye" />
+      </button>
     {:else}
-      <button class="mr-2 rounded px-2 py-2 text-xs text-neutral-400 hover:bg-neutral-800 hover:text-neutral-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-neutral-300" aria-label={`Скрыть сессию ${s.name || `#${s.id}`} из списка`} disabled={!connected} onclick={() => onhide(s)}>Скрыть</button>
+      <button class="icon-btn mr-1 shrink-0 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Скрыть сессию ${title} из списка`} title="Скрыть из списка" disabled={!connected} onclick={() => onhide(s)}>
+        <Icon name="eye-off" />
+      </button>
     {/if}
   </div>
 {/snippet}
@@ -35,18 +44,24 @@
       </button>
     </div>
     <nav class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-2">
-      {#each sessions.filter(s => showInSidebar(s) && !s.hidden) as s (s.id)}
+      {#each visibleSessions as s (s.id)}
         {@render sessionRow(s)}
       {/each}
-      <details class="mt-2 border-t border-neutral-900 pt-2">
-        <summary class="cursor-pointer rounded-lg px-3 py-2 text-sm text-neutral-300 hover:bg-neutral-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-neutral-300">Скрытые сессии</summary>
-        <p class="px-3 py-1 text-xs text-neutral-400">Скрытые агенты могут продолжать работать.</p>
-        {#each sessions.filter(s => showInSidebar(s) && s.hidden) as s (s.id)}
-          {@render sessionRow(s)}
-        {:else}
-          <p class="px-3 py-2 text-xs text-neutral-500">Нет скрытых сессий</p>
-        {/each}
-      </details>
+      {#if hiddenSessions.length}
+        <div class="mt-2 border-t border-neutral-900 pt-2">
+          <button class="flex w-full cursor-pointer items-center justify-between rounded-lg px-3 py-2 text-left text-sm text-neutral-400 transition-colors hover:bg-neutral-900 hover:text-neutral-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-neutral-300" aria-expanded={hiddenOpen} onclick={() => (hiddenOpen = !hiddenOpen)}>
+            <span>Скрытые · {hiddenSessions.length}</span>
+            <Icon name="chevron" class="size-4 transition-transform {hiddenOpen ? 'rotate-180' : ''}" />
+          </button>
+          {#if hiddenOpen}
+            <div class="mt-1 flex flex-col gap-1">
+              {#each hiddenSessions as s (s.id)}
+                {@render sessionRow(s)}
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/if}
     </nav>
     <div class="border-t border-neutral-900 p-2">
       <button class="flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors hover:bg-neutral-900" title="Настройки" onclick={onprofile}>

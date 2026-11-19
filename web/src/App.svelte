@@ -77,7 +77,6 @@
   }
   function hideSession(session) {
     if (!connected || session.id === 1) return;
-    if (!confirm(`Скрыть сессию #${session.id}? Агент и его процессы могут продолжать работать. История и очередь сохранятся; сессию можно вернуть.`)) return;
     error = '';
     send({type:'visibility', id:session.id, hidden:true});
   }
