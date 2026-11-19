@@ -1,6 +1,0 @@
-{
-  "telegram": "Отдельные candidate bot, owner account, forum supergroup credentials не предоставлены и не использовались.",
-  "windows": "Windows Node host недоступен.",
-  "install": "Packaged CLI фиксирует state path в $HOME/.local/share/secretary; отдельный install prefix отсутствует. HOME не подменялся.",
-  "mobile_browser": "Mobile browser/device не предоставлен."
-}
