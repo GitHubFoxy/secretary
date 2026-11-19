@@ -1,65 +1,33 @@
-// Фейковый `codex app-server` для тестов: JSON-RPC по строкам.
-// Текст с HANG при первом получении не получает ответа на turn/start (зависание до начала хода). Повтор HANG отвечает.
-// LONG держит ход до turn/interrupt. Полученный ввод пишется в FAKE_LOG.
-import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
+// A fake `codex app-server` for adapter tests: JSON-RPC over lines, logs each turn/start to calls.log in its cwd.
+// LONG holds the turn until turn/interrupt; HANG never answers turn/start; a cwd containing "slow-thread" delays thread/start.
+import { appendFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 
-const log = (entry: object) => appendFileSync(process.env.FAKE_LOG!, JSON.stringify(entry) + '\n');
-const hangMarker = `${process.env.FAKE_LOG}.hang`;
 const send = (message: object) => process.stdout.write(JSON.stringify(message) + '\n');
-const threadId = 'codex-thread';
-let turns = 0;
-let busy: string | null = null;
+const thread = { id: 'codex-thread' };
+let busy = '';
 
-const rl = createInterface({ input: process.stdin });
-rl.on('line', line => {
-  const message = JSON.parse(line);
-  if (message.id === undefined) return;
-  const { id, method, params } = message;
-  if (method === 'initialize') return send({ jsonrpc: '2.0', id, result: {} });
+createInterface({ input: process.stdin }).on('line', line => {
+  const { id, method, params } = JSON.parse(line);
+  if (id === undefined) return;
+  if (method === 'initialize') return send({ id, result: {} });
   if (method === 'thread/start' || method === 'thread/resume') {
-    if (process.env.FAKE_DELAY_THREAD) {
-      writeFileSync(`${process.env.FAKE_LOG}.thread`, '');
-      setTimeout(() => send({ jsonrpc: '2.0', id, result: { thread: { id: threadId } } }), 300);
-      return;
-    }
-    return send({ jsonrpc: '2.0', id, result: { thread: { id: threadId } } });
+    return setTimeout(() => send({ id, result: { thread } }), process.cwd().includes('slow-thread') ? 300 : 0);
   }
   if (method === 'turn/interrupt') {
-    send({ jsonrpc: '2.0', id, result: {} });
-    if (busy) send({ jsonrpc: '2.0', method: 'turn/completed', params: { turn: { id: busy, status: 'interrupted' } } });
-    busy = null;
+    send({ id, result: {} });
+    if (busy) send({ method: 'turn/completed', params: { turn: { id: busy, status: 'interrupted' } } });
+    busy = '';
     return;
   }
   if (method === 'turn/start') {
     const text: string = params.input[0].text;
-    log({ harness: 'codex', received: text, thread: params.threadId });
-    if (text.includes('EXIT_UNACK')) {
-      const timer = setInterval(() => { if (existsSync(`${process.env.FAKE_LOG}.exit`)) { clearInterval(timer); process.exit(1); } }, 10);
-      return;
-    }
-    if (text.includes('HANG') && !existsSync(hangMarker)) { writeFileSync(hangMarker, ''); return; }
-    const turnId = `turn-${++turns}`;
-    if (text.includes('RACE_COMPLETE')) {
-      setTimeout(() => {
-        send({ jsonrpc:'2.0', id, result:{turn:{id:turnId}} });
-        send({ jsonrpc:'2.0', method:'turn/completed', params:{turn:{id:turnId, status:'completed'}} });
-      }, 300);
-      return;
-    }
-    if (text.includes('DELAYED')) {
-      busy = turnId;
-      setTimeout(() => {
-        send({ jsonrpc: '2.0', id, result: { turn: { id: turnId } } });
-        send({ jsonrpc: '2.0', method: 'turn/started', params: { turn: { id: turnId } } });
-      }, 300);
-      return;
-    }
-    send({ jsonrpc: '2.0', id, result: { turn: { id: turnId } } });
-    send({ jsonrpc: '2.0', method: 'turn/started', params: { turn: { id: turnId } } });
-    if (text.includes('LONG')) { busy = turnId; return; }
-    send({ jsonrpc: '2.0', method: 'item/completed', params: { item: { type: 'agentMessage', text: `ANSWER ${text}` } } });
-    send({ jsonrpc: '2.0', method: 'turn/completed', params: { turn: { id: turnId, status: 'completed' } } });
+    appendFileSync('calls.log', JSON.stringify({ text, thread: params.threadId }) + '\n');
+    if (text.includes('HANG')) return;
+    const turn = { id: 'turn-1' };
+    send({ id, result: { turn } });
+    if (text.includes('LONG')) { busy = turn.id; return; }
+    send({ method: 'item/completed', params: { item: { type: 'agentMessage', text: `ANSWER ${text}` } } });
+    send({ method: 'turn/completed', params: { turn: { ...turn, status: 'completed' } } });
   }
-});
-rl.on('close', () => process.exit(0));
+}).on('close', () => process.exit(0));

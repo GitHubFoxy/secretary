@@ -11,13 +11,13 @@ test('reconnects with backoff, refreshes on open and never resends a command', (
   }
   const c = createConnection({ url:'ws://example/ws', WebSocketImpl:FakeSocket,
     schedule:(fn, delay) => { const t = {fn, delay}; timers.push(t); return t; }, cancel:t => { t.cancelled = true; },
-    onOpen:() => c.send({type:'read', id:1}), onClose:() => {}, onMessage:() => {} });
-  c.connect(); expect(c.send({type:'send'})).toBe(false);
-  sockets[0].open(); expect(c.send({type:'send', text:'hello'})).toBe(true);
+    onOpen:() => c.request({type:'read', id:1, requestId:'r'}).catch(() => {}), onClose:() => {}, onMessage:() => {} });
+  c.connect(); c.request({type:'send'}).catch(e => expect(e.disconnected).toBe(true));
+  sockets[0].open(); c.request({type:'send', text:'hello', requestId:'s'}).catch(() => {});
   sockets[0].close(); expect(timers[0].delay).toBe(1000);
   timers[0].fn(); sockets[1].close(); expect(timers[1].delay).toBe(2000);
   timers[1].fn(); sockets[2].open();
-  expect(calls).toEqual([{type:'read',id:1},{type:'send',text:'hello'},{type:'read',id:1}]);
+  expect(calls).toEqual([{type:'read',id:1,requestId:'r'},{type:'send',text:'hello',requestId:'s'},{type:'read',id:1,requestId:'r'}]);
   sockets[2].close(); expect(timers[2].delay).toBe(1000);
   c.stop(); expect(timers[2].cancelled).toBe(true);
 });
@@ -29,4 +29,19 @@ test('manual reconnect cancels pending timer and does not duplicate sockets', ()
   c.connect(); c.connect(); expect(sockets.length).toBe(1);
   sockets[0].close(); c.connect(); expect(timers[0].cancelled).toBe(true); expect(sockets.length).toBe(2);
   c.stop();
+});
+
+test('ответ сопоставляется с запросом, остальные сообщения идут дальше, обрыв отклоняет ожидающие', async () => {
+  const sockets = [], other = [];
+  class FakeSocket { constructor() { this.readyState = 0; sockets.push(this); } send() {} close() { this.readyState = 3; this.onclose?.(); } }
+  const c = createConnection({url:'ws://test', WebSocketImpl:FakeSocket, schedule:() => 0, cancel:() => {}, onOpen:()=>{}, onClose:()=>{}, onMessage:m => other.push(m)});
+  c.connect(); sockets[0].readyState = 1; sockets[0].onopen();
+  const ok = c.request({type:'read', requestId:'a'}), bad = c.request({type:'send', requestId:'b'}), lost = c.request({type:'stop', requestId:'c'});
+  const deliver = m => sockets[0].onmessage({data:JSON.stringify(m)});
+  deliver({type:'reply', requestId:'a', value:1}); deliver({type:'error', requestId:'b', message:'нельзя'}); deliver({type:'sessions', sessions:[]});
+  expect(await ok).toMatchObject({value:1});
+  await expect(bad).rejects.toThrow('нельзя');
+  expect(other).toEqual([{type:'sessions', sessions:[]}]);
+  sockets[0].close();
+  await expect(lost).rejects.toMatchObject({disconnected:true});
 });

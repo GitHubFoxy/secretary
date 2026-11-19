@@ -34,7 +34,7 @@
   <button class="fixed inset-0 z-10 cursor-default bg-black/60" aria-label="Закрыть список" onclick={onclose} transition:fade={{ duration: 200 }}></button>
   <aside class="fixed inset-y-0 left-0 z-20 flex w-80 max-w-[85vw] flex-col border-r border-neutral-900 bg-neutral-950" transition:fly={{ x: -320, duration: 220 }}>
     <div class="flex items-center justify-between border-b border-neutral-900 px-4 py-3">
-      <button class="min-w-0 truncate cursor-pointer text-sm font-semibold text-neutral-100" aria-label="Открыть основной чат" onclick={() => onselect(1)}>Secretary</button>
+      <button class="min-w-0 truncate cursor-pointer text-sm font-semibold text-neutral-100" aria-label="Открыть основной чат" onclick={() => onselect(sessions.find(s => s.secretary).id)}>Secretary</button>
       <button class="icon-btn" aria-label="Закрыть" onclick={onclose}>
         <Icon name="close" />
       </button>

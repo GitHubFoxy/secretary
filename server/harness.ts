@@ -1,32 +1,57 @@
-import type { Subprocess } from 'bun';
 import type { Image } from './images';
 
 // One turn of a harness. Session owns the queue and history; the adapter only speaks the harness protocol.
+// Contract, in order: onSessionId and onEvent any time; onDispatching right before the message is written to the
+// harness (from then on a retry could run it twice); onAccepted at most once, when the harness has the message.
+// Resolves true when the turn completed successfully.
 export type TurnOptions = {
   folder: string; model: string; reasoning: string | null; resumeId: string | null; secretary: boolean;
+  // Aborted when the owner wants the turn to end. Before dispatch the adapter returns without sending;
+  // after it, the adapter asks the harness to stop and kills it if it doesn't within the deadline.
+  interrupt: AbortSignal;
+  // Aborted to kill the harness at once.
+  stop: AbortSignal;
   onSessionId: (id: string) => void;
   onEvent: (event: any) => void;
-  onProcess: (child: Subprocess<'pipe', 'pipe', 'inherit'>) => void;
-  onInterruptable: (interrupt: () => void) => void;
-  // Called right before the message is handed to the harness: after this a retry could run it twice.
   onDispatching: () => void;
-  // The harness has accepted the message.
   onAccepted: () => void;
-  shouldCancel: () => boolean;
 };
 export type Turn = (options: TurnOptions, text: string, images: Image[]) => Promise<boolean>;
 
-// On Linux setsid puts the harness in its own process group, so one signal stops it together with the tools it started.
-// If Secretary itself dies, systemd kills whatever is left (secretary.service uses KillMode=control-group).
-export function spawnHarness(args: string[], cwd: string) {
-  return Bun.spawn(process.platform === 'linux' ? ['setsid', ...args] : args, { cwd, stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' });
+export const harnessTiming = { interruptDeadlineMs: 10_000 };
+
+export function onAbort(signal: AbortSignal, callback: () => void) {
+  if (signal.aborted) callback();
+  else signal.addEventListener('abort', callback, { once: true });
 }
 
-export function killHarness(child: Subprocess) {
-  try {
-    if (process.platform === 'linux') process.kill(-child.pid, 'SIGKILL');
-    else child.kill('SIGKILL');
-  } catch {}
+// On Linux setsid puts the harness in its own process group, so one signal stops it together with the tools it started.
+// If Secretary itself dies, systemd kills whatever is left (secretary.service uses KillMode=control-group).
+export function spawnHarness(args: string[], cwd: string, { interrupt, stop }: Pick<TurnOptions, 'interrupt' | 'stop'>) {
+  const child = Bun.spawn(process.platform === 'linux' ? ['setsid', ...args] : args, { cwd, env: process.env, stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' });
+  let closed = false;
+  let deadline: Timer | undefined;
+  // After the harness exits its process group lives on while any tool it started does, and Linux does not reuse
+  // a pid that is still a process group id, so the group kill below still reaches leftovers and nothing else.
+  const kill = () => {
+    if (closed) return;
+    try {
+      if (process.platform === 'linux') process.kill(-child.pid, 'SIGKILL');
+      else child.kill('SIGKILL');
+    } catch {}
+  };
+  onAbort(stop, kill);
+  onAbort(interrupt, () => { deadline = setTimeout(kill, harnessTiming.interruptDeadlineMs); });
+  return {
+    child,
+    write(message: object) { try { child.stdin.write(JSON.stringify(message) + '\n'); child.stdin.flush(); } catch {} },
+    async close() {
+      clearTimeout(deadline);
+      kill();
+      closed = true;
+      await child.exited;
+    },
+  };
 }
 
 // Reads JSON lines until the stream ends or onLine returns false.

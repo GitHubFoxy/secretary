@@ -1,5 +1,5 @@
 import { expect, test } from 'bun:test';
-import { createInterruptFeedback, interruptSessionFor } from './interrupt-feedback.js';
+import { createInterruptFeedback } from './interrupt-feedback.js';
 
 function fixture() {
   const states = new Map(), timers = new Map();
@@ -46,12 +46,4 @@ test('ответы разных запросов и сессий не смеши
   expect(states.get(1).message).toBe('Ход завершился до подтверждения остановки.');
   feedback.clear(1);
   expect(states.get(1)).toBeNull();
-});
-
-test('общие ошибки без requestId не сопоставляются с очищенным состоянием остановки', () => {
-  const states = {'1':null, '2':{requestId:'stop-2', pending:true}};
-  expect(interruptSessionFor(states, undefined)).toBeNull();
-  expect(interruptSessionFor(states, null)).toBeNull();
-  expect(interruptSessionFor(states, 'unknown')).toBeNull();
-  expect(interruptSessionFor(states, 'stop-2')).toBe(2);
 });
