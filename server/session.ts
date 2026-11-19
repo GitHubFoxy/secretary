@@ -29,7 +29,6 @@ function killTree(pid: number) {
 }
 
 export class Session {
-  // Сколько ждать ответа адаптера на срочное прерывание, прежде чем убить процесс хода (мс).
   static interruptDeadlineMs = 10_000;
   // Срочные сообщения (urgent) всегда стоят впереди обычных, в порядке прихода. urgent — их число.
   private queue: Pending[] = [];
@@ -47,7 +46,6 @@ export class Session {
   private awaitingExit = false;
   private activeItems: Pending[] = [];
   private dispatched = false;
-  // Функция прерывания текущего хода; появляется, когда адаптер уже начал ход.
   private interruptCurrent?: () => void;
   onComplete?: (answer: string) => void;
   private listeners: ((event: unknown) => void)[] = [];
@@ -211,7 +209,6 @@ export class Session {
     this.publish(event);
   }
   private publishQueue() { this.publish({ type: 'queue', items: this.queued() }); }
-  // Сообщения, которые ещё не дошли до адаптера, по порядку отправки (срочные впереди).
   queued() { return this.queue.map(({ id, text, images, urgent }) => ({ id, text, images, urgent })); }
 
   private deletionBlocked() {
@@ -353,7 +350,6 @@ export class Session {
       }
     }
     await process.exited;
-    // Если агент завершился без подтверждения, показываем ошибку и неопределённый статус доставки.
     if (!delivered && !completed && !this.restarting && !this.stopped) this.emit({ type: 'error', message: 'Агент завершился без подтверждения сообщения' });
     this.finish(completed, delivered);
     } catch (error) {
@@ -371,7 +367,6 @@ export class Session {
     }
   }
 
-  // После перезапуска программы подтверждённые, но ещё не начатые сообщения запускаются сразу.
   resumePending() {
     if (!this.running && !this.deleted && !this.deletionBlocked() && this.queue.length) void this.next();
   }
