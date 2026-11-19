@@ -1,3 +1,4 @@
+import { mcpUrl } from './mcp-address';
 import type { Image } from './images';
 import type { ThreadStartParams } from './protocol/v2/ThreadStartParams';
 import type { TurnStartParams } from './protocol/v2/TurnStartParams';
@@ -7,7 +8,7 @@ type Options = { folder: string; model: string; reasoning: string | null; thread
 
 export async function codexTurn(options: Options, text: string, images: Image[] = []) {
   const args = ['codex', 'app-server'];
-  if (options.secretary) args.push('-c', 'mcp_servers.secretary.url="http://127.0.0.1:3001/mcp"');
+  if (options.secretary) args.push('-c', `mcp_servers.secretary.url="${mcpUrl}"`);
   const process = Bun.spawn(globalThis.process.platform === 'linux' ? ['setsid', ...args] : args, { cwd: options.folder, stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' });
   options.onProcess?.(process);
   let id = 0;

@@ -1,3 +1,4 @@
+import { mcpUrl } from './mcp-address';
 import { codexTurn } from './codex';
 import { validateImages, type Image } from './images';
 import { db } from './database';
@@ -321,7 +322,7 @@ export class Session {
       '--dangerously-skip-permissions', '--model', this.row.model];
     if (this.row.reasoning) args.push('--effort', this.row.reasoning);
     if (this.row.harness_session_id) args.push('--resume', this.row.harness_session_id);
-    if (this.row.id === 1) args.push('--mcp-config', JSON.stringify({mcpServers:{secretary:{type:'http',url:'http://127.0.0.1:3001/mcp'}}}));
+    if (this.row.id === 1) args.push('--mcp-config', JSON.stringify({mcpServers:{secretary:{type:'http',url:mcpUrl}}}));
     const process = Bun.spawn(globalThis.process.platform === 'linux' ? ['setsid', ...args] : args, { cwd: this.row.folder, stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' });
     this.recordProcess(process);
     dispatch();

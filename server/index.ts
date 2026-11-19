@@ -1,3 +1,4 @@
+import { mcpPort } from './mcp-address';
 import { authorized, pair } from './auth';
 import { models, modelDetails, claudeModelDetails } from './models';
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
@@ -55,7 +56,7 @@ async function call(name: string, args: any) {
     default: throw new Error('Unknown tool');
   }
 }
-Bun.serve({ hostname:'127.0.0.1', port:3001, async fetch(req) {
+Bun.serve({ hostname:'127.0.0.1', port:mcpPort, async fetch(req) {
   if (new URL(req.url).pathname !== '/mcp' || req.method !== 'POST') return new Response(null,{status:405});
   const msg = await req.json();
   if (msg.id === undefined) return new Response(null,{status:202});
