@@ -18,13 +18,9 @@ _Avoid_: руководитель, chief of agents, роутер, оркестр
 Постоянная личность, которой Secretary Agent поручает работу одного направления: проект, покупки на Ozon и т. п. Живёт в своей папке, имеет свои память, навыки и сессии harness. Если папка Specialist — репозиторий, это проект.
 _Avoid_: Chief of project, bot, profile, persona, worker, subagent
 
-**Secretary Agent Folder**:
-Собственная папка Secretary Agent: его инструкции (`AGENTS.md`), характер, навыки и, возможно, память. Определяет, кто он, а не с какими данными работает.
-_Avoid_: home folder, tmp, inbox, хранилище заметок
-
 **Secretary Persona**:
-Готовые инструкции, характер и навыки Secretary Agent, которые поставляются вместе с Secretary App и копируются в Secretary Agent Folder при первом запуске. Дальше Owner меняет их как хочет.
-_Avoid_: шаблон, preset, профиль
+Инструкции, характер и навыки Secretary Agent — то, что определяет, кто он. Лежит в папке `~/.secretary`. Secretary App поставляет Persona по умолчанию, дальше Owner меняет её как хочет.
+_Avoid_: Secretary Agent Folder, шаблон, профиль, home folder
 
 **Host**:
 Машина, на которой работают harness: свой сервер владельца или облачный контейнер. На ней же работает программа Secretary и хранится состояние.
@@ -36,3 +32,4 @@ _Avoid_: task, worker, тред, процесс
 
 **Immediate message**:
 Сообщение, которое прерывает текущий ход Session и отправляется сразу; когда Session находится в состоянии `idle`, отправляется как обычное сообщение.
+_Avoid_: steer (вмешательство в ход без прерывания — это другое)
