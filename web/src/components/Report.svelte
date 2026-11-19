@@ -46,11 +46,11 @@
   role="presentation" onclick={toggle}>
   <div class="mb-2 flex flex-wrap gap-x-2 text-neutral-400">
     {#if session}
-      <button class="cursor-pointer text-neutral-200 underline" onclick={() => onselect(message.id)}>{session.name || `Сессия #${message.id}`}</button>
+      <button class="cursor-pointer text-neutral-200 underline" onclick={() => onselect(message.report.id)}>{session.name || `Сессия #${message.report.id}`}</button>
     {:else}
-      <span>Сессия #{message.id}</span>
+      <span>Сессия #{message.report.id}</span>
     {/if}
-    <span>{message.harness}</span><span class="break-all">{message.folder}</span>
+    <span>{message.report.harness}</span><span class="break-all">{message.report.folder}</span>
     <button class="sr-only focus:not-sr-only focus:cursor-pointer focus:text-neutral-200 focus:underline" aria-expanded={expanded} onclick={() => expanded = !expanded}>{expanded ? 'Свернуть отчёт' : 'Развернуть отчёт'}</button>
   </div>
   <div class="relative min-w-0">

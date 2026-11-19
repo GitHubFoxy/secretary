@@ -46,18 +46,18 @@
       <p class="py-16 text-center text-sm text-neutral-600">{!connected ? 'Нет соединения. Повторное подключение…' : !historyLoaded ? 'Загрузка сообщений…' : 'Сообщений пока нет'}</p>
     {/if}
     {#each messages as m (m.key)}
-      {#if m.role === 'Отчёт'}
+      {#if m.kind === 'report'}
         <div class="flex justify-start">
-          <Report message={m} session={sessions.find(s => s.id === m.id)} {onselect} />
+          <Report message={m} session={sessions.find(s => s.id === m.report.id)} {onselect} />
         </div>
-      {:else if m.role === 'Вы' || m.role === 'В очереди' || m.role === 'Не отправлено' || m.role === 'Доставка неизвестна'}
+      {:else if m.kind === 'user' || m.kind === 'queued' || m.kind === 'cancelled' || m.kind === 'uncertain'}
         <div class="flex flex-col items-end gap-1">
-          {#if m.role === 'В очереди'}<span class="text-xs text-neutral-500">{m.urgent ? 'В очереди, срочное' : 'В очереди'}</span>{/if}
-          {#if m.role === 'Не отправлено'}<span class="text-xs text-neutral-500">Не отправлено: сессия остановлена</span>{/if}
-          {#if m.role === 'Доставка неизвестна'}<span class="text-xs text-neutral-400">Неизвестно, получил ли агент сообщение</span>{/if}
-          <div class="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-neutral-800 px-4 py-2.5 text-[15px] leading-relaxed text-neutral-100 {m.role === 'В очереди' ? 'opacity-60' : ''} {m.role === 'Не отправлено' ? 'line-through opacity-50' : ''}">{#each m.images || [] as image}<a href={'data:' + image.type + ';base64,' + image.data} target="_blank" rel="noopener"><img class="my-2 max-h-80 max-w-full rounded-lg" src={'data:' + image.type + ';base64,' + image.data} alt="Прикреплённое изображение" /></a>{/each}{m.text}</div>
+          {#if m.kind === 'queued'}<span class="text-xs text-neutral-500">{m.urgent ? 'В очереди, срочное' : 'В очереди'}</span>{/if}
+          {#if m.kind === 'cancelled'}<span class="text-xs text-neutral-500">Не отправлено: сессия остановлена</span>{/if}
+          {#if m.kind === 'uncertain'}<span class="text-xs text-neutral-400">Неизвестно, получил ли агент сообщение</span>{/if}
+          <div class="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-neutral-800 px-4 py-2.5 text-[15px] leading-relaxed text-neutral-100 {m.kind === 'queued' ? 'opacity-60' : ''} {m.kind === 'cancelled' ? 'line-through opacity-50' : ''}">{#each m.images as image}<a href={'data:' + image.type + ';base64,' + image.data} target="_blank" rel="noopener"><img class="my-2 max-h-80 max-w-full rounded-lg" src={'data:' + image.type + ';base64,' + image.data} alt="Прикреплённое изображение" /></a>{/each}{m.text}</div>
         </div>
-      {:else if m.role === 'Ошибка'}
+      {:else if m.kind === 'error'}
         <div class="flex justify-start">
           <p class="max-w-[85%] whitespace-pre-wrap break-words text-[15px] leading-relaxed text-red-400"><span class="sr-only">Ошибка: </span>{m.text}</p>
         </div>

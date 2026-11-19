@@ -16,7 +16,7 @@ test('обновляет старую базу без потери данных 
       const run = Bun.spawnSync([process.execPath, '--eval', `
         const {db} = await import(${source});
         const row = db.query('SELECT * FROM sessions WHERE id = 1').get();
-        if (row.model !== 'opus' || row.hidden !== 0 || row.process_uncontained !== 1) throw Error('migration lost data');
+        if (row.model !== 'opus' || row.hidden !== 0) throw Error('migration lost data');
         db.close();
       `], {cwd:dir, stdout:'pipe', stderr:'pipe'});
       expect({code:run.exitCode, stderr:run.stderr.toString()}).toEqual({code:0, stderr:''});
@@ -24,14 +24,3 @@ test('обновляет старую базу без потери данных 
   } finally { rmSync(dir, {recursive:true, force:true}); }
 });
 
-test('ошибка несовместимой схемы не подавляется', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'secretary-migration-error-'));
-  try {
-    const old = new Database(join(dir, 'secretary.sqlite'));
-    old.run('CREATE VIEW sessions AS SELECT 1 AS id');
-    old.close();
-    const run = Bun.spawnSync([process.execPath, '--eval', `await import(${JSON.stringify(import.meta.dir + '/database.ts')})`], {cwd:dir, stdout:'pipe', stderr:'pipe'});
-    expect(run.exitCode).not.toBe(0);
-    expect(run.stderr.toString()).toContain('view');
-  } finally { rmSync(dir, {recursive:true, force:true}); }
-});

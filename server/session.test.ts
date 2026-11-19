@@ -3,65 +3,30 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-test('session deletion persists, preserves children, and ignores late callbacks', () => {
-  const directory = mkdtempSync(join(tmpdir(), 'secretary-delete-'));
+test('сессии: удаление, видимость и смена harness', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'secretary-session-'));
   try {
     const result = Bun.spawnSync([process.execPath, '--eval', `
       import { expect } from 'bun:test';
-      const { Session, db } = await import(${JSON.stringify(import.meta.dir + '/session.ts')});
+      const { Session } = await import(${JSON.stringify(import.meta.dir + '/session.ts')});
       const secretary = Session.create('opus', '.');
-      secretary.setName('  Главный чат  ');
-      expect(secretary.info.name).toBe('Главный чат');
+      expect(() => secretary.delete()).toThrow('Cannot delete secretary');
+      expect(() => secretary.setHidden(true)).toThrow();
+      expect(() => Session.create('opus', '/home/user/.secretary/agents').setHidden(true)).toThrow();
       expect(() => secretary.setName('   ')).toThrow();
-      expect(() => secretary.setName('x'.repeat(101))).toThrow();
-      await expect(secretary.delete()).rejects.toThrow('Cannot delete secretary');
+
       const parent = Session.create('opus', '.');
       const child = Session.create('opus', '.', 'claude', parent.id, 'Проверка', 'high');
-      expect(Session.get(child.id).info).toMatchObject({name:'Проверка', reasoning:'high'});
-      child.setName('Специалист');
-      expect(Session.get(child.id).info.name).toBe('Специалист');
-      child.setName('Проверка');
-      child.setReasoning('low');
-      expect(Session.get(child.id).info.reasoning).toBe('low');
-      child.setReasoning(null);
-      expect(Session.get(child.id).info.reasoning).toBeNull();
-      child.setReasoning('high');
-      child.switchHarness('codex', 'test');
-      expect(Session.get(child.id).info).toMatchObject({name:'Проверка', reasoning:null});
-      parent.emit({type:'user', message:{content:'history'}});
-      child.emit({type:'user', message:{content:'keep'}});
-      await parent.delete();
+      child.setHidden(true);
+      expect(Session.get(child.id).info.hidden).toBe(1);
+
+      child.onEvent(() => {});
+      parent.delete();
       expect(Session.get(parent.id)).toBeNull();
-      expect(parent.events()).toEqual([]);
       expect(child.info.parent_id).toBeNull();
-      expect(child.events()).toHaveLength(1);
-      const active = Session.create('opus', '.');
-      const worker = Bun.spawn(['sleep', '60']);
-      active.recordProcess(worker);
-      active.running = true;
-      active.queue = ['queued'];
-      let reported = false;
-      active.onComplete = () => { reported = true; };
-      await expect(active.delete()).rejects.toThrow('Не удалось подтвердить');
-      expect(active.queue).toEqual(['queued']);
-      worker.kill();
-      await worker.exited;
-      active.queue = [];
-      active.running = false;
-      active.process = undefined;
-      const replacement = Session.create('opus', '.');
-      await expect(active.delete()).rejects.toThrow('Не удалось подтвердить');
-      expect(replacement.info.status).toBe('idle');
-      expect(replacement.events()).toEqual([]);
-      expect(reported).toBe(false);
-      db.close();
-      const { Database } = await import('bun:sqlite');
-      const reopened = new Database('secretary.sqlite');
-      expect(reopened.query('SELECT name FROM sessions WHERE id = ?').get(secretary.id)).toEqual({name:'Главный чат'});
-      expect(reopened.query('SELECT name FROM sessions WHERE id = ?').get(child.id)).toEqual({name:'Проверка'});
-      expect(reopened.query('SELECT * FROM sessions WHERE id = ?').get(parent.id)).toBeNull();
-      expect(reopened.query('SELECT * FROM events WHERE session_id = ?').all(parent.id)).toEqual([]);
-      reopened.close();
+
+      child.configure('claude', 'sonnet', 'low');
+      expect(child.info).toMatchObject({ model: 'sonnet', reasoning: 'low' });
     `], { cwd: directory, stdout: 'pipe', stderr: 'pipe' });
     expect({ exitCode: result.exitCode, stderr: result.stderr.toString() }).toEqual({ exitCode: 0, stderr: '' });
   } finally {

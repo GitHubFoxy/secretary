@@ -4,7 +4,6 @@
   import { createInterruptFeedback, interruptSessionFor } from './interrupt-feedback.js';
   import { createUpdateChecker } from './updates.js';
   import { keyboardInset } from './viewport.js';
-  import { visibleMessage, userMessage, queuedMessage, keyedMessages } from './messages.js';
   import TopBar from './components/TopBar.svelte';
   import SessionDrawer from './components/SessionDrawer.svelte';
   import SettingsPanel from './components/SettingsPanel.svelte';
@@ -13,9 +12,9 @@
   import Modal from './components/Modal.svelte';
   import Icon from './components/Icon.svelte';
 
-  let settingsLoaded = false, historyLoaded = false;
+  let historyLoaded = false;
   let historyHasMore = false, historyLoadingOlder = false, historyRequestId = null, historyRequestAll = false, historyVersion = 0, historyStartAtTop = false;
-  let sessions = [], events = [], queue = [], selected = 1, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
+  let sessions = [], history = [], queue = [], selected = 1, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], pendingSend = null;
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   let agentsOriginal = '', agentsSaving = false;
@@ -38,20 +37,18 @@
     onMessage: handleMessage,
   });
   const send = value => connection.send(value);
-  const refresh = () => send({type:'list'});
   function requestHistory(id, all = false) { historyRequestId = crypto.randomUUID(); historyRequestAll = all; historyLoadingOlder = all; if (!send({type:'read', id, all, requestId:historyRequestId})) historyLoadingOlder = false; }
-  function select(id) { if (selected !== id) { events = []; queue = []; } selected = id; historyLoaded = false; historyHasMore = false; drawerOpen = false; requestHistory(id); const s = sessions.find(s => s.id === id); if (s) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
+  function select(id) { if (selected !== id) { history = []; queue = []; } selected = id; historyLoaded = false; historyHasMore = false; drawerOpen = false; requestHistory(id); }
   function handleMessage(e) {
     const msg = JSON.parse(e.data);
-    if (msg.type === 'sessions') { sessions = msg.sessions; if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select(sessions[0].id); } const s = sessions.find(s => s.id === selected); if (s && !settingsLoaded) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; settingsLoaded = true; } }
-    if (msg.type === 'history' && msg.id === selected && msg.requestId === historyRequestId) { events = msg.events; queue = msg.queue || []; historyLoaded = true; historyHasMore = msg.hasMore; historyLoadingOlder = false; historyStartAtTop = historyRequestAll; historyVersion++; }
-    // Очередь приходит отдельными событиями и в историю не попадает: заменяем список целиком.
-    if (msg.type === 'event' && msg.sessionId === selected && msg.event.type === 'queue') queue = msg.event.items;
-    else if (msg.type === 'event') { if (msg.sessionId === selected) events = [...events, msg.event]; refresh(); }
+    if (msg.type === 'sessions') { sessions = msg.sessions; if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select(sessions[0].id); } }
+    if (msg.type === 'history' && msg.id === selected && msg.requestId === historyRequestId) { history = msg.messages; queue = msg.queue; historyLoaded = true; historyHasMore = msg.hasMore; historyLoadingOlder = false; historyStartAtTop = historyRequestAll; historyVersion++; }
+    if (msg.type === 'message' && msg.sessionId === selected) history = [...history, msg.message];
+    if (msg.type === 'queue' && msg.sessionId === selected) queue = msg.items;
     if (msg.type === 'created') { select(msg.id); settingsOpen = false; }
     if (msg.type === 'sent' && pendingSend?.id === msg.requestId) { if (message === pendingSend.text && images === pendingSend.images) { message = ''; images = []; } pendingSend = null; }
     if (msg.type === 'interrupt_ack') interruptFeedback.ack(msg.sessionId, msg.requestId, msg.accepted);
-    if (msg.type === 'event' && msg.event.type === 'interrupt_result') interruptFeedback.result(msg.sessionId, msg.event.requestId, msg.event.outcome);
+    if (msg.type === 'interrupt_result') interruptFeedback.result(msg.sessionId, msg.requestId, msg.outcome);
     if (msg.type === 'error') {
       if (msg.requestId === historyRequestId) historyLoadingOlder = false;
       const interrupted = interruptSessionFor(interruptStates, msg.requestId);
@@ -61,10 +58,11 @@
     }
   }
   function submit(immediate = false) { if (!connected || pendingSend || (!message.trim() && !images.length)) return; const id = crypto.randomUUID(); pendingSend = {id, text:message, images}; if (!interruptStates[selected]?.pending) interruptFeedback.clear(selected); send({type:'send',id:selected,text:message,images,immediate,requestId:id}); }
+  // The settings form edits a copy of the selected session's harness, model and reasoning.
+  function loadSettings() { if (!current) return; harness = current.harness; model = current.model; reasoning = current.reasoning ?? null; }
   function saveSettings() {
-    const s = sessions.find(s => s.id === selected);
-    if (!s) return;
-    if (s.harness !== harness && !confirm('Текущий контекст будет потерян. Продолжить?')) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; return; }
+    if (!current) return;
+    if (current.harness !== harness && !confirm('Текущий контекст будет потерян. Продолжить?')) { loadSettings(); return; }
     send({type:'settings', id:selected, harness, model, reasoning}); settingsOpen = false;
   }
   function stop() { send({type:'stop', id:selected}); }
@@ -76,15 +74,15 @@
     catch { interruptFeedback.fail(id, requestId, 'нет соединения'); }
   }
   function hideSession(session) {
-    if (!connected || session.id === 1) return;
+    if (!connected) return;
     error = '';
     send({type:'visibility', id:session.id, hidden:true});
   }
   function restoreSession(session) { if (connected) { error = ''; send({type:'visibility', id:session.id, hidden:false}); } }
-  function openSettings() { const s = sessions.find(s => s.id === selected); if (s) { harness = s.harness; model = s.model; reasoning = s.reasoning ?? null; } settingsOpen = true; }
+  function openSettings() { loadSettings(); settingsOpen = true; }
   function openRename() { newName = current?.name || (selected === 1 ? 'Secretary' : `Сессия #${selected}`); settingsOpen = false; renameOpen = true; }
   function rename() { if (!connected || !newName.trim()) return; error = ''; send({type:'rename', id:selected, name:newName}); renameOpen = false; }
-  function createThread() { const folder = sessions.find(s => s.id === selected)?.folder; if (!folder) return; send({type:'create', harness, model, folder}); }
+  function createThread() { if (current) send({type:'create', harness, model, folder:current.folder}); }
   async function loadAgents() {
     agentsLoaded = false;
     agentsStatus = 'Загрузка…';
@@ -113,17 +111,11 @@
     } finally { agentsSaving = false; }
   }
   function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); }
-  function text(event) {
-    if (event.type === 'user' && typeof event.message?.content === 'string') return {...userMessage(event.message.content), images:event.images || []};
-    if (event.type === 'result') return {role:'Агент', text:event.result};
-    if (event.method === 'item/completed' && event.params.item.type === 'agentMessage') return {role:'Агент', text:event.params.item.text};
-    if (event.type === 'error') return {role:'Ошибка', text:event.message};
-    if (event.type === 'cancelled') return {role:'Не отправлено', text:event.text, images:event.images || []};
-    if (event.type === 'delivery_uncertain') return {role:'Доставка неизвестна', text:event.text, images:event.images || []};
-    return null;
-  }
-  // Сначала история, затем очередь: сообщения из очереди ещё не приняты агентом и стоят после уже отправленных.
-  $: messages = keyedMessages(events, queue, selected, text);
+  // Queued messages are not accepted by the agent yet, so they come after history.
+  $: messages = [
+    ...history.map((m, index) => ({...m, key:`${selected}:${index}`})),
+    ...queue.map(item => ({kind:'queued', text:item.text, images:item.images, urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
+  ];
   $: current = sessions.find(s => s.id === selected);
 
   // Высота поля ввода и высота экранной клавиатуры (iOS не сжимает layout viewport, поэтому берём visualViewport).

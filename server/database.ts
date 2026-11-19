@@ -11,9 +11,6 @@ db.run(`CREATE TABLE IF NOT EXISTS sessions (
   id INTEGER PRIMARY KEY, parent_id INTEGER, harness TEXT NOT NULL, model TEXT NOT NULL,
   folder TEXT NOT NULL, harness_session_id TEXT, status TEXT NOT NULL
 )`);
-addColumn('sessions', 'process_identity TEXT');
-addColumn('sessions', 'deletion_processes TEXT');
-addColumn('sessions', 'process_uncontained INTEGER NOT NULL DEFAULT 1');
 addColumn('sessions', 'name TEXT');
 addColumn('sessions', 'reasoning TEXT');
 addColumn('sessions', 'hidden INTEGER NOT NULL DEFAULT 0');

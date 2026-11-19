@@ -1,14 +1,11 @@
 <script>
   import { fade, fly } from 'svelte/transition';
   import Icon from './Icon.svelte';
-  import { showInSidebar } from '../sessions.js';
   let { open = false, sessions = [], selected, connected = false, onhide, onrestore, onselect, onclose, onprofile } = $props();
 
   let hiddenOpen = $state(false);
-  const visibleSessions = $derived(sessions.filter(s => showInSidebar(s) && !s.hidden));
-  const hiddenSessions = $derived(sessions.filter(s => showInSidebar(s) && s.hidden));
-
-  const lastEvent = s => s.last_event?.type === 'status' ? s.last_event.status : s.last_event?.method || s.last_event?.type || '';
+  const visibleSessions = $derived(sessions.filter(s => !s.internal && !s.hidden));
+  const hiddenSessions = $derived(sessions.filter(s => !s.internal && s.hidden));
 </script>
 
 <svelte:window onkeydown={e => { if (open && e.key === 'Escape') onclose(); }} />
@@ -20,7 +17,6 @@
       <span class="block truncate text-sm {selected === s.id ? 'text-neutral-100' : 'text-neutral-300'}">{title}</span>
       <span class="mt-0.5 block truncate text-xs text-neutral-500">{s.status} · {s.model} · {s.reasoning ?? 'по умолчанию'}</span>
       <span class="block truncate text-xs text-neutral-600">{s.folder}</span>
-      {#if lastEvent(s)}<span class="block truncate text-xs text-neutral-600">{lastEvent(s)}</span>{/if}
     </button>
     {#if s.hidden}
       <button class="icon-btn mr-1 shrink-0 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Вернуть сессию ${title} в список`} title="Вернуть в список" disabled={!connected} onclick={() => onrestore(s)}>
