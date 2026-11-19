@@ -101,6 +101,16 @@ test('остановка отменяет очередь и в базе, ход 
   expect(pending(db)).toBe(0);
 });
 
+test('сообщение, отправленное во время завершения остановленного хода, уходит после него', async () => {
+  const { calls, create } = setup();
+  const s = await create();
+  s.send('a');
+  s.stop();
+  s.send('b');
+  calls[0].end(false); await tick();
+  expect(calls.map(c => c.text)).toEqual(['a', 'b']);
+});
+
 test('сбой запуска оставляет сообщение в очереди, сбой после отправки не останавливает очередь', async () => {
   const { calls, create } = setup();
   const s = await create();

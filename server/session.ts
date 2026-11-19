@@ -157,17 +157,16 @@ export class Session {
 
   private finish(turn: ActiveTurn, completed: boolean) {
     // Messages of the turn that never reached history: cancelled if the harness never saw them, uncertain if it might have.
-    const unresolved = turn.userInterrupt || (turn.dispatched && !turn.accepted)
-      ? this.queue.drop(turn.items, turn.dispatched ? 'delivery_uncertain' : 'cancelled') : 0;
+    if (turn.userInterrupt || (turn.dispatched && !turn.accepted)) this.queue.drop(turn.items, turn.dispatched ? 'delivery_uncertain' : 'cancelled');
     const requestId = turn.userInterrupt?.requestId;
     if (requestId) this.publish({ type: 'interrupt_result', requestId, outcome: completed ? 'completed' : 'ended' });
     this.turn = undefined;
     // A turn interrupted for an urgent message is not finished: status stays running, no report.
     if (!this.stopped && turn.restarting && !completed && this.queue.length) { void this.next(); return; }
     this.setStatus(this.stopped ? 'stopped' : completed || turn.userInterrupt ? 'idle' : 'interrupted');
-    // After an uncertain delivery the queue goes on without repeating that message.
-    // A failure before dispatch keeps the message queued, so a broken launch does not loop.
-    if (!this.stopped && (completed || turn.accepted || unresolved) && this.queue.length) void this.next();
+    // The queue goes on once the turn's messages have left it, whichever way. A failure before dispatch keeps them queued,
+    // so a broken launch does not loop; resumePending or the next message retries.
+    if (!this.stopped && !turn.items.some(item => this.queue.has(item)) && this.queue.length) void this.next();
     if (completed && !turn.userInterrupt) {
       try { this.onComplete?.(turn.answer); } catch (error) { console.error('Report failed', error); }
     }

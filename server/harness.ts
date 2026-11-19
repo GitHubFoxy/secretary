@@ -31,6 +31,8 @@ export function spawnHarness(args: string[], cwd: string, { interrupt, stop }: P
   const child = Bun.spawn(process.platform === 'linux' ? ['setsid', ...args] : args, { cwd, env: process.env, stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' });
   let closed = false;
   let deadline: Timer | undefined;
+  // After the harness exits its process group lives on while any tool it started does, and Linux does not reuse
+  // a pid that is still a process group id, so the group kill below still reaches leftovers and nothing else.
   const kill = () => {
     if (closed) return;
     try {
