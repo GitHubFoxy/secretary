@@ -2,7 +2,7 @@
 
 # Secretary v2
 
-Установка и запуск: `bun install --cwd web`, затем `bun run start`. Сервер слушает `127.0.0.1:3000`. Для удалённого доступа нужен HTTPS через Tailscale Serve. Claude Code и Codex должны быть установлены и авторизованы.
+Установка и запуск: `bun install --cwd web`, затем `bun run start`. Сервер слушает `127.0.0.1:3000`. Для удалённого доступа нужен HTTPS: на omarchy сервер опубликован через Cloudflare Tunnel (`secretary-tunnel.service`) по адресу `app.scrtrbot.ru`. Устройство архитектуры описано в `docs/architecture.md`. Claude Code и Codex должны быть установлены и авторизованы.
 
 SQLite хранится в `server/secretary.sqlite`. Настройки Secretary Agent создаются в `~/.secretary/` при первом запуске.
 
