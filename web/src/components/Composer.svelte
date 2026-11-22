@@ -2,6 +2,7 @@
   import { onDestroy } from 'svelte';
   import Icon from './Icon.svelte';
   import { duration, wavFromRecording } from '../voice.js';
+  import { prepareImage } from '../prepare-image.js';
   // onsubmit(immediate): true — прервать идущий ход и отправить сразу (правая кнопка и Enter), false — добавить в очередь (левая кнопка во время хода).
   let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, sessionId, onsubmit, oninterrupt, onvoice } = $props();
   let imageError = $state('');
@@ -90,22 +91,23 @@
     observer.observe(area);
     return () => observer.disconnect();
   });
-  async function add(files) {
+  function add(files) {
     imageError = '';
     const selected = Array.from(files);
     if (images.length + selected.length > 4) { imageError = 'Можно прикрепить не более 4 изображений'; return; }
-    for (const file of selected) {
-      if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024) { imageError = 'Выберите PNG, JPEG, GIF или WebP размером до 5 МБ'; return; }
-    }
-    try {
-      const added = await Promise.all(selected.map(file => new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve({type:file.type, data:reader.result.split(',')[1]});
-        reader.onerror = () => reject(new Error('Не удалось прочитать изображение'));
-        reader.readAsDataURL(file);
-      })));
-      images = [...images, ...added];
-    } catch (e) { imageError = e.message; }
+    const added = selected.map(file => {
+      const image = {url:URL.createObjectURL(file), processing:true};
+      image.ready = prepareImage(file).then(data => ({data}), error => ({error:error.message})).then(result => {
+        images = images.map(item => item === image ? {...item, processing:false, error:result.error} : item);
+        return result;
+      });
+      return image;
+    });
+    images = [...images, ...added];
+  }
+  function remove(image) {
+    URL.revokeObjectURL(image.url);
+    images = images.filter(item => item !== image);
   }
   function paste(e) {
     const files = Array.from(e.clipboardData?.files || []).filter(file => file.type.startsWith('image/'));
@@ -128,7 +130,7 @@
 <form class="px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2" onsubmit={e => { e.preventDefault(); submit(); }}>
   {#if voiceError}<p role="alert" class="mx-auto max-w-3xl text-sm text-red-400">{voiceError}</p>{/if}
   {#if imageError}<p role="alert" class="mx-auto max-w-3xl text-sm text-red-400">{imageError}</p>{/if}
-  <div class="mx-auto flex max-w-3xl flex-wrap gap-2">{#each images as image, i}<div class="relative"><img class="h-20 rounded" src={'data:' + image.type + ';base64,' + image.data} alt="Изображение для отправки" /><button type="button" class="absolute right-0 top-0 bg-neutral-900 px-1" aria-label="Удалить изображение" onclick={() => images = images.filter((_, index) => index !== i)}>×</button></div>{/each}</div>
+  <div class="mx-auto flex max-w-3xl flex-wrap gap-2">{#each images as image}<div class="relative"><img class="h-20 rounded" src={image.url} alt="Изображение для отправки" />{#if image.processing}<span role="status" class="absolute bottom-0 left-0 bg-neutral-900/80 px-1 text-xs">Обработка…</span>{/if}{#if image.error}<span role="alert" class="absolute bottom-0 left-0 bg-red-900 px-1 text-xs">{image.error}</span>{/if}<button type="button" class="absolute right-0 top-0 bg-neutral-900 px-1" aria-label="Удалить изображение" onclick={() => remove(image)}>×</button></div>{/each}</div>
   <div bind:this={row} role="group" onpointermove={move} onpointerup={up} onpointercancel={() => { press = null; if (recording && !recording.locked) stop(false); }} class="relative mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-neutral-800 bg-neutral-900 p-2 shadow-lg shadow-black/40 transition-colors focus-within:border-neutral-600">
     {#if hint}<div class="pointer-events-none absolute -top-10 right-0 rounded-lg bg-neutral-800 px-3 py-1.5 text-xs text-neutral-300">{hint}</div>{/if}
     {#if recording?.locked}
@@ -142,7 +144,7 @@
     <div class="pointer-events-none absolute -top-[72px] right-0 flex h-16 w-10 flex-col items-center justify-center gap-0.5 rounded-full border border-neutral-700 bg-neutral-900 text-neutral-400" style:transform="translateY({recording.dy / 2}px)"><Icon name="lock" class="size-4" /><Icon name="chevron" class="size-4 rotate-180" /></div>
     <div class="pointer-events-none absolute -right-3 top-1/2 -mt-8 grid size-16 place-items-center rounded-full bg-red-600 text-white shadow-[0_0_0_8px_rgba(220,38,38,0.25)]" style:transform="translate({recording.dx}px, {recording.dy}px)"><Icon name="microphone" class="size-6" /></div>
     {:else}
-    <label class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-xl bg-neutral-800 text-neutral-400 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2" title="Прикрепить изображение"><Icon name="paperclip" /><span class="sr-only">Прикрепить изображение</span><input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple class="sr-only" {disabled} onchange={e => { add(e.currentTarget.files); e.currentTarget.value = ''; }} /></label>
+    <label class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-xl bg-neutral-800 text-neutral-400 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2" title="Прикрепить изображение"><Icon name="paperclip" /><span class="sr-only">Прикрепить изображение</span><input type="file" accept="image/*" multiple class="sr-only" {disabled} onchange={e => { add(e.currentTarget.files); e.currentTarget.value = ''; }} /></label>
     <label class="sr-only" for="message">Сообщение</label>
     <textarea
       id="message"
