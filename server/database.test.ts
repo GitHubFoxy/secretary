@@ -3,7 +3,26 @@ import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openDatabase } from './database';
+import { migrateDatabase, openDatabase } from './database';
+
+test('переносит историю из WAL и не заменяет существующую базу', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'secretary-copy-'));
+  try {
+    const source = join(dir, 'old.sqlite');
+    const destination = join(dir, 'new.sqlite');
+    const old = new Database(source);
+    old.run('PRAGMA journal_mode = WAL');
+    old.run('CREATE TABLE history (message TEXT)');
+    old.run("INSERT INTO history VALUES ('сохранено')");
+    migrateDatabase(source, destination);
+    old.run("INSERT INTO history VALUES ('позже')");
+    migrateDatabase(source, destination);
+    const copy = new Database(destination);
+    expect(copy.query('SELECT message FROM history').all()).toEqual([{ message: 'сохранено' }]);
+    copy.close();
+    old.close();
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
 
 test('обновляет старую базу без потери данных и повторно открывает её', () => {
   const dir = mkdtempSync(join(tmpdir(), 'secretary-migration-'));
