@@ -1,4 +1,4 @@
-import { constants, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
 export const SECRETARY_PROMPT = `# Secretary Agent
 
@@ -95,7 +95,7 @@ export function ensurePersona(folder: string) {
     const content = readFileSync(path, 'utf8');
     if (/^## Системный контракт(?:[^\n]*)$/m.test(content)) {
       const preferences = content.match(/^## Предпочтения владельца[^\n]*\n[\s\S]*?(?=^## |$(?![\s\S]))/m)?.[0] ?? DEFAULT_PREFERENCES;
-      copyFileSync(path, `${path}.bak`, constants.COPYFILE_EXCL);
+      copyFileSync(path, `${path}.bak`);
       writeFileSync(path, preferences);
     }
   }
