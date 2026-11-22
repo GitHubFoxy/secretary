@@ -32,6 +32,15 @@ export class MessageQueue {
     this.publishQueue();
   }
 
+  promote(id: unknown, active: Message[]) {
+    const item = this.items.find(item => item.id === id && !active.includes(item));
+    if (!item) throw new Error('Сообщение уже отправляется или отсутствует в очереди');
+    this.db.query('UPDATE pending_messages SET urgent = 1 WHERE id = ?').run(item.id);
+    item.urgent = true;
+    this.items.sort((a, b) => Number(b.urgent) - Number(a.urgent) || a.id - b.id);
+    this.publishQueue();
+  }
+
   // The next turn: all waiting urgent messages together, so they don't wait for each other; otherwise one ordinary message.
   peek() {
     return this.items[0]?.urgent ? this.items.filter(item => item.urgent) : this.items.slice(0, 1);

@@ -34,6 +34,35 @@ const history = (s: Session) => s.events().filter(e => ['user', 'cancelled', 'de
 const statuses = (s: Session) => s.events().filter(e => e.type === 'status').map(e => e.status);
 const pending = (db: Database) => (db.query('SELECT COUNT(*) AS n FROM pending_messages').get() as { n: number }).n;
 
+test('выбранное сообщение из очереди прерывает ход, остальные сохраняют порядок', async () => {
+  const { db, calls, create } = setup();
+  const s = await create();
+  s.send('ход'); calls[0].start();
+  s.send('первое'); s.send('выбранное'); s.send('последнее');
+  const id = s.queue.list()[1].id;
+  s.sendQueued(id);
+  expect(calls[0].options.interrupt.aborted).toBe(true);
+  expect(s.queue.list().map(m => m.text)).toEqual(['выбранное', 'первое', 'последнее']);
+  expect((db.query('SELECT urgent FROM pending_messages WHERE id = ?').get(id) as { urgent: number }).urgent).toBe(1);
+  calls[0].end(false); await tick();
+  expect(calls[1].text).toBe('выбранное');
+  calls[1].start(); calls[1].answer('ok'); await tick();
+  expect(calls[2].text).toBe('первое');
+  calls[2].start(); calls[2].answer('ok'); await tick();
+  expect(calls[3].text).toBe('последнее');
+  expect(() => s.sendQueued(id)).toThrow();
+});
+
+test('сообщение активного хода нельзя отправить повторно из очереди', async () => {
+  const { calls, create } = setup();
+  const s = await create();
+  s.send('ход');
+  const id = s.queue.list()[0].id;
+  calls[0].options.onDispatching();
+  expect(() => s.sendQueued(id)).toThrow();
+  expect(calls[0].options.interrupt.aborted).toBe(false);
+});
+
 test('Immediate message прерывает ход и идёт раньше обычных, срочные уходят одним ходом', async () => {
   const { db, calls, create } = setup();
   const s = await create();

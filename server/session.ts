@@ -100,6 +100,16 @@ export class Session {
     this.stopped = false;
     const urgent = immediate && !!this.turn;
     this.queue.add(text, images, urgent);
+    this.startOrInterrupt(urgent);
+  }
+
+  sendQueued(id: unknown) {
+    this.queue.promote(id, this.turn?.items ?? []);
+    this.stopped = false;
+    this.startOrInterrupt(true);
+  }
+
+  private startOrInterrupt(urgent: boolean) {
     if (!this.turn) void this.next();
     else if (urgent) { this.turn.restarting = true; this.turn.interrupt.abort(); }
   }
