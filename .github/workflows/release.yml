@@ -1,0 +1,24 @@
+name: Release
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.5
+      - run: bun install --cwd web --frozen-lockfile
+      - run: bun run --cwd web build
+      - run: |
+          tar -czf secretary.tar.gz server web/dist secretary install.sh update.sh
+          sha256sum secretary.tar.gz > secretary.tar.gz.sha256
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            secretary.tar.gz
+            secretary.tar.gz.sha256
