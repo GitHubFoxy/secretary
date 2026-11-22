@@ -125,7 +125,7 @@
   // Queued messages are not accepted by the agent yet, so they come after history.
   $: messages = [
     ...history.map((m, index) => ({...m, key:`${selected}:${index}`})),
-    ...queue.map(item => ({kind:'queued', text:item.text, images:item.images, urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
+    ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:item.images, urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
   ];
   $: current = sessions.find(s => s.id === selected);
   $: title = current?.name || (current?.secretary ? 'Secretary' : `Сессия #${selected}`);
@@ -207,7 +207,7 @@
 
     <div bind:this={chatViewport} class="relative flex min-h-0 flex-1 flex-col">
       {#key historyVersion}
-        <MessageList {messages} {sessions} {historyLoaded} {connected} {historyHasMore} {historyLoadingOlder} startAtTop={historyStartAtTop} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} />
+        <MessageList {messages} {sessions} {historyLoaded} {connected} {historyHasMore} {historyLoadingOlder} startAtTop={historyStartAtTop} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} />
       {/key}
 
       <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->

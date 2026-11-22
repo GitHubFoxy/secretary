@@ -40,6 +40,7 @@ function sameOrigin(request: Request, url: URL) {
 const commands: Record<string, (cmd: any) => unknown> = {
   read: cmd => { const s = sessions.get(cmd.id); return { ...chatHistoryPage(db, s.id, cmd.all === true), queue: s.queue.list() }; },
   send: cmd => { sessions.get(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true); },
+  sendQueued: cmd => { sessions.get(cmd.id).sendQueued(cmd.messageId); },
   stop: cmd => { sessions.stop(cmd.id); },
   interrupt: cmd => ({ accepted: sessions.get(cmd.id).interrupt(cmd.requestId) }),
   rename: cmd => { sessions.get(cmd.id).setName(cmd.name); publishSessions(); },
