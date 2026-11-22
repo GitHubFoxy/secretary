@@ -7,6 +7,7 @@ import android.view.WindowManager
 import android.webkit.CookieManager
 import com.getcapacitor.BridgeActivity
 import com.getcapacitor.CapConfig
+import org.json.JSONObject
 
 class MainActivity : BridgeActivity() {
     private fun applyAssistIntent(intent: Intent?) {
@@ -25,6 +26,7 @@ class MainActivity : BridgeActivity() {
         applyAssistIntent(intent)
         val host = getSharedPreferences("host", MODE_PRIVATE).getString("url", null)
         config = CapConfig.Builder(this).apply {
+            setPluginsConfiguration(JSONObject().put("SystemBars", JSONObject().put("style", "DARK")))
             if (host == null) setStartPath("/setup.html") else setServerUrl(host)
         }.create()
         registerPlugin(HostPlugin::class.java)
