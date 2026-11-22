@@ -1,4 +1,20 @@
 import { Database } from 'bun:sqlite';
+import { existsSync, linkSync, unlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+
+export function migrateDatabase(source: string, destination: string) {
+  if (!existsSync(source) || existsSync(destination)) return;
+  const temporary = `${destination}.${randomUUID()}`;
+  const old = new Database(source, { readonly: true });
+  try {
+    if ((old.query('PRAGMA integrity_check').get() as { integrity_check: string }).integrity_check !== 'ok') throw new Error('Повреждена старая база данных');
+    old.query('VACUUM INTO ?').run(temporary);
+    linkSync(temporary, destination);
+  } finally {
+    old.close();
+    if (existsSync(temporary)) unlinkSync(temporary);
+  }
+}
 
 // Opens the store and brings an older schema up to date. Tests pass ':memory:'.
 export function openDatabase(path: string) {

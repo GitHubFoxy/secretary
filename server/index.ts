@@ -3,7 +3,7 @@ import { chatHistoryPage, chatMessage } from './chat';
 import { claudeTurn } from './claude';
 import { codexTurn } from './codex';
 import { secretaryFolder } from './config';
-import { openDatabase } from './database';
+import { migrateDatabase, openDatabase } from './database';
 import { serveMcp } from './mcp';
 import { checkReasoning, modelDetails } from './models';
 import { ensurePersona } from './persona';
@@ -12,7 +12,9 @@ import { Sessions } from './sessions';
 const agentsFile = `${secretaryFolder}/AGENTS.md`;
 ensurePersona(secretaryFolder);
 
-const db = openDatabase('secretary.sqlite');
+const databasePath = `${secretaryFolder}/secretary.sqlite`;
+migrateDatabase('secretary.sqlite', databasePath);
+const db = openDatabase(databasePath);
 const publish = (message: object) => server.publish('events', JSON.stringify(message));
 const publishSessions = () => publish({ type: 'sessions', sessions: sessions.list() });
 const sessions = new Sessions(db, {
