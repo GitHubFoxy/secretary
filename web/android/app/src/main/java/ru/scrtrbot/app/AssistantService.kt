@@ -7,7 +7,7 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Outline
 import android.graphics.drawable.ColorDrawable
-import android.graphics.drawable.GradientDrawable
+import android.net.Uri
 import android.os.Bundle
 import android.service.voice.VoiceInteractionService
 import android.service.voice.VoiceInteractionSession
@@ -20,6 +20,10 @@ import android.view.WindowManager
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.webkit.WebResourceRequest
+import androidx.webkit.WebViewCompat
+import androidx.webkit.WebViewFeature
 import android.widget.FrameLayout
 
 class AssistantService : VoiceInteractionService()
@@ -30,6 +34,12 @@ class AssistantSessionService : VoiceInteractionSessionService() {
 
 class AssistantSession(private val service: AssistantSessionService) : VoiceInteractionSession(service) {
     private var webView: WebView? = null
+    private lateinit var root: FrameLayout
+
+    private fun openApp() {
+        startAssistantActivity(Intent(service, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+        hide()
+    }
 
     override fun onCreateContentView(): View {
         window?.window?.apply {
@@ -38,25 +48,55 @@ class AssistantSession(private val service: AssistantSessionService) : VoiceInte
             setDimAmount(0.35f)
             setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
-        val root = FrameLayout(service)
-        root.setOnClickListener { hide() }
+        root = FrameLayout(service).apply { setOnClickListener { hide() } }
+        return root
+    }
+
+    override fun onShow(args: Bundle?, showFlags: Int) {
+        super.onShow(args, showFlags)
+        val host = HostAddress.get(service)
+        if (host == null) {
+            openApp()
+            return
+        }
+        val origin = Uri.parse(host)
+        fun isHost(uri: Uri): Boolean {
+            fun port(uri: Uri) = if (uri.port != -1) uri.port else if (uri.scheme == "https") 443 else 80
+            return uri.scheme == origin.scheme && uri.host == origin.host && port(uri) == port(origin)
+        }
+        webView?.let { root.removeView(it); it.destroy() }
         val sheet = WebView(service).apply {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
-            background = GradientDrawable().apply {
-                setColor(Color.WHITE)
-                cornerRadius = 24 * resources.displayMetrics.density
-            }
+            setBackgroundColor(Color.rgb(10, 10, 10))
             outlineProvider = object : ViewOutlineProvider() {
                 override fun getOutline(view: View, outline: Outline) {
-                    outline.setRoundRect(0, 0, view.width, view.height, 24 * resources.displayMetrics.density)
+                    val radius = 24 * resources.displayMetrics.density
+                    outline.setRoundRect(0, 0, view.width, view.height + radius.toInt(), radius)
                 }
             }
             clipToOutline = true
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
+                    !isHost(request.url)
+            }
+            if (WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) &&
+                WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+                val origins = setOf(host)
+                WebViewCompat.addWebMessageListener(this, "SecretaryOverlayNative", origins) { _, message, _, isMainFrame, _ ->
+                    if (isMainFrame) when (message.data) {
+                        "close" -> hide()
+                        "openApp" -> openApp()
+                    }
+                }
+                WebViewCompat.addDocumentStartJavaScript(this,
+                    "if (window === window.top) window.SecretaryOverlay = { close: () => SecretaryOverlayNative.postMessage('close'), openApp: () => SecretaryOverlayNative.postMessage('openApp') };",
+                    origins)
+            }
             webChromeClient = object : WebChromeClient() {
                 override fun onPermissionRequest(request: PermissionRequest) {
-                    if (request.origin.toString() != "https://app.scrtrbot.ru/" ||
+                    if (!isHost(request.origin) ||
                         request.resources.any { it != PermissionRequest.RESOURCE_AUDIO_CAPTURE }) {
                         request.deny()
                         return
@@ -79,12 +119,14 @@ class AssistantSession(private val service: AssistantSessionService) : VoiceInte
                     }
                 }
             }
-            loadUrl("https://app.scrtrbot.ru")
+            loadUrl("$host/?overlay")
         }
         webView = sheet
+        val margin = (8 * service.resources.displayMetrics.density).toInt()
         root.addView(sheet, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-            (service.resources.displayMetrics.heightPixels * 0.45f).toInt(), Gravity.BOTTOM))
-        return root
+            (service.resources.displayMetrics.heightPixels * 0.5f).toInt(), Gravity.BOTTOM).apply {
+            setMargins(margin, 0, margin, margin)
+        })
     }
 
     override fun onBackPressed() { hide() }
