@@ -230,3 +230,20 @@ test('NO_REPLY у Specialist не отправляет отчёт родител
   sessions.stop(specialist.id);
   expect(calls[1].options.stop.aborted).toBe(true);
 });
+
+
+test('голосовое сообщение сохраняет признак в очереди после перезапуска и включает озвучку только для Secretary Agent', async () => {
+  const before = setup();
+  const s = before.sessions.get(1);
+  s.send('первое'); before.calls[0].start();
+  s.send('голосовое', undefined, false, true);
+  const after = setup(before.db);
+  expect(after.sessions.get(1).queue.list()[0].voice).toBe(true);
+  after.sessions.resumePending();
+  expect(after.published.some(event => event.type === 'speech_start')).toBe(true);
+  after.calls[0].start();
+  after.calls[0].options.onEvent({type:'assistant', message:{content:[{type:'text', text:'Привет'}]}});
+  expect(after.published.some(event => event.type === 'speech_event')).toBe(true);
+  after.calls[0].end(true); await tick();
+  expect(after.published.some(event => event.type === 'speech_end' && !event.interrupted)).toBe(true);
+});

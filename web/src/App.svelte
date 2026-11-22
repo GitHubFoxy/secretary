@@ -10,6 +10,7 @@
   import SettingsPanel from './components/SettingsPanel.svelte';
   import MessageList from './components/MessageList.svelte';
   import { voiceText } from './voice.js';
+  import { createSpeechPlayer } from './speech.js';
   import Composer from './components/Composer.svelte';
   import Modal from './components/Modal.svelte';
   import Icon from './components/Icon.svelte';
@@ -21,7 +22,20 @@
   let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyStartAtTop = false, historyToken = 0;
   let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
   if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }
-  let voiceMessages = [], voiceModel = '', voiceStatus = '', videoInterval = '1';
+  let voiceMessages = [], voiceModel = '', voiceStatus = '', videoInterval = '1', ttsEngine = '', voiceModeHint = false, speaking = false;
+  const speech = createSpeechPlayer(value => { speaking = value; });
+  async function loadTtsEngine() {
+    try { const response = await fetch('/settings/tts'); if (!response.ok) throw new Error(await response.text()); ttsEngine = (await response.json()).engine; }
+    catch (err) { voiceStatus = `Не удалось загрузить настройку: ${err.message}`; }
+  }
+  async function saveTtsEngine(event) {
+    const value = event.target.value;
+    try { const response = await fetch('/settings/tts', {method:'PUT', body:value}); if (!response.ok) throw new Error(await response.text()); ttsEngine = value; voiceStatus = ''; }
+    catch (err) { voiceStatus = `Не удалось сохранить настройку: ${err.message}`; event.target.value = ttsEngine; }
+  }
+  function stopSpeech() { speech.stop(); if (connected) command({type:'speechStop'}); }
+  function micPress() { speech.unlock(); stopSpeech(); }
+  function recordStart() { if (current?.secretary && connected) command({type:'speechWarm'}); }
   async function loadVideoInterval() {
     try { const response = await fetch('/settings/video'); if (!response.ok) throw new Error(await response.text()); videoInterval = (await response.json()).interval; }
     catch (err) { voiceStatus = `Не удалось загрузить настройку: ${err.message}`; }
@@ -55,13 +69,13 @@
       if (!response.ok) throw new Error('Version unavailable');
       return (await response.json()).version;
     },
-    isBusy: () => Boolean(message || images.length || preparing.some(item => !item.error) || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
+    isBusy: () => Boolean(speaking || message || images.length || preparing.some(item => !item.error) || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
     reload: () => location.replace('/?update'),
   });
   const connection = createConnection({
     url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`,
     onOpen: () => { connected = true; if (selected !== null) loadHistory(selected, false, historyLoaded); updates.check(); },
-    onClose: () => { connected = false; interruptFeedback.disconnect(); },
+    onClose: () => { connected = false; speech.stop(); interruptFeedback.disconnect(); },
     onMessage: handleMessage,
   });
   // Commands whose only visible result is a broadcast (sessions, message) or an error.
@@ -82,6 +96,11 @@
   }
   function select(id) { if (selected !== id) { history = []; queue = []; } selected = id; historyLoaded = false; historyHasMore = false; drawerOpen = false; loadHistory(id); }
   function handleMessage(msg) {
+    if (msg.type === 'speech_start') speech.start();
+    if (msg.type === 'speech_audio') speech.audio(msg.data, msg.rate);
+    if (msg.type === 'speech_done') speech.done();
+    if (msg.type === 'speech_cancel') speech.stop();
+    if (msg.type === 'speech_error') { speech.stop(); error = msg.message; }
     if (msg.type === 'sessions') { sessions = msg.sessions; if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select((sessions.find(s => s.secretary) ?? sessions[0]).id); } }
     if (msg.type === 'message' && msg.sessionId === selected && !history.some(m => m.cursor === msg.message.cursor)) history = [...history, msg.message];
     if (msg.type === 'queue' && msg.sessionId === selected) queue = msg.items;
@@ -139,7 +158,7 @@
       if (!response.ok) throw new Error(await response.text());
       const {text} = await response.json();
       if (!text) throw new Error('Речь не распознана');
-      await connection.request({type:'send', id:item.id, text:voiceText(text, item.seconds)});
+      await connection.request({type:'send', id:item.id, text:voiceText(text, item.seconds), voice:true});
       voiceMessages = voiceMessages.filter(v => v.key !== item.key);
     } catch (err) {
       voiceMessages = voiceMessages.map(v => v.key === item.key ? {...v, error:err.message} : v);
@@ -154,7 +173,8 @@
   }
   function stop() { command({type:'stop', id:selected}); }
   async function interrupt() {
-    if (!connected || interruptStates[selected]?.pending) return;
+    stopSpeech();
+    if (!current?.status || current.status !== 'running' || !connected || interruptStates[selected]?.pending) return;
     const id = selected, requestId = crypto.randomUUID();
     interruptFeedback.start(id, requestId);
     try { interruptFeedback.ack(id, requestId, (await connection.request({type:'interrupt', id, requestId})).accepted); }
@@ -199,7 +219,7 @@
       agentsStatus = `Не удалось сохранить: ${err.message || err}`;
     } finally { agentsSaving = false; }
   }
-  function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); loadVoiceModel(); }
+  function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); loadVoiceModel(); loadTtsEngine(); }
   // Queued messages are not accepted by the agent yet, so they come after history.
   $: messages = [
     ...history.map((m, index) => ({...m, images:m.images?.map(image => videoUrls[image.data] ? {...image, url:videoUrls[image.data]} : image), key:`${selected}:${index}`})),
@@ -246,6 +266,25 @@
     </header>
 
     <div class="flex min-h-0 flex-1 flex-col gap-4 p-4">
+      <div class="flex flex-col gap-2 text-sm">Голосовые ответы
+        <div class="grid grid-cols-2 gap-2">
+          <button type="button" aria-pressed="true" class="flex flex-col items-start gap-1 rounded-2xl border border-neutral-500 bg-neutral-900 p-3 text-left">
+            <span class="flex items-center gap-2 font-medium text-neutral-100"><Icon name="microphone" class="size-4" />Рация</span>
+            <span class="text-xs leading-snug text-neutral-400">Держишь кнопку, говоришь — Secretary отвечает голосом</span>
+          </button>
+          <button type="button" aria-disabled="true" onclick={() => { voiceModeHint = true; setTimeout(() => voiceModeHint = false, 1500); }} class="relative flex flex-col items-start gap-1 rounded-2xl border border-neutral-800 p-3 text-left">
+            <span class="flex items-center gap-2 font-medium text-neutral-500">Живой разговор<span class="rounded-full border border-neutral-700 px-1.5 text-[10px] leading-4 text-neutral-400">скоро</span></span>
+            <span class="text-xs leading-snug text-neutral-600">Говоришь без кнопки, как по телефону</span>
+            {#if voiceModeHint}<span role="status" class="absolute -top-9 right-0 rounded-lg bg-neutral-800 px-3 py-1.5 text-xs text-neutral-200 shadow-lg">Скоро. Пока работает Рация</span>{/if}
+          </button>
+        </div>
+      </div>
+      <label class="flex flex-col gap-2 text-sm">Голос ответов
+        <select class="field" value={ttsEngine} disabled={!ttsEngine} onchange={saveTtsEngine}>
+          <option value="inworld">Inworld — облако, звучит естественнее</option>
+          <option value="piper">Piper — бесплатно, на Host</option>
+        </select>
+      </label>
       <label class="flex flex-col gap-2 text-sm">Распознавание речи на Host
         <select class="field" value={voiceModel} disabled={!voiceModel} onchange={saveVoiceModel}>
           <option value="gigaam">GigaAM — быстрее, лучше русский</option>
@@ -314,7 +353,16 @@
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
         <div class="pointer-events-auto">
           {#if interruptStates[selected]?.message}<p role="status" aria-live="polite" class="mx-auto max-w-3xl px-4 text-sm text-neutral-400">{interruptStates[selected].message}</p>{/if}
-          <Composer {videoInterval} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
+          {#if speaking && current?.secretary}
+            <div class="mx-auto mb-2 flex max-w-3xl justify-center px-4">
+              <button type="button" onclick={stopSpeech} class="flex items-center gap-2.5 rounded-full border border-neutral-800 bg-neutral-900 py-1.5 pl-3.5 pr-1.5 text-sm text-neutral-300 shadow-lg">
+                <span class="flex h-4 items-center gap-[3px]" aria-hidden="true">{#each [0, 1, 2, 3, 4] as i}<span class="speaking-bar w-[3px] rounded-full bg-neutral-300" style:animation-delay="{i * 0.13}s"></span>{/each}</span>
+                Озвучиваю
+                <span class="flex items-center gap-1.5 rounded-full bg-neutral-800 px-2.5 py-1 text-neutral-100"><span class="size-2 rounded-[2px] bg-current"></span>Стоп</span>
+              </button>
+            </div>
+          {/if}
+          <Composer {videoInterval} onmicpress={micPress} onrecordstart={recordStart} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
         </div>
       </div>
     </div>

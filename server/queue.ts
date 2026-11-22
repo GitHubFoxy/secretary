@@ -2,7 +2,7 @@ import type { Database } from 'bun:sqlite';
 import { writeEvent } from './database';
 import type { Image } from './images';
 
-export type Message = { id: number; text: string; images: Image[]; urgent: boolean };
+export type Message = { id: number; text: string; images: Image[]; urgent: boolean; voice: boolean };
 export type Unsent = 'cancelled' | 'delivery_uncertain';
 
 // The messages of one Session that the client got a confirmation for but that are not in history yet.
@@ -13,8 +13,8 @@ export class MessageQueue {
   private items: Message[];
 
   constructor(private db: Database, private sessionId: number, private publish: (event: object, cursor?: number) => void) {
-    const rows = db.query('SELECT id, urgent, text, images, in_flight FROM pending_messages WHERE session_id = ? ORDER BY urgent DESC, id').all(sessionId) as { id: number; urgent: number; text: string; images: string; in_flight: number }[];
-    this.items = rows.map(row => ({ id: row.id, text: row.text, images: JSON.parse(row.images), urgent: row.urgent === 1 }));
+    const rows = db.query('SELECT id, urgent, text, images, in_flight, voice FROM pending_messages WHERE session_id = ? ORDER BY urgent DESC, id').all(sessionId) as { id: number; urgent: number; text: string; images: string; in_flight: number; voice: number }[];
+    this.items = rows.map(row => ({ id: row.id, text: row.text, images: JSON.parse(row.images), urgent: row.urgent === 1, voice: row.voice === 1 }));
     // In flight at load time means Secretary died after handing these to a harness: they must not be sent again.
     const inFlight = new Set(rows.filter(row => row.in_flight).map(row => row.id));
     this.drop(this.items.filter(item => inFlight.has(item.id)), 'delivery_uncertain');
@@ -25,9 +25,9 @@ export class MessageQueue {
   has(item: Message) { return this.items.includes(item); }
 
   // Urgent messages stand before ordinary ones, each group in arrival order.
-  add(text: string, images: Image[], urgent: boolean) {
-    const saved = this.db.query('INSERT INTO pending_messages (session_id, urgent, text, images) VALUES (?, ?, ?, ?)').run(this.sessionId, urgent ? 1 : 0, text, JSON.stringify(images));
-    const item: Message = { id: Number(saved.lastInsertRowid), text, images, urgent };
+  add(text: string, images: Image[], urgent: boolean, voice = false) {
+    const saved = this.db.query('INSERT INTO pending_messages (session_id, urgent, text, images, voice) VALUES (?, ?, ?, ?, ?)').run(this.sessionId, urgent ? 1 : 0, text, JSON.stringify(images), voice ? 1 : 0);
+    const item: Message = { id: Number(saved.lastInsertRowid), text, images, urgent, voice };
     this.items.splice(urgent ? this.items.filter(m => m.urgent).length : this.items.length, 0, item);
     this.publishQueue();
   }
