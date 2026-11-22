@@ -1,35 +1,65 @@
 <script>
   import { onDestroy } from 'svelte';
   import Icon from './Icon.svelte';
-  import { wavFromRecording } from '../voice.js';
+  import { duration, wavFromRecording } from '../voice.js';
   // onsubmit(immediate): true — прервать идущий ход и отправить сразу (правая кнопка и Enter), false — добавить в очередь (левая кнопка во время хода).
   let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, sessionId, onsubmit, oninterrupt, onvoice } = $props();
   let imageError = $state('');
   let area = $state();
-  let recorder = $state(null), voiceError = $state(''), requesting = $state(false), stream, destroyed = false;
-  onDestroy(() => { destroyed = true; if (recorder) { recorder.onstop = null; recorder.stop(); } stream?.getTracks().forEach(track => track.stop()); });
-  async function record() {
-    if (recorder) { recorder.stop(); return; }
-    if (requesting) return;
-    voiceError = '';
-    requesting = true;
-    const id = sessionId;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({audio:true});
-      if (destroyed) { stream.getTracks().forEach(track => track.stop()); return; }
-      const current = new MediaRecorder(stream), chunks = [];
-      recorder = current;
-      current.ondataavailable = event => chunks.push(event.data);
-      current.onstop = async () => {
-        stream.getTracks().forEach(track => track.stop());
-        recorder = null;
-        onvoice(wavFromRecording(chunks), id);
-      };
-      current.start();
-    } catch (error) { stream?.getTracks().forEach(track => track.stop()); voiceError = `Не удалось записать голос: ${error.message}`; }
-    finally { requesting = false; }
+  // Как в Telegram: на сенсорном экране нажатие переключает голос и видео, удержание записывает;
+  // мышью удерживать неудобно, поэтому щелчок сразу начинает запись с замком.
+  let mode = $state('voice'), recording = $state.raw(null), hint = $state(''), voiceError = $state(''), now = $state(0);
+  let row, press, recorder, chunks, stream;
+  onDestroy(() => stop(false));
+  $effect(() => {
+    if (!recording) return;
+    const timer = setInterval(() => now = Date.now(), 250);
+    return () => clearInterval(timer);
+  });
+  function showHint(text) { hint = text; setTimeout(() => { if (hint === text) hint = ''; }, 1500); }
+  function down(e) {
+    if (disabled || recording) return;
+    row.setPointerCapture(e.pointerId);
+    if (e.pointerType === 'mouse') { start(true); return; }
+    press = {x:e.clientX, y:e.clientY, timer:setTimeout(() => { press.timer = null; mode === 'voice' ? start(false) : showHint('Видеосообщения скоро'); }, 250)};
   }
-
+  function move(e) {
+    if (!press || !recording || recording.locked) return;
+    const dx = e.clientX - press.x, dy = e.clientY - press.y;
+    if (dx < -120) stop(false);
+    else recording = {...recording, dx:Math.min(0, dx), dy:Math.min(0, dy), locked:dy < -70};
+  }
+  function up() {
+    if (press?.timer) { clearTimeout(press.timer); mode = mode === 'voice' ? 'video' : 'voice'; showHint(mode === 'voice' ? 'Удерживайте для записи голоса' : 'Удерживайте для видео'); }
+    else if (recording && !recording.locked) stop(true);
+    press = null;
+  }
+  async function start(locked) {
+    voiceError = '';
+    const token = {};
+    recording = {token, id:sessionId, started:Date.now(), locked, dx:0, dy:0};
+    now = Date.now();
+    let media;
+    try { media = await navigator.mediaDevices.getUserMedia({audio:true}); }
+    catch (error) { recording = null; voiceError = `Не удалось записать голос: ${error.message}`; return; }
+    // Пока ждали разрешения, запись могли отменить или отпустить палец.
+    if (recording?.token !== token) { media.getTracks().forEach(track => track.stop()); return; }
+    stream = media; chunks = [];
+    recorder = new MediaRecorder(media);
+    recorder.ondataavailable = event => chunks.push(event.data);
+    recorder.start();
+  }
+  function stop(send) {
+    const current = recording, active = recorder, media = stream, parts = chunks;
+    recording = null; recorder = null;
+    if (!active) return;
+    const seconds = (Date.now() - current.started) / 1000;
+    active.onstop = () => {
+      media.getTracks().forEach(track => track.stop());
+      if (send && seconds >= 0.5) onvoice({id:current.id, key:crypto.randomUUID(), seconds, wav:wavFromRecording(parts)});
+    };
+    active.stop();
+  }
 
   // Поле растёт вместе с текстом; больше максимальной высоты (max-h в разметке) прокручивается.
   function fit() {
@@ -83,7 +113,19 @@
   {#if voiceError}<p role="alert" class="mx-auto max-w-3xl text-sm text-red-400">{voiceError}</p>{/if}
   {#if imageError}<p role="alert" class="mx-auto max-w-3xl text-sm text-red-400">{imageError}</p>{/if}
   <div class="mx-auto flex max-w-3xl flex-wrap gap-2">{#each images as image, i}<div class="relative"><img class="h-20 rounded" src={'data:' + image.type + ';base64,' + image.data} alt="Изображение для отправки" /><button type="button" class="absolute right-0 top-0 bg-neutral-900 px-1" aria-label="Удалить изображение" onclick={() => images = images.filter((_, index) => index !== i)}>×</button></div>{/each}</div>
-  <div class="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-neutral-800 bg-neutral-900 p-2 shadow-lg shadow-black/40 transition-colors focus-within:border-neutral-600">
+  <div bind:this={row} role="group" onpointermove={move} onpointerup={up} onpointercancel={() => { press = null; if (recording && !recording.locked) stop(false); }} class="relative mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-neutral-800 bg-neutral-900 p-2 shadow-lg shadow-black/40 transition-colors focus-within:border-neutral-600">
+    {#if hint}<div class="pointer-events-none absolute -top-10 right-0 rounded-lg bg-neutral-800 px-3 py-1.5 text-xs text-neutral-300">{hint}</div>{/if}
+    {#if recording?.locked}
+    <button type="button" aria-label="Удалить запись" title="Удалить запись" class="grid size-10 shrink-0 place-items-center rounded-xl text-neutral-400 hover:text-neutral-200" onclick={() => stop(false)}><Icon name="trash" class="size-5" /></button>
+    <div class="flex min-h-10 flex-1 items-center gap-2 px-1 text-[15px] tabular-nums text-neutral-100"><span class="size-2.5 animate-pulse rounded-full bg-red-500"></span>{duration((now - recording.started) / 1000)}</div>
+    <button type="button" aria-label="Отправить голосовое сообщение" title="Отправить" class="grid size-10 shrink-0 place-items-center rounded-xl bg-neutral-100 text-neutral-950 hover:opacity-80" onclick={() => stop(true)}><Icon name="send" class="size-5" /></button>
+    {:else if recording}
+    <div class="flex min-h-10 items-center gap-2 px-2 text-[15px] tabular-nums text-neutral-100"><span class="size-2.5 animate-pulse rounded-full bg-red-500"></span>{duration((now - recording.started) / 1000)}</div>
+    <div class="flex min-h-10 flex-1 items-center justify-center text-sm text-neutral-500" style:transform="translateX({recording.dx}px)" style:opacity={1 + recording.dx / 150}>‹ Влево — отмена</div>
+    <div class="size-10 shrink-0"></div>
+    <div class="pointer-events-none absolute -top-[72px] right-0 flex h-16 w-10 flex-col items-center justify-center gap-0.5 rounded-full border border-neutral-700 bg-neutral-900 text-neutral-400" style:transform="translateY({recording.dy / 2}px)"><Icon name="lock" class="size-4" /><Icon name="chevron" class="size-4 rotate-180" /></div>
+    <div class="pointer-events-none absolute -right-3 top-1/2 -mt-8 grid size-16 place-items-center rounded-full bg-red-600 text-white shadow-[0_0_0_8px_rgba(220,38,38,0.25)]" style:transform="translate({recording.dx}px, {recording.dy}px)"><Icon name="microphone" class="size-6" /></div>
+    {:else}
     <label class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-xl bg-neutral-800 text-neutral-400 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2" title="Прикрепить изображение"><Icon name="paperclip" /><span class="sr-only">Прикрепить изображение</span><input type="file" accept="image/png,image/jpeg,image/gif,image/webp" multiple class="sr-only" {disabled} onchange={e => { add(e.currentTarget.files); e.currentTarget.value = ''; }} /></label>
     <label class="sr-only" for="message">Сообщение</label>
     <textarea
@@ -118,10 +160,8 @@
         <Icon name="queue" class="size-5" />
       </button>
     {/if}
-    {#if recorder || (!value.trim() && !images.length)}
-    <button type="button" disabled={(disabled || requesting) && !recorder} onclick={record} aria-label={recorder ? "Остановить запись" : "Записать голосовое сообщение"} title={recorder ? "Остановить запись" : "Записать голосовое сообщение"} class="grid size-10 shrink-0 place-items-center rounded-xl {recorder ? 'bg-red-700 text-white' : 'bg-neutral-800 text-neutral-400'}">
-      <Icon name="microphone" class="size-5" />
-    </button>
+    {#if !value.trim() && !images.length}
+    <button type="button" {disabled} onpointerdown={down} onclick={e => { if (e.detail === 0) start(true); }} oncontextmenu={e => e.preventDefault()} aria-label={mode === 'voice' ? 'Голосовое сообщение' : 'Видеосообщение'} title={mode === 'voice' ? 'Голосовое сообщение' : 'Видеосообщение'} class="grid size-10 shrink-0 touch-none select-none place-items-center rounded-xl bg-neutral-800 text-neutral-300 disabled:opacity-30"><Icon name={mode === 'voice' ? 'microphone' : 'video'} class="size-5" /></button>
     {/if}
     {#if value.trim() || images.length}
     <button
@@ -132,6 +172,7 @@
     >
       <Icon name="send" class="size-5" />
     </button>
+    {/if}
     {/if}
   </div>
 </form>

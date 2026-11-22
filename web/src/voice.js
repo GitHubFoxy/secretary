@@ -19,3 +19,15 @@ export async function wavFromRecording(chunks) {
     return buffer;
   } finally { await context.close(); }
 }
+
+export function duration(seconds) {
+  const s = Math.max(0, Math.floor(seconds));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+// Пометка в тексте говорит агенту, что это расшифровка, а интерфейсу — что показать значок микрофона.
+export const voiceText = (text, seconds) => `[Голосовое ${duration(seconds)}] ${text}`;
+export function parseVoice(text) {
+  const match = /^\[Голосовое (\d+:\d\d)\] ([\s\S]*)$/.exec(text);
+  return match && {duration: match[1], text: match[2]};
+}

@@ -27,6 +27,12 @@
   {:else if name === 'microphone'}
     <rect x="9" y="3" width="6" height="12" rx="3" />
     <path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" />
+  {:else if name === 'video'}
+    <rect x="3" y="6" width="13" height="12" rx="3" />
+    <path d="m16 10 5-3v10l-5-3z" />
+  {:else if name === 'lock'}
+    <rect x="5" y="11" width="14" height="9" rx="2" />
+    <path d="M8 11V8a4 4 0 0 1 8 0v3" />
   {:else if name === 'paperclip'}
     <path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551" />
   {:else if name === 'queue'}

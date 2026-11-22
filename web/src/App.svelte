@@ -9,6 +9,7 @@
   import SessionDrawer from './components/SessionDrawer.svelte';
   import SettingsPanel from './components/SettingsPanel.svelte';
   import MessageList from './components/MessageList.svelte';
+  import { voiceText } from './voice.js';
   import Composer from './components/Composer.svelte';
   import Modal from './components/Modal.svelte';
   import Icon from './components/Icon.svelte';
@@ -43,7 +44,7 @@
       if (!response.ok) throw new Error('Version unavailable');
       return (await response.json()).version;
     },
-    isBusy: () => Boolean(message || images.length || sending || voiceMessages.some(item => item.kind === 'user') || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
+    isBusy: () => Boolean(message || images.length || sending || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
     reload: () => location.replace('/?update'),
   });
   const connection = createConnection({
@@ -88,17 +89,17 @@
       error = err.disconnected ? 'Не удалось подтвердить доставку сообщения. Проверьте историю перед повторной отправкой.' : `Не удалось доставить сообщение: ${err.message}`;
     } finally { sending = false; }
   }
-  async function sendVoice(wav, id) {
-    const key = crypto.randomUUID();
-    voiceMessages = [...voiceMessages, {id, key, kind:'user', text:'Распознавание голоса…', images:[]}];
+  // Запись хранится в памяти, пока её текст не принят: при ошибке её можно отправить повторно.
+  async function sendVoice(item) {
+    voiceMessages = [...voiceMessages.filter(v => v.key !== item.key), {...item, kind:'voice', error:''}];
     try {
-      const response = await fetch('/voice', {method:'POST', headers:{'Content-Type':'audio/wav'}, body:await wav});
+      const response = await fetch('/voice', {method:'POST', headers:{'Content-Type':'audio/wav'}, body:await item.wav});
       if (!response.ok) throw new Error(await response.text());
       const {text} = await response.json();
-      await connection.request({type:'send', id, text:`[Расшифровка голосового сообщения] ${text}`});
-      voiceMessages = voiceMessages.filter(item => item.key !== key);
+      await connection.request({type:'send', id:item.id, text:voiceText(text, item.seconds)});
+      voiceMessages = voiceMessages.filter(v => v.key !== item.key);
     } catch (err) {
-      voiceMessages = voiceMessages.map(item => item.key === key ? {...item, kind:'error', text:`Не удалось отправить голосовое сообщение: ${err.message}`} : item);
+      voiceMessages = voiceMessages.map(v => v.key === item.key ? {...v, error:err.message} : v);
     }
   }
   // The settings form edits a copy of the selected session's harness, model and reasoning.
@@ -255,7 +256,7 @@
 
     <div bind:this={chatViewport} class="relative flex min-h-0 flex-1 flex-col">
       {#key historyVersion}
-        <MessageList {messages} {sessions} {historyLoaded} {connected} {historyHasMore} {historyLoadingOlder} startAtTop={historyStartAtTop} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} />
+        <MessageList {messages} {sessions} {historyLoaded} {connected} {historyHasMore} {historyLoadingOlder} startAtTop={historyStartAtTop} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} />
       {/key}
 
       <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
