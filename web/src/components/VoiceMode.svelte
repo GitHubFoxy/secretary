@@ -123,7 +123,7 @@
   </div>
 {:else}
   <!-- Пустое место над шторкой прозрачно: под ним видно приложение, нажатие закрывает шторку. -->
-  <div class="fixed inset-0 flex flex-col justify-end p-2" role="presentation" onclick={e => { if (e.target === e.currentTarget) close(); }}>
+  <div class="fixed inset-0 flex flex-col justify-end p-2" style:padding-bottom="calc(max(env(safe-area-inset-bottom), 1.5rem) + 0.5rem)" role="presentation" onclick={e => { if (e.target === e.currentTarget) close(); }}>
     <div class="flex max-h-[75dvh] flex-col rounded-[28px] border border-neutral-800 bg-[#0a0a0a] p-4 transition-shadow {listening ? 'shadow-[0_0_0_1px_#ef444455,0_-8px_40px_#ef444433]' : ''}">
       <header class="flex items-center gap-2">
         <span class="flex-1 text-xs text-neutral-400">{status}</span>
