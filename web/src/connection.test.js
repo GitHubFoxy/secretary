@@ -19,7 +19,9 @@ test('reconnects with backoff, refreshes on open and never resends a command', (
   timers[1].fn(); sockets[2].open();
   expect(calls).toEqual([{type:'read',id:1,requestId:'r'},{type:'send',text:'hello',requestId:'s'},{type:'read',id:1,requestId:'r'}]);
   sockets[2].close(); expect(timers[2].delay).toBe(1000);
-  c.stop(); expect(timers[2].cancelled).toBe(true);
+  timers[2].fn(); sockets[3].close(); timers[3].fn(); sockets[4].close();
+  expect(timers[4].delay).toBe(2000);
+  c.stop(); expect(timers[4].cancelled).toBe(true);
 });
 
 test('manual reconnect cancels pending timer and does not duplicate sockets', () => {

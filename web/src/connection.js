@@ -25,7 +25,7 @@ export function createConnection({url, onOpen, onClose, onMessage, WebSocketImpl
       socket = null;
       failWaiting();
       onClose();
-      const delay = Math.min(30000, 1000 * 2 ** Math.min(attempts++, 5));
+      const delay = Math.min(2000, 1000 * 2 ** attempts++);
       timer = schedule(connect, delay);
     };
     current.onerror = () => current.close();
