@@ -6,7 +6,7 @@
 
 Установка и запуск: `bun install --cwd web`, затем `bun run start`. Сервер слушает `127.0.0.1:3000`. Для удалённого доступа нужен HTTPS: на omarchy сервер опубликован через Cloudflare Tunnel (`secretary-tunnel.service`) по адресу `app.scrtrbot.ru`. Устройство архитектуры описано в `docs/architecture.md`. Claude Code и Codex должны быть установлены и авторизованы.
 
-SQLite хранится в `server/secretary.sqlite`. Настройки Secretary Agent создаются в `~/.secretary/` при первом запуске.
+SQLite и настройки Secretary Agent хранятся в `~/.secretary/`.
 
 Чтобы команда `secretary` была доступна из терминала, выполните из корня проекта `mkdir -p ~/.local/bin && ln -s "$PWD/secretary" ~/.local/bin/secretary` (каталог `~/.local/bin` должен быть в `PATH`). Команды `secretary start`, `secretary stop` и `secretary status` управляют пользовательской службой systemd `secretary.service`; она должна быть установлена отдельно.
 
