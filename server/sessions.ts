@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { chatHistory, reportText } from './chat';
 import { mcpUrl as defaultMcpUrl } from './config';
 import type { Turn } from './harness';
-import { specialistPrompt } from './persona';
+import { SECRETARY_PROMPT, SPECIALIST_PROMPT } from './persona';
 import { isInternal, isSpecialist, SECRETARY_ID, Session, type SessionRow } from './session';
 
 export type SessionSettings = { harness: string; model: string; reasoning: string | null };
@@ -23,7 +23,6 @@ type Options = {
 // All Sessions of the Host and the rules for them. The browser and the Secretary Agent (through MCP) are two adapters over this.
 export class Sessions {
   private all = new Map<number, Session>();
-  private secretaryFolder = '';
 
   constructor(private db: Database, private options: Options) {}
 
@@ -32,7 +31,6 @@ export class Sessions {
   // Loads every Session. Turns that were running when Secretary died are marked interrupted;
   // their messages already in flight become delivery_uncertain inside each queue.
   load(secretaryFolder: string) {
-    this.secretaryFolder = secretaryFolder;
     const rows = this.db.query('SELECT * FROM sessions ORDER BY id').all() as SessionRow[];
     if (!rows.length) this.insert({ harness: 'claude', model: 'opus', reasoning: null, folder: secretaryFolder });
     else for (const row of rows) this.attach(row);
@@ -95,8 +93,8 @@ export class Sessions {
   private attach(row: SessionRow) {
     const baseMcp = this.options.mcpUrl ?? defaultMcpUrl;
     const session = new Session(this.db, row, this.options.turns, r => {
-      if (r.id === SECRETARY_ID) return { mcpUrl: `${baseMcp}/${r.id}` };
-      if (isSpecialist(r)) return { mcpUrl: `${baseMcp}/${r.id}`, systemPrompt: specialistPrompt(this.secretaryFolder) };
+      if (r.id === SECRETARY_ID) return { mcpUrl: `${baseMcp}/${r.id}`, systemPrompt: SECRETARY_PROMPT };
+      if (isSpecialist(r)) return { mcpUrl: `${baseMcp}/${r.id}`, systemPrompt: SPECIALIST_PROMPT };
       return {};
     });
     this.all.set(session.id, session);

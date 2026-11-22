@@ -189,6 +189,10 @@ test('правила сессий: Secretary Agent, видимость, имя, 
   const { calls, sessions, create } = setup();
   const secretary = sessions.get(1);
   expect(sessions.list()[0]).toMatchObject({ id: 1, secretary: true, internal: true });
+  secretary.send('привет');
+  expect(calls[0].options.systemPrompt).toContain('Говори как живой человек');
+  calls[0].start(); calls[0].answer('ok'); await tick();
+  calls.length = 0;
   expect(() => sessions.delete(1)).toThrow();
   expect(() => secretary.setHidden(true)).toThrow();
   expect(() => secretary.setName('   ')).toThrow();
@@ -212,6 +216,7 @@ test('NO_REPLY у Specialist не отправляет отчёт родител
   const child = await create({ parentId: specialist.id, name: 'Фича' });
 
   specialist.send('проверь');
+  expect(calls[0].options.systemPrompt).toContain('Ты — Specialist');
   expect(calls[0].options.mcpUrl).toMatch(/\/mcp\/2$/);
   calls[0].start(); calls[0].answer('NO_REPLY'); await tick();
   // Secretary Agent should NOT receive a report for NO_REPLY.

@@ -16,7 +16,8 @@ createInterface({ input: process.stdin }).on('line', line => {
   }
   const text: string = message.message.content;
   const resume = args.indexOf('--resume');
-  appendFileSync('calls.log', JSON.stringify({ text, resume: resume >= 0 ? args[resume + 1] : null }) + '\n');
+  const prompt = args.indexOf('--append-system-prompt');
+  appendFileSync('calls.log', JSON.stringify({ text, resume: resume >= 0 ? args[resume + 1] : null, prompt: prompt >= 0 ? args[prompt + 1] : null }) + '\n');
   out({ type: 'system', subtype: 'init', session_id });
   if (text.includes('LONG') || text.includes('STUBBORN')) { busy = text; return; }
   out({ type: 'result', is_error: false, result: `ANSWER ${text}`, session_id });
