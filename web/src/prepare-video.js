@@ -41,11 +41,11 @@ export async function prepareVideo(file, interval) {
     try { wav = await wavFromRecording([file]); } catch (error) {
       if (error.name !== 'EncodingError') throw error;
     }
+    // Кадры полезны и без слов: музыка, тишина или сбой распознавания не мешают отправить видео.
     let transcript = '';
     if (wav) {
       const response = await fetch('/voice', {method:'POST', headers:{'Content-Type':'audio/wav'}, body:wav});
-      if (!response.ok) throw new Error(await response.text());
-      transcript = (await response.json()).text;
+      transcript = response.ok ? (await response.json()).text : `не удалась (${await response.text()})`;
     }
     return {frames, description:`[Видео ${duration(seconds)}. Кадры по порядку: ${frames.map((_, i) => `${i + 1} — ${duration(i * interval)}`).join(', ')}]${transcript ? `\nРасшифровка звука: ${transcript}` : ''}`};
   } finally { video.removeAttribute('src'); video.load(); URL.revokeObjectURL(url); }
