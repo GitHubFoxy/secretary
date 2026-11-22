@@ -25,3 +25,12 @@ test('история отдаётся страницами по видимым �
   expect(chatHistoryPage(db, 1, true)).toMatchObject({ hasMore: false, messages: { length: 15 } });
   expect(chatHistoryPage(db, 2)).toEqual({ messages: [], hasMore: false });
 });
+
+test('ошибки хода видны в чате и не выглядят как ответ агента', () => {
+  expect(chatMessage({ type: 'result', is_error: true, result: 'Not logged in · Please run /login' }))
+    .toEqual({ kind: 'error', text: 'Claude Code не вошёл в подписку. На Host выполните: claude auth login' });
+  expect(chatMessage({ type: 'result', is_error: true, result: 'другая ошибка' }))
+    .toEqual({ kind: 'error', text: 'другая ошибка' });
+  expect(chatMessage({ method: 'turn/completed', params: { turn: { error: { message: 'ошибка Codex' } } } }))
+    .toEqual({ kind: 'error', text: 'ошибка Codex' });
+});

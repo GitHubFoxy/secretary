@@ -33,6 +33,8 @@ export const codexTurn: Turn = async (options, text, images) => {
   try {
     await request('initialize', { clientInfo: { name: 'secretary', version: '0.1.0' }, capabilities: null });
     harness.write({ jsonrpc: '2.0', method: 'initialized' });
+    const account = await request('account/read', { refreshToken: false });
+    if (account.requiresOpenaiAuth && !account.account) throw new Error('Codex не вошёл в подписку. На Host выполните: codex login --device-auth');
     const agentsFile = Bun.file(`${options.folder}/AGENTS.md`);
     const developerInstructions = options.systemPrompt ?? (options.secretary && await agentsFile.exists() ? await agentsFile.text() : undefined);
     const start: ThreadStartParams = { cwd: options.folder, approvalPolicy: 'never', sandbox: 'danger-full-access', developerInstructions };

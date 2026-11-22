@@ -11,7 +11,7 @@
     <h1 class="truncate text-sm font-medium text-neutral-100">{title}</h1>
     <p class="flex items-center gap-1.5 text-xs text-neutral-500">
       <span class="size-1.5 rounded-full {connected ? 'bg-neutral-300' : 'bg-neutral-700'}"></span>
-      {connected ? (status || 'подключено') : 'нет соединения'}
+      {connected ? (status || 'подключено') : 'Нет связи с Host. Повторное подключение…'}
     </p>
   </div>
   <button class="icon-btn" aria-label="Настройки сессии" onclick={onsettings}>
