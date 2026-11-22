@@ -46,6 +46,7 @@ async function synthesize(text: string, signal: AbortSignal, send: (data: string
   if (signal.aborted) return;
   if (engine === 'piper') {
     const model = join(piperFolder, 'ru_RU-dmitri-medium.onnx');
+    if (!await Bun.file(join(piperFolder, 'piper/piper')).exists() || !await Bun.file(model).exists()) throw new Error('Piper не установлен. Запустите scripts/install-tts.sh на Host');
     const child = Bun.spawn([join(piperFolder, 'piper/piper'), '--model', model, '--output_raw'], {stdin:'pipe', stdout:'pipe', stderr:'pipe'});
     const abort = () => child.kill();
     signal.addEventListener('abort', abort, {once:true});
@@ -94,7 +95,7 @@ export class Speech {
       : event?.method === 'item/completed' && event.params?.item?.type === 'agentMessage' ? event.params.item.text : '';
     if (!text || text.startsWith('NO_REPLY')) return;
     const signal = this.controller.signal;
-    const {sentences} = splitSentences(speechText(text), true);
+    const sentences = splitSentences(speechText(text));
     for (const sentence of sentences) {
       this.queue = this.queue.then(async () => {
         if (!signal.aborted) await this.speak(sentence, signal, (data, rate) => this.publish({type:'speech_audio', data, rate}));

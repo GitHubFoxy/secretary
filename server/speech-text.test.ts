@@ -6,14 +6,11 @@ test('cleans the spoken copy and preserves link text and inline code', () => {
   expect(speechText(markdown)).toBe('Заголовок Ссылка: документация. Открой ссылка в чате и выполни bun test. код в чате таблица в чате');
 });
 
-test('sends complete sentences as text arrives and flushes the remainder', () => {
-  let buffer = '', spoken: string[] = [];
-  for (const chunk of ['Первая фраза.', ' Вторая ', 'фраза! Остаток']) {
-    buffer += chunk;
-    const result = splitSentences(buffer);
-    spoken.push(...result.sentences);
-    buffer = result.rest;
-  }
-  expect(spoken).toEqual(['Первая фраза.', 'Вторая фраза!']);
-  expect(splitSentences(buffer, true)).toEqual({sentences:['Остаток'], rest:''});
+test('splits a whole message into sentences for ordered synthesis', () => {
+  expect(splitSentences('Первая фраза. Вторая фраза! Остаток')).toEqual(['Первая фраза.', 'Вторая фраза!', 'Остаток']);
+});
+
+test('preserves punctuation after a bare URL and inline code as spoken text', () => {
+  expect(speechText('Открой https://example.org. Выполни `https://host/a_b`.')).toBe('Открой ссылка в чате. Выполни https://host/a_b.');
+  expect(speechText('До\n```\n```\nПосле')).toBe('До код в чате После');
 });
