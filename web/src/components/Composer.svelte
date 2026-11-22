@@ -6,11 +6,17 @@
   let area = $state();
 
   // Поле растёт вместе с текстом; больше максимальной высоты (max-h в разметке) прокручивается.
-  $effect(() => {
-    void value;
-    if (!area) return;
+  function fit() {
     area.style.height = 'auto';
     area.style.height = area.scrollHeight + 'px';
+  }
+  $effect(() => { void value; if (area) fit(); });
+  // Высота зависит и от ширины: при запуске из кэша поле может появиться раньше, чем у него есть ширина.
+  $effect(() => {
+    if (!area) return;
+    const observer = new ResizeObserver(fit);
+    observer.observe(area);
+    return () => observer.disconnect();
   });
   async function add(files) {
     imageError = '';
