@@ -11,6 +11,8 @@
   import Composer from './components/Composer.svelte';
   import Modal from './components/Modal.svelte';
   import Icon from './components/Icon.svelte';
+  import { Capacitor, registerPlugin } from '@capacitor/core';
+  const host = registerPlugin('Host');
 
   let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyStartAtTop = false, historyToken = 0;
   let sessions = [], history = [], queue = [], selected = null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
@@ -162,6 +164,9 @@
     </header>
 
     <div class="flex min-h-0 flex-1 flex-col gap-4 p-4">
+      {#if Capacitor.isNativePlatform()}
+        <button class="btn-ghost self-start" onclick={() => { if (confirm('Сбросить адрес Host и забыть вход?')) host.reset(); }}>Сбросить адрес Host</button>
+      {/if}
       <textarea
         class="field min-h-0 flex-1 resize-none font-mono"
         aria-label="Содержимое AGENTS.md"

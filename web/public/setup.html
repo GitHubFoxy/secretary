@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Подключение к Host</title>
+  <style>
+    body { background: #0a0a0a; color: #e5e5e5; font: 16px system-ui; margin: 0; padding: 24px; }
+    main { max-width: 480px; margin: 10vh auto; }
+    form, label { display: flex; flex-direction: column; gap: 12px; }
+    input, button { font: inherit; border: 1px solid #525252; border-radius: 8px; padding: 12px; }
+    input { background: #171717; color: white; }
+    button { background: #e5e5e5; color: #171717; cursor: pointer; }
+    #error { color: #f87171; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Подключение к Host</h1>
+    <form id="form">
+      <label>Адрес Host<input id="url" type="url" placeholder="https://host.tailnet.ts.net" required></label>
+      <p id="error" role="alert"></p>
+      <button>Продолжить</button>
+    </form>
+  </main>
+  <script>
+    document.getElementById('form').addEventListener('submit', async event => {
+      event.preventDefault();
+      try { await window.Capacitor.Plugins.Host.connect({url: document.getElementById('url').value}); }
+      catch (error) { document.getElementById('error').textContent = error.message; }
+    });
+  </script>
+</body>
+</html>
