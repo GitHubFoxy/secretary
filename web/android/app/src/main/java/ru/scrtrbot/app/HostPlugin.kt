@@ -28,6 +28,7 @@ class HostPlugin : Plugin() {
             call.reject("Введите HTTPS-адрес Host, например https://host.tailnet.ts.net")
             return
         }
+        activity.stopService(Intent(activity, ReplyService::class.java))
         HostAddress.set(activity, address)
         call.resolve()
         activity.runOnUiThread { activity.recreate() }
@@ -63,6 +64,7 @@ class HostPlugin : Plugin() {
 
     @PluginMethod
     fun reset(call: PluginCall) {
+        activity.stopService(Intent(activity, ReplyService::class.java))
         HostAddress.set(activity, null)
         activity.runOnUiThread {
             CookieManager.getInstance().removeAllCookies {

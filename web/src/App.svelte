@@ -33,7 +33,7 @@
     drawerOpen = settingsOpen = renameOpen = profileOpen = false;
     voiceMode = true; voiceKey++;
   }
-  if (overlay && !cached?.sessions?.find(s => s.id === cached.selected)?.secretary) cached = null;
+  if ((overlay || new URLSearchParams(location.search).has('secretary')) && !cached?.sessions?.find(s => s.id === cached.selected)?.secretary) cached = null;
   let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyStartAtTop = false, historyToken = 0;
   let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
   if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }

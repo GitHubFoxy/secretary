@@ -1,6 +1,11 @@
 package ru.scrtrbot.app
 
 import android.os.Bundle
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
 import android.webkit.CookieManager
 import com.getcapacitor.BridgeActivity
 import com.getcapacitor.CapConfig
@@ -20,9 +25,25 @@ class MainActivity : BridgeActivity() {
         }.create()
         registerPlugin(HostPlugin::class.java)
         super.onCreate(savedInstanceState)
+        if (host != null) {
+            ContextCompat.startForegroundService(this, Intent(this, ReplyService::class.java))
+            if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+                requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
+        }
+        openReply(intent)
     }
 
+    private fun openReply(intent: Intent?) {
+        if (intent?.getBooleanExtra("secretary_reply", false) == true) {
+            intent.removeExtra("secretary_reply")
+            HostAddress.get(this)?.let { bridge.webView.loadUrl("$it/?secretary") }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); openReply(intent) }
+    override fun onStart() { super.onStart(); ReplyService.visible = true }
     public override fun onStop() {
+        ReplyService.visible = false
         CookieManager.getInstance().flush()
         super.onStop()
     }

@@ -105,6 +105,7 @@ export class Sessions {
     // A child's answer goes to its parent as a report unless it explicitly chose NO_REPLY.
     session.onComplete = answer => {
       const info = session.info;
+      if (info.id === SECRETARY_ID && answer && !answer.startsWith('NO_REPLY')) this.options.onEvent(session, {type:'secretary_reply', text:answer});
       if (info.parent_id && answer && !answer.startsWith('NO_REPLY')) this.all.get(info.parent_id)?.send(reportText(info, answer));
     };
     return session;
