@@ -50,3 +50,9 @@ export async function prepareVideo(file, interval) {
     return {frames, description:`[Видео ${duration(seconds)}. Кадры по порядку: ${frames.map((_, i) => `${i + 1} — ${duration(i * interval)}`).join(', ')}]${transcript ? `\nРасшифровка звука: ${transcript}` : ''}`};
   } finally { video.removeAttribute('src'); video.load(); URL.revokeObjectURL(url); }
 }
+
+// Описание кадров нужно агенту; в чате показываем текст Owner и расшифровку отдельно.
+export function videoText(text) {
+  const [own, transcript] = text.replace(/\[Видео [^\]\n]*\]\n?/, '').split(/\n*Расшифровка звука: /);
+  return {text: own.trim(), transcript};
+}
