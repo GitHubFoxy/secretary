@@ -9,7 +9,8 @@
   // Как в Telegram: на сенсорном экране нажатие переключает голос и видео, удержание записывает;
   // мышью удерживать неудобно, поэтому щелчок сразу начинает запись с замком.
   let mode = $state('voice'), recording = $state.raw(null), hint = $state(''), voiceError = $state(''), now = $state(0);
-  let row, press, recorder, chunks, stream;
+  let row, press, recorder, chunks, stream, audio;
+  let bars = $state([4, 4, 4, 4, 4]);
   onDestroy(() => stop(false));
   $effect(() => {
     if (!recording) return;
@@ -48,10 +49,25 @@
     recorder = new MediaRecorder(media);
     recorder.ondataavailable = event => chunks.push(event.data);
     recorder.start();
+    // Полоски у таймера показывают, что микрофон слышит голос.
+    audio = new AudioContext();
+    const analyser = audio.createAnalyser(), samples = new Uint8Array(512);
+    audio.createMediaStreamSource(media).connect(analyser);
+    let level = 0;
+    const tick = time => {
+      if (recording?.token !== token) return;
+      analyser.getByteTimeDomainData(samples);
+      const loudness = Math.min(1, 4 * Math.sqrt(samples.reduce((sum, v) => sum + ((v - 128) / 128) ** 2, 0) / samples.length));
+      level += (loudness - level) * (loudness > level ? 0.5 : 0.12);
+      bars = bars.map((_, i) => 4 + level * 18 * (0.5 + 0.5 * Math.abs(Math.sin(time / 1000 * 7 + i * 1.3))));
+      requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
   }
   function stop(send) {
     const current = recording, active = recorder, media = stream, parts = chunks;
     recording = null; recorder = null;
+    audio?.close(); audio = null; bars = bars.map(() => 4);
     if (!active) return;
     const seconds = (Date.now() - current.started) / 1000;
     active.onstop = () => {
@@ -117,10 +133,10 @@
     {#if hint}<div class="pointer-events-none absolute -top-10 right-0 rounded-lg bg-neutral-800 px-3 py-1.5 text-xs text-neutral-300">{hint}</div>{/if}
     {#if recording?.locked}
     <button type="button" aria-label="Удалить запись" title="Удалить запись" class="grid size-10 shrink-0 place-items-center rounded-xl text-neutral-400 hover:text-neutral-200" onclick={() => stop(false)}><Icon name="trash" class="size-5" /></button>
-    <div class="flex min-h-10 flex-1 items-center gap-2 px-1 text-[15px] tabular-nums text-neutral-100"><span class="size-2.5 animate-pulse rounded-full bg-red-500"></span>{duration((now - recording.started) / 1000)}</div>
+    <div class="flex min-h-10 flex-1 items-center gap-2 px-1 text-[15px] tabular-nums text-neutral-100"><span class="flex h-[22px] items-center gap-[3px]" aria-hidden="true">{#each bars as height}<span class="w-[3px] rounded-full bg-red-500" style:height="{height}px"></span>{/each}</span>{duration((now - recording.started) / 1000)}</div>
     <button type="button" aria-label="Отправить голосовое сообщение" title="Отправить" class="grid size-10 shrink-0 place-items-center rounded-xl bg-neutral-100 text-neutral-950 hover:opacity-80" onclick={() => stop(true)}><Icon name="send" class="size-5" /></button>
     {:else if recording}
-    <div class="flex min-h-10 items-center gap-2 px-2 text-[15px] tabular-nums text-neutral-100"><span class="size-2.5 animate-pulse rounded-full bg-red-500"></span>{duration((now - recording.started) / 1000)}</div>
+    <div class="flex min-h-10 items-center gap-2 px-2 text-[15px] tabular-nums text-neutral-100"><span class="flex h-[22px] items-center gap-[3px]" aria-hidden="true">{#each bars as height}<span class="w-[3px] rounded-full bg-red-500" style:height="{height}px"></span>{/each}</span>{duration((now - recording.started) / 1000)}</div>
     <div class="flex min-h-10 flex-1 items-center justify-center text-sm text-neutral-500" style:transform="translateX({recording.dx}px)" style:opacity={1 + recording.dx / 150}>‹ Влево — отмена</div>
     <div class="size-10 shrink-0"></div>
     <div class="pointer-events-none absolute -top-[72px] right-0 flex h-16 w-10 flex-col items-center justify-center gap-0.5 rounded-full border border-neutral-700 bg-neutral-900 text-neutral-400" style:transform="translateY({recording.dy / 2}px)"><Icon name="lock" class="size-4" /><Icon name="chevron" class="size-4 rotate-180" /></div>
