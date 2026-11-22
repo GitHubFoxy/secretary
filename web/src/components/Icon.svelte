@@ -22,6 +22,8 @@
     <path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3" />
   {:else if name === 'close'}
     <path d="M6 6l12 12M18 6L6 18" />
+  {:else if name === 'expand'}
+    <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
   {:else if name === 'send'}
     <path d="M12 19V5M5.5 11.5L12 5l6.5 6.5" />
   {:else if name === 'microphone'}
