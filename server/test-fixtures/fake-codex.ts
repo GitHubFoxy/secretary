@@ -11,6 +11,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   const { id, method, params } = JSON.parse(line);
   if (id === undefined) return;
   if (method === 'initialize') return send({ id, result: {} });
+  if (method === 'account/read') return send({ id, result: { account: process.cwd().includes('no-auth') ? null : { type: 'chatgpt' }, requiresOpenaiAuth: true } });
   if (method === 'thread/start' || method === 'thread/resume') {
     return setTimeout(() => send({ id, result: { thread } }), process.cwd().includes('slow-thread') ? 300 : 0);
   }

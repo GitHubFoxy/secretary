@@ -76,3 +76,10 @@ test('codex: прерывание до turn/start отменяет отправ�
   expect(t.log).not.toContain('dispatching');
   expect(t.calls()).toEqual([]);
 });
+
+test('codex без входа показывает команду для авторизации до отправки', async () => {
+  const t = run(codexTurn, 'привет', { folder: 'no-auth' });
+  await expect(t.result).rejects.toThrow('codex login --device-auth');
+  expect(t.log).not.toContain('dispatching');
+  expect(t.calls()).toEqual([]);
+});

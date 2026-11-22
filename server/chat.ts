@@ -22,6 +22,17 @@ export function agentAnswer(event: any): string | null {
 }
 
 export function chatMessage(event: any): ChatMessage | null {
+  if (event?.type === 'result' && event.is_error) {
+    const text = event.result === 'Not logged in · Please run /login'
+      ? 'Claude Code не вошёл в подписку. На Host выполните: claude auth login'
+      : event.result || 'Неизвестная ошибка';
+    return { kind: 'error', text };
+  }
+  if (event?.method === 'turn/completed' && event.params?.turn?.error) {
+    const error = event.params.turn.error;
+    const text = error.message || 'Неизвестная ошибка';
+    return { kind: 'error', text };
+  }
   const answer = agentAnswer(event);
   if (answer !== null) return answer && !answer.startsWith('NO_REPLY') ? { kind: 'agent', text: answer } : null;
   const images: Image[] = event?.images || [];

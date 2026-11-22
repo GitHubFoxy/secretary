@@ -64,7 +64,7 @@
       await connection.request({type:'send', id:selected, text:sent.text, images:sent.images, immediate});
       if (message === sent.text && images === sent.images) { message = ''; images = []; }
     } catch (err) {
-      error = err.disconnected ? 'Соединение прервалось до подтверждения отправки. Проверьте историю перед повторной отправкой.' : err.message;
+      error = err.disconnected ? 'Не удалось подтвердить доставку сообщения. Проверьте историю перед повторной отправкой.' : `Не удалось доставить сообщение: ${err.message}`;
     } finally { sending = false; }
   }
   // The settings form edits a copy of the selected session's harness, model and reasoning.
