@@ -4,6 +4,34 @@
   let { open = false, sessions = [], selected, connected = false, onhide, onrestore, onselect, onclose, onprofile } = $props();
 
   let hiddenOpen = $state(false);
+  let offset = $state(0), dragging = $state(false);
+  let startX, startY, direction;
+  $effect(() => { if (open) offset = 0; });
+
+  function touchStart(e) {
+    if (e.touches.length !== 1) return;
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+    direction = undefined;
+  }
+
+  function touchMove(e) {
+    if (startX === undefined) return;
+    const x = e.touches[0].clientX - startX;
+    const y = e.touches[0].clientY - startY;
+    if (!direction && Math.max(Math.abs(x), Math.abs(y)) > 8) direction = Math.abs(x) > Math.abs(y) ? 'horizontal' : 'vertical';
+    if (direction === 'horizontal') {
+      dragging = true;
+      offset = Math.min(0, x);
+    }
+  }
+
+  function touchEnd(e) {
+    if (dragging && e.type !== 'touchcancel' && -offset > e.currentTarget.offsetWidth / 3) onclose();
+    else offset = 0;
+    dragging = false;
+    startX = undefined;
+  }
   const secretaryId = $derived(sessions.find(s => s.secretary)?.id);
   const visibleSessions = $derived(sessions.filter(s => !s.internal && !s.hidden));
   const hiddenSessions = $derived(sessions.filter(s => !s.internal && s.hidden));
@@ -53,7 +81,8 @@
 
 {#if open}
   <button class="fixed inset-0 z-10 cursor-default bg-black/60" aria-label="Закрыть список" onclick={onclose} transition:fade={{ duration: 200 }}></button>
-  <aside class="fixed inset-y-0 left-0 z-20 flex w-80 max-w-[85vw] flex-col border-r border-neutral-900 bg-neutral-950" transition:fly={{ x: -320, duration: 220 }}>
+  <div class="fixed inset-y-0 left-0 z-20 w-80 max-w-[85vw]" transition:fly={{ x: -320, duration: 220 }}>
+  <aside class="flex h-full flex-col border-r border-neutral-900 bg-neutral-950" style:transform="translateX({offset}px)" style:transition={dragging ? 'none' : 'transform 220ms'} style:touch-action="pan-y" ontouchstart={touchStart} ontouchmove={touchMove} ontouchend={touchEnd} ontouchcancel={touchEnd}>
     <div class="flex items-center justify-between border-b border-neutral-900 px-4 py-3">
       <button class="min-w-0 truncate cursor-pointer text-sm font-semibold text-neutral-100" aria-label="Открыть основной чат" onclick={() => onselect(secretaryId)}>Secretary</button>
       <button class="icon-btn" aria-label="Закрыть" onclick={onclose}>
@@ -97,4 +126,5 @@
       </button>
     </div>
   </aside>
+  </div>
 {/if}
