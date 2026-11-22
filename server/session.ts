@@ -39,7 +39,7 @@ export class Session {
   private turn?: ActiveTurn;
   private stopped = false;
   private deleted = false;
-  private listeners: ((event: any) => void)[] = [];
+  private listeners: ((event: any, cursor?: number) => void)[] = [];
   // Called with the last answer when a turn completes on its own.
   onComplete?: (answer: string) => void;
 
@@ -49,13 +49,13 @@ export class Session {
     private turns: Record<string, Turn>,
     private turnContext: (row: SessionRow) => TurnContext = () => ({}),
   ) {
-    this.queue = new MessageQueue(db, row.id, event => this.publish(event));
+    this.queue = new MessageQueue(db, row.id, (event, cursor) => this.publish(event, cursor));
   }
 
   get id() { return this.row.id; }
   get info() { return this.db.query('SELECT * FROM sessions WHERE id = ?').get(this.id) as SessionRow; }
   events() { return (this.db.query('SELECT json FROM events WHERE session_id = ? ORDER BY rowid').all(this.id) as { json: string }[]).map(row => JSON.parse(row.json)); }
-  onEvent(callback: (event: any) => void) { this.listeners.push(callback); }
+  onEvent(callback: (event: any, cursor?: number) => void) { this.listeners.push(callback); }
 
   setHidden(hidden: boolean) {
     if (isInternal(this.row) || typeof hidden !== 'boolean') throw new Error('Недопустимое изменение видимости сессии');
@@ -135,10 +135,10 @@ export class Session {
   }
 
   private emit(event: unknown) {
-    writeEvent(this.db, this.id, event);
-    this.publish(event);
+    const cursor = writeEvent(this.db, this.id, event);
+    this.publish(event, cursor);
   }
-  private publish(event: unknown) { for (const listener of this.listeners) listener(event); }
+  private publish(event: unknown, cursor?: number) { for (const listener of this.listeners) listener(event, cursor); }
 
   private setStatus(status: Status) {
     if (this.info.status === status) return;

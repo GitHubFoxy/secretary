@@ -33,6 +33,10 @@ export function createConnection({url, onOpen, onClose, onMessage, WebSocketImpl
   function clearTimer() { if (timer != null) { cancel(timer); timer = null; } }
   return {
     connect,
+    reconnect() {
+      if (socket) { const current = socket; socket = null; current.close(); failWaiting(); onClose(); }
+      connect();
+    },
     request(command) {
       if (!socket || socket.readyState !== 1) return Promise.reject(Object.assign(new Error('нет соединения'), {disconnected:true}));
       const requestId = command.requestId ?? crypto.randomUUID();

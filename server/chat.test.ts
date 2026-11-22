@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { chatHistoryPage, chatMessage, reportText } from './chat';
+import { chatPage, chatChanges, chatMessage, reportText } from './chat';
 
 test('события обоих harness превращаются в сообщения чата', () => {
   expect(chatMessage({ type: 'result', result: 'ответ', usage: {} })).toEqual({ kind: 'agent', text: 'ответ' });
@@ -19,11 +19,11 @@ test('история отдаётся страницами по видимым �
     db.query('INSERT INTO events VALUES (1, ?, ?)').run(JSON.stringify({ type: 'user', message: { content: `message ${i}` } }), '');
     db.query('INSERT INTO events VALUES (1, ?, ?)').run(JSON.stringify({ type: 'status', status: 'idle' }), '');
   }
-  const page = chatHistoryPage(db, 1);
+  const page = chatPage(db, 1);
   expect(page.hasMore).toBe(true);
   expect(page.messages.map(m => m.text)).toEqual(Array.from({ length: 10 }, (_, i) => `message ${i + 5}`));
-  expect(chatHistoryPage(db, 1, true)).toMatchObject({ hasMore: false, messages: { length: 15 } });
-  expect(chatHistoryPage(db, 2)).toEqual({ messages: [], hasMore: false });
+  expect(chatPage(db, 1, true)).toMatchObject({ hasMore: false, messages: { length: 15 } });
+  expect(chatPage(db, 2)).toEqual({ messages: [], hasMore: false });
 });
 
 test('ошибки хода видны в чате и не выглядят как ответ агента', () => {
@@ -33,4 +33,17 @@ test('ошибки хода видны в чате и не выглядят ка
     .toEqual({ kind: 'error', text: 'другая ошибка' });
   expect(chatMessage({ method: 'turn/completed', params: { turn: { error: { message: 'ошибка Codex' } } } }))
     .toEqual({ kind: 'error', text: 'ошибка Codex' });
+});
+
+test('после переподключения возвращаются только новые видимые сообщения', async () => {
+  const db = new Database(':memory:');
+  db.run('CREATE TABLE events (session_id INTEGER NOT NULL, json TEXT NOT NULL, time TEXT NOT NULL)');
+  const insert = db.query('INSERT INTO events VALUES (?, ?, ?)');
+  for (let i = 0; i < 12; i++) insert.run(1, JSON.stringify({type:'user', message:{content:`${i}`}}), '');
+  const page = chatPage(db, 1);
+  expect(page.messages.map(m => m.text)).toEqual(Array.from({length:10}, (_, i) => `${i + 2}`));
+  insert.run(1, JSON.stringify({type:'status'}), '');
+  insert.run(2, JSON.stringify({type:'user', message:{content:'чужая сессия'}}), '');
+  insert.run(1, JSON.stringify({type:'user', message:{content:'новое'}}), '');
+  expect(chatChanges(db, 1, page.messages.at(-1)!.cursor).map(m => m.text)).toEqual(['новое']);
 });

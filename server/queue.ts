@@ -12,7 +12,7 @@ export type Unsent = 'cancelled' | 'delivery_uncertain';
 export class MessageQueue {
   private items: Message[];
 
-  constructor(private db: Database, private sessionId: number, private publish: (event: object) => void) {
+  constructor(private db: Database, private sessionId: number, private publish: (event: object, cursor?: number) => void) {
     const rows = db.query('SELECT id, urgent, text, images, in_flight FROM pending_messages WHERE session_id = ? ORDER BY urgent DESC, id').all(sessionId) as { id: number; urgent: number; text: string; images: string; in_flight: number }[];
     this.items = rows.map(row => ({ id: row.id, text: row.text, images: JSON.parse(row.images), urgent: row.urgent === 1 }));
     // In flight at load time means Secretary died after handing these to a harness: they must not be sent again.
@@ -73,14 +73,15 @@ export class MessageQueue {
     if (!live.length) return 0;
     const events = live.map(eventOf);
     const time = new Date().toISOString();
+    const cursors: number[] = [];
     this.db.transaction(() => {
       live.forEach((item, i) => {
-        writeEvent(this.db, this.sessionId, events[i], time);
+        cursors.push(writeEvent(this.db, this.sessionId, events[i], time));
         this.db.query('DELETE FROM pending_messages WHERE id = ?').run(item.id);
       });
     })();
     this.items = this.items.filter(item => !live.includes(item));
-    for (const event of events) this.publish(event);
+    events.forEach((event, i) => this.publish(event, cursors[i]));
     this.publishQueue();
     return live.length;
   }

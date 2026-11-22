@@ -45,3 +45,19 @@ test('ответ сопоставляется с запросом, осталь�
   sockets[0].close();
   await expect(lost).rejects.toMatchObject({disconnected:true});
 });
+
+test('возврат в приложение заменяет зависшее соединение и отклоняет незавершённый запрос', async () => {
+  const sockets = [];
+  class FakeSocket {
+    constructor() { this.readyState = 0; sockets.push(this); }
+    send() {}
+    close() { this.readyState = 2; }
+  }
+  const c = createConnection({url:'ws://test', WebSocketImpl:FakeSocket, onOpen:()=>{}, onClose:()=>{}, onMessage:()=>{}});
+  c.connect(); sockets[0].readyState = 1; sockets[0].onopen();
+  const pending = c.request({type:'read', requestId:'r'});
+  c.reconnect();
+  await expect(pending).rejects.toMatchObject({disconnected:true});
+  expect(sockets).toHaveLength(2);
+  c.stop();
+});

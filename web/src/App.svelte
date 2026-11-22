@@ -12,8 +12,11 @@
   import Modal from './components/Modal.svelte';
   import Icon from './components/Icon.svelte';
 
+  let cached;
+  try { cached = JSON.parse(localStorage.getItem('last-chat')); } catch {}
   let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyStartAtTop = false, historyToken = 0;
-  let sessions = [], history = [], queue = [], selected = null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
+  let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
+  if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], sending = false;
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   let agentsOriginal = '', agentsSaving = false;
@@ -23,34 +26,39 @@
     currentVersion: __SECRETARY_BUILD_ID__,
     fetchVersion: async () => {
       const response = await fetch('/build-version.json', {cache:'no-store'});
+      if (response.status === 401) { localStorage.removeItem('last-chat'); location.assign('/?login'); }
       if (!response.ok) throw new Error('Version unavailable');
       return (await response.json()).version;
     },
     isBusy: () => Boolean(message || images.length || sending || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
-    reload: () => location.reload(),
+    reload: () => location.replace('/?update'),
   });
   const connection = createConnection({
     url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`,
-    onOpen: () => { connected = true; if (selected !== null) select(selected); updates.check(); },
+    onOpen: () => { connected = true; if (selected !== null) loadHistory(selected, false, historyLoaded); updates.check(); },
     onClose: () => { connected = false; interruptFeedback.disconnect(); },
     onMessage: handleMessage,
   });
   // Commands whose only visible result is a broadcast (sessions, message) or an error.
   const command = value => connection.request(value).catch(err => { error = err.message; });
-  async function loadHistory(id, all = false) {
+  async function loadHistory(id, all = false, sync = false) {
     const token = ++historyToken;
     historyLoadingOlder = all;
     try {
-      const page = await connection.request({type:'read', id, all});
+      const after = sync ? (history.at(-1)?.cursor ?? 0) : undefined;
+      const page = await connection.request({type:'read', id, all, after});
       if (token !== historyToken) return;
-      history = page.messages; queue = page.queue; historyHasMore = page.hasMore; historyStartAtTop = all; historyLoaded = true; historyVersion++;
+      const merged = new Map((sync ? history : []).concat(page.messages, history.filter(m => m.cursor > (page.messages.at(-1)?.cursor ?? after ?? Infinity))).map(m => [m.cursor, m]));
+      history = [...merged.values()].sort((a, b) => a.cursor - b.cursor); queue = page.queue;
+      if (!sync) { historyHasMore = page.hasMore; historyStartAtTop = all; historyVersion++; }
+      historyLoaded = true;
     } catch (err) { if (token === historyToken && !err.disconnected) error = err.message; }
     finally { if (token === historyToken) historyLoadingOlder = false; }
   }
   function select(id) { if (selected !== id) { history = []; queue = []; } selected = id; historyLoaded = false; historyHasMore = false; drawerOpen = false; loadHistory(id); }
   function handleMessage(msg) {
     if (msg.type === 'sessions') { sessions = msg.sessions; if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select((sessions.find(s => s.secretary) ?? sessions[0]).id); } }
-    if (msg.type === 'message' && msg.sessionId === selected) history = [...history, msg.message];
+    if (msg.type === 'message' && msg.sessionId === selected && !history.some(m => m.cursor === msg.message.cursor)) history = [...history, msg.message];
     if (msg.type === 'queue' && msg.sessionId === selected) queue = msg.items;
     if (msg.type === 'interrupt_result') interruptFeedback.result(msg.sessionId, msg.requestId, msg.outcome);
     if (msg.type === 'error') error = msg.message;
@@ -127,6 +135,9 @@
     ...history.map((m, index) => ({...m, key:`${selected}:${index}`})),
     ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:item.images, urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
   ];
+  $: if (historyLoaded && selected !== null) {
+    try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-10), hasMore:historyHasMore || history.length > 10})); } catch { localStorage.removeItem('last-chat'); }
+  }
   $: current = sessions.find(s => s.id === selected);
   $: title = current?.name || (current?.secretary ? 'Secretary' : `Сессия #${selected}`);
 
@@ -135,7 +146,7 @@
   $: if (chatViewport) keyboard = keyboardInset({ viewport: window.visualViewport, container: chatViewport, activeElement: document.activeElement });
   onMount(() => {
     connection.connect();
-    const reconnect = () => { if (document.visibilityState === 'visible') { connection.connect(); updates.check(); } };
+    const reconnect = () => { if (document.visibilityState === 'visible') { connection.reconnect(); updates.check(); } };
     const updateTimer = setInterval(() => { if (document.visibilityState === 'visible') updates.check(); }, 5000);
     window.addEventListener('online', reconnect);
     document.addEventListener('visibilitychange', reconnect);
