@@ -118,7 +118,7 @@
     catch (err) { if (!err.disconnected) interruptFeedback.fail(id, requestId, err.message); }
   }
   function setHidden(session, hidden) { if (connected) { error = ''; command({type:'visibility', id:session.id, hidden}); } }
-  function openSettings() { loadSettings(); loadVoiceModel(); settingsOpen = true; }
+  function openSettings() { loadSettings(); settingsOpen = true; }
   function openRename() { newName = title; settingsOpen = false; renameOpen = true; }
   function rename() { if (!connected || !newName.trim()) return; error = ''; command({type:'rename', id:selected, name:newName}); renameOpen = false; }
   // A new chat in the same folder with the saved settings of the current one.
@@ -156,7 +156,7 @@
       agentsStatus = `Не удалось сохранить: ${err.message || err}`;
     } finally { agentsSaving = false; }
   }
-  function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); }
+  function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); loadVoiceModel(); }
   // Queued messages are not accepted by the agent yet, so they come after history.
   $: messages = [
     ...history.map((m, index) => ({...m, key:`${selected}:${index}`})),
@@ -201,6 +201,13 @@
     </header>
 
     <div class="flex min-h-0 flex-1 flex-col gap-4 p-4">
+      <label class="flex flex-col gap-2 text-sm">Распознавание речи на Host
+        <select class="field" value={voiceModel} disabled={!voiceModel} onchange={saveVoiceModel}>
+          <option value="gigaam">GigaAM — быстрее, лучше русский</option>
+          <option value="parakeet">Parakeet — лучше английские слова</option>
+        </select>
+      </label>
+      {#if voiceStatus}<p role="alert" class="text-sm text-red-400">{voiceStatus}</p>{/if}
       {#if Capacitor.isNativePlatform()}
         <button class="btn-ghost self-start" onclick={() => { if (confirm('Сбросить адрес Host и забыть вход?')) host.reset(); }}>Сбросить адрес Host</button>
       {/if}
@@ -240,13 +247,6 @@
     </Modal>
 
     <Modal open={settingsOpen} title="Настройки сессии" onclose={() => (settingsOpen = false)}>
-      <label class="flex flex-col gap-2 pb-6 text-sm">Распознавание речи на Host
-        <select class="field" value={voiceModel} disabled={!voiceModel} onchange={saveVoiceModel}>
-          <option value="gigaam">GigaAM — быстрее, лучше русский</option>
-          <option value="parakeet">Parakeet — лучше английские слова</option>
-        </select>
-      </label>
-      {#if voiceStatus}<p role="alert" class="text-sm text-red-400">{voiceStatus}</p>{/if}
       <SettingsPanel bind:harness bind:model bind:reasoning {connected} onsave={saveSettings} onstop={stop} oncreate={createThread} onrename={openRename} />
     </Modal>
 
