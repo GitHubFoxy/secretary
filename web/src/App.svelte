@@ -266,14 +266,23 @@
     </header>
 
     <div class="flex min-h-0 flex-1 flex-col gap-4 p-4">
-      <div class="flex flex-col gap-2 text-sm">Режим голоса
-        <div class="flex gap-2"><button type="button" class="btn-ghost border border-neutral-600" aria-pressed="true">Рация</button><button type="button" class="btn-ghost opacity-50" title="Скоро" aria-disabled="true" onclick={() => voiceModeHint = true}>Живой разговор</button></div>
-        {#if voiceModeHint}<span class="text-neutral-400">Скоро</span>{/if}
+      <div class="flex flex-col gap-2 text-sm">Голосовые ответы
+        <div class="grid grid-cols-2 gap-2">
+          <button type="button" aria-pressed="true" class="flex flex-col items-start gap-1 rounded-2xl border border-neutral-500 bg-neutral-900 p-3 text-left">
+            <span class="flex items-center gap-2 font-medium text-neutral-100"><Icon name="microphone" class="size-4" />Рация</span>
+            <span class="text-xs leading-snug text-neutral-400">Держишь кнопку, говоришь — Secretary отвечает голосом</span>
+          </button>
+          <button type="button" aria-disabled="true" onclick={() => { voiceModeHint = true; setTimeout(() => voiceModeHint = false, 1500); }} class="relative flex flex-col items-start gap-1 rounded-2xl border border-neutral-800 p-3 text-left">
+            <span class="flex items-center gap-2 font-medium text-neutral-500">Живой разговор<span class="rounded-full border border-neutral-700 px-1.5 text-[10px] leading-4 text-neutral-400">скоро</span></span>
+            <span class="text-xs leading-snug text-neutral-600">Говоришь без кнопки, как по телефону</span>
+            {#if voiceModeHint}<span role="status" class="absolute -top-9 right-0 rounded-lg bg-neutral-800 px-3 py-1.5 text-xs text-neutral-200 shadow-lg">Скоро. Пока работает Рация</span>{/if}
+          </button>
+        </div>
       </div>
-      <label class="flex flex-col gap-2 text-sm">Синтез речи
+      <label class="flex flex-col gap-2 text-sm">Голос ответов
         <select class="field" value={ttsEngine} disabled={!ttsEngine} onchange={saveTtsEngine}>
-          <option value="inworld">Inworld — облако</option>
-          <option value="piper">Piper — на Host</option>
+          <option value="inworld">Inworld — облако, звучит естественнее</option>
+          <option value="piper">Piper — бесплатно, на Host</option>
         </select>
       </label>
       <label class="flex flex-col gap-2 text-sm">Распознавание речи на Host
@@ -344,8 +353,16 @@
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
         <div class="pointer-events-auto">
           {#if interruptStates[selected]?.message}<p role="status" aria-live="polite" class="mx-auto max-w-3xl px-4 text-sm text-neutral-400">{interruptStates[selected].message}</p>{/if}
-          {#if speaking && current?.secretary}<p role="status" class="mx-auto max-w-3xl px-4 text-sm text-neutral-400">Озвучиваю ответ…</p>{/if}
-          <Composer {videoInterval} speaking={speaking && current?.secretary} onmicpress={micPress} onrecordstart={recordStart} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
+          {#if speaking && current?.secretary}
+            <div class="mx-auto mb-2 flex max-w-3xl justify-center px-4">
+              <button type="button" onclick={stopSpeech} class="flex items-center gap-2.5 rounded-full border border-neutral-800 bg-neutral-900 py-1.5 pl-3.5 pr-1.5 text-sm text-neutral-300 shadow-lg">
+                <span class="flex h-4 items-center gap-[3px]" aria-hidden="true">{#each [0, 1, 2, 3, 4] as i}<span class="speaking-bar w-[3px] rounded-full bg-neutral-300" style:animation-delay="{i * 0.13}s"></span>{/each}</span>
+                Озвучиваю
+                <span class="flex items-center gap-1.5 rounded-full bg-neutral-800 px-2.5 py-1 text-neutral-100"><span class="size-2 rounded-[2px] bg-current"></span>Стоп</span>
+              </button>
+            </div>
+          {/if}
+          <Composer {videoInterval} onmicpress={micPress} onrecordstart={recordStart} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
         </div>
       </div>
     </div>

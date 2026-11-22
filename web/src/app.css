@@ -134,3 +134,11 @@
     @apply bg-neutral-900 font-medium text-neutral-200;
   }
 }
+
+.speaking-bar {
+  height: 4px;
+  animation: speaking 0.9s ease-in-out infinite;
+}
+@keyframes speaking {
+  50% { height: 16px; }
+}
