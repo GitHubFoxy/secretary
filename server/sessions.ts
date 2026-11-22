@@ -15,7 +15,7 @@ type Options = {
   // Rejects a model or reasoning level the harness does not offer.
   checkModel: (harness: string, model: string, reasoning: string) => Promise<void>;
   // Every Session event, raw. Adapters decide what to show.
-  onEvent: (session: Session, event: any) => void;
+  onEvent: (session: Session, event: any, cursor?: number) => void;
   onChange: () => void;
   mcpUrl?: string;
 };
@@ -100,8 +100,8 @@ export class Sessions {
       return {};
     });
     this.all.set(session.id, session);
-    session.onEvent(event => {
-      this.options.onEvent(session, event);
+    session.onEvent((event, cursor) => {
+      this.options.onEvent(session, event, cursor);
       if (event.type === 'status') this.options.onChange();
     });
     // A child's answer goes to its parent as a report unless it explicitly chose NO_REPLY.

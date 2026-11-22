@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { createConnection } from './connection.js';
+  import { mergeHistory } from './history.js';
   import { createInterruptFeedback } from './interrupt-feedback.js';
   import { createUpdateChecker } from './updates.js';
   import { keyboardInset } from './viewport.js';
@@ -14,8 +15,11 @@
   import { Capacitor, registerPlugin } from '@capacitor/core';
   const host = registerPlugin('Host');
 
+  let cached;
+  try { cached = JSON.parse(localStorage.getItem('last-chat')); } catch {}
   let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyStartAtTop = false, historyToken = 0;
-  let sessions = [], history = [], queue = [], selected = null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
+  let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
+  if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], sending = false;
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   let agentsOriginal = '', agentsSaving = false;
@@ -25,34 +29,39 @@
     currentVersion: __SECRETARY_BUILD_ID__,
     fetchVersion: async () => {
       const response = await fetch('/build-version.json', {cache:'no-store'});
+      if (response.status === 401) { localStorage.removeItem('last-chat'); location.assign('/?login'); }
       if (!response.ok) throw new Error('Version unavailable');
       return (await response.json()).version;
     },
     isBusy: () => Boolean(message || images.length || sending || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
-    reload: () => location.reload(),
+    reload: () => location.replace('/?update'),
   });
   const connection = createConnection({
     url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`,
-    onOpen: () => { connected = true; if (selected !== null) select(selected); updates.check(); },
+    onOpen: () => { connected = true; if (selected !== null) loadHistory(selected, false, historyLoaded); updates.check(); },
     onClose: () => { connected = false; interruptFeedback.disconnect(); },
     onMessage: handleMessage,
   });
   // Commands whose only visible result is a broadcast (sessions, message) or an error.
   const command = value => connection.request(value).catch(err => { error = err.message; });
-  async function loadHistory(id, all = false) {
+  async function loadHistory(id, all = false, sync = false) {
     const token = ++historyToken;
     historyLoadingOlder = all;
     try {
+      const lastCursor = sync ? history.at(-1)?.cursor : undefined;
       const page = await connection.request({type:'read', id, all});
       if (token !== historyToken) return;
-      history = page.messages; queue = page.queue; historyHasMore = page.hasMore; historyStartAtTop = all; historyLoaded = true; historyVersion++;
+      const merged = mergeHistory(history, page.messages, lastCursor);
+      history = merged.messages; queue = page.queue;
+      if (!sync || !merged.overlap) { historyHasMore = page.hasMore; historyStartAtTop = all; historyVersion++; }
+      historyLoaded = true;
     } catch (err) { if (token === historyToken && !err.disconnected) error = err.message; }
     finally { if (token === historyToken) historyLoadingOlder = false; }
   }
   function select(id) { if (selected !== id) { history = []; queue = []; } selected = id; historyLoaded = false; historyHasMore = false; drawerOpen = false; loadHistory(id); }
   function handleMessage(msg) {
     if (msg.type === 'sessions') { sessions = msg.sessions; if (!sessions.some(s => s.id === selected) && sessions.length) { message = ''; settingsOpen = false; select((sessions.find(s => s.secretary) ?? sessions[0]).id); } }
-    if (msg.type === 'message' && msg.sessionId === selected) history = [...history, msg.message];
+    if (msg.type === 'message' && msg.sessionId === selected && !history.some(m => m.cursor === msg.message.cursor)) history = [...history, msg.message];
     if (msg.type === 'queue' && msg.sessionId === selected) queue = msg.items;
     if (msg.type === 'interrupt_result') interruptFeedback.result(msg.sessionId, msg.requestId, msg.outcome);
     if (msg.type === 'error') error = msg.message;
@@ -129,6 +138,9 @@
     ...history.map((m, index) => ({...m, key:`${selected}:${index}`})),
     ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:item.images, urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
   ];
+  $: if (historyLoaded && selected !== null) {
+    try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-10), hasMore:historyHasMore || history.length > 10})); } catch { localStorage.removeItem('last-chat'); }
+  }
   $: current = sessions.find(s => s.id === selected);
   $: title = current?.name || (current?.secretary ? 'Secretary' : `Сессия #${selected}`);
 

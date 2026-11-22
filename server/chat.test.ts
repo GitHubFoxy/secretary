@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { chatHistoryPage, chatMessage, reportText } from './chat';
+import { chatPage, chatMessage, reportText } from './chat';
 
 test('события обоих harness превращаются в сообщения чата', () => {
   expect(chatMessage({ type: 'result', result: 'ответ', usage: {} })).toEqual({ kind: 'agent', text: 'ответ' });
@@ -19,11 +19,11 @@ test('история отдаётся страницами по видимым �
     db.query('INSERT INTO events VALUES (1, ?, ?)').run(JSON.stringify({ type: 'user', message: { content: `message ${i}` } }), '');
     db.query('INSERT INTO events VALUES (1, ?, ?)').run(JSON.stringify({ type: 'status', status: 'idle' }), '');
   }
-  const page = chatHistoryPage(db, 1);
+  const page = chatPage(db, 1);
   expect(page.hasMore).toBe(true);
   expect(page.messages.map(m => m.text)).toEqual(Array.from({ length: 10 }, (_, i) => `message ${i + 5}`));
-  expect(chatHistoryPage(db, 1, true)).toMatchObject({ hasMore: false, messages: { length: 15 } });
-  expect(chatHistoryPage(db, 2)).toEqual({ messages: [], hasMore: false });
+  expect(chatPage(db, 1, true)).toMatchObject({ hasMore: false, messages: { length: 15 } });
+  expect(chatPage(db, 2)).toEqual({ messages: [], hasMore: false });
 });
 
 test('ошибки хода видны в чате и не выглядят как ответ агента', () => {

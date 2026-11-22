@@ -40,5 +40,5 @@ export function openDatabase(path: string) {
 }
 
 export function writeEvent(db: Database, sessionId: number, event: unknown, time = new Date().toISOString()) {
-  db.query('INSERT INTO events VALUES (?, ?, ?)').run(sessionId, JSON.stringify(event), time);
+  return Number(db.query('INSERT INTO events VALUES (?, ?, ?)').run(sessionId, JSON.stringify(event), time).lastInsertRowid);
 }

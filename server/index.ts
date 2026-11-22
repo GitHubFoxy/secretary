@@ -1,5 +1,5 @@
 import { authorized, pair } from './auth';
-import { chatHistoryPage, chatMessage } from './chat';
+import { chatPage, chatMessage } from './chat';
 import { claudeTurn } from './claude';
 import { codexTurn } from './codex';
 import { secretaryFolder } from './config';
@@ -22,9 +22,9 @@ const sessions = new Sessions(db, {
   checkModel: checkReasoning,
   onChange: publishSessions,
   // The browser gets chat messages, the queue and interrupt results; other raw events stay in SQLite.
-  onEvent(session, event) {
+  onEvent(session, event, cursor) {
     const message = chatMessage(event);
-    if (message) publish({ type: 'message', sessionId: session.id, message });
+    if (message) publish({ type: 'message', sessionId: session.id, message: {...message, cursor} });
     else if (event.type === 'queue' || event.type === 'interrupt_result') publish({ ...event, sessionId: session.id });
   },
 });
@@ -40,7 +40,10 @@ function sameOrigin(request: Request, url: URL) {
 
 // The browser adapter. Every command gets exactly one answer with its requestId: `reply` with the result or `error`.
 const commands: Record<string, (cmd: any) => unknown> = {
-  read: cmd => { const s = sessions.get(cmd.id); return { ...chatHistoryPage(db, s.id, cmd.all === true), queue: s.queue.list() }; },
+  read: cmd => {
+    const session = sessions.get(cmd.id);
+    return {...chatPage(db, session.id, cmd.all === true), queue: session.queue.list()};
+  },
   send: cmd => { sessions.get(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true); },
   sendQueued: cmd => { sessions.get(cmd.id).sendQueued(cmd.messageId); },
   stop: cmd => { sessions.stop(cmd.id); },
