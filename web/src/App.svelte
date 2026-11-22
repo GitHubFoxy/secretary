@@ -45,7 +45,7 @@
       if (!response.ok) throw new Error('Version unavailable');
       return (await response.json()).version;
     },
-    isBusy: () => Boolean(message || images.length || preparing.length || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
+    isBusy: () => Boolean(message || images.length || preparing.some(item => !item.error) || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
     reload: () => location.replace('/?update'),
   });
   const connection = createConnection({

@@ -22,7 +22,7 @@ function worker({width = 6000, height = 4000, fail = false} = {}) {
 test('сжимает большое изображение в WebP и освобождает bitmap', async () => {
   const image = worker();
   await image.run({data:{}});
-  expect(image.result()).toEqual({output:{type:'image/webp', data:'dGVzdA=='}, dimensions:[2048, 1365], closed:true});
+  expect(image.result()).toEqual({output:{type:'image/webp', data:'dGVzdA=='}, dimensions:[1568, 1045], closed:true});
 });
 
 test('сообщает об ошибке, если браузер не может прочитать изображение', async () => {

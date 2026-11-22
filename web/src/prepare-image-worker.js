@@ -2,7 +2,8 @@ onmessage = async ({data:file}) => {
   let bitmap;
   try {
     bitmap = await createImageBitmap(file, {imageOrientation:'from-image'});
-    const scale = Math.min(1, 2048 / Math.max(bitmap.width, bitmap.height));
+    // Цена картинки для Claude растёт с площадью: 1568 px по длинной стороне примерно на 40% дешевле 2048 px, для фото хватает.
+    const scale = Math.min(1, 1568 / Math.max(bitmap.width, bitmap.height));
     const canvas = new OffscreenCanvas(Math.max(1, Math.round(bitmap.width * scale)), Math.max(1, Math.round(bitmap.height * scale)));
     canvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
     const blob = await canvas.convertToBlob({type:'image/webp', quality:0.8});
