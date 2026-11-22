@@ -59,6 +59,11 @@
     catch (err) { voiceStatus = `Не удалось сохранить настройку: ${err.message}`; event.target.value = voiceModel; }
   }
   let videoUrls = {};
+  let assistantStatus = '';
+  async function requestAssistant() {
+    try { assistantStatus = (await host.requestAssistantRole()).held ? 'Готово: удерживайте Power' : 'Выберите Secretary помощником в настройках'; }
+    catch { assistantStatus = 'Обновите приложение'; }
+  }
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], preparing = [];
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   let agentsOriginal = '', agentsSaving = false;
@@ -305,6 +310,10 @@
       </label>
       {#if voiceStatus}<p role="alert" class="text-sm text-red-400">{voiceStatus}</p>{/if}
       {#if Capacitor.isNativePlatform()}
+        <div class="flex flex-wrap items-center gap-3 text-sm">
+          <button class="btn-ghost" onclick={requestAssistant}>Открывать Secretary по Power</button>
+          {#if assistantStatus}<span role="status" class="text-xs text-neutral-400">{assistantStatus}</span>{/if}
+        </div>
         <button class="btn-ghost self-start" onclick={() => { if (confirm('Сбросить адрес Host и забыть вход?')) host.reset(); }}>Сбросить адрес Host</button>
       {/if}
       <textarea

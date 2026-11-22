@@ -23,12 +23,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <intent-filter>
-                <action android:name="android.intent.action.ASSIST" />
-                <category android:name="android.intent.category.DEFAULT" />
-            </intent-filter>
-
         </activity>
+
+        <service android:name=".AssistantService" android:permission="android.permission.BIND_VOICE_INTERACTION" android:exported="true">
+            <intent-filter><action android:name="android.service.voice.VoiceInteractionService" /></intent-filter>
+            <meta-data android:name="android.voice_interaction" android:resource="@xml/voice_interaction_service" />
+        </service>
+        <service android:name=".AssistantRecognitionService" android:exported="true">
+            <intent-filter><action android:name="android.speech.RecognitionService" /></intent-filter>
+        </service>
+        <service android:name=".AssistantSessionService" android:permission="android.permission.BIND_VOICE_INTERACTION" android:exported="true" />
+        <activity android:name=".AudioPermissionActivity" android:theme="@android:style/Theme.Translucent.NoTitleBar" android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"
