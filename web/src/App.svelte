@@ -20,6 +20,7 @@
   let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyStartAtTop = false, historyToken = 0;
   let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
   if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }
+  let voiceMessages = [];
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], sending = false;
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   let agentsOriginal = '', agentsSaving = false;
@@ -33,7 +34,7 @@
       if (!response.ok) throw new Error('Version unavailable');
       return (await response.json()).version;
     },
-    isBusy: () => Boolean(message || images.length || sending || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
+    isBusy: () => Boolean(message || images.length || sending || voiceMessages.some(item => item.kind === 'user') || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
     reload: () => location.replace('/?update'),
   });
   const connection = createConnection({
@@ -77,6 +78,19 @@
     } catch (err) {
       error = err.disconnected ? 'Не удалось подтвердить доставку сообщения. Проверьте историю перед повторной отправкой.' : `Не удалось доставить сообщение: ${err.message}`;
     } finally { sending = false; }
+  }
+  async function sendVoice(wav, id) {
+    const key = crypto.randomUUID();
+    voiceMessages = [...voiceMessages, {id, key, kind:'user', text:'Распознавание голоса…', images:[]}];
+    try {
+      const response = await fetch('/voice', {method:'POST', headers:{'Content-Type':'audio/wav'}, body:await wav});
+      if (!response.ok) throw new Error(await response.text());
+      const {text} = await response.json();
+      await connection.request({type:'send', id, text:`[Расшифровка голосового сообщения] ${text}`});
+      voiceMessages = voiceMessages.filter(item => item.key !== key);
+    } catch (err) {
+      voiceMessages = voiceMessages.map(item => item.key === key ? {...item, kind:'error', text:`Не удалось отправить голосовое сообщение: ${err.message}`} : item);
+    }
   }
   // The settings form edits a copy of the selected session's harness, model and reasoning.
   function loadSettings() { if (!current) return; harness = current.harness; model = current.model; reasoning = current.reasoning ?? null; }
@@ -136,6 +150,7 @@
   // Queued messages are not accepted by the agent yet, so they come after history.
   $: messages = [
     ...history.map((m, index) => ({...m, key:`${selected}:${index}`})),
+    ...voiceMessages.filter(item => item.id === selected),
     ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:item.images, urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
   ];
   $: if (historyLoaded && selected !== null) {
@@ -231,7 +246,7 @@
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
         <div class="pointer-events-auto">
           {#if interruptStates[selected]?.message}<p role="status" aria-live="polite" class="mx-auto max-w-3xl px-4 text-sm text-neutral-400">{interruptStates[selected].message}</p>{/if}
-          <Composer bind:value={message} bind:images disabled={!connected || sending} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} onsubmit={submit} oninterrupt={interrupt} />
+          <Composer bind:value={message} bind:images disabled={!connected || sending} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} />
         </div>
       </div>
     </div>

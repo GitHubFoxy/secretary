@@ -1,9 +1,35 @@
 <script>
+  import { onDestroy } from 'svelte';
   import Icon from './Icon.svelte';
+  import { wavFromRecording } from '../voice.js';
   // onsubmit(immediate): true — прервать идущий ход и отправить сразу (правая кнопка и Enter), false — добавить в очередь (левая кнопка во время хода).
-  let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, onsubmit, oninterrupt } = $props();
+  let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, sessionId, onsubmit, oninterrupt, onvoice } = $props();
   let imageError = $state('');
   let area = $state();
+  let recorder = $state(null), voiceError = $state(''), requesting = $state(false), stream, destroyed = false;
+  onDestroy(() => { destroyed = true; if (recorder) { recorder.onstop = null; recorder.stop(); } stream?.getTracks().forEach(track => track.stop()); });
+  async function record() {
+    if (recorder) { recorder.stop(); return; }
+    if (requesting) return;
+    voiceError = '';
+    requesting = true;
+    const id = sessionId;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({audio:true});
+      if (destroyed) { stream.getTracks().forEach(track => track.stop()); return; }
+      const current = new MediaRecorder(stream), chunks = [];
+      recorder = current;
+      current.ondataavailable = event => chunks.push(event.data);
+      current.onstop = async () => {
+        stream.getTracks().forEach(track => track.stop());
+        recorder = null;
+        onvoice(wavFromRecording(chunks), id);
+      };
+      current.start();
+    } catch (error) { stream?.getTracks().forEach(track => track.stop()); voiceError = `Не удалось записать голос: ${error.message}`; }
+    finally { requesting = false; }
+  }
+
 
   // Поле растёт вместе с текстом; больше максимальной высоты (max-h в разметке) прокручивается.
   function fit() {
@@ -54,6 +80,7 @@
 </script>
 
 <form class="px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2" onsubmit={e => { e.preventDefault(); submit(); }}>
+  {#if voiceError}<p role="alert" class="mx-auto max-w-3xl text-sm text-red-400">{voiceError}</p>{/if}
   {#if imageError}<p role="alert" class="mx-auto max-w-3xl text-sm text-red-400">{imageError}</p>{/if}
   <div class="mx-auto flex max-w-3xl flex-wrap gap-2">{#each images as image, i}<div class="relative"><img class="h-20 rounded" src={'data:' + image.type + ';base64,' + image.data} alt="Изображение для отправки" /><button type="button" class="absolute right-0 top-0 bg-neutral-900 px-1" aria-label="Удалить изображение" onclick={() => images = images.filter((_, index) => index !== i)}>×</button></div>{/each}</div>
   <div class="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-neutral-800 bg-neutral-900 p-2 shadow-lg shadow-black/40 transition-colors focus-within:border-neutral-600">
@@ -91,8 +118,8 @@
         <Icon name="queue" class="size-5" />
       </button>
     {/if}
-    {#if !running && !value.trim() && !images.length}
-    <button type="button" disabled aria-label="Голосовой ввод пока недоступен" title="Голосовой ввод пока недоступен" class="grid size-10 shrink-0 cursor-not-allowed place-items-center rounded-xl bg-neutral-800 text-neutral-500">
+    {#if recorder || (!value.trim() && !images.length)}
+    <button type="button" disabled={(disabled || requesting) && !recorder} onclick={record} aria-label={recorder ? "Остановить запись" : "Записать голосовое сообщение"} title={recorder ? "Остановить запись" : "Записать голосовое сообщение"} class="grid size-10 shrink-0 place-items-center rounded-xl {recorder ? 'bg-red-700 text-white' : 'bg-neutral-800 text-neutral-400'}">
       <Icon name="microphone" class="size-5" />
     </button>
     {/if}

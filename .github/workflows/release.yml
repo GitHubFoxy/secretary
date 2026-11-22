@@ -15,7 +15,7 @@ jobs:
       - run: bun install --cwd web --frozen-lockfile
       - run: bun run --cwd web build
       - run: |
-          tar -czf secretary.tar.gz server web/dist secretary install.sh update.sh
+          tar -czf secretary.tar.gz server web/dist secretary install.sh update.sh scripts
           sha256sum secretary.tar.gz > secretary.tar.gz.sha256
       - uses: softprops/action-gh-release@v2
         with:

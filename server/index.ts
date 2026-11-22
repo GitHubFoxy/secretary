@@ -8,6 +8,7 @@ import { serveMcp } from './mcp';
 import { checkReasoning, modelDetails } from './models';
 import { ensurePersona } from './persona';
 import { Sessions } from './sessions';
+import { transcribe } from './voice';
 
 const agentsFile = `${secretaryFolder}/AGENTS.md`;
 ensurePersona(secretaryFolder);
@@ -72,6 +73,11 @@ const server = Bun.serve({
       return new Response('Unauthorized', { status: 401, headers: { 'Cache-Control': 'no-store' } });
     }
     if ((request.method !== 'GET' || url.pathname === '/ws') && !sameOrigin(request, url)) return new Response('Forbidden', { status: 403 });
+    if (url.pathname === '/voice' && request.method === 'POST') {
+      const size = Number(request.headers.get('content-length'));
+      if (!size || size > 20 * 1024 * 1024) return new Response('Запись слишком большая', {status: 413});
+      return request.arrayBuffer().then(bytes => transcribe(new Uint8Array(bytes))).then(text => Response.json({text}), error => new Response(String(error), {status: 500}));
+    }
     if (url.pathname === '/model-details')
       return Promise.resolve().then(() => modelDetails(url.searchParams.get('harness') || '', true)).then(result => Response.json(result), error => new Response(String(error), { status: 500 }));
     if (url.pathname === '/settings/agents') {
