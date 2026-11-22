@@ -6,15 +6,11 @@ import { secretaryFolder } from './config';
 import { openDatabase } from './database';
 import { serveMcp } from './mcp';
 import { checkReasoning, modelDetails } from './models';
+import { ensurePersona } from './persona';
 import { Sessions } from './sessions';
-import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 
 const agentsFile = `${secretaryFolder}/AGENTS.md`;
-mkdirSync(secretaryFolder, { recursive: true });
-if (!existsSync(agentsFile)) writeFileSync(agentsFile, `# Secretary Agent
-
-Ты правая рука владельца. Отвечай сам на быстрые вопросы. Долгую работу поручай через delegate, указывая name, harness, model, reasoning, folder и task. Следи за дочерними сессиями. На неважный [report ...] ответь ровно NO_REPLY. Если отчёт содержит важные для владельца сведения, сообщи о них.\n`);
-if (!existsSync(`${secretaryFolder}/CLAUDE.md`)) writeFileSync(`${secretaryFolder}/CLAUDE.md`, '@AGENTS.md\n');
+ensurePersona(secretaryFolder);
 
 const db = openDatabase('secretary.sqlite');
 const publish = (message: object) => server.publish('events', JSON.stringify(message));
@@ -44,7 +40,7 @@ function sameOrigin(request: Request, url: URL) {
 const commands: Record<string, (cmd: any) => unknown> = {
   read: cmd => { const s = sessions.get(cmd.id); return { ...chatHistoryPage(db, s.id, cmd.all === true), queue: s.queue.list() }; },
   send: cmd => { sessions.get(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true); },
-  stop: cmd => { sessions.get(cmd.id).stop(); },
+  stop: cmd => { sessions.stop(cmd.id); },
   interrupt: cmd => ({ accepted: sessions.get(cmd.id).interrupt(cmd.requestId) }),
   rename: cmd => { sessions.get(cmd.id).setName(cmd.name); publishSessions(); },
   visibility: cmd => { sessions.get(cmd.id).setHidden(cmd.hidden); publishSessions(); },

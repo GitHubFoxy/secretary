@@ -1,4 +1,3 @@
-import { mcpUrl } from './config';
 import { onAbort, readJsonLines, spawnHarness, type Turn } from './harness';
 
 export const claudeTurn: Turn = async (options, text, images) => {
@@ -6,7 +5,8 @@ export const claudeTurn: Turn = async (options, text, images) => {
   const args = ['claude', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', '--model', options.model];
   if (options.reasoning) args.push('--effort', options.reasoning);
   if (options.resumeId) args.push('--resume', options.resumeId);
-  if (options.secretary) args.push('--mcp-config', JSON.stringify({ mcpServers: { secretary: { type: 'http', url: mcpUrl } } }));
+  if (options.mcpUrl) args.push('--mcp-config', JSON.stringify({ mcpServers: { secretary: { type: 'http', url: options.mcpUrl } } }));
+  if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);
   const harness = spawnHarness(args, options.folder, options);
   const content = images.length
     ? [{ type: 'text', text }, ...images.map(image => ({ type: 'image', source: { type: 'base64', media_type: image.type, data: image.data } }))]

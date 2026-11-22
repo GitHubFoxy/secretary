@@ -4,19 +4,40 @@
   let { open = false, sessions = [], selected, connected = false, onhide, onrestore, onselect, onclose, onprofile } = $props();
 
   let hiddenOpen = $state(false);
+  const secretaryId = $derived(sessions.find(s => s.secretary)?.id);
   const visibleSessions = $derived(sessions.filter(s => !s.internal && !s.hidden));
   const hiddenSessions = $derived(sessions.filter(s => !s.internal && s.hidden));
+  const visibleIds = $derived(new Set(visibleSessions.map(s => s.id)));
+  const topSessions = $derived(visibleSessions.filter(s => !s.parent_id || s.parent_id === secretaryId || !visibleIds.has(s.parent_id)));
+  const childrenOf = (id) => visibleSessions.filter(s => s.parent_id === id);
+
+  const statusText = { running: 'работает', idle: 'свободен', interrupted: 'прерван', stopped: 'остановлен' };
+  const dotClass = {
+    running: 'bg-emerald-500 shadow-[0_0_0_3px_rgba(16,185,129,0.22)]',
+    idle: 'bg-neutral-600',
+    interrupted: 'bg-amber-500',
+    stopped: 'bg-red-500/70',
+  };
 </script>
 
 <svelte:window onkeydown={e => { if (open && e.key === 'Escape') onclose(); }} />
 
-{#snippet sessionRow(s)}
+{#snippet sessionRow(s, compact = false)}
   {@const title = s.name || `Сессия #${s.id}`}
-  <div class="flex items-center rounded-lg {s.parent_id ? 'ml-5' : ''} {selected === s.id ? 'bg-neutral-900' : ''}">
-    <button class="min-w-0 flex-1 cursor-pointer rounded-lg px-3 py-2.5 text-left transition-colors hover:bg-neutral-900" onclick={() => onselect(s.id)}>
-      <span class="block truncate text-sm {selected === s.id ? 'text-neutral-100' : 'text-neutral-300'}">{title}</span>
-      <span class="mt-0.5 block truncate text-xs text-neutral-500">{s.status} · {s.model} · {s.reasoning ?? 'по умолчанию'}</span>
-      <span class="block truncate text-xs text-neutral-600">{s.folder}</span>
+  {@const active = selected === s.id}
+  <div class="group flex items-center rounded-lg transition-colors {active ? 'bg-neutral-900 ring-1 ring-neutral-800' : 'hover:bg-neutral-900/70'}">
+    <button class="min-w-0 flex-1 cursor-pointer rounded-lg text-left {compact ? 'px-2.5 py-1.5' : 'px-3 py-2'}" onclick={() => onselect(s.id)}>
+      <span class="flex min-w-0 items-center gap-2">
+        <span class="size-1.5 shrink-0 rounded-full {dotClass[s.status] ?? 'bg-neutral-600'}" aria-hidden="true"></span>
+        <span class="truncate {compact ? 'text-xs' : 'text-sm font-medium'} {active ? 'text-neutral-100' : compact ? 'text-neutral-400' : 'text-neutral-200'}">{title}</span>
+        {#if compact}
+          <span class="ml-auto shrink-0 font-mono text-[10px] text-neutral-500">{s.model}</span>
+        {/if}
+      </span>
+      {#if !compact}
+        <span class="mt-0.5 block truncate pl-3.5 text-xs text-neutral-500">{statusText[s.status] ?? s.status} · {s.model} · {s.reasoning ?? 'по умолчанию'}</span>
+        <span class="block truncate pl-3.5 font-mono text-xs text-neutral-600">{s.folder}</span>
+      {/if}
     </button>
     {#if s.hidden}
       <button class="icon-btn mr-1 shrink-0 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Вернуть сессию ${title} в список`} title="Вернуть в список" disabled={!connected} onclick={() => onrestore(s)}>
@@ -34,14 +55,24 @@
   <button class="fixed inset-0 z-10 cursor-default bg-black/60" aria-label="Закрыть список" onclick={onclose} transition:fade={{ duration: 200 }}></button>
   <aside class="fixed inset-y-0 left-0 z-20 flex w-80 max-w-[85vw] flex-col border-r border-neutral-900 bg-neutral-950" transition:fly={{ x: -320, duration: 220 }}>
     <div class="flex items-center justify-between border-b border-neutral-900 px-4 py-3">
-      <button class="min-w-0 truncate cursor-pointer text-sm font-semibold text-neutral-100" aria-label="Открыть основной чат" onclick={() => onselect(sessions.find(s => s.secretary).id)}>Secretary</button>
+      <button class="min-w-0 truncate cursor-pointer text-sm font-semibold text-neutral-100" aria-label="Открыть основной чат" onclick={() => onselect(secretaryId)}>Secretary</button>
       <button class="icon-btn" aria-label="Закрыть" onclick={onclose}>
         <Icon name="close" />
       </button>
     </div>
-    <nav class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto p-2">
-      {#each visibleSessions as s (s.id)}
-        {@render sessionRow(s)}
+    <nav class="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-2">
+      {#each topSessions as s (s.id)}
+        {@const workers = childrenOf(s.id)}
+        <div class="flex flex-col gap-0.5">
+          {@render sessionRow(s, false)}
+          {#if workers.length}
+            <div class="ml-3.5 mt-0.5 mb-1 flex flex-col gap-0.5 border-l border-neutral-800 pl-2.5">
+              {#each workers as worker (worker.id)}
+                {@render sessionRow(worker, true)}
+              {/each}
+            </div>
+          {/if}
+        </div>
       {/each}
       {#if hiddenSessions.length}
         <div class="mt-2 border-t border-neutral-900 pt-2">
@@ -52,7 +83,7 @@
           {#if hiddenOpen}
             <div class="mt-1 flex flex-col gap-1">
               {#each hiddenSessions as s (s.id)}
-                {@render sessionRow(s)}
+                {@render sessionRow(s, !!(s.parent_id && s.parent_id !== secretaryId))}
               {/each}
             </div>
           {/if}

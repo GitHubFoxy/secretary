@@ -1,18 +1,24 @@
 import type { Database } from 'bun:sqlite';
 import { agentAnswer } from './chat';
 import { writeEvent } from './database';
-import type { Turn } from './harness';
+import type { Turn, TurnOptions } from './harness';
 import { validateImages } from './images';
 import { MessageQueue, type Message } from './queue';
 
 export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string; name: string | null; reasoning: string | null; hidden: number };
 export type Status = 'idle' | 'running' | 'interrupted' | 'stopped';
+export type TurnContext = Pick<TurnOptions, 'mcpUrl' | 'systemPrompt'>;
 
 export const SECRETARY_ID = 1;
 
 // The main Secretary Agent session and sessions inside its folder belong to Secretary itself, not to the owner's list.
 export function isInternal(row: Pick<SessionRow, 'id' | 'folder'>) {
   return row.id === SECRETARY_ID || row.folder.split('/').includes('.secretary');
+}
+
+// Level-1 Specialist: direct child of Secretary Agent or a top-level session created by the Owner.
+export function isSpecialist(row: Pick<SessionRow, 'id' | 'parent_id'>) {
+  return row.id !== SECRETARY_ID && (row.parent_id === null || row.parent_id === SECRETARY_ID);
 }
 
 type ActiveTurn = {
@@ -37,7 +43,12 @@ export class Session {
   // Called with the last answer when a turn completes on its own.
   onComplete?: (answer: string) => void;
 
-  constructor(private db: Database, private row: SessionRow, private turns: Record<string, Turn>) {
+  constructor(
+    private db: Database,
+    private row: SessionRow,
+    private turns: Record<string, Turn>,
+    private turnContext: (row: SessionRow) => TurnContext = () => ({}),
+  ) {
     this.queue = new MessageQueue(db, row.id, event => this.publish(event));
   }
 
@@ -136,6 +147,7 @@ export class Session {
     let completed = false;
     try {
       completed = await this.turns[this.row.harness]({
+        ...this.turnContext(this.row),
         folder: this.row.folder, model: this.row.model, reasoning: this.row.reasoning, resumeId: this.row.harness_session_id, secretary: this.id === SECRETARY_ID,
         interrupt: turn.interrupt.signal, stop: turn.stop.signal,
         onSessionId: id => {

@@ -176,3 +176,23 @@ test('правила сессий: Secretary Agent, видимость, имя, 
   await sessions.configure(s.id, { harness: 'claude', model: 'sonnet', reasoning: null });
   expect(s.info).toMatchObject({ harness: 'claude', model: 'sonnet', harness_session_id: null });
 });
+
+test('NO_REPLY у Specialist не отправляет отчёт родителю, а stop каскадно останавливает детей', async () => {
+  const { calls, sessions, create } = setup();
+  const specialist = await create({ parentId: 1, name: 'Проект' });
+  const child = await create({ parentId: specialist.id, name: 'Фича' });
+
+  specialist.send('проверь');
+  expect(calls[0].options.mcpUrl).toMatch(/\/mcp\/2$/);
+  calls[0].start(); calls[0].answer('NO_REPLY'); await tick();
+  // Secretary Agent should NOT receive a report for NO_REPLY.
+  expect(calls).toHaveLength(1);
+
+  child.send('задача');
+  expect(calls[1].options.mcpUrl).toBeUndefined();
+  expect(calls[1].options.systemPrompt).toBeUndefined();
+  calls[1].start();
+
+  sessions.stop(specialist.id);
+  expect(calls[1].options.stop.aborted).toBe(true);
+});

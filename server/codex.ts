@@ -1,4 +1,3 @@
-import { mcpUrl } from './config';
 import { onAbort, readJsonLines, spawnHarness, type Turn } from './harness';
 import type { ThreadStartParams } from './protocol/v2/ThreadStartParams';
 import type { TurnStartParams } from './protocol/v2/TurnStartParams';
@@ -6,7 +5,7 @@ import type { TurnStartParams } from './protocol/v2/TurnStartParams';
 export const codexTurn: Turn = async (options, text, images) => {
   if (options.interrupt.aborted) return false;
   const args = ['codex', 'app-server'];
-  if (options.secretary) args.push('-c', `mcp_servers.secretary.url="${mcpUrl}"`);
+  if (options.mcpUrl) args.push('-c', `mcp_servers.secretary.url="${options.mcpUrl}"`);
   const harness = spawnHarness(args, options.folder, options);
   let id = 0;
   // `accepted` runs as soon as the response is read, before the notifications that follow it in the same chunk.
@@ -34,7 +33,9 @@ export const codexTurn: Turn = async (options, text, images) => {
   try {
     await request('initialize', { clientInfo: { name: 'secretary', version: '0.1.0' }, capabilities: null });
     harness.write({ jsonrpc: '2.0', method: 'initialized' });
-    const start: ThreadStartParams = { cwd: options.folder, approvalPolicy: 'never', sandbox: 'danger-full-access', developerInstructions: options.secretary ? await Bun.file(`${options.folder}/AGENTS.md`).text() : undefined };
+    const agentsFile = Bun.file(`${options.folder}/AGENTS.md`);
+    const developerInstructions = options.systemPrompt ?? (options.secretary && await agentsFile.exists() ? await agentsFile.text() : undefined);
+    const start: ThreadStartParams = { cwd: options.folder, approvalPolicy: 'never', sandbox: 'danger-full-access', developerInstructions };
     const thread = options.resumeId
       ? await request('thread/resume', { threadId: options.resumeId, excludeTurns: true })
       : await request('thread/start', start);

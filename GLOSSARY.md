@@ -15,8 +15,12 @@ _Avoid_: пользователь, клиент, user
 _Avoid_: руководитель, chief of agents, роутер, оркестратор
 
 **Specialist**:
-Агент, который отвечает за одно направление целиком, обычно за проект. Сам распараллеливает работу в своей папке и единственный отчитывается Secretary Agent.
-_Avoid_: Chief of project, bot, profile, persona, worker, subagent
+Агент, который отвечает за одно направление целиком, обычно за проект. Сам распараллеливает работу в своей папке через Workers и единственный отчитывается Secretary Agent.
+_Avoid_: Chief of project, bot, profile, persona, subagent
+
+**Worker**:
+Дочерняя Session, которую запускает Specialist для конкретной задачи (например, реализация фичи в отдельном git worktree или ревью). Не имеет доступа к MCP и отчитывается только своему Specialist.
+_Avoid_: subagent, дочерний процесс, агент-исполнитель
 
 **Secretary Persona**:
 Инструкции, характер и навыки Secretary Agent — то, что определяет, кто он. Лежит в папке `~/.secretary`. Secretary App поставляет Persona по умолчанию, дальше Owner меняет её как хочет.
@@ -35,8 +39,8 @@ _Avoid_: proxy, router, балансировщик
 _Avoid_: логин, ID пользователя, код сопряжения
 
 **Session**:
-Любой работающий агент: процесс harness (Claude Code или Codex) плюс его история в SQLite. Secretary Agent и дочерние агенты — одинаковые сессии; у дочерней есть родитель.
-_Avoid_: task, worker, тред, процесс
+Любой работающий агент: процесс harness (Claude Code или Codex) плюс его история в SQLite. Secretary Agent, Specialists и Workers — одинаковые сессии; у дочерней есть родитель.
+_Avoid_: task, тред, процесс
 
 **Immediate message**:
 Сообщение, которое прерывает текущий ход Session и отправляется сразу; когда Session находится в состоянии `idle`, отправляется как обычное сообщение.
