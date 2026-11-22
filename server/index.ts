@@ -8,6 +8,7 @@ import { serveMcp } from './mcp';
 import { checkReasoning, modelDetails } from './models';
 import { ensurePersona } from './persona';
 import { Sessions } from './sessions';
+import { transcribe, voiceModel, setVoiceModel } from './voice';
 
 const agentsFile = `${secretaryFolder}/AGENTS.md`;
 ensurePersona(secretaryFolder);
@@ -72,8 +73,18 @@ const server = Bun.serve({
       return new Response('Unauthorized', { status: 401, headers: { 'Cache-Control': 'no-store' } });
     }
     if ((request.method !== 'GET' || url.pathname === '/ws') && !sameOrigin(request, url)) return new Response('Forbidden', { status: 403 });
+    if (url.pathname === '/voice' && request.method === 'POST') {
+      const size = Number(request.headers.get('content-length'));
+      if (!size || size > 20 * 1024 * 1024) return new Response('Запись слишком большая', {status: 413});
+      return request.arrayBuffer().then(bytes => transcribe(new Uint8Array(bytes))).then(text => Response.json({text}), error => new Response(String(error), {status: 500}));
+    }
     if (url.pathname === '/model-details')
       return Promise.resolve().then(() => modelDetails(url.searchParams.get('harness') || '', true)).then(result => Response.json(result), error => new Response(String(error), { status: 500 }));
+    if (url.pathname === '/settings/voice') {
+      if (request.method === 'GET') return voiceModel().then(model => Response.json({model}), error => new Response(String(error), {status: 500}));
+      if (request.method === 'PUT') return request.text().then(setVoiceModel).then(() => new Response(null, {status: 204}), error => new Response(String(error), {status: 400}));
+      return new Response(null, {status: 405});
+    }
     if (url.pathname === '/settings/agents') {
       if (request.method === 'GET') return Bun.file(agentsFile).text().then(text => new Response(text, { headers: { 'content-type': 'text/plain; charset=utf-8' } }), error => new Response(String(error), { status: 500 }));
       if (request.method === 'PUT') return request.text().then(text => Bun.write(agentsFile, text)).then(() => new Response(null, { status: 204 }), error => new Response(String(error), { status: 500 }));

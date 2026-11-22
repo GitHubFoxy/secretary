@@ -1,9 +1,11 @@
 <script>
   import Markdown from './Markdown.svelte';
   import Report from './Report.svelte';
+  import Icon from './Icon.svelte';
+  import { duration, parseVoice } from '../voice.js';
   import { untrack } from 'svelte';
   // bottomInset — высота поля ввода поверх списка (плюс клавиатура), под ней должны оставаться видимыми последние сообщения.
-  let { messages = [], sessions = [], historyLoaded = false, connected = false, historyHasMore = false, historyLoadingOlder = false, startAtTop = false, onloadOlder, bottomInset = 0, onselect, onsendQueued } = $props();
+  let { messages = [], sessions = [], historyLoaded = false, connected = false, historyHasMore = false, historyLoadingOlder = false, startAtTop = false, onloadOlder, bottomInset = 0, onselect, onsendQueued, onretryVoice } = $props();
   let scroller = $state();
   let initialScroll = true;
   // Пока пользователь у самого низа, новые размеры списка не сдвигают его последние сообщения под поле ввода.
@@ -50,12 +52,18 @@
         <div class="flex justify-start">
           <Report message={m} session={sessions.find(s => s.id === m.report.id)} {onselect} />
         </div>
+      {:else if m.kind === 'voice'}
+        <div class="flex flex-col items-end gap-1">
+          <div class="flex items-center gap-2 rounded-2xl rounded-br-md border bg-neutral-800 px-4 py-2.5 text-sm text-neutral-400 {m.error ? 'border-red-900' : 'border-transparent'}"><Icon name="microphone" class="size-4" />{duration(m.seconds)}{#if !m.error}<span class="animate-pulse">· распознаю…</span>{/if}</div>
+          {#if m.error}<p class="max-w-[85%] text-right text-xs text-red-400">Не удалось распознать: {m.error} <button class="text-neutral-200 underline" disabled={!connected} onclick={() => onretryVoice(m)}>Повторить</button></p>{/if}
+        </div>
       {:else if m.kind === 'user' || m.kind === 'queued' || m.kind === 'cancelled' || m.kind === 'uncertain'}
+        {@const voice = parseVoice(m.text)}
         <div class="flex flex-col items-end gap-1">
           {#if m.kind === 'queued'}<span class="text-xs text-neutral-500">{m.urgent ? 'В очереди, срочное' : 'В очереди'}</span>{/if}
           {#if m.kind === 'cancelled'}<span class="text-xs text-neutral-500">Не отправлено: сессия остановлена</span>{/if}
           {#if m.kind === 'uncertain'}<span class="text-xs text-neutral-400">Не удалось подтвердить доставку. Проверьте историю перед повторной отправкой.</span>{/if}
-          <div class="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-neutral-800 px-4 py-2.5 text-[15px] leading-relaxed text-neutral-100 {m.kind === 'queued' ? 'opacity-60' : ''} {m.kind === 'cancelled' ? 'line-through opacity-50' : ''}">{#each m.images as image}<a href={'data:' + image.type + ';base64,' + image.data} target="_blank" rel="noopener"><img class="my-2 max-h-80 max-w-full rounded-lg" src={'data:' + image.type + ';base64,' + image.data} alt="Прикреплённое изображение" /></a>{/each}{m.text}</div>
+          <div class="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-neutral-800 px-4 py-2.5 text-[15px] leading-relaxed text-neutral-100 {m.kind === 'queued' ? 'opacity-60' : ''} {m.kind === 'cancelled' ? 'line-through opacity-50' : ''}">{#each m.images as image}<a href={'data:' + image.type + ';base64,' + image.data} target="_blank" rel="noopener"><img class="my-2 max-h-80 max-w-full rounded-lg" src={'data:' + image.type + ';base64,' + image.data} alt="Прикреплённое изображение" /></a>{/each}{#if voice}<span class="mb-1 flex items-center gap-1.5 text-xs text-neutral-500"><Icon name="microphone" class="size-3.5" />{voice.duration}</span>{voice.text}{:else}{m.text}{/if}</div>
           {#if m.kind === 'queued' && !m.urgent}<button class="btn-ghost text-xs" disabled={!connected} onclick={() => onsendQueued(m.id)}>Отправить сейчас</button>{/if}
         </div>
       {:else if m.kind === 'error'}

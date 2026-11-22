@@ -9,6 +9,7 @@
   import SessionDrawer from './components/SessionDrawer.svelte';
   import SettingsPanel from './components/SettingsPanel.svelte';
   import MessageList from './components/MessageList.svelte';
+  import { voiceText } from './voice.js';
   import Composer from './components/Composer.svelte';
   import Modal from './components/Modal.svelte';
   import Icon from './components/Icon.svelte';
@@ -20,6 +21,16 @@
   let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyStartAtTop = false, historyToken = 0;
   let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
   if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }
+  let voiceMessages = [], voiceModel = '', voiceStatus = '';
+  async function loadVoiceModel() {
+    try { const response = await fetch('/settings/voice'); if (!response.ok) throw new Error(await response.text()); voiceModel = (await response.json()).model; voiceStatus = ''; }
+    catch (err) { voiceStatus = `Не удалось загрузить настройку: ${err.message}`; }
+  }
+  async function saveVoiceModel(event) {
+    const value = event.target.value;
+    try { const response = await fetch('/settings/voice', {method:'PUT', body:value}); if (!response.ok) throw new Error(await response.text()); voiceModel = value; voiceStatus = ''; }
+    catch (err) { voiceStatus = `Не удалось сохранить настройку: ${err.message}`; event.target.value = voiceModel; }
+  }
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], sending = false;
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   let agentsOriginal = '', agentsSaving = false;
@@ -33,7 +44,7 @@
       if (!response.ok) throw new Error('Version unavailable');
       return (await response.json()).version;
     },
-    isBusy: () => Boolean(message || images.length || sending || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
+    isBusy: () => Boolean(message || images.length || sending || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
     reload: () => location.replace('/?update'),
   });
   const connection = createConnection({
@@ -77,6 +88,19 @@
     } catch (err) {
       error = err.disconnected ? 'Не удалось подтвердить доставку сообщения. Проверьте историю перед повторной отправкой.' : `Не удалось доставить сообщение: ${err.message}`;
     } finally { sending = false; }
+  }
+  // Запись хранится в памяти, пока её текст не принят: при ошибке её можно отправить повторно.
+  async function sendVoice(item) {
+    voiceMessages = [...voiceMessages.filter(v => v.key !== item.key), {...item, kind:'voice', error:''}];
+    try {
+      const response = await fetch('/voice', {method:'POST', headers:{'Content-Type':'audio/wav'}, body:await item.wav});
+      if (!response.ok) throw new Error(await response.text());
+      const {text} = await response.json();
+      await connection.request({type:'send', id:item.id, text:voiceText(text, item.seconds)});
+      voiceMessages = voiceMessages.filter(v => v.key !== item.key);
+    } catch (err) {
+      voiceMessages = voiceMessages.map(v => v.key === item.key ? {...v, error:err.message} : v);
+    }
   }
   // The settings form edits a copy of the selected session's harness, model and reasoning.
   function loadSettings() { if (!current) return; harness = current.harness; model = current.model; reasoning = current.reasoning ?? null; }
@@ -132,10 +156,11 @@
       agentsStatus = `Не удалось сохранить: ${err.message || err}`;
     } finally { agentsSaving = false; }
   }
-  function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); }
+  function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); loadVoiceModel(); }
   // Queued messages are not accepted by the agent yet, so they come after history.
   $: messages = [
     ...history.map((m, index) => ({...m, key:`${selected}:${index}`})),
+    ...voiceMessages.filter(item => item.id === selected),
     ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:item.images, urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
   ];
   $: if (historyLoaded && selected !== null) {
@@ -176,6 +201,13 @@
     </header>
 
     <div class="flex min-h-0 flex-1 flex-col gap-4 p-4">
+      <label class="flex flex-col gap-2 text-sm">Распознавание речи на Host
+        <select class="field" value={voiceModel} disabled={!voiceModel} onchange={saveVoiceModel}>
+          <option value="gigaam">GigaAM — быстрее, лучше русский</option>
+          <option value="parakeet">Parakeet — лучше английские слова</option>
+        </select>
+      </label>
+      {#if voiceStatus}<p role="alert" class="text-sm text-red-400">{voiceStatus}</p>{/if}
       {#if Capacitor.isNativePlatform()}
         <button class="btn-ghost self-start" onclick={() => { if (confirm('Сбросить адрес Host и забыть вход?')) host.reset(); }}>Сбросить адрес Host</button>
       {/if}
@@ -224,14 +256,14 @@
 
     <div bind:this={chatViewport} class="relative flex min-h-0 flex-1 flex-col">
       {#key historyVersion}
-        <MessageList {messages} {sessions} {historyLoaded} {connected} {historyHasMore} {historyLoadingOlder} startAtTop={historyStartAtTop} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} />
+        <MessageList {messages} {sessions} {historyLoaded} {connected} {historyHasMore} {historyLoadingOlder} startAtTop={historyStartAtTop} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} />
       {/key}
 
       <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
         <div class="pointer-events-auto">
           {#if interruptStates[selected]?.message}<p role="status" aria-live="polite" class="mx-auto max-w-3xl px-4 text-sm text-neutral-400">{interruptStates[selected].message}</p>{/if}
-          <Composer bind:value={message} bind:images disabled={!connected || sending} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} onsubmit={submit} oninterrupt={interrupt} />
+          <Composer bind:value={message} bind:images disabled={!connected || sending} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} />
         </div>
       </div>
     </div>
