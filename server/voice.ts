@@ -43,8 +43,6 @@ async function recognize(wav: Uint8Array): Promise<string> {
     const process = Bun.spawn([join(folder, 'sherpa-onnx-offline'), ...paths.map((path, i) => `--${['tokens', 'encoder', 'decoder', 'joiner'][i]}=${path}`), ...model.args, `--num-threads=${Math.min(4, availableParallelism())}`, '--debug=false', file], { stdout: 'pipe', stderr: 'pipe' });
     const [stdout, stderr, status] = await Promise.all([new Response(process.stdout).text(), new Response(process.stderr).text(), process.exited]);
     if (status !== 0) throw new Error(stderr.trim() || 'Ошибка sherpa-onnx');
-    const text = JSON.parse(stdout.trim()).text?.trim();
-    if (!text) throw new Error('Речь не распознана');
-    return text;
+    return JSON.parse(stdout.trim()).text?.trim() ?? '';
   } finally { await rm(dir, {recursive:true, force:true}); }
 }
