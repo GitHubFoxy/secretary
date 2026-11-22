@@ -1,4 +1,4 @@
-export type Image = { type: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'; data: string; video?: { seconds: number; time: number } };
+export type Image = { type: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'; data: string; video?: { seconds: number; time: number; note?: boolean } };
 
 export function validateImages(value: unknown): Image[] {
   if (value === undefined) return [];
@@ -10,6 +10,7 @@ export function validateImages(value: unknown): Image[] {
     const type = b.subarray(0, 8).equals(Buffer.from([137,80,78,71,13,10,26,10])) ? 'image/png' : b.subarray(0, 3).equals(Buffer.from([255,216,255])) ? 'image/jpeg' : ['GIF87a','GIF89a'].includes(b.subarray(0, 6).toString()) ? 'image/gif' : b.subarray(0, 4).toString() === 'RIFF' && b.subarray(8, 12).toString() === 'WEBP' ? 'image/webp' : null;
     if (!type || image.type !== type) throw new Error('Поддерживаются только PNG, JPEG, GIF и WebP');
     if (image.video !== undefined && (!image.video || !Number.isFinite(image.video.seconds) || image.video.seconds <= 0 || image.video.seconds > 60 || !Number.isInteger(image.video.time) || image.video.time < 0 || image.video.time >= image.video.seconds)) throw new Error('Некорректное время кадра');
-    return { type, data: image.data, ...(image.video ? {video:{seconds:image.video.seconds, time:image.video.time}} : {}) } as Image;
+    if (image.video?.note !== undefined && typeof image.video.note !== 'boolean') throw new Error('Некорректный признак видеосообщения');
+    return { type, data: image.data, ...(image.video ? {video:{seconds:image.video.seconds, time:image.video.time, ...(image.video.note ? {note:true} : {})}} : {}) } as Image;
   });
 }

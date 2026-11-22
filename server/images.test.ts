@@ -9,6 +9,9 @@ test('проверяет формат, содержимое, размер и ч�
   const frame = {...webp, video:{seconds:60, time:59}};
   expect(validateImages(Array(60).fill(frame))).toHaveLength(60);
   expect(validateImages([frame])[0]).toEqual(frame);
+  const note = {...frame, video:{...frame.video, note:true}};
+  expect(validateImages([note])[0]).toEqual(note);
+  expect(() => validateImages([{...frame, video:{...frame.video, note:'yes'}}])).toThrow();
   expect(() => validateImages([{...webp, video:{seconds:61, time:0}}])).toThrow();
   expect(validateImages(undefined)).toEqual([]);
   expect(() => validateImages([{...png, type:'image/jpeg'}])).toThrow();

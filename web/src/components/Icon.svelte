@@ -30,6 +30,8 @@
   {:else if name === 'video'}
     <rect x="3" y="6" width="13" height="12" rx="3" />
     <path d="m16 10 5-3v10l-5-3z" />
+  {:else if name === 'flip'}
+    <path d="M4 9a8 8 0 0 1 14-3l2 2M20 4v4h-4M20 15a8 8 0 0 1-14 3l-2-2M4 20v-4h4" />
   {:else if name === 'lock'}
     <rect x="5" y="11" width="14" height="9" rx="2" />
     <path d="M8 11V8a4 4 0 0 1 8 0v3" />
