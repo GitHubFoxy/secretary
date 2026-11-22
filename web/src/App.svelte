@@ -31,10 +31,11 @@
     try { const response = await fetch('/settings/voice', {method:'PUT', body:value}); if (!response.ok) throw new Error(await response.text()); voiceModel = value; voiceStatus = ''; }
     catch (err) { voiceStatus = `Не удалось сохранить настройку: ${err.message}`; event.target.value = voiceModel; }
   }
-  let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], sending = false;
+  let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], preparing = [];
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   let agentsOriginal = '', agentsSaving = false;
   let interruptStates = {};
+  const deliveries = new Map();
   const interruptFeedback = createInterruptFeedback({onChange: (id, state) => { interruptStates = {...interruptStates, [id]:state}; }});
   const updates = createUpdateChecker({
     currentVersion: __SECRETARY_BUILD_ID__,
@@ -44,7 +45,7 @@
       if (!response.ok) throw new Error('Version unavailable');
       return (await response.json()).version;
     },
-    isBusy: () => Boolean(message || images.length || sending || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
+    isBusy: () => Boolean(message || images.length || preparing.some(item => !item.error) || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
     reload: () => location.replace('/?update'),
   });
   const connection = createConnection({
@@ -78,16 +79,39 @@
     if (msg.type === 'error') error = msg.message;
   }
   async function submit(immediate = false) {
-    if (!connected || sending || (!message.trim() && !images.length)) return;
-    const sent = {text:message, images};
-    sending = true;
-    if (!interruptStates[selected]?.pending) interruptFeedback.clear(selected);
+    if (!connected || (!message.trim() && !images.length)) return;
+    const sent = {id:crypto.randomUUID(), sessionId:selected, text:message, images, immediate};
+    const previous = deliveries.get(sent.sessionId) ?? Promise.resolve();
+    let finish;
+    const delivery = new Promise(resolve => { finish = resolve; });
+    deliveries.set(sent.sessionId, delivery);
+    message = ''; images = [];
+    preparing = [...preparing, sent];
+    if (!interruptStates[sent.sessionId]?.pending) interruptFeedback.clear(sent.sessionId);
     try {
-      await connection.request({type:'send', id:selected, text:sent.text, images:sent.images, immediate});
-      if (message === sent.text && images === sent.images) { message = ''; images = []; }
+      const results = await Promise.all(sent.images.map(image => image.ready));
+      sent.images = sent.images.map((image, index) => ({...image, processing:false, error:results[index].error}));
+      const failed = results.find(result => result.error);
+      if (failed) throw new Error(failed.error);
+      await previous;
+      await connection.request({type:'send', id:sent.sessionId, text:sent.text, images:results.map(result => result.data), immediate});
+      preparing = preparing.filter(item => item.id !== sent.id);
+      sent.images.forEach(image => URL.revokeObjectURL(image.url));
     } catch (err) {
-      error = err.disconnected ? 'Не удалось подтвердить доставку сообщения. Проверьте историю перед повторной отправкой.' : `Не удалось доставить сообщение: ${err.message}`;
-    } finally { sending = false; }
+      const detail = err.disconnected ? 'Не удалось подтвердить доставку. Проверьте историю перед повторной отправкой.' : err.message;
+      preparing = preparing.map(item => item.id === sent.id ? {...item, error:detail} : item);
+    } finally {
+      await previous;
+      finish();
+      if (deliveries.get(sent.sessionId) === delivery) deliveries.delete(sent.sessionId);
+    }
+  }
+  function restorePreparing(id) {
+    if (message.trim() || images.length) return;
+    const item = preparing.find(entry => entry.id === id);
+    if (!item) return;
+    message = item.text; images = item.images;
+    preparing = preparing.filter(entry => entry.id !== id);
   }
   // Запись хранится в памяти, пока её текст не принят: при ошибке её можно отправить повторно.
   async function sendVoice(item) {
@@ -162,6 +186,7 @@
     ...history.map((m, index) => ({...m, key:`${selected}:${index}`})),
     ...voiceMessages.filter(item => item.id === selected),
     ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:item.images, urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
+    ...preparing.filter(item => item.sessionId === selected).map(item => ({...item, kind:'preparing', key:`preparing:${item.id}`})),
   ];
   $: if (historyLoaded && selected !== null) {
     try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-10), hasMore:historyHasMore || history.length > 10})); } catch { localStorage.removeItem('last-chat'); }
@@ -256,14 +281,14 @@
 
     <div bind:this={chatViewport} class="relative flex min-h-0 flex-1 flex-col">
       {#key historyVersion}
-        <MessageList {messages} {sessions} {historyLoaded} {connected} {historyHasMore} {historyLoadingOlder} startAtTop={historyStartAtTop} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} />
+        <MessageList {messages} {sessions} {historyLoaded} {connected} {historyHasMore} {historyLoadingOlder} startAtTop={historyStartAtTop} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} />
       {/key}
 
       <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
         <div class="pointer-events-auto">
           {#if interruptStates[selected]?.message}<p role="status" aria-live="polite" class="mx-auto max-w-3xl px-4 text-sm text-neutral-400">{interruptStates[selected].message}</p>{/if}
-          <Composer bind:value={message} bind:images disabled={!connected || sending} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} />
+          <Composer bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} />
         </div>
       </div>
     </div>
