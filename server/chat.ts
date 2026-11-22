@@ -70,15 +70,6 @@ export function chatHistory(db: Database, sessionId: number, limit: number) {
   return recentMessages(db, sessionId, limit).map(({cursor, ...message}) => message);
 }
 
-// A cursor is the rowid of a visible message; invisible events do not need to reach the client.
-export function chatChanges(db: Database, sessionId: number, after: number) {
-  const rows = db.query('SELECT rowid, json FROM events WHERE session_id = ? AND rowid > ? ORDER BY rowid').all(sessionId, after) as { rowid: number; json: string }[];
-  return rows.flatMap(row => {
-    const message = chatMessage(JSON.parse(row.json));
-    return message ? [{...message, cursor: row.rowid}] : [];
-  });
-}
-
 export function chatPage(db: Database, sessionId: number, all = false) {
   const messages = recentMessages(db, sessionId, all ? Number.MAX_SAFE_INTEGER : 11);
   return {messages: all ? messages : messages.slice(-10), hasMore: !all && messages.length > 10};

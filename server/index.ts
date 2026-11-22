@@ -1,5 +1,5 @@
 import { authorized, pair } from './auth';
-import { chatChanges, chatPage, chatMessage } from './chat';
+import { chatPage, chatMessage } from './chat';
 import { claudeTurn } from './claude';
 import { codexTurn } from './codex';
 import { secretaryFolder } from './config';
@@ -40,7 +40,10 @@ function sameOrigin(request: Request, url: URL) {
 
 // The browser adapter. Every command gets exactly one answer with its requestId: `reply` with the result or `error`.
 const commands: Record<string, (cmd: any) => unknown> = {
-  read: cmd => { const s = sessions.get(cmd.id); return { ...(Number.isSafeInteger(cmd.after) && cmd.after >= 0 ? {messages: chatChanges(db, s.id, cmd.after)} : chatPage(db, s.id, cmd.all === true)), queue: s.queue.list() };  },
+  read: cmd => {
+    const session = sessions.get(cmd.id);
+    return {...chatPage(db, session.id, cmd.all === true), queue: session.queue.list()};
+  },
   send: cmd => { sessions.get(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true); },
   sendQueued: cmd => { sessions.get(cmd.id).sendQueued(cmd.messageId); },
   stop: cmd => { sessions.stop(cmd.id); },

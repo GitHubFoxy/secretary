@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import { createConnection } from './connection.js';
+  import { mergeHistory } from './history.js';
   import { createInterruptFeedback } from './interrupt-feedback.js';
   import { createUpdateChecker } from './updates.js';
   import { keyboardInset } from './viewport.js';
@@ -47,12 +48,12 @@
     const token = ++historyToken;
     historyLoadingOlder = all;
     try {
-      const after = sync ? (history.at(-1)?.cursor ?? 0) : undefined;
-      const page = await connection.request({type:'read', id, all, after});
+      const lastCursor = sync ? history.at(-1)?.cursor : undefined;
+      const page = await connection.request({type:'read', id, all});
       if (token !== historyToken) return;
-      const merged = new Map((sync ? history : []).concat(page.messages, history.filter(m => m.cursor > (page.messages.at(-1)?.cursor ?? after ?? Infinity))).map(m => [m.cursor, m]));
-      history = [...merged.values()].sort((a, b) => a.cursor - b.cursor); queue = page.queue;
-      if (!sync) { historyHasMore = page.hasMore; historyStartAtTop = all; historyVersion++; }
+      const merged = mergeHistory(history, page.messages, lastCursor);
+      history = merged.messages; queue = page.queue;
+      if (!sync || !merged.overlap) { historyHasMore = page.hasMore; historyStartAtTop = all; historyVersion++; }
       historyLoaded = true;
     } catch (err) { if (token === historyToken && !err.disconnected) error = err.message; }
     finally { if (token === historyToken) historyLoadingOlder = false; }
@@ -148,7 +149,7 @@
   $: if (chatViewport) keyboard = keyboardInset({ viewport: window.visualViewport, container: chatViewport, activeElement: document.activeElement });
   onMount(() => {
     connection.connect();
-    const reconnect = () => { if (document.visibilityState === 'visible') { connection.reconnect(); updates.check(); } };
+    const reconnect = () => { if (document.visibilityState === 'visible') { connection.connect(); updates.check(); } };
     const updateTimer = setInterval(() => { if (document.visibilityState === 'visible') updates.check(); }, 5000);
     window.addEventListener('online', reconnect);
     document.addEventListener('visibilitychange', reconnect);
