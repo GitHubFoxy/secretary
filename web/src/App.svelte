@@ -21,7 +21,16 @@
   let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyStartAtTop = false, historyToken = 0;
   let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
   if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }
-  let voiceMessages = [], voiceModel = '', voiceStatus = '';
+  let voiceMessages = [], voiceModel = '', voiceStatus = '', videoInterval = '1';
+  async function loadVideoInterval() {
+    try { const response = await fetch('/settings/video'); if (!response.ok) throw new Error(await response.text()); videoInterval = (await response.json()).interval; }
+    catch (err) { voiceStatus = `Не удалось загрузить настройку: ${err.message}`; }
+  }
+  async function saveVideoInterval(event) {
+    const value = event.target.value;
+    try { const response = await fetch('/settings/video', {method:'PUT', body:value}); if (!response.ok) throw new Error(await response.text()); videoInterval = value; voiceStatus = ''; }
+    catch (err) { voiceStatus = `Не удалось сохранить настройку: ${err.message}`; event.target.value = videoInterval; }
+  }
   async function loadVoiceModel() {
     try { const response = await fetch('/settings/voice'); if (!response.ok) throw new Error(await response.text()); voiceModel = (await response.json()).model; voiceStatus = ''; }
     catch (err) { voiceStatus = `Не удалось загрузить настройку: ${err.message}`; }
@@ -94,7 +103,14 @@
       const failed = results.find(result => result.error);
       if (failed) throw new Error(failed.error);
       await previous;
-      await connection.request({type:'send', id:sent.sessionId, text:sent.text, images:results.map(result => result.data), immediate});
+      let offset = 0;
+      const descriptions = results.map(result => {
+        const start = offset; offset += result.frames.length;
+        return result.description?.replace('Кадры по порядку:', `Кадры по порядку, начиная с изображения ${start + 1}:`);
+      }).filter(Boolean);
+      const frames = results.flatMap(result => result.frames);
+      if (JSON.stringify(frames).length > 29 * 1024 * 1024) throw new Error('Вложения слишком большие для отправки');
+      await connection.request({type:'send', id:sent.sessionId, text:[sent.text, ...descriptions].filter(Boolean).join('\n\n'), images:frames, immediate});
       preparing = preparing.filter(item => item.id !== sent.id);
       sent.images.forEach(image => URL.revokeObjectURL(image.url));
     } catch (err) {
@@ -189,7 +205,7 @@
     ...preparing.filter(item => item.sessionId === selected).map(item => ({...item, kind:'preparing', key:`preparing:${item.id}`})),
   ];
   $: if (historyLoaded && selected !== null) {
-    try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-10), hasMore:historyHasMore || history.length > 10})); } catch { localStorage.removeItem('last-chat'); }
+    try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-10).map(m => ({...m, images:m.images?.filter(image => !image.video || image.video.time === 0)})), hasMore:historyHasMore || history.length > 10})); } catch { localStorage.removeItem('last-chat'); }
   }
   $: current = sessions.find(s => s.id === selected);
   $: title = current?.name || (current?.secretary ? 'Secretary' : `Сессия #${selected}`);
@@ -198,6 +214,7 @@
   let composerHeight = 0, keyboard = 0, chatViewport;
   $: if (chatViewport) keyboard = keyboardInset({ viewport: window.visualViewport, container: chatViewport, activeElement: document.activeElement });
   onMount(() => {
+    loadVideoInterval();
     connection.connect();
     const reconnect = () => { if (document.visibilityState === 'visible') { connection.connect(); updates.check(); } };
     const updateTimer = setInterval(() => { if (document.visibilityState === 'visible') updates.check(); }, 5000);
@@ -230,6 +247,12 @@
         <select class="field" value={voiceModel} disabled={!voiceModel} onchange={saveVoiceModel}>
           <option value="gigaam">GigaAM — быстрее, лучше русский</option>
           <option value="parakeet">Parakeet — лучше английские слова</option>
+        </select>
+      </label>
+      <label class="flex flex-col gap-2 text-sm">Частота кадров видео
+        <select class="field" value={videoInterval} onchange={saveVideoInterval}>
+          <option value="1">1 кадр в секунду</option>
+          <option value="2">1 кадр в 2 секунды</option>
         </select>
       </label>
       {#if voiceStatus}<p role="alert" class="text-sm text-red-400">{voiceStatus}</p>{/if}
@@ -288,7 +311,7 @@
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
         <div class="pointer-events-auto">
           {#if interruptStates[selected]?.message}<p role="status" aria-live="polite" class="mx-auto max-w-3xl px-4 text-sm text-neutral-400">{interruptStates[selected].message}</p>{/if}
-          <Composer bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} />
+          <Composer {videoInterval} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} />
         </div>
       </div>
     </div>

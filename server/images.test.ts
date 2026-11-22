@@ -6,9 +6,13 @@ test('проверяет формат, содержимое, размер и ч�
   expect(validateImages([png])).toEqual([png]);
   const webp = {type:'image/webp', data:Buffer.from('RIFF0000WEBP').toString('base64')};
   expect(validateImages([webp])).toEqual([webp]);
+  const frame = {...webp, video:{seconds:60, time:59}};
+  expect(validateImages(Array(60).fill(frame))).toHaveLength(60);
+  expect(validateImages([frame])[0]).toEqual(frame);
+  expect(() => validateImages([{...webp, video:{seconds:61, time:0}}])).toThrow();
   expect(validateImages(undefined)).toEqual([]);
   expect(() => validateImages([{...png, type:'image/jpeg'}])).toThrow();
   expect(() => validateImages([{type:'image/png', data:'bad!'}])).toThrow();
-  expect(() => validateImages(Array(5).fill(png))).toThrow();
+  expect(() => validateImages(Array(64).fill(png))).toThrow();
   expect(() => validateImages([{...png, data:Buffer.alloc(5 * 1024 * 1024 + 1).toString('base64')}])).toThrow();
 });
