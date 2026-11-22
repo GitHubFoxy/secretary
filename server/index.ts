@@ -8,6 +8,7 @@ import { serveMcp } from './mcp';
 import { checkReasoning, modelDetails } from './models';
 import { ensurePersona } from './persona';
 import { Sessions } from './sessions';
+import { Speech, warmSpeech, ttsEngine, setTtsEngine } from './speech';
 import { transcribe, voiceModel, setVoiceModel } from './voice';
 
 const videoIntervalFile = `${secretaryFolder}/video-interval`;
@@ -18,6 +19,7 @@ const databasePath = `${secretaryFolder}/secretary.sqlite`;
 migrateDatabase('secretary.sqlite', databasePath);
 const db = openDatabase(databasePath);
 const publish = (message: object) => server.publish('events', JSON.stringify(message));
+const speech = new Speech(publish);
 const publishSessions = () => publish({ type: 'sessions', sessions: sessions.list() });
 const sessions = new Sessions(db, {
   turns: { claude: claudeTurn, codex: codexTurn },
@@ -25,6 +27,9 @@ const sessions = new Sessions(db, {
   onChange: publishSessions,
   // The browser gets chat messages, the queue and interrupt results; other raw events stay in SQLite.
   onEvent(session, event, cursor) {
+    if (event.type === 'speech_start') { speech.start(); publish({type:'speech_start'}); return; }
+    if (event.type === 'speech_event') { speech.event(event.event); return; }
+    if (event.type === 'speech_end') { speech.end(event.interrupted); return; }
     const message = chatMessage(event);
     if (message) publish({ type: 'message', sessionId: session.id, message: {...message, cursor} });
     else if (event.type === 'queue' || event.type === 'interrupt_result') publish({ ...event, sessionId: session.id });
@@ -46,10 +51,12 @@ const commands: Record<string, (cmd: any) => unknown> = {
     const session = sessions.get(cmd.id);
     return {...chatPage(db, session.id, cmd.all === true), queue: session.queue.list()};
   },
-  send: cmd => { sessions.get(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true); },
+  send: cmd => { sessions.get(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true, cmd.voice === true); },
   sendQueued: cmd => { sessions.get(cmd.id).sendQueued(cmd.messageId); },
-  stop: cmd => { sessions.stop(cmd.id); },
-  interrupt: cmd => ({ accepted: sessions.get(cmd.id).interrupt(cmd.requestId) }),
+  speechWarm: () => { speech.stop(); publish({type:'speech_cancel'}); warmSpeech(); },
+  speechStop: () => { speech.stop(); publish({type:'speech_cancel'}); },
+  stop: cmd => { speech.stop(); publish({type:'speech_cancel'}); sessions.stop(cmd.id); },
+  interrupt: cmd => { speech.stop(); publish({type:'speech_cancel'}); return { accepted: sessions.get(cmd.id).interrupt(cmd.requestId) }; },
   rename: cmd => { sessions.get(cmd.id).setName(cmd.name); publishSessions(); },
   visibility: cmd => { sessions.get(cmd.id).setHidden(cmd.hidden); publishSessions(); },
   delete: cmd => { sessions.delete(cmd.id); },
@@ -90,6 +97,11 @@ const server = Bun.serve({
       if (request.method === 'GET') return voiceModel().then(model => Response.json({model}), error => new Response(String(error), {status: 500}));
       if (request.method === 'PUT') return request.text().then(setVoiceModel).then(() => new Response(null, {status: 204}), error => new Response(String(error), {status: 400}));
       return new Response(null, {status: 405});
+    }
+    if (url.pathname === '/settings/tts') {
+      if (request.method === 'GET') return ttsEngine().then(engine => Response.json({engine}), error => new Response(String(error), {status:500}));
+      if (request.method === 'PUT') return request.text().then(setTtsEngine).then(() => new Response(null, {status:204}), error => new Response(String(error), {status:400}));
+      return new Response(null, {status:405});
     }
     if (url.pathname === '/settings/agents') {
       if (request.method === 'GET') return Bun.file(agentsFile).text().then(text => new Response(text, { headers: { 'content-type': 'text/plain; charset=utf-8' } }), error => new Response(String(error), { status: 500 }));

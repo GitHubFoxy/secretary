@@ -5,7 +5,7 @@
   import { prepareImage } from '../prepare-image.js';
   import { prepareVideo, frameFromCanvas, finishVideo } from '../prepare-video.js';
   // onsubmit(immediate): true — прервать идущий ход и отправить сразу (правая кнопка и Enter), false — добавить в очередь (левая кнопка во время хода).
-  let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, sessionId, videoInterval = 1, onsubmit, oninterrupt, onvoice, onvideo } = $props();
+  let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, sessionId, videoInterval = 1, onsubmit, oninterrupt, onvoice, onvideo, onmicpress, onrecordstart, speaking = false } = $props();
   let imageError = $state('');
   let area = $state();
   // Как в Telegram: на сенсорном экране нажатие переключает голос и видео, удержание записывает;
@@ -22,6 +22,7 @@
   function showHint(text) { hint = text; setTimeout(() => { if (hint === text) hint = ''; }, 1500); }
   function down(e) {
     if (disabled || recording) return;
+    onmicpress?.();
     row.setPointerCapture(e.pointerId);
     if (e.pointerType === 'mouse') { start(true); return; }
     press = {x:e.clientX, y:e.clientY, timer:setTimeout(() => { press.timer = null; start(false); }, 250)};
@@ -39,6 +40,7 @@
   }
   async function start(locked) {
     voiceError = '';
+    if (mode === 'voice') onrecordstart?.();
     const token = {};
     recording = {token, id:sessionId, mode, started:Date.now(), locked, dx:0, dy:0};
     now = Date.now();
@@ -224,7 +226,7 @@
       placeholder="Напишите сообщение"
       class="max-h-40 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-[15px] text-neutral-100 placeholder:text-neutral-600 focus:outline-none"
     ></textarea>
-    {#if running && !value.trim() && !images.length}
+    {#if (running || speaking) && !value.trim() && !images.length}
       <button
         type="button"
         class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-xl bg-red-700 text-white transition-colors hover:bg-red-600 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-400 disabled:cursor-not-allowed disabled:opacity-30"
@@ -247,7 +249,7 @@
       </button>
     {/if}
     {#if !value.trim() && !images.length}
-    <button type="button" {disabled} onpointerdown={down} onclick={e => { if (e.detail === 0) start(true); }} oncontextmenu={e => e.preventDefault()} aria-label={mode === 'voice' ? 'Голосовое сообщение' : 'Видеосообщение'} title={mode === 'voice' ? 'Голосовое сообщение' : 'Видеосообщение'} class="grid size-10 shrink-0 touch-none select-none place-items-center rounded-xl bg-neutral-800 text-neutral-300 disabled:opacity-30"><Icon name={mode === 'voice' ? 'microphone' : 'video'} class="size-5" /></button>
+    <button type="button" {disabled} onpointerdown={down} onclick={e => { if (e.detail === 0) { onmicpress?.(); start(true); } }} oncontextmenu={e => e.preventDefault()} aria-label={mode === 'voice' ? 'Голосовое сообщение' : 'Видеосообщение'} title={mode === 'voice' ? 'Голосовое сообщение' : 'Видеосообщение'} class="grid size-10 shrink-0 touch-none select-none place-items-center rounded-xl bg-neutral-800 text-neutral-300 disabled:opacity-30"><Icon name={mode === 'voice' ? 'microphone' : 'video'} class="size-5" /></button>
     {/if}
     {#if value.trim() || images.length}
     <button

@@ -36,6 +36,7 @@ export function openDatabase(path: string) {
   // Messages confirmed to the client that have not reached a harness yet. They survive a restart.
   db.run(`CREATE TABLE IF NOT EXISTS pending_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, urgent INTEGER NOT NULL, text TEXT NOT NULL, images TEXT NOT NULL)`);
   addColumn('pending_messages', 'in_flight INTEGER NOT NULL DEFAULT 0');
+  addColumn('pending_messages', 'voice INTEGER NOT NULL DEFAULT 0');
   return db;
 }
 
