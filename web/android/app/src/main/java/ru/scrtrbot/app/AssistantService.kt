@@ -57,6 +57,7 @@ class AssistantSession(private val service: AssistantSessionService) : VoiceInte
             hide()
             return
         }
+        ReplyService.overlayVisible = true
         val host = HostAddress.get(service)
         if (host == null) {
             openApp()
@@ -122,9 +123,12 @@ class AssistantSession(private val service: AssistantSessionService) : VoiceInte
         root.addView(sheet, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
 
+    override fun onHide() { ReplyService.overlayVisible = false; super.onHide() }
+
     override fun onBackPressed() { hide() }
 
     override fun onDestroy() {
+        ReplyService.overlayVisible = false
         webView?.destroy()
         webView = null
         super.onDestroy()

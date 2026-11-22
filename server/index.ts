@@ -27,6 +27,7 @@ const sessions = new Sessions(db, {
   onChange: publishSessions,
   // The browser gets chat messages, the queue and interrupt results; other raw events stay in SQLite.
   onEvent(session, event, cursor) {
+    if (event.type === 'secretary_reply') { publish(event); return; }
     if (event.type === 'speech_start') { speech.start(); publish({type:'speech_start'}); return; }
     if (event.type === 'speech_event') { speech.event(event.event); return; }
     if (event.type === 'speech_end') { speech.end(event.interrupted); return; }

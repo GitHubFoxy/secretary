@@ -34,6 +34,20 @@ const history = (s: Session) => s.events().filter(e => ['user', 'cancelled', 'de
 const statuses = (s: Session) => s.events().filter(e => e.type === 'status').map(e => e.status);
 const pending = (db: Database) => (db.query('SELECT COUNT(*) AS n FROM pending_messages').get() as { n: number }).n;
 
+test('событие ответа публикуется только после успешного завершения Secretary Agent', async () => {
+  const { sessions, calls, published, create } = setup();
+  const secretary = sessions.get(1);
+  secretary.send('привет'); calls[0].start();
+  calls[0].options.onEvent({type:'result', result:'ответ'});
+  expect(published.filter(e => e.type === 'secretary_reply')).toEqual([]);
+  calls[0].end(true); await tick();
+  expect(published.filter(e => e.type === 'secretary_reply')).toEqual([{type:'secretary_reply', text:'ответ'}]);
+  const specialist = await create();
+  specialist.send('задача'); calls[1].start(); calls[1].answer('готово'); await tick();
+  secretary.send('ещё'); calls[2].start(); calls[2].options.onEvent({type:'result', result:'черновик'}); calls[2].end(false); await tick();
+  expect(published.filter(e => e.type === 'secretary_reply')).toHaveLength(1);
+});
+
 test('выбранное сообщение из очереди прерывает ход, остальные сохраняют порядок', async () => {
   const { db, calls, create } = setup();
   const s = await create();
