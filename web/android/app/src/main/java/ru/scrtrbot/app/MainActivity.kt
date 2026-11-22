@@ -4,7 +4,9 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
+import android.webkit.CookieManager
 import com.getcapacitor.BridgeActivity
+import com.getcapacitor.CapConfig
 
 class MainActivity : BridgeActivity() {
     private fun applyAssistIntent(intent: Intent?) {
@@ -21,6 +23,11 @@ class MainActivity : BridgeActivity() {
 
     public override fun onCreate(savedInstanceState: Bundle?) {
         applyAssistIntent(intent)
+        val host = getSharedPreferences("host", MODE_PRIVATE).getString("url", null)
+        config = CapConfig.Builder(this).apply {
+            if (host == null) setStartPath("/setup.html") else setServerUrl(host)
+        }.create()
+        registerPlugin(HostPlugin::class.java)
         super.onCreate(savedInstanceState)
     }
 
@@ -31,6 +38,7 @@ class MainActivity : BridgeActivity() {
     }
 
     public override fun onStop() {
+        CookieManager.getInstance().flush()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(false)
             setTurnScreenOn(false)
