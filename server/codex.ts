@@ -36,10 +36,11 @@ export const codexTurn: Turn = async (options, text, images) => {
     const account = await request('account/read', { refreshToken: false });
     if (account.requiresOpenaiAuth && !account.account) throw new Error('Codex не вошёл в подписку. На Host выполните: codex login --device-auth');
     const agentsFile = Bun.file(`${options.folder}/AGENTS.md`);
-    const developerInstructions = options.systemPrompt ?? (options.secretary && await agentsFile.exists() ? await agentsFile.text() : undefined);
+    const preferences = options.secretary && await agentsFile.exists() ? await agentsFile.text() : undefined;
+    const developerInstructions = [options.systemPrompt, preferences].filter(Boolean).join('\n\n') || undefined;
     const start: ThreadStartParams = { cwd: options.folder, approvalPolicy: 'never', sandbox: 'danger-full-access', developerInstructions };
     const thread = options.resumeId
-      ? await request('thread/resume', { threadId: options.resumeId, excludeTurns: true })
+      ? await request('thread/resume', { threadId: options.resumeId, excludeTurns: true, developerInstructions })
       : await request('thread/start', start);
     options.onSessionId(thread.thread.id);
     if (options.interrupt.aborted) return false;

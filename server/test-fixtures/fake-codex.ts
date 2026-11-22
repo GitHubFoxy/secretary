@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline';
 const send = (message: object) => process.stdout.write(JSON.stringify(message) + '\n');
 const thread = { id: 'codex-thread' };
 let busy = '';
+let prompt: string | undefined;
 
 createInterface({ input: process.stdin }).on('line', line => {
   const { id, method, params } = JSON.parse(line);
@@ -13,6 +14,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   if (method === 'initialize') return send({ id, result: {} });
   if (method === 'account/read') return send({ id, result: { account: process.cwd().includes('no-auth') ? null : { type: 'chatgpt' }, requiresOpenaiAuth: true } });
   if (method === 'thread/start' || method === 'thread/resume') {
+    prompt = params.developerInstructions;
     return setTimeout(() => send({ id, result: { thread } }), process.cwd().includes('slow-thread') ? 300 : 0);
   }
   if (method === 'turn/interrupt') {
@@ -23,7 +25,7 @@ createInterface({ input: process.stdin }).on('line', line => {
   }
   if (method === 'turn/start') {
     const text: string = params.input[0].text;
-    appendFileSync('calls.log', JSON.stringify({ text, thread: params.threadId }) + '\n');
+    appendFileSync('calls.log', JSON.stringify({ text, thread: params.threadId, prompt }) + '\n');
     if (text.includes('HANG')) return;
     const turn = { id: 'turn-1' };
     send({ id, result: { turn } });

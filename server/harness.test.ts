@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { claudeTurn } from './claude';
 import { codexTurn } from './codex';
 import { harnessTiming, type Turn } from './harness';
+import { ensurePersona, SECRETARY_PROMPT } from './persona';
 
 const root = mkdtempSync(join(tmpdir(), 'secretary-harness-'));
 const bin = join(root, 'bin');
@@ -19,20 +20,24 @@ harnessTiming.interruptDeadlineMs = 300;
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 let folders = 0;
-function run(turn: Turn, text: string, { resumeId = null as string | null, folder = 'f' } = {}) {
+function run(turn: Turn, text: string, { resumeId = null as string | null, folder = 'f', persona = false } = {}) {
   const dir = join(root, `${folder}-${++folders}`);
   mkdirSync(dir);
+  if (persona) {
+    writeFileSync(join(dir, 'AGENTS.md'), '# Старые правила\n\n## Предпочтения владельца\n\nЛюблю чай.\n\n## Системный контракт (лучше не менять)\n\nСтарый контракт.\n');
+    ensurePersona(dir);
+  }
   const interrupt = new AbortController(), stop = new AbortController();
   const log: string[] = [];
   const result = turn({
-    folder: dir, model: 'm', reasoning: null, resumeId, secretary: false, interrupt: interrupt.signal, stop: stop.signal,
+    folder: dir, model: 'm', reasoning: null, resumeId, secretary: persona, systemPrompt: persona ? SECRETARY_PROMPT : undefined, interrupt: interrupt.signal, stop: stop.signal,
     onSessionId: id => log.push(`session ${id}`),
     onEvent: event => { const answer = event.result || event.params?.item?.text; if (answer) log.push(answer); },
     onDispatching: () => log.push('dispatching'),
     onAccepted: () => log.push('accepted'),
   }, text, []);
   const calls = () => existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf8').trim().split('\n').map(line => JSON.parse(line)) : [];
-  return { result, log, calls, interrupt, stop };
+  return { result, log, calls, interrupt, stop, dir };
 }
 const until = async (check: () => boolean) => { for (let i = 0; !check(); i++) { if (i > 400) throw new Error('timeout'); await Bun.sleep(10); } };
 
@@ -82,4 +87,27 @@ test('codex без входа показывает команду для авт�
   await expect(t.result).rejects.toThrow('codex login --device-auth');
   expect(t.log).not.toContain('dispatching');
   expect(t.calls()).toEqual([]);
+});
+
+for (const [name, turn] of [['claude', claudeTurn], ['codex', codexTurn]] as const) {
+  test(`${name}: существующая установка получает новые правила и сохраняет предпочтения`, async () => {
+    const t = run(turn, 'привет', { persona: true, resumeId: 'existing-session' });
+    expect(await t.result).toBe(true);
+    expect(t.calls()[0].prompt).toContain('Говори как живой человек');
+    expect(readFileSync(join(t.dir, 'AGENTS.md'), 'utf8')).toBe('## Предпочтения владельца\n\nЛюблю чай.\n\n');
+    expect(readFileSync(join(t.dir, 'AGENTS.md.bak'), 'utf8')).toContain('Старый контракт.');
+    expect(readFileSync(join(t.dir, 'CLAUDE.md'), 'utf8')).toBe('@AGENTS.md\n');
+    if (name === 'codex') expect(t.calls()[0].prompt).toContain('Люблю чай.');
+  });
+}
+
+test('миграция старого файла по умолчанию сохраняет пустые предпочтения', () => {
+  const dir = join(root, 'old-default');
+  mkdirSync(dir);
+  const old = '# Secretary Agent\n\n## Предпочтения владельца\n\n*(Пока пусто — заполняется по просьбе владельца.)*\n\n## Системный контракт (лучше не менять)\n\nКонтракт.\n';
+  writeFileSync(join(dir, 'AGENTS.md'), old);
+  ensurePersona(dir);
+  ensurePersona(dir);
+  expect(readFileSync(join(dir, 'AGENTS.md'), 'utf8')).toBe('## Предпочтения владельца\n\n*(Пока пусто — заполняется по просьбе владельца.)*\n\n');
+  expect(readFileSync(join(dir, 'AGENTS.md.bak'), 'utf8')).toBe(old);
 });
