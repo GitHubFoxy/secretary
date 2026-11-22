@@ -40,6 +40,7 @@
     try { const response = await fetch('/settings/voice', {method:'PUT', body:value}); if (!response.ok) throw new Error(await response.text()); voiceModel = value; voiceStatus = ''; }
     catch (err) { voiceStatus = `Не удалось сохранить настройку: ${err.message}`; event.target.value = voiceModel; }
   }
+  let videoUrls = {};
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], preparing = [];
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   let agentsOriginal = '', agentsSaving = false;
@@ -87,14 +88,14 @@
     if (msg.type === 'interrupt_result') interruptFeedback.result(msg.sessionId, msg.requestId, msg.outcome);
     if (msg.type === 'error') error = msg.message;
   }
-  async function submit(immediate = false) {
-    if (!connected || (!message.trim() && !images.length)) return;
-    const sent = {id:crypto.randomUUID(), sessionId:selected, text:message, images, immediate};
+  async function submit(immediate = false, video = null) {
+    if (!connected || (!video && !message.trim() && !images.length)) return;
+    const sent = video ? {id:crypto.randomUUID(), sessionId:video.id, text:'', images:[video], immediate} : {id:crypto.randomUUID(), sessionId:selected, text:message, images, immediate};
     const previous = deliveries.get(sent.sessionId) ?? Promise.resolve();
     let finish;
     const delivery = new Promise(resolve => { finish = resolve; });
     deliveries.set(sent.sessionId, delivery);
-    message = ''; images = [];
+    if (!video) { message = ''; images = []; }
     preparing = [...preparing, sent];
     if (!interruptStates[sent.sessionId]?.pending) interruptFeedback.clear(sent.sessionId);
     try {
@@ -110,9 +111,10 @@
       }).filter(Boolean);
       const frames = results.flatMap(result => result.frames);
       if (JSON.stringify(frames).length > 29 * 1024 * 1024) throw new Error('Вложения слишком большие для отправки');
+      if (video) videoUrls = {...videoUrls, [frames[0].data]:video.url};
       await connection.request({type:'send', id:sent.sessionId, text:[sent.text, ...descriptions].filter(Boolean).join('\n\n'), images:frames, immediate});
       preparing = preparing.filter(item => item.id !== sent.id);
-      sent.images.forEach(image => URL.revokeObjectURL(image.url));
+      if (!video) sent.images.forEach(image => URL.revokeObjectURL(image.url));
     } catch (err) {
       const detail = err.disconnected ? 'Не удалось подтвердить доставку. Проверьте историю перед повторной отправкой.' : err.message;
       preparing = preparing.map(item => item.id === sent.id ? {...item, error:detail} : item);
@@ -122,6 +124,7 @@
       if (deliveries.get(sent.sessionId) === delivery) deliveries.delete(sent.sessionId);
     }
   }
+  function runningForVideo(id) { return sessions.find(session => session.id === id)?.status === 'running'; }
   function restorePreparing(id) {
     if (message.trim() || images.length) return;
     const item = preparing.find(entry => entry.id === id);
@@ -199,7 +202,7 @@
   function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); loadVoiceModel(); }
   // Queued messages are not accepted by the agent yet, so they come after history.
   $: messages = [
-    ...history.map((m, index) => ({...m, key:`${selected}:${index}`})),
+    ...history.map((m, index) => ({...m, images:m.images?.map(image => videoUrls[image.data] ? {...image, url:videoUrls[image.data]} : image), key:`${selected}:${index}`})),
     ...voiceMessages.filter(item => item.id === selected),
     ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:item.images, urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
     ...preparing.filter(item => item.sessionId === selected).map(item => ({...item, kind:'preparing', key:`preparing:${item.id}`})),
@@ -311,7 +314,7 @@
       <div bind:offsetHeight={composerHeight} style:bottom="{keyboard}px" class="pointer-events-none absolute inset-x-0 z-10 bg-linear-to-t from-neutral-950 from-60% to-transparent pt-6">
         <div class="pointer-events-auto">
           {#if interruptStates[selected]?.message}<p role="status" aria-live="polite" class="mx-auto max-w-3xl px-4 text-sm text-neutral-400">{interruptStates[selected].message}</p>{/if}
-          <Composer {videoInterval} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} />
+          <Composer {videoInterval} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(runningForVideo(video.id), video)} />
         </div>
       </div>
     </div>

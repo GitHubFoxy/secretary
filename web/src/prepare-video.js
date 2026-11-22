@@ -27,16 +27,25 @@ export async function prepareVideo(file, interval) {
       if (time === 0) { if (video.readyState < 2) await event(video, 'loadeddata'); }
       else { video.currentTime = time; await event(video, 'seeked'); }
       canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
-      const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', 0.8));
-      if (!blob || blob.type !== 'image/webp') throw new Error('Браузер не поддерживает WebP');
-      const data = await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result.split(',')[1]);
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-      });
-      frames.push({type:'image/webp', data, video:{seconds, time}});
+      frames.push({...await frameFromCanvas(canvas), video:{seconds, time}});
     }
+    return await finishVideo(file, frames, seconds, interval);
+  } finally { video.removeAttribute('src'); video.load(); URL.revokeObjectURL(url); }
+}
+
+export async function frameFromCanvas(canvas) {
+  const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp', 0.8));
+  if (!blob || blob.type !== 'image/webp') throw new Error('Браузер не поддерживает WebP');
+  const data = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result.split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+  return {type:'image/webp', data};
+}
+
+export async function finishVideo(file, frames, seconds, interval) {
     let wav;
     try { wav = await wavFromRecording([file]); } catch (error) {
       if (error.name !== 'EncodingError') throw error;
@@ -48,7 +57,6 @@ export async function prepareVideo(file, interval) {
       transcript = response.ok ? (await response.json()).text : `не удалась (${await response.text()})`;
     }
     return {frames, description:`[Видео ${duration(seconds)}. Кадры по порядку: ${frames.map((_, i) => `${i + 1} — ${duration(i * interval)}`).join(', ')}]${transcript ? `\nРасшифровка звука: ${transcript}` : ''}`};
-  } finally { video.removeAttribute('src'); video.load(); URL.revokeObjectURL(url); }
 }
 
 // Описание кадров нужно агенту; в чате показываем текст Owner и расшифровку отдельно.
