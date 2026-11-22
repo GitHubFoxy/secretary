@@ -69,7 +69,7 @@
             {@const frame = m.images.find(image => image.video?.note)}
             {@const video = videoText(m.text)}
             <div class="relative size-[170px] overflow-hidden rounded-full bg-neutral-800">
-              {#if frame.url}<button type="button" class="size-full" aria-label="Воспроизвести или остановить видеосообщение" onclick={e => { const video = e.currentTarget.querySelector('video'); video.paused ? video.play() : video.pause(); }}><video class="size-full object-cover" src={frame.url} playsinline preload="metadata"><track kind="captions" /></video></button>{:else}<img class="size-full object-cover" src={'data:' + frame.type + ';base64,' + frame.data} alt="Кадр видеосообщения" />{/if}
+              {#if frame.url}<button type="button" class="size-full" aria-label="Воспроизвести или остановить видеосообщение" onclick={e => { const video = e.currentTarget.querySelector('video'); video.paused ? video.play() : video.pause(); }}><video class="size-full object-cover" src={frame.url} poster={'data:' + frame.type + ';base64,' + frame.data} playsinline preload="metadata"><track kind="captions" /></video></button>{:else}<img class="size-full object-cover" src={'data:' + frame.type + ';base64,' + frame.data} alt="Кадр видеосообщения" />{/if}
               <span class="pointer-events-none absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-md bg-black/60 px-1.5 py-0.5 text-xs text-white"><Icon name="video" class="size-3" />{duration(frame.video.seconds)}</span>
             </div>
             {#if video.transcript}<span class="flex max-w-[80%] gap-1.5 text-sm text-neutral-400"><Icon name="microphone" class="mt-0.5 size-3.5 shrink-0" />{video.transcript}</span>{/if}

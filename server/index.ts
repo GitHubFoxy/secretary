@@ -77,7 +77,7 @@ const server = Bun.serve({
     if (url.pathname === '/voice' && request.method === 'POST') {
       const size = Number(request.headers.get('content-length'));
       if (!size || size > 20 * 1024 * 1024) return new Response('Запись слишком большая', {status: 413});
-      return request.arrayBuffer().then(bytes => transcribe(new Uint8Array(bytes))).then(text => Response.json({text}), error => new Response(String(error), {status: 500}));
+      return request.arrayBuffer().then(bytes => transcribe(new Uint8Array(bytes))).then(text => Response.json({text}), error => new Response(error.message, {status: 500}));
     }
     if (url.pathname === '/model-details')
       return Promise.resolve().then(() => modelDetails(url.searchParams.get('harness') || '', true)).then(result => Response.json(result), error => new Response(String(error), { status: 500 }));

@@ -138,6 +138,7 @@
       const response = await fetch('/voice', {method:'POST', headers:{'Content-Type':'audio/wav'}, body:await item.wav});
       if (!response.ok) throw new Error(await response.text());
       const {text} = await response.json();
+      if (!text) throw new Error('Речь не распознана');
       await connection.request({type:'send', id:item.id, text:voiceText(text, item.seconds)});
       voiceMessages = voiceMessages.filter(v => v.key !== item.key);
     } catch (err) {
