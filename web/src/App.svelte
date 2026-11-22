@@ -20,7 +20,16 @@
   let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyStartAtTop = false, historyToken = 0;
   let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
   if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }
-  let voiceMessages = [];
+  let voiceMessages = [], voiceModel = '', voiceStatus = '';
+  async function loadVoiceModel() {
+    try { const response = await fetch('/settings/voice'); if (!response.ok) throw new Error(await response.text()); voiceModel = (await response.json()).model; voiceStatus = ''; }
+    catch (err) { voiceStatus = `Не удалось загрузить настройку: ${err.message}`; }
+  }
+  async function saveVoiceModel(event) {
+    const value = event.target.value;
+    try { const response = await fetch('/settings/voice', {method:'PUT', body:value}); if (!response.ok) throw new Error(await response.text()); voiceModel = value; voiceStatus = ''; }
+    catch (err) { voiceStatus = `Не удалось сохранить настройку: ${err.message}`; event.target.value = voiceModel; }
+  }
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], sending = false;
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   let agentsOriginal = '', agentsSaving = false;
@@ -108,7 +117,7 @@
     catch (err) { if (!err.disconnected) interruptFeedback.fail(id, requestId, err.message); }
   }
   function setHidden(session, hidden) { if (connected) { error = ''; command({type:'visibility', id:session.id, hidden}); } }
-  function openSettings() { loadSettings(); settingsOpen = true; }
+  function openSettings() { loadSettings(); loadVoiceModel(); settingsOpen = true; }
   function openRename() { newName = title; settingsOpen = false; renameOpen = true; }
   function rename() { if (!connected || !newName.trim()) return; error = ''; command({type:'rename', id:selected, name:newName}); renameOpen = false; }
   // A new chat in the same folder with the saved settings of the current one.
@@ -230,6 +239,13 @@
     </Modal>
 
     <Modal open={settingsOpen} title="Настройки сессии" onclose={() => (settingsOpen = false)}>
+      <label class="flex flex-col gap-2 pb-6 text-sm">Распознавание речи на Host
+        <select class="field" value={voiceModel} disabled={!voiceModel} onchange={saveVoiceModel}>
+          <option value="gigaam">GigaAM — быстрее, лучше русский</option>
+          <option value="parakeet">Parakeet — лучше английские слова</option>
+        </select>
+      </label>
+      {#if voiceStatus}<p role="alert" class="text-sm text-red-400">{voiceStatus}</p>{/if}
       <SettingsPanel bind:harness bind:model bind:reasoning {connected} onsave={saveSettings} onstop={stop} oncreate={createThread} onrename={openRename} />
     </Modal>
 

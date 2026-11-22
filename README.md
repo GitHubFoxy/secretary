@@ -24,6 +24,6 @@ Android-прототип: `cd web && bun install && bun run build && bunx cap sy
 
 ### Голосовые сообщения
 
-На Host с Linux x86_64 выполните `bash ~/.secretary/current/scripts/install-voice.sh` (в копии репозитория — `bash scripts/install-voice.sh`). Скрипт скачивает sherpa-onnx 2.0.2 и Parakeet TDT 0.6B v3 int8 и проверяет SHA-256 архивов. Для распознавания требуется около 2 ГБ оперативной памяти; аудио обрабатывается локально. Модель Parakeet распространяется по лицензии [CC BY 4.0](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3), sherpa-onnx — по лицензии Apache 2.0.
+На Host с Linux x86_64 выполните `bash ~/.secretary/current/scripts/install-voice.sh` (в копии репозитория — `bash scripts/install-voice.sh`). Скрипт устанавливает sherpa-onnx 2.0.2 и две модели с проверкой SHA-256. Модель можно выбрать в настройках; по умолчанию используется GigaAM v3 e2e RNNT int8 (около 1 ГБ оперативной памяти), также доступна Parakeet TDT 0.6B v3 int8 (около 2 ГБ). Аудио обрабатывается локально. [GigaAM](https://huggingface.co/Smirnov75/GigaAM-v3-sherpa-onnx) — сторонняя конверсия по лицензии MIT; [Parakeet](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3) распространяется по CC BY 4.0, sherpa-onnx — по Apache 2.0.
 
-Для другой transducer-модели sherpa-onnx замените в `~/.secretary/asr/` файлы `encoder.onnx`, `decoder.onnx`, `joiner.onnx` и `tokens.txt`. Android-приложение с голосовым вводом нужно пересобрать: добавлено разрешение на микрофон.
+Android-приложение с голосовым вводом нужно пересобрать: добавлено разрешение на микрофон.

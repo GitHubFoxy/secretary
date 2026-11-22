@@ -8,7 +8,7 @@ import { serveMcp } from './mcp';
 import { checkReasoning, modelDetails } from './models';
 import { ensurePersona } from './persona';
 import { Sessions } from './sessions';
-import { transcribe } from './voice';
+import { transcribe, voiceModel, setVoiceModel } from './voice';
 
 const agentsFile = `${secretaryFolder}/AGENTS.md`;
 ensurePersona(secretaryFolder);
@@ -80,6 +80,11 @@ const server = Bun.serve({
     }
     if (url.pathname === '/model-details')
       return Promise.resolve().then(() => modelDetails(url.searchParams.get('harness') || '', true)).then(result => Response.json(result), error => new Response(String(error), { status: 500 }));
+    if (url.pathname === '/settings/voice') {
+      if (request.method === 'GET') return voiceModel().then(model => Response.json({model}), error => new Response(String(error), {status: 500}));
+      if (request.method === 'PUT') return request.text().then(setVoiceModel).then(() => new Response(null, {status: 204}), error => new Response(String(error), {status: 400}));
+      return new Response(null, {status: 405});
+    }
     if (url.pathname === '/settings/agents') {
       if (request.method === 'GET') return Bun.file(agentsFile).text().then(text => new Response(text, { headers: { 'content-type': 'text/plain; charset=utf-8' } }), error => new Response(String(error), { status: 500 }));
       if (request.method === 'PUT') return request.text().then(text => Bun.write(agentsFile, text)).then(() => new Response(null, { status: 204 }), error => new Response(String(error), { status: 500 }));
