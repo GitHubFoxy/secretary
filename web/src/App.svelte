@@ -12,6 +12,7 @@
   import { voiceText } from './voice.js';
   import { createSpeechPlayer } from './speech.js';
   import Composer from './components/Composer.svelte';
+  import VoiceMode from './components/VoiceMode.svelte';
   import Modal from './components/Modal.svelte';
   import Icon from './components/Icon.svelte';
   import { Capacitor, registerPlugin } from '@capacitor/core';
@@ -19,9 +20,19 @@
 
   let cached;
   try { cached = JSON.parse(localStorage.getItem('last-chat')); } catch {}
-  // Шторка поверх другого приложения (кнопка Power): только чат Secretary Agent и последний обмен сообщениями.
+  // Шторка поверх другого приложения (кнопка Power): голосовой режим с Secretary Agent.
   const overlay = new URLSearchParams(location.search).has('overlay');
   const overlayBridge = globalThis.SecretaryOverlay;
+  // В шторке под пустым местом должно быть видно приложение, поверх которого её открыли.
+  if (overlay) document.documentElement.style.background = document.body.style.background = 'transparent';
+  // Power внутри приложения открывает тот же голосовой режим на весь экран (событие присылает Android-оболочка).
+  let voiceMode = false, voiceKey = 0;
+  function openVoiceMode() {
+    const secretary = sessions.find(s => s.secretary);
+    if (secretary && selected !== secretary.id) select(secretary.id);
+    drawerOpen = settingsOpen = renameOpen = profileOpen = false;
+    voiceMode = true; voiceKey++;
+  }
   if (overlay && !cached?.sessions?.find(s => s.id === cached.selected)?.secretary) cached = null;
   let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyStartAtTop = false, historyToken = 0;
   let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
@@ -237,11 +248,12 @@
     ...preparing.filter(item => item.sessionId === selected).map(item => ({...item, kind:'preparing', key:`preparing:${item.id}`})),
   ];
   const userKinds = ['user', 'voice', 'queued', 'preparing', 'cancelled', 'uncertain'];
-  $: shown = overlay ? messages.slice(Math.max(0, messages.findLastIndex(m => userKinds.includes(m.kind)))) : messages;
+  $: turn = messages.slice(Math.max(0, messages.findLastIndex(m => userKinds.includes(m.kind))));
   $: if (historyLoaded && selected !== null) {
     try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-10).map(m => ({...m, images:m.images?.filter(image => !image.video || image.video.time === 0)})), hasMore:historyHasMore || history.length > 10})); } catch { localStorage.removeItem('last-chat'); }
   }
   $: current = sessions.find(s => s.id === selected);
+  $: voiceProps = {turn, sessionId:selected, running:current?.status === 'running', speaking, connected, onstart:() => { micPress(); recordStart(); }, onvoice:sendVoice, onstopspeech:stopSpeech};
   $: title = current?.name || (current?.secretary ? 'Secretary' : `Сессия #${selected}`);
 
   // Высота поля ввода и высота экранной клавиатуры (iOS не сжимает layout viewport, поэтому берём visualViewport).
@@ -261,13 +273,16 @@
     document.addEventListener('focusin', update);
     document.addEventListener('focusout', update);
     update();
-    return () => { clearInterval(updateTimer); updates.stop(); interruptFeedback.dispose(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); window.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
+    window.addEventListener('secretary-voice', openVoiceMode);
+    return () => { window.removeEventListener('secretary-voice', openVoiceMode); clearInterval(updateTimer); updates.stop(); interruptFeedback.dispose(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); window.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
   });
 </script>
 
 <svelte:head><title>Secretary</title></svelte:head>
 
-{#if profileOpen}
+{#if overlay}
+  <VoiceMode variant="sheet" {...voiceProps} onclose={() => overlayBridge?.close()} onopenapp={() => overlayBridge?.openApp()} />
+{:else if profileOpen}
   <div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
     <header class="flex items-center gap-2 border-b border-neutral-900 px-2 py-2">
       <button class="icon-btn" aria-label="Назад" onclick={() => (profileOpen = false)}>
@@ -331,22 +346,13 @@
   </div>
 {:else}
   <div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
-    {#if overlay}
-      <header class="flex items-center gap-2 px-3 pb-1 pt-2">
-        <span class="ml-1 size-2 rounded-full {!connected ? 'bg-neutral-700' : current?.status === 'running' ? 'animate-pulse bg-amber-400' : 'bg-neutral-400'}"></span>
-        <h1 class="flex-1 text-sm font-medium text-neutral-100">Secretary</h1>
-        <button class="icon-btn" aria-label="Открыть чат" onclick={() => overlayBridge?.openApp()}><Icon name="expand" /></button>
-        <button class="icon-btn" aria-label="Закрыть" onclick={() => overlayBridge?.close()}><Icon name="close" /></button>
-      </header>
-    {:else}
-      <TopBar
-        {title}
-        status={current?.status}
-        {connected}
-        onmenu={() => (drawerOpen = true)}
-        onsettings={openSettings}
-      />
-    {/if}
+    <TopBar
+      {title}
+      status={current?.status}
+      {connected}
+      onmenu={() => (drawerOpen = true)}
+      onsettings={openSettings}
+    />
 
     <Modal open={renameOpen} title="Переименовать чат" onclose={() => (renameOpen = false)}>
       <form class="flex flex-col gap-4" onsubmit={e => { e.preventDefault(); rename(); }}>
@@ -370,7 +376,7 @@
 
     <div bind:this={chatViewport} class="relative flex min-h-0 flex-1 flex-col">
       {#key historyVersion}
-        <MessageList messages={shown} {sessions} {historyLoaded} {connected} historyHasMore={historyHasMore && !overlay} {historyLoadingOlder} startAtTop={historyStartAtTop} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} />
+        <MessageList {messages} {sessions} {historyLoaded} {connected} historyHasMore={historyHasMore} {historyLoadingOlder} startAtTop={historyStartAtTop} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} />
       {/key}
 
       <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
@@ -390,6 +396,8 @@
         </div>
       </div>
     </div>
+
+    {#if voiceMode}{#key voiceKey}<VoiceMode variant="full" {...voiceProps} onclose={() => (voiceMode = false)} />{/key}{/if}
 
     <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onhide={s => setHidden(s, true)} onrestore={s => setHidden(s, false)} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} />
   </div>

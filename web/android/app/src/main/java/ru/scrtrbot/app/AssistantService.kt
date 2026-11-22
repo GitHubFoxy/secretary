@@ -5,17 +5,14 @@ import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
-import android.graphics.Outline
 import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.service.voice.VoiceInteractionService
 import android.service.voice.VoiceInteractionSession
 import android.service.voice.VoiceInteractionSessionService
-import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
-import android.view.ViewOutlineProvider
 import android.view.WindowManager
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
@@ -48,12 +45,18 @@ class AssistantSession(private val service: AssistantSessionService) : VoiceInte
             setDimAmount(0.35f)
             setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
-        root = FrameLayout(service).apply { setOnClickListener { hide() } }
+        root = FrameLayout(service)
         return root
     }
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
+        // Secretary App уже на экране: голосовой режим открывается в нём самом, на весь экран.
+        MainActivity.resumed?.let {
+            it.bridge.webView.evaluateJavascript("dispatchEvent(new Event('secretary-voice'))", null)
+            hide()
+            return
+        }
         val host = HostAddress.get(service)
         if (host == null) {
             openApp()
@@ -69,14 +72,8 @@ class AssistantSession(private val service: AssistantSessionService) : VoiceInte
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
-            setBackgroundColor(Color.rgb(10, 10, 10))
-            outlineProvider = object : ViewOutlineProvider() {
-                override fun getOutline(view: View, outline: Outline) {
-                    val radius = 24 * resources.displayMetrics.density
-                    outline.setRoundRect(0, 0, view.width, view.height + radius.toInt(), radius)
-                }
-            }
-            clipToOutline = true
+            // Шторку рисует веб-интерфейс, вокруг неё должно быть видно приложение под ней.
+            setBackgroundColor(Color.TRANSPARENT)
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean =
                     !isHost(request.url)
@@ -122,11 +119,7 @@ class AssistantSession(private val service: AssistantSessionService) : VoiceInte
             loadUrl("$host/?overlay")
         }
         webView = sheet
-        val margin = (8 * service.resources.displayMetrics.density).toInt()
-        root.addView(sheet, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-            (service.resources.displayMetrics.heightPixels * 0.5f).toInt(), Gravity.BOTTOM).apply {
-            setMargins(margin, 0, margin, margin)
-        })
+        root.addView(sheet, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
     }
 
     override fun onBackPressed() { hide() }

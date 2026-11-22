@@ -7,6 +7,11 @@ import com.getcapacitor.CapConfig
 import org.json.JSONObject
 
 class MainActivity : BridgeActivity() {
+    companion object { var resumed: MainActivity? = null }
+
+    public override fun onResume() { super.onResume(); resumed = this }
+    public override fun onPause() { resumed = null; super.onPause() }
+
     public override fun onCreate(savedInstanceState: Bundle?) {
         val host = HostAddress.get(this)
         config = CapConfig.Builder(this).apply {
