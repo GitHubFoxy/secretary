@@ -2,7 +2,7 @@ import { test, expect } from 'bun:test';
 import { mkdtemp, readFile, rm, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { filePath, saveFile, validateFiles } from './files';
+import { fileResponse, filePath, saveFile, validateFiles } from './files';
 import { chatMessage } from './chat';
 
 test('сохраняет файлы с безопасными именами и проверяет метаданные', async () => {
@@ -21,7 +21,7 @@ test('сохраняет файлы с безопасными именами и 
     expect(chatMessage({type:'user', message:{content:''}, images:[], files:[first]})).toEqual({kind:'user', text:'', images:[], files:[first]});
     expect((await saveFile(new Request('http://localhost/files?name=.', {method:'POST', body:'x'}), root)).name).toBe('file');
     const before = await readdir(join(root, 'files'));
-    await expect(saveFile(new Request('http://localhost/files?name=big', {method:'POST', body:new Uint8Array(25 * 1024 * 1024 + 1)}), root)).rejects.toThrow();
+    await expect(saveFile(new Request('http://localhost/files?name=big', {method:'POST', body:new Uint8Array(100 * 1024 * 1024 + 1)}), root)).rejects.toThrow();
     expect(await readdir(join(root, 'files'))).toEqual(before);
   } finally { await rm(root, {recursive:true, force:true}); }
 });
@@ -56,5 +56,23 @@ test('передаёт файл обоим harness и сохраняет его 
     const child = Bun.spawn(['bun', '-e', script], {cwd:import.meta.dir, env:{...process.env, HOME:root}, stdout:'pipe', stderr:'pipe'});
     const [status, stdout, stderr] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
     expect({status, stdout, stderr}).toEqual({status:0, stdout:'', stderr:''});
+  } finally { await rm(root, {recursive:true, force:true}); }
+});
+
+test('отдаёт сохранённый файл только по его uuid и имени', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'secretary-file-response-'));
+  try {
+    const photo = await saveFile(new Request('http://localhost/files?name=photo.jpg', {method:'POST', headers:{'Content-Type':'image/jpeg'}, body:'JPG'}), root);
+    const page = await saveFile(new Request('http://localhost/files?name=page.html', {method:'POST', headers:{'Content-Type':'text/html'}, body:'<script>'}), root);
+    const served = await fileResponse(photo.id, 'photo.jpg', root);
+    expect(served?.headers.get('content-type')).toBe('image/jpeg');
+    expect(served?.headers.get('content-disposition')).toBe('inline');
+    expect(await served?.text()).toBe('JPG');
+    expect((await fileResponse(page.id, 'page.html', root))?.headers.get('content-disposition')).toBe('attachment');
+    expect(await fileResponse(photo.id, '..%2F..%2Fphoto.jpg', root)).toBeNull();
+    expect(await fileResponse(photo.id, '..', root)).toBeNull();
+    expect(await fileResponse('../' + photo.id, 'photo.jpg', root)).toBeNull();
+    expect(await fileResponse(photo.id, 'other.jpg', root)).toBeNull();
+    expect(await fileResponse(photo.id, '%E0%A4%A', root)).toBeNull();
   } finally { await rm(root, {recursive:true, force:true}); }
 });

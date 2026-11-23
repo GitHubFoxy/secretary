@@ -3,7 +3,7 @@ import { chatPage, chatMessage } from './chat';
 import { claudeTurn } from './claude';
 import { codexTurn } from './codex';
 import { secretaryFolder } from './config';
-import { saveFile } from './files';
+import { fileResponse, saveFile } from './files';
 import { migrateDatabase, openDatabase } from './database';
 import { serveMcp } from './mcp';
 import { checkReasoning, modelDetails } from './models';
@@ -87,6 +87,9 @@ const server = Bun.serve({
     if ((request.method !== 'GET' || url.pathname === '/ws') && !sameOrigin(request, url)) return new Response('Forbidden', { status: 403 });
     if (url.pathname === '/files' && request.method === 'POST')
       return saveFile(request).then(file => Response.json(file), error => new Response(String(error), {status:400}));
+    const stored = url.pathname.match(/^\/files\/([^/]+)\/([^/]+)$/);
+    if (stored && request.method === 'GET')
+      return fileResponse(stored[1], stored[2]).then(response => response ?? new Response('Not found', {status:404}));
     if (url.pathname === '/voice' && request.method === 'POST') {
       const size = Number(request.headers.get('content-length'));
       if (!size || size > 20 * 1024 * 1024) return new Response('Запись слишком большая', {status: 413});

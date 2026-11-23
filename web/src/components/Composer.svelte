@@ -132,11 +132,11 @@
       media.getTracks().forEach(track => track.stop()); videoTrack?.stop(); canvasStream?.getTracks().forEach(track => track.stop());
       if (send && seconds >= 0.5) {
         if (current.mode === 'video') {
-          const blob = new Blob(parts, {type:active.mimeType}), length = Math.min(60, seconds);
+          const file = new File(parts, 'video.' + (active.mimeType.split(/[/;]/)[1] || 'webm'), {type:active.mimeType}), length = Math.min(60, seconds);
           const ready = Promise.all(captured.filter(frame => frame.time < length).map(async frame => ({...await frame.data, video:{seconds:length, time:frame.time, note:true}})))
-            .then(frames => { if (!frames.length) throw new Error('Не удалось получить кадры видео'); return finishVideo(blob, frames, length, Number(videoInterval)); })
+            .then(frames => { if (!frames.length) throw new Error('Не удалось получить кадры видео'); return finishVideo(file, frames, length, Number(videoInterval)); })
             .catch(error => ({error:error.message}));
-          onvideo({id:current.id, url:URL.createObjectURL(blob), video:{seconds:length, time:0, note:true}, ready});
+          onvideo({id:current.id, url:URL.createObjectURL(file), video:{seconds:length, time:0, note:true}, ready});
         } else onvoice({id:current.id, key:crypto.randomUUID(), seconds, wav:wavFromRecording(parts)});
       }
     };
@@ -161,11 +161,11 @@
     const selected = Array.from(files);
     if (images.length + selected.length > 4) { imageError = 'Можно прикрепить не более 4 файлов'; return; }
     if ([...images, ...selected].filter(item => item.video || item.type?.startsWith('video/')).length > 1) { imageError = 'Можно прикрепить одно видео'; return; }
-    if (selected.some(file => !file.type.startsWith('image/') && !file.type.startsWith('video/') && file.size > 25 * 1024 * 1024)) { imageError = 'Файл превышает 25 МБ'; return; }
+    if (selected.some(file => file.size > 100 * 1024 * 1024)) { imageError = 'Файл превышает 100 МБ'; return; }
     const added = selected.map(file => {
       if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) return {file:true, name:file.name, size:file.size, type:file.type, ready:Promise.resolve({frames:[], file})};
       const image = {url:URL.createObjectURL(file), video:file.type.startsWith('video/'), processing:true};
-      image.ready = (image.video ? prepareVideo(file, Number(videoInterval)) : prepareImage(file).then(data => ({frames:[data]}))).then(data => data, error => ({error:error.message})).then(result => {
+      image.ready = (image.video ? prepareVideo(file, Number(videoInterval)) : prepareImage(file).then(data => ({frames:[data], file}))).then(data => data, error => ({error:error.message})).then(result => {
         images = images.map(item => item === image ? {...item, processing:false, error:result.error} : item);
         return result;
       });
