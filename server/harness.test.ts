@@ -57,6 +57,10 @@ for (const [name, turn, resumeKey] of [['claude', claudeTurn, 'resume'], ['codex
   });
 }
 
+test('claude: упавший harness отдаёт владельцу код выхода и конец stderr', async () => {
+  await expect(run(claudeTurn, 'CRASH').result).rejects.toThrow('Claude Code завершился с кодом 1: Invalid API key · Please run /login');
+});
+
 test('claude: ход, который игнорирует прерывание, убивается после дедлайна', async () => {
   const t = run(claudeTurn, 'STUBBORN');
   await until(() => t.log.includes('accepted'));

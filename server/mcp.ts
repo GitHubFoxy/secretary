@@ -1,7 +1,20 @@
+import { readFileSync } from 'node:fs';
 import { mcpPort } from './config';
 import { modelDetails } from './models';
 import { isSpecialist, SECRETARY_ID } from './session';
 import type { Sessions } from './sessions';
+
+const issuesUrl = 'https://github.com/GitHubFoxy/secretary/issues/new';
+
+// The owner sends the issue from their own GitHub account, so the Host needs no token.
+export function issueUrl(title: string, body: string, caller: { harness: string; model: string }, build = buildVersion()) {
+  const details = `\n\n---\nВерсия: ${build}\nHarness: ${caller.harness}, модель ${caller.model}\nСистема: ${process.platform} ${process.arch}`;
+  return `${issuesUrl}?${new URLSearchParams({ title, body: body.slice(0, 6000) + details, labels: 'needs-triage' })}`;
+}
+
+function buildVersion() {
+  try { return JSON.parse(readFileSync(new URL('../web/dist/build-version.json', import.meta.url), 'utf8')).version; } catch { return 'неизвестна'; }
+}
 
 type ModelList = (harness: string) => Promise<{ id: string; supportedReasoningEfforts: { reasoningEffort: string }[] }[]>;
 
@@ -53,6 +66,15 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
         { id: { type: 'number', description: `id ${target}` } },
         ['id'],
       ],
+      ...(isSecretary ? [[
+        'report_issue',
+        'Подготовить сообщение об ошибке или идее для разработчиков Secretary App. Возвращает ссылку на заполненный GitHub issue: отдай её владельцу, он проверит текст и отправит.',
+        {
+          title: { type: 'string', minLength: 1, description: 'Коротко, что случилось' },
+          body: { type: 'string', minLength: 1, description: 'Что делал владелец, что ожидал, что произошло; текст ошибок, если есть' },
+        },
+        ['title', 'body'],
+      ]] : []),
     ].map(([name, description, properties, required]) => ({ name, description, inputSchema: { type: 'object', properties, required } }));
   }
 
@@ -119,6 +141,11 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
         const target = resolveTarget(callerId, isSecretary, args.id);
         sessions.stop(target.id);
         return { ok: true };
+      }
+      case 'report_issue': {
+        if (!isSecretary) throw new Error('Неизвестный инструмент');
+        if (typeof args.title !== 'string' || !args.title.trim() || typeof args.body !== 'string' || !args.body.trim()) throw new Error('Укажите title и body');
+        return { url: issueUrl(args.title.trim(), args.body.trim(), sessions.get(callerId).info) };
       }
       default:
         throw new Error('Неизвестный инструмент');
