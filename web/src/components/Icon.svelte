@@ -1,5 +1,5 @@
 <script>
-  /* Paperclip and phone: Lucide Icons, ISC License.
+  /* Paperclip, phone, camera, image and file: Lucide Icons, ISC License.
    * Copyright (c) 2026 Lucide Icons and Contributors
    * Permission to use, copy, modify, and/or distribute this software for any
    * purpose with or without fee is hereby granted, provided that the above
@@ -39,10 +39,18 @@
   {:else if name === 'lock'}
     <rect x="5" y="11" width="14" height="9" rx="2" />
     <path d="M8 11V8a4 4 0 0 1 8 0v3" />
-  {:else if name === 'file'}
-    <path d="M6 3h8l4 4v14H6zM14 3v5h4" />
   {:else if name === 'paperclip'}
     <path d="m16 6-8.414 8.586a2 2 0 0 0 2.829 2.829l8.414-8.586a4 4 0 1 0-5.657-5.657l-8.379 8.551a6 6 0 1 0 8.485 8.485l8.379-8.551" />
+  {:else if name === 'camera'}
+    <path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3z" />
+    <circle cx="12" cy="13" r="3" />
+  {:else if name === 'image'}
+    <rect x="3" y="3" width="18" height="18" rx="2" />
+    <circle cx="9" cy="9" r="2" />
+    <path d="m21 15-3.1-3.1a2 2 0 0 0-2.8 0L6 21" />
+  {:else if name === 'file'}
+    <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7z" />
+    <path d="M14 2v4a2 2 0 0 0 2 2h4" />
   {:else if name === 'queue'}
     <path d="M4 7h11M4 12h11M4 17h6M18 14v6M15 17h6" />
   {:else if name === 'stop'}

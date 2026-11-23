@@ -3,10 +3,17 @@
   import Icon from './Icon.svelte';
   import { duration, wavFromRecording } from '../voice.js';
   import { prepareImage } from '../prepare-image.js';
+  import { fileSize } from '../file-size.js';
   import { prepareVideo, frameFromCanvas, finishVideo } from '../prepare-video.js';
   // onsubmit(immediate): true — прервать идущий ход и отправить сразу (правая кнопка и Enter), false — добавить в очередь (левая кнопка во время хода).
   let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, sessionId, videoInterval = 1, onsubmit, oninterrupt, onvoice, onvideo, onmicpress, onrecordstart } = $props();
-  let imageError = $state('');
+  let imageError = $state(''), attachOpen = $state(false);
+  // capture открывает камеру сразу; без него Android WebView предлагает только выбор файла.
+  const attachOptions = [
+    {label:'Камера', icon:'camera', accept:'image/*', capture:'environment'},
+    {label:'Фото и видео', icon:'image', accept:'image/*,video/*'},
+    {label:'Файл', icon:'file'},
+  ];
   let area = $state();
   // Как в Telegram: на сенсорном экране нажатие переключает голос и видео, удержание записывает;
   // мышью удерживать неудобно, поэтому щелчок сразу начинает запись с замком.
@@ -188,6 +195,7 @@
   }
 </script>
 
+<svelte:window onkeydown={e => { if (e.key === 'Escape') attachOpen = false; }} />
 {#if recording?.mode === 'video'}
   <div class="pointer-events-none fixed inset-0 bg-black/60 backdrop-blur-[3px]"></div>
   <div class="pointer-events-none absolute bottom-full left-1/2 mb-8 flex -translate-x-1/2 flex-col items-center">
@@ -202,7 +210,18 @@
 <form class="relative px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2" onsubmit={e => { e.preventDefault(); submit(); }}>
   {#if voiceError}<p role="alert" class="mx-auto max-w-3xl text-sm text-red-400">{voiceError}</p>{/if}
   {#if imageError}<p role="alert" class="mx-auto max-w-3xl text-sm text-red-400">{imageError}</p>{/if}
-  <div class="mx-auto flex max-w-3xl flex-wrap gap-2">{#each images as image}<div class="relative">{#if image.file}<div class="flex h-20 max-w-60 items-center gap-2 rounded bg-neutral-800 px-3 pr-6"><Icon name="file" class="size-6 shrink-0" /><span class="min-w-0"><span class="block truncate">{image.name}</span><span class="text-xs text-neutral-400">{(image.size / 1024 / 1024).toFixed(2)} МБ</span></span></div>{:else if image.video}<video class="h-20 rounded" src={image.url} muted playsinline preload="metadata"></video><span class="absolute left-1 top-1 rounded bg-black/60 p-0.5 text-white"><Icon name="video" class="size-3.5" /></span>{:else}<img class="h-20 rounded" src={image.url} alt="Изображение для отправки" />{/if}{#if image.processing}<span role="status" class="absolute bottom-0 left-0 bg-neutral-900/80 px-1 text-xs">Обработка…</span>{/if}{#if image.error}<span role="alert" class="absolute bottom-0 left-0 bg-red-900 px-1 text-xs">{image.error}</span>{/if}<button type="button" class="absolute right-0 top-0 bg-neutral-900 px-1" aria-label="Удалить вложение" onclick={() => remove(image)}>×</button></div>{/each}</div>
+  <div class="mx-auto flex max-w-3xl flex-wrap gap-2">{#each images as image}<div class="relative">{#if image.file}<div class="flex h-20 max-w-60 items-center gap-2 rounded bg-neutral-800 px-3 pr-6"><Icon name="file" class="size-6 shrink-0" /><span class="min-w-0"><span class="block truncate">{image.name}</span><span class="text-xs text-neutral-400">{fileSize(image.size)}</span></span></div>{:else if image.video}<video class="h-20 rounded" src={image.url} muted playsinline preload="metadata"></video><span class="absolute left-1 top-1 rounded bg-black/60 p-0.5 text-white"><Icon name="video" class="size-3.5" /></span>{:else}<img class="h-20 rounded" src={image.url} alt="Изображение для отправки" />{/if}{#if image.processing}<span role="status" class="absolute bottom-0 left-0 bg-neutral-900/80 px-1 text-xs">Обработка…</span>{/if}{#if image.error}<span role="alert" class="absolute bottom-0 left-0 bg-red-900 px-1 text-xs">{image.error}</span>{/if}<button type="button" class="absolute right-0 top-0 bg-neutral-900 px-1" aria-label="Удалить вложение" onclick={() => remove(image)}>×</button></div>{/each}</div>
+  {#if attachOpen}
+    <div class="fixed inset-0 z-30" role="presentation" onclick={() => (attachOpen = false)}></div>
+    <div class="absolute bottom-full left-3 z-40 mb-1 w-56 overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900 py-1 shadow-xl shadow-black/50">
+      {#each attachOptions as option}
+        <label class="flex cursor-pointer items-center gap-3 px-4 py-3 text-[15px] text-neutral-100 hover:bg-neutral-800 focus-within:bg-neutral-800">
+          <Icon name={option.icon} class="size-5 text-neutral-400" />{option.label}
+          <input type="file" accept={option.accept} capture={option.capture} multiple={!option.capture} class="sr-only" onchange={e => { attachOpen = false; add(e.currentTarget.files); e.currentTarget.value = ''; }} />
+        </label>
+      {/each}
+    </div>
+  {/if}
   <div bind:this={row} role="group" onpointermove={move} onpointerup={up} onpointercancel={() => { clearTimeout(press?.timer); press = null; if (recording && !recording.locked) stop(false); }} class="relative mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-neutral-800 bg-neutral-900 p-2 shadow-lg shadow-black/40 transition-colors focus-within:border-neutral-600">
     {#if hint}<div class="pointer-events-none absolute -top-10 right-0 rounded-lg bg-neutral-800 px-3 py-1.5 text-xs text-neutral-300">{hint}</div>{/if}
     {#if recording?.locked}
@@ -216,7 +235,7 @@
     <div class="pointer-events-none absolute -top-[72px] right-0 flex h-16 w-10 flex-col items-center justify-center gap-0.5 rounded-full border border-neutral-700 bg-neutral-900 text-neutral-400" style:transform="translateY({recording.dy / 2}px)"><Icon name="lock" class="size-4" /><Icon name="chevron" class="size-4 rotate-180" /></div>
     <div class="pointer-events-none absolute -right-3 top-1/2 -mt-8 grid size-16 place-items-center rounded-full bg-red-600 text-white shadow-[0_0_0_8px_rgba(220,38,38,0.25)]" style:transform="translate({recording.dx}px, {recording.dy}px)"><Icon name={recording.mode === 'video' ? 'video' : 'microphone'} class="size-6" /></div>
     {:else}
-    <label class="grid size-10 shrink-0 cursor-pointer place-items-center rounded-xl bg-neutral-800 text-neutral-400 focus-within:outline focus-within:outline-2 focus-within:outline-offset-2" title="Прикрепить изображение или видео"><Icon name="paperclip" /><span class="sr-only">Прикрепить изображение или видео</span><input type="file" accept="image/*,video/*" multiple class="sr-only" {disabled} onchange={e => { add(e.currentTarget.files); e.currentTarget.value = ''; }} /></label>
+    <button type="button" class="grid size-10 shrink-0 place-items-center rounded-xl bg-neutral-800 text-neutral-400 hover:text-neutral-200 disabled:opacity-40" aria-label="Прикрепить" aria-expanded={attachOpen} title="Прикрепить" {disabled} onclick={() => (attachOpen = !attachOpen)}><Icon name="paperclip" /></button>
     <label class="sr-only" for="message">Сообщение</label>
     <textarea
       id="message"
