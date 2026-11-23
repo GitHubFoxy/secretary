@@ -3,7 +3,7 @@ import { agentAnswer } from './chat';
 import { writeEvent } from './database';
 import type { Turn, TurnOptions } from './harness';
 import { validateImages } from './images';
-import { filePath, validateFiles } from './files';
+import { filePath, validateFiles, type FileAttachment } from './files';
 import { MessageQueue, type Message } from './queue';
 
 export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string; name: string | null; reasoning: string | null; hidden: number };
@@ -104,6 +104,9 @@ export class Session {
     this.queue.add(text, images, urgent, voice, speechTarget, files);
     this.startOrInterrupt(urgent);
   }
+
+  // Files from the agent appear in the chat like its answer; the turn goes on.
+  showFiles(files: FileAttachment[], text: string) { this.emit({ type: 'agent_files', text, files }); }
 
   sendQueued(id: unknown) {
     this.queue.promote(id, this.turn?.items ?? []);

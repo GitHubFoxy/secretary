@@ -1,5 +1,5 @@
 <script>
-  /* Paperclip, phone, camera, image and file: Lucide Icons, ISC License.
+  /* Paperclip, phone, camera, image, file and download: Lucide Icons, ISC License.
    * Copyright (c) 2026 Lucide Icons and Contributors
    * Permission to use, copy, modify, and/or distribute this software for any
    * purpose with or without fee is hereby granted, provided that the above
@@ -62,6 +62,8 @@
     <circle cx="12" cy="12" r="3" />
   {:else if name === 'eye-off'}
     <path d="M9.9 4.2A10 10 0 0 1 12 4c6.5 0 10 8 10 8a18 18 0 0 1-2.2 3.2M6.6 6.6A18 18 0 0 0 2 12s3.5 7 10 7a9.7 9.7 0 0 0 5.4-1.6M3 3l18 18M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+  {:else if name === 'download'}
+    <path d="M12 15V3M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5" />
   {:else if name === 'chevron'}
     <path d="M6 9l6 6 6-6" />
   {:else if name === 'back'}
