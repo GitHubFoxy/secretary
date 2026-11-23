@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { secretaryFolder } from './config';
 
-const maxSize = 25 * 1024 * 1024;
+const maxSize = 100 * 1024 * 1024;
 const fileIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 export type FileAttachment = { file: true; id: string; name: string; size: number; type: string };
 
@@ -24,7 +24,7 @@ export async function saveFile(request: Request, root = secretaryFolder): Promis
   const id = randomUUID();
   const file: FileAttachment = { file:true, id, name, size:0, type:request.headers.get('content-type') || 'application/octet-stream' };
   const declared = request.headers.get('content-length');
-  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > maxSize)) throw new Error('Файл превышает 25 МБ');
+  if (declared !== null && (!/^\d+$/.test(declared) || Number(declared) > maxSize)) throw new Error('Файл превышает 100 МБ');
   const dir = join(root, 'files', id);
   await mkdir(join(root, 'files'), { recursive:true });
   await mkdir(dir);
@@ -33,7 +33,7 @@ export async function saveFile(request: Request, root = secretaryFolder): Promis
     try {
       if (request.body) for await (const chunk of request.body) {
         file.size += chunk.length;
-        if (file.size > maxSize) throw new Error('Файл превышает 25 МБ');
+        if (file.size > maxSize) throw new Error('Файл превышает 100 МБ');
         await output.writeFile(chunk);
       }
     } finally { await output.close(); }

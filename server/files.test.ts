@@ -21,7 +21,7 @@ test('сохраняет файлы с безопасными именами и 
     expect(chatMessage({type:'user', message:{content:''}, images:[], files:[first]})).toEqual({kind:'user', text:'', images:[], files:[first]});
     expect((await saveFile(new Request('http://localhost/files?name=.', {method:'POST', body:'x'}), root)).name).toBe('file');
     const before = await readdir(join(root, 'files'));
-    await expect(saveFile(new Request('http://localhost/files?name=big', {method:'POST', body:new Uint8Array(25 * 1024 * 1024 + 1)}), root)).rejects.toThrow();
+    await expect(saveFile(new Request('http://localhost/files?name=big', {method:'POST', body:new Uint8Array(100 * 1024 * 1024 + 1)}), root)).rejects.toThrow();
     expect(await readdir(join(root, 'files'))).toEqual(before);
   } finally { await rm(root, {recursive:true, force:true}); }
 });

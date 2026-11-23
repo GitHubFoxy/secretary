@@ -161,7 +161,7 @@
     const selected = Array.from(files);
     if (images.length + selected.length > 4) { imageError = 'Можно прикрепить не более 4 файлов'; return; }
     if ([...images, ...selected].filter(item => item.video || item.type?.startsWith('video/')).length > 1) { imageError = 'Можно прикрепить одно видео'; return; }
-    if (selected.some(file => file.size > 25 * 1024 * 1024)) { imageError = 'Файл превышает 25 МБ'; return; }
+    if (selected.some(file => file.size > 100 * 1024 * 1024)) { imageError = 'Файл превышает 100 МБ'; return; }
     const added = selected.map(file => {
       if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) return {file:true, name:file.name, size:file.size, type:file.type, ready:Promise.resolve({frames:[], file})};
       const image = {url:URL.createObjectURL(file), video:file.type.startsWith('video/'), processing:true};
