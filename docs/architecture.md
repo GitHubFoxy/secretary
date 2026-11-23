@@ -31,7 +31,7 @@ Cloudflare Tunnel (app.scrtrbot.ru) ─▶ 127.0.0.1:3000 на Host
 
 ### Клиент (`web/`)
 
-Svelte 5 + Vite + Tailwind, без SvelteKit, код на JavaScript. Клиент не знает протоколов harness. Он получает от сервера готовые сообщения чата (`{kind, text, images}`), очередь и список сессий, а отправляет команды по WebSocket.
+Svelte 5 + Vite + Tailwind, без SvelteKit, код на JavaScript. Клиент не знает протоколов harness. Он получает от сервера готовые сообщения чата (`{kind, text, images, files}`), очередь и список сессий, а отправляет команды по WebSocket. Вложения сохраняются на Host в `~/.secretary/files/`; модель получает путь к ним, а фото и кадры видео — ещё и прямо в сообщении ([ADR 0009](adr/0009-media-originals-on-host.md)).
 
 Android-приложение — оболочка Capacitor, которая загружает `https://app.scrtrbot.ru` ([ADR 0004](adr/0004-capacitor-loads-the-site.md)). Поэтому новая версия интерфейса доходит до телефона без переустановки: `bun run --cwd web build` публикует сборку, а открытые клиенты проверяют `build-version.json` и перезагружаются, когда пользователь ничего не набирает. Нативная часть (`MainActivity.kt`) нужна для роли системного помощника: приложение открывается удержанием кнопки Power.
 
