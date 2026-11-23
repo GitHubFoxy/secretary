@@ -51,9 +51,7 @@ class AssistantSession(private val service: AssistantSessionService) : VoiceInte
 
     override fun onShow(args: Bundle?, showFlags: Int) {
         super.onShow(args, showFlags)
-        // Secretary App уже на экране: голосовой режим открывается в нём самом, на весь экран.
-        MainActivity.resumed?.let {
-            it.bridge.webView.evaluateJavascript("dispatchEvent(new Event('secretary-voice'))", null)
+        if (MainActivity.resumed != null) {
             hide()
             return
         }

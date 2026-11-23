@@ -19,7 +19,9 @@ const databasePath = `${secretaryFolder}/secretary.sqlite`;
 migrateDatabase('secretary.sqlite', databasePath);
 const db = openDatabase(databasePath);
 const publish = (message: object) => server.publish('events', JSON.stringify(message));
-const speech = new Speech(publish);
+let speechTarget: ((message: object) => void) | undefined;
+const speech = new Speech(message => speechTarget?.(message));
+function stopSpeech() { speech.stop(); speechTarget?.({type:'speech_cancel'}); speechTarget = undefined; }
 const publishSessions = () => publish({ type: 'sessions', sessions: sessions.list() });
 const sessions = new Sessions(db, {
   turns: { claude: claudeTurn, codex: codexTurn },
@@ -28,7 +30,7 @@ const sessions = new Sessions(db, {
   // The browser gets chat messages, the queue and interrupt results; other raw events stay in SQLite.
   onEvent(session, event, cursor) {
     if (event.type === 'secretary_reply') { publish(event); return; }
-    if (event.type === 'speech_start') { speech.start(); publish({type:'speech_start'}); return; }
+    if (event.type === 'speech_start') { stopSpeech(); speechTarget = event.speechTarget; speech.start(); speechTarget?.({type:'speech_start'}); return; }
     if (event.type === 'speech_event') { speech.event(event.event); return; }
     if (event.type === 'speech_end') { speech.end(event.interrupted); return; }
     const message = chatMessage(event);
@@ -47,17 +49,17 @@ function sameOrigin(request: Request, url: URL) {
 }
 
 // The browser adapter. Every command gets exactly one answer with its requestId: `reply` with the result or `error`.
-const commands: Record<string, (cmd: any) => unknown> = {
+const commands: Record<string, (cmd: any, send: (message: object) => void) => unknown> = {
   read: cmd => {
     const session = sessions.get(cmd.id);
     return {...chatPage(db, session.id, Number.isSafeInteger(cmd.before) && cmd.before > 0 ? cmd.before : undefined), queue: session.queue.list()};
   },
-  send: cmd => { sessions.get(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true, cmd.voice === true); },
+  send: (cmd, send) => { sessions.get(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true, cmd.voice === true, cmd.voice === true ? send : undefined); },
   sendQueued: cmd => { sessions.get(cmd.id).sendQueued(cmd.messageId); },
-  speechWarm: () => { speech.stop(); publish({type:'speech_cancel'}); warmSpeech(); },
-  speechStop: () => { speech.stop(); publish({type:'speech_cancel'}); },
-  stop: cmd => { speech.stop(); publish({type:'speech_cancel'}); sessions.stop(cmd.id); },
-  interrupt: cmd => { speech.stop(); publish({type:'speech_cancel'}); return { accepted: sessions.get(cmd.id).interrupt(cmd.requestId) }; },
+  speechWarm: (_, send) => { if (speechTarget === send) stopSpeech(); warmSpeech(); },
+  speechStop: (_, send) => { if (speechTarget === send) stopSpeech(); },
+  stop: cmd => { stopSpeech(); sessions.stop(cmd.id); },
+  interrupt: cmd => { stopSpeech(); return { accepted: sessions.get(cmd.id).interrupt(cmd.requestId) }; },
   rename: cmd => { sessions.get(cmd.id).setName(cmd.name); publishSessions(); },
   visibility: cmd => { sessions.get(cmd.id).setHidden(cmd.hidden); publishSessions(); },
   delete: cmd => { sessions.delete(cmd.id); },
@@ -116,14 +118,14 @@ const server = Bun.serve({
   },
   websocket: {
     maxPayloadLength: 30 * 1024 * 1024,
-    open(socket) { socket.subscribe('events'); socket.send(JSON.stringify({ type: 'sessions', sessions: sessions.list() })); },
+    open(socket) { socket.data = (message: object) => { if (socket.readyState === 1) socket.send(JSON.stringify(message)); }; socket.subscribe('events'); socket.send(JSON.stringify({ type: 'sessions', sessions: sessions.list() })); },
     async message(socket, message) {
       let cmd: any;
       try {
         cmd = JSON.parse(String(message));
         const command = commands[cmd.type];
         if (!command) throw new Error(`Неизвестная команда: ${cmd.type}`);
-        const result = await command(cmd);
+        const result = await command(cmd, socket.data as (message: object) => void);
         socket.send(JSON.stringify({ type: 'reply', requestId: cmd.requestId, ...(result ?? {}) }));
       } catch (error) { socket.send(JSON.stringify({ type: 'error', message: String(error), requestId: cmd?.requestId })); }
     },
