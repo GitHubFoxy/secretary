@@ -1,5 +1,5 @@
 <script>
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { createConnection } from './connection.js';
   import { mergeHistory } from './history.js';
   import { createInterruptFeedback } from './interrupt-feedback.js';
@@ -17,6 +17,7 @@
   import Icon from './components/Icon.svelte';
   import { Capacitor, registerPlugin } from '@capacitor/core';
   const host = registerPlugin('Host');
+  const share = registerPlugin('Share');
 
   let cached;
   try { cached = JSON.parse(localStorage.getItem('last-chat')); } catch {}
@@ -75,6 +76,33 @@
     catch { assistantStatus = 'Обновите приложение'; }
   }
   let drawerOpen = false, settingsOpen = false, renameOpen = false, newName = '', images = [], preparing = [];
+  let composer, shared = [], shareBusy = false;
+  async function loadShared() {
+    try { shared = (await share.pending()).items; }
+    catch (err) { error = `Не удалось получить общий контент: ${err.message}`; }
+  }
+  async function applyShared(item, secretary) {
+    shareBusy = true;
+    try {
+      const files = await Promise.all(item.files.map(async file => {
+        const response = await fetch(Capacitor.convertFileSrc(file.path));
+        if (!response.ok) throw new Error(`Не удалось прочитать ${file.name}`);
+        return new File([await response.blob()], file.name, {type:file.type});
+      }));
+      if (selected !== secretary.id) select(secretary.id);
+      drawerOpen = settingsOpen = renameOpen = profileOpen = voiceMode = false;
+      await tick();
+      if (!composer) throw new Error('Поле ввода недоступно');
+      if (item.text) message += (message ? '\n' : '') + item.text;
+      if (files.length) composer.add(files);
+      if (item.error) error = item.error;
+      await share.acknowledge({id:item.id});
+      await loadShared();
+    } catch (err) { error = `Не удалось получить общий контент: ${err.message}`; shared = []; }
+    finally { shareBusy = false; }
+  }
+  $: secretaryForShare = sessions.find(s => s.secretary);
+  $: if (shared.length && secretaryForShare && !shareBusy) applyShared(shared[0], secretaryForShare);
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   let agentsOriginal = '', agentsSaving = false;
   let interruptStates = {};
@@ -267,6 +295,10 @@
   onMount(() => {
     loadVideoInterval();
     connection.connect();
+    let shareListener;
+    if (Capacitor.isNativePlatform() && Capacitor.isPluginAvailable('Share')) {
+      share.addListener('received', loadShared).then(listener => { shareListener = listener; loadShared(); });
+    }
     const reconnect = () => { if (document.visibilityState === 'visible') { connection.connect(); updates.check(); } };
     const updateTimer = setInterval(() => { if (document.visibilityState === 'visible') updates.check(); }, 5000);
     window.addEventListener('online', reconnect);
@@ -278,7 +310,7 @@
     document.addEventListener('focusin', update);
     document.addEventListener('focusout', update);
     update();
-    return () => { clearInterval(updateTimer); updates.stop(); interruptFeedback.dispose(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); window.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
+    return () => { shareListener?.remove(); clearInterval(updateTimer); updates.stop(); interruptFeedback.dispose(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); window.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
   });
 </script>
 
@@ -397,7 +429,7 @@
               </button>
             </div>
           {/if}
-          <Composer {videoInterval} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
+          <Composer bind:this={composer} {videoInterval} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
         </div>
       </div>
     </div>
