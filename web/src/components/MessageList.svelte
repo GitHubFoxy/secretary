@@ -53,7 +53,6 @@
 
 <div bind:this={scroller} onscroll={onscroll} class="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]" aria-live="polite">
   <div class="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 pt-6" style="padding-bottom: {bottomInset + 24}px">
-    {#if historyLoadingOlder}<p class="self-center text-sm text-neutral-500">Загрузка…</p>{/if}
     {#if messages.length === 0}
       <p class="py-16 text-center text-sm text-neutral-600">{!connected ? 'Нет связи с Host. Повторное подключение…' : !historyLoaded ? 'Загрузка сообщений…' : 'Сообщений пока нет'}</p>
     {/if}
@@ -104,6 +103,8 @@
     {/each}
   </div>
 </div>
+<!-- Поверх списка, а не в нём: строка в потоке сдвинула бы сообщения во время подгрузки. -->
+{#if historyLoadingOlder}<p role="status" class="pointer-events-none absolute left-1/2 top-2 z-20 -translate-x-1/2 rounded-full bg-neutral-800 px-3 py-1 text-xs text-neutral-300">Загрузка…</p>{/if}
 {#if !pinned}
   <button type="button" aria-label="К последнему сообщению" class="absolute right-4 z-20 flex size-10 items-center justify-center rounded-full border border-neutral-700 bg-neutral-800 text-neutral-100 shadow-lg" style:bottom="{bottomInset + 12}px" onclick={() => { pinned = true; scroller.scrollTo({top:scroller.scrollHeight, behavior:'smooth'}); }}><Icon name="chevron" /></button>
 {/if}
