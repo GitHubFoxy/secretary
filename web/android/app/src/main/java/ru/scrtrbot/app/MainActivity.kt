@@ -24,13 +24,13 @@ class MainActivity : BridgeActivity() {
             if (host == null) setStartPath("/setup.html") else setServerUrl(host)
         }.create()
         registerPlugin(HostPlugin::class.java)
+        registerPlugin(SharePlugin::class.java)
         super.onCreate(savedInstanceState)
         if (host != null) {
             ContextCompat.startForegroundService(this, Intent(this, ReplyService::class.java))
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
                 requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
         }
-        openReply(intent)
     }
 
     private fun openReply(intent: Intent?) {
@@ -40,7 +40,11 @@ class MainActivity : BridgeActivity() {
         }
     }
 
-    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); openReply(intent) }
+    private fun share(intent: Intent?) {
+        (bridge.getPlugin("Share")?.instance as? SharePlugin)?.receive(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); openReply(intent); share(intent) }
     override fun onStart() { super.onStart(); ReplyService.visible = true }
     public override fun onStop() {
         ReplyService.visible = false

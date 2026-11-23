@@ -156,7 +156,7 @@
     observer.observe(area);
     return () => observer.disconnect();
   });
-  function add(files) {
+  export function add(files) {
     imageError = '';
     const selected = Array.from(files);
     if (images.length + selected.length > 4) { imageError = 'Можно прикрепить не более 4 файлов'; return; }
