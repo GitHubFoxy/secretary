@@ -149,11 +149,16 @@
         return result.description?.replace('Кадры по порядку:', `Кадры по порядку, начиная с изображения ${start + 1}:`);
       }).filter(Boolean);
       const frames = results.flatMap(result => result.frames);
+      const files = await Promise.all(results.filter(result => result.file).map(async result => {
+        const response = await fetch(`/files?name=${encodeURIComponent(result.file.name)}`, {method:'POST', headers:{'Content-Type':result.file.type || 'application/octet-stream'}, body:result.file});
+        if (!response.ok) throw new Error(await response.text());
+        return response.json();
+      }));
       if (JSON.stringify(frames).length > 29 * 1024 * 1024) throw new Error('Вложения слишком большие для отправки');
       if (video) videoUrls = {...videoUrls, [frames[0].data]:video.url};
-      await connection.request({type:'send', id:sent.sessionId, text:[sent.text, ...descriptions].filter(Boolean).join('\n\n'), images:frames, immediate});
+      await connection.request({type:'send', id:sent.sessionId, text:[sent.text, ...descriptions].filter(Boolean).join('\n\n'), images:frames, files, immediate});
       preparing = preparing.filter(item => item.id !== sent.id);
-      if (!video) sent.images.forEach(image => URL.revokeObjectURL(image.url));
+      if (!video) sent.images.forEach(image => { if (image.url) URL.revokeObjectURL(image.url); });
     } catch (err) {
       const detail = err.disconnected ? 'Не удалось подтвердить доставку. Проверьте историю перед повторной отправкой.' : err.message;
       preparing = preparing.map(item => item.id === sent.id ? {...item, error:detail} : item);
@@ -242,9 +247,9 @@
   function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); loadVoiceModel(); loadTtsEngine(); }
   // Queued messages are not accepted by the agent yet, so they come after history.
   $: messages = [
-    ...history.map(m => ({...m, images:m.images?.map(image => videoUrls[image.data] ? {...image, url:videoUrls[image.data]} : image), key:`${selected}:${m.cursor}`})),
+    ...history.map(m => ({...m, images:[...(m.images || []).map(image => videoUrls[image.data] ? {...image, url:videoUrls[image.data]} : image), ...(m.files || [])], key:`${selected}:${m.cursor}`})),
     ...voiceMessages.filter(item => item.id === selected),
-    ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:item.images, urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
+    ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:[...item.images, ...(item.files || [])], urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
     ...preparing.filter(item => item.sessionId === selected).map(item => ({...item, kind:'preparing', key:`preparing:${item.id}`})),
   ];
   const userKinds = ['user', 'voice', 'queued', 'preparing', 'cancelled', 'uncertain'];

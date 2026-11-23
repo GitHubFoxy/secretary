@@ -154,7 +154,9 @@
     const selected = Array.from(files);
     if (images.length + selected.length > 4) { imageError = 'Можно прикрепить не более 4 файлов'; return; }
     if ([...images, ...selected].filter(item => item.video || item.type?.startsWith('video/')).length > 1) { imageError = 'Можно прикрепить одно видео'; return; }
+    if (selected.some(file => !file.type.startsWith('image/') && !file.type.startsWith('video/') && file.size > 25 * 1024 * 1024)) { imageError = 'Файл превышает 25 МБ'; return; }
     const added = selected.map(file => {
+      if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) return {file:true, name:file.name, size:file.size, type:file.type, ready:Promise.resolve({frames:[], file})};
       const image = {url:URL.createObjectURL(file), video:file.type.startsWith('video/'), processing:true};
       image.ready = (image.video ? prepareVideo(file, Number(videoInterval)) : prepareImage(file).then(data => ({frames:[data]}))).then(data => data, error => ({error:error.message})).then(result => {
         images = images.map(item => item === image ? {...item, processing:false, error:result.error} : item);
@@ -165,7 +167,7 @@
     images = [...images, ...added];
   }
   function remove(image) {
-    URL.revokeObjectURL(image.url);
+    if (image.url) URL.revokeObjectURL(image.url);
     images = images.filter(item => item !== image);
   }
   function paste(e) {
@@ -200,7 +202,7 @@
 <form class="relative px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-2" onsubmit={e => { e.preventDefault(); submit(); }}>
   {#if voiceError}<p role="alert" class="mx-auto max-w-3xl text-sm text-red-400">{voiceError}</p>{/if}
   {#if imageError}<p role="alert" class="mx-auto max-w-3xl text-sm text-red-400">{imageError}</p>{/if}
-  <div class="mx-auto flex max-w-3xl flex-wrap gap-2">{#each images as image}<div class="relative">{#if image.video}<video class="h-20 rounded" src={image.url} muted playsinline preload="metadata"></video><span class="absolute left-1 top-1 rounded bg-black/60 p-0.5 text-white"><Icon name="video" class="size-3.5" /></span>{:else}<img class="h-20 rounded" src={image.url} alt="Изображение для отправки" />{/if}{#if image.processing}<span role="status" class="absolute bottom-0 left-0 bg-neutral-900/80 px-1 text-xs">Обработка…</span>{/if}{#if image.error}<span role="alert" class="absolute bottom-0 left-0 bg-red-900 px-1 text-xs">{image.error}</span>{/if}<button type="button" class="absolute right-0 top-0 bg-neutral-900 px-1" aria-label="Удалить изображение" onclick={() => remove(image)}>×</button></div>{/each}</div>
+  <div class="mx-auto flex max-w-3xl flex-wrap gap-2">{#each images as image}<div class="relative">{#if image.file}<div class="flex h-20 max-w-60 items-center gap-2 rounded bg-neutral-800 px-3 pr-6"><Icon name="file" class="size-6 shrink-0" /><span class="min-w-0"><span class="block truncate">{image.name}</span><span class="text-xs text-neutral-400">{(image.size / 1024 / 1024).toFixed(2)} МБ</span></span></div>{:else if image.video}<video class="h-20 rounded" src={image.url} muted playsinline preload="metadata"></video><span class="absolute left-1 top-1 rounded bg-black/60 p-0.5 text-white"><Icon name="video" class="size-3.5" /></span>{:else}<img class="h-20 rounded" src={image.url} alt="Изображение для отправки" />{/if}{#if image.processing}<span role="status" class="absolute bottom-0 left-0 bg-neutral-900/80 px-1 text-xs">Обработка…</span>{/if}{#if image.error}<span role="alert" class="absolute bottom-0 left-0 bg-red-900 px-1 text-xs">{image.error}</span>{/if}<button type="button" class="absolute right-0 top-0 bg-neutral-900 px-1" aria-label="Удалить вложение" onclick={() => remove(image)}>×</button></div>{/each}</div>
   <div bind:this={row} role="group" onpointermove={move} onpointerup={up} onpointercancel={() => { clearTimeout(press?.timer); press = null; if (recording && !recording.locked) stop(false); }} class="relative mx-auto flex w-full max-w-3xl items-end gap-2 rounded-2xl border border-neutral-800 bg-neutral-900 p-2 shadow-lg shadow-black/40 transition-colors focus-within:border-neutral-600">
     {#if hint}<div class="pointer-events-none absolute -top-10 right-0 rounded-lg bg-neutral-800 px-3 py-1.5 text-xs text-neutral-300">{hint}</div>{/if}
     {#if recording?.locked}
