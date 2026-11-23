@@ -7,6 +7,11 @@ import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.content.ContextCompat
 import android.webkit.CookieManager
+import android.webkit.URLUtil
+import android.app.DownloadManager
+import android.net.Uri
+import android.os.Environment
+import android.widget.Toast
 import com.getcapacitor.BridgeActivity
 import com.getcapacitor.CapConfig
 import org.json.JSONObject
@@ -30,6 +35,19 @@ class MainActivity : BridgeActivity() {
             ContextCompat.startForegroundService(this, Intent(this, ReplyService::class.java))
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
                 requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 2)
+        }
+        // WebView does not download files by itself: the system downloader saves them to Downloads with the login cookie.
+        bridge.webView.setDownloadListener { url, userAgent, disposition, mimeType, _ ->
+            val name = URLUtil.guessFileName(url, disposition, mimeType)
+            val request = DownloadManager.Request(Uri.parse(url))
+                .addRequestHeader("Cookie", CookieManager.getInstance().getCookie(url) ?: "")
+                .addRequestHeader("User-Agent", userAgent)
+                .setMimeType(mimeType)
+                .setTitle(name)
+                .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+                .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
+            getSystemService(DownloadManager::class.java).enqueue(request)
+            Toast.makeText(this, "Скачиваю $name", Toast.LENGTH_SHORT).show()
         }
         openReply(intent)
         share(intent)

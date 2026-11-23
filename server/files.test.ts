@@ -64,15 +64,16 @@ test('отдаёт сохранённый файл только по его uuid
   try {
     const photo = await saveFile(new Request('http://localhost/files?name=photo.jpg', {method:'POST', headers:{'Content-Type':'image/jpeg'}, body:'JPG'}), root);
     const page = await saveFile(new Request('http://localhost/files?name=page.html', {method:'POST', headers:{'Content-Type':'text/html'}, body:'<script>'}), root);
-    const served = await fileResponse(photo.id, 'photo.jpg', root);
+    const served = await fileResponse(photo.id, 'photo.jpg', false, root);
     expect(served?.headers.get('content-type')).toBe('image/jpeg');
     expect(served?.headers.get('content-disposition')).toBe('inline');
     expect(await served?.text()).toBe('JPG');
-    expect((await fileResponse(page.id, 'page.html', root))?.headers.get('content-disposition')).toBe('attachment');
-    expect(await fileResponse(photo.id, '..%2F..%2Fphoto.jpg', root)).toBeNull();
-    expect(await fileResponse(photo.id, '..', root)).toBeNull();
-    expect(await fileResponse('../' + photo.id, 'photo.jpg', root)).toBeNull();
-    expect(await fileResponse(photo.id, 'other.jpg', root)).toBeNull();
-    expect(await fileResponse(photo.id, '%E0%A4%A', root)).toBeNull();
+    expect((await fileResponse(page.id, 'page.html', false, root))?.headers.get('content-disposition')).toBe("attachment; filename*=UTF-8''page.html");
+    expect((await fileResponse(photo.id, 'photo.jpg', true, root))?.headers.get('content-disposition')).toBe("attachment; filename*=UTF-8''photo.jpg");
+    expect(await fileResponse(photo.id, '..%2F..%2Fphoto.jpg', false, root)).toBeNull();
+    expect(await fileResponse(photo.id, '..', false, root)).toBeNull();
+    expect(await fileResponse('../' + photo.id, 'photo.jpg', false, root)).toBeNull();
+    expect(await fileResponse(photo.id, 'other.jpg', false, root)).toBeNull();
+    expect(await fileResponse(photo.id, '%E0%A4%A', false, root)).toBeNull();
   } finally { await rm(root, {recursive:true, force:true}); }
 });

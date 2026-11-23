@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
-import { mcpPort } from './config';
+import { hostPath, mcpPort, secretaryFolder } from './config';
+import { storeFile } from './files';
 import { modelDetails } from './models';
 import { isSpecialist, SECRETARY_ID } from './session';
 import type { Sessions } from './sessions';
@@ -20,7 +21,7 @@ type ModelList = (harness: string) => Promise<{ id: string; supportedReasoningEf
 
 // One MCP adapter for both Secretary Agent (level 0) and Specialists (level 1).
 // The caller's session id is in the path (/mcp/<id>); level-2 child sessions do not get MCP.
-export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList } = {}) {
+export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList, root = secretaryFolder } = {}) {
   function toolsFor(isSecretary: boolean) {
     const target = isSecretary ? 'Specialist' : 'Worker';
     const targetGen = isSecretary ? 'Specialists' : 'твоих Workers';
@@ -67,6 +68,14 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
         ['id'],
       ],
       ...(isSecretary ? [[
+        'send_file',
+        'Показать владельцу файл с Host в чате: картинку, видео, аудио или документ. Владелец сможет открыть его и скачать на устройство.',
+        {
+          path: { type: 'string', minLength: 1, description: 'Путь к файлу на Host: абсолютный или от твоей папки' },
+          caption: { type: 'string', description: 'Подпись к файлу' },
+        },
+        ['path'],
+      ], [
         'report_issue',
         'Подготовить сообщение об ошибке или идее для разработчиков Secretary App. Возвращает ссылку на заполненный GitHub issue: отдай её владельцу, он проверит текст и отправит.',
         {
@@ -141,6 +150,14 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
         const target = resolveTarget(callerId, isSecretary, args.id);
         sessions.stop(target.id);
         return { ok: true };
+      }
+      case 'send_file': {
+        if (!isSecretary) throw new Error('Неизвестный инструмент');
+        if (typeof args.path !== 'string' || !args.path.trim()) throw new Error('Укажите path');
+        const caller = sessions.get(callerId);
+        const file = await storeFile(hostPath(args.path.trim(), caller.info.folder), root);
+        caller.showFiles([file], typeof args.caption === 'string' ? args.caption.trim() : '');
+        return { name: file.name, size: file.size };
       }
       case 'report_issue': {
         if (!isSecretary) throw new Error('Неизвестный инструмент');

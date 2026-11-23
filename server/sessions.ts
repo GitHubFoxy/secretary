@@ -1,8 +1,6 @@
 import type { Database } from 'bun:sqlite';
-import { homedir } from 'node:os';
-import { resolve } from 'node:path';
 import { chatHistory, reportText } from './chat';
-import { mcpUrl as defaultMcpUrl } from './config';
+import { hostPath, mcpUrl as defaultMcpUrl } from './config';
 import type { Turn } from './harness';
 import { SECRETARY_PROMPT, SPECIALIST_PROMPT } from './persona';
 import { isInternal, isSpecialist, SECRETARY_ID, Session, type SessionRow } from './session';
@@ -62,7 +60,7 @@ export class Sessions {
   async create(settings: NewSession) {
     if (typeof settings.folder !== 'string' || !settings.folder) throw new Error('Не указана папка');
     await this.check(settings);
-    const session = this.insert({ ...settings, folder: resolve(settings.folder.replace(/^~(?=\/|$)/, homedir())) });
+    const session = this.insert({ ...settings, folder: hostPath(settings.folder) });
     this.options.onChange();
     return session;
   }

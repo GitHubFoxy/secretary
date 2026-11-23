@@ -20,7 +20,8 @@ self.addEventListener('activate', event => event.waitUntil(self.clients.claim())
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET' || url.origin !== self.location.origin) return;
-  if (event.request.mode === 'navigate' && !url.searchParams.has('login')) {
+  // Files open and download from the Host itself: the shell would replace them.
+  if (event.request.mode === 'navigate' && !url.searchParams.has('login') && !url.pathname.startsWith('/files/')) {
     event.respondWith(caches.open(cacheName).then(async cache => {
       if (url.searchParams.has('update')) await updateShell().catch(() => {});
       return (await cache.match('/')) || fetch(event.request);

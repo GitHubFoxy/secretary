@@ -1,7 +1,7 @@
-import { mkdir, open, rm } from 'node:fs/promises';
+import { copyFile, mkdir, open, rm } from 'node:fs/promises';
 import { statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { secretaryFolder } from './config';
 
 const maxSize = 100 * 1024 * 1024;
@@ -41,6 +41,17 @@ export async function saveFile(request: Request, root = secretaryFolder): Promis
   } catch (error) { await rm(dir, {recursive:true, force:true}); throw error; }
 }
 
+// A file the agent shows the owner is copied, so later edits to the original do not change the chat.
+export async function storeFile(path: string, root = secretaryFolder): Promise<FileAttachment> {
+  let stat;
+  try { stat = statSync(path); } catch { throw new Error(`Файл не найден: ${path}`); }
+  if (!stat.isFile()) throw new Error(`Это не файл: ${path}`);
+  const file: FileAttachment = { file:true, id:randomUUID(), name:safeName(basename(path)), size:stat.size, type:Bun.file(path).type };
+  await mkdir(join(root, 'files', file.id), { recursive:true });
+  await copyFile(path, filePath(file, root));
+  return file;
+}
+
 export function validateFiles(value: unknown, root = secretaryFolder): FileAttachment[] {
   if (value === undefined) return [];
   if (!Array.isArray(value) || value.length > 4) throw new Error('Можно прикрепить не более 4 файлов');
@@ -55,12 +66,13 @@ export function validateFiles(value: unknown, root = secretaryFolder): FileAttac
 
 // Картинки и видео открываются в браузере, остальное скачивается: загруженный HTML или SVG
 // не должен исполняться на адресе приложения, где есть вход.
-export async function fileResponse(id: string, encodedName: string, root = secretaryFolder): Promise<Response | null> {
+export async function fileResponse(id: string, encodedName: string, download = false, root = secretaryFolder): Promise<Response | null> {
   let name: string;
   try { name = decodeURIComponent(encodedName); } catch { return null; }
   if (!fileIdPattern.test(id) || safeName(name) !== name) return null;
   const file = Bun.file(join(root, 'files', id, name));
   if (!(await file.exists())) return null;
-  const inline = /^(image\/(?!svg)|video\/)/.test(file.type);
-  return new Response(file, { headers: { 'Content-Type': file.type, 'Content-Disposition': inline ? 'inline' : 'attachment', 'X-Content-Type-Options': 'nosniff' } });
+  const inline = !download && /^(image\/(?!svg)|video\/|audio\/)/.test(file.type);
+  const disposition = inline ? 'inline' : `attachment; filename*=UTF-8''${encodeURIComponent(name)}`;
+  return new Response(file, { headers: { 'Content-Type': file.type, 'Content-Disposition': disposition, 'X-Content-Type-Options': 'nosniff' } });
 }

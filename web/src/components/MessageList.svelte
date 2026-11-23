@@ -108,7 +108,17 @@
       {:else}
         <div class="flex justify-start">
           <div class="max-w-[85%] min-w-0 px-1">
-            <Markdown text={m.text} />
+            {#each m.files || [] as file}
+              {@const src = fileUrl(file)}
+              <div class="mb-3 flex flex-col items-start gap-2">
+                {#if isImage(file.type)}<a href={src} target="_blank" rel="noopener"><img class="max-h-80 max-w-full rounded-lg" {src} alt={file.name} /></a>
+                {:else if isVideo(file.type)}<video class="max-h-80 max-w-full rounded-lg" {src} controls playsinline preload="metadata"><track kind="captions" /></video>
+                {:else if file.type.startsWith('audio/')}<audio class="w-72 max-w-full" {src} controls preload="metadata"></audio>{/if}
+                <!-- ?download: сервер отдаёт файл как вложение, и Android WebView передаёт его системному загрузчику. -->
+                <a href={src + '?download'} download={file.name} class="flex max-w-full items-center gap-2 rounded-lg bg-neutral-800 px-3 py-2 text-neutral-100 hover:bg-neutral-700"><Icon name="file" class="size-6 shrink-0" /><span class="min-w-0"><span class="block break-all text-sm">{file.name}</span><span class="text-xs text-neutral-400">{fileSize(file.size)}</span></span><Icon name="download" class="ml-2 size-5 shrink-0 text-neutral-400" /><span class="sr-only">Скачать</span></a>
+              </div>
+            {/each}
+            {#if m.text}<Markdown text={m.text} />{/if}
           </div>
         </div>
       {/if}

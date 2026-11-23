@@ -1,4 +1,7 @@
 import { afterAll, expect, test } from 'bun:test';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { openDatabase } from './database';
 import type { Turn, TurnOptions } from './harness';
 import { issueUrl, serveMcp } from './mcp';
@@ -6,7 +9,7 @@ import { Sessions } from './sessions';
 
 type Call = { text: string; options: TurnOptions; start(): void; answer(text: string): void; end(completed: boolean): void };
 
-function setup() {
+function setup(root = '/nonexistent') {
   const calls: Call[] = [];
   const turn: Turn = (options, text) => new Promise(resolve => calls.push({
     text, options,
@@ -24,6 +27,7 @@ function setup() {
   sessions.load('/home/u/.secretary');
   const server = serveMcp(sessions, {
     port: 0,
+    root,
     listModels: async harness => {
       if (harness === 'codex') throw new Error('codex not installed');
       return [{ id: 'opus', supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }] }];
@@ -54,7 +58,7 @@ test('Secretary Agent: list отдаёт сессии и модели, send со
   servers.push(env.server);
 
   const tools = await env.rpc(1, 'tools/list');
-  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['list', 'send', 'read', 'stop', 'report_issue']);
+  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['list', 'send', 'read', 'stop', 'send_file', 'report_issue']);
 
   const listed = await env.callTool(1, 'list');
   expect(listed.isError).toBe(false);
@@ -119,6 +123,24 @@ test('read по умолчанию отдаёт очищенные сообще�
 
   const raw = await env.callTool(1, 'read', { id: s1, raw: true, limit: 10 });
   expect(raw.data.some((e: any) => e.type === 'tool_use')).toBe(true);
+});
+
+test('send_file показывает копию файла в чате Secretary Agent, а Specialist его не видит', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'secretary-send-file-'));
+  try {
+    const env = setup(root);
+    servers.push(env.server);
+    await writeFile(join(root, 'кот.png'), 'PNG');
+    const sent = await env.callTool(1, 'send_file', { path: join(root, 'кот.png'), caption: 'Вот кот' });
+    expect(sent).toEqual({ isError: false, data: { name: 'кот.png', size: 3 } });
+    const [message] = env.sessions.chatHistory(1, 1) as any[];
+    expect(message).toMatchObject({ kind: 'agent', text: 'Вот кот', files: [{ name: 'кот.png', size: 3, type: 'image/png' }] });
+    expect(await readFile(join(root, 'files', message.files[0].id, 'кот.png'), 'utf8')).toBe('PNG');
+    expect((await env.callTool(1, 'send_file', { path: join(root, 'нет.png') })).isError).toBe(true);
+
+    const { id } = (await env.callTool(1, 'send', { name: 'S', folder: root, message: 'go' })).data;
+    expect((await env.rpc(id, 'tools/list')).body.result.tools.map((t: any) => t.name)).not.toContain('send_file');
+  } finally { await rm(root, { recursive: true, force: true }); }
 });
 
 test('report_issue: ссылка на новый issue с текстом и версией', () => {
