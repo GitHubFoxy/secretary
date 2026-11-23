@@ -3,6 +3,7 @@ import { chatPage, chatMessage } from './chat';
 import { claudeTurn } from './claude';
 import { codexTurn } from './codex';
 import { secretaryFolder } from './config';
+import { saveFile } from './files';
 import { migrateDatabase, openDatabase } from './database';
 import { serveMcp } from './mcp';
 import { checkReasoning, modelDetails } from './models';
@@ -54,7 +55,7 @@ const commands: Record<string, (cmd: any, send: (message: object) => void) => un
     const session = sessions.get(cmd.id);
     return {...chatPage(db, session.id, Number.isSafeInteger(cmd.before) && cmd.before > 0 ? cmd.before : undefined), queue: session.queue.list()};
   },
-  send: (cmd, send) => { sessions.get(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true, cmd.voice === true, cmd.voice === true ? send : undefined); },
+  send: (cmd, send) => { sessions.get(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true, cmd.voice === true, cmd.voice === true ? send : undefined, cmd.files); },
   sendQueued: cmd => { sessions.get(cmd.id).sendQueued(cmd.messageId); },
   speechWarm: (_, send) => { if (speechTarget === send) stopSpeech(); warmSpeech(); },
   speechStop: (_, send) => { if (speechTarget === send) stopSpeech(); },
@@ -84,6 +85,8 @@ const server = Bun.serve({
       return new Response('Unauthorized', { status: 401, headers: { 'Cache-Control': 'no-store' } });
     }
     if ((request.method !== 'GET' || url.pathname === '/ws') && !sameOrigin(request, url)) return new Response('Forbidden', { status: 403 });
+    if (url.pathname === '/files' && request.method === 'POST')
+      return saveFile(request).then(file => Response.json(file), error => new Response(String(error), {status:400}));
     if (url.pathname === '/voice' && request.method === 'POST') {
       const size = Number(request.headers.get('content-length'));
       if (!size || size > 20 * 1024 * 1024) return new Response('Запись слишком большая', {status: 413});

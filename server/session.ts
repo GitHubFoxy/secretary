@@ -3,6 +3,7 @@ import { agentAnswer } from './chat';
 import { writeEvent } from './database';
 import type { Turn, TurnOptions } from './harness';
 import { validateImages } from './images';
+import { filePath, validateFiles } from './files';
 import { MessageQueue, type Message } from './queue';
 
 export type SessionRow = { id: number; parent_id: number | null; harness: string; model: string; folder: string; harness_session_id: string | null; status: string; name: string | null; reasoning: string | null; hidden: number };
@@ -92,14 +93,15 @@ export class Session {
 
   // An ordinary message waits for the turn to end. An immediate one interrupts the running turn and goes next.
   // The message is stored before returning: the client only gets a confirmation for a stored message.
-  send(text: unknown, input?: unknown, immediate = false, voice = false, speechTarget?: (message: object) => void) {
+  send(text: unknown, input?: unknown, immediate = false, voice = false, speechTarget?: (message: object) => void, inputFiles?: unknown) {
     if (typeof text !== 'string') throw new Error('Некорректный текст сообщения');
     const images = validateImages(input);
-    if (!text.trim() && !images.length) throw new Error('Сообщение пустое');
+    const files = validateFiles(inputFiles);
+    if (!text.trim() && !images.length && !files.length) throw new Error('Сообщение пустое');
     if (this.deleted) throw new Error('Сессия удалена');
     this.stopped = false;
     const urgent = immediate && !!this.turn;
-    this.queue.add(text, images, urgent, voice, speechTarget);
+    this.queue.add(text, images, urgent, voice, speechTarget, files);
     this.startOrInterrupt(urgent);
   }
 
@@ -154,7 +156,7 @@ export class Session {
     const speechTarget = this.id === SECRETARY_ID ? items.findLast(item => item.voice && item.speechTarget)?.speechTarget : undefined;
     if (speechTarget) this.publish({ type: 'speech_start', speechTarget });
     // Several urgent messages go as one turn but stay separate in history.
-    const text = items.map(item => item.text).filter(Boolean).join('\n\n');
+    const text = items.map(item => [item.text, ...item.files.map(file => `Файл: ${filePath(file)} (${file.name}, ${file.size} байт)`)].filter(Boolean).join('\n')).filter(Boolean).join('\n\n');
     const images = items.flatMap(item => item.images);
     let completed = false;
     try {

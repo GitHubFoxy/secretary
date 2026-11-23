@@ -1,8 +1,9 @@
 import type { Database } from 'bun:sqlite';
 import { writeEvent } from './database';
 import type { Image } from './images';
+import type { FileAttachment } from './files';
 
-export type Message = { id: number; text: string; images: Image[]; urgent: boolean; voice: boolean; speechTarget?: (message: object) => void };
+export type Message = { id: number; text: string; images: Image[]; files: FileAttachment[]; urgent: boolean; voice: boolean; speechTarget?: (message: object) => void };
 export type Unsent = 'cancelled' | 'delivery_uncertain';
 
 // The messages of one Session that the client got a confirmation for but that are not in history yet.
@@ -14,7 +15,10 @@ export class MessageQueue {
 
   constructor(private db: Database, private sessionId: number, private publish: (event: object, cursor?: number) => void) {
     const rows = db.query('SELECT id, urgent, text, images, in_flight, voice FROM pending_messages WHERE session_id = ? ORDER BY urgent DESC, id').all(sessionId) as { id: number; urgent: number; text: string; images: string; in_flight: number; voice: number }[];
-    this.items = rows.map(row => ({ id: row.id, text: row.text, images: JSON.parse(row.images), urgent: row.urgent === 1, voice: row.voice === 1 }));
+    this.items = rows.map(row => {
+      const saved = JSON.parse(row.images);
+      return { id: row.id, text: row.text, images: saved.images ?? saved, files: saved.files ?? [], urgent: row.urgent === 1, voice: row.voice === 1 };
+    });
     // In flight at load time means Secretary died after handing these to a harness: they must not be sent again.
     const inFlight = new Set(rows.filter(row => row.in_flight).map(row => row.id));
     this.drop(this.items.filter(item => inFlight.has(item.id)), 'delivery_uncertain');
@@ -25,9 +29,9 @@ export class MessageQueue {
   has(item: Message) { return this.items.includes(item); }
 
   // Urgent messages stand before ordinary ones, each group in arrival order.
-  add(text: string, images: Image[], urgent: boolean, voice = false, speechTarget?: (message: object) => void) {
-    const saved = this.db.query('INSERT INTO pending_messages (session_id, urgent, text, images, voice) VALUES (?, ?, ?, ?, ?)').run(this.sessionId, urgent ? 1 : 0, text, JSON.stringify(images), voice ? 1 : 0);
-    const item: Message = { id: Number(saved.lastInsertRowid), text, images, urgent, voice, speechTarget };
+  add(text: string, images: Image[], urgent: boolean, voice = false, speechTarget?: (message: object) => void, files: FileAttachment[] = []) {
+    const saved = this.db.query('INSERT INTO pending_messages (session_id, urgent, text, images, voice) VALUES (?, ?, ?, ?, ?)').run(this.sessionId, urgent ? 1 : 0, text, JSON.stringify({images, files}), voice ? 1 : 0);
+    const item: Message = { id: Number(saved.lastInsertRowid), text, images, files, urgent, voice, speechTarget };
     this.items.splice(urgent ? this.items.filter(m => m.urgent).length : this.items.length, 0, item);
     this.publishQueue();
   }
@@ -51,13 +55,13 @@ export class MessageQueue {
   }
 
   accept(batch: Message[]) {
-    this.resolve(batch, item => ({ type: 'user', message: { role: 'user', content: item.text }, images: item.images }));
+    this.resolve(batch, item => ({ type: 'user', message: { role: 'user', content: item.text }, images: item.images, files: item.files }));
   }
 
   // Returns how many of the batch were still waiting.
   drop(batch: Message[], outcome: Unsent | ((item: Message) => Unsent)) {
     const outcomeOf = typeof outcome === 'function' ? outcome : () => outcome;
-    return this.resolve(batch, item => ({ type: outcomeOf(item), text: item.text, images: item.images }));
+    return this.resolve(batch, item => ({ type: outcomeOf(item), text: item.text, images: item.images, files: item.files }));
   }
 
   dropAll(outcome: (item: Message) => Unsent) { return this.drop(this.items, outcome); }

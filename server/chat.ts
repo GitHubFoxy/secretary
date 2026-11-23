@@ -1,9 +1,10 @@
 import type { Database } from 'bun:sqlite';
 import type { Image } from './images';
+import type { FileAttachment } from './files';
 
 // SQLite keeps raw harness events for agents (MCP read). The browser only gets the chat messages built here.
 export type ChatMessage =
-  | { kind: 'user' | 'cancelled' | 'uncertain'; text: string; images: Image[] }
+  | { kind: 'user' | 'cancelled' | 'uncertain'; text: string; images: Image[]; files?: FileAttachment[] }
   | { kind: 'agent' | 'error'; text: string }
   | { kind: 'report'; text: string; report: { id: number; harness: string; folder: string } };
 
@@ -36,15 +37,16 @@ export function chatMessage(event: any): ChatMessage | null {
   const answer = agentAnswer(event);
   if (answer !== null) return answer && !answer.startsWith('NO_REPLY') ? { kind: 'agent', text: answer } : null;
   const images: Image[] = event?.images || [];
+  const files: FileAttachment[] = event?.files || [];
   if (event?.type === 'user') {
     const text = typeof event.message?.content === 'string' ? event.message.content : '';
     const report = reportPattern.exec(text);
     if (report) return { kind: 'report', text: report[4], report: { id: Number(report[1]), harness: report[2], folder: report[3] } };
-    return text || images.length ? { kind: 'user', text, images } : null;
+    return text || images.length || files.length ? { kind: 'user', text, images, ...(files.length ? {files} : {}) } : null;
   }
   if (event?.type === 'error') return event.message ? { kind: 'error', text: String(event.message) } : null;
   if (event?.type === 'cancelled' || event?.type === 'delivery_uncertain')
-    return event.text || images.length ? { kind: event.type === 'cancelled' ? 'cancelled' : 'uncertain', text: event.text || '', images } : null;
+    return event.text || images.length || files.length ? { kind: event.type === 'cancelled' ? 'cancelled' : 'uncertain', text: event.text || '', images, ...(files.length ? {files} : {}) } : null;
   return null;
 }
 
