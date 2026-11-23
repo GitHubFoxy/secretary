@@ -15,14 +15,19 @@ test('события обоих harness превращаются в сообще
 test('история отдаётся страницами по видимым сообщениям', () => {
   const db = new Database(':memory:');
   db.run('CREATE TABLE events (session_id INTEGER NOT NULL, json TEXT NOT NULL, time TEXT NOT NULL)');
-  for (let i = 0; i < 15; i++) {
+  for (let i = 0; i < 45; i++) {
     db.query('INSERT INTO events VALUES (1, ?, ?)').run(JSON.stringify({ type: 'user', message: { content: `message ${i}` } }), '');
     db.query('INSERT INTO events VALUES (1, ?, ?)').run(JSON.stringify({ type: 'status', status: 'idle' }), '');
   }
   const page = chatPage(db, 1);
   expect(page.hasMore).toBe(true);
-  expect(page.messages.map(m => m.text)).toEqual(Array.from({ length: 10 }, (_, i) => `message ${i + 5}`));
-  expect(chatPage(db, 1, true)).toMatchObject({ hasMore: false, messages: { length: 15 } });
+  expect(page.messages.map(m => m.text)).toEqual(Array.from({ length: 20 }, (_, i) => `message ${i + 25}`));
+  const older = chatPage(db, 1, page.messages[0].cursor);
+  expect(older.hasMore).toBe(true);
+  expect(older.messages.map(m => m.text)).toEqual(Array.from({ length: 20 }, (_, i) => `message ${i + 5}`));
+  const first = chatPage(db, 1, older.messages[0].cursor);
+  expect(first.hasMore).toBe(false);
+  expect(first.messages.map(m => m.text)).toEqual(Array.from({ length: 5 }, (_, i) => `message ${i}`));
   expect(chatPage(db, 2)).toEqual({ messages: [], hasMore: false });
 });
 

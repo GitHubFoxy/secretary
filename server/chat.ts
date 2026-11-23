@@ -49,10 +49,10 @@ export function chatMessage(event: any): ChatMessage | null {
 }
 
 // Newest chat messages, scanning raw events backwards until enough are found.
-function recentMessages(db: Database, sessionId: number, limit: number) {
+function recentMessages(db: Database, sessionId: number, limit: number, before = Number.MAX_SAFE_INTEGER) {
   const query = db.query('SELECT rowid, json FROM events WHERE session_id = ? AND rowid < ? ORDER BY rowid DESC LIMIT 200');
   const messages: (ChatMessage & {cursor: number})[] = [];
-  let cursor = Number.MAX_SAFE_INTEGER;
+  let cursor = before;
   while (messages.length < limit) {
     const rows = query.all(sessionId, cursor) as { rowid: number; json: string }[];
     for (const row of rows) {
@@ -70,7 +70,7 @@ export function chatHistory(db: Database, sessionId: number, limit: number) {
   return recentMessages(db, sessionId, limit).map(({cursor, ...message}) => message);
 }
 
-export function chatPage(db: Database, sessionId: number, all = false) {
-  const messages = recentMessages(db, sessionId, all ? Number.MAX_SAFE_INTEGER : 11);
-  return {messages: all ? messages : messages.slice(-10), hasMore: !all && messages.length > 10};
+export function chatPage(db: Database, sessionId: number, before?: number) {
+  const messages = recentMessages(db, sessionId, 21, before);
+  return {messages: messages.slice(-20), hasMore: messages.length > 20};
 }
