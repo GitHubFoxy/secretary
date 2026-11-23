@@ -38,10 +38,10 @@ test('событие ответа публикуется только после
   const { sessions, calls, published, create } = setup();
   const secretary = sessions.get(1);
   secretary.send('привет'); calls[0].start();
-  calls[0].options.onEvent({type:'result', result:'ответ'});
+  calls[0].options.onEvent({type:'result', result:'# Ответ\n- **Ссылка**: [сайт](https://example.org)\n- `команда`'});
   expect(published.filter(e => e.type === 'secretary_reply')).toEqual([]);
   calls[0].end(true); await tick();
-  expect(published.filter(e => e.type === 'secretary_reply')).toEqual([{type:'secretary_reply', text:'ответ'}]);
+  expect(published.filter(e => e.type === 'secretary_reply')).toEqual([{type:'secretary_reply', text:'Ответ\nСсылка: сайт\nкоманда'}]);
   const specialist = await create();
   specialist.send('задача'); calls[1].start(); calls[1].answer('готово'); await tick();
   secretary.send('ещё'); calls[2].start(); calls[2].options.onEvent({type:'result', result:'черновик'}); calls[2].end(false); await tick();
