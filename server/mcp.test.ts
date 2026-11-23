@@ -1,7 +1,7 @@
 import { afterAll, expect, test } from 'bun:test';
 import { openDatabase } from './database';
 import type { Turn, TurnOptions } from './harness';
-import { serveMcp } from './mcp';
+import { issueUrl, serveMcp } from './mcp';
 import { Sessions } from './sessions';
 
 type Call = { text: string; options: TurnOptions; start(): void; answer(text: string): void; end(completed: boolean): void };
@@ -54,7 +54,7 @@ test('Secretary Agent: list отдаёт сессии и модели, send со
   servers.push(env.server);
 
   const tools = await env.rpc(1, 'tools/list');
-  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['list', 'send', 'read', 'stop']);
+  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['list', 'send', 'read', 'stop', 'report_issue']);
 
   const listed = await env.callTool(1, 'list');
   expect(listed.isError).toBe(false);
@@ -119,4 +119,13 @@ test('read по умолчанию отдаёт очищенные сообще�
 
   const raw = await env.callTool(1, 'read', { id: s1, raw: true, limit: 10 });
   expect(raw.data.some((e: any) => e.type === 'tool_use')).toBe(true);
+});
+
+test('report_issue: ссылка на новый issue с текстом и версией', () => {
+  const url = new URL(issueUrl('Не работает Power', 'Нажал Power — ничего', { harness: 'claude', model: 'opus' }, 'abc123'));
+  expect(url.origin + url.pathname).toBe('https://github.com/GitHubFoxy/secretary/issues/new');
+  expect(url.searchParams.get('title')).toBe('Не работает Power');
+  expect(url.searchParams.get('body')).toContain('Нажал Power — ничего');
+  expect(url.searchParams.get('body')).toContain('Версия: abc123');
+  expect(url.searchParams.get('body')).toContain('Harness: claude, модель opus');
 });

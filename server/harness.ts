@@ -29,7 +29,11 @@ export function onAbort(signal: AbortSignal, callback: () => void) {
 // On Linux setsid puts the harness in its own process group, so one signal stops it together with the tools it started.
 // If Secretary itself dies, systemd kills whatever is left (secretary.service uses KillMode=control-group).
 export function spawnHarness(args: string[], cwd: string, { interrupt, stop }: Pick<TurnOptions, 'interrupt' | 'stop'>) {
-  const child = Bun.spawn(process.platform === 'linux' ? ['setsid', ...args] : args, { cwd, env: process.env, stdin: 'pipe', stdout: 'pipe', stderr: 'inherit' });
+  const child = Bun.spawn(process.platform === 'linux' ? ['setsid', ...args] : args, { cwd, env: process.env, stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' });
+  // The journal keeps the whole stderr; the owner sees its end when the harness dies.
+  let stderrTail = '';
+  const decoder = new TextDecoder();
+  const stderr = (async () => { for await (const chunk of child.stderr) { process.stderr.write(chunk); stderrTail = (stderrTail + decoder.decode(chunk, { stream: true })).slice(-2000); } })();
   let closed = false;
   let deadline: Timer | undefined;
   // After the harness exits its process group lives on while any tool it started does, and Linux does not reuse
@@ -46,6 +50,11 @@ export function spawnHarness(args: string[], cwd: string, { interrupt, stop }: P
   return {
     child,
     write(message: object) { try { child.stdin.write(JSON.stringify(message) + '\n'); child.stdin.flush(); } catch {} },
+    async failure(name: string) {
+      // A tool the harness started may still hold stderr open, so the tail is read only briefly after exit.
+      await child.exited; await Promise.race([stderr, Bun.sleep(200)]);
+      return new Error(`${name} завершился с кодом ${child.exitCode}${stderrTail.trim() ? `: ${stderrTail.trim()}` : ''}`);
+    },
     async close() {
       clearTimeout(deadline);
       kill();

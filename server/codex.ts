@@ -26,8 +26,9 @@ export const codexTurn: Turn = async (options, text, images) => {
       options.onEvent(message);
       if (message.method === 'turn/completed') done(message.params.turn.status === 'completed');
     }
-  }).finally(() => {
-    for (const waiter of pending.values()) waiter.reject(new Error('Codex process exited'));
+  }).finally(async () => {
+    const error = await harness.failure('Codex');
+    for (const waiter of pending.values()) waiter.reject(error);
     done(false);
   });
   try {

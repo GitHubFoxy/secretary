@@ -12,7 +12,7 @@ export const claudeTurn: Turn = async (options, text, images) => {
     ? [{ type: 'text', text }, ...images.map(image => ({ type: 'image', source: { type: 'base64', media_type: image.type, data: image.data } }))]
     : text;
   let accepted = false;
-  let completed = false;
+  let completed = false, finished = false;
   try {
     options.onDispatching();
     harness.write({ type: 'user', message: { role: 'user', content } });
@@ -22,8 +22,9 @@ export const claudeTurn: Turn = async (options, text, images) => {
       // Claude Code sends no receipt: its first event after the message means it has read it.
       if (!accepted) { accepted = true; options.onAccepted(); }
       options.onEvent(event);
-      if (event.type === 'result') { completed = !event.is_error; return false; }
+      if (event.type === 'result') { completed = !event.is_error; finished = true; return false; }
     });
+    if (!finished && !options.interrupt.aborted && !options.stop.aborted) throw await harness.failure('Claude Code');
   } finally {
     await harness.close();
   }
