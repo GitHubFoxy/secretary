@@ -6,6 +6,7 @@ import { mcpUrl as defaultMcpUrl } from './config';
 import type { Turn } from './harness';
 import { SECRETARY_PROMPT, SPECIALIST_PROMPT } from './persona';
 import { isInternal, isSpecialist, SECRETARY_ID, Session, type SessionRow } from './session';
+import { markdownText } from './speech-text';
 
 export type SessionSettings = { harness: string; model: string; reasoning: string | null };
 export type NewSession = SessionSettings & { folder: string; parentId?: number | null; name?: string | null };
@@ -105,7 +106,7 @@ export class Sessions {
     // A child's answer goes to its parent as a report unless it explicitly chose NO_REPLY.
     session.onComplete = answer => {
       const info = session.info;
-      if (info.id === SECRETARY_ID && answer && !answer.startsWith('NO_REPLY')) this.options.onEvent(session, {type:'secretary_reply', text:answer});
+      if (info.id === SECRETARY_ID && answer && !answer.startsWith('NO_REPLY')) this.options.onEvent(session, {type:'secretary_reply', text:markdownText(answer)});
       if (info.parent_id && answer && !answer.startsWith('NO_REPLY')) this.all.get(info.parent_id)?.send(reportText(info, answer));
     };
     return session;
