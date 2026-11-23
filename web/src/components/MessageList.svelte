@@ -8,6 +8,16 @@
   import { tick } from 'svelte';
   // bottomInset — высота поля ввода поверх списка (плюс клавиатура), под ней должны оставаться видимыми последние сообщения.
   let { messages = [], sessions = [], historyLoaded = false, connected = false, historyHasMore = false, historyLoadingOlder = false, onloadOlder, bottomInset = 0, onselect, onsendQueued, onretryVoice, onrestorePreparing, restoreDisabled = false } = $props();
+  const isImage = type => type.startsWith('image/'), isVideo = type => type.startsWith('video/');
+  const fileUrl = file => `/files/${file.id}/${encodeURIComponent(file.name)}`;
+  // Фото и видео показываем из images, а их оригиналы лежат в files; остальные файлы остаются карточками.
+  // Оригиналы фото идут в том же порядке, что и их кадры в images.
+  function shown(images) {
+    const photos = images.filter(image => image.file && isImage(image.type));
+    return images
+      .filter(image => !image.file || !(isImage(image.type) || isVideo(image.type)))
+      .map(image => image.file || image.video ? image : {...image, original: photos.shift()});
+  }
   let scroller = $state();
   let initialScroll = true;
   // Пока пользователь у самого низа, новые размеры списка не сдвигают его последние сообщения под поле ввода.
@@ -70,6 +80,7 @@
         </div>
       {:else if m.kind === 'user' || m.kind === 'queued' || m.kind === 'cancelled' || m.kind === 'uncertain' || m.kind === 'preparing'}
         {@const voice = parseVoice(m.text)}
+        {@const videoFile = m.images.find(image => image.file && isVideo(image.type))}
         <div class="flex flex-col items-end gap-1">
           {#if m.kind === 'preparing'}<span class="text-xs text-neutral-400">{m.error ? `Не отправлено: ${m.error}` : 'Обработка…'}</span>{/if}
           {#if m.kind === 'queued'}<span class="text-xs text-neutral-500">{m.urgent ? 'В очереди, срочное' : 'В очереди'}</span>{/if}
@@ -78,13 +89,14 @@
           {#if m.images.some(image => image.video?.note)}
             {@const frame = m.images.find(image => image.video?.note)}
             {@const video = videoText(m.text)}
+            {@const src = videoFile ? fileUrl(videoFile) : frame.url}
             <div class="relative size-[170px] overflow-hidden rounded-full bg-neutral-800">
-              {#if frame.url}<button type="button" class="size-full" aria-label="Воспроизвести или остановить видеосообщение" onclick={e => { const video = e.currentTarget.querySelector('video'); video.paused ? video.play() : video.pause(); }}><video class="size-full object-cover" src={frame.url} poster={'data:' + frame.type + ';base64,' + frame.data} playsinline preload="metadata"><track kind="captions" /></video></button>{:else}<img class="size-full object-cover" src={'data:' + frame.type + ';base64,' + frame.data} alt="Кадр видеосообщения" />{/if}
+              {#if src}<button type="button" class="size-full" aria-label="Воспроизвести или остановить видеосообщение" onclick={e => { const video = e.currentTarget.querySelector('video'); video.paused ? video.play() : video.pause(); }}><video class="size-full object-cover" {src} poster={'data:' + frame.type + ';base64,' + frame.data} playsinline preload="metadata"><track kind="captions" /></video></button>{:else}<img class="size-full object-cover" src={'data:' + frame.type + ';base64,' + frame.data} alt="Кадр видеосообщения" />{/if}
               <span class="pointer-events-none absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-md bg-black/60 px-1.5 py-0.5 text-xs text-white"><Icon name="video" class="size-3" />{duration(frame.video.seconds)}</span>
             </div>
             {#if video.transcript}<span class="flex max-w-[80%] gap-1.5 text-sm text-neutral-400"><Icon name="microphone" class="mt-0.5 size-3.5 shrink-0" />{video.transcript}</span>{/if}
           {:else}
-          <div class="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-neutral-800 px-4 py-2.5 text-[15px] leading-relaxed text-neutral-100 {m.kind === 'queued' ? 'opacity-60' : ''} {m.kind === 'cancelled' ? 'line-through opacity-50' : ''}">{#each m.images.filter(image => !image.video || image.video === true || image.video.time === 0) as image}{#if image.file}<span class="my-2 flex items-center gap-2 rounded bg-neutral-700 px-3 py-2"><Icon name="file" class="size-6 shrink-0" /><span><span class="block break-all">{image.name}</span><span class="text-xs text-neutral-400">{fileSize(image.size)}</span></span></span>{:else if image.video}<span class="relative my-2 block w-fit">{#if image.url}<video class="max-h-80 max-w-full rounded-lg" src={image.url} muted playsinline preload="metadata"></video>{:else}<img class="max-h-80 max-w-full rounded-lg" src={'data:' + image.type + ';base64,' + image.data} alt="Кадр видео" />{/if}<span class="absolute bottom-2 left-2 flex items-center gap-1 rounded-md bg-black/60 px-1.5 py-0.5 text-xs text-white"><Icon name="video" class="size-3.5" />{image.video.seconds ? duration(image.video.seconds) : 'Видео'}</span></span>{:else}<a href={image.url || 'data:' + image.type + ';base64,' + image.data} target="_blank" rel="noopener"><img class="my-2 max-h-80 max-w-full rounded-lg" src={image.url || 'data:' + image.type + ';base64,' + image.data} alt="Прикреплённое изображение" /></a>{/if}{/each}{#if voice}<span class="mb-1 flex items-center gap-1.5 text-xs text-neutral-500"><Icon name="microphone" class="size-3.5" />{voice.duration}</span>{voice.text}{:else if m.images.some(image => image.video)}{@const video = videoText(m.text)}{video.text}{#if video.transcript}<span class="mt-1 flex gap-1.5 text-sm text-neutral-400"><Icon name="microphone" class="mt-0.5 size-3.5 shrink-0" />{video.transcript}</span>{/if}{:else}{m.text}{/if}</div>
+          <div class="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-neutral-800 px-4 py-2.5 text-[15px] leading-relaxed text-neutral-100 {m.kind === 'queued' ? 'opacity-60' : ''} {m.kind === 'cancelled' ? 'line-through opacity-50' : ''}">{#each shown(m.images).filter(image => !image.video || image.video === true || image.video.time === 0) as image}{#if image.file}<span class="my-2 flex items-center gap-2 rounded bg-neutral-700 px-3 py-2"><Icon name="file" class="size-6 shrink-0" /><span><span class="block break-all">{image.name}</span><span class="text-xs text-neutral-400">{fileSize(image.size)}</span></span></span>{:else if image.video}{@const src = videoFile ? fileUrl(videoFile) : image.url}<span class="relative my-2 block w-fit">{#if src}<video class="max-h-80 max-w-full rounded-lg" {src} controls playsinline preload="metadata"><track kind="captions" /></video>{:else}<img class="max-h-80 max-w-full rounded-lg" src={'data:' + image.type + ';base64,' + image.data} alt="Кадр видео" />{/if}<span class="absolute bottom-2 left-2 flex items-center gap-1 rounded-md bg-black/60 px-1.5 py-0.5 text-xs text-white"><Icon name="video" class="size-3.5" />{image.video.seconds ? duration(image.video.seconds) : 'Видео'}</span></span>{:else}<a href={image.original ? fileUrl(image.original) : image.url || 'data:' + image.type + ';base64,' + image.data} target="_blank" rel="noopener"><img class="my-2 max-h-80 max-w-full rounded-lg" src={image.url || 'data:' + image.type + ';base64,' + image.data} alt="Прикреплённое изображение" /></a>{/if}{/each}{#if voice}<span class="mb-1 flex items-center gap-1.5 text-xs text-neutral-500"><Icon name="microphone" class="size-3.5" />{voice.duration}</span>{voice.text}{:else if m.images.some(image => image.video)}{@const video = videoText(m.text)}{video.text}{#if video.transcript}<span class="mt-1 flex gap-1.5 text-sm text-neutral-400"><Icon name="microphone" class="mt-0.5 size-3.5 shrink-0" />{video.transcript}</span>{/if}{:else}{m.text}{/if}</div>
           {/if}
           {#if m.kind === 'preparing' && m.error}<button class="btn-ghost text-xs" disabled={restoreDisabled} onclick={() => onrestorePreparing(m.id)}>Вернуть в поле ввода</button>{/if}
           {#if m.kind === 'queued' && !m.urgent}<button class="btn-ghost text-xs" disabled={!connected} onclick={() => onsendQueued(m.id)}>Отправить сейчас</button>{/if}

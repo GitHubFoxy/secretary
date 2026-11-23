@@ -56,7 +56,7 @@ export async function finishVideo(file, frames, seconds, interval) {
       const response = await fetch('/voice', {method:'POST', headers:{'Content-Type':'audio/wav'}, body:wav});
       transcript = response.ok ? (await response.json()).text : `не удалась (${await response.text()})`;
     }
-    return {frames, description:`[Видео ${duration(seconds)}. Кадры по порядку: ${frames.map((_, i) => `${i + 1} — ${duration(i * interval)}`).join(', ')}]${transcript ? `\nРасшифровка звука: ${transcript}` : ''}`};
+    return {frames, file, description:`[Видео ${duration(seconds)}. Кадры по порядку: ${frames.map((_, i) => `${i + 1} — ${duration(i * interval)}`).join(', ')}]${transcript ? `\nРасшифровка звука: ${transcript}` : ''}`};
 }
 
 // Описание кадров нужно агенту; в чате показываем текст Owner и расшифровку отдельно.
