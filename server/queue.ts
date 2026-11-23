@@ -2,7 +2,7 @@ import type { Database } from 'bun:sqlite';
 import { writeEvent } from './database';
 import type { Image } from './images';
 
-export type Message = { id: number; text: string; images: Image[]; urgent: boolean; voice: boolean };
+export type Message = { id: number; text: string; images: Image[]; urgent: boolean; voice: boolean; speechTarget?: (message: object) => void };
 export type Unsent = 'cancelled' | 'delivery_uncertain';
 
 // The messages of one Session that the client got a confirmation for but that are not in history yet.
@@ -21,13 +21,13 @@ export class MessageQueue {
   }
 
   get length() { return this.items.length; }
-  list() { return this.items.map(item => ({ ...item })); }
+  list() { return this.items.map(({ speechTarget, ...item }) => item); }
   has(item: Message) { return this.items.includes(item); }
 
   // Urgent messages stand before ordinary ones, each group in arrival order.
-  add(text: string, images: Image[], urgent: boolean, voice = false) {
+  add(text: string, images: Image[], urgent: boolean, voice = false, speechTarget?: (message: object) => void) {
     const saved = this.db.query('INSERT INTO pending_messages (session_id, urgent, text, images, voice) VALUES (?, ?, ?, ?, ?)').run(this.sessionId, urgent ? 1 : 0, text, JSON.stringify(images), voice ? 1 : 0);
-    const item: Message = { id: Number(saved.lastInsertRowid), text, images, urgent, voice };
+    const item: Message = { id: Number(saved.lastInsertRowid), text, images, urgent, voice, speechTarget };
     this.items.splice(urgent ? this.items.filter(m => m.urgent).length : this.items.length, 0, item);
     this.publishQueue();
   }

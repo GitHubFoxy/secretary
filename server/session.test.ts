@@ -246,18 +246,34 @@ test('NO_REPLY у Specialist не отправляет отчёт родител
 });
 
 
-test('голосовое сообщение сохраняет признак в очереди после перезапуска и включает озвучку только для Secretary Agent', async () => {
+test('сообщение голосового режима хранит получателя до начала хода, но не после перезапуска', async () => {
   const before = setup();
   const s = before.sessions.get(1);
   s.send('первое'); before.calls[0].start();
-  s.send('голосовое', undefined, false, true);
-  const after = setup(before.db);
+  const target = () => {};
+  const otherTarget = () => {};
+  s.send('голосовое', undefined, false, true, target);
+  s.send('ещё голосовое', undefined, false, true, otherTarget);
+  expect(before.published.some(event => event.type === 'speech_start')).toBe(false);
+  before.calls[0].end(true); await tick();
+  expect(before.published.find(event => event.type === 'speech_start').speechTarget).toBe(target);
+  before.calls[1].start();
+  before.calls[1].options.onEvent({type:'assistant', message:{content:[{type:'text', text:'Привет'}]}});
+  expect(before.published.some(event => event.type === 'speech_event')).toBe(true);
+  before.calls[1].end(true); await tick();
+  expect(before.published.some(event => event.type === 'speech_end' && !event.interrupted)).toBe(true);
+  expect(before.published.filter(event => event.type === 'speech_start').map(event => event.speechTarget)).toEqual([target, otherTarget]);
+  before.calls[2].start(); before.calls[2].end(true); await tick();
+  const pending = setup();
+  pending.sessions.get(1).send('первое'); pending.calls[0].start();
+  pending.sessions.get(1).send('голосовое', undefined, false, true, target);
+  const after = setup(pending.db);
   expect(after.sessions.get(1).queue.list()[0].voice).toBe(true);
   after.sessions.resumePending();
-  expect(after.published.some(event => event.type === 'speech_start')).toBe(true);
+  expect(after.published.some(event => event.type === 'speech_start')).toBe(false);
   after.calls[0].start();
   after.calls[0].options.onEvent({type:'assistant', message:{content:[{type:'text', text:'Привет'}]}});
-  expect(after.published.some(event => event.type === 'speech_event')).toBe(true);
+  expect(after.published.some(event => event.type === 'speech_event')).toBe(false);
   after.calls[0].end(true); await tick();
-  expect(after.published.some(event => event.type === 'speech_end' && !event.interrupted)).toBe(true);
+  expect(after.published.some(event => event.type === 'speech_end')).toBe(false);
 });

@@ -92,14 +92,14 @@ export class Session {
 
   // An ordinary message waits for the turn to end. An immediate one interrupts the running turn and goes next.
   // The message is stored before returning: the client only gets a confirmation for a stored message.
-  send(text: unknown, input?: unknown, immediate = false, voice = false) {
+  send(text: unknown, input?: unknown, immediate = false, voice = false, speechTarget?: (message: object) => void) {
     if (typeof text !== 'string') throw new Error('Некорректный текст сообщения');
     const images = validateImages(input);
     if (!text.trim() && !images.length) throw new Error('Сообщение пустое');
     if (this.deleted) throw new Error('Сессия удалена');
     this.stopped = false;
     const urgent = immediate && !!this.turn;
-    this.queue.add(text, images, urgent, voice);
+    this.queue.add(text, images, urgent, voice, speechTarget);
     this.startOrInterrupt(urgent);
   }
 
@@ -151,7 +151,8 @@ export class Session {
     if (!items.length) return;
     const turn: ActiveTurn = this.turn = { items, interrupt: new AbortController(), stop: new AbortController(), dispatched: false, accepted: false, restarting: false, answer: '' };
     this.setStatus('running');
-    if (this.id === SECRETARY_ID && items.some(item => item.voice)) this.publish({ type: 'speech_start' });
+    const speechTarget = this.id === SECRETARY_ID ? items.findLast(item => item.voice && item.speechTarget)?.speechTarget : undefined;
+    if (speechTarget) this.publish({ type: 'speech_start', speechTarget });
     // Several urgent messages go as one turn but stay separate in history.
     const text = items.map(item => item.text).filter(Boolean).join('\n\n');
     const images = items.flatMap(item => item.images);
@@ -168,14 +169,14 @@ export class Session {
         },
         onDispatching: () => { this.queue.inFlight(items); turn.dispatched = true; },
         onAccepted: () => { turn.accepted = true; this.queue.accept(items); },
-        onEvent: event => { turn.answer = agentAnswer(event) ?? turn.answer; if (this.id === SECRETARY_ID && items.some(item => item.voice)) this.publish({type:'speech_event', event}); this.emit(event); },
+        onEvent: event => { turn.answer = agentAnswer(event) ?? turn.answer; if (speechTarget) this.publish({type:'speech_event', event}); this.emit(event); },
       }, text, images);
       if (!turn.accepted && !completed && !turn.interrupt.signal.aborted && !this.stopped) this.emit({ type: 'error', message: 'Агент завершился без подтверждения сообщения' });
     } catch (error) {
       // A turn interrupted for an urgent message restarts at once, so its error is not shown.
       if (!turn.restarting) this.emit({ type: 'error', message: String(error) });
     }
-    if (this.id === SECRETARY_ID && items.some(item => item.voice)) this.publish({ type: 'speech_end', interrupted: !completed || turn.interrupt.signal.aborted || turn.stop.signal.aborted });
+    if (speechTarget) this.publish({ type: 'speech_end', interrupted: !completed || turn.interrupt.signal.aborted || turn.stop.signal.aborted });
     this.finish(turn, completed);
   }
 

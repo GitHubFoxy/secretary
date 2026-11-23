@@ -1,5 +1,5 @@
 <script>
-  /* Paperclip: Lucide Icons, ISC License.
+  /* Paperclip and phone: Lucide Icons, ISC License.
    * Copyright (c) 2026 Lucide Icons and Contributors
    * Permission to use, copy, modify, and/or distribute this software for any
    * purpose with or without fee is hereby granted, provided that the above
@@ -29,6 +29,8 @@
   {:else if name === 'microphone'}
     <rect x="9" y="3" width="6" height="12" rx="3" />
     <path d="M6 11a6 6 0 0 0 12 0M12 17v4M9 21h6" />
+  {:else if name === 'phone'}
+    <path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7l.4 2.8a2 2 0 0 1-.6 1.7L7.6 9.5a16 16 0 0 0 6.9 6.9l1.3-1.3a2 2 0 0 1 1.7-.6l2.8.4a2 2 0 0 1 1.7 2z" />
   {:else if name === 'video'}
     <rect x="3" y="6" width="13" height="12" rx="3" />
     <path d="m16 10 5-3v10l-5-3z" />

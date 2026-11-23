@@ -25,7 +25,6 @@
   const overlayBridge = globalThis.SecretaryOverlay;
   // В шторке под пустым местом должно быть видно приложение, поверх которого её открыли.
   if (overlay) document.documentElement.style.background = document.body.style.background = 'transparent';
-  // Power внутри приложения открывает тот же голосовой режим на весь экран (событие присылает Android-оболочка).
   let voiceMode = false, voiceKey = 0;
   function openVoiceMode() {
     const secretary = sessions.find(s => s.secretary);
@@ -179,7 +178,7 @@
       if (!response.ok) throw new Error(await response.text());
       const {text} = await response.json();
       if (!text) throw new Error('Речь не распознана');
-      await connection.request({type:'send', id:item.id, text:voiceText(text, item.seconds), voice:true});
+      await connection.request({type:'send', id:item.id, text:voiceText(text, item.seconds), voice:item.speech === true});
       voiceMessages = voiceMessages.filter(v => v.key !== item.key);
     } catch (err) {
       voiceMessages = voiceMessages.map(v => v.key === item.key ? {...v, error:err.message} : v);
@@ -254,7 +253,7 @@
     try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-20).map(m => ({...m, images:m.images?.filter(image => !image.video || image.video.time === 0)})), hasMore:historyHasMore || history.length > 20})); } catch { localStorage.removeItem('last-chat'); }
   }
   $: current = sessions.find(s => s.id === selected);
-  $: voiceProps = {turn, sessionId:selected, running:current?.status === 'running', speaking, connected, onstart:() => { micPress(); recordStart(); }, onvoice:sendVoice, onstopspeech:stopSpeech};
+  $: voiceProps = {turn, sessionId:selected, running:current?.status === 'running', speaking, connected, onstart:() => { micPress(); recordStart(); }, onvoice:item => sendVoice({...item, speech:true}), onstopspeech:stopSpeech};
   $: title = current?.name || (current?.secretary ? 'Secretary' : `Сессия #${selected}`);
 
   // Высота поля ввода и высота экранной клавиатуры (iOS не сжимает layout viewport, поэтому берём visualViewport).
@@ -274,8 +273,7 @@
     document.addEventListener('focusin', update);
     document.addEventListener('focusout', update);
     update();
-    window.addEventListener('secretary-voice', openVoiceMode);
-    return () => { window.removeEventListener('secretary-voice', openVoiceMode); clearInterval(updateTimer); updates.stop(); interruptFeedback.dispose(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); window.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
+    return () => { clearInterval(updateTimer); updates.stop(); interruptFeedback.dispose(); connection.stop(); window.removeEventListener('online', reconnect); document.removeEventListener('visibilitychange', reconnect); window.removeEventListener('resize', update); document.removeEventListener('focusin', update); document.removeEventListener('focusout', update); vv?.removeEventListener('resize', update); vv?.removeEventListener('scroll', update); };
   });
 </script>
 
@@ -352,6 +350,7 @@
       status={current?.status}
       {connected}
       onmenu={() => (drawerOpen = true)}
+      oncall={openVoiceMode}
       onsettings={openSettings}
     />
 
@@ -393,7 +392,7 @@
               </button>
             </div>
           {/if}
-          <Composer {videoInterval} onmicpress={micPress} onrecordstart={recordStart} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
+          <Composer {videoInterval} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
         </div>
       </div>
     </div>
