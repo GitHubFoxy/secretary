@@ -50,7 +50,7 @@ function sameOrigin(request: Request, url: URL) {
 const commands: Record<string, (cmd: any) => unknown> = {
   read: cmd => {
     const session = sessions.get(cmd.id);
-    return {...chatPage(db, session.id, cmd.all === true), queue: session.queue.list()};
+    return {...chatPage(db, session.id, Number.isSafeInteger(cmd.before) && cmd.before > 0 ? cmd.before : undefined), queue: session.queue.list()};
   },
   send: cmd => { sessions.get(cmd.id).send(cmd.text, cmd.images, cmd.immediate === true, cmd.voice === true); },
   sendQueued: cmd => { sessions.get(cmd.id).sendQueued(cmd.messageId); },

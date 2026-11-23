@@ -4,23 +4,34 @@
   import Icon from './Icon.svelte';
   import { duration, parseVoice } from '../voice.js';
   import { videoText } from '../prepare-video.js';
-  import { untrack } from 'svelte';
+  import { tick } from 'svelte';
   // bottomInset — высота поля ввода поверх списка (плюс клавиатура), под ней должны оставаться видимыми последние сообщения.
-  let { messages = [], sessions = [], historyLoaded = false, connected = false, historyHasMore = false, historyLoadingOlder = false, startAtTop = false, onloadOlder, bottomInset = 0, onselect, onsendQueued, onretryVoice, onrestorePreparing, restoreDisabled = false } = $props();
+  let { messages = [], sessions = [], historyLoaded = false, connected = false, historyHasMore = false, historyLoadingOlder = false, onloadOlder, bottomInset = 0, onselect, onsendQueued, onretryVoice, onrestorePreparing, restoreDisabled = false } = $props();
   let scroller = $state();
   let initialScroll = true;
   // Пока пользователь у самого низа, новые размеры списка не сдвигают его последние сообщения под поле ввода.
-  let pinned = untrack(() => !startAtTop);
+  let pinned = $state(true);
+  let loading = false;
 
-  function onscroll() {
+  async function onscroll() {
     pinned = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80;
+    const items = scroller.querySelectorAll('[data-message]');
+    if (!connected || !historyHasMore || historyLoadingOlder || loading || !items[9] || items[9].getBoundingClientRect().bottom < scroller.getBoundingClientRect().top) return;
+    loading = true;
+    const anchor = [...items].find(item => item.getBoundingClientRect().bottom > scroller.getBoundingClientRect().top);
+    const offset = anchor?.offsetTop;
+    try {
+      await onloadOlder();
+      await tick();
+      if (anchor?.isConnected) scroller.scrollTop += anchor.offsetTop - offset;
+    } finally { loading = false; }
   }
 
   // Новые сообщения не сдвигают пользователя, пока он читает историю выше.
   $effect(() => {
     void messages.length;
     if (scroller) {
-      if (initialScroll || pinned) scroller.scrollTo({ top: initialScroll && startAtTop ? 0 : scroller.scrollHeight, behavior: initialScroll ? 'instant' : 'smooth' });
+      if (initialScroll || (pinned && !loading)) scroller.scrollTo({ top: scroller.scrollHeight, behavior: initialScroll ? 'instant' : 'smooth' });
       initialScroll = false;
     }
   });
@@ -40,15 +51,14 @@
   });
 </script>
 
-<div bind:this={scroller} onscroll={onscroll} class="min-h-0 flex-1 overflow-y-auto overscroll-contain" aria-live="polite">
+<div bind:this={scroller} onscroll={onscroll} class="min-h-0 flex-1 overflow-y-auto overscroll-contain [overflow-anchor:none]" aria-live="polite">
   <div class="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 pt-6" style="padding-bottom: {bottomInset + 24}px">
-    {#if historyHasMore}
-      <button class="btn-ghost self-center text-sm" disabled={!connected || historyLoadingOlder} onclick={onloadOlder}>{historyLoadingOlder ? 'Загрузка…' : 'Показать предыдущие сообщения'}</button>
-    {/if}
+    {#if historyLoadingOlder}<p class="self-center text-sm text-neutral-500">Загрузка…</p>{/if}
     {#if messages.length === 0}
       <p class="py-16 text-center text-sm text-neutral-600">{!connected ? 'Нет связи с Host. Повторное подключение…' : !historyLoaded ? 'Загрузка сообщений…' : 'Сообщений пока нет'}</p>
     {/if}
     {#each messages as m (m.key)}
+      <div data-message>
       {#if m.kind === 'report'}
         <div class="flex justify-start">
           <Report message={m} session={sessions.find(s => s.id === m.report.id)} {onselect} />
@@ -90,6 +100,10 @@
           </div>
         </div>
       {/if}
+      </div>
     {/each}
   </div>
 </div>
+{#if !pinned}
+  <button type="button" aria-label="К последнему сообщению" class="absolute right-4 z-20 flex size-10 items-center justify-center rounded-full border border-neutral-700 bg-neutral-800 text-neutral-100 shadow-lg" style:bottom="{bottomInset + 12}px" onclick={() => { pinned = true; scroller.scrollTo({top:scroller.scrollHeight, behavior:'smooth'}); }}><Icon name="chevron" /></button>
+{/if}

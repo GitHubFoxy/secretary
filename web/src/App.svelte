@@ -34,7 +34,7 @@
     voiceMode = true; voiceKey++;
   }
   if ((overlay || new URLSearchParams(location.search).has('secretary')) && !cached?.sessions?.find(s => s.id === cached.selected)?.secretary) cached = null;
-  let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyStartAtTop = false, historyToken = 0;
+  let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyToken = 0;
   let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
   if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }
   let voiceMessages = [], voiceModel = '', voiceStatus = '', videoInterval = '1', ttsEngine = '', voiceModeHint = false, speaking = false;
@@ -100,16 +100,17 @@
   });
   // Commands whose only visible result is a broadcast (sessions, message) or an error.
   const command = value => connection.request(value).catch(err => { error = err.message; });
-  async function loadHistory(id, all = false, sync = false) {
+  async function loadHistory(id, older = false, sync = false) {
     const token = ++historyToken;
-    historyLoadingOlder = all;
+    historyLoadingOlder = older;
     try {
       const lastCursor = sync ? history.at(-1)?.cursor : undefined;
-      const page = await connection.request({type:'read', id, all});
+      const page = await connection.request({type:'read', id, before: older ? history[0]?.cursor : undefined});
       if (token !== historyToken) return;
-      const merged = mergeHistory(history, page.messages, lastCursor);
+      const merged = older ? {messages: [...page.messages, ...history], overlap: true} : mergeHistory(history, page.messages, lastCursor);
       history = merged.messages; queue = page.queue;
-      if (!sync || !merged.overlap) { historyHasMore = page.hasMore; historyStartAtTop = all; historyVersion++; }
+      if (older) historyHasMore = page.hasMore;
+      else if (!sync || !merged.overlap) { historyHasMore = page.hasMore; historyVersion++; }
       historyLoaded = true;
     } catch (err) { if (token === historyToken && !err.disconnected) error = err.message; }
     finally { if (token === historyToken) historyLoadingOlder = false; }
@@ -242,7 +243,7 @@
   function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); loadVoiceModel(); loadTtsEngine(); }
   // Queued messages are not accepted by the agent yet, so they come after history.
   $: messages = [
-    ...history.map((m, index) => ({...m, images:m.images?.map(image => videoUrls[image.data] ? {...image, url:videoUrls[image.data]} : image), key:`${selected}:${index}`})),
+    ...history.map(m => ({...m, images:m.images?.map(image => videoUrls[image.data] ? {...image, url:videoUrls[image.data]} : image), key:`${selected}:${m.cursor}`})),
     ...voiceMessages.filter(item => item.id === selected),
     ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:item.images, urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
     ...preparing.filter(item => item.sessionId === selected).map(item => ({...item, kind:'preparing', key:`preparing:${item.id}`})),
@@ -250,7 +251,7 @@
   const userKinds = ['user', 'voice', 'queued', 'preparing', 'cancelled', 'uncertain'];
   $: turn = messages.slice(Math.max(0, messages.findLastIndex(m => userKinds.includes(m.kind))));
   $: if (historyLoaded && selected !== null) {
-    try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-10).map(m => ({...m, images:m.images?.filter(image => !image.video || image.video.time === 0)})), hasMore:historyHasMore || history.length > 10})); } catch { localStorage.removeItem('last-chat'); }
+    try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-20).map(m => ({...m, images:m.images?.filter(image => !image.video || image.video.time === 0)})), hasMore:historyHasMore || history.length > 20})); } catch { localStorage.removeItem('last-chat'); }
   }
   $: current = sessions.find(s => s.id === selected);
   $: voiceProps = {turn, sessionId:selected, running:current?.status === 'running', speaking, connected, onstart:() => { micPress(); recordStart(); }, onvoice:sendVoice, onstopspeech:stopSpeech};
@@ -376,7 +377,7 @@
 
     <div bind:this={chatViewport} class="relative flex min-h-0 flex-1 flex-col">
       {#key historyVersion}
-        <MessageList {messages} {sessions} {historyLoaded} {connected} historyHasMore={historyHasMore} {historyLoadingOlder} startAtTop={historyStartAtTop} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} />
+        <MessageList {messages} {sessions} {historyLoaded} {connected} historyHasMore={historyHasMore} {historyLoadingOlder} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} />
       {/key}
 
       <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
