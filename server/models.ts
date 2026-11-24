@@ -1,6 +1,6 @@
 import { readJsonLines } from './harness';
 
-type ModelDetails = { id: string; label?: string; supportedReasoningEfforts: { reasoningEffort: string }[] };
+type ModelDetails = { id: string; aliases?: string[]; supportedReasoningEfforts: { reasoningEffort: string }[] };
 
 export function parseClaudeModels(output: string): ModelDetails[] {
   for (const line of output.split('\n')) {
@@ -9,12 +9,23 @@ export function parseClaudeModels(output: string): ModelDetails[] {
     if (msg.type !== 'control_response' || msg.response?.request_id !== 'models') continue;
     if (msg.response.subtype !== 'success') throw new Error('Claude Code не вернул список моделей');
     const list = msg.response.response?.models;
-    if (!Array.isArray(list) || !list.length) throw new Error('Claude Code вернул пустой список моделей');
-    return list.map((model: any) => ({
-      id: model.value,
-      label: model.resolvedModel ? `${model.displayName} (${model.resolvedModel})` : model.displayName || model.value,
-      supportedReasoningEfforts: (model.supportedEffortLevels || []).map((reasoningEffort: string) => ({ reasoningEffort })),
-    }));
+    if (!Array.isArray(list)) throw new Error('Claude Code вернул пустой список моделей');
+    const byId = new Map<string, ModelDetails>();
+    for (const model of list) {
+      if (!model.resolvedModel) continue;
+      const existing = byId.get(model.resolvedModel);
+      if (existing) {
+        if (model.value && !existing.aliases?.includes(model.value)) existing.aliases = [...(existing.aliases || []), model.value];
+        continue;
+      }
+      byId.set(model.resolvedModel, {
+        id: model.resolvedModel,
+        ...(model.value && model.value !== model.resolvedModel ? { aliases: [model.value] } : {}),
+        supportedReasoningEfforts: (model.supportedEffortLevels || []).map((reasoningEffort: string) => ({ reasoningEffort })),
+      });
+    }
+    if (!byId.size) throw new Error('Claude Code вернул пустой список моделей');
+    return [...byId.values()];
   }
   throw new Error('Claude Code не ответил на запрос списка моделей');
 }
@@ -64,6 +75,6 @@ export function modelDetails(harness: string, fresh = false) {
 }
 
 export async function checkReasoning(harness: string, model: string, reasoning: string) {
-  const details = (await modelDetails(harness)).find(m => m.id === model);
+  const details = (await modelDetails(harness)).find(m => m.id === model || m.aliases?.includes(model));
   if (!details?.supportedReasoningEfforts.some(e => e.reasoningEffort === reasoning)) throw new Error('Unsupported model or reasoning level');
 }

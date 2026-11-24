@@ -54,10 +54,6 @@
     <button class="sr-only focus:not-sr-only focus:cursor-pointer focus:text-neutral-200 focus:underline" aria-expanded={expanded} onclick={() => expanded = !expanded}>{expanded ? 'Свернуть отчёт' : 'Развернуть отчёт'}</button>
   </div>
   <div class="relative min-w-0">
-    <div bind:this={preview} class:collapsed={!expanded}><Markdown text={message.text} /></div>
+    <div bind:this={preview} class={expanded ? '' : 'max-h-24 overflow-hidden'}><Markdown text={message.text} /></div>
   </div>
 </div>
-
-<style>
-  .collapsed { max-height: 6rem; overflow: hidden; }
-</style>

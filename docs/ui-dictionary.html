@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Secretary App — UI Dictionary</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-neutral-950 font-sans text-neutral-200 antialiased selection:bg-sky-500/30">
+  <main class="mx-auto max-w-4xl px-5 py-10">
+
+    <!-- Page Header -->
+    <header class="mb-8 border-b border-neutral-800/80 pb-6">
+      <div class="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <p class="text-xs font-medium uppercase tracking-widest text-sky-400">Secretary App · UI Dictionary</p>
+          <h1 class="mt-1 text-2xl font-semibold tracking-tight text-neutral-50">Полный словарь UI-элементов</h1>
+        </div>
+        <span class="rounded-full border border-neutral-800 bg-neutral-900 px-3 py-1 font-mono text-xs text-neutral-400">17 элементов · 4 раздела</span>
+      </div>
+      <!-- Quick Jump Nav -->
+      <nav class="mt-5 flex flex-wrap gap-2 text-xs">
+        <a href="#chat" class="rounded-full border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-neutral-300 transition-colors hover:border-sky-500/60 hover:text-sky-300">1. Экран чата (6)</a>
+        <a href="#input" class="rounded-full border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-neutral-300 transition-colors hover:border-sky-500/60 hover:text-sky-300">2. Ввод и запись (5)</a>
+        <a href="#navigation" class="rounded-full border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-neutral-300 transition-colors hover:border-sky-500/60 hover:text-sky-300">3. Навигация и модалки (3)</a>
+        <a href="#voice-profile" class="rounded-full border border-neutral-800 bg-neutral-900 px-3 py-1.5 text-neutral-300 transition-colors hover:border-sky-500/60 hover:text-sky-300">4. Голос и профиль (3)</a>
+      </nav>
+    </header>
+
+    <!-- ============================================================ -->
+    <!-- SECTION 1: CHAT SCREEN                                       -->
+    <!-- ============================================================ -->
+    <section id="chat" class="mb-12 scroll-mt-6">
+      <h2 class="mb-4 text-xs font-semibold uppercase tracking-widest text-neutral-500">1 · Экран чата</h2>
+      <div class="flex flex-col gap-5">
+
+        <!-- 1. TOP BAR -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto w-[220px] overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-2.5 shadow-2xl">
+            <div class="relative z-10 flex items-center gap-2 rounded-xl bg-neutral-900 px-2.5 py-2 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+              <div class="relative flex size-6 items-center justify-center rounded-md bg-neutral-800 text-neutral-300">
+                <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M4 12h16M4 17h10"/></svg>
+                <span class="absolute -bottom-3 left-1/2 inline-flex size-[18px] -translate-x-1/2 items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+              </div>
+              <div class="relative min-w-0 flex-1">
+                <div class="truncate text-[11px] font-medium text-neutral-100">Secretary</div>
+                <div class="flex items-center gap-1 text-[9px] text-neutral-400"><span class="size-1.5 rounded-full bg-emerald-500"></span><span>idle</span></div>
+                <span class="absolute -bottom-3 left-6 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+              </div>
+              <div class="relative flex items-center gap-1">
+                <div class="flex size-6 items-center justify-center rounded-md bg-neutral-800 text-neutral-300">
+                  <svg class="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2A19.8 19.8 0 0 1 3.08 5.18 2 2 0 0 1 5.06 3h3a2 2 0 0 1 2 1.72c.12.9.34 1.78.65 2.62a2 2 0 0 1-.45 2.11L9 10.7a16 16 0 0 0 4.3 4.3l1.25-1.26a2 2 0 0 1 2.11-.45c.84.31 1.72.53 2.62.65A2 2 0 0 1 22 16.92z"/></svg>
+                </div>
+                <div class="flex size-6 items-center justify-center rounded-md bg-neutral-800 text-neutral-300">
+                  <svg class="size-3" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="12" cy="19" r="1.8"/></svg>
+                </div>
+                <span class="absolute -bottom-3 left-1/2 inline-flex size-[18px] -translate-x-1/2 items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">3</span>
+              </div>
+            </div>
+            <div class="mt-3 flex h-[155px] flex-col justify-between px-1 opacity-20">
+              <div class="space-y-2.5">
+                <div class="ml-auto h-6 w-28 rounded-xl rounded-br-sm bg-neutral-800"></div>
+                <div class="space-y-1.5"><div class="h-2 w-36 rounded bg-neutral-800"></div><div class="h-2 w-24 rounded bg-neutral-800"></div></div>
+              </div>
+              <div class="h-8 rounded-xl border border-neutral-800 bg-neutral-900"></div>
+            </div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Top Bar</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">App Bar</span>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Header</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>Верх экрана · закреплён над лентой сообщений</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">TopBar.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Leading Icon Button <span class="text-neutral-500">(Menu)</span></li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Title + Status Dot</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">3</span> Trailing Action Buttons <span class="text-neutral-500">(Phone, More)</span></li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- 2. ERROR BANNER -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto w-[220px] overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-2.5 shadow-2xl">
+            <div class="flex items-center gap-2 rounded-xl bg-neutral-900 px-2.5 py-2 opacity-25">
+              <div class="size-5 rounded bg-neutral-800"></div><div class="h-2.5 w-16 rounded bg-neutral-700"></div>
+            </div>
+            <div class="relative z-10 mt-1.5 rounded-lg border border-red-900/70 bg-neutral-900 px-2 py-1.5 text-center text-[10px] text-red-400 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+              Нет связи с сервером
+              <span class="absolute -bottom-2.5 right-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+            </div>
+            <div class="mt-3 flex h-[128px] flex-col justify-between px-1 opacity-20">
+              <div class="space-y-2.5">
+                <div class="ml-auto h-6 w-24 rounded-xl bg-neutral-800"></div>
+                <div class="h-2 w-32 rounded bg-neutral-800"></div>
+              </div>
+              <div class="h-8 rounded-xl bg-neutral-900"></div>
+            </div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Error Banner</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Alert Bar</span>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Inline Alert</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>Сразу под Top Bar · полоса на всю ширину экрана</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">App.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Alert Text <span class="text-neutral-500">(role="alert")</span></li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- 3. MESSAGE LIST -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto w-[220px] overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-2.5 shadow-2xl">
+            <div class="flex items-center gap-2 rounded-xl bg-neutral-900 px-2.5 py-2 opacity-20">
+              <div class="size-5 rounded bg-neutral-800"></div><div class="h-2.5 w-16 rounded bg-neutral-700"></div>
+            </div>
+            <div class="relative z-10 my-2 flex h-[132px] flex-col rounded-xl bg-neutral-900/70 p-2 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+              <!-- 1: Loading Pill -->
+              <div class="relative mx-auto rounded-full bg-neutral-800 px-2.5 py-0.5 text-[9px] text-neutral-300">
+                Загрузка…
+                <span class="absolute -right-3 -top-1 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+              </div>
+              <!-- 2: Feed -->
+              <div class="relative mt-2.5 flex flex-1 flex-col gap-2">
+                <div class="ml-auto h-5 w-24 rounded-xl rounded-br-sm bg-neutral-800"></div>
+                <div class="space-y-1"><div class="h-2 w-28 rounded bg-neutral-700"></div><div class="h-2 w-20 rounded bg-neutral-700"></div></div>
+                <span class="absolute left-0 top-1 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+              </div>
+              <!-- 3: Scroll-to-Bottom FAB -->
+              <div class="absolute bottom-2 right-2 flex size-6 items-center justify-center rounded-full border border-neutral-700 bg-neutral-800 text-neutral-100 shadow">
+                <svg class="size-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
+                <span class="absolute -left-3 -top-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">3</span>
+              </div>
+            </div>
+            <div class="h-8 rounded-xl bg-neutral-900 opacity-20"></div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Message List</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Chat Feed</span>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Scroll Area</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>Центр экрана · прокручиваемая лента между Top Bar и Composer</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">MessageList.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Loading Pill <span class="text-neutral-500">(Floating Top)</span></li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Message Items + Empty State</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">3</span> Scroll-to-Bottom FAB</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- 4. MESSAGE ITEM (BUBBLES & MEDIA) -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto w-[220px] overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-3 shadow-2xl">
+            <div class="flex flex-col gap-3">
+              <!-- 1: User Bubble -->
+              <div class="relative ml-auto max-w-[140px] rounded-2xl rounded-br-sm bg-neutral-800 px-3 py-1.5 text-[10px] text-neutral-100 ring-2 ring-sky-400">
+                Собери релиз
+                <span class="absolute -left-2.5 -top-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+              </div>
+              <!-- 2: Video Note Circle -->
+              <div class="relative ml-auto flex size-14 items-center justify-center rounded-full bg-neutral-800 ring-2 ring-sky-400">
+                <span class="rounded bg-black/60 px-1 text-[8px] text-white">0:12</span>
+                <span class="absolute -left-2.5 top-1/2 inline-flex size-[18px] -translate-y-1/2 items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+              </div>
+              <!-- 3: Agent Markdown + File Card -->
+              <div class="relative max-w-[165px] rounded-xl bg-neutral-900/80 p-2 ring-2 ring-sky-400">
+                <div class="space-y-1"><div class="h-1.5 w-28 rounded bg-neutral-600"></div><div class="h-1.5 w-20 rounded bg-neutral-700"></div></div>
+                <div class="mt-2 flex items-center gap-1.5 rounded bg-neutral-800 px-2 py-1 text-[9px] text-neutral-200">
+                  <span class="size-2.5 rounded-xs bg-neutral-600"></span>
+                  <span class="truncate">report.pdf</span>
+                </div>
+                <span class="absolute -right-2 -top-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">3</span>
+              </div>
+            </div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Message Item</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Chat Bubble</span>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Media Card</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>Внутри Message List · справа (Owner) и слева (агент)</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">MessageItem.svelte · Markdown.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> User Bubble <span class="text-neutral-500">(Text / Voice / Queued)</span></li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Video Note Circle <span class="text-neutral-500">(170px)</span></li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">3</span> Markdown Block + File Download Card</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- 5. REPORT CARD -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto w-[220px] overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-2.5 shadow-2xl">
+            <div class="h-6 rounded-xl bg-neutral-900 opacity-20"></div>
+            <div class="mt-3 space-y-2.5 px-0.5">
+              <div class="ml-auto h-5 w-20 rounded-xl bg-neutral-800 opacity-20"></div>
+              <div class="relative z-10 max-w-[180px] rounded-2xl bg-neutral-900 p-2.5 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+                <div class="relative flex flex-wrap gap-1.5 text-[9px] text-neutral-400">
+                  <span class="text-neutral-200 underline">specialist-1</span>
+                  <span>claude</span>
+                  <span class="absolute -right-2 -top-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+                </div>
+                <div class="relative mt-2 space-y-1 overflow-hidden">
+                  <div class="h-1.5 w-32 rounded bg-neutral-600"></div>
+                  <div class="h-1.5 w-28 rounded bg-neutral-700"></div>
+                  <div class="h-1.5 w-20 rounded bg-neutral-800"></div>
+                  <span class="absolute -bottom-1 -right-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+                </div>
+              </div>
+            </div>
+            <div class="mt-10 h-8 rounded-xl bg-neutral-900 opacity-20"></div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Report Card</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Collapsible Card</span>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Disclosure Card</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>Внутри Message List · слева, вместо обычного пузыря</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">Report.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Meta Header <span class="text-neutral-500">(Link + Harness + Path)</span></li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Collapsible Markdown Body</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- 6. SPEAKING PILL -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto w-[220px] overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-2.5 shadow-2xl">
+            <div class="h-6 rounded-xl bg-neutral-900 opacity-20"></div>
+            <div class="mt-3 h-[86px] space-y-2 px-1 opacity-20">
+              <div class="ml-auto h-5 w-24 rounded-xl bg-neutral-800"></div>
+              <div class="h-2 w-32 rounded bg-neutral-800"></div>
+            </div>
+            <!-- Highlighted Speaking Pill -->
+            <div class="relative z-10 mx-auto mb-2 flex w-fit items-center gap-2 rounded-full border border-neutral-700 bg-neutral-900 py-1 pl-3 pr-1 text-[10px] text-neutral-200 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+              <span class="relative flex h-3 items-center gap-[2px]">
+                <span class="h-1.5 w-[2px] rounded-full bg-neutral-300"></span>
+                <span class="h-3 w-[2px] rounded-full bg-neutral-300"></span>
+                <span class="h-2 w-[2px] rounded-full bg-neutral-300"></span>
+                <span class="absolute -left-2 -top-3.5 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+              </span>
+              <span>Озвучиваю</span>
+              <span class="relative flex items-center gap-1 rounded-full bg-neutral-800 px-2 py-0.5 text-neutral-100">
+                <span class="size-1.5 rounded-[1px] bg-current"></span>Стоп
+                <span class="absolute -right-2 -top-3.5 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+              </span>
+            </div>
+            <div class="h-9 rounded-2xl border border-neutral-800 bg-neutral-900 opacity-25"></div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Speaking Pill</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Floating Status Pill</span>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Chip</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>По центру прямо над Composer · поверх ленты сообщений</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">SpeakingPill.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Equalizer Bars + Label</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Stop Pill Button</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- SECTION 2: INPUT & RECORDING                                 -->
+    <!-- ============================================================ -->
+    <section id="input" class="mb-12 scroll-mt-6">
+      <h2 class="mb-4 text-xs font-semibold uppercase tracking-widest text-neutral-500">2 · Ввод и запись</h2>
+      <div class="flex flex-col gap-5">
+
+        <!-- 7. COMPOSER -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto w-[220px] overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-2.5 shadow-2xl">
+            <div class="h-6 rounded-xl bg-neutral-900 opacity-20"></div>
+            <div class="mt-3 h-[116px] space-y-2.5 px-1 opacity-20">
+              <div class="ml-auto h-6 w-28 rounded-xl bg-neutral-800"></div>
+              <div class="h-2 w-36 rounded bg-neutral-800"></div>
+            </div>
+            <div class="relative z-10 flex items-center gap-1.5 rounded-2xl border border-neutral-700 bg-neutral-900 p-1.5 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+              <div class="relative flex size-7 shrink-0 items-center justify-center rounded-lg bg-neutral-800 text-neutral-300">
+                <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.44 11.05l-8.49 8.49a5 5 0 0 1-7.07-7.07l8.49-8.49a3 3 0 1 1 4.24 4.24l-8.49 8.49a1 1 0 0 1-1.41-1.41l7.78-7.78"/></svg>
+                <span class="absolute -left-2 -top-3 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+              </div>
+              <div class="relative flex-1 px-1 text-[10px] text-neutral-500">
+                Сообщение…
+                <span class="absolute -top-4 left-7 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+              </div>
+              <div class="relative flex size-7 shrink-0 items-center justify-center rounded-lg bg-neutral-100 text-neutral-950">
+                <svg class="size-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 19V5M5 12l7-7 7 7"/></svg>
+                <span class="absolute -right-2 -top-3 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">3</span>
+              </div>
+            </div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Composer</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Message Input Bar</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>Низ экрана · плавает поверх ленты и поднимается над клавиатурой</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">Composer.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Attachment Trigger Button</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Auto-growing Textarea</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">3</span> Send / Queue / Mic / Stop Buttons</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- 8. ATTACHMENT POPOVER -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto h-[210px] w-[220px] overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-2.5 shadow-2xl">
+            <div class="flex h-full flex-col justify-between opacity-20">
+              <div class="h-6 rounded-xl bg-neutral-900"></div>
+              <div class="h-9 rounded-2xl bg-neutral-900"></div>
+            </div>
+            <!-- 1: Backdrop -->
+            <span class="absolute right-4 top-8 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+            <!-- 2 & 3: Popover Menu -->
+            <div class="absolute bottom-14 left-3 z-10 w-[132px] rounded-xl border border-neutral-700 bg-neutral-900 py-1 text-[10px] text-neutral-100 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+              <span class="absolute -right-2 -top-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+              <div class="px-2.5 py-1.5">Камера</div>
+              <div class="bg-neutral-800 px-2.5 py-1.5">Фото и видео</div>
+              <div class="relative px-2.5 py-1.5">
+                Файл
+                <span class="absolute -right-2 bottom-1 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">3</span>
+              </div>
+            </div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Attachment Popover</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Popover Menu</span>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Dropdown</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>Над левым краем Composer · всплывает от кнопки скрепки</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">AttachmentPopover.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Dismiss Backdrop</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Popover Surface</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">3</span> Menu Items <span class="text-neutral-500">(Icon + Label + File Input)</span></li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- 9. ATTACHMENT STRIP -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto w-[220px] overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-2.5 shadow-2xl">
+            <div class="h-6 rounded-xl bg-neutral-900 opacity-20"></div>
+            <div class="mt-3 h-[68px] space-y-2 px-1 opacity-20">
+              <div class="ml-auto h-5 w-24 rounded-xl bg-neutral-800"></div>
+            </div>
+            <!-- Highlighted Attachment Strip -->
+            <div class="relative z-10 mb-2 flex gap-2 rounded-xl bg-neutral-900/80 p-1.5 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+              <div class="relative flex size-11 items-center justify-center rounded bg-neutral-800 text-[9px] text-neutral-400">
+                IMG
+                <span class="absolute -left-2 -top-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+                <span class="absolute right-0 top-0 bg-neutral-950 px-1 text-[9px] text-neutral-200">×</span>
+                <span class="absolute bottom-0 left-0 bg-neutral-950/90 px-1 text-[7px] text-neutral-300">…</span>
+              </div>
+              <div class="relative flex h-11 flex-1 items-center gap-1.5 rounded bg-neutral-800 px-2 text-[9px] text-neutral-300">
+                <span class="truncate">spec.pdf</span>
+                <span class="absolute -top-2 right-0 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+              </div>
+            </div>
+            <div class="h-9 rounded-2xl border border-neutral-800 bg-neutral-900 opacity-25"></div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Attachment Strip</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Preview Strip</span>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Tray</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>Внутри Composer · сразу над строкой ввода</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">AttachmentStrip.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Thumbnail / File Card + Status Badge</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Remove Button <span class="text-neutral-500">(×)</span></li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- 10. RECORDING BAR -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto w-[220px] overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-2.5 shadow-2xl">
+            <div class="h-6 rounded-xl bg-neutral-900 opacity-20"></div>
+            <div class="mt-3 h-[76px] opacity-20"></div>
+            <!-- Lock Pill floating above right -->
+            <div class="relative z-10 mb-2 ml-auto flex h-10 w-7 flex-col items-center justify-center rounded-full border border-neutral-700 bg-neutral-900 text-[9px] text-neutral-300 ring-2 ring-sky-400">
+              🔒
+              <span class="absolute -left-3 top-1 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">3</span>
+            </div>
+            <!-- Highlighted Recording Bar -->
+            <div class="relative z-10 flex items-center gap-1.5 rounded-2xl border border-neutral-700 bg-neutral-900 px-2 py-2 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+              <div class="relative flex items-center gap-1 text-[10px] tabular-nums text-neutral-100">
+                <span class="h-3 w-[2px] rounded-full bg-red-500"></span>
+                <span class="h-2 w-[2px] rounded-full bg-red-500"></span>
+                <span>0:07</span>
+                <span class="absolute -top-4 left-0 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+              </div>
+              <div class="relative flex-1 text-center text-[9px] text-neutral-400">
+                ‹ Влево — отмена
+                <span class="absolute -top-4 left-1/2 inline-flex size-[18px] -translate-x-1/2 items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+              </div>
+              <div class="flex size-7 items-center justify-center rounded-full bg-red-600 text-[10px] text-white">●</div>
+            </div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Recording Bar</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Voice Recorder</span>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Hold / Locked</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>Внутри Composer · заменяет строку ввода на время записи</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">Composer.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Live Equalizer + Timer</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Slide-to-Cancel / Trash Button</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">3</span> Lock Pill / Send Button</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- 11. VIDEO RECORDER OVERLAY -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto flex h-[210px] w-[220px] flex-col items-center justify-center overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-2.5 shadow-2xl">
+            <!-- 1: Blurred Scrim -->
+            <div class="absolute inset-0 bg-black/60 backdrop-blur-[2px]">
+              <span class="absolute left-3 top-3 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+            </div>
+            <!-- 2: Circular Video Preview + Progress Ring -->
+            <div class="relative z-10 mb-5 flex size-24 items-center justify-center rounded-full border-2 border-red-500 bg-neutral-800 ring-2 ring-sky-400 ring-offset-2 ring-offset-neutral-950">
+              <span class="text-[10px] text-neutral-400">CAMERA</span>
+              <span class="absolute -left-2 -top-1 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+              <!-- 3: Flip Camera Button -->
+              <div class="absolute -bottom-1 right-0 flex size-6 items-center justify-center rounded-full border border-neutral-600 bg-neutral-900 text-[9px] text-neutral-200">↻
+                <span class="absolute -right-3 -bottom-1 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">3</span>
+              </div>
+            </div>
+            <div class="absolute inset-x-2.5 bottom-2.5 h-8 rounded-2xl bg-neutral-900 opacity-35"></div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Video Recorder Overlay</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Camera Overlay</span>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Progress Ring</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>По центру экрана над Composer · поверх размытого фона</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">VideoRecorderOverlay.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Blurred Scrim</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Circular Preview + SVG Progress Ring</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">3</span> Flip Camera Button</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- SECTION 3: NAVIGATION & MODALS                               -->
+    <!-- ============================================================ -->
+    <section id="navigation" class="mb-12 scroll-mt-6">
+      <h2 class="mb-4 text-xs font-semibold uppercase tracking-widest text-neutral-500">3 · Навигация и модалки</h2>
+      <div class="flex flex-col gap-5">
+
+        <!-- 12. NAVIGATION DRAWER -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto h-[222px] w-[220px] overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-2.5 shadow-2xl">
+            <div class="flex h-full flex-col justify-between opacity-20">
+              <div class="h-7 rounded-lg bg-neutral-900"></div>
+              <div class="h-8 rounded-xl bg-neutral-900"></div>
+            </div>
+            <div class="absolute inset-0 bg-black/55">
+              <span class="absolute right-3 top-1/2 inline-flex size-[18px] -translate-y-1/2 items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+            </div>
+            <div class="absolute inset-y-1.5 left-1.5 z-10 flex w-[156px] flex-col rounded-[20px] bg-neutral-950 p-2 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+              <div class="flex items-center justify-between border-b border-neutral-800 pb-1.5">
+                <span class="text-[11px] font-semibold text-neutral-100">Secretary</span>
+                <span class="text-[10px] text-neutral-500">✕</span>
+              </div>
+              <div class="relative mt-2 flex-1 space-y-1.5">
+                <span class="absolute -right-2 -top-1 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+                <div class="rounded-md bg-neutral-900 px-2 py-1.5 ring-1 ring-neutral-800">
+                  <div class="flex items-center gap-1.5"><span class="size-1.5 rounded-full bg-emerald-500"></span><span class="text-[10px] font-medium text-neutral-100">Secretary</span></div>
+                </div>
+                <div class="px-2 py-1">
+                  <div class="flex items-center gap-1.5"><span class="size-1.5 rounded-full bg-neutral-600"></span><span class="text-[10px] text-neutral-300">project-a</span></div>
+                  <div class="ml-1.5 mt-1 border-l border-neutral-800 pl-2 text-[9px] text-neutral-500">worker-1</div>
+                </div>
+                <div class="border-t border-neutral-900 pt-1 text-[9px] text-neutral-500">Скрытые · 2 ▾</div>
+              </div>
+              <div class="relative mt-auto flex items-center gap-1.5 border-t border-neutral-800 pt-1.5">
+                <span class="flex size-5 items-center justify-center rounded-full bg-neutral-800 text-[9px] font-medium text-neutral-200">М</span>
+                <span class="text-[10px] text-neutral-300">Mikhail</span>
+                <span class="absolute -right-2 -top-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">3</span>
+              </div>
+            </div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Navigation Drawer</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Slide-over</span>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Sidebar</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>Слева · выезжает поверх экрана на всю высоту</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">SessionDrawer.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Scrim / Backdrop</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Nested List + Disclosure <span class="text-neutral-500">(Скрытые)</span></li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">3</span> Profile Footer <span class="text-neutral-500">(Avatar)</span></li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- 13. MODAL -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto flex h-[210px] w-[220px] items-center justify-center overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-3 shadow-2xl">
+            <div class="absolute inset-0 bg-black/60">
+              <span class="absolute left-3 top-3 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+            </div>
+            <div class="relative z-10 w-full rounded-2xl border border-neutral-700 bg-neutral-950 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+              <div class="relative flex items-center justify-between border-b border-neutral-800 px-3 py-2">
+                <span class="text-[10px] font-semibold text-neutral-100">Переименовать чат</span>
+                <span class="text-[10px] text-neutral-500">✕</span>
+                <span class="absolute -right-2 -top-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+              </div>
+              <div class="relative space-y-2 p-3">
+                <div class="h-6 rounded-md border border-neutral-800 bg-neutral-900"></div>
+                <div class="flex justify-end gap-1.5">
+                  <div class="h-5 w-11 rounded bg-neutral-900"></div>
+                  <div class="h-5 w-14 rounded bg-neutral-200"></div>
+                </div>
+                <span class="absolute -bottom-2 -right-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">3</span>
+              </div>
+            </div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Modal</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Dialog</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>По центру экрана · поверх затемнённого фона (Scrim)</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">Modal.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Scrim / Backdrop</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Dialog Header + Close Button</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">3</span> Scrollable Body <span class="text-neutral-500">(Rename / Settings)</span></li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- 14. SESSION SETTINGS -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto w-[220px] overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-3 shadow-2xl">
+            <div class="flex flex-col gap-2.5">
+              <!-- Group 1: Settings Rows -->
+              <div class="divide-y divide-neutral-800/80 rounded-xl border border-neutral-800 bg-neutral-900/60 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+                <div class="relative flex items-center justify-between px-2.5 py-1.5 text-[9px]">
+                  <span class="text-neutral-400">Агент</span>
+                  <span class="flex gap-0.5 rounded bg-neutral-950 p-0.5"><span class="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-100">Claude</span><span class="px-1.5 py-0.5 text-neutral-500">Codex</span></span>
+                  <span class="absolute -left-2 -top-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+                </div>
+                <div class="relative flex items-center justify-between px-2.5 py-1.5 text-[9px]">
+                  <span class="text-neutral-400">Модель</span>
+                  <span class="font-mono text-neutral-100">claude-opus-5-5 ↻</span>
+                  <span class="absolute -right-2 top-0.5 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+                </div>
+                <div class="flex items-center justify-between px-2.5 py-1.5 text-[9px]">
+                  <span class="text-neutral-400">Reasoning</span>
+                  <span class="text-neutral-200">По умолчанию ▾</span>
+                </div>
+              </div>
+              <div class="rounded-lg bg-neutral-100 py-1 text-center text-[9px] font-medium text-neutral-950">Сохранить</div>
+              <!-- Group 2: Action List -->
+              <div class="relative divide-y divide-neutral-800/80 rounded-xl border border-neutral-800 bg-neutral-900/60 text-[9px]">
+                <div class="flex justify-between px-2.5 py-1.5 text-neutral-200"><span>Переименовать</span><span class="text-neutral-600">›</span></div>
+                <div class="flex justify-between px-2.5 py-1.5 text-neutral-200"><span>Новый тред</span><span class="text-neutral-600">›</span></div>
+                <div class="px-2.5 py-1.5 text-red-400">Остановить сессию</div>
+                <span class="absolute -right-2 -top-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">3</span>
+              </div>
+            </div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Session Settings</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Grouped List</span>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Segmented Control</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>Внутри Modal · открывается по кнопке More в Top Bar</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">SettingsPanel.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Segmented Control <span class="text-neutral-500">(Claude / Codex)</span></li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Inline Select Rows + Refresh Button</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">3</span> Grouped Action List <span class="text-neutral-500">(Destructive Row)</span></li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+      </div>
+    </section>
+
+    <!-- ============================================================ -->
+    <!-- SECTION 4: VOICE & PROFILE                                   -->
+    <!-- ============================================================ -->
+    <section id="voice-profile" class="mb-6 scroll-mt-6">
+      <h2 class="mb-4 text-xs font-semibold uppercase tracking-widest text-neutral-500">4 · Голос и профиль</h2>
+      <div class="flex flex-col gap-5">
+
+        <!-- 15. VOICE CALL OVERLAY (FULL) -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto flex h-[222px] w-[220px] flex-col justify-between overflow-hidden rounded-[26px] border border-neutral-800 bg-[radial-gradient(circle_at_50%_88%,#3f0d0d,#0a0a0a_65%)] p-3 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+            <!-- 1: Status Header -->
+            <div class="relative flex items-center justify-between text-[10px] text-neutral-400">
+              <span>Слушаю</span>
+              <span>✕</span>
+              <span class="absolute -bottom-3 right-5 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+            </div>
+            <!-- 2: Live Transcript -->
+            <div class="relative my-auto py-3">
+              <p class="text-base font-medium text-white">Говорите…</p>
+              <p class="text-[9px] text-neutral-400">Отправлю, когда замолчите</p>
+              <span class="absolute right-0 top-1/2 inline-flex size-[18px] -translate-y-1/2 items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+            </div>
+            <!-- 3: Primary Mic FAB -->
+            <div class="relative flex items-center justify-center gap-4 pb-1">
+              <span class="size-7 rounded-full bg-neutral-900/80"></span>
+              <div class="flex size-12 items-center justify-center rounded-full bg-red-600 text-white shadow-[0_0_24px_#ef444499]">
+                <span class="flex items-center gap-[2px]"><span class="h-2 w-[2px] rounded bg-white"></span><span class="h-4 w-[2px] rounded bg-white"></span><span class="h-2.5 w-[2px] rounded bg-white"></span></span>
+              </div>
+              <span class="size-7"></span>
+              <span class="absolute -top-2 right-6 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">3</span>
+            </div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Voice Call Overlay</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Full-screen Overlay</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>На весь экран поверх чата · открывается по кнопке «Позвонить»</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">VoiceMode.svelte (variant="full")</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Status Header + Close</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Live Turn / Transcript Area</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">3</span> Primary Mic FAB + Stop / Wave</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- 16. VOICE CALL BOTTOM SHEET -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto flex h-[222px] w-[220px] flex-col justify-end overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-900/40 p-2 shadow-2xl">
+            <!-- 1: Transparent Tap Area (another app visible underneath) -->
+            <div class="relative flex flex-1 items-center justify-center text-[9px] text-neutral-600">
+              Другое приложение
+              <span class="absolute right-2 top-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+            </div>
+            <!-- Highlighted Bottom Sheet -->
+            <div class="relative z-10 rounded-[20px] border border-neutral-700 bg-neutral-950 p-3 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+              <div class="relative flex items-center justify-between text-[9px] text-neutral-400">
+                <span>Слушаю</span>
+                <span class="flex items-center gap-[2px]"><span class="h-2 w-[2px] bg-red-500"></span><span class="h-3 w-[2px] bg-red-500"></span><span class="h-1.5 w-[2px] bg-red-500"></span></span>
+                <span class="absolute -top-3 right-8 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+              </div>
+              <p class="mt-2 text-xs font-medium text-white">Говорите…</p>
+              <div class="relative mt-3 flex items-center justify-between text-[9px]">
+                <span class="text-neutral-400">Отмена</span>
+                <span class="rounded bg-neutral-100 px-2 py-0.5 font-medium text-neutral-950">Отправить</span>
+                <span class="absolute -bottom-2 left-1/2 inline-flex size-[18px] -translate-x-1/2 items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">3</span>
+              </div>
+            </div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Voice Call Bottom Sheet</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Bottom Sheet</span>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Assistant Sheet</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>Низ экрана поверх другого приложения · по кнопке Power</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">VoiceMode.svelte (variant="sheet")</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Transparent Tap-to-Close Area</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Compact Status + Wave Header</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">3</span> Bottom Action Row <span class="text-neutral-500">(Mic / Expand / Close)</span></li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+        <!-- 17. PROFILE SCREEN -->
+        <article class="grid gap-6 rounded-2xl border border-neutral-800/90 bg-neutral-900/50 p-5 sm:grid-cols-[240px_1fr] sm:items-center">
+          <div class="relative mx-auto flex h-[222px] w-[220px] flex-col gap-2 overflow-hidden rounded-[26px] border border-neutral-800 bg-neutral-950 p-2.5 ring-2 ring-sky-400 shadow-[0_0_20px_rgba(56,189,248,0.22)]">
+            <!-- 1: Back Top Bar -->
+            <div class="relative flex items-center gap-2 border-b border-neutral-800 pb-1.5 text-[10px] text-neutral-100">
+              <span>←</span><span class="font-medium">Секретарь</span>
+              <span class="absolute -bottom-2 right-1 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">1</span>
+            </div>
+            <!-- 2: Option Cards + Badge -->
+            <div class="relative grid grid-cols-2 gap-1.5">
+              <div class="rounded-lg border border-neutral-500 bg-neutral-900 p-1.5 text-[9px] text-neutral-100">Рация</div>
+              <div class="rounded-lg border border-neutral-800 p-1.5 text-[9px] text-neutral-500">Живой <span class="rounded-full border border-neutral-700 px-1 text-[7px]">скоро</span></div>
+              <span class="absolute -right-1 -top-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">2</span>
+            </div>
+            <!-- Selects -->
+            <div class="rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-[9px] text-neutral-400">Голос · Inworld ▾</div>
+            <!-- 3: Code Textarea + Save -->
+            <div class="relative flex-1 rounded-md border border-neutral-800 bg-neutral-900 p-1.5 font-mono text-[8px] text-neutral-500">
+              # AGENTS.md
+              <span class="absolute -right-1 -top-2 inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold leading-none text-sky-950 ring-2 ring-neutral-950">3</span>
+            </div>
+            <div class="ml-auto rounded bg-neutral-100 px-2 py-0.5 text-[9px] font-medium text-neutral-950">Сохранить</div>
+          </div>
+          <div class="flex flex-col gap-4">
+            <div>
+              <div class="flex flex-wrap items-center gap-2">
+                <h3 class="text-xl font-semibold text-neutral-50">Profile Screen</h3>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Settings Screen</span>
+                <span class="rounded-md border border-neutral-800 bg-neutral-950 px-2 py-0.5 font-mono text-xs text-neutral-400">Sub-page</span>
+              </div>
+              <p class="mt-2 flex items-center gap-2 text-sm text-neutral-300"><span class="inline-block size-1.5 rounded-full bg-sky-400"></span>Отдельный экран · открывается из Profile Footer в Navigation Drawer</p>
+              <p class="mt-1 font-mono text-xs text-neutral-500">ProfileScreen.svelte</p>
+            </div>
+            <div class="border-t border-neutral-800/80 pt-3">
+              <p class="mb-2 text-[11px] font-medium uppercase tracking-wider text-neutral-500">Внутри</p>
+              <ul class="flex flex-wrap gap-2 text-xs">
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">1</span> Back Top Bar</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">2</span> Option Cards + Badge + Tooltip</li>
+                <li class="flex items-center gap-1.5 rounded-lg border border-neutral-800 bg-neutral-950 px-2.5 py-1.5"><span class="inline-flex size-[18px] items-center justify-center rounded-full bg-sky-400 text-[10px] font-bold text-sky-950">3</span> Selects + Code Editor Textarea</li>
+              </ul>
+            </div>
+          </div>
+        </article>
+
+      </div>
+    </section>
+
+  </main>
+</body>
+</html>

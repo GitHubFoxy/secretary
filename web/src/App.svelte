@@ -14,7 +14,8 @@
   import Composer from './components/Composer.svelte';
   import VoiceMode from './components/VoiceMode.svelte';
   import Modal from './components/Modal.svelte';
-  import Icon from './components/Icon.svelte';
+  import ProfileScreen from './components/ProfileScreen.svelte';
+  import SpeakingPill from './components/SpeakingPill.svelte';
   import { Capacitor, registerPlugin } from '@capacitor/core';
   const host = registerPlugin('Host');
   const share = registerPlugin('Share');
@@ -37,7 +38,7 @@
   let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyToken = 0;
   let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
   if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }
-  let voiceMessages = [], voiceModel = '', voiceStatus = '', videoInterval = '1', ttsEngine = '', voiceModeHint = false, speaking = false;
+  let voiceMessages = [], voiceModel = '', voiceStatus = '', videoInterval = '1', ttsEngine = '', speaking = false;
   const speech = createSpeechPlayer(value => { speaking = value; });
   async function loadTtsEngine() {
     try { const response = await fetch('/settings/tts'); if (!response.ok) throw new Error(await response.text()); ttsEngine = (await response.json()).engine; }
@@ -317,67 +318,23 @@
 {#if overlay}
   <VoiceMode variant="sheet" {...voiceProps} onclose={() => overlayBridge?.close()} onopenapp={() => overlayBridge?.openApp()} />
 {:else if profileOpen}
-  <div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
-    <header class="flex items-center gap-2 border-b border-neutral-900 px-2 py-2">
-      <button class="icon-btn" aria-label="Назад" onclick={() => (profileOpen = false)}>
-        <Icon name="back" />
-      </button>
-      <h1 class="min-w-0 flex-1 truncate px-1 text-sm font-medium text-neutral-100">Секретарь</h1>
-    </header>
-
-    <div class="flex min-h-0 flex-1 flex-col gap-4 p-4">
-      <div class="flex flex-col gap-2 text-sm">Голосовые ответы
-        <div class="grid grid-cols-2 gap-2">
-          <button type="button" aria-pressed="true" class="flex flex-col items-start gap-1 rounded-2xl border border-neutral-500 bg-neutral-900 p-3 text-left">
-            <span class="flex items-center gap-2 font-medium text-neutral-100"><Icon name="microphone" class="size-4" />Рация</span>
-            <span class="text-xs leading-snug text-neutral-400">Держишь кнопку, говоришь — Secretary отвечает голосом</span>
-          </button>
-          <button type="button" aria-disabled="true" onclick={() => { voiceModeHint = true; setTimeout(() => voiceModeHint = false, 1500); }} class="relative flex flex-col items-start gap-1 rounded-2xl border border-neutral-800 p-3 text-left">
-            <span class="flex items-center gap-2 font-medium text-neutral-500">Живой разговор<span class="rounded-full border border-neutral-700 px-1.5 text-[10px] leading-4 text-neutral-400">скоро</span></span>
-            <span class="text-xs leading-snug text-neutral-600">Говоришь без кнопки, как по телефону</span>
-            {#if voiceModeHint}<span role="status" class="absolute -top-9 right-0 rounded-lg bg-neutral-800 px-3 py-1.5 text-xs text-neutral-200 shadow-lg">Скоро. Пока работает Рация</span>{/if}
-          </button>
-        </div>
-      </div>
-      <label class="flex flex-col gap-2 text-sm">Голос ответов
-        <select class="field" value={ttsEngine} disabled={!ttsEngine} onchange={saveTtsEngine}>
-          <option value="inworld">Inworld — облако, звучит естественнее</option>
-          <option value="piper">Piper — бесплатно, на Host</option>
-        </select>
-      </label>
-      <label class="flex flex-col gap-2 text-sm">Распознавание речи на Host
-        <select class="field" value={voiceModel} disabled={!voiceModel} onchange={saveVoiceModel}>
-          <option value="gigaam">GigaAM — быстрее, лучше русский</option>
-          <option value="parakeet">Parakeet — лучше английские слова</option>
-        </select>
-      </label>
-      <label class="flex flex-col gap-2 text-sm">Частота кадров видео
-        <select class="field" value={videoInterval} onchange={saveVideoInterval}>
-          <option value="1">1 кадр в секунду</option>
-          <option value="2">1 кадр в 2 секунды</option>
-        </select>
-      </label>
-      {#if voiceStatus}<p role="alert" class="text-sm text-red-400">{voiceStatus}</p>{/if}
-      {#if Capacitor.isNativePlatform()}
-        <div class="flex flex-wrap items-center gap-3 text-sm">
-          <button class="btn-ghost" onclick={requestAssistant}>Открывать Secretary по Power</button>
-          {#if assistantStatus}<span role="status" class="text-xs text-neutral-400">{assistantStatus}</span>{/if}
-        </div>
-        <button class="btn-ghost self-start" onclick={() => { if (confirm('Сбросить адрес Host и забыть вход?')) host.reset(); }}>Сбросить адрес Host</button>
-      {/if}
-      <textarea
-        class="field min-h-0 flex-1 resize-none font-mono"
-        aria-label="Содержимое AGENTS.md"
-        spellcheck="false"
-        disabled={!agentsLoaded}
-        bind:value={agents}
-      ></textarea>
-      <div class="flex items-center justify-end gap-3">
-        <span role="status" class="text-xs text-neutral-500">{agentsStatus}</span>
-        <button class="btn" onclick={saveAgents} disabled={!agentsLoaded}>Сохранить</button>
-      </div>
-    </div>
-  </div>
+  <ProfileScreen
+    {ttsEngine}
+    {voiceModel}
+    {videoInterval}
+    {voiceStatus}
+    {assistantStatus}
+    bind:agents
+    {agentsLoaded}
+    {agentsStatus}
+    onback={() => (profileOpen = false)}
+    onsaveTtsEngine={saveTtsEngine}
+    onsaveVoiceModel={saveVoiceModel}
+    onsaveVideoInterval={saveVideoInterval}
+    onrequestAssistant={requestAssistant}
+    onresetHost={() => { if (confirm('Сбросить адрес Host и забыть вход?')) host.reset(); }}
+    onsaveAgents={saveAgents}
+  />
 {:else}
   <div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
     <TopBar
@@ -419,13 +376,7 @@
         <div class="pointer-events-auto">
           {#if interruptStates[selected]?.message}<p role="status" aria-live="polite" class="mx-auto max-w-3xl px-4 text-sm text-neutral-400">{interruptStates[selected].message}</p>{/if}
           {#if speaking && current?.secretary}
-            <div class="mx-auto mb-2 flex max-w-3xl justify-center px-4">
-              <button type="button" onclick={stopSpeech} class="flex items-center gap-2.5 rounded-full border border-neutral-800 bg-neutral-900 py-1.5 pl-3.5 pr-1.5 text-sm text-neutral-300 shadow-lg">
-                <span class="flex h-4 items-center gap-[3px]" aria-hidden="true">{#each [0, 1, 2, 3, 4] as i}<span class="speaking-bar w-[3px] rounded-full bg-neutral-300" style:animation-delay="{i * 0.13}s"></span>{/each}</span>
-                Озвучиваю
-                <span class="flex items-center gap-1.5 rounded-full bg-neutral-800 px-2.5 py-1 text-neutral-100"><span class="size-2 rounded-[2px] bg-current"></span>Стоп</span>
-              </button>
-            </div>
+            <SpeakingPill onstop={stopSpeech} />
           {/if}
           <Composer bind:this={composer} {videoInterval} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
         </div>
