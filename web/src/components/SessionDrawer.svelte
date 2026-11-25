@@ -35,11 +35,24 @@
   }
   const secretary = $derived(sessions.find(s => s.secretary));
   const secretaryId = $derived(secretary?.id);
-  const visibleSessions = $derived(sessions.filter(s => !s.internal && !s.hidden));
+  // Specialists with their Workers under them; a Worker whose Specialist is not in the list shows as a top row.
+  function groups(list) {
+    const ids = new Set(list.map(s => s.id));
+    return list.filter(s => !s.parent_id || s.parent_id === secretaryId || !ids.has(s.parent_id))
+      .map(s => ({ session: s, workers: list.filter(w => w.parent_id === s.id) }));
+  }
+  const visibleGroups = $derived(groups(sessions.filter(s => !s.internal && !s.hidden)));
   const hiddenSessions = $derived(sessions.filter(s => !s.internal && s.hidden));
-  const visibleIds = $derived(new Set(visibleSessions.map(s => s.id)));
-  const topSessions = $derived(visibleSessions.filter(s => !s.parent_id || s.parent_id === secretaryId || !visibleIds.has(s.parent_id)));
-  const childrenOf = (id) => visibleSessions.filter(s => s.parent_id === id);
+  const hiddenGroups = $derived(groups(hiddenSessions));
+
+  // Workers are folded by default; what the owner unfolded is remembered on this device.
+  let expanded = $state(new Set(JSON.parse(localStorage.getItem('expanded-specialists') || '[]')));
+  function toggle(id) {
+    const next = new Set(expanded);
+    next.has(id) ? next.delete(id) : next.add(id);
+    expanded = next;
+    localStorage.setItem('expanded-specialists', JSON.stringify([...next]));
+  }
 
   const statusText = { running: 'работает', idle: 'свободен', interrupted: 'прерван', stopped: 'остановлен' };
   const dotClass = {
@@ -56,23 +69,27 @@
   <span class="flex items-center gap-1 truncate text-xs text-neutral-500"><Icon name={s.harness} class="size-3 shrink-0 {harnessInfo(s.harness).accent}" />{modelLabel(s.model)}{#if s.reasoning}<span>· {s.reasoning}</span>{/if}</span>
 {/snippet}
 
-{#snippet sessionRow(s, compact = false)}
+{#snippet sessionRow(s, worker = false, workers = [])}
   {@const title = s.name || `Сессия #${s.id}`}
   {@const active = selected === s.id}
+  {@const unfolded = expanded.has(s.id) || workers.some(w => w.id === selected)}
   <div class="group flex items-center rounded-lg transition-colors {active ? 'bg-neutral-900 ring-1 ring-neutral-800' : 'hover:bg-neutral-900/70'}">
-    <button class="min-w-0 flex-1 cursor-pointer rounded-lg text-left {compact ? 'px-2.5 py-1.5' : 'px-3 py-2'}" onclick={() => onselect(s.id)}>
+    <button class="min-w-0 flex-1 cursor-pointer rounded-lg text-left {worker ? 'px-2.5 py-1.5' : 'px-3 py-2'}" onclick={() => onselect(s.id)}>
       <span class="flex min-w-0 items-center gap-2">
-        <span class="size-1.5 shrink-0 rounded-full {dotClass[s.status] ?? 'bg-neutral-600'}" aria-hidden="true"></span>
-        <span class="truncate {compact ? 'text-xs' : 'text-sm font-medium'} {active ? 'text-neutral-100' : compact ? 'text-neutral-400' : 'text-neutral-200'}">{title}</span>
-        {#if compact}
-          <span class="ml-auto flex shrink-0 items-center gap-1 text-[10px] text-neutral-500"><Icon name={s.harness} class="size-3 {harnessInfo(s.harness).accent}" />{modelLabel(s.model)}</span>
-        {/if}
+        <span class="size-1.5 shrink-0 rounded-full {dotClass[s.status] ?? 'bg-neutral-600'}" aria-hidden="true" title={statusText[s.status] ?? s.status}></span>
+        <span class="min-w-0 flex-1 truncate {worker ? 'text-xs' : 'text-sm'} {active ? 'text-neutral-100' : worker ? 'text-neutral-400' : 'text-neutral-200'}">{title}</span>
+        <Icon name={s.harness} class="size-3.5 shrink-0 {harnessInfo(s.harness).accent}" />
       </span>
-      {#if !compact}
-        <span class="mt-0.5 flex items-center gap-1 truncate pl-3.5 text-xs text-neutral-500">{statusText[s.status] ?? s.status} ·{@render agentLine(s)}</span>
-        <span class="block truncate pl-3.5 font-mono text-xs text-neutral-600">{s.folder}</span>
+      {#if active}
+        <span class="mt-0.5 flex min-w-0 items-center gap-1 pl-3.5 text-xs text-neutral-500">{statusText[s.status] ?? s.status} ·{@render agentLine(s)}</span>
+        <span class="block truncate pl-3.5 font-mono text-[11px] text-neutral-600">{s.folder}</span>
       {/if}
     </button>
+    {#if workers.length}
+      <button class="flex h-8 min-w-12 shrink-0 cursor-pointer items-center justify-center gap-1 rounded-lg border border-neutral-800 px-2 text-xs text-neutral-400 transition-colors hover:border-neutral-600 hover:text-neutral-100" aria-expanded={unfolded} aria-label={`${unfolded ? 'Свернуть' : 'Показать'} Workers: ${workers.length}`} onclick={() => toggle(s.id)}>
+        <Icon name="chevron" class="size-3.5 transition-transform {unfolded ? '' : '-rotate-90'}" />{workers.length}
+      </button>
+    {/if}
     {#if s.hidden}
       <button class="icon-btn mr-1 shrink-0 disabled:cursor-not-allowed disabled:opacity-30" aria-label={`Вернуть сессию ${title} в список`} title="Вернуть в список" disabled={!connected} onclick={() => onrestore(s)}>
         <Icon name="eye" />
@@ -83,6 +100,11 @@
       </button>
     {/if}
   </div>
+  {#if unfolded}
+    <div class="ml-3.5 mt-0.5 mb-1 flex flex-col gap-0.5 border-l border-neutral-800 pl-2.5">
+      {#each workers as w (w.id)}{@render sessionRow(w, true)}{/each}
+    </div>
+  {/if}
 {/snippet}
 
 {#if open}
@@ -98,19 +120,9 @@
         <Icon name="close" />
       </button>
     </div>
-    <nav class="flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto p-2">
-      {#each topSessions as s (s.id)}
-        {@const workers = childrenOf(s.id)}
-        <div class="flex flex-col gap-0.5">
-          {@render sessionRow(s, false)}
-          {#if workers.length}
-            <div class="ml-3.5 mt-0.5 mb-1 flex flex-col gap-0.5 border-l border-neutral-800 pl-2.5">
-              {#each workers as worker (worker.id)}
-                {@render sessionRow(worker, true)}
-              {/each}
-            </div>
-          {/if}
-        </div>
+    <nav class="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto p-2">
+      {#each visibleGroups as g (g.session.id)}
+        <div class="flex flex-col gap-0.5">{@render sessionRow(g.session, false, g.workers)}</div>
       {/each}
       {#if hiddenSessions.length}
         <div class="mt-2 border-t border-neutral-900 pt-2">
@@ -120,8 +132,8 @@
           </button>
           {#if hiddenOpen}
             <div class="mt-1 flex flex-col gap-1">
-              {#each hiddenSessions as s (s.id)}
-                {@render sessionRow(s, !!(s.parent_id && s.parent_id !== secretaryId))}
+              {#each hiddenGroups as g (g.session.id)}
+                <div class="flex flex-col gap-0.5">{@render sessionRow(g.session, false, g.workers)}</div>
               {/each}
             </div>
           {/if}
