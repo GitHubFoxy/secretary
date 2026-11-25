@@ -1,7 +1,7 @@
 import { authorized, pair } from './auth';
 import { chatPage, chatMessage } from './chat';
 import { claudeTurn } from './claude';
-import { codexTurn } from './codex';
+import { codexRateLimits, codexTurn } from './codex';
 import { secretaryFolder } from './config';
 import { fileResponse, saveFile } from './files';
 import { migrateDatabase, openDatabase } from './database';
@@ -97,6 +97,8 @@ const server = Bun.serve({
     }
     if (url.pathname === '/model-details')
       return Promise.resolve().then(() => modelDetails(url.searchParams.get('harness') || '', true)).then(result => Response.json(result), error => new Response(String(error), { status: 500 }));
+    if (url.pathname === '/codex/limits')
+      return codexRateLimits().then(limits => Response.json(limits), error => new Response(error.message, { status: 500 }));
     if (url.pathname === '/settings/video') {
       if (request.method === 'GET') return Bun.file(videoIntervalFile).exists().then(exists => exists ? Bun.file(videoIntervalFile).text() : '1').then(interval => Response.json({interval}));
       if (request.method === 'PUT') return request.text().then(value => { if (!['1', '2'].includes(value)) throw new Error('Недопустимая частота кадров'); return Bun.write(videoIntervalFile, value); }).then(() => new Response(null, {status:204}), error => new Response(String(error), {status:400}));

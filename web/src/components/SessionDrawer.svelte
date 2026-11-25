@@ -1,7 +1,7 @@
 <script>
   import { fade, fly } from 'svelte/transition';
   import Icon from './Icon.svelte';
-  let { open = false, sessions = [], selected, connected = false, onhide, onrestore, onselect, onclose, onprofile } = $props();
+  let { open = false, sessions = [], selected, connected = false, onhide, onrestore, onselect, onclose, onprofile, onlimits } = $props();
 
   let hiddenOpen = $state(false);
   let offset = $state(0), dragging = $state(false);
@@ -119,10 +119,13 @@
         </div>
       {/if}
     </nav>
-    <div class="border-t border-neutral-900 p-2">
-      <button class="flex w-full cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors hover:bg-neutral-900" title="Настройки" onclick={onprofile}>
+    <div class="flex items-center gap-1 border-t border-neutral-900 p-2">
+      <button class="flex min-w-0 flex-1 cursor-pointer items-center gap-3 rounded-lg px-3 py-2 text-left transition-colors hover:bg-neutral-900" title="Настройки" onclick={onprofile}>
         <span class="grid size-8 shrink-0 place-items-center rounded-full bg-neutral-800 text-sm font-medium text-neutral-100" aria-hidden="true">М</span>
         <span class="truncate text-sm text-neutral-200">Mikhail</span>
+      </button>
+      <button class="icon-btn shrink-0" aria-label="Лимиты Codex" title="Лимиты Codex" onclick={onlimits}>
+        <Icon name="gauge" />
       </button>
     </div>
   </aside>

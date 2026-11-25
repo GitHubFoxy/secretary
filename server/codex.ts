@@ -55,3 +55,23 @@ export const codexTurn: Turn = async (options, text, images) => {
     await reading;
   }
 };
+
+// Лимиты читает отдельный app-server: он не мешает ходам сессий и закрывается сразу после ответа.
+export async function codexRateLimits() {
+  const p = Bun.spawn(['codex', 'app-server'], { stdin: 'pipe', stdout: 'pipe', stderr: 'ignore', signal: AbortSignal.timeout(15_000) });
+  const send = (message: object) => { p.stdin.write(JSON.stringify(message) + '\n'); p.stdin.flush(); };
+  send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'secretary', version: '0.1.0' }, capabilities: null } });
+  send({ method: 'initialized' });
+  send({ id: 2, method: 'account/rateLimits/read' });
+  let limits: any;
+  try {
+    await readJsonLines(p.stdout, message => {
+      if (message.id !== 2) return;
+      if (message.error) throw new Error(message.error.message);
+      limits = message.result;
+      return false;
+    });
+  } finally { p.kill(); }
+  if (!limits) throw new Error('Codex не ответил на запрос лимитов');
+  return limits;
+}

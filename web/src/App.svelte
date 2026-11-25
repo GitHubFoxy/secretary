@@ -15,6 +15,7 @@
   import VoiceMode from './components/VoiceMode.svelte';
   import Modal from './components/Modal.svelte';
   import ProfileScreen from './components/ProfileScreen.svelte';
+  import CodexLimits from './components/CodexLimits.svelte';
   import SpeakingPill from './components/SpeakingPill.svelte';
   import { Capacitor, registerPlugin } from '@capacitor/core';
   const host = registerPlugin('Host');
@@ -103,6 +104,7 @@
   }
   $: secretaryForShare = sessions.find(s => s.secretary);
   $: if (shared.length && secretaryForShare && !shareBusy) applyShared(shared[0], secretaryForShare);
+  let limitsOpen = false, limits = null, limitsStatus = '';
   let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
   let agentsOriginal = '', agentsSaving = false;
   let interruptStates = {};
@@ -272,6 +274,14 @@
     } finally { agentsSaving = false; }
   }
   function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); loadVoiceModel(); loadTtsEngine(); }
+  async function openLimits() {
+    drawerOpen = false; limitsOpen = true; limits = null; limitsStatus = 'Загрузка…';
+    try {
+      const response = await fetch('/codex/limits');
+      if (!response.ok) throw new Error(await response.text());
+      limits = await response.json(); limitsStatus = '';
+    } catch (err) { limitsStatus = `Не удалось загрузить: ${err.message || err}`; }
+  }
   // Queued messages are not accepted by the agent yet, so they come after history.
   $: messages = [
     ...history.map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})),
@@ -362,6 +372,10 @@
       <SettingsPanel bind:harness bind:model bind:reasoning {connected} onsave={saveSettings} onstop={stop} oncreate={createThread} onrename={openRename} />
     </Modal>
 
+    <Modal open={limitsOpen} title="Лимиты Codex" onclose={() => (limitsOpen = false)}>
+      <CodexLimits {limits} status={limitsStatus} />
+    </Modal>
+
     {#if error}
       <p role="alert" class="border-b border-neutral-900 px-4 py-2 text-center text-sm text-red-400">{error}</p>
     {/if}
@@ -385,6 +399,6 @@
 
     {#if voiceMode}{#key voiceKey}<VoiceMode variant="full" {...voiceProps} onclose={() => (voiceMode = false)} />{/key}{/if}
 
-    <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onhide={s => setHidden(s, true)} onrestore={s => setHidden(s, false)} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} />
+    <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onhide={s => setHidden(s, true)} onrestore={s => setHidden(s, false)} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} onlimits={openLimits} />
   </div>
 {/if}
