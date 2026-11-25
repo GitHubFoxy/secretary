@@ -1,6 +1,6 @@
 <script>
   // Окна лимитов приходят в минутах: 300 — пять часов, 10080 — неделя.
-  let { limits = null, status = '' } = $props();
+  let { limits = null, status = '', onrefresh } = $props();
 
   const windowName = minutes => {
     if (!minutes) return 'Окно';
@@ -12,10 +12,37 @@
   const resetText = seconds => new Date(seconds * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
   const barClass = percent => percent >= 100 ? 'bg-red-500' : percent >= 80 ? 'bg-amber-500' : 'bg-emerald-500';
 
+  const minute = 60_000;
+  let now = $state(Date.now());
+  let lastRefresh = 0;
+
+  // Остаток считается от времени сброса, которое уже пришло от Codex, и не уходит ниже нуля.
+  const countdown = seconds => {
+    const left = Math.max(0, seconds * 1000 - now);
+    const parts = [[Math.floor(left / (24 * 60 * minute)), 'д'], [Math.floor(left / (60 * minute)) % 24, 'ч'], [Math.floor(left / minute) % 60, 'м']];
+    // Как в T3 Code: начинаем с крупнейшей ненулевой единицы. Берём две, чтобы отсчёт был виден поминутно.
+    const first = parts.findIndex(([n]) => n > 0);
+    if (first < 0) return left > 0 ? '<1м' : 'сейчас';
+    return parts.slice(first, first + 2).filter(([n]) => n > 0).map(([n, u]) => `${n}${u}`).join(' ');
+  };
+
   const snapshots = $derived.by(() => {
     if (!limits) return [];
     const byId = Object.values(limits.rateLimitsByLimitId ?? {}).filter(Boolean);
     return byId.length ? byId : [limits.rateLimits];
+  });
+
+  // Раз в минуту обновляем отсчёт. Если какой-то сброс уже прошёл, просим свежие лимиты, но не чаще раза в минуту.
+  $effect(() => {
+    const timer = setInterval(() => {
+      now = Date.now();
+      const passed = snapshots.some(s => [s.primary, s.secondary].some(w => w?.resetsAt && w.resetsAt * 1000 <= now));
+      if (passed && now - lastRefresh >= minute) {
+        lastRefresh = now;
+        onrefresh?.();
+      }
+    }, minute);
+    return () => clearInterval(timer);
   });
 </script>
 
@@ -44,7 +71,7 @@
               <div class="h-full rounded-full {barClass(window.usedPercent)}" style:width="{Math.min(100, window.usedPercent)}%"></div>
             </div>
             {#if window.resetsAt}
-              <span class="text-xs text-neutral-500">Сброс: {resetText(window.resetsAt)}</span>
+              <span class="text-xs text-neutral-500">До сброса: <span class="font-mono text-neutral-300">{countdown(window.resetsAt)}</span> · {resetText(window.resetsAt)}</span>
             {/if}
           </div>
         {/each}

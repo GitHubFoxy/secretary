@@ -274,13 +274,16 @@
     } finally { agentsSaving = false; }
   }
   function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); loadVoiceModel(); loadTtsEngine(); }
-  async function openLimits() {
-    drawerOpen = false; limitsOpen = true; limits = null; limitsStatus = 'Загрузка…';
+  async function loadLimits() {
     try {
       const response = await fetch('/codex/limits');
       if (!response.ok) throw new Error(await response.text());
       limits = await response.json(); limitsStatus = '';
     } catch (err) { limitsStatus = `Не удалось загрузить: ${err.message || err}`; }
+  }
+  function openLimits() {
+    drawerOpen = false; limitsOpen = true; limits = null; limitsStatus = 'Загрузка…';
+    loadLimits();
   }
   // Queued messages are not accepted by the agent yet, so they come after history.
   $: messages = [
@@ -373,7 +376,7 @@
     </Modal>
 
     <Modal open={limitsOpen} title="Лимиты Codex" onclose={() => (limitsOpen = false)}>
-      <CodexLimits {limits} status={limitsStatus} />
+      <CodexLimits {limits} status={limitsStatus} onrefresh={loadLimits} />
     </Modal>
 
     {#if error}
