@@ -42,7 +42,7 @@ test('событие ответа публикуется только после
   calls[0].options.onEvent({type:'result', result:'# Ответ\n- **Ссылка**: [сайт](https://example.org)\n- `команда`'});
   expect(published.filter(e => e.type === 'secretary_reply')).toEqual([]);
   calls[0].end(true); await tick();
-  expect(published.filter(e => e.type === 'secretary_reply')).toEqual([{type:'secretary_reply', text:'Ответ\nСсылка: сайт\nкоманда'}]);
+  expect(published.filter(e => e.type === 'secretary_reply')).toEqual([{type:'secretary_reply', text:'Ответ\n• Ссылка: сайт\n• команда'}]);
   const specialist = await create();
   specialist.send('задача'); calls[1].start(); calls[1].answer('готово'); await tick();
   secretary.send('ещё'); calls[2].start(); calls[2].options.onEvent({type:'result', result:'черновик'}); calls[2].end(false); await tick();
