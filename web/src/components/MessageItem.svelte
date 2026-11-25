@@ -2,6 +2,7 @@
   import Markdown from './Markdown.svelte';
   import Report from './Report.svelte';
   import Icon from './Icon.svelte';
+  import Modal from './Modal.svelte';
   import { duration, parseVoice } from '../voice.js';
   import { videoText } from '../prepare-video.js';
   import { fileSize } from '../file-size.js';
@@ -10,6 +11,8 @@
 
   const isImage = type => type.startsWith('image/');
   const isVideo = type => type.startsWith('video/');
+  // Картинку открываем внутри приложения: ссылка target="_blank" в Android-оболочке уводит в окно, откуда нет пути назад.
+  let viewed = $state(null);
   const fileUrl = file => `/files/${file.id}/${encodeURIComponent(file.name)}`;
 
   // Фото и видео показываем из images, а их оригиналы лежат в files; остальные файлы остаются карточками.
@@ -88,9 +91,9 @@
                 </span>
               </span>
             {:else}
-              <a href={image.original ? fileUrl(image.original) : image.url || 'data:' + image.type + ';base64,' + image.data} target="_blank" rel="noopener">
+              <button type="button" class="block" aria-label="Открыть изображение" onclick={() => (viewed = { src: image.original ? fileUrl(image.original) : image.url || 'data:' + image.type + ';base64,' + image.data, alt: 'Прикреплённое изображение' })}>
                 <img class="my-2 max-h-80 max-w-full rounded-lg" src={image.url || 'data:' + image.type + ';base64,' + image.data} alt="Прикреплённое изображение" />
-              </a>
+              </button>
             {/if}
           {/each}
           {#if voice}
@@ -116,7 +119,7 @@
           {@const src = fileUrl(file)}
           <div class="mb-3 flex flex-col items-start gap-2">
             {#if isImage(file.type)}
-              <a href={src} target="_blank" rel="noopener"><img class="max-h-80 max-w-full rounded-lg" {src} alt={file.name} /></a>
+              <button type="button" aria-label="Открыть изображение" onclick={() => (viewed = { src, alt: file.name })}><img class="max-h-80 max-w-full rounded-lg" {src} alt={file.name} /></button>
             {:else if isVideo(file.type)}
               <video class="max-h-80 max-w-full rounded-lg" {src} controls playsinline preload="metadata"><track kind="captions" /></video>
             {:else if file.type.startsWith('audio/')}
@@ -139,3 +142,7 @@
     </div>
   {/if}
 </div>
+
+<Modal open={!!viewed} title={viewed?.alt} onclose={() => (viewed = null)}>
+  <img class="mx-auto max-h-[70dvh] max-w-full rounded-lg" src={viewed?.src} alt={viewed?.alt} />
+</Modal>
