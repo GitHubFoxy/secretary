@@ -1,4 +1,5 @@
 <script>
+  import { blockedBySpentWeek } from '../codex-limits.js';
   // Окна лимитов приходят в минутах: 300 — пять часов, 10080 — неделя.
   let { limits = null, status = '', onrefresh } = $props();
 
@@ -61,7 +62,7 @@
         {#if snapshot.rateLimitReachedType}
           <p class="text-sm text-red-400">Лимит исчерпан</p>
         {/if}
-        {#each [snapshot.primary, snapshot.secondary].filter(Boolean) as window}
+        {#each blockedBySpentWeek(snapshot, now) as window}
           <div class="flex flex-col gap-1.5">
             <div class="flex items-baseline justify-between text-xs text-neutral-400">
               <span>{windowName(window.windowDurationMins)}</span>
