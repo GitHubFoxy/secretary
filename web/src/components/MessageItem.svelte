@@ -6,6 +6,7 @@
   import { duration, parseVoice } from '../voice.js';
   import { videoText } from '../prepare-video.js';
   import { fileSize } from '../file-size.js';
+  import { harnessInfo, modelLabel } from '../agents.js';
 
   let { message: m, sessions = [], connected = false, restoreDisabled = false, onselect, onsendQueued, onretryVoice, onrestorePreparing } = $props();
 
@@ -25,8 +26,20 @@
   }
 </script>
 
+{#snippet agent(a)}
+  {@const info = harnessInfo(a.harness)}
+  <span class="inline-flex items-center gap-1 whitespace-nowrap {info.accent}"><Icon name={a.harness} class="size-3.5" />{modelLabel(a.model)}{#if a.reasoning}<span class="text-neutral-500"> · {a.reasoning}</span>{/if}</span>
+{/snippet}
+
 <div data-message>
-  {#if m.kind === 'report'}
+  {#if m.kind === 'switch'}
+    <div class="flex items-center gap-2 text-xs text-neutral-400" role="note" aria-label="Модель переключена">
+      <div class="h-px flex-1 bg-neutral-800"></div>
+      <Icon name="switch" class="size-3.5 shrink-0" />
+      <span class="flex flex-wrap items-center justify-center gap-x-1.5">{@render agent(m.from)}<span class="text-neutral-600">→</span>{@render agent(m.to)}</span>
+      <div class="h-px flex-1 bg-neutral-800"></div>
+    </div>
+  {:else if m.kind === 'report'}
     <div class="flex justify-start">
       <Report message={m} session={sessions.find(s => s.id === m.report.id)} {onselect} />
     </div>

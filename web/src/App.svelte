@@ -17,6 +17,7 @@
   import ProfileScreen from './components/ProfileScreen.svelte';
   import CodexLimits from './components/CodexLimits.svelte';
   import SpeakingPill from './components/SpeakingPill.svelte';
+  import { mergeSwitches } from './agents.js';
   import { Capacitor, registerPlugin } from '@capacitor/core';
   const host = registerPlugin('Host');
   const share = registerPlugin('Share');
@@ -37,7 +38,7 @@
   }
   if ((overlay || new URLSearchParams(location.search).has('secretary')) && !cached?.sessions?.find(s => s.id === cached.selected)?.secretary) cached = null;
   let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyToken = 0;
-  let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', harness = 'claude', model = 'opus', reasoning = null, connected = false;
+  let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', connected = false;
   if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }
   let voiceMessages = [], voiceModel = '', voiceStatus = '', videoInterval = '1', ttsEngine = '', speaking = false;
   const speech = createSpeechPlayer(value => { speaking = value; });
@@ -218,13 +219,7 @@
       voiceMessages = voiceMessages.map(v => v.key === item.key ? {...v, error:err.message} : v);
     }
   }
-  // The settings form edits a copy of the selected session's harness, model and reasoning.
-  function loadSettings() { if (!current) return; harness = current.harness; model = current.model; reasoning = current.reasoning ?? null; }
-  function saveSettings() {
-    if (!current) return;
-    if (current.harness !== harness && !confirm('Текущий контекст будет потерян. Продолжить?')) { loadSettings(); return; }
-    command({type:'settings', id:selected, harness, model, reasoning}); settingsOpen = false;
-  }
+  function saveSettings({harness, model, reasoning}) { command({type:'settings', id:selected, harness, model, reasoning}); settingsOpen = false; }
   function stop() { command({type:'stop', id:selected}); }
   async function interrupt() {
     stopSpeech();
@@ -235,14 +230,15 @@
     catch (err) { if (!err.disconnected) interruptFeedback.fail(id, requestId, err.message); }
   }
   function setHidden(session, hidden) { if (connected) { error = ''; command({type:'visibility', id:session.id, hidden}); } }
-  function openSettings() { loadSettings(); settingsOpen = true; }
+  function openSettings() { settingsOpen = true; }
   function openRename() { newName = title; settingsOpen = false; renameOpen = true; }
   function rename() { if (!connected || !newName.trim()) return; error = ''; command({type:'rename', id:selected, name:newName}); renameOpen = false; }
-  // A new chat in the same folder with the saved settings of the current one.
-  async function createThread() {
+  // A separate chat in the folder of the current one, starting from an empty context.
+  async function createThread({harness, model, reasoning, name}) {
     if (!current) return;
     try {
-      const {id} = await connection.request({type:'create', harness:current.harness, model:current.model, reasoning:current.reasoning ?? null, folder:current.folder});
+      const {id} = await connection.request({type:'create', harness, model, reasoning, folder:current.folder});
+      if (name.trim()) await connection.request({type:'rename', id, name});
       settingsOpen = false; select(id);
     } catch (err) { error = err.message; }
   }
@@ -287,7 +283,7 @@
   }
   // Queued messages are not accepted by the agent yet, so they come after history.
   $: messages = [
-    ...history.map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})),
+    ...mergeSwitches(history).map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})),
     ...voiceMessages.filter(item => item.id === selected),
     ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:[...item.images, ...(item.files || [])], urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
     ...preparing.filter(item => item.sessionId === selected).map(item => ({...item, kind:'preparing', key:`preparing:${item.id}`})),
@@ -371,8 +367,8 @@
       </form>
     </Modal>
 
-    <Modal open={settingsOpen} title="Настройки сессии" onclose={() => (settingsOpen = false)}>
-      <SettingsPanel bind:harness bind:model bind:reasoning {connected} onsave={saveSettings} onstop={stop} oncreate={createThread} onrename={openRename} />
+    <Modal open={settingsOpen} title={current?.secretary ? 'Secretary Agent' : 'Настройки чата'} onclose={() => (settingsOpen = false)}>
+      {#if current}{#key selected}<SettingsPanel session={current} {connected} onsave={saveSettings} onstop={stop} oncreate={createThread} onrename={openRename} />{/key}{/if}
     </Modal>
 
     <Modal open={limitsOpen} title="Лимиты Codex" onclose={() => (limitsOpen = false)}>

@@ -7,7 +7,10 @@ export type ChatMessage =
   | { kind: 'user' | 'cancelled' | 'uncertain'; text: string; images: Image[]; files?: FileAttachment[] }
   | { kind: 'agent'; text: string; files?: FileAttachment[] }
   | { kind: 'error'; text: string }
-  | { kind: 'report'; text: string; report: { id: number; harness: string; folder: string } };
+  | { kind: 'report'; text: string; report: { id: number; harness: string; folder: string } }
+  | { kind: 'switch'; from: AgentSettings; to: AgentSettings };
+
+export type AgentSettings = { harness: string; model: string; reasoning: string | null };
 
 type Child = { id: number; harness: string; folder: string };
 const reportPattern = /^\[report #(\d+) (\S+) ([^\]\n]+)\] ([\s\S]*)$/;
@@ -35,6 +38,7 @@ export function chatMessage(event: any): ChatMessage | null {
     const text = error.message || 'Неизвестная ошибка';
     return { kind: 'error', text };
   }
+  if (event?.type === 'model_switch') return { kind: 'switch', from: event.from, to: event.to };
   if (event?.type === 'agent_files') return { kind: 'agent', text: event.text, files: event.files };
   const answer = agentAnswer(event);
   if (answer !== null) return answer && !answer.startsWith('NO_REPLY') ? { kind: 'agent', text: answer } : null;
@@ -52,22 +56,48 @@ export function chatMessage(event: any): ChatMessage | null {
   return null;
 }
 
-// Newest chat messages, scanning raw events backwards until enough are found.
-function recentMessages(db: Database, sessionId: number, limit: number, before = Number.MAX_SAFE_INTEGER) {
+// Chat messages from newest to oldest, scanning raw events backwards.
+function* messagesBefore(db: Database, sessionId: number, before = Number.MAX_SAFE_INTEGER) {
   const query = db.query('SELECT rowid, json FROM events WHERE session_id = ? AND rowid < ? ORDER BY rowid DESC LIMIT 200');
-  const messages: (ChatMessage & {cursor: number})[] = [];
   let cursor = before;
-  while (messages.length < limit) {
+  while (true) {
     const rows = query.all(sessionId, cursor) as { rowid: number; json: string }[];
     for (const row of rows) {
       cursor = row.rowid;
       const message = chatMessage(JSON.parse(row.json));
-      if (message) messages.push({...message, cursor});
-      if (messages.length >= limit) break;
+      if (message) yield {...message, cursor};
     }
-    if (rows.length < 200) break;
+    if (rows.length < 200) return;
+  }
+}
+
+function recentMessages(db: Database, sessionId: number, limit: number, before?: number) {
+  const messages: (ChatMessage & {cursor: number})[] = [];
+  for (const message of messagesBefore(db, sessionId, before)) {
+    messages.push(message);
+    if (messages.length >= limit) break;
   }
   return messages.reverse();
+}
+
+// About 30k tokens: a token is 3-4 characters of Russian or English text.
+const transcriptBudget = 100_000;
+
+// What a new harness session learns of the chat: the owner's messages and the agent's answers, newest within the budget.
+export function chatTranscript(db: Database, sessionId: number) {
+  const lines: string[] = [];
+  let size = 0;
+  for (const message of messagesBefore(db, sessionId)) {
+    const line = message.kind === 'user' ? `Пользователь: ${message.text}`
+      : message.kind === 'agent' ? `Агент: ${message.text}`
+      : message.kind === 'report' ? `Отчёт #${message.report.id}: ${message.text}` : null;
+    if (!line) continue;
+    if (size + line.length > transcriptBudget) break;
+    lines.push(line);
+    size += line.length;
+  }
+  if (!lines.length) return '';
+  return `Это продолжение чата, который до тебя вёл другой агент. Его последние сообщения:\n<history>\n${lines.reverse().join('\n\n')}\n</history>\n\n`;
 }
 
 export function chatHistory(db: Database, sessionId: number, limit: number) {

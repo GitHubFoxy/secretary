@@ -12,9 +12,10 @@ type Call = { text: string; options: TurnOptions; start(): void; answer(text: st
 function setup(db: Database = openDatabase(':memory:')) {
   const calls: Call[] = [];
   const published: any[] = [];
+  // Like a real harness, a started turn reports its session id, so the next turn resumes it.
   const turn: Turn = (options, text) => new Promise((resolve, reject) => calls.push({
     text, options,
-    start() { options.onDispatching(); options.onAccepted(); },
+    start() { options.onSessionId(options.resumeId ?? `thread-${calls.length}`); options.onDispatching(); options.onAccepted(); },
     answer(answer) { options.onEvent({ type: 'result', result: answer }); resolve(true); },
     end: resolve,
     fail: () => reject(new Error('spawn failed')),
@@ -276,4 +277,26 @@ test('сообщение голосового режима хранит полу
   expect(after.published.some(event => event.type === 'speech_event')).toBe(false);
   after.calls[0].end(true); await tick();
   expect(after.published.some(event => event.type === 'speech_end')).toBe(false);
+});
+
+test('смена harness продолжает чат: событие в истории, новый harness получает переписку, смена модели — нет', async () => {
+  const { calls, sessions, create } = setup();
+  const s = await create();
+  s.send('первый вопрос'); calls[0].start();
+  calls[0].options.onEvent({ type: 'tool_use', name: 'Bash' });
+  calls[0].answer('первый ответ'); await tick();
+
+  await sessions.configure(s.id, { harness: 'claude', model: 'sonnet', reasoning: null });
+  s.send('второй'); calls[1].start(); calls[1].answer('ok'); await tick();
+  expect(calls[1].options.resumeId).toBe('thread-1');
+  expect(calls[1].text).toBe('второй');
+
+  await sessions.configure(s.id, { harness: 'codex', model: 'gpt', reasoning: 'high' });
+  await sessions.configure(s.id, { harness: 'codex', model: 'gpt', reasoning: 'high' });
+  expect(s.events().filter(e => e.type === 'model_switch').map(e => `${e.from.model}→${e.to.model}`)).toEqual(['m→sonnet', 'sonnet→gpt']);
+  s.send('третий');
+  expect(calls[2].options.resumeId).toBeNull();
+  expect(calls[2].text).toContain('Пользователь: первый вопрос\n\nАгент: первый ответ\n\nПользователь: второй\n\nАгент: ok');
+  expect(calls[2].text).not.toContain('Bash');
+  expect(calls[2].text.endsWith('</history>\n\nтретий')).toBe(true);
 });

@@ -7,7 +7,7 @@
   import { duration, wavFromRecording } from '../voice.js';
   import { prepareImage } from '../prepare-image.js';
   import { prepareVideo, frameFromCanvas, finishVideo } from '../prepare-video.js';
-  // onsubmit(immediate): true — прервать идущий ход и отправить сразу (правая кнопка и Enter), false — добавить в очередь (левая кнопка во время хода).
+  // onsubmit(immediate): true — прервать идущий ход и отправить сразу (правая кнопка и Enter на ПК), false — добавить в очередь (левая кнопка во время хода).
   let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, sessionId, videoInterval = 1, onsubmit, oninterrupt, onvoice, onvideo, onmicpress, onrecordstart } = $props();
   let imageError = $state(''), attachOpen = $state(false);
   let area = $state();
@@ -183,8 +183,10 @@
   }
 
   // Срочная отправка нужна только во время работы агента.
+  // На сенсорном экране (основной ввод — палец) Enter переносит строку, отправка — кнопкой.
+  const touch = matchMedia('(pointer: coarse)').matches;
   function keydown(e) {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && !touch) {
       e.preventDefault();
       submit();
     }
@@ -222,7 +224,7 @@
       onkeydown={keydown}
       onpaste={paste}
       placeholder="Напишите сообщение"
-      class="max-h-40 min-h-10 flex-1 resize-none bg-transparent px-2 py-2 text-[15px] text-neutral-100 placeholder:text-neutral-600 focus:outline-none"
+      class="max-h-40 min-h-10 flex-1 resize-none bg-transparent [scrollbar-width:none] [&::-webkit-scrollbar]:hidden px-2 py-2 text-[15px] text-neutral-100 placeholder:text-neutral-600 focus:outline-none"
     ></textarea>
     {#if running && !value.trim() && !images.length}
       <button

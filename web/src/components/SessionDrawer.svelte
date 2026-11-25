@@ -1,6 +1,7 @@
 <script>
   import { fade, fly } from 'svelte/transition';
   import Icon from './Icon.svelte';
+  import { harnessInfo, modelLabel } from '../agents.js';
   let { open = false, sessions = [], selected, connected = false, onhide, onrestore, onselect, onclose, onprofile, onlimits } = $props();
 
   let hiddenOpen = $state(false);
@@ -59,11 +60,11 @@
         <span class="size-1.5 shrink-0 rounded-full {dotClass[s.status] ?? 'bg-neutral-600'}" aria-hidden="true"></span>
         <span class="truncate {compact ? 'text-xs' : 'text-sm font-medium'} {active ? 'text-neutral-100' : compact ? 'text-neutral-400' : 'text-neutral-200'}">{title}</span>
         {#if compact}
-          <span class="ml-auto shrink-0 font-mono text-[10px] text-neutral-500">{s.model}</span>
+          <span class="ml-auto flex shrink-0 items-center gap-1 text-[10px] text-neutral-500"><Icon name={s.harness} class="size-3 {harnessInfo(s.harness).accent}" />{modelLabel(s.model)}</span>
         {/if}
       </span>
       {#if !compact}
-        <span class="mt-0.5 block truncate pl-3.5 text-xs text-neutral-500">{statusText[s.status] ?? s.status} · {s.model} · {s.reasoning ?? 'по умолчанию'}</span>
+        <span class="mt-0.5 flex items-center gap-1 truncate pl-3.5 text-xs text-neutral-500">{statusText[s.status] ?? s.status} · <Icon name={s.harness} class="size-3 shrink-0 {harnessInfo(s.harness).accent}" />{modelLabel(s.model)}{#if s.reasoning}<span>· {s.reasoning}</span>{/if}</span>
         <span class="block truncate pl-3.5 font-mono text-xs text-neutral-600">{s.folder}</span>
       {/if}
     </button>

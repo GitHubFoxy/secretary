@@ -1,5 +1,5 @@
 import type { Database } from 'bun:sqlite';
-import { agentAnswer } from './chat';
+import { agentAnswer, chatTranscript } from './chat';
 import { writeEvent } from './database';
 import type { Turn, TurnOptions } from './harness';
 import { validateImages } from './images';
@@ -70,11 +70,15 @@ export class Session {
   }
 
   // Switching harness starts a new harness session: the old context cannot be resumed by the other harness.
+  // The chat itself goes on; the next turn hands the new harness a transcript.
   configure(harness: string, model: string, reasoning: string | null) {
     if (this.turn) throw new Error('Сессия работает');
-    if (harness !== this.row.harness) this.row.harness_session_id = null;
+    const { harness: oldHarness, model: oldModel, reasoning: oldReasoning } = this.row;
+    if (harness === oldHarness && model === oldModel && reasoning === oldReasoning) return;
+    if (harness !== oldHarness) this.row.harness_session_id = null;
     Object.assign(this.row, { harness, model, reasoning });
     this.db.query('UPDATE sessions SET harness = ?, model = ?, reasoning = ?, harness_session_id = ? WHERE id = ?').run(harness, model, reasoning, this.row.harness_session_id, this.id);
+    this.emit({ type: 'model_switch', from: { harness: oldHarness, model: oldModel, reasoning: oldReasoning }, to: { harness, model, reasoning } });
   }
 
   delete() {
@@ -159,7 +163,8 @@ export class Session {
     const speechTarget = this.id === SECRETARY_ID ? items.findLast(item => item.voice && item.speechTarget)?.speechTarget : undefined;
     if (speechTarget) this.publish({ type: 'speech_start', speechTarget });
     // Several urgent messages go as one turn but stay separate in history.
-    const text = items.map(item => [item.text, ...item.files.map(file => `Файл: ${filePath(file)} (${file.name}, ${file.size} байт)`)].filter(Boolean).join('\n')).filter(Boolean).join('\n\n');
+    const history = this.row.harness_session_id ? '' : chatTranscript(this.db, this.id);
+    const text = history + items.map(item => [item.text, ...item.files.map(file => `Файл: ${filePath(file)} (${file.name}, ${file.size} байт)`)].filter(Boolean).join('\n')).filter(Boolean).join('\n\n');
     const images = items.flatMap(item => item.images);
     let completed = false;
     try {
