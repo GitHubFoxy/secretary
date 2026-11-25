@@ -68,15 +68,16 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
         { id: { type: 'number', description: `id ${target}` } },
         ['id'],
       ],
-      ...(isSecretary ? [[
+      [
         'send_file',
-        'Показать владельцу файл с Host в чате: картинку, видео, аудио или документ. Владелец сможет открыть его и скачать на устройство.',
+        'Показать владельцу файл с Host в твоём чате: картинку, видео, аудио или документ. Владелец сможет открыть его и скачать на устройство.',
         {
           path: { type: 'string', minLength: 1, description: 'Путь к файлу на Host: абсолютный или от твоей папки' },
           caption: { type: 'string', description: 'Подпись к файлу' },
         },
         ['path'],
-      ], [
+      ],
+      ...(isSecretary ? [[
         'report_issue',
         'Подготовить сообщение об ошибке или идее для разработчиков Secretary App. Возвращает ссылку на заполненный GitHub issue: отдай её владельцу, он проверит текст и отправит.',
         {
@@ -154,7 +155,6 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
         return { ok: true };
       }
       case 'send_file': {
-        if (!isSecretary) throw new Error('Неизвестный инструмент');
         if (typeof args.path !== 'string' || !args.path.trim()) throw new Error('Укажите path');
         const caller = sessions.get(callerId);
         const file = await storeFile(hostPath(args.path.trim(), caller.info.folder), root);

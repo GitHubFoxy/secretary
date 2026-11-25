@@ -129,7 +129,7 @@ test('read по умолчанию отдаёт очищенные сообще�
   expect(raw.data.some((e: any) => e.type === 'tool_use')).toBe(true);
 });
 
-test('send_file показывает копию файла в чате Secretary Agent, а Specialist его не видит', async () => {
+test('send_file показывает копию файла в чате того, кто его отправил: Secretary Agent или Specialist', async () => {
   const root = await mkdtemp(join(tmpdir(), 'secretary-send-file-'));
   try {
     const env = setup(root);
@@ -143,7 +143,9 @@ test('send_file показывает копию файла в чате Secretary
     expect((await env.callTool(1, 'send_file', { path: join(root, 'нет.png') })).isError).toBe(true);
 
     const { id } = (await env.callTool(1, 'send', { name: 'S', folder: root, message: 'go' })).data;
-    expect((await env.rpc(id, 'tools/list')).body.result.tools.map((t: any) => t.name)).not.toContain('send_file');
+    expect((await env.callTool(id, 'send_file', { path: 'кот.png' })).isError).toBe(false);
+    expect((env.sessions.chatHistory(id, 1) as any[])[0]).toMatchObject({ kind: 'agent', files: [{ name: 'кот.png' }] });
+    expect(env.sessions.chatHistory(1, 5).filter((m: any) => m.files)).toHaveLength(1);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
