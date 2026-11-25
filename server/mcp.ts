@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { hostPath, mcpPort, secretaryFolder } from './config';
 import { storeFile } from './files';
 import { modelDetails } from './models';
+import { specialistModel } from './persona';
 import { isSpecialist, SECRETARY_ID } from './session';
 import type { Sessions } from './sessions';
 
@@ -35,7 +36,7 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
       [
         'send',
         isSecretary
-          ? 'Отправить задачу Specialist. С id — пишет существующему (по умолчанию в очередь; immediate: true прерывает ход). Без id — создаёт нового Specialist по name и folder и сразу запускает задачу (harness, model, reasoning наследуются).'
+          ? 'Отправить задачу Specialist. С id — пишет существующему (по умолчанию в очередь; immediate: true прерывает ход). Без id — создаёт нового Specialist по name и folder и сразу запускает задачу (harness, model, reasoning — из настройки владельца для новых Specialists, иначе как у тебя).'
           : 'Отправить задачу Worker. С id — пишет существующему (по умолчанию в очередь; immediate: true прерывает ход). Без id — создаёт нового Worker по name (folder необязателен, по умолчанию твоя папка; harness, model, reasoning наследуются).',
         {
           message: { type: 'string', description: 'Текст задачи или сообщения' },
@@ -43,9 +44,9 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
           immediate: { type: 'boolean', description: 'Прервать текущий ход и отправить сразу (только с id)' },
           name: { type: 'string', minLength: 1, description: isSecretary ? 'Короткое имя Specialist по области ответственности (например, Заметки, [Название проекта], Исследователь, Общий)' : 'Короткое имя Worker по сути задачи' },
           folder: { type: 'string', description: isSecretary ? 'Рабочая папка (обязательно без id)' : 'Рабочая папка или путь к git worktree (по умолчанию твоя папка)' },
-          harness: { type: 'string', enum: sessions.harnesses, description: 'Harness (по умолчанию как у тебя)' },
-          model: { type: 'string', description: 'Модель из list (по умолчанию как у тебя)' },
-          reasoning: { type: 'string', description: 'Уровень reasoning из list (по умолчанию как у тебя)' },
+          harness: { type: 'string', enum: sessions.harnesses, description: 'Harness (по умолчанию — см. описание send)' },
+          model: { type: 'string', description: 'Модель из list (по умолчанию — см. описание send)' },
+          reasoning: { type: 'string', description: 'Уровень reasoning из list (по умолчанию — см. описание send)' },
         },
         ['message'],
       ],
@@ -125,15 +126,16 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
           ? args.folder.trim()
           : (isSecretary ? '' : caller.folder);
         if (!folder) throw new Error('Укажите folder для нового Specialist');
-        const harness = typeof args.harness === 'string' && args.harness.trim() ? args.harness.trim() : caller.harness;
-        const sameHarness = harness === caller.harness;
+        const base = (isSecretary && specialistModel(root)) || caller;
+        const harness = typeof args.harness === 'string' && args.harness.trim() ? args.harness.trim() : base.harness;
+        const sameHarness = harness === base.harness;
         const model = typeof args.model === 'string' && args.model.trim()
           ? args.model.trim()
-          : (sameHarness ? caller.model : '');
+          : (sameHarness ? base.model : '');
         if (!model) throw new Error('При смене harness укажите model из list');
         const reasoning = typeof args.reasoning === 'string' && args.reasoning.trim()
           ? args.reasoning.trim()
-          : (sameHarness && model === caller.model ? caller.reasoning : null);
+          : (sameHarness && model === base.model ? base.reasoning : null);
         const child = await sessions.create({ harness, model, reasoning, folder, parentId: callerId, name: args.name.trim() });
         child.send(args.message);
         return { id: child.id, status: 'running' };

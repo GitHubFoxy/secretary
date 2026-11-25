@@ -2,7 +2,7 @@ import type { Database } from 'bun:sqlite';
 import { chatHistory, reportText } from './chat';
 import { hostPath, mcpUrl as defaultMcpUrl } from './config';
 import type { Turn } from './harness';
-import { SECRETARY_PROMPT, SPECIALIST_PROMPT } from './persona';
+import { SECRETARY_PROMPT, specialistPrompt } from './persona';
 import { isInternal, isSpecialist, SECRETARY_ID, Session, type SessionRow } from './session';
 import { markdownText } from './speech-text';
 
@@ -22,6 +22,7 @@ type Options = {
 // All Sessions of the Host and the rules for them. The browser and the Secretary Agent (through MCP) are two adapters over this.
 export class Sessions {
   private all = new Map<number, Session>();
+  private folder = '';
 
   constructor(private db: Database, private options: Options) {}
 
@@ -30,6 +31,7 @@ export class Sessions {
   // Loads every Session. Turns that were running when Secretary died are marked interrupted;
   // their messages already in flight become delivery_uncertain inside each queue.
   load(secretaryFolder: string) {
+    this.folder = secretaryFolder;
     const rows = this.db.query('SELECT * FROM sessions ORDER BY id').all() as SessionRow[];
     if (!rows.length) this.insert({ harness: 'claude', model: 'opus', reasoning: null, folder: secretaryFolder });
     else for (const row of rows) this.attach(row);
@@ -79,7 +81,7 @@ export class Sessions {
     this.options.onChange();
   }
 
-  private async check({ harness, model, reasoning }: SessionSettings) {
+  async check({ harness, model, reasoning }: SessionSettings) {
     if (!this.harnesses.includes(harness) || typeof model !== 'string' || !model) throw new Error('Некорректные настройки сессии');
     if (reasoning !== null) await this.options.checkModel(harness, model, reasoning);
   }
@@ -93,7 +95,7 @@ export class Sessions {
     const baseMcp = this.options.mcpUrl ?? defaultMcpUrl;
     const session = new Session(this.db, row, this.options.turns, r => {
       if (r.id === SECRETARY_ID) return { mcpUrl: `${baseMcp}/${r.id}`, systemPrompt: SECRETARY_PROMPT };
-      if (isSpecialist(r)) return { mcpUrl: `${baseMcp}/${r.id}`, systemPrompt: SPECIALIST_PROMPT };
+      if (isSpecialist(r)) return { mcpUrl: `${baseMcp}/${r.id}`, systemPrompt: specialistPrompt(this.folder) };
       return {};
     });
     this.all.set(session.id, session);

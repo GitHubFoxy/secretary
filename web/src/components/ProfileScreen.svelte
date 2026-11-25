@@ -1,6 +1,9 @@
 <script>
   import { Capacitor } from '@capacitor/core';
   import Icon from './Icon.svelte';
+  import InstructionsEditor from './InstructionsEditor.svelte';
+  import SpecialistModel from './SpecialistModel.svelte';
+  import { harnessInfo, modelLabel } from '../agents.js';
 
   let {
     ttsEngine = '',
@@ -8,79 +11,101 @@
     videoInterval = '1',
     voiceStatus = '',
     assistantStatus = '',
-    agents = $bindable(''),
-    agentsLoaded = false,
-    agentsStatus = '',
+    secretary = null,
+    dirty = $bindable(false),
     onback,
     onsaveTtsEngine,
     onsaveVoiceModel,
     onsaveVideoInterval,
     onrequestAssistant,
     onresetHost,
-    onsaveAgents,
   } = $props();
 
-  let voiceModeHint = $state(false);
+  const editors = {
+    secretary: { title: 'Secretary Agent', hint: 'Как Secretary Agent общается с тобой и что о тебе помнит.' },
+    specialist: { title: 'Specialists', hint: 'Общие инструкции для всех Specialists. Workers их не получают.' },
+  };
+  let screen = $state('main');
+  let specialistModel = $state(undefined);
+
+  async function loadSpecialistModel() {
+    try { const response = await fetch('/settings/specialist-model'); if (response.ok) specialistModel = await response.json(); } catch {}
+  }
+  async function saveSpecialistModel(value) {
+    const response = await fetch('/settings/specialist-model', {method:'PUT', body:JSON.stringify(value)});
+    if (!response.ok) throw new Error(await response.text());
+    specialistModel = value;
+  }
+  loadSpecialistModel();
 </script>
 
-<div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
-  <header class="flex items-center gap-2 border-b border-neutral-900 px-2 py-2">
-    <button class="icon-btn" aria-label="Назад" onclick={onback}>
-      <Icon name="back" />
-    </button>
-    <h1 class="min-w-0 flex-1 truncate px-1 text-sm font-medium text-neutral-100">Секретарь</h1>
-  </header>
+{#snippet row(label, hint, onclick)}
+  <button type="button" class="flex w-full cursor-pointer items-center gap-3 px-3.5 py-3 text-left transition-colors hover:bg-neutral-800/60" {onclick}>
+    <span class="min-w-0 flex-1"><span class="block text-sm text-neutral-100">{label}</span>{#if hint}<span class="block truncate text-xs text-neutral-500">{hint}</span>{/if}</span>
+    <Icon name="chevron" class="size-3.5 shrink-0 -rotate-90 text-neutral-600" />
+  </button>
+{/snippet}
 
-  <div class="flex min-h-0 flex-1 flex-col gap-4 p-4">
-    <div class="flex flex-col gap-2 text-sm">Голосовые ответы
-      <div class="grid grid-cols-2 gap-2">
-        <button type="button" aria-pressed="true" class="flex flex-col items-start gap-1 rounded-2xl border border-neutral-500 bg-neutral-900 p-3 text-left">
-          <span class="flex items-center gap-2 font-medium text-neutral-100"><Icon name="microphone" class="size-4" />Рация</span>
-          <span class="text-xs leading-snug text-neutral-400">Держишь кнопку, говоришь — Secretary отвечает голосом</span>
-        </button>
-        <button type="button" aria-disabled="true" onclick={() => { voiceModeHint = true; setTimeout(() => voiceModeHint = false, 1500); }} class="relative flex flex-col items-start gap-1 rounded-2xl border border-neutral-800 p-3 text-left">
-          <span class="flex items-center gap-2 font-medium text-neutral-500">Живой разговор<span class="rounded-full border border-neutral-700 px-1.5 text-[10px] leading-4 text-neutral-400">скоро</span></span>
-          <span class="text-xs leading-snug text-neutral-600">Говоришь без кнопки, как по телефону</span>
-          {#if voiceModeHint}<span role="status" class="absolute -top-9 right-0 rounded-lg bg-neutral-800 px-3 py-1.5 text-xs text-neutral-200 shadow-lg">Скоро. Пока работает Рация</span>{/if}
-        </button>
-      </div>
-    </div>
-    <label class="flex flex-col gap-2 text-sm">Голос ответов
-      <select class="field" value={ttsEngine} disabled={!ttsEngine} onchange={onsaveTtsEngine}>
-        <option value="inworld">Inworld — облако, звучит естественнее</option>
-        <option value="piper">Piper — бесплатно, на Host</option>
-      </select>
-    </label>
-    <label class="flex flex-col gap-2 text-sm">Распознавание речи на Host
-      <select class="field" value={voiceModel} disabled={!voiceModel} onchange={onsaveVoiceModel}>
-        <option value="gigaam">GigaAM — быстрее, лучше русский</option>
-        <option value="parakeet">Parakeet — лучше английские слова</option>
-      </select>
-    </label>
-    <label class="flex flex-col gap-2 text-sm">Частота кадров видео
-      <select class="field" value={videoInterval} onchange={onsaveVideoInterval}>
-        <option value="1">1 кадр в секунду</option>
-        <option value="2">1 кадр в 2 секунды</option>
-      </select>
-    </label>
-    {#if voiceStatus}<p role="alert" class="text-sm text-red-400">{voiceStatus}</p>{/if}
-    {#if Capacitor.isNativePlatform()}
-      <div class="flex flex-wrap items-center gap-3 text-sm">
-        <button class="btn-ghost" onclick={onrequestAssistant}>Открывать Secretary по Power</button>
-        {#if assistantStatus}<span role="status" class="text-xs text-neutral-400">{assistantStatus}</span>{/if}
-      </div>
-      <button class="btn-ghost self-start" onclick={onresetHost}>Сбросить адрес Host</button>
-    {/if}
-    <textarea
-      class="field min-h-0 flex-1 resize-none font-mono"
-      aria-label="Содержимое AGENTS.md"
-      spellcheck="false"
-      disabled={!agentsLoaded}
-      bind:value={agents}
-    ></textarea>
-    <div class="flex items-center justify-end gap-3">
-      <span role="status" class="text-xs text-neutral-500">{agentsStatus}</span>
-      <button class="btn" onclick={onsaveAgents} disabled={!agentsLoaded}>Сохранить</button>
+{#snippet choice(label, value, onchange, options)}
+  <label class="flex items-center justify-between gap-3 px-3.5 py-2.5 text-sm text-neutral-100"><span class="whitespace-nowrap">{label}</span>
+    <select class="min-w-0 cursor-pointer bg-transparent py-1 text-right text-sm text-neutral-400 focus:outline-none disabled:opacity-40" {value} disabled={!value} {onchange}>
+      {#each options as [optionValue, text, disabled]}<option class="bg-neutral-900 text-neutral-100" value={optionValue} {disabled}>{text}</option>{/each}
+    </select>
+  </label>
+{/snippet}
+
+{#if screen === 'secretary' || screen === 'specialist'}
+  <InstructionsEditor role={screen} {...editors[screen]} bind:dirty onback={() => (screen = 'main')} />
+{:else if screen === 'model' && secretary}
+  <SpecialistModel value={specialistModel} {secretary} onsave={saveSpecialistModel} onback={() => (screen = 'main')} />
+{:else}
+  <div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
+    <header class="flex items-center gap-2 border-b border-neutral-900 px-2 py-2">
+      <button class="icon-btn" aria-label="Назад" onclick={onback}><Icon name="back" /></button>
+      <h1 class="min-w-0 flex-1 truncate px-1 text-sm font-medium text-neutral-100">Профиль</h1>
+    </header>
+
+    <div class="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto p-4">
+      <section class="flex flex-col gap-2">
+        <h2 class="text-[11px] uppercase tracking-wide text-neutral-500">Агенты</h2>
+        <div class="divide-y divide-neutral-800/80 overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/50">
+          {@render row('Secretary Agent', 'Инструкции: как общается и что помнит', () => (screen = 'secretary'))}
+          {@render row('Specialists', 'Инструкции для всех Specialists', () => (screen = 'specialist'))}
+          <button type="button" class="flex w-full cursor-pointer items-center gap-3 px-3.5 py-3 text-left transition-colors hover:bg-neutral-800/60 disabled:cursor-default" disabled={!secretary} onclick={() => (screen = 'model')}>
+            <span class="flex-1 text-sm text-neutral-100">Модель новых Specialists</span>
+            {#if specialistModel !== undefined}
+              <span class="flex min-w-0 items-center gap-1 truncate text-xs text-neutral-400">
+                {#if specialistModel}<Icon name={specialistModel.harness} class="size-3.5 shrink-0 {harnessInfo(specialistModel.harness).accent}" />{modelLabel(specialistModel.model)}{#if specialistModel.reasoning} · {specialistModel.reasoning}{/if}{:else}Как у Secretary Agent{/if}
+              </span>
+            {/if}
+            <Icon name="chevron" class="size-3.5 shrink-0 -rotate-90 text-neutral-600" />
+          </button>
+        </div>
+      </section>
+
+      <section class="flex flex-col gap-2">
+        <h2 class="text-[11px] uppercase tracking-wide text-neutral-500">Голос</h2>
+        <div class="divide-y divide-neutral-800/80 rounded-xl border border-neutral-800 bg-neutral-900/50">
+          {@render choice('Режим', 'radio', () => {}, [['radio', 'Рация'], ['live', 'Живой разговор · скоро', true]])}
+          {@render choice('Голос ответов', ttsEngine, onsaveTtsEngine, [['inworld', 'Inworld · облако'], ['piper', 'Piper · на Host']])}
+          {@render choice('Распознавание', voiceModel, onsaveVoiceModel, [['gigaam', 'GigaAM · русский'], ['parakeet', 'Parakeet · английский']])}
+          {@render choice('Кадры видео', videoInterval, onsaveVideoInterval, [['1', '1 в секунду'], ['2', '1 в 2 секунды']])}
+        </div>
+        {#if voiceStatus}<p role="alert" class="text-sm text-red-400">{voiceStatus}</p>{/if}
+      </section>
+
+      {#if Capacitor.isNativePlatform()}
+        <section class="flex flex-col gap-2">
+          <h2 class="text-[11px] uppercase tracking-wide text-neutral-500">Это устройство</h2>
+          <div class="divide-y divide-neutral-800/80 overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/50 text-sm">
+            <button type="button" class="flex w-full cursor-pointer items-center justify-between gap-3 px-3.5 py-3 text-left text-neutral-100 hover:bg-neutral-800/60" onclick={onrequestAssistant}>
+              Открывать Secretary по Power
+              {#if assistantStatus}<span role="status" class="text-xs text-neutral-400">{assistantStatus}</span>{/if}
+            </button>
+            <button type="button" class="w-full cursor-pointer px-3.5 py-3 text-left text-red-400 hover:bg-red-950/30" onclick={onresetHost}>Сбросить адрес Host</button>
+          </div>
+        </section>
+      {/if}
     </div>
   </div>
-</div>
+{/if}

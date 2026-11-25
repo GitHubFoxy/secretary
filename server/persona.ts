@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 
 export const SECRETARY_PROMPT = `# Secretary Agent
 
@@ -83,6 +83,29 @@ export const SPECIALIST_PROMPT = `# Specialist
 - Если отчёт Worker промежуточный (ты продолжаешь координацию, отправляешь правки или ждёшь других Workers), обработай его и ответь ровно \`NO_REPLY\` (без пробелов и пояснений) — тогда преждевременный отчёт не уйдёт в Secretary Agent.
 - Отчитывайся в Secretary Agent, когда задача завершена, появился важный промежуточный итог, блокер или нужен ответ владельца.
 `;
+
+export type Role = 'secretary' | 'specialist';
+export const systemPrompts: Record<Role, string> = { secretary: SECRETARY_PROMPT, specialist: SPECIALIST_PROMPT };
+
+// The owner's instructions for a role, added to its built-in prompt. The Secretary Agent's harness reads AGENTS.md from its
+// own folder; Specialists work in other folders, so their file goes into the system prompt.
+export const instructionsFile = (folder: string, role: Role) => `${folder}/${role === 'secretary' ? 'AGENTS.md' : 'specialists.md'}`;
+export function specialistPrompt(folder: string) {
+  const file = instructionsFile(folder, 'specialist');
+  const instructions = existsSync(file) ? readFileSync(file, 'utf8').trim() : '';
+  return instructions ? `${SPECIALIST_PROMPT}\n${instructions}\n` : SPECIALIST_PROMPT;
+}
+
+// Harness, model and reasoning for new Specialists; without the file they take the Secretary Agent's.
+export function specialistModel(folder: string): { harness: string; model: string; reasoning: string | null } | null {
+  const file = `${folder}/specialist-model.json`;
+  return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : null;
+}
+export function setSpecialistModel(folder: string, settings: { harness: string; model: string; reasoning: string | null } | null) {
+  const file = `${folder}/specialist-model.json`;
+  if (settings) writeFileSync(file, JSON.stringify({ harness: settings.harness, model: settings.model, reasoning: settings.reasoning ?? null }));
+  else if (existsSync(file)) unlinkSync(file);
+}
 
 const DEFAULT_PREFERENCES = `## Предпочтения владельца
 

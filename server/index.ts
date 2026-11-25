@@ -7,13 +7,12 @@ import { fileResponse, saveFile } from './files';
 import { migrateDatabase, openDatabase } from './database';
 import { serveMcp } from './mcp';
 import { checkReasoning, modelDetails } from './models';
-import { ensurePersona } from './persona';
+import { ensurePersona, instructionsFile, setSpecialistModel, specialistModel, systemPrompts, type Role } from './persona';
 import { Sessions } from './sessions';
 import { Speech, warmSpeech, ttsEngine, setTtsEngine } from './speech';
 import { transcribe, voiceModel, setVoiceModel } from './voice';
 
 const videoIntervalFile = `${secretaryFolder}/video-interval`;
-const agentsFile = `${secretaryFolder}/AGENTS.md`;
 ensurePersona(secretaryFolder);
 
 const databasePath = `${secretaryFolder}/secretary.sqlite`;
@@ -114,9 +113,19 @@ const server = Bun.serve({
       if (request.method === 'PUT') return request.text().then(setTtsEngine).then(() => new Response(null, {status:204}), error => new Response(String(error), {status:400}));
       return new Response(null, {status:405});
     }
-    if (url.pathname === '/settings/agents') {
-      if (request.method === 'GET') return Bun.file(agentsFile).text().then(text => new Response(text, { headers: { 'content-type': 'text/plain; charset=utf-8' } }), error => new Response(String(error), { status: 500 }));
-      if (request.method === 'PUT') return request.text().then(text => Bun.write(agentsFile, text)).then(() => new Response(null, { status: 204 }), error => new Response(String(error), { status: 500 }));
+    const role = url.pathname.match(/^\/settings\/agents\/(secretary|specialist)$/)?.[1] as Role | undefined;
+    if (role) {
+      const file = Bun.file(instructionsFile(secretaryFolder, role));
+      if (request.method === 'GET') return file.exists().then(async exists => Response.json({ text: exists ? await file.text() : '', system: systemPrompts[role] }), error => new Response(String(error), { status: 500 }));
+      if (request.method === 'PUT') return request.text().then(text => Bun.write(file, text)).then(() => new Response(null, { status: 204 }), error => new Response(String(error), { status: 500 }));
+      return new Response(null, { status: 405 });
+    }
+    if (url.pathname === '/settings/specialist-model') {
+      if (request.method === 'GET') return Response.json(specialistModel(secretaryFolder));
+      if (request.method === 'PUT') return request.json().then(async settings => {
+        if (settings) await sessions.check(settings);
+        setSpecialistModel(secretaryFolder, settings);
+      }).then(() => new Response(null, { status: 204 }), error => new Response(String(error), { status: 400 }));
       return new Response(null, { status: 405 });
     }
     if (url.pathname === '/ws') return server.upgrade(request) ? undefined : new Response('WebSocket upgrade failed', { status: 400 });

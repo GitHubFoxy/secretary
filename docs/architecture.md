@@ -60,6 +60,8 @@ SQLite в `server/secretary.sqlite`:
 
 Коды сопряжения и токены устройств лежат отдельно, в `~/.secretary/auth.sqlite`.
 
+Инструкции агентов складываются из встроенной части (`persona.ts`) и файла владельца, который он правит в профиле. Файл Secretary Agent — `~/.secretary/AGENTS.md`: его читает harness из папки Secretary Agent. Specialists работают в чужих папках, поэтому их файл `~/.secretary/specialists.md` добавляется к системному промпту. Workers получают только задачу от Specialist. Модель, с которой Secretary Agent создаёт Specialists, задаёт `~/.secretary/specialist-model.json`; без него берётся модель Secretary Agent.
+
 ## Как проходит сообщение
 
 1. Клиент шлёт `send`. Сервер сохраняет сообщение в `pending_messages` и только потом подтверждает отправку клиенту.

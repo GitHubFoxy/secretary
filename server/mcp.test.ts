@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openDatabase } from './database';
 import type { Turn, TurnOptions } from './harness';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { issueUrl, serveMcp } from './mcp';
+import { instructionsFile, setSpecialistModel } from './persona';
 import { Sessions } from './sessions';
 
 type Call = { text: string; options: TurnOptions; start(): void; answer(text: string): void; end(completed: boolean): void };
@@ -24,7 +28,7 @@ function setup(root = '/nonexistent') {
     onEvent() {},
     onChange() {},
   });
-  sessions.load('/home/u/.secretary');
+  sessions.load(root);
   const server = serveMcp(sessions, {
     port: 0,
     root,
@@ -164,4 +168,25 @@ test('Secretary Agent: list показывает видимых Specialists, с�
   const names = async (args = {}) => (await env.callTool(1, 'list', args)).data.sessions.map((s: any) => s.name);
   expect(await names()).toEqual(['Активный']);
   expect(await names({ hidden: true })).toEqual(['Завершённый']);
+});
+
+test('новый Specialist берёт модель из настройки владельца и получает его инструкции; Worker их не получает', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'secretary-'));
+  setSpecialistModel(root, { harness: 'codex', model: 'gpt', reasoning: 'high' });
+  writeFileSync(instructionsFile(root, 'specialist'), 'Не пушить без «да».');
+  const env = setup(root);
+  servers.push(env.server);
+
+  const created = await env.callTool(1, 'send', { name: 'Проект', folder: '/tmp/p', message: 'начни' });
+  expect(env.sessions.get(created.data.id).info).toMatchObject({ harness: 'codex', model: 'gpt', reasoning: 'high' });
+  expect(env.calls[0].options.systemPrompt).toContain('Ты — Specialist');
+  expect(env.calls[0].options.systemPrompt).toContain('Не пушить без «да».');
+
+  const worker = await env.callTool(created.data.id, 'send', { name: 'Фича', message: 'сделай' });
+  expect(env.sessions.get(worker.data.id).info).toMatchObject({ harness: 'codex', model: 'gpt', reasoning: 'high' });
+  expect(env.calls[1].options.systemPrompt).toBeUndefined();
+
+  setSpecialistModel(root, null);
+  const second = await env.callTool(1, 'send', { name: 'Другой', folder: '/tmp/q', message: 'начни' });
+  expect(env.sessions.get(second.data.id).info).toMatchObject({ harness: 'claude', model: 'opus' });
 });

@@ -106,8 +106,7 @@
   $: secretaryForShare = sessions.find(s => s.secretary);
   $: if (shared.length && secretaryForShare && !shareBusy) applyShared(shared[0], secretaryForShare);
   let limitsOpen = false, limits = null, limitsStatus = '';
-  let profileOpen = false, agents = '', agentsLoaded = false, agentsStatus = '';
-  let agentsOriginal = '', agentsSaving = false;
+  let profileOpen = false, instructionsDirty = false;
   let interruptStates = {};
   const deliveries = new Map();
   const interruptFeedback = createInterruptFeedback({onChange: (id, state) => { interruptStates = {...interruptStates, [id]:state}; }});
@@ -119,7 +118,7 @@
       if (!response.ok) throw new Error('Version unavailable');
       return (await response.json()).version;
     },
-    isBusy: () => Boolean(speaking || message || images.length || preparing.some(item => !item.error) || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || agentsSaving || (profileOpen && (!agentsLoaded || agents !== agentsOriginal))),
+    isBusy: () => Boolean(speaking || message || images.length || preparing.some(item => !item.error) || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || (profileOpen && instructionsDirty)),
     reload: () => location.replace('/?update'),
   });
   const connection = createConnection({
@@ -242,34 +241,7 @@
       settingsOpen = false; select(id);
     } catch (err) { error = err.message; }
   }
-  async function loadAgents() {
-    agentsLoaded = false;
-    agentsStatus = 'Загрузка…';
-    try {
-      const response = await fetch('/settings/agents');
-      if (!response.ok) throw new Error(await response.text());
-      agents = await response.text();
-      agentsOriginal = agents;
-      agentsLoaded = true;
-      agentsStatus = '';
-    } catch (err) {
-      agentsStatus = `Не удалось загрузить: ${err.message || err}`;
-    }
-  }
-  async function saveAgents() {
-    agentsStatus = 'Сохранение…';
-    agentsSaving = true;
-    try {
-      const saved = agents;
-      const response = await fetch('/settings/agents', {method:'PUT', body: saved});
-      if (!response.ok) throw new Error(await response.text());
-      agentsOriginal = saved;
-      agentsStatus = 'Сохранено';
-    } catch (err) {
-      agentsStatus = `Не удалось сохранить: ${err.message || err}`;
-    } finally { agentsSaving = false; }
-  }
-  function openProfile() { drawerOpen = false; profileOpen = true; loadAgents(); loadVoiceModel(); loadTtsEngine(); }
+  function openProfile() { drawerOpen = false; profileOpen = true; loadVoiceModel(); loadTtsEngine(); }
   async function loadLimits() {
     try {
       const response = await fetch('/codex/limits');
@@ -333,16 +305,14 @@
     {videoInterval}
     {voiceStatus}
     {assistantStatus}
-    bind:agents
-    {agentsLoaded}
-    {agentsStatus}
+    secretary={sessions.find(s => s.secretary)}
+    bind:dirty={instructionsDirty}
     onback={() => (profileOpen = false)}
     onsaveTtsEngine={saveTtsEngine}
     onsaveVoiceModel={saveVoiceModel}
     onsaveVideoInterval={saveVideoInterval}
     onrequestAssistant={requestAssistant}
     onresetHost={() => { if (confirm('Сбросить адрес Host и забыть вход?')) host.reset(); }}
-    onsaveAgents={saveAgents}
   />
 {:else}
   <div class="flex h-dvh flex-col bg-neutral-950 text-neutral-200">
