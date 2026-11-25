@@ -11,6 +11,7 @@
     return `${minutes} мин`;
   };
   const resetText = seconds => new Date(seconds * 1000).toLocaleString('ru-RU', { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+  const left = window => Math.max(0, 100 - window.usedPercent);
   const barClass = percent => percent >= 100 ? 'bg-red-500' : percent >= 80 ? 'bg-amber-500' : 'bg-emerald-500';
 
   const minute = 60_000;
@@ -66,10 +67,10 @@
           <div class="flex flex-col gap-1.5">
             <div class="flex items-baseline justify-between text-xs text-neutral-400">
               <span>{windowName(window.windowDurationMins)}</span>
-              <span class="font-mono text-neutral-200">{window.usedPercent}%</span>
+              <span><span class="font-mono text-neutral-200">{left(window)}%</span> осталось</span>
             </div>
-            <div class="h-1.5 overflow-hidden rounded-full bg-neutral-800" role="meter" aria-label="Использовано" aria-valuemin="0" aria-valuemax="100" aria-valuenow={window.usedPercent}>
-              <div class="h-full rounded-full {barClass(window.usedPercent)}" style:width="{Math.min(100, window.usedPercent)}%"></div>
+            <div class="h-1.5 overflow-hidden rounded-full bg-neutral-800" role="meter" aria-label="Осталось" aria-valuemin="0" aria-valuemax="100" aria-valuenow={left(window)}>
+              <div class="h-full rounded-full {barClass(window.usedPercent)}" style:width="{left(window)}%"></div>
             </div>
             {#if window.resetsAt}
               <span class="text-xs text-neutral-500">До сброса: <span class="font-mono text-neutral-300">{countdown(window.resetsAt)}</span> · {resetText(window.resetsAt)}</span>
