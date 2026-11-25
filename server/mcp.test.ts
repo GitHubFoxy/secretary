@@ -151,3 +151,17 @@ test('report_issue: ссылка на новый issue с текстом и ве
   expect(url.searchParams.get('body')).toContain('Версия: abc123');
   expect(url.searchParams.get('body')).toContain('Harness: claude, модель opus');
 });
+
+test('Secretary Agent: list показывает видимых Specialists, скрытые — только по hidden: true', async () => {
+  const env = setup();
+  servers.push(env.server);
+  const settings = { harness: 'claude', model: 'opus', reasoning: null };
+  const active = await env.sessions.create({ ...settings, folder: '/tmp/a', parentId: 1, name: 'Активный' });
+  const settled = await env.sessions.create({ ...settings, folder: '/tmp/b', parentId: 1, name: 'Завершённый' });
+  await env.sessions.create({ ...settings, folder: '/tmp/a', parentId: active.id, name: 'Worker' });
+  settled.setHidden(true);
+
+  const names = async (args = {}) => (await env.callTool(1, 'list', args)).data.sessions.map((s: any) => s.name);
+  expect(await names()).toEqual(['Активный']);
+  expect(await names({ hidden: true })).toEqual(['Завершённый']);
+});

@@ -28,8 +28,8 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
     return [
       [
         'list',
-        `Показать список ${targetGen} (id, имя, папка, harness, модель, статус) и доступные на этом Host модели с уровнями reasoning.`,
-        {},
+        `Показать список ${targetGen} (id, имя, папка, harness, модель, статус) и доступные на этом Host модели с уровнями reasoning. Скрытые владельцем — завершённые — показываются только с hidden: true.`,
+        { hidden: { type: 'boolean', description: 'Показать только скрытые владельцем' } },
         [],
       ],
       [
@@ -109,7 +109,7 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
   async function call(callerId: number, isSecretary: boolean, name: string, args: any) {
     switch (name) {
       case 'list': {
-        const all = sessions.list().filter(s => isSecretary ? !s.secretary : s.parent_id === callerId);
+        const all = sessions.list().filter(s => (isSecretary ? isSpecialist(s) : s.parent_id === callerId) && !!s.hidden === (args.hidden === true));
         return { sessions: all, models: await availableModels() };
       }
       case 'send': {
