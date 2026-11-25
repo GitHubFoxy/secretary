@@ -33,7 +33,8 @@
     dragging = false;
     startX = undefined;
   }
-  const secretaryId = $derived(sessions.find(s => s.secretary)?.id);
+  const secretary = $derived(sessions.find(s => s.secretary));
+  const secretaryId = $derived(secretary?.id);
   const visibleSessions = $derived(sessions.filter(s => !s.internal && !s.hidden));
   const hiddenSessions = $derived(sessions.filter(s => !s.internal && s.hidden));
   const visibleIds = $derived(new Set(visibleSessions.map(s => s.id)));
@@ -51,6 +52,10 @@
 
 <svelte:window onkeydown={e => { if (open && e.key === 'Escape') onclose(); }} />
 
+{#snippet agentLine(s)}
+  <span class="flex items-center gap-1 truncate text-xs text-neutral-500"><Icon name={s.harness} class="size-3 shrink-0 {harnessInfo(s.harness).accent}" />{modelLabel(s.model)}{#if s.reasoning}<span>· {s.reasoning}</span>{/if}</span>
+{/snippet}
+
 {#snippet sessionRow(s, compact = false)}
   {@const title = s.name || `Сессия #${s.id}`}
   {@const active = selected === s.id}
@@ -64,7 +69,7 @@
         {/if}
       </span>
       {#if !compact}
-        <span class="mt-0.5 flex items-center gap-1 truncate pl-3.5 text-xs text-neutral-500">{statusText[s.status] ?? s.status} · <Icon name={s.harness} class="size-3 shrink-0 {harnessInfo(s.harness).accent}" />{modelLabel(s.model)}{#if s.reasoning}<span>· {s.reasoning}</span>{/if}</span>
+        <span class="mt-0.5 flex items-center gap-1 truncate pl-3.5 text-xs text-neutral-500">{statusText[s.status] ?? s.status} ·{@render agentLine(s)}</span>
         <span class="block truncate pl-3.5 font-mono text-xs text-neutral-600">{s.folder}</span>
       {/if}
     </button>
@@ -85,7 +90,10 @@
   <div class="fixed inset-y-0 left-0 z-20 w-80 max-w-[85vw]" transition:fly={{ x: -320, duration: 220 }}>
   <aside class="flex h-full flex-col border-r border-neutral-900 bg-neutral-950" style:transform="translateX({offset}px)" style:transition={dragging ? 'none' : 'transform 220ms'} style:touch-action="pan-y" ontouchstart={touchStart} ontouchmove={touchMove} ontouchend={touchEnd} ontouchcancel={touchEnd}>
     <div class="flex items-center justify-between border-b border-neutral-900 px-4 py-3">
-      <button class="min-w-0 truncate cursor-pointer text-sm font-semibold text-neutral-100" aria-label="Открыть основной чат" onclick={() => onselect(secretaryId)}>Secretary</button>
+      <button class="min-w-0 cursor-pointer text-left" aria-label="Открыть основной чат" onclick={() => onselect(secretaryId)}>
+        <span class="block truncate text-sm font-semibold text-neutral-100">Secretary</span>
+        {#if secretary}{@render agentLine(secretary)}{/if}
+      </button>
       <button class="icon-btn" aria-label="Закрыть" onclick={onclose}>
         <Icon name="close" />
       </button>
