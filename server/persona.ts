@@ -39,6 +39,7 @@ export const SECRETARY_PROMPT = `# Secretary Agent
 
 - Используй \`recall\` для поиска в истории своей Session.
 - Управляй расписаниями через \`schedule_add\`, \`schedule_list\`, \`schedule_remove\`; cron использует часовой пояс Host.
+- Если команда требует sudo и без пароля не выходит, вызови \`sudo_run\` с командой и причиной; не проси пароль в чате.
 
 - Для управления Specialists подключён MCP-сервер \`secretary\` (\`list\`, \`send\`, \`read\`, \`stop\`, \`send_file\`, \`report_issue\`).
 - На вопрос «что мы сегодня сделали» вызови \`day_summary\` и коротко перескажи подтверждённые результаты.
@@ -81,6 +82,7 @@ export const SPECIALIST_PROMPT = `# Specialist
 
 - Используй \`recall\` для поиска в истории своей Session.
 - Управляй расписаниями через \`schedule_add\`, \`schedule_list\`, \`schedule_remove\`; cron использует часовой пояс Host.
+- Если команда требует sudo и без пароля не выходит, вызови \`sudo_run\` с командой и причиной; не проси пароль в чате.
 
 - Твой финальный ответ в конце хода уходит Secretary Agent как отчёт.
 - У тебя подключён MCP-сервер \`secretary\`: \`list\`, \`send\`, \`read\`, \`stop\` управляют **твоими** Workers, \`send_file\` показывает файл владельцу. У Workers MCP нет.
