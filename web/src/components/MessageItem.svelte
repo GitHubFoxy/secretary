@@ -17,7 +17,7 @@
   async function decide(type) {
     sudoBusy = true; sudoError = '';
     const secret = password; password = '';
-    try { await onsudo(type, m.id, type === 'sudoApprove' ? secret : undefined); }
+    try { await onsudo(type, m.id, ['sudoApprove', 'secretApprove'].includes(type) ? secret : undefined); }
     catch (error) { sudoError = error.message; }
     finally { sudoBusy = false; }
   }
@@ -81,6 +81,16 @@
       <p class="mt-2">Изменения:</p><pre class="max-h-96 overflow-auto whitespace-pre-wrap break-all">{skillDiff(m.before, m.content)}</pre>
       {#if m.status}<p class="mt-2">{m.status === 'approved' ? 'Принято' : 'Отклонено'}</p>
       {:else}<div class="mt-3 flex gap-3"><button class="rounded bg-amber-700 px-3 py-2" disabled={!connected || sudoBusy} onclick={() => decideSkill('skillApprove')}>Принять</button><button class="rounded bg-neutral-700 px-3 py-2" disabled={!connected || sudoBusy} onclick={() => decideSkill('skillReject')}>Отклонить</button></div>{#if sudoError}<p class="mt-2 text-red-400">{sudoError}</p>{/if}{/if}
+    </div>
+  {:else if m.kind === 'secret'}
+    <div class="max-w-full rounded-xl border border-amber-700 bg-neutral-900 p-4 text-sm text-neutral-100">
+      <p>Агент запрашивает секрет: {m.name}</p><p class="whitespace-pre-wrap break-words">Причина: {m.reason}</p>
+      {#if m.status}<p class="mt-2">{m.status === 'saved' ? 'Сохранён' : m.status}</p>
+      {:else}
+        <label class="mt-3 block">Секрет <input class="mt-1 block w-full rounded bg-neutral-800 p-2" type="password" autocomplete="off" bind:value={password} /></label>
+        <div class="mt-3 flex gap-3"><button class="rounded bg-amber-700 px-3 py-2" disabled={!connected || sudoBusy || !password} onclick={() => decide('secretApprove')}>Сохранить</button><button class="rounded bg-neutral-700 px-3 py-2" disabled={!connected || sudoBusy} onclick={() => decide('secretReject')}>Отклонить</button></div>
+        {#if sudoError}<p class="mt-2 text-red-400">{sudoError}</p>{/if}
+      {/if}
     </div>
   {:else if m.kind === 'sudo'}
     <div class="max-w-full rounded-xl border border-amber-700 bg-neutral-900 p-4 text-sm text-neutral-100">
