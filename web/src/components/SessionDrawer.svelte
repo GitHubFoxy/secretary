@@ -82,6 +82,7 @@
       {#if active}
         <span class="mt-0.5 block truncate pl-3.5 text-xs text-neutral-500">{statusText[s.status] ?? s.status} · {modelLabel(s.model)}{#if s.reasoning}{' · '}{s.reasoning}{/if}</span>
         <span class="block truncate pl-3.5 font-mono text-[11px] text-neutral-600">{s.folder}</span>
+        {#if s.branch}<span class="block truncate pl-3.5 font-mono text-[11px] text-neutral-600">{s.branch}</span>{/if}
       {/if}
     </button>
     <!-- Вне кнопки чата: так иконка стоит по центру строки, на одном уровне с кнопками справа, сколько бы строк ни было. -->

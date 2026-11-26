@@ -29,6 +29,7 @@ export function openDatabase(path: string) {
     id INTEGER PRIMARY KEY, parent_id INTEGER, harness TEXT NOT NULL, model TEXT NOT NULL,
     folder TEXT NOT NULL, harness_session_id TEXT, status TEXT NOT NULL
   )`);
+  addColumn('sessions', 'branch TEXT');
   addColumn('sessions', 'name TEXT');
   addColumn('sessions', 'reasoning TEXT');
   addColumn('sessions', 'hidden INTEGER NOT NULL DEFAULT 0');
