@@ -53,15 +53,15 @@ if [ -z "$choice" ]; then
   case "$choice" in 1|2|3) ;; *) echo 'Неизвестный выбор.' >&2; exit 1;; esac
 fi
 step 'Системные пакеты и Tailscale'
-echo 'Обычно занимает 2–3 минуты.'
+echo 'Обычно занимает до минуты.'
 sudo -v
 if [ "$ID" = arch ]; then
-  sudo pacman -S --needed --noconfirm curl git tar gzip unzip nodejs npm tailscale
+  sudo pacman -S --needed --noconfirm curl git tar gzip unzip tailscale
   sudo systemctl enable --now tailscaled
 else
   # needrestart on Ubuntu 24.04 otherwise stops apt with a full-screen dialog.
   sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update
-  sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y curl git tar gzip unzip nodejs npm ca-certificates
+  sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y curl git tar gzip unzip ca-certificates
   if ! command -v tailscale >/dev/null; then curl -fsSL https://tailscale.com/install.sh | sh; fi
   sudo systemctl enable --now tailscaled
 fi
@@ -78,7 +78,11 @@ if [ "$choice" = 1 ] || [ "$choice" = 3 ]; then
   claude auth login
 fi
 if [ "$choice" = 2 ] || [ "$choice" = 3 ]; then
-  if ! command -v codex >/dev/null; then npm install --prefix "$HOME/.local" -g @openai/codex; fi
+  # The latest release binary: npm from the distribution would pull in hundreds of packages for one program.
+  if ! command -v codex >/dev/null; then
+    curl --progress-bar -fL https://github.com/openai/codex/releases/latest/download/codex-x86_64-unknown-linux-musl.tar.gz | tar -xzO > "$HOME/.local/bin/codex"
+    chmod +x "$HOME/.local/bin/codex"
+  fi
   codex login --device-auth
 fi
 
