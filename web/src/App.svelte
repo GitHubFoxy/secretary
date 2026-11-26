@@ -212,7 +212,9 @@
     if (item.kind === 'voice') voiceMessages = voiceMessages.map(v => v.key === item.key ? {...v, error:''} : v);
     else voiceMessages = [...voiceMessages, {...item, kind:'voice', error:'', afterCursor: item.id === selected ? (history.at(-1)?.cursor ?? 0) : 0}];
     try {
-      const response = await fetch('/voice', {method:'POST', headers:{'Content-Type':'audio/wav'}, body:await item.wav});
+      const wav = await item.wav;
+      if (!wav) throw new Error('Не услышал речь');
+      const response = await fetch('/voice', {method:'POST', headers:{'Content-Type':'audio/wav'}, body:wav});
       if (!response.ok) throw new Error(await response.text());
       const {text} = await response.json();
       if (!text) throw new Error('Речь не распознана');

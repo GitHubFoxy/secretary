@@ -60,6 +60,10 @@
     <path d="M14 2v4a2 2 0 0 0 2 2h4" />
   {:else if name === 'queue'}
     <path d="M4 7h11M4 12h11M4 17h6M18 14v6M15 17h6" />
+  {:else if name === 'pause'}
+    <path d="M9 5v14M15 5v14" />
+  {:else if name === 'play'}
+    <path d="m8 5 11 7-11 7z" />
   {:else if name === 'stop'}
     <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
   {:else if name === 'trash'}
