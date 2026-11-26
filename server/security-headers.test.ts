@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 test('HTTP responses include security headers', async () => {
   const home = mkdtempSync(join(tmpdir(), 'secretary-headers-'));
-  const proc = Bun.spawn([process.execPath, 'index.ts'], { cwd: import.meta.dir, env: { ...process.env, HOME: home, SECRETARY_PORT: '0', SECRETARY_MCP_PORT: '0' }, stdout: 'pipe', stderr: 'pipe' });
+  const proc = Bun.spawn([process.execPath, 'index.ts'], { cwd: import.meta.dir, env: { ...process.env, HOME: home, SECRETARY_PORT: '0', SECRETARY_MCP_PORT: '0', SECRETARY_PREVIEW_PORT: '0' }, stdout: 'pipe', stderr: 'pipe' });
   try {
     const reader = proc.stdout.getReader();
     const { value } = await reader.read();
