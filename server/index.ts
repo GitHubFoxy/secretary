@@ -6,6 +6,7 @@ import { secretaryFolder } from './config';
 import { fileResponse, saveFile } from './files';
 import { migrateDatabase, openDatabase } from './database';
 import { serveMcp } from './mcp';
+import { listNotes, saveNote, deleteNote } from './notes';
 import { checkReasoning, modelDetails } from './models';
 import { ensurePersona, instructionsFile, setSpecialistModel, specialistModel, systemPrompts, type Role } from './persona';
 import { Sessions } from './sessions';
@@ -50,6 +51,9 @@ function sameOrigin(request: Request, url: URL) {
 
 // The browser adapter. Every command gets exactly one answer with its requestId: `reply` with the result or `error`.
 const commands: Record<string, (cmd: any, send: (message: object) => void) => unknown> = {
+  notes: cmd => ({notes: listNotes(db, sessions.get(cmd.id).id)}),
+  noteSave: cmd => { const session = sessions.get(cmd.id); saveNote(db, session.id, cmd.noteId, cmd.text); publish({type:'notesChanged', sessionId:session.id}); },
+  noteDelete: cmd => { const session = sessions.get(cmd.id); deleteNote(db, session.id, cmd.noteId); publish({type:'notesChanged', sessionId:session.id}); },
   read: cmd => {
     const session = sessions.get(cmd.id);
     return {...chatPage(db, session.id, Number.isSafeInteger(cmd.before) && cmd.before > 0 ? cmd.before : undefined), queue: session.queue.list()};

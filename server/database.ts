@@ -37,6 +37,7 @@ export function openDatabase(path: string) {
   db.run(`CREATE TABLE IF NOT EXISTS pending_messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, urgent INTEGER NOT NULL, text TEXT NOT NULL, images TEXT NOT NULL)`);
   addColumn('pending_messages', 'in_flight INTEGER NOT NULL DEFAULT 0');
   addColumn('pending_messages', 'voice INTEGER NOT NULL DEFAULT 0');
+  db.run(`CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, session_id INTEGER NOT NULL, text TEXT NOT NULL, updated_at TEXT NOT NULL)`);
   return db;
 }
 

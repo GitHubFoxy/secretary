@@ -3,6 +3,7 @@ import { expect, test } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { reportText } from './chat';
 import { openDatabase } from './database';
+import { listNotes, saveNote, deleteNote } from './notes';
 import type { Turn, TurnOptions } from './harness';
 import type { Session } from './session';
 import { Sessions } from './sessions';
@@ -299,4 +300,19 @@ test('смена harness продолжает чат: событие в исто
   expect(calls[2].text).toContain('Пользователь: первый вопрос\n\nАгент: первый ответ\n\nПользователь: второй\n\nАгент: ok');
   expect(calls[2].text).not.toContain('Bash');
   expect(calls[2].text.endsWith('</history>\n\nтретий')).toBe(true);
+});
+
+
+test('заметки сохраняются, обновляются и удаляются вместе с Session', async () => {
+  const {db, sessions, create} = setup();
+  const session = await create();
+  saveNote(db, session.id, 'a', 'первая');
+  expect(listNotes(db, session.id).map((note: any) => note.text)).toEqual(['первая']);
+  saveNote(db, session.id, 'a', 'обновлённая');
+  expect(listNotes(db, session.id).map((note: any) => note.text)).toEqual(['обновлённая']);
+  deleteNote(db, session.id, 'a');
+  expect(listNotes(db, session.id)).toEqual([]);
+  saveNote(db, session.id, 'b', 'другая');
+  sessions.delete(session.id);
+  expect(listNotes(db, session.id)).toEqual([]);
 });
