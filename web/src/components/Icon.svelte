@@ -16,7 +16,12 @@
 </script>
 
 <svg class={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-  {#if name === 'menu'}
+  {#if name === 'copy'}
+    <rect x="8" y="8" width="13" height="13" rx="2" />
+    <path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3" />
+  {:else if name === 'check'}
+    <path d="m5 12 4 4L19 6" />
+  {:else if name === 'menu'}
     <path d="M4 7h16M4 12h16M4 17h10" />
   {:else if name === 'more'}
     <path d="M5 12h.01M12 12h.01M19 12h.01" stroke-width="3" />
