@@ -1,7 +1,7 @@
 import { Schedules } from './schedules';
 import { recall } from './database';
 import type { Database } from 'bun:sqlite';
-import { chatHistory, chatMessage, reportText } from './chat';
+import { chatHistory, reportText } from './chat';
 import { hostPath, mcpUrl as defaultMcpUrl } from './config';
 import type { Turn } from './harness';
 import { SECRETARY_PROMPT, specialistPrompt } from './persona';
@@ -66,30 +66,6 @@ export class Sessions {
   children(parentId: number) { return [...this.all.values()].filter(s => s.info.parent_id === parentId); }
 
   recall(id: number, query: string) { return recall(this.db, id, query); }
-  daySummary(date?: unknown) {
-    const now = new Date();
-    const day = date === undefined ? [now.getFullYear(), String(now.getMonth() + 1).padStart(2, '0'), String(now.getDate()).padStart(2, '0')].join('-') : date;
-    if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) throw new Error('Неверная дата');
-    const [y, m, d] = day.split('-').map(Number);
-    const start = new Date(0);
-    start.setFullYear(y, m - 1, d); start.setHours(0, 0, 0, 0);
-    if (start.getFullYear() !== y || start.getMonth() !== m - 1 || start.getDate() !== d) throw new Error('Неверная дата');
-    const end = new Date(start); end.setDate(end.getDate() + 1);
-    const rows = this.db.query('SELECT e.session_id, e.time, e.json, s.name, s.parent_id FROM events e JOIN sessions s ON s.id = e.session_id WHERE e.time >= ? AND e.time < ? ORDER BY e.time, e.rowid').all(start.toISOString(), end.toISOString()) as any[];
-    const groups = new Map<number, any>();
-    for (const row of rows) {
-      const message = chatMessage(JSON.parse(row.json));
-      if (!message || !['user', 'agent', 'report', 'switch', 'error'].includes(message.kind)) continue;
-      let group = groups.get(row.session_id);
-      if (!group) groups.set(row.session_id, group = { id: row.session_id, name: row.name, parent_id: row.parent_id, turns: 0, events: [] });
-      if (message.kind === 'user') group.turns++;
-      if ('text' in message) message.text = message.text.slice(0, 2000);
-      if ('images' in message) delete (message as any).images;
-      if ('files' in message && message.files) message.files = message.files.map(file => ({ name: file.name } as typeof file));
-      group.events.push({ time: row.time, ...message });
-    }
-    return { date: day, timezone: Intl.DateTimeFormat().resolvedOptions().timeZone, sessions: [...groups.values()] };
-  }
   chatHistory(id: unknown, limit: number) { return chatHistory(this.db, this.get(id).id, limit); }
 
   stop(id: unknown) {
