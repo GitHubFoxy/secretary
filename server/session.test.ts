@@ -316,3 +316,29 @@ test('заметки сохраняются, обновляются и удал�
   sessions.delete(session.id);
   expect(listNotes(db, session.id)).toEqual([]);
 });
+
+test('после перезапуска ход с сессией harness продолжается автоматически', async () => {
+  const first = setup();
+  const s = await first.create();
+  s.send('задача'); first.calls[0].start();
+  const restored = setup(first.db);
+  expect(restored.calls).toHaveLength(0);
+  restored.sessions.resumePending();
+  expect(restored.calls).toHaveLength(1);
+  expect(restored.calls[0].options.resumeId).toBe('thread-1');
+  expect(restored.calls[0].text).toBe('Secretary перезапустился посреди твоего хода. Продолжи работу с того места, где остановился; если всё уже сделано — коротко подведи итог.');
+  expect(restored.sessions.get(s.id).info.status).toBe('running');
+  restored.calls[0].start(); restored.calls[0].answer('готово'); await tick();
+  expect(restored.sessions.get(s.id).info.status).toBe('idle');
+  expect(restored.sessions.chatHistory(s.id, 20).some(m => m.kind === 'user' && m.text.includes('Secretary перезапустился'))).toBe(false);
+});
+
+test('после перезапуска ход без сессии harness остаётся прерванным', async () => {
+  const first = setup();
+  const s = await first.create();
+  s.send('задача'); first.calls[0].options.onDispatching();
+  const restored = setup(first.db);
+  restored.sessions.resumePending();
+  expect(restored.sessions.get(s.id).info.status).toBe('interrupted');
+  expect(restored.calls).toHaveLength(0);
+});

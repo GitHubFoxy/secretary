@@ -34,8 +34,13 @@ export class Sessions {
     this.folder = secretaryFolder;
     const rows = this.db.query('SELECT * FROM sessions ORDER BY id').all() as SessionRow[];
     if (!rows.length) this.insert({ harness: 'claude', model: 'opus', reasoning: null, folder: secretaryFolder });
-    else for (const row of rows) this.attach(row);
-    this.db.query("UPDATE sessions SET status = 'interrupted' WHERE status = 'running'").run();
+    else for (const row of rows) {
+      const session = this.attach(row);
+      if (row.status === 'running') this.db.transaction(() => {
+        this.db.query("UPDATE sessions SET status = 'interrupted' WHERE id = ?").run(row.id);
+        if (row.harness_session_id) session.queue.add('Secretary перезапустился посреди твоего хода. Продолжи работу с того места, где остановился; если всё уже сделано — коротко подведи итог.', [], true, false, undefined, [], true);
+      })();
+    }
   }
 
   // Messages confirmed before a restart go now. Call once adapters listen.

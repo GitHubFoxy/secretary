@@ -3,7 +3,7 @@ import { writeEvent } from './database';
 import type { Image } from './images';
 import type { FileAttachment } from './files';
 
-export type Message = { id: number; text: string; images: Image[]; files: FileAttachment[]; urgent: boolean; voice: boolean; speechTarget?: (message: object) => void };
+export type Message = { id: number; text: string; images: Image[]; files: FileAttachment[]; urgent: boolean; voice: boolean; system?: boolean; speechTarget?: (message: object) => void };
 export type Unsent = 'cancelled' | 'delivery_uncertain';
 
 // The messages of one Session that the client got a confirmation for but that are not in history yet.
@@ -17,7 +17,7 @@ export class MessageQueue {
     const rows = db.query('SELECT id, urgent, text, images, in_flight, voice FROM pending_messages WHERE session_id = ? ORDER BY urgent DESC, id').all(sessionId) as { id: number; urgent: number; text: string; images: string; in_flight: number; voice: number }[];
     this.items = rows.map(row => {
       const saved = JSON.parse(row.images);
-      return { id: row.id, text: row.text, images: saved.images ?? saved, files: saved.files ?? [], urgent: row.urgent === 1, voice: row.voice === 1 };
+      return { id: row.id, text: row.text, images: saved.images ?? saved, files: saved.files ?? [], urgent: row.urgent === 1, voice: row.voice === 1, system: saved.system === true };
     });
     // In flight at load time means Secretary died after handing these to a harness: they must not be sent again.
     const inFlight = new Set(rows.filter(row => row.in_flight).map(row => row.id));
@@ -25,13 +25,13 @@ export class MessageQueue {
   }
 
   get length() { return this.items.length; }
-  list() { return this.items.map(({ speechTarget, ...item }) => item); }
+  list() { return this.items.filter(item => !item.system).map(({ speechTarget, ...item }) => item); }
   has(item: Message) { return this.items.includes(item); }
 
   // Urgent messages stand before ordinary ones, each group in arrival order.
-  add(text: string, images: Image[], urgent: boolean, voice = false, speechTarget?: (message: object) => void, files: FileAttachment[] = []) {
-    const saved = this.db.query('INSERT INTO pending_messages (session_id, urgent, text, images, voice) VALUES (?, ?, ?, ?, ?)').run(this.sessionId, urgent ? 1 : 0, text, JSON.stringify({images, files}), voice ? 1 : 0);
-    const item: Message = { id: Number(saved.lastInsertRowid), text, images, files, urgent, voice, speechTarget };
+  add(text: string, images: Image[], urgent: boolean, voice = false, speechTarget?: (message: object) => void, files: FileAttachment[] = [], system = false) {
+    const saved = this.db.query('INSERT INTO pending_messages (session_id, urgent, text, images, voice) VALUES (?, ?, ?, ?, ?)').run(this.sessionId, urgent ? 1 : 0, text, JSON.stringify({images, files, system}), voice ? 1 : 0);
+    const item: Message = { id: Number(saved.lastInsertRowid), text, images, files, urgent, voice, speechTarget, system };
     this.items.splice(urgent ? this.items.filter(m => m.urgent).length : this.items.length, 0, item);
     this.publishQueue();
   }
@@ -55,13 +55,13 @@ export class MessageQueue {
   }
 
   accept(batch: Message[]) {
-    this.resolve(batch, item => ({ type: 'user', message: { role: 'user', content: item.text }, images: item.images, files: item.files }));
+    this.resolve(batch, item => ({ type: item.system ? 'system' : 'user', message: { role: 'user', content: item.text }, images: item.images, files: item.files }));
   }
 
   // Returns how many of the batch were still waiting.
   drop(batch: Message[], outcome: Unsent | ((item: Message) => Unsent)) {
     const outcomeOf = typeof outcome === 'function' ? outcome : () => outcome;
-    return this.resolve(batch, item => ({ type: outcomeOf(item), text: item.text, images: item.images, files: item.files }));
+    return this.resolve(batch, item => ({ type: item.system ? 'system' : outcomeOf(item), text: item.text, images: item.images, files: item.files }));
   }
 
   dropAll(outcome: (item: Message) => Unsent) { return this.drop(this.items, outcome); }
