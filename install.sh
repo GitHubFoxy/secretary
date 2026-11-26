@@ -1,12 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# An agent or a script passes the choice as an argument; a person answers the question.
+usage='Использование: install.sh [--subscription claude|codex|both]'
+args=("$@")
+choice=''
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --subscription) case "${2:-}" in claude) choice=1;; codex) choice=2;; both) choice=3;; *) echo "$usage" >&2; exit 1;; esac; shift 2;;
+    -h|--help) echo "$usage"; exit 0;;
+    *) echo "$usage" >&2; exit 1;;
+  esac
+done
+
 if [ "$(id -u)" -eq 0 ]; then
   if [ -z "${SUDO_USER:-}" ] || [ "$SUDO_USER" = root ]; then
     echo 'Запустите установку от обычного пользователя, не от root.' >&2
     exit 1
   fi
-  exec sudo -u "$SUDO_USER" -H env XDG_RUNTIME_DIR="/run/user/$(id -u "$SUDO_USER")" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" bash "$0" "$@"
+  exec sudo -u "$SUDO_USER" -H env XDG_RUNTIME_DIR="/run/user/$(id -u "$SUDO_USER")" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$SUDO_USER")/bus" bash "$0" "${args[@]}"
 fi
 
 if [ "$(uname -m)" != x86_64 ] || [ "$(uname -s)" != Linux ]; then
@@ -27,17 +39,22 @@ trap 'printf "\nУстановка остановилась на шаге «%s»
 printf '%s\tначало\t%s %s\n' "$(date -Is)" "$ID" "${VERSION_ID:-}" >> "$log"
 
 step 'Выбор подписки'
-printf 'Подписка: 1 — Claude, 2 — Codex, 3 — обе: '
-read -r choice
-case "$choice" in 1|2|3) ;; *) echo 'Неизвестный выбор.' >&2; exit 1;; esac
+if [ -z "$choice" ]; then
+  # With `curl … | bash` stdin is the script itself, so the answer is read from the terminal.
+  if ! { : < /dev/tty; } 2>/dev/null; then echo "Нет терминала для вопроса. $usage" >&2; exit 1; fi
+  printf 'Подписка: 1 — Claude, 2 — Codex, 3 — обе: '
+  read -r choice < /dev/tty
+  case "$choice" in 1|2|3) ;; *) echo 'Неизвестный выбор.' >&2; exit 1;; esac
+fi
 step 'Системные пакеты и Tailscale'
 sudo -v
 if [ "$ID" = arch ]; then
   sudo pacman -S --needed --noconfirm curl git tar gzip unzip nodejs npm tailscale
   sudo systemctl enable --now tailscaled
 else
-  sudo apt-get update
-  sudo apt-get install -y curl git tar gzip unzip nodejs npm ca-certificates
+  # needrestart on Ubuntu 24.04 otherwise stops apt with a full-screen dialog.
+  sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update
+  sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y curl git tar gzip unzip nodejs npm ca-certificates
   if ! command -v tailscale >/dev/null; then curl -fsSL https://tailscale.com/install.sh | sh; fi
   sudo systemctl enable --now tailscaled
 fi

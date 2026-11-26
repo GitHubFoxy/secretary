@@ -4,6 +4,16 @@
 
 **Один чат, один помощник.** Даёшь Secretary Agent задачу — с телефона по кнопке Power или из браузера, — и он её делает: сам или поручив Specialists, которые работают параллельно на твоём Host.
 
+## Установка на сервер
+
+Нужен сервер с Arch или Ubuntu 24.04 (x86_64), подписка Claude Code или Codex и Android-телефон. Войдите на сервер обычным пользователем с sudo и выполните:
+
+```sh
+curl -fsSL https://github.com/GitHubFoxy/secretary/releases/latest/download/install.sh | bash
+```
+
+Скрипт спросит подписку, попросит войти в неё и в Tailscale и в конце покажет адрес Host и код сопряжения для приложения. Без вопросов: `bash install.sh --subscription claude|codex|both`. Журнал шагов: `~/.secretary/install.log`.
+
 Установка и запуск: `bun install --cwd web`, затем `bun run start`. Сервер слушает `127.0.0.1:3000`. Для удалённого доступа нужен HTTPS: на omarchy сервер опубликован через Cloudflare Tunnel (`secretary-tunnel.service`) по адресу `app.scrtrbot.ru`. Устройство архитектуры описано в `docs/architecture.md`. Claude Code и Codex должны быть установлены и авторизованы.
 
 SQLite и настройки Secretary Agent хранятся в `~/.secretary/`.

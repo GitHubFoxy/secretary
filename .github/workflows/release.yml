@@ -22,3 +22,4 @@ jobs:
           files: |
             secretary.tar.gz
             secretary.tar.gz.sha256
+            install.sh
