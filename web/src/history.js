@@ -9,3 +9,12 @@ export function mergeHistory(current, page, lastCursor) {
   messages.sort((a, b) => a.cursor - b.cursor);
   return {messages, overlap};
 }
+
+export function insertVoices(history, voices) {
+  const messages = history.slice();
+  for (const voice of voices) {
+    const index = messages.findIndex(message => message.cursor > voice.afterCursor);
+    messages.splice(index < 0 ? messages.length : index, 0, voice);
+  }
+  return messages;
+}

@@ -1,7 +1,7 @@
 <script>
   import { onMount, tick } from 'svelte';
   import { createConnection } from './connection.js';
-  import { mergeHistory } from './history.js';
+  import { mergeHistory, insertVoices } from './history.js';
   import { createInterruptFeedback } from './interrupt-feedback.js';
   import { createUpdateChecker } from './updates.js';
   import { keyboardInset } from './viewport.js';
@@ -209,7 +209,8 @@
   }
   // Запись хранится в памяти, пока её текст не принят: при ошибке её можно отправить повторно.
   async function sendVoice(item) {
-    voiceMessages = [...voiceMessages.filter(v => v.key !== item.key), {...item, kind:'voice', error:''}];
+    if (item.kind === 'voice') voiceMessages = voiceMessages.map(v => v.key === item.key ? {...v, error:''} : v);
+    else voiceMessages = [...voiceMessages, {...item, kind:'voice', error:'', afterCursor: item.id === selected ? (history.at(-1)?.cursor ?? 0) : 0}];
     try {
       const response = await fetch('/voice', {method:'POST', headers:{'Content-Type':'audio/wav'}, body:await item.wav});
       if (!response.ok) throw new Error(await response.text());
@@ -275,8 +276,7 @@
   }
   // Queued messages are not accepted by the agent yet, so they come after history.
   $: messages = [
-    ...groupSteps(mergeSwitches(history).map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})), current?.status === 'running'),
-    ...voiceMessages.filter(item => item.id === selected),
+    ...groupSteps(insertVoices(mergeSwitches(history).map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})), voiceMessages.filter(item => item.id === selected)), current?.status === 'running'),
     ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:[...item.images, ...(item.files || [])], urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
     ...preparing.filter(item => item.sessionId === selected).map(item => ({...item, kind:'preparing', key:`preparing:${item.id}`})),
   ];
@@ -374,7 +374,7 @@
 
     <div bind:this={chatViewport} class="relative flex min-h-0 flex-1 flex-col">
       {#key historyVersion}
-        <MessageList {messages} {sessions} {historyLoaded} {connected} historyHasMore={historyHasMore} {historyLoadingOlder} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} />
+        <MessageList {messages} {sessions} {historyLoaded} {connected} historyHasMore={historyHasMore} {historyLoadingOlder} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} oncancelVoice={item => voiceMessages = voiceMessages.filter(v => v.key !== item.key)} />
       {/key}
 
       <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->
