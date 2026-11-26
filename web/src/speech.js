@@ -1,7 +1,7 @@
 // PCM chunks are scheduled against one audio clock, so consecutive chunks play in order.
-export function createSpeechPlayer(onChange, AudioContextImpl = AudioContext) {
+export function createSpeechPlayer(onChange, AudioContextImpl = AudioContext, onPlaying = () => {}) {
   let context, next = 0, sources = new Set(), carry = null, active = false;
-  function changed() { onChange(active || sources.size > 0); }
+  function changed() { onChange(active || sources.size > 0); onPlaying(sources.size > 0); }
   function unlock() {
     context ||= new AudioContextImpl();
     if (context.state === 'suspended') context.resume();
@@ -33,6 +33,7 @@ export function createSpeechPlayer(onChange, AudioContextImpl = AudioContext) {
       sources.add(source);
       next = Math.max(next, context.currentTime);
       source.start(next); next += buffer.duration; changed();
+      return true;
     },
   };
 }

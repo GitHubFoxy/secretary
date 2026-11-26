@@ -32,8 +32,18 @@
   const overlayBridge = globalThis.SecretaryOverlay;
   // В шторке под пустым местом должно быть видно приложение, поверх которого её открыли.
   if (overlay) document.documentElement.style.background = document.body.style.background = 'transparent';
-  let voiceMode = false, voiceKey = 0;
+  let voiceMode = false, voiceKey = 0, voiceOpenedAt = performance.now();
+  const voiceTimings = new Map();
+  function finishVoiceTiming(id) {
+    const timing = voiceTimings.get(id);
+    if (!timing) return;
+    voiceTimings.delete(id);
+    const values = Object.fromEntries(['listening', 'end', 'recognized', 'event', 'audio'].map(key => [key, timing[key] == null ? null : Math.round(timing[key] - timing.press)]));
+    console.info('Voice Call ms', values);
+    if (connected) command({type:'voiceTiming', values});
+  }
   function openVoiceMode() {
+    voiceOpenedAt = performance.now();
     const secretary = sessions.find(s => s.secretary);
     if (secretary && selected !== secretary.id) select(secretary.id);
     drawerOpen = settingsOpen = renameOpen = profileOpen = false;
@@ -43,8 +53,8 @@
   let historyLoaded = false, historyHasMore = false, historyLoadingOlder = false, historyVersion = 0, historyToken = 0;
   let sessions = cached?.sessions ?? [], history = cached?.history ?? [], queue = [], selected = cached?.selected ?? null, message = '', error = '', connected = false;
   if (cached) { historyLoaded = true; historyHasMore = cached.hasMore; }
-  let voiceMessages = [], voiceModel = '', voiceStatus = '', videoInterval = '1', ttsEngine = '', speaking = false;
-  const speech = createSpeechPlayer(value => { speaking = value; });
+  let voiceMessages = [], voiceModel = '', voiceStatus = '', videoInterval = '1', ttsEngine = '', speaking = false, playing = false, speechFinishedId = null;
+  const speech = createSpeechPlayer(value => { speaking = value; }, AudioContext, value => { playing = value; });
   async function loadTtsEngine() {
     try { const response = await fetch('/settings/tts'); if (!response.ok) throw new Error(await response.text()); ttsEngine = (await response.json()).engine; }
     catch (err) { voiceStatus = `Не удалось загрузить настройку: ${err.message}`; }
@@ -128,7 +138,7 @@
   const connection = createConnection({
     url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`,
     onOpen: () => { connected = true; notesRevision++; for (const id of draftPending.keys()) savePending(id); if (selected !== null) { loadHistory(selected, false, historyLoaded); if (!draftPending.has(selected)) loadDraft(selected); } updates.check(); },
-    onClose: () => { connected = false; speech.stop(); interruptFeedback.disconnect(); },
+    onClose: () => { connected = false; for (const id of voiceTimings.keys()) finishVoiceTiming(id); speech.stop(); interruptFeedback.disconnect(); },
     onMessage: handleMessage,
   });
   // Commands whose only visible result is a broadcast (sessions, message) or an error.
@@ -203,7 +213,12 @@
     if (msg.type === 'draftChanged' && msg.sessionId === selected && msg.from !== draftFrom && document.activeElement?.id !== 'message') { draftToken++; clearTimeout(draftPending.get(selected)?.timer); draftPending.delete(selected); message = msg.text; }
     if (msg.type === 'notesChanged' && msg.sessionId === selected) notesRevision++;
     if (msg.type === 'speech_start') speech.start();
-    if (msg.type === 'speech_audio') speech.audio(msg.data, msg.rate);
+    if (msg.type === 'speech_event' && voiceTimings.has(msg.voiceTimingId)) voiceTimings.get(msg.voiceTimingId).event ??= performance.now();
+    if (msg.type === 'speech_audio' && speech.audio(msg.data, msg.rate)) {
+      const timing = voiceTimings.get(msg.voiceTimingId);
+      if (timing) { timing.audio = performance.now(); finishVoiceTiming(msg.voiceTimingId); }
+    }
+    if (['speech_done', 'speech_cancel', 'speech_error'].includes(msg.type)) { speechFinishedId = msg.voiceTimingId; finishVoiceTiming(msg.voiceTimingId); }
     if (msg.type === 'speech_done') speech.done();
     if (msg.type === 'speech_cancel') speech.stop();
     if (msg.type === 'speech_error') { speech.stop(); error = msg.message; }
@@ -270,10 +285,13 @@
       const response = await fetch('/voice', {method:'POST', headers:{'Content-Type':'audio/wav'}, body:wav});
       if (!response.ok) throw new Error(await response.text());
       const {text} = await response.json();
+      if (item.timing) item.timing.recognized = performance.now();
       if (!text) throw new Error('Речь не распознана');
-      await connection.request({type:'send', id:item.id, text:voiceText(text, item.seconds), voice:item.speech === true});
+      if (item.timing) voiceTimings.set(item.key, item.timing);
+      await connection.request({type:'send', id:item.id, text:voiceText(text, item.seconds), voice:item.speech === true, voiceTimingId:item.timing ? item.key : undefined});
       voiceMessages = voiceMessages.filter(v => v.key !== item.key);
     } catch (err) {
+      if (item.timing) { if (!voiceTimings.has(item.key)) voiceTimings.set(item.key, item.timing); finishVoiceTiming(item.key); }
       voiceMessages = voiceMessages.map(v => v.key === item.key ? {...v, error:err.message} : v);
     }
   }
@@ -344,7 +362,7 @@
     try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-20).map(m => ({...m, images:m.images?.filter(image => !image.video || image.video.time === 0)})), hasMore:historyHasMore || history.length > 20})); } catch { localStorage.removeItem('last-chat'); }
   }
   $: current = sessions.find(s => s.id === selected);
-  $: voiceProps = {turn, sessionId:selected, running:current?.status === 'running', speaking, connected, onstart:() => { micPress(); recordStart(); }, onvoice:item => sendVoice({...item, speech:true}), onstopspeech:stopSpeech};
+  $: voiceProps = {turn, sessionId:selected, running:current?.status === 'running', processing:voiceMessages.some(item => item.id === selected && item.speech && !item.error), speaking:playing, speechFinishedId, connected, openedAt:voiceOpenedAt, onstart:() => { micPress(); recordStart(); }, onvoice:item => sendVoice({...item, speech:true}), onstopspeech:stopSpeech};
   $: title = current?.name || (current?.secretary ? 'Secretary' : `Сессия #${selected}`);
 
   // Высота поля ввода и высота экранной клавиатуры (iOS не сжимает layout viewport, поэтому берём visualViewport).
@@ -376,6 +394,8 @@
 
 {#if overlay}
   <VoiceMode variant="sheet" {...voiceProps} onclose={() => overlayBridge?.close()} onopenapp={() => overlayBridge?.openApp()} />
+{:else if voiceMode}
+  {#key voiceKey}<VoiceMode variant="full" {...voiceProps} onclose={() => (voiceMode = false)} />{/key}
 {:else if profileOpen}
   <ProfileScreen
     {ttsEngine}
@@ -448,7 +468,6 @@
       </div>
     </div>
 
-    {#if voiceMode}{#key voiceKey}<VoiceMode variant="full" {...voiceProps} onclose={() => (voiceMode = false)} />{/key}{/if}
 
     <SessionDrawer open={drawerOpen} {sessions} {selected} {connected} onhide={s => setHidden(s, true)} onrestore={s => setHidden(s, false)} onselect={select} onclose={() => (drawerOpen = false)} onprofile={openProfile} onlimits={openLimits} />
   </div>
