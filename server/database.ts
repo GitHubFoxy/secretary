@@ -1,4 +1,5 @@
 import { Database } from 'bun:sqlite';
+import { chatMessage } from './chat';
 import { existsSync, linkSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
@@ -39,9 +40,28 @@ export function openDatabase(path: string) {
   addColumn('pending_messages', 'voice INTEGER NOT NULL DEFAULT 0');
   db.run(`CREATE TABLE IF NOT EXISTS notes (id TEXT PRIMARY KEY, session_id INTEGER NOT NULL, text TEXT NOT NULL, updated_at TEXT NOT NULL)`);
   db.run(`CREATE TABLE IF NOT EXISTS drafts (session_id INTEGER PRIMARY KEY, text TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+  db.run("CREATE VIRTUAL TABLE IF NOT EXISTS message_search USING fts5(text, session_id UNINDEXED, time UNINDEXED, event_id UNINDEXED)");
+  const existing = new Set((db.query('SELECT event_id FROM message_search').all() as {event_id: number}[]).map(row => row.event_id));
+  const rows = db.query('SELECT rowid, session_id, json, time FROM events').all() as {rowid: number; session_id: number; json: string; time: string}[];
+  db.transaction(() => { for (const row of rows) if (!existing.has(row.rowid)) indexEvent(db, row.rowid, row.session_id, JSON.parse(row.json), row.time); })();
   return db;
 }
 
 export function writeEvent(db: Database, sessionId: number, event: unknown, time = new Date().toISOString()) {
-  return Number(db.query('INSERT INTO events VALUES (?, ?, ?)').run(sessionId, JSON.stringify(event), time).lastInsertRowid);
+  return db.transaction(() => {
+    const id = Number(db.query('INSERT INTO events VALUES (?, ?, ?)').run(sessionId, JSON.stringify(event), time).lastInsertRowid);
+    indexEvent(db, id, sessionId, event, time);
+    return id;
+  })();
+}
+
+function indexEvent(db: Database, id: number, sessionId: number, event: unknown, time: string) {
+  const message = chatMessage(event);
+  if (message && ['user', 'agent', 'report'].includes(message.kind) && 'text' in message && message.text)
+    db.query('INSERT INTO message_search VALUES (?, ?, ?, ?)').run(message.text, sessionId, time, id);
+}
+export function recall(db: Database, sessionId: number, query: string) {
+  const words = query.slice(0, 500).match(/[\p{L}\p{N}_]+/gu);
+  if (!words) return [];
+  return db.query(`SELECT session_id, time, event_id, snippet(message_search, 0, '', '', '…', 40) AS text FROM message_search WHERE message_search MATCH ? AND session_id = ? ORDER BY rank LIMIT 10`).all(words.map(word => `"${word}"`).join(' AND '), sessionId);
 }

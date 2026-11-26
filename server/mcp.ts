@@ -27,6 +27,7 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
     const target = isSecretary ? 'Specialist' : 'Worker';
     const targetGen = isSecretary ? 'Specialists' : 'твоих Workers';
     return [
+      ['recall', 'Найти сообщения в истории своей Session.', { query: { type: 'string' } }, ['query']],
       [
         'list',
         `Показать список ${targetGen} (id, имя, папка, harness, модель, статус) и доступные на этом Host модели с уровнями reasoning. Скрытые владельцем — завершённые — показываются только с hidden: true.`,
@@ -110,6 +111,10 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
 
   async function call(callerId: number, isSecretary: boolean, name: string, args: any) {
     switch (name) {
+      case 'recall': {
+        if (typeof args.query !== 'string') throw new Error('Укажите query');
+        return sessions.recall(callerId, args.query);
+      }
       case 'list': {
         const all = sessions.list().filter(s => (isSecretary ? isSpecialist(s) : s.parent_id === callerId) && !!s.hidden === (args.hidden === true));
         return { sessions: all, models: await availableModels() };

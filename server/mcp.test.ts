@@ -60,7 +60,7 @@ test('Secretary Agent: list отдаёт сессии и модели, send со
   servers.push(env.server);
 
   const tools = await env.rpc(1, 'tools/list');
-  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['list', 'send', 'read', 'stop', 'send_file', 'report_issue']);
+  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['recall', 'list', 'send', 'read', 'stop', 'send_file', 'report_issue']);
 
   const listed = await env.callTool(1, 'list');
   expect(listed.isError).toBe(false);
@@ -205,4 +205,13 @@ test('MCP проверяет токен Session, Host и Origin', async () => {
   expect((await request(`Bearer ${tokens.get(1)}`)).status).toBe(200);
   expect((await request(`Bearer ${tokens.get(1)}`, { host: 'evil.example' })).status).toBe(403);
   expect((await request(`Bearer ${tokens.get(1)}`, { origin: 'http://127.0.0.1' })).status).toBe(403);
+});
+
+test('recall ищет историю вызывающей Session через MCP', async () => {
+  const env = setup();
+  servers.push(env.server);
+  const id = (await env.callTool(1, 'send', { name: 'Проект', folder: '/tmp', message: 'редкая фраза' })).data.id;
+  env.calls[0].start();
+  expect((await env.callTool(id, 'recall', { query: 'редкая' })).data[0].text).toContain('редкая фраза');
+  expect((await env.callTool(1, 'recall', { query: 'редкая' })).data).toEqual([]);
 });
