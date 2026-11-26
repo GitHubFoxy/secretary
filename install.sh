@@ -17,9 +17,20 @@ if [ "$ID" != arch ] && { [ "$ID" != ubuntu ] || [ "${VERSION_ID:-}" != 24.04 ];
   echo 'Поддерживаются только Arch и Ubuntu 24.04 на x86_64.' >&2; exit 1
 fi
 
+# Each step prints its number and lands in the log with its duration, so a slow or failed step is visible.
+mkdir -p "$HOME/.secretary"
+log="$HOME/.secretary/install.log"
+total=8 n=0 name='' started=$SECONDS
+finish() { [ -n "$name" ] && printf '%s\t%s\t%ss\n' "$(date -Is)" "$name" "$((SECONDS - started))" >> "$log"; name=''; }
+step() { finish; n=$((n + 1)); name=$1; started=$SECONDS; printf '\n[%d/%d] %s\n' "$n" "$total" "$name"; }
+trap 'printf "\nУстановка остановилась на шаге «%s». Журнал: %s\n" "$name" "$log" >&2; printf "%s\t%s\tошибка\n" "$(date -Is)" "$name" >> "$log"' ERR
+printf '%s\tначало\t%s %s\n' "$(date -Is)" "$ID" "${VERSION_ID:-}" >> "$log"
+
+step 'Выбор подписки'
 printf 'Подписка: 1 — Claude, 2 — Codex, 3 — обе: '
 read -r choice
 case "$choice" in 1|2|3) ;; *) echo 'Неизвестный выбор.' >&2; exit 1;; esac
+step 'Системные пакеты и Tailscale'
 sudo -v
 if [ "$ID" = arch ]; then
   sudo pacman -S --needed --noconfirm curl git tar gzip unzip nodejs npm tailscale
@@ -31,11 +42,13 @@ else
   sudo systemctl enable --now tailscaled
 fi
 
+step 'Bun'
 mkdir -p "$HOME/.secretary/releases" "$HOME/.local/bin" "$HOME/.config/systemd/user"
 export PATH="$HOME/.secretary/bun/bin:$HOME/.local/bin:$PATH"
 if [ ! -x "$HOME/.secretary/bun/bin/bun" ]; then
   curl -fsSL https://bun.sh/install | BUN_INSTALL="$HOME/.secretary/bun" bash -s 'bun-v1.3.5'
 fi
+step 'Агент и вход в подписку'
 if [ "$choice" = 1 ] || [ "$choice" = 3 ]; then
   if ! command -v claude >/dev/null; then curl -fsSL https://claude.ai/install.sh | bash; fi
   claude auth login
@@ -45,6 +58,7 @@ if [ "$choice" = 2 ] || [ "$choice" = 3 ]; then
   codex login --device-auth
 fi
 
+step 'Загрузка Secretary'
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 curl --progress-bar -fL https://github.com/GitHubFoxy/secretary/releases/latest/download/secretary.tar.gz -o "$tmp/secretary.tar.gz"
@@ -55,6 +69,7 @@ mkdir "$release"
 tar -xzf "$tmp/secretary.tar.gz" -C "$release"
 ln -sfn "$release" "$HOME/.secretary/current"
 ln -sfn "$HOME/.secretary/current/secretary" "$HOME/.local/bin/secretary"
+step 'Служба Secretary'
 cat > "$HOME/.config/systemd/user/secretary.service" <<'UNIT'
 [Unit]
 Description=Secretary
@@ -71,9 +86,13 @@ UNIT
 sudo loginctl enable-linger "$(id -un)"
 systemctl --user daemon-reload
 systemctl --user enable --now secretary.service
+step 'Подключение к Tailscale'
 sudo tailscale up
 sudo tailscale serve --bg 3000
 address=$(tailscale status --json | "$HOME/.secretary/bun/bin/bun" -e 'let s=""; for await (const c of Bun.stdin.stream()) s+=new TextDecoder().decode(c); console.log(JSON.parse(s).Self.DNSName.replace(/\.$/, ""))')
+step 'Подключение телефона'
 echo "Host: https://$address"
 "$HOME/.local/bin/secretary" pair
+finish
+printf '%s\tготово\t%ss всего\n' "$(date -Is)" "$SECONDS" >> "$log"
 printf '\nДля полного доступа Secretary можно отключить пароль sudo строкой в /etc/sudoers.d/secretary:\n%s ALL=(ALL) NOPASSWD: ALL\nДоступ к Secretary тогда означает root на Host.\n' "$(id -un)"
