@@ -60,7 +60,7 @@ test('Secretary Agent: list отдаёт сессии и модели, send со
   servers.push(env.server);
 
   const tools = await env.rpc(1, 'tools/list');
-  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['recall', 'list', 'send', 'read', 'stop', 'send_file', 'day_summary', 'report_issue']);
+  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['sudo_run', 'recall', 'list', 'send', 'read', 'stop', 'send_file', 'day_summary', 'report_issue']);
 
   const listed = await env.callTool(1, 'list');
   expect(listed.isError).toBe(false);

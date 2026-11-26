@@ -6,6 +6,7 @@ import type { FileAttachment } from './files';
 export type ChatMessage =
   | { kind: 'user' | 'cancelled' | 'uncertain'; text: string; images: Image[]; files?: FileAttachment[] }
   | { kind: 'agent'; text: string; files?: FileAttachment[] }
+  | { kind: 'sudo'; id: string; command?: string; reason?: string; status?: string }
   | { kind: 'error'; text: string }
   | { kind: 'step'; tool: string; summary: string }
   | { kind: 'thinking'; text: string }
@@ -30,6 +31,8 @@ export function agentAnswer(event: any): string | null {
 }
 
 export function chatMessage(event: any): ChatMessage | null {
+  if (event?.type === 'sudo_request') return { kind: 'sudo', id: event.id, command: event.command, reason: event.reason };
+  if (event?.type === 'sudo_result') return { kind: 'sudo', id: event.id, status: event.status };
   if (event?.type === 'assistant' && Array.isArray(event.message?.content)) {
     const block = event.message.content.find((b: any) => b.type === 'tool_use' || b.type === 'thinking' || b.type === 'text');
     if (block?.type === 'text') return { kind: 'writing' };

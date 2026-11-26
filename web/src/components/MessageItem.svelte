@@ -8,7 +8,18 @@
   import { fileSize } from '../file-size.js';
   import { harnessInfo, modelLabel } from '../agents.js';
 
-  let { message: m, sessions = [], connected = false, restoreDisabled = false, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing } = $props();
+  let { onsudo, message: m, sessions = [], connected = false, restoreDisabled = false, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing } = $props();
+
+  let password = $state('');
+  let sudoBusy = $state(false);
+  let sudoError = $state('');
+  async function decide(type) {
+    sudoBusy = true; sudoError = '';
+    const secret = password; password = '';
+    try { await onsudo(type, m.id, type === 'sudoApprove' ? secret : undefined); }
+    catch (error) { sudoError = error.message; }
+    finally { sudoBusy = false; }
+  }
 
   const isImage = type => type.startsWith('image/');
   const isVideo = type => type.startsWith('video/');
@@ -50,7 +61,19 @@
 {/snippet}
 
 <div data-message>
-  {#if m.kind === 'activity'}
+  {#if m.kind === 'sudo'}
+    <div class="max-w-full rounded-xl border border-amber-700 bg-neutral-900 p-4 text-sm text-neutral-100">
+      <p>Агент хочет выполнить от root:</p>
+      <pre class="my-2 whitespace-pre-wrap break-all">{m.command}</pre>
+      <p class="whitespace-pre-wrap break-words">Причина: {m.reason}</p>
+      {#if m.status}<p class="mt-2">{({completed:'Выполнено', rejected:'Отклонено', timeout:'Время ожидания истекло', error:'Ошибка запуска'})[m.status] || m.status}</p>
+      {:else}
+        <label class="mt-3 block">Пароль sudo <input class="mt-1 block w-full rounded bg-neutral-800 p-2" type="password" autocomplete="off" bind:value={password} /></label>
+        <div class="mt-3 flex gap-3"><button class="rounded bg-amber-700 px-3 py-2" disabled={!connected || sudoBusy || !password} onclick={() => decide('sudoApprove')}>Выполнить</button><button class="rounded bg-neutral-700 px-3 py-2" disabled={!connected || sudoBusy} onclick={() => decide('sudoReject')}>Отклонить</button></div>
+        {#if sudoError}<p class="mt-2 text-red-400">{sudoError}</p>{/if}
+      {/if}
+    </div>
+  {:else if m.kind === 'activity'}
     <p class="truncate text-sm text-neutral-400">{m.text}</p>
   {:else if m.kind === 'steps'}
     <div class="max-w-[85%] text-sm text-neutral-400">

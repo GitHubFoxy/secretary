@@ -145,7 +145,7 @@ export class Session {
     if (!this.turn && !this.deleted && this.queue.length) void this.next();
   }
 
-  private emit(event: unknown) {
+  emit(event: unknown) {
     const cursor = writeEvent(this.db, this.id, event);
     this.publish(event, cursor);
   }

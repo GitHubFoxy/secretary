@@ -6,6 +6,7 @@ import { port, secretaryFolder } from './config';
 import { fileResponse, saveFile } from './files';
 import { migrateDatabase, openDatabase } from './database';
 import { serveMcp } from './mcp';
+import { Sudo } from './sudo';
 import { getDraft, saveDraft } from './drafts';
 import { listNotes, saveNote, deleteNote } from './notes';
 import { checkReasoning, modelDetails } from './models';
@@ -43,6 +44,8 @@ const sessions = new Sessions(db, {
   },
 });
 
+const sudo = new Sudo((id, event) => sessions.get(id).emit(event));
+
 // Browsers send Origin; a foreign one is rejected. Requests without Origin (curl) pass.
 function sameOrigin(request: Request, url: URL) {
   const origin = request.headers.get('origin');
@@ -52,6 +55,8 @@ function sameOrigin(request: Request, url: URL) {
 
 // The browser adapter. Every command gets exactly one answer with its requestId: `reply` with the result or `error`.
 const commands: Record<string, (cmd: any, send: (message: object) => void) => unknown> = {
+  sudoApprove: cmd => sudo.approve(cmd.sudoId, cmd.password),
+  sudoReject: cmd => sudo.reject(cmd.sudoId),
   draft: cmd => ({text: getDraft(db, sessions.get(cmd.id).id)}),
   draftSave: cmd => { const session = sessions.get(cmd.id); if (typeof cmd.from !== 'string') throw new Error('Некорректный id вкладки'); saveDraft(db, session.id, cmd.text); publish({type:'draftChanged', sessionId:session.id, text:cmd.text, from:cmd.from}); },
   notes: cmd => ({notes: listNotes(db, sessions.get(cmd.id).id)}),
@@ -167,7 +172,7 @@ const server = Bun.serve({
 
 // Loading and resuming sessions can publish events.
 sessions.load(secretaryFolder);
-serveMcp(sessions);
+serveMcp(sessions, { sudo });
 sessions.resumePending();
 
 console.log(`Secretary: ${server.url}`);

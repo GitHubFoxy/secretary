@@ -6,6 +6,7 @@ import { specialistModel } from './persona';
 import { isSpecialist, SECRETARY_ID } from './session';
 import type { Sessions } from './sessions';
 import { createWorktree } from './worktree';
+import { Sudo } from './sudo';
 
 const issuesUrl = 'https://github.com/GitHubFoxy/secretary/issues/new';
 
@@ -23,11 +24,12 @@ type ModelList = (harness: string) => Promise<{ id: string; supportedReasoningEf
 
 // One MCP adapter for both Secretary Agent (level 0) and Specialists (level 1).
 // The caller's session id is in the path (/mcp/<id>); level-2 child sessions do not get MCP.
-export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList, root = secretaryFolder } = {}) {
+export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList, root = secretaryFolder, sudo = new Sudo((id, event) => sessions.get(id).emit(event)) } = {}) {
   function toolsFor(isSecretary: boolean) {
     const target = isSecretary ? 'Specialist' : 'Worker';
     const targetGen = isSecretary ? 'Specialists' : 'твоих Workers';
     return [
+      ['sudo_run', 'Запросить подтверждение владельца и выполнить команду с sudo.', { command: { type: 'string' }, reason: { type: 'string' } }, ['command', 'reason']],
       ['recall', 'Найти сообщения в истории своей Session.', { query: { type: 'string' } }, ['query']],
       [
         'list',
@@ -115,6 +117,10 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
 
   async function call(callerId: number, isSecretary: boolean, name: string, args: any) {
     switch (name) {
+      case 'sudo_run': {
+        if (typeof args.command !== 'string' || !args.command.trim() || typeof args.reason !== 'string' || !args.reason.trim()) throw new Error('Укажите command и reason');
+        return sudo.request(callerId, args.command, args.reason, sessions.get(callerId).info.folder);
+      }
       case 'recall': {
         if (typeof args.query !== 'string') throw new Error('Укажите query');
         return sessions.recall(callerId, args.query);
