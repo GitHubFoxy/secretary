@@ -9,7 +9,7 @@
   import { fileSize } from '../file-size.js';
   import { harnessInfo, modelLabel } from '../agents.js';
 
-  let { onsudo, message: m, sessions = [], connected = false, restoreDisabled = false, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing } = $props();
+  let { onskill, onsudo, message: m, sessions = [], connected = false, restoreDisabled = false, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing } = $props();
 
   let password = $state('');
   let sudoBusy = $state(false);
@@ -20,6 +20,18 @@
     try { await onsudo(type, m.id, type === 'sudoApprove' ? secret : undefined); }
     catch (error) { sudoError = error.message; }
     finally { sudoBusy = false; }
+  }
+
+  async function decideSkill(type) {
+    sudoBusy = true; sudoError = '';
+    try { await onskill(type, m.id); } catch (error) { sudoError = error.message; } finally { sudoBusy = false; }
+  }
+
+  function skillDiff(before, after) {
+    const oldLines = (before || '').split('\n'), newLines = (after || '').split('\n');
+    while (oldLines.length && newLines.length && oldLines[0] === newLines[0]) { oldLines.shift(); newLines.shift(); }
+    while (oldLines.length && newLines.length && oldLines.at(-1) === newLines.at(-1)) { oldLines.pop(); newLines.pop(); }
+    return [...oldLines.map(line => `- ${line}`), ...newLines.map(line => `+ ${line}`)].join('\n');
   }
 
   const isImage = type => type.startsWith('image/');
@@ -62,7 +74,15 @@
 {/snippet}
 
 <div data-message>
-  {#if m.kind === 'sudo'}
+  {#if m.kind === 'skill'}
+    <div class="max-w-full rounded-xl border border-amber-700 bg-neutral-900 p-4 text-sm text-neutral-100">
+      <p>Предложение skill: {m.name}</p>
+      <p class="whitespace-pre-wrap break-words">Причина: {m.reason}</p>
+      <p class="mt-2">Изменения:</p><pre class="max-h-96 overflow-auto whitespace-pre-wrap break-all">{skillDiff(m.before, m.content)}</pre>
+      {#if m.status}<p class="mt-2">{m.status === 'approved' ? 'Принято' : 'Отклонено'}</p>
+      {:else}<div class="mt-3 flex gap-3"><button class="rounded bg-amber-700 px-3 py-2" disabled={!connected || sudoBusy} onclick={() => decideSkill('skillApprove')}>Принять</button><button class="rounded bg-neutral-700 px-3 py-2" disabled={!connected || sudoBusy} onclick={() => decideSkill('skillReject')}>Отклонить</button></div>{#if sudoError}<p class="mt-2 text-red-400">{sudoError}</p>{/if}{/if}
+    </div>
+  {:else if m.kind === 'sudo'}
     <div class="max-w-full rounded-xl border border-amber-700 bg-neutral-900 p-4 text-sm text-neutral-100">
       <p>Агент хочет выполнить от root:</p>
       <pre class="my-2 whitespace-pre-wrap break-all">{m.command}</pre>

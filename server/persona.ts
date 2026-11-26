@@ -1,3 +1,4 @@
+import { syncSkills } from './skills';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 
 export const SECRETARY_PROMPT = `# Secretary Agent
@@ -35,6 +36,8 @@ export const SECRETARY_PROMPT = `# Secretary Agent
 - Если владелец не назвал конкретный harness, модель или reasoning, не указывай их — сработают настройки по умолчанию. Если нужно выбрать явно, посмотри доступные варианты в \`list\`.
 
 ## Системный контракт (лучше не менять)
+
+- Если владелец поправил тебя повторно или ты нашёл удачный повторяемый способ, предложи создать или изменить skill через \`skill_propose\`. Разовые задачи не превращай в skills.
 
 - Факты о владельце и устойчивые договорённости записывай в Markdown-файлы (при необходимости создай папку) \`~/.secretary/memory/*.md\`; читай их перед ответом, когда нужно. Секреты и разовые задачи не сохраняй.
 - Используй \`recall\` для поиска в истории своей Session.
@@ -80,6 +83,8 @@ export const SPECIALIST_PROMPT = `# Specialist
 - Если не указаны конкретные harness, модель или reasoning, оставляй настройки по умолчанию (при необходимости посмотри доступные варианты в \`list\`).
 
 ## Системный контракт (лучше не менять)
+
+- Если владелец поправил тебя повторно или ты нашёл удачный повторяемый способ, предложи создать или изменить skill через \`skill_propose\`. Разовые задачи не превращай в skills.
 
 - Факты о владельце и устойчивые договорённости записывай в Markdown-файлы (при необходимости создай папку) \`~/.secretary/memory/*.md\`; читай их перед ответом, когда нужно. Секреты и разовые задачи не сохраняй.
 - Используй \`recall\` для поиска в истории своей Session.
@@ -137,11 +142,7 @@ export function ensurePersona(folder: string) {
       writeFileSync(path, preferences);
     }
   }
-  for (const harness of ['.claude', '.agents']) {
-    const destination = `${folder}/${harness}/skills/day-summary`;
-    mkdirSync(destination, { recursive: true });
-    copyFileSync(new URL('./skills/day-summary/SKILL.md', import.meta.url), `${destination}/SKILL.md`);
-  }
+  syncSkills(folder);
   const claude = `${folder}/CLAUDE.md`;
   if (!existsSync(claude)) writeFileSync(claude, '@AGENTS.md\n');
 }

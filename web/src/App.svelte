@@ -357,7 +357,7 @@
     return grouped;
   }
   // Queued messages are not accepted by the agent yet, so they come after history.
-  $: groupedHistory = groupSteps(insertVoices(mergeSwitches(history.filter(m => m.kind !== 'sudo' || !m.status)).map(m => m.kind === 'sudo' ? {...m, status: history.findLast(e => e.kind === 'sudo' && e.id === m.id && e.status)?.status} : m).map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})), voiceMessages.filter(item => item.id === selected)), current?.status === 'running');
+  $: groupedHistory = groupSteps(insertVoices(mergeSwitches(history.filter(m => !['sudo', 'skill'].includes(m.kind) || !m.status)).map(m => ['sudo', 'skill'].includes(m.kind) ? {...m, status: history.findLast(e => e.kind === m.kind && e.id === m.id && e.status)?.status} : m).map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})), voiceMessages.filter(item => item.id === selected)), current?.status === 'running');
   $: messages = [
     ...groupedHistory,
     ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:[...item.images, ...(item.files || [])], urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
@@ -463,7 +463,7 @@
 
     <div bind:this={chatViewport} class="relative flex min-h-0 flex-1 flex-col">
       {#key historyVersion}
-        <MessageList onsudo={(type, sudoId, password) => connection.request({type, sudoId, ...(password ? {password} : {})})} {messages} {sessions} {historyLoaded} {connected} historyHasMore={historyHasMore} {historyLoadingOlder} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} oncancelVoice={item => voiceMessages = voiceMessages.filter(v => v.key !== item.key)} />
+        <MessageList onskill={(type, skillId) => connection.request({type, skillId})} onsudo={(type, sudoId, password) => connection.request({type, sudoId, ...(password ? {password} : {})})} {messages} {sessions} {historyLoaded} {connected} historyHasMore={historyHasMore} {historyLoadingOlder} onloadOlder={() => loadHistory(selected, true)} bottomInset={composerHeight + keyboard} onselect={select} onrestorePreparing={restorePreparing} restoreDisabled={!!message.trim() || !!images.length} onsendQueued={id => command({type:'sendQueued', id:selected, messageId:id})} onretryVoice={sendVoice} oncancelVoice={item => voiceMessages = voiceMessages.filter(v => v.key !== item.key)} />
       {/key}
 
       <!-- Поле ввода плавает поверх списка: сообщения прокручиваются под ним. -->

@@ -1,3 +1,4 @@
+import { Skills } from './skills';
 import { servePreview } from './preview';
 import { authorized, pair } from './auth';
 import { slashCommands } from './commands';
@@ -51,6 +52,7 @@ const sessions = new Sessions(db, {
   },
 });
 
+const skills = new Skills(secretaryFolder, (id, event) => sessions.get(id).emit(event));
 const sudo = new Sudo((id, event) => sessions.get(id).emit(event));
 
 // Browsers send Origin; a foreign one is rejected. Requests without Origin (curl) pass.
@@ -71,6 +73,8 @@ const commands: Record<string, (cmd: any, send: (message: object) => void) => un
     return { references: [...agents.map(s => ({label:`@${s.name || 'Session'} (#${s.id})`, value:`@${s.name || 'Session'} (#${s.id})`})), ...files.map(path => ({label:path, value:path}))] };
   },
   slashCommands: async cmd => { const {harness, folder} = sessions.get(cmd.id).info; return {commands: await slashCommands(harness, folder)}; },
+  skillApprove: cmd => skills.approve(cmd.skillId),
+  skillReject: cmd => skills.reject(cmd.skillId),
   sudoApprove: cmd => sudo.approve(cmd.sudoId, cmd.password),
   sudoReject: cmd => sudo.reject(cmd.sudoId),
   draft: cmd => ({text: getDraft(db, sessions.get(cmd.id).id)}),
@@ -134,7 +138,7 @@ const server = Bun.serve({
 
 // Loading and resuming sessions can publish events.
 sessions.load(secretaryFolder);
-serveMcp(sessions, { sudo });
+serveMcp(sessions, { sudo, skills });
 servePreview();
 sessions.resumePending();
 sessions.schedules.tick();

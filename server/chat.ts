@@ -6,6 +6,7 @@ import type { FileAttachment } from './files';
 export type ChatMessage =
   | { kind: 'user' | 'cancelled' | 'uncertain'; text: string; images: Image[]; files?: FileAttachment[] }
   | { kind: 'agent'; text: string; files?: FileAttachment[]; preview?: { url: string; expires_at: string } }
+  | { kind: 'skill'; id: string; name?: string; reason?: string; before?: string; content?: string; status?: string }
   | { kind: 'sudo'; id: string; command?: string; reason?: string; status?: string }
   | { kind: 'error'; text: string }
   | { kind: 'step'; tool: string; summary: string }
@@ -40,6 +41,8 @@ export function chatMessage(event: any, time = ''): ChatMessage | null {
       ...(valid(metadata?.pre_tokens) ? { beforeTokens: metadata.pre_tokens } : {}),
       ...(valid(metadata?.post_tokens) ? { afterTokens: metadata.post_tokens } : {}) };
   }
+  if (event?.type === 'skill_request') return { kind: 'skill', id: event.id, name: event.name, reason: event.reason, before: event.before, content: event.content };
+  if (event?.type === 'skill_result') return { kind: 'skill', id: event.id, status: event.status };
   if (event?.type === 'sudo_request') return { kind: 'sudo', id: event.id, command: event.command, reason: event.reason };
   if (event?.type === 'sudo_result') return { kind: 'sudo', id: event.id, status: event.status };
   if (event?.type === 'assistant' && Array.isArray(event.message?.content)) {

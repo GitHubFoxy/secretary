@@ -61,7 +61,7 @@ test('Secretary Agent: list отдаёт сессии и модели, send со
   servers.push(env.server);
 
   const tools = await env.rpc(1, 'tools/list');
-  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['schedule_add', 'schedule_list', 'schedule_remove', 'sudo_run', 'recall', 'list', 'send', 'read', 'stop', 'hide', 'send_file', 'publish_html', 'report_issue']);
+  expect(tools.body.result.tools.map((t: any) => t.name)).toEqual(['schedule_add', 'schedule_list', 'schedule_remove', 'sudo_run', 'skill_propose', 'recall', 'list', 'send', 'read', 'stop', 'hide', 'send_file', 'publish_html', 'report_issue']);
 
   const listed = await env.callTool(1, 'list');
   expect(listed.isError).toBe(false);
@@ -304,4 +304,17 @@ test('publish_html доступен Secretary Agent и Specialist и сохра�
     servers.push(disabled.server);
     expect((await disabled.callTool(1, 'publish_html', { path: join(root, 'page.html') })).data).toContain('Публикация не настроена');
   } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test('skill_propose доступен Secretary Agent и Specialist и показывает предложение в чате', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'skill-mcp-'));
+  const env = setup(root); servers.push(env.server);
+  const id = (await env.callTool(1, 'send', { name: 'Проект', folder: root, message: 'работай' })).data.id;
+  for (const caller of [1, id]) {
+    const result = await env.callTool(caller, 'skill_propose', { name: 'example', content: 'новая версия', reason: 'повторяется' });
+    expect(result.isError).toBe(false);
+    expect(env.sessions.get(caller).events().some((event: any) => event.type === 'skill_request' && event.id === result.data.id)).toBe(true);
+  }
+  await rm(root, { recursive: true, force: true });
 });
