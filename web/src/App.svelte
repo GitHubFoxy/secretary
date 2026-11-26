@@ -367,7 +367,7 @@
     return grouped;
   }
   // Queued messages are not accepted by the agent yet, so they come after history.
-  $: groupedHistory = groupSteps(insertVoices(mergeSwitches(history.filter(m => !['sudo', 'skill'].includes(m.kind) || !m.status)).map(m => ['sudo', 'skill'].includes(m.kind) ? {...m, status: history.findLast(e => e.kind === m.kind && e.id === m.id && e.status)?.status} : m).map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})), voiceMessages.filter(item => item.id === selected)), current?.status === 'running');
+  $: groupedHistory = groupSteps(insertVoices(mergeSwitches(history.filter(m => !['sudo', 'skill', 'secret'].includes(m.kind) || !m.status)).map(m => ['sudo', 'skill', 'secret'].includes(m.kind) ? {...m, status: history.findLast(e => e.kind === m.kind && e.id === m.id && e.status)?.status} : m).map(m => ({...m, images:[...(m.images || []), ...(m.files || [])], key:`${selected}:${m.cursor}`})), voiceMessages.filter(item => item.id === selected)), current?.status === 'running');
   $: messages = [
     ...groupedHistory,
     ...queue.map(item => ({kind:'queued', id:item.id, text:item.text, images:[...item.images, ...(item.files || [])], urgent:item.urgent, key:`${selected}:queue:${item.id}`})),
@@ -418,6 +418,7 @@
   <DownloadsScreen onback={() => (downloadsOpen = false)} />
 {:else if profileOpen}
   <ProfileScreen
+    request={value => connection.request(value)}
     {ttsEngine}
     {voiceModel}
     {videoInterval}

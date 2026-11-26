@@ -13,6 +13,8 @@ import { migrateDatabase, openDatabase } from './database';
 import { serveMcp } from './mcp';
 import { Memory } from './memory';
 import { Sudo } from './sudo';
+import { Secrets } from './secrets';
+import { ExternalMcp } from './external-mcp';
 import { getDraft, saveDraft } from './drafts';
 import { listNotes, saveNote, deleteNote } from './notes';
 import { checkReasoning, modelDetails } from './models';
@@ -24,6 +26,7 @@ import { turnComplete } from './smart-turn';
 
 const camera = cameraRequests(secretaryFolder);
 const memory = new Memory(secretaryFolder);
+const externalMcp = new ExternalMcp(secretaryFolder);
 const videoIntervalFile = `${secretaryFolder}/video-interval`;
 ensurePersona(secretaryFolder);
 
@@ -55,6 +58,7 @@ const sessions = new Sessions(db, {
 });
 
 const skills = new Skills(secretaryFolder, (id, event) => sessions.get(id).emit(event));
+const secrets = new Secrets(secretaryFolder, (id, event) => sessions.get(id).emit(event));
 const sudo = new Sudo((id, event) => sessions.get(id).emit(event));
 
 // Browsers send Origin; a foreign one is rejected. Requests without Origin (curl) pass.
@@ -66,6 +70,8 @@ function sameOrigin(request: Request, url: URL) {
 
 // The browser adapter. Every command gets exactly one answer with its requestId: `reply` with the result or `error`.
 const commands: Record<string, (cmd: any, send: (message: object) => void) => unknown> = {
+  mcpList: () => ({ servers: externalMcp.list() }),
+  mcpSave: cmd => { externalMcp.save(cmd.servers); },
   cameraState: (cmd, send) => { camera.set(send, cmd.enabled === true); },
   cameraReply: (cmd, send) => camera.reply(send, cmd.id, cmd.image, cmd.error),
   compact: cmd => sessions.get(cmd.id).compact(),
@@ -79,6 +85,8 @@ const commands: Record<string, (cmd: any, send: (message: object) => void) => un
   slashCommands: async cmd => { const {harness, folder} = sessions.get(cmd.id).info; return {commands: await slashCommands(harness, folder)}; },
   skillApprove: cmd => skills.approve(cmd.skillId),
   skillReject: cmd => skills.reject(cmd.skillId),
+  secretApprove: cmd => secrets.approve(cmd.sudoId, cmd.password),
+  secretReject: cmd => secrets.reject(cmd.sudoId),
   sudoApprove: cmd => sudo.approve(cmd.sudoId, cmd.password),
   sudoReject: cmd => sudo.reject(cmd.sudoId),
   draft: cmd => ({text: getDraft(db, sessions.get(cmd.id).id)}),
@@ -143,7 +151,7 @@ const server = Bun.serve({
 
 // Loading and resuming sessions can publish events.
 sessions.load(secretaryFolder);
-serveMcp(sessions, { sudo, skills, cameraFrame: () => camera.request() });
+serveMcp(sessions, { sudo, secrets, skills, cameraFrame: () => camera.request() });
 servePreview();
 sessions.resumePending();
 sessions.schedules.tick();

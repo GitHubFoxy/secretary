@@ -9,6 +9,7 @@ import { isSpecialist, SECRETARY_ID } from './session';
 import type { Sessions } from './sessions';
 import { createWorktree } from './worktree';
 import { Sudo } from './sudo';
+import { Secrets } from './secrets';
 
 const issuesUrl = 'https://github.com/GitHubFoxy/secretary/issues/new';
 
@@ -26,7 +27,7 @@ type ModelList = (harness: string) => Promise<{ id: string; supportedReasoningEf
 
 // One MCP adapter for both Secretary Agent (level 0) and Specialists (level 1).
 // The caller's session id is in the path (/mcp/<id>); level-2 child sessions do not get MCP.
-export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList, root = secretaryFolder, previewBase = previewUrl, sudo = new Sudo((id, event) => sessions.get(id).emit(event)), skills = new Skills(root, (id, event) => sessions.get(id).emit(event)) , cameraFrame = async (): Promise<string> => { throw new Error('Камера не включена'); } } = {}) {
+export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList, root = secretaryFolder, previewBase = previewUrl, sudo = new Sudo((id, event) => sessions.get(id).emit(event)), secrets = new Secrets(root, (id, event) => sessions.get(id).emit(event)), skills = new Skills(root, (id, event) => sessions.get(id).emit(event)) , cameraFrame = async (): Promise<string> => { throw new Error('Камера не включена'); } } = {}) {
   function toolsFor(isSecretary: boolean) {
     const target = isSecretary ? 'Specialist' : 'Worker';
     const targetGen = isSecretary ? 'Specialists' : 'твоих Workers';
@@ -34,6 +35,7 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
       ['schedule_add', 'Создать расписание: cron из пяти полей или at (ISO 8601 с часовым поясом). Cron использует часовой пояс Host.', { message: { type: 'string' }, session_id: { type: 'number' }, cron: { type: 'string' }, at: { type: 'string' } }, ['message']],
       ['schedule_list', 'Показать доступные расписания.', {}, []],
       ['schedule_remove', 'Удалить расписание по id.', { id: { type: 'number' } }, ['id']],
+      ['request_secret', 'Запросить секрет у владельца.', { name: { type: 'string' }, reason: { type: 'string' } }, ['name', 'reason']],
       ['sudo_run', 'Запросить подтверждение владельца и выполнить команду с sudo.', { command: { type: 'string' }, reason: { type: 'string' } }, ['command', 'reason']],
       ['skill_propose', 'Предложить владельцу создать или изменить skill.', { name: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, ['name', 'content', 'reason']],
       ['recall', 'Найти сообщения в истории своей Session.', { query: { type: 'string' } }, ['query']],
@@ -131,6 +133,7 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
       }
       case 'schedule_list': return sessions.schedules.list(allowed);
       case 'schedule_remove': return sessions.schedules.remove(args.id, allowed);
+      case 'request_secret': return secrets.request(callerId, args.name, args.reason);
       case 'sudo_run': {
         if (typeof args.command !== 'string' || !args.command.trim() || typeof args.reason !== 'string' || !args.reason.trim()) throw new Error('Укажите command и reason');
         return sudo.request(callerId, args.command, args.reason, sessions.get(callerId).info.folder);

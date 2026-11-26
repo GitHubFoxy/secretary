@@ -1,3 +1,4 @@
+import { ExternalMcp } from './external-mcp';
 import { onAbort, readJsonLines, spawnHarness, type Turn } from './harness';
 
 export const claudeTurn: Turn = async (options, text, images) => {
@@ -5,9 +6,22 @@ export const claudeTurn: Turn = async (options, text, images) => {
   const args = ['claude', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--dangerously-skip-permissions', '--model', options.model];
   if (options.reasoning) args.push('--effort', options.reasoning);
   if (options.resumeId) args.push('--resume', options.resumeId);
-  if (options.mcpUrl) args.push('--mcp-config', JSON.stringify({ mcpServers: { secretary: { type: 'http', url: options.mcpUrl, headers: { Authorization: `Bearer ${options.mcpToken}` } } } }));
+  const servers = options.mcpRoot && options.mcpRole ? await new ExternalMcp(options.mcpRoot).resolve(options.mcpRole) : [];
+  const env = { ...process.env };
+  const configs: Record<string, object> = {};
+  for (const server of servers) {
+    const values = server.type === 'stdio' ? server.env : server.headers;
+    const mapped = Object.fromEntries(Object.entries(values).map(([name, value]) => {
+      const key = `SECRETARY_MCP_${crypto.randomUUID().replaceAll('-', '')}`;
+      env[key] = value;
+      return [name, `\${${key}}`];
+    }));
+    configs[server.name] = server.type === 'stdio' ? { type: 'stdio', command: server.command, args: server.args, env: mapped } : { type: 'http', url: server.url, headers: mapped };
+  }
+  if (options.mcpUrl) configs.secretary = { type: 'http', url: options.mcpUrl, headers: { Authorization: `Bearer ${options.mcpToken}` } };
+  if (Object.keys(configs).length) args.push('--mcp-config', JSON.stringify({ mcpServers: configs }));
   if (options.systemPrompt) args.push('--append-system-prompt', options.systemPrompt);
-  const harness = spawnHarness(args, options.folder, options);
+  const harness = spawnHarness(args, options.folder, options, env);
   const content = images.length
     ? [{ type: 'text', text }, ...images.map(image => ({ type: 'image', source: { type: 'base64', media_type: image.type, data: image.data } }))]
     : text;
