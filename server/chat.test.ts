@@ -1,6 +1,6 @@
 import { expect, test } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { chatPage, chatMessage, reportText } from './chat';
+import { chatPage, chatMessage, reportText, usageLimit } from './chat';
 
 test('события обоих harness превращаются в сообщения чата', () => {
   expect(chatMessage({ type: 'result', result: 'ответ', usage: {} })).toEqual({ kind: 'agent', text: 'ответ' });
@@ -76,4 +76,15 @@ test('завершённое сжатие обоих harness сохраняет�
   db.run('CREATE TABLE events (session_id INTEGER, json TEXT, time TEXT)');
   for (const event of [claude, codex]) db.query('INSERT INTO events VALUES (1, ?, ?)').run(JSON.stringify(event), time);
   expect(chatPage(db, 1).messages.map(({cursor, ...message}) => message)).toEqual([chatMessage(claude, time), chatMessage(codex, time)]);
+});
+
+test('распознаёт лимит Claude Code и Codex, но не обычные ошибки', () => {
+  const reset = new Date(2030, 0, 2, 15, 30).getTime();
+  const now = new Date(2030, 0, 2, 10).getTime();
+  expect(usageLimit({type:'result', is_error:true, result:'Usage limit reached, resets at 3:30 PM', emittedAtMs:now})).toEqual({resetsAt:reset});
+  expect(usageLimit({method:'turn/completed', params:{turn:{error:{codexErrorInfo:'usageLimitExceeded', resetsAt:reset / 1000}}}})).toEqual({resetsAt:reset});
+  expect(usageLimit({method:'error', emittedAtMs:now, params:{willRetry:false, error:{codexErrorInfo:'usageLimitExceeded', message:'try again at 3:30 PM.'}}})).toEqual({resetsAt:reset});
+  expect(usageLimit({method:'error', params:{willRetry:true, error:{codexErrorInfo:'usageLimitExceeded'}}})).toBeNull();
+  expect(usageLimit({type:'result', is_error:true, result:'authentication failed'})).toBeNull();
+  expect(usageLimit({type:'result', is_error:false, result:'usage limit'})).toBeNull();
 });

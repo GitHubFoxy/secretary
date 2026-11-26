@@ -1,7 +1,7 @@
 // Session, MessageQueue and Sessions in process, with a scripted harness in place of Claude Code and Codex.
 import { expect, test } from 'bun:test';
 import type { Database } from 'bun:sqlite';
-import { reportText } from './chat';
+import { reportText, usageLimitText } from './chat';
 import { openDatabase } from './database';
 import { getDraft, saveDraft } from './drafts';
 import { listNotes, saveNote, deleteNote } from './notes';
@@ -374,4 +374,38 @@ test('сжатие требует свободную непустую Session и
   expect(s.events().some(e => e.subtype === 'compact_boundary')).toBe(true);
   expect(s.info.status).toBe('idle');
   expect(history(s)).toEqual(['user привет']);
+});
+
+test('лимит создаёт событие, отчёт родителю и переживающее перезапуск расписание', async () => {
+  const { db, calls, sessions, create } = setup();
+  const child = await create({parentId: 1, harness: 'codex'});
+  const reset = Date.now() + 3600_000;
+  child.send('задача'); calls[0].start();
+  const error = {codexErrorInfo:'usageLimitExceeded', resetsAt: Math.floor(reset / 1000)};
+  calls[0].options.onEvent({method:'error', params:{willRetry:false, error}});
+  calls[0].options.onEvent({method:'turn/completed', params:{turn:{status:'failed', error}}});
+  calls[0].end(false); await tick();
+  const at = Math.floor(reset / 1000) * 1000;
+  expect(child.events().filter(e => e.type === 'usage_limit')).toEqual([{type:'usage_limit', resetsAt:at}]);
+  expect(calls[1].text).toContain(reportText(child.info, usageLimitText(at)));
+  const restored = new Sessions(db, {turns:{claude: async () => true, codex: async () => true}, checkModel:async () => {}, onEvent() {}, onChange() {}});
+  restored.load('/home/u/.secretary');
+  const schedules = restored.schedules.list([child.id]);
+  expect(schedules).toHaveLength(1);
+  expect(schedules[0].next_run).toBe(at + 60_000);
+  expect(schedules[0].text).toBe('Лимит подписки сбросился, продолжи работу с того места, где остановился');
+  sessions.schedules.tick(at + 60_000);
+  expect(calls[2].text).toContain('Лимит подписки сбросился, продолжи работу с того места, где остановился');
+  expect(sessions.schedules.list([child.id])[0].next_run).toBeNull();
+});
+
+test('лимит без времени назначает продолжение через 30 минут', async () => {
+  const { calls, sessions, create } = setup();
+  const child = await create();
+  child.send('задача'); calls[0].start();
+  calls[0].options.onEvent({type:'result', is_error:true, result:'Rate limit reached'});
+  const before = Date.now(); calls[0].end(false); await tick();
+  const schedule = sessions.schedules.list([child.id])[0];
+  expect(schedule.next_run!).toBeGreaterThanOrEqual(before + 30 * 60_000);
+  expect(schedule.next_run!).toBeLessThanOrEqual(Date.now() + 30 * 60_000);
 });
