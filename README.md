@@ -12,7 +12,7 @@
 curl -fsSL https://github.com/GitHubFoxy/secretary/releases/latest/download/install.sh | bash
 ```
 
-Скрипт спросит подписку, попросит войти в неё и в Tailscale и в конце покажет адрес Host и код сопряжения для приложения. Без вопросов: `bash install.sh --subscription claude|codex|both`. Журнал шагов: `~/.secretary/install.log`.
+Скрипт спросит подписку, попросит войти в неё и в Tailscale и в конце покажет адрес Host и код сопряжения для приложения. Host публикуется в интернет через Tailscale Funnel, поэтому телефону не нужен VPN; войти можно только по коду сопряжения. Только внутри своей сети Tailscale: `--private`. Без вопросов: `bash install.sh --subscription claude|codex|both`. Журнал шагов: `~/.secretary/install.log`.
 
 Установка и запуск: `bun install --cwd web`, затем `bun run start`. Сервер слушает `127.0.0.1:3000`. Для удалённого доступа нужен HTTPS: на omarchy сервер опубликован через Cloudflare Tunnel (`secretary-tunnel.service`) по адресу `app.scrtrbot.ru`. Устройство архитектуры описано в `docs/architecture.md`. Claude Code и Codex должны быть установлены и авторизованы.
 

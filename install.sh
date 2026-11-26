@@ -2,11 +2,12 @@
 set -euo pipefail
 
 # An agent or a script passes the choice as an argument; a person answers the question.
-usage='Использование: install.sh [--subscription claude|codex|both]'
-choice=''
+usage='Использование: install.sh [--subscription claude|codex|both] [--private]'
+choice='' private=''
 while [ $# -gt 0 ]; do
   case "$1" in
     --subscription) case "${2:-}" in claude) choice=1;; codex) choice=2;; both) choice=3;; *) echo "$usage" >&2; exit 1;; esac; shift 2;;
+    --private) private=1; shift;;
     -h|--help) echo "$usage"; exit 0;;
     *) echo "$usage" >&2; exit 1;;
   esac
@@ -120,7 +121,13 @@ if ! tailscale status >/dev/null 2>&1; then
   echo 'Откройте ссылку ниже в браузере и войдите в Tailscale. Установка продолжится сама.'
 fi
 sudo tailscale up
-sudo tailscale serve --bg 3000 >/dev/null
+# Funnel publishes Host on the internet, so the phone needs no VPN; the pairing code and device token guard it.
+if [ -n "$private" ]; then
+  sudo tailscale serve --bg 3000 >/dev/null
+else
+  echo 'Если Tailscale попросит включить Funnel, откройте ссылку и подтвердите: так телефон откроет Host без VPN.'
+  sudo tailscale funnel --bg 3000
+fi
 address=$(tailscale status --json | "$HOME/.secretary/bun/bin/bun" -e 'let s=""; for await (const c of Bun.stdin.stream()) s+=new TextDecoder().decode(c); console.log(JSON.parse(s).Self.DNSName.replace(/\.$/, ""))')
 echo '✓ Tailscale подключён'
 
@@ -129,6 +136,14 @@ code=$("$HOME/.local/bin/secretary" pair | grep -o '[A-Z0-9]\{4\}-[A-Z0-9]\{4\}'
 finish
 printf '%s\tготово\t%ss всего\n' "$(date -Is)" "$SECONDS" >> "$log"
 printf '\nДля полного доступа Secretary можно отключить пароль sudo строкой в /etc/sudoers.d/secretary:\n%s ALL=(ALL) NOPASSWD: ALL\nДоступ к Secretary тогда означает root на Host.\n' "$(id -un)"
+if [ -n "$private" ]; then
+  phone='  На телефоне:
+  1. Установите Tailscale и войдите тем же аккаунтом.
+  2. Откройте Secretary и введите адрес Host и код.'
+else
+  phone='  На телефоне откройте Secretary и введите адрес Host и код.
+  Host доступен из интернета; войти можно только по коду сопряжения.'
+fi
 cat <<DONE
 
 ════════════════════════════════════════════════════════
@@ -137,8 +152,6 @@ cat <<DONE
   Адрес Host:  https://$address
   Код:         $code   (действует 10 минут; новый — secretary pair)
 
-  На телефоне:
-  1. Установите Tailscale и войдите тем же аккаунтом.
-  2. Откройте Secretary и введите адрес Host и код.
+$phone
 ════════════════════════════════════════════════════════
 DONE
