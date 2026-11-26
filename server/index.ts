@@ -1,4 +1,5 @@
 import { Skills } from './skills';
+import { cameraRequests } from './camera';
 import { servePreview } from './preview';
 import { authorized, pair } from './auth';
 import { slashCommands } from './commands';
@@ -21,6 +22,7 @@ import { Speech, warmSpeech, ttsEngine, setTtsEngine } from './speech';
 import { transcribe, voiceModel, setVoiceModel } from './voice';
 import { turnComplete } from './smart-turn';
 
+const camera = cameraRequests(secretaryFolder);
 const memory = new Memory(secretaryFolder);
 const videoIntervalFile = `${secretaryFolder}/video-interval`;
 ensurePersona(secretaryFolder);
@@ -64,6 +66,8 @@ function sameOrigin(request: Request, url: URL) {
 
 // The browser adapter. Every command gets exactly one answer with its requestId: `reply` with the result or `error`.
 const commands: Record<string, (cmd: any, send: (message: object) => void) => unknown> = {
+  cameraState: (cmd, send) => { camera.set(send, cmd.enabled === true); },
+  cameraReply: (cmd, send) => camera.reply(send, cmd.id, cmd.image, cmd.error),
   compact: cmd => sessions.get(cmd.id).compact(),
   references: async cmd => {
     const session = sessions.get(cmd.id);
@@ -123,6 +127,7 @@ const server = Bun.serve({
   websocket: {
     maxPayloadLength: 30 * 1024 * 1024,
     open(socket) { socket.data = (message: object) => { if (socket.readyState === 1) socket.send(JSON.stringify(message)); }; socket.subscribe('events'); socket.send(JSON.stringify({ type: 'sessions', sessions: sessions.list() })); },
+    close(socket) { camera.remove(socket.data as (message: object) => void); },
     async message(socket, message) {
       let cmd: any;
       try {
@@ -138,7 +143,7 @@ const server = Bun.serve({
 
 // Loading and resuming sessions can publish events.
 sessions.load(secretaryFolder);
-serveMcp(sessions, { sudo, skills });
+serveMcp(sessions, { sudo, skills, cameraFrame: () => camera.request() });
 servePreview();
 sessions.resumePending();
 sessions.schedules.tick();

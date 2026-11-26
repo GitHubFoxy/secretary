@@ -26,7 +26,7 @@ type ModelList = (harness: string) => Promise<{ id: string; supportedReasoningEf
 
 // One MCP adapter for both Secretary Agent (level 0) and Specialists (level 1).
 // The caller's session id is in the path (/mcp/<id>); level-2 child sessions do not get MCP.
-export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList, root = secretaryFolder, previewBase = previewUrl, sudo = new Sudo((id, event) => sessions.get(id).emit(event)), skills = new Skills(root, (id, event) => sessions.get(id).emit(event)) } = {}) {
+export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList, root = secretaryFolder, previewBase = previewUrl, sudo = new Sudo((id, event) => sessions.get(id).emit(event)), skills = new Skills(root, (id, event) => sessions.get(id).emit(event)) , cameraFrame = async (): Promise<string> => { throw new Error('Камера не включена'); } } = {}) {
   function toolsFor(isSecretary: boolean) {
     const target = isSecretary ? 'Specialist' : 'Worker';
     const targetGen = isSecretary ? 'Specialists' : 'твоих Workers';
@@ -90,7 +90,7 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
         ['path'],
       ],
       ['publish_html', 'Опубликовать HTML-файл или каталог с index.html на 24 часа. Ссылка доступна каждому, у кого она есть.', { path: { type: 'string', minLength: 1 } }, ['path']],
-      ...(isSecretary ? [[
+      ...(isSecretary ? [['camera_frame', 'Получить кадр включённой камеры Voice Call по просьбе владельца. Возвращает путь к файлу.', {}, []], [
         'report_issue',
         'Подготовить сообщение об ошибке или идее для разработчиков Secretary App. Возвращает ссылку на заполненный GitHub issue: отдай её владельцу, он проверит текст и отправит.',
         {
@@ -215,6 +215,10 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
         const result = await publishHtml(hostPath(args.path.trim(), caller.info.folder), root, previewBase);
         caller.emit({ type: 'agent_preview', ...result });
         return result;
+      }
+      case 'camera_frame': {
+        if (!isSecretary) throw new Error('Неизвестный инструмент');
+        return {path: await cameraFrame()};
       }
       case 'report_issue': {
         if (!isSecretary) throw new Error('Неизвестный инструмент');

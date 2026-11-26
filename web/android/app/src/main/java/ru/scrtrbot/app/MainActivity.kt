@@ -12,6 +12,8 @@ import android.app.DownloadManager
 import android.net.Uri
 import android.os.Environment
 import android.widget.Toast
+import android.webkit.PermissionRequest
+import com.getcapacitor.BridgeWebChromeClient
 import com.getcapacitor.BridgeActivity
 import com.getcapacitor.CapConfig
 import org.json.JSONObject
@@ -32,6 +34,16 @@ class MainActivity : BridgeActivity() {
         registerPlugin(SharePlugin::class.java)
         registerPlugin(DownloadsPlugin::class.java)
         super.onCreate(savedInstanceState)
+        bridge.webView.webChromeClient = object : BridgeWebChromeClient(bridge) {
+            override fun onPermissionRequest(request: PermissionRequest) {
+                val expected = host?.let { Uri.parse(it) }
+                val origin = request.origin
+                fun port(uri: Uri) = if (uri.port != -1) uri.port else if (uri.scheme == "https") 443 else 80
+                if (expected == null || origin.scheme != expected.scheme || origin.host != expected.host || port(origin) != port(expected) ||
+                    request.resources.any { it != PermissionRequest.RESOURCE_AUDIO_CAPTURE && it != PermissionRequest.RESOURCE_VIDEO_CAPTURE }) request.deny()
+                else super.onPermissionRequest(request)
+            }
+        }
         if (host != null) {
             ContextCompat.startForegroundService(this, Intent(this, ReplyService::class.java))
             if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
