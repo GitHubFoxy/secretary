@@ -6,6 +6,7 @@
   import { createUpdateChecker } from './updates.js';
   import { keyboardInset } from './viewport.js';
   import TopBar from './components/TopBar.svelte';
+  import Notes from './components/Notes.svelte';
   import SessionDrawer from './components/SessionDrawer.svelte';
   import SettingsPanel from './components/SettingsPanel.svelte';
   import MessageList from './components/MessageList.svelte';
@@ -107,6 +108,7 @@
   $: if (shared.length && secretaryForShare && !shareBusy) applyShared(shared[0], secretaryForShare);
   let limitsOpen = false, limits = null, limitsStatus = '';
   let profileOpen = false, instructionsDirty = false;
+  let notesOpen = false, notesRevision = 0;
   let interruptStates = {};
   const deliveries = new Map();
   const interruptFeedback = createInterruptFeedback({onChange: (id, state) => { interruptStates = {...interruptStates, [id]:state}; }});
@@ -118,12 +120,12 @@
       if (!response.ok) throw new Error('Version unavailable');
       return (await response.json()).version;
     },
-    isBusy: () => Boolean(speaking || message || images.length || preparing.some(item => !item.error) || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || renameOpen || settingsOpen || (profileOpen && instructionsDirty)),
+    isBusy: () => Boolean(speaking || message || images.length || preparing.some(item => !item.error) || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || notesOpen || renameOpen || settingsOpen || (profileOpen && instructionsDirty)),
     reload: () => location.replace('/?update'),
   });
   const connection = createConnection({
     url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`,
-    onOpen: () => { connected = true; if (selected !== null) loadHistory(selected, false, historyLoaded); updates.check(); },
+    onOpen: () => { connected = true; notesRevision++; if (selected !== null) loadHistory(selected, false, historyLoaded); updates.check(); },
     onClose: () => { connected = false; speech.stop(); interruptFeedback.disconnect(); },
     onMessage: handleMessage,
   });
@@ -146,6 +148,7 @@
   }
   function select(id) { if (selected !== id) { history = []; queue = []; } selected = id; historyLoaded = false; historyHasMore = false; drawerOpen = false; loadHistory(id); }
   function handleMessage(msg) {
+    if (msg.type === 'notesChanged' && msg.sessionId === selected) notesRevision++;
     if (msg.type === 'speech_start') speech.start();
     if (msg.type === 'speech_audio') speech.audio(msg.data, msg.rate);
     if (msg.type === 'speech_done') speech.done();
@@ -322,8 +325,11 @@
       {connected}
       onmenu={() => (drawerOpen = true)}
       oncall={openVoiceMode}
+      onnotes={() => (notesOpen = true)}
       onsettings={openSettings}
     />
+
+    <Notes open={notesOpen} sessionId={selected} {connection} revision={notesRevision} onclose={() => (notesOpen = false)} />
 
     <Modal open={renameOpen} title="Переименовать чат" onclose={() => (renameOpen = false)}>
       <form class="flex flex-col gap-4" onsubmit={e => { e.preventDefault(); rename(); }}>

@@ -88,6 +88,7 @@ export class Session {
       this.db.query('UPDATE sessions SET parent_id = NULL WHERE parent_id = ?').run(this.id);
       this.queue.discard();
       this.db.query('DELETE FROM events WHERE session_id = ?').run(this.id);
+      this.db.query('DELETE FROM notes WHERE session_id = ?').run(this.id);
       this.db.query('DELETE FROM sessions WHERE id = ?').run(this.id);
     })();
     this.deleted = true;

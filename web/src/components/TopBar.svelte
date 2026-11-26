@@ -1,6 +1,6 @@
 <script>
   import Icon from './Icon.svelte';
-  let { title, status = '', connected = false, onmenu, onsettings, oncall } = $props();
+  let { title, status = '', connected = false, onmenu, onsettings, oncall, onnotes } = $props();
 </script>
 
 <header class="flex items-center gap-2 border-b border-neutral-900 px-2 py-2">
@@ -17,6 +17,7 @@
       {#if status}<span>{status}</span>{/if}
     </p>
   </div>
+  <button class="icon-btn" aria-label="Заметки" onclick={onnotes}><Icon name="notes" /></button>
   <button class="icon-btn" aria-label="Позвонить" onclick={oncall}>
     <Icon name="phone" />
   </button>
