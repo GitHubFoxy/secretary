@@ -93,7 +93,42 @@ const commands: Record<string, (cmd: any, send: (message: object) => void) => un
 
 const server = Bun.serve({
   port, hostname: '127.0.0.1',
-  fetch(request, server) {
+  async fetch(request, server) {
+    const response = await handleRequest(request, server);
+    if (response) {
+      response.headers.set('Content-Security-Policy', "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self' ws: wss:; frame-ancestors 'none'");
+      response.headers.set('X-Frame-Options', 'DENY');
+      response.headers.set('Referrer-Policy', 'no-referrer');
+      response.headers.set('X-Content-Type-Options', 'nosniff');
+    }
+    return response;
+  },
+  websocket: {
+    maxPayloadLength: 30 * 1024 * 1024,
+    open(socket) { socket.data = (message: object) => { if (socket.readyState === 1) socket.send(JSON.stringify(message)); }; socket.subscribe('events'); socket.send(JSON.stringify({ type: 'sessions', sessions: sessions.list() })); },
+    async message(socket, message) {
+      let cmd: any;
+      try {
+        cmd = JSON.parse(String(message));
+        const command = commands[cmd.type];
+        if (!command) throw new Error(`Неизвестная команда: ${cmd.type}`);
+        const result = await command(cmd, socket.data as (message: object) => void);
+        socket.send(JSON.stringify({ type: 'reply', requestId: cmd.requestId, ...(result ?? {}) }));
+      } catch (error) { socket.send(JSON.stringify({ type: 'error', message: String(error), requestId: cmd?.requestId })); }
+    },
+  },
+});
+
+// Loading and resuming sessions can publish events.
+sessions.load(secretaryFolder);
+serveMcp(sessions, { sudo });
+sessions.resumePending();
+sessions.schedules.tick();
+setInterval(() => sessions.schedules.tick(), 30_000);
+
+console.log(`Secretary: ${server.url}`);
+
+function handleRequest(request: Request, server: any) {
     const url = new URL(request.url);
     if (url.pathname === '/pair' && request.method === 'POST') {
       if (!sameOrigin(request, url)) return new Response('Forbidden', { status: 403 });
@@ -156,28 +191,4 @@ const server = Bun.serve({
     const path = url.pathname === '/' ? '/index.html' : url.pathname;
     if (path.includes('..')) return new Response('Not found', { status: 404 });
     return new Response(Bun.file(`${import.meta.dir}/../web/dist${path}`), { headers: { 'Cache-Control': ['/index.html', '/build-version.json', '/sw.js'].includes(path) ? 'no-store' : 'no-cache' } });
-  },
-  websocket: {
-    maxPayloadLength: 30 * 1024 * 1024,
-    open(socket) { socket.data = (message: object) => { if (socket.readyState === 1) socket.send(JSON.stringify(message)); }; socket.subscribe('events'); socket.send(JSON.stringify({ type: 'sessions', sessions: sessions.list() })); },
-    async message(socket, message) {
-      let cmd: any;
-      try {
-        cmd = JSON.parse(String(message));
-        const command = commands[cmd.type];
-        if (!command) throw new Error(`Неизвестная команда: ${cmd.type}`);
-        const result = await command(cmd, socket.data as (message: object) => void);
-        socket.send(JSON.stringify({ type: 'reply', requestId: cmd.requestId, ...(result ?? {}) }));
-      } catch (error) { socket.send(JSON.stringify({ type: 'error', message: String(error), requestId: cmd?.requestId })); }
-    },
-  },
-});
-
-// Loading and resuming sessions can publish events.
-sessions.load(secretaryFolder);
-serveMcp(sessions, { sudo });
-sessions.resumePending();
-sessions.schedules.tick();
-setInterval(() => sessions.schedules.tick(), 30_000);
-
-console.log(`Secretary: ${server.url}`);
+}
