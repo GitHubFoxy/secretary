@@ -30,6 +30,7 @@ class MainActivity : BridgeActivity() {
         }.create()
         registerPlugin(HostPlugin::class.java)
         registerPlugin(SharePlugin::class.java)
+        registerPlugin(DownloadsPlugin::class.java)
         super.onCreate(savedInstanceState)
         if (host != null) {
             ContextCompat.startForegroundService(this, Intent(this, ReplyService::class.java))
@@ -46,8 +47,13 @@ class MainActivity : BridgeActivity() {
                 .setTitle(name)
                 .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
                 .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name)
-            getSystemService(DownloadManager::class.java).enqueue(request)
-            Toast.makeText(this, "Скачиваю $name", Toast.LENGTH_SHORT).show()
+            try {
+                val id = getSystemService(DownloadManager::class.java).enqueue(request)
+                DownloadsPlugin.record(this, id, name)
+                Toast.makeText(this, "Скачиваю $name", Toast.LENGTH_SHORT).show()
+            } catch (e: Exception) {
+                Toast.makeText(this, "Не удалось начать загрузку: ${e.localizedMessage}", Toast.LENGTH_LONG).show()
+            }
         }
         openReply(intent)
         share(intent)
