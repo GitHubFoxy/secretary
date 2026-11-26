@@ -1,5 +1,6 @@
 <script>
   import Markdown from './Markdown.svelte';
+  import MediaPlayer from './MediaPlayer.svelte';
   import Report from './Report.svelte';
   import Icon from './Icon.svelte';
   import Modal from './Modal.svelte';
@@ -81,18 +82,11 @@
         {@const frame = m.images.find(image => image.video?.note)}
         {@const video = videoText(m.text)}
         {@const src = videoFile ? fileUrl(videoFile) : frame.url}
-        <div class="relative size-[170px] overflow-hidden rounded-full bg-neutral-800">
-          {#if src}
-            <button type="button" class="size-full" aria-label="Воспроизвести или остановить видеосообщение" onclick={e => { const video = e.currentTarget.querySelector('video'); video.paused ? video.play() : video.pause(); }}>
-              <video class="size-full object-cover" {src} poster={'data:' + frame.type + ';base64,' + frame.data} playsinline preload="metadata"><track kind="captions" /></video>
-            </button>
-          {:else}
-            <img class="size-full object-cover" src={'data:' + frame.type + ';base64,' + frame.data} alt="Кадр видеосообщения" />
-          {/if}
-          <span class="pointer-events-none absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-1 rounded-md bg-black/60 px-1.5 py-0.5 text-xs text-white">
-            <Icon name="video" class="size-3" />{duration(frame.video.seconds)}
-          </span>
-        </div>
+        {#if src}
+          <MediaPlayer {src} video round poster={'data:' + frame.type + ';base64,' + frame.data} title="Видеосообщение" />
+        {:else}
+          <img class="size-[170px] rounded-full object-cover" src={'data:' + frame.type + ';base64,' + frame.data} alt="Кадр видеосообщения" />
+        {/if}
         {#if video.transcript}<span class="flex max-w-[80%] gap-1.5 text-sm text-neutral-400"><Icon name="microphone" class="mt-0.5 size-3.5 shrink-0" />{video.transcript}</span>{/if}
       {:else}
         <div class="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md bg-neutral-800 px-4 py-2.5 text-[15px] leading-relaxed text-neutral-100 {m.kind === 'queued' ? 'opacity-60' : ''} {m.kind === 'cancelled' ? 'line-through opacity-50' : ''}">
@@ -109,7 +103,7 @@
               {@const src = videoFile ? fileUrl(videoFile) : image.url}
               <span class="relative my-2 block w-fit">
                 {#if src}
-                  <video class="max-h-80 max-w-full rounded-lg" {src} controls playsinline preload="metadata"><track kind="captions" /></video>
+                  <MediaPlayer {src} video />
                 {:else}
                   <img class="max-h-80 max-w-full rounded-lg" src={'data:' + image.type + ';base64,' + image.data} alt="Кадр видео" />
                 {/if}
@@ -148,9 +142,9 @@
             {#if isImage(file.type)}
               <button type="button" aria-label="Открыть изображение" onclick={() => (viewed = { src, alt: file.name })}><img class="max-h-80 max-w-full rounded-lg" {src} alt={file.name} /></button>
             {:else if isVideo(file.type)}
-              <video class="max-h-80 max-w-full rounded-lg" {src} controls playsinline preload="metadata"><track kind="captions" /></video>
+              <MediaPlayer {src} video />
             {:else if file.type.startsWith('audio/')}
-              <audio class="w-72 max-w-full" {src} controls preload="metadata"></audio>
+              <MediaPlayer {src} title={file.name} />
             {/if}
             <!-- ?download: сервер отдаёт файл как вложение, и Android WebView передаёт его системному загрузчику. -->
             <a href={src + '?download'} download={file.name} class="flex max-w-full items-center gap-2 rounded-lg bg-neutral-800 px-3 py-2 text-neutral-100 hover:bg-neutral-700">
