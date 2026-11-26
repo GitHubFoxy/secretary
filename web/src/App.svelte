@@ -370,7 +370,7 @@
     try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-20).map(m => ({...m, images:m.images?.filter(image => !image.video || image.video.time === 0)})), hasMore:historyHasMore || history.length > 20})); } catch { localStorage.removeItem('last-chat'); }
   }
   $: current = sessions.find(s => s.id === selected);
-  $: voiceProps = {turn, sessionId:selected, running:current?.status === 'running', processing:voiceMessages.some(item => item.id === selected && item.speech && !item.error), speaking:playing, speechFinishedId, connected, openedAt:voiceOpenedAt, onstart:() => { micPress(); recordStart(); }, onvoice:item => sendVoice({...item, speech:true}), onstopspeech:stopSpeech};
+  $: voiceProps = {turn, sessionId:selected, running:current?.status === 'running', processing:voiceMessages.some(item => item.id === selected && item.speech && !item.error), speaking:playing, speechFinishedId, connected, openedAt:voiceOpenedAt, onstart:() => { micPress(); recordStart(); }, onvoice:item => sendVoice({...item, speech:true}), onphoto:image => connection.request({type:'send', id:selected, text:'Снимок с камеры', images:[image]}), onstopspeech:stopSpeech};
   $: title = current?.name || (current?.secretary ? 'Secretary' : `Сессия #${selected}`);
 
   // Высота поля ввода и высота экранной клавиатуры (iOS не сжимает layout viewport, поэтому берём visualViewport).

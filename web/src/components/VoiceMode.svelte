@@ -7,16 +7,41 @@
   // Голосовой режим: открывается и сразу слушает, отправляет, когда человек замолчал.
   // variant 'sheet' — шторка поверх другого приложения, 'full' — весь экран внутри Secretary App.
   // turn — сообщения текущего хода: последнее сообщение пользователя и всё после него.
-  let { variant = 'sheet', turn = [], sessionId, running = false, processing = false, speaking = false, speechFinishedId = null, connected = false, openedAt = performance.now(), onstart, onvoice, onstopspeech, onclose, onopenapp } = $props();
+  let { variant = 'sheet', turn = [], sessionId, running = false, processing = false, speaking = false, speechFinishedId = null, connected = false, openedAt = performance.now(), onstart, onvoice, onphoto, onstopspeech, onclose, onopenapp } = $props();
 
   let listening = $state(false), starting = $state(false), waiting = $state(false), hint = $state(''), bars = $state([4, 4, 4, 4, 4]);
+  let camera = $state(null), video = $state(null), facing = $state('environment'), cameraStatus = $state('');
+  let cameraRequest = 0;
   let recording = null, audio, autostarted = false, disposed = false, lastKey = $state(null), timing;
 
   // Шторка открывается раньше, чем появляется связь с Host: начинаем слушать, как только она есть.
   $effect(() => { if (connected && !autostarted) { autostarted = true; listen(openedAt, true); } });
   $effect(() => { if (speaking || (lastKey && speechFinishedId === lastKey) || (lastKey && turn.some(item => item.key === lastKey && item.error))) waiting = false; });
   $effect(() => { if (!connected) { autostarted = false; finish(false); } });
-  onDestroy(() => { disposed = true; finish(false); });
+  onDestroy(() => { disposed = true; finish(false); stopCamera(); });
+
+  function stopCamera() { cameraRequest++; camera?.getTracks().forEach(track => track.stop()); camera = null; }
+  async function openCamera() {
+    stopCamera(); cameraStatus = '';
+    const request = cameraRequest;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:facing}, audio:false});
+      if (disposed || request !== cameraRequest) { stream.getTracks().forEach(track => track.stop()); return; }
+      camera = stream;
+    } catch (error) { cameraStatus = `Нет доступа к камере: ${error.message}`; }
+  }
+  $effect(() => { if (video && camera) video.srcObject = camera; });
+  async function snapshot() {
+    if (!video?.videoWidth || !camera) return;
+    const canvas = document.createElement('canvas');
+    const scale = Math.min(1, 1568 / Math.max(video.videoWidth, video.videoHeight));
+    canvas.width = Math.round(video.videoWidth * scale); canvas.height = Math.round(video.videoHeight * scale);
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+    const [header, data] = canvas.toDataURL('image/jpeg', 0.8).split(',');
+    if (!header.startsWith('data:image/jpeg')) { cameraStatus = 'Не удалось создать снимок'; return; }
+    try { await onphoto({type:'image/jpeg', data}); cameraStatus = 'Снимок отправлен'; }
+    catch (error) { cameraStatus = `Не удалось отправить снимок: ${error.message}`; }
+  }
 
   async function listen(press = performance.now(), first = false) {
     if (listening || starting || !connected) return;
@@ -115,6 +140,15 @@
   <span class="flex gap-1" aria-hidden="true">{#each [0, 1, 2] as i}<span class="size-1.5 animate-pulse rounded-full bg-neutral-400" style:animation-delay="{i * 0.2}s"></span>{/each}</span>
 {/snippet}
 {#snippet body()}
+  <div class="mb-4 flex flex-wrap gap-2">
+    <button class="btn-ghost" onclick={() => camera ? stopCamera() : openCamera()}>{camera ? 'Выключить камеру' : 'Камера'}</button>
+    {#if camera}
+      <button class="btn-ghost" onclick={() => { facing = facing === 'environment' ? 'user' : 'environment'; openCamera(); }}>Переключить камеру</button>
+      <button class="btn-ghost" disabled={!connected} onclick={snapshot}>Снимок</button>
+    {/if}
+  </div>
+  {#if camera}<video bind:this={video} autoplay playsinline muted class="mb-3 max-h-48 w-full rounded-lg object-contain"></video>{/if}
+  {#if cameraStatus}<p role="status" class="mb-3 text-sm text-neutral-400">{cameraStatus}</p>{/if}
   {#if listening}
     <p class="{full ? 'text-3xl' : 'text-lg'} font-medium leading-snug text-white">Говорите…</p>
     <p class="mt-2 text-sm text-neutral-500">Отправлю, когда замолчите</p>
