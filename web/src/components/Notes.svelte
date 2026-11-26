@@ -8,7 +8,7 @@
     try {
       const result = await connection.request({type:'notes', id});
       if (id === sessionId) {
-        notes = result.notes;
+        notes = result.notes; status = '';
         oncount(notes.length);
         if (editing && !timer) {
           const note = notes.find(item => item.id === editing);
@@ -17,7 +17,8 @@
         }
       }
     }
-    catch (error) { status = error.message; }
+    // Before the socket reconnects the request fails at once; revision++ on reconnect reloads, so this error is not shown.
+    catch (error) { if (!error.disconnected) status = error.message; }
   }
   let status = $state('');
   $effect(() => {
