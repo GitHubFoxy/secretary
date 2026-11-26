@@ -1,3 +1,4 @@
+import { Skills } from './skills';
 import { readFileSync } from 'node:fs';
 import { hostPath, mcpPort, secretaryFolder, previewUrl } from './config';
 import { publishHtml } from './preview';
@@ -25,7 +26,7 @@ type ModelList = (harness: string) => Promise<{ id: string; supportedReasoningEf
 
 // One MCP adapter for both Secretary Agent (level 0) and Specialists (level 1).
 // The caller's session id is in the path (/mcp/<id>); level-2 child sessions do not get MCP.
-export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList, root = secretaryFolder, previewBase = previewUrl, sudo = new Sudo((id, event) => sessions.get(id).emit(event)) } = {}) {
+export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList, root = secretaryFolder, previewBase = previewUrl, sudo = new Sudo((id, event) => sessions.get(id).emit(event)), skills = new Skills(root, (id, event) => sessions.get(id).emit(event)) } = {}) {
   function toolsFor(isSecretary: boolean) {
     const target = isSecretary ? 'Specialist' : 'Worker';
     const targetGen = isSecretary ? 'Specialists' : 'твоих Workers';
@@ -34,6 +35,7 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
       ['schedule_list', 'Показать доступные расписания.', {}, []],
       ['schedule_remove', 'Удалить расписание по id.', { id: { type: 'number' } }, ['id']],
       ['sudo_run', 'Запросить подтверждение владельца и выполнить команду с sudo.', { command: { type: 'string' }, reason: { type: 'string' } }, ['command', 'reason']],
+      ['skill_propose', 'Предложить владельцу создать или изменить skill.', { name: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, ['name', 'content', 'reason']],
       ['recall', 'Найти сообщения в истории своей Session.', { query: { type: 'string' } }, ['query']],
       [
         'list',
@@ -133,6 +135,7 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
         if (typeof args.command !== 'string' || !args.command.trim() || typeof args.reason !== 'string' || !args.reason.trim()) throw new Error('Укажите command и reason');
         return sudo.request(callerId, args.command, args.reason, sessions.get(callerId).info.folder);
       }
+      case 'skill_propose': return skills.propose(callerId, args.name, args.content, args.reason);
       case 'recall': {
         if (typeof args.query !== 'string') throw new Error('Укажите query');
         return sessions.recall(callerId, args.query);
