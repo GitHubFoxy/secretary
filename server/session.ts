@@ -55,6 +55,7 @@ export class Session {
     this.queue = new MessageQueue(db, row.id, (event, cursor) => this.publish(event, cursor));
   }
 
+  get context() { return this.turnContext(this.row); }
   get id() { return this.row.id; }
   get info() { return this.db.query('SELECT * FROM sessions WHERE id = ?').get(this.id) as SessionRow; }
   events() { return (this.db.query('SELECT json FROM events WHERE session_id = ? ORDER BY rowid').all(this.id) as { json: string }[]).map(row => JSON.parse(row.json)); }

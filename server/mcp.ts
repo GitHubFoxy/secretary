@@ -25,84 +25,85 @@ function buildVersion() {
 
 type ModelList = (harness: string) => Promise<{ id: string; supportedReasoningEfforts: { reasoningEffort: string }[] }[]>;
 
+export function toolsFor(isSecretary: boolean, harnesses: string[]) {
+  const target = isSecretary ? 'Specialist' : 'Worker';
+  const targetGen = isSecretary ? 'Specialists' : 'твоих Workers';
+  return [
+    ['schedule_add', 'Создать расписание: cron из пяти полей или at (ISO 8601 с часовым поясом). Cron использует часовой пояс Host.', { message: { type: 'string' }, session_id: { type: 'number' }, cron: { type: 'string' }, at: { type: 'string' } }, ['message']],
+    ['schedule_list', 'Показать доступные расписания.', {}, []],
+    ['schedule_remove', 'Удалить расписание по id.', { id: { type: 'number' } }, ['id']],
+    ['request_secret', 'Запросить секрет у владельца.', { name: { type: 'string' }, reason: { type: 'string' } }, ['name', 'reason']],
+    ['sudo_run', 'Запросить подтверждение владельца и выполнить команду с sudo.', { command: { type: 'string' }, reason: { type: 'string' } }, ['command', 'reason']],
+    ['skill_propose', 'Предложить владельцу создать или изменить skill.', { name: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, ['name', 'content', 'reason']],
+    ['recall', 'Найти сообщения в истории своей Session.', { query: { type: 'string' } }, ['query']],
+    [
+      'list',
+      `Показать список ${targetGen} (id, имя, папка, harness, модель, статус) и доступные на этом Host модели с уровнями reasoning. Скрытые владельцем — завершённые — показываются только с hidden: true.`,
+      { hidden: { type: 'boolean', description: 'Показать только скрытые владельцем' } },
+      [],
+    ],
+    [
+      'send',
+      isSecretary
+        ? 'Отправить задачу Specialist. С id — пишет существующему (по умолчанию в очередь; immediate: true прерывает ход). Без id — создаёт нового Specialist по name и folder и сразу запускает задачу (harness, model, reasoning — из настройки владельца для новых Specialists, иначе как у тебя).'
+        : 'Отправить задачу Worker. С id — пишет существующему (по умолчанию в очередь; immediate: true прерывает ход). Без id — создаёт нового Worker по name (folder необязателен, по умолчанию твоя папка; worktree: true создаёт отдельный worktree от HEAD без незакоммиченных файлов; harness, model, reasoning наследуются).',
+      {
+        message: { type: 'string', description: 'Текст задачи или сообщения' },
+        id: { type: 'number', description: `id существующего ${target}` },
+        immediate: { type: 'boolean', description: 'Прервать текущий ход и отправить сразу (только с id)' },
+        name: { type: 'string', minLength: 1, description: isSecretary ? 'Короткое имя Specialist по области ответственности (например, Заметки, [Название проекта], Исследователь, Общий)' : 'Короткое имя Worker по сути задачи' },
+        folder: { type: 'string', description: isSecretary ? 'Рабочая папка (обязательно без id)' : 'Рабочая папка или путь к git worktree (по умолчанию твоя папка)' },
+        ...(!isSecretary ? { worktree: { type: 'boolean', description: 'Создать Worker в отдельном git worktree от текущего HEAD; без id и folder' } } : {}),
+        harness: { type: 'string', enum: harnesses, description: 'Harness (по умолчанию — см. описание send)' },
+        model: { type: 'string', description: 'Модель из list (по умолчанию — см. описание send)' },
+        reasoning: { type: 'string', description: 'Уровень reasoning из list (по умолчанию — см. описание send)' },
+      },
+      ['message'],
+    ],
+    [
+      'read',
+      `Прочитать последние сообщения ${target} по id. По умолчанию возвращает последние 10 очищенных сообщений диалога (user, agent, report, error); передай raw: true для сырых событий.`,
+      {
+        id: { type: 'number', description: `id ${target}` },
+        limit: { type: 'number', description: 'Сколько сообщений вернуть (1–100, по умолчанию 10)' },
+        raw: { type: 'boolean', description: 'Вернуть сырые события harness вместо очищенных сообщений' },
+      },
+      ['id'],
+    ],
+    [
+      'stop',
+      isSecretary
+        ? 'Немедленно остановить Specialist по id вместе с его Workers.'
+        : 'Немедленно остановить одного из твоих Workers по id.',
+      { id: { type: 'number', description: `id ${target}` } },
+      ['id'],
+    ],
+    ['hide', `Скрыть или вернуть ${target} в боковой панели.`, { id: { type: 'number' }, hidden: { type: 'boolean' } }, ['id', 'hidden']],
+    [
+      'send_file',
+      'Показать владельцу файл с Host в твоём чате: картинку, видео, аудио или документ. Владелец сможет открыть его и скачать на устройство.',
+      {
+        path: { type: 'string', minLength: 1, description: 'Путь к файлу на Host: абсолютный или от твоей папки' },
+        caption: { type: 'string', description: 'Подпись к файлу' },
+      },
+      ['path'],
+    ],
+    ['publish_html', 'Опубликовать HTML-файл или каталог с index.html на 24 часа. Ссылка доступна каждому, у кого она есть.', { path: { type: 'string', minLength: 1 } }, ['path']],
+    ...(isSecretary ? [['camera_frame', 'Получить кадр включённой камеры Voice Call по просьбе владельца. Возвращает путь к файлу.', {}, []], [
+      'report_issue',
+      'Подготовить сообщение об ошибке или идее для разработчиков Secretary App. Возвращает ссылку на заполненный GitHub issue: отдай её владельцу, он проверит текст и отправит.',
+      {
+        title: { type: 'string', minLength: 1, description: 'Коротко, что случилось' },
+        body: { type: 'string', minLength: 1, description: 'Что делал владелец, что ожидал, что произошло; текст ошибок, если есть' },
+      },
+      ['title', 'body'],
+    ]] : []),
+  ].map(([name, description, properties, required]) => ({ name, description, inputSchema: { type: 'object', properties, required } }));
+}
+
 // One MCP adapter for both Secretary Agent (level 0) and Specialists (level 1).
 // The caller's session id is in the path (/mcp/<id>); level-2 child sessions do not get MCP.
 export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = modelDetails as ModelList, root = secretaryFolder, previewBase = previewUrl, sudo = new Sudo((id, event) => sessions.get(id).emit(event)), secrets = new Secrets(root, (id, event) => sessions.get(id).emit(event)), skills = new Skills(root, (id, event) => sessions.get(id).emit(event)) , cameraFrame = async (): Promise<string> => { throw new Error('Камера не включена'); } } = {}) {
-  function toolsFor(isSecretary: boolean) {
-    const target = isSecretary ? 'Specialist' : 'Worker';
-    const targetGen = isSecretary ? 'Specialists' : 'твоих Workers';
-    return [
-      ['schedule_add', 'Создать расписание: cron из пяти полей или at (ISO 8601 с часовым поясом). Cron использует часовой пояс Host.', { message: { type: 'string' }, session_id: { type: 'number' }, cron: { type: 'string' }, at: { type: 'string' } }, ['message']],
-      ['schedule_list', 'Показать доступные расписания.', {}, []],
-      ['schedule_remove', 'Удалить расписание по id.', { id: { type: 'number' } }, ['id']],
-      ['request_secret', 'Запросить секрет у владельца.', { name: { type: 'string' }, reason: { type: 'string' } }, ['name', 'reason']],
-      ['sudo_run', 'Запросить подтверждение владельца и выполнить команду с sudo.', { command: { type: 'string' }, reason: { type: 'string' } }, ['command', 'reason']],
-      ['skill_propose', 'Предложить владельцу создать или изменить skill.', { name: { type: 'string' }, content: { type: 'string' }, reason: { type: 'string' } }, ['name', 'content', 'reason']],
-      ['recall', 'Найти сообщения в истории своей Session.', { query: { type: 'string' } }, ['query']],
-      [
-        'list',
-        `Показать список ${targetGen} (id, имя, папка, harness, модель, статус) и доступные на этом Host модели с уровнями reasoning. Скрытые владельцем — завершённые — показываются только с hidden: true.`,
-        { hidden: { type: 'boolean', description: 'Показать только скрытые владельцем' } },
-        [],
-      ],
-      [
-        'send',
-        isSecretary
-          ? 'Отправить задачу Specialist. С id — пишет существующему (по умолчанию в очередь; immediate: true прерывает ход). Без id — создаёт нового Specialist по name и folder и сразу запускает задачу (harness, model, reasoning — из настройки владельца для новых Specialists, иначе как у тебя).'
-          : 'Отправить задачу Worker. С id — пишет существующему (по умолчанию в очередь; immediate: true прерывает ход). Без id — создаёт нового Worker по name (folder необязателен, по умолчанию твоя папка; worktree: true создаёт отдельный worktree от HEAD без незакоммиченных файлов; harness, model, reasoning наследуются).',
-        {
-          message: { type: 'string', description: 'Текст задачи или сообщения' },
-          id: { type: 'number', description: `id существующего ${target}` },
-          immediate: { type: 'boolean', description: 'Прервать текущий ход и отправить сразу (только с id)' },
-          name: { type: 'string', minLength: 1, description: isSecretary ? 'Короткое имя Specialist по области ответственности (например, Заметки, [Название проекта], Исследователь, Общий)' : 'Короткое имя Worker по сути задачи' },
-          folder: { type: 'string', description: isSecretary ? 'Рабочая папка (обязательно без id)' : 'Рабочая папка или путь к git worktree (по умолчанию твоя папка)' },
-          ...(!isSecretary ? { worktree: { type: 'boolean', description: 'Создать Worker в отдельном git worktree от текущего HEAD; без id и folder' } } : {}),
-          harness: { type: 'string', enum: sessions.harnesses, description: 'Harness (по умолчанию — см. описание send)' },
-          model: { type: 'string', description: 'Модель из list (по умолчанию — см. описание send)' },
-          reasoning: { type: 'string', description: 'Уровень reasoning из list (по умолчанию — см. описание send)' },
-        },
-        ['message'],
-      ],
-      [
-        'read',
-        `Прочитать последние сообщения ${target} по id. По умолчанию возвращает последние 10 очищенных сообщений диалога (user, agent, report, error); передай raw: true для сырых событий.`,
-        {
-          id: { type: 'number', description: `id ${target}` },
-          limit: { type: 'number', description: 'Сколько сообщений вернуть (1–100, по умолчанию 10)' },
-          raw: { type: 'boolean', description: 'Вернуть сырые события harness вместо очищенных сообщений' },
-        },
-        ['id'],
-      ],
-      [
-        'stop',
-        isSecretary
-          ? 'Немедленно остановить Specialist по id вместе с его Workers.'
-          : 'Немедленно остановить одного из твоих Workers по id.',
-        { id: { type: 'number', description: `id ${target}` } },
-        ['id'],
-      ],
-      ['hide', `Скрыть или вернуть ${target} в боковой панели.`, { id: { type: 'number' }, hidden: { type: 'boolean' } }, ['id', 'hidden']],
-      [
-        'send_file',
-        'Показать владельцу файл с Host в твоём чате: картинку, видео, аудио или документ. Владелец сможет открыть его и скачать на устройство.',
-        {
-          path: { type: 'string', minLength: 1, description: 'Путь к файлу на Host: абсолютный или от твоей папки' },
-          caption: { type: 'string', description: 'Подпись к файлу' },
-        },
-        ['path'],
-      ],
-      ['publish_html', 'Опубликовать HTML-файл или каталог с index.html на 24 часа. Ссылка доступна каждому, у кого она есть.', { path: { type: 'string', minLength: 1 } }, ['path']],
-      ...(isSecretary ? [['camera_frame', 'Получить кадр включённой камеры Voice Call по просьбе владельца. Возвращает путь к файлу.', {}, []], [
-        'report_issue',
-        'Подготовить сообщение об ошибке или идее для разработчиков Secretary App. Возвращает ссылку на заполненный GitHub issue: отдай её владельцу, он проверит текст и отправит.',
-        {
-          title: { type: 'string', minLength: 1, description: 'Коротко, что случилось' },
-          body: { type: 'string', minLength: 1, description: 'Что делал владелец, что ожидал, что произошло; текст ошибок, если есть' },
-        },
-        ['title', 'body'],
-      ]] : []),
-    ].map(([name, description, properties, required]) => ({ name, description, inputSchema: { type: 'object', properties, required } }));
-  }
 
   async function availableModels() {
     const result: Record<string, { id: string; reasoning: string[] }[]> = {};
@@ -253,7 +254,7 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
       if (msg.id === undefined) return new Response(null, { status: 202 });
       const ok = (result: unknown) => Response.json({ jsonrpc: '2.0', id: msg.id, result });
       if (msg.method === 'initialize') return ok({ protocolVersion: msg.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'secretary', version: '0.1' } });
-      if (msg.method === 'tools/list') return ok({ tools: toolsFor(isSecretary) });
+      if (msg.method === 'tools/list') return ok({ tools: toolsFor(isSecretary, sessions.harnesses) });
       if (msg.method === 'tools/call') {
         try { return ok({ content: [{ type: 'text', text: JSON.stringify(await call(callerId, isSecretary, msg.params.name, msg.params.arguments || {})) }] }); }
         catch (error) { return ok({ isError: true, content: [{ type: 'text', text: String(error) }] }); }

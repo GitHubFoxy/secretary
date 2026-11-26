@@ -318,3 +318,21 @@ test('skill_propose доступен Secretary Agent и Specialist и показ
   }
   await rm(root, { recursive: true, force: true });
 });
+
+test('представление агентов совпадает с tools/list и скрывает токены и секреты', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'agent-view-'));
+  const { agentView } = await import('./observability');
+  const { Secrets } = await import('./secrets');
+  const { ExternalMcp } = await import('./external-mcp');
+  try {
+    const env = setup(root); servers.push(env.server);
+    await new Secrets(root).set('KEY', 'secret-"value');
+    new ExternalMcp(root).save([{name:'external', enabled:true, roles:['secretary'], type:'http', url:'https://example.com/?key=private-query', headers:{Authorization:'Bearer ${secret:KEY}'}}]);
+    const view = await agentView(root, env.sessions, '1');
+    expect(view.roles.secretary.tools).toEqual((await env.rpc(1, 'tools/list')).body.result.tools);
+    const text = JSON.stringify(view);
+    expect(text).not.toContain((env.sessions as any).tokens.get(1));
+    expect(text).not.toContain('secret-');
+    expect(text).not.toContain('private-query');
+  } finally { await rm(root, {recursive:true, force:true}); }
+});

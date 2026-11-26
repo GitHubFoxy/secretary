@@ -1,4 +1,5 @@
 import { Skills } from './skills';
+import { agentView } from './observability';
 import { cameraRequests } from './camera';
 import { servePreview } from './preview';
 import { authorized, pair } from './auth';
@@ -193,6 +194,10 @@ function handleRequest(request: Request, server: any) {
       return Promise.resolve().then(() => modelDetails(url.searchParams.get('harness') || '', true)).then(result => Response.json(result), error => new Response(String(error), { status: 500 }));
     if (url.pathname === '/codex/limits')
       return codexRateLimits().then(limits => Response.json(limits), error => new Response(error.message, { status: 500 }));
+    if (url.pathname === '/settings/agent-view') {
+      if (request.method !== 'GET') return new Response(null, {status:405});
+      return agentView(secretaryFolder, sessions, url.searchParams.get('session')).then(data => Response.json(data, {headers:{'Cache-Control':'no-store'}}), error => new Response(String(error), {status:400}));
+    }
     if (url.pathname === '/settings/video') {
       if (request.method === 'GET') return Bun.file(videoIntervalFile).exists().then(exists => exists ? Bun.file(videoIntervalFile).text() : '1').then(interval => Response.json({interval}));
       if (request.method === 'PUT') return request.text().then(value => { if (!['1', '2'].includes(value)) throw new Error('Недопустимая частота кадров'); return Bun.write(videoIntervalFile, value); }).then(() => new Response(null, {status:204}), error => new Response(String(error), {status:400}));
