@@ -1,57 +1,44 @@
 <script>
-  import { renderMarkdown } from '../markdown.js';
   import { mount, unmount } from 'svelte';
+  import { renderMarkdown } from '../markdown.js';
   import Icon from './Icon.svelte';
 
+  // text — сырой текст ответа агента или отчёта. HTML здесь уже очищен в renderMarkdown.
   let { text = '' } = $props();
   const html = $derived(renderMarkdown(text));
   let container;
 
+  async function copy(code) {
+    try { await navigator.clipboard.writeText(code.textContent); return true; }
+    catch {
+      // Android WebView без разрешения на буфер обмена: копируем через выделение.
+      getSelection().selectAllChildren(code);
+      const copied = document.execCommand('copy');
+      getSelection().removeAllRanges();
+      return copied;
+    }
+  }
+
+  // Каждому блоку кода — кнопка «Копировать». Обёртка держит кнопку на месте, пока сам блок прокручивается вбок.
   $effect(() => {
-    html;
+    void html;
     const icons = [];
-    for (const pre of container.querySelectorAll('pre')) {
-      const code = pre.querySelector('code');
-      if (!code) continue;
-      const wrapper = document.createElement('div');
+    for (const code of container.querySelectorAll('pre > code')) {
+      const pre = code.parentElement, wrapper = document.createElement('div'), button = document.createElement('button');
       wrapper.className = 'code-block';
       pre.replaceWith(wrapper);
-      wrapper.append(pre);
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'copy-code';
-      button.setAttribute('aria-label', 'Копировать');
-      button.title = 'Копировать';
-      wrapper.append(button);
-      let icon = mount(Icon, { target: button, props: { name: 'copy', class: 'size-4' } });
-      icons.push(() => unmount(icon));
+      Object.assign(button, { type: 'button', className: 'copy-code', title: 'Копировать' });
+      wrapper.append(pre, button);
+      const props = $state({ name: 'copy', class: 'size-4' });
       let timer;
       button.onclick = async () => {
-        try {
-          await navigator.clipboard.writeText(code.textContent);
-        } catch {
-          const selection = window.getSelection();
-          const range = document.createRange();
-          range.selectNodeContents(code);
-          selection.removeAllRanges();
-          selection.addRange(range);
-          const copied = document.execCommand('copy');
-          selection.removeAllRanges();
-          if (!copied) return;
-        }
+        if (!await copy(code)) return;
+        props.name = 'check'; button.title = 'Скопировано';
         clearTimeout(timer);
-        unmount(icon);
-        icon = mount(Icon, { target: button, props: { name: 'check', class: 'size-4' } });
-        button.title = 'Скопировано';
-        button.setAttribute('aria-label', 'Скопировано');
-        timer = setTimeout(() => {
-          unmount(icon);
-          icon = mount(Icon, { target: button, props: { name: 'copy', class: 'size-4' } });
-          button.title = 'Копировать';
-          button.setAttribute('aria-label', 'Копировать');
-        }, 1000);
+        timer = setTimeout(() => { props.name = 'copy'; button.title = 'Копировать'; }, 1000);
       };
-      icons.push(() => clearTimeout(timer));
+      const icon = mount(Icon, { target: button, props });
+      icons.push(() => { clearTimeout(timer); unmount(icon); });
     }
     return () => icons.forEach(cleanup => cleanup());
   });
