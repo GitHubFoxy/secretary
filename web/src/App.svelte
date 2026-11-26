@@ -418,6 +418,7 @@
   <DownloadsScreen onback={() => (downloadsOpen = false)} />
 {:else if profileOpen}
   <ProfileScreen
+    request={value => connection.request(value)}
     {ttsEngine}
     {voiceModel}
     {videoInterval}
