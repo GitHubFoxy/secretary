@@ -85,7 +85,7 @@ const server = Bun.serve({
       }).catch(() => new Response('Invalid request', { status: 400 }));
     }
     if (!authorized(request)) {
-      if (url.pathname === '/' && request.method === 'GET') return new Response(Bun.file('login.html'), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
+      if (url.pathname === '/' && request.method === 'GET') return new Response(Bun.file(`${import.meta.dir}/login.html`), { headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } });
       return new Response('Unauthorized', { status: 401, headers: { 'Cache-Control': 'no-store' } });
     }
     if ((request.method !== 'GET' || url.pathname === '/ws') && !sameOrigin(request, url)) return new Response('Forbidden', { status: 403 });
@@ -136,7 +136,7 @@ const server = Bun.serve({
     if (url.pathname === '/ws') return server.upgrade(request) ? undefined : new Response('WebSocket upgrade failed', { status: 400 });
     const path = url.pathname === '/' ? '/index.html' : url.pathname;
     if (path.includes('..')) return new Response('Not found', { status: 404 });
-    return new Response(Bun.file(`../web/dist${path}`), { headers: { 'Cache-Control': ['/index.html', '/build-version.json', '/sw.js'].includes(path) ? 'no-store' : 'no-cache' } });
+    return new Response(Bun.file(`${import.meta.dir}/../web/dist${path}`), { headers: { 'Cache-Control': ['/index.html', '/build-version.json', '/sw.js'].includes(path) ? 'no-store' : 'no-cache' } });
   },
   websocket: {
     maxPayloadLength: 30 * 1024 * 1024,

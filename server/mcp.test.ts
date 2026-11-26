@@ -206,3 +206,42 @@ test('MCP проверяет токен Session, Host и Origin', async () => {
   expect((await request(`Bearer ${tokens.get(1)}`, { host: 'evil.example' })).status).toBe(403);
   expect((await request(`Bearer ${tokens.get(1)}`, { origin: 'http://127.0.0.1' })).status).toBe(403);
 });
+
+test('Worker получает отдельный worktree от HEAD и удаление Session сохраняет файлы', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'secretary-worktree-'));
+  const repo = join(root, 'repo');
+  const git = (...args: string[]) => {
+    const result = Bun.spawnSync(['git', ...args], { cwd: repo, stdout: 'pipe', stderr: 'pipe' });
+    if (result.exitCode) throw new Error(result.stderr.toString());
+    return result.stdout.toString().trim();
+  };
+  try {
+    await import('node:fs/promises').then(fs => fs.mkdir(repo));
+    git('init'); git('config', 'user.email', 'test@example.com'); git('config', 'user.name', 'Test');
+    await writeFile(join(repo, 'file'), 'committed');
+    git('add', 'file'); git('commit', '-m', 'initial');
+    const head = git('rev-parse', 'HEAD');
+    await writeFile(join(repo, 'file'), 'uncommitted');
+    const env = setup(root); servers.push(env.server);
+    const specialist = (await env.callTool(1, 'send', { name: 'S', folder: repo, message: 'go' })).data.id;
+    const results = await Promise.all([1, 2].map(() => env.callTool(specialist, 'send', { name: 'W', message: 'go', worktree: true })));
+    for (const result of results) {
+      expect(result.isError).toBe(false);
+      const { id, folder, branch } = result.data;
+      expect(await readFile(join(folder, 'file'), 'utf8')).toBe('committed');
+      expect(git('-C', folder, 'rev-parse', 'HEAD')).toBe(head);
+      expect(git('-C', folder, 'branch', '--show-current')).toBe(branch);
+      expect(env.sessions.get(id).info.branch).toBe(branch);
+      await writeFile(join(folder, 'file'), 'worker changes');
+      env.calls.find(call => call.options.folder === folder)!.end(true);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      env.sessions.delete(id);
+      expect(await readFile(join(folder, 'file'), 'utf8')).toBe('worker changes');
+    }
+    expect(results[0].data.folder).not.toBe(results[1].data.folder);
+    expect((await env.callTool(specialist, 'send', { id: 2, message: 'x', worktree: true })).isError).toBe(true);
+    expect((await env.callTool(specialist, 'send', { name: 'W', message: 'x', folder: repo, worktree: true })).isError).toBe(true);
+    const other = (await env.callTool(1, 'send', { name: 'S', folder: root, message: 'go' })).data.id;
+    expect((await env.callTool(other, 'send', { name: 'W', message: 'x', worktree: true })).isError).toBe(true);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

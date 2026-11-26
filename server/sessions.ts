@@ -7,7 +7,7 @@ import { isInternal, isSpecialist, SECRETARY_ID, Session, type SessionRow } from
 import { markdownText } from './speech-text';
 
 export type SessionSettings = { harness: string; model: string; reasoning: string | null };
-export type NewSession = SessionSettings & { folder: string; parentId?: number | null; name?: string | null };
+export type NewSession = SessionSettings & { folder: string; branch?: string | null; parentId?: number | null; name?: string | null };
 
 type Options = {
   turns: Record<string, Turn>;
@@ -99,7 +99,7 @@ export class Sessions {
   }
 
   private insert(s: NewSession) {
-    const result = this.db.query("INSERT INTO sessions (harness, model, folder, status, parent_id, name, reasoning) VALUES (?, ?, ?, 'idle', ?, ?, ?)").run(s.harness, s.model, s.folder, s.parentId ?? null, s.name ?? null, s.reasoning);
+    const result = this.db.query("INSERT INTO sessions (harness, model, folder, status, parent_id, name, reasoning, branch) VALUES (?, ?, ?, 'idle', ?, ?, ?, ?)").run(s.harness, s.model, s.folder, s.parentId ?? null, s.name ?? null, s.reasoning, s.branch ?? null);
     return this.attach(this.db.query('SELECT * FROM sessions WHERE id = ?').get(Number(result.lastInsertRowid)) as SessionRow);
   }
 

@@ -5,6 +5,7 @@ import { modelDetails } from './models';
 import { specialistModel } from './persona';
 import { isSpecialist, SECRETARY_ID } from './session';
 import type { Sessions } from './sessions';
+import { createWorktree } from './worktree';
 
 const issuesUrl = 'https://github.com/GitHubFoxy/secretary/issues/new';
 
@@ -37,13 +38,14 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
         'send',
         isSecretary
           ? 'Отправить задачу Specialist. С id — пишет существующему (по умолчанию в очередь; immediate: true прерывает ход). Без id — создаёт нового Specialist по name и folder и сразу запускает задачу (harness, model, reasoning — из настройки владельца для новых Specialists, иначе как у тебя).'
-          : 'Отправить задачу Worker. С id — пишет существующему (по умолчанию в очередь; immediate: true прерывает ход). Без id — создаёт нового Worker по name (folder необязателен, по умолчанию твоя папка; harness, model, reasoning наследуются).',
+          : 'Отправить задачу Worker. С id — пишет существующему (по умолчанию в очередь; immediate: true прерывает ход). Без id — создаёт нового Worker по name (folder необязателен, по умолчанию твоя папка; worktree: true создаёт отдельный worktree от HEAD без незакоммиченных файлов; harness, model, reasoning наследуются).',
         {
           message: { type: 'string', description: 'Текст задачи или сообщения' },
           id: { type: 'number', description: `id существующего ${target}` },
           immediate: { type: 'boolean', description: 'Прервать текущий ход и отправить сразу (только с id)' },
           name: { type: 'string', minLength: 1, description: isSecretary ? 'Короткое имя Specialist по области ответственности (например, Заметки, [Название проекта], Исследователь, Общий)' : 'Короткое имя Worker по сути задачи' },
           folder: { type: 'string', description: isSecretary ? 'Рабочая папка (обязательно без id)' : 'Рабочая папка или путь к git worktree (по умолчанию твоя папка)' },
+          ...(!isSecretary ? { worktree: { type: 'boolean', description: 'Создать Worker в отдельном git worktree от текущего HEAD; без id и folder' } } : {}),
           harness: { type: 'string', enum: sessions.harnesses, description: 'Harness (по умолчанию — см. описание send)' },
           model: { type: 'string', description: 'Модель из list (по умолчанию — см. описание send)' },
           reasoning: { type: 'string', description: 'Уровень reasoning из list (по умолчанию — см. описание send)' },
@@ -116,6 +118,7 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
       }
       case 'send': {
         if (typeof args.message !== 'string' || !args.message.trim()) throw new Error('Пустое сообщение');
+        if (args.worktree === true && (isSecretary || args.id !== undefined || args.folder !== undefined)) throw new Error('worktree доступен только для нового Worker без folder');
         if (args.id !== undefined) {
           const target = resolveTarget(callerId, isSecretary, args.id);
           target.send(args.message, undefined, args.immediate === true);
@@ -137,9 +140,20 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
         const reasoning = typeof args.reasoning === 'string' && args.reasoning.trim()
           ? args.reasoning.trim()
           : (sameHarness && model === base.model ? base.reasoning : null);
-        const child = await sessions.create({ harness, model, reasoning, folder, parentId: callerId, name: args.name.trim() });
-        child.send(args.message);
-        return { id: child.id, status: 'running' };
+        await sessions.check({ harness, model, reasoning });
+        const worktree = args.worktree === true ? await createWorktree(folder) : null;
+        let child;
+        try {
+          child = await sessions.create({ harness, model, reasoning, folder: worktree?.folder ?? folder, branch: worktree?.branch, parentId: callerId, name: args.name.trim() });
+          child.send(args.message);
+        } catch (error) {
+          if (child) sessions.delete(child.id);
+          if (worktree) {
+            try { await worktree.remove(); } catch (cleanup) { throw new Error(`${error}; не удалось удалить worktree ${worktree.folder}: ${cleanup}`); }
+          }
+          throw error;
+        }
+        return { id: child.id, status: 'running', ...(worktree ? { folder: worktree.folder, branch: worktree.branch } : {}) };
       }
       case 'read': {
         const target = resolveTarget(callerId, isSecretary, args.id, isSecretary);
