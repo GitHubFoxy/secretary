@@ -45,3 +45,16 @@ test('прерывание хода не создаёт сообщение в ч
   expect(chatMessage({ method: 'turn/completed', params: { turn: { status: 'interrupted', error: null } } })).toBeNull();
   expect(chatMessage({ method: 'turn/completed', params: { turn: { status: 'interrupted', error: { message: 'interrupted' } } } })).toBeNull();
 });
+
+test('Claude: вызов инструмента становится шагом', () => {
+  expect(chatMessage({type:'assistant', message:{content:[{type:'tool_use', name:'Bash', input:{command:'bun test'}}]}})).toEqual({kind:'step', tool:'Bash', summary:'bun test'});
+});
+test('Claude: рассуждение становится сообщением thinking', () => {
+  expect(chatMessage({type:'assistant', message:{content:[{type:'thinking', thinking:'Проверю тесты'}]}})).toEqual({kind:'thinking', text:'Проверю тесты'});
+});
+test('Codex: команда становится шагом', () => {
+  expect(chatMessage({method:'item/started', params:{item:{type:'commandExecution', command:'bun test'}}})).toEqual({kind:'step', tool:'Bash', summary:'bun test'});
+});
+test('Codex: рассуждение становится сообщением thinking', () => {
+  expect(chatMessage({method:'item/completed', params:{item:{type:'reasoning', summary:['Первое', 'Второе']}}})).toEqual({kind:'thinking', text:'Первое\nВторое'});
+});

@@ -14,6 +14,7 @@
   const isVideo = type => type.startsWith('video/');
   // Картинку открываем внутри приложения: ссылка target="_blank" в Android-оболочке уводит в окно, откуда нет пути назад.
   let viewed = $state(null);
+  let stepsOpen = $state(false);
   const fileUrl = file => `/files/${file.id}/${encodeURIComponent(file.name)}`;
 
   // Фото и видео показываем из images, а их оригиналы лежат в files; остальные файлы остаются карточками.
@@ -32,7 +33,17 @@
 {/snippet}
 
 <div data-message>
-  {#if m.kind === 'switch'}
+  {#if m.kind === 'steps'}
+    <div class="max-w-[85%] text-sm text-neutral-400">
+      <p>Думает…</p>
+      {#if m.thinking}<p class="mt-1 line-clamp-3 whitespace-pre-wrap text-neutral-500">{m.thinking}</p>{/if}
+      {#if m.steps.length}
+        {@const last = m.steps[m.steps.length - 1]}
+        <button type="button" class="mt-1 text-left" aria-expanded={stepsOpen} onclick={() => stepsOpen = !stepsOpen}>{stepsOpen ? '▾' : '▸'} {m.steps.length} шагов · {last.tool}{last.summary ? `: ${last.summary}` : ''}</button>
+        {#if stepsOpen}<ul class="mt-1 space-y-1 pl-4">{#each m.steps as step}<li class="break-words">{step.tool}{step.summary ? `: ${step.summary}` : ''}</li>{/each}</ul>{/if}
+      {/if}
+    </div>
+  {:else if m.kind === 'switch'}
     <div class="flex items-center gap-2 text-xs text-neutral-400" role="note" aria-label="Модель переключена">
       <div class="h-px flex-1 bg-neutral-800"></div>
       <Icon name="switch" class="size-3.5 shrink-0" />
