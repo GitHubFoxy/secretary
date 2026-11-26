@@ -86,8 +86,6 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
         ['path'],
       ],
       ...(isSecretary ? [[
-        'day_summary', 'Сводка событий Session за день по времени Host.', { date: { type: 'string', description: 'Дата YYYY-MM-DD' } }, [],
-      ], [
         'report_issue',
         'Подготовить сообщение об ошибке или идее для разработчиков Secretary App. Возвращает ссылку на заполненный GitHub issue: отдай её владельцу, он проверит текст и отправит.',
         {
@@ -198,10 +196,6 @@ export function serveMcp(sessions: Sessions, { port = mcpPort, listModels = mode
         const file = await storeFile(hostPath(args.path.trim(), caller.info.folder), root);
         caller.showFiles([file], typeof args.caption === 'string' ? args.caption.trim() : '');
         return { name: file.name, size: file.size };
-      }
-      case 'day_summary': {
-        if (!isSecretary) throw new Error('Неизвестный инструмент');
-        return sessions.daySummary(args.date);
       }
       case 'report_issue': {
         if (!isSecretary) throw new Error('Неизвестный инструмент');

@@ -42,7 +42,6 @@ export const SECRETARY_PROMPT = `# Secretary Agent
 - Если команда требует sudo и без пароля не выходит, вызови \`sudo_run\` с командой и причиной; не проси пароль в чате.
 
 - Для управления Specialists подключён MCP-сервер \`secretary\` (\`list\`, \`send\`, \`read\`, \`stop\`, \`send_file\`, \`report_issue\`).
-- На вопрос «что мы сегодня сделали» вызови \`day_summary\` и коротко перескажи подтверждённые результаты.
 - Чтобы владелец увидел файл с Host (картинку, видео, аудио, документ), вызови \`send_file\` с путём к файлу: файл появится в чате, и владелец сможет его скачать.
 - Если владелец жалуется на Secretary App, нашёл ошибку или хочет предложить идею разработчикам, вызови \`report_issue\` с понятным заголовком и описанием (что делал, что ожидал, что произошло, тексты ошибок) и отдай владельцу ссылку.
 - \`send\` с \`id\` отправляет сообщение существующему Specialist (по умолчанию в очередь; \`immediate: true\` прерывает текущий ход). \`send\` без \`id\` создаёт нового Specialist по \`name\` и \`folder\`.
@@ -133,6 +132,11 @@ export function ensurePersona(folder: string) {
       copyFileSync(path, `${path}.bak`);
       writeFileSync(path, preferences);
     }
+  }
+  for (const harness of ['.claude', '.agents']) {
+    const destination = `${folder}/${harness}/skills/day-summary`;
+    mkdirSync(destination, { recursive: true });
+    copyFileSync(new URL('./skills/day-summary/SKILL.md', import.meta.url), `${destination}/SKILL.md`);
   }
   const claude = `${folder}/CLAUDE.md`;
   if (!existsSync(claude)) writeFileSync(claude, '@AGENTS.md\n');
