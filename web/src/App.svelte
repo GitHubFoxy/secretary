@@ -96,7 +96,7 @@
       drawerOpen = settingsOpen = renameOpen = profileOpen = voiceMode = false;
       await tick();
       if (!composer) throw new Error('Поле ввода недоступно');
-      if (item.text) message += (message ? '\n' : '') + item.text;
+      if (item.text) { message += (message ? '\n' : '') + item.text; scheduleDraft(message); }
       if (files.length) composer.add(files);
       if (item.error) error = item.error;
       await share.acknowledge({id:item.id});
@@ -120,12 +120,12 @@
       if (!response.ok) throw new Error('Version unavailable');
       return (await response.json()).version;
     },
-    isBusy: () => Boolean(speaking || message || images.length || preparing.some(item => !item.error) || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || notesOpen || renameOpen || settingsOpen || (profileOpen && instructionsDirty)),
+    isBusy: () => Boolean(speaking || draftPending.size || images.length || preparing.some(item => !item.error) || voiceMessages.some(item => !item.error) || Object.values(interruptStates).some(state => state?.pending) || notesOpen || renameOpen || settingsOpen || (profileOpen && instructionsDirty)),
     reload: () => location.replace('/?update'),
   });
   const connection = createConnection({
     url: `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`,
-    onOpen: () => { connected = true; notesRevision++; if (selected !== null) loadHistory(selected, false, historyLoaded); updates.check(); },
+    onOpen: () => { connected = true; notesRevision++; for (const id of draftPending.keys()) savePending(id); if (selected !== null) { loadHistory(selected, false, historyLoaded); if (!draftPending.has(selected)) loadDraft(selected); } updates.check(); },
     onClose: () => { connected = false; speech.stop(); interruptFeedback.disconnect(); },
     onMessage: handleMessage,
   });
@@ -146,8 +146,46 @@
     } catch (err) { if (token === historyToken && !err.disconnected) error = err.message; }
     finally { if (token === historyToken) historyLoadingOlder = false; }
   }
-  function select(id) { if (selected !== id) { history = []; queue = []; } selected = id; historyLoaded = false; historyHasMore = false; drawerOpen = false; loadHistory(id); }
+  const draftFrom = crypto.randomUUID();
+  const draftPending = new Map();
+  let draftToken = 0;
+  function savePending(id) {
+    const entry = draftPending.get(id);
+    if (!entry) return;
+    clearTimeout(entry.timer);
+    entry.timer = null;
+    connection.request({type:'draftSave', id, text:entry.text, from:draftFrom}).then(() => {
+      if (draftPending.get(id) === entry) draftPending.delete(id);
+    }).catch(err => { error = `Не удалось сохранить черновик: ${err.message}`; });
+  }
+  function scheduleDraft(text) {
+    if (selected === null) return;
+    const id = selected;
+    clearTimeout(draftPending.get(id)?.timer);
+    const entry = {text, timer:null};
+    draftPending.set(id, entry);
+    entry.timer = setTimeout(() => savePending(id), 500);
+    draftToken++;
+  }
+  async function loadDraft(id) {
+    const token = ++draftToken;
+    try {
+      const result = await connection.request({type:'draft', id});
+      if (selected === id && token === draftToken) message = result.text;
+    } catch (err) { if (!err.disconnected) error = err.message; }
+  }
+  function select(id) {
+    if (selected !== id) {
+      if (selected !== null) savePending(selected);
+      history = []; queue = []; message = '';
+      selected = id;
+      if (draftPending.has(id)) { draftToken++; message = draftPending.get(id).text; }
+      else loadDraft(id);
+    }
+    historyLoaded = false; historyHasMore = false; drawerOpen = false; loadHistory(id);
+  }
   function handleMessage(msg) {
+    if (msg.type === 'draftChanged' && msg.sessionId === selected && msg.from !== draftFrom && document.activeElement?.id !== 'message') { draftToken++; clearTimeout(draftPending.get(selected)?.timer); draftPending.delete(selected); message = msg.text; }
     if (msg.type === 'notesChanged' && msg.sessionId === selected) notesRevision++;
     if (msg.type === 'speech_start') speech.start();
     if (msg.type === 'speech_audio') speech.audio(msg.data, msg.rate);
@@ -167,7 +205,7 @@
     let finish;
     const delivery = new Promise(resolve => { finish = resolve; });
     deliveries.set(sent.sessionId, delivery);
-    if (!video) { message = ''; images = []; }
+    if (!video) { message = ''; images = []; scheduleDraft(''); }
     preparing = [...preparing, sent];
     if (!interruptStates[sent.sessionId]?.pending) interruptFeedback.clear(sent.sessionId);
     try {
@@ -204,7 +242,7 @@
     if (message.trim() || images.length) return;
     const item = preparing.find(entry => entry.id === id);
     if (!item) return;
-    message = item.text; images = item.images;
+    message = item.text; images = item.images; scheduleDraft(message);
     preparing = preparing.filter(entry => entry.id !== id);
   }
   // Запись хранится в памяти, пока её текст не принят: при ошибке её можно отправить повторно.
@@ -387,7 +425,7 @@
           {#if speaking && current?.secretary}
             <SpeakingPill onstop={stopSpeech} />
           {/if}
-          <Composer bind:this={composer} {videoInterval} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
+          <Composer bind:this={composer} {videoInterval} bind:value={message} bind:images disabled={!connected} stopDisabled={!connected || !!interruptStates[selected]?.pending} running={current?.status === 'running'} sessionId={selected} oninput={scheduleDraft} onsubmit={submit} oninterrupt={interrupt} onvoice={sendVoice} onvideo={video => submit(false, video)} />
         </div>
       </div>
     </div>

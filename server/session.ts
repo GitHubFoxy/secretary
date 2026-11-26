@@ -89,6 +89,7 @@ export class Session {
       this.queue.discard();
       this.db.query('DELETE FROM events WHERE session_id = ?').run(this.id);
       this.db.query('DELETE FROM notes WHERE session_id = ?').run(this.id);
+      this.db.query('DELETE FROM drafts WHERE session_id = ?').run(this.id);
       this.db.query('DELETE FROM sessions WHERE id = ?').run(this.id);
     })();
     this.deleted = true;

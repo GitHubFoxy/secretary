@@ -6,6 +6,7 @@ import { secretaryFolder } from './config';
 import { fileResponse, saveFile } from './files';
 import { migrateDatabase, openDatabase } from './database';
 import { serveMcp } from './mcp';
+import { getDraft, saveDraft } from './drafts';
 import { listNotes, saveNote, deleteNote } from './notes';
 import { checkReasoning, modelDetails } from './models';
 import { ensurePersona, instructionsFile, setSpecialistModel, specialistModel, systemPrompts, type Role } from './persona';
@@ -49,6 +50,8 @@ function sameOrigin(request: Request, url: URL) {
 
 // The browser adapter. Every command gets exactly one answer with its requestId: `reply` with the result or `error`.
 const commands: Record<string, (cmd: any, send: (message: object) => void) => unknown> = {
+  draft: cmd => ({text: getDraft(db, sessions.get(cmd.id).id)}),
+  draftSave: cmd => { const session = sessions.get(cmd.id); if (typeof cmd.from !== 'string') throw new Error('Некорректный id вкладки'); saveDraft(db, session.id, cmd.text); publish({type:'draftChanged', sessionId:session.id, text:cmd.text, from:cmd.from}); },
   notes: cmd => ({notes: listNotes(db, sessions.get(cmd.id).id)}),
   noteSave: cmd => { const session = sessions.get(cmd.id); saveNote(db, session.id, cmd.noteId, cmd.text); publish({type:'notesChanged', sessionId:session.id}); },
   noteDelete: cmd => { const session = sessions.get(cmd.id); deleteNote(db, session.id, cmd.noteId); publish({type:'notesChanged', sessionId:session.id}); },

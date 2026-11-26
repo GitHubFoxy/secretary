@@ -8,7 +8,7 @@
   import { prepareImage } from '../prepare-image.js';
   import { prepareVideo, frameFromCanvas, finishVideo } from '../prepare-video.js';
   // onsubmit(immediate): true — прервать идущий ход и отправить сразу (правая кнопка и Enter на ПК), false — добавить в очередь (левая кнопка во время хода).
-  let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, sessionId, videoInterval = 1, onsubmit, oninterrupt, onvoice, onvideo, onmicpress, onrecordstart } = $props();
+  let { value = $bindable(''), images = $bindable([]), disabled = false, stopDisabled = false, running = false, sessionId, videoInterval = 1, onsubmit, oninterrupt, onvoice, onvideo, onmicpress, onrecordstart, oninput } = $props();
   let imageError = $state(''), attachOpen = $state(false);
   let area = $state();
   // Как в Telegram: на сенсорном экране нажатие переключает голос и видео, удержание записывает;
@@ -232,6 +232,7 @@
       rows="1"
       bind:this={area}
       bind:value
+      oninput={event => oninput?.(event.target.value)}
       onkeydown={keydown}
       onpaste={paste}
       placeholder="Напишите сообщение"
