@@ -39,3 +39,9 @@ test('ошибки хода видны в чате и не выглядят ка
   expect(chatMessage({ method: 'turn/completed', params: { turn: { error: { message: 'ошибка Codex' } } } }))
     .toEqual({ kind: 'error', text: 'ошибка Codex' });
 });
+
+test('прерывание хода не создаёт сообщение в чате', () => {
+  expect(chatMessage({ type: 'result', subtype: 'error_during_execution', is_error: true, terminal_reason: 'aborted_streaming', errors: ['[ede_diagnostic] result_type=user'] })).toBeNull();
+  expect(chatMessage({ method: 'turn/completed', params: { turn: { status: 'interrupted', error: null } } })).toBeNull();
+  expect(chatMessage({ method: 'turn/completed', params: { turn: { status: 'interrupted', error: { message: 'interrupted' } } } })).toBeNull();
+});
