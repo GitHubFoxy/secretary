@@ -3,6 +3,7 @@ import { expect, test } from 'bun:test';
 import type { Database } from 'bun:sqlite';
 import { reportText } from './chat';
 import { openDatabase } from './database';
+import { getDraft, saveDraft } from './drafts';
 import { listNotes, saveNote, deleteNote } from './notes';
 import type { Turn, TurnOptions } from './harness';
 import type { Session } from './session';
@@ -341,4 +342,17 @@ test('после перезапуска ход без сессии harness ос�
   restored.sessions.resumePending();
   expect(restored.sessions.get(s.id).info.status).toBe('interrupted');
   expect(restored.calls).toHaveLength(0);
+});
+
+test('черновик сохраняется и удаляется вместе с Session', async () => {
+  const {db, sessions, create} = setup();
+  const session = await create();
+  expect(getDraft(db, session.id)).toBe('');
+  saveDraft(db, session.id, 'текст');
+  expect(getDraft(db, session.id)).toBe('текст');
+  saveDraft(db, session.id, '');
+  expect(db.query('SELECT * FROM drafts WHERE session_id = ?').get(session.id)).toBeNull();
+  saveDraft(db, session.id, 'снова');
+  sessions.delete(session.id);
+  expect(db.query('SELECT * FROM drafts WHERE session_id = ?').get(session.id)).toBeNull();
 });
