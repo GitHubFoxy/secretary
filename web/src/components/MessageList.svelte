@@ -3,7 +3,7 @@
   import Icon from './Icon.svelte';
   import { tick } from 'svelte';
   // bottomInset — высота поля ввода поверх списка (плюс клавиатура), под ней должны оставаться видимыми последние сообщения.
-  let { messages = [], sessions = [], historyLoaded = false, connected = false, historyHasMore = false, historyLoadingOlder = false, onloadOlder, bottomInset = 0, onselect, onsendQueued, onretryVoice, onrestorePreparing, restoreDisabled = false } = $props();
+  let { messages = [], sessions = [], historyLoaded = false, connected = false, historyHasMore = false, historyLoadingOlder = false, onloadOlder, bottomInset = 0, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing, restoreDisabled = false } = $props();
   let scroller = $state();
   let content = $state();
   // Пока пользователь у самого низа, новые размеры списка не сдвигают его последние сообщения под поле ввода.
@@ -41,7 +41,7 @@
       <p class="py-16 text-center text-sm text-neutral-600">{!connected ? 'Нет связи с Host. Повторное подключение…' : !historyLoaded ? 'Загрузка сообщений…' : 'Сообщений пока нет'}</p>
     {/if}
     {#each messages as m (m.key)}
-      <MessageItem message={m} {sessions} {connected} {restoreDisabled} {onselect} {onrestorePreparing} {onsendQueued} {onretryVoice} />
+      <MessageItem message={m} {sessions} {connected} {restoreDisabled} {onselect} {onrestorePreparing} {onsendQueued} {onretryVoice} {oncancelVoice} />
     {/each}
   </div>
 </div>

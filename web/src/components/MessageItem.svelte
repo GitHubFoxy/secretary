@@ -8,7 +8,7 @@
   import { fileSize } from '../file-size.js';
   import { harnessInfo, modelLabel } from '../agents.js';
 
-  let { message: m, sessions = [], connected = false, restoreDisabled = false, onselect, onsendQueued, onretryVoice, onrestorePreparing } = $props();
+  let { message: m, sessions = [], connected = false, restoreDisabled = false, onselect, onsendQueued, onretryVoice, oncancelVoice, onrestorePreparing } = $props();
 
   const isImage = type => type.startsWith('image/');
   const isVideo = type => type.startsWith('video/');
@@ -63,6 +63,7 @@
         <p class="max-w-[85%] text-right text-xs text-red-400">
           Не удалось распознать: {m.error}
           <button class="text-neutral-200 underline" disabled={!connected} onclick={() => onretryVoice(m)}>Повторить</button>
+          <button class="text-neutral-200 underline" onclick={() => oncancelVoice(m)}>Отменить</button>
         </p>
       {/if}
     </div>
