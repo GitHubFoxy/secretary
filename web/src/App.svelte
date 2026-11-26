@@ -211,7 +211,9 @@
   async function sendVoice(item) {
     voiceMessages = [...voiceMessages.filter(v => v.key !== item.key), {...item, kind:'voice', error:''}];
     try {
-      const response = await fetch('/voice', {method:'POST', headers:{'Content-Type':'audio/wav'}, body:await item.wav});
+      const wav = await item.wav;
+      if (!wav) throw new Error('Не услышал речь');
+      const response = await fetch('/voice', {method:'POST', headers:{'Content-Type':'audio/wav'}, body:wav});
       if (!response.ok) throw new Error(await response.text());
       const {text} = await response.json();
       if (!text) throw new Error('Речь не распознана');

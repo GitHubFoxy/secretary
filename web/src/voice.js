@@ -1,3 +1,28 @@
+export function trimSilence(samples, rate = 16000) {
+  const window = Math.round(rate * 0.02), active = [];
+  for (let start = 0; start < samples.length; start += window) {
+    const end = Math.min(start + window, samples.length);
+    let energy = 0;
+    for (let i = start; i < end; i++) energy += samples[i] ** 2;
+    if (Math.sqrt(energy / (end - start)) >= 0.01) active.push([start, end]);
+  }
+  if (!active.length) return new Float32Array(0);
+  const parts = [], padding = Math.round(rate * 0.15);
+  let start = Math.max(0, active[0][0] - padding), end = active[0][1];
+  for (const [next, nextEnd] of active.slice(1)) {
+    if (next - end > rate * 0.7) {
+      parts.push(samples.subarray(start, Math.min(samples.length, end + padding)));
+      start = Math.max(0, next - padding);
+    }
+    end = nextEnd;
+  }
+  parts.push(samples.subarray(start, Math.min(samples.length, end + padding)));
+  const result = new Float32Array(parts.reduce((n, part) => n + part.length, 0));
+  let offset = 0;
+  for (const part of parts) { result.set(part, offset); offset += part.length; }
+  return result;
+}
+
 export async function wavFromRecording(chunks) {
   const context = new AudioContext();
   try {
@@ -7,7 +32,8 @@ export async function wavFromRecording(chunks) {
     source.buffer = audio;
     source.connect(offline.destination);
     source.start();
-    const samples = (await offline.startRendering()).getChannelData(0);
+    const samples = trimSilence((await offline.startRendering()).getChannelData(0));
+    if (!samples.length) return null;
     const buffer = new ArrayBuffer(44 + samples.length * 2);
     const view = new DataView(buffer);
     const write = (offset, text) => [...text].forEach((char, i) => view.setUint8(offset + i, char.charCodeAt(0)));
