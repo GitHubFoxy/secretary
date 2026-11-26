@@ -7,7 +7,7 @@
   // Голосовой режим: открывается и сразу слушает, отправляет, когда человек замолчал.
   // variant 'sheet' — шторка поверх другого приложения, 'full' — весь экран внутри Secretary App.
   // turn — сообщения текущего хода: последнее сообщение пользователя и всё после него.
-  let { variant = 'sheet', turn = [], sessionId, running = false, processing = false, speaking = false, speechFinishedId = null, connected = false, openedAt = performance.now(), onstart, onvoice, onphoto, onstopspeech, onclose, onopenapp } = $props();
+  let { variant = 'sheet', turn = [], sessionId, running = false, processing = false, speaking = false, speechFinishedId = null, connected = false, openedAt = performance.now(), onstart, onvoice, onphoto, oncamera, onstopspeech, onclose, onopenapp } = $props();
 
   let listening = $state(false), starting = $state(false), waiting = $state(false), hint = $state(''), bars = $state([4, 4, 4, 4, 4]);
   let camera = $state(null), video = $state(null), facing = $state('environment'), cameraStatus = $state('');
@@ -18,7 +18,8 @@
   $effect(() => { if (connected && !autostarted) { autostarted = true; listen(openedAt, true); } });
   $effect(() => { if (speaking || (lastKey && speechFinishedId === lastKey) || (lastKey && turn.some(item => item.key === lastKey && item.error))) waiting = false; });
   $effect(() => { if (!connected) { autostarted = false; finish(false); } });
-  onDestroy(() => { disposed = true; finish(false); stopCamera(); });
+  onDestroy(() => { disposed = true; finish(false); stopCamera(); oncamera?.(null); });
+  $effect(() => { oncamera?.(connected && camera ? capture : null); });
 
   function stopCamera() { cameraRequest++; camera?.getTracks().forEach(track => track.stop()); camera = null; }
   async function openCamera() {
@@ -31,15 +32,19 @@
     } catch (error) { cameraStatus = `Нет доступа к камере: ${error.message}`; }
   }
   $effect(() => { if (video && camera) video.srcObject = camera; });
-  async function snapshot() {
-    if (!video?.videoWidth || !camera) return;
+  function capture() {
+    if (!video?.videoWidth || !camera) throw new Error('Камера не включена');
     const canvas = document.createElement('canvas');
     const scale = Math.min(1, 1568 / Math.max(video.videoWidth, video.videoHeight));
     canvas.width = Math.round(video.videoWidth * scale); canvas.height = Math.round(video.videoHeight * scale);
     canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
     const [header, data] = canvas.toDataURL('image/jpeg', 0.8).split(',');
-    if (!header.startsWith('data:image/jpeg')) { cameraStatus = 'Не удалось создать снимок'; return; }
-    try { await onphoto({type:'image/jpeg', data}); cameraStatus = 'Снимок отправлен'; }
+    if (!header.startsWith('data:image/jpeg')) throw new Error('Не удалось создать снимок');
+    cameraStatus = 'Снимок сделан';
+    return {type:'image/jpeg', data};
+  }
+  async function snapshot() {
+    try { await onphoto(capture()); cameraStatus = 'Снимок отправлен'; }
     catch (error) { cameraStatus = `Не удалось отправить снимок: ${error.message}`; }
   }
 

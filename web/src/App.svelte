@@ -204,7 +204,17 @@
     openSecretaryPending = !secretary;
     if (secretary) select(secretary.id);
   }
+  let cameraCapture = null;
+  function setCamera(capture) {
+    cameraCapture = capture;
+    if (connected) connection.request({type:'cameraState', enabled:!!capture}).catch(() => {});
+  }
   function handleMessage(msg) {
+    if (msg.type === 'camera_frame') {
+      try { connection.request({type:'cameraReply', id:msg.id, image:cameraCapture ? cameraCapture() : undefined, error:cameraCapture ? undefined : 'Камера не включена'}).catch(() => {}); }
+      catch (err) { connection.request({type:'cameraReply', id:msg.id, error:err.message}).catch(() => {}); }
+      return;
+    }
     if (msg.type === 'secretary_reply' && shouldNotify({enabled:notificationsEnabled(), permission:globalThis.Notification?.permission, text:msg.text, visibility:document.visibilityState, native:Capacitor.isNativePlatform()})) {
       try {
         const notification = new Notification('Secretary', {body:msg.text.slice(0, 200), tag:'secretary-reply'});
@@ -370,7 +380,7 @@
     try { localStorage.setItem('last-chat', JSON.stringify({selected, sessions, history:history.slice(-20).map(m => ({...m, images:m.images?.filter(image => !image.video || image.video.time === 0)})), hasMore:historyHasMore || history.length > 20})); } catch { localStorage.removeItem('last-chat'); }
   }
   $: current = sessions.find(s => s.id === selected);
-  $: voiceProps = {turn, sessionId:selected, running:current?.status === 'running', processing:voiceMessages.some(item => item.id === selected && item.speech && !item.error), speaking:playing, speechFinishedId, connected, openedAt:voiceOpenedAt, onstart:() => { micPress(); recordStart(); }, onvoice:item => sendVoice({...item, speech:true}), onphoto:image => connection.request({type:'send', id:selected, text:'Снимок с камеры', images:[image]}), onstopspeech:stopSpeech};
+  $: voiceProps = {turn, sessionId:selected, running:current?.status === 'running', processing:voiceMessages.some(item => item.id === selected && item.speech && !item.error), speaking:playing, speechFinishedId, connected, openedAt:voiceOpenedAt, onstart:() => { micPress(); recordStart(); }, onvoice:item => sendVoice({...item, speech:true}), onphoto:image => connection.request({type:'send', id:selected, text:'Снимок с камеры', images:[image]}), oncamera:setCamera, onstopspeech:stopSpeech};
   $: title = current?.name || (current?.secretary ? 'Secretary' : `Сессия #${selected}`);
 
   // Высота поля ввода и высота экранной клавиатуры (iOS не сжимает layout viewport, поэтому берём visualViewport).
