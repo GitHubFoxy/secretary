@@ -7,7 +7,6 @@
   import { keyboardInset } from './viewport.js';
   import TopBar from './components/TopBar.svelte';
   import Notes from './components/Notes.svelte';
-  let notesOpen = false, notesRevision = 0;
   import SessionDrawer from './components/SessionDrawer.svelte';
   import SettingsPanel from './components/SettingsPanel.svelte';
   import MessageList from './components/MessageList.svelte';
@@ -109,6 +108,7 @@
   $: if (shared.length && secretaryForShare && !shareBusy) applyShared(shared[0], secretaryForShare);
   let limitsOpen = false, limits = null, limitsStatus = '';
   let profileOpen = false, instructionsDirty = false;
+  let notesOpen = false, notesRevision = 0;
   let interruptStates = {};
   const deliveries = new Map();
   const interruptFeedback = createInterruptFeedback({onChange: (id, state) => { interruptStates = {...interruptStates, [id]:state}; }});
